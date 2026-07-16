@@ -1,0 +1,410 @@
+{
+  "skill_name": "option-helper",
+  "evals": [
+    {
+      "id": 1,
+      "category": "方向性期权",
+      "label": "strong_bullish_low_cost",
+      "expected_label": "买入看涨期权",
+      "acceptable_labels": ["看涨期权"],
+      "prompt": "我觉得这个标的后面一个月可能会涨得比较明显，现在期权价格也不算贵。我想少花点钱去博上涨，最多亏掉买期权的钱。这个适合用什么结构？",
+      "answer": {
+        "primary_structure": "买入看涨期权",
+        "acceptable_structures": ["看涨期权"],
+        "required_points": ["适合明显看涨", "最大亏损为权利金", "盈亏平衡为行权价加权利金", "上涨越多收益越大"]
+      },
+      "expected_output": "应推荐买入看涨期权。理由是明显看涨且期权价格不算贵，希望用有限权利金获得上行弹性。应说明盈亏平衡为行权价加权利金，最大亏损为权利金，上行收益理论上无上限。",
+      "files": []
+    },
+    {
+      "id": 2,
+      "category": "方向性期权",
+      "label": "portfolio_downside_hedge",
+      "expected_label": "买入看跌期权",
+      "acceptable_labels": ["保护性看跌期权", "看跌期权"],
+      "prompt": "我手里有现货，短期怕它突然跌，但又不想把现货卖掉，因为如果后面反弹我还想吃到上涨。有没有比较直接的保护方式？",
+      "answer": {
+        "primary_structure": "买入看跌期权",
+        "acceptable_structures": ["保护性看跌期权", "看跌期权"],
+        "required_points": ["保留现货上行", "用权利金买下行保护", "标的下跌时看跌期权价值上升", "主要成本是权利金损耗"]
+      },
+      "expected_output": "应推荐买入看跌期权用于保护。理由是保留现货上行，同时用权利金锁定下行保护成本。应说明看跌期权盈利随标的下跌扩大，最大亏损为权利金，主要风险是标的不跌时保护成本损耗。",
+      "files": []
+    },
+    {
+      "id": 3,
+      "category": "方向性期权",
+      "label": "covered_call_income",
+      "expected_label": "卖出看涨期权",
+      "acceptable_labels": ["备兑看涨", "备兑卖出看涨", "卖出看涨"],
+      "prompt": "我已经有现货了，觉得短期很难大涨，最多就是横盘或者小涨。我想收点权利金，如果涨到上面某个价位被卖掉也能接受。这个适合什么做法？",
+      "answer": {
+        "primary_structure": "卖出看涨期权",
+        "acceptable_structures": ["备兑看涨", "备兑卖出看涨"],
+        "required_points": ["适合持有现货时增强收益", "卖出看涨收取权利金", "上涨超过行权价后上行收益被让渡", "若裸卖则上行风险无上限"]
+      },
+      "expected_output": "应推荐在持有现货基础上卖出看涨期权，即备兑看涨。理由是判断标的不大涨并愿意在较高价位让渡上行空间。应提示若没有现货保护，裸卖看涨的上行风险无上限。",
+      "files": []
+    },
+    {
+      "id": 4,
+      "category": "方向性期权",
+      "label": "cash_secured_put_entry",
+      "expected_label": "卖出看跌期权",
+      "acceptable_labels": ["卖出看跌", "现金担保卖出看跌"],
+      "prompt": "我想在更低的位置买这个标的，现在直接买觉得有点贵。如果它不跌下来，我收点权利金也可以；如果跌下来，我也能接受按那个价位买入。这个是什么结构？",
+      "answer": {
+        "primary_structure": "卖出看跌期权",
+        "acceptable_structures": ["现金担保卖出看跌", "卖出看跌"],
+        "required_points": ["适合愿意低位接货", "期初收取权利金", "跌破行权价后可能被行权买入标的", "下行亏损随标的下跌扩大但受标的跌到零限制"]
+      },
+      "expected_output": "应推荐卖出看跌期权。理由是愿意在更低价位买入标的，同时通过收取权利金补偿等待。应说明到期低于行权价会承担买入标的后的下行风险。",
+      "files": []
+    },
+    {
+      "id": 5,
+      "category": "垂直价差",
+      "label": "mild_bullish_capped_upside",
+      "expected_label": "牛市看涨价差",
+      "acceptable_labels": ["牛市看跌价差"],
+      "prompt": "我觉得这个标的后面大概率小涨，但上面空间也不大，下面支撑还可以。现在期权有点贵，我也不想裸卖承担太大风险。这个行情适合用什么结构？顺便给一个备选。",
+      "answer": {
+        "primary_structure": "牛市看涨价差",
+        "acceptable_structures": ["牛市看跌价差"],
+        "required_points": ["买入较低行权价看涨期权", "卖出较高行权价看涨期权", "亏损为净权利金", "收益在高行权价以上封顶"]
+      },
+      "expected_output": "应主推牛市看涨价差，即买入较低行权价看涨期权、卖出较高行权价看涨期权。理由是温和看涨、上方空间有限、亏损以净权利金封顶且不承担裸卖期权尾部风险。",
+      "files": []
+    },
+    {
+      "id": 6,
+      "category": "垂直价差",
+      "label": "mild_bullish_collect_premium_defined_risk",
+      "expected_label": "牛市看跌价差",
+      "acceptable_labels": ["牛市看涨价差"],
+      "prompt": "我对这个标的不算特别看涨，就是觉得它大概率不怎么跌，下面支撑比较强。我想一开始收点权利金，但又不想裸卖看跌把风险放太大。有没有风险封住的结构？",
+      "answer": {
+        "primary_structure": "牛市看跌价差",
+        "acceptable_structures": ["牛市看涨价差"],
+        "required_points": ["卖出较高行权价看跌期权", "买入较低行权价看跌期权", "最大盈利为净权利金", "最大亏损为行权价差减净权利金"]
+      },
+      "expected_output": "应推荐牛市看跌价差。理由是温和看多到中性、期初收取净权利金，同时通过买入低行权价看跌锁定最大亏损。",
+      "files": []
+    },
+    {
+      "id": 7,
+      "category": "垂直价差",
+      "label": "mild_bearish_capped_downside",
+      "expected_label": "熊市看跌价差",
+      "acceptable_labels": ["熊市看涨价差"],
+      "prompt": "我觉得这个标的后面偏弱，可能会慢慢跌一点，但下面也有支撑，不像会大跌。我不想花太多权利金，也想把最大亏损控制住。适合什么结构？",
+      "answer": {
+        "primary_structure": "熊市看跌价差",
+        "acceptable_structures": ["熊市看涨价差"],
+        "required_points": ["买入较高行权价看跌期权", "卖出较低行权价看跌期权", "适合温和看跌", "最大亏损为净权利金"]
+      },
+      "expected_output": "应推荐熊市看跌价差。理由是温和看跌、下方空间有限、通过卖出低行权价看跌降低成本，最大亏损为净权利金，最大盈利为行权价差减净权利金。",
+      "files": []
+    },
+    {
+      "id": 8,
+      "category": "垂直价差",
+      "label": "mild_bearish_collect_premium_defined_risk",
+      "expected_label": "熊市看涨价差",
+      "acceptable_labels": ["熊市看跌价差"],
+      "prompt": "我觉得它大概率涨不上去，可能横盘偏弱。我想收点权利金，但又不想裸卖看涨，怕万一突然大涨风险太大。有没有风险封住的结构？",
+      "answer": {
+        "primary_structure": "熊市看涨价差",
+        "acceptable_structures": ["熊市看跌价差"],
+        "required_points": ["卖出较低行权价看涨期权", "买入较高行权价看涨期权", "最大盈利为净权利金", "最大亏损为行权价差减净权利金"]
+      },
+      "expected_output": "应推荐熊市看涨价差。理由是温和看空到中性、期初收取净权利金，同时通过买入高行权价看涨限制上行风险。",
+      "files": []
+    },
+    {
+      "id": 9,
+      "category": "波动率与区间",
+      "label": "event_large_move_unknown_direction",
+      "expected_label": "买入跨式",
+      "acceptable_labels": ["买入宽跨式", "跨式", "宽跨式"],
+      "prompt": "这个标的马上有大事件，我真判断不了方向，但感觉不管往上还是往下，波动都会比较大。我不想押方向，只想押它会动起来。用什么结构比较合适？有没有便宜一点的替代？",
+      "answer": {
+        "primary_structure": "买入跨式",
+        "acceptable_structures": ["买入宽跨式"],
+        "required_points": ["买入同一行权价看涨和看跌", "方向不确定但押大波动", "最大亏损为总权利金", "宽跨式成本更低但需要更大波动"]
+      },
+      "expected_output": "应推荐买入跨式。替代结构可为买入宽跨式，成本更低但需要更大幅度波动才盈利。",
+      "files": []
+    },
+    {
+      "id": 10,
+      "category": "波动率与区间",
+      "label": "large_move_low_cost_unknown_direction",
+      "expected_label": "买入宽跨式",
+      "acceptable_labels": ["买入跨式", "宽跨式"],
+      "prompt": "我也觉得后面会有大波动，但跨式太贵了。我愿意牺牲一点胜率，只有涨很多或者跌很多才赚钱也可以，主要想把成本降下来。这个更像什么结构？",
+      "answer": {
+        "primary_structure": "买入宽跨式",
+        "acceptable_structures": ["买入跨式"],
+        "required_points": ["买入虚值看涨和虚值看跌", "成本低于跨式", "需要更大幅度波动才盈利", "最大亏损为总权利金"]
+      },
+      "expected_output": "应推荐买入宽跨式。理由是方向不确定、押大波动且希望降低权利金成本，但需要更大幅度突破才盈利。",
+      "files": []
+    },
+    {
+      "id": 11,
+      "category": "波动率与区间",
+      "label": "pin_near_one_level",
+      "expected_label": "买入蝶式",
+      "acceptable_labels": ["蝶式"],
+      "prompt": "我觉得它到期很可能就收在某个价位附近，不太会离得太远。我想用比较低的成本去押这个落点，但如果偏离太多就认亏。这个适合什么结构？",
+      "answer": {
+        "primary_structure": "买入蝶式",
+        "acceptable_structures": ["蝶式"],
+        "required_points": ["适合押到期接近中间行权价", "成本较低", "两端之外亏损为净权利金", "偏离中间价越远收益越低"]
+      },
+      "expected_output": "应推荐买入蝶式。理由是押到期落在中间价附近、成本较低、最大亏损为净权利金。",
+      "files": []
+    },
+    {
+      "id": 12,
+      "category": "波动率与区间",
+      "label": "range_bound_wider_tolerance",
+      "expected_label": "买入鹰式",
+      "acceptable_labels": ["买入蝶式", "鹰式"],
+      "prompt": "我觉得这个标的到期大概率就在一个区间里，不太会大涨大跌。但我也不想押得太死，只押某一个点，希望容错范围宽一点。这个适合什么结构？",
+      "answer": {
+        "primary_structure": "买入鹰式",
+        "acceptable_structures": ["买入蝶式"],
+        "required_points": ["适合押到期落在区间", "容错范围比蝶式更宽", "区间内收益较高", "两端之外亏损为净权利金"]
+      },
+      "expected_output": "应推荐买入鹰式。理由是押到期落在区间、容错范围比蝶式更宽，两端之外亏损为净权利金。",
+      "files": []
+    },
+    {
+      "id": 13,
+      "category": "波动率与区间",
+      "label": "move_away_from_center",
+      "expected_label": "卖出蝶式",
+      "acceptable_labels": ["卖出鹰式"],
+      "prompt": "我不太相信它到期会刚好停在中间那个价位附近，觉得要么上去一点，要么下去一点，只要别钉在中间就行。有没有这种方向不强、但不想它停在中间的结构？",
+      "answer": {
+        "primary_structure": "卖出蝶式",
+        "acceptable_structures": ["卖出鹰式"],
+        "required_points": ["适合认为到期会偏离中间价", "中间附近最不利", "两端之外较有利", "收益和亏损都有限"]
+      },
+      "expected_output": "应推荐卖出蝶式或卖出鹰式。核心是判断到期不会停在中间区域，标的偏离中间价更有利，但收益和亏损都有限。",
+      "files": []
+    },
+    {
+      "id": 14,
+      "category": "障碍期权",
+      "label": "upside_but_not_touch_barrier",
+      "expected_label": "向上敲出看涨",
+      "acceptable_labels": ["向上敲出看涨期权"],
+      "prompt": "我有点看涨，但觉得它很难冲过上面那个关键价位。如果真冲过去了，我反而不想继续拿这个看涨头寸。有没有比普通看涨便宜一点的结构？",
+      "answer": {
+        "primary_structure": "向上敲出看涨",
+        "acceptable_structures": ["向上敲出看涨期权"],
+        "required_points": ["适合温和看涨但不触及上方障碍", "触及上方障碍后作废", "通常比普通看涨便宜", "必须看存续期路径"]
+      },
+      "expected_output": "应推荐向上敲出看涨。应强调损益不能只看到期价格，必须判断存续期内是否触及障碍。",
+      "files": []
+    },
+    {
+      "id": 15,
+      "category": "障碍期权",
+      "label": "bullish_unless_break_support",
+      "expected_label": "向下敲出看涨",
+      "acceptable_labels": ["向下敲出看涨期权"],
+      "prompt": "我看涨，但前提是它别先跌破下面那个关键支撑。如果先破了支撑，我这个看涨判断就不想继续了。有没有这种跌破就失效、但正常上涨还能参与的结构？",
+      "answer": {
+        "primary_structure": "向下敲出看涨",
+        "acceptable_structures": ["向下敲出看涨期权"],
+        "required_points": ["看涨但不希望先跌破下方障碍", "触及下方障碍后作废", "未敲出时类似普通看涨", "路径状态决定是否生效"]
+      },
+      "expected_output": "应推荐向下敲出看涨。理由是看涨观点以不跌破下方障碍为前提，若存续期内触及障碍则合约作废。",
+      "files": []
+    },
+    {
+      "id": 16,
+      "category": "障碍期权",
+      "label": "breakout_then_up",
+      "expected_label": "向上敲入看涨",
+      "acceptable_labels": ["向上敲入看涨期权"],
+      "prompt": "我觉得它只有真正突破上面那个关键价位以后，后面才可能继续往上。在没突破之前，我不想为普通看涨付太多钱。这个想法适合什么结构？",
+      "answer": {
+        "primary_structure": "向上敲入看涨",
+        "acceptable_structures": ["向上敲入看涨期权"],
+        "required_points": ["先触及上方障碍才生效", "适合突破后继续上涨", "未触及障碍则作废", "不能只看到期价格"]
+      },
+      "expected_output": "应推荐向上敲入看涨。理由是只有先突破上方障碍后看涨期权才生效，适合押突破后继续上行。",
+      "files": []
+    },
+    {
+      "id": 17,
+      "category": "障碍期权",
+      "label": "dip_then_rebound",
+      "expected_label": "向下敲入看涨",
+      "acceptable_labels": ["向下敲入看涨期权"],
+      "prompt": "我觉得它可能先砸一下，跌到下面某个位置以后再反弹。如果没先跌到那个位置，我就不想做这个反弹交易。有没有先跌到才生效的看涨结构？",
+      "answer": {
+        "primary_structure": "向下敲入看涨",
+        "acceptable_structures": ["向下敲入看涨期权"],
+        "required_points": ["先触及下方障碍才生效", "适合先下跌后反弹", "未触及障碍则作废", "触发后按看涨期权逻辑结算"]
+      },
+      "expected_output": "应推荐向下敲入看涨。理由是先触及下方障碍后看涨期权才生效，适合押先探底后反弹。",
+      "files": []
+    },
+    {
+      "id": 18,
+      "category": "障碍期权",
+      "label": "bearish_unless_rally_invalidates",
+      "expected_label": "向上敲出看跌",
+      "acceptable_labels": ["向上敲出看跌期权"],
+      "prompt": "我看跌，但如果它先反弹突破上面那个位置，我的看跌逻辑就不成立了。我希望这种情况下合约直接失效，权利金也比普通看跌便宜些。适合什么结构？",
+      "answer": {
+        "primary_structure": "向上敲出看跌",
+        "acceptable_structures": ["向上敲出看跌期权"],
+        "required_points": ["看跌但不希望先突破上方障碍", "触及上方障碍后作废", "未敲出时类似普通看跌", "必须判断路径"]
+      },
+      "expected_output": "应推荐向上敲出看跌。理由是看跌观点以不触及上方障碍为前提，触及后合约作废。",
+      "files": []
+    },
+    {
+      "id": 19,
+      "category": "障碍期权",
+      "label": "mild_down_but_not_crash",
+      "expected_label": "向下敲出看跌",
+      "acceptable_labels": ["向下敲出看跌期权"],
+      "prompt": "我觉得它可能小跌，但不太可能跌穿下面那个很低的位置。如果真跌穿了，我反而不想继续持有这个看跌合约。有没有跌穿就失效的看跌结构？",
+      "answer": {
+        "primary_structure": "向下敲出看跌",
+        "acceptable_structures": ["向下敲出看跌期权"],
+        "required_points": ["适合温和看跌但不触及下方障碍", "触及下方障碍后作废", "未敲出时类似普通看跌", "下行收益被障碍限制"]
+      },
+      "expected_output": "应推荐向下敲出看跌。理由是温和看跌但认为不会深跌触及下方障碍，若触及障碍则合约作废。",
+      "files": []
+    },
+    {
+      "id": 20,
+      "category": "障碍期权",
+      "label": "rally_then_fall",
+      "expected_label": "向上敲入看跌",
+      "acceptable_labels": ["向上敲入看跌期权"],
+      "prompt": "我觉得它可能先冲高，冲到上面某个位置以后再回落。如果没先冲到那个位置，我就不想做这个看跌交易。有什么结构适合？",
+      "answer": {
+        "primary_structure": "向上敲入看跌",
+        "acceptable_structures": ["向上敲入看跌期权"],
+        "required_points": ["先触及上方障碍才生效", "适合先冲高后回落", "未触及障碍则作废", "触发后按看跌期权逻辑结算"]
+      },
+      "expected_output": "应推荐向上敲入看跌。理由是先触及上方障碍后看跌期权才生效，适合押冲高后回落。",
+      "files": []
+    },
+    {
+      "id": 21,
+      "category": "障碍期权",
+      "label": "breakdown_then_further_down",
+      "expected_label": "向下敲入看跌",
+      "acceptable_labels": ["向下敲入看跌期权"],
+      "prompt": "我觉得它如果跌破那个关键支撑，后面可能会继续走弱；但如果一直没跌破，其实我也不需要这个看跌保护。有什么结构适合这种想法？为什么不能只看到期价格？",
+      "answer": {
+        "primary_structure": "向下敲入看跌",
+        "acceptable_structures": ["向下敲入看跌期权"],
+        "required_points": ["先触及下方障碍才生效", "适合破位后继续下跌", "未触及障碍则作废", "不能只看到期价格"]
+      },
+      "expected_output": "应推荐向下敲入看跌。应强调路径依赖，先判断是否触及障碍，再讨论到期看跌损益。",
+      "files": []
+    },
+    {
+      "id": 22,
+      "category": "二元与数字期权",
+      "label": "yes_no_close_above_level",
+      "expected_label": "现金二元看涨",
+      "acceptable_labels": ["现金二元看涨期权"],
+      "prompt": "我只关心它到期能不能站上某个价位，站上多少我不在乎。只要站上就给我一笔固定收益，没站上就亏买期权的钱。这个是什么结构？",
+      "answer": {
+        "primary_structure": "现金二元看涨",
+        "acceptable_structures": ["现金二元看涨期权"],
+        "required_points": ["到期高于行权价即固定赔付", "未站上亏权利金", "收益不随涨幅增加", "只判断到期是否过线"]
+      },
+      "expected_output": "应推荐现金二元看涨。理由是押到期是否高于行权价，站上即获得固定赔付，未站上亏权利金。",
+      "files": []
+    },
+    {
+      "id": 23,
+      "category": "二元与数字期权",
+      "label": "yes_no_close_below_level",
+      "expected_label": "现金二元看跌",
+      "acceptable_labels": ["现金二元看跌期权"],
+      "prompt": "我只关心它到期会不会跌破某个价位，跌破多少我不在乎。只要跌破就给固定收益，没跌破就亏权利金。这个该用什么？",
+      "answer": {
+        "primary_structure": "现金二元看跌",
+        "acceptable_structures": ["现金二元看跌期权"],
+        "required_points": ["到期低于行权价即固定赔付", "未跌破亏权利金", "收益不随跌幅增加", "只判断到期是否跌破"]
+      },
+      "expected_output": "应推荐现金二元看跌。理由是押到期是否低于行权价，跌破即获得固定赔付，未跌破亏权利金。",
+      "files": []
+    },
+    {
+      "id": 24,
+      "category": "二元与数字期权",
+      "label": "asset_or_nothing_up",
+      "expected_label": "资产二元看涨",
+      "acceptable_labels": ["资产二元看涨期权"],
+      "prompt": "我不是想要固定金额，而是想要一种到期只要站上某个价位，就按标的价格本身来赔付；没站上就没有赔付。这个属于什么结构？",
+      "answer": {
+        "primary_structure": "资产二元看涨",
+        "acceptable_structures": ["资产二元看涨期权"],
+        "required_points": ["到期高于行权价才支付标的价值", "未站上则归零并亏权利金", "赔付不是固定金额", "常用于结构拆解"]
+      },
+      "expected_output": "应推荐资产二元看涨。理由是到期站上行权价后支付标的价值，而不是固定现金赔付。",
+      "files": []
+    },
+    {
+      "id": 25,
+      "category": "二元与数字期权",
+      "label": "asset_or_nothing_down",
+      "expected_label": "资产二元看跌",
+      "acceptable_labels": ["资产二元看跌期权"],
+      "prompt": "我想要一种到期只要跌破某个价位，就按标的价格本身来赔付；如果没跌破就不赔。这个不是固定金额赔付，应该叫什么？",
+      "answer": {
+        "primary_structure": "资产二元看跌",
+        "acceptable_structures": ["资产二元看跌期权"],
+        "required_points": ["到期低于行权价才支付标的价值", "未跌破则归零并亏权利金", "赔付不是固定金额", "常用于结构拆解"]
+      },
+      "expected_output": "应推荐资产二元看跌。理由是到期跌破行权价后支付标的价值，而不是固定现金赔付。",
+      "files": []
+    },
+    {
+      "id": 26,
+      "category": "触碰类",
+      "label": "intraperiod_touch_not_close",
+      "expected_label": "触碰即付",
+      "acceptable_labels": ["一触即付", "触碰即付期权"],
+      "prompt": "我觉得它中途大概率会摸到上面某个价位，但不确定最后能不能收在那上面。只要中间碰到一次我就想拿固定收益。这个该用什么结构？和只看到期的那种有什么区别？",
+      "answer": {
+        "primary_structure": "触碰即付",
+        "acceptable_structures": ["一触即付", "触碰即付期权"],
+        "required_points": ["存续期内触及一次即固定赔付", "不要求到期仍在障碍价上方", "与到期二元期权不同", "路径决定结果"]
+      },
+      "expected_output": "应推荐触碰即付。理由是只要存续期内触及障碍价即支付固定赔付，不要求到期仍在该价位之上。",
+      "files": []
+    },
+    {
+      "id": 27,
+      "category": "触碰类",
+      "label": "no_touch_range_bound",
+      "expected_label": "不碰才付",
+      "acceptable_labels": ["不触碰期权", "不碰才付期权"],
+      "prompt": "我觉得它后面会窄幅震荡，不太可能碰到上面那个风险价位。如果整个期间都没碰到，我想拿一笔固定收益；一旦碰到就认亏权利金。这个是什么结构？",
+      "answer": {
+        "primary_structure": "不碰才付",
+        "acceptable_structures": ["不触碰期权", "不碰才付期权"],
+        "required_points": ["全程未触及障碍才固定赔付", "中途触及一次即作废", "适合窄幅震荡低波动观点", "与触碰即付方向相反"]
+      },
+      "expected_output": "应推荐不碰才付。理由是全程未触及障碍才获得固定赔付，中途触及一次即作废。",
+      "files": []
+    }
+  ]
+}
