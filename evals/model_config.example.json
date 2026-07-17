@@ -1,0 +1,17 @@
+{
+  "default_provider": "deepseek",
+  "providers": {
+    "deepseek": {
+      "base_url": "https://api.deepseek.com/chat/completions",
+      "model": "deepseek-chat",
+      "api_key_env": "DEEPSEEK_API_KEY",
+      "api_key": "替换成你的API Key"
+    },
+    "example_openai_compatible": {
+      "base_url": "https://example.com/v1/chat/completions",
+      "model": "example-model",
+      "api_key_env": "EXAMPLE_API_KEY",
+      "api_key": ""
+    }
+  }
+}

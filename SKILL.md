@@ -32,6 +32,33 @@ Use targeted lookup when possible:
 4. State payoff formula, break-even, maximum profit/loss, and key risk.
 5. If the user provides a specific underlying and price view, translate the view into strike, barrier, and premium assumptions only as an illustrative example unless market quotes are available.
 
+## Structure Selection Guardrails
+
+Use the user's described construction and path condition to disambiguate exact structures before naming the structure.
+
+Vertical spread mapping:
+
+- `买入较低行权价看涨期权、卖出较高行权价看涨期权` is 牛市看涨价差.
+- `卖出较高行权价看跌期权、买入较低行权价看跌期权` is 牛市看跌价差.
+- `买入较高行权价看跌期权、卖出较低行权价看跌期权` is 熊市看跌价差.
+- `卖出较低行权价看涨期权、买入较高行权价看涨期权` is 熊市看涨价差.
+- If the user says they want to sell a put for premium and buy a lower-strike put for protection, recommend 牛市看跌价差, not 熊市看跌价差.
+
+Barrier direction mapping:
+
+- `向上` means the barrier is above the current price and is triggered by touching or breaking the upper barrier.
+- `向下` means the barrier is below the current price and is triggered by touching or breaking the lower barrier.
+- `敲入` means the option becomes effective only after the barrier is touched.
+- `敲出` means the option becomes invalid after the barrier is touched.
+- If a call activates only after breaking an upper key level, recommend 向上敲入看涨.
+- If a call activates only after first falling to a lower support, recommend 向下敲入看涨.
+- If a put activates only after first rallying to an upper resistance, recommend 向上敲入看跌.
+- If a put activates only after breaking a lower key level, recommend 向下敲入看跌.
+
+Covered call naming:
+
+- If the user already holds the underlying and wants to sell an upside call for premium, treat `备兑开仓` as `备兑看涨`, and include the canonical name `卖出看涨期权` or `备兑看涨` in the recommendation.
+
 ## Answer Format
 
 For recommendations, answer in this order:
