@@ -1,90 +1,82 @@
 ---
 name: option-helper
-description: Recommend and explain option payoff structures from a market view. Trigger when the user asks what option structure fits a given underlying, direction, volatility view, price range, path condition, barrier or touch condition, or asks for the payoff, break-even, maximum profit/loss, construction, use case, or comparison of vanilla options, vertical spreads, straddles, strangles, butterflies, condors, barrier options, binary options, digital options, one-touch, or no-touch structures. Do not use for structured products such as airbags, snowballs, accumulators, or full product term-sheet design.
+description: 期权结构库。用于查询、解释、比较、计算和推荐期权及期权挂钩结构，包括普通期权、价差、波动率策略、障碍期权、二元期权、触碰类、雪球、安全气囊、累购、FCN、DCN、凤凰式结构、鲨鱼鳍及其他结构化产品。当用户询问某个结构的构造、损益、最大收益或亏损、盈亏平衡、适用行情、风险、敲入敲出条件、情景结果、报价要素，或根据标的、期限、方向、波动率、价格区间和路径判断推荐合适结构时使用。
 ---
 
-# Option Helper
+# 期权结构库
 
-Turn a market view into a concrete option structure, or explain the payoff mechanics of a named structure.
+本技能以本地结构库为依据，回答期权结构相关问题，并在信息充分时根据市场观点筛选合适结构。
 
-## Reference Loading
+## 文件职责
 
-Read `references/option-structures.md` before answering. It is the source of truth for notation, payoff conventions, formulas, break-even points, maximum profit/loss, examples, and structure-specific use cases.
+| 文件或目录 | 内容 | 使用方式 |
+| --- | --- | --- |
+| `references/optionlist.md` | 已登记结构、分类和入库情况 | 每次先查，确认名称和正文是否完整 |
+| `references/optionlib.md` | 结构定义、要素、损益、示例、适用场景和总结 | 解释、比较、计算或推荐时，以对应结构正文为准 |
+| `assets/payoff/` | 一页通损益图 | 用户要求看图、核对图示或引用图示时使用 |
+| `assets/disclaimer/disclaimer.md` | 风险提示 | 推荐、报价讨论、收益测算和结构化产品说明时使用 |
+| `references/optionlib-manager.md` | 结构库维护规范 | 新增、删除、重命名、移动分类或修改结构正文时使用 |
 
-Use targeted lookup when possible:
+`optionlib.md`是损益和公式的唯一依据。图示可辅助说明，但不能替代正文中的条款和损益逻辑。结构在列表中标为“待录入”时，只能说明已登记名称；用户要求图示时，再查看实际存在的图片，不得自行补造完整条款。
 
-- Directional options: section 2
-- Vertical spreads: section 3
-- Volatility and range structures: section 4
-- Barrier options: section 5
-- Binary and digital options: section 6
+## 处理问题
 
-## Workflow
+先识别用户要解决的问题，再读取必要资料。
 
-1. Parse the user view into four dimensions: direction, volatility, path, and magnitude.
-2. Select the structure family:
-   - Strong directional view: use calls or puts.
-   - Moderate directional view with capped payoff acceptable: use vertical spreads.
-   - Direction uncertain but volatility view clear: use straddles, strangles, butterflies, or condors.
-   - Touch, knock-in, knock-out, or path-dependent condition: use barrier or touch structures.
-   - Fixed payout or yes/no outcome: use binary, digital, one-touch, or no-touch structures.
-3. Select the exact structure and cite its construction from the reference.
-4. State payoff formula, break-even, maximum profit/loss, and key risk.
-5. If the user provides a specific underlying and price view, translate the view into strike, barrier, and premium assumptions only as an illustrative example unless market quotes are available.
+### 查询或解释指定结构
 
-## Structure Selection Guardrails
+1. 在`optionlist.md`确认结构是否已登记以及正文状态。
+2. 已录入时，读取对应正文，按用户关注点说明定义、构造、损益、关键条件、适用场景和风险。
+3. 待录入时，明确说明正文尚未完成；用户要求图示时，仅查看实际存在的图片。
 
-Use the user's described construction and path condition to disambiguate exact structures before naming the structure.
+### 比较多个结构
 
-Vertical spread mapping:
+对同一市场观点下可替代的结构进行比较。优先比较方向要求、收益上限、亏损边界、是否依赖路径、资金占用和主要风险，不堆砌无关指标。
 
-- `买入较低行权价看涨期权、卖出较高行权价看涨期权` is 牛市看涨价差.
-- `卖出较高行权价看跌期权、买入较低行权价看跌期权` is 牛市看跌价差.
-- `买入较高行权价看跌期权、卖出较低行权价看跌期权` is 熊市看跌价差.
-- `卖出较低行权价看涨期权、买入较高行权价看涨期权` is 熊市看涨价差.
-- If the user says they want to sell a put for premium and buy a lower-strike put for protection, recommend 牛市看跌价差, not 熊市看跌价差.
+### 根据行情推荐结构
 
-Barrier direction mapping:
+先提取以下信息：
 
-- `向上` means the barrier is above the current price and is triggered by touching or breaking the upper barrier.
-- `向下` means the barrier is below the current price and is triggered by touching or breaking the lower barrier.
-- `敲入` means the option becomes effective only after the barrier is touched.
-- `敲出` means the option becomes invalid after the barrier is touched.
-- If a call activates only after breaking an upper key level, recommend 向上敲入看涨.
-- If a call activates only after first falling to a lower support, recommend 向下敲入看涨.
-- If a put activates only after first rallying to an upper resistance, recommend 向上敲入看跌.
-- If a put activates only after breaking a lower key level, recommend 向下敲入看跌.
+- 标的及当前价格或价格区间
+- 看涨、看跌或震荡判断
+- 对波动率的判断
+- 期限
+- 是否存在敲入、敲出、触碰或区间条件
+- 对最大亏损、收益封顶和资金占用的接受程度
 
-Covered call naming:
+信息不足时，只追问会改变推荐结论的项目。推荐时给出1至3个结构，说明适用原因、构造、收益与风险边界，以及不适用的情形；不把示例参数当作真实报价。
 
-- If the user already holds the underlying and wants to sell an upside call for premium, treat `备兑开仓` as `备兑看涨`, and include the canonical name `卖出看涨期权` or `备兑看涨` in the recommendation.
+### 计算损益或情景
 
-## Answer Format
+先写清采用的参数、持有方和计算口径，再列判断条件和结果。
 
-For recommendations, answer in this order:
+- 到期价格结构按到期价格计算。
+- 障碍、触碰和雪球按观察期内的实际路径判断，不能只看到期价格。
+- 期权持有方与期权对手方的损益必须分清；没有明确立场时先确认。
+- 没有市场报价时，权利金、票息、障碍价和行权价只能作为假设，不得表述为可成交条件。
 
-1. 推荐结构
-2. 适用观点
-3. 构造
-4. 到期损益
-5. 盈亏平衡与最大盈亏
-6. 主要风险
-7. 替代结构
+### 图示查询
 
-For a named-structure explanation, answer in this order:
+从`assets/payoff/`使用实际存在的对应图片。图片文件名以目录中的名称为准，不自行改名。若同一结构存在不同报价或参数版本，应按用户指定版本展示。
 
-1. 结构定义
-2. 构造
-3. 损益公式
-4. 盈亏平衡与最大盈亏
-5. 适用场景
-6. 易错点
+### 维护结构库
 
-## Writing Rules
+涉及新增、删除、重命名、移动分类、补图或修改正文时，先读取`references/optionlib-manager.md`，再按其中的编号、表格、公式和校验规则处理。不得为了补齐列表而虚构正文内容。
 
-- Use concise professional quantitative-finance language.
-- Use `权利金`; do not replace it with `保证金`.
-- Do not use `腿`; write the actual option position, such as `买入低行权价看涨期权、卖出高行权价看涨期权`.
-- Do not add Greeks unless the user explicitly asks.
-- Distinguish expiry payoff from path state. For barrier, touch, and no-touch structures, do not infer payoff from only the terminal price.
-- If a requested structure is outside the reference scope, say so directly and do not invent unsupported terms.
+## 结构判断口径
+
+- 明确看涨或看跌：优先考虑看涨期权、看跌期权或方向性价差。
+- 有方向判断且接受收益封顶：考虑垂直价差。
+- 方向不明但判断波动会扩大或收敛：考虑跨式、宽跨式、蝶式或鹰式。
+- 收益取决于触及、敲入、敲出或观察路径：考虑障碍、触碰或雪球类结构。
+- 收益固定、二元或与观察日挂钩：考虑二元、数字、单触、不触碰及其他结构化产品。
+
+## 回答要求
+
+- 使用简洁、准确的中文。先说结论，再说明判断条件、损益和风险。
+- 用户问一个明确问题时，直接回答该问题，不机械套用完整模板。
+- 讲构造时直接写“买入”或“卖出”的期权头寸，不使用“腿”。
+- 严格区分权利金、保证金、名义本金和收益率，不能互相替代。
+- 用户未要求时，不扩展希腊字母或无关的专业指标。
+- 结构库没有覆盖的结构、条款或报价，直接说明资料不足，不编造规则。
+- 推荐、报价讨论、收益测算和结构化产品说明的结尾，附简短风险提示；用户要求完整版本时使用`disclaimer.md`。

@@ -16,7 +16,7 @@ from urllib import error, request
 
 ROOT = Path(__file__).resolve().parents[1]
 SKILL_PATH = ROOT / "SKILL.md"
-REFERENCE_PATH = ROOT / "references" / "option-structures.md"
+OPTIONLIB_PATH = ROOT / "references" / "optionlib.md"
 EVALS_PATH = ROOT / "evals" / "evals.json"
 RESULT_DIR = ROOT / "evals" / "model_results"
 CONFIG_PATH = ROOT / "evals" / "model_config.json"
@@ -77,14 +77,14 @@ def build_system_prompt(use_skill: bool) -> str:
         return base
 
     skill = read_text(SKILL_PATH)
-    reference = read_text(REFERENCE_PATH)
+    optionlib = read_text(OPTIONLIB_PATH)
     return (
         f"{base}\n\n"
         "下面是必须遵守的本地skill说明。你需要按其中的工作流、栏目顺序和写作规则回答。\n\n"
         "=== SKILL.md ===\n"
         f"{skill}\n\n"
-        "=== references/option-structures.md ===\n"
-        f"{reference}\n"
+        "=== references/optionlib.md ===\n"
+        f"{optionlib}\n"
     )
 
 
