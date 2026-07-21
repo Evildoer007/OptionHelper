@@ -14,6 +14,7 @@ description: 期权结构库。用于查询、解释、比较、计算和推荐�
 | `references/optionlist.md` | 已登记结构、分类和入库情况 | 每次先查，确认名称和正文是否完整 |
 | `references/optionlib.md` | 结构定义、要素、损益、示例、适用场景和总结 | 解释、比较、计算或推荐时，以对应结构正文为准 |
 | `assets/payoff/` | 一页通损益图 | 用户要求看图、核对图示或引用图示时使用 |
+| `references/payoff-manager.md` | 情景Payoff图的布局、颜色、命名和校验规范 | 创建、修改、补充或核对Payoff图时先读取 |
 | `assets/disclaimer/disclaimer.md` | 风险提示 | 推荐、报价讨论、收益测算和结构化产品说明时使用 |
 | `references/optionlib-manager.md` | 结构库维护规范 | 新增、删除、重命名、移动分类或修改结构正文时使用 |
 
@@ -61,7 +62,7 @@ description: 期权结构库。用于查询、解释、比较、计算和推荐�
 
 ### 维护结构库
 
-涉及新增、删除、重命名、移动分类、补图或修改正文时，先读取`references/optionlib-manager.md`，再按其中的编号、表格、公式和校验规则处理。不得为了补齐列表而虚构正文内容。
+涉及新增、删除、重命名、移动分类或修改正文时，先读取`references/optionlib-manager.md`；涉及创建、修改或补充Payoff图时，先读取`references/payoff-manager.md`。不得为了补齐列表而虚构正文内容。
 
 ## 结构判断口径
 

@@ -1,0 +1,13 @@
+{
+  "name": "optionhelper-payoff-editor",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node app/server.mjs",
+    "test": "node --test tests/core.test.mjs",
+    "validate": "node app/cli.mjs validate"
+  }
+}

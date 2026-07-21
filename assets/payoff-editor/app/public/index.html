@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Payoff SVG Editor</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23C8102E'/%3E%3Cpath d='M7 8h13a5 5 0 0 1 0 10h-6v6H7z' fill='white'/%3E%3C/svg%3E" />
+    <link rel="stylesheet" href="/style.css" />
+    <link rel="stylesheet" href="/controls.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="brand"><span class="brand-mark">P</span><span>Payoff SVG Editor</span><small>OPTIONHELPER</small></div>
+        <div class="topbar-status" id="modeBadge">选择产品后开始</div>
+        <div class="topbar-actions">
+          <label class="file-button">导入外部SVG<input id="externalFile" type="file" accept="image/svg+xml,.svg" /></label>
+          <button class="button button-quiet" id="recheckButton">重新检测资料库</button>
+        </div>
+      </header>
+
+      <main class="workbench" id="workbench">
+        <aside class="library-panel">
+          <div class="panel-kicker">资料库入口</div>
+          <h1>产品与情景</h1>
+          <p class="panel-copy">标题和情景完全由OptionList与OptionLib生成，编辑器不改任何图中文字。</p>
+          <label class="field-label" for="productSelect">产品</label>
+          <select id="productSelect" class="product-select"><option value="">选择产品</option></select>
+          <button class="button button-primary wide" id="newTemplateButton" disabled>从模板新建</button>
+          <button class="button button-quiet wide" id="openDraftButton" disabled>打开现有草稿</button>
+          <button class="button button-quiet wide" id="reimportButton" disabled>按资料库重新导入情景</button>
+          <div class="binding-card" id="bindingCard">
+            <span>尚未选择产品</span>
+          </div>
+          <div class="scenario-heading"><span>资料库情景</span><small id="scenarioCount">0</small></div>
+          <ol class="scenario-list" id="scenarioList"></ol>
+          <div class="library-note" id="libraryNote">资料库错配时，图仅可预览；请修改optionlib.md后重新检测。</div>
+        </aside>
+        <div class="panel-resizer panel-resizer-left" id="libraryResizer" role="separator" aria-label="调整产品与情景面板宽度" aria-orientation="vertical" tabindex="0"></div>
+
+        <section class="canvas-panel">
+          <div class="canvas-toolbar">
+            <div class="canvas-state"><span class="state-dot" id="stateDot"></span><span id="canvasState">预览锁定</span></div>
+            <div class="canvas-toolbar-actions">
+              <div class="zoom-control" aria-label="画布缩放"><button class="zoom-button" id="zoomOutButton" title="缩小1%">−</button><label class="zoom-input-wrap"><input id="zoomInput" type="number" min="1" max="400" step="1" inputmode="numeric" aria-label="画布缩放百分比" value="72" /><em>%</em></label><button class="zoom-button" id="zoomInButton" title="放大1%">+</button><button class="zoom-fit" id="zoomFitButton" title="适应画布">适应</button></div>
+              <button class="button button-quiet" id="editButton" disabled>进入编辑</button>
+              <button class="button button-quiet" id="saveButton" disabled>保存草稿</button>
+              <button class="button button-primary" id="publishButton" disabled>确认发布</button>
+            </div>
+          </div>
+          <div class="notice-area" id="noticeArea"></div>
+          <div class="canvas-viewport" id="canvasViewport">
+            <div class="empty-canvas" id="emptyCanvas">
+              <h2>选择产品后开始绘制</h2>
+              <p>产品和情景将由OptionList与OptionLib自动导入。</p>
+            </div>
+          </div>
+          <div class="canvas-footer"><span>正式发布须人工确认</span></div>
+        </section>
+        <div class="panel-resizer panel-resizer-right" id="inspectorResizer" role="separator" aria-label="调整图形控制面板宽度" aria-orientation="vertical" tabindex="0"></div>
+
+        <aside class="inspector-panel" id="inspectorPanel">
+          <div class="panel-kicker">图形控制</div>
+          <h2 id="inspectorTitle">未选择情景</h2>
+          <div class="source-detail" id="sourceDetail">选择产品后显示资料库来源。</div>
+          <div class="inspector-group">
+            <div class="group-title">坐标轴</div>
+            <p class="drag-hint">十字轴：X=100%、Y=0固定；拖动纵轴顶端或横轴右端，只调整交点位置。</p>
+            <div class="parameter-grid axis-grid">
+              <label class="parameter-field"><span>纵轴位置</span><input id="axisLeft" type="number" min="0" max="100" step="0.01" data-numeric="position" /><em>%</em></label>
+              <label class="parameter-field"><span>横轴位置</span><input id="axisBottom" type="number" min="0" max="100" step="0.01" data-numeric="position" /><em>%</em></label>
+            </div>
+          </div>
+          <div class="inspector-group">
+            <div class="group-title">收益曲线</div>
+            <div class="parameter-grid curve-options">
+              <label class="parameter-field"><span>类型</span><select id="curveType" class="compact-control"><option value="polyline">折线</option><option value="step">阶梯线</option></select></label>
+              <label class="parameter-field"><span>线宽</span><input id="strokeWidth" type="number" min="0.1" max="20" step="0.01" data-numeric="width" /><em>px</em></label>
+            </div>
+            <div class="section-action"><button class="button button-quiet small" id="addCurveButton">生成起点</button><button class="button button-quiet small" id="addNodeButton">添加节点</button></div>
+            <div class="point-table" id="pointTable"></div>
+          </div>
+          <div class="inspector-group">
+            <div class="group-title">辅助线</div>
+            <div class="parameter-grid guide-options">
+              <label class="parameter-field"><span>方向</span><select id="guideDirection" class="compact-control"><option value="horizontal">横线</option><option value="vertical">纵线</option></select></label>
+              <label class="parameter-field"><span>位置</span><input id="guidePosition" type="number" min="0" max="100" step="0.01" value="50" data-numeric="position" /><em>%</em></label>
+              <label class="parameter-field full"><span>样式</span><select id="guideStyle" class="compact-control"><option value="solid">实线</option><option value="dashed">虚线</option></select></label>
+            </div>
+            <button class="button button-quiet small wide-action" id="addGuideButton">添加辅助线</button>
+            <div class="line-list" id="guideList"></div>
+          </div>
+          <div class="inspector-group">
+            <div class="group-title">关键价格</div>
+            <div class="parameter-grid threshold-options">
+              <label class="parameter-field"><span>标记</span><select id="thresholdToken" class="compact-control"></select></label>
+              <label class="parameter-field"><span>位置</span><input id="thresholdPosition" type="number" min="0" max="100" step="0.01" value="50" data-numeric="position" /><em>%</em></label>
+            </div>
+            <button class="button button-quiet small wide-action" id="addThresholdButton">添加关键价格线</button>
+            <div class="line-list" id="thresholdList"></div>
+            <p class="hint">关键价格只使用标准标记；辅助线不添加自由文字。</p>
+          </div>
+          <div class="lock-card"><strong>锁定内容</strong><span>产品名称、SVG文件名、情景标题与数量、坐标文字、图例、颜色和版式。</span></div>
+        </aside>
+      </main>
+    </div>
+    <script type="module" src="/app.mjs"></script>
+  </body>
+</html>

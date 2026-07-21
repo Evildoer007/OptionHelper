@@ -1,0 +1,111 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "optionhelper-payoff/v1",
+  "title": "OptionHelper Payoff JSON",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "library", "graphics"],
+  "properties": {
+    "$schema": { "const": "optionhelper-payoff/v1" },
+    "schemaVersion": { "const": 1 },
+    "library": {
+      "type": "object",
+      "description": "只读资料库快照。必须与当前optionlist.md和optionlib.md完全一致。",
+      "additionalProperties": false,
+      "required": ["id", "name", "sourceFingerprint", "section", "scenarios"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+$" },
+        "name": { "type": "string", "minLength": 1 },
+        "sourceFingerprint": { "type": "string", "pattern": "^[a-f0-9]{16}$" },
+        "section": { "type": "string", "pattern": "^#### " },
+        "scenarios": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "title", "condition", "payoff"],
+            "properties": {
+              "id": { "type": "string" },
+              "title": { "type": "string", "minLength": 1 },
+              "condition": { "type": "string" },
+              "payoff": { "type": "string", "minLength": 1 }
+            }
+          }
+        }
+      }
+    },
+    "graphics": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["scenarioId", "axis", "curve", "thresholds"],
+        "properties": {
+          "scenarioId": { "type": "string" },
+          "axis": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["left", "bottom"],
+            "properties": {
+              "left": { "type": "number", "minimum": 0, "maximum": 1, "multipleOf": 0.0001, "description": "纵轴在绘图区内的横向位置，0至1对应0.00%至100.00%。" },
+              "bottom": { "type": "number", "minimum": 0, "maximum": 1, "multipleOf": 0.0001, "description": "横轴距绘图区底部的纵向位置，0至1对应0.00%至100.00%。" },
+              "zeroY": { "type": "number", "minimum": 0, "maximum": 1, "multipleOf": 0.0001, "description": "旧草稿兼容字段。编辑器忽略该字段，并会在下一次保存时移除。" }
+            }
+          },
+          "curve": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["type", "strokeWidth", "points"],
+            "properties": {
+              "type": { "enum": ["polyline", "step"] },
+              "strokeWidth": { "type": "number", "minimum": 0.1, "maximum": 20, "multipleOf": 0.01 },
+              "points": {
+                "type": "array",
+                "maxItems": 12,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["x", "y"],
+                  "properties": {
+                    "x": { "type": "number", "minimum": 0, "maximum": 1, "multipleOf": 0.0001 },
+                    "y": { "type": "number", "minimum": 0, "maximum": 1, "multipleOf": 0.0001 }
+                  }
+                }
+              }
+            }
+          },
+          "thresholds": {
+            "type": "array",
+            "maxItems": 4,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["token", "x"],
+              "properties": {
+                "token": { "enum": ["S₀", "K", "K₁", "K₂", "K₃", "K₄", "K_p", "K_c", "K_u", "K_d", "H", "H_in", "H_out", "H_floor", "H_reset", "H_u", "H_d", "H_{out,t}"] },
+                "x": { "type": "number", "minimum": 0, "maximum": 1, "multipleOf": 0.0001 }
+              }
+            }
+          },
+          "guides": {
+            "description": "可选辅助线。不带自由文字，用于参数化画横线或纵线。",
+            "type": "array",
+            "maxItems": 6,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["direction", "position", "style"],
+              "properties": {
+                "direction": { "enum": ["horizontal", "vertical"] },
+                "position": { "type": "number", "minimum": 0, "maximum": 1, "multipleOf": 0.0001 },
+                "style": { "enum": ["solid", "dashed"] }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
