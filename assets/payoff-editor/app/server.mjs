@@ -4,10 +4,12 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   ROOT,
+  buildPublishReview,
   createTemplateDraft,
   inspectNativeSvg,
   listProducts,
   loadStoredConfig,
+  migrateConfig,
   publish,
   reimportDraft,
   renderPayoffSvg,
@@ -76,22 +78,29 @@ async function api(request, response, url) {
     return json(response, 200, validationResponse(draft, { config: draft.config, source: draft.source, svg: renderPayoffSvg(draft.config) }));
   }
   if (url.pathname === '/api/render') {
-    const validation = await validateConfig(body.config);
+    const config = migrateConfig(body.config);
+    const validation = await validateConfig(config);
     if (validation.errors.length) return json(response, 422, validationResponse(validation));
-    return json(response, 200, validationResponse(validation, { svg: renderPayoffSvg(body.config, { editing: Boolean(body.editing) }) }));
+    return json(response, 200, validationResponse(validation, { config, svg: renderPayoffSvg(config, { editing: Boolean(body.editing) }) }));
   }
   if (url.pathname === '/api/drafts/save') {
     const saved = await saveDraft(body.config);
-    return json(response, saved.errors.length ? 422 : 200, validationResponse(saved, { saved: saved.saved, svg: saved.errors.length ? null : renderPayoffSvg(body.config) }));
+    return json(response, saved.errors.length ? 422 : 200, validationResponse(saved, { saved: saved.saved, config: saved.config, svg: saved.errors.length ? null : renderPayoffSvg(saved.config) }));
   }
   if (url.pathname === '/api/publish') {
+    const config = migrateConfig(body.config);
     if (!body.confirmed) {
-      const validation = await validateConfig(body.config, { requireComplete: true, requireRecorded: true });
-      if (validation.errors.length) return json(response, 422, validationResponse(validation));
-      return json(response, 200, { ok: true, confirmationRequired: true, message: '正式发布会归档旧SVG，并覆盖该产品的正式SVG。' });
+      const review = await buildPublishReview(config);
+      return json(response, 200, { ok: true, confirmationRequired: true, config, review, message: '请核对发布前审阅，再由人工确认正式发布。' });
     }
-    const result = await publish(body.config);
-    return json(response, result.errors.length ? 422 : 200, validationResponse(result, { published: result.published, svg: result.errors.length ? null : renderPayoffSvg(body.config) }));
+    const result = await publish(config);
+    return json(response, result.published ? 200 : 422, {
+      ok: result.published,
+      validation: { errors: result.errors, warnings: result.warnings },
+      published: result.published,
+      config: result.config,
+      svg: result.published ? renderPayoffSvg(result.config) : null,
+    });
   }
   if (url.pathname === '/api/external/check') {
     const result = await inspectNativeSvg(body.svg || '');

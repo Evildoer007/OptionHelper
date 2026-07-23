@@ -1,0 +1,229 @@
+{
+  "$schema": "optionhelper-payoff/v2",
+  "schemaVersion": 2,
+  "library": {
+    "id": "4.4",
+    "name": "鹰式",
+    "sourceFingerprint": "dd51c84a4e1fa60f",
+    "section": "#### 4.4.2 损益结构",
+    "scenarios": [
+      {
+        "id": "4.4.2-01",
+        "title": "到期落在两端区间外",
+        "condition": "$S_T\\le K_1$或$S_T\\ge K_4$",
+        "payoff": "$-D$"
+      },
+      {
+        "id": "4.4.2-02",
+        "title": "到期落在第一与第二行权价之间",
+        "condition": "$K_1<S_T<K_2$",
+        "payoff": "$S_T-K_1-D$"
+      },
+      {
+        "id": "4.4.2-03",
+        "title": "到期落在第二与第三行权价之间",
+        "condition": "$K_2\\le S_T\\le K_3$",
+        "payoff": "($K_2-K_1)-D$"
+      },
+      {
+        "id": "4.4.2-04",
+        "title": "到期落在第三与第四行权价之间",
+        "condition": "$K_3<S_T<K_4$",
+        "payoff": "$K_4-S_T-D$"
+      }
+    ],
+    "axis": {
+      "kind": "underlying_price",
+      "label": "标的价格(%)",
+      "unit": "%",
+      "referenceValue": 100
+    }
+  },
+  "graphics": [
+    {
+      "scenarioId": "4.4.2-01",
+      "scale": {
+        "xMin": 71.25,
+        "xMax": 128.75,
+        "yMin": -10,
+        "yMax": 10
+      },
+      "curve": {
+        "type": "polyline",
+        "strokeWidth": 4.4,
+        "points": [
+          {
+            "x": 75,
+            "y": -3
+          },
+          {
+            "x": 85,
+            "y": -3
+          },
+          {
+            "x": 115,
+            "y": -3,
+            "breakBefore": true
+          },
+          {
+            "x": 125,
+            "y": -3
+          }
+        ]
+      },
+      "thresholds": [
+        {
+          "token": "K₁",
+          "value": 85
+        },
+        {
+          "token": "K₂",
+          "value": 95
+        },
+        {
+          "token": "K₃",
+          "value": 105
+        },
+        {
+          "token": "K₄",
+          "value": 115
+        }
+      ],
+      "guides": []
+    },
+    {
+      "scenarioId": "4.4.2-02",
+      "scale": {
+        "xMin": 80,
+        "xMax": 120,
+        "yMin": -10,
+        "yMax": 10
+      },
+      "curve": {
+        "type": "polyline",
+        "strokeWidth": 4.4,
+        "points": [
+          {
+            "x": 85,
+            "y": -3
+          },
+          {
+            "x": 88,
+            "y": 0
+          },
+          {
+            "x": 95,
+            "y": 7
+          }
+        ]
+      },
+      "thresholds": [
+        {
+          "token": "K₁",
+          "value": 85
+        },
+        {
+          "token": "K₂",
+          "value": 95
+        },
+        {
+          "token": "K₃",
+          "value": 105
+        },
+        {
+          "token": "K₄",
+          "value": 115
+        }
+      ],
+      "guides": []
+    },
+    {
+      "scenarioId": "4.4.2-03",
+      "scale": {
+        "xMin": 80,
+        "xMax": 120,
+        "yMin": -10,
+        "yMax": 10
+      },
+      "curve": {
+        "type": "polyline",
+        "strokeWidth": 4.4,
+        "points": [
+          {
+            "x": 95,
+            "y": 7
+          },
+          {
+            "x": 105,
+            "y": 7
+          }
+        ]
+      },
+      "thresholds": [
+        {
+          "token": "K₁",
+          "value": 85
+        },
+        {
+          "token": "K₂",
+          "value": 95
+        },
+        {
+          "token": "K₃",
+          "value": 105
+        },
+        {
+          "token": "K₄",
+          "value": 115
+        }
+      ],
+      "guides": []
+    },
+    {
+      "scenarioId": "4.4.2-04",
+      "scale": {
+        "xMin": 80,
+        "xMax": 120,
+        "yMin": -10,
+        "yMax": 10
+      },
+      "curve": {
+        "type": "polyline",
+        "strokeWidth": 4.4,
+        "points": [
+          {
+            "x": 105,
+            "y": 7
+          },
+          {
+            "x": 112,
+            "y": 0
+          },
+          {
+            "x": 115,
+            "y": -3
+          }
+        ]
+      },
+      "thresholds": [
+        {
+          "token": "K₁",
+          "value": 85
+        },
+        {
+          "token": "K₂",
+          "value": 95
+        },
+        {
+          "token": "K₃",
+          "value": 105
+        },
+        {
+          "token": "K₄",
+          "value": 115
+        }
+      ],
+      "guides": []
+    }
+  ]
+}

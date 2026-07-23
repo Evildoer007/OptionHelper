@@ -1,0 +1,140 @@
+{
+  "$schema": "optionhelper-payoff/v2",
+  "schemaVersion": 2,
+  "library": {
+    "id": "10.3",
+    "name": "折价看涨8080（期权费）",
+    "sourceFingerprint": "89cb2b50b813bf49",
+    "section": "#### 10.3.2 损益结构",
+    "scenarios": [
+      {
+        "id": "10.3.2-01",
+        "title": "标的高于高执行价",
+        "condition": "ST > K2",
+        "payoff": "R × α"
+      },
+      {
+        "id": "10.3.2-02",
+        "title": "标的介于两执行价之间",
+        "condition": "K1 < ST ≤ K2",
+        "payoff": "R（为负值或零）"
+      },
+      {
+        "id": "10.3.2-03",
+        "title": "标的不高于低执行价",
+        "condition": "ST ≤ K1",
+        "payoff": "−(S0 − K1)/S0，示例为−20%，对应报价中的20%期权费口径"
+      }
+    ],
+    "axis": {
+      "kind": "underlying_price",
+      "label": "标的价格(%)",
+      "unit": "%",
+      "referenceValue": 100
+    }
+  },
+  "graphics": [
+    {
+      "scenarioId": "10.3.2-01",
+      "scale": {
+        "xMin": 77,
+        "xMax": 123,
+        "yMin": -92,
+        "yMax": 92
+      },
+      "curve": {
+        "type": "polyline",
+        "strokeWidth": 4.4,
+        "points": [
+          {
+            "x": 100,
+            "y": 0
+          },
+          {
+            "x": 110,
+            "y": 80
+          }
+        ]
+      },
+      "thresholds": [
+        {
+          "token": "K₁",
+          "value": 80
+        },
+        {
+          "token": "K₂",
+          "value": 100
+        }
+      ],
+      "guides": []
+    },
+    {
+      "scenarioId": "10.3.2-02",
+      "scale": {
+        "xMin": 77,
+        "xMax": 123,
+        "yMin": -230,
+        "yMax": 230
+      },
+      "curve": {
+        "type": "polyline",
+        "strokeWidth": 4.4,
+        "points": [
+          {
+            "x": 80,
+            "y": -200
+          },
+          {
+            "x": 100,
+            "y": 0
+          }
+        ]
+      },
+      "thresholds": [
+        {
+          "token": "K₁",
+          "value": 80
+        },
+        {
+          "token": "K₂",
+          "value": 100
+        }
+      ],
+      "guides": []
+    },
+    {
+      "scenarioId": "10.3.2-03",
+      "scale": {
+        "xMin": 54,
+        "xMax": 146,
+        "yMin": -230,
+        "yMax": 230
+      },
+      "curve": {
+        "type": "polyline",
+        "strokeWidth": 4.4,
+        "points": [
+          {
+            "x": 60,
+            "y": -200
+          },
+          {
+            "x": 80,
+            "y": -200
+          }
+        ]
+      },
+      "thresholds": [
+        {
+          "token": "K₁",
+          "value": 80
+        },
+        {
+          "token": "K₂",
+          "value": 100
+        }
+      ],
+      "guides": []
+    }
+  ]
+}

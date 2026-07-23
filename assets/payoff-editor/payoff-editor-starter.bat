@@ -5,10 +5,12 @@ set "EDITOR_DIR=%~dp0"
 set "EDITOR_PORT=4179"
 for %%I in ("%EDITOR_DIR%..\..") do set "PROJECT_DIR=%%~fI"
 
+call :editor_running
+if not errorlevel 1 goto :ready
+
 if not exist "%EDITOR_DIR%app\server.mjs" goto :missing_server
 if not exist "%PROJECT_DIR%\references\optionlist.md" goto :missing_optionlist
 if not exist "%PROJECT_DIR%\references\optionlib.md" goto :missing_optionlib
-if not exist "%PROJECT_DIR%\assets\payoff" goto :missing_payoff_dir
 
 set "NODE_EXE="
 for /f "delims=" %%I in ('where node 2^>nul') do if not defined NODE_EXE set "NODE_EXE=%%I"
@@ -39,6 +41,10 @@ start "" "http://127.0.0.1:%EDITOR_PORT%"
 endlocal
 exit /b 0
 
+:editor_running
+powershell -NoProfile -Command "try { $r = Invoke-WebRequest -UseBasicParsing -TimeoutSec 1 http://127.0.0.1:%EDITOR_PORT%/api/products; if ($r.StatusCode -eq 200) { exit 0 } } catch { exit 1 }" >nul 2>nul
+exit /b %errorlevel%
+
 :missing_server
 echo.
 echo [Payoff Editor] Start failed: app\server.mjs is missing.
@@ -53,12 +59,6 @@ goto :stop
 :missing_optionlib
 echo.
 echo [Payoff Editor] Start failed: references\optionlib.md is missing.
-echo Please download and extract the complete OptionHelper folder.
-goto :stop
-
-:missing_payoff_dir
-echo.
-echo [Payoff Editor] Start failed: assets\payoff is missing.
 echo Please download and extract the complete OptionHelper folder.
 goto :stop
 
@@ -83,7 +83,7 @@ goto :stop
 :port_busy
 echo.
 echo [Payoff Editor] Start failed: port %EDITOR_PORT% is already in use.
-echo Close the existing Payoff Editor server, then run this starter again.
+echo It is not a responding Payoff Editor server. Free the port, then run this starter again.
 goto :stop
 
 :server_timeout

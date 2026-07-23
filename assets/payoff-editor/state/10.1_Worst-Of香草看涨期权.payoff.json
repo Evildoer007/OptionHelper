@@ -1,0 +1,92 @@
+{
+  "$schema": "optionhelper-payoff/v2",
+  "schemaVersion": 2,
+  "library": {
+    "id": "10.1",
+    "name": "Worst-Of香草看涨期权",
+    "sourceFingerprint": "440f4932646d3f5d",
+    "section": "#### 10.1.2 损益结构",
+    "scenarios": [
+      {
+        "id": "10.1.2-01",
+        "title": "最差标的高于行权价",
+        "condition": "P > K",
+        "payoff": "P − K − 期权费率"
+      },
+      {
+        "id": "10.1.2-02",
+        "title": "最差标的不高于行权价",
+        "condition": "P ≤ K",
+        "payoff": "−期权费率"
+      }
+    ],
+    "axis": {
+      "kind": "underlying_price",
+      "label": "标的价格(%)",
+      "unit": "%",
+      "referenceValue": 100
+    }
+  },
+  "graphics": [
+    {
+      "scenarioId": "10.1.2-01",
+      "scale": {
+        "xMin": 80,
+        "xMax": 120,
+        "yMin": -10,
+        "yMax": 10
+      },
+      "curve": {
+        "type": "polyline",
+        "strokeWidth": 4.4,
+        "points": [
+          {
+            "x": 100,
+            "y": -1.59
+          },
+          {
+            "x": 110,
+            "y": 8.41
+          }
+        ]
+      },
+      "thresholds": [
+        {
+          "token": "K",
+          "value": 100
+        }
+      ],
+      "guides": []
+    },
+    {
+      "scenarioId": "10.1.2-02",
+      "scale": {
+        "xMin": 77,
+        "xMax": 123,
+        "yMin": -10,
+        "yMax": 10
+      },
+      "curve": {
+        "type": "polyline",
+        "strokeWidth": 4.4,
+        "points": [
+          {
+            "x": 80,
+            "y": -1.59
+          },
+          {
+            "x": 100,
+            "y": -1.59
+          }
+        ]
+      },
+      "thresholds": [
+        {
+          "token": "K",
+          "value": 100
+        }
+      ],
+      "guides": []
+    }
+  ]
+}

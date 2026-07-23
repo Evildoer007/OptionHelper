@@ -1,0 +1,223 @@
+{
+  "$schema": "optionhelper-payoff/v2",
+  "schemaVersion": 2,
+  "library": {
+    "id": "9.20",
+    "name": "保底凤凰式结构",
+    "sourceFingerprint": "f3785574dd9eb8c9",
+    "section": "#### 9.20.2 损益结构",
+    "scenarios": [
+      {
+        "id": "9.20.2-01",
+        "title": "提前敲出",
+        "condition": "某个敲出观察日$S_t\\ge H_{out}$",
+        "payoff": "$C$"
+      },
+      {
+        "id": "9.20.2-02",
+        "title": "未敲出、未敲入",
+        "condition": "未触发敲出，且全程$S_t>H_{in}$",
+        "payoff": "$C$"
+      },
+      {
+        "id": "9.20.2-03",
+        "title": "未敲出、曾敲入、到期修复",
+        "condition": "未触发敲出，曾敲入且$S_T\\ge K$",
+        "payoff": "$C$"
+      },
+      {
+        "id": "9.20.2-04",
+        "title": "未敲出、曾敲入、到期未修复",
+        "condition": "未触发敲出，曾敲入且$S_T<K$",
+        "payoff": "$C+N\\cdot\\max(S_T/K-1,F-1)$"
+      }
+    ],
+    "axis": {
+      "kind": "underlying_price",
+      "label": "标的价格(%)",
+      "unit": "%",
+      "referenceValue": 100
+    }
+  },
+  "graphics": [
+    {
+      "scenarioId": "9.20.2-01",
+      "scale": {
+        "xMin": 65.5,
+        "xMax": 134.5,
+        "yMin": -34.5,
+        "yMax": 34.5
+      },
+      "curve": {
+        "type": "polyline",
+        "strokeWidth": 4.4,
+        "points": [
+          {
+            "x": 103,
+            "y": 30,
+            "endpoint": "closed"
+          },
+          {
+            "x": 103,
+            "y": 30,
+            "breakBefore": true,
+            "endpoint": "closed"
+          }
+        ]
+      },
+      "thresholds": [
+        {
+          "token": "K",
+          "value": 100
+        },
+        {
+          "token": "H_c",
+          "value": 80
+        },
+        {
+          "token": "H_out",
+          "value": 103
+        },
+        {
+          "token": "H_in",
+          "value": 70
+        }
+      ],
+      "guides": []
+    },
+    {
+      "scenarioId": "9.20.2-02",
+      "scale": {
+        "xMin": 65.5,
+        "xMax": 134.5,
+        "yMin": -77.62,
+        "yMax": 77.63
+      },
+      "curve": {
+        "type": "polyline",
+        "strokeWidth": 4.4,
+        "points": [
+          {
+            "x": 70,
+            "y": 67.5
+          },
+          {
+            "x": 103,
+            "y": 67.5
+          }
+        ]
+      },
+      "thresholds": [
+        {
+          "token": "K",
+          "value": 100
+        },
+        {
+          "token": "H_c",
+          "value": 80
+        },
+        {
+          "token": "H_out",
+          "value": 103
+        },
+        {
+          "token": "H_in",
+          "value": 70
+        }
+      ],
+      "guides": []
+    },
+    {
+      "scenarioId": "9.20.2-03",
+      "scale": {
+        "xMin": 65.5,
+        "xMax": 134.5,
+        "yMin": -69,
+        "yMax": 69
+      },
+      "curve": {
+        "type": "polyline",
+        "strokeWidth": 4.4,
+        "points": [
+          {
+            "x": 100,
+            "y": 60
+          },
+          {
+            "x": 103,
+            "y": 60
+          }
+        ]
+      },
+      "thresholds": [
+        {
+          "token": "K",
+          "value": 100
+        },
+        {
+          "token": "H_c",
+          "value": 80
+        },
+        {
+          "token": "H_out",
+          "value": 103
+        },
+        {
+          "token": "H_in",
+          "value": 70
+        }
+      ],
+      "guides": []
+    },
+    {
+      "scenarioId": "9.20.2-04",
+      "scale": {
+        "xMin": 54,
+        "xMax": 146,
+        "yMin": -103.5,
+        "yMax": 103.5
+      },
+      "curve": {
+        "type": "polyline",
+        "strokeWidth": 4.4,
+        "points": [
+          {
+            "x": 60,
+            "y": -90
+          },
+          {
+            "x": 85,
+            "y": -90
+          },
+          {
+            "x": 90,
+            "y": -40
+          },
+          {
+            "x": 100,
+            "y": 60
+          }
+        ]
+      },
+      "thresholds": [
+        {
+          "token": "K",
+          "value": 100
+        },
+        {
+          "token": "H_c",
+          "value": 80
+        },
+        {
+          "token": "H_out",
+          "value": 103
+        },
+        {
+          "token": "H_in",
+          "value": 70
+        }
+      ],
+      "guides": []
+    }
+  ]
+}

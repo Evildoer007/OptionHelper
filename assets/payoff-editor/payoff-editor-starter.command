@@ -16,8 +16,7 @@ fail() {
 for required_path in \
   "$editor_dir/app/server.mjs" \
   "$project_dir/references/optionlist.md" \
-  "$project_dir/references/optionlib.md" \
-  "$project_dir/assets/payoff"; do
+  "$project_dir/references/optionlib.md"; do
   [[ -e "$required_path" ]] || fail "项目目录不完整。请保留完整OptionHelper项目及其原有目录结构。"
 done
 
@@ -31,7 +30,12 @@ node_major="${node_major%%.*}"
 (( node_major >= 18 )) || fail "当前Node.js版本为${node_version}。请升级至18或更高版本后重试。"
 
 if lsof -nP -iTCP:"$editor_port" -sTCP:LISTEN >/dev/null 2>&1; then
-  fail "${editor_port}端口已被占用。请先关闭已有Payoff Editor或释放该端口。"
+  if curl --silent --fail "http://127.0.0.1:${editor_port}/api/products" >/dev/null 2>&1; then
+    open "http://127.0.0.1:${editor_port}"
+    print -- "Payoff Editor已在运行，已重新打开浏览器。"
+    exit 0
+  fi
+  fail "${editor_port}端口已被其他程序占用。请释放该端口后重试。"
 fi
 
 cd "$project_dir" || fail "无法进入OptionHelper项目目录。"

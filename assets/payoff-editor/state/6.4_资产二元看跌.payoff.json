@@ -1,0 +1,97 @@
+{
+  "$schema": "optionhelper-payoff/v2",
+  "schemaVersion": 2,
+  "library": {
+    "id": "6.4",
+    "name": "资产二元看跌",
+    "sourceFingerprint": "93248f7299b511d2",
+    "section": "#### 6.4.2 损益结构",
+    "scenarios": [
+      {
+        "id": "6.4.2-01",
+        "title": "到期未触发",
+        "condition": "$S_T\\ge K$",
+        "payoff": "$-p$"
+      },
+      {
+        "id": "6.4.2-02",
+        "title": "到期触发",
+        "condition": "$S_T<K$",
+        "payoff": "$S_T-p$"
+      }
+    ],
+    "axis": {
+      "kind": "underlying_price",
+      "label": "标的价格(%)",
+      "unit": "%",
+      "referenceValue": 100
+    }
+  },
+  "graphics": [
+    {
+      "scenarioId": "6.4.2-01",
+      "scale": {
+        "xMin": 77,
+        "xMax": 123,
+        "yMin": -57.5,
+        "yMax": 57.5
+      },
+      "curve": {
+        "type": "polyline",
+        "strokeWidth": 4.4,
+        "points": [
+          {
+            "x": 100,
+            "y": -50
+          },
+          {
+            "x": 120,
+            "y": -50
+          }
+        ]
+      },
+      "thresholds": [
+        {
+          "token": "K",
+          "value": 100
+        }
+      ],
+      "guides": []
+    },
+    {
+      "scenarioId": "6.4.2-02",
+      "scale": {
+        "xMin": 77,
+        "xMax": 123,
+        "yMin": -57.5,
+        "yMax": 57.5
+      },
+      "curve": {
+        "type": "polyline",
+        "strokeWidth": 4.4,
+        "points": [
+          {
+            "x": 80,
+            "y": 30
+          },
+          {
+            "x": 99,
+            "y": 49
+          },
+          {
+            "x": 100,
+            "y": 50,
+            "endpoint": "open"
+          }
+        ]
+      },
+      "thresholds": [
+        {
+          "token": "K",
+          "value": 100
+        }
+      ],
+      "guides": []
+    }
+  ]
+}

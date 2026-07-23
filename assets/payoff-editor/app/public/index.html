@@ -55,7 +55,7 @@
               <p>产品和情景将由OptionList与OptionLib自动导入。</p>
             </div>
           </div>
-          <div class="canvas-footer"><span>正式发布须人工确认</span></div>
+          <div class="canvas-footer"><span>Ctrl或Command加滚轮缩放；中键或空格加左键拖拽画布</span><span>正式发布须人工确认</span></div>
         </section>
         <div class="panel-resizer panel-resizer-right" id="inspectorResizer" role="separator" aria-label="调整图形控制面板宽度" aria-orientation="vertical" tabindex="0"></div>
 
@@ -64,12 +64,16 @@
           <h2 id="inspectorTitle">未选择情景</h2>
           <div class="source-detail" id="sourceDetail">选择产品后显示资料库来源。</div>
           <div class="inspector-group">
-            <div class="group-title">坐标轴</div>
-            <p class="drag-hint">十字轴：X=100%、Y=0固定；拖动纵轴顶端或横轴右端，只调整交点位置。</p>
+            <div class="group-title">坐标范围</div>
+            <p class="drag-hint" id="axisRule">纵轴固定在100%，横轴固定在Y=0；X轴范围须严格覆盖该参考值。</p>
             <div class="parameter-grid axis-grid">
-              <label class="parameter-field"><span>纵轴位置</span><input id="axisLeft" type="number" min="0" max="100" step="0.01" data-numeric="position" /><em>%</em></label>
-              <label class="parameter-field"><span>横轴位置</span><input id="axisBottom" type="number" min="0" max="100" step="0.01" data-numeric="position" /><em>%</em></label>
+              <label class="parameter-field"><span>X下限</span><input id="scaleXMin" type="number" step="0.01" data-numeric="value" data-scale="xMin" /><em data-axis-unit>%</em></label>
+              <label class="parameter-field"><span>X上限</span><input id="scaleXMax" type="number" step="0.01" data-numeric="value" data-scale="xMax" /><em data-axis-unit>%</em></label>
+              <label class="parameter-field"><span>Y下限</span><input id="scaleYMin" type="number" step="0.01" data-numeric="value" data-scale="yMin" /><em></em></label>
+              <label class="parameter-field"><span>Y上限</span><input id="scaleYMax" type="number" step="0.01" data-numeric="value" data-scale="yMax" /><em></em></label>
             </div>
+            <div class="axis-action"><button class="button button-quiet small" id="autoScaleButton" disabled>自动取景</button></div>
+            <p class="hint">按节点、关键价格和辅助线留白，并将纵轴参考值与Y=0置于绘图区中心。</p>
           </div>
           <div class="inspector-group">
             <div class="group-title">收益曲线</div>
@@ -81,28 +85,45 @@
             <div class="point-table" id="pointTable"></div>
           </div>
           <div class="inspector-group">
-            <div class="group-title">辅助线</div>
+            <div class="group-title">局部辅助线</div>
             <div class="parameter-grid guide-options">
               <label class="parameter-field"><span>方向</span><select id="guideDirection" class="compact-control"><option value="horizontal">横线</option><option value="vertical">纵线</option></select></label>
-              <label class="parameter-field"><span>位置</span><input id="guidePosition" type="number" min="0" max="100" step="0.01" value="50" data-numeric="position" /><em>%</em></label>
-              <label class="parameter-field full"><span>样式</span><select id="guideStyle" class="compact-control"><option value="solid">实线</option><option value="dashed">虚线</option></select></label>
+              <label class="parameter-field"><span id="guideValueLabel">Y位置</span><input id="guideValue" type="number" step="0.01" data-numeric="value" data-optional placeholder="净损益" /><em id="guideValueUnit"></em></label>
+              <label class="parameter-field"><span id="guideStartLabel">X起点</span><input id="guideStart" type="number" step="0.01" data-numeric="value" data-optional /><em id="guideStartUnit">%</em></label>
+              <label class="parameter-field"><span id="guideEndLabel">X终点</span><input id="guideEnd" type="number" step="0.01" data-numeric="value" data-optional /><em id="guideEndUnit">%</em></label>
             </div>
-            <button class="button button-quiet small wide-action" id="addGuideButton">添加辅助线</button>
+            <button class="button button-quiet small wide-action" id="addGuideButton">添加局部辅助线</button>
+            <p class="hint" id="guideActionHint" aria-live="polite"></p>
             <div class="line-list" id="guideList"></div>
           </div>
           <div class="inspector-group">
             <div class="group-title">关键价格</div>
             <div class="parameter-grid threshold-options">
               <label class="parameter-field"><span>标记</span><select id="thresholdToken" class="compact-control"></select></label>
-              <label class="parameter-field"><span>位置</span><input id="thresholdPosition" type="number" min="0" max="100" step="0.01" value="50" data-numeric="position" /><em>%</em></label>
+              <label class="parameter-field"><span>数值</span><input id="thresholdValue" type="number" step="0.01" data-numeric="value" data-optional placeholder="横轴变量" /><em data-axis-unit>%</em></label>
             </div>
             <button class="button button-quiet small wide-action" id="addThresholdButton">添加关键价格线</button>
+            <p class="hint" id="thresholdActionHint" aria-live="polite"></p>
             <div class="line-list" id="thresholdList"></div>
-            <p class="hint">关键价格只使用标准标记；辅助线不添加自由文字。</p>
+            <p class="hint">关键价格按标准标记自动分配固定语义颜色；局部辅助线仅用于辅助绘图。</p>
           </div>
-          <div class="lock-card"><strong>锁定内容</strong><span>产品名称、SVG文件名、情景标题与数量、坐标文字、图例、颜色和版式。</span></div>
+          <div class="inspector-group reset-group">
+            <div class="group-title">重置图形</div>
+            <p class="hint">仅重置可编辑图形参数，资料库情景文字与顺序保持不变。</p>
+            <div class="reset-actions"><button class="button button-quiet small" id="resetScenarioButton" disabled>重置当前情景</button><button class="button button-danger small" id="resetAllButton" disabled>重置整张图</button></div>
+          </div>
         </aside>
       </main>
+      <dialog class="publish-review-dialog" id="publishReviewDialog" aria-labelledby="publishReviewTitle">
+        <div class="publish-review-card">
+          <div class="publish-review-head"><div><span class="panel-kicker">人工确认</span><h2 id="publishReviewTitle">发布前审阅</h2></div><button class="dialog-close" id="publishReviewCancel" type="button" aria-label="返回编辑">×</button></div>
+          <p class="publish-review-copy" id="publishReviewCopy"></p>
+          <div class="publish-review-summary" id="publishReviewSummary"></div>
+          <div class="publish-review-list" id="publishReviewList"></div>
+          <p class="publish-review-note" id="publishReviewNote"></p>
+          <div class="publish-review-actions"><button class="button button-quiet" id="publishReviewBack" type="button">返回编辑</button><button class="button button-primary" id="publishReviewConfirm" type="button">确认发布</button></div>
+        </div>
+      </dialog>
     </div>
     <script type="module" src="/app.mjs"></script>
   </body>
