@@ -12,6 +12,7 @@ import {
   boundedPointX,
   clamp,
   guideExtent,
+  materializeGuideExtent,
   guideMeta,
   normalizeAxis,
   ratioToX,
@@ -33,6 +34,7 @@ const state = {
   productDraft: null,
   draftLookupPending: false,
   draftLookupVersion: 0,
+  documentVersion: 0,
   draftOrigin: null,
   config: null,
   validation: null,
@@ -57,6 +59,7 @@ const displaySection = (value) => String(value || '').replace(/^#{1,6}\s*/, '');
 const tokenOptions = [
   'S₀', 'K', 'K₁', 'K₂', 'K₃', 'K₄', 'K_p', 'K_c', 'K_u', 'K_d',
   'H', 'H_in', 'H_{in,2}', 'H_out', 'H_{out,2}', 'H_{out,t}', 'H_c', 'H_buffer', 'H_floor', 'H_reset', 'H_u', 'H_d',
+  'H_{hedge,1}', 'H_{hedge,2}', 'B', 'L',
 ];
 
 function currentAxis() {
@@ -117,6 +120,14 @@ function clearDocument() {
   state.selectedScenario = 0;
   state.dirty = false;
   $('canvasViewport').innerHTML = emptyCanvas();
+}
+
+function invalidateDocumentRequests() {
+  state.documentVersion += 1;
+  state.renderVersion += 1;
+  state.draftLookupVersion += 1;
+  clearTimeout(state.renderTimer);
+  state.renderTimer = null;
 }
 
 function confirmDiscardChanges(action) {
@@ -204,6 +215,15 @@ function renderScenarioList() {
     if (active) {
       item.dataset.scenarioSelect = String(index);
       item.addEventListener('click', () => selectScenario(index));
+      item.setAttribute('role', 'button');
+      item.tabIndex = 0;
+      item.setAttribute('aria-label', `切换至情景${index + 1}：${scenario.title}`);
+      if (index === state.selectedScenario) item.setAttribute('aria-current', 'true');
+      item.addEventListener('keydown', (event) => {
+        if (event.key !== 'Enter' && event.key !== ' ') return;
+        event.preventDefault();
+        selectScenario(index);
+      });
     } else {
       item.setAttribute('aria-disabled', 'true');
     }
@@ -242,7 +262,12 @@ function ensureNumericControlsValid() {
   return false;
 }
 
-function readControlValue(input, scale, direction) {
+function readControlValue(input, scale, direction, { optional = false } = {}) {
+  if (optional && !input.value.trim()) {
+    input.setCustomValidity('');
+    input.removeAttribute('aria-invalid');
+    return null;
+  }
   const value = readNumericInput(input);
   if (value === null) return null;
   const [min, max] = direction === 'horizontal' ? [scale.yMin, scale.yMax] : [scale.xMin, scale.xMax];
@@ -298,7 +323,9 @@ function renderPointTable(enabled) {
     const label = ({ none: '—', open: '○', closed: '●' })[value];
     return `<option value="${value}" ${selected === value ? 'selected' : ''}>${label}</option>`;
   }).join('');
-  target.innerHTML = `<div class="point-head"><span>节点</span><span>${currentAxis().unit ? '价格%' : '变量值'}</span><span>净损益</span><span>断</span><span>端</span><span></span></div>${points.map((point, index) => `<div class="point-row"><span>${String(index + 1).padStart(2, '0')}</span><input data-point-x="${index}" data-numeric="value" type="number" step="0.01" value="${formatNumber(point.x)}" ${enabled ? '' : 'disabled'} /><input data-point-y="${index}" data-numeric="value" type="number" step="0.01" value="${formatNumber(point.y)}" ${enabled ? '' : 'disabled'} /><label class="point-break" title="从此节点断开前一段曲线"><input data-point-break="${index}" type="checkbox" ${point.breakBefore ? 'checked' : ''} ${enabled && index > 0 ? '' : 'disabled'} /><span>断</span></label><select class="point-endpoint" data-point-endpoint="${index}" title="端点样式：—无标记、○不含、●包含" ${enabled ? '' : 'disabled'}>${endpointOptions(point.endpoint || 'none')}</select><button class="row-delete" data-delete-point="${index}" title="删除节点" ${enabled && points.length > 2 ? '' : 'disabled'}>×</button></div>`).join('')}<p class="point-hint">断：从该点重新起笔。端：○不含，●包含；同价跳变请在后一节点勾选断。</p>`;
+  const axis = currentAxis();
+  const xHeader = axis.unit ? `${axis.label}` : axis.label || '横轴变量';
+  target.innerHTML = `<div class="point-head"><span>节点</span><span>${xHeader}</span><span>净损益</span><span>断</span><span>端</span><span></span></div>${points.map((point, index) => `<div class="point-row"><span>${String(index + 1).padStart(2, '0')}</span><input data-point-x="${index}" data-numeric="value" type="number" step="0.01" value="${formatNumber(point.x)}" ${enabled ? '' : 'disabled'} /><input data-point-y="${index}" data-numeric="value" type="number" step="0.01" value="${formatNumber(point.y)}" ${enabled ? '' : 'disabled'} /><label class="point-break" title="从此节点断开前一段曲线"><input data-point-break="${index}" type="checkbox" ${point.breakBefore ? 'checked' : ''} ${enabled && index > 0 ? '' : 'disabled'} /><span>断</span></label><select class="point-endpoint" data-point-endpoint="${index}" title="端点样式：—无标记、○不含、●包含" ${enabled ? '' : 'disabled'}>${endpointOptions(point.endpoint || 'none')}</select><button class="row-delete" data-delete-point="${index}" title="删除节点" ${enabled && points.length > 2 ? '' : 'disabled'}>×</button></div>`).join('')}<p class="point-hint">断：从该点重新起笔。端：○不含，●包含；同价跳变请在后一节点勾选断。</p>`;
   target.querySelectorAll('[data-point-x], [data-point-y]').forEach((input) => bindNumericInput(input, (value) => {
     const index = Number(input.dataset.pointX ?? input.dataset.pointY);
     setPoint(index, input.dataset.pointX === undefined ? 'y' : 'x', value);
@@ -344,11 +371,12 @@ function renderGuideList(enabled) {
   const guides = selectedGraphic()?.guides || [];
   $('guideList').innerHTML = guides.length ? guides.map((guide, index) => {
     const extent = guideExtent(guide, selectedGraphic().scale);
-    const valueLabel = guide.direction === 'horizontal' ? 'Y位置' : 'X位置';
-    const startLabel = guide.direction === 'horizontal' ? 'Xmin' : 'Ymin';
-    const endLabel = guide.direction === 'horizontal' ? 'Xmax' : 'Ymax';
-    const valueUnit = guide.direction === 'vertical' ? '%' : '';
-    const extentUnit = guide.direction === 'horizontal' ? '%' : '';
+    const axis = currentAxis();
+    const valueLabel = guide.direction === 'horizontal' ? '净损益' : axis.label;
+    const startLabel = guide.direction === 'horizontal' ? `${axis.label}起点` : '净损益起点';
+    const endLabel = guide.direction === 'horizontal' ? `${axis.label}终点` : '净损益终点';
+    const valueUnit = guide.direction === 'vertical' ? axis.unit : '';
+    const extentUnit = guide.direction === 'horizontal' ? axis.unit : '';
     return `<div class="line-row guide-row"><select data-guide-direction="${index}" ${enabled ? '' : 'disabled'}>${guideOptions(guide.direction)}</select><label class="guide-row-control">${valueLabel}<input data-guide-field="${index}" data-guide-property="value" data-numeric="value" type="number" step="0.01" value="${formatNumber(guide.value)}" ${enabled ? '' : 'disabled'} /><em>${valueUnit}</em></label><label class="guide-row-control">${startLabel}<input data-guide-field="${index}" data-guide-property="start" data-numeric="value" type="number" step="0.01" value="${formatNumber(extent.start)}" ${enabled ? '' : 'disabled'} /><em>${extentUnit}</em></label><label class="guide-row-control">${endLabel}<input data-guide-field="${index}" data-guide-property="end" data-numeric="value" type="number" step="0.01" value="${formatNumber(extent.end)}" ${enabled ? '' : 'disabled'} /><em>${extentUnit}</em></label><button class="row-delete" data-delete-guide="${index}" title="删除局部辅助线" ${enabled ? '' : 'disabled'}>×</button></div>`;
   }).join('') : '<div class="parameter-empty">未添加局部辅助线。</div>';
   $('guideList').querySelectorAll('[data-guide-field]').forEach((input) => bindNumericInput(input, (value) => updateGraphic((graphic) => {
@@ -359,11 +387,13 @@ function renderGuideList(enabled) {
       : guideExtentRange(graphic.scale, guide.direction);
     if (!valueInScale(value, range[0], range[1])) return { changed: false, message: '局部辅助线数值必须落在当前对应坐标范围内。' };
     const extent = guideExtent(guide, graphic.scale);
+    const materialiseExtent = property !== 'value' && (!Object.hasOwn(guide, 'start') || !Object.hasOwn(guide, 'end'));
+    if (materialiseExtent) Object.assign(guide, materializeGuideExtent(guide, graphic.scale));
     const nextStart = property === 'start' ? round(value) : extent.start;
     const nextEnd = property === 'end' ? round(value) : extent.end;
     if (property !== 'value' && nextStart >= nextEnd) return { changed: false, message: '局部辅助线起点必须小于终点。' };
     const next = round(value);
-    if (guide[property] === next) return { changed: false };
+    if (guide[property] === next && !materialiseExtent) return { changed: false };
     guide[property] = next;
     return { changed: true };
   })));
@@ -481,7 +511,7 @@ function setEditingControls() {
   applyGuideExtentDefaults(graphic.scale, $('guideDirection').value);
   $('addNodeButton').disabled = !enabled || graphic.curve.points.length >= MAX_POINTS;
   const guideDirection = $('guideDirection').value;
-  const guideValue = readControlValue($('guideValue'), graphic.scale, guideDirection);
+  const guideValue = readControlValue($('guideValue'), graphic.scale, guideDirection, { optional: true });
   const guideStart = readGuideExtentValue($('guideStart'), graphic.scale, guideDirection);
   const guideEnd = readGuideExtentValue($('guideEnd'), graphic.scale, guideDirection);
   const guideReason = !enabled
@@ -501,7 +531,7 @@ function setEditingControls() {
   const thresholdTokenAvailable = [...$('thresholdToken').options].some((option) => !option.disabled);
   $('thresholdToken').disabled = !enabled || !thresholdTokenAvailable;
   $('thresholdValue').disabled = !enabled;
-  const thresholdValue = readControlValue($('thresholdValue'), graphic.scale, 'vertical');
+  const thresholdValue = readControlValue($('thresholdValue'), graphic.scale, 'vertical', { optional: true });
   const thresholdReason = !enabled
     ? '进入编辑模式后可添加关键价格线。'
     : graphic.thresholds.length >= MAX_THRESHOLDS
@@ -602,7 +632,74 @@ function attachCanvasInteractions() {
   svg.querySelectorAll('[data-scenario-card]').forEach((card) => card.addEventListener('click', () => {
     if (!state.dragging && performance.now() >= state.suppressCanvasClickUntil) selectScenario(Number(card.dataset.scenarioCard));
   }));
-  svg.querySelectorAll('[data-role]').forEach((handle) => handle.addEventListener('pointerdown', (event) => beginDrag(event, svg, handle)));
+  svg.querySelectorAll('[data-role]').forEach((handle) => {
+    handle.addEventListener('pointerdown', (event) => beginDrag(event, svg, handle));
+    handle.tabIndex = 0;
+    handle.setAttribute('role', 'slider');
+    handle.setAttribute('aria-label', svgHandleLabel(handle));
+    handle.addEventListener('keydown', (event) => nudgeSvgHandle(event, handle));
+  });
+}
+
+function svgHandleLabel(handle) {
+  const labels = {
+    node: `曲线节点${Number(handle.dataset.point) + 1}`,
+    threshold: `关键价格${Number(handle.dataset.threshold) + 1}`,
+    guide: `辅助线${Number(handle.dataset.guide) + 1}`,
+    'guide-start': `辅助线${Number(handle.dataset.guide) + 1}起点`,
+    'guide-end': `辅助线${Number(handle.dataset.guide) + 1}终点`,
+  };
+  return `${labels[handle.dataset.role] || '图形控制点'}。使用方向键微调。`;
+}
+
+function nudgeSvgHandle(event, handle) {
+  if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) return;
+  const graphic = selectedGraphic();
+  if (!graphic || !editable()) return;
+  event.preventDefault();
+  const horizontal = event.key === 'ArrowLeft' || event.key === 'ArrowRight';
+  const direction = (event.key === 'ArrowLeft' || event.key === 'ArrowDown') ? -1 : 1;
+  const xStep = currentAxis().kind === 'underlying_price' ? 0.5 : currentAxis().kind === 'realized_volatility' ? 0.25 : 1;
+  const yStep = Math.max(0.01, round((graphic.scale.yMax - graphic.scale.yMin) / 100));
+  const role = handle.dataset.role;
+  updateGraphic((nextGraphic) => {
+    const before = JSON.stringify(nextGraphic);
+    const changed = () => ({ changed: JSON.stringify(nextGraphic) !== before });
+    if (role === 'node') {
+      const index = Number(handle.dataset.point);
+      const point = nextGraphic.curve.points[index];
+      if (horizontal) point.x = boundedPointX(point.x + direction * xStep, nextGraphic.curve.points, index, nextGraphic.curve.type, nextGraphic.scale);
+      else point.y = round(clamp(point.y + direction * yStep, nextGraphic.scale.yMin, nextGraphic.scale.yMax));
+      return changed();
+    }
+    if (role === 'threshold' && horizontal) {
+      const threshold = nextGraphic.thresholds[Number(handle.dataset.threshold)];
+      threshold.value = round(clamp(threshold.value + direction * xStep, nextGraphic.scale.xMin, nextGraphic.scale.xMax));
+      return changed();
+    }
+    const guide = nextGraphic.guides[Number(handle.dataset.guide)];
+    if (!guide) return { changed: false };
+    const guideIsHorizontal = guide.direction === 'horizontal';
+    if (role === 'guide' && ((guideIsHorizontal && !horizontal) || (!guideIsHorizontal && horizontal))) {
+      const [min, max] = guideIsHorizontal ? [nextGraphic.scale.yMin, nextGraphic.scale.yMax] : [nextGraphic.scale.xMin, nextGraphic.scale.xMax];
+      guide.value = round(clamp(guide.value + direction * (guideIsHorizontal ? yStep : xStep), min, max));
+      return changed();
+    }
+    if ((role === 'guide-start' || role === 'guide-end') && ((guideIsHorizontal && horizontal) || (!guideIsHorizontal && !horizontal))) {
+      Object.assign(guide, materializeGuideExtent(guide, nextGraphic.scale));
+      const extent = guideExtent(guide, nextGraphic.scale);
+      guide.start = round(extent.start);
+      guide.end = round(extent.end);
+      const step = guideIsHorizontal ? xStep : yStep;
+      const [min, max] = guideExtentRange(nextGraphic.scale, guide.direction);
+      const property = role === 'guide-start' ? 'start' : 'end';
+      const bound = property === 'start' ? guide.end - 0.01 : guide.start + 0.01;
+      guide[property] = round(clamp(guide[property] + direction * step, property === 'start' ? min : bound, property === 'start' ? bound : max));
+      return changed();
+    }
+    return { changed: false };
+  }, { structural: true });
+  updateUi();
 }
 
 function injectSvg(svg) {
@@ -619,8 +716,10 @@ function injectReadOnlySvg(svg) {
 async function refreshPreview() {
   if (state.externalSvg || !state.config) return;
   const version = ++state.renderVersion;
-  const { body } = await request('/api/render', { method: 'POST', body: { config: state.config, editing: state.editing } });
-  if (version !== state.renderVersion) return;
+  const documentVersion = state.documentVersion;
+  const config = state.config;
+  const { body } = await request('/api/render', { method: 'POST', body: { config, editing: state.editing } });
+  if (version !== state.renderVersion || documentVersion !== state.documentVersion || config !== state.config) return;
   state.validation = body.validation || state.validation;
   if (body.ok) {
     state.config = body.config || state.config;
@@ -776,6 +875,7 @@ function dragMove(event) {
     guide.value = nextValue;
   } else if (role === 'guide-start' || role === 'guide-end') {
     const guide = graphic.guides[Number(data.guide)];
+    Object.assign(guide, materializeGuideExtent(guide, graphic.scale));
     const extent = guideExtent(guide, graphic.scale);
     const candidate = guide.direction === 'horizontal'
       ? ratioToX((point.x - geometry.left) / geometry.width, graphic.scale)
@@ -970,7 +1070,11 @@ async function checkSelectedDraft() {
 async function newTemplate() {
   if (!state.product?.available) return;
   if (!confirmDiscardChanges('从模板重新开始')) return;
-  const { body } = await request('/api/drafts/new', { method: 'POST', body: { id: state.product.id } });
+  const productId = state.product.id;
+  invalidateDocumentRequests();
+  const documentVersion = state.documentVersion;
+  const { body } = await request('/api/drafts/new', { method: 'POST', body: { id: productId } });
+  if (documentVersion !== state.documentVersion || state.product?.id !== productId) return;
   if (!body.ok) { state.validation = body.validation || { errors: [{ message: body.message || '无法创建草稿。' }], warnings: [] }; updateUi(); return; }
   state.config = body.config;
   state.externalSvg = null;
@@ -1003,7 +1107,11 @@ async function reimportDraft() {
   const label = `${state.product.id} ${state.product.name}`;
   const unsaved = state.dirty ? '当前浏览器内未保存的修改也会丢失。' : '';
   if (!window.confirm(`将归档“${label}”当前已保存的草稿JSON，并按最新资料库重建空子图。旧曲线不会自动迁移。${unsaved}是否继续？`)) return;
-  const { body } = await request('/api/drafts/reimport', { method: 'POST', body: { id: state.product.id } });
+  const productId = state.product.id;
+  invalidateDocumentRequests();
+  const documentVersion = state.documentVersion;
+  const { body } = await request('/api/drafts/reimport', { method: 'POST', body: { id: productId } });
+  if (documentVersion !== state.documentVersion || state.product?.id !== productId) return;
   if (!body.ok) { state.validation = body.validation || { errors: [{ message: body.message || '无法重新导入情景。' }], warnings: [] }; updateUi(); return; }
   state.config = body.config;
   state.externalSvg = null;
@@ -1156,7 +1264,10 @@ function resetAllGraphics() {
 
 async function importExternalSvg(svg) {
   if (!confirmDiscardChanges('导入外部SVG')) return false;
+  invalidateDocumentRequests();
+  const documentVersion = state.documentVersion;
   const { body } = await request('/api/external/check', { method: 'POST', body: { svg } });
+  if (documentVersion !== state.documentVersion) return false;
   state.editing = false;
   if (body.editable) {
     state.config = body.config;
@@ -1166,7 +1277,9 @@ async function importExternalSvg(svg) {
     state.productDraft = { config: structuredClone(body.config), validation: body.validation };
     state.dirty = false;
     state.draftOrigin = 'stored';
-    const rendered = await request('/api/render', { method: 'POST', body: { config: state.config, editing: false } });
+    const importedConfig = state.config;
+    const rendered = await request('/api/render', { method: 'POST', body: { config: importedConfig, editing: false } });
+    if (documentVersion !== state.documentVersion || importedConfig !== state.config) return false;
     if (!rendered.body.ok) throw new Error(rendered.body.validation?.errors?.[0]?.message || '无法渲染原生SVG。');
     injectSvg(rendered.body.svg);
   } else {
@@ -1193,6 +1306,7 @@ function wireControls() {
     state.product = nextProduct;
     state.productDraft = null;
     state.draftLookupPending = false;
+    invalidateDocumentRequests();
     clearDocument();
     updateUi();
     checkSelectedDraft().catch((error) => setNotice(null, error.message));
@@ -1207,9 +1321,12 @@ function wireControls() {
   $('publishReviewBack').addEventListener('click', closePublishReview);
   $('publishReviewConfirm').addEventListener('click', () => confirmPublishReview().catch((error) => setNotice(null, error.message)));
   $('recheckButton').addEventListener('click', async () => {
+    const documentVersion = state.documentVersion;
+    const config = state.config;
     await loadProducts();
-    if (!state.config) return;
-    const { body } = await request('/api/render', { method: 'POST', body: { config: state.config, editing: state.editing } });
+    if (documentVersion !== state.documentVersion || !config || config !== state.config) return;
+    const { body } = await request('/api/render', { method: 'POST', body: { config, editing: state.editing } });
+    if (documentVersion !== state.documentVersion || config !== state.config) return;
     state.validation = body.validation || { errors: [{ message: body.issue?.message || body.message || '资料库检测失败。' }], warnings: [] };
     if (body.ok) {
       state.config = body.config || state.config;

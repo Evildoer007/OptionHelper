@@ -25,6 +25,8 @@
 .readonly .canvas-stage { opacity: .95; }
 .state-dot.dirty { background: var(--gold); box-shadow: 0 0 0 3px rgba(216, 155, 39, .16); }
 .scenario-list li.preview { color: var(--muted); cursor: default; }
+.scenario-list li[role="button"] { cursor: pointer; }
+.scenario-list li[role="button"]:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }
 .scenario-list li.preview::after { content: '资料库'; margin-left: 6px; color: #9a948d; font: 9px var(--mono); }
 .scenario-title, .scenario-condition { display: block; }
 .scenario-condition { margin-top: 3px; color: var(--muted); font-size: 10px; font-weight: 400; line-height: 1.55; overflow-wrap: anywhere; }

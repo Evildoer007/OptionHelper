@@ -48,9 +48,11 @@ export const LEGACY_SCHEMA = 'optionhelper-payoff/v1';
 export const THRESHOLD_TOKENS = Object.freeze([
   'S₀', 'K', 'K₁', 'K₂', 'K₃', 'K₄', 'K_p', 'K_c', 'K_u', 'K_d',
   'H', 'H_in', 'H_{in,2}', 'H_out', 'H_{out,2}', 'H_{out,t}', 'H_c', 'H_buffer', 'H_floor', 'H_reset', 'H_u', 'H_d',
+  'H_{hedge,1}', 'H_{hedge,2}', 'B', 'L',
 ]);
 export const GUIDE_DIRECTIONS = ['horizontal', 'vertical'];
-export const GUIDE_STYLES = ['solid', 'dashed'];
+// 局部辅助线固定为虚线；旧版solid在迁移时规范为dashed。
+export const GUIDE_STYLES = ['dashed'];
 export const PAYOFF_SCENARIO_HEADER = '情景';
 export const PAYOFF_CONDITION_HEADER = '判断条件';
 
@@ -61,6 +63,7 @@ const CARD = Object.freeze({
   plot: Object.freeze({ left: 42, right: 684, top: 70, bottom: 426 }),
 });
 const LINE_WIDTH_DECIMALS = 2;
+const PUBLISH_LIBRARY_WARNING_CODES = new Set(['LIBRARY_PRODUCT_MISMATCH', 'LIBRARY_SCENARIO_MISMATCH']);
 
 const text = (value) => String(value ?? '').trim();
 const hash = (value) => createHash('sha256').update(value).digest('hex').slice(0, 16);
@@ -220,6 +223,7 @@ export function migrateConfig(input) {
       ...graphic,
       guides: Array.isArray(graphic?.guides) ? graphic.guides.map((guide) => ({ ...guide, style: 'dashed' })) : graphic?.guides,
     }));
+    migrateLegacyThresholdTokens(config);
     return config;
   }
   if (!isLegacyConfig(input)) return clone(input);
@@ -246,7 +250,28 @@ export function migrateConfig(input) {
       })) : [],
     };
   });
+  migrateLegacyThresholdTokens(config);
   return config;
+}
+
+// 早期编辑器只有H_buffer/H_floor两个泛化标记，无法忠实表达资料库中
+// 的避险线、缓冲价与限损价。仅按已锁定的产品编号做确定性迁移，不触碰
+// 其他结构中仍有明确含义的旧标记。
+function migrateLegacyThresholdTokens(config) {
+  const id = config?.library?.id;
+  for (const graphic of config?.graphics || []) {
+    if (!Array.isArray(graphic?.thresholds)) continue;
+    if (id === '9.15') {
+      graphic.thresholds = graphic.thresholds.map((item) => item.token === 'H_buffer' ? { ...item, token: 'H_{hedge,1}' } : item);
+      if (!graphic.thresholds.some((item) => item.token === 'H_{hedge,2}') && graphic.thresholds.length < MAX_THRESHOLDS) {
+        graphic.thresholds.push({ token: 'H_{hedge,2}', value: 75 });
+      }
+    } else if (id === '9.27') {
+      graphic.thresholds = graphic.thresholds.map((item) => item.token === 'H_buffer' ? { ...item, token: 'B' } : item);
+    } else if (id === '9.28' || id === '9.29') {
+      graphic.thresholds = graphic.thresholds.map((item) => item.token === 'H_floor' ? { ...item, token: 'L' } : item);
+    }
+  }
 }
 
 function validationError(code, message, extra = {}) {
@@ -344,7 +369,7 @@ export async function validateConfig(config, { requireComplete = false } = {}) {
       for (const [guideIndex, guide] of guides.entries()) {
         keyCheck(guide, ['direction', 'value', 'start', 'end', 'style'], `graphics[${index}].guides[${guideIndex}]`, errors);
         if (!GUIDE_DIRECTIONS.includes(guide?.direction)) errors.push(validationError('GUIDE_DIRECTION_INVALID', '辅助线只能为horizontal或vertical。'));
-        if (!GUIDE_STYLES.includes(guide?.style)) errors.push(validationError('GUIDE_STYLE_INVALID', '辅助线只能为solid或dashed。'));
+        if (!GUIDE_STYLES.includes(guide?.style)) errors.push(validationError('GUIDE_STYLE_INVALID', '辅助线样式只能为dashed。'));
         numberCheck(guide?.value, `${label}辅助线数值`, errors);
         const hasStart = Object.prototype.hasOwnProperty.call(guide || {}, 'start');
         const hasEnd = Object.prototype.hasOwnProperty.call(guide || {}, 'end');
@@ -423,11 +448,19 @@ function graphicCard(scenario, graphic, index, cardX, cardY, editing, axis) {
     const converted = pointToSvg(point, geometry, scale);
     return `<circle class="curve-endpoint ${point.endpoint}" data-element="curve-endpoint" data-point="${originalIndex}" cx="${converted.x.toFixed(2)}" cy="${converted.y.toFixed(2)}" r="5.4"/>`;
   }).join('');
-  const thresholdLines = graphic.thresholds.filter((threshold) => !isImplicitDefaultStrike(graphic.thresholds, threshold, axis)).map((threshold) => {
+  const visibleThresholds = graphic.thresholds.filter((threshold) => !isImplicitDefaultStrike(graphic.thresholds, threshold, axis));
+  const thresholdLines = visibleThresholds.map((threshold, visibleIndex) => {
     const thresholdIndex = graphic.thresholds.indexOf(threshold);
     const x = geometry.left + xToRatio(threshold.value, scale) * geometry.width;
     const meta = thresholdMeta(threshold.token);
-    return `<g class="threshold-group ${meta.family}" data-element="threshold" data-index="${thresholdIndex}" data-token="${html(threshold.token)}"><line class="threshold ${meta.family}" style="stroke:${meta.color};stroke-dasharray:${meta.dash}" x1="${x.toFixed(2)}" y1="${geometry.top}" x2="${x.toFixed(2)}" y2="${geometry.bottom}"/>${editing ? `<circle class="threshold-handle ${meta.family}" style="stroke:${meta.color}" data-role="threshold" data-scenario="${index}" data-threshold="${thresholdIndex}" cx="${x.toFixed(2)}" cy="${geometry.bottom}" r="8"/>` : ''}</g>`;
+    const labelDirection = geometry.xAxisY > geometry.top + 68 ? -1 : 1;
+    const lane = visibleIndex % 2;
+    const labelY = geometry.xAxisY + labelDirection * (25 + lane * 28);
+    const valueY = labelY + labelDirection * 14;
+    const labelAnchor = x < geometry.left + 88 ? 'start' : x > geometry.right - 88 ? 'end' : 'middle';
+    const labelX = labelAnchor === 'start' ? x + 8 : labelAnchor === 'end' ? x - 8 : x;
+    const label = `${html(meta.label)} ${svgToken(threshold.token)}`;
+    return `<g class="threshold-group ${meta.family}" data-element="threshold" data-index="${thresholdIndex}" data-token="${html(threshold.token)}"><line class="threshold ${meta.family}" style="stroke:${meta.color};stroke-dasharray:${meta.dash}" x1="${x.toFixed(2)}" y1="${(geometry.xAxisY - 11).toFixed(2)}" x2="${x.toFixed(2)}" y2="${(geometry.xAxisY + 11).toFixed(2)}"/><text class="cn threshold-label" style="fill:${meta.color}" x="${labelX.toFixed(2)}" y="${labelY.toFixed(2)}" text-anchor="${labelAnchor}">${label}</text><text class="cn threshold-value" style="fill:${meta.color}" x="${labelX.toFixed(2)}" y="${valueY.toFixed(2)}" text-anchor="${labelAnchor}">${formatValue(threshold.value)}${axisUnit(axis)}</text>${editing ? `<circle class="threshold-handle ${meta.family}" style="stroke:${meta.color}" data-role="threshold" data-scenario="${index}" data-threshold="${thresholdIndex}" cx="${x.toFixed(2)}" cy="${geometry.xAxisY.toFixed(2)}" r="8"/>` : ''}</g>`;
   }).join('');
   const guideLines = graphic.guides.map((guide, guideIndex) => {
     const horizontal = guide.direction === 'horizontal';
@@ -444,8 +477,12 @@ function graphicCard(scenario, graphic, index, cardX, cardY, editing, axis) {
     const line = horizontal
       ? `<line class="guide" style="stroke:${meta.color};stroke-dasharray:${meta.dash}" x1="${start.toFixed(2)}" y1="${position.toFixed(2)}" x2="${end.toFixed(2)}" y2="${position.toFixed(2)}"/>`
       : `<line class="guide" style="stroke:${meta.color};stroke-dasharray:${meta.dash}" x1="${position.toFixed(2)}" y1="${start.toFixed(2)}" x2="${position.toFixed(2)}" y2="${end.toFixed(2)}"/>`;
+    const label = horizontal ? formatValue(guide.value) : `${formatValue(guide.value)}${axisUnit(axis)}`;
+    const labelX = horizontal ? end - 4 : position + (position > geometry.right - 58 ? -7 : 7);
+    const labelY = horizontal ? position + (position < geometry.top + 18 ? 14 : -6) : start + 14;
+    const labelAnchor = horizontal ? 'end' : position > geometry.right - 58 ? 'end' : 'start';
     const handle = editing ? `<circle class="guide-handle" style="stroke:${meta.color}" data-role="guide" data-scenario="${index}" data-guide="${guideIndex}" cx="${(horizontal ? handlePosition : position).toFixed(2)}" cy="${(horizontal ? position : handlePosition).toFixed(2)}" r="7"/><circle class="guide-endpoint ${horizontal ? 'horizontal' : 'vertical'}" style="stroke:${meta.color}" data-role="guide-start" data-scenario="${index}" data-guide="${guideIndex}" cx="${(horizontal ? start : position).toFixed(2)}" cy="${(horizontal ? position : start).toFixed(2)}" r="5"/><circle class="guide-endpoint ${horizontal ? 'horizontal' : 'vertical'}" style="stroke:${meta.color}" data-role="guide-end" data-scenario="${index}" data-guide="${guideIndex}" cx="${(horizontal ? end : position).toFixed(2)}" cy="${(horizontal ? position : end).toFixed(2)}" r="5"/>` : '';
-    return `<g data-element="guide" data-index="${guideIndex}">${line}${handle}</g>`;
+    return `<g data-element="guide" data-index="${guideIndex}">${line}<text class="cn guide-label" x="${labelX.toFixed(2)}" y="${labelY.toFixed(2)}" text-anchor="${labelAnchor}">${label}</text>${handle}</g>`;
   }).join('');
   const pointHandles = editing ? graphic.curve.points.map((point, pointIndex) => {
     const converted = pointToSvg(point, geometry, scale);
@@ -467,12 +504,6 @@ function graphicCard(scenario, graphic, index, cardX, cardY, editing, axis) {
 function legendItems(config) {
   const axis = libraryAxis(config.library);
   const items = [{ kind: 'payoff', label: 'Payoff', width: 142 }];
-  const guideIndices = new Set();
-  for (const graphic of config.graphics) graphic.guides.forEach((_, index) => guideIndices.add(index));
-  for (const index of [...guideIndices].sort((left, right) => left - right)) {
-    const meta = guideMeta(index);
-    items.push({ kind: 'guide', index, meta, label: meta.label, width: 132 });
-  }
   const seen = new Set();
   for (const graphic of config.graphics) {
     for (const threshold of graphic.thresholds) {
@@ -504,7 +535,6 @@ function layoutLegend(items) {
 
 function renderLegendItem(item, y) {
   if (item.kind === 'payoff') return `<line x1="${item.x}" y1="${y}" x2="${item.x + 42}" y2="${y}" stroke="#C8102E" stroke-width="4.4"/><text class="legend" x="${item.x + 55}" y="${y + 5}">Payoff</text>`;
-  if (item.kind === 'guide') return `<line x1="${item.x}" y1="${y}" x2="${item.x + 42}" y2="${y}" stroke="${item.meta.color}" stroke-width="1.25" stroke-dasharray="${item.meta.dash}"/><text class="legend" x="${item.x + 55}" y="${y + 5}">${item.meta.label}</text>`;
   const { meta } = item;
   return `<line x1="${item.x}" y1="${y}" x2="${item.x + 42}" y2="${y}" stroke="${meta.color}" stroke-width="2.35" stroke-dasharray="${meta.dash}"/><text class="legend" x="${item.x + 55}" y="${y + 5}">${html(meta.label)} <tspan class="legend-token">${svgToken(item.token)}</tspan> = ${formatValue(item.value)}${item.axisUnit}</text>`;
 }
@@ -522,7 +552,7 @@ export function renderPayoffSvg(config, { editing = false } = {}) {
   <title id="title">${html(config.library.name)}情景Payoff图</title><desc id="desc">由OptionHelper资料库绑定的真实坐标情景Payoff图。图中文字由optionlist.md和optionlib.md生成。</desc>
   <metadata id="optionhelper-payoff-config" data-schema="${SCHEMA}"><![CDATA[${metadata}]]></metadata>
   <defs><linearGradient id="everbright-red-gold" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#C8102E"/><stop offset="1" stop-color="#D89B27"/></linearGradient><style>
-  .cn{font-family:"PingFang SC","Microsoft YaHei","Noto Sans CJK SC",Arial,sans-serif}.card{fill:#fff;stroke:#CFCFCF;stroke-width:1.1}.card-accent{stroke:#C8102E;stroke-width:4.5}.scenario-no{font-size:15px;font-weight:700;fill:#C8102E}.scenario-name{font-size:17px;font-weight:700;fill:#252525}.axis-title{font-size:12px;font-weight:600;fill:#252525}.reference-label,.range-label{font-size:12px;fill:#4F4F4F}.axis{stroke:#252525;stroke-width:1.9}.axis-arrow{fill:#252525}.threshold{stroke-width:2.35}.guide{stroke-width:1.25;opacity:.88}.payoff-line{fill:none;stroke:#C8102E;stroke-linecap:round;stroke-linejoin:round}.curve-endpoint{stroke:#C8102E;stroke-width:2.25}.curve-endpoint.open{fill:#fff}.curve-endpoint.closed{fill:#C8102E}.pending{font-family:"PingFang SC","Microsoft YaHei",sans-serif;font-size:18px;font-weight:700;fill:#CFCFCF;letter-spacing:3px}.legend{font-size:12px;fill:#777}.legend .token-sub{font-size:9px}.node-handle{fill:#fff;stroke:#C8102E;stroke-width:3;cursor:grab}.threshold-handle{fill:#fff;stroke-width:3;cursor:ew-resize}.guide-handle{fill:#fff;stroke-width:3;cursor:move}.guide-endpoint{fill:#fff;stroke-width:2.2}.guide-endpoint.horizontal{cursor:ew-resize}.guide-endpoint.vertical{cursor:ns-resize}
+  .cn{font-family:"PingFang SC","Microsoft YaHei","Noto Sans CJK SC",Arial,sans-serif}.card{fill:#fff;stroke:#CFCFCF;stroke-width:1.1}.card-accent{stroke:#C8102E;stroke-width:4.5}.scenario-no{font-size:15px;font-weight:700;fill:#C8102E}.scenario-name{font-size:17px;font-weight:700;fill:#252525}.axis-title{font-size:12px;font-weight:600;fill:#252525}.reference-label,.range-label{font-size:12px;fill:#4F4F4F}.axis{stroke:#252525;stroke-width:1.9}.axis-arrow{fill:#252525}.threshold{stroke-width:2.35}.threshold-label{font-size:11px;font-weight:700}.threshold-label .token-sub{font-size:8px}.threshold-value{font-size:10px}.guide{stroke-width:1.25;opacity:.88}.guide-label{font-size:10px;fill:#66717C}.payoff-line{fill:none;stroke:#C8102E;stroke-linecap:round;stroke-linejoin:round}.curve-endpoint{stroke:#C8102E;stroke-width:2.25}.curve-endpoint.open{fill:#fff}.curve-endpoint.closed{fill:#C8102E}.pending{font-family:"PingFang SC","Microsoft YaHei",sans-serif;font-size:18px;font-weight:700;fill:#CFCFCF;letter-spacing:3px}.legend{font-size:12px;fill:#777}.legend .token-sub{font-size:9px}.node-handle{fill:#fff;stroke:#C8102E;stroke-width:3;cursor:grab}.threshold-handle{fill:#fff;stroke-width:3;cursor:ew-resize}.guide-handle{fill:#fff;stroke-width:3;cursor:move}.guide-endpoint{fill:#fff;stroke-width:2.2}.guide-endpoint.horizontal{cursor:ew-resize}.guide-endpoint.vertical{cursor:ns-resize}
   </style></defs>
   <rect width="1500" height="${height}" fill="#fff"/><rect x="16" y="16" width="1468" height="64" fill="url(#everbright-red-gold)"/><rect x="16" y="16" width="9" height="64" fill="#A80F28"/><text class="cn" x="40" y="56" fill="#fff" font-size="30" font-weight="700">${html(config.library.name)}</text>
   ${cards}
@@ -652,24 +682,71 @@ export async function reimportDraft(idOrName) {
 export async function publish(input, { paths = PATHS } = {}) {
   const config = migrateConfig(input);
   const validation = await validateConfig(config);
-  // A formal SVG is a snapshot, not an approval workflow.  Validation remains
-  // available to the editor as feedback, but does not block publishing a
-  // renderable draft at any stage.
   if (!config?.library?.id || !config?.library?.name || !Array.isArray(config?.library?.scenarios) || !Array.isArray(config?.graphics)) {
     return { ...validation, published: false, config };
   }
-  await ensureStorage(paths, { includePayoff: true });
-  const locations = storagePaths(config, paths);
-  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-  if (await exists(locations.formalSvg)) await fs.rename(locations.formalSvg, path.join(paths.history, `${locations.base}_payoff.${stamp}.svg`));
+
+  // A stale library snapshot may be formally published after human review, but
+  // malformed graphics, invalid values and locked-field changes must never be
+  // rendered or written. A graphics-order mismatch is also advisory only when
+  // it is solely a consequence of the stale library snapshot.
+  const libraryStale = validation.errors.some((error) => PUBLISH_LIBRARY_WARNING_CODES.has(error.code));
+  const blockingErrors = validation.errors.filter((error) => !PUBLISH_LIBRARY_WARNING_CODES.has(error.code)
+    && !(libraryStale && error.code === 'GRAPHICS_SCENARIO_MISMATCH'));
+  if (blockingErrors.length) return { ...validation, published: false, config };
+
+  let svg;
   try {
-    const svg = renderPayoffSvg(config);
-    await Promise.all([fs.writeFile(locations.source, `${JSON.stringify(config, null, 2)}\n`, 'utf8'), fs.writeFile(locations.formalSvg, svg, 'utf8')]);
-    return { ...validation, published: true, locations, config };
+    svg = renderPayoffSvg(config);
   } catch (error) {
     return {
       ...validation,
       errors: [...validation.errors, validationError('SVG_RENDER_FAILED', `无法生成SVG：${error.message || '图形数据不完整。'}`)],
+      published: false,
+      config,
+    };
+  }
+
+  await ensureStorage(paths, { includePayoff: true });
+  const locations = storagePaths(config, paths);
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const unique = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const draftTemp = path.join(paths.source, `.${locations.base}.${unique}.draft.tmp`);
+  const svgTemp = path.join(paths.payoff, `.${locations.base}.${unique}.svg.tmp`);
+  let hadDraft = false;
+  let previousDraft = null;
+  let draftReplaced = false;
+  try {
+    // Write every new artifact before touching the official paths. Renaming the
+    // temporary SVG within assets/payoff is an atomic replacement on supported
+    // filesystems, so a failed publish never removes the old formal SVG.
+    await Promise.all([
+      fs.writeFile(draftTemp, `${JSON.stringify(config, null, 2)}\n`, 'utf8'),
+      fs.writeFile(svgTemp, svg, 'utf8'),
+    ]);
+    hadDraft = await exists(locations.source);
+    previousDraft = hadDraft ? await fs.readFile(locations.source) : null;
+    if (await exists(locations.formalSvg)) {
+      await fs.copyFile(locations.formalSvg, path.join(paths.history, `${locations.base}_payoff.${stamp}.svg`));
+    }
+    await fs.rename(draftTemp, locations.source);
+    draftReplaced = true;
+    await fs.rename(svgTemp, locations.formalSvg);
+    return { ...validation, published: true, locations, config };
+  } catch (error) {
+    let rollbackError = null;
+    if (draftReplaced) {
+      try {
+        if (hadDraft) await fs.writeFile(locations.source, previousDraft);
+        else await fs.unlink(locations.source);
+      } catch (rollback) {
+        rollbackError = rollback;
+      }
+    }
+    await Promise.allSettled([fs.unlink(draftTemp), fs.unlink(svgTemp)]);
+    return {
+      ...validation,
+      errors: [...validation.errors, validationError('SVG_RENDER_FAILED', `无法生成SVG：${error.message || '图形数据不完整。'}${rollbackError ? `；草稿回滚失败：${rollbackError.message || '未知错误'}` : ''}`)],
       published: false,
       config,
     };

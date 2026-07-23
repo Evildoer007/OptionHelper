@@ -1,7 +1,9 @@
 export const DEFAULT_SCALE = Object.freeze({ xMin: 0, xMax: 200, yMin: -100, yMax: 100 });
 export const VALUE_DECIMALS = 2;
 export const MAX_GUIDES = 6;
-export const MAX_THRESHOLDS = 4;
+// 个别结构（例如壁虎型雪球）同时需要执行价、敲出价、敲入价和两条
+// 避险线，因此关键价格线的真实上限为5条。
+export const MAX_THRESHOLDS = 5;
 export const MAX_POINTS = 12;
 export const CURVE_ENDPOINTS = Object.freeze(['none', 'open', 'closed']);
 export const AXIS_KINDS = Object.freeze(['underlying_price', 'realized_volatility', 'observed_days', 'coupon_count']);
@@ -14,44 +16,41 @@ export const THRESHOLD_FAMILIES = Object.freeze({
   spot: Object.freeze({ label: '期初价', color: '#8A8A8A' }),
   strike: Object.freeze({ label: '执行价', color: '#1F5FA8' }),
   knockout: Object.freeze({ label: '敲出价', color: '#D89B27' }),
-  knockin: Object.freeze({ label: '敲入价', color: '#16856A' }),
-  barrier: Object.freeze({ label: '障碍价', color: '#7A5B3A' }),
+  knockin: Object.freeze({ label: '敲入价', color: '#D89B27' }),
+  barrier: Object.freeze({ label: '障碍价', color: '#D89B27' }),
   other: Object.freeze({ label: '关键价格', color: '#6F7780' }),
 });
 
 const THRESHOLD_META = Object.freeze({
   'S₀': Object.freeze({ family: 'spot', label: '期初价', color: '#8A8A8A', dash: '4 4' }),
   K: Object.freeze({ family: 'strike', label: '执行价', color: '#1F5FA8', dash: '9 4' }),
-  'K₁': Object.freeze({ family: 'strike', label: '执行价1', color: '#276EB2', dash: '9 4' }),
-  'K₂': Object.freeze({ family: 'strike', label: '执行价2', color: '#4B88C2', dash: '7 4' }),
-  'K₃': Object.freeze({ family: 'strike', label: '执行价3', color: '#73A2D1', dash: '5 4' }),
-  'K₄': Object.freeze({ family: 'strike', label: '执行价4', color: '#9BC0E1', dash: '3 4' }),
-  K_p: Object.freeze({ family: 'strike', label: '看跌执行价', color: '#315F9A', dash: '9 4' }),
-  K_c: Object.freeze({ family: 'strike', label: '看涨执行价', color: '#4D7FB7', dash: '7 4' }),
-  K_u: Object.freeze({ family: 'strike', label: '上执行价', color: '#1A78A8', dash: '5 4' }),
-  K_d: Object.freeze({ family: 'strike', label: '下执行价', color: '#5C98C8', dash: '3 4' }),
-  H: Object.freeze({ family: 'barrier', label: '触发价', color: '#7A5B3A', dash: '8 5' }),
+  'K₁': Object.freeze({ family: 'strike', label: '执行价1', color: '#1F5FA8', dash: '9 4' }),
+  'K₂': Object.freeze({ family: 'strike', label: '执行价2', color: '#1F5FA8', dash: '7 4' }),
+  'K₃': Object.freeze({ family: 'strike', label: '执行价3', color: '#1F5FA8', dash: '5 4' }),
+  'K₄': Object.freeze({ family: 'strike', label: '执行价4', color: '#1F5FA8', dash: '3 4' }),
+  K_p: Object.freeze({ family: 'strike', label: '看跌执行价', color: '#1F5FA8', dash: '9 4' }),
+  K_c: Object.freeze({ family: 'strike', label: '看涨执行价', color: '#1F5FA8', dash: '7 4' }),
+  K_u: Object.freeze({ family: 'strike', label: '上执行价', color: '#1F5FA8', dash: '5 4' }),
+  K_d: Object.freeze({ family: 'strike', label: '下执行价', color: '#1F5FA8', dash: '3 4' }),
+  H: Object.freeze({ family: 'barrier', label: '触发价', color: '#D89B27', dash: '8 5' }),
   H_out: Object.freeze({ family: 'knockout', label: '敲出价', color: '#D89B27', dash: '12 5' }),
-  'H_{out,2}': Object.freeze({ family: 'knockout', label: '第二敲出价', color: '#A56200', dash: '8 4' }),
-  'H_{out,t}': Object.freeze({ family: 'knockout', label: '时间敲出价', color: '#B97810', dash: '5 3' }),
-  H_in: Object.freeze({ family: 'knockin', label: '敲入价', color: '#16856A', dash: '12 5' }),
-  'H_{in,2}': Object.freeze({ family: 'knockin', label: '第二敲入价', color: '#0B6551', dash: '8 4' }),
-  H_c: Object.freeze({ family: 'barrier', label: '计息价', color: '#5E6E9B', dash: '6 4' }),
-  H_buffer: Object.freeze({ family: 'barrier', label: '缓冲价', color: '#9A5B3C', dash: '8 3' }),
-  H_floor: Object.freeze({ family: 'barrier', label: '保底价', color: '#7653A6', dash: '7 3' }),
-  H_reset: Object.freeze({ family: 'barrier', label: '重设价', color: '#A65070', dash: '4 3' }),
-  H_u: Object.freeze({ family: 'barrier', label: '上障碍价', color: '#C17A19', dash: '10 4' }),
-  H_d: Object.freeze({ family: 'barrier', label: '下障碍价', color: '#397D60', dash: '6 3' }),
+  'H_{out,2}': Object.freeze({ family: 'knockout', label: '第二敲出价', color: '#D89B27', dash: '8 4' }),
+  'H_{out,t}': Object.freeze({ family: 'knockout', label: '时间敲出价', color: '#D89B27', dash: '5 3' }),
+  H_in: Object.freeze({ family: 'knockin', label: '敲入价', color: '#D89B27', dash: '12 5' }),
+  'H_{in,2}': Object.freeze({ family: 'knockin', label: '第二敲入价', color: '#D89B27', dash: '8 4' }),
+  H_c: Object.freeze({ family: 'barrier', label: '计息价', color: '#D89B27', dash: '6 4' }),
+  H_buffer: Object.freeze({ family: 'barrier', label: '缓冲价', color: '#D89B27', dash: '8 3' }),
+  H_floor: Object.freeze({ family: 'barrier', label: '保底价', color: '#D89B27', dash: '7 3' }),
+  H_reset: Object.freeze({ family: 'barrier', label: '重设价', color: '#D89B27', dash: '4 3' }),
+  H_u: Object.freeze({ family: 'barrier', label: '上障碍价', color: '#D89B27', dash: '10 4' }),
+  H_d: Object.freeze({ family: 'barrier', label: '下障碍价', color: '#D89B27', dash: '6 3' }),
+  'H_{hedge,1}': Object.freeze({ family: 'barrier', label: '第一避险线', color: '#D89B27', dash: '8 3' }),
+  'H_{hedge,2}': Object.freeze({ family: 'barrier', label: '第二避险线', color: '#D89B27', dash: '6 3' }),
+  B: Object.freeze({ family: 'barrier', label: '缓冲价', color: '#D89B27', dash: '8 3' }),
+  L: Object.freeze({ family: 'barrier', label: '限损价', color: '#D89B27', dash: '7 3' }),
 });
 
-export const GUIDE_PALETTE = Object.freeze([
-  Object.freeze({ label: '辅助线1', color: '#6A5E83', dash: '3 5' }),
-  Object.freeze({ label: '辅助线2', color: '#4E7C8A', dash: '5 4' }),
-  Object.freeze({ label: '辅助线3', color: '#8B6240', dash: '2 4' }),
-  Object.freeze({ label: '辅助线4', color: '#60783E', dash: '7 3' }),
-  Object.freeze({ label: '辅助线5', color: '#845B82', dash: '4 3' }),
-  Object.freeze({ label: '辅助线6', color: '#3D7189', dash: '9 4' }),
-]);
+export const GUIDE_META = Object.freeze({ label: '辅助线', color: '#8A949E', dash: '4 4' });
 
 export const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 export const round = (value, decimals = VALUE_DECIMALS) => Math.round((Number(value) + Number.EPSILON) * (10 ** decimals)) / (10 ** decimals);
@@ -117,7 +116,7 @@ export function thresholdMeta(token) {
 }
 
 export function guideMeta(index) {
-  return GUIDE_PALETTE[index % GUIDE_PALETTE.length];
+  return GUIDE_META;
 }
 
 // Guides are intentionally non-semantic local drawing aids. Older v2 JSON without
@@ -130,6 +129,13 @@ export function guideExtent(guide, scale) {
     start: Number.isFinite(guide?.start) ? guide.start : min,
     end: Number.isFinite(guide?.end) ? guide.end : max,
   };
+}
+
+// v2早期草稿可不带起止点。任何一次局部编辑前都先把它显式化，
+// 避免只改一个端点而被校验器视为无效半段线。
+export function materializeGuideExtent(guide, scale) {
+  const { start, end } = guideExtent(guide, scale);
+  return { ...guide, start: round(start), end: round(end) };
 }
 
 export function pointInScale(point, scale) {

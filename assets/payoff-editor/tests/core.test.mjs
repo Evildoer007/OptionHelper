@@ -36,6 +36,7 @@ import {
   boundedPointX,
   createBlankGraphic,
   guideExtent,
+  materializeGuideExtent,
   guideMeta,
   ratioToX,
   ratioToY,
@@ -132,6 +133,30 @@ test('新建配置以损益结构公式生成v2默认Payoff曲线', async () => 
   const validation = await validateConfig(config);
   assert.equal(validation.errors.length, 0);
   assert.equal(validation.warnings.filter((item) => item.code === 'CURVE_PENDING').length, 0);
+});
+
+test('资料库专属关键价格主键完整保留并可迁移旧草稿', async () => {
+  const gecko = await createConfig('9.15');
+  assert(gecko.graphics.every((graphic) => graphic.thresholds.some((item) => item.token === 'H_{hedge,1}' && item.value === 80)));
+  assert(gecko.graphics.every((graphic) => graphic.thresholds.some((item) => item.token === 'H_{hedge,2}' && item.value === 75)));
+  assert(gecko.graphics.every((graphic) => graphic.thresholds.length === 5));
+
+  const legacyGecko = structuredClone(gecko);
+  legacyGecko.graphics.forEach((graphic) => {
+    graphic.thresholds = graphic.thresholds
+      .filter((item) => item.token !== 'H_{hedge,2}')
+      .map((item) => item.token === 'H_{hedge,1}' ? { ...item, token: 'H_buffer' } : item);
+  });
+  const migrated = migrateConfig(legacyGecko);
+  assert(migrated.graphics.every((graphic) => graphic.thresholds.some((item) => item.token === 'H_{hedge,1}' && item.value === 80)));
+  assert(migrated.graphics.every((graphic) => graphic.thresholds.some((item) => item.token === 'H_{hedge,2}' && item.value === 75)));
+
+  const buffer = await createConfig('9.27');
+  const limited = await createConfig('9.28');
+  const booster = await createConfig('9.29');
+  assert(buffer.graphics.every((graphic) => graphic.thresholds.some((item) => item.token === 'B')));
+  assert(limited.graphics.every((graphic) => graphic.thresholds.some((item) => item.token === 'L')));
+  assert(booster.graphics.every((graphic) => graphic.thresholds.some((item) => item.token === 'L')));
 });
 
 test('未完成收益曲线仍可发布正式SVG', async () => {
@@ -247,6 +272,33 @@ test('资料库校验提示不阻断正式SVG发布', async () => {
   }
 });
 
+test('发布拒绝非法图形，且失败时保留原正式SVG', async () => {
+  const config = await completeConfig('2.1');
+  const { root, paths } = await temporaryPaths();
+  try {
+    const first = await publish(config, { paths });
+    assert.equal(first.published, true);
+    const original = await fs.readFile(first.locations.formalSvg, 'utf8');
+
+    const missingGraphics = structuredClone(config);
+    missingGraphics.graphics = [];
+    const missingResult = await publish(missingGraphics, { paths });
+    assert.equal(missingResult.published, false);
+    assert(missingResult.errors.some((item) => item.code === 'GRAPHICS_SCENARIO_MISMATCH'));
+    assert.equal(await fs.readFile(first.locations.formalSvg, 'utf8'), original);
+
+    const unsafeWidth = structuredClone(config);
+    unsafeWidth.graphics[0].curve.strokeWidth = '4.4" data-audit="unsafe';
+    const unsafeResult = await publish(unsafeWidth, { paths });
+    assert.equal(unsafeResult.published, false);
+    assert(unsafeResult.errors.some((item) => item.code === 'GRAPH_VALUE_INVALID'));
+    assert.equal(await fs.readFile(first.locations.formalSvg, 'utf8'), original);
+    assert.doesNotMatch(original, /data-audit/);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
 test('共享坐标模型把价格、净损益、坐标轴和拖拽换算保持一致', () => {
   assert.deepEqual(axisRatios(DEFAULT_SCALE), { x: 0.5, y: 0.5 });
   assert.equal(xToRatio(70, DEFAULT_SCALE), 0.35);
@@ -273,7 +325,7 @@ test('范围、节点、关键线和辅助线的边界校验拒绝无效状态',
   graphic.scale = { xMin: 0, xMax: 200, yMin: -100, yMax: 100 };
   graphic.curve.points[1].x = 220;
   graphic.thresholds = [{ token: 'K', value: 220 }];
-  graphic.guides = [{ direction: 'horizontal', value: 101, style: 'solid' }];
+  graphic.guides = [{ direction: 'horizontal', value: 101, style: 'dashed' }];
   validation = await validateConfig(config);
   assert(validation.errors.some((item) => item.code === 'POINT_RANGE_INVALID'));
   assert(validation.errors.some((item) => item.code === 'THRESHOLD_RANGE_INVALID'));
@@ -284,13 +336,13 @@ test('范围、节点、关键线和辅助线的边界校验拒绝无效状态',
   assert(validation.errors.some((item) => item.code === 'GRAPH_PRECISION_INVALID'));
 
   graphic.curve.points[1].x = 100;
-  graphic.guides = [{ direction: 'horizontal', value: 10, start: 80, end: 80, style: 'solid' }];
+  graphic.guides = [{ direction: 'horizontal', value: 10, start: 80, end: 80, style: 'dashed' }];
   validation = await validateConfig(config);
   assert(validation.errors.some((item) => item.code === 'GUIDE_EXTENT_ORDER_INVALID'));
-  graphic.guides = [{ direction: 'vertical', value: 120, start: -20, style: 'solid' }];
+  graphic.guides = [{ direction: 'vertical', value: 120, start: -20, style: 'dashed' }];
   validation = await validateConfig(config);
   assert(validation.errors.some((item) => item.code === 'GUIDE_EXTENT_INVALID'));
-  graphic.guides = [{ direction: 'vertical', value: 120, start: -100.001, end: 80, style: 'solid' }];
+  graphic.guides = [{ direction: 'vertical', value: 120, start: -100.001, end: 80, style: 'dashed' }];
   validation = await validateConfig(config);
   assert(validation.errors.some((item) => item.code === 'GRAPH_PRECISION_INVALID'));
 });
@@ -371,7 +423,7 @@ test('自动取景以100%和0为中心并覆盖全部图形元素', () => {
 
 test('数量上限、重复关键线和无效输入都不改变共享图形状态', () => {
   const graphic = createBlankGraphic('test.2-01');
-  for (let index = 0; index < MAX_GUIDES; index += 1) assert.equal(addGuide(graphic, { direction: 'vertical', value: index * 10, style: 'solid' }).changed, true);
+  for (let index = 0; index < MAX_GUIDES; index += 1) assert.equal(addGuide(graphic, { direction: 'vertical', value: index * 10, style: 'dashed' }).changed, true);
   const beforeGuides = structuredClone(graphic);
   assert.deepEqual(addGuide(graphic, { direction: 'horizontal', value: 10, style: 'dashed' }), { changed: false, message: `每个情景最多${MAX_GUIDES}条辅助线。` });
   assert.deepEqual(graphic, beforeGuides);
@@ -386,19 +438,19 @@ test('数量上限、重复关键线和无效输入都不改变共享图形状�
   const beforeDuplicate = structuredClone(fresh);
   assert.equal(addThreshold(fresh, { token: 'K', value: 130 }).changed, false);
   assert.deepEqual(fresh, beforeDuplicate);
-  assert.equal(addGuide(fresh, { direction: 'vertical', value: 201, style: 'solid' }).changed, false);
+  assert.equal(addGuide(fresh, { direction: 'vertical', value: 201, style: 'dashed' }).changed, false);
   assert.deepEqual(fresh, beforeDuplicate);
 
   assert.equal(addGuide(fresh, { direction: 'horizontal', value: 10, start: 60, end: 140, style: 'dashed' }).changed, true);
   assert.deepEqual(fresh.guides[0], { direction: 'horizontal', value: 10, start: 60, end: 140, style: 'dashed' });
-  assert.equal(addGuide(fresh, { direction: 'vertical', value: 110, start: 20, end: 20, style: 'solid' }).changed, false);
+  assert.equal(addGuide(fresh, { direction: 'vertical', value: 110, start: 20, end: 20, style: 'dashed' }).changed, false);
 });
 
 test('单图和整图重置恢复默认范围并保留情景绑定', () => {
   const dirty = createBlankGraphic('1.2-01');
   dirty.scale.xMin = 50;
   dirty.curve.points = [{ x: 50, y: 1 }, { x: 150, y: 2 }];
-  dirty.guides = [{ direction: 'horizontal', value: 1, style: 'solid' }];
+  dirty.guides = [{ direction: 'horizontal', value: 1, style: 'dashed' }];
   const reset = resetGraphic(dirty.scenarioId);
   assert.equal(reset.scenarioId, dirty.scenarioId);
   assert.deepEqual(reset.scale, DEFAULT_SCALE);
@@ -415,7 +467,7 @@ test('SVG以真实坐标绘制语义关键价格线与局部辅助线段', async
   graphic.thresholds = [{ token: 'S₀', value: 100 }, { token: 'K', value: 120 }, { token: 'H_out', value: 140 }];
   graphic.guides = [
     { direction: 'vertical', value: 70, start: -40, end: 50, style: 'dashed' },
-    { direction: 'horizontal', value: 10, start: 80, end: 160, style: 'solid' },
+    { direction: 'horizontal', value: 10, start: 80, end: 160, style: 'dashed' },
   ];
   const svg = renderPayoffSvg(config, { editing: true });
   assert.match(svg, /data-element="x-axis" x1="58" y1="340\.00" x2="700" y2="340\.00"/);
@@ -423,17 +475,19 @@ test('SVG以真实坐标绘制语义关键价格线与局部辅助线段', async
   assert.match(svg, /M282\.70 322\.20 H443\.20 V304\.40/);
   assert.match(svg, /x1="282\.70" y1="411\.20" x2="282\.70" y2="251\.00"/);
   assert.match(svg, /x1="314\.80" y1="322\.20" x2="571\.60" y2="322\.20"/);
-  assert.match(svg, /class="threshold spot"/);
-  assert.match(svg, /class="threshold strike"/);
-  assert.match(svg, /class="threshold knockout"/);
+  assert.match(svg, /class="threshold spot"[^>]*x1="379\.00" y1="329\.00" x2="379\.00" y2="351\.00"/);
+  assert.match(svg, /class="threshold strike"[^>]*x1="443\.20" y1="329\.00" x2="443\.20" y2="351\.00"/);
+  assert.match(svg, /class="threshold knockout"[^>]*x1="507\.40" y1="329\.00" x2="507\.40" y2="351\.00"/);
   const visibleSvg = svg.slice(svg.indexOf('</metadata>'));
-  assert.match(visibleSvg, />期初价 <tspan class="legend-token">S₀<\/tspan> = 100%<\/text>/);
-  assert.match(visibleSvg, />执行价 <tspan class="legend-token">K<\/tspan> = 120%<\/text>/);
-  assert.match(visibleSvg, /敲出价 <tspan class="legend-token">H<tspan class="token-sub" baseline-shift="sub">out<\/tspan><\/tspan> = 140%/);
+  assert.match(visibleSvg, /class="cn threshold-label"[^>]*>期初价 S₀<\/text>/);
+  assert.match(visibleSvg, /class="cn threshold-label"[^>]*>执行价 K<\/text>/);
+  assert.match(visibleSvg, /敲出价 H<tspan class="token-sub" baseline-shift="sub">out<\/tspan>/);
+  assert.match(visibleSvg, /class="cn threshold-value"[^>]*>120%<\/text>/);
   assert.match(visibleSvg, /class="threshold knockout" style="stroke:#D89B27;stroke-dasharray:12 5"/);
   assert.match(visibleSvg, /class="threshold strike" style="stroke:#1F5FA8;stroke-dasharray:9 4"/);
-  assert.match(visibleSvg, /class="guide" style="stroke:#4E7C8A;stroke-dasharray:5 4" x1="314\.80" y1="322\.20"/);
-  assert.doesNotMatch(visibleSvg, /key-label|guide-label|edit-boundary|Y:|·|solid/);
+  assert.match(visibleSvg, /class="guide" style="stroke:#8A949E;stroke-dasharray:4 4" x1="314\.80" y1="322\.20"/);
+  assert.match(visibleSvg, /class="cn guide-label"[^>]*>10<\/text>/);
+  assert.doesNotMatch(visibleSvg, /edit-boundary|Y:|·|solid/);
   assert.match(svg, /data-element="x-label"[^>]*>标的价格\(%\)<\/text>/);
   assert.doesNotMatch(svg, /标的价格S_T/);
   assert.match(svg, /data-role="node"/);
@@ -442,32 +496,36 @@ test('SVG以真实坐标绘制语义关键价格线与局部辅助线段', async
 
 test('关键价格语义和旧辅助线全跨度兼容规则稳定', () => {
   assert.deepEqual(thresholdMeta('S₀'), { family: 'spot', label: '期初价', color: '#8A8A8A', dash: '4 4' });
-  assert.deepEqual(thresholdMeta('K_u'), { family: 'strike', label: '上执行价', color: '#1A78A8', dash: '5 4' });
+  assert.deepEqual(thresholdMeta('K_u'), { family: 'strike', label: '上执行价', color: '#1F5FA8', dash: '5 4' });
   assert.deepEqual(thresholdMeta('H_out'), { family: 'knockout', label: '敲出价', color: '#D89B27', dash: '12 5' });
-  assert.deepEqual(thresholdMeta('H_in'), { family: 'knockin', label: '敲入价', color: '#16856A', dash: '12 5' });
-  assert.deepEqual(thresholdMeta('H_{out,2}'), { family: 'knockout', label: '第二敲出价', color: '#A56200', dash: '8 4' });
-  assert.deepEqual(thresholdMeta('H_{in,2}'), { family: 'knockin', label: '第二敲入价', color: '#0B6551', dash: '8 4' });
+  assert.deepEqual(thresholdMeta('H_in'), { family: 'knockin', label: '敲入价', color: '#D89B27', dash: '12 5' });
+  assert.deepEqual(thresholdMeta('H_{out,2}'), { family: 'knockout', label: '第二敲出价', color: '#D89B27', dash: '8 4' });
+  assert.deepEqual(thresholdMeta('H_{in,2}'), { family: 'knockin', label: '第二敲入价', color: '#D89B27', dash: '8 4' });
+  assert.deepEqual(thresholdMeta('H_{hedge,2}'), { family: 'barrier', label: '第二避险线', color: '#D89B27', dash: '6 3' });
+  assert.deepEqual(thresholdMeta('B'), { family: 'barrier', label: '缓冲价', color: '#D89B27', dash: '8 3' });
+  assert.deepEqual(thresholdMeta('L'), { family: 'barrier', label: '限损价', color: '#D89B27', dash: '7 3' });
   assert.deepEqual(guideExtent({ direction: 'horizontal', value: 10, style: 'solid' }, DEFAULT_SCALE), { start: 0, end: 200 });
   assert.deepEqual(guideExtent({ direction: 'vertical', value: 120, start: -20, end: 80, style: 'solid' }, DEFAULT_SCALE), { start: -20, end: 80 });
+  assert.deepEqual(materializeGuideExtent({ direction: 'horizontal', value: 10, style: 'dashed' }, DEFAULT_SCALE), { direction: 'horizontal', value: 10, style: 'dashed', start: 0, end: 200 });
 });
 
-test('局部辅助线在新旧JSON中统一规范为不重复颜色的虚线', async () => {
+test('局部辅助线在新旧JSON中统一规范为中性灰虚线', async () => {
   const config = await completeConfig();
   config.graphics[0].guides = [{ direction: 'horizontal', value: 0, start: 80, end: 120, style: 'solid' }];
   const migrated = migrateConfig(config);
   assert.equal(migrated.graphics[0].guides[0].style, 'dashed');
   const svg = renderPayoffSvg(config);
-  assert.match(svg, /class="guide" style="stroke:#6A5E83;stroke-dasharray:3 5"/);
+  assert.match(svg, /class="guide" style="stroke:#8A949E;stroke-dasharray:4 4"/);
   assert.doesNotMatch(svg.slice(svg.indexOf('</metadata>')), /Y:|edit-boundary/);
 });
 
-test('关键线和辅助线使用固定且互不重复的语义颜色，JSON不接受颜色覆写', async () => {
-  const tokens = ['S₀', 'K', 'K₁', 'K₂', 'K₃', 'K₄', 'K_p', 'K_c', 'K_u', 'K_d', 'H', 'H_out', 'H_{out,2}', 'H_{out,t}', 'H_in', 'H_{in,2}', 'H_c', 'H_floor', 'H_reset', 'H_u', 'H_d'];
-  const thresholdColors = tokens.map((token) => thresholdMeta(token).color);
-  assert.equal(new Set(thresholdColors).size, thresholdColors.length);
+test('关键线按语义家族分色，JSON不接受颜色覆写', async () => {
+  const strikeTokens = ['K', 'K₁', 'K₂', 'K₃', 'K₄', 'K_p', 'K_c', 'K_u', 'K_d'];
+  const barrierTokens = ['H', 'H_out', 'H_{out,2}', 'H_{out,t}', 'H_in', 'H_{in,2}', 'H_c', 'H_floor', 'H_reset', 'H_u', 'H_d', 'H_{hedge,1}', 'H_{hedge,2}', 'B', 'L'];
+  assert(strikeTokens.every((token) => thresholdMeta(token).color === '#1F5FA8'));
+  assert(barrierTokens.every((token) => thresholdMeta(token).color === '#D89B27'));
   const guideColors = Array.from({ length: MAX_GUIDES }, (_, index) => guideMeta(index).color);
-  assert.equal(new Set(guideColors).size, MAX_GUIDES);
-  assert.equal(new Set([...thresholdColors, ...guideColors]).size, thresholdColors.length + guideColors.length);
+  assert.deepEqual(guideColors, Array(MAX_GUIDES).fill('#8A949E'));
 
   const config = await completeConfig();
   config.graphics[0].thresholds = [{ token: 'H_out', value: 120, color: '#000000' }];

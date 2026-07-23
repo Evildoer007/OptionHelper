@@ -1,4 +1,4 @@
-import { autoFitScale, createBlankGraphic, round } from './public/graphic-model.mjs';
+import { autoFitScale, createBlankGraphic, MAX_THRESHOLDS, round } from './public/graphic-model.mjs';
 
 // The library's .2 payoff table defines the geometry.  .3 examples provide
 // parameter values and are used for numeric calibration only.  Keeping the
@@ -36,7 +36,7 @@ function prices(parameters, definitions) {
   return definitions
     .map(([token, fallback]) => ({ token, value: value(parameters, token, fallback) }))
     .filter((item) => Number.isFinite(item.value) && !seen.has(item.token) && seen.add(item.token))
-    .slice(0, 4);
+    .slice(0, MAX_THRESHOLDS);
 }
 
 function make(id, scenarios, parameters, axis, definition) {
@@ -141,7 +141,7 @@ const FORMULAS = Object.freeze({
   '9.12': (p) => snowball(p, [['K', 100], ['H_out', 100], ['H_in', 85]], [P(dot(100, 82.2)), P(dot(100, 92.1)), P(line([85, 100], [100, 100])), P(line([80, -200], [100, 0]))]),
   '9.13': (p) => snowball(p, [['K', 100], ['H_out', 103], ['H_in', 95], ['H_floor', 95]], [P(dot(103, 51)), P(line([95, 77.3], [103, 77.3])), P(line([90, -50], [95, -50], [100, 0]))]),
   '9.14': (p) => snowball(p, [['K', 100], ['H_out', 100], ['H_in', 80], ['H_reset', 90]], [P(dot(100, 24)), P(dot(90, 48.6)), P(line([80, 146], [100, 146])), P(line([85, -150], [100, 0]))]),
-  '9.15': (p) => snowball(p, [['K', 100], ['H_out', 103], ['H_in', 70], ['H_buffer', 80]], [P(dot(103, 150)), P(dot(80, 15)), P(line([70, 300], [103, 300])), P(line([85, -150], [100, 0]))]),
+  '9.15': (p) => snowball(p, [['K', 100], ['H_out', 103], ['H_in', 70], ['H_{hedge,1}', 80], ['H_{hedge,2}', 75]], [P(dot(103, 150)), P(dot(80, 15)), P(line([70, 300], [103, 300])), P(line([85, -150], [100, 0]))]),
   '9.16': (p) => snowball(p, [['K', 100], ['H_out', 103]], [P(dot(103, 32.2)), P(line([70, -100], [103, -100]))]),
   '9.17': (p) => snowball(p, [['K', 100], ['H_out', 100]], [P(join(dot(100, 78.9), dot(103, 213.7))), P(line([70, 55], [100, 55]))]),
   '9.18': (p) => snowball(p, [['K', 100], ['H_out', 103], ['H_in', 70]], [P(dot(104, 75)), P(line([70, 225], [103, 225])), P(dot(100, 0)), P(line([80, -200], [100, 0]))]),
@@ -153,9 +153,9 @@ const FORMULAS = Object.freeze({
   '9.24': () => [P(dot(4, 40)), P(line([0, 0], [3, 30], [9, 90], [12, 120]))],
   '9.25': () => [P(dot(4, 36)), P(line([0, 30], [9, 88.5], [12, 108]))],
   '9.26': (p) => snowball(p, [['K', 100], ['H_out', 103], ['H_in', 70]], [P(dot(104, 120)), P(line([70, 40], [103, 40])), P(dot(100, 0)), P(line([65, -350], [100, 0]))]),
-  '9.27': (p) => snowball(p, [['K', 100], ['H_out', 103], ['H_buffer', 80]], [P(dot(103, 65.8)), P(line([80, 0], [105, 250])), P(line([75, -250], [80, -200]))]),
-  '9.28': (p) => snowball(p, [['K', 100], ['H_out', 103], ['H_floor', 95]], [P(dot(103, 38.5)), P(line([100, 0], [120, 0])), P(line([95, -50], [100, 0])), P(line([70, -50], [95, -50]))]),
-  '9.29': (p) => snowball(p, [['K', 100], ['H_out', 103], ['H_floor', 80]], [P(dot(104, 45)), P(line([100, 0], [102, 30])), P(line([70, -100], [80, -100], [90, -50], [100, 0]))]),
+  '9.27': (p) => snowball(p, [['K', 100], ['H_out', 103], ['B', 80]], [P(dot(103, 65.8)), P(line([80, 0], [105, 250])), P(line([75, -250], [80, -200]))]),
+  '9.28': (p) => snowball(p, [['K', 100], ['H_out', 103], ['L', 95]], [P(dot(103, 38.5)), P(line([100, 0], [120, 0])), P(line([95, -50], [100, 0])), P(line([70, -50], [95, -50]))]),
+  '9.29': (p) => snowball(p, [['K', 100], ['H_out', 103], ['L', 80]], [P(dot(104, 45)), P(line([100, 0], [102, 30])), P(line([70, -100], [80, -100], [90, -50], [100, 0]))]),
   '10.1': (p) => {
     const k = value(p, 'K', 100), t = prices(p, [['K', 100]]);
     return [P(line([k, -1.59], [110, 8.41]), t), P(line([80, -1.59], [k, -1.59]), t)];
