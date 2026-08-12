@@ -1,0 +1,60 @@
+{
+  "name_zh": "助推器",
+  "terms": {
+    "S0": 100.0,
+    "T": 1.0,
+    "N": 5000000.0,
+    "g": 0.2,
+    "K": 100.0,
+    "H_KO": 103.0,
+    "O_KO": "monthly_last",
+    "settlement": "cash",
+    "observation_price": "close",
+    "margin_call": false,
+    "r_out": 0.09,
+    "alpha": 3.0,
+    "Lmax": 0.2,
+    "monitor": {
+      "tau_out": "first_time(S_t[O_out] >= H_out)"
+    },
+    "derived_terms": {
+      "G": "N * g"
+    },
+    "pricing_methods": [
+      "monte_carlo"
+    ],
+    "constraints": [
+      "g == 0.2",
+      "K == S_0",
+      "H_out == 1.03 * S_0"
+    ]
+  },
+  "paths": [
+    {
+      "condition": "tau_out < inf",
+      "cases": [
+        {
+          "domain": "S_T >= 0",
+          "pnl": "cash(tau_out, N * r_out)"
+        }
+      ]
+    },
+    {
+      "condition": "tau_out == inf",
+      "cases": [
+        {
+          "domain": "S_T >= K",
+          "pnl": "cash(T, N * alpha * r_T)"
+        },
+        {
+          "domain": "(1 - ell) * S_0 <= S_T < K",
+          "pnl": "cash(T, N * r_T)"
+        },
+        {
+          "domain": "0 <= S_T < (1 - ell) * S_0",
+          "pnl": "cash(T, -N * ell)"
+        }
+      ]
+    }
+  ]
+}

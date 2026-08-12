@@ -1,0 +1,208 @@
+/* OptDesk owns the surrounding chrome. Standalone module pages keep their own header. */
+html[data-optionhelper-app-hosted="true"],
+html[data-optionhelper-app-hosted="true"] body,
+html[data-optionhelper-app-hosted="true"] .app-shell {
+  width: 100%;
+  min-width: 0 !important;
+  min-height: 100%;
+  height: 100%;
+  overflow: hidden;
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
+html[data-optionhelper-app-hosted="true"] .topbar {
+  display: none !important;
+}
+
+html[data-optionhelper-app-hosted="true"] .workbench {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0 !important;
+  height: 100vh !important;
+  min-height: 0;
+  grid-template-columns: minmax(190px, 23%) 4px minmax(360px, 1fr) 4px minmax(250px, 29%) !important;
+}
+
+html[data-optionhelper-app-hosted="true"] .optionhelper-choice {
+  position: relative !important;
+  display: block !important;
+  min-width: 0;
+  margin: 0 !important;
+}
+
+html[data-optionhelper-app-hosted="true"] .choice-native {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  min-height: 1px !important;
+  margin: -1px !important;
+  padding: 0 !important;
+  overflow: hidden !important;
+  clip: rect(0 0 0 0) !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
+html[data-optionhelper-app-hosted="true"] .choice-trigger {
+  display: flex;
+  width: 100%;
+  min-height: 32px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 9px;
+  border: 1px solid var(--rule, #d7cfd0);
+  border-radius: 7px;
+  background: var(--surface, #fff);
+  color: var(--ink, #2b2224);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.3;
+  text-align: left;
+}
+
+html[data-optionhelper-app-hosted="true"] .choice-trigger__value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+html[data-optionhelper-app-hosted="true"] .choice-trigger__chevron {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 7px;
+  border-right: 1.4px solid currentColor;
+  border-bottom: 1.4px solid currentColor;
+  color: var(--muted, #766b6d);
+  transform: rotate(45deg) translate(-2px, -2px);
+}
+
+html[data-optionhelper-app-hosted="true"] .optionhelper-choice:hover .choice-trigger,
+html[data-optionhelper-app-hosted="true"] .optionhelper-choice[data-open="true"] .choice-trigger {
+  border-color: var(--red, #c8102e);
+  background: #fff8f8;
+}
+
+html[data-optionhelper-app-hosted="true"] .optionhelper-choice[data-open="true"] .choice-trigger {
+  box-shadow: 0 0 0 3px rgba(200, 16, 46, .10);
+  color: var(--red-deep, #9e1027);
+}
+
+html[data-optionhelper-app-hosted="true"] .choice-trigger:focus-visible {
+  outline: 3px solid rgba(200, 16, 46, .22);
+  outline-offset: 2px;
+}
+
+html[data-optionhelper-app-hosted="true"] .choice-trigger:disabled {
+  border-color: var(--rule, #d7cfd0);
+  background: #f4f2f2;
+  color: #978e90;
+  cursor: not-allowed;
+}
+
+html[data-optionhelper-app-hosted="true"] .choice-trigger[aria-invalid="true"] {
+  border-color: #b71b36;
+  background: #fff7f8;
+  box-shadow: 0 0 0 3px rgba(183, 27, 54, .08);
+}
+
+html[data-optionhelper-app-hosted="true"] .choice-menu {
+  position: absolute;
+  z-index: 120;
+  top: calc(100% + 5px);
+  right: 0;
+  left: 0;
+  max-height: min(260px, 42vh);
+  padding: 5px;
+  overflow: auto;
+  border: 1px solid var(--rule, #d7cfd0);
+  border-radius: 9px;
+  background: var(--surface, #fff);
+  box-shadow: 0 14px 28px rgba(60, 40, 44, .17);
+}
+
+html[data-optionhelper-app-hosted="true"] .choice-option {
+  display: flex;
+  width: 100%;
+  min-height: 30px;
+  align-items: center;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink, #2b2224);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.35;
+  text-align: left;
+}
+
+html[data-optionhelper-app-hosted="true"] .choice-option:hover,
+html[data-optionhelper-app-hosted="true"] .choice-option:focus-visible {
+  outline: 0;
+  background: #fff0f2;
+  color: var(--red-deep, #9e1027);
+}
+
+html[data-optionhelper-app-hosted="true"] .choice-option[aria-selected="true"] {
+  background: #f9e9ec;
+  color: var(--red-deep, #9e1027);
+  font-weight: 700;
+}
+
+html[data-optionhelper-app-hosted="true"] .choice-option:disabled {
+  color: #a09698;
+  cursor: not-allowed;
+}
+
+/* Reporter keeps semantic native radios and checkboxes.  In the narrow host
+   column, give every choice the same durable geometry so the browser control
+   and its label cannot drift apart across checked, focus and disabled states. */
+html[data-optionhelper-app-hosted="true"] .settings-panel .choice {
+  display: grid !important;
+  grid-template-columns: 16px minmax(0, 1fr);
+  align-items: center !important;
+  column-gap: 8px;
+  min-height: 32px;
+  margin: 0;
+}
+
+html[data-optionhelper-app-hosted="true"] .settings-panel .choice > input[type="radio"],
+html[data-optionhelper-app-hosted="true"] .settings-panel .choice > input[type="checkbox"] {
+  grid-column: 1;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--red, #c8102e);
+}
+
+@media (max-width: 1180px) {
+  html[data-optionhelper-app-hosted="true"] .workbench {
+    grid-template-columns: minmax(190px, 23%) 4px minmax(360px, 1fr) 4px minmax(250px, 29%) !important;
+  }
+}
+
+@media (max-width: 920px) {
+  html[data-optionhelper-app-hosted="true"] body {
+    overflow: auto;
+  }
+
+  html[data-optionhelper-app-hosted="true"] .app-shell,
+  html[data-optionhelper-app-hosted="true"] .workbench {
+    height: auto !important;
+    min-height: 100%;
+    overflow: visible;
+  }
+
+  html[data-optionhelper-app-hosted="true"] .workbench {
+    display: grid !important;
+    grid-template-columns: minmax(180px, 30%) minmax(0, 1fr) !important;
+  }
+
+  html[data-optionhelper-app-hosted="true"] .inspector,
+  html[data-optionhelper-app-hosted="true"] .right-panel {
+    grid-column: 1 / -1;
+  }
+}

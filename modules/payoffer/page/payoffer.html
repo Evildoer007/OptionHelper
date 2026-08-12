@@ -1,0 +1,697 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>收益结构 | OptionHelper</title>
+    <link rel="icon" href="../../icons/optionhelper-app-icon-tile-light.svg">
+    <link rel="stylesheet" href="./ui/style.css">
+    <link rel="stylesheet" href="./ui/controls.css">
+    <style>
+      .runtime-parameter-grid { grid-template-columns: 1fr 1fr; }
+      .runtime-parameter-grid .parameter-field { grid-template-columns: minmax(82px, 1fr) minmax(86px, 1.1fr); }
+      .runtime-parameter-grid .parameter-field.full { grid-template-columns: minmax(100px, .72fr) minmax(0, 1.28fr); }
+      .runtime-parameter-grid .parameter-field select { width:100%; height:29px; padding:0 5px; border:1px solid var(--rule); background:#fff; color:var(--ink); font:11px var(--font); }
+      .runtime-parameter-grid .parameter-field textarea { width:100%; min-height:58px; padding:6px; border:1px solid var(--rule); background:#fff; color:var(--ink); font:10px/1.45 var(--mono); resize:vertical; }
+      .runtime-parameter-grid .parameter-field small { grid-column: 1 / -1; color:var(--muted); font:9px/1.4 var(--mono); overflow-wrap:anywhere; }
+      .runtime-parameter-grid .parameter-field span { overflow:hidden; text-overflow:ellipsis; }
+      .contract-identity-grid { grid-template-columns:1fr 1fr; }
+      .contract-identity-grid .parameter-field { grid-template-columns:minmax(82px,1fr) minmax(92px,1.1fr); }
+      .contract-identity-grid .parameter-field.full { grid-column:1 / -1; grid-template-columns:minmax(100px,.72fr) minmax(0,1.28fr); }
+      .contract-identity-grid .parameter-field input,.contract-identity-grid .parameter-field textarea { width:100%; min-width:0; height:29px; padding:0 5px; border:1px solid var(--rule); background:#fff; color:var(--ink); font:11px var(--mono); }
+      .contract-identity-grid .parameter-field textarea { height:auto; min-height:58px; padding:6px; resize:vertical; line-height:1.45; }
+      .contract-identity-grid .parameter-field .date-input { font-family:var(--mono); }
+      .contract-identity-grid .parameter-field input:disabled,.contract-identity-grid .parameter-field textarea:disabled,.runtime-parameter-grid .term-input:disabled { background:var(--wash); color:var(--muted); cursor:not-allowed; }
+      .runtime-parameter-grid .field-symbol { color:var(--red); font-family:Georgia,"Times New Roman",serif; font-weight:700; }
+      .runtime-actions { display:grid; gap:7px; margin-top:10px; }
+      .runtime-actions .button { width:100%; }
+      .runtime-import { width:100%; min-height:96px; margin-top:8px; padding:8px; border:1px solid var(--rule); background:#fff; color:var(--ink); font:10px/1.5 var(--mono); resize:vertical; }
+      .scenario-list li { cursor:pointer; }
+      .scenario-list li:hover { color:var(--red); }
+      .scenario-list li.selected { color:var(--red); font-weight:700; }
+      .scenario-kind { display:block; margin-top:3px; color:var(--muted); font:10px var(--mono); }
+      .canvas-viewport .canvas-stage > svg { display:block; width:100%; height:auto; }
+      .source-detail .formula { display:block; margin-top:5px; white-space:normal; overflow-wrap:anywhere; }
+      .runtime-payoff-form .runtime-payoff-field textarea[readonly] { background:var(--wash); color:#5b554f; }
+      .runtime-payoff-result { margin:0; color:var(--muted); font-size:11px; line-height:1.55; overflow-wrap:anywhere; }
+    </style>
+    <style>
+      .readonly .canvas-viewport { padding: 24px; background: #f6f7f6; }
+      .readonly .canvas-stage,
+      .readonly .canvas-viewport > svg,
+      .readonly .canvas-viewport > img { border: 1px solid #e1e4e3; box-shadow: none; }
+      .readonly .runtime-parameter-grid .parameter-field select,
+      .readonly .runtime-parameter-grid .parameter-field textarea,
+      .readonly .contract-identity-grid .parameter-field input,
+      .readonly .contract-identity-grid .parameter-field textarea,
+      .readonly .runtime-import { border-color: #d9dddc; border-radius: 7px; font-family: var(--font); }
+      .readonly .runtime-parameter-grid .field-symbol { color: var(--red-deep); font-family: var(--font); }
+      .readonly .source-detail .formula { font-family: "Cambria Math", "STIX Two Math", "Times New Roman", serif; }
+      .readonly .runtime-actions .button { border-radius: 8px; }
+      .readonly .lock-card { border-top: 1px solid #e4e7e6; }
+    </style>
+  </head>
+  <body>
+    <div class="app-shell readonly">
+      <header class="topbar">
+        <div class="brand"><img class="brand-logo" src="../../icons/optionhelper-logo.svg" alt="OptionHelper"><span class="brand-separator" aria-hidden="true"></span><span class="module-title">收益结构</span></div>
+        <div class="topbar-status" id="modeBadge">正在连接本机服务</div>
+        <div class="topbar-actions">
+          <button class="button button-primary" id="previewButton">预览收益图</button>
+          <button class="button button-primary" id="runtimePayoffButton">生成本次参数图</button>
+          <button class="button button-quiet" id="recheckButton">重新读取资料库</button>
+        </div>
+      </header>
+
+      <main class="workbench" id="workbench">
+        <aside class="library-panel">
+          <div class="panel-kicker">资料库入口</div>
+          <h1>产品与路径</h1>
+          <p class="panel-copy">产品、默认条款与收益路径均来自OptionReg；OptionLib只用于逐项核对条款语义。</p>
+          <label class="field-label" for="productSelect">产品</label>
+          <select id="productSelect" class="product-select"><option value="">请选择产品</option></select>
+          <button class="button button-primary wide" id="openPreviewButton" disabled>预览本次收益图</button>
+          <div class="binding-card" id="bindingCard"><span>尚未选择产品</span></div>
+          <div class="scenario-heading"><span>产品路径</span><small id="scenarioCount">0</small></div>
+          <ol class="scenario-list" id="scenarioList"></ol>
+          <div class="library-note" id="libraryNote">默认示例资产为只读基准。本页生成的任何图仅属于本次条款与本次结果。</div>
+        </aside>
+        <div class="panel-resizer panel-resizer-left" id="libraryResizer" role="separator" aria-label="调整产品与路径面板宽度" aria-orientation="vertical" tabindex="0"></div>
+
+        <section class="canvas-panel">
+          <div class="canvas-toolbar">
+            <div class="canvas-state"><span class="state-dot" id="stateDot"></span><span id="canvasState">等待预览</span></div>
+            <div class="canvas-toolbar-actions">
+              <div class="zoom-control" aria-label="画布缩放"><button class="zoom-button" id="zoomOutButton" title="缩小">−</button><label class="zoom-input-wrap"><input id="zoomInput" type="number" min="20" max="200" step="1" inputmode="numeric" aria-label="画布缩放百分比" value="100"><em>%</em></label><button class="zoom-button" id="zoomInButton" title="放大">+</button><button class="zoom-fit" id="zoomFitButton" title="适应画布">适应</button></div>
+              <button class="button button-quiet" id="canvasPreviewButton">更新预览</button>
+              <button class="button button-primary" id="canvasRunButton">生成本次结果</button>
+            </div>
+          </div>
+          <div class="notice-area" id="noticeArea" aria-live="polite" aria-atomic="true"></div>
+          <div class="canvas-viewport" id="canvasViewport">
+            <div class="empty-canvas" id="emptyCanvas"><div class="empty-mark">P</div><h2>选择产品后生成收益图</h2><p>图形按本次已解析合同计算，不会修改固定默认示例。</p></div>
+          </div>
+          <div class="canvas-footer"><span>可使用滚轮或缩放工具查看完整路径图</span><span>本次参数图保存在当前任务中</span></div>
+        </section>
+        <div class="panel-resizer panel-resizer-right" id="inspectorResizer" role="separator" aria-label="调整条款参数面板宽度" aria-orientation="vertical" tabindex="0"></div>
+
+        <aside class="inspector-panel" id="inspectorPanel">
+          <div class="panel-kicker">条款控制</div>
+          <h2 id="inspectorTitle">未选择产品</h2>
+          <div class="source-detail" id="sourceDetail">选择产品后显示路径来源与条款字段。</div>
+          <div class="inspector-group">
+            <div class="group-title">合同身份</div>
+            <p class="drag-hint" id="identityRule">合同身份与条款覆盖共同解析为本次合约。标的代码与参考价必须一一对应。</p>
+            <div class="parameter-grid contract-identity-grid" id="identityFields">
+              <label class="parameter-field full"><span>标的代码</span><input id="contractUnderlyings" autocomplete="off" placeholder="例如000905.SH"><small>underlyings，多个标的以英文逗号分隔</small></label>
+              <label class="parameter-field"><span>合同标识</span><input id="contractId" autocomplete="off" placeholder="留空自动生成"></label>
+              <label class="parameter-field"><span>币种</span><input id="contractCurrency" autocomplete="off" value="CNY"></label>
+              <label class="parameter-field"><span>合同起始日</span><input id="contractStartDate" class="date-input" type="text" inputmode="numeric" autocomplete="off" placeholder="yyyy/mm/dd" aria-describedby="contractStartDateHint"><small id="contractStartDateHint">统一显示yyyy/mm/dd；提交时转换为ISO日期</small></label>
+              <label class="parameter-field full"><span>合同参考价</span><textarea id="contractReferenceSpots" spellcheck="false" aria-label="合同参考价JSON"></textarea><small>contract_reference_spots，键必须逐一覆盖标的代码</small></label>
+            </div>
+          </div>
+          <div class="inspector-group">
+            <div class="group-title">本次条款覆盖</div>
+            <p class="drag-hint" id="runtimeRule">默认条款来自OptionReg；只有改动后的字段才会作为term_overrides提交。</p>
+            <div class="parameter-grid runtime-parameter-grid" id="parameterFields"></div>
+            <div class="runtime-actions"><button class="button button-quiet small" id="applyParametersButton">解析并更新收益图</button><button class="button button-quiet small" id="restoreDefaultsButton">恢复OptionReg默认值</button></div>
+          </div>
+          <div class="inspector-group">
+            <div class="group-title">导入合同或条款</div>
+            <p class="hint">可粘贴条款覆盖或既有结果；导入后只回填可编辑字段。</p>
+            <textarea id="parameterJson" class="runtime-import" placeholder='例如：{"term_overrides":{"K":100},"identity":{"underlyings":["000905.SH"]}}'></textarea>
+            <div class="runtime-actions"><button class="button button-quiet small" id="importParametersButton">导入并回填</button></div>
+          </div>
+          <div class="inspector-group">
+            <div class="group-title">路径说明</div>
+            <div class="source-detail" id="selectedPathDetail">选择路径后显示判断条件与损益表达。</div>
+          </div>
+          <div class="inspector-group reset-group">
+            <div class="group-title">资料库权限</div>
+            <div class="lock-card"><strong>默认资产只读</strong>本页不会写入figures中的固定默认SVG。默认资产仅在确认资料库结构错误后，随Python规格的受控重建流程更新。</div>
+          </div>
+        </aside>
+      </main>
+
+      <dialog class="publish-review-dialog runtime-payoff-dialog" id="runtimePayoffDialog" aria-labelledby="runtimePayoffTitle">
+        <form class="publish-review-card runtime-payoff-form" id="runtimePayoffForm">
+          <div class="publish-review-head"><div><span class="panel-kicker">本次任务</span><h2 id="runtimePayoffTitle">生成参数化收益图</h2></div><button class="dialog-close" id="runtimePayoffClose" type="button" aria-label="关闭">×</button></div>
+          <p class="publish-review-copy">确认本次产品与关键条款后生成收益图。结果会保存在当前任务中，不会修改默认资产。</p>
+          <label class="runtime-payoff-field"><span>产品</span><input id="runtimePayoffProduct" readonly></label>
+          <p class="runtime-payoff-fields" id="runtimePayoffFields">先选择产品。</p>
+          <p class="runtime-payoff-message" id="runtimePayoffMessage" aria-live="polite"></p>
+          <div class="publish-review-actions"><button class="button button-quiet" id="runtimePayoffCancel" type="button">取消</button><button class="button button-primary" id="runtimePayoffSubmit" type="submit">生成收益图</button></div>
+        </form>
+      </dialog>
+    </div>
+
+    <script src="../module-host-bridge.js"></script>
+    <script src="./date_input.js"></script>
+    <script>
+      const $ = id => document.getElementById(id);
+      const state = { products: [], product: null, preview: null, previewPayload: null, previewSignature: null, selectedPathIndex: 0, zoom: 1, zoomMode: 'fit', previewRequestId: 0 };
+      const apiBase = location.protocol === 'file:' ? 'http://127.0.0.1:4181' : '';
+      const apiUrl = path => apiBase + path;
+      const selectValues = {
+        exercise_style: [['European', '欧式'], ['American', '美式']],
+        settlement: [['cash', '现金结算']],
+        observation_price: [['close', '收盘价'], ['open', '开盘价'], ['high', '最高价'], ['low', '最低价']]
+      };
+      const escapeHtml = value => String(value ?? '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;');
+      const termInputs = () => [...document.querySelectorAll('.term-input')];
+      const { parseDateInput, formatDateInput } = window.PayofferDateInput;
+      const identifier = prefix => prefix + '_' + new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14);
+      const statusText = product => product?.runtime_status === 'enabled' ? '共享解释器可运行' : '既有正式资料图';
+
+      function showNotice(message, type = '') {
+        $('noticeArea').innerHTML = '<div class="notice ' + type + '"><strong>' + (type === 'error' ? '无法执行' : '收益结构') + '</strong><span>' + escapeHtml(message) + '</span></div>';
+      }
+
+      function setServiceStatus(message, error = false) {
+        $('modeBadge').textContent = message;
+        $('modeBadge').style.color = error ? '#b21b36' : '';
+      }
+
+      function setCanvasState(message, mode = 'ready') {
+        $('canvasState').textContent = message;
+        const dot = mode === 'ready' ? 'valid' : mode === 'busy' ? 'edit' : mode === 'dirty' ? 'dirty' : '';
+        $('stateDot').className = 'state-dot ' + dot;
+      }
+
+      function defaultValue(field) {
+        return field.default_value;
+      }
+
+      function displayValue(value) {
+        return value !== null && typeof value === 'object' ? JSON.stringify(value) : String(value ?? '');
+      }
+
+      function inputKind(field) {
+        if (Array.isArray(field.default_value) || (field.default_value && typeof field.default_value === 'object')) return 'json';
+        if (typeof field.default_value === 'number') return 'number';
+        if (typeof field.default_value === 'boolean') return 'boolean';
+        return 'text';
+      }
+
+      function selectControl(field, value, attributes) {
+        const options = selectValues[field.key];
+        if (!options) return '';
+        return '<select' + attributes + '>' + options.map(option => '<option value="' + escapeHtml(option[0]) + '"' + (String(value) === option[0] ? ' selected' : '') + '>' + escapeHtml(option[1]) + '</option>').join('') + '</select>';
+      }
+
+      function termControl(field) {
+        const value = displayValue(defaultValue(field));
+        const kind = inputKind(field);
+        const attributes = ' class="term-input" data-key="' + escapeHtml(field.key) + '" data-kind="' + kind + '" data-default="' + escapeHtml(JSON.stringify(defaultValue(field))) + '"';
+        const selector = selectControl(field, value, attributes);
+        if (selector) return selector;
+        if (kind === 'json') return '<textarea' + attributes + '>' + escapeHtml(value) + '</textarea>';
+        if (kind === 'boolean') return '<select' + attributes + '><option value="true"' + (value === 'true' ? ' selected' : '') + '>true</option><option value="false"' + (value === 'false' ? ' selected' : '') + '>false</option></select>';
+        return '<input' + attributes + ' type="' + (kind === 'number' ? 'number' : 'text') + '"' + (kind === 'number' ? ' step="any"' : '') + ' value="' + escapeHtml(value) + '">';
+      }
+
+      function termField(field) {
+        const full = field.key.length > 11 || typeof field.default_value === 'object';
+        const label = escapeHtml(field.chinese_name) + ' <span class="field-symbol">' + escapeHtml(field.math_symbol || field.key) + '</span>';
+        return '<label class="parameter-field ' + (full ? 'full' : '') + '"><span title="' + escapeHtml(field.english_name) + '">' + label + '</span>' + termControl(field) + '<small>' + escapeHtml(field.key) + ' · ' + escapeHtml(field.english_name) + ' · OptionReg默认条款</small></label>';
+      }
+
+      function defaultIdentity(product) {
+        const fields = product.payoff_fields || [];
+        const vector = fields.find(field => field.key === 'S0Vec')?.default_value;
+        const scalar = fields.find(field => field.key === 'S0')?.default_value;
+        const referenceValues = Array.isArray(vector) ? vector : [typeof scalar === 'number' ? scalar : 100];
+        const underlyings = referenceValues.map((_, index) => referenceValues.length === 1 ? 'UNDERLYING' : 'UNDERLYING_' + (index + 1));
+        const spots = Object.fromEntries(underlyings.map((asset, index) => [asset, referenceValues[index]]));
+        return { contract_id: '', underlyings, currency: 'CNY', contract_start_date: '', contract_reference_spots: spots };
+      }
+
+      function renderIdentity({ preserve = false } = {}) {
+        if (!state.product) {
+          ['openPreviewButton', 'previewButton', 'runtimePayoffButton', 'canvasPreviewButton', 'canvasRunButton', 'applyParametersButton', 'restoreDefaultsButton'].forEach(id => { $(id).disabled = true; });
+          $('bindingCard').innerHTML = '<span>尚未选择产品</span>';
+          $('scenarioCount').textContent = '0';
+          $('scenarioList').replaceChildren();
+          $('inspectorTitle').textContent = '未选择产品';
+          $('sourceDetail').textContent = '选择产品后显示路径来源与条款字段。';
+          return;
+        }
+        ['openPreviewButton', 'previewButton', 'runtimePayoffButton', 'canvasPreviewButton', 'canvasRunButton'].forEach(id => { $(id).disabled = false; });
+        const before = preserve ? {
+          contract_id: $('contractId').value,
+          underlyings: $('contractUnderlyings').value,
+          currency: $('contractCurrency').value,
+          contract_start_date: $('contractStartDate').value,
+          contract_reference_spots: $('contractReferenceSpots').value
+        } : defaultIdentity(state.product);
+        $('contractId').value = before.contract_id || '';
+        $('contractUnderlyings').value = Array.isArray(before.underlyings) ? before.underlyings.join(',') : before.underlyings || '';
+        $('contractCurrency').value = before.currency || 'CNY';
+        $('contractStartDate').value = formatDateInput(before.contract_start_date);
+        $('contractReferenceSpots').value = typeof before.contract_reference_spots === 'string' ? before.contract_reference_spots : JSON.stringify(before.contract_reference_spots || {});
+      }
+
+      function renderParameters({ preserve = false } = {}) {
+        if (!state.product) {
+          renderIdentity();
+          renderSelectedPath();
+          return;
+        }
+        const before = preserve ? Object.fromEntries(termInputs().map(item => [item.dataset.key, item.value])) : {};
+        $('parameterFields').innerHTML = state.product.payoff_fields.map(termField).join('') || '<p class="parameter-empty">该产品尚未登记可覆盖条款。</p>';
+        termInputs().forEach(item => { if (Object.hasOwn(before, item.dataset.key)) item.value = before[item.dataset.key]; });
+        const enabled = state.product.runtime_status === 'enabled';
+        const message = enabled
+          ? '默认条款来自OptionReg。页面仅提交与默认值不同的term_overrides，并由本机服务解析为ResolvedContract。'
+          : '该产品尚未完整录入。页面只能载入既有正式资料图，不能预览新参数或生成本次结果。';
+        $('runtimeRule').textContent = message;
+        [...document.querySelectorAll('#identityFields input, #identityFields textarea, #parameterFields .term-input')].forEach(input => { input.disabled = !enabled; });
+        $('applyParametersButton').disabled = !enabled;
+        $('restoreDefaultsButton').disabled = !enabled;
+        $('runtimePayoffButton').disabled = !enabled;
+        $('canvasRunButton').disabled = !enabled;
+      }
+
+      function parseTermValue(item) {
+        const raw = item.value.trim();
+        if (!raw) return undefined;
+        if (item.dataset.kind === 'number') {
+          const value = Number(raw);
+          if (!Number.isFinite(value)) throw new Error(item.dataset.key + '必须是有限数');
+          return value;
+        }
+        if (item.dataset.kind === 'boolean') return raw === 'true';
+        if (item.dataset.kind === 'json') {
+          try { return JSON.parse(raw); }
+          catch (error) { throw new Error(item.dataset.key + '必须是JSON：' + error.message); }
+        }
+        return raw;
+      }
+
+      function parseFieldDefault(item) {
+        try { return JSON.parse(item.dataset.default); }
+        catch (error) { throw new Error(item.dataset.key + '的OptionReg默认值无法读取'); }
+      }
+
+      function isSameValue(left, right) {
+        return JSON.stringify(left) === JSON.stringify(right);
+      }
+
+      function collectTermOverrides() {
+        const overrides = {};
+        for (const item of termInputs()) {
+          const value = parseTermValue(item);
+          if (value === undefined) continue;
+          if (!isSameValue(value, parseFieldDefault(item))) overrides[item.dataset.key] = value;
+        }
+        return overrides;
+      }
+
+      function parseUnderlyings(value) {
+        const underlyings = String(value).split(',').map(item => item.trim()).filter(Boolean);
+        if (!underlyings.length) throw new Error('请至少填写一个标的代码');
+        if (new Set(underlyings).size !== underlyings.length) throw new Error('标的代码不能重复');
+        return underlyings;
+      }
+
+      function collectIdentity() {
+        const underlyings = parseUnderlyings($('contractUnderlyings').value);
+        const rawSpots = $('contractReferenceSpots').value.trim();
+        const identity = { underlyings, currency: $('contractCurrency').value.trim() || 'CNY' };
+        if ($('contractId').value.trim()) identity.contract_id = $('contractId').value.trim();
+        identity.contract_start_date = parseDateInput($('contractStartDate').value);
+        if (!identity.contract_start_date) delete identity.contract_start_date;
+        if (rawSpots) {
+          let spots;
+          try { spots = JSON.parse(rawSpots); }
+          catch (error) { throw new Error('合同参考价必须是JSON对象：' + error.message); }
+          if (!spots || Array.isArray(spots) || typeof spots !== 'object') throw new Error('合同参考价必须是以标的代码为键的JSON对象');
+          const spotKeys = Object.keys(spots).sort();
+          const assetKeys = [...underlyings].sort();
+          if (!isSameValue(spotKeys, assetKeys)) throw new Error('合同参考价的键必须逐一覆盖标的代码');
+          for (const key of spotKeys) {
+            if (!Number.isFinite(Number(spots[key])) || Number(spots[key]) <= 0) throw new Error('合同参考价.' + key + '必须为正数');
+            spots[key] = Number(spots[key]);
+          }
+          identity.contract_reference_spots = spots;
+        }
+        return identity;
+      }
+
+      function buildRequestPayload() {
+        if (!state.product) throw new Error('请选择产品');
+        return { product_id: state.product.product_id, term_overrides: collectTermOverrides(), identity: collectIdentity() };
+      }
+
+      function currentSignature() {
+        return JSON.stringify(buildRequestPayload());
+      }
+
+      function markInputDirty() {
+        if (!state.product || state.product.runtime_status !== 'enabled') return;
+        try {
+          const current = state.previewSignature === currentSignature();
+          setCanvasState(current ? '收益图已更新' : '条款待预览', current ? 'ready' : 'dirty');
+        } catch (error) {
+          setCanvasState('输入待修正');
+        }
+      }
+
+      function suggestedReferenceValues() {
+        const vector = termInputs().find(item => item.dataset.key === 'S0Vec');
+        const scalar = termInputs().find(item => item.dataset.key === 'S0');
+        try {
+          if (vector) {
+            const value = parseTermValue(vector);
+            if (Array.isArray(value)) return value.map(Number);
+          }
+          if (scalar) return [Number(parseTermValue(scalar))];
+        } catch (error) {
+          return [];
+        }
+        return [];
+      }
+
+      function syncReferenceSpots() {
+        let underlyings;
+        try { underlyings = parseUnderlyings($('contractUnderlyings').value); }
+        catch (error) { return markInputDirty(); }
+        let existing = {};
+        try {
+          const parsed = JSON.parse($('contractReferenceSpots').value || '{}');
+          if (parsed && !Array.isArray(parsed) && typeof parsed === 'object') existing = parsed;
+        } catch (error) {
+          existing = {};
+        }
+        const previousValues = Object.values(existing);
+        const suggested = suggestedReferenceValues();
+        const spots = Object.fromEntries(underlyings.map((asset, index) => [asset, Number(existing[asset] ?? previousValues[index] ?? suggested[index] ?? 100)]));
+        $('contractReferenceSpots').value = JSON.stringify(spots);
+        markInputDirty();
+      }
+
+      function renderLibrary() {
+        if (!state.product) return;
+        const blocked = state.preview?.runtime_status === 'blocked';
+        const paths = state.preview?.paths || [];
+        const scope = state.product.underlying_scope === 'multi_underlying' ? '多标的结构' : '单标的结构';
+        $('bindingCard').innerHTML = '<strong>' + escapeHtml(state.product.product_id + ' ' + state.product.canonical_name) + '</strong><span>' + scope + '；' + state.product.payoff_fields.length + '个可覆盖条款；' + statusText(state.product) + '。</span>';
+        $('scenarioCount').textContent = blocked ? '资料图' : String(paths.length);
+        if (blocked) {
+          $('scenarioList').innerHTML = '<li class="preview">已载入既有正式默认SVG；该产品尚未开放运行。</li>';
+          return;
+        }
+        $('scenarioList').innerHTML = paths.map((path, index) => '<li data-path-index="' + index + '" role="button" tabindex="0" class="' + (index === state.selectedPathIndex ? 'selected' : '') + '"><span class="scenario-title">' + escapeHtml(path.title || '路径' + (index + 1)) + '</span><span class="scenario-condition">' + escapeHtml(path.condition_tex || '—') + '</span><span class="scenario-kind">' + escapeHtml(path.chart_kind || 'terminal_price') + '</span></li>').join('') || '<li class="preview">预览后展示当前合同的收益路径</li>';
+        [...$('scenarioList').querySelectorAll('[data-path-index]')].forEach(item => {
+          const selectPath = () => { state.selectedPathIndex = Number(item.dataset.pathIndex); renderLibrary(); renderSelectedPath(); };
+          item.addEventListener('click', selectPath);
+          item.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); selectPath(); } });
+        });
+      }
+
+      function renderSelectedPath() {
+        const path = state.preview?.paths?.[state.selectedPathIndex];
+        if (!path) {
+          $('inspectorTitle').textContent = state.product ? state.product.canonical_name + '合同输入' : '未选择产品';
+          $('sourceDetail').textContent = state.preview?.runtime_status === 'blocked'
+            ? '当前产品只展示正式默认资料图；合同解析与本次参数图均被entry_status锁定。'
+            : state.product ? '填写合同身份和条款覆盖后，预览会显示当前ResolvedContract的收益路径。' : '选择产品后显示路径来源与条款字段。';
+          $('selectedPathDetail').textContent = state.preview?.runtime_status === 'blocked' ? '该产品的路径语义待合同确认，不能从资料图反推新参数结果。' : '选择路径后显示判断条件与损益表达。';
+          return;
+        }
+        $('inspectorTitle').textContent = path.title || '路径' + (state.selectedPathIndex + 1);
+        $('sourceDetail').innerHTML = '来源：OptionReg.paths，经共享现金流解释器解析。<span class="formula">条件：' + escapeHtml(path.condition_tex || '—') + '</span>';
+        $('selectedPathDetail').innerHTML = '<span class="formula">损益：' + escapeHtml(path.payoff_tex || '—') + '</span><span class="formula">分段数：' + (path.segments?.length || 0) + '</span>';
+      }
+
+      function setZoom(value, { mode = 'manual' } = {}) {
+        state.zoom = Math.max(.2, Math.min(2, Number(value) || 1));
+        state.zoomMode = mode;
+        $('zoomInput').value = String(Math.round(state.zoom * 100));
+        const stage = $('canvasViewport').querySelector('.canvas-stage');
+        if (stage) stage.style.setProperty('--zoom', state.zoom);
+      }
+
+      function fitZoom() {
+        const viewport = $('canvasViewport');
+        setZoom(Math.min(1, Math.max(.2, (viewport.clientWidth - 44) / 1500)), { mode: 'fit' });
+      }
+
+      function zoomAtPointer(event) {
+        const viewport = $('canvasViewport');
+        const stage = viewport.querySelector('.canvas-stage');
+        if (!stage) return;
+        event.preventDefault();
+        const delta = event.deltaMode === WheelEvent.DOM_DELTA_LINE ? event.deltaY * 16 : event.deltaY;
+        const previousZoom = state.zoom;
+        const nextZoom = Math.max(.2, Math.min(2, previousZoom * Math.exp(-delta * .0015)));
+        if (Math.abs(nextZoom - previousZoom) < .001) return;
+        const bounds = viewport.getBoundingClientRect();
+        const pointerX = event.clientX - bounds.left;
+        const pointerY = event.clientY - bounds.top;
+        const contentX = viewport.scrollLeft + pointerX;
+        const contentY = viewport.scrollTop + pointerY;
+        const ratio = nextZoom / previousZoom;
+        setZoom(nextZoom);
+        viewport.scrollLeft = Math.max(0, contentX * ratio - pointerX);
+        viewport.scrollTop = Math.max(0, contentY * ratio - pointerY);
+      }
+
+      function bindResizer(resizer, variable, minimum, maximum) {
+        let startX = 0;
+        let startValue = 0;
+        const finish = () => {
+          resizer.classList.remove('active');
+          document.removeEventListener('pointermove', move);
+          document.removeEventListener('pointerup', finish);
+        };
+        const move = event => {
+          const delta = variable === '--library-width' ? event.clientX - startX : startX - event.clientX;
+          const next = Math.max(minimum, Math.min(maximum, startValue + delta));
+          $('workbench').style.setProperty(variable, String(next) + 'px');
+        };
+        resizer.addEventListener('pointerdown', event => {
+          startX = event.clientX;
+          startValue = parseInt(getComputedStyle($('workbench')).getPropertyValue(variable), 10);
+          resizer.classList.add('active');
+          document.addEventListener('pointermove', move);
+          document.addEventListener('pointerup', finish);
+        });
+        resizer.addEventListener('keydown', event => {
+          if (!['ArrowLeft', 'ArrowRight'].includes(event.key)) return;
+          event.preventDefault();
+          const direction = event.key === 'ArrowRight' ? 1 : -1;
+          const delta = variable === '--library-width' ? direction * 10 : -direction * 10;
+          const current = parseInt(getComputedStyle($('workbench')).getPropertyValue(variable), 10);
+          $('workbench').style.setProperty(variable, String(Math.max(minimum, Math.min(maximum, current + delta))) + 'px');
+        });
+      }
+
+      function renderPreview(response, signature, payload) {
+        state.preview = response.preview;
+        state.previewSignature = signature;
+        state.previewPayload = payload;
+        state.selectedPathIndex = 0;
+        const stage = document.createElement('div');
+        stage.className = 'canvas-stage';
+        stage.innerHTML = response.svg;
+        $('canvasViewport').replaceChildren(stage);
+        requestAnimationFrame(() => {
+          if (state.zoomMode === 'fit') fitZoom();
+          else stage.style.setProperty('--zoom', state.zoom);
+        });
+        renderLibrary();
+        renderSelectedPath();
+        const enabled = state.preview.runtime_status === 'enabled';
+        let current = false;
+        try { current = enabled && state.previewSignature === currentSignature(); }
+        catch (error) { current = false; }
+        setCanvasState(enabled ? (current ? '收益图已更新' : '条款待预览') : '正式资料图已载入', current || !enabled ? 'ready' : 'dirty');
+        showNotice(enabled
+          ? '已按当前ResolvedContract计算' + state.preview.paths.length + '条收益路径。'
+          : '已载入既有正式默认图。该产品尚未完整录入，不能生成本次参数图。');
+      }
+
+      async function request(path, body) {
+        const response = await fetch(apiUrl(path), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+        let data;
+        try { data = await response.json(); }
+        catch (error) { throw new Error('本机服务未返回有效JSON'); }
+        if (!response.ok || !data.ok) throw new Error(data.message || '本机服务返回错误');
+        return data;
+      }
+
+      async function preview() {
+        const payload = buildRequestPayload();
+        const signature = JSON.stringify(payload);
+        const requestId = ++state.previewRequestId;
+        const productId = state.product.product_id;
+        setCanvasState('正在解析合同', 'busy');
+        try {
+          const data = await request('/api/preview', payload);
+          if (requestId !== state.previewRequestId || state.product?.product_id !== productId) return;
+          renderPreview(data, signature, payload);
+          return data;
+        } catch (error) {
+          if (requestId === state.previewRequestId) {
+            setCanvasState('预览失败');
+            showNotice(error.message, 'error');
+          }
+          throw error;
+        }
+      }
+
+      async function openRuntimeDialog() {
+        if (!state.product) return showNotice('请先选择产品。', 'error');
+        if (state.product.runtime_status !== 'enabled') return showNotice('当前产品只支持正式资料图预览，不能生成本次参数图。', 'error');
+        try {
+          if (!state.preview || state.previewSignature !== currentSignature()) await preview();
+          const contract = state.preview?.payoff_input?.contract;
+          if (!contract) throw new Error('当前预览尚未形成可运行的产品条款，请检查合同身份和条款覆盖。');
+          $('runtimePayoffProduct').value = state.product.product_id + ' ' + state.product.canonical_name;
+          const overridden = Object.keys(state.previewPayload?.term_overrides || {});
+          const underlyings = Array.isArray(contract?.identity?.underlyings) ? contract.identity.underlyings.join('、') : '未填写';
+          const terms = overridden.length ? overridden.slice(0, 4).join('、') : '默认条款';
+          $('runtimePayoffFields').textContent = '标的：' + underlyings + '。关键条款：' + terms + '。';
+          $('runtimePayoffMessage').textContent = '';
+          $('runtimePayoffMessage').className = 'runtime-payoff-message';
+          if (!$('runtimePayoffDialog').open) $('runtimePayoffDialog').showModal();
+        } catch (error) {
+          showNotice('当前条款尚不能生成收益图，请检查产品与关键条款后重试。', 'error');
+        }
+      }
+
+      async function runRuntime(event) {
+        event.preventDefault();
+        if (!state.product || !state.previewPayload) return;
+        const taskId = identifier('payoff');
+        const runId = identifier('run');
+        $('runtimePayoffSubmit').disabled = true;
+        $('runtimePayoffMessage').className = 'runtime-payoff-message';
+        $('runtimePayoffMessage').textContent = '正在生成本次结果…';
+        try {
+          const result = await request('/api/run', { ...state.previewPayload, task_id: taskId, run_id: runId });
+          $('runtimePayoffDialog').close();
+          showNotice('结果已保存，可生成Card或Report。');
+          setCanvasState('本次结果已生成', 'ready');
+        } catch (error) {
+          $('runtimePayoffMessage').textContent = error.message;
+          $('runtimePayoffMessage').className = 'runtime-payoff-message error';
+        } finally {
+          $('runtimePayoffSubmit').disabled = false;
+        }
+      }
+
+      function fillIdentity(identity) {
+        if (!identity || typeof identity !== 'object') return 0;
+        if (Array.isArray(identity.underlyings)) $('contractUnderlyings').value = identity.underlyings.join(',');
+        if (identity.contract_id !== undefined) $('contractId').value = identity.contract_id || '';
+        if (identity.currency !== undefined) $('contractCurrency').value = identity.currency || 'CNY';
+        if (identity.contract_start_date) $('contractStartDate').value = formatDateInput(String(identity.contract_start_date).slice(0, 10));
+        if (identity.contract_reference_spots && typeof identity.contract_reference_spots === 'object') $('contractReferenceSpots').value = JSON.stringify(identity.contract_reference_spots);
+        return 1;
+      }
+
+      function importParameters() {
+        try {
+          const source = JSON.parse($('parameterJson').value || '{}');
+          if (!source || Array.isArray(source) || typeof source !== 'object') throw new Error('必须是JSON对象');
+          const contract = source.PayoffInput?.contract || source.payoff_input?.contract || source.contract || null;
+          const terms = source.term_overrides || contract?.terms || source.terms || source;
+          if (!terms || Array.isArray(terms) || typeof terms !== 'object') throw new Error('未找到term_overrides或ResolvedContract.terms');
+          let count = 0;
+          termInputs().forEach(item => {
+            if (Object.hasOwn(terms, item.dataset.key) && terms[item.dataset.key] !== null) {
+              item.value = displayValue(terms[item.dataset.key]);
+              count += 1;
+            }
+          });
+          const identityCount = fillIdentity(source.identity || contract?.identity);
+          if (!count && !identityCount) throw new Error('导入内容不包含当前产品可编辑的条款或合同身份');
+          markInputDirty();
+          showNotice('已回填' + count + '个条款字段' + (identityCount ? '及合同身份' : '') + '。请预览后再生成本次结果。');
+        } catch (error) {
+          showNotice('导入失败：' + error.message, 'error');
+        }
+      }
+
+      function restoreDefaults() {
+        if (!state.product || state.product.runtime_status !== 'enabled') return;
+        renderIdentity();
+        renderParameters();
+        markInputDirty();
+        showNotice('已恢复OptionReg默认身份和默认条款；预览后才会更新收益图。');
+      }
+
+      async function selectProduct() {
+        state.product = state.products.find(product => product.product_id === $('productSelect').value) || null;
+        state.preview = null;
+        state.previewPayload = null;
+        state.previewSignature = null;
+        state.selectedPathIndex = 0;
+        if (!state.product) return;
+        state.zoomMode = 'fit';
+        renderIdentity();
+        renderParameters();
+        $('openPreviewButton').disabled = false;
+        renderLibrary();
+        renderSelectedPath();
+        await preview();
+      }
+
+      async function loadCatalog() {
+        const response = await fetch(apiUrl('/api/catalog'));
+        let data;
+        try { data = await response.json(); }
+        catch (error) { throw new Error('产品目录未返回有效JSON'); }
+        if (!response.ok || !data.ok) throw new Error(data.message || '产品目录读取失败');
+        state.products = data.products;
+        const retained = $('productSelect').value;
+        $('productSelect').replaceChildren(new Option('请选择产品',''), ...data.products.map(product => new Option(product.product_id + ' ' + product.canonical_name, product.product_id)));
+        $('productSelect').value = data.products.some(product => product.product_id === retained) ? retained : '';
+        await selectProduct();
+      }
+
+      $('productSelect').addEventListener('change', () => selectProduct().catch(error => showNotice(error.message, 'error')));
+      $('previewButton').addEventListener('click', () => preview().catch(() => {}));
+      $('openPreviewButton').addEventListener('click', () => preview().catch(() => {}));
+      $('canvasPreviewButton').addEventListener('click', () => preview().catch(() => {}));
+      $('applyParametersButton').addEventListener('click', () => preview().catch(() => {}));
+      $('restoreDefaultsButton').addEventListener('click', restoreDefaults);
+      $('runtimePayoffButton').addEventListener('click', () => openRuntimeDialog());
+      $('canvasRunButton').addEventListener('click', () => openRuntimeDialog());
+      $('recheckButton').addEventListener('click', () => loadCatalog().then(() => showNotice('产品目录已重新读取。')).catch(error => showNotice(error.message, 'error')));
+      $('importParametersButton').addEventListener('click', importParameters);
+      $('runtimePayoffClose').addEventListener('click', () => $('runtimePayoffDialog').close());
+      $('runtimePayoffCancel').addEventListener('click', () => $('runtimePayoffDialog').close());
+      $('runtimePayoffForm').addEventListener('submit', runRuntime);
+      $('zoomOutButton').addEventListener('click', () => setZoom(state.zoom - .05));
+      $('zoomInButton').addEventListener('click', () => setZoom(state.zoom + .05));
+      $('zoomInput').addEventListener('input', event => setZoom(Number(event.target.value) / 100));
+      $('zoomFitButton').addEventListener('click', fitZoom);
+      $('canvasViewport').addEventListener('wheel', zoomAtPointer, { passive: false });
+      ['contractId', 'contractCurrency', 'contractStartDate', 'contractReferenceSpots'].forEach(id => $(id).addEventListener('input', markInputDirty));
+      $('contractUnderlyings').addEventListener('input', syncReferenceSpots);
+      $('contractUnderlyings').addEventListener('change', syncReferenceSpots);
+      $('parameterFields').addEventListener('input', markInputDirty);
+      $('parameterFields').addEventListener('change', markInputDirty);
+      bindResizer($('libraryResizer'), '--library-width', 220, 420);
+      bindResizer($('inspectorResizer'), '--inspector-width', 300, 520);
+      new ResizeObserver(() => { if (state.preview && state.zoomMode === 'fit') fitZoom(); }).observe($('canvasViewport'));
+
+      if (location.protocol === 'file:') setServiceStatus('正在连接本机服务');
+      loadCatalog()
+        .then(() => {
+          setServiceStatus('本机服务已连接');
+          if (location.protocol === 'file:') showNotice('已连接本机服务。可在本页解析合同、预览收益图并生成本次结果。');
+        })
+        .catch(error => {
+          setServiceStatus('未连接本机服务', true);
+          const message = location.protocol === 'file:'
+            ? '请先双击同目录的payoffer.command启动服务，再点击“重新读取资料库”。'
+            : error.message;
+          showNotice(message, 'error');
+        });
+    </script>
+  </body>
+</html>

@@ -1,0 +1,53 @@
+{
+  "name_zh": "FCN（无敲入要素）",
+  "terms": {
+    "S0": 100.0,
+    "T": 1.0,
+    "N": 10000000.0,
+    "g": 0.25,
+    "K": 85.0,
+    "H_KO": 103.0,
+    "c": 0.07,
+    "O_KO": "monthly_last",
+    "settlement": "cash",
+    "observation_price": "close",
+    "margin_call": true,
+    "monitor": {
+      "tau_out": "first_time(S_t[O_out] >= H_out)"
+    },
+    "derived_terms": {
+      "G": "N * g"
+    },
+    "pricing_methods": [
+      "monte_carlo"
+    ],
+    "constraints": [
+      "K == 0.85 * S_0",
+      "H_out == 1.03 * S_0"
+    ]
+  },
+  "paths": [
+    {
+      "condition": "tau_out < inf",
+      "cases": [
+        {
+          "domain": "S_T >= 0",
+          "pnl": "cash(tau_out, N * c * tau_out)"
+        }
+      ]
+    },
+    {
+      "condition": "tau_out == inf",
+      "cases": [
+        {
+          "domain": "S_T >= K",
+          "pnl": "cash(T, N * c * T)"
+        },
+        {
+          "domain": "0 <= S_T < K",
+          "pnl": "cash(T, N * c * T + N * (S_T / K - 1))"
+        }
+      ]
+    }
+  ]
+}

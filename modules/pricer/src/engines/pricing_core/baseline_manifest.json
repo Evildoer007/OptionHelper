@@ -1,0 +1,15 @@
+{
+  "baseline_id": "option_pricing-standard-2026-08-07",
+  "random_source": {
+    "path": "data/rand_normal.npy",
+    "sha256": "5762ac55cb922bd9dd2cb9ebf7f97857153519bf0405470299b8c4061910b8ed",
+    "seed": 20240101,
+    "shape": [2000, 800],
+    "dtype": "float64"
+  },
+  "golden_results": {
+    "path": "tests/golden_standard_results.json",
+    "sha256": "82b17a63bf716bb7d83ac676bc1249b27dd8d87f0af15fae8d6210edaa9092d6"
+  },
+  "rule": "任何数值改动必须在相同输入、相同随机矩阵和相同路径数下解释后才可更新Golden。"
+}

@@ -1,0 +1,18 @@
+[
+  {
+    "id": "app.optdesk.module-task-context",
+    "area": "app_host",
+    "description": "OptDesk必须把当前task_id交给内置Bridge并注入非查询模块运行",
+    "target": "app.bridge_contract",
+    "input": {},
+    "expect": {"equals": {"canonical_reads_task_id": true, "embedded_reads_task_id": true, "workspace_posts_host_context": true}}
+  },
+  {
+    "id": "app.module-bridge.single-wrapper",
+    "area": "app_host",
+    "description": "共享Bridge和App内置Bridge只包装一次Tool请求与响应",
+    "target": "app.bridge_contract",
+    "input": {},
+    "expect": {"equals": {"canonical_single_wrapper": true, "embedded_single_wrapper": true}}
+  }
+]

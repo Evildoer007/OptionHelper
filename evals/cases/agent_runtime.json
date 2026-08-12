@@ -1,0 +1,66 @@
+[
+  {
+    "id": "app.agent.knowledge-no-compute",
+    "area": "app-agent",
+    "description": "资料问答只返回文字，不触发计算模块。",
+    "target": "app.agent_runtime",
+    "input": {"scenario": "knowledge"},
+    "expect": {"equals": {"status": "completed", "tool_calls": [], "recommender_calls": 0}}
+  },
+  {
+    "id": "app.agent.pricer-missing-input",
+    "area": "app-agent",
+    "description": "定价缺少受控输入时只追问一次。",
+    "target": "app.agent_runtime",
+    "input": {"scenario": "missing_pricer"},
+    "expect": {"equals": {"status": "needs_input", "tool_calls": []}}
+  },
+  {
+    "id": "app.agent.recommender-fixed-workflow",
+    "area": "app-agent",
+    "description": "推荐请求进入固定Workflow；空候选不得进入无法恢复的确认门。",
+    "target": "app.agent_runtime",
+    "input": {"scenario": "recommendation"},
+    "expect": {"equals": {"status": "partial", "recommender_calls": 1, "tool_calls": []}}
+  },
+  {
+    "id": "app.agent.tool-failure-no-fabrication",
+    "area": "app-agent",
+    "description": "工具失败被观察，不制造估值数字。",
+    "target": "app.agent_runtime",
+    "input": {"scenario": "tool_failure"},
+    "expect": {"equals": {"status": "partial", "tool_calls": ["pricer.run"], "observation_statuses": ["failed"]}, "not_contains": {"text": "PV"}}
+  },
+  {
+    "id": "app.agent.duplicate-call-stops",
+    "area": "app-agent",
+    "description": "同轮重复工具调用在第二次执行前停止。",
+    "target": "app.agent_runtime",
+    "input": {"scenario": "duplicate"},
+    "expect": {"equals": {"status": "stopped_duplicate", "tool_calls": ["pricer.run"]}}
+  },
+  {
+    "id": "app.agent.permission-stops",
+    "area": "app-agent",
+    "description": "目录外操作不会被OptChat代理执行。",
+    "target": "app.agent_runtime",
+    "input": {"scenario": "permission"},
+    "expect": {"equals": {"status": "blocked", "tool_calls": []}}
+  },
+  {
+    "id": "app.agent.round-limit-stops",
+    "area": "app-agent",
+    "description": "达到最大决策轮次时停止，不继续调用模块。",
+    "target": "app.agent_runtime",
+    "input": {"scenario": "round_limit"},
+    "expect": {"equals": {"status": "max_rounds", "tool_calls": ["pricer.run"]}}
+  },
+  {
+    "id": "app.agent.financial-number-requires-runref",
+    "area": "app-agent",
+    "description": "模型未获结果事实时不得输出金融数值。",
+    "target": "app.agent_runtime",
+    "input": {"scenario": "untraceable_number"},
+    "expect": {"equals": {"status": "partial", "tool_calls": []}, "not_contains": {"text": "12.4"}}
+  }
+]

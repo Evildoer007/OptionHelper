@@ -1,0 +1,46 @@
+{
+  "name_zh": "期权费型小雪球（无敲入）",
+  "terms": {
+    "S0": 100.0,
+    "T": 1.0,
+    "N": 100000000.0,
+    "H_KO": 103.0,
+    "O_KO": "monthly_last",
+    "settlement": "cash",
+    "observation_price": "close",
+    "margin_call": false,
+    "c1": 0.0198,
+    "c2": 0.0,
+    "p": 0.01,
+    "monitor": {
+      "tau_out": "first_time(S_t[O_out] >= H_out)"
+    },
+    "pricing_methods": [
+      "monte_carlo"
+    ],
+    "constraints": [
+      "H_out == 1.03 * S_0",
+      "c_2 == 0"
+    ]
+  },
+  "paths": [
+    {
+      "condition": "tau_out < inf",
+      "cases": [
+        {
+          "domain": "S_T >= 0",
+          "pnl": "cash(0, -N * p * T) + cash(tau_out, N * c_1 * tau_out + N * p * (T - tau_out))"
+        }
+      ]
+    },
+    {
+      "condition": "tau_out == inf",
+      "cases": [
+        {
+          "domain": "S_T >= 0",
+          "pnl": "cash(0, -N * p * T) + cash(T, N * c_2 * T)"
+        }
+      ]
+    }
+  ]
+}

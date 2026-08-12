@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="zh-CN" data-theme-scope="fixed-light">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <title>OptDesk | OptionHelper</title>
+    <script src="/app/frontend/shared/theme-bootstrap.js"></script>
+    <link id="app-favicon" rel="icon" href="/app/assets/icons/optionhelper-app-icon-tile-light.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="/app/frontend/shared/styles.css">
+    <link rel="stylesheet" href="/app/frontend/shared/refinement.css">
+    <script type="module" src="/app/frontend/shared/theme.js"></script>
+  </head>
+  <body class="workspace-body">
+    <div class="workspace-shell workspace-shell--desk" data-workspace-shell data-mode="desk" data-has-desk="false" data-report-open="false">
+      <aside class="workspace-rail workspace-rail--unbranded">
+        <section class="rail-mode-area" aria-label="工作模式"><div class="mode-switch mode-switch--rail" data-mode-switch><button type="button" data-mode="chat">OptChat</button></div></section>
+        <button class="rail-new-task" type="button" data-new-task><span aria-hidden="true">＋</span><span class="rail-new-task__label">新建任务</span></button>
+        <section class="task-rail" aria-label="任务历史"><p class="rail-section-label">最近任务</p><div class="task-list" id="rail-task-list"></div></section>
+        <footer class="rail-footer"><a class="connection-link connection-link--rail" data-settings-link href="/settings"><strong class="connection-link__value">设置中心</strong></a></footer>
+        <button class="rail-collapse-toggle" type="button" data-rail-collapse-toggle aria-expanded="true" aria-label="收起任务栏" title="收起任务栏"><svg viewBox="0 0 24 24" aria-hidden="true"><path class="rail-chevron rail-chevron--collapse" d="m13.75 7.75-4.25 4.25 4.25 4.25"></path><path class="rail-chevron rail-chevron--expand" d="m10.25 7.75 4.25 4.25-4.25 4.25"></path></svg></button>
+      </aside>
+      <div class="workspace-splitter workspace-splitter--rail" data-workspace-splitter="rail" role="separator" aria-label="调整任务栏宽度" aria-orientation="vertical" tabindex="0"></div>
+      <main class="work-area">
+        <header class="workbench-head"><div><h1 id="task-title">新建研究任务</h1></div><div class="workbench-head__actions"><button class="button-secondary button-secondary--head report-drawer-toggle" type="button" data-report-toggle aria-controls="task-context" aria-expanded="false">报告</button></div></header>
+        <div class="workspace-content">
+          <section class="chat-surface" id="chat-surface" aria-label="任务对话" aria-hidden="true" inert><header class="conversation__header conversation__header--shared"><div><h2 id="conversation-title">开始研究</h2><p>围绕当前任务对话；需要结构化产出时可在右侧请求Card或Report。</p></div></header><div class="conversation-scroll-stage" id="chat-scroll-stage"><div class="message-stream" id="conversation-stream" aria-live="polite"></div></div></section>
+          <section class="desk-surface" id="desk-surface" aria-label="研究模块"><nav class="desk-module-tabs" id="module-tabs" role="tablist" aria-label="研究模块"><span class="desk-module-tabs__indicator" aria-hidden="true"></span><button type="button" role="tab" data-module="datafetcher" aria-controls="module-mount">数据获取</button><button type="button" role="tab" data-module="payoffer" aria-controls="module-mount">收益结构</button><button type="button" role="tab" data-module="pricer" aria-controls="module-mount">估值定价</button><button type="button" role="tab" data-module="backtester" aria-controls="module-mount">历史回测</button><button type="button" role="tab" data-module="reporter" aria-controls="module-mount">研究报告</button></nav><section class="desk-status-strip" aria-label="任务状态"><span class="desk-status-strip__label">任务状态</span><span class="desk-status-strip__value" id="task-state">选择任务后，在同一研究上下文中运行模块。</span></section><section class="work-stage" aria-live="polite"><section class="desk-panel is-active module-stage" id="module-mount" role="tabpanel"><div class="conversation-start"><div><h2>选择研究模块</h2><p class="conversation-start__copy">各模块页面保持独立运行能力，并在OptDesk中承载同一任务上下文。</p></div></div></section></section></section>
+        </div>
+        <section class="assistant-region" aria-label="任务助手"><button class="assistant-toggle" type="button" data-assistant-toggle aria-controls="assistant-panel" aria-expanded="false" aria-label="打开任务对话"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5.5 6.75A3.25 3.25 0 0 1 8.75 3.5h6.5a3.25 3.25 0 0 1 3.25 3.25v4.5a3.25 3.25 0 0 1-3.25 3.25H11l-3.75 3v-3H8.75a3.25 3.25 0 0 1-3.25-3.25z"></path></svg><span class="sr-only">打开任务对话</span></button><section class="assistant-panel" id="assistant-panel" role="dialog" aria-modal="false" aria-label="任务对话" aria-hidden="true"><header class="assistant-panel__head"><div><strong>任务对话</strong><span>当前任务的连续对话</span></div><button class="assistant-panel__close" type="button" data-assistant-close aria-label="收起任务对话">×</button></header><div class="assistant-panel__transcript" id="assistant-transcript"></div><div class="desk-command-dock__body"><div class="composer composer--shared"><p class="notice" id="workspace-status" hidden role="status"></p><form id="workspace-form"><textarea name="content" rows="1" placeholder="输入需求，按Enter发送，Shift加Enter换行" aria-label="任务要求" required></textarea><div class="composer-actions"><label class="model-picker" for="workspace-model-picker"><span class="model-picker__label">当前模型</span><select id="workspace-model-picker" data-choice aria-label="选择模型"><option>未配置模型</option></select></label><button class="send-control" type="submit" aria-label="发送"><svg viewBox="0 0 24 24" aria-hidden="true"><path class="send-arrow" d="M12 19V5M6 11l6-6 6 6"></path><path class="send-success" d="m7.5 12.5 3 3 6-7"></path><rect class="stop-square" x="8" y="8" width="8" height="8" rx="1.5"></rect></svg></button></div></form></div></div></section></section>
+      </main>
+      <div class="workspace-splitter workspace-splitter--context" data-workspace-splitter="context" role="separator" aria-label="调整报告栏宽度" aria-orientation="vertical" tabindex="0"></div>
+      <aside class="task-context" id="task-context" aria-label="报告库" aria-hidden="true" inert><header class="task-context__head"><div><p class="context-kicker">本机报告</p><h2>报告库</h2></div><button class="drawer-close" type="button" data-report-close aria-label="收起报告">×</button></header><section class="task-context__group"><div class="report-list" id="report-list"></div></section><section class="task-context__group"><p class="context-kicker">生成报告</p><div class="report-actions" data-report-actions><button class="button-secondary" type="button" data-report-kind="card" aria-describedby="report-feedback">生成Card</button><button class="button-primary" type="button" data-report-kind="report" aria-describedby="report-feedback">生成Report</button></div><p class="report-feedback" id="report-feedback" hidden role="status"></p></section><section class="task-context__group task-context__group--bottom"><p class="context-copy">报告保存在本机，可按需预览或下载。</p></section></aside>
+    </div>
+    <script type="module" src="/app/frontend/optdesk/optdesk.js"></script>
+  </body>
+</html>

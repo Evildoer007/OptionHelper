@@ -1,0 +1,26 @@
+[
+  {
+    "id": "app.agent.historical-fact-no-rerun",
+    "area": "app-agent",
+    "description": "已验证ModuleRun事实可在下一轮直接解释，无需重复执行模块。",
+    "target": "app.agent_runtime",
+    "input": {"scenario": "historical_fact"},
+    "expect": {"equals": {"status": "completed", "tool_calls": []}}
+  },
+  {
+    "id": "app.agent.fact-value-mismatch-blocked",
+    "area": "app-agent",
+    "description": "数值与fact_ref不一致时必须拒绝模型结论。",
+    "target": "app.agent_runtime",
+    "input": {"scenario": "mismatched_fact"},
+    "expect": {"equals": {"status": "partial", "tool_calls": ["pricer.run"]}}
+  },
+  {
+    "id": "app.agent.approval-number-requires-fact",
+    "area": "app-agent",
+    "description": "批准提示不得绕过金融数字事实引用门禁。",
+    "target": "app.agent_runtime",
+    "input": {"scenario": "approval_number"},
+    "expect": {"equals": {"status": "partial", "tool_calls": []}}
+  }
+]

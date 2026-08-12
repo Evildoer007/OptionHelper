@@ -1,0 +1,7 @@
+# Planned Windows x86_64 dependency lock.
+# This source-stage file intentionally contains no resolved third-party wheel.
+# Populate only after the selected Python WebView runtime, signing toolchain and
+# capability build have passed Windows acceptance. Do not reuse this lock on macOS.
+platform = "windows-x86_64"
+status = "not_resolved"
+python = ">=3.11"

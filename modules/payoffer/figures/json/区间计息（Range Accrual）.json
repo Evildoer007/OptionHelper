@@ -1,0 +1,47 @@
+{
+  "name_zh": "区间计息（Range Accrual）",
+  "terms": {
+    "S0": 100.0,
+    "T": 0.08333333333333333,
+    "N": 10000000.0,
+    "Hlow": 94.0,
+    "Hup": 106.0,
+    "c_max": 0.0145,
+    "p": 0.0121,
+    "n_obs": 22,
+    "Orange": "daily",
+    "settlement": "cash",
+    "observation_price": "close",
+    "margin_call": false,
+    "payoff_figure_basis": "gross_before_premium",
+    "monitor": {
+      "n_obs_actual": "exact_observation_count(S_t[O_range], n_obs)",
+      "n_in": "count(S_t[O_range] >= L and S_t[O_range] <= U)"
+    },
+    "pricing_methods": [
+      "monte_carlo"
+    ],
+    "constraints": [
+      "L < U"
+    ]
+  },
+  "paths": [
+    {
+      "condition": "True",
+      "cases": [
+        {
+          "domain": "n_in == n_obs",
+          "pnl": "cash(0, -N * p) + cash(T, N * c_max)"
+        },
+        {
+          "domain": "0 < n_in < n_obs",
+          "pnl": "cash(0, -N * p) + cash(T, N * c_max * n_in / n_obs)"
+        },
+        {
+          "domain": "n_in == 0",
+          "pnl": "cash(0, -N * p)"
+        }
+      ]
+    }
+  ]
+}

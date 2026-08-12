@@ -1,0 +1,1 @@
+"""Non-sensitive settings contracts."""

@@ -1,0 +1,224 @@
+"""Immutable derivative contract terms, separated from live market data."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any
+
+from ._validation import (
+    require_finite_real,
+    require_nonnegative_real,
+    require_plain_int,
+    require_positive_real,
+)
+from .basis import ResultBasis
+from .enums import (
+    AccumulatorQuantityBasis,
+    AutocallKind,
+    CallPut,
+    PricingMethod,
+)
+from .models import SchedulePoint
+
+
+@dataclass(frozen=True, kw_only=True)
+class OptionInstrument:
+    basis: ResultBasis
+
+
+@dataclass(frozen=True, kw_only=True)
+class OptionRegPathOption(OptionInstrument):
+    """A resolved OptionReg contract valued by the shared path interpreter.
+
+    The contract remains immutable.  This is deliberately one generic
+    instrument rather than a class per OptionReg product.
+    """
+
+    resolved_contract: Any
+    asset_spots: tuple[float, ...] = ()
+    asset_volatilities: tuple[float, ...] = ()
+    asset_dividend_yields: tuple[float, ...] = ()
+    correlation: tuple[tuple[float, ...], ...] | None = None
+    trading_sessions: tuple[str, ...] = ()
+    calendar_id: str = ""
+    calendar_version: str = ""
+
+
+@dataclass(frozen=True, kw_only=True)
+class EuropeanVanillaOption(OptionInstrument):
+    strike: float
+    maturity_years: float
+    call_put: CallPut
+    future: bool = False
+
+    def __post_init__(self) -> None:
+        _require_positive("strike", self.strike)
+        _require_positive("maturity_years", self.maturity_years)
+
+
+@dataclass(frozen=True, kw_only=True)
+class BinaryOption(OptionInstrument):
+    strike: float
+    maturity_years: float
+    call_put: CallPut
+    payout_type: str
+    payout: float = 0.0
+    future: bool = False
+
+    def __post_init__(self) -> None:
+        _require_positive("strike", self.strike)
+        _require_positive("maturity_years", self.maturity_years)
+        _require_finite("payout", self.payout)
+
+
+@dataclass(frozen=True, kw_only=True)
+class BarrierOption(OptionInstrument):
+    strike: float
+    barrier: float
+    maturity_years: float
+    call_put: CallPut
+    knock: str
+    monitoring: str
+    rebate: float = 0.0
+    rebate_at_hit: bool = True
+    future: bool = False
+
+    def __post_init__(self) -> None:
+        _require_positive("strike", self.strike)
+        _require_positive("barrier", self.barrier)
+        _require_positive("maturity_years", self.maturity_years)
+        _require_finite("rebate", self.rebate)
+
+
+@dataclass(frozen=True, kw_only=True)
+class StaticAccumulatorOption(OptionInstrument):
+    call_put: CallPut
+    initial_spot: float
+    strike: float
+    barrier: float
+    range_payout: float
+    knockout_payout: float
+    loss_multiplier: float
+    first_observation: int
+    observation_count: int
+    total_observations: int
+    accumulator_type: str
+    expiry_multiplier: float = 1.0
+    day_adjustment: float = 0.0
+    quantity_basis: AccumulatorQuantityBasis = AccumulatorQuantityBasis.WHOLE_CONTRACT
+
+    def __post_init__(self) -> None:
+        _require_positive("initial_spot", self.initial_spot)
+        _require_positive("strike", self.strike)
+        _require_positive("barrier", self.barrier)
+        require_nonnegative_real("range_payout", self.range_payout)
+        require_nonnegative_real("knockout_payout", self.knockout_payout)
+        _require_positive("loss_multiplier", self.loss_multiplier)
+        _require_positive_int("first_observation", self.first_observation)
+        _require_positive_int("observation_count", self.observation_count)
+        _require_positive_int("total_observations", self.total_observations)
+        if self.first_observation + self.observation_count - 1 > self.total_observations:
+            raise ValueError("最后估值观察序号不得超过total_observations")
+        _require_positive("expiry_multiplier", self.expiry_multiplier)
+        require_nonnegative_real("day_adjustment", self.day_adjustment)
+        if self.day_adjustment >= self.first_observation:
+            raise ValueError("day_adjustment必须小于first_observation以保证期限为正")
+        if self.quantity_basis is not AccumulatorQuantityBasis.WHOLE_CONTRACT:
+            raise ValueError("Static Accumulator当前只支持WHOLE_CONTRACT数量口径")
+
+
+@dataclass(frozen=True, kw_only=True)
+class AutocallOption(OptionInstrument):
+    kind: AutocallKind
+    call_put: CallPut
+    strike: float
+    knock_in: float
+    knock_out: float
+    floor: float
+    coupon: float
+    call_schedule: tuple[SchedulePoint, ...]
+    coupon_schedule: tuple[SchedulePoint, ...]
+    final_trading_day: int
+    final_calendar_day: int
+    final_rebate: float
+    margin: float = 0.0
+    knock_out_step_down: float | None = None
+    forward_curve_weight: float = 1.0
+    parachute: bool = False
+    enhanced_strike: float | None = None
+    participation: float = 0.0
+
+    def __post_init__(self) -> None:
+        _require_positive("strike", self.strike)
+        _require_positive("knock_in", self.knock_in)
+        _require_positive("knock_out", self.knock_out)
+        require_nonnegative_real("floor", self.floor)
+        _require_finite("coupon", self.coupon)
+        _require_positive_int("final_trading_day", self.final_trading_day)
+        _require_positive_int("final_calendar_day", self.final_calendar_day)
+        _require_finite("final_rebate", self.final_rebate)
+        _require_finite("margin", self.margin)
+        if self.knock_out_step_down is not None:
+            _require_finite("knock_out_step_down", self.knock_out_step_down)
+        _require_weight("forward_curve_weight", self.forward_curve_weight)
+        if self.enhanced_strike is not None:
+            _require_positive("enhanced_strike", self.enhanced_strike)
+        _require_finite("participation", self.participation)
+
+
+@dataclass(frozen=True, kw_only=True)
+class PathAccumulatorOption(OptionInstrument):
+    call_put: CallPut
+    strike: float
+    knock_out: float
+    multiplier: float
+    ko_begin_trading_day: int
+    lock_trading_days: int
+    ko_terminates: bool
+    observation_schedule: tuple[SchedulePoint, ...]
+    forward_curve_weight: float = 1.0
+    quantity_basis: AccumulatorQuantityBasis = AccumulatorQuantityBasis.WHOLE_CONTRACT
+
+    def __post_init__(self) -> None:
+        _require_positive("strike", self.strike)
+        _require_positive("knock_out", self.knock_out)
+        _require_positive("multiplier", self.multiplier)
+        _require_positive_int("ko_begin_trading_day", self.ko_begin_trading_day)
+        require_plain_int("lock_trading_days", self.lock_trading_days, nonnegative=True)
+        _require_weight("forward_curve_weight", self.forward_curve_weight)
+        if self.quantity_basis is not AccumulatorQuantityBasis.WHOLE_CONTRACT:
+            raise ValueError("Path Accumulator当前只支持WHOLE_CONTRACT数量口径")
+
+
+@dataclass(frozen=True)
+class OptionLeg:
+    weight: float
+    instrument: OptionInstrument
+    method: PricingMethod
+    label: str
+
+    def __post_init__(self) -> None:
+        _require_finite("weight", self.weight)
+
+
+@dataclass(frozen=True, kw_only=True)
+class CompositeOption(OptionInstrument):
+    legs: tuple[OptionLeg, ...]
+
+
+def _require_positive(label: str, value: float) -> None:
+    require_positive_real(label, value)
+
+
+def _require_finite(label: str, value: float) -> None:
+    require_finite_real(label, value)
+
+
+def _require_positive_int(label: str, value: int) -> None:
+    require_plain_int(label, value, positive=True)
+
+
+def _require_weight(label: str, value: float) -> None:
+    require_finite_real(label, value)
+    if not 0.0 <= float(value) <= 1.0:
+        raise ValueError(f"{label}必须位于0和1之间")

@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "optionhelper://schemas/run-ref",
+  "title": "RunRef",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tenant_id", "task_id", "data_fetch_run_id", "expected_manifest_hash", "expected_data_asset_hash"],
+      "properties": {
+        "tenant_id": {"type": "string", "minLength": 1},
+        "task_id": {"type": "string", "minLength": 1},
+        "data_fetch_run_id": {"type": "string", "minLength": 1},
+        "expected_manifest_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "expected_data_asset_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["module", "tenant_id", "task_id", "run_id", "expected_semantic_result_hash", "expected_artifact_manifest_hash"],
+      "properties": {
+        "module": {"enum": ["payoffer", "pricer", "backtester"]},
+        "tenant_id": {"type": "string", "minLength": 1},
+        "task_id": {"type": "string", "minLength": 1},
+        "run_id": {"type": "string", "minLength": 1},
+        "expected_semantic_result_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "expected_artifact_manifest_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tenant_id", "report_run_id", "expected_semantic_fact_hash", "expected_artifact_manifest_hash"],
+      "properties": {
+        "tenant_id": {"type": "string", "minLength": 1},
+        "report_run_id": {"type": "string", "minLength": 1},
+        "expected_semantic_fact_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "expected_artifact_manifest_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    }
+  ]
+}

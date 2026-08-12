@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "optionhelper://schemas/error",
+  "title": "Error",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["error_code", "stage", "message", "retryable", "missing_inputs", "upstream_refs"],
+  "properties": {
+    "error_code": {"type": "string", "minLength": 1},
+    "stage": {"type": "string", "minLength": 1},
+    "message": {"type": "string", "minLength": 1},
+    "retryable": {"type": "boolean"},
+    "missing_inputs": {"type": "array", "items": {"type": "string"}},
+    "upstream_refs": {"type": "array", "items": {"type": "string"}}
+  }
+}

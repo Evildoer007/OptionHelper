@@ -1,0 +1,166 @@
+[
+  {
+    "id": "compute.payoffer.formal-run",
+    "area": "Payoffer正式协议",
+    "description": "经Core编译、HostContext和正式ResultStore完成Payoffer运行并解析ModuleRunRef。",
+    "target": "compute.formal_run",
+    "input": {"module": "payoffer"},
+    "expect": {
+      "equals": {
+        "module": "payoffer",
+        "status": "succeeded",
+        "contract_matches": true,
+        "run_ref.module": "payoffer",
+        "run_ref.task_id": "eval-payoffer-task",
+        "run_ref.tenant_id": "eval-tenant",
+        "run_ref_resolves": true,
+        "artifact_anchor_matches": true
+      },
+      "exists": ["run_ref.expected_artifact_manifest_hash"]
+    }
+  },
+  {
+    "id": "compute.pricer.formal-run",
+    "area": "Pricer正式协议",
+    "description": "经Core编译、DataAssetRef、HostContext和正式ResultStore完成Pricer运行。",
+    "target": "compute.formal_run",
+    "input": {"module": "pricer"},
+    "expect": {
+      "equals": {
+        "module": "pricer",
+        "status": "succeeded",
+        "contract_matches": true,
+        "run_ref.module": "pricer",
+        "run_ref.task_id": "eval-pricer-task",
+        "run_ref.tenant_id": "eval-tenant",
+        "run_ref_resolves": true,
+        "artifact_anchor_matches": true
+      },
+      "exists": ["run_ref.expected_artifact_manifest_hash"]
+    }
+  },
+  {
+    "id": "compute.runref-v1.2-required",
+    "area": "ModuleRunRef v1.2",
+    "description": "真实ModuleRunRef读取外部artifact manifest锚，缺字段或篡改锚均拒绝且不启用旧版证明。",
+    "target": "compute.runref_v12",
+    "input": {},
+    "expect": {
+      "equals": {
+        "schema": "optionhelper.module-run-ref/v1.2",
+        "field_count": 6,
+        "artifact_anchor_matches": true,
+        "missing_artifact_anchor_rejected": true,
+        "tampered_artifact_anchor_rejected": true,
+        "legacy_attestation_used": false
+      }
+    }
+  },
+  {
+    "id": "modulehost.v2.signed-scope",
+    "area": "ModuleHost v2",
+    "description": "ModuleHost v2令牌绑定完整上下文，任一关键范围被篡改后均验证失败。",
+    "target": "modulehost.v2",
+    "input": {"scenario": "signed_scope"},
+    "expect": {
+      "equals": {"all_tampering_rejected": true},
+      "not_contains": {"outcomes": "accepted"}
+    }
+  },
+  {
+    "id": "modulehost.v2.permission-intersection",
+    "area": "ModuleHost v2",
+    "description": "目录和运行必须由Caller与Host共同授权，正式Core拒绝local-development Host。",
+    "target": "modulehost.v2",
+    "input": {"scenario": "permission_intersection"},
+    "expect": {
+      "equals": {
+        "catalog_allowed": true,
+        "run_allowed": true,
+        "catalog_mismatch_rejected": true,
+        "run_mismatch_rejected": true,
+        "local_host_rejected": true
+      }
+    }
+  },
+  {
+    "id": "compute.formal-host-rejected",
+    "area": "计算Host边界",
+    "description": "缺HostContext、缺ResultStore或合同指纹错误时正式计算必须拒绝。",
+    "target": "compute.security_matrix",
+    "input": {"scenario": "host_rejected"},
+    "expect": {
+      "equals": {"all_rejected": true},
+      "not_contains": {"outcomes": "accepted"}
+    }
+  },
+  {
+    "id": "compute.data-ref-tenant-rejected",
+    "area": "计算数据租户边界",
+    "description": "Pricer和Backtester均拒绝跨租户DataAssetRef。",
+    "target": "compute.security_matrix",
+    "input": {"scenario": "cross_tenant_data_ref"},
+    "expect": {
+      "equals": {"all_rejected": true},
+      "not_contains": {"outcomes": "accepted"}
+    }
+  },
+  {
+    "id": "reporter.selection-negative",
+    "area": "Reporter选择协议",
+    "description": "公开Reporter入口拒绝缺失依赖、无选择端口、未知来源和跨租户来源。",
+    "target": "reporter.public_protocol",
+    "input": {},
+    "expect": {
+      "equals": {
+        "all_rejected": true,
+        "selection_never_auto_latest": true,
+        "tampered_hash_rejected": true,
+        "errors.missing_store": "result_store_not_injected",
+        "errors.missing_designer": "designer_port_not_injected",
+        "errors.unknown_source": "selection_validation_failed",
+        "errors.cross_tenant": "selection_validation_failed",
+        "errors.tampered_hash": "report_validation_failed"
+      }
+    }
+  },
+  {
+    "id": "recommender.evidence-negative",
+    "area": "Recommender证据边界",
+    "description": "缺OptionLib、CatalogVersion不一致或OptionReg禁止时均不得形成候选。",
+    "target": "recommender.evidence_matrix",
+    "input": {},
+    "expect": {
+      "equals": {"all_rejected": true, "no_candidates": true}
+    }
+  },
+  {
+    "id": "datafetcher.app-security",
+    "area": "DataFetcher App安全",
+    "description": "App入口拒绝明文凭据、伪造上下文、缺读权限及无Host SecretRef的取数请求。",
+    "target": "datafetcher.app_security",
+    "input": {},
+    "expect": {
+      "equals": {"all_rejected": true},
+      "not_contains": {"outcomes": "accepted"}
+    }
+  },
+  {
+    "id": "agent.security-boundaries",
+    "area": "Agent安全边界",
+    "description": "真实AgentLoop阻止未授权工具、敏感参数、无来源金融数字和错误事实引用。",
+    "target": "app.agent_security_matrix",
+    "input": {},
+    "expect": {
+      "equals": {
+        "all_blocked": true,
+        "unauthorized_tool_not_called": true,
+        "sensitive_tool_not_called": true,
+        "statuses.permission": "blocked",
+        "statuses.sensitive_argument": "unavailable",
+        "statuses.untraceable_number": "partial",
+        "statuses.mismatched_fact": "partial"
+      }
+    }
+  }
+]

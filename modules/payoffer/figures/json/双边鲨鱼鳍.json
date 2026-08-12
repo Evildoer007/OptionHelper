@@ -1,0 +1,69 @@
+{
+  "name_zh": "双边鲨鱼鳍",
+  "terms": {
+    "S0": 100.0,
+    "T": 0.16666666666666666,
+    "N": 10000000.0,
+    "Ku": 105.0,
+    "Kd": 95.0,
+    "H_KO_2": 115.0,
+    "H_KO_1": 85.0,
+    "eta_u": 0.03,
+    "eta_d": 0.04,
+    "alpha_u": 0.5,
+    "alpha_d": 0.8,
+    "p": 0.0088,
+    "O_KO": "daily",
+    "settlement": "cash",
+    "observation_price": "close",
+    "margin_call": false,
+    "monitor": {
+      "terminal_out_observed": "require_maturity_observation(S_t[O_out], T)",
+      "tau_out_2": "first_time(S_t[O_out] >= H_out_2)",
+      "tau_out_1": "first_time(S_t[O_out] <= H_out_1)"
+    },
+    "pricing_methods": [
+      "monte_carlo"
+    ],
+    "constraints": [
+      "H_out_1 < K_1 and K_1 < K_2 and K_2 < H_out_2"
+    ]
+  },
+  "paths": [
+    {
+      "condition": "tau_out_2 < tau_out_1",
+      "cases": [
+        {
+          "domain": "S_T >= 0",
+          "pnl": "cash(0, -N * p) + cash(tau_out_2, N * r_out_2)"
+        }
+      ]
+    },
+    {
+      "condition": "tau_out_1 < tau_out_2",
+      "cases": [
+        {
+          "domain": "S_T >= 0",
+          "pnl": "cash(0, -N * p) + cash(tau_out_1, N * r_out_1)"
+        }
+      ]
+    },
+    {
+      "condition": "tau_out_2 == inf and tau_out_1 == inf",
+      "cases": [
+        {
+          "domain": "K_2 <= S_T < H_out_2",
+          "pnl": "cash(0, -N * p) + cash(T, N * alpha_2 * (S_T - K_2) / S_0)"
+        },
+        {
+          "domain": "H_out_1 < S_T <= K_1",
+          "pnl": "cash(0, -N * p) + cash(T, N * alpha_1 * (K_1 - S_T) / S_0)"
+        },
+        {
+          "domain": "K_1 < S_T < K_2",
+          "pnl": "cash(0, -N * p)"
+        }
+      ]
+    }
+  ]
+}

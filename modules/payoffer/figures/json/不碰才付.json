@@ -1,0 +1,44 @@
+{
+  "name_zh": "不碰才付",
+  "terms": {
+    "S0": 100.0,
+    "T": 1.0,
+    "Htouch": 115.0,
+    "A": 20.0,
+    "Pi_0": 8.0,
+    "Otouch": "daily",
+    "settlement": "cash",
+    "observation_price": "close",
+    "margin_call": false,
+    "constraints": [
+      "O_touch == 'daily'"
+    ],
+    "monitor": {
+      "terminal_touch_observed": "require_maturity_observation(S_t[O_touch], T)",
+      "tau_touch": "first_time(S_t[O_touch] >= H_touch)"
+    },
+    "pricing_methods": [
+      "monte_carlo"
+    ]
+  },
+  "paths": [
+    {
+      "condition": "tau_touch == inf",
+      "cases": [
+        {
+          "domain": "0 <= S_T < H_touch",
+          "pnl": "cash(0, -P) + cash(T, A)"
+        }
+      ]
+    },
+    {
+      "condition": "tau_touch < inf",
+      "cases": [
+        {
+          "domain": "S_T >= 0",
+          "pnl": "cash(0, -P)"
+        }
+      ]
+    }
+  ]
+}

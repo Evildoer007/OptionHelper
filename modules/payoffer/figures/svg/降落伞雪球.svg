@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="978" viewBox="0 0 1200 978" role="img" aria-labelledby="title desc">
+  <title id="title">降落伞雪球路径Payoff图</title><desc id="desc">由Python Payoffer根据本次ResolvedContract计算并由共享现金流解释器逐点核对的参数化路径Payoff图。</desc>
+  <defs><linearGradient id="everbright-red-gold" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#C8102E"/><stop offset="1" stop-color="#D89B27"/></linearGradient><style>
+  .cn{font-family:"PingFang SC","Microsoft YaHei","Noto Sans CJK SC",Arial,sans-serif}.card{fill:#fff;stroke:#CFCFCF;stroke-width:1.1}.card-accent{stroke:#C8102E;stroke-width:4.5}.scenario-no{font-size:17px;font-weight:700;fill:#252525}.scenario-note{font-size:10.5px;fill:#6F7780}.axis-title{font-size:12px;font-weight:600;fill:#252525}.reference-label,.range-label{font-size:12px;fill:#4F4F4F}.axis{stroke:#252525;stroke-width:1.3}.axis-arrow{fill:#252525}.threshold{stroke-width:1;opacity:.82}.threshold-value{font-size:11px;font-weight:700}.payoff-guide{stroke:#B9BEC7;stroke-width:1;stroke-dasharray:3 4}.payoff-level-label{font-size:11px;font-weight:600;fill:#6F7780}.payoff-line{fill:none;stroke:#C8102E;stroke-width:2.6;stroke-linecap:round;stroke-linejoin:round}.payoff-jump{stroke:#C8102E;stroke-width:1.4;stroke-dasharray:4 3;fill:none}.curve-turn{fill:#6B3FA0;stroke:#fff;stroke-width:1.2}.curve-endpoint{stroke:#C8102E;stroke-width:1.7}.curve-endpoint.open{fill:#fff}.curve-endpoint.closed{fill:#C8102E}.global-legend{font-size:12px;fill:#555}.global-legend .token-sub{font-size:9px}
+  </style></defs>
+  <rect width="1200" height="978" fill="#fff"/><rect x="16" y="16" width="1168" height="56" fill="url(#everbright-red-gold)"/><rect x="16" y="16" width="8" height="56" fill="#A80F28"/><text class="cn" x="38" y="52" fill="#fff" font-size="26" font-weight="700">降落伞雪球</text>
+  <g data-path-card="0">
+  <defs><clipPath id="payoffer-card-clip-0"><rect x="20" y="96" width="570" height="392"/></clipPath></defs>
+  <rect class="card" x="16" y="92" width="578" height="400"/><line class="card-accent" x1="16" y1="94" x2="594" y2="94"/>
+  <g clip-path="url(#payoffer-card-clip-0)">
+  <text class="cn scenario-no" x="40" y="131">路径1</text><text class="cn scenario-note" x="40" y="150">固定非终值历史，仅终值变化</text>
+  <line class="payoff-guide" x1="54" y1="200.0769" x2="556" y2="200.0769"/><text class="cn payoff-level-label" x="322.8889" y="193.0769" text-anchor="end">+12.5万</text>
+  <line class="axis" x1="54" y1="413.9231" x2="556" y2="413.9231"/><line class="axis" x1="332.8889" y1="168" x2="332.8889" y2="446"/>
+  <path class="axis-arrow" d="M332.8889 161 L328.3889 170 L337.3889 170 Z"/><path class="axis-arrow" d="M563 413.9231 L554 409.4231 L554 418.4231 Z"/>
+  <path class="payoff-line" d="M54 200.0769 L64.6809 200.0769 L75.3617 200.0769 L86.0426 200.0769 L96.7234 200.0769 L107.4043 200.0769 L118.0851 200.0769 L128.766 200.0769 L139.4468 200.0769 L150.1277 200.0769 L160.8085 200.0769 L171.4894 200.0769 L182.1702 200.0769 L192.8511 200.0769 L203.5319 200.0769 L214.2128 200.0769 L224.8936 200.0769 L235.5745 200.0769 L246.2553 200.0769 L256.9362 200.0769 L267.617 200.0769 L278.2979 200.0769 L288.9787 200.0769 L299.6596 200.0769 L310.3404 200.0769 L321.0213 200.0769 L331.7021 200.0769 L342.383 200.0769 L353.0638 200.0769 L363.7447 200.0769 L374.4255 200.0769 L385.1064 200.0769 L395.7872 200.0769 L406.4681 200.0769 L417.1489 200.0769 L427.8298 200.0769 L438.5106 200.0769 L449.1915 200.0769 L459.8723 200.0769 L470.5532 200.0769 L481.234 200.0769 L491.9149 200.0769 L502.5957 200.0769 L513.2766 200.0769 L523.9574 200.0769 L534.6383 200.0769 L545.3191 200.0769 L556 200.0769"/>
+  <text class="cn axis-title" x="332.8889" y="156" text-anchor="middle">净收益</text><text class="cn reference-label" x="342.8889" y="437.9231" text-anchor="start">100%</text><text class="cn axis-title" x="556" y="437.9231" text-anchor="end">到期标的价格</text>
+  </g>
+</g><g data-path-card="1">
+  <defs><clipPath id="payoffer-card-clip-1"><rect x="610" y="96" width="570" height="392"/></clipPath></defs>
+  <rect class="card" x="606" y="92" width="578" height="400"/><line class="card-accent" x1="606" y1="94" x2="1184" y2="94"/>
+  <g clip-path="url(#payoffer-card-clip-1)">
+  <text class="cn scenario-no" x="630" y="131">路径2</text><text class="cn scenario-note" x="630" y="150">固定非终值历史，仅终值变化</text>
+  <line class="payoff-guide" x1="644" y1="217.7692" x2="1146" y2="217.7692"/><text class="cn payoff-level-label" x="912.8889" y="210.7692" text-anchor="end">+300万</text>
+  <line class="axis" x1="644" y1="416.2308" x2="1146" y2="416.2308"/><line class="axis" x1="922.8889" y1="188" x2="922.8889" y2="446"/>
+  <path class="axis-arrow" d="M922.8889 181 L918.3889 190 L927.3889 190 Z"/><path class="axis-arrow" d="M1153 416.2308 L1144 411.7308 L1144 420.7308 Z"/>
+  <line class="threshold" style="stroke:#D89B27;stroke-dasharray:8 3" x1="839.2222" y1="188" x2="839.2222" y2="446"/><text class="cn threshold-value" x="839.2222" y="162" text-anchor="middle" style="fill:#D89B27">70%</text><path class="payoff-line" d="M839.2222 217.7692 L845.7494 217.7692 L852.2766 217.7692 L858.8038 217.7692 L865.331 217.7692 L871.8582 217.7692 L878.3853 217.7692 L884.9125 217.7692 L891.4397 217.7692 L897.9669 217.7692 L904.4941 217.7692 L911.0213 217.7692 L917.5485 217.7692 L924.0757 217.7692 L930.6028 217.7692 L937.13 217.7692 L943.6572 217.7692 L950.1844 217.7692 L956.7116 217.7692 L963.2388 217.7692 L969.766 217.7692 L976.2931 217.7692 L982.8203 217.7692 L989.3475 217.7692 L995.8747 217.7692 L1002.4019 217.7692 L1008.9291 217.7692 L1015.4563 217.7692 L1021.9835 217.7692 L1028.5106 217.7692 L1035.0378 217.7692 L1041.565 217.7692 L1048.0922 217.7692 L1054.6194 217.7692 L1061.1466 217.7692 L1067.6738 217.7692 L1074.2009 217.7692 L1080.7281 217.7692 L1087.2553 217.7692 L1093.7825 217.7692 L1100.3097 217.7692 L1106.8369 217.7692 L1113.3641 217.7692 L1119.8913 217.7692 L1126.4184 217.7692 L1132.9456 217.7692 L1139.4728 217.7692 L1146 217.7692"/>
+  <text class="cn axis-title" x="922.8889" y="176" text-anchor="middle">净收益</text><text class="cn reference-label" x="932.8889" y="440.2308" text-anchor="start">100%</text><text class="cn axis-title" x="1146" y="440.2308" text-anchor="end">到期标的价格</text>
+  </g>
+</g><g data-path-card="2">
+  <defs><clipPath id="payoffer-card-clip-2"><rect x="20" y="508" width="570" height="392"/></clipPath></defs>
+  <rect class="card" x="16" y="504" width="578" height="400"/><line class="card-accent" x1="16" y1="506" x2="594" y2="506"/>
+  <g clip-path="url(#payoffer-card-clip-2)">
+  <text class="cn scenario-no" x="40" y="543">路径3</text><text class="cn scenario-note" x="40" y="562">固定非终值历史，仅终值变化</text>
+  <line class="payoff-guide" x1="54" y1="612.0769" x2="556" y2="612.0769"/><text class="cn payoff-level-label" x="322.8889" y="605.0769" text-anchor="end">+300万</text>
+  <line class="axis" x1="54" y1="825.9231" x2="556" y2="825.9231"/><line class="axis" x1="332.8889" y1="580" x2="332.8889" y2="858"/>
+  <path class="axis-arrow" d="M332.8889 573 L328.3889 582 L337.3889 582 Z"/><path class="axis-arrow" d="M563 825.9231 L554 821.4231 L554 830.4231 Z"/>
+  <path class="payoff-line" d="M256.9362 612.0769 L267.617 612.0769 L278.2979 612.0769 L288.9787 612.0769 L299.6596 612.0769 L310.3404 612.0769 L321.0213 612.0769 L331.7021 612.0769 L342.383 612.0769 L353.0638 612.0769 L363.7447 612.0769 L374.4255 612.0769 L385.1064 612.0769 L395.7872 612.0769 L406.4681 612.0769 L417.1489 612.0769 L427.8298 612.0769 L438.5106 612.0769 L449.1915 612.0769 L459.8723 612.0769 L470.5532 612.0769 L481.234 612.0769 L491.9149 612.0769 L502.5957 612.0769 L513.2766 612.0769 L523.9574 612.0769 L534.6383 612.0769 L545.3191 612.0769 L556 612.0769"/>
+  <text class="cn axis-title" x="332.8889" y="568" text-anchor="middle">净收益</text><text class="cn reference-label" x="342.8889" y="849.9231" text-anchor="start">100%</text><text class="cn axis-title" x="556" y="849.9231" text-anchor="end">到期标的价格</text>
+  </g>
+</g><g data-path-card="3">
+  <defs><clipPath id="payoffer-card-clip-3"><rect x="610" y="508" width="570" height="392"/></clipPath></defs>
+  <rect class="card" x="606" y="504" width="578" height="400"/><line class="card-accent" x1="606" y1="506" x2="1184" y2="506"/>
+  <g clip-path="url(#payoffer-card-clip-3)">
+  <text class="cn scenario-no" x="630" y="543">路径4</text><text class="cn scenario-note" x="630" y="562">固定非终值历史，仅终值变化</text>
+  
+  <line class="axis" x1="644" y1="612.0769" x2="1146" y2="612.0769"/><line class="axis" x1="922.8889" y1="580" x2="922.8889" y2="858"/>
+  <path class="axis-arrow" d="M922.8889 573 L918.3889 582 L927.3889 582 Z"/><path class="axis-arrow" d="M1153 612.0769 L1144 607.5769 L1144 616.5769 Z"/>
+  <path class="payoff-line" d="M644 825.9231 L654.6809 817.7332 L665.3617 809.5434 L676.0426 801.3535 L686.7234 793.1637 L697.4043 784.9738 L708.0851 776.784 L718.766 768.5941 L729.4468 760.4043 L740.1277 752.2144 L750.8085 744.0246 L761.4894 735.8347 L772.1702 727.6448 L782.8511 719.455 L793.5319 711.2651 L804.2128 703.0753 L814.8936 694.8854 L825.5745 686.6956 L836.2553 678.5057 L846.9362 670.3159 L857.617 662.126 L868.2979 653.9362 L878.9787 645.7463 L889.6596 637.5565 L900.3404 629.3666 L911.0213 621.1768 L921.7021 612.9869 L932.383 612.0769 L943.0638 612.0769 L953.7447 612.0769 L964.4255 612.0769 L975.1064 612.0769 L985.7872 612.0769 L996.4681 612.0769 L1007.1489 612.0769 L1017.8298 612.0769 L1028.5106 612.0769 L1039.1915 612.0769 L1049.8723 612.0769 L1060.5532 612.0769 L1071.234 612.0769 L1081.9149 612.0769 L1092.5957 612.0769 L1103.2766 612.0769 L1113.9574 612.0769 L1124.6383 612.0769 L1135.3191 612.0769 L1146 612.0769"/>
+  <text class="cn axis-title" x="922.8889" y="568" text-anchor="middle">净收益</text><text class="cn reference-label" x="932.8889" y="636.0769" text-anchor="start">100%</text><text class="cn axis-title" x="1146" y="636.0769" text-anchor="end">到期标的价格</text>
+  </g>
+</g>
+  <line x1="16" y1="928" x2="1184" y2="928" stroke="#C8102E" stroke-width="1.4"/><g class="cn" data-global-legend="true"><line x1="16" y1="958" x2="58" y2="958" stroke="#C8102E" stroke-width="2.6"/><text class="global-legend" x="71" y="963">收益函数</text><line x1="170" y1="958" x2="212" y2="958" stroke="#D89B27" stroke-width="1" stroke-dasharray="8 3"/><text class="global-legend" x="225" y="963">最后敲出价 <tspan class="legend-token">H<tspan class="token-sub" baseline-shift="sub">out_2</tspan></tspan> = 70%</text></g>
+</svg>

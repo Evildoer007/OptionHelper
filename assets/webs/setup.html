@@ -1,0 +1,52 @@
+<!doctype html>
+<!-- Direction contract: model configuration keeps keys local and makes each usable model connection explicit. -->
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>OptionHelper</title>
+    <link rel="stylesheet" href="./workspace.css">
+  </head>
+  <body class="setup-page">
+    <header class="topbar">
+      <div class="topbar__left"><a class="brand" data-setup-return href="./chat.html"><img src="../../logo/optionhelper-logo.svg" alt="OptionHelper"><span>OptionHelper</span></a></div>
+      <a class="topbar-return" data-setup-return href="./chat.html">返回</a>
+    </header>
+    <main class="setup">
+      <section class="setup-card" aria-label="模型配置">
+        <header class="setup-intro">
+          <div>
+            <p class="setup-kicker">本机模型服务</p>
+            <h1>配置模型</h1>
+            <p>可保存多个模型连接，并在OptChat和OptDesk的输入框中切换。</p>
+          </div>
+          <p class="setup-security">API Key仅保存到macOS钥匙串</p>
+        </header>
+        <div class="setup-layout">
+          <aside class="configured-models" aria-labelledby="configured-models-title">
+            <div class="configured-models__head">
+              <h2 id="configured-models-title">已配置模型</h2>
+              <button class="button-quiet" id="new-connection" type="button">新增连接</button>
+            </div>
+            <p class="configured-models__copy">选择已有连接可查看或更新其模型信息。</p>
+            <div class="connection-list" id="connection-list"></div>
+          </aside>
+          <section class="connection-editor" aria-labelledby="connection-editor-title">
+            <h2 id="connection-editor-title">新增模型连接</h2>
+            <p id="connection-editor-copy">保存后会测试连接。配置完成后可在输入框中直接切换。</p>
+            <form class="setup-form" id="connection-form">
+              <input id="connection-id" name="id" type="hidden">
+              <div class="field"><label for="provider">模型服务</label><select id="provider" name="provider"><option value="deepseek">DeepSeek</option><option value="openai">OpenAI</option><option value="anthropic">Anthropic</option><option value="gemini">Google Gemini</option><option value="compatible">OpenAI兼容接口</option></select></div>
+              <div class="field"><label for="model">模型名称</label><input id="model" name="model" autocomplete="off" placeholder="例如deepseek-chat" required></div>
+              <div class="field field--wide"><label for="base-url">接口地址</label><input id="base-url" name="baseUrl" autocomplete="url" placeholder="https://api.deepseek.com"></div>
+              <div class="field field--wide"><label for="api-key">API Key</label><input id="api-key" name="apiKey" type="password" autocomplete="new-password" placeholder="首次配置该模型服务时填写。同一服务新增模型或编辑时可留空"><p class="field-hint">不会写入HTML、本机报告、许可证或日志。</p></div>
+              <div class="field field--wide" id="thinking-field"><label><input id="thinking" name="thinking" type="checkbox"> 启用思考模式</label></div>
+              <div class="form-foot field--wide"><p class="form-result" id="form-result" role="status"></p><div><a class="button-quiet" data-setup-return href="./chat.html">返回</a><button class="button-primary" type="submit">保存并测试连接</button></div></div>
+            </form>
+          </section>
+        </div>
+      </section>
+    </main>
+    <script type="module" src="./setup.js"></script>
+  </body>
+</html>

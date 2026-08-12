@@ -1,0 +1,122 @@
+[
+  {
+    "id": "datafetcher.status.offline",
+    "area": "datafetcher",
+    "description": "DataFetcher状态查询不探测真实凭据",
+    "target": "tool.call",
+    "input": {"module": "datafetcher", "request": {"action": "status"}},
+    "expect": {"equals": {"module": "datafetcher"}, "exists": ["ok", "status"]}
+  },
+  {
+    "id": "datafetcher.fetch.local",
+    "area": "datafetcher",
+    "description": "受控本地CSV生成DataAssetRef",
+    "target": "tool.call",
+    "input": {"module": "datafetcher", "request": {"action": "fetch", "asset_id": "000905.SH", "start_date": "2024-01-02", "end_date": "2024-01-05", "fields": ["close", "adj_close"], "source_priority": ["local"], "local_csv": "$DATA_FIXTURE", "task_id": "eval-data"}},
+    "expect": {"equals": {"ok": true, "module": "datafetcher", "data_asset_ref.asset_ids.0": "000905.SH", "data_asset_ref.lineage.provider": "local"}, "exists": ["data_asset_ref.content_hash", "data_fetch_run_id"]}
+  },
+  {
+    "id": "datafetcher.action.unsupported",
+    "area": "datafetcher",
+    "description": "未知action返回结构化错误",
+    "target": "tool.call",
+    "input": {"module": "datafetcher", "request": {"action": "delete_all"}},
+    "expect": {"equals": {"ok": false, "error.code": "unsupported_action"}}
+  },
+  {
+    "id": "recommender.status.unconfigured",
+    "area": "recommender",
+    "description": "无模型端口时明确标记未配置",
+    "target": "tool.call",
+    "input": {"module": "recommender", "request": {"action": "status"}},
+    "expect": {"equals": {"ok": false, "module": "recommender", "status": "unconfigured", "fully_configured": false}}
+  },
+  {
+    "id": "recommender.recommend.unavailable",
+    "area": "recommender",
+    "description": "无正式模型端口不得伪造推荐",
+    "target": "tool.call",
+    "input": {"module": "recommender", "request": {"action": "recommend", "request": {"query": "筛选一只单标的结构"}}},
+    "expect": {"equals": {"ok": false, "status": "failed", "error.type": "RecommenderUnavailable"}}
+  },
+  {
+    "id": "recommender.controlled.pending-approval",
+    "area": "recommender",
+    "description": "受控推荐一次合并询问全部必要信息，不伪造候选或绕过确认",
+    "target": "recommender.controlled",
+    "input": {},
+    "expect": {"equals": {"recommendation_set.schema": "optionhelper.recommendation-set/v1", "recommendation_set.status": "pending_question", "recommendation_set.next_question": "为完成结构筛选，请一次补充：研究期限、最大可承受亏损、是否接受本金波动。已在对话中确认的内容无需重复。"}, "length": {"recommendation_set.candidates": 0, "recommendation_set.missing_information": 3}, "exists": ["recommendation_set.audit_trail"]}
+  },
+  {
+    "id": "payoffer.catalog.65",
+    "area": "payoffer",
+    "description": "Payoffer公开目录覆盖65个产品",
+    "target": "tool.call",
+    "input": {"module": "payoffer", "request": {"action": "catalog"}},
+    "expect": {"equals": {"ok": true, "module": "payoffer"}, "length": {"products": 65}}
+  },
+  {
+    "id": "payoffer.preview.call",
+    "area": "payoffer",
+    "description": "收益结构预览返回结构化结果和SVG",
+    "target": "tool.call",
+    "input": {"module": "payoffer", "request": {"action": "preview", "product_id": "2.1"}},
+    "expect": {"equals": {"ok": true, "module": "payoffer", "preview.product_id": "2.1"}, "contains": {"svg": "<svg"}}
+  },
+  {
+    "id": "payoffer.product.invalid",
+    "area": "payoffer",
+    "description": "非法产品不得回退到默认收益结构",
+    "target": "tool.call",
+    "input": {"module": "payoffer", "request": {"action": "preview", "product_id": "0.0"}},
+    "expect": {"equals": {"exception.type": "PayoffEngineError"}, "contains": {"exception.message": "有效的product_id"}}
+  },
+  {
+    "id": "pricer.catalog.65",
+    "area": "pricer",
+    "description": "Pricer公开目录覆盖65个产品",
+    "target": "tool.call",
+    "input": {"module": "pricer", "request": {"action": "catalog"}},
+    "expect": {"equals": {"ok": true, "module": "pricer"}, "length": {"products": 65}}
+  },
+  {
+    "id": "pricer.run.local",
+    "area": "pricer",
+    "description": "三个计算模块必须由Core编译成唯一的正式输入协议",
+    "target": "workflow.formal_compute_protocol",
+    "input": {},
+    "expect": {"equals": {"tool_parameters.0": "module", "tool_parameters.1": "request", "tool_parameters.2": "caller_context", "tool_parameters.3": "host_context", "tool_parameters.4": "result_store", "tool_parameters.5": "data_store", "same_contract": true}, "contains": {"payoffer_keys": "payoff_input", "pricer_keys": "market_data_refs", "backtester_keys": "historical_data"}}
+  },
+  {
+    "id": "pricer.action.unsupported",
+    "area": "pricer",
+    "description": "正式Pricer Tool拒绝旧页面动作，不能保留隐式兼容接口",
+    "target": "tool.call",
+    "input": {"module": "pricer", "request": {"action": "forecast"}},
+    "expect": {"equals": {"ok": false, "module": "pricer", "status": "unsupported"}, "contains": {"message": "仅支持catalog、run"}}
+  },
+  {
+    "id": "backtester.catalog.65",
+    "area": "backtester",
+    "description": "Backtester公开目录覆盖65个产品",
+    "target": "tool.call",
+    "input": {"module": "backtester", "request": {"action": "catalog"}},
+    "expect": {"equals": {"ok": true, "module": "backtester"}, "length": {"products": 65}}
+  },
+  {
+    "id": "backtester.run.local",
+    "area": "backtester",
+    "description": "受控历史资产经Core正式BacktestInput与Host上下文运行代表性回测",
+    "target": "tool.call",
+    "input": {"module": "backtester", "request": {"action": "run", "product_id": "2.1", "identity": {"underlyings": ["000905.SH"]}, "term_overrides": {"T": 0.0054794521, "Pi_0": 1.0}, "backtest_config": {"start_date": "2024-01-02", "end_date": "2024-01-08", "entry_rule": "daily"}}},
+    "expect": {"equals": {"ok": true, "module": "backtester", "status": "succeeded", "task_id": "eval-backtest", "analysis_case_id": "backtester-run-local", "candidate_id": "eval-backtest-candidate"}, "exists": ["run_id", "contract_fingerprint", "resolved_contract.contract_fingerprint", "backtest.data_asset_ref.content_hash", "module_run_ref.expected_semantic_result_hash", "module_run_ref.expected_artifact_manifest_hash"]}
+  },
+  {
+    "id": "backtester.action.unsupported",
+    "area": "backtester",
+    "description": "Backtester未知action返回结构化错误",
+    "target": "tool.call",
+    "input": {"module": "backtester", "request": {"action": "predict"}},
+    "expect": {"equals": {"ok": false, "status": "unsupported"}}
+  }
+]

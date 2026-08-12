@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>数据获取 | OptionHelper</title>
+  <link rel="icon" href="../../icons/optionhelper-app-icon-tile-light.svg">
+  <link rel="alternate icon" href="../../../assets/icons/optionhelper-app-icon-tile-light.svg">
+  <link rel="stylesheet" href="./datafetcher.css">
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand"><img class="brand-logo" src="../../icons/optionhelper-logo.svg" onerror="this.onerror=null;this.src='../../../assets/icons/optionhelper-logo.svg'" alt="OptionHelper"><span class="brand-separator"></span><span class="module-title">数据获取</span></div>
+      <p class="topbar-status" id="service-status">正在检查本机服务</p>
+      <div class="topbar-actions"><button class="button button-quiet" id="refresh-assets" type="button">刷新资产索引</button></div>
+    </header>
+    <main class="workbench" id="workbench">
+      <aside class="library-panel">
+        <p class="panel-kicker">数据资产</p>
+        <h1>数据对象</h1>
+        <p class="panel-copy">仅列出服务已返回的受控数据资产。选择资产可复用其标识，不读取原始数据。</p>
+        <div class="asset-filter"><label class="sr-only" for="asset-search">搜索资产</label><input id="asset-search" class="control" type="search" placeholder="搜索资产ID或Hash"></div>
+        <div class="asset-list" id="asset-list" aria-live="polite"><p class="empty-list">尚无已加载数据对象。</p></div>
+        <p class="library-note">每项仅提供服务生成的资产下载链接。页面不会展示或提交Provider令牌。</p>
+      </aside>
+      <div class="panel-resizer panel-resizer-left" id="library-resizer" role="separator" aria-label="调整数据对象面板宽度" aria-orientation="vertical" tabindex="0"></div>
+      <section class="canvas-panel">
+        <div class="canvas-toolbar">
+          <div class="canvas-state"><span class="state-dot" id="state-dot"></span><span id="canvas-state">等待数据请求</span></div>
+          <span class="run-id" id="run-id"></span>
+        </div>
+        <div class="notice" id="notice" hidden aria-live="polite"></div>
+        <div class="canvas-viewport">
+          <section class="result-sheet" id="result-sheet">
+            <header class="sheet-heading"><div><p class="section-kicker">数据请求结果</p><h2>真实结果画布</h2><p>提交后显示服务返回的缓存决策、质量报告、数据资产引用与预览。</p></div></header>
+            <div class="empty-canvas" id="empty-canvas"><strong>尚未返回数据</strong><span>在右侧配置DataRequest后执行。这里不会显示示例行情。</span></div>
+            <div id="result-content" hidden></div>
+          </section>
+        </div>
+      </section>
+      <div class="panel-resizer panel-resizer-right" id="inspector-resizer" role="separator" aria-label="调整DataRequest配置面板宽度" aria-orientation="vertical" tabindex="0"></div>
+      <aside class="inspector-panel">
+        <form id="request-form" novalidate>
+          <p class="panel-kicker">本次数据请求</p><h2>数据请求</h2>
+          <p class="panel-copy">日期接受yyyy/mm/dd或yyyy-mm-dd；提交时统一转换为ISO日期。</p>
+          <section class="inspector-group">
+            <label class="control-field" for="asset-ids"><span>资产标识</span><textarea id="asset-ids" required placeholder="每行或逗号分隔一个资产标识"></textarea><small>支持多资产。服务按请求资产集合处理。</small></label>
+            <div class="control-grid"><label class="control-field" for="start-date"><span>开始日期</span><input class="date-input" id="start-date" type="text" inputmode="numeric" autocomplete="off" placeholder="yyyy/mm/dd" required></label><label class="control-field" for="end-date"><span>结束日期</span><input class="date-input" id="end-date" type="text" inputmode="numeric" autocomplete="off" placeholder="yyyy/mm/dd" required></label></div>
+<div class="control-grid"><label class="control-field" for="frequency"><span>频率</span><select id="frequency"><option value="1d">日频1d</option></select></label><label class="control-field" for="adjustment"><span>复权口径</span><select id="adjustment"><option value="auto" selected>自动：股票/ETF前复权，指数不复权</option><option value="none">不复权</option><option value="forward">前复权</option><option value="both">原始价格与前复权价格并存</option></select></label></div>
+            <label class="control-field" for="fields"><span>字段</span><input id="fields" value="close,adj_close" required><small>股票/ETF可使用adj_close并保留close审计；指数仅使用未复权close。</small></label>
+          </section>
+          <section class="inspector-group">
+            <h3>数据源与任务数据资产留存</h3>
+            <label class="control-field" for="provider-priority"><span>数据源优先级</span><input id="provider-priority" value="ifind_http" required><small>默认实时请求iFinD HTTP。Wind仅可由Host受控启用。</small></label>
+            <p class="panel-copy">成功数据会留存为受控任务数据资产，并返回DataAssetRef，用于后续估值、回测与报告复现；这不是本地数据源回退。</p>
+            <details class="advanced-options"><summary>高级选项：缓存、本地CSV与离线模式</summary>
+              <label class="control-field" for="cache-policy"><span>缓存策略</span><select id="cache-policy"><option value="force_refresh" selected>实时请求，不复用缓存</option><option value="extend_only">只补覆盖缺口</option><option value="reuse">只复用缓存</option></select></label>
+              <label class="control-field" for="local-csv"><span>受控本地CSV</span><input id="local-csv" value="" placeholder="market/510300.SH_daily.csv"><small>填写后才启用本地CSV，且仅允许受控目录内相对路径。</small></label>
+              <label class="check-field"><input id="offline" type="checkbox"><span>离线模式：仅使用显式缓存或本地CSV</span></label>
+            </details>
+          </section>
+          <section class="secret-card"><strong>凭据状态</strong><span id="secret-status">仅显示SecretRef状态，未加载令牌。</span></section>
+          <p class="form-message" id="form-message" aria-live="polite"></p>
+          <button class="button button-primary wide" id="submit-request" type="submit">实时获取数据</button>
+        </form>
+      </aside>
+    </main>
+  </div>
+  <script src="../module-host-bridge.js"></script>
+  <script src="./datafetcher.js"></script>
+</body>
+</html>

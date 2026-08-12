@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>定价分析 | OptionHelper</title>
+    <style>
+      :root{--ink:#2b2224;--muted:#7c6066;--paper:#fdfbfb;--line:#ead6da;--red:#c8102e;--gold:#aa7414;--ok:#326b4a;font-family:"Avenir Next","PingFang SC","Microsoft YaHei",sans-serif}*{box-sizing:border-box}body{margin:0;color:var(--ink);background:#eee9e8}.bar{height:62px;display:flex;align-items:center;gap:10px;padding:0 24px;border-bottom:1px solid var(--line);background:var(--paper)}.mark{display:grid;width:28px;height:28px;place-items:center;background:var(--red);box-shadow:inset 0 3px var(--gold);color:white;font:bold 15px Georgia}.bar strong{font-size:16px}.bar small{color:var(--muted);letter-spacing:.1em}.status{margin-left:auto;color:var(--muted);font-size:12px}.shell{display:grid;grid-template-columns:330px minmax(460px,1fr) 300px;min-height:calc(100vh - 62px)}aside,main{padding:22px;background:var(--paper)}aside{border-right:1px solid var(--line)}.right{border-right:0;border-left:1px solid var(--line)}main{background:#f7f1f2}h1,h2,h3,p{margin-top:0}h1{font-size:21px;margin-bottom:5px}h2{font-size:15px;margin-bottom:10px}h3{font-size:13px}.copy,.hint{color:var(--muted);font-size:12px;line-height:1.65}.field{display:block;margin:13px 0}.field>span{display:flex;justify-content:space-between;margin-bottom:5px;font-size:12px;font-weight:700}.field math{color:var(--red)}input,select,textarea,button{font:inherit}input,select,textarea{width:100%;border:1px solid var(--line);background:#fff;padding:8px;font-size:12px}textarea{min-height:142px;resize:vertical;font-family:"SFMono-Regular",Menlo,monospace;line-height:1.5}.two{display:grid;grid-template-columns:1fr 1fr;gap:10px}button{width:100%;border:0;padding:10px;background:var(--red);color:#fff;font-weight:700;cursor:pointer}button:disabled{opacity:.5;cursor:wait}.sheet{border:1px solid var(--line);background:#fff}.sheet-head{display:flex;justify-content:space-between;gap:12px;padding:18px 20px;border-bottom:1px solid var(--line)}.sheet-head h2{font-size:20px;margin-bottom:5px}.badge{align-self:flex-start;color:#75591b;background:#faf6ed;padding:5px 8px;font-size:11px}.section{padding:18px 20px;border-bottom:1px solid var(--line)}.section:last-child{border:0}.formula{padding:10px 12px;background:#fbf9f9;font-size:18px;overflow:auto}.grid{display:grid;grid-template-columns:repeat(3,1fr);border:1px solid var(--line)}.metric{min-height:74px;padding:10px;border-right:1px solid var(--line);border-bottom:1px solid var(--line)}.metric:nth-child(3n){border-right:0}.metric:nth-last-child(-n+3){border-bottom:0}.metric span{display:block;color:var(--muted);font-size:11px}.metric strong{display:block;margin-top:8px;font-size:16px;word-break:break-all}.table{width:100%;border-collapse:collapse;font-size:12px}.table th,.table td{padding:8px;border:1px solid var(--line);text-align:left}.table th{color:var(--muted);background:#fbf9f9}.empty{color:var(--muted)}pre{max-height:360px;margin:0;overflow:auto;padding:12px;background:#21191b;color:#f8e9eb;font:11px/1.55 "SFMono-Regular",Menlo,monospace}.notice{padding:11px;border-bottom:1px solid var(--gold);background:#faf6ed;color:#705b2b;font-size:12px;line-height:1.55}.message{min-height:20px;margin-top:10px;color:var(--muted);font-size:12px}.message.error{color:var(--red)}.message.ok{color:var(--ok)}@media(max-width:1060px){.shell{grid-template-columns:300px 1fr}.right{grid-column:1/-1;border-left:0;border-top:1px solid var(--line)}.right .stack{display:grid;grid-template-columns:1fr 1fr;gap:14px}}@media(max-width:700px){.shell{display:block}.grid{grid-template-columns:repeat(2,1fr)}.metric:nth-child(3n){border-right:1px solid var(--line)}.metric:nth-child(2n){border-right:0}.metric:nth-last-child(-n+3){border-bottom:1px solid var(--line)}.metric:nth-last-child(-n+2){border-bottom:0}}
+    </style>
+  </head>
+  <body>
+    <header class="bar"><span class="mark">P</span><strong>定价分析</strong><small>OPTIONHELPER</small><span class="status" id="serviceStatus">正在连接本机Pricing服务</span></header>
+    <div class="shell">
+      <aside>
+        <h1>合同条款</h1>
+        <p class="copy">选择产品后，传入该产品完整PricingInput中的条款字段。页面不从SVG推导条款。</p>
+        <form id="form">
+          <label class="field"><span>产品</span><select id="productId" required><option value="2.1">2.1 看涨期权</option></select></label>
+          <label class="field"><span>标的代码 <math><mi>𝒰</mi></math></span><input id="underlyings" value="000905.SH" required></label>
+          <label class="field"><span>交易日期限</span><input id="tenor" type="number" min="1" value="61" required></label>
+          <label class="field"><span>条款参数JSON</span><textarea id="parameters" required>{
+  "priceBasis": "relative_100",
+  "T": 0.25,
+  "K": 100,
+  "nC": 1
+}</textarea></label>
+          <label class="field"><span>观察日历JSON</span><textarea id="schedules">{}</textarea></label>
+          <button id="run" type="submit">运行Pricing</button><div class="message" id="message"></div>
+        </form>
+      </aside>
+      <main>
+        <div class="sheet">
+          <header class="sheet-head"><div><h2 id="resultTitle">等待运行</h2><p class="copy">闭式解或蒙特卡洛由已解析合同的定价规则决定。未实现产品明确返回不支持。</p></div><span class="badge" id="method">未运行</span></header>
+          <section class="section"><h3>估值定义</h3><div class="formula"><math display="block"><mi>PV</mi><mo>=</mo><msup><mi>e</mi><mrow><mo>−</mo><mi>r</mi><mi>τ</mi></mrow></msup><msup><mi>E</mi><mi>Q</mi></msup><mo>[</mo><mi>Cashflow</mi><mo>]</mo></math></div></section>
+          <section class="section"><h3>估值与Greeks</h3><div class="grid"><div class="metric"><span>PV</span><strong id="pv">未运行</strong></div><div class="metric"><span>Delta</span><strong id="delta">未运行</strong></div><div class="metric"><span>Gamma</span><strong id="gamma">未运行</strong></div><div class="metric"><span>Vega</span><strong id="vega">未运行</strong></div><div class="metric"><span>Theta</span><strong id="theta">未运行</strong></div><div class="metric"><span>Rho</span><strong id="rho">未运行</strong></div></div></section>
+          <section class="section"><h3>概率与情景</h3><table class="table"><thead><tr><th>指标</th><th>结果</th><th>口径</th></tr></thead><tbody id="probabilities"><tr><td colspan="3" class="empty">未运行</td></tr></tbody></table></section>
+          <section class="section"><h3>完整运行记录</h3><pre id="raw">未运行</pre></section>
+        </div>
+      </main>
+      <aside class="right"><div class="stack"><div><h2>市场与模型</h2><p class="copy">现价与历史波动率从本地前复权收盘价读取。默认使用中证500本地行情。</p><label class="field"><span>HV窗口 <math><msub><mi>w</mi><mi>HV</mi></msub></math></span><select id="hv"><option value="10">HV10</option><option value="20" selected>HV20</option><option value="60">HV60</option><option value="122">HV122</option></select></label><div class="two"><label class="field"><span>无风险利率 <math><mi>r</mi></math></span><input id="rate" type="number" step="0.0001" value="0.015"></label><label class="field"><span>分红率 <math><mi>q</mi></math></span><input id="dividend" type="number" step="0.0001" value="0"></label></div><label class="field"><span>估值日，留空取最后交易日</span><input id="valuationDate" type="date"></label></div><div><h2>运行边界</h2><div class="notice">这是设计稿，不连接定价内核。正式Pricing结果保存至<code>result/output_pricing/&lt;task_id&gt;/&lt;run_id&gt;/</code>；未实现真实现金流规则的产品不得生成伪造PV或Greeks。</div><p class="hint" id="fieldHint">正式页面从Registry读取该产品的登记字段。</p></div></div></aside>
+    </div>
+    <script>
+      const $=id=>document.getElementById(id);const fields=['pv','delta','gamma','vega','theta','rho'];
+      const fmt=value=>value===null||value===undefined?'不适用':typeof value==='number'?value.toLocaleString('zh-CN',{maximumFractionDigits:8}):JSON.stringify(value);
+      function jsonField(id,label){try{return JSON.parse($(id).value)}catch(error){throw new Error(label+'不是有效JSON：'+error.message)}}
+      async function catalog(){const response=await fetch('/api/catalog');const data=await response.json();if(!data.ok)throw new Error(data.message||'产品目录读取失败');const select=$('productId');select.replaceChildren(...data.products.map(row=>{const option=document.createElement('option');option.value=row.product_id;option.textContent=`${row.product_id} ${row.canonical_name}`;option.dataset.fields=row.input_fields.join('、');return option}));select.value='2.1';showFields();}
+      function showFields(){const option=$('productId').selectedOptions[0];$('fieldHint').textContent='登记Pricing字段：'+(option?.dataset.fields||'');}
+      function render(data){const pricing=data.pricing||{};$('resultTitle').textContent=`${data.contract.product_id} ${data.contract.product_name}，运行${data.run_id}`;$('method').textContent=pricing.method||pricing.status||'未支持';for(const name of fields)$(name).textContent=fmt(pricing.greeks?.[name]??(name==='pv'?pricing.pv:null));$('pv').textContent=fmt(pricing.pv);const rows=Object.entries(pricing.probabilities||{}).map(([key,value])=>`<tr><td>${key}</td><td>${fmt(value.value)}</td><td>${value.definition||value.status||''}</td></tr>`).join('');$('probabilities').innerHTML=rows||'<tr><td colspan="3">不适用</td></tr>';$('raw').textContent=JSON.stringify(data,null,2);}
+      async function run(event){event.preventDefault();const button=$('run');const message=$('message');try{button.disabled=true;message.className='message';message.textContent='正在调用Pricing内核…';const body={product_id:$('productId').value,underlyings:$('underlyings').value,tenor_trading_days:Number($('tenor').value),parameters:jsonField('parameters','条款参数'),schedules:jsonField('schedules','观察日历'),hv_window:Number($('hv').value),risk_free_rate:Number($('rate').value),valuation_date:$('valuationDate').value||null,dividend_yields:{[$('underlyings').value.trim()]:Number($('dividend').value)}};const response=await fetch('/api/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const data=await response.json();if(!response.ok||!data.ok)throw new Error(data.message||'Pricing运行失败');render(data);message.className='message ok';message.textContent=`运行完成：${data.run_id}`;}catch(error){message.className='message error';message.textContent=error.message;}finally{button.disabled=false;}}
+      $('form').addEventListener('submit',run);$('productId').addEventListener('change',showFields);catalog().then(()=>{$('serviceStatus').textContent='Pricing本机服务已连接'}).catch(error=>{$('serviceStatus').textContent=error.message;$('serviceStatus').style.color='#c8102e'});
+    </script>
+  </body>
+</html>

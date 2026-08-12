@@ -1,0 +1,305 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>估值定价 | OptionHelper</title>
+    <link rel="icon" href="../../icons/optionhelper-app-icon-tile-light.svg">
+    <link rel="stylesheet" href="./ui/style.css">
+    <link rel="stylesheet" href="./ui/controls.css">
+    <script src="./vendor/echarts.min.js"></script>
+    <script src="../module-host-bridge.js"></script>
+    <script src="./ui/date-control.js"></script>
+    <style>
+      .pricing-app .canvas-panel {
+        display: grid;
+        min-height: 0;
+        grid-template-rows: 50px auto minmax(0, 1fr);
+        background: var(--paper);
+      }
+
+      .pricing-app .canvas-toolbar { background: var(--paper); }
+
+      .pricing-app .canvas-viewport {
+        display: block;
+        min-height: 0;
+        overflow: auto;
+        scrollbar-gutter: stable;
+        padding: 0 32px 56px;
+        background: var(--paper);
+      }
+
+      .valuation-sheet {
+        width: min(1320px, 100%);
+        margin: 0 auto;
+        padding: 32px 0 56px;
+        background: transparent;
+      }
+
+      .sheet-heading {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 18px;
+        padding-bottom: 22px;
+        border-bottom: 1px solid var(--rule-soft);
+      }
+
+      .sheet-heading h1 { margin: 0; font-size: 22px; letter-spacing: -.025em; }
+      .sheet-heading p { margin: 6px 0 0; color: var(--muted); font-size: 12px; line-height: 1.55; }
+      .section-kicker { margin: 0 0 5px; color: var(--red-deep); font: 650 10px var(--font); letter-spacing: .02em; }
+
+      .status-tag {
+        display: inline-flex;
+        align-items: center;
+        min-height: 25px;
+        padding: 0 9px;
+        border: 1px solid var(--rule);
+        border-radius: 8px;
+        background: var(--surface);
+        color: var(--muted);
+        font: 10px var(--font);
+        white-space: nowrap;
+      }
+
+      .status-tag.ok { border-color: #82a890; background: var(--paper); color: #356144; }
+      .status-tag.unsupported { border-color: var(--red); background: var(--paper); color: var(--red-deep); }
+
+      .valuation-slip {
+        display: grid;
+        grid-template-columns: 1.35fr repeat(3, minmax(0, 1fr));
+        margin-top: 22px;
+        border-top: 1px solid var(--rule-soft);
+        border-bottom: 1px solid var(--rule-soft);
+      }
+
+      .slip-cell { min-height: 96px; padding: 17px 16px; }
+      .slip-cell:not(.primary) { border-left: 1px solid var(--rule-soft); }
+      .slip-cell span { display: block; color: var(--muted); font-size: 10px; }
+      .slip-cell strong { display: block; margin-top: 9px; font-size: 16px; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+      .slip-cell.primary { color: var(--paper); background: var(--red); }
+      .slip-cell.primary span { color: rgba(255, 255, 255, .78); }
+      .slip-cell.primary strong { font-size: 28px; letter-spacing: -.03em; }
+
+      .market-strip {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        margin-top: 20px;
+        padding-top: 18px;
+        border-top: 1px solid var(--rule-soft);
+      }
+
+      .market-item { min-height: 58px; padding: 0 12px; }
+      .market-item:first-child { padding-left: 0; }
+      .market-item + .market-item { border-left: 1px solid var(--rule-soft); }
+      .market-item span { display: block; color: var(--muted); font-size: 10px; }
+      .market-item strong { display: block; margin-top: 6px; font-size: 13px; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+
+      .report-section { margin-top: 30px; padding-top: 26px; border-top: 1px solid var(--rule-soft); }
+      .report-section h2 { margin: 0; font-size: 16px; letter-spacing: -.015em; }
+      .report-section > p { margin: 5px 0 12px; color: var(--muted); font-size: 11px; line-height: 1.55; }
+
+      .chart-grid,
+      .risk-grid { display: grid; gap: 28px; }
+
+      .chart-grid { grid-template-columns: 1.15fr .85fr; }
+      .risk-grid { grid-template-columns: 1fr 1fr; }
+      .chart-figure,
+      .data-section { min-width: 0; margin: 0; padding: 0; }
+      .chart-figure + .chart-figure,
+      .risk-grid .data-section + .data-section { padding-left: 28px; border-left: 1px solid var(--rule-soft); }
+      .chart-figure figcaption { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; padding-bottom: 11px; border-bottom: 1px solid var(--rule-soft); font-size: 12px; }
+      .chart-figure figcaption span { color: var(--muted); font-size: 10px; text-align: right; }
+      .chart { height: 282px; }
+      .greek-overview { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+      .curve-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 28px; }
+      .surface-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 28px; }
+      .surface-note { margin: 0 0 12px; color: var(--muted); font-size: 11px; line-height: 1.55; }
+      .scenario-table td { white-space: nowrap; }
+      .chart-empty { display: grid; height: 100%; place-items: center; padding: 18px; border: 1px solid var(--rule); border-radius: 8px; background: var(--surface); color: var(--muted); font-size: 12px; text-align: center; }
+
+      .data-section h2 { margin: 0; font-size: 15px; }
+      .metric-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin-top: 12px; border-top: 1px solid var(--rule-soft); border-bottom: 1px solid var(--rule-soft); }
+      .metric { min-height: 68px; padding: 12px 0; }
+      .metric:not(:nth-child(3n + 1)) { padding-left: 12px; border-left: 1px solid var(--surface-muted); }
+      .metric:nth-child(n + 4) { border-top: 1px solid var(--surface-muted); }
+      .metric span { display: block; color: var(--muted); font-size: 10px; }
+      .metric strong { display: block; margin-top: 7px; font-size: 14px; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+      .metric.positive strong { color: var(--red); }
+      .metric.negative strong { color: #2b5f9e; }
+
+      .table-wrap { overflow: auto; margin-top: 12px; border: 1px solid var(--rule); }
+      .data-table { width: 100%; border-collapse: collapse; font-size: 11px; font-variant-numeric: tabular-nums; }
+      .data-table th { padding: 9px 10px; border-bottom: 1px solid var(--rule); background: var(--surface-muted); color: #474846; text-align: left; font-weight: 700; white-space: nowrap; }
+      .data-table td { padding: 9px 10px; border-bottom: 1px solid var(--rule-soft); color: #343534; vertical-align: top; }
+      .data-table tr:last-child td { border-bottom: 0; }
+      .empty { color: var(--muted) !important; text-align: center; }
+
+      .audit-details { margin-top: 20px; padding: 0; border-top: 1px solid var(--rule); }
+      .audit-details summary { padding: 12px 0; font-size: 12px; font-weight: 700; cursor: pointer; }
+      .audit-details pre { max-height: 360px; margin: 0 0 13px; padding: 12px; overflow: auto; background: #292d2c; color: #f0f0ee; font: 10px/1.55 var(--mono); white-space: pre-wrap; }
+
+      .inspector-panel form { display: grid; gap: 0; }
+      .inspector-panel h2 { margin-top: 0; }
+      .inspector-panel .inspector-group { padding: 14px 0; }
+      .control-field { display: grid; gap: 5px; margin-top: 9px; color: #4c4e4c; font-size: 11px; font-weight: 700; }
+      .control-field input,
+      .control-field select,
+      .control-field textarea,
+      .term-fields input,
+      .term-fields select { border-color: var(--rule); border-radius: 8px; font-family: var(--font); }
+      .control-field input,
+      .control-field select,
+      .control-field textarea { width: 100%; min-height: 30px; padding: 5px 7px; border: 1px solid var(--rule); background: var(--paper); color: var(--ink); font-size: 11px; }
+      .control-field input[type=number],
+      .date-input { font-family: var(--mono); }
+      .control-field textarea { min-height: 76px; resize: vertical; line-height: 1.5; }
+      .control-field small { color: var(--muted); font-size: 10px; font-weight: 400; line-height: 1.5; }
+      .control-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+
+      .term-fields { display: grid; grid-template-columns: 1fr; gap: 8px; }
+      .term-fields .field { display: grid; grid-template-columns: minmax(84px, 1fr) minmax(105px, 1.15fr); align-items: center; gap: 5px; min-width: 0; }
+      .term-fields .field.long { grid-template-columns: 1fr; }
+      .term-fields .field span { color: #4c4e4c; font-size: 11px; font-weight: 700; overflow-wrap: anywhere; }
+      .term-fields input,
+      .term-fields select { width: 100%; min-width: 0; height: 29px; padding: 0 5px; border: 1px solid var(--rule); background: var(--paper); color: var(--ink); font-size: 10px; }
+      .term-fields small { grid-column: 1 / -1; color: var(--muted); font-size: 10px; line-height: 1.45; overflow-wrap: anywhere; }
+
+      .run-zone { display: grid; gap: 8px; }
+      .message { min-height: 18px; margin: 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
+      .message.error { color: var(--red-deep); }
+      .message.ok { color: #356144; }
+      .module-note { margin: 0; padding: 0; color: var(--muted); font-size: 11px; line-height: 1.55; }
+      .canvas-toolbar-actions .button { height: 29px; line-height: 27px; font-size: 11px; }
+
+      @media (max-width: 1180px) {
+        .valuation-slip,
+        .market-strip { grid-template-columns: repeat(2, 1fr); }
+        .chart-grid,
+        .risk-grid { grid-template-columns: 1fr; }
+        .metric-grid { grid-template-columns: repeat(2, 1fr); }
+        .greek-overview, .curve-grid, .surface-grid { grid-template-columns: 1fr; }
+        .metric:not(:nth-child(3n + 1)) { border-left: 0; }
+        .metric:nth-child(even) { padding-left: 12px; border-left: 1px solid var(--surface-muted); }
+        .metric:nth-child(n + 3) { border-top: 1px solid var(--surface-muted); }
+        .chart-figure + .chart-figure,
+        .risk-grid .data-section + .data-section { padding: 26px 0 0; border-top: 1px solid var(--rule-soft); border-left: 0; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="app-shell pricing-app">
+      <header class="topbar">
+        <div class="brand"><img class="brand-logo" src="../../icons/optionhelper-logo.svg" onerror="this.onerror=null;this.src='../../../assets/icons/optionhelper-logo.svg'" alt="OptionHelper"><span class="brand-separator" aria-hidden="true"></span><span class="module-title">估值定价</span></div>
+        <div class="topbar-status" id="serviceStatus">正在连接本机服务</div>
+        <div class="topbar-actions"><button class="button button-quiet" id="refreshCatalog" type="button">重新读取资料库</button><button class="button button-primary" id="runTop" form="form" type="submit" disabled>运行定价</button></div>
+      </header>
+
+      <main class="workbench" id="workbench">
+        <aside class="library-panel">
+          <div class="panel-kicker">估值对象</div><h1>产品与估值范围</h1><p class="panel-copy">选择结构后，系统读取本次条款与市场快照，输出PV、适用的Greeks、情景价格与事件概率。</p>
+          <label class="field-label" for="productId">产品</label><select id="productId" class="product-select"><option value="">请选择产品</option></select>
+          <div class="binding-card" id="bindingCard"><span>尚未选择产品</span></div>
+          <div class="scenario-heading"><span>估值画布</span><small>04</small></div>
+          <ol class="scenario-list"><li><span class="scenario-title">合同条款</span><span class="scenario-condition">读取已登记的PayoffInput与本次覆盖值。</span></li><li><span class="scenario-title">市场快照</span><span class="scenario-condition">现价、HV、利率与分红假设可追溯。</span></li><li><span class="scenario-title">估值与敏感度</span><span class="scenario-condition">只展示实际实现模型产生的PV和情景结果。</span></li><li><span class="scenario-title">风险指标</span><span class="scenario-condition">Greeks和事件概率不适用时明确标记。</span></li></ol>
+          <div class="library-note">模型可用性以本次运行结果为准。未接入真实定价器的产品不会展示伪造PV或Greeks。</div>
+        </aside>
+        <div class="panel-resizer panel-resizer-left" id="libraryResizer" role="separator" aria-label="调整产品面板宽度" aria-orientation="vertical" tabindex="0"></div>
+
+        <section class="canvas-panel">
+          <div class="canvas-toolbar"><div class="canvas-state"><span class="state-dot" id="stateDot"></span><span id="canvasState">等待估值</span></div><div class="canvas-toolbar-actions"><button class="button button-quiet" id="focusInputs" type="button">调整输入</button><button class="button button-primary" id="runCanvasButton" type="button" disabled>运行定价</button></div></div>
+          <div class="notice-area" id="noticeArea" aria-live="polite"></div>
+          <div class="canvas-viewport">
+            <article class="valuation-sheet" aria-label="估值结果">
+              <header class="sheet-heading"><div><p class="section-kicker">定价结果</p><h1 id="resultTitle">等待运行</h1><p id="resultCopy">运行后展示估值方法、市场快照、敏感度、Greeks与适用的概率指标。</p></div><span class="status-tag" id="method">未运行</span></header>
+              <section class="valuation-slip" aria-label="估值摘要"><div class="slip-cell primary"><span>PV</span><strong id="pv">未运行</strong></div><div class="slip-cell"><span>模型版本</span><strong id="modelVersion">未运行</strong></div><div class="slip-cell"><span>计算误差</span><strong id="standardError">未运行</strong></div><div class="slip-cell"><span>币种</span><strong id="currency">未运行</strong></div></section>
+              <section class="market-strip" aria-label="市场快照"><div class="market-item"><span>估值日</span><strong id="snapshotDate">未运行</strong></div><div class="market-item"><span>现价</span><strong id="snapshotSpot">未运行</strong></div><div class="market-item"><span>实际使用波动率</span><strong id="snapshotHv">未运行</strong></div><div class="market-item"><span>无风险利率/分红率</span><strong id="snapshotRates">未运行</strong></div></section>
+              <section class="report-section"><h2>一、合同摘要</h2><p>合同来自OptionReg。下列风险图与表均由本次ResolvedContract、市场快照及模型重新估值得到。</p><div class="table-wrap"><table class="data-table"><thead><tr><th>产品</th><th>标的</th><th>行权价</th><th>剩余期限</th><th>方法</th><th>波动率口径</th></tr></thead><tbody id="contractSummary"><tr><td colspan="6" class="empty">运行后展示合同摘要</td></tr></tbody></table></div></section>
+              <section class="report-section"><h2>二、Greeks总览</h2><p>金额口径以本次合同数量为准；Delta、Gamma已由归一化标的坐标还原至实际标的价格坐标。</p><div class="metric-grid greek-overview"><div class="metric" id="deltaCell"><span>Delta</span><strong id="delta">未运行</strong></div><div class="metric" id="gammaCell"><span>Gamma</span><strong id="gamma">未运行</strong></div><div class="metric" id="thetaCell"><span>Theta</span><strong id="theta">未运行</strong></div><div class="metric" id="vegaCell"><span>Vega</span><strong id="vega">未运行</strong></div><div class="metric" id="rhoCell"><span>Rho</span><strong id="rho">未运行</strong></div></div></section>
+              <section class="report-section"><h2>三、Greeks曲线</h2><p>每个点均使用同一正式定价引擎重估。Monte Carlo曲线复用冻结随机矩阵，保证共同随机数比较。</p><div class="curve-grid"><figure class="chart-figure"><figcaption><strong>Delta-Spot</strong><span id="deltaSpotAxis">未运行</span></figcaption><div class="chart" id="deltaSpotChart"><div class="chart-empty">运行后展示真实风险曲线</div></div></figure><figure class="chart-figure"><figcaption><strong>Gamma-Spot</strong><span id="gammaSpotAxis">未运行</span></figcaption><div class="chart" id="gammaSpotChart"><div class="chart-empty">运行后展示真实风险曲线</div></div></figure><figure class="chart-figure"><figcaption><strong>Theta-Time</strong><span id="thetaTimeAxis">未运行</span></figcaption><div class="chart" id="thetaTimeChart"><div class="chart-empty">运行后展示真实风险曲线</div></div></figure><figure class="chart-figure"><figcaption><strong>Vega-Volatility</strong><span id="vegaVolAxis">未运行</span></figcaption><div class="chart" id="vegaVolChart"><div class="chart-empty">运行后展示真实风险曲线</div></div></figure></div></section>
+              <section class="report-section"><h2>四、Greeks曲面</h2><p class="surface-note">曲面以热力投影呈现：X轴为标的现价，Y轴为剩余期限，颜色与格内数值为对应Greek。每张图保留完整轴定义。</p><div class="surface-grid"><figure class="chart-figure"><figcaption><strong>Delta曲面</strong><span id="deltaSurfaceAxis">未运行</span></figcaption><div class="chart" id="deltaSurfaceChart"><div class="chart-empty">运行后展示真实Greek曲面</div></div></figure><figure class="chart-figure"><figcaption><strong>Gamma曲面</strong><span id="gammaSurfaceAxis">未运行</span></figcaption><div class="chart" id="gammaSurfaceChart"><div class="chart-empty">运行后展示真实Greek曲面</div></div></figure><figure class="chart-figure"><figcaption><strong>Theta曲面</strong><span id="thetaSurfaceAxis">未运行</span></figcaption><div class="chart" id="thetaSurfaceChart"><div class="chart-empty">运行后展示真实Greek曲面</div></div></figure><figure class="chart-figure"><figcaption><strong>Vega曲面</strong><span id="vegaSurfaceAxis">未运行</span></figcaption><div class="chart" id="vegaSurfaceChart"><div class="chart-empty">运行后展示真实Greek曲面</div></div></figure></div></section>
+              <section class="report-section"><h2>五、Spot与Time情景分析</h2><p>展示受控Spot×剩余期限网格的真实PV与Greeks。非用户提交的正式情景仅在这里作为风险网格披露。</p><div class="table-wrap"><table class="data-table scenario-table"><thead><tr><th>Spot变动</th><th>标的现价</th><th>剩余期限</th><th>PV</th><th>Delta</th><th>Gamma</th><th>Theta</th><th>Vega</th><th>Rho</th></tr></thead><tbody id="riskScenarios"><tr><td colspan="9" class="empty">运行后展示真实风险网格</td></tr></tbody></table></div></section>
+              <section class="report-section"><h2>六、概率与事件定义</h2><p>不适用的概率不以零值替代。</p><div class="table-wrap"><table class="data-table"><thead><tr><th>指标</th><th>结果</th><th>定义</th></tr></thead><tbody id="probabilities"><tr><td colspan="3" class="empty">运行后展示可用概率指标</td></tr></tbody></table></div></section>
+              <span id="errorStatus" hidden>未运行</span><details class="audit-details"><summary>审计记录：完整输入、市场快照、输出与模型口径</summary><pre id="raw">未运行</pre></details>
+            </article>
+          </div>
+        </section>
+        <div class="panel-resizer panel-resizer-right" id="inspectorResizer" role="separator" aria-label="调整输入面板宽度" aria-orientation="vertical" tabindex="0"></div>
+
+        <aside class="inspector-panel">
+          <form id="form" aria-label="定价输入">
+            <div class="panel-kicker">本次定价输入</div><h2 id="inspectorTitle">合同与市场参数</h2><div class="source-detail">条款参数来自Registry。市场参数只作用于本次估值，且会写入本次运行记录。</div>
+            <section class="inspector-group"><div class="group-title">标的</div><label class="control-field"><span>标的代码</span><input id="underlyings" value="000905.SH" required><small id="underlyingHint">单标的</small></label></section>
+            <section class="inspector-group"><div class="group-title">结构条款</div><p class="drag-hint" id="fieldHint">正在读取已登记条款字段。</p><div class="term-fields" id="termFields" aria-live="polite"></div></section>
+            <section class="inspector-group">
+              <div class="group-title">市场快照</div>
+              <div class="control-grid"><label class="control-field"><span>HV窗口</span><select id="hv"><option value="5">HV5</option><option value="10">HV10</option><option value="20" selected>HV20</option><option value="60">HV60</option><option value="122">HV122</option><option value="244">HV244</option></select></label><label class="control-field"><span>估值日</span><input id="valuationDate" class="date-input" type="text" inputmode="numeric" autocomplete="off" placeholder="yyyy/mm/dd"><small>默认当前设备本地日期；非交易日按最近前一交易日取行情。</small></label></div>
+              <div class="control-grid"><label class="control-field"><span>无风险利率R<sub>f</sub></span><input id="rate" type="number" step="0.0001" value="0.015"></label><label class="control-field"><span>分红率q</span><input id="dividend" type="number" step="0.0001" value="0"></label></div>
+              <div class="control-grid"><label class="control-field"><span>合同起始日</span><input id="contractStartDate" class="date-input" type="text" inputmode="numeric" autocomplete="off" placeholder="yyyy/mm/dd"><small>新发合约默认等于估值日；存续合约必须填写真实起始日。</small></label><label class="control-field"><span>单标的合同起始参考价S₀Raw</span><input id="referenceSpot" type="number" min="0" step="any" placeholder="绑定行情后自动填充" readonly><small>仅由已绑定DataAssetRef在合同起始日或此前的未复权close填充；不会用估值日现价替代。</small></label></div><label class="control-field"><span>多标的合同起始参考价</span><textarea id="referenceSpots" placeholder="绑定行情后自动填充" readonly></textarea><small>仅多标的合同显示。每个价格均来自合同起始日或此前的未复权close。</small></label>
+            </section>
+              <section class="inspector-group"><div class="group-title">高级输入与审计</div><label class="control-field"><span>PricingConfig补充参数</span><textarea id="pricingInput" placeholder='例如：{"model_method":"monte_carlo","path_count":2000,"random_seed":20240101,"greek_bumps":{"spot":0.01,"volatility":0.01,"time":0.00274,"rate":0.0001}}'></textarea><small>中证500演示使用显式demo_mode=true与MC10，仅用于链路演示且不可报价。正式MC至少使用1000条路径且相对标准误差不高于5%才可报价；路径数上限为2000，random_seed固定为20240101。</small></label><label class="control-field"><span>条款覆盖导入</span><textarea id="parameterJson" placeholder="粘贴条款覆盖JSON，导入后回填上方字段"></textarea></label><button class="button button-quiet small" type="button" id="importParameters">导入条款</button><div class="control-grid"><label class="control-field"><span>任务标识</span><input id="taskId" placeholder="留空自动生成"></label><label class="control-field"><span>运行标识</span><input id="runId" placeholder="留空自动生成"></label></div></section>
+            <section class="inspector-group reset-group"><div class="run-zone"><button class="button button-primary" id="run" type="submit" disabled>运行定价</button><p class="message" id="message" role="status" aria-live="polite"></p><p class="module-note">仅展示已实现定价规则的结果。路径结构没有真实现金流定价器时，PV与Greeks明确显示不适用。</p></div></section>
+          </form>
+        </aside>
+      </main>
+    </div>
+
+    <script>
+      const $ = id => document.getElementById(id);
+      const greekNames = ['delta','gamma','vega','theta','rho'];
+      const pricingState = { products: [], charts: {} };
+      const csi500Demo = { productId:'2.1', underlyings:'000905.SH', referenceSpot:7443.4332, volatilityOverride:0.20, timeToMaturity:1, rate:0.02, dividend:0 };
+      const localTodayIso = () => { const now = new Date(); return `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`; };
+      const numberTypes = new Set(['number','integer']);
+      const fmt = (value,digits=6) => value === null || value === undefined ? '不适用' : typeof value === 'number' ? value.toLocaleString('zh-CN',{maximumFractionDigits:digits}) : typeof value === 'object' && value.status === 'not_applicable' ? `不适用${value.reason?`：${value.reason}`:''}` : typeof value === 'object' && 'pv_amount_value' in value ? fmt(value.pv_amount_value,digits) : String(value);
+      const percent = value => value === null || value === undefined ? '不适用' : `${(Number(value)*100).toLocaleString('zh-CN',{maximumFractionDigits:2})}%`;
+      const selectedProduct = () => pricingState.products.find(row => row.product_id === $('productId').value) || null;
+      const fields = () => [...document.querySelectorAll('.term-input')];
+      function setState(text,kind='') { $('canvasState').textContent=text; $('stateDot').className=`state-dot ${kind}`; }
+      function showNotice(text,kind='') { $('noticeArea').innerHTML=`<div class="notice ${kind}"><strong>${kind==='error'?'无法运行':'估值定价'}</strong><span>${text}</span></div>`; }
+      function preferredValue(_row,field) { return field.default_value ?? ''; }
+      function inputValue(value) { return Array.isArray(value) || (value && typeof value==='object') ? JSON.stringify(value) : String(value ?? ''); }
+      function buildInput(row,field) { const name=`${field.label}${field.symbol ? `，${field.symbol}` : ''}`; const value=inputValue(preferredValue(row,field)); const long=field.key.length>13 || Array.isArray(field.default_value) || (field.default_value && typeof field.default_value==='object'); const domain=field.domain||{}; let control; if(field.value_type==='boolean') control=`<select class="term-input" data-key="${field.key}" data-type="boolean"><option value="true" ${field.default_value===true?'selected':''}>true</option><option value="false" ${field.default_value===false?'selected':''}>false</option></select>`; else if(Array.isArray(domain.enum)) control=`<select class="term-input" data-key="${field.key}" data-type="${field.value_type}">${domain.enum.map(item=>`<option value="${String(item)}" ${String(item)===String(field.default_value)?'selected':''}>${String(item)}</option>`).join('')}</select>`; else { const numeric=numberTypes.has(field.value_type); control=`<input class="term-input" data-key="${field.key}" data-type="${field.value_type}" type="${numeric?'number':'text'}" ${numeric?'step="any"':''} value="${value.replaceAll('&','&amp;').replaceAll('"','&quot;')}">`; } return `<label class="field ${long?'long':''}"><span>${name}</span>${control}<small>字段键：${field.key}${field.unit?`，${field.unit}`:''}</small></label>`; }
+      function renderTerms({preserve=false}={}) { const row=selectedProduct(); if(!row){$('termFields').innerHTML='<p class="hint">请选择产品后读取条款字段。</p>';$('bindingCard').innerHTML='<span>尚未选择产品</span>';$('inspectorTitle').textContent='合同与市场参数';['runTop','runCanvasButton','run'].forEach(id=>$(id).disabled=true);return;} ['runTop','runCanvasButton','run'].forEach(id=>$(id).disabled=false); const before=preserve?Object.fromEntries(fields().map(el=>[el.dataset.key,el.value])):{}; $('termFields').innerHTML=(row.payoff_fields||[]).map(field=>buildInput(row,field)).join('')||'<p class="hint">该产品尚无可编辑条款字段。</p>'; fields().forEach(el=>{if(Object.prototype.hasOwnProperty.call(before,el.dataset.key))el.value=before[el.dataset.key];}); const multi=row.underlying_scope==='multi_underlying'; $('underlyingHint').textContent=multi?'多标的以英文逗号分隔；需提供覆盖全部标的的本地历史数据':'单标的'; $('underlyings').placeholder=multi?'例如000905.SH,000300.SH':'例如000905.SH'; $('fieldHint').textContent='条款字段由OptionReg加载；市场与模型参数只在本页构造PricingConfig。'; const capability=row.pricer_status==='supported'?`已接入${(row.pricer_methods||[]).join('、')}`:`未接入：${row.pricer_reason||'暂无正式模型'}`; $('bindingCard').innerHTML=`<strong>${row.product_id} ${row.canonical_name}</strong><span>${multi?'多标的':'单标的'}；${capability}</span>`; $('inspectorTitle').textContent=`${row.canonical_name}定价输入`; }
+      function collectParameters(){const parameters={};fields().forEach(el=>{const raw=el.value.trim();if(!raw)return;if(numberTypes.has(el.dataset.type)){const value=Number(raw);if(!Number.isFinite(value))throw new Error(`${el.dataset.key}必须为数值`);parameters[el.dataset.key]=value;}else if(el.dataset.type==='boolean')parameters[el.dataset.key]=raw==='true';else if(raw.startsWith('[')||raw.startsWith('{')){try{parameters[el.dataset.key]=JSON.parse(raw);}catch(error){throw new Error(`${el.dataset.key}不是有效JSON`);}}else parameters[el.dataset.key]=raw;});return parameters;}
+      collectParameters=function(){const row=selectedProduct();const defaults=new Map((row?.payoff_fields||[]).map(field=>[field.key,preferredValue(row,field)]));const parameters={};fields().forEach(el=>{const raw=el.value.trim();if(!raw)return;let value;if(numberTypes.has(el.dataset.type)){value=Number(raw);if(!Number.isFinite(value))throw new Error(`${el.dataset.key}必须为数值`);}else if(el.dataset.type==='boolean')value=raw==='true';else if(raw.startsWith('[')||raw.startsWith('{')){try{value=JSON.parse(raw);}catch(error){throw new Error(`${el.dataset.key}不是有效JSON`);}}else value=raw;const initial=defaults.get(el.dataset.key);if(JSON.stringify(value)===JSON.stringify(initial)||String(value)===String(initial))return;parameters[el.dataset.key]=value;});return parameters;}
+      function parseObject(id,label){try{const value=JSON.parse($(id).value||'{}');if(!value||Array.isArray(value)||typeof value!=='object')throw new Error('必须为JSON对象');return value;}catch(error){throw new Error(`${label}格式错误：${error.message}`);}}
+      function collectPricingConfig(parameters,assets){const config=parseObject('pricingInput','PricingConfig补充参数');const visibleDate=OptionHelperDate.toIso($('valuationDate').value,'估值日');config.valuation_date=config.valuation_date===undefined||config.valuation_date===null?visibleDate:OptionHelperDate.toIso(config.valuation_date,'PricingConfig估值日');config.risk_free_rate??=Number($('rate').value);config.dividend_yield??=(assets.length>1?Object.fromEntries(assets.map(asset=>[asset,Number($('dividend').value)])):Number($('dividend').value));if(config.time_to_maturity===undefined&&!OptionHelperDate.toIso($('contractStartDate').value,'合同起始日'))config.time_to_maturity=Number(parameters.T);config.hv_window??=Number($('hv').value);return config;}
+      function contractIdentity(assets){const startDate=OptionHelperDate.toIso($('contractStartDate').value,'合同起始日');const identity={underlyings:assets,contract_start_date:startDate};if(assets.length===1){const spot=Number($('referenceSpot').value);if(Number.isFinite(spot)&&spot>0)identity.contract_reference_spots={[assets[0]]:spot};return identity;}const raw=$('referenceSpots').value.trim();if(!raw)return identity;const references=parseObject('referenceSpots','多标的合同起始参考价');if(Object.keys(references).length!==assets.length||assets.some(asset=>!Number.isFinite(Number(references[asset]))||Number(references[asset])<=0))throw new Error('多标的合同起始参考价必须逐一覆盖标的代码且全部为正数。');identity.contract_reference_spots=Object.fromEntries(assets.map(asset=>[asset,Number(references[asset])]));return identity;}
+      function importParameters(){try{const source=JSON.parse($('parameterJson').value);if(!source||Array.isArray(source)||typeof source!=='object')throw new Error('必须为JSON对象');fields().forEach(el=>{if(Object.prototype.hasOwnProperty.call(source,el.dataset.key)&&source[el.dataset.key]!==null)el.value=inputValue(source[el.dataset.key],el.dataset.key);});$('message').className='message ok';$('message').textContent='条款已回填至上方字段。';}catch(error){$('message').className='message error';$('message').textContent=`条款导入失败：${error.message}`;}}
+      async function catalog(){const response=await fetch('/api/catalog');const data=await response.json();if(!data.ok)throw new Error(data.message||'产品目录读取失败');pricingState.products=data.products;const select=$('productId');const retained=select.value;select.replaceChildren(new Option('请选择产品',''),...data.products.map(row=>{const option=new Option(`${row.product_id} ${row.canonical_name}${row.pricer_status==='supported'?'':'，未接入'}`,row.product_id);option.disabled=row.pricer_status!=='supported';return option;}));select.value=data.products.some(row=>row.product_id===retained)?retained:'';renderTerms();}
+      function disposeCharts(){Object.values(pricingState.charts).forEach(chart=>chart.dispose());pricingState.charts={};}
+      function chartNode(id){const node=$(id);node.innerHTML='';if(!window.echarts){node.innerHTML='<div class="chart-empty">离线ECharts资源未加载</div>';return null;}return node;}
+      function renderRiskPanels(pricing){
+        disposeCharts();
+        const curveIds={delta_spot:['deltaSpotChart','deltaSpotAxis'],gamma_spot:['gammaSpotChart','gammaSpotAxis'],theta_time:['thetaTimeChart','thetaTimeAxis'],vega_volatility:['vegaVolChart','vegaVolAxis']};
+        const surfaceIds={delta_surface:['deltaSurfaceChart','deltaSurfaceAxis'],gamma_surface:['gammaSurfaceChart','gammaSurfaceAxis'],theta_surface:['thetaSurfaceChart','thetaSurfaceAxis'],vega_surface:['vegaSurfaceChart','vegaSurfaceAxis']};
+        const empty=id=>{$(id).innerHTML='<div class="chart-empty">当前产品尚无可用真实风险数据</div>';};
+        if(!pricing||pricing.status!=='priced'){Object.values(curveIds).forEach(([id])=>empty(id));Object.values(surfaceIds).forEach(([id])=>empty(id));$('riskScenarios').innerHTML='<tr><td colspan="9" class="empty">不适用</td></tr>';$('contractSummary').innerHTML='<tr><td colspan="6" class="empty">不适用</td></tr>';return;}
+        const contract=pricing.input_snapshot?.contract||{};const identity=contract.identity||{};const terms=contract.terms||{};const snapshot=pricing.market_snapshot||{};const volatilityLabel=snapshot.volatility_source==='volatility_override'?'手工覆盖波动率':'历史波动率';const underlyings=identity.underlyings||contract.underlyings||[];$('pv').textContent=fmt(pricing.pv??pricing.pv_amount);$('modelVersion').textContent=pricing.model_version??pricing.version??'不适用';$('contractSummary').innerHTML=`<tr><td>${identity.product_id||pricing.product_id||'不适用'}</td><td>${underlyings.join(',')||'不适用'}</td><td>${fmt(terms.K)}</td><td>${fmt(snapshot.time_to_maturity,6)}年</td><td>${pricing.method||'不适用'}</td><td>${volatilityLabel}：${percent(Object.values(snapshot.volatility||{})[0])}</td></tr>`;
+        (pricing.risk_curves||[]).forEach(curve=>{const ids=curveIds[curve.key];if(!ids)return;const [id,axisId]=ids;$(axisId).textContent=`X：${curve.x_axis.name}(${curve.x_axis.unit})；Y：${curve.y_axis.name}(${curve.y_axis.unit})`;
+          const node=chartNode(id);if(!node)return;const chart=pricingState.charts[id]=echarts.init(node);chart.setOption({animationDuration:220,tooltip:{trigger:'axis',valueFormatter:value=>fmt(value)},grid:{left:56,right:18,top:20,bottom:48},xAxis:{type:'category',name:curve.x_axis.unit,data:curve.points.map(point=>fmt(point.x,4)),axisLine:{lineStyle:{color:'#d1d1ce'}}},yAxis:{type:'value',name:curve.y_axis.name,splitLine:{lineStyle:{color:'#e9e9e7'}}},series:[{name:curve.name,type:'line',smooth:true,symbolSize:6,data:curve.points.map(point=>point.y),lineStyle:{width:2,color:'#c8102e'},itemStyle:{color:'#c8102e'}}]});
+        });
+        (pricing.risk_surfaces||[]).forEach(surface=>{const ids=surfaceIds[surface.key];if(!ids)return;const [id,axisId]=ids;$(axisId).textContent=`X：${surface.x_axis.name}(${surface.x_axis.unit})；Y：${surface.y_axis.name}(${surface.y_axis.unit})；Z：${surface.z_axis.name}(${surface.z_axis.unit})`;
+          const node=chartNode(id);if(!node)return;const values=surface.data.map(row=>row.value[2]).filter(value=>typeof value==='number');const chart=pricingState.charts[id]=echarts.init(node);chart.setOption({animationDuration:220,tooltip:{position:'top',formatter:params=>`${surface.x_axis.name}: ${fmt(surface.x_axis.values[params.value[0]],4)}<br>${surface.y_axis.name}: ${fmt(surface.y_axis.values[params.value[1]],2)}<br>${surface.z_axis.name}: ${fmt(params.value[2])}`},grid:{left:66,right:56,top:14,bottom:48},xAxis:{type:'category',name:surface.x_axis.unit,data:surface.x_axis.values.map(value=>fmt(value,3)),axisLine:{lineStyle:{color:'#d1d1ce'}}},yAxis:{type:'category',name:surface.y_axis.unit,data:surface.y_axis.values.map(value=>fmt(value,2)),axisLine:{lineStyle:{color:'#d1d1ce'}}},visualMap:{min:Math.min(...values),max:Math.max(...values),calculable:true,orient:'horizontal',left:'center',bottom:0,inRange:{color:['#2b5f9e','#f4eee9','#c8102e']}},series:[{type:'heatmap',data:surface.data.map(row=>row.value),label:{show:true,formatter:params=>fmt(params.value[2],2),fontSize:9},emphasis:{itemStyle:{shadowBlur:8,shadowColor:'rgba(0,0,0,.2)'}}}]});
+        });
+        const rows=(pricing.risk_scenarios||[]).map(row=>`<tr><td>${percent(row.spot_shift)}</td><td>${fmt(row.spot)}</td><td>${fmt(row.remaining_days,1)}日</td><td>${fmt(row.pv)}</td><td>${fmt(row.greeks?.Delta)}</td><td>${fmt(row.greeks?.Gamma)}</td><td>${fmt(row.greeks?.Theta)}</td><td>${fmt(row.greeks?.Vega)}</td><td>${fmt(row.greeks?.Rho)}</td></tr>`).join('');$('riskScenarios').innerHTML=rows||'<tr><td colspan="9" class="empty">不适用</td></tr>';
+      }
+      function renderCharts(pricing){renderRiskPanels(pricing);}
+      function resetOutput(message='运行后展示图表与估值结果。'){['pv','modelVersion','standardError','currency','snapshotDate','snapshotSpot','snapshotHv','snapshotRates','delta','gamma','vega','theta','rho','errorStatus'].forEach(id=>$(id).textContent='未运行');$('resultCopy').textContent=message;$('probabilities').innerHTML='<tr><td colspan="3" class="empty">不适用</td></tr>';renderCharts(null);}
+      function render(data){const pricing=data.pricing||{};const market=data.market_snapshot||{};const contract=data.resolved_contract||{};const identity=contract.identity||{};$('resultTitle').textContent=`${identity.product_id||pricing.product_id||''} ${identity.name_zh||selectedProduct()?.canonical_name||''}`.trim();$('method').textContent=pricing.method||pricing.status||'未支持';$('method').className=`status-tag ${pricing.status==='priced'?'ok':pricing.status==='unsupported'?'unsupported':''}`;if(pricing.status!=='priced'){resetOutput(pricing.messages?.join('；')||'该产品尚未接入真实定价规则，未展示伪造PV或图表。');$('raw').textContent=JSON.stringify(data,null,2);showNotice(pricing.messages?.join('；')||'当前结构没有可用真实定价规则。','error');setState('未支持');return;}const precision=pricing.precision_status==='demo_only'?'MC10演示结果，不可报价':pricing.quote_eligible===false?'结果不可报价':'可报价结果';$('resultCopy').textContent=`估值日${market.valuation_date||'不适用'}，${pricing.method||'已定价'}，${precision}。敏感度与Greeks仅使用本次模型输出。`;$('pv').textContent=fmt(pricing.pv);$('modelVersion').textContent=pricing.model_version||'不适用';$('standardError').textContent=pricing.standard_error===null?'不适用':fmt(pricing.standard_error);$('currency').textContent=pricing.currency||'不适用';const firstSpot=Object.values(market.spot||pricing.market_snapshot?.spot||{})[0];const firstHv=Object.values(market.historical_volatility||pricing.market_snapshot?.volatility||{})[0];const firstQ=typeof market.dividend_yield==='number'?market.dividend_yield:Object.values(market.dividend_yield||pricing.market_snapshot?.dividend_yield||{})[0];$('snapshotDate').textContent=market.valuation_date||pricing.market_snapshot?.valuation_date||'不适用';$('snapshotSpot').textContent=fmt(firstSpot);$('snapshotHv').textContent=percent(firstHv);$('snapshotRates').textContent=`${percent(market.risk_free_rate??pricing.market_snapshot?.risk_free_rate)}/${percent(firstQ)}`;greekNames.forEach(key=>{const value=pricing.greeks?.[key];const elementId=key.toLowerCase();$(elementId).textContent=fmt(value);const cell=$(`${elementId}Cell`);cell.classList.toggle('positive',Number(value)>0);cell.classList.toggle('negative',Number(value)<0);});$('errorStatus').textContent=pricing.standard_error===null?'不适用':fmt(pricing.standard_error);const labels={in_the_money:'到期价内概率',knock_in:'敲入概率',knock_out:'敲出概率'};const probabilities=Object.entries(pricing.probabilities||{}).map(([key,value])=>`<tr><td>${labels[key]||key}</td><td>${fmt(value)}</td><td>${key==='in_the_money'?'仅单腿香草适用':key==='knock_in'?'按本次模拟路径统计敲入':'按本次模拟路径统计敲出'}</td></tr>`).join('');$('probabilities').innerHTML=probabilities||'<tr><td colspan="3" class="empty">不适用</td></tr>';$('raw').textContent=JSON.stringify(data,null,2);renderCharts(pricing);const completion=pricing.precision_status==='demo_only'?'定价完成：MC10演示结果，不可报价。':pricing.quote_eligible===false?'定价完成：精度门禁未通过，不可报价。':'定价完成。PV、敏感度、Greeks与概率指标均来自本次模型运行。';showNotice(completion);setState('定价完成','valid');}
+      function underlyingList(){return $('underlyings').value.split(',').map(value=>value.trim()).filter(Boolean);}
+      function fillResolvedReference(data){const identity=data?.resolved_contract?.identity||{};const references=identity.reference_prices||identity.contract_reference_spots;if(!references||typeof references!=='object')return;const assets=underlyingList();if(assets.length===1&&Number.isFinite(Number(references[assets[0]])))$('referenceSpot').value=String(references[assets[0]]);else if(assets.length>1)$('referenceSpots').value=JSON.stringify(references);}
+      async function run(event){event?.preventDefault();const button=$('run');const message=$('message');try{button.disabled=true;$('runTop').disabled=true;message.className='message';message.textContent='正在调用定价内核…';setState('正在定价','edit');const assets=underlyingList();if(!assets.length)throw new Error('请至少填写一个标的代码。');const termOverrides=collectParameters();const body={product_id:$('productId').value,identity:contractIdentity(assets),term_overrides:termOverrides,pricing_config:collectPricingConfig(termOverrides,assets),task_id:$('taskId').value.trim()||null,run_id:$('runId').value.trim()||null};const response=await fetch('/api/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const data=await response.json();if(!response.ok||!data.ok)throw new Error(data.message||'定价运行失败');fillResolvedReference(data);render(data);message.className='message ok';message.textContent=`运行完成：${data.run_id}`;}catch(error){message.className='message error';message.textContent=error.message;showNotice(error.message,'error');setState('定价失败');}finally{button.disabled=false;$('runTop').disabled=false;}}
+      function bindResizer(resizer,variable,minimum,maximum){let startX=0,startValue=0;const workbench=$('workbench');const clamp=value=>Math.max(minimum,Math.min(maximum,value));const current=()=>parseInt(getComputedStyle(workbench).getPropertyValue(variable),10)||minimum;const setWidth=value=>{const next=clamp(value);workbench.style.setProperty(variable,`${next}px`);resizer.setAttribute('aria-valuenow',String(next));};const finish=()=>{resizer.classList.remove('active');document.removeEventListener('pointermove',move);document.removeEventListener('pointerup',finish);};const move=event=>setWidth(startValue+(variable==='--library-width'?event.clientX-startX:startX-event.clientX));resizer.setAttribute('aria-valuemin',String(minimum));resizer.setAttribute('aria-valuemax',String(maximum));resizer.setAttribute('aria-valuenow',String(current()));resizer.addEventListener('pointerdown',event=>{startX=event.clientX;startValue=current();resizer.classList.add('active');document.addEventListener('pointermove',move);document.addEventListener('pointerup',finish);});resizer.addEventListener('keydown',event=>{const step=event.shiftKey?24:8;const direction=variable==='--library-width'?1:-1;if(event.key==='Home'){event.preventDefault();setWidth(minimum);return;}if(event.key==='End'){event.preventDefault();setWidth(maximum);return;}if(event.key==='ArrowLeft'||event.key==='ArrowRight'){event.preventDefault();setWidth(current()+(event.key==='ArrowRight'?step:-step)*direction);}});}
+      function setNewIssueDefaults(){const today=localTodayIso();OptionHelperDate.set($('valuationDate'),today);OptionHelperDate.set($('contractStartDate'),today);$('contractStartDate').dataset.newIssueDefault='true';}
+      function loadCsi500Demo({productId=null,announce=true}={}) { if(productId)$('productId').value=productId; const demoDate=localTodayIso(); $('underlyings').value=csi500Demo.underlyings; renderTerms(); OptionHelperDate.set($('valuationDate'),demoDate); OptionHelperDate.set($('contractStartDate'),demoDate); $('contractStartDate').dataset.newIssueDefault='true'; $('rate').value=String(csi500Demo.rate); $('dividend').value=String(csi500Demo.dividend); $('referenceSpot').value=String(csi500Demo.referenceSpot); $('referenceSpots').value=''; $('referenceSpot').dataset.localSample='true'; $('pricingInput').value=JSON.stringify({model_method:'monte_carlo',path_count:10,demo_mode:true,spot:csi500Demo.referenceSpot,volatility_override:csi500Demo.volatilityOverride,time_to_maturity:csi500Demo.timeToMaturity,risk_free_rate:csi500Demo.rate,dividend_yield:csi500Demo.dividend,valuation_date:demoDate,demo_calendar:{calendar_id:'demo-european-vanilla',calendar_version:'v1',sessions:[demoDate],discrete_path:false}}); if(announce){const row=selectedProduct(); showNotice(`已载入中证500${row?.canonical_name||''}新发合约样例：现价${csi500Demo.referenceSpot}、波动率覆盖20%、R_f 2%、q 0%、剩余期限1年均为显式演示输入；Monte Carlo路径数为10，未读取或推断行情，结果明确标记为不可报价。`);} }
+      function invalidateLocalReference(){const field=$('referenceSpot');if(field.dataset.localSample==='true'){field.value='';field.dataset.localSample='';} $('referenceSpots').value='';}
+      OptionHelperDate.bind($('valuationDate'),'估值日');OptionHelperDate.bind($('contractStartDate'),'合同起始日');
+      function validateDateInputs(){OptionHelperDate.toIso($('valuationDate').value,'估值日');OptionHelperDate.toIso($('contractStartDate').value,'合同起始日');}
+      function resetForFormalPricing(){renderTerms();$('pricingInput').value='';$('underlyings').value='';$('referenceSpot').value='';$('referenceSpots').value='';$('referenceSpot').dataset.localSample='';setNewIssueDefaults();showNotice('已切换产品。请先在数据获取中绑定真实日频行情，系统会按合同起始日自动填充S₀Raw。');}
+      $('form').addEventListener('submit',event=>{try{validateDateInputs();}catch(error){event.preventDefault();event.stopImmediatePropagation();$('message').className='message error';$('message').textContent=error.message;showNotice(error.message,'error');setState('定价失败');}},true);
+      $('form').addEventListener('submit',run);$('runCanvasButton').addEventListener('click',()=>$('form').requestSubmit());$('focusInputs').addEventListener('click',()=>$('underlyings').focus());$('refreshCatalog').addEventListener('click',()=>catalog().then(()=>{$('productId').value===csi500Demo.productId?loadCsi500Demo({productId:csi500Demo.productId}):renderTerms();}).catch(error=>showNotice(error.message,'error')));$('productId').addEventListener('change',()=>{$('productId').value===csi500Demo.productId?loadCsi500Demo({announce:false}):resetForFormalPricing();});$('underlyings').addEventListener('input',()=>{invalidateLocalReference();const field=fields().find(el=>el.dataset.key==='U');if(field)field.value=$('underlyings').value.trim();});$('valuationDate').addEventListener('input',invalidateLocalReference);$('valuationDate').addEventListener('change',()=>{if($('contractStartDate').dataset.newIssueDefault==='true'){const value=OptionHelperDate.toIso($('valuationDate').value,'估值日');if(value)OptionHelperDate.set($('contractStartDate'),value);}});$('contractStartDate').addEventListener('input',()=>{invalidateLocalReference();$('contractStartDate').dataset.newIssueDefault='';});$('referenceSpot').addEventListener('input',()=>{$('referenceSpot').dataset.localSample='';});$('importParameters').addEventListener('click',importParameters);window.addEventListener('resize',()=>Object.values(pricingState.charts).forEach(chart=>chart.resize()));bindResizer($('libraryResizer'),'--library-width',220,420);bindResizer($('inspectorResizer'),'--inspector-width',300,520);setNewIssueDefaults();if(location.protocol==='file:'){$('serviceStatus').textContent='请先启动本机服务';showNotice('当前是直接打开HTML。页面骨架可预览；运行定价请启动pricer.command。');setState('等待本机服务');}catalog().then(()=>{renderTerms();showNotice('请选择产品后配置合同条款与市场参数。');if(location.protocol!=='file:')$('serviceStatus').textContent='本机服务已连接';}).catch(error=>{if(location.protocol!=='file:'){$('serviceStatus').textContent=error.message;$('serviceStatus').style.color='#b21b36';}});
+    </script>
+  </body>
+</html>

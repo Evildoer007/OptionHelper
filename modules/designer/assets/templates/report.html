@@ -1,0 +1,37 @@
+<!doctype html>
+<!--
+  Public detailed-report shell.
+  The Report is one continuous A4 research document. Designer always renders
+  exactly seven chapters in this order: 核心结论、结构推荐、合同参数、收益结构、
+  估值定价、历史回测、风险提示。Input may supply facts only; it
+  cannot rename, hide, merge or reorder these chapters.
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light">
+<meta name="designer-design-system-version" content="__DESIGN_SYSTEM_VERSION__">
+<title>__TITLE__</title>
+__ECHARTS_HEAD__
+<style>
+__REPORT_THEME__
+</style>
+</head>
+<body class="report-profile-__LAYOUT__" data-design-system-version="__DESIGN_SYSTEM_VERSION__">
+<a class="skip-link" href="#report-main">跳至正文</a>
+<div class="report-shell">
+<main id="report-main" class="report-document" tabindex="-1">
+  <header class="report-head">
+    <div class="report-head__copy">
+      <p class="report-head__brand">__BRAND__</p>
+      <h1>__TITLE__</h1>
+    </div>
+    <dl class="identity-ledger">__IDENTITY__</dl>
+  </header>
+  __CONTENT__
+</main>
+</div>
+__CHART_SCRIPT__
+</body>
+</html>

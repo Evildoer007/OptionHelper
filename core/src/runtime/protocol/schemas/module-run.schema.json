@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "optionhelper://schemas/module-run",
+  "title": "ModuleRun",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["module", "tenant_id", "analysis_case_id", "task_id", "run_id", "candidate_id", "catalog_version", "status", "contract_fingerprint", "execution_fingerprint", "input_snapshot", "data_refs", "limitations", "artifact_manifest", "created_by", "access_scope"],
+  "properties": {
+    "module": {"enum": ["payoffer", "pricer", "backtester"]},
+    "tenant_id": {"type": "string", "minLength": 1},
+    "analysis_case_id": {"type": "string", "minLength": 1},
+    "task_id": {"type": "string", "minLength": 1},
+    "run_id": {"type": "string", "minLength": 1},
+    "candidate_id": {"type": ["string", "null"]},
+    "catalog_version": {"type": ["string", "null"]},
+    "status": {"enum": ["created", "validating", "queued", "running", "succeeded", "partial", "failed", "unsupported", "cancelled", "timed_out"]},
+    "contract_fingerprint": {"type": ["string", "null"]},
+    "execution_fingerprint": {"type": "string", "minLength": 1},
+    "input_snapshot": {"type": "object"},
+    "data_refs": {"type": "array"},
+    "result": {"type": ["object", "null"]},
+    "limitations": {"type": "array", "items": {"type": "string"}},
+    "artifacts": {"type": "array"},
+    "artifact_manifest": {"type": "object"},
+    "created_by": {"type": "string", "minLength": 1},
+    "access_scope": {"type": "array", "items": {"type": "string"}},
+    "error": {"type": ["object", "null"]},
+    "metadata": {"type": "object"}
+  },
+  "allOf": [{
+    "if": {"properties": {"status": {"enum": ["succeeded", "partial"]}}, "required": ["status"]},
+    "then": {
+      "properties": {
+        "candidate_id": {"type": "string", "minLength": 1},
+        "catalog_version": {"type": "string", "minLength": 1},
+        "contract_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    }
+  }]
+}

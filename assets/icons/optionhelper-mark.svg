@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-labelledby="title desc">
+  <title id="title">OptionHelper compact mark</title>
+  <desc id="desc">The transparent-background OptionHelper payoff mark for compact navigation.</desc>
+  <defs>
+    <linearGradient id="red" x1="0" y1="256" x2="256" y2="0" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#A90022"/>
+      <stop offset="1" stop-color="#C8102E"/>
+    </linearGradient>
+  </defs>
+  <circle cx="128" cy="128" r="128" fill="url(#red)"/>
+  <path d="M65 173H111C126 173 138 169 149 160L204 111" fill="none" stroke="#fff" stroke-linecap="round" stroke-linejoin="round" stroke-width="19"/>
+  <circle cx="65" cy="173" r="9.5" fill="#fff"/>
+  <circle cx="204" cy="111" r="9.5" fill="#fff"/>
+  <path d="M181 65A82 82 0 1 0 181 191" fill="none" opacity=".28" stroke="#fff" stroke-linecap="round" stroke-width="8"/>
+</svg>

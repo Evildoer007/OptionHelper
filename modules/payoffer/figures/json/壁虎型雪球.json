@@ -1,0 +1,92 @@
+{
+  "name_zh": "壁虎型雪球",
+  "terms": {
+    "S0": 100.0,
+    "T": 2.0,
+    "N": 10000000.0,
+    "g": 0.2,
+    "K": 100.0,
+    "H_KO": 103.0,
+    "H_KI": 70.0,
+    "c": 0.15,
+    "c_hedge": 0.15,
+    "O_KO": "monthly_last",
+    "O_KI": "daily",
+    "Ohedge": "monthly_last",
+    "hedge_ki_history_policy": "include_hedge_date",
+    "settlement": "cash",
+    "observation_price": "close",
+    "margin_call": true,
+    "hedge_schedule": [
+      [
+        8,
+        80.0
+      ],
+      [
+        16,
+        75.0
+      ]
+    ],
+    "monitor": {
+      "tau_out": "first_time(S_t[O_out] >= H_out)",
+      "tau_in": "first_time(S_t[O_in] <= H_in)",
+      "tau_hedge_raw": "first_time_below_schedule(S_t[O_hedge], H_hedge_j)",
+      "tau_hedge": "effective_hedge_time(tau_hedge_raw, tau_out, tau_in, hedge_ki_history_policy)"
+    },
+    "derived_terms": {
+      "G": "N * g"
+    },
+    "pricing_methods": [
+      "monte_carlo"
+    ],
+    "constraints": [
+      "K == S_0",
+      "H_in < H_out",
+      "T == 2",
+      "O_hedge == 'monthly_last'",
+      "schedule_between(H_hedge_j, H_in, H_out)"
+    ]
+  },
+  "paths": [
+    {
+      "condition": "tau_out < inf and tau_out <= tau_hedge",
+      "cases": [
+        {
+          "domain": "S_T >= 0",
+          "pnl": "cash(tau_out, N * c * tau_out)"
+        }
+      ]
+    },
+    {
+      "condition": "tau_hedge < tau_out",
+      "cases": [
+        {
+          "domain": "S_T >= 0",
+          "pnl": "cash(tau_hedge, N * c_hedge * tau_hedge)"
+        }
+      ]
+    },
+    {
+      "condition": "tau_out == inf and tau_hedge == inf and tau_in == inf",
+      "cases": [
+        {
+          "domain": "S_T >= 0",
+          "pnl": "cash(T, N * c * T)"
+        }
+      ]
+    },
+    {
+      "condition": "tau_out == inf and tau_hedge == inf and tau_in < inf",
+      "cases": [
+        {
+          "domain": "S_T >= S_0",
+          "pnl": "cash(T, 0)"
+        },
+        {
+          "domain": "0 <= S_T < S_0",
+          "pnl": "cash(T, N * r_T)"
+        }
+      ]
+    }
+  ]
+}

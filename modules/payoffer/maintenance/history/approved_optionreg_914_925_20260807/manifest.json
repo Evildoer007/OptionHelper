@@ -1,0 +1,39 @@
+{
+  "approval_id": "approved_optionreg_914_925_20260807",
+  "module": "payoffer",
+  "operation": "default_asset_template_publish",
+  "updates": [
+    {
+      "product_id": "9.25",
+      "name_zh": "保底DCN",
+      "changed_fields": [
+        "paths",
+        "visual_template"
+      ],
+      "reasons": {
+        "paths": "confirmed_path_correction",
+        "visual_template": "visual_template_schema_v1"
+      },
+      "before_json_hash": "cd4c100e9aef992dc84f1ff890ca684d25b3f576f0782d09ce7d131bc813577a",
+      "before_svg_hash": "86613d6adc9e3ea74880fd44c4e1608981fc71b02087134d2128387424c6b667",
+      "after_json_hash": "3eb6009f86628b66e0a6ab642d1c4950fb127b50b8d4919754b1890f7fae3949",
+      "after_svg_hash": "19893510c2b35e332a31c5e99075bbc8c02139b6ecbebb60e616562819080bda"
+    },
+    {
+      "product_id": "9.14",
+      "name_zh": "救生艇雪球",
+      "changed_fields": [
+        "terms",
+        "visual_template"
+      ],
+      "reasons": {
+        "terms": "confirmed_c_reset_correction",
+        "visual_template": "visual_template_schema_v1"
+      },
+      "before_json_hash": "2e141e64259ceb019763482313ed2d22ca057f314eb28913c054f7362fdbe44a",
+      "before_svg_hash": "7f8c616d176f4690e1ef820071e9900cf40ed0ed58cd6e5651f5008b4ded13b1",
+      "after_json_hash": "26b6add106a35c3770a0a68f5fe79b3f27f24bc4915158d25fea9d822ba3ad61",
+      "after_svg_hash": "9f56d44f4c85c029c444a303a9830ad057d5f4a2480a6bacaadd8f9146361fe6"
+    }
+  ]
+}

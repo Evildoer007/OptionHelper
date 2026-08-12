@@ -1,0 +1,47 @@
+{
+  "name_zh": "折价看涨8080（保证金）",
+  "terms": {
+    "S0": 100.0,
+    "T": 0.08333333333333333,
+    "exercise_style": "European",
+    "settlement": "cash",
+    "observation_price": "close",
+    "margin_call": false,
+    "N": 10000000.0,
+    "g": 0.2,
+    "p": 0.0,
+    "K1": 80.0,
+    "K2": 100.0,
+    "alpha": 0.8,
+    "derived_terms": {
+      "G": "N * g"
+    },
+    "pricing_methods": [
+      "monte_carlo"
+    ],
+    "constraints": [
+      "K_1 < K_2",
+      "K_2 == S_0",
+      "p == 0"
+    ]
+  },
+  "paths": [
+    {
+      "condition": "True",
+      "cases": [
+        {
+          "domain": "S_T > K_2",
+          "pnl": "cash(T, N * alpha * r_T)"
+        },
+        {
+          "domain": "K_1 < S_T <= K_2",
+          "pnl": "cash(T, N * r_T)"
+        },
+        {
+          "domain": "0 <= S_T <= K_1",
+          "pnl": "cash(T, -N * (S_0 - K_1) / S_0)"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,311 @@
+"""App task runtime that persists real Capability module runs."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from contextlib import contextmanager
+from dataclasses import dataclass, field
+from threading import Lock
+from typing import Any, Iterator, Mapping
+
+from ..errors import AuthorizationError, UnavailableCapabilityError, ValidationError
+from ..identity.session_identity import SessionIdentity
+from ..stores.data_store import DataStore
+from ..stores.result_store import ResultStore
+from ..task_runtime.job_runner import JobRunner
+from ..task_runtime.idempotency_store import ToolIdempotencyStore
+from ..task_runtime.task_service import TaskService
+from ..tool_gateway import ToolGateway
+
+
+@dataclass
+class _LockEntry:
+    lock: Lock = field(default_factory=Lock)
+    users: int = 0
+
+
+class _CommittedRunPendingError(RuntimeError):
+    pass
+
+
+class ToolDispatcher:
+    def __init__(
+        self,
+        gateway: ToolGateway,
+        jobs: JobRunner,
+        tasks: TaskService,
+        results: ResultStore,
+        data_assets: DataStore,
+        idempotency: ToolIdempotencyStore | None = None,
+    ) -> None:
+        self._gateway = gateway
+        self._jobs = jobs
+        self._tasks = tasks
+        self._results = results
+        self._data_assets = data_assets
+        self._idempotency = idempotency or ToolIdempotencyStore(tasks._state._root / "tool-idempotency.sqlite3")
+        self._idempotency_locks: dict[tuple[str, str, str, str], _LockEntry] = {}
+        self._idempotency_guard = Lock()
+
+    def dispatch(
+        self,
+        tool_name: str,
+        payload: dict[str, Any],
+        identity: SessionIdentity,
+        *,
+        module_context: object | None = None,
+        request_id: str = "",
+        agent_proxy: bool = False,
+    ) -> dict[str, Any]:
+        action = str(payload.get("action", "")).strip().lower()
+        compute_read_action = tool_name in {"payoffer", "pricer", "backtester"} and action not in {"", "run"}
+        if action in {"catalog", "status", "list_assets", "list_report_sources"}:
+            _, result = self._jobs.run(lambda: self._gateway.dispatch(
+                tool_name, payload, identity, module_context=module_context, request_id=request_id, agent_proxy=agent_proxy,
+            ))
+            return result
+        if compute_read_action:
+            # Only declared ``run`` reaches the task/contract/result pipeline.
+            # A non-run action remains a formal module concern: success is a
+            # read-only response; ``ok=False`` is a module rejection, not an
+            # App-level silent success.  Future writing actions must be added
+            # explicitly to the run-class gate rather than relying on this.
+            _, result = self._jobs.run(lambda: self._gateway.dispatch(
+                tool_name, payload, identity, module_context=module_context, request_id=request_id, agent_proxy=agent_proxy,
+            ))
+            if result.get("ok") is False:
+                raise ValidationError(str(result.get("message", f"Capability tool {tool_name} rejected the request")))
+            return result
+        task_id = payload.get("task_id")
+        if not isinstance(task_id, str) or not task_id:
+            raise ValidationError("task_id is required for a Capability module run")
+        self._tasks.get(identity, task_id)
+        idempotency_key = None
+        input_hash = None
+        if tool_name in {"payoffer", "pricer", "backtester"}:
+            clean_payload = dict(payload)
+            supplied_key = clean_payload.pop("idempotency_key", None)
+            input_hash = _tool_input_hash(clean_payload)
+            payload = clean_payload
+            if not supplied_key and not request_id:
+                return self._dispatch_mutating(
+                    tool_name, payload, identity, task_id,
+                    module_context=module_context,
+                    request_id=request_id,
+                    agent_proxy=agent_proxy,
+                )
+            idempotency_key = _idempotency_key(supplied_key or request_id)
+            with self._idempotency_lock(identity, task_id, tool_name, idempotency_key):
+                claim_state, replay = self._idempotency.claim(
+                    tenant_id=identity.tenant_id,
+                    task_id=task_id,
+                    module=tool_name,
+                    action="run",
+                    idempotency_key=idempotency_key,
+                    input_hash=input_hash,
+                )
+                if claim_state == "replay" and replay is not None:
+                    return self._replay(identity, replay)
+                if claim_state == "uncertain":
+                    raise ValidationError("此前运行可能已提交但缺少最终ModuleRunRef索引，禁止自动重算；需按恢复记录人工核验")
+                if claim_state == "busy":
+                    raise ValidationError("相同计算请求正在执行，完成后重试将返回原ModuleRunRef")
+                try:
+                    return self._dispatch_mutating(
+                        tool_name, payload, identity, task_id,
+                        module_context=module_context,
+                        request_id=request_id,
+                        agent_proxy=agent_proxy,
+                        idempotency_key=idempotency_key,
+                        input_hash=input_hash,
+                    )
+                except _CommittedRunPendingError as error:
+                    self._idempotency.mark_uncertain(
+                        tenant_id=identity.tenant_id, task_id=task_id, module=tool_name, action="run",
+                        idempotency_key=idempotency_key, input_hash=input_hash,
+                    )
+                    raise ValidationError(str(error)) from error
+                except Exception:
+                    self._idempotency.abandon(
+                        tenant_id=identity.tenant_id, task_id=task_id, module=tool_name, action="run",
+                        idempotency_key=idempotency_key, input_hash=input_hash,
+                    )
+                    raise
+        return self._dispatch_mutating(
+            tool_name, payload, identity, task_id,
+            module_context=module_context,
+            request_id=request_id,
+            agent_proxy=agent_proxy,
+        )
+
+    def _dispatch_mutating(
+        self,
+        tool_name: str,
+        payload: dict[str, Any],
+        identity: SessionIdentity,
+        task_id: str,
+        *,
+        module_context: object | None,
+        request_id: str,
+        agent_proxy: bool,
+        idempotency_key: str | None = None,
+        input_hash: str | None = None,
+    ) -> dict[str, Any]:
+        gateway_payload = dict(payload)
+        if tool_name in {"payoffer", "pricer", "backtester"}:
+            # task_id is a Host routing fact, not part of the three business
+            # input contracts consumed by the Capability.
+            gateway_payload.pop("task_id", None)
+        execution, result = self._jobs.run(lambda: self._gateway.dispatch(
+            tool_name, gateway_payload, identity, module_context=module_context, request_id=request_id, agent_proxy=agent_proxy,
+        ))
+        if result.get("status") == "unavailable":
+            raise UnavailableCapabilityError(f"Capability tool {tool_name}", str(result.get("reason", "the Capability reported unavailable")))
+        if result.get("ok") is False:
+            raise ValidationError(str(result.get("message", f"Capability tool {tool_name} rejected the request")))
+
+        data_asset_ref = result.get("data_asset_ref")
+        if tool_name == "datafetcher":
+            if not isinstance(data_asset_ref, dict):
+                raise ValidationError("successful DataFetcher response requires data_asset_ref")
+            self._data_assets.register(identity, data_asset_ref)
+            if isinstance(task_id, str) and task_id:
+                self._tasks.append_data_asset_ref(identity, task_id, data_asset_ref)
+            # DataFetcher produces DataAssetRef, never a calculation ModuleRun.
+            return {**result, "job": execution.__dict__}
+        if tool_name == "reporter":
+            # Reporter commits its distinct App-owned ReportRun inside the
+            # formal adapter; it must never be relabelled as ModuleRun.
+            return {**result, "job": execution.__dict__}
+        if tool_name not in {"payoffer", "pricer", "backtester"}:
+            return {**result, "job": execution.__dict__}
+
+        existing = result.get("module_run_ref")
+        if isinstance(existing, dict):
+            if existing.get("module") != tool_name or existing.get("task_id") != task_id or existing.get("tenant_id") != identity.tenant_id:
+                raise ValidationError("Capability ModuleRunRef does not match authenticated App scope")
+            self._results.resolve_module_run(identity, existing)
+            reference = dict(existing)
+        else:
+            reference = self._results.commit_module_run(identity, task_id, tool_name, result)
+        try:
+            self._tasks.append_run_ref(identity, task_id, reference)
+        except Exception:
+            try:
+                self._tasks.append_run_ref(identity, task_id, reference)
+            except Exception as retry_error:
+                raise _CommittedRunPendingError("ModuleRun已提交，但任务索引写入失败；已禁止自动重算") from retry_error
+        if idempotency_key is not None and input_hash is not None:
+            try:
+                self._idempotency.complete(
+                    tenant_id=identity.tenant_id,
+                    task_id=task_id,
+                    module=tool_name,
+                    action="run",
+                    idempotency_key=idempotency_key,
+                    input_hash=input_hash,
+                    reference=reference,
+                )
+            except Exception as error:
+                raise _CommittedRunPendingError("ModuleRun已提交，但幂等索引完成写入失败；已禁止自动重算") from error
+        return {**result, "module_run_ref": reference, "job": execution.__dict__}
+
+    @contextmanager
+    def _idempotency_lock(
+        self, identity: SessionIdentity, task_id: str, module: str, key: str,
+    ) -> Iterator[None]:
+        scope = (identity.tenant_id, task_id, module, key)
+        with self._idempotency_guard:
+            entry = self._idempotency_locks.setdefault(scope, _LockEntry())
+            entry.users += 1
+        entry.lock.acquire()
+        try:
+            yield
+        finally:
+            entry.lock.release()
+            with self._idempotency_guard:
+                entry.users -= 1
+                if entry.users == 0 and self._idempotency_locks.get(scope) is entry:
+                    self._idempotency_locks.pop(scope, None)
+
+    def _replay(self, identity: SessionIdentity, reference: dict[str, str]) -> dict[str, Any]:
+        self._results.resolve_owned_module_run(identity, reference)
+        record = self._results.resolve_module_run(identity, reference)
+        result = record.get("result")
+        if not isinstance(result, dict):
+            raise ValidationError("持久幂等索引指向无效ModuleRun")
+        return {**result, "module_run_ref": reference, "idempotent_replay": True}
+
+    def dispatch_for_conversation(
+        self,
+        tool_name: str,
+        payload: dict[str, Any],
+        identity: SessionIdentity,
+        *,
+        module_context: object,
+        request_id: str,
+    ) -> dict[str, Any]:
+        """Run a server-originated OptChat tool under proxy, not Desk, authority."""
+        _require_task_data_scope(self._tasks, identity, tool_name, payload)
+        return self.dispatch(
+            tool_name,
+            payload,
+            identity,
+            module_context=module_context,
+            request_id=request_id,
+            agent_proxy=True,
+        )
+
+
+def _require_task_data_scope(tasks: TaskService, identity: SessionIdentity, tool_name: str, payload: Mapping[str, Any]) -> None:
+    """Bind conversation calculations to DataAssetRefs already attached to this task."""
+    task_id = payload.get("task_id")
+    if not isinstance(task_id, str) or not task_id:
+        raise ValidationError("conversation tool requires task_id")
+    task = tasks.get(identity, task_id)
+    if tool_name not in {"pricer", "backtester"}:
+        return
+    permitted = {
+        str(item.get("data_asset_id")): str(item.get("content_hash"))
+        for item in task.get("data_asset_refs", []) if isinstance(item, Mapping)
+        if isinstance(item.get("data_asset_id"), str) and isinstance(item.get("content_hash"), str)
+    }
+    if not permitted:
+        raise ValidationError("当前任务尚无可用于计算的受控DataAssetRef")
+    candidate = payload.get("market_data_refs") if tool_name == "pricer" else payload.get("historical_data")
+    if tool_name == "pricer":
+        if not isinstance(candidate, list) or len(candidate) != 1:
+            raise ValidationError("OptChat Pricer必须指定当前任务的唯一DataAssetRef")
+        candidate = candidate[0]
+    asset_id, content_hash = _task_data_asset_ref(candidate)
+    if asset_id not in permitted or content_hash not in {None, permitted[asset_id]}:
+        raise AuthorizationError("conversation.tool.run", "DataAssetRef不属于当前任务")
+    if tool_name == "pricer" and payload.get("trading_calendar_ref") is not None:
+        calendar_id, calendar_hash = _task_data_asset_ref(payload["trading_calendar_ref"])
+        if calendar_id not in permitted or calendar_hash not in {None, permitted[calendar_id]}:
+            raise AuthorizationError("conversation.tool.run", "交易日历DataAssetRef不属于当前任务")
+
+
+def _task_data_asset_ref(value: object) -> tuple[str, str | None]:
+    if isinstance(value, str):
+        return value, None
+    if isinstance(value, Mapping) and set(value).issubset({"data_asset_id", "content_hash"}) and isinstance(value.get("data_asset_id"), str):
+        raw_hash = value.get("content_hash")
+        return str(value["data_asset_id"]), str(raw_hash) if isinstance(raw_hash, str) else None
+    raise ValidationError("OptChat计算只能引用当前任务的DataAssetRef")
+
+
+def _tool_input_hash(payload: Mapping[str, Any]) -> str:
+    try:
+        encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    except (TypeError, ValueError) as error:
+        raise ValidationError("Tool输入必须是可稳定哈希的JSON对象") from error
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _idempotency_key(value: object) -> str:
+    key = str(value or "").strip()
+    if not key or len(key) > 128 or any(ord(char) < 32 or ord(char) == 127 for char in key):
+        raise ValidationError("idempotency_key必须是1至128字符的可打印字符串")
+    return key

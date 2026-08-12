@@ -1,0 +1,21 @@
+[
+  {
+    "id": "knowledger.lookup.call",
+    "area": "knowledger",
+    "description": "按产品ID定位看涨期权并返回稳定条款摘要",
+    "target": "knowledger.lookup",
+    "input": {"product_id": "2.1"},
+    "expect": {
+      "equals": {"product_id": "2.1", "name_zh": "看涨期权", "path_count": 1, "product_count": 65},
+      "contains": {"term_keys": "K"}
+    }
+  },
+  {
+    "id": "knowledger.lookup.unknown",
+    "area": "knowledger",
+    "description": "未知产品不得被静默替换",
+    "target": "knowledger.lookup",
+    "input": {"product_id": "0.0"},
+    "expect": {"equals": {"exception.type": "KeyError"}, "contains": {"exception.message": "未知产品"}}
+  }
+]

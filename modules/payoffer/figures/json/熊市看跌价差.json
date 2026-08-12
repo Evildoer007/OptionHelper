@@ -1,0 +1,40 @@
+{
+  "name_zh": "熊市看跌价差",
+  "terms": {
+    "S0": 100.0,
+    "T": 1.0,
+    "exercise_style": "European",
+    "settlement": "cash",
+    "observation_price": "close",
+    "margin_call": false,
+    "K1": 95.0,
+    "K2": 105.0,
+    "P_net": 4.0,
+    "pricing_methods": [
+      "black_scholes",
+      "monte_carlo"
+    ],
+    "constraints": [
+      "K_1 < K_2"
+    ]
+  },
+  "paths": [
+    {
+      "condition": "True",
+      "cases": [
+        {
+          "domain": "0 <= S_T <= K_1",
+          "pnl": "cash(0, -P_net) + cash(T, u * (K_2 - K_1))"
+        },
+        {
+          "domain": "K_1 < S_T < K_2",
+          "pnl": "cash(0, -P_net) + cash(T, u * (K_2 - S_T))"
+        },
+        {
+          "domain": "S_T >= K_2",
+          "pnl": "cash(0, -P_net)"
+        }
+      ]
+    }
+  ]
+}

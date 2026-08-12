@@ -1,0 +1,12 @@
+app:
+  product_name: OptionHelper
+  capability_name: option-helper
+  local_mode: true
+settings:
+  model_service: disabled_until_provider_configured
+  data_interface: disabled_until_provider_configured
+  storage_export: controlled_export_location_ref_required
+  preferences: default
+security:
+  secrets: secret_ref_only
+  default_role: sales

@@ -1,0 +1,118 @@
+{
+  "name_zh": "救生艇雪球",
+  "terms": {
+    "S0": 100.0,
+    "T": 2.0,
+    "N": 10000000.0,
+    "g": 0.2,
+    "K": 100.0,
+    "H_KO": 100.0,
+    "H_KI": 80.0,
+    "c": 0.073,
+    "c_reset": 0.1,
+    "O_KO": "monthly_last",
+    "O_KI": "daily",
+    "Oreset": "monthly_last",
+    "settlement": "cash",
+    "observation_price": "close",
+    "margin_call": true,
+    "Hreset": 90.0,
+    "monitor": {
+      "tau_in": "first_time(S_t[O_in] <= H_in)",
+      "tau_reset": "first_observation_on_or_after(S_t[O_reset], tau_in)",
+      "tau_out": "reset_knockout_time(S_t[O_out], tau_reset, H_out, H_reset)"
+    },
+    "derived_terms": {
+      "G": "N * g"
+    },
+    "pricing_methods": [
+      "monte_carlo"
+    ],
+    "constraints": [
+      "K == S_0",
+      "H_out == S_0",
+      "H_in == 0.8 * S_0",
+      "H_reset < H_out"
+    ]
+  },
+  "paths": [
+    {
+      "condition": "tau_out < tau_reset",
+      "cases": [
+        {
+          "domain": "S_T >= 0",
+          "pnl": "cash(tau_out, N * c * tau_out)"
+        }
+      ]
+    },
+    {
+      "condition": "tau_reset <= tau_out < inf",
+      "cases": [
+        {
+          "domain": "S_T >= 0",
+          "pnl": "cash(tau_out, N * (c * max(tau_reset - 1 / 365, 0) + c_reset * (tau_out - max(tau_reset - 1 / 365, 0))))"
+        }
+      ]
+    },
+    {
+      "condition": "tau_out == inf and tau_in == inf",
+      "cases": [
+        {
+          "domain": "S_T >= 0",
+          "pnl": "cash(T, N * c * T)"
+        }
+      ]
+    },
+    {
+      "condition": "tau_out == inf and tau_in < inf",
+      "cases": [
+        {
+          "domain": "S_T >= 0",
+          "pnl": "cash(T, N * min((S_T - S_0) / S_0, 0))"
+        }
+      ]
+    }
+  ],
+  "visual_template": {
+    "schema_version": 1,
+    "layout": "standard_path_cards",
+    "path_views": [
+      {
+        "path_index": 1,
+        "case_indexes": [
+          1
+        ],
+        "axis": "S_T",
+        "chart_kind": "conditional_terminal_metric",
+        "title": "路径1"
+      },
+      {
+        "path_index": 2,
+        "case_indexes": [
+          1
+        ],
+        "axis": "S_T",
+        "chart_kind": "conditional_terminal_metric",
+        "title": "路径2"
+      },
+      {
+        "path_index": 3,
+        "case_indexes": [
+          1
+        ],
+        "axis": "S_T",
+        "chart_kind": "conditional_terminal_metric",
+        "title": "路径3"
+      },
+      {
+        "path_index": 4,
+        "case_indexes": [
+          1
+        ],
+        "axis": "S_T",
+        "chart_kind": "conditional_terminal_metric",
+        "title": "路径4"
+      }
+    ]
+  }
+}

@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "optionhelper://schemas/tool-io",
+  "title": "ToolInputOutput",
+  "$defs": {
+    "resolved_contract": {"$ref": "optionhelper://schemas/resolved-contract"},
+    "data_asset_ref": {"$ref": "optionhelper://schemas/data-asset-ref"},
+    "generic_input": {"type": "object"},
+    "generic_output": {"type": "object"},
+    "datafetcher_input": {"$ref": "#/$defs/generic_input"},
+    "datafetcher_output": {"$ref": "#/$defs/generic_output"},
+    "recommender_input": {"$ref": "#/$defs/generic_input"},
+    "recommender_output": {"$ref": "#/$defs/generic_output"},
+    "payoffer_input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract"],
+      "properties": {"contract": {"$ref": "#/$defs/resolved_contract"}}
+    },
+    "payoffer_output": {"$ref": "optionhelper://schemas/module-run"},
+    "pricer_input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract", "pricing_config", "market_data_refs"],
+      "properties": {
+        "contract": {"$ref": "#/$defs/resolved_contract"},
+        "pricing_config": {"type": "object"},
+        "market_data_refs": {"type": "array", "items": {"$ref": "#/$defs/data_asset_ref"}},
+        "trading_calendar_ref": {
+          "oneOf": [
+            {"$ref": "#/$defs/data_asset_ref"},
+            {"type": "null"}
+          ]
+        }
+      }
+    },
+    "pricer_output": {"$ref": "optionhelper://schemas/module-run"},
+    "backtester_input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract", "backtest_config", "historical_data"],
+      "properties": {
+        "contract": {"$ref": "#/$defs/resolved_contract"},
+        "backtest_config": {"type": "object"},
+        "historical_data": {"$ref": "#/$defs/data_asset_ref"}
+      }
+    },
+    "backtester_output": {"$ref": "optionhelper://schemas/module-run"},
+    "reporter_input": {"$ref": "#/$defs/generic_input"},
+    "reporter_output": {"$ref": "#/$defs/generic_output"},
+    "designer_input": {"$ref": "#/$defs/generic_input"},
+    "designer_output": {"$ref": "#/$defs/generic_output"}
+  }
+}

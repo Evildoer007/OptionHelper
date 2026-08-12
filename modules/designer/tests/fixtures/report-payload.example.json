@@ -1,0 +1,47 @@
+{
+  "meta": {
+    "title": "场外衍生品结构研究报告",
+    "as_of_date": "待填",
+    "report_id": "TEMPLATE-DEMO",
+    "generated_at": "待填",
+    "brand": "结构化产品研究",
+    "review_status": "模板示例，不可外发",
+    "layout": "brief"
+  },
+  "sections": ["conclusion", "recommendation", "parameters", "payoff", "pricing", "backtest", "risk"],
+  "conclusion": {
+    "structure_name": "待确认",
+    "underlyings": "待确认",
+    "reasons": ["在此填写经核验的核心推荐理由。"],
+    "valuation_summary": [],
+    "greeks_summary": [],
+    "backtest_summary": [],
+    "risk_summary": ["本文件仅为模板验证，不含任何可供交易或销售使用的结论。"]
+  },
+  "recommendation": {
+    "headline": "待确认结构",
+    "reason": "在此填写结构选择理由。",
+    "structure_name": "待确认",
+    "underlyings": "待确认",
+    "terms": [
+      {"label": "挂钩标的", "value": "待确认"},
+      {"label": "产品期限", "value": "待确认"},
+      {"label": "关键条款", "value": "待确认"}
+    ],
+    "alternatives": [
+      {"title": "备选结构", "summary": "在此说明备选结构的适配条件，不以模板文字替代正式条款或计算结果。", "tags": ["待确认"]}
+    ]
+  },
+  "payoff": {"status": "pending", "note": "尚未提供本次参数化收益图和已解析条款。"},
+  "pricing": {"status": "not_run", "note": "本次任务尚未运行估值。"},
+  "backtest": {"status": "not_run", "note": "本次任务尚未运行回测。"},
+  "parameters": {
+    "payoff_input": [],
+    "pricing_input": [],
+    "backtest_input": []
+  },
+  "risk": {
+    "items": ["本文件仅为模板验证，不含任何可供交易或销售使用的结论。"],
+    "disclaimer": "正式报告须按实际结构和适用监管要求补充风险提示、数据来源及免责声明。"
+  }
+}

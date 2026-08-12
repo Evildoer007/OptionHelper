@@ -1,0 +1,6484 @@
+[
+  {
+    "product_id": "2.1",
+    "canonical_name": "看涨期权",
+    "route_adapter": "european_vanilla",
+    "method": "black_scholes",
+    "calendar_requirement": "not_required",
+    "resolved_contract": {
+      "bound": true,
+      "product_id_matches": true,
+      "underlyings": [
+        "A"
+      ],
+      "contract_fingerprint": "2e1714ea440f630bb566007ebb820033c1c057ae842a76f67cea85ed8a250a0b"
+    },
+    "input_fields_summary": {
+      "identity_fields": [
+        "underlyings",
+        "reference_prices"
+      ],
+      "pricing_config_fields": [
+        "valuation_date",
+        "spot",
+        "historical_volatility",
+        "risk_free_rate",
+        "dividend_yield",
+        "model_method",
+        "path_count",
+        "demo_mode",
+        "random_seed"
+      ],
+      "market_data_ref": {
+        "schema_id": "market-history-v1",
+        "normalized_fields": [
+          "date",
+          "asset_id",
+          "close",
+          "adj_close"
+        ]
+      },
+      "trading_calendar_ref_bound": false,
+      "path_count": null,
+      "demo_mode": false,
+      "random_seed": 20240101
+    },
+    "valuation_dates": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-28",
+      "market_as_of_date": "2023-07-28"
+    },
+    "market_date_fallback": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-27",
+      "market_as_of_date": "2023-07-27"
+    },
+    "status": "priced",
+    "pv_amount": -3.019867330675524,
+    "greeks_shape": {
+      "names": [
+        "delta",
+        "gamma",
+        "rho",
+        "theta",
+        "vega"
+      ],
+      "count": 5,
+      "statuses": {
+        "delta": "available",
+        "gamma": "available",
+        "rho": "available",
+        "theta": "available",
+        "vega": "available"
+      },
+      "finite_values": true
+    },
+    "risk_output_shape": {
+      "curve_count": 4,
+      "curve_point_counts": [
+        5,
+        5,
+        3,
+        5
+      ],
+      "surface_count": 4,
+      "scenario_count": 0
+    },
+    "limitations_or_error": {
+      "limitations": [],
+      "messages": [],
+      "missing_calendar": {
+        "category": "not_required",
+        "exception": "",
+        "message": ""
+      }
+    },
+    "quote_eligible": true,
+    "precision_status": "quote_eligible",
+    "path_count": null
+  },
+  {
+    "product_id": "2.2",
+    "canonical_name": "看跌期权",
+    "route_adapter": "european_vanilla",
+    "method": "black_scholes",
+    "calendar_requirement": "not_required",
+    "resolved_contract": {
+      "bound": true,
+      "product_id_matches": true,
+      "underlyings": [
+        "A"
+      ],
+      "contract_fingerprint": "b355b19ba8909cdfd1ad8a86f79d0ba5b589ea3471c0955742abd0baa20851ad"
+    },
+    "input_fields_summary": {
+      "identity_fields": [
+        "underlyings",
+        "reference_prices"
+      ],
+      "pricing_config_fields": [
+        "valuation_date",
+        "spot",
+        "historical_volatility",
+        "risk_free_rate",
+        "dividend_yield",
+        "model_method",
+        "path_count",
+        "demo_mode",
+        "random_seed"
+      ],
+      "market_data_ref": {
+        "schema_id": "market-history-v1",
+        "normalized_fields": [
+          "date",
+          "asset_id",
+          "close",
+          "adj_close"
+        ]
+      },
+      "trading_calendar_ref_bound": false,
+      "path_count": null,
+      "demo_mode": false,
+      "random_seed": 20240101
+    },
+    "valuation_dates": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-28",
+      "market_as_of_date": "2023-07-28"
+    },
+    "market_date_fallback": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-27",
+      "market_as_of_date": "2023-07-27"
+    },
+    "status": "priced",
+    "pv_amount": -5.0,
+    "greeks_shape": {
+      "names": [
+        "delta",
+        "gamma",
+        "rho",
+        "theta",
+        "vega"
+      ],
+      "count": 5,
+      "statuses": {
+        "delta": "available",
+        "gamma": "available",
+        "rho": "available",
+        "theta": "available",
+        "vega": "available"
+      },
+      "finite_values": true
+    },
+    "risk_output_shape": {
+      "curve_count": 4,
+      "curve_point_counts": [
+        5,
+        5,
+        3,
+        5
+      ],
+      "surface_count": 4,
+      "scenario_count": 0
+    },
+    "limitations_or_error": {
+      "limitations": [],
+      "messages": [],
+      "missing_calendar": {
+        "category": "not_required",
+        "exception": "",
+        "message": ""
+      }
+    },
+    "quote_eligible": true,
+    "precision_status": "quote_eligible",
+    "path_count": null
+  },
+  {
+    "product_id": "3.1",
+    "canonical_name": "牛市看涨价差",
+    "route_adapter": "european_portfolio",
+    "method": "black_scholes",
+    "calendar_requirement": "not_required",
+    "resolved_contract": {
+      "bound": true,
+      "product_id_matches": true,
+      "underlyings": [
+        "A"
+      ],
+      "contract_fingerprint": "4a36c1a51f984dc8de3553df9e5254bf59735ef95011d350cf218dc2651ff17e"
+    },
+    "input_fields_summary": {
+      "identity_fields": [
+        "underlyings",
+        "reference_prices"
+      ],
+      "pricing_config_fields": [
+        "valuation_date",
+        "spot",
+        "historical_volatility",
+        "risk_free_rate",
+        "dividend_yield",
+        "model_method",
+        "path_count",
+        "demo_mode",
+        "random_seed"
+      ],
+      "market_data_ref": {
+        "schema_id": "market-history-v1",
+        "normalized_fields": [
+          "date",
+          "asset_id",
+          "close",
+          "adj_close"
+        ]
+      },
+      "trading_calendar_ref_bound": false,
+      "path_count": null,
+      "demo_mode": false,
+      "random_seed": 20240101
+    },
+    "valuation_dates": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-28",
+      "market_as_of_date": "2023-07-28"
+    },
+    "market_date_fallback": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-27",
+      "market_as_of_date": "2023-07-27"
+    },
+    "status": "priced",
+    "pv_amount": 2.8811260358582444,
+    "greeks_shape": {
+      "names": [
+        "delta",
+        "gamma",
+        "rho",
+        "theta",
+        "vega"
+      ],
+      "count": 5,
+      "statuses": {
+        "delta": "available",
+        "gamma": "available",
+        "rho": "available",
+        "theta": "available",
+        "vega": "available"
+      },
+      "finite_values": true
+    },
+    "risk_output_shape": {
+      "curve_count": 4,
+      "curve_point_counts": [
+        5,
+        5,
+        3,
+        5
+      ],
+      "surface_count": 4,
+      "scenario_count": 0
+    },
+    "limitations_or_error": {
+      "limitations": [],
+      "messages": [],
+      "missing_calendar": {
+        "category": "not_required",
+        "exception": "",
+        "message": ""
+      }
+    },
+    "quote_eligible": true,
+    "precision_status": "quote_eligible",
+    "path_count": null
+  },
+  {
+    "product_id": "3.2",
+    "canonical_name": "牛市看跌价差",
+    "route_adapter": "european_portfolio",
+    "method": "black_scholes",
+    "calendar_requirement": "not_required",
+    "resolved_contract": {
+      "bound": true,
+      "product_id_matches": true,
+      "underlyings": [
+        "A"
+      ],
+      "contract_fingerprint": "5740c554c6f9ae801de6fb2a3b095d39d139df5f898b2d2691ae5fe5401b915e"
+    },
+    "input_fields_summary": {
+      "identity_fields": [
+        "underlyings",
+        "reference_prices"
+      ],
+      "pricing_config_fields": [
+        "valuation_date",
+        "spot",
+        "historical_volatility",
+        "risk_free_rate",
+        "dividend_yield",
+        "model_method",
+        "path_count",
+        "demo_mode",
+        "random_seed"
+      ],
+      "market_data_ref": {
+        "schema_id": "market-history-v1",
+        "normalized_fields": [
+          "date",
+          "asset_id",
+          "close",
+          "adj_close"
+        ]
+      },
+      "trading_calendar_ref_bound": false,
+      "path_count": null,
+      "demo_mode": false,
+      "random_seed": 20240101
+    },
+    "valuation_dates": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-28",
+      "market_as_of_date": "2023-07-28"
+    },
+    "market_date_fallback": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-27",
+      "market_as_of_date": "2023-07-27"
+    },
+    "status": "priced",
+    "pv_amount": -8.920860697209307,
+    "greeks_shape": {
+      "names": [
+        "delta",
+        "gamma",
+        "rho",
+        "theta",
+        "vega"
+      ],
+      "count": 5,
+      "statuses": {
+        "delta": "available",
+        "gamma": "available",
+        "rho": "available",
+        "theta": "available",
+        "vega": "available"
+      },
+      "finite_values": true
+    },
+    "risk_output_shape": {
+      "curve_count": 4,
+      "curve_point_counts": [
+        5,
+        5,
+        3,
+        5
+      ],
+      "surface_count": 4,
+      "scenario_count": 0
+    },
+    "limitations_or_error": {
+      "limitations": [],
+      "messages": [],
+      "missing_calendar": {
+        "category": "not_required",
+        "exception": "",
+        "message": ""
+      }
+    },
+    "quote_eligible": true,
+    "precision_status": "quote_eligible",
+    "path_count": null
+  },
+  {
+    "product_id": "3.3",
+    "canonical_name": "熊市看跌价差",
+    "route_adapter": "european_portfolio",
+    "method": "black_scholes",
+    "calendar_requirement": "not_required",
+    "resolved_contract": {
+      "bound": true,
+      "product_id_matches": true,
+      "underlyings": [
+        "A"
+      ],
+      "contract_fingerprint": "be9fd5474e8307d62b60c3d98b00c1a939c65707be13c086fb89639896d14cd7"
+    },
+    "input_fields_summary": {
+      "identity_fields": [
+        "underlyings",
+        "reference_prices"
+      ],
+      "pricing_config_fields": [
+        "valuation_date",
+        "spot",
+        "historical_volatility",
+        "risk_free_rate",
+        "dividend_yield",
+        "model_method",
+        "path_count",
+        "demo_mode",
+        "random_seed"
+      ],
+      "market_data_ref": {
+        "schema_id": "market-history-v1",
+        "normalized_fields": [
+          "date",
+          "asset_id",
+          "close",
+          "adj_close"
+        ]
+      },
+      "trading_calendar_ref_bound": false,
+      "path_count": null,
+      "demo_mode": false,
+      "random_seed": 20240101
+    },
+    "valuation_dates": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-28",
+      "market_as_of_date": "2023-07-28"
+    },
+    "market_date_fallback": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-27",
+      "market_as_of_date": "2023-07-27"
+    },
+    "status": "priced",
+    "pv_amount": -1.0791393027906935,
+    "greeks_shape": {
+      "names": [
+        "delta",
+        "gamma",
+        "rho",
+        "theta",
+        "vega"
+      ],
+      "count": 5,
+      "statuses": {
+        "delta": "available",
+        "gamma": "available",
+        "rho": "available",
+        "theta": "available",
+        "vega": "available"
+      },
+      "finite_values": true
+    },
+    "risk_output_shape": {
+      "curve_count": 4,
+      "curve_point_counts": [
+        5,
+        5,
+        3,
+        5
+      ],
+      "surface_count": 4,
+      "scenario_count": 0
+    },
+    "limitations_or_error": {
+      "limitations": [],
+      "messages": [],
+      "missing_calendar": {
+        "category": "not_required",
+        "exception": "",
+        "message": ""
+      }
+    },
+    "quote_eligible": true,
+    "precision_status": "quote_eligible",
+    "path_count": null
+  },
+  {
+    "product_id": "3.4",
+    "canonical_name": "熊市看涨价差",
+    "route_adapter": "european_portfolio",
+    "method": "black_scholes",
+    "calendar_requirement": "not_required",
+    "resolved_contract": {
+      "bound": true,
+      "product_id_matches": true,
+      "underlyings": [
+        "A"
+      ],
+      "contract_fingerprint": "f51908d08fba799bc751d0fc830ae7866fc75d54fd3e331c9900f456a430887d"
+    },
+    "input_fields_summary": {
+      "identity_fields": [
+        "underlyings",
+        "reference_prices"
+      ],
+      "pricing_config_fields": [
+        "valuation_date",
+        "spot",
+        "historical_volatility",
+        "risk_free_rate",
+        "dividend_yield",
+        "model_method",
+        "path_count",
+        "demo_mode",
+        "random_seed"
+      ],
+      "market_data_ref": {
+        "schema_id": "market-history-v1",
+        "normalized_fields": [
+          "date",
+          "asset_id",
+          "close",
+          "adj_close"
+        ]
+      },
+      "trading_calendar_ref_bound": false,
+      "path_count": null,
+      "demo_mode": false,
+      "random_seed": 20240101
+    },
+    "valuation_dates": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-28",
+      "market_as_of_date": "2023-07-28"
+    },
+    "market_date_fallback": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-27",
+      "market_as_of_date": "2023-07-27"
+    },
+    "status": "priced",
+    "pv_amount": -12.881126035858244,
+    "greeks_shape": {
+      "names": [
+        "delta",
+        "gamma",
+        "rho",
+        "theta",
+        "vega"
+      ],
+      "count": 5,
+      "statuses": {
+        "delta": "available",
+        "gamma": "available",
+        "rho": "available",
+        "theta": "available",
+        "vega": "available"
+      },
+      "finite_values": true
+    },
+    "risk_output_shape": {
+      "curve_count": 4,
+      "curve_point_counts": [
+        5,
+        5,
+        3,
+        5
+      ],
+      "surface_count": 4,
+      "scenario_count": 0
+    },
+    "limitations_or_error": {
+      "limitations": [],
+      "messages": [],
+      "missing_calendar": {
+        "category": "not_required",
+        "exception": "",
+        "message": ""
+      }
+    },
+    "quote_eligible": true,
+    "precision_status": "quote_eligible",
+    "path_count": null
+  },
+  {
+    "product_id": "4.1",
+    "canonical_name": "跨式",
+    "route_adapter": "european_portfolio",
+    "method": "black_scholes",
+    "calendar_requirement": "not_required",
+    "resolved_contract": {
+      "bound": true,
+      "product_id_matches": true,
+      "underlyings": [
+        "A"
+      ],
+      "contract_fingerprint": "29e33990a117c68cdb7c3a39563d302a5a368b7b3a49c4f638e15b8883db6402"
+    },
+    "input_fields_summary": {
+      "identity_fields": [
+        "underlyings",
+        "reference_prices"
+      ],
+      "pricing_config_fields": [
+        "valuation_date",
+        "spot",
+        "historical_volatility",
+        "risk_free_rate",
+        "dividend_yield",
+        "model_method",
+        "path_count",
+        "demo_mode",
+        "random_seed"
+      ],
+      "market_data_ref": {
+        "schema_id": "market-history-v1",
+        "normalized_fields": [
+          "date",
+          "asset_id",
+          "close",
+          "adj_close"
+        ]
+      },
+      "trading_calendar_ref_bound": false,
+      "path_count": null,
+      "demo_mode": false,
+      "random_seed": 20240101
+    },
+    "valuation_dates": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-28",
+      "market_as_of_date": "2023-07-28"
+    },
+    "market_date_fallback": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-27",
+      "market_as_of_date": "2023-07-27"
+    },
+    "status": "priced",
+    "pv_amount": -12.019867330675524,
+    "greeks_shape": {
+      "names": [
+        "delta",
+        "gamma",
+        "rho",
+        "theta",
+        "vega"
+      ],
+      "count": 5,
+      "statuses": {
+        "delta": "available",
+        "gamma": "available",
+        "rho": "available",
+        "theta": "available",
+        "vega": "available"
+      },
+      "finite_values": true
+    },
+    "risk_output_shape": {
+      "curve_count": 4,
+      "curve_point_counts": [
+        5,
+        5,
+        3,
+        5
+      ],
+      "surface_count": 4,
+      "scenario_count": 0
+    },
+    "limitations_or_error": {
+      "limitations": [],
+      "messages": [],
+      "missing_calendar": {
+        "category": "not_required",
+        "exception": "",
+        "message": ""
+      }
+    },
+    "quote_eligible": true,
+    "precision_status": "quote_eligible",
+    "path_count": null
+  },
+  {
+    "product_id": "4.2",
+    "canonical_name": "宽跨式",
+    "route_adapter": "european_portfolio",
+    "method": "black_scholes",
+    "calendar_requirement": "not_required",
+    "resolved_contract": {
+      "bound": true,
+      "product_id_matches": true,
+      "underlyings": [
+        "A"
+      ],
+      "contract_fingerprint": "95fdadd27131b8918148532707b6218ec67819c229a06b0a7c56a9a8de3bbceb"
+    },
+    "input_fields_summary": {
+      "identity_fields": [
+        "underlyings",
+        "reference_prices"
+      ],
+      "pricing_config_fields": [
+        "valuation_date",
+        "spot",
+        "historical_volatility",
+        "risk_free_rate",
+        "dividend_yield",
+        "model_method",
+        "path_count",
+        "demo_mode",
+        "random_seed"
+      ],
+      "market_data_ref": {
+        "schema_id": "market-history-v1",
+        "normalized_fields": [
+          "date",
+          "asset_id",
+          "close",
+          "adj_close"
+        ]
+      },
+      "trading_calendar_ref_bound": false,
+      "path_count": null,
+      "demo_mode": false,
+      "random_seed": 20240101
+    },
+    "valuation_dates": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-28",
+      "market_as_of_date": "2023-07-28"
+    },
+    "market_date_fallback": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-27",
+      "market_as_of_date": "2023-07-27"
+    },
+    "status": "priced",
+    "pv_amount": -8.0,
+    "greeks_shape": {
+      "names": [
+        "delta",
+        "gamma",
+        "rho",
+        "theta",
+        "vega"
+      ],
+      "count": 5,
+      "statuses": {
+        "delta": "available",
+        "gamma": "available",
+        "rho": "available",
+        "theta": "available",
+        "vega": "available"
+      },
+      "finite_values": true
+    },
+    "risk_output_shape": {
+      "curve_count": 4,
+      "curve_point_counts": [
+        5,
+        5,
+        3,
+        5
+      ],
+      "surface_count": 4,
+      "scenario_count": 0
+    },
+    "limitations_or_error": {
+      "limitations": [],
+      "messages": [],
+      "missing_calendar": {
+        "category": "not_required",
+        "exception": "",
+        "message": ""
+      }
+    },
+    "quote_eligible": true,
+    "precision_status": "quote_eligible",
+    "path_count": null
+  },
+  {
+    "product_id": "4.3",
+    "canonical_name": "蝶式",
+    "route_adapter": "european_portfolio",
+    "method": "black_scholes",
+    "calendar_requirement": "not_required",
+    "resolved_contract": {
+      "bound": true,
+      "product_id_matches": true,
+      "underlyings": [
+        "A"
+      ],
+      "contract_fingerprint": "7b1a801faab9fb99ffc7cb01712233f16a16e1d9fb63ee51e85d26eea5405b43"
+    },
+    "input_fields_summary": {
+      "identity_fields": [
+        "underlyings",
+        "reference_prices"
+      ],
+      "pricing_config_fields": [
+        "valuation_date",
+        "spot",
+        "historical_volatility",
+        "risk_free_rate",
+        "dividend_yield",
+        "model_method",
+        "path_count",
+        "demo_mode",
+        "random_seed"
+      ],
+      "market_data_ref": {
+        "schema_id": "market-history-v1",
+        "normalized_fields": [
+          "date",
+          "asset_id",
+          "close",
+          "adj_close"
+        ]
+      },
+      "trading_calendar_ref_bound": false,
+      "path_count": null,
+      "demo_mode": false,
+      "random_seed": 20240101
+    },
+    "valuation_dates": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-28",
+      "market_as_of_date": "2023-07-28"
+    },
+    "market_date_fallback": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-27",
+      "market_as_of_date": "2023-07-27"
+    },
+    "status": "priced",
+    "pv_amount": 5.321854063743075,
+    "greeks_shape": {
+      "names": [
+        "delta",
+        "gamma",
+        "rho",
+        "theta",
+        "vega"
+      ],
+      "count": 5,
+      "statuses": {
+        "delta": "available",
+        "gamma": "available",
+        "rho": "available",
+        "theta": "available",
+        "vega": "available"
+      },
+      "finite_values": true
+    },
+    "risk_output_shape": {
+      "curve_count": 4,
+      "curve_point_counts": [
+        5,
+        5,
+        3,
+        5
+      ],
+      "surface_count": 4,
+      "scenario_count": 0
+    },
+    "limitations_or_error": {
+      "limitations": [],
+      "messages": [],
+      "missing_calendar": {
+        "category": "not_required",
+        "exception": "",
+        "message": ""
+      }
+    },
+    "quote_eligible": true,
+    "precision_status": "quote_eligible",
+    "path_count": null
+  },
+  {
+    "product_id": "4.4",
+    "canonical_name": "鹰式",
+    "route_adapter": "european_portfolio",
+    "method": "black_scholes",
+    "calendar_requirement": "not_required",
+    "resolved_contract": {
+      "bound": true,
+      "product_id_matches": true,
+      "underlyings": [
+        "A"
+      ],
+      "contract_fingerprint": "3f3f3a9584fb3814c5f437bacfb7a5199b01915595f8ab708f9c874e71d8d9f0"
+    },
+    "input_fields_summary": {
+      "identity_fields": [
+        "underlyings",
+        "reference_prices"
+      ],
+      "pricing_config_fields": [
+        "valuation_date",
+        "spot",
+        "historical_volatility",
+        "risk_free_rate",
+        "dividend_yield",
+        "model_method",
+        "path_count",
+        "demo_mode",
+        "random_seed"
+      ],
+      "market_data_ref": {
+        "schema_id": "market-history-v1",
+        "normalized_fields": [
+          "date",
+          "asset_id",
+          "close",
+          "adj_close"
+        ]
+      },
+      "trading_calendar_ref_bound": false,
+      "path_count": null,
+      "demo_mode": false,
+      "random_seed": 20240101
+    },
+    "valuation_dates": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-28",
+      "market_as_of_date": "2023-07-28"
+    },
+    "market_date_fallback": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-27",
+      "market_as_of_date": "2023-07-27"
+    },
+    "status": "priced",
+    "pv_amount": 6.801986733067565,
+    "greeks_shape": {
+      "names": [
+        "delta",
+        "gamma",
+        "rho",
+        "theta",
+        "vega"
+      ],
+      "count": 5,
+      "statuses": {
+        "delta": "available",
+        "gamma": "available",
+        "rho": "available",
+        "theta": "available",
+        "vega": "available"
+      },
+      "finite_values": true
+    },
+    "risk_output_shape": {
+      "curve_count": 4,
+      "curve_point_counts": [
+        5,
+        5,
+        3,
+        5
+      ],
+      "surface_count": 4,
+      "scenario_count": 0
+    },
+    "limitations_or_error": {
+      "limitations": [],
+      "messages": [],
+      "missing_calendar": {
+        "category": "not_required",
+        "exception": "",
+        "message": ""
+      }
+    },
+    "quote_eligible": true,
+    "precision_status": "quote_eligible",
+    "path_count": null
+  },
+  {
+    "product_id": "5.1",
+    "canonical_name": "向上敲出看涨",
+    "route_adapter": "optionreg_path",
+    "method": "monte_carlo",
+    "calendar_requirement": "trading-calendar",
+    "resolved_contract": {
+      "bound": true,
+      "product_id_matches": true,
+      "underlyings": [
+        "A"
+      ],
+      "contract_fingerprint": "2b889533154c3dfd6fe479228496ef1d7787e949a634583ac4e06fbba7be6773"
+    },
+    "input_fields_summary": {
+      "identity_fields": [
+        "underlyings",
+        "reference_prices"
+      ],
+      "pricing_config_fields": [
+        "valuation_date",
+        "spot",
+        "historical_volatility",
+        "risk_free_rate",
+        "dividend_yield",
+        "model_method",
+        "path_count",
+        "demo_mode",
+        "random_seed"
+      ],
+      "market_data_ref": {
+        "schema_id": "market-history-v1",
+        "normalized_fields": [
+          "date",
+          "asset_id",
+          "close",
+          "adj_close"
+        ]
+      },
+      "trading_calendar_ref_bound": true,
+      "path_count": 10,
+      "demo_mode": true,
+      "random_seed": 20240101
+    },
+    "valuation_dates": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-28",
+      "market_as_of_date": "2023-07-28"
+    },
+    "market_date_fallback": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-27",
+      "market_as_of_date": "2023-07-27"
+    },
+    "status": "priced",
+    "pv_amount": -3.0252384294621715,
+    "greeks_shape": {
+      "names": [
+        "delta",
+        "gamma",
+        "rho",
+        "theta",
+        "vega"
+      ],
+      "count": 5,
+      "statuses": {
+        "delta": "available",
+        "gamma": "available",
+        "rho": "available",
+        "theta": "available",
+        "vega": "available"
+      },
+      "finite_values": true
+    },
+    "risk_output_shape": {
+      "curve_count": 4,
+      "curve_point_counts": [
+        5,
+        5,
+        3,
+        5
+      ],
+      "surface_count": 4,
+      "scenario_count": 0
+    },
+    "limitations_or_error": {
+      "limitations": [],
+      "messages": [
+        "Monte Carlo演示结果不可用于正式报价"
+      ],
+      "missing_calendar": {
+        "category": "missing_trading_calendar",
+        "exception": "ValueError",
+        "message": "路径型Pricer必须绑定独立trading-calendar交易日历"
+      }
+    },
+    "quote_eligible": false,
+    "precision_status": "demo_only",
+    "path_count": 10
+  },
+  {
+    "product_id": "5.2",
+    "canonical_name": "向下敲出看涨",
+    "route_adapter": "optionreg_path",
+    "method": "monte_carlo",
+    "calendar_requirement": "trading-calendar",
+    "resolved_contract": {
+      "bound": true,
+      "product_id_matches": true,
+      "underlyings": [
+        "A"
+      ],
+      "contract_fingerprint": "8ef715eb6e86040a7cd463201752c4d2d2631772ba19386aa5d1737f210e5824"
+    },
+    "input_fields_summary": {
+      "identity_fields": [
+        "underlyings",
+        "reference_prices"
+      ],
+      "pricing_config_fields": [
+        "valuation_date",
+        "spot",
+        "historical_volatility",
+        "risk_free_rate",
+        "dividend_yield",
+        "model_method",
+        "path_count",
+        "demo_mode",
+        "random_seed"
+      ],
+      "market_data_ref": {
+        "schema_id": "market-history-v1",
+        "normalized_fields": [
+          "date",
+          "asset_id",
+          "close",
+          "adj_close"
+        ]
+      },
+      "trading_calendar_ref_bound": true,
+      "path_count": 10,
+      "demo_mode": true,
+      "random_seed": 20240101
+    },
+    "valuation_dates": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-28",
+      "market_as_of_date": "2023-07-28"
+    },
+    "market_date_fallback": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-27",
+      "market_as_of_date": "2023-07-27"
+    },
+    "status": "priced",
+    "pv_amount": -3.0252384294621715,
+    "greeks_shape": {
+      "names": [
+        "delta",
+        "gamma",
+        "rho",
+        "theta",
+        "vega"
+      ],
+      "count": 5,
+      "statuses": {
+        "delta": "available",
+        "gamma": "available",
+        "rho": "available",
+        "theta": "available",
+        "vega": "available"
+      },
+      "finite_values": true
+    },
+    "risk_output_shape": {
+      "curve_count": 4,
+      "curve_point_counts": [
+        5,
+        5,
+        3,
+        5
+      ],
+      "surface_count": 4,
+      "scenario_count": 0
+    },
+    "limitations_or_error": {
+      "limitations": [],
+      "messages": [
+        "Monte Carlo演示结果不可用于正式报价"
+      ],
+      "missing_calendar": {
+        "category": "missing_trading_calendar",
+        "exception": "ValueError",
+        "message": "路径型Pricer必须绑定独立trading-calendar交易日历"
+      }
+    },
+    "quote_eligible": false,
+    "precision_status": "demo_only",
+    "path_count": 10
+  },
+  {
+    "product_id": "5.3",
+    "canonical_name": "向上敲入看涨",
+    "route_adapter": "optionreg_path",
+    "method": "monte_carlo",
+    "calendar_requirement": "trading-calendar",
+    "resolved_contract": {
+      "bound": true,
+      "product_id_matches": true,
+      "underlyings": [
+        "A"
+      ],
+      "contract_fingerprint": "68df867d26ae4104ebeba7e8e6645e7a08c5dea95d2072914f21a6bbbba10215"
+    },
+    "input_fields_summary": {
+      "identity_fields": [
+        "underlyings",
+        "reference_prices"
+      ],
+      "pricing_config_fields": [
+        "valuation_date",
+        "spot",
+        "historical_volatility",
+        "risk_free_rate",
+        "dividend_yield",
+        "model_method",
+        "path_count",
+        "demo_mode",
+        "random_seed"
+      ],
+      "market_data_ref": {
+        "schema_id": "market-history-v1",
+        "normalized_fields": [
+          "date",
+          "asset_id",
+          "close",
+          "adj_close"
+        ]
+      },
+      "trading_calendar_ref_bound": true,
+      "path_count": 10,
+      "demo_mode": true,
+      "random_seed": 20240101
+    },
+    "valuation_dates": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-28",
+      "market_as_of_date": "2023-07-28"
+    },
+    "market_date_fallback": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-27",
+      "market_as_of_date": "2023-07-27"
+    },
+    "status": "priced",
+    "pv_amount": -5.0,
+    "greeks_shape": {
+      "names": [
+        "delta",
+        "gamma",
+        "rho",
+        "theta",
+        "vega"
+      ],
+      "count": 5,
+      "statuses": {
+        "delta": "available",
+        "gamma": "available",
+        "rho": "available",
+        "theta": "available",
+        "vega": "available"
+      },
+      "finite_values": true
+    },
+    "risk_output_shape": {
+      "curve_count": 4,
+      "curve_point_counts": [
+        5,
+        5,
+        3,
+        5
+      ],
+      "surface_count": 4,
+      "scenario_count": 0
+    },
+    "limitations_or_error": {
+      "limitations": [],
+      "messages": [
+        "Monte Carlo演示结果不可用于正式报价"
+      ],
+      "missing_calendar": {
+        "category": "missing_trading_calendar",
+        "exception": "ValueError",
+        "message": "路径型Pricer必须绑定独立trading-calendar交易日历"
+      }
+    },
+    "quote_eligible": false,
+    "precision_status": "demo_only",
+    "path_count": 10
+  },
+  {
+    "product_id": "5.4",
+    "canonical_name": "向下敲入看涨",
+    "route_adapter": "optionreg_path",
+    "method": "monte_carlo",
+    "calendar_requirement": "trading-calendar",
+    "resolved_contract": {
+      "bound": true,
+      "product_id_matches": true,
+      "underlyings": [
+        "A"
+      ],
+      "contract_fingerprint": "b01174a757950d2a636fbe104adb15d6d22427380e32a1b201741b9651c72805"
+    },
+    "input_fields_summary": {
+      "identity_fields": [
+        "underlyings",
+        "reference_prices"
+      ],
+      "pricing_config_fields": [
+        "valuation_date",
+        "spot",
+        "historical_volatility",
+        "risk_free_rate",
+        "dividend_yield",
+        "model_method",
+        "path_count",
+        "demo_mode",
+        "random_seed"
+      ],
+      "market_data_ref": {
+        "schema_id": "market-history-v1",
+        "normalized_fields": [
+          "date",
+          "asset_id",
+          "close",
+          "adj_close"
+        ]
+      },
+      "trading_calendar_ref_bound": true,
+      "path_count": 10,
+      "demo_mode": true,
+      "random_seed": 20240101
+    },
+    "valuation_dates": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-28",
+      "market_as_of_date": "2023-07-28"
+    },
+    "market_date_fallback": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-27",
+      "market_as_of_date": "2023-07-27"
+    },
+    "status": "priced",
+    "pv_amount": -5.0,
+    "greeks_shape": {
+      "names": [
+        "delta",
+        "gamma",
+        "rho",
+        "theta",
+        "vega"
+      ],
+      "count": 5,
+      "statuses": {
+        "delta": "available",
+        "gamma": "available",
+        "rho": "available",
+        "theta": "available",
+        "vega": "available"
+      },
+      "finite_values": true
+    },
+    "risk_output_shape": {
+      "curve_count": 4,
+      "curve_point_counts": [
+        5,
+        5,
+        3,
+        5
+      ],
+      "surface_count": 4,
+      "scenario_count": 0
+    },
+    "limitations_or_error": {
+      "limitations": [],
+      "messages": [
+        "Monte Carlo演示结果不可用于正式报价"
+      ],
+      "missing_calendar": {
+        "category": "missing_trading_calendar",
+        "exception": "ValueError",
+        "message": "路径型Pricer必须绑定独立trading-calendar交易日历"
+      }
+    },
+    "quote_eligible": false,
+    "precision_status": "demo_only",
+    "path_count": 10
+  },
+  {
+    "product_id": "5.5",
+    "canonical_name": "向上敲出看跌",
+    "route_adapter": "optionreg_path",
+    "method": "monte_carlo",
+    "calendar_requirement": "trading-calendar",
+    "resolved_contract": {
+      "bound": true,
+      "product_id_matches": true,
+      "underlyings": [
+        "A"
+      ],
+      "contract_fingerprint": "0530e979d7e10a92557b967e580d46ec2639600982be1b054f3aee92ef0a354e"
+    },
+    "input_fields_summary": {
+      "identity_fields": [
+        "underlyings",
+        "reference_prices"
+      ],
+      "pricing_config_fields": [
+        "valuation_date",
+        "spot",
+        "historical_volatility",
+        "risk_free_rate",
+        "dividend_yield",
+        "model_method",
+        "path_count",
+        "demo_mode",
+        "random_seed"
+      ],
+      "market_data_ref": {
+        "schema_id": "market-history-v1",
+        "normalized_fields": [
+          "date",
+          "asset_id",
+          "close",
+          "adj_close"
+        ]
+      },
+      "trading_calendar_ref_bound": true,
+      "path_count": 10,
+      "demo_mode": true,
+      "random_seed": 20240101
+    },
+    "valuation_dates": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-28",
+      "market_as_of_date": "2023-07-28"
+    },
+    "market_date_fallback": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-27",
+      "market_as_of_date": "2023-07-27"
+    },
+    "status": "priced",
+    "pv_amount": -5.0,
+    "greeks_shape": {
+      "names": [
+        "delta",
+        "gamma",
+        "rho",
+        "theta",
+        "vega"
+      ],
+      "count": 5,
+      "statuses": {
+        "delta": "available",
+        "gamma": "available",
+        "rho": "available",
+        "theta": "available",
+        "vega": "available"
+      },
+      "finite_values": true
+    },
+    "risk_output_shape": {
+      "curve_count": 4,
+      "curve_point_counts": [
+        5,
+        5,
+        3,
+        5
+      ],
+      "surface_count": 4,
+      "scenario_count": 0
+    },
+    "limitations_or_error": {
+      "limitations": [],
+      "messages": [
+        "Monte Carlo演示结果不可用于正式报价"
+      ],
+      "missing_calendar": {
+        "category": "missing_trading_calendar",
+        "exception": "ValueError",
+        "message": "路径型Pricer必须绑定独立trading-calendar交易日历"
+      }
+    },
+    "quote_eligible": false,
+    "precision_status": "demo_only",
+    "path_count": 10
+  },
+  {
+    "product_id": "5.6",
+    "canonical_name": "向下敲出看跌",
+    "route_adapter": "optionreg_path",
+    "method": "monte_carlo",
+    "calendar_requirement": "trading-calendar",
+    "resolved_contract": {
+      "bound": true,
+      "product_id_matches": true,
+      "underlyings": [
+        "A"
+      ],
+      "contract_fingerprint": "cad0919e34d4f7215df309934c8693adb32c433ba4454b38c61a48666cc0034f"
+    },
+    "input_fields_summary": {
+      "identity_fields": [
+        "underlyings",
+        "reference_prices"
+      ],
+      "pricing_config_fields": [
+        "valuation_date",
+        "spot",
+        "historical_volatility",
+        "risk_free_rate",
+        "dividend_yield",
+        "model_method",
+        "path_count",
+        "demo_mode",
+        "random_seed"
+      ],
+      "market_data_ref": {
+        "schema_id": "market-history-v1",
+        "normalized_fields": [
+          "date",
+          "asset_id",
+          "close",
+          "adj_close"
+        ]
+      },
+      "trading_calendar_ref_bound": true,
+      "path_count": 10,
+      "demo_mode": true,
+      "random_seed": 20240101
+    },
+    "valuation_dates": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-28",
+      "market_as_of_date": "2023-07-28"
+    },
+    "market_date_fallback": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-27",
+      "market_as_of_date": "2023-07-27"
+    },
+    "status": "priced",
+    "pv_amount": -5.0,
+    "greeks_shape": {
+      "names": [
+        "delta",
+        "gamma",
+        "rho",
+        "theta",
+        "vega"
+      ],
+      "count": 5,
+      "statuses": {
+        "delta": "available",
+        "gamma": "available",
+        "rho": "available",
+        "theta": "available",
+        "vega": "available"
+      },
+      "finite_values": true
+    },
+    "risk_output_shape": {
+      "curve_count": 4,
+      "curve_point_counts": [
+        5,
+        5,
+        3,
+        5
+      ],
+      "surface_count": 4,
+      "scenario_count": 0
+    },
+    "limitations_or_error": {
+      "limitations": [],
+      "messages": [
+        "Monte Carlo演示结果不可用于正式报价"
+      ],
+      "missing_calendar": {
+        "category": "missing_trading_calendar",
+        "exception": "ValueError",
+        "message": "路径型Pricer必须绑定独立trading-calendar交易日历"
+      }
+    },
+    "quote_eligible": false,
+    "precision_status": "demo_only",
+    "path_count": 10
+  },
+  {
+    "product_id": "5.7",
+    "canonical_name": "向上敲入看跌",
+    "route_adapter": "optionreg_path",
+    "method": "monte_carlo",
+    "calendar_requirement": "trading-calendar",
+    "resolved_contract": {
+      "bound": true,
+      "product_id_matches": true,
+      "underlyings": [
+        "A"
+      ],
+      "contract_fingerprint": "8faf9f4569c77b01cd64c55a9077b62b2f3b3a9774948bf3ea8c6b2de8ba1386"
+    },
+    "input_fields_summary": {
+      "identity_fields": [
+        "underlyings",
+        "reference_prices"
+      ],
+      "pricing_config_fields": [
+        "valuation_date",
+        "spot",
+        "historical_volatility",
+        "risk_free_rate",
+        "dividend_yield",
+        "model_method",
+        "path_count",
+        "demo_mode",
+        "random_seed"
+      ],
+      "market_data_ref": {
+        "schema_id": "market-history-v1",
+        "normalized_fields": [
+          "date",
+          "asset_id",
+          "close",
+          "adj_close"
+        ]
+      },
+      "trading_calendar_ref_bound": true,
+      "path_count": 10,
+      "demo_mode": true,
+      "random_seed": 20240101
+    },
+    "valuation_dates": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-28",
+      "market_as_of_date": "2023-07-28"
+    },
+    "market_date_fallback": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-27",
+      "market_as_of_date": "2023-07-27"
+    },
+    "status": "priced",
+    "pv_amount": -5.0,
+    "greeks_shape": {
+      "names": [
+        "delta",
+        "gamma",
+        "rho",
+        "theta",
+        "vega"
+      ],
+      "count": 5,
+      "statuses": {
+        "delta": "available",
+        "gamma": "available",
+        "rho": "available",
+        "theta": "available",
+        "vega": "available"
+      },
+      "finite_values": true
+    },
+    "risk_output_shape": {
+      "curve_count": 4,
+      "curve_point_counts": [
+        5,
+        5,
+        3,
+        5
+      ],
+      "surface_count": 4,
+      "scenario_count": 0
+    },
+    "limitations_or_error": {
+      "limitations": [],
+      "messages": [
+        "Monte Carlo演示结果不可用于正式报价"
+      ],
+      "missing_calendar": {
+        "category": "missing_trading_calendar",
+        "exception": "ValueError",
+        "message": "路径型Pricer必须绑定独立trading-calendar交易日历"
+      }
+    },
+    "quote_eligible": false,
+    "precision_status": "demo_only",
+    "path_count": 10
+  },
+  {
+    "product_id": "5.8",
+    "canonical_name": "向下敲入看跌",
+    "route_adapter": "optionreg_path",
+    "method": "monte_carlo",
+    "calendar_requirement": "trading-calendar",
+    "resolved_contract": {
+      "bound": true,
+      "product_id_matches": true,
+      "underlyings": [
+        "A"
+      ],
+      "contract_fingerprint": "4becabfc5e3d157279d9ada3f6af48b86beaf34d14c51f28bcead23f6c579d02"
+    },
+    "input_fields_summary": {
+      "identity_fields": [
+        "underlyings",
+        "reference_prices"
+      ],
+      "pricing_config_fields": [
+        "valuation_date",
+        "spot",
+        "historical_volatility",
+        "risk_free_rate",
+        "dividend_yield",
+        "model_method",
+        "path_count",
+        "demo_mode",
+        "random_seed"
+      ],
+      "market_data_ref": {
+        "schema_id": "market-history-v1",
+        "normalized_fields": [
+          "date",
+          "asset_id",
+          "close",
+          "adj_close"
+        ]
+      },
+      "trading_calendar_ref_bound": true,
+      "path_count": 10,
+      "demo_mode": true,
+      "random_seed": 20240101
+    },
+    "valuation_dates": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-28",
+      "market_as_of_date": "2023-07-28"
+    },
+    "market_date_fallback": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-27",
+      "market_as_of_date": "2023-07-27"
+    },
+    "status": "priced",
+    "pv_amount": -5.0,
+    "greeks_shape": {
+      "names": [
+        "delta",
+        "gamma",
+        "rho",
+        "theta",
+        "vega"
+      ],
+      "count": 5,
+      "statuses": {
+        "delta": "available",
+        "gamma": "available",
+        "rho": "available",
+        "theta": "available",
+        "vega": "available"
+      },
+      "finite_values": true
+    },
+    "risk_output_shape": {
+      "curve_count": 4,
+      "curve_point_counts": [
+        5,
+        5,
+        3,
+        5
+      ],
+      "surface_count": 4,
+      "scenario_count": 0
+    },
+    "limitations_or_error": {
+      "limitations": [],
+      "messages": [
+        "Monte Carlo演示结果不可用于正式报价"
+      ],
+      "missing_calendar": {
+        "category": "missing_trading_calendar",
+        "exception": "ValueError",
+        "message": "路径型Pricer必须绑定独立trading-calendar交易日历"
+      }
+    },
+    "quote_eligible": false,
+    "precision_status": "demo_only",
+    "path_count": 10
+  },
+  {
+    "product_id": "6.1",
+    "canonical_name": "现金二元看涨",
+    "route_adapter": "optionreg_path",
+    "method": "monte_carlo",
+    "calendar_requirement": "not_required",
+    "resolved_contract": {
+      "bound": true,
+      "product_id_matches": true,
+      "underlyings": [
+        "A"
+      ],
+      "contract_fingerprint": "9d3057c5dfbc187d80a79e876887effb5aa0e4f1c135d1202c42f7911a1d8884"
+    },
+    "input_fields_summary": {
+      "identity_fields": [
+        "underlyings",
+        "reference_prices"
+      ],
+      "pricing_config_fields": [
+        "valuation_date",
+        "spot",
+        "historical_volatility",
+        "risk_free_rate",
+        "dividend_yield",
+        "model_method",
+        "path_count",
+        "demo_mode",
+        "random_seed"
+      ],
+      "market_data_ref": {
+        "schema_id": "market-history-v1",
+        "normalized_fields": [
+          "date",
+          "asset_id",
+          "close",
+          "adj_close"
+        ]
+      },
+      "trading_calendar_ref_bound": false,
+      "path_count": 10,
+      "demo_mode": true,
+      "random_seed": 20240101
+    },
+    "valuation_dates": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-28",
+      "market_as_of_date": "2023-07-28"
+    },
+    "market_date_fallback": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-27",
+      "market_as_of_date": "2023-07-27"
+    },
+    "status": "priced",
+    "pv_amount": 11.603973466135105,
+    "greeks_shape": {
+      "names": [
+        "delta",
+        "gamma",
+        "rho",
+        "theta",
+        "vega"
+      ],
+      "count": 5,
+      "statuses": {
+        "delta": "available",
+        "gamma": "available",
+        "rho": "available",
+        "theta": "available",
+        "vega": "available"
+      },
+      "finite_values": true
+    },
+    "risk_output_shape": {
+      "curve_count": 4,
+      "curve_point_counts": [
+        5,
+        5,
+        3,
+        5
+      ],
+      "surface_count": 4,
+      "scenario_count": 0
+    },
+    "limitations_or_error": {
+      "limitations": [],
+      "messages": [
+        "Monte Carlo演示结果不可用于正式报价"
+      ],
+      "missing_calendar": {
+        "category": "not_required",
+        "exception": "",
+        "message": ""
+      }
+    },
+    "quote_eligible": false,
+    "precision_status": "demo_only",
+    "path_count": 10
+  },
+  {
+    "product_id": "6.2",
+    "canonical_name": "现金二元看跌",
+    "route_adapter": "optionreg_path",
+    "method": "monte_carlo",
+    "calendar_requirement": "not_required",
+    "resolved_contract": {
+      "bound": true,
+      "product_id_matches": true,
+      "underlyings": [
+        "A"
+      ],
+      "contract_fingerprint": "efc893c5aa393049c4d9614b2c39522ce3ccc1ea0ad4224d500f4940735fdeb7"
+    },
+    "input_fields_summary": {
+      "identity_fields": [
+        "underlyings",
+        "reference_prices"
+      ],
+      "pricing_config_fields": [
+        "valuation_date",
+        "spot",
+        "historical_volatility",
+        "risk_free_rate",
+        "dividend_yield",
+        "model_method",
+        "path_count",
+        "demo_mode",
+        "random_seed"
+      ],
+      "market_data_ref": {
+        "schema_id": "market-history-v1",
+        "normalized_fields": [
+          "date",
+          "asset_id",
+          "close",
+          "adj_close"
+        ]
+      },
+      "trading_calendar_ref_bound": false,
+      "path_count": 10,
+      "demo_mode": true,
+      "random_seed": 20240101
+    },
+    "valuation_dates": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-28",
+      "market_as_of_date": "2023-07-28"
+    },
+    "market_date_fallback": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-27",
+      "market_as_of_date": "2023-07-27"
+    },
+    "status": "priced",
+    "pv_amount": -8.0,
+    "greeks_shape": {
+      "names": [
+        "delta",
+        "gamma",
+        "rho",
+        "theta",
+        "vega"
+      ],
+      "count": 5,
+      "statuses": {
+        "delta": "available",
+        "gamma": "available",
+        "rho": "available",
+        "theta": "available",
+        "vega": "available"
+      },
+      "finite_values": true
+    },
+    "risk_output_shape": {
+      "curve_count": 4,
+      "curve_point_counts": [
+        5,
+        5,
+        3,
+        5
+      ],
+      "surface_count": 4,
+      "scenario_count": 0
+    },
+    "limitations_or_error": {
+      "limitations": [],
+      "messages": [
+        "Monte Carlo演示结果不可用于正式报价"
+      ],
+      "missing_calendar": {
+        "category": "not_required",
+        "exception": "",
+        "message": ""
+      }
+    },
+    "quote_eligible": false,
+    "precision_status": "demo_only",
+    "path_count": 10
+  },
+  {
+    "product_id": "6.3",
+    "canonical_name": "资产二元看涨",
+    "route_adapter": "optionreg_path",
+    "method": "monte_carlo",
+    "calendar_requirement": "not_required",
+    "resolved_contract": {
+      "bound": true,
+      "product_id_matches": true,
+      "underlyings": [
+        "A"
+      ],
+      "contract_fingerprint": "07a427a1e6a5d4f3e3c01ee26568152c65f01e0d052c2c35e6c9b0bfb175c2bc"
+    },
+    "input_fields_summary": {
+      "identity_fields": [
+        "underlyings",
+        "reference_prices"
+      ],
+      "pricing_config_fields": [
+        "valuation_date",
+        "spot",
+        "historical_volatility",
+        "risk_free_rate",
+        "dividend_yield",
+        "model_method",
+        "path_count",
+        "demo_mode",
+        "random_seed"
+      ],
+      "market_data_ref": {
+        "schema_id": "market-history-v1",
+        "normalized_fields": [
+          "date",
+          "asset_id",
+          "close",
+          "adj_close"
+        ]
+      },
+      "trading_calendar_ref_bound": false,
+      "path_count": 10,
+      "demo_mode": true,
+      "random_seed": 20240101
+    },
+    "valuation_dates": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-28",
+      "market_as_of_date": "2023-07-28"
+    },
+    "market_date_fallback": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-27",
+      "market_as_of_date": "2023-07-27"
+    },
+    "status": "priced",
+    "pv_amount": 49.99999999999991,
+    "greeks_shape": {
+      "names": [
+        "delta",
+        "gamma",
+        "rho",
+        "theta",
+        "vega"
+      ],
+      "count": 5,
+      "statuses": {
+        "delta": "available",
+        "gamma": "available",
+        "rho": "available",
+        "theta": "available",
+        "vega": "available"
+      },
+      "finite_values": true
+    },
+    "risk_output_shape": {
+      "curve_count": 4,
+      "curve_point_counts": [
+        5,
+        5,
+        3,
+        5
+      ],
+      "surface_count": 4,
+      "scenario_count": 0
+    },
+    "limitations_or_error": {
+      "limitations": [],
+      "messages": [
+        "Monte Carlo演示结果不可用于正式报价"
+      ],
+      "missing_calendar": {
+        "category": "not_required",
+        "exception": "",
+        "message": ""
+      }
+    },
+    "quote_eligible": false,
+    "precision_status": "demo_only",
+    "path_count": 10
+  },
+  {
+    "product_id": "6.4",
+    "canonical_name": "资产二元看跌",
+    "route_adapter": "optionreg_path",
+    "method": "monte_carlo",
+    "calendar_requirement": "not_required",
+    "resolved_contract": {
+      "bound": true,
+      "product_id_matches": true,
+      "underlyings": [
+        "A"
+      ],
+      "contract_fingerprint": "498e45219f3f1e51af810da1239b6760bfdad146ce71601a223560b20bff2fef"
+    },
+    "input_fields_summary": {
+      "identity_fields": [
+        "underlyings",
+        "reference_prices"
+      ],
+      "pricing_config_fields": [
+        "valuation_date",
+        "spot",
+        "historical_volatility",
+        "risk_free_rate",
+        "dividend_yield",
+        "model_method",
+        "path_count",
+        "demo_mode",
+        "random_seed"
+      ],
+      "market_data_ref": {
+        "schema_id": "market-history-v1",
+        "normalized_fields": [
+          "date",
+          "asset_id",
+          "close",
+          "adj_close"
+        ]
+      },
+      "trading_calendar_ref_bound": false,
+      "path_count": 10,
+      "demo_mode": true,
+      "random_seed": 20240101
+    },
+    "valuation_dates": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-28",
+      "market_as_of_date": "2023-07-28"
+    },
+    "market_date_fallback": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-27",
+      "market_as_of_date": "2023-07-27"
+    },
+    "status": "priced",
+    "pv_amount": -50.0,
+    "greeks_shape": {
+      "names": [
+        "delta",
+        "gamma",
+        "rho",
+        "theta",
+        "vega"
+      ],
+      "count": 5,
+      "statuses": {
+        "delta": "available",
+        "gamma": "available",
+        "rho": "available",
+        "theta": "available",
+        "vega": "available"
+      },
+      "finite_values": true
+    },
+    "risk_output_shape": {
+      "curve_count": 4,
+      "curve_point_counts": [
+        5,
+        5,
+        3,
+        5
+      ],
+      "surface_count": 4,
+      "scenario_count": 0
+    },
+    "limitations_or_error": {
+      "limitations": [],
+      "messages": [
+        "Monte Carlo演示结果不可用于正式报价"
+      ],
+      "missing_calendar": {
+        "category": "not_required",
+        "exception": "",
+        "message": ""
+      }
+    },
+    "quote_eligible": false,
+    "precision_status": "demo_only",
+    "path_count": 10
+  },
+  {
+    "product_id": "6.5",
+    "canonical_name": "触碰即付",
+    "route_adapter": "optionreg_path",
+    "method": "monte_carlo",
+    "calendar_requirement": "trading-calendar",
+    "resolved_contract": {
+      "bound": true,
+      "product_id_matches": true,
+      "underlyings": [
+        "A"
+      ],
+      "contract_fingerprint": "8fa5f934965baea32b515324339016585890f62de77b14c88d6ed8b3e4cdfdf9"
+    },
+    "input_fields_summary": {
+      "identity_fields": [
+        "underlyings",
+        "reference_prices"
+      ],
+      "pricing_config_fields": [
+        "valuation_date",
+        "spot",
+        "historical_volatility",
+        "risk_free_rate",
+        "dividend_yield",
+        "model_method",
+        "path_count",
+        "demo_mode",
+        "random_seed"
+      ],
+      "market_data_ref": {
+        "schema_id": "market-history-v1",
+        "normalized_fields": [
+          "date",
+          "asset_id",
+          "close",
+          "adj_close"
+        ]
+      },
+      "trading_calendar_ref_bound": true,
+      "path_count": 10,
+      "demo_mode": true,
+      "random_seed": 20240101
+    },
+    "valuation_dates": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-28",
+      "market_as_of_date": "2023-07-28"
+    },
+    "market_date_fallback": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-27",
+      "market_as_of_date": "2023-07-27"
+    },
+    "status": "priced",
+    "pv_amount": -8.0,
+    "greeks_shape": {
+      "names": [
+        "delta",
+        "gamma",
+        "rho",
+        "theta",
+        "vega"
+      ],
+      "count": 5,
+      "statuses": {
+        "delta": "available",
+        "gamma": "available",
+        "rho": "available",
+        "theta": "available",
+        "vega": "available"
+      },
+      "finite_values": true
+    },
+    "risk_output_shape": {
+      "curve_count": 4,
+      "curve_point_counts": [
+        5,
+        5,
+        3,
+        5
+      ],
+      "surface_count": 4,
+      "scenario_count": 0
+    },
+    "limitations_or_error": {
+      "limitations": [],
+      "messages": [
+        "Monte Carlo演示结果不可用于正式报价"
+      ],
+      "missing_calendar": {
+        "category": "missing_trading_calendar",
+        "exception": "ValueError",
+        "message": "路径型Pricer必须绑定独立trading-calendar交易日历"
+      }
+    },
+    "quote_eligible": false,
+    "precision_status": "demo_only",
+    "path_count": 10
+  },
+  {
+    "product_id": "6.6",
+    "canonical_name": "不碰才付",
+    "route_adapter": "optionreg_path",
+    "method": "monte_carlo",
+    "calendar_requirement": "trading-calendar",
+    "resolved_contract": {
+      "bound": true,
+      "product_id_matches": true,
+      "underlyings": [
+        "A"
+      ],
+      "contract_fingerprint": "7f799b63f2b0280b34d5dbaa132ab48c6d8629245689a5099c1092ec01fd2ccf"
+    },
+    "input_fields_summary": {
+      "identity_fields": [
+        "underlyings",
+        "reference_prices"
+      ],
+      "pricing_config_fields": [
+        "valuation_date",
+        "spot",
+        "historical_volatility",
+        "risk_free_rate",
+        "dividend_yield",
+        "model_method",
+        "path_count",
+        "demo_mode",
+        "random_seed"
+      ],
+      "market_data_ref": {
+        "schema_id": "market-history-v1",
+        "normalized_fields": [
+          "date",
+          "asset_id",
+          "close",
+          "adj_close"
+        ]
+      },
+      "trading_calendar_ref_bound": true,
+      "path_count": 10,
+      "demo_mode": true,
+      "random_seed": 20240101
+    },
+    "valuation_dates": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-28",
+      "market_as_of_date": "2023-07-28"
+    },
+    "market_date_fallback": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-27",
+      "market_as_of_date": "2023-07-27"
+    },
+    "status": "priced",
+    "pv_amount": 11.605047685892426,
+    "greeks_shape": {
+      "names": [
+        "delta",
+        "gamma",
+        "rho",
+        "theta",
+        "vega"
+      ],
+      "count": 5,
+      "statuses": {
+        "delta": "available",
+        "gamma": "available",
+        "rho": "available",
+        "theta": "available",
+        "vega": "available"
+      },
+      "finite_values": true
+    },
+    "risk_output_shape": {
+      "curve_count": 4,
+      "curve_point_counts": [
+        5,
+        5,
+        3,
+        5
+      ],
+      "surface_count": 4,
+      "scenario_count": 0
+    },
+    "limitations_or_error": {
+      "limitations": [],
+      "messages": [
+        "Monte Carlo演示结果不可用于正式报价"
+      ],
+      "missing_calendar": {
+        "category": "missing_trading_calendar",
+        "exception": "ValueError",
+        "message": "路径型Pricer必须绑定独立trading-calendar交易日历"
+      }
+    },
+    "quote_eligible": false,
+    "precision_status": "demo_only",
+    "path_count": 10
+  },
+  {
+    "product_id": "7.1",
+    "canonical_name": "标准安全气囊Airbag",
+    "route_adapter": "optionreg_path",
+    "method": "monte_carlo",
+    "calendar_requirement": "trading-calendar",
+    "resolved_contract": {
+      "bound": true,
+      "product_id_matches": true,
+      "underlyings": [
+        "A"
+      ],
+      "contract_fingerprint": "bd5499dfd6df6d9fc86a9339f3acf583ea0e2221e9f8dca05f29d54829b837bc"
+    },
+    "input_fields_summary": {
+      "identity_fields": [
+        "underlyings",
+        "reference_prices"
+      ],
+      "pricing_config_fields": [
+        "valuation_date",
+        "spot",
+        "historical_volatility",
+        "risk_free_rate",
+        "dividend_yield",
+        "model_method",
+        "path_count",
+        "demo_mode",
+        "random_seed"
+      ],
+      "market_data_ref": {
+        "schema_id": "market-history-v1",
+        "normalized_fields": [
+          "date",
+          "asset_id",
+          "close",
+          "adj_close"
+        ]
+      },
+      "trading_calendar_ref_bound": true,
+      "path_count": 10,
+      "demo_mode": true,
+      "random_seed": 20240101
+    },
+    "valuation_dates": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-28",
+      "market_as_of_date": "2023-07-28"
+    },
+    "market_date_fallback": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-27",
+      "market_as_of_date": "2023-07-27"
+    },
+    "status": "priced",
+    "pv_amount": -3.025238429462173,
+    "greeks_shape": {
+      "names": [
+        "delta",
+        "gamma",
+        "rho",
+        "theta",
+        "vega"
+      ],
+      "count": 5,
+      "statuses": {
+        "delta": "available",
+        "gamma": "available",
+        "rho": "available",
+        "theta": "available",
+        "vega": "available"
+      },
+      "finite_values": true
+    },
+    "risk_output_shape": {
+      "curve_count": 4,
+      "curve_point_counts": [
+        5,
+        5,
+        3,
+        5
+      ],
+      "surface_count": 4,
+      "scenario_count": 0
+    },
+    "limitations_or_error": {
+      "limitations": [],
+      "messages": [
+        "Monte Carlo演示结果不可用于正式报价"
+      ],
+      "missing_calendar": {
+        "category": "missing_trading_calendar",
+        "exception": "ValueError",
+        "message": "路径型Pricer必须绑定独立trading-calendar交易日历"
+      }
+    },
+    "quote_eligible": false,
+    "precision_status": "demo_only",
+    "path_count": 10
+  },
+  {
+    "product_id": "7.2",
+    "canonical_name": "安全气囊Airbag（上涨收益封顶）",
+    "route_adapter": "optionreg_path",
+    "method": "monte_carlo",
+    "calendar_requirement": "trading-calendar",
+    "resolved_contract": {
+      "bound": true,
+      "product_id_matches": true,
+      "underlyings": [
+        "A"
+      ],
+      "contract_fingerprint": "64e613ecfa9a7fdaef718849d3989b30ca7d94dbf89bab64c34b1fc4c69f388b"
+    },
+    "input_fields_summary": {
+      "identity_fields": [
+        "underlyings",
+        "reference_prices"
+      ],
+      "pricing_config_fields": [
+        "valuation_date",
+        "spot",
+        "historical_volatility",
+        "risk_free_rate",
+        "dividend_yield",
+        "model_method",
+        "path_count",
+        "demo_mode",
+        "random_seed"
+      ],
+      "market_data_ref": {
+        "schema_id": "market-history-v1",
+        "normalized_fields": [
+          "date",
+          "asset_id",
+          "close",
+          "adj_close"
+        ]
+      },
+      "trading_calendar_ref_bound": true,
+      "path_count": 10,
+      "demo_mode": true,
+      "random_seed": 20240101
+    },
+    "valuation_dates": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-28",
+      "market_as_of_date": "2023-07-28"
+    },
+    "market_date_fallback": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-27",
+      "market_as_of_date": "2023-07-27"
+    },
+    "status": "priced",
+    "pv_amount": 1.974761570537828,
+    "greeks_shape": {
+      "names": [
+        "delta",
+        "gamma",
+        "rho",
+        "theta",
+        "vega"
+      ],
+      "count": 5,
+      "statuses": {
+        "delta": "available",
+        "gamma": "available",
+        "rho": "available",
+        "theta": "available",
+        "vega": "available"
+      },
+      "finite_values": true
+    },
+    "risk_output_shape": {
+      "curve_count": 4,
+      "curve_point_counts": [
+        5,
+        5,
+        3,
+        5
+      ],
+      "surface_count": 4,
+      "scenario_count": 0
+    },
+    "limitations_or_error": {
+      "limitations": [],
+      "messages": [
+        "Monte Carlo演示结果不可用于正式报价"
+      ],
+      "missing_calendar": {
+        "category": "missing_trading_calendar",
+        "exception": "ValueError",
+        "message": "路径型Pricer必须绑定独立trading-calendar交易日历"
+      }
+    },
+    "quote_eligible": false,
+    "precision_status": "demo_only",
+    "path_count": 10
+  },
+  {
+    "product_id": "7.3",
+    "canonical_name": "安全气囊Airbag（折让上涨参与率）",
+    "route_adapter": "optionreg_path",
+    "method": "monte_carlo",
+    "calendar_requirement": "trading-calendar",
+    "resolved_contract": {
+      "bound": true,
+      "product_id_matches": true,
+      "underlyings": [
+        "A"
+      ],
+      "contract_fingerprint": "6b90cb5cfe130edfd73ca4dc4fbd20f11ba12e2b4f01b65d829ceea223dba606"
+    },
+    "input_fields_summary": {
+      "identity_fields": [
+        "underlyings",
+        "reference_prices"
+      ],
+      "pricing_config_fields": [
+        "valuation_date",
+        "spot",
+        "historical_volatility",
+        "risk_free_rate",
+        "dividend_yield",
+        "model_method",
+        "path_count",
+        "demo_mode",
+        "random_seed"
+      ],
+      "market_data_ref": {
+        "schema_id": "market-history-v1",
+        "normalized_fields": [
+          "date",
+          "asset_id",
+          "close",
+          "adj_close"
+        ]
+      },
+      "trading_calendar_ref_bound": true,
+      "path_count": 10,
+      "demo_mode": true,
+      "random_seed": 20240101
+    },
+    "valuation_dates": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-28",
+      "market_as_of_date": "2023-07-28"
+    },
+    "market_date_fallback": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-27",
+      "market_as_of_date": "2023-07-27"
+    },
+    "status": "priced",
+    "pv_amount": 1.4613235621979925,
+    "greeks_shape": {
+      "names": [
+        "delta",
+        "gamma",
+        "rho",
+        "theta",
+        "vega"
+      ],
+      "count": 5,
+      "statuses": {
+        "delta": "available",
+        "gamma": "available",
+        "rho": "available",
+        "theta": "available",
+        "vega": "available"
+      },
+      "finite_values": true
+    },
+    "risk_output_shape": {
+      "curve_count": 4,
+      "curve_point_counts": [
+        5,
+        5,
+        3,
+        5
+      ],
+      "surface_count": 4,
+      "scenario_count": 0
+    },
+    "limitations_or_error": {
+      "limitations": [],
+      "messages": [
+        "Monte Carlo演示结果不可用于正式报价"
+      ],
+      "missing_calendar": {
+        "category": "missing_trading_calendar",
+        "exception": "ValueError",
+        "message": "路径型Pricer必须绑定独立trading-calendar交易日历"
+      }
+    },
+    "quote_eligible": false,
+    "precision_status": "demo_only",
+    "path_count": 10
+  },
+  {
+    "product_id": "8.1",
+    "canonical_name": "标准累购",
+    "route_adapter": "optionreg_path",
+    "method": "monte_carlo",
+    "calendar_requirement": "trading-calendar",
+    "resolved_contract": {
+      "bound": true,
+      "product_id_matches": true,
+      "underlyings": [
+        "A"
+      ],
+      "contract_fingerprint": "6675606ad60f013fc53656aef633f3a0b8512a3ba9eacda2f915ba8fd376c5ad"
+    },
+    "input_fields_summary": {
+      "identity_fields": [
+        "underlyings",
+        "reference_prices"
+      ],
+      "pricing_config_fields": [
+        "valuation_date",
+        "spot",
+        "historical_volatility",
+        "risk_free_rate",
+        "dividend_yield",
+        "model_method",
+        "path_count",
+        "demo_mode",
+        "random_seed"
+      ],
+      "market_data_ref": {
+        "schema_id": "market-history-v1",
+        "normalized_fields": [
+          "date",
+          "asset_id",
+          "close",
+          "adj_close"
+        ]
+      },
+      "trading_calendar_ref_bound": true,
+      "path_count": 10,
+      "demo_mode": true,
+      "random_seed": 20240101
+    },
+    "valuation_dates": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-28",
+      "market_as_of_date": "2023-07-28"
+    },
+    "market_date_fallback": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-27",
+      "market_as_of_date": "2023-07-27"
+    },
+    "status": "priced",
+    "pv_amount": 282654.84992361703,
+    "greeks_shape": {
+      "names": [
+        "delta",
+        "gamma",
+        "rho",
+        "theta",
+        "vega"
+      ],
+      "count": 5,
+      "statuses": {
+        "delta": "available",
+        "gamma": "available",
+        "rho": "available",
+        "theta": "available",
+        "vega": "available"
+      },
+      "finite_values": true
+    },
+    "risk_output_shape": {
+      "curve_count": 4,
+      "curve_point_counts": [
+        5,
+        5,
+        3,
+        5
+      ],
+      "surface_count": 4,
+      "scenario_count": 0
+    },
+    "limitations_or_error": {
+      "limitations": [],
+      "messages": [
+        "Monte Carlo演示结果不可用于正式报价"
+      ],
+      "missing_calendar": {
+        "category": "missing_trading_calendar",
+        "exception": "ValueError",
+        "message": "路径型Pricer必须绑定独立trading-calendar交易日历"
+      }
+    },
+    "quote_eligible": false,
+    "precision_status": "demo_only",
+    "path_count": 10
+  },
+  {
+    "product_id": "9.1",
+    "canonical_name": "经典型雪球",
+    "route_adapter": "optionreg_path",
+    "method": "monte_carlo",
+    "calendar_requirement": "trading-calendar",
+    "resolved_contract": {
+      "bound": true,
+      "product_id_matches": true,
+      "underlyings": [
+        "A"
+      ],
+      "contract_fingerprint": "cebd58cd58462026be4e3fd8ee0d65d5c661484d949fc53b57f48fd4c8ee20c4"
+    },
+    "input_fields_summary": {
+      "identity_fields": [
+        "underlyings",
+        "reference_prices"
+      ],
+      "pricing_config_fields": [
+        "valuation_date",
+        "spot",
+        "historical_volatility",
+        "risk_free_rate",
+        "dividend_yield",
+        "model_method",
+        "path_count",
+        "demo_mode",
+        "random_seed"
+      ],
+      "market_data_ref": {
+        "schema_id": "market-history-v1",
+        "normalized_fields": [
+          "date",
+          "asset_id",
+          "close",
+          "adj_close"
+        ]
+      },
+      "trading_calendar_ref_bound": true,
+      "path_count": 10,
+      "demo_mode": true,
+      "random_seed": 20240101
+    },
+    "valuation_dates": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-28",
+      "market_as_of_date": "2023-07-28"
+    },
+    "market_date_fallback": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-27",
+      "market_as_of_date": "2023-07-27"
+    },
+    "status": "priced",
+    "pv_amount": 2939696.834853258,
+    "greeks_shape": {
+      "names": [
+        "delta",
+        "gamma",
+        "rho",
+        "theta",
+        "vega"
+      ],
+      "count": 5,
+      "statuses": {
+        "delta": "available",
+        "gamma": "available",
+        "rho": "available",
+        "theta": "available",
+        "vega": "available"
+      },
+      "finite_values": true
+    },
+    "risk_output_shape": {
+      "curve_count": 4,
+      "curve_point_counts": [
+        5,
+        5,
+        3,
+        5
+      ],
+      "surface_count": 4,
+      "scenario_count": 0
+    },
+    "limitations_or_error": {
+      "limitations": [],
+      "messages": [
+        "Monte Carlo演示结果不可用于正式报价"
+      ],
+      "missing_calendar": {
+        "category": "missing_trading_calendar",
+        "exception": "ValueError",
+        "message": "路径型Pricer必须绑定独立trading-calendar交易日历"
+      }
+    },
+    "quote_eligible": false,
+    "precision_status": "demo_only",
+    "path_count": 10
+  },
+  {
+    "product_id": "9.2",
+    "canonical_name": "OTM型雪球",
+    "route_adapter": "optionreg_path",
+    "method": "monte_carlo",
+    "calendar_requirement": "trading-calendar",
+    "resolved_contract": {
+      "bound": true,
+      "product_id_matches": true,
+      "underlyings": [
+        "A"
+      ],
+      "contract_fingerprint": "3ecec88533774a883bff0694b90fb787a19875188871f2d7de8944c7511c54fc"
+    },
+    "input_fields_summary": {
+      "identity_fields": [
+        "underlyings",
+        "reference_prices"
+      ],
+      "pricing_config_fields": [
+        "valuation_date",
+        "spot",
+        "historical_volatility",
+        "risk_free_rate",
+        "dividend_yield",
+        "model_method",
+        "path_count",
+        "demo_mode",
+        "random_seed"
+      ],
+      "market_data_ref": {
+        "schema_id": "market-history-v1",
+        "normalized_fields": [
+          "date",
+          "asset_id",
+          "close",
+          "adj_close"
+        ]
+      },
+      "trading_calendar_ref_bound": true,
+      "path_count": 10,
+      "demo_mode": true,
+      "random_seed": 20240101
+    },
+    "valuation_dates": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-28",
+      "market_as_of_date": "2023-07-28"
+    },
+    "market_date_fallback": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-27",
+      "market_as_of_date": "2023-07-27"
+    },
+    "status": "priced",
+    "pv_amount": 1763818.1009119553,
+    "greeks_shape": {
+      "names": [
+        "delta",
+        "gamma",
+        "rho",
+        "theta",
+        "vega"
+      ],
+      "count": 5,
+      "statuses": {
+        "delta": "available",
+        "gamma": "available",
+        "rho": "available",
+        "theta": "available",
+        "vega": "available"
+      },
+      "finite_values": true
+    },
+    "risk_output_shape": {
+      "curve_count": 4,
+      "curve_point_counts": [
+        5,
+        5,
+        3,
+        5
+      ],
+      "surface_count": 4,
+      "scenario_count": 0
+    },
+    "limitations_or_error": {
+      "limitations": [],
+      "messages": [
+        "Monte Carlo演示结果不可用于正式报价"
+      ],
+      "missing_calendar": {
+        "category": "missing_trading_calendar",
+        "exception": "ValueError",
+        "message": "路径型Pricer必须绑定独立trading-calendar交易日历"
+      }
+    },
+    "quote_eligible": false,
+    "precision_status": "demo_only",
+    "path_count": 10
+  },
+  {
+    "product_id": "9.3",
+    "canonical_name": "折价OTM雪球",
+    "route_adapter": "optionreg_path",
+    "method": "monte_carlo",
+    "calendar_requirement": "trading-calendar",
+    "resolved_contract": {
+      "bound": true,
+      "product_id_matches": true,
+      "underlyings": [
+        "A"
+      ],
+      "contract_fingerprint": "cc2feeb7d2e5d3ddd91e437f09a69633421ede9427121757e83194690170412e"
+    },
+    "input_fields_summary": {
+      "identity_fields": [
+        "underlyings",
+        "reference_prices"
+      ],
+      "pricing_config_fields": [
+        "valuation_date",
+        "spot",
+        "historical_volatility",
+        "risk_free_rate",
+        "dividend_yield",
+        "model_method",
+        "path_count",
+        "demo_mode",
+        "random_seed"
+      ],
+      "market_data_ref": {
+        "schema_id": "market-history-v1",
+        "normalized_fields": [
+          "date",
+          "asset_id",
+          "close",
+          "adj_close"
+        ]
+      },
+      "trading_calendar_ref_bound": true,
+      "path_count": 10,
+      "demo_mode": true,
+      "random_seed": 20240101
+    },
+    "valuation_dates": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-28",
+      "market_as_of_date": "2023-07-28"
+    },
+    "market_date_fallback": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-27",
+      "market_as_of_date": "2023-07-27"
+    },
+    "status": "priced",
+    "pv_amount": 2057787.784397281,
+    "greeks_shape": {
+      "names": [
+        "delta",
+        "gamma",
+        "rho",
+        "theta",
+        "vega"
+      ],
+      "count": 5,
+      "statuses": {
+        "delta": "available",
+        "gamma": "available",
+        "rho": "available",
+        "theta": "available",
+        "vega": "available"
+      },
+      "finite_values": true
+    },
+    "risk_output_shape": {
+      "curve_count": 4,
+      "curve_point_counts": [
+        5,
+        5,
+        3,
+        5
+      ],
+      "surface_count": 4,
+      "scenario_count": 0
+    },
+    "limitations_or_error": {
+      "limitations": [],
+      "messages": [
+        "Monte Carlo演示结果不可用于正式报价"
+      ],
+      "missing_calendar": {
+        "category": "missing_trading_calendar",
+        "exception": "ValueError",
+        "message": "路径型Pricer必须绑定独立trading-calendar交易日历"
+      }
+    },
+    "quote_eligible": false,
+    "precision_status": "demo_only",
+    "path_count": 10
+  },
+  {
+    "product_id": "9.4",
+    "canonical_name": "折价建仓型雪球",
+    "route_adapter": "optionreg_path",
+    "method": "monte_carlo",
+    "calendar_requirement": "trading-calendar",
+    "resolved_contract": {
+      "bound": true,
+      "product_id_matches": true,
+      "underlyings": [
+        "A"
+      ],
+      "contract_fingerprint": "96fdafd9cbcf859c4b6a0a9f742f66fde3229be997e4b6e1ad860f1e53fcef40"
+    },
+    "input_fields_summary": {
+      "identity_fields": [
+        "underlyings",
+        "reference_prices"
+      ],
+      "pricing_config_fields": [
+        "valuation_date",
+        "spot",
+        "historical_volatility",
+        "risk_free_rate",
+        "dividend_yield",
+        "model_method",
+        "path_count",
+        "demo_mode",
+        "random_seed"
+      ],
+      "market_data_ref": {
+        "schema_id": "market-history-v1",
+        "normalized_fields": [
+          "date",
+          "asset_id",
+          "close",
+          "adj_close"
+        ]
+      },
+      "trading_calendar_ref_bound": true,
+      "path_count": 10,
+      "demo_mode": true,
+      "random_seed": 20240101
+    },
+    "valuation_dates": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-28",
+      "market_as_of_date": "2023-07-28"
+    },
+    "market_date_fallback": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-27",
+      "market_as_of_date": "2023-07-27"
+    },
+    "status": "priced",
+    "pv_amount": 3128213.6362366443,
+    "greeks_shape": {
+      "names": [
+        "delta",
+        "gamma",
+        "rho",
+        "theta",
+        "vega"
+      ],
+      "count": 5,
+      "statuses": {
+        "delta": "available",
+        "gamma": "available",
+        "rho": "available",
+        "theta": "available",
+        "vega": "available"
+      },
+      "finite_values": true
+    },
+    "risk_output_shape": {
+      "curve_count": 4,
+      "curve_point_counts": [
+        5,
+        5,
+        3,
+        5
+      ],
+      "surface_count": 4,
+      "scenario_count": 0
+    },
+    "limitations_or_error": {
+      "limitations": [],
+      "messages": [
+        "Monte Carlo演示结果不可用于正式报价"
+      ],
+      "missing_calendar": {
+        "category": "missing_trading_calendar",
+        "exception": "ValueError",
+        "message": "路径型Pricer必须绑定独立trading-calendar交易日历"
+      }
+    },
+    "quote_eligible": false,
+    "precision_status": "demo_only",
+    "path_count": 10
+  },
+  {
+    "product_id": "9.5",
+    "canonical_name": "超低敲入型雪球",
+    "route_adapter": "optionreg_path",
+    "method": "monte_carlo",
+    "calendar_requirement": "trading-calendar",
+    "resolved_contract": {
+      "bound": true,
+      "product_id_matches": true,
+      "underlyings": [
+        "A"
+      ],
+      "contract_fingerprint": "8b52b90ffea17a3e31301d16c70c5107b46095b34f3e11c64007aef859abc870"
+    },
+    "input_fields_summary": {
+      "identity_fields": [
+        "underlyings",
+        "reference_prices"
+      ],
+      "pricing_config_fields": [
+        "valuation_date",
+        "spot",
+        "historical_volatility",
+        "risk_free_rate",
+        "dividend_yield",
+        "model_method",
+        "path_count",
+        "demo_mode",
+        "random_seed"
+      ],
+      "market_data_ref": {
+        "schema_id": "market-history-v1",
+        "normalized_fields": [
+          "date",
+          "asset_id",
+          "close",
+          "adj_close"
+        ]
+      },
+      "trading_calendar_ref_bound": true,
+      "path_count": 10,
+      "demo_mode": true,
+      "random_seed": 20240101
+    },
+    "valuation_dates": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-28",
+      "market_as_of_date": "2023-07-28"
+    },
+    "market_date_fallback": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-27",
+      "market_as_of_date": "2023-07-27"
+    },
+    "status": "priced",
+    "pv_amount": 199370.43433977864,
+    "greeks_shape": {
+      "names": [
+        "delta",
+        "gamma",
+        "rho",
+        "theta",
+        "vega"
+      ],
+      "count": 5,
+      "statuses": {
+        "delta": "available",
+        "gamma": "available",
+        "rho": "available",
+        "theta": "available",
+        "vega": "available"
+      },
+      "finite_values": true
+    },
+    "risk_output_shape": {
+      "curve_count": 4,
+      "curve_point_counts": [
+        5,
+        5,
+        3,
+        5
+      ],
+      "surface_count": 4,
+      "scenario_count": 0
+    },
+    "limitations_or_error": {
+      "limitations": [],
+      "messages": [
+        "Monte Carlo演示结果不可用于正式报价"
+      ],
+      "missing_calendar": {
+        "category": "missing_trading_calendar",
+        "exception": "ValueError",
+        "message": "路径型Pricer必须绑定独立trading-calendar交易日历"
+      }
+    },
+    "quote_eligible": false,
+    "precision_status": "demo_only",
+    "path_count": 10
+  },
+  {
+    "product_id": "9.6",
+    "canonical_name": "超低敲入保底型雪球",
+    "route_adapter": "optionreg_path",
+    "method": "monte_carlo",
+    "calendar_requirement": "trading-calendar",
+    "resolved_contract": {
+      "bound": true,
+      "product_id_matches": true,
+      "underlyings": [
+        "A"
+      ],
+      "contract_fingerprint": "c75f315a117eff38275bb416c64575066f60ac8243bc31405ce05bceb0d4f4ce"
+    },
+    "input_fields_summary": {
+      "identity_fields": [
+        "underlyings",
+        "reference_prices"
+      ],
+      "pricing_config_fields": [
+        "valuation_date",
+        "spot",
+        "historical_volatility",
+        "risk_free_rate",
+        "dividend_yield",
+        "model_method",
+        "path_count",
+        "demo_mode",
+        "random_seed"
+      ],
+      "market_data_ref": {
+        "schema_id": "market-history-v1",
+        "normalized_fields": [
+          "date",
+          "asset_id",
+          "close",
+          "adj_close"
+        ]
+      },
+      "trading_calendar_ref_bound": true,
+      "path_count": 10,
+      "demo_mode": true,
+      "random_seed": 20240101
+    },
+    "valuation_dates": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-28",
+      "market_as_of_date": "2023-07-28"
+    },
+    "market_date_fallback": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-27",
+      "market_as_of_date": "2023-07-27"
+    },
+    "status": "priced",
+    "pv_amount": 111336.73605987638,
+    "greeks_shape": {
+      "names": [
+        "delta",
+        "gamma",
+        "rho",
+        "theta",
+        "vega"
+      ],
+      "count": 5,
+      "statuses": {
+        "delta": "available",
+        "gamma": "available",
+        "rho": "available",
+        "theta": "available",
+        "vega": "available"
+      },
+      "finite_values": true
+    },
+    "risk_output_shape": {
+      "curve_count": 4,
+      "curve_point_counts": [
+        5,
+        5,
+        3,
+        5
+      ],
+      "surface_count": 4,
+      "scenario_count": 0
+    },
+    "limitations_or_error": {
+      "limitations": [],
+      "messages": [
+        "Monte Carlo演示结果不可用于正式报价"
+      ],
+      "missing_calendar": {
+        "category": "missing_trading_calendar",
+        "exception": "ValueError",
+        "message": "路径型Pricer必须绑定独立trading-calendar交易日历"
+      }
+    },
+    "quote_eligible": false,
+    "precision_status": "demo_only",
+    "path_count": 10
+  },
+  {
+    "product_id": "9.7",
+    "canonical_name": "敲入变化型雪球",
+    "route_adapter": "optionreg_path",
+    "method": "monte_carlo",
+    "calendar_requirement": "trading-calendar",
+    "resolved_contract": {
+      "bound": true,
+      "product_id_matches": true,
+      "underlyings": [
+        "A"
+      ],
+      "contract_fingerprint": "e9f30c35c5ea1c74776c13ec87bbd2983219ea00eb5e59cac258e407ef29b795"
+    },
+    "input_fields_summary": {
+      "identity_fields": [
+        "underlyings",
+        "reference_prices"
+      ],
+      "pricing_config_fields": [
+        "valuation_date",
+        "spot",
+        "historical_volatility",
+        "risk_free_rate",
+        "dividend_yield",
+        "model_method",
+        "path_count",
+        "demo_mode",
+        "random_seed"
+      ],
+      "market_data_ref": {
+        "schema_id": "market-history-v1",
+        "normalized_fields": [
+          "date",
+          "asset_id",
+          "close",
+          "adj_close"
+        ]
+      },
+      "trading_calendar_ref_bound": true,
+      "path_count": 10,
+      "demo_mode": true,
+      "random_seed": 20240101
+    },
+    "valuation_dates": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-28",
+      "market_as_of_date": "2023-07-28"
+    },
+    "market_date_fallback": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-27",
+      "market_as_of_date": "2023-07-27"
+    },
+    "status": "priced",
+    "pv_amount": 3233666.518338584,
+    "greeks_shape": {
+      "names": [
+        "delta",
+        "gamma",
+        "rho",
+        "theta",
+        "vega"
+      ],
+      "count": 5,
+      "statuses": {
+        "delta": "available",
+        "gamma": "available",
+        "rho": "available",
+        "theta": "available",
+        "vega": "available"
+      },
+      "finite_values": true
+    },
+    "risk_output_shape": {
+      "curve_count": 4,
+      "curve_point_counts": [
+        5,
+        5,
+        3,
+        5
+      ],
+      "surface_count": 4,
+      "scenario_count": 0
+    },
+    "limitations_or_error": {
+      "limitations": [],
+      "messages": [
+        "Monte Carlo演示结果不可用于正式报价"
+      ],
+      "missing_calendar": {
+        "category": "missing_trading_calendar",
+        "exception": "ValueError",
+        "message": "路径型Pricer必须绑定独立trading-calendar交易日历"
+      }
+    },
+    "quote_eligible": false,
+    "precision_status": "demo_only",
+    "path_count": 10
+  },
+  {
+    "product_id": "9.8",
+    "canonical_name": "高概率敲出雪球",
+    "route_adapter": "optionreg_path",
+    "method": "monte_carlo",
+    "calendar_requirement": "trading-calendar",
+    "resolved_contract": {
+      "bound": true,
+      "product_id_matches": true,
+      "underlyings": [
+        "A"
+      ],
+      "contract_fingerprint": "f664e5558a558f57276c7b12904d6cdd5dfe876cd831c0cb43c8fcef2911ff2a"
+    },
+    "input_fields_summary": {
+      "identity_fields": [
+        "underlyings",
+        "reference_prices"
+      ],
+      "pricing_config_fields": [
+        "valuation_date",
+        "spot",
+        "historical_volatility",
+        "risk_free_rate",
+        "dividend_yield",
+        "model_method",
+        "path_count",
+        "demo_mode",
+        "random_seed"
+      ],
+      "market_data_ref": {
+        "schema_id": "market-history-v1",
+        "normalized_fields": [
+          "date",
+          "asset_id",
+          "close",
+          "adj_close"
+        ]
+      },
+      "trading_calendar_ref_bound": true,
+      "path_count": 10,
+      "demo_mode": true,
+      "random_seed": 20240101
+    },
+    "valuation_dates": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-28",
+      "market_as_of_date": "2023-07-28"
+    },
+    "market_date_fallback": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-27",
+      "market_as_of_date": "2023-07-27"
+    },
+    "status": "priced",
+    "pv_amount": 97467.43369498839,
+    "greeks_shape": {
+      "names": [
+        "delta",
+        "gamma",
+        "rho",
+        "theta",
+        "vega"
+      ],
+      "count": 5,
+      "statuses": {
+        "delta": "available",
+        "gamma": "available",
+        "rho": "available",
+        "theta": "available",
+        "vega": "available"
+      },
+      "finite_values": true
+    },
+    "risk_output_shape": {
+      "curve_count": 4,
+      "curve_point_counts": [
+        5,
+        5,
+        3,
+        5
+      ],
+      "surface_count": 4,
+      "scenario_count": 0
+    },
+    "limitations_or_error": {
+      "limitations": [],
+      "messages": [
+        "Monte Carlo演示结果不可用于正式报价"
+      ],
+      "missing_calendar": {
+        "category": "missing_trading_calendar",
+        "exception": "ValueError",
+        "message": "路径型Pricer必须绑定独立trading-calendar交易日历"
+      }
+    },
+    "quote_eligible": false,
+    "precision_status": "demo_only",
+    "path_count": 10
+  },
+  {
+    "product_id": "9.9",
+    "canonical_name": "敲出递降型雪球",
+    "route_adapter": "optionreg_path",
+    "method": "monte_carlo",
+    "calendar_requirement": "trading-calendar",
+    "resolved_contract": {
+      "bound": true,
+      "product_id_matches": true,
+      "underlyings": [
+        "A"
+      ],
+      "contract_fingerprint": "3034d695737d2ccdb4ab09266060afb7acb8d8d733c5e7ca33ab69dab70cd302"
+    },
+    "input_fields_summary": {
+      "identity_fields": [
+        "underlyings",
+        "reference_prices"
+      ],
+      "pricing_config_fields": [
+        "valuation_date",
+        "spot",
+        "historical_volatility",
+        "risk_free_rate",
+        "dividend_yield",
+        "model_method",
+        "path_count",
+        "demo_mode",
+        "random_seed"
+      ],
+      "market_data_ref": {
+        "schema_id": "market-history-v1",
+        "normalized_fields": [
+          "date",
+          "asset_id",
+          "close",
+          "adj_close"
+        ]
+      },
+      "trading_calendar_ref_bound": true,
+      "path_count": 10,
+      "demo_mode": true,
+      "random_seed": 20240101
+    },
+    "valuation_dates": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-28",
+      "market_as_of_date": "2023-07-28"
+    },
+    "market_date_fallback": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-27",
+      "market_as_of_date": "2023-07-27"
+    },
+    "status": "priced",
+    "pv_amount": 794907.7401715236,
+    "greeks_shape": {
+      "names": [
+        "delta",
+        "gamma",
+        "rho",
+        "theta",
+        "vega"
+      ],
+      "count": 5,
+      "statuses": {
+        "delta": "available",
+        "gamma": "available",
+        "rho": "available",
+        "theta": "available",
+        "vega": "available"
+      },
+      "finite_values": true
+    },
+    "risk_output_shape": {
+      "curve_count": 4,
+      "curve_point_counts": [
+        5,
+        5,
+        3,
+        5
+      ],
+      "surface_count": 4,
+      "scenario_count": 0
+    },
+    "limitations_or_error": {
+      "limitations": [],
+      "messages": [
+        "Monte Carlo演示结果不可用于正式报价"
+      ],
+      "missing_calendar": {
+        "category": "missing_trading_calendar",
+        "exception": "ValueError",
+        "message": "路径型Pricer必须绑定独立trading-calendar交易日历"
+      }
+    },
+    "quote_eligible": false,
+    "precision_status": "demo_only",
+    "path_count": 10
+  },
+  {
+    "product_id": "9.10",
+    "canonical_name": "降落伞雪球",
+    "route_adapter": "optionreg_path",
+    "method": "monte_carlo",
+    "calendar_requirement": "trading-calendar",
+    "resolved_contract": {
+      "bound": true,
+      "product_id_matches": true,
+      "underlyings": [
+        "A"
+      ],
+      "contract_fingerprint": "d556ac23ac26edf4378b5316fee5e7a5f88a9acb70d9c8b37c6e54044aeeae17"
+    },
+    "input_fields_summary": {
+      "identity_fields": [
+        "underlyings",
+        "reference_prices"
+      ],
+      "pricing_config_fields": [
+        "valuation_date",
+        "spot",
+        "historical_volatility",
+        "risk_free_rate",
+        "dividend_yield",
+        "model_method",
+        "path_count",
+        "demo_mode",
+        "random_seed"
+      ],
+      "market_data_ref": {
+        "schema_id": "market-history-v1",
+        "normalized_fields": [
+          "date",
+          "asset_id",
+          "close",
+          "adj_close"
+        ]
+      },
+      "trading_calendar_ref_bound": true,
+      "path_count": 10,
+      "demo_mode": true,
+      "random_seed": 20240101
+    },
+    "valuation_dates": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-28",
+      "market_as_of_date": "2023-07-28"
+    },
+    "market_date_fallback": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-27",
+      "market_as_of_date": "2023-07-27"
+    },
+    "status": "priced",
+    "pv_amount": 2204772.6261399435,
+    "greeks_shape": {
+      "names": [
+        "delta",
+        "gamma",
+        "rho",
+        "theta",
+        "vega"
+      ],
+      "count": 5,
+      "statuses": {
+        "delta": "available",
+        "gamma": "available",
+        "rho": "available",
+        "theta": "available",
+        "vega": "available"
+      },
+      "finite_values": true
+    },
+    "risk_output_shape": {
+      "curve_count": 4,
+      "curve_point_counts": [
+        5,
+        5,
+        3,
+        5
+      ],
+      "surface_count": 4,
+      "scenario_count": 0
+    },
+    "limitations_or_error": {
+      "limitations": [],
+      "messages": [
+        "Monte Carlo演示结果不可用于正式报价"
+      ],
+      "missing_calendar": {
+        "category": "missing_trading_calendar",
+        "exception": "ValueError",
+        "message": "路径型Pricer必须绑定独立trading-calendar交易日历"
+      }
+    },
+    "quote_eligible": false,
+    "precision_status": "demo_only",
+    "path_count": 10
+  },
+  {
+    "product_id": "9.11",
+    "canonical_name": "增强型雪球",
+    "route_adapter": "optionreg_path",
+    "method": "monte_carlo",
+    "calendar_requirement": "trading-calendar",
+    "resolved_contract": {
+      "bound": true,
+      "product_id_matches": true,
+      "underlyings": [
+        "A"
+      ],
+      "contract_fingerprint": "93c934b3bbd65d28884e6bf11a5a5e5a009d68f2fbf9705436857f557c802286"
+    },
+    "input_fields_summary": {
+      "identity_fields": [
+        "underlyings",
+        "reference_prices"
+      ],
+      "pricing_config_fields": [
+        "valuation_date",
+        "spot",
+        "historical_volatility",
+        "risk_free_rate",
+        "dividend_yield",
+        "model_method",
+        "path_count",
+        "demo_mode",
+        "random_seed"
+      ],
+      "market_data_ref": {
+        "schema_id": "market-history-v1",
+        "normalized_fields": [
+          "date",
+          "asset_id",
+          "close",
+          "adj_close"
+        ]
+      },
+      "trading_calendar_ref_bound": true,
+      "path_count": 10,
+      "demo_mode": true,
+      "random_seed": 20240101
+    },
+    "valuation_dates": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-28",
+      "market_as_of_date": "2023-07-28"
+    },
+    "market_date_fallback": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-27",
+      "market_as_of_date": "2023-07-27"
+    },
+    "status": "priced",
+    "pv_amount": 2208484.086071756,
+    "greeks_shape": {
+      "names": [
+        "delta",
+        "gamma",
+        "rho",
+        "theta",
+        "vega"
+      ],
+      "count": 5,
+      "statuses": {
+        "delta": "available",
+        "gamma": "available",
+        "rho": "available",
+        "theta": "available",
+        "vega": "available"
+      },
+      "finite_values": true
+    },
+    "risk_output_shape": {
+      "curve_count": 4,
+      "curve_point_counts": [
+        5,
+        5,
+        3,
+        5
+      ],
+      "surface_count": 4,
+      "scenario_count": 0
+    },
+    "limitations_or_error": {
+      "limitations": [],
+      "messages": [
+        "Monte Carlo演示结果不可用于正式报价"
+      ],
+      "missing_calendar": {
+        "category": "missing_trading_calendar",
+        "exception": "ValueError",
+        "message": "路径型Pricer必须绑定独立trading-calendar交易日历"
+      }
+    },
+    "quote_eligible": false,
+    "precision_status": "demo_only",
+    "path_count": 10
+  },
+  {
+    "product_id": "9.12",
+    "canonical_name": "票息前置型（早利）雪球",
+    "route_adapter": "optionreg_path",
+    "method": "monte_carlo",
+    "calendar_requirement": "trading-calendar",
+    "resolved_contract": {
+      "bound": true,
+      "product_id_matches": true,
+      "underlyings": [
+        "A"
+      ],
+      "contract_fingerprint": "7575e3f20600dda93b4dde3ffb055d0f7c0d1e802294bab53e19034a2e664932"
+    },
+    "input_fields_summary": {
+      "identity_fields": [
+        "underlyings",
+        "reference_prices"
+      ],
+      "pricing_config_fields": [
+        "valuation_date",
+        "spot",
+        "historical_volatility",
+        "risk_free_rate",
+        "dividend_yield",
+        "model_method",
+        "path_count",
+        "demo_mode",
+        "random_seed"
+      ],
+      "market_data_ref": {
+        "schema_id": "market-history-v1",
+        "normalized_fields": [
+          "date",
+          "asset_id",
+          "close",
+          "adj_close"
+        ]
+      },
+      "trading_calendar_ref_bound": true,
+      "path_count": 10,
+      "demo_mode": true,
+      "random_seed": 20240101
+    },
+    "valuation_dates": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-28",
+      "market_as_of_date": "2023-07-28"
+    },
+    "market_date_fallback": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-27",
+      "market_as_of_date": "2023-07-27"
+    },
+    "status": "priced",
+    "pv_amount": 20544.567738669728,
+    "greeks_shape": {
+      "names": [
+        "delta",
+        "gamma",
+        "rho",
+        "theta",
+        "vega"
+      ],
+      "count": 5,
+      "statuses": {
+        "delta": "available",
+        "gamma": "available",
+        "rho": "available",
+        "theta": "available",
+        "vega": "available"
+      },
+      "finite_values": true
+    },
+    "risk_output_shape": {
+      "curve_count": 4,
+      "curve_point_counts": [
+        5,
+        5,
+        3,
+        5
+      ],
+      "surface_count": 4,
+      "scenario_count": 0
+    },
+    "limitations_or_error": {
+      "limitations": [],
+      "messages": [
+        "Monte Carlo演示结果不可用于正式报价"
+      ],
+      "missing_calendar": {
+        "category": "missing_trading_calendar",
+        "exception": "ValueError",
+        "message": "路径型Pricer必须绑定独立trading-calendar交易日历"
+      }
+    },
+    "quote_eligible": false,
+    "precision_status": "demo_only",
+    "path_count": 10
+  },
+  {
+    "product_id": "9.13",
+    "canonical_name": "高保底雪球",
+    "route_adapter": "optionreg_path",
+    "method": "monte_carlo",
+    "calendar_requirement": "trading-calendar",
+    "resolved_contract": {
+      "bound": true,
+      "product_id_matches": true,
+      "underlyings": [
+        "A"
+      ],
+      "contract_fingerprint": "af8f776cc6de3c8113ff2eab71a7d0192ee0bf696f7fa19c5fea8ebb4ee5453f"
+    },
+    "input_fields_summary": {
+      "identity_fields": [
+        "underlyings",
+        "reference_prices"
+      ],
+      "pricing_config_fields": [
+        "valuation_date",
+        "spot",
+        "historical_volatility",
+        "risk_free_rate",
+        "dividend_yield",
+        "model_method",
+        "path_count",
+        "demo_mode",
+        "random_seed"
+      ],
+      "market_data_ref": {
+        "schema_id": "market-history-v1",
+        "normalized_fields": [
+          "date",
+          "asset_id",
+          "close",
+          "adj_close"
+        ]
+      },
+      "trading_calendar_ref_bound": true,
+      "path_count": 10,
+      "demo_mode": true,
+      "random_seed": 20240101
+    },
+    "valuation_dates": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-28",
+      "market_as_of_date": "2023-07-28"
+    },
+    "market_date_fallback": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-27",
+      "market_as_of_date": "2023-07-27"
+    },
+    "status": "priced",
+    "pv_amount": 765207.4248494982,
+    "greeks_shape": {
+      "names": [
+        "delta",
+        "gamma",
+        "rho",
+        "theta",
+        "vega"
+      ],
+      "count": 5,
+      "statuses": {
+        "delta": "available",
+        "gamma": "available",
+        "rho": "available",
+        "theta": "available",
+        "vega": "available"
+      },
+      "finite_values": true
+    },
+    "risk_output_shape": {
+      "curve_count": 4,
+      "curve_point_counts": [
+        5,
+        5,
+        3,
+        5
+      ],
+      "surface_count": 4,
+      "scenario_count": 0
+    },
+    "limitations_or_error": {
+      "limitations": [],
+      "messages": [
+        "Monte Carlo演示结果不可用于正式报价"
+      ],
+      "missing_calendar": {
+        "category": "missing_trading_calendar",
+        "exception": "ValueError",
+        "message": "路径型Pricer必须绑定独立trading-calendar交易日历"
+      }
+    },
+    "quote_eligible": false,
+    "precision_status": "demo_only",
+    "path_count": 10
+  },
+  {
+    "product_id": "9.14",
+    "canonical_name": "救生艇雪球",
+    "route_adapter": "optionreg_path",
+    "method": "monte_carlo",
+    "calendar_requirement": "trading-calendar",
+    "resolved_contract": {
+      "bound": true,
+      "product_id_matches": true,
+      "underlyings": [
+        "A"
+      ],
+      "contract_fingerprint": "acac0254946c80741a00408f01ff0b9f3e56b2aa03bafadc92a03711bcc77318"
+    },
+    "input_fields_summary": {
+      "identity_fields": [
+        "underlyings",
+        "reference_prices"
+      ],
+      "pricing_config_fields": [
+        "valuation_date",
+        "spot",
+        "historical_volatility",
+        "risk_free_rate",
+        "dividend_yield",
+        "model_method",
+        "path_count",
+        "demo_mode",
+        "random_seed"
+      ],
+      "market_data_ref": {
+        "schema_id": "market-history-v1",
+        "normalized_fields": [
+          "date",
+          "asset_id",
+          "close",
+          "adj_close"
+        ]
+      },
+      "trading_calendar_ref_bound": true,
+      "path_count": 10,
+      "demo_mode": true,
+      "random_seed": 20240101
+    },
+    "valuation_dates": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-28",
+      "market_as_of_date": "2023-07-28"
+    },
+    "market_date_fallback": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-27",
+      "market_as_of_date": "2023-07-27"
+    },
+    "status": "priced",
+    "pv_amount": 5999.013779691561,
+    "greeks_shape": {
+      "names": [
+        "delta",
+        "gamma",
+        "rho",
+        "theta",
+        "vega"
+      ],
+      "count": 5,
+      "statuses": {
+        "delta": "available",
+        "gamma": "available",
+        "rho": "available",
+        "theta": "available",
+        "vega": "available"
+      },
+      "finite_values": true
+    },
+    "risk_output_shape": {
+      "curve_count": 4,
+      "curve_point_counts": [
+        5,
+        5,
+        3,
+        5
+      ],
+      "surface_count": 4,
+      "scenario_count": 0
+    },
+    "limitations_or_error": {
+      "limitations": [],
+      "messages": [
+        "Monte Carlo演示结果不可用于正式报价"
+      ],
+      "missing_calendar": {
+        "category": "missing_trading_calendar",
+        "exception": "ValueError",
+        "message": "路径型Pricer必须绑定独立trading-calendar交易日历"
+      }
+    },
+    "quote_eligible": false,
+    "precision_status": "demo_only",
+    "path_count": 10
+  },
+  {
+    "product_id": "9.15",
+    "canonical_name": "壁虎型雪球",
+    "route_adapter": "optionreg_path",
+    "method": "monte_carlo",
+    "calendar_requirement": "trading-calendar",
+    "resolved_contract": {
+      "bound": true,
+      "product_id_matches": true,
+      "underlyings": [
+        "A"
+      ],
+      "contract_fingerprint": "5a20bd846ee272b647318a204c815c280c54cc080500d02ef75604eaec03e89d"
+    },
+    "input_fields_summary": {
+      "identity_fields": [
+        "underlyings",
+        "reference_prices"
+      ],
+      "pricing_config_fields": [
+        "valuation_date",
+        "spot",
+        "historical_volatility",
+        "risk_free_rate",
+        "dividend_yield",
+        "model_method",
+        "path_count",
+        "demo_mode",
+        "random_seed"
+      ],
+      "market_data_ref": {
+        "schema_id": "market-history-v1",
+        "normalized_fields": [
+          "date",
+          "asset_id",
+          "close",
+          "adj_close"
+        ]
+      },
+      "trading_calendar_ref_bound": true,
+      "path_count": 10,
+      "demo_mode": true,
+      "random_seed": 20240101
+    },
+    "valuation_dates": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-28",
+      "market_as_of_date": "2023-07-28"
+    },
+    "market_date_fallback": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-27",
+      "market_as_of_date": "2023-07-27"
+    },
+    "status": "priced",
+    "pv_amount": 2204772.6261399435,
+    "greeks_shape": {
+      "names": [
+        "delta",
+        "gamma",
+        "rho",
+        "theta",
+        "vega"
+      ],
+      "count": 5,
+      "statuses": {
+        "delta": "available",
+        "gamma": "available",
+        "rho": "available",
+        "theta": "available",
+        "vega": "available"
+      },
+      "finite_values": true
+    },
+    "risk_output_shape": {
+      "curve_count": 4,
+      "curve_point_counts": [
+        5,
+        5,
+        3,
+        5
+      ],
+      "surface_count": 4,
+      "scenario_count": 0
+    },
+    "limitations_or_error": {
+      "limitations": [],
+      "messages": [
+        "Monte Carlo演示结果不可用于正式报价"
+      ],
+      "missing_calendar": {
+        "category": "missing_trading_calendar",
+        "exception": "ValueError",
+        "message": "路径型Pricer必须绑定独立trading-calendar交易日历"
+      }
+    },
+    "quote_eligible": false,
+    "precision_status": "demo_only",
+    "path_count": 10
+  },
+  {
+    "product_id": "9.16",
+    "canonical_name": "期权费型小雪球（无敲入）",
+    "route_adapter": "optionreg_path",
+    "method": "monte_carlo",
+    "calendar_requirement": "trading-calendar",
+    "resolved_contract": {
+      "bound": true,
+      "product_id_matches": true,
+      "underlyings": [
+        "A"
+      ],
+      "contract_fingerprint": "38d1f3c255a25ad4bccf3ce18dcefafff9443fc4f4c51152b7f99fd709d5fd80"
+    },
+    "input_fields_summary": {
+      "identity_fields": [
+        "underlyings",
+        "reference_prices"
+      ],
+      "pricing_config_fields": [
+        "valuation_date",
+        "spot",
+        "historical_volatility",
+        "risk_free_rate",
+        "dividend_yield",
+        "model_method",
+        "path_count",
+        "demo_mode",
+        "random_seed"
+      ],
+      "market_data_ref": {
+        "schema_id": "market-history-v1",
+        "normalized_fields": [
+          "date",
+          "asset_id",
+          "close",
+          "adj_close"
+        ]
+      },
+      "trading_calendar_ref_bound": true,
+      "path_count": 10,
+      "demo_mode": true,
+      "random_seed": 20240101
+    },
+    "valuation_dates": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-28",
+      "market_as_of_date": "2023-07-28"
+    },
+    "market_date_fallback": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-27",
+      "market_as_of_date": "2023-07-27"
+    },
+    "status": "priced",
+    "pv_amount": -997260.2739726028,
+    "greeks_shape": {
+      "names": [
+        "delta",
+        "gamma",
+        "rho",
+        "theta",
+        "vega"
+      ],
+      "count": 5,
+      "statuses": {
+        "delta": "available",
+        "gamma": "available",
+        "rho": "available",
+        "theta": "available",
+        "vega": "available"
+      },
+      "finite_values": true
+    },
+    "risk_output_shape": {
+      "curve_count": 4,
+      "curve_point_counts": [
+        5,
+        5,
+        3,
+        5
+      ],
+      "surface_count": 4,
+      "scenario_count": 0
+    },
+    "limitations_or_error": {
+      "limitations": [],
+      "messages": [
+        "Monte Carlo演示结果不可用于正式报价"
+      ],
+      "missing_calendar": {
+        "category": "missing_trading_calendar",
+        "exception": "ValueError",
+        "message": "路径型Pricer必须绑定独立trading-calendar交易日历"
+      }
+    },
+    "quote_eligible": false,
+    "precision_status": "demo_only",
+    "path_count": 10
+  },
+  {
+    "product_id": "9.17",
+    "canonical_name": "全保证金型小雪球（无敲入）",
+    "route_adapter": "optionreg_path",
+    "method": "monte_carlo",
+    "calendar_requirement": "trading-calendar",
+    "resolved_contract": {
+      "bound": true,
+      "product_id_matches": true,
+      "underlyings": [
+        "A"
+      ],
+      "contract_fingerprint": "95d94b76d5d58a5d4b6502d6ba5e76d9b3c52988426af2345502d1a72e3a629a"
+    },
+    "input_fields_summary": {
+      "identity_fields": [
+        "underlyings",
+        "reference_prices"
+      ],
+      "pricing_config_fields": [
+        "valuation_date",
+        "spot",
+        "historical_volatility",
+        "risk_free_rate",
+        "dividend_yield",
+        "model_method",
+        "path_count",
+        "demo_mode",
+        "random_seed"
+      ],
+      "market_data_ref": {
+        "schema_id": "market-history-v1",
+        "normalized_fields": [
+          "date",
+          "asset_id",
+          "close",
+          "adj_close"
+        ]
+      },
+      "trading_calendar_ref_bound": true,
+      "path_count": 10,
+      "demo_mode": true,
+      "random_seed": 20240101
+    },
+    "valuation_dates": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-28",
+      "market_as_of_date": "2023-07-28"
+    },
+    "market_date_fallback": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-27",
+      "market_as_of_date": "2023-07-27"
+    },
+    "status": "priced",
+    "pv_amount": 537661.7187281733,
+    "greeks_shape": {
+      "names": [
+        "delta",
+        "gamma",
+        "rho",
+        "theta",
+        "vega"
+      ],
+      "count": 5,
+      "statuses": {
+        "delta": "available",
+        "gamma": "available",
+        "rho": "available",
+        "theta": "available",
+        "vega": "available"
+      },
+      "finite_values": true
+    },
+    "risk_output_shape": {
+      "curve_count": 4,
+      "curve_point_counts": [
+        5,
+        5,
+        3,
+        5
+      ],
+      "surface_count": 4,
+      "scenario_count": 0
+    },
+    "limitations_or_error": {
+      "limitations": [],
+      "messages": [
+        "Monte Carlo演示结果不可用于正式报价"
+      ],
+      "missing_calendar": {
+        "category": "missing_trading_calendar",
+        "exception": "ValueError",
+        "message": "路径型Pricer必须绑定独立trading-calendar交易日历"
+      }
+    },
+    "quote_eligible": false,
+    "precision_status": "demo_only",
+    "path_count": 10
+  },
+  {
+    "product_id": "9.18",
+    "canonical_name": "Worst-Of雪球",
+    "route_adapter": "optionreg_path",
+    "method": "monte_carlo",
+    "calendar_requirement": "trading-calendar",
+    "resolved_contract": {
+      "bound": true,
+      "product_id_matches": true,
+      "underlyings": [
+        "A",
+        "B"
+      ],
+      "contract_fingerprint": "d8a0ff61c0c376bc5abfb8a1470768cb3ae8d6d5a49c4e8a879b19065ff61ff2"
+    },
+    "input_fields_summary": {
+      "identity_fields": [
+        "underlyings",
+        "reference_prices"
+      ],
+      "pricing_config_fields": [
+        "valuation_date",
+        "spot",
+        "historical_volatility",
+        "risk_free_rate",
+        "dividend_yield",
+        "model_method",
+        "path_count",
+        "demo_mode",
+        "random_seed"
+      ],
+      "market_data_ref": {
+        "schema_id": "market-history-v1",
+        "normalized_fields": [
+          "date",
+          "asset_id",
+          "close",
+          "adj_close"
+        ]
+      },
+      "trading_calendar_ref_bound": true,
+      "path_count": 10,
+      "demo_mode": true,
+      "random_seed": 20240101
+    },
+    "valuation_dates": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-28",
+      "market_as_of_date": "2023-07-28"
+    },
+    "market_date_fallback": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-27",
+      "market_as_of_date": "2023-07-27"
+    },
+    "status": "priced",
+    "pv_amount": 2199525.2129788906,
+    "greeks_shape": {
+      "names": [
+        "delta",
+        "gamma",
+        "rho",
+        "theta",
+        "vega"
+      ],
+      "count": 5,
+      "statuses": {
+        "delta": "available",
+        "gamma": "available",
+        "rho": "available",
+        "theta": "available",
+        "vega": "available"
+      },
+      "finite_values": true
+    },
+    "risk_output_shape": {
+      "curve_count": 4,
+      "curve_point_counts": [
+        5,
+        5,
+        3,
+        5
+      ],
+      "surface_count": 4,
+      "scenario_count": 0
+    },
+    "limitations_or_error": {
+      "limitations": [],
+      "messages": [
+        "Monte Carlo演示结果不可用于正式报价"
+      ],
+      "missing_calendar": {
+        "category": "missing_trading_calendar",
+        "exception": "ValueError",
+        "message": "路径型Pricer必须绑定独立trading-calendar交易日历"
+      }
+    },
+    "quote_eligible": false,
+    "precision_status": "demo_only",
+    "path_count": 10
+  },
+  {
+    "product_id": "9.19",
+    "canonical_name": "凤凰式结构",
+    "route_adapter": "optionreg_path",
+    "method": "monte_carlo",
+    "calendar_requirement": "trading-calendar",
+    "resolved_contract": {
+      "bound": true,
+      "product_id_matches": true,
+      "underlyings": [
+        "A"
+      ],
+      "contract_fingerprint": "51e276e31ba979c3c208305cff354004846c07da7451b0d73abfd469697b0a2b"
+    },
+    "input_fields_summary": {
+      "identity_fields": [
+        "underlyings",
+        "reference_prices"
+      ],
+      "pricing_config_fields": [
+        "valuation_date",
+        "spot",
+        "historical_volatility",
+        "risk_free_rate",
+        "dividend_yield",
+        "model_method",
+        "path_count",
+        "demo_mode",
+        "random_seed"
+      ],
+      "market_data_ref": {
+        "schema_id": "market-history-v1",
+        "normalized_fields": [
+          "date",
+          "asset_id",
+          "close",
+          "adj_close"
+        ]
+      },
+      "trading_calendar_ref_bound": true,
+      "path_count": 10,
+      "demo_mode": true,
+      "random_seed": 20240101
+    },
+    "valuation_dates": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-28",
+      "market_as_of_date": "2023-07-28"
+    },
+    "market_date_fallback": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-27",
+      "market_as_of_date": "2023-07-27"
+    },
+    "status": "priced",
+    "pv_amount": 104810.3085398549,
+    "greeks_shape": {
+      "names": [
+        "delta",
+        "gamma",
+        "rho",
+        "theta",
+        "vega"
+      ],
+      "count": 5,
+      "statuses": {
+        "delta": "available",
+        "gamma": "available",
+        "rho": "available",
+        "theta": "available",
+        "vega": "available"
+      },
+      "finite_values": true
+    },
+    "risk_output_shape": {
+      "curve_count": 4,
+      "curve_point_counts": [
+        5,
+        5,
+        3,
+        5
+      ],
+      "surface_count": 4,
+      "scenario_count": 0
+    },
+    "limitations_or_error": {
+      "limitations": [],
+      "messages": [
+        "Monte Carlo演示结果不可用于正式报价"
+      ],
+      "missing_calendar": {
+        "category": "missing_trading_calendar",
+        "exception": "ValueError",
+        "message": "路径型Pricer必须绑定独立trading-calendar交易日历"
+      }
+    },
+    "quote_eligible": false,
+    "precision_status": "demo_only",
+    "path_count": 10
+  },
+  {
+    "product_id": "9.20",
+    "canonical_name": "保底凤凰式结构",
+    "route_adapter": "optionreg_path",
+    "method": "monte_carlo",
+    "calendar_requirement": "trading-calendar",
+    "resolved_contract": {
+      "bound": true,
+      "product_id_matches": true,
+      "underlyings": [
+        "A"
+      ],
+      "contract_fingerprint": "b5e745a83c1f484e7a122090a0711af9393fc679b57b7d41a3da5d30f1090f6a"
+    },
+    "input_fields_summary": {
+      "identity_fields": [
+        "underlyings",
+        "reference_prices"
+      ],
+      "pricing_config_fields": [
+        "valuation_date",
+        "spot",
+        "historical_volatility",
+        "risk_free_rate",
+        "dividend_yield",
+        "model_method",
+        "path_count",
+        "demo_mode",
+        "random_seed"
+      ],
+      "market_data_ref": {
+        "schema_id": "market-history-v1",
+        "normalized_fields": [
+          "date",
+          "asset_id",
+          "close",
+          "adj_close"
+        ]
+      },
+      "trading_calendar_ref_bound": true,
+      "path_count": 10,
+      "demo_mode": true,
+      "random_seed": 20240101
+    },
+    "valuation_dates": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-28",
+      "market_as_of_date": "2023-07-28"
+    },
+    "market_date_fallback": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-27",
+      "market_as_of_date": "2023-07-27"
+    },
+    "status": "priced",
+    "pv_amount": 173216.004844242,
+    "greeks_shape": {
+      "names": [
+        "delta",
+        "gamma",
+        "rho",
+        "theta",
+        "vega"
+      ],
+      "count": 5,
+      "statuses": {
+        "delta": "available",
+        "gamma": "available",
+        "rho": "available",
+        "theta": "available",
+        "vega": "available"
+      },
+      "finite_values": true
+    },
+    "risk_output_shape": {
+      "curve_count": 4,
+      "curve_point_counts": [
+        5,
+        5,
+        3,
+        5
+      ],
+      "surface_count": 4,
+      "scenario_count": 0
+    },
+    "limitations_or_error": {
+      "limitations": [],
+      "messages": [
+        "Monte Carlo演示结果不可用于正式报价"
+      ],
+      "missing_calendar": {
+        "category": "missing_trading_calendar",
+        "exception": "ValueError",
+        "message": "路径型Pricer必须绑定独立trading-calendar交易日历"
+      }
+    },
+    "quote_eligible": false,
+    "precision_status": "demo_only",
+    "path_count": 10
+  },
+  {
+    "product_id": "9.21",
+    "canonical_name": "FCN（无敲入要素）",
+    "route_adapter": "optionreg_path",
+    "method": "monte_carlo",
+    "calendar_requirement": "trading-calendar",
+    "resolved_contract": {
+      "bound": true,
+      "product_id_matches": true,
+      "underlyings": [
+        "A"
+      ],
+      "contract_fingerprint": "f8d4bc4b5b8f37ba8f0719191f99620e5b6c08702ae8362235e0b09bb68b7473"
+    },
+    "input_fields_summary": {
+      "identity_fields": [
+        "underlyings",
+        "reference_prices"
+      ],
+      "pricing_config_fields": [
+        "valuation_date",
+        "spot",
+        "historical_volatility",
+        "risk_free_rate",
+        "dividend_yield",
+        "model_method",
+        "path_count",
+        "demo_mode",
+        "random_seed"
+      ],
+      "market_data_ref": {
+        "schema_id": "market-history-v1",
+        "normalized_fields": [
+          "date",
+          "asset_id",
+          "close",
+          "adj_close"
+        ]
+      },
+      "trading_calendar_ref_bound": true,
+      "path_count": 10,
+      "demo_mode": true,
+      "random_seed": 20240101
+    },
+    "valuation_dates": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-28",
+      "market_as_of_date": "2023-07-28"
+    },
+    "market_date_fallback": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-27",
+      "market_as_of_date": "2023-07-27"
+    },
+    "status": "priced",
+    "pv_amount": 684296.7329267657,
+    "greeks_shape": {
+      "names": [
+        "delta",
+        "gamma",
+        "rho",
+        "theta",
+        "vega"
+      ],
+      "count": 5,
+      "statuses": {
+        "delta": "available",
+        "gamma": "available",
+        "rho": "available",
+        "theta": "available",
+        "vega": "available"
+      },
+      "finite_values": true
+    },
+    "risk_output_shape": {
+      "curve_count": 4,
+      "curve_point_counts": [
+        5,
+        5,
+        3,
+        5
+      ],
+      "surface_count": 4,
+      "scenario_count": 0
+    },
+    "limitations_or_error": {
+      "limitations": [],
+      "messages": [
+        "Monte Carlo演示结果不可用于正式报价"
+      ],
+      "missing_calendar": {
+        "category": "missing_trading_calendar",
+        "exception": "ValueError",
+        "message": "路径型Pricer必须绑定独立trading-calendar交易日历"
+      }
+    },
+    "quote_eligible": false,
+    "precision_status": "demo_only",
+    "path_count": 10
+  },
+  {
+    "product_id": "9.22",
+    "canonical_name": "FCN（有敲入要素）",
+    "route_adapter": "optionreg_path",
+    "method": "monte_carlo",
+    "calendar_requirement": "trading-calendar",
+    "resolved_contract": {
+      "bound": true,
+      "product_id_matches": true,
+      "underlyings": [
+        "A"
+      ],
+      "contract_fingerprint": "c4b50ea40650a6c72be714a266b7d5a43666f761423d758e7ad9c9a66129ecc6"
+    },
+    "input_fields_summary": {
+      "identity_fields": [
+        "underlyings",
+        "reference_prices"
+      ],
+      "pricing_config_fields": [
+        "valuation_date",
+        "spot",
+        "historical_volatility",
+        "risk_free_rate",
+        "dividend_yield",
+        "model_method",
+        "path_count",
+        "demo_mode",
+        "random_seed"
+      ],
+      "market_data_ref": {
+        "schema_id": "market-history-v1",
+        "normalized_fields": [
+          "date",
+          "asset_id",
+          "close",
+          "adj_close"
+        ]
+      },
+      "trading_calendar_ref_bound": true,
+      "path_count": 10,
+      "demo_mode": true,
+      "random_seed": 20240101
+    },
+    "valuation_dates": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-28",
+      "market_as_of_date": "2023-07-28"
+    },
+    "market_date_fallback": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-27",
+      "market_as_of_date": "2023-07-27"
+    },
+    "status": "priced",
+    "pv_amount": 1469848.417426629,
+    "greeks_shape": {
+      "names": [
+        "delta",
+        "gamma",
+        "rho",
+        "theta",
+        "vega"
+      ],
+      "count": 5,
+      "statuses": {
+        "delta": "available",
+        "gamma": "available",
+        "rho": "available",
+        "theta": "available",
+        "vega": "available"
+      },
+      "finite_values": true
+    },
+    "risk_output_shape": {
+      "curve_count": 4,
+      "curve_point_counts": [
+        5,
+        5,
+        3,
+        5
+      ],
+      "surface_count": 4,
+      "scenario_count": 0
+    },
+    "limitations_or_error": {
+      "limitations": [],
+      "messages": [
+        "Monte Carlo演示结果不可用于正式报价"
+      ],
+      "missing_calendar": {
+        "category": "missing_trading_calendar",
+        "exception": "ValueError",
+        "message": "路径型Pricer必须绑定独立trading-calendar交易日历"
+      }
+    },
+    "quote_eligible": false,
+    "precision_status": "demo_only",
+    "path_count": 10
+  },
+  {
+    "product_id": "9.23",
+    "canonical_name": "保底FCN（有敲入要素）",
+    "route_adapter": "optionreg_path",
+    "method": "monte_carlo",
+    "calendar_requirement": "trading-calendar",
+    "resolved_contract": {
+      "bound": true,
+      "product_id_matches": true,
+      "underlyings": [
+        "A"
+      ],
+      "contract_fingerprint": "8fccaf4a6a704036e752d63a0510f4d36cd48ed520b43cb28a12ca0fa53e57cb"
+    },
+    "input_fields_summary": {
+      "identity_fields": [
+        "underlyings",
+        "reference_prices"
+      ],
+      "pricing_config_fields": [
+        "valuation_date",
+        "spot",
+        "historical_volatility",
+        "risk_free_rate",
+        "dividend_yield",
+        "model_method",
+        "path_count",
+        "demo_mode",
+        "random_seed"
+      ],
+      "market_data_ref": {
+        "schema_id": "market-history-v1",
+        "normalized_fields": [
+          "date",
+          "asset_id",
+          "close",
+          "adj_close"
+        ]
+      },
+      "trading_calendar_ref_bound": true,
+      "path_count": 10,
+      "demo_mode": true,
+      "random_seed": 20240101
+    },
+    "valuation_dates": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-28",
+      "market_as_of_date": "2023-07-28"
+    },
+    "market_date_fallback": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-27",
+      "market_as_of_date": "2023-07-27"
+    },
+    "status": "priced",
+    "pv_amount": 808416.629584646,
+    "greeks_shape": {
+      "names": [
+        "delta",
+        "gamma",
+        "rho",
+        "theta",
+        "vega"
+      ],
+      "count": 5,
+      "statuses": {
+        "delta": "available",
+        "gamma": "available",
+        "rho": "available",
+        "theta": "available",
+        "vega": "available"
+      },
+      "finite_values": true
+    },
+    "risk_output_shape": {
+      "curve_count": 4,
+      "curve_point_counts": [
+        5,
+        5,
+        3,
+        5
+      ],
+      "surface_count": 4,
+      "scenario_count": 0
+    },
+    "limitations_or_error": {
+      "limitations": [],
+      "messages": [
+        "Monte Carlo演示结果不可用于正式报价"
+      ],
+      "missing_calendar": {
+        "category": "missing_trading_calendar",
+        "exception": "ValueError",
+        "message": "路径型Pricer必须绑定独立trading-calendar交易日历"
+      }
+    },
+    "quote_eligible": false,
+    "precision_status": "demo_only",
+    "path_count": 10
+  },
+  {
+    "product_id": "9.24",
+    "canonical_name": "DCN",
+    "route_adapter": "optionreg_path",
+    "method": "monte_carlo",
+    "calendar_requirement": "trading-calendar",
+    "resolved_contract": {
+      "bound": true,
+      "product_id_matches": true,
+      "underlyings": [
+        "A"
+      ],
+      "contract_fingerprint": "cfc60a2d6466cb1839510dd1d6f06219b94ca9c448184879018e653e3ed02911"
+    },
+    "input_fields_summary": {
+      "identity_fields": [
+        "underlyings",
+        "reference_prices"
+      ],
+      "pricing_config_fields": [
+        "valuation_date",
+        "spot",
+        "historical_volatility",
+        "risk_free_rate",
+        "dividend_yield",
+        "model_method",
+        "path_count",
+        "demo_mode",
+        "random_seed"
+      ],
+      "market_data_ref": {
+        "schema_id": "market-history-v1",
+        "normalized_fields": [
+          "date",
+          "asset_id",
+          "close",
+          "adj_close"
+        ]
+      },
+      "trading_calendar_ref_bound": true,
+      "path_count": 10,
+      "demo_mode": true,
+      "random_seed": 20240101
+    },
+    "valuation_dates": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-28",
+      "market_as_of_date": "2023-07-28"
+    },
+    "market_date_fallback": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-27",
+      "market_as_of_date": "2023-07-27"
+    },
+    "status": "priced",
+    "pv_amount": 397923.21823113726,
+    "greeks_shape": {
+      "names": [
+        "delta",
+        "gamma",
+        "rho",
+        "theta",
+        "vega"
+      ],
+      "count": 5,
+      "statuses": {
+        "delta": "available",
+        "gamma": "available",
+        "rho": "available",
+        "theta": "available",
+        "vega": "available"
+      },
+      "finite_values": true
+    },
+    "risk_output_shape": {
+      "curve_count": 4,
+      "curve_point_counts": [
+        5,
+        5,
+        3,
+        5
+      ],
+      "surface_count": 4,
+      "scenario_count": 0
+    },
+    "limitations_or_error": {
+      "limitations": [],
+      "messages": [
+        "Monte Carlo演示结果不可用于正式报价"
+      ],
+      "missing_calendar": {
+        "category": "missing_trading_calendar",
+        "exception": "ValueError",
+        "message": "路径型Pricer必须绑定独立trading-calendar交易日历"
+      }
+    },
+    "quote_eligible": false,
+    "precision_status": "demo_only",
+    "path_count": 10
+  },
+  {
+    "product_id": "9.25",
+    "canonical_name": "保底DCN",
+    "route_adapter": "optionreg_path",
+    "method": "monte_carlo",
+    "calendar_requirement": "trading-calendar",
+    "resolved_contract": {
+      "bound": true,
+      "product_id_matches": true,
+      "underlyings": [
+        "A"
+      ],
+      "contract_fingerprint": "bc786df160f867935c70edf9d5a42d22100ba550e9215166ca23fd5f8d677af3"
+    },
+    "input_fields_summary": {
+      "identity_fields": [
+        "underlyings",
+        "reference_prices"
+      ],
+      "pricing_config_fields": [
+        "valuation_date",
+        "spot",
+        "historical_volatility",
+        "risk_free_rate",
+        "dividend_yield",
+        "model_method",
+        "path_count",
+        "demo_mode",
+        "random_seed"
+      ],
+      "market_data_ref": {
+        "schema_id": "market-history-v1",
+        "normalized_fields": [
+          "date",
+          "asset_id",
+          "close",
+          "adj_close"
+        ]
+      },
+      "trading_calendar_ref_bound": true,
+      "path_count": 10,
+      "demo_mode": true,
+      "random_seed": 20240101
+    },
+    "valuation_dates": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-28",
+      "market_as_of_date": "2023-07-28"
+    },
+    "market_date_fallback": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-27",
+      "market_as_of_date": "2023-07-27"
+    },
+    "status": "priced",
+    "pv_amount": 238753.93093868234,
+    "greeks_shape": {
+      "names": [
+        "delta",
+        "gamma",
+        "rho",
+        "theta",
+        "vega"
+      ],
+      "count": 5,
+      "statuses": {
+        "delta": "available",
+        "gamma": "available",
+        "rho": "available",
+        "theta": "available",
+        "vega": "available"
+      },
+      "finite_values": true
+    },
+    "risk_output_shape": {
+      "curve_count": 4,
+      "curve_point_counts": [
+        5,
+        5,
+        3,
+        5
+      ],
+      "surface_count": 4,
+      "scenario_count": 0
+    },
+    "limitations_or_error": {
+      "limitations": [],
+      "messages": [
+        "Monte Carlo演示结果不可用于正式报价"
+      ],
+      "missing_calendar": {
+        "category": "missing_trading_calendar",
+        "exception": "ValueError",
+        "message": "路径型Pricer必须绑定独立trading-calendar交易日历"
+      }
+    },
+    "quote_eligible": false,
+    "precision_status": "demo_only",
+    "path_count": 10
+  },
+  {
+    "product_id": "9.26",
+    "canonical_name": "触发器",
+    "route_adapter": "optionreg_path",
+    "method": "monte_carlo",
+    "calendar_requirement": "trading-calendar",
+    "resolved_contract": {
+      "bound": true,
+      "product_id_matches": true,
+      "underlyings": [
+        "A"
+      ],
+      "contract_fingerprint": "f622c3f60df43ea96fa4905d56d8a62191300a0ff13cec061e8e87e4a92c9be5"
+    },
+    "input_fields_summary": {
+      "identity_fields": [
+        "underlyings",
+        "reference_prices"
+      ],
+      "pricing_config_fields": [
+        "valuation_date",
+        "spot",
+        "historical_volatility",
+        "risk_free_rate",
+        "dividend_yield",
+        "model_method",
+        "path_count",
+        "demo_mode",
+        "random_seed"
+      ],
+      "market_data_ref": {
+        "schema_id": "market-history-v1",
+        "normalized_fields": [
+          "date",
+          "asset_id",
+          "close",
+          "adj_close"
+        ]
+      },
+      "trading_calendar_ref_bound": true,
+      "path_count": 10,
+      "demo_mode": true,
+      "random_seed": 20240101
+    },
+    "valuation_dates": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-28",
+      "market_as_of_date": "2023-07-28"
+    },
+    "market_date_fallback": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-27",
+      "market_as_of_date": "2023-07-27"
+    },
+    "status": "priced",
+    "pv_amount": 190094.77608455456,
+    "greeks_shape": {
+      "names": [
+        "delta",
+        "gamma",
+        "rho",
+        "theta",
+        "vega"
+      ],
+      "count": 5,
+      "statuses": {
+        "delta": "available",
+        "gamma": "available",
+        "rho": "available",
+        "theta": "available",
+        "vega": "available"
+      },
+      "finite_values": true
+    },
+    "risk_output_shape": {
+      "curve_count": 4,
+      "curve_point_counts": [
+        5,
+        5,
+        3,
+        5
+      ],
+      "surface_count": 4,
+      "scenario_count": 0
+    },
+    "limitations_or_error": {
+      "limitations": [],
+      "messages": [
+        "Monte Carlo演示结果不可用于正式报价"
+      ],
+      "missing_calendar": {
+        "category": "missing_trading_calendar",
+        "exception": "ValueError",
+        "message": "路径型Pricer必须绑定独立trading-calendar交易日历"
+      }
+    },
+    "quote_eligible": false,
+    "precision_status": "demo_only",
+    "path_count": 10
+  },
+  {
+    "product_id": "9.27",
+    "canonical_name": "锁盈缓冲结构",
+    "route_adapter": "optionreg_path",
+    "method": "monte_carlo",
+    "calendar_requirement": "trading-calendar",
+    "resolved_contract": {
+      "bound": true,
+      "product_id_matches": true,
+      "underlyings": [
+        "A"
+      ],
+      "contract_fingerprint": "fd2768d72cbd3cfb407d4bd9691cedd815e71052440c8df9874b05ed02e189a4"
+    },
+    "input_fields_summary": {
+      "identity_fields": [
+        "underlyings",
+        "reference_prices"
+      ],
+      "pricing_config_fields": [
+        "valuation_date",
+        "spot",
+        "historical_volatility",
+        "risk_free_rate",
+        "dividend_yield",
+        "model_method",
+        "path_count",
+        "demo_mode",
+        "random_seed"
+      ],
+      "market_data_ref": {
+        "schema_id": "market-history-v1",
+        "normalized_fields": [
+          "date",
+          "asset_id",
+          "close",
+          "adj_close"
+        ]
+      },
+      "trading_calendar_ref_bound": true,
+      "path_count": 10,
+      "demo_mode": true,
+      "random_seed": 20240101
+    },
+    "valuation_dates": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-28",
+      "market_as_of_date": "2023-07-28"
+    },
+    "market_date_fallback": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-27",
+      "market_as_of_date": "2023-07-27"
+    },
+    "status": "priced",
+    "pv_amount": 2157980.925643026,
+    "greeks_shape": {
+      "names": [
+        "delta",
+        "gamma",
+        "rho",
+        "theta",
+        "vega"
+      ],
+      "count": 5,
+      "statuses": {
+        "delta": "available",
+        "gamma": "available",
+        "rho": "available",
+        "theta": "available",
+        "vega": "available"
+      },
+      "finite_values": true
+    },
+    "risk_output_shape": {
+      "curve_count": 4,
+      "curve_point_counts": [
+        5,
+        5,
+        3,
+        5
+      ],
+      "surface_count": 4,
+      "scenario_count": 0
+    },
+    "limitations_or_error": {
+      "limitations": [],
+      "messages": [
+        "Monte Carlo演示结果不可用于正式报价"
+      ],
+      "missing_calendar": {
+        "category": "missing_trading_calendar",
+        "exception": "ValueError",
+        "message": "路径型Pricer必须绑定独立trading-calendar交易日历"
+      }
+    },
+    "quote_eligible": false,
+    "precision_status": "demo_only",
+    "path_count": 10
+  },
+  {
+    "product_id": "9.28",
+    "canonical_name": "限损票息结构",
+    "route_adapter": "optionreg_path",
+    "method": "monte_carlo",
+    "calendar_requirement": "trading-calendar",
+    "resolved_contract": {
+      "bound": true,
+      "product_id_matches": true,
+      "underlyings": [
+        "A"
+      ],
+      "contract_fingerprint": "864d5b5d4a10d9cc7b236482081cc46d1312c2aaa185084c0f7cc649175a1711"
+    },
+    "input_fields_summary": {
+      "identity_fields": [
+        "underlyings",
+        "reference_prices"
+      ],
+      "pricing_config_fields": [
+        "valuation_date",
+        "spot",
+        "historical_volatility",
+        "risk_free_rate",
+        "dividend_yield",
+        "model_method",
+        "path_count",
+        "demo_mode",
+        "random_seed"
+      ],
+      "market_data_ref": {
+        "schema_id": "market-history-v1",
+        "normalized_fields": [
+          "date",
+          "asset_id",
+          "close",
+          "adj_close"
+        ]
+      },
+      "trading_calendar_ref_bound": true,
+      "path_count": 10,
+      "demo_mode": true,
+      "random_seed": 20240101
+    },
+    "valuation_dates": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-28",
+      "market_as_of_date": "2023-07-28"
+    },
+    "market_date_fallback": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-27",
+      "market_as_of_date": "2023-07-27"
+    },
+    "status": "priced",
+    "pv_amount": 0.0,
+    "greeks_shape": {
+      "names": [
+        "delta",
+        "gamma",
+        "rho",
+        "theta",
+        "vega"
+      ],
+      "count": 5,
+      "statuses": {
+        "delta": "available",
+        "gamma": "available",
+        "rho": "available",
+        "theta": "available",
+        "vega": "available"
+      },
+      "finite_values": true
+    },
+    "risk_output_shape": {
+      "curve_count": 4,
+      "curve_point_counts": [
+        5,
+        5,
+        3,
+        5
+      ],
+      "surface_count": 4,
+      "scenario_count": 0
+    },
+    "limitations_or_error": {
+      "limitations": [],
+      "messages": [
+        "Monte Carlo演示结果不可用于正式报价"
+      ],
+      "missing_calendar": {
+        "category": "missing_trading_calendar",
+        "exception": "ValueError",
+        "message": "路径型Pricer必须绑定独立trading-calendar交易日历"
+      }
+    },
+    "quote_eligible": false,
+    "precision_status": "demo_only",
+    "path_count": 10
+  },
+  {
+    "product_id": "9.29",
+    "canonical_name": "助推器",
+    "route_adapter": "optionreg_path",
+    "method": "monte_carlo",
+    "calendar_requirement": "trading-calendar",
+    "resolved_contract": {
+      "bound": true,
+      "product_id_matches": true,
+      "underlyings": [
+        "A"
+      ],
+      "contract_fingerprint": "b6a6925fc57d95e0c9225a7f8b9a83c0f6742de5995df257ae618f21a5b81a99"
+    },
+    "input_fields_summary": {
+      "identity_fields": [
+        "underlyings",
+        "reference_prices"
+      ],
+      "pricing_config_fields": [
+        "valuation_date",
+        "spot",
+        "historical_volatility",
+        "risk_free_rate",
+        "dividend_yield",
+        "model_method",
+        "path_count",
+        "demo_mode",
+        "random_seed"
+      ],
+      "market_data_ref": {
+        "schema_id": "market-history-v1",
+        "normalized_fields": [
+          "date",
+          "asset_id",
+          "close",
+          "adj_close"
+        ]
+      },
+      "trading_calendar_ref_bound": true,
+      "path_count": 10,
+      "demo_mode": true,
+      "random_seed": 20240101
+    },
+    "valuation_dates": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-28",
+      "market_as_of_date": "2023-07-28"
+    },
+    "market_date_fallback": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-27",
+      "market_as_of_date": "2023-07-27"
+    },
+    "status": "priced",
+    "pv_amount": 296214.2355806742,
+    "greeks_shape": {
+      "names": [
+        "delta",
+        "gamma",
+        "rho",
+        "theta",
+        "vega"
+      ],
+      "count": 5,
+      "statuses": {
+        "delta": "available",
+        "gamma": "available",
+        "rho": "available",
+        "theta": "available",
+        "vega": "available"
+      },
+      "finite_values": true
+    },
+    "risk_output_shape": {
+      "curve_count": 4,
+      "curve_point_counts": [
+        5,
+        5,
+        3,
+        5
+      ],
+      "surface_count": 4,
+      "scenario_count": 0
+    },
+    "limitations_or_error": {
+      "limitations": [],
+      "messages": [
+        "Monte Carlo演示结果不可用于正式报价"
+      ],
+      "missing_calendar": {
+        "category": "missing_trading_calendar",
+        "exception": "ValueError",
+        "message": "路径型Pricer必须绑定独立trading-calendar交易日历"
+      }
+    },
+    "quote_eligible": false,
+    "precision_status": "demo_only",
+    "path_count": 10
+  },
+  {
+    "product_id": "10.1",
+    "canonical_name": "Worst-Of香草看涨期权",
+    "route_adapter": "optionreg_path",
+    "method": "monte_carlo",
+    "calendar_requirement": "not_required",
+    "resolved_contract": {
+      "bound": true,
+      "product_id_matches": true,
+      "underlyings": [
+        "A",
+        "B"
+      ],
+      "contract_fingerprint": "9625ed8ba1a878065a7bd3893aec0f841aaad260a8f2d112a5de8ade0c639532"
+    },
+    "input_fields_summary": {
+      "identity_fields": [
+        "underlyings",
+        "reference_prices"
+      ],
+      "pricing_config_fields": [
+        "valuation_date",
+        "spot",
+        "historical_volatility",
+        "risk_free_rate",
+        "dividend_yield",
+        "model_method",
+        "path_count",
+        "demo_mode",
+        "random_seed"
+      ],
+      "market_data_ref": {
+        "schema_id": "market-history-v1",
+        "normalized_fields": [
+          "date",
+          "asset_id",
+          "close",
+          "adj_close"
+        ]
+      },
+      "trading_calendar_ref_bound": false,
+      "path_count": 10,
+      "demo_mode": true,
+      "random_seed": 20240101
+    },
+    "valuation_dates": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-28",
+      "market_as_of_date": "2023-07-28"
+    },
+    "market_date_fallback": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-27",
+      "market_as_of_date": "2023-07-27"
+    },
+    "status": "priced",
+    "pv_amount": -0.014234721450938959,
+    "greeks_shape": {
+      "names": [
+        "delta",
+        "gamma",
+        "rho",
+        "theta",
+        "vega"
+      ],
+      "count": 5,
+      "statuses": {
+        "delta": "available",
+        "gamma": "available",
+        "rho": "available",
+        "theta": "available",
+        "vega": "available"
+      },
+      "finite_values": true
+    },
+    "risk_output_shape": {
+      "curve_count": 4,
+      "curve_point_counts": [
+        5,
+        5,
+        3,
+        5
+      ],
+      "surface_count": 4,
+      "scenario_count": 0
+    },
+    "limitations_or_error": {
+      "limitations": [],
+      "messages": [
+        "Monte Carlo演示结果不可用于正式报价"
+      ],
+      "missing_calendar": {
+        "category": "not_required",
+        "exception": "",
+        "message": ""
+      }
+    },
+    "quote_eligible": false,
+    "precision_status": "demo_only",
+    "path_count": 10
+  },
+  {
+    "product_id": "10.2",
+    "canonical_name": "折价看涨8080（保证金）",
+    "route_adapter": "optionreg_path",
+    "method": "monte_carlo",
+    "calendar_requirement": "not_required",
+    "resolved_contract": {
+      "bound": true,
+      "product_id_matches": true,
+      "underlyings": [
+        "A"
+      ],
+      "contract_fingerprint": "0367c61a084c409cea48b80752e3ee3b3bb5a21d3a926afe1f315e6235497606"
+    },
+    "input_fields_summary": {
+      "identity_fields": [
+        "underlyings",
+        "reference_prices"
+      ],
+      "pricing_config_fields": [
+        "valuation_date",
+        "spot",
+        "historical_volatility",
+        "risk_free_rate",
+        "dividend_yield",
+        "model_method",
+        "path_count",
+        "demo_mode",
+        "random_seed"
+      ],
+      "market_data_ref": {
+        "schema_id": "market-history-v1",
+        "normalized_fields": [
+          "date",
+          "asset_id",
+          "close",
+          "adj_close"
+        ]
+      },
+      "trading_calendar_ref_bound": false,
+      "path_count": 10,
+      "demo_mode": true,
+      "random_seed": 20240101
+    },
+    "valuation_dates": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-28",
+      "market_as_of_date": "2023-07-28"
+    },
+    "market_date_fallback": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-27",
+      "market_as_of_date": "2023-07-27"
+    },
+    "status": "priced",
+    "pv_amount": 13322.228392488621,
+    "greeks_shape": {
+      "names": [
+        "delta",
+        "gamma",
+        "rho",
+        "theta",
+        "vega"
+      ],
+      "count": 5,
+      "statuses": {
+        "delta": "available",
+        "gamma": "available",
+        "rho": "available",
+        "theta": "available",
+        "vega": "available"
+      },
+      "finite_values": true
+    },
+    "risk_output_shape": {
+      "curve_count": 4,
+      "curve_point_counts": [
+        5,
+        5,
+        3,
+        5
+      ],
+      "surface_count": 4,
+      "scenario_count": 0
+    },
+    "limitations_or_error": {
+      "limitations": [],
+      "messages": [
+        "Monte Carlo演示结果不可用于正式报价"
+      ],
+      "missing_calendar": {
+        "category": "not_required",
+        "exception": "",
+        "message": ""
+      }
+    },
+    "quote_eligible": false,
+    "precision_status": "demo_only",
+    "path_count": 10
+  },
+  {
+    "product_id": "10.3",
+    "canonical_name": "折价看涨8080（期权费）",
+    "route_adapter": "optionreg_path",
+    "method": "monte_carlo",
+    "calendar_requirement": "not_required",
+    "resolved_contract": {
+      "bound": true,
+      "product_id_matches": true,
+      "underlyings": [
+        "A"
+      ],
+      "contract_fingerprint": "9da3cc45b8ce15cb96068be2cbce923016aa2bfcc2f86263488e8e85e8cf69fa"
+    },
+    "input_fields_summary": {
+      "identity_fields": [
+        "underlyings",
+        "reference_prices"
+      ],
+      "pricing_config_fields": [
+        "valuation_date",
+        "spot",
+        "historical_volatility",
+        "risk_free_rate",
+        "dividend_yield",
+        "model_method",
+        "path_count",
+        "demo_mode",
+        "random_seed"
+      ],
+      "market_data_ref": {
+        "schema_id": "market-history-v1",
+        "normalized_fields": [
+          "date",
+          "asset_id",
+          "close",
+          "adj_close"
+        ]
+      },
+      "trading_calendar_ref_bound": false,
+      "path_count": 10,
+      "demo_mode": true,
+      "random_seed": 20240101
+    },
+    "valuation_dates": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-28",
+      "market_as_of_date": "2023-07-28"
+    },
+    "market_date_fallback": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-27",
+      "market_as_of_date": "2023-07-27"
+    },
+    "status": "priced",
+    "pv_amount": 13322.228392488621,
+    "greeks_shape": {
+      "names": [
+        "delta",
+        "gamma",
+        "rho",
+        "theta",
+        "vega"
+      ],
+      "count": 5,
+      "statuses": {
+        "delta": "available",
+        "gamma": "available",
+        "rho": "available",
+        "theta": "available",
+        "vega": "available"
+      },
+      "finite_values": true
+    },
+    "risk_output_shape": {
+      "curve_count": 4,
+      "curve_point_counts": [
+        5,
+        5,
+        3,
+        5
+      ],
+      "surface_count": 4,
+      "scenario_count": 0
+    },
+    "limitations_or_error": {
+      "limitations": [],
+      "messages": [
+        "Monte Carlo演示结果不可用于正式报价"
+      ],
+      "missing_calendar": {
+        "category": "not_required",
+        "exception": "",
+        "message": ""
+      }
+    },
+    "quote_eligible": false,
+    "precision_status": "demo_only",
+    "path_count": 10
+  },
+  {
+    "product_id": "10.4",
+    "canonical_name": "方差互换",
+    "route_adapter": "optionreg_path",
+    "method": "monte_carlo",
+    "calendar_requirement": "trading-calendar",
+    "resolved_contract": {
+      "bound": true,
+      "product_id_matches": true,
+      "underlyings": [
+        "A"
+      ],
+      "contract_fingerprint": "2c1a891169f46c1985bfcc12202cc12755ad182d153943508819ff66c3cee49b"
+    },
+    "input_fields_summary": {
+      "identity_fields": [
+        "underlyings",
+        "reference_prices"
+      ],
+      "pricing_config_fields": [
+        "valuation_date",
+        "spot",
+        "historical_volatility",
+        "risk_free_rate",
+        "dividend_yield",
+        "model_method",
+        "path_count",
+        "demo_mode",
+        "random_seed"
+      ],
+      "market_data_ref": {
+        "schema_id": "market-history-v1",
+        "normalized_fields": [
+          "date",
+          "asset_id",
+          "close",
+          "adj_close"
+        ]
+      },
+      "trading_calendar_ref_bound": true,
+      "path_count": 10,
+      "demo_mode": true,
+      "random_seed": 20240101
+    },
+    "valuation_dates": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-28",
+      "market_as_of_date": "2023-07-28"
+    },
+    "market_date_fallback": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-27",
+      "market_as_of_date": "2023-07-27"
+    },
+    "status": "priced",
+    "pv_amount": -421800.30481312954,
+    "greeks_shape": {
+      "names": [
+        "delta",
+        "gamma",
+        "rho",
+        "theta",
+        "vega"
+      ],
+      "count": 5,
+      "statuses": {
+        "delta": "available",
+        "gamma": "available",
+        "rho": "available",
+        "theta": "available",
+        "vega": "available"
+      },
+      "finite_values": true
+    },
+    "risk_output_shape": {
+      "curve_count": 4,
+      "curve_point_counts": [
+        5,
+        5,
+        3,
+        5
+      ],
+      "surface_count": 4,
+      "scenario_count": 0
+    },
+    "limitations_or_error": {
+      "limitations": [],
+      "messages": [
+        "Monte Carlo演示结果不可用于正式报价"
+      ],
+      "missing_calendar": {
+        "category": "missing_trading_calendar",
+        "exception": "ValueError",
+        "message": "路径型Pricer必须绑定独立trading-calendar交易日历"
+      }
+    },
+    "quote_eligible": false,
+    "precision_status": "demo_only",
+    "path_count": 10
+  },
+  {
+    "product_id": "10.5",
+    "canonical_name": "看涨鲨鱼鳍（UOC）",
+    "route_adapter": "optionreg_path",
+    "method": "monte_carlo",
+    "calendar_requirement": "trading-calendar",
+    "resolved_contract": {
+      "bound": true,
+      "product_id_matches": true,
+      "underlyings": [
+        "A"
+      ],
+      "contract_fingerprint": "768121938064cc70d93e20c88fcb7e549c57210ae9b594216b5a67e87763c082"
+    },
+    "input_fields_summary": {
+      "identity_fields": [
+        "underlyings",
+        "reference_prices"
+      ],
+      "pricing_config_fields": [
+        "valuation_date",
+        "spot",
+        "historical_volatility",
+        "risk_free_rate",
+        "dividend_yield",
+        "model_method",
+        "path_count",
+        "demo_mode",
+        "random_seed"
+      ],
+      "market_data_ref": {
+        "schema_id": "market-history-v1",
+        "normalized_fields": [
+          "date",
+          "asset_id",
+          "close",
+          "adj_close"
+        ]
+      },
+      "trading_calendar_ref_bound": true,
+      "path_count": 10,
+      "demo_mode": true,
+      "random_seed": 20240101
+    },
+    "valuation_dates": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-28",
+      "market_as_of_date": "2023-07-28"
+    },
+    "market_date_fallback": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-27",
+      "market_as_of_date": "2023-07-27"
+    },
+    "status": "priced",
+    "pv_amount": -160769.58773721644,
+    "greeks_shape": {
+      "names": [
+        "delta",
+        "gamma",
+        "rho",
+        "theta",
+        "vega"
+      ],
+      "count": 5,
+      "statuses": {
+        "delta": "available",
+        "gamma": "available",
+        "rho": "available",
+        "theta": "available",
+        "vega": "available"
+      },
+      "finite_values": true
+    },
+    "risk_output_shape": {
+      "curve_count": 4,
+      "curve_point_counts": [
+        5,
+        5,
+        3,
+        5
+      ],
+      "surface_count": 4,
+      "scenario_count": 0
+    },
+    "limitations_or_error": {
+      "limitations": [],
+      "messages": [
+        "Monte Carlo演示结果不可用于正式报价"
+      ],
+      "missing_calendar": {
+        "category": "missing_trading_calendar",
+        "exception": "ValueError",
+        "message": "路径型Pricer必须绑定独立trading-calendar交易日历"
+      }
+    },
+    "quote_eligible": false,
+    "precision_status": "demo_only",
+    "path_count": 10
+  },
+  {
+    "product_id": "10.6",
+    "canonical_name": "看跌鲨鱼鳍（DOP）",
+    "route_adapter": "optionreg_path",
+    "method": "monte_carlo",
+    "calendar_requirement": "trading-calendar",
+    "resolved_contract": {
+      "bound": true,
+      "product_id_matches": true,
+      "underlyings": [
+        "A"
+      ],
+      "contract_fingerprint": "8678801abd7dbb3985ca27581d5ee7e49d5fc3ece7f125e470224445d7ecd241"
+    },
+    "input_fields_summary": {
+      "identity_fields": [
+        "underlyings",
+        "reference_prices"
+      ],
+      "pricing_config_fields": [
+        "valuation_date",
+        "spot",
+        "historical_volatility",
+        "risk_free_rate",
+        "dividend_yield",
+        "model_method",
+        "path_count",
+        "demo_mode",
+        "random_seed"
+      ],
+      "market_data_ref": {
+        "schema_id": "market-history-v1",
+        "normalized_fields": [
+          "date",
+          "asset_id",
+          "close",
+          "adj_close"
+        ]
+      },
+      "trading_calendar_ref_bound": true,
+      "path_count": 10,
+      "demo_mode": true,
+      "random_seed": 20240101
+    },
+    "valuation_dates": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-28",
+      "market_as_of_date": "2023-07-28"
+    },
+    "market_date_fallback": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-27",
+      "market_as_of_date": "2023-07-27"
+    },
+    "status": "priced",
+    "pv_amount": -300000.0,
+    "greeks_shape": {
+      "names": [
+        "delta",
+        "gamma",
+        "rho",
+        "theta",
+        "vega"
+      ],
+      "count": 5,
+      "statuses": {
+        "delta": "available",
+        "gamma": "available",
+        "rho": "available",
+        "theta": "available",
+        "vega": "available"
+      },
+      "finite_values": true
+    },
+    "risk_output_shape": {
+      "curve_count": 4,
+      "curve_point_counts": [
+        5,
+        5,
+        3,
+        5
+      ],
+      "surface_count": 4,
+      "scenario_count": 0
+    },
+    "limitations_or_error": {
+      "limitations": [],
+      "messages": [
+        "Monte Carlo演示结果不可用于正式报价"
+      ],
+      "missing_calendar": {
+        "category": "missing_trading_calendar",
+        "exception": "ValueError",
+        "message": "路径型Pricer必须绑定独立trading-calendar交易日历"
+      }
+    },
+    "quote_eligible": false,
+    "precision_status": "demo_only",
+    "path_count": 10
+  },
+  {
+    "product_id": "10.7",
+    "canonical_name": "双边鲨鱼鳍",
+    "route_adapter": "optionreg_path",
+    "method": "monte_carlo",
+    "calendar_requirement": "trading-calendar",
+    "resolved_contract": {
+      "bound": true,
+      "product_id_matches": true,
+      "underlyings": [
+        "A"
+      ],
+      "contract_fingerprint": "c34d5221245501e115d0b3500e9420a6537343d178fa416416dc177a5a14e2ce"
+    },
+    "input_fields_summary": {
+      "identity_fields": [
+        "underlyings",
+        "reference_prices"
+      ],
+      "pricing_config_fields": [
+        "valuation_date",
+        "spot",
+        "historical_volatility",
+        "risk_free_rate",
+        "dividend_yield",
+        "model_method",
+        "path_count",
+        "demo_mode",
+        "random_seed"
+      ],
+      "market_data_ref": {
+        "schema_id": "market-history-v1",
+        "normalized_fields": [
+          "date",
+          "asset_id",
+          "close",
+          "adj_close"
+        ]
+      },
+      "trading_calendar_ref_bound": true,
+      "path_count": 10,
+      "demo_mode": true,
+      "random_seed": 20240101
+    },
+    "valuation_dates": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-28",
+      "market_as_of_date": "2023-07-28"
+    },
+    "market_date_fallback": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-27",
+      "market_as_of_date": "2023-07-27"
+    },
+    "status": "priced",
+    "pv_amount": -88000.0,
+    "greeks_shape": {
+      "names": [
+        "delta",
+        "gamma",
+        "rho",
+        "theta",
+        "vega"
+      ],
+      "count": 5,
+      "statuses": {
+        "delta": "available",
+        "gamma": "available",
+        "rho": "available",
+        "theta": "available",
+        "vega": "available"
+      },
+      "finite_values": true
+    },
+    "risk_output_shape": {
+      "curve_count": 4,
+      "curve_point_counts": [
+        5,
+        5,
+        3,
+        5
+      ],
+      "surface_count": 4,
+      "scenario_count": 0
+    },
+    "limitations_or_error": {
+      "limitations": [],
+      "messages": [
+        "Monte Carlo演示结果不可用于正式报价"
+      ],
+      "missing_calendar": {
+        "category": "missing_trading_calendar",
+        "exception": "ValueError",
+        "message": "路径型Pricer必须绑定独立trading-calendar交易日历"
+      }
+    },
+    "quote_eligible": false,
+    "precision_status": "demo_only",
+    "path_count": 10
+  },
+  {
+    "product_id": "10.8",
+    "canonical_name": "区间计息（Range Accrual）",
+    "route_adapter": "optionreg_path",
+    "method": "monte_carlo",
+    "calendar_requirement": "trading-calendar",
+    "resolved_contract": {
+      "bound": true,
+      "product_id_matches": true,
+      "underlyings": [
+        "A"
+      ],
+      "contract_fingerprint": "a82bc019d64a30a68a64570387ebde7f0dd2c6a208967585834b8d1007acae28"
+    },
+    "input_fields_summary": {
+      "identity_fields": [
+        "underlyings",
+        "reference_prices"
+      ],
+      "pricing_config_fields": [
+        "valuation_date",
+        "spot",
+        "historical_volatility",
+        "risk_free_rate",
+        "dividend_yield",
+        "model_method",
+        "path_count",
+        "demo_mode",
+        "random_seed"
+      ],
+      "market_data_ref": {
+        "schema_id": "market-history-v1",
+        "normalized_fields": [
+          "date",
+          "asset_id",
+          "close",
+          "adj_close"
+        ]
+      },
+      "trading_calendar_ref_bound": true,
+      "path_count": 10,
+      "demo_mode": true,
+      "random_seed": 20240101
+    },
+    "valuation_dates": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-28",
+      "market_as_of_date": "2023-07-28"
+    },
+    "market_date_fallback": {
+      "requested_valuation_date": "2023-07-28",
+      "effective_valuation_session": "2023-07-27",
+      "market_as_of_date": "2023-07-27"
+    },
+    "status": "priced",
+    "pv_amount": 23777.70481799147,
+    "greeks_shape": {
+      "names": [
+        "delta",
+        "gamma",
+        "rho",
+        "theta",
+        "vega"
+      ],
+      "count": 5,
+      "statuses": {
+        "delta": "available",
+        "gamma": "available",
+        "rho": "available",
+        "theta": "available",
+        "vega": "available"
+      },
+      "finite_values": true
+    },
+    "risk_output_shape": {
+      "curve_count": 4,
+      "curve_point_counts": [
+        5,
+        5,
+        3,
+        5
+      ],
+      "surface_count": 4,
+      "scenario_count": 0
+    },
+    "limitations_or_error": {
+      "limitations": [],
+      "messages": [
+        "Monte Carlo演示结果不可用于正式报价"
+      ],
+      "missing_calendar": {
+        "category": "missing_trading_calendar",
+        "exception": "ValueError",
+        "message": "路径型Pricer必须绑定独立trading-calendar交易日历"
+      }
+    },
+    "quote_eligible": false,
+    "precision_status": "demo_only",
+    "path_count": 10
+  }
+]

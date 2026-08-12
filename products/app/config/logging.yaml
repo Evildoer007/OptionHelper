@@ -1,0 +1,9 @@
+version: 1
+logging:
+  redact_fields:
+    - secret
+    - password
+    - token
+    - api_key
+  persist_request_bodies: false
+  persist_model_prompts: false

@@ -1,0 +1,50 @@
+{
+  "name_zh": "看跌鲨鱼鳍（DOP）",
+  "terms": {
+    "S0": 100.0,
+    "T": 0.5,
+    "N": 10000000.0,
+    "K": 100.0,
+    "H_KO": 90.0,
+    "eta": 0.05,
+    "p": 0.03,
+    "O_KO": "daily",
+    "settlement": "cash",
+    "observation_price": "close",
+    "margin_call": false,
+    "monitor": {
+      "terminal_out_observed": "require_maturity_observation(S_t[O_out], T)",
+      "tau_out": "first_time(S_t[O_out] <= H_out)"
+    },
+    "pricing_methods": [
+      "monte_carlo"
+    ],
+    "constraints": [
+      "H_out < K"
+    ]
+  },
+  "paths": [
+    {
+      "condition": "tau_out < inf",
+      "cases": [
+        {
+          "domain": "S_T >= 0",
+          "pnl": "cash(0, -N * p) + cash(tau_out, N * r_out)"
+        }
+      ]
+    },
+    {
+      "condition": "tau_out == inf",
+      "cases": [
+        {
+          "domain": "H_out < S_T < K",
+          "pnl": "cash(0, -N * p) + cash(T, N * (K - S_T) / S_0)"
+        },
+        {
+          "domain": "S_T >= K",
+          "pnl": "cash(0, -N * p)"
+        }
+      ]
+    }
+  ]
+}

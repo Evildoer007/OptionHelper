@@ -1,0 +1,2 @@
+# 仅用于Skill与App封装，不进入可安装Skill运行时依赖。
+PyInstaller==6.21.0

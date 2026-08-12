@@ -1,5 +1,30 @@
 .DS_Store
+.idea/
+.claude/settings.local.json
 __pycache__/
 *.pyc
+*.pyo
+.pytest_cache/
+.ruff_cache/
 evals/model_config.json
 evals/model_results/
+apps/macos/OptionHelperApp/build/
+
+# 12.1运行与构建生成物
+data/**
+!data/.gitkeep
+result/**
+!result/.gitkeep
+dist/**
+!dist/.gitkeep
+products/app/capability/**
+!products/app/capability/.gitkeep
+
+# 本机设置、Secret引用缓存与平台构建缓存
+.optionhelper/
+*.secret-ref
+*.credentials.json
+products/app/.venv/
+products/app/build/
+products/app/packaging/macos/build/
+products/app/packaging/windows/build/

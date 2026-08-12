@@ -1,0 +1,66 @@
+{
+  "name_zh": "DCN",
+  "terms": {
+    "S0": 100.0,
+    "T": 1.0,
+    "N": 10000000.0,
+    "g": 0.2,
+    "c": 0.01,
+    "O_KO": "monthly_last",
+    "settlement": "cash",
+    "observation_price": "close",
+    "margin_call": true,
+    "Hc": 80.0,
+    "Oc": "monthly_last",
+    "Llock": 3,
+    "monitor": {
+      "tau_out": "first_time_after(S_t[O_out] >= schedule_levels(S_t[O_out], H_out_j), n_lock)",
+      "n_coupon": "count_until(S_t[O_c] >= H_c, first_time_after(S_t[O_out] >= schedule_levels(S_t[O_out], H_out_j), n_lock))"
+    },
+    "derived_terms": {
+      "G": "N * g",
+      "ko_barrier_schedule": "[(1, S_0), (2, S_0), (3, S_0), (4, S_0), (5, S_0), (6, S_0), (7, S_0), (8, S_0), (9, S_0), (10, S_0), (11, S_0), (12, 0.8 * S_0)]"
+    },
+    "pricing_methods": [
+      "monte_carlo"
+    ],
+    "constraints": [
+      "g == 0.2",
+      "H_c == 0.8 * S_0",
+      "T == 1",
+      "n_lock < 12",
+      "is_monthly_schedule(O_out)",
+      "is_monthly_schedule(O_c)",
+      "schedule_matches_ratios(H_out_j, S_0, [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0.8])"
+    ]
+  },
+  "paths": [
+    {
+      "condition": "tau_out < T",
+      "cases": [
+        {
+          "domain": "S_T >= 0",
+          "pnl": "cash(tau_out, N * c * n_coupon)"
+        }
+      ]
+    },
+    {
+      "condition": "tau_out == T",
+      "cases": [
+        {
+          "domain": "S_T >= H_c",
+          "pnl": "cash(T, N * c * n_coupon)"
+        }
+      ]
+    },
+    {
+      "condition": "tau_out == inf",
+      "cases": [
+        {
+          "domain": "S_T >= 0",
+          "pnl": "cash(T, N * (c * n_coupon + S_T / S_0 - 1))"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <title>进入OptionHelper</title>
+    <script src="/app/frontend/shared/theme-bootstrap.js"></script>
+    <link id="app-favicon" rel="icon" href="/app/assets/icons/optionhelper-app-icon-tile-light.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="/app/frontend/shared/styles.css">
+    <link rel="stylesheet" href="/app/frontend/shared/refinement.css">
+    <script type="module" src="/app/frontend/shared/theme.js"></script>
+  </head>
+  <body class="login-page">
+    <canvas id="login-vol-surface" aria-hidden="true"></canvas>
+
+    <div id="login-splash" class="login-splash" aria-hidden="true">
+      <div class="login-splash__stage">
+        <span class="login-splash__glow"></span>
+        <span class="login-splash__ping"></span>
+        <span class="login-splash__ping login-splash__ping--second"></span>
+        <svg class="login-splash__logo" viewBox="236 116 1053 264" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <linearGradient id="login-splash-red-gradient" x1="244" y1="372" x2="490" y2="118" gradientUnits="userSpaceOnUse">
+              <stop stop-color="#A90022"></stop>
+              <stop offset="1" stop-color="#C8102E"></stop>
+            </linearGradient>
+            <clipPath id="login-splash-disc-clip"><circle cx="128" cy="128" r="128"></circle></clipPath>
+          </defs>
+          <g transform="translate(218 98)">
+            <g transform="translate(22 22)" clip-path="url(#login-splash-disc-clip)">
+              <circle class="login-splash__disc" cx="128" cy="128" r="128" fill="url(#login-splash-red-gradient)"></circle>
+              <g class="login-splash__candidates" stroke="#fff" stroke-linecap="round" stroke-linejoin="round" fill="none">
+                <path class="login-splash__candidate login-splash__candidate--one" d="M65 173H88C103 173 115 169 126 160L204 78" pathLength="1" stroke-width="7"></path>
+                <path class="login-splash__candidate login-splash__candidate--two" d="M65 173H101C116 173 128 169 139 160L204 95" pathLength="1" stroke-width="7"></path>
+                <path class="login-splash__candidate login-splash__candidate--three" d="M65 173H124C139 173 151 169 162 160L204 128" pathLength="1" stroke-width="7"></path>
+                <path class="login-splash__candidate login-splash__candidate--four" d="M65 173H141C156 173 168 169 179 160L204 145" pathLength="1" stroke-width="7"></path>
+              </g>
+              <path class="login-splash__payoff" d="M65 173H111C126 173 138 169 149 160L204 111" pathLength="1" fill="none"
+                    stroke="#fff" stroke-linecap="round" stroke-linejoin="round" stroke-width="19"></path>
+              <path class="login-splash__sweep" d="M181 65A82 82 0 1 0 181 191" pathLength="1" fill="none"
+                    stroke="#fff" stroke-linecap="round" stroke-width="8"></path>
+              <g class="login-splash__ticks" stroke="#fff" stroke-width="2" stroke-linecap="round" fill="none">
+                <path class="login-splash__tick login-splash__tick--start" d="M65 152V138M65 194V208M44 173H30M86 173H100"></path>
+                <path class="login-splash__tick login-splash__tick--end" d="M204 90V76M204 132V146M183 111H169M225 111H239"></path>
+              </g>
+              <circle class="login-splash__dot login-splash__dot--start" cx="65" cy="173" r="9.5" fill="#fff"></circle>
+              <circle class="login-splash__dot login-splash__dot--end" cx="204" cy="111" r="9.5" fill="#fff"></circle>
+              <path class="login-splash__arc" d="M181 65A82 82 0 1 0 181 191" pathLength="1" fill="none"
+                    stroke="#fff" stroke-linecap="round" stroke-width="8"></path>
+            </g>
+            <g fill="#252525">
+              <text class="login-splash__word login-splash__word--option" x="342" y="176" font-family="Avenir Next, Avenir, Helvetica Neue, Arial, sans-serif" font-size="112" font-weight="650" letter-spacing="-3">Option</text>
+              <text class="login-splash__word login-splash__word--helper" x="715" y="176" font-family="Avenir Next, Avenir, Helvetica Neue, Arial, sans-serif" font-size="112" font-weight="400" letter-spacing="-3">Helper</text>
+            </g>
+            <rect class="login-splash__rule" x="345" y="210" width="722" height="4" rx="2" fill="#C8102E"></rect>
+          </g>
+        </svg>
+      </div>
+    </div>
+
+    <div class="login-theme" role="group" aria-label="主题" inert aria-hidden="true">
+      <button type="button" data-theme-set="auto" aria-pressed="false" title="跟随系统" aria-label="跟随系统">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"></circle><path d="M12 3.5v17M12 3.5a8.5 8.5 0 0 1 0 17Z" fill="currentColor" stroke="none"></path></svg>
+      </button>
+      <button type="button" data-theme-set="light" aria-pressed="true" title="浅色" aria-label="浅色">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4.6"></circle><path d="M12 2.4v2.6M12 19v2.6M4.4 12H1.8M22.2 12h-2.6M6.4 6.4 4.6 4.6M19.4 19.4l-1.8-1.8M17.6 6.4l1.8-1.8M4.6 19.4l1.8 1.8"></path></svg>
+      </button>
+      <button type="button" data-theme-set="dark" aria-pressed="false" title="深色" aria-label="深色">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14.2A8.4 8.4 0 0 1 9.8 4a8.5 8.5 0 1 0 10.2 10.2Z"></path></svg>
+      </button>
+    </div>
+    <span class="login-environment" inert aria-hidden="true"><i></i>DEV</span>
+
+    <main class="login-wrap" inert aria-hidden="true">
+      <div class="login-topbar">
+        <svg class="login-logo" viewBox="236 116 1053 264" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="OptionHelper">
+          <defs><linearGradient id="login-header-red-gradient" x1="244" y1="372" x2="490" y2="118" gradientUnits="userSpaceOnUse"><stop stop-color="#A90022"></stop><stop offset="1" stop-color="#C8102E"></stop></linearGradient></defs>
+          <g transform="translate(218 98)"><g transform="translate(22 22)"><circle cx="128" cy="128" r="128" fill="url(#login-header-red-gradient)"></circle><path d="M65 173H111C126 173 138 169 149 160L204 111" fill="none" stroke="#fff" stroke-linecap="round" stroke-linejoin="round" stroke-width="19"></path><circle cx="65" cy="173" r="9.5" fill="#fff"></circle><circle cx="204" cy="111" r="9.5" fill="#fff"></circle><path d="M181 65A82 82 0 1 0 181 191" fill="none" stroke="#fff" stroke-linecap="round" stroke-width="8" opacity=".28"></path></g><g class="login-logo__word"><text class="login-logo__option" x="342" y="176" font-family="Avenir Next, Avenir, Helvetica Neue, Arial, sans-serif" font-size="112" font-weight="650" letter-spacing="-3">Option</text><text x="715" y="176" font-family="Avenir Next, Avenir, Helvetica Neue, Arial, sans-serif" font-size="112" font-weight="400" letter-spacing="-3">Helper</text></g><rect x="345" y="210" width="722" height="4" rx="2" fill="#C8102E"></rect></g>
+        </svg>
+      </div>
+
+      <section class="login-card">
+        <div class="login-head">
+          <h1>登录OptionHelper</h1>
+          <p>本机开发模式</p>
+        </div>
+
+        <form id="login-form" novalidate>
+          <div class="login-field" id="login-account-field">
+            <div class="login-label"><label for="login-account">账号</label></div>
+            <input class="login-input" type="text" id="login-account" name="account" autocomplete="username"
+                   placeholder="工号或邮箱" spellcheck="false" autocapitalize="off" maxlength="254"
+                   aria-describedby="login-account-tip" aria-invalid="false">
+            <p class="login-tip login-tip--bad" id="login-account-tip" role="alert"></p>
+          </div>
+
+          <div class="login-field" id="login-password-field">
+            <div class="login-label"><label for="login-password">密码</label><a href="#" id="login-forgot">忘记密码</a></div>
+            <div class="login-password">
+              <input class="login-input" type="password" id="login-password" name="password"
+                     autocomplete="current-password" placeholder="请输入密码" maxlength="1024"
+                     aria-describedby="login-password-tip" aria-invalid="false">
+              <button class="login-eye" type="button" id="login-eye" aria-pressed="false" aria-label="显示密码" title="显示密码">
+                <svg class="login-eye__on" viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z"></path><circle cx="12" cy="12" r="3.2"></circle></svg>
+                <svg class="login-eye__off" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4l16 16"></path><path d="M9.6 6.1A9.7 9.7 0 0 1 12 5.5c6 0 9.5 6.5 9.5 6.5a17 17 0 0 1-3.3 4"></path><path d="M6.4 8A17 17 0 0 0 2.5 12S6 18.5 12 18.5c1.3 0 2.4-.3 3.5-.7"></path><path d="M9.9 9.9a3.2 3.2 0 0 0 4.3 4.3"></path></svg>
+              </button>
+            </div>
+            <p class="login-tip login-tip--bad" id="login-password-tip" role="alert"></p>
+          </div>
+
+          <label class="login-check" for="login-remember">
+            <input type="checkbox" id="login-remember" name="remember" checked>
+            <span class="login-check__box"><svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2.4 6.3 4.8 8.7 9.6 3.4"></path></svg></span>
+            记住此设备
+          </label>
+
+          <button class="login-submit" type="submit" id="login-submit">登录</button>
+          <p class="login-status" id="login-status" role="status" aria-live="polite"></p>
+        </form>
+      </section>
+
+      <p class="login-foot">登录后任务与报告仅保存在此Mac。</p>
+    </main>
+
+    <script src="/app/frontend/login/login-startup.js"></script>
+    <script type="module" src="/app/frontend/login/login.js"></script>
+  </body>
+</html>

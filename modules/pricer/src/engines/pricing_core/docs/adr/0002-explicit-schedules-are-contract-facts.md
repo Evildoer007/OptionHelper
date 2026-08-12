@@ -1,0 +1,3 @@
+# 显式观察日是结构化产品的合约事实
+
+Autocall和Path Accumulator以明确交易日、自然日、障碍和现金流日程为事实源，不再同时接收不参与定价的月份或频率字段。这样可避免两个日程来源冲突，并确保OptionHelper传入的ResolvedContract能够逐字段复现。

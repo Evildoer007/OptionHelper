@@ -1,0 +1,3 @@
+/* 页面主体沿用冻结的module-ui样式；此同名入口供统一页面目录识别。 */
+@import url("./ui/style.css");
+@import url("./ui/controls.css");

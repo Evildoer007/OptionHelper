@@ -1,0 +1,76 @@
+{
+  "name_zh": "票息前置型（早利）雪球",
+  "terms": {
+    "S0": 100.0,
+    "T": 2.0,
+    "N": 10000000.0,
+    "g": 0.2,
+    "K": 100.0,
+    "H_KO": 100.0,
+    "H_KI": 85.0,
+    "O_KO": "monthly_last",
+    "O_KI": "daily",
+    "Llock": 0,
+    "settlement": "cash",
+    "observation_price": "close",
+    "margin_call": true,
+    "c1": 0.25,
+    "c2": 0.05,
+    "coupon_switch_observation": 12,
+    "monitor": {
+      "tau_out": "first_time_after(S_t[O_out] >= H_out, n_lock)",
+      "n_out": "observation_ordinal(S_t[O_out], tau_out)",
+      "tau_in": "first_time(S_t[O_in] <= H_in)"
+    },
+    "derived_terms": {
+      "G": "N * g"
+    },
+    "pricing_methods": [
+      "monte_carlo"
+    ],
+    "constraints": [
+      "K == S_0",
+      "H_out == S_0",
+      "H_in < H_out",
+      "is_monthly_schedule(O_out)"
+    ]
+  },
+  "paths": [
+    {
+      "condition": "n_out <= n_switch",
+      "cases": [
+        {
+          "domain": "S_T >= 0",
+          "pnl": "cash(tau_out, N * c_1 * tau_out)"
+        }
+      ]
+    },
+    {
+      "condition": "n_switch < n_out < inf",
+      "cases": [
+        {
+          "domain": "S_T >= 0",
+          "pnl": "cash(tau_out, N * c_2 * tau_out)"
+        }
+      ]
+    },
+    {
+      "condition": "tau_out == inf and tau_in == inf",
+      "cases": [
+        {
+          "domain": "S_T >= 0",
+          "pnl": "cash(T, N * c_2 * T)"
+        }
+      ]
+    },
+    {
+      "condition": "tau_out == inf and tau_in < inf",
+      "cases": [
+        {
+          "domain": "S_T >= 0",
+          "pnl": "cash(T, N * min((S_T - S_0) / S_0, 0))"
+        }
+      ]
+    }
+  ]
+}

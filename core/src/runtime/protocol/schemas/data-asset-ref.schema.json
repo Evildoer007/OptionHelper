@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "optionhelper://schemas/data-asset-ref",
+  "title": "DataAssetRef",
+  "type": "object",
+  "required": ["data_asset_id", "storage_ref", "media_type", "schema_id", "asset_ids", "normalized_fields", "coverage", "row_count", "partition_spec", "price_convention", "content_hash", "lineage", "tenant_id", "created_by", "access_scope"],
+  "additionalProperties": false,
+  "properties": {
+    "data_asset_id": {"type": "string", "minLength": 1},
+    "storage_ref": {"type": "string", "minLength": 1},
+    "media_type": {"type": "string", "minLength": 1},
+    "schema_id": {"type": "string", "minLength": 1},
+    "asset_ids": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+    "normalized_fields": {"type": "array", "items": {"type": "string"}},
+    "coverage": {"type": "object"},
+    "row_count": {"type": "integer", "minimum": 0},
+    "partition_spec": {"type": "object"},
+    "price_convention": {"type": "object"},
+    "content_hash": {"type": "string", "minLength": 1},
+    "lineage": {"type": "object"},
+    "tenant_id": {"type": "string", "minLength": 1},
+    "created_by": {"type": "string", "minLength": 1},
+    "access_scope": {"type": "array", "items": {"type": "string"}}
+  }
+}

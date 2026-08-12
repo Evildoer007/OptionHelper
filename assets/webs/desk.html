@@ -1,0 +1,266 @@
+<!doctype html>
+<!-- Direction contract: OptDesk is the primary research workbench. Each module consumes one shared task and one shared parameter layer. -->
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>OptionHelper</title>
+  <link rel="stylesheet" href="./workspace.css?v=desk-task-scope-1">
+  </head>
+  <body class="workspace-body">
+    <div class="workspace-shell workspace-shell--desk" data-workspace-shell data-mode="desk">
+      <aside class="workspace-rail">
+        <a class="workspace-brand" href="./chat.html" aria-label="返回智能对话">
+          <img class="workspace-brand__full" src="../../logo/optionhelper-logo.svg" alt="OptionHelper">
+          <img class="workspace-brand__compact" src="../../logo/optionhelper-mark.svg" alt="" aria-hidden="true">
+        </a>
+
+        <section class="rail-mode-area" aria-label="工作模式">
+          <div class="mode-switch mode-switch--rail" aria-label="模式切换">
+            <button type="button" data-mode="chat" aria-pressed="false">OptChat</button>
+            <button type="button" data-mode="desk" aria-pressed="true">OptDesk</button>
+          </div>
+        </section>
+
+        <button class="rail-new-task" type="button" data-new-task><span aria-hidden="true">＋</span><span class="rail-new-task__label">新建任务</span></button>
+
+        <section class="task-rail" aria-label="任务历史">
+          <div class="task-list" id="rail-task-list"></div>
+        </section>
+
+        <footer class="rail-footer">
+          <a class="connection-link connection-link--rail" data-connection-link data-connection-static href="./setup.html"><strong class="connection-link__value connection-link__value--single">配置模型</strong></a>
+        </footer>
+        <button class="rail-collapse-toggle" type="button" data-rail-collapse-toggle aria-expanded="true" aria-label="收起任务栏" title="收起任务栏">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="1.2" y="1" width="17.6" height="22" rx="5.6"></rect><path class="rail-chevron rail-chevron--collapse" d="m10.2 9.5-2.7 1.85a.72.72 0 0 0 0 1.3l2.7 1.85"></path><path class="rail-chevron rail-chevron--expand" d="m7.5 9.5 2.7 1.85a.72.72 0 0 1 0 1.3L7.5 14.5"></path></svg>
+        </button>
+      </aside>
+
+      <div class="workspace-splitter workspace-splitter--rail" data-workspace-splitter="rail" role="separator" aria-label="调整任务栏宽度" aria-valuemin="248" aria-valuemax="384" tabindex="0"></div>
+
+      <main class="work-area">
+        <header class="workbench-head">
+          <div>
+            <h1 id="task-title">新建研究任务</h1>
+          </div>
+          <div class="workbench-head__actions">
+            <button class="button-secondary button-secondary--head report-drawer-toggle" type="button" data-report-toggle aria-controls="task-context" aria-expanded="false">报告</button>
+          </div>
+        </header>
+
+        <nav class="desk-module-tabs" role="tablist" aria-label="研究模块">
+          <button type="button" role="tab" data-tab="parameters" aria-controls="panel-parameters" aria-selected="true" tabindex="0">参数配置</button>
+          <button type="button" role="tab" data-tab="payoff" aria-controls="panel-payoff">收益结构</button>
+          <button type="button" role="tab" data-tab="pricing" aria-controls="panel-pricing">估值定价</button>
+          <button type="button" role="tab" data-tab="backtest" aria-controls="panel-backtest">历史回测</button>
+          <button type="button" role="tab" data-tab="report" aria-controls="panel-report">研究报告</button>
+        </nav>
+
+        <section class="desk-status-strip" aria-label="任务上下文">
+          <span class="desk-status-strip__label">任务状态</span>
+          <span class="desk-status-strip__value" id="task-state">当前任务会保留对话、参数和关联Report。</span>
+          <dl class="parameter-summary parameter-summary--strip" id="parameter-summary"></dl>
+        </section>
+
+        <section class="work-stage" aria-live="polite">
+          <section class="desk-panel is-active" id="panel-parameters" data-panel="parameters" role="tabpanel" aria-label="参数配置">
+            <div class="module-head">
+              <div>
+                <h2>参数配置</h2>
+                <p>正式运行时，Registry是产品字段唯一来源；本页仅在Desk设计稿中暂存本次任务的条款覆盖。Payoff、估值定价、历史回测和研究报告均复用同一份已解析条款，不在下游页面重复录入。</p>
+              </div>
+              <span class="prototype-badge">原型状态</span>
+            </div>
+            <div class="module-workbench">
+              <form class="module-form" id="parameter-form" data-module="parameters" data-module-label="参数配置">
+                <div class="form-section-title field--wide"><h3>选择产品</h3><p>目标版从Registry的65个产品记录选择当前产品。表单只生成该产品完整的PayoffInput；当前静态设计稿仅展示字段布局。</p></div>
+                <div class="field field--wide"><label for="parameter-underlying">研究标的</label><input id="parameter-underlying" name="underlying" autocomplete="off" placeholder="填写标的；多标的以逗号分隔"><p class="field-help">目标运行时支持单标的和Registry声明的多标的结构；当前设计稿尚未接入Registry验证。</p></div>
+                <div class="field field--wide"><label for="parameter-product">产品</label><select id="parameter-product" name="productId"><option value="">请选择产品</option></select><p class="parameter-contract-status" id="parameter-contract-status">选择产品后显示完整条款参数。</p></div>
+                <div class="generated-fields field--wide" id="payoff-parameter-fields" aria-live="polite"></div>
+                <div class="form-section-title field--wide"><h3>研究说明</h3><p>不属于产品条款，仅用于保留任务背景和待确认事项。</p></div>
+                <div class="field field--wide"><label for="parameter-note">任务说明</label><textarea id="parameter-note" name="note" rows="4" placeholder="记录投资目标、期限约束、风险偏好或待确认事项"></textarea></div>
+                <div class="module-actions"><button class="button-secondary" id="parameter-save" type="submit" disabled>保存参数配置</button><span class="module-save-state"></span></div>
+              </form>
+              <aside class="module-ledger" aria-label="参数使用范围">
+                <h3>参数使用范围</h3>
+                <dl>
+                  <dt>Payoff</dt><dd>只读取所选产品的完整条款</dd>
+                  <dt>估值定价</dt><dd>读取全部条款并补充市场与模型输入</dd>
+                  <dt>历史回测</dt><dd>读取全部条款并补充历史与执行规则</dd>
+                  <dt>研究报告</dt><dd>记录本次任务的输入口径</dd>
+                </dl>
+              </aside>
+            </div>
+          </section>
+
+          <section class="desk-panel" id="panel-payoff" data-panel="payoff" role="tabpanel" aria-label="收益结构">
+            <div class="payoff-workbench" aria-label="Payoff编辑工作台">
+              <aside class="payoff-library" aria-label="结构资料库">
+                <p class="payoff-kicker">结构资料库</p>
+                <h2 id="payoff-product-title">尚未选择产品</h2>
+                <p class="payoff-library__copy" id="payoff-library-copy">请先在参数配置中填写研究标的并保存产品条款。</p>
+                <div class="payoff-binding" id="payoff-binding">未载入PayoffInput</div>
+                <div class="payoff-section-head"><span>当前条款</span><small id="payoff-term-count">0</small></div>
+                <ol class="payoff-term-list" id="payoff-term-list"></ol>
+                <button class="payoff-parameters-link" type="button" data-tab-link="parameters">调整参数配置</button>
+              </aside>
+
+              <section class="payoff-canvas" aria-labelledby="payoff-canvas-title">
+                <header class="payoff-canvas__toolbar">
+                  <div class="payoff-canvas__state"><span class="payoff-state-dot" id="payoff-state-dot"></span><span id="payoff-canvas-state">等待产品条款</span></div>
+                  <div class="payoff-zoom" aria-label="收益图缩放">
+                    <button type="button" id="payoff-zoom-out" aria-label="缩小收益图">−</button>
+                    <output id="payoff-zoom-value">100%</output>
+                    <button type="button" id="payoff-zoom-in" aria-label="放大收益图">+</button>
+                    <button type="button" id="payoff-zoom-fit">适应</button>
+                  </div>
+                </header>
+                <div class="payoff-canvas__viewport" id="payoff-canvas-viewport">
+                  <div class="payoff-empty-canvas" id="payoff-empty-canvas">
+                    <span>Payoff</span>
+                    <h3 id="payoff-canvas-title">选择产品后载入收益结构</h3>
+                    <p>收益图会直接在当前Desk工作台内显示。</p>
+                  </div>
+                  <div class="payoff-svg-stage" id="payoff-svg-stage" hidden>
+                    <img id="payoff-svg" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==" alt="本次参数化收益图">
+                  </div>
+                </div>
+                <footer class="payoff-canvas__footer"><span>当前图为已发布的只读收益结构</span><span>图形草稿与发布流程不会在Desk中改写</span></footer>
+              </section>
+
+              <aside class="payoff-inspector" aria-label="图形控制">
+                <p class="payoff-kicker">图形控制</p>
+                <h2 id="payoff-inspector-title">未选择产品</h2>
+                <p class="payoff-inspector__source" id="payoff-inspector-source">选择并保存产品条款后，目标运行时显示本次参数化收益图及其固定默认基准。</p>
+                <section class="payoff-inspector__group">
+                  <h3>条款绑定</h3>
+                  <dl class="payoff-bound-fields" id="payoff-bound-fields"></dl>
+                </section>
+                <section class="payoff-inspector__group">
+                  <h3>图形状态</h3>
+                  <p class="payoff-inspector__note">固定默认SVG只可因资料库结构错误由人工维护；Desk展示本次PayoffInput生成的运行时图，不修改默认资产。</p>
+                </section>
+              </aside>
+            </div>
+          </section>
+
+          <section class="desk-panel" id="panel-pricing" data-panel="pricing" role="tabpanel" aria-label="估值定价">
+            <div class="module-head">
+              <div>
+                <h2>估值定价</h2>
+                <p>Pricing副本已直接载入当前Desk工作台。条款仍由参数配置统一维护，计算尚未接入。</p>
+              </div>
+              <span class="prototype-badge">未接入计算</span>
+            </div>
+            <section class="module-copy-stage" data-module-copy="pricing" data-copy-source="./pricing/pricing-analysis.html" aria-label="Pricing工作台副本" aria-busy="true">
+              <p class="module-copy-stage__loading">正在载入Pricing工作台副本。</p>
+            </section>
+            <div class="module-workbench">
+              <div class="module-input-stack">
+                <div class="module-reference module-reference--split"><span>产品条款来自参数配置，以下仅补充估值日市场与模型输入。</span><button type="button" class="text-link" data-tab-link="parameters">查看参数配置</button></div>
+                <section class="shared-terms"><h3>已载入的完整PayoffInput</h3><p class="shared-terms__intro" id="pricing-contract-status">请先在参数配置保存产品条款。</p><dl class="shared-terms__list" data-shared-parameters="pricing"></dl></section>
+                <form class="module-form" id="pricing-form" data-module="pricing" data-module-label="估值定价">
+                  <div class="form-section-title field--wide"><h3>市场与模型参数</h3><p>以下字段将追加至PayoffInput，形成完整PricingInput。不会生成定价结果。</p></div>
+                  <div class="generated-fields field--wide" id="pricing-parameter-fields" aria-live="polite"></div>
+                  <div class="module-actions"><button class="button-secondary" id="pricing-save" type="submit" disabled>保存估值参数</button><span class="module-save-state"></span></div>
+                </form>
+              </div>
+              <aside class="module-ledger" aria-label="估值定价边界">
+                <h3>当前边界</h3>
+                <dl>
+                  <dt>定价结果</dt><dd>未接入计算</dd>
+                  <dt>敏感性指标</dt><dd>未接入计算</dd>
+                  <dt>市场数据</dt><dd>等待真实数据接口</dd>
+                </dl>
+              </aside>
+            </div>
+          </section>
+
+          <section class="desk-panel" id="panel-backtest" data-panel="backtest" role="tabpanel" aria-label="历史回测">
+            <div class="module-head">
+              <div>
+                <h2>历史回测</h2>
+                <p>Backtest副本已直接载入当前Desk工作台。条款仍由参数配置统一维护，计算尚未接入。</p>
+              </div>
+              <span class="prototype-badge">未接入计算</span>
+            </div>
+            <section class="module-copy-stage" data-module-copy="backtest" data-copy-source="./backtest/backtest-analysis.html" aria-label="Backtest工作台副本" aria-busy="true">
+              <p class="module-copy-stage__loading">正在载入Backtest工作台副本。</p>
+            </section>
+            <div class="module-workbench">
+              <div class="module-input-stack">
+                <div class="module-reference module-reference--split"><span>产品条款来自参数配置，以下仅补充历史数据与回测执行规则。</span><button type="button" class="text-link" data-tab-link="parameters">查看参数配置</button></div>
+                <section class="shared-terms"><h3>已载入的完整PayoffInput</h3><p class="shared-terms__intro" id="backtest-contract-status">请先在参数配置保存产品条款。</p><dl class="shared-terms__list" data-shared-parameters="backtest"></dl></section>
+                <form class="module-form" id="backtest-form" data-module="backtest" data-module-label="历史回测">
+                  <div class="form-section-title field--wide"><h3>历史与回测参数</h3><p>以下字段将追加至PayoffInput，形成完整BacktestInput。不会生成收益或风险指标。</p></div>
+                  <div class="generated-fields field--wide" id="backtest-parameter-fields" aria-live="polite"></div>
+                  <div class="module-actions"><button class="button-secondary" id="backtest-save" type="submit" disabled>保存回测参数</button><span class="module-save-state"></span></div>
+                </form>
+              </div>
+              <aside class="module-ledger" aria-label="历史回测边界">
+                <h3>当前边界</h3>
+                <dl>
+                  <dt>运行状态</dt><dd>原型状态</dd>
+                  <dt>历史表现</dt><dd>未接入计算</dd>
+                  <dt>风险指标</dt><dd>未接入计算</dd>
+                </dl>
+              </aside>
+            </div>
+          </section>
+
+          <section class="desk-panel" id="panel-report" data-panel="report" role="tabpanel" aria-label="研究报告">
+            <div class="module-head">
+              <div>
+                <h2>研究报告</h2>
+                <p>模型输出有效的完整Report结构后会保存到当前设备。本页不会补造估值、回测或未经审核的结论。</p>
+              </div>
+            </div>
+            <div class="report-list report-list--wide" id="desk-report-list"></div>
+          </section>
+        </section>
+
+        <section class="desk-command-dock" aria-label="任务助手">
+          <div class="desk-command-dock__body">
+            <div id="message-stream" aria-live="polite" hidden></div>
+            <div class="composer composer--desk">
+              <p class="notice" id="desk-notice" hidden></p>
+              <form id="desk-form">
+                <textarea id="desk-input" rows="1" placeholder="输入任务要求，按Enter发送，Shift加Enter换行" aria-label="研究任务" required></textarea>
+                <div class="composer-actions">
+                  <label class="model-picker" for="desk-model-picker">
+                    <span class="model-picker__label">当前模型</span>
+                    <select id="desk-model-picker" aria-label="选择模型"><option>未配置模型</option></select>
+                  </label>
+                  <button class="send-control" id="send-button" type="submit" aria-label="发送">
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path class="send-arrow" d="M12 19V5M6 11l6-6 6 6"></path>
+                      <rect class="stop-square" x="7" y="7" width="10" height="10" rx="1"></rect>
+                    </svg>
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        </section>
+      </main>
+
+      <div class="workspace-splitter workspace-splitter--context" data-workspace-splitter="context" role="separator" aria-label="调整报告栏宽度" aria-orientation="vertical" aria-valuemin="280" aria-valuemax="480" tabindex="-1" aria-hidden="true"></div>
+
+      <aside class="task-context" id="task-context" aria-label="本机报告">
+        <header class="task-context__head">
+          <div><p class="context-kicker" id="report-context-kicker">本机报告</p><h2 id="report-context-title">报告库</h2></div>
+          <button class="drawer-close" type="button" data-report-close aria-label="收起报告">×</button>
+        </header>
+        <section class="task-context__group">
+          <div class="report-list" id="chat-report-list"></div>
+        </section>
+        <section class="task-context__group task-context__group--bottom">
+          <p class="context-kicker">报告边界</p>
+          <p class="context-copy">自动生成内容固定标注为AI生成，未经人工审核。</p>
+        </section>
+      </aside>
+
+    </div>
+  <script type="module" src="./desk.js?v=desk-task-scope-1"></script>
+  </body>
+</html>

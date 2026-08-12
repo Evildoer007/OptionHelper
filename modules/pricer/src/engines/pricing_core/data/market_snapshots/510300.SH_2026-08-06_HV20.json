@@ -1,0 +1,40 @@
+{
+  "schema_version": "market-snapshot-1",
+  "code": "510300.SH",
+  "asset_type": "ETF",
+  "requested_as_of": "2026-08-06",
+  "market_date": "2026-08-06",
+  "spot": 4.709,
+  "volatility": 0.2637641542738417,
+  "volatility_window": 20,
+  "historical_volatility": [
+    [
+      10,
+      0.22484455760529223
+    ],
+    [
+      20,
+      0.2637641542738417
+    ],
+    [
+      60,
+      0.23430271770547495
+    ],
+    [
+      122,
+      0.20054321028174327
+    ]
+  ],
+  "risk_free_rate": 0.02,
+  "dividend_yield": 0.0,
+  "carry": null,
+  "provider": "IFIND_HTTP",
+  "source": "IFIND_HTTP:510300.SH:close@2026-08-06:HV20(adjusted_close,244)",
+  "price_field": "close_unadjusted",
+  "volatility_field": "adjusted_close_log_return_sample_std",
+  "annualization_trading_days": 244,
+  "observation_count": 268,
+  "history_start_date": "2025-07-02",
+  "history_end_date": "2026-08-06",
+  "data_sha256": "c77c2ae474c212ae0e97a584c60f14501050c6647ff78f3f1bc07c7659700648"
+}

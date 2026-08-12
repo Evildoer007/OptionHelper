@@ -1,0 +1,73 @@
+{
+  "name_zh": "保底FCN（有敲入要素）",
+  "terms": {
+    "S0": 100.0,
+    "T": 2.0,
+    "N": 10000000.0,
+    "g": 0.2,
+    "K": 100.0,
+    "H_KO": 103.0,
+    "H_KI": 80.0,
+    "c": 0.055,
+    "O_KO": "monthly_last",
+    "O_KI": "daily",
+    "settlement": "cash",
+    "observation_price": "close",
+    "margin_call": true,
+    "F": 0.8,
+    "Hfloor": 80.0,
+    "monitor": {
+      "tau_out": "first_time(S_t[O_out] >= H_out)",
+      "tau_in": "first_time(S_t[O_in] <= H_in)"
+    },
+    "derived_terms": {
+      "G": "N * g"
+    },
+    "pricing_methods": [
+      "monte_carlo"
+    ],
+    "constraints": [
+      "K == S_0",
+      "H_in == H_floor",
+      "H_in == F * S_0",
+      "H_out == 1.03 * S_0"
+    ]
+  },
+  "paths": [
+    {
+      "condition": "tau_out < inf",
+      "cases": [
+        {
+          "domain": "S_T >= 0",
+          "pnl": "cash(tau_out, N * c * tau_out)"
+        }
+      ]
+    },
+    {
+      "condition": "tau_out == inf and tau_in == inf",
+      "cases": [
+        {
+          "domain": "S_T >= 0",
+          "pnl": "cash(T, N * c * T)"
+        }
+      ]
+    },
+    {
+      "condition": "tau_out == inf and tau_in < inf",
+      "cases": [
+        {
+          "domain": "S_T >= K",
+          "pnl": "cash(T, N * c * T)"
+        },
+        {
+          "domain": "F * K <= S_T < K",
+          "pnl": "cash(T, N * c * T + N * (S_T / K - 1))"
+        },
+        {
+          "domain": "0 <= S_T < F * K",
+          "pnl": "cash(T, N * c * T + N * (F - 1))"
+        }
+      ]
+    }
+  ]
+}

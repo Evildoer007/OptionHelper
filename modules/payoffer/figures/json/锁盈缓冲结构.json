@@ -1,0 +1,52 @@
+{
+  "name_zh": "锁盈缓冲结构",
+  "terms": {
+    "S0": 100.0,
+    "T": 1.0,
+    "N": 10000000.0,
+    "g": 0.2,
+    "H_KO": 103.0,
+    "c": 0.2,
+    "O_KO": "monthly_last",
+    "settlement": "cash",
+    "observation_price": "close",
+    "margin_call": true,
+    "Bbuf": 80.0,
+    "monitor": {
+      "tau_out": "first_time_before(S_t[O_out] >= H_out, T)"
+    },
+    "derived_terms": {
+      "G": "N * g"
+    },
+    "pricing_methods": [
+      "monte_carlo"
+    ],
+    "constraints": [
+      "is_monthly_schedule(O_out)"
+    ]
+  },
+  "paths": [
+    {
+      "condition": "tau_out < inf",
+      "cases": [
+        {
+          "domain": "S_T >= 0",
+          "pnl": "cash(tau_out, N * c * tau_out)"
+        }
+      ]
+    },
+    {
+      "condition": "tau_out == inf",
+      "cases": [
+        {
+          "domain": "S_T >= K_buf",
+          "pnl": "cash(T, N * (S_T - K_buf) / S_0)"
+        },
+        {
+          "domain": "0 <= S_T < K_buf",
+          "pnl": "cash(T, N * (S_T / S_0 - 1))"
+        }
+      ]
+    }
+  ]
+}
