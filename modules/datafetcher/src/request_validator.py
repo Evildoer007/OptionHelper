@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 import hashlib
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
+from zoneinfo import ZoneInfo
 
 from .config import DataFetcherConfig
 from .market_conventions import UnsupportedChinaAsset, china_market_convention
@@ -77,6 +78,45 @@ def _request_local_source_fingerprint(value: DataRequest) -> str | None:
     return None
 
 
+def latest_observable_market_date(config: DataFetcherConfig) -> str:
+    """返回Host确认的行情截止日，默认使用Asia/Shanghai当日。
+
+    该边界只约束OHLC等历史行情；未来交易日仍必须由独立的CalendarRequest取得。
+    """
+
+    value = config.market_data_as_of_date
+    today = datetime.now(ZoneInfo("Asia/Shanghai")).date()
+    if value is None:
+        return today.isoformat()
+    try:
+        parsed = date.fromisoformat(value)
+    except (TypeError, ValueError) as error:
+        raise RequestValidationError("market_data_as_of_date必须为YYYY-MM-DD") from error
+    if parsed.isoformat() != value:
+        raise RequestValidationError("market_data_as_of_date必须为YYYY-MM-DD")
+    if parsed > today:
+        raise RequestValidationError("market_data_as_of_date不得晚于当前可观测日期")
+    return parsed.isoformat()
+
+
+def _calendar_evidence_identity(config: DataFetcherConfig) -> str | None:
+    """将日历证据纳入请求/缓存身份，不把旧质量结论复用于新日历。"""
+
+    reference = config.trading_calendar_ref
+    if reference is not None:
+        payload: Mapping[str, Any] = {
+            "data_asset_id": reference.data_asset_id,
+            "content_hash": reference.content_hash,
+            "schema_id": reference.schema_id,
+        }
+    elif config.trading_calendar_sessions:
+        payload = {str(key): value for key, value in config.trading_calendar_sessions.items()}
+    else:
+        return None
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def validate_request(value: DataRequest, config: DataFetcherConfig, caller: CallerContext) -> DataRequest:
     if "data:read" not in caller.capabilities:
         raise RequestValidationError("当前CallerContext无data:read权限")
@@ -95,6 +135,8 @@ def validate_request(value: DataRequest, config: DataFetcherConfig, caller: Call
         raise RequestValidationError("start_date不得晚于end_date")
     if (date.fromisoformat(end_date) - date.fromisoformat(start_date)).days > config.max_span_days:
         raise RequestValidationError("日期区间超过本机DataFetcher上限")
+    if end_date > latest_observable_market_date(config):
+        raise RequestValidationError("历史行情不允许请求未来日期；未来交易日请使用fetch_calendar")
 
     requested_fields = tuple(dict.fromkeys(_FIELD_ALIASES.get(item.strip().lower(), item.strip().lower()) for item in value.fields if item and item.strip()))
     if not requested_fields:
@@ -148,6 +190,7 @@ def validate_request(value: DataRequest, config: DataFetcherConfig, caller: Call
         offline=bool(value.offline),
         local_csv=value.local_csv,
         local_source_fingerprint=local_source_fingerprint,
+        calendar_evidence_identity=_calendar_evidence_identity(config),
         quota_limit=value.quota_limit,
     )
 
@@ -167,6 +210,7 @@ def canonical_request_payload(value: DataRequest) -> dict[str, Any]:
         "cache_policy": value.cache_policy,
         "offline": value.offline,
         "local_source_fingerprint": _request_local_source_fingerprint(value),
+        "calendar_evidence_identity": value.calendar_evidence_identity,
         "quota_limit": value.quota_limit,
     }
 

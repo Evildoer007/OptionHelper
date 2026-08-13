@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 from contextlib import ExitStack
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, replace
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -26,13 +26,26 @@ from runtime.bootstrap import bootstrap_runtime
 from .cache_resolver import CacheIndexError, CacheMatch, LocalCache
 from .config import DataFetcherConfig
 from .data_normalizer import DataNormalizationError, daily_content_hash, daily_csv_bytes, merge_daily_history, normalize_daily_history
-from .calendar_service import CalendarCache, CalendarValidationError, fetch_calendar_asset
+from .calendar_service import (
+    CalendarCache,
+    CalendarValidationError,
+    VerifiedCalendarEvidence,
+    calendar_evidence_for_history,
+    fetch_calendar_asset,
+    validate_calendar_request,
+)
 from .models import CalendarRequest, CallerContext, DataAssetRef, DataFetchResult, DataFetchRun, DataRequest, SecretRef
 from .market_conventions import hv_input_requirements, market_conventions
 from .providers import IFindHttpProvider, IFindSdkProvider, LocalCsvProvider, WindProvider
 from .providers.base import ProviderError, ProviderQuotaExceeded, ProviderUnauthorized, ProviderUnavailable
 from .quality_validator import DataQualityError, validate_daily_history
-from .request_validator import RequestValidationError, cache_identity, request_fingerprint, validate_request
+from .request_validator import (
+    RequestValidationError,
+    cache_identity,
+    latest_observable_market_date,
+    request_fingerprint,
+    validate_request,
+)
 
 
 MODULE_ROOT = Path(__file__).resolve().parents[3]
@@ -88,14 +101,11 @@ def _asset_ref(value: Mapping[str, Any]) -> DataAssetRef:
     )
 
 
-@dataclass(frozen=True)
-class _CalendarEvidence:
-    dates_by_asset: Mapping[str, tuple[str, ...]]
-    calendar_id: str
-    calendar_version: str
-
-
-def _coverage(frame: pd.DataFrame, request: DataRequest, config: DataFetcherConfig) -> dict[str, Any]:
+def _coverage(
+    frame: pd.DataFrame,
+    request: DataRequest,
+    calendar_evidence: VerifiedCalendarEvidence | None,
+) -> dict[str, Any]:
     by_asset = {
         asset_id: {
             "start_date": group["date"].min(),
@@ -106,16 +116,15 @@ def _coverage(frame: pd.DataFrame, request: DataRequest, config: DataFetcherConf
     }
     conventions = market_conventions(request.asset_ids, request.adjustment)
     exchanges = sorted({str(value["exchange"]) for value in conventions.values()})
-    evidence = _expected_trading_dates(request, config)
-    if evidence is None:
+    if calendar_evidence is None:
         sessions = sorted(str(value) for value in frame["date"].dropna().unique())
         calendar_id = "UNVERIFIED-" + "+".join(exchanges)
         calendar_version = "unverified"
     else:
-        sessions = sorted({session for values in evidence.dates_by_asset.values() for session in values})
-        calendar_id = evidence.calendar_id
-        calendar_version = evidence.calendar_version
-    return {
+        sessions = sorted({session for values in calendar_evidence.dates_by_asset.values() for session in values})
+        calendar_id = calendar_evidence.calendar_id
+        calendar_version = calendar_evidence.calendar_version
+    coverage = {
         # 正式覆盖只声明已观测数据；请求区间另存，不能把未验证日期伪装成覆盖。
         "start_date": str(frame["date"].min()),
         "end_date": str(frame["date"].max()),
@@ -126,11 +135,20 @@ def _coverage(frame: pd.DataFrame, request: DataRequest, config: DataFetcherConf
         "calendar_version": calendar_version,
         "by_asset": by_asset,
     }
+    if calendar_evidence is not None and calendar_evidence.calendar_ref:
+        coverage["calendar_ref"] = dict(calendar_evidence.calendar_ref)
+    return coverage
 
 
-def _expected_trading_dates(request: DataRequest, config: DataFetcherConfig) -> _CalendarEvidence | None:
+def _expected_trading_dates(
+    request: DataRequest,
+    config: DataFetcherConfig,
+    caller: CallerContext,
+) -> VerifiedCalendarEvidence | None:
     """只接受带身份、版本和完整覆盖声明的显式交易所日历。"""
 
+    if config.trading_calendar_ref is not None:
+        return calendar_evidence_for_history(config.trading_calendar_ref, request, caller, config)
     conventions = market_conventions(request.asset_ids)
     validated_by_exchange: dict[str, tuple[str, ...]] = {}
     calendar_ids: list[str] = []
@@ -187,11 +205,43 @@ def _expected_trading_dates(request: DataRequest, config: DataFetcherConfig) -> 
     }
     if not fully_covered or not expected or not all(dates for dates in expected.values()):
         return None
-    return _CalendarEvidence(
+    return VerifiedCalendarEvidence(
         dates_by_asset=expected,
         calendar_id="+".join(sorted(dict.fromkeys(calendar_ids))),
         calendar_version="+".join(sorted(dict.fromkeys(calendar_versions))),
+        calendar_ref={},
     )
+
+
+def _asset_uses_calendar_evidence(
+    ref: DataAssetRef,
+    evidence: VerifiedCalendarEvidence | None,
+) -> bool:
+    """缓存原始CSV可复用，但DataAssetRef必须与本次日历质量证据一致。"""
+
+    coverage = dict(ref.coverage)
+    lineage = dict(ref.lineage)
+    if evidence is None:
+        return (
+            coverage.get("calendar_version") == "unverified"
+            and "calendar_ref" not in coverage
+            and "trading_calendar_ref" not in lineage
+        )
+    if coverage.get("calendar_id") != evidence.calendar_id or coverage.get("calendar_version") != evidence.calendar_version:
+        return False
+    if evidence.calendar_ref:
+        return (
+            coverage.get("calendar_ref") == dict(evidence.calendar_ref)
+            and lineage.get("trading_calendar_ref") == dict(evidence.calendar_ref)
+        )
+    return "calendar_ref" not in coverage and "trading_calendar_ref" not in lineage
+
+
+def _data_asset_ref_key(caller: CallerContext, request: DataRequest) -> str:
+    """同一原始缓存内按主体和日历证据选择语义正确的DataAssetRef。"""
+
+    evidence = request.calendar_evidence_identity or "unverified"
+    return f"{_owner_partition(caller.principal_id)}:{evidence}"
 
 
 def _existing_data_asset(store: LocalDataStore, *, asset_id: str, caller: CallerContext, content_hash: str) -> DataAssetRef:
@@ -218,10 +268,11 @@ def _asset_reference(
     cache_decision: str,
     provider_calls: list[Mapping[str, Any]],
     caller: CallerContext,
+    calendar_evidence: VerifiedCalendarEvidence | None,
 ) -> DataAssetRef:
     content_hash = daily_content_hash(frame)
     conventions = market_conventions(request.asset_ids, request.adjustment)
-    coverage = _coverage(frame, request, config)
+    coverage = _coverage(frame, request, calendar_evidence)
     adjustment = {
         asset_id: {
             field: (
@@ -264,6 +315,17 @@ def _asset_reference(
     }, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")).hexdigest()
     data_asset_id = f"data-{identity}-{provider}-o-{_owner_partition(caller.principal_id)}"
     store = LocalDataStore(Path(config.data_root or RUNTIME_PATHS.data_root))
+    lineage: dict[str, Any] = {
+        "provider": provider,
+        "request_hash": request_hash,
+        "cache_decision": cache_decision,
+        "provider_calls": [dict(item) for item in provider_calls],
+        "local_source_fingerprint": request.local_source_fingerprint if provider == "local" else None,
+        "normalizer_version": "market-history-v1",
+        "fetched_at": _now(),
+    }
+    if calendar_evidence is not None and calendar_evidence.calendar_ref:
+        lineage["trading_calendar_ref"] = dict(calendar_evidence.calendar_ref)
     try:
         return store.put_bytes(
             tenant_id=caller.tenant_id,
@@ -277,15 +339,7 @@ def _asset_reference(
             row_count=int(len(frame)),
             partition_spec={"date_column": "date", "frequency": request.frequency, "asset_partitioned": True},
             price_convention=price_convention,
-            lineage={
-                "provider": provider,
-                "request_hash": request_hash,
-                "cache_decision": cache_decision,
-                "provider_calls": [dict(item) for item in provider_calls],
-                "local_source_fingerprint": request.local_source_fingerprint if provider == "local" else None,
-                "normalizer_version": "market-history-v1",
-                "fetched_at": _now(),
-            },
+            lineage=lineage,
             created_by=caller.principal_id,
             access_scope=("read",),
         )
@@ -409,7 +463,11 @@ def _fetch_provider(
         try:
             frame = provider.fetch(request, config)
             quota_used += units
-            normalized = normalize_daily_history(frame, request)
+            normalized = normalize_daily_history(
+                frame,
+                request,
+                latest_observable_date=latest_observable_market_date(config),
+            )
             calls.append({"provider": name, "outcome": "succeeded", "quota_units": units})
             return name, normalized, quota_used
         except ProviderError as error:
@@ -460,51 +518,68 @@ def _resolve_data(
         for identity in identities:
             locks.enter_context(cache.fetch_lock(identity))
 
-        calendar_evidence = _expected_trading_dates(request, config)
+        calendar_evidence = _expected_trading_dates(request, config, caller)
         expected_trading_dates = calendar_evidence.dates_by_asset if calendar_evidence is not None else None
+        latest_observable_date = latest_observable_market_date(config)
+        data_asset_ref_key = _data_asset_ref_key(caller, request)
         matches = [] if request.cache_policy == "force_refresh" else [
             cache.lookup(
                 request,
                 name,
                 tenant_id=caller.tenant_id,
                 expected_trading_dates=expected_trading_dates,
+                data_asset_ref_key=data_asset_ref_key,
             )
             for name in request.source_priority
         ]
         full_match = next((match for match in matches if match.complete and match.frame is not None and match.metadata), None)
         if full_match is not None:
-            asset_ref = _asset_ref(full_match.metadata["data_asset_ref"])
-            try:
-                LocalDataStore(Path(config.data_root or RUNTIME_PATHS.data_root)).resolve(asset_ref, tenant_id=caller.tenant_id)
-            except (FileNotFoundError, PermissionError, StoreError):
-                invalid_match = full_match
-                full_match = None
+            reference = full_match.metadata.get("data_asset_ref")
+            asset_ref: DataAssetRef | None = _asset_ref(reference) if isinstance(reference, Mapping) else None
+            if asset_ref is not None:
+                try:
+                    LocalDataStore(Path(config.data_root or RUNTIME_PATHS.data_root)).resolve(asset_ref, tenant_id=caller.tenant_id)
+                except (FileNotFoundError, PermissionError, StoreError):
+                    asset_ref = None
+                    invalid_match = full_match
+                else:
+                    invalid_match = None
             else:
-                quality = validate_daily_history(
-                    full_match.frame, request.fields, start_date=request.start_date, end_date=request.end_date,
-                    expected_trading_dates=expected_trading_dates,
-                )
-                if asset_ref.created_by == caller.principal_id and "read" in asset_ref.access_scope:
+                invalid_match = None
+            quality = validate_daily_history(
+                full_match.frame, request.fields, start_date=request.start_date, end_date=request.end_date,
+                expected_trading_dates=expected_trading_dates,
+                latest_observable_date=latest_observable_date,
+            )
+            if asset_ref is not None:
+                same_owner = asset_ref.created_by == caller.principal_id and "read" in asset_ref.access_scope
+                if same_owner and _asset_uses_calendar_evidence(asset_ref, calendar_evidence):
                     return asset_ref, quality, "cache_hit", full_match.frame
-                rebound_decision = "cache_rebound"
-                rebound_ref = _asset_reference(
-                    full_match.frame,
-                    request,
-                    config,
-                    full_match.provider,
-                    request_hash,
-                    rebound_decision,
-                    calls,
-                    caller,
-                )
-                cache.save(cache_identity(request, full_match.provider, tenant_id=caller.tenant_id), full_match.frame, {
+            rebound_decision = "cache_rebound" if asset_ref is None or asset_ref.created_by != caller.principal_id else "cache_revalidated"
+            rebound_ref = _asset_reference(
+                full_match.frame,
+                request,
+                config,
+                full_match.provider,
+                request_hash,
+                rebound_decision,
+                calls,
+                caller,
+                calendar_evidence,
+            )
+            cache.save(
+                cache_identity(request, full_match.provider, tenant_id=caller.tenant_id),
+                full_match.frame,
+                {
                     "content_hash": rebound_ref.content_hash,
                     "provider": full_match.provider,
                     "data_asset_ref": asdict(rebound_ref),
                     "updated_at": _now(),
                     "tenant_id": caller.tenant_id,
-                })
-                return rebound_ref, quality, rebound_decision, full_match.frame
+                },
+                data_asset_ref_key=data_asset_ref_key,
+            )
+            return rebound_ref, quality, rebound_decision, full_match.frame
         else:
             invalid_match = None
 
@@ -532,22 +607,38 @@ def _resolve_data(
         quality = validate_daily_history(
             frame, request.fields, start_date=request.start_date, end_date=request.end_date,
             expected_trading_dates=expected_trading_dates,
+            latest_observable_date=latest_observable_date,
         )
         cache_decision = "cache_extended" if cached_frame is not None else "cache_miss_fetched"
-        asset_ref = _asset_reference(frame, request, config, selected_provider or "local", request_hash, cache_decision, calls, caller)
-        cache.save(cache_identity(request, selected_provider or "local", tenant_id=caller.tenant_id), frame, {
-            "content_hash": asset_ref.content_hash,
-            "provider": selected_provider,
-            "data_asset_ref": asdict(asset_ref),
-            "updated_at": _now(),
-            "tenant_id": caller.tenant_id,
-        })
+        asset_ref = _asset_reference(
+            frame,
+            request,
+            config,
+            selected_provider or "local",
+            request_hash,
+            cache_decision,
+            calls,
+            caller,
+            calendar_evidence,
+        )
+        cache.save(
+            cache_identity(request, selected_provider or "local", tenant_id=caller.tenant_id),
+            frame,
+            {
+                "content_hash": asset_ref.content_hash,
+                "provider": selected_provider,
+                "data_asset_ref": asdict(asset_ref),
+                "updated_at": _now(),
+                "tenant_id": caller.tenant_id,
+            },
+            data_asset_ref_key=data_asset_ref_key,
+        )
         return asset_ref, quality, cache_decision, frame
 
 
 def _failure_result(
     config: DataFetcherConfig,
-    request: DataRequest,
+    request: DataRequest | CalendarRequest,
     task_id: str,
     run_id: str,
     request_hash: str,
@@ -668,8 +759,9 @@ def fetch_calendar_data(
     calls: list[dict[str, Any]] = []
     try:
         safe_task = _safe_task_id(task_id)
+        raw_request = validate_calendar_request(request, effective_config)
         raw_request, ref, quality, cache_decision, provider_calls = fetch_calendar_asset(
-            request, effective_caller, effective_config,
+            raw_request, effective_caller, effective_config,
         )
         calls.extend(dict(item) for item in provider_calls)
         request_hash = hashlib.sha256(
@@ -690,6 +782,9 @@ def fetch_calendar_data(
         preview = tuple({"session": value} for value in tuple(ref.coverage.get("sessions", ()))[:12])
         return DataFetchResult(ok=True, run=run, quality_report=quality, data_preview=preview)
     except Exception as error:
+        attempted_calls = getattr(error, "provider_calls", ())
+        if isinstance(attempted_calls, (tuple, list)):
+            calls.extend(dict(item) for item in attempted_calls if isinstance(item, Mapping))
         fallback = raw_request or CalendarRequest(asset_ids=(), start_date="", end_date="")
         request_hash = hashlib.sha256(
             json.dumps(fallback.public_dict(), ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")

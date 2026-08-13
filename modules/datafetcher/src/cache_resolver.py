@@ -135,6 +135,7 @@ class LocalCache:
         *,
         tenant_id: str = "local",
         expected_trading_dates: Mapping[str, Sequence[str]] | None = None,
+        data_asset_ref_key: str | None = None,
     ) -> CacheMatch:
         identity = cache_identity(request, provider, tenant_id=tenant_id)
         with self._index_guard():
@@ -152,13 +153,16 @@ class LocalCache:
                 actual_hash = daily_content_hash(frame)
                 expected_hash = record.get("content_hash")
                 reference = record.get("data_asset_ref")
+                references = record.get("data_asset_refs")
+                if data_asset_ref_key is not None and isinstance(references, Mapping):
+                    candidate = references.get(data_asset_ref_key)
+                    reference = candidate if isinstance(candidate, Mapping) else None
             except (DataNormalizationError, KeyError, OSError, pd.errors.ParserError):
                 return self._miss(provider, identity, request)
             if (
                 not isinstance(expected_hash, str)
                 or actual_hash != expected_hash
-                or not isinstance(reference, Mapping)
-                or reference.get("content_hash") != expected_hash
+                or (reference is not None and (not isinstance(reference, Mapping) or reference.get("content_hash") != expected_hash))
             ):
                 return self._miss(provider, identity, request)
             missing: dict[str, tuple[tuple[str, str], ...]] = {}
@@ -179,9 +183,18 @@ class LocalCache:
                 if intervals:
                     missing[asset_id] = intervals
             complete = not missing
-            return CacheMatch(provider, identity, frame, record, complete, missing)
+            metadata = dict(record)
+            metadata["data_asset_ref"] = dict(reference) if isinstance(reference, Mapping) else None
+            return CacheMatch(provider, identity, frame, metadata, complete, missing)
 
-    def save(self, identity: str, frame: pd.DataFrame, metadata: Mapping[str, Any]) -> None:
+    def save(
+        self,
+        identity: str,
+        frame: pd.DataFrame,
+        metadata: Mapping[str, Any],
+        *,
+        data_asset_ref_key: str | None = None,
+    ) -> None:
         content_hash = str(metadata["content_hash"])
         relative_path = f"assets/{content_hash}.csv"
         with self._index_guard():
@@ -194,7 +207,8 @@ class LocalCache:
                 references.update(existing["data_asset_refs"])
             reference = metadata.get("data_asset_ref")
             if isinstance(reference, Mapping) and isinstance(reference.get("created_by"), str):
-                references[reference["created_by"]] = dict(reference)
+                reference_key = data_asset_ref_key or reference["created_by"]
+                references[reference_key] = dict(reference)
             index["entries"][identity] = {
                 "data_path": relative_path,
                 **dict(metadata),

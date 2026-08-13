@@ -42,9 +42,17 @@ class IFindDownloadError(RuntimeError):
         self.unauthorized = unauthorized
 
 
-def _post(url: str, *, headers: Mapping[str, str], payload: Mapping[str, Any] | None = None) -> dict[str, Any]:
+def _post(
+    url: str,
+    *,
+    headers: Mapping[str, str],
+    payload: Mapping[str, Any] | None = None,
+    timeout_seconds: int = 30,
+) -> dict[str, Any]:
+    if isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, (int, float)) or timeout_seconds <= 0:
+        raise IFindDownloadError("iFind请求超时设置无效")
     try:
-        response = requests.post(url, headers=dict(headers), json=payload, timeout=60)
+        response = requests.post(url, headers=dict(headers), json=payload, timeout=timeout_seconds)
     except requests.RequestException as error:
         raise IFindDownloadError("iFind HTTPS连接失败") from error
     if not response.ok:
@@ -70,20 +78,36 @@ def _post(url: str, *, headers: Mapping[str, str], payload: Mapping[str, Any] | 
         raise IFindDownloadError(
             "iFind数据请求被拒绝",
             quota_exceeded=("额度" in detail or "quota" in detail),
-            unauthorized=any(marker in detail for marker in ("token", "auth", "鉴权", "认证", "权限")),
+            unauthorized=any(
+                marker in detail
+                for marker in ("token", "auth", "credential", "鉴权", "认证", "权限")
+            ),
         )
     return result
 
 
-def get_access_token(refresh_token: str) -> str:
-    result = _post(TOKEN_URL, headers={"Content-Type": "application/json", "refresh_token": refresh_token})
+def get_access_token(refresh_token: str, *, timeout_seconds: int = 30) -> str:
+    result = _post(
+        TOKEN_URL,
+        headers={"Content-Type": "application/json", "refresh_token": refresh_token},
+        timeout_seconds=timeout_seconds,
+    )
     token = result.get("data", {}).get("access_token") if isinstance(result.get("data"), Mapping) else None
     if not isinstance(token, str) or not token:
         raise IFindDownloadError("iFind未返回有效access_token")
     return token
 
 
-def history_response(access_token: str, *, code: str, indicators: str, start_date: str, end_date: str, cps: int) -> dict[str, Any]:
+def history_response(
+    access_token: str,
+    *,
+    code: str,
+    indicators: str,
+    start_date: str,
+    end_date: str,
+    cps: int,
+    timeout_seconds: int = 30,
+) -> dict[str, Any]:
     payload = {
         "codes": code,
         "indicators": indicators,
@@ -95,10 +119,18 @@ def history_response(access_token: str, *, code: str, indicators: str, start_dat
         HISTORY_URL,
         headers={"Content-Type": "application/json", "access_token": access_token, "ifindlang": "cn"},
         payload=payload,
+        timeout_seconds=timeout_seconds,
     )
 
 
-def calendar_response(access_token: str, *, exchange: str, start_date: str, end_date: str) -> dict[str, Any]:
+def calendar_response(
+    access_token: str,
+    *,
+    exchange: str,
+    start_date: str,
+    end_date: str,
+    timeout_seconds: int = 30,
+) -> dict[str, Any]:
     """调用iFind独立交易日历接口，不携带任何行情字段或复权参数。"""
 
     market_code = CALENDAR_MARKET_CODES.get(exchange)
@@ -118,6 +150,7 @@ def calendar_response(access_token: str, *, exchange: str, start_date: str, end_
             "startdate": start_date,
             "enddate": end_date,
         },
+        timeout_seconds=timeout_seconds,
     )
 
 
@@ -241,15 +274,32 @@ def _adjusted_ohlc_from_cps_2(payload: Mapping[str, Any]) -> pd.DataFrame:
 def download_history(
     *, access_token: str, code: str, start_date: str, end_date: str,
     asset_type: str, adjustment: str, include_volume: bool = False,
+    timeout_seconds: int = 30,
 ) -> pd.DataFrame:
     raw_indicators = "open,high,low,close,volume" if include_volume else "open,high,low,close"
     raw = _canonical_raw(
-        history_response(access_token, code=code, indicators=raw_indicators, start_date=start_date, end_date=end_date, cps=1),
+        history_response(
+            access_token,
+            code=code,
+            indicators=raw_indicators,
+            start_date=start_date,
+            end_date=end_date,
+            cps=1,
+            timeout_seconds=timeout_seconds,
+        ),
         include_volume=include_volume,
     )
     if asset_type in {"stock", "etf"} and adjustment in {"forward", "both"}:
         adjusted = _adjusted_ohlc_from_cps_2(
-            history_response(access_token, code=code, indicators="open,high,low,close", start_date=start_date, end_date=end_date, cps=2)
+            history_response(
+                access_token,
+                code=code,
+                indicators="open,high,low,close",
+                start_date=start_date,
+                end_date=end_date,
+                cps=2,
+                timeout_seconds=timeout_seconds,
+            )
         )
         result = raw.merge(adjusted, on=["date", "asset_id"], how="inner", validate="one_to_one")
         if len(result) != len(raw):
@@ -281,7 +331,7 @@ class IFindHttpProvider:
     def fetch(self, request: DataRequest, config: DataFetcherConfig) -> pd.DataFrame:
         refresh_token = self._refresh_token(config)
         try:
-            access_token = get_access_token(refresh_token)
+            access_token = get_access_token(refresh_token, timeout_seconds=config.timeout_seconds)
         except IFindDownloadError as error:
             self._raise_access_error(error)
         try:
@@ -294,6 +344,7 @@ class IFindHttpProvider:
                     asset_type=str(china_market_convention(asset_id, request.adjustment)["asset_class"]),
                     adjustment=str(china_market_convention(asset_id, request.adjustment)["effective_adjustment"]),
                     include_volume="volume" in request.fields,
+                    timeout_seconds=config.timeout_seconds,
                 )
                 for asset_id in request.asset_ids
             ]
@@ -310,7 +361,7 @@ class IFindHttpProvider:
 
         refresh_token = self._refresh_token(config)
         try:
-            access_token = get_access_token(refresh_token)
+            access_token = get_access_token(refresh_token, timeout_seconds=config.timeout_seconds)
         except IFindDownloadError as error:
             self._raise_access_error(error)
         exchanges = sorted({
@@ -325,6 +376,7 @@ class IFindHttpProvider:
                         exchange=exchange,
                         start_date=request.start_date,
                         end_date=request.end_date,
+                        timeout_seconds=config.timeout_seconds,
                     ),
                     exchange=exchange,
                 )
@@ -342,7 +394,7 @@ class IFindHttpProvider:
 
         refresh_token = self._refresh_token(config)
         try:
-            get_access_token(refresh_token)
+            get_access_token(refresh_token, timeout_seconds=config.timeout_seconds)
         except IFindDownloadError as error:
             self._raise_access_error(error)
 

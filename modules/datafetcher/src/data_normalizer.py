@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from datetime import date
 
 import pandas as pd
 
@@ -44,7 +45,12 @@ def daily_csv_bytes(frame: pd.DataFrame) -> bytes:
     return canonical.encode("utf-8")
 
 
-def normalize_daily_history(frame: pd.DataFrame, request: DataRequest) -> pd.DataFrame:
+def normalize_daily_history(
+    frame: pd.DataFrame,
+    request: DataRequest,
+    *,
+    latest_observable_date: str | None = None,
+) -> pd.DataFrame:
     """将Provider原始列转为``date + asset_id + requested fields``。"""
 
     if not isinstance(frame, pd.DataFrame) or frame.empty:
@@ -61,6 +67,15 @@ def normalize_daily_history(frame: pd.DataFrame, request: DataRequest) -> pd.Dat
 
     result["date"] = pd.to_datetime(result["date"], errors="coerce").dt.strftime("%Y-%m-%d")
     result["asset_id"] = result["asset_id"].astype(str).str.strip().str.upper()
+    cutoff = latest_observable_date or date.today().isoformat()
+    try:
+        canonical_cutoff = date.fromisoformat(cutoff).isoformat()
+    except (TypeError, ValueError) as error:
+        raise DataNormalizationError("历史行情可观测截止日必须为YYYY-MM-DD") from error
+    provider_assets = result["asset_id"].isin(request.asset_ids)
+    future_rows = provider_assets & result["date"].notna() & result["date"].gt(canonical_cutoff)
+    if future_rows.any():
+        raise DataNormalizationError("Provider返回未来行情日期")
     if "close" not in result.columns:
         raise DataNormalizationError("Provider数据缺少请求字段：close")
     for asset_id, convention in market_conventions(request.asset_ids, request.adjustment).items():

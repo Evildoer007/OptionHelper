@@ -10,7 +10,7 @@ from typing import Callable, Mapping
 
 from runtime.bootstrap import bootstrap_runtime
 
-from .models import SecretRef
+from .models import DataAssetRef, SecretRef
 
 
 DEFAULT_FIELDS = (
@@ -87,6 +87,11 @@ class DataFetcherConfig:
     ifind_secret_ref: SecretRef | None = None
     ifind_secret_port: Callable[[SecretRef], str] | None = field(default=None, repr=False, compare=False)
     timeout_seconds: int = 30
+    # Host确认的最新可观测行情日。未注入时以Asia/Shanghai当前自然日为上限；
+    # 未来日期只能通过独立交易日历入口取得，不能形成历史OHLC资产。
+    market_data_as_of_date: str | None = None
+    # 已登记的受控trading-calendar资产。历史质量仅在该资产完整覆盖请求时标记complete。
+    trading_calendar_ref: DataAssetRef | None = None
     # 只有含calendar_id、calendar_version和完整覆盖声明的映射才可作为已验证日历。
     # 裸sessions仍可保留为辅助信息，但行情质量必须标记为unverified。
     trading_calendar_sessions: Mapping[str, object] = field(default_factory=dict)
@@ -123,6 +128,8 @@ class DataFetcherConfig:
             ifind_secret_ref=self.ifind_secret_ref,
             ifind_secret_port=self.ifind_secret_port,
             timeout_seconds=self.timeout_seconds,
+            market_data_as_of_date=self.market_data_as_of_date,
+            trading_calendar_ref=self.trading_calendar_ref,
             trading_calendar_sessions={
                 key: dict(value) if isinstance(value, Mapping) else tuple(value)
                 for key, value in self.trading_calendar_sessions.items()

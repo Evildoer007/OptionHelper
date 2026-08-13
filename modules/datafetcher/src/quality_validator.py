@@ -38,6 +38,7 @@ def validate_daily_history(
     start_date: str | None = None,
     end_date: str | None = None,
     expected_trading_dates: Mapping[str, Sequence[str]] | None = None,
+    latest_observable_date: str | None = None,
 ) -> dict[str, Any]:
     required = {"date", "asset_id", *fields}
     missing = required.difference(frame.columns)
@@ -45,6 +46,10 @@ def validate_daily_history(
         raise DataQualityError(f"历史行情缺少字段：{','.join(sorted(missing))}")
     if frame.empty:
         raise DataQualityError("历史行情为空")
+    if latest_observable_date is not None:
+        observed = frame["date"].astype(str)
+        if observed.gt(latest_observable_date).any():
+            raise DataQualityError("历史行情包含未来日期")
     if frame[["date", "asset_id", *fields]].isna().any(axis=None):
         raise DataQualityError("历史行情含空日期、标的或请求字段")
     if frame.duplicated(["date", "asset_id"]).any():

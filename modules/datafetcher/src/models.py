@@ -32,6 +32,7 @@ class DataRequest:
     offline: bool = False
     local_csv: str | None = None
     local_source_fingerprint: str | None = None
+    calendar_evidence_identity: str | None = None
     quota_limit: int | None = None
 
     @property
@@ -107,6 +108,8 @@ class DataRequest:
         """返回可写入结果的非敏感请求快照。"""
 
         value = asdict(self)
+        # 仅用于缓存隔离的内部摘要不属于公开请求协议；实际日历关联写入DataAssetRef谱系。
+        value.pop("calendar_evidence_identity", None)
         if not include_local_source and value.get("local_csv"):
             value["local_csv"] = "controlled-local-csv"
         return value

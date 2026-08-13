@@ -17,20 +17,33 @@ class WindProvider:
         return {
             "provider": cls.name,
             "enabled": enabled,
-            "status": "enabled_not_probed" if enabled else "disabled_by_policy",
+            "status": "enabled_requires_runtime_probe" if enabled else "disabled_by_policy",
         }
 
     @staticmethod
     def estimate_quota(request: DataRequest) -> int:
         return len(request.asset_ids)
 
-    def fetch(self, request: DataRequest, _config):
+    @staticmethod
+    def probe() -> bool:
+        """确认Wind SDK和会话就绪；仅在显式启用且实际取数前调用。"""
+
         try:
             from WindPy import w  # type: ignore[import-not-found]
         except ImportError as error:
             raise ProviderUnavailable("Wind SDK当前不可用") from error
         if not w.isconnected() and getattr(w.start(), "ErrorCode", -1) != 0:
             raise ProviderUnavailable("Wind连接未就绪")
+        if not w.isconnected():
+            raise ProviderUnavailable("Wind连接未就绪")
+        return True
+
+    def fetch(self, request: DataRequest, _config):
+        self.probe()
+        try:
+            from WindPy import w  # type: ignore[import-not-found]
+        except ImportError as error:
+            raise ProviderUnavailable("Wind SDK当前不可用") from error
         fields = ",".join(request.fields)
         frames = []
         for asset_id in request.asset_ids:

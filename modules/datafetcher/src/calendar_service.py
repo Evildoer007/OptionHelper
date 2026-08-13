@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from datetime import date, datetime, timezone
 import hashlib
 import json
 from pathlib import Path
 import tempfile
 import threading
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from runtime.adapters.local_store import LocalDataStore, StoreError
 from runtime.protocol.models import CallerContext, DataAssetRef
@@ -18,9 +18,9 @@ from runtime.protocol.models import CallerContext, DataAssetRef
 from .cache_resolver import _process_lock
 from .config import DataFetcherConfig
 from .market_conventions import UnsupportedChinaAsset, china_market_convention
-from .models import CalendarRequest
+from .models import CalendarRequest, DataRequest
 from .providers import IFindHttpProvider
-from .providers.base import ProviderError, ProviderQuotaExceeded, ProviderUnavailable
+from .providers.base import ProviderError, ProviderQuotaExceeded, ProviderUnauthorized, ProviderUnavailable
 
 
 CALENDAR_SCHEMA = "trading-calendar"
@@ -30,6 +30,16 @@ _INDEX_LOCKS_GUARD = threading.Lock()
 
 class CalendarValidationError(ValueError):
     code = "calendar_validation_error"
+
+
+@dataclass(frozen=True)
+class VerifiedCalendarEvidence:
+    """历史行情质量使用的已登记日历证据，不复制Core DataAssetRef。"""
+
+    dates_by_asset: Mapping[str, tuple[str, ...]]
+    calendar_id: str
+    calendar_version: str
+    calendar_ref: Mapping[str, str]
 
 
 def _ref_from_mapping(value: Mapping[str, Any]) -> DataAssetRef:
@@ -104,6 +114,105 @@ def _validate_exchange_sessions(
     if result != tuple(sorted(result)) or len(set(result)) != len(result):
         raise CalendarValidationError(f"{exchange}交易日必须严格递增且不重复")
     return result
+
+
+def _coverage_dates(value: Mapping[str, Any]) -> tuple[str, str]:
+    try:
+        start = date.fromisoformat(str(value["start_date"])).isoformat()
+        end = date.fromisoformat(str(value["end_date"])).isoformat()
+    except (KeyError, TypeError, ValueError) as error:
+        raise CalendarValidationError("交易日历DataAssetRef覆盖日期无效") from error
+    if start > end:
+        raise CalendarValidationError("交易日历DataAssetRef覆盖日期无效")
+    return start, end
+
+
+def calendar_evidence_for_history(
+    ref: DataAssetRef,
+    request: DataRequest,
+    caller: CallerContext,
+    config: DataFetcherConfig,
+) -> VerifiedCalendarEvidence:
+    """从受控日历资产读取可消费的历史质量证据。
+
+    只接受与当前租户、主体、标的和请求区间一致的Core DataAssetRef；没有该证据
+    时历史行情保持unverified，绝不以工作日代替交易所日历。
+    """
+
+    if not isinstance(ref, DataAssetRef):
+        raise CalendarValidationError("trading_calendar_ref必须是受控DataAssetRef")
+    if ref.schema_id != CALENDAR_SCHEMA or ref.media_type != "application/json" or ref.normalized_fields != ("session",):
+        raise CalendarValidationError("trading_calendar_ref必须是trading-calendar application/json")
+    if ref.tenant_id != caller.tenant_id or ref.created_by != caller.principal_id or "read" not in ref.access_scope:
+        raise CalendarValidationError("trading_calendar_ref无当前CallerContext读取权限")
+    if set(ref.asset_ids) != set(request.asset_ids):
+        raise CalendarValidationError("trading_calendar_ref必须逐一覆盖历史行情标的")
+    coverage = dict(ref.coverage)
+    coverage_start, coverage_end = _coverage_dates(coverage)
+    if coverage_start > request.start_date or coverage_end < request.end_date:
+        raise CalendarValidationError("trading_calendar_ref未完整覆盖历史行情请求区间")
+    calendar_id = coverage.get("calendar_id")
+    calendar_version = coverage.get("calendar_version")
+    if not isinstance(calendar_id, str) or not calendar_id.startswith("CN-") or not isinstance(calendar_version, str) or not calendar_version:
+        raise CalendarValidationError("trading_calendar_ref缺少已验证中国交易所日历身份")
+    if dict(ref.price_convention).get("contains_market_prices") is not False:
+        raise CalendarValidationError("trading_calendar_ref不得包含市场价格")
+    try:
+        encoded = LocalDataStore(Path(config.data_root)).read_bytes(ref, tenant_id=caller.tenant_id)
+    except (FileNotFoundError, PermissionError, StoreError) as error:
+        raise CalendarValidationError("trading_calendar_ref无法通过DataStore完整性校验") from error
+    if hashlib.sha256(encoded).hexdigest() != ref.content_hash:
+        raise CalendarValidationError("trading_calendar_ref内容哈希不一致")
+    try:
+        payload = json.loads(encoded)
+    except (TypeError, ValueError, json.JSONDecodeError) as error:
+        raise CalendarValidationError("trading_calendar_ref内容不是有效JSON") from error
+    if not isinstance(payload, Mapping) or payload.get("schema_id") != CALENDAR_SCHEMA:
+        raise CalendarValidationError("trading_calendar_ref内容协议无效")
+    if set(payload.get("asset_ids", ())) != set(request.asset_ids):
+        raise CalendarValidationError("trading_calendar_ref内容标的与请求不一致")
+    exchanges = {
+        asset_id: str(china_market_convention(asset_id)["exchange"])
+        for asset_id in request.asset_ids
+    }
+    payload_exchange = payload.get("asset_exchange")
+    raw_by_exchange = payload.get("sessions_by_exchange")
+    if not isinstance(payload_exchange, Mapping) or not isinstance(raw_by_exchange, Mapping):
+        raise CalendarValidationError("trading_calendar_ref缺少交易所session映射")
+    if {str(key): str(value) for key, value in payload_exchange.items()} != exchanges:
+        raise CalendarValidationError("trading_calendar_ref交易所映射与标的不一致")
+    verified_by_exchange: dict[str, tuple[str, ...]] = {}
+    for exchange in sorted(set(exchanges.values())):
+        values = raw_by_exchange.get(exchange)
+        if isinstance(values, (str, bytes)) or not isinstance(values, Sequence):
+            raise CalendarValidationError("trading_calendar_ref交易所session映射无效")
+        verified_by_exchange[exchange] = _validate_exchange_sessions(
+            tuple(values), exchange=exchange, start_date=coverage_start, end_date=coverage_end,
+        )
+    expected_intersection = tuple(sorted(set.intersection(*(set(values) for values in verified_by_exchange.values()))))
+    payload_sessions = payload.get("sessions")
+    coverage_sessions = coverage.get("sessions")
+    if not isinstance(payload_sessions, Sequence) or isinstance(payload_sessions, (str, bytes)):
+        raise CalendarValidationError("trading_calendar_ref缺少sessions")
+    if tuple(payload_sessions) != expected_intersection or coverage_sessions != list(expected_intersection):
+        raise CalendarValidationError("trading_calendar_ref交易日交集与覆盖声明不一致")
+    dates_by_asset = {
+        asset_id: tuple(value for value in verified_by_exchange[exchange] if request.start_date <= value <= request.end_date)
+        for asset_id, exchange in exchanges.items()
+    }
+    if not all(dates_by_asset.values()):
+        raise CalendarValidationError("trading_calendar_ref在历史行情请求区间没有交易日")
+    return VerifiedCalendarEvidence(
+        dates_by_asset=dates_by_asset,
+        calendar_id=calendar_id,
+        calendar_version=calendar_version,
+        calendar_ref={
+            "data_asset_id": ref.data_asset_id,
+            "content_hash": ref.content_hash,
+            "schema_id": ref.schema_id,
+            "media_type": ref.media_type,
+        },
+    )
 
 
 def _canonical_payload(
@@ -279,6 +388,8 @@ class CalendarCache:
             document = json.loads(payload)
         except (TypeError, ValueError, OSError, json.JSONDecodeError):
             return None
+        if ref.created_by != caller.principal_id or "read" not in ref.access_scope:
+            return None
         if ref.schema_id != CALENDAR_SCHEMA or hashlib.sha256(payload).hexdigest() != ref.content_hash:
             return None
         coverage = dict(ref.coverage)
@@ -358,13 +469,9 @@ def _store_reference(
         return ref
 
 
-def _cached_reference(
-    request: CalendarRequest,
-    caller: CallerContext,
-    config: DataFetcherConfig,
-    cache: CalendarCache,
-    cached: tuple[DataAssetRef, bytes],
-) -> tuple[DataAssetRef, Mapping[str, Any]]:
+def _cached_reference(cached: tuple[DataAssetRef, bytes]) -> tuple[DataAssetRef, Mapping[str, Any]]:
+    """解析已由CalendarCache按主体和完整性验证过的缓存日历。"""
+
     ref, encoded = cached
     try:
         payload = json.loads(encoded)
@@ -372,17 +479,14 @@ def _cached_reference(
         raise CalendarValidationError("交易日历缓存内容无效") from error
     if not isinstance(payload, Mapping):
         raise CalendarValidationError("交易日历缓存内容无效")
-    if ref.created_by != caller.principal_id or "read" not in ref.access_scope:
-        ref = _store_reference(
-            request,
-            caller,
-            config,
-            payload,
-            encoded,
-            hashlib.sha256(encoded).hexdigest(),
-        )
-        cache.save(request, caller, encoded, ref)
     return ref, payload
+
+
+def _attach_provider_calls(error: Exception, calls: Sequence[Mapping[str, Any]]) -> Exception:
+    """把已经发生的日历Provider尝试交给统一Run持久化，不暴露异常成因。"""
+
+    setattr(error, "provider_calls", tuple(dict(item) for item in calls))
+    return error
 
 
 def fetch_calendar_asset(
@@ -404,7 +508,7 @@ def fetch_calendar_asset(
     with cache.fetch_lock(identity):
         cached_after = cache.lookup(request, caller, store)
         if cached_before is None and cached_after is not None:
-            ref, payload = _cached_reference(request, caller, config, cache, cached_after)
+            ref, payload = _cached_reference(cached_after)
             decision = "verified_cache_reused"
         else:
             expected = sorted({str(china_market_convention(item)["exchange"]) for item in request.asset_ids})
@@ -437,10 +541,11 @@ def fetch_calendar_asset(
                 calls.append({"provider": "ifind_http", "endpoint": "get_trade_dates", "outcome": error.code, "quota_units": 0})
                 cached = cache.lookup(request, caller, store)
                 if cached is None:
-                    if isinstance(error, CalendarValidationError):
-                        raise
-                    raise ProviderUnavailable("交易日历暂不可用，且没有完整覆盖本次区间的已验证缓存") from error
-                ref, payload = _cached_reference(request, caller, config, cache, cached)
+                    if isinstance(error, (CalendarValidationError, ProviderQuotaExceeded, ProviderUnauthorized)):
+                        raise _attach_provider_calls(error, calls)
+                    unavailable = ProviderUnavailable("交易日历暂不可用，且没有完整覆盖本次区间的已验证缓存")
+                    raise _attach_provider_calls(unavailable, calls) from error
+                ref, payload = _cached_reference(cached)
                 decision = "verified_cache_fallback"
     quality = {
         "schema_id": CALENDAR_SCHEMA,
@@ -459,6 +564,8 @@ __all__ = (
     "CALENDAR_SCHEMA",
     "CalendarCache",
     "CalendarValidationError",
+    "VerifiedCalendarEvidence",
+    "calendar_evidence_for_history",
     "fetch_calendar_asset",
     "validate_calendar_request",
 )
