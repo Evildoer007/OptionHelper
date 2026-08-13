@@ -16,7 +16,7 @@
     "monitor": {
       "tau_out": "first_time(S_t[O_out] >= H_out)",
       "n_out": "observation_ordinal(S_t[O_out], tau_out)",
-      "Q_acc": "accumulated_quantity(S_t[O_out], H_out, K, q, m, n_lock, n_obs, T)"
+      "Q_acc": "accumulated_quantity(S_t[O_out], H_out, K, q, m, n_lock, n_obs, T_contract)"
     },
     "pricing_methods": [
       "monte_carlo"
@@ -32,7 +32,7 @@
       "cases": [
         {
           "domain": "S_T >= 0",
-          "pnl": "cash(T, u * Q_acc * (S_T - K))"
+          "pnl": "cash(T, 100 * u * Q_acc * (S_T - K) / (q * n_obs * S_0))"
         }
       ]
     },
@@ -41,7 +41,7 @@
       "cases": [
         {
           "domain": "S_T >= 0",
-          "pnl": "cash(T, u * Q_acc * (S_T - K))"
+          "pnl": "cash(T, 100 * u * Q_acc * (S_T - K) / (q * n_obs * S_0))"
         }
       ]
     },
@@ -50,9 +50,42 @@
       "cases": [
         {
           "domain": "S_T >= 0",
-          "pnl": "cash(T, u * Q_acc * (S_T - K))"
+          "pnl": "cash(T, 100 * u * Q_acc * (S_T - K) / (q * n_obs * S_0))"
         }
       ]
     }
-  ]
+  ],
+  "visual_template": {
+    "schema_version": 1,
+    "layout": "standard_path_cards",
+    "path_views": [
+      {
+        "path_index": 1,
+        "case_indexes": [
+          1
+        ],
+        "axis": "S_T",
+        "chart_kind": "conditional_terminal_metric",
+        "title": "路径1"
+      },
+      {
+        "path_index": 2,
+        "case_indexes": [
+          1
+        ],
+        "axis": "S_T",
+        "chart_kind": "conditional_terminal_metric",
+        "title": "路径2"
+      },
+      {
+        "path_index": 3,
+        "case_indexes": [
+          1
+        ],
+        "axis": "S_T",
+        "chart_kind": "conditional_terminal_metric",
+        "title": "路径3"
+      }
+    ]
+  }
 }

@@ -10,7 +10,13 @@
 PayoffInput = {ResolvedContract}
 ```
 
+正式运行只接受Core的`ResolvedContract.to_protocol_dict()`完整快照，并要求Host的`contract_ref.schema_id`严格等于`optionhelper.resolved-contract/v1.0.0`。不接受旧`v1`引用或页面裁剪投影。
+
 输出路径面板、定义域、开闭端点、关键阈值和SVG，写入安装目录之外的项目Store中的`$OPTIONHELPER_RESULT_ROOT/output_payoff/{task_id}/{run_id}/`。不调用Pricer或Backtester。
+
+输出还包含`reporter_payoff_facts`，其版本为`v1.0.0`。该对象只提供共享解释器已核对的分段收益范围、开闭端点、受控价格符号阈值和百分比单位，供Reporter在验证同一ModuleRun后消费；它不含HTML、名义本金、币种、内部N或内部100口径，也不替代Reporter的来源校验。
+
+面向用户的估值、回测和报告只展示百分比。`S0Raw`仅用于真实价格与标准化合同换算，不作为面向用户字段；内部现金流、点数、金额和名义本金不得投影到页面、正式Tool、CSV或报告。
 
 ## 固定资产
 
@@ -24,6 +30,7 @@ PayoffInput = {ResolvedContract}
 - 单独调用时向用户说明收益机制、关键情景、边界和风险；原始JSON仅在用户明确要求或系统集成时展示。
 - 用户明确变更期限、行权价、参与率或其他条款并要求重算时，Host将变更编译为新的`ResolvedContract`后直接运行；不改写此前收益图或此前结果。
 - 不自动调用Pricer、Backtester或Reporter。报告中的收益图由Reporter和Designer采用报告版式重新表现；资料库默认示例图保持不变。
+- 独立`payoffer.html`是开发预览页。其本地Store结果仅供本机核对，不能直接生成正式Card或Report；正式交付必须由App Host提交受控ModuleRun，再由Reporter显式选择并验证。
 
 ## 用户可见进度
 

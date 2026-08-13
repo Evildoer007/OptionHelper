@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import asdict, dataclass
+from datetime import date, timedelta
 from hashlib import sha256
 from pathlib import Path
 from typing import Any, Mapping
@@ -20,15 +21,18 @@ from runtime.adapters.local_store import LocalResultStore, StoreError
 from runtime.contracts.contract_api import (
     ContractResolutionError,
     PricePath,
+    RESOLVED_CONTRACT_SCHEMA_ID,
     ResolvedContract,
-    evaluate_payoff,
+    evaluate_contract,
     get_product,
     resolve_contract,
+    verify_product_snapshot_binding,
 )
 from runtime.contracts.contract_types import deep_thaw, semantic_hash
 from runtime.knowledger import load_registry as load_optionreg
 from runtime.ports.result_store import ResultStorePort
 from runtime.protocol.module_host import ModuleHostContext
+from runtime.protocol.version import PUBLIC_VERSION
 
 from ..asset_resolver import (
     DefaultAssetError,
@@ -36,6 +40,7 @@ from ..asset_resolver import (
     build_visual_template,
     figure_asset_paths,
     load_default_figure_payload,
+    payoff_template_paths_match,
     payoff_template_terms_match,
     resolve_default_visual_asset,
 )
@@ -58,6 +63,27 @@ from .svg_renderer import render_svg as render_svg_text
 MODULE_ROOT = Path(__file__).resolve().parents[4]
 RUNTIME_PATHS = bootstrap_runtime(MODULE_ROOT)
 RESULT_ROOT = RUNTIME_PATHS.result_root
+_INTERNAL_SCALE_TERM_KEYS = frozenset({"N", "Nvar", "Nvega", "G"})
+# 收益经济仍由Core以100为基准计算。该常量只留在模块内部，公开投影不得泄露
+# 其名义/点数含义；用户看到的同一数值一律是百分比。
+_INTERNAL_PERCENT_BASE = 100.0
+_PAYOFF_UNIT = "percent"
+_REPORTER_PAYOFF_BASES = frozenset({"net_after_premium", "gross_before_premium"})
+_PUBLIC_HIDDEN_TERM_KEYS = _INTERNAL_SCALE_TERM_KEYS | frozenset({"S0", "S0Vec"})
+_REPORTER_PAYOFF_FACTS_VERSION = "v1.0.0"
+# ``S_0`` is already the coordinate-system reference line.  It is a price
+# term in TermCatalog, but it is not a contractual strike/barrier threshold.
+# The exclusion is by the controlled mathematical symbol, never by a storage
+# key or by its numeric value.
+_REFERENCE_PRICE_SYMBOLS = frozenset({"S_0", "S_{i,0}"})
+# Core requires a calendar identity and a resolved schedule for observation
+# terms.  These values identify only the deterministic grid used by the
+# standalone Payoffer development preview; they are not a market or trading
+# calendar and are never used by the formal Host ResolvedContract path.
+_LOCAL_DEVELOPMENT_CALENDAR_ID = "payoffer-local-development-preview"
+_LOCAL_DEVELOPMENT_CALENDAR_VERSION = "v1"
+_OBSERVATION_TERM_KEYS = frozenset({"O_KO", "O_KI", "Ohedge", "Oreset", "Orange", "Otouch", "Oc", "Ovar"})
+_LOCAL_DEVELOPMENT_PREVIEW_SESSIONS = 800
 
 
 class PayoffEngineError(ValueError):
@@ -83,7 +109,11 @@ class RenderedPath:
     turning_points: list[dict[str, float]]
     thresholds: list[dict[str, Any]]
     payoff_levels: list[dict[str, Any]]
+    reporter_segments: list[dict[str, Any]]
+    reporter_endpoints: list[dict[str, Any]]
     payoff_basis: str = "net_after_premium"
+    payoff_unit: str = _PAYOFF_UNIT
+    display_unit: str = _PAYOFF_UNIT
     status_note: str | None = None
     candidate_state: dict[str, Any] | None = None
     time_view: dict[str, Any] | None = None
@@ -101,8 +131,8 @@ def product_by_id(product_id: str, registry: Mapping[str, Any] | None = None) ->
         raise PayoffEngineError(str(error)) from error
 
 
-def product_id_by_name(name_zh: str, registry: Mapping[str, Any] | None = None) -> str:
-    """以中文结构名定位OptionReg内部编号，不将编号暴露给Payoffer调用方。"""
+def _product_id_for_asset_name(name_zh: str, registry: Mapping[str, Any] | None = None) -> str:
+    """仅为固定中文命名资产定位对应的OptionReg产品。"""
     name = str(name_zh).strip()
     if not name:
         raise PayoffEngineError("必须提供中文结构名")
@@ -119,60 +149,19 @@ def product_id_by_name(name_zh: str, registry: Mapping[str, Any] | None = None) 
     return str(matches[0])
 
 
-def product_by_name(name_zh: str, registry: Mapping[str, Any] | None = None) -> dict[str, Any]:
-    source = registry or load_registry()
-    return product_by_id(product_id_by_name(name_zh, source), source)
-
-
-def default_figure_payload(name_zh: str, registry: Mapping[str, Any] | None = None) -> dict[str, Any]:
-    """由资料库维护流程重建默认JSON时使用；正常运行不调用本函数。"""
-    product = product_by_name(name_zh, registry)
-    return {
-        "name_zh": product["identity"]["name_zh"],
-        "terms": deepcopy(product["terms"]),
-        "paths": deepcopy(product["paths"]),
-        "visual_template": build_visual_template(product["paths"]),
-    }
-
-
-def term_overrides_from_default_json(name_zh: str, edited_payload: Mapping[str, Any]) -> dict[str, Any]:
-    """把大模型或人工修改后的默认JSON转换为本次合法条款覆盖，不允许改写路径经济逻辑。"""
-    if not isinstance(edited_payload, Mapping):
-        raise PayoffEngineError("本次Payoffer JSON必须是对象")
-    default = load_default_figure_payload(name_zh)
-    if edited_payload.get("name_zh") != default["name_zh"]:
-        raise PayoffEngineError("本次Payoffer JSON的中文结构名与默认JSON不一致")
-    edited_terms = edited_payload.get("terms")
-    if not isinstance(edited_terms, Mapping):
-        raise PayoffEngineError("本次Payoffer JSON必须含terms对象")
-    default_terms = default["terms"]
-    unknown = set(edited_terms) - set(default_terms)
-    if unknown:
-        raise PayoffEngineError(f"本次Payoffer JSON含未登记条款：{'、'.join(sorted(unknown))}")
-    static = {"monitor", "pricing_methods", "constraints", "derived_terms", "margin_call", "payoff_figure_basis"}
-    for key in static & set(edited_terms):
-        if edited_terms[key] != default_terms.get(key):
-            raise PayoffEngineError(f"本次Payoffer JSON不能修改固定规则字段{key}")
-    if "paths" in edited_payload and edited_payload["paths"] != default["paths"]:
-        raise PayoffEngineError("本次Payoffer JSON不能修改固定收益路径；路径维护必须走资料库流程")
-    if "visual_template" in edited_payload and edited_payload["visual_template"] != default["visual_template"]:
-        raise PayoffEngineError("本次Payoffer JSON不能修改固定视觉模板；模板维护必须走资料库流程")
-    return {
-        key: deepcopy(value)
-        for key, value in edited_terms.items()
-        if key not in static and value != default_terms.get(key)
-    }
-
-
 def _registry_with_default_figure(name_zh: str) -> tuple[str, dict[str, Any], dict[str, Any]]:
     """核验默认资产与OptionReg同源，但绝不以JSON替换合同规则。"""
     registry = load_registry()
-    product_id = product_id_by_name(name_zh, registry)
+    product_id = _product_id_for_asset_name(name_zh, registry)
     default = load_default_figure_payload(name_zh)
-    expected = default_figure_payload(name_zh, registry)
+    expected = {
+        "name_zh": registry["products"][product_id]["identity"]["name_zh"],
+        "terms": registry["products"][product_id]["terms"],
+        "paths": registry["products"][product_id]["paths"],
+    }
     if (
         not payoff_template_terms_match(default["terms"], expected["terms"])
-        or semantic_hash(default["paths"]) != semantic_hash(expected["paths"])
+        or not payoff_template_paths_match(default["paths"], expected["paths"])
     ):
         raise PayoffEngineError(f"{name_zh}的固定默认JSON与OptionReg不一致；请先完成资料库维护后再发布默认资产")
     # 这份product仍是OptionReg的原始经济规则。默认JSON仅被读取和核验，普通
@@ -187,18 +176,17 @@ def payoff_term_fields(product: Mapping[str, Any], registry: Mapping[str, Any] |
     terms = product["terms"]
     fields: list[dict[str, Any]] = []
     for key, value in terms.items():
-        if key in {"monitor", "pricing_methods", "constraints", "derived_terms"}:
+        if key in {"monitor", "pricing_methods", "constraints", "derived_terms", *_PUBLIC_HIDDEN_TERM_KEYS}:
             continue
         definition = catalog[key]
-        is_normalized_base = key in {"S0", "S0Vec"}
         fields.append(
             {
                 "key": key,
                 "chinese_name": definition["name_zh"],
                 "english_name": definition.get("name_en", definition["name_zh"]),
                 "math_symbol": definition["symbol"],
-                "source_policy": "内部标准化基准100，真实合同参考价由identity.contract_reference_spots提供" if is_normalized_base else "OptionReg默认条款，可由本次PayoffInput覆盖",
-                "allow_override": not is_normalized_base,
+                "source_policy": "OptionReg默认条款，可由本次PayoffInput覆盖",
+                "allow_override": True,
                 "default_value": value,
             }
         )
@@ -209,20 +197,59 @@ def _default_identity(product: Mapping[str, Any]) -> dict[str, Any]:
     terms = product["terms"]
     if "S0Vec" in terms:
         assets = [f"UNDERLYING_{index + 1}" for index in range(len(terms["S0Vec"]))]
-        return {"underlyings": assets, "contract_reference_spots": dict(zip(assets, terms["S0Vec"]))}
-    return {"underlyings": ["UNDERLYING"], "contract_reference_spots": {"UNDERLYING": float(terms.get("S0", 100.0))}}
+        identity = {"underlyings": assets, "reference_prices": dict(zip(assets, terms["S0Vec"]))}
+    else:
+        identity = {"underlyings": ["UNDERLYING"], "reference_prices": {"UNDERLYING": float(terms.get("S0", 100.0))}}
+    if _has_observation_terms(terms):
+        identity.update({
+            "calendar_id": _LOCAL_DEVELOPMENT_CALENDAR_ID,
+            "calendar_version": _LOCAL_DEVELOPMENT_CALENDAR_VERSION,
+        })
+    return identity
+
+
+def _has_observation_terms(terms: Mapping[str, Any]) -> bool:
+    return bool(_OBSERVATION_TERM_KEYS & set(terms))
+
+
+def _local_development_preview_dates() -> list[str]:
+    """Return a deterministic local preview grid, never a verified market calendar."""
+    current = date(2026, 1, 2)
+    dates: list[str] = []
+    while len(dates) < _LOCAL_DEVELOPMENT_PREVIEW_SESSIONS:
+        if current.weekday() < 5:
+            dates.append(current.isoformat())
+        current += timedelta(days=1)
+    return dates
 
 
 def build_payoff_input(
     name_zh: str,
     term_overrides: Mapping[str, Any] | None = None,
     identity: Mapping[str, Any] | None = None,
+    *,
+    maintenance_registry: Mapping[str, Any] | None = None,
 ) -> ResolvedContract:
-    """兼容页面：默认条款加本次覆盖解析为唯一ResolvedContract。"""
+    """独立页面预览或受控默认资产维护：解析OptionReg为ResolvedContract。"""
     try:
-        product_id, product, registry = _registry_with_default_figure(name_zh)
-        actual_identity = {**_default_identity(product), **dict(identity or {})}
-        return resolve_contract(str(product_id), identity=actual_identity, term_overrides=term_overrides, registry=registry)
+        if maintenance_registry is None:
+            product_id, product, registry = _registry_with_default_figure(name_zh)
+        else:
+            # 仅默认资产维护可显式传入当期OptionReg：目标副本允许保留待修复的
+            # 旧默认JSON，因此不能读取全局冻结资产或运行其同源门禁。页面预览
+            # 未提供该参数时仍必须走上面的严格校验。
+            registry = deepcopy(dict(maintenance_registry))
+            product_id = _product_id_for_asset_name(name_zh, registry)
+            product = product_by_id(product_id, registry)
+        supplied_identity = dict(identity or {})
+        if "reference_prices" in supplied_identity and supplied_identity["reference_prices"] is None:
+            raise PayoffEngineError("Payoffer价格合同必须提供逐标的价格参考")
+        actual_identity = {**_default_identity(product), **supplied_identity}
+        preview_dates = _local_development_preview_dates() if _has_observation_terms(product["terms"]) else None
+        return resolve_contract(
+            str(product_id), identity=actual_identity, term_overrides=term_overrides,
+            registry=registry, trading_dates=preview_dates,
+        )
     except (ContractResolutionError, TypeError, ValueError) as error:
         raise PayoffEngineError(str(error)) from error
 
@@ -293,7 +320,7 @@ def _evaluate_candidate(
         cached = evaluation_cache.get(key)
         if cached is None:
             try:
-                outcome = evaluate_payoff(contract, candidate_path(contract, axis, value, template))
+                outcome = evaluate_contract(contract, candidate_path(contract, axis, value, template))
             except Exception as error:
                 raise PayoffEngineError(f"{contract.product_id}无法由共享解释器结算展示候选路径：{error}") from error
             cached = (
@@ -510,29 +537,190 @@ def _payoff_levels(segments: list[list[dict[str, Any]]]) -> list[dict[str, float
     return [{"value": float(value)} for value, _ in sorted(selected)]
 
 
-def _thresholds(domains: list[CompiledDomain]) -> list[dict[str, Any]]:
-    seen: set[tuple[str, float]] = set()
+def _price_term_thresholds(contract: ResolvedContract, axis: str) -> list[dict[str, Any]]:
+    """Return controlled contractual price thresholds for price-based charts.
+
+    A domain may not mention every economically meaningful strike or barrier.
+    Conversely, an equal numeric value is never enough to conclude that a
+    value is a strike or barrier.  Bind the final contract terms to the
+    read-only OptionReg TermCatalog by storage key, and retain the catalog's
+    mathematical symbol and Chinese label.  This keeps ``K=100`` and
+    ``H=100`` distinct from the coordinate reference line and from each other.
+    """
+    if axis not in {"S_T", "W_T"}:
+        return []
+    catalog = load_registry().get("term_catalog", {})
+    if not isinstance(catalog, Mapping):
+        raise PayoffEngineError("OptionReg缺少可用的TermCatalog")
+
     items: list[dict[str, Any]] = []
-    for domain in domains:
-        for threshold in domain.thresholds:
-            key = (threshold.token, threshold.value)
-            if key not in seen:
-                seen.add(key)
-                items.append({"token": threshold.token, "value": threshold.value})
+    for term_key in sorted(contract.terms):
+        definition = catalog.get(term_key)
+        if not isinstance(definition, Mapping) or definition.get("unit") != "price":
+            continue
+        symbol = str(definition.get("symbol", "")).strip()
+        if not symbol or symbol in _REFERENCE_PRICE_SYMBOLS:
+            continue
+        value = contract.terms[term_key]
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        numeric_value = float(value)
+        if not np.isfinite(numeric_value):
+            raise PayoffEngineError(f"{contract.product_id}的价格条款{symbol}不是有限数值")
+        label = str(definition.get("name_zh", "")).strip()
+        if not label:
+            raise PayoffEngineError(f"TermCatalog缺少价格条款{symbol}的中文语义标签")
+        items.append({
+            "token": symbol,
+            "value": numeric_value,
+            "label": label,
+            "semantic_role": "contract_price_term",
+            "source": "term_catalog",
+        })
     return items
 
 
+def _thresholds(
+    contract: ResolvedContract,
+    domains: list[CompiledDomain],
+    axis: str,
+) -> list[dict[str, Any]]:
+    """Combine domain bounds with TermCatalog-bound price semantics.
+
+    Domain thresholds preserve the exact parsing source for a segment.  A
+    matching TermCatalog threshold augments that same visual line rather than
+    adding a duplicate.  The semantic line intentionally survives at the
+    coordinate reference value, including 100, because its meaning comes from
+    the contract symbol rather than its number.
+    """
+    indexed: dict[tuple[str, float], dict[str, Any]] = {}
+    order: list[tuple[str, float]] = []
+
+    def register(item: Mapping[str, Any]) -> None:
+        token = str(item["token"])
+        value = float(item["value"])
+        key = (token, value)
+        existing = indexed.get(key)
+        if existing is None:
+            indexed[key] = dict(item)
+            order.append(key)
+            return
+        # The TermCatalog record is more informative than an AST expression
+        # token, so preserve its controlled label and semantic role.
+        existing.update(item)
+
+    for domain in domains:
+        for threshold in domain.thresholds:
+            register({"token": threshold.token, "value": threshold.value, "source": "domain"})
+    for threshold in _price_term_thresholds(contract, axis):
+        register(threshold)
+    return [indexed[key] for key in order]
+
+
+def _reporter_segment_facts(
+    *,
+    case_index: int,
+    domain: CompiledDomain,
+    case_segments: list[list[dict[str, Any]]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Project evaluated segments into compact, renderer-independent facts.
+
+    These facts have no formula text, notional, currency or internal scale
+    fields.  They are a machine projection for Reporter to verify against the
+    selected Payoffer ModuleRun, not report HTML and not an alternate payoff
+    calculator.
+    """
+    scenarios: list[dict[str, Any]] = []
+    endpoints: list[dict[str, Any]] = []
+    for segment_index, segment in enumerate(case_segments, start=1):
+        if not segment:
+            continue
+        first, last = segment[0], segment[-1]
+        lower_endpoint = str(first.get("endpoint", "not_a_domain_boundary"))
+        upper_endpoint = str(last.get("endpoint", "not_a_domain_boundary"))
+        values = [float(point["y"]) for point in segment]
+        scenario_id = f"case_{case_index}_segment_{segment_index}"
+        scenarios.append({
+            "scenario_id": scenario_id,
+            "axis": domain.axis,
+            "domain": {
+                "lower": float(first["x"]),
+                "upper": float(last["x"]),
+                "lower_endpoint": lower_endpoint,
+                "upper_endpoint": upper_endpoint,
+            },
+            "payoff": {
+                "unit": _PAYOFF_UNIT,
+                "minimum_percent": min(values),
+                "maximum_percent": max(values),
+            },
+        })
+        for side, point, endpoint in (("lower", first, lower_endpoint), ("upper", last, upper_endpoint)):
+            if endpoint not in {"open", "closed"}:
+                continue
+            endpoints.append({
+                "scenario_id": scenario_id,
+                "side": side,
+                "axis_value": float(point["x"]),
+                "inclusion": endpoint,
+                "payoff_percent": float(point["y"]),
+            })
+    return scenarios, endpoints
+
+
+def _reporter_payoff_facts(path_panels: list[Mapping[str, Any]]) -> dict[str, Any]:
+    """Create the controlled percentage-only payoff projection for Reporter."""
+    paths: list[dict[str, Any]] = []
+    for path in path_panels:
+        axis = path.get("axis", {})
+        if not isinstance(axis, Mapping):
+            raise PayoffEngineError("Payoffer路径缺少可验证的横轴事实")
+        payoff_basis = str(path.get("payoff_basis", ""))
+        if payoff_basis not in _REPORTER_PAYOFF_BASES:
+            raise PayoffEngineError("Payoffer路径缺少受控收益口径")
+        paths.append({
+            "path_id": str(path["path_id"]),
+            "title": str(path["title"]),
+            "chart_kind": str(path["chart_kind"]),
+            "payoff_basis": payoff_basis,
+            "axis": {
+                "unit": str(axis["unit"]),
+                "label": str(axis["label"]),
+                "display_unit": str(axis["display_unit"]),
+                "number_format": str(axis["number_format"]),
+            },
+            "scenario_segments": deepcopy(path["reporter_segments"]),
+            "endpoint_facts": deepcopy(path["reporter_endpoints"]),
+            "thresholds": [
+                {
+                    key: threshold[key]
+                    for key in ("token", "value", "label", "semantic_role", "source")
+                    if key in threshold
+                }
+                for threshold in path.get("thresholds", [])
+            ],
+        })
+    return {
+        "schema_version": _REPORTER_PAYOFF_FACTS_VERSION,
+        "projection_status": "controlled_percent_machine_facts",
+        "source": "runtime.contracts.evaluate_contract",
+        "discounting": "not_applied",
+        "payoff_unit": _PAYOFF_UNIT,
+        "paths": paths,
+    }
+
+
 def _payoff_figure_basis(contract: ResolvedContract) -> tuple[str, float]:
-    """返回收益图展示口径及仅用于图形的期初期权费还原额。"""
+    """返回百分比收益图口径及仅用于图形的期初期权费还原值。"""
     basis = str(contract.terms.get("payoff_figure_basis", "net_after_premium"))
     if basis == "net_after_premium":
         return basis, 0.0
     if basis != "gross_before_premium":
         raise PayoffEngineError(f"{contract.product_id}含未登记的收益图口径{basis}")
     try:
-        offset = float(contract.terms["N"]) * float(contract.terms["p"])
+        offset = _INTERNAL_PERCENT_BASE * float(contract.terms["p"])
     except (KeyError, TypeError, ValueError) as error:
-        raise PayoffEngineError(f"{contract.product_id}的扣费前收益图必须定义N与p") from error
+        raise PayoffEngineError(f"{contract.product_id}的扣费前收益图必须定义p") from error
     if not np.isfinite(offset) or offset < 0.0:
         raise PayoffEngineError(f"{contract.product_id}的扣费前收益图期权费无效")
     return basis, offset
@@ -627,21 +815,41 @@ def render_paths(contract: ResolvedContract, visual_template: Mapping[str, Any])
             selected_domains: list[CompiledDomain] = []
             selected_cases: list[dict[str, str]] = []
             selected_case_indexes: list[int] = []
+            reporter_segments: list[dict[str, Any]] = []
+            reporter_endpoints: list[dict[str, Any]] = []
+            reporter_fact_sources: list[tuple[int, CompiledDomain, list[list[dict[str, Any]]]]] = []
             for case_index, domain, _ in entries:
-                segments.extend(
-                    _case_segments(
-                        contract, axis, x_scale, path_index, case_index, domain,
-                        fixed_template, evaluation_cache,
-                    )
+                case_segments = _case_segments(
+                    contract, axis, x_scale, path_index, case_index, domain,
+                    fixed_template, evaluation_cache,
                 )
+                segments.extend(case_segments)
+                reporter_fact_sources.append((case_index + 1, domain, case_segments))
                 selected_domains.append(domain)
-                selected_cases.append({"condition_tex": path["cases"][case_index]["domain"], "payoff_tex": path["cases"][case_index]["pnl"]})
+                selected_cases.append({
+                    "condition_tex": path["cases"][case_index]["domain"],
+                })
                 selected_case_indexes.append(case_index + 1)
             _apply_figure_basis(segments, premium_offset)
+            # ``gross_before_premium`` changes the plotted payoff after the
+            # shared interpreter result is sampled.  Project Reporter facts
+            # only after the identical display basis has been applied, so a
+            # verified report can never describe a different curve from SVG.
+            for case_index, domain, case_segments in reporter_fact_sources:
+                case_facts, endpoint_facts = _reporter_segment_facts(
+                    case_index=case_index,
+                    domain=domain,
+                    case_segments=case_segments,
+                )
+                reporter_segments.extend(case_facts)
+                reporter_endpoints.extend(endpoint_facts)
             jumps, turning_points = _annotate_boundaries(segments)
             values = [float(point["y"]) for segment in segments for point in segment]
             y_low, y_high = min(0.0, *values), max(0.0, *values)
-            padding = max(1.0, (y_high - y_low) * 0.15)
+            payoff_span = y_high - y_low
+            # 固定最小值会在旧名义金额标准化为百分比后改变曲线像素位置。
+            # 非零收益图使用相对留白，确保尺度变换不改变几何形状；纯零图才给最小范围。
+            padding = payoff_span * 0.15 if payoff_span > 1e-12 else 1.0
             scale = {**x_scale, "y_min": y_low - padding, "y_max": y_high + padding}
             split_state = len(groups) > 1
             title = view["title"] if not split_state else f"{view['title']}·情景{state_index}"
@@ -654,9 +862,11 @@ def render_paths(contract: ResolvedContract, visual_template: Mapping[str, Any])
             rendered.append(
                 RenderedPath(
                     path_id=path_id, title=title, condition_tex=path["condition"],
-                    payoff_tex="；".join(item["payoff_tex"] for item in selected_cases), piece_summaries=selected_cases,
+                    payoff_tex="", piece_summaries=selected_cases,
                     chart_kind=chart_kind, axis={"unit": axis, "reference_value": _axis_reference(contract, axis), **_AXIS_META[axis]}, scale=scale,
-                    segments=segments, jumps=jumps, turning_points=turning_points, thresholds=_thresholds(selected_domains), payoff_levels=_payoff_levels(segments),
+                    segments=segments, jumps=jumps, turning_points=turning_points,
+                    thresholds=_thresholds(contract, selected_domains, axis), payoff_levels=_payoff_levels(segments),
+                    reporter_segments=reporter_segments, reporter_endpoints=reporter_endpoints,
                     payoff_basis=payoff_basis, status_note=status_note,
                     candidate_state={"template": fixed_template.name, "history_rule": "nonterminal_fixed" if terminal_slice else "axis_constructed", "seed_monitor_values": state_seed, "case_indexes": selected_case_indexes},
                 )
@@ -674,10 +884,41 @@ def _axis_reference(contract: ResolvedContract, axis: str) -> float:
     return 100.0
 
 
-def _protocol_contract(contract: ResolvedContract) -> dict[str, Any]:
-    """输出共享核心的完整只读合同快照，而不是旧页面的裁剪副本。"""
-    value = contract.to_protocol_dict() if hasattr(contract, "to_protocol_dict") else contract.to_dict()
-    return _json_safe(deep_thaw(value))
+def _controlled_contract_snapshot(contract: ResolvedContract) -> dict[str, Any]:
+    """取得Core完整合同，仅可写入受控的正式ModuleRun输入。"""
+    try:
+        return _json_safe(deep_thaw(contract.to_controlled_snapshot()))
+    except ContractResolutionError as error:
+        raise PayoffEngineError(f"Core受控ResolvedContract快照无效：{error}") from error
+
+
+def _display_contract(contract: ResolvedContract) -> dict[str, Any]:
+    """建立不可重建的公开展示投影。
+
+    公开PayoffResult不是ResolvedContract：不含完整paths、term_sources或任一
+    可校验的产品/路径哈希。若消费者需重算，必须从ModuleRun的受控
+    ``input_snapshot.json``获取Core完整合同，而不能把本对象反序列化。
+    """
+    identity = contract.identity
+    display_identity = {
+        key: _json_safe(deep_thaw(identity[key]))
+        for key in ("product_id", "name_zh", "entry_status", "contract_id", "underlyings")
+        if key in identity
+    }
+    hidden_terms = _PUBLIC_HIDDEN_TERM_KEYS | {
+        "monitor", "derived_terms", "constraints", "pricing_methods",
+    }
+    return {
+        "projection_status": "display_only",
+        # 明确这是不可用于复算的来源引用，不是本对象的contract_fingerprint。
+        "source_contract_fingerprint": contract.contract_fingerprint,
+        "identity": display_identity,
+        "terms": {
+            str(key): _json_safe(deep_thaw(value))
+            for key, value in contract.terms.items()
+            if key not in hidden_terms
+        },
+    }
 
 
 def _template_term_bindings(asset: DefaultVisualAsset, contract: ResolvedContract) -> dict[str, Any]:
@@ -689,23 +930,26 @@ def _template_term_bindings(asset: DefaultVisualAsset, contract: ResolvedContrac
         str(key): _json_safe(deep_thaw(contract.terms[key]))
         for key in template_terms
         if key in contract.terms
+        and key not in _PUBLIC_HIDDEN_TERM_KEYS
+        and key != "derived_terms"
     }
 
 
 def _runtime_figure_payload(result: PayoffResult) -> dict[str, Any]:
-    """保存本次参数图的JSON，不把默认JSON改造成新的合同事实源。"""
+    """生成正式公开图形工件的受控百分比投影。
+
+    路径采样、候选状态和视觉模板只服务于本次渲染，不能进入公开
+    ``artifacts/payoff.json``。跨模块消费者只取得可验证的百分比情景事实；
+    SVG由同一ModuleRun的artifact manifest受控引用。
+    """
     payload = result.payload
-    resolved = payload["resolved_contract"]
     return {
+        "module": payload["module"],
         "name_zh": payload["name_zh"],
-        "visual_template": payload["visual_template"],
-        "identity": resolved["identity"],
-        "terms": resolved["terms"],
-        "term_sources": resolved["term_sources"],
-        "paths": resolved["paths"],
-        "product_version": resolved.get("product_version"),
-        "resolved_schedules": resolved.get("resolved_schedules"),
-        "contract_fingerprint": resolved.get("contract_fingerprint"),
+        "product_id": payload["product_id"],
+        "reporter_payoff_facts": payload["reporter_payoff_facts"],
+        "reporter_payoff_facts_hash": payload["reporter_payoff_facts_hash"],
+        "svg_content_hash": payload["svg_content_hash"],
     }
 
 
@@ -713,6 +957,8 @@ def _coerce_payoff_contract(payoff_input: Any) -> ResolvedContract:
     """严格接收共享PayoffInput={ResolvedContract}。"""
     if not isinstance(payoff_input, PayoffInput) or not isinstance(payoff_input.contract, ResolvedContract):
         raise PayoffEngineError("render_payoff仅接受PayoffInput={ResolvedContract}")
+    if payoff_input.contract.identity.get("price_convention") != "normalized_100":
+        raise PayoffEngineError("Payoffer只接受内部S=100的normalized_100合同")
     return payoff_input.contract
 
 
@@ -755,25 +1001,28 @@ def render_payoff(payoff_input: PayoffInput) -> PayoffResult:
 
     raw_paths = [asdict(path) for path in render_paths(contract, asset.template["visual_template"])]
     path_panels = _json_safe(raw_paths)
-    resolved_contract = _protocol_contract(contract)
+    reporter_payoff_facts = _json_safe(_reporter_payoff_facts(path_panels))
+    display_contract = _display_contract(contract)
     renderer_version = _renderer_version()
     result: dict[str, Any] = {
         "module": "payoffer",
         "product_id": contract.product_id,
         "name_zh": contract.name_zh,
         "product_version": contract.product_version,
-        "contract_fingerprint": contract.contract_fingerprint,
-        "resolved_contract": resolved_contract,
+        "display_contract": display_contract,
         "default_visual_asset": asset.to_reference(),
         "visual_template": {
             "source": f"figures/json/{asset.name_zh}.json",
             "term_bindings": _template_term_bindings(asset, contract),
         },
         "path_panels": path_panels,
+        "reporter_payoff_facts": reporter_payoff_facts,
+        "reporter_payoff_facts_hash": semantic_hash(reporter_payoff_facts),
         "cashflow_semantics": {
-            "source": "runtime.contracts.evaluate_payoff",
-            "holder_side": "cash(t, amount)",
+            "source": "runtime.contracts.evaluate_contract",
             "discounting": "not_applied",
+            "unit": _PAYOFF_UNIT,
+            "display_unit": _PAYOFF_UNIT,
         },
         "renderer_version": renderer_version,
     }
@@ -803,7 +1052,6 @@ def preview_payload(
         # 页面展示使用的历史字段仅在预览适配层生成，正式PayoffResult不复制路径。
         "paths": payoff_result.payload["path_panels"],
         "runtime_status": "enabled",
-        "payoff_input": {"contract": _protocol_contract(contract)},
     }
 
 
@@ -821,7 +1069,7 @@ def _store_payoff_result(
     expose_destination: bool = False,
 ) -> dict[str, Any]:
     """唯一结果写入路径：提交到调用方显式提供的ResultStore。"""
-    protocol_contract = _protocol_contract(contract)
+    controlled_contract = _controlled_contract_snapshot(contract)
     default_asset = dict(result.payload["default_visual_asset"])
     execution_fingerprint = semantic_hash({
         "contract_fingerprint": contract.contract_fingerprint,
@@ -847,7 +1095,8 @@ def _store_payoff_result(
         "output": output,
     }
     input_snapshot = {
-        "payoff_input": {"contract": protocol_contract},
+        "snapshot_kind": "core_controlled_resolved_contract",
+        "payoff_input": {"contract": controlled_contract},
         "default_visual_asset": default_asset,
         "requested_output": "parameterized_payoff_svg",
         "host_scope": {
@@ -883,7 +1132,7 @@ def _store_payoff_result(
     files: dict[str, bytes | str | Mapping[str, Any]] = {
         "manifest.json": manifest,
         "input_snapshot.json": input_snapshot,
-        "resolved_contract.json": protocol_contract,
+        "resolved_contract.json": controlled_contract,
         "data_refs.json": "[]\n",
         "limitations.json": "[]\n",
         output["payoff_json"]: _runtime_figure_payload(result),
@@ -922,7 +1171,7 @@ def _store_payoff_result(
 
 
 def _host_contract(payoff_input: PayoffInput, host_context: ModuleHostContext) -> ResolvedContract:
-    """只接受Host已验证的合同引用，不在Payoffer重做ProductVersion解析。"""
+    """绑定Host身份与Core验证过的合同快照，拒绝偶然相同的指纹。"""
     contract = _coerce_payoff_contract(payoff_input)
     if not isinstance(host_context, ModuleHostContext) or host_context.module != "payoffer":
         raise PayoffEngineError("正式Payoffer运行必须接收payoffer的ModuleHostContext")
@@ -943,10 +1192,15 @@ def _host_contract(payoff_input: PayoffInput, host_context: ModuleHostContext) -
     contract_ref = host_context.contract_ref
     if contract_ref is None:
         raise PayoffEngineError("正式Payoffer运行缺少Core已验证contract_ref")
-    if contract_ref.schema_id != "optionhelper.resolved-contract/v1":
-        raise PayoffEngineError("Core已验证contract_ref不是ResolvedContract v1引用")
+    if contract_ref.schema_id != RESOLVED_CONTRACT_SCHEMA_ID:
+        raise PayoffEngineError("Core已验证contract_ref不是当前ResolvedContract引用")
     if contract_ref.content_hash != contract.contract_fingerprint:
         raise PayoffEngineError("Core已验证contract_ref与ResolvedContract fingerprint不一致")
+    if contract.product_version.startswith("unversioned:"):
+        try:
+            verify_product_snapshot_binding(contract, load_registry())
+        except ContractResolutionError as error:
+            raise PayoffEngineError(f"ResolvedContract未通过Core产品快照绑定：{error}") from error
     return contract
 
 
@@ -983,12 +1237,12 @@ def run_runtime(
     task_id: str,
     run_id: str,
 ) -> dict[str, Any]:
-    """独立页面开发入口：使用与Hosted结果隔离的本地Store。"""
+    """独立页面开发入口：只写入与正式结果隔离的本地预览Store。"""
     contract = build_payoff_input(name_zh, term_overrides, identity)
     payoff_input = PayoffInput(contract=contract)
     result = render_payoff(payoff_input)
     development_store = LocalResultStore(RESULT_ROOT / "payoffer-development")
-    return _store_payoff_result(
+    response = _store_payoff_result(
         result,
         contract,
         store=development_store,
@@ -996,7 +1250,16 @@ def run_runtime(
         task_id=task_id,
         run_id=run_id,
         analysis_case_id=task_id,
-        candidate_id=None,
-        catalog_version="local-development",
+        # Core Store requires every successful run to be candidate-scoped.
+        # This fixed local scope is a development-preview namespace only; it
+        # neither represents an App candidate nor grants formal delivery.
+        candidate_id="local-development",
+        # ResultStore validates catalog_version as the public protocol version.
+        # The local tenant/candidate above still isolate this development preview
+        # from an App-hosted formal delivery.
+        catalog_version=PUBLIC_VERSION,
         expose_destination=True,
     )
+    response["result_scope"] = "development_preview_only"
+    response["formal_delivery_eligible"] = False
+    return response

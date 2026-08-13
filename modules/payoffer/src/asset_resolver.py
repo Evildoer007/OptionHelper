@@ -38,7 +38,11 @@ FIGURES_DIR = _figures_dir(RUNTIME_PATHS)
 DEFAULT_JSON_DIR = FIGURES_DIR / "json"
 DEFAULT_SVG_DIR = FIGURES_DIR / "svg"
 _AXIS_VARIABLES = frozenset({"S_T", "r_T", "W_T", "sigma_realized", "n_in"})
-_NON_VISUAL_TERM_FIELDS = frozenset({"constraints", "pricing_methods"})
+_NON_VISUAL_TERM_FIELDS = frozenset({
+    # 默认JSON是只读视觉模板；公式解释唯一以OptionReg/ResolvedContract为准。
+    # monitor和derived_terms会参与经济路径计算，但不决定图面路径面板的绑定。
+    "constraints", "pricing_methods", "monitor", "derived_terms", "N", "Nvar", "Nvega", "G",
+})
 
 
 class DefaultAssetError(ValueError):
@@ -138,11 +142,6 @@ def _validate_visual_template(value: Any, paths: list[Mapping[str, Any]], name_z
     return deep_thaw(value)
 
 
-def default_assets(name_zh: str) -> dict[str, Path]:
-    """历史调用兼容：返回固定默认资产路径。"""
-    return figure_asset_paths(name_zh)
-
-
 def _normalize_figure_payload(value: Any, name: str, path: Path) -> dict[str, Any]:
     if not isinstance(value, dict) or not {"name_zh", "terms", "paths"}.issubset(value):
         raise DefaultAssetError(f"{name}的固定默认JSON必须含name_zh、terms、paths")
@@ -173,11 +172,6 @@ def load_default_figure_payload(name_zh: str) -> dict[str, Any]:
     return _normalize_figure_payload(value, name, path)
 
 
-def default_payload(name_zh: str) -> dict[str, Any]:
-    """历史调用兼容：读取默认JSON模板。"""
-    return load_default_figure_payload(name_zh)
-
-
 def _asset_hash(json_bytes: bytes, svg_bytes: bytes) -> tuple[str, str, str]:
     return (
         sha256(json_bytes).hexdigest(),
@@ -191,6 +185,23 @@ def payoff_template_terms_match(default_terms: Mapping[str, Any], registry_terms
     default = {key: value for key, value in default_terms.items() if key not in _NON_VISUAL_TERM_FIELDS}
     registered = {key: value for key, value in registry_terms.items() if key not in _NON_VISUAL_TERM_FIELDS}
     return semantic_hash(default) == semantic_hash(registered)
+
+
+def payoff_template_paths_match(default_paths: list[Mapping[str, Any]], registry_paths: list[Mapping[str, Any]]) -> bool:
+    """校验默认资产的路径面板绑定，不把JSON中的历史收益公式当作运行时权威。"""
+    def signature(paths: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
+        try:
+            return [
+                {
+                    "condition": path["condition"],
+                    "cases": [{"domain": case["domain"]} for case in path["cases"]],
+                }
+                for path in paths
+            ]
+        except (KeyError, TypeError):
+            return []
+
+    return semantic_hash(signature(default_paths)) == semantic_hash(signature(registry_paths))
 
 
 def _snapshot_for_contract(contract: ResolvedContract) -> tuple[dict[str, Any], str, dict[str, Path], str]:
@@ -264,8 +275,8 @@ def resolve_default_visual_asset(contract: ResolvedContract) -> DefaultVisualAss
     # 只做一致性校验，真正计算只会读取contract.paths和contract.terms。
     if not payoff_template_terms_match(template["terms"], product["terms"]):
         raise DefaultAssetError(f"{name_zh}的固定默认JSON条款与OptionReg不一致；请先完成资料库维护后再运行")
-    if semantic_hash(template["paths"]) != semantic_hash(product["paths"]):
-        raise DefaultAssetError(f"{name_zh}的固定默认JSON路径与OptionReg不一致；请先完成资料库维护后再运行")
+    if not payoff_template_paths_match(template["paths"], product["paths"]):
+        raise DefaultAssetError(f"{name_zh}的固定默认JSON路径面板与OptionReg不一致；请先完成资料库维护后再运行")
 
     json_hash, svg_hash, pair_hash = _asset_hash(json_bytes, svg_bytes)
     return DefaultVisualAsset(
@@ -294,6 +305,7 @@ __all__ = (
     "figure_asset_paths",
     "load_default_figure_payload",
     "payoff_template_terms_match",
+    "payoff_template_paths_match",
     "verify_contract_snapshot_binding",
     "resolve_default_visual_asset",
 )

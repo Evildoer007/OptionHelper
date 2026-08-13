@@ -55,10 +55,10 @@
     <div class="app-shell readonly">
       <header class="topbar">
         <div class="brand"><img class="brand-logo" src="../../icons/optionhelper-logo.svg" alt="OptionHelper"><span class="brand-separator" aria-hidden="true"></span><span class="module-title">收益结构</span></div>
-        <div class="topbar-status" id="modeBadge">正在连接本机服务</div>
+        <div class="topbar-status" id="modeBadge">开发预览，正在连接本机服务</div>
         <div class="topbar-actions">
           <button class="button button-primary" id="previewButton">预览收益图</button>
-          <button class="button button-primary" id="runtimePayoffButton">生成本次参数图</button>
+          <button class="button button-primary" id="runtimePayoffButton">保存开发预览</button>
           <button class="button button-quiet" id="recheckButton">重新读取资料库</button>
         </div>
       </header>
@@ -74,7 +74,7 @@
           <div class="binding-card" id="bindingCard"><span>尚未选择产品</span></div>
           <div class="scenario-heading"><span>产品路径</span><small id="scenarioCount">0</small></div>
           <ol class="scenario-list" id="scenarioList"></ol>
-          <div class="library-note" id="libraryNote">默认示例资产为只读基准。本页生成的任何图仅属于本次条款与本次结果。</div>
+          <div class="library-note" id="libraryNote">这是开发预览页。默认示例资产为只读基准；本页结果仅供本机核对，不能直接用于正式Card或Report。</div>
         </aside>
         <div class="panel-resizer panel-resizer-left" id="libraryResizer" role="separator" aria-label="调整产品与路径面板宽度" aria-orientation="vertical" tabindex="0"></div>
 
@@ -84,14 +84,14 @@
             <div class="canvas-toolbar-actions">
               <div class="zoom-control" aria-label="画布缩放"><button class="zoom-button" id="zoomOutButton" title="缩小">−</button><label class="zoom-input-wrap"><input id="zoomInput" type="number" min="20" max="200" step="1" inputmode="numeric" aria-label="画布缩放百分比" value="100"><em>%</em></label><button class="zoom-button" id="zoomInButton" title="放大">+</button><button class="zoom-fit" id="zoomFitButton" title="适应画布">适应</button></div>
               <button class="button button-quiet" id="canvasPreviewButton">更新预览</button>
-              <button class="button button-primary" id="canvasRunButton">生成本次结果</button>
+              <button class="button button-primary" id="canvasRunButton">保存开发预览</button>
             </div>
           </div>
           <div class="notice-area" id="noticeArea" aria-live="polite" aria-atomic="true"></div>
           <div class="canvas-viewport" id="canvasViewport">
             <div class="empty-canvas" id="emptyCanvas"><div class="empty-mark">P</div><h2>选择产品后生成收益图</h2><p>图形按本次已解析合同计算，不会修改固定默认示例。</p></div>
           </div>
-          <div class="canvas-footer"><span>可使用滚轮或缩放工具查看完整路径图</span><span>本次参数图保存在当前任务中</span></div>
+          <div class="canvas-footer"><span>可使用滚轮或缩放工具查看完整路径图</span><span>开发预览仅保存在本机开发Store</span></div>
         </section>
         <div class="panel-resizer panel-resizer-right" id="inspectorResizer" role="separator" aria-label="调整条款参数面板宽度" aria-orientation="vertical" tabindex="0"></div>
 
@@ -105,9 +105,8 @@
             <div class="parameter-grid contract-identity-grid" id="identityFields">
               <label class="parameter-field full"><span>标的代码</span><input id="contractUnderlyings" autocomplete="off" placeholder="例如000905.SH"><small>underlyings，多个标的以英文逗号分隔</small></label>
               <label class="parameter-field"><span>合同标识</span><input id="contractId" autocomplete="off" placeholder="留空自动生成"></label>
-              <label class="parameter-field"><span>币种</span><input id="contractCurrency" autocomplete="off" value="CNY"></label>
               <label class="parameter-field"><span>合同起始日</span><input id="contractStartDate" class="date-input" type="text" inputmode="numeric" autocomplete="off" placeholder="yyyy/mm/dd" aria-describedby="contractStartDateHint"><small id="contractStartDateHint">统一显示yyyy/mm/dd；提交时转换为ISO日期</small></label>
-              <label class="parameter-field full"><span>合同参考价</span><textarea id="contractReferenceSpots" spellcheck="false" aria-label="合同参考价JSON"></textarea><small>contract_reference_spots，键必须逐一覆盖标的代码</small></label>
+              <label class="parameter-field full"><span>标的价格参考</span><textarea id="contractReferencePrices" spellcheck="false" aria-label="标的价格参考JSON"></textarea><small>逐标的最新可用未复权close，用于生成本次相对收益率。</small></label>
             </div>
           </div>
           <div class="inspector-group">
@@ -135,12 +134,12 @@
 
       <dialog class="publish-review-dialog runtime-payoff-dialog" id="runtimePayoffDialog" aria-labelledby="runtimePayoffTitle">
         <form class="publish-review-card runtime-payoff-form" id="runtimePayoffForm">
-          <div class="publish-review-head"><div><span class="panel-kicker">本次任务</span><h2 id="runtimePayoffTitle">生成参数化收益图</h2></div><button class="dialog-close" id="runtimePayoffClose" type="button" aria-label="关闭">×</button></div>
-          <p class="publish-review-copy">确认本次产品与关键条款后生成收益图。结果会保存在当前任务中，不会修改默认资产。</p>
+          <div class="publish-review-head"><div><span class="panel-kicker">开发预览</span><h2 id="runtimePayoffTitle">保存参数化收益图</h2></div><button class="dialog-close" id="runtimePayoffClose" type="button" aria-label="关闭">×</button></div>
+          <p class="publish-review-copy">确认本次产品与关键条款后保存开发预览。结果仅写入本机开发Store，不会修改默认资产，也不能直接生成正式Card或Report。</p>
           <label class="runtime-payoff-field"><span>产品</span><input id="runtimePayoffProduct" readonly></label>
           <p class="runtime-payoff-fields" id="runtimePayoffFields">先选择产品。</p>
           <p class="runtime-payoff-message" id="runtimePayoffMessage" aria-live="polite"></p>
-          <div class="publish-review-actions"><button class="button button-quiet" id="runtimePayoffCancel" type="button">取消</button><button class="button button-primary" id="runtimePayoffSubmit" type="submit">生成收益图</button></div>
+          <div class="publish-review-actions"><button class="button button-quiet" id="runtimePayoffCancel" type="button">取消</button><button class="button button-primary" id="runtimePayoffSubmit" type="submit">保存开发预览</button></div>
         </form>
       </dialog>
     </div>
@@ -217,13 +216,10 @@
       }
 
       function defaultIdentity(product) {
-        const fields = product.payoff_fields || [];
-        const vector = fields.find(field => field.key === 'S0Vec')?.default_value;
-        const scalar = fields.find(field => field.key === 'S0')?.default_value;
-        const referenceValues = Array.isArray(vector) ? vector : [typeof scalar === 'number' ? scalar : 100];
-        const underlyings = referenceValues.map((_, index) => referenceValues.length === 1 ? 'UNDERLYING' : 'UNDERLYING_' + (index + 1));
-        const spots = Object.fromEntries(underlyings.map((asset, index) => [asset, referenceValues[index]]));
-        return { contract_id: '', underlyings, currency: 'CNY', contract_start_date: '', contract_reference_spots: spots };
+        const underlyingCount = Number(product.underlying_count) || 1;
+        const underlyings = Array.from({ length: underlyingCount }, (_, index) => underlyingCount === 1 ? 'UNDERLYING' : 'UNDERLYING_' + (index + 1));
+        const spots = Object.fromEntries(underlyings.map(asset => [asset, 100]));
+        return { contract_id: '', underlyings, contract_start_date: '', reference_prices: spots };
       }
 
       function renderIdentity({ preserve = false } = {}) {
@@ -240,15 +236,13 @@
         const before = preserve ? {
           contract_id: $('contractId').value,
           underlyings: $('contractUnderlyings').value,
-          currency: $('contractCurrency').value,
           contract_start_date: $('contractStartDate').value,
-          contract_reference_spots: $('contractReferenceSpots').value
+          reference_prices: $('contractReferencePrices').value
         } : defaultIdentity(state.product);
         $('contractId').value = before.contract_id || '';
         $('contractUnderlyings').value = Array.isArray(before.underlyings) ? before.underlyings.join(',') : before.underlyings || '';
-        $('contractCurrency').value = before.currency || 'CNY';
         $('contractStartDate').value = formatDateInput(before.contract_start_date);
-        $('contractReferenceSpots').value = typeof before.contract_reference_spots === 'string' ? before.contract_reference_spots : JSON.stringify(before.contract_reference_spots || {});
+        $('contractReferencePrices').value = typeof before.reference_prices === 'string' ? before.reference_prices : JSON.stringify(before.reference_prices || {});
       }
 
       function renderParameters({ preserve = false } = {}) {
@@ -316,8 +310,8 @@
 
       function collectIdentity() {
         const underlyings = parseUnderlyings($('contractUnderlyings').value);
-        const rawSpots = $('contractReferenceSpots').value.trim();
-        const identity = { underlyings, currency: $('contractCurrency').value.trim() || 'CNY' };
+        const rawSpots = $('contractReferencePrices').value.trim();
+        const identity = { underlyings };
         if ($('contractId').value.trim()) identity.contract_id = $('contractId').value.trim();
         identity.contract_start_date = parseDateInput($('contractStartDate').value);
         if (!identity.contract_start_date) delete identity.contract_start_date;
@@ -333,7 +327,7 @@
             if (!Number.isFinite(Number(spots[key])) || Number(spots[key]) <= 0) throw new Error('合同参考价.' + key + '必须为正数');
             spots[key] = Number(spots[key]);
           }
-          identity.contract_reference_spots = spots;
+          identity.reference_prices = spots;
         }
         return identity;
       }
@@ -378,7 +372,7 @@
         catch (error) { return markInputDirty(); }
         let existing = {};
         try {
-          const parsed = JSON.parse($('contractReferenceSpots').value || '{}');
+          const parsed = JSON.parse($('contractReferencePrices').value || '{}');
           if (parsed && !Array.isArray(parsed) && typeof parsed === 'object') existing = parsed;
         } catch (error) {
           existing = {};
@@ -386,7 +380,7 @@
         const previousValues = Object.values(existing);
         const suggested = suggestedReferenceValues();
         const spots = Object.fromEntries(underlyings.map((asset, index) => [asset, Number(existing[asset] ?? previousValues[index] ?? suggested[index] ?? 100)]));
-        $('contractReferenceSpots').value = JSON.stringify(spots);
+        $('contractReferencePrices').value = JSON.stringify(spots);
         markInputDirty();
       }
 
@@ -421,7 +415,7 @@
         }
         $('inspectorTitle').textContent = path.title || '路径' + (state.selectedPathIndex + 1);
         $('sourceDetail').innerHTML = '来源：OptionReg.paths，经共享现金流解释器解析。<span class="formula">条件：' + escapeHtml(path.condition_tex || '—') + '</span>';
-        $('selectedPathDetail').innerHTML = '<span class="formula">损益：' + escapeHtml(path.payoff_tex || '—') + '</span><span class="formula">分段数：' + (path.segments?.length || 0) + '</span>';
+        $('selectedPathDetail').innerHTML = '<span class="formula">收益口径：百分比</span><span class="formula">分段数：' + (path.segments?.length || 0) + '</span>';
       }
 
       function setZoom(value, { mode = 'manual' } = {}) {
@@ -508,7 +502,7 @@
         catch (error) { current = false; }
         setCanvasState(enabled ? (current ? '收益图已更新' : '条款待预览') : '正式资料图已载入', current || !enabled ? 'ready' : 'dirty');
         showNotice(enabled
-          ? '已按当前ResolvedContract计算' + state.preview.paths.length + '条收益路径。'
+          ? '已按当前受控合同计算' + state.preview.paths.length + '条收益路径。'
           : '已载入既有正式默认图。该产品尚未完整录入，不能生成本次参数图。');
       }
 
@@ -546,11 +540,11 @@
         if (state.product.runtime_status !== 'enabled') return showNotice('当前产品只支持正式资料图预览，不能生成本次参数图。', 'error');
         try {
           if (!state.preview || state.previewSignature !== currentSignature()) await preview();
-          const contract = state.preview?.payoff_input?.contract;
-          if (!contract) throw new Error('当前预览尚未形成可运行的产品条款，请检查合同身份和条款覆盖。');
+          const displayContract = state.preview?.display_contract;
+          if (!displayContract || displayContract.projection_status !== 'display_only') throw new Error('当前预览尚未形成可展示的合同投影，请检查合同身份和条款覆盖。');
           $('runtimePayoffProduct').value = state.product.product_id + ' ' + state.product.canonical_name;
           const overridden = Object.keys(state.previewPayload?.term_overrides || {});
-          const underlyings = Array.isArray(contract?.identity?.underlyings) ? contract.identity.underlyings.join('、') : '未填写';
+          const underlyings = Array.isArray(displayContract?.identity?.underlyings) ? displayContract.identity.underlyings.join('、') : '未填写';
           const terms = overridden.length ? overridden.slice(0, 4).join('、') : '默认条款';
           $('runtimePayoffFields').textContent = '标的：' + underlyings + '。关键条款：' + terms + '。';
           $('runtimePayoffMessage').textContent = '';
@@ -568,12 +562,12 @@
         const runId = identifier('run');
         $('runtimePayoffSubmit').disabled = true;
         $('runtimePayoffMessage').className = 'runtime-payoff-message';
-        $('runtimePayoffMessage').textContent = '正在生成本次结果…';
+        $('runtimePayoffMessage').textContent = '正在保存开发预览…';
         try {
           const result = await request('/api/run', { ...state.previewPayload, task_id: taskId, run_id: runId });
           $('runtimePayoffDialog').close();
-          showNotice('结果已保存，可生成Card或Report。');
-          setCanvasState('本次结果已生成', 'ready');
+          showNotice('开发预览已保存，仅供本机核对，不能直接用于正式Card或Report。');
+          setCanvasState('开发预览已保存', 'ready');
         } catch (error) {
           $('runtimePayoffMessage').textContent = error.message;
           $('runtimePayoffMessage').className = 'runtime-payoff-message error';
@@ -586,9 +580,8 @@
         if (!identity || typeof identity !== 'object') return 0;
         if (Array.isArray(identity.underlyings)) $('contractUnderlyings').value = identity.underlyings.join(',');
         if (identity.contract_id !== undefined) $('contractId').value = identity.contract_id || '';
-        if (identity.currency !== undefined) $('contractCurrency').value = identity.currency || 'CNY';
         if (identity.contract_start_date) $('contractStartDate').value = formatDateInput(String(identity.contract_start_date).slice(0, 10));
-        if (identity.contract_reference_spots && typeof identity.contract_reference_spots === 'object') $('contractReferenceSpots').value = JSON.stringify(identity.contract_reference_spots);
+        if (identity.reference_prices && typeof identity.reference_prices === 'object') $('contractReferencePrices').value = JSON.stringify(identity.reference_prices);
         return 1;
       }
 
@@ -596,8 +589,10 @@
         try {
           const source = JSON.parse($('parameterJson').value || '{}');
           if (!source || Array.isArray(source) || typeof source !== 'object') throw new Error('必须是JSON对象');
-          const contract = source.PayoffInput?.contract || source.payoff_input?.contract || source.contract || null;
-          const terms = source.term_overrides || contract?.terms || source.terms || source;
+          if (Object.hasOwn(source, 'resolved_contract')) throw new Error('旧resolved_contract不是可导入的正式合同；请导入受控input_snapshot中的payoff_input.contract，或使用display_contract仅回填展示条款。');
+          const controlledContract = source.contract || source.PayoffInput?.contract || source.payoff_input?.contract || null;
+          const displayContract = source.display_contract || null;
+          const terms = source.term_overrides || controlledContract?.terms || displayContract?.terms || source.terms || source;
           if (!terms || Array.isArray(terms) || typeof terms !== 'object') throw new Error('未找到term_overrides或ResolvedContract.terms');
           let count = 0;
           termInputs().forEach(item => {
@@ -606,7 +601,7 @@
               count += 1;
             }
           });
-          const identityCount = fillIdentity(source.identity || contract?.identity);
+          const identityCount = fillIdentity(source.identity || controlledContract?.identity || displayContract?.identity);
           if (!count && !identityCount) throw new Error('导入内容不包含当前产品可编辑的条款或合同身份');
           markInputDirty();
           showNotice('已回填' + count + '个条款字段' + (identityCount ? '及合同身份' : '') + '。请预览后再生成本次结果。');
@@ -670,7 +665,7 @@
       $('zoomInput').addEventListener('input', event => setZoom(Number(event.target.value) / 100));
       $('zoomFitButton').addEventListener('click', fitZoom);
       $('canvasViewport').addEventListener('wheel', zoomAtPointer, { passive: false });
-      ['contractId', 'contractCurrency', 'contractStartDate', 'contractReferenceSpots'].forEach(id => $(id).addEventListener('input', markInputDirty));
+      ['contractId', 'contractStartDate', 'contractReferencePrices'].forEach(id => $(id).addEventListener('input', markInputDirty));
       $('contractUnderlyings').addEventListener('input', syncReferenceSpots);
       $('contractUnderlyings').addEventListener('change', syncReferenceSpots);
       $('parameterFields').addEventListener('input', markInputDirty);
@@ -679,11 +674,11 @@
       bindResizer($('inspectorResizer'), '--inspector-width', 300, 520);
       new ResizeObserver(() => { if (state.preview && state.zoomMode === 'fit') fitZoom(); }).observe($('canvasViewport'));
 
-      if (location.protocol === 'file:') setServiceStatus('正在连接本机服务');
+      if (location.protocol === 'file:') setServiceStatus('开发预览，正在连接本机服务');
       loadCatalog()
         .then(() => {
-          setServiceStatus('本机服务已连接');
-          if (location.protocol === 'file:') showNotice('已连接本机服务。可在本页解析合同、预览收益图并生成本次结果。');
+          setServiceStatus('开发预览服务已连接');
+          if (location.protocol === 'file:') showNotice('已连接开发预览服务。可在本页解析合同、预览收益图并保存本机预览；正式Card或Report须经App Host和Reporter。');
         })
         .catch(error => {
           setServiceStatus('未连接本机服务', true);

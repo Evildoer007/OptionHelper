@@ -81,8 +81,16 @@ def _svg_token(token: str) -> str:
     return f'{escape(match.group(1))}<tspan class="token-sub" baseline-shift="sub">{escape(suffix)}</tspan>'
 
 
-def _threshold_meta(token: str) -> tuple[str, str, str]:
-    return _THRESHOLD_META.get(_token_key(token), ("关键阈值", "#6F7780", "4 4"))
+def _threshold_meta(threshold: Mapping[str, Any] | str) -> tuple[str, str, str]:
+    """Use the TermCatalog label when a controlled semantic threshold has one."""
+    if isinstance(threshold, Mapping):
+        token = str(threshold.get("token", ""))
+        catalog_label = str(threshold.get("label", "")).strip()
+    else:
+        token = str(threshold)
+        catalog_label = ""
+    default_label, color, dash = _THRESHOLD_META.get(_token_key(token), ("关键阈值", "#6F7780", "4 4"))
+    return catalog_label or default_label, color, dash
 
 
 def _format_value(value: float, axis: Mapping[str, Any]) -> str:
@@ -147,11 +155,7 @@ def _jump_svg(jumps: Sequence[Mapping[str, Any]], scale: Mapping[str, float], le
 def _format_pnl(value: float) -> str:
     sign = "+" if value > 0.0 else "-"
     amount = abs(float(value))
-    if amount >= 100_000_000.0:
-        return f"{sign}{_number(amount / 100_000_000.0)}亿"
-    if amount >= 10_000.0:
-        return f"{sign}{_number(amount / 10_000.0)}万"
-    return f"{sign}{_number(amount)}"
+    return f"{sign}{_number(amount)}%"
 
 
 def _payoff_level_svg(path: Mapping[str, Any], scale: Mapping[str, float], *, left: float, right: float, top: float, bottom: float, axis_x: float) -> str:
@@ -186,7 +190,13 @@ def _visible_thresholds(path: Mapping[str, Any]) -> list[Mapping[str, Any]]:
         item
         for item in path.get("thresholds", [])
         if abs(float(item["value"])) > 1e-12
-        and abs(float(item["value"]) - reference) > 1e-9
+        # A TermCatalog-bound price term remains a visible semantic threshold
+        # at the reference level.  Only an unlabeled domain boundary at that
+        # same coordinate is redundant with the axis reference line.
+        and (
+            str(item.get("semantic_role", "")) == "contract_price_term"
+            or abs(float(item["value"]) - reference) > 1e-9
+        )
         and float(scale["x_min"]) <= float(item["value"]) <= float(scale["x_max"])
     ]
 
@@ -197,8 +207,8 @@ def _annotation_layout(path: Mapping[str, Any], plot_left: float, plot_right: fl
     candidates: list[tuple[float, str, str, float]] = []
     for item in _visible_thresholds(path):
         x = _coord_x(float(item["value"]), scale, plot_left, plot_right - plot_left)
-        _, color, _ = _threshold_meta(str(item["token"]))
-        text = f"{_format_value(float(item['value']), axis)}{unit}"
+        label, color, _ = _threshold_meta(item)
+        text = f"{label} {_token_key(str(item['token']))}={_format_value(float(item['value']), axis)}{unit}"
         candidates.append((x, text, color, max(30.0, 12.0 + len(text) * 7.2)))
     candidates.sort(key=lambda item: item[0])
     row_ends: list[float] = []
@@ -216,11 +226,11 @@ def _annotation_layout(path: Mapping[str, Any], plot_left: float, plot_right: fl
 
 def _threshold_svg(path: Mapping[str, Any], annotations: Sequence[_Annotation], *, left: float, right: float, top: float, bottom: float, band_y: float) -> str:
     scale = path["scale"]
-    by_value = {float(item["value"]): item for item in _visible_thresholds(path)}
     parts: list[str] = []
-    for value, item in by_value.items():
+    for item in _visible_thresholds(path):
+        value = float(item["value"])
         x = _coord_x(value, scale, left, right - left)
-        _, color, dash = _threshold_meta(str(item["token"]))
+        _, color, dash = _threshold_meta(item)
         parts.append(f'<line class="threshold" style="stroke:{color};stroke-dasharray:{dash}" x1="{_number(x)}" y1="{_number(top)}" x2="{_number(x)}" y2="{_number(bottom)}"/>')
     for annotation in annotations:
         y = band_y + annotation.row * 20.0
@@ -276,7 +286,7 @@ def _card(path: Mapping[str, Any], index: int, layout: _CardLayout) -> str:
     reference_x = y_axis_x - 10 if reference_anchor == "end" else y_axis_x + 10
     title = escape(str(path.get("title", f"路径{index + 1}")))
     state_note = escape(str(path.get("status_note") or ""))
-    payoff_label = "收益（扣费前）" if path.get("payoff_basis") == "gross_before_premium" else "净收益"
+    payoff_label = "收益率（扣费前）" if path.get("payoff_basis") == "gross_before_premium" else "净收益率"
     return f'''<g data-path-card="{index}">
   <defs><clipPath id="payoffer-card-clip-{index}"><rect x="{_number(card_x + 4)}" y="{_number(card_y + 4)}" width="{_number(card_width - 8)}" height="{_number(card_height - 8)}"/></clipPath></defs>
   <rect class="card" x="{_number(card_x)}" y="{_number(card_y)}" width="{_number(card_width)}" height="{_number(card_height)}"/><line class="card-accent" x1="{_number(card_x)}" y1="{_number(card_y + 2)}" x2="{_number(card_x + card_width)}" y2="{_number(card_y + 2)}"/>
@@ -302,7 +312,7 @@ def _legend_items(paths: Sequence[Mapping[str, Any]]) -> list[dict[str, str | fl
             if key in seen:
                 continue
             seen.add(key)
-            label, color, dash = _threshold_meta(token)
+            label, color, dash = _threshold_meta(threshold)
             full_label = f"{label} {token} = {_format_value(value, axis)}{unit}"
             items.append({"kind": "threshold", "token": token, "value": value, "label": label, "color": color, "dash": dash, "unit": unit, "value_text": _format_value(value, axis), "width": max(184.0, 98.0 + len(full_label) * 8.0)})
     return items

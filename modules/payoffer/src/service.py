@@ -29,7 +29,6 @@ from .impl.engine import (
     render_payoff,
     run_payoff,
     run_runtime,
-    term_overrides_from_default_json,
 )
 from .impl.svg_renderer import render_svg
 from .models import PayoffInput
@@ -59,6 +58,7 @@ def catalog_payload() -> dict[str, object]:
                 "canonical_name": product["identity"]["name_zh"],
                 "name_zh": product["identity"]["name_zh"],
                 "underlying_scope": "multi_underlying" if "S0Vec" in product["terms"] else "single_underlying",
+                "underlying_count": len(product["terms"].get("S0Vec", ())) or 1,
                 "runtime_status": "enabled" if product["identity"]["entry_status"] else "blocked",
                 "formula_mode": "shared_cashflow_interpreter",
                 "path_count": len(product["paths"]),
@@ -82,26 +82,27 @@ def _preview_svg(name_zh: str, payload: dict) -> str:
         raise PayoffEngineError(f"缺少{name_zh}的正式默认SVG") from error
 
 
-def _term_overrides(body: dict, name_zh: str) -> object:
-    if "payoff_json" in body:
-        return term_overrides_from_default_json(name_zh, body["payoff_json"])
-    return body.get("term_overrides", body.get("payoff_input"))
-
-
-def _name_from_body(body: dict) -> str:
-    """兼容当前Payoffer页面的product_id请求与既有中文名调用。"""
-    name_zh = str(body.get("name_zh", "")).strip()
-    if name_zh:
-        return name_zh
+def _preview_request(body: Mapping[str, Any]) -> tuple[str, Mapping[str, Any] | None, Mapping[str, Any] | None]:
+    """开发预览只接受当前页面的product_id、term_overrides与identity输入。"""
+    allowed = {"product_id", "term_overrides", "identity", "task_id", "run_id"}
+    unknown = set(body) - allowed
+    if unknown:
+        raise PayoffEngineError(f"开发预览请求含未登记字段：{'、'.join(sorted(unknown))}；请使用product_id")
     product_id = str(body.get("product_id", "")).strip()
     product = load_registry().get("products", {}).get(product_id)
     if not isinstance(product, dict):
-        raise PayoffEngineError("必须提供有效的product_id或name_zh")
+        raise PayoffEngineError("必须提供有效的product_id")
     identity = product.get("identity", {})
-    resolved = str(identity.get("name_zh", "")).strip() if isinstance(identity, dict) else ""
-    if not resolved:
+    name_zh = str(identity.get("name_zh", "")).strip() if isinstance(identity, dict) else ""
+    if not name_zh:
         raise PayoffEngineError(f"{product_id}缺少中文产品名称")
-    return resolved
+    term_overrides = body.get("term_overrides")
+    if term_overrides is not None and not isinstance(term_overrides, Mapping):
+        raise PayoffEngineError("term_overrides必须是对象")
+    supplied_identity = body.get("identity")
+    if supplied_identity is not None and not isinstance(supplied_identity, Mapping):
+        raise PayoffEngineError("identity必须是对象")
+    return name_zh, term_overrides, supplied_identity
 
 
 def page_asset_path(request_path: str) -> Path | None:
@@ -125,16 +126,13 @@ def call_tool(
     if action == "catalog":
         return catalog_payload()
     if action == "preview":
-        name_zh = _name_from_body(body)
-        payload = preview_payload(name_zh, _term_overrides(body, name_zh), body.get("identity"))
+        name_zh, term_overrides, identity = _preview_request(body)
+        payload = preview_payload(name_zh, term_overrides, identity)
         return {"ok": True, "module": "payoffer", "preview": payload, "svg": _preview_svg(name_zh, payload)}
     if action == "run":
         if not isinstance(host_context, ModuleHostContext) or result_store is None or not tenant_id:
             raise PayoffEngineError("正式Payoffer调用必须由Host注入ModuleHostContext、ResultStorePort与tenant_id")
-        payoff_input = body.get("payoff_input")
-        if payoff_input is None and "contract" in body:
-            payoff_input = {"contract": body["contract"]}
-        payoff_input = _formal_payoff_input(payoff_input)
+        payoff_input = _formal_payoff_input(body.get("payoff_input"))
         requested_run_id = body.get("run_id")
         run_id = requested_run_id.strip() if isinstance(requested_run_id, str) and requested_run_id.strip() else f"run-{uuid4().hex[:12]}"
         return run_payoff(
@@ -161,9 +159,9 @@ def _formal_payoff_input(value: Any) -> PayoffInput:
             contract = contract_value
         elif isinstance(contract_value, Mapping):
             try:
-                contract = ResolvedContract(**dict(contract_value))
+                contract = ResolvedContract.from_controlled_snapshot(contract_value)
             except (TypeError, ValueError, ContractResolutionError) as error:
-                raise PayoffEngineError(f"PayoffInput.contract无效：{error}") from error
+                raise PayoffEngineError(f"PayoffInput.contract必须是Core受控ResolvedContract快照：{error}") from error
         else:
             raise PayoffEngineError("PayoffInput.contract必须为ResolvedContract或完整协议对象")
     else:
@@ -172,6 +170,10 @@ def _formal_payoff_input(value: Any) -> PayoffInput:
         verify_contract_snapshot_binding(contract)
     except DefaultAssetError as error:
         raise PayoffEngineError(f"PayoffInput.contract产品快照无效：{error}") from error
+    if {"S0", "S0Vec"} & set(contract.terms):
+        references = contract.identity.get("reference_prices")
+        if not isinstance(references, Mapping) or set(references) != set(contract.underlyings):
+            raise PayoffEngineError("正式Payoffer必须提供逐标的价格参考")
     return PayoffInput(contract=contract)
 
 
@@ -250,7 +252,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(HTTPStatus.OK, catalog_payload())
                 return
             if parsed.path == "/api/preview.svg":
-                name_zh = parse_qs(parsed.query).get("name_zh", [""])[0]
+                product_id = parse_qs(parsed.query).get("product_id", [""])[0]
+                name_zh, _, _ = _preview_request({"product_id": product_id})
                 payload = preview_payload(name_zh)
                 self._respond(HTTPStatus.OK, _preview_svg(name_zh, payload).encode("utf-8"), "image/svg+xml; charset=utf-8")
                 return
@@ -265,16 +268,16 @@ class Handler(BaseHTTPRequestHandler):
         try:
             body = self._request_json()
             if parsed.path == "/api/preview":
-                name_zh = _name_from_body(body)
-                payload = preview_payload(name_zh, _term_overrides(body, name_zh), body.get("identity"))
+                name_zh, term_overrides, identity = _preview_request(body)
+                payload = preview_payload(name_zh, term_overrides, identity)
                 self._json(HTTPStatus.OK, {"ok": True, "preview": payload, "svg": _preview_svg(name_zh, payload)})
                 return
             if parsed.path == "/api/run":
-                name_zh = _name_from_body(body)
+                name_zh, term_overrides, identity = _preview_request(body)
                 result = run_runtime(
                     name_zh,
-                    _term_overrides(body, name_zh),
-                    body.get("identity"),
+                    term_overrides,
+                    identity,
                     str(body.get("task_id", "")),
                     str(body.get("run_id", "")),
                 )

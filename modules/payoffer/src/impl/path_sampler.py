@@ -380,10 +380,10 @@ def _reference_level(contract: ResolvedContract) -> float:
 
 
 def _raw_reference(contract: ResolvedContract) -> np.ndarray:
-    values = contract.identity.get("contract_reference_spots")
-    if values is not None:
-        return np.asarray([values[asset] for asset in contract.underlyings], dtype=float)
-    return _normalized_reference(contract)
+    values = contract.identity.get("reference_prices")
+    if not isinstance(values, Mapping) or set(values) != set(contract.underlyings):
+        raise DomainCompileError("ResolvedContract必须提供逐标的reference_prices")
+    return np.asarray([values[asset] for asset in contract.underlyings], dtype=float)
 
 
 def _normalized_reference(contract: ResolvedContract) -> np.ndarray:
