@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build a verified v1.0 candidate without touching immutable history."""
+"""Build a verified v1.0.0 candidate without touching immutable history."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ import zipfile
 
 
 ROOT = Path(__file__).resolve().parents[1]
-for path in (ROOT / "packaging" / "skill", ROOT / "packaging" / "app", ROOT / "packaging" / "app" / "macos", ROOT / "packaging" / "app" / "windows"):
+for path in (ROOT / "packaging", ROOT / "packaging" / "skill", ROOT / "packaging" / "app", ROOT / "packaging" / "app" / "macos", ROOT / "packaging" / "app" / "windows"):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
@@ -24,6 +24,7 @@ from verify_app import verify_app
 from build_macos import build_macos
 from build_windows import build_windows
 from verify_skill import probe_runtime, verify_skill, verify_zip
+from release_contract import RELEASE_VERSION, require_release_version
 
 
 class CurrentBuildError(RuntimeError):
@@ -130,8 +131,10 @@ def _verify_layout(stage: Path, version: str, platform: str) -> None:
 
 
 def build_current(version: str, platform: str) -> dict[str, Path]:
-    if version != "v1.0":
-        raise CurrentBuildError("本轮锁定v1.0；不得擅自提高或覆盖正式版本")
+    try:
+        require_release_version(version)
+    except ValueError as error:
+        raise CurrentBuildError(str(error)) from error
     if platform not in {"macos", "windows"}:
         raise CurrentBuildError(f"不支持的平台：{platform}")
     total_steps = 7
@@ -145,21 +148,20 @@ def build_current(version: str, platform: str) -> dict[str, Path]:
         _progress(3, total_steps, "正在验证Skill内容、运行时和App契约")
         errors = [*verify_skill(skill), *verify_source_snapshot(skill, repo_root=ROOT), *probe_runtime(skill)]
         if errors:
-            raise CurrentBuildError("v1.0候选Skill未通过验收：\n" + "\n".join(errors))
+            raise CurrentBuildError(f"{RELEASE_VERSION}候选Skill未通过验收：\n" + "\n".join(errors))
         app_errors = verify_app(ROOT / "products" / "app", capability_root=skill)
         if app_errors:
             raise CurrentBuildError("App开发源未通过当次Capability验收：\n" + "\n".join(app_errors))
         _progress(4, total_steps, "正在归档并校验Skill ZIP")
         skill_zip = write_zip(skill)
         if verify_zip(skill_zip):
-            raise CurrentBuildError("v1.0候选Skill ZIP未通过解压验收")
+            raise CurrentBuildError(f"{RELEASE_VERSION}候选Skill ZIP未通过解压验收")
         shutil.copy2(skill_zip, stage / "option-helper.zip")
 
-        # The platform builders require a writable history location for their
-        # per-build manifests.  It is temporary by design, so versions/v1.0
-        # remains byte-for-byte untouched.
+        # The platform builders own their temporary version directory and
+        # create it only when their artifacts are ready to commit.  The root
+        # itself remains isolated from the immutable versions/ archive.
         candidate_history = temporary / "history"
-        (candidate_history / version).mkdir(parents=True)
         _progress(5, total_steps, "正在打包平台应用和安装物")
         if platform == "macos":
             artifacts = build_macos(version, skill, dist_root=stage, versions_root=candidate_history)
@@ -181,9 +183,9 @@ def build_current(version: str, platform: str) -> dict[str, Path]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="一键构建OptionHelper v1.0候选；macOS写dist，Windows隔离到result/windows-candidate"
+        description="一键构建OptionHelper v1.0.0候选；macOS写dist，Windows隔离到result/windows-candidate"
     )
-    parser.add_argument("--version", default="v1.0")
+    parser.add_argument("--version", default=RELEASE_VERSION)
     parser.add_argument("--platform", choices=("macos", "windows"), required=True)
     args = parser.parse_args()
     try:

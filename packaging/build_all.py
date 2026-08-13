@@ -25,7 +25,7 @@ def main() -> None:
     parser.add_argument("--target", choices=("skill", "all"), default="all")
     parser.add_argument("--platform", choices=("current", "macos", "windows"), default="current")
     catalog_mode = parser.add_mutually_exclusive_group()
-    catalog_mode.add_argument("--catalog-version", help="构建Skill时使用已签发CatalogVersion，如v1.0")
+    catalog_mode.add_argument("--catalog-version", help="构建Skill时使用已签发CatalogVersion，仅允许v1.0.0")
     catalog_mode.add_argument("--candidate", action="store_true", help="从当前references构建仅开发环境可执行的技术候选")
     args = parser.parse_args()
     if args.target in {"skill", "all"} and not args.catalog_version and not args.candidate:

@@ -27,7 +27,7 @@ def verify_app(app_root: Path, *, capability_root: Path | None) -> list[str]:
     for relative in ("backend/reporter_adapter.py", "backend/stores/result_store.py"):
         adapter = app_root / relative
         if not adapter.is_file():
-            errors.append(f"App缺少ModuleRunRef v1.2适配：{relative}")
+            errors.append(f"App缺少ModuleRunRef当前协议适配：{relative}")
         elif "expected_artifact_manifest_hash" not in adapter.read_text(encoding="utf-8", errors="ignore"):
             errors.append(f"App适配未绑定ModuleRunRef外部锚：{relative}")
     for module in ("datafetcher", "payoffer", "pricer", "backtester", "reporter"):

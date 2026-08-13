@@ -29,12 +29,19 @@ VERSIONS_ROOT = ROOT / "versions"
 SKILL_PACKAGING = ROOT / "packaging" / "skill"
 if str(SKILL_PACKAGING) not in sys.path:
     sys.path.insert(0, str(SKILL_PACKAGING))
+if str(ROOT / "packaging") not in sys.path:
+    sys.path.insert(0, str(ROOT / "packaging"))
 
 from verify_skill import content_tree_entries, tree_hash, verify_skill
+from release_contract import RELEASE_VERSION, require_release_version
 
 
 class MacOSBuildError(RuntimeError):
     pass
+
+
+def _progress(message: str) -> None:
+    print(f"[platform] {message}", flush=True)
 
 
 NUMERIC_RUNTIME_MODULES = ("numpy", "pandas", "scipy", "numba")
@@ -129,6 +136,76 @@ def verify_dmg_install_layout(
                 run(["hdiutil", "detach", str(mountpoint)])
 
 
+def _commit_release_artifacts(
+    *,
+    dmg: Path,
+    output_dmg: Path,
+    history_stage: Path,
+    release_root: Path,
+    archive_names: tuple[str, ...],
+    transaction_stage: bool = False,
+) -> bool:
+    """Commit the candidate DMG and its archive together, or restore both stages."""
+    created_root = False
+    if release_root.exists():
+        if not transaction_stage:
+            raise MacOSBuildError("App版本已存在；请提高app_version")
+    else:
+        release_root.mkdir(parents=False, exist_ok=False)
+        created_root = True
+    if any((release_root / name).exists() for name in archive_names):
+        raise MacOSBuildError("App版本已存在；请提高app_version")
+    try:
+        for name in archive_names:
+            staged = history_stage / name
+            archived = release_root / name
+            os.replace(staged, archived)
+        os.replace(dmg, output_dmg)
+    except BaseException:
+        _rollback_committed_release_artifacts(
+            dmg=dmg,
+            output_dmg=output_dmg,
+            history_stage=history_stage,
+            release_root=release_root,
+            archive_names=archive_names,
+            created_root=created_root,
+        )
+        raise
+    return created_root
+
+
+def _rollback_committed_release_artifacts(
+    *,
+    dmg: Path,
+    output_dmg: Path,
+    history_stage: Path,
+    release_root: Path,
+    archive_names: tuple[str, ...],
+    created_root: bool,
+) -> None:
+    """Restore only this App's files after a failed transaction-stage check."""
+    if output_dmg.exists() and not dmg.exists():
+        os.replace(output_dmg, dmg)
+    for name in reversed(archive_names):
+        archived = release_root / name
+        staged = history_stage / name
+        if archived.exists() and not staged.exists():
+            os.replace(archived, staged)
+    if created_root and release_root.exists() and not any(release_root.iterdir()):
+        release_root.rmdir()
+
+
+def _validate_transaction_stage(release_root: Path) -> None:
+    """Require the Catalog and Capability already staged by the release transaction."""
+    required = (
+        release_root / "knowledger" / "catalog-version.json",
+        release_root / "option-helper.zip",
+        release_root / "capability-manifest.json",
+    )
+    if not release_root.is_dir() or any(not path.is_file() for path in required):
+        raise MacOSBuildError("macOS事务版本根缺少已签发Catalog或Capability")
+
+
 def verified_capability(capability_root: Path) -> dict[str, Any]:
     errors = verify_skill(capability_root)
     if errors:
@@ -165,9 +242,11 @@ def app_manifest(
         "bundle_id": "com.optionhelper.app",
         "platform": "macos-arm64",
         "capability_version": capability["capability_version"],
+        "catalog_version": capability["catalog_version"],
         "capability_manifest_hash": capability_manifest_hash,
         "capability_content_tree_hash": capability["content_tree_hash"],
         "protocol_version": capability["protocol_version"],
+        "design_system_version": capability["design_system_version"],
         "shell_language": shell_language,
         "build_tool": build_tool,
         "signing": {"method": "ad-hoc", "notarized": False},
@@ -186,13 +265,17 @@ def platform_release_manifest(
     if not app_manifest_path.is_file() or not dmg_path.is_file():
         raise MacOSBuildError("PlatformReleaseManifest缺少App Manifest或DMG")
     return {
-        "schema": "optionhelper.platform-release-manifest/v1",
+        "schema": f"optionhelper.platform-release-manifest/{RELEASE_VERSION}",
         "app_version": app_version,
         "platform": "macos",
         "architecture": "arm64",
         "app_manifest_hash": file_hash(app_manifest_path),
+        "capability_version": capability["capability_version"],
+        "catalog_version": capability["catalog_version"],
         "capability_manifest_hash": capability["capability_manifest_hash"],
         "capability_content_tree_hash": capability["capability_content_tree_hash"],
+        "protocol_version": capability["protocol_version"],
+        "design_system_version": capability["design_system_version"],
         "installer": {"filename": dmg_path.name, "sha256": file_hash(dmg_path), "size": dmg_path.stat().st_size},
         "installer_hash": file_hash(dmg_path),
         "signing_identity": "ad-hoc",
@@ -224,13 +307,17 @@ def verify_platform_release_manifest(path: Path, *, app_manifest_path: Path, dmg
     if not isinstance(installer, dict):
         raise MacOSBuildError("PlatformReleaseManifest缺少installer")
     checks = {
-        "schema": "optionhelper.platform-release-manifest/v1",
+        "schema": f"optionhelper.platform-release-manifest/{RELEASE_VERSION}",
         "platform": "macos",
         "architecture": "arm64",
         "app_version": app_manifest.get("app_version"),
         "app_manifest_hash": file_hash(app_manifest_path),
+        "capability_version": app_manifest.get("capability_version"),
+        "catalog_version": app_manifest.get("catalog_version"),
         "capability_manifest_hash": app_manifest.get("capability_manifest_hash"),
         "capability_content_tree_hash": app_manifest.get("capability_content_tree_hash"),
+        "protocol_version": app_manifest.get("protocol_version"),
+        "design_system_version": app_manifest.get("design_system_version"),
         "installer_hash": file_hash(dmg_path),
         "signing_identity": "ad-hoc",
         "signature_status": "ad-hoc_validated",
@@ -500,9 +587,12 @@ def build_macos(
     *,
     dist_root: Path = DIST_ROOT,
     versions_root: Path = VERSIONS_ROOT,
+    transaction_stage: bool = False,
 ) -> dict[str, Path]:
-    if app_version != "v1.0":
-        raise MacOSBuildError("本轮App版本固定为v1.0；未获确认前不得生成其他版本")
+    try:
+        require_release_version(app_version)
+    except ValueError as error:
+        raise MacOSBuildError(str(error)) from error
     if platform.system() != "Darwin" or platform.machine() != "arm64":
         raise MacOSBuildError("macOS arm64构建必须在本机arm64 macOS执行")
     assert_build_python()
@@ -510,18 +600,25 @@ def build_macos(
     versions_root = versions_root.resolve()
     output_dmg = dist_root / f"OptionHelper-{app_version}-macOS-arm64.dmg"
     release_root = versions_root / app_version
-    if release_root.exists():
-        assert_no_finder_conflicts(release_root)
-    archive_dmg = release_root / output_dmg.name
-    if output_dmg.exists() or archive_dmg.exists() or (release_root / "app-manifest.json").exists():
+    if output_dmg.exists():
         raise MacOSBuildError("App版本已存在；请提高app_version")
+    if release_root.exists():
+        if not transaction_stage:
+            raise MacOSBuildError("App版本已存在；请提高app_version")
+        if versions_root == VERSIONS_ROOT.resolve():
+            raise MacOSBuildError("macOS事务版本根不得使用正式versions目录")
+        _validate_transaction_stage(release_root)
+    elif transaction_stage:
+        raise MacOSBuildError("macOS事务版本根不存在")
 
+    _progress("正在验证当次Capability")
     source = capability_root.resolve()
     capability = verified_capability(source)
     capability_manifest_hash = file_hash(source / "capability-manifest.json")
 
     with tempfile.TemporaryDirectory(prefix="optionhelper-macos-") as temporary_name:
         temporary = Path(temporary_name)
+        _progress("正在组装应用资源")
         bundle = temporary / "OptionHelper.app"
         resources = bundle / "Contents" / "Resources"
         resources.mkdir(parents=True)
@@ -544,6 +641,7 @@ def build_macos(
         copy_tree(ROOT / "core" / "src" / "runtime", resources / "runtime")
         copy_licenses(resources / "LICENSES", source)
         write_json(resources / "app-manifest.json", manifest)
+        _progress("正在构建后端运行时")
         backend = build_backend(temporary, resources)
         run([str(backend), "--probe-pdf-runtime", "--resource-dir", str(resources)])
         verify_bundle(bundle, manifest)
@@ -554,8 +652,10 @@ def build_macos(
                 f"macOS App体积{bundle_size / 1024 / 1024:.1f}MB超过"
                 f"{MAX_APP_BUNDLE_BYTES // 1024 // 1024}MB上限；请检查重复资源和无关依赖"
             )
+        _progress("正在签名并验证应用包")
         run(["codesign", "--force", "--deep", "--sign", "-", str(bundle)])
         run(["codesign", "--verify", "--deep", "--strict", "--verbose=2", str(bundle)])
+        _progress("正在生成DMG安装物")
         built_dmg = temporary / f"OptionHelper-{app_version}-macOS-arm64.dmg"
         dmg_layout = prepare_dmg_layout(bundle, temporary / "dmg-layout")
         run(["hdiutil", "create", "-volname", "OptionHelper", "-srcfolder", str(dmg_layout), "-format", "UDZO", str(built_dmg)])
@@ -565,6 +665,7 @@ def build_macos(
                 f"macOS安装物体积{built_dmg.stat().st_size / 1024 / 1024:.1f}MB超过"
                 f"{MAX_DMG_BYTES // 1024 // 1024}MB上限；请检查重复资源和无关运行时依赖"
             )
+        _progress("正在验证安装物")
         verify_dmg_install_layout(
             built_dmg,
             expected_content_tree_hash=str(capability["content_tree_hash"]),
@@ -598,11 +699,28 @@ def build_macos(
             shutil.copy2(release_manifest_path, archive_release)
             verify_platform_release_manifest(archive_release, app_manifest_path=archive_manifest, dmg_path=archive_stage)
             assert_no_finder_conflicts(history_stage)
-            os.replace(dmg, output_dmg)
-            for artifact in (archive_stage, checksum, archive_manifest, archive_release):
-                os.replace(artifact, release_root / artifact.name)
-            assert_no_finder_conflicts(dist_root)
-            assert_no_finder_conflicts(release_root)
+            _progress("正在写入临时交付记录")
+            created_release_root = _commit_release_artifacts(
+                dmg=dmg,
+                output_dmg=output_dmg,
+                history_stage=history_stage,
+                release_root=release_root,
+                archive_names=(archive_stage.name, checksum.name, archive_manifest.name, archive_release.name),
+                transaction_stage=transaction_stage,
+            )
+            try:
+                assert_no_finder_conflicts(dist_root)
+                assert_no_finder_conflicts(release_root)
+            except BaseException:
+                _rollback_committed_release_artifacts(
+                    dmg=dmg,
+                    output_dmg=output_dmg,
+                    history_stage=history_stage,
+                    release_root=release_root,
+                    archive_names=(archive_stage.name, checksum.name, archive_manifest.name, archive_release.name),
+                    created_root=created_release_root,
+                )
+                raise
         finally:
             if output_stage.exists():
                 shutil.rmtree(output_stage)

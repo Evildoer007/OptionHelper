@@ -26,7 +26,7 @@ def request(
     path: str,
     body: dict[str, object] | None = None,
     headers: dict[str, str] | None = None,
-) -> tuple[int, dict[str, object], str | None]:
+) -> tuple[int, dict[str, object] | str, str | None]:
     actual_headers = dict(headers or {})
     payload = None
     if body is not None:
@@ -35,7 +35,10 @@ def request(
     connection.request(method, path, body=payload, headers=actual_headers)
     response = connection.getresponse()
     raw = response.read().decode("utf-8")
-    value = json.loads(raw) if raw else {}
+    try:
+        value: dict[str, object] | str = json.loads(raw) if raw else {}
+    except json.JSONDecodeError:
+        value = raw
     return response.status, value, response.getheader("Set-Cookie")
 
 
@@ -114,10 +117,61 @@ def verify(bundle: Path) -> dict[str, object]:
             integrity = capability.get("integrity", {})
             require(isinstance(integrity, dict) and integrity.get("release_ready") is True, "内置Capability未通过完整性门禁")
 
-            status, admin_body, admin_cookie = request(
-                connection, "POST", "/api/auth/local", {"role": "admin", "principal_label": "artifact-verifier"}
+            initial_password = "artifact-initialization-password"  # test fixture
+            status, pending_login, pending_cookie = request(
+                connection,
+                "POST",
+                "/api/auth/login",
+                {"account": "artifact-admin", "password": initial_password, "remember": False},
             )
-            require(status == 200 and admin_cookie is not None, "管理员本地登录失败")
+            require(
+                status == 503 and pending_cookie is None and pending_login.get("error") == "unavailable",
+                "受管App在首次初始化前没有拒绝登录",
+            )
+            status, local_login, local_cookie = request(
+                connection,
+                "POST",
+                "/api/auth/local",
+                {"role": "admin", "principal_label": "artifact-verifier"},
+            )
+            require(
+                status == 503 and local_cookie is None and local_login.get("error") == "unavailable",
+                "受管App意外开放了本地开发身份",
+            )
+            status, initialized, initialization_cookie = request(
+                connection,
+                "POST",
+                "/api/auth/initialize",
+                {"account": "artifact-admin", "password": initial_password},
+            )
+            require(
+                status == 201 and initialization_cookie is None and initialized.get("status") == "initialized",
+                "管理员首次初始化失败",
+            )
+            status, repeated, repeated_cookie = request(
+                connection,
+                "POST",
+                "/api/auth/initialize",
+                {"account": "artifact-admin-repeat", "password": initial_password},
+            )
+            require(
+                status == 409 and repeated_cookie is None and repeated.get("error") == "account_already_initialized",
+                "受管App没有拒绝重复初始化",
+            )
+            status, admin_body, admin_cookie = request(
+                connection,
+                "POST",
+                "/api/auth/login",
+                {"account": "artifact-admin", "password": initial_password, "remember": False},
+            )
+            identity = admin_body.get("identity")
+            require(
+                status == 200
+                and admin_cookie is not None
+                and isinstance(identity, dict)
+                and identity.get("role") == "admin",
+                "管理员受管登录失败",
+            )
             admin = admin_cookie.split(";", 1)[0]
             modules = ("datafetcher", "payoffer", "pricer", "backtester", "reporter")
             actions = {
@@ -148,18 +202,13 @@ def verify(bundle: Path) -> dict[str, object]:
                 require(isinstance(result, dict) and result.get("ok") is not False, f"{module}拒绝成品调用：{result}")
                 tool_status[module] = summarize_tool_result(result)
 
-            status, _sales_body, sales_cookie = request(
-                connection, "POST", "/api/auth/local", {"role": "sales", "principal_label": "artifact-sales"}
-            )
-            require(status == 200 and sales_cookie is not None, "销售本地登录失败")
-            sales = sales_cookie.split(";", 1)[0]
-            status, _body, _ = request(connection, "GET", "/optdesk", headers={"Cookie": sales})
-            require(status == 403, "销售权限错误：不应访问OptDesk")
+            status, _body, _ = request(connection, "GET", "/optdesk", headers={"Cookie": admin})
+            require(status == 200, "管理员身份无法访问OptDesk")
             return {
                 "status": "verified",
                 "capability_version": capability.get("capability_version"),
                 "modules": tool_status,
-                "sales_optdesk_status": status,
+                "admin_optdesk_status": status,
             }
         finally:
             if connection is not None:

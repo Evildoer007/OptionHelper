@@ -1,16 +1,31 @@
 #!/bin/zsh
-# One-click macOS v1.0 local-candidate build.  It never overwrites the
-# existing formal archive under versions/v1.0.
+# One-click macOS v1.0.0 local-candidate build. It never overwrites
+# the formal archive under versions/v1.0.0.
 set -euo pipefail
 
 ROOT="${0:A:h}"
-VERSION="${OPTIONHELPER_VERSION:-v1.0}"
+VERSION="${OPTIONHELPER_VERSION:-v1.0.0}"
 
 setopt NULL_GLOB
 
+LOCAL_PYTHON_FILE="$ROOT/.optionhelper/runtime/build-python-path"
+python_selection_source=""
+if [[ -n "${OPTIONHELPER_PYTHON:-}" ]]; then
+  python_selection_source="environment"
+elif [[ -f "$LOCAL_PYTHON_FILE" && ! -L "$LOCAL_PYTHON_FILE" ]]; then
+  IFS= read -r OPTIONHELPER_PYTHON < "$LOCAL_PYTHON_FILE" || OPTIONHELPER_PYTHON=""
+  if [[ "$OPTIONHELPER_PYTHON" = /* && -x "$OPTIONHELPER_PYTHON" ]]; then
+    python_selection_source="local"
+    print "已使用本机保存的Python解释器：$OPTIONHELPER_PYTHON"
+  else
+    print -u2 "本机保存的Python解释器已失效，将重新列出候选环境。"
+    OPTIONHELPER_PYTHON=""
+  fi
+fi
+
 if [[ -z "${OPTIONHELPER_PYTHON:-}" ]]; then
-  print -u2 "必须先由用户显式选择Python。构建器不得自动选择候选环境。"
-  print -u2 "可选解释器仅供选择；枚举过程不会运行候选解释器。设置OPTIONHELPER_PYTHON为其中一个绝对路径后重新运行："
+  print -u2 "尚未选择用于构建的Python解释器。"
+  print -u2 "可选解释器仅供选择；枚举过程不会运行候选解释器。请设置OPTIONHELPER_PYTHON为其中一个绝对路径后重新运行："
   candidates=()
   [[ -n "${CONDA_PREFIX:-}" ]] && candidates+=("$CONDA_PREFIX/bin/python")
   candidates+=(
@@ -57,6 +72,16 @@ if [[ "$OPTIONHELPER_PYTHON" != /* || ! -x "$OPTIONHELPER_PYTHON" ]]; then
   exit 1
 fi
 PYTHON_BIN="$OPTIONHELPER_PYTHON"
+if [[ "$python_selection_source" == "environment" ]]; then
+  local_python_dir="${LOCAL_PYTHON_FILE:h}"
+  local_python_temp="${LOCAL_PYTHON_FILE}.tmp.$$"
+  /bin/mkdir -p "$local_python_dir"
+  /bin/chmod 700 "$local_python_dir"
+  print -r -- "$PYTHON_BIN" > "$local_python_temp"
+  /bin/chmod 600 "$local_python_temp"
+  /bin/mv -f "$local_python_temp" "$LOCAL_PYTHON_FILE"
+  print "已将本次选择保存为本机设置：$LOCAL_PYTHON_FILE"
+fi
 
 cd "$ROOT"
 print "OptionHelper macOS候选构建"

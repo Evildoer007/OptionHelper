@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-from datetime import datetime
 from hashlib import sha256
 import json
 from pathlib import Path
@@ -15,8 +14,11 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT / "core" / "src") not in sys.path:
     sys.path.insert(0, str(ROOT / "core" / "src"))
+if str(ROOT / "packaging") not in sys.path:
+    sys.path.insert(0, str(ROOT / "packaging"))
 
 from runtime.knowledger.versioning import SNAPSHOT_FILES, validate_published_catalog, verify_candidate
+from release_contract import RELEASE_VERSION, require_published_at, require_release_version
 
 
 PUBLISHER = "OptionHelper Project Team"
@@ -26,15 +28,23 @@ def _digest(path: Path) -> str:
     return sha256(path.read_bytes()).hexdigest()
 
 
-def sign_catalog(candidate: Path, *, version: str, published_at: str, root: Path = ROOT) -> Path:
+def sign_catalog(
+    candidate: Path,
+    *,
+    version: str,
+    published_at: str,
+    root: Path = ROOT,
+    versions_root: Path | None = None,
+) -> Path:
     root = root.resolve()
     candidate = candidate.resolve()
-    datetime.fromisoformat(published_at)  # 时间格式必须由调用方显式固定。
+    require_release_version(version)
+    require_published_at(published_at)
     verify_candidate(root, candidate)
     snapshot = json.loads((candidate / "snapshot.json").read_text(encoding="utf-8"))
     if snapshot.get("proposed_catalog_version") != version or snapshot.get("integrity_evidence", {}).get("default_asset_registry_drift"):
         raise ValueError("技术候选版本或默认资产冻结哈希未通过，拒绝签发")
-    archive_root = root / "versions"
+    archive_root = versions_root.resolve() if versions_root else root / "versions"
     release_root = archive_root / version
     catalog_target = release_root / "knowledger" / "catalog-version.json"
     if release_root.exists():

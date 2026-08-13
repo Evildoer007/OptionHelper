@@ -23,6 +23,7 @@ from verify_skill import (
     PAGE_MODULES,
     SkillVerificationError,
     _module_hashes,
+    _tool_catalog_protocol_version,
     content_tree_entries,
     is_development_artifact_path,
     is_credential_file,
@@ -52,8 +53,11 @@ def _candidate_conflicts(output_root: Path, name: str) -> list[Path]:
 
 if str(ROOT / "core" / "src") not in sys.path:
     sys.path.insert(0, str(ROOT / "core" / "src"))
+if str(ROOT / "packaging") not in sys.path:
+    sys.path.insert(0, str(ROOT / "packaging"))
 
 from runtime.knowledger.versioning import load_published_catalog_snapshots, validate_published_catalog
+from release_contract import RELEASE_VERSION, require_release_version
 
 
 class SkillBuildError(RuntimeError):
@@ -141,12 +145,12 @@ def load_source_map(path: Path = SOURCE_MAP) -> dict[str, object]:
     return _validate_source_map(config)
 
 
-def _record(path: Path, root: Path) -> dict[str, object]:
+def _record(path: Path, root: Path, *, provenance_path: str | None = None) -> dict[str, object]:
     if path.is_symlink() or not path.is_file():
         raise SkillBuildError(f"白名单源文件不存在或为符号链接：{path}")
     if is_credential_file(path.name):
         raise SkillBuildError(f"白名单源文件不得为凭据：{path}")
-    relative = path.relative_to(root).as_posix()
+    relative = provenance_path or path.relative_to(root).as_posix()
     digest = sha256(path.read_bytes()).hexdigest()
     return {
         "path": relative,
@@ -154,6 +158,27 @@ def _record(path: Path, root: Path) -> dict[str, object]:
         "sha256": digest,
         "executable": bool(path.stat().st_mode & stat.S_IXUSR),
     }
+
+
+def _catalog_archive_root(
+    repo_root: Path,
+    config: dict[str, object],
+    versions_root: Path | None,
+) -> Path:
+    if versions_root is not None:
+        return versions_root.expanduser().resolve()
+    catalog = config["catalog"]
+    assert isinstance(catalog, dict)
+    return (repo_root / str(catalog["source_root"])).resolve()
+
+
+def _published_provenance(path: Path, archive_root: Path) -> str:
+    """Return an archive-stable source identity without exposing its host path."""
+    try:
+        relative = path.relative_to(archive_root).as_posix()
+    except ValueError as error:
+        raise SkillBuildError(f"正式Catalog来源不在受控versions_root内：{path}") from error
+    return (PurePosixPath("versions") / PurePosixPath(relative)).as_posix()
 
 
 def _excluded(relative: Path, patterns: list[str]) -> bool:
@@ -217,14 +242,23 @@ def _copy_tree(source: Path, target: Path, patterns: list[str]) -> list[Path]:
     return files
 
 
-def _resolve_catalog(repo_root: Path, config: dict[str, object], catalog_version: str) -> tuple[Path, dict[str, object]]:
-    if not re.fullmatch(r"v\d+\.\d+", catalog_version):
-        raise SkillBuildError("catalog_version必须采用v1.0格式")
+def _resolve_catalog(
+    repo_root: Path,
+    config: dict[str, object],
+    catalog_version: str,
+    *,
+    versions_root: Path | None = None,
+) -> tuple[Path, dict[str, object]]:
+    try:
+        require_release_version(catalog_version)
+    except ValueError as error:
+        raise SkillBuildError(str(error)) from error
     catalog = config["catalog"]
     assert isinstance(catalog, dict)
-    source = repo_root / str(catalog["source_root"]) / catalog_version / str(catalog["file_name"])
+    archive_root = _catalog_archive_root(repo_root, config, versions_root)
+    source = archive_root / catalog_version / str(catalog["file_name"])
     if source.is_symlink() or not source.is_file():
-        raise SkillBuildError(f"缺少已签发CatalogVersion：{source.relative_to(repo_root)}")
+        raise SkillBuildError(f"缺少已签发CatalogVersion：{source}")
     try:
         payload = json.loads(source.read_text(encoding="utf-8"))
     except json.JSONDecodeError as error:
@@ -245,7 +279,7 @@ def _resolve_catalog(repo_root: Path, config: dict[str, object], catalog_version
     if not isinstance(payload.get("products"), dict) or len(payload["products"]) != 65:
         raise SkillBuildError("CatalogVersion必须含65个产品版本映射")
     try:
-        validate_published_catalog(repo_root, catalog_version)
+        validate_published_catalog(repo_root, catalog_version, versions_root=archive_root)
     except ValueError as error:
         raise SkillBuildError(f"CatalogVersion正式版本链校验失败：{error}") from error
     return source, payload
@@ -253,13 +287,23 @@ def _resolve_catalog(repo_root: Path, config: dict[str, object], catalog_version
 
 def _protocol_version(repo_root: Path) -> str:
     source = repo_root / "core" / "src" / "runtime" / "protocol" / "tool_catalog.py"
-    matches = set(re.findall(r'"protocol_version"\s*:\s*"([^"]+)"', source.read_text(encoding="utf-8")))
-    if len(matches) != 1:
+    protocol_version = _tool_catalog_protocol_version(source)
+    if protocol_version is None:
         raise SkillBuildError("无法从Tool Catalog确定唯一protocol_version")
-    return matches.pop()
+    if protocol_version != RELEASE_VERSION:
+        raise SkillBuildError(
+            f"Core Tool Catalog协议版本必须为{RELEASE_VERSION}，当前为{protocol_version}"
+        )
+    return protocol_version
 
 
-def _source_records(repo_root: Path, config: dict[str, object], catalog_path: Path | None) -> list[dict[str, object]]:
+def _source_records(
+    repo_root: Path,
+    config: dict[str, object],
+    catalog_path: Path | None,
+    *,
+    versions_root: Path | None = None,
+) -> list[dict[str, object]]:
     records: dict[str, dict[str, object]] = {}
 
     def add(path: Path) -> None:
@@ -275,19 +319,35 @@ def _source_records(repo_root: Path, config: dict[str, object], catalog_path: Pa
         for path in _tree_files(source, list(item.get("exclude", []))):
             add(path)
     if catalog_path is not None:
-        add(catalog_path)
+        archive_root = _catalog_archive_root(repo_root, config, versions_root)
+
+        def add_published(path: Path) -> None:
+            record = _record(
+                path,
+                repo_root,
+                provenance_path=_published_provenance(path, archive_root),
+            )
+            records[str(record["path"])] = record
+
+        add_published(catalog_path)
         catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
         version_root = catalog_path.parents[1]
         for relative in catalog["product_manifest_refs"].values():
             manifest_path = version_root / str(relative)
-            add(manifest_path)
+            add_published(manifest_path)
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             for filename in manifest["snapshot_files"].values():
-                add(manifest_path.parent / filename)
+                add_published(manifest_path.parent / filename)
     return sorted(records.values(), key=lambda item: str(item["path"]))
 
 
-def _source_output_paths(repo_root: Path, config: dict[str, object], catalog_path: Path | None) -> set[str]:
+def _source_output_paths(
+    repo_root: Path,
+    config: dict[str, object],
+    catalog_path: Path | None,
+    *,
+    versions_root: Path | None = None,
+) -> set[str]:
     paths = {str(config["catalog"]["target"])}
     for item in config["files"]:
         assert isinstance(item, dict)
@@ -300,7 +360,7 @@ def _source_output_paths(repo_root: Path, config: dict[str, object], catalog_pat
         for path in _tree_files(source, list(item.get("exclude", []))):
             paths.add((target / path.relative_to(source).as_posix()).as_posix())
     if catalog_path is not None:
-        _record(catalog_path, repo_root)
+        _published_provenance(catalog_path, _catalog_archive_root(repo_root, config, versions_root))
         catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
         version_root = catalog_path.parents[1]
         for relative in catalog["product_manifest_refs"].values():
@@ -328,7 +388,7 @@ def _working_tree_catalog(repo_root: Path) -> dict[str, object]:
         "formal_release": False,
         "execution_scope": "development_only",
         "executable": True,
-        "catalog_version": "unreleased",
+        "catalog_version": RELEASE_VERSION,
         "catalog_source": "working-tree",
         "product_count": 65,
         "product_ids": product_ids,
@@ -340,10 +400,14 @@ def _copy_published_catalog_snapshots(
     repo_root: Path,
     catalog_version: str,
     staged: Path,
+    *,
+    versions_root: Path | None = None,
 ) -> None:
     """把正式ProductVersion快照装入包，并以其Payoff资产覆盖活目录副本。"""
     try:
-        catalog, snapshots = load_published_catalog_snapshots(repo_root, catalog_version)
+        catalog, snapshots = load_published_catalog_snapshots(
+            repo_root, catalog_version, versions_root=versions_root
+        )
     except ValueError as error:
         raise SkillBuildError(f"无法读取正式ProductVersion快照：{error}") from error
     for product_id, snapshot in snapshots.items():
@@ -359,7 +423,12 @@ def _copy_published_catalog_snapshots(
         _copy_file(Path(snapshot["default_svg_path"]), staged / "assets" / "payoffer" / "figures" / "svg" / f"{name}.svg")
 
 
-def verify_source_snapshot(skill_root: Path, *, repo_root: Path = ROOT) -> list[str]:
+def verify_source_snapshot(
+    skill_root: Path,
+    *,
+    repo_root: Path = ROOT,
+    versions_root: Path | None = None,
+) -> list[str]:
     """确认候选Manifest仍对应当前Source Map选择的开发源。"""
     try:
         manifest = json.loads((skill_root / "capability-manifest.json").read_text(encoding="utf-8"))
@@ -371,9 +440,14 @@ def verify_source_snapshot(skill_root: Path, *, repo_root: Path = ROOT) -> list[
             catalog_path = None
             expected_catalog = _working_tree_catalog(repo_root)
         else:
-            catalog_path, expected_catalog = _resolve_catalog(repo_root, config, str(manifest["catalog_version"]))
-        records = _source_records(repo_root, config, catalog_path)
-        expected_paths = _source_output_paths(repo_root, config, catalog_path)
+            catalog_path, expected_catalog = _resolve_catalog(
+                repo_root,
+                config,
+                str(manifest["catalog_version"]),
+                versions_root=versions_root,
+            )
+        records = _source_records(repo_root, config, catalog_path, versions_root=versions_root)
+        expected_paths = _source_output_paths(repo_root, config, catalog_path, versions_root=versions_root)
         actual_paths = {str(item["path"]) for item in content_tree_entries(skill_root)}
     except (KeyError, OSError, json.JSONDecodeError, SkillBuildError, SkillVerificationError) as error:
         return [f"无法核对候选来源快照：{error}"]
@@ -440,6 +514,7 @@ def build_skill(
     candidate: bool = False,
     replace: bool = False,
     repo_root: Path = ROOT,
+    versions_root: Path | None = None,
 ) -> Path:
     repo_root = repo_root.expanduser().resolve()
     config = load_source_map(SOURCE_MAP)
@@ -452,8 +527,13 @@ def build_skill(
         catalog_source = "working-tree"
     else:
         assert catalog_version is not None
-        catalog_path, catalog_payload = _resolve_catalog(repo_root, config, catalog_version)
-        catalog_source = catalog_path.relative_to(repo_root).as_posix()
+        catalog_path, catalog_payload = _resolve_catalog(
+            repo_root, config, catalog_version, versions_root=versions_root
+        )
+        catalog_source = _published_provenance(
+            catalog_path,
+            _catalog_archive_root(repo_root, config, versions_root),
+        )
     output_root = output_root.expanduser().resolve()
     if output_root == output_root.anchor:
         raise SkillBuildError("拒绝把候选构建到文件系统根目录")
@@ -465,7 +545,7 @@ def build_skill(
     staged = staging_parent / "option-helper"
     staged.mkdir()
     try:
-        source_records = _source_records(repo_root, config, catalog_path)
+        source_records = _source_records(repo_root, config, catalog_path, versions_root=versions_root)
         for item in config["files"]:
             assert isinstance(item, dict)
             source = repo_root / str(item["source"])
@@ -474,8 +554,7 @@ def build_skill(
             assert isinstance(item, dict)
             source = repo_root / str(item["source"])
             _copy_tree(source, staged / str(item["target"]), list(item.get("exclude", [])))
-        for relative in ("assets/designer/templates", "assets/designer/fonts"):
-            (staged / relative).mkdir(parents=True, exist_ok=True)
+        (staged / "assets/designer/templates").mkdir(parents=True, exist_ok=True)
         catalog = config["catalog"]
         assert isinstance(catalog, dict)
         catalog_target = staged / str(catalog["target"])
@@ -484,23 +563,28 @@ def build_skill(
             catalog_target.write_text(json.dumps(catalog_payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         else:
             _copy_file(catalog_path, catalog_target)
-            _copy_published_catalog_snapshots(repo_root, str(catalog_version), staged)
+            _copy_published_catalog_snapshots(
+                repo_root,
+                str(catalog_version),
+                staged,
+                versions_root=versions_root,
+            )
         entries = content_tree_entries(staged)
         hashes = {str(item["path"]): str(item["sha256"]) for item in entries}
         contract_entries = [item for item in entries if str(item["path"]).startswith("scripts/runtime/contracts/")]
         if not contract_entries:
             raise SkillBuildError("候选包缺少共享合同核心")
         manifest = {
-            "manifest_schema_version": "1.0",
+            "manifest_schema_version": RELEASE_VERSION,
             "package_status": "candidate",
-            "capability_version": "candidate",
+            "capability_version": RELEASE_VERSION,
             "release_status": "technical_candidate" if candidate else "candidate_from_published_catalog",
             "formal_release": False,
             "execution_scope": "development_only" if candidate else "candidate_verification",
-            "catalog_version": "unreleased" if candidate else catalog_version,
+            "catalog_version": RELEASE_VERSION if candidate else catalog_version,
             "catalog_source": catalog_source,
             "protocol_version": _protocol_version(repo_root),
-            "design_system_version": "candidate",
+            "design_system_version": RELEASE_VERSION,
             "hash_spec_version": HASH_SPEC_VERSION,
             "modules": list(MODULES),
             "page_modules": list(PAGE_MODULES),
@@ -515,7 +599,10 @@ def build_skill(
             "source_content_hashes": {str(item["path"]): str(item["sha256"]) for item in source_records},
         }
         (staged / "capability-manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        errors = [*verify_skill(staged), *verify_source_snapshot(staged, repo_root=repo_root)]
+        errors = [
+            *verify_skill(staged),
+            *verify_source_snapshot(staged, repo_root=repo_root, versions_root=versions_root),
+        ]
         if not errors:
             errors.extend(probe_runtime(staged))
         if errors:
@@ -562,7 +649,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="构建未签发的OptionHelper Skill候选包")
     parser.add_argument("--output", type=Path, default=ROOT / "dist" / "candidates" / "skill")
     catalog_mode = parser.add_mutually_exclusive_group(required=True)
-    catalog_mode.add_argument("--catalog-version", help="已签发CatalogVersion，如v1.0")
+    catalog_mode.add_argument("--catalog-version", help=f"已签发CatalogVersion，仅允许{RELEASE_VERSION}")
     catalog_mode.add_argument("--candidate", action="store_true", help="从当前references构建仅开发环境可执行的技术候选")
     parser.add_argument("--replace", action="store_true")
     parser.add_argument("--zip", action="store_true")

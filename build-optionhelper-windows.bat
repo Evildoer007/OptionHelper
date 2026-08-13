@@ -1,11 +1,11 @@
 @echo off
 setlocal EnableExtensions
-rem One-click Windows v1.0 local-candidate build. It writes only to
-rem result\windows-candidate and never replaces macOS dist or versions\v1.0.
+rem One-click Windows v1.0.0 local-candidate build. It writes only to
+rem result\windows-candidate and never replaces macOS dist or versions\v1.0.0.
 set "STATUS=0"
 set "ROOT=%~dp0"
 set "VERSION=%OPTIONHELPER_VERSION%"
-if not defined VERSION set "VERSION=v1.0"
+if not defined VERSION set "VERSION=v1.0.0"
 
 if /I not "%OS%"=="Windows_NT" (
   echo This build must run on a Windows machine.

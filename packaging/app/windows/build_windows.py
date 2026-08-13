@@ -25,12 +25,19 @@ WINDOWS_ICON_SIZES = (16, 20, 24, 32, 40, 48, 64, 96, 128, 256)
 WINDOWS_ICON_LAYER_COUNT = len(WINDOWS_ICON_SIZES)
 if str(SKILL_PACKAGING) not in sys.path:
     sys.path.insert(0, str(SKILL_PACKAGING))
+if str(ROOT / "packaging") not in sys.path:
+    sys.path.insert(0, str(ROOT / "packaging"))
 
 from verify_skill import content_tree_entries, tree_hash, verify_skill
+from release_contract import RELEASE_VERSION, require_release_version
 
 
 class WindowsBuildError(RuntimeError):
     pass
+
+
+def _progress(message: str) -> None:
+    print(f"[platform] {message}", flush=True)
 
 
 NUMERIC_RUNTIME_MODULES = ("numpy", "pandas", "scipy", "numba")
@@ -210,9 +217,11 @@ def _manifest(
         "bundle_id": "com.optionhelper.app",
         "platform": "windows-x86_64",
         "capability_version": capability["capability_version"],
+        "catalog_version": capability["catalog_version"],
         "capability_manifest_hash": _hash(capability_manifest),
         "capability_content_tree_hash": capability["content_tree_hash"],
         "protocol_version": capability["protocol_version"],
+        "design_system_version": capability["design_system_version"],
         "shell_language": "csharp",
         "build_tool": "dotnet",
         "signing": {"method": "unsigned", "notarized": False},
@@ -237,8 +246,11 @@ def build_windows(
     dist_root: Path,
     versions_root: Path = ROOT / "versions",
 ) -> dict[str, Path]:
-    if app_version != "v1.0":
-        raise WindowsBuildError("本轮App版本固定为v1.0；未获确认前不得生成其他版本")
+    try:
+        require_release_version(app_version)
+    except ValueError as error:
+        raise WindowsBuildError(str(error)) from error
+    _progress("正在验证当次Capability")
     check_prerequisites(capability_root)
     if verify_skill(capability_root):
         raise WindowsBuildError("Capability未通过verify_skill")
@@ -249,17 +261,22 @@ def build_windows(
     application_icon = verified_capability_icon(capability_root)
 
     release_root = versions_root.resolve() / app_version
-    if not release_root.is_dir():
-        raise WindowsBuildError("Windows App必须在已签发Skill版本目录内构建")
+    if release_root.exists() and not release_root.is_dir():
+        raise WindowsBuildError("Windows构建记录路径不是目录")
+    if not release_root.exists():
+        if versions_root.resolve() == (ROOT / "versions").resolve():
+            raise WindowsBuildError("Windows正式归档只能由受控发行事务创建")
+        release_root.mkdir(parents=True, exist_ok=False)
     installer_name = f"OptionHelper-{app_version}-windows-x86_64.zip"
     archive_installer = release_root / installer_name
     if archive_installer.exists() or (release_root / "app-manifest-windows.json").exists():
-        raise WindowsBuildError("Windows App历史版本已存在；不得覆盖已签发的v1.0文件")
+        raise WindowsBuildError(f"Windows App历史版本已存在；不得覆盖已签发的{RELEASE_VERSION}文件")
 
     with tempfile.TemporaryDirectory(prefix="optionhelper-windows-") as temporary_name:
         temporary = Path(temporary_name)
         environment = dict(os.environ)
         environment["PYINSTALLER_CONFIG_DIR"] = str(temporary / "pyinstaller-config")
+        _progress("正在构建后端运行时")
         _run(backend_build_command(temporary, application_icon), cwd=ROOT, env=environment)
         backend = temporary / "pyinstaller-dist" / "OptionHelperBackend"
         if not (backend / "OptionHelperBackend.exe").is_file():
@@ -267,6 +284,7 @@ def build_windows(
         _verify_backend(backend)
         verify_executable_icon(backend / "OptionHelperBackend.exe", application_icon)
 
+        _progress("正在构建Windows应用壳")
         shell = temporary / "shell"
         _run(shell_build_command(shell, application_icon), cwd=ROOT)
         if not (shell / "OptionHelper.exe").is_file():
@@ -274,6 +292,7 @@ def build_windows(
         verify_executable_icon(shell / "OptionHelper.exe", application_icon)
         _run([str(shell / "OptionHelper.exe"), "--check-webview2"], cwd=shell)
 
+        _progress("正在组装应用资源")
         app = temporary / "OptionHelper"
         resources = app / "Resources"
         app.mkdir()
@@ -305,6 +324,7 @@ def build_windows(
         if app_size > MAX_WINDOWS_APP_BYTES:
             raise WindowsBuildError(f"Windows App体积{app_size / 1024 / 1024:.1f}MB超过750MB上限")
 
+        _progress("正在验证安装物")
         dist_root.mkdir(parents=True, exist_ok=True)
         staged_zip = temporary / installer_name
         with zipfile.ZipFile(staged_zip, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
@@ -331,11 +351,13 @@ def build_windows(
         app_manifest.write_text(json.dumps(manifest, ensure_ascii=False, sort_keys=True, indent=2) + "\n", encoding="utf-8")
         release_manifest = release_root / "platform-release-manifest-windows.json"
         release_manifest.write_text(json.dumps({
-            "schema": "optionhelper.platform-release-manifest/v1", "app_version": app_version,
+            "schema": f"optionhelper.platform-release-manifest/{RELEASE_VERSION}", "app_version": app_version,
             "platform": "windows", "architecture": "x86_64", "installer": {
                 "filename": installer_name, "sha256": _hash(archive_installer), "size": archive_installer.stat().st_size,
-            }, "app_manifest_hash": _hash(app_manifest), "capability_manifest_hash": manifest["capability_manifest_hash"],
-            "capability_content_tree_hash": manifest["capability_content_tree_hash"], "signing_identity": "unsigned",
+            }, "app_manifest_hash": _hash(app_manifest), "capability_version": manifest["capability_version"],
+            "catalog_version": manifest["catalog_version"], "capability_manifest_hash": manifest["capability_manifest_hash"],
+            "capability_content_tree_hash": manifest["capability_content_tree_hash"], "protocol_version": manifest["protocol_version"],
+            "design_system_version": manifest["design_system_version"], "signing_identity": "unsigned",
             "application_icon": manifest["application_icon"],
             "signature_status": "unsigned_local_candidate", "notarized": False, "release_status": "local_candidate",
         }, ensure_ascii=False, sort_keys=True, indent=2) + "\n", encoding="utf-8")
