@@ -22,6 +22,14 @@ def scale_result(result: Any, quantity: float) -> Any:
         pv_percent=None if result.pv_percent is None else result.pv_percent * quantity,
         pv_points_100=None if result.pv_points_100 is None else result.pv_points_100 * quantity,
         standard_error=None if result.standard_error is None else result.standard_error * quantity,
+        standard_error_points_100=(
+            None if result.standard_error_points_100 is None
+            else result.standard_error_points_100 * quantity
+        ),
+        standard_error_percent=(
+            None if result.standard_error_percent is None
+            else result.standard_error_percent * quantity
+        ),
         greeks={key: scaled(value) for key, value in result.greeks.items()},
         extended_greeks={key: scaled(value) for key, value in result.extended_greeks.items()},
     )
@@ -57,7 +65,7 @@ def real_spot_greeks(result: Any, reference_price: float) -> Any:
     return replace(result, greeks=greeks, extended_greeks=extended)
 
 
-def add_time_zero_cashflow(result: Any, cashflow: float, notional: float) -> Any:
+def add_time_zero_cashflow(result: Any, cashflow: float, cashflow_scale: float | None) -> Any:
     """Add an already-fixed contract cashflow without changing sensitivities.
 
     OptionReg paths include ``cash(0, ...)`` in holder PnL.  Closed-form
@@ -67,14 +75,14 @@ def add_time_zero_cashflow(result: Any, cashflow: float, notional: float) -> Any
     """
     if cashflow == 0.0:
         return result
-    points = cashflow / notional * 100.0
+    points = cashflow if cashflow_scale is None else cashflow / cashflow_scale * 100.0
     return replace(
         result,
         # OptionReg cash(0, amount) is already denominated in contract
-        # currency. Only percentage and points views require notional
+        # currency. Only percentage and points views require cashflow-scale
         # conversion; applying it again to pv_amount changes the cash unit.
         pv_amount=None if result.pv_amount is None else result.pv_amount + cashflow,
-        pv_percent=None if result.pv_percent is None else result.pv_percent + cashflow / notional,
+        pv_percent=None if result.pv_percent is None else result.pv_percent + points / 100.0,
         pv_points_100=None if result.pv_points_100 is None else result.pv_points_100 + points,
     )
 

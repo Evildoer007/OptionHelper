@@ -32,8 +32,8 @@ def assess_quote_precision(
     if method != "monte_carlo":
         return QuotePrecisionDecision("quote_eligible", True, {"applies": False})
 
-    pv = result.pv_amount
-    standard_error = result.standard_error
+    pv = result.pv_points_100
+    standard_error = result.standard_error_points_100
     relative_error = None
     reasons: list[str] = []
     if pv is None or not math.isfinite(float(pv)) or abs(float(pv)) <= _PV_ZERO_TOLERANCE:
@@ -52,8 +52,8 @@ def assess_quote_precision(
         "policy": "mc_relative_se_5pct_min1000",
         "path_count": path_count,
         "minimum_path_count": MINIMUM_QUOTE_PATH_COUNT,
-        "pv_amount": pv,
-        "standard_error_amount": standard_error,
+        "pv_points_100": pv,
+        "standard_error_points_100": standard_error,
         "relative_standard_error": relative_error,
         "maximum_relative_standard_error": MAXIMUM_RELATIVE_STANDARD_ERROR,
         "reasons": reasons,

@@ -69,9 +69,9 @@ def _unsupported(contract: ResolvedContract, config: Any, state: ObservedContrac
 def _market_state(contract: ResolvedContract, config: Any, snapshot: Mapping[str, Any] | None) -> MarketState:
     asset = contract.underlyings[0]
     spot = _asset_value(config.spot, asset, "spot")
-    references = contract.identity.get("reference_prices") or contract.identity.get("contract_reference_spots")
+    references = contract.identity.get("reference_prices")
     if not references or asset not in references:
-        raise PricingInputError("定价必须提供合同起始参考价contract_reference_spots")
+        raise PricingInputError("定价必须提供合同起始参考价reference_prices")
     volatility = _asset_value(config.volatility_override if config.volatility_override is not None else config.historical_volatility, asset, "volatility")
     tau = float(config.time_to_maturity if config.time_to_maturity is not None else contract.terms["T"])
     if not 0.0 < tau <= float(contract.terms["T"]) + 1e-12:
@@ -98,7 +98,7 @@ def _asset_value(value: Any, asset: str, label: str) -> float:
 
 def _price_with_risk(adapter: ProductPricingAdapter, contract: ResolvedContract, config: Any, market: MarketState, state: ObservedContractState, supplied_snapshot: Mapping[str, Any]) -> PricingResult:
     asset = contract.underlyings[0]
-    references = contract.identity.get("reference_prices") or contract.identity.get("contract_reference_spots")
+    references = contract.identity.get("reference_prices")
     reference_price = float(references[asset])
     def price_one(local_market: MarketState, maturity: float) -> PricingResult:
         return adapter.reprice(

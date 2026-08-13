@@ -40,7 +40,7 @@ def load_market_history_bytes(payload: bytes) -> pd.DataFrame:
     return _normalise_market_history(pd.read_csv(BytesIO(payload)))
 
 
-def contract_reference_spots_from_history(
+def reference_prices_from_history(
     history: pd.DataFrame,
     underlyings: Sequence[str],
     *,
@@ -114,6 +114,6 @@ def market_snapshot_from_history(
 
 
 __all__ = (
-    "MarketDataError", "contract_reference_spots_from_history", "load_market_history",
+    "MarketDataError", "reference_prices_from_history", "load_market_history",
     "load_market_history_bytes", "market_snapshot_from_history",
 )

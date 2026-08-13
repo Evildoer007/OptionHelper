@@ -32,7 +32,7 @@ def price(pricing_input: PricingInput) -> PricingResult:
     if pricing_input.trading_calendar_data is not None and not isinstance(pricing_input.trading_calendar_data, TradingCalendarData):
         raise TypeError("PricingInput.trading_calendar_data必须是TradingCalendarData")
     if len(pricing_input.market_data_refs) > 1:
-        raise ValueError("当前正式Pricer仅支持单标的单一market_data_ref")
+        raise ValueError("当前正式Pricer仅支持一个覆盖全部合同标的的market_data_ref")
     snapshot: Mapping[str, object] | None = None
     config = pricing_input.pricing_config
     historical = pricing_input.historical_data
@@ -48,6 +48,10 @@ def price(pricing_input: PricingInput) -> PricingResult:
         trading_calendar = validate_trading_calendar_asset(
             calendar_ref, calendar_data, pricing_input.contract.underlyings,
         )
+        identity = pricing_input.contract.identity
+        for field in ("calendar_id", "calendar_version"):
+            if identity.get(field) != trading_calendar[field]:
+                raise ValueError(f"冻结ResolvedContract.{field}与Host验证交易日历不一致")
     if historical is not None:
         if data_ref is not None:
             validate_market_data_asset(data_ref, historical, pricing_input.contract.underlyings)

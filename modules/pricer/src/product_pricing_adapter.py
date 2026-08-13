@@ -9,6 +9,7 @@ from typing import Any, Mapping
 from runtime.contracts.contract_api import ResolvedContract
 
 from .config import PricingConfig
+from .calendar_policy import requires_future_trading_calendar
 from .greeks import add_time_zero_cashflow, real_spot_greeks, scale_result
 from .model_router import ModelRoute, resolve_route
 from .observation_schedule import actual_n_obs
@@ -37,7 +38,6 @@ _EXACT_MAPPINGS = {
         for product_id in ("3.1", "3.2", "3.3", "3.4", "4.1", "4.2", "4.3", "4.4")
     },
 }
-
 
 def product_mapping(product_id: str) -> ProductMapping:
     """OptionReg产品的唯一正式基座归属。"""
@@ -96,7 +96,7 @@ class ProductPricingAdapter:
             start_value = contract.identity.get("contract_start_date")
             observed_state.validate_path_events(
                 contract_start_date=None if start_value is None else str(start_value),
-                path_dependent=bool(contract.terms.get("monitor")),
+                path_dependent=self._requires_trading_calendar,
                 requires_accumulated_count="n_coupon" in contract.terms.get("monitor", {}),
                 requires_accumulated_quantity="Q_acc" in contract.terms.get("monitor", {}),
                 unsupported_midlife_aggregate="n_in" in contract.terms.get("monitor", {}),
@@ -104,10 +104,10 @@ class ProductPricingAdapter:
         if self.route.capability.adapter != "optionreg_path" and len(contract.underlyings) != 1:
             raise ProductNotAvailable("该闭式结构仅支持单标的")
         self.asset = contract.underlyings[0]
-        references = contract.identity.get("reference_prices") or contract.identity.get("contract_reference_spots")
+        references = contract.identity.get("reference_prices")
         if not isinstance(references, Mapping) or set(references) != set(contract.underlyings):
-            raise ProductNotAvailable("定价必须提供合同起始参考价contract_reference_spots")
-        self.reference_price = _number(references[self.asset], "contract_reference_spots")
+            raise ProductNotAvailable("定价必须提供合同起始参考价reference_prices")
+        self.reference_price = _number(references[self.asset], "reference_prices")
         self.trading_calendar = _validated_trading_calendar(
             self.market_snapshot.get("trading_calendar"),
             as_of=_as_of(self.config.valuation_date),
@@ -136,8 +136,12 @@ class ProductPricingAdapter:
 
     @property
     def _requires_trading_calendar(self) -> bool:
-        """Only actual discrete observations need exchange trading sessions."""
-        return self._uses_optionreg_path and bool(self.contract.terms.get("monitor"))
+        """Use the one formal calendar policy for every adapter reprice."""
+        return requires_future_trading_calendar(
+            self.contract.product_id,
+            self.contract.terms,
+            self.method,
+        )
 
     def reprice(self, *, spot: float | None = None, volatility: float | None = None, risk_free_rate: float | None = None, maturity_years: float | None = None) -> PricingResult:
         """同一基座入口的受控重估；供PV、Greek和风险网格共同使用。"""
@@ -158,17 +162,21 @@ class ProductPricingAdapter:
             result = add_time_zero_cashflow(
                 result,
                 _initial_cashflow(self.contract, quantity),
-                float(self.contract.terms.get("N", self.reference_price)),
+                _cashflow_basis(self.contract, self.reference_price)["cashflow_scale"],
             )
         # OPTIONREG_PATH receives and bumps real market spots, while the
         # interpreter converts paths to the contract scale internally.  Its
         # Greek output is therefore already in actual-spot coordinates.
         result = result if self._uses_optionreg_path else real_spot_greeks(result, self.reference_price)
-        is_demo = bool(self.config.demo_mode and self.method == "monte_carlo")
+        result = _apply_value_basis(result, self.contract.product_id)
+        # ``reprice`` is an internal base/Greek/risk-grid primitive.  It may be
+        # invoked many times within one public valuation, but it never owns the
+        # quotation decision: only optionhelper_core.price applies the single
+        # path-count and relative-standard-error gate to the completed result.
         return replace(
             result,
-            precision_status="demo_only" if is_demo else "quote_eligible",
-            quote_eligible=not is_demo,
+            precision_status="not_assessed",
+            quote_eligible=False,
             path_count=int(self.config.path_count) if self.method == "monte_carlo" else None,
         )
 
@@ -184,7 +192,7 @@ class ProductPricingAdapter:
         }}
         if self.method == "monte_carlo":
             config.update({"paths": int(self.config.path_count), "seed": int(self.config.random_seed)})
-        basis = {"notional": float(self.contract.terms.get("N", self.reference_price)), "currency": self.contract.currency}
+        basis = _cashflow_basis(self.contract, self.reference_price)
         contract = ({
             "strike": float(self.contract.terms["K"]), "maturity_years": float(maturity_years),
             "call_put": direction, "basis": basis,
@@ -268,11 +276,71 @@ def _from_run(run: Any) -> PricingResult:
         method=run.result.method, version=run.result.version, warnings=run.result.warnings,
         diagnostics={**run.result.diagnostics, "pricing_run_id": run.run_id, "route_id": run.route_id, "request_fingerprint": run.request_fingerprint},
         engine_raw=run.result.engine_raw,
-        standard_error=(
+        standard_error=None if run.result.diagnostics.get("standard_error_points_100") is None else float(run.result.diagnostics["standard_error_points_100"]),
+        standard_error_points_100=(
             None if run.result.diagnostics.get("standard_error_points_100") is None
             else float(run.result.diagnostics["standard_error_points_100"])
-            * float(run.effective_parameters["contract"]["basis"]["notional"]) / 100.0
         ),
+        standard_error_percent=(
+            None if run.result.diagnostics.get("standard_error_points_100") is None
+            else float(run.result.diagnostics["standard_error_points_100"]) / 100.0
+        ),
+    )
+
+
+def _cashflow_basis(contract: ResolvedContract, reference_price: float) -> dict[str, Any]:
+    """Build the only scale used to project a 100-point value into money.
+
+    ``reference_price_basis`` is never a notional.  A contract without an
+    explicit cashflow scale settles directly in normalized contract points:
+    it deliberately has no private currency projection rather than inventing
+    one from the start reference price.
+    """
+    terms = contract.terms
+    if "N" in terms:
+        scale = float(terms["N"])
+        kind = "contract_notional"
+    elif "Nvar" in terms:
+        scale = float(terms["Nvar"])
+        kind = "variance_notional"
+    elif "Nvega" in terms:
+        scale = float(terms["Nvega"])
+        kind = "vega_notional"
+    else:
+        scale = None
+        kind = "normalized_contract_points"
+    return {
+        "reference_price_basis": float(reference_price),
+        "cashflow_scale": scale,
+        "cashflow_scale_kind": kind,
+        "currency": contract.currency,
+    }
+
+
+def _apply_value_basis(result: PricingResult, product_id: str) -> PricingResult:
+    """Mark the only product whose 100 points are variance, not price points."""
+    if product_id != "10.4":
+        return replace(result, value_basis="pv_points_100")
+
+    def variance_unit(unit: str | None) -> str | None:
+        return None if unit is None else unit.replace("pv_points_100", "variance_points_100")
+
+    def variance_percent_unit(unit: str | None) -> str | None:
+        return None if unit is None else unit.replace("pv_percent", "variance_percent")
+
+    def convert(value: GreekValue) -> GreekValue:
+        return replace(
+            value,
+            unit=variance_unit(value.unit),
+            pv_points_100_unit=variance_unit(value.pv_points_100_unit),
+            pv_percent_unit=variance_percent_unit(value.pv_percent_unit),
+        )
+
+    return replace(
+        result,
+        value_basis="variance_points_100",
+        greeks={name: convert(value) for name, value in result.greeks.items()},
+        extended_greeks={name: convert(value) for name, value in result.extended_greeks.items()},
     )
 
 

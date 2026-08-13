@@ -225,7 +225,8 @@ def main() -> None:
                 "maturity_years": 0.25,
                 "call_put": "CALL",
                 "basis": {
-                    "notional": 1_000_000.0,
+                    "cashflow_scale": 1_000_000.0,
+                    "cashflow_scale_kind": "contract_cashflow",
                     "currency": "CNY",
                 },
             },
@@ -239,7 +240,7 @@ def main() -> None:
         },
         "BLACK_SCHOLES",
     )
-    print(f"pv_points_100={run.result.pv_points_100:.12f}")
+    print(f"pv_percent={run.result.pv_percent:.12f}")
 
 
 if __name__ == "__main__":

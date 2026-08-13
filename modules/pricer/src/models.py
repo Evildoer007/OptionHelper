@@ -134,7 +134,7 @@ def validate_market_data_asset(
     historical: HistoricalData,
     underlyings: tuple[str, ...],
 ) -> Mapping[str, Any]:
-    """验证Host资产身份、内容、字段、覆盖范围和合同标的映射。"""
+    """验证Host资产身份、市场字段、口径、覆盖范围和合同标的映射。"""
     if not isinstance(ref, DataAssetRef):
         raise ValueError("market_data_refs只能传入受控DataAssetRef")
     if ref.media_type != "text/csv" or ref.schema_id != "market-history-v1":
@@ -148,6 +148,7 @@ def validate_market_data_asset(
     required = {"date", "asset_id", "close", "adj_close"}
     if not required.issubset(set(ref.normalized_fields)):
         raise ValueError("DataAssetRef.normalized_fields必须含date、asset_id、close、adj_close")
+    convention = _validate_market_price_convention(ref.price_convention, underlyings)
     if tuple(ref.normalized_fields) != tuple(historical.normalized_fields):
         raise ValueError("DataAssetRef与HistoricalData.normalized_fields不一致")
     if int(ref.row_count) != len(historical.rows):
@@ -173,7 +174,59 @@ def validate_market_data_asset(
         "schema_id": ref.schema_id,
         "coverage": coverage,
         "data_asset_id": ref.data_asset_id,
+        "close_field": "close",
+        "hv_fields_by_asset": convention["hv_fields_by_asset"],
     }
+
+
+def _validate_market_price_convention(
+    value: Mapping[str, Any],
+    underlyings: tuple[str, ...],
+) -> Mapping[str, Mapping[str, str]]:
+    """验证DataFetcher逐标的价格口径，不引入Pricer私有字段别名。"""
+    if not isinstance(value, Mapping):
+        raise ValueError("DataAssetRef.price_convention必须为对象")
+    convention = dict(value)
+    if convention.get("frequency") != "1d":
+        raise ValueError("DataAssetRef.price_convention.frequency必须为1d")
+    adjustments = convention.get("field_adjustment_by_asset")
+    markets = convention.get("asset_market_conventions")
+    hv_requirements = convention.get("hv_input_requirements_by_asset")
+    if not all(isinstance(item, Mapping) for item in (adjustments, markets, hv_requirements)):
+        raise ValueError(
+            "DataAssetRef.price_convention必须含DataFetcher逐标的field_adjustment_by_asset、"
+            "asset_market_conventions和hv_input_requirements_by_asset"
+        )
+    if set(adjustments) != set(underlyings) or set(markets) != set(underlyings) or set(hv_requirements) != set(underlyings):
+        raise ValueError("DataAssetRef.price_convention必须逐一覆盖合同标的")
+
+    hv_fields: dict[str, str] = {}
+    for asset in underlyings:
+        fields = adjustments[asset]
+        market = markets[asset]
+        hv_input = hv_requirements[asset]
+        if not isinstance(fields, Mapping) or fields.get("close") != "unadjusted":
+            raise ValueError(f"DataAssetRef.price_convention.{asset}.close必须为unadjusted")
+        adj_close = fields.get("adj_close") if isinstance(fields, Mapping) else None
+        if adj_close not in {"forward_adjusted", "not_applicable_alias_of_raw", "unadjusted_alias_of_raw"}:
+            raise ValueError(f"DataAssetRef.price_convention.{asset}.adj_close口径无效")
+        if not isinstance(market, Mapping) or market.get("raw_close_retained") is not True:
+            raise ValueError(f"DataAssetRef.price_convention.{asset}必须保留未复权close")
+        if market.get("close_convention") not in {"unadjusted_close", "unadjusted_index_close"}:
+            raise ValueError(f"DataAssetRef.price_convention.{asset}.close_convention无效")
+        if not isinstance(hv_input, Mapping):
+            raise ValueError(f"DataAssetRef.price_convention.{asset}.hv_input_requirements无效")
+        hv_field = hv_input.get("return_price_field")
+        if hv_field not in {"close", "adj_close"}:
+            raise ValueError(f"DataAssetRef.price_convention.{asset}.HV价格字段无效")
+        if hv_input.get("return_type") != "log_return" or hv_input.get("annualization_trading_days") != 244:
+            raise ValueError(f"DataAssetRef.price_convention.{asset}.HV计算口径无效")
+        if hv_input.get("required_frequency") != "1d":
+            raise ValueError(f"DataAssetRef.price_convention.{asset}.HV频率必须为1d")
+        if market.get("historical_return_field") != hv_field:
+            raise ValueError(f"DataAssetRef.price_convention.{asset}.HV字段与市场口径不一致")
+        hv_fields[asset] = str(hv_field)
+    return {"hv_fields_by_asset": hv_fields}
 
 
 def validate_trading_calendar_asset(

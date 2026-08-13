@@ -88,7 +88,8 @@ run = price_option(
             "maturity_years": 0.25,
             "call_put": "CALL",
             "basis": {
-                "notional": 1_000_000.0,
+                "cashflow_scale": 1_000_000.0,
+                "cashflow_scale_kind": "contract_cashflow",
                 "currency": "CNY",
             },
         },
@@ -105,7 +106,7 @@ run = price_option(
     output="TERMINAL_AND_JSON",
 )
 
-print(run.result.pv_points_100)
+print(run.result.pv_percent)
 print(run.result.greeks["Delta"])
 ```
 
@@ -117,11 +118,9 @@ result/pricing/{run_id}/pricing_run.json
 
 ## 六、PV口径
 
-- `pv_points_100`：每100名义本金的价值点数。
-- `pv_percent`：占名义本金的比例，等于`pv_points_100/100`。
-- `pv_amount`：货币金额，等于`pv_percent×notional`。
-
-例如`pv_points_100=5`、名义本金100万元，则`pv_percent=5%`，`pv_amount=5万元`。
+- `pv_percent`：Pricer唯一用户可见PV口径，表示合同100基准对应的百分比价值。
+- `pv_points_100`：内部机器复验口径，等于`pv_percent×100`，仅用于Golden、共同随机数和数值核对。
+- 兼容金额字段只保留在内部引擎调试与对账对象，不得进入Pricer页面、正式Tool、CSV或报告。
 
 ## 七、Greek口径
 
@@ -142,7 +141,7 @@ result/pricing/{run_id}/pricing_run.json
 
 - `value`和明确单位。
 - 扰动幅度和差分方式。
-- `pv_points_100、pv_percent、pv_amount`三种结果口径。
+- 内部每100点与公开百分比敏感度口径。
 - Theta的自然日和交易日前移信息。
 
 Vanilla核心Greek使用解析公式。其他结构使用统一中央差分、共同随机数和固定扰动。Monte Carlo路径较少时，Greek只用于回归，不应用于正式风险报价。

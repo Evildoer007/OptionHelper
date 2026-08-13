@@ -13,8 +13,8 @@ from runtime.protocol.models import DataAssetRef
 
 from .market_resolver import (
     MarketDataError,
-    contract_reference_spots_from_history,
     load_market_history_bytes,
+    reference_prices_from_history,
 )
 
 
@@ -127,7 +127,7 @@ def with_data_backed_reference(
     start = _iso_date(identity.get("contract_start_date") or effective_valuation, "合同起始日")
     if start > effective_valuation:
         raise PricerInputDefaultError("合同起始日不得晚于估值日")
-    resolved = contract_reference_spots_from_history(
+    resolved = reference_prices_from_history(
         history, underlyings, contract_start_date=start,
     )
     _set_or_check_references(identity, resolved["reference_prices"])
@@ -149,11 +149,11 @@ def validate_frozen_contract_reference(
     start = _iso_date(identity.get("contract_start_date"), "ResolvedContract.contract_start_date")
     if start > _iso_date(valuation_date, "估值日"):
         raise PricerInputDefaultError("ResolvedContract合同起始日不得晚于估值日")
-    references = identity.get("reference_prices", identity.get("contract_reference_spots"))
+    references = identity.get("reference_prices")
     if not isinstance(references, Mapping) or set(references) != set(underlyings):
         raise PricerInputDefaultError("ResolvedContract必须含逐标的合同起始参考价")
     try:
-        resolved = contract_reference_spots_from_history(
+        resolved = reference_prices_from_history(
             _history_frame(historical_rows), underlyings, contract_start_date=start,
         )
     except MarketDataError as error:
@@ -204,10 +204,9 @@ def _iso_date(value: Any, label: str) -> str:
 
 
 def _set_or_check_references(identity: dict[str, Any], expected: Mapping[str, float]) -> None:
-    supplied = identity.get("reference_prices", identity.get("contract_reference_spots"))
+    supplied = identity.get("reference_prices")
     if supplied is not None:
         _check_references(supplied, expected)
-    identity["contract_reference_spots"] = dict(expected)
     identity["reference_prices"] = dict(expected)
 
 
@@ -218,7 +217,7 @@ def _check_references(supplied: Any, expected: Mapping[str, float]) -> None:
         try:
             actual = float(supplied[asset])
         except (TypeError, ValueError) as error:
-            raise PricerInputDefaultError(f"contract_reference_spots.{asset}必须为正数") from error
+            raise PricerInputDefaultError(f"reference_prices.{asset}必须为正数") from error
         if actual <= 0 or not isclose(actual, float(expected_value), rel_tol=1e-10, abs_tol=1e-8):
             raise PricerInputDefaultError(
                 f"{asset}合同起始参考价必须来自已绑定DataAssetRef在{asset}合同起始日或此前的未复权close"

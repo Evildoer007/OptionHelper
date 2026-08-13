@@ -17,6 +17,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import sys
 from threading import RLock
 from typing import Any, Mapping
@@ -51,6 +52,19 @@ def _load_catalog():
 
 _CATALOG = _load_catalog()
 _OUTPUT_MODES = ("TERMINAL_AND_JSON", "TERMINAL", "JSON", "NONE")
+_PUBLIC_CLI_REDACTED_FIELDS = frozenset({
+    "notional", "cashflow_scale", "cashflow_scale_kind", "currency",
+    "pv_amount", "pv_amount_value", "pv_amount_unit", "engine_raw",
+    "pv_points_100", "standard_error_points_100",
+    "pv_points_100_value", "pv_points_100_unit",
+    "target_pv_points_100", "target_pv_absolute_tolerance",
+    "canonical_value_basis",
+})
+_PUBLIC_PERCENT_TEXT_REPLACEMENTS = (
+    ("standard_error_points_100", "standard_error_percent"),
+    ("variance_points_100", "variance_percent"),
+    ("pv_points_100", "pv_percent"),
+)
 
 
 class RiskStatus(str, Enum):
@@ -158,8 +172,8 @@ def list_structures(family: str) -> tuple[str, ...]:
 
 
 def describe_structure(family: str, structure: str) -> dict[str, Any]:
-    """返回产品族和结构共同约束的完整目录说明。"""
-    return _CATALOG.describe_structure(family, structure)
+    """返回仅含公开百分比口径的产品目录说明。"""
+    return _public_percent_payload(_CATALOG.describe_structure(family, structure))
 
 
 def price_option(
@@ -806,7 +820,79 @@ def _canonical_json(value: Any) -> str:
 
 
 def _run_payload(run: PricingRun) -> dict[str, Any]:
-    return _json_value(run)
+    return _public_percent_payload(_json_value(run))
+
+
+def _public_percent_payload(value: Any) -> Any:
+    """Project CLI JSON from internal 100-point values to public percentages."""
+    if isinstance(value, Mapping):
+        # RiskMetric is used by the CLI facade.  Its canonical ``value`` is
+        # machine points, while the explicitly named percent sibling is the
+        # user-facing sensitivity.
+        if "pv_percent_value" in value and "pv_points_100_value" in value:
+            result = {
+                str(key): _public_percent_payload(item)
+                for key, item in value.items()
+                if str(key).casefold() not in _PUBLIC_CLI_REDACTED_FIELDS
+            }
+            result["value"] = value.get("pv_percent_value")
+            unit = value.get("pv_percent_unit") or value.get("unit")
+            result["unit"] = _percent_unit(unit)
+            result["pv_percent_value"] = value.get("pv_percent_value")
+            result["pv_percent_unit"] = _percent_unit(value.get("pv_percent_unit"))
+            return result
+        result: dict[str, Any] = {}
+        standard_error_points = value.get("standard_error_points_100")
+        target_points = value.get("target_pv_points_100")
+        target_tolerance_points = value.get("target_pv_absolute_tolerance")
+        for key, item in value.items():
+            field = str(key)
+            if field.casefold() in _PUBLIC_CLI_REDACTED_FIELDS:
+                continue
+            if field == "value_basis":
+                result[field] = _percent_unit(item)
+            elif field in {"unit", "pv_percent_unit"}:
+                result[field] = _percent_unit(item)
+            else:
+                result[field] = _public_percent_payload(item)
+        if "standard_error_percent" not in result and isinstance(standard_error_points, (int, float)):
+            result["standard_error_percent"] = float(standard_error_points) / 100.0
+        if isinstance(target_points, (int, float)):
+            result["target_pv_percent"] = float(target_points) / 100.0
+        if isinstance(target_tolerance_points, (int, float)):
+            result["target_pv_percent_tolerance"] = float(target_tolerance_points) / 100.0
+        return result
+    if isinstance(value, tuple | list):
+        result = []
+        for item in value:
+            if isinstance(item, str):
+                projected = _percent_unit(item)
+                if projected != item:
+                    result.append(projected)
+                    continue
+                if item.casefold() in _PUBLIC_CLI_REDACTED_FIELDS or _contains_private_money_text(item):
+                    continue
+            result.append(_public_percent_payload(item))
+        return result
+    if isinstance(value, str):
+        if _contains_private_money_text(value):
+            return "private_metadata_redacted"
+        return _percent_unit(value)
+    return value
+
+
+def _percent_unit(value: object) -> object:
+    if not isinstance(value, str):
+        return value
+    projected = value
+    for machine, public in _PUBLIC_PERCENT_TEXT_REPLACEMENTS:
+        projected = re.sub(re.escape(machine), public, projected, flags=re.IGNORECASE)
+    return projected
+
+
+def _contains_private_money_text(value: str) -> bool:
+    text = value.casefold()
+    return any(field in text for field in _PUBLIC_CLI_REDACTED_FIELDS) or "cny" in text
 
 
 def _write_run_json(run: PricingRun) -> None:
@@ -829,7 +915,7 @@ def _write_solve_json(run: SolveRun) -> None:
     path.parent.mkdir(parents=True, exist_ok=False)
     path.write_text(
         json.dumps(
-            _json_value(run), ensure_ascii=False, sort_keys=False, indent=2,
+            _public_percent_payload(_json_value(run)), ensure_ascii=False, sort_keys=False, indent=2,
             allow_nan=False,
         ) + "\n",
         encoding="utf-8",
@@ -842,6 +928,8 @@ def _print_section(name: str, value: Any) -> None:
 
 
 def _print_run(run: PricingRun) -> None:
+    public = _run_payload(run)
+    result = public["result"]
     _print_section("REQUEST", {
         "run_id": run.run_id,
         "request_fingerprint": run.request_fingerprint,
@@ -850,46 +938,43 @@ def _print_run(run: PricingRun) -> None:
         "method": run.method,
         "route_id": run.route_id,
     })
-    _print_section("REQUESTED_PARAMETERS", run.requested_parameters)
-    _print_section("EFFECTIVE_PARAMETERS", run.effective_parameters)
+    _print_section("REQUESTED_PARAMETERS", public["requested_parameters"])
+    _print_section("EFFECTIVE_PARAMETERS", public["effective_parameters"])
     _print_section("CONTRACT", {
-        "requested": run.requested_parameters.get("contract", {}),
-        "effective": run.effective_parameters["contract"],
+        "requested": public["requested_parameters"].get("contract", {}),
+        "effective": public["effective_parameters"]["contract"],
     })
     _print_section("MARKET", {
-        "requested": run.requested_parameters.get("market", {}),
-        "effective": run.effective_parameters["market"],
+        "requested": public["requested_parameters"].get("market", {}),
+        "effective": public["effective_parameters"]["market"],
     })
     _print_section("STATE", {
-        "requested": run.requested_parameters.get("valuation_state", {}),
-        "effective": run.effective_parameters["valuation_state"],
+        "requested": public["requested_parameters"].get("valuation_state", {}),
+        "effective": public["effective_parameters"]["valuation_state"],
     })
     _print_section("CONFIG", {
-        "requested": run.requested_parameters.get("config", {}),
-        "effective": run.effective_parameters["config"],
-        "random_source": run.random_source,
+        "requested": public["requested_parameters"].get("config", {}),
+        "effective": public["effective_parameters"]["config"],
+        "random_source": public["random_source"],
     })
     _print_section("RESULT", {
-        "method": run.result.method,
-        "version": run.result.version,
-        "currency": run.result.currency,
+        "method": result["method"],
+        "version": result["version"],
     })
     _print_section("PV", {
-        "pv_amount": run.result.pv_amount,
-        "pv_percent": run.result.pv_percent,
-        "pv_points_100": run.result.pv_points_100,
+        "pv_percent": result["pv_percent"],
     })
-    _print_section("GREEKS", run.result.greeks)
-    _print_section("EXTENDED_RISKS", run.result.extended_risks)
-    _print_section("WARNINGS", run.result.warnings)
+    _print_section("GREEKS", result["greeks"])
+    _print_section("EXTENDED_RISKS", result["extended_risks"])
+    _print_section("WARNINGS", result["warnings"])
     _print_section("DIAGNOSTICS", {
-        "diagnostics": run.result.diagnostics,
-        "engine_raw": run.result.engine_raw,
+        "diagnostics": result["diagnostics"],
     })
     _print_section("ARTIFACTS", {"pricing_run_json": run.json_output_path})
 
 
 def _print_solve_run(run: SolveRun) -> None:
+    public = _public_percent_payload(_json_value(run))
     _print_section("REQUEST", {
         "run_id": run.run_id,
         "request_fingerprint": run.request_fingerprint,
@@ -898,14 +983,14 @@ def _print_solve_run(run: SolveRun) -> None:
         "method": run.method,
         "route_id": run.route_id,
     })
-    _print_section("TARGET", run.target)
-    _print_section("REQUESTED_PARAMETERS", run.requested_parameters)
-    _print_section("EFFECTIVE_PARAMETERS", run.effective_parameters)
+    _print_section("TARGET", public["target"])
+    _print_section("REQUESTED_PARAMETERS", public["requested_parameters"])
+    _print_section("EFFECTIVE_PARAMETERS", public["effective_parameters"])
     _print_section("CONFIG", {
-        "effective": run.effective_config,
-        "random_source": run.random_source,
+        "effective": public["effective_config"],
+        "random_source": public["random_source"],
     })
-    _print_section("SOLUTION", run.result)
+    _print_section("SOLUTION", public["result"])
     _print_section("ARTIFACTS", {"solve_run_json": run.json_output_path})
 
 
@@ -1020,9 +1105,15 @@ def _strict_enum(enum_type: Any, label: str, value: Any):
 
 def _build_basis(derivatives: Any, value: Any):
     values = _require_mapping("contract.basis", value)
-    _reject_unknown("contract.basis", values, {"notional", "currency"})
+    _reject_unknown(
+        "contract.basis",
+        values,
+        {"reference_price_basis", "cashflow_scale", "cashflow_scale_kind", "currency"},
+    )
     return derivatives.ResultBasis(
-        notional=values.get("notional"),
+        reference_price_basis=values.get("reference_price_basis"),
+        cashflow_scale=values.get("cashflow_scale"),
+        cashflow_scale_kind=values.get("cashflow_scale_kind"),
         currency=values.get("currency"),
     )
 

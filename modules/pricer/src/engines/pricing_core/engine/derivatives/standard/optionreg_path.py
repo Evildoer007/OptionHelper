@@ -198,9 +198,15 @@ def _price_points(
 ) -> tuple[float, np.ndarray]:
     raw_values = _raw_path_values(instrument, market, config, valuation_state)
     basis = instrument.basis
-    if basis.notional is None:
-        raise ValueError("OptionReg路径MC必须提供notional basis")
-    return float(raw_values.mean() / basis.notional * 100.0), raw_values
+    if basis.cashflow_scale is None:
+        # Products without N/Nvar/Nvega settle directly in the shared
+        # dimensionless contract-point semantics.  S0Raw has already been
+        # consumed by the Core path normalization and must not become a
+        # surrogate money denominator here.
+        return float(raw_values.mean()), raw_values
+    if basis.cashflow_scale_kind == "variance_notional":
+        return float(raw_values.mean() / basis.cashflow_scale), raw_values
+    return float(raw_values.mean() / basis.cashflow_scale * 100.0), raw_values
 
 
 def price_optionreg_path_monte_carlo(
@@ -249,7 +255,20 @@ def price_optionreg_path_monte_carlo(
         theta_roll=theta_roll,
     )
     converted = convert_points_100(base_points, instrument.basis)
-    standard_error_points = float(raw_values.std(ddof=1) / math.sqrt(len(raw_values)) / instrument.basis.notional * 100.0) if len(raw_values) > 1 else 0.0
+    if len(raw_values) <= 1:
+        standard_error_points = 0.0
+    elif instrument.basis.cashflow_scale is None:
+        standard_error_points = float(raw_values.std(ddof=1) / math.sqrt(len(raw_values)))
+    elif instrument.basis.cashflow_scale_kind == "variance_notional":
+        standard_error_points = float(
+            raw_values.std(ddof=1) / math.sqrt(len(raw_values))
+            / instrument.basis.cashflow_scale
+        )
+    else:
+        standard_error_points = float(
+            raw_values.std(ddof=1) / math.sqrt(len(raw_values))
+            / instrument.basis.cashflow_scale * 100.0
+        )
     random_info = config.monte_carlo.random_source.info
     return PricingResult(
         pv_amount=converted.pv_amount,

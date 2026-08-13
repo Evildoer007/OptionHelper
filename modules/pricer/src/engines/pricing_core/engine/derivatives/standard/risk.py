@@ -114,8 +114,12 @@ def make_risk_value(
     points = _require_finite("Greek", value_points_100)
     percent = points / 100.0
     amount = None
-    if basis.notional is not None and basis.currency is not None:
-        amount = percent * basis.notional
+    if basis.cashflow_scale is not None and basis.currency is not None:
+        amount = (
+            points * basis.cashflow_scale
+            if basis.cashflow_scale_kind == "variance_notional"
+            else percent * basis.cashflow_scale
+        )
     if not unit.startswith("pv_points_100"):
         raise ValueError("STANDARD Greek标准单位必须以pv_points_100开头")
     suffix = unit.removeprefix("pv_points_100")

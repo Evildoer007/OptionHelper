@@ -23,20 +23,20 @@ def vanilla_risk_outputs(*, price_one: PriceOne, market: Any, maturity_years: fl
     time_days = [round(value * 365.0, 6) for value in time_values]
 
     curves = [
-        _curve("delta_spot", "Delta-Spot", spot_factor, "CNY", "Delta", "CNY_per_spot", spot_values, grid[-1], "delta", method),
-        _curve("gamma_spot", "Gamma-Spot", spot_factor, "CNY", "Gamma", "CNY_per_spot²", spot_values, grid[-1], "gamma", method),
-        _curve("theta_time", "Theta-Time", "剩余期限", "calendar_days", "Theta", "CNY_per_calendar_day", time_days, [grid[index][2] for index in range(len(time_values))], "theta", method),
+        _curve("delta_spot", "Delta-Spot", spot_factor, "raw_spot", "Delta", "pv_points_100_per_spot", spot_values, grid[-1], "delta", method),
+        _curve("gamma_spot", "Gamma-Spot", spot_factor, "raw_spot", "Gamma", "pv_points_100_per_spot_squared", spot_values, grid[-1], "gamma", method),
+        _curve("theta_time", "Theta-Time", "剩余期限", "calendar_days", "Theta", "pv_points_100_per_calendar_day", time_days, [grid[index][2] for index in range(len(time_values))], "theta", method),
     ]
     vol_shift = (-0.10, -0.05, 0.0, 0.05, 0.10)
     vol_markets = [replace(market, volatility=max(1e-8, market.volatility + shift)) for shift in vol_shift]
     vol_results = [_risk_price(price_one, local_market, maturity_years) for local_market in vol_markets]
-    curves.append(_curve("vega_volatility", "Vega-Volatility", "波动率", "decimal", "Vega", "CNY_per_1pct_volatility", [item.volatility for item in vol_markets], vol_results, "vega", method))
+    curves.append(_curve("vega_volatility", "Vega-Volatility", "波动率", "decimal", "Vega", "pv_points_100_per_1pct_volatility", [item.volatility for item in vol_markets], vol_results, "vega", method))
 
     surfaces = [_surface(name, label, unit, spot_values, time_days, grid, greek, method, spot_factor) for name, label, unit, greek in (
-        ("delta_surface", "Delta曲面", "CNY_per_spot", "delta"),
-        ("gamma_surface", "Gamma曲面", "CNY_per_spot²", "gamma"),
-        ("theta_surface", "Theta曲面", "CNY_per_calendar_day", "theta"),
-        ("vega_surface", "Vega曲面", "CNY_per_1pct_volatility", "vega"),
+        ("delta_surface", "Delta曲面", "pv_points_100_per_spot", "delta"),
+        ("gamma_surface", "Gamma曲面", "pv_points_100_per_spot_squared", "gamma"),
+        ("theta_surface", "Theta曲面", "pv_points_100_per_calendar_day", "theta"),
+        ("vega_surface", "Vega曲面", "pv_points_100_per_1pct_volatility", "vega"),
     )]
     scenarios = _spot_time_scenarios(grid, spot_shifts, time_days, spot_values, method, spot_factor)
     return curves, surfaces, scenarios
@@ -64,9 +64,11 @@ def scenario_values(*, price_one: PriceOne, market: Any, maturity_years: float, 
         priced = _risk_price(price_one, local, maturity_years)
         result, reason = priced
         rows.append({
-            "name": scenario["name"], "pv": None if result is None else result.pv_amount, "pv_amount": None if result is None else result.pv_amount,
+            "name": scenario["name"],
             "pv_percent": None if result is None else result.pv_percent, "pv_points_100": None if result is None else result.pv_points_100,
-            "standard_error": None if result is None else result.standard_error, "method": method,
+            "standard_error_points_100": None if result is None else result.standard_error_points_100,
+            "standard_error_percent": None if result is None else result.standard_error_percent,
+            "value_basis": None if result is None else result.value_basis, "method": method,
             "status": "not_applicable" if reason else "ok", "reason": reason,
             "shifts": {key: value for key, value in scenario.items() if key != "name"},
             "greeks": {name.capitalize(): _greek(priced, name) for name in ("delta", "gamma", "theta", "vega", "rho")},
@@ -105,14 +107,18 @@ def _greek(priced: tuple[Any | None, str | None], name: str) -> float | None:
     if result is None:
         return None
     value = result.greeks.get(name)
-    return value.pv_amount_value if value is not None else None
+    return value.value if value is not None else None
 
 
 def _curve(key: str, name: str, x_name: str, x_unit: str, y_name: str, y_unit: str, xs: list[float], priced: list[tuple[Any | None, str | None]], greek: str, method: str) -> dict[str, Any]:
+    first_value = next(
+        (result.greeks[greek] for result, _reason in priced if result is not None and greek in result.greeks),
+        None,
+    )
     return {
         "key": key, "name": name,
         "x_axis": {"name": x_name, "unit": x_unit},
-        "y_axis": {"name": y_name, "unit": y_unit},
+        "y_axis": {"name": y_name, "unit": y_unit if first_value is None else first_value.unit},
         "method": method,
         "points": [
             {
@@ -133,16 +139,20 @@ def _surface(key: str, name: str, z_unit: str, spots: list[float], times: list[f
             result, reason = priced
             data.append({
                 "value": [spot_index, time_index, _greek(priced, greek)],
-                "standard_error": None if result is None else result.standard_error,
+                "standard_error_points_100": None if result is None else result.standard_error_points_100,
                 "path_pv_sha256_float64": None if result is None else result.diagnostics.get("path_pv_sha256_float64"),
                 "status": "not_applicable" if reason else "ok",
                 "reason": reason,
             })
+    first_value = next(
+        (result.greeks[greek] for row in grid for result, _reason in row if result is not None and greek in result.greeks),
+        None,
+    )
     return {
         "key": key, "name": name, "method": method,
-        "x_axis": {"name": spot_factor, "unit": "CNY", "values": spots},
+        "x_axis": {"name": spot_factor, "unit": "raw_spot", "values": spots},
         "y_axis": {"name": "剩余期限", "unit": "calendar_days", "values": times},
-        "z_axis": {"name": name.removesuffix("曲面"), "unit": z_unit},
+        "z_axis": {"name": name.removesuffix("曲面"), "unit": z_unit if first_value is None else first_value.unit},
         "data": data,
     }
 
@@ -155,7 +165,11 @@ def _spot_time_scenarios(grid: list[list[Any]], shifts: tuple[float, ...], time_
             result, reason = grid[time_index][spot_index]
             rows.append({
                 "spot_shift": shifts[spot_index], "spot": spots[spot_index], "spot_factor": spot_factor, "remaining_days": time_days[time_index],
-                "pv": None if result is None else result.pv_amount, "standard_error": None if result is None else result.standard_error, "method": method,
+                "pv_points_100": None if result is None else result.pv_points_100,
+                "pv_percent": None if result is None else result.pv_percent,
+                "standard_error_points_100": None if result is None else result.standard_error_points_100,
+                "standard_error_percent": None if result is None else result.standard_error_percent,
+                "value_basis": None if result is None else result.value_basis, "method": method,
                 "status": "not_applicable" if reason else "ok", "reason": reason,
                 "greeks": {name.capitalize(): _greek((result, reason), name) for name in ("delta", "gamma", "theta", "vega", "rho")},
                 "path_pv_sha256_float64": None if result is None else result.diagnostics.get("path_pv_sha256_float64"),
