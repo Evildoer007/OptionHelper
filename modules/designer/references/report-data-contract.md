@@ -6,13 +6,13 @@
 
 ```json
 {
+  "schema": "optionhelper.designer-payload/v1.0.0",
   "meta": {
     "title": "场外衍生品投资策略",
     "as_of_date": "2026年8月3日",
     "report_id": "RPT-...",
     "generated_at": "2026年8月3日",
-    "brand": "结构化产品研究",
-    "layout": "brief"
+    "brand": "结构化产品研究"
   },
   "sections": ["conclusion", "recommendation", "parameters", "payoff", "pricing", "backtest", "risk"],
   "conclusion": {},
@@ -25,7 +25,7 @@
 }
 ```
 
-Designer固定输出七段完整报告，标题逐字为：核心结论、结构推荐、合同参数、收益结构、估值定价、历史回测、风险提示。`sections`和`meta.section_titles`只用于接收历史输入，渲染器不使用它们改名、删减、合并或重排；历史`research`和`next_steps`字段只兼容读取，不控制公开结构；`risk`始终位于报告末尾。`recommendation`表现Reporter冻结的选择理由、适用条件、不适用情形和主要权衡。公开`DesignerInput.html_report_layout`只支持`continuous`且只适用于HTML Report。`meta.layout`是Designer内部连续版的`brief`表现值，不是公开输入字段。
+Designer只消费`optionhelper.designer-payload/v1.0.0`，且顶层`schema`字段必须存在并逐字匹配。其他schema或缺失schema均会被拒绝，不做版本转换、默认补齐或兼容读取。设计系统描述固定为`optionhelper.design-system/v1.0.0`。固定输出七段完整报告，标题逐字为：核心结论、结构推荐、合同参数、收益结构、估值定价、历史回测、风险提示。若传入`sections`，其值必须严格等于该顺序；`research`和`meta.section_titles`均不属于公开契约。`risk`始终位于报告末尾。`recommendation`表现Reporter冻结的选择理由、适用条件、不适用情形和主要权衡。Report固定A4与Card模板均由Designer内部固定，公开`DesignerInput`、Tool与CLI不接受`layout`或`html_report_layout`。payload的`meta`不参与版式选择。
 
 ## 2. 核心结论与结构推荐
 
@@ -81,7 +81,7 @@ Designer只改变读者格式，不改写冻结事实。普通数值、指标、
 
 Card固定为210mm宽度、高度随完整内容自然延展，无损益图、无交互图。其内容是同一Report事实的简版：推荐结构、挂钩标的、推荐依据、估值日与方法、最多四项核心估值指标、完整五个Greeks、四项核心回测指标、四项产品专属回测指标及最多2项风险提示。没有已冻结事实时显示“未提供”，不填默认数字。PDF导出使用A4自然分页，不因复杂期权结构或完整指标而拒绝交付。
 
-Report固定为连续A4正文并完整展示七个章节，不提供目录版。在“估值定价”中展开估值方法、估值日、全部估值指标、五个Greeks、假设、风险曲线、Greek曲面与已提供定价情景。在“历史回测”中展开样本定义、核心统计、路径事件、产品专属统计、年度统计、标的表现与全部已提供图表。
+Report固定为连续A4正文并完整展示七个章节。HTML宽屏提供固定目录跳转七个章节，PDF隐藏目录。在“估值定价”中展开估值方法、估值日、全部估值指标、五个Greeks、假设、风险曲线、Greek曲面与已提供定价情景。在“历史回测”中展开样本定义、核心统计、路径事件、产品专属统计、年度统计、标的表现与全部已提供图表。
 
 ## 6. 渲染校验
 
@@ -92,6 +92,6 @@ Report固定为连续A4正文并完整展示七个章节，不提供目录版。
 
 ## 7. 证据边界
 
-- 从同一`ReportUnit`或同一任务运行快照取数，不得在报告渲染时重估、重算Greeks或重跑回测。
+- 从同一份冻结交接事实或同一任务运行快照取数，不得在报告渲染时重估、重算Greeks或重跑回测。
 - 绝对价格条款、相对价格条款、日频近似、缺失数据处理和收益率分母必须按实际输入披露。
 - 收益图、估值、回测三者分别引用本次任务的资产和结果，不用默认样图或案例数据替代。

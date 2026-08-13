@@ -9,12 +9,14 @@ read result directories, perform financial calculations, or alter facts.
 
 from __future__ import annotations
 
+import base64
 from html import escape as html_escape
 from html.parser import HTMLParser
 import importlib.metadata
+import math
 from pathlib import Path
 import re
-from typing import Literal
+from typing import Any, Literal, Mapping
 from xml.etree import ElementTree
 
 from .design_tokens import TOKENS
@@ -28,7 +30,7 @@ class PdfRuntimeError(RuntimeError):
     """Raised when the pinned local PDF runtime is not usable."""
 
 
-BlockKind = Literal["heading", "paragraph", "item", "caption", "table", "metric_grid"]
+BlockKind = Literal["heading", "paragraph", "item", "caption", "table", "metric_grid", "chart", "svg"]
 PdfBlock = tuple[BlockKind, int, str | list[list[str]]]
 
 
@@ -118,6 +120,16 @@ def _mathml_text(markup: str) -> str:
             )
         if tag == "mfrac" and len(children) >= 2:
             return f"({content(children[0])})/({content(children[1])})"
+        if tag == "msqrt" and children:
+            return f"√({content(children[0])})"
+        if tag == "mroot" and len(children) >= 2:
+            return f"root[{content(children[1])}]({content(children[0])})"
+        if tag == "mtable":
+            return "[" + "; ".join(content(child) for child in children) + "]"
+        if tag == "mtr":
+            return ", ".join(content(child) for child in children)
+        if tag == "mtd":
+            return "".join(content(child) for child in children)
         value = element.text or ""
         for child in children:
             value += content(child)
@@ -144,7 +156,11 @@ class _PublicHtmlParser(HTMLParser):
         self._cell: list[str] | None = None
         self._metric_grid: list[dict[str, str]] | None = None
         self._metric_item: dict[str, str] | None = None
+        self._metric_field_name: str | None = None
+        self._metric_strip: list[dict[str, str]] | None = None
+        self._module_state: list[str] | None = None
         self._math_parts: list[str] | None = None
+        self._chart_figure_depth = 0
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         tag = tag.lower()
@@ -160,9 +176,22 @@ class _PublicHtmlParser(HTMLParser):
             self._math_parts.append(f"<{tag}>")
             return
         if tag == "img":
-            alt = _clean_text(dict(attrs).get("alt") or "")
+            attributes = dict(attrs)
+            src = attributes.get("src") or ""
+            if src.startswith("data:image/svg+xml;base64,"):
+                try:
+                    svg = base64.b64decode(src.partition(",")[2], validate=True).decode("utf-8")
+                except (UnicodeDecodeError, ValueError):
+                    svg = ""
+                if svg:
+                    self.blocks.append(("svg", 0, svg))
+                    return
+            alt = _clean_text(attributes.get("alt") or "")
             if alt:
                 self.blocks.append(("caption", 0, f"图示：{alt}"))
+            return
+        if tag == "figure" and "chart-figure" in (dict(attrs).get("class") or "").split():
+            self._chart_figure_depth += 1
             return
         if tag == "br":
             if self._cell is not None:
@@ -180,6 +209,36 @@ class _PublicHtmlParser(HTMLParser):
             self._cell = []
             return
         class_name = dict(attrs).get("class") or ""
+        if tag == "div" and "chart" in class_name.split():
+            chart_id = _clean_text(dict(attrs).get("id") or "")
+            if chart_id:
+                self.blocks.append(("chart", 0, chart_id))
+            return
+        if tag == "figcaption" and self._chart_figure_depth:
+            # The static chart Flowable prints the title as part of the same
+            # unbreakable visual, preventing a caption at one page bottom and
+            # its chart on the next page.
+            self._active.append(("skip-caption", []))
+            return
+        if tag == "div" and "module-state" in class_name:
+            self._module_state = []
+            self._active.append(("module-state", self._module_state))
+            return
+        if tag == "div" and "metric-strip" in class_name:
+            self._metric_strip = []
+            return
+        if tag == "div" and self._metric_strip is not None and "metric" in class_name and "metric__" not in class_name:
+            self._metric_item = {}
+            return
+        if tag == "div" and self._metric_item is not None:
+            metric_field = next(
+                (name for marker, name in (("metric__value", "value"), ("metric__label", "label"), ("metric__note", "note")) if marker in class_name),
+                None,
+            )
+            if metric_field:
+                self._metric_field_name = metric_field
+                self._active.append(("metric-field", []))
+                return
         if tag == "dl" and ("card-metric-grid" in class_name or "card-contract-grid" in class_name):
             self._metric_grid = []
             return
@@ -214,11 +273,50 @@ class _PublicHtmlParser(HTMLParser):
             else:
                 self._math_parts.append(f"</{tag}>")
             return
+        if tag == "figure" and self._chart_figure_depth:
+            self._chart_figure_depth -= 1
+            return
+        if tag == "figcaption" and self._active and self._active[-1][0] == "skip-caption":
+            self._active.pop()
+            return
         if tag in {"th", "td"} and self._cell is not None:
             if self._table_row is not None:
                 self._table_row.append(_clean_text("".join(self._cell)))
             self._cell = None
             return
+        if tag == "div" and self._metric_field_name is not None:
+            for index in range(len(self._active) - 1, -1, -1):
+                active_tag, parts = self._active[index]
+                if active_tag == "metric-field":
+                    self._active.pop(index)
+                    assert self._metric_item is not None
+                    self._metric_item[self._metric_field_name] = _clean_text("".join(parts))
+                    self._metric_field_name = None
+                    return
+        if tag == "div" and self._metric_item is not None and self._metric_strip is not None:
+            if self._metric_item.get("label"):
+                self._metric_strip.append(dict(self._metric_item))
+            self._metric_item = None
+            return
+        if tag == "div" and self._metric_strip is not None:
+            metrics = self._metric_strip
+            self._metric_strip = None
+            if metrics:
+                self.blocks.append(("metric_grid", 0, [
+                    [item.get("label", ""), item.get("value", ""), item.get("note", "")]
+                    for item in metrics
+                ]))
+            return
+        if tag == "div" and self._module_state is not None:
+            for index in range(len(self._active) - 1, -1, -1):
+                active_tag, parts = self._active[index]
+                if active_tag == "module-state":
+                    self._active.pop(index)
+                    value = _clean_text("".join(parts))
+                    self._module_state = None
+                    if value:
+                        self.blocks.append(("caption", 0, value))
+                    return
         if self._metric_item is not None and tag in {"dt", "dd", "small"}:
             for index in range(len(self._active) - 1, -1, -1):
                 active_tag, parts = self._active[index]
@@ -313,8 +411,8 @@ def _register_fonts() -> tuple[object, str, str]:
     # the delivery remains readable on another computer. The CID fallback
     # keeps minimal Linux test environments functional.
     cjk_candidates = (
-        Path("/System/Library/Fonts/STHeiti Medium.ttc"),
         Path("C:/Windows/Fonts/msyh.ttc"),
+        Path("/System/Library/Fonts/STHeiti Medium.ttc"),
         Path("C:/Windows/Fonts/simsun.ttc"),
         Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"),
         Path("/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc"),
@@ -485,11 +583,390 @@ def _metric_grid_flowable(
     return table
 
 
-def render_pdf(html_content: str) -> bytes:
+def _card_page_height(flowables: list[object], *, content_width: float, top: float, bottom: float) -> float:
+    """Size a Card PDF page to its real reader-visible content.
+
+    A Card is a 210 mm-wide compact sheet, not a report preview cropped to an
+    arbitrary fraction of A4.  Its height grows with the frozen text and
+    tables.  A small guard band absorbs ReportLab paragraph spacing without
+    introducing a report-sized blank tail.
+    """
+
+    content_height = 0.0
+    for flowable in flowables:
+        _width, height = flowable.wrap(content_width, 100_000)
+        content_height += max(0.0, height)
+    return content_height + top + bottom + 200
+
+
+def _svg_number(value: str | None, fallback: float = 0.0) -> float:
+    if not value:
+        return fallback
+    match = re.search(r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)", value)
+    return float(match.group(0)) if match else fallback
+
+
+def _svg_styles(root: ElementTree.Element) -> dict[str, dict[str, str]]:
+    """Read the restricted class palette emitted by the report-only SVG.
+
+    Payoffer owns the source SVG.  Designer only translates common public SVG
+    primitives into ReportLab vector calls so PDF retains the supplied visual
+    evidence without browser execution or an external converter.
+    """
+
+    styles: dict[str, dict[str, str]] = {}
+    for element in root.iter():
+        if element.tag.rsplit("}", 1)[-1].lower() != "style":
+            continue
+        for class_name, declaration in re.findall(r"\.([\w-]+)\s*\{([^}]*)\}", element.text or ""):
+            styles[class_name] = {
+                key.strip(): value.strip()
+                for key, value in re.findall(r"([\w-]+)\s*:\s*([^;]+)", declaration)
+            }
+    return styles
+
+
+def _svg_paint(element: ElementTree.Element, styles: Mapping[str, Mapping[str, str]], inherited: Mapping[str, str]) -> dict[str, str]:
+    paint = dict(inherited)
+    for class_name in (element.get("class") or "").split():
+        paint.update(styles.get(class_name, {}))
+    for name in ("fill", "stroke", "stroke-width", "stroke-dasharray", "font-size", "font-weight", "opacity", "fill-opacity", "stroke-opacity"):
+        if element.get(name) is not None:
+            paint[name] = str(element.get(name))
+    paint.update({key.strip(): value.strip() for key, value in re.findall(r"([\w-]+)\s*:\s*([^;]+)", element.get("style") or "")})
+    return paint
+
+
+def _svg_color(value: str | None, *, fallback: str | None = None) -> str | None:
+    candidate = (value or fallback or "").strip()
+    if not candidate or candidate.lower() in {"none", "transparent"}:
+        return None
+    if candidate.startswith("url("):
+        # Payoffer's report SVG uses its governed red-gold title gradient.
+        # ReportLab has no SVG gradient decoder; retain the canonical brand-red
+        # visual rather than dropping the supplied title band.
+        return "#C8102E"
+    if re.fullmatch(r"#[0-9A-Fa-f]{3}", candidate):
+        return "#" + "".join(char * 2 for char in candidate[1:])
+    return candidate if re.fullmatch(r"#[0-9A-Fa-f]{6}", candidate) else fallback
+
+
+def _svg_path_commands(raw: str) -> list[tuple[str, list[float]]]:
+    tokens = re.findall(r"[MmLlHhVvCcQqZz]|[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?", raw)
+    size = {"M": 2, "L": 2, "H": 1, "V": 1, "C": 6, "Q": 4, "Z": 0}
+    commands: list[tuple[str, list[float]]] = []
+    index = 0
+    active = ""
+    while index < len(tokens):
+        if tokens[index].isalpha():
+            active = tokens[index]
+            index += 1
+            if active.upper() == "Z":
+                commands.append((active, []))
+                active = ""
+                continue
+        if not active:
+            break
+        count = size.get(active.upper())
+        if count is None or index + count > len(tokens) or any(token.isalpha() for token in tokens[index:index + count]):
+            break
+        values = [float(token) for token in tokens[index:index + count]]
+        index += count
+        commands.append((active, values))
+        if active in {"M", "m"}:
+            active = "L" if active == "M" else "l"
+    return commands
+
+
+def _svg_flowable(markup: str, *, content_width: float, latin_font: str, cjk_font: str) -> object:
+    """Return a bounded vector Flowable for a Reporter-provided payoff SVG."""
+
+    from reportlab.lib import colors
+    from reportlab.platypus import Flowable
+
+    try:
+        root = ElementTree.fromstring(markup)
+    except ElementTree.ParseError as error:
+        raise PdfRuntimeError("收益图SVG格式无效，无法生成等价PDF图形。") from error
+    view_box = (root.get("viewBox") or "").replace(",", " ").split()
+    source_width = _svg_number(root.get("width"), 1200.0)
+    source_height = _svg_number(root.get("height"), 566.0)
+    if len(view_box) == 4:
+        offset_x, offset_y, source_width, source_height = (float(value) for value in view_box)
+    else:
+        offset_x = offset_y = 0.0
+    if source_width <= 0 or source_height <= 0:
+        raise PdfRuntimeError("收益图SVG缺少有效画布尺寸。")
+    width = content_width
+    height = min(width * source_height / source_width, 310.0)
+    scale = width / source_width
+    styles = _svg_styles(root)
+
+    class _PayoffSvg(Flowable):
+        def __init__(self) -> None:
+            super().__init__()
+            self.width = width
+            self.height = height
+
+        def wrap(self, available_width: float, available_height: float) -> tuple[float, float]:
+            if available_width < self.width:
+                self.width = available_width
+                self.height = min(self.width * source_height / source_width, 310.0)
+            return self.width, self.height
+
+        def draw(self) -> None:
+            canvas = self.canv
+            scale_x = self.width / source_width
+            scale_y = self.height / source_height
+
+            def point(x: float, y: float) -> tuple[float, float]:
+                return ((x - offset_x) * scale_x, self.height - (y - offset_y) * scale_y)
+
+            def set_paint(paint: Mapping[str, str]) -> tuple[bool, bool]:
+                fill = _svg_color(paint.get("fill"), fallback="#252B35")
+                stroke = _svg_color(paint.get("stroke"))
+                opacity = max(0.0, min(1.0, _svg_number(paint.get("opacity"), 1.0)))
+                if fill:
+                    canvas.setFillColor(colors.HexColor(fill), alpha=opacity * _svg_number(paint.get("fill-opacity"), 1.0))
+                if stroke:
+                    canvas.setStrokeColor(colors.HexColor(stroke), alpha=opacity * _svg_number(paint.get("stroke-opacity"), 1.0))
+                    canvas.setLineWidth(max(0.2, _svg_number(paint.get("stroke-width"), 1.0) * (scale_x + scale_y) / 2))
+                    dash = [number for number in re.findall(r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)", paint.get("stroke-dasharray", ""))]
+                    canvas.setDash([float(number) * scale_x for number in dash] if dash else [])
+                else:
+                    canvas.setDash()
+                return bool(fill), bool(stroke)
+
+            def draw_path(raw: str, paint: Mapping[str, str]) -> None:
+                path = canvas.beginPath()
+                current = (0.0, 0.0)
+                origin = (0.0, 0.0)
+                for command, values in _svg_path_commands(raw):
+                    absolute = command.isupper()
+                    name = command.upper()
+                    if name == "M":
+                        x, y = values
+                        current = (x, y) if absolute else (current[0] + x, current[1] + y)
+                        origin = current
+                        path.moveTo(*point(*current))
+                    elif name == "L":
+                        x, y = values
+                        current = (x, y) if absolute else (current[0] + x, current[1] + y)
+                        path.lineTo(*point(*current))
+                    elif name == "H":
+                        x = values[0] if absolute else current[0] + values[0]
+                        current = (x, current[1])
+                        path.lineTo(*point(*current))
+                    elif name == "V":
+                        y = values[0] if absolute else current[1] + values[0]
+                        current = (current[0], y)
+                        path.lineTo(*point(*current))
+                    elif name == "C":
+                        coords = [(values[index], values[index + 1]) for index in range(0, 6, 2)]
+                        if not absolute:
+                            coords = [(current[0] + x, current[1] + y) for x, y in coords]
+                        path.curveTo(*point(*coords[0]), *point(*coords[1]), *point(*coords[2]))
+                        current = coords[2]
+                    elif name == "Q":
+                        # ReportLab has no quadratic primitive.  Preserve the
+                        # factual end point as a straight segment rather than
+                        # inventing a different curve.
+                        x, y = values[-2:]
+                        current = (x, y) if absolute else (current[0] + x, current[1] + y)
+                        path.lineTo(*point(*current))
+                    elif name == "Z":
+                        path.close()
+                        current = origin
+                fill, stroke = set_paint(paint)
+                canvas.drawPath(path, stroke=int(stroke), fill=int(fill))
+
+            def walk(element: ElementTree.Element, inherited: Mapping[str, str]) -> None:
+                tag = element.tag.rsplit("}", 1)[-1].lower()
+                if tag in {"defs", "style", "title", "desc", "clippath", "lineargradient", "stop"}:
+                    return
+                paint = _svg_paint(element, styles, inherited)
+                if tag == "rect":
+                    fill, stroke = set_paint(paint)
+                    x, y = point(_svg_number(element.get("x")), _svg_number(element.get("y")) + _svg_number(element.get("height")))
+                    canvas.rect(x, y, _svg_number(element.get("width")) * scale_x, _svg_number(element.get("height")) * scale_y, stroke=int(stroke), fill=int(fill))
+                elif tag == "line":
+                    _fill, stroke = set_paint(paint)
+                    if stroke:
+                        canvas.line(*point(_svg_number(element.get("x1")), _svg_number(element.get("y1"))), *point(_svg_number(element.get("x2")), _svg_number(element.get("y2"))))
+                elif tag == "circle":
+                    fill, stroke = set_paint(paint)
+                    x, y = point(_svg_number(element.get("cx")), _svg_number(element.get("cy")))
+                    radius = _svg_number(element.get("r")) * (scale_x + scale_y) / 2
+                    canvas.circle(x, y, radius, stroke=int(stroke), fill=int(fill))
+                elif tag in {"path", "polyline", "polygon"}:
+                    raw = element.get("d") or ""
+                    if tag != "path":
+                        numbers = [float(value) for value in re.findall(r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)", element.get("points") or "")]
+                        raw = "M" + " L".join(f"{numbers[index]},{numbers[index + 1]}" for index in range(0, len(numbers) - 1, 2))
+                        if tag == "polygon":
+                            raw += " Z"
+                    if raw:
+                        draw_path(raw, paint)
+                elif tag == "text":
+                    content = _clean_text("".join(element.itertext()))
+                    if content:
+                        _fill, _stroke = set_paint(paint)
+                        font_size = max(5.0, _svg_number(paint.get("font-size"), 11.0) * scale_y)
+                        canvas.setFont(cjk_font if any(not char.isascii() for char in content) else latin_font, font_size)
+                        x, y = point(_svg_number(element.get("x")), _svg_number(element.get("y")))
+                        anchor = element.get("text-anchor")
+                        if anchor == "middle":
+                            canvas.drawCentredString(x, y, content)
+                        elif anchor == "end":
+                            canvas.drawRightString(x, y, content)
+                        else:
+                            canvas.drawString(x, y, content)
+                for child in list(element):
+                    walk(child, paint)
+
+            canvas.saveState()
+            walk(root, {"fill": "#252B35"})
+            canvas.restoreState()
+
+    return _PayoffSvg()
+
+
+def _chart_flowable(spec: Mapping[str, Any], *, content_width: float, latin_font: str, cjk_font: str) -> object:
+    """Render frozen ECharts facts as a controlled static PDF chart.
+
+    This uses the exact chart specification that powers the offline HTML
+    visual.  The PDF does not execute browser JavaScript but retains a true
+    graphical projection alongside the existing accessible data table.
+    """
+
+    from reportlab.lib import colors
+    from reportlab.platypus import Flowable
+
+    chart_type = str(spec.get("type") or "line")
+    x_values = list(spec.get("x") or [])
+    y_values = list(spec.get("y") or [])
+    series = list(spec.get("series") or [])
+    width = content_width
+    height = min(max(190.0, width * 0.45), 270.0)
+    palette = ("#C8102E", "#49647D", "#9C722C", "#7A8591")
+
+    def number(value: Any) -> float | None:
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            return None
+        return parsed if math.isfinite(parsed) else None
+
+    class _Chart(Flowable):
+        def __init__(self) -> None:
+            super().__init__()
+            self.width = width
+            self.height = height
+
+        def wrap(self, available_width: float, available_height: float) -> tuple[float, float]:
+            self.width = min(width, available_width)
+            return self.width, self.height
+
+        def draw(self) -> None:
+            canvas = self.canv
+            left, right, top, bottom = 44.0, 16.0, 20.0, 34.0
+            plot_width, plot_height = max(1.0, self.width - left - right), max(1.0, self.height - top - bottom)
+            canvas.saveState()
+            canvas.setFillColor(colors.HexColor("#FEFDFB"))
+            canvas.setStrokeColor(colors.HexColor(TOKEN_COLORS["rule_strong"]))
+            canvas.setLineWidth(.55)
+            canvas.rect(0, 0, self.width, self.height, fill=1, stroke=1)
+            canvas.setStrokeColor(colors.HexColor("#A8B0B8"))
+            canvas.setLineWidth(.45)
+            canvas.line(left, bottom, left, bottom + plot_height)
+            canvas.line(left, bottom, left + plot_width, bottom)
+            if chart_type == "heatmap":
+                data = [row for row in list(spec.get("data") or []) if isinstance(row, list) and len(row) == 3 and number(row[2]) is not None]
+                values = [number(row[2]) for row in data]
+                low, high = (min(values), max(values)) if values else (0.0, 1.0)
+                x_count, y_count = max(1, len(x_values)), max(1, len(y_values))
+                for row in data:
+                    try:
+                        x_index, y_index = int(row[0]), int(row[1])
+                    except (TypeError, ValueError):
+                        continue
+                    value = number(row[2])
+                    ratio = 0.5 if high == low else max(0.0, min(1.0, (value - low) / (high - low)))
+                    red = int(245 - 52 * ratio)
+                    green = int(239 - 112 * ratio)
+                    blue = int(235 - 144 * ratio)
+                    canvas.setFillColor(colors.Color(red / 255, green / 255, blue / 255))
+                    canvas.rect(left + x_index * plot_width / x_count, bottom + y_index * plot_height / y_count, plot_width / x_count, plot_height / y_count, fill=1, stroke=0)
+            else:
+                values = [number(item) for entry in series for item in list(entry.get("data") or [])]
+                finite = [item for item in values if item is not None]
+                low, high = (min(finite), max(finite)) if finite else (0.0, 1.0)
+                if chart_type == "bar":
+                    # Bar charts express a magnitude against zero.  Include
+                    # that baseline even when every frozen observation shares
+                    # one sign, otherwise the bars extend beyond the frame.
+                    low, high = min(low, 0.0), max(high, 0.0)
+                if low == high:
+                    low, high = low - 1.0, high + 1.0
+                for tick in range(5):
+                    y = bottom + plot_height * tick / 4
+                    canvas.setStrokeColor(colors.HexColor("#E3E5E7"))
+                    canvas.setDash(2, 2)
+                    canvas.line(left, y, left + plot_width, y)
+                canvas.setDash()
+                count = max(1, len(x_values) - 1)
+                for series_index, entry in enumerate(series):
+                    points = []
+                    for index, item in enumerate(list(entry.get("data") or [])):
+                        value = number(item)
+                        if value is None:
+                            continue
+                        x = left + plot_width * min(index, count) / count
+                        y = bottom + (value - low) / (high - low) * plot_height
+                        points.append((x, y))
+                    color = colors.HexColor(palette[series_index % len(palette)])
+                    canvas.setStrokeColor(color)
+                    canvas.setFillColor(color)
+                    canvas.setLineWidth(1.6)
+                    if chart_type == "bar":
+                        bar_width = max(2.0, plot_width / max(1, len(x_values)) / max(1, len(series)))
+                        for point_index, (x, y) in enumerate(points):
+                            baseline = bottom + (0 - low) / (high - low) * plot_height
+                            center_offset = (series_index - (len(series) - 1) / 2) * bar_width
+                            canvas.rect(x + center_offset - bar_width * .4, min(baseline, y), bar_width * .8, abs(y - baseline), fill=1, stroke=0)
+                    else:
+                        path = canvas.beginPath()
+                        for point_index, (x, y) in enumerate(points):
+                            (path.moveTo if point_index == 0 else path.lineTo)(x, y)
+                        canvas.drawPath(path, stroke=1, fill=0)
+                        for x, y in points:
+                            canvas.circle(x, y, 1.8, stroke=0, fill=1)
+                canvas.setFont(latin_font, 6.8)
+                canvas.setFillColor(colors.HexColor(TOKEN_COLORS["muted"]))
+                for tick in range(5):
+                    value = low + (high - low) * tick / 4
+                    canvas.drawRightString(left - 5, bottom + plot_height * tick / 4 - 2, f"{value:.2g}")
+                if x_values:
+                    labels = [str(x_values[index]) for index in range(0, len(x_values), max(1, math.ceil(len(x_values) / 6)))]
+                    for index, label in enumerate(labels):
+                        x = left + plot_width * index * max(1, math.ceil(len(x_values) / 6)) / count
+                        canvas.setFont(cjk_font if any(not char.isascii() for char in label) else latin_font, 6.8)
+                        canvas.drawCentredString(x, bottom - 12, label[:12])
+            title = str(spec.get("title") or "图表")
+            canvas.setFont(cjk_font if any(not char.isascii() for char in title) else latin_font, 8.5)
+            canvas.setFillColor(colors.HexColor(TOKEN_COLORS["ink_soft"]))
+            canvas.drawString(left, self.height - 12, title)
+            canvas.restoreState()
+
+    return _Chart()
+
+
+def render_pdf(html_content: str, *, chart_specs: Mapping[str, Mapping[str, Any]] | None = None) -> bytes:
     """Render public HTML to a self-contained PDF.
 
-    Card and Report share a fixed A4-width PDF surface. Card remains compact,
-    but continues on later pages when complete frozen facts need more space.
+    Report uses A4. Card keeps the same 210 mm width while its PDF page height
+    follows the rendered facts, so a short card does not carry a report-sized
+    blank tail.
     """
 
     _require_runtime()
@@ -520,7 +997,7 @@ def render_pdf(html_content: str) -> bytes:
         # report page, so do not render it twice before the title.
         blocks = blocks[1:]
 
-    page_width, page_height = A4
+    page_width, report_page_height = A4
     left, right, top, bottom = ((18, 18, 18, 16) if is_card else (42, 42, 52, 36))
     content_width = page_width - left - right
     compact = is_card
@@ -546,10 +1023,60 @@ def render_pdf(html_content: str) -> bytes:
                                  textColor=colors.HexColor(TOKEN_COLORS["ink_soft"])),
     }
 
+    flowables: list[object] = []
+    for kind, level, raw in blocks:
+        if kind == "heading":
+            if level == 1:
+                flowables.append(_paragraph(str(raw), styles["title"], latin_font=latin_font, cjk_font=cjk_font))
+                flowables.append(HRFlowable(width="100%", thickness=1.25, color=colors.HexColor(TOKEN_COLORS["brand_red"]), spaceAfter=4))
+            elif level == 2:
+                # Do not strand a report chapter title at the bottom of a
+                # page. Reserve room for its rule and first line of evidence;
+                # ReportLab then moves the complete opening to the next A4
+                # page when the current page cannot hold that minimum.
+                if not compact:
+                    flowables.append(CondPageBreak(72))
+                heading = _paragraph(str(raw), styles["section"], latin_font=latin_font, cjk_font=cjk_font)
+                rule = HRFlowable(width="100%", thickness=.45, color=colors.HexColor(TOKEN_COLORS["rule_strong"]), spaceAfter=5)
+                flowables.append(KeepTogether([heading, rule]) if not compact else heading)
+                if compact:
+                    flowables.append(rule)
+            else:
+                flowables.append(_paragraph(str(raw), styles["subsection"], latin_font=latin_font, cjk_font=cjk_font))
+            continue
+        if kind == "metric_grid":
+            rows = raw if isinstance(raw, list) else []
+            flowables.append(_metric_grid_flowable(rows, content_width=content_width, styles=styles, latin_font=latin_font, cjk_font=cjk_font))
+            flowables.append(Spacer(1, 4))
+            continue
+        if kind == "table":
+            rows = raw if isinstance(raw, list) else []
+            if rows:
+                flowables.append(_table_flowable(rows, content_width=content_width, styles=styles, latin_font=latin_font, cjk_font=cjk_font, compact=compact))
+                flowables.append(Spacer(1, 5))
+            continue
+        if kind == "svg":
+            flowables.append(_svg_flowable(str(raw), content_width=content_width, latin_font=latin_font, cjk_font=cjk_font))
+            flowables.append(Spacer(1, 5))
+            continue
+        if kind == "chart":
+            spec = (chart_specs or {}).get(str(raw))
+            if spec is None:
+                raise PdfRuntimeError(f"报告图表{raw}缺少受控静态图规格。")
+            flowables.append(_chart_flowable(spec, content_width=content_width, latin_font=latin_font, cjk_font=cjk_font))
+            flowables.append(Spacer(1, 4))
+            continue
+        if kind == "item":
+            flowables.append(_paragraph("• " + str(raw), styles["item"], latin_font=latin_font, cjk_font=cjk_font))
+            continue
+        style = styles["caption"] if kind == "caption" else styles["body"]
+        flowables.append(_paragraph(str(raw), style, latin_font=latin_font, cjk_font=cjk_font))
+
+    page_height = _card_page_height(flowables, content_width=content_width, top=top, bottom=bottom) if compact else report_page_height
     buffer = BytesIO()
     document = BaseDocTemplate(
         buffer,
-        pagesize=A4,
+        pagesize=(page_width, page_height),
         leftMargin=left,
         rightMargin=right,
         topMargin=top,
@@ -589,41 +1116,6 @@ def render_pdf(html_content: str) -> bytes:
 
     frame = Frame(left, bottom, content_width, page_height - top - bottom, id="content", leftPadding=0, rightPadding=0, topPadding=0, bottomPadding=0)
     document.addPageTemplates([PageTemplate(id="designer", frames=[frame], onPage=on_page)])
-
-    flowables: list[object] = []
-    for kind, level, raw in blocks:
-        if kind == "heading":
-            if level == 1:
-                flowables.append(_paragraph(str(raw), styles["title"], latin_font=latin_font, cjk_font=cjk_font))
-                flowables.append(HRFlowable(width="100%", thickness=1.25, color=colors.HexColor(TOKEN_COLORS["brand_red"]), spaceAfter=4))
-            elif level == 2:
-                # Do not strand a report chapter title at the bottom of a
-                # page. Reserve room for its rule and first line of evidence;
-                # ReportLab then moves the complete opening to the next A4
-                # page when the current page cannot hold that minimum.
-                flowables.append(CondPageBreak(48 if compact else 72))
-                heading = _paragraph(str(raw), styles["section"], latin_font=latin_font, cjk_font=cjk_font)
-                rule = HRFlowable(width="100%", thickness=.45, color=colors.HexColor(TOKEN_COLORS["rule_strong"]), spaceAfter=5)
-                flowables.append(KeepTogether([heading, rule]))
-            else:
-                flowables.append(_paragraph(str(raw), styles["subsection"], latin_font=latin_font, cjk_font=cjk_font))
-            continue
-        if kind == "metric_grid":
-            rows = raw if isinstance(raw, list) else []
-            flowables.append(_metric_grid_flowable(rows, content_width=content_width, styles=styles, latin_font=latin_font, cjk_font=cjk_font))
-            flowables.append(Spacer(1, 4))
-            continue
-        if kind == "table":
-            rows = raw if isinstance(raw, list) else []
-            if rows:
-                flowables.append(_table_flowable(rows, content_width=content_width, styles=styles, latin_font=latin_font, cjk_font=cjk_font, compact=compact))
-                flowables.append(Spacer(1, 5))
-            continue
-        if kind == "item":
-            flowables.append(_paragraph("• " + str(raw), styles["item"], latin_font=latin_font, cjk_font=cjk_font))
-            continue
-        style = styles["caption"] if kind == "caption" else styles["body"]
-        flowables.append(_paragraph(str(raw), style, latin_font=latin_font, cjk_font=cjk_font))
 
     document.build(flowables)
     result = buffer.getvalue()

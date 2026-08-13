@@ -14,7 +14,8 @@ from types import MappingProxyType
 from typing import Any, Mapping
 
 
-DESIGN_SYSTEM_VERSION = "designer-2026.08.11.2"
+DESIGN_SYSTEM_VERSION = "v1.0.0"
+DESIGN_SYSTEM_SCHEMA = "optionhelper.design-system/v1.0.0"
 
 
 @dataclass(frozen=True)
@@ -108,8 +109,8 @@ TOKENS = DesignTokens(
     colors=_freeze(_COLORS),
     fonts=_freeze(
         {
-            "sans": 'Arial, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif',
-            "chinese": '"PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", Arial, sans-serif',
+            "sans": 'Arial, "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", sans-serif',
+            "chinese": '"Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", Arial, sans-serif',
             "latin": 'Arial, sans-serif',
             "math": '"STIX Two Math", "Cambria Math", "Times New Roman", serif',
         }
@@ -117,13 +118,13 @@ TOKENS = DesignTokens(
     type_scale=_freeze(
         {
             "report_title": "26px",
-            "report_title_brief": "23px",
+            "report_title_a4": "23px",
             "report_title_print": "20px",
             "section": "17px",
-            "section_continuous": "15px",
+            "section_a4": "15px",
             "section_print": "14px",
             "subsection": "14px",
-            "subsection_brief": "13px",
+            "subsection_a4": "13px",
             "subsection_print": "12px",
             "report_body": "12.5px",
             "report_body_print": "11.5px",

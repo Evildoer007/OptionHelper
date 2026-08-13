@@ -44,7 +44,8 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
-body.report-profile-brief {
+body.report-profile-a4,
+body.designer-card-page {
   font-size: var(--type-report-body);
   line-height: 1.72;
   letter-spacing: .001em;
@@ -68,13 +69,49 @@ a { color: inherit; }
 .skip-link:focus { transform: translateY(0); }
 
 .report-shell {
-  display: block;
-  width: min(100%, 210mm);
+  display: grid;
+  grid-template-columns: 32mm minmax(0, 210mm);
+  gap: 8mm;
+  align-items: start;
+  justify-content: center;
+  width: min(calc(100% - 48px), 260mm);
   margin: 0 auto;
 }
 
+.report-toc {
+  position: sticky;
+  top: 26px;
+  margin-top: 26px;
+  padding: 8mm 0 8mm 4mm;
+  border-left: 1px solid var(--red);
+  color: var(--muted);
+}
+
+.report-toc nav { display: grid; }
+
+.report-toc a {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr);
+  gap: 4px;
+  padding: 5px 3px;
+  border-bottom: 1px solid var(--rule);
+  color: inherit;
+  font-size: var(--type-meta);
+  line-height: 1.45;
+  text-decoration: none;
+}
+
+.report-toc a:hover,
+.report-toc a:focus-visible { color: var(--red-deep); }
+
+.report-toc a span {
+  color: var(--red);
+  font-family: var(--font-latin);
+  font-weight: 700;
+}
+
 .report-document {
-  width: min(210mm, calc(100% - 48px));
+  width: min(210mm, 100%);
   min-width: 0;
   margin: 26px 0 48px;
   padding: 14mm 16mm 16mm;
@@ -628,58 +665,58 @@ td { color: var(--ink-soft); }
   line-height: 1.68;
 }
 
-body.report-profile-brief .report-document {
-  width: min(210mm, calc(100% - 48px));
+body.report-profile-a4 .report-document {
+  width: min(210mm, 100%);
   margin: 26px 0 48px;
   padding: 14mm 16mm 16mm;
 }
-body.report-profile-brief .report-head { padding-bottom: 4.5mm; }
-body.report-profile-brief .report-head h1 { font-size: var(--type-report-title-brief); }
-body.report-profile-brief .report-head__brand { margin-top: 10px; font-size: var(--type-table); }
-body.report-profile-brief .identity-ledger { margin-top: 12px; }
-body.report-profile-brief .report-head > .identity-ledger { max-width: 230px; }
-body.report-profile-brief .identity-ledger div { padding: 9px 11px 10px; }
-body.report-profile-brief .evidence-wrap { margin-top: 15px; padding-top: 10px; }
-body.report-profile-brief .evidence-spine { margin-top: 0; }
-body.report-profile-brief .evidence-step { padding: 8px 9px 9px; }
-body.report-profile-brief .evidence-step dd { font-size: var(--type-meta); }
-body.report-profile-brief .report-section { padding: 21px 0 9px; }
-body.report-profile-brief .report-section h2 { margin-bottom: 10px; font-size: var(--type-section-continuous); }
-body.report-profile-brief .report-section h3 { margin: 12px 0 4px; font-size: var(--type-subsection-brief); }
-body.report-profile-brief .report-section h4,
-body.report-profile-brief .scenario h3,
-body.report-profile-brief .alternative h3 { font-size: var(--type-table); }
-body.report-profile-brief .report-section p { margin: 5px 0; }
-body.report-profile-brief .conclusion-band {
+body.report-profile-a4 .report-head { padding-bottom: 4.5mm; }
+body.report-profile-a4 .report-head h1 { font-size: var(--type-report-title-a4); }
+body.report-profile-a4 .report-head__brand { margin-top: 10px; font-size: var(--type-table); }
+body.report-profile-a4 .identity-ledger { margin-top: 12px; }
+body.report-profile-a4 .report-head > .identity-ledger { max-width: 230px; }
+body.report-profile-a4 .identity-ledger div { padding: 9px 11px 10px; }
+body.report-profile-a4 .evidence-wrap { margin-top: 15px; padding-top: 10px; }
+body.report-profile-a4 .evidence-spine { margin-top: 0; }
+body.report-profile-a4 .evidence-step { padding: 8px 9px 9px; }
+body.report-profile-a4 .evidence-step dd { font-size: var(--type-meta); }
+body.report-profile-a4 .report-section { padding: 21px 0 9px; }
+body.report-profile-a4 .report-section h2 { margin-bottom: 10px; font-size: var(--type-section-a4); }
+body.report-profile-a4 .report-section h3 { margin: 12px 0 4px; font-size: var(--type-subsection-a4); }
+body.report-profile-a4 .report-section h4,
+body.report-profile-a4 .scenario h3,
+body.report-profile-a4 .alternative h3 { font-size: var(--type-table); }
+body.report-profile-a4 .report-section p { margin: 5px 0; }
+body.report-profile-a4 .conclusion-band {
   margin-bottom: 14px;
   padding: 11px 14px 12px;
 }
-body.report-profile-brief .conclusion-band__label { margin-bottom: 4px !important; }
-body.report-profile-brief .metric-strip { margin: 10px 0; }
-body.report-profile-brief .metric { padding: 9px 10px 10px; }
-body.report-profile-brief .metric__value { font-size: calc(var(--type-metric) - 1px); }
-body.report-profile-brief .metric__label { margin-top: 4px; font-size: var(--type-meta); }
-body.report-profile-brief .scenario-grid,
-body.report-profile-brief .alternative-grid { gap: 8px; margin: 10px 0; }
-body.report-profile-brief .scenario-grid,
-body.report-profile-brief .alternative-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-body.report-profile-brief .scenario,
-body.report-profile-brief .alternative { padding: 9px 10px; border-radius: 0; }
-body.report-profile-brief .scenario p,
-body.report-profile-brief .alternative p { margin-top: 4px; font-size: var(--type-meta); line-height: 1.58; }
-body.report-profile-brief .payoff-figure,
-body.report-profile-brief .chart-figure { margin: 11px 0; padding: 10px; border-radius: 0; }
-body.report-profile-brief .chart { height: clamp(205px, 32vw, 290px); }
-body.report-profile-brief .formula { margin: 10px 0; padding: 10px 12px; font-size: calc(var(--type-formula) - 1px); }
-body.report-profile-brief .module-state { margin: 10px 0; padding: 9px 12px; border-radius: 0; }
-body.report-profile-brief .table-wrap { margin: 10px 0; }
-body.report-profile-brief th,
-body.report-profile-brief td { padding: 6px 8px; }
-body.report-profile-brief .plain-list,
-body.report-profile-brief .risk-list { margin: 6px 0 10px; padding-left: 19px; }
-body.report-profile-brief .plain-list li,
-body.report-profile-brief .risk-list li { margin: 3px 0; }
-body.report-profile-brief .disclaimer { margin-top: 12px; padding-top: 10px; line-height: 1.58; }
+body.report-profile-a4 .conclusion-band__label { margin-bottom: 4px !important; }
+body.report-profile-a4 .metric-strip { margin: 10px 0; }
+body.report-profile-a4 .metric { padding: 9px 10px 10px; }
+body.report-profile-a4 .metric__value { font-size: calc(var(--type-metric) - 1px); }
+body.report-profile-a4 .metric__label { margin-top: 4px; font-size: var(--type-meta); }
+body.report-profile-a4 .scenario-grid,
+body.report-profile-a4 .alternative-grid { gap: 8px; margin: 10px 0; }
+body.report-profile-a4 .scenario-grid,
+body.report-profile-a4 .alternative-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+body.report-profile-a4 .scenario,
+body.report-profile-a4 .alternative { padding: 9px 10px; border-radius: 0; }
+body.report-profile-a4 .scenario p,
+body.report-profile-a4 .alternative p { margin-top: 4px; font-size: var(--type-meta); line-height: 1.58; }
+body.report-profile-a4 .payoff-figure,
+body.report-profile-a4 .chart-figure { margin: 11px 0; padding: 10px; border-radius: 0; }
+body.report-profile-a4 .chart { height: clamp(205px, 32vw, 290px); }
+body.report-profile-a4 .formula { margin: 10px 0; padding: 10px 12px; font-size: calc(var(--type-formula) - 1px); }
+body.report-profile-a4 .module-state { margin: 10px 0; padding: 9px 12px; border-radius: 0; }
+body.report-profile-a4 .table-wrap { margin: 10px 0; }
+body.report-profile-a4 th,
+body.report-profile-a4 td { padding: 6px 8px; }
+body.report-profile-a4 .plain-list,
+body.report-profile-a4 .risk-list { margin: 6px 0 10px; padding-left: 19px; }
+body.report-profile-a4 .plain-list li,
+body.report-profile-a4 .risk-list li { margin: 3px 0; }
+body.report-profile-a4 .disclaimer { margin-top: 12px; padding-top: 10px; line-height: 1.58; }
 
 .parameter-table__cn { width: 17%; }
 .parameter-table__en { width: 25%; }
@@ -707,8 +744,9 @@ body.report-profile-brief .disclaimer { margin-top: 12px; padding-top: 10px; lin
 
 @media (max-width: __BREAKPOINT_NARROW__) {
   .report-shell { display: block; width: 100%; }
+  .report-toc { display: none; }
   .report-document,
-  body.report-profile-brief .report-document {
+  body.report-profile-a4 .report-document {
     width: 100%;
     margin: 0;
     padding: 24px 20px 40px;
@@ -733,12 +771,12 @@ body.report-profile-brief .disclaimer { margin-top: 12px; padding-top: 10px; lin
   .evidence-step:nth-child(-n + 4) { border-bottom: 1px solid var(--rule); }
   .scenario-grid,
   .alternative-grid,
-  body.report-profile-brief .scenario-grid,
-  body.report-profile-brief .alternative-grid { grid-template-columns: 1fr; }
+  body.report-profile-a4 .scenario-grid,
+  body.report-profile-a4 .alternative-grid { grid-template-columns: 1fr; }
   .metric { border-bottom: 1px solid var(--rule); }
   .metric:last-child { border-bottom: 0; }
   .chart,
-  body.report-profile-brief .chart { height: 250px; }
+  body.report-profile-a4 .chart { height: 250px; }
 }
 
 @page {
@@ -757,13 +795,14 @@ body.report-profile-brief .disclaimer { margin-top: 12px; padding-top: 10px; lin
     background: var(--paper);
     font-size: var(--type-body-print);
   }
-  body.report-profile-brief {
+  body.report-profile-a4 {
     font-size: var(--type-report-body-print);
     line-height: 1.65;
   }
   .report-shell { display: block; width: auto; margin: 0; }
+  .report-toc { display: none !important; }
   .report-document,
-  body.report-profile-brief .report-document {
+  body.report-profile-a4 .report-document {
     width: auto;
     margin: 0;
     padding: 0;
@@ -973,9 +1012,11 @@ body.report-profile-brief .disclaimer { margin-top: 12px; padding-top: 10px; lin
   letter-spacing: .07em;
 }
 
-.designer-card .card-conclusion h2 {
-  margin-bottom: 2px;
+.designer-card .card-structure {
+  margin: 0 0 2px;
+  color: var(--ink);
   font-size: var(--type-card-structure);
+  font-weight: 760;
   line-height: 1.2;
 }
 
@@ -1113,7 +1154,8 @@ body.report-profile-brief .disclaimer { margin-top: 12px; padding-top: 10px; lin
 }
 
 @media print {
-  body.report-profile-brief { background: var(--paper); }
+  body.report-profile-a4,
+  body.designer-card-page { background: var(--paper); }
   .designer-card {
     width: 210mm;
     min-height: 0;
@@ -1126,7 +1168,7 @@ body.report-profile-brief .disclaimer { margin-top: 12px; padding-top: 10px; lin
     break-inside: auto;
   }
   .designer-card .card-analysis-grid { gap: 4mm; }
-  .designer-card .card-conclusion h2 { font-size: var(--type-card-structure); }
+  .designer-card .card-structure { font-size: var(--type-card-structure); }
 }
 
 @media (max-width: __BREAKPOINT_NARROW__) {

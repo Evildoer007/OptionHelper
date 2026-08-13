@@ -20,8 +20,8 @@ _RUNTIME_ASSET_FILES = {
     "templates": frozenset(_REQUIRED_TEMPLATE_NAMES),
     "themes": frozenset({"designer-theme.css"}),
     "vendor": frozenset({"echarts.min.js"}),
+    "samples": frozenset({"card.html", "report.html"}),
 }
-_IGNORED_ASSET_NAMES = frozenset({".DS_Store"})
 # 开发态的资源属于Designer模块；标准Skill发行包将其置于assets/designer。
 # 不由Reporter推断或透传资源路径，避免目录调整后报告失效。
 _DEFAULT_ASSET_ROOT = _MODULE_ASSET_ROOT if _MODULE_ASSET_ROOT.is_dir() else _RELEASE_ASSET_ROOT
@@ -43,7 +43,6 @@ class DesignerConfig:
     default_asset_mode: str = "shared"
     allow_portable_assets: bool = True
     allow_pdf: bool = True
-    require_declared_design_system_version: bool = False
 
     def __post_init__(self) -> None:
         root = self.asset_root.expanduser().resolve()
@@ -53,7 +52,7 @@ class DesignerConfig:
         root_names = {
             path.name
             for path in root.iterdir()
-            if path.name not in _IGNORED_ASSET_NAMES
+            if path.name
         }
         expected_root_names = set(_RUNTIME_ASSET_FILES)
         if root_names != expected_root_names:
@@ -72,7 +71,7 @@ class DesignerConfig:
             actual_files = {
                 path.name
                 for path in directory_path.iterdir()
-                if path.name not in _IGNORED_ASSET_NAMES
+                if path.name
             }
             if actual_files != expected_files:
                 missing = sorted(expected_files.difference(actual_files))
@@ -92,7 +91,7 @@ class DesignerConfig:
             raise DesignerConfigurationError(f"找不到Designer模板：{', '.join(missing_templates)}")
         if self.default_asset_mode not in {"shared", "portable"}:
             raise DesignerConfigurationError("default_asset_mode只能是shared或portable。")
-        for name in ("allow_portable_assets", "allow_pdf", "require_declared_design_system_version"):
+        for name in ("allow_portable_assets", "allow_pdf"):
             if not isinstance(getattr(self, name), bool):
                 raise DesignerConfigurationError(f"{name}必须是布尔值。")
         if self.default_asset_mode == "portable" and not self.allow_portable_assets:
@@ -158,7 +157,6 @@ class DesignerConfig:
         *,
         asset_mode: str,
         output_format: str,
-        declared_design_system_version: str | None,
     ) -> None:
         """Reject a requested render policy before content is rendered."""
 
@@ -166,8 +164,6 @@ class DesignerConfig:
             raise DesignerConfigurationError("当前Designer配置禁止portable资源模式。")
         if output_format == "pdf" and not self.allow_pdf:
             raise DesignerConfigurationError("当前Designer配置禁止PDF输出。")
-        if self.require_declared_design_system_version and not declared_design_system_version:
-            raise DesignerConfigurationError("当前Designer配置要求显式声明design_system_version。")
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any] | None = None) -> "DesignerConfig":
@@ -181,7 +177,6 @@ class DesignerConfig:
             "default_asset_mode",
             "allow_portable_assets",
             "allow_pdf",
-            "require_declared_design_system_version",
         }
         unknown = set(value).difference(allowed)
         if unknown:

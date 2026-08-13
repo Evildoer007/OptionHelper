@@ -10,6 +10,9 @@ import html
 import json
 from pathlib import Path
 import re
+import shutil
+import subprocess
+import tempfile
 from typing import Any
 
 from .components import render_formula, render_inline_formula
@@ -27,18 +30,6 @@ SECTION_TITLES = {
     "pricing": "估值定价",
     "backtest": "历史回测",
     "risk": "风险提示",
-}
-# Historical handoffs occasionally repeat an old section title inside the
-# module ``headline``.  The public H2 sequence above is the only outline;
-# those legacy labels must not reappear as nested visible headings.
-_LEGACY_SECTION_HEADLINES = {
-    "conclusion": {"结论"},
-    "recommendation": {"对象和条款", "推荐结构与关键条款"},
-    "parameters": {"附录", "合同参数与估值假设"},
-    "payoff": {"收益机制与情景"},
-    "pricing": {"估值与敏感性"},
-    "backtest": {"回测"},
-    "risk": {"风险", "风险与限制", "风险提示与数据限制"},
 }
 PUBLIC_BRAND = "光大证券 金融创新业务总部"
 STATUS_LABELS = {name: str(state["label"]) for name, state in TOKENS.states.items()}
@@ -62,9 +53,6 @@ PARAMETER_SOURCE_LABELS = {
     "market_fixing": "市场定盘",
     "schedule_derived": "合约日程推导",
 }
-# ``brief`` is the single continuous A4 document shell. HTML and PDF use the
-# same body without a separate directory layout.
-LAYOUTS = {"brief"}
 ASSET_MODES = {"shared", "portable"}
 _NUMBER_TEXT = re.compile(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$")
 _MATH_SUBSCRIPT_TOKEN = re.compile(
@@ -115,7 +103,10 @@ def text(value: Any) -> str:
         known = _PUBLIC_VALUE_TEXT.get(value.casefold())
         if known:
             return known
-        return _number_text(value) if _NUMBER_TEXT.fullmatch(value.strip()) else value
+        # Frozen strings may be security identifiers, instrument codes or
+        # already-public dates.  Never infer a numeric type from their shape:
+        # for example, ``000300`` must not become ``300`` in a contract table.
+        return value
     return str(value)
 
 
@@ -206,28 +197,15 @@ def as_dict(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
-def _public_module_headline(value: Any, section: str) -> str:
-    """Drop an outline alias when it is passed as a nested module headline."""
+def module_headline(value: Any, section: str) -> str:
+    """Avoid repeating the current section heading inside its own content."""
 
     headline = text(value)
-    if headline in _LEGACY_SECTION_HEADLINES.get(section, set()) | {SECTION_TITLES[section]}:
-        return ""
-    return headline
+    return "" if headline == SECTION_TITLES[section] else headline
 
 
 def parameter_key(row: dict[str, Any]) -> str:
     return text(row.get("symbol") or row.get("en") or row.get("cn")).strip()
-
-
-def report_layout(meta: dict[str, Any]) -> str:
-    layout = text(meta.get("layout") or "brief").lower()
-    # Historical frozen payloads may still say ``report``.  Render them with
-    # the only supported public shell instead of recreating a directory view.
-    if layout == "report":
-        return "brief"
-    if layout not in LAYOUTS:
-        raise ValueError(f"meta.layout仅支持：{', '.join(sorted(LAYOUTS))}")
-    return layout
 
 
 def validate_chart(raw_spec: Any, location: str) -> None:
@@ -267,7 +245,6 @@ def validate_chart(raw_spec: Any, location: str) -> None:
 
 
 def validate_payload(payload: dict[str, Any]) -> None:
-    report_layout(as_dict(payload.get("meta")))
     highlights = as_list(payload.get("contract_highlights"))
     if len(highlights) > 6:
         raise ValueError("contract_highlights最多展示6项关键条款。")
@@ -296,10 +273,9 @@ def validate_payload(payload: dict[str, Any]) -> None:
         for position, row in enumerate(rows, start=1):
             if text(row.get("source")) not in PARAMETER_SOURCES:
                 raise ValueError(f"{group_name}[{position}]的source不符合约定。")
-    # v2 public reports keep shared contract terms once and only retain
-    # genuinely module-specific rows in the three module groups.  Preserve the
-    # historical subset invariant only for legacy payloads without that shared
-    # group.
+    # The public report keeps shared contract terms once and only retains
+    # genuinely module-specific rows in the three module groups. Preserve the
+    # subset invariant for inputs without the shared contract group.
     if not parameter_groups["common_input"]:
         payoff_keys = {parameter_key(row) for row in parameter_groups["payoff_input"] if parameter_key(row)}
         for group_name in ("pricing_input", "backtest_input"):
@@ -317,7 +293,7 @@ def status_box(module: dict[str, Any]) -> str:
         note = "该模块没有可展示的本次运行结果。"
     return (
         f'<div class="module-state" data-status="{esc(status)}" role="status">'
-        f'<strong>{esc(label)}</strong><span>{esc(note)}</span>'
+        f'<strong>{esc(label)}：</strong><span>{esc(note)}</span>'
         '</div>'
     )
 
@@ -405,7 +381,7 @@ def simple_table(rows: list[Any], columns: list[tuple[str, str]], caption: str =
 def chart_data_table(spec: dict[str, Any], x_values: list[Any], series: list[dict[str, Any]]) -> str:
     """Provide the complete visible data table for every chart.
 
-    Reports are continuous documents.  The tabular equivalent is therefore
+    Reports are a4 documents.  The tabular equivalent is therefore
     rendered in full below its chart rather than hidden behind an expander.
     """
 
@@ -594,7 +570,7 @@ def detail_tables(tables: list[Any]) -> str:
 def render_recommendation(data: dict[str, Any]) -> str:
     module = as_dict(data.get("recommendation"))
     blocks = []
-    headline = _public_module_headline(module.get("headline"), "recommendation")
+    headline = module_headline(module.get("headline"), "recommendation")
     if headline:
         blocks.append('<div class="recommendation-head">')
         blocks.append(f'<h3>{esc(headline)}</h3>')
@@ -608,9 +584,8 @@ def render_recommendation(data: dict[str, Any]) -> str:
             f'<div><dt>挂钩标的</dt><dd>{esc(underlyings) if underlyings else "待确认"}</dd></div>'
             "</dl>"
         )
-    # Recommendation reasoning is part of the structure recommendation, not
-    # a second public chapter.  These are frozen Reporter facts and are never
-    # inferred or expanded by Designer.
+    # This is the frozen recommendation rationale. Designer displays the
+    # provided market-view reasoning without deriving or extending it.
     reason = text(module.get("reason"))
     if reason:
         blocks.append(f'<div class="recommendation-head"><p>{rich_text(reason)}</p></div>')
@@ -830,7 +805,7 @@ def load_report_theme(config: DesignerConfig | None = None) -> str:
 
 
 def validate_generated_javascript(source: str) -> None:
-    """Reject delimiter corruption in the fixed offline chart bootstrap."""
+    """Reject malformed offline chart bootstrap code before delivery."""
 
     pairs = {")": "(", "]": "[", "}": "{"}
     stack: list[str] = []
@@ -854,6 +829,20 @@ def validate_generated_javascript(source: str) -> None:
                 raise ValueError("生成的图表JavaScript括号不匹配，已阻止交付。")
     if quote or stack:
         raise ValueError("生成的图表JavaScript结构不完整，已阻止交付。")
+    node = shutil.which("node")
+    if node is None:
+        raise ValueError("当前环境缺少Node.js，无法完成图表JavaScript语法校验。")
+    script = re.sub(r"^\s*<script>|</script>\s*$", "", source, flags=re.IGNORECASE)
+    with tempfile.NamedTemporaryFile("w", suffix=".js", encoding="utf-8", delete=False) as stream:
+        stream.write(script)
+        candidate = Path(stream.name)
+    try:
+        checked = subprocess.run([node, "--check", str(candidate)], capture_output=True, text=True, check=False)
+    finally:
+        candidate.unlink(missing_ok=True)
+    if checked.returncode:
+        detail = checked.stderr.strip().splitlines()[-1] if checked.stderr.strip() else "未知语法错误"
+        raise ValueError(f"生成的图表JavaScript语法无效，已阻止交付：{detail}")
 
 
 def render_html(
@@ -870,9 +859,8 @@ def render_html(
     if not echarts_path:
         echarts_path = config.relative_echarts_path(input_dir)
     meta = as_dict(payload.get("meta"))
-    layout = report_layout(meta)
     # The seven chapter headings are immutable. The document title remains
-    # the research title supplied by Reporter so a delivered report can be
+    # the delivery title supplied by Reporter so a delivered report can be
     # recognised outside the system; use the institutional default only when
     # the request did not provide one.
     title = text(meta.get("title")) or "单个期权结构推荐报告"
@@ -907,6 +895,14 @@ def render_html(
         f'<section id="{item["id"]}" class="report-section"{item["status_attr"]}>'
         f'<h2><span class="section-title">{esc(item["title"])}</span></h2>{item["body"]}</section>'
         for item in sections
+    )
+    toc = (
+        '<aside class="report-toc" aria-label="报告目录"><nav>'
+        + "".join(
+            f'<a href="#{esc(item["id"])}"><span>{position}.</span>{esc(item["title"])}</a>'
+            for position, item in enumerate(sections, start=1)
+        )
+        + "</nav></aside>"
     )
     chart_json = json.dumps(charts, ensure_ascii=False).replace("</", "<\\/")
     report_identity = [("报告日期", meta.get("as_of_date"))]
@@ -953,9 +949,9 @@ def render_html(
         .replace("__ECHARTS_HEAD__", echarts_head)
         .replace("__REPORT_THEME__", report_theme)
         .replace("__BRAND__", esc(PUBLIC_BRAND))
-        .replace("__LAYOUT__", esc(layout))
         .replace("__DESIGN_SYSTEM_VERSION__", esc(design_system_version))
         .replace("__IDENTITY__", identity)
+        .replace("__REPORT_TOC__", toc)
         .replace("__CONTENT__", content)
         .replace("__CHARTS__", chart_json)
         .replace("__CHART_PALETTE__", json.dumps(list(design_system.tokens["chart_palette"])))
@@ -968,7 +964,6 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Render a modular OptionHelper HTML research report.")
     parser.add_argument("--input", required=True, type=Path, help="Report payload JSON path")
     parser.add_argument("--output", required=True, type=Path, help="Output filename, with or without .html")
-    parser.add_argument("--html-report-layout", choices=("continuous",), help="Report HTML is always continuous")
     parser.add_argument("--output-type", choices=("card", "report"), default="report", help="Card or detailed Report")
     parser.add_argument("--format", choices=("html", "pdf"), help="Output format; .pdf also selects PDF")
     parser.add_argument(
@@ -1002,19 +997,12 @@ def main() -> None:
     from .design_renderer import materialize_portable_assets, render
     from .models import DesignerInput
 
-    if requested_format == "html" and args.output_type == "report":
-        layout = args.html_report_layout or "continuous"
-    elif args.html_report_layout is not None:
-        parser.error("--html-report-layout只适用于HTML Report。")
-    else:
-        layout = None
     output_path.parent.mkdir(parents=True, exist_ok=True)
     artifact = render(
         DesignerInput(
             payload=payload,
             output_type=args.output_type,
             format=requested_format,
-            html_report_layout=layout,
             asset_mode=asset_mode,
             input_dir=input_path.parent,
             output_dir=output_path.parent,

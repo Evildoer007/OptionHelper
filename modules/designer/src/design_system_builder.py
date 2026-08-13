@@ -13,13 +13,14 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .config import load_designer_config
-from .design_tokens import DESIGN_SYSTEM_VERSION, token_dict, token_hash
+from .design_tokens import DESIGN_SYSTEM_SCHEMA, DESIGN_SYSTEM_VERSION, token_dict, token_hash
 
 
 @dataclass(frozen=True)
 class DesignSystem:
     """A frozen, portable design-system bundle."""
 
+    schema: str
     design_system_version: str
     token_hash: str
     tokens: Mapping[str, Any]
@@ -30,6 +31,7 @@ class DesignSystem:
 
     def to_dict(self) -> dict[str, Any]:
         return {
+            "schema": self.schema,
             "design_system_version": self.design_system_version,
             "token_hash": self.token_hash,
             "tokens": dict(self.tokens),
@@ -120,6 +122,7 @@ def build_design_system() -> DesignSystem:
     tokens = token_dict()
     colors = tokens["colors"]
     return DesignSystem(
+        schema=DESIGN_SYSTEM_SCHEMA,
         design_system_version=DESIGN_SYSTEM_VERSION,
         token_hash=token_hash(),
         tokens=tokens,
@@ -156,4 +159,4 @@ def build_design_system_json() -> str:
     return json.dumps(build_design_system().to_dict(), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
-__all__ = ["DESIGN_SYSTEM_VERSION", "DesignSystem", "build_design_system", "build_design_system_json", "theme_path"]
+__all__ = ["DESIGN_SYSTEM_SCHEMA", "DESIGN_SYSTEM_VERSION", "DesignSystem", "build_design_system", "build_design_system_json", "theme_path"]

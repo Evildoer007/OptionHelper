@@ -2,10 +2,9 @@
 
 ## 职责
 
-Designer从唯一`design_tokens.py`构建设计系统，并把Reporter交接的冻结
-`ReportUnit`或已整理的`designer_payload`表现为研究简报或完整研究报告。多Unit的
-`ReportBundle`排序与拆分仍由Reporter负责；Designer只控制表达，不重新取数、
-计算、排序或改变金融事实。
+Designer从唯一`design_tokens.py`构建设计系统，并将Reporter通过公开Tool交接的
+冻结`optionhelper.designer-payload/v1.0.0`表现为研究简报或完整研究报告。多份报告的排序与拆分由Reporter负责；
+Designer只控制表达，不重新取数、计算、排序或改变金融事实。
 
 ## 公共入口
 
@@ -14,17 +13,16 @@ from modules.designer import build_design_system, call_tool, render
 from modules.designer.models import DesignerInput
 
 artifact = render(DesignerInput(
-    payload=designer_payload,
+    payload=payload,
     output_type="report",       # card或report
     format="html",              # html或pdf
-    html_report_layout="continuous",  # Report HTML固定连续版
 ))
 ```
 
 跨模块调用只使用公开Tool入口，不导入Designer内部实现：
 
 ```python
-artifact_response = call_tool({"action": "render", "payload": designer_payload})
+artifact_response = call_tool({"action": "render", "payload": payload})
 ```
 
 `load_designer_config()`是唯一运行时配置入口，负责校验当前Tool调用允许
@@ -32,7 +30,7 @@ artifact_response = call_tool({"action": "render", "payload": designer_payload})
 这些仍只由`design_tokens.py`管理。Tool请求可显式传入`config`对象，未知
 字段或不合法策略会以`invalid_configuration`拒绝。可用策略字段为
 `default_asset_mode`、`allow_portable_assets`、`allow_pdf`和
-`require_declared_design_system_version`。
+`allow_pdf`。
 
 `build_design_system()`返回`design_system_version`、令牌哈希、CSS变量、
 组件规则、离线ECharts主题和Payoffer SVG主题。`render()`返回HTML及设计
@@ -57,18 +55,20 @@ OptChat、OptDesk、研究简报、完整研究报告、ECharts和Payoffer SVG�
 
 ## 输入与输出
 
-输入为冻结ReportUnit或Reporter整理后的Designer payload及设计系统版本；输出HTML/PDF、主题信息
-和渲染清单。事实冲突、缺字段或状态不完整时退回Reporter。Designer不扫描
+输入为Reporter交接的冻结`optionhelper.designer-payload/v1.0.0`；`schema`必须存在且逐字匹配，其他值及缺失值直接拒绝，不做迁移或降级。设计系统公开描述固定为`optionhelper.design-system/v1.0.0`。输出HTML/PDF、主题信息和渲染清单。
+事实冲突、缺字段或状态不完整时退回Reporter。Designer不扫描
 运行目录、不选择最新结果、不调用计算模块。
+
+面向用户的估值、回测和报告只展示百分比。`S0Raw`仅用于真实价格与标准化合同换算，不作为面向用户字段；内部现金流、点数、金额和名义本金不得投影到页面、正式Tool、CSV或报告。
 
 ## 交互边界
 
 - Designer不向用户追问研究条件、产品选择或计算参数；缺失事实统一退回Reporter一次汇总。
 - Designer不检查模型配置或数据凭据，也不触发取数、估值或回测。它只接受Reporter已经冻结的事实、交付形式和覆盖状态。
 - 研究简报不渲染损益图。完整研究报告按已有正式结果选择必要图表，图内不重复放标题，标题和图注由报告版式统一管理。
-- 研究简报固定210mm宽度、高度随完整内容自然延展，不保留空白占位；不复用完整报告七段章节，无损益图或交互图。它只呈现推荐结构与标的、推荐依据、已冻结的估值定价、已冻结的历史回测和最多2项风险提示；PDF导出按A4自然分页，不因复杂结构或完整指标而拒绝交付。
-- 完整研究报告只有连续A4正文一种版式。Designer固定且逐字输出以下七个章节，任何输入不得改名、删减、合并或重排：核心结论、结构推荐、合同参数、收益结构、估值定价、历史回测、风险提示。不提供目录版；选择理由、适用条件、不适用情形和主要权衡归入“结构推荐”，Designer不得自行推导或补写。
-- `sections`与`meta.section_titles`仅作为历史输入兼容字段，不能控制公开报告结构。章节没有可用事实时仍保留，并显示真实空状态或模块状态。
+- Card固定210mm宽度、高度随完整内容自然延展，不保留空白占位；固定展示结构推荐、推荐理由、关键合同条款、估值摘要、回测摘要、主要风险，无损益图、SVG、ECharts或其他图表。PDF导出按A4自然分页，不因复杂结构或完整指标而拒绝交付。
+- 完整研究报告只有固定A4正文一种内部版式。Designer没有公开`layout`或`html_report_layout`参数，固定且逐字输出以下七个章节，任何输入不得改名、删减、合并或重排：核心结论、结构推荐、合同参数、收益结构、估值定价、历史回测、风险提示。HTML宽屏目录只是固定章节的阅读跳转，PDF中隐藏；选择理由、适用条件、不适用情形和主要权衡归入“结构推荐”，Designer不得自行推导或补写。
+- Report只接受固定7段`sections`数组，不接受`research`或自定义`meta.section_titles`。章节没有可用事实时仍保留，并显示真实空状态或模块状态。
 - 模板不得自行增加内部说明、审计内容或重复章节。
 - 产物正文不出现系统品牌、工具名、运行标识、文件路径、审计过程或内部机器字段。
 - Designer不自行选择输出目录；产物只由Reporter写入安装目录之外的项目Store。

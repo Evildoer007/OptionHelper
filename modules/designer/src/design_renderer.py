@@ -18,7 +18,7 @@ from typing import Any, Mapping
 
 from .config import DesignerConfig, load_designer_config
 from .design_system_builder import build_design_system
-from .models import DesignerInput
+from .models import DESIGNER_ARTIFACT_MANIFEST_SCHEMA, DesignerInput
 from .pdf_renderer import PdfRuntimeError, render_pdf
 from .renderer import (
     PUBLIC_BRAND,
@@ -41,7 +41,8 @@ class DesignerDependencyError(RuntimeError):
     """Raised when a requested output format lacks its optional converter."""
 
 
-CARD_CONTENT_ORDER = ("recommendation", "pricing", "backtest", "risk")
+CARD_CONTENT_ORDER = ("recommendation", "reason", "contract_highlights", "pricing", "backtest", "risk")
+CARD_DELIVERY_TITLE = "场外衍生品结构推荐卡片"
 
 
 def _normalise_input(value: DesignerInput | Mapping[str, Any]) -> DesignerInput:
@@ -52,13 +53,21 @@ def _normalise_input(value: DesignerInput | Mapping[str, Any]) -> DesignerInput:
     raise TypeError("render需要DesignerInput或Mapping。")
 
 
-def _normalise_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+def _normalise_payload(payload: Mapping[str, Any], *, output_type: str) -> dict[str, Any]:
     """Copy a payload and add only non-financial presentation defaults."""
 
     result = deepcopy(dict(payload))
+    if output_type == "report":
+        supplied_sections = result.get("sections")
+        if supplied_sections is not None and tuple(as_list(supplied_sections)) != SECTION_ORDER:
+            raise ValueError("Report sections必须严格为核心结论、结构推荐、合同参数、收益结构、估值定价、历史回测、风险提示。")
+        if "research" in result:
+            raise ValueError("Report不接受research字段；研究逻辑不属于公开报告。")
+        if "section_titles" in as_dict(result.get("meta")):
+            raise ValueError("Report不接受自定义section_titles；公开章节标题固定。")
     meta = dict(result.get("meta") or {})
-    if "layout" not in meta:
-        meta["layout"] = "brief"
+    if "layout" in meta:
+        raise ValueError("payload.meta不接受layout字段；Report版式由Designer固定。")
     result["meta"] = meta
     result.setdefault("sections", list(SECTION_ORDER))
     for key in ("conclusion", "recommendation", "parameters", "payoff", "pricing", "backtest", "risk"):
@@ -78,7 +87,7 @@ def _semantic_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
 
     value = deepcopy(dict(payload))
     meta = dict(value.get("meta") or {})
-    for key in ("layout", "output_type", "format", "asset_mode", "design_system_version", "design_system_hash"):
+    for key in ("output_type", "format", "asset_mode", "design_system_version", "design_system_hash"):
         meta.pop(key, None)
     value["meta"] = meta
     return value
@@ -132,7 +141,7 @@ def _card_data_table(rows: list[Mapping[str, Any]]) -> str:
 
 
 def _card_body(payload: Mapping[str, Any]) -> str:
-    """Render the compact public research brief.
+    """Render the compact public recommendation Card.
 
     Card is the concise reading surface of the same frozen facts as the
     detailed Report. It answers four reader questions only: what is
@@ -145,42 +154,49 @@ def _card_body(payload: Mapping[str, Any]) -> str:
         unit = text(value)
         return {"CNY": "人民币", "RMB": "人民币"}.get(unit.upper(), unit)
 
+    def unavailable_module_copy(module: Mapping[str, Any], subject: str) -> str:
+        status = text(module.get("status") or "pending").lower()
+        label = STATUS_LABELS.get(status, "未提供")
+        note = text(module.get("note")) or f"本次未形成可引用的{subject}结果。"
+        message = note if note.startswith(label) else f"{label}：{note}"
+        return f'<p class="empty-copy">{esc(message)}</p>'
+
     recommendation = as_dict(payload.get("recommendation"))
     blocks: list[str] = []
     headline = text(recommendation.get("headline") or recommendation.get("structure_name"))
     reason = text(recommendation.get("reason"))
     underlyings = text(recommendation.get("underlyings"))
-    if headline or underlyings:
-        blocks.append('<section class="card-conclusion"><p class="conclusion-band__label">推荐结构</p>')
-        if headline:
-            blocks.append(f"<h2>{esc(headline)}</h2>")
-        if underlyings:
-            blocks.append(f'<p class="card-underlying">挂钩标的：{esc(underlyings)}</p>')
-        blocks.append("</section>")
-    if reason:
-        blocks.append(f'<section class="card-reasoning"><h2>推荐依据</h2><p>{rich_text(reason)}</p></section>')
+    blocks.append('<section class="card-conclusion"><h2>结构推荐</h2>')
+    blocks.append(f'<p class="card-structure">{esc(headline) if headline else "未提供"}</p>')
+    blocks.append(
+        f'<p class="card-underlying">挂钩标的：{esc(underlyings) if underlyings else "未提供"}</p>'
+    )
+    blocks.append("</section>")
+    blocks.append('<section class="card-reasoning"><h2>推荐理由</h2>')
+    blocks.append(f"<p>{rich_text(reason)}</p>" if reason else '<p class="empty-copy">未提供。</p>')
+    blocks.append("</section>")
 
     highlights = [as_dict(item) for item in as_list(payload.get("contract_highlights")) if as_dict(item)]
+    terms: list[str] = []
     if highlights:
-        terms = []
         compact_units = {"年", "人民币", "份合同", "点", "次", "期"}
         for item in highlights:
             label, value, note = text(item.get("label")), text(item.get("value")), text(item.get("note"))
             if not label or not value:
                 continue
             if note in compact_units:
-                value_html = f"<strong>{esc(value)}{esc(note)}</strong>"
+                value_html = f"<strong>{rich_text(value)}{esc(note)}</strong>"
             else:
                 note_html = f"<small>{esc(note)}</small>" if note else ""
-                value_html = f"<strong>{esc(value)}</strong>{note_html}"
+                value_html = f"<strong>{rich_text(value)}</strong>{note_html}"
             terms.append(f'<div class="card-contract"><dt>{esc(label)}</dt><dd>{value_html}</dd></div>')
-        if terms:
-            blocks.append(
-                '<section class="card-contract-summary" aria-labelledby="card-contract-summary-title">'
-                '<div class="card-contract-summary__heading"><h2 id="card-contract-summary-title">关键条款</h2>'
-                '<p>以下估值定价与历史回测均基于同一份已确认合同。</p></div>'
-                f'<dl class="card-contract-grid">{"".join(terms)}</dl></section>'
-            )
+    blocks.append(
+        '<section class="card-contract-summary" aria-labelledby="card-contract-summary-title">'
+        '<div class="card-contract-summary__heading"><h2 id="card-contract-summary-title">关键合同条款</h2>'
+        '<p>估值摘要与回测摘要均基于同一份冻结合同事实。</p></div>'
+        + (f'<dl class="card-contract-grid">{"".join(terms)}</dl>' if terms else '<p class="empty-copy">未提供。</p>')
+        + '</section>'
+    )
 
     pricing_rows: list[dict[str, Any]] = []
     pricing = as_dict(payload.get("pricing"))
@@ -244,7 +260,7 @@ def _card_body(payload: Mapping[str, Any]) -> str:
                 })
 
     blocks.append('<section class="card-analysis-grid">')
-    blocks.append('<div class="card-analysis"><h2>估值定价</h2>')
+    blocks.append('<div class="card-analysis"><h2>估值摘要</h2>')
     if pricing_rows:
         blocks.append(_card_data_table(pricing_rows))
         valuation_date = text(pricing.get("valuation_date"))
@@ -253,26 +269,26 @@ def _card_body(payload: Mapping[str, Any]) -> str:
             detail = "；".join(item for item in (f"估值日：{valuation_date}" if valuation_date else "", f"方法：{method}" if method else "") if item)
             blocks.append(f'<p class="card-data-note">{esc(detail)}</p>')
     else:
-        blocks.append('<p class="empty-copy">本次尚未形成可引用的估值结果。</p>')
-    blocks.append('</div><div class="card-analysis"><h2>历史回测</h2>')
+        blocks.append(unavailable_module_copy(pricing, "估值"))
+    blocks.append('</div><div class="card-analysis"><h2>回测摘要</h2>')
     if backtest_rows:
         blocks.append(_card_data_table(backtest_rows))
         window = text(backtest.get("window"))
         if window:
             blocks.append(f'<p class="card-data-note">样本区间：{esc(window)}</p>')
     else:
-        blocks.append('<p class="empty-copy">本次尚未形成可引用的回测结果。</p>')
+        blocks.append(unavailable_module_copy(backtest, "回测"))
     blocks.append('</div></section>')
 
     risk = as_dict(payload.get("risk"))
     risk_values = [text(item) for item in as_list(risk.get("items")) if text(item)][:2]
-    if risk_values:
-        blocks.append(
-            '<section class="card-risk"><h2>风险提示</h2><p>'
-            + rich_text("；".join(value.rstrip("。") for value in risk_values) + "。")
-            + "</p></section>"
-        )
-    return "".join(blocks) or '<p class="empty-copy">当前没有可展示的Card内容。</p>'
+    blocks.append('<section class="card-risk"><h2>主要风险</h2>')
+    blocks.append(
+        "<p>" + rich_text("；".join(value.rstrip("。") for value in risk_values) + "。") + "</p>"
+        if risk_values else '<p class="empty-copy">未提供。</p>'
+    )
+    blocks.append("</section>")
+    return "".join(blocks)
 
 
 def render_card_html(
@@ -282,14 +298,13 @@ def render_card_html(
 ) -> str:
     """Render the minimal Card from the same frozen payload as a Report."""
 
-    safe_payload = _normalise_payload(payload)
+    safe_payload = _normalise_payload(payload, output_type="card")
     validate_payload(safe_payload)
-    card_title = text(as_dict(safe_payload.get("meta")).get("title")) or "期权结构推荐卡片"
     theme = build_design_system()
     config = load_designer_config(config)
     template = config.read_template("card.html")
     return (
-        template.replace("__TITLE__", html.escape(card_title))
+        template.replace("__TITLE__", html.escape(CARD_DELIVERY_TITLE))
         .replace("__REPORT_THEME__", config.read_report_theme())
         .replace("__BRAND__", html.escape(PUBLIC_BRAND))
         .replace("__DESIGN_SYSTEM_VERSION__", html.escape(theme.design_system_version))
@@ -297,7 +312,28 @@ def render_card_html(
     )
 
 
-def _pdf_bytes(html_content: str, base_url: Path) -> bytes:
+def _chart_specs_from_html(html_content: str) -> dict[str, dict[str, Any]]:
+    """Recover the frozen chart specs already embedded in Designer HTML.
+
+    HTML and PDF share this exact public specification.  The PDF renderer uses
+    it for a controlled static projection rather than executing browser code.
+    """
+
+    match = re.search(r"const chartSpecs=(\[.*?\]);", html_content, re.DOTALL)
+    if not match:
+        return {}
+    try:
+        values = json.loads(match.group(1).replace("<\\/", "</"))
+    except json.JSONDecodeError as error:
+        raise DesignerDependencyError("报告图表规格无效，无法生成PDF。") from error
+    return {
+        str(item.get("id")): dict(item)
+        for item in values
+        if isinstance(item, Mapping) and str(item.get("id") or "")
+    }
+
+
+def _pdf_bytes(html_content: str, base_url: Path, *, chart_specs: Mapping[str, Mapping[str, Any]] | None = None) -> bytes:
     """Convert Designer's public HTML into a real self-contained PDF.
 
     ``base_url`` remains part of the stable renderer signature because callers
@@ -307,21 +343,28 @@ def _pdf_bytes(html_content: str, base_url: Path) -> bytes:
 
     del base_url
     try:
-        return render_pdf(html_content)
+        return render_pdf(html_content, chart_specs=chart_specs)
     except PdfRuntimeError as error:
         raise DesignerDependencyError(str(error)) from error
 
 
 def _pdf_html_projection(html_content: str) -> str:
-    """Remove browser-only chart machinery while retaining its text data.
+    """Retain public visual facts while removing executable browser scripts.
 
-    Chart figures already contain an accessibility summary and an exact data
-    table.  PDF keeps those reader-visible facts but never carries a deferred
-    script or an empty browser chart container into the delivery receipt.
+    ``render_pdf`` consumes report-only SVG data and the frozen ECharts
+    specification before this projection is converted.  Removing scripts is
+    therefore safe: the reader receives equivalent static figures plus the
+    same captions and full data tables.
     """
 
-    value = re.sub(r"<script\b[^>]*>.*?</script\s*>", "", html_content, flags=re.IGNORECASE | re.DOTALL)
-    return re.sub(r'<div\s+class="chart"\b[^>]*></div>', "", value, flags=re.IGNORECASE)
+    without_scripts = re.sub(
+        r"<script\b[^>]*>.*?</script\s*>", "", html_content, flags=re.IGNORECASE | re.DOTALL
+    )
+    # The navigation rail is an HTML reading aid. PDF remains the same
+    # continuous A4 research document, without an extra navigation column.
+    return re.sub(
+        r'<aside class="report-toc"[^>]*>.*?</aside\s*>', "", without_scripts, flags=re.IGNORECASE | re.DOTALL
+    )
 
 
 def _portable_assets(config: DesignerConfig) -> list[dict[str, str]]:
@@ -372,14 +415,14 @@ def render(
     config.validate_request(
         asset_mode=request.asset_mode,
         output_format=request.normalized_format,
-        declared_design_system_version=request.design_system_version,
     )
-    payload = _normalise_payload(request.payload)
+    payload = _normalise_payload(request.payload, output_type=request.normalized_output_type)
     # A detailed report is a governed public document, not a user-composed
     # dashboard. Its seven chapters are always present in canonical order;
     # an unavailable module renders its truthful status inside that chapter.
-    if request.normalized_output_type == "report":
-        payload["sections"] = list(SECTION_ORDER)
+    payload["sections"] = list(
+        SECTION_ORDER if request.normalized_output_type == "report" else CARD_CONTENT_ORDER
+    )
     theme = build_design_system()
     if request.design_system_version and request.design_system_version != theme.design_system_version:
         raise ValueError(
@@ -391,9 +434,6 @@ def render(
         if request.asset_mode == "portable"
         else config.relative_echarts_path(request.output_dir or input_dir)
     )
-    layout = "brief"
-    if as_dict(payload.get("meta")).get("layout") != layout:
-        payload["meta"] = {**as_dict(payload.get("meta")), "layout": layout}
     if request.normalized_output_type == "card":
         html_content = render_card_html(payload, config=config)
     else:
@@ -406,6 +446,7 @@ def render(
         )
     _assert_public_delivery_text(html_content)
     output_format = request.normalized_format
+    pdf_chart_specs = _chart_specs_from_html(html_content) if output_format == "pdf" else None
     if output_format == "pdf":
         html_content = _pdf_html_projection(html_content)
     result: dict[str, Any] = {
@@ -414,7 +455,6 @@ def render(
         "html": html_content,
         "design_system_version": theme.design_system_version,
         "design_system_hash": theme.token_hash,
-        "layout": layout,
         "asset_mode": request.asset_mode,
     }
     result["format"] = output_format
@@ -424,7 +464,6 @@ def render(
             "semantic_fact_hash": semantic_fact_hash,
             "output_type": request.normalized_output_type,
             "format": output_format,
-            "layout": layout,
             "asset_mode": request.asset_mode,
             "design_system_version": theme.design_system_version,
             "design_system_hash": theme.token_hash,
@@ -432,7 +471,7 @@ def render(
     )
     requires_echarts = '<script src=' in html_content
     if output_format == "pdf":
-        result["pdf"] = _pdf_bytes(html_content, input_dir)
+        result["pdf"] = _pdf_bytes(html_content, input_dir, chart_specs=pdf_chart_specs)
         result["mime_type"] = "application/pdf"
     else:
         result["mime_type"] = "text/html; charset=utf-8"
@@ -440,18 +479,17 @@ def render(
         result["portable_assets"] = _portable_assets(config) if requires_echarts else []
     html_hash = sha256(html_content.encode("utf-8")).hexdigest()
     manifest: dict[str, Any] = {
-        "schema": "optionhelper.designer-artifact-manifest/v1",
+        "schema": DESIGNER_ARTIFACT_MANIFEST_SCHEMA,
         "design_system_version": theme.design_system_version,
         "design_system_hash": theme.token_hash,
         "output_type": request.normalized_output_type,
         "format": output_format,
-        "layout": layout,
         "html_sha256": html_hash,
         "semantic_fact_hash": semantic_fact_hash,
         "presentation_input_hash": presentation_input_hash,
         # Bind the receipt to the exact frozen handoff received from Reporter.
-        # ``payload`` below contains Designer-only defaults and layout
-        # normalisation, so hashing it would make an otherwise immutable Card
+        # ``payload`` below contains Designer-only defaults and fixed document
+        # presentation, so hashing it would make an otherwise immutable Card
         # handoff fail Reporter verification.
         "content_sha256": _stable_hash(request.payload),
         "assets": [],

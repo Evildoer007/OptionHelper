@@ -12,8 +12,8 @@ from typing import Any, Mapping
 
 from .config import DesignerConfig, DesignerConfigurationError, load_designer_config
 from .design_renderer import DesignerDependencyError, render
-from .design_system_builder import build_design_system
-from .models import DesignerInput
+from .design_system_builder import DESIGN_SYSTEM_SCHEMA, build_design_system
+from .models import DESIGNER_ARTIFACT_MANIFEST_SCHEMA, DESIGNER_PAYLOAD_SCHEMA, DesignerInput
 from .pdf_renderer import runtime_status as pdf_runtime_status
 
 
@@ -22,9 +22,11 @@ def _profile() -> dict[str, Any]:
     return {
         "module": "designer",
         "version": theme.design_system_version,
+        "design_system_schema": DESIGN_SYSTEM_SCHEMA,
+        "payload_schema": DESIGNER_PAYLOAD_SCHEMA,
+        "artifact_manifest_schema": DESIGNER_ARTIFACT_MANIFEST_SCHEMA,
         "design_system_hash": theme.token_hash,
         "output_types": ["card", "report"],
-        "html_report_layouts": ["continuous"],
         "modules": list(theme.tokens["modules"]),
         "modes": list(theme.tokens["modes"]),
     }
@@ -58,7 +60,6 @@ def capability(config: DesignerConfig | Mapping[str, Any] | None = None) -> dict
         "default_asset_mode": config.default_asset_mode,
         "formats": ["html", "pdf"] if pdf_available else ["html"],
         "pdf_runtime": pdf_runtime,
-        "requires_design_system_version": config.require_declared_design_system_version,
     }
 
 
