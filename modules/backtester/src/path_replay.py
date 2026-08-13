@@ -8,7 +8,7 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 import pandas as pd
 
-from runtime.contracts.contract_api import ContractResolutionError, PricePath, ResolvedContract, evaluate_payoff
+from runtime.contracts.contract_api import ContractResolutionError, PricePath, ResolvedContract, evaluate_contract
 
 from .entry_generator import BacktestInputError, BacktestUnsupportedError
 from .historical_data import HistoricalData, required_contract_fields
@@ -75,23 +75,45 @@ def aligned_history(historical_data: HistoricalData, underlyings: Sequence[str],
     return AlignedHistory(close=close, price_fields=fields)
 
 
-def contract_stop_position(index: pd.DatetimeIndex, start: int, contract: ResolvedContract, complete_tenor: bool) -> tuple[int | None, str | None]:
-    """在到期日当天或此前最近交易日结束，绝不以到期后价格结算。"""
+def contract_stop_position(
+    index: pd.DatetimeIndex,
+    start: int,
+    contract: ResolvedContract,
+    complete_tenor: bool,
+    *,
+    trading_sessions: pd.DatetimeIndex,
+    calendar_coverage_end: pd.Timestamp | None,
+) -> tuple[int | None, str | None]:
+    """按受控交易日历定位合同终点，绝不以工作日猜测到期。"""
+    entry_date = index[start]
+    if entry_date not in trading_sessions:
+        return None, "entry_date_missing_from_controlled_calendar"
     if "n_obs" in contract.terms:
-        stop = start + int(contract.terms["n_obs"]) - 1
-        if stop < len(index):
-            return stop, None
+        expected = trading_sessions[trading_sessions >= entry_date]
+        target = int(contract.terms["n_obs"])
+        if len(expected) >= target:
+            terminal_session = expected[target - 1]
+            stop = index.get_indexer([terminal_session])[0]
+            if stop >= start:
+                return int(stop), None
+            return None, "missing_controlled_calendar_session_price"
         if not complete_tenor and start < len(index) - 1:
             return len(index) - 1, None
         return None, "insufficient_observation_count_tenor"
     if "T" not in contract.terms:
         return None, "contract_tenor_missing"
-    maturity = index[start] + pd.Timedelta(days=float(contract.terms["T"]) * 365.0)
-    before = np.flatnonzero(index <= maturity)
-    if len(before):
-        stop = int(before[-1])
-        if stop >= start and (maturity - index[stop]).days <= 7:
-            return stop, None
+    maturity = entry_date + pd.Timedelta(days=float(contract.terms["T"]) * 365.0)
+    if calendar_coverage_end is None or calendar_coverage_end < maturity:
+        if not complete_tenor and start < len(index) - 1:
+            return len(index) - 1, None
+        return None, "calendar_not_covered_to_contract_maturity"
+    expected = trading_sessions[(trading_sessions >= entry_date) & (trading_sessions <= maturity)]
+    if len(expected):
+        terminal_session = expected[-1]
+        stop = index.get_indexer([terminal_session])[0]
+        if stop >= start:
+            return int(stop), None
+        return None, "missing_controlled_calendar_session_price"
     if not complete_tenor and start < len(index) - 1:
         return len(index) - 1, None
     return None, "insufficient_tenor"
@@ -107,7 +129,7 @@ def replay_path(
     """以共享解释器回放，并在最早有效提前终止点截断路径。"""
     times = np.asarray((dates - dates[0]).days, dtype=float) / 365.0
     try:
-        full_outcome = evaluate_payoff(contract, _price_path(contract, values, times, dates, price_fields))
+        full_outcome = evaluate_contract(contract, _price_path(contract, values, times, dates, price_fields))
     except ValueError as original_error:
         if not _is_early_settlement_endpoint_error(original_error):
             raise BacktestInputError(str(original_error)) from original_error
@@ -116,7 +138,7 @@ def replay_path(
             raise BacktestInputError(str(original_error)) from original_error
         times = contract_times
         try:
-            full_outcome = evaluate_payoff(contract, _price_path(contract, values, times, dates, price_fields))
+            full_outcome = evaluate_contract(contract, _price_path(contract, values, times, dates, price_fields))
         except ValueError as error:
             raise BacktestInputError(str(error)) from error
     if not _has_termination(full_outcome.monitor_values):
@@ -126,7 +148,7 @@ def replay_path(
         candidate_times = times[: end + 1]
         candidate_fields = {name: field[: end + 1] for name, field in price_fields.items()}
         try:
-            outcome = evaluate_payoff(contract, _price_path(contract, values[: end + 1], candidate_times, candidate_dates, candidate_fields))
+            outcome = evaluate_contract(contract, _price_path(contract, values[: end + 1], candidate_times, candidate_dates, candidate_fields))
         except ValueError:
             continue
         if _has_termination(outcome.monitor_values):

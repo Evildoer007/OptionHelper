@@ -48,6 +48,7 @@ def specialized_metrics(
             "terminal_performance": number_summary(terminal),
             "terminal_return_sign": _terminal_return_sign(terminal),
             "terminal_segments": list(outcome_summary),
+            "selected_path_case_gross_return": _path_case_gross_returns(trades),
         })
     elif profile_spec.profile_id in {"dual_knock_autocall", "coupon_autocall"}:
         result.update({
@@ -75,12 +76,14 @@ def specialized_metrics(
             "events": _select_events(event_summary, ("tau_in",)),
             "buffer_outcomes": _buffer_outcomes(trades),
             "knock_in_outcomes": _knock_in_outcomes(trades),
+            "selected_path_case_gross_return": _path_case_gross_returns(trades),
         })
     elif profile_spec.profile_id == "accumulator":
         result.update({
             "events": _select_events(event_summary, ("tau_out",)),
             "accumulated_quantity": _select_monitors(monitor_summary, ("Q_acc", "n_out")),
-            "pnl_per_accumulated_unit": _pnl_per_accumulated_unit(trades),
+            "gross_return_per_accumulated_unit": _gross_return_per_accumulated_unit(trades),
+            "knock_out_vs_full_term": _accumulator_outcomes(trades),
             "contract_purchase_price": _finite_term(terms, "K"),
             "quantity_multiplier": _finite_term(terms, "m"),
             "periodic_purchase_cashflows": {"status": "not_exposed_by_shared_contract_core"},
@@ -96,7 +99,7 @@ def specialized_metrics(
                 "spread": number_summary(realized - strike) if strike is not None else number_summary([]),
             },
             "volatility_buckets": _volatility_buckets(realized, strike),
-            "variance_pnl": number_summary([trade.pnl for trade in trades]),
+            "variance_gross_return": _gross_return_summary(trades),
         })
     elif profile_spec.profile_id == "range_accrual":
         n_in, n_obs = paired_monitor_values(trades, "n_in", "n_obs_actual")
@@ -104,14 +107,17 @@ def specialized_metrics(
         result.update({
             "range_observations": _select_monitors(monitor_summary, ("n_in", "n_obs_actual")),
             "in_range_observation_ratio": number_summary(ratio),
-            "range_accrual_pnl": number_summary([trade.pnl for trade in trades]),
+            "range_accrual_gross_return": _gross_return_summary(trades),
         })
     elif profile_spec.profile_id == "shark_fin":
         result.update({
             "events": _select_events(event_summary, ("tau_out", "tau_out_1", "tau_out_2")),
             "trigger_vs_untriggered": _event_outcomes(trades, ("tau_out", "tau_out_1", "tau_out_2")),
             "terminal_performance": number_summary(terminal),
+            "selected_path_case_gross_return": _path_case_gross_returns(trades),
         })
+    if "S0Vec" in terms:
+        result["multi_underlying_terminal"] = _multi_underlying_terminal(trades)
     gaps = _metric_gaps(profile_spec.profile_id, terms)
     result["metric_coverage"] = {
         "status": "partial" if gaps else "complete",
@@ -167,9 +173,10 @@ def _knock_in_outcomes(trades: Sequence[Any]) -> dict[str, Any]:
     knocked = [trade for trade in trades if event_happened(trade.events.get("tau_in"))]
     not_knocked = [trade for trade in trades if not event_happened(trade.events.get("tau_in"))]
     return {
-        "knock_in_pnl": number_summary([trade.pnl for trade in knocked]),
-        "not_knock_in_pnl": number_summary([trade.pnl for trade in not_knocked]),
+        "knock_in_gross_return": _gross_return_summary(knocked),
+        "not_knock_in_gross_return": _gross_return_summary(not_knocked),
         "knock_in_terminal_performance": number_summary([trade.terminal_performance for trade in knocked if trade.terminal_performance is not None]),
+        "not_knock_in_terminal_performance": number_summary([trade.terminal_performance for trade in not_knocked if trade.terminal_performance is not None]),
     }
 
 
@@ -182,13 +189,33 @@ def _buffer_outcomes(trades: Sequence[Any]) -> dict[str, Any]:
     }
 
 
-def _pnl_per_accumulated_unit(trades: Sequence[Any]) -> dict[str, float | None]:
+def _gross_return_per_accumulated_unit(trades: Sequence[Any]) -> dict[str, Any]:
     values = [
-        float(trade.pnl) / float(quantity)
+        float(trade.pnl) / float(quantity) / 100.0
         for trade in trades
         if isinstance((quantity := trade.events.get("Q_acc")), (int, float, np.number)) and float(quantity) > 0
     ]
-    return number_summary(values)
+    return _return_summary(values)
+
+
+def _accumulator_outcomes(trades: Sequence[Any]) -> dict[str, Any]:
+    """按共享解释器的tau_out划分提前结束和完整期限的已观察结果。"""
+    knocked_out = [trade for trade in trades if event_happened(trade.events.get("tau_out"))]
+    full_term = [trade for trade in trades if not event_happened(trade.events.get("tau_out"))]
+    total = len(trades)
+    return {
+        "knock_out_count": len(knocked_out),
+        "full_term_count": len(full_term),
+        "knock_out_rate": len(knocked_out) / total if total else None,
+        "knock_out_accumulated_quantity": _monitor_summary(knocked_out, "Q_acc"),
+        "full_term_accumulated_quantity": _monitor_summary(full_term, "Q_acc"),
+        "knock_out_gross_return": _gross_return_summary(knocked_out),
+        "full_term_gross_return": _gross_return_summary(full_term),
+    }
+
+
+def _monitor_summary(trades: Sequence[Any], name: str) -> dict[str, float | None]:
+    return number_summary(monitor_values(trades, name))
 
 
 def _finite_term(terms: Mapping[str, Any], key: str) -> float | None:
@@ -219,9 +246,81 @@ def _event_outcomes(trades: Sequence[Any], event_names: Sequence[str]) -> dict[s
         "triggered_count": len(triggered),
         "untriggered_count": total - len(triggered),
         "triggered_rate": len(triggered) / total if total else None,
-        "triggered_pnl": number_summary([trade.pnl for trade in triggered]),
-        "untriggered_pnl": number_summary([trade.pnl for trade in untriggered]),
+        "triggered_gross_return": _gross_return_summary(triggered),
+        "untriggered_gross_return": _gross_return_summary(untriggered),
+        "triggered_terminal_performance": _terminal_performance_summary(triggered),
+        "untriggered_terminal_performance": _terminal_performance_summary(untriggered),
     }
+
+
+def _gross_return_summary(trades: Sequence[Any]) -> dict[str, Any]:
+    return _return_summary([trade.gross_contract_return for trade in trades])
+
+
+def _terminal_performance_summary(trades: Sequence[Any]) -> dict[str, float | None]:
+    return number_summary([trade.terminal_performance for trade in trades if trade.terminal_performance is not None])
+
+
+def _path_case_gross_returns(trades: Sequence[Any]) -> list[dict[str, Any]]:
+    """只按共享解释器选中的path/case汇总，不反推条款情形。"""
+    grouped: dict[tuple[int, int], list[Any]] = {}
+    for trade in trades:
+        grouped.setdefault((int(trade.path_id), int(trade.case_id)), []).append(trade)
+    total = len(trades)
+    return [
+        {
+            "code": f"path_{path_id + 1}_case_{case_id + 1}",
+            "count": len(items),
+            "rate": len(items) / total if total else None,
+            "gross_return": _gross_return_summary(items),
+        }
+        for (path_id, case_id), items in sorted(grouped.items())
+    ]
+
+
+def _multi_underlying_terminal(trades: Sequence[Any]) -> dict[str, Any]:
+    """多标的只描述逐笔实测终值表现，不声称覆盖或相关性估计。"""
+    by_asset_count: dict[str, int] = {}
+    worst: list[float] = []
+    best: list[float] = []
+    dispersion: list[float] = []
+    observed = 0
+    for trade in trades:
+        performances = {
+            str(asset): float(value)
+            for asset, value in trade.underlying_performances.items()
+            if isinstance(value, (int, float, np.number)) and np.isfinite(float(value))
+        }
+        if not performances:
+            continue
+        observed += 1
+        worst_value = min(performances.values())
+        best_value = max(performances.values())
+        # 同值时按资产ID稳定选择，避免统计随dict插入顺序改变。
+        worst_asset = min(asset for asset, value in performances.items() if np.isclose(value, worst_value))
+        by_asset_count[worst_asset] = by_asset_count.get(worst_asset, 0) + 1
+        worst.append(worst_value)
+        best.append(best_value)
+        dispersion.append(best_value - worst_value)
+    return {
+        "underlying_count": max((len(trade.underlying_performances) for trade in trades), default=0),
+        "observed_trade_count": observed,
+        "worst_of_terminal_performance": number_summary(worst),
+        "best_of_terminal_performance": number_summary(best),
+        "cross_underlying_dispersion": number_summary(dispersion),
+        "worst_underlying_selection": {
+            "by_asset_count": dict(sorted(by_asset_count.items())),
+            "by_asset_rate": {
+                asset: count / observed if observed else None
+                for asset, count in sorted(by_asset_count.items())
+            },
+        },
+    }
+
+
+def _return_summary(values: Sequence[float]) -> dict[str, Any]:
+    """结构专属收益只公开百分比口径；100基准仅留在内部账本。"""
+    return {"percent": number_summary(values)}
 
 
 def _metric_gaps(profile_id: str, terms: Mapping[str, Any]) -> list[str]:

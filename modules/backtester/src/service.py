@@ -21,6 +21,7 @@ from runtime.bootstrap import bootstrap_runtime
 from runtime.adapters.local_store import LocalResultStore
 from runtime.contracts.contract_api import (
     ContractResolutionError,
+    RESOLVED_CONTRACT_SCHEMA_ID,
     ResolvedContract,
     resolve_contract,
     verify_product_snapshot_binding,
@@ -28,6 +29,7 @@ from runtime.contracts.contract_api import (
 from runtime.knowledger import load_registry
 from runtime.protocol.models import BacktestInput as ProtocolBacktestInput, DataAssetRef, ModuleRunRef
 from runtime.protocol.module_host import ModuleHostContext, require_host_bound_run_contract
+from runtime.protocol.version import PUBLIC_VERSION
 import pandas as pd
 
 from .historical_data import (
@@ -38,6 +40,7 @@ from .historical_data import (
     load_port_historical_data,
     validate_data_asset_ref,
 )
+from .entry_generator import BacktestInputError, ZeroValidSamplesError
 from .impl.config import BacktestConfig
 from .impl.engine import backtest
 from .models import BacktestInput
@@ -105,6 +108,7 @@ class BacktesterRuntime:
                 "default_value": value,
             } for key, value in terms.items() if key not in {
                 "monitor", "pricing_methods", "constraints", "derived_terms", "margin_call", "payoff_figure_basis",
+                "payoff_normalizer",
             }]
             products.append({
                 "product_id": product_id,
@@ -127,16 +131,20 @@ class BacktesterRuntime:
         }
 
     def run(self, body: Mapping[str, Any]) -> dict[str, Any]:
+        """受控本地开发入口；先取得历史日历，再解析同一份观察合同。"""
         product_id = _text(body.get("product_id"), "product_id")
+        history = self._historical_data(body)
         identity = _identity(body)
+        identity.setdefault("calendar_id", history.calendar_id)
+        identity.setdefault("calendar_version", history.calendar_version)
         contract = resolve_contract(
             product_id,
             identity=identity,
             term_overrides=_term_overrides(body),
             registry=load_registry(),
+            trading_dates=history.trading_sessions,
         )
         config = _backtest_config(body)
-        history = self._historical_data(body)
         result = backtest(BacktestInput(contract, config, history))
         task_id = _identifier(body.get("task_id"), "task")
         run_id = _identifier(body.get("run_id"), "run")
@@ -144,20 +152,21 @@ class BacktesterRuntime:
         candidate_id = _identifier(body.get("candidate_id"), "candidate")
         created_at = _now()
         backtest_payload = result.to_dict()
+        private_audit_ledger = result.audit_ledger()
         data_ref = validate_data_asset_ref(backtest_payload["data_asset_ref"])
         backtest_payload["data_asset_ref"] = data_ref
         data_refs = [data_ref]
         limitations = list(backtest_payload["limitations"])
         output = {
             "ok": True,
-            "schema_version": "backtester.run.v1",
+            "schema_version": "backtester.run.v1.0.0",
             "module": self.module_name,
             "status": "succeeded",
             "task_id": task_id,
             "run_id": run_id,
             "analysis_case_id": analysis_case_id,
             "candidate_id": candidate_id,
-            "catalog_version": contract.registry_snapshot_hash,
+            "catalog_version": PUBLIC_VERSION,
             "contract_fingerprint": contract.contract_fingerprint,
             "created_at": created_at,
             "resolved_contract": contract.to_protocol_dict(),
@@ -167,7 +176,7 @@ class BacktesterRuntime:
             "backtest": backtest_payload,
         }
         input_snapshot = {
-            "schema_version": "backtester.input-snapshot.v1",
+            "schema_version": "backtester.input-snapshot.v1.0.0",
             "product_id": product_id,
             "identity": identity,
             "term_overrides": _term_overrides(body),
@@ -182,6 +191,7 @@ class BacktesterRuntime:
             run_id=run_id,
             input_snapshot=input_snapshot,
             output=output,
+            private_audit_ledger=private_audit_ledger,
         )
         return {**output, "module_run_ref": module_run_ref}
 
@@ -195,46 +205,72 @@ class BacktesterRuntime:
         protocol_input = _formal_backtest_input(request)
         contract = protocol_input.contract
         _require_host_contract(contract, host_context)
-        data_ref = protocol_input.historical_data
-        try:
-            validate_data_asset_ref(asdict(data_ref))
-        except HistoricalDataError as error:
-            raise BacktesterWebInputError(f"BacktestInput.historical_data无效：{error}") from error
-        if data_ref.schema_id != "market-history-v1" or data_ref.media_type != "text/csv":
-            raise BacktesterWebInputError(
-                "BacktestInput.historical_data必须是market-history-v1 text/csv行情资产"
-            )
-        if data_ref.tenant_id != self._tenant_id:
-            raise BacktesterWebInputError("DataAssetRef.tenant_id与Host tenant不一致")
-        if "read" not in data_ref.access_scope:
-            raise BacktesterWebInputError("DataAssetRef.access_scope未授权read")
-        store = self._data_store
-        if store is None:
-            raise BacktesterWebInputError("正式Backtester运行必须由Host注入data_store")
-        if not callable(getattr(store, "read_bytes", None)):
-            raise BacktesterWebInputError("data_store必须实现read_bytes")
-        try:
-            payload = store.read_bytes(data_ref, tenant_id=self._tenant_id)
-        except (OSError, PermissionError, TypeError, ValueError) as error:
-            raise BacktesterWebInputError(f"BacktestInput.historical_data无法由DataStore验证：{error}") from error
-        if not isinstance(payload, bytes):
-            raise BacktesterWebInputError("DataStore.read_bytes必须返回bytes")
-        if sha256(payload).hexdigest() != data_ref.content_hash:
-            raise BacktesterWebInputError("DataStore返回原始字节与DataAssetRef.content_hash不一致")
-        try:
-            history = HistoricalData.from_frame(pd.read_csv(BytesIO(payload)), data_asset_ref=asdict(data_ref))
-        except (TypeError, ValueError) as error:
-            raise BacktesterWebInputError(f"BacktestInput.historical_data无法解析：{error}") from error
-        config = BacktestConfig.from_mapping(protocol_input.backtest_config)
-        result = backtest(BacktestInput(contract, config, history))
-        backtest_payload = result.to_dict()
-        data_ref_dict = validate_data_asset_ref(backtest_payload["data_asset_ref"])
+        result_store = self._formal_result_store()
         task_id = str(host_context.task_id)
         run_id = f"run-{uuid4().hex[:12]}"
         created_at = _now()
+        data_ref = protocol_input.historical_data
+        input_snapshot = _formal_input_snapshot(contract, protocol_input.backtest_config, data_ref)
+        data_refs: list[dict[str, Any]] = []
+        limitations: list[str] = ["formal_run_failed_before_result"]
+        try:
+            data_ref_dict = validate_data_asset_ref(asdict(data_ref))
+        except HistoricalDataError as error:
+            return self._formal_failure(
+                contract=contract, task_id=task_id, run_id=run_id, created_at=created_at,
+                analysis_case_id=host_context.analysis_case_id, candidate_id=host_context.candidate_id,
+                result_store=result_store, input_snapshot=input_snapshot, data_refs=data_refs, limitations=limitations,
+                stage="historical_data", error_code="historical_data_reference_invalid", error=error,
+            )
+        data_refs = [data_ref_dict]
+        input_snapshot = _formal_input_snapshot(contract, protocol_input.backtest_config, data_ref_dict)
+        try:
+            _validate_formal_data_ref(data_ref, tenant_id=self._tenant_id)
+            store = self._formal_data_store()
+            payload = store.read_bytes(data_ref, tenant_id=self._tenant_id)
+            if not isinstance(payload, bytes):
+                raise BacktesterWebInputError("data_store.read_bytes必须返回bytes")
+            if sha256(payload).hexdigest() != data_ref.content_hash:
+                raise BacktesterWebInputError("DataStore返回原始字节与DataAssetRef.content_hash不一致")
+            history = HistoricalData.from_frame(pd.read_csv(BytesIO(payload)), data_asset_ref=asdict(data_ref))
+            if not history.calendar_source_declared:
+                raise BacktesterWebInputError("正式完整期限回测要求DataAssetRef显式声明交易日calendar_id、calendar_version和sessions")
+            _require_contract_calendar(contract, history)
+        except (BacktesterWebInputError, HistoricalDataError, OSError, PermissionError, TypeError, ValueError) as error:
+            return self._formal_failure(
+                contract=contract, task_id=task_id, run_id=run_id, created_at=created_at,
+                analysis_case_id=host_context.analysis_case_id, candidate_id=host_context.candidate_id,
+                result_store=result_store, input_snapshot=input_snapshot, data_refs=data_refs, limitations=limitations,
+                stage="historical_data", error_code="historical_data_unavailable", error=error,
+            )
+        try:
+            config = BacktestConfig.from_mapping(protocol_input.backtest_config)
+            if not config.complete_tenor:
+                raise BacktesterWebInputError("正式Backtester运行必须要求complete_tenor=true；partial coverage不能标记为succeeded")
+        except ValueError as error:
+            return self._formal_failure(
+                contract=contract, task_id=task_id, run_id=run_id, created_at=created_at,
+                analysis_case_id=host_context.analysis_case_id, candidate_id=host_context.candidate_id,
+                result_store=result_store, input_snapshot=input_snapshot, data_refs=data_refs, limitations=limitations,
+                stage="backtest_config", error_code="backtest_config_invalid", error=error,
+            )
+        input_snapshot = _formal_input_snapshot(contract, config.to_dict(), data_ref_dict)
+        try:
+            result = backtest(BacktestInput(contract, config, history))
+        except (BacktestInputError, HistoricalDataError, ValueError) as error:
+            error_code = "zero_valid_samples" if isinstance(error, ZeroValidSamplesError) else "backtest_execution_failed"
+            return self._formal_failure(
+                contract=contract, task_id=task_id, run_id=run_id, created_at=created_at,
+                analysis_case_id=host_context.analysis_case_id, candidate_id=host_context.candidate_id,
+                result_store=result_store, input_snapshot=input_snapshot, data_refs=data_refs, limitations=limitations,
+                stage="path_replay", error_code=error_code, error=error,
+            )
+        backtest_payload = result.to_dict()
+        private_audit_ledger = result.audit_ledger()
+        data_ref_dict = validate_data_asset_ref(backtest_payload["data_asset_ref"])
         output = {
             "ok": True,
-            "schema_version": "backtester.run.v1",
+            "schema_version": "backtester.run.v1.0.0",
             "module": self.module_name,
             "status": "succeeded",
             "task_id": task_id,
@@ -251,18 +287,79 @@ class BacktesterRuntime:
             "backtest": backtest_payload,
         }
         require_host_bound_run_contract(output, host_context)
-        input_snapshot = {
-            "contract": contract.to_protocol_dict(),
-            "backtest_config": config.to_dict(),
-            "historical_data": asdict(data_ref),
-        }
         module_run_ref = _write_run(
-            result_store=self._result_store(),
+            result_store=result_store,
             tenant_id=self._tenant_id,
             task_id=task_id,
             run_id=run_id,
             input_snapshot=input_snapshot,
             output=output,
+            private_audit_ledger=private_audit_ledger,
+        )
+        return {**output, "module_run_ref": module_run_ref}
+
+    def _formal_data_store(self) -> Any:
+        store = self._data_store
+        if store is None:
+            raise BacktesterWebInputError("正式Backtester运行必须由Host注入data_store")
+        if not callable(getattr(store, "read_bytes", None)):
+            raise BacktesterWebInputError("data_store必须实现read_bytes")
+        return store
+
+    def _formal_result_store(self) -> Any:
+        store = self._result_store_port
+        if store is None:
+            raise BacktesterWebInputError("正式Backtester运行必须由Host注入result_store")
+        if not callable(getattr(store, "commit_module_run", None)):
+            raise BacktesterWebInputError("result_store必须实现commit_module_run")
+        return store
+
+    def _formal_failure(
+        self,
+        *,
+        contract: ResolvedContract,
+        task_id: str,
+        run_id: str,
+        created_at: str,
+        analysis_case_id: str,
+        candidate_id: str,
+        result_store: Any,
+        input_snapshot: Mapping[str, Any],
+        data_refs: list[dict[str, Any]],
+        limitations: list[str],
+        stage: str,
+        error_code: str,
+        error: Exception,
+    ) -> dict[str, Any]:
+        message = _safe_formal_error_message(error)
+        failure = {
+            "error_code": error_code,
+            "stage": stage,
+            "message": message,
+            "retryable": stage == "historical_data",
+            "missing_inputs": ["historical_data"] if stage == "historical_data" else [],
+            "upstream_refs": data_refs,
+        }
+        output = {
+            "ok": False,
+            "schema_version": "backtester.run.v1.0.0",
+            "module": self.module_name,
+            "status": "failed",
+            "task_id": task_id,
+            "run_id": run_id,
+            "analysis_case_id": analysis_case_id,
+            "candidate_id": candidate_id,
+            "catalog_version": PUBLIC_VERSION,
+            "contract_fingerprint": contract.contract_fingerprint,
+            "created_at": created_at,
+            "resolved_contract": contract.to_protocol_dict(),
+            "data_refs": data_refs,
+            "limitations": [*limitations, f"formal_failure_stage:{stage}"],
+            "error": failure,
+        }
+        module_run_ref = _write_failed_run(
+            result_store=result_store, tenant_id=self._tenant_id, task_id=task_id, run_id=run_id,
+            input_snapshot=input_snapshot, output=output,
         )
         return {**output, "module_run_ref": module_run_ref}
 
@@ -378,10 +475,70 @@ def _require_host_contract(contract: ResolvedContract, context: ModuleHostContex
         raise BacktesterWebInputError("ModuleHostContext缺少正式运行字段：" + ",".join(missing))
     if context.contract_fingerprint != contract.contract_fingerprint:
         raise BacktesterWebInputError("ModuleHostContext.contract_fingerprint与ResolvedContract不一致")
-    if context.contract_ref is None or context.contract_ref.schema_id != "optionhelper.resolved-contract/v1":
+    if context.contract_ref is None or context.contract_ref.schema_id != RESOLVED_CONTRACT_SCHEMA_ID:
         raise BacktesterWebInputError("Backtester正式运行缺少Core验证的ResolvedContract引用")
     if context.contract_ref.content_hash != contract.contract_fingerprint:
         raise BacktesterWebInputError("ModuleHostContext.contract_ref与ResolvedContract不一致")
+
+
+def _formal_input_snapshot(
+    contract: ResolvedContract,
+    backtest_config: Mapping[str, Any],
+    historical_data: DataAssetRef | Mapping[str, Any],
+) -> dict[str, Any]:
+    """正式Run快照只保存可验证合同、配置及经净化的资产引用。"""
+    raw_reference = asdict(historical_data) if isinstance(historical_data, DataAssetRef) else dict(historical_data)
+    try:
+        reference = validate_data_asset_ref(raw_reference)
+    except HistoricalDataError:
+        reference = {
+            "status": "invalid_data_asset_ref",
+            "data_asset_id": _safe_snapshot_identifier(raw_reference.get("data_asset_id")),
+            "content_hash": _safe_snapshot_hash(raw_reference.get("content_hash")),
+        }
+    return {
+        "contract": contract.to_protocol_dict(),
+        "backtest_config": dict(backtest_config),
+        "historical_data": reference,
+    }
+
+
+def _safe_snapshot_identifier(value: Any) -> str | None:
+    text = str(value).strip() if value is not None else ""
+    return text if _IDENTIFIER.fullmatch(text) else None
+
+
+def _safe_snapshot_hash(value: Any) -> str | None:
+    text = str(value).strip() if value is not None else ""
+    return text if re.fullmatch(r"[0-9a-f]{64}", text) else None
+
+
+def _validate_formal_data_ref(reference: DataAssetRef, *, tenant_id: str) -> None:
+    """先验证逻辑资产授权，再让Host私有DataStore读取原始字节。"""
+    if reference.tenant_id != tenant_id:
+        raise BacktesterWebInputError("DataAssetRef租户与Host调用方不一致")
+    if "read" not in reference.access_scope:
+        raise BacktesterWebInputError("DataAssetRef.access_scope缺少read权限")
+    if reference.schema_id != "market-history-v1" or reference.media_type != "text/csv":
+        raise BacktesterWebInputError("正式回测只接受market-history-v1 text/csv历史资产")
+
+
+def _require_contract_calendar(contract: ResolvedContract, history: HistoricalData) -> None:
+    """一笔正式回测只能使用与冻结合同完全相同的已验证交易日历。"""
+    identity = contract.identity
+    if (
+        identity.get("calendar_id") != history.calendar_id
+        or identity.get("calendar_version") != history.calendar_version
+    ):
+        raise BacktesterWebInputError("ResolvedContract交易日历与DataAssetRef.calendar_id/calendar_version不一致")
+
+
+def _safe_formal_error_message(error: Exception) -> str:
+    """失败Run保留阶段语义，不把外置Store的物理路径带入公共错误。"""
+    message = str(error).strip()
+    if not message or "/" in message or "\\" in message:
+        return "正式历史数据读取或校验失败"
+    return message
 
 
 def _identity(body: Mapping[str, Any]) -> dict[str, Any]:
@@ -448,12 +605,13 @@ def _write_run(
     run_id: str,
     input_snapshot: Mapping[str, Any],
     output: Mapping[str, Any],
+    private_audit_ledger: list[dict[str, Any]],
 ) -> dict[str, str]:
     """把唯一正式结果交给Core原子提交，模块不再直接写运行目录。"""
     backtest_payload = output["backtest"]
     files: dict[str, Any] = {
         "manifest.json": {
-            "schema_version": "backtester.module-run.v1",
+            "schema_version": "backtester.module-run.v1.0.0",
             "module": "backtester",
             "tenant_id": tenant_id,
             "task_id": task_id,
@@ -475,6 +633,50 @@ def _write_run(
         "artifacts/backtest_result.json": backtest_payload,
         "artifacts/trade_ledger.csv": _trade_ledger_csv(backtest_payload["trade_ledger"]),
         "artifacts/branch_coverage.json": backtest_payload["branch_coverage"],
+        "private/audit_trade_ledger.json": _json_text(private_audit_ledger),
+    }
+    reference = result_store.commit_module_run(
+        module="backtester",
+        tenant_id=tenant_id,
+        task_id=task_id,
+        run_id=run_id,
+        files=files,
+    )
+    if not isinstance(reference, ModuleRunRef):
+        raise BacktesterWebInputError("result_store未返回正式ModuleRunRef")
+    return asdict(reference)
+
+
+def _write_failed_run(
+    *,
+    result_store: Any,
+    tenant_id: str,
+    task_id: str,
+    run_id: str,
+    input_snapshot: Mapping[str, Any],
+    output: Mapping[str, Any],
+) -> dict[str, str]:
+    """提交可解析的失败ModuleRun；不伪造result.json或公开计算结果。"""
+    files: dict[str, Any] = {
+        "manifest.json": {
+            "schema_version": "backtester.module-run.v1.0.0",
+            "module": "backtester",
+            "tenant_id": tenant_id,
+            "task_id": task_id,
+            "run_id": run_id,
+            "analysis_case_id": output.get("analysis_case_id"),
+            "candidate_id": output.get("candidate_id"),
+            "catalog_version": output.get("catalog_version"),
+            "status": "failed",
+            "created_at": output["created_at"],
+            "contract_fingerprint": output["contract_fingerprint"],
+            "artifacts": [],
+        },
+        "input_snapshot.json": dict(input_snapshot),
+        "resolved_contract.json": output["resolved_contract"],
+        "data_refs.json": _json_text(output["data_refs"]),
+        "limitations.json": _json_text(output["limitations"]),
+        "error.json": dict(output["error"]),
     }
     reference = result_store.commit_module_run(
         module="backtester",
@@ -494,7 +696,10 @@ def _json_text(value: Any) -> str:
 
 def _trade_ledger_csv(trades: Any) -> str:
     output = StringIO(newline="")
-    columns = ("trade_id", "entry_date", "exit_date", "path_id", "case_id", "pnl", "return_value", "trade_json")
+    columns = (
+        "trade_id", "entry_date", "exit_date", "path_id", "case_id", "gross_contract_return",
+        "trade_json",
+    )
     writer = csv.DictWriter(output, fieldnames=columns, lineterminator="\n")
     writer.writeheader()
     for trade in trades:
@@ -510,7 +715,7 @@ def _port_failure(error: DataFetcherPortUnavailable) -> dict[str, Any]:
     data_store_missing = "DataStore" in message or "read_bytes" in message
     return {
         "ok": False,
-        "schema_version": "backtester.error.v1",
+        "schema_version": "backtester.error.v1.0.0",
         "module": "backtester",
         "status": "failed",
         "error": {
@@ -555,18 +760,12 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         if self.path != "/api/run":
             return self._json(HTTPStatus.NOT_FOUND, {"ok": False, "message": "未找到接口"})
-        try:
-            length = int(self.headers.get("Content-Length", "0"))
-            if length <= 0 or length > MAX_BODY_BYTES:
-                raise BacktesterWebInputError("请求体大小无效")
-            body = json.loads(self.rfile.read(length).decode("utf-8"))
-            if not isinstance(body, Mapping):
-                raise BacktesterWebInputError("请求体必须为JSON对象")
-            return self._json(HTTPStatus.OK, self.runtime.run(body))
-        except DataFetcherPortUnavailable as error:
-            return self._json(HTTPStatus.SERVICE_UNAVAILABLE, _port_failure(error))
-        except Exception as error:
-            return self._json(HTTPStatus.BAD_REQUEST, {"ok": False, "message": str(error)})
+        return self._json(HTTPStatus.CONFLICT, {
+            "ok": False,
+            "module": "backtester",
+            "status": "host_binding_required",
+            "message": "独立页面不执行回测；请在OptionHelper App Host中绑定ResolvedContract、DataAssetRef、DataStore和ResultStore后运行。",
+        })
 
     def _file(self, path: Path, content_type: str) -> None:
         if not path.is_file():

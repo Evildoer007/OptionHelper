@@ -27,23 +27,18 @@ def summarize_common_metrics(
     include_annual: bool,
 ) -> dict[str, Any]:
     """由唯一逐笔账本派生所有非产品专属统计。"""
-    pnl = np.asarray([trade.pnl for trade in trades], dtype=float)
-    returns = np.asarray([trade.return_value for trade in trades if trade.return_value is not None], dtype=float)
+    returns = np.asarray([trade.gross_contract_return for trade in trades], dtype=float)
+    positive_count = int(np.sum(returns > 0.0))
     common = {
         "sample_count": len(trades),
-        "win_rate": float(np.mean(pnl > 0)) if len(pnl) else None,
-        "average_pnl": float(pnl.mean()) if len(pnl) else None,
-        "median_pnl": float(np.median(pnl)) if len(pnl) else None,
-        "minimum_pnl": float(pnl.min()) if len(pnl) else None,
-        "maximum_pnl": float(pnl.max()) if len(pnl) else None,
-        # ``minimum_pnl`` is signed.  ``max_loss`` is a loss amount, so an
-        # all-profitable sample has no loss rather than a positive “loss”.
-        "max_loss": max(0.0, -float(pnl.min())) if len(pnl) else None,
-        "average_return": float(returns.mean()) if len(returns) else None,
-        "median_return": float(np.median(returns)) if len(returns) else None,
-        "minimum_return": float(returns.min()) if len(returns) else None,
-        "maximum_return": float(returns.max()) if len(returns) else None,
-        "return_not_applicable_count": sum(trade.return_value is None for trade in trades),
+        "valid_return_sample_count": len(trades),
+        "positive_return_count": positive_count,
+        "win_rate": positive_count / len(trades) if trades else None,
+        "average_gross_return": float(returns.mean()) if len(returns) else None,
+        "median_gross_return": float(np.median(returns)) if len(returns) else None,
+        "minimum_gross_return": float(returns.min()) if len(returns) else None,
+        "maximum_gross_return": float(returns.max()) if len(returns) else None,
+        "max_loss_gross_return": max(0.0, -float(returns.min())) if len(returns) else None,
         "return_distribution": distribution(returns),
     }
     tenor_years = float(contract.terms.get("T", 0.0))
@@ -170,7 +165,7 @@ def outcome_summary(trades: Sequence[Any], contract: Any) -> list[dict[str, Any]
     rows: list[dict[str, Any]] = []
     for (path_index, case_index), definition in definitions.items():
         selected = [trade for trade in trades if trade.path_id == path_index and trade.case_id == case_index]
-        pnl = np.asarray([trade.pnl for trade in selected], dtype=float)
+        returns = np.asarray([trade.gross_contract_return for trade in selected], dtype=float)
         rows.append({
             "code": f"path_{path_index + 1}_case_{case_index + 1}",
             "label": f"路径{path_index + 1}·情形{case_index + 1}",
@@ -178,7 +173,7 @@ def outcome_summary(trades: Sequence[Any], contract: Any) -> list[dict[str, Any]
             "domain": definition["domain"],
             "count": len(selected),
             "rate": len(selected) / total if total else None,
-            "average_pnl": float(pnl.mean()) if len(pnl) else None,
+            "average_gross_return": float(returns.mean()) if len(returns) else None,
         })
     return rows
 
@@ -212,14 +207,15 @@ def annual_summary(trades: Sequence[Any], contract: Any) -> list[dict[str, Any]]
         grouped.setdefault(pd.Timestamp(trade.entry_date).year, []).append(trade)
     rows: list[dict[str, Any]] = []
     for year, items in sorted(grouped.items()):
-        pnl = np.asarray([trade.pnl for trade in items], dtype=float)
-        returns = np.asarray([trade.return_value for trade in items if trade.return_value is not None], dtype=float)
+        returns = np.asarray([trade.gross_contract_return for trade in items], dtype=float)
+        positive_count = int(np.sum(returns > 0.0))
         rows.append({
             "year": year,
             "sample_count": len(items),
-            "win_rate": float(np.mean(pnl > 0)) if len(pnl) else None,
-            "average_pnl": float(pnl.mean()) if len(pnl) else None,
-            "average_return": float(returns.mean()) if len(returns) else None,
+            "valid_return_sample_count": len(items),
+            "positive_return_count": positive_count,
+            "win_rate": positive_count / len(items) if items else None,
+            "average_gross_return": float(returns.mean()) if len(returns) else None,
             "outcome_summary": outcome_summary(items, contract),
             "three_outcome_summary": three_outcome_summary(items),
             "event_rates": {name: value["trigger_rate"] for name, value in event_summary(items, 0.0).items()},

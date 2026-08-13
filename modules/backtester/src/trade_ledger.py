@@ -26,6 +26,7 @@ class HistoricalResolvedContract:
     start_date: str
     end_date: str
     reference_prices: Mapping[str, float]
+    reference_price_provenance: Mapping[str, Any]
     resolved_schedules: Mapping[str, Any]
     product_version: str
     template_contract_fingerprint: str
@@ -38,6 +39,7 @@ class HistoricalResolvedContract:
             "start_date": self.start_date,
             "end_date": self.end_date,
             "reference_prices": dict(self.reference_prices),
+            "reference_price_provenance": deep_thaw(self.reference_price_provenance),
             "resolved_schedules": deep_thaw(self.resolved_schedules),
             "product_version": self.product_version,
             "template_contract_fingerprint": self.template_contract_fingerprint,
@@ -64,9 +66,8 @@ class TradeResult:
     events: Mapping[str, Any]
     cashflows: tuple[Mapping[str, Any], ...]
     pnl: float
-    return_value: float | None
-    return_denominator: float | None
-    return_status: Mapping[str, Any]
+    gross_contract_return: float
+    return_normalization: Mapping[str, str]
     terminal_performance: float | None
     entry_features: Mapping[str, Any]
     data_flags: Mapping[str, Any]
@@ -96,22 +97,35 @@ class TradeResult:
             "case_id": self.case_id,
             "settlement_type": self.settlement_type,
             "events": deep_thaw(self.events),
-            "cashflows": [dict(item) for item in self.cashflows],
-            "pnl": self.pnl,
-            "contract_cashflow_pnl": self.pnl,
-            "client_net_pnl": None,
-            "pnl_convention": {
+            "gross_contract_return": self.gross_contract_return,
+            "gross_return_convention": {
                 "basis": "contract_cashflow_before_external_costs",
-                "external_costs_modelled": False,
-                "client_net_pnl_status": "not_modelled",
+                "display_unit": "percentage",
+                "value_encoding": "decimal_ratio",
+                "normalization": dict(self.return_normalization),
             },
-            "return_value": self.return_value,
-            "return_denominator": self.return_denominator,
-            "return_status": dict(self.return_status),
+            "client_net_return": {
+                "status": "not_modelled",
+                "value": None,
+                "reasons": ["option_premium", "funding", "fees", "taxes", "hedging", "slippage_not_modelled"],
+            },
+            "client_net_pnl": {
+                "status": "not_modelled",
+                "value": None,
+                "reasons": ["option_premium", "funding", "fees", "taxes", "hedging", "slippage_not_modelled"],
+            },
             "terminal_performance": self.terminal_performance,
             "entry_features": deep_thaw(self.entry_features),
             "data_flags": deep_thaw(self.data_flags),
             "limitations": list(self.limitations),
+        }
+
+    def to_audit_dict(self) -> dict[str, Any]:
+        """仅供ResultStore私有审计产物使用的原始现金流账本。"""
+        return {
+            **self.to_dict(),
+            "cashflows": [dict(item) for item in self.cashflows],
+            "audit_contract_cashflow_amount": self.pnl,
         }
 
 
@@ -128,8 +142,8 @@ def freeze_trade_contract(
         "contract_id": f"{identity['contract_id']}@{entry_date}",
         "contract_start_date": entry_date,
         "contract_end_date": _date_text(trading_dates[-1]),
-        "contract_reference_spots": dict(entry_spots),
         "reference_prices": dict(entry_spots),
+        "reference_price_provenance": _reference_price_provenance(entry_spots),
     })
     schedules = _resolved_schedule_snapshot(contract, trading_dates)
     trade_contract = replace(
@@ -144,6 +158,7 @@ def freeze_trade_contract(
         start_date=entry_date,
         end_date=_date_text(trading_dates[-1]),
         reference_prices=dict(entry_spots),
+        reference_price_provenance=_reference_price_provenance(entry_spots),
         resolved_schedules=schedules,
         product_version=trade_contract.product_version,
         template_contract_fingerprint=contract.contract_fingerprint,
@@ -167,8 +182,8 @@ def build_trade_result(
     entry_spots = {asset: float(replay.values[0, index]) for index, asset in enumerate(contract.underlyings)}
     settlement_spots = {asset: float(replay.values[-1, index]) for index, asset in enumerate(contract.underlyings)}
     performances = {asset: settlement_spots[asset] / entry_spots[asset] - 1.0 for asset in contract.underlyings}
-    denominator = _return_denominator(contract, config.return_denominator)
     pnl = float(sum(float(item["amount"]) for item in cashflows))
+    gross_return, normalization = _gross_contract_return(contract, pnl)
     return TradeResult(
         trade_id=trade_id,
         historical_contract=historical_contract,
@@ -185,12 +200,8 @@ def build_trade_result(
         events=_event_dates(replay.outcome.monitor_values, replay.dates, replay.times),
         cashflows=cashflows,
         pnl=pnl,
-        return_value=pnl / denominator if denominator else None,
-        return_denominator=denominator,
-        return_status={
-            "status": "available" if denominator is not None else "not_applicable",
-            "reason": None if denominator is not None else f"return_denominator_{config.return_denominator}_unavailable",
-        },
+        gross_contract_return=gross_return,
+        return_normalization=normalization,
         terminal_performance=min(performances.values()) if "S0Vec" in contract.terms else performances[contract.underlyings[0]],
         entry_features=entry_features,
         data_flags={
@@ -202,6 +213,12 @@ def build_trade_result(
             "content_hash": historical_data.data_asset_ref["content_hash"],
             "complete_tenor_requested": config.complete_tenor,
             "path_end_date": _date_text(replay.dates[-1]),
+            "entry_reference": {
+                "field": "close",
+                "adjustment": "unadjusted",
+                "source": "latest_available_close_proxy",
+                "raw_spots": entry_spots,
+            },
         },
         limitations=tuple(historical_data.limitations) + ("payment_calendar_not_exposed_by_shared_contract_core",),
     )
@@ -223,6 +240,17 @@ def _entry_normalized_spots(contract: ResolvedContract, entry_spots: Mapping[str
     return {asset: 100.0 for asset in contract.underlyings} if "S0" in contract.terms or "S0Vec" in contract.terms else dict(entry_spots)
 
 
+def _reference_price_provenance(entry_spots: Mapping[str, float]) -> dict[str, Any]:
+    return {
+        "role": "S0Raw_proxy",
+        "field": "close",
+        "adjustment": "unadjusted",
+        "source": "latest_available_close_proxy",
+        "raw_spots": dict(entry_spots),
+        "freeze": "per_trade_at_entry",
+    }
+
+
 def _dated_cashflow(flow: ContractCashflow, dates: pd.DatetimeIndex, times: np.ndarray) -> dict[str, Any]:
     position = int(np.abs(times - float(flow.time)).argmin())
     return {"date": _date_text(dates[position]), "time": float(flow.time), "amount": float(flow.amount)}
@@ -241,15 +269,34 @@ def _event_dates(monitors: Mapping[str, Any], dates: pd.DatetimeIndex, times: np
     return result
 
 
-def _return_denominator(contract: ResolvedContract, convention: str) -> float | None:
+def _gross_contract_return(contract: ResolvedContract, pnl: float) -> tuple[float, dict[str, str]]:
+    """将解释器现金流映射为无货币单位的每100合同单位收益。
+
+    ``N``、``Nvar``等仅是合同公式的规模变量，而非用户可选择的收益率分母。
+    没有规模变量的价格型合同本身已在内部100基准上结算；累购以首期约定数量
+    乘100基准作为一个合同单位。每个路径都返回收益，不能因缺少``N``而失效。
+    """
     terms = contract.terms
-    if convention == "notional":
-        return float(terms["N"]) if "N" in terms else None
-    if convention == "margin":
-        value = float(terms.get("N", 0.0)) * float(terms.get("g", 0.0))
-        return value or None
-    value = float(terms.get("Pi_0", terms.get("P_net", 0.0))) or float(terms.get("N", 0.0)) * float(terms.get("p", 0.0))
-    return value or None
+    if contract.product_id == "10.4":
+        variance_notional = float(terms.get("Nvar", 0.0))
+        if variance_notional > 0.0:
+            return pnl / (variance_notional * 10_000.0), {
+                "source": "variance_percentage_squared_contract_scale",
+                "contract_base": "100",
+            }
+    for key, source in (("N", "declared_contract_scale"), ("Nvar", "declared_variance_contract_scale"), ("Nvega", "declared_vega_contract_scale")):
+        value = float(terms.get(key, 0.0))
+        if value > 0.0:
+            return pnl / value, {"source": source, "contract_base": "100"}
+    if contract.product_id == "8.1":
+        quantity = float(terms.get("q", 0.0))
+        observations = float(terms.get("n_obs", 0.0))
+        if quantity > 0.0 and observations > 0.0:
+            return pnl / (quantity * observations * 100.0), {
+                "source": "accumulator_full_term_contractual_purchase_scale",
+                "contract_base": "100",
+            }
+    return pnl / 100.0, {"source": "normalized_unit_contract", "contract_base": "100"}
 
 
 def _date_text(value: Any) -> str:

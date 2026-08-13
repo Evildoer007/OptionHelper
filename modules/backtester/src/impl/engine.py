@@ -24,12 +24,15 @@ from .config import BacktestConfig
 
 
 _ECONOMIC_CONVENTION = {
-    "pnl_basis": "contract_cashflow_before_external_costs",
+    "gross_return_basis": "contract_cashflow_before_external_costs",
+    "gross_return_display_unit": "percentage",
+    "gross_return_value_encoding": "decimal_ratio",
     "external_costs_modelled": False,
     "client_net_pnl_status": "not_modelled",
-    "client_net_pnl_reason": "未建模交易费、资金成本、税费及客户特定现金流；不得将合同条款现金流损益表述为客户净损益。",
-    "win_rate_numerator": "contract_cashflow_pnl_gt_zero",
-    "win_rate_denominator": "valid_trade_count",
+    "client_net_return_status": "not_modelled",
+    "client_net_return_reason": "未建模期权费、资金成本、交易费、税费、对冲及滑点；不得将合同毛收益表述为客户净收益。",
+    "win_rate_numerator": "positive_gross_contract_return_count",
+    "win_rate_denominator": "valid_return_sample_count",
 }
 
 
@@ -98,7 +101,6 @@ class BacktestResult:
             "complete_tenor": self.config.complete_tenor,
             "missing_data_policy": self.config.missing_data_policy,
             "alignment_policy": self.config.alignment_policy,
-            "return_denominator": self.config.return_denominator,
             "statistics_frequency": self.config.statistics_frequency,
             "contract_price_field": self.historical_data.contract_price_field,
             "contract_adjustment": self.historical_data.contract_adjustment,
@@ -108,8 +110,9 @@ class BacktestResult:
             "entry_hv_bins": list(self.config.entry_hv_bins or ()),
         }
         common_keys = (
-            "sample_count", "skipped_count", "win_rate", "average_pnl", "median_pnl", "minimum_pnl", "maximum_pnl",
-            "max_loss", "average_return", "median_return", "minimum_return", "maximum_return", "return_not_applicable_count",
+            "sample_count", "skipped_count", "valid_return_sample_count", "positive_return_count", "win_rate",
+            "average_gross_return", "median_gross_return", "minimum_gross_return", "maximum_gross_return",
+            "max_loss_gross_return",
             "return_distribution",
         )
         common_metrics = {key: summary[key] for key in common_keys}
@@ -140,6 +143,12 @@ class BacktestResult:
             "annual_summary": summary["annual_summary"],
             "price_convention_evidence": {
                 "contract_settlement": {"field": "close", "adjustment": "unadjusted"},
+                "entry_reference": {
+                    "field": "close",
+                    "adjustment": "unadjusted",
+                    "source": "latest_available_close_proxy",
+                    "freeze": "per_trade_at_entry",
+                },
                 "entry_hv": {
                     "field": self.historical_data.hv_price_field,
                     "adjustment": self.historical_data.hv_adjustment,
@@ -161,6 +170,10 @@ class BacktestResult:
             "data_asset_ref": payload["data_asset_ref"],
         })
         return payload
+
+    def audit_ledger(self) -> list[dict[str, Any]]:
+        """返回供私有ResultStore审计文件保存的原始现金流账本。"""
+        return [trade.to_audit_dict() for trade in self.trades]
 
 
 def backtest(backtest_input: Any) -> BacktestResult:
@@ -189,7 +202,14 @@ def backtest(backtest_input: Any) -> BacktestResult:
             historical_data, contract.underlyings, history.close.index[start],
             window=config.entry_hv_window, bins=config.entry_hv_bins,
         )
-        stop, reason = contract_stop_position(history.close.index, start, contract, config.complete_tenor)
+        stop, reason = contract_stop_position(
+            history.close.index,
+            start,
+            contract,
+            config.complete_tenor,
+            trading_sessions=historical_data.trading_sessions,
+            calendar_coverage_end=historical_data.calendar_coverage_end,
+        )
         if stop is None:
             _skip_or_reject(skipped, config, entry_date, reason or "insufficient_tenor")
             continue
@@ -227,7 +247,7 @@ def backtest(backtest_input: Any) -> BacktestResult:
             skipped.append({"entry_date": entry_date, "reason": str(error)})
     if not trades:
         raise ZeroValidSamplesError("zero_valid_samples：没有满足完整期限、观察日与数据要求的有效入场样本")
-    ledger_hash = semantic_hash([trade.to_dict() for trade in trades])
+    ledger_hash = semantic_hash([trade.to_audit_dict() for trade in trades])
     profile_hash = metric_profile_hash(profile_spec)
     execution_fingerprint = semantic_hash({
         "contract_fingerprint": contract.contract_fingerprint,

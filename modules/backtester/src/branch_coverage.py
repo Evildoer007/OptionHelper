@@ -35,7 +35,7 @@ def branch_coverage(contract: Any, trades: Sequence[Any]) -> dict[str, Any]:
         if (item["path_id"], item["case_id"]) not in counts
     ]
     return {
-        "schema_version": "backtester.branch-coverage.v1",
+        "schema_version": "backtester.branch-coverage.v1.0.0",
         "scope": "observed_trade_outcomes",
         "product_id": product_id,
         "status": "complete" if not uncovered else "partial",

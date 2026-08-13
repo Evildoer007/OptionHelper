@@ -25,7 +25,6 @@ class BacktestConfig:
     complete_tenor: bool = True
     missing_data_policy: str = "drop_trade"
     alignment_policy: str = "intersection"
-    return_denominator: str = "notional"
     statistics_frequency: str = "all"
     entry_hv_window: int | None = None
     entry_hv_bins: tuple[float, ...] | None = None
@@ -62,8 +61,6 @@ class BacktestConfig:
             raise BacktestConfigError("missing_data_policy只能为drop_trade或reject")
         if config.alignment_policy != "intersection":
             raise BacktestConfigError("首期多标的对齐仅支持intersection")
-        if config.return_denominator not in {"notional", "margin", "premium"}:
-            raise BacktestConfigError("return_denominator只能为notional、margin或premium")
         if config.statistics_frequency not in {"all", "year"}:
             raise BacktestConfigError("statistics_frequency只能为all或year")
         if config.entry_hv_window is not None and config.entry_hv_window not in {5, 10, 20, 60, 122, 244}:

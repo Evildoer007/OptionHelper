@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, is_dataclass
+from dataclasses import asdict, dataclass, field, is_dataclass
 from hashlib import sha256
 from io import BytesIO
 import json
@@ -44,6 +44,11 @@ class HistoricalData:
     contract_adjustment: str = "unadjusted"
     hv_price_field: str | None = None
     hv_adjustment: str | None = None
+    trading_sessions: pd.DatetimeIndex = field(default_factory=pd.DatetimeIndex)
+    calendar_id: str = ""
+    calendar_version: str = ""
+    calendar_coverage_end: pd.Timestamp | None = None
+    calendar_source_declared: bool = False
     limitations: tuple[str, ...] = ()
 
     @classmethod
@@ -52,13 +57,22 @@ class HistoricalData:
         normalized_hash = _frame_hash(data)
         reference = _build_or_validate_asset_ref(data, data_asset_ref, normalized_hash)
         contract_field, contract_adjustment, hv_field, hv_adjustment = _price_convention(data, reference)
-        limitations = ["exchange_calendar_not_exposed_by_data_source_weekday_validation_only"]
+        sessions = _trading_sessions(reference["coverage"])
+        calendar_id = str(reference["coverage"]["calendar_id"])
+        calendar_version = str(reference["coverage"]["calendar_version"])
+        calendar_coverage_end = _calendar_coverage_end(reference["coverage"])
+        source_declared = _calendar_is_source_declared(data_asset_ref)
+        limitations: list[str] = []
+        if not source_declared:
+            limitations.append("calendar_sessions_derived_from_frame_not_formal_evidence")
         if data_asset_ref is None:
             limitations.append("in_memory_historical_data_without_persisted_data_asset")
         return cls(
             data, reference, normalized_hash, _reference_fingerprint(reference),
             contract_price_field=contract_field, contract_adjustment=contract_adjustment,
-            hv_price_field=hv_field, hv_adjustment=hv_adjustment,
+            hv_price_field=hv_field, hv_adjustment=hv_adjustment, trading_sessions=sessions,
+            calendar_id=calendar_id, calendar_version=calendar_version, calendar_coverage_end=calendar_coverage_end,
+            calendar_source_declared=source_declared,
             limitations=tuple(limitations),
         )
 
@@ -72,6 +86,11 @@ class HistoricalData:
         if _reference_fingerprint(self.data_asset_ref) != self.data_asset_ref_fingerprint:
             raise HistoricalDataError("HistoricalData.data_asset_ref已变化，拒绝使用失真的数据谱系")
         _build_or_validate_asset_ref(data, self.data_asset_ref, self.normalized_content_hash)
+        sessions = _trading_sessions(self.data_asset_ref["coverage"])
+        if not sessions.equals(self.trading_sessions):
+            raise HistoricalDataError("HistoricalData交易日历已变化，拒绝使用失真的期限路径")
+        if _calendar_coverage_end(self.data_asset_ref["coverage"]) != self.calendar_coverage_end:
+            raise HistoricalDataError("HistoricalData交易日历覆盖终点已变化，拒绝使用失真的期限路径")
 
 
 def normalize_history_frame(frame: pd.DataFrame) -> pd.DataFrame:
@@ -252,6 +271,10 @@ def _protocol_data_asset_ref(reference: Mapping[str, Any]) -> DataAssetRef:
             access_scope=tuple(str(item) for item in reference["access_scope"]), partition_spec=dict(reference["partition_spec"]),
         )
     except (KeyError, TypeError, ValueError) as error:
+        # Core会先对storage_ref执行不透明引用校验。保留这一边界的语义，
+        # 使调用者不会把“物理路径被拒绝”误判为普通字段格式问题。
+        if "物理路径" in str(error):
+            raise HistoricalDataError("DataAssetRef.storage_ref必须为受控opaque引用，禁止裸物理路径") from error
         raise HistoricalDataError("DataAssetRef格式无效") from error
 
 
@@ -273,7 +296,7 @@ def _build_or_validate_asset_ref(data: pd.DataFrame, supplied: Mapping[str, Any]
     coverage = _coverage(data)
     default = {
         "data_asset_id": f"local-{normalized_hash[:16]}", "storage_ref": "in_memory", "media_type": "text/csv",
-        "schema_id": "optionhelper.market_history.v1", "asset_ids": sorted(data["asset_id"].unique().tolist()),
+        "schema_id": "market-history-v1", "asset_ids": sorted(data["asset_id"].unique().tolist()),
         "normalized_fields": data.columns.tolist(), "coverage": coverage, "row_count": int(len(data)),
         "price_convention": {
             "contract_close_field": "close", "contract_adjustment": "unadjusted",
@@ -285,7 +308,15 @@ def _build_or_validate_asset_ref(data: pd.DataFrame, supplied: Mapping[str, Any]
         "lineage": {"provider": "local", "normalizer": "backtester.historical_data.v1"},
         "tenant_id": "local", "created_by": "local", "access_scope": ["read"], "partition_spec": {},
     }
-    reference = {**default, **dict(supplied or {})}
+    supplied_mapping = dict(supplied or {})
+    supplied_coverage = supplied_mapping.get("coverage")
+    if supplied_coverage is not None and not isinstance(supplied_coverage, Mapping):
+        raise HistoricalDataError("DataAssetRef.coverage必须为对象")
+    reference = {
+        **default,
+        **supplied_mapping,
+        "coverage": {**coverage, **dict(supplied_coverage or {})},
+    }
     missing = DATA_ASSET_REQUIRED_FIELDS - set(reference)
     if missing:
         raise HistoricalDataError(f"DataAssetRef缺少字段：{','.join(sorted(missing))}")
@@ -307,10 +338,13 @@ def _build_or_validate_asset_ref(data: pd.DataFrame, supplied: Mapping[str, Any]
         raise HistoricalDataError("DataAssetRef.row_count与历史数据不一致")
     if not _coverage_matches(reference["coverage"], coverage):
         raise HistoricalDataError("DataAssetRef.coverage与历史数据不一致")
+    if not _all_assets_cover_sessions(data, _trading_sessions(reference["coverage"])):
+        raise HistoricalDataError("历史数据未覆盖DataAssetRef声明的全部交易日sessions")
     return reference
 
 
 def _coverage(data: pd.DataFrame) -> dict[str, Any]:
+    sessions = _session_texts(data["date"].drop_duplicates().sort_values())
     by_asset = {
         asset_id: {"start_date": group["date"].min().strftime("%Y-%m-%d"), "end_date": group["date"].max().strftime("%Y-%m-%d"), "row_count": int(len(group))}
         for asset_id, group in data.groupby("asset_id", sort=True)
@@ -318,6 +352,9 @@ def _coverage(data: pd.DataFrame) -> dict[str, Any]:
     return {
         "date_start": data["date"].min().strftime("%Y-%m-%d"), "date_end": data["date"].max().strftime("%Y-%m-%d"),
         "trading_day_rows": int(data["date"].nunique()), "by_asset": by_asset,
+        "sessions": sessions,
+        "calendar_id": "local-development",
+        "calendar_version": "frame-sessions-v1",
     }
 
 
@@ -326,7 +363,83 @@ def _coverage_matches(declared: Any, expected: Mapping[str, Any]) -> bool:
         return False
     if "by_asset" in declared and dict(declared["by_asset"]) != expected["by_asset"]:
         return False
-    return all(key not in declared or declared[key] == expected[key] for key in ("date_start", "date_end", "trading_day_rows"))
+    if not all(key not in declared or declared[key] == expected[key] for key in ("date_start", "date_end", "trading_day_rows")):
+        return False
+    declared_sessions = _trading_sessions(declared)
+    expected_sessions = _trading_sessions(expected)
+    if not declared_sessions.equals(expected_sessions):
+        return False
+    return _calendar_coverage_end(declared) <= declared_sessions[-1]
+
+
+def _all_assets_cover_sessions(data: pd.DataFrame, sessions: pd.DatetimeIndex) -> bool:
+    expected = set(sessions)
+    return all(set(group["date"]) == expected for _, group in data.groupby("asset_id", sort=False))
+
+
+def _calendar_is_source_declared(supplied: Mapping[str, Any] | None) -> bool:
+    """只有资产引用原始声明的日历才能支撑正式完整期限判断。"""
+    if not isinstance(supplied, Mapping):
+        return False
+    coverage = supplied.get("coverage")
+    if not isinstance(coverage, Mapping):
+        return False
+    required = ("sessions", "calendar_id", "calendar_version")
+    if not all(name in coverage and coverage[name] is not None and coverage[name] != "" for name in required):
+        return False
+    calendar_id, calendar_version = str(coverage["calendar_id"]).strip(), str(coverage["calendar_version"]).strip()
+    if (
+        calendar_id.upper().startswith("UNVERIFIED")
+        or calendar_version.casefold() in {"unverified", "unknown", "derived", "frame-sessions-v1"}
+        or calendar_id.casefold() in {"local-development", "unknown"}
+    ):
+        return False
+    try:
+        _trading_sessions(coverage)
+        _calendar_coverage_end(coverage)
+    except HistoricalDataError:
+        return False
+    return True
+
+
+def _session_texts(values: Any) -> list[str]:
+    return [pd.Timestamp(value).strftime("%Y-%m-%d") for value in values]
+
+
+def _trading_sessions(coverage: Mapping[str, Any]) -> pd.DatetimeIndex:
+    values = coverage.get("sessions")
+    if not isinstance(values, (list, tuple)) or not values:
+        raise HistoricalDataError("DataAssetRef.coverage必须提供非空交易日sessions")
+    if any(not isinstance(value, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value) for value in values):
+        raise HistoricalDataError("DataAssetRef.coverage.sessions必须为YYYY-MM-DD交易日")
+    try:
+        sessions = pd.DatetimeIndex(pd.to_datetime(list(values), format="%Y-%m-%d", errors="raise"))
+    except (TypeError, ValueError) as error:
+        raise HistoricalDataError("DataAssetRef.coverage.sessions必须为有效交易日") from error
+    if sessions.has_duplicates or not sessions.is_monotonic_increasing:
+        raise HistoricalDataError("DataAssetRef.coverage.sessions必须严格递增且不重复")
+    if (sessions.dayofweek >= 5).any():
+        raise HistoricalDataError("DataAssetRef.coverage.sessions含非交易日周末")
+    for calendar_field in ("calendar_id", "calendar_version"):
+        value = coverage.get(calendar_field)
+        if not isinstance(value, str) or not value.strip():
+            raise HistoricalDataError(f"DataAssetRef.coverage.{calendar_field}必须为非空字符串")
+    return sessions
+
+
+def _calendar_coverage_end(coverage: Mapping[str, Any]) -> pd.Timestamp:
+    """日历覆盖终点不得越过CSV实际声明的最后交易session。"""
+    value = coverage.get("calendar_coverage_end", coverage.get("date_end", coverage.get("end")))
+    if not isinstance(value, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+        raise HistoricalDataError("DataAssetRef.coverage必须声明YYYY-MM-DD日历覆盖终点")
+    try:
+        end = pd.Timestamp(pd.to_datetime(value, format="%Y-%m-%d", errors="raise"))
+    except (TypeError, ValueError) as error:
+        raise HistoricalDataError("DataAssetRef.coverage日历覆盖终点无效") from error
+    sessions = _trading_sessions(coverage)
+    if end > sessions[-1]:
+        raise HistoricalDataError("DataAssetRef.coverage日历覆盖终点不得晚于已声明的最后交易session")
+    return end
 
 
 def _frame_hash(data: pd.DataFrame) -> str:

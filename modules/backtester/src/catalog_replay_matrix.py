@@ -21,15 +21,19 @@ from .models import BacktestInput
 
 
 MATRIX_COLUMNS = (
-    "product_id", "product_name", "status", "data_asset_ref", "entry_rule", "complete_tenor",
+    "product_id", "product_name", "contract_fingerprint", "strike_terms", "data_asset_ref", "entry_rule", "complete_tenor",
+    "smoke", "formal_evidence",
     "sample_count", "skipped_count", "skipped_entries", "skipped_reason_counts", "observed_events",
-    "observed_path_cases", "ledger", "ledger_hash", "branch_coverage", "contract_cashflow_pnl",
-    "return_denominator", "win_rate", "client_net_pnl", "reason",
+    "observed_path_cases", "ledger", "ledger_hash", "branch_coverage", "gross_contract_return",
+    "win_rate", "client_net_return", "client_net_pnl",
 )
+
+# OptionReg的执行价TermCatalog键。障碍、缓冲、初始价虽也以price表示，均不属于执行价。
+_STRIKE_TERM_KEYS = frozenset({"K", "K1", "K2", "K3", "K4", "Kp", "Kc", "Kd", "Ku"})
 
 
 def replay_catalog_matrix(historical_data: HistoricalData, config: BacktestConfig) -> list[dict[str, Any]]:
-    """逐个回放OptionReg登记结构，并准确保留complete、partial或blocked状态。"""
+    """逐个回放OptionReg登记结构，分开记录烟测、分支覆盖与正式Run证据。"""
 
     if not isinstance(historical_data, HistoricalData):
         raise TypeError("historical_data必须为HistoricalData")
@@ -43,16 +47,25 @@ def replay_catalog_matrix(historical_data: HistoricalData, config: BacktestConfi
         underlyings = _underlyings_for_product(product)
         base = _base_row(product_id, product_name, historical_data, config)
         try:
-            contract = resolve_contract(product_id, identity={"underlyings": underlyings}, registry=registry)
+            contract = resolve_contract(
+                product_id,
+                identity={
+                    "underlyings": underlyings,
+                    "reference_prices": {underlying: 100.0 for underlying in underlyings},
+                    "calendar_id": historical_data.calendar_id,
+                    "calendar_version": historical_data.calendar_version,
+                },
+                registry=registry,
+                trading_dates=historical_data.trading_sessions,
+            )
             payload = backtest(BacktestInput(contract, config, historical_data)).to_dict()
         except Exception as error:  # 产品级阻断必须留在矩阵，不能因为单项失败丢行。
             rows.append({
                 **base,
-                "status": "blocked",
-                "reason": f"{type(error).__name__}:{error}",
+                "smoke": {"status": "blocked", "reason": f"{type(error).__name__}:{error}"},
             })
             continue
-        rows.append(_completed_row(base, payload))
+        rows.append(_completed_row(base, payload, contract))
     return rows
 
 
@@ -85,10 +98,13 @@ def _base_row(
     return {
         "product_id": product_id,
         "product_name": product_name,
-        "status": "blocked",
+        "contract_fingerprint": None,
+        "strike_terms": {},
         "data_asset_ref": deepcopy(historical_data.data_asset_ref),
         "entry_rule": config.entry_rule,
         "complete_tenor": config.complete_tenor,
+        "smoke": {"status": "blocked", "reason": "not_run"},
+        "formal_evidence": _formal_evidence(historical_data),
         "sample_count": 0,
         "skipped_count": 0,
         "skipped_entries": [],
@@ -98,48 +114,44 @@ def _base_row(
         "ledger": [],
         "ledger_hash": None,
         "branch_coverage": {"status": "blocked"},
-        "contract_cashflow_pnl": {
+        "gross_contract_return": {
             "basis": "contract_cashflow_before_external_costs",
+            "display_unit": "percentage",
+            "value_encoding": "decimal_ratio",
             "external_costs_modelled": False,
             "total": None,
             "average": None,
         },
-        "return_denominator": {
-            "convention": config.return_denominator,
-            "values": [],
-            "not_applicable_count": 0,
-        },
         "win_rate": {
-            "numerator": "contract_cashflow_pnl_gt_zero_count",
+            "numerator": "positive_gross_contract_return_count",
             "numerator_count": 0,
-            "denominator": "valid_trade_count",
+            "denominator": "valid_return_sample_count",
             "denominator_count": 0,
             "rate": None,
         },
+        "client_net_return": {"status": "not_modelled", "value": None},
         "client_net_pnl": {"status": "not_modelled", "value": None},
-        "reason": None,
     }
 
 
-def _completed_row(base: Mapping[str, Any], payload: Mapping[str, Any]) -> dict[str, Any]:
+def _completed_row(
+    base: Mapping[str, Any],
+    payload: Mapping[str, Any],
+    contract: Any,
+) -> dict[str, Any]:
     common = dict(payload["common_metrics"])
     ledger = list(payload["trade_ledger"])
     coverage = dict(payload["branch_coverage"])
     skipped = list(payload["skipped_entries"])
-    denominator_values = sorted({
-        float(trade["return_denominator"])
-        for trade in ledger
-        if trade.get("return_denominator") is not None
-    })
-    status_reasons = []
-    if coverage["status"] != "complete":
-        status_reasons.append("uncovered_branch_pairs")
-    if skipped:
-        status_reasons.append("skipped_entries")
-    status = "partial" if status_reasons else "complete"
     return {
         **base,
-        "status": status,
+        "smoke": {
+            "status": "passed",
+            "reason": None,
+            "sample_status": "partial" if coverage["status"] != "complete" or skipped else "complete",
+        },
+        "contract_fingerprint": payload["contract_fingerprint"],
+        "strike_terms": _strike_terms(contract),
         "data_asset_ref": deepcopy(payload["data_asset_ref"]),
         "sample_count": int(payload["sample_count"]),
         "skipped_count": int(payload["skipped_count"]),
@@ -150,31 +162,56 @@ def _completed_row(base: Mapping[str, Any], payload: Mapping[str, Any]) -> dict[
         "ledger": ledger,
         "ledger_hash": payload["ledger_hash"],
         "branch_coverage": coverage,
-        "contract_cashflow_pnl": {
-            "basis": payload["economic_convention"]["pnl_basis"],
+        "gross_contract_return": {
+            "basis": payload["economic_convention"]["gross_return_basis"],
+            "display_unit": payload["economic_convention"]["gross_return_display_unit"],
+            "value_encoding": payload["economic_convention"]["gross_return_value_encoding"],
             "external_costs_modelled": payload["economic_convention"]["external_costs_modelled"],
-            "total": float(sum(float(trade["contract_cashflow_pnl"]) for trade in ledger)),
-            "average": common["average_pnl"],
-        },
-        "return_denominator": {
-            "convention": payload["backtest_config"]["return_denominator"],
-            "values": denominator_values,
-            "not_applicable_count": common["return_not_applicable_count"],
+            "total": float(sum(float(trade["gross_contract_return"]) for trade in ledger)),
+            "average": common["average_gross_return"],
         },
         "win_rate": {
-            "numerator": "contract_cashflow_pnl_gt_zero_count",
-            "numerator_count": int(sum(float(trade["contract_cashflow_pnl"]) > 0.0 for trade in ledger)),
-            "denominator": "valid_trade_count",
-            "denominator_count": len(ledger),
+            "numerator": "positive_gross_contract_return_count",
+            "numerator_count": common["positive_return_count"],
+            "denominator": "valid_return_sample_count",
+            "denominator_count": common["valid_return_sample_count"],
             "rate": common["win_rate"],
         },
+        "client_net_return": {"status": "not_modelled", "value": None},
         "client_net_pnl": {"status": "not_modelled", "value": None},
-        "reason": ",".join(status_reasons) if status_reasons else None,
+    }
+
+
+def _formal_evidence(historical_data: HistoricalData) -> dict[str, Any]:
+    """目录矩阵仅做开发烟测，正式资产、Host和Store证据必须单独取得。"""
+    data_ref = historical_data.data_asset_ref
+    if str(data_ref.get("storage_ref")) == "in_memory":
+        reason = "in_memory_historical_data_is_development_smoke_only"
+    elif not historical_data.calendar_source_declared:
+        reason = "data_asset_calendar_not_source_declared"
+    else:
+        reason = "formal_host_datastore_run_not_requested"
+    return {
+        "status": "not_executed",
+        "reason": reason,
+        "host_context_bound": False,
+        "data_store_verified": False,
+        "result_store_committed": False,
+        "module_run_ref": None,
     }
 
 
 def _underlyings_for_product(product: Mapping[str, Any]) -> list[str]:
     return ["000905.SH", "000300.SH"] if "S0Vec" in product["terms"] else ["000905.SH"]
+
+
+def _strike_terms(contract: Any) -> dict[str, float]:
+    """只记录OptionReg明确登记的执行价，不把障碍或缓冲价格混入。"""
+    return {
+        key: float(value)
+        for key, value in contract.terms.items()
+        if key in _STRIKE_TERM_KEYS
+    }
 
 
 def _normalize_row(row: Mapping[str, Any]) -> dict[str, Any]:
