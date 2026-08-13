@@ -2,10 +2,20 @@
 
 from __future__ import annotations
 
-import hashlib
+import re
 from typing import Any, Mapping
 
 from .models import ReporterError, require_identifier, require_text, stable_hash
+
+
+_SHA256 = re.compile(r"[0-9a-f]{64}\Z")
+
+
+def _content_hash(value: Any, field: str) -> str:
+    digest = require_text(value, field)
+    if not _SHA256.fullmatch(digest):
+        raise ReporterError(f"{field}必须是正式资产的64位小写SHA-256")
+    return digest
 
 
 def build_host_selection_source_refs(source: Mapping[str, Any], tenant_id: str) -> dict[str, Any]:
@@ -14,7 +24,8 @@ def build_host_selection_source_refs(source: Mapping[str, Any], tenant_id: str) 
     source_id = require_identifier(source.get("source_id"), "source.source_id")
     task_id = require_identifier(source.get("task_id"), "source.task_id")
     analysis_case_id = require_identifier(source.get("analysis_case_id"), "source.analysis_case_id")
-    catalog_version = str(source.get("catalog_version") or "app-host-selection")
+    catalog_version = require_text(source.get("catalog_version"), "source.catalog_version")
+    catalog_hash = _content_hash(source.get("catalog_content_hash"), "source.catalog_content_hash")
     raw_candidates = source.get("candidates")
     if not isinstance(raw_candidates, list) or not raw_candidates:
         raise ReporterError("Host选择证据缺少候选")
@@ -32,7 +43,12 @@ def build_host_selection_source_refs(source: Mapping[str, Any], tenant_id: str) 
         # ``unversioned:<content-hash>``; preserve it exactly so the selected
         # candidate can be matched against the committed contract snapshot.
         product_version = require_text(candidate.get("product_version"), "candidate.product_version")
+        product_hash = _content_hash(
+            candidate.get("product_version_content_hash"),
+            "candidate.product_version_content_hash",
+        )
         candidate.pop("module_run_refs", None)
+        candidate.pop("module_run_options", None)
         # The Host selection is an identity and authorization boundary, not a
         # second recommender.  Keep public candidate facts already frozen by
         # the authoritative recommendation/product source.  Replacing them
@@ -52,13 +68,12 @@ def build_host_selection_source_refs(source: Mapping[str, Any], tenant_id: str) 
         product_refs[candidate_id] = {
             "product_id": product_id,
             "product_version": product_version,
-            "content_hash": stable_hash({"product_id": product_id, "product_version": product_version}),
+            "content_hash": product_hash,
         }
 
-    catalog_hash = stable_hash({"catalog_version": catalog_version, "product_versions": product_refs})
-    run_id = f"selection-{hashlib.sha256(source_id.encode()).hexdigest()[:24]}"
+    run_id = require_identifier(source.get("selection_run_id") or source_id, "source.selection_run_id")
     recommendation = {
-        "schema": "optionhelper.recommendation-set/v2",
+        "schema": "optionhelper.recommendation-set/v1.0.0",
         "tenant_id": tenant_id,
         "task_id": task_id,
         "analysis_case_id": analysis_case_id,
@@ -71,7 +86,7 @@ def build_host_selection_source_refs(source: Mapping[str, Any], tenant_id: str) 
         "product_version_refs": product_refs,
         "catalog_version_ref": {"catalog_version": catalog_version, "content_hash": catalog_hash},
         "evidence_refs": {"recommendation_set": {
-            "source_id": "app-result-selection",
+        "source_id": source_id,
             "run_id": run_id,
             "payload": recommendation,
             "expected_semantic_result_hash": stable_hash(recommendation),

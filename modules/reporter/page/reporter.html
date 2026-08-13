@@ -44,7 +44,7 @@
           <div class="setting-group"><label>交付方式</label><select id="deliveryMode"><option value="single">单结构</option><option value="batch">批量独立报告</option><option value="combined">组合索引与独立报告</option><option value="comparison">横向对比</option></select></div>
           <fieldset class="setting-group"><legend>内容等级</legend><label class="choice"><input type="radio" name="outputType" value="card"><span>Card简洁版</span></label><label class="choice"><input type="radio" name="outputType" value="report" checked><span>Report详细版</span></label></fieldset>
           <fieldset class="setting-group"><legend>输出格式</legend><label class="choice"><input type="radio" name="format" value="html" checked><span>HTML</span></label><label class="choice"><input type="radio" name="format" value="pdf"><span>PDF</span></label></fieldset>
-          <div class="setting-group"><label>HTML Report版式</label><p class="rule">完整报告固定为连续A4正文，左侧提供阅读目录。</p></div>
+          <div class="setting-group"><label>HTML Report版式</label><p class="rule">完整报告固定为连续A4正文，不提供目录版。</p></div>
           <fieldset class="setting-group"><legend>纳入模块</legend><label class="choice"><input type="checkbox" data-module="recommender" checked><span>Recommender</span></label><label class="choice"><input type="checkbox" data-module="payoff" checked><span>Payoffer</span></label><label class="choice"><input type="checkbox" data-module="pricing" checked><span>Pricer</span></label><label class="choice"><input type="checkbox" data-module="backtest" checked><span>Backtester</span></label></fieldset>
           <div class="setting-group"><label for="audience">受众</label><select id="audience"><option value="professional">专业用户</option></select></div>
           <p class="rule" id="formatRule">Card与Report决定内容；HTML与PDF只决定承载方式。</p>

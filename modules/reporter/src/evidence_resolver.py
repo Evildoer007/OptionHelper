@@ -10,6 +10,7 @@ from __future__ import annotations
 from hashlib import sha256
 import json
 from pathlib import Path, PurePosixPath
+import re
 from typing import Any, Mapping
 
 from runtime.ports.result_store import ResultStorePort
@@ -30,9 +31,10 @@ from .models import (
 from .artifact_validator import validate_hashed_artifact
 
 
-RECOMMENDATION_SCHEMA = "optionhelper.recommendation-set/v2"
-READY_STATUSES = {"succeeded", "complete"}
+RECOMMENDATION_SCHEMA = "optionhelper.recommendation-set/v1.0.0"
+READY_STATUSES = {"succeeded"}
 TERMINAL_NONREADY = {"failed", "unsupported", "cancelled", "timed_out", "partial"}
+_SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _SAFE_ARTIFACT = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-/")
 
 
@@ -63,7 +65,6 @@ def _status_note(status: str, error: Mapping[str, Any] | None = None, reason: An
         return str(error.get("message") or error.get("reason") or "上游模块未提供可展示结果。")
     labels = {
         "not_run": "本次报告未提供该模块的显式运行引用。",
-        "legacy_unverified": "上游记录缺少正式协议字段，不能作为已验证结果展示。",
         "failed": "上游模块运行失败，不能填充案例数值。",
         "unsupported": "上游模块声明当前不支持该请求。",
         "partial": "上游模块只完成部分计算，不能作为完整结论展示。",
@@ -87,8 +88,8 @@ def _terminal_error(run_dir: Path, manifest: Mapping[str, Any]) -> Mapping[str, 
     return read_json(path, "error.json") if path.is_file() and not path.is_symlink() else None
 
 
-def _required_candidate(raw: Mapping[str, Any], *, request: ReportRequest) -> tuple[dict[str, Any], str | None]:
-    """返回推荐候选及其证据状态；旧格式可保留为明确未验证状态。"""
+def _required_candidate(raw: Mapping[str, Any], *, request: ReportRequest) -> dict[str, Any]:
+    """读取一条完整、可验证的正式推荐候选。"""
 
     value = dict(raw)
     try:
@@ -97,6 +98,12 @@ def _required_candidate(raw: Mapping[str, Any], *, request: ReportRequest) -> tu
         product_name = require_text(value.get("product_name"), "RecommendationCandidate.product_name")
         product_version = require_text(value.get("product_version"), "RecommendationCandidate.product_version")
         contract_fingerprint = require_text(value.get("contract_fingerprint"), "RecommendationCandidate.contract_fingerprint")
+        product_version_content_hash = require_text(
+            value.get("product_version_content_hash"),
+            "RecommendationCandidate.product_version_content_hash",
+        )
+        if not _SHA256.fullmatch(product_version_content_hash):
+            raise ReporterError("RecommendationCandidate.product_version_content_hash必须是64位SHA-256")
         analysis_basis_id = require_text(value.get("analysis_basis_id"), "RecommendationCandidate.analysis_basis_id")
         underlyings = [require_text(item, "RecommendationCandidate.underlyings[]") for item in as_list(value.get("underlyings"), "RecommendationCandidate.underlyings")]
         currency = require_text(value.get("currency"), "RecommendationCandidate.currency")
@@ -112,6 +119,7 @@ def _required_candidate(raw: Mapping[str, Any], *, request: ReportRequest) -> tu
             "product_id": product_id,
             "product_name": product_name,
             "product_version": product_version,
+            "product_version_content_hash": product_version_content_hash,
             "contract_fingerprint": contract_fingerprint,
             "analysis_basis_id": analysis_basis_id,
             "underlyings": underlyings,
@@ -131,61 +139,22 @@ def _required_candidate(raw: Mapping[str, Any], *, request: ReportRequest) -> tu
             raise ReporterError(f"候选{candidate_id}的product_id与product_version_refs不一致")
         if require_text(version_ref.get("product_version"), f"product_version_refs.{candidate_id}.product_version") != product_version:
             raise ReporterError(f"候选{candidate_id}的product_version与product_version_refs不一致")
-        require_text(version_ref.get("content_hash"), f"product_version_refs.{candidate_id}.content_hash")
-        return candidate, None
+        version_content_hash = require_text(
+            version_ref.get("content_hash"), f"product_version_refs.{candidate_id}.content_hash",
+        )
+        if not _SHA256.fullmatch(version_content_hash):
+            raise ReporterError(f"product_version_refs.{candidate_id}.content_hash必须是64位小写SHA-256")
+        if product_version_content_hash != version_content_hash:
+            raise ReporterError(f"候选{candidate_id}的product_version_content_hash与product_version_refs不一致")
+        return candidate
     except (ReporterError, TypeError, ValueError) as error:
-        # Legacy推荐对象仍可在草稿中呈现，但必须标明不可验证，且不能驱动任何计算结果。
-        fallback_id = str(value.get("candidate_id", "")).strip()
-        if not fallback_id:
-            raise ReporterError(f"RecommendationCandidate缺少candidate_id，不能建立报告主体：{error}") from error
-        return {
-            "candidate_id": fallback_id,
-            "product_id": str(value.get("product_id", "")),
-            "product_name": str(value.get("product_name", value.get("name_zh", ""))),
-            "underlyings": list(value.get("underlyings", [])) if isinstance(value.get("underlyings"), list) else [],
-            "rank": value.get("rank"),
-            "reason": str(value.get("reason", "")),
-            "suitable_for": list(value.get("suitable_for", [])) if isinstance(value.get("suitable_for"), list) else [],
-            "not_suitable_for": list(value.get("not_suitable_for", [])) if isinstance(value.get("not_suitable_for"), list) else [],
-            "main_risks": list(value.get("main_risks", [])) if isinstance(value.get("main_risks"), list) else [],
-            "library_status": str(value.get("library_status", "legacy_unverified")),
-            "key_terms": list(value.get("key_terms", [])) if isinstance(value.get("key_terms"), list) else [],
-            "evidence_refs": [],
-        }, str(error)
+        raise ReporterError(f"RecommendationCandidate不满足正式协议：{error}") from error
 
 
 def _recommendation_set(request: ReportRequest) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
     catalog_ref = as_mapping(request.source_refs.get("catalog_version_ref"), "source_refs.catalog_version_ref")
     catalog_version = require_text(catalog_ref.get("catalog_version"), "catalog_version_ref.catalog_version")
     catalog_content_hash = require_text(catalog_ref.get("content_hash"), "catalog_version_ref.content_hash")
-    if request.subject_type == "product":
-        product_ref = as_mapping(request.subject_ref.get("product_ref"), "subject_ref.product_ref")
-        product_id = require_text(product_ref.get("product_id"), "subject_ref.product_ref.product_id")
-        product_version = require_text(product_ref.get("product_version"), "subject_ref.product_ref.product_version")
-        product_name = require_text(product_ref.get("product_name"), "subject_ref.product_ref.product_name")
-        if require_text(product_ref.get("catalog_version"), "subject_ref.product_ref.catalog_version") != catalog_version:
-            raise ReporterError("subject_ref.product_ref.catalog_version与catalog_version_ref不一致")
-        if require_text(product_ref.get("catalog_content_hash"), "subject_ref.product_ref.catalog_content_hash") != catalog_content_hash:
-            raise ReporterError("subject_ref.product_ref.catalog_content_hash与catalog_version_ref不一致")
-        version_ref = as_mapping(request.source_refs["product_version_refs"].get(product_id), f"product_version_refs.{product_id}")
-        if require_text(version_ref.get("product_id"), f"product_version_refs.{product_id}.product_id") != product_id:
-            raise ReporterError("subject_ref.product_ref.product_id与product_version_refs不一致")
-        if require_text(version_ref.get("product_version"), f"product_version_refs.{product_id}.product_version") != product_version:
-            raise ReporterError("subject_ref.product_ref.product_version与product_version_refs不一致")
-        if require_text(product_ref.get("product_version_content_hash"), "subject_ref.product_ref.product_version_content_hash") != require_text(version_ref.get("content_hash"), f"product_version_refs.{product_id}.content_hash"):
-            raise ReporterError("subject_ref.product_ref.product_version_content_hash与product_version_refs不一致")
-        candidate = {
-            "candidate_id": f"product:{product_id}", "product_id": product_id, "product_name": product_name,
-            "product_version": product_version, "analysis_basis_id": require_text(product_ref.get("analysis_basis_id"), "subject_ref.product_ref.analysis_basis_id"),
-            "underlyings": list(as_list(product_ref.get("underlyings"), "subject_ref.product_ref.underlyings", allow_empty=True)),
-            "currency": require_text(product_ref.get("currency"), "subject_ref.product_ref.currency"),
-            "price_convention": as_mapping(product_ref.get("price_convention"), "subject_ref.product_ref.price_convention"),
-            "rank": 1, "reason": str(product_ref.get("description", "")), "suitable_for": [], "not_suitable_for": [],
-            "main_risks": list(product_ref.get("main_risks", [])) if isinstance(product_ref.get("main_risks"), list) else [],
-            "library_status": str(product_ref.get("library_status", "ready")), "key_terms": list(product_ref.get("key_terms", [])) if isinstance(product_ref.get("key_terms"), list) else [], "evidence_refs": [],
-        }
-        return {candidate["candidate_id"]: candidate}, {"status": "ready", "source": "subject_ref.product_ref", "run_id": None}
-
     evidence_refs = as_mapping(request.source_refs.get("evidence_refs"), "source_refs.evidence_refs")
     envelope = as_mapping(evidence_refs.get("recommendation_set"), "source_refs.evidence_refs.recommendation_set")
     allowed = {"source_id", "run_id", "payload", "expected_semantic_result_hash"}
@@ -212,25 +181,21 @@ def _recommendation_set(request: ReportRequest) -> tuple[dict[str, dict[str, Any
     if envelope.get("run_id") and require_identifier(envelope.get("run_id"), "recommendation_set.run_id") != run_id:
         raise ReporterError("RecommendationSet引用run_id与payload不一致")
     candidates: dict[str, dict[str, Any]] = {}
-    legacy_errors: dict[str, str] = {}
     for raw in as_list(payload.get("candidates"), "RecommendationSet.candidates"):
-        candidate, legacy_error = _required_candidate(as_mapping(raw, "RecommendationSet.candidates[]"), request=request)
+        candidate = _required_candidate(as_mapping(raw, "RecommendationSet.candidates[]"), request=request)
         candidate_id = candidate["candidate_id"]
         if candidate_id in candidates:
             raise ReporterError(f"RecommendationSet.candidates含重复candidate_id：{candidate_id}")
         candidates[candidate_id] = candidate
-        if legacy_error:
-            legacy_errors[candidate_id] = legacy_error
     selected = set(request.candidate_ids)
     missing = selected.difference(candidates)
     if missing:
         raise ReporterError(f"RecommendationSet未包含所选candidate_id：{','.join(sorted(missing))}")
     return candidates, {
-        "status": "legacy_unverified" if legacy_errors else "ready",
+        "status": "ready",
         "source": require_text(envelope.get("source_id"), "recommendation_set.source_id"),
         "run_id": run_id,
         "semantic_result_hash": expected_hash,
-        "legacy_errors": legacy_errors,
     }
 
 
@@ -245,9 +210,13 @@ def _contract_fields(raw: Mapping[str, Any], field: str) -> dict[str, Any]:
         "product_version": require_text(contract.get("product_version"), f"{field}.product_version"),
         "contract_fingerprint": require_text(contract.get("contract_fingerprint"), f"{field}.contract_fingerprint"),
         "resolved_schedules": contract.get("resolved_schedules"),
+        "registry_snapshot_hash": require_text(contract.get("registry_snapshot_hash"), f"{field}.registry_snapshot_hash"),
+        "product_snapshot_hash": require_text(contract.get("product_snapshot_hash"), f"{field}.product_snapshot_hash"),
     }
     if required["resolved_schedules"] is None:
         raise ReporterError(f"{field}.resolved_schedules不能为空；必须为ResolvedContract.to_protocol_dict()快照")
+    if not _SHA256.fullmatch(required["registry_snapshot_hash"]) or not _SHA256.fullmatch(required["product_snapshot_hash"]):
+        raise ReporterError(f"{field}缺少正式Registry/ProductVersion快照哈希")
     terms = as_mapping(contract.get("terms"), f"{field}.terms")
     term_sources = as_mapping(contract.get("term_sources"), f"{field}.term_sources")
     paths = as_list(contract.get("paths"), f"{field}.paths", allow_empty=True)
@@ -394,13 +363,7 @@ def _load_module_run(
         contract_path = _inside(run_dir, _safe_relative(manifest.get("resolved_contract", "resolved_contract.json"), "manifest.resolved_contract"), "manifest.resolved_contract")
         contract = _contract_fields(read_json(contract_path, "resolved_contract.json"), "resolved_contract")
     except ReporterError as error:
-        # 缺少v2协议字段的旧记录可以留在报告中，但绝不能成为已验证计算内容。
-        return {
-            "status": "legacy_unverified",
-            "note": _status_note("legacy_unverified", reason=str(error)),
-            "ref": ref,
-            "run": {key: manifest.get(key) for key in ("module", "task_id", "run_id", "analysis_case_id", "candidate_id", "semantic_result_hash")},
-        }
+        raise ReporterError(f"{display_module}运行不满足正式协议：{error}") from error
     # 以下均为已声明对象之间的冲突或受控文件篡改，必须拒绝生成，不能降级混用。
     if require_text(manifest.get("contract_fingerprint"), "manifest.contract_fingerprint") != str(candidate.get("contract_fingerprint")):
         raise ReporterError("manifest.contract_fingerprint与候选合同快照不一致")
@@ -418,6 +381,13 @@ def _load_module_run(
         raise ReporterError("ResolvedContract产品编号或中文名称与RecommendationCandidate不一致")
     if contract["product_version"] != candidate["product_version"]:
         raise ReporterError("ResolvedContract.product_version与RecommendationCandidate不一致")
+    if contract["product_snapshot_hash"] != candidate["product_version_content_hash"]:
+        raise ReporterError("ResolvedContract.product_snapshot_hash与RecommendationCandidate不一致")
+    if contract["registry_snapshot_hash"] != require_text(
+        as_mapping(request.source_refs.get("catalog_version_ref"), "source_refs.catalog_version_ref").get("content_hash"),
+        "catalog_version_ref.content_hash",
+    ):
+        raise ReporterError("ResolvedContract.registry_snapshot_hash与Catalog证据不一致")
     if contract["analysis_basis_id"] != candidate["analysis_basis_id"]:
         raise ReporterError("ResolvedContract.analysis_basis_id与RecommendationCandidate不一致")
     if contract["underlyings"] != candidate["underlyings"]:
@@ -452,7 +422,7 @@ def _validate_candidate_contracts(candidate_id: str, modules: Mapping[str, Mappi
     if not ready:
         return None
     baseline = dict(ready[0]["contract"])
-    fields = ("product_id", "product_name", "product_version", "contract_fingerprint", "analysis_basis_id", "underlyings", "currency", "price_convention")
+    fields = ("product_id", "product_name", "product_version", "product_snapshot_hash", "registry_snapshot_hash", "contract_fingerprint", "analysis_basis_id", "underlyings", "currency", "price_convention")
     for evidence in ready[1:]:
         candidate = evidence["contract"]
         for field in fields:
@@ -465,18 +435,6 @@ def resolve_evidence(request: ReportRequest, result_store: ResultStorePort) -> d
     """解析一份正式请求的所有证据，返回仅供Reporter内部使用的对象。"""
 
     candidates, recommender = _recommendation_set(request)
-    if request.subject_type == "product":
-        return {
-            "recommender": recommender,
-            "candidates": candidates,
-            "candidate_evidence": {
-                next(iter(candidates)): {
-                    "candidate": next(iter(candidates.values())),
-                    "modules": {name: {"status": "not_requested", "note": _status_note("not_requested")} for name in MODULE_TO_RUN},
-                    "contract": None,
-                }
-            },
-        }
     raw_refs = as_mapping(request.source_refs.get("module_run_refs"), "source_refs.module_run_refs")
     candidate_evidence: dict[str, Any] = {}
     for candidate_id in request.candidate_ids:
@@ -486,23 +444,16 @@ def resolve_evidence(request: ReportRequest, result_store: ResultStorePort) -> d
         if unknown:
             raise ReporterError(f"module_run_refs.{candidate_id}含未知模块：{','.join(sorted(unknown))}")
         modules: dict[str, Any] = {}
-        if recommender["status"] == "legacy_unverified":
-            for display_module in MODULE_TO_RUN:
-                modules[display_module] = {
-                    "status": "legacy_unverified" if display_module in request.selected_modules else "not_requested",
-                    "note": _status_note("legacy_unverified" if display_module in request.selected_modules else "not_requested", reason=(recommender.get("legacy_errors") or {}).get(candidate_id)),
-                }
-        else:
-            for display_module in MODULE_TO_RUN:
-                if display_module not in request.selected_modules:
-                    modules[display_module] = {"status": "not_requested", "note": _status_note("not_requested")}
-                elif display_module not in candidate_refs:
-                    modules[display_module] = {"status": "not_run", "note": _status_note("not_run")}
-                else:
-                    modules[display_module] = _load_module_run(
-                        request, result_store, candidate=candidate, display_module=display_module,
-                        raw_ref=as_mapping(candidate_refs[display_module], f"module_run_refs.{candidate_id}.{display_module}"),
-                    )
+        for display_module in MODULE_TO_RUN:
+            if display_module not in request.selected_modules:
+                modules[display_module] = {"status": "not_requested", "note": _status_note("not_requested")}
+            elif display_module not in candidate_refs:
+                modules[display_module] = {"status": "not_run", "note": _status_note("not_run")}
+            else:
+                modules[display_module] = _load_module_run(
+                    request, result_store, candidate=candidate, display_module=display_module,
+                    raw_ref=as_mapping(candidate_refs[display_module], f"module_run_refs.{candidate_id}.{display_module}"),
+                )
         candidate_evidence[candidate_id] = {
             "candidate": candidate,
             "modules": modules,

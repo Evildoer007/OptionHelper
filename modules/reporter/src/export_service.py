@@ -12,7 +12,7 @@ from typing import Any, Mapping
 from runtime.ports.module import ModulePort
 
 from .designer_handoff import build_collection_payload, build_design_brief, build_designer_payload, render_with_designer
-from .artifact_validator import resolve_artifact_path, sha256_file, validate_hashed_artifact, validate_written_artifact
+from .artifact_validator import is_public_module_artifact, resolve_artifact_path, sha256_file, validate_hashed_artifact, validate_written_artifact
 from .models import ReporterError, ReportRequest, SCHEMA_MANIFEST, stable_hash, write_json
 from .payoff_report_figure import PROFILE as PAYOFF_REPORT_FIGURE_PROFILE, derive_report_payoff_svg
 
@@ -65,6 +65,10 @@ def _write_artifacts(
                 if not all(isinstance(item, str) and item for item in (storage_ref, content_hash, name)):
                     raise ReporterError("ArtifactRef不完整")
                 source = validate_hashed_artifact(run_dir, storage_ref, content_hash, f"ArtifactRef源文件：{storage_ref}")
+                # 所有ModuleRun文件都会被Core哈希验真，但只有result.json和
+                # artifacts/**是公开交付物；快照、数据引用与private/**绝不复制。
+                if not is_public_module_artifact(storage_ref, module=str(module)):
+                    continue
                 relative = _destination_name(str(candidate_id), str(module), name)
                 destination = stage / relative
                 destination.parent.mkdir(parents=True, exist_ok=True)
@@ -166,7 +170,6 @@ def _write_rendered(stage: Path, payload: Mapping[str, Any], request: ReportRequ
         "designer": {
             "design_system_version": artifact.get("design_system_version"),
             "design_system_hash": artifact.get("design_system_hash"),
-            "layout": artifact.get("layout"),
             "output_type": artifact.get("output_type"),
             "asset_mode": artifact.get("asset_mode"),
             "source_artifact_hash": designer_manifest.get("artifact_hash"),
@@ -236,7 +239,14 @@ def _write_unit_directory(
         "generated_at": datetime.now(UTC).isoformat(),
     }
     write_json(stage / "run_manifest.json", manifest)
-    return {"report_unit": "report-unit.json", "designer_input": "designer-input.json", "design_brief": "design-brief.json", "report": report_file, "manifest": "run_manifest.json"}
+    return {
+        "status": manifest["status"],
+        "report_unit": "report-unit.json",
+        "designer_input": "designer-input.json",
+        "design_brief": "design-brief.json",
+        "report": report_file,
+        "manifest": "run_manifest.json",
+    }
 
 
 def _candidate_evidence(evidence: Mapping[str, Any], candidate_id: str) -> dict[str, Any]:
@@ -321,7 +331,16 @@ def write_report_run(
                 "generated_at": datetime.now(UTC).isoformat(),
             }
             write_json(stage / "run_manifest.json", manifest)
-            outcome = {"directory": str(stage), "report_unit": "report-unit.json", "designer_input": "designer-input.json", "design_brief": "design-brief.json", "report": rendered["path"], "manifest": "run_manifest.json", "children": child_outputs}
+            outcome = {
+                "directory": str(stage),
+                "status": manifest["status"],
+                "report_unit": "report-unit.json",
+                "designer_input": "designer-input.json",
+                "design_brief": "design-brief.json",
+                "report": rendered["path"],
+                "manifest": "run_manifest.json",
+                "children": child_outputs,
+            }
         os.replace(stage, root)
     except Exception:
         shutil.rmtree(stage, ignore_errors=True)

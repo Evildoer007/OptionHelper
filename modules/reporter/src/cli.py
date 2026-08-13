@@ -39,7 +39,7 @@ def run(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="使用显式ModuleRunRef生成OptionHelper ReportRun。")
-    parser.add_argument("--request", type=Path, required=True, help="ReportRequest v2 JSON文件")
+    parser.add_argument("--request", type=Path, required=True, help="ReportRequest JSON文件")
     parser.add_argument("--result-store-root", type=Path, required=True, help="受控Core LocalResultStore根目录")
     parser.add_argument("--output-root", type=Path, default=default_report_output_root(RUNTIME_PATHS), help="报告输出根目录")
     args = parser.parse_args()

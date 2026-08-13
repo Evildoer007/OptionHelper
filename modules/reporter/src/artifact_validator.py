@@ -9,7 +9,19 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Mapping
 
 from .config import DEFAULT_REPORTER_CONFIG
-from .models import ReporterError, read_json, require_text, stable_hash
+from .models import (
+    SCHEMA_DESIGN_BRIEF,
+    SCHEMA_DESIGNER_ARTIFACT_MANIFEST,
+    SCHEMA_DESIGNER_PAYLOAD,
+    SCHEMA_MANIFEST,
+    SCHEMA_REPORT_BUNDLE,
+    SCHEMA_REPORT_UNIT,
+    SCHEMA_REQUEST,
+    ReporterError,
+    read_json,
+    require_text,
+    stable_hash,
+)
 from .payoff_report_figure import PROFILE as PAYOFF_REPORT_FIGURE_PROFILE, validate_report_payoff_svg
 
 
@@ -32,6 +44,35 @@ def resolve_artifact_path(root: Path, reference: object, label: str) -> Path:
     if result != base and base not in result.parents:
         raise ReporterError(f"{label}越出受控目录")
     return result
+
+
+_BACKTEST_PUBLIC_ARTIFACTS = frozenset({
+    "result.json",
+    "artifacts/backtest_result.json",
+    "artifacts/trade_ledger.csv",
+    "artifacts/branch_coverage.json",
+})
+
+
+def is_public_module_artifact(reference: object, *, module: str | None = None) -> bool:
+    """Whether a verified ModuleRun file may be copied into a public ReportRun.
+
+    Core hashes every submitted file, including input snapshots and private
+    audit material.  Hash verification does not grant publication rights:
+    only the canonical public result and files explicitly placed below
+    ``artifacts/`` may cross this boundary.
+    """
+
+    try:
+        relative = PurePosixPath(require_text(reference, "ArtifactRef.storage_ref"))
+    except ReporterError:
+        return False
+    if relative.is_absolute() or not relative.parts or any(part in {"", ".", ".."} for part in relative.parts):
+        return False
+    normalized = relative.as_posix()
+    if module == "backtest":
+        return normalized in _BACKTEST_PUBLIC_ARTIFACTS
+    return relative == PurePosixPath("result.json") or relative.parts[:1] == ("artifacts",)
 
 
 def validate_hashed_artifact(root: Path, reference: object, expected_hash: object, label: str) -> Path:
@@ -84,7 +125,6 @@ def validate_designer_artifact(
     *,
     output_format: str,
     output_type: str,
-    expected_layout: str,
     expected_frozen_payload_hash: str,
     expected_asset_mode: str,
 ) -> list[dict[str, Any]]:
@@ -94,14 +134,18 @@ def validate_designer_artifact(
         raise ReporterError("Designer Tool产物format与ReportRequest不一致")
     if artifact.get("output_type") != output_type:
         raise ReporterError("Designer Tool产物output_type与ReportRequest不一致")
-    if artifact.get("layout") != expected_layout:
-        raise ReporterError("Designer Tool产物layout与请求不一致")
+    if "layout" in artifact:
+        raise ReporterError("Designer Tool产物不接受版式字段")
     if artifact.get("asset_mode") != expected_asset_mode:
         raise ReporterError("Designer Tool产物asset_mode与请求不一致")
     manifest = artifact.get("artifact_manifest")
     if not isinstance(manifest, Mapping):
         raise ReporterError("Designer Tool产物缺少artifact_manifest")
-    for field, expected in (("format", output_format), ("output_type", output_type), ("layout", expected_layout)):
+    if manifest.get("schema") != SCHEMA_DESIGNER_ARTIFACT_MANIFEST:
+        raise ReporterError("Designer artifact_manifest.schema不是当前协议")
+    if "layout" in manifest:
+        raise ReporterError("Designer artifact_manifest不接受版式字段")
+    for field, expected in (("format", output_format), ("output_type", output_type)):
         if manifest.get(field) != expected:
             raise ReporterError(f"Designer artifact_manifest.{field}与请求不一致")
     for field in ("design_system_version", "design_system_hash", "semantic_fact_hash", "presentation_input_hash", "artifact_hash"):
@@ -185,9 +229,32 @@ def _validate_portable_assets(
 
 
 def _validate_report_unit(unit: Mapping[str, Any]) -> None:
+    if unit.get("schema") != SCHEMA_REPORT_UNIT:
+        raise ReporterError("report-unit.json的Schema不是当前协议")
+    if unit.get("unit_type") != "ContractReportUnit":
+        raise ReporterError("report-unit.json的unit_type不是当前正式类型")
     expected = stable_hash({key: value for key, value in unit.items() if key != "semantic_fact_hash"})
     if unit.get("semantic_fact_hash") != expected:
         raise ReporterError("report-unit.json的semantic_fact_hash不对应冻结事实")
+
+
+def _validate_report_bundle(bundle: Mapping[str, Any]) -> None:
+    if bundle.get("schema") != SCHEMA_REPORT_BUNDLE:
+        raise ReporterError("ReportBundle的Schema不是当前协议")
+    if bundle.get("unit_type") != "ReportBundle":
+        raise ReporterError("ReportBundle的unit_type不是当前正式类型")
+    expected = stable_hash({key: value for key, value in bundle.items() if key != "semantic_fact_hash"})
+    if bundle.get("semantic_fact_hash") != expected:
+        raise ReporterError("ReportBundle的semantic_fact_hash不对应冻结事实")
+
+
+def _frozen_evidence_status(unit: Mapping[str, Any]) -> str:
+    """Return the only status an individual frozen ContractReportUnit permits."""
+
+    status = unit.get("evidence_status")
+    if status not in {"verified", "partial"}:
+        raise ReporterError("冻结ReportUnit.evidence_status无效")
+    return str(status)
 
 
 def _validated_json(root: Path, reference: object, label: str) -> tuple[Path, dict[str, Any]]:
@@ -287,15 +354,29 @@ def validate_report_run_directory(
     brief_path, brief = _validated_json(root, "design-brief.json", "design-brief.json")
     _, manifest = _validated_json(root, "run_manifest.json", "run_manifest.json")
 
+    if request.get("schema") != SCHEMA_REQUEST:
+        raise ReporterError("report-request.json的Schema不是当前协议")
+    if manifest.get("schema") != SCHEMA_MANIFEST:
+        raise ReporterError("run_manifest.json的Schema不是当前协议")
+    if payload.get("schema") != SCHEMA_DESIGNER_PAYLOAD:
+        raise ReporterError("designer-input.json的Schema不是当前协议")
+    if brief.get("schema") != SCHEMA_DESIGN_BRIEF:
+        raise ReporterError("design-brief.json的Schema不是当前协议")
+
     if expected_request is not None and request != dict(expected_request):
         raise ReporterError("report-request.json与受控selection重建结果不一致")
+    if request.get("subject_type") not in {"contract", "bundle", "comparison"}:
+        raise ReporterError("report-request.json的subject_type不是当前正式类型")
     for field in ("tenant_id", "task_id", "report_run_id", "analysis_case_id"):
         if manifest.get(field) != request.get(field):
             raise ReporterError(f"run_manifest.json的{field}与report-request.json不一致")
     if manifest.get("request_hash") != stable_hash(request):
         raise ReporterError("run_manifest.json的request_hash不一致")
 
-    _validate_report_unit(unit)
+    if unit.get("unit_type") == "ReportBundle":
+        _validate_report_bundle(unit)
+    else:
+        _validate_report_unit(unit)
     report_unit_ref = manifest.get("report_unit")
     if not isinstance(report_unit_ref, Mapping) or report_unit_ref.get("path") != unit_path.name:
         raise ReporterError("run_manifest.json未声明report-unit.json")
@@ -323,15 +404,18 @@ def validate_report_run_directory(
         root, receipt_ref.get("path"), receipt_ref.get("file_hash"), "designer_artifact_manifest.path",
     )
     receipt = read_json(receipt_path, "designer-artifact-manifest.json")
+    if receipt.get("schema") != SCHEMA_DESIGNER_ARTIFACT_MANIFEST:
+        raise ReporterError("designer-artifact-manifest.json的Schema不是当前协议")
     if receipt_ref.get("frozen_payload_hash") != payload_hash or receipt.get("content_sha256") != payload_hash:
         raise ReporterError("Designer回执未绑定冻结designer-input事实哈希")
     designer = rendered.get("designer")
     if not isinstance(designer, Mapping) or designer.get("artifact_manifest") != receipt:
         raise ReporterError("run_manifest.json中的Designer回执与持久化清单不一致")
-    expected_layout = "brief"
     if rendered.get("format") != request.get("format") or receipt.get("format") != request.get("format"):
         raise ReporterError("Designer回执的format与report-request.json不一致")
-    for field, expected in (("output_type", request.get("output_type")), ("layout", expected_layout)):
+    if "layout" in receipt or "layout" in designer:
+        raise ReporterError("Designer回执不接受版式字段")
+    for field, expected in (("output_type", request.get("output_type")),):
         if receipt.get(field) != expected or designer.get(field) != expected:
             raise ReporterError(f"Designer回执的{field}与report-request.json不一致")
     rendered_path = validate_hashed_artifact(root, rendered.get("path"), rendered.get("content_hash"), "rendered.path")
@@ -372,19 +456,20 @@ def validate_report_run_directory(
         if child_candidate_id not in candidate_ids or not isinstance(subject, Mapping) or subject.get("candidate_id") != child_candidate_id:
             raise ReporterError("候选子报告的ReportUnit与受控selection不一致")
         report_unit_hashes = [str(unit.get("semantic_fact_hash"))]
-    elif request.get("subject_type") == "product":
-        report_unit_hashes = [str(unit.get("semantic_fact_hash"))]
+        frozen_evidence_statuses = [_frozen_evidence_status(unit)]
     elif delivery_mode == "single":
         subject = unit.get("subject")
         if len(candidate_ids) != 1 or not isinstance(subject, Mapping) or subject.get("candidate_id") != candidate_ids[0]:
             raise ReporterError("根ReportUnit候选与受控selection不一致")
         report_unit_hashes = [str(unit.get("semantic_fact_hash"))]
+        frozen_evidence_statuses = [_frozen_evidence_status(unit)]
     else:
         report_units = unit.get("report_units")
         if not isinstance(report_units, list) or any(not isinstance(item, Mapping) for item in report_units):
             raise ReporterError("ReportBundle缺少独立ReportUnit")
         bundle_candidate_ids: list[str] = []
         report_unit_hashes = []
+        frozen_evidence_statuses = []
         for item in report_units:
             _validate_report_unit(item)
             subject = item.get("subject")
@@ -392,6 +477,7 @@ def validate_report_run_directory(
                 raise ReporterError("ReportBundle含无效候选ReportUnit")
             bundle_candidate_ids.append(str(subject["candidate_id"]))
             report_unit_hashes.append(str(item.get("semantic_fact_hash")))
+            frozen_evidence_statuses.append(_frozen_evidence_status(item))
         if bundle_candidate_ids != candidate_ids:
             raise ReporterError("ReportBundle候选集合或顺序与受控selection不一致")
     if brief.get("report_unit_semantic_fact_hashes") != report_unit_hashes:
@@ -438,6 +524,16 @@ def validate_report_run_directory(
     if child_ids != expected_children:
         raise ReporterError("run_manifest.json的候选子报告集合或顺序与受控selection不一致")
 
+    child_evidence_statuses = [
+        status
+        for child in children
+        for status in child["validation"]["frozen_evidence_statuses"]
+    ]
+    all_evidence_statuses = [*frozen_evidence_statuses, *child_evidence_statuses]
+    expected_delivery_status = "succeeded" if all(status == "verified" for status in all_evidence_statuses) else "partial"
+    if manifest.get("status") != expected_delivery_status:
+        raise ReporterError("run_manifest.json的status必须由冻结ReportUnit.evidence_status推导")
+
     return {
         "root": root,
         "request": request,
@@ -448,6 +544,8 @@ def validate_report_run_directory(
         "receipt": receipt,
         "rendered_path": rendered_path,
         "children": children,
+        "frozen_evidence_statuses": all_evidence_statuses,
+        "delivery_status": expected_delivery_status,
     }
 
 

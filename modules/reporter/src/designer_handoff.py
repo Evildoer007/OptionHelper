@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import base64
 from copy import deepcopy
-from datetime import UTC, datetime
 from pathlib import Path
 import re
 from typing import Any, Mapping
@@ -16,10 +15,20 @@ from typing import Any, Mapping
 from runtime.ports.module import ModulePort
 
 from .artifact_validator import validate_designer_artifact
-from .models import ReporterError, ReportRequest, stable_hash
+from .models import (
+    CARD_SECTION_ORDER,
+    REPORT_SECTION_ORDER,
+    SCHEMA_DESIGN_BRIEF,
+    SCHEMA_DESIGNER_PAYLOAD,
+    ReporterError,
+    ReportRequest,
+    stable_hash,
+)
 from .report_unit_builder import normalize_parameter_groups, public_chart_specs
 
 
+DESIGNER_PAYLOAD_SCHEMA = SCHEMA_DESIGNER_PAYLOAD
+DESIGN_BRIEF_SCHEMA = SCHEMA_DESIGN_BRIEF
 DESIGNER_CONSTRAINTS = [
     "Designer只处理字体、颜色、组件、间距、图表和版式，不得新增或改写金融事实。",
     "不得删除上游运行状态、来源、限制或风险提示。",
@@ -30,11 +39,37 @@ _DISPLAY_STATUS = {"ready", "not_run", "failed", "unsupported", "partial"}
 _INTERNAL_DELIVERY_TEXT = re.compile(
     r"(?i)(optionhelper|app\s+host|reporter|designer|reportunit|modulerun|审计|run[_ ]?id|runref|source[_ ]?id|manifest|hash|文件路径|物理路径|module[_ ]?run)"
 )
+_FORBIDDEN_PUBLIC_ECONOMICS = re.compile(
+    r"(?i)(cny|人民币|名义本金|amount|\bpnl\b|p\s*&\s*l|cashflow|现金流|每100份合同|points_100|点数)"
+)
 _PUBLIC_MODULE_NAMES = {"payoff": "收益结构", "pricing": "估值定价", "backtest": "历史回测"}
+_DISPLAY_MODULE_FIELDS = {
+    "payoff": ("formula", "formula_mathml", "scenarios"),
+    "pricing": ("method", "valuation_date", "metrics", "greeks", "assumptions", "scenario_rows", "charts"),
+    "backtest": ("window", "entry_rule", "metrics", "card_metrics", "detail_tables", "event_statistics", "charts"),
+}
+_FORBIDDEN_MODULE_FIELD_FRAGMENTS = (
+    "amount", "pnl", "cashflow", "points_100", "point_value", "currency",
+    "source_path", "storage_ref", "run_id", "runref", "manifest", "hash", "audit",
+    "file_path", "directory", "result_dir", "path",
+    "candidate_id", "product_id", "task_id", "tenant_id", "analysis_case_id",
+    "source_id", "execution_fingerprint", "contract_fingerprint", "catalog_version",
+    "product_version",
+)
+_PUBLIC_VALUE_KEYS = {
+    "label", "value", "note", "value_format", "title", "rule", "formula", "formula_mathml",
+    "id", "method", "valuation_date", "name", "type", "data", "x", "y", "series", "columns", "rows",
+    "event", "monitor", "sample_count", "valid_return_sample_count", "positive_return_count", "win_rate",
+    "average_gross_return", "median_gross_return", "minimum_gross_return", "maximum_gross_return",
+    "max_loss_gross_return", "trigger_count", "trigger_rate", "average_days", "median_days", "count",
+    "rate", "year", "average", "median", "minimum", "maximum", "true_rate", "condition", "payoff",
+    "source", "cn", "en", "symbol", "description", "accessibility_summary", "source_note",
+    "x_axis_name", "y_axis_name", "z_axis_name",
+}
 _PUBLIC_LIMITATION_TEXT = {
     "exchange_calendar_not_exposed_by_data_source_weekday_validation_only": "数据源未提供可核验的交易日历，本次仅按工作日校验样本日期。",
     "no_nav_curve_is_generated": "本次回测按到期损益统计，未生成持有期净值曲线。",
-    "payment_calendar_not_exposed_by_shared_contract_core": "合同事实未提供独立付款日历，现金流日期按当前合同约定处理。",
+    "payment_calendar_not_exposed_by_shared_contract_core": "合同事实未提供独立付款日历，相关日期按当前合同约定处理。",
     "coverage_does_not_claim_unobserved_scenarios_were_economically_exercised": "情景覆盖仅表示样本中观察到的路径，不代表未观察情景已实际发生。",
     "in_memory_historical_data_without_persisted_data_asset": "历史数据仅绑定本次运行，未形成可复用的数据资产。",
 }
@@ -43,6 +78,8 @@ _PUBLIC_CANDIDATE_INDEX = ("", "一", "二", "三", "四", "五", "六", "七", 
 
 def _public_text(value: Any, fallback: str = "") -> str:
     text = str(value or "").strip()
+    if _FORBIDDEN_PUBLIC_ECONOMICS.search(text):
+        return fallback
     text = re.sub(r"(?i)optionhelper", "", text).strip(" -_/|：:")
     return text or fallback
 
@@ -56,6 +93,7 @@ def _public_strings(value: Any) -> list[str]:
         text for item in value
         if isinstance(item, str)
         and not _INTERNAL_DELIVERY_TEXT.search(item)
+        and not _FORBIDDEN_PUBLIC_ECONOMICS.search(item)
         and (text := _public_text(item))
     ]
 
@@ -67,7 +105,6 @@ def _public_recommendation(value: Any) -> dict[str, Any]:
     underlyings = _public_strings(raw.get("underlyings"))
     product_name = _public_text(raw.get("product_name"))
     result = {
-        "product_id": _public_text(raw.get("product_id")),
         "product_name": product_name,
         "headline": _public_text(raw.get("headline") or product_name),
         "structure_name": _public_text(raw.get("structure_name") or product_name),
@@ -88,7 +125,11 @@ def _public_limitations(values: Any) -> list[str]:
         return []
     result: list[str] = []
     for item in values:
-        if not isinstance(item, str) or not item.strip() or _INTERNAL_DELIVERY_TEXT.search(item):
+        if (
+            not isinstance(item, str) or not item.strip()
+            or _INTERNAL_DELIVERY_TEXT.search(item)
+            or _FORBIDDEN_PUBLIC_ECONOMICS.search(item)
+        ):
             continue
         value = item.strip()
         prefixed = re.match(r"(?i)^(payoff|pricing|backtest)\s*[：:]\s*(.+)$", value)
@@ -113,22 +154,54 @@ def _public_module_note(status: str) -> str:
     }.get(status, "该项结果当前不可作为正式结论使用。")
 
 
-def _designer_layout(request: ReportRequest) -> str:
-    del request
-    # The public Report has one continuous A4 body. HTML navigation is a
-    # Designer reading aid and is hidden in print/PDF.
-    return "brief"
+def _public_failure_note(status: str) -> str:
+    return {
+        "cancelled": "该项分析已取消，交付物不引用其结果。",
+        "timed_out": "该项分析超时，交付物不引用其结果。",
+    }.get(status, _public_module_note("failed"))
 
 
-def _display_module(raw: Mapping[str, Any], *, artifact_paths: Mapping[str, str]) -> dict[str, Any]:
-    value = deepcopy(dict(raw))
-    status = str(value.get("status", "not_run"))
-    if status not in _DISPLAY_STATUS:
+def _public_module_value(value: Any) -> Any:
+    """Remove any non-reader economics from a selected module field."""
+
+    if isinstance(value, str):
+        return _public_text(value)
+    if isinstance(value, list):
+        return [item for raw in value if (item := _public_module_value(raw)) not in (None, "", [], {})]
+    if isinstance(value, Mapping):
+        return {
+            str(key): item
+            for key, raw in value.items()
+            if str(key) in _PUBLIC_VALUE_KEYS
+            if not any(fragment in str(key).casefold() for fragment in _FORBIDDEN_MODULE_FIELD_FRAGMENTS)
+            if (item := _public_module_value(raw)) not in (None, "", [], {})
+        }
+    return deepcopy(value)
+
+
+def _display_module(name: str, raw: Mapping[str, Any], *, artifact_paths: Mapping[str, str]) -> dict[str, Any]:
+    source = raw if isinstance(raw, Mapping) else {}
+    value = {
+        "status": str(source.get("status", "not_run")),
+        **{
+            field: _public_module_value(source[field])
+            for field in _DISPLAY_MODULE_FIELDS[name]
+            if field in source and _public_module_value(source[field]) not in (None, "", [], {})
+        },
+    }
+    status = value["status"]
+    if status in {"cancelled", "timed_out"}:
+        value["status"] = "failed"
+    elif status not in _DISPLAY_STATUS:
         # 冻结ReportUnit保留原始状态供受控清单追溯；公开Designer投影只使用
         # 已发布的展示状态和自然语言说明，不携带内部状态枚举。
-        value["status"] = "failed" if status == "legacy_unverified" else "not_run"
-    value["note"] = _public_module_note(str(value.get("status", "not_run")))
-    artifacts = value.pop("artifacts", [])
+        value["status"] = "not_run"
+    value["note"] = (
+        _public_failure_note(status)
+        if status in {"cancelled", "timed_out"}
+        else _public_module_note(str(value.get("status", "not_run")))
+    )
+    artifacts = source.get("artifacts", [])
     value["charts"] = public_chart_specs(value.get("charts"))
     if value.get("status") == "ready":
         for artifact in artifacts if isinstance(artifacts, list) else []:
@@ -144,25 +217,12 @@ def _display_module(raw: Mapping[str, Any], *, artifact_paths: Mapping[str, str]
 
 
 def _sections(unit: Mapping[str, Any], request: ReportRequest) -> list[str]:
-    if unit.get("unit_type") == "ProductKnowledgeUnit":
-        # 产品知识交付没有本次合同、估值或回测证据；无论Card/Report均不得
-        # 借用完整合同报告章节暗示已经完成计算。
-        return ["recommendation", "risk"]
     if request.output_type == "report":
         # A Report is a complete reader document.  Modules without usable
         # evidence retain their own truthful state in the corresponding
-        # chapter rather than disappearing from the research structure.
-        return ["conclusion", "recommendation", "parameters", "payoff", "pricing", "backtest", "risk"]
-    result: list[str] = []
-    if "recommender" in request.selected_modules:
-        result.append("recommendation")
-    for name in ("payoff", "pricing", "backtest"):
-        if name in request.selected_modules:
-            result.append(name)
-    if request.output_type == "report":
-        result.append("parameters")
-    result.append("risk")
-    return result
+        # chapter rather than disappearing from the fixed reader structure.
+        return list(REPORT_SECTION_ORDER)
+    return list(CARD_SECTION_ORDER)
 
 
 def _report_title(unit: Mapping[str, Any], request: ReportRequest) -> str:
@@ -176,9 +236,6 @@ def _report_title(unit: Mapping[str, Any], request: ReportRequest) -> str:
     ] if isinstance(raw_underlyings, (list, tuple)) else []
     if not product_name:
         raise ReporterError("正式交付必须包含产品名称")
-    if unit.get("unit_type") == "ProductKnowledgeUnit":
-        suffix = "产品资料卡片" if request.output_type == "card" else "产品资料报告"
-        return f"{'、'.join(underlyings)}{product_name}{suffix}"
     if not underlyings:
         raise ReporterError("正式单产品交付必须包含标的")
     suffix = "推荐卡片" if request.output_type == "card" else "推荐报告"
@@ -208,7 +265,7 @@ def _report_as_of_date(request: ReportRequest, content: Mapping[str, Any]) -> st
     valuation_date = str(pricing.get("valuation_date") or "").strip()
     if valuation_date:
         return valuation_date
-    return datetime.now(UTC).date().isoformat()
+    return "截至日期未提供"
 
 
 def _rows_by_label(rows: Any) -> dict[str, dict[str, Any]]:
@@ -251,14 +308,10 @@ def _structured_conclusion(payload: Mapping[str, Any]) -> dict[str, Any]:
         backtest_rows[label]
         for label in (
             "样本数", "胜率", "历史正收益样本占比",
-            "平均损益", "平均收益", "最差损益", "最大亏损",
+            "平均收益", "最大亏损",
         )
         if label in backtest_rows and backtest_rows[label].get("value") is not None
     ]
-    # Average P&L and average return express the same summary slot. Prefer the
-    # frozen P&L fact when both exist.
-    if "平均损益" in backtest_rows and "平均收益" in backtest_rows:
-        backtest_summary = [row for row in backtest_summary if row.get("label") != "平均收益"]
 
     risk_values = [
         _public_text(item) for item in risk.get("items", [])
@@ -289,27 +342,31 @@ def build_designer_payload(
     artifact_paths = artifact_paths or {}
     meta = {
         "title": _report_title(unit, request),
-        "brand": "结构化产品研究",
         "as_of_date": _report_as_of_date(request, content),
-        "layout": _designer_layout(request),
     }
     recommendation = _public_recommendation(content.get("recommendation"))
     public_limitations = _public_unit_limitations(unit)
     payload = {
-        "schema": "optionhelper.designer-payload/v2",
+        "schema": DESIGNER_PAYLOAD_SCHEMA,
         "meta": meta,
         "sections": _sections(unit, request),
         "recommendation": recommendation,
-        "contract_highlights": deepcopy(content.get("contract_highlights", [])) if isinstance(content.get("contract_highlights"), list) else [],
-        "payoff": _display_module(content.get("payoff", {}) if isinstance(content.get("payoff"), Mapping) else {}, artifact_paths=artifact_paths),
-        "pricing": _display_module(content.get("pricing", {}) if isinstance(content.get("pricing"), Mapping) else {}, artifact_paths=artifact_paths),
-        "backtest": _display_module(content.get("backtest", {}) if isinstance(content.get("backtest"), Mapping) else {}, artifact_paths=artifact_paths),
+        "contract_highlights": [
+            _public_module_value(item)
+            for item in content.get("contract_highlights", [])
+            if isinstance(item, Mapping) and _public_module_value(item)
+        ] if isinstance(content.get("contract_highlights"), list) else [],
+        "payoff": _display_module("payoff", content.get("payoff", {}) if isinstance(content.get("payoff"), Mapping) else {}, artifact_paths=artifact_paths),
+        "pricing": _display_module("pricing", content.get("pricing", {}) if isinstance(content.get("pricing"), Mapping) else {}, artifact_paths=artifact_paths),
+        "backtest": _display_module("backtest", content.get("backtest", {}) if isinstance(content.get("backtest"), Mapping) else {}, artifact_paths=artifact_paths),
         "parameters": normalize_parameter_groups(content.get("parameters", {})),
         "risk": {
             "items": _public_strings((content.get("risk") or {}).get("items")) if isinstance(content.get("risk"), Mapping) else [],
             "disclaimer": _public_text((content.get("risk") or {}).get("disclaimer")) if isinstance(content.get("risk"), Mapping) else "",
         },
     }
+    if not payload["risk"]["items"]:
+        payload["risk"]["items"] = ["结构收益取决于合同条款与市场路径，可能发生部分或全部本金损失。"]
     if request.output_type == "card":
         # Designer原生从pricing/backtest.metrics渲染Card指标。Reporter只补Payoff
         # 情景摘要，避免把内部运行记录带入对外交付物。
@@ -400,12 +457,12 @@ def build_collection_payload(units: list[Mapping[str, Any]], request: ReportRequ
         else "组合页只汇总候选结论；各候选的收益、估值和回测结果分别列示，避免跨合同混用。"
     )
     return {
-        "schema": "optionhelper.designer-payload/v2",
+        "schema": DESIGNER_PAYLOAD_SCHEMA,
         "meta": {
-            "title": _public_text(request.metadata.get("title"), "结构化产品候选比较"), "brand": "结构化产品研究",
-            "as_of_date": str(request.metadata.get("as_of_date", "")), "layout": _designer_layout(request),
+            "title": _public_text(request.metadata.get("title"), "结构化产品候选比较"),
+            "as_of_date": str(request.metadata.get("as_of_date", "")),
         },
-        "sections": ["recommendation", "risk"] if is_card else ["conclusion", "recommendation", "parameters", "payoff", "pricing", "backtest", "risk"],
+        "sections": list(CARD_SECTION_ORDER) if is_card else list(REPORT_SECTION_ORDER),
         "conclusion": {
             "structure_name": "候选结构比较",
             "underlyings": "",
@@ -429,11 +486,10 @@ def build_collection_payload(units: list[Mapping[str, Any]], request: ReportRequ
 
 def build_design_brief(payload: Mapping[str, Any], request: ReportRequest, *, report_unit_hashes: list[str]) -> dict[str, Any]:
     return {
-        "schema": "optionhelper.design-brief/v2",
+        "schema": DESIGN_BRIEF_SCHEMA,
         "report_run_id": request.report_run_id,
         "output_type": request.output_type,
         "format": request.format,
-        "html_report_layout": request.html_report_layout,
         "audience": request.audience,
         "language": "zh-CN",
         "frozen_payload_hash": stable_hash(payload),
@@ -451,7 +507,6 @@ def render_with_designer(
 ) -> dict[str, Any]:
     """通过Designer公开Tool接口渲染冻结负载。"""
 
-    layout = "continuous"
     tool_request = {
         "action": "render",
         "payload": payload,
@@ -460,8 +515,6 @@ def render_with_designer(
         "asset_mode": "portable",
         "input_dir": str(output_dir),
     }
-    if request.output_type == "report" and request.format == "html":
-        tool_request["html_report_layout"] = layout
     try:
         response = designer_port.call_tool(tool_request)
     except Exception as error:
@@ -488,7 +541,6 @@ def render_with_designer(
         result,
         output_format=request.format,
         output_type=request.output_type,
-        expected_layout="brief",
         expected_frozen_payload_hash=stable_hash(payload),
         expected_asset_mode="portable",
     )
@@ -496,5 +548,6 @@ def render_with_designer(
 
 
 __all__ = [
-    "DESIGNER_CONSTRAINTS", "build_collection_payload", "build_design_brief", "build_designer_payload", "render_with_designer",
+    "DESIGNER_CONSTRAINTS", "DESIGNER_PAYLOAD_SCHEMA", "DESIGN_BRIEF_SCHEMA",
+    "build_collection_payload", "build_design_brief", "build_designer_payload", "render_with_designer",
 ]

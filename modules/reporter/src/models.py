@@ -17,9 +17,21 @@ from runtime.contracts.contract_types import canonical_json, semantic_hash
 from runtime.protocol.models import ModuleRunRef
 
 
-SCHEMA_REQUEST = "optionhelper.report-request/v2"
-SCHEMA_REPORT_UNIT = "optionhelper.contract-report-unit/v2"
-SCHEMA_MANIFEST = "optionhelper.report-run-manifest/v2"
+DELIVERY_PROTOCOL_VERSION = "v1.0.0"
+SCHEMA_REQUEST = f"optionhelper.report-request/{DELIVERY_PROTOCOL_VERSION}"
+SCHEMA_REPORT_UNIT = f"optionhelper.contract-report-unit/{DELIVERY_PROTOCOL_VERSION}"
+SCHEMA_REPORT_BUNDLE = f"optionhelper.report-bundle/{DELIVERY_PROTOCOL_VERSION}"
+SCHEMA_MANIFEST = f"optionhelper.report-run-manifest/{DELIVERY_PROTOCOL_VERSION}"
+SCHEMA_DESIGNER_PAYLOAD = f"optionhelper.designer-payload/{DELIVERY_PROTOCOL_VERSION}"
+SCHEMA_DESIGN_BRIEF = f"optionhelper.design-brief/{DELIVERY_PROTOCOL_VERSION}"
+SCHEMA_DESIGNER_ARTIFACT_MANIFEST = f"optionhelper.designer-artifact-manifest/{DELIVERY_PROTOCOL_VERSION}"
+REPORT_SECTION_ORDER = (
+    "conclusion", "recommendation", "parameters",
+    "payoff", "pricing", "backtest", "risk",
+)
+CARD_SECTION_ORDER = (
+    "recommendation", "reason", "contract_highlights", "pricing", "backtest", "risk",
+)
 DISPLAY_MODULES = ("recommender", "payoff", "pricing", "backtest")
 MODULE_TO_RUN = {"payoff": "payoffer", "pricing": "pricer", "backtest": "backtester"}
 _IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z")
@@ -154,7 +166,6 @@ class ReportRequest:
     source_refs: Mapping[str, Any]
     output_type: str
     format: str
-    html_report_layout: str | None
     audience: str
     metadata: Mapping[str, Any]
 
@@ -180,15 +191,10 @@ class ReportRequest:
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> "ReportRequest":
         raw = as_mapping(value, "ReportRequest")
-        forbidden = {"report_level", "delivery_mode", "selected_modules", "candidate_ids", "module_runs", "result_dir", "request_path"}.intersection(raw)
-        if forbidden:
-            raise ReporterError(
-                "ReportRequest v2不接受旧字段：" + ",".join(sorted(forbidden)) + "；请使用subject_ref与source_refs.module_run_refs。"
-            )
         reject_physical_paths(raw)
         allowed = {
             "schema", "tenant_id", "task_id", "report_run_id", "analysis_case_id", "subject_type", "subject_ref",
-            "source_refs", "output_type", "format", "html_report_layout", "audience", "metadata",
+            "source_refs", "output_type", "format", "audience", "metadata",
         }
         unknown = set(raw).difference(allowed)
         if unknown:
@@ -197,9 +203,6 @@ class ReportRequest:
             raise ReporterError(f"ReportRequest.schema必须为{SCHEMA_REQUEST}")
         output_type = require_text(raw.get("output_type"), "output_type").lower()
         output_format = str(raw.get("format") or "html").strip().lower()
-        raw_layout = raw.get("html_report_layout")
-        if raw_layout is None and output_type == "report" and output_format == "html":
-            raw_layout = "continuous"
         request = cls(
             tenant_id=require_identifier(raw.get("tenant_id"), "tenant_id"),
             task_id=require_identifier(raw.get("task_id"), "task_id"),
@@ -210,7 +213,6 @@ class ReportRequest:
             source_refs=as_mapping(raw.get("source_refs"), "source_refs"),
             output_type=output_type,
             format=output_format,
-            html_report_layout=str(raw_layout).lower() if raw_layout is not None else None,
             audience=require_text(raw.get("audience"), "audience"),
             metadata=as_mapping(raw.get("metadata", {}), "metadata"),
         )
@@ -218,24 +220,15 @@ class ReportRequest:
         return request
 
     def _validate(self) -> None:
-        if self.subject_type not in {"product", "contract", "bundle", "comparison"}:
-            raise ReporterError("subject_type仅支持product、contract、bundle、comparison")
+        if self.subject_type not in {"contract", "bundle", "comparison"}:
+            raise ReporterError("subject_type仅支持contract、bundle、comparison")
         if self.delivery_mode not in {"single", "combined", "batch", "comparison"}:
             raise ReporterError("subject_ref.delivery_mode仅支持single、combined、batch、comparison")
         candidate_ids = self.candidate_ids
-        if self.subject_type == "product":
-            if self.delivery_mode != "single":
-                raise ReporterError("product仅支持single交付")
-            if candidate_ids:
-                raise ReporterError("product不应提供candidate_ids；请使用subject_ref.product_ref")
-            product_ref = self.subject_ref.get("product_ref")
-            if not isinstance(product_ref, Mapping):
-                raise ReporterError("product需要subject_ref.product_ref")
-        else:
-            if self.delivery_mode == "single" and len(candidate_ids) != 1:
-                raise ReporterError("single必须且只能选择一个candidate_id")
-            if self.delivery_mode != "single" and len(candidate_ids) < 2:
-                raise ReporterError("combined、batch和comparison至少选择两个candidate_id")
+        if self.delivery_mode == "single" and len(candidate_ids) != 1:
+            raise ReporterError("single必须且只能选择一个candidate_id")
+        if self.delivery_mode != "single" and len(candidate_ids) < 2:
+            raise ReporterError("combined、batch和comparison至少选择两个candidate_id")
         if len(set(candidate_ids)) != len(candidate_ids):
             raise ReporterError("subject_ref.candidate_ids不得重复")
         self.selected_modules
@@ -243,14 +236,6 @@ class ReportRequest:
             raise ReporterError("output_type仅支持card、report")
         if self.format not in {"html", "pdf"}:
             raise ReporterError("format仅支持html、pdf")
-        if self.format == "html":
-            if self.output_type == "report":
-                if self.html_report_layout != "continuous":
-                    raise ReporterError("Report HTML仅支持连续版，html_report_layout必须为continuous")
-            elif self.html_report_layout is not None:
-                raise ReporterError("Card HTML不支持报告目录布局，html_report_layout必须为null")
-        elif self.html_report_layout is not None:
-            raise ReporterError("PDF为无目录页式，html_report_layout必须为null")
         required_source_keys = {"product_version_refs", "catalog_version_ref", "evidence_refs", "module_run_refs"}
         missing = required_source_keys.difference(self.source_refs)
         if missing:
@@ -274,14 +259,15 @@ class ReportRequest:
             "source_refs": dict(self.source_refs),
             "output_type": self.output_type,
             "format": self.format,
-            "html_report_layout": self.html_report_layout,
             "audience": self.audience,
             "metadata": dict(self.metadata),
         }
 
 
 __all__ = [
-    "DISPLAY_MODULES", "MODULE_TO_RUN", "ReporterError", "ReportRequest",
-    "SCHEMA_MANIFEST", "SCHEMA_REPORT_UNIT", "SCHEMA_REQUEST", "as_list", "as_mapping", "module_run_ref",
+    "DELIVERY_PROTOCOL_VERSION", "DISPLAY_MODULES", "MODULE_TO_RUN",
+    "CARD_SECTION_ORDER", "REPORT_SECTION_ORDER", "ReporterError", "ReportRequest",
+    "SCHEMA_DESIGN_BRIEF", "SCHEMA_DESIGNER_ARTIFACT_MANIFEST", "SCHEMA_DESIGNER_PAYLOAD",
+    "SCHEMA_MANIFEST", "SCHEMA_REPORT_BUNDLE", "SCHEMA_REPORT_UNIT", "SCHEMA_REQUEST", "as_list", "as_mapping", "module_run_ref",
     "read_json", "read_json_value", "reject_physical_paths", "require_identifier", "require_text", "stable_hash", "write_json",
 ]

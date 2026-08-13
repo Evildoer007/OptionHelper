@@ -15,7 +15,7 @@ from .report_unit_builder import build_report_document, build_report_units
 
 
 def validate_request(value: Mapping[str, Any]) -> ReportRequest:
-    """解析正式v2请求；旧目录型请求会在模型层明确拒绝。"""
+    """解析当前正式请求。"""
 
     return ReportRequest.from_mapping(value)
 
