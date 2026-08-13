@@ -1,6 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "optionhelper://schemas/tool-io",
+  "x-optionhelper-protocol-version": "v1.0.0",
   "title": "ToolInputOutput",
   "$defs": {
     "resolved_contract": {"$ref": "optionhelper://schemas/resolved-contract"},
@@ -11,21 +12,70 @@
     "datafetcher_output": {"$ref": "#/$defs/generic_output"},
     "recommender_input": {"$ref": "#/$defs/generic_input"},
     "recommender_output": {"$ref": "#/$defs/generic_output"},
+    "observed_contract_event": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["event_type", "event_date", "observation_stage", "accumulated_count", "accumulated_quantity"],
+      "properties": {
+        "event_type": {"type": "string", "minLength": 1},
+        "event_date": {"type": "string", "format": "date"},
+        "observation_stage": {"type": ["integer", "null"], "minimum": 0},
+        "accumulated_count": {"type": ["integer", "null"], "minimum": 0},
+        "accumulated_quantity": {"type": ["number", "null"], "minimum": 0}
+      }
+    },
+    "realized_cashflow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cashflow_id", "payment_date", "amount", "currency", "status"],
+      "properties": {
+        "cashflow_id": {"type": ["string", "null"]},
+        "payment_date": {"type": "string", "format": "date"},
+        "amount": {"type": "number"},
+        "currency": {"type": ["string", "null"]},
+        "status": {"enum": ["paid", "settled", "realized"]}
+      }
+    },
+    "observed_contract_state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["valuation_date", "lifecycle_status", "occurred_events", "realized_cashflows", "source_refs", "state_hash"],
+      "properties": {
+        "valuation_date": {"type": ["string", "null"], "format": "date"},
+        "lifecycle_status": {"enum": ["initial", "active", "terminated", "matured"]},
+        "occurred_events": {"type": "array", "items": {"$ref": "#/$defs/observed_contract_event"}},
+        "realized_cashflows": {"type": "array", "items": {"$ref": "#/$defs/realized_cashflow"}},
+        "source_refs": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "state_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
     "payoffer_input": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["contract"],
-      "properties": {"contract": {"$ref": "#/$defs/resolved_contract"}}
+      "required": ["action", "payoff_input"],
+      "properties": {
+        "action": {"const": "run"},
+        "run_id": {"type": "string", "minLength": 1},
+        "payoff_input": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["contract"],
+          "properties": {"contract": {"$ref": "#/$defs/resolved_contract"}}
+        }
+      }
     },
     "payoffer_output": {"$ref": "optionhelper://schemas/module-run"},
     "pricer_input": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["contract", "pricing_config", "market_data_refs"],
+      "required": ["action", "contract", "pricing_config", "market_data_refs"],
       "properties": {
+        "action": {"const": "run"},
+        "run_id": {"type": "string", "minLength": 1},
         "contract": {"$ref": "#/$defs/resolved_contract"},
         "pricing_config": {"type": "object"},
         "market_data_refs": {"type": "array", "items": {"$ref": "#/$defs/data_asset_ref"}},
+        "observed_contract_state": {"$ref": "#/$defs/observed_contract_state"},
         "trading_calendar_ref": {
           "oneOf": [
             {"$ref": "#/$defs/data_asset_ref"},
@@ -38,8 +88,10 @@
     "backtester_input": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["contract", "backtest_config", "historical_data"],
+      "required": ["action", "contract", "backtest_config", "historical_data"],
       "properties": {
+        "action": {"const": "run"},
+        "run_id": {"type": "string", "minLength": 1},
         "contract": {"$ref": "#/$defs/resolved_contract"},
         "backtest_config": {"type": "object"},
         "historical_data": {"$ref": "#/$defs/data_asset_ref"}

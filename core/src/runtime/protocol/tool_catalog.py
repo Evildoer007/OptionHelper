@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from .version import PUBLIC_VERSION
+
 
 MODULES = ("datafetcher", "recommender", "payoffer", "pricer", "backtester", "reporter", "designer")
 
@@ -15,11 +17,27 @@ _OPERATIONS = {
     "designer": (("render",), False),
 }
 
+_POLICIES = {
+    "catalog": "module.catalog",
+    "status": "module.catalog",
+    "fetch": "module.run",
+    "recommend": "conversation.tool.run",
+    "recommend_fixed": "conversation.tool.run",
+    "run": "module.run",
+    "render": "module.run",
+}
+
 
 def tool_catalog() -> dict[str, dict[str, object]]:
     catalog: dict[str, dict[str, object]] = {}
     for module in MODULES:
         operations, has_page = _OPERATIONS[module]
+        declared_actions = ("catalog", "status", *operations)
+        if module == "datafetcher":
+            declared_actions += ("list_assets",)
+        if module == "reporter":
+            declared_actions += ("list_report_sources",)
+        actions = [{"action": action, "required_policy": _POLICIES.get(action, "module.catalog")} for action in declared_actions]
         catalog[module] = {
             "module": module,
             "operation": operations[0],
@@ -27,10 +45,10 @@ def tool_catalog() -> dict[str, dict[str, object]]:
             "entrypoint": f"modules.{module}.service:call_tool",
             "has_page": has_page,
             "independent": True,
-            "required_capability": f"{module}.run",
+            "actions": actions,
             "input_schema": f"optionhelper://schemas/tool-io#/$defs/{module}_input",
             "output_schema": f"optionhelper://schemas/tool-io#/$defs/{module}_output",
-            "protocol_version": "v1.2",
+            "protocol_version": PUBLIC_VERSION,
         }
     return catalog
 

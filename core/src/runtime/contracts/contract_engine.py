@@ -32,13 +32,26 @@ DEFAULT_REGISTRY_PATH = get_default_registry_path()
 _RULE_TERM_KEYS = frozenset({"monitor", "pricing_methods", "constraints", "derived_terms"})
 # 这些字段是产品定义的一部分，而不是本次交易可报价、可覆盖的经济参数。
 # 它们仍保留在ResolvedContract.terms中，供下游展示和审计读取。
-_IMMUTABLE_TERM_KEYS = frozenset({"margin_call", "payoff_figure_basis"})
-_STATIC_TERM_KEYS = _RULE_TERM_KEYS | _IMMUTABLE_TERM_KEYS
+_IMMUTABLE_TERM_KEYS = frozenset({"margin_call", "payoff_figure_basis", "N", "Nvar", "Nvega", "G"})
+# 不可覆盖不等于不可进入公式：N/Nvar虽是内部固定100基准，仍须由解释器绑定。
+_STATIC_TERM_KEYS = _RULE_TERM_KEYS | frozenset({"margin_call", "payoff_figure_basis"})
 _ALLOWED_PRODUCT_KEYS = frozenset({"identity", "terms", "paths"})
 _ALLOWED_IDENTITY_KEYS = frozenset({"product_id", "name_zh", "entry_status"})
 _ALLOWED_PATH_KEYS = frozenset({"condition", "cases"})
 _ALLOWED_CASE_KEYS = frozenset({"domain", "pnl"})
 _OBSERVATION_TERM_KEYS = frozenset({"O_KO", "O_KI", "Oc", "Otouch", "Orange", "Ovar", "Ohedge", "Oreset"})
+_DEFAULT_STRIKE_ANCHOR_KEYS = {
+    "3.1": frozenset({"K1", "K2"}),
+    "3.2": frozenset({"K1", "K2"}),
+    "3.3": frozenset({"K1", "K2"}),
+    "3.4": frozenset({"K1", "K2"}),
+    "4.2": frozenset({"Kp", "Kc"}),
+    "4.3": frozenset({"K1", "K2", "K3"}),
+    "4.4": frozenset({"K1", "K2", "K3", "K4"}),
+    "10.2": frozenset({"K1", "K2"}),
+    "10.3": frozenset({"K1", "K2"}),
+    "10.7": frozenset({"Kd", "Ku"}),
+}
 _FORMULA_FUNCTIONS = frozenset({
     "min", "max", "first_time", "first_time_after", "first_time_before", "first_time_levels", "first_time_below_levels", "schedule_levels", "step_levels",
     "first_time_below_schedule", "first_observation_on_or_after", "terminal_event_time", "reset_knockout_time", "effective_hedge_time",
@@ -48,6 +61,7 @@ _FORMULA_FUNCTIONS = frozenset({
 })
 _SETTLEMENT_VARIABLES = frozenset({"S_t", "S_T", "W_t", "W_T", "r_T", "u", "T_contract", "inf"})
 _NORMALIZED_PRICE_BASE = 100.0
+_PAYOFF_SCALE_TERM_KEYS = frozenset({"N", "Nvar"})
 _MATURITY_TIME_TOLERANCE = 7.0 / 365.0
 _NUMERIC_COMPARISON_RTOL = 1e-12
 _NUMERIC_COMPARISON_ATOL = 1e-12
@@ -65,20 +79,65 @@ def _shared_term_catalog() -> Mapping[str, Any]:
     return _load_term_catalog(DEFAULT_REGISTRY_PATH)
 
 
+def _quoteable_price_term_keys(terms: Mapping[str, Any], catalog: Mapping[str, Any]) -> frozenset[str]:
+    """TermCatalog的price类别是唯一可平移或判定覆盖的依据。"""
+    return frozenset(
+        key
+        for key, value in terms.items()
+        if catalog.get(key, {}).get("unit") == "price"
+        and catalog.get(key, {}).get("value_type") in {"number", "number_list"}
+        and isinstance(value, (int, float, np.number, Sequence))
+        and not isinstance(value, (str, bytes, bool))
+    )
+
+
+def _default_strike_anchor(
+    product_id: str,
+    terms: Mapping[str, Any],
+    overrides: Mapping[str, Any],
+    catalog: Mapping[str, Any],
+) -> tuple[dict[str, Any], bool]:
+    """将显式多执行价产品的默认经济坐标整体平移至最低执行价100。"""
+    strike_keys = _DEFAULT_STRIKE_ANCHOR_KEYS.get(product_id)
+    if strike_keys is None:
+        return dict(terms), False
+    if not strike_keys.issubset(terms):
+        raise ContractResolutionError(f"{product_id}多执行价锚定缺少已登记执行价条款")
+    price_keys = _quoteable_price_term_keys(terms, catalog)
+    if set(overrides) & price_keys:
+        return dict(terms), False
+    strikes = [terms[key] for key in strike_keys]
+    if any(isinstance(value, bool) or not isinstance(value, (int, float, np.number)) or not np.isfinite(float(value)) or float(value) <= 0 for value in strikes):
+        raise ContractResolutionError(f"{product_id}多执行价锚定要求执行价为正有限数值")
+    scale = _NORMALIZED_PRICE_BASE / min(float(value) for value in strikes)
+    anchored: dict[str, Any] = {}
+    for key, value in terms.items():
+        if key not in price_keys:
+            anchored[key] = value
+        elif isinstance(value, (int, float, np.number)) and not isinstance(value, bool):
+            anchored[key] = float(value) * scale
+        elif isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+            anchored[key] = [float(item) * scale for item in value]
+        else:
+            raise ContractResolutionError(f"{product_id}可报价price条款{key}无法按同一坐标锚定")
+    return anchored, True
+
+
 def _schedule_snapshot(terms: Mapping[str, Any], trading_dates: Sequence[Any] | None = None) -> dict[str, Any]:
     """冻结合同登记的观察选择器。
 
-    没有具体交易日历时不伪造观察日期；只保存可复核的selector和日历解析状态。
-    模块拿到真实交易日后仍由同一共享解释器解析实际观察集合。
+    含观察条款的正式合同必须在Host已验证的交易日历上解析，不能只冻结selector。
     """
     keys = sorted(_OBSERVATION_TERM_KEYS & set(terms))
     if trading_dates is None:
-        return {key: {"selector": deep_thaw(terms[key]), "status": "selector_frozen"} for key in keys}
+        if keys:
+            raise ContractResolutionError("含观察条款的正式合同必须提供Host验证交易日历")
+        return {}
     dates = pd.to_datetime(list(trading_dates), errors="coerce")
     if not len(dates) or dates.isna().any() or not dates.is_monotonic_increasing or dates.has_duplicates:
         raise ContractResolutionError("合同交易日历须为非空、严格递增的有效日期")
     times = np.arange(len(dates), dtype=float)
-    return {
+    snapshot = {
         key: {
             "selector": deep_thaw(terms[key]),
             "status": "resolved",
@@ -86,6 +145,46 @@ def _schedule_snapshot(terms: Mapping[str, Any], trading_dates: Sequence[Any] | 
         }
         for key in keys
     }
+    if any(not value["dates"] for value in snapshot.values()):
+        raise ContractResolutionError("Host验证交易日历未解析出全部合同观察日")
+    return snapshot
+
+
+def _require_observation_calendar_identity(identity: Mapping[str, Any], terms: Mapping[str, Any]) -> None:
+    if not (_OBSERVATION_TERM_KEYS & set(terms)):
+        return
+    for key in ("calendar_id", "calendar_version"):
+        value = identity.get(key)
+        if not isinstance(value, str) or not value.strip():
+            raise ContractResolutionError(f"含观察条款的正式合同必须提供identity.{key}")
+
+
+def _validate_resolved_schedule_snapshot(
+    terms: Mapping[str, Any], schedules: Mapping[str, Any], identity: Mapping[str, Any],
+) -> None:
+    keys = frozenset(_OBSERVATION_TERM_KEYS & set(terms))
+    if not keys:
+        if schedules:
+            raise ContractResolutionError("无观察条款的ResolvedContract.resolved_schedules必须为空")
+        return
+    _require_observation_calendar_identity(identity, terms)
+    if set(schedules) != keys:
+        raise ContractResolutionError("ResolvedContract.resolved_schedules必须逐一覆盖观察条款")
+    for key in sorted(keys):
+        value = schedules[key]
+        if not isinstance(value, Mapping) or set(value) != {"selector", "status", "dates"}:
+            raise ContractResolutionError(f"ResolvedContract.resolved_schedules.{key}外形无效")
+        if value["status"] != "resolved" or semantic_hash(value["selector"]) != semantic_hash(terms[key]):
+            raise ContractResolutionError(f"ResolvedContract.resolved_schedules.{key}必须为对应selector的resolved日程")
+        dates = value["dates"]
+        if not isinstance(dates, Sequence) or isinstance(dates, (str, bytes)) or not dates:
+            raise ContractResolutionError(f"ResolvedContract.resolved_schedules.{key}必须包含真实观察日")
+        try:
+            parsed = tuple(pd.Timestamp(item).date().isoformat() for item in dates)
+        except (TypeError, ValueError) as error:
+            raise ContractResolutionError(f"ResolvedContract.resolved_schedules.{key}包含无效观察日") from error
+        if tuple(dates) != parsed or parsed != tuple(sorted(parsed)) or len(set(parsed)) != len(parsed):
+            raise ContractResolutionError(f"ResolvedContract.resolved_schedules.{key}观察日必须为严格递增的ISO日期")
 
 
 def _economic_identity(identity: Mapping[str, Any]) -> dict[str, Any]:
@@ -94,9 +193,7 @@ def _economic_identity(identity: Mapping[str, Any]) -> dict[str, Any]:
         "product_id", "underlyings", "currency", "contract_start_date", "contract_end_date",
         "reference_prices", "price_convention", "calendar_id", "calendar_version",
     )
-    result = {key: identity.get(key) for key in keys}
-    result["reference_prices"] = identity.get("reference_prices") or identity.get("contract_reference_spots")
-    return result
+    return {key: identity.get(key) for key in keys}
 
 
 class ContractResolutionError(ValueError):
@@ -171,6 +268,7 @@ class ResolvedContract:
             if product_version.startswith("unversioned:") and product_version != f"unversioned:{self.product_snapshot_hash[:16]}":
                 raise ContractResolutionError("ResolvedContract.product_version与产品快照哈希不一致")
         schedules = deep_freeze(self.resolved_schedules or _schedule_snapshot(terms))
+        _validate_resolved_schedule_snapshot(terms, schedules, identity)
         fingerprint = semantic_hash({
             "identity": _economic_identity(identity),
             "terms": terms,
@@ -206,7 +304,7 @@ class ResolvedContract:
     def to_dict(self) -> dict[str, Any]:
         """返回旧消费者使用的四字段外形。
 
-        新消费者应使用``to_protocol_dict``取得蓝图v1.1完整合同。保留此方法可让
+        新消费者应使用``to_protocol_dict``取得当前正式完整合同。保留此方法可让
         尚未迁移的三个计算模块继续运行，而不复制或修改其消费者代码。
         """
         return {
@@ -229,6 +327,25 @@ class ResolvedContract:
             "product_paths_hash": self.product_paths_hash,
         })
         return result
+
+    def to_controlled_snapshot(self) -> dict[str, Any]:
+        """返回仅供Core与受控ModuleRun输入使用的完整合同快照。
+
+        该快照可由``ResolvedContract(**snapshot)``严格复原并校验原始
+        fingerprint与产品快照绑定。它不是公开展示对象；页面和公开工件必须
+        使用各模块显式定义的display projection，不能裁剪后仍称作合同。
+        """
+        return self.to_protocol_dict()
+
+    @classmethod
+    def from_controlled_snapshot(cls, snapshot: Mapping[str, Any]) -> "ResolvedContract":
+        """严格恢复Core受控快照，拒绝展示投影或不完整对象。"""
+        if not isinstance(snapshot, Mapping):
+            raise ContractResolutionError("Core受控ResolvedContract快照必须是对象")
+        try:
+            return cls(**dict(snapshot))
+        except (TypeError, ValueError, ContractResolutionError) as error:
+            raise ContractResolutionError(f"Core受控ResolvedContract快照无效：{error}") from error
 
 
 @dataclass(frozen=True)
@@ -369,7 +486,7 @@ class PricePath:
     """完整单标的或多标的真实市场价格路径，首维为合同时间。
 
     ``values``保存交易日收盘价，不应由调用方预先归一化；解释器以identity中的
-    ``contract_reference_spots``将其映射为内部100基准价格水平。若合同将
+    ``reference_prices``将其映射为内部100基准价格水平。若合同将
     ``observation_price``设为``open``、``high``或``low``，调用方必须在
     ``price_fields``中逐一提供同形状的对应OHLC序列；禁止静默回退至收盘价。
     """
@@ -463,7 +580,7 @@ def verify_product_snapshot_binding(
     if published:
         if attested_product_version != contract.product_version:
             raise ContractResolutionError("历史ProductVersion必须同时提供签发版本证明与对应归档Registry快照")
-        if re.fullmatch(r"v[1-9]\d*\.\d+", contract.product_version) is None:
+        if re.fullmatch(r"v[1-9]\d*\.\d+\.\d+", contract.product_version) is None:
             raise ContractResolutionError("历史ProductVersion版本格式无效")
     elif attested_product_version is not None:
         raise ContractResolutionError("开发态unversioned合同不得伪装正式ProductVersion证明")
@@ -478,11 +595,12 @@ def verify_product_snapshot_binding(
         for key, source in contract.term_sources.items()
         if source == "override"
     }
-    expected = resolve_contract(
+    expected = _resolve_contract(
         contract.product_id,
         identity=identity,
         term_overrides=overrides,
         registry=registry,
+        frozen_resolved_schedules=contract.resolved_schedules,
     )
     for label, actual, declared in (
         ("identity", _economic_identity(contract.identity), _economic_identity(expected.identity)),
@@ -522,7 +640,7 @@ def _verify_snapshot_hashes(
     return contract
 
 
-def resolve_contract(
+def _resolve_contract(
     product_id: str,
     *,
     identity: Mapping[str, Any] | None = None,
@@ -530,6 +648,7 @@ def resolve_contract(
     registry: Mapping[str, Any] | None = None,
     registry_path: str | Path = DEFAULT_REGISTRY_PATH,
     trading_dates: Sequence[Any] | None = None,
+    frozen_resolved_schedules: Mapping[str, Any] | None = None,
 ) -> ResolvedContract:
     """以默认条款加本次覆盖生成唯一合同；未完整录入的产品拒绝运行。"""
     source_registry = deepcopy(dict(registry)) if registry is not None else load_registry(registry_path)
@@ -544,7 +663,7 @@ def resolve_contract(
     supplied_identity = dict(identity or {})
     unknown_identity = set(supplied_identity) - {
         "contract_id", "underlyings", "currency", "contract_start_date", "contract_end_date",
-        "contract_reference_spots", "reference_prices", "price_convention", "calendar_id",
+        "reference_prices", "price_convention", "calendar_id",
         "calendar_version",
     }
     if unknown_identity:
@@ -553,18 +672,24 @@ def resolve_contract(
     if not underlyings or any(not item for item in underlyings) or len(set(underlyings)) != len(underlyings):
         raise ContractResolutionError("underlyings必须为无重复的非空标的代码序列")
     source_terms = product["terms"]
-    legacy_references = supplied_identity.get("contract_reference_spots")
-    protocol_references = supplied_identity.get("reference_prices")
-    if legacy_references is not None and protocol_references is not None and dict(legacy_references) != dict(protocol_references):
-        raise ContractResolutionError("reference_prices与兼容字段contract_reference_spots不一致")
-    references = protocol_references if protocol_references is not None else legacy_references
+    references = supplied_identity.get("reference_prices")
     if references is not None:
         if not isinstance(references, Mapping) or set(references) != set(underlyings):
-            raise ContractResolutionError("contract_reference_spots必须逐一覆盖underlyings")
-        references = {str(key): _positive_number(value, f"contract_reference_spots.{key}") for key, value in references.items()}
+            raise ContractResolutionError("reference_prices必须逐一覆盖underlyings")
+        references = {str(key): _positive_number(value, f"reference_prices.{key}") for key, value in references.items()}
 
     defaults = {key: deepcopy(value) for key, value in source_terms.items() if key not in _RULE_TERM_KEYS}
+    # Payoffer、Pricer和Backtester共用这份合同解释器。历史OptionReg保留的N/Nvar
+    # 只是旧资料的规模示例；运行期一律固定为无货币单位的100点标准化结算基准。
+    # 不改写资料库或默认示例资产，亦不让客户名义本金进入本次合同。
+    for key in _PAYOFF_SCALE_TERM_KEYS & set(defaults):
+        defaults[key] = _NORMALIZED_PRICE_BASE
     overrides = dict(term_overrides or {})
+    attempted_scale_override = set(overrides) & _PAYOFF_SCALE_TERM_KEYS
+    if attempted_scale_override:
+        raise ContractResolutionError(
+            f"内部标准化基准100不可覆盖：{','.join(sorted(attempted_scale_override))}"
+        )
     attempted_immutable = set(overrides) & _IMMUTABLE_TERM_KEYS
     if attempted_immutable:
         raise ContractResolutionError(f"结构性条款不可由用户直接覆盖：{','.join(sorted(attempted_immutable))}")
@@ -575,7 +700,9 @@ def resolve_contract(
     unknown = set(overrides) - set(defaults)
     if unknown:
         raise ContractResolutionError(f"本次条款覆盖含未登记字段：{','.join(sorted(unknown))}")
-    final_terms = {**defaults, **overrides}
+    final_terms, default_strike_anchored = _default_strike_anchor(
+        str(product_id), {**defaults, **overrides}, overrides, source_registry["term_catalog"],
+    )
     _validate_terms(final_terms, source_registry["term_catalog"])
     if "S0Vec" in final_terms:
         required_assets = len(final_terms["S0Vec"])
@@ -585,9 +712,19 @@ def resolve_contract(
             raise ContractResolutionError(
                 f"{product_id}为多标的结构，underlyings数量必须与S0Vec长度{required_assets}一致"
             )
+    if _OBSERVATION_TERM_KEYS & set(final_terms):
+        _require_observation_calendar_identity(supplied_identity, final_terms)
+        if trading_dates is None and frozen_resolved_schedules is None:
+            raise ContractResolutionError("含观察条款的正式合同必须提供Host验证交易日历")
     price_convention = str(supplied_identity.get("price_convention") or "normalized_100")
+    if price_convention == "normalized_100" and references is None:
+        # A normalized contract's S0/S0Vec is its declared price coordinate,
+        # not an implicit market quote.  Freeze that coordinate explicitly so
+        # every formal calculator receives the same complete identity.  An
+        # absolute-market contract still requires a Host-supplied quote.
+        references = _normalized_reference_prices(final_terms, underlyings)
     if price_convention == "normalized_100":
-        _validate_normalized_price_base(final_terms)
+        _validate_normalized_price_base(final_terms, allow_scaled_coordinate=default_strike_anchored)
     elif price_convention == "absolute_market":
         if references is None:
             raise ContractResolutionError("absolute_market价格口径必须提供reference_prices")
@@ -638,7 +775,6 @@ def resolve_contract(
         "contract_start_date": supplied_identity.get("contract_start_date"),
         "contract_end_date": supplied_identity.get("contract_end_date"),
         "reference_prices": references,
-        "contract_reference_spots": references,
         "price_convention": price_convention,
         "calendar_id": supplied_identity.get("calendar_id"),
         "calendar_version": supplied_identity.get("calendar_version"),
@@ -650,12 +786,36 @@ def resolve_contract(
         term_sources,
         tuple(deepcopy(product["paths"])),
         product_version=product_version,
-        resolved_schedules=_schedule_snapshot(final_terms, trading_dates),
+        resolved_schedules=(
+            deep_thaw(frozen_resolved_schedules)
+            if frozen_resolved_schedules is not None
+            else _schedule_snapshot(final_terms, trading_dates)
+        ),
         registry_snapshot_hash=registry_snapshot_hash,
         product_snapshot_hash=product_snapshot_hash,
         product_paths_hash=product_paths_hash,
     )
     return _verify_snapshot_hashes(contract, source_registry)
+
+
+def resolve_contract(
+    product_id: str,
+    *,
+    identity: Mapping[str, Any] | None = None,
+    term_overrides: Mapping[str, Any] | None = None,
+    registry: Mapping[str, Any] | None = None,
+    registry_path: str | Path = DEFAULT_REGISTRY_PATH,
+    trading_dates: Sequence[Any] | None = None,
+) -> ResolvedContract:
+    """以默认条款加本次覆盖生成唯一正式合同；观察日必须由Host冻结。"""
+    return _resolve_contract(
+        product_id,
+        identity=identity,
+        term_overrides=term_overrides,
+        registry=registry,
+        registry_path=registry_path,
+        trading_dates=trading_dates,
+    )
 
 
 def make_payoff_input(contract: ResolvedContract) -> PayoffInput:
@@ -678,7 +838,7 @@ def bind_term_symbols(terms: Mapping[str, Any], term_catalog: Mapping[str, Any] 
     return variables
 
 
-def evaluate_payoff(contract: ResolvedContract, price_path: PricePath) -> PayoffEvaluation:
+def evaluate_contract(contract: ResolvedContract, price_path: PricePath) -> PayoffEvaluation:
     """同一解释器选择唯一经济路径、唯一分段并产出逐笔持有方现金流。"""
     variables = _formula_context(contract, price_path)
     monitor_values = compute_monitor_values(contract, price_path, variables)
@@ -697,10 +857,6 @@ def evaluate_payoff(contract: ResolvedContract, price_path: PricePath) -> Payoff
     if not isinstance(result, CashflowBundle):
         raise FormulaError("pnl必须返回由cash(t, amount)组成的现金流")
     return PayoffEvaluation(selected_path, selected_case, monitor_values, result.flows)
-
-
-# v1.1正式名称；evaluate_payoff仅为现有三个消费者保留迁移期别名。
-evaluate_contract = evaluate_payoff
 
 
 def _validate_settlement_endpoint(
@@ -1105,14 +1261,31 @@ def _check_number(value: Any, key: str, domain: Mapping[str, Any]) -> None:
     if "exclusive_min" in domain and number <= float(domain["exclusive_min"]): raise ContractResolutionError(f"条款{key}必须大于{domain['exclusive_min']}")
 
 
-def _validate_normalized_price_base(terms: Mapping[str, Any]) -> None:
+def _validate_normalized_price_base(terms: Mapping[str, Any], *, allow_scaled_coordinate: bool = False) -> None:
     """价格水平统一以100为内部基准，真实参考价仅由identity提供。"""
+    if allow_scaled_coordinate:
+        return
     if "S0" in terms and not np.isclose(float(terms["S0"]), _NORMALIZED_PRICE_BASE, rtol=0.0, atol=1e-12):
-        raise ContractResolutionError("S0是固定的内部标准化基准100，不可覆盖为其他数值；请在contract_reference_spots传入真实合同参考价")
+        raise ContractResolutionError("S0是固定的内部标准化基准100，不可覆盖为其他数值；请在reference_prices传入真实合同参考价")
     if "S0Vec" in terms:
         levels = np.asarray(terms["S0Vec"], dtype=float)
         if not np.allclose(levels, _NORMALIZED_PRICE_BASE, rtol=0.0, atol=1e-12):
-            raise ContractResolutionError("S0Vec各分量必须为内部标准化基准100；请在contract_reference_spots逐一传入真实合同参考价")
+            raise ContractResolutionError("S0Vec各分量必须为内部标准化基准100；请在reference_prices逐一传入真实合同参考价")
+
+
+def _normalized_reference_prices(terms: Mapping[str, Any], underlyings: Sequence[str]) -> dict[str, float] | None:
+    """Derive normalized coordinate references only from frozen S0 facts."""
+
+    if "S0Vec" in terms:
+        values = tuple(float(value) for value in terms["S0Vec"])
+        if len(values) != len(underlyings):
+            raise ContractResolutionError("S0Vec与underlyings数量不一致，无法冻结参考价格")
+        return dict(zip(underlyings, values, strict=True))
+    if "S0" in terms:
+        if len(underlyings) != 1:
+            raise ContractResolutionError("多标的normalized_100合同必须使用S0Vec冻结逐标的参考价格")
+        return {underlyings[0]: float(terms["S0"])}
+    return None
 
 
 def _formula_context(contract: ResolvedContract, price_path: PricePath) -> dict[str, Any]:
@@ -1121,7 +1294,7 @@ def _formula_context(contract: ResolvedContract, price_path: PricePath) -> dict[
     catalog = _shared_term_catalog()
     variables = bind_term_symbols(contract.terms, catalog)
     # 公式中的T是当前实际结算终点，用于ACT/365票息与期权费的实际天数折算。
-    # 合同期限仍保留在ResolvedContract；evaluate_payoff随后拒绝半程未终止路径，
+    # 合同期限仍保留在ResolvedContract；evaluate_contract随后拒绝半程未终止路径，
     # 只有已发生的提前终止事件才能在合同到期前结算。
     if "T" in contract.terms:
         contractual_tenor = float(contract.terms["T"])
@@ -1136,7 +1309,7 @@ def _formula_context(contract: ResolvedContract, price_path: PricePath) -> dict[
         variables["T"] = float(price_path.times[-1])
     observation_price = str(contract.terms.get("observation_price", "close"))
     raw_values = price_path.values_for(observation_price)
-    references = contract.identity.get("reference_prices") or contract.identity.get("contract_reference_spots")
+    references = contract.identity.get("reference_prices")
     if references is None:
         if "S0Vec" in contract.terms:
             reference_values = np.asarray(contract.terms["S0Vec"], dtype=float)
@@ -1150,7 +1323,24 @@ def _formula_context(contract: ResolvedContract, price_path: PricePath) -> dict[
     if reference_values.shape != (len(price_path.asset_ids),):
         raise ContractResolutionError("合同参考价数量与标的数量不一致")
     price_convention = str(contract.identity.get("price_convention") or "normalized_100")
-    if "S0Vec" in contract.terms:
+    if price_convention == "absolute_market":
+        # 兼容旧absolute_market输入，但解释器仍输出100基准点数。价格条款只在
+        # 公式上下文转换，ResolvedContract保留原始合同录入值和身份参考价。
+        normalized_reference = np.full(len(price_path.asset_ids), _NORMALIZED_PRICE_BASE, dtype=float)
+        for key, value in contract.terms.items():
+            definition = catalog.get(key, {})
+            if definition.get("unit") != "price":
+                continue
+            symbol = str(definition.get("symbol", ""))
+            if not symbol:
+                continue
+            if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+                levels = np.asarray(value, dtype=float)
+                if levels.shape == reference_values.shape:
+                    variables[symbol] = levels / reference_values * _NORMALIZED_PRICE_BASE
+            elif isinstance(value, (int, float, np.number)):
+                variables[symbol] = float(value) / float(reference_values[0]) * _NORMALIZED_PRICE_BASE
+    elif "S0Vec" in contract.terms:
         normalized_reference = np.asarray(contract.terms["S0Vec"], dtype=float)
     elif "S0" in contract.terms:
         normalized_reference = np.full(len(price_path.asset_ids), float(contract.terms["S0"]), dtype=float)
@@ -1168,9 +1358,9 @@ def _formula_context(contract: ResolvedContract, price_path: PricePath) -> dict[
         # 从而恒等于原始价格的raw_terminal / contract_reference - 1。
         # 这既保留默认S_0=100的展示尺度，也支持任意合同参考价。
         "r_T": float(terminal[0] / normalized_reference[0] - 1.0),
-        # 普通期权等按每份标的结算的价格差，须由内部100基准换回真实货币价格。
-        # 结构化产品直接使用r_T与N结算，不使用该换算因子。
-        "u": 1.0 if price_convention == "absolute_market" else float(reference_values[0] / _NORMALIZED_PRICE_BASE),
+        # 所有合同收益均以无货币单位的每100标准化单位表达。真实参考价只用于
+        # raw路径归一化，绝不把普通期权价差换回货币金额。
+        "u": 1.0,
         "W_t": worst_series,
         "W_T": float(np.min(performance[-1])),
     })

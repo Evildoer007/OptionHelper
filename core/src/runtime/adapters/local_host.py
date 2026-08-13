@@ -21,6 +21,7 @@ from urllib.parse import urljoin, urlparse
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from runtime.protocol.models import CallerContext, ModuleRunRef
+from runtime.protocol.version import PUBLIC_VERSION, RESOLVED_CONTRACT_SCHEMA_ID
 from runtime.protocol.module_host import (
     HostObjectRef,
     ModuleHostContext,
@@ -116,6 +117,12 @@ class LocalHostAuthority:
     def tenant_id(self) -> str:
         return self._tenant_id
 
+    @property
+    def principal_id(self) -> str:
+        """The fixed local-development principal used for Host-owned assets."""
+
+        return self._principal_id
+
     def caller(self, *, request_id: str) -> CallerContext:
         return CallerContext(
             tenant_id=self._tenant_id,
@@ -148,15 +155,15 @@ class LocalHostAuthority:
             "contract_fingerprint": contract_fingerprint,
             "module": module,
             "page_hash": "0" * 64,
-            "capability_version": "12.1",
-            "protocol_version": "v1.2",
+            "capability_version": PUBLIC_VERSION,
+            "protocol_version": PUBLIC_VERSION,
             "context_id": f"mhc_{secrets.token_urlsafe(18)}",
             "host_kind": "local-development",
-            "request_policy": ("module.run",),
+            "request_policy": ("module.catalog", "module.run"),
             "result_refs": result_refs,
             "contract_ref": HostObjectRef(
                 reference_id=f"contract-{contract_fingerprint[:24]}",
-                schema_id="optionhelper.resolved-contract/v1",
+                schema_id=RESOLVED_CONTRACT_SCHEMA_ID,
                 content_hash=contract_fingerprint,
             ),
         }

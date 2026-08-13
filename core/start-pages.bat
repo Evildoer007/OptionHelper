@@ -1,22 +1,52 @@
 @echo off
 setlocal EnableExtensions
 set "SCRIPT_DIR=%~dp0"
+set "PROJECT_ROOT=%OPTIONHELPER_PROJECT_ROOT%"
+if not defined PROJECT_ROOT (
+  echo 请设置OPTIONHELPER_PROJECT_ROOT为Skill安装目录外的项目运行目录。 1>&2
+  exit /b 1
+)
+for %%I in ("%PROJECT_ROOT%") do set "PROJECT_ROOT=%%~fI"
+for %%I in ("%SCRIPT_DIR%") do set "SKILL_ROOT=%%~fI"
+if /I "%PROJECT_ROOT%"=="%SKILL_ROOT%" (
+  echo OPTIONHELPER_PROJECT_ROOT不得位于Skill安装目录内。 1>&2
+  exit /b 1
+)
+set "STATE_FILE=%PROJECT_ROOT%\.optionhelper\runtime\python-path"
 if "%~1"=="--check-environment" set "CHECK_ENV=1"
 set "MODULE_NAME=%~1"
 if "%MODULE_NAME%"=="" set "MODULE_NAME=payoffer"
 
-set "PYTHON_BIN="
 if defined OPTIONHELPER_PYTHON (
   set "PYTHON_BIN=%OPTIONHELPER_PYTHON%"
-  call :require_absolute "%PYTHON_BIN%"
-  if errorlevel 1 exit /b 1
+) else (
+  if exist "%STATE_FILE%" set /p "PYTHON_BIN=" < "%STATE_FILE%"
+  if not defined PYTHON_BIN (
+    setlocal EnableDelayedExpansion
+    set /a CANDIDATE_COUNT=0
+    if defined CONDA_PREFIX call :add_candidate "%CONDA_PREFIX%\python.exe"
+    if defined CONDA_EXE (
+      for %%I in ("%CONDA_EXE%") do set "CONDA_BASE=%%~dpI.."
+      for %%P in ("!CONDA_BASE!\envs\*\python.exe") do call :add_candidate "%%~fP"
+    )
+    if !CANDIDATE_COUNT! EQU 0 (
+      echo 未发现可选conda Python环境。请先激活所需环境，或设置OPTIONHELPER_PYTHON。 1>&2
+      endlocal
+      exit /b 1
+    )
+    echo 请选择本次项目工作流使用的Python解释器：
+    for /L %%I in (1,1,!CANDIDATE_COUNT!) do call echo   %%I^) %%CANDIDATE_%%I%%
+    set /p "PYTHON_CHOICE=输入编号："
+    for /f "delims=0123456789" %%I in ("!PYTHON_CHOICE!") do set "PYTHON_CHOICE="
+    if not defined PYTHON_CHOICE goto :invalid_python_choice
+    if !PYTHON_CHOICE! LSS 1 goto :invalid_python_choice
+    if !PYTHON_CHOICE! GTR !CANDIDATE_COUNT! goto :invalid_python_choice
+    for %%I in (!PYTHON_CHOICE!) do set "PYTHON_BIN=!CANDIDATE_%%I!"
+    endlocal & set "PYTHON_BIN=!PYTHON_BIN!" & set "PERSIST_SELECTION=1"
+  )
 )
-if not defined PYTHON_BIN for /f "delims=" %%P in ('where python3 2^>nul') do if not defined PYTHON_BIN set "PYTHON_BIN=%%P"
-if not defined PYTHON_BIN for /f "delims=" %%P in ('where python 2^>nul') do if not defined PYTHON_BIN set "PYTHON_BIN=%%P"
-if not defined PYTHON_BIN (
-  echo 未找到可用Python。请设置OPTIONHELPER_PYTHON，或安装python3。 1>&2
-  exit /b 1
-)
+call :require_absolute "%PYTHON_BIN%"
+if errorlevel 1 exit /b 1
 if not exist "%PYTHON_BIN%" (
   echo Python不存在或不可执行：%PYTHON_BIN% 1>&2
   exit /b 1
@@ -34,12 +64,18 @@ if not exist "%CHECKER%" (
 )
 "%PYTHON_BIN%" "%CHECKER%" --requirements "%SCRIPT_DIR%requirements.lock" --check-dependencies
 if errorlevel 1 exit /b %errorlevel%
+"%PYTHON_BIN%" "%CHECKER%" --check-store --skill-root "%SKILL_ROOT%" --data-root "%PROJECT_ROOT%\data" --result-root "%PROJECT_ROOT%\result" --runtime-root "%PROJECT_ROOT%\.optionhelper\runtime"
+if errorlevel 1 exit /b %errorlevel%
+if defined PERSIST_SELECTION (
+  for %%I in ("%STATE_FILE%") do if not exist "%%~dpI" mkdir "%%~dpI"
+  > "%STATE_FILE%" echo %PYTHON_BIN%
+)
 
 if defined CHECK_ENV (
-  "%PYTHON_BIN%" "%SCRIPT_DIR%module_host.py" --list
+  "%PYTHON_BIN%" "%SCRIPT_DIR%module_host.py" --list --project-root "%PROJECT_ROOT%"
   exit /b %errorlevel%
 )
-"%PYTHON_BIN%" "%SCRIPT_DIR%module_host.py" --module "%MODULE_NAME%"
+"%PYTHON_BIN%" "%SCRIPT_DIR%module_host.py" --module "%MODULE_NAME%" --project-root "%PROJECT_ROOT%"
 exit /b %errorlevel%
 
 :require_absolute
@@ -50,4 +86,18 @@ if "%CANDIDATE:~2,1%"=="\" exit /b 0
 if "%CANDIDATE:~2,1%"=="/" exit /b 0
 :not_absolute
 echo OPTIONHELPER_PYTHON必须是绝对Python路径。 1>&2
+exit /b 1
+
+:add_candidate
+set "CANDIDATE=%~1"
+if not exist "%CANDIDATE%" exit /b 0
+if exist "%CANDIDATE%\NUL" exit /b 0
+for /L %%I in (1,1,!CANDIDATE_COUNT!) do if /I "!CANDIDATE_%%I!"=="%CANDIDATE%" exit /b 0
+set /a CANDIDATE_COUNT+=1
+set "CANDIDATE_!CANDIDATE_COUNT!=%CANDIDATE%"
+exit /b 0
+
+:invalid_python_choice
+echo Python选择无效。 1>&2
+endlocal
 exit /b 1

@@ -1,5 +1,6 @@
-"""跨模块结构化协议。"""
+"""跨模块协议命名空间。
 
-from .module_host import ModuleHostContext, validate_module_host_context
+此包不聚合导出业务类型。调用方必须从具体子模块导入，避免协议层反向加载合同。
+"""
 
-__all__ = ("ModuleHostContext", "validate_module_host_context")
+__all__: tuple[str, ...] = ()

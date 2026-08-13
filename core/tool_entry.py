@@ -39,13 +39,56 @@ from runtime.contracts.input_adapter import (
     is_explicit_demo_pricing_config,
     prepare_compute_request as _prepare_compute_request,
 )
-from runtime.protocol.models import CallerContext, ModuleRunRef
+from runtime.protocol.models import CallerContext, DataAssetRef, ModuleRunRef
 from runtime.protocol.module_host import ModuleHostContext
 from runtime.protocol.tool_catalog import MODULES, tool_catalog
+from runtime.protocol.version import PUBLIC_VERSION, require_public_version
 
 
 class ToolDispatchError(ValueError):
     pass
+
+
+_GATEWAY_AUTHORITY = object()
+
+
+class _GatewayAuthorization:
+    """One in-process handoff after the App has verified the Host HMAC.
+
+    Core deliberately does not duplicate App's session-key verifier.  The
+    public calculator entry therefore accepts this sealed handoff only; raw
+    CallerContext and ModuleHostContext values are not an authorization API.
+    """
+
+    __slots__ = ("caller_context", "host_context", "_authority")
+
+    def __init__(
+        self,
+        caller_context: CallerContext,
+        host_context: ModuleHostContext,
+        authority: object,
+    ) -> None:
+        object.__setattr__(self, "caller_context", caller_context)
+        object.__setattr__(self, "host_context", host_context)
+        object.__setattr__(self, "_authority", authority)
+
+    def __setattr__(self, name: str, value: object) -> None:
+        if name in self.__slots__ and hasattr(self, name):
+            raise AttributeError("授权交接对象不可修改")
+        object.__setattr__(self, name, value)
+
+
+def _authorize_verified_app_call(
+    caller_context: CallerContext,
+    host_context: ModuleHostContext,
+) -> _GatewayAuthorization:
+    """Private ToolGateway handoff for an already HMAC-verified App request."""
+
+    if not isinstance(caller_context, CallerContext):
+        raise ToolDispatchError("ToolGateway必须提供已验证的CallerContext")
+    if not isinstance(host_context, ModuleHostContext) or host_context.host_kind != "app":
+        raise ToolDispatchError("ToolGateway必须提供App Host验证后的ModuleHostContext")
+    return _GatewayAuthorization(caller_context, host_context, _GATEWAY_AUTHORITY)
 
 
 class ProjectRequestError(RuntimeError):
@@ -144,12 +187,19 @@ def _request_requires_trading_calendar(
     identity: Mapping[str, Any],
     term_overrides: Mapping[str, Any],
 ) -> bool:
-    """Resolve the contract before deciding whether discrete sessions matter."""
+    """Inspect immutable product metadata before any calendar is available.
 
-    contract = resolve_contract(
-        str(product_id).strip(), identity=dict(identity), term_overrides=dict(term_overrides),
-    )
-    return bool(contract.terms.get("monitor"))
+    The actual contract is resolved only after the Host has authenticated the
+    calendar bytes.  This preflight must therefore never fabricate a calendar
+    merely to ask whether the product needs one.
+    """
+
+    del identity, term_overrides
+    from runtime.contracts.contract_api import get_product
+
+    product = get_product(str(product_id).strip())
+    terms = product.get("terms") if isinstance(product, Mapping) else None
+    return bool(isinstance(terms, Mapping) and terms.get("monitor"))
 
 
 def _request_hash(project_root: Path, body: Mapping[str, Any]) -> str:
@@ -166,6 +216,7 @@ def prepare_compute_request(
     data_refs: tuple[Mapping[str, Any], ...] = (),
     resolved_contract: Mapping[str, Any] | None = None,
     data_store: Any | None = None,
+    product_snapshot_provider: Any | None = None,
 ) -> dict[str, Any]:
     """Compile a calculator request through Core's sole contract resolver."""
     if module not in {"payoffer", "pricer", "backtester"}:
@@ -181,24 +232,34 @@ def prepare_compute_request(
         friendly_request = compile_pricer_input_defaults(
             request, data_refs=data_refs, data_store=data_store,
         )
-    return _prepare_compute_request(module, friendly_request, data_refs=data_refs, resolved_contract=resolved_contract)
+    return _prepare_compute_request(
+        module,
+        friendly_request,
+        data_refs=data_refs,
+        resolved_contract=resolved_contract,
+        data_store=data_store,
+        product_snapshot_provider=product_snapshot_provider,
+    )
 
 
 def call_tool(
     module: str,
     request: Mapping[str, Any],
     *,
-    caller_context: CallerContext | None = None,
-    host_context: ModuleHostContext | None = None,
+    authorization: _GatewayAuthorization | None = None,
     result_store: Any | None = None,
     data_store: Any | None = None,
 ) -> Mapping[str, Any]:
+    """Formal App-only entry; raw Context values cannot authorize a call."""
+
     if module not in MODULES:
         raise ToolDispatchError(f"未知模块：{module}")
     _reject_untrusted_request_fields(request)
-    if not isinstance(caller_context, CallerContext):
-        raise ToolDispatchError("正式Tool调用必须携带App验证后的CallerContext")
-    if not isinstance(host_context, ModuleHostContext) or host_context.module != module:
+    if not isinstance(authorization, _GatewayAuthorization) or authorization._authority is not _GATEWAY_AUTHORITY:
+        raise ToolDispatchError("正式Tool调用只能由已验证的App ToolGateway发起")
+    caller_context = authorization.caller_context
+    host_context = authorization.host_context
+    if host_context.module != module:
         raise ToolDispatchError("正式Tool调用必须携带模块一致的ModuleHostContext")
     if host_context.host_kind != "app":
         raise ToolDispatchError("正式Tool调用只接受App Host授权上下文")
@@ -451,19 +512,24 @@ def _evidence(product_id: str, source: str, excerpt: str, identity: Mapping[str,
 
 
 def _catalog_version(paths: Any) -> str:
-    candidates = [
-        paths.knowledger_root / "catalog-version.json",
-        paths.project_root / "versions" / "v1.0" / "knowledger" / "catalog-version.json",
-    ]
-    for path in candidates:
+    """Return the sole public catalog version for the installed protocol.
+
+    An optional catalog declaration may attest this value, but it cannot
+    introduce a second release vocabulary or revive an old storage layout.
+    """
+
+    path = paths.knowledger_root / "catalog-version.json"
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        value = None
+    declared = value.get("catalog_version") if isinstance(value, Mapping) else None
+    if declared is not None:
         try:
-            value = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-            continue
-        version = value.get("catalog_version") if isinstance(value, Mapping) else None
-        if isinstance(version, str) and version:
-            return version
-    raise ProjectRequestError("knowledger", "当前Skill缺少已发布的产品资料版本，无法进行正式推荐。")
+            require_public_version(declared, "catalog_version")
+        except ValueError as error:
+            raise ProjectRequestError("knowledger", "资料目录版本与当前正式协议不一致。") from error
+    return PUBLIC_VERSION
 
 
 def _configuration(*, require_model: bool = True, require_ifind: bool = True) -> dict[str, str]:
@@ -703,6 +769,19 @@ def run_recommendation_request(
     }
 
 
+def _data_window_dates(data_window: Mapping[str, Any]) -> tuple[date, date]:
+    """Validate one Host-owned market-data interval before any provider call."""
+
+    try:
+        end_date = date.fromisoformat(str(data_window.get("end_date") or date.today().isoformat()))
+        start_date = date.fromisoformat(str(data_window.get("start_date") or (end_date - timedelta(days=1_460)).isoformat()))
+    except ValueError as error:
+        raise ProjectRequestError("datafetcher", "数据区间必须使用YYYY-MM-DD日期。") from error
+    if start_date > end_date:
+        raise ProjectRequestError("datafetcher", "数据起始日不得晚于结束日。")
+    return start_date, end_date
+
+
 def _fetch_local_data_asset(
     *,
     layout: LocalProjectLayout,
@@ -713,18 +792,21 @@ def _fetch_local_data_asset(
     request_id: str,
     progress: Callable[[Mapping[str, Any]], None] | None,
 ) -> tuple[Any, str]:
-    """Fetch one formal, current DataAssetRef for a local calculator run."""
+    """Fetch raw history without claiming that the requested end is observed.
+
+    The request end remains the user's valuation request.  During a trading
+    day the last close can legitimately precede it.  A verified calendar is
+    deliberately *not* passed to DataFetcher here: its strict completeness
+    check rightly rejects every declared session without an observed close.
+    Once the provider returns its actual per-asset coverage, the Host binds a
+    historical-calendar slice ending at the common observed date and keeps the
+    future path calendar as a separate authenticated reference.
+    """
 
     from modules.datafetcher.config import DataFetcherConfig
     from modules.datafetcher.service import fetch_data
 
-    try:
-        end_date = date.fromisoformat(str(data_window.get("end_date") or date.today().isoformat()))
-        start_date = date.fromisoformat(str(data_window.get("start_date") or (end_date - timedelta(days=1_460)).isoformat()))
-    except ValueError as error:
-        raise ProjectRequestError("datafetcher", "数据区间必须使用YYYY-MM-DD日期。") from error
-    if start_date > end_date:
-        raise ProjectRequestError("datafetcher", "数据起始日不得晚于结束日。")
+    start_date, end_date = _data_window_dates(data_window)
     _progress(progress, "datafetcher", "正在通过iFind获取并校验标的历史行情")
     result = fetch_data({
         "asset_ids": [str(item) for item in underlyings],
@@ -749,6 +831,57 @@ def _fetch_local_data_asset(
     valuation_date = _latest_available_data_date(data_ref, requested_date=end_date)
     _progress(progress, "datafetcher", "iFind行情已冻结为本次计算数据", "completed")
     return data_ref, valuation_date
+
+
+def _persist_calendar_bound_history_asset(
+    *,
+    data_ref: DataAssetRef,
+    calendar_ref: DataAssetRef,
+    data_store: Any,
+    principal_id: str,
+) -> DataAssetRef:
+    """Persist the Host-verified calendar binding as a new immutable asset ref.
+
+    A LocalDataStore authenticates all reference metadata.  Mutating the
+    DataFetcher reference in memory would therefore fail closed at read time.
+    The Host instead reuses the verified CSV bytes and commits a second,
+    metadata-bound ref.  Its calendar identity and sessions are derived only
+    from the verified calendar asset, never from browser or provider metadata.
+    """
+
+    if data_ref.created_by != principal_id:
+        raise ProjectRequestError("datafetcher", "历史行情DataAssetRef所有者与当前Host主体不一致。")
+    from runtime.contracts.input_adapter import bind_verified_calendar_to_history
+
+    bound = bind_verified_calendar_to_history(asdict(data_ref), asdict(calendar_ref), data_store)
+    payload = data_store.read_bytes(data_ref, tenant_id=data_ref.tenant_id)
+    if not isinstance(payload, bytes):
+        raise ProjectRequestError("datafetcher", "DataStore未返回历史行情原始字节。")
+    lineage = dict(bound["lineage"])
+    lineage["host_verified_calendar_ref"] = {
+        "data_asset_id": calendar_ref.data_asset_id,
+        "content_hash": calendar_ref.content_hash,
+        "schema_id": calendar_ref.schema_id,
+    }
+    try:
+        return data_store.put_bytes(
+            tenant_id=data_ref.tenant_id,
+            data_asset_id=f"{data_ref.data_asset_id}-calendar-{calendar_ref.content_hash[:16]}",
+            payload=payload,
+            media_type=str(bound["media_type"]),
+            schema_id=str(bound["schema_id"]),
+            asset_ids=tuple(str(item) for item in bound["asset_ids"]),
+            normalized_fields=tuple(str(item) for item in bound["normalized_fields"]),
+            coverage=dict(bound["coverage"]),
+            row_count=int(bound["row_count"]),
+            partition_spec=dict(bound["partition_spec"]),
+            price_convention=dict(bound["price_convention"]),
+            lineage=lineage,
+            created_by=data_ref.created_by,
+            access_scope=tuple(str(item) for item in bound["access_scope"]),
+        )
+    except (FileExistsError, OSError, PermissionError, TypeError, ValueError) as error:
+        raise ProjectRequestError("datafetcher", "Host无法提交经验证交易日历绑定的历史行情。") from error
 
 
 def _latest_available_data_date(data_ref: Any, *, requested_date: date) -> str:
@@ -796,6 +929,7 @@ def _fetch_local_calendar_asset(
     horizon_years: float,
     request_id: str,
     progress: Callable[[Mapping[str, Any]], None] | None,
+    history_start_date: str | None = None,
 ) -> Any:
     """获取估值日前回看和合同期限内的完整中国交易日，不读取未来价格。"""
 
@@ -804,6 +938,11 @@ def _fetch_local_calendar_asset(
 
     requested = date.fromisoformat(valuation_date)
     start = requested - timedelta(days=14)
+    if history_start_date is not None:
+        try:
+            start = min(start, date.fromisoformat(history_start_date))
+        except ValueError as error:
+            raise ProjectRequestError("datafetcher", "交易日历历史起始日必须为YYYY-MM-DD。") from error
     end = requested + timedelta(days=round(max(float(horizon_years), 1.0 / 365.0) * 365.0) + 14)
     _progress(progress, "datafetcher", "正在通过iFind获取估值日至合同到期日的中国交易日历")
     result = fetch_calendar_data({
@@ -875,30 +1014,32 @@ def run_module_request(
     data_store = None
     valuation_date = None
     market_as_of_date = None
-    if module in {"pricer", "backtester"}:
+    requested_pricing = _mapping_field(body, "pricing_config") if module == "pricer" else {}
+    data_window = _mapping_field(body, "data_window")
+    requires_market_history = module in {"pricer", "backtester"}
+    requires_calendar = module == "backtester" or _request_requires_trading_calendar(
+        product_id, identity=identity, term_overrides=term_overrides,
+    )
+    if requires_market_history or requires_calendar:
         token = os.environ.get("IFIND_REFRESH_TOKEN", "").strip()
         if not token:
-            raise ProjectRequestError("configuration", "单模块估值或回测需要iFind Refresh Token。", missing=("iFind Refresh Token",))
+            raise ProjectRequestError(
+                "configuration", "含观察条款的单模块运行或行情估值需要iFind Refresh Token。",
+                missing=("iFind Refresh Token",),
+            )
         if ifind_probe is not None:
             try:
                 ifind_probe(token)
             except Exception as error:
                 raise ProjectRequestError("ifind", "iFind凭据验证失败，请检查Refresh Token或网络后重试。") from error
-        data_ref, market_as_of_date = _fetch_local_data_asset(
-            layout=layout, authority=authority, task_id=task_id, underlyings=underlyings,
-            data_window=_mapping_field(body, "data_window"), request_id=f"data-{task_hash}", progress=progress,
-        )
-        data_store = importlib.import_module("runtime.adapters.local_store").LocalDataStore(layout.data_root)
-        identity.setdefault("contract_start_date", market_as_of_date)
-        requested_pricing = _mapping_field(body, "pricing_config") if module == "pricer" else {}
         valuation_date = str(
             requested_pricing.get("valuation_date")
-            or _mapping_field(body, "data_window").get("end_date")
+            or data_window.get("end_date")
+            or identity.get("contract_start_date")
             or date.today().isoformat()
         )
-        if module == "pricer" and _request_requires_trading_calendar(
-            product_id, identity=identity, term_overrides=term_overrides,
-        ):
+        history_start = _data_window_dates(data_window)[0] if requires_market_history else None
+        if requires_calendar:
             effective_horizon = horizon_years or float(term_overrides.get("T", 1.0))
             calendar_ref = _fetch_local_calendar_asset(
                 layout=layout,
@@ -909,7 +1050,29 @@ def run_module_request(
                 horizon_years=effective_horizon,
                 request_id=f"calendar-{task_hash}",
                 progress=progress,
+                history_start_date=None if history_start is None else history_start.isoformat(),
             )
+        data_store = importlib.import_module("runtime.adapters.local_store").LocalDataStore(layout.data_root)
+        if requires_market_history:
+            data_ref, market_as_of_date = _fetch_local_data_asset(
+                layout=layout, authority=authority, task_id=task_id, underlyings=underlyings,
+                data_window=data_window, request_id=f"data-{task_hash}", progress=progress,
+            )
+            if calendar_ref is not None:
+                data_ref = _persist_calendar_bound_history_asset(
+                    data_ref=data_ref, calendar_ref=calendar_ref, data_store=data_store,
+                    principal_id=authority.principal_id,
+                )
+            elif module == "backtester":
+                raise ProjectRequestError("datafetcher", "正式Backtester运行缺少经验证交易日历。")
+            identity.setdefault("contract_start_date", market_as_of_date)
+        elif calendar_ref is None:
+            raise ProjectRequestError("datafetcher", "正式Backtester运行缺少经验证交易日历。")
+        else:
+            # Payoffer has no history asset to determine an observed close.
+            # Its explicit requested contract start is still frozen with the
+            # verified future schedule, never inferred from a price bar.
+            identity.setdefault("contract_start_date", valuation_date)
 
     if module == "payoffer":
         friendly: dict[str, Any] = {
@@ -929,14 +1092,12 @@ def run_module_request(
                 **_mapping_field(body, "backtest_config"),
             },
         }
-    prepared = prepare_compute_request(
-        module, friendly,
-        data_refs=(
-            () if data_ref is None else
-            (asdict(data_ref),) if calendar_ref is None else
-            (asdict(data_ref), asdict(calendar_ref))
-        ), data_store=data_store,
+    data_refs = tuple(
+        asdict(reference)
+        for reference in (data_ref, calendar_ref)
+        if reference is not None
     )
+    prepared = prepare_compute_request(module, friendly, data_refs=data_refs, data_store=data_store)
     catalog_version = _catalog_version(paths)
     context = authority.context(
         module, task_id=task_id, analysis_case_id=analysis_case_id,
@@ -947,7 +1108,11 @@ def run_module_request(
     result = call_local_tool(
         module, dict(prepared["request"]), authority=authority,
         request_id=f"{module}-{task_hash}", host_context=context,
-        result_store=LocalResultStore(layout.result_root), data_store=data_store,
+        result_store=LocalResultStore(layout.result_root),
+        # Core consumes the calendar bytes while compiling an observation
+        # contract.  Payoffer receives only that frozen contract, never a
+        # DataStore capability it cannot lawfully use.
+        data_store=data_store if module in {"pricer", "backtester"} else None,
     )
     if result.get("ok") is not True:
         raise ProjectRequestError(module, str(result.get("message") or f"{module}未能完成。"))
@@ -1065,10 +1230,6 @@ def run_project_request(
 
     product_id = str(candidate["product_id"])
     underlyings = tuple(str(item) for item in candidate.get("underlyings", ()))
-    data_ref, market_as_of_date = _fetch_local_data_asset(
-        layout=layout, authority=authority, task_id=task_id, underlyings=underlyings,
-        data_window={}, request_id=f"data-{task_hash}", progress=progress,
-    )
     requested_pricing = _mapping_field(body, "pricing_config")
     term_overrides = _mapping_field(body, "term_overrides")
     horizon_years = _horizon_years(case.confirmed_constraints.get("horizon"))
@@ -1076,23 +1237,31 @@ def run_project_request(
         term_overrides["T"] = horizon_years
     effective_horizon = float(term_overrides.get("T", horizon_years or 1.0))
     valuation_date = str(requested_pricing.get("valuation_date") or date.today().isoformat())
-    calendar_ref = None
-    if _request_requires_trading_calendar(
-        product_id,
-        identity={"underlyings": list(underlyings), "contract_start_date": market_as_of_date},
-        term_overrides=term_overrides,
-    ):
-        calendar_ref = _fetch_local_calendar_asset(
-            layout=layout,
-            authority=authority,
-            task_id=task_id,
-            underlyings=underlyings,
-            valuation_date=valuation_date,
-            horizon_years=effective_horizon,
-            request_id=f"calendar-{task_hash}",
-            progress=progress,
-        )
+    data_window: dict[str, Any] = {}
+    history_start, _ = _data_window_dates(data_window)
+    # The project flow always invokes Backtester.  It therefore obtains one
+    # verified calendar before history, then gives the same ref to both the
+    # DataFetcher quality gate and the contract compiler.
+    calendar_ref = _fetch_local_calendar_asset(
+        layout=layout,
+        authority=authority,
+        task_id=task_id,
+        underlyings=underlyings,
+        valuation_date=valuation_date,
+        horizon_years=effective_horizon,
+        request_id=f"calendar-{task_hash}",
+        progress=progress,
+        history_start_date=history_start.isoformat(),
+    )
+    data_ref, market_as_of_date = _fetch_local_data_asset(
+        layout=layout, authority=authority, task_id=task_id, underlyings=underlyings,
+        data_window=data_window, request_id=f"data-{task_hash}", progress=progress,
+    )
     data_store = importlib.import_module("runtime.adapters.local_store").LocalDataStore(layout.data_root)
+    data_ref = _persist_calendar_bound_history_asset(
+        data_ref=data_ref, calendar_ref=calendar_ref, data_store=data_store,
+        principal_id=authority.principal_id,
+    )
     pricing_config = {
         "valuation_date": valuation_date,
         "path_count": 2_000,
@@ -1125,7 +1294,7 @@ def run_project_request(
     )
     _progress(progress, "payoffer", "正在运行正式收益结构模块")
     payoff = call_local_tool(
-        "payoffer", {"action": "run", "contract": contract_payload},
+        "payoffer", {"action": "run", "payoff_input": {"contract": contract_payload}},
         authority=authority, request_id=f"payoff-{task_hash}",
         host_context=context, result_store=result_store,
     )
@@ -1135,16 +1304,19 @@ def run_project_request(
     if not isinstance(raw_ref, Mapping):
         raise ProjectRequestError("payoffer", "正式收益结构模块缺少可验证运行引用。")
     module_ref = ModuleRunRef(**dict(raw_ref))
-    result_store.resolve_module_run(module_ref, tenant_id=authority.tenant_id)
+    result_store.verify_module_run(module_ref, tenant_id=authority.tenant_id)
     _progress(progress, "payoffer", "正式收益结构结果已验证", "completed")
 
-    completed_refs: dict[str, dict[str, Any]] = {"payoff": dict(raw_ref)}
-    module_failures: dict[str, str] = {}
-    for module, display_name, module_request in (
-        ("pricer", "pricing", dict(pricing_request["request"])),
-        ("backtester", "backtest", {
+    backtest_request = prepare_compute_request(
+        "backtester",
+        {
             "action": "run",
-            "contract": contract_payload,
+            "product_id": product_id,
+            "identity": {
+                "underlyings": list(underlyings),
+                "contract_start_date": market_as_of_date,
+            },
+            "term_overrides": term_overrides,
             "backtest_config": {
                 "start_date": str(data_ref.coverage.get("start") or data_ref.coverage.get("start_date")),
                 "end_date": market_as_of_date,
@@ -1152,8 +1324,16 @@ def run_project_request(
                 "complete_tenor": True,
                 **_mapping_field(body, "backtest_config"),
             },
-            "historical_data": asdict(data_ref),
-        }),
+        },
+        data_refs=(asdict(data_ref), asdict(calendar_ref)),
+        resolved_contract=contract_payload,
+        data_store=data_store,
+    )
+    completed_refs: dict[str, dict[str, Any]] = {"payoff": dict(raw_ref)}
+    module_failures: dict[str, str] = {}
+    for module, display_name, module_request in (
+        ("pricer", "pricing", dict(pricing_request["request"])),
+            ("backtester", "backtest", dict(backtest_request["request"])),
     ):
         _progress(progress, module, f"正在运行正式{module}模块")
         module_context = authority.context(
@@ -1175,7 +1355,7 @@ def run_project_request(
             if module_result.get("ok") is not True or not isinstance(module_raw_ref, Mapping):
                 raise ProjectRequestError(module, str(module_result.get("message") or f"{module}未形成可验证运行引用。"))
             verified_ref = ModuleRunRef(**dict(module_raw_ref))
-            result_store.resolve_module_run(verified_ref, tenant_id=authority.tenant_id)
+            result_store.verify_module_run(verified_ref, tenant_id=authority.tenant_id)
             completed_refs[display_name] = dict(module_raw_ref)
             _progress(progress, module, f"正式{module}结果已验证", "completed")
         except Exception:
@@ -1190,12 +1370,14 @@ def run_project_request(
         "candidate_id": str(candidate["candidate_id"]),
         "product_name": str(identity["name_zh"]),
         "product_version": contract.product_version,
+        "product_version_content_hash": contract.product_snapshot_hash,
         "contract_fingerprint": contract.contract_fingerprint,
         "analysis_basis_id": f"basis-{contract.contract_fingerprint[:20]}",
         "underlyings": list(contract.underlyings),
         "currency": contract.currency,
         "price_convention": {"spot": "close", "contract_basis": identity["price_convention"]},
         "module_run_refs": completed_refs,
+        "module_run_options": {name: [reference] for name, reference in completed_refs.items()},
     }
     source = {
         "source_id": source_id,
@@ -1203,16 +1385,19 @@ def run_project_request(
         "task_id": task_id,
         "analysis_case_id": analysis_case_id,
         "catalog_version": catalog_version,
+        # A report source is bound to the registry snapshot that compiled the
+        # exact ResolvedContract, never to a mutable catalog label alone.
+        "catalog_content_hash": contract.registry_snapshot_hash,
         "candidates": [report_candidate],
     }
     selection = {
         "source_id": source_id,
         "candidate_ids": [report_candidate["candidate_id"]],
         "selected_modules": [name for name in ("payoff", "pricing", "backtest") if name in completed_refs],
+        "module_run_refs": {report_candidate["candidate_id"]: completed_refs},
         "delivery_mode": "single",
         "output_type": output_type,
         "format": "html",
-        "html_report_layout": layout_name,
         "audience": "professional",
         "report_run_id": report_run_id,
         "metadata": {
@@ -1237,7 +1422,11 @@ def run_project_request(
         tenant_id=authority.tenant_id,
         output_root=layout.result_root,
     ))
-    if report.get("ok") is not True or report.get("status") != "completed":
+    # Reporter may deliberately return ``partial`` after producing a verified
+    # HTML artifact whose evidence section identifies unavailable modules.  That
+    # is a valid delivery state; the project result below keeps it partial rather
+    # than throwing away the artifact or claiming complete coverage.
+    if report.get("ok") is not True or report.get("status") not in {"completed", "partial"}:
         raise ProjectRequestError("reporter", str(report.get("message") or "Reporter或Designer未能生成正式报告。"))
     report_name = str((report.get("output") or {}).get("report") or "")
     report_path = (layout.result_root / task_id / report_run_id / report_name).resolve()

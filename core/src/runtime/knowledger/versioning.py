@@ -18,9 +18,11 @@ from typing import Any, Mapping, Sequence
 from runtime.bootstrap import discover_project_root
 from runtime.contracts.contract_api import validate_registry
 from runtime.knowledger.registry_loader import get_default_registry_path, load_registry
+from runtime.protocol.version import PUBLIC_VERSION
 
 
-HASH_SPEC_VERSION = "v1.0"
+RELEASE_VERSION = PUBLIC_VERSION
+HASH_SPEC_VERSION = RELEASE_VERSION
 TECHNICAL_STATUS = "technical_candidate_not_executable"
 RULE_TERM_KEYS = frozenset({"monitor", "pricing_methods", "constraints", "derived_terms"})
 SNAPSHOT_FILES = {
@@ -50,8 +52,8 @@ def _canonical(value: Any) -> bytes:
 
 
 def _validate_version(version: str) -> None:
-    if re.fullmatch(r"v[1-9]\d*\.\d+", version) is None:
-        raise ValueError("版本必须使用v1.0、v1.1或v2.0格式")
+    if version != RELEASE_VERSION:
+        raise ValueError(f"当前版本只能使用{RELEASE_VERSION}")
 
 
 def _validate_timestamp(value: object, field: str) -> None:
@@ -604,7 +606,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     build = subparsers.add_parser("build-candidate")
     build.add_argument("--root", default=".")
     build.add_argument("--output", required=True)
-    build.add_argument("--proposed-version", default="v1.0")
+    build.add_argument("--proposed-version", default=RELEASE_VERSION)
     build.add_argument("--built-at", required=True)
     integrity = subparsers.add_parser("verify-candidate-integrity")
     integrity.add_argument("--candidate", required=True)

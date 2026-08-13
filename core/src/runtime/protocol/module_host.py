@@ -17,12 +17,20 @@ import time
 from typing import Any
 
 from .models import ModuleRunRef
+from .version import (
+    PRICING_CONFIG_SCHEMA_ID,
+    PUBLIC_VERSION,
+    RESOLVED_CONTRACT_SCHEMA_ID,
+    require_public_version,
+)
 
 
 PAGE_MODULES = ("datafetcher", "payoffer", "pricer", "backtester", "reporter")
-CAPABILITY_TOKEN_VERSION = "v2"
+CAPABILITY_TOKEN_VERSION = PUBLIC_VERSION
 _HASH = re.compile(r"[0-9a-f]{64}\Z")
-_TOKEN = re.compile(r"v2\.(?P<expires_at>[0-9]{1,12})\.(?P<signature>[0-9a-f]{64})\Z")
+_TOKEN = re.compile(
+    rf"{re.escape(CAPABILITY_TOKEN_VERSION)}\.(?P<expires_at>[0-9]{{1,12}})\.(?P<signature>[0-9a-f]{{64}})\Z"
+)
 _CONTEXT_ID = re.compile(r"mhc_[A-Za-z0-9_-]{16,96}\Z")
 _HOST_KINDS = frozenset({"app", "local-development"})
 
@@ -142,12 +150,14 @@ def capability_token_payload(
     if not isinstance(request_policy, tuple) or not request_policy:
         raise ModuleHostContextError("request_policy必须为非空字符串元组")
     policy = tuple(_required_text(item, "request_policy[]") for item in request_policy)
-    _required_text(capability_version, "capability_version")
-    _required_text(protocol_version, "protocol_version")
+    require_public_version(capability_version, "capability_version")
+    require_public_version(protocol_version, "protocol_version")
     task_id = _optional_scope_id(task_id, "task_id")
     analysis_case_id = _optional_scope_id(analysis_case_id, "analysis_case_id")
     candidate_id = _optional_scope_id(candidate_id, "candidate_id")
     catalog_version = _optional_scope_id(catalog_version, "catalog_version")
+    if catalog_version is not None:
+        require_public_version(catalog_version, "catalog_version")
     contract_fingerprint = _optional_scope_hash(contract_fingerprint, "contract_fingerprint")
     if contract_ref is not None and not isinstance(contract_ref, HostObjectRef):
         raise ModuleHostContextError("contract_ref必须为HostObjectRef")
@@ -312,9 +322,9 @@ class ModuleHostContext:
     page_hash: str
     capability_version: str
     protocol_version: str
-    context_id: str = "mhc_legacy_context_0000"
-    host_kind: str = "app"
-    request_policy: tuple[str, ...] = ("module.run",)
+    context_id: str
+    host_kind: str
+    request_policy: tuple[str, ...]
     contract_ref: HostObjectRef | None = None
     config_ref: HostObjectRef | None = None
     result_refs: tuple[ModuleRunRef, ...] = ()
@@ -327,12 +337,14 @@ class ModuleHostContext:
             _required_text(self.analysis_case_id, "analysis_case_id")
         _optional_scope_id(self.task_id, "task_id")
         _optional_scope_id(self.candidate_id, "candidate_id")
-        _optional_scope_id(self.catalog_version, "catalog_version")
+        catalog_version = _optional_scope_id(self.catalog_version, "catalog_version")
+        if catalog_version is not None:
+            require_public_version(catalog_version, "catalog_version")
         _optional_scope_hash(self.contract_fingerprint, "contract_fingerprint")
         _require_page_module(self.module)
         _required_hash(self.page_hash, "page_hash")
-        _required_text(self.capability_version, "capability_version")
-        _required_text(self.protocol_version, "protocol_version")
+        require_public_version(self.capability_version, "capability_version")
+        require_public_version(self.protocol_version, "protocol_version")
         _require_context_id(self.context_id)
         if self.host_kind not in _HOST_KINDS:
             raise ModuleHostContextError("host_kind必须为app或local-development")
@@ -340,8 +352,12 @@ class ModuleHostContext:
             raise ModuleHostContextError("request_policy必须为非空字符串元组")
         if self.contract_ref is not None and not isinstance(self.contract_ref, HostObjectRef):
             raise ModuleHostContextError("contract_ref必须为HostObjectRef")
+        if self.contract_ref is not None and self.contract_ref.schema_id != RESOLVED_CONTRACT_SCHEMA_ID:
+            raise ModuleHostContextError(f"contract_ref.schema_id必须为{RESOLVED_CONTRACT_SCHEMA_ID}")
         if self.config_ref is not None and not isinstance(self.config_ref, HostObjectRef):
             raise ModuleHostContextError("config_ref必须为HostObjectRef")
+        if self.config_ref is not None and self.config_ref.schema_id != PRICING_CONFIG_SCHEMA_ID:
+            raise ModuleHostContextError(f"config_ref.schema_id必须为{PRICING_CONFIG_SCHEMA_ID}")
         if not isinstance(self.result_refs, tuple) or not all(isinstance(item, ModuleRunRef) for item in self.result_refs):
             raise ModuleHostContextError("result_refs必须为ModuleRunRef元组")
 

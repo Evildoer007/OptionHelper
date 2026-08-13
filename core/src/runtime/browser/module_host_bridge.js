@@ -10,8 +10,13 @@
     reporter: {"/api/status": "status", "/api/report-sources": "list_report_sources", "/api/run": "run"},
   };
   const queryActions = new Set(["catalog", "list_assets", "list_report_sources", "status"]);
-  const embeddedInDesk = new URLSearchParams(location.search).get("host") === "optdesk";
+  const query = new URLSearchParams(location.search);
+  const embeddedInDesk = query.get("host") === "optdesk";
   const hostedInDesk = embeddedInDesk && window.parent !== window;
+  // A per-iframe nonce is more reliable than comparing WindowProxy object
+  // identity in WKWebView, where that identity can change during navigation.
+  // It also keeps the context hand-off scoped to the iframe the App created.
+  const bridgeNonce = query.get("bridge_nonce");
   let context = null;
   let hostScope = Object.freeze({});
   let acceptHostContext = null;
@@ -230,10 +235,12 @@
   else installChoiceControls();
 
   function valid(value) {
+    const token = /^v1\.0\.0\.([0-9]{1,12})\.([0-9a-f]{64})$/.exec(String(value?.capability_token || ""));
+    const expiresAt = Number(token?.[1]);
     return value && value.module === moduleName && value.host_kind && value.context_id && value.capability_token
       && typeof value.page_hash === "string" && /^[0-9a-f]{64}$/.test(value.page_hash)
       && ["task_id", "analysis_case_id", "candidate_id", "catalog_version", "contract_fingerprint"].every((field) => value[field] === null || typeof value[field] === "string")
-      && Number(String(value.capability_token).split(".")[1]) * 1000 > Date.now();
+      && Number.isSafeInteger(expiresAt) && expiresAt * 1000 > Date.now();
   }
   function requestId() { return crypto.randomUUID ? crypto.randomUUID() : `req_${Date.now()}_${Math.random().toString(36).slice(2)}`; }
   function asResponse(status, body) {
@@ -407,7 +414,8 @@
   document.addEventListener("click", (event) => { void handleHostedDownload(event); }, true);
 
   window.addEventListener("message", (event) => {
-    if (event.origin !== location.origin || event.source !== window.parent || event.data?.type !== "optionhelper.module-host-context") return;
+    if (event.origin !== location.origin || event.data?.type !== "optionhelper.module-host-context") return;
+    if (hostedInDesk && (!bridgeNonce || event.data?.bridge_nonce !== bridgeNonce)) return;
     if (!valid(event.data.context)) return;
     context = Object.freeze({...event.data.context});
     hostScope = Object.freeze({
@@ -421,5 +429,7 @@
     acceptHostContext?.(context);
     window.dispatchEvent(new CustomEvent("optionhelper.module-host-ready", {detail: {module: moduleName}}));
   });
-  if (window.parent !== window) window.parent.postMessage({type: "optionhelper.module-host-ready", module: moduleName}, location.origin);
+  if (window.parent !== window) {
+    window.parent.postMessage({type: "optionhelper.module-host-ready", module: moduleName, bridge_nonce: bridgeNonce}, location.origin);
+  }
 })();

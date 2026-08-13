@@ -7,9 +7,40 @@ ResolvedContract、Pricer和Backtester负责。
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Mapping
+from datetime import date
+from math import isfinite
+import re
+from typing import TYPE_CHECKING, Any, Mapping
 
-from runtime.contracts.contract_api import PayoffInput, ResolvedContract
+from runtime.contracts.contract_types import semantic_hash
+from .version import require_public_version
+
+if TYPE_CHECKING:
+    from runtime.contracts.contract_api import ResolvedContract
+
+
+_IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z")
+_SHA256 = re.compile(r"[0-9a-f]{64}\Z")
+
+
+def _identifier(value: object, field: str) -> str:
+    if not isinstance(value, str) or not _IDENTIFIER.fullmatch(value):
+        raise ValueError(f"{field}必须是受控标识符")
+    return value
+
+
+def _hash(value: object, field: str) -> str:
+    if not isinstance(value, str) or not _SHA256.fullmatch(value):
+        raise ValueError(f"{field}必须为64位小写SHA-256")
+    return value
+
+
+def _opaque_ref(value: object, field: str) -> str:
+    if not isinstance(value, str) or not value or any(ord(char) < 32 or ord(char) == 127 for char in value):
+        raise ValueError(f"{field}必须为不含控制字符的不透明引用")
+    if value.startswith(("/", "~")) or ".." in value.replace("\\", "/").split("/"):
+        raise ValueError(f"{field}必须是不含物理路径的不透明引用")
+    return value
 
 
 @dataclass(frozen=True)
@@ -29,6 +60,25 @@ class DataAssetRef:
     created_by: str = "local"
     access_scope: tuple[str, ...] = ("read",)
     partition_spec: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        _identifier(self.data_asset_id, "DataAssetRef.data_asset_id")
+        _opaque_ref(self.storage_ref, "DataAssetRef.storage_ref")
+        for name in ("media_type", "schema_id", "tenant_id", "created_by"):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not value.strip() or any(ord(char) < 32 or ord(char) == 127 for char in value):
+                raise ValueError(f"DataAssetRef.{name}必须为不含控制字符的非空字符串")
+        _hash(self.content_hash, "DataAssetRef.content_hash")
+        if isinstance(self.row_count, bool) or not isinstance(self.row_count, int) or self.row_count < 0:
+            raise ValueError("DataAssetRef.row_count必须为非负整数")
+        for name in ("asset_ids", "normalized_fields", "access_scope"):
+            value = getattr(self, name)
+            if not isinstance(value, (tuple, list)) or any(not isinstance(item, str) or not item.strip() for item in value):
+                raise ValueError(f"DataAssetRef.{name}必须为非空字符串元组")
+            object.__setattr__(self, name, tuple(value))
+        for name in ("coverage", "price_convention", "lineage", "partition_spec"):
+            if not isinstance(getattr(self, name), Mapping):
+                raise ValueError(f"DataAssetRef.{name}必须为对象")
 
 
 @dataclass(frozen=True)
@@ -82,6 +132,13 @@ class DataFetchRunRef:
     expected_manifest_hash: str
     expected_data_asset_hash: str
 
+    def __post_init__(self) -> None:
+        _identifier(self.tenant_id, "DataFetchRunRef.tenant_id")
+        _identifier(self.task_id, "DataFetchRunRef.task_id")
+        _identifier(self.data_fetch_run_id, "DataFetchRunRef.data_fetch_run_id")
+        _hash(self.expected_manifest_hash, "DataFetchRunRef.expected_manifest_hash")
+        _hash(self.expected_data_asset_hash, "DataFetchRunRef.expected_data_asset_hash")
+
 
 @dataclass(frozen=True)
 class ModuleRunRef:
@@ -95,10 +152,11 @@ class ModuleRunRef:
     def __post_init__(self) -> None:
         if self.module not in {"payoffer", "pricer", "backtester"}:
             raise ValueError("ModuleRunRef.module必须为三个计算模块之一")
+        _identifier(self.tenant_id, "ModuleRunRef.tenant_id")
+        _identifier(self.task_id, "ModuleRunRef.task_id")
+        _identifier(self.run_id, "ModuleRunRef.run_id")
         for name in ("expected_semantic_result_hash", "expected_artifact_manifest_hash"):
-            value = getattr(self, name)
-            if not isinstance(value, str) or len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
-                raise ValueError(f"ModuleRunRef.{name}必须为64位小写SHA-256")
+            _hash(getattr(self, name), f"ModuleRunRef.{name}")
 
 
 @dataclass(frozen=True)
@@ -108,6 +166,145 @@ class ReportRunRef:
     expected_semantic_fact_hash: str
     expected_artifact_manifest_hash: str
 
+    def __post_init__(self) -> None:
+        _identifier(self.tenant_id, "ReportRunRef.tenant_id")
+        _identifier(self.report_run_id, "ReportRunRef.report_run_id")
+        _hash(self.expected_semantic_fact_hash, "ReportRunRef.expected_semantic_fact_hash")
+        _hash(self.expected_artifact_manifest_hash, "ReportRunRef.expected_artifact_manifest_hash")
+
+
+@dataclass(frozen=True)
+class ObservedContractEvent:
+    """Host已核验的单个合同事件，禁止携带模块私有扩展字段。"""
+
+    event_type: str
+    event_date: str
+    observation_stage: int | None = None
+    accumulated_count: int | None = None
+    accumulated_quantity: float | None = None
+
+    def __post_init__(self) -> None:
+        _require_nonempty_text(self.event_type, "ObservedContractEvent.event_type")
+        _require_iso_date(self.event_date, "ObservedContractEvent.event_date")
+        for name, value in (("observation_stage", self.observation_stage), ("accumulated_count", self.accumulated_count)):
+            if value is not None and (not isinstance(value, int) or isinstance(value, bool) or value < 0):
+                raise ValueError(f"ObservedContractEvent.{name}必须为非负整数或null")
+        if self.accumulated_quantity is not None:
+            if isinstance(self.accumulated_quantity, bool) or not isinstance(self.accumulated_quantity, (int, float)) or not isfinite(float(self.accumulated_quantity)) or self.accumulated_quantity < 0:
+                raise ValueError("ObservedContractEvent.accumulated_quantity必须为非负有限数值或null")
+            object.__setattr__(self, "accumulated_quantity", float(self.accumulated_quantity))
+
+    def to_protocol_dict(self) -> dict[str, Any]:
+        return {
+            "event_type": self.event_type,
+            "event_date": self.event_date,
+            "observation_stage": self.observation_stage,
+            "accumulated_count": self.accumulated_count,
+            "accumulated_quantity": self.accumulated_quantity,
+        }
+
+
+@dataclass(frozen=True)
+class RealizedCashflow:
+    """Host已核验的已实现现金流事实。"""
+
+    payment_date: str
+    amount: float
+    status: str
+    cashflow_id: str | None = None
+    currency: str | None = None
+
+    def __post_init__(self) -> None:
+        _require_iso_date(self.payment_date, "RealizedCashflow.payment_date")
+        if isinstance(self.amount, bool) or not isinstance(self.amount, (int, float)) or not isfinite(float(self.amount)):
+            raise ValueError("RealizedCashflow.amount必须为有限数值")
+        object.__setattr__(self, "amount", float(self.amount))
+        if self.status not in {"paid", "settled", "realized"}:
+            raise ValueError("RealizedCashflow.status必须为paid、settled或realized")
+        for name in ("cashflow_id", "currency"):
+            value = getattr(self, name)
+            if value is not None:
+                _require_nonempty_text(value, f"RealizedCashflow.{name}")
+
+    def to_protocol_dict(self) -> dict[str, Any]:
+        return {
+            "cashflow_id": self.cashflow_id,
+            "payment_date": self.payment_date,
+            "amount": self.amount,
+            "currency": self.currency,
+            "status": self.status,
+        }
+
+
+@dataclass(frozen=True)
+class ObservedContractState:
+    """Pricer正式请求中由Host冻结的存续合同事实。"""
+
+    valuation_date: str | None
+    lifecycle_status: str = "initial"
+    occurred_events: tuple[ObservedContractEvent, ...] = ()
+    realized_cashflows: tuple[RealizedCashflow, ...] = ()
+    source_refs: tuple[str, ...] = ()
+    state_hash: str = ""
+
+    def __post_init__(self) -> None:
+        if self.valuation_date is not None:
+            _require_iso_date(self.valuation_date, "ObservedContractState.valuation_date")
+        if self.lifecycle_status not in {"initial", "active", "terminated", "matured"}:
+            raise ValueError("ObservedContractState.lifecycle_status无效")
+        if not isinstance(self.occurred_events, tuple) or not all(isinstance(item, ObservedContractEvent) for item in self.occurred_events):
+            raise TypeError("ObservedContractState.occurred_events必须为Host冻结ObservedContractEvent元组")
+        if not isinstance(self.realized_cashflows, tuple) or not all(isinstance(item, RealizedCashflow) for item in self.realized_cashflows):
+            raise TypeError("ObservedContractState.realized_cashflows必须为Host冻结RealizedCashflow元组")
+        if not isinstance(self.source_refs, tuple) or any(not isinstance(item, str) or not item.strip() for item in self.source_refs):
+            raise TypeError("ObservedContractState.source_refs必须为非空字符串元组")
+        if (self.occurred_events or self.realized_cashflows) and not self.source_refs:
+            raise ValueError("ObservedContractState含已发生事实时必须提供source_refs")
+        if self.valuation_date is not None:
+            cutoff = date.fromisoformat(self.valuation_date)
+            if any(date.fromisoformat(item.event_date) > cutoff for item in self.occurred_events):
+                raise ValueError("ObservedContractState事件日期不得晚于估值日")
+            if any(date.fromisoformat(item.payment_date) > cutoff for item in self.realized_cashflows):
+                raise ValueError("ObservedContractState已实现现金流日期不得晚于估值日")
+        content_hash = semantic_hash(self._content_payload())
+        if self.state_hash and self.state_hash != content_hash:
+            raise ValueError("ObservedContractState.state_hash与状态内容不一致")
+        object.__setattr__(self, "state_hash", content_hash)
+
+    @classmethod
+    def from_host_payload(cls, value: Mapping[str, Any]) -> "ObservedContractState":
+        if not isinstance(value, Mapping):
+            raise TypeError("observed_contract_state必须为Host对象")
+        allowed = {"valuation_date", "lifecycle_status", "occurred_events", "realized_cashflows", "source_refs", "state_hash"}
+        unknown = set(value) - allowed
+        if unknown:
+            raise ValueError("observed_contract_state含未知字段：" + ",".join(sorted(str(item) for item in unknown)))
+        events = tuple(_observed_event_from_payload(item) for item in value.get("occurred_events", ()))
+        cashflows = tuple(_realized_cashflow_from_payload(item) for item in value.get("realized_cashflows", ()))
+        source_refs = value.get("source_refs", ())
+        if isinstance(source_refs, (str, bytes)):
+            raise TypeError("observed_contract_state.source_refs必须为字符串序列")
+        return cls(
+            valuation_date=value.get("valuation_date"),
+            lifecycle_status=value.get("lifecycle_status", "initial"),
+            occurred_events=events,
+            realized_cashflows=cashflows,
+            source_refs=tuple(source_refs),
+            state_hash=value.get("state_hash", ""),
+        )
+
+    def _content_payload(self) -> dict[str, Any]:
+        return {
+            "valuation_date": self.valuation_date,
+            "lifecycle_status": self.lifecycle_status,
+            "occurred_events": [item.to_protocol_dict() for item in self.occurred_events],
+            "realized_cashflows": [item.to_protocol_dict() for item in self.realized_cashflows],
+            "source_refs": list(self.source_refs),
+        }
+
+    def to_protocol_dict(self) -> dict[str, Any]:
+        return {**self._content_payload(), "state_hash": self.state_hash}
+
 
 @dataclass(frozen=True)
 class PricingInput:
@@ -115,6 +312,11 @@ class PricingInput:
     pricing_config: Mapping[str, Any]
     market_data_refs: tuple[DataAssetRef, ...] = ()
     trading_calendar_ref: DataAssetRef | None = None
+    observed_contract_state: ObservedContractState | None = None
+
+    def __post_init__(self) -> None:
+        if self.observed_contract_state is not None and not isinstance(self.observed_contract_state, ObservedContractState):
+            raise TypeError("PricingInput.observed_contract_state必须为Host冻结ObservedContractState")
 
 
 @dataclass(frozen=True)
@@ -166,6 +368,7 @@ class ModuleRun:
                 raise ValueError("成功或部分成功的ModuleRun.candidate_id不能为空")
             if not self.catalog_version:
                 raise ValueError("成功或部分成功的ModuleRun.catalog_version不能为空")
+            require_public_version(self.catalog_version, "ModuleRun.catalog_version")
             if not isinstance(self.contract_fingerprint, str) or len(self.contract_fingerprint) != 64 or any(
                 char not in "0123456789abcdef" for char in self.contract_fingerprint
             ):
@@ -189,6 +392,58 @@ def require_run_status(value: str) -> str:
     return value
 
 
+def _observed_event_from_payload(value: Any) -> ObservedContractEvent:
+    if not isinstance(value, Mapping):
+        raise TypeError("observed_contract_state.occurred_events必须为对象列表")
+    allowed = {"event_type", "event_date", "observation_stage", "accumulated_count", "accumulated_quantity"}
+    unknown = set(value) - allowed
+    if unknown:
+        raise ValueError("observed_contract_state.occurred_events含未知字段：" + ",".join(sorted(str(item) for item in unknown)))
+    missing = {"event_type", "event_date"} - set(value)
+    if missing:
+        raise ValueError("observed_contract_state.occurred_events缺少字段：" + ",".join(sorted(missing)))
+    return ObservedContractEvent(
+        event_type=value["event_type"],
+        event_date=value["event_date"],
+        observation_stage=value.get("observation_stage"),
+        accumulated_count=value.get("accumulated_count"),
+        accumulated_quantity=value.get("accumulated_quantity"),
+    )
+
+
+def _realized_cashflow_from_payload(value: Any) -> RealizedCashflow:
+    if not isinstance(value, Mapping):
+        raise TypeError("observed_contract_state.realized_cashflows必须为对象列表")
+    allowed = {"cashflow_id", "payment_date", "amount", "currency", "status"}
+    unknown = set(value) - allowed
+    if unknown:
+        raise ValueError("observed_contract_state.realized_cashflows含未知字段：" + ",".join(sorted(str(item) for item in unknown)))
+    missing = {"payment_date", "amount", "status"} - set(value)
+    if missing:
+        raise ValueError("observed_contract_state.realized_cashflows缺少字段：" + ",".join(sorted(missing)))
+    return RealizedCashflow(
+        cashflow_id=value.get("cashflow_id"),
+        payment_date=value["payment_date"],
+        amount=value["amount"],
+        currency=value.get("currency"),
+        status=value["status"],
+    )
+
+
+def _require_nonempty_text(value: object, label: str) -> None:
+    if not isinstance(value, str) or not value.strip() or any(ord(character) < 32 or ord(character) == 127 for character in value):
+        raise ValueError(f"{label}必须为不含控制字符的非空字符串")
+
+
+def _require_iso_date(value: object, label: str) -> None:
+    if not isinstance(value, str):
+        raise ValueError(f"{label}必须为YYYY-MM-DD")
+    try:
+        date.fromisoformat(value)
+    except ValueError as error:
+        raise ValueError(f"{label}必须为YYYY-MM-DD") from error
+
+
 _RUN_TRANSITIONS = {
     "created": {"validating", "cancelled"},
     "validating": {"queued", "unsupported", "failed", "cancelled"},
@@ -207,6 +462,7 @@ def require_run_transition(current: str, target: str) -> tuple[str, str]:
 
 __all__ = (
     "ArtifactRef", "BacktestInput", "CallerContext", "DataAssetRef", "DataFetchRunRef",
-    "ModuleRun", "ModuleRunRef", "PayoffInput", "PricingInput", "ReportRunRef", "SecretRef",
+    "ModuleRun", "ModuleRunRef", "ObservedContractEvent", "ObservedContractState",
+    "PricingInput", "RealizedCashflow", "ReportRunRef", "SecretRef",
     "require_module_name", "require_run_status", "require_run_transition",
 )

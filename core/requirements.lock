@@ -1,4 +1,4 @@
-# OptionHelper 12.1开发基线。由已验证Python环境检查；不自动安装或创建环境。
+# OptionHelper开发运行依赖。由已验证Python环境检查；不自动安装或创建环境。
 numpy==2.4.6
 pandas==3.0.5
 scipy==1.18.0

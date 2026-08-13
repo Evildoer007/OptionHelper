@@ -18,6 +18,9 @@ class BootstrapError(RuntimeError):
 _SCOPED_RELEASE_RUNTIME_ROOT: ContextVar[Path | None] = ContextVar(
     "optionhelper_scoped_release_runtime_root", default=None,
 )
+_SCOPED_DEVELOPMENT_STORE_ROOTS: ContextVar[tuple[Path, Path] | None] = ContextVar(
+    "optionhelper_scoped_development_store_roots", default=None,
+)
 
 
 @contextmanager
@@ -36,6 +39,27 @@ def release_runtime_scope(runtime_root: str | Path) -> Iterator[Path]:
         yield root
     finally:
         _SCOPED_RELEASE_RUNTIME_ROOT.reset(token)
+
+
+@contextmanager
+def local_runtime_scope(data_root: str | Path, result_root: str | Path) -> Iterator[tuple[Path, Path]]:
+    """Bind one standalone Host's external writable stores for this call.
+
+    Development source may live in the repository, but local user data never
+    does.  The scope is process-local and avoids mutating environment
+    variables, so nested module imports cannot silently select repository or
+    system-default storage.
+    """
+
+    data = Path(data_root).expanduser().resolve()
+    result = Path(result_root).expanduser().resolve()
+    if not data.is_dir() or not result.is_dir() or data == result:
+        raise BootstrapError("本机Host必须提供两个已预检的外部Store目录")
+    token = _SCOPED_DEVELOPMENT_STORE_ROOTS.set((data, result))
+    try:
+        yield data, result
+    finally:
+        _SCOPED_DEVELOPMENT_STORE_ROOTS.reset(token)
 
 
 @dataclass(frozen=True)
@@ -130,6 +154,12 @@ def bootstrap_runtime(start: str | Path | None = None, *, mutate_sys_path: bool 
         )
     else:
         root = discover_project_root(source)
+        scoped_roots = _SCOPED_DEVELOPMENT_STORE_ROOTS.get()
+        if scoped_roots is not None:
+            data_root, result_root = scoped_roots
+        else:
+            data_root = Path(os.environ.get("OPTIONHELPER_DATA_ROOT", root / "data")).expanduser().resolve()
+            result_root = Path(os.environ.get("OPTIONHELPER_RESULT_ROOT", root / "result")).expanduser().resolve()
         module_roots = tuple(
             path
             for path in sorted((root / "modules").glob("*/src"))
@@ -138,8 +168,8 @@ def bootstrap_runtime(start: str | Path | None = None, *, mutate_sys_path: bool 
         paths = RuntimePaths(
             project_root=root,
             knowledger_root=root / "references",
-            result_root=Path(os.environ.get("OPTIONHELPER_RESULT_ROOT", root / "result")).expanduser().resolve(),
-            data_root=Path(os.environ.get("OPTIONHELPER_DATA_ROOT", root / "data")).expanduser().resolve(),
+            result_root=result_root,
+            data_root=data_root,
             module_source_roots=module_roots,
             mode="development",
         )

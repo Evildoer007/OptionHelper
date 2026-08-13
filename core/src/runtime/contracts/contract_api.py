@@ -1,5 +1,7 @@
 """Payoffer、Pricer与Backtester共用的稳定合同入口。"""
 
+from runtime.protocol.version import RESOLVED_CONTRACT_SCHEMA_ID
+
 from .contract_engine import (
     Cashflow,
     ContractResolutionError,
@@ -12,7 +14,6 @@ from .contract_engine import (
     compute_monitor_values,
     evaluate_contract,
     evaluate_formula,
-    evaluate_payoff,
     get_product,
     load_registry,
     make_payoff_input,
@@ -31,11 +32,11 @@ __all__ = (
     "PayoffInput",
     "PricePath",
     "ResolvedContract",
+    "RESOLVED_CONTRACT_SCHEMA_ID",
     "bind_term_symbols",
     "compute_monitor_values",
     "evaluate_formula",
     "evaluate_contract",
-    "evaluate_payoff",
     "get_product",
     "load_registry",
     "make_payoff_input",

@@ -13,7 +13,9 @@ import tempfile
 from typing import Any, Mapping
 
 from runtime.contracts.contract_types import canonical_json, semantic_hash
+from runtime.contracts.contract_api import ResolvedContract
 from runtime.protocol.models import DataAssetRef, ModuleRunRef
+from runtime.protocol.version import PUBLIC_VERSION
 
 
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z")
@@ -107,6 +109,43 @@ def _read_regular_bytes(path: Path, label: str) -> bytes:
             os.close(descriptor)
 
 
+def _json_mapping(value: bytes | str | Mapping[str, Any], label: str) -> Mapping[str, Any]:
+    try:
+        parsed = value if isinstance(value, Mapping) else json.loads(
+            value.decode("utf-8") if isinstance(value, bytes) else value,
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError, TypeError) as error:
+        raise StoreError(f"{label}必须是有效JSON对象") from error
+    if not isinstance(parsed, Mapping):
+        raise StoreError(f"{label}必须是JSON对象")
+    return parsed
+
+
+def _validate_success_contract(
+    manifest: Mapping[str, Any],
+    resolved_contract: bytes | str | Mapping[str, Any],
+    result: Mapping[str, Any],
+) -> None:
+    """Reject a successful Run before it can anchor a display-only contract."""
+
+    try:
+        contract = ResolvedContract.from_controlled_snapshot(
+            _json_mapping(resolved_contract, "resolved_contract.json"),
+        )
+    except Exception as error:
+        raise StoreError("成功ModuleRun必须包含严格受控ResolvedContract快照") from error
+    for field in ("candidate_id", "catalog_version", "contract_fingerprint"):
+        value = manifest.get(field)
+        if not isinstance(value, str) or not value:
+            raise StoreError(f"成功ModuleRun缺少manifest.json.{field}")
+        if value != result.get(field):
+            raise StoreError(f"result.json.{field}与manifest.json不一致")
+    if manifest["catalog_version"] != PUBLIC_VERSION:
+        raise StoreError(f"成功ModuleRun.catalog_version必须为{PUBLIC_VERSION}")
+    if manifest["contract_fingerprint"] != contract.contract_fingerprint:
+        raise StoreError("manifest.json.contract_fingerprint与受控合同不一致")
+
+
 def _publish_directory(stage: Path, final: Path, label: str) -> None:
     """原子发布目录，并把并发输家稳定归类为不可变对象冲突。"""
     try:
@@ -157,7 +196,11 @@ class LocalDataStore:
         asset = _safe_id(data_asset_id, "data_asset_id")
         content_hash = sha256(payload).hexdigest()
         provisional = DataAssetRef(
-            data_asset_id=asset, storage_ref="", media_type=media_type, schema_id=schema_id,
+            # ``storage_ref`` is part of the public Ref shape but intentionally
+            # excluded from the metadata commitment below.  Use a harmless
+            # opaque placeholder while deriving that commitment; an empty
+            # string would be a second, invalid Ref state.
+            data_asset_id=asset, storage_ref=f"pending:{tenant}:{asset}", media_type=media_type, schema_id=schema_id,
             asset_ids=asset_ids, normalized_fields=normalized_fields, coverage=dict(coverage or {}),
             row_count=row_count, price_convention=dict(price_convention or {}), content_hash=content_hash,
             lineage=dict(lineage or {}), tenant_id=tenant, created_by=created_by,
@@ -239,11 +282,8 @@ class LocalResultStore:
         if "artifacts/artifact_manifest.json" in files or "commit_marker.json" in files:
             raise StoreError("产物清单与提交标记由ResultStore生成")
         raw_manifest = files["manifest.json"]
-        try:
-            manifest_value = raw_manifest if isinstance(raw_manifest, Mapping) else json.loads(raw_manifest.decode("utf-8") if isinstance(raw_manifest, bytes) else raw_manifest)
-        except (UnicodeDecodeError, json.JSONDecodeError, TypeError) as error:
-            raise StoreError("manifest.json必须是有效JSON对象") from error
-        if not isinstance(manifest_value, Mapping) or manifest_value.get("status") not in _FINAL_RUN_STATES:
+        manifest_value = _json_mapping(raw_manifest, "manifest.json")
+        if manifest_value.get("status") not in _FINAL_RUN_STATES:
             raise StoreError("ModuleRun只提交合法终态")
         status = str(manifest_value["status"])
         manifest_identity = {"module": module, "tenant_id": tenant, "task_id": task, "run_id": run}
@@ -262,20 +302,12 @@ class LocalResultStore:
         staging_root = _inside(self.root, tenant_root / ".staging")
         staging_root.mkdir(parents=True, exist_ok=True)
         raw_result = files.get("result.json")
-        try:
-            result_value = {} if raw_result is None else raw_result if isinstance(raw_result, Mapping) else json.loads(raw_result.decode("utf-8") if isinstance(raw_result, bytes) else raw_result)
-        except (UnicodeDecodeError, json.JSONDecodeError, TypeError) as error:
-            raise StoreError("result.json必须是有效JSON对象") from error
-        if not isinstance(result_value, Mapping):
-            raise StoreError("result.json必须是JSON对象")
+        result_value = {} if raw_result is None else _json_mapping(raw_result, "result.json")
+        if status in {"succeeded", "partial"}:
+            _validate_success_contract(manifest_value, files["resolved_contract.json"], result_value)
         if raw_result is None:
             raw_error = files["error.json"]
-            try:
-                error_value = raw_error if isinstance(raw_error, Mapping) else json.loads(raw_error.decode("utf-8") if isinstance(raw_error, bytes) else raw_error)
-            except (UnicodeDecodeError, json.JSONDecodeError, TypeError) as error:
-                raise StoreError("error.json必须是有效JSON对象") from error
-            if not isinstance(error_value, Mapping):
-                raise StoreError("error.json必须是JSON对象")
+            error_value = _json_mapping(raw_error, "error.json")
             result_hash = semantic_hash({"status": status, "error": error_value})
         else:
             result_hash = semantic_hash(result_value)
@@ -313,43 +345,6 @@ class LocalResultStore:
             expected_semantic_result_hash=result_hash,
             expected_artifact_manifest_hash=artifact_manifest_hash,
         )
-
-    def attest_legacy_module_run_ref(self, legacy_ref: Mapping[str, Any], *, tenant_id: str) -> ModuleRunRef:
-        """Explicitly anchor one pre-v1.2 stored run without creating a new run.
-
-        This migration boundary is intentionally separate from normal resolve:
-        callers must present the exact historical five-field reference, and the
-        returned current reference is valid only for the bytes verified now.
-        """
-        self._assert_root_unchanged()
-        fields = {"module", "tenant_id", "task_id", "run_id", "expected_semantic_result_hash"}
-        if not isinstance(legacy_ref, Mapping) or set(legacy_ref) != fields:
-            raise StoreError("历史ModuleRunRef必须为旧版五字段引用")
-        tenant = _safe_id(tenant_id, "tenant_id")
-        if legacy_ref.get("tenant_id") != tenant:
-            raise PermissionError("历史ModuleRunRef跨租户迁移被拒绝")
-        module = str(legacy_ref.get("module"))
-        if module not in _MODULE_DIR:
-            raise StoreError("历史ModuleRunRef.module无效")
-        run_dir = _inside(
-            self.root,
-            _tenant_root(self.root, tenant) / _MODULE_DIR[module]
-            / _safe_id(str(legacy_ref.get("task_id")), "task_id")
-            / _safe_id(str(legacy_ref.get("run_id")), "run_id"),
-        )
-        manifest_path = _inside(run_dir, run_dir / "artifacts" / "artifact_manifest.json")
-        if not manifest_path.is_file() or manifest_path.is_symlink():
-            raise FileNotFoundError("历史ModuleRun产物清单不存在")
-        ref = ModuleRunRef(
-            module=module,
-            tenant_id=tenant,
-            task_id=str(legacy_ref["task_id"]),
-            run_id=str(legacy_ref["run_id"]),
-            expected_semantic_result_hash=str(legacy_ref["expected_semantic_result_hash"]),
-            expected_artifact_manifest_hash=sha256(_read_regular_bytes(manifest_path, "历史ModuleRun产物清单")).hexdigest(),
-        )
-        self.resolve_module_run(ref, tenant_id=tenant)
-        return ref
 
     def resolve_module_run(self, ref: ModuleRunRef, *, tenant_id: str) -> Path:
         self._assert_root_unchanged()
@@ -436,6 +431,11 @@ class LocalResultStore:
         if recomputed_hash != ref.expected_semantic_result_hash:
             raise StoreIntegrityError("ModuleRun语义结果哈希与正式结果不一致")
         return run_dir
+
+    def verify_module_run(self, ref: ModuleRunRef, *, tenant_id: str) -> None:
+        """Verify a RunRef without exposing its physical directory to callers."""
+
+        self.resolve_module_run(ref, tenant_id=tenant_id)
 
     def read_module_run_file(self, ref: ModuleRunRef, name: str, *, tenant_id: str) -> bytes:
         """Return one RunRef-bound artifact without exposing an unchecked read."""

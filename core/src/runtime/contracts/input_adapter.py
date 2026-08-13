@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import date
+from hashlib import sha256
+import json
 from math import isfinite
 from typing import Any, Mapping, Sequence
 
@@ -20,6 +22,9 @@ from .contract_engine import (
     verify_product_snapshot_binding,
 )
 from .contract_types import semantic_hash
+from runtime.protocol.models import DataAssetRef, ObservedContractState
+from runtime.ports.data_store import DataStoreReadPort
+from runtime.ports.product_snapshot import ProductSnapshotProvider, require_product_snapshot_provider
 
 
 _CALCULATORS = frozenset({"payoffer", "pricer", "backtester"})
@@ -82,6 +87,8 @@ def prepare_compute_request(
     *,
     data_refs: Sequence[Mapping[str, Any]] = (),
     resolved_contract: Mapping[str, Any] | None = None,
+    data_store: DataStoreReadPort | None = None,
+    product_snapshot_provider: ProductSnapshotProvider | None = None,
 ) -> dict[str, Any]:
     """Return one formal business request and its immutable contract facts."""
     if module not in _CALCULATORS or not isinstance(request, Mapping):
@@ -92,7 +99,7 @@ def prepare_compute_request(
         raise ContractResolutionError("正式计算输入编译器只处理run")
     allowed = set(_COMMON_FIELDS)
     if module == "pricer":
-        allowed.add("pricing_config")
+        allowed.update({"pricing_config", "observed_contract_state"})
     elif module == "backtester":
         allowed.add("backtest_config")
     if module == "pricer":
@@ -120,20 +127,45 @@ def prepare_compute_request(
     )
     if unsupported_refs:
         raise ContractResolutionError("计算请求包含不支持的DataAssetRef.schema_id")
+    calendar = verified_trading_calendar(calendar_refs[0], data_store) if calendar_refs else None
+    resolver_identity = dict(identity)
+    if calendar is not None:
+        for key in ("calendar_id", "calendar_version"):
+            supplied = resolver_identity.get(key)
+            if supplied is not None and supplied != calendar[key]:
+                raise ContractResolutionError(f"identity.{key}与Host验证交易日历不一致")
+            resolver_identity[key] = calendar[key]
+
     if resolved_contract is None:
         contract = resolve_contract(
             product_id.strip(),
-            identity=dict(identity),
+            identity=resolver_identity,
             term_overrides=dict(overrides),
+            trading_dates=calendar["sessions"] if calendar is not None else None,
         )
     else:
         try:
             contract = ResolvedContract(**dict(resolved_contract))
-            verify_product_snapshot_binding(contract, load_registry())
+            if contract.product_version.startswith("unversioned:"):
+                registry = load_registry()
+                attested_product_version = None
+            else:
+                provider = require_product_snapshot_provider(product_snapshot_provider)
+                registry = provider.load_registry_snapshot(
+                    product_version=contract.product_version,
+                    product_id=contract.product_id,
+                    registry_snapshot_hash=contract.registry_snapshot_hash,
+                )
+                attested_product_version = contract.product_version
+            verify_product_snapshot_binding(
+                contract, registry, attested_product_version=attested_product_version,
+            )
         except (TypeError, ValueError, ContractResolutionError) as error:
             raise ContractResolutionError(f"Host冻结ResolvedContract无效：{error}") from error
         requested_product = product_id.strip() if isinstance(product_id, str) else contract.product_id
-        _verify_friendly_request(contract, requested_product, identity, overrides)
+        _verify_friendly_request(contract, requested_product, resolver_identity, overrides)
+        if calendar is not None:
+            _verify_calendar_matches_contract(contract, calendar)
     contract_payload = contract.to_protocol_dict()
     if module == "payoffer":
         formal: dict[str, Any] = {"action": "run", "payoff_input": {"contract": contract_payload}}
@@ -151,19 +183,37 @@ def prepare_compute_request(
             "pricing_config": deepcopy(dict(config)),
             "market_data_refs": list(history_refs),
         }
+        observed_state = values.get("observed_contract_state")
+        if observed_state is not None:
+            try:
+                frozen_state = ObservedContractState.from_host_payload(observed_state)
+            except (TypeError, ValueError) as error:
+                raise ContractResolutionError(f"Host冻结observed_contract_state无效：{error}") from error
+            formal["observed_contract_state"] = frozen_state.to_protocol_dict()
         if calendar_refs:
             formal["trading_calendar_ref"] = calendar_refs[0]
     else:
         config = values.get("backtest_config")
         if not isinstance(config, Mapping):
             raise ContractResolutionError("backtest_config必须为对象")
-        if len(history_refs) != 1 or calendar_refs:
-            raise ContractResolutionError("BacktestInput必须绑定唯一DataAssetRef")
+        if len(history_refs) != 1 or len(calendar_refs) > 1:
+            raise ContractResolutionError("BacktestInput必须绑定唯一历史DataAssetRef，交易日历最多一项")
+        if calendar_refs:
+            historical_data = bind_verified_calendar_to_history(
+                history_refs[0], calendar_refs[0], data_store,
+            )
+        else:
+            # A non-observation contract can use the calendar provenance already
+            # authenticated in its one history asset.  This preserves the
+            # complete BacktestInput shape for an offline release probe without
+            # allowing any observation schedule to be frozen from those fields.
+            _require_declared_history_calendar(history_refs[0])
+            historical_data = history_refs[0]
         formal = {
             "action": "run",
             "contract": contract_payload,
             "backtest_config": deepcopy(dict(config)),
-            "historical_data": history_refs[0],
+            "historical_data": historical_data,
         }
     run_id = values.get("run_id")
     if isinstance(run_id, str) and run_id.strip():
@@ -192,6 +242,139 @@ def _canonical_data_ref(value: Mapping[str, Any]) -> dict[str, Any]:
     return deepcopy(dict(value))
 
 
+def verified_trading_calendar(
+    value: Mapping[str, Any],
+    data_store: DataStoreReadPort | None,
+) -> dict[str, Any]:
+    """Read one App-owned calendar asset and freeze only its authenticated facts.
+
+    A browser may name a calendar asset but never supplies calendar identity or
+    sessions.  The Host-provided DataStore is the only byte authority here.
+    """
+
+    if data_store is None or not callable(getattr(data_store, "read_bytes", None)):
+        raise ContractResolutionError("正式交易日历必须由Host注入经验证的DataStorePort")
+    try:
+        reference = DataAssetRef(**dict(value))
+        encoded = data_store.read_bytes(reference, tenant_id=reference.tenant_id)
+    except (TypeError, ValueError, OSError, PermissionError) as error:
+        raise ContractResolutionError("Host验证交易日历无法读取") from error
+    if not isinstance(encoded, bytes) or sha256(encoded).hexdigest() != reference.content_hash:
+        raise ContractResolutionError("Host验证交易日历内容哈希不一致")
+    try:
+        payload = json.loads(encoded.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ContractResolutionError("Host验证交易日历不是有效JSON") from error
+    if not isinstance(payload, Mapping) or payload.get("schema_id") != "trading-calendar":
+        raise ContractResolutionError("Host验证交易日历协议无效")
+    coverage = reference.coverage
+    calendar_id = coverage.get("calendar_id")
+    calendar_version = coverage.get("calendar_version")
+    sessions = payload.get("sessions")
+    if (
+        reference.schema_id != "trading-calendar"
+        or reference.media_type != "application/json"
+        or not isinstance(calendar_id, str)
+        or not calendar_id
+        or not isinstance(calendar_version, str)
+        or not calendar_version
+        or not isinstance(sessions, list)
+        or isinstance(sessions, (str, bytes))
+    ):
+        raise ContractResolutionError("Host验证交易日历缺少身份或交易日")
+    if set(payload.get("asset_ids", ())) != set(reference.asset_ids):
+        raise ContractResolutionError("Host验证交易日历标的与DataAssetRef不一致")
+    try:
+        normalized = tuple(date.fromisoformat(str(item)).isoformat() for item in sessions)
+    except ValueError as error:
+        raise ContractResolutionError("Host验证交易日历交易日必须为YYYY-MM-DD") from error
+    if not normalized or normalized != tuple(sorted(normalized)) or len(set(normalized)) != len(normalized):
+        raise ContractResolutionError("Host验证交易日历交易日必须严格递增且不重复")
+    if coverage.get("sessions") not in (None, list(normalized)):
+        raise ContractResolutionError("Host验证交易日历覆盖声明与内容不一致")
+    return {
+        "calendar_ref": deepcopy(dict(value)),
+        "calendar_id": calendar_id,
+        "calendar_version": calendar_version,
+        "sessions": normalized,
+    }
+
+
+def bind_verified_calendar_to_history(
+    history_ref: Mapping[str, Any],
+    calendar_ref: Mapping[str, Any],
+    data_store: DataStoreReadPort | None,
+) -> dict[str, Any]:
+    """Return a history ref whose calendar facts come only from verified bytes.
+
+    DataFetcher may carry calendar metadata as lineage.  Backtester needs the
+    same facts in the signed DataAssetRef coverage, so the Host replaces rather
+    than trusts those fields.  The selected sessions are constrained to the
+    history coverage; this never invents a date outside the supplied asset.
+    """
+
+    history = _canonical_data_ref(history_ref)
+    if history["schema_id"] != "market-history-v1":
+        raise ContractResolutionError("历史行情必须使用market-history-v1 DataAssetRef")
+    calendar = verified_trading_calendar(calendar_ref, data_store)
+    coverage = deepcopy(dict(history["coverage"]))
+    start = coverage.get("start_date", coverage.get("start"))
+    end = coverage.get("end_date", coverage.get("end"))
+    try:
+        start_day = date.fromisoformat(str(start)).isoformat()
+        end_day = date.fromisoformat(str(end)).isoformat()
+    except ValueError as error:
+        raise ContractResolutionError("历史行情DataAssetRef.coverage必须声明YYYY-MM-DD起止日") from error
+    if start_day > end_day:
+        raise ContractResolutionError("历史行情DataAssetRef.coverage起止日无效")
+    sessions = tuple(day for day in calendar["sessions"] if start_day <= day <= end_day)
+    if not sessions or sessions[0] != start_day or sessions[-1] != end_day:
+        raise ContractResolutionError("Host验证交易日历未完整覆盖历史行情DataAssetRef")
+    coverage.update({
+        "calendar_id": calendar["calendar_id"],
+        "calendar_version": calendar["calendar_version"],
+        "sessions": list(sessions),
+        "calendar_coverage_end": sessions[-1],
+        "calendar_ref": calendar["calendar_ref"],
+    })
+    return {**history, "coverage": coverage}
+
+
+def _require_declared_history_calendar(history_ref: Mapping[str, Any]) -> None:
+    """Require a self-contained historical DataAssetRef calendar declaration."""
+
+    coverage = history_ref.get("coverage")
+    if not isinstance(coverage, Mapping):
+        raise ContractResolutionError("BacktestInput历史行情必须声明交易日历覆盖")
+    sessions = coverage.get("sessions")
+    calendar_id = coverage.get("calendar_id")
+    calendar_version = coverage.get("calendar_version")
+    if (
+        not isinstance(sessions, list)
+        or not sessions
+        or not isinstance(calendar_id, str)
+        or not calendar_id
+        or not isinstance(calendar_version, str)
+        or not calendar_version
+    ):
+        raise ContractResolutionError("BacktestInput历史行情必须显式声明calendar_id、calendar_version和sessions")
+
+
+def _verify_calendar_matches_contract(contract: ResolvedContract, calendar: Mapping[str, Any]) -> None:
+    """An existing frozen contract may only be repriced on its own calendar."""
+
+    identity = contract.identity
+    if (
+        identity.get("calendar_id") != calendar["calendar_id"]
+        or identity.get("calendar_version") != calendar["calendar_version"]
+    ):
+        raise ContractResolutionError("Host验证交易日历与已冻结ResolvedContract不一致")
+    sessions = set(calendar["sessions"])
+    for schedule in contract.resolved_schedules.values():
+        if any(day not in sessions for day in schedule["dates"]):
+            raise ContractResolutionError("Host验证交易日历未覆盖已冻结合同观察日")
+
+
 def _verify_friendly_request(
     contract: ResolvedContract,
     product_id: str,
@@ -209,9 +392,15 @@ def _verify_friendly_request(
             existing = tuple(contract.identity.get(key, ())) if key == "underlyings" else contract.identity.get(key)
             if existing != supplied:
                 raise ContractResolutionError(f"identity.{key}与任务已冻结ResolvedContract冲突")
-    supplied_references = identity.get("reference_prices", identity.get("contract_reference_spots"))
+    supplied_references = identity.get("reference_prices")
     if supplied_references is not None and dict(contract.identity.get("reference_prices") or {}) != dict(supplied_references):
         raise ContractResolutionError("identity.reference_prices与任务已冻结ResolvedContract冲突")
 
 
-__all__ = ("explicit_demo_pricing_error", "is_explicit_demo_pricing_config", "prepare_compute_request")
+__all__ = (
+    "bind_verified_calendar_to_history",
+    "explicit_demo_pricing_error",
+    "is_explicit_demo_pricing_config",
+    "prepare_compute_request",
+    "verified_trading_calendar",
+)
