@@ -20,7 +20,7 @@ from ..identity.session_identity import SessionIdentity
 from .redaction import has_hidden_reasoning, redact_text
 
 
-_ACTIONS = frozenset({"final", "ask_user", "call_tool", "request_approval"})
+_ACTIONS = frozenset({"final", "ask_user", "call_tool"})
 _FORBIDDEN_DECISION_KEYS = frozenset({"reasoning", "chain_of_thought", "analysis", "secret", "api_key", "token"})
 _SECRET_TEXT = ("sk-", "access_token", "refresh_token", "api_key", "password", "bearer ")
 _INTERNAL_TEXT = re.compile(
@@ -76,11 +76,10 @@ class AgentDecision:
             raise ValidationError("Agent决策不得包含推理或Secret字段")
         action = str(value.get("action", "")).strip()
         if action not in _ACTIONS:
-            raise ValidationError("Agent action必须是final、ask_user、call_tool或request_approval")
+            raise ValidationError("Agent action必须是final、ask_user或call_tool")
         allowed = {
             "final": {"action", "text", "fact_refs"},
             "ask_user": {"action", "question"},
-            "request_approval": {"action", "message"},
             "call_tool": {"action", "tool", "arguments"},
         }[action]
         unexpected = set(value).difference(allowed)
@@ -92,7 +91,7 @@ class AgentDecision:
             if not isinstance(arguments, Mapping) or _contains_sensitive_key(arguments):
                 raise ValidationError("Agent工具参数必须为不含Secret的对象")
             return cls(action=action, tool=tool, arguments=dict(arguments))
-        field = "text" if action == "final" else "question" if action == "ask_user" else "message"
+        field = "text" if action == "final" else "question"
         fact_refs = _fact_refs(value.get("fact_refs")) if action == "final" else ()
         return cls(action=action, text=_text(value.get(field), field), fact_refs=fact_refs)
 
@@ -133,14 +132,21 @@ class AgentLoop:
             try:
                 context = self._context_builder.build(identity, task_id, message)
                 if round_number == 1 and _should_run_fixed_recommendation(message, context):
-                    raw = self._recommender.run_fixed(identity, task_id, message, {"workflow": "recommendation"})
+                    raw = self._recommender.run_fixed(
+                        identity, task_id, message, {"workflow": _fixed_recommendation_workflow(message)},
+                    )
                     observations.append(_observation("recommender.run", raw, identity))
                     return _recommendation_outcome(raw, observations, round_number)
                 if round_number == 1 and _explicit_delivery_kinds(message) == ("card", "report"):
                     tool_names = {str(item.get("name")) for item in context.get("tool_catalog", []) if isinstance(item, Mapping)}
                     if "reporter.run" in tool_names:
                         return self._run_dual_delivery(identity, task_id, message, observations, round_number)
-                decision_context = {**context, "observations": observations, "round": round_number, "max_rounds": self._max_rounds}
+                decision_context = _model_context(
+                    context,
+                    observations=observations,
+                    round_number=round_number,
+                    max_rounds=self._max_rounds,
+                )
                 decision = AgentDecision.from_mapping(self._gateway.decide_for(identity, task_id, decision_context))
             except (UnavailableCapabilityError, AuthorizationError, ValidationError, ValueError) as error:
                 return _result(
@@ -176,29 +182,6 @@ class AgentLoop:
                 if has_hidden_reasoning(decision.text) or (_has_financial_number(text) and not _has_valid_fact_citations(text, (), observations, _context_facts(context))):
                     return _result("partial", "模型不能在未引用受控事实时给出金融数字。", observations, round_number)
                 return _result("needs_input", text, observations, round_number, action="ask_user")
-            if decision.action == "request_approval":
-                approval_text = _user_text(decision.text, identity)
-                if _has_financial_number(approval_text) and not _has_valid_fact_citations(
-                    approval_text, (), observations, _context_facts(context),
-                ):
-                    return _result(
-                        "partial",
-                        "该数值缺少可核验的正式分析依据，未进入确认流程。请先完成相应分析。",
-                        observations,
-                        round_number,
-                    )
-                # A model-authored approval request carries no trustworthy
-                # operation identity, candidate gate or side-effect class.
-                # The Host therefore ignores it and gives the model another
-                # round.  Real recommendation confirmations are emitted only
-                # by the deterministic policy in ``_recommendation_outcome``.
-                observations.append({
-                    "tool": "host.approval_policy",
-                    "status": "not_required",
-                    "message": "当前没有由Host判定需要确认的受控操作，请继续完成只读答复或选择已授权工具。",
-                })
-                continue
-
             assert decision.tool is not None and decision.arguments is not None
             tool_names = {str(item.get("name")) for item in context.get("tool_catalog", []) if isinstance(item, Mapping)}
             if decision.tool not in tool_names:
@@ -221,9 +204,10 @@ class AgentLoop:
                 if self._observation_builder is not None:
                     try:
                         facts = self._observation_builder.facts_for(identity, task_id, decision.tool, raw)
-                        if isinstance(facts, Mapping) and isinstance(facts.get("run_ref"), Mapping) and isinstance(facts.get("facts"), list):
-                            observation["run_ref"] = _opaque_ref(facts["run_ref"])
-                            observation["facts"] = _fact_projection(facts["facts"])
+                        if isinstance(facts, Mapping) and isinstance(facts.get("facts"), list):
+                            projected_facts = _fact_projection(facts["facts"])
+                            if projected_facts:
+                                observation["facts"] = projected_facts
                     except Exception:
                         # The tool may already have committed a valid run.  A
                         # failed fact projection must not relabel it failed or
@@ -241,7 +225,7 @@ class AgentLoop:
                             round_number,
                             action="ask_user",
                         )
-                    if raw.get("ok") is True and str(raw.get("status", "")).lower() in {"completed", "succeeded"}:
+                    if raw.get("ok") is True and str(raw.get("status", "")).lower() in {"completed", "succeeded", "partial"}:
                         requested_kind = str(
                             decision.arguments.get("kind")
                             or decision.arguments.get("output_type")
@@ -307,10 +291,9 @@ class AgentLoop:
 
         output_format = "pdf" if "pdf" in message.lower() else "html"
         deliveries: list[Mapping[str, Any]] = []
+        has_partial_delivery = False
         for kind in ("card", "report"):
             arguments: dict[str, Any] = {"kind": kind, "format": output_format}
-            if kind == "report" and output_format == "html":
-                arguments["html_report_layout"] = "continuous"
             try:
                 raw = self._tool_executor.call(identity, task_id, "reporter.run", arguments)
                 observations.append(_observation("reporter.run", raw, identity))
@@ -340,8 +323,9 @@ class AgentLoop:
                     round_number,
                     action="ask_user",
                 )
-            if raw.get("ok") is not True or status not in {"completed", "succeeded"}:
+            if raw.get("ok") is not True or status not in {"completed", "succeeded", "partial"}:
                 return _result("partial", "交付材料暂未全部生成。请稍后重试。", observations, round_number)
+            has_partial_delivery = has_partial_delivery or status == "partial"
         detailed = deliveries[-1] if deliveries else {}
         delivery_status, delivery_text = _delivery_completion(detailed, "report")
         if delivery_status == "partial":
@@ -357,6 +341,13 @@ class AgentLoop:
             if isinstance(item.get("preview_url"), str) and item.get("preview_url")
         ]
         preview_text = "预览入口：" + "；".join(preview_entries) if preview_entries else "可在当前任务中预览或导出。"
+        if has_partial_delivery:
+            return _result(
+                "partial",
+                f"研究简报和完整研究报告已形成可预览版本。部分交付内容已标注为不完整。{preview_text}",
+                observations,
+                round_number,
+            )
         return _result(
             "completed",
             f"研究简报和完整研究报告已基于同一组分析结果生成。{preview_text}",
@@ -392,14 +383,92 @@ def _result(
     return result
 
 
+def _model_context(
+    context: Mapping[str, Any], *, observations: list[dict[str, Any]], round_number: int, max_rounds: int,
+) -> dict[str, Any]:
+    """Expose business facts to the model without Store reference material."""
+
+    task = context.get("task")
+    task_fact = {
+        key: str(task[key])[:240]
+        for key in ("subject", "status")
+        if isinstance(task, Mapping) and task.get(key) is not None
+    }
+    model_context: dict[str, Any] = {
+        "task": task_fact,
+        "caller": _public_mapping(context.get("caller"), allowed=("role", "audience")),
+        "messages": _public_messages(context.get("messages")),
+        "latest_message": str(context.get("latest_message", ""))[:2_000],
+        "facts": _public_business_facts(context.get("facts")),
+        "tool_catalog": context.get("tool_catalog") if isinstance(context.get("tool_catalog"), list) else [],
+        "decision_protocol": context.get("decision_protocol") if isinstance(context.get("decision_protocol"), Mapping) else {},
+    }
+    return {
+        **model_context,
+        "observations": observations,
+        "round": round_number,
+        "max_rounds": max_rounds,
+    }
+
+
+def _public_mapping(value: object, *, allowed: tuple[str, ...]) -> dict[str, str]:
+    if not isinstance(value, Mapping):
+        return {}
+    return {key: str(value[key])[:240] for key in allowed if value.get(key) is not None}
+
+
+def _public_messages(value: object) -> list[dict[str, str]]:
+    if not isinstance(value, list):
+        return []
+    return [
+        {
+            "role": str(item.get("role", "user"))[:32],
+            "content": str(item.get("content", ""))[:2_000],
+            "status": str(item.get("status", ""))[:80],
+        }
+        for item in value[-12:]
+        if isinstance(item, Mapping)
+    ]
+
+
+def _public_business_facts(value: object) -> dict[str, Any]:
+    """Project only customer-meaningful facts; all Store references stay local."""
+
+    if not isinstance(value, Mapping):
+        return {}
+    facts: dict[str, Any] = {}
+    contract = value.get("resolved_contract")
+    if isinstance(contract, Mapping):
+        identity = contract.get("identity")
+        terms = contract.get("terms")
+        projected_contract: dict[str, Any] = {}
+        if isinstance(identity, Mapping):
+            projected_contract["identity"] = _public_mapping(identity, allowed=("underlyings", "product_name"))
+        if isinstance(terms, Mapping):
+            projected_contract["terms"] = {
+                str(key): item
+                for key, item in terms.items()
+                if isinstance(item, (str, int, float, bool))
+            }
+        if projected_contract:
+            facts["contract_terms"] = projected_contract
+    raw_runs = value.get("module_run_facts")
+    if isinstance(raw_runs, list):
+        facts["module_run_facts"] = [
+            {"facts": projected}
+            for row in raw_runs
+            if isinstance(row, Mapping)
+            for projected in [_fact_projection(row.get("facts") if isinstance(row.get("facts"), list) else [])]
+            if projected
+        ]
+    return facts
+
+
 def _observation(tool: str, value: Mapping[str, Any], identity: SessionIdentity) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         raise ValidationError("工具必须返回对象")
     status = str(value.get("status", "succeeded" if value.get("ok") is not False else "failed")).lower()
     result: dict[str, Any] = {"tool": tool, "status": "failed" if value.get("ok") is False else status}
-    for field in ("module_run_ref", "data_asset_ref", "report_run_ref"):
-        if isinstance(value.get(field), Mapping):
-            result[field] = _opaque_ref(value[field])
     recommendation = value.get("recommendation_set")
     if not isinstance(recommendation, Mapping) and isinstance(value.get("result"), Mapping):
         recommendation = value["result"].get("recommendation_set")
@@ -514,7 +583,7 @@ def _recommendation_outcome(
             _candidate_confirmation_text(recommendation),
             observations,
             round_number,
-            action="request_approval",
+            action="ask_user",
         )
     return _result("partial", "当前未形成可交付的推荐结果。请调整一项筛选条件后重新尝试。", observations, round_number)
 
@@ -529,7 +598,10 @@ def _delivery_completion(raw: Mapping[str, Any], requested_kind: str) -> tuple[s
     preview = delivery.get("preview_url") or raw.get("preview_url")
     has_preview = isinstance(preview, str) and preview.startswith("/api/reports/")
     preview_text = f"预览入口：{preview}" if has_preview else "可在当前任务中预览或导出。"
+    is_partial = str(raw.get("status", "")).strip().lower() == "partial"
     if kind == "card":
+        if is_partial:
+            return "partial", f"研究简报已生成。{preview_text}部分内容未能完整交付，已如实标注。"
         return "completed", f"研究简报已生成。{preview_text}" if has_preview else f"研究简报已生成，{preview_text}"
     missing = delivery.get("missing_modules")
     raw_missing = missing if isinstance(missing, list) else []
@@ -545,6 +617,8 @@ def _delivery_completion(raw: Mapping[str, Any], requested_kind: str) -> tuple[s
             "partial",
             f"{delivery_text}本次{labels}未执行，相关章节已明确标注，不作为已完成结论。",
         )
+    if is_partial:
+        return "partial", f"研究报告已生成。{preview_text}部分内容未能完整交付，已如实标注。"
     return (
         "completed",
         f"完整研究报告已生成。{preview_text}" if has_preview else f"完整研究报告已生成，{preview_text}",
@@ -642,6 +716,12 @@ def _should_run_fixed_recommendation(message: str, context: Mapping[str, Any]) -
                 return True
             if (
                 previous_status == "needs_input"
+                and _awaits_contract_confirmation(previous)
+                and _confirmation_text(text)
+            ):
+                return True
+            if (
+                previous_status == "needs_input"
                 and _delivery_choice_text(text)
                 and "研究简报" in str(previous.get("content", ""))
                 and "完整研究报告" in str(previous.get("content", ""))
@@ -655,11 +735,27 @@ def _should_run_fixed_recommendation(message: str, context: Mapping[str, Any]) -
     return any(word in str(latest.get("content", "")) for word in ("标的", "期限", "观点", "亏损", "回撤", "本金", "净值"))
 
 
+def _fixed_recommendation_workflow(message: object) -> str:
+    """Use the detailed fixed route only when the customer explicitly requests it."""
+
+    text = str(message or "").lower()
+    return "professional_report" if any(
+        marker in text for marker in ("完整研究报告", "详细报告", "深度报告", "完整报告", "生成html报告", "生成html简报", "html报告")
+    ) else "recommendation"
+
+
 def _confirmation_text(value: object) -> bool:
     text = str(value or "").strip().lower()
     if not text or any(word in text for word in ("不确认", "不同意", "取消", "不要执行", "先不要")):
         return False
     return any(word in text for word in ("确认", "同意", "按此", "按这个", "继续执行", "继续生成", "继续分析", "可以执行", "好的", "好，"))
+
+
+def _awaits_contract_confirmation(message: Mapping[str, Any]) -> bool:
+    """识别本Host刚展示过的候选合同确认提示。"""
+
+    content = str(message.get("content", ""))
+    return "确认按此候选和条款继续" in content and "需要调整" in content
 
 
 def _delivery_choice_text(value: object) -> bool:
@@ -682,17 +778,6 @@ def _user_text(value: str | None, identity: SessionIdentity) -> str:
     if _INTERNAL_TEXT.search(text):
         return "当前步骤尚未形成可交付结果。请补充标的、产品结构和期限，我会继续完成所需分析。"
     return text
-
-
-def _opaque_ref(value: Mapping[str, Any]) -> dict[str, Any]:
-    permitted = {
-        "module", "run_id", "data_asset_id", "content_hash", "result_hash",
-        "expected_semantic_result_hash", "expected_artifact_manifest_hash", "status",
-    }
-    result = {str(key): value[key] for key in permitted if key in value and isinstance(value[key], (str, int, float, bool))}
-    if "expected_semantic_result_hash" in result:
-        result["result_hash"] = result.pop("expected_semantic_result_hash")
-    return result
 
 
 def _call_fingerprint(tool: str, arguments: Mapping[str, Any]) -> str:

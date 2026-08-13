@@ -19,6 +19,9 @@ from ..secrets.secret_ref import SecretRef
 from ..settings.settings_models import ModelServiceSettings
 
 
+MAX_MODEL_RESPONSE_BYTES = 512 * 1024
+
+
 def complete_openai_compatible(
     settings: ModelServiceSettings,
     secret_ref: SecretRef,
@@ -47,13 +50,17 @@ def complete_openai_compatible(
     )
     try:
         with opener(request, timeout=45) as response:
-            raw = response.read()
+            # Read one byte beyond the ceiling so an upstream server cannot
+            # make the local App allocate an unbounded non-streaming body.
+            raw = response.read(MAX_MODEL_RESPONSE_BYTES + 1)
     except HTTPError as error:
         if error.code in {401, 403}:
             raise UnavailableCapabilityError("模型凭据", "模型服务拒绝了当前API Key，请重新粘贴并保存后再测试连接。") from error
         raise UnavailableCapabilityError("模型服务上游", f"模型服务返回HTTP {error.code}，请检查模型名称、Base URL或稍后重试。") from error
     except (URLError, TimeoutError) as error:
         raise UnavailableCapabilityError("模型服务网络", "无法连接模型服务，请检查网络和Base URL后重试。") from error
+    if not isinstance(raw, bytes) or len(raw) > MAX_MODEL_RESPONSE_BYTES:
+        raise ValidationError("模型服务响应超过允许上限")
 
     try:
         value = json.loads(raw.decode("utf-8"))

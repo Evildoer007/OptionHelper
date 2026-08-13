@@ -24,11 +24,12 @@ private final class OptionHelperWindow: NSWindow {
 }
 
 @main
-final class OptionHelperApp: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKScriptMessageHandler {
+final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavigationDelegate, WKScriptMessageHandler {
     private var backend: Process?
     private var startupPipe: Pipe?
     private var window: NSWindow?
     private var webView: WKWebView?
+    private var railToggle: NSButton?
     private var loadedURL = false
     private var themePreference = "light"
 
@@ -153,7 +154,7 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, WKNavigationDelega
         // Show the splash before the login page's module graph is evaluated.
         // The login module owns the timer and always removes this class again.
         let startupScript = WKUserScript(
-            source: "if (location.pathname === '/') document.documentElement.classList.add('login-boot');",
+            source: "document.documentElement.dataset.nativeShell='macos';if (location.pathname === '/') document.documentElement.classList.add('login-boot');",
             injectionTime: .atDocumentStart,
             forMainFrameOnly: true
         )
@@ -170,12 +171,50 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, WKNavigationDelega
         window.title = "OptionHelper"
         window.center()
         window.contentView = view
+        window.delegate = self
         window.makeFirstResponder(view)
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         self.window = window
         self.webView = view
+        installRailToggle(in: window)
         view.load(URLRequest(url: startupURL))
+    }
+
+    private func installRailToggle(in window: NSWindow) {
+        guard let closeButton = window.standardWindowButton(.closeButton), let titlebar = closeButton.superview else { return }
+        let size = NSSize(width: 26, height: 24)
+        let button = NSButton(frame: NSRect(
+            x: closeButton.frame.maxX + 94,
+            y: closeButton.frame.midY - size.height / 2,
+            width: size.width,
+            height: size.height
+        ))
+        button.image = NSImage(systemSymbolName: "sidebar.left", accessibilityDescription: "收起或展开任务栏")
+        button.contentTintColor = .secondaryLabelColor
+        button.bezelStyle = .inline
+        button.isBordered = false
+        button.target = self
+        button.action = #selector(toggleRail(_:))
+        button.toolTip = "收起或展开任务栏"
+        button.isHidden = true
+        titlebar.addSubview(button)
+        railToggle = button
+    }
+
+    @objc private func toggleRail(_ sender: Any?) {
+        webView?.evaluateJavaScript("document.querySelector('[data-rail-collapse-toggle]')?.click()")
+    }
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        webView.evaluateJavaScript("Boolean(document.querySelector('[data-rail-collapse-toggle]'))") { [weak self] value, _ in
+            self?.railToggle?.isHidden = (value as? Bool) != true
+        }
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        guard notification.object as? NSWindow === window else { return }
+        NSApp.terminate(nil)
     }
 
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {

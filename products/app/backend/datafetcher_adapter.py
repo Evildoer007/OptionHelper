@@ -5,7 +5,7 @@ from __future__ import annotations
 from hashlib import sha256
 from pathlib import Path
 import sys
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 _CORE_SRC = Path(__file__).resolve().parents[3] / "core" / "src"
 if str(_CORE_SRC) not in sys.path:
@@ -94,18 +94,27 @@ class DataFetcherAdapter:
         reference, content = self._app_datafetcher_read(data_asset_id, _caller(principal, request_id))
         if not isinstance(reference, dict) or not isinstance(content, bytes):
             raise ValidationError("DataFetcher download must return DataAssetRef and bytes")
+        try:
+            frozen_ref = DataAssetRef(**reference)
+        except (TypeError, ValueError) as error:
+            raise ValidationError("DataFetcher download returned an invalid DataAssetRef") from error
+        if sha256(content).hexdigest() != frozen_ref.content_hash:
+            raise ValidationError("DataFetcher download bytes do not match DataAssetRef.content_hash")
         return reference, content
 
     def bind_data_store(
         self,
         principal: SessionIdentity,
+        *,
+        task_id: str,
+        data_refs: tuple[Mapping[str, Any], ...],
     ) -> DataStoreReadPort:
         """Bind a tenant-scoped, read-only DataStore port for pricing modules."""
         if self._data_store is None:
             raise UnavailableCapabilityError(
                 "pricing.data_store", "App Host has no configured DataStorePort",
             )
-        return _BoundDataStore(principal, self._data_store)
+        return _BoundDataStore(principal, task_id, data_refs, self._data_store)
 
 
 class _BoundDataStore:
@@ -114,9 +123,21 @@ class _BoundDataStore:
     def __init__(
         self,
         principal: SessionIdentity,
+        task_id: str,
+        data_refs: tuple[Mapping[str, Any], ...],
         data_store: DataStoreReadPort,
     ) -> None:
         self._principal = principal
+        if not isinstance(task_id, str) or not task_id:
+            raise ValidationError("计算DataStore必须绑定当前任务")
+        self._task_id = task_id
+        self._allowed_refs = {
+            (str(ref.get("data_asset_id")), str(ref.get("content_hash")))
+            for ref in data_refs
+            if isinstance(ref, Mapping)
+        }
+        if not self._allowed_refs:
+            raise ValidationError("计算DataStore必须绑定当前任务已验证DataAssetRef")
         self._data_store = data_store
 
     def read_bytes(self, ref: DataAssetRef, *, tenant_id: str) -> bytes:
@@ -126,6 +147,8 @@ class _BoundDataStore:
             raise PermissionError("DataAssetRef tenant does not match the App caller")
         if ref.created_by != self._principal.principal_id:
             raise PermissionError("DataAssetRef owner does not match the App caller")
+        if (ref.data_asset_id, ref.content_hash) not in self._allowed_refs:
+            raise PermissionError("DataAssetRef is not attached to the current App task")
         if "read" not in ref.access_scope:
             raise PermissionError("DataAssetRef does not grant read access")
         content = self._data_store.read_bytes(ref, tenant_id=tenant_id)

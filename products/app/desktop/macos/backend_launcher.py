@@ -25,7 +25,7 @@ def resource_root() -> Path:
 
 def configure_resource_imports(resources: Path) -> None:
     """Load shared runtime and module services only from the staged Capability."""
-    for root in (resources / "runtime", resources / "capability" / "option-helper" / "scripts"):
+    for root in (resources, resources / "runtime", resources / "capability" / "option-helper" / "scripts"):
         value = str(root.resolve())
         if root.is_dir() and value not in sys.path:
             sys.path.insert(0, value)
@@ -56,6 +56,8 @@ def main() -> int:
     runtime_root.mkdir(parents=True, exist_ok=True)
     os.environ["OPTIONHELPER_RUNTIME_ROOT"] = str(runtime_root)
     from backend.app_server import AppServer
+    from backend.secrets.secret_provider import SecretProvider
+    from desktop.macos.keychain import MacOSKeychain
 
     stopped = threading.Event()
 
@@ -71,11 +73,12 @@ def main() -> int:
         capability_root=resources / "capability" / "option-helper",
         frontend_root=resources / "frontend",
         brand_assets_root=resources / "assets" / "icons",
-        # This local candidate only binds loopback and has no account
-        # provisioning UI.  An empty login therefore creates the explicitly
-        # local User1 administrator session; managed credentials remain an
-        # opt-in future deployment mode rather than making first launch fail.
+        # Development builds intentionally use the loopback-only direct-entry
+        # identity. Account provisioning is not part of the current workflow.
         authentication_mode="local-development",
+        # Credential values remain in the login keychain.  The App database
+        # receives only opaque SecretRef metadata.
+        secret_provider=SecretProvider({"keychain": MacOSKeychain()}),
     )
     try:
         url = app.start_background()

@@ -35,7 +35,7 @@ from .capability_service import CapabilityServiceCaller
 from .datafetcher_adapter import DataFetcherAdapter
 from .errors import AuthorizationError, CapabilityIntegrityError, UnavailableCapabilityError, UserActionError, ValidationError
 from .identity.identity_provider import IdentityProvider, LocalAuthenticationRequest, LocalAuthProvider
-from .identity.login_handler import AuthenticationMode, LoginHandler, LoginOutcome, LoginRequest
+from .identity.login_handler import AuthenticationMode, InitialProvisionRequest, LoginHandler, LoginOutcome, LoginRequest
 from .identity.password_store import PasswordCredentialStore
 from .identity.session_identity import SessionIdentity
 from .model_gateway.gateway import ModelGateway
@@ -75,7 +75,7 @@ FRONTEND_ASSETS = frozenset({
     "optchat/index.html", "optchat/optchat.js",
     "optdesk/index.html", "optdesk/optdesk.js",
     "settings/index.html", "settings/settings.js",
-    "shared/styles.css", "shared/refinement.css", "shared/module-host.css", "shared/app.js", "shared/theme-bootstrap.js", "shared/theme.js", "shared/vol-surface.js",
+    "shared/styles.css", "shared/refinement.css", "shared/module-host.css", "shared/app.js", "shared/transition-scope.js", "shared/theme-bootstrap.js", "shared/theme.js", "shared/vol-surface.js",
 })
 _CAPABILITY_CSP = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'self'; form-action 'self'"
 
@@ -153,6 +153,7 @@ class AppServer:
             self.results,
             self.data_assets,
             self.contracts,
+            self.tasks,
             capability_runtime_root=self._capability_runtime_root,
         )
         self.provider_registry = ProviderRegistry()
@@ -176,7 +177,12 @@ class AppServer:
             self.gateway, JobRunner(), self.tasks, self.results, self.data_assets, self.tool_idempotency,
         )
         self.model_gateway = ModelGateway(self.settings_for, self.provider_registry, self.secret_provider)
-        self.conversation_tools = AppConversationToolExecutor(self.tool_dispatcher, self.registry, self.results)
+        self.conversation_tools = AppConversationToolExecutor(
+            self.tool_dispatcher,
+            self.registry,
+            self.results,
+            self.contracts,
+        )
         self.recommender = RecommenderAdapter(
             gateway=self.model_gateway,
             registry=self.registry,
@@ -281,6 +287,34 @@ class AppServer:
         ))
         return outcome
 
+    def close_session(self, identity: SessionIdentity) -> None:
+        self.sessions.delete(identity.session_id)
+        self.audit.record(AuditEvent(
+            action="identity.logout",
+            principal_id=identity.principal_id,
+            outcome="succeeded",
+            tenant_id=identity.tenant_id,
+            decision="allow",
+        ))
+
+    def provision_initial_administrator(
+        self,
+        request: InitialProvisionRequest,
+        *,
+        client_host: str,
+    ) -> None:
+        """Persist one managed local admin verifier without logging its password."""
+
+        account = self.login_handler.provision_initial_administrator(request, client_host=client_host)
+        self.audit.record(AuditEvent(
+            action="identity.account.initialize",
+            principal_id=account.principal_id,
+            outcome="succeeded",
+            tenant_id=account.tenant_id,
+            decision="allow",
+            reference="managed-local-initial-administrator",
+        ))
+
     def settings_for(self, identity: SessionIdentity) -> SettingsSnapshot:
         principal = self._principal_settings(identity)
         tenant_key = self._tenant_settings_key(identity.tenant_id)
@@ -297,6 +331,31 @@ class AppServer:
             storage_export=principal.storage_export,
             preferences=principal.preferences,
         )
+
+    def model_connections_for(self, identity: SessionIdentity) -> dict[str, Any]:
+        """Expose the browser contract without exposing credential refs.
+
+        The persisted v1.0 configuration has one active connection.  It is
+        presented as a list from day one so workspace controls never need to
+        infer provider state or receive a secret reference.
+        """
+
+        model = self.settings_for(identity).model_service
+        if model.provider_name == "unconfigured" or not model.model_name:
+            connections: list[dict[str, Any]] = []
+        else:
+            connections = [{
+                "connection_id": "primary",
+                "provider_name": model.provider_name,
+                "endpoint": model.endpoint,
+                "model_name": model.model_name,
+                "credential_configured": model.secret_ref is not None,
+            }]
+        return {
+            "schema_version": "v1.0.0",
+            "active_connection_id": "primary" if connections else None,
+            "connections": connections,
+        }
 
     def save_settings(self, identity: SessionIdentity, snapshot: SettingsSnapshot, capability: str) -> SettingsSnapshot:
         self.policy.require(identity.role, capability)
@@ -450,7 +509,22 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
                 self._post(parsed, request_id)
         except AuthorizationError as error:
             self._audit_denial(error, request_id)
-            self._json(HTTPStatus.FORBIDDEN, {"error": "forbidden", "capability": error.capability, "reason": "请求未获授权"})
+            # Authentication failures must remain distinguishable from an
+            # authenticated caller being denied a capability.  The login page
+            # can then give the user a precise, non-sensitive credential hint
+            # without weakening authorization failures elsewhere.
+            if error.capability == "account.login":
+                self._json(HTTPStatus.UNAUTHORIZED, {
+                    "error": "unauthorized",
+                    "capability": error.capability,
+                    "reason": "账号或密码不正确",
+                })
+            else:
+                self._json(HTTPStatus.FORBIDDEN, {
+                    "error": "forbidden",
+                    "capability": error.capability,
+                    "reason": "请求未获授权",
+                })
         except UnavailableCapabilityError as error:
             self._json(HTTPStatus.SERVICE_UNAVAILABLE, {
                 "error": "unavailable",
@@ -477,6 +551,12 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
         path = parsed.path
         if path in {"/health", "/api/health"}:
             self._json(HTTPStatus.OK, {"status": "ok", "mode": "local", "capability": _capability_summary(self.app.registry)})
+            return
+        if path == "/api/auth/initialization":
+            self.app.login_handler.require_local_peer(str(self.client_address[0]))
+            self._json(HTTPStatus.OK, {
+                "initialization_required": self.app.login_handler.requires_initialization(),
+            })
             return
         if path == "/":
             self._serve_frontend_asset("login/index.html")
@@ -526,6 +606,11 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
             self.app.policy.require(identity.role, "settings.read")
             self._json(HTTPStatus.OK, {"settings": serialize_settings_public(self.app.settings_for(identity))})
             return
+        if path == "/api/settings/model-connections":
+            identity = self._identity()
+            self.app.policy.require(identity.role, "settings.read")
+            self._json(HTTPStatus.OK, self.app.model_connections_for(identity))
+            return
         if path.startswith("/api/module-host/"):
             identity = self._identity()
             self.app.policy.require(identity.role, "module.host_context")
@@ -535,7 +620,11 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
             analysis_case_id = query.get("analysis_case_id", [None])[0]
             if task_id is not None:
                 self.app.tasks.get(identity, task_id)
-            binding = self.app.contracts.get(identity, task_id) if task_id is not None else None
+            binding = self.app.contracts.get_current(
+                identity,
+                task_id,
+                catalog_version=str(self.app.registry.manifest["catalog_version"]),
+            ) if task_id is not None else None
             if binding is not None:
                 fingerprint = str(binding["contract_fingerprint"])
                 analysis_case_id = f"case-{fingerprint[:24]}"
@@ -600,6 +689,20 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
                 cookie=outcome.identity.session_id,
                 persistent_cookie=outcome.remember,
             )
+            return
+        if path == "/api/auth/initialize":
+            request = InitialProvisionRequest.from_payload(body)
+            self.app.provision_initial_administrator(request, client_host=str(self.client_address[0]))
+            self._json(
+                HTTPStatus.CREATED,
+                {"status": "initialized", "message": "首个本机管理员账号已创建。请使用该账号登录。"},
+            )
+            return
+        if path == "/api/auth/logout":
+            _only_fields(body, set())
+            identity = self._identity()
+            self.app.close_session(identity)
+            self._json(HTTPStatus.OK, {"status": "signed_out"}, clear_cookie=True)
             return
         if path == "/api/auth/local":
             if not self.app.login_handler.is_local_development:
@@ -696,24 +799,14 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
                 # OptChat declares only the public delivery type.  The
                 # App-owned executor selects current, verified task evidence;
                 # no client path or ModuleRunRef is accepted on this route.
-                _only_fields(body, {"kind", "format", "html_report_layout"})
+                _only_fields(body, {"kind", "format"})
                 kind = str(body.get("kind", "")).strip().lower()
                 if kind not in {"card", "report"}:
                     raise ValidationError("report kind must be card or report")
                 output_format = str(body.get("format", "html")).strip().lower()
                 if output_format not in {"html", "pdf"}:
                     raise ValidationError("report format must be html or pdf")
-                layout = body.get("html_report_layout")
-                if layout is not None and not isinstance(layout, str):
-                    raise ValidationError("html_report_layout must be a string")
-                if kind != "report" or output_format != "html":
-                    if layout is not None:
-                        raise ValidationError("html_report_layout is only valid for HTML reports")
-                elif layout is not None and layout != "continuous":
-                    raise ValidationError("html_report_layout must be continuous")
                 arguments = {"kind": kind, "format": output_format}
-                if kind == "report" and output_format == "html":
-                    arguments["html_report_layout"] = "continuous"
                 result = self.app.conversation_tools.call(identity, task_id, "reporter.run", arguments)
                 self._json(HTTPStatus.OK, {"result": result})
                 return
@@ -975,6 +1068,7 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
         cookie: str | None = None,
         *,
         persistent_cookie: bool = False,
+        clear_cookie: bool = False,
     ) -> None:
         body = json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str).encode("utf-8")
         self.send_response(status)
@@ -984,6 +1078,8 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
         if cookie:
             max_age = "; Max-Age=2592000" if persistent_cookie else ""
             self.send_header("Set-Cookie", f"optionhelper_session={cookie}; HttpOnly; SameSite=Strict; Path=/{max_age}")
+        elif clear_cookie:
+            self.send_header("Set-Cookie", "optionhelper_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0")
         self.end_headers()
         self.wfile.write(body)
 
@@ -1042,6 +1138,7 @@ def _data_asset_download_id(path: str) -> str | None:
 def _credential_fields_for(path: str) -> frozenset[str]:
     return {
         "/api/auth/login": frozenset({"password"}),
+        "/api/auth/initialize": frozenset({"password"}),
         "/api/settings/model/credential": frozenset({"api_key"}),
         "/api/settings/data/credential": frozenset({"refresh_token"}),
     }.get(path, frozenset())
@@ -1101,11 +1198,10 @@ def _storage_from(value: dict[str, Any]) -> StorageExportSettings:
 
 
 def _preference_from(value: dict[str, Any], current: PreferenceSettings) -> PreferenceSettings:
+    if set(value).difference({"language", "font_scale", "theme"}):
+        raise ValidationError("preferences contains unsupported fields")
     language = value.get("language", current.language)
     font_scale = value.get("font_scale", current.font_scale)
-    # Keep old local settings loadable, but retire the directory layout rather
-    # than letting a persisted preference restore it.
-    layout = "continuous"
     theme = value.get("theme", current.theme)
     if language not in {"zh-CN", "en-US"}:
         raise ValidationError("language must be zh-CN or en-US")
@@ -1115,7 +1211,7 @@ def _preference_from(value: dict[str, Any], current: PreferenceSettings) -> Pref
         raise ValidationError("font_scale must be numeric") from error
     if not 0.8 <= scale <= 1.4 or theme not in {"light", "dark", "auto"}:
         raise ValidationError("preferences are outside allowed values")
-    return PreferenceSettings(language=language, font_scale=scale, html_report_layout=layout, theme=theme)
+    return PreferenceSettings(language=language, font_scale=scale, theme=theme)
 
 
 def _json_hash(value: dict[str, Any]) -> str:

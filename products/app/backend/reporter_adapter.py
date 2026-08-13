@@ -70,29 +70,47 @@ class _ScopedResultPorts:
         for raw_candidate in source.get("candidates", []):
             if not isinstance(raw_candidate, Mapping):
                 continue
-            refs: dict[str, dict[str, str]] = {}
-            for module, raw_ref in (raw_candidate.get("module_run_refs") or {}).items():
-                if module not in {"payoff", "pricing", "backtest"} or not isinstance(raw_ref, Mapping):
+            verified_options: dict[str, list[dict[str, str]]] = {}
+            raw_options = raw_candidate.get("module_run_options")
+            if not isinstance(raw_options, Mapping):
+                continue
+            for module, source_options in raw_options.items():
+                if module not in {"payoff", "pricing", "backtest"} or not isinstance(source_options, list):
                     continue
-                try:
-                    run_module = str(raw_ref.get("module") or {
-                        "payoff": "payoffer", "pricing": "pricer", "backtest": "backtester",
-                    }[module])
-                    ref = ModuleRunRef(
-                        module=run_module, tenant_id=str(raw_ref["tenant_id"]), task_id=str(raw_ref["task_id"]), run_id=str(raw_ref["run_id"]),
-                        expected_semantic_result_hash=str(raw_ref["expected_semantic_result_hash"]),
-                        expected_artifact_manifest_hash=str(raw_ref["expected_artifact_manifest_hash"]),
-                    )
-                    self.resolve_module_run(ref, tenant_id=self._principal.tenant_id)
-                except (KeyError, TypeError, ValueError, PermissionError, ValidationError, OSError):
-                    continue
-                refs[module] = {
-                    "module": ref.module, "tenant_id": ref.tenant_id, "task_id": ref.task_id, "run_id": ref.run_id,
-                    "expected_semantic_result_hash": ref.expected_semantic_result_hash,
-                    "expected_artifact_manifest_hash": ref.expected_artifact_manifest_hash, "status": "succeeded",
+                rows: list[dict[str, str]] = []
+                for raw_ref in source_options:
+                    if not isinstance(raw_ref, Mapping):
+                        continue
+                    try:
+                        run_module = str(raw_ref.get("module") or {
+                            "payoff": "payoffer", "pricing": "pricer", "backtest": "backtester",
+                        }[module])
+                        ref = ModuleRunRef(
+                            module=run_module, tenant_id=str(raw_ref["tenant_id"]), task_id=str(raw_ref["task_id"]), run_id=str(raw_ref["run_id"]),
+                            expected_semantic_result_hash=str(raw_ref["expected_semantic_result_hash"]),
+                            expected_artifact_manifest_hash=str(raw_ref["expected_artifact_manifest_hash"]),
+                        )
+                        self.resolve_module_run(ref, tenant_id=self._principal.tenant_id)
+                    except (KeyError, TypeError, ValueError, PermissionError, ValidationError, OSError):
+                        continue
+                    rows.append({
+                        "module": ref.module, "tenant_id": ref.tenant_id, "task_id": ref.task_id, "run_id": ref.run_id,
+                        "expected_semantic_result_hash": ref.expected_semantic_result_hash,
+                        "expected_artifact_manifest_hash": ref.expected_artifact_manifest_hash, "status": "succeeded",
+                    })
+                if rows:
+                    verified_options[module] = rows
+            if verified_options:
+                single_refs = {
+                    module: rows[0]
+                    for module, rows in verified_options.items()
+                    if len(rows) == 1
                 }
-            if refs:
-                candidates.append({**dict(raw_candidate), "module_run_refs": refs})
+                candidates.append({
+                    **dict(raw_candidate),
+                    "module_run_options": verified_options,
+                    "module_run_refs": single_refs,
+                })
         if not candidates:
             return None
         verified = {key: value for key, value in source.items() if key != "candidates"}
@@ -154,7 +172,13 @@ class ReporterAdapter:
             delivery = _verified_report_delivery(report_root, expected_request=expected_request)
             report_request = delivery["request"]
             committed_request = {**dict(report_request), "reporter_audit": delivery["audit"]}
-            report_ref = self._results.commit_report_run(principal, task_id, committed_request, delivery["artifacts"])
+            report_ref = self._results.commit_report_run(
+                principal,
+                task_id,
+                committed_request,
+                delivery["artifacts"],
+                status=delivery["status"],
+            )
         base = _artifact_url(report_ref["report_run_id"], delivery["report"])
         children = [{
             "candidate_id": item["candidate_id"], "report": item["artifact_name"],
@@ -162,7 +186,11 @@ class ReporterAdapter:
             "download_url": _artifact_url(report_ref["report_run_id"], item["artifact_name"], download=True),
         } for item in delivery["children"]]
         return {
-            "ok": True, "module": "reporter", "status": "completed", "report_run_ref": report_ref,
+            "ok": True, "module": "reporter",
+            # The App's longstanding API uses completed for a fully verified
+            # delivery.  Keep partial explicit so incomplete reports are
+            # never promoted to completed.
+            "status": "completed" if delivery["status"] == "succeeded" else "partial", "report_run_ref": report_ref,
             "output": {"report": delivery["report"], "children": children},
             "preview_url": base, "download_url": _artifact_url(report_ref["report_run_id"], delivery["report"], download=True),
         }
@@ -190,7 +218,7 @@ def _verified_report_delivery(root: Path, *, expected_request: Mapping[str, Any]
         raise ValidationError(f"Reporter ReportRun完整性校验失败：{error}") from error
     artifacts: list[dict[str, Any]] = []
     root_artifact = _add_rendered(artifacts, validation, artifact_prefix="")
-    audit = {"schema": "optionhelper.app-reporter-audit/v1", "root": _audit_record(validation), "children": []}
+    audit = {"schema": "optionhelper.app-reporter-audit/v1.0.0", "root": _audit_record(validation), "children": []}
     children = []
     for child in validation["children"]:
         candidate_id = child["candidate_id"]
@@ -202,7 +230,7 @@ def _verified_report_delivery(root: Path, *, expected_request: Mapping[str, Any]
         children.append({"candidate_id": candidate_id, "artifact_name": artifact_name})
     return {
         "request": validation["request"], "artifacts": artifacts, "report": root_artifact,
-        "children": children, "audit": audit,
+        "children": children, "audit": audit, "status": validation["delivery_status"],
     }
 
 
@@ -257,7 +285,17 @@ def _child_artifact_prefix(candidate_id: str) -> str:
 
 
 def _public_catalog(catalog: Mapping[str, Any]) -> dict[str, Any]:
-    return {"tenant_id": catalog["tenant_id"], "sources": [{key: value for key, value in source.items() if key != "source_refs"} for source in catalog["sources"]]}
+    """Project the browser catalog without internal pricing-basis metadata."""
+    sources: list[dict[str, Any]] = []
+    for raw_source in catalog["sources"]:
+        source = {key: value for key, value in raw_source.items() if key not in {"source_refs", "candidates"}}
+        source["candidates"] = [
+            {key: value for key, value in candidate.items() if key not in {"currency", "price_convention"}}
+            for candidate in raw_source.get("candidates", [])
+            if isinstance(candidate, Mapping)
+        ]
+        sources.append(source)
+    return {"tenant_id": catalog["tenant_id"], "sources": sources}
 
 
 def _artifact_url(report_run_id: str, artifact_name: str, *, download: bool = False) -> str:

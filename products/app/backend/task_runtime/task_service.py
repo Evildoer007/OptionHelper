@@ -211,7 +211,12 @@ class TaskService:
         return copy.deepcopy(state) if state["status"] in {"pending_approval", "approved"} else None
 
     def approve_pending_recommendation(self, identity: SessionIdentity, task_id: str) -> dict[str, Any] | None:
-        """Atomically approve a candidate only after the user chose a delivery."""
+        """Atomically persist an explicit candidate confirmation.
+
+        Choosing a product structure and choosing a deliverable are separate
+        customer decisions.  An approved state may therefore have no delivery
+        yet; it is never computation authority until one is selected.
+        """
 
         selected: dict[str, Any] | None = None
 
@@ -223,8 +228,6 @@ class TaskService:
                 return tasks
             state = _pending_recommendation(raw, allow_approved=True)
             if state["status"] == "pending_approval":
-                if state["delivery"] is None:
-                    return tasks
                 state["status"] = "approved"
                 state["approved_at"] = datetime.now(timezone.utc).isoformat()
                 task["recommendation_state"] = state
@@ -241,6 +244,8 @@ class TaskService:
         identity: SessionIdentity,
         task_id: str,
         delivery: dict[str, Any],
+        *,
+        confirmed_constraints: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
         """Bind one explicit, user-selected delivery to the stored candidate."""
 
@@ -255,8 +260,11 @@ class TaskService:
             if not isinstance(raw, dict):
                 return tasks
             state = _pending_recommendation(raw, allow_approved=True)
-            if state["status"] != "pending_approval":
+            if state["status"] not in {"pending_approval", "approved"} or state["delivery"] is not None:
                 return tasks
+            if confirmed_constraints is not None:
+                state["confirmed_constraints"] = copy.deepcopy(confirmed_constraints)
+                state = _pending_recommendation(state, allow_approved=True)
             state["delivery"] = normalized
             task["recommendation_state"] = state
             task["updated_at"] = datetime.now(timezone.utc).isoformat()
@@ -381,7 +389,7 @@ def _pending_recommendation(value: dict[str, Any], *, allow_approved: bool = Fal
 
     allowed = {
         "status", "analysis_case_id", "catalog_version", "confirmed_constraints", "delivery", "candidate",
-        "approved_at", "completed_at",
+        "workflow_mode", "approved_at", "completed_at",
     }
     if set(value).difference(allowed):
         raise ValidationError("Recommendation continuation contains unsupported fields")
@@ -398,6 +406,10 @@ def _pending_recommendation(value: dict[str, Any], *, allow_approved: bool = Fal
         if not text or len(text) > 160:
             raise ValidationError(f"Recommendation continuation {field} is invalid")
         result[field] = text
+    workflow_mode = str(value.get("workflow_mode", "")).strip()
+    if workflow_mode not in {"single_agent", "multi_agent", "degraded_single_agent"}:
+        raise ValidationError("Recommendation continuation workflow_mode is invalid")
+    result["workflow_mode"] = workflow_mode
     constraints = value.get("confirmed_constraints")
     if not isinstance(constraints, dict) or set(constraints).difference({
         "underlying", "horizon", "market_view", "max_loss", "principal_fluctuation", "output_type", "format",
@@ -405,8 +417,8 @@ def _pending_recommendation(value: dict[str, Any], *, allow_approved: bool = Fal
         raise ValidationError("Recommendation continuation constraints are invalid")
     result["confirmed_constraints"] = copy.deepcopy(constraints)
     delivery = _recommendation_delivery(value.get("delivery"), required=False)
-    if delivery is None and status in {"approved", "completed"}:
-        raise ValidationError("Recommendation continuation delivery is required after approval")
+    if delivery is None and status == "completed":
+        raise ValidationError("Recommendation continuation delivery is required after completion")
     result["delivery"] = delivery
     candidate = value.get("candidate")
     if not isinstance(candidate, dict) or set(candidate).difference({

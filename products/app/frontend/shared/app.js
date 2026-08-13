@@ -294,6 +294,40 @@ export async function initializeWorkspace(mode, { onModeChange } = {}) {
       window.setTimeout(() => { location.href = settingsLink.href; }, 130);
     });
   }
+
+  const accountMenuRoot = shell.querySelector("[data-account-menu-root]");
+  const accountMenuToggle = accountMenuRoot?.querySelector("[data-account-menu-toggle]");
+  const accountMenu = accountMenuRoot?.querySelector(".rail-account-menu");
+  const logoutButton = accountMenuRoot?.querySelector("[data-logout]");
+  const setAccountMenuOpen = (open, { focus = false } = {}) => {
+    if (!accountMenu || !accountMenuToggle) return;
+    accountMenu.hidden = !open;
+    accountMenuToggle.setAttribute("aria-expanded", String(open));
+    if (open && focus) accountMenu.querySelector('[role="menuitem"]')?.focus();
+  };
+  if (accountMenuRoot && accountMenuToggle && accountMenu && accountMenuRoot.dataset.accountMenuReady !== "true") {
+    accountMenuRoot.dataset.accountMenuReady = "true";
+    accountMenuToggle.addEventListener("click", () => setAccountMenuOpen(accountMenu.hidden));
+    document.addEventListener("pointerdown", (event) => {
+      if (!accountMenuRoot.contains(event.target)) setAccountMenuOpen(false);
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape" || accountMenu.hidden) return;
+      setAccountMenuOpen(false);
+      accountMenuToggle.focus();
+    });
+  }
+  logoutButton?.addEventListener("click", async () => {
+    if (logoutButton.disabled) return;
+    logoutButton.disabled = true;
+    try {
+      await request("/api/auth/logout", { method: "POST", body: "{}" });
+      location.assign("/");
+    } catch {
+      logoutButton.disabled = false;
+      logoutButton.title = "退出未完成，请稍后重试。";
+    }
+  });
   enhanceSelects(document);
   installLayoutControls(shell);
   return session;
@@ -451,6 +485,7 @@ export function renderTaskList(target, tasks, activeTaskId, onSelect) {
     <button class="task-item" type="button" data-task-id="${escapeText(task.task_id)}" aria-current="${task.task_id === activeTaskId}">
       <strong class="task-item__title">${escapeText(task.subject)}</strong>
       <small>${escapeText(formatTaskDate(task.updated_at || task.created_at))}</small>
+      <span class="task-item__more" aria-hidden="true">⋮</span>
     </button>`).join("");
   target.querySelectorAll("[data-task-id]").forEach((button) => {
     button.addEventListener("click", () => onSelect(button.dataset.taskId));

@@ -33,7 +33,5 @@ class SettingsService:
             or "\\" in export_location_ref
         ):
             raise ValidationError("export_location_ref must be a controlled opaque reference")
-        if settings.preferences.html_report_layout != "continuous":
-            raise ValidationError("html_report_layout must be continuous")
         if settings.preferences.theme not in {"light", "dark", "auto"}:
             raise ValidationError("theme must be light, dark, or auto")

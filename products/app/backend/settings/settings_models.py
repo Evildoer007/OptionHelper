@@ -33,9 +33,6 @@ class StorageExportSettings:
 class PreferenceSettings:
     language: str = "zh-CN"
     font_scale: float = 1.0
-    # Public reports have a single continuous layout.  Keep the field only
-    # for backward-compatible preference records; it is not user-selectable.
-    html_report_layout: Literal["continuous"] = "continuous"
     theme: Literal["light", "dark", "auto"] = "light"
 
 
@@ -68,7 +65,6 @@ def serialize_settings(snapshot: SettingsSnapshot) -> dict[str, Any]:
         "preferences": {
             "language": snapshot.preferences.language,
             "font_scale": snapshot.preferences.font_scale,
-            "html_report_layout": snapshot.preferences.html_report_layout,
             "theme": snapshot.preferences.theme,
         },
     }
@@ -119,7 +115,6 @@ def deserialize_settings(value: dict[str, Any]) -> SettingsSnapshot:
         preferences=PreferenceSettings(
             language=str(preferences.get("language", "zh-CN")),
             font_scale=float(preferences.get("font_scale", 1.0)),
-            html_report_layout="continuous",
             theme=preferences.get("theme", "light"),
         ),
     )

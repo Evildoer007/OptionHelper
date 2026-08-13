@@ -22,10 +22,12 @@
 
 @end
 
-@interface OptionHelperAppDelegate : NSObject <NSApplicationDelegate, WKScriptMessageHandler>
+@interface OptionHelperAppDelegate : NSObject <NSApplicationDelegate, NSWindowDelegate, WKScriptMessageHandler, WKNavigationDelegate>
 @property(nonatomic, strong) NSTask *backend;
 @property(nonatomic, strong) NSPipe *startupPipe;
 @property(nonatomic, strong) NSWindow *window;
+@property(nonatomic, strong) WKWebView *webView;
+@property(nonatomic, strong) NSButton *railToggle;
 @property(nonatomic) BOOL loadedURL;
 @property(nonatomic, strong) NSMutableString *startupOutput;
 @property(nonatomic, copy) NSString *themePreference;
@@ -178,23 +180,63 @@
     WKWebViewConfiguration *configuration = [[WKWebViewConfiguration alloc] init];
     // Show the splash before the login page's module graph is evaluated.  The
     // login module owns the timer and always removes this class again.
-    WKUserScript *startupScript = [[WKUserScript alloc] initWithSource:@"if (location.pathname === '/') document.documentElement.classList.add('login-boot');"
+    WKUserScript *startupScript = [[WKUserScript alloc] initWithSource:@"document.documentElement.dataset.nativeShell='macos';if (location.pathname === '/') document.documentElement.classList.add('login-boot');"
                                                          injectionTime:WKUserScriptInjectionTimeAtDocumentStart
                                                       forMainFrameOnly:YES];
     [configuration.userContentController addUserScript:startupScript];
     [configuration.userContentController addScriptMessageHandler:self name:@"optionhelperTheme"];
     WKWebView *webView = [[WKWebView alloc] initWithFrame:NSZeroRect configuration:configuration];
+    webView.navigationDelegate = self;
     self.window = [[OptionHelperWindow alloc] initWithContentRect:NSMakeRect(0, 0, 1320, 860)
                                                styleMask:(NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable)
                                                  backing:NSBackingStoreBuffered
                                                    defer:NO];
     self.window.title = @"OptionHelper";
+    self.window.delegate = self;
     self.window.contentView = webView;
     [self.window makeFirstResponder:webView];
     [self.window center];
     [self.window makeKeyAndOrderFront:nil];
     [NSApp activateIgnoringOtherApps:YES];
+    self.webView = webView;
+    [self installRailToggleForWindow:self.window];
     [webView loadRequest:[NSURLRequest requestWithURL:startupURL]];
+}
+
+- (void)installRailToggleForWindow:(NSWindow *)window {
+    NSButton *closeButton = [window standardWindowButton:NSWindowCloseButton];
+    NSView *titlebar = closeButton.superview;
+    if (closeButton == nil || titlebar == nil) return;
+    NSSize size = NSMakeSize(26, 24);
+    NSRect frame = NSMakeRect(NSMaxX(closeButton.frame) + 94, NSMidY(closeButton.frame) - size.height / 2, size.width, size.height);
+    NSButton *button = [[NSButton alloc] initWithFrame:frame];
+    button.image = [NSImage imageWithSystemSymbolName:@"sidebar.left" accessibilityDescription:@"收起或展开任务栏"];
+    button.contentTintColor = NSColor.secondaryLabelColor;
+    button.bezelStyle = NSBezelStyleInline;
+    button.bordered = NO;
+    button.target = self;
+    button.action = @selector(toggleRail:);
+    button.toolTip = @"收起或展开任务栏";
+    button.hidden = YES;
+    [titlebar addSubview:button];
+    self.railToggle = button;
+}
+
+- (void)toggleRail:(id)sender {
+    [self.webView evaluateJavaScript:@"document.querySelector('[data-rail-collapse-toggle]')?.click()" completionHandler:nil];
+}
+
+- (void)webView:(WKWebView *)webView didFinishNavigation:(WKNavigation *)navigation {
+    __weak typeof(self) weakSelf = self;
+    [webView evaluateJavaScript:@"Boolean(document.querySelector('[data-rail-collapse-toggle]'))" completionHandler:^(id value, NSError *error) {
+        weakSelf.railToggle.hidden = ![value isKindOfClass:NSNumber.class] || ![(NSNumber *)value boolValue];
+    }];
+}
+
+- (void)windowWillClose:(NSNotification *)notification {
+    if (notification.object == self.window) {
+        [NSApp terminate:nil];
+    }
 }
 
 - (void)userContentController:(WKUserContentController *)userContentController didReceiveScriptMessage:(WKScriptMessage *)message {

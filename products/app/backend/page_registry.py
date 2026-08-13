@@ -109,10 +109,14 @@ class PageRegistry:
         expected = self._manifest.get("content_hashes", {}).get(relative_path)
         if not isinstance(expected, str):
             raise CapabilityIntegrityError(f"Capability asset is not declared in manifest: {relative_path}")
-        actual = hashlib.sha256(path.read_bytes()).hexdigest()
+        # Return exactly the bytes whose hash was checked.  A separate read
+        # after verification would let a writable development Capability swap
+        # an asset between check and send.
+        content = path.read_bytes()
+        actual = hashlib.sha256(content).hexdigest()
         if not hmac.compare_digest(expected, actual):
             raise CapabilityIntegrityError(f"Capability asset hash mismatch: {relative_path}")
-        return path.read_bytes(), self._content_type(path.suffix)
+        return content, self._content_type(path.suffix)
 
     def host_context(
         self,
@@ -306,10 +310,15 @@ class PageRegistry:
 
     def bridge_available(self, module_name: str) -> bool:
         page = self.get(module_name)
-        bridge = self._root / "assets" / "pages" / "module-host-bridge.js"
-        if not bridge.is_file() or "assets/pages/module-host-bridge.js" not in self._manifest.get("content_hashes", {}):
+        bridge_path = "assets/pages/module-host-bridge.js"
+        if bridge_path not in self._manifest.get("content_hashes", {}):
             return False
-        return "module-host-bridge.js" in (self._root / page.capability_asset).read_text(encoding="utf-8")
+        # Both static resources must be current manifest bytes when a host
+        # context is issued.  Do not make an execution decision from an
+        # unchecked second filesystem read.
+        self.read_asset(bridge_path)
+        content, _ = self.read_asset(page.capability_asset)
+        return b"module-host-bridge.js" in content
 
     def validate_host_request(
         self,

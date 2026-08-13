@@ -32,6 +32,9 @@ class DataStore:
         claimed_tenant = asset.get("tenant_id")
         if claimed_tenant is not None and claimed_tenant != identity.tenant_id:
             raise ValidationError("DataAssetRef tenant_id does not match App caller")
+        claimed_owner = asset.get("created_by")
+        if claimed_owner is not None and claimed_owner != identity.principal_id:
+            raise ValidationError("DataAssetRef created_by does not match App caller")
         asset_ids = _string_list(asset.get("asset_ids"), "asset_ids")
         normalized_fields = _string_list(asset.get("normalized_fields"), "normalized_fields")
         coverage = _mapping(asset.get("coverage"), "coverage")
@@ -58,7 +61,7 @@ class DataStore:
             "price_convention": price_convention,
             "content_hash": asset["content_hash"],
             "lineage": lineage,
-            "created_by": str(asset.get("created_by") or identity.principal_id),
+            "created_by": identity.principal_id,
             "access_scope": access_scope,
             "partition_spec": partition_spec,
             "registered_at": datetime.now(timezone.utc).isoformat(),
@@ -131,6 +134,8 @@ class DataStore:
             raise KeyError(data_asset_id)
         if record.get("tenant_id") != identity.tenant_id:
             raise AuthorizationError("data.read", "data asset belongs to another tenant")
+        if record.get("created_by") != identity.principal_id or "read" not in record.get("access_scope", []):
+            raise AuthorizationError("data.read", "data asset is not owned by current caller")
         return record
 
 

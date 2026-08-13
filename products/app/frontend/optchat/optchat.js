@@ -2,6 +2,17 @@ import { bindComposerKeyboard, clearMessage, configureModelPicker, initializeWor
 import { createTransitionScope } from "/app/frontend/shared/transition-scope.js";
 
 const modules = new Map([["datafetcher", "数据获取"], ["payoffer", "收益结构"], ["pricer", "估值定价"], ["backtester", "历史回测"], ["reporter", "研究报告"]]);
+const thinkingStates = Object.freeze([
+  "Working",
+  "Searching",
+  "Solving",
+  "Listening",
+  "Connecting",
+  "Weaving",
+  "Composing",
+  "Breathing",
+  "Shaping",
+]);
 const transientPrefix = "optionhelper.workspace.state";
 const workspaceEntryKey = "optionhelper-workspace-enter";
 
@@ -53,6 +64,10 @@ export async function startWorkspace(initialMode) {
   let workspaceStatusTimer = 0;
   const moduleFrames = new Map();
   const moduleContexts = new Map();
+
+  const createModuleBridgeNonce = () => crypto.randomUUID
+    ? crypto.randomUUID()
+    : `bridge-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
   const clearWorkspaceStatus = () => {
     window.clearTimeout(workspaceStatusTimer);
@@ -108,14 +123,30 @@ export async function startWorkspace(initialMode) {
     const thinking = document.createElement("article");
     thinking.className = "message message--assistant message--thinking";
     thinking.setAttribute("role", "status");
-    thinking.setAttribute("aria-label", "正在处理");
     const orbs = document.createElement("span");
     orbs.className = "thinking-orbs";
     orbs.setAttribute("aria-hidden", "true");
     for (let index = 0; index < 3; index += 1) orbs.append(document.createElement("i"));
     const copy = document.createElement("span");
     copy.className = "thinking-copy";
-    copy.textContent = "正在处理";
+    let stateIndex = 0;
+    const setThinkingState = () => {
+      const state = thinkingStates[stateIndex];
+      thinking.setAttribute("aria-label", `正在处理：${state}`);
+      copy.dataset.thinkingState = state.toLowerCase();
+      copy.textContent = state;
+      if (!matchMedia("(prefers-reduced-motion: reduce)").matches) {
+        copy.classList.remove("is-changing");
+        void copy.offsetWidth;
+        copy.classList.add("is-changing");
+      }
+    };
+    setThinkingState();
+    const stateTimer = window.setInterval(() => {
+      stateIndex = (stateIndex + 1) % thinkingStates.length;
+      setThinkingState();
+    }, 940);
+    thinking.disposeThinking = () => window.clearInterval(stateTimer);
     thinking.append(orbs, copy);
     stream.append(thinking);
     stream.scrollTop = stream.scrollHeight;
@@ -353,24 +384,26 @@ export async function startWorkspace(initialMode) {
   function deliverContext(moduleName) {
     const frame = moduleFrames.get(moduleName);
     const context = moduleContexts.get(moduleName);
-    if (frame?.dataset.ready === "true" && context) frame.contentWindow?.postMessage({ type: "optionhelper.module-host-context", context }, location.origin);
+    const bridgeNonce = frame?.dataset.bridgeNonce;
+    if (frame?.dataset.ready === "true" && context && bridgeNonce) {
+      frame.contentWindow?.postMessage({ type: "optionhelper.module-host-context", context, bridge_nonce: bridgeNonce }, location.origin);
+    }
   }
 
   async function mountModule(moduleName, updateLocation = true) {
     if (!modules.has(moduleName) || !currentTask) return;
-    currentModule = moduleName;
-      setActiveModule(moduleName);
-    if (updateLocation) setTaskLocation(currentTask.task_id, { module: moduleName });
+    const previousModule = currentModule;
     try {
       const task = `?task_id=${encodeURIComponent(currentTask.task_id)}`;
       const { context } = await request(`/api/module-host/${encodeURIComponent(moduleName)}${task}`);
-      moduleContexts.set(moduleName, context);
       let frame = moduleFrames.get(moduleName);
       if (!frame) {
+        const bridgeNonce = createModuleBridgeNonce();
         frame = document.createElement("iframe");
         frame.title = modules.get(moduleName);
-        frame.src = `/capability/assets/pages/${encodeURIComponent(moduleName)}/${encodeURIComponent(moduleName)}.html?host=optdesk`;
+        frame.src = `/capability/assets/pages/${encodeURIComponent(moduleName)}/${encodeURIComponent(moduleName)}.html?host=optdesk&bridge_nonce=${encodeURIComponent(bridgeNonce)}`;
         frame.className = "module-frame";
+        frame.dataset.bridgeNonce = bridgeNonce;
         frame.setAttribute("aria-hidden", "true");
         frame.addEventListener("load", () => applyHostedModulePresentation(frame));
         frame.addEventListener("error", () => showWorkspaceStatus(`${modules.get(moduleName)}页面未能载入。`, true, 7000), { once: true });
@@ -378,15 +411,24 @@ export async function startWorkspace(initialMode) {
         mount.querySelector(".conversation-start")?.remove();
         mount.append(frame);
       }
+      moduleContexts.set(moduleName, context);
+      currentModule = moduleName;
+      setActiveModule(moduleName);
+      if (updateLocation) setTaskLocation(currentTask.task_id, { module: moduleName });
       activateFrame(moduleName);
       deliverContext(moduleName);
-    } catch (error) { showWorkspaceStatus("模块暂未就绪，请稍后重试。", true, 7000); }
+    } catch (error) {
+      currentModule = previousModule;
+      setActiveModule(previousModule, false);
+      showWorkspaceStatus("模块暂未就绪，请稍后重试。", true, 7000);
+    }
   }
 
   window.addEventListener("message", (event) => {
     const moduleName = event.data?.module;
     const frame = moduleFrames.get(moduleName);
     if (event.origin !== location.origin || event.source !== frame?.contentWindow || event.data?.type !== "optionhelper.module-host-ready") return;
+    if (event.data?.bridge_nonce !== frame?.dataset.bridgeNonce) return;
     frame.dataset.ready = "true";
     deliverContext(moduleName);
   });
@@ -483,6 +525,7 @@ export async function startWorkspace(initialMode) {
         : error.message;
       showWorkspaceStatus(failureMessage, true);
     } finally {
+      thinkingMessage?.disposeThinking?.();
       thinkingMessage?.remove();
       setComposerSending(submit, false);
     }

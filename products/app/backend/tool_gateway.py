@@ -7,7 +7,6 @@ Capability failures rather than synthetic financial output.
 
 from __future__ import annotations
 
-import importlib.util
 from datetime import date, timedelta
 from pathlib import Path
 import re
@@ -25,8 +24,9 @@ from .stores.result_store import ResultStore
 from .stores.data_store import DataStore
 from .stores.contract_store import ContractStore
 from runtime.contracts.input_adapter import explicit_demo_pricing_error, is_explicit_demo_pricing_config
+from runtime.capability_import import load_verified_source_module, verified_capability_modules
 from runtime.protocol.module_host import HostObjectRef, ModuleHostContextError, require_host_bound_run_contract
-from runtime.protocol.models import CallerContext
+from runtime.protocol.models import CallerContext, ModuleRunRef
 from runtime.ports.tool_gateway import ToolGatewayPort
 from modules.pricer.calendar_policy import requires_future_trading_calendar_for_protocol
 
@@ -41,6 +41,7 @@ class ToolGateway:
         results: ResultStore | None = None,
         data_assets: DataStore | None = None,
         contracts: ContractStore | None = None,
+        tasks: object | None = None,
         capability_runtime_root: str | Path | None = None,
     ) -> None:
         self._registry = registry
@@ -50,6 +51,7 @@ class ToolGateway:
         self._results = results
         self._data_assets = data_assets
         self._contracts = contracts
+        self._tasks = tasks
         self._capability_runtime_root = (
             Path(capability_runtime_root).expanduser().resolve()
             if capability_runtime_root is not None else None
@@ -96,7 +98,10 @@ class ToolGateway:
         else:
             granted_capability = "module.catalog" if read_only_action else "module.run"
             self._policy.require(caller_context.role, granted_capability)
-        _reject_untrusted_host_fields(payload)
+        _reject_untrusted_host_fields(
+            payload,
+            allow_reporter_module_run_refs=(tool_name == "reporter" and isinstance(payload.get("selection"), Mapping)),
+        )
         _reject_path_payload(payload)
         compute_run = tool_name in {"payoffer", "pricer", "backtester"} and _is_run_action(payload)
         verified_context = None
@@ -115,92 +120,135 @@ class ToolGateway:
         if tool_name == "reporter":
             if self._reporter is None:
                 raise UnavailableCapabilityError("reporter", "App ReporterAdapter is not configured")
-            return self._reporter.dispatch(payload, caller_context)
+            if read_only_action:
+                return self._reporter.dispatch(payload, caller_context)
+            if verified_context is None:
+                raise ValidationError("Reporter运行缺少已验证Module Host context")
+            return self._reporter.dispatch(
+                self._controlled_reporter_request(payload, caller_context, verified_context),
+                caller_context,
+            )
         if tool_name == "datafetcher":
             if self._datafetcher is None:
                 raise UnavailableCapabilityError("datafetcher", "App DataFetcherAdapter is not configured")
             return self._datafetcher.dispatch(payload, caller_context, request_id=request_id)
-        self._registry.assert_execution_integrity()
         scripts_root = str(self._registry.capability_root / "scripts")
         with capability_import_scope(
             scripts_root,
             runtime_root=self._capability_runtime_root,
         ):
             try:
-                tool_entry = self._load_tool_entry(scripts_root)
-                # ``tool_entry.call_tool`` imports this exact name internally.
-                # Preloading and verifying it inside the same isolated scope
-                # prevents a development/Eval ``modules.*`` cache from being
-                # reused by an otherwise verified Capability.
-                load_verified_capability_service(tool_name, scripts_root)
-                effective_payload = payload
-                effective_context = verified_context
-                bound_data_store = None
-                if compute_run:
-                    if not verified_context.task_id:
-                        raise ValidationError("计算模块必须绑定App任务")
-                    if not callable(getattr(tool_entry, "prepare_compute_request", None)):
-                        raise ValidationError("Capability缺少正式计算输入编译器")
-                    if self._contracts is None:
-                        raise ValidationError("App ContractStore未配置，无法冻结ResolvedContract")
-                    if tool_name in {"pricer", "backtester"}:
-                        if self._datafetcher is None:
-                            raise UnavailableCapabilityError(
-                                f"{tool_name}.data_store", "App DataFetcherAdapter is not configured",
+                # The registry checks layout and manifest provenance.  Every
+                # source is then reopened once with O_NOFOLLOW, hash-checked,
+                # and compiled from that exact byte buffer below.  A rename
+                # after this point therefore fails closed or cannot change the
+                # code executing in this request.
+                self._registry.assert_execution_integrity()
+                content_hashes = self._registry.manifest.get("content_hashes")
+                if not isinstance(content_hashes, Mapping):
+                    raise UnavailableCapabilityError("ToolGateway", "Capability content hashes are unavailable")
+                with verified_capability_modules(scripts_root, content_hashes):
+                    tool_entry = self._load_tool_entry(scripts_root, content_hashes)
+                    # ``tool_entry.call_tool`` imports this exact name internally.
+                    # Preloading inside the verified loader prevents development
+                    # or Eval ``modules.*`` objects from being reused.
+                    load_verified_capability_service(tool_name, scripts_root)
+                    effective_payload = payload
+                    effective_context = verified_context
+                    bound_data_store = None
+                    if compute_run:
+                        if not verified_context.task_id:
+                            raise ValidationError("计算模块必须绑定App任务")
+                        if not callable(getattr(tool_entry, "prepare_compute_request", None)):
+                            raise ValidationError("Capability缺少正式计算输入编译器")
+                        if self._contracts is None:
+                            raise ValidationError("App ContractStore未配置，无法冻结ResolvedContract")
+                        friendly_payload = _business_payload(payload)
+                        existing = self._contracts.get(caller_context, str(verified_context.task_id))
+                        data_refs = self._resolve_compute_data_refs(
+                            tool_name,
+                            friendly_payload,
+                            caller_context,
+                            existing,
+                            request_id=request_id,
+                            task_id=str(verified_context.task_id),
+                        )
+                        if self._tasks is None or not callable(getattr(self._tasks, "get", None)):
+                            raise ValidationError("App TaskService未配置，无法绑定正式计算DataAssetRef")
+                        task = self._tasks.get(caller_context, str(verified_context.task_id))
+                        task_refs = task.get("data_asset_refs") if isinstance(task, Mapping) else None
+                        if not isinstance(task_refs, list):
+                            raise ValidationError("当前任务缺少受控DataAssetRef索引")
+                        attached = {
+                            (str(item.get("data_asset_id")), str(item.get("content_hash")))
+                            for item in task_refs if isinstance(item, Mapping)
+                        }
+                        if any(
+                            (str(ref.get("data_asset_id")), str(ref.get("content_hash"))) not in attached
+                            for ref in data_refs
+                        ):
+                            raise ValidationError("正式计算DataAssetRef必须已绑定当前App任务")
+                        if tool_name in {"pricer", "backtester"} and data_refs:
+                            if self._datafetcher is None:
+                                raise UnavailableCapabilityError(
+                                    f"{tool_name}.data_store", "App DataFetcherAdapter is not configured",
+                                )
+                            bound_data_store = self._datafetcher.bind_data_store(
+                                caller_context,
+                                task_id=str(verified_context.task_id),
+                                data_refs=tuple(data_refs),
                             )
-                        bound_data_store = self._datafetcher.bind_data_store(caller_context)
-                    friendly_payload = _business_payload(payload)
-                    existing = self._contracts.get(caller_context, str(verified_context.task_id))
-                    data_refs = self._resolve_compute_data_refs(
+                        prepared = tool_entry.prepare_compute_request(
+                            tool_name,
+                            friendly_payload,
+                            data_refs=tuple(data_refs),
+                            resolved_contract=existing.get("resolved_contract") if existing else None,
+                            data_store=bound_data_store,
+                        )
+                        if not isinstance(prepared, Mapping) or not isinstance(prepared.get("request"), Mapping):
+                            raise ValidationError("Capability返回的正式计算输入无效")
+                        effective_payload = dict(prepared["request"])
+                        binding = self._contracts.bind(
+                            caller_context,
+                            str(verified_context.task_id),
+                            prepared,
+                            catalog_version=str(self._registry.manifest["catalog_version"]),
+                        )
+                        effective_context = self._bind_contract_context(caller_context, verified_context, binding)
+                    _reject_path_payload(effective_payload)
+                    bound_store = None
+                    if compute_run:
+                        if self._results is None or effective_context.task_id is None:
+                            raise ValidationError("计算模块必须绑定App任务与ResultStore")
+                        bound_store = self._results.bind_module_store(caller_context, effective_context.task_id)
+                    authorize = getattr(tool_entry, "_authorize_verified_app_call", None)
+                    if not callable(authorize):
+                        raise UnavailableCapabilityError(
+                            "Capability protocol",
+                            "the verified Capability does not implement the current App authorization handoff",
+                        )
+                    result = tool_entry.call_tool(
                         tool_name,
-                        friendly_payload,
-                        caller_context,
-                        existing,
-                        request_id=request_id,
-                    )
-                    prepared = tool_entry.prepare_compute_request(
-                        tool_name,
-                        friendly_payload,
-                        data_refs=tuple(data_refs),
-                        resolved_contract=existing.get("resolved_contract") if existing else None,
+                        effective_payload,
+                        authorization=authorize(
+                            CallerContext(
+                                tenant_id=caller_context.tenant_id,
+                                principal_id=caller_context.principal_id,
+                                role=caller_context.role.value,
+                                capabilities=(granted_capability,),
+                                session_id=caller_context.session_id,
+                                audience=caller_context.audience,
+                                request_id=request_id,
+                            ),
+                            effective_context,
+                        ),
+                        result_store=bound_store,
                         data_store=bound_data_store,
                     )
-                    if not isinstance(prepared, Mapping) or not isinstance(prepared.get("request"), Mapping):
-                        raise ValidationError("Capability返回的正式计算输入无效")
-                    effective_payload = dict(prepared["request"])
-                    binding = self._contracts.bind(
-                        caller_context,
-                        str(verified_context.task_id),
-                        prepared,
-                        catalog_version=str(self._registry.manifest["catalog_version"]),
-                    )
-                    effective_context = self._bind_contract_context(caller_context, verified_context, binding)
-                _reject_path_payload(effective_payload)
-                bound_store = None
-                if compute_run:
-                    if self._results is None or effective_context.task_id is None:
-                        raise ValidationError("计算模块必须绑定App任务与ResultStore")
-                    bound_store = self._results.bind_module_store(caller_context, effective_context.task_id)
-                result = tool_entry.call_tool(
-                    tool_name,
-                    effective_payload,
-                    caller_context=CallerContext(
-                        tenant_id=caller_context.tenant_id,
-                        principal_id=caller_context.principal_id,
-                        role=caller_context.role.value,
-                        capabilities=(granted_capability,),
-                        session_id=caller_context.session_id,
-                        audience=caller_context.audience,
-                        request_id=request_id,
-                    ),
-                    host_context=effective_context,
-                    result_store=bound_store,
-                    data_store=bound_data_store,
-                )
-                if compute_run:
-                    if not isinstance(result, Mapping):
-                        raise ValidationError("Capability计算结果必须为对象")
-                    result = _bind_compute_result(result, effective_context)
+                    if compute_run:
+                        if not isinstance(result, Mapping):
+                            raise ValidationError("Capability计算结果必须为对象")
+                        result = _bind_compute_result(result, effective_context)
             except UserActionError:
                 # This class is only created by an App-owned preflight.  Its
                 # message is a fixed, reviewed next step and contains no
@@ -228,6 +276,7 @@ class ToolGateway:
         existing_contract: Mapping[str, Any] | None = None,
         *,
         request_id: str = "",
+        task_id: str = "",
     ) -> list[dict[str, Any]]:
         if module == "payoffer":
             return []
@@ -307,6 +356,9 @@ class ToolGateway:
                             "交易日历暂不可用，且没有完整覆盖本次区间的已验证缓存。",
                         )
                     self._data_assets.register(identity, calendar_asset)
+                    if self._tasks is None or not callable(getattr(self._tasks, "append_data_asset_ref", None)) or not task_id:
+                        raise ValidationError("自动交易日历必须绑定当前App任务")
+                    self._tasks.append_data_asset_ref(identity, task_id, calendar_asset)
                     calendar_ref = self._data_assets.resolve_for_compute(
                         identity,
                         calendar_asset["data_asset_id"],
@@ -336,18 +388,118 @@ class ToolGateway:
             contract_ref=HostObjectRef.from_payload(contract_ref, "contract_ref"),
         )
 
-    def _load_tool_entry(self, _scripts_root: str) -> Any:
-        path = self._registry.capability_root / "scripts" / "tool_entry.py"
-        if not path.is_file():
-            raise UnavailableCapabilityError("ToolGateway", "verified Capability does not provide scripts/tool_entry.py")
-        spec = importlib.util.spec_from_file_location("option_helper_embedded_tool_entry", path)
-        if spec is None or spec.loader is None:
-            raise UnavailableCapabilityError("ToolGateway", "cannot load embedded Capability tool entry")
-        module = importlib.util.module_from_spec(spec)
-        # The embedded Capability is read-only.  Its source must not acquire
-        # ``__pycache__`` artefacts merely because App dispatches a tool.
-        spec.loader.exec_module(module)
-        return module
+    def _controlled_reporter_request(
+        self,
+        payload: Mapping[str, Any],
+        identity: SessionIdentity,
+        context: Any,
+    ) -> dict[str, Any]:
+        """Accept only an explicit current-task selection with complete RunRefs.
+
+        The Agent and browser may choose an opaque source and candidate, but
+        never fabricate, shorten or substitute a ModuleRunRef.  ResultStore is
+        queried again immediately before Reporter so a stale, cross-task or
+        hash-drifted run cannot survive a conversation turn.
+        """
+
+        if self._results is None:
+            raise ValidationError("Reporter运行缺少App ResultStore")
+        task_id = getattr(context, "task_id", None)
+        if not isinstance(task_id, str) or not task_id:
+            raise ValidationError("Reporter运行必须绑定当前任务")
+        selection = payload.get("selection")
+        if not isinstance(selection, Mapping):
+            raise ValidationError("Reporter运行必须显式提交受控selection")
+        source_id = selection.get("source_id")
+        if not isinstance(source_id, str) or not source_id:
+            raise ValidationError("Reporter运行必须显式选择当前任务的source_id")
+        try:
+            source = self._results.select_report_source(identity, task_id, source_id)
+        except (KeyError, AuthorizationError) as error:
+            raise ValidationError("Reporter source不属于当前任务或已不再可用") from error
+        if _scope_text(context, "analysis_case_id") and source.get("analysis_case_id") != context.analysis_case_id:
+            raise ValidationError("Reporter source与Module Host analysis_case_id不一致")
+        if _scope_text(context, "catalog_version") and source.get("catalog_version") != context.catalog_version:
+            raise ValidationError("Reporter source与Module Host catalog_version不一致")
+        candidate_ids = selection.get("candidate_ids")
+        if not isinstance(candidate_ids, list) or len(candidate_ids) != 1 or not isinstance(candidate_ids[0], str):
+            raise ValidationError("Reporter运行必须显式选择唯一candidate_id")
+        candidate_id = candidate_ids[0]
+        candidate = next(
+            (item for item in source.get("candidates", ()) if isinstance(item, Mapping) and item.get("candidate_id") == candidate_id),
+            None,
+        )
+        if candidate is None:
+            raise ValidationError("Reporter candidate不属于当前任务source")
+        if _scope_text(context, "candidate_id") and candidate_id != context.candidate_id:
+            raise ValidationError("Reporter candidate与Module Host candidate_id不一致")
+        if _scope_text(context, "contract_fingerprint") and candidate.get("contract_fingerprint") != context.contract_fingerprint:
+            raise ValidationError("Reporter candidate与Module Host contract_fingerprint不一致")
+        selected_modules = selection.get("selected_modules")
+        if (
+            not isinstance(selected_modules, list)
+            or not selected_modules
+            or len(set(selected_modules)) != len(selected_modules)
+            or any(module not in {"payoff", "pricing", "backtest"} for module in selected_modules)
+        ):
+            raise ValidationError("Reporter必须显式选择不重复的计算模块")
+        raw_all_refs = selection.get("module_run_refs")
+        if not isinstance(raw_all_refs, Mapping) or set(raw_all_refs) != {candidate_id}:
+            raise ValidationError("Reporter必须为唯一candidate显式提供ModuleRunRef映射")
+        raw_refs = raw_all_refs.get(candidate_id)
+        if not isinstance(raw_refs, Mapping) or set(raw_refs) != set(selected_modules):
+            raise ValidationError("Reporter每个已选模块必须显式提供完整ModuleRunRef或null")
+        source_options = candidate.get("module_run_options")
+        if not isinstance(source_options, Mapping):
+            raise ValidationError("Reporter source缺少已验证ModuleRunRef选项")
+        controlled_refs: dict[str, dict[str, str] | None] = {}
+        for display_module in selected_modules:
+            raw_ref = raw_refs[display_module]
+            if raw_ref is None:
+                controlled_refs[display_module] = None
+                continue
+            if not isinstance(raw_ref, Mapping):
+                raise ValidationError("Reporter ModuleRunRef必须为对象或null")
+            try:
+                reference = ModuleRunRef(**dict(raw_ref))
+            except (TypeError, ValueError) as error:
+                raise ValidationError("Reporter ModuleRunRef必须包含完整外部哈希锚") from error
+            expected_module = {"payoff": "payoffer", "pricing": "pricer", "backtest": "backtester"}[display_module]
+            if (
+                reference.module != expected_module
+                or reference.tenant_id != identity.tenant_id
+                or reference.task_id != task_id
+            ):
+                raise ValidationError("Reporter ModuleRunRef超出当前租户、任务或模块范围")
+            allowed = source_options.get(display_module)
+            if not isinstance(allowed, list) or not any(
+                _same_module_run_ref(reference, option) for option in allowed if isinstance(option, Mapping)
+            ):
+                raise ValidationError("Reporter ModuleRunRef不是当前ResultStore已验证选项")
+            try:
+                self._results.resolve_owned_module_run(identity, _module_run_ref_payload(reference))
+            except (KeyError, ValidationError, AuthorizationError, OSError) as error:
+                raise ValidationError("Reporter ModuleRunRef已失效或不再属于当前主体") from error
+            controlled_refs[display_module] = _module_run_ref_payload(reference)
+        return {
+            **dict(payload),
+            "task_id": task_id,
+            "selection": {
+                **dict(selection),
+                "source_id": source_id,
+                "candidate_ids": [candidate_id],
+                "selected_modules": list(selected_modules),
+                "module_run_refs": {candidate_id: controlled_refs},
+            },
+        }
+
+    def _load_tool_entry(self, scripts_root: str, content_hashes: Mapping[str, str]) -> Any:
+        return load_verified_source_module(
+            "option_helper_embedded_tool_entry",
+            scripts_root,
+            "tool_entry.py",
+            content_hashes,
+        )
 
 
 class _BoundInternalToolGateway:
@@ -398,15 +550,30 @@ def _reject_path_payload(value: object) -> None:
             _reject_path_payload(item)
 
 
-def _reject_untrusted_host_fields(value: object) -> None:
+def _reject_untrusted_host_fields(value: object, *, allow_reporter_module_run_refs: bool = False) -> None:
+    """Reject browser identity fields before dispatch.
+
+    Reporter selections are the exception: a ModuleRunRef carries tenant and
+    task anchors by protocol.  Those anchors are accepted only beneath its
+    explicit ``module_run_refs`` field and are immediately re-authorized by
+    ``_controlled_reporter_request`` before Reporter receives the payload.
+    """
+
     if isinstance(value, dict):
         for key, item in value.items():
-            if _normalized_payload_key(key) in _HOST_PRIVATE_FIELDS:
+            child_is_reporter_ref = allow_reporter_module_run_refs or key == "module_run_refs"
+            if _normalized_payload_key(key) in _HOST_PRIVATE_FIELDS and not allow_reporter_module_run_refs:
                 raise ValidationError(f"{key}由App Host管理，页面不得提交")
-            _reject_untrusted_host_fields(item)
+            _reject_untrusted_host_fields(
+                item,
+                allow_reporter_module_run_refs=child_is_reporter_ref,
+            )
     elif isinstance(value, list):
         for item in value:
-            _reject_untrusted_host_fields(item)
+            _reject_untrusted_host_fields(
+                item,
+                allow_reporter_module_run_refs=allow_reporter_module_run_refs,
+            )
 
 
 def _is_read_only_action(payload: Mapping[str, Any]) -> bool:
@@ -452,6 +619,33 @@ def _bind_compute_result(result: Mapping[str, Any], context: Any) -> dict[str, A
             raise ValidationError(f"Capability计算结果{field}与Host绑定冲突")
         value[field] = expected
     return value
+
+
+def _scope_text(context: Any, field: str) -> str | None:
+    value = getattr(context, field, None)
+    return value if isinstance(value, str) and value else None
+
+
+def _module_run_ref_payload(reference: ModuleRunRef) -> dict[str, str]:
+    return {
+        "module": reference.module,
+        "tenant_id": reference.tenant_id,
+        "task_id": reference.task_id,
+        "run_id": reference.run_id,
+        "expected_semantic_result_hash": reference.expected_semantic_result_hash,
+        "expected_artifact_manifest_hash": reference.expected_artifact_manifest_hash,
+    }
+
+
+def _same_module_run_ref(reference: ModuleRunRef, value: Mapping[str, Any]) -> bool:
+    try:
+        candidate = ModuleRunRef(**{
+            field: value.get(field)
+            for field in _module_run_ref_payload(reference)
+        })
+        return _module_run_ref_payload(reference) == _module_run_ref_payload(candidate)
+    except (TypeError, ValueError):
+        return False
 
 
 def _is_run_action(payload: Mapping[str, Any]) -> bool:
@@ -591,7 +785,7 @@ def _require_conversation_report_request(identity: SessionIdentity, payload: Map
     if kind == "report" and identity.role.value != "admin":
         raise AuthorizationError("conversation.tool.run", "full reports require administrator approval")
     _require_scope_fields(selection, {
-        "source_id", "candidate_ids", "selected_modules", "delivery_mode", "output_type", "format", "html_report_layout", "audience", "report_run_id", "metadata",
+        "source_id", "candidate_ids", "selected_modules", "module_run_refs", "delivery_mode", "output_type", "format", "html_report_layout", "audience", "report_run_id", "metadata",
     })
 
 

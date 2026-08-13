@@ -15,7 +15,7 @@ import sys
 from typing import Any, Iterator
 
 from runtime.bootstrap import release_runtime_scope
-from runtime.capability_import import CAPABILITY_IMPORT_LOCK
+from runtime.capability_import import CAPABILITY_IMPORT_LOCK, verified_capability_modules
 
 from .errors import CapabilityIntegrityError, UnavailableCapabilityError, ValidationError
 from .page_registry import PageRegistry
@@ -159,19 +159,20 @@ class CapabilityServiceCaller:
         self._registry.assert_execution_integrity()
         with capability_import_scope(scripts_root, runtime_root=self._runtime_root):
             try:
-                service = load_verified_capability_service("datafetcher", scripts_root)
-                handler = getattr(service, "call_tool_from_app", None)
-                if not callable(handler):
-                    raise UnavailableCapabilityError(
-                        "datafetcher.app_secret_port",
-                        "the verified DataFetcher Capability does not declare an App caller and SecretRef port",
+                with _verified_module_imports(self._registry, scripts_root):
+                    service = load_verified_capability_service("datafetcher", scripts_root)
+                    handler = getattr(service, "call_tool_from_app", None)
+                    if not callable(handler):
+                        raise UnavailableCapabilityError(
+                            "datafetcher.app_secret_port",
+                            "the verified DataFetcher Capability does not declare an App caller and SecretRef port",
+                        )
+                    result = handler(
+                        dict(request),
+                        caller_context=caller_context,
+                        secret_ref=secret_ref,
+                        secret_port=secret_port,
                     )
-                result = handler(
-                    dict(request),
-                    caller_context=caller_context,
-                    secret_ref=secret_ref,
-                    secret_port=secret_port,
-                )
             except UnavailableCapabilityError:
                 raise
             except Exception as error:
@@ -192,14 +193,15 @@ class CapabilityServiceCaller:
         self._registry.assert_execution_integrity()
         with capability_import_scope(scripts_root, runtime_root=self._runtime_root):
             try:
-                service = load_verified_capability_service("datafetcher", scripts_root)
-                handler = getattr(service, "read_data_asset", None)
-                if not callable(handler):
-                    raise UnavailableCapabilityError(
-                        "datafetcher.download_port",
-                        "the verified DataFetcher Capability does not declare an indexed asset read port",
-                    )
-                reference, content = handler(data_asset_id, caller=caller_context)
+                with _verified_module_imports(self._registry, scripts_root):
+                    service = load_verified_capability_service("datafetcher", scripts_root)
+                    handler = getattr(service, "read_data_asset", None)
+                    if not callable(handler):
+                        raise UnavailableCapabilityError(
+                            "datafetcher.download_port",
+                            "the verified DataFetcher Capability does not declare an indexed asset read port",
+                        )
+                    reference, content = handler(data_asset_id, caller=caller_context)
             except UnavailableCapabilityError:
                 raise
             except (FileNotFoundError, PermissionError):
@@ -212,3 +214,12 @@ class CapabilityServiceCaller:
         if not is_dataclass(reference) or not isinstance(content, bytes):
             raise ValidationError("Capability DataFetcher download returned an invalid asset")
         return asdict(reference), content
+
+
+@contextmanager
+def _verified_module_imports(registry: PageRegistry, scripts_root: str) -> Iterator[None]:
+    hashes = registry.manifest.get("content_hashes")
+    if not isinstance(hashes, dict):
+        raise CapabilityIntegrityError("Capability content hashes are unavailable")
+    with verified_capability_modules(scripts_root, hashes):
+        yield None

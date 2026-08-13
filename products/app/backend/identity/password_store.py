@@ -1,8 +1,8 @@
-"""App-private password verifier storage for the future managed account service.
+"""App-private password verifier storage for the managed local App.
 
-The store is deliberately not exposed through HTTP.  It persists only salted
-PBKDF2 verifiers and account claims; account provisioning remains an external
-administrative responsibility until the managed account service is available.
+Only salted PBKDF2 verifiers and account claims are persisted.  The narrow
+first-account flow may create exactly one local administrator; subsequent
+account administration remains outside the browser-facing App API.
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ from threading import RLock
 from typing import Any
 
 from ..authorization.roles import Role
-from ..errors import ValidationError
+from ..errors import UserActionError, ValidationError
 
 
 _SCHEME = "pbkdf2-sha256"
@@ -56,12 +56,7 @@ class PasswordCredentialStore:
         tenant_id: str,
         principal_id: str | None = None,
     ) -> PasswordAccount:
-        """Provision one verifier for a future trusted administrative caller.
-
-        No App route invokes this method.  Keeping provisioning outside the
-        browser prevents the unfinished account system from becoming a hidden
-        self-registration endpoint.
-        """
+        """Provision one verifier for a trusted account-management caller."""
 
         canonical = _canonical_account(account)
         secret = _validated_password(password)
@@ -71,18 +66,7 @@ class PasswordCredentialStore:
         principal = (principal_id or f"account:{canonical}").strip()
         if not principal or len(principal) > 160:
             raise ValidationError("principal_id must contain 1 to 160 visible characters")
-        salt = secrets.token_bytes(32)
-        verifier = _derive(secret, salt, _ITERATIONS)
-        record = {
-            "account": canonical,
-            "principal_id": principal,
-            "tenant_id": tenant,
-            "role": role.value,
-            "scheme": _SCHEME,
-            "iterations": _ITERATIONS,
-            "salt": base64.b64encode(salt).decode("ascii"),
-            "verifier": base64.b64encode(verifier).decode("ascii"),
-        }
+        record = _account_record(canonical, secret, role, tenant, principal)
         with self._lock:
             value = self._read()
             accounts = value.setdefault("accounts", {})
@@ -91,6 +75,34 @@ class PasswordCredentialStore:
             accounts[canonical] = record
             self._write(value)
         return PasswordAccount(canonical, principal, tenant, role)
+
+    def provision_initial_administrator(self, account: str, password: str) -> PasswordAccount:
+        """Create the single first local administrator without accepting claims.
+
+        This method is deliberately separate from :meth:`provision`: it is the
+        only account-writing path exposed by the App Host and it refuses every
+        request once any account exists.  Role, tenant and principal claims are
+        fixed by the Host rather than supplied by a browser client.
+        """
+
+        canonical = _canonical_account(account)
+        secret = _validated_initial_administrator_password(password)
+        tenant = "managed-local"
+        principal = f"managed-local:{canonical}"
+        record = _account_record(canonical, secret, Role.ADMIN, tenant, principal)
+        with self._lock:
+            value = self._read()
+            accounts = value.setdefault("accounts", {})
+            if not isinstance(accounts, dict):
+                raise ValidationError("Password account store is invalid")
+            if accounts:
+                raise UserActionError(
+                    "account_already_initialized",
+                    "本机账号已初始化。如需新增或重置账号，请联系管理员。",
+                )
+            accounts[canonical] = record
+            self._write(value)
+        return PasswordAccount(canonical, principal, tenant, Role.ADMIN)
 
     def authenticate(self, account: str, password: str) -> PasswordAccount | None:
         canonical = _canonical_account(account)
@@ -163,6 +175,30 @@ def _validated_password(value: str) -> bytes:
     if not encoded or len(encoded) > 4096:
         raise ValidationError("password is outside the supported length")
     return encoded
+
+
+def _validated_initial_administrator_password(value: str) -> bytes:
+    """Apply the one additional guard needed by the unrecoverable first setup."""
+
+    encoded = _validated_password(value)
+    if len(value) < 12:
+        raise ValidationError("initial administrator password must contain at least 12 characters")
+    return encoded
+
+
+def _account_record(account: str, password: bytes, role: Role, tenant_id: str, principal_id: str) -> dict[str, object]:
+    salt = secrets.token_bytes(32)
+    verifier = _derive(password, salt, _ITERATIONS)
+    return {
+        "account": account,
+        "principal_id": principal_id,
+        "tenant_id": tenant_id,
+        "role": role.value,
+        "scheme": _SCHEME,
+        "iterations": _ITERATIONS,
+        "salt": base64.b64encode(salt).decode("ascii"),
+        "verifier": base64.b64encode(verifier).decode("ascii"),
+    }
 
 
 def _derive(password: bytes, salt: bytes, iterations: int) -> bytes:
