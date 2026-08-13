@@ -9,6 +9,7 @@ from dataclasses import asdict, dataclass, field
 import re
 from typing import Any, Mapping, Sequence
 
+from runtime.protocol.models import ModuleRunRef as CoreModuleRunRef
 
 ROUTES = {
     "chat",
@@ -29,7 +30,6 @@ CANDIDATE_STATUSES = {
     "pending_terms",
     "approved",
     "running",
-    "report_ready",
     "rejected",
     "unsupported",
 }
@@ -45,6 +45,9 @@ SET_STATUSES = {
 RUN_STATUSES = {
     "pending", "running", "succeeded", "partial", "failed", "unsupported", "cancelled", "timed_out",
 }
+ANALYSIS_STATUSES = {"not_started", "running", "completed", "partial", "failed", "unsupported", "cancelled", "timed_out"}
+DELIVERY_STATUSES = {"not_requested", "pending", "completed", "partial", "unavailable"}
+RECOMMENDATION_SET_SCHEMA = "optionhelper.recommendation-set/v1.0.0"
 _INTERNAL_PUBLIC_TEXT = re.compile(
     r"(?i)(?:candidate|evidence|module_run|run|task|analysis|audit|contract|resolved_contract)[a-z0-9_]*"
 )
@@ -261,56 +264,53 @@ class EvidenceRef:
         return result
 
 
-@dataclass(frozen=True)
-class ModuleRunRef:
-    module: str
-    run_id: str
-    status: str
-    semantic_result_hash: str | None = None
-    limitation: str | None = None
+def module_execution_from_tool_result(
+    module: str,
+    value: Mapping[str, Any],
+    *,
+    tenant_id: str,
+    task_id: str,
+    candidate_id: str,
+    catalog_version: str,
+    contract_fingerprint: str,
+) -> tuple[str, CoreModuleRunRef | None, str | None]:
+    """将Tool响应收敛为正式Core引用与独立生命周期状态。
 
-    @classmethod
-    def from_tool_result(
-        cls,
-        module: str,
-        value: Mapping[str, Any],
-        *,
-        candidate_id: str,
-        catalog_version: str,
-        contract_fingerprint: str,
-    ) -> "ModuleRunRef":
-        data = dict(value)
-        raw_status = str(data.get("status", "")).strip().lower()
-        if not raw_status:
-            raw_status = "complete" if data.get("ok") is True else "failed"
-        aliases = {"completed": "succeeded", "complete": "succeeded", "unavailable": "unsupported", "timeout": "timed_out"}
-        status = aliases.get(raw_status, raw_status)
-        if status not in RUN_STATUSES:
-            status = "failed"
-        run_id = str(data.get("run_id", "")).strip()
-        if status in {"succeeded", "partial"} and not run_id:
-            status = "failed"
-        if run_id and status not in {"pending", "running"}:
-            expected = {
-                "candidate_id": candidate_id,
-                "catalog_version": catalog_version,
-                "contract_fingerprint": contract_fingerprint,
-            }
-            mismatched = [field_name for field_name, expected_value in expected.items() if data.get(field_name) != expected_value]
-            if mismatched:
-                raise RecommendationValidationError(
-                    f"{module}返回未绑定CandidateContract的ModuleRun：{','.join(mismatched)}"
-                )
-        return cls(
-            module=module,
-            run_id=run_id,
-            status=status,
-            semantic_result_hash=str(data.get("semantic_result_hash", "")).strip() or None,
-            limitation=str(data.get("message") or data.get("reason") or "").strip() or None,
-        )
+    推荐模块不保存另一套弱化RunRef。成功或部分成功必须携带Core
+    ``ModuleRunRef``；失败终态则只保留状态及面向流程的受控说明。
+    """
 
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+    data = dict(value)
+    raw_status = str(data.get("status", "")).strip().lower()
+    aliases = {"completed": "succeeded", "complete": "succeeded", "unavailable": "unsupported", "timeout": "timed_out"}
+    raw_status = raw_status or ("succeeded" if data.get("ok") is True else "failed")
+    status = aliases.get(raw_status, raw_status)
+    if status not in RUN_STATUSES:
+        raise RecommendationValidationError(f"{module}返回未知运行状态：{status}")
+    expected_binding = {
+        "candidate_id": candidate_id,
+        "catalog_version": catalog_version,
+        "contract_fingerprint": contract_fingerprint,
+    }
+    supplied_binding = {name: data.get(name) for name in expected_binding}
+    mismatched = [name for name, expected in expected_binding.items() if supplied_binding[name] != expected]
+    if status in {"succeeded", "partial"} and mismatched:
+        raise RecommendationValidationError(f"{module}返回未绑定当前CandidateContract的ModuleRun：{','.join(mismatched)}")
+    if status not in {"succeeded", "partial"} and any(value is not None for value in supplied_binding.values()) and mismatched:
+        raise RecommendationValidationError(f"{module}失败终态的CandidateContract绑定冲突：{','.join(mismatched)}")
+    limitation = str(data.get("message") or data.get("reason") or "").strip() or None
+    if status not in {"succeeded", "partial"}:
+        return status, None, limitation
+    raw_ref = data.get("module_run_ref")
+    if not isinstance(raw_ref, Mapping):
+        raise RecommendationValidationError(f"{module}成功结果缺少Core正式ModuleRunRef")
+    try:
+        reference = CoreModuleRunRef(**dict(raw_ref))
+    except (TypeError, ValueError) as error:
+        raise RecommendationValidationError(f"{module}返回的Core ModuleRunRef无效") from error
+    if reference.module != module or reference.tenant_id != tenant_id or reference.task_id != task_id:
+        raise RecommendationValidationError(f"{module}返回的Core ModuleRunRef不属于当前任务")
+    return status, reference, limitation
 
 
 @dataclass(frozen=True)
@@ -327,9 +327,11 @@ class RecommendationCandidate:
     product_name: str | None = None
     key_terms: tuple[Mapping[str, Any], ...] = ()
     candidate_status: str = "candidate"
+    constraints_fingerprint: str = ""
     evidence_refs: tuple[EvidenceRef, ...] = ()
     missing_inputs: tuple[str, ...] = ()
-    module_run_refs: tuple[ModuleRunRef, ...] = ()
+    module_run_refs: tuple[CoreModuleRunRef, ...] = ()
+    module_statuses: Mapping[str, str] = field(default_factory=dict)
 
     @classmethod
     def from_mapping(
@@ -343,7 +345,7 @@ class RecommendationCandidate:
             "candidate_id", "product_id", "underlyings", "rank", "reason",
             "suitable_for", "not_suitable_for", "main_risks", "library_status",
             "product_name", "key_terms", "candidate_status", "evidence_ref_ids",
-            "missing_inputs", "module_run_refs",
+            "missing_inputs", "module_run_refs", "module_statuses", "constraints_fingerprint",
         }
         unknown = sorted(set(data) - allowed)
         if unknown:
@@ -366,10 +368,21 @@ class RecommendationCandidate:
         candidate_status = _required_text(data.get("candidate_status", "candidate"), "candidate_status")
         if candidate_status not in CANDIDATE_STATUSES:
             raise RecommendationValidationError(f"候选状态无效：{candidate_status}")
-        runs = tuple(
-            ModuleRunRef(**item) if isinstance(item, Mapping) else item
-            for item in data.get("module_run_refs", ())
-        )
+        fingerprint = _required_text(data.get("constraints_fingerprint"), "constraints_fingerprint")
+        if not re.fullmatch(r"[0-9a-f]{64}", fingerprint):
+            raise RecommendationValidationError("constraints_fingerprint必须为64位小写十六进制")
+        raw_runs = data.get("module_run_refs", ())
+        if isinstance(raw_runs, (str, bytes)) or not isinstance(raw_runs, Sequence):
+            raise RecommendationValidationError("module_run_refs必须为Core ModuleRunRef数组")
+        try:
+            runs = tuple(CoreModuleRunRef(**dict(item)) if isinstance(item, Mapping) else item for item in raw_runs)
+        except (TypeError, ValueError) as error:
+            raise RecommendationValidationError("module_run_refs包含无效Core ModuleRunRef") from error
+        if any(not isinstance(item, CoreModuleRunRef) for item in runs):
+            raise RecommendationValidationError("module_run_refs必须使用Core ModuleRunRef")
+        statuses = _mapping(data.get("module_statuses", {}), "module_statuses")
+        if any(str(module) not in {"payoffer", "pricer", "backtester"} or str(status) not in RUN_STATUSES for module, status in statuses.items()):
+            raise RecommendationValidationError("module_statuses包含无效模块或状态")
         return cls(
             candidate_id=_required_text(data.get("candidate_id"), "candidate_id"),
             product_id=product_id,
@@ -383,9 +396,11 @@ class RecommendationCandidate:
             product_name=str(data.get("product_name", "")).strip() or None,
             key_terms=tuple(_mapping(item, "key_terms[]") for item in data.get("key_terms", ())),
             candidate_status=candidate_status,
+            constraints_fingerprint=fingerprint,
             evidence_refs=tuple(refs),
             missing_inputs=_text_tuple(data.get("missing_inputs", ()), "missing_inputs", allow_empty=True),
             module_run_refs=runs,
+            module_statuses={str(module): str(status) for module, status in statuses.items()},
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -405,6 +420,7 @@ class CandidateContract:
     catalog_version: str
     evidence_ref_ids: tuple[str, ...]
     contract_fingerprint: str
+    constraints_fingerprint: str
     resolved_contract: Mapping[str, Any] = field(default_factory=dict)
     module_inputs: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
     display_terms: tuple[Mapping[str, str], ...] = ()
@@ -431,6 +447,9 @@ class CandidateContract:
         expected_refs = tuple(item.evidence_id for item in candidate.evidence_refs)
         if len(set(evidence_ref_ids)) != len(evidence_ref_ids) or set(evidence_ref_ids) != set(expected_refs):
             raise RecommendationValidationError(f"CandidateContract与候选{candidate_id}的evidence_ref_ids冲突")
+        constraints = _required_text(data.get("constraints_fingerprint"), "CandidateContract.constraints_fingerprint")
+        if constraints != candidate.constraints_fingerprint:
+            raise RecommendationValidationError(f"CandidateContract与候选{candidate_id}的constraints_fingerprint冲突")
         resolved_contract = _mapping(data.get("resolved_contract"), "CandidateContract.resolved_contract")
         fingerprint = _required_text(
             data.get("contract_fingerprint") or resolved_contract.get("contract_fingerprint"),
@@ -438,18 +457,16 @@ class CandidateContract:
         )
         if not re.fullmatch(r"[0-9a-f]{64}", fingerprint):
             raise RecommendationValidationError("CandidateContract.contract_fingerprint必须为64位小写十六进制")
-        resolved_fingerprint = _required_text(
-            resolved_contract.get("contract_fingerprint"), "ResolvedContract.contract_fingerprint"
-        )
-        if resolved_fingerprint != fingerprint:
+        try:
+            from runtime.contracts.contract_engine import ResolvedContract
+
+            core_contract = ResolvedContract(**dict(resolved_contract))
+        except (TypeError, ValueError) as error:
+            raise RecommendationValidationError("CandidateContract必须携带Core验证通过的ResolvedContract") from error
+        if core_contract.contract_fingerprint != fingerprint:
             raise RecommendationValidationError("ResolvedContract.contract_fingerprint与CandidateContract不一致")
-        resolved_identity = resolved_contract.get("identity")
-        if resolved_identity is not None:
-            identity = _mapping(resolved_identity, "ResolvedContract.identity")
-            if _required_text(identity.get("product_id"), "ResolvedContract.identity.product_id") != product_id:
-                raise RecommendationValidationError("ResolvedContract.identity.product_id与CandidateContract不一致")
-            if _text_tuple(identity.get("underlyings", ()), "ResolvedContract.identity.underlyings") != underlyings:
-                raise RecommendationValidationError("ResolvedContract.identity.underlyings与CandidateContract标的顺序不一致")
+        if core_contract.product_id != product_id or tuple(core_contract.underlyings) != underlyings:
+            raise RecommendationValidationError("ResolvedContract身份与CandidateContract不一致")
         module_inputs = _mapping(data.get("module_inputs", {}), "CandidateContract.module_inputs")
         if any(not isinstance(item, Mapping) for item in module_inputs.values()):
             raise RecommendationValidationError("CandidateContract.module_inputs必须按模块映射对象")
@@ -457,7 +474,7 @@ class CandidateContract:
         return cls(
             candidate_id=candidate_id, product_id=product_id, underlyings=underlyings,
             catalog_version=catalog_version, evidence_ref_ids=evidence_ref_ids,
-            contract_fingerprint=fingerprint, resolved_contract=resolved_contract,
+            contract_fingerprint=fingerprint, constraints_fingerprint=constraints, resolved_contract=resolved_contract,
             module_inputs={str(key): dict(item) for key, item in module_inputs.items()},
             display_terms=display_terms,
         )
@@ -493,6 +510,8 @@ class RecommendationSet:
     status: str
     primary_candidate_id: str | None
     candidates: tuple[RecommendationCandidate, ...]
+    analysis_status: str = "not_started"
+    delivery_status: str = "not_requested"
     requested_outputs: tuple[str, ...] = ()
     rejected: tuple[Mapping[str, Any], ...] = ()
     missing_information: tuple[str, ...] = ()
@@ -501,7 +520,7 @@ class RecommendationSet:
     audit_trail: tuple[AuditEvent, ...] = ()
 
     def __post_init__(self) -> None:
-        if self.schema != "optionhelper.recommendation-set/v1":
+        if self.schema != RECOMMENDATION_SET_SCHEMA:
             raise RecommendationValidationError("RecommendationSet.schema无效")
         if self.route not in {"recommendation", "professional_report"}:
             raise RecommendationValidationError("RecommendationSet只用于结构推荐路由")
@@ -509,6 +528,10 @@ class RecommendationSet:
             raise RecommendationValidationError("workflow_mode无效")
         if self.status not in SET_STATUSES:
             raise RecommendationValidationError(f"RecommendationSet状态无效：{self.status}")
+        if self.analysis_status not in ANALYSIS_STATUSES:
+            raise RecommendationValidationError("analysis_status无效")
+        if self.delivery_status not in DELIVERY_STATUSES:
+            raise RecommendationValidationError("delivery_status无效")
         if len(self.candidates) > 3:
             raise RecommendationValidationError("最多允许一个主候选和两个备选")
         candidate_ids = [item.candidate_id for item in self.candidates]
@@ -537,6 +560,8 @@ class RecommendationSet:
             "status": self.status,
             "primary_candidate_id": self.primary_candidate_id,
             "candidates": [item.to_dict() for item in self.candidates],
+            "analysis_status": self.analysis_status,
+            "delivery_status": self.delivery_status,
             "requested_outputs": list(self.requested_outputs),
             "rejected": _json_value(self.rejected),
             "missing_information": list(self.missing_information),
@@ -562,21 +587,21 @@ class RecommendationSet:
         for candidate in self.candidates:
             terms = [
                 {
-                    "label": _public_text(str(item.get("label", ""))),
-                    "value": _public_text(str(item.get("value", ""))),
+                    "label": public_text(str(item.get("label", ""))),
+                    "value": public_text(str(item.get("value", ""))),
                     "source": str(item.get("source")) if str(item.get("source")) in {"用户输入", "拟采用参数"} else "拟采用参数",
                 }
                 for item in candidate.key_terms
-                if _public_text(str(item.get("label", ""))) and _public_text(str(item.get("value", "")))
+                if public_text(str(item.get("label", ""))) and public_text(str(item.get("value", "")))
             ]
             recommendations.append({
                 "产品编号": candidate.product_id,
-                "产品名称": _public_text(candidate.product_name or "") or candidate.product_id,
+                "产品名称": public_text(candidate.product_name or "") or candidate.product_id,
                 "排名": candidate.rank,
-                "推荐理由": _public_text(candidate.reason) or "该结构与已确认条件相匹配。",
-                "适用条件": _public_text_list(candidate.suitable_for),
-                "不适用条件": _public_text_list(candidate.not_suitable_for),
-                "主要风险": _public_text_list(candidate.main_risks),
+                "推荐理由": public_text(candidate.reason) or "该结构与已确认条件相匹配。",
+                "适用条件": public_text_list(candidate.suitable_for),
+                "不适用条件": public_text_list(candidate.not_suitable_for),
+                "主要风险": public_text_list(candidate.main_risks),
                 "资料状态": material_status[candidate.library_status],
                 "拟采用条款": terms,
             })
@@ -597,10 +622,10 @@ class RecommendationSet:
         }
 
 
-def _public_text(value: str) -> str:
+def public_text(value: str) -> str:
     text = str(value).strip()
     return "" if _INTERNAL_PUBLIC_TEXT.search(text) else text
 
 
-def _public_text_list(values: Sequence[str]) -> list[str]:
-    return [text for item in values if (text := _public_text(str(item)))]
+def public_text_list(values: Sequence[str]) -> list[str]:
+    return [text for item in values if (text := public_text(str(item)))]

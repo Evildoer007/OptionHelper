@@ -6,6 +6,8 @@ Intent、Research、Critic、Executor流程负责。
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from collections.abc import Mapping, Sequence
 from typing import Any
@@ -13,9 +15,10 @@ from typing import Any
 
 _UNDERLYING = re.compile(r"(?<![A-Za-z0-9])(?P<code>\d{6}\.(?:SH|SZ))(?![A-Za-z0-9])", re.IGNORECASE)
 _HORIZON = re.compile(r"(?P<number>\d+|[一二三四五六七八九十两]+)\s*(?P<unit>个?月|月|年|个?季度|季度|季)")
-_LOSS = re.compile(r"(?:最大(?:可承受)?(?:亏损|损失|回撤)?|最大亏损?|亏损(?:不超过|上限为|控制在)?|回撤(?:不超过|上限为|控制在)?)\s*(?P<value>\d+(?:\.\d+)?)\s*[%％]")
+_LOSS = re.compile(r"(?:最大(?:可承受)?(?:亏损|损失|回撤)?|最大亏损?|亏损(?:不超过|上限为|控制在|改为)?|回撤(?:不超过|上限为|控制在|改为)?|最大(?:可承受)?(?:亏损|损失|回撤)?改为)\s*(?P<value>\d+(?:\.\d+)?)\s*[%％]")
 _CHINESE_NUMBER = {"一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9, "十": 10}
 _REQUIRED = ("underlying", "horizon", "market_view", "max_loss", "principal_fluctuation")
+_NEGATION = r"(?:不|别|否|难以|不会|不再|未(?!来)|无)"
 _QUESTIONS = {
     "underlying": "请补充标的代码，例如000905.SH。",
     "horizon": "请确认投资期限，例如3个月。",
@@ -57,6 +60,9 @@ def normalize_confirmed_constraints(value: Mapping[str, Any] | None) -> dict[str
     output_format = _normalize_format(source.get("format"))
     if output_format:
         result["format"] = output_format
+    term_overrides = _normalize_term_overrides(source.get("term_overrides"))
+    if term_overrides:
+        result["term_overrides"] = term_overrides
     return result
 
 
@@ -78,7 +84,8 @@ def merge_confirmed_constraints(existing: Mapping[str, Any] | None, messages: Se
             continue
         if role != "user" or not text:
             continue
-        result.update(_extract_text(text))
+        extracted = _extract_text(text)
+        _merge_user_constraints(result, extracted, text)
         confirmation = _confirmation(text)
         if pending_field == "principal_fluctuation" and confirmation is not None:
             result["principal_fluctuation"] = confirmation
@@ -86,9 +93,62 @@ def merge_confirmed_constraints(existing: Mapping[str, Any] | None, messages: Se
     return normalize_confirmed_constraints(result)
 
 
+def _merge_user_constraints(existing: dict[str, Any], extracted: Mapping[str, Any], text: str) -> None:
+    """后续表达只覆盖它真正说明的维度，不能抹掉已确认的波动观点。"""
+
+    value = dict(extracted)
+    previous_view = str(existing.get("market_view", ""))
+    current_view = str(value.get("market_view", ""))
+    if previous_view:
+        previous_direction, previous_volatility = _view_parts(previous_view)
+        current_direction, current_volatility = _view_parts(current_view)
+        if not current_direction and _negates_market_dimension(text, ("上涨", "看涨", "上行", "走高", "下跌", "看跌", "下行", "走低", "震荡", "横盘")):
+            previous_direction = ""
+        if not current_volatility and _negates_market_dimension(
+            text, ("波动率上升", "波动率下行", "波动率下降", "波动率上行", "隐含波动率上升", "隐含波动率下降", "隐波上升", "隐波下降", "iv上升", "iv下降"),
+        ):
+            previous_volatility = ""
+        direction = current_direction or previous_direction
+        volatility = current_volatility or previous_volatility
+        merged = "+".join(item for item in (direction, volatility) if item)
+        if merged:
+            value["market_view"] = merged
+        else:
+            existing.pop("market_view", None)
+    overrides = value.pop("term_overrides", None)
+    existing.update(value)
+    if isinstance(overrides, Mapping):
+        merged_overrides = dict(existing.get("term_overrides", {}))
+        merged_overrides.update(overrides)
+        existing["term_overrides"] = merged_overrides
+
+
+def _view_parts(value: str) -> tuple[str, str]:
+    direction = next((item for item in ("上涨", "看跌", "震荡") if item in value), "")
+    volatility = next((item for item in ("波动率上升", "波动率下降") if item in value), "")
+    return direction, volatility
+
+
+def _negates_market_dimension(text: str, terms: Sequence[str]) -> bool:
+    lowered = text.lower()
+    if any(re.search(rf"{_NEGATION}.{{0,8}}{re.escape(term)}", lowered) for term in terms):
+        return True
+    return any("波动" in term or "隐波" in term or "iv" in term for term in terms) and bool(
+        re.search(rf"{_NEGATION}.{{0,4}}(?:上升|上行|下降|下行)", lowered)
+    )
+
+
 def missing_required_constraints(constraints: Mapping[str, Any]) -> tuple[str, ...]:
     normalized = normalize_confirmed_constraints(constraints)
     return tuple(field for field in _REQUIRED if field not in normalized)
+
+
+def constraints_fingerprint(constraints: Mapping[str, Any] | None) -> str:
+    """冻结会改变候选或合同解释的已确认客户条件。"""
+
+    normalized = normalize_confirmed_constraints(constraints)
+    body = json.dumps(normalized, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(body).hexdigest()
 
 
 def question_for_missing_constraint(field: str) -> str:
@@ -173,6 +233,95 @@ def _extract_text(text: str) -> dict[str, Any]:
         result["format"] = "pdf"
     elif wants_html:
         result["format"] = "html"
+    term_overrides = _extract_term_overrides(text)
+    if term_overrides:
+        result["term_overrides"] = term_overrides
+    return result
+
+
+def _normalize_term_overrides(value: object) -> dict[str, str | float]:
+    """Keep only a small, typed vocabulary that the App later intersects with OptionReg.
+
+    Natural-language extraction never assumes that every product owns every
+    term.  The App binding layer accepts an item only when that exact key is
+    present in the selected product's published term set.
+    """
+
+    if not isinstance(value, Mapping):
+        return {}
+    allowed_numeric = {
+        "K", "K1", "K2", "K3", "K4", "Pi_0", "P_net", "c", "c_max", "alpha",
+        "H_KO", "H_KI", "B",
+    }
+    allowed_text = {"O_KO", "O_KI", "Oc", "settlement", "exercise_style"}
+    result: dict[str, str | float] = {}
+    for raw_key, raw_value in value.items():
+        key = str(raw_key)
+        if key in allowed_numeric and isinstance(raw_value, (int, float)) and not isinstance(raw_value, bool):
+            result[key] = float(raw_value)
+        elif key in allowed_text and isinstance(raw_value, str) and raw_value.strip():
+            result[key] = raw_value.strip()
+    return result
+
+
+def _extract_term_overrides(text: str) -> dict[str, str | float]:
+    """Extract only explicit, customer-facing contract terms.
+
+    These are intentionally conservative.  Ambiguous product-specific terms
+    remain unchanged and are shown for confirmation rather than guessed.
+    """
+
+    compact = re.sub(r"\s+", "", text).lower()
+    result: dict[str, str | float] = {}
+
+    numeric_patterns = (
+        ("K4", r"第四执行(?:价|水平)[为是]?([0-9]+(?:\.[0-9]+)?)"),
+        ("K3", r"第三执行(?:价|水平)[为是]?([0-9]+(?:\.[0-9]+)?)"),
+        ("K2", r"第二执行(?:价|水平)[为是]?([0-9]+(?:\.[0-9]+)?)"),
+        ("K1", r"第一执行(?:价|水平)[为是]?([0-9]+(?:\.[0-9]+)?)"),
+        ("K", r"(?<![一二三四五六七八九十])执行(?:价|水平)(?:调整|改)?[为是]?([0-9]+(?:\.[0-9]+)?)"),
+        ("P_net", r"净(?:权利金|期权费)[为是]?([0-9]+(?:\.[0-9]+)?)"),
+        ("Pi_0", r"(?<!净)(?:权利金|期权费)[为是]?([0-9]+(?:\.[0-9]+)?)"),
+    )
+    for key, pattern in numeric_patterns:
+        match = re.search(pattern, compact)
+        if match:
+            result[key] = float(match.group(1))
+
+    rate_patterns = (
+        ("c", r"(?:票息|票面收益)[为是]?([0-9]+(?:\.[0-9]+)?)%"),
+        ("alpha", r"参与率[为是]?([0-9]+(?:\.[0-9]+)?)%"),
+    )
+    for key, pattern in rate_patterns:
+        match = re.search(pattern, compact)
+        if match:
+            result[key] = float(match.group(1)) / 100.0
+
+    barrier_patterns = (
+        ("H_KO", r"敲出障碍(?:水平)?[为是]?([0-9]+(?:\.[0-9]+)?)"),
+        ("H_KI", r"敲入障碍(?:水平)?[为是]?([0-9]+(?:\.[0-9]+)?)"),
+        ("B", r"(?<!敲出)(?<!敲入)(?:气囊)?障碍(?:水平)?[为是]?([0-9]+(?:\.[0-9]+)?)"),
+    )
+    for key, pattern in barrier_patterns:
+        match = re.search(pattern, compact)
+        if match:
+            result[key] = float(match.group(1))
+
+    schedule = (
+        "monthly_last" if re.search(r"(?:每月末|月末).{0,4}观察", compact) else
+        "daily" if "每日观察" in compact else None
+    )
+    if schedule:
+        if "敲出" in compact:
+            result["O_KO"] = schedule
+        if "敲入" in compact:
+            result["O_KI"] = schedule
+        if re.search(r"票息.{0,6}观察|观察.{0,6}票息", compact):
+            result["Oc"] = schedule
+    if "现金结算" in compact:
+        result["settlement"] = "cash"
+    if "欧式行权" in compact:
+        result["exercise_style"] = "European"
     return result
 
 
@@ -213,9 +362,27 @@ def _normalize_market_view(value: object) -> str | None:
     text = str(value or "").strip().lower()
     if not text:
         return None
-    direction = "上涨" if any(word in text for word in ("上涨", "看涨", "上行", "走高")) else "看跌" if any(word in text for word in ("下跌", "看跌", "下行", "走低")) else "震荡" if any(word in text for word in ("震荡", "横盘")) else ""
-    volatility = "波动率上升" if any(word in text for word in ("波动率上升", "波动率上行", "隐含波动率上升", "隐波上升", "波动加大", "波动增大", "iv上升")) else "波动率下降" if any(word in text for word in ("波动率下降", "波动率下行", "隐含波动率下降", "隐波下降", "iv下降")) else ""
+    direction = (
+        "上涨" if _affirmed(text, ("上涨", "看涨", "上行", "走高")) else
+        "看跌" if _affirmed(text, ("下跌", "看跌", "下行", "走低")) else
+        "震荡" if _affirmed(text, ("震荡", "横盘")) else ""
+    )
+    volatility = (
+        "波动率上升" if _affirmed(text, ("波动率上升", "波动率上行", "隐含波动率上升", "隐波上升", "波动加大", "波动增大", "iv上升")) else
+        "波动率下降" if _affirmed(text, ("波动率下降", "波动率下行", "隐含波动率下降", "隐波下降", "iv下降")) else ""
+    )
     return "+".join(part for part in (direction, volatility) if part) or None
+
+
+def _affirmed(text: str, terms: Sequence[str]) -> bool:
+    """只接受未被局部否定的市场判断；否定本身不推断反方向。"""
+
+    for term in terms:
+        for match in re.finditer(re.escape(term), text):
+            prefix = text[max(0, match.start() - 10):match.start()]
+            if not re.search(rf"{_NEGATION}.{{0,8}}$", prefix):
+                return True
+    return False
 
 
 def _normalize_loss(value: object) -> str | None:

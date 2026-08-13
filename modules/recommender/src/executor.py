@@ -6,7 +6,7 @@ from dataclasses import replace
 from typing import Any, Mapping, Sequence
 
 from .agent_steps import AgentStepRunner
-from .models import CandidateContract, ModuleRunRef, RecommendationCandidate, RecommendationValidationError
+from .models import CandidateContract, RecommendationCandidate, RecommendationValidationError, module_execution_from_tool_result
 from .ports import ToolPort
 
 
@@ -38,6 +38,7 @@ def execute(
     *,
     approved_candidate_ids: Sequence[str],
     requested_outputs: Sequence[str],
+    tenant_id: str = "local",
     task_id: str,
     run_id: str,
     candidate_contracts: Mapping[str, Mapping[str, Any]],
@@ -57,13 +58,6 @@ def execute(
         raise RecommendationValidationError(f"CandidateContract未经当前批准：{','.join(unapproved_contracts)}")
     if not approved:
         return tuple(candidates)
-    missing_contracts = sorted(approved - set(candidate_contracts))
-    if missing_contracts:
-        raise RecommendationValidationError(f"已批准候选缺少CandidateContract：{','.join(missing_contracts)}")
-    contracts = {
-        candidate_id: CandidateContract.from_mapping(candidate_contracts[candidate_id], candidate=candidate_index[candidate_id])
-        for candidate_id in approved
-    }
     blocked = {candidate_id for candidate_id in approved if candidate_index[candidate_id].library_status != "ready"}
     runnable = approved - blocked
     if blocked:
@@ -77,6 +71,13 @@ def execute(
             replace(item, candidate_status="pending_terms") if item.candidate_id in blocked else item
             for item in candidates
         )
+    missing_contracts = sorted(runnable - set(candidate_contracts))
+    if missing_contracts:
+        raise RecommendationValidationError(f"已批准候选缺少CandidateContract：{','.join(missing_contracts)}")
+    contracts = {
+        candidate_id: CandidateContract.from_mapping(candidate_contracts[candidate_id], candidate=candidate_index[candidate_id])
+        for candidate_id in runnable
+    }
     requested = {str(item).strip().lower() for item in requested_outputs}
     output_to_module = {
         "payoff": "payoffer", "payoffer": "payoffer",
@@ -101,7 +102,8 @@ def execute(
     tool_requests = plan.get("tool_requests", ())
     if isinstance(tool_requests, (str, bytes)) or not isinstance(tool_requests, Sequence):
         raise RecommendationValidationError("Executor.tool_requests必须为数组")
-    runs: dict[str, list[ModuleRunRef]] = {item: [] for item in runnable}
+    runs: dict[str, list[Any]] = {item: [] for item in runnable}
+    statuses_by_candidate: dict[str, dict[str, str]] = {item: {} for item in runnable}
     seen_calls: set[tuple[str, str]] = set()
     if len(tool_requests) > len(runnable) * len(EXECUTION_MODULES):
         raise RecommendationValidationError("Executor工具调用数量超过候选与模块上限")
@@ -124,27 +126,34 @@ def execute(
         body = _module_request(module, contract)
         try:
             result = tool_port.call(module, body)
-            run_ref = ModuleRunRef.from_tool_result(
+            status, run_ref, limitation = module_execution_from_tool_result(
                 module,
                 result,
+                tenant_id=tenant_id,
+                task_id=task_id,
                 candidate_id=contract.candidate_id,
                 catalog_version=contract.catalog_version,
                 contract_fingerprint=contract.contract_fingerprint,
             )
-            step_runner.audit.append(f"tool.{module}", run_ref.status, agent_role="Executor", input_value=body,
+            step_runner.audit.append(f"tool.{module}", status, agent_role="Executor", input_value=body,
                                      output_value=result, detail={
                                          "candidate_id": candidate_id, "task_id": task_id,
                                          "recommendation_run_id": run_id, "call_index": position,
+                                         **({"limitation": limitation} if limitation else {}),
                                      })
+        except RecommendationValidationError:
+            raise
         except Exception as error:
-            run_ref = ModuleRunRef(module=module, run_id="", status="failed", limitation=str(error))
+            status, run_ref = "failed", None
             step_runner.audit.append(f"tool.{module}", "failed", agent_role="Executor", input_value=body,
                                      output_value=None, detail={
                                          "candidate_id": candidate_id, "task_id": task_id,
                                          "recommendation_run_id": run_id, "call_index": position,
                                          "message": str(error),
                                      })
-        runs[candidate_id].append(run_ref)
+        statuses_by_candidate[candidate_id][module] = status
+        if run_ref is not None:
+            runs[candidate_id].append(run_ref)
 
     expected_calls = {(candidate_id, module) for candidate_id in runnable for module in requested_modules}
     missing_calls = sorted(expected_calls - seen_calls)
@@ -161,14 +170,19 @@ def execute(
             updated.append(item)
             continue
         item_runs = tuple(runs[item.candidate_id])
-        statuses = {run.status for run in item_runs}
+        statuses = set(statuses_by_candidate[item.candidate_id].values())
         if statuses == {"succeeded"}:
-            candidate_status = "report_ready"
+            candidate_status = "approved"
         elif "unsupported" in statuses and statuses <= {"unsupported", "succeeded"}:
             candidate_status = "unsupported"
         elif statuses & {"partial", "failed", "cancelled", "timed_out"}:
             candidate_status = "pending_data"
         else:
             candidate_status = "running"
-        updated.append(replace(item, candidate_status=candidate_status, module_run_refs=item_runs))
+        updated.append(replace(
+            item,
+            candidate_status=candidate_status,
+            module_run_refs=item_runs,
+            module_statuses=statuses_by_candidate[item.candidate_id],
+        ))
     return tuple(updated)

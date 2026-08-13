@@ -13,7 +13,7 @@ from .evidence_retriever import retrieve_evidence
 from .executor import ALLOWED_MODULES, execute
 from .interaction import merge_confirmed_constraints, missing_required_constraints, question_for_missing_constraints
 from .intent_router import route_intent
-from .models import CandidateContract, ModelCapability, RecommendationCase, RecommendationSet, RouteDecision
+from .models import CandidateContract, ModelCapability, RECOMMENDATION_SET_SCHEMA, RecommendationCase, RecommendationSet, RouteDecision, RecommendationValidationError, public_text
 from .ports import AgentPort, HttpAgentPort, HttpEndpoint, HttpKnowledgePort, HttpToolPort, KnowledgePort, ToolPort
 
 
@@ -32,8 +32,8 @@ _ROUTE_TOOLS = {
 }
 
 _CONTRACT_CONFIRMATION_QUESTION = (
-    "以上为拟采用合同条款，是否按此继续？如需调整，请一次说明需要修改的期限、名义本金、"
-    "行权价、障碍、票息、参与率或其他条款。"
+    "以上为拟采用合同条款，是否按此继续？如需调整，请一次说明需要修改的期限、执行水平、"
+    "票息或参与率、障碍、观察方式、结算方式或其他适用条款。"
 )
 
 
@@ -48,7 +48,7 @@ def capability(config: RecommenderConfig | None = None) -> dict[str, Any]:
         "ok": all(configured.values()),
         "module": "recommender",
         "status": "ready" if all(configured.values()) else "unconfigured",
-        "schema": "optionhelper.recommendation-set/v1",
+        "schema": RECOMMENDATION_SET_SCHEMA,
         "actions": ["recommend", "recommend_fixed"],
         "routes": ["chat", "knowledge", "data", "direct_execution", "recommendation", "professional_report", "existing_report", "maintenance", "freeform"],
         "agent_roles": ["Intent", "Research", "Critic", "Executor"],
@@ -72,12 +72,35 @@ class RecommenderService:
         self.config = config or RecommenderConfig()
 
     def recommend(self, request: RecommendationCase | Mapping[str, Any]) -> Mapping[str, Any]:
+        result, _ = self._recommend_with_domain(request)
+        return result
+
+    def _recommend_with_domain(
+        self,
+        request: RecommendationCase | Mapping[str, Any],
+        *,
+        workflow: str | None = None,
+    ) -> tuple[Mapping[str, Any], RecommendationSet | None]:
+        """执行推荐，并仅在正式Tool调用链内保留领域对象供安全投影。"""
+
         case = request if isinstance(request, RecommendationCase) else RecommendationCase.from_mapping(request)
-        route = route_intent(case.prompt)
+        if workflow is not None:
+            route_name = str(workflow).strip().lower()
+            if route_name not in {"recommendation", "professional_report"}:
+                raise ValueError("固定Recommender workflow仅支持recommendation或professional_report")
+            route = RouteDecision(
+                route=route_name,
+                confidence=1.0,
+                reason="App Agent显式请求固定结构推荐Workflow",
+                fixed_recommendation_workflow=True,
+                agent_policy="capability_based",
+            )
+        else:
+            route = route_intent(case.prompt)
         if route.fixed_recommendation_workflow:
             result = self._run_recommendation(case, route=route)
-            return {"route": route.to_dict(), "recommendation_set": result.to_dict()}
-        return {"route": route.to_dict(), "freeform": self._run_freeform(case, route)}
+            return {"route": route.to_dict(), "recommendation_set": result.to_dict()}, result
+        return {"route": route.to_dict(), "freeform": self._run_freeform(case, route)}, None
 
     def recommend_fixed(
         self,
@@ -92,18 +115,8 @@ class RecommenderService:
         standalone freeform agent.
         """
 
-        case = request if isinstance(request, RecommendationCase) else RecommendationCase.from_mapping(request)
-        route_name = str(workflow).strip().lower()
-        if route_name not in {"recommendation", "professional_report"}:
-            raise ValueError("固定Recommender workflow仅支持recommendation或professional_report")
-        route = RouteDecision(
-            route=route_name,
-            confidence=1.0,
-            reason="App Agent显式请求固定结构推荐Workflow",
-            fixed_recommendation_workflow=True,
-            agent_policy="capability_based",
-        )
-        return {"route": route.to_dict(), "recommendation_set": self._run_recommendation(case, route=route).to_dict()}
+        result, _ = self._recommend_with_domain(request, workflow=workflow)
+        return result
 
     def _run_recommendation(self, case: RecommendationCase, *, route: RouteDecision) -> RecommendationSet:
         run_id = case.run_id or f"recommend_{uuid4().hex[:12]}"
@@ -122,7 +135,7 @@ class RecommenderService:
                 output_value={"missing": missing}, detail={"rule": "全部关键缺口一次合并追问"},
             )
             return RecommendationSet(
-                schema="optionhelper.recommendation-set/v1", task_id=case.task_id, run_id=run_id,
+                schema=RECOMMENDATION_SET_SCHEMA, task_id=case.task_id, run_id=run_id,
                 analysis_case_id=case.analysis_case_id, catalog_version=case.catalog_version, route=route.route,
                 workflow_mode="single_agent", status="pending_question", primary_candidate_id=None, candidates=(),
                 missing_information=missing, next_question=question_for_missing_constraints(missing),
@@ -226,7 +239,7 @@ class RecommenderService:
                      output_value={"candidate_ids": [item.candidate_id for item in candidates], "rejected": rejected})
         if not candidates:
             return RecommendationSet(
-                schema="optionhelper.recommendation-set/v1", task_id=case.task_id, run_id=run_id,
+                schema=RECOMMENDATION_SET_SCHEMA, task_id=case.task_id, run_id=run_id,
                 analysis_case_id=case.analysis_case_id, catalog_version=case.catalog_version, route=route.route,
                 workflow_mode=mode, status="unavailable", primary_candidate_id=None, candidates=(), rejected=rejected,
                 requested_outputs=case.requested_outputs,
@@ -242,6 +255,7 @@ class RecommenderService:
                 candidates,
                 approved_candidate_ids=case.approved_candidate_ids,
                 requested_outputs=case.requested_outputs,
+                tenant_id=case.tenant_id,
                 task_id=case.task_id,
                 run_id=run_id,
                 candidate_contracts=case.candidate_contracts,
@@ -253,20 +267,37 @@ class RecommenderService:
             audit.append("approval_gate", "pending", agent_role=None,
                          input_value={"candidate_ids": [item.candidate_id for item in candidates]}, output_value=None,
                          detail={"reason": "未提供用户确认或受控自动批准"})
-        statuses = {run.status for item in candidates for run in item.module_run_refs}
+        module_statuses = {
+            status for item in candidates for status in item.module_statuses.values()
+        }
         if not approved:
             status = "pending_approval"
+            analysis_status = "not_started"
         elif any(item.candidate_status == "pending_terms" for item in candidates):
             status = "partial"
-        elif not statuses:
+            analysis_status = "not_started"
+        elif not module_statuses:
             status = "candidate_ready"
-        elif statuses <= {"succeeded"}:
+            analysis_status = "not_started"
+        elif module_statuses <= {"succeeded"}:
             status = "completed"
+            analysis_status = "completed"
+        elif module_statuses <= {"unsupported", "succeeded"} and "unsupported" in module_statuses:
+            status = "partial"
+            analysis_status = "unsupported"
+        elif "timed_out" in module_statuses:
+            status = "partial"
+            analysis_status = "timed_out"
+        elif "cancelled" in module_statuses:
+            status = "partial"
+            analysis_status = "cancelled"
+        elif "failed" in module_statuses:
+            status = "partial"
+            analysis_status = "failed"
         else:
             status = "partial"
-        limitations = [
-            run.limitation for item in candidates for run in item.module_run_refs if run.limitation
-        ]
+            analysis_status = "partial"
+        limitations: list[str] = []
         limitations.extend(
             f"候选{item.candidate_id}资料状态为{item.library_status}，未调用计算模块。"
             for item in candidates if item.candidate_status == "pending_terms"
@@ -277,10 +308,12 @@ class RecommenderService:
         if report_requested:
             limitations.append("所选交付将在同一合同下的验证结果完成后生成。")
         return RecommendationSet(
-            schema="optionhelper.recommendation-set/v1", task_id=case.task_id, run_id=run_id,
+            schema=RECOMMENDATION_SET_SCHEMA, task_id=case.task_id, run_id=run_id,
             analysis_case_id=case.analysis_case_id, catalog_version=case.catalog_version, route=route.route,
             workflow_mode=mode, status=status, primary_candidate_id=candidates[0].candidate_id,
             candidates=candidates, requested_outputs=case.requested_outputs, rejected=rejected,
+            analysis_status=analysis_status,
+            delivery_status="pending" if report_requested else "not_requested",
             next_question=_CONTRACT_CONFIRMATION_QUESTION if not approved and needs_confirmation else None,
             audit_trail=tuple(audit.events),
             limitations=tuple(limitations),
@@ -298,7 +331,7 @@ class RecommenderService:
         audit.append("workflow", "failed", agent_role=None, input_value={"case": case.analysis_case_id}, output_value=None,
                      detail={"error_type": type(error).__name__, "message": str(error)})
         return RecommendationSet(
-            schema="optionhelper.recommendation-set/v1", task_id=case.task_id, run_id=run_id,
+            schema=RECOMMENDATION_SET_SCHEMA, task_id=case.task_id, run_id=run_id,
             analysis_case_id=case.analysis_case_id, catalog_version=case.catalog_version, route=route.route,
             workflow_mode=mode, status="unavailable", primary_candidate_id=None, candidates=(),
             requested_outputs=case.requested_outputs,
@@ -498,21 +531,46 @@ def call_tool(request: Mapping[str, Any]) -> Mapping[str, Any]:
         service = _service_from_environment()
         if action in {"recommend", "recommend_fixed"}:
             workflow = str(body.pop("workflow", "recommendation"))
-            result = service.recommend(body) if action == "recommend" else service.recommend_fixed(body, workflow=workflow)
+            recommendation: RecommendationSet | None = None
+            if isinstance(service, RecommenderService):
+                result, recommendation = service._recommend_with_domain(
+                    body,
+                    workflow=workflow if action == "recommend_fixed" else None,
+                )
+            else:
+                result = service.recommend(body) if action == "recommend" else service.recommend_fixed(body, workflow=workflow)
             recommendation_set = result.get("recommendation_set")
             if isinstance(recommendation_set, Mapping):
                 status = str(recommendation_set.get("status", "failed"))
             else:
                 freeform = result.get("freeform")
                 status = str(freeform.get("status", "completed")) if isinstance(freeform, Mapping) else "failed"
+            public = _public_result(result, recommendation=recommendation)
             return {
                 "ok": status not in {"partial", "failed", "unavailable"},
                 "module": "recommender",
                 "status": status,
-                "result": result,
+                "result": public,
             }
     except Exception as error:
         return {"ok": False, "module": "recommender", "status": "failed",
-                "error": {"type": type(error).__name__, "message": str(error)}}
+                "error": {"type": type(error).__name__, "message": "推荐服务当前不可用，请稍后重试。"}}
     return {"ok": False, "module": "recommender", "status": "unsupported",
             "message": f"Recommender不支持action={action}；支持status、recommend、recommend_fixed。"}
+
+
+def _public_result(
+    result: Mapping[str, Any], *, recommendation: RecommendationSet | None = None,
+) -> Mapping[str, Any]:
+    """正式Tool入口默认仅返回客户可见投影。"""
+
+    if isinstance(recommendation, RecommendationSet):
+        return recommendation.to_public_dict()
+    freeform = result.get("freeform")
+    if isinstance(freeform, Mapping):
+        response = public_text(str(freeform.get("response", "")))
+        return {
+            "说明": response or "当前未形成可展示结果。",
+            "状态": str(freeform.get("status", "unavailable")),
+        }
+    return {"说明": "当前未形成可展示结果。"}

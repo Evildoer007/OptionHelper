@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Mapping, Sequence
 
 from .candidate_critic import critique_candidates
+from .interaction import constraints_fingerprint
 from .models import EvidenceRef, RecommendationCandidate, RecommendationValidationError
 
 
@@ -122,6 +123,15 @@ def build_candidates(
                 "source": "constraint_gate",
             })
             continue
+        requested_underlying = str((confirmed_constraints or {}).get("underlying", "")).strip().upper()
+        proposal_underlyings = tuple(str(item).strip().upper() for item in _string_list(row.get("underlyings")))
+        if requested_underlying and proposal_underlyings != (requested_underlying,):
+            rejected.append({
+                "product_id": product_id,
+                "reason": "候选标的与客户已确认标的不一致",
+                "source": "constraint_gate",
+            })
+            continue
         ref_ids = _string_list(row.get("evidence_ref_ids", ()))
         referenced = [evidence_index.get(item) for item in ref_ids]
         if not ref_ids or any(item is None for item in referenced):
@@ -157,7 +167,9 @@ def build_candidates(
         row["candidate_id"] = f"{run_id}_candidate_{rank:02d}"
         row["rank"] = rank
         row["candidate_status"] = "candidate"
+        row["constraints_fingerprint"] = constraints_fingerprint(confirmed_constraints)
         row["module_run_refs"] = []
+        row["module_statuses"] = {}
         row["key_terms"] = []
         candidates.append(RecommendationCandidate.from_mapping(row, evidence_index=evidence_index))
     for _, row in accepted_rows[max_candidates:]:
