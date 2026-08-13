@@ -1,1 +1,0 @@
-"""Reporter test package."""

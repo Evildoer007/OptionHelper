@@ -1,1 +1,0 @@
-"""Pricer test package."""
