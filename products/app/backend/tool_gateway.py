@@ -493,7 +493,12 @@ class ToolGateway:
             },
         }
 
-    def _load_tool_entry(self, scripts_root: str, content_hashes: Mapping[str, str]) -> Any:
+    def _load_tool_entry(self, scripts_root: str, content_hashes: Mapping[str, str] | None = None) -> Any:
+        """加载经清单校验的Capability入口，兼容受控内部调用。"""
+        if content_hashes is None:
+            content_hashes = self._registry.manifest.get("content_hashes")
+        if not isinstance(content_hashes, Mapping):
+            raise UnavailableCapabilityError("ToolGateway", "Capability content hashes are unavailable")
         return load_verified_source_module(
             "option_helper_embedded_tool_entry",
             scripts_root,
