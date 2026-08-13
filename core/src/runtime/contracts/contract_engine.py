@@ -712,10 +712,6 @@ def _resolve_contract(
             raise ContractResolutionError(
                 f"{product_id}为多标的结构，underlyings数量必须与S0Vec长度{required_assets}一致"
             )
-    if _OBSERVATION_TERM_KEYS & set(final_terms):
-        _require_observation_calendar_identity(supplied_identity, final_terms)
-        if trading_dates is None and frozen_resolved_schedules is None:
-            raise ContractResolutionError("含观察条款的正式合同必须提供Host验证交易日历")
     price_convention = str(supplied_identity.get("price_convention") or "normalized_100")
     if price_convention == "normalized_100" and references is None:
         # A normalized contract's S0/S0Vec is its declared price coordinate,
@@ -751,6 +747,10 @@ def _resolve_contract(
     for expression in source_terms.get("constraints", []):
         if _coerce_bool(evaluate_formula(expression, variables)) is not True:
             raise ContractResolutionError(f"条款覆盖不满足产品约束：{expression}")
+    if _OBSERVATION_TERM_KEYS & set(final_terms):
+        _require_observation_calendar_identity(supplied_identity, final_terms)
+        if trading_dates is None and frozen_resolved_schedules is None:
+            raise ContractResolutionError("含观察条款的正式合同必须提供Host验证交易日历")
     final_terms["monitor"] = deepcopy(source_terms.get("monitor", {}))
     final_terms["pricing_methods"] = list(source_terms["pricing_methods"])
     if "constraints" in source_terms:
@@ -857,6 +857,11 @@ def evaluate_contract(contract: ResolvedContract, price_path: PricePath) -> Payo
     if not isinstance(result, CashflowBundle):
         raise FormulaError("pnl必须返回由cash(t, amount)组成的现金流")
     return PayoffEvaluation(selected_path, selected_case, monitor_values, result.flows)
+
+
+def evaluate_payoff(contract: ResolvedContract, price_path: PricePath) -> PayoffEvaluation:
+    """兼容既有调用方的公开估值入口。"""
+    return evaluate_contract(contract, price_path)
 
 
 def _validate_settlement_endpoint(
