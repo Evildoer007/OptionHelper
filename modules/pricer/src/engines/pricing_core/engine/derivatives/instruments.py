@@ -41,7 +41,7 @@ class OptionRegPathOption(OptionInstrument):
     correlation: tuple[tuple[float, ...], ...] | None = None
     trading_sessions: tuple[str, ...] = ()
     calendar_id: str = ""
-    calendar_version: str = ""
+    calendar_revision: str = ""
 
 
 @dataclass(frozen=True, kw_only=True)

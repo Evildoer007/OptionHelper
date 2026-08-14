@@ -24,7 +24,7 @@ from ..results import PricingResult
 from .risk import ThetaRollValue, calculate_standard_greeks
 
 
-_VERSION = "standard-optionreg-discrete-mc-1"
+_IMPLEMENTATION_ID = "standard-optionreg-discrete-mc"
 _MAX_PATHS = 2000
 
 
@@ -48,8 +48,8 @@ def _session_dates(
             (market.as_of, market.as_of + timedelta(days=round(remaining * 365.0))),
             np.asarray((0.0, remaining), dtype=float),
         )
-    if not instrument.calendar_id or not instrument.calendar_version:
-        raise ValueError("OptionReg路径MC缺少calendar_id或calendar_version")
+    if not instrument.calendar_id or not instrument.calendar_revision:
+        raise ValueError("OptionReg路径MC缺少calendar_id或calendar_revision")
     try:
         all_sessions = tuple(date.fromisoformat(str(value)) for value in instrument.trading_sessions)
     except ValueError as error:
@@ -278,7 +278,7 @@ def price_optionreg_path_monte_carlo(
         greeks=greeks,
         extended_greeks=extended,
         method=PricingMethod.MONTE_CARLO_CPU,
-        version=_VERSION,
+        implementation_id=_IMPLEMENTATION_ID,
         warnings=(*converted.warnings,),
         diagnostics={
             "standard_error_points_100": standard_error_points,
@@ -291,7 +291,7 @@ def price_optionreg_path_monte_carlo(
             **({
                 "calendar": {
                     "calendar_id": instrument.calendar_id,
-                    "calendar_version": instrument.calendar_version,
+                    "calendar_revision": instrument.calendar_revision,
                     "session_start": priced_sessions[0].isoformat(),
                     "session_end": priced_sessions[-1].isoformat(),
                     "session_count": len(priced_sessions),
@@ -305,7 +305,16 @@ def price_optionreg_path_monte_carlo(
                     "time_basis": "ACT/365 contractual maturity",
                 },
             }),
-            "random_source": {"sha256": random_info.sha256, "paths": config.paths, "seed": config.seed},
+            "random_source": {
+                "sha256": random_info.sha256,
+                "seed": random_info.seed,
+                "requested_seed": config.seed,
+                "origin": random_info.origin,
+                "shape": list(random_info.shape),
+                "dtype": random_info.dtype,
+                "source_path": random_info.path,
+                "paths": config.paths,
+            },
             "path_pv_sha256_float64": hashlib.sha256(np.ascontiguousarray(raw_values).tobytes()).hexdigest(),
             "valuation_state_applied": {
                 "knocked_in": bool(valuation_state and valuation_state.knocked_in),

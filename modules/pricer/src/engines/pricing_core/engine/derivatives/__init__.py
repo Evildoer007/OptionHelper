@@ -4,13 +4,11 @@ from .api import REGISTRY, price, solve
 from .basis import ResultBasis
 from .enums import (
     AccumulatorQuantityBasis,
-    AutocallKind,
     CallPut,
     ObservationFrequency,
     PricingMethod,
 )
 from .instruments import (
-    AutocallOption,
     BarrierOption,
     BinaryOption,
     CompositeOption,
@@ -18,7 +16,6 @@ from .instruments import (
     OptionInstrument,
     OptionRegPathOption,
     OptionLeg,
-    PathAccumulatorOption,
     StaticAccumulatorOption,
 )
 from .models import (
@@ -35,8 +32,6 @@ from .results import GreekValue, PricingResult, SolveResult
 
 __all__ = [
     "AccumulatorQuantityBasis",
-    "AutocallKind",
-    "AutocallOption",
     "BarrierOption",
     "BinaryOption",
     "CallPut",
@@ -51,7 +46,6 @@ __all__ = [
     "OptionInstrument",
     "OptionRegPathOption",
     "OptionLeg",
-    "PathAccumulatorOption",
     "PricingMethod",
     "PricingResult",
     "RandomMatrixInfo",

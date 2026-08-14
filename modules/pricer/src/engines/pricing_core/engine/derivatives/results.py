@@ -24,7 +24,7 @@ _PRIVATE_CONTRACT_SCALE_FIELDS = frozenset({"n", "nvar", "nvega"})
 _PUBLIC_CONTRACT_IDENTITY_FIELDS = frozenset({
     "product_id", "name_zh", "entry_status", "contract_id", "underlyings",
     "contract_start_date", "contract_end_date", "reference_prices",
-    "price_convention", "calendar_id", "calendar_version", "product_version",
+    "price_convention", "calendar_id", "calendar_revision", "product_version",
 })
 
 # ``pv_points_100`` remains the numerical kernel's reconciliation basis.  It
@@ -193,7 +193,7 @@ def _contains_private_money_compatibility_text(value: object) -> bool:
 def redact_public_money_compatibility(value: Any) -> Any:
     """Remove private money-projection fields from a public Pricer envelope.
 
-    The calculation kernel may retain amount/currency fields for legacy
+    The calculation kernel may retain amount/currency fields for internal
     reconciliation.  They must not leak back through nested diagnostics or
     snapshots after the public result has adopted the 100-point contract
     basis.
@@ -255,7 +255,7 @@ class PricingResult:
     currency: str | None
     greeks: dict[str, GreekValue]
     method: PricingMethod
-    version: str
+    implementation_id: str
     extended_greeks: dict[str, GreekValue] = field(default_factory=dict)
     warnings: tuple[str, ...] = ()
     diagnostics: dict[str, Any] = field(default_factory=dict)
@@ -290,13 +290,8 @@ class PricingResult:
     path_count: int | None = None
 
     @property
-    def model_version(self) -> str:
-        """OptionHelper协议的名称，STANDARD仍以version保存实体版本。"""
-        return self.version
-
-    @property
     def pv(self) -> float | None:
-        """Backward-compatible public shorthand for the contractual 100-point PV."""
+        """Public shorthand for the contractual 100-point PV."""
         return self.pv_points_100
 
     def to_dict(self) -> dict[str, Any]:
@@ -359,7 +354,7 @@ class SolveResult:
     target_pv: float
     converged: bool
     method: PricingMethod
-    version: str
+    implementation_id: str
     warnings: tuple[str, ...] = ()
     diagnostics: dict[str, Any] = field(default_factory=dict)
     engine_raw: dict[str, Any] = field(default_factory=dict)

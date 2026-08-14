@@ -14,7 +14,7 @@ from ..results import PricingResult
 from .risk import ThetaRollValue, calculate_standard_greeks, raw_price_to_points_100
 
 
-_VERSION = "standard-static-accumulator-3"
+_IMPLEMENTATION_ID = "standard-static-accumulator"
 
 
 def _normal_cdf(value: float) -> float:
@@ -430,7 +430,7 @@ def price_static_accumulator_standard(
         currency=converted.currency,
         greeks=greeks,
         method=PricingMethod.STATIC_REPLICATION,
-        version=_VERSION,
+        implementation_id=_IMPLEMENTATION_ID,
         extended_greeks=extended_greeks,
         warnings=warnings,
         diagnostics=diagnostics,

@@ -104,7 +104,7 @@ class RunResult:
     greeks: dict[str, RiskMetric]
     extended_risks: dict[str, RiskMetric]
     method: str
-    version: str
+    implementation_id: str
     warnings: tuple[str, ...]
     diagnostics: dict[str, Any]
     engine_raw: dict[str, Any]
@@ -135,7 +135,7 @@ class SolveRunResult:
     target_pv_absolute_tolerance: float
     converged: bool
     method: str
-    version: str
+    implementation_id: str
     contract_patch: dict[str, float]
     warnings: tuple[str, ...]
     diagnostics: dict[str, Any]
@@ -371,7 +371,7 @@ def solve_option(
         target_pv_absolute_tolerance=solve_target.target_pv_absolute_tolerance,
         converged=solved.converged,
         method=solved.method.name,
-        version=solved.version,
+        implementation_id=solved.implementation_id,
         contract_patch=deepcopy(
             solved.diagnostics.get(
                 "contract_patch", {solved.variable: solved.value}
@@ -414,24 +414,13 @@ def solve_option(
 
 
 def _pricing_route(family: str, structure: str, method: str) -> tuple[str, dict[str, Any]]:
-    """选择基座明确登记的方法；香草BS与冻结MC共享同一结构。"""
-    if family == "VANILLA" and structure == "EUROPEAN_VANILLA" and method == "MONTE_CARLO_CPU":
-        return "STANDARD_VANILLA_MONTE_CARLO", {
-            "instrument_type": "EuropeanVanillaOption", "method": "MONTE_CARLO_CPU",
-            "price_handler": "price_vanilla_monte_carlo", "solve_handler": None,
-        }
+    """选择已登记的闭式或静态复制标准路由。"""
     route_id = _CATALOG.route_id(family, structure)
     return route_id, dict(_CATALOG.ENGINE_ROUTES[route_id])
 
 
 def _parameter_spec_for_method(family: str, structure: str, method: str) -> dict[str, Any]:
-    spec = _CATALOG.parameter_spec(family, structure)
-    if family == "VANILLA" and structure == "EUROPEAN_VANILLA" and method == "MONTE_CARLO_CPU":
-        spec["config"] = {
-            "required": (),
-            "optional": ("paths", "seed", "threads", "random_source", "greek_bumps", "diagnostics"),
-        }
-    return spec
+    return _CATALOG.parameter_spec(family, structure)
 
 
 def _require_mapping(label: str, value: Any) -> Mapping[str, Any]:
@@ -553,9 +542,11 @@ def _random_metadata(config: Any) -> dict[str, Any]:
     info = monte_carlo.random_source.info
     return {
         "used": True,
-        "seed": monte_carlo.seed,
+        "seed": info.seed,
+        "requested_seed": monte_carlo.seed,
         "paths": monte_carlo.paths,
         "threads": monte_carlo.threads,
+        "origin": info.origin,
         "shape": list(info.shape),
         "dtype": info.dtype,
         "sha256": info.sha256,
@@ -641,7 +632,7 @@ def _normalize_result(value: Any, family: str, structure: str) -> RunResult:
         greeks=greeks,
         extended_risks=extended_risks,
         method=value.method.name,
-        version=value.version,
+        implementation_id=value.implementation_id,
         warnings=tuple(value.warnings),
         diagnostics=deepcopy(value.diagnostics),
         engine_raw=deepcopy(value.engine_raw),
@@ -959,7 +950,7 @@ def _print_run(run: PricingRun) -> None:
     })
     _print_section("RESULT", {
         "method": result["method"],
-        "version": result["version"],
+        "implementation_id": result["implementation_id"],
     })
     _print_section("PV", {
         "pv_percent": result["pv_percent"],
@@ -1165,7 +1156,7 @@ def _build_instrument(derivatives: Any, structure: str, contract: dict[str, Any]
             ),
             trading_sessions=tuple(contract.get("trading_sessions", ())),
             calendar_id=str(contract.get("calendar_id", "")),
-            calendar_version=str(contract.get("calendar_version", "")),
+            calendar_revision=str(contract.get("calendar_revision", "")),
         )
     if structure == "BINARY":
         return derivatives.BinaryOption(
@@ -1230,53 +1221,7 @@ def _build_instrument(derivatives: Any, structure: str, contract: dict[str, Any]
                 contract.get("quantity_basis", "WHOLE_CONTRACT"),
             ),
         )
-    if structure in {"SNOWBALL", "PHOENIX", "TRIGGER"}:
-        return derivatives.AutocallOption(
-            basis=basis,
-            kind=_strict_enum(derivatives.AutocallKind, "structure", structure),
-            call_put=_strict_enum(derivatives.CallPut, "contract.call_put", contract["call_put"]),
-            strike=contract["strike"],
-            knock_in=contract["knock_in"],
-            knock_out=contract["knock_out"],
-            floor=contract["floor"],
-            coupon=contract["coupon"],
-            call_schedule=_build_schedule(derivatives, "contract.call_schedule", contract["call_schedule"]),
-            coupon_schedule=_build_schedule(
-                derivatives,
-                "contract.coupon_schedule",
-                contract["coupon_schedule"],
-            ),
-            final_trading_day=contract["final_trading_day"],
-            final_calendar_day=contract["final_calendar_day"],
-            final_rebate=contract["final_rebate"],
-            margin=contract.get("margin", 0.0),
-            knock_out_step_down=contract.get("knock_out_step_down"),
-            forward_curve_weight=contract.get("forward_curve_weight", 1.0),
-            parachute=contract.get("parachute", False),
-            enhanced_strike=contract.get("enhanced_strike"),
-            participation=contract.get("participation", 0.0),
-        )
-    return derivatives.PathAccumulatorOption(
-        basis=basis,
-        call_put=_strict_enum(derivatives.CallPut, "contract.call_put", contract["call_put"]),
-        strike=contract["strike"],
-        knock_out=contract["knock_out"],
-        multiplier=contract["multiplier"],
-        ko_begin_trading_day=contract["ko_begin_trading_day"],
-        lock_trading_days=contract["lock_trading_days"],
-        ko_terminates=contract["ko_terminates"],
-        observation_schedule=_build_schedule(
-            derivatives,
-            "contract.observation_schedule",
-            contract["observation_schedule"],
-        ),
-        forward_curve_weight=contract.get("forward_curve_weight", 1.0),
-        quantity_basis=_strict_enum(
-            derivatives.AccumulatorQuantityBasis,
-            "contract.quantity_basis",
-            contract.get("quantity_basis", "WHOLE_CONTRACT"),
-        ),
-    )
+    raise ValueError(f"没有已登记的正式Pricer结构：{structure}")
 
 
 def _build_airbag(derivatives: Any, basis: Any, value: Any):

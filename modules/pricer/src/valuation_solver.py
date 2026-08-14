@@ -49,7 +49,7 @@ def price(pricing_input: PricingInput) -> PricingResult:
             calendar_ref, calendar_data, pricing_input.contract.underlyings,
         )
         identity = pricing_input.contract.identity
-        for field in ("calendar_id", "calendar_version"):
+        for field in ("calendar_id", "calendar_revision"):
             if identity.get(field) != trading_calendar[field]:
                 raise ValueError(f"冻结ResolvedContract.{field}与Host验证交易日历不一致")
     if historical is not None:

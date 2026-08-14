@@ -11,7 +11,7 @@ from runtime.contracts.contract_api import ResolvedContract
 from .config import PricingConfig
 from .calendar_policy import requires_future_trading_calendar
 from .greeks import add_time_zero_cashflow, real_spot_greeks, scale_result
-from .model_router import ModelRoute, resolve_route
+from .model_router import resolve_route
 from .observation_schedule import actual_n_obs
 from .observed_state import ObservedContractState
 from .engines.pricing_core.engine.derivatives.results import GreekValue, PricingResult
@@ -92,7 +92,7 @@ class ProductPricingAdapter:
             raise ProductNotAvailable(f"{contract.product_id}没有已验证的{self.route.capability.adapter}参数适配")
         if self.route.capability.adapter == "european_vanilla":
             observed_state.validate_european_vanilla()
-        if self._uses_optionreg_path:
+        if self.method == "monte_carlo":
             start_value = contract.identity.get("contract_start_date")
             observed_state.validate_path_events(
                 contract_start_date=None if start_value is None else str(start_value),
@@ -101,7 +101,7 @@ class ProductPricingAdapter:
                 requires_accumulated_quantity="Q_acc" in contract.terms.get("monitor", {}),
                 unsupported_midlife_aggregate="n_in" in contract.terms.get("monitor", {}),
             )
-        if self.route.capability.adapter != "optionreg_path" and len(contract.underlyings) != 1:
+        if self.method != "monte_carlo" and len(contract.underlyings) != 1:
             raise ProductNotAvailable("该闭式结构仅支持单标的")
         self.asset = contract.underlyings[0]
         references = contract.identity.get("reference_prices")
@@ -116,23 +116,15 @@ class ProductPricingAdapter:
 
     @property
     def family(self) -> str:
-        return "OPTIONREG" if self._uses_optionreg_path else self.route.capability.family
+        return "OPTIONREG" if self.method == "monte_carlo" else self.route.capability.family
 
     @property
     def structure(self) -> str:
-        return "OPTIONREG_PATH" if self._uses_optionreg_path else self.route.capability.structure
+        return "OPTIONREG_PATH" if self.method == "monte_carlo" else self.route.capability.structure
 
     @property
     def method(self) -> str:
         return self.route.method
-
-    @property
-    def _uses_optionreg_path(self) -> bool:
-        """Structured products and explicit portfolio MC share one interpreter."""
-        return (
-            self.route.capability.adapter == "optionreg_path"
-            or (self.route.capability.adapter == "european_portfolio" and self.method == "monte_carlo")
-        )
 
     @property
     def _requires_trading_calendar(self) -> bool:
@@ -156,18 +148,19 @@ class ProductPricingAdapter:
         )
         run = price_option(self.family, self.structure, parameters, engine_method, output="NONE")
         result = _from_run(run)
-        quantity = float(self.contract.terms["n_C"] if self.contract.product_id == "2.1" else self.contract.terms["n_P"]) if self.route.capability.adapter == "european_vanilla" else 1.0
-        result = scale_result(result, quantity)
-        if not self._uses_optionreg_path:
+        if self.method != "monte_carlo":
+            quantity = (
+                float(self.contract.terms["n_C"] if self.contract.product_id == "2.1" else self.contract.terms["n_P"])
+                if self.route.capability.adapter == "european_vanilla"
+                else 1.0
+            )
+            result = scale_result(result, quantity)
             result = add_time_zero_cashflow(
                 result,
                 _initial_cashflow(self.contract, quantity),
                 _cashflow_basis(self.contract, self.reference_price)["cashflow_scale"],
             )
-        # OPTIONREG_PATH receives and bumps real market spots, while the
-        # interpreter converts paths to the contract scale internally.  Its
-        # Greek output is therefore already in actual-spot coordinates.
-        result = result if self._uses_optionreg_path else real_spot_greeks(result, self.reference_price)
+            result = real_spot_greeks(result, self.reference_price)
         result = _apply_value_basis(result, self.contract.product_id)
         # ``reprice`` is an internal base/Greek/risk-grid primitive.  It may be
         # invoked many times within one public valuation, but it never owns the
@@ -183,8 +176,6 @@ class ProductPricingAdapter:
     def _parameters(self, *, spot: float, volatility: float, risk_free_rate: float, maturity_years: float) -> dict[str, Any]:
         if spot <= 0.0 or volatility <= 0.0 or maturity_years <= 0.0:
             raise ValueError("受控重估的spot、volatility和maturity_years必须为正数")
-        normalized_spot = spot / self.reference_price * float(self.contract.terms.get("S0", 100.0))
-        direction = "CALL" if self.contract.product_id == "2.1" else "PUT"
         config = {"greek_bumps": {
             "spot_relative_bump": float(self.config.greek_bumps["spot"]),
             "volatility_absolute_bump": float(self.config.greek_bumps["volatility"]),
@@ -193,37 +184,46 @@ class ProductPricingAdapter:
         if self.method == "monte_carlo":
             config.update({"paths": int(self.config.path_count), "seed": int(self.config.random_seed)})
         basis = _cashflow_basis(self.contract, self.reference_price)
-        contract = ({
-            "strike": float(self.contract.terms["K"]), "maturity_years": float(maturity_years),
-            "call_put": direction, "basis": basis,
-        } if self.route.capability.adapter == "european_vanilla" else {
-            "legs": [
-                {"weight": weight, "structure": "EUROPEAN_VANILLA", "method": "BLACK_SCHOLES", "label": label,
-                 "contract": {"strike": strike, "maturity_years": float(maturity_years), "call_put": call_put, "basis": basis}}
-                for label, weight, call_put, strike in _portfolio_legs(self.contract)
-            ], "basis": basis,
-        } if self.route.capability.adapter == "european_portfolio" and not self._uses_optionreg_path else {
-            "resolved_contract": _contract_with_maturity(
+        if self.method == "monte_carlo":
+            contract = {
+                "resolved_contract": _contract_with_maturity(
                 self.contract,
                 float(maturity_years) + self._elapsed_years(),
                 remaining_years=float(maturity_years),
                 trading_calendar=self.trading_calendar,
                 as_of=_as_of(self.config.valuation_date),
-            ),
-            "basis": basis,
-            "asset_spots": [_asset_number(self.config.spot, asset, "spot") for asset in self.contract.underlyings],
-            "asset_volatilities": [self._asset_volatility(asset) for asset in self.contract.underlyings],
-            "asset_dividend_yields": [_asset_number(self.config.dividend_yield, asset, "dividend_yield") for asset in self.contract.underlyings],
-            "correlation": self.config.correlation,
-            "trading_sessions": [] if self.trading_calendar is None else list(self.trading_calendar["sessions"]),
-            "calendar_id": "" if self.trading_calendar is None else self.trading_calendar["calendar_id"],
-            "calendar_version": "" if self.trading_calendar is None else self.trading_calendar["calendar_version"],
-        })
+                ),
+                "basis": basis,
+                "asset_spots": [_asset_number(self.config.spot, asset, "spot") for asset in self.contract.underlyings],
+                "asset_volatilities": [self._asset_volatility(asset) for asset in self.contract.underlyings],
+                "asset_dividend_yields": [_asset_number(self.config.dividend_yield, asset, "dividend_yield") for asset in self.contract.underlyings],
+                "correlation": self.config.correlation,
+                "trading_sessions": [] if self.trading_calendar is None else list(self.trading_calendar["sessions"]),
+                "calendar_id": "" if self.trading_calendar is None else self.trading_calendar["calendar_id"],
+                "calendar_revision": "" if self.trading_calendar is None else self.trading_calendar["calendar_revision"],
+            }
+        elif self.route.capability.adapter == "european_vanilla":
+            direction = "CALL" if self.contract.product_id == "2.1" else "PUT"
+            contract = {
+                "strike": float(self.contract.terms["K"]),
+                "maturity_years": float(maturity_years),
+                "call_put": direction,
+                "basis": basis,
+            }
+        else:
+            contract = {
+                "legs": [
+                    {"weight": weight, "structure": "EUROPEAN_VANILLA", "method": "BLACK_SCHOLES", "label": label,
+                     "contract": {"strike": strike, "maturity_years": float(maturity_years), "call_put": call_put, "basis": basis}}
+                    for label, weight, call_put, strike in _portfolio_legs(self.contract)
+                ],
+                "basis": basis,
+            }
         return {
             "contract": contract,
             "market": {
                 "as_of": _as_of(self.config.valuation_date),
-                "spot": spot if self._uses_optionreg_path else normalized_spot,
+                "spot": spot if self.method == "monte_carlo" else spot / self.reference_price * float(self.contract.terms.get("S0", 100.0)),
                 "volatility": float(volatility),
                 "risk_free_rate": float(risk_free_rate),
                 "dividend_yield": _asset_number(self.config.dividend_yield, self.asset, "dividend_yield"),
@@ -232,7 +232,7 @@ class ProductPricingAdapter:
             "config": config,
             "valuation_state": self.observed_state.valuation_state(
                 contract_start_date=str(self.contract.identity.get("contract_start_date"))
-            ) if self._uses_optionreg_path else {},
+            ) if self.method == "monte_carlo" else {},
         }
 
     def _spot(self) -> float:
@@ -250,7 +250,7 @@ class ProductPricingAdapter:
         return float(self.config.time_to_maturity if self.config.time_to_maturity is not None else self.contract.terms["T"])
 
     def _elapsed_years(self) -> float:
-        if not self._uses_optionreg_path:
+        if self.method != "monte_carlo":
             return 0.0
         state = self.observed_state.valuation_state(
             contract_start_date=str(self.contract.identity.get("contract_start_date"))
@@ -273,7 +273,7 @@ def _from_run(run: Any) -> PricingResult:
         pv_points_100=run.result.pv_points_100, currency=run.result.currency,
         greeks={name.lower(): greek(value) for name, value in run.result.greeks.items()},
         extended_greeks={name.casefold().replace(" ", "_"): greek(value) for name, value in run.result.extended_risks.items()},
-        method=run.result.method, version=run.result.version, warnings=run.result.warnings,
+        method=run.result.method, implementation_id=run.result.implementation_id, warnings=run.result.warnings,
         diagnostics={**run.result.diagnostics, "pricing_run_id": run.run_id, "route_id": run.route_id, "request_fingerprint": run.request_fingerprint},
         engine_raw=run.result.engine_raw,
         standard_error=None if run.result.diagnostics.get("standard_error_points_100") is None else float(run.result.diagnostics["standard_error_points_100"]),
@@ -456,10 +456,10 @@ def _validated_trading_calendar(value: Any, *, as_of: date, demo_mode: bool) -> 
     if not isinstance(value, Mapping):
         raise ProductNotAvailable("离散路径MC必须提供独立trading-calendar资产的显式交易sessions")
     calendar_id = value.get("calendar_id")
-    calendar_version = value.get("calendar_version")
+    calendar_revision = value.get("calendar_revision")
     sessions = value.get("sessions")
-    if not isinstance(calendar_id, str) or not calendar_id.strip() or not isinstance(calendar_version, str) or not calendar_version.strip():
-        raise ProductNotAvailable("离散路径MC交易日历必须包含calendar_id和calendar_version")
+    if not isinstance(calendar_id, str) or not calendar_id.strip() or not isinstance(calendar_revision, str) or not calendar_revision.strip():
+        raise ProductNotAvailable("离散路径MC交易日历必须包含calendar_id和calendar_revision")
     if isinstance(sessions, (str, bytes)) or not isinstance(sessions, (tuple, list)):
         raise ProductNotAvailable("离散路径MC必须提供显式交易sessions，禁止weekday推断")
     parsed: list[date] = []
@@ -477,7 +477,7 @@ def _validated_trading_calendar(value: Any, *, as_of: date, demo_mode: bool) -> 
         raise ProductNotAvailable("正式离散路径MC必须注入经验证的中国交易sessions DataAssetRef")
     return {
         "calendar_id": calendar_id,
-        "calendar_version": calendar_version,
+        "calendar_revision": calendar_revision,
         "sessions": tuple(item.isoformat() for item in parsed),
         "verified_cn_sessions": verified_cn,
         "source": source,

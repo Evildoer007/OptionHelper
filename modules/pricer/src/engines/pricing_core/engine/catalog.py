@@ -14,8 +14,7 @@ FAMILY_STRUCTURES = {
     "DIGITAL": ("BINARY",),
     "BARRIER": ("BARRIER",),
     "AIRBAG": ("AIRBAG",),
-    "ACCUMULATOR": ("STATIC_ACCUMULATOR", "PATH_ACCUMULATOR"),
-    "AUTOCALL": ("SNOWBALL", "PHOENIX", "TRIGGER"),
+    "ACCUMULATOR": ("STATIC_ACCUMULATOR",),
     "OPTIONREG": ("OPTIONREG_PATH",),
 }
 
@@ -49,18 +48,6 @@ ENGINE_ROUTES = {
         "method": "STATIC_REPLICATION",
         "price_handler": "price_static_accumulator_standard",
         "solve_handler": None,
-    },
-    "STANDARD_AUTOCALL_MONTE_CARLO_CPU": {
-        "instrument_type": "AutocallOption",
-        "method": "MONTE_CARLO_CPU",
-        "price_handler": "price_autocall_standard",
-        "solve_handler": "solve_autocall_standard",
-    },
-    "STANDARD_PATH_ACCUMULATOR_MONTE_CARLO_CPU": {
-        "instrument_type": "PathAccumulatorOption",
-        "method": "MONTE_CARLO_CPU",
-        "price_handler": "price_path_accumulator_standard",
-        "solve_handler": "solve_path_accumulator_standard",
     },
     "STANDARD_OPTIONREG_DISCRETE_MONTE_CARLO": {
         "instrument_type": "OptionRegPathOption",
@@ -96,10 +83,6 @@ _ANALYTIC_STANDARD_CORE_RISKS = {
     "Rho": _risk("AVAILABLE", "pv_points_100_per_1pct_rate", None, "analytic", None),
 }
 
-_SCHEDULE_POINT_SHAPE = {
-    "type": "SchedulePoint[]",
-    "fields": ("trading_day", "calendar_day", "barrier", "amount"),
-}
 _AIRBAG_LEG_SHAPE = {
     "type": "OptionLeg[]",
     "fields": ("weight", "structure", "contract", "method", "label"),
@@ -115,15 +98,6 @@ _STATE_FIELDS_BY_STRUCTURE = {
     "BARRIER": (),
     "AIRBAG": (),
     "STATIC_ACCUMULATOR": (),
-    "SNOWBALL": ("trading_day", "calendar_day", "knocked_in", "knocked_out"),
-    "PHOENIX": ("trading_day", "calendar_day", "knocked_in", "knocked_out"),
-    "TRIGGER": ("trading_day", "calendar_day", "knocked_in", "knocked_out"),
-    "PATH_ACCUMULATOR": (
-        "trading_day",
-        "calendar_day",
-        "knocked_out",
-        "accumulated_count",
-    ),
     "OPTIONREG_PATH": (
         "trading_day", "calendar_day", "knocked_in", "knocked_out",
         "accumulated_count", "accumulated_quantity", "observation_stage",
@@ -138,36 +112,6 @@ _MONTE_CARLO_CONFIG_FIELDS = {
     "optional": (
         "paths", "seed", "threads", "random_source", "greek_bumps", "diagnostics"
     ),
-}
-
-_SNOWBALL_CONTRACT = {
-    "required": (
-        "call_put",
-        "strike",
-        "knock_in",
-        "knock_out",
-        "floor",
-        "coupon",
-        "call_schedule",
-        "coupon_schedule",
-        "final_trading_day",
-        "final_calendar_day",
-        "final_rebate",
-        "basis",
-    ),
-    "optional": (
-        "margin",
-        "knock_out_step_down",
-        "forward_curve_weight",
-        "parachute",
-        "enhanced_strike",
-        "participation",
-    ),
-    "choices": {},
-    "nested": {
-        "call_schedule": _SCHEDULE_POINT_SHAPE,
-        "coupon_schedule": _SCHEDULE_POINT_SHAPE,
-    },
 }
 
 _STRUCTURES: dict[str, dict[str, Any]] = {
@@ -276,55 +220,12 @@ _STRUCTURES: dict[str, dict[str, Any]] = {
         "solve_targets": (),
         "core_greeks": deepcopy(_STANDARD_CORE_RISKS),
     },
-    "SNOWBALL": {
-        "family": "AUTOCALL",
-        "route_id": "STANDARD_AUTOCALL_MONTE_CARLO_CPU",
-        "contract": deepcopy(_SNOWBALL_CONTRACT),
-        "solve_targets": ("coupon",),
-        "core_greeks": deepcopy(_STANDARD_CORE_RISKS),
-    },
-    "PHOENIX": {
-        "family": "AUTOCALL",
-        "route_id": "STANDARD_AUTOCALL_MONTE_CARLO_CPU",
-        "contract": deepcopy(_SNOWBALL_CONTRACT),
-        "solve_targets": ("coupon",),
-        "core_greeks": deepcopy(_STANDARD_CORE_RISKS),
-    },
-    "TRIGGER": {
-        "family": "AUTOCALL",
-        "route_id": "STANDARD_AUTOCALL_MONTE_CARLO_CPU",
-        "contract": deepcopy(_SNOWBALL_CONTRACT),
-        "solve_targets": ("coupon",),
-        "core_greeks": deepcopy(_STANDARD_CORE_RISKS),
-    },
-    "PATH_ACCUMULATOR": {
-        "family": "ACCUMULATOR",
-        "route_id": "STANDARD_PATH_ACCUMULATOR_MONTE_CARLO_CPU",
-        "contract": {
-            "required": (
-                "call_put",
-                "strike",
-                "knock_out",
-                "multiplier",
-                "ko_begin_trading_day",
-                "lock_trading_days",
-                "ko_terminates",
-                "observation_schedule",
-                "basis",
-            ),
-            "optional": ("forward_curve_weight", "quantity_basis"),
-            "choices": {},
-            "nested": {"observation_schedule": _SCHEDULE_POINT_SHAPE},
-        },
-        "solve_targets": ("strike",),
-        "core_greeks": deepcopy(_STANDARD_CORE_RISKS),
-    },
     "OPTIONREG_PATH": {
         "family": "OPTIONREG",
         "route_id": "STANDARD_OPTIONREG_DISCRETE_MONTE_CARLO",
         "contract": {
             "required": ("resolved_contract", "basis"),
-            "optional": ("asset_spots", "asset_volatilities", "asset_dividend_yields", "correlation", "trading_sessions", "calendar_id", "calendar_version"),
+            "optional": ("asset_spots", "asset_volatilities", "asset_dividend_yields", "correlation", "trading_sessions", "calendar_id", "calendar_revision"),
             "choices": {},
             "nested": {},
         },
@@ -352,7 +253,7 @@ RESULT_FIELDS = (
     "greeks",
     "extended_risks",
     "method",
-    "version",
+    "implementation_id",
     "warnings",
     "diagnostics",
     "engine_raw",

@@ -71,12 +71,12 @@ def compile_pricer_input_defaults(
         return values
 
     refs = tuple(_data_asset_ref(item) for item in data_refs)
-    history_refs = tuple(ref for ref in refs if ref.schema_id == "market-history-v1")
+    history_refs = tuple(ref for ref in refs if ref.schema_id == "market-history")
     calendar_refs = tuple(ref for ref in refs if ref.schema_id == "trading-calendar")
     unsupported = tuple(
         ref.schema_id
         for ref in refs
-        if ref.schema_id not in {"market-history-v1", "trading-calendar"}
+        if ref.schema_id not in {"market-history", "trading-calendar"}
     )
     if unsupported:
         raise PricerInputDefaultError(
@@ -84,7 +84,7 @@ def compile_pricer_input_defaults(
             + ",".join(sorted(set(unsupported)))
         )
     if len(history_refs) != 1:
-        raise PricerInputDefaultError("Pricer正式输入必须绑定唯一market-history-v1行情DataAssetRef")
+        raise PricerInputDefaultError("Pricer正式输入必须绑定唯一market-history行情DataAssetRef")
     if len(calendar_refs) > 1:
         raise PricerInputDefaultError("Pricer正式输入最多绑定一个trading-calendar交易日历DataAssetRef")
     if data_store is None or not callable(getattr(data_store, "read_bytes", None)):

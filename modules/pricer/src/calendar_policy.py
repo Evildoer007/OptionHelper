@@ -14,10 +14,10 @@ def requires_future_trading_calendar(
 ) -> bool:
     """Return whether the selected formal route needs observed sessions.
 
-    A calendar is required only for an OptionReg path route that has a real
-    observation schedule.  Terminal-only MC, including European portfolios,
-    consumes its valuation and contractual maturity endpoints and must not
-    manufacture intermediate sessions.
+    A calendar is required only when a Monte Carlo contract has a real
+    observation schedule. Terminal-only contracts consume their valuation and
+    contractual-maturity endpoints and must not manufacture intermediate
+    sessions.
     """
 
     if not isinstance(terms, Mapping):
@@ -28,7 +28,7 @@ def requires_future_trading_calendar(
     route = resolve_route(str(product_id), allowed, str(model_method))
     if route is None:
         return False
-    return route.capability.adapter == "optionreg_path" and bool(terms.get("monitor"))
+    return route.method == "monte_carlo" and bool(terms.get("monitor"))
 
 
 def requires_future_trading_calendar_for_protocol(

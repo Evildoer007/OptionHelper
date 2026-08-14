@@ -23,7 +23,7 @@ class HistoricalData:
     source_ref: str
     rows: tuple[Mapping[str, Any], ...]
     content_hash: str = ""
-    schema_id: str = "market-history-v1"
+    schema_id: str = "market-history"
     asset_ids: tuple[str, ...] = ()
     normalized_fields: tuple[str, ...] = ("date", "asset_id", "close", "adj_close")
     coverage: Mapping[str, Any] | None = None
@@ -38,8 +38,8 @@ class HistoricalData:
         fields = set(self.normalized_fields)
         if not required.issubset(fields):
             raise ValueError("HistoricalData.normalized_fields必须含date、asset_id、close、adj_close")
-        if self.schema_id != "market-history-v1":
-            raise ValueError("HistoricalData.schema_id必须为market-history-v1")
+        if self.schema_id != "market-history":
+            raise ValueError("HistoricalData.schema_id必须为market-history")
         row_assets = tuple(sorted({str(row.get("asset_id", "")).strip() for row in self.rows}))
         if not row_assets or "" in row_assets:
             raise ValueError("HistoricalData.rows必须逐行提供asset_id")
@@ -63,12 +63,12 @@ class HistoricalData:
         coverage = dict(self.coverage or {})
         sessions = coverage.get("sessions")
         calendar_id = coverage.get("calendar_id")
-        calendar_version = coverage.get("calendar_version")
-        if not sessions or not calendar_id or not calendar_version:
+        calendar_revision = coverage.get("calendar_revision")
+        if not sessions or not calendar_id or not calendar_revision:
             return None
         return {
             "calendar_id": str(calendar_id),
-            "calendar_version": str(calendar_version),
+            "calendar_revision": str(calendar_revision),
             "sessions": tuple(str(value) for value in sessions),
             "verified_cn_sessions": _is_verified_cn_calendar(coverage),
             "source": self.storage_mode,
@@ -137,8 +137,8 @@ def validate_market_data_asset(
     """验证Host资产身份、市场字段、口径、覆盖范围和合同标的映射。"""
     if not isinstance(ref, DataAssetRef):
         raise ValueError("market_data_refs只能传入受控DataAssetRef")
-    if ref.media_type != "text/csv" or ref.schema_id != "market-history-v1":
-        raise ValueError("DataAssetRef必须是market-history-v1 text/csv")
+    if ref.media_type != "text/csv" or ref.schema_id != "market-history":
+        raise ValueError("DataAssetRef必须是market-history text/csv")
     if not _is_sha256(ref.content_hash) or ref.content_hash != historical.content_hash:
         raise ValueError("DataAssetRef.content_hash必须与HistoricalData内容哈希一致")
     if ref.storage_ref != historical.source_ref:
@@ -166,7 +166,7 @@ def validate_market_data_asset(
     _validate_history_sessions(historical.rows, coverage["sessions"])
     return {
         "calendar_id": str(coverage["calendar_id"]),
-        "calendar_version": str(coverage["calendar_version"]),
+        "calendar_revision": str(coverage["calendar_revision"]),
         "sessions": tuple(str(value) for value in coverage["sessions"]),
         "verified_cn_sessions": _is_verified_cn_calendar(coverage),
         "source": "host-injected",
@@ -254,7 +254,7 @@ def validate_trading_calendar_asset(
         raise ValueError("交易日历资产不得包含未来价格")
     return {
         "calendar_id": str(coverage["calendar_id"]),
-        "calendar_version": str(coverage["calendar_version"]),
+        "calendar_revision": str(coverage["calendar_revision"]),
         "sessions": tuple(calendar.sessions),
         "sessions_by_exchange": {key: tuple(value) for key, value in calendar.sessions_by_exchange.items()},
         "asset_exchange": dict(calendar.asset_exchange),
@@ -288,7 +288,7 @@ def _validate_coverage(coverage: Mapping[str, Any], *, allow_empty: bool) -> Non
         if allow_empty:
             return
         raise ValueError("DataAssetRef.coverage必须声明日期覆盖和交易日历")
-    required = {"sessions", "calendar_id", "calendar_version"}
+    required = {"sessions", "calendar_id", "calendar_revision"}
     missing = required - set(coverage)
     if missing:
         raise ValueError("DataAssetRef.coverage缺少：" + "、".join(sorted(missing)))
@@ -312,7 +312,7 @@ def _validate_coverage(coverage: Mapping[str, Any], *, allow_empty: bool) -> Non
         raise ValueError("DataAssetRef.coverage.sessions必须非空、严格递增且不重复")
     if parsed[0] < start or parsed[-1] > end:
         raise ValueError("DataAssetRef.coverage.sessions必须位于声明日期范围")
-    for key in ("calendar_id", "calendar_version"):
+    for key in ("calendar_id", "calendar_revision"):
         if not isinstance(coverage[key], str) or not coverage[key].strip():
             raise ValueError(f"DataAssetRef.coverage.{key}不能为空")
 
@@ -369,7 +369,7 @@ def _iso_date(value: object, label: str) -> date:
 
 def _is_verified_cn_calendar(coverage: Mapping[str, Any]) -> bool:
     """正式报价只认显式版本化的中国交易日历，不根据weekday猜测。"""
-    return str(coverage.get("calendar_id", "")).upper().startswith("CN-") and bool(str(coverage.get("calendar_version", "")).strip())
+    return str(coverage.get("calendar_id", "")).upper().startswith("CN-") and bool(str(coverage.get("calendar_revision", "")).strip())
 
 
 __all__ = (

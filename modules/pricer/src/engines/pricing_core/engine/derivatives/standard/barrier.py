@@ -19,7 +19,7 @@ from .risk import (
 )
 
 
-_VERSION = "standard-barrier-3"
+_IMPLEMENTATION_ID = "standard-barrier"
 _FREQUENCY_TO_DT = {
     "Continuous": 0.0,
     "HalfDaily": 1 / 488,
@@ -424,7 +424,7 @@ def price_barrier_standard(
         currency=converted.currency,
         greeks=greeks,
         method=config.method,
-        version=_VERSION,
+        implementation_id=_IMPLEMENTATION_ID,
         extended_greeks=extended_greeks,
         warnings=tuple(warnings),
         diagnostics={

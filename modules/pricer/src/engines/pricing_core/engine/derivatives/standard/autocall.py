@@ -17,7 +17,7 @@ try:
     from ..basis import convert_points_100
     from ..enums import AutocallKind, PricingMethod
     from ..instruments import AutocallOption
-    from ..models import MarketState, SolveTarget, ValuationConfig, ValuationState
+    from ..models import MarketState, ValuationConfig, ValuationState
     from ..random_source import NpyRandomSource
     from ..results import PricingResult, SolveResult
     from ._numba_runtime import numba_thread_scope
@@ -29,7 +29,7 @@ except ImportError:  # Direct file loading used by the audit harness.
         from derivatives.basis import convert_points_100
         from derivatives.enums import AutocallKind, PricingMethod
         from derivatives.instruments import AutocallOption
-        from derivatives.models import MarketState, SolveTarget, ValuationConfig, ValuationState
+        from derivatives.models import MarketState, ValuationConfig, ValuationState
         from derivatives.random_source import NpyRandomSource
         from derivatives.results import PricingResult, SolveResult
         from derivatives.standard._numba_runtime import numba_thread_scope
@@ -43,8 +43,7 @@ except ImportError:  # Direct file loading used by the audit harness.
             sys.path.pop(0)
 
 
-_VERSION = "standard-autocall-3"
-_SEED = 20240101
+_IMPLEMENTATION_ID = "standard-autocall"
 _MAX_PATHS = 2000
 
 
@@ -141,8 +140,6 @@ def _validate(instrument: AutocallOption, config: ValuationConfig, state: Valuat
         raise ValueError("kind必须是AutocallKind")
     if config.paths > _MAX_PATHS:
         raise ValueError(f"paths不得超过{_MAX_PATHS}")
-    if config.seed != _SEED:
-        raise ValueError("Autocall STANDARD只接受seed=20240101")
     if state.knocked_out:
         raise ValueError("已敲出的Autocall必须提供待结算现金流，不能按存续合约重新模拟")
     _strict_schedule(instrument.call_schedule, "call_schedule")
@@ -276,8 +273,6 @@ def _simulate(
     source = monte_carlo.random_source
     if not isinstance(source, NpyRandomSource):
         raise ValueError("random_source必须是NpyRandomSource")
-    if source.info.seed != _SEED:
-        raise ValueError("随机数源seed与配置不一致")
     matrix = source.load(paths=monte_carlo.paths, steps=used_steps)
 
     call_amounts, coupon_amounts, call_barriers, coupon_barriers, final_rebate = (
@@ -329,8 +324,10 @@ def simulate_autocall_paths(
 
 def _random_diagnostics(config, source, used_steps):
     return {
-        "paths": config.paths, "seed": config.seed, "threads": config.threads,
+        "paths": config.paths, "seed": source.info.seed,
+        "requested_seed": config.seed, "threads": config.threads,
         "random_source": source.info.path, "random_sha256": source.info.sha256,
+        "random_origin": source.info.origin,
         "random_shape": source.info.shape, "random_dtype": source.info.dtype,
         "used_paths": config.paths, "used_steps": used_steps,
     }
@@ -413,7 +410,7 @@ def price_autocall_standard(instrument, market, config, valuation_state=None) ->
     return PricingResult(
         pv_amount=converted.pv_amount, pv_percent=converted.pv_percent,
         pv_points_100=converted.pv_points_100, currency=converted.currency,
-        greeks=greeks, method=PricingMethod.MONTE_CARLO_CPU, version=_VERSION,
+        greeks=greeks, method=PricingMethod.MONTE_CARLO_CPU, implementation_id=_IMPLEMENTATION_ID,
         extended_greeks=extended_greeks,
         warnings=tuple(warnings),
         diagnostics={
@@ -477,7 +474,7 @@ def solve_autocall_standard(instrument, market, config, target, valuation_state=
         value=value, variable=target.variable, target_pv=target.target_pv,
         converged=bool(root.converged) and target_met,
         method=PricingMethod.MONTE_CARLO_CPU,
-        version=_VERSION,
+        implementation_id=_IMPLEMENTATION_ID,
         warnings=tuple(_warnings(config)),
         diagnostics={
             "engine": "standard.autocall", **_random_diagnostics(config, latest_source, latest_steps),

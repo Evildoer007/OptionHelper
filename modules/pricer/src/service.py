@@ -69,7 +69,6 @@ ICON_DIR = PROJECT_ROOT / "assets" / "icons"
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("OPTIONHELPER_PRICER_PORT", "4280"))
 MAX_BODY_BYTES = 1_500_000
-WEB_UI_VERSION = "2026.08.04.1"
 RESULT_TABLE_NAME = "pricing_results.csv"
 RESULT_TABLE_LOCK = threading.Lock()
 
@@ -887,7 +886,7 @@ class Handler(BaseHTTPRequestHandler):
             **static_assets(),
         }
         if self.path == "/api/status":
-            return self._json(HTTPStatus.OK, {"ok": True, "module": "pricer", "web_ui_version": WEB_UI_VERSION})
+            return self._json(HTTPStatus.OK, {"ok": True, "module": "pricer"})
         if self.path == "/api/catalog":
             return self._json(HTTPStatus.OK, self.runtime.catalog())
         if self.path in {"/", "/pricer.html"}:

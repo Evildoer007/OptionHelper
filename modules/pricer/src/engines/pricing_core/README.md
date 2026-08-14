@@ -12,6 +12,7 @@
 - 只使用CPU，不依赖CUDA。
 - macOS已运行验证；Windows只完成代码级兼容设计，尚未实机验证。
 - 快速回归固定`paths=10、seed=20240101、threads=1`，不代表正式报价精度。
+- 默认随机矩阵存在时直接使用；文件缺失时按本次`seed`自动重建2000×800的float64矩阵，并写入可核验元数据。已有矩阵不会被新seed覆盖。删除历史无元数据矩阵后得到的是当前环境按该seed生成的新基线，不应再与旧矩阵逐路径比较。
 
 ## 二、目录
 
@@ -20,8 +21,7 @@ pricing_core/
 ├── main.py                 唯一公共入口
 ├── engine/                 STANDARD定价、Greek、反解和市场数据
 ├── data/
-│   ├── rand_normal.npy     固定随机矩阵
-│   └── market_snapshots/   脱敏收盘市场快照
+│   └── rand_normal.npy     固定随机矩阵
 ├── examples/quick_start.py 最小运行示例
 ├── tests/                  Golden、数值与独立运行测试
 ├── docs/adr/               架构决策
@@ -203,7 +203,7 @@ snapshot = fetch_ifind_market_snapshot(
     volatility_window=20,
     risk_free_rate=0.02,
     dividend_yield=0.0,
-    output_path="data/market_snapshots/510300.SH_2026-08-06_HV20.json",
+    output_path="/受控外置数据目录/510300.SH_2026-08-06_HV20.json",
 )
 
 market = snapshot.to_market_parameters()
@@ -218,12 +218,7 @@ market = snapshot.to_market_parameters()
 - 快照保存字段、口径、实际交易日、观察数量和数据哈希，不保存完整历史序列。
 - 当前利率、股息率和carry由调用者明确提供，尚未从iFinD自动拉取。
 
-项目内包含两份已实盘验证的脱敏样例：
-
-- `data/market_snapshots/000300.SH_2026-08-06_HV20.json`
-- `data/market_snapshots/510300.SH_2026-08-06_HV20.json`
-
-定价和测试优先读取离线快照，避免网络状态改变回归结果。
+仓库不内置行情快照。正式定价通过Host注入的DataAssetRef读取外置Store；需要可复现的离线试验时，由调用者在外置数据目录保存并显式引用快照。
 
 ## 十、显式日程与参数规则
 

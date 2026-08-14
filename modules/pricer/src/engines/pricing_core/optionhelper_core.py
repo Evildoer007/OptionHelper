@@ -56,7 +56,7 @@ def _validated_config(value: Any) -> Any:
 def _unsupported(contract: ResolvedContract, config: Any, state: ObservedContractState, allowed: tuple[str, ...], reason: str) -> PricingResult:
     return PricingResult(
         pv_amount=None, pv_percent=None, pv_points_100=None, currency=contract.currency,
-        method="unsupported", version="optionhelper/unsupported", status="unsupported", product_id=contract.product_id,
+        method="unsupported", implementation_id="optionhelper.unsupported", status="unsupported", product_id=contract.product_id,
         contract_fingerprint=contract.contract_fingerprint,
         greeks={name: GreekValue(value=None, unit=None, bump=None, difference="not_applicable", status="not_applicable", reason=reason) for name in ("delta", "gamma", "vega", "theta", "rho")},
         input_snapshot={"contract": contract.to_protocol_dict(), "pricing_config": _config_dict(config), "optionreg_allowed_methods": list(allowed)},

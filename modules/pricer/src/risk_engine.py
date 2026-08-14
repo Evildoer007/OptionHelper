@@ -73,6 +73,7 @@ def scenario_values(*, price_one: PriceOne, market: Any, maturity_years: float, 
             "shifts": {key: value for key, value in scenario.items() if key != "name"},
             "greeks": {name.capitalize(): _greek(priced, name) for name in ("delta", "gamma", "theta", "vega", "rho")},
             "path_pv_sha256_float64": None if result is None else result.diagnostics.get("path_pv_sha256_float64"),
+            "random_source": _random_source(priced),
         })
     return rows
 
@@ -110,6 +111,14 @@ def _greek(priced: tuple[Any | None, str | None], name: str) -> float | None:
     return value.value if value is not None else None
 
 
+def _random_source(priced: tuple[Any | None, str | None]) -> dict[str, Any] | None:
+    result, _reason = priced
+    if result is None:
+        return None
+    source = result.diagnostics.get("random_source")
+    return None if source is None else dict(source)
+
+
 def _curve(key: str, name: str, x_name: str, x_unit: str, y_name: str, y_unit: str, xs: list[float], priced: list[tuple[Any | None, str | None]], greek: str, method: str) -> dict[str, Any]:
     first_value = next(
         (result.greeks[greek] for result, _reason in priced if result is not None and greek in result.greeks),
@@ -126,6 +135,7 @@ def _curve(key: str, name: str, x_name: str, x_unit: str, y_name: str, y_unit: s
                 "y": _greek(value, greek),
                 "status": "not_applicable" if value[1] else "ok",
                 "reason": value[1],
+                "random_source": _random_source(value),
             }
             for x, value in zip(xs, priced, strict=True)
         ],
@@ -143,6 +153,7 @@ def _surface(key: str, name: str, z_unit: str, spots: list[float], times: list[f
                 "path_pv_sha256_float64": None if result is None else result.diagnostics.get("path_pv_sha256_float64"),
                 "status": "not_applicable" if reason else "ok",
                 "reason": reason,
+                "random_source": _random_source(priced),
             })
     first_value = next(
         (result.greeks[greek] for row in grid for result, _reason in row if result is not None and greek in result.greeks),
@@ -173,6 +184,7 @@ def _spot_time_scenarios(grid: list[list[Any]], shifts: tuple[float, ...], time_
                 "status": "not_applicable" if reason else "ok", "reason": reason,
                 "greeks": {name.capitalize(): _greek((result, reason), name) for name in ("delta", "gamma", "theta", "vega", "rho")},
                 "path_pv_sha256_float64": None if result is None else result.diagnostics.get("path_pv_sha256_float64"),
+                "random_source": _random_source((result, reason)),
             })
     return rows
 

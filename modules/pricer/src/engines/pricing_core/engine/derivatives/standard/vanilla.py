@@ -4,20 +4,15 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, replace
 from datetime import timedelta
-import hashlib
 import math
 from statistics import NormalDist
-
-import numpy as np
 
 from ..basis import convert_points_100
 from ..enums import CallPut, PricingMethod
 from ..instruments import EuropeanVanillaOption
 from ..models import MarketState, ValuationConfig, ValuationState
-from ..random_source import default_random_source
 from ..results import PricingResult
 from .risk import (
-    StandardGreekConvention,
     ThetaRollValue,
     calculate_standard_greeks,
     effective_dividend_yield,
@@ -26,7 +21,7 @@ from .risk import (
 )
 
 
-_VERSION = "standard-vanilla-4"
+_IMPLEMENTATION_ID = "standard-vanilla"
 _PI = 3.14159265358979
 _STANDARD_NORMAL = NormalDist()
 
@@ -425,7 +420,7 @@ def price_vanilla_standard(
         currency=converted.currency,
         greeks=greeks,
         method=config.method,
-        version=_VERSION,
+        implementation_id=_IMPLEMENTATION_ID,
         extended_greeks=extended_greeks,
         warnings=tuple(warnings),
         diagnostics=diagnostics,
@@ -434,106 +429,4 @@ def price_vanilla_standard(
             "unit": "POINTS_100",
             "note": "STANDARD raw output retained in the shared raw-result field",
         },
-    )
-
-
-def price_vanilla_monte_carlo(
-    instrument: EuropeanVanillaOption,
-    market: MarketState,
-    config: ValuationConfig,
-    valuation_state: ValuationState | None = None,
-) -> PricingResult:
-    """同一EuropeanVanillaOption的固定随机源风险中性MC。"""
-    del valuation_state
-    if config.method is not PricingMethod.MONTE_CARLO_CPU:
-        raise ValueError("Vanilla MC仅支持MONTE_CARLO_CPU")
-    source = default_random_source()
-    if config.seed != source.info.seed:
-        raise ValueError(f"Vanilla MC固定seed={source.info.seed}")
-    z = source.load(config.paths, 1)[:, 0]
-    sign = 1.0 if instrument.call_put is CallPut.CALL else -1.0
-    tau = instrument.maturity_years
-    q = effective_dividend_yield(market, future=instrument.future)
-
-    def values(local: MarketState, maturity: float = tau) -> np.ndarray:
-        carry = local.risk_free_rate - effective_dividend_yield(
-            local, future=instrument.future
-        )
-        terminal = local.spot * np.exp(
-            (carry - 0.5 * local.volatility ** 2) * maturity
-            + local.volatility * math.sqrt(maturity) * z
-        )
-        payoff = np.maximum(sign * (terminal - instrument.strike), 0.0)
-        return math.exp(-local.risk_free_rate * maturity) * payoff
-
-    path_values = values(market)
-    raw = float(np.mean(path_values))
-    converted = convert_points_100(raw, instrument.basis)
-    raw_standard_error = float(np.std(path_values, ddof=1) / math.sqrt(config.paths))
-    converted_standard_error = convert_points_100(raw_standard_error, instrument.basis)
-    bump = StandardGreekConvention.from_valuation_config(config)
-    ds = market.spot * bump.spot_relative_bump
-    dv = min(bump.volatility_absolute_bump, market.volatility / 2)
-    dr = bump.risk_free_rate_absolute_bump
-    up = float(np.mean(values(replace(market, spot=market.spot + ds))))
-    down = float(np.mean(values(replace(market, spot=market.spot - ds))))
-    vup = float(np.mean(values(replace(market, volatility=market.volatility + dv))))
-    vdown = float(np.mean(values(replace(market, volatility=market.volatility - dv))))
-    rup = float(np.mean(values(replace(market, risk_free_rate=market.risk_free_rate + dr))))
-    rdown = float(np.mean(values(replace(market, risk_free_rate=market.risk_free_rate - dr))))
-    rolled_tau = tau - bump.theta_calendar_day_shift / 365
-    if rolled_tau <= 0:
-        raise ValueError("Vanilla MC Theta推进后不得到期")
-    rolled = float(np.mean(values(market, rolled_tau)))
-    greeks = {
-        "delta": make_risk_value(
-            (up - down) / (2 * ds), unit="pv_points_100_per_spot", bump=ds,
-            difference="common_random_numbers_central", basis=instrument.basis,
-        ),
-        "gamma": make_risk_value(
-            (up - 2 * raw + down) / (ds * ds),
-            unit="pv_points_100_per_spot_squared", bump=ds,
-            difference="common_random_numbers_central", basis=instrument.basis,
-        ),
-        "vega": make_risk_value(
-            (vup - vdown) / (2 * dv) * 0.01,
-            unit="pv_points_100_per_1pct_volatility", bump=dv,
-            difference="common_random_numbers_central", basis=instrument.basis,
-        ),
-        "theta": make_risk_value(
-            (rolled - raw) / bump.theta_calendar_day_shift,
-            unit="pv_points_100_per_calendar_day",
-            bump=float(bump.theta_calendar_day_shift),
-            difference="common_random_numbers_forward_roll", basis=instrument.basis,
-            time_basis="calendar_day",
-        ),
-        "rho": make_risk_value(
-            (rup - rdown) / (2 * dr) * 0.01,
-            unit="pv_points_100_per_1pct_rate", bump=dr,
-            difference="common_random_numbers_central", basis=instrument.basis,
-        ),
-    }
-    terminal = market.spot * np.exp(
-        (market.risk_free_rate - q - 0.5 * market.volatility ** 2) * tau
-        + market.volatility * math.sqrt(tau) * z
-    )
-    return PricingResult(
-        pv_amount=converted.pv_amount,
-        pv_percent=converted.pv_percent,
-        pv_points_100=converted.pv_points_100,
-        currency=converted.currency,
-        greeks=greeks,
-        method=config.method,
-        version="standard-vanilla-mc-1",
-        warnings=converted.warnings,
-        diagnostics={
-            "engine": "standard.vanilla_mc",
-            "paths": config.paths,
-            "standard_error_points_100": raw_standard_error,
-            "random_source": asdict(source.info),
-            "path_pv_sha256_float64": hashlib.sha256(np.ascontiguousarray(path_values).tobytes()).hexdigest(),
-            "model_in_the_money_probability": float(np.mean(sign * (terminal - instrument.strike) > 0)),
-        },
-        engine_raw={"price": raw, "unit": "POINTS_100"},
-        standard_error=converted_standard_error.pv_amount,
     )

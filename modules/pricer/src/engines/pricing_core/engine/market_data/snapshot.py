@@ -15,7 +15,7 @@ from .models import DailyBar, MarketSnapshot, MarketSnapshotRequest
 from .providers import MarketDataProvider
 
 
-SCHEMA_VERSION = "market-snapshot-1"
+SCHEMA_ID = "optionhelper.market-snapshot"
 
 
 def _historical_volatility(
@@ -87,7 +87,7 @@ def build_market_snapshot(
         f"HV{request.volatility_window}(adjusted_close,{request.annualization_trading_days})"
     )
     return MarketSnapshot(
-        schema_version=SCHEMA_VERSION,
+        schema=SCHEMA_ID,
         code=request.code,
         asset_type=request.asset_type,
         requested_as_of=request.as_of,
@@ -146,8 +146,8 @@ def load_market_snapshot(path: Path | str) -> MarketSnapshot:
             f"市场快照字段不匹配：missing={sorted(missing)}, unknown={sorted(unknown)}"
         )
     values = dict(payload)
-    if values["schema_version"] != SCHEMA_VERSION:
-        raise ValueError(f"不支持的市场快照版本：{values['schema_version']}")
+    if values["schema"] != SCHEMA_ID:
+        raise ValueError(f"不支持的市场快照版本：{values['schema']}")
     for name in (
         "requested_as_of", "market_date", "history_start_date", "history_end_date"
     ):

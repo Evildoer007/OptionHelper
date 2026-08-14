@@ -19,7 +19,7 @@ from ..results import GreekValue, PricingResult
 from .risk import make_risk_value
 
 
-_VERSION = "standard-airbag-2"
+_IMPLEMENTATION_ID = "standard-airbag"
 _SUPPORTED_LEG_TYPES = (EuropeanVanillaOption, BinaryOption, BarrierOption)
 
 
@@ -69,7 +69,7 @@ def price_airbag_standard(
                 "instrument": type(leg.instrument).__name__,
                 "method": leg.method.name,
                 "engine": leg_result.diagnostics.get("engine"),
-                "version": leg_result.version,
+                "implementation_id": leg_result.implementation_id,
                 "pv_points_100": leg_result.pv_points_100,
                 "engine_raw": deepcopy(leg_result.engine_raw),
             }
@@ -148,7 +148,7 @@ def price_airbag_standard(
         currency=converted.currency,
         greeks=greeks,
         method=config.method,
-        version=_VERSION,
+        implementation_id=_IMPLEMENTATION_ID,
         extended_greeks=extended_greeks,
         warnings=tuple(dict.fromkeys(warnings)),
         diagnostics=diagnostics,

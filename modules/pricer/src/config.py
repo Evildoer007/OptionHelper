@@ -41,8 +41,12 @@ class PricingConfig:
             raise PricingConfigError("demo_mode必须为布尔值")
         if self.demo_calendar is not None and not isinstance(self.demo_calendar, Mapping):
             raise PricingConfigError("demo_calendar必须为对象或None")
-        if self.random_seed != 20240101:
-            raise PricingConfigError("random_seed固定为20240101，以保持正式MC可复现")
+        if (
+            not isinstance(self.random_seed, int)
+            or isinstance(self.random_seed, bool)
+            or not 0 <= self.random_seed <= 0xFFFFFFFF
+        ):
+            raise PricingConfigError("random_seed必须为0至4294967295之间的整数")
         if self.correlation is not None:
             if not isinstance(self.correlation, list) or not self.correlation or any(
                 not isinstance(row, list) for row in self.correlation

@@ -43,8 +43,7 @@ except ImportError:  # Direct file loading used by the audit harness.
             sys.path.pop(0)
 
 
-_VERSION = "standard-path-accumulator-3"
-_SEED = 20240101
+_IMPLEMENTATION_ID = "standard-path-accumulator"
 _MAX_PATHS = 2000
 
 
@@ -166,8 +165,6 @@ def _validate(
         raise ValueError("路径累购STANDARD只支持MONTE_CARLO_CPU")
     if config.paths > _MAX_PATHS:
         raise ValueError(f"paths不得超过{_MAX_PATHS}")
-    if config.seed != _SEED:
-        raise ValueError(f"路径累购STANDARD只接受seed={_SEED}")
     if not instrument.observation_schedule:
         raise ValueError("observation_schedule不能为空")
     previous_trading = None
@@ -241,8 +238,6 @@ def _simulate(
     source = monte_carlo.random_source
     if not isinstance(source, NpyRandomSource):
         raise ValueError("random_source必须是NpyRandomSource")
-    if source.info.seed != _SEED:
-        raise ValueError("随机数源seed与配置不一致")
     matrix = source.load(paths=monte_carlo.paths, steps=used_steps)
 
     ko_tday = np.array([point.trading_day for point in instrument.observation_schedule])
@@ -329,10 +324,12 @@ def _diagnostics(
     return {
         "engine": "standard_path_accumulator_monte_carlo_cpu",
         "paths": config.paths,
-        "seed": config.seed,
+        "seed": source.info.seed,
+        "requested_seed": config.seed,
         "threads": config.threads,
         "random_source": source.info.path,
         "random_sha256": source.info.sha256,
+        "random_origin": source.info.origin,
         "random_shape": source.info.shape,
         "random_dtype": source.info.dtype,
         "used_paths": config.paths,
@@ -420,7 +417,7 @@ def price_path_accumulator_standard(
         currency=converted.currency,
         greeks=greeks,
         method=PricingMethod.MONTE_CARLO_CPU,
-        version=_VERSION,
+        implementation_id=_IMPLEMENTATION_ID,
         extended_greeks=extended_greeks,
         warnings=warnings,
         diagnostics=diagnostics,
@@ -478,15 +475,17 @@ def solve_path_accumulator_standard(
         target_pv=target.target_pv,
         converged=bool(root.converged) and target_met,
         method=PricingMethod.MONTE_CARLO_CPU,
-        version=_VERSION,
+        implementation_id=_IMPLEMENTATION_ID,
         warnings=_warnings(instrument, config),
         diagnostics={
             "engine": "standard_path_accumulator_monte_carlo_cpu",
             "paths": config.paths,
-            "seed": config.seed,
+            "seed": latest_source.info.seed,
+            "requested_seed": config.seed,
             "threads": config.threads,
             "random_source": latest_source.info.path,
             "random_sha256": latest_source.info.sha256,
+            "random_origin": latest_source.info.origin,
             "random_shape": latest_source.info.shape,
             "random_dtype": latest_source.info.dtype,
             "used_paths": config.paths,

@@ -19,7 +19,7 @@ from .risk import (
 )
 
 
-_VERSION = "standard-digital-4"
+_IMPLEMENTATION_ID = "standard-digital"
 _CASH_OR_NOTHING = "Cash-or-Nothing"
 _ASSET_OR_NOTHING = "Asset-or-Nothing"
 
@@ -138,7 +138,7 @@ def price_binary_standard(
         currency=converted.currency,
         greeks=greeks,
         method=config.method,
-        version=_VERSION,
+        implementation_id=_IMPLEMENTATION_ID,
         extended_greeks=extended_greeks,
         warnings=converted.warnings,
         diagnostics={

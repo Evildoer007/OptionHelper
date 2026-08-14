@@ -100,7 +100,7 @@ class MarketSnapshotRequest:
 
 @dataclass(frozen=True)
 class MarketSnapshot:
-    schema_version: str
+    schema: str
     code: str
     asset_type: str
     requested_as_of: date

@@ -121,11 +121,17 @@ class MonteCarloConfig:
 
         if not isinstance(self.paths, int) or isinstance(self.paths, bool) or self.paths <= 0:
             raise ValueError("paths必须为正整数")
+        if (
+            not isinstance(self.seed, int)
+            or isinstance(self.seed, bool)
+            or not 0 <= self.seed <= 0xFFFFFFFF
+        ):
+            raise ValueError("seed必须是0至4294967295之间的整数")
         if not isinstance(self.threads, int) or isinstance(self.threads, bool) or self.threads <= 0:
             raise ValueError("threads必须为正整数")
         source = self.random_source
         if source is None:
-            source = default_random_source()
+            source = default_random_source(seed=self.seed)
             object.__setattr__(self, "random_source", source)
         elif not isinstance(source, NpyRandomSource):
             raise ValueError("random_source必须是NpyRandomSource")
