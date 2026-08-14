@@ -29,7 +29,7 @@ from runtime.contracts.contract_api import (
 from runtime.knowledger import load_registry
 from runtime.protocol.models import BacktestInput as ProtocolBacktestInput, DataAssetRef, ModuleRunRef
 from runtime.protocol.module_host import ModuleHostContext, require_host_bound_run_contract
-from runtime.protocol.version import PUBLIC_VERSION
+from runtime.protocol.version import DEVELOPMENT_RELEASE_ID
 import pandas as pd
 
 from .historical_data import (
@@ -58,7 +58,6 @@ BRAND_ASSET_DIR = PROJECT_ROOT / "assets" / "icons"
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("OPTIONHELPER_BACKTESTER_PORT", "4281"))
 MAX_BODY_BYTES = 1_500_000
-WEB_UI_VERSION = "2026.08.07.2"
 _IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,79}")
 
 
@@ -136,7 +135,7 @@ class BacktesterRuntime:
         history = self._historical_data(body)
         identity = _identity(body)
         identity.setdefault("calendar_id", history.calendar_id)
-        identity.setdefault("calendar_version", history.calendar_version)
+        identity.setdefault("calendar_revision", history.calendar_revision)
         contract = resolve_contract(
             product_id,
             identity=identity,
@@ -159,14 +158,14 @@ class BacktesterRuntime:
         limitations = list(backtest_payload["limitations"])
         output = {
             "ok": True,
-            "schema_version": "backtester.run.v1.0.0",
+            "schema": "optionhelper.backtester.run",
             "module": self.module_name,
             "status": "succeeded",
             "task_id": task_id,
             "run_id": run_id,
             "analysis_case_id": analysis_case_id,
             "candidate_id": candidate_id,
-            "catalog_version": PUBLIC_VERSION,
+            "catalog_version": DEVELOPMENT_RELEASE_ID,
             "contract_fingerprint": contract.contract_fingerprint,
             "created_at": created_at,
             "resolved_contract": contract.to_protocol_dict(),
@@ -176,7 +175,7 @@ class BacktesterRuntime:
             "backtest": backtest_payload,
         }
         input_snapshot = {
-            "schema_version": "backtester.input-snapshot.v1.0.0",
+            "schema": "optionhelper.backtester.input-snapshot",
             "product_id": product_id,
             "identity": identity,
             "term_overrides": _term_overrides(body),
@@ -234,7 +233,7 @@ class BacktesterRuntime:
                 raise BacktesterWebInputError("DataStore返回原始字节与DataAssetRef.content_hash不一致")
             history = HistoricalData.from_frame(pd.read_csv(BytesIO(payload)), data_asset_ref=asdict(data_ref))
             if not history.calendar_source_declared:
-                raise BacktesterWebInputError("正式完整期限回测要求DataAssetRef显式声明交易日calendar_id、calendar_version和sessions")
+                raise BacktesterWebInputError("正式完整期限回测要求DataAssetRef显式声明交易日calendar_id、calendar_revision和sessions")
             _require_contract_calendar(contract, history)
         except (BacktesterWebInputError, HistoricalDataError, OSError, PermissionError, TypeError, ValueError) as error:
             return self._formal_failure(
@@ -270,7 +269,7 @@ class BacktesterRuntime:
         data_ref_dict = validate_data_asset_ref(backtest_payload["data_asset_ref"])
         output = {
             "ok": True,
-            "schema_version": "backtester.run.v1.0.0",
+            "schema": "optionhelper.backtester.run",
             "module": self.module_name,
             "status": "succeeded",
             "task_id": task_id,
@@ -342,14 +341,14 @@ class BacktesterRuntime:
         }
         output = {
             "ok": False,
-            "schema_version": "backtester.run.v1.0.0",
+            "schema": "optionhelper.backtester.run",
             "module": self.module_name,
             "status": "failed",
             "task_id": task_id,
             "run_id": run_id,
             "analysis_case_id": analysis_case_id,
             "candidate_id": candidate_id,
-            "catalog_version": PUBLIC_VERSION,
+            "catalog_version": DEVELOPMENT_RELEASE_ID,
             "contract_fingerprint": contract.contract_fingerprint,
             "created_at": created_at,
             "resolved_contract": contract.to_protocol_dict(),
@@ -519,8 +518,8 @@ def _validate_formal_data_ref(reference: DataAssetRef, *, tenant_id: str) -> Non
         raise BacktesterWebInputError("DataAssetRef租户与Host调用方不一致")
     if "read" not in reference.access_scope:
         raise BacktesterWebInputError("DataAssetRef.access_scope缺少read权限")
-    if reference.schema_id != "market-history-v1" or reference.media_type != "text/csv":
-        raise BacktesterWebInputError("正式回测只接受market-history-v1 text/csv历史资产")
+    if reference.schema_id != "market-history" or reference.media_type != "text/csv":
+        raise BacktesterWebInputError("正式回测只接受market-history text/csv历史资产")
 
 
 def _require_contract_calendar(contract: ResolvedContract, history: HistoricalData) -> None:
@@ -528,9 +527,9 @@ def _require_contract_calendar(contract: ResolvedContract, history: HistoricalDa
     identity = contract.identity
     if (
         identity.get("calendar_id") != history.calendar_id
-        or identity.get("calendar_version") != history.calendar_version
+        or identity.get("calendar_revision") != history.calendar_revision
     ):
-        raise BacktesterWebInputError("ResolvedContract交易日历与DataAssetRef.calendar_id/calendar_version不一致")
+        raise BacktesterWebInputError("ResolvedContract交易日历与DataAssetRef.calendar_id/calendar_revision不一致")
 
 
 def _safe_formal_error_message(error: Exception) -> str:
@@ -611,7 +610,7 @@ def _write_run(
     backtest_payload = output["backtest"]
     files: dict[str, Any] = {
         "manifest.json": {
-            "schema_version": "backtester.module-run.v1.0.0",
+            "schema": "optionhelper.backtester.module-run",
             "module": "backtester",
             "tenant_id": tenant_id,
             "task_id": task_id,
@@ -659,7 +658,7 @@ def _write_failed_run(
     """提交可解析的失败ModuleRun；不伪造result.json或公开计算结果。"""
     files: dict[str, Any] = {
         "manifest.json": {
-            "schema_version": "backtester.module-run.v1.0.0",
+            "schema": "optionhelper.backtester.module-run",
             "module": "backtester",
             "tenant_id": tenant_id,
             "task_id": task_id,
@@ -715,7 +714,7 @@ def _port_failure(error: DataFetcherPortUnavailable) -> dict[str, Any]:
     data_store_missing = "DataStore" in message or "read_bytes" in message
     return {
         "ok": False,
-        "schema_version": "backtester.error.v1.0.0",
+        "schema": "optionhelper.backtester.error",
         "module": "backtester",
         "status": "failed",
         "error": {
@@ -745,7 +744,7 @@ class Handler(BaseHTTPRequestHandler):
             "/vendor/echarts.min.js": (VENDOR_DIR / "echarts.min.js", "application/javascript; charset=utf-8"),
         }
         if self.path == "/api/status":
-            return self._json(HTTPStatus.OK, {"ok": True, "module": "backtester", "web_ui_version": WEB_UI_VERSION})
+            return self._json(HTTPStatus.OK, {"ok": True, "module": "backtester"})
         if self.path == "/api/catalog":
             return self._json(HTTPStatus.OK, self.runtime.catalog())
         if self.path in {"/", "/backtester.html"}:

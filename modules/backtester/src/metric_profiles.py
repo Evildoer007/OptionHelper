@@ -46,16 +46,18 @@ def specialized_metrics(
     if profile_spec.profile_id == "terminal_payoff":
         result.update({
             "terminal_performance": number_summary(terminal),
-            "terminal_return_sign": _terminal_return_sign(terminal),
+            "terminal_performance_sign": _terminal_performance_sign(terminal),
             "terminal_segments": list(outcome_summary),
             "selected_path_case_gross_return": _path_case_gross_returns(trades),
         })
     elif profile_spec.profile_id in {"dual_knock_autocall", "coupon_autocall"}:
-        result.update({
-            "three_outcome_summary": list(three_outcome_summary),
-            "conditional_summary": dict(conditional_summary),
-            "events": _select_events(event_summary, ("tau_in", "tau_out", "tau_out_1", "tau_out_2", "tau_reset", "tau_hedge")),
-        })
+        result["events"] = _select_events(
+            event_summary,
+            ("tau_in", "tau_out", "tau_out_1", "tau_out_2", "tau_reset", "tau_hedge"),
+        )
+        if "tau_in" in event_summary:
+            result["three_outcome_summary"] = list(three_outcome_summary)
+            result["conditional_summary"] = dict(conditional_summary)
         if profile_spec.profile_id == "coupon_autocall":
             result["coupon_observations"] = _select_monitors(monitor_summary, ("n_coupon",))
             result["coupon_payment"] = _coupon_payment(trades)
@@ -134,7 +136,7 @@ def _select_monitors(source: Mapping[str, Any], names: Sequence[str]) -> dict[st
     return {name: source[name] for name in names if name in source}
 
 
-def _terminal_return_sign(values: np.ndarray) -> dict[str, Any]:
+def _terminal_performance_sign(values: np.ndarray) -> dict[str, Any]:
     total = len(values)
     return {
         "positive_count": int(np.sum(values > 0)),
@@ -164,7 +166,7 @@ def _coupon_payment(trades: Sequence[Any]) -> dict[str, Any]:
     return {
         "paid_observation_count": number_summary(paid),
         "scheduled_observation_count": number_summary(scheduled),
-        "payment_rate": number_summary(rates),
+        "observation_hit_rate": number_summary(rates),
         "unpaid_observation_count": number_summary(unpaid),
     }
 

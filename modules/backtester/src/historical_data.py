@@ -46,7 +46,7 @@ class HistoricalData:
     hv_adjustment: str | None = None
     trading_sessions: pd.DatetimeIndex = field(default_factory=pd.DatetimeIndex)
     calendar_id: str = ""
-    calendar_version: str = ""
+    calendar_revision: str = ""
     calendar_coverage_end: pd.Timestamp | None = None
     calendar_source_declared: bool = False
     limitations: tuple[str, ...] = ()
@@ -59,7 +59,7 @@ class HistoricalData:
         contract_field, contract_adjustment, hv_field, hv_adjustment = _price_convention(data, reference)
         sessions = _trading_sessions(reference["coverage"])
         calendar_id = str(reference["coverage"]["calendar_id"])
-        calendar_version = str(reference["coverage"]["calendar_version"])
+        calendar_revision = str(reference["coverage"]["calendar_revision"])
         calendar_coverage_end = _calendar_coverage_end(reference["coverage"])
         source_declared = _calendar_is_source_declared(data_asset_ref)
         limitations: list[str] = []
@@ -71,7 +71,7 @@ class HistoricalData:
             data, reference, normalized_hash, _reference_fingerprint(reference),
             contract_price_field=contract_field, contract_adjustment=contract_adjustment,
             hv_price_field=hv_field, hv_adjustment=hv_adjustment, trading_sessions=sessions,
-            calendar_id=calendar_id, calendar_version=calendar_version, calendar_coverage_end=calendar_coverage_end,
+            calendar_id=calendar_id, calendar_revision=calendar_revision, calendar_coverage_end=calendar_coverage_end,
             calendar_source_declared=source_declared,
             limitations=tuple(limitations),
         )
@@ -296,7 +296,7 @@ def _build_or_validate_asset_ref(data: pd.DataFrame, supplied: Mapping[str, Any]
     coverage = _coverage(data)
     default = {
         "data_asset_id": f"local-{normalized_hash[:16]}", "storage_ref": "in_memory", "media_type": "text/csv",
-        "schema_id": "market-history-v1", "asset_ids": sorted(data["asset_id"].unique().tolist()),
+        "schema_id": "market-history", "asset_ids": sorted(data["asset_id"].unique().tolist()),
         "normalized_fields": data.columns.tolist(), "coverage": coverage, "row_count": int(len(data)),
         "price_convention": {
             "contract_close_field": "close", "contract_adjustment": "unadjusted",
@@ -305,7 +305,7 @@ def _build_or_validate_asset_ref(data: pd.DataFrame, supplied: Mapping[str, Any]
             "close_equals_adj_close": False, "calendar": "trading_days",
         },
         "content_hash": normalized_hash,
-        "lineage": {"provider": "local", "normalizer": "backtester.historical_data.v1"},
+        "lineage": {"provider": "local", "normalizer": "backtester.historical-data"},
         "tenant_id": "local", "created_by": "local", "access_scope": ["read"], "partition_spec": {},
     }
     supplied_mapping = dict(supplied or {})
@@ -354,7 +354,7 @@ def _coverage(data: pd.DataFrame) -> dict[str, Any]:
         "trading_day_rows": int(data["date"].nunique()), "by_asset": by_asset,
         "sessions": sessions,
         "calendar_id": "local-development",
-        "calendar_version": "frame-sessions-v1",
+        "calendar_revision": "frame-sessions",
     }
 
 
@@ -384,13 +384,13 @@ def _calendar_is_source_declared(supplied: Mapping[str, Any] | None) -> bool:
     coverage = supplied.get("coverage")
     if not isinstance(coverage, Mapping):
         return False
-    required = ("sessions", "calendar_id", "calendar_version")
+    required = ("sessions", "calendar_id", "calendar_revision")
     if not all(name in coverage and coverage[name] is not None and coverage[name] != "" for name in required):
         return False
-    calendar_id, calendar_version = str(coverage["calendar_id"]).strip(), str(coverage["calendar_version"]).strip()
+    calendar_id, calendar_revision = str(coverage["calendar_id"]).strip(), str(coverage["calendar_revision"]).strip()
     if (
         calendar_id.upper().startswith("UNVERIFIED")
-        or calendar_version.casefold() in {"unverified", "unknown", "derived", "frame-sessions-v1"}
+        or calendar_revision.casefold() in {"unverified", "unknown", "derived", "frame-sessions"}
         or calendar_id.casefold() in {"local-development", "unknown"}
     ):
         return False
@@ -420,7 +420,7 @@ def _trading_sessions(coverage: Mapping[str, Any]) -> pd.DatetimeIndex:
         raise HistoricalDataError("DataAssetRef.coverage.sessions必须严格递增且不重复")
     if (sessions.dayofweek >= 5).any():
         raise HistoricalDataError("DataAssetRef.coverage.sessions含非交易日周末")
-    for calendar_field in ("calendar_id", "calendar_version"):
+    for calendar_field in ("calendar_id", "calendar_revision"):
         value = coverage.get(calendar_field)
         if not isinstance(value, str) or not value.strip():
             raise HistoricalDataError(f"DataAssetRef.coverage.{calendar_field}必须为非空字符串")
@@ -464,7 +464,7 @@ def _is_china_index_asset(asset_id: str) -> bool:
 
 
 def _price_convention(data: pd.DataFrame, reference: Mapping[str, Any]) -> tuple[str, str, str | None, str | None]:
-    """兼容Core旧字段和DataFetcher正式逐资产字段，不改写DataAssetRef。"""
+    """读取模块内HistoricalData或DataFetcher逐资产价格口径，不改写DataAssetRef。"""
     convention = reference.get("price_convention")
     if not isinstance(convention, Mapping):
         raise HistoricalDataError("DataAssetRef.price_convention必须为对象")

@@ -53,7 +53,7 @@ def replay_catalog_matrix(historical_data: HistoricalData, config: BacktestConfi
                     "underlyings": underlyings,
                     "reference_prices": {underlying: 100.0 for underlying in underlyings},
                     "calendar_id": historical_data.calendar_id,
-                    "calendar_version": historical_data.calendar_version,
+                    "calendar_revision": historical_data.calendar_revision,
                 },
                 registry=registry,
                 trading_dates=historical_data.trading_sessions,
