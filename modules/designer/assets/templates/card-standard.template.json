@@ -1,0 +1,14 @@
+{
+  "schema": "optionhelper.designer-template",
+  "id": "card-standard",
+  "output_type": "card",
+  "shell": "card.html",
+  "sections": [
+    {"id": "recommendation", "title": "结构推荐", "block": "recommendation"},
+    {"id": "reason", "title": "推荐理由", "block": "reason"},
+    {"id": "contract-highlights", "title": "关键合同条款", "block": "contract_highlights"},
+    {"id": "pricing", "title": "估值摘要", "block": "pricing"},
+    {"id": "backtest", "title": "回测摘要", "block": "backtest"},
+    {"id": "risk", "title": "主要风险", "block": "risk"}
+  ]
+}

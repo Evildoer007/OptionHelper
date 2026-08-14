@@ -1,0 +1,9 @@
+{
+  "schema": "optionhelper.designer-template",
+  "id": "quote-standard",
+  "output_type": "quote",
+  "shell": "quote.html",
+  "sections": [
+    {"id": "reference-quote", "title": "推荐结构及参考报价", "block": "reference_quote"}
+  ]
+}

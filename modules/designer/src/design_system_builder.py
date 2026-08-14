@@ -1,4 +1,4 @@
-"""Build the versioned Designer design system from one token source.
+"""Build the Designer design system from one token source.
 
 This module deliberately has no dependency on a page, Reporter, or financial
 module.  It emits serializable data that can be embedded by the renderer or
@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .config import load_designer_config
-from .design_tokens import DESIGN_SYSTEM_SCHEMA, DESIGN_SYSTEM_VERSION, token_dict, token_hash
+from .design_tokens import DESIGN_SYSTEM_SCHEMA, DESIGN_SYSTEM_ID, token_dict, token_hash
 
 
 @dataclass(frozen=True)
@@ -21,7 +21,7 @@ class DesignSystem:
     """A frozen, portable design-system bundle."""
 
     schema: str
-    design_system_version: str
+    design_system_id: str
     token_hash: str
     tokens: Mapping[str, Any]
     css_variables: str
@@ -32,7 +32,7 @@ class DesignSystem:
     def to_dict(self) -> dict[str, Any]:
         return {
             "schema": self.schema,
-            "design_system_version": self.design_system_version,
+            "design_system_id": self.design_system_id,
             "token_hash": self.token_hash,
             "tokens": dict(self.tokens),
             "css_variables": self.css_variables,
@@ -123,7 +123,7 @@ def build_design_system() -> DesignSystem:
     colors = tokens["colors"]
     return DesignSystem(
         schema=DESIGN_SYSTEM_SCHEMA,
-        design_system_version=DESIGN_SYSTEM_VERSION,
+        design_system_id=DESIGN_SYSTEM_ID,
         token_hash=token_hash(),
         tokens=tokens,
         css_variables=_css_variables(tokens),
@@ -159,4 +159,4 @@ def build_design_system_json() -> str:
     return json.dumps(build_design_system().to_dict(), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
-__all__ = ["DESIGN_SYSTEM_SCHEMA", "DESIGN_SYSTEM_VERSION", "DesignSystem", "build_design_system", "build_design_system_json", "theme_path"]
+__all__ = ["DESIGN_SYSTEM_SCHEMA", "DESIGN_SYSTEM_ID", "DesignSystem", "build_design_system", "build_design_system_json", "theme_path"]

@@ -18,7 +18,7 @@ def svg_theme() -> dict[str, Any]:
 def svg_attributes() -> dict[str, str]:
     theme = svg_theme()
     return {
-        "data-design-system-version": build_design_system().design_system_version,
+        "data-design-system": build_design_system().design_system_id,
         "data-primary-stroke": str(theme["stroke"]),
         "data-secondary-stroke": str(theme["secondary_stroke"]),
         "data-risk-stroke": str(theme["risk_stroke"]),

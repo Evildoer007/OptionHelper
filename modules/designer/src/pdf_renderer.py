@@ -699,7 +699,6 @@ def _svg_flowable(markup: str, *, content_width: float, latin_font: str, cjk_fon
         raise PdfRuntimeError("收益图SVG缺少有效画布尺寸。")
     width = content_width
     height = min(width * source_height / source_width, 310.0)
-    scale = width / source_width
     styles = _svg_styles(root)
 
     class _PayoffSvg(Flowable):
@@ -976,7 +975,6 @@ def render_pdf(html_content: str, *, chart_specs: Mapping[str, Mapping[str, Any]
     from reportlab.lib.enums import TA_LEFT
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.styles import ParagraphStyle
-    from reportlab.lib.units import mm
     from reportlab.platypus import BaseDocTemplate, CondPageBreak, HRFlowable, KeepTogether, PageTemplate, Spacer, Frame
 
     _pdfmetrics, latin_font, cjk_font = _register_fonts()

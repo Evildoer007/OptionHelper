@@ -20,16 +20,16 @@ from .config import DesignerConfig, load_designer_config
 from .design_system_builder import build_design_system
 from .models import DESIGNER_ARTIFACT_MANIFEST_SCHEMA, DesignerInput
 from .pdf_renderer import PdfRuntimeError, render_pdf
+from .template_definition import default_template_id, load_template_definition
 from .renderer import (
     PUBLIC_BRAND,
     SECTION_ORDER,
-    STATUS_LABELS,
     as_dict,
     as_list,
     canonical_greeks,
     display_text,
     esc,
-    metric_strip,
+    esc_rendered,
     render_html,
     rich_text,
     text,
@@ -43,6 +43,10 @@ class DesignerDependencyError(RuntimeError):
 
 CARD_CONTENT_ORDER = ("recommendation", "reason", "contract_highlights", "pricing", "backtest", "risk")
 CARD_DELIVERY_TITLE = "场外衍生品结构推荐卡片"
+QUOTE_CONTENT_ORDER = ("reference_quote",)
+QUOTE_DELIVERY_TITLE = "推荐结构及参考报价"
+_QUOTE_COLUMN_KEY = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")
+_QUOTE_VALUE_FORMATS = frozenset({"text", "number", "percent"})
 
 
 def _normalise_input(value: DesignerInput | Mapping[str, Any]) -> DesignerInput:
@@ -51,6 +55,58 @@ def _normalise_input(value: DesignerInput | Mapping[str, Any]) -> DesignerInput:
     if isinstance(value, Mapping):
         return DesignerInput.from_mapping(value)
     raise TypeError("render需要DesignerInput或Mapping。")
+
+
+def _reference_quote(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Return one validated, explicit reference-quote fact block.
+
+    Quote delivery is intentionally unavailable without a frozen quote.  It
+    must not infer a client-facing quote from valuation, payoff or backtest
+    evidence, because those facts use different economic meanings.
+    """
+
+    quote = as_dict(payload.get("reference_quote"))
+    groups = as_list(quote.get("groups"))
+    if not quote or not groups:
+        raise ValueError("Quote需要包含至少一组明确reference_quote报价事实。")
+    for group_index, raw_group in enumerate(groups, start=1):
+        group = as_dict(raw_group)
+        if not text(group.get("title")):
+            raise ValueError(f"reference_quote.groups[{group_index}]必须包含分组标题。")
+        columns = as_list(group.get("columns"))
+        rows = as_list(group.get("rows"))
+        if not columns or not rows:
+            raise ValueError(f"reference_quote.groups[{group_index}]必须同时包含columns和rows。")
+        keys: list[str] = []
+        for column_index, raw_column in enumerate(columns, start=1):
+            column = as_dict(raw_column)
+            key = text(column.get("key"))
+            label = text(column.get("label"))
+            value_format = text(column.get("format") or "text").lower()
+            if not _QUOTE_COLUMN_KEY.fullmatch(key):
+                raise ValueError(
+                    f"reference_quote.groups[{group_index}].columns[{column_index}].key不符合约定。"
+                )
+            if not label:
+                raise ValueError(
+                    f"reference_quote.groups[{group_index}].columns[{column_index}]必须包含列标题。"
+                )
+            if value_format not in _QUOTE_VALUE_FORMATS:
+                raise ValueError(
+                    f"reference_quote.groups[{group_index}].columns[{column_index}].format不支持。"
+                )
+            if key in keys:
+                raise ValueError(f"reference_quote.groups[{group_index}]存在重复列：{key}。")
+            keys.append(key)
+        for row_index, raw_row in enumerate(rows, start=1):
+            row = as_dict(raw_row)
+            for key in keys:
+                value = row.get(key)
+                if value is None or (isinstance(value, str) and not value.strip()):
+                    raise ValueError(
+                        f"reference_quote.groups[{group_index}].rows[{row_index}]缺少{key}。"
+                    )
+    return quote
 
 
 def _normalise_payload(payload: Mapping[str, Any], *, output_type: str) -> dict[str, Any]:
@@ -65,6 +121,8 @@ def _normalise_payload(payload: Mapping[str, Any], *, output_type: str) -> dict[
             raise ValueError("Report不接受research字段；研究逻辑不属于公开报告。")
         if "section_titles" in as_dict(result.get("meta")):
             raise ValueError("Report不接受自定义section_titles；公开章节标题固定。")
+    if output_type == "quote":
+        _reference_quote(result)
     meta = dict(result.get("meta") or {})
     if "layout" in meta:
         raise ValueError("payload.meta不接受layout字段；Report版式由Designer固定。")
@@ -87,7 +145,7 @@ def _semantic_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
 
     value = deepcopy(dict(payload))
     meta = dict(value.get("meta") or {})
-    for key in ("output_type", "format", "asset_mode", "design_system_version", "design_system_hash"):
+    for key in ("output_type", "format", "asset_mode", "design_system_id", "design_system_hash"):
         meta.pop(key, None)
     value["meta"] = meta
     return value
@@ -123,12 +181,12 @@ def _card_data_table(rows: list[Mapping[str, Any]]) -> str:
         label = text(row.get("metric"))
         value = text(row.get("value"))
         unit = text(row.get("unit"))
-        if not label:
+        if not label or not value:
             continue
         items.append(
             "<tr>"
-            f"<td>{esc(label)}</td><td>{esc(value) if value else '未提供'}</td>"
-            f"<td>{esc(unit) if unit else '口径未提供'}</td>"
+            f"<td>{esc(label)}</td><td>{esc(value)}</td>"
+            f"<td>{esc(unit)}</td>"
             "</tr>"
         )
     if not items:
@@ -140,154 +198,148 @@ def _card_data_table(rows: list[Mapping[str, Any]]) -> str:
     )
 
 
-def _card_body(payload: Mapping[str, Any]) -> str:
-    """Render the compact public recommendation Card.
+def _card_body(
+    payload: Mapping[str, Any],
+    sections: tuple[tuple[str, str, str], ...] | None = None,
+) -> str:
+    """Render the concise view of the same frozen facts as a Report.
 
-    Card is the concise reading surface of the same frozen facts as the
-    detailed Report. It answers four reader questions only: what is
-    recommended, why, how it is valued, and how the structure behaved in the
-    verified backtest. Payoff figures, scenario tables, full detail tables
-    and charts remain in Report as an expansion of this same evidence.
+    A Card has no payoff/chart renderer.  Its definition can select or reorder
+    its six known blocks, while the shared shell and CSS remain unchanged.
     """
+
+    sections = sections or tuple((key, title, key) for key, title in (
+        ("recommendation", "结构推荐"), ("reason", "推荐理由"),
+        ("contract-highlights", "关键合同条款"), ("pricing", "估值摘要"),
+        ("backtest", "回测摘要"), ("risk", "主要风险"),
+    ))
 
     def card_unit(value: Any) -> str:
         unit = text(value)
         return {"CNY": "人民币", "RMB": "人民币"}.get(unit.upper(), unit)
 
-    def unavailable_module_copy(module: Mapping[str, Any], subject: str) -> str:
-        status = text(module.get("status") or "pending").lower()
-        label = STATUS_LABELS.get(status, "未提供")
-        note = text(module.get("note")) or f"本次未形成可引用的{subject}结果。"
-        message = note if note.startswith(label) else f"{label}：{note}"
-        return f'<p class="empty-copy">{esc(message)}</p>'
-
     recommendation = as_dict(payload.get("recommendation"))
-    blocks: list[str] = []
-    headline = text(recommendation.get("headline") or recommendation.get("structure_name"))
-    reason = text(recommendation.get("reason"))
-    underlyings = text(recommendation.get("underlyings"))
-    blocks.append('<section class="card-conclusion"><h2>结构推荐</h2>')
-    blocks.append(f'<p class="card-structure">{esc(headline) if headline else "未提供"}</p>')
-    blocks.append(
-        f'<p class="card-underlying">挂钩标的：{esc(underlyings) if underlyings else "未提供"}</p>'
-    )
-    blocks.append("</section>")
-    blocks.append('<section class="card-reasoning"><h2>推荐理由</h2>')
-    blocks.append(f"<p>{rich_text(reason)}</p>" if reason else '<p class="empty-copy">未提供。</p>')
-    blocks.append("</section>")
+    pricing = as_dict(payload.get("pricing"))
+    backtest = as_dict(payload.get("backtest"))
+    risk = as_dict(payload.get("risk"))
 
-    highlights = [as_dict(item) for item in as_list(payload.get("contract_highlights")) if as_dict(item)]
-    terms: list[str] = []
-    if highlights:
+    def recommendation_block(title: str) -> str:
+        headline = text(recommendation.get("headline") or recommendation.get("structure_name"))
+        underlyings = text(recommendation.get("underlyings"))
+        if not headline and not underlyings:
+            return ""
+        parts = [f'<section class="card-conclusion"><h2>{esc(title)}</h2>']
+        if headline:
+            parts.append(f'<p class="card-structure">{esc(headline)}</p>')
+        if underlyings:
+            parts.append(f'<p class="card-underlying">挂钩标的：{esc(underlyings)}</p>')
+        return "".join(parts) + "</section>"
+
+    def reason_block(title: str) -> str:
+        reason = text(recommendation.get("reason"))
+        return f'<section class="card-reasoning"><h2>{esc(title)}</h2><p>{rich_text(reason)}</p></section>' if reason else ""
+
+    def contract_block(title: str) -> str:
+        terms: list[str] = []
         compact_units = {"年", "人民币", "份合同", "点", "次", "期"}
-        for item in highlights:
+        for item in (as_dict(value) for value in as_list(payload.get("contract_highlights"))):
             label, value, note = text(item.get("label")), text(item.get("value")), text(item.get("note"))
             if not label or not value:
                 continue
             if note in compact_units:
                 value_html = f"<strong>{rich_text(value)}{esc(note)}</strong>"
             else:
-                note_html = f"<small>{esc(note)}</small>" if note else ""
-                value_html = f"<strong>{rich_text(value)}</strong>{note_html}"
+                value_html = f"<strong>{rich_text(value)}</strong>" + (f"<small>{esc(note)}</small>" if note else "")
             terms.append(f'<div class="card-contract"><dt>{esc(label)}</dt><dd>{value_html}</dd></div>')
-    blocks.append(
-        '<section class="card-contract-summary" aria-labelledby="card-contract-summary-title">'
-        '<div class="card-contract-summary__heading"><h2 id="card-contract-summary-title">关键合同条款</h2>'
-        '<p>估值摘要与回测摘要均基于同一份冻结合同事实。</p></div>'
-        + (f'<dl class="card-contract-grid">{"".join(terms)}</dl>' if terms else '<p class="empty-copy">未提供。</p>')
-        + '</section>'
-    )
-
-    pricing_rows: list[dict[str, Any]] = []
-    pricing = as_dict(payload.get("pricing"))
-    if text(pricing.get("status")).lower() == "ready":
-        # Card is a compact subset of Report, not a different fact view.
-        # Keep up to four headline valuation metrics and always expose the
-        # five canonical Greeks; missing values remain truthful public states.
-        for row in [as_dict(item) for item in as_list(pricing.get("metrics"))][:4]:
-            if text(row.get("label")):
-                pricing_rows.append({
-                    "metric": text(row.get("label")),
-                    "value": display_text(row.get("value"), row.get("value_format")),
-                    "unit": card_unit(row.get("note")),
-                })
-        for row in canonical_greeks(as_list(pricing.get("greeks"))):
-            pricing_rows.append({
-                "metric": text(row.get("label")),
-                "value": display_text(row.get("value"), row.get("value_format")),
-                "unit": card_unit(row.get("unit")),
-            })
-
-    backtest_rows: list[dict[str, Any]] = []
-    backtest = as_dict(payload.get("backtest"))
-    if text(backtest.get("status")).lower() == "ready":
-        preferred_groups = (
-            ("样本数",),
-            ("胜率", "历史正收益样本占比"),
-            ("平均损益", "平均收益"),
-            ("最差损益", "最大亏损"),
+        if not terms:
+            return ""
+        return (
+            '<section class="card-contract-summary" aria-labelledby="card-contract-summary-title">'
+            f'<div class="card-contract-summary__heading"><h2 id="card-contract-summary-title">{esc(title)}</h2>'
+            '<p>估值摘要与回测摘要均基于同一份冻结合同事实。</p></div>'
+            f'<dl class="card-contract-grid">{"".join(terms)}</dl></section>'
         )
+
+    def pricing_block(title: str) -> str:
+        if text(pricing.get("status")).lower() != "ready":
+            return ""
+        rows: list[dict[str, Any]] = []
+        for row in (as_dict(item) for item in as_list(pricing.get("metrics"))[:4]):
+            value = display_text(row.get("value"), row.get("value_format"))
+            if text(row.get("label")) and value:
+                rows.append({"metric": text(row.get("label")), "value": value, "unit": card_unit(row.get("note"))})
+        for row in canonical_greeks(as_list(pricing.get("greeks"))):
+            value = display_text(row.get("value"), row.get("value_format"))
+            if value:
+                rows.append({"metric": text(row.get("label")), "value": value, "unit": card_unit(row.get("unit"))})
+        table = _card_data_table(rows)
+        if not table:
+            return ""
+        detail = "；".join(
+            value for value in (
+                f"估值日：{text(pricing.get('valuation_date'))}" if text(pricing.get("valuation_date")) else "",
+                f"方法：{text(pricing.get('method'))}" if text(pricing.get("method")) else "",
+            ) if value
+        )
+        return f'<div class="card-analysis"><h2>{esc(title)}</h2>{table}' + (f'<p class="card-data-note">{esc(detail)}</p>' if detail else "") + "</div>"
+
+    def backtest_block(title: str) -> str:
+        if text(backtest.get("status")).lower() != "ready":
+            return ""
         metrics_by_label = {
             text(as_dict(item).get("label")): as_dict(item)
-            for item in as_list(backtest.get("metrics"))
-            if text(as_dict(item).get("label"))
+            for item in as_list(backtest.get("metrics")) if text(as_dict(item).get("label"))
         }
-        for table in [as_dict(item) for item in as_list(backtest.get("detail_tables"))]:
-            if text(table.get("title")) != "公共回测统计":
-                continue
-            for item in as_list(table.get("rows")):
-                row = as_dict(item)
-                label = text(row.get("label"))
-                if label:
-                    metrics_by_label.setdefault(label, row)
-        for candidates in preferred_groups:
-            label = next(
-                (name for name in candidates if name in metrics_by_label and metrics_by_label[name].get("value") is not None),
-                candidates[0],
-            )
-            row = metrics_by_label.get(label, {})
-            backtest_rows.append({
-                "metric": label,
-                "value": display_text(row.get("value"), row.get("value_format")) if row else "未提供",
-                "unit": text(row.get("note")) if row else "",
-            })
-        for row in [as_dict(item) for item in as_list(backtest.get("card_metrics"))][:4]:
-            if text(row.get("label")):
-                backtest_rows.append({
-                    "metric": text(row.get("label")),
-                    "value": display_text(row.get("value"), row.get("value_format")),
-                    "unit": text(row.get("note")),
-                })
-
-    blocks.append('<section class="card-analysis-grid">')
-    blocks.append('<div class="card-analysis"><h2>估值摘要</h2>')
-    if pricing_rows:
-        blocks.append(_card_data_table(pricing_rows))
-        valuation_date = text(pricing.get("valuation_date"))
-        method = text(pricing.get("method"))
-        if valuation_date or method:
-            detail = "；".join(item for item in (f"估值日：{valuation_date}" if valuation_date else "", f"方法：{method}" if method else "") if item)
-            blocks.append(f'<p class="card-data-note">{esc(detail)}</p>')
-    else:
-        blocks.append(unavailable_module_copy(pricing, "估值"))
-    blocks.append('</div><div class="card-analysis"><h2>回测摘要</h2>')
-    if backtest_rows:
-        blocks.append(_card_data_table(backtest_rows))
+        for table in (as_dict(item) for item in as_list(backtest.get("detail_tables"))):
+            if text(table.get("title")) == "公共回测统计":
+                for item in as_list(table.get("rows")):
+                    row = as_dict(item)
+                    if text(row.get("label")):
+                        metrics_by_label.setdefault(text(row.get("label")), row)
+        rows: list[dict[str, Any]] = []
+        for labels in (("样本数",), ("胜率", "历史正收益样本占比"), ("平均损益", "平均收益"), ("最差损益", "最大亏损")):
+            row = next((metrics_by_label[label] for label in labels if metrics_by_label.get(label, {}).get("value") is not None), None)
+            if row:
+                rows.append({"metric": text(row.get("label")), "value": display_text(row.get("value"), row.get("value_format")), "unit": text(row.get("note"))})
+        for row in (as_dict(item) for item in as_list(backtest.get("card_metrics"))[:4]):
+            value = display_text(row.get("value"), row.get("value_format"))
+            if text(row.get("label")) and value:
+                rows.append({"metric": text(row.get("label")), "value": value, "unit": text(row.get("note"))})
+        table = _card_data_table(rows)
+        if not table:
+            return ""
         window = text(backtest.get("window"))
-        if window:
-            blocks.append(f'<p class="card-data-note">样本区间：{esc(window)}</p>')
-    else:
-        blocks.append(unavailable_module_copy(backtest, "回测"))
-    blocks.append('</div></section>')
+        return f'<div class="card-analysis"><h2>{esc(title)}</h2>{table}' + (f'<p class="card-data-note">样本区间：{esc(window)}</p>' if window else "") + "</div>"
 
-    risk = as_dict(payload.get("risk"))
-    risk_values = [text(item) for item in as_list(risk.get("items")) if text(item)][:2]
-    blocks.append('<section class="card-risk"><h2>主要风险</h2>')
-    blocks.append(
-        "<p>" + rich_text("；".join(value.rstrip("。") for value in risk_values) + "。") + "</p>"
-        if risk_values else '<p class="empty-copy">未提供。</p>'
-    )
-    blocks.append("</section>")
+    def risk_block(title: str) -> str:
+        values = [text(item) for item in as_list(risk.get("items")) if text(item)][:2]
+        if not values:
+            return ""
+        content = "；".join(value.rstrip("。") for value in values) + "。"
+        return f'<section class="card-risk"><h2>{esc(title)}</h2><p>{rich_text(content)}</p></section>'
+
+    renderers = {
+        "recommendation": recommendation_block,
+        "reason": reason_block,
+        "contract_highlights": contract_block,
+        "pricing": pricing_block,
+        "backtest": backtest_block,
+        "risk": risk_block,
+    }
+    blocks: list[str] = []
+    position = 0
+    while position < len(sections):
+        _, title, block = sections[position]
+        if block == "pricing" and position + 1 < len(sections) and sections[position + 1][2] == "backtest":
+            left, right = pricing_block(title), backtest_block(sections[position + 1][1])
+            if left or right:
+                blocks.append('<section class="card-analysis-grid">' + left + right + "</section>")
+            position += 2
+            continue
+        rendered = renderers[block](title)
+        if rendered:
+            blocks.append(rendered if block not in {"pricing", "backtest"} else '<section class="card-analysis-grid">' + rendered + "</section>")
+        position += 1
     return "".join(blocks)
 
 
@@ -295,6 +347,8 @@ def render_card_html(
     payload: Mapping[str, Any],
     *,
     config: DesignerConfig | Mapping[str, Any] | None = None,
+    section_definition: tuple[tuple[str, str, str], ...] | None = None,
+    template_shell: str = "card.html",
 ) -> str:
     """Render the minimal Card from the same frozen payload as a Report."""
 
@@ -302,13 +356,86 @@ def render_card_html(
     validate_payload(safe_payload)
     theme = build_design_system()
     config = load_designer_config(config)
-    template = config.read_template("card.html")
+    template = config.read_template(template_shell)
     return (
         template.replace("__TITLE__", html.escape(CARD_DELIVERY_TITLE))
         .replace("__REPORT_THEME__", config.read_report_theme())
         .replace("__BRAND__", html.escape(PUBLIC_BRAND))
-        .replace("__DESIGN_SYSTEM_VERSION__", html.escape(theme.design_system_version))
-        .replace("__CARD_BODY__", _card_body(safe_payload))
+        .replace("__DESIGN_SYSTEM_ID__", html.escape(theme.design_system_id))
+        .replace("__CARD_BODY__", _card_body(safe_payload, section_definition))
+    )
+
+
+def _quote_table(group: Mapping[str, Any]) -> str:
+    """Render one product-specific quote table with the shared three-line rule."""
+
+    columns = [as_dict(item) for item in as_list(group.get("columns"))]
+    rows = [as_dict(item) for item in as_list(group.get("rows"))]
+    head = "".join(f'<th scope="col">{esc(column.get("label"))}</th>' for column in columns)
+    body_rows: list[str] = []
+    for row in rows:
+        cells: list[str] = []
+        for column in columns:
+            value = display_text(row.get(text(column.get("key"))), column.get("format") or "text")
+            cells.append(f"<td>{rich_text(value)}</td>")
+        body_rows.append("<tr>" + "".join(cells) + "</tr>")
+    return (
+        '<div class="table-wrap quote-table-wrap"><table class="quote-table">'
+        f"<thead><tr>{head}</tr></thead><tbody>{''.join(body_rows)}</tbody></table></div>"
+    )
+
+
+def _quote_identity(quote: Mapping[str, Any]) -> str:
+    rows = (
+        ("报价日期", quote.get("quote_date")),
+        ("报价有效期", quote.get("valid_until")),
+    )
+    return "".join(
+        f"<div><dt>{esc(label)}</dt><dd>{esc_rendered(text(value))}</dd></div>"
+        for label, value in rows
+        if text(value)
+    )
+
+
+def _quote_body(payload: Mapping[str, Any]) -> str:
+    quote = _reference_quote(payload)
+    groups = [as_dict(item) for item in as_list(quote.get("groups"))]
+    rendered_groups = "".join(
+        '<section class="quote-group">'
+        f"<h2>{esc(group.get('title'))}</h2>{_quote_table(group)}"
+        "</section>"
+        for group in groups
+    )
+    note = text(quote.get("note")) or "以上为参考报价，实际以交易台正式报价为准。"
+    return rendered_groups + f'<p class="quote-note">{rich_text(note)}</p>'
+
+
+def render_quote_html(
+    payload: Mapping[str, Any],
+    *,
+    config: DesignerConfig | Mapping[str, Any] | None = None,
+    section_definition: tuple[tuple[str, str, str], ...] | None = None,
+    template_shell: str = "quote.html",
+) -> str:
+    """Render explicit, grouped reference quotes without any inferred prices."""
+
+    safe_payload = _normalise_payload(payload, output_type="quote")
+    config = load_designer_config(config)
+    definition = section_definition or (("reference-quote", QUOTE_DELIVERY_TITLE, "reference_quote"),)
+    if len(definition) != 1 or definition[0][2] != "reference_quote":
+        raise ValueError("Quote模板只能包含reference_quote内容块。")
+    theme = build_design_system()
+    template = config.read_template(template_shell)
+    meta = as_dict(safe_payload.get("meta"))
+    title = text(meta.get("quote_title")) or QUOTE_DELIVERY_TITLE
+    quote = _reference_quote(safe_payload)
+    return (
+        template.replace("__TITLE__", esc(title))
+        .replace("__REPORT_THEME__", config.read_report_theme())
+        .replace("__BRAND__", esc(PUBLIC_BRAND))
+        .replace("__DESIGN_SYSTEM_ID__", esc(theme.design_system_id))
+        .replace("__IDENTITY__", _quote_identity(quote))
+        .replace("__QUOTE_BODY__", _quote_body(safe_payload))
     )
 
 
@@ -417,16 +544,23 @@ def render(
         output_format=request.normalized_format,
     )
     payload = _normalise_payload(request.payload, output_type=request.normalized_output_type)
-    # A detailed report is a governed public document, not a user-composed
-    # dashboard. Its seven chapters are always present in canonical order;
-    # an unavailable module renders its truthful status inside that chapter.
-    payload["sections"] = list(
-        SECTION_ORDER if request.normalized_output_type == "report" else CARD_CONTENT_ORDER
-    )
+    # A template controls the order of known fact blocks, never their values.
+    # Empty blocks are omitted by the shared renderers.
+    sections_by_output = {
+        "report": SECTION_ORDER,
+        "card": CARD_CONTENT_ORDER,
+        "quote": QUOTE_CONTENT_ORDER,
+    }
+    payload["sections"] = list(sections_by_output[request.normalized_output_type])
     theme = build_design_system()
-    if request.design_system_version and request.design_system_version != theme.design_system_version:
+    template = load_template_definition(
+        config,
+        request.template_id or default_template_id(request.normalized_output_type),
+        request.normalized_output_type,
+    )
+    if request.design_system_id and request.design_system_id != theme.design_system_id:
         raise ValueError(
-            f"设计系统版本不匹配：输入={request.design_system_version}，当前={theme.design_system_version}"
+            f"设计系统标识不匹配：输入={request.design_system_id}，当前={theme.design_system_id}"
         )
     input_dir = request.input_dir or Path.cwd()
     echarts_path = (
@@ -435,14 +569,28 @@ def render(
         else config.relative_echarts_path(request.output_dir or input_dir)
     )
     if request.normalized_output_type == "card":
-        html_content = render_card_html(payload, config=config)
+        html_content = render_card_html(
+            payload,
+            config=config,
+            section_definition=tuple((item.id, item.title, item.block) for item in template.sections),
+            template_shell=template.shell,
+        )
+    elif request.normalized_output_type == "quote":
+        html_content = render_quote_html(
+            payload,
+            config=config,
+            section_definition=tuple((item.id, item.title, item.block) for item in template.sections),
+            template_shell=template.shell,
+        )
     else:
         html_content = render_html(
             payload,
             input_dir,
             echarts_path,
-            design_system_version=theme.design_system_version,
+            design_system_id=theme.design_system_id,
             config=config,
+            section_definition=tuple((item.id, item.title, item.block) for item in template.sections),
+            template_shell=template.shell,
         )
     _assert_public_delivery_text(html_content)
     output_format = request.normalized_format
@@ -453,8 +601,9 @@ def render(
         "format": request.format,
         "output_type": request.normalized_output_type,
         "html": html_content,
-        "design_system_version": theme.design_system_version,
+        "design_system_id": theme.design_system_id,
         "design_system_hash": theme.token_hash,
+        "template_id": template.id,
         "asset_mode": request.asset_mode,
     }
     result["format"] = output_format
@@ -465,8 +614,9 @@ def render(
             "output_type": request.normalized_output_type,
             "format": output_format,
             "asset_mode": request.asset_mode,
-            "design_system_version": theme.design_system_version,
+            "design_system_id": theme.design_system_id,
             "design_system_hash": theme.token_hash,
+            "template_id": template.id,
         }
     )
     requires_echarts = '<script src=' in html_content
@@ -480,8 +630,9 @@ def render(
     html_hash = sha256(html_content.encode("utf-8")).hexdigest()
     manifest: dict[str, Any] = {
         "schema": DESIGNER_ARTIFACT_MANIFEST_SCHEMA,
-        "design_system_version": theme.design_system_version,
+        "design_system_id": theme.design_system_id,
         "design_system_hash": theme.token_hash,
+        "template_id": template.id,
         "output_type": request.normalized_output_type,
         "format": output_format,
         "html_sha256": html_hash,
@@ -522,6 +673,7 @@ __all__ = [
     "materialize_portable_assets",
     "render",
     "render_card_html",
+    "render_quote_html",
     "render_html",
     "validate_payload",
 ]

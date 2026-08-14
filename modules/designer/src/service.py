@@ -21,12 +21,12 @@ def _profile() -> dict[str, Any]:
     theme = build_design_system()
     return {
         "module": "designer",
-        "version": theme.design_system_version,
+        "design_system_id": theme.design_system_id,
         "design_system_schema": DESIGN_SYSTEM_SCHEMA,
         "payload_schema": DESIGNER_PAYLOAD_SCHEMA,
         "artifact_manifest_schema": DESIGNER_ARTIFACT_MANIFEST_SCHEMA,
         "design_system_hash": theme.token_hash,
-        "output_types": ["card", "report"],
+        "output_types": ["card", "quote", "report"],
         "modules": list(theme.tokens["modules"]),
         "modes": list(theme.tokens["modes"]),
     }
@@ -54,7 +54,7 @@ def capability(config: DesignerConfig | Mapping[str, Any] | None = None) -> dict
         "offline_assets": {
             "report_theme": config.report_theme_path.name,
             "echarts": config.echarts_asset_path.name,
-            "templates": ["card.html", "report.html"],
+            "templates": ["card.html", "quote.html", "report.html"],
         },
         "asset_modes": ["shared", "portable"] if config.allow_portable_assets else ["shared"],
         "default_asset_mode": config.default_asset_mode,

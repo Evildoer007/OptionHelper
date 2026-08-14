@@ -1,0 +1,15 @@
+{
+  "schema": "optionhelper.designer-template",
+  "id": "report-standard",
+  "output_type": "report",
+  "shell": "report.html",
+  "sections": [
+    {"id": "conclusion", "title": "核心结论", "block": "conclusion"},
+    {"id": "recommendation", "title": "结构推荐", "block": "recommendation"},
+    {"id": "parameters", "title": "合同参数", "block": "parameters"},
+    {"id": "payoff", "title": "收益结构", "block": "payoff"},
+    {"id": "pricing", "title": "估值定价", "block": "pricing"},
+    {"id": "backtest", "title": "历史回测", "block": "backtest"},
+    {"id": "risk", "title": "风险提示", "block": "risk"}
+  ]
+}

@@ -29,8 +29,8 @@ def render_module_header(module: str, title: str, description: str = "") -> str:
     return (
         '<header class="module-header" data-module="'
         + _esc(module)
-        + '" data-design-system-version="'
-        + TOKENS.version
+        + '" data-design-system="'
+        + TOKENS.system_id
         + '"><p class="module-header__eyebrow">'
         + _esc(module)
         + '</p><h1>'
@@ -170,8 +170,8 @@ def render_table(rows: Iterable[Mapping[str, Any]], columns: Iterable[tuple[str,
 
 def render_card_shell(title: str, body: str, *, brand: str = "结构化产品研究") -> str:
     return (
-        '<main><article class="designer-card" data-output-type="card" data-design-system-version="'
-        + TOKENS.version
+        '<main><article class="designer-card" data-output-type="card" data-design-system="'
+        + TOKENS.system_id
         + '"><p class="designer-card__brand">'
         + _esc(brand)
         + "</p><h1>"

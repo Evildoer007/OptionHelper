@@ -7,11 +7,11 @@ from pathlib import Path
 from typing import Any, Mapping
 
 
-OUTPUT_TYPES = {"card", "report"}
+OUTPUT_TYPES = {"card", "quote", "report"}
 FORMATS = {"html", "pdf"}
 ASSET_MODES = {"shared", "portable"}
-DESIGNER_PAYLOAD_SCHEMA = "optionhelper.designer-payload/v1.0.0"
-DESIGNER_ARTIFACT_MANIFEST_SCHEMA = "optionhelper.designer-artifact-manifest/v1.0.0"
+DESIGNER_PAYLOAD_SCHEMA = "optionhelper.designer-payload"
+DESIGNER_ARTIFACT_MANIFEST_SCHEMA = "optionhelper.designer-artifact-manifest"
 _REQUEST_FIELDS = {
     "payload",
     "output_type",
@@ -19,7 +19,8 @@ _REQUEST_FIELDS = {
     "asset_mode",
     "input_dir",
     "output_dir",
-    "design_system_version",
+    "design_system_id",
+    "template_id",
     "metadata",
 }
 
@@ -39,7 +40,8 @@ class DesignerInput:
     asset_mode: str = "shared"
     input_dir: Path | None = None
     output_dir: Path | None = None
-    design_system_version: str | None = None
+    design_system_id: str | None = None
+    template_id: str | None = None
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -54,6 +56,8 @@ class DesignerInput:
             raise ValueError(f"asset_mode仅支持：{', '.join(sorted(ASSET_MODES))}")
         if not isinstance(self.payload, Mapping):
             raise TypeError("DesignerInput.payload必须是Mapping。")
+        if self.template_id is not None and not str(self.template_id).strip():
+            raise ValueError("template_id不能为空字符串。")
         payload = dict(self.payload)
         declared_schema = payload.get("schema")
         if str(declared_schema) != DESIGNER_PAYLOAD_SCHEMA:
@@ -84,7 +88,8 @@ class DesignerInput:
             asset_mode=str(value.get("asset_mode") or "shared").lower(),
             input_dir=Path(value["input_dir"]).resolve() if value.get("input_dir") else None,
             output_dir=Path(value["output_dir"]).resolve() if value.get("output_dir") else None,
-            design_system_version=str(value["design_system_version"]) if value.get("design_system_version") else None,
+            design_system_id=str(value["design_system_id"]) if value.get("design_system_id") else None,
+            template_id=str(value["template_id"]) if value.get("template_id") else None,
             metadata=value.get("metadata") if isinstance(value.get("metadata"), Mapping) else {},
         )
 

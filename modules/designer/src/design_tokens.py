@@ -14,8 +14,8 @@ from types import MappingProxyType
 from typing import Any, Mapping
 
 
-DESIGN_SYSTEM_VERSION = "v1.0.0"
-DESIGN_SYSTEM_SCHEMA = "optionhelper.design-system/v1.0.0"
+DESIGN_SYSTEM_ID = "optionhelper.design-system"
+DESIGN_SYSTEM_SCHEMA = DESIGN_SYSTEM_ID
 
 
 @dataclass(frozen=True)
@@ -37,14 +37,14 @@ class DesignTokens:
     modes: tuple[str, ...]
 
     @property
-    def version(self) -> str:
-        return DESIGN_SYSTEM_VERSION
+    def system_id(self) -> str:
+        return DESIGN_SYSTEM_ID
 
     def to_dict(self) -> dict[str, Any]:
         # ``dataclasses.asdict`` deep-copies values and therefore cannot
         # serialize MappingProxyType on the supported Python versions.
         return {
-            "version": self.version,
+            "schema": self.system_id,
             "colors": dict(self.colors),
             "fonts": dict(self.fonts),
             "type_scale": dict(self.type_scale),

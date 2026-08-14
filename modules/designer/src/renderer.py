@@ -13,12 +13,12 @@ import re
 import shutil
 import subprocess
 import tempfile
-from typing import Any
+from typing import Any, Sequence
 
 from .components import render_formula, render_inline_formula
 from .config import DesignerConfig, load_designer_config
 from .design_system_builder import build_design_system
-from .design_tokens import DESIGN_SYSTEM_VERSION, TOKENS
+from .design_tokens import DESIGN_SYSTEM_ID, TOKENS
 
 
 SECTION_ORDER = ("conclusion", "recommendation", "parameters", "payoff", "pricing", "backtest", "risk")
@@ -38,12 +38,7 @@ GREEK_ORDER = ("Delta", "Gamma", "Vega", "Theta", "Rho")
 _GREEK_KEY = {name.casefold(): name for name in GREEK_ORDER}
 _PUBLIC_VALUE_STATUS = {
     "not_applicable": "不适用",
-    "unavailable": "未提供",
-    "not_provided": "未提供",
-    "not_available": "未提供",
-    "pending": "待提供",
-    "failed": "未形成结果",
-    "unsupported": "不支持",
+    "unsupported": "不适用",
 }
 PARAMETER_SOURCES = {"template_default", "user_override", "user_selection", "market_fixing", "schedule_derived"}
 PARAMETER_SOURCE_LABELS = {
@@ -123,7 +118,7 @@ def display_text(value: Any, value_format: Any = "number") -> str:
     if status in _PUBLIC_VALUE_STATUS:
         return _PUBLIC_VALUE_STATUS[status]
     if value is None:
-        return "未提供"
+        return ""
     if isinstance(value, bool):
         return "是" if value else "否"
     if not isinstance(value, (int, float)) or isinstance(value, bool):
@@ -287,10 +282,10 @@ def validate_payload(payload: dict[str, Any]) -> None:
 
 def status_box(module: dict[str, Any]) -> str:
     status = text(module.get("status") or "pending").lower()
-    label = STATUS_LABELS.get(status, "状态待确认")
     note = text(module.get("note"))
     if not note:
-        note = "该模块没有可展示的本次运行结果。"
+        return ""
+    label = STATUS_LABELS.get(status, "")
     return (
         f'<div class="module-state" data-status="{esc(status)}" role="status">'
         f'<strong>{esc(label)}：</strong><span>{esc(note)}</span>'
@@ -537,11 +532,16 @@ def canonical_greeks(rows: list[Any]) -> list[dict[str, Any]]:
             source[label] = row
     ordered: list[dict[str, Any]] = []
     for label in GREEK_ORDER:
-        row = dict(source.get(label, {}))
+        if label not in source:
+            continue
+        row = dict(source[label])
         row["label"] = label
         status = text(row.get("status")).casefold()
         if row.get("value") is None or not text(row.get("value")):
-            row["value"] = _PUBLIC_VALUE_STATUS.get(status, "未提供")
+            public_status = _PUBLIC_VALUE_STATUS.get(status, "")
+            if not public_status:
+                continue
+            row["value"] = public_status
         ordered.append(row)
     return ordered
 
@@ -578,11 +578,15 @@ def render_recommendation(data: dict[str, Any]) -> str:
     structure_name = text(module.get("structure_name"))
     underlyings = text(module.get("underlyings"))
     if structure_name or underlyings:
+        identities = []
+        if structure_name:
+            identities.append(f'<div><dt>推荐结构</dt><dd>{esc(structure_name)}</dd></div>')
+        if underlyings:
+            identities.append(f'<div><dt>挂钩标的</dt><dd>{esc(underlyings)}</dd></div>')
         blocks.append(
             '<dl class="identity-ledger">'
-            f'<div><dt>推荐结构</dt><dd>{esc(structure_name) if structure_name else "待确认"}</dd></div>'
-            f'<div><dt>挂钩标的</dt><dd>{esc(underlyings) if underlyings else "待确认"}</dd></div>'
-            "</dl>"
+            + "".join(identities)
+            + "</dl>"
         )
     # This is the frozen recommendation rationale. Designer displays the
     # provided market-view reasoning without deriving or extending it.
@@ -622,7 +626,7 @@ def render_recommendation(data: dict[str, Any]) -> str:
             alternatives.append(card + "</article>")
     if alternatives:
         blocks.append('<div class="alternative-grid">' + "".join(alternatives) + "</div>")
-    return "".join(block for block in blocks if block) or '<p class="empty-copy">尚未提供结构推荐内容。</p>'
+    return "".join(block for block in blocks if block)
 
 
 def render_payoff(data: dict[str, Any], input_dir: Path) -> str:
@@ -630,8 +634,6 @@ def render_payoff(data: dict[str, Any], input_dir: Path) -> str:
     if text(module.get("status") or "pending").lower() != "ready":
         return status_box(module)
     blocks = [embedded_svg(module.get("report_svg_path"), input_dir)]
-    if not blocks[0]:
-        blocks[0] = status_box({"status": "pending", "note": "未提供本次参数化收益图，不展示默认样图。"})
     formula_html = formula_block(module)
     if formula_html:
         blocks.append(formula_html)
@@ -653,12 +655,12 @@ def render_pricing(data: dict[str, Any], charts: list[dict[str, Any]]) -> str:
     method = text(module.get("method"))
     valuation_date = text(module.get("valuation_date"))
     if method or valuation_date:
-        blocks.append(
-            '<dl class="identity-ledger">'
-            f'<div><dt>估值方法</dt><dd>{esc(method) if method else "待披露"}</dd></div>'
-            f'<div><dt>估值日</dt><dd>{esc(valuation_date) if valuation_date else "待披露"}</dd></div>'
-            "</dl>"
-        )
+        ledger = []
+        if method:
+            ledger.append(f'<div><dt>估值方法</dt><dd>{esc(method)}</dd></div>')
+        if valuation_date:
+            ledger.append(f'<div><dt>估值日</dt><dd>{esc(valuation_date)}</dd></div>')
+        blocks.append('<dl class="identity-ledger">' + "".join(ledger) + "</dl>")
     blocks.append(metric_strip(as_list(module.get("metrics"))))
     pricing_parameters = as_list(as_dict(data.get("parameters")).get("pricing_input"))
     if pricing_parameters:
@@ -687,7 +689,7 @@ def render_pricing(data: dict[str, Any], charts: list[dict[str, Any]]) -> str:
     assumptions = item_list(as_list(module.get("assumptions")))
     if assumptions:
         blocks.append(f"<h3>估值假设</h3>{assumptions}")
-    return "".join(block for block in blocks if block) or '<p class="empty-copy">未提供可展示的估值结果。</p>'
+    return "".join(block for block in blocks if block)
 
 
 def render_backtest(data: dict[str, Any], charts: list[dict[str, Any]]) -> str:
@@ -698,12 +700,12 @@ def render_backtest(data: dict[str, Any], charts: list[dict[str, Any]]) -> str:
     window = text(module.get("window"))
     entry_rule = text(module.get("entry_rule"))
     if window or entry_rule:
-        blocks.append(
-            '<dl class="identity-ledger">'
-            f'<div><dt>样本区间</dt><dd>{esc(window) if window else "待披露"}</dd></div>'
-            f'<div><dt>入场规则</dt><dd>{esc(entry_rule) if entry_rule else "待披露"}</dd></div>'
-            "</dl>"
-        )
+        ledger = []
+        if window:
+            ledger.append(f'<div><dt>样本区间</dt><dd>{esc(window)}</dd></div>')
+        if entry_rule:
+            ledger.append(f'<div><dt>入场规则</dt><dd>{esc(entry_rule)}</dd></div>')
+        blocks.append('<dl class="identity-ledger">' + "".join(ledger) + "</dl>")
     blocks.append(metric_strip(as_list(module.get("metrics"))))
     backtest_parameters = as_list(as_dict(data.get("parameters")).get("backtest_input"))
     if backtest_parameters:
@@ -731,7 +733,7 @@ def render_backtest(data: dict[str, Any], charts: list[dict[str, Any]]) -> str:
     )
     blocks.append(detail_tables(as_list(module.get("detail_tables"))))
     blocks.append(item_list(as_list(module.get("limitations"))))
-    return "".join(block for block in blocks if block) or '<p class="empty-copy">未提供可展示的回测结果。</p>'
+    return "".join(block for block in blocks if block)
 
 
 def render_parameters(data: dict[str, Any]) -> str:
@@ -750,21 +752,22 @@ def render_parameters(data: dict[str, Any]) -> str:
 
     rows = [*unique_rows("common_input"), *unique_rows("payoff_input")]
     visible = parameter_table(rows, "合同参数")
-    return visible or '<p class="empty-copy">本次任务未提供已确认参数。</p>'
+    return visible
 
 
 def render_risk(data: dict[str, Any]) -> str:
     module = as_dict(data.get("risk"))
     items = item_list(as_list(module.get("items")), "risk-list")
     disclaimer = text(module.get("disclaimer"))
-    if not disclaimer:
-        disclaimer = "未提供正式风险揭示文本。本HTML仅作内部草稿，禁止外发或作为投资建议使用。"
+    if not items and not disclaimer:
+        return ""
     suitable = item_list(as_list(module.get("suitable_for")))
     not_suitable = item_list(as_list(module.get("not_suitable_for")))
     suitability_block = (f"<h3>适用条件</h3>{suitable}" if suitable else "") + (f"<h3>不适用情形</h3>{not_suitable}" if not_suitable else "")
     limitations = item_list(as_list(module.get("limitations")))
     limitation_block = f"<h3>数据与方法限制</h3>{limitations}" if limitations else ""
-    return items + suitability_block + limitation_block + f'<p class="disclaimer">{esc(disclaimer)}</p>'
+    disclaimer_block = f'<p class="disclaimer">{esc(disclaimer)}</p>' if disclaimer else ""
+    return items + suitability_block + limitation_block + disclaimer_block
 
 
 def render_conclusion(data: dict[str, Any]) -> str:
@@ -776,7 +779,7 @@ def render_conclusion(data: dict[str, Any]) -> str:
     blocks: list[str] = ['<div class="conclusion-band">']
     if structure or underlyings:
         blocks.append('<p class="conclusion-band__label">推荐结论</p>')
-        statement = f"推荐{structure}" if structure else "推荐结构待确认"
+        statement = f"推荐{structure}" if structure else ""
         if underlyings:
             statement += f"，挂钩{underlyings}"
         blocks.append(f"<p class=\"conclusion-band__statement\">{rich_text(statement + '。')}</p>")
@@ -793,9 +796,7 @@ def render_conclusion(data: dict[str, Any]) -> str:
     if risks:
         blocks.append(f"<h3>风险边界</h3>{risks}")
     blocks.append("</div>")
-    if len(blocks) == 2:
-        return '<p class="empty-copy">本次未形成可供摘要的冻结事实。</p>'
-    return "".join(blocks)
+    return "".join(blocks) if len(blocks) > 2 else ""
 
 
 def load_report_theme(config: DesignerConfig | None = None) -> str:
@@ -850,8 +851,10 @@ def render_html(
     input_dir: Path | None = None,
     echarts_path: str = "",
     *,
-    design_system_version: str = DESIGN_SYSTEM_VERSION,
+    design_system_id: str = DESIGN_SYSTEM_ID,
     config: DesignerConfig | None = None,
+    section_definition: Sequence[tuple[str, str, str]] | None = None,
+    template_shell: str = "report.html",
 ) -> str:
     validate_payload(payload)
     config = config or load_designer_config()
@@ -876,16 +879,21 @@ def render_html(
         "conclusion": lambda: render_conclusion(payload),
         "parameters": lambda: render_parameters(payload),
     }
+    section_definition = section_definition or tuple(
+        (key, SECTION_TITLES[key], key) for key in SECTION_ORDER
+    )
     sections = []
-    for key in SECTION_ORDER:
+    for section_key, section_title, key in section_definition:
         body = renderers[key]()
-        section_id = f"section-{key}"
+        if not body:
+            continue
+        section_id = f"section-{section_key}"
         section_status = ""
         if key in {"payoff", "pricing", "backtest"}:
             section_status = text(as_dict(payload.get(key)).get("status") or "pending").lower()
         sections.append({
             "id": section_id,
-            "title": SECTION_TITLES[key],
+            "title": section_title,
             "body": body,
             "status": section_status,
             "status_attr": f' data-status="{esc(section_status)}"' if section_status else "",
@@ -907,8 +915,9 @@ def render_html(
     chart_json = json.dumps(charts, ensure_ascii=False).replace("</", "<\\/")
     report_identity = [("报告日期", meta.get("as_of_date"))]
     identity = "".join(
-        f'<div><dt>{esc(label)}</dt><dd>{esc_rendered(value) if text(value) else "待补充"}</dd></div>'
+        f'<div><dt>{esc(label)}</dt><dd>{esc_rendered(value)}</dd></div>'
         for label, value in report_identity
+        if text(value)
     )
     echarts_head = f'<script src="{esc(echarts_path)}" defer></script>' if charts else ""
     chart_script = "" if not charts else r"""<script>
@@ -943,13 +952,13 @@ def render_html(
     )
     if chart_script:
         validate_generated_javascript(chart_script)
-    template = config.read_template("report.html")
+    template = config.read_template(template_shell)
     return (
         template.replace("__TITLE__", esc(title))
         .replace("__ECHARTS_HEAD__", echarts_head)
         .replace("__REPORT_THEME__", report_theme)
         .replace("__BRAND__", esc(PUBLIC_BRAND))
-        .replace("__DESIGN_SYSTEM_VERSION__", esc(design_system_version))
+        .replace("__DESIGN_SYSTEM_ID__", esc(design_system_id))
         .replace("__IDENTITY__", identity)
         .replace("__REPORT_TOC__", toc)
         .replace("__CONTENT__", content)
@@ -964,7 +973,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Render a modular OptionHelper HTML research report.")
     parser.add_argument("--input", required=True, type=Path, help="Report payload JSON path")
     parser.add_argument("--output", required=True, type=Path, help="Output filename, with or without .html")
-    parser.add_argument("--output-type", choices=("card", "report"), default="report", help="Card or detailed Report")
+    parser.add_argument("--output-type", choices=("card", "quote", "report"), default="report", help="Card, Quote or detailed Report")
     parser.add_argument("--format", choices=("html", "pdf"), help="Output format; .pdf also selects PDF")
     parser.add_argument(
         "--asset-mode",

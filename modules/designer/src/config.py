@@ -15,12 +15,17 @@ from typing import Any, Mapping
 
 _MODULE_ASSET_ROOT = Path(__file__).resolve().parents[1] / "assets"
 _RELEASE_ASSET_ROOT = Path(__file__).resolve().parents[3] / "assets" / "designer"
-_REQUIRED_TEMPLATE_NAMES = ("card.html", "report.html")
+_REQUIRED_TEMPLATE_NAMES = ("card.html", "quote.html", "report.html")
+_REQUIRED_TEMPLATE_DEFINITIONS = (
+    "card-standard.template.json",
+    "quote-standard.template.json",
+    "report-standard.template.json",
+)
 _RUNTIME_ASSET_FILES = {
-    "templates": frozenset(_REQUIRED_TEMPLATE_NAMES),
+    "templates": frozenset((*_REQUIRED_TEMPLATE_NAMES, *_REQUIRED_TEMPLATE_DEFINITIONS)),
     "themes": frozenset({"designer-theme.css"}),
     "vendor": frozenset({"echarts.min.js"}),
-    "samples": frozenset({"card.html", "report.html"}),
+    "samples": frozenset({"card.html", "quote.html", "report.html"}),
 }
 # 开发态的资源属于Designer模块；标准Skill发行包将其置于assets/designer。
 # 不由Reporter推断或透传资源路径，避免目录调整后报告失效。
@@ -73,14 +78,23 @@ class DesignerConfig:
                 for path in directory_path.iterdir()
                 if path.name
             }
-            if actual_files != expected_files:
+            allowed_files = actual_files
+            if directory == "templates":
+                allowed_files = {
+                    name for name in actual_files
+                    if name in expected_files or name.endswith(".template.json")
+                }
+                invalid_templates = actual_files.difference(allowed_files)
+                if invalid_templates:
+                    raise DesignerConfigurationError(
+                        "Designer模板目录仅允许HTML壳和.template.json定义："
+                        f"{', '.join(sorted(invalid_templates))}。"
+                    )
+            if not expected_files.issubset(allowed_files):
                 missing = sorted(expected_files.difference(actual_files))
-                unexpected = sorted(actual_files.difference(expected_files))
                 detail = []
                 if missing:
                     detail.append(f"缺少{', '.join(missing)}")
-                if unexpected:
-                    detail.append(f"包含未治理资源{', '.join(unexpected)}")
                 raise DesignerConfigurationError(f"Designer资源目录{directory}不符合交付清单：{'；'.join(detail)}。")
         if not self.report_theme_path.is_file():
             raise DesignerConfigurationError(f"找不到Designer视觉主题：{self.report_theme_path}")
@@ -117,6 +131,15 @@ class DesignerConfig:
         if name not in _REQUIRED_TEMPLATE_NAMES:
             raise DesignerConfigurationError(f"不支持的Designer模板：{name}")
         return self.template_root / name
+
+    def template_definition_path(self, template_id: str) -> Path:
+        """Resolve one managed template definition without accepting a path."""
+
+        name = f"{template_id}.template.json"
+        path = (self.template_root / name).resolve()
+        if path.parent != self.template_root.resolve() or not path.is_file() or path.is_symlink():
+            raise DesignerConfigurationError(f"找不到Designer模板定义：{template_id}。")
+        return path
 
     def read_template(self, name: str) -> str:
         """Read an immutable, shipped HTML shell for one public output type."""
