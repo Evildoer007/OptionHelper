@@ -17,14 +17,13 @@ from runtime.contracts.contract_types import canonical_json, semantic_hash
 from runtime.protocol.models import ModuleRunRef
 
 
-DELIVERY_PROTOCOL_VERSION = "v1.0.0"
-SCHEMA_REQUEST = f"optionhelper.report-request/{DELIVERY_PROTOCOL_VERSION}"
-SCHEMA_REPORT_UNIT = f"optionhelper.contract-report-unit/{DELIVERY_PROTOCOL_VERSION}"
-SCHEMA_REPORT_BUNDLE = f"optionhelper.report-bundle/{DELIVERY_PROTOCOL_VERSION}"
-SCHEMA_MANIFEST = f"optionhelper.report-run-manifest/{DELIVERY_PROTOCOL_VERSION}"
-SCHEMA_DESIGNER_PAYLOAD = f"optionhelper.designer-payload/{DELIVERY_PROTOCOL_VERSION}"
-SCHEMA_DESIGN_BRIEF = f"optionhelper.design-brief/{DELIVERY_PROTOCOL_VERSION}"
-SCHEMA_DESIGNER_ARTIFACT_MANIFEST = f"optionhelper.designer-artifact-manifest/{DELIVERY_PROTOCOL_VERSION}"
+SCHEMA_REQUEST = "optionhelper.report-request"
+SCHEMA_REPORT_UNIT = "optionhelper.contract-report-unit"
+SCHEMA_REPORT_BUNDLE = "optionhelper.report-bundle"
+SCHEMA_MANIFEST = "optionhelper.report-run-manifest"
+SCHEMA_DESIGNER_PAYLOAD = "optionhelper.designer-payload"
+SCHEMA_DESIGN_BRIEF = "optionhelper.design-brief"
+SCHEMA_DESIGNER_ARTIFACT_MANIFEST = "optionhelper.designer-artifact-manifest"
 REPORT_SECTION_ORDER = (
     "conclusion", "recommendation", "parameters",
     "payoff", "pricing", "backtest", "risk",
@@ -265,7 +264,7 @@ class ReportRequest:
 
 
 __all__ = [
-    "DELIVERY_PROTOCOL_VERSION", "DISPLAY_MODULES", "MODULE_TO_RUN",
+    "DISPLAY_MODULES", "MODULE_TO_RUN",
     "CARD_SECTION_ORDER", "REPORT_SECTION_ORDER", "ReporterError", "ReportRequest",
     "SCHEMA_DESIGN_BRIEF", "SCHEMA_DESIGNER_ARTIFACT_MANIFEST", "SCHEMA_DESIGNER_PAYLOAD",
     "SCHEMA_MANIFEST", "SCHEMA_REPORT_BUNDLE", "SCHEMA_REPORT_UNIT", "SCHEMA_REQUEST", "as_list", "as_mapping", "module_run_ref",

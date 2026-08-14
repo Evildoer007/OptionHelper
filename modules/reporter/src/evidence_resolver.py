@@ -31,7 +31,7 @@ from .models import (
 from .artifact_validator import validate_hashed_artifact
 
 
-RECOMMENDATION_SCHEMA = "optionhelper.recommendation-set/v1.0.0"
+RECOMMENDATION_SCHEMA = "optionhelper.recommendation-set"
 READY_STATUSES = {"succeeded"}
 TERMINAL_NONREADY = {"failed", "unsupported", "cancelled", "timed_out", "partial"}
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")

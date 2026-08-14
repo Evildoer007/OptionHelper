@@ -40,7 +40,7 @@ def build_host_selection_source_refs(source: Mapping[str, Any], tenant_id: str) 
         product_id = require_identifier(candidate.get("product_id"), "candidate.product_id")
         # Product versions are immutable evidence labels, not path segments.
         # Runtime contracts may use a qualified form such as
-        # ``unversioned:<content-hash>``; preserve it exactly so the selected
+        # ``development:<content-hash>``; preserve it exactly so the selected
         # candidate can be matched against the committed contract snapshot.
         product_version = require_text(candidate.get("product_version"), "candidate.product_version")
         product_hash = _content_hash(
@@ -73,7 +73,7 @@ def build_host_selection_source_refs(source: Mapping[str, Any], tenant_id: str) 
 
     run_id = require_identifier(source.get("selection_run_id") or source_id, "source.selection_run_id")
     recommendation = {
-        "schema": "optionhelper.recommendation-set/v1.0.0",
+        "schema": "optionhelper.recommendation-set",
         "tenant_id": tenant_id,
         "task_id": task_id,
         "analysis_case_id": analysis_case_id,

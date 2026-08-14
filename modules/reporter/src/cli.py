@@ -8,7 +8,6 @@ CLI可以读取本地JSON文件作为用户提交载体，但传给服务的仍�
 from __future__ import annotations
 
 import argparse
-import json
 from pathlib import Path
 
 from runtime.adapters.local_store import LocalResultStore
@@ -16,7 +15,6 @@ from runtime.bootstrap import bootstrap_runtime
 from runtime.ports.module import ModulePort
 
 from .config import default_report_output_root
-from .models import ReporterError, read_json
 from .service import run_report
 
 

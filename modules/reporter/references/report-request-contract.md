@@ -4,7 +4,7 @@ Reporter只接收显式引用，不接收物理结果目录，也不会搜索最
 
 ```json
 {
-  "schema": "optionhelper.report-request/v1.0.0",
+  "schema": "optionhelper.report-request",
   "tenant_id": "tenant_001",
   "task_id": "task_20260804",
   "report_run_id": "report_001",
@@ -17,15 +17,15 @@ Reporter只接收显式引用，不接收物理结果目录，也不会搜索最
   },
   "source_refs": {
     "product_version_refs": {
-      "candidate_01": {"product_id": "9.1", "product_version": "option-reg-v1", "content_hash": "<sha256>"}
+      "candidate_01": {"product_id": "9.1", "product_version": "<product-release>", "content_hash": "<sha256>"}
     },
-    "catalog_version_ref": {"catalog_version": "v1.0.0", "content_hash": "<sha256>"},
+    "catalog_version_ref": {"catalog_version": "<catalog-release>", "content_hash": "<sha256>"},
     "evidence_refs": {
       "recommendation_set": {
         "source_id": "recommender/run-001",
         "run_id": "run-001",
         "expected_semantic_result_hash": "<sha256>",
-        "payload": {"schema": "optionhelper.recommendation-set/v1.0.0"}
+        "payload": {"schema": "optionhelper.recommendation-set"}
       }
     },
     "module_run_refs": {
@@ -52,7 +52,7 @@ Reporter只接收显式引用，不接收物理结果目录，也不会搜索最
 - Core LocalResultStore的`artifacts/artifact_manifest.json`及`commit_marker.json`必须通过校验；清单列出的每个文件都校验存在性、非符号链接与SHA-256。
 - 未满足当前正式协议字段的结果、合同冲突、哈希冲突或清单冲突均会拒绝生成；不会把不完整记录作为部分可信事实展示。
 
-`output_type`仅决定Card或Report的内容密度，`format`仅决定HTML或PDF。Report固定为连续正文，Card固定为无图简报；调用方不传递版式参数。
+`output_type`仅决定Card或Report的内容密度，`format`仅决定HTML或PDF。Report固定为连续正文，HTML宽屏提供左侧章节目录，PDF不显示导航；Card固定为无图简报。调用方不传递版式参数。
 
 Card是简洁交付，固定呈现结构推荐、推荐理由、关键合同条款、估值摘要、回测摘要、主要风险；不展示收益结构章节、损益图或其他图表。
 

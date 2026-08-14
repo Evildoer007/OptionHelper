@@ -16,7 +16,7 @@ from xml.etree import ElementTree as ET
 from .models import ReporterError
 
 
-PROFILE = "payoffer-report-figure/v1"
+PROFILE = "payoffer-report-figure"
 _SVG_NS = "http://www.w3.org/2000/svg"
 _XLINK_NS = "http://www.w3.org/1999/xlink"
 _NS = "{" + _SVG_NS + "}"

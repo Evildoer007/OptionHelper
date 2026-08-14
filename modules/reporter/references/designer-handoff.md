@@ -3,8 +3,8 @@
 交接对象固定使用以下Schema：
 
 ```text
-optionhelper.designer-payload/v1.0.0
-optionhelper.design-brief/v1.0.0
+optionhelper.designer-payload
+optionhelper.design-brief
 ```
 
 Reporter先冻结ReportUnit，再构造`DesignBrief`和Designer payload。Reporter通过宿主注入的Core `ModulePort`调用Designer公开Tool：

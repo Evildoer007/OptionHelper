@@ -46,7 +46,7 @@ def capability(*, result_store_configured: bool = False, designer_port_configure
         "ok": True,
         "module": "reporter",
         "status": "available" if result_store_configured and designer_port_configured and selection_port_configured else "requires_dependencies",
-        "request_schema": "optionhelper.report-request/v1.0.0",
+        "request_schema": "optionhelper.report-request",
         "actions": ["status", "run"],
         "required": ["显式ModuleRunRef", "source_refs", "宿主注入ResultStorePort", "宿主注入Designer ModulePort", "宿主注入ResultSelectionPort"],
         "forbidden": sorted(_FORBIDDEN),
@@ -148,7 +148,6 @@ def build_selected_request(selection: Mapping[str, Any], *, tenant_id: str, sele
     module_refs: dict[str, dict[str, Any]] = {}
     for candidate_id in selected_ids:
         record = candidate_map[candidate_id]
-        available = record.get("module_run_refs") if isinstance(record.get("module_run_refs"), Mapping) else {}
         explicit = requested_refs.get(candidate_id, {})
         if not isinstance(explicit, Mapping):
             raise ReporterError("页面选择的候选ModuleRunRef必须为对象")
@@ -176,7 +175,7 @@ def build_selected_request(selection: Mapping[str, Any], *, tenant_id: str, sele
     output_type = str(selection.get("output_type", "report")).lower()
     output_format = str(selection.get("format", "html")).lower()
     return {
-        "schema": "optionhelper.report-request/v1.0.0",
+        "schema": "optionhelper.report-request",
         "tenant_id": tenant_id,
         "task_id": task_id,
         "report_run_id": require_identifier(selection.get("report_run_id"), "selection.report_run_id"),

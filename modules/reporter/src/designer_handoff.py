@@ -144,23 +144,6 @@ def _public_limitations(values: Any) -> list[str]:
     return result
 
 
-def _public_module_note(status: str) -> str:
-    return {
-        "ready": "该项结果已完成。",
-        "not_run": "本次未运行该项分析。",
-        "failed": "该项分析未完成，交付物不引用其结果。",
-        "unsupported": "当前条件不支持该项分析。",
-        "partial": "该项分析仅完成部分内容，使用时需关注限制。",
-    }.get(status, "该项结果当前不可作为正式结论使用。")
-
-
-def _public_failure_note(status: str) -> str:
-    return {
-        "cancelled": "该项分析已取消，交付物不引用其结果。",
-        "timed_out": "该项分析超时，交付物不引用其结果。",
-    }.get(status, _public_module_note("failed"))
-
-
 def _public_module_value(value: Any) -> Any:
     """Remove any non-reader economics from a selected module field."""
 
@@ -196,11 +179,12 @@ def _display_module(name: str, raw: Mapping[str, Any], *, artifact_paths: Mappin
         # 冻结ReportUnit保留原始状态供受控清单追溯；公开Designer投影只使用
         # 已发布的展示状态和自然语言说明，不携带内部状态枚举。
         value["status"] = "not_run"
-    value["note"] = (
-        _public_failure_note(status)
-        if status in {"cancelled", "timed_out"}
-        else _public_module_note(str(value.get("status", "not_run")))
-    )
+    # A missing module is not reader content.  Only an upstream-provided,
+    # public explanation remains eligible for Designer to show as a genuine
+    # partial/failed state; Reporter never manufactures an "未运行" paragraph.
+    note = _public_text(source.get("note"))
+    if note:
+        value["note"] = note
     artifacts = source.get("artifacts", [])
     value["charts"] = public_chart_specs(value.get("charts"))
     if value.get("status") == "ready":
@@ -265,7 +249,7 @@ def _report_as_of_date(request: ReportRequest, content: Mapping[str, Any]) -> st
     valuation_date = str(pricing.get("valuation_date") or "").strip()
     if valuation_date:
         return valuation_date
-    return "截至日期未提供"
+    return ""
 
 
 def _rows_by_label(rows: Any) -> dict[str, dict[str, Any]]:
@@ -365,8 +349,6 @@ def build_designer_payload(
             "disclaimer": _public_text((content.get("risk") or {}).get("disclaimer")) if isinstance(content.get("risk"), Mapping) else "",
         },
     }
-    if not payload["risk"]["items"]:
-        payload["risk"]["items"] = ["结构收益取决于合同条款与市场路径，可能发生部分或全部本金损失。"]
     if request.output_type == "card":
         # Designer原生从pricing/backtest.metrics渲染Card指标。Reporter只补Payoff
         # 情景摘要，避免把内部运行记录带入对外交付物。
@@ -515,6 +497,9 @@ def render_with_designer(
         "asset_mode": "portable",
         "input_dir": str(output_dir),
     }
+    template_id = str(request.metadata.get("template_id", "")).strip()
+    if template_id:
+        tool_request["template_id"] = template_id
     try:
         response = designer_port.call_tool(tool_request)
     except Exception as error:

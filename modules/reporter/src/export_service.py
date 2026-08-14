@@ -168,7 +168,7 @@ def _write_rendered(stage: Path, payload: Mapping[str, Any], request: ReportRequ
         "delivery_mode": delivery_mode,
         "portable_assets": portable_assets,
         "designer": {
-            "design_system_version": artifact.get("design_system_version"),
+            "design_system_id": artifact.get("design_system_id"),
             "design_system_hash": artifact.get("design_system_hash"),
             "output_type": artifact.get("output_type"),
             "asset_mode": artifact.get("asset_mode"),

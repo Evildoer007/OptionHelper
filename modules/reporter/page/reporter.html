@@ -12,28 +12,31 @@
       <header class="topbar">
         <div class="brand"><img src="../../icons/optionhelper-logo.svg" onerror="this.onerror=null;this.src='../../../assets/icons/optionhelper-logo.svg'" alt="OptionHelper"><span></span><strong>报告生成</strong></div>
         <div class="service-state" id="serviceState">正在连接本机服务</div>
-        <div class="top-actions"><button id="refreshButton" class="button button-quiet">刷新结果</button><button id="generateButton" class="button button-primary" disabled>生成并保存</button></div>
       </header>
 
       <main class="workbench">
         <aside class="source-panel">
-          <div class="panel-kicker">已保存证据</div>
-          <h1>选择报告来源</h1>
-          <p>只显示当前租户经授权的结果引用。页面不会读取或提交服务器目录。</p>
+          <div class="panel-kicker">研究对象</div>
+          <h1>报告来源</h1>
+          <p>选择当前任务中已完成的分析结果。</p>
           <label for="taskFilter">任务筛选</label>
-          <input id="taskFilter" autocomplete="off" placeholder="task_id，可留空">
+          <input id="taskFilter" autocomplete="off" placeholder="任务名称或标识，可留空">
           <label for="sourceSelect">研究与合同来源</label>
           <select id="sourceSelect" disabled><option>等待受控结果目录</option></select>
           <div class="source-detail" id="sourceDetail">选择来源后显示候选、产品版本与资料状态。</div>
-          <div class="source-foot">同一报告来源中的候选可批量生成独立ReportUnit；不同合同不会被合成为一个结构。</div>
+          <div class="source-foot">同一任务中的多个候选可分别生成报告，不同合同不会合并为同一结构。</div>
         </aside>
         <div class="panel-resizer" id="sourceResizer" role="separator" aria-label="调整报告来源面板宽度" aria-orientation="vertical" tabindex="0"></div>
 
         <section class="selection-panel">
-          <div class="section-head"><div><span class="panel-kicker">结果选择</span><h2>候选与模块结果</h2></div><span class="selection-count" id="selectionCount">未选择候选</span></div>
+          <div class="section-head">
+            <div><span class="panel-kicker">报告内容</span><h2>候选与分析结果</h2></div>
+            <div class="top-actions"><button id="refreshButton" class="button button-quiet">刷新结果</button><button id="generateButton" class="button button-primary" disabled>生成并保存</button></div>
+          </div>
+          <div class="selection-count" id="selectionCount">未选择候选</div>
           <div class="notice" id="notice" role="status">正在读取当前租户可用的报告来源。</div>
           <div class="candidate-list" id="candidateList"></div>
-          <div class="missing-note">模块状态来自已保存ModuleRun。未选择或不存在的模块会在ReportUnit中保留真实缺失状态。</div>
+          <div class="missing-note">未完成的分析不会被补写；报告只使用当前任务中真实保存的结果。</div>
         </section>
 
         <div class="panel-resizer" id="settingsResizer" role="separator" aria-label="调整交付设置面板宽度" aria-orientation="vertical" tabindex="0"></div>
@@ -42,17 +45,17 @@
           <div class="panel-kicker">交付设置</div>
           <h2>内容与格式</h2>
           <div class="setting-group"><label>交付方式</label><select id="deliveryMode"><option value="single">单结构</option><option value="batch">批量独立报告</option><option value="combined">组合索引与独立报告</option><option value="comparison">横向对比</option></select></div>
-          <fieldset class="setting-group"><legend>内容等级</legend><label class="choice"><input type="radio" name="outputType" value="card"><span>Card简洁版</span></label><label class="choice"><input type="radio" name="outputType" value="report" checked><span>Report详细版</span></label></fieldset>
+          <fieldset class="setting-group"><legend>内容等级</legend><label class="choice"><input type="radio" name="outputType" value="card"><span>研究简报</span></label><label class="choice"><input type="radio" name="outputType" value="report" checked><span>完整研究报告</span></label></fieldset>
           <fieldset class="setting-group"><legend>输出格式</legend><label class="choice"><input type="radio" name="format" value="html" checked><span>HTML</span></label><label class="choice"><input type="radio" name="format" value="pdf"><span>PDF</span></label></fieldset>
-          <div class="setting-group"><label>HTML Report版式</label><p class="rule">完整报告固定为连续A4正文，不提供目录版。</p></div>
-          <fieldset class="setting-group"><legend>纳入模块</legend><label class="choice"><input type="checkbox" data-module="recommender" checked><span>Recommender</span></label><label class="choice"><input type="checkbox" data-module="payoff" checked><span>Payoffer</span></label><label class="choice"><input type="checkbox" data-module="pricing" checked><span>Pricer</span></label><label class="choice"><input type="checkbox" data-module="backtest" checked><span>Backtester</span></label></fieldset>
+          <div class="setting-group"><label>报告版式</label><p class="rule">完整报告采用连续A4正文。</p></div>
+          <fieldset class="setting-group"><legend>纳入内容</legend><label class="choice"><input type="checkbox" data-module="recommender" checked><span>产品建议</span></label><label class="choice"><input type="checkbox" data-module="payoff" checked><span>收益结构</span></label><label class="choice"><input type="checkbox" data-module="pricing" checked><span>估值定价</span></label><label class="choice"><input type="checkbox" data-module="backtest" checked><span>历史回测</span></label></fieldset>
           <div class="setting-group"><label for="audience">受众</label><select id="audience"><option value="professional">专业用户</option></select></div>
-          <p class="rule" id="formatRule">Card与Report决定内容；HTML与PDF只决定承载方式。</p>
+          <p class="rule" id="formatRule">内容等级决定报告深度，HTML与PDF决定交付格式。</p>
         </aside>
       </main>
 
       <section class="preview-panel" id="previewPanel" hidden>
-        <div class="preview-head"><div><span class="panel-kicker">已保存ReportRun</span><h2 id="previewTitle">报告预览</h2></div><a id="downloadLink" class="button button-quiet" href="#">下载文件</a></div>
+        <div class="preview-head"><div><span class="panel-kicker">报告预览</span><h2 id="previewTitle">已生成报告</h2></div><a id="downloadLink" class="button button-quiet" href="#">下载文件</a></div>
         <div class="child-reports" id="childReports"></div>
         <iframe id="reportPreview" title="已生成报告预览"></iframe>
       </section>

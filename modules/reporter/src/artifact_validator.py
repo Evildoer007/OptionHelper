@@ -148,7 +148,7 @@ def validate_designer_artifact(
     for field, expected in (("format", output_format), ("output_type", output_type)):
         if manifest.get(field) != expected:
             raise ReporterError(f"Designer artifact_manifest.{field}与请求不一致")
-    for field in ("design_system_version", "design_system_hash", "semantic_fact_hash", "presentation_input_hash", "artifact_hash"):
+    for field in ("design_system_id", "design_system_hash", "semantic_fact_hash", "presentation_input_hash", "artifact_hash"):
         if not isinstance(artifact.get(field), str) or not artifact[field]:
             raise ReporterError(f"Designer Tool产物缺少{field}")
         if artifact.get(field) != manifest.get(field):
