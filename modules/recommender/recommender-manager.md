@@ -4,7 +4,7 @@ Recommender拥有自然语言路由、推荐状态机、四个Agent步骤、候�
 
 ## 固定规则
 
-- `RecommendationSet`唯一Schema为`optionhelper.recommendation-set/v1.0.0`。
+- `RecommendationSet`唯一Schema为`optionhelper.recommendation-set`。
 - Research候选必须引用同一`catalog_version`下至少一条OptionLib章节证据，证据原文哈希必须匹配。
 - OptionList、OptionLib、OptionReg证据状态不是`ready`时，候选不得运行计算模块。
 - Critic必须逐一审阅Research产品，新增、漏审、重复审阅均失败。

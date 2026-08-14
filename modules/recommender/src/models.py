@@ -47,7 +47,7 @@ RUN_STATUSES = {
 }
 ANALYSIS_STATUSES = {"not_started", "running", "completed", "partial", "failed", "unsupported", "cancelled", "timed_out"}
 DELIVERY_STATUSES = {"not_requested", "pending", "completed", "partial", "unavailable"}
-RECOMMENDATION_SET_SCHEMA = "optionhelper.recommendation-set/v1.0.0"
+RECOMMENDATION_SET_SCHEMA = "optionhelper.recommendation-set"
 _INTERNAL_PUBLIC_TEXT = re.compile(
     r"(?i)(?:candidate|evidence|module_run|run|task|analysis|audit|contract|resolved_contract)[a-z0-9_]*"
 )

@@ -79,8 +79,8 @@ class HttpEndpoint:
 @dataclass(frozen=True)
 class HttpAgentPort:
     endpoint: HttpEndpoint
-    capability_path: str = "/v1/model/capability"
-    step_path: str = "/v1/agent/step"
+    capability_path: str = "/model/capability"
+    step_path: str = "/agent/step"
 
     def capability(self) -> ModelCapability:
         response = self.endpoint.post(self.capability_path, {"capability": "recommender"})
@@ -104,7 +104,7 @@ class HttpAgentPort:
 @dataclass(frozen=True)
 class HttpKnowledgePort:
     endpoint: HttpEndpoint
-    search_path: str = "/v1/knowledger/search"
+    search_path: str = "/knowledger/search"
 
     def search(self, payload: Mapping[str, Any]) -> Mapping[str, Any]:
         response = self.endpoint.post(self.search_path, payload)

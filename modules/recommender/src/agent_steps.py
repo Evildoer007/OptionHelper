@@ -63,7 +63,7 @@ class AgentStepRunner:
             raise ValueError(f"未知Agent角色：{role}")
         port_role = role if self.workflow_mode == "multi_agent" else f"SingleAgent.{role}"
         request = {
-            "workflow": "optionhelper.recommender/v1.0.0",
+            "workflow": "optionhelper.recommender",
             "role_rule": ROLE_RULES[role],
             "required_output": _required_output(role),
             "input": dict(payload),
