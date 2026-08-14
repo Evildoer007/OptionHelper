@@ -18,7 +18,13 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT / "packaging") not in sys.path:
     sys.path.insert(0, str(ROOT / "packaging"))
 
-from release_contract import RELEASE_VERSION, require_published_at, require_release_version
+from release_contract import (
+    CAPABILITY_MANIFEST_SCHEMA,
+    PROTOCOL_ID,
+    RELEASE_VERSION,
+    require_published_at,
+    require_release_version,
+)
 
 
 PUBLISHER = "OptionHelper Project Team"
@@ -29,15 +35,15 @@ def _published_manifest(candidate: Path, published_at: str) -> None:
     manifest_path = candidate / "capability-manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest.update({
-        "manifest_schema_version": RELEASE_VERSION,
+        "manifest_schema": CAPABILITY_MANIFEST_SCHEMA,
         "package_status": "published",
         "capability_version": RELEASE_VERSION,
         "catalog_version": RELEASE_VERSION,
-        "protocol_version": RELEASE_VERSION,
+        "protocol_id": PROTOCOL_ID,
         "release_status": "published",
         "formal_release": True,
         "execution_scope": "production",
-        "design_system_version": RELEASE_VERSION,
+        "design_system_id": "optionhelper.design-system",
         "published_by": PUBLISHER,
         "published_at": published_at,
         "content_tree_entries": entries,
@@ -70,7 +76,7 @@ def sign(
     if (
         candidate_manifest.get("catalog_version") != RELEASE_VERSION
         or candidate_manifest.get("release_status") != "candidate_from_published_catalog"
-        or candidate_manifest.get("protocol_version") != RELEASE_VERSION
+        or candidate_manifest.get("protocol_id") != PROTOCOL_ID
     ):
         raise ValueError("Capability必须绑定统一版本的正式Catalog和协议")
 

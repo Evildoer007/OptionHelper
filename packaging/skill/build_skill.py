@@ -17,13 +17,17 @@ import uuid
 import zipfile
 from fnmatch import fnmatch
 
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT / "packaging" / "skill") not in sys.path:
+    sys.path.insert(0, str(ROOT / "packaging" / "skill"))
+
 from verify_skill import (
-    HASH_SPEC_VERSION,
+    HASH_SPEC_ID,
     MODULES,
     PAGE_MODULES,
     SkillVerificationError,
     _module_hashes,
-    _tool_catalog_protocol_version,
+    _tool_catalog_protocol_id,
     content_tree_entries,
     is_development_artifact_path,
     is_credential_file,
@@ -34,7 +38,6 @@ from verify_skill import (
 )
 
 
-ROOT = Path(__file__).resolve().parents[2]
 SOURCE_MAP = Path(__file__).with_name("package-source-map.json")
 _SAFE_TOP_LEVEL = ("references", "scripts", "assets", "LICENSES")
 _BANNED_SOURCE_ROOTS = {"blueprint", "data", "dist", "evals", "history", "products", "result"}
@@ -57,7 +60,7 @@ if str(ROOT / "packaging") not in sys.path:
     sys.path.insert(0, str(ROOT / "packaging"))
 
 from runtime.knowledger.versioning import load_published_catalog_snapshots, validate_published_catalog
-from release_contract import RELEASE_VERSION, require_release_version
+from release_contract import CAPABILITY_MANIFEST_SCHEMA, DEVELOPMENT_ID, PROTOCOL_ID, RELEASE_VERSION, require_release_version
 
 
 class SkillBuildError(RuntimeError):
@@ -82,11 +85,11 @@ def _target_allowed(target: str) -> bool:
 def _validate_source_map(config: object) -> dict[str, object]:
     if not isinstance(config, dict):
         raise SkillBuildError("Source Map必须是JSON对象")
-    expected_keys = {"schema_version", "modules", "page_modules", "catalog", "files", "trees"}
+    expected_keys = {"schema", "modules", "page_modules", "catalog", "files", "trees"}
     if set(config) != expected_keys:
         raise SkillBuildError(f"Source Map字段必须精确为{sorted(expected_keys)}")
-    if config["schema_version"] != "1.0":
-        raise SkillBuildError("Source Map版本不支持")
+    if config["schema"] != "optionhelper.skill-source-map":
+        raise SkillBuildError("Source Map Schema无效")
     if not isinstance(config["modules"], list) or not isinstance(config["page_modules"], list):
         raise SkillBuildError("Source Map模块清单必须是数组")
     if tuple(config["modules"]) != MODULES or tuple(config["page_modules"]) != PAGE_MODULES:
@@ -285,16 +288,16 @@ def _resolve_catalog(
     return source, payload
 
 
-def _protocol_version(repo_root: Path) -> str:
+def _protocol_id(repo_root: Path) -> str:
     source = repo_root / "core" / "src" / "runtime" / "protocol" / "tool_catalog.py"
-    protocol_version = _tool_catalog_protocol_version(source)
-    if protocol_version is None:
-        raise SkillBuildError("无法从Tool Catalog确定唯一protocol_version")
-    if protocol_version != RELEASE_VERSION:
+    protocol_id = _tool_catalog_protocol_id(source)
+    if protocol_id is None:
+        raise SkillBuildError("无法从Tool Catalog确定唯一protocol_id")
+    if protocol_id != PROTOCOL_ID:
         raise SkillBuildError(
-            f"Core Tool Catalog协议版本必须为{RELEASE_VERSION}，当前为{protocol_version}"
+            f"Core Tool Catalog协议标识必须为{PROTOCOL_ID}，当前为{protocol_id}"
         )
-    return protocol_version
+    return protocol_id
 
 
 def _source_records(
@@ -388,7 +391,7 @@ def _working_tree_catalog(repo_root: Path) -> dict[str, object]:
         "formal_release": False,
         "execution_scope": "development_only",
         "executable": True,
-        "catalog_version": RELEASE_VERSION,
+        "catalog_version": DEVELOPMENT_ID,
         "catalog_source": "working-tree",
         "product_count": 65,
         "product_ids": product_ids,
@@ -575,17 +578,17 @@ def build_skill(
         if not contract_entries:
             raise SkillBuildError("候选包缺少共享合同核心")
         manifest = {
-            "manifest_schema_version": RELEASE_VERSION,
+            "manifest_schema": CAPABILITY_MANIFEST_SCHEMA,
             "package_status": "candidate",
-            "capability_version": RELEASE_VERSION,
+            "capability_version": DEVELOPMENT_ID if candidate else str(catalog_version),
             "release_status": "technical_candidate" if candidate else "candidate_from_published_catalog",
             "formal_release": False,
             "execution_scope": "development_only" if candidate else "candidate_verification",
-            "catalog_version": RELEASE_VERSION if candidate else catalog_version,
+            "catalog_version": DEVELOPMENT_ID if candidate else catalog_version,
             "catalog_source": catalog_source,
-            "protocol_version": _protocol_version(repo_root),
-            "design_system_version": RELEASE_VERSION,
-            "hash_spec_version": HASH_SPEC_VERSION,
+            "protocol_id": _protocol_id(repo_root),
+            "design_system_id": "optionhelper.design-system",
+            "hash_spec_id": HASH_SPEC_ID,
             "modules": list(MODULES),
             "page_modules": list(PAGE_MODULES),
             "contract_core_hash": tree_hash(contract_entries),

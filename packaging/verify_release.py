@@ -4,11 +4,8 @@
 from __future__ import annotations
 
 import argparse
-from hashlib import sha256
 import json
-import os
 from pathlib import Path
-import stat
 import subprocess
 import sys
 import tempfile
@@ -27,7 +24,7 @@ for path in (
 
 from runtime.knowledger.versioning import validate_published_catalog
 from build_macos import file_hash, verify_dmg_install_layout, verify_platform_release_manifest
-from release_contract import RELEASE_VERSION, require_published_at, require_release_version
+from release_contract import PROTOCOL_ID, RELEASE_VERSION, require_published_at, require_release_version
 from verify_macos import verify as verify_macos_bundle
 from verify_skill import content_tree_entries, tree_hash, verify_skill, verify_zip
 
@@ -59,8 +56,8 @@ def _published_capability(manifest: dict[str, object]) -> None:
         "execution_scope": "production",
         "capability_version": RELEASE_VERSION,
         "catalog_version": RELEASE_VERSION,
-        "protocol_version": RELEASE_VERSION,
-        "design_system_version": RELEASE_VERSION,
+        "protocol_id": PROTOCOL_ID,
+        "design_system_id": "optionhelper.design-system",
     }
     mismatches = [field for field, value in expected.items() if manifest.get(field) != value]
     _require(not mismatches, "正式Capability Manifest字段无效：" + ", ".join(mismatches))
@@ -138,8 +135,8 @@ def _verify_platform_binding(
         "app_version": RELEASE_VERSION,
         "capability_version": RELEASE_VERSION,
         "catalog_version": RELEASE_VERSION,
-        "protocol_version": RELEASE_VERSION,
-        "design_system_version": RELEASE_VERSION,
+        "protocol_id": PROTOCOL_ID,
+        "design_system_id": "optionhelper.design-system",
     }
     mismatches = [field for field, value in expected.items() if app_manifest.get(field) != value]
     _require(not mismatches, "App Manifest公开版本字段无效：" + ", ".join(mismatches))

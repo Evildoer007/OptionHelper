@@ -29,12 +29,18 @@ PACKAGING_ROOT = Path(__file__).resolve().parents[1]
 if str(PACKAGING_ROOT) not in sys.path:
     sys.path.insert(0, str(PACKAGING_ROOT))
 
-from release_contract import RELEASE_VERSION, public_version_errors, require_published_at
+from release_contract import (
+    CAPABILITY_MANIFEST_SCHEMA,
+    DEVELOPMENT_ID,
+    HASH_SPEC_ID,
+    PROTOCOL_ID,
+    RELEASE_VERSION,
+    public_version_errors,
+    require_published_at,
+)
 
 MODULES = ("datafetcher", "recommender", "payoffer", "pricer", "backtester", "reporter", "designer")
 PAGE_MODULES = ("datafetcher", "payoffer", "pricer", "backtester", "reporter")
-HASH_SPEC_VERSION = "content-tree-sha256-nfc-v1"
-PROTOCOL_VERSION = RELEASE_VERSION
 _TEXT_SUFFIXES = {".py", ".md", ".json", ".yaml", ".yml", ".html", ".js", ".css", ".command", ".bat", ".lock"}
 _LOCAL_ENVIRONMENT_MARKER = "Machine" + "Learning"
 _SECRET_PATTERNS = (
@@ -332,30 +338,17 @@ def _launcher_errors(root: Path) -> list[str]:
     return errors
 
 
-def _tool_catalog_protocol_version(path: Path) -> str | None:
+def _tool_catalog_protocol_id(path: Path) -> str | None:
     """Read the protocol identity without importing a Capability module.
 
-    The catalog deliberately refers to the shared ``PUBLIC_VERSION`` constant,
-    so a literal-only regular expression would reject a valid, self-contained
-    Capability.  Keep this parser static: release verification must not run
-    arbitrary code from the package it is inspecting.
+    Keep this parser static: release verification must not run arbitrary code
+    from the package it is inspecting.
     """
     text = path.read_text(encoding="utf-8", errors="ignore")
-    versions = set(re.findall(r'"protocol_version"\s*:\s*"([^"]+)"', text))
-    uses_public_version = bool(re.search(r'"protocol_version"\s*:\s*PUBLIC_VERSION\b', text))
-    if not uses_public_version:
-        return versions.pop() if len(versions) == 1 else None
-    if not (version_source := path.with_name("version.py")).is_file():
-        return None
-    matches = set(re.findall(
-        r'^PUBLIC_VERSION\s*=\s*["\']([^"\']+)["\']\s*$',
-        version_source.read_text(encoding="utf-8", errors="ignore"),
-        re.MULTILINE,
-    ))
-    if len(matches) != 1:
-        return None
-    versions.update(matches)
-    return versions.pop() if len(versions) == 1 else None
+    identities = set(re.findall(r'"protocol_id"\s*:\s*"([^"]+)"', text))
+    if re.search(r'"protocol_id"\s*:\s*MODULE_HOST_PROTOCOL_ID\b', text):
+        identities.add(PROTOCOL_ID)
+    return identities.pop() if len(identities) == 1 else None
 
 
 def _capability_interface_errors(root: Path) -> list[str]:
@@ -408,8 +401,8 @@ def _capability_interface_errors(root: Path) -> list[str]:
             token_pattern = schema_payload.get("properties", {}).get("capability_token", {}).get("pattern", "")
             if schema_payload.get("title") != "ModuleHostContext":
                 errors.append("ModuleHostContext Schema标题无效")
-            if not str(token_pattern).startswith("^v1\\.0\\.0"):
-                errors.append("ModuleHostContext Schema未锁定v1.0.0 capability_token")
+            if not str(token_pattern).startswith("^oh\\."):
+                errors.append("ModuleHostContext Schema未锁定稳定capability_token前缀")
         except json.JSONDecodeError:
             errors.append("ModuleHostContext Schema不是有效JSON")
     run_ref_schema = root / "scripts" / "runtime" / "protocol" / "schemas" / "run-ref.schema.json"
@@ -508,17 +501,24 @@ def _manifest_errors(root: Path, entries: list[dict[str, object]]) -> list[str]:
         return [f"Capability Manifest不是有效JSON：{error}"]
     errors: list[str] = []
     required = {
-        "manifest_schema_version", "package_status", "capability_version", "catalog_version", "catalog_source",
+        "manifest_schema", "package_status", "capability_version", "catalog_version", "catalog_source",
         "release_status", "formal_release", "execution_scope",
-        "protocol_version", "design_system_version", "hash_spec_version", "modules", "page_modules",
+        "protocol_id", "design_system_id", "hash_spec_id", "modules", "page_modules",
         "contract_core_hash", "tool_catalog_hash", "content_tree_hash", "content_hashes", "content_tree_entries",
         "module_content_hashes", "source_map_hash", "source_tree_hash", "source_content_hashes",
     }
     errors.extend(f"Capability Manifest缺少字段：{field}" for field in sorted(required - set(manifest)))
-    if manifest.get("manifest_schema_version") != RELEASE_VERSION:
-        errors.append(f"Capability Manifest Schema版本必须为{RELEASE_VERSION}")
-    errors.extend(public_version_errors(manifest))
+    if manifest.get("manifest_schema") != CAPABILITY_MANIFEST_SCHEMA:
+        errors.append(f"Capability Manifest Schema必须为{CAPABILITY_MANIFEST_SCHEMA}")
     published = manifest.get("release_status") == "published"
+    technical = manifest.get("release_status") == "technical_candidate"
+    if not technical:
+        errors.extend(public_version_errors(manifest))
+    elif (
+        manifest.get("catalog_version") != DEVELOPMENT_ID
+        or manifest.get("capability_version") != DEVELOPMENT_ID
+    ):
+        errors.append("技术候选必须使用development标识，不得冒充发布版本")
     if published:
         catalog_version = manifest.get("catalog_version")
         if (
@@ -536,12 +536,12 @@ def _manifest_errors(root: Path, entries: list[dict[str, object]]) -> list[str]:
                 require_published_at(manifest["published_at"])
             except ValueError as error:
                 errors.append(str(error))
-        if manifest.get("design_system_version") != RELEASE_VERSION:
-            errors.append("正式Capability必须绑定当前Design System版本")
+        if manifest.get("design_system_id") != "optionhelper.design-system":
+            errors.append("正式Capability必须绑定Design System标识")
     elif manifest.get("package_status") != "candidate" or manifest.get("formal_release") is not False:
         errors.append("候选Capability Manifest状态无效")
-    if manifest.get("hash_spec_version") != HASH_SPEC_VERSION:
-        errors.append("内容树哈希规范版本不匹配")
+    if manifest.get("hash_spec_id") != HASH_SPEC_ID:
+        errors.append("内容树哈希规范标识不匹配")
     if tuple(manifest.get("modules", ())) != MODULES:
         errors.append("Manifest七模块顺序或集合不正确")
     if tuple(manifest.get("page_modules", ())) != PAGE_MODULES:
@@ -567,13 +567,13 @@ def _manifest_errors(root: Path, entries: list[dict[str, object]]) -> list[str]:
         errors.append("共享合同核心哈希不一致")
     if manifest.get("tool_catalog_hash") != actual_hashes.get("scripts/runtime/protocol/tool_catalog.py"):
         errors.append("Tool Catalog哈希不一致")
-    if manifest.get("protocol_version") != PROTOCOL_VERSION:
-        errors.append(f"Capability协议版本必须为{PROTOCOL_VERSION}")
+    if manifest.get("protocol_id") != PROTOCOL_ID:
+        errors.append(f"Capability协议版本必须为{PROTOCOL_ID}")
     tool_catalog = root / "scripts" / "runtime" / "protocol" / "tool_catalog.py"
     if tool_catalog.is_file():
-        catalog_version = _tool_catalog_protocol_version(tool_catalog)
-        if catalog_version != PROTOCOL_VERSION:
-            errors.append(f"Tool Catalog协议版本必须唯一为{PROTOCOL_VERSION}")
+        catalog_version = _tool_catalog_protocol_id(tool_catalog)
+        if catalog_version != PROTOCOL_ID:
+            errors.append(f"Tool Catalog协议版本必须唯一为{PROTOCOL_ID}")
     catalog_path = root / "scripts" / "knowledger" / "catalog-version.json"
     try:
         catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
@@ -581,7 +581,6 @@ def _manifest_errors(root: Path, entries: list[dict[str, object]]) -> list[str]:
             errors.append("CatalogVersion与Capability Manifest不一致")
         if "release_id" in catalog:
             errors.append("CatalogVersion不得包含release_id")
-        technical = manifest.get("release_status") == "technical_candidate"
         if technical:
             expected_fields = {
                 "manifest_type", "release_status", "formal_release", "execution_scope", "executable", "catalog_version",
@@ -595,9 +594,9 @@ def _manifest_errors(root: Path, entries: list[dict[str, object]]) -> list[str]:
                 or catalog.get("formal_release") is not False
                 or catalog.get("execution_scope") != "development_only"
                 or catalog.get("executable") is not True
-                or catalog.get("catalog_version") != RELEASE_VERSION
+                or catalog.get("catalog_version") != DEVELOPMENT_ID
                 or catalog.get("catalog_source") != "working-tree"
-                or manifest.get("catalog_version") != RELEASE_VERSION
+                or manifest.get("catalog_version") != DEVELOPMENT_ID
                 or manifest.get("catalog_source") != "working-tree"
                 or manifest.get("execution_scope") != "development_only"
             ):
@@ -868,7 +867,7 @@ def _formal_compute_protocol_errors(root: Path, python: str, environment: Mappin
         )
         context = ModuleHostContext(
             session_ref="release-probe-session-ref",
-            capability_token="v1.0.0.999999999999." + "1" * 64,
+            capability_token="oh.999999999999." + "1" * 64,
             analysis_case_id="release-probe-case",
             task_id="release-probe-task",
             candidate_id="release-probe-candidate",
@@ -877,7 +876,7 @@ def _formal_compute_protocol_errors(root: Path, python: str, environment: Mappin
             module="pricer",
             page_hash="b" * 64,
             capability_version="v1.0.0",
-            protocol_version="v1.0.0",
+            protocol_id="optionhelper.module-host",
             context_id="mhc_release_probe_current_0001",
             host_kind="app",
             request_policy=("module.catalog",),
@@ -986,9 +985,9 @@ def _formal_compute_protocol_errors(root: Path, python: str, environment: Mappin
         ref = {
             "data_asset_id": "protocol-market",
             "storage_ref": "data:protocol:protocol-market:" + "a" * 64 + ":" + "b" * 64,
-            "media_type": "text/csv", "schema_id": "market-history-v1",
+            "media_type": "text/csv", "schema_id": "market-history",
             "asset_ids": (asset,), "normalized_fields": ("date", "asset_id", "close", "adj_close"),
-            "coverage": {"start": "2024-01-02", "end": "2024-01-05", "sessions": ["2024-01-02", "2024-01-03", "2024-01-04", "2024-01-05"], "calendar_id": "CN-SSE", "calendar_version": "protocol-v1"},
+            "coverage": {"start": "2024-01-02", "end": "2024-01-05", "sessions": ["2024-01-02", "2024-01-03", "2024-01-04", "2024-01-05"], "calendar_id": "CN-SSE", "calendar_revision": "protocol-fixture"},
             "row_count": 4, "price_convention": {"adjustment": "close_and_adj_close"},
             "content_hash": sha256(market_payload).hexdigest(), "lineage": {"probe": "formal-compute"},
             "tenant_id": "protocol", "created_by": "probe", "access_scope": ("read",), "partition_spec": {},

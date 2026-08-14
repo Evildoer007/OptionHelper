@@ -53,7 +53,7 @@ def build_development_capability(workspace: Path, catalog_version: str) -> Path:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="以临时已验证Capability启动OptionHelper本机App")
-    parser.add_argument("--catalog-version", default="v1.0.0")
+    parser.add_argument("--catalog-version", default="development")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=4181)
     parser.add_argument("--data-dir", type=Path)

@@ -18,7 +18,7 @@ if str(ROOT / "packaging") not in sys.path:
     sys.path.insert(0, str(ROOT / "packaging"))
 
 from runtime.knowledger.versioning import SNAPSHOT_FILES, validate_published_catalog, verify_candidate
-from release_contract import RELEASE_VERSION, require_published_at, require_release_version
+from release_contract import require_published_at, require_release_version
 
 
 PUBLISHER = "OptionHelper Project Team"
