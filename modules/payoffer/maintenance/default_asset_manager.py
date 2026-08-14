@@ -247,7 +247,7 @@ def plan_default_asset_refresh(figures_root: Path = FIGURES_ROOT) -> list[dict[s
             "svg_content": svg_content,
             "changed_fields": changed,
             "reasons": {
-                field: _CONFIRMED_REG_REFRESHES.get(product_id, {}).get(field, "visual_template_schema_v1")
+                field: _CONFIRMED_REG_REFRESHES.get(product_id, {}).get(field, "visual_template_schema")
                 for field in changed
             },
             "before_json_hash": _digest(json_path.read_bytes()),

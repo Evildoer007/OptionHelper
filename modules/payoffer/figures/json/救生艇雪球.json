@@ -74,7 +74,7 @@
     }
   ],
   "visual_template": {
-    "schema_version": 1,
+    "schema": "optionhelper.payoff-visual-template",
     "layout": "standard_path_cards",
     "path_views": [
       {

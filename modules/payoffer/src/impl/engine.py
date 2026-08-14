@@ -20,7 +20,6 @@ from runtime.bootstrap import bootstrap_runtime
 from runtime.adapters.local_store import LocalResultStore, StoreError
 from runtime.contracts.contract_api import (
     ContractResolutionError,
-    PricePath,
     RESOLVED_CONTRACT_SCHEMA_ID,
     ResolvedContract,
     evaluate_contract,
@@ -32,13 +31,11 @@ from runtime.contracts.contract_types import deep_thaw, semantic_hash
 from runtime.knowledger import load_registry as load_optionreg
 from runtime.ports.result_store import ResultStorePort
 from runtime.protocol.module_host import ModuleHostContext
-from runtime.protocol.version import PUBLIC_VERSION
+from runtime.protocol.version import DEVELOPMENT_RELEASE_ID
 
 from ..asset_resolver import (
     DefaultAssetError,
     DefaultVisualAsset,
-    build_visual_template,
-    figure_asset_paths,
     load_default_figure_payload,
     payoff_template_paths_match,
     payoff_template_terms_match,
@@ -70,7 +67,7 @@ _INTERNAL_PERCENT_BASE = 100.0
 _PAYOFF_UNIT = "percent"
 _REPORTER_PAYOFF_BASES = frozenset({"net_after_premium", "gross_before_premium"})
 _PUBLIC_HIDDEN_TERM_KEYS = _INTERNAL_SCALE_TERM_KEYS | frozenset({"S0", "S0Vec"})
-_REPORTER_PAYOFF_FACTS_VERSION = "v1.0.0"
+_REPORTER_PAYOFF_FACTS_SCHEMA = "optionhelper.reporter-payoff-facts"
 # ``S_0`` is already the coordinate-system reference line.  It is a price
 # term in TermCatalog, but it is not a contractual strike/barrier threshold.
 # The exclusion is by the controlled mathematical symbol, never by a storage
@@ -81,7 +78,7 @@ _REFERENCE_PRICE_SYMBOLS = frozenset({"S_0", "S_{i,0}"})
 # standalone Payoffer development preview; they are not a market or trading
 # calendar and are never used by the formal Host ResolvedContract path.
 _LOCAL_DEVELOPMENT_CALENDAR_ID = "payoffer-local-development-preview"
-_LOCAL_DEVELOPMENT_CALENDAR_VERSION = "v1"
+_LOCAL_DEVELOPMENT_CALENDAR_VERSION = "local-development"
 _OBSERVATION_TERM_KEYS = frozenset({"O_KO", "O_KI", "Ohedge", "Oreset", "Orange", "Otouch", "Oc", "Ovar"})
 _LOCAL_DEVELOPMENT_PREVIEW_SESSIONS = 800
 
@@ -203,7 +200,7 @@ def _default_identity(product: Mapping[str, Any]) -> dict[str, Any]:
     if _has_observation_terms(terms):
         identity.update({
             "calendar_id": _LOCAL_DEVELOPMENT_CALENDAR_ID,
-            "calendar_version": _LOCAL_DEVELOPMENT_CALENDAR_VERSION,
+            "calendar_revision": _LOCAL_DEVELOPMENT_CALENDAR_VERSION,
         })
     return identity
 
@@ -701,7 +698,7 @@ def _reporter_payoff_facts(path_panels: list[Mapping[str, Any]]) -> dict[str, An
             ],
         })
     return {
-        "schema_version": _REPORTER_PAYOFF_FACTS_VERSION,
+        "schema": _REPORTER_PAYOFF_FACTS_SCHEMA,
         "projection_status": "controlled_percent_machine_facts",
         "source": "runtime.contracts.evaluate_contract",
         "discounting": "not_applied",
@@ -962,7 +959,7 @@ def _coerce_payoff_contract(payoff_input: Any) -> ResolvedContract:
     return payoff_input.contract
 
 
-def _renderer_version() -> str:
+def _renderer_id() -> str:
     """渲染器内容哈希进入运行指纹，避免同合同下静默改变图形事实。"""
     renderer_path = Path(__file__).with_name("svg_renderer.py")
     try:
@@ -1003,7 +1000,7 @@ def render_payoff(payoff_input: PayoffInput) -> PayoffResult:
     path_panels = _json_safe(raw_paths)
     reporter_payoff_facts = _json_safe(_reporter_payoff_facts(path_panels))
     display_contract = _display_contract(contract)
-    renderer_version = _renderer_version()
+    renderer_id = _renderer_id()
     result: dict[str, Any] = {
         "module": "payoffer",
         "product_id": contract.product_id,
@@ -1024,7 +1021,7 @@ def render_payoff(payoff_input: PayoffInput) -> PayoffResult:
             "unit": _PAYOFF_UNIT,
             "display_unit": _PAYOFF_UNIT,
         },
-        "renderer_version": renderer_version,
+        "renderer_id": renderer_id,
     }
     result["semantic_result_hash"] = semantic_hash(result)
     svg = render_svg_text({"name_zh": contract.name_zh, "paths": raw_paths})
@@ -1074,7 +1071,7 @@ def _store_payoff_result(
     execution_fingerprint = semantic_hash({
         "contract_fingerprint": contract.contract_fingerprint,
         "default_visual_asset": default_asset,
-        "renderer_version": result.payload["renderer_version"],
+        "renderer_id": result.payload["renderer_id"],
     })
     output = {
         "payoff_json": "artifacts/payoff.json",
@@ -1196,7 +1193,7 @@ def _host_contract(payoff_input: PayoffInput, host_context: ModuleHostContext) -
         raise PayoffEngineError("Core已验证contract_ref不是当前ResolvedContract引用")
     if contract_ref.content_hash != contract.contract_fingerprint:
         raise PayoffEngineError("Core已验证contract_ref与ResolvedContract fingerprint不一致")
-    if contract.product_version.startswith("unversioned:"):
+    if contract.product_version.startswith("development:"):
         try:
             verify_product_snapshot_binding(contract, load_registry())
         except ContractResolutionError as error:
@@ -1257,7 +1254,7 @@ def run_runtime(
         # ResultStore validates catalog_version as the public protocol version.
         # The local tenant/candidate above still isolate this development preview
         # from an App-hosted formal delivery.
-        catalog_version=PUBLIC_VERSION,
+        catalog_version=DEVELOPMENT_RELEASE_ID,
         expose_destination=True,
     )
     response["result_scope"] = "development_preview_only"

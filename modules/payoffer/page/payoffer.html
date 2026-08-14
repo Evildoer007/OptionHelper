@@ -55,28 +55,28 @@
     <div class="app-shell readonly">
       <header class="topbar">
         <div class="brand"><img class="brand-logo" src="../../icons/optionhelper-logo.svg" alt="OptionHelper"><span class="brand-separator" aria-hidden="true"></span><span class="module-title">收益结构</span></div>
-        <div class="topbar-status" id="modeBadge">开发预览，正在连接本机服务</div>
+        <div class="topbar-status" id="modeBadge">正在连接本机服务</div>
         <div class="topbar-actions">
           <button class="button button-primary" id="previewButton">预览收益图</button>
-          <button class="button button-primary" id="runtimePayoffButton">保存开发预览</button>
+          <button class="button button-primary" id="runtimePayoffButton">保存收益结构</button>
           <button class="button button-quiet" id="recheckButton">重新读取资料库</button>
         </div>
       </header>
 
       <main class="workbench" id="workbench">
         <aside class="library-panel">
-          <div class="panel-kicker">资料库入口</div>
-          <h1>产品与路径</h1>
-          <p class="panel-copy">产品、默认条款与收益路径均来自OptionReg；OptionLib只用于逐项核对条款语义。</p>
+          <div class="panel-kicker">研究对象</div>
+          <h1>产品结构</h1>
+          <p class="panel-copy">选择产品并查看已登记条款与收益路径。</p>
           <label class="field-label" for="productSelect">产品</label>
           <select id="productSelect" class="product-select"><option value="">请选择产品</option></select>
           <button class="button button-primary wide" id="openPreviewButton" disabled>预览本次收益图</button>
           <div class="binding-card" id="bindingCard"><span>尚未选择产品</span></div>
           <div class="scenario-heading"><span>产品路径</span><small id="scenarioCount">0</small></div>
           <ol class="scenario-list" id="scenarioList"></ol>
-          <div class="library-note" id="libraryNote">这是开发预览页。默认示例资产为只读基准；本页结果仅供本机核对，不能直接用于正式Card或Report。</div>
+          <div class="library-note" id="libraryNote">默认条款保持只读。本次修改仅保存到当前研究任务。</div>
         </aside>
-        <div class="panel-resizer panel-resizer-left" id="libraryResizer" role="separator" aria-label="调整产品与路径面板宽度" aria-orientation="vertical" tabindex="0"></div>
+        <div class="panel-resizer panel-resizer-left" id="libraryResizer" role="separator" aria-label="调整产品结构面板宽度" aria-orientation="vertical" tabindex="0"></div>
 
         <section class="canvas-panel">
           <div class="canvas-toolbar">
@@ -84,19 +84,19 @@
             <div class="canvas-toolbar-actions">
               <div class="zoom-control" aria-label="画布缩放"><button class="zoom-button" id="zoomOutButton" title="缩小">−</button><label class="zoom-input-wrap"><input id="zoomInput" type="number" min="20" max="200" step="1" inputmode="numeric" aria-label="画布缩放百分比" value="100"><em>%</em></label><button class="zoom-button" id="zoomInButton" title="放大">+</button><button class="zoom-fit" id="zoomFitButton" title="适应画布">适应</button></div>
               <button class="button button-quiet" id="canvasPreviewButton">更新预览</button>
-              <button class="button button-primary" id="canvasRunButton">保存开发预览</button>
+              <button class="button button-primary" id="canvasRunButton">保存收益结构</button>
             </div>
           </div>
           <div class="notice-area" id="noticeArea" aria-live="polite" aria-atomic="true"></div>
           <div class="canvas-viewport" id="canvasViewport">
-            <div class="empty-canvas" id="emptyCanvas"><div class="empty-mark">P</div><h2>选择产品后生成收益图</h2><p>图形按本次已解析合同计算，不会修改固定默认示例。</p></div>
+            <div class="empty-canvas" id="emptyCanvas"><p class="section-kicker">收益结构图</p><h2>选择产品后生成收益图</h2><p>收益图按当前产品条款计算。</p></div>
           </div>
-          <div class="canvas-footer"><span>可使用滚轮或缩放工具查看完整路径图</span><span>开发预览仅保存在本机开发Store</span></div>
+          <div class="canvas-footer"><span>可使用滚轮或缩放工具查看完整路径图</span><span>结果保存到当前研究任务</span></div>
         </section>
         <div class="panel-resizer panel-resizer-right" id="inspectorResizer" role="separator" aria-label="调整条款参数面板宽度" aria-orientation="vertical" tabindex="0"></div>
 
         <aside class="inspector-panel" id="inspectorPanel">
-          <div class="panel-kicker">条款控制</div>
+          <div class="panel-kicker">条款参数</div>
           <h2 id="inspectorTitle">未选择产品</h2>
           <div class="source-detail" id="sourceDetail">选择产品后显示路径来源与条款字段。</div>
           <div class="inspector-group">
@@ -134,12 +134,12 @@
 
       <dialog class="publish-review-dialog runtime-payoff-dialog" id="runtimePayoffDialog" aria-labelledby="runtimePayoffTitle">
         <form class="publish-review-card runtime-payoff-form" id="runtimePayoffForm">
-          <div class="publish-review-head"><div><span class="panel-kicker">开发预览</span><h2 id="runtimePayoffTitle">保存参数化收益图</h2></div><button class="dialog-close" id="runtimePayoffClose" type="button" aria-label="关闭">×</button></div>
-          <p class="publish-review-copy">确认本次产品与关键条款后保存开发预览。结果仅写入本机开发Store，不会修改默认资产，也不能直接生成正式Card或Report。</p>
+          <div class="publish-review-head"><div><span class="panel-kicker">收益结构</span><h2 id="runtimePayoffTitle">保存收益结构</h2></div><button class="dialog-close" id="runtimePayoffClose" type="button" aria-label="关闭">×</button></div>
+          <p class="publish-review-copy">确认产品与关键条款后，将本次收益结构保存到当前研究任务。</p>
           <label class="runtime-payoff-field"><span>产品</span><input id="runtimePayoffProduct" readonly></label>
           <p class="runtime-payoff-fields" id="runtimePayoffFields">先选择产品。</p>
           <p class="runtime-payoff-message" id="runtimePayoffMessage" aria-live="polite"></p>
-          <div class="publish-review-actions"><button class="button button-quiet" id="runtimePayoffCancel" type="button">取消</button><button class="button button-primary" id="runtimePayoffSubmit" type="submit">保存开发预览</button></div>
+          <div class="publish-review-actions"><button class="button button-quiet" id="runtimePayoffCancel" type="button">取消</button><button class="button button-primary" id="runtimePayoffSubmit" type="submit">保存收益结构</button></div>
         </form>
       </dialog>
     </div>
@@ -454,6 +454,12 @@
       function bindResizer(resizer, variable, minimum, maximum) {
         let startX = 0;
         let startValue = 0;
+        const current = () => parseInt(getComputedStyle($('workbench')).getPropertyValue(variable), 10) || minimum;
+        const setWidth = value => {
+          const next = Math.max(minimum, Math.min(maximum, value));
+          $('workbench').style.setProperty(variable, String(next) + 'px');
+          resizer.setAttribute('aria-valuenow', String(next));
+        };
         const finish = () => {
           resizer.classList.remove('active');
           document.removeEventListener('pointermove', move);
@@ -461,12 +467,14 @@
         };
         const move = event => {
           const delta = variable === '--library-width' ? event.clientX - startX : startX - event.clientX;
-          const next = Math.max(minimum, Math.min(maximum, startValue + delta));
-          $('workbench').style.setProperty(variable, String(next) + 'px');
+          setWidth(startValue + delta);
         };
+        resizer.setAttribute('aria-valuemin', String(minimum));
+        resizer.setAttribute('aria-valuemax', String(maximum));
+        resizer.setAttribute('aria-valuenow', String(current()));
         resizer.addEventListener('pointerdown', event => {
           startX = event.clientX;
-          startValue = parseInt(getComputedStyle($('workbench')).getPropertyValue(variable), 10);
+          startValue = current();
           resizer.classList.add('active');
           document.addEventListener('pointermove', move);
           document.addEventListener('pointerup', finish);
@@ -476,8 +484,7 @@
           event.preventDefault();
           const direction = event.key === 'ArrowRight' ? 1 : -1;
           const delta = variable === '--library-width' ? direction * 10 : -direction * 10;
-          const current = parseInt(getComputedStyle($('workbench')).getPropertyValue(variable), 10);
-          $('workbench').style.setProperty(variable, String(Math.max(minimum, Math.min(maximum, current + delta))) + 'px');
+          setWidth(current() + delta);
         });
       }
 
@@ -562,12 +569,12 @@
         const runId = identifier('run');
         $('runtimePayoffSubmit').disabled = true;
         $('runtimePayoffMessage').className = 'runtime-payoff-message';
-        $('runtimePayoffMessage').textContent = '正在保存开发预览…';
+        $('runtimePayoffMessage').textContent = '正在保存收益结构…';
         try {
           const result = await request('/api/run', { ...state.previewPayload, task_id: taskId, run_id: runId });
           $('runtimePayoffDialog').close();
-          showNotice('开发预览已保存，仅供本机核对，不能直接用于正式Card或Report。');
-          setCanvasState('开发预览已保存', 'ready');
+          showNotice('收益结构已保存到当前研究任务。');
+          setCanvasState('收益结构已保存', 'ready');
         } catch (error) {
           $('runtimePayoffMessage').textContent = error.message;
           $('runtimePayoffMessage').className = 'runtime-payoff-message error';
@@ -674,11 +681,11 @@
       bindResizer($('inspectorResizer'), '--inspector-width', 300, 520);
       new ResizeObserver(() => { if (state.preview && state.zoomMode === 'fit') fitZoom(); }).observe($('canvasViewport'));
 
-      if (location.protocol === 'file:') setServiceStatus('开发预览，正在连接本机服务');
+      if (location.protocol === 'file:') setServiceStatus('正在连接本机服务');
       loadCatalog()
         .then(() => {
-          setServiceStatus('开发预览服务已连接');
-          if (location.protocol === 'file:') showNotice('已连接开发预览服务。可在本页解析合同、预览收益图并保存本机预览；正式Card或Report须经App Host和Reporter。');
+          setServiceStatus('本机服务已连接');
+          if (location.protocol === 'file:') showNotice('已连接本机服务。可在本页选择产品、调整条款并保存收益结构。');
         })
         .catch(error => {
           setServiceStatus('未连接本机服务', true);

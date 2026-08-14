@@ -19,14 +19,13 @@ from runtime.contracts.contract_api import (
 from runtime.ports.result_store import ResultStorePort
 from runtime.protocol.module_host import ModuleHostContext
 
-from .asset_resolver import DefaultAssetError, verify_contract_snapshot_binding
+from .asset_resolver import DefaultAssetError, figure_asset_paths, verify_contract_snapshot_binding
 from .impl.engine import (
     PayoffEngineError,
-    figure_asset_paths,
     load_registry,
     payoff_term_fields,
     preview_payload,
-    render_payoff,
+    render_payoff as render_payoff,
     run_payoff,
     run_runtime,
 )
@@ -178,7 +177,7 @@ def _formal_payoff_input(value: Any) -> PayoffInput:
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "OptionHelperPayoff/1.0"
+    server_version = "OptionHelperPayoff"
 
     def log_message(self, format: str, *args: object) -> None:
         print(f"[Payoff] {format % args}")

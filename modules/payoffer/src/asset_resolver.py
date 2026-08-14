@@ -116,7 +116,7 @@ def build_visual_template(paths: list[Mapping[str, Any]]) -> dict[str, Any]:
             "title": f"路径{path_index}",
         })
     return {
-        "schema_version": 1,
+        "schema": "optionhelper.payoff-visual-template",
         "layout": "standard_path_cards",
         "path_views": views,
     }
@@ -125,7 +125,7 @@ def build_visual_template(paths: list[Mapping[str, Any]]) -> dict[str, Any]:
 def _validate_visual_template(value: Any, paths: list[Mapping[str, Any]], name_zh: str) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         raise DefaultAssetError(f"{name_zh}的默认JSON必须含visual_template对象")
-    if value.get("schema_version") != 1 or value.get("layout") != "standard_path_cards":
+    if value.get("schema") != "optionhelper.payoff-visual-template" or value.get("layout") != "standard_path_cards":
         raise DefaultAssetError(f"{name_zh}的visual_template版本或布局类型无效")
     expected = build_visual_template(paths)
     views = value.get("path_views")
@@ -211,14 +211,14 @@ def _snapshot_for_contract(contract: ResolvedContract) -> tuple[dict[str, Any], 
     ProductVersion六件套证明，不能因当前OptionReg后来变化而被重新绑定。
     """
     contract_product_version = str(contract.product_version)
-    if contract_product_version.startswith("unversioned:"):
+    if contract_product_version.startswith("development:"):
         try:
             registry = load_registry()
             verify_product_snapshot_binding(contract, registry)
             product = get_product(contract.product_id, registry)
         except ContractResolutionError as error:
             raise DefaultAssetError(str(error)) from error
-        return product, contract_product_version, figure_asset_paths(contract.name_zh), "unversioned_registry_current"
+        return product, contract_product_version, figure_asset_paths(contract.name_zh), "development_registry_current"
 
     try:
         loader = load_packaged_product_snapshot if RUNTIME_PATHS.mode == "release" else load_current_product_snapshot

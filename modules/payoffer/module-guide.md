@@ -10,11 +10,11 @@
 PayoffInput = {ResolvedContract}
 ```
 
-正式运行只接受Core的`ResolvedContract.to_protocol_dict()`完整快照，并要求Host的`contract_ref.schema_id`严格等于`optionhelper.resolved-contract/v1.0.0`。不接受旧`v1`引用或页面裁剪投影。
+正式运行只接受Core的`ResolvedContract.to_protocol_dict()`完整快照，并要求Host的`contract_ref.schema_id`严格等于`optionhelper.resolved-contract`。不接受其他Schema引用或页面裁剪投影。
 
 输出路径面板、定义域、开闭端点、关键阈值和SVG，写入安装目录之外的项目Store中的`$OPTIONHELPER_RESULT_ROOT/output_payoff/{task_id}/{run_id}/`。不调用Pricer或Backtester。
 
-输出还包含`reporter_payoff_facts`，其版本为`v1.0.0`。该对象只提供共享解释器已核对的分段收益范围、开闭端点、受控价格符号阈值和百分比单位，供Reporter在验证同一ModuleRun后消费；它不含HTML、名义本金、币种、内部N或内部100口径，也不替代Reporter的来源校验。
+输出还包含Schema为`optionhelper.reporter-payoff-facts`的`reporter_payoff_facts`。该对象只提供共享解释器已核对的分段收益范围、开闭端点、受控价格符号阈值和百分比单位，供Reporter在验证同一ModuleRun后消费；它不含HTML、名义本金、币种、内部N或内部100口径，也不替代Reporter的来源校验。
 
 面向用户的估值、回测和报告只展示百分比。`S0Raw`仅用于真实价格与标准化合同换算，不作为面向用户字段；内部现金流、点数、金额和名义本金不得投影到页面、正式Tool、CSV或报告。
 
