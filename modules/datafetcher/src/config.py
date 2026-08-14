@@ -92,7 +92,7 @@ class DataFetcherConfig:
     market_data_as_of_date: str | None = None
     # 已登记的受控trading-calendar资产。历史质量仅在该资产完整覆盖请求时标记complete。
     trading_calendar_ref: DataAssetRef | None = None
-    # 只有含calendar_id、calendar_version和完整覆盖声明的映射才可作为已验证日历。
+    # 只有含calendar_id、calendar_revision和完整覆盖声明的映射才可作为已验证日历。
     # 裸sessions仍可保留为辅助信息，但行情质量必须标记为unverified。
     trading_calendar_sessions: Mapping[str, object] = field(default_factory=dict)
 

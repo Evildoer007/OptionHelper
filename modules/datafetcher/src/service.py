@@ -119,11 +119,11 @@ def _coverage(
     if calendar_evidence is None:
         sessions = sorted(str(value) for value in frame["date"].dropna().unique())
         calendar_id = "UNVERIFIED-" + "+".join(exchanges)
-        calendar_version = "unverified"
+        calendar_revision = "unverified"
     else:
         sessions = sorted({session for values in calendar_evidence.dates_by_asset.values() for session in values})
         calendar_id = calendar_evidence.calendar_id
-        calendar_version = calendar_evidence.calendar_version
+        calendar_revision = calendar_evidence.calendar_revision
     coverage = {
         # 正式覆盖只声明已观测数据；请求区间另存，不能把未验证日期伪装成覆盖。
         "start_date": str(frame["date"].min()),
@@ -132,7 +132,7 @@ def _coverage(
         "requested_end_date": request.end_date,
         "sessions": sessions,
         "calendar_id": calendar_id,
-        "calendar_version": calendar_version,
+        "calendar_revision": calendar_revision,
         "by_asset": by_asset,
     }
     if calendar_evidence is not None and calendar_evidence.calendar_ref:
@@ -152,7 +152,7 @@ def _expected_trading_dates(
     conventions = market_conventions(request.asset_ids)
     validated_by_exchange: dict[str, tuple[str, ...]] = {}
     calendar_ids: list[str] = []
-    calendar_versions: list[str] = []
+    calendar_revisions: list[str] = []
     fully_covered = True
     for convention in conventions.values():
         exchange = str(convention["exchange"])
@@ -180,11 +180,11 @@ def _expected_trading_dates(
             fully_covered = False
             continue
         calendar_id = metadata.get("calendar_id")
-        calendar_version = metadata.get("calendar_version")
+        calendar_revision = metadata.get("calendar_revision")
         coverage_start = metadata.get("coverage_start_date")
         coverage_end = metadata.get("coverage_end_date")
-        if not all(isinstance(value, str) and value.strip() for value in (calendar_id, calendar_version, coverage_start, coverage_end)):
-            raise DataQualityError(f"交易日历{exchange}缺少calendar_id、calendar_version或覆盖声明")
+        if not all(isinstance(value, str) and value.strip() for value in (calendar_id, calendar_revision, coverage_start, coverage_end)):
+            raise DataQualityError(f"交易日历{exchange}缺少calendar_id、calendar_revision或覆盖声明")
         try:
             canonical_start = datetime.strptime(str(coverage_start), "%Y-%m-%d").date().isoformat()
             canonical_end = datetime.strptime(str(coverage_end), "%Y-%m-%d").date().isoformat()
@@ -195,7 +195,7 @@ def _expected_trading_dates(
         if canonical_start > request.start_date or canonical_end < request.end_date:
             fully_covered = False
         calendar_ids.append(str(calendar_id))
-        calendar_versions.append(str(calendar_version))
+        calendar_revisions.append(str(calendar_revision))
     expected = {
         asset_id: tuple(
             session for session in validated_by_exchange[str(convention["exchange"])]
@@ -208,7 +208,7 @@ def _expected_trading_dates(
     return VerifiedCalendarEvidence(
         dates_by_asset=expected,
         calendar_id="+".join(sorted(dict.fromkeys(calendar_ids))),
-        calendar_version="+".join(sorted(dict.fromkeys(calendar_versions))),
+        calendar_revision="+".join(sorted(dict.fromkeys(calendar_revisions))),
         calendar_ref={},
     )
 
@@ -223,11 +223,11 @@ def _asset_uses_calendar_evidence(
     lineage = dict(ref.lineage)
     if evidence is None:
         return (
-            coverage.get("calendar_version") == "unverified"
+            coverage.get("calendar_revision") == "unverified"
             and "calendar_ref" not in coverage
             and "trading_calendar_ref" not in lineage
         )
-    if coverage.get("calendar_id") != evidence.calendar_id or coverage.get("calendar_version") != evidence.calendar_version:
+    if coverage.get("calendar_id") != evidence.calendar_id or coverage.get("calendar_revision") != evidence.calendar_revision:
         return False
     if evidence.calendar_ref:
         return (
@@ -294,7 +294,7 @@ def _asset_reference(
         "valuation_timestamp": f"{frame['date'].max()}T15:00:00+08:00",
         "market_close_status": "historical_or_cached",
         "calendar_id": coverage["calendar_id"],
-        "calendar_version": coverage["calendar_version"],
+        "calendar_revision": coverage["calendar_revision"],
         "asset_market_conventions": conventions,
         "hv_input_requirements_by_asset": {
             asset_id: hv_input_requirements(convention)
@@ -304,7 +304,7 @@ def _asset_reference(
     # LocalDataStore将全部DataAsset元数据纳入storage_ref认证。ID同样必须绑定会
     # 改变资产语义的内容、请求、覆盖与口径，不能以相同CSV静默复用旧lineage。
     identity = hashlib.sha256(json.dumps({
-        "schema_id": "market-history-v1",
+        "schema_id": "market-history",
         "content_hash": content_hash,
         "provider": provider,
         "request_hash": request_hash,
@@ -321,7 +321,7 @@ def _asset_reference(
         "cache_decision": cache_decision,
         "provider_calls": [dict(item) for item in provider_calls],
         "local_source_fingerprint": request.local_source_fingerprint if provider == "local" else None,
-        "normalizer_version": "market-history-v1",
+        "normalizer_version": "market-history",
         "fetched_at": _now(),
     }
     if calendar_evidence is not None and calendar_evidence.calendar_ref:
@@ -332,7 +332,7 @@ def _asset_reference(
             data_asset_id=data_asset_id,
             payload=daily_csv_bytes(frame),
             media_type="text/csv",
-            schema_id="market-history-v1",
+            schema_id="market-history",
             asset_ids=tuple(request.asset_ids),
             normalized_fields=("date", "asset_id", *request.fields),
             coverage=coverage,
@@ -484,6 +484,8 @@ def _fetch_provider(
     if protected_error is not None:
         raise protected_error
     if last_error is not None:
+        if isinstance(last_error, ProviderError):
+            raise last_error
         raise ProviderUnavailable("没有可用Provider满足本次请求") from last_error
     raise ProviderUnavailable("没有可用Provider满足本次请求")
 
@@ -820,7 +822,7 @@ def capability(*, app_configured: bool | None = None) -> dict[str, Any]:
         },
         "offline_supported": True,
         "actions": ["status", "catalog", "list_assets", "fetch", "fetch_calendar"],
-        "data_schemas": ["market-history-v1", "trading-calendar"],
+        "data_schemas": ["market-history", "trading-calendar"],
     }
     if app_configured is not None:
         result.update({

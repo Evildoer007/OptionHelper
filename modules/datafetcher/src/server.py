@@ -16,7 +16,7 @@ from .service import HOST, PAGE, PAGE_DIR, PORT, RUNTIME_PATHS, DataFetcherError
 def _download_media(ref: DataAssetRef) -> tuple[str, str]:
     """由受控DataAssetRef决定下载媒体类型，页面不能指定扩展名。"""
 
-    if ref.schema_id == "market-history-v1" and ref.media_type == "text/csv":
+    if ref.schema_id == "market-history" and ref.media_type == "text/csv":
         return "text/csv; charset=utf-8", ".csv"
     if ref.schema_id == "trading-calendar" and ref.media_type == "application/json":
         return "application/json; charset=utf-8", ".json"

@@ -38,7 +38,7 @@ class VerifiedCalendarEvidence:
 
     dates_by_asset: Mapping[str, tuple[str, ...]]
     calendar_id: str
-    calendar_version: str
+    calendar_revision: str
     calendar_ref: Mapping[str, str]
 
 
@@ -152,8 +152,8 @@ def calendar_evidence_for_history(
     if coverage_start > request.start_date or coverage_end < request.end_date:
         raise CalendarValidationError("trading_calendar_ref未完整覆盖历史行情请求区间")
     calendar_id = coverage.get("calendar_id")
-    calendar_version = coverage.get("calendar_version")
-    if not isinstance(calendar_id, str) or not calendar_id.startswith("CN-") or not isinstance(calendar_version, str) or not calendar_version:
+    calendar_revision = coverage.get("calendar_revision")
+    if not isinstance(calendar_id, str) or not calendar_id.startswith("CN-") or not isinstance(calendar_revision, str) or not calendar_revision:
         raise CalendarValidationError("trading_calendar_ref缺少已验证中国交易所日历身份")
     if dict(ref.price_convention).get("contains_market_prices") is not False:
         raise CalendarValidationError("trading_calendar_ref不得包含市场价格")
@@ -205,7 +205,7 @@ def calendar_evidence_for_history(
     return VerifiedCalendarEvidence(
         dates_by_asset=dates_by_asset,
         calendar_id=calendar_id,
-        calendar_version=calendar_version,
+        calendar_revision=calendar_revision,
         calendar_ref={
             "data_asset_id": ref.data_asset_id,
             "content_hash": ref.content_hash,
@@ -427,7 +427,7 @@ def _store_reference(
         "end_date": request.end_date,
         "sessions": list(sessions),
         "calendar_id": "CN-" + "+".join(payload["exchanges"]),
-        "calendar_version": content_hash[:16],
+        "calendar_revision": content_hash[:16],
         "by_exchange": by_exchange,
     }
     store = LocalDataStore(Path(config.data_root))

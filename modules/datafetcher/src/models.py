@@ -9,7 +9,11 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any, Mapping, Sequence
 
-from runtime.protocol.models import CallerContext, DataAssetRef, SecretRef
+from runtime.protocol.models import (
+    CallerContext as CallerContext,
+    DataAssetRef,
+    SecretRef as SecretRef,
+)
 
 
 @dataclass(frozen=True)

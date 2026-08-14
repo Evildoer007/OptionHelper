@@ -353,7 +353,10 @@ class IFindHttpProvider:
                 raise ProviderQuotaExceeded("iFind额度不足") from error
             if error.unauthorized:
                 raise ProviderUnauthorized("iFind鉴权失败") from error
-            raise ProviderUnavailable("iFind数据请求失败") from error
+            # IFindDownloadError only contains messages sanitized by this
+            # provider boundary.  Preserve that actionable reason instead of
+            # collapsing every data/shape/network failure into one sentence.
+            raise ProviderUnavailable(str(error)) from error
         return pd.concat(frames, ignore_index=True)
 
     def fetch_calendar(self, request: CalendarRequest, config: DataFetcherConfig) -> Mapping[str, tuple[str, ...]]:

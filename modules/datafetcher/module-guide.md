@@ -40,7 +40,7 @@
 
 Host登记`DataAssetRef`时必须执行`register_data_asset(ref, identity)`等价约束：`ref.tenant_id == identity.tenant_id`、`ref.created_by == identity.principal_id`、`access_scope`含`read`，并在读取时再次核验同一约束、`content_hash`和`storage_ref`。DataFetcher只返回Core字段，不接受页面传入的主体、租户或SecretRef覆盖。
 
-正式Capability由官方构建流程从本模块源码生成，禁止手改冻结副本。发行验收必须对生成副本验证：`call_tool_from_app(request, caller_context, secret_ref, secret_port)`签名可由Host调用，`fetch_calendar`可生成`trading-calendar application/json`资产，且历史`market-history-v1 text/csv`资产可被Host只读DataStore、Pricer与Backtester按当前Core的`DataAssetRef`字段读取。该验收使用假SecretPort和假Provider，不读取真实Refresh Token，也不访问iFind。
+正式Capability由官方构建流程从本模块源码生成，禁止手改冻结副本。发行验收必须对生成副本验证：`call_tool_from_app(request, caller_context, secret_ref, secret_port)`签名可由Host调用，`fetch_calendar`可生成`trading-calendar application/json`资产，且历史`market-history text/csv`资产可被Host只读DataStore、Pricer与Backtester按当前Core的`DataAssetRef`字段读取。该验收使用假SecretPort和假Provider，不读取真实Refresh Token，也不访问iFind。
 
 ## 用户可见进度
 

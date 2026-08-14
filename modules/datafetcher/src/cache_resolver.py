@@ -106,12 +106,16 @@ class LocalCache:
 
     def _index(self) -> dict[str, Any]:
         if not self.index_path.exists():
-            return {"version": 1, "entries": {}}
+            return {"schema": "optionhelper.data-cache-index", "entries": {}}
         try:
             value = json.loads(self.index_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as error:
             raise CacheIndexError("DataFetcher缓存索引损坏，拒绝静默覆盖") from error
-        if not isinstance(value, dict) or not isinstance(value.get("entries"), dict):
+        if (
+            not isinstance(value, dict)
+            or value.get("schema") != "optionhelper.data-cache-index"
+            or not isinstance(value.get("entries"), dict)
+        ):
             raise CacheIndexError("DataFetcher缓存索引结构无效，拒绝静默覆盖")
         return value
 

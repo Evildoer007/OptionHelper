@@ -229,7 +229,7 @@ def cache_identity(
     """日期范围不进入缓存身份，使extend_only可安全补齐同口径资产。"""
 
     payload = {
-        "schema_id": "market-history-v1",
+        "schema_id": "market-history",
         "asset_ids": sorted(value.asset_ids),
         "fields": list(value.fields),
         "frequency": value.frequency,
