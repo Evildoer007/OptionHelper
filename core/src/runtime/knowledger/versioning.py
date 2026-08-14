@@ -18,11 +18,8 @@ from typing import Any, Mapping, Sequence
 from runtime.bootstrap import discover_project_root
 from runtime.contracts.contract_api import validate_registry
 from runtime.knowledger.registry_loader import get_default_registry_path, load_registry
-from runtime.protocol.version import PUBLIC_VERSION
-
-
-RELEASE_VERSION = PUBLIC_VERSION
-HASH_SPEC_VERSION = RELEASE_VERSION
+RELEASE_VERSION = "v1.0.0"
+HASH_SPEC_ID = "optionhelper.catalog-sha256"
 TECHNICAL_STATUS = "technical_candidate_not_executable"
 RULE_TERM_KEYS = frozenset({"monitor", "pricing_methods", "constraints", "derived_terms"})
 SNAPSHOT_FILES = {
@@ -211,7 +208,7 @@ def _write_candidate_tree(root: Path, destination: Path, version: str, built_at:
             "product_id": product_id,
             "name_zh": name,
             "proposed_product_version": version,
-            "hash_spec_version": HASH_SPEC_VERSION,
+            "hash_spec_id": HASH_SPEC_ID,
             "built_at": built_at,
             "snapshot_files": SNAPSHOT_FILES,
             "snapshot_sha256": snapshot_hashes,
@@ -235,7 +232,7 @@ def _write_candidate_tree(root: Path, destination: Path, version: str, built_at:
         "executable": False,
         "proposed_catalog_version": version,
         "proposed_product_versions": {product_id: version for product_id in ordered_ids},
-        "hash_spec_version": HASH_SPEC_VERSION,
+        "hash_spec_id": HASH_SPEC_ID,
         "built_at": built_at,
         "product_count": 65,
         "product_snapshot_refs": product_refs,
@@ -531,7 +528,7 @@ def activate_catalog(root: str | Path, version: str, *, versions_root: str | Pat
 
 
 def load_current_catalog(root: str | Path, *, versions_root: str | Path | None = None) -> dict[str, Any] | None:
-    """无current时返回None保留开发态unversioned；存在时严格验证，失败不降级。"""
+    """无current时返回None保留开发态development；存在时严格验证，失败不降级。"""
     root_path = _project_root(root)
     archive_root = Path(versions_root).expanduser().resolve() if versions_root else root_path / "versions"
     current = archive_root / "current.json"

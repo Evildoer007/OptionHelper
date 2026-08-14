@@ -153,7 +153,7 @@ def _schedule_snapshot(terms: Mapping[str, Any], trading_dates: Sequence[Any] | 
 def _require_observation_calendar_identity(identity: Mapping[str, Any], terms: Mapping[str, Any]) -> None:
     if not (_OBSERVATION_TERM_KEYS & set(terms)):
         return
-    for key in ("calendar_id", "calendar_version"):
+    for key in ("calendar_id", "calendar_revision"):
         value = identity.get(key)
         if not isinstance(value, str) or not value.strip():
             raise ContractResolutionError(f"含观察条款的正式合同必须提供identity.{key}")
@@ -191,7 +191,7 @@ def _economic_identity(identity: Mapping[str, Any]) -> dict[str, Any]:
     """仅保留决定合同现金流语义的身份字段，排除展示与运行追踪字段。"""
     keys = (
         "product_id", "underlyings", "currency", "contract_start_date", "contract_end_date",
-        "reference_prices", "price_convention", "calendar_id", "calendar_version",
+        "reference_prices", "price_convention", "calendar_id", "calendar_revision",
     )
     return {key: identity.get(key) for key in keys}
 
@@ -252,7 +252,7 @@ class ResolvedContract:
         terms = deep_freeze(self.terms)
         sources = deep_freeze(self.term_sources)
         paths = tuple(deep_freeze(path) for path in self.paths)
-        product_version = self.product_version or str(identity.get("product_version") or "unversioned")
+        product_version = self.product_version or str(identity.get("product_version") or "development")
         if identity.get("product_version") not in {None, product_version}:
             raise ContractResolutionError("ResolvedContract.product_version与identity不一致")
         if set(sources) != set(terms) or any(value not in {"default", "override", "derived"} for value in sources.values()):
@@ -265,7 +265,7 @@ class ResolvedContract:
                 raise ContractResolutionError("ResolvedContract产品快照绑定必须包含三个64位SHA-256")
             if semantic_hash(paths) != self.product_paths_hash:
                 raise ContractResolutionError("ResolvedContract.paths与声明ProductVersion快照不一致")
-            if product_version.startswith("unversioned:") and product_version != f"unversioned:{self.product_snapshot_hash[:16]}":
+            if product_version.startswith("development:") and product_version != f"development:{self.product_snapshot_hash[:16]}":
                 raise ContractResolutionError("ResolvedContract.product_version与产品快照哈希不一致")
         schedules = deep_freeze(self.resolved_schedules or _schedule_snapshot(terms))
         _validate_resolved_schedule_snapshot(terms, schedules, identity)
@@ -576,18 +576,18 @@ def verify_product_snapshot_binding(
 ) -> ResolvedContract:
     """证明合同事实来自所声明的同一Registry产品快照。"""
 
-    published = not contract.product_version.startswith("unversioned:")
+    published = not contract.product_version.startswith("development:")
     if published:
         if attested_product_version != contract.product_version:
             raise ContractResolutionError("历史ProductVersion必须同时提供签发版本证明与对应归档Registry快照")
         if re.fullmatch(r"v[1-9]\d*\.\d+\.\d+", contract.product_version) is None:
             raise ContractResolutionError("历史ProductVersion版本格式无效")
     elif attested_product_version is not None:
-        raise ContractResolutionError("开发态unversioned合同不得伪装正式ProductVersion证明")
-    contract = _verify_snapshot_hashes(contract, registry, enforce_unversioned=not published)
+        raise ContractResolutionError("开发态development合同不得伪装正式ProductVersion证明")
+    contract = _verify_snapshot_hashes(contract, registry, enforce_development=not published)
     identity_fields = {
         "contract_id", "underlyings", "currency", "contract_start_date", "contract_end_date",
-        "reference_prices", "price_convention", "calendar_id", "calendar_version",
+        "reference_prices", "price_convention", "calendar_id", "calendar_revision",
     }
     identity = {key: deep_thaw(value) for key, value in contract.identity.items() if key in identity_fields}
     overrides = {
@@ -616,7 +616,7 @@ def _verify_snapshot_hashes(
     contract: ResolvedContract,
     registry: Mapping[str, Any],
     *,
-    enforce_unversioned: bool = True,
+    enforce_development: bool = True,
 ) -> ResolvedContract:
     """校验Registry、产品和paths哈希；解析器内部使用以避免递归。"""
 
@@ -634,8 +634,8 @@ def _verify_snapshot_hashes(
         raise ContractResolutionError("ResolvedContract产品快照哈希不一致")
     if semantic_hash(declared_paths) != contract.product_paths_hash or semantic_hash(contract.paths) != contract.product_paths_hash:
         raise ContractResolutionError("ResolvedContract.paths不属于声明ProductVersion快照")
-    expected_version = f"unversioned:{product_hash[:16]}"
-    if enforce_unversioned and contract.product_version != expected_version:
+    expected_version = f"development:{product_hash[:16]}"
+    if enforce_development and contract.product_version != expected_version:
         raise ContractResolutionError("ResolvedContract.ProductVersion未由当前Registry快照证明")
     return contract
 
@@ -664,7 +664,7 @@ def _resolve_contract(
     unknown_identity = set(supplied_identity) - {
         "contract_id", "underlyings", "currency", "contract_start_date", "contract_end_date",
         "reference_prices", "price_convention", "calendar_id",
-        "calendar_version",
+        "calendar_revision",
     }
     if unknown_identity:
         raise ContractResolutionError(f"合同identity含未知字段：{','.join(sorted(unknown_identity))}")
@@ -764,7 +764,7 @@ def _resolve_contract(
     registry_snapshot_hash = semantic_hash(source_registry)
     product_snapshot_hash = semantic_hash(product)
     product_paths_hash = semantic_hash(product["paths"])
-    product_version = f"unversioned:{product_snapshot_hash[:16]}"
+    product_version = f"development:{product_snapshot_hash[:16]}"
     resolved_identity = {
         "product_id": str(product_id),
         "name_zh": product_identity["name_zh"],
@@ -777,7 +777,7 @@ def _resolve_contract(
         "reference_prices": references,
         "price_convention": price_convention,
         "calendar_id": supplied_identity.get("calendar_id"),
-        "calendar_version": supplied_identity.get("calendar_version"),
+        "calendar_revision": supplied_identity.get("calendar_revision"),
         "product_version": product_version,
     }
     contract = ResolvedContract(
@@ -1329,8 +1329,8 @@ def _formula_context(contract: ResolvedContract, price_path: PricePath) -> dict[
         raise ContractResolutionError("合同参考价数量与标的数量不一致")
     price_convention = str(contract.identity.get("price_convention") or "normalized_100")
     if price_convention == "absolute_market":
-        # 兼容旧absolute_market输入，但解释器仍输出100基准点数。价格条款只在
-        # 公式上下文转换，ResolvedContract保留原始合同录入值和身份参考价。
+        # absolute_market保留真实合同录入价格；解释器只在公式上下文中换算为
+        # 100基准，ResolvedContract继续保存原始条款和身份参考价。
         normalized_reference = np.full(len(price_path.asset_ids), _NORMALIZED_PRICE_BASE, dtype=float)
         for key, value in contract.terms.items():
             definition = catalog.get(key, {})

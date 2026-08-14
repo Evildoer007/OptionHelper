@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .version import PUBLIC_VERSION
+from .version import MODULE_HOST_PROTOCOL_ID
 
 
 MODULES = ("datafetcher", "recommender", "payoffer", "pricer", "backtester", "reporter", "designer")
@@ -48,7 +48,7 @@ def tool_catalog() -> dict[str, dict[str, object]]:
             "actions": actions,
             "input_schema": f"optionhelper://schemas/tool-io#/$defs/{module}_input",
             "output_schema": f"optionhelper://schemas/tool-io#/$defs/{module}_output",
-            "protocol_version": PUBLIC_VERSION,
+            "protocol_id": MODULE_HOST_PROTOCOL_ID,
         }
     return catalog
 

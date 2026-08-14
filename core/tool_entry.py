@@ -34,7 +34,7 @@ from runtime.adapters.local_host import (
     LocalProjectLayout,
 )
 from runtime.adapters.local_store import LocalResultStore
-from runtime.contracts.contract_api import ResolvedContract, resolve_contract
+from runtime.contracts.contract_api import ResolvedContract
 from runtime.contracts.input_adapter import (
     is_explicit_demo_pricing_config,
     prepare_compute_request as _prepare_compute_request,
@@ -42,7 +42,7 @@ from runtime.contracts.input_adapter import (
 from runtime.protocol.models import CallerContext, DataAssetRef, ModuleRunRef
 from runtime.protocol.module_host import ModuleHostContext
 from runtime.protocol.tool_catalog import MODULES, tool_catalog
-from runtime.protocol.version import PUBLIC_VERSION, require_public_version
+from runtime.protocol.version import DEVELOPMENT_RELEASE_ID, require_release_id
 
 
 class ToolDispatchError(ValueError):
@@ -526,10 +526,11 @@ def _catalog_version(paths: Any) -> str:
     declared = value.get("catalog_version") if isinstance(value, Mapping) else None
     if declared is not None:
         try:
-            require_public_version(declared, "catalog_version")
+            require_release_id(declared, "catalog_version")
         except ValueError as error:
             raise ProjectRequestError("knowledger", "资料目录版本与当前正式协议不一致。") from error
-    return PUBLIC_VERSION
+        return declared
+    return DEVELOPMENT_RELEASE_ID
 
 
 def _configuration(*, require_model: bool = True, require_ifind: bool = True) -> dict[str, str]:
@@ -716,7 +717,7 @@ def run_recommendation_request(
         config = _configuration(require_model=True, require_ifind=False)
         if config["mode"] == "host":
             _progress(progress, "host", "正在由受控Host执行结构推荐")
-            response = JsonHttpEndpoint(config["host_url"]).post("v1/project/recommend", body)
+            response = JsonHttpEndpoint(config["host_url"]).post("project/recommend", body)
             if response.get("ok") is not True:
                 raise ProjectRequestError("host", str(response.get("message") or "受控Host未能完成结构推荐。"))
             return response
@@ -1172,7 +1173,7 @@ def run_project_request(
     )
     if config["mode"] == "host":
         _progress(progress, "host", "正在由受控Host执行推荐与报告流程")
-        response = JsonHttpEndpoint(config["host_url"]).post("v1/project/run", body)
+        response = JsonHttpEndpoint(config["host_url"]).post("project/run", body)
         if response.get("ok") is not True:
             raise ProjectRequestError("host", str(response.get("message") or "受控Host未能完成研究请求。"))
         return response

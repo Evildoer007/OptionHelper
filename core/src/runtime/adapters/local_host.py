@@ -21,7 +21,11 @@ from urllib.parse import urljoin, urlparse
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from runtime.protocol.models import CallerContext, ModuleRunRef
-from runtime.protocol.version import PUBLIC_VERSION, RESOLVED_CONTRACT_SCHEMA_ID
+from runtime.protocol.version import (
+    DEVELOPMENT_RELEASE_ID,
+    MODULE_HOST_PROTOCOL_ID,
+    RESOLVED_CONTRACT_SCHEMA_ID,
+)
 from runtime.protocol.module_host import (
     HostObjectRef,
     ModuleHostContext,
@@ -155,8 +159,8 @@ class LocalHostAuthority:
             "contract_fingerprint": contract_fingerprint,
             "module": module,
             "page_hash": "0" * 64,
-            "capability_version": PUBLIC_VERSION,
-            "protocol_version": PUBLIC_VERSION,
+            "capability_version": DEVELOPMENT_RELEASE_ID,
+            "protocol_id": MODULE_HOST_PROTOCOL_ID,
             "context_id": f"mhc_{secrets.token_urlsafe(18)}",
             "host_kind": "local-development",
             "request_policy": ("module.catalog", "module.run"),

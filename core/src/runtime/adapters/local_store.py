@@ -15,7 +15,6 @@ from typing import Any, Mapping
 from runtime.contracts.contract_types import canonical_json, semantic_hash
 from runtime.contracts.contract_api import ResolvedContract
 from runtime.protocol.models import DataAssetRef, ModuleRunRef
-from runtime.protocol.version import PUBLIC_VERSION
 
 
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z")
@@ -140,8 +139,6 @@ def _validate_success_contract(
             raise StoreError(f"成功ModuleRun缺少manifest.json.{field}")
         if value != result.get(field):
             raise StoreError(f"result.json.{field}与manifest.json不一致")
-    if manifest["catalog_version"] != PUBLIC_VERSION:
-        raise StoreError(f"成功ModuleRun.catalog_version必须为{PUBLIC_VERSION}")
     if manifest["contract_fingerprint"] != contract.contract_fingerprint:
         raise StoreError("manifest.json.contract_fingerprint与受控合同不一致")
 

@@ -18,18 +18,18 @@ from typing import Any
 
 from .models import ModuleRunRef
 from .version import (
+    MODULE_HOST_PROTOCOL_ID,
     PRICING_CONFIG_SCHEMA_ID,
-    PUBLIC_VERSION,
     RESOLVED_CONTRACT_SCHEMA_ID,
-    require_public_version,
+    require_release_id,
 )
 
 
 PAGE_MODULES = ("datafetcher", "payoffer", "pricer", "backtester", "reporter")
-CAPABILITY_TOKEN_VERSION = PUBLIC_VERSION
+CAPABILITY_TOKEN_PREFIX = "oh"
 _HASH = re.compile(r"[0-9a-f]{64}\Z")
 _TOKEN = re.compile(
-    rf"{re.escape(CAPABILITY_TOKEN_VERSION)}\.(?P<expires_at>[0-9]{{1,12}})\.(?P<signature>[0-9a-f]{{64}})\Z"
+    rf"{re.escape(CAPABILITY_TOKEN_PREFIX)}\.(?P<expires_at>[0-9]{{1,12}})\.(?P<signature>[0-9a-f]{{64}})\Z"
 )
 _CONTEXT_ID = re.compile(r"mhc_[A-Za-z0-9_-]{16,96}\Z")
 _HOST_KINDS = frozenset({"app", "local-development"})
@@ -126,7 +126,7 @@ def capability_token_payload(
     host_kind: str,
     request_policy: tuple[str, ...],
     capability_version: str,
-    protocol_version: str,
+    protocol_id: str,
     task_id: str | None = None,
     analysis_case_id: str | None = None,
     candidate_id: str | None = None,
@@ -150,14 +150,15 @@ def capability_token_payload(
     if not isinstance(request_policy, tuple) or not request_policy:
         raise ModuleHostContextError("request_policy必须为非空字符串元组")
     policy = tuple(_required_text(item, "request_policy[]") for item in request_policy)
-    require_public_version(capability_version, "capability_version")
-    require_public_version(protocol_version, "protocol_version")
+    require_release_id(capability_version, "capability_version")
+    if protocol_id != MODULE_HOST_PROTOCOL_ID:
+        raise ModuleHostContextError(f"protocol_id必须为{MODULE_HOST_PROTOCOL_ID}")
     task_id = _optional_scope_id(task_id, "task_id")
     analysis_case_id = _optional_scope_id(analysis_case_id, "analysis_case_id")
     candidate_id = _optional_scope_id(candidate_id, "candidate_id")
     catalog_version = _optional_scope_id(catalog_version, "catalog_version")
     if catalog_version is not None:
-        require_public_version(catalog_version, "catalog_version")
+        require_release_id(catalog_version, "catalog_version")
     contract_fingerprint = _optional_scope_hash(contract_fingerprint, "contract_fingerprint")
     if contract_ref is not None and not isinstance(contract_ref, HostObjectRef):
         raise ModuleHostContextError("contract_ref必须为HostObjectRef")
@@ -182,7 +183,7 @@ def capability_token_payload(
         "module": module,
         "page_hash": page_hash,
         "principal_id": principal_id,
-        "protocol_version": protocol_version,
+        "protocol_id": protocol_id,
         "request_policy": list(policy),
         "result_refs": [_module_run_ref_payload(ref) for ref in result_refs],
         "session_id": session_id,
@@ -206,7 +207,7 @@ def issue_capability_token(
     host_kind: str,
     request_policy: tuple[str, ...],
     capability_version: str,
-    protocol_version: str,
+    protocol_id: str,
     task_id: str | None = None,
     analysis_case_id: str | None = None,
     candidate_id: str | None = None,
@@ -232,7 +233,7 @@ def issue_capability_token(
         host_kind=host_kind,
         request_policy=request_policy,
         capability_version=capability_version,
-        protocol_version=protocol_version,
+        protocol_id=protocol_id,
         task_id=task_id,
         analysis_case_id=analysis_case_id,
         candidate_id=candidate_id,
@@ -243,7 +244,7 @@ def issue_capability_token(
         result_refs=result_refs,
     )
     signature = hmac.new(token_secret, payload, hashlib.sha256).hexdigest()
-    return f"{CAPABILITY_TOKEN_VERSION}.{expires_at}.{signature}"
+    return f"{CAPABILITY_TOKEN_PREFIX}.{expires_at}.{signature}"
 
 
 def verify_capability_token(
@@ -260,7 +261,7 @@ def verify_capability_token(
     host_kind: str,
     request_policy: tuple[str, ...],
     capability_version: str,
-    protocol_version: str,
+    protocol_id: str,
     task_id: str | None = None,
     analysis_case_id: str | None = None,
     candidate_id: str | None = None,
@@ -290,7 +291,7 @@ def verify_capability_token(
             host_kind=host_kind,
             request_policy=request_policy,
             capability_version=capability_version,
-            protocol_version=protocol_version,
+            protocol_id=protocol_id,
             task_id=task_id,
             analysis_case_id=analysis_case_id,
             candidate_id=candidate_id,
@@ -321,7 +322,7 @@ class ModuleHostContext:
     module: str
     page_hash: str
     capability_version: str
-    protocol_version: str
+    protocol_id: str
     context_id: str
     host_kind: str
     request_policy: tuple[str, ...]
@@ -339,12 +340,13 @@ class ModuleHostContext:
         _optional_scope_id(self.candidate_id, "candidate_id")
         catalog_version = _optional_scope_id(self.catalog_version, "catalog_version")
         if catalog_version is not None:
-            require_public_version(catalog_version, "catalog_version")
+            require_release_id(catalog_version, "catalog_version")
         _optional_scope_hash(self.contract_fingerprint, "contract_fingerprint")
         _require_page_module(self.module)
         _required_hash(self.page_hash, "page_hash")
-        require_public_version(self.capability_version, "capability_version")
-        require_public_version(self.protocol_version, "protocol_version")
+        require_release_id(self.capability_version, "capability_version")
+        if self.protocol_id != MODULE_HOST_PROTOCOL_ID:
+            raise ModuleHostContextError(f"protocol_id必须为{MODULE_HOST_PROTOCOL_ID}")
         _require_context_id(self.context_id)
         if self.host_kind not in _HOST_KINDS:
             raise ModuleHostContextError("host_kind必须为app或local-development")
@@ -373,7 +375,7 @@ class ModuleHostContext:
             "module": self.module,
             "page_hash": self.page_hash,
             "capability_version": self.capability_version,
-            "protocol_version": self.protocol_version,
+            "protocol_id": self.protocol_id,
             "context_id": self.context_id,
             "host_kind": self.host_kind,
             "request_policy": list(self.request_policy),
@@ -402,7 +404,7 @@ class ModuleHostContext:
             raise ModuleHostContextError("ModuleHostContext必须为对象")
         required = {
             "session_ref", "capability_token", "analysis_case_id", "task_id", "candidate_id", "catalog_version", "contract_fingerprint", "module", "page_hash",
-            "capability_version", "protocol_version", "context_id", "host_kind", "request_policy",
+            "capability_version", "protocol_id", "context_id", "host_kind", "request_policy",
         }
         optional = {"contract_ref", "config_ref", "result_refs"}
         unknown = set(value).difference(required | optional)
@@ -431,7 +433,7 @@ class ModuleHostContext:
             module=_required_text(value.get("module"), "module"),
             page_hash=_required_hash(value.get("page_hash"), "page_hash"),
             capability_version=_required_text(value.get("capability_version"), "capability_version"),
-            protocol_version=_required_text(value.get("protocol_version"), "protocol_version"),
+            protocol_id=_required_text(value.get("protocol_id"), "protocol_id"),
             context_id=_required_text(value.get("context_id"), "context_id"),
             host_kind=_required_text(value.get("host_kind"), "host_kind"),
             request_policy=tuple(_required_text(item, "request_policy[]") for item in raw_policy),
@@ -476,7 +478,7 @@ def verify_module_host_context(
         host_kind=context.host_kind,
         request_policy=context.request_policy,
         capability_version=context.capability_version,
-        protocol_version=context.protocol_version,
+        protocol_id=context.protocol_id,
         task_id=context.task_id,
         analysis_case_id=context.analysis_case_id,
         candidate_id=context.candidate_id,
@@ -567,7 +569,7 @@ def _optional_scope_hash(value: Any, field: str) -> str | None:
 
 
 __all__ = (
-    "CAPABILITY_TOKEN_VERSION", "PAGE_MODULES", "CapabilityToken", "HostObjectRef",
+    "CAPABILITY_TOKEN_PREFIX", "PAGE_MODULES", "CapabilityToken", "HostObjectRef",
     "ModuleHostContext", "ModuleHostContextError", "capability_token_payload",
     "issue_capability_token", "parse_capability_token", "validate_module_host_context",
     "verify_capability_token", "verify_module_host_context", "require_host_bound_run_contract",

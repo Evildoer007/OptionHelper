@@ -67,7 +67,7 @@ def explicit_demo_pricing_error(config: Mapping[str, Any] | object) -> str | Non
         return "MC10演示demo_calendar必须为对象。"
     expected_calendar = {
         "calendar_id": "demo-european-vanilla",
-        "calendar_version": "v1",
+        "calendar_revision": "single-session-demo",
         "sessions": [valuation_date],
         "discrete_path": False,
     }
@@ -119,18 +119,18 @@ def prepare_compute_request(
         raise ContractResolutionError("identity与term_overrides必须为对象")
 
     refs = tuple(_canonical_data_ref(item) for item in data_refs)
-    history_refs = tuple(item for item in refs if item.get("schema_id") == "market-history-v1")
+    history_refs = tuple(item for item in refs if item.get("schema_id") == "market-history")
     calendar_refs = tuple(item for item in refs if item.get("schema_id") == "trading-calendar")
     unsupported_refs = tuple(
         item for item in refs
-        if item.get("schema_id") not in {"market-history-v1", "trading-calendar"}
+        if item.get("schema_id") not in {"market-history", "trading-calendar"}
     )
     if unsupported_refs:
         raise ContractResolutionError("计算请求包含不支持的DataAssetRef.schema_id")
     calendar = verified_trading_calendar(calendar_refs[0], data_store) if calendar_refs else None
     resolver_identity = dict(identity)
     if calendar is not None:
-        for key in ("calendar_id", "calendar_version"):
+        for key in ("calendar_id", "calendar_revision"):
             supplied = resolver_identity.get(key)
             if supplied is not None and supplied != calendar[key]:
                 raise ContractResolutionError(f"identity.{key}与Host验证交易日历不一致")
@@ -146,7 +146,7 @@ def prepare_compute_request(
     else:
         try:
             contract = ResolvedContract(**dict(resolved_contract))
-            if contract.product_version.startswith("unversioned:"):
+            if contract.product_version.startswith("development:"):
                 registry = load_registry()
                 attested_product_version = None
             else:
@@ -269,15 +269,15 @@ def verified_trading_calendar(
         raise ContractResolutionError("Host验证交易日历协议无效")
     coverage = reference.coverage
     calendar_id = coverage.get("calendar_id")
-    calendar_version = coverage.get("calendar_version")
+    calendar_revision = coverage.get("calendar_revision")
     sessions = payload.get("sessions")
     if (
         reference.schema_id != "trading-calendar"
         or reference.media_type != "application/json"
         or not isinstance(calendar_id, str)
         or not calendar_id
-        or not isinstance(calendar_version, str)
-        or not calendar_version
+        or not isinstance(calendar_revision, str)
+        or not calendar_revision
         or not isinstance(sessions, list)
         or isinstance(sessions, (str, bytes))
     ):
@@ -295,7 +295,7 @@ def verified_trading_calendar(
     return {
         "calendar_ref": deepcopy(dict(value)),
         "calendar_id": calendar_id,
-        "calendar_version": calendar_version,
+        "calendar_revision": calendar_revision,
         "sessions": normalized,
     }
 
@@ -314,8 +314,8 @@ def bind_verified_calendar_to_history(
     """
 
     history = _canonical_data_ref(history_ref)
-    if history["schema_id"] != "market-history-v1":
-        raise ContractResolutionError("历史行情必须使用market-history-v1 DataAssetRef")
+    if history["schema_id"] != "market-history":
+        raise ContractResolutionError("历史行情必须使用market-history DataAssetRef")
     calendar = verified_trading_calendar(calendar_ref, data_store)
     coverage = deepcopy(dict(history["coverage"]))
     start = coverage.get("start_date", coverage.get("start"))
@@ -332,7 +332,7 @@ def bind_verified_calendar_to_history(
         raise ContractResolutionError("Host验证交易日历未完整覆盖历史行情DataAssetRef")
     coverage.update({
         "calendar_id": calendar["calendar_id"],
-        "calendar_version": calendar["calendar_version"],
+        "calendar_revision": calendar["calendar_revision"],
         "sessions": list(sessions),
         "calendar_coverage_end": sessions[-1],
         "calendar_ref": calendar["calendar_ref"],
@@ -348,16 +348,16 @@ def _require_declared_history_calendar(history_ref: Mapping[str, Any]) -> None:
         raise ContractResolutionError("BacktestInput历史行情必须声明交易日历覆盖")
     sessions = coverage.get("sessions")
     calendar_id = coverage.get("calendar_id")
-    calendar_version = coverage.get("calendar_version")
+    calendar_revision = coverage.get("calendar_revision")
     if (
         not isinstance(sessions, list)
         or not sessions
         or not isinstance(calendar_id, str)
         or not calendar_id
-        or not isinstance(calendar_version, str)
-        or not calendar_version
+        or not isinstance(calendar_revision, str)
+        or not calendar_revision
     ):
-        raise ContractResolutionError("BacktestInput历史行情必须显式声明calendar_id、calendar_version和sessions")
+        raise ContractResolutionError("BacktestInput历史行情必须显式声明calendar_id、calendar_revision和sessions")
 
 
 def _verify_calendar_matches_contract(contract: ResolvedContract, calendar: Mapping[str, Any]) -> None:
@@ -366,7 +366,7 @@ def _verify_calendar_matches_contract(contract: ResolvedContract, calendar: Mapp
     identity = contract.identity
     if (
         identity.get("calendar_id") != calendar["calendar_id"]
-        or identity.get("calendar_version") != calendar["calendar_version"]
+        or identity.get("calendar_revision") != calendar["calendar_revision"]
     ):
         raise ContractResolutionError("Host验证交易日历与已冻结ResolvedContract不一致")
     sessions = set(calendar["sessions"])

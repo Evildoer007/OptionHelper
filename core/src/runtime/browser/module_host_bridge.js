@@ -50,6 +50,97 @@
   applyEmbeddedLayout();
   document.addEventListener("DOMContentLoaded", applyEmbeddedLayout, { once: true });
 
+  const panelLayoutKey = "optionhelper.desk-panel-widths";
+
+  function clampPanelWidth(value, minimum, maximum, fallback) {
+    const parsed = Number.parseInt(value, 10);
+    return Number.isFinite(parsed) ? Math.max(minimum, Math.min(maximum, parsed)) : fallback;
+  }
+
+  function readPanelLayout(workbench) {
+    const style = getComputedStyle(workbench);
+    const left = style.getPropertyValue("--library-width") || style.getPropertyValue("--source-width");
+    const right = style.getPropertyValue("--inspector-width") || style.getPropertyValue("--settings-width");
+    return {
+      left: clampPanelWidth(left, 220, 420, 280),
+      right: clampPanelWidth(right, 300, 520, 340),
+    };
+  }
+
+  function applyPanelLayout(workbench, layout) {
+    const left = clampPanelWidth(layout?.left, 220, 420, 280);
+    const right = clampPanelWidth(layout?.right, 300, 520, 340);
+    workbench.style.setProperty("--library-width", `${left}px`);
+    workbench.style.setProperty("--source-width", `${left}px`);
+    workbench.style.setProperty("--inspector-width", `${right}px`);
+    workbench.style.setProperty("--settings-width", `${right}px`);
+  }
+
+  function storedPanelLayout() {
+    try { return JSON.parse(localStorage.getItem(panelLayoutKey) || "null"); }
+    catch { return null; }
+  }
+
+  function persistPanelLayout(workbench) {
+    const layout = readPanelLayout(workbench);
+    try { localStorage.setItem(panelLayoutKey, JSON.stringify(layout)); }
+    catch { /* Storage may be unavailable in a standalone private preview. */ }
+    window.parent.postMessage({
+      type: "optionhelper.desk-panel-layout-change",
+      module: moduleName,
+      bridge_nonce: bridgeNonce,
+      layout,
+    }, location.origin);
+  }
+
+  function installSharedPanelLayout() {
+    if (!hostedInDesk) return;
+    const workbench = document.querySelector(".workbench");
+    if (!workbench || workbench.dataset.optionhelperSharedLayout === "true") return;
+    workbench.dataset.optionhelperSharedLayout = "true";
+    applyPanelLayout(workbench, storedPanelLayout() || readPanelLayout(workbench));
+    let committedLayout = JSON.stringify(readPanelLayout(workbench));
+    let pendingCommit = 0;
+    const commitCurrentLayout = () => {
+      pendingCommit = 0;
+      const nextLayout = readPanelLayout(workbench);
+      const serialized = JSON.stringify(nextLayout);
+      if (serialized === committedLayout) return;
+      committedLayout = serialized;
+      persistPanelLayout(workbench);
+    };
+    const scheduleCommit = () => {
+      if (pendingCommit) return;
+      pendingCommit = requestAnimationFrame(commitCurrentLayout);
+    };
+    const commit = (event) => {
+      if (!event.target?.closest?.(".panel-resizer")) return;
+      scheduleCommit();
+    };
+    new MutationObserver(scheduleCommit).observe(workbench, { attributes: true, attributeFilter: ["style"] });
+    document.addEventListener("pointerup", commit, true);
+    document.addEventListener("keyup", commit, true);
+    window.addEventListener("storage", (event) => {
+      if (event.key !== panelLayoutKey || !event.newValue) return;
+      try { applyPanelLayout(workbench, JSON.parse(event.newValue)); }
+      catch { /* Ignore malformed external storage events. */ }
+    });
+    window.addEventListener("message", (event) => {
+      if (event.origin !== location.origin || event.source !== window.parent) return;
+      if (event.data?.type !== "optionhelper.desk-panel-layout") return;
+      if (event.data?.bridge_nonce && event.data.bridge_nonce !== bridgeNonce) return;
+      const layout = {
+        left: clampPanelWidth(event.data?.layout?.left, 220, 420, 280),
+        right: clampPanelWidth(event.data?.layout?.right, 300, 520, 340),
+      };
+      committedLayout = JSON.stringify(layout);
+      applyPanelLayout(workbench, layout);
+    });
+  }
+
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", installSharedPanelLayout, {once: true});
+  else installSharedPanelLayout();
+
   function optionFor(select, value) {
     return Array.from(select.options).find((option) => option.value === value) || select.selectedOptions[0] || select.options[0];
   }
@@ -235,7 +326,7 @@
   else installChoiceControls();
 
   function valid(value) {
-    const token = /^v1\.0\.0\.([0-9]{1,12})\.([0-9a-f]{64})$/.exec(String(value?.capability_token || ""));
+    const token = /^oh\.([0-9]{1,12})\.([0-9a-f]{64})$/.exec(String(value?.capability_token || ""));
     const expiresAt = Number(token?.[1]);
     return value && value.module === moduleName && value.host_kind && value.context_id && value.capability_token
       && typeof value.page_hash === "string" && /^[0-9a-f]{64}$/.test(value.page_hash)

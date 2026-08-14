@@ -13,7 +13,6 @@ import re
 from typing import TYPE_CHECKING, Any, Mapping
 
 from runtime.contracts.contract_types import semantic_hash
-from .version import require_public_version
 
 if TYPE_CHECKING:
     from runtime.contracts.contract_api import ResolvedContract
@@ -112,16 +111,16 @@ class SecretRef:
 
     provider: str
     key: str
-    version: str | None = None
+    revision: str | None = None
 
     def __post_init__(self) -> None:
         if not self.provider.strip() or not self.key.strip():
             raise ValueError("SecretRef requires non-empty provider and key")
-        if self.version is not None and not self.version.strip():
-            raise ValueError("SecretRef version must be non-empty when supplied")
+        if self.revision is not None and not self.revision.strip():
+            raise ValueError("SecretRef revision must be non-empty when supplied")
 
     def redacted(self) -> dict[str, str | None]:
-        return {"provider": self.provider, "key": self.key, "version": self.version}
+        return {"provider": self.provider, "key": self.key, "revision": self.revision}
 
 
 @dataclass(frozen=True)
@@ -368,7 +367,6 @@ class ModuleRun:
                 raise ValueError("成功或部分成功的ModuleRun.candidate_id不能为空")
             if not self.catalog_version:
                 raise ValueError("成功或部分成功的ModuleRun.catalog_version不能为空")
-            require_public_version(self.catalog_version, "ModuleRun.catalog_version")
             if not isinstance(self.contract_fingerprint, str) or len(self.contract_fingerprint) != 64 or any(
                 char not in "0123456789abcdef" for char in self.contract_fingerprint
             ):

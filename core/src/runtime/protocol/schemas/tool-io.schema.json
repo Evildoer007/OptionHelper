@@ -1,7 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "optionhelper://schemas/tool-io",
-  "x-optionhelper-protocol-version": "v1.0.0",
   "title": "ToolInputOutput",
   "$defs": {
     "resolved_contract": {"$ref": "optionhelper://schemas/resolved-contract"},
