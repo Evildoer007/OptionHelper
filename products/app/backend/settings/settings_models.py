@@ -87,7 +87,7 @@ def deserialize_settings(value: dict[str, Any]) -> SettingsSnapshot:
             return None
         if not isinstance(raw, dict):
             raise ValueError("secret_ref must be an object")
-        return SecretRef(provider=str(raw["provider"]), key=str(raw["key"]), version=raw.get("version"))
+        return SecretRef(provider=str(raw["provider"]), key=str(raw["key"]), revision=raw.get("revision"))
 
     model = value.get("model_service", {})
     data = value.get("data_interface", {})

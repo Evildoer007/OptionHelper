@@ -45,6 +45,7 @@ export async function startWorkspace(initialMode) {
   const assistantClose = document.querySelector("[data-assistant-close]");
   const form = document.querySelector("#workspace-form");
   const input = form.elements.content;
+  const submit = form.querySelector("button[type=submit]");
   const status = document.querySelector("#workspace-status");
   const title = document.querySelector("#task-title");
   const taskState = document.querySelector("#task-state");
@@ -64,6 +65,20 @@ export async function startWorkspace(initialMode) {
   let workspaceStatusTimer = 0;
   const moduleFrames = new Map();
   const moduleContexts = new Map();
+  let moduleIndicatorFrame = 0;
+  const panelLayoutKey = "optionhelper.desk-panel-widths";
+  const clampPanelWidth = (value, minimum, maximum, fallback) => {
+    const parsed = Number.parseInt(value, 10);
+    return Number.isFinite(parsed) ? Math.max(minimum, Math.min(maximum, parsed)) : fallback;
+  };
+  const normalizePanelLayout = (layout) => ({
+    left: clampPanelWidth(layout?.left, 220, 420, 280),
+    right: clampPanelWidth(layout?.right, 300, 520, 340),
+  });
+  let sharedPanelLayout = (() => {
+    try { return normalizePanelLayout(JSON.parse(localStorage.getItem(panelLayoutKey) || "null")); }
+    catch { return normalizePanelLayout(null); }
+  })();
 
   const createModuleBridgeNonce = () => crypto.randomUUID
     ? crypto.randomUUID()
@@ -85,11 +100,15 @@ export async function startWorkspace(initialMode) {
   const clearReportFeedback = () => clearMessage(reportFeedback);
   const setComposerSending = (button, sending) => {
     if (sending) button.classList.remove("is-sent");
-    button.disabled = sending;
+    button.dataset.sending = String(sending);
+    button.disabled = sending || !input.value.trim();
     button.classList.toggle("is-generating", sending);
     form.classList.toggle("is-generating", sending);
     button.setAttribute("aria-busy", String(sending));
     button.setAttribute("aria-label", sending ? "正在发送" : "发送");
+  };
+  const syncComposerAvailability = () => {
+    submit.disabled = submit.dataset.sending === "true" || !input.value.trim();
   };
   const markComposerSent = (button) => {
     if (matchMedia("(prefers-reduced-motion: reduce)").matches) return;
@@ -343,14 +362,22 @@ export async function startWorkspace(initialMode) {
   }
 
   function syncModuleTabIndicator(animate = true) {
-    const active = tabs?.querySelector('[data-module][aria-selected="true"]');
-    if (!active || !moduleTabIndicator) return;
-    if (!animate) moduleTabIndicator.style.transition = "none";
-    moduleTabIndicator.style.transform = `translate3d(${active.offsetLeft}px, 0, 0) scaleX(${active.offsetWidth})`;
-    if (!animate) {
-      void moduleTabIndicator.offsetWidth;
-      moduleTabIndicator.style.removeProperty("transition");
-    }
+    window.cancelAnimationFrame(moduleIndicatorFrame);
+    moduleIndicatorFrame = window.requestAnimationFrame(() => {
+      const active = tabs?.querySelector('[data-module][aria-selected="true"]');
+      if (!active || !moduleTabIndicator) return;
+      const tabsRect = tabs.getBoundingClientRect();
+      const activeRect = active.getBoundingClientRect();
+      if (activeRect.width <= 0 || tabsRect.width <= 0) return;
+      if (!animate) moduleTabIndicator.style.transition = "none";
+      moduleTabIndicator.style.width = `${activeRect.width}px`;
+      moduleTabIndicator.style.transform = `translate3d(${activeRect.left - tabsRect.left + tabs.scrollLeft}px, 0, 0)`;
+      moduleTabIndicator.dataset.ready = "true";
+      if (!animate) {
+        void moduleTabIndicator.offsetWidth;
+        moduleTabIndicator.style.removeProperty("transition");
+      }
+    });
   }
 
   function setActiveModule(moduleName, animate = true) {
@@ -387,6 +414,7 @@ export async function startWorkspace(initialMode) {
     const bridgeNonce = frame?.dataset.bridgeNonce;
     if (frame?.dataset.ready === "true" && context && bridgeNonce) {
       frame.contentWindow?.postMessage({ type: "optionhelper.module-host-context", context, bridge_nonce: bridgeNonce }, location.origin);
+      frame.contentWindow?.postMessage({ type: "optionhelper.desk-panel-layout", layout: sharedPanelLayout, bridge_nonce: bridgeNonce }, location.origin);
     }
   }
 
@@ -427,8 +455,21 @@ export async function startWorkspace(initialMode) {
   window.addEventListener("message", (event) => {
     const moduleName = event.data?.module;
     const frame = moduleFrames.get(moduleName);
-    if (event.origin !== location.origin || event.source !== frame?.contentWindow || event.data?.type !== "optionhelper.module-host-ready") return;
+    if (event.origin !== location.origin || event.source !== frame?.contentWindow) return;
     if (event.data?.bridge_nonce !== frame?.dataset.bridgeNonce) return;
+    if (event.data?.type === "optionhelper.desk-panel-layout-change") {
+      sharedPanelLayout = normalizePanelLayout(event.data.layout);
+      try { localStorage.setItem(panelLayoutKey, JSON.stringify(sharedPanelLayout)); } catch { /* optional */ }
+      for (const target of moduleFrames.values()) {
+        target.contentWindow?.postMessage({
+          type: "optionhelper.desk-panel-layout",
+          layout: sharedPanelLayout,
+          bridge_nonce: target.dataset.bridgeNonce,
+        }, location.origin);
+      }
+      return;
+    }
+    if (event.data?.type !== "optionhelper.module-host-ready") return;
     frame.dataset.ready = "true";
     deliverContext(moduleName);
   });
@@ -450,13 +491,19 @@ export async function startWorkspace(initialMode) {
     next.focus();
     mountModule(next.dataset.module).catch(() => showWorkspaceStatus("模块暂未就绪，请稍后重试。", true, 7000));
   });
+  const moduleTabsResizeObserver = new ResizeObserver(() => syncModuleTabIndicator(false));
+  moduleTabsResizeObserver.observe(tabs);
+  tabs.addEventListener("scroll", () => syncModuleTabIndicator(false), { passive: true });
   window.addEventListener("resize", () => syncModuleTabIndicator(false), { passive: true });
   assistantToggle.addEventListener("click", () => setAssistantOpen(!assistantOpen, { focus: true }));
   assistantClose.addEventListener("click", () => { setAssistantOpen(false); assistantToggle.focus(); });
   stream.addEventListener("scroll", () => {
     if (!restoringScroll) saveTransient();
   }, { passive: true });
-  input.addEventListener("input", saveTransient);
+  input.addEventListener("input", () => {
+    saveTransient();
+    syncComposerAvailability();
+  });
   stream.addEventListener("click", (event) => {
     const starter = event.target.closest("[data-starter-prompt]");
     if (!starter) return;
@@ -476,7 +523,6 @@ export async function startWorkspace(initialMode) {
 
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
-    const submit = form.querySelector("button[type=submit]");
     const submittedContent = input.value.trim();
     if (!submittedContent) return;
     let pendingMessage;
@@ -508,8 +554,10 @@ export async function startWorkspace(initialMode) {
       let messagePersisted = false;
       if (currentTask) {
         await selectTask(currentTask.task_id, false).catch(() => {});
-        const last = currentTask?.messages?.at?.(-1);
-        if (last?.role === "user" && last.content === submittedContent) {
+        const submittedMessagePersisted = currentTask?.messages
+          ?.slice?.(-2)
+          .some((entry) => entry.role === "user" && entry.content === submittedContent);
+        if (submittedMessagePersisted) {
           messagePersisted = true;
           input.value = "";
           saveTransient();
@@ -531,6 +579,7 @@ export async function startWorkspace(initialMode) {
     }
   });
   bindComposerKeyboard(form);
+  syncComposerAvailability();
 
   document.querySelectorAll("[data-report-kind]").forEach((button) => button.addEventListener("click", async () => {
     if (!currentTask) { showReportFeedback("请先新建或选择任务。", true); return; }
@@ -579,8 +628,10 @@ export async function startWorkspace(initialMode) {
     button.dataset.permitted = String(session.capabilities.includes(capability));
   });
   syncReportActions();
-  await configureModelPicker(document.querySelector("#workspace-model-picker")).catch(() => {});
-  const tasks = await loadTasks();
+  const [, tasks] = await Promise.all([
+    configureModelPicker(document.querySelector("#workspace-model-picker")).catch(() => {}),
+    loadTasks(),
+  ]);
   const requested = taskIdFromLocation();
   if (requested) await selectTask(requested, false).catch(() => {});
   if (!currentTask && tasks.length) await selectTask(tasks[0].task_id, false);
@@ -588,6 +639,7 @@ export async function startWorkspace(initialMode) {
   if (!currentTask) renderMessages(stream, [], "新建任务后即可开始对话，并按需生成Card或Report。");
   await applyMode(initialMode, { updateHistory: false });
   restoreTransient();
+  syncComposerAvailability();
   if (initialMode === "desk" && currentTask) await mountModule(currentModule, false);
 }
 

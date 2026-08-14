@@ -11,8 +11,65 @@ html[data-optionhelper-app-hosted="true"] .app-shell {
   overflow-x: hidden;
 }
 
+/*
+ * OptDesk module surface
+ *
+ * Each module remains independently runnable and keeps its own content model.
+ * Inside OptDesk, this layer gives all five pages one shared three-column
+ * workbench: source on the left, results in the centre and inputs on the right.
+ */
+html[data-optionhelper-app-hosted="true"] {
+  --red: #c8102e;
+  --red-deep: #971029;
+  --gold: #aa7414;
+  --ink: #252625;
+  --muted: #686d6a;
+  --rule: #dcdedc;
+  --rule-soft: #eceeec;
+  --paper: #ffffff;
+  --panel: #f6f7f6;
+  --surface: #f6f7f6;
+  --surface-muted: #f0f2f0;
+  --desk: #ffffff;
+  --wash: #f0f2f0;
+  --font: Arial, "PingFang SC", "Microsoft YaHei", sans-serif;
+  --mono: "SFMono-Regular", Menlo, Consolas, monospace;
+  color: var(--ink);
+  background: var(--paper);
+  font-family: var(--font);
+}
+
+html[data-optionhelper-app-hosted="true"] body,
+html[data-optionhelper-app-hosted="true"] button,
+html[data-optionhelper-app-hosted="true"] input,
+html[data-optionhelper-app-hosted="true"] select,
+html[data-optionhelper-app-hosted="true"] textarea {
+  font-family: var(--font) !important;
+}
+
 html[data-optionhelper-app-hosted="true"] .topbar {
   display: none !important;
+}
+
+/* Reporter keeps its delivery actions in the standalone header. In OptDesk,
+ * retain only those actions so report generation remains usable without
+ * reintroducing the module logo or service chrome. */
+html[data-optionhelper-app-hosted="true"] .topbar:has(#generateButton) {
+  min-height: 48px;
+  height: 48px;
+  padding: 0 18px;
+  display: flex !important;
+  justify-content: flex-end;
+  background: var(--paper);
+  border-bottom: 1px solid var(--rule-soft);
+}
+
+html[data-optionhelper-app-hosted="true"] .topbar:has(#generateButton) :is(.brand, .service-state) {
+  display: none !important;
+}
+
+html[data-optionhelper-app-hosted="true"] .topbar:has(#generateButton) + .workbench {
+  height: calc(100vh - 48px) !important;
 }
 
 html[data-optionhelper-app-hosted="true"] .workbench {
@@ -21,7 +78,280 @@ html[data-optionhelper-app-hosted="true"] .workbench {
   min-width: 0 !important;
   height: 100vh !important;
   min-height: 0;
-  grid-template-columns: minmax(190px, 23%) 4px minmax(360px, 1fr) 4px minmax(250px, 29%) !important;
+  overflow: hidden;
+  grid-template-columns:
+    var(--library-width, var(--source-width, clamp(220px, 21%, 270px)))
+    10px
+    minmax(320px, 1fr)
+    10px
+    var(--inspector-width, var(--settings-width, clamp(280px, 27%, 350px)))
+    !important;
+  background: var(--paper) !important;
+}
+
+html[data-optionhelper-app-hosted="true"] :is(
+  .library-panel,
+  .source-panel,
+  .inspector-panel,
+  .settings-panel
+) {
+  min-width: 0;
+  padding: 20px 18px !important;
+  overflow: auto;
+  border: 0 !important;
+  background: var(--panel) !important;
+  box-shadow: none !important;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(72, 78, 74, .18) transparent;
+}
+
+html[data-optionhelper-app-hosted="true"] :is(
+  .library-panel,
+  .source-panel,
+  .inspector-panel,
+  .settings-panel
+)::-webkit-scrollbar {
+  width: 5px;
+}
+
+html[data-optionhelper-app-hosted="true"] :is(
+  .library-panel,
+  .source-panel,
+  .inspector-panel,
+  .settings-panel
+)::-webkit-scrollbar-thumb {
+  border-radius: 99px;
+  background: rgba(72, 78, 74, .18);
+}
+
+html[data-optionhelper-app-hosted="true"] :is(
+  .canvas-panel,
+  .selection-panel
+) {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border: 0 !important;
+  background: var(--paper) !important;
+  box-shadow: none !important;
+}
+
+html[data-optionhelper-app-hosted="true"] .workbench > :nth-child(1) {
+  grid-column: 1 !important;
+  grid-row: 1 !important;
+}
+
+html[data-optionhelper-app-hosted="true"] .workbench > :nth-child(2) {
+  grid-column: 2 !important;
+  grid-row: 1 !important;
+}
+
+html[data-optionhelper-app-hosted="true"] .workbench > :nth-child(3) {
+  grid-column: 3 !important;
+  grid-row: 1 !important;
+}
+
+html[data-optionhelper-app-hosted="true"] .workbench > :nth-child(4) {
+  grid-column: 4 !important;
+  grid-row: 1 !important;
+}
+
+html[data-optionhelper-app-hosted="true"] .workbench > :nth-child(5) {
+  grid-column: 5 !important;
+  grid-row: 1 !important;
+}
+
+html[data-optionhelper-app-hosted="true"] .settings-panel {
+  display: block !important;
+}
+
+html[data-optionhelper-app-hosted="true"] .panel-resizer {
+  position: relative;
+  display: block !important;
+  width: 10px;
+  border: 0 !important;
+  background: transparent !important;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+html[data-optionhelper-app-hosted="true"] .panel-resizer::before {
+  position: absolute;
+  inset: 0 auto 0 4px;
+  width: 1px;
+  background: var(--rule);
+  content: "";
+  transform-origin: center;
+  transition: background-color .16s ease, transform .16s ease;
+}
+
+html[data-optionhelper-app-hosted="true"] .panel-resizer:is(:hover, :focus-visible, .active)::before {
+  background: var(--red);
+  transform: scaleX(2);
+}
+
+html[data-optionhelper-app-hosted="true"] :is(.panel-kicker, .section-kicker) {
+  margin: 0 0 6px;
+  color: var(--red-deep) !important;
+  font: 700 10px/1.4 var(--font) !important;
+  letter-spacing: .02em !important;
+}
+
+html[data-optionhelper-app-hosted="true"] :is(
+  .library-panel h1,
+  .source-panel h1,
+  .inspector-panel h2,
+  .settings-panel h2,
+  .section-head h2
+) {
+  margin: 0;
+  color: var(--ink);
+  font-size: 18px !important;
+  line-height: 1.28;
+  letter-spacing: -.02em;
+}
+
+html[data-optionhelper-app-hosted="true"] :is(
+  .panel-copy,
+  .source-detail,
+  .source-foot,
+  .library-note,
+  .missing-note,
+  .rule
+) {
+  color: var(--muted) !important;
+  font-size: 11px !important;
+  line-height: 1.62 !important;
+}
+
+html[data-optionhelper-app-hosted="true"] :is(
+  .button,
+  button.button,
+  .file-button
+) {
+  min-height: 32px;
+  border: 1px solid var(--rule) !important;
+  border-radius: 8px !important;
+  background: var(--paper);
+  color: var(--ink);
+  box-shadow: none !important;
+  font-size: 11px !important;
+  font-weight: 650;
+}
+
+html[data-optionhelper-app-hosted="true"] :is(.button, .file-button):hover:not(:disabled) {
+  border-color: #bcc1be !important;
+  background: #fafbfa;
+}
+
+html[data-optionhelper-app-hosted="true"] .button-primary {
+  border-color: var(--red) !important;
+  background: var(--red) !important;
+  color: #fff !important;
+}
+
+html[data-optionhelper-app-hosted="true"] .button-primary:hover:not(:disabled) {
+  border-color: var(--red-deep) !important;
+  background: var(--red-deep) !important;
+}
+
+html[data-optionhelper-app-hosted="true"] :is(
+  input:not([type="radio"]):not([type="checkbox"]),
+  select,
+  textarea
+) {
+  border-color: var(--rule) !important;
+  border-radius: 8px !important;
+  background: var(--paper) !important;
+  color: var(--ink) !important;
+  box-shadow: none !important;
+}
+
+html[data-optionhelper-app-hosted="true"] :is(
+  input:not([type="radio"]):not([type="checkbox"]),
+  select,
+  textarea
+):focus-visible {
+  outline: 2px solid rgba(200, 16, 46, .2) !important;
+  outline-offset: 1px !important;
+  border-color: var(--red) !important;
+}
+
+html[data-optionhelper-app-hosted="true"] :is(
+  .canvas-toolbar,
+  .section-head
+) {
+  min-height: 48px;
+  border-color: var(--rule) !important;
+  background: var(--paper) !important;
+}
+
+html[data-optionhelper-app-hosted="true"] .canvas-toolbar {
+  padding-inline: 18px !important;
+}
+
+html[data-optionhelper-app-hosted="true"] .canvas-viewport {
+  min-height: 0;
+  overflow: auto;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(72, 78, 74, .18) transparent;
+  background: var(--paper) !important;
+}
+
+html[data-optionhelper-app-hosted="true"] .canvas-viewport::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+
+html[data-optionhelper-app-hosted="true"] .canvas-viewport::-webkit-scrollbar-thumb {
+  border-radius: 99px;
+  background: rgba(72, 78, 74, .18);
+}
+
+html[data-optionhelper-app-hosted="true"] .selection-panel {
+  overflow: auto;
+  scrollbar-gutter: stable;
+}
+
+html[data-optionhelper-app-hosted="true"] :is(
+  .binding-card,
+  .secret-card,
+  .module-note,
+  .profile-note,
+  .candidate,
+  .chart-figure,
+  .metric-strip > div,
+  .ledger,
+  .trade-inspector,
+  .table-wrap,
+  .audit-details
+) {
+  border-color: var(--rule) !important;
+  border-radius: 10px !important;
+  background: var(--paper) !important;
+  box-shadow: none !important;
+}
+
+html[data-optionhelper-app-hosted="true"] :is(.notice, .notice-area .notice) {
+  border-radius: 8px !important;
+  box-shadow: none !important;
+}
+
+html[data-optionhelper-app-hosted="true"] :is(
+  .analysis-sheet,
+  .valuation-sheet,
+  .result-sheet
+) {
+  width: min(1320px, 100%) !important;
+  margin-inline: auto !important;
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+html[data-optionhelper-app-hosted="true"] .selection-panel {
+  padding: 24px 28px !important;
 }
 
 html[data-optionhelper-app-hosted="true"] .optionhelper-choice {
@@ -178,12 +508,6 @@ html[data-optionhelper-app-hosted="true"] .settings-panel .choice > input[type="
   accent-color: var(--red, #c8102e);
 }
 
-@media (max-width: 1180px) {
-  html[data-optionhelper-app-hosted="true"] .workbench {
-    grid-template-columns: minmax(190px, 23%) 4px minmax(360px, 1fr) 4px minmax(250px, 29%) !important;
-  }
-}
-
 @media (max-width: 920px) {
   html[data-optionhelper-app-hosted="true"] body {
     overflow: auto;
@@ -198,11 +522,34 @@ html[data-optionhelper-app-hosted="true"] .settings-panel .choice > input[type="
 
   html[data-optionhelper-app-hosted="true"] .workbench {
     display: grid !important;
-    grid-template-columns: minmax(180px, 30%) minmax(0, 1fr) !important;
+    grid-template-columns: minmax(190px, 30%) minmax(0, 1fr) !important;
   }
 
-  html[data-optionhelper-app-hosted="true"] .inspector,
-  html[data-optionhelper-app-hosted="true"] .right-panel {
+  html[data-optionhelper-app-hosted="true"] .workbench > :nth-child(1) {
+    grid-column: 1 !important;
+    grid-row: 1 !important;
+  }
+
+  html[data-optionhelper-app-hosted="true"] .workbench > :nth-child(3) {
+    grid-column: 2 !important;
+    grid-row: 1 !important;
+  }
+
+  html[data-optionhelper-app-hosted="true"] .workbench > :nth-child(5) {
+    grid-column: 1 / -1 !important;
+    grid-row: 2 !important;
+  }
+
+  html[data-optionhelper-app-hosted="true"] :is(
+    .inspector,
+    .right-panel,
+    .inspector-panel,
+    .settings-panel
+  ) {
     grid-column: 1 / -1;
+  }
+
+  html[data-optionhelper-app-hosted="true"] .panel-resizer {
+    display: none !important;
   }
 }

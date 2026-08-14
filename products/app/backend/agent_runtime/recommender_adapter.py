@@ -721,7 +721,6 @@ class AppConversationToolExecutor:
         allowed = {"kind", "output_type", "format", "title"}
         if set(arguments).difference(allowed):
             raise ValidationError("OptChat报告请求只接受交付类型、格式和标题")
-        layout = "continuous" if requested_kind == "report" and requested_format == "html" else None
         catalog = self._results.list_owned_report_sources(identity, task_id=task_id)
         sources = catalog.get("sources") if isinstance(catalog, Mapping) else None
         if not isinstance(sources, list) or not sources:
@@ -755,7 +754,6 @@ class AppConversationToolExecutor:
             "delivery_mode": "single",
             "output_type": requested_kind,
             "format": requested_format,
-            "html_report_layout": layout,
             "audience": identity.audience,
             "report_run_id": report_run_id or f"chat-report-{uuid4().hex[:16]}",
             "metadata": {"title": title},

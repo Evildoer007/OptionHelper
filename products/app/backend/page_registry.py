@@ -197,7 +197,7 @@ class PageRegistry:
         session_ref = hmac.new(self._token_secret, f"session:{identity.session_id}".encode("utf-8"), hashlib.sha256).hexdigest()[:24]
         session_ref = f"local:{session_ref}"
         capability_version = str(self._manifest["capability_version"])
-        protocol_version = str(self._manifest["protocol_version"])
+        protocol_id = str(self._manifest["protocol_id"])
         context = ModuleHostContext(
             session_ref=session_ref,
             capability_token=issue_capability_token(
@@ -213,7 +213,7 @@ class PageRegistry:
                 host_kind="app",
                 request_policy=request_policy,
                 capability_version=capability_version,
-                protocol_version=protocol_version,
+                protocol_id=protocol_id,
                 task_id=task_id,
                 analysis_case_id=analysis_case_id,
                 candidate_id=candidate_id,
@@ -231,7 +231,7 @@ class PageRegistry:
             module=module_name,
             page_hash=page.content_hash,
             capability_version=capability_version,
-            protocol_version=protocol_version,
+            protocol_id=protocol_id,
             context_id=context_id,
             host_kind="app",
             request_policy=request_policy,
@@ -386,7 +386,7 @@ class PageRegistry:
             manifest = json.loads(path.read_text(encoding="utf-8"))
         except json.JSONDecodeError as error:
             raise CapabilityIntegrityError("Embedded Capability manifest is invalid JSON") from error
-        required = {"capability_version", "protocol_version", "content_tree_hash", "content_hashes", "modules"}
+        required = {"capability_version", "protocol_id", "content_tree_hash", "content_hashes", "modules"}
         missing = required.difference(manifest)
         if missing or not isinstance(manifest.get("content_hashes"), dict):
             raise CapabilityIntegrityError(f"Embedded Capability manifest lacks required fields: {sorted(missing)}")
@@ -410,7 +410,7 @@ class PageRegistry:
         return pages
 
     def _verify_content_tree(self) -> dict[str, Any]:
-        """Diagnose the declared full-tree hash using blueprint hash_spec_version.
+        """Diagnose the declared full-tree hash using blueprint hash_spec_id.
 
         Startup surfaces integrity status for diagnostics.  Code execution
         calls :meth:`assert_execution_integrity` and rejects any mismatch.

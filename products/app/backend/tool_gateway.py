@@ -315,14 +315,25 @@ class ToolGateway:
                         return []
         else:
             requested = payload.get("historical_data", payload.get("history_reference"))
-        history_ref = self._data_assets.resolve_for_compute(
-            identity,
-            requested,
-            asset_ids=tuple(map(str, underlyings)),
-            schema_id="market-history-v1",
-        )
-        if history_ref is None:
-            raise ValidationError("正式计算缺少market-history-v1行情资产")
+        assets = tuple(map(str, underlyings))
+        history_request = _history_fetch_request(module, payload, frozen, assets)
+        try:
+            history_ref = self._data_assets.resolve_for_compute(
+                identity,
+                requested,
+                asset_ids=assets,
+                schema_id="market-history",
+            )
+        except UserActionError:
+            if not task_id or not _empty_data_reference(requested):
+                raise
+            history_ref = self._fetch_and_bind_history(
+                history_request, identity, request_id=request_id, task_id=task_id,
+            )
+        else:
+            if history_ref is None:
+                raise ValidationError("正式计算缺少market-history行情资产")
+            self._attach_data_ref(identity, task_id, history_ref)
         refs = [history_ref]
         if module == "pricer":
             requested_calendar = payload.get("trading_calendar_ref")
@@ -369,11 +380,65 @@ class ToolGateway:
                     refs.append(calendar_ref)
         return refs
 
+    def _fetch_and_bind_history(
+        self,
+        request: dict[str, Any],
+        identity: SessionIdentity,
+        *,
+        request_id: str,
+        task_id: str,
+    ) -> dict[str, Any]:
+        if self._datafetcher is None:
+            raise UnavailableCapabilityError("market_data", "App DataFetcherAdapter is not configured")
+        if self._data_assets is None:
+            raise ValidationError("App DataStore未配置，无法登记自动获取的行情")
+        result = self._datafetcher.dispatch(
+            request,
+            identity,
+            request_id=f"{request_id}-market" if request_id else f"market-{uuid4().hex}",
+        )
+        asset = result.get("data_asset_ref")
+        if result.get("ok") is not True or not isinstance(asset, dict):
+            raise UserActionError(
+                "market_data_unavailable",
+                "未能自动取得所需行情，请检查数据接口配置或缩短数据区间后重试。",
+            )
+        self._data_assets.register(identity, asset)
+        self._attach_data_ref(identity, task_id, asset)
+        resolved = self._data_assets.resolve_for_compute(
+            identity,
+            asset.get("data_asset_id"),
+            asset_ids=tuple(request["asset_ids"]),
+            schema_id="market-history",
+        )
+        if resolved is None:
+            raise ValidationError("自动获取的行情未能登记为正式DataAssetRef")
+        return resolved
+
+    def _attach_data_ref(self, identity: SessionIdentity, task_id: str, reference: Mapping[str, Any]) -> None:
+        if not task_id:
+            return
+        get_task = getattr(self._tasks, "get", None)
+        append = getattr(self._tasks, "append_data_asset_ref", None)
+        if not callable(get_task) or not callable(append):
+            return
+        task = get_task(identity, task_id)
+        refs = task.get("data_asset_refs") if isinstance(task, Mapping) else None
+        signature = (str(reference.get("data_asset_id")), str(reference.get("content_hash")))
+        if isinstance(refs, list) and any(
+            isinstance(item, Mapping)
+            and (str(item.get("data_asset_id")), str(item.get("content_hash"))) == signature
+            for item in refs
+        ):
+            return
+        if not isinstance(refs, list):
+            raise ValidationError("自动行情必须绑定当前App任务")
+        append(identity, task_id, dict(reference))
+
     def _bind_contract_context(self, identity: SessionIdentity, context: Any, binding: Mapping[str, Any]) -> Any:
         fingerprint = binding.get("contract_fingerprint")
         if not isinstance(fingerprint, str) or len(fingerprint) != 64:
             raise ValidationError("ResolvedContract缺少有效contract_fingerprint")
-        task_id = context.task_id
         catalog_version = context.catalog_version or str(binding["catalog_version"])
         contract_ref = binding.get("contract_ref")
         if not isinstance(contract_ref, Mapping):
@@ -583,7 +648,12 @@ def _reject_untrusted_host_fields(value: object, *, allow_reporter_module_run_re
 
 def _is_read_only_action(payload: Mapping[str, Any]) -> bool:
     action = payload.get("action", "run")
-    return isinstance(action, str) and action.strip().lower() in {"catalog", "status", "list_assets"}
+    return isinstance(action, str) and action.strip().lower() in {
+        "catalog",
+        "status",
+        "list_assets",
+        "list_report_sources",
+    }
 
 
 def _validate_host_scope(payload: dict[str, Any], context: Any) -> None:
@@ -670,6 +740,71 @@ def _requires_path_calendar(resolved_contract: object, payload: Mapping[str, Any
     config = payload.get("pricing_config")
     method = config.get("model_method", "auto") if isinstance(config, Mapping) else "auto"
     return requires_future_trading_calendar_for_protocol(resolved_contract, method)
+
+
+def _empty_data_reference(value: object) -> bool:
+    return value is None or value == ""
+
+
+def _history_fetch_request(
+    module: str,
+    payload: Mapping[str, Any],
+    resolved_contract: object,
+    underlyings: tuple[str, ...],
+) -> dict[str, Any]:
+    contract = resolved_contract if isinstance(resolved_contract, Mapping) else {}
+    terms = contract.get("terms", {}) if isinstance(contract.get("terms", {}), Mapping) else {}
+    if module == "pricer":
+        config = payload.get("pricing_config")
+        raw_end = config.get("valuation_date") if isinstance(config, Mapping) else None
+        end = _iso_date_or_today(raw_end, "valuation_date")
+        start = _years_before(end, 3)
+    elif module == "backtester":
+        config = payload.get("backtest_config")
+        config = config if isinstance(config, Mapping) else {}
+        entry_end = _iso_date_or_today(config.get("end_date"), "backtest_config.end_date")
+        start = _iso_date_or_default(config.get("start_date"), _years_before(entry_end, 3), "backtest_config.start_date")
+        try:
+            tenor_days = max(0, round(float(terms.get("T", 1.0)) * 366.0))
+        except (TypeError, ValueError) as error:
+            raise ValidationError("合同期限T必须为有效数字") from error
+        end = entry_end + timedelta(days=tenor_days)
+    else:
+        raise ValidationError("只有定价与回测可以自动准备行情")
+    if start > end:
+        raise ValidationError("自动行情开始日期不得晚于结束日期")
+    return {
+        "action": "fetch",
+        "asset_ids": list(underlyings),
+        "start_date": start.isoformat(),
+        "end_date": end.isoformat(),
+        "fields": ["close", "adj_close"],
+        "provider": "ifind_http",
+        "frequency": "1d",
+        "adjustment": "auto",
+        "cache_policy": "force_refresh",
+        "offline": False,
+    }
+
+
+def _iso_date_or_today(value: object, label: str) -> date:
+    return _iso_date_or_default(value, date.today(), label)
+
+
+def _iso_date_or_default(value: object, default: date, label: str) -> date:
+    if value in {None, ""}:
+        return default
+    try:
+        return date.fromisoformat(str(value))
+    except ValueError as error:
+        raise ValidationError(f"{label}必须为YYYY-MM-DD") from error
+
+
+def _years_before(value: date, years: int) -> date:
+    try:
+        return value.replace(year=value.year - years)
+    except ValueError:
+        return value.replace(year=value.year - years, day=28)
 
 
 def _calendar_fetch_request(
@@ -790,7 +925,7 @@ def _require_conversation_report_request(identity: SessionIdentity, payload: Map
     if kind == "report" and identity.role.value != "admin":
         raise AuthorizationError("conversation.tool.run", "full reports require administrator approval")
     _require_scope_fields(selection, {
-        "source_id", "candidate_ids", "selected_modules", "module_run_refs", "delivery_mode", "output_type", "format", "html_report_layout", "audience", "report_run_id", "metadata",
+        "source_id", "candidate_ids", "selected_modules", "module_run_refs", "delivery_mode", "output_type", "format", "audience", "report_run_id", "metadata",
     })
 
 

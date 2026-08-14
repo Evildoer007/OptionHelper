@@ -218,7 +218,7 @@ def _verified_report_delivery(root: Path, *, expected_request: Mapping[str, Any]
         raise ValidationError(f"Reporter ReportRun完整性校验失败：{error}") from error
     artifacts: list[dict[str, Any]] = []
     root_artifact = _add_rendered(artifacts, validation, artifact_prefix="")
-    audit = {"schema": "optionhelper.app-reporter-audit/v1.0.0", "root": _audit_record(validation), "children": []}
+    audit = {"schema": "optionhelper.app-reporter-audit", "root": _audit_record(validation), "children": []}
     children = []
     for child in validation["children"]:
         candidate_id = child["candidate_id"]

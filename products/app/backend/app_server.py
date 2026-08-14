@@ -12,7 +12,6 @@ import argparse
 import hashlib
 import json
 import re
-import sys
 import threading
 from dataclasses import replace
 from http import HTTPStatus
@@ -335,8 +334,8 @@ class AppServer:
     def model_connections_for(self, identity: SessionIdentity) -> dict[str, Any]:
         """Expose the browser contract without exposing credential refs.
 
-        The persisted v1.0 configuration has one active connection.  It is
-        presented as a list from day one so workspace controls never need to
+        The persisted configuration has one active connection. It is
+        presented as a list so workspace controls never need to
         infer provider state or receive a secret reference.
         """
 
@@ -352,7 +351,7 @@ class AppServer:
                 "credential_configured": model.secret_ref is not None,
             }]
         return {
-            "schema_version": "v1.0.0",
+            "schema": "optionhelper.model-connections",
             "active_connection_id": "primary" if connections else None,
             "connections": connections,
         }
@@ -443,17 +442,36 @@ class AppServer:
                     model = ModelServiceSettings("unconfigured", "")
                 else:
                     model = replace(model, endpoint=endpoint)
-        if model.secret_ref is not None and model.secret_ref != model_reference:
-            model = replace(model, secret_ref=None)
+        if model.provider_name != "unconfigured" and model.secret_ref != model_reference:
+            model = replace(
+                model,
+                secret_ref=model_reference
+                if self._credential_is_saved(model_reference, "模型服务凭据")
+                else None,
+            )
         data = snapshot.data_interface
         if data.provider_name not in {"unconfigured", "ifind-http"}:
             data = DataInterfaceSettings("unconfigured")
-        if data.secret_ref is not None and data.secret_ref != data_reference:
-            data = replace(data, secret_ref=None)
+        if data.provider_name != "unconfigured" and data.secret_ref != data_reference:
+            data = replace(
+                data,
+                secret_ref=data_reference
+                if self._credential_is_saved(data_reference, "iFind数据凭据")
+                else None,
+            )
         normalized = replace(snapshot, role="admin", model_service=model, data_interface=data)
         if normalized != snapshot:
             self.settings.save(self._tenant_settings_key(tenant_id), normalized)
         return normalized
+
+    def _credential_is_saved(self, reference: SecretRef, purpose: str) -> bool:
+        """Reattach one exact Host-owned reference after a development rebuild."""
+
+        try:
+            self.secret_provider.resolve(reference, purpose)
+        except UnavailableCapabilityError:
+            return False
+        return True
 
     def save_credential(
         self,
@@ -487,7 +505,7 @@ class AppServer:
 
 class _AppRequestHandler(BaseHTTPRequestHandler):
     app: AppServer
-    server_version = "OptionHelperApp/0.1"
+    server_version = "OptionHelperApp"
 
     def log_message(self, format: str, *args: object) -> None:
         # Access logs can contain query text.  Audit only explicit, redacted events.
@@ -645,20 +663,11 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
             if relative.startswith("assets/icons/"):
                 self._serve_brand_asset(self._optional_identity(), relative.removeprefix("assets/icons/"))
                 return
-            if relative.startswith("assets/logo/"):
-                self._serve_brand_asset(self._optional_identity(), relative.removeprefix("assets/logo/"))
-                return
             identity = self._identity()
             self._serve_capability_asset(identity, relative)
             return
         if path.startswith("/app/assets/icons/"):
             self._serve_brand_asset(self._optional_identity(), path.removeprefix("/app/assets/icons/"))
-            return
-        # The frozen module pages keep their original relative logo URLs.  Map
-        # only these two legacy URL shapes to the declared icon asset; no
-        # capability source is copied or exposed as an arbitrary static tree.
-        if path.startswith("/logo/"):
-            self._serve_brand_asset(self._optional_identity(), path.removeprefix("/logo/"))
             return
         if path == "/optchat":
             identity = self._identity()
@@ -963,9 +972,6 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
         raise KeyError(path)
 
     def _serve_capability_asset(self, identity: SessionIdentity, relative: str) -> None:
-        if relative.startswith("assets/logo/"):
-            self._serve_brand_asset(identity, relative.removeprefix("assets/logo/"))
-            return
         page_prefix = "assets/pages/"
         if not relative.startswith(page_prefix):
             raise AuthorizationError("module.page", "only registered module page assets are mountable")
@@ -1246,7 +1252,7 @@ def _capability_summary(registry: PageRegistry) -> dict[str, Any]:
     manifest = registry.manifest
     return {
         "capability_version": manifest["capability_version"],
-        "protocol_version": manifest["protocol_version"],
+        "protocol_id": manifest["protocol_id"],
         "content_tree_hash": manifest["content_tree_hash"],
         "integrity": registry.integrity,
         "pages": [{"module": page.module_name, "path": page.capability_asset, "sha256": page.content_hash} for page in registry.all()],

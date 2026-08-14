@@ -6,11 +6,11 @@ App是同一Capability的身份、权限、模型、会话、任务、存储、�
 
 ## 2. 当前阶段
 
-本目录提供可启动的本机HTTP平台：LocalAuthProvider签发明确的开发身份，后端强制销售用户与管理员权限，OptChat、OptDesk和设置中心壳层可用，任务、消息、非敏感设置和审计事件写入用户本机状态目录。macOS本机可通过钥匙串保存并调用DeepSeek兼容接口；iFind当前可安全保存凭据，但HTTP数据Provider仍待接入。远程登录、Wind和服务器能力未接入时必须返回结构化Unavailable，绝不生成模拟结果。
+本目录提供可启动的本机HTTP平台。开发启动器使用明确的本机开发身份；桌面候选使用本机账号口令。后端统一执行角色权限，OptChat、OptDesk、设置中心、任务、消息、审计和本机状态持久化均已接入。模型服务采用OpenAI兼容接口；DataFetcher通过iFind Refresh Token获取行情和交易日历。远程身份、服务器托管密钥及未接入的数据源必须返回结构化Unavailable，绝不生成模拟结果。
 
 ## 3. 设置与凭据
 
-统一设置中心覆盖账号与权限、OpenAI兼容模型服务、数据接口、存储导出和界面偏好。macOS首次配置仅接收模型API Key与iFind Refresh Token；后端立即将它们写入受控凭据存储，设置文件只保存固定`SecretRef`。页面不回显、日志不记录、结果和报告不写入Secret正文。Windows与服务器环境分别接入Credential Manager和托管密钥服务。完整HTML报告固定为连续A4正文，不提供目录版。
+统一设置中心覆盖账号与权限、OpenAI兼容模型服务、数据接口、存储导出和界面偏好。模型API Key与iFind Refresh Token写入受控凭据存储，设置文件只保存固定`SecretRef`。页面不回显、日志不记录、结果和报告不写入Secret正文。完整HTML报告使用连续A4正文并在宽屏提供左侧章节目录；PDF保留同一正文顺序但不显示导航。
 
 ## 4. 页面与权限
 
@@ -18,7 +18,7 @@ App前端只拥有登录、OptChat、OptDesk和设置中心壳层。DataFetcher�
 
 ## 5. 平台与发布
 
-Python后端及前端契约跨平台共用。macOS与Windows差异只能位于`desktop/`和`packaging/`，包括窗口、路径、凭据存储、签名和安装。当前不构建、签名或发布安装物。
+Python后端及前端契约跨平台共用。macOS与Windows差异只能位于`desktop/`和`packaging/`，包括窗口、路径、凭据存储、签名和安装。仓库可生成本机候选安装物；Developer ID签名、公证及外部分发状态必须由发行清单如实声明，不能由开发构建结果推断。
 
 ## 6. Capability与回滚
 
@@ -32,8 +32,8 @@ App只接收已经验证的Skill候选目录，校验Capability Manifest后原�
 "${OPTIONHELPER_PYTHON:-python3}" packaging/app/run_development_app.py --port 4181
 ```
 
-启动器会在系统临时目录构建、验证并显式注入当次Capability；它不会读取或写入`products/app/capability/option-helper`。访问`http://127.0.0.1:4181/`。本机开发身份选择页会明确显示其不是生产登录。状态目录可通过`--data-dir`指定；目录只保存App状态，不能替代模块的数据或运行结果存储。
+启动器会在系统临时目录构建、验证并显式注入当次Capability；它不读取仓库内的旧Capability副本。访问`http://127.0.0.1:4181/`。开发启动与桌面候选的登录模式不同，不得混用。状态目录可通过`--data-dir`指定；目录只保存App状态，不能替代模块的数据或运行结果Store。
 
 ## 8. 验收入口
 
-App测试覆盖角色权限、页面Manifest哈希、真实本机HTTP、任务与偏好持久化、钥匙串凭据写入边界和Unavailable状态。真实登录、iFind数据接口、服务器与Windows凭据适配分别完成后再追加集成验收，未接入能力保持明确不可用。
+App测试覆盖登录、角色权限、页面Manifest哈希、本机HTTP、任务与偏好持久化、受控凭据、iFind行情与交易日历、计算模块及报告入口。平台签名、公证、Windows凭据和服务器托管能力分别验收；未接入能力保持明确不可用。

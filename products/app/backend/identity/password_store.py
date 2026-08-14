@@ -132,12 +132,16 @@ class PasswordCredentialStore:
 
     def _read(self) -> dict[str, Any]:
         if not self._path.exists():
-            return {"version": 1, "accounts": {}}
+            return {"schema": "optionhelper.password-account-store", "accounts": {}}
         try:
             value = json.loads(self._path.read_text(encoding="utf-8"))
         except json.JSONDecodeError as error:
             raise ValidationError("Password account store is invalid") from error
-        if not isinstance(value, dict) or value.get("version") != 1 or not isinstance(value.get("accounts"), dict):
+        if (
+            not isinstance(value, dict)
+            or value.get("schema") != "optionhelper.password-account-store"
+            or not isinstance(value.get("accounts"), dict)
+        ):
             raise ValidationError("Password account store is invalid")
         return value
 

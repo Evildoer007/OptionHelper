@@ -17,36 +17,47 @@
       <a class="topbar-return" href="/optchat">返回工作台</a>
     </header>
     <main class="setup">
-      <section class="setup-card" aria-label="统一设置中心">
+      <section class="setup-card" aria-label="设置中心">
         <header class="setup-intro">
           <div>
-            <p class="setup-kicker">本机服务配置</p>
-            <h1>统一设置中心</h1>
-            <p data-setup-intro>首次使用只需选择模型服务，保存API Key并测试连接。其余项目已有可用默认值，可按需要调整。</p>
+            <h1>设置中心</h1>
+            <p data-setup-intro>管理模型连接、市场数据、结果存储与当前设备偏好。</p>
           </div>
-          <p class="setup-security">凭据仅保存在此Mac的OptionHelper专用目录</p>
+          <p class="setup-security">凭据仅保存在当前设备</p>
         </header>
         <div class="setup-layout">
           <aside class="configured-models">
-            <div class="configured-models__head"><p>开始使用</p><h2>配置进度</h2></div>
-            <ol class="setup-steps" aria-label="首次使用步骤">
-              <li class="setup-step is-current" data-model-step><span>1</span><div><strong>连接模型</strong><small>选择服务并保存API Key</small></div></li>
-              <li class="setup-step" data-workspace-step><span>2</span><div><strong>开始任务</strong><small>返回工作台发送需求</small></div></li>
-            </ol>
-            <p class="configured-models__copy">其他设置可按需要调整。</p>
             <nav class="connection-list settings-nav" aria-label="设置项目">
-              <a class="connection-item" href="#model"><svg class="settings-nav__icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v4M6.4 5.3l2.8 2.8M3 12h4M6.4 18.7l2.8-2.8M12 21v-4M17.6 18.7l-2.8-2.8M21 12h-4M17.6 5.3l-2.8 2.8"/><circle cx="12" cy="12" r="3.2"/></svg><span><strong>模型服务</strong><small>连接与凭据</small></span></a>
-              <a class="connection-item" href="#data" data-settings-data-link hidden><svg class="settings-nav__icon" viewBox="0 0 24 24" aria-hidden="true"><ellipse cx="12" cy="5.5" rx="7" ry="2.7"/><path d="M5 5.5v6.5c0 1.5 3.1 2.7 7 2.7s7-1.2 7-2.7V5.5M5 12v6.5c0 1.5 3.1 2.7 7 2.7s7-1.2 7-2.7V12"/></svg><span><strong>数据接口</strong><small>iFind市场数据</small></span></a>
-              <a class="connection-item" href="#storage"><svg class="settings-nav__icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7.5h16v11H4zM7 4.5h10v3H7zM8 12h8M12 9v6"/></svg><span><strong>结果与导出</strong><small>本机文件保存</small></span></a>
-              <a class="connection-item" href="#preferences"><svg class="settings-nav__icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 17h16M8 4v6M16 14v6"/><circle cx="8" cy="7" r="2"/><circle cx="16" cy="17" r="2"/></svg><span><strong>显示偏好</strong><small>语言与主题</small></span></a>
-              <a class="connection-item" href="#identity"><svg class="settings-nav__icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="3.5"/><path d="M5.5 20c.7-3.6 3-5.5 6.5-5.5s5.8 1.9 6.5 5.5"/></svg><span><strong>当前身份</strong><small>本机权限状态</small></span></a>
+              <a class="connection-item" href="#preferences"><svg class="settings-nav__icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 17h16M8 4v6M16 14v6"/><circle cx="8" cy="7" r="2"/><circle cx="16" cy="17" r="2"/></svg><strong>通用设置</strong></a>
+              <a class="connection-item" href="#model"><svg class="settings-nav__icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v4M6.4 5.3l2.8 2.8M3 12h4M6.4 18.7l2.8-2.8M12 21v-4M17.6 18.7l-2.8-2.8M21 12h-4M17.6 5.3l-2.8 2.8"/><circle cx="12" cy="12" r="3.2"/></svg><strong>模型服务</strong></a>
+              <a class="connection-item" href="#data" data-settings-data-link hidden><svg class="settings-nav__icon" viewBox="0 0 24 24" aria-hidden="true"><ellipse cx="12" cy="5.5" rx="7" ry="2.7"/><path d="M5 5.5v6.5c0 1.5 3.1 2.7 7 2.7s7-1.2 7-2.7V5.5M5 12v6.5c0 1.5 3.1 2.7 7 2.7s7-1.2 7-2.7V12"/></svg><strong>数据接口</strong></a>
+              <a class="connection-item" href="#storage"><svg class="settings-nav__icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7.5h16v11H4zM7 4.5h10v3H7zM8 12h8M12 9v6"/></svg><strong>存储与导出</strong></a>
             </nav>
+            <footer class="settings-account" id="identity-list" aria-label="当前账户"></footer>
           </aside>
           <section class="connection-editor">
-            <section id="model" class="setting-section">
-              <p class="setting-section__eyebrow">第一步</p>
-              <h2>连接模型服务</h2>
-              <p>用于任务对话与研究建议。选择预设会填入兼容Base URL和模型名；可在高级选项中按服务商文档覆盖。API Key不会显示在页面、设置文件或报告中。</p>
+            <section id="preferences" class="setting-section">
+              <div class="setting-section__head"><div><h2>通用设置</h2><p>调整当前设备的语言与登录外观。</p></div></div>
+              <form id="preferences-form" class="settings-rows" novalidate>
+                <div class="field settings-row" data-field-spec data-purpose data-example data-default>
+                  <div class="settings-row__copy"><label for="interface-language">界面语言</label><small class="field-spec"><span data-purpose>设置当前设备使用的界面语言</span><span data-example hidden>简体中文</span><span data-default hidden>简体中文</span></small></div>
+                  <select id="interface-language" name="language" data-choice aria-label="界面语言"><option value="zh-CN">简体中文</option><option value="en-US">English</option></select>
+                </div>
+                <div class="field field--wide settings-row settings-row--stack" data-field-spec data-purpose data-example data-default>
+                  <div class="settings-row__copy"><label id="preference-theme-label">登录主题</label><small class="field-spec" id="preference-theme-spec"><span data-purpose>仅控制启动动画、登录页与App图标</span><span data-example hidden>跟随系统</span><span data-default hidden>浅色</span></small></div>
+                  <div class="theme-preference" data-theme-controls role="group" aria-labelledby="preference-theme-label" aria-describedby="preference-theme-spec">
+                    <button type="button" data-theme-set="auto" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="7"/><path d="M12 5a7 7 0 0 1 0 14z"/></svg>跟随系统</button>
+                    <button type="button" data-theme-set="light" aria-pressed="true"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.5"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M18.7 5.3l-2.1 2.1M7.4 16.6l-2.1 2.1"/></svg>浅色</button>
+                    <button type="button" data-theme-set="dark" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 15.2A7.3 7.3 0 0 1 8.8 5a7.5 7.5 0 1 0 10.2 10.2z"/></svg>深色</button>
+                  </div>
+                  <input id="preference-theme" name="theme" type="hidden" value="light">
+                </div>
+                <div class="form-foot field--wide"><p class="form-result" data-form-result="preferences" role="status" aria-live="polite"></p><div><button class="button-primary">保存通用设置</button></div></div>
+              </form>
+            </section>
+            <section id="model" class="setting-section" hidden>
+              <div class="setting-section__head"><div><h2>模型服务</h2><p>配置服务、模型与调用凭据。</p></div><span class="connection-status" data-model-status>未配置</span></div>
+              <p>首次使用只需选择模型服务，保存API Key并测试连接。预设会自动填入兼容Base URL和模型名，API Key不会显示在页面、设置文件或报告中。</p>
               <form id="model-form" class="setup-form" autocomplete="off" novalidate>
                 <input name="provider_name" type="hidden" value="openai-compatible">
                 <div class="field field--wide" data-field-spec>
@@ -56,13 +67,13 @@
                     <option value="kimi">Kimi</option>
                     <option value="custom">OpenAI兼容或自定义</option>
                   </select>
-                  <small class="field-spec" id="model-provider-spec"><span data-purpose><strong>用途</strong>选择兼容服务预设</span><span data-example><strong>示例</strong>DeepSeek</span><span data-default><strong>默认</strong>DeepSeek</span></small>
+                  <small class="field-spec" id="model-provider-spec"><span data-purpose>选择模型服务预设</span><span data-example hidden>DeepSeek</span><span data-default hidden>DeepSeek</span></small>
                   <small class="field-note" data-user-model-state hidden>管理员尚未配置模型服务。</small>
                 </div>
                 <div class="field field--wide" data-field-spec data-admin-only>
                   <label for="model-api-key">API Key<span class="field-required" aria-hidden="true">必填</span></label>
                   <input id="model-api-key" name="api_key" type="password" autocomplete="new-password" spellcheck="false" placeholder="粘贴服务商控制台生成的API Key" aria-describedby="model-key-spec model-credential-state">
-                  <small class="field-spec" id="model-key-spec"><span data-purpose><strong>用途</strong>授权本机调用所选模型服务</span><span data-example><strong>示例</strong>服务商控制台生成的完整密钥</span><span data-default><strong>默认</strong>未配置</span></small>
+                  <small class="field-spec" id="model-key-spec"><span data-purpose>授权当前设备调用所选模型服务</span><span data-example hidden>服务商控制台生成的完整密钥</span><span data-default hidden>未配置</span></small>
                   <small class="field-note" id="model-credential-state">尚未配置本机凭据。</small>
                 </div>
                 <details class="advanced-options field--wide" id="model-advanced-options" data-admin-only>
@@ -71,12 +82,12 @@
                     <div data-field-spec>
                       <label for="model-endpoint">兼容Base URL</label>
                       <input id="model-endpoint" name="endpoint" type="url" inputmode="url" placeholder="https://api.example.com/v1" aria-describedby="model-endpoint-spec">
-                      <small class="field-spec" id="model-endpoint-spec"><span data-purpose><strong>用途</strong>指定OpenAI兼容服务入口</span><span data-example><strong>示例</strong>https://api.example.com/v1</span><span data-default><strong>默认</strong>随预设填入</span></small>
+                      <small class="field-spec" id="model-endpoint-spec"><span data-purpose>指定OpenAI兼容服务入口</span><span data-example hidden>https://api.example.com/v1</span><span data-default hidden>随预设填入</span></small>
                     </div>
                     <div data-field-spec>
                       <label for="model-name">模型名</label>
                       <input id="model-name" name="model_name" autocomplete="off" spellcheck="false" placeholder="例如服务商文档中的模型名" aria-describedby="model-name-spec">
-                      <small class="field-spec" id="model-name-spec"><span data-purpose><strong>用途</strong>指定本次调用的模型</span><span data-example><strong>示例</strong>服务商文档中的模型名</span><span data-default><strong>默认</strong>随预设填入</span></small>
+                      <small class="field-spec" id="model-name-spec"><span data-purpose>填写服务商文档中的模型名</span><span data-example hidden>服务商文档中的模型名</span><span data-default hidden>随预设填入</span></small>
                     </div>
                   </div>
                 </details>
@@ -84,21 +95,21 @@
               </form>
             </section>
             <section id="data" class="setting-section" hidden>
-              <h2>连接iFind市场数据</h2>
+              <div class="setting-section__head"><div><h2>数据接口</h2><p>连接iFind市场数据。</p></div><span class="connection-status" data-data-status>未配置</span></div>
               <p>管理员可选配置。只需保存Refresh Token，App会在取数时自动获取有效的访问凭据。</p>
               <form id="data-form" class="setup-form" autocomplete="off" novalidate>
                 <input name="provider_name" type="hidden" value="ifind-http">
                 <div class="field field--wide" data-field-spec>
                   <label for="ifind-refresh-token">iFind Refresh Token<span class="field-required" aria-hidden="true">必填</span></label>
                   <input id="ifind-refresh-token" name="refresh_token" type="password" autocomplete="new-password" spellcheck="false" placeholder="粘贴Refresh Token" aria-describedby="ifind-refresh-spec data-credential-state">
-                  <small class="field-spec" id="ifind-refresh-spec"><span data-purpose><strong>用途</strong>由App自动获取可用的访问凭据</span><span data-example><strong>示例</strong>iFind控制台复制的完整Refresh Token</span><span data-default><strong>默认</strong>未配置</span></small>
+                  <small class="field-spec" id="ifind-refresh-spec"><span data-purpose>由App自动获取可用的访问凭据</span><span data-example hidden>iFind控制台复制的完整Refresh Token</span><span data-default hidden>未配置</span></small>
                   <small class="field-note" id="data-credential-state">保存后仅保留在OptionHelper本机凭据存储。</small>
                 </div>
                 <div class="form-foot field--wide"><p class="form-result" data-form-result="data" role="status" aria-live="polite"></p><div><button class="button-quiet" type="button" id="test-data">测试已保存连接</button><button class="button-primary">保存iFind凭据</button></div></div>
               </form>
             </section>
-            <section id="storage" class="setting-section">
-              <h2>结果与导出</h2>
+            <section id="storage" class="setting-section" hidden>
+              <div class="setting-section__head"><div><h2>存储与导出</h2><p>管理本机结果位置与导出行为。</p></div></div>
               <p>任务对话、运行记录和结果默认保存在当前设备的OptionHelper专用目录，不会散落到软件安装目录。</p>
               <div class="storage-location" aria-label="默认本机数据位置">
                 <strong>默认位置</strong>
@@ -109,46 +120,18 @@
                 <div class="field field--wide" data-field-spec>
                   <label for="export-location-ref">高级导出位置标识<span class="field-optional">可选</span></label>
                   <input id="export-location-ref" name="export_location_ref" placeholder="保留空白，使用默认本机结果目录" aria-describedby="export-location-spec">
-                  <small class="field-spec" id="export-location-spec"><span data-purpose><strong>用途</strong>引用管理员提供的受控导出位置</span><span data-example><strong>示例</strong>team/report-export</span><span data-default><strong>默认</strong>本机结果目录</span></small>
+                  <small class="field-spec" id="export-location-spec"><span data-purpose>引用管理员提供的受控导出位置</span><span data-example hidden>team/report-export</span><span data-default hidden>本机结果目录</span></small>
                   <small class="field-note">这里不是Finder路径选择器，仅填写管理员提供的位置标识。</small>
                 </div>
                 <div class="field" data-field-spec>
                   <label for="allow-directory">导出时选择文件夹</label>
                   <select id="allow-directory" name="allow_user_selected_directory" data-choice aria-describedby="allow-directory-spec"><option value="true">允许选择</option><option value="false">始终使用默认位置</option></select>
-                  <small class="field-spec" id="allow-directory-spec"><span data-purpose><strong>用途</strong>控制每次导出的保存位置</span><span data-example><strong>示例</strong>允许选择</span><span data-default><strong>默认</strong>允许选择</span></small>
+                  <small class="field-spec" id="allow-directory-spec"><span data-purpose>控制每次导出的保存位置</span><span data-example hidden>允许选择</span><span data-default hidden>允许选择</span></small>
                   <small class="field-note">不会移动已有结果。</small>
                 </div>
                 <div class="form-foot field--wide"><p class="form-result" data-form-result="storage" role="status" aria-live="polite"></p><div><button class="button-primary">保存导出设置</button></div></div>
               </form>
             </section>
-            <section id="preferences" class="setting-section">
-              <h2>显示偏好</h2>
-              <p>只影响当前设备上的界面和后续生成的HTML报告。</p>
-              <form id="preferences-form" class="setup-form" novalidate>
-                <div class="field" data-field-spec>
-                  <label for="interface-language">界面语言</label>
-                  <select id="interface-language" name="language" data-choice aria-describedby="interface-language-spec"><option value="zh-CN">简体中文</option><option value="en-US">English</option></select>
-                  <small class="field-spec" id="interface-language-spec"><span data-purpose><strong>用途</strong>设置当前设备的界面语言</span><span data-example><strong>示例</strong>简体中文</span><span data-default><strong>默认</strong>简体中文</span></small>
-                </div>
-                <div class="field" data-field-spec>
-                  <label>HTML报告版式</label>
-                  <small class="field-spec"><span data-purpose><strong>用途</strong>完整研究报告统一为连续A4正文</span><span data-example><strong>示例</strong>HTML左侧阅读目录</span><span data-default><strong>固定</strong>打印隐藏目录</span></small>
-                  <small class="field-note">报告内容与顺序由统一模板固定，不提供第二套目录版式。</small>
-                </div>
-                <div class="field field--wide" data-field-spec data-purpose data-example data-default>
-                  <label id="preference-theme-label">登录主题</label>
-                  <small class="field-spec" id="preference-theme-spec"><span data-purpose><strong>用途</strong>控制启动动画、登录页与App图标的深浅显示</span><span data-example><strong>示例</strong>跟随系统</span><span data-default><strong>默认</strong>浅色</span></small>
-                  <div class="theme-preference" data-theme-controls role="group" aria-labelledby="preference-theme-label" aria-describedby="preference-theme-spec">
-                    <button type="button" data-theme-set="auto" aria-pressed="false">跟随系统</button>
-                    <button type="button" data-theme-set="light" aria-pressed="true">浅色</button>
-                    <button type="button" data-theme-set="dark" aria-pressed="false">深色</button>
-                  </div>
-                  <input id="preference-theme" name="theme" type="hidden" value="light">
-                </div>
-                <div class="form-foot field--wide"><p class="form-result" data-form-result="preferences" role="status" aria-live="polite"></p><div><button class="button-primary">保存显示偏好</button></div></div>
-              </form>
-            </section>
-            <section id="identity" class="setting-section"><h2>当前身份</h2><p>本机开发阶段的身份与权限状态。</p><dl class="identity-list" id="identity-list"></dl></section>
           </section>
         </div>
       </section>

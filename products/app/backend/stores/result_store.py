@@ -20,7 +20,6 @@ if str(_CORE_SRC) not in sys.path:
 from runtime.adapters.local_store import LocalResultStore, StoreError
 from runtime.contracts.contract_types import semantic_hash
 from runtime.protocol.models import ModuleRunRef
-from runtime.protocol.version import PUBLIC_VERSION
 from modules.reporter.selection_facts import build_host_selection_source_refs
 
 from ..errors import AuthorizationError, ValidationError
@@ -28,8 +27,7 @@ from ..identity.session_identity import SessionIdentity
 from . import _LocalDocumentStore
 
 
-CURRENT_CATALOG_VERSION = PUBLIC_VERSION
-MODULE_RUN_REF_VERSION = f"module-run-ref/{PUBLIC_VERSION}"
+MODULE_RUN_REF_SCHEMA = "optionhelper.module-run-ref"
 
 
 class ResultStore:
@@ -88,7 +86,7 @@ class ResultStore:
         )
         record = {
             **pending_reference,
-            "reference_version": MODULE_RUN_REF_VERSION,
+            "reference_schema": MODULE_RUN_REF_SCHEMA,
             "anchor_state": "pending_commit",
             "created_by": identity.principal_id,
             "created_at": datetime.now(timezone.utc).isoformat(),
@@ -141,7 +139,7 @@ class ResultStore:
                     "module", "tenant_id", "task_id", "run_id", "expected_semantic_result_hash",
                     "expected_artifact_manifest_hash",
                 )
-                if record.get("reference_version") != MODULE_RUN_REF_VERSION:
+                if record.get("reference_schema") != MODULE_RUN_REF_SCHEMA:
                     # Recovery data from another protocol is not a current
                     # RunRef and must never be reinterpreted as one.
                     self._remove_recovery(record_key)
@@ -309,7 +307,7 @@ class ResultStore:
             reference = {
                 "module": record["module"], "tenant_id": record["tenant_id"], "task_id": record["task_id"], "run_id": record["run_id"],
                 "expected_semantic_result_hash": record["expected_semantic_result_hash"],
-                "expected_artifact_manifest_hash": record["expected_artifact_manifest_hash"], "status": "succeeded",
+                "expected_artifact_manifest_hash": record["expected_artifact_manifest_hash"],
             }
             options = row.setdefault("module_run_options", {}).setdefault(display_module, [])
             if not any(existing == reference for existing in options):
@@ -742,8 +740,6 @@ def _module_run_files(
         catalog_version = ""
     else:
         catalog_version = catalog_version.strip()
-    if status in {"succeeded", "partial"} and catalog_version != CURRENT_CATALOG_VERSION:
-        raise ValidationError(f"成功ModuleRun.catalog_version必须为{CURRENT_CATALOG_VERSION}")
     value["catalog_version"] = catalog_version
     execution_fingerprint = value.get("execution_fingerprint")
     if not isinstance(execution_fingerprint, str) or not execution_fingerprint:
@@ -920,8 +916,8 @@ def _report_candidate(record: dict[str, Any], verified_contract: dict[str, Any])
     if not product_version:
         raise ValidationError("formal report source is missing product_version")
     catalog_version = str(result.get("catalog_version") or "").strip()
-    if catalog_version != CURRENT_CATALOG_VERSION:
-        raise ValidationError(f"formal report source catalog_version must be {CURRENT_CATALOG_VERSION}")
+    if not catalog_version:
+        raise ValidationError("formal report source is missing catalog_version")
     underlyings = identity.get("underlyings")
     if not isinstance(underlyings, list) or not all(isinstance(value, str) and value for value in underlyings):
         raise ValidationError("formal report source is missing contract underlyings")

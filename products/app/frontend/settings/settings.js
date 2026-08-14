@@ -10,16 +10,29 @@ if (!session) throw new Error("未建立本机会话");
 const roleLabel = { admin: "管理员", sales: "用户" };
 const canManageModel = session.capabilities.includes("settings.model.write");
 const canManageData = session.capabilities.includes("settings.data.write");
-document.querySelector("#identity-list").innerHTML = [["使用身份", roleLabel[session.identity.role] || "用户"], ["租户", session.identity.tenant_id], ["本机身份", session.identity.principal_id]].map(([key, value]) => `<dt>${key}</dt><dd>${value}</dd>`).join("");
+const identityList = document.querySelector("#identity-list");
+if (identityList) {
+  const avatar = document.createElement("span");
+  avatar.className = "settings-account__avatar";
+  avatar.textContent = "O";
+  const copy = document.createElement("span");
+  copy.className = "settings-account__copy";
+  const name = document.createElement("strong");
+  name.textContent = "OptionHelper用户";
+  const role = document.createElement("small");
+  role.textContent = roleLabel[session.identity.role] || "用户";
+  copy.append(name, role);
+  identityList.append(avatar, copy);
+}
 if (canManageData) {
   document.querySelector("#data").hidden = false;
   document.querySelector("[data-settings-data-link]").hidden = false;
 }
 document.querySelector("[data-setup-intro]").textContent = canManageModel && session.capabilities.includes("optdesk")
-  ? "首次使用只需选择模型服务，保存API Key并测试连接；随后即可在OptChat和OptDesk发起任务。其余项目已有可用默认值，可按需要调整。"
+  ? "首次使用只需选择模型服务并测试连接。此处也可管理数据接口、存储与偏好。"
   : canManageModel
-    ? "首次使用只需选择模型服务，保存API Key并测试连接；随后即可在OptChat发起任务。其余项目已有可用默认值，可按需要调整。"
-    : "模型服务和数据接口由管理员统一配置。你可以查看当前状态，并调整自己的结果导出与显示偏好。";
+    ? "首次使用只需选择模型服务并测试连接。此处也可管理存储与偏好。"
+    : "模型服务与数据接口由管理员管理。你可以调整存储与偏好。";
 const storagePath = document.querySelector("[data-default-storage-path]");
 if (storagePath && /Win/i.test(navigator.platform)) {
   storagePath.textContent = "Windows：用户目录/AppData/Local/OptionHelper/local-state";
@@ -33,10 +46,10 @@ const themePreference = preferenceForm.elements.theme;
 const themeControls = preferenceForm.querySelector("[data-theme-controls]");
 const modelState = document.querySelector("#model-credential-state");
 const dataState = document.querySelector("#data-credential-state");
-const modelStep = document.querySelector("[data-model-step]");
-const workspaceStep = document.querySelector("[data-workspace-step]");
 const modelPreset = modelForm.elements.provider_preset;
 const modelAdvanced = document.querySelector("#model-advanced-options");
+const modelStatus = document.querySelector("[data-model-status]");
+const dataStatus = document.querySelector("[data-data-status]");
 let modelConfigured = false;
 let dataConfigured = false;
 let modelCredentialOrigin = "";
@@ -120,16 +133,6 @@ function showStoredCredential(control, configured, emptyPlaceholder) {
   control.dataset.credentialSaved = String(configured);
 }
 
-function updateProgress() {
-  const configured = modelConfigured;
-  modelStep?.classList.toggle("is-current", !configured);
-  modelStep?.classList.toggle("is-complete", configured);
-  workspaceStep?.classList.toggle("is-current", configured);
-  modelStep?.querySelector("span").replaceChildren(document.createTextNode(configured ? "✓" : "1"));
-  modelStep?.querySelector("small").replaceChildren(document.createTextNode(configured ? "已保存凭据，建议测试连接" : "选择服务并保存API Key"));
-  workspaceStep?.querySelector("small").replaceChildren(document.createTextNode(configured ? "返回工作台发送需求" : "完成第一步后可开始"));
-}
-
 function presetFor(model) {
   const provider = String(model.provider_name || "").trim();
   const endpoint = String(model.endpoint || "").trim().replace(/\/$/, "");
@@ -147,10 +150,17 @@ function applyPreset(presetName, { overwrite = false } = {}) {
 }
 
 function setActiveSection(id) {
-  document.querySelectorAll(".settings-nav a").forEach((link) => {
-    const active = link.getAttribute("href") === `#${id}`;
+  const links = Array.from(document.querySelectorAll(".settings-nav a:not([hidden])"));
+  const requested = links.find((link) => link.getAttribute("href") === `#${id}`);
+  const activeId = requested ? id : "preferences";
+  links.forEach((link) => {
+    const active = link.getAttribute("href") === `#${activeId}`;
     link.toggleAttribute("aria-current", active);
   });
+  document.querySelectorAll(".setting-section").forEach((section) => {
+    section.hidden = section.id !== activeId;
+  });
+  return activeId;
 }
 
 function applySettings(settings) {
@@ -165,6 +175,10 @@ function applySettings(settings) {
   showStoredCredential(modelForm.elements.api_key, modelConfigured, "粘贴所选模型服务的API Key");
   if (modelAdvanced) modelAdvanced.open = preset === "custom";
   credentialState(modelState, modelConfigured);
+  if (modelStatus) {
+    modelStatus.textContent = modelConfigured ? "已连接" : "未配置";
+    modelStatus.classList.toggle("is-ready", modelConfigured);
+  }
   const sharedState = document.querySelector("[data-user-model-state]");
   if (sharedState) sharedState.textContent = modelConfigured ? "管理员已配置模型服务，可以直接开始任务。" : "管理员尚未配置模型服务。";
 
@@ -173,13 +187,16 @@ function applySettings(settings) {
   dataConfigured = Boolean(data.credential_configured);
   showStoredCredential(dataForm.elements.refresh_token, dataConfigured, "粘贴iFind Refresh Token");
   credentialState(dataState, dataConfigured, { kind: "data" });
+  if (dataStatus) {
+    dataStatus.textContent = dataConfigured ? "已连接" : "未配置";
+    dataStatus.classList.toggle("is-ready", dataConfigured);
+  }
 
   storageForm.elements.export_location_ref.value = settings.storage_export?.export_location_ref || "";
   storageForm.elements.allow_user_selected_directory.value = String(settings.storage_export?.allow_user_selected_directory !== false);
   preferenceForm.elements.language.value = settings.preferences?.language || "zh-CN";
   themePreference.value = settings.preferences?.theme || currentThemePreference();
   setThemePreference(themePreference.value, { persist: false });
-  updateProgress();
   enhanceSelects(document);
 }
 
@@ -245,15 +262,12 @@ function setSaving(form, saving) {
 
 document.querySelectorAll(".settings-nav a").forEach((link) => link.addEventListener("click", (event) => {
   const id = link.getAttribute("href").slice(1);
-  setActiveSection(id);
-  const target = document.getElementById(id);
-  if (!target) return;
   event.preventDefault();
-  history.replaceState(null, "", `#${id}`);
-  if (matchMedia("(prefers-reduced-motion: reduce)").matches) target.scrollIntoView({ block: "start" });
-  else target.scrollIntoView({ behavior: "smooth", block: "start" });
+  const activeId = setActiveSection(id);
+  history.replaceState(null, "", `#${activeId}`);
+  document.querySelector(".connection-editor")?.scrollTo({ top: 0, behavior: "auto" });
 }));
-setActiveSection(location.hash.slice(1) || "model");
+setActiveSection(location.hash.slice(1) || "preferences");
 
 preferenceForm.addEventListener("submit", async (event) => {
   event.preventDefault();

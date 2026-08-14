@@ -78,6 +78,250 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
   }
 }
 
+/* LibreChat component ports. React and Tailwind are removed, while the source
+   component geometry and interaction states remain in the native App shell. */
+.workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-new-task {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 10px;
+}
+
+.workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-new-task__icon {
+  width: 17px;
+  height: 17px;
+  flex: 0 0 17px;
+  fill: currentColor;
+}
+
+.workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-new-task__label {
+  overflow: hidden;
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-shell.workspace-shell--desk[data-workspace-shell] .task-list {
+  gap: 2px;
+}
+
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .task-item,
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .task-item,
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="desk"] .task-item {
+  position: relative;
+  min-height: 36px;
+  grid-template-columns: minmax(0, 1fr) auto 18px;
+  gap: 8px;
+  padding: 0 5px 0 8px;
+  border-radius: 9px;
+}
+
+.workspace-shell.workspace-shell--desk[data-workspace-shell] .task-item::before {
+  position: absolute;
+  top: 8px;
+  bottom: 8px;
+  left: 0;
+  width: 2px;
+  border-radius: 999px;
+  background: var(--red);
+  content: "";
+  opacity: 0;
+  transform: scaleY(.35);
+  transition: opacity 150ms ease, transform 180ms var(--oh-panel-ease);
+}
+
+.workspace-shell.workspace-shell--desk[data-workspace-shell] .task-item[aria-current="true"]::before {
+  opacity: 1;
+  transform: scaleY(1);
+}
+
+.workspace-shell.workspace-shell--desk[data-workspace-shell] .task-item__chat,
+.workspace-shell.workspace-shell--desk[data-workspace-shell] .task-item__more {
+  display: inline-grid;
+  width: 18px;
+  height: 18px;
+  place-items: center;
+  color: #8b8d8a;
+}
+
+.workspace-shell.workspace-shell--desk[data-workspace-shell] .task-item__chat svg {
+  width: 17px;
+  height: 17px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.5;
+}
+
+.workspace-shell.workspace-shell--desk[data-workspace-shell] .task-item__more {
+  border-radius: 7px;
+  opacity: 0;
+  transition: opacity 150ms ease, background-color 150ms ease, color 150ms ease;
+}
+
+.workspace-shell.workspace-shell--desk[data-workspace-shell] .task-item__more svg {
+  width: 16px;
+  height: 16px;
+  fill: currentColor;
+}
+
+.workspace-shell.workspace-shell--desk[data-workspace-shell] .task-item:hover .task-item__more,
+.workspace-shell.workspace-shell--desk[data-workspace-shell] .task-item:focus-visible .task-item__more,
+.workspace-shell.workspace-shell--desk[data-workspace-shell] .task-item[aria-current="true"] .task-item__more {
+  opacity: .72;
+}
+
+.workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-footer {
+  position: relative;
+  padding-top: 8px;
+}
+
+.workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-account-trigger {
+  display: grid;
+  min-height: 44px;
+  grid-template-columns: 30px minmax(0, 1fr) 18px;
+  gap: 9px;
+  padding: 5px 7px;
+  border-radius: 11px;
+  text-align: left;
+}
+
+.workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-account-trigger__mark {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border: 1px solid #d0cdca;
+  border-radius: 999px;
+  background: #fff;
+  color: #6f6964;
+}
+
+.workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-account-trigger__mark svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
+}
+
+.workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-account-trigger__copy {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-account-trigger__copy strong,
+.workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-account-trigger__copy small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-account-trigger__copy strong {
+  color: #35302d;
+  font-size: 12.5px;
+  font-weight: 640;
+}
+
+.workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-account-trigger__copy small {
+  color: #928b86;
+  font-size: 10px;
+}
+
+.workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-account-trigger__chevron {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.7;
+  transition: transform 180ms ease;
+}
+
+.workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-account-trigger[aria-expanded="true"] .rail-account-trigger__chevron {
+  transform: rotate(180deg);
+}
+
+.workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-account-menu {
+  right: auto;
+  bottom: calc(100% + 8px);
+  left: 0;
+  width: min(244px, calc(var(--rail-effective-width) - 16px));
+  min-width: 190px;
+  padding: 7px;
+  border: 1px solid #dedbd7;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, .98);
+  box-shadow: 0 14px 34px rgba(37, 31, 27, .14), 0 2px 8px rgba(37, 31, 27, .07);
+}
+
+.workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-account-menu__identity {
+  display: grid;
+  gap: 2px;
+  padding: 8px 9px 7px;
+}
+
+.workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-account-menu__identity strong {
+  color: #302b28;
+  font-size: 12.5px;
+}
+
+.workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-account-menu__identity span {
+  color: #8b847f;
+  font-size: 10.5px;
+}
+
+.workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-account-menu__separator {
+  height: 1px;
+  margin: 2px 5px 5px;
+  background: #ece9e6;
+}
+
+.workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-account-menu__item {
+  min-height: 36px;
+  gap: 10px;
+  padding: 0 9px;
+  border-radius: 9px;
+  font-size: 12.5px;
+}
+
+.workspace-shell.workspace-shell--desk[data-workspace-shell] .send-control:disabled {
+  cursor: default;
+  opacity: .22;
+}
+
+@media (min-width: 701px) {
+  .workspace-shell.workspace-shell--desk[data-workspace-shell][data-rail-collapsed="true"] .rail-new-task {
+    justify-content: center;
+    padding-inline: 0 !important;
+  }
+
+  .workspace-shell.workspace-shell--desk[data-workspace-shell][data-rail-collapsed="true"] .rail-account-trigger {
+    min-height: 42px;
+    grid-template-columns: 30px;
+    justify-content: center;
+    padding-inline: 0;
+  }
+
+  .workspace-shell.workspace-shell--desk[data-workspace-shell][data-rail-collapsed="true"] .rail-account-trigger__copy,
+  .workspace-shell.workspace-shell--desk[data-workspace-shell][data-rail-collapsed="true"] .rail-account-trigger__chevron {
+    display: none;
+  }
+
+  .workspace-shell.workspace-shell--desk[data-workspace-shell][data-rail-collapsed="true"] .rail-account-menu {
+    bottom: 8px;
+    left: calc(100% + 9px);
+    width: 220px;
+  }
+}
+
 .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-mode-area {
   margin-top: 10px;
 }
@@ -272,20 +516,116 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
 }
 
 .setup-page .topbar { min-height: 58px; }
-.setup-page .setup { padding: 28px 24px 44px; }
-.setup-page .setup-card { max-width: 1080px; }
-.setup-page .setup-intro { padding: 26px 30px 22px; }
-.setup-page .setup-card h1 { font-size: 25px; }
-.setup-page .setup-intro > div > p { margin-top: 6px; font-size: 12px; }
-.setup-page .setup-layout { grid-template-columns: 230px minmax(0, 1fr); }
-.setup-page .configured-models { padding: 22px 18px; }
-.setup-page .connection-editor { padding: 24px 30px 36px; }
-.setup-page .connection-editor h2 { font-size: 18px; }
-.setup-page .setting-section > p { font-size: 12px; }
+.setup-page .setup {
+  min-height: calc(100dvh - 58px);
+  padding: 26px 24px 40px;
+}
+.setup-page .setup-card {
+  display: flex;
+  max-width: 1040px;
+  min-height: min(720px, calc(100dvh - 124px));
+  flex-direction: column;
+  overflow: hidden;
+  border-color: #e5dfe0;
+  border-radius: 16px;
+  box-shadow: 0 18px 46px rgba(48, 35, 38, .07);
+}
+.setup-page .setup-intro {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 24px;
+  padding: 20px 26px 18px;
+  border-bottom: 1px solid #ece7e6;
+}
+.setup-page .setup-card h1 {
+  font-size: 22px;
+  letter-spacing: -.025em;
+}
+.setup-page .setup-intro > div > p {
+  max-width: 680px;
+  margin-top: 4px;
+  color: #746b6d;
+  font-size: 12px;
+  line-height: 1.55;
+}
+.setup-page .setup-security {
+  margin: 0;
+  padding: 6px 10px;
+  border: 1px solid #ead9b5;
+  border-radius: 999px;
+  background: #fffbf1;
+  color: #806631;
+  font-size: 10.5px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+.setup-page .setup-layout {
+  display: grid;
+  grid-template-columns: 188px minmax(0, 1fr);
+  flex: 1;
+  gap: 0;
+  min-height: 0;
+  padding: 0;
+}
+.setup-page .configured-models {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  padding: 18px 12px 14px;
+  border: 0;
+  border-right: 1px solid #ece7e6;
+  border-radius: 0;
+  background: #faf9f8;
+}
+.setup-page .connection-editor {
+  min-width: 0;
+  padding: 26px 32px 34px;
+  overflow-y: auto;
+}
+.setup-page .connection-editor h2 {
+  font-size: 19px;
+  letter-spacing: -.02em;
+}
+.setup-page .setting-section > p {
+  max-width: 70ch;
+  margin: 4px 0 22px;
+  color: #746b6d;
+  font-size: 12px;
+  line-height: 1.65;
+}
+.setup-page .setting-section__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  margin-bottom: 18px;
+}
+.setup-page .setting-section__head p {
+  margin: 3px 0 0;
+  color: #807678;
+  font-size: 11.5px;
+}
+.setup-page .connection-status {
+  flex: none;
+  padding: 4px 9px;
+  border: 1px solid #e2dcdd;
+  border-radius: 999px;
+  background: #f8f6f6;
+  color: #847a7c;
+  font-size: 10.5px;
+  font-weight: 650;
+}
+.setup-page .connection-status.is-ready {
+  border-color: #cfe0d4;
+  background: #f3f8f4;
+  color: #477257;
+}
 .setup-page .storage-location {
   display: grid;
   gap: 4px;
-  margin-top: 14px;
+  max-width: 580px;
+  margin: 0 0 22px;
   padding: 12px 14px;
   border: 1px solid #eadcdf;
   border-radius: 10px;
@@ -296,111 +636,19 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
 }
 .setup-page .storage-location strong { color: var(--ink); font-size: 12px; }
 .setup-page .storage-location small { color: #877b7d; }
-.setup-page .setup-form { gap: 16px; }
+.setup-page .setup-form {
+  grid-template-columns: minmax(0, 580px);
+  gap: 18px;
+}
+.setup-page .setup-form > * { grid-column: 1; }
 .setup-page .setup-form .field label { font-size: 12px; }
 .setup-page .setup-form .field input,
 .setup-page .setup-form .field select,
 .setup-page .setup-form .field .choice-trigger { min-height: 40px; font-size: 13px; }
 .setup-page .setup-form .field-note { font-size: 11px; }
-.settings-nav .connection-item[aria-current] {
-  background: #fff;
-  color: var(--red-deep);
-  box-shadow: inset 2px 0 0 var(--red);
-}
-
-/* Settings navigation is a quiet working rail, not a second card inside the
-   settings surface. The model form remains the primary work area. */
-.setup-page .setup-layout {
-  grid-template-columns: 224px minmax(0, 1fr);
-  gap: 28px;
-}
-
-.setup-page .configured-models {
-  min-height: 0;
-  padding: 4px 20px 8px 0;
-  border: 0;
-  border-right: 1px solid #ece7e6;
-  border-radius: 0;
-  background: transparent;
-}
-
-.setup-page .configured-models__head {
-  display: block;
-  margin-bottom: 12px;
-}
-
-.setup-page .configured-models__head > p {
-  margin: 0 0 3px;
-  color: #9a696f;
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: .04em;
-}
-
-.setup-page .configured-models h2 {
-  font-size: 14px;
-  font-weight: 720;
-  letter-spacing: -.015em;
-}
-
-.setup-page .setup-steps {
-  position: relative;
-  gap: 2px;
-  margin: 0 0 14px;
-}
-
-.setup-page .setup-steps::before {
-  position: absolute;
-  top: 27px;
-  bottom: 27px;
-  left: 12px;
-  width: 1px;
-  background: #e4dcdd;
-  content: "";
-}
-
-.setup-page .setup-step {
-  grid-template-columns: 25px minmax(0, 1fr);
-  align-items: center;
-  gap: 9px;
-  min-height: 42px;
-  padding: 5px 0;
-}
-
-.setup-page .setup-step > span {
-  position: relative;
-  z-index: 1;
-  width: 25px;
-  height: 25px;
-  font-size: 11px;
-}
-
-.setup-page .setup-step.is-current > span {
-  box-shadow: none;
-}
-
-.setup-page .setup-step strong {
-  font-size: 12px;
-  line-height: 1.35;
-}
-
-.setup-page .setup-step small {
-  margin-top: 1px;
-  font-size: 10.5px;
-  line-height: 1.35;
-}
-
-.setup-page .configured-models__copy {
-  margin: 16px 0 8px;
-  padding-top: 14px;
-  border-top: 1px solid #ece7e6;
-  color: #817779;
-  font-size: 11px;
-  line-height: 1.5;
-}
-
 .setup-page .connection-list.settings-nav {
-  gap: 2px;
+  display: grid;
+  gap: 4px;
 }
 
 .setup-page .settings-nav .connection-item {
@@ -408,10 +656,10 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
   grid-template-columns: 18px minmax(0, 1fr);
   align-items: center;
   gap: 10px;
-  min-height: 40px;
-  padding: 7px 9px;
+  min-height: 42px;
+  padding: 8px 10px;
   border: 0;
-  border-radius: 8px;
+  border-radius: 10px;
   background: transparent;
   color: #4c4546;
   text-decoration: none;
@@ -425,7 +673,7 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
 }
 
 .setup-page .settings-nav .connection-item[aria-current] {
-  background: #fbf0f2;
+  background: #f8e9ec;
   box-shadow: inset 2px 0 0 var(--red);
   color: var(--red-deep);
 }
@@ -444,7 +692,7 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
 
 .setup-page .settings-nav .connection-item strong {
   display: block;
-  font-size: 12px;
+  font-size: 12.5px;
   font-weight: 650;
   line-height: 1.35;
 }
@@ -458,16 +706,153 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
   outline-offset: 2px;
 }
 
+.setup-page .settings-account {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-top: auto;
+  padding: 14px 8px 2px;
+  border-top: 1px solid #ece7e6;
+}
+.setup-page .settings-account__avatar {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  flex: none;
+  place-items: center;
+  border-radius: 50%;
+  background: #f4dfe3;
+  color: var(--red-deep);
+  font-size: 12px;
+  font-weight: 760;
+}
+.setup-page .settings-account__copy {
+  display: grid;
+  min-width: 0;
+  gap: 1px;
+}
+.setup-page .settings-account__copy strong {
+  overflow: hidden;
+  color: #332d2e;
+  font-size: 12px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.setup-page .settings-account__copy small {
+  color: #8a8082;
+  font-size: 10.5px;
+}
+
+.setup-page .settings-rows {
+  display: grid;
+  max-width: 680px;
+  border-top: 1px solid #ece7e6;
+}
+.setup-page .settings-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(180px, 260px);
+  align-items: center;
+  gap: 26px;
+  min-height: 72px;
+  padding: 14px 0;
+  border-bottom: 1px solid #ece7e6;
+}
+.setup-page .settings-row--stack {
+  grid-template-columns: 1fr;
+  align-items: stretch;
+  gap: 12px;
+}
+.setup-page .settings-row__copy {
+  display: grid;
+  gap: 3px;
+}
+.setup-page .settings-row__copy label {
+  color: #332d2e;
+  font-size: 13px;
+  font-weight: 650;
+}
+.setup-page .settings-row__copy .field-spec {
+  margin: 0;
+  color: #83797b;
+  font-size: 11px;
+}
+.setup-page .settings-row > [data-choice-root] { width: 100%; }
+.setup-page .theme-preference {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  padding: 0;
+  background: transparent;
+}
+.setup-page .theme-preference button {
+  display: grid;
+  min-height: 74px;
+  place-content: center;
+  gap: 5px;
+  border: 1px solid #e3dcdd;
+  border-radius: 12px;
+  background: #fff;
+  color: #5e5557;
+  font-size: 11.5px;
+  transition: border-color .16s ease, background-color .16s ease, color .16s ease;
+}
+.setup-page .theme-preference button svg {
+  width: 18px;
+  height: 18px;
+  margin: 0 auto;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.6;
+}
+.setup-page .theme-preference button:first-child svg path { fill: currentColor; stroke: none; }
+.setup-page .theme-preference button:hover {
+  border-color: #d6c7ca;
+  background: #fdfafa;
+}
+.setup-page .theme-preference button[aria-pressed="true"] {
+  border-color: #dbaeb7;
+  background: #fbf0f2;
+  color: var(--red-deep);
+}
+.setup-page .theme-preference button:focus-visible {
+  outline: 2px solid rgba(200, 16, 46, .35);
+  outline-offset: 2px;
+}
+.setup-page .form-foot {
+  align-items: center;
+  margin-top: 4px;
+  padding-top: 16px;
+  border-top: 1px solid #ece7e6;
+}
+
 @media (max-width: 700px) {
+  .setup-page .setup { padding: 14px 12px 28px; }
+  .setup-page .setup-card { min-height: auto; }
+  .setup-page .setup-intro {
+    grid-template-columns: 1fr;
+    gap: 10px;
+    padding: 18px 20px;
+  }
+  .setup-page .setup-security { justify-self: start; }
+  .setup-page .setup-layout { grid-template-columns: 1fr; }
   .setup-page .configured-models {
-    padding: 0 0 18px;
+    padding: 12px 14px;
     border-right: 0;
     border-bottom: 1px solid #ece7e6;
   }
-
   .setup-page .connection-list.settings-nav {
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 4px;
+  }
+  .setup-page .settings-account { margin-top: 10px; }
+  .setup-page .connection-editor { padding: 22px 20px 28px; }
+  .setup-page .settings-row {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+    gap: 10px;
   }
 }
 
@@ -823,15 +1208,21 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
   z-index: 2;
   bottom: 8px;
   left: 0;
-  width: 1px;
+  width: 0;
   height: 2px;
   border-radius: 999px;
   background: var(--red);
   pointer-events: none;
-  transform: translate3d(0, 0, 0) scaleX(0);
-  transform-origin: left center;
-  transition: transform .25s cubic-bezier(.22, 1, .36, 1);
-  will-change: transform;
+  opacity: 0;
+  transform: translate3d(0, 0, 0);
+  transition:
+    width .25s cubic-bezier(.22, 1, .36, 1),
+    transform .25s cubic-bezier(.22, 1, .36, 1);
+  will-change: width, transform;
+}
+
+.workspace-shell.workspace-shell--desk[data-workspace-shell] .desk-module-tabs__indicator[data-ready="true"] {
+  opacity: 1;
 }
 
 /* A short-lived processing beam borrows the border-beam principle without
@@ -1115,7 +1506,7 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
 .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .task-item,
 .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="desk"] .task-item {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto 16px;
+  grid-template-columns: minmax(0, 1fr) max-content;
   min-height: 36px;
   align-items: center;
   gap: 8px;
@@ -1672,5 +2063,643 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
     animation: none !important;
     filter: none !important;
     transition: none !important;
+  }
+}
+/* Unified workspace surface. Chat and Desk share one quiet navigation rail;
+   the OptionHelper red is reserved for active state and primary action. */
+.workspace-shell.workspace-shell--desk[data-workspace-shell] {
+  --rail-width: 236px;
+  --conversation-column-max: 820px;
+  --conversation-column-reserve: 44px;
+  background: #fff;
+}
+
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .workspace-rail--unbranded,
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .workspace-rail--unbranded,
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="desk"] .workspace-rail--unbranded {
+  padding: 14px 11px 12px;
+  border-right-color: #e7e5e2;
+  background: #f6f7f6;
+  color: #403a36;
+}
+
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .mode-switch--rail,
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .mode-switch--rail,
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="desk"] .mode-switch--rail {
+  min-height: 40px;
+  padding: 3px;
+  border: 1px solid #e4e3e0;
+  border-radius: 12px;
+  background: #ebecea;
+  box-shadow: none;
+}
+
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .mode-switch--rail::before,
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .mode-switch--rail::before,
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="desk"] .mode-switch--rail::before {
+  top: 3px;
+  bottom: 3px;
+  left: 3px;
+  width: calc(50% - 3px);
+  border-radius: 9px;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(44, 38, 35, .11), 0 4px 12px rgba(44, 38, 35, .045);
+}
+
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="desk"] .mode-switch--rail::before {
+  background: var(--red);
+}
+
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .mode-switch button,
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .mode-switch button,
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="desk"] .mode-switch button {
+  min-height: 34px;
+  color: #6d716e;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .mode-switch button[aria-pressed="true"] { color: var(--red-deep); }
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="desk"] .mode-switch button[aria-pressed="true"] { color: #fff; }
+
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-new-task,
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .rail-new-task,
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="desk"] .rail-new-task {
+  min-height: 38px !important;
+  margin-top: 10px !important;
+  padding: 0 9px !important;
+  border-radius: 9px !important;
+  color: #302b28 !important;
+  font-weight: 590;
+}
+
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-new-task > span:first-child {
+  color: var(--red);
+  font-size: 20px;
+}
+
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-new-task:hover,
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .rail-new-task:hover,
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="desk"] .rail-new-task:hover {
+  background: #ebecea !important;
+  color: var(--red-deep) !important;
+}
+
+.workspace-shell.workspace-shell--desk[data-workspace-shell] .task-rail {
+  margin-top: 15px;
+  padding-top: 10px;
+  scrollbar-color: rgba(76, 70, 65, .16) transparent;
+}
+
+.workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-section-label,
+.workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .rail-section-label,
+.workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="desk"] .rail-section-label {
+  color: #96908b;
+  font-size: 10.5px;
+}
+
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .task-item,
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .task-item,
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="desk"] .task-item {
+  min-height: 38px;
+  grid-template-columns: minmax(0, 1fr) auto 18px;
+  gap: 7px;
+  padding: 0 8px;
+  color: #504a46;
+}
+
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .task-item small,
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .task-item small,
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="desk"] .task-item small { color: #948d87; }
+
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .task-item:hover,
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .task-item[aria-current="true"],
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .task-item:hover,
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .task-item[aria-current="true"],
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="desk"] .task-item:hover,
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="desk"] .task-item[aria-current="true"] {
+  background: #e9eae8;
+  color: #292522;
+}
+
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .task-item[aria-current="true"],
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .task-item[aria-current="true"],
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="desk"] .task-item[aria-current="true"] {
+  box-shadow: inset 2px 0 0 var(--red);
+}
+
+.workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-footer,
+.workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .rail-footer,
+.workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="desk"] .rail-footer { border-top-color: #deddda; }
+
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-account-trigger,
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .rail-account-trigger,
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="desk"] .rail-account-trigger { color: #716a65; }
+
+.workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-account-trigger__mark { border-color: #c9c5c0; }
+.workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-account-trigger:hover,
+.workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-account-trigger[aria-expanded="true"] { background: #ebecea; color: var(--red-deep); }
+
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-collapse-toggle,
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .rail-collapse-toggle,
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="desk"] .rail-collapse-toggle {
+  top: 0;
+  right: -14px;
+  width: 28px;
+  height: 72px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: #817a75;
+  box-shadow: none;
+  opacity: .26;
+  transform: none;
+}
+
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .workspace-rail:hover .rail-collapse-toggle,
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-rail-collapsed="true"] .rail-collapse-toggle,
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-collapse-toggle:focus-visible {
+  opacity: 1;
+  transform: none;
+}
+
+.workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-collapse-toggle:hover {
+  border-color: transparent;
+  background: transparent;
+  color: var(--red-deep);
+  box-shadow: none;
+  transform: none;
+}
+
+.workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-collapse-toggle svg {
+  width: 14px;
+  height: 14px;
+  overflow: visible;
+}
+
+.workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-toggle-bar {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.15;
+  stroke-linecap: round;
+  transform-box: fill-box;
+  transform-origin: center;
+  transition: transform .3s cubic-bezier(.2, .8, .2, 1);
+}
+
+.workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-collapse-toggle:hover .rail-toggle-bar--top,
+.workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-collapse-toggle:focus-visible .rail-toggle-bar--top {
+  transform: rotate(15deg) translateY(.7px);
+}
+
+.workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-collapse-toggle:hover .rail-toggle-bar--bottom,
+.workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-collapse-toggle:focus-visible .rail-toggle-bar--bottom {
+  transform: rotate(-15deg) translateY(-.7px);
+}
+
+.workspace-shell.workspace-shell--desk[data-workspace-shell][data-rail-collapsed="true"] .rail-toggle-bar--top {
+  transform: rotate(-15deg) translateY(.7px);
+}
+
+.workspace-shell.workspace-shell--desk[data-workspace-shell][data-rail-collapsed="true"] .rail-toggle-bar--bottom {
+  transform: rotate(15deg) translateY(-.7px);
+}
+
+.workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .workbench-head,
+.workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="desk"] .workbench-head {
+  min-height: 54px;
+  padding: 0 24px;
+}
+
+.workspace-shell.workspace-shell--desk[data-workspace-shell] .workbench-head h1 { font-size: 15px; }
+.workspace-shell.workspace-shell--desk[data-workspace-shell] .work-area { grid-template-rows: 54px minmax(0, 1fr) var(--assistant-height); }
+.workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .work-area { grid-template-rows: 54px minmax(0, 1fr) 150px; }
+
+.workspace-shell.workspace-shell--desk[data-workspace-shell] .conversation-start {
+  width: min(760px, calc(100% - 42px));
+  padding: 12px 0 18px;
+}
+
+.workspace-shell.workspace-shell--desk[data-workspace-shell] .conversation-start__mark { display: none; }
+.workspace-shell.workspace-shell--desk[data-workspace-shell] .conversation-start h2 {
+  margin-top: 0;
+  font-size: clamp(24px, 2.6vw, 30px);
+  font-weight: 650;
+}
+
+.workspace-shell.workspace-shell--desk[data-workspace-shell] .conversation-start__copy { margin-top: 8px; color: #7e7772; }
+.workspace-shell.workspace-shell--desk[data-workspace-shell] .conversation-starters { gap: 9px; margin-top: 20px; }
+.workspace-shell.workspace-shell--desk[data-workspace-shell] .conversation-starter {
+  min-height: 84px;
+  padding: 13px 14px;
+  border-color: #e5e2de;
+  border-radius: 13px;
+  background: rgba(255, 255, 255, .74);
+  box-shadow: none;
+}
+
+.workspace-shell.workspace-shell--desk[data-workspace-shell] .conversation-starter:hover {
+  border-color: #d9c7ca;
+  background: #fff;
+  box-shadow: 0 7px 18px rgba(78, 47, 52, .055);
+  transform: translateY(-1px);
+}
+
+.workspace-shell.workspace-shell--desk[data-workspace-shell] .message-stream {
+  padding-right: max(22px, calc((100% - 820px) / 2));
+  padding-left: max(22px, calc((100% - 820px) / 2));
+}
+
+.workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .assistant-region { padding: 10px 24px 16px; }
+.workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .composer,
+.workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .assistant-region .composer { width: min(820px, calc(100% - 28px)); }
+
+.workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .composer form {
+  min-height: 108px;
+  padding: 12px 13px 10px;
+  border-color: #dedbd7;
+  border-radius: 18px;
+  box-shadow: 0 6px 24px rgba(43, 37, 34, .08);
+}
+
+.workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .composer textarea { min-height: 34px; }
+
+@media (min-width: 701px) {
+  .workspace-shell.workspace-shell--desk[data-workspace-shell][data-rail-collapsed="true"] { --rail-effective-width: 56px; }
+  .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-rail-collapsed="true"] .workspace-rail--unbranded { padding-inline: 6px; }
+  .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-rail-collapsed="true"] .workspace-rail--unbranded .rail-new-task {
+    margin-top: 8px !important;
+    border-radius: 10px !important;
+  }
+}
+
+/* Final cascade for the LibreChat ports. These selectors intentionally match
+   both modes so Chat and Desk preserve the same persistent rail geometry. */
+.workspace-body,
+.workspace-body button,
+.workspace-body input,
+.workspace-body select,
+.workspace-body textarea {
+  font-family: Arial, "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .mode-switch--rail::before {
+  transform: translate3d(0, 0, 0);
+  transition:
+    transform 420ms cubic-bezier(.22, 1, .36, 1),
+    background-color 260ms ease,
+    box-shadow 260ms ease;
+  will-change: transform;
+}
+
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="desk"] .mode-switch--rail::before {
+  transform: translate3d(100%, 0, 0);
+}
+
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .mode-switch button,
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .mode-switch button:hover,
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .mode-switch button[aria-pressed="true"] {
+  background: transparent !important;
+  box-shadow: none !important;
+  transform: none;
+  transition: color 220ms ease;
+}
+
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .task-item,
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .task-item,
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="desk"] .task-item {
+  position: relative;
+  min-height: 36px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  padding: 0 28px 0 8px;
+  border-radius: 9px;
+}
+
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .task-item::before {
+  position: absolute;
+  top: 8px;
+  bottom: 8px;
+  left: 0;
+  width: 2px;
+  border-radius: 999px;
+  background: var(--red);
+  content: "";
+  opacity: 0;
+  transform: scaleY(.35);
+  transition: opacity 150ms ease, transform 180ms var(--oh-panel-ease);
+}
+
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .task-item[aria-current="true"]::before {
+  opacity: 1;
+  transform: scaleY(1);
+}
+
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .task-item__more {
+  display: inline-grid;
+}
+
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .task-item__more {
+  position: absolute;
+  right: 4px;
+  background: #e9eae8;
+  opacity: 0;
+}
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .task-item:hover .task-item__more,
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .task-item:focus-visible .task-item__more,
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .task-item__more[aria-expanded="true"] { opacity: .72; }
+
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .task-item:hover small,
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .task-item:focus-visible small { opacity: 0; }
+
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-account-trigger {
+  display: flex;
+  align-items: center;
+  min-height: 48px;
+  gap: 10px;
+  padding: 6px 8px;
+  border-radius: 10px;
+  background: transparent;
+  color: #332f2c;
+  text-align: left;
+}
+
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-account-trigger__mark {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 32px;
+  place-items: center;
+  border: 0;
+  border-radius: 999px;
+  background: #e7e8e7;
+  color: #393633;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-account-trigger__name {
+  min-width: 0;
+  overflow: hidden;
+  color: inherit;
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-account-menu {
+  right: auto;
+  bottom: calc(100% + 8px);
+  left: 0;
+  width: min(244px, calc(var(--rail-effective-width) - 16px));
+  min-width: 190px;
+  padding: 7px;
+  border: 1px solid #dedbd7;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, .98);
+  box-shadow: 0 14px 34px rgba(37, 31, 27, .14), 0 2px 8px rgba(37, 31, 27, .07);
+}
+
+@media (min-width: 701px) {
+  .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-rail-collapsed="true"] .rail-account-trigger {
+    width: 42px;
+    min-width: 42px;
+    max-width: 42px;
+    height: 42px;
+    min-height: 42px;
+    justify-content: center;
+    padding: 0;
+  }
+
+  .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-rail-collapsed="true"] .rail-account-trigger__copy,
+  .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-rail-collapsed="true"] .rail-account-trigger__name {
+    display: none;
+  }
+
+  .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-rail-collapsed="true"] .rail-account-menu {
+    bottom: 8px;
+    left: calc(100% + 9px);
+    width: 220px;
+  }
+}
+
+/* The account footer is a compact identity line, without a mode-specific rule. */
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-footer,
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .rail-footer,
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="desk"] .rail-footer {
+  padding-top: 8px;
+  border-top: 1px solid #deddda;
+}
+
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-account-trigger {
+  min-height: 36px;
+  gap: 8px;
+  padding: 3px 7px;
+  border-radius: 9px;
+  background: transparent !important;
+}
+
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-account-trigger:hover,
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-account-trigger[aria-expanded="true"] {
+  background: #ebecea !important;
+}
+
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-account-trigger__mark {
+  width: 26px;
+  height: 26px;
+  flex-basis: 26px;
+  font-size: 10px;
+}
+
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-account-trigger__name {
+  font-size: 13px;
+}
+
+@media (min-width: 701px) {
+  .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-rail-collapsed="true"] .rail-account-trigger {
+    width: 36px;
+    min-width: 36px;
+    max-width: 36px;
+    height: 36px;
+    min-height: 36px;
+  }
+
+  .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-rail-collapsed="true"] .rail-account-trigger__mark {
+    width: 26px;
+    height: 26px;
+    flex-basis: 26px;
+  }
+}
+
+/* Mode selection remains one neutral segmented control in both work modes. */
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="desk"] .mode-switch--rail::before {
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(44, 38, 35, .11), 0 4px 12px rgba(44, 38, 35, .045);
+}
+
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="desk"] .mode-switch button[aria-pressed="true"] {
+  color: var(--red-deep);
+}
+
+/* A selected task is a quiet surface state, not a red status marker. */
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .task-item::before {
+  display: none;
+}
+
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .task-item[aria-current="true"],
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .task-item[aria-current="true"],
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="desk"] .task-item[aria-current="true"] {
+  box-shadow: none;
+}
+
+/* LibreChat compact rail. This final layer replaces the former full-height
+   new-task strip with two stable icon actions: new task above, account below. */
+@media (min-width: 701px) {
+  .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-rail-collapsed="true"] .workspace-rail--unbranded {
+    display: grid;
+    grid-template-rows: 42px minmax(0, 1fr) 42px;
+    gap: 8px;
+    padding: 14px 6px 12px;
+    overflow: visible;
+  }
+
+  .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-rail-collapsed="true"] .rail-mode-area,
+  .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-rail-collapsed="true"] .task-rail {
+    position: absolute;
+    visibility: hidden;
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-rail-collapsed="true"] .rail-new-task {
+    position: static;
+    grid-row: 1;
+    align-self: center;
+    justify-self: center;
+    width: 42px;
+    min-width: 42px;
+    max-width: 42px;
+    height: 42px;
+    min-height: 42px !important;
+    max-height: 42px;
+    margin: 0 !important;
+    padding: 0 !important;
+    border: 0;
+    border-radius: 10px !important;
+    background: transparent !important;
+    color: #5f5a56 !important;
+    transform: none;
+  }
+
+  .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-rail-collapsed="true"] .rail-new-task:hover,
+  .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-rail-collapsed="true"] .rail-new-task:focus-visible {
+    background: #e9eae8 !important;
+    color: var(--red-deep) !important;
+  }
+
+  .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-rail-collapsed="true"] .rail-footer {
+    position: relative;
+    inset: auto;
+    grid-row: 3;
+    align-self: end;
+    visibility: visible;
+    width: 42px;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    opacity: 1;
+    pointer-events: auto;
+    transform: none;
+  }
+
+  .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-rail-collapsed="true"] .rail-account-trigger {
+    width: 42px;
+    min-width: 42px;
+    max-width: 42px;
+    height: 42px;
+    min-height: 42px;
+    padding: 0;
+  }
+}
+
+/* Codex-style rail icon family: one quiet outline weight for every utility
+   action, with the vertical ellipsis retained as the single filled glyph. */
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-new-task__icon,
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-collapse-toggle svg,
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .task-item__chat svg,
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-account-menu__item > svg {
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
+}
+
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-new-task__icon,
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-collapse-toggle svg,
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-account-menu__item > svg {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+}
+
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .task-item__chat svg {
+  width: 18px;
+  height: 18px;
+}
+
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .task-item__more svg {
+  width: 15px;
+  height: 15px;
+  fill: currentColor;
+  stroke: none;
+}
+
+/* Final compact account geometry: one quiet identity line in both modes. */
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-footer,
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .rail-footer,
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="desk"] .rail-footer {
+  padding-top: 8px;
+  border-top: 1px solid #deddda;
+}
+
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-account-trigger {
+  min-height: 36px;
+  gap: 8px;
+  padding: 3px 7px;
+  border-radius: 9px;
+  background: transparent !important;
+}
+
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-account-trigger:hover,
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-account-trigger[aria-expanded="true"] {
+  background: #ebecea !important;
+}
+
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-account-trigger__mark {
+  width: 26px;
+  height: 26px;
+  flex-basis: 26px;
+  font-size: 10px;
+}
+
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-account-trigger__name { font-size: 13px; }
+
+@media (min-width: 701px) {
+  .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-rail-collapsed="true"] .rail-account-trigger {
+    width: 36px;
+    min-width: 36px;
+    max-width: 36px;
+    height: 36px;
+    min-height: 36px;
+    padding: 0;
+  }
+
+  .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-rail-collapsed="true"] .rail-account-trigger__mark {
+    width: 26px;
+    height: 26px;
+    flex-basis: 26px;
   }
 }
