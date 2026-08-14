@@ -5,3 +5,4 @@
 
 - `ReportLab-LICENSE.txt`：ReportLab 5.0.0。用于Card和Report的真实PDF交付。
 - `Pillow-LICENSE.txt`：Pillow 12.3.0。ReportLab运行时依赖及其随附组件许可证。
+- `LibreChat-LICENSE.txt`：LibreChat。用于App侧栏折叠、新建任务、账户菜单、任务行与发送控件的前端结构和图形。
