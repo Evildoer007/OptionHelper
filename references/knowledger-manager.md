@@ -53,9 +53,9 @@ PYTHONPATH=core/src "${OPTIONHELPER_PYTHON:-python3}" -m tests.knowledger.audit 
 技术候选固定写入`result/build-candidates/knowledger/<version>`，保存65个产品的三源片段、默认条款及冻结Payoff JSON与SVG。技术候选不可执行，不得写入`versions/knowledger`，也不得建立`current`。
 
 ```bash
-PYTHONPATH=core/src "${OPTIONHELPER_PYTHON:-python3}" -m runtime.knowledger.versioning build-candidate --root . --output result/build-candidates/knowledger/v1.0 --proposed-version v1.0 --built-at 2026-08-07T12:00:00+08:00
-PYTHONPATH=core/src "${OPTIONHELPER_PYTHON:-python3}" -m runtime.knowledger.versioning verify-candidate-integrity --candidate result/build-candidates/knowledger/v1.0
-PYTHONPATH=core/src "${OPTIONHELPER_PYTHON:-python3}" -m runtime.knowledger.versioning verify-candidate-freshness --root . --candidate result/build-candidates/knowledger/v1.0
+PYTHONPATH=core/src "${OPTIONHELPER_PYTHON:-python3}" -m runtime.knowledger.versioning build-candidate --root . --output result/build-candidates/knowledger/v1.0.0 --proposed-version v1.0.0 --built-at 2026-08-07T12:00:00+08:00
+PYTHONPATH=core/src "${OPTIONHELPER_PYTHON:-python3}" -m runtime.knowledger.versioning verify-candidate-integrity --candidate result/build-candidates/knowledger/v1.0.0
+PYTHONPATH=core/src "${OPTIONHELPER_PYTHON:-python3}" -m runtime.knowledger.versioning verify-candidate-freshness --root . --candidate result/build-candidates/knowledger/v1.0.0
 ```
 
 正式ProductVersion与CatalogVersion必须独立签发为`published`且`executable`，保留六件套哈希、签发人和签发时间。Skill构建及显式版本运行只接受经正式Catalog验证的快照；开发态无`current`时继续读取当前OptionReg，但不得把技术候选降级当作正式版本。

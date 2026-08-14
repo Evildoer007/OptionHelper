@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 
-def _term(name_zh, _legacy_name_en, symbol, value_type, unit, domain):
+def _term(name_zh, _name_en, symbol, value_type, unit, domain):
     return {
         "name_zh": name_zh,
         "symbol": symbol,
