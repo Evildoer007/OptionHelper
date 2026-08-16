@@ -146,6 +146,8 @@ class CapabilityServiceCaller:
         caller_context: object,
         secret_ref: object | None,
         secret_port: object | None = None,
+        *,
+        trading_calendar_ref: object | None = None,
     ) -> dict[str, Any]:
         """Call only a Capability that declares the App-safe DataFetcher port.
 
@@ -167,12 +169,14 @@ class CapabilityServiceCaller:
                             "datafetcher.app_secret_port",
                             "the verified DataFetcher Capability does not declare an App caller and SecretRef port",
                         )
-                    result = handler(
-                        dict(request),
-                        caller_context=caller_context,
-                        secret_ref=secret_ref,
-                        secret_port=secret_port,
-                    )
+                    handler_kwargs = {
+                        "caller_context": caller_context,
+                        "secret_ref": secret_ref,
+                        "secret_port": secret_port,
+                    }
+                    if trading_calendar_ref is not None:
+                        handler_kwargs["trading_calendar_ref"] = trading_calendar_ref
+                    result = handler(dict(request), **handler_kwargs)
             except UnavailableCapabilityError:
                 raise
             except Exception as error:

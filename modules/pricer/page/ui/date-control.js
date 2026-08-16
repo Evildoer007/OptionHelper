@@ -26,7 +26,22 @@
     input.value = value ? toDisplay(value) : '';
   }
 
+  function latestWeekday(reference = new Date()) {
+    const date = new Date(reference.getFullYear(), reference.getMonth(), reference.getDate());
+    while (date.getDay() === 0 || date.getDay() === 6) date.setDate(date.getDate() - 1);
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+  }
+
+  function formatTyping(value) {
+    const digits = String(value ?? '').replace(/\D/g, '').slice(0, 8);
+    return [digits.slice(0, 4), digits.slice(4, 6), digits.slice(6, 8)].filter(Boolean).join('/');
+  }
+
   function bind(input, label) {
+    input.addEventListener('input', () => {
+      const formatted = formatTyping(input.value);
+      if (formatted !== input.value) input.value = formatted;
+    });
     input.addEventListener('blur', () => {
       if (!input.value.trim()) return;
       try {
@@ -37,5 +52,5 @@
     });
   }
 
-  global.OptionHelperDate = Object.freeze({ toIso, toDisplay, set, bind });
+  global.OptionHelperDate = Object.freeze({ toIso, toDisplay, set, bind, latestWeekday, formatTyping });
 }(window));

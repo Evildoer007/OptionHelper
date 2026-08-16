@@ -638,7 +638,8 @@
         $('openPreviewButton').disabled = false;
         renderLibrary();
         renderSelectedPath();
-        await preview();
+        setCanvasState('条款待预览', 'dirty');
+        $('noticeArea').replaceChildren();
       }
 
       async function loadCatalog() {

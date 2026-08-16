@@ -544,10 +544,13 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
                     "reason": "请求未获授权",
                 })
         except UnavailableCapabilityError as error:
+            public_message = {
+                "datafetcher.configuration": "请先在设置中心填写并保存iFind数据凭据，然后重试。",
+            }.get(error.capability, "相关功能暂不可用。请确认本机服务、当前任务和数据配置后重试。")
             self._json(HTTPStatus.SERVICE_UNAVAILABLE, {
                 "error": "unavailable",
                 "capability": error.capability,
-                "message": "相关功能暂不可用。请确认本机服务、当前任务和数据配置后重试。",
+                "message": public_message,
                 "next_step": error.next_step,
             })
         except UserActionError as error:
@@ -643,6 +646,13 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
                 task_id,
                 catalog_version=str(self.app.registry.manifest["catalog_version"]),
             ) if task_id is not None else None
+            if task_id is not None and binding is None and module_name in {"pricer", "backtester"}:
+                stale = self.app.contracts.get(identity, task_id)
+                if stale is not None:
+                    raise UserActionError(
+                        "stale_task_contract",
+                        "当前任务的合同来自旧产品目录。请新建研究任务后继续估值或历史回测。",
+                    )
             if binding is not None:
                 fingerprint = str(binding["contract_fingerprint"])
                 analysis_case_id = f"case-{fingerprint[:24]}"

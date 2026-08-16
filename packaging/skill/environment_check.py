@@ -10,7 +10,7 @@ import os
 from pathlib import Path
 import re
 import sys
-from typing import Callable
+from typing import Callable, Mapping
 
 
 _REQUIREMENT = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*)==([^\s#]+)$")
@@ -65,10 +65,30 @@ def check_dependencies(
     }
 
 
-def check_data_api() -> dict[str, object]:
+def _configured(environ: Mapping[str, str], name: str) -> bool:
+    return bool(environ.get(name, "").strip())
+
+
+def check_model_api(environ: Mapping[str, str] | None = None) -> dict[str, object]:
+    """Check model configuration without exposing connection details or credentials."""
+
+    values = os.environ if environ is None else environ
+    if _configured(values, "OPTIONHELPER_HOST_URL"):
+        return {"ok": True, "mode": "host", "status": "configured"}
+    required = (
+        "OPTIONHELPER_MODEL_BASE_URL",
+        "OPTIONHELPER_MODEL",
+        "OPTIONHELPER_MODEL_API_KEY",
+    )
+    configured = all(_configured(values, name) for name in required)
+    return {"ok": configured, "mode": "direct", "status": "configured" if configured else "missing"}
+
+
+def check_data_api(environ: Mapping[str, str] | None = None) -> dict[str, object]:
     """Check only whether the Host configured iFind; never contact a provider."""
 
-    configured = bool(os.environ.get("IFIND_REFRESH_TOKEN", "").strip())
+    values = os.environ if environ is None else environ
+    configured = _configured(values, "IFIND_REFRESH_TOKEN")
     return {
         "ok": configured,
         "data_provider": {
@@ -77,6 +97,75 @@ def check_data_api() -> dict[str, object]:
             "status": "configured" if configured else "missing",
         },
         "note": "预检只检查凭据是否由Host配置，不发起网络或数据请求。",
+    }
+
+
+def _readiness_guidance(
+    next_action: str | None,
+    requirements_path: Path,
+    dependencies: Mapping[str, object],
+) -> str:
+    if next_action == "install_dependencies":
+        python = dependencies.get("python")
+        if isinstance(python, Mapping) and python.get("status") == "unsupported":
+            return "当前Python不受支持。请先确认安装或恢复Python3.11或更高版本的环境，重新选择解释器后再检查。"
+        return (
+            "锁定依赖未就绪。请先确认安装，再使用当前解释器执行："
+            f'"{sys.executable}" -m pip install -r "{requirements_path}"；安装后重新运行统一就绪检查。'
+        )
+    if next_action == "configure_model":
+        return "模型尚未配置。请让Host配置模型，或完整设置兼容模型端点、模型名称和模型凭据后重新检查。"
+    if next_action == "configure_data_api":
+        return "iFind尚未配置。请让Host安全注入IFIND_REFRESH_TOKEN后重新检查；无需提供Access Token。"
+    if next_action == "fix_store":
+        return "项目Store不可用。请将data、result和.optionhelper/runtime设在Skill安装目录之外后重新检查。"
+    return "统一就绪检查通过，可进入工作流。"
+
+
+def check_readiness(
+    requirements_path: Path,
+    skill_root: Path,
+    data_root: str | None = None,
+    result_root: str | None = None,
+    *,
+    runtime_root: str | None = None,
+    project_root: Path | None = None,
+    version_lookup: Callable[[str], str] = installed_version,
+    environ: Mapping[str, str] | None = None,
+) -> dict[str, object]:
+    """Return the single first-use gate for every OptionHelper workflow."""
+
+    dependencies = check_dependencies(requirements_path, version_lookup=version_lookup)
+    stores = check_external_stores(
+        skill_root,
+        data_root,
+        result_root,
+        runtime_root=runtime_root,
+        project_root=project_root,
+    )
+    model = check_model_api(environ)
+    data_api = check_data_api(environ)
+    next_action = next(
+        (
+            action
+            for action, item in (
+                ("install_dependencies", dependencies),
+                ("configure_model", model),
+                ("configure_data_api", data_api),
+                ("fix_store", stores),
+            )
+            if not bool(item["ok"])
+        ),
+        None,
+    )
+    return {
+        "ok": next_action is None,
+        "dependencies": dependencies,
+        "model": model,
+        "data_api": data_api,
+        "stores": stores,
+        "next_action": next_action,
+        "guidance": _readiness_guidance(next_action, requirements_path, dependencies),
     }
 
 
@@ -140,11 +229,35 @@ def main() -> None:
     parser.add_argument("--data-root")
     parser.add_argument("--result-root")
     parser.add_argument("--runtime-root")
+    parser.add_argument("--project-root", type=Path)
     parser.add_argument("--check-dependencies", action="store_true")
     parser.add_argument("--check-store", action="store_true")
+    parser.add_argument("--check-model-api", action="store_true")
     parser.add_argument("--check-data-api", action="store_true")
+    parser.add_argument("--check-readiness", action="store_true")
     args = parser.parse_args()
-    explicit_check = args.check_dependencies or args.check_store or args.check_data_api
+    if args.check_readiness:
+        try:
+            report = check_readiness(
+                args.requirements,
+                args.skill_root,
+                args.data_root,
+                args.result_root,
+                runtime_root=args.runtime_root,
+                project_root=args.project_root,
+            )
+        except (OSError, ValueError) as error:
+            report = {
+                "ok": False,
+                "dependencies": {"ok": False, "status": "invalid_lock", "reason": str(error)},
+                "next_action": "fix_dependencies",
+                "guidance": "依赖锁定文件不可读取。请确认使用了当前Skill的scripts/requirements.lock后重新检查。",
+            }
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        if not bool(report["ok"]):
+            raise SystemExit(1)
+        return
+    explicit_check = args.check_dependencies or args.check_store or args.check_model_api or args.check_data_api
     check_dependencies_requested = args.check_dependencies or not explicit_check
     check_store_requested = args.check_store or not explicit_check
     report: dict[str, object] = {}
@@ -163,6 +276,9 @@ def main() -> None:
             runtime_root=args.runtime_root,
         )
         ok = ok and bool(report["stores"]["ok"])
+    if args.check_model_api:
+        report["model"] = check_model_api()
+        ok = ok and bool(report["model"]["ok"])
     if args.check_data_api:
         report["data_api"] = check_data_api()
         ok = ok and bool(report["data_api"]["ok"])

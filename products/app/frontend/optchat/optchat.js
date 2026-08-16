@@ -345,6 +345,7 @@ export async function startWorkspace(initialMode) {
   async function selectTask(taskId, updateLocation = true) {
     if (currentTask) saveTransient();
     const { task } = await request(`/api/tasks/${encodeURIComponent(taskId)}`);
+    if (currentTask?.task_id && currentTask.task_id !== task.task_id) disposeModuleFrames();
     currentTask = task;
     clearReportFeedback();
     syncReportActions();
@@ -359,6 +360,15 @@ export async function startWorkspace(initialMode) {
     await loadTasks();
     restoreTransient();
     if (currentMode === "desk") await mountModule(currentModule, false);
+  }
+
+  function disposeModuleFrames() {
+    for (const frame of moduleFrames.values()) {
+      frame.src = "about:blank";
+      frame.remove();
+    }
+    moduleFrames.clear();
+    moduleContexts.clear();
   }
 
   function syncModuleTabIndicator(animate = true) {
@@ -448,7 +458,12 @@ export async function startWorkspace(initialMode) {
     } catch (error) {
       currentModule = previousModule;
       setActiveModule(previousModule, false);
-      showWorkspaceStatus("模块暂未就绪，请稍后重试。", true, 7000);
+      const staleTask = error.status === 409 && error.body?.error === "stale_task_contract";
+      showWorkspaceStatus(
+        staleTask ? (error.body.message || "当前任务的合同来自旧产品目录。请新建研究任务后继续。") : "模块暂未就绪，请稍后重试。",
+        true,
+        7000,
+      );
     }
   }
 
@@ -568,7 +583,9 @@ export async function startWorkspace(initialMode) {
         saveTransient();
       }
       const recovery = error.body?.error?.next_step || error.body?.next_step;
-      const failureMessage = error.status === 503
+      const failureMessage = error.status === 409 && error.body?.error === "stale_task_contract"
+        ? (error.body.message || "当前任务的合同来自旧产品目录。请新建研究任务后继续。")
+        : error.status === 503
         ? `${recovery || "模型暂不可用，请在设置中心检查模型服务。"}任务内容已保留。`
         : error.message;
       showWorkspaceStatus(failureMessage, true);

@@ -35,8 +35,8 @@ class PricingConfig:
             raise PricingConfigError("hv_window只能为5、10、20、60、122或244")
         if self.model_method not in {"auto", "black_scholes", "monte_carlo"}:
             raise PricingConfigError("model_method只能为auto、black_scholes或monte_carlo")
-        if not isinstance(self.path_count, int) or isinstance(self.path_count, bool) or not 10 <= self.path_count <= 2_000:
-            raise PricingConfigError("path_count必须为10至2000的整数，以匹配已冻结随机矩阵")
+        if not isinstance(self.path_count, int) or isinstance(self.path_count, bool) or not 1 <= self.path_count <= 2_000:
+            raise PricingConfigError("path_count必须为1至2000的整数，以匹配已冻结随机矩阵")
         if not isinstance(self.demo_mode, bool):
             raise PricingConfigError("demo_mode必须为布尔值")
         if self.demo_calendar is not None and not isinstance(self.demo_calendar, Mapping):

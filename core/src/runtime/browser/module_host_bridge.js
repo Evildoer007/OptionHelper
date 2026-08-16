@@ -373,7 +373,7 @@
     return null;
   }
   function normalizeHostedRequest(body, action) {
-    if (action === "run" && hostScope.contract_fingerprint) {
+    if (action === "run" && hostScope.contract_fingerprint && body.new_contract_variant !== true) {
       delete body.product_id;
       delete body.identity;
       delete body.term_overrides;
@@ -467,7 +467,7 @@
     const envelope = await response.json();
     const result = envelope.result || envelope;
     if (moduleName === "payoffer" && action === "run" && !result.destination && result.module_run_ref?.run_id) {
-      result.destination = `ResultStore（run_id=${result.module_run_ref.run_id}）`;
+      result.destination = "结果已保存到当前研究任务。";
     }
     return asResponse(response.status, result);
   }

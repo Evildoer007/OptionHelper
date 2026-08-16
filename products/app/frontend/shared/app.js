@@ -7,7 +7,7 @@ export async function request(path, options = {}) {
   });
   const body = await response.json().catch(() => ({}));
   if (!response.ok) {
-    const error = new Error(body.detail || body.reason || body.next_step || body.error?.next_step || body.error || "请求未完成");
+    const error = new Error(body.message || body.detail || body.reason || body.next_step || body.error?.next_step || body.error || "请求未完成");
     error.status = response.status;
     error.body = body;
     throw error;

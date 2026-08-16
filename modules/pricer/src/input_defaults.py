@@ -44,6 +44,9 @@ def compile_pricer_input_defaults(
     if not isinstance(request, Mapping):
         raise PricerInputDefaultError("Pricer输入必须为对象")
     values = deepcopy(dict(request))
+    auto_contract_start_date = values.pop("auto_contract_start_date", False)
+    if not isinstance(auto_contract_start_date, bool):
+        raise PricerInputDefaultError("auto_contract_start_date必须为布尔值")
     product_id = str(values.get("product_id", "")).strip()
     config_value = values.get("pricing_config")
     if not isinstance(config_value, Mapping):
@@ -102,7 +105,10 @@ def compile_pricer_input_defaults(
     try:
         history = load_market_history_bytes(payload)
         identity = with_data_backed_reference(
-            identity, history, valuation_date=valuation_date,
+            identity,
+            history,
+            valuation_date=valuation_date,
+            auto_contract_start_date=auto_contract_start_date,
         )
     except MarketDataError as error:
         raise PricerInputDefaultError(str(error)) from error
@@ -117,6 +123,7 @@ def with_data_backed_reference(
     history: Any,
     *,
     valuation_date: str,
+    auto_contract_start_date: bool = False,
 ) -> dict[str, Any]:
     """Set or verify the only legal raw contract reference price source."""
     if not isinstance(identity_value, Mapping):
@@ -124,15 +131,49 @@ def with_data_backed_reference(
     identity = deepcopy(dict(identity_value))
     underlyings = _underlyings(identity)
     effective_valuation = _iso_date(valuation_date, "估值日")
-    start = _iso_date(identity.get("contract_start_date") or effective_valuation, "合同起始日")
+    supplied_start = identity.get("contract_start_date")
+    if auto_contract_start_date and supplied_start not in {None, ""}:
+        raise PricerInputDefaultError("自动合同起始日不得同时提交具体日期")
+    start = _iso_date(supplied_start or effective_valuation, "合同起始日")
     if start > effective_valuation:
         raise PricerInputDefaultError("合同起始日不得晚于估值日")
+    if auto_contract_start_date:
+        # The page's initial date is a convenience default, not a customer
+        # instruction.  Freeze the contract on the latest common close that
+        # is genuinely present in the Host-verified market history.  This
+        # avoids inventing an intraday close when the requested day has not
+        # arrived from the provider yet.
+        start = _latest_common_close_date(history, underlyings, start)
     resolved = reference_prices_from_history(
         history, underlyings, contract_start_date=start,
     )
     _set_or_check_references(identity, resolved["reference_prices"])
     identity["contract_start_date"] = start
     return identity
+
+
+def _latest_common_close_date(history: Any, underlyings: Sequence[str], cutoff: str) -> str:
+    """Return the latest real session with a close for every contract asset."""
+    import pandas as pd
+
+    try:
+        limit = pd.Timestamp(cutoff)
+        rows = history.loc[:, ["date", "asset_id", "close"]].copy()
+    except (AttributeError, KeyError) as error:
+        raise PricerInputDefaultError("历史行情缺少用于冻结合同起始日的close") from error
+    rows["date"] = pd.to_datetime(rows["date"], errors="coerce")
+    rows["close"] = pd.to_numeric(rows["close"], errors="coerce")
+    rows = rows[
+        rows["date"].notna()
+        & rows["close"].notna()
+        & (rows["close"] > 0)
+        & (rows["date"] <= limit)
+        & rows["asset_id"].isin(underlyings)
+    ]
+    common = rows.pivot(index="date", columns="asset_id", values="close").reindex(columns=list(underlyings)).dropna()
+    if common.empty:
+        raise PricerInputDefaultError("DataAssetRef未覆盖全部标的在估值日或此前的共同未复权close")
+    return common.index[-1].strftime("%Y-%m-%d")
 
 
 def validate_frozen_contract_reference(

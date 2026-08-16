@@ -1,15 +1,16 @@
 # OptionHelper Skill安装与配置
 
-这份README只解决四件事：把Skill装到项目里、选择Python、配置按需能力、确认运行边界。对话与工作流以`SKILL.md`为准，模块输入输出以`references/module-guides/`为准。
+这份README只解决首次安装和统一就绪配置。对话与工作流以`SKILL.md`为准，模块输入输出以`references/module-guides/`为准。
 
 ## 快速开始
 
-首次使用按以下顺序完成一次即可：
+首次使用必须按以下顺序完成；Python、依赖、模型、iFind和Store全部就绪前，不进入咨询、推荐、计算或交付：
 
 1.把Skill解压到Agent Host的项目级Skill目录。
-2.需要运行计算时，先只读枚举本机可用Python环境并让用户选择；纯知识咨询不执行Python时不枚举也不询问环境。
-3.用选定环境完成依赖和Store检查。缺依赖时先征得用户同意，再安装锁定版本。
-4.只有任务需要新行情时才检查iFind。当前对话Agent本身就是对话模型，不要再配置模型地址、模型名称或模型API Key。
+2.只读枚举本机可用Python环境并让用户选择。
+3.用选定环境检查锁定依赖；缺依赖时先征得用户同意，再安装锁定版本并复检。
+4.配置模型能力和iFind Refresh Token。Host托管模型也必须在预检中报告已配置。
+5.初始化并检查项目级Store。
 
 配置完成后，用户可以直接提问、指定模块、调整参数或要求结构推荐。Agent负责调用现成模块；用户不需要手写JSON、Python或HTML。
 
@@ -28,9 +29,9 @@ test -f "$OPTIONHELPER_SKILL_ROOT/SKILL.md"
 
 ## 2.Python与依赖
 
-运行Skill需要Python3.11或更高版本。用户已说明环境或解释器路径，或者Host已经设置`OPTIONHELPER_PYTHON`时，直接复用，不重复询问。
+运行Skill需要Python3.11或更高版本。首次配置时，用户已说明环境或解释器路径，或者Host已经设置`OPTIONHELPER_PYTHON`时，直接复用，不重复询问。
 
-需要执行Python但尚未选定环境时，Agent必须在第一次执行前先只读枚举本机可用环境：优先读取Conda环境清单，同时检查当前`CONDA_PREFIX`、`VIRTUAL_ENV`和PATH中的独立解释器。对绝对路径去重后，向用户展示环境名称、可安全取得的Python版本和解释器绝对路径，再让用户选择。Agent不得自行选择第一个、当前、base或任何看似可用的环境；用户选择前不得运行候选解释器、依赖检查或模块。
+首次配置但尚未选定环境时，Agent必须先只读枚举本机可用环境：优先读取Conda环境清单，同时检查当前`CONDA_PREFIX`、`VIRTUAL_ENV`和PATH中的独立解释器。对绝对路径去重后，向用户展示环境名称、可安全取得的Python版本和解释器绝对路径，再让用户选择。Agent不得自行选择第一个、当前、base或任何看似可用的环境；用户选择前不得运行候选解释器、依赖检查或模块。没有Python3.11或更高版本候选时，先说明缺口并询问是否授权安装或恢复一个受支持环境；得到授权后才使用Host支持的安装方式，完成后重新枚举和选择。
 
 用户选择后，本次任务的依赖检查、数据获取、参数重算、模块计算、报告整理、HTML或PDF渲染及Python子进程都使用同一个`OPTIONHELPER_PYTHON`：
 
@@ -69,27 +70,13 @@ export OPTIONHELPER_PYTHON='/Python可执行文件的绝对路径'
 "$OPTIONHELPER_PYTHON" -m pip install -r "$OPTIONHELPER_SKILL_ROOT/scripts/requirements.lock"
 ```
 
-安装后重新检查，返回`"ok": true`才进入模块运行。安装失败时保留原始错误并停止，不循环尝试其他环境。Skill不会自动创建环境，也不会擅自安装或升级依赖。
+安装后必须运行统一就绪检查，只有返回`"ok": true`才可进入任何工作流。安装失败时保留原始错误并停止，不循环尝试其他环境。Skill不会自动创建环境，也不会擅自安装或升级依赖。
 
-## 3.首次配置：只检查需要的能力
+## 3.首次配置：统一就绪门禁
 
-### 3.1已经在对话的Agent
+模型与iFind均在首次配置阶段完成。Host托管模式设置`OPTIONHELPER_HOST_URL`，由Host在预检中确认模型已配置；独立批处理模式则配置兼容模型端点、模型名称和模型凭据。两种模式都不能跳过模型检查。
 
-如果Claude、DeepSeek、Codex或其他Agent已经能回答用户请求，当前Agent本身就是对话模型，不要再配置模型地址、模型名称或模型API Key。
-
-首次只确认：
-
-1.Python与依赖检查通过；
-2.项目级Store路径预检通过；
-3.仅当任务需要获取新数据时，才配置iFind Refresh Token。
-
-普通咨询、产品比较、条款解释、只做结构推荐和Payoffer不需要数据凭据。基于当前任务已有已验证结果生成交付物，也不重新检查数据凭据。
-
-### 3.2iFind凭据
-
-实时取数只配置长期有效的`IFIND_REFRESH_TOKEN`。Skill自动换取短期访问凭据，不要求用户维护Access Token。
-
-优先由Host凭据库注入。临时验证可在同一终端安全输入：
+实时数据使用长期有效的`IFIND_REFRESH_TOKEN`。优先由Host凭据库注入；临时验证可在同一终端安全输入：
 
 ```bash
 read -rs "IFIND_REFRESH_TOKEN?粘贴iFind Refresh Token后按Enter: "
@@ -97,25 +84,14 @@ echo
 export IFIND_REFRESH_TOKEN
 ```
 
-不得把真实Token写入Skill目录、README、请求文件、日志或版本库。
-
-### 3.3按任务预检，不固定盘问
-
-| 请求 | 数据能力预检 |
-|---|---|
-| 咨询、比较、结构推荐、Payoffer | 不检查iFind |
-| Pricer、Backtester或需要新行情的正式交付 | 先复用当前任务合格的DataAssetRef；无法复用时检查`IFIND_REFRESH_TOKEN` |
-| 基于已有ModuleRunRef生成交付物 | 不重新取数或检查iFind |
-
-需要新数据时，先运行不读取、不输出凭据值、不发起网络或数据请求的预检：
+不得把真实Token或模型凭据写入Skill目录、README、请求文件、日志或版本库。iFind只使用Refresh Token，不要求用户维护Access Token。预检不读取、不输出凭据值，不发起网络或数据请求，也不发送模型请求：
 
 ```bash
-"$OPTIONHELPER_PYTHON" "$OPTIONHELPER_SKILL_ROOT/scripts/environment_check.py" --check-data-api
+"$OPTIONHELPER_PYTHON" "$OPTIONHELPER_SKILL_ROOT/scripts/environment_check.py" \
+  --check-readiness --skill-root "$OPTIONHELPER_SKILL_ROOT" --project-root "$PWD"
 ```
 
-未配置时，在取数和计算前一次提示：“当前数据服务尚未配置。请先配置iFind Refresh Token；配置完成后我会继续当前任务。”保留已确认条件，不得先运行、失败后再追问，也不得无提示改用本地CSV。
-
-已经配置但调用失败时，分别说明凭据无效或过期、网络不可用、Provider异常和数据权限不足，不要统称为“未配置”。
+检查会统一返回依赖、模型、数据API、Store和下一步操作。缺依赖时一次列出锁定版本和当前状态，等用户确认后才安装；缺模型、iFind或Store时只报告相应缺口并保留原任务。通过前不得进入任何工作流。实际数据调用失败时，分别说明凭据无效或过期、网络不可用、Provider异常和数据权限不足，不要统称为“未配置”。
 
 ## 4.Store
 
@@ -131,31 +107,31 @@ export OPTIONHELPER_RESULT_ROOT="$PWD/result"
 只有用户明确指定其他受控Store，或默认目录不可写时，才使用环境变量覆盖。三个目录必须位于Skill安装目录之外且互不复用。预检验证路径边界，不以此宣称已完成真实数据请求或写入测试。
 
 ```bash
-"$OPTIONHELPER_PYTHON" "$OPTIONHELPER_SKILL_ROOT/scripts/environment_check.py" --check-store
-"$OPTIONHELPER_PYTHON" "$OPTIONHELPER_SKILL_ROOT/scripts/tool_entry.py" --list
+"$OPTIONHELPER_PYTHON" "$OPTIONHELPER_SKILL_ROOT/scripts/environment_check.py" \
+  --check-readiness --skill-root "$OPTIONHELPER_SKILL_ROOT" --project-root "$PWD"
 ```
 
 ## 5.项目级入口与能力范围
 
-README只说明安装、依赖、凭据、Store和Host能力。运行行为以`SKILL.md`为准。三种工作流如下：
+README只说明安装、依赖、凭据、Store和Host能力。统一就绪通过后，运行行为以`SKILL.md`为准。三种工作流如下：
 
 | 场景 | 正常行为 | iFind要求 |
 |---|---|---|
-| 咨询、比较、结构解释 | 当前Agent读取资料并回答；需要收益机制时调用Payoffer | 否 |
-| 指定模块或参数重算 | 调用用户指定或受参数变化影响的模块 | Payoffer否；Pricer和Backtester按需 |
-| 结构推荐与正式交付 | Recommender筛选结构；按需计算；Reporter→Designer交付 | 需要新数据时才检查 |
+| 咨询、比较、结构解释 | 当前Agent读取资料并回答；需要收益机制时调用Payoffer | 已在统一门禁配置，不重复询问 |
+| 指定模块或参数重算 | 调用用户指定或受参数变化影响的模块；已有结果交付走Reporter→Designer | 已在统一门禁配置，不重复询问 |
+| 结构推荐与正式交付 | Recommender筛选结构；按需计算；Reporter→Designer交付 | 已在统一门禁配置，不重复询问 |
 
 面向用户的估值、回测和报告只展示百分比。`S0Raw`仅用于真实价格与标准化合同换算，不作为面向用户字段；内部现金流、点数、金额和名义本金不得投影到页面、正式Tool、CSV或报告。
 
 ### 5.1当前对话Agent模式
 
-当前对话Agent通过受控结构化入口运行，不需要用户填写JSON。研究简报固定为结构推荐、推荐理由、关键合同条款、估值摘要、回测摘要、主要风险，无损益图；完整研究报告采用连续A4正文，固定为核心结论、结构推荐、合同参数、收益结构、估值定价、历史回测、风险提示。完整HTML在宽屏提供左侧章节目录，PDF保留同一正文顺序但不显示导航。两类交付默认HTML；任何报告都必须由Reporter整理已验证结果，再由Designer生成。不得让模型自行拼接模块JSON，不需要临时`.py`或手工HTML。
+当前对话Agent通过受控结构化入口运行，不需要用户填写JSON。研究简报固定为结构推荐、推荐理由、关键合同条款、估值摘要、回测摘要、主要风险，无损益图；完整研究报告采用连续A4正文，固定为核心结论、结构推荐、合同参数、收益结构、估值定价、历史回测、风险提示，无章节目录。HTML和PDF均按同一顺序连续呈现。两类交付默认HTML；任何报告都必须由Reporter整理已验证结果，再由Designer生成。不得让模型自行拼接模块JSON，不需要临时`.py`或手工HTML。
 
 项目级独立CLI当前只支持单份HTML。PDF、两份同时交付和Host内已有结果选择需要正式Reporter和Designer端口；能力不足时明确返回不可用，不静默降级。
 
-### 5.2无对话Agent的批处理模式
+### 5.2独立批处理模式
 
-只有在没有现成对话模型、确实需要终端独立理解自然语言时，才配置兼容模型端点：
+独立批处理需要在首次配置阶段提供兼容模型端点：
 
 ```bash
 export OPTIONHELPER_MODEL_BASE_URL='https://模型服务地址/compatible-api'
@@ -188,11 +164,8 @@ Host只要具备对应能力即可接入，不绑定某一模型厂商。普通�
 
 ## 7.常见问题
 
-**为什么Agent不应再次询问模型服务？**
-当前对话模型已经承担理解与沟通。只有终端独立批处理才需要额外模型端点。
-
-**为什么没有马上检查iFind？**
-咨询、比较、结构推荐和Payoffer不需要行情。Pricer、Backtester或需要新数据的正式交付才检查。
+**为什么首次使用就检查模型和iFind？**
+任何工作流都从可复现的项目运行环境开始。预检只确认Host已安全配置能力，不读取凭据、不下载行情，也不发送研究内容。
 
 **缺少Python库会怎样？**
 模块不会启动。Agent一次列出缺失项和版本差异，等待用户授权安装或改选环境。

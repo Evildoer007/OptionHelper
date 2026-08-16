@@ -28,7 +28,13 @@ from runtime.ports.product_snapshot import ProductSnapshotProvider, require_prod
 
 
 _CALCULATORS = frozenset({"payoffer", "pricer", "backtester"})
-_COMMON_FIELDS = frozenset({"action", "product_id", "identity", "term_overrides", "run_id"})
+_COMMON_FIELDS = frozenset({
+    "action", "product_id", "identity", "term_overrides", "run_id",
+    # This is a first-run page intent, not a contract identity field.  The
+    # Host consumes it while compiling the data-backed contract and never
+    # forwards it to a formal calculator input.
+    "auto_contract_start_date",
+})
 _DEMO_MARKET_REQUIRED = frozenset({
     "valuation_date", "spot", "volatility_override", "time_to_maturity",
     "risk_free_rate", "dividend_yield", "demo_calendar",

@@ -2412,6 +2412,25 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
 .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .task-item:hover small,
 .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .task-item:focus-visible small { opacity: 0; }
 
+/* Keep task actions quiet until the pointer reaches that task. */
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .task-item__more {
+  opacity: 0 !important;
+}
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .task-item:hover .task-item__more,
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .task-item:focus-visible .task-item__more {
+  opacity: .72 !important;
+}
+
+/* The OptChat deep link uses the same task renderer before the desk shell
+   class is applied; keep its three-dot action on the same hover contract. */
+.workspace-body .task-item__more {
+  opacity: 0 !important;
+}
+.workspace-body .task-item:hover .task-item__more,
+.workspace-body .task-item:focus-visible .task-item__more {
+  opacity: .72 !important;
+}
+
 .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-account-trigger {
   display: flex;
   align-items: center;

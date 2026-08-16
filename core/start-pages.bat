@@ -62,14 +62,12 @@ if not exist "%CHECKER%" (
   echo 缺少环境检查器：%CHECKER% 1>&2
   exit /b 1
 )
-"%PYTHON_BIN%" "%CHECKER%" --requirements "%SCRIPT_DIR%requirements.lock" --check-dependencies
-if errorlevel 1 exit /b %errorlevel%
-"%PYTHON_BIN%" "%CHECKER%" --check-store --skill-root "%SKILL_ROOT%" --data-root "%PROJECT_ROOT%\data" --result-root "%PROJECT_ROOT%\result" --runtime-root "%PROJECT_ROOT%\.optionhelper\runtime"
-if errorlevel 1 exit /b %errorlevel%
 if defined PERSIST_SELECTION (
   for %%I in ("%STATE_FILE%") do if not exist "%%~dpI" mkdir "%%~dpI"
   > "%STATE_FILE%" echo %PYTHON_BIN%
 )
+"%PYTHON_BIN%" "%CHECKER%" --requirements "%SCRIPT_DIR%requirements.lock" --check-readiness --skill-root "%SKILL_ROOT%" --project-root "%PROJECT_ROOT%" --data-root "%PROJECT_ROOT%\data" --result-root "%PROJECT_ROOT%\result" --runtime-root "%PROJECT_ROOT%\.optionhelper\runtime"
+if errorlevel 1 exit /b %errorlevel%
 
 if defined CHECK_ENV (
   "%PYTHON_BIN%" "%SCRIPT_DIR%module_host.py" --list --project-root "%PROJECT_ROOT%"

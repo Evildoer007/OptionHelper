@@ -38,6 +38,11 @@ def main() -> int:
     parser.add_argument("--data-dir", type=Path)
     parser.add_argument("--resource-dir", type=Path)
     parser.add_argument("--probe-pdf-runtime", action="store_true")
+    parser.add_argument(
+        "--verification-fixture",
+        action="store_true",
+        help="仅为成品App计算验收登记受控测试行情，不用于正常启动",
+    )
     args = parser.parse_args()
 
     resources = (args.resource_dir or resource_root()).resolve()
@@ -84,6 +89,10 @@ def main() -> int:
             "local-secret": LocalSecretStore(runtime_root / "credentials"),
         }),
     )
+    if args.verification_fixture:
+        from backend.verification_fixture import install_compute_verification_fixture
+
+        install_compute_verification_fixture(app)
     try:
         url = app.start_background()
         print(f"OPTIONHELPER_URL={url}", flush=True)

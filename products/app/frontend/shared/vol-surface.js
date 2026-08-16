@@ -197,12 +197,6 @@ export function initializeVolSurface(canvas) {
     targetYaw = -0.46 + (event.clientX / window.innerWidth - 0.5) * 0.1;
     targetPitch = 0.92 - (event.clientY / window.innerHeight - 0.5) * 0.08;
   }, { passive: true });
-  document.documentElement.addEventListener("pointerleave", () => {
-    pointerX = -1;
-    pointerY = -1;
-    targetYaw = -0.46;
-    targetPitch = 0.92;
-  }, { passive: true });
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) stop();
     else if (canvas.classList.contains("is-visible")) start();

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""校验Reporter v2交付物的冻结事实和文件完整性，不重算金融结果。"""
+"""校验Reporter交付物的冻结事实和文件完整性，不重算金融结果。"""
 
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ def validate(output_dir: Path) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Validate one Reporter v2 output directory.")
+    parser = argparse.ArgumentParser(description="Validate one Reporter output directory.")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     try:

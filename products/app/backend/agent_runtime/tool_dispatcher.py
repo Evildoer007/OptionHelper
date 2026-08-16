@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from threading import Lock
 from typing import Any, Iterator, Mapping
 
-from ..errors import AuthorizationError, UnavailableCapabilityError, ValidationError
+from ..errors import AuthorizationError, UnavailableCapabilityError, UserActionError, ValidationError
 from ..identity.session_identity import SessionIdentity
 from ..stores.data_store import DataStore
 from ..stores.result_store import ResultStore
@@ -163,6 +163,8 @@ class ToolDispatcher:
         if result.get("status") == "unavailable":
             raise UnavailableCapabilityError(f"Capability tool {tool_name}", str(result.get("reason", "the Capability reported unavailable")))
         if result.get("ok") is False:
+            if tool_name == "datafetcher":
+                raise UserActionError("datafetcher_request_rejected", _datafetcher_failure_message(result))
             raise ValidationError(str(result.get("message", f"Capability tool {tool_name} rejected the request")))
 
         data_asset_ref = result.get("data_asset_ref")
@@ -294,6 +296,26 @@ def _task_data_asset_ref(value: object) -> tuple[str, str | None]:
         raw_hash = value.get("content_hash")
         return str(value["data_asset_id"]), str(raw_hash) if isinstance(raw_hash, str) else None
     raise ValidationError("OptChat计算只能引用当前任务的DataAssetRef")
+
+
+def _datafetcher_failure_message(result: Mapping[str, Any]) -> str:
+    """Return only a safe, actionable DataFetcher failure for the App UI."""
+    error = result.get("error")
+    if not isinstance(error, Mapping):
+        return "数据请求未完成，请检查标的、日期与数据服务后重试。"
+    code = str(error.get("code", "")).strip().lower()
+    fixed_messages = {
+        "unauthorized": "iFind凭据不可用，请在设置中心重新保存Refresh Token后重试。",
+        "provider_unavailable": "iFind连接暂不可用，请检查网络和数据服务状态后重试。",
+        "quota_exceeded": "本次数据请求超过当前服务限额，请缩短区间或稍后重试。",
+    }
+    if code in fixed_messages:
+        return fixed_messages[code]
+    message = str(error.get("message", "")).strip()
+    forbidden = ("/", "\\\\", "token", "secret", "password", "credential")
+    if message and len(message) <= 240 and not any(item in message.lower() for item in forbidden):
+        return message
+    return "数据请求未完成，请检查标的、日期与数据服务后重试。"
 
 
 def _tool_input_hash(payload: Mapping[str, Any]) -> str:

@@ -128,6 +128,9 @@ def _coverage(
         # 正式覆盖只声明已观测数据；请求区间另存，不能把未验证日期伪装成覆盖。
         "start_date": str(frame["date"].min()),
         "end_date": str(frame["date"].max()),
+        # Backtester的正式DataAssetRef协议以此字段确认日历声明不越过
+        # 实际观察到的最后一条日线；不要用请求截止日替代。
+        "calendar_coverage_end": str(frame["date"].max()),
         "requested_start_date": request.start_date,
         "requested_end_date": request.end_date,
         "sessions": sessions,
@@ -914,6 +917,11 @@ def call_tool(request: Mapping[str, Any]) -> Mapping[str, Any]:
     if action not in {"fetch", "fetch_calendar"}:
         return {"ok": False, "module": "datafetcher", "status": "failed", "error": {"code": "unsupported_action", "message": "DataFetcher不支持该action"}}
     task_id = payload.pop("task_id", "local")
+    # The App Host binds these fields in every Desk request after a contract
+    # has been selected.  ToolGateway has already verified them against the
+    # signed ModuleHostContext; they are not DataRequest inputs.
+    for field in ("analysis_case_id", "candidate_id", "catalog_version", "contract_fingerprint"):
+        payload.pop(field, None)
     source = payload.pop("request", payload.pop("data_request", payload))
     if not isinstance(source, Mapping):
         return {"ok": False, "module": "datafetcher", "status": "failed", "error": {"code": "validation_error", "message": "DataRequest必须为对象"}}
@@ -970,8 +978,9 @@ def call_tool_from_app(
     caller_context: CallerContext,
     secret_ref: SecretRef | None = None,
     secret_port: Callable[[SecretRef], str] | None = None,
+    trading_calendar_ref: DataAssetRef | None = None,
 ) -> Mapping[str, Any]:
-    """App薄适配入口；只读动作不要求凭据，fetch必须使用Host SecretRef。"""
+    """App薄适配入口；Host可注入已验证交易日历，不进入页面请求。"""
 
     if not isinstance(request, Mapping):
         raise RequestValidationError("App DataFetcher请求必须为对象")
@@ -982,6 +991,8 @@ def call_tool_from_app(
     if "data:read" not in caller_context.capabilities:
         raise RequestValidationError("App CallerContext无data:read权限")
     _validate_app_payload(request)
+    if trading_calendar_ref is not None and not isinstance(trading_calendar_ref, DataAssetRef):
+        raise RequestValidationError("App交易日历必须由Host以Core DataAssetRef注入")
 
     payload = dict(request)
     action = _app_action(payload)
@@ -1002,6 +1013,7 @@ def call_tool_from_app(
         DataFetcherConfig.from_runtime(),
         ifind_secret_ref=managed_secret_ref,
         ifind_secret_port=managed_secret_port,
+        trading_calendar_ref=trading_calendar_ref,
     )
     if action == "test_connection":
         try:
@@ -1033,6 +1045,11 @@ def call_tool_from_app(
             },
         }
     task_id = payload.pop("task_id", "local")
+    # These fields are authenticated App Host scope, not DataRequest fields.
+    # They arrive with every Desk module request so the host can bind the run
+    # to the current task/contract, but DataFetcher only accepts data inputs.
+    for field in ("analysis_case_id", "candidate_id", "catalog_version", "contract_fingerprint"):
+        payload.pop(field, None)
     source = payload.pop("request", payload.pop("data_request", payload))
     if not isinstance(source, Mapping):
         raise RequestValidationError("DataRequest必须为对象")

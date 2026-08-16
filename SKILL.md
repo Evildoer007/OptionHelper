@@ -19,20 +19,29 @@ OptionHelper是模型中立的期权研究Skill。外部Host负责模型、会�
 
 若低优先级文件与高优先级文件冲突，停止执行冲突部分并按高优先级规则说明缺口，不自行选择有利解释。
 
-## 开始前
+## 首次配置门禁
 
-首次在项目中使用时读取README并完成一次环境检查。Host自动初始化安装目录之外的项目Store：当前项目的`$PWD/.optionhelper/runtime`、`$PWD/data`和`$PWD/result`，并分别通过`OPTIONHELPER_RUNTIME_ROOT`、`OPTIONHELPER_DATA_ROOT`和`OPTIONHELPER_RESULT_ROOT`注入，不为默认Store新增提问。安装目录只读；数据、结果、会话和凭据只能进入安装目录之外的项目Store。
+任何咨询、推荐、计算和交付都必须先通过一次统一就绪检查，不以“纯知识咨询”“已有结果”或“当前对话已有模型”为由跳过。Host自动初始化安装目录之外的项目Store：当前项目的`$PWD/.optionhelper/runtime`、`$PWD/data`和`$PWD/result`，并分别通过`OPTIONHELPER_RUNTIME_ROOT`、`OPTIONHELPER_DATA_ROOT`和`OPTIONHELPER_RESULT_ROOT`注入。安装目录只读；数据、结果、会话和凭据只能进入安装目录之外的项目Store。
 
-只要本次工作需要执行Python，先确定解释器。若用户已在当前对话明确指定环境或绝对解释器路径，或Host已明确注入`OPTIONHELPER_PYTHON`，直接复用；不得重复询问。否则必须在第一次执行前先只读枚举本机可用的Conda环境、当前虚拟环境和PATH中的独立解释器，去重后向用户展示“环境名称、Python版本（可安全取得时）和解释器绝对路径”，再请用户选择本次使用的环境。不得自行选择第一个、当前、base或任何看似可用的环境；用户明确选择前不得运行候选解释器、依赖检查、研究流程或模块。若没有发现候选，只请求用户提供解释器绝对路径。纯知识咨询不执行Python时不枚举也不询问环境。
+先确定解释器。若用户已在当前对话明确指定环境或绝对解释器路径，或Host已明确注入`OPTIONHELPER_PYTHON`，直接复用，不重复询问；否则先只读枚举本机可用的Conda环境、当前虚拟环境和PATH中的独立解释器，去重后展示环境名称、可安全取得的Python版本和解释器绝对路径，请用户选择。不得自行选择第一个、当前、base或任何看似可用的环境；用户明确选择前不得运行候选解释器、依赖检查、研究流程或模块。没有Python3.11或更高版本候选时，说明缺口并询问是否授权安装或恢复一个受支持环境；得到授权后只使用Host支持的安装方式，完成后重新枚举和选择，不得静默安装或改用系统Python。
 
-用户选定后，本次任务的全部Python操作必须持续使用同一个解释器绝对路径，包括依赖检查、环境检查、DataFetcher、单模块运行、参数重算、Recommender流程、Reporter、Designer、验证命令及其Python子进程。每条Python命令都显式使用`"$OPTIONHELPER_PYTHON"`，不得在后续步骤改写为裸`python`、`python3`、另一个Conda环境或系统解释器，也不得因为进入新模块而重新选择环境。需要安装依赖时也只能运行`"$OPTIONHELPER_PYTHON" -m pip`。只有已选环境无法继续且用户明确同意更换时，才重新展示候选并更新`OPTIONHELPER_PYTHON`；更换后从依赖检查重新开始。非Python命令不受此规则影响。
+用户选定后，本次任务的全部Python操作必须持续使用同一个解释器绝对路径，包括依赖检查、配置检查、DataFetcher、单模块运行、参数重算、Recommender、Reporter、Designer和Python子进程。每条Python命令都显式使用`"$OPTIONHELPER_PYTHON"`，不得改用裸`python`、`python3`、另一个Conda环境或系统解释器。需要安装依赖时也只能运行`"$OPTIONHELPER_PYTHON" -m pip`；只有当前环境无法继续且用户明确同意更换时，才重新选择并从检查开始。
 
-解释器选定后，先运行`scripts/environment_check.py --check-dependencies`和`--check-store`。若Python版本不支持、库缺失`missing`或版本不符`version_mismatch`，立即停止模块执行，一次列出每个库的锁定版本、当前版本和状态，并让用户选择“在已选环境安装锁定依赖”或“改选另一个环境”。不得自动运行`pip install`，不得擅自换环境，也不得用系统Python或临时脚本绕过。只有用户明确授权安装后才可在已选解释器中执行README给出的安装命令；安装后重新检查，返回`"ok": true`才通过。只有本次任务需要新数据时，才运行`scripts/environment_check.py --check-data-api`；该预检只检查Host是否配置iFind，不发起网络或数据请求。随后运行`scripts/tool_entry.py --list`检查入口；检查失败时一次合并列出缺少的Store或Host能力。
+解释器选定后，运行：
+
+```bash
+"$OPTIONHELPER_PYTHON" "$OPTIONHELPER_SKILL_ROOT/scripts/environment_check.py" \
+  --check-readiness --skill-root "$OPTIONHELPER_SKILL_ROOT" --project-root "$PWD"
+```
+
+该门禁一次检查Python与锁定依赖、模型能力、iFind数据API和外部Store。模型必须由Host托管并报告已配置，或由兼容模型端点、模型名称和凭据完整配置；不得把当前对话模型默认视为已配置。iFind只检查`IFIND_REFRESH_TOKEN`是否由Host安全注入，不读取、显示、记录或转述凭据，不要求用户维护Access Token，也不发起网络或数据请求。`scripts/tool_entry.py --list`只列出入口，不是环境或Host能力检查。
+
+若Python版本不支持、库缺失`missing`或版本不符`version_mismatch`，立即停止所有工作，一次列出每个库的锁定版本、当前版本和状态，并询问用户是否在已选环境安装锁定依赖。未经明确授权不得自动运行`pip install`、擅自换环境或用临时脚本绕过；只有用户明确授权安装后，才可在已选解释器中安装锁定依赖。安装后必须重新运行统一就绪检查。模型、iFind或Store未配置时，只说明相应缺口并保留用户已确认的研究条件；全部返回`"ok": true`前不得进入任何工作流。
 
 ## 运行模式
 
-- **当前对话Agent模式**：Claude、DeepSeek、Codex或其他已在对话中的模型属于此模式。当前Agent就是模型，不要求用户再配置模型地址、模型名称或模型API Key。
-- **批处理模式**：只有没有现成对话模型、需要终端独立理解自然语言时，才使用README中的`--project-request`并配置兼容模型端点。
+- **Host托管模式**：Host负责模型、身份和凭据，并在统一就绪检查中报告模型与iFind均已配置。
+- **独立批处理模式**：使用README中的兼容模型端点、模型名称、模型凭据和iFind Refresh Token；缺少任一项时保持未就绪。
 
 当前对话Agent模式下：
 
@@ -41,29 +50,9 @@ OptionHelper是模型中立的期权研究Skill。外部Host负责模型、会�
 - 当前Agent必须按[Recommender指南](modules/recommender/module-guide.md)完成Intent、Research和Critic步骤，形成有资料依据的主候选；不得凭记忆直接选择产品。
 - 正式交付时，把已经验证的选择通过`--project-json`交给受控链路。该入口负责DataFetcher、Payoffer、Pricer、Backtester、Reporter和Designer，不得拆写临时Python、手工HTML或第二套执行脚本。
 
-## 能力预检
+## 任务能力边界
 
-先判断本次请求实际需要哪些能力，再运行任何模块。预检只检查本次会用到的能力，不把安装检查变成固定问卷。
-
-| 本次任务 | 运行前必须确认 | 不得要求 |
-| --- | --- | --- |
-| 咨询、比较、条款解释、只做结构推荐 | Python与资料可用 | 数据凭据；第二套模型配置 |
-| 只运行Payoffer | 已冻结合同和Payoffer可用 | 数据凭据；估值或回测配置 |
-| 获取或刷新行情 | iFind数据能力已配置 | Access Token；本地文件路径 |
-| 运行Pricer或Backtester | 当前任务已有满足口径的DataAssetRef；路径型Pricer另需独立完整交易日历，没有时先确认iFind数据能力 | 猜测行情、推算工作日日历；无提示改用本地数据 |
-| 基于已有结果生成交付物 | 指定ModuleRunRef、Reporter和Designer可用 | 重新取数；重新计算；第二套模型配置 |
-| 推荐并正式交付 | 当前Agent或批处理模型可用；需要新数据时iFind可用；所需计算与交付端口可用 | 先开始计算、失败后再补问配置 |
-
-数据能力按以下顺序判断：
-
-1. 当前任务已有覆盖本次标的、日期、字段和口径的受控DataAssetRef时直接复用，不重复检查或索取数据凭据。
-2. 需要新数据时，App先读取公开的数据服务配置状态；Skill独立运行先确认`IFIND_REFRESH_TOKEN`已由Host注入。路径型Pricer自动准备历史行情和独立未来交易日历，普通用户不填写iFind字段。只检查是否已配置，不读取、显示、记录或转述凭据内容。
-3. 未配置时停止在取数之前，一次说明：“当前数据服务尚未配置。请先配置iFind Refresh Token；配置完成后我会继续当前任务。”保留已经确认的研究条件，不重复询问。
-4. 已配置但失败时，分别说明凭据无效或过期、网络不可用、Provider服务异常、数据权限不足，不把这些状态统称为“未配置”。
-5. 禁止要求Access Token，禁止猜测数据，禁止无提示回退到本地CSV，禁止让用户提供物理路径。
-6. DataFetcher调用失败后只能使用模块返回的已验证缓存结果或明确停止。Agent不得直接读取、解析或修改`datafetcher-cache`、`index.json`、`calendar-index.json`及其中的资产文件，不得用历史行情日期、普通工作日或临时脚本替代未来交易日历。
-
-当前对话Agent模式中，当前对话模型已经满足模型能力，不检查`OPTIONHELPER_MODEL_*`，也不询问模型服务。只有批处理`--project-request`在启动前检查兼容模型端点、模型名称和API Key；缺少任一项时一次列明，不进入推荐、取数或计算。
+统一就绪检查通过后，才按任务使用能力，不重复索取模型或数据凭据。当前任务已有覆盖标的、日期、字段和口径的受控`DataAssetRef`时直接复用；需要新数据时由DataFetcher使用已配置的iFind。路径型Pricer自动准备历史行情和独立未来交易日历，普通用户不填写iFind字段。iFind调用失败时分别说明凭据失效、网络不可用、Provider异常或数据权限不足；不得猜测数据、无提示回退本地CSV、索取Access Token或要求物理路径。Agent不得读取、解析或修改`datafetcher-cache`、`index.json`、`calendar-index.json`或其中资产文件，也不得用历史行情日期、普通工作日或临时脚本替代未来交易日历。
 
 ## 对话与默认值
 
@@ -80,21 +69,21 @@ OptionHelper是模型中立的期权研究Skill。外部Host负责模型、会�
 
 ## 三种用户工作流
 
-先按用户表述命中以下三类之一。不得把正常咨询变成问卷，也不得把报告请求降级为模型自行写HTML。
+统一就绪后，按用户表述命中以下三类之一。不得把业务追问变成问卷，也不得把报告请求降级为模型自行写HTML。
 
 ### 强制执行门禁
 
 每次请求先选定且只选定一种工作流，再执行其必经路径。模型不得把工作流中的任一步替换成自行编写的Python、HTML、PDF、图表或文件；模块返回的JSON只在模块之间传递，不能原样拼接成面向用户的报告。用户修改期限、波动率、行权价或其他合同参数时，先冻结新合同，再重跑受影响模块，绝不把旧结果贴到新参数下。
 
 - 命中工作流1：直接给出研究结论；只有需要收益情景时才调用Payoffer。
-- 命中工作流2：只调用用户指定或受参数变更影响的模块；完成后返回该模块的专业结论，不自动生成报告。
-- 命中工作流3且用户要求交付：必须完整通过`Recommender→DataFetcher（需要新数据时）→Payoffer→Pricer→Backtester→Reporter→Designer`。任一环节不可用时返回真实缺口，不能自制替代报告。
+- 命中工作流2：只调用用户指定或受参数变更影响的模块；用户明确要求交付时，把同一合同下已验证的`ModuleRunRef`交给Reporter→Designer，不重新推荐、取数或计算。
+- 命中工作流3且用户要求交付：执行`Recommender→DataFetcher（需要新数据时）→Payoffer→Pricer→Backtester→Reporter→Designer`。模块失败时按覆盖状态决定`partial`或`unavailable`，不得自制替代报告或把部分覆盖说成完整。
 - 只有用户明确要求报告时才进入Reporter；进入Reporter后，只有Designer可以生成HTML或PDF。
 
 | 工作流 | 触发条件 | 必经路径 | 只在何时提问 | 绝对禁止 |
 | --- | --- | --- | --- | --- |
 | 1.咨询与结构解释 | 科普、条款、收益机制、损益情景、产品比较 | OptionList/OptionLib；必要时Payoffer | 缺少标的或条款且无法解释时 | 无需数据却取数、估值、回测或生成报告 |
-| 2.指定模块与参数重算 | 明确要求收益图、估值、Greeks、回测、取数，或修改已确认参数 | 同一ResolvedContract下按要求调用DataFetcher、Payoffer、Pricer或Backtester | 缺少会改变计算含义的金融条件时，一次合并问完 | 顺带运行未要求模块；自行新建Python、HTML或计算脚本 |
+| 2.指定模块与参数重算 | 明确要求收益图、估值、Greeks、回测、取数、已有结果交付，或修改已确认参数 | 同一ResolvedContract下按要求调用DataFetcher、Payoffer、Pricer或Backtester；明确要求交付时Reporter→Designer | 缺少会改变计算含义的金融条件时，一次合并问完 | 顺带运行未要求模块；为交付重新推荐、取数或计算；自行新建Python、HTML或计算脚本 |
 | 3.结构推荐与正式交付 | 请求推荐，或请求推荐并生成简报/详细报告 | Recommender→必要的数据与计算→Reporter→Designer | 多个同等候选、关键风险条件缺失或用户要求比较时 | 跳过Recommender；直接使用示例产品；不经Reporter→Designer自行输出文件 |
 
 ### 1.咨询与结构解释
@@ -103,7 +92,7 @@ OptionHelper是模型中立的期权研究Skill。外部Host负责模型、会�
 
 ### 2.指定模块与参数重算
 
-用户已指定产品时，不做推荐；先复用当前合同。用户说“改成3个月”“波动率改为20%”“把行权价调为105后重算”即为已确认的参数覆盖：简短回显变化后，重新冻结合同并只运行受影响模块。
+用户已指定产品时，不做推荐；先复用同一产品、同一参数下的当前合同。没有匹配合同而缺少关键条款时，一次展示拟采用条款、来源和默认值，取得一次确认后再冻结合同。用户说“改成3个月”“波动率改为20%”“把行权价调为105后重算”即为已确认的参数覆盖：简短回显变化后，重新冻结合同并只运行受影响模块。
 
 | 目标 | 模块指南 | 正常返回 |
 | --- | --- | --- |
@@ -111,6 +100,8 @@ OptionHelper是模型中立的期权研究Skill。外部Host负责模型、会�
 | 收益结构或收益图 | [Payoffer](modules/payoffer/module-guide.md) | 条款、收益情景、边界和图形资产引用 |
 | 估值或Greeks | [Pricer](modules/pricer/module-guide.md) | 估值、Greeks、情景、精度和限制 |
 | 历史回测 | [Backtester](modules/backtester/module-guide.md) | 样本范围、收益风险统计、路径结果和限制 |
+
+用户要求基于已有结果生成研究简报或完整研究报告时，指定同一合同下的`ModuleRunRef`，直接由Reporter冻结事实并交给Designer渲染；不重新取数、重新计算或进行结构推荐。结果不足时按`coverage=partial`或`coverage=unavailable`返回真实状态。
 
 ### 3.结构推荐与正式交付
 
@@ -120,7 +111,7 @@ Recommender选出主候选后，必须先向用户展示一份拟采用条款摘
 
 用户回复按此继续、无需调整或同等明确表达后，才冻结CandidateContract并运行后续模块。用户直接给出调整值时，该回复同时构成条款确认；更新合同并简要回显变更，不再重复询问。即使用户最初已经要求生成报告，报告请求也只确认交付目标，不代表合同条款已经确认。交付格式和报告类型已经明确时不得再次询问。
 
-默认路径为：确认研究条件→Recommender按客户利益筛选主候选→展示拟采用合同条款并接受一次调整→冻结合同→需要新数据时先做数据预检和取数→同一合同下运行Payoffer、Pricer、Backtester→Reporter冻结事实→Designer按固定模板输出。用户已有同一合同下的验证结果时，跳过已完成阶段，不扫描目录选择“最新结果”。
+默认路径为：确认研究条件→Recommender按客户利益筛选主候选→展示拟采用合同条款并接受一次调整→冻结合同→按需取数→同一合同下运行Payoffer、Pricer、Backtester→Reporter冻结事实→Designer按固定模板输出。用户已有同一合同下的验证结果时，跳过已完成阶段，不扫描目录选择“最新结果”。
 
 多个候选同等适合时，先按客户承担的成本、最大损失、收益上限和路径风险说明差异，再请用户选择。除候选选择和合同条款这一次必要确认外，不新增许可式提问。任一模块失败时保留已验证结果并标记覆盖不完整，不把部分覆盖表述为全量完成。
 
@@ -131,7 +122,7 @@ Recommender选出主候选后，必须先向用户展示一份拟采用条款摘
 | 交付物 | 固定内容顺序 | 默认形式 |
 | --- | --- | --- |
 | 研究简报 | 1.结构推荐；2.推荐理由；3.关键合同条款；4.估值摘要；5.回测摘要；6.主要风险 | `card`；HTML或PDF；无章节目录；无损益图；HTML固定210mm宽度、高度随完整内容自然延展，不保留空白占位；PDF按A4分页 |
-| 完整研究报告 | 1.核心结论；2.结构推荐；3.合同参数；4.收益结构；5.估值定价；6.历史回测；7.风险提示 | `report`；连续A4正文；HTML宽屏提供左侧章节目录，PDF隐藏导航并按同一顺序分页 |
+| 完整研究报告 | 1.核心结论；2.结构推荐；3.合同参数；4.收益结构；5.估值定价；6.历史回测；7.风险提示 | `report`；连续A4正文；无章节目录；HTML和PDF均按同一顺序连续呈现 |
 
 交付形式与分析覆盖是两个概念：
 

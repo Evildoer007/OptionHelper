@@ -408,6 +408,13 @@ def backend_build_command(workspace: Path) -> list[str]:
         "--specpath", str(workspace / "pyinstaller-spec"), "--paths", str(APP_ROOT),
         "--exclude-module", "runtime", "--exclude-module", "modules",
     ]
+    # The launcher imports the AppServer after configuring resource paths.
+    # Make the module an explicit PyInstaller root so a rebuilt App cannot
+    # retain an earlier frozen authorization policy.
+    command.extend(("--hidden-import", "backend.app_server"))
+    # The packaged verifier enables the launcher's explicit compute fixture.
+    # Keep its App-owned installer module in the frozen import graph as well.
+    command.extend(("--hidden-import", "backend.verification_fixture"))
     for module in NUMERIC_RUNTIME_MODULES:
         command.extend(("--hidden-import", module))
     for module in PDF_RUNTIME_MODULES:

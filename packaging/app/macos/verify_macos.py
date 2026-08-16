@@ -60,6 +60,35 @@ def summarize_tool_result(result: dict[str, object]) -> dict[str, object]:
     return summary
 
 
+def summarize_compute_result(
+    module: str,
+    result: dict[str, object],
+    *,
+    task_id: str,
+) -> dict[str, object]:
+    """Return only non-sensitive proof that one persisted calculator run exists."""
+    status = result.get("status")
+    require(status in {"succeeded", "partial"}, f"{module}未返回可验收状态：{status}")
+    reference = result.get("module_run_ref")
+    require(isinstance(reference, dict), f"{module}缺少ModuleRunRef")
+    require(
+        reference.get("module") == module and reference.get("task_id") == task_id,
+        f"{module}的ModuleRunRef未绑定当前任务",
+    )
+    if module == "payoffer":
+        require(isinstance(result.get("payoff_semantic_hash"), str) and result["payoff_semantic_hash"], "payoffer缺少收益结构语义结果哈希")
+        expected_result = "payoff_semantic_hash"
+    else:
+        expected_result = {"pricer": "pricing", "backtester": "backtest"}[module]
+        readable = result.get(expected_result)
+        require(isinstance(readable, dict) and bool(readable), f"{module}没有非空可读结果")
+    return {
+        "status": status,
+        "module_run_id": reference.get("run_id"),
+        "result_section": expected_result,
+    }
+
+
 def wait_for_url(process: subprocess.Popen[str], timeout: float = 45.0) -> str:
     if process.stdout is None:
         raise AppVerificationError("App Host没有可读输出")
@@ -98,6 +127,7 @@ def verify(bundle: Path) -> dict[str, object]:
             [
                 str(backend), "--host", "127.0.0.1", "--port", "0",
                 "--data-dir", str(Path(temporary) / "state"), "--resource-dir", str(resources),
+                "--verification-fixture",
             ],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -117,17 +147,6 @@ def verify(bundle: Path) -> dict[str, object]:
             integrity = capability.get("integrity", {})
             require(isinstance(integrity, dict) and integrity.get("release_ready") is True, "内置Capability未通过完整性门禁")
 
-            initial_password = "artifact-initialization-password"  # test fixture
-            status, pending_login, pending_cookie = request(
-                connection,
-                "POST",
-                "/api/auth/login",
-                {"account": "artifact-admin", "password": initial_password, "remember": False},
-            )
-            require(
-                status == 503 and pending_cookie is None and pending_login.get("error") == "unavailable",
-                "受管App在首次初始化前没有拒绝登录",
-            )
             status, local_login, local_cookie = request(
                 connection,
                 "POST",
@@ -135,44 +154,12 @@ def verify(bundle: Path) -> dict[str, object]:
                 {"role": "admin", "principal_label": "artifact-verifier"},
             )
             require(
-                status == 503 and local_cookie is None and local_login.get("error") == "unavailable",
-                "受管App意外开放了本地开发身份",
+                status == 200 and local_cookie is not None
+                and isinstance(local_login.get("identity"), dict)
+                and local_login["identity"].get("role") == "admin",
+                "成品App本地管理员身份登录失败",
             )
-            status, initialized, initialization_cookie = request(
-                connection,
-                "POST",
-                "/api/auth/initialize",
-                {"account": "artifact-admin", "password": initial_password},
-            )
-            require(
-                status == 201 and initialization_cookie is None and initialized.get("status") == "initialized",
-                "管理员首次初始化失败",
-            )
-            status, repeated, repeated_cookie = request(
-                connection,
-                "POST",
-                "/api/auth/initialize",
-                {"account": "artifact-admin-repeat", "password": initial_password},
-            )
-            require(
-                status == 409 and repeated_cookie is None and repeated.get("error") == "account_already_initialized",
-                "受管App没有拒绝重复初始化",
-            )
-            status, admin_body, admin_cookie = request(
-                connection,
-                "POST",
-                "/api/auth/login",
-                {"account": "artifact-admin", "password": initial_password, "remember": False},
-            )
-            identity = admin_body.get("identity")
-            require(
-                status == 200
-                and admin_cookie is not None
-                and isinstance(identity, dict)
-                and identity.get("role") == "admin",
-                "管理员受管登录失败",
-            )
-            admin = admin_cookie.split(";", 1)[0]
+            admin = local_cookie.split(";", 1)[0]
             modules = ("datafetcher", "payoffer", "pricer", "backtester", "reporter")
             actions = {
                 "datafetcher": "status",
@@ -202,13 +189,139 @@ def verify(bundle: Path) -> dict[str, object]:
                 require(isinstance(result, dict) and result.get("ok") is not False, f"{module}拒绝成品调用：{result}")
                 tool_status[module] = summarize_tool_result(result)
 
+            status, task_body, _ = request(
+                connection,
+                "POST",
+                "/api/tasks",
+                {"subject": "成品App Pricer与Backtester受控计算验收"},
+                {"Cookie": admin},
+            )
+            task = task_body.get("task")
+            require(status == 201 and isinstance(task, dict) and isinstance(task.get("task_id"), str), "计算验收任务创建失败")
+            task_id = task["task_id"]
+            base_input = {
+                "product_id": "2.1",
+                "identity": {
+                    "underlyings": ["000905.SH"],
+                    "reference_prices": {"000905.SH": 100.0},
+                },
+                "term_overrides": {"K": 100.0, "T": 1.0, "Pi_0": 0.0},
+                "task_id": task_id,
+            }
+            status, context_body, _ = request(
+                connection,
+                "GET",
+                f"/api/module-host/payoffer?task_id={task_id}",
+                headers={"Cookie": admin},
+            )
+            context = context_body.get("context")
+            require(status == 200 and isinstance(context, dict), "payoffer预览缺少Module Host Context")
+            headers = {
+                "Cookie": admin,
+                "Origin": url,
+                "X-OptionHelper-Module-Context": json.dumps(context),
+                "X-OptionHelper-Request-Id": "artifact-payoffer-preview",
+            }
+            status, tool_body, _ = request(
+                connection,
+                "POST",
+                "/api/tools/payoffer",
+                {"action": "preview", **base_input},
+                headers,
+            )
+            preview = tool_body.get("result")
+            require(
+                status == 200 and isinstance(preview, dict)
+                and isinstance(preview.get("preview"), dict)
+                and isinstance(preview.get("svg"), str)
+                and preview["svg"].lstrip().startswith("<svg"),
+                f"payoffer成品预览失败：{tool_body}",
+            )
+            compute_requests = {
+                "payoffer": base_input,
+                "backtester": {
+                    **base_input,
+                    "backtest_config": {"entry_rule": "explicit", "entry_dates": ["2022-01-04"]},
+                },
+                "pricer": {
+                    **base_input,
+                    "pricing_config": {
+                        "valuation_date": "2022-02-01",
+                        "spot": 100.0,
+                        "historical_volatility": 0.20,
+                        "dividend_yield": 0.0,
+                        "risk_free_rate": 0.02,
+                        "model_method": "black_scholes",
+                    },
+                },
+            }
+            compute_status: dict[str, object] = {}
+            # Backtester establishes the first data-backed contract.  Payoffer
+            # is then also run formally against that same contract, and its
+            # subsequent scoped preview verifies the Desk display path.
+            for sequence, module in enumerate(("backtester", "pricer", "payoffer"), start=20):
+                status, context_body, _ = request(
+                    connection,
+                    "GET",
+                    f"/api/module-host/{module}?task_id={task_id}",
+                    headers={"Cookie": admin},
+                )
+                context = context_body.get("context")
+                require(status == 200 and isinstance(context, dict), f"{module}计算缺少Module Host Context")
+                headers = {
+                    "Cookie": admin,
+                    "Origin": url,
+                    "X-OptionHelper-Module-Context": json.dumps(context),
+                    "X-OptionHelper-Request-Id": f"artifact-compute-{module}-{sequence}",
+                }
+                status, tool_body, _ = request(
+                    connection,
+                    "POST",
+                    f"/api/tools/{module}",
+                    compute_requests[module],
+                    headers,
+                )
+                require(status == 200, f"{module}成品实际计算失败：{tool_body}")
+                result = tool_body.get("result")
+                require(isinstance(result, dict), f"{module}成品实际计算没有结果对象")
+                compute_status[module] = summarize_compute_result(module, result, task_id=task_id)
+
+            status, context_body, _ = request(
+                connection,
+                "GET",
+                f"/api/module-host/payoffer?task_id={task_id}",
+                headers={"Cookie": admin},
+            )
+            context = context_body.get("context")
+            require(status == 200 and isinstance(context, dict), "已绑定任务的payoffer预览缺少Module Host Context")
+            scoped_preview = {"action": "preview", **base_input}
+            for field in ("analysis_case_id", "candidate_id", "catalog_version", "contract_fingerprint"):
+                if context.get(field) is not None:
+                    scoped_preview[field] = context[field]
+            headers = {
+                "Cookie": admin,
+                "Origin": url,
+                "X-OptionHelper-Module-Context": json.dumps(context),
+                "X-OptionHelper-Request-Id": "artifact-payoffer-bound-preview",
+            }
+            status, tool_body, _ = request(connection, "POST", "/api/tools/payoffer", scoped_preview, headers)
+            preview = tool_body.get("result")
+            require(
+                status == 200 and isinstance(preview, dict)
+                and isinstance(preview.get("preview"), dict)
+                and isinstance(preview.get("svg"), str)
+                and preview["svg"].lstrip().startswith("<svg"),
+                f"已绑定任务的payoffer预览失败：{tool_body}",
+            )
+
             status, _body, _ = request(connection, "GET", "/optdesk", headers={"Cookie": admin})
-            require(status == 200, "管理员身份无法访问OptDesk")
+            require(status == 200, "本地管理员身份无法访问OptDesk")
             return {
                 "status": "verified",
                 "capability_version": capability.get("capability_version"),
                 "modules": tool_status,
-                "admin_optdesk_status": status,
+                "compute_runs": compute_status,
+                "local_admin_optdesk_status": status,
             }
         finally:
             if connection is not None:

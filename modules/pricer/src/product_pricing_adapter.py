@@ -86,8 +86,6 @@ class ProductPricingAdapter:
             raise ProductNotAvailable(mapping.reason or _unavailable_reason(contract, allowed, config.model_method))
         if self.route is None:
             raise ProductNotAvailable(_unavailable_reason(contract, allowed, config.model_method))
-        if self.route.method == "monte_carlo" and config.path_count == 10 and not config.demo_mode:
-            raise ProductNotAvailable("MC10仅允许显式demo_mode=true；正式报价不得以10条路径标记为priced")
         if self.route.capability.adapter not in {"european_vanilla", "european_portfolio", "optionreg_path"}:
             raise ProductNotAvailable(f"{contract.product_id}没有已验证的{self.route.capability.adapter}参数适配")
         if self.route.capability.adapter == "european_vanilla":

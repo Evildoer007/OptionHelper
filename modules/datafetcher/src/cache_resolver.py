@@ -111,6 +111,12 @@ class LocalCache:
             value = json.loads(self.index_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as error:
             raise CacheIndexError("DataFetcher缓存索引损坏，拒绝静默覆盖") from error
+        if self._is_v1_index(value):
+            value = {
+                "schema": "optionhelper.data-cache-index",
+                "entries": value["entries"],
+            }
+            _atomic_write_json(self.index_path, value)
         if (
             not isinstance(value, dict)
             or value.get("schema") != "optionhelper.data-cache-index"
@@ -118,6 +124,24 @@ class LocalCache:
         ):
             raise CacheIndexError("DataFetcher缓存索引结构无效，拒绝静默覆盖")
         return value
+
+    @staticmethod
+    def _is_v1_index(value: Any) -> bool:
+        """仅迁移本模块已发布过的v1索引，其他格式继续失败关闭。"""
+
+        if not isinstance(value, dict) or set(value) != {"version", "entries"}:
+            return False
+        entries = value.get("entries")
+        if value.get("version") != 1 or not isinstance(entries, dict):
+            return False
+        required = {"data_path", "content_hash", "provider", "tenant_id", "updated_at"}
+        return all(
+            isinstance(identity, str)
+            and isinstance(record, dict)
+            and required.issubset(record)
+            and all(isinstance(record[field], str) for field in required)
+            for identity, record in entries.items()
+        )
 
     @staticmethod
     def _miss(provider: str, identity: str, request: DataRequest) -> CacheMatch:

@@ -314,8 +314,9 @@ def _store_boundary_errors(root: Path) -> list[str]:
     skill = root / "SKILL.md"
     if skill.is_file():
         text = skill.read_text(encoding="utf-8")
-        if "environment_check.py" not in text or "OPTIONHELPER_DATA_ROOT" not in text or "OPTIONHELPER_RESULT_ROOT" not in text:
-            errors.append("根SKILL未声明依赖与外部Store预检")
+        required = ("environment_check.py", "--check-readiness", "OPTIONHELPER_DATA_ROOT", "OPTIONHELPER_RESULT_ROOT")
+        if any(value not in text for value in required):
+            errors.append("根SKILL未声明统一就绪门禁与外部Store预检")
     return errors
 
 
@@ -325,16 +326,16 @@ def _launcher_errors(root: Path) -> list[str]:
     batch = root / "scripts" / "start-pages.bat"
     if command.is_file():
         text = command.read_text(encoding="utf-8", errors="ignore")
-        required = ("module_host.py", "OPTIONHELPER_PYTHON", "environment_check.py", "--check-store")
+        required = ("module_host.py", "OPTIONHELPER_PYTHON", "environment_check.py")
         forbidden = ('exec python ', 'exec python3 ', 'PYTHON_BIN="$(command -v')
-        if any(value not in text for value in required) or any(value in text for value in forbidden) or _LOCAL_ENVIRONMENT_MARKER in text:
-            errors.append("macOS启动器必须要求已选Python并在module_host前检查外部Store")
+        if any(value not in text for value in required) or "--check-readiness" not in text or any(value in text for value in forbidden) or _LOCAL_ENVIRONMENT_MARKER in text:
+            errors.append("macOS启动器必须要求已选Python并在module_host前通过统一就绪门禁")
     if batch.is_file():
         text = batch.read_text(encoding="utf-8", errors="ignore")
-        required = ("module_host.py", "OPTIONHELPER_PYTHON", "environment_check.py", "--check-store", "OPTIONHELPER_PROJECT_ROOT")
+        required = ("module_host.py", "OPTIONHELPER_PYTHON", "environment_check.py", "OPTIONHELPER_PROJECT_ROOT")
         forbidden = ("where python", 'set "PYTHON_BIN=python')
-        if any(value not in text for value in required) or any(value in text for value in forbidden) or _LOCAL_ENVIRONMENT_MARKER in text:
-            errors.append("Windows启动器必须要求已选Python并在module_host前检查外部Store")
+        if any(value not in text for value in required) or "--check-readiness" not in text or any(value in text for value in forbidden) or _LOCAL_ENVIRONMENT_MARKER in text:
+            errors.append("Windows启动器必须要求已选Python并在module_host前通过统一就绪门禁")
     return errors
 
 
@@ -1044,7 +1045,18 @@ def probe_runtime(
         environment["OPTIONHELPER_RUNTIME_ROOT"] = str(runtime_root)
         environment["OPTIONHELPER_DATA_ROOT"] = str(data_root)
         environment["OPTIONHELPER_RESULT_ROOT"] = str(result_root)
+        environment["OPTIONHELPER_HOST_URL"] = "http://127.0.0.1:61614"
+        environment["IFIND_REFRESH_TOKEN"] = "runtime-probe-configuration"
         commands = [
+            (
+                "readiness",
+                [
+                    python, str(root / "scripts" / "environment_check.py"), "--check-readiness",
+                    "--skill-root", str(root), "--project-root", store,
+                    "--data-root", str(data_root), "--result-root", str(result_root),
+                    "--runtime-root", str(runtime_root),
+                ],
+            ),
             ("tool_entry", [python, str(root / "scripts" / "tool_entry.py"), "--list"]),
             ("module_host", [python, str(root / "scripts" / "module_host.py"), "--list"]),
             ("modules", [python, "-c", "import importlib; [importlib.import_module(f'modules.{name}.service') for name in " + repr(MODULES) + "]"]),

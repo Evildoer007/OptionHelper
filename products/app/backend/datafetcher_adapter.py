@@ -41,29 +41,56 @@ class DataFetcherAdapter:
         self._data_store = data_store
         self._secret_provider = secret_provider
 
-    def dispatch(self, request: dict[str, Any], principal: SessionIdentity, *, request_id: str = "") -> dict[str, Any]:
+    def dispatch(
+        self,
+        request: dict[str, Any],
+        principal: SessionIdentity,
+        *,
+        request_id: str = "",
+        trading_calendar_ref: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Dispatch one App-owned request, optionally with Host calendar evidence.
+
+        ``trading_calendar_ref`` is deliberately a keyword-only, in-process
+        dependency.  It is never copied into the page request, so a browser
+        cannot forge the calendar used to quality-gate historical prices.
+        """
         if not isinstance(request, dict):
             raise ValidationError("DataFetcher request must be an object")
         _reject_untrusted_context(request)
+        calendar_ref = _trading_calendar_ref(trading_calendar_ref)
         action = _action(request)
         settings = self._settings_for(principal)
         interface = settings.data_interface
         requires_ifind = action in {"fetch", "fetch_calendar", "test_connection"}
         if requires_ifind and (interface.provider_name != "ifind-http" or interface.secret_ref is None):
-            raise UnavailableCapabilityError("datafetcher.configuration", "请先在设置中心保存iFind Refresh Token。")
+            raise UnavailableCapabilityError("datafetcher.configuration", "请先在设置中心完成iFind数据服务配置。")
         if not callable(self._app_datafetcher_call):
             raise UnavailableCapabilityError(
                 "datafetcher.app_secret_port",
                 "the verified DataFetcher service cannot receive the App caller and SecretRef",
             )
         if self._secret_provider is None:
-            return self._app_datafetcher_call(dict(request), _caller(principal, request_id), None)
+            if calendar_ref is None:
+                return self._app_datafetcher_call(dict(request), _caller(principal, request_id), None)
+            return self._app_datafetcher_call(
+                dict(request), _caller(principal, request_id), None,
+                trading_calendar_ref=calendar_ref,
+            )
         secret_ref = interface.secret_ref
+        if calendar_ref is None:
+            return self._app_datafetcher_call(
+                dict(request),
+                _caller(principal, request_id),
+                secret_ref,
+                self._secret_port(secret_ref),
+            )
         return self._app_datafetcher_call(
             dict(request),
             _caller(principal, request_id),
             secret_ref,
             self._secret_port(secret_ref),
+            trading_calendar_ref=calendar_ref,
         )
 
     def _secret_port(self, expected_ref: SecretRef | None) -> Callable[[SecretRef], str] | None:
@@ -166,6 +193,22 @@ def _caller(principal: SessionIdentity, request_id: str) -> CallerContext:
         audience=principal.audience,
         request_id=request_id,
     )
+
+
+def _trading_calendar_ref(value: Mapping[str, Any] | None) -> DataAssetRef | None:
+    """Validate the Host-only calendar evidence passed to DataFetcher."""
+
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise ValidationError("交易日历必须由App Host以DataAssetRef注入")
+    try:
+        reference = DataAssetRef(**dict(value))
+    except (TypeError, ValueError) as error:
+        raise ValidationError("交易日历DataAssetRef无效") from error
+    if reference.schema_id != "trading-calendar":
+        raise ValidationError("交易日历DataAssetRef.schema_id必须为trading-calendar")
+    return reference
 
 
 def _action(request: dict[str, Any]) -> str:

@@ -162,6 +162,14 @@ textarea:focus-visible {
   font: 12px var(--font);
 }
 
+.product-select:disabled {
+  border-color: var(--rule);
+  background: var(--wash);
+  color: var(--muted);
+  cursor: not-allowed;
+  opacity: 1;
+}
+
 .binding-card {
   margin-top: 14px;
   padding: 11px 12px;
@@ -174,6 +182,7 @@ textarea:focus-visible {
 }
 
 .binding-card strong { display: block; color: var(--ink); font-size: 13px; }
+.binding-card .lock-note { display: block; margin-top: 6px; color: var(--red-deep); }
 
 .scenario-heading {
   display: flex;

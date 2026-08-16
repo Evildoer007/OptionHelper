@@ -82,17 +82,16 @@ if [[ ! -f "$CHECKER" ]]; then
   echo "缺少环境检查器：$CHECKER" >&2
   exit 1
 fi
-"$PYTHON_BIN" "$CHECKER" --requirements "$SCRIPT_DIR/requirements.lock" --check-dependencies
-"$PYTHON_BIN" "$CHECKER" --check-store --skill-root "$SCRIPT_DIR" \
-  --data-root "$PROJECT_ROOT/data" --result-root "$PROJECT_ROOT/result" \
-  --runtime-root "$PROJECT_ROOT/.optionhelper/runtime"
-
 if [[ -n "${PERSIST_SELECTION:-}" ]]; then
   mkdir -p "${STATE_FILE:h}"
   chmod 700 "${STATE_FILE:h}"
   print -r -- "$PYTHON_BIN" > "$STATE_FILE"
   chmod 600 "$STATE_FILE"
 fi
+"$PYTHON_BIN" "$CHECKER" --requirements "$SCRIPT_DIR/requirements.lock" --check-readiness \
+  --skill-root "$SCRIPT_DIR" --project-root "$PROJECT_ROOT" \
+  --data-root "$PROJECT_ROOT/data" --result-root "$PROJECT_ROOT/result" \
+  --runtime-root "$PROJECT_ROOT/.optionhelper/runtime"
 
 if [[ "${1:-}" == "--check-environment" ]]; then
   exec "$PYTHON_BIN" "$SCRIPT_DIR/module_host.py" --list

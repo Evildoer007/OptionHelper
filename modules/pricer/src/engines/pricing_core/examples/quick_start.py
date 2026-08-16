@@ -23,7 +23,8 @@ parameters = {
         "maturity_years": 0.25,
         "call_put": "CALL",
         "basis": {
-            "notional": 1_000_000.0,
+            "cashflow_scale": 1_000_000.0,
+            "cashflow_scale_kind": "contract_cashflow",
             "currency": "CNY",
         },
     },
@@ -43,5 +44,5 @@ run = pricing.price_option(
     "BLACK_SCHOLES",
     output="TERMINAL_AND_JSON",
 )
-print(f"pv_points_100={run.result.pv_points_100:.12f}")
+print(f"pv_percent={run.result.pv_percent:.12f}")
 print(f"json_output_path={run.json_output_path}")

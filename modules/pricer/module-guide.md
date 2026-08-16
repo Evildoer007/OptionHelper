@@ -16,14 +16,14 @@ PricingInput = {ResolvedContract, PricingConfig, market_data_refs, trading_calen
 
 `pricing_methods`来自OptionReg，实际运行能力来自Pricer，两者不相交则返回`unsupported`。存续期路径结构必须先由可见不复权价格形成`ObservedContractState`；历史不足时不得假设未发生事件。该状态应由Core正式协议独立冻结，Pricer不得把它伪装为定价参数。
 
-Monte Carlo结果只有在路径数不少于1000且百分比标准误差相对PV不高于5%时才标记为`quote_eligible`。该默认值受当前冻结随机矩阵2000条路径上限约束；未满足门禁仍返回真实数值，但标记为`low_precision`和不可报价。`MC10`仅是显式`demo/logic-only`探针，必须标记`demo_only`且不可报价。
+正式Monte Carlo严格使用`path_count`设置的路径数。`MC10`仅作为显式`demo/logic-only`探针，与正式市场定价隔离。
 
 面向用户的估值、回测和报告只展示百分比。`S0Raw`仅用于真实价格与标准化合同换算，不作为面向用户字段；内部现金流、点数、金额和名义本金不得投影到页面、正式Tool、CSV或报告。内部每100点数仅用于Golden、共同随机数回归和可复验计算。
 
 ## 交互边界
 
 - 页面正式运行只能通过App任务上下文取得已绑定的`DataAssetRef`和必要的`trading-calendar`。页面不得提交物理路径、读取本地CSV或自行伪造行情、日历和合同状态。
-- 运行前先复用当前任务覆盖本次标的、估值日、字段和口径的DataAssetRef；引用合格时不重新检查数据凭据。无法复用且需要新数据时，必须在计算前按DataFetcher指南检查iFind数据能力，未配置则保留估值条件并停止，不猜测市场输入或无提示改用本地数据。
+- 运行前先复用当前任务覆盖本次标的、估值日、字段和口径的DataAssetRef。统一就绪门禁已确认iFind配置；无法复用且需要新数据时，按DataFetcher指南取得数据。运行时数据能力不可用则保留估值条件并停止，不猜测市场输入或无提示改用本地数据。
 - 历史行情DataAssetRef只提供现价、历史波动率和历史数据。路径型Monte Carlo另用独立`trading-calendar`引用读取未来交易日期，未来价格始终由Pricer模拟。
 - 用户输入日期保留为`requested_valuation_date`，未填写时默认今天。若请求日尚无可用数据，则采用DataAssetRef中所有标的均有覆盖的最新数据日作为`effective_valuation_session`；不得使用请求区间的截止日冒充实际数据日。结果同时披露请求日期、有效估值日和有效到期交易日。
 - Black-Scholes和仅终值的普通香草Monte Carlo不强制获取完整未来日历；离散路径结构必须覆盖有效估值交易日至合同到期日前最后一个交易日。

@@ -17,6 +17,9 @@ function formatDateTyping(value) {
 
 function defaultDateRange(now = new Date()) {
   const end = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  // 日频行情在周末不能形成新的观测。默认取最近工作日，避免首次打开
+  // 数据页就在服务端被拒绝为“未来日期”。交易所节假日仍由服务端日历校验。
+  while (end.getDay() === 0 || end.getDay() === 6) end.setDate(end.getDate() - 1);
   const start = new Date(end);
   start.setFullYear(end.getFullYear() - 3);
   if (start.getMonth() !== end.getMonth()) start.setDate(0);
@@ -26,6 +29,20 @@ function defaultDateRange(now = new Date()) {
     String(value.getDate()).padStart(2, '0'),
   ].join('/');
   return {start: display(start), end: display(end)};
+}
+
+function nearestWeekday(value) {
+  const date = new Date(`${value.iso}T00:00:00Z`);
+  while (date.getUTCDay() === 0 || date.getUTCDay() === 6) date.setUTCDate(date.getUTCDate() - 1);
+  const iso = date.toISOString().slice(0, 10);
+  return {iso, display: iso.replaceAll('-', '/')};
+}
+
+function normalizeCurrentWeekendEndDate(value) {
+  // A manually typed Saturday or Sunday is no more observable than today's
+  // weekend default.  Normalise every daily end date before it reaches the
+  // Host so a valid-looking calendar entry cannot become a rejected request.
+  return nearestWeekday(value);
 }
 
 function splitList(value) {
@@ -49,7 +66,8 @@ function cacheDecisionLabel(value) {
 
 function buildFetchRequest(values) {
   const start = parseAndFormatDate(values.startDate);
-  const end = parseAndFormatDate(values.endDate);
+  const endInput = parseAndFormatDate(values.endDate);
+  const end = endInput && normalizeCurrentWeekendEndDate(endInput, values.now);
   if (!start || !end) throw new Error('日期必须为真实的yyyy/mm/dd或yyyy-mm-dd。');
   if (start.iso > end.iso) throw new Error('开始日期不得晚于结束日期。');
   const assetIds = splitList(values.assetIds).map(item => item.toUpperCase());
@@ -146,7 +164,7 @@ function initializePage() {
     input.addEventListener('blur', () => { if (input.value.trim()) normalizeDate(input); });
   }
   $('asset-search').addEventListener('input', renderAssets); $('refresh-assets').addEventListener('click', loadAssets);
-  $('request-form').addEventListener('submit', async event => { event.preventDefault(); clearFieldErrors(); let request; try { request = buildFetchRequest({assetIds: $('asset-ids').value, startDate: $('start-date').value, endDate: $('end-date').value, fields: $('fields').value, frequency: $('frequency').value, adjustment: $('adjustment').value, providerPriority: $('provider-priority').value, cachePolicy: $('cache-policy').value, offline: $('offline').checked, localCsv: $('local-csv').value}); $('asset-ids').value = request.asset_ids.join('\n'); $('start-date').value = parseAndFormatDate($('start-date').value).display; $('end-date').value = parseAndFormatDate($('end-date').value).display; } catch (error) { state('请求配置错误', 'failed'); message(error.message, 'failed'); showInputError(error.message); return; }
+  $('request-form').addEventListener('submit', async event => { event.preventDefault(); clearFieldErrors(); let request; try { request = buildFetchRequest({assetIds: $('asset-ids').value, startDate: $('start-date').value, endDate: $('end-date').value, fields: $('fields').value, frequency: $('frequency').value, adjustment: $('adjustment').value, providerPriority: $('provider-priority').value, cachePolicy: $('cache-policy').value, offline: $('offline').checked, localCsv: $('local-csv').value}); $('asset-ids').value = request.asset_ids.join('\n'); $('start-date').value = request.start_date.replaceAll('-', '/'); $('end-date').value = request.end_date.replaceAll('-', '/'); } catch (error) { state('请求配置错误', 'failed'); message(error.message, 'failed'); showInputError(error.message); return; }
     state('正在检查数据与缓存', 'running'); message('正在获取数据。'); setBusy(true); $('result-content').hidden = true; $('empty-canvas').hidden = false;
     try { const data = await requestJson('/api/fetch', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(request)}); renderResult(data); addAsset(data); $('run-id').textContent = data.data_fetch_run_id || ''; state('请求完成', 'complete'); message(`请求完成：${data.cache_decision || '服务未返回缓存决策'}。`); } catch (error) { if (error.payload) { renderResult(error.payload); $('run-id').textContent = error.payload.data_fetch_run_id || ''; } state('请求失败', 'failed'); message(error.message, 'failed'); } finally { setBusy(false); }
   });
@@ -154,5 +172,5 @@ function initializePage() {
   bindResizer('library-resizer', '--library-width', 220, 420); bindResizer('inspector-resizer', '--inspector-width', 300, 520); loadStatus(); loadAssets();
 }
 
-if (typeof module === 'object' && module.exports) module.exports = {parseAndFormatDate, formatDateTyping, defaultDateRange, splitList, buildFetchRequest, resultSummary, parseServiceResponse};
+if (typeof module === 'object' && module.exports) module.exports = {parseAndFormatDate, formatDateTyping, defaultDateRange, nearestWeekday, normalizeCurrentWeekendEndDate, splitList, buildFetchRequest, resultSummary, parseServiceResponse};
 if (typeof document !== 'undefined' && document.getElementById) initializePage();
