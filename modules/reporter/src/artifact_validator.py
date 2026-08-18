@@ -478,7 +478,21 @@ def validate_report_run_directory(
             bundle_candidate_ids.append(str(subject["candidate_id"]))
             report_unit_hashes.append(str(item.get("semantic_fact_hash")))
             frozen_evidence_statuses.append(_frozen_evidence_status(item))
-        if bundle_candidate_ids != candidate_ids:
+        if request.get("output_type") == "quote":
+            selected_order = list(dict.fromkeys(bundle_candidate_ids))
+            if selected_order != candidate_ids:
+                raise ReporterError("Quote合同快照的候选顺序与受控selection不一致")
+            fingerprints = []
+            for item in report_units:
+                contract = item.get("contract") if isinstance(item.get("contract"), Mapping) else {}
+                candidate_id = str((item.get("subject") or {}).get("candidate_id", ""))
+                fingerprint = contract.get("contract_fingerprint")
+                if not isinstance(fingerprint, str) or not fingerprint:
+                    raise ReporterError("Quote合同快照缺少contract_fingerprint")
+                fingerprints.append((candidate_id, fingerprint))
+            if len(set(fingerprints)) != len(fingerprints):
+                raise ReporterError("Quote不得重复冻结同一合同快照")
+        elif bundle_candidate_ids != candidate_ids:
             raise ReporterError("ReportBundle候选集合或顺序与受控selection不一致")
     if brief.get("report_unit_semantic_fact_hashes") != report_unit_hashes:
         raise ReporterError("design-brief.json未绑定全部ReportUnit事实哈希")
@@ -489,6 +503,8 @@ def validate_report_run_directory(
         "batch": "collection_index_with_candidate_reports",
         "comparison": "comparison_summary",
     }.get(str(delivery_mode))
+    if request.get("output_type") == "quote":
+        expected_realization = "quote_collection"
     if child_candidate_id is None:
         if expected_realization is None and manifest.get("delivery_realization") not in {None, "single_contract"}:
             raise ReporterError("run_manifest.json的single交付形态不一致")
@@ -503,7 +519,10 @@ def validate_report_run_directory(
             raise ReporterError("候选独立报告不得继续声明子报告")
         expected_children: list[str] = []
     else:
-        expected_children = list(candidate_ids) if delivery_mode in {"combined", "batch"} else []
+        expected_children = (
+            [] if request.get("output_type") == "quote"
+            else list(candidate_ids) if delivery_mode in {"combined", "batch"} else []
+        )
 
     child_ids: list[str] = []
     children: list[dict[str, Any]] = []

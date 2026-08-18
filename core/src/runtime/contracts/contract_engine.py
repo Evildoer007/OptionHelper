@@ -62,7 +62,13 @@ _FORMULA_FUNCTIONS = frozenset({
 _SETTLEMENT_VARIABLES = frozenset({"S_t", "S_T", "W_t", "W_T", "r_T", "u", "T_contract", "inf"})
 _NORMALIZED_PRICE_BASE = 100.0
 _PAYOFF_SCALE_TERM_KEYS = frozenset({"N", "Nvar"})
-_MATURITY_TIME_TOLERANCE = 7.0 / 365.0
+# A contractual maturity can fall inside the Spring Festival closure.  The
+# injected exchange calendar is authoritative, and the last real session can
+# then be up to two calendar weeks before the contractual date.  The path MC
+# builder rejects anything beyond this same bound, so the evaluator must use
+# the matching tolerance instead of treating a valid pre-holiday session as a
+# truncated contract.
+_MATURITY_TIME_TOLERANCE = 14.0 / 365.0
 _NUMERIC_COMPARISON_RTOL = 1e-12
 _NUMERIC_COMPARISON_ATOL = 1e-12
 _MAX_FORMULA_CHARS = 4096

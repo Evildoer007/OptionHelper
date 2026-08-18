@@ -98,9 +98,13 @@ def _risk_price(price_one: PriceOne, market: Any, maturity_years: float) -> tupl
         return price_one(market, maturity_years), None
     except ValueError as error:
         message = str(error)
-        if "OptionReg路径MC注入交易sessions未覆盖完整剩余合同期限" not in message:
+        expected_calendar_errors = (
+            "OptionReg路径MC注入交易sessions未覆盖完整剩余合同期限",
+            "价格路径终点",
+        )
+        if not any(token in message for token in expected_calendar_errors):
             raise
-        return None, "风险点剩余期限内不足两个真实交易session，标记not_applicable；未补造weekday。"
+        return None, "风险点不能与真实交易日历对齐，剩余期限内不足两个真实交易session或会截断合同路径，标记not_applicable；未补造weekday。"
 
 
 def _greek(priced: tuple[Any | None, str | None], name: str) -> float | None:

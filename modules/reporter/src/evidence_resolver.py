@@ -7,6 +7,7 @@ Reporter从不接收结果目录，也不搜索最近一次运行。所有计算
 
 from __future__ import annotations
 
+from copy import deepcopy
 from hashlib import sha256
 import json
 from pathlib import Path, PurePosixPath
@@ -319,6 +320,7 @@ def _load_module_run(
     candidate: Mapping[str, Any],
     display_module: str,
     raw_ref: Mapping[str, Any],
+    allow_contract_parameter_variant: bool = False,
 ) -> dict[str, Any]:
     run_module = MODULE_TO_RUN[display_module]
     ref = module_run_ref(raw_ref, f"module_run_refs.{candidate['candidate_id']}.{display_module}", tenant_id=request.tenant_id, task_id=request.task_id)
@@ -365,7 +367,10 @@ def _load_module_run(
     except ReporterError as error:
         raise ReporterError(f"{display_module}运行不满足正式协议：{error}") from error
     # 以下均为已声明对象之间的冲突或受控文件篡改，必须拒绝生成，不能降级混用。
-    if require_text(manifest.get("contract_fingerprint"), "manifest.contract_fingerprint") != str(candidate.get("contract_fingerprint")):
+    if (
+        not allow_contract_parameter_variant
+        and require_text(manifest.get("contract_fingerprint"), "manifest.contract_fingerprint") != str(candidate.get("contract_fingerprint"))
+    ):
         raise ReporterError("manifest.contract_fingerprint与候选合同快照不一致")
     result_path = _inside(run_dir, _safe_relative(manifest.get("result", "result.json"), "manifest.result"), "manifest.result")
     result = read_json(result_path, "result.json")
@@ -388,7 +393,7 @@ def _load_module_run(
         "catalog_version_ref.content_hash",
     ):
         raise ReporterError("ResolvedContract.registry_snapshot_hash与Catalog证据不一致")
-    if contract["analysis_basis_id"] != candidate["analysis_basis_id"]:
+    if not allow_contract_parameter_variant and contract["analysis_basis_id"] != candidate["analysis_basis_id"]:
         raise ReporterError("ResolvedContract.analysis_basis_id与RecommendationCandidate不一致")
     if contract["underlyings"] != candidate["underlyings"]:
         raise ReporterError("ResolvedContract.underlyings顺序与RecommendationCandidate不一致")
@@ -431,10 +436,67 @@ def _validate_candidate_contracts(candidate_id: str, modules: Mapping[str, Mappi
     return baseline
 
 
+def _resolve_quote_evidence(
+    request: ReportRequest,
+    result_store: ResultStorePort,
+    candidates: Mapping[str, Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Resolve each explicitly selected Quote row without assuming the candidate default terms.
+
+    Quote may select several saved parameter variants for the same recommendation
+    candidate.  Product identity, task, tenant, underlying and registry checks stay
+    identical to a normal Report; only the candidate's default contract fingerprint
+    is deliberately not used as a selection gate.
+    """
+
+    result: list[dict[str, Any]] = []
+    seen_contracts: set[tuple[str, str]] = set()
+    for index, item in enumerate(request.quote_items, start=1):
+        candidate_id = str(item["candidate_id"])
+        candidate = candidates[candidate_id]
+        module = str(item["module"])
+        evidence = _load_module_run(
+            request,
+            result_store,
+            candidate=candidate,
+            display_module=module,
+            raw_ref=as_mapping(item["module_run_ref"], f"quote_items[{index}].module_run_ref"),
+            allow_contract_parameter_variant=True,
+        )
+        if evidence.get("status") != "ready" or not isinstance(evidence.get("contract"), Mapping):
+            raise ReporterError(f"quote_items[{index}]必须选择已完成且可验证的运行结果")
+        contract = dict(evidence["contract"])
+        signature = (candidate_id, require_text(contract.get("contract_fingerprint"), "ResolvedContract.contract_fingerprint"))
+        if signature in seen_contracts:
+            continue
+        seen_contracts.add(signature)
+        variant = deepcopy(dict(candidate))
+        variant["contract_fingerprint"] = signature[1]
+        modules = {
+            name: evidence if name == module else {"status": "not_requested", "note": _status_note("not_requested")}
+            for name in MODULE_TO_RUN
+        }
+        result.append({
+            "candidate": variant,
+            "modules": modules,
+            "contract": contract,
+            "quote_module": module,
+        })
+    if not result:
+        raise ReporterError("Quote没有可展示的已验证合同快照")
+    return result
+
+
 def resolve_evidence(request: ReportRequest, result_store: ResultStorePort) -> dict[str, Any]:
     """解析一份正式请求的所有证据，返回仅供Reporter内部使用的对象。"""
 
     candidates, recommender = _recommendation_set(request)
+    if request.output_type == "quote":
+        return {
+            "recommender": recommender,
+            "candidates": candidates,
+            "quote_evidence": _resolve_quote_evidence(request, result_store, candidates),
+        }
     raw_refs = as_mapping(request.source_refs.get("module_run_refs"), "source_refs.module_run_refs")
     candidate_evidence: dict[str, Any] = {}
     for candidate_id in request.candidate_ids:

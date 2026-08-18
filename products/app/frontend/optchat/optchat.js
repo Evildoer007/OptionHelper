@@ -65,6 +65,8 @@ export async function startWorkspace(initialMode) {
   let workspaceStatusTimer = 0;
   const moduleFrames = new Map();
   const moduleContexts = new Map();
+  const moduleContextVersions = new Map();
+  let moduleContextRefreshPromise = null;
   let moduleIndicatorFrame = 0;
   const panelLayoutKey = "optionhelper.desk-panel-widths";
   const clampPanelWidth = (value, minimum, maximum, fallback) => {
@@ -369,6 +371,7 @@ export async function startWorkspace(initialMode) {
     }
     moduleFrames.clear();
     moduleContexts.clear();
+    moduleContextVersions.clear();
   }
 
   function syncModuleTabIndicator(animate = true) {
@@ -423,9 +426,35 @@ export async function startWorkspace(initialMode) {
     const context = moduleContexts.get(moduleName);
     const bridgeNonce = frame?.dataset.bridgeNonce;
     if (frame?.dataset.ready === "true" && context && bridgeNonce) {
-      frame.contentWindow?.postMessage({ type: "optionhelper.module-host-context", context, bridge_nonce: bridgeNonce }, location.origin);
+      frame.contentWindow?.postMessage({
+        type: "optionhelper.module-host-context",
+        context,
+        context_version: moduleContextVersions.get(moduleName) || 1,
+        bridge_nonce: bridgeNonce,
+      }, location.origin);
       frame.contentWindow?.postMessage({ type: "optionhelper.desk-panel-layout", layout: sharedPanelLayout, bridge_nonce: bridgeNonce }, location.origin);
     }
+  }
+
+  function setModuleContext(moduleName, context) {
+    moduleContexts.set(moduleName, context);
+    moduleContextVersions.set(moduleName, (moduleContextVersions.get(moduleName) || 0) + 1);
+  }
+
+  async function refreshModuleContext(moduleName) {
+    if (!currentTask || !moduleFrames.has(moduleName)) return;
+    const task = `?task_id=${encodeURIComponent(currentTask.task_id)}`;
+    const { context } = await request(`/api/module-host/${encodeURIComponent(moduleName)}${task}`);
+    setModuleContext(moduleName, context);
+    deliverContext(moduleName);
+  }
+
+  async function refreshMountedModuleContexts() {
+    if (moduleContextRefreshPromise) return moduleContextRefreshPromise;
+    moduleContextRefreshPromise = Promise.all(
+      [...moduleFrames.keys()].map((moduleName) => refreshModuleContext(moduleName)),
+    ).finally(() => { moduleContextRefreshPromise = null; });
+    return moduleContextRefreshPromise;
   }
 
   async function mountModule(moduleName, updateLocation = true) {
@@ -443,13 +472,19 @@ export async function startWorkspace(initialMode) {
         frame.className = "module-frame";
         frame.dataset.bridgeNonce = bridgeNonce;
         frame.setAttribute("aria-hidden", "true");
-        frame.addEventListener("load", () => applyHostedModulePresentation(frame));
+        frame.addEventListener("load", () => {
+          applyHostedModulePresentation(frame);
+          // Delivery on load means the context is not dependent on a single
+          // child ready event surviving a WKWebView navigation.
+          frame.dataset.ready = "true";
+          deliverContext(moduleName);
+        });
         frame.addEventListener("error", () => showWorkspaceStatus(`${modules.get(moduleName)}页面未能载入。`, true, 7000), { once: true });
         moduleFrames.set(moduleName, frame);
         mount.querySelector(".conversation-start")?.remove();
         mount.append(frame);
       }
-      moduleContexts.set(moduleName, context);
+      setModuleContext(moduleName, context);
       currentModule = moduleName;
       setActiveModule(moduleName);
       if (updateLocation) setTaskLocation(currentTask.task_id, { module: moduleName });
@@ -470,7 +505,11 @@ export async function startWorkspace(initialMode) {
   window.addEventListener("message", (event) => {
     const moduleName = event.data?.module;
     const frame = moduleFrames.get(moduleName);
-    if (event.origin !== location.origin || event.source !== frame?.contentWindow) return;
+    // WKWebView may replace the iframe WindowProxy while a capability page is
+    // navigating.  The bridge nonce is created by Desk and is the stable
+    // per-frame binding, so do not discard a valid ready message merely
+    // because WebKit changed the proxy object identity.
+    if (event.origin !== location.origin || !frame) return;
     if (event.data?.bridge_nonce !== frame?.dataset.bridgeNonce) return;
     if (event.data?.type === "optionhelper.desk-panel-layout-change") {
       sharedPanelLayout = normalizePanelLayout(event.data.layout);
@@ -482,6 +521,21 @@ export async function startWorkspace(initialMode) {
           bridge_nonce: target.dataset.bridgeNonce,
         }, location.origin);
       }
+      return;
+    }
+    if (event.data?.type === "optionhelper.module-host-context-ack") {
+      frame.dataset.contextVersion = String(event.data.context_version || "");
+      return;
+    }
+    if (event.data?.type === "optionhelper.module-host-context-request") {
+      frame.dataset.ready = "true";
+      deliverContext(moduleName);
+      return;
+    }
+    if (event.data?.type === "optionhelper.module-contract-updated") {
+      void refreshMountedModuleContexts().catch(() => {
+        showWorkspaceStatus("产品方案已更新，但模块上下文暂未同步。请稍后重试。", true, 7000);
+      });
       return;
     }
     if (event.data?.type !== "optionhelper.module-host-ready") return;
@@ -651,7 +705,9 @@ export async function startWorkspace(initialMode) {
   ]);
   const requested = taskIdFromLocation();
   if (requested) await selectTask(requested, false).catch(() => {});
-  if (!currentTask && tasks.length) await selectTask(tasks[0].task_id, false);
+  // Do not silently resume the first saved task.  A fresh OptDesk entry must
+  // start from an unbound task, so the module product selector remains
+  // “请选择产品”; saved tasks are resumed only through their task URL or rail.
   if (!currentTask && initialMode === "desk") await selectTask((await createTask()).task_id, false);
   if (!currentTask) renderMessages(stream, [], "新建任务后即可开始对话，并按需生成Card或Report。");
   await applyMode(initialMode, { updateHistory: false });

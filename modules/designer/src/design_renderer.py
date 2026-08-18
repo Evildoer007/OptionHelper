@@ -236,8 +236,13 @@ def _card_body(
         return "".join(parts) + "</section>"
 
     def reason_block(title: str) -> str:
-        reason = text(recommendation.get("reason"))
-        return f'<section class="card-reasoning"><h2>{esc(title)}</h2><p>{rich_text(reason)}</p></section>' if reason else ""
+        reasons = [text(item) for item in as_list(recommendation.get("reason_points")) if text(item)]
+        if not reasons and text(recommendation.get("reason")):
+            reasons = [text(recommendation.get("reason"))]
+        if not reasons:
+            return ""
+        content = "；".join(item.rstrip("。；") for item in reasons) + "。"
+        return f'<section class="card-reasoning"><h2>{esc(title)}</h2><p>{rich_text(content)}</p></section>'
 
     def contract_block(title: str) -> str:
         terms: list[str] = []
@@ -268,10 +273,15 @@ def _card_body(
             value = display_text(row.get("value"), row.get("value_format"))
             if text(row.get("label")) and value:
                 rows.append({"metric": text(row.get("label")), "value": value, "unit": card_unit(row.get("note"))})
-        for row in canonical_greeks(as_list(pricing.get("greeks"))):
+        greeks = {text(row.get("label")): row for row in canonical_greeks(as_list(pricing.get("greeks")))}
+        for label in ("Delta", "Gamma", "Vega", "Theta", "Rho"):
+            row = greeks.get(label)
+            if row is None:
+                rows.append({"metric": label, "value": "—", "unit": ""})
+                continue
             value = display_text(row.get("value"), row.get("value_format"))
             if value:
-                rows.append({"metric": text(row.get("label")), "value": value, "unit": card_unit(row.get("unit"))})
+                rows.append({"metric": label, "value": value, "unit": card_unit(row.get("unit"))})
         table = _card_data_table(rows)
         if not table:
             return ""
@@ -308,8 +318,12 @@ def _card_body(
         table = _card_data_table(rows)
         if not table:
             return ""
-        window = text(backtest.get("window"))
-        return f'<div class="card-analysis"><h2>{esc(title)}</h2>{table}' + (f'<p class="card-data-note">样本区间：{esc(window)}</p>' if window else "") + "</div>"
+        details = [
+            f"样本区间：{text(backtest.get('window'))}" if text(backtest.get("window")) else "",
+            f"入场规则：{text(backtest.get('entry_rule'))}" if text(backtest.get("entry_rule")) else "",
+        ]
+        detail = "；".join(item for item in details if item)
+        return f'<div class="card-analysis"><h2>{esc(title)}</h2>{table}' + (f'<p class="card-data-note">{esc(detail)}</p>' if detail else "") + "</div>"
 
     def risk_block(title: str) -> str:
         values = [text(item) for item in as_list(risk.get("items")) if text(item)][:2]
@@ -487,10 +501,11 @@ def _pdf_html_projection(html_content: str) -> str:
     without_scripts = re.sub(
         r"<script\b[^>]*>.*?</script\s*>", "", html_content, flags=re.IGNORECASE | re.DOTALL
     )
-    # The navigation rail is an HTML reading aid. PDF remains the same
-    # continuous A4 research document, without an extra navigation column.
     return re.sub(
-        r'<aside class="report-toc"[^>]*>.*?</aside\s*>', "", without_scripts, flags=re.IGNORECASE | re.DOTALL
+        r'<aside\s+class="report-toc"\s+aria-label="报告目录">.*?</aside\s*>',
+        "",
+        without_scripts,
+        flags=re.IGNORECASE | re.DOTALL,
     )
 
 

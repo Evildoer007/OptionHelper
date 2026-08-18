@@ -1415,6 +1415,22 @@ def _contract_report_unit(request: ReportRequest, candidate_evidence: Mapping[st
 def build_report_units(request: ReportRequest, evidence: Mapping[str, Any]) -> list[dict[str, Any]]:
     """按一合同一单位原则建立冻结单位。"""
 
+    if request.output_type == "quote":
+        quote_evidence = evidence.get("quote_evidence")
+        if not isinstance(quote_evidence, list):
+            raise ReporterError("Quote证据解析结果缺少quote_evidence")
+        recommender = evidence.get("recommender") if isinstance(evidence.get("recommender"), Mapping) else {}
+        units: list[dict[str, Any]] = []
+        for item in quote_evidence:
+            if not isinstance(item, Mapping):
+                raise ReporterError("Quote含无效合同快照")
+            unit = _contract_report_unit(request, item, recommender)
+            unit["selected_modules"] = [str(item.get("quote_module"))]
+            unit["evidence_status"] = "verified"
+            unit.pop("semantic_fact_hash", None)
+            unit["semantic_fact_hash"] = stable_hash(unit)
+            units.append(unit)
+        return units
     candidate_evidence = evidence.get("candidate_evidence")
     if not isinstance(candidate_evidence, Mapping):
         raise ReporterError("证据解析结果缺少candidate_evidence")
@@ -1427,7 +1443,7 @@ def build_report_document(request: ReportRequest, units: list[Mapping[str, Any]]
 
     if not units:
         raise ReporterError("没有可冻结的ReportUnit")
-    if request.delivery_mode == "single":
+    if request.output_type != "quote" and request.delivery_mode == "single":
         document = deepcopy(dict(units[0]))
     else:
         document = {

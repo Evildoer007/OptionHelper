@@ -35,6 +35,7 @@
           </div>
           <div class="selection-count" id="selectionCount">未选择候选</div>
           <div class="notice" id="notice" role="status">正在读取当前租户可用的报告来源。</div>
+          <div class="quote-items" id="quoteItems" hidden aria-live="polite"></div>
           <div class="candidate-list" id="candidateList"></div>
           <div class="missing-note">未完成的分析不会被补写；报告只使用当前任务中真实保存的结果。</div>
         </section>
@@ -44,18 +45,19 @@
         <aside class="settings-panel">
           <div class="panel-kicker">交付设置</div>
           <h2>内容与格式</h2>
-          <div class="setting-group"><label>交付方式</label><select id="deliveryMode"><option value="single">单结构</option><option value="batch">批量独立报告</option><option value="combined">组合索引与独立报告</option><option value="comparison">横向对比</option></select></div>
-          <fieldset class="setting-group"><legend>内容等级</legend><label class="choice"><input type="radio" name="outputType" value="card"><span>研究简报</span></label><label class="choice"><input type="radio" name="outputType" value="report" checked><span>完整研究报告</span></label></fieldset>
+          <div class="setting-group" id="deliveryModeGroup"><label>交付方式</label><select id="deliveryMode"><option value="single">单结构</option><option value="batch">批量独立报告</option><option value="combined">组合索引与独立报告</option><option value="comparison">横向对比</option></select></div>
+          <fieldset class="setting-group"><legend>内容等级</legend><label class="choice"><input type="radio" name="outputType" value="card"><span>研究简报</span></label><label class="choice"><input type="radio" name="outputType" value="quote"><span>参考报价</span></label><label class="choice"><input type="radio" name="outputType" value="report" checked><span>完整研究报告</span></label></fieldset>
+          <div class="setting-group" id="referenceQuotePanel" hidden><label>报价结构清单</label><p class="rule">逐条加入已保存的参数运行结果。同一挂钩标的自动汇总为一张表，同一结构的不同参数版本保留为多行。</p></div>
           <fieldset class="setting-group"><legend>输出格式</legend><label class="choice"><input type="radio" name="format" value="html" checked><span>HTML</span></label><label class="choice"><input type="radio" name="format" value="pdf"><span>PDF</span></label></fieldset>
           <div class="setting-group"><label>报告版式</label><p class="rule">完整报告采用连续A4正文。</p></div>
-          <fieldset class="setting-group"><legend>纳入内容</legend><label class="choice"><input type="checkbox" data-module="recommender" checked><span>产品建议</span></label><label class="choice"><input type="checkbox" data-module="payoff" checked><span>收益结构</span></label><label class="choice"><input type="checkbox" data-module="pricing" checked><span>估值定价</span></label><label class="choice"><input type="checkbox" data-module="backtest" checked><span>历史回测</span></label></fieldset>
+          <fieldset class="setting-group" id="moduleGroup"><legend>纳入内容</legend><label class="choice"><input type="checkbox" data-module="recommender" checked><span>产品建议</span></label><label class="choice"><input type="checkbox" data-module="payoff" checked><span>收益结构</span></label><label class="choice"><input type="checkbox" data-module="pricing" checked><span>估值定价</span></label><label class="choice"><input type="checkbox" data-module="backtest" checked><span>历史回测</span></label></fieldset>
           <div class="setting-group"><label for="audience">受众</label><select id="audience"><option value="professional">专业用户</option></select></div>
           <p class="rule" id="formatRule">内容等级决定报告深度，HTML与PDF决定交付格式。</p>
         </aside>
       </main>
 
       <section class="preview-panel" id="previewPanel" hidden>
-        <div class="preview-head"><div><span class="panel-kicker">报告预览</span><h2 id="previewTitle">已生成报告</h2></div><a id="downloadLink" class="button button-quiet" href="#">下载文件</a></div>
+        <div class="preview-head"><div><span class="panel-kicker">报告预览</span><h2 id="previewTitle">已生成报告</h2></div><div class="top-actions"><button id="convertPdfButton" class="button button-quiet" hidden>另存为PDF</button><a id="downloadLink" class="button button-quiet" href="#">下载文件</a></div></div>
         <div class="child-reports" id="childReports"></div>
         <iframe id="reportPreview" title="已生成报告预览"></iframe>
       </section>

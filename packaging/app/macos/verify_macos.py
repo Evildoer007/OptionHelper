@@ -241,6 +241,9 @@ def verify(bundle: Path) -> dict[str, object]:
                 "payoffer": base_input,
                 "backtester": {
                     **base_input,
+                    # 回测合同的起始参考价必须由已绑定历史的实际收盘价冻结；
+                    # 不沿用Payoffer预览用的展示参考价100。
+                    "identity": {"underlyings": ["000905.SH"]},
                     "backtest_config": {"entry_rule": "explicit", "entry_dates": ["2022-01-04"]},
                 },
                 "pricer": {
@@ -312,6 +315,127 @@ def verify(bundle: Path) -> dict[str, object]:
                 and isinstance(preview.get("svg"), str)
                 and preview["svg"].lstrip().startswith("<svg"),
                 f"已绑定任务的payoffer预览失败：{tool_body}",
+            )
+
+            # Airbag 7.2 has a daily observation schedule.  This is the
+            # regression case for the first-run calendar preparation path:
+            # its formal contract must be compiled only after the Host has
+            # provided a verified trading calendar.
+            status, path_task_body, _ = request(
+                connection,
+                "POST",
+                "/api/tasks",
+                {"subject": "成品App 7.2 Airbag路径定价验收"},
+                {"Cookie": admin},
+            )
+            path_task = path_task_body.get("task")
+            require(
+                status == 201 and isinstance(path_task, dict)
+                and isinstance(path_task.get("task_id"), str),
+                "7.2路径定价验收任务创建失败",
+            )
+            path_task_id = path_task["task_id"]
+            status, context_body, _ = request(
+                connection,
+                "GET",
+                f"/api/module-host/pricer?task_id={path_task_id}",
+                headers={"Cookie": admin},
+            )
+            context = context_body.get("context")
+            require(status == 200 and isinstance(context, dict), "7.2定价缺少Module Host Context")
+            headers = {
+                "Cookie": admin,
+                "Origin": url,
+                "X-OptionHelper-Module-Context": json.dumps(context),
+                "X-OptionHelper-Request-Id": "artifact-pricer-7-2",
+            }
+            status, tool_body, _ = request(
+                connection,
+                "POST",
+                "/api/tools/pricer",
+                {
+                    "product_id": "7.2",
+                    "identity": {"underlyings": ["000905.SH"]},
+                    "term_overrides": {},
+                    "pricing_config": {
+                        "valuation_date": "2022-02-01",
+                        "spot": 100.0,
+                        "historical_volatility": 0.20,
+                        "dividend_yield": 0.0,
+                        "risk_free_rate": 0.02,
+                        "model_method": "monte_carlo",
+                        "path_count": 100,
+                    },
+                    "task_id": path_task_id,
+                },
+                headers,
+            )
+            require(status == 200, f"7.2成品实际定价失败：{tool_body}")
+            path_pricer_result = tool_body.get("result")
+            require(isinstance(path_pricer_result, dict), "7.2成品实际定价没有结果对象")
+            path_data_refs = path_pricer_result.get("data_refs")
+            require(
+                isinstance(path_data_refs, list)
+                and {ref.get("schema_id") for ref in path_data_refs if isinstance(ref, dict)}
+                == {"market-history", "trading-calendar"},
+                "7.2定价没有绑定市场历史与交易日历",
+            )
+            compute_status["pricer_7_2"] = summarize_compute_result(
+                "pricer",
+                path_pricer_result,
+                task_id=path_task_id,
+            )
+
+            # Payoffer uses the same first-run contract compiler. Verify it
+            # independently so an observation calendar cannot regress to a
+            # Pricer-only App preparation path.
+            status, payoff_task_body, _ = request(
+                connection,
+                "POST",
+                "/api/tasks",
+                {"subject": "成品App 7.2 Airbag收益结构验收"},
+                {"Cookie": admin},
+            )
+            payoff_task = payoff_task_body.get("task")
+            require(
+                status == 201 and isinstance(payoff_task, dict)
+                and isinstance(payoff_task.get("task_id"), str),
+                "7.2收益结构验收任务创建失败",
+            )
+            payoff_task_id = payoff_task["task_id"]
+            status, context_body, _ = request(
+                connection,
+                "GET",
+                f"/api/module-host/payoffer?task_id={payoff_task_id}",
+                headers={"Cookie": admin},
+            )
+            context = context_body.get("context")
+            require(status == 200 and isinstance(context, dict), "7.2收益结构缺少Module Host Context")
+            headers = {
+                "Cookie": admin,
+                "Origin": url,
+                "X-OptionHelper-Module-Context": json.dumps(context),
+                "X-OptionHelper-Request-Id": "artifact-payoffer-7-2",
+            }
+            status, tool_body, _ = request(
+                connection,
+                "POST",
+                "/api/tools/payoffer",
+                {
+                    "product_id": "7.2",
+                    "identity": {"underlyings": ["000905.SH"]},
+                    "term_overrides": {},
+                    "task_id": payoff_task_id,
+                },
+                headers,
+            )
+            require(status == 200, f"7.2成品收益结构失败：{tool_body}")
+            path_payoffer_result = tool_body.get("result")
+            require(isinstance(path_payoffer_result, dict), "7.2成品收益结构没有结果对象")
+            compute_status["payoffer_7_2"] = summarize_compute_result(
+                "payoffer",
+                path_payoffer_result,
+                task_id=payoff_task_id,
             )
 
             status, _body, _ = request(connection, "GET", "/optdesk", headers={"Cookie": admin})

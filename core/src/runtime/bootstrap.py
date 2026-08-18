@@ -96,6 +96,21 @@ def _release_root(start: Path) -> Path | None:
     return None
 
 
+def _configured_release_root() -> Path | None:
+    """Return the immutable Capability root explicitly bound by a desktop host."""
+
+    raw_root = os.environ.get("OPTIONHELPER_CAPABILITY_ROOT")
+    if not raw_root:
+        return None
+    candidate = Path(raw_root).expanduser().resolve()
+    if not (
+        (candidate / "SKILL.md").is_file()
+        and (candidate / "scripts" / "knowledger" / "optionreg.py").is_file()
+    ):
+        raise BootstrapError("App注入的Capability根目录不完整")
+    return candidate
+
+
 def _external_release_roots(release: Path) -> tuple[Path, Path]:
     """发行Skill只能使用显式且安装目录外的可写Store。"""
     scoped_runtime_root = _SCOPED_RELEASE_RUNTIME_ROOT.get()
@@ -141,7 +156,7 @@ def _environment_release_roots() -> tuple[Path, Path]:
 def bootstrap_runtime(start: str | Path | None = None, *, mutate_sys_path: bool = True) -> RuntimePaths:
     """解析开发态或发行态资源，并按需注册唯一模块源码根。"""
     source = Path(start or __file__).expanduser().resolve()
-    release = _release_root(source if source.is_dir() else source.parent)
+    release = _configured_release_root() or _release_root(source if source.is_dir() else source.parent)
     if release is not None:
         data_root, result_root = _external_release_roots(release)
         paths = RuntimePaths(

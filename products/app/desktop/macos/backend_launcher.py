@@ -47,6 +47,11 @@ def main() -> int:
 
     resources = (args.resource_dir or resource_root()).resolve()
     configure_resource_imports(resources)
+    capability_root = resources / "capability" / "option-helper"
+    # PyInstaller modules have no repository-relative __file__ at runtime.
+    # Bind the staged immutable Capability explicitly so Runtime Bootstrap
+    # remains in release mode when the App is launched from a mounted DMG.
+    os.environ["OPTIONHELPER_CAPABILITY_ROOT"] = str(capability_root)
     if args.probe_pdf_runtime:
         from modules.designer.pdf_renderer import runtime_status
 
@@ -75,7 +80,7 @@ def main() -> int:
         host=args.host,
         port=args.port,
         app_data_dir=args.data_dir,
-        capability_root=resources / "capability" / "option-helper",
+        capability_root=capability_root,
         frontend_root=resources / "frontend",
         brand_assets_root=resources / "assets" / "icons",
         # Development builds intentionally use the loopback-only direct-entry

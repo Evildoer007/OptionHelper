@@ -25,7 +25,6 @@ from .risk import ThetaRollValue, calculate_standard_greeks
 
 
 _IMPLEMENTATION_ID = "standard-optionreg-discrete-mc"
-_MAX_PATHS = 2000
 
 
 def _session_dates(
@@ -83,13 +82,22 @@ def _asset_inputs(instrument: OptionRegPathOption, market: MarketState) -> tuple
     base_spots = np.asarray(raw_spots or (market.spot,) * asset_count, dtype=float)
     base_volatilities = np.asarray(raw_volatilities or (market.volatility,) * asset_count, dtype=float)
     base_dividend_yields = np.asarray(raw_dividend_yields or (market.dividend_yield,) * asset_count, dtype=float)
-    if base_spots[0] <= 0.0 or base_volatilities[0] <= 0.0:
-        raise ValueError("OptionReg路径MC的主标的spot和volatility必须为正数")
+    if (base_spots <= 0.0).any() or (base_volatilities <= 0.0).any():
+        raise ValueError("OptionReg路径MC的标的spot和volatility必须逐一为正数")
     # Standard risk shocks enter MarketState.  Preserve the adapter's asset
     # vector ratios while applying a parallel market shock, so CRN Greeks do
     # not silently become zero for multi-asset contracts.
     spots = base_spots * (market.spot / base_spots[0])
-    volatilities = base_volatilities + (market.volatility - base_volatilities[0])
+    # Vega and scenario panels shock the lead asset through ``MarketState``.
+    # Apply that same absolute shock to every asset, but retain a positive
+    # numerical floor for a low-volatility secondary asset.  Previously a
+    # legitimate lead-asset downward bump could turn another asset negative,
+    # making a multi-underlying product fail only while building its risk
+    # panel even though its base PV was valid.
+    volatilities = np.maximum(
+        base_volatilities + (market.volatility - base_volatilities[0]),
+        1e-8,
+    )
     dividend_yields = base_dividend_yields + (market.dividend_yield - base_dividend_yields[0])
     if (
         spots.shape != (asset_count,)
@@ -140,8 +148,6 @@ def _raw_path_values(
 ) -> np.ndarray:
     if config.method is not PricingMethod.MONTE_CARLO_CPU:
         raise ValueError("OptionReg路径结构只支持MONTE_CARLO_CPU")
-    if config.paths > _MAX_PATHS:
-        raise ValueError(f"OptionReg路径MC paths不得超过{_MAX_PATHS}")
     contract = _contract_for_state(
         instrument.resolved_contract,
         valuation_state,

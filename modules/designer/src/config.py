@@ -23,7 +23,7 @@ _REQUIRED_TEMPLATE_DEFINITIONS = (
 )
 _RUNTIME_ASSET_FILES = {
     "templates": frozenset((*_REQUIRED_TEMPLATE_NAMES, *_REQUIRED_TEMPLATE_DEFINITIONS)),
-    "themes": frozenset({"designer-theme.css"}),
+    "themes": frozenset({"designer-theme.css", "designer-token-vars.css"}),
     "vendor": frozenset({"echarts.min.js"}),
     "samples": frozenset({"card.html", "quote.html", "report.html"}),
 }

@@ -64,7 +64,12 @@ class DataFetcherAdapter:
         interface = settings.data_interface
         requires_ifind = action in {"fetch", "fetch_calendar", "test_connection"}
         if requires_ifind and (interface.provider_name != "ifind-http" or interface.secret_ref is None):
-            raise UnavailableCapabilityError("datafetcher.configuration", "请先在设置中心完成iFind数据服务配置。")
+            raise UnavailableCapabilityError(
+                "datafetcher.configuration",
+                "请先在设置中心完成iFind数据服务配置。",
+                failure_code="data_interface_configuration",
+                stage="data",
+            )
         if not callable(self._app_datafetcher_call):
             raise UnavailableCapabilityError(
                 "datafetcher.app_secret_port",

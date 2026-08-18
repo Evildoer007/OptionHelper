@@ -167,6 +167,7 @@ class ReportRequest:
     format: str
     audience: str
     metadata: Mapping[str, Any]
+    quote_items: tuple[Mapping[str, Any], ...] = ()
 
     @property
     def delivery_mode(self) -> str:
@@ -179,6 +180,8 @@ class ReportRequest:
 
     @property
     def selected_modules(self) -> tuple[str, ...]:
+        if self.output_type == "quote":
+            return tuple(dict.fromkeys(str(item["module"]) for item in self.quote_items))
         if "selected_modules" not in self.subject_ref:
             raise ReporterError("subject_ref.selected_modules必须显式指定")
         values = self.subject_ref.get("selected_modules")
@@ -193,7 +196,7 @@ class ReportRequest:
         reject_physical_paths(raw)
         allowed = {
             "schema", "tenant_id", "task_id", "report_run_id", "analysis_case_id", "subject_type", "subject_ref",
-            "source_refs", "output_type", "format", "audience", "metadata",
+            "source_refs", "output_type", "format", "audience", "metadata", "quote_items",
         }
         unknown = set(raw).difference(allowed)
         if unknown:
@@ -214,6 +217,10 @@ class ReportRequest:
             format=output_format,
             audience=require_text(raw.get("audience"), "audience"),
             metadata=as_mapping(raw.get("metadata", {}), "metadata"),
+            quote_items=tuple(
+                as_mapping(item, "quote_items[]")
+                for item in as_list(raw.get("quote_items", []), "quote_items", allow_empty=True)
+            ),
         )
         request._validate()
         return request
@@ -221,18 +228,48 @@ class ReportRequest:
     def _validate(self) -> None:
         if self.subject_type not in {"contract", "bundle", "comparison"}:
             raise ReporterError("subject_type仅支持contract、bundle、comparison")
-        if self.delivery_mode not in {"single", "combined", "batch", "comparison"}:
-            raise ReporterError("subject_ref.delivery_mode仅支持single、combined、batch、comparison")
+        if self.delivery_mode not in {"single", "combined", "batch", "comparison", "quote"}:
+            raise ReporterError("subject_ref.delivery_mode仅支持single、combined、batch、comparison、quote")
         candidate_ids = self.candidate_ids
-        if self.delivery_mode == "single" and len(candidate_ids) != 1:
+        if self.output_type == "quote":
+            if self.subject_type != "bundle" or self.delivery_mode != "quote":
+                raise ReporterError("Quote必须使用bundle subject_type和quote delivery_mode")
+            if not candidate_ids:
+                raise ReporterError("Quote必须包含至少一个候选")
+            if "selected_modules" in self.subject_ref:
+                raise ReporterError("Quote不接受selected_modules，请逐行使用quote_items选择已保存运行")
+            if not self.quote_items:
+                raise ReporterError("Quote必须包含至少一行quote_items")
+            seen: set[tuple[str, str, str]] = set()
+            for index, item in enumerate(self.quote_items, start=1):
+                if set(item) != {"candidate_id", "module", "module_run_ref"}:
+                    raise ReporterError(f"quote_items[{index}]字段必须为candidate_id、module、module_run_ref")
+                candidate_id = require_identifier(item.get("candidate_id"), f"quote_items[{index}].candidate_id")
+                module = require_text(item.get("module"), f"quote_items[{index}].module").lower()
+                if candidate_id not in candidate_ids or module not in MODULE_TO_RUN:
+                    raise ReporterError(f"quote_items[{index}]候选或模块无效")
+                ref = module_run_ref(
+                    item.get("module_run_ref"), f"quote_items[{index}].module_run_ref",
+                    tenant_id=self.tenant_id, task_id=self.task_id,
+                )
+                if ref.module != MODULE_TO_RUN[module]:
+                    raise ReporterError(f"quote_items[{index}].module_run_ref.module与模块不一致")
+                signature = (candidate_id, module, ref.run_id)
+                if signature in seen:
+                    raise ReporterError("quote_items不得重复选择同一运行")
+                seen.add(signature)
+        elif self.quote_items:
+            raise ReporterError("只有Quote允许quote_items")
+        if self.output_type != "quote" and self.delivery_mode == "single" and len(candidate_ids) != 1:
             raise ReporterError("single必须且只能选择一个candidate_id")
-        if self.delivery_mode != "single" and len(candidate_ids) < 2:
+        if self.output_type != "quote" and self.delivery_mode != "single" and len(candidate_ids) < 2:
             raise ReporterError("combined、batch和comparison至少选择两个candidate_id")
         if len(set(candidate_ids)) != len(candidate_ids):
             raise ReporterError("subject_ref.candidate_ids不得重复")
-        self.selected_modules
-        if self.output_type not in {"card", "report"}:
-            raise ReporterError("output_type仅支持card、report")
+        if self.output_type not in {"card", "quote", "report"}:
+            raise ReporterError("output_type仅支持card、quote、report")
+        if self.output_type != "quote":
+            self.selected_modules
         if self.format not in {"html", "pdf"}:
             raise ReporterError("format仅支持html、pdf")
         required_source_keys = {"product_version_refs", "catalog_version_ref", "evidence_refs", "module_run_refs"}
@@ -247,7 +284,7 @@ class ReportRequest:
             raise ReporterError("source_refs.module_run_refs必须为对象")
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        result = {
             "schema": SCHEMA_REQUEST,
             "tenant_id": self.tenant_id,
             "task_id": self.task_id,
@@ -261,6 +298,9 @@ class ReportRequest:
             "audience": self.audience,
             "metadata": dict(self.metadata),
         }
+        if self.quote_items:
+            result["quote_items"] = [dict(item) for item in self.quote_items]
+        return result
 
 
 __all__ = [

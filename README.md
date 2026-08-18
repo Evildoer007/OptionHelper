@@ -7,7 +7,7 @@ OptionHelper是期权结构研究与交付系统。本仓库维护同一套权�
 ## 文档分工
 
 - 本文件：开发仓库的环境、目录、测试、构建和签发说明。
-- [SKILL.md](SKILL.md)：安装后提供给Agent Host的行为与工作流约束。
+- [SKILL.md](SKILL.md)：安装后提供给当前对话Agent的行为与工作流约束。
 - [packaging/skill/SKILL_README.md](packaging/skill/SKILL_README.md)：安装包内`README.md`的开发源，说明Skill安装、配置和使用方法。
 - `modules/*/module-guide.md`：各模块的输入、输出、进度文案和失败边界。
 - [tests/README.md](tests/README.md)：开发仓库级迁移基线和验收门禁。
@@ -48,7 +48,7 @@ Windows运行`build-optionhelper-windows.bat`时采用相同原则，并通过`p
 ## 目录与权威来源
 
 - `references/`：Knowledger资料源，包括OptionList、OptionLib和唯一OptionReg。
-- `core/`：共享合同、协议、Host端口、Store适配器、Tool入口和页面Host。
+- `core/`：共享合同、协议、运行端口、Store适配器、Tool入口和页面运行层。
 - `modules/`：七个内部能力模块及各自测试。
 - `products/app/`：App后端、前端和桌面壳层开发源，不复制金融内核。
 - `packaging/`：从当前权威源码构建Skill、App和平台安装物。
@@ -67,7 +67,7 @@ Windows运行`build-optionhelper-windows.bat`时采用相同原则，并通过`p
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.:core/src "$OPTIONHELPER_PYTHON" -m pytest -q tests core/tests modules products/app/tests packaging/skill/tests packaging/tests evals/tests
 ```
 
-这条命令覆盖开发仓库的单元测试、协议测试和静态构建门禁。真实模型、真实iFind、浏览器交互、回环HTTP、挂载DMG和平台签名属于独立验收，不能用单元测试通过替代。
+这条命令覆盖开发仓库的单元测试、协议测试和静态构建门禁。真实iFind、浏览器交互、回环HTTP、挂载DMG和平台签名属于独立验收，不能用单元测试通过替代。
 
 Pricer数值变化必须先建立Golden基线。无法解释的PV、Greeks、风险曲线、路径哈希或精度变化应立即阻断，不得直接更新基线掩盖差异。
 
@@ -144,4 +144,4 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.:core/src "$OPTIONHELPER_PYTHON" packaging
 
 ## 当前边界
 
-未接入或未验证的服务器登录、外部数据源、模型Provider、平台签名、公证和自动更新必须明确返回不可用，不得伪造成功。Secret只能由Host受控保存和注入，不能写入源码、设置文件、日志、结果、报告或构建产物。
+未接入或未验证的服务器登录、外部数据源、平台签名、公证和自动更新必须明确返回不可用，不得伪造成功。Secret只能由受控运行环境保存和注入，不能写入源码、设置文件、日志、结果、报告或构建产物。

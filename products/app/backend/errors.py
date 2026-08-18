@@ -9,9 +9,18 @@ model, data, or financial-module response.
 class UnavailableCapabilityError(RuntimeError):
     """Raised when a source-stage App integration has no approved implementation."""
 
-    def __init__(self, capability: str, next_step: str) -> None:
+    def __init__(
+        self,
+        capability: str,
+        next_step: str,
+        *,
+        failure_code: str = "capability_unavailable",
+        stage: str = "capability",
+    ) -> None:
         self.capability = capability
         self.next_step = next_step
+        self.failure_code = failure_code
+        self.stage = stage
         super().__init__(f"{capability} is unavailable: {next_step}")
 
 
@@ -37,11 +46,20 @@ class UserActionError(ValidationError):
     preconditions constructed by the Host itself.
     """
 
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        stage: str = "input",
+        next_step: str | None = None,
+    ) -> None:
         if not code or not message:
             raise ValueError("UserActionError requires a public code and message")
         self.code = code
         self.message = message
+        self.stage = stage
+        self.next_step = next_step or "请按提示调整当前任务的输入或数据后重试。"
         super().__init__(message)
 
 

@@ -79,10 +79,17 @@
         [self showFailure:@"找不到内置App Host"];
         return;
     }
-    NSURL *support = [[[NSFileManager defaultManager] URLsForDirectory:NSApplicationSupportDirectory
-                                                               inDomains:NSUserDomainMask] firstObject];
-    support = [[support URLByAppendingPathComponent:@"OptionHelper" isDirectory:YES]
-                   URLByAppendingPathComponent:@"local-state" isDirectory:YES];
+    NSString *requestedDataDirectory = [[[NSProcessInfo processInfo] environment] objectForKey:@"OPTIONHELPER_APP_DATA_DIR"];
+    NSURL *support = nil;
+    if (requestedDataDirectory.length > 0) {
+        support = [NSURL fileURLWithPath:requestedDataDirectory isDirectory:YES];
+    } else {
+        NSArray<NSURL *> *supportDirectories = [[NSFileManager defaultManager]
+            URLsForDirectory:NSApplicationSupportDirectory inDomains:NSUserDomainMask];
+        NSURL *applicationSupport = supportDirectories.firstObject;
+        support = [[applicationSupport URLByAppendingPathComponent:@"OptionHelper" isDirectory:YES]
+            URLByAppendingPathComponent:@"local-state" isDirectory:YES];
+    }
     NSError *directoryError = nil;
     if (![[NSFileManager defaultManager] createDirectoryAtURL:support
                                    withIntermediateDirectories:YES

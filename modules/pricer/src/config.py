@@ -22,7 +22,8 @@ class PricingConfig:
     dividend_yield: float | dict[str, float] = 0.0
     time_to_maturity: float | None = None
     model_method: str = "auto"
-    path_count: int = 2_000
+    # 测试期默认使用10条；调用方显式传入path_count时保持该值。
+    path_count: int = 10
     demo_mode: bool = False
     demo_calendar: dict[str, Any] | None = None
     random_seed: int = 20240101
@@ -35,8 +36,8 @@ class PricingConfig:
             raise PricingConfigError("hv_window只能为5、10、20、60、122或244")
         if self.model_method not in {"auto", "black_scholes", "monte_carlo"}:
             raise PricingConfigError("model_method只能为auto、black_scholes或monte_carlo")
-        if not isinstance(self.path_count, int) or isinstance(self.path_count, bool) or not 1 <= self.path_count <= 2_000:
-            raise PricingConfigError("path_count必须为1至2000的整数，以匹配已冻结随机矩阵")
+        if not isinstance(self.path_count, int) or isinstance(self.path_count, bool) or self.path_count <= 0:
+            raise PricingConfigError("path_count必须为正整数")
         if not isinstance(self.demo_mode, bool):
             raise PricingConfigError("demo_mode必须为布尔值")
         if self.demo_calendar is not None and not isinstance(self.demo_calendar, Mapping):

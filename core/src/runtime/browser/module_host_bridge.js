@@ -19,9 +19,27 @@
   const bridgeNonce = query.get("bridge_nonce");
   let context = null;
   let hostScope = Object.freeze({});
+  let contextVersion = 0;
   let acceptHostContext = null;
-  const hostContextReady = new Promise((resolve) => { acceptHostContext = resolve; });
+  let hostContextReady = new Promise((resolve) => { acceptHostContext = resolve; });
   const nativeFetch = window.fetch.bind(window);
+
+  function resetHostContext() {
+    context = null;
+    hostScope = Object.freeze({});
+    hostContextReady = new Promise((resolve) => { acceptHostContext = resolve; });
+  }
+
+  function requestHostContext(reason) {
+    if (!hostedInDesk) return;
+    window.parent.postMessage({
+      type: "optionhelper.module-host-context-request",
+      module: moduleName,
+      bridge_nonce: bridgeNonce,
+      context_version: contextVersion || null,
+      reason,
+    }, location.origin);
+  }
 
   function applyEmbeddedLayout() {
     if (!hostedInDesk) return;
@@ -343,6 +361,7 @@
   function waitForHostContext(signal) {
     if (context) return context;
     if (signal?.aborted) throw abortError();
+    requestHostContext("fetch");
     return new Promise((resolve, reject) => {
       let settled = false;
       const finish = (value) => {
@@ -359,7 +378,13 @@
         signal?.removeEventListener("abort", abort);
         reject(abortError());
       };
-      const timer = window.setTimeout(() => finish(null), 5000);
+      const timer = window.setTimeout(() => {
+        // The initial ready message can be dropped while WKWebView replaces
+        // the iframe WindowProxy.  Ask again before returning a typed error;
+        // the parent answers with the latest versioned context.
+        requestHostContext("timeout");
+        finish(null);
+      }, 5000);
       signal?.addEventListener("abort", abort, {once: true});
       hostContextReady.then(finish);
     });
@@ -402,7 +427,14 @@
   async function hostedDataAssetDownload(url, signal) {
     if (!context && hostedInDesk) await waitForHostContext(signal);
     if (!context && hostedInDesk) {
-      return asResponse(503, {ok: false, message: "模块页面尚未收到下载上下文，请稍后重试。"});
+      return asResponse(503, {
+        ok: false,
+        error: "module_context_timeout",
+        failure_code: "module_context_timeout",
+        stage: "module_host",
+        message: "模块页面尚未收到下载上下文，请稍后重试。",
+        next_step: "请保持当前OptDesk页面打开；上下文将自动重新同步。",
+      });
     }
     if (!context) return nativeFetch(url, {signal});
     return nativeFetch(url.pathname, {
@@ -436,7 +468,14 @@
     // GET /api/catalog request and fails before the bridge is installed.
     if (!context && hostedInDesk) await waitForHostContext(signal);
     if (!context && hostedInDesk) {
-      return asResponse(503, {ok: false, message: "模块页面尚未收到运行上下文，请稍后重试。"});
+      return asResponse(503, {
+        ok: false,
+        error: "module_context_timeout",
+        failure_code: "module_context_timeout",
+        stage: "module_host",
+        message: "模块页面尚未收到运行上下文，请稍后重试。",
+        next_step: "请保持当前OptDesk页面打开；上下文将自动重新同步。",
+      });
     }
     if (!context) return nativeFetch(input, init);
     let body = {};
@@ -468,6 +507,24 @@
     const result = envelope.result || envelope;
     if (moduleName === "payoffer" && action === "run" && !result.destination && result.module_run_ref?.run_id) {
       result.destination = "结果已保存到当前研究任务。";
+    }
+    if (
+      response.ok
+      && action === "run"
+      && (moduleName === "pricer" || moduleName === "backtester")
+      && body.new_contract_variant === true
+      && result.resolved_contract?.identity?.product_id
+    ) {
+      // Do not let the next run inherit the previous product's scope while
+      // Desk activates the new contract version.
+      resetHostContext();
+      window.parent.postMessage({
+        type: "optionhelper.module-contract-updated",
+        module: moduleName,
+        bridge_nonce: bridgeNonce,
+        run_id: result.module_run_ref?.run_id || null,
+      }, location.origin);
+      requestHostContext("contract-updated");
     }
     return asResponse(response.status, result);
   }
@@ -508,7 +565,10 @@
     if (event.origin !== location.origin || event.data?.type !== "optionhelper.module-host-context") return;
     if (hostedInDesk && (!bridgeNonce || event.data?.bridge_nonce !== bridgeNonce)) return;
     if (!valid(event.data.context)) return;
+    const suppliedVersion = Number(event.data.context_version);
+    if (event.data.context_version !== undefined && (!Number.isSafeInteger(suppliedVersion) || suppliedVersion < contextVersion)) return;
     context = Object.freeze({...event.data.context});
+    contextVersion = Number.isSafeInteger(suppliedVersion) && suppliedVersion > 0 ? suppliedVersion : contextVersion + 1;
     hostScope = Object.freeze({
       task_id: context.task_id,
       analysis_case_id: context.analysis_case_id,
@@ -518,9 +578,17 @@
     });
     window.fetch = hostedFetch;
     acceptHostContext?.(context);
+    window.parent.postMessage({
+      type: "optionhelper.module-host-context-ack",
+      module: moduleName,
+      bridge_nonce: bridgeNonce,
+      context_version: contextVersion,
+    }, location.origin);
+    window.dispatchEvent(new CustomEvent("optionhelper.module-host-context", {detail: {context, contextVersion}}));
     window.dispatchEvent(new CustomEvent("optionhelper.module-host-ready", {detail: {module: moduleName}}));
   });
   if (window.parent !== window) {
     window.parent.postMessage({type: "optionhelper.module-host-ready", module: moduleName, bridge_nonce: bridgeNonce}, location.origin);
+    requestHostContext("initial");
   }
 })();

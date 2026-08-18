@@ -267,8 +267,8 @@ def _structure_errors(root: Path) -> list[str]:
     required = [
         "SKILL.md", "README.md", "capability-manifest.json", "references/context.md", "references/optionlist.md",
         "references/optionlib.md", "references/knowledger-manager.md", "scripts/tool_entry.py",
-        "scripts/module_host.py", "scripts/environment_check.py", "scripts/start-pages.command",
-        "scripts/start-pages.bat", "scripts/requirements.lock", "scripts/knowledger/__init__.py",
+        "scripts/module_host.py", "scripts/environment_check.py", "scripts/requirements.lock",
+        "scripts/knowledger/__init__.py",
         "scripts/knowledger/optionreg.py", "scripts/knowledger/catalog-version.json", "scripts/runtime",
         "scripts/modules", "assets/icons", "assets/payoffer/figures/json", "assets/payoffer/figures/svg",
         "assets/designer/themes", "assets/designer/vendor", "LICENSES",
@@ -317,25 +317,6 @@ def _store_boundary_errors(root: Path) -> list[str]:
         required = ("environment_check.py", "--check-readiness", "OPTIONHELPER_DATA_ROOT", "OPTIONHELPER_RESULT_ROOT")
         if any(value not in text for value in required):
             errors.append("根SKILL未声明统一就绪门禁与外部Store预检")
-    return errors
-
-
-def _launcher_errors(root: Path) -> list[str]:
-    errors: list[str] = []
-    command = root / "scripts" / "start-pages.command"
-    batch = root / "scripts" / "start-pages.bat"
-    if command.is_file():
-        text = command.read_text(encoding="utf-8", errors="ignore")
-        required = ("module_host.py", "OPTIONHELPER_PYTHON", "environment_check.py")
-        forbidden = ('exec python ', 'exec python3 ', 'PYTHON_BIN="$(command -v')
-        if any(value not in text for value in required) or "--check-readiness" not in text or any(value in text for value in forbidden) or _LOCAL_ENVIRONMENT_MARKER in text:
-            errors.append("macOS启动器必须要求已选Python并在module_host前通过统一就绪门禁")
-    if batch.is_file():
-        text = batch.read_text(encoding="utf-8", errors="ignore")
-        required = ("module_host.py", "OPTIONHELPER_PYTHON", "environment_check.py", "OPTIONHELPER_PROJECT_ROOT")
-        forbidden = ("where python", 'set "PYTHON_BIN=python')
-        if any(value not in text for value in required) or "--check-readiness" not in text or any(value in text for value in forbidden) or _LOCAL_ENVIRONMENT_MARKER in text:
-            errors.append("Windows启动器必须要求已选Python并在module_host前通过统一就绪门禁")
     return errors
 
 
@@ -705,7 +686,6 @@ def verify_skill(root: Path) -> list[str]:
     errors.extend(_legacy_product_name_errors(root))
     errors.extend(_link_errors(root))
     errors.extend(_store_boundary_errors(root))
-    errors.extend(_launcher_errors(root))
     errors.extend(_manifest_errors(root, entries))
     return sorted(set(errors))
 
@@ -1045,7 +1025,6 @@ def probe_runtime(
         environment["OPTIONHELPER_RUNTIME_ROOT"] = str(runtime_root)
         environment["OPTIONHELPER_DATA_ROOT"] = str(data_root)
         environment["OPTIONHELPER_RESULT_ROOT"] = str(result_root)
-        environment["OPTIONHELPER_HOST_URL"] = "http://127.0.0.1:61614"
         environment["IFIND_REFRESH_TOKEN"] = "runtime-probe-configuration"
         commands = [
             (
@@ -1097,9 +1076,6 @@ def verify_zip(archive: Path) -> list[str]:
                 return ["ZIP包含重复成员"]
             if any(name.startswith("/") or ".." in Path(name).parts or not name.startswith("option-helper/") for name in names):
                 return ["ZIP成员越出option-helper根目录"]
-            launcher = bundle.getinfo("option-helper/scripts/start-pages.command") if "option-helper/scripts/start-pages.command" in names else None
-            if launcher is None or not ((launcher.external_attr >> 16) & stat.S_IXUSR):
-                return ["ZIP内macOS启动器必须保留用户执行权限"]
             with tempfile.TemporaryDirectory(prefix="optionhelper-skill-") as temporary:
                 bundle.extractall(temporary)
                 for info in bundle.infolist():

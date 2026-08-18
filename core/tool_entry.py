@@ -329,10 +329,10 @@ def _call_validated_tool(
         and not is_explicit_demo_pricing_config(request.get("pricing_config"))
     )
     if data_store is not None:
-        if module not in {"pricer", "backtester"} or action != "run":
-            raise ToolDispatchError("外置DataStorePort仅允许Host注入Pricer或Backtester正式运行")
+        if module not in {"payoffer", "pricer", "backtester"} or action != "run":
+            raise ToolDispatchError("外置DataStorePort仅允许Host注入正式计算模块")
         if not callable(getattr(data_store, "read_bytes", None)):
-            raise ToolDispatchError("正式Pricer或Backtester运行必须由Host注入DataStorePort")
+            raise ToolDispatchError("正式计算模块必须由Host注入DataStorePort")
     elif needs_data_store and action == "run":
         raise ToolDispatchError("正式Pricer或Backtester运行必须由Host注入DataStorePort")
     bootstrap_runtime()
@@ -348,58 +348,13 @@ def _call_validated_tool(
     kwargs = {"host_context": host_context}
     if result_store is not None:
         kwargs["result_store"] = result_store
-    if data_store is not None:
+    if data_store is not None and module in {"pricer", "backtester"}:
         kwargs["data_store"] = data_store
     kwargs["tenant_id"] = caller_context.tenant_id
     result = handler(dict(request), **kwargs)
     if not isinstance(result, Mapping):
         raise ToolDispatchError(f"模块{module}返回值必须为JSON对象")
     return dict(result)
-
-
-class _OpenAICompatibleAgentPort:
-    """Provider-neutral structured AgentPort; the API key never enters payloads."""
-
-    def __init__(self, endpoint: JsonHttpEndpoint, model: str, api_key: str) -> None:
-        self._endpoint = endpoint
-        self._model = model
-        self._api_key = api_key
-
-    def capability(self) -> Any:
-        from modules.recommender.models import ModelCapability
-
-        return ModelCapability(
-            model_id=self._model,
-            structured_output=True,
-            tool_calling=False,
-            multi_agent=False,
-            max_parallel_agents=1,
-        )
-
-    def run_step(self, role: str, payload: Mapping[str, Any]) -> Mapping[str, Any]:
-        response = self._endpoint.post("chat/completions", {
-            "model": self._model,
-            "temperature": 0,
-            "response_format": {"type": "json_object"},
-            "messages": [
-                {
-                    "role": "system",
-                    "content": (
-                        "你是OptionHelper固定推荐流程中的受限步骤。严格遵守role_rule，"
-                        "只输出required_output要求的JSON对象，不输出Markdown，不调用工具，不编造金融数值。"
-                    ),
-                },
-                {"role": "user", "content": json.dumps({"role": role, **dict(payload)}, ensure_ascii=False)},
-            ],
-        }, bearer_token=self._api_key)
-        try:
-            content = response["choices"][0]["message"]["content"]
-            value = json.loads(content) if isinstance(content, str) else content
-        except (KeyError, IndexError, TypeError, json.JSONDecodeError) as error:
-            raise ProjectRequestError("recommender", "模型没有返回可验证的结构化推荐结果。") from error
-        if not isinstance(value, Mapping):
-            raise ProjectRequestError("recommender", "模型没有返回可验证的结构化推荐结果。")
-        return dict(value)
 
 
 class _LocalKnowledgePort:
@@ -533,36 +488,24 @@ def _catalog_version(paths: Any) -> str:
     return DEVELOPMENT_RELEASE_ID
 
 
-def _configuration(*, require_model: bool = True, require_ifind: bool = True) -> dict[str, str]:
+def _configuration(*, require_ifind: bool = True) -> dict[str, str]:
     host_url = os.environ.get("OPTIONHELPER_HOST_URL", "").strip()
     if host_url:
         return {"mode": "host", "host_url": host_url}
-    values = {
-        "base_url": os.environ.get("OPTIONHELPER_MODEL_BASE_URL", "").strip(),
-        "model": os.environ.get("OPTIONHELPER_MODEL", "").strip(),
-        "api_key": os.environ.get("OPTIONHELPER_MODEL_API_KEY", "").strip(),
-        "ifind": os.environ.get("IFIND_REFRESH_TOKEN", "").strip(),
-    }
-    required: list[tuple[str, str]] = []
-    if require_model:
-        required.extend((
-            ("base_url", "模型服务地址"), ("model", "模型名称"),
-            ("api_key", "模型API Key"),
-        ))
-    if require_ifind:
-        required.append(("ifind", "iFind Refresh Token"))
-    missing = [label for key, label in required if not values[key]]
+    ifind = os.environ.get("IFIND_REFRESH_TOKEN", "").strip()
+    if require_ifind and not ifind:
+        missing = ["iFind Refresh Token"]
+    else:
+        missing = []
     if missing:
         raise ProjectRequestError(
             "configuration",
-            "OptionHelper尚未完成运行配置，请在Host的环境或Secret Store中补充：" + "、".join(missing) + "。",
+            "OptionHelper尚未完成运行配置，请在Secret Store中补充：" + "、".join(missing) + "。",
             missing=missing,
         )
     public_values: dict[str, str] = {"mode": "direct"}
-    if require_model:
-        public_values.update({key: values[key] for key in ("base_url", "model", "api_key")})
     if require_ifind:
-        public_values["ifind"] = values["ifind"]
+        public_values["ifind"] = ifind
     return public_values
 
 
@@ -714,21 +657,22 @@ def run_recommendation_request(
     if not prompt:
         raise ProjectRequestError("request", "请提供需要筛选的期权结构需求。")
     if agent_port is None:
-        config = _configuration(require_model=True, require_ifind=False)
+        config = _configuration(require_ifind=False)
         if config["mode"] == "host":
             _progress(progress, "host", "正在由受控Host执行结构推荐")
             response = JsonHttpEndpoint(config["host_url"]).post("project/recommend", body)
             if response.get("ok") is not True:
                 raise ProjectRequestError("host", str(response.get("message") or "受控Host未能完成结构推荐。"))
             return response
+        raise ProjectRequestError(
+            "request",
+            "当前Skill由对话模型负责理解和推荐；请将已验证的结构选择通过--project-json提交，"
+            "不调用第二个模型服务。",
+        )
     paths = bootstrap_runtime()
     layout = LocalProjectLayout.create(skill_root=paths.project_root, project_root=project_root or Path.cwd())
     layout.initialize()
     authority = LocalHostAuthority(layout)
-    if agent_port is None:
-        agent_port = _OpenAICompatibleAgentPort(
-            JsonHttpEndpoint(config["base_url"]), config["model"], config["api_key"],
-        )
     from modules.recommender.service import RecommenderService
 
     case = _recommendation_case(
@@ -1082,7 +1026,7 @@ def run_module_request(
     elif module == "pricer":
         friendly = {
             "action": "run", "product_id": product_id, "identity": identity, "term_overrides": term_overrides,
-            "pricing_config": {"valuation_date": valuation_date, "path_count": 2_000, **requested_pricing},
+            "pricing_config": {"valuation_date": valuation_date, "path_count": 10, **requested_pricing},
         }
     else:
         friendly = {
@@ -1153,24 +1097,35 @@ def run_project_request(
     request_lower = prompt.casefold()
     requested_card = any(token in request_lower for token in ("简报", "简单报告", "card"))
     requested_report = any(token in request_lower for token in ("详细报告", "深度报告", "完整报告"))
-    output_type = explicit_output or ("card" if requested_card and not requested_report else "report")
-    if output_type not in {"card", "report"}:
-        raise ProjectRequestError("request", "交付类型只能选择简单报告或详细报告。")
+    requested_quote = any(token in request_lower for token in ("参考报价", "quote", "报价表"))
+    output_type = explicit_output or ("quote" if requested_quote else "card" if requested_card and not requested_report else "report")
+    if output_type not in {"card", "quote", "report"}:
+        raise ProjectRequestError("request", "交付类型只能选择研究简报、参考报价或详细报告。")
     output_format = str(body.get("format") or "html").strip().lower()
     if output_format != "html":
         raise ProjectRequestError("request", "项目级自然语言入口当前仅交付HTML格式。")
-    layout_name = None if output_type == "card" else str(body.get("html_report_layout") or "continuous").strip().lower()
+    layout_name = None if output_type in {"card", "quote"} else str(body.get("html_report_layout") or "continuous").strip().lower()
     if layout_name is not None and layout_name != "continuous":
         raise ProjectRequestError("request", "HTML详细报告固定为连续正文，不提供目录版。")
 
     model_selection = _mapping_field(body, "selection") if "selection" in body else {}
-    config = (
-        _configuration(require_model=False, require_ifind=True)
-        if model_selection
-        else _configuration()
-        if agent_port is None
-        else {"mode": "direct", "ifind": os.environ.get("IFIND_REFRESH_TOKEN", "test-refresh-token")}
-    )
+    if model_selection:
+        config = _configuration(require_ifind=True)
+    elif agent_port is None:
+        config = _configuration(require_ifind=False)
+        if config["mode"] == "host":
+            _progress(progress, "host", "正在由受控Host执行推荐与报告流程")
+            response = JsonHttpEndpoint(config["host_url"]).post("project/run", body)
+            if response.get("ok") is not True:
+                raise ProjectRequestError("host", str(response.get("message") or "受控Host未能完成研究请求。"))
+            return response
+        raise ProjectRequestError(
+            "request",
+            "当前Skill由对话模型负责理解和推荐；请先提交已验证的selection，"
+            "不调用第二个模型服务。",
+        )
+    else:
+        config = {"mode": "direct", "ifind": os.environ.get("IFIND_REFRESH_TOKEN", "test-refresh-token")}
     if config["mode"] == "host":
         _progress(progress, "host", "正在由受控Host执行推荐与报告流程")
         response = JsonHttpEndpoint(config["host_url"]).post("project/run", body)
@@ -1211,8 +1166,10 @@ def run_project_request(
         _progress(progress, "recommender", "已验证当前对话选择，未调用第二个模型服务", "completed")
     else:
         if agent_port is None:
-            agent_port = _OpenAICompatibleAgentPort(
-                JsonHttpEndpoint(config["base_url"]), config["model"], config["api_key"]
+            raise ProjectRequestError(
+                "request",
+                "当前Skill由对话模型负责理解和推荐；请先提交已验证的selection，"
+                "不调用第二个模型服务。",
             )
         from modules.recommender.service import RecommenderService
 
@@ -1265,7 +1222,7 @@ def run_project_request(
     )
     pricing_config = {
         "valuation_date": valuation_date,
-        "path_count": 2_000,
+        "path_count": 10,
         **requested_pricing,
     }
     pricing_request = prepare_compute_request(
@@ -1308,60 +1265,61 @@ def run_project_request(
     result_store.verify_module_run(module_ref, tenant_id=authority.tenant_id)
     _progress(progress, "payoffer", "正式收益结构结果已验证", "completed")
 
-    backtest_request = prepare_compute_request(
-        "backtester",
-        {
-            "action": "run",
-            "product_id": product_id,
-            "identity": {
-                "underlyings": list(underlyings),
-                "contract_start_date": market_as_of_date,
-            },
-            "term_overrides": term_overrides,
-            "backtest_config": {
-                "start_date": str(data_ref.coverage.get("start") or data_ref.coverage.get("start_date")),
-                "end_date": market_as_of_date,
-                "entry_rule": "monthly",
-                "complete_tenor": True,
-                **_mapping_field(body, "backtest_config"),
-            },
-        },
-        data_refs=(asdict(data_ref), asdict(calendar_ref)),
-        resolved_contract=contract_payload,
-        data_store=data_store,
-    )
     completed_refs: dict[str, dict[str, Any]] = {"payoff": dict(raw_ref)}
     module_failures: dict[str, str] = {}
-    for module, display_name, module_request in (
-        ("pricer", "pricing", dict(pricing_request["request"])),
-            ("backtester", "backtest", dict(backtest_request["request"])),
-    ):
-        _progress(progress, module, f"正在运行正式{module}模块")
-        module_context = authority.context(
-            module, task_id=task_id, analysis_case_id=analysis_case_id,
-            candidate_id=str(candidate["candidate_id"]), catalog_version=catalog_version,
-            contract_fingerprint=contract.contract_fingerprint,
-            result_refs=(module_ref,),
+    if output_type != "quote":
+        backtest_request = prepare_compute_request(
+            "backtester",
+            {
+                "action": "run",
+                "product_id": product_id,
+                "identity": {
+                    "underlyings": list(underlyings),
+                    "contract_start_date": market_as_of_date,
+                },
+                "term_overrides": term_overrides,
+                "backtest_config": {
+                    "start_date": str(data_ref.coverage.get("start") or data_ref.coverage.get("start_date")),
+                    "end_date": market_as_of_date,
+                    "entry_rule": "monthly",
+                    "complete_tenor": True,
+                    **_mapping_field(body, "backtest_config"),
+                },
+            },
+            data_refs=(asdict(data_ref), asdict(calendar_ref)),
+            resolved_contract=contract_payload,
+            data_store=data_store,
         )
-        try:
-            module_result = call_local_tool(
-                module, module_request,
-                authority=authority,
-                request_id=f"{module}-{task_hash}",
-                host_context=module_context,
-                result_store=result_store,
-                data_store=data_store,
+        for module, display_name, module_request in (
+            ("pricer", "pricing", dict(pricing_request["request"])),
+            ("backtester", "backtest", dict(backtest_request["request"])),
+        ):
+            _progress(progress, module, f"正在运行正式{module}模块")
+            module_context = authority.context(
+                module, task_id=task_id, analysis_case_id=analysis_case_id,
+                candidate_id=str(candidate["candidate_id"]), catalog_version=catalog_version,
+                contract_fingerprint=contract.contract_fingerprint,
+                result_refs=(module_ref,),
             )
-            module_raw_ref = module_result.get("module_run_ref")
-            if module_result.get("ok") is not True or not isinstance(module_raw_ref, Mapping):
-                raise ProjectRequestError(module, str(module_result.get("message") or f"{module}未形成可验证运行引用。"))
-            verified_ref = ModuleRunRef(**dict(module_raw_ref))
-            result_store.verify_module_run(verified_ref, tenant_id=authority.tenant_id)
-            completed_refs[display_name] = dict(module_raw_ref)
-            _progress(progress, module, f"正式{module}结果已验证", "completed")
-        except Exception:
-            module_failures[display_name] = "正式模块未完成，报告已标注覆盖缺口。"
-            _progress(progress, module, f"正式{module}暂未完成，报告将明确标注缺口", "partial")
+            try:
+                module_result = call_local_tool(
+                    module, module_request,
+                    authority=authority,
+                    request_id=f"{module}-{task_hash}",
+                    host_context=module_context,
+                    result_store=result_store,
+                    data_store=data_store,
+                )
+                module_raw_ref = module_result.get("module_run_ref")
+                if module_result.get("ok") is not True or not isinstance(module_raw_ref, Mapping):
+                    raise ProjectRequestError(module, str(module_result.get("message") or f"{module}未形成可验证运行引用。"))
+                verified_ref = ModuleRunRef(**dict(module_raw_ref))
+                result_store.verify_module_run(verified_ref, tenant_id=authority.tenant_id)
+                completed_refs[display_name] = dict(module_raw_ref)
+                _progress(progress, module, f"正式{module}结果已验证", "completed")
+            except Exception:
+                module_failures[display_name] = "正式模块未完成，报告已标注覆盖缺口。"
+                _progress(progress, module, f"正式{module}暂未完成，报告将明确标注缺口", "partial")
 
     identity = dict(contract.identity)
     source_id = f"source-{task_hash}"
@@ -1391,25 +1349,43 @@ def run_project_request(
         "catalog_content_hash": contract.registry_snapshot_hash,
         "candidates": [report_candidate],
     }
-    selection = {
-        "source_id": source_id,
-        "candidate_ids": [report_candidate["candidate_id"]],
-        "selected_modules": [name for name in ("payoff", "pricing", "backtest") if name in completed_refs],
-        "module_run_refs": {report_candidate["candidate_id"]: completed_refs},
-        "delivery_mode": "single",
-        "output_type": output_type,
-        "format": "html",
-        "audience": "professional",
-        "report_run_id": report_run_id,
-        "metadata": {
-            "title": str(body.get("title") or f"{identity['name_zh']}结构{'简报' if output_type == 'card' else '研究'}"),
-            "as_of_date": valuation_date,
-        },
-    }
+    if output_type == "quote":
+        selection = {
+            "source_id": source_id,
+            "quote_items": [{
+                "candidate_id": report_candidate["candidate_id"],
+                "module": "payoff",
+                "module_run_ref": dict(raw_ref),
+            }],
+            "output_type": "quote",
+            "format": "html",
+            "audience": "professional",
+            "report_run_id": report_run_id,
+            "metadata": {
+                "title": str(body.get("title") or f"{identity['name_zh']}参考报价"),
+                "as_of_date": valuation_date,
+            },
+        }
+    else:
+        selection = {
+            "source_id": source_id,
+            "candidate_ids": [report_candidate["candidate_id"]],
+            "selected_modules": [name for name in ("payoff", "pricing", "backtest") if name in completed_refs],
+            "module_run_refs": {report_candidate["candidate_id"]: completed_refs},
+            "delivery_mode": "single",
+            "output_type": output_type,
+            "format": "html",
+            "audience": "professional",
+            "report_run_id": report_run_id,
+            "metadata": {
+                "title": str(body.get("title") or f"{identity['name_zh']}结构{'简报' if output_type == 'card' else '研究'}"),
+                "as_of_date": valuation_date,
+            },
+        }
     from modules.reporter.artifact_validator import validate_report_run_directory
     from modules.reporter.service import build_selected_request, call_tool as reporter_call_tool
 
-    delivery_name = "HTML简报" if output_type == "card" else "HTML详细报告"
+    delivery_name = {"card": "HTML简报", "quote": "HTML参考报价", "report": "HTML详细报告"}[output_type]
     _progress(progress, "reporter", f"Reporter正在冻结事实并交由Designer生成{delivery_name}")
     selection_port = _SelectionPort(source)
     expected_report_request = build_selected_request(
@@ -1451,9 +1427,14 @@ def run_project_request(
     _progress(progress, "reporter", f"Reporter和Designer已完成正式{delivery_name}", "completed")
     full_coverage = (
         not module_failures
-        and set(completed_refs) == {"payoff", "pricing", "backtest"}
-        and verified_report_modules == {"payoff", "pricing", "backtest"}
-        and report_unit.get("evidence_status") == "verified"
+        and (
+            output_type == "quote"
+            or (
+                set(completed_refs) == {"payoff", "pricing", "backtest"}
+                and verified_report_modules == {"payoff", "pricing", "backtest"}
+                and report_unit.get("evidence_status") == "verified"
+            )
+        )
     )
     return {
         "ok": True,

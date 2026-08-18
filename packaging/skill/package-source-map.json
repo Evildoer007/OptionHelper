@@ -39,8 +39,6 @@
     {"source": "core/src/runtime/knowledger/__init__.py", "target": "scripts/knowledger/__init__.py"},
     {"source": "core/tool_entry.py", "target": "scripts/tool_entry.py"},
     {"source": "core/module_host.py", "target": "scripts/module_host.py"},
-    {"source": "core/start-pages.command", "target": "scripts/start-pages.command"},
-    {"source": "core/start-pages.bat", "target": "scripts/start-pages.bat"},
     {"source": "core/src/runtime/browser/module_host_bridge.js", "target": "assets/pages/module-host-bridge.js"},
     {"source": "core/requirements.lock", "target": "scripts/requirements.lock"},
     {"source": "packaging/skill/environment_check.py", "target": "scripts/environment_check.py"}
@@ -63,6 +61,9 @@
     {"source": "modules/backtester/page", "target": "assets/pages/backtester", "exclude": ["**/__pycache__/**", "**/*.pyc", ".DS_Store"]},
     {"source": "modules/reporter/page", "target": "assets/pages/reporter", "exclude": ["**/__pycache__/**", "**/*.pyc", ".DS_Store"]},
     {"source": "modules/payoffer/figures", "target": "assets/payoffer/figures", "exclude": ["**/__pycache__/**", "**/*.pyc", ".DS_Store"]},
-    {"source": "modules/designer/assets", "target": "assets/designer", "exclude": ["**/__pycache__/**", "**/*.pyc", ".DS_Store"]}
+    {"source": "modules/designer/assets/templates", "target": "assets/designer/templates", "exclude": ["**/__pycache__/**", "**/*.pyc", ".DS_Store"]},
+    {"source": "modules/designer/assets/themes", "target": "assets/designer/themes", "exclude": ["**/__pycache__/**", "**/*.pyc", ".DS_Store"]},
+    {"source": "modules/designer/assets/samples", "target": "assets/designer/samples", "exclude": ["**/__pycache__/**", "**/*.pyc", ".DS_Store"]},
+    {"source": "modules/designer/assets/vendor", "target": "assets/designer/vendor", "exclude": ["**/__pycache__/**", "**/*.pyc", ".DS_Store"]}
   ]
 }

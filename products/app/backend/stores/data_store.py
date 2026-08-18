@@ -104,7 +104,7 @@ class DataStore:
                 if isinstance(item, dict)
                 and item.get("tenant_id") == identity.tenant_id
                 and item.get("created_by") == identity.principal_id
-                and set(asset_ids).issubset(set(item.get("asset_ids", [])))
+                and set(asset_ids) == set(item.get("asset_ids", []))
                 and (schema_id is None or item.get("schema_id") == schema_id)
             ]
             if not candidates:
@@ -118,14 +118,114 @@ class DataStore:
                 raise UserActionError(
                     "market_data_required",
                     message,
+                    stage="data",
+                    next_step="请在数据获取中准备覆盖当前标的和所需区间的日频行情后重试。",
                 )
             record = max(candidates, key=lambda item: (str(item.get("registered_at", "")), str(item.get("data_asset_id", ""))))
         if record.get("created_by") != identity.principal_id:
             raise AuthorizationError("data.read", "data asset is not owned by current caller")
-        if not set(asset_ids).issubset(set(record.get("asset_ids", []))):
-            raise ValidationError("DataAssetRef未覆盖ResolvedContract全部标的")
+        if set(asset_ids) != set(record.get("asset_ids", [])):
+            raise ValidationError("DataAssetRef标的必须与ResolvedContract完全一致")
         if schema_id is not None and record.get("schema_id") != schema_id:
             raise ValidationError(f"DataAssetRef.schema_id必须为{schema_id}")
+        return {key: record[key] for key in _PROTOCOL_FIELDS}
+
+    def resolve_frozen_trading_calendar(
+        self,
+        identity: SessionIdentity,
+        requested: object,
+        *,
+        asset_ids: tuple[str, ...],
+        calendar_id: str,
+        calendar_revision: str,
+    ) -> dict[str, Any]:
+        """Resolve the exact calendar revision frozen into a contract.
+
+        Market-history can safely prefer the newest compatible asset.  An
+        observed contract cannot: its schedules were resolved from one
+        calendar revision, so selecting a newer revision changes the contract
+        after it has been signed.  Keep this lookup separate from the generic
+        resolver to make that distinction explicit at the Host boundary.
+        """
+
+        requested_id = _requested_asset_id(requested)
+        if requested_id:
+            record = self.get(identity, requested_id)
+            if isinstance(requested, dict) and requested.get("content_hash") not in {None, record.get("content_hash")}:
+                raise ValidationError("DataAssetRef.content_hash与App登记记录不一致")
+            candidates = [record]
+        else:
+            candidates = [
+                item for item in self._state.read("data_assets").values()
+                if isinstance(item, dict)
+                and item.get("tenant_id") == identity.tenant_id
+                and item.get("created_by") == identity.principal_id
+                and item.get("schema_id") == "trading-calendar"
+                and set(asset_ids) == set(item.get("asset_ids", []))
+                and isinstance(item.get("coverage"), dict)
+                and item["coverage"].get("calendar_id") == calendar_id
+                and item["coverage"].get("calendar_revision") == calendar_revision
+            ]
+        if not candidates:
+            raise UserActionError(
+                "frozen_contract_calendar_missing",
+                "当前方案冻结的交易日历不在本机数据中，不能用另一版本替代。请切换产品建立新方案版本后重试。",
+                stage="data",
+                next_step="请恢复该交易日历，或切换产品建立新的方案版本后重试。",
+            )
+        record = max(candidates, key=lambda item: (str(item.get("registered_at", "")), str(item.get("data_asset_id", ""))))
+        if record.get("created_by") != identity.principal_id:
+            raise AuthorizationError("data.read", "data asset is not owned by current caller")
+        if set(asset_ids) != set(record.get("asset_ids", [])):
+            raise ValidationError("DataAssetRef标的必须与ResolvedContract完全一致")
+        return {key: record[key] for key in _PROTOCOL_FIELDS}
+
+    def resolve_trading_calendar_covering(
+        self,
+        identity: SessionIdentity,
+        *,
+        asset_ids: tuple[str, ...],
+        start_date: str,
+        end_date: str,
+    ) -> dict[str, Any] | None:
+        """Return a locally registered calendar that covers an exact interval.
+
+        Calendar assets are immutable snapshots.  Registration time therefore
+        is not a meaningful proxy for fitness: a newer short-range snapshot
+        must not hide an older snapshot that already covers the full contract
+        tenor.  This lookup is deliberately limited to new contracts; a
+        frozen contract keeps using ``resolve_frozen_trading_calendar``.
+        """
+
+        candidates: list[dict[str, Any]] = []
+        for item in self._state.read("data_assets").values():
+            if not isinstance(item, dict):
+                continue
+            if (
+                item.get("tenant_id") != identity.tenant_id
+                or item.get("created_by") != identity.principal_id
+                or item.get("schema_id") != "trading-calendar"
+                or set(item.get("asset_ids", [])) != set(asset_ids)
+            ):
+                continue
+            coverage = item.get("coverage")
+            if not isinstance(coverage, dict):
+                continue
+            coverage_start = coverage.get("start_date")
+            coverage_end = coverage.get("end_date")
+            if (
+                isinstance(coverage_start, str)
+                and isinstance(coverage_end, str)
+                and coverage_start <= start_date
+                and coverage_end >= end_date
+            ):
+                candidates.append(item)
+        if not candidates:
+            return None
+        record = max(
+            candidates,
+            key=lambda item: (str(item.get("registered_at", "")), str(item.get("data_asset_id", ""))),
+        )
         return {key: record[key] for key in _PROTOCOL_FIELDS}
 
     def get(self, identity: SessionIdentity, data_asset_id: str) -> dict[str, Any]:
@@ -174,4 +274,15 @@ def _string_list(value: object, name: str) -> list[str]:
 def _mapping(value: object, name: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValidationError(f"DataAssetRef {name} must be an object")
-    return dict(value)
+    # DataAsset metadata crosses JSON persistence and HTTP boundaries.
+    # Canonicalise nested tuples (for example ``coverage.sessions``) before
+    # the immutability comparison. Otherwise registering the same calendar a
+    # second time changes only tuple -> list after persistence and is falsely
+    # rejected as a different immutable asset.
+    try:
+        normalized = json.loads(json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+    except (TypeError, ValueError) as error:
+        raise ValidationError(f"DataAssetRef {name} must be JSON-compatible") from error
+    if not isinstance(normalized, dict):
+        raise ValidationError(f"DataAssetRef {name} must be an object")
+    return normalized

@@ -544,27 +544,76 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
                     "reason": "请求未获授权",
                 })
         except UnavailableCapabilityError as error:
-            public_message = {
-                "datafetcher.configuration": "请先在设置中心填写并保存iFind数据凭据，然后重试。",
-            }.get(error.capability, "相关功能暂不可用。请确认本机服务、当前任务和数据配置后重试。")
+            public_message = _unavailable_public_message(error)
+            diagnostic_id = _diagnostic_id(
+                self.headers.get("X-OptionHelper-Request-Id") or request_id,
+                error.failure_code,
+                error.stage,
+            )
+            self._audit_operational_failure(
+                request_id,
+                failure_code=error.failure_code,
+                stage=error.stage,
+                reference=error.capability,
+            )
             self._json(HTTPStatus.SERVICE_UNAVAILABLE, {
                 "error": "unavailable",
                 "capability": error.capability,
+                "failure_code": error.failure_code,
+                "stage": error.stage,
                 "message": public_message,
                 "next_step": error.next_step,
+                "diagnostic_id": diagnostic_id,
             })
         except UserActionError as error:
-            self._json(HTTPStatus.CONFLICT, {"ok": False, "error": error.code, "message": error.message})
+            diagnostic_id = _diagnostic_id(
+                self.headers.get("X-OptionHelper-Request-Id") or request_id,
+                error.code,
+                error.stage,
+            )
+            self._audit_operational_failure(
+                request_id,
+                failure_code=error.code,
+                stage=error.stage,
+            )
+            self._json(HTTPStatus.CONFLICT, {
+                "ok": False,
+                "error": error.code,
+                "failure_code": error.code,
+                "stage": error.stage,
+                "message": error.message,
+                "next_step": error.next_step,
+                "diagnostic_id": diagnostic_id,
+            })
         except (ValidationError, ValueError):
+            diagnostic_id = _diagnostic_id(
+                self.headers.get("X-OptionHelper-Request-Id") or request_id,
+                "input_invalid",
+                "input",
+            )
+            self._audit_operational_failure(request_id, failure_code="input_invalid", stage="input")
             self._json(HTTPStatus.BAD_REQUEST, {
                 "error": "invalid_request",
+                "failure_code": "input_invalid",
+                "stage": "input",
                 "message": "本次输入不完整或格式不正确。请检查日期、条款和定价参数后重试。",
                 "detail": "请求不符合受控输入规则",
+                "next_step": "请检查日期、标的、条款与定价或回测参数后重试。",
+                "diagnostic_id": diagnostic_id,
             })
         except KeyError:
             self._json(HTTPStatus.NOT_FOUND, {"error": "not_found", "detail": "请求的受控对象不存在"})
         except CapabilityIntegrityError:
-            self._json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": "capability_integrity_error", "detail": "内置能力完整性校验未通过"})
+            diagnostic_id = _diagnostic_id(request_id, "capability_integrity_error", "capability")
+            self._audit_operational_failure(request_id, failure_code="capability_integrity_error", stage="capability")
+            self._json(HTTPStatus.SERVICE_UNAVAILABLE, {
+                "error": "capability_integrity_error",
+                "failure_code": "capability_integrity_error",
+                "stage": "capability",
+                "detail": "内置能力完整性校验未通过",
+                "next_step": "请重新安装完整的OptionHelper应用后重试。",
+                "diagnostic_id": diagnostic_id,
+            })
         except Exception as error:  # pragma: no cover - safety boundary
             self._json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "internal_error", "detail": type(error).__name__})
 
@@ -967,15 +1016,11 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
                     raise ValidationError("selection.output_type must be card or report")
                 self.app.policy.require(identity.role, capability)
                 body = {"action": "run", "task_id": source["task_id"], "kind": kind, "selection": selection}
-            try:
-                result = self.app.tool_dispatcher.dispatch(
-                    tool, body, identity,
-                    module_context=module_context,
-                    request_id=self.headers.get("X-OptionHelper-Request-Id", ""),
-                )
-            except UnavailableCapabilityError as error:
-                self.app.audit.record(AuditEvent(action="tool.dispatch", principal_id=identity.principal_id, tenant_id=identity.tenant_id, outcome="unavailable", decision="allow", reference=tool, reason=error.capability, request_id=request_id))
-                raise
+            result = self.app.tool_dispatcher.dispatch(
+                tool, body, identity,
+                module_context=module_context,
+                request_id=self.headers.get("X-OptionHelper-Request-Id", ""),
+            )
             self.app.audit.record(AuditEvent(action="tool.dispatch", principal_id=identity.principal_id, tenant_id=identity.tenant_id, outcome="succeeded", decision="allow", reference=tool, request_id=request_id))
             self._json(HTTPStatus.OK, {"tool": tool, "result": result})
             return
@@ -1125,8 +1170,58 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
             )
         )
 
+    def _audit_operational_failure(
+        self,
+        request_id: str,
+        *,
+        failure_code: str,
+        stage: str,
+        reference: str | None = None,
+    ) -> None:
+        """Record a diagnosable failure without persisting request payloads or causes.
 
-def _reject_plain_secrets(value: Any, *, allowed_plaintext_fields: frozenset[str] = frozenset(), depth: int = 0) -> None:
+        The public response carries the same deterministic diagnostic id.  The
+        local audit deliberately stores only the reviewed code and stage: raw
+        provider exceptions can contain paths or credential material.
+        """
+
+        identity = self._optional_identity()
+        if identity is None:
+            return
+        self.app.audit.record(
+            AuditEvent(
+                action="tool.dispatch",
+                principal_id=identity.principal_id,
+                tenant_id=identity.tenant_id,
+                outcome="failed",
+                decision="allow",
+                reference=reference,
+                reason=f"{stage}:{failure_code}",
+                request_id=request_id,
+            )
+        )
+
+
+def _diagnostic_id(request_id: str, failure_code: str, stage: str) -> str:
+    """Return a stable public handle without reflecting implementation detail."""
+
+    material = f"{request_id}|{stage}|{failure_code}".encode("utf-8")
+    return f"diag-{hashlib.sha256(material).hexdigest()[:12]}"
+
+
+def _unavailable_public_message(error: UnavailableCapabilityError) -> str:
+    """Map reviewed App failures to a user-actionable, non-sensitive message."""
+
+    if error.capability == "datafetcher.configuration":
+        return "请先在设置中心填写并保存iFind数据凭据，然后重试。"
+    if error.capability in {"market_data", "backtester.trading_calendar"}:
+        return "行情或交易日历暂不可用。请检查数据获取配置后重新获取所需区间。"
+    if error.failure_code == "capability_execution_failed":
+        return "本次计算未完成。请检查产品条款、行情数据和交易日历后重试。"
+    return "相关本机能力暂不可用。请确认当前任务和数据配置后重试。"
+
+
+def _reject_plain_secrets(value: Any, *, allowed_plaintext_fields: frozenset = frozenset(), depth: int = 0) -> None:
     forbidden = {"password", "token", "api_key", "access_token", "refresh_token", "secret", "secret_value", "private_key"}
     if isinstance(value, dict):
         for key, item in value.items():

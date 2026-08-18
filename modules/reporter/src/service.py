@@ -21,6 +21,7 @@ from runtime.ports.result_store import ResultStorePort
 
 from .artifact_validator import validate_hashed_artifact, validate_written_artifact
 from .config import DEFAULT_REPORTER_CONFIG, default_report_output_root
+from .export_service import reissue_saved_report
 from .models import DISPLAY_MODULES, ReporterError, require_identifier, require_text
 from .reporter_engine import build_report
 from .selection_facts import build_host_selection_source_refs
@@ -47,11 +48,11 @@ def capability(*, result_store_configured: bool = False, designer_port_configure
         "module": "reporter",
         "status": "available" if result_store_configured and designer_port_configured and selection_port_configured else "requires_dependencies",
         "request_schema": "optionhelper.report-request",
-        "actions": ["status", "run"],
+        "actions": ["status", "run", "derive"],
         "required": ["显式ModuleRunRef", "source_refs", "宿主注入ResultStorePort", "宿主注入Designer ModulePort", "宿主注入ResultSelectionPort"],
         "forbidden": sorted(_FORBIDDEN),
         "formats": ["html", "pdf"],
-        "output_types": ["card", "report"],
+        "output_types": ["card", "quote", "report"],
     }
 
 
@@ -107,7 +108,7 @@ def build_selected_request(selection: Mapping[str, Any], *, tenant_id: str, sele
 
     if selection_port is None:
         raise ReporterError("当前Host未注入ResultSelectionPort，不能选择已保存运行结果。")
-    allowed = {"source_id", "candidate_ids", "selected_modules", "module_run_refs", "delivery_mode", "output_type", "format", "audience", "report_run_id", "metadata"}
+    allowed = {"source_id", "candidate_ids", "selected_modules", "module_run_refs", "quote_items", "delivery_mode", "output_type", "format", "audience", "report_run_id", "metadata"}
     unknown = set(selection).difference(allowed)
     if unknown:
         raise ReporterError(f"页面选择含未知字段：{','.join(sorted(unknown))}")
@@ -124,6 +125,59 @@ def build_selected_request(selection: Mapping[str, Any], *, tenant_id: str, sele
     if not isinstance(candidates, list) or not candidates:
         raise ReporterError("所选报告证据没有可用候选")
     candidate_map = {str(item.get("candidate_id")): item for item in candidates if isinstance(item, Mapping) and item.get("candidate_id")}
+    output_type = str(selection.get("output_type", "report")).lower()
+    output_format = str(selection.get("format", "html")).lower()
+    source_refs = build_host_selection_source_refs(source, tenant_id)
+    if output_type == "quote":
+        raw_items = selection.get("quote_items")
+        if not isinstance(raw_items, list) or not raw_items:
+            raise ReporterError("Quote必须逐行选择至少一个已保存运行结果")
+        quote_items: list[dict[str, Any]] = []
+        candidate_ids: list[str] = []
+        seen: set[tuple[str, str, str]] = set()
+        for index, raw_item in enumerate(raw_items, start=1):
+            if not isinstance(raw_item, Mapping) or set(raw_item) != {"candidate_id", "module", "module_run_ref"}:
+                raise ReporterError(f"quote_items[{index}]字段必须为candidate_id、module、module_run_ref")
+            candidate_id = require_identifier(raw_item.get("candidate_id"), f"quote_items[{index}].candidate_id")
+            module = str(raw_item.get("module", "")).strip().lower()
+            if candidate_id not in candidate_map or module not in {"payoff", "pricing", "backtest"}:
+                raise ReporterError(f"quote_items[{index}]候选或来源模块无效")
+            chosen = raw_item.get("module_run_ref")
+            if not isinstance(chosen, Mapping):
+                raise ReporterError(f"quote_items[{index}].module_run_ref必须为对象")
+            options = candidate_map[candidate_id].get("module_run_options")
+            allowed_refs = options.get(module, []) if isinstance(options, Mapping) and isinstance(options.get(module), list) else []
+            if not any(
+                isinstance(option, Mapping) and all(option.get(key) == chosen.get(key) for key in _RUN_REF_FIELDS)
+                for option in allowed_refs
+            ):
+                raise ReporterError(f"quote_items[{index}]的ModuleRunRef不属于当前候选")
+            signature = (candidate_id, module, str(chosen.get("run_id", "")))
+            if signature in seen:
+                raise ReporterError("Quote不得重复选择同一运行")
+            seen.add(signature)
+            if candidate_id not in candidate_ids:
+                candidate_ids.append(candidate_id)
+            quote_items.append({
+                "candidate_id": candidate_id,
+                "module": module,
+                "module_run_ref": {key: chosen.get(key) for key in _RUN_REF_FIELDS},
+            })
+        return {
+            "schema": "optionhelper.report-request",
+            "tenant_id": tenant_id,
+            "task_id": task_id,
+            "report_run_id": require_identifier(selection.get("report_run_id"), "selection.report_run_id"),
+            "analysis_case_id": analysis_case_id,
+            "subject_type": "bundle",
+            "subject_ref": {"delivery_mode": "quote", "candidate_ids": candidate_ids},
+            "source_refs": {**dict(source_refs), "module_run_refs": {}},
+            "quote_items": quote_items,
+            "output_type": "quote",
+            "format": output_format,
+            "audience": str(selection.get("audience", "professional")),
+            "metadata": dict(selection.get("metadata", {})) if isinstance(selection.get("metadata", {}), Mapping) else {},
+        }
     candidate_ids = selection.get("candidate_ids")
     if not isinstance(candidate_ids, list) or not candidate_ids:
         raise ReporterError("页面必须显式选择至少一个候选")
@@ -141,7 +195,6 @@ def build_selected_request(selection: Mapping[str, Any], *, tenant_id: str, sele
         raise ReporterError("单结构报告只能选择一个候选")
     if delivery_mode != "single" and len(selected_ids) < 2:
         raise ReporterError("批量、组合或对比报告至少选择两个候选")
-    source_refs = build_host_selection_source_refs(source, tenant_id)
     requested_refs = selection.get("module_run_refs")
     if not isinstance(requested_refs, Mapping):
         raise ReporterError("页面选择必须显式提交module_run_refs对象")
@@ -172,8 +225,6 @@ def build_selected_request(selection: Mapping[str, Any], *, tenant_id: str, sele
             ):
                 raise ReporterError("页面选择的ModuleRunRef不属于当前候选")
             module_refs[candidate_id][name] = {key: chosen.get(key) for key in _RUN_REF_FIELDS}
-    output_type = str(selection.get("output_type", "report")).lower()
-    output_format = str(selection.get("format", "html")).lower()
     return {
         "schema": "optionhelper.report-request",
         "tenant_id": tenant_id,
@@ -260,6 +311,43 @@ def call_tool(
         return {**capability(result_store_configured=result_store is not None, designer_port_configured=designer_port is not None, selection_port_configured=selection_ready), "action": action}
     if action == "list_report_sources":
         return _selection_catalog(selection_port, tenant_id=require_identifier(tenant_id, "tenant_id"), task_id=body.get("task_id"), query=body.get("query"))
+    if action == "derive":
+        if designer_port is None:
+            return {
+                **capability(result_store_configured=result_store is not None, designer_port_configured=False, selection_port_configured=selection_ready),
+                "action": action,
+                "ok": False,
+                "error": "designer_port_not_injected",
+                "message": "Host必须注入Designer ModulePort。",
+            }
+        if set(body) != {"source", "report_run_id", "format"} or not isinstance(body.get("source"), Mapping):
+            return {
+                "ok": False,
+                "module": "reporter",
+                "status": "rejected",
+                "error": "derive_request_invalid",
+                "message": "转换必须提交source、report_run_id和format。",
+            }
+        try:
+            target = output_root or default_report_output_root(RUNTIME_PATHS)
+            outcome = reissue_saved_report(
+                output_root=target,
+                tenant_id=require_identifier(tenant_id, "tenant_id"),
+                source=body["source"],
+                report_run_id=body["report_run_id"],
+                output_format=body["format"],
+                designer_port=designer_port,
+            )
+            request = json.loads((Path(outcome["directory"]) / "report-request.json").read_text(encoding="utf-8"))
+            return _generated_response(outcome, request=request)
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, ReporterError) as error:
+            return {
+                "ok": False,
+                "module": "reporter",
+                "status": "failed",
+                "error": "derive_failed",
+                "message": str(error),
+            }
     if action != "run":
         return {**capability(result_store_configured=result_store is not None, designer_port_configured=designer_port is not None, selection_port_configured=selection_ready), "action": action, "ok": False, "error": "unsupported_action"}
     if result_store is None:
@@ -338,15 +426,25 @@ class Handler(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(length).decode("utf-8"))
             if not isinstance(body, Mapping):
                 raise ReporterError("请求体必须为ReportRequest对象")
-            if self.result_store is None or self.designer_port is None:
-                raise ReporterError("Reporter服务缺少ResultStorePort或Designer ModulePort。")
-            if not isinstance(body.get("selection"), Mapping):
-                raise ReporterError("页面接口只接受受控selection；机器调用请使用Reporter Tool入口。")
-            request = build_selected_request(body["selection"], tenant_id=self.tenant_id, selection_port=self.selection_port)
-            result = _generated_response(
-                run_report(request, result_store=self.result_store, designer_port=self.designer_port, output_root=self.output_root),
-                request=request,
-            )
+            if isinstance(body.get("derive"), Mapping):
+                result = call_tool(
+                    {"action": "derive", **dict(body["derive"])},
+                    designer_port=self.designer_port,
+                    tenant_id=self.tenant_id,
+                    output_root=self.output_root,
+                )
+                if not result.get("ok"):
+                    raise ReporterError(str(result.get("message") or "报告转换失败"))
+            else:
+                if self.result_store is None or self.designer_port is None:
+                    raise ReporterError("Reporter服务缺少ResultStorePort或Designer ModulePort。")
+                if not isinstance(body.get("selection"), Mapping):
+                    raise ReporterError("页面接口只接受受控selection或derive；机器调用请使用Reporter Tool入口。")
+                request = build_selected_request(body["selection"], tenant_id=self.tenant_id, selection_port=self.selection_port)
+                result = _generated_response(
+                    run_report(request, result_store=self.result_store, designer_port=self.designer_port, output_root=self.output_root),
+                    request=request,
+                )
             return self._json(HTTPStatus.OK, result)
         except (UnicodeDecodeError, json.JSONDecodeError, ReporterError) as error:
             return self._json(HTTPStatus.BAD_REQUEST, {"ok": False, "message": str(error)})

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""OptionHelper Skill安装前的依赖和外部Store检查。"""
+"""OptionHelper Skill安装前的依赖、iFind和外部Store检查。"""
 
 from __future__ import annotations
 
@@ -65,30 +65,11 @@ def check_dependencies(
     }
 
 
-def _configured(environ: Mapping[str, str], name: str) -> bool:
-    return bool(environ.get(name, "").strip())
-
-
-def check_model_api(environ: Mapping[str, str] | None = None) -> dict[str, object]:
-    """Check model configuration without exposing connection details or credentials."""
-
-    values = os.environ if environ is None else environ
-    if _configured(values, "OPTIONHELPER_HOST_URL"):
-        return {"ok": True, "mode": "host", "status": "configured"}
-    required = (
-        "OPTIONHELPER_MODEL_BASE_URL",
-        "OPTIONHELPER_MODEL",
-        "OPTIONHELPER_MODEL_API_KEY",
-    )
-    configured = all(_configured(values, name) for name in required)
-    return {"ok": configured, "mode": "direct", "status": "configured" if configured else "missing"}
-
-
 def check_data_api(environ: Mapping[str, str] | None = None) -> dict[str, object]:
-    """Check only whether the Host configured iFind; never contact a provider."""
+    """Check iFind availability without exposing credentials or contacting a provider."""
 
     values = os.environ if environ is None else environ
-    configured = _configured(values, "IFIND_REFRESH_TOKEN")
+    configured = bool(values.get("IFIND_REFRESH_TOKEN", "").strip())
     return {
         "ok": configured,
         "data_provider": {
@@ -96,7 +77,7 @@ def check_data_api(environ: Mapping[str, str] | None = None) -> dict[str, object
             "credential": "IFIND_REFRESH_TOKEN",
             "status": "configured" if configured else "missing",
         },
-        "note": "预检只检查凭据是否由Host配置，不发起网络或数据请求。",
+        "note": "预检只检查iFind是否已安全配置，不发起网络或数据请求。",
     }
 
 
@@ -113,10 +94,8 @@ def _readiness_guidance(
             "锁定依赖未就绪。请先确认安装，再使用当前解释器执行："
             f'"{sys.executable}" -m pip install -r "{requirements_path}"；安装后重新运行统一就绪检查。'
         )
-    if next_action == "configure_model":
-        return "模型尚未配置。请让Host配置模型，或完整设置兼容模型端点、模型名称和模型凭据后重新检查。"
     if next_action == "configure_data_api":
-        return "iFind尚未配置。请让Host安全注入IFIND_REFRESH_TOKEN后重新检查；无需提供Access Token。"
+        return "iFind尚未配置。请在本机安全配置IFIND_REFRESH_TOKEN后重新检查；无需提供Access Token。"
     if next_action == "fix_store":
         return "项目Store不可用。请将data、result和.optionhelper/runtime设在Skill安装目录之外后重新检查。"
     return "统一就绪检查通过，可进入工作流。"
@@ -143,14 +122,12 @@ def check_readiness(
         runtime_root=runtime_root,
         project_root=project_root,
     )
-    model = check_model_api(environ)
     data_api = check_data_api(environ)
     next_action = next(
         (
             action
             for action, item in (
                 ("install_dependencies", dependencies),
-                ("configure_model", model),
                 ("configure_data_api", data_api),
                 ("fix_store", stores),
             )
@@ -161,7 +138,6 @@ def check_readiness(
     return {
         "ok": next_action is None,
         "dependencies": dependencies,
-        "model": model,
         "data_api": data_api,
         "stores": stores,
         "next_action": next_action,
@@ -232,7 +208,6 @@ def main() -> None:
     parser.add_argument("--project-root", type=Path)
     parser.add_argument("--check-dependencies", action="store_true")
     parser.add_argument("--check-store", action="store_true")
-    parser.add_argument("--check-model-api", action="store_true")
     parser.add_argument("--check-data-api", action="store_true")
     parser.add_argument("--check-readiness", action="store_true")
     args = parser.parse_args()
@@ -257,7 +232,7 @@ def main() -> None:
         if not bool(report["ok"]):
             raise SystemExit(1)
         return
-    explicit_check = args.check_dependencies or args.check_store or args.check_model_api or args.check_data_api
+    explicit_check = args.check_dependencies or args.check_store or args.check_data_api
     check_dependencies_requested = args.check_dependencies or not explicit_check
     check_store_requested = args.check_store or not explicit_check
     report: dict[str, object] = {}
@@ -276,9 +251,6 @@ def main() -> None:
             runtime_root=args.runtime_root,
         )
         ok = ok and bool(report["stores"]["ok"])
-    if args.check_model_api:
-        report["model"] = check_model_api()
-        ok = ok and bool(report["model"]["ok"])
     if args.check_data_api:
         report["data_api"] = check_data_api()
         ok = ok and bool(report["data_api"]["ok"])

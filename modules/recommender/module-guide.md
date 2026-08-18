@@ -2,7 +2,7 @@
 
 ## 正式入口
 
-领域入口为`recommend(RecommendationCase)`。App Agent使用`recommend_fixed(RecommendationCase)`显式进入同一固定状态机，不再经过自由路由。Tool action分别为`recommend`和`recommend_fixed`。本模块只服务`SKILL.md`定义的第三类工作流“结构推荐与正式交付”：闲聊、知识、指定模块运行、已有结果交付、资料维护及自由组合不进入候选状态机。进入本模块前，Skill统一就绪门禁已经确认Host托管模型或独立模型配置以及iFind配置；本模块不索取或记录凭据。
+领域入口为`recommend(RecommendationCase)`。App Agent使用`recommend_fixed(RecommendationCase)`显式进入同一固定状态机，不再经过自由路由。Tool action分别为`recommend`和`recommend_fixed`。本模块只服务`SKILL.md`定义的第三类工作流“结构推荐与正式交付”：闲聊、知识、指定模块运行、已有结果交付、资料维护及自由组合不进入候选状态机。当前对话大模型负责理解用户意图；Skill统一就绪门禁只确认iFind配置。本模块不索取或记录凭据。
 
 用户已经明确指定产品时不进入候选选择，只验证该产品、标的和覆盖参数；用户指定一个或多个分析模块时直接进入相应模块；用户要求整理已有结果时直接进入Reporter。只有需要从市场观点或约束中选择结构时才运行本模块。
 

@@ -205,9 +205,16 @@ def prepare_compute_request(
         if len(history_refs) != 1 or len(calendar_refs) > 1:
             raise ContractResolutionError("BacktestInput必须绑定唯一历史DataAssetRef，交易日历最多一项")
         if calendar_refs:
-            historical_data = bind_verified_calendar_to_history(
-                history_refs[0], calendar_refs[0], data_store,
+            # The App must persist a calendar-bound history ref *before* this
+            # formal compilation.  ``DataAssetRef.storage_ref`` commits every
+            # coverage field, so mutating it here would invalidate the opaque
+            # reference when Backtester reads the bytes.  We still verify the
+            # separately supplied calendar against that persisted coverage in
+            # order to freeze observation schedules from authenticated dates.
+            _require_history_calendar_matches_verified_calendar(
+                history_refs[0], calendar,
             )
+            historical_data = history_refs[0]
         else:
             # A non-observation contract can use the calendar provenance already
             # authenticated in its one history asset.  This preserves the
@@ -344,6 +351,49 @@ def bind_verified_calendar_to_history(
         "calendar_ref": calendar["calendar_ref"],
     })
     return {**history, "coverage": coverage}
+
+
+def _require_history_calendar_matches_verified_calendar(
+    history_ref: Mapping[str, Any],
+    calendar: Mapping[str, Any] | None,
+) -> None:
+    """Require a persisted history reference to carry the verified calendar.
+
+    This is intentionally a comparison rather than an in-memory mutation of
+    the history ref.  A DataAssetRef is metadata-committed by its storage
+    reference, therefore adding calendar facts after it was issued makes the
+    otherwise correct CSV unreadable to the formal Backtester.
+    """
+
+    if calendar is None:
+        raise ContractResolutionError("BacktestInput缺少Host验证交易日历")
+    history = _canonical_data_ref(history_ref)
+    coverage = history.get("coverage")
+    if history.get("schema_id") != "market-history" or not isinstance(coverage, Mapping):
+        raise ContractResolutionError("BacktestInput历史行情必须声明交易日历覆盖")
+    start = coverage.get("start_date", coverage.get("start"))
+    end = coverage.get("end_date", coverage.get("end"))
+    try:
+        start_day = date.fromisoformat(str(start)).isoformat()
+        end_day = date.fromisoformat(str(end)).isoformat()
+    except ValueError as error:
+        raise ContractResolutionError("历史行情DataAssetRef.coverage必须声明YYYY-MM-DD起止日") from error
+    expected_sessions = [
+        session for session in calendar["sessions"]
+        if start_day <= session <= end_day
+    ]
+    if (
+        not expected_sessions
+        or expected_sessions[0] != start_day
+        or expected_sessions[-1] != end_day
+        or coverage.get("calendar_id") != calendar["calendar_id"]
+        or coverage.get("calendar_revision") != calendar["calendar_revision"]
+        or coverage.get("sessions") != expected_sessions
+        or coverage.get("calendar_coverage_end") != expected_sessions[-1]
+    ):
+        raise ContractResolutionError(
+            "BacktestInput历史行情必须使用已持久化的Host验证交易日历；请重新获取该回测区间行情。"
+        )
 
 
 def _require_declared_history_calendar(history_ref: Mapping[str, Any]) -> None:

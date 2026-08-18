@@ -17,6 +17,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
+from urllib.request import urlopen
 import uuid
 from typing import Any
 
@@ -406,7 +408,6 @@ def backend_build_command(workspace: Path) -> list[str]:
         sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", "--onedir",
         "--name", "OptionHelperBackend", "--distpath", str(dist), "--workpath", str(workspace / "pyinstaller-work"),
         "--specpath", str(workspace / "pyinstaller-spec"), "--paths", str(APP_ROOT),
-        "--exclude-module", "runtime", "--exclude-module", "modules",
     ]
     # The launcher imports the AppServer after configuring resource paths.
     # Make the module an explicit PyInstaller root so a rebuilt App cannot
@@ -473,6 +474,60 @@ def build_backend(workspace: Path, resources: Path) -> Path:
     verify_backend_payload(package)
     copied = copy_backend_bundle(package, resources)
     return copied / "OptionHelperBackend"
+
+
+def probe_backend_startup(backend: Path, resources: Path, workspace: Path) -> None:
+    """Prove that the frozen App Host can import and publish its loopback API.
+
+    The AppServer imports ``runtime`` and calendar-policy modules during normal
+    startup.  A PDF-only probe does not traverse that import path, so it cannot
+    catch a PyInstaller exclusion that leaves the desktop UI without a backend.
+    """
+
+    state = workspace / "backend-startup-probe-state"
+    log = workspace / "backend-startup-probe.log"
+    state.mkdir(parents=True, exist_ok=False)
+    with log.open("w", encoding="utf-8") as handle:
+        process = subprocess.Popen(
+            [str(backend), "--data-dir", str(state), "--resource-dir", str(resources)],
+            cwd=backend.parent,
+            stdout=handle,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+    try:
+        deadline = time.monotonic() + 20.0
+        url = ""
+        while time.monotonic() < deadline:
+            output = log.read_text(encoding="utf-8", errors="replace") if log.exists() else ""
+            for line in output.splitlines():
+                if line.startswith("OPTIONHELPER_URL="):
+                    url = line.removeprefix("OPTIONHELPER_URL=").strip()
+                    break
+            if url:
+                try:
+                    with urlopen(url + "/api/health", timeout=2.0) as response:  # nosec B310 - loopback URL emitted by this process
+                        payload = json.loads(response.read().decode("utf-8"))
+                    if payload.get("status") != "ok":
+                        raise MacOSBuildError("冻结后端健康检查返回无效状态")
+                    return
+                except OSError:
+                    # The launcher wrote its URL before the HTTP thread was
+                    # fully listening.  Retry inside the bounded probe window.
+                    pass
+            if process.poll() is not None:
+                break
+            time.sleep(0.1)
+        output = log.read_text(encoding="utf-8", errors="replace") if log.exists() else ""
+        raise MacOSBuildError("冻结后端未能启动并发布本地服务：" + output[-2000:])
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=5)
 
 
 def finder_conflicts(root: Path) -> list[Path]:
@@ -651,6 +706,7 @@ def build_macos(
         _progress("正在构建后端运行时")
         backend = build_backend(temporary, resources)
         run([str(backend), "--probe-pdf-runtime", "--resource-dir", str(resources)])
+        probe_backend_startup(backend, resources, temporary)
         verify_bundle(bundle, manifest)
         assert_no_finder_conflicts(bundle)
         bundle_size = _backend_size(bundle)

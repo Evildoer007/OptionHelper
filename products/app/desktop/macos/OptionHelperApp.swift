@@ -78,9 +78,16 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
             showFailure("找不到内置App Host")
             return
         }
-        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("OptionHelper", isDirectory: true)
-            .appendingPathComponent("local-state", isDirectory: true)
+        let environment = ProcessInfo.processInfo.environment
+        let requestedDataDirectory = environment["OPTIONHELPER_APP_DATA_DIR"]?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let support: URL
+        if let requestedDataDirectory, !requestedDataDirectory.isEmpty {
+            support = URL(fileURLWithPath: requestedDataDirectory, isDirectory: true)
+        } else {
+            support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent("OptionHelper", isDirectory: true)
+                .appendingPathComponent("local-state", isDirectory: true)
+        }
         do {
             try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
         } catch {

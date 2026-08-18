@@ -27,8 +27,8 @@
 
 ## 交互边界
 
-- Skill的统一就绪门禁已在任何工作流前确认模型和`IFIND_REFRESH_TOKEN`；DataFetcher不重复索取、读取、显示或记录凭据内容。
-- 若运行时凭据失效或Host撤销配置，在Provider调用前说明：“当前数据服务不可用。请检查iFind Refresh Token或Host配置后继续。”保留已确认的标的、日期和字段，不重复询问。
+- Skill的统一就绪门禁已在任何工作流前确认`IFIND_REFRESH_TOKEN`；DataFetcher不重复索取、读取、显示或记录凭据内容。
+- 若运行时凭据失效或数据配置被撤销，在Provider调用前说明：“当前数据服务不可用。请检查iFind Refresh Token配置后继续。”保留已确认的标的、日期和字段，不重复询问。
 - 已配置但失败时，分别说明凭据无效或过期、网络不可用、Provider异常、数据权限不足，不把所有失败都归类为未配置。
 - 默认使用iFind API实时获取或刷新中国市场数据；只有用户明确选择离线数据时才使用本地CSV，不把本地CSV作为无提示回退。
 - iFind只要求Host保存Refresh Token，短期访问凭据由Provider自动获取和更新。不得要求用户同时维护两种Token。

@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import base64
 from copy import deepcopy
+from math import isfinite
+from numbers import Real
 from pathlib import Path
 import re
 from typing import Any, Mapping
@@ -74,6 +76,35 @@ _PUBLIC_LIMITATION_TEXT = {
     "in_memory_historical_data_without_persisted_data_asset": "历史数据仅绑定本次运行，未形成可复用的数据资产。",
 }
 _PUBLIC_CANDIDATE_INDEX = ("", "一", "二", "三", "四", "五", "六", "七", "八", "九", "十")
+_QUOTE_EXCLUDED_TERMS = {"Delta", "Gamma", "Vega", "Theta", "Rho"}
+_QUOTE_PREMIUM_TERMS = {
+    "Pi_0": "期权费",
+    "P_net": "净期权费",
+    "p": "期权费率",
+}
+_QUOTE_TERM_PRIORITY = {
+    "期限": 10,
+    "执行价": 20,
+    "执行价1": 21,
+    "执行价2": 22,
+    "执行价3": 23,
+    "期权费": 30,
+    "净期权费": 31,
+    "期权费率": 32,
+    "敲入水平": 40,
+    "敲出水平": 41,
+    "障碍水平": 42,
+    "票息": 50,
+    "票息率": 51,
+    "参与率": 60,
+    "观察设置": 70,
+    "结算方式": 80,
+}
+_GENERIC_RECOMMENDATION_TEXT = frozenset({
+    "与已确认市场判断和风险边界相符。",
+    "可承受结构化产品风险。",
+    "候选排序和适用边界来自冻结的推荐结果。",
+})
 
 
 def _public_text(value: Any, fallback: str = "") -> str:
@@ -104,13 +135,16 @@ def _public_recommendation(value: Any) -> dict[str, Any]:
     raw = value if isinstance(value, Mapping) else {}
     underlyings = _public_strings(raw.get("underlyings"))
     product_name = _public_text(raw.get("product_name"))
+    reason = _public_text(raw.get("reason"))
+    if reason in _GENERIC_RECOMMENDATION_TEXT:
+        reason = ""
     result = {
         "product_name": product_name,
         "headline": _public_text(raw.get("headline") or product_name),
         "structure_name": _public_text(raw.get("structure_name") or product_name),
         "underlyings": "、".join(underlyings),
-        "reason": _public_text(raw.get("reason")),
-        "suitable_for": _public_strings(raw.get("suitable_for")),
+        "reason": reason,
+        "suitable_for": [item for item in _public_strings(raw.get("suitable_for")) if item not in _GENERIC_RECOMMENDATION_TEXT],
         "not_suitable_for": _public_strings(raw.get("not_suitable_for")),
         "main_risks": _public_strings(raw.get("main_risks")),
     }
@@ -201,6 +235,8 @@ def _display_module(name: str, raw: Mapping[str, Any], *, artifact_paths: Mappin
 
 
 def _sections(unit: Mapping[str, Any], request: ReportRequest) -> list[str]:
+    if request.output_type == "quote":
+        return []
     if request.output_type == "report":
         # A Report is a complete reader document.  Modules without usable
         # evidence retain their own truthful state in the corresponding
@@ -210,6 +246,8 @@ def _sections(unit: Mapping[str, Any], request: ReportRequest) -> list[str]:
 
 
 def _report_title(unit: Mapping[str, Any], request: ReportRequest) -> str:
+    if request.output_type == "quote":
+        return "推荐结构及参考报价"
     subject = unit.get("subject") if isinstance(unit.get("subject"), Mapping) else {}
     product_name = _public_text(subject.get("product_name"))
     raw_underlyings = subject.get("underlyings")
@@ -314,6 +352,105 @@ def _structured_conclusion(payload: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _quote_term_value(row: Mapping[str, Any]) -> tuple[str, str] | None:
+    """Return one public, reader-facing contract term for a Quote row."""
+
+    label = _public_text(row.get("label"))
+    value = _public_text(row.get("value"))
+    note = _public_text(row.get("note"))
+    if not label or not value or label in _QUOTE_EXCLUDED_TERMS:
+        return None
+    return label, f"{value}{note}" if label == "期限" and note else value
+
+
+def _quote_premium_value(symbol: str, value: Any) -> str:
+    """Format only the contract's normalized premium convention for Quote."""
+
+    if isinstance(value, Real) and not isinstance(value, bool) and isfinite(float(value)):
+        percent = float(value) * 100 if symbol == "p" else float(value)
+        return f"{percent:,.2f}".rstrip("0").rstrip(".") + "%"
+    return _public_text(value)
+
+
+def _quote_terms(unit: Mapping[str, Any], content: Mapping[str, Any]) -> list[tuple[str, str]]:
+    """Return basic contract terms only, including the normalized option premium."""
+
+    highlights = content.get("contract_highlights") if isinstance(content.get("contract_highlights"), list) else []
+    terms = [item for highlight in highlights if isinstance(highlight, Mapping) and (item := _quote_term_value(highlight))]
+    labels = {label for label, _ in terms}
+    contract = unit.get("contract") if isinstance(unit.get("contract"), Mapping) else {}
+    raw_terms = contract.get("terms") if isinstance(contract.get("terms"), Mapping) else {}
+    for symbol, label in _QUOTE_PREMIUM_TERMS.items():
+        if label in labels or symbol not in raw_terms:
+            continue
+        value = _quote_premium_value(symbol, raw_terms[symbol])
+        if value:
+            terms.append((label, value))
+            labels.add(label)
+    return terms
+
+
+def _quote_from_units(units: list[Mapping[str, Any]], request: ReportRequest) -> dict[str, Any]:
+    """Build the standard Quote table from explicitly selected frozen runs."""
+
+    grouped: dict[tuple[str, ...], dict[str, Any]] = {}
+    for unit in units:
+        content = unit.get("content") if isinstance(unit.get("content"), Mapping) else {}
+        recommendation = _public_recommendation(content.get("recommendation"))
+        subject = unit.get("subject") if isinstance(unit.get("subject"), Mapping) else {}
+        structure = _public_text(
+            recommendation.get("structure_name")
+            or recommendation.get("product_name")
+            or subject.get("product_name"),
+            "期权结构",
+        )
+        underlyings = tuple(_public_strings(subject.get("underlyings")))
+        if not underlyings:
+            raise ReporterError("Quote合同快照缺少真实挂钩标的")
+        terms = _quote_terms(unit, content)
+        if not any(label == "期限" for label, _ in terms) or len(terms) < 2:
+            raise ReporterError("Quote合同快照缺少期限或可展示的基本条款，请重新选择有效运行结果")
+        group = grouped.setdefault(underlyings, {"rows": [], "labels": []})
+        row = {"structure": structure}
+        for label, value in _quote_terms(unit, content):
+            if label in row:
+                continue
+            row[label] = value
+            if label not in group["labels"]:
+                group["labels"].append(label)
+        group["rows"].append(row)
+
+    groups: list[dict[str, Any]] = []
+    for underlyings, group in grouped.items():
+        labels = sorted(
+            group["labels"],
+            key=lambda label: (_QUOTE_TERM_PRIORITY.get(label, 999), group["labels"].index(label)),
+        )
+        columns = [{"key": "structure", "label": "结构类型", "format": "text"}]
+        label_keys: dict[str, str] = {}
+        for index, label in enumerate(labels, start=1):
+            key = f"term_{index}"
+            label_keys[label] = key
+            columns.append({"key": key, "label": label, "format": "text"})
+        rows = []
+        for raw_row in group["rows"]:
+            row = {"structure": raw_row["structure"]}
+            for label in labels:
+                row[label_keys[label]] = raw_row.get(label, "—")
+            rows.append(row)
+        title = f"挂钩标的：{'、'.join(underlyings)}" if len(underlyings) == 1 else f"挂钩标的组合：{'、'.join(underlyings)}"
+        groups.append({"title": title, "columns": columns, "rows": rows})
+
+    if not groups:
+        raise ReporterError("参考报价缺少可展示的已选结构")
+    as_of_date = str(request.metadata.get("as_of_date", "")).strip()
+    return {
+        **({"quote_date": as_of_date} if as_of_date else {}),
+        "note": "本表按本次明确选择的结构及参数运行结果整理。实际交易前请与交易台确认最终报价。",
+        "groups": groups,
+    }
+
+
 def build_designer_payload(
     unit: Mapping[str, Any],
     request: ReportRequest,
@@ -324,6 +461,15 @@ def build_designer_payload(
 
     content = unit.get("content") if isinstance(unit.get("content"), Mapping) else {}
     artifact_paths = artifact_paths or {}
+    if request.output_type == "quote":
+        return {
+            "schema": DESIGNER_PAYLOAD_SCHEMA,
+            "meta": {
+                "title": _report_title(unit, request),
+                "as_of_date": _report_as_of_date(request, content),
+            },
+            "reference_quote": _quote_from_units([unit], request),
+        }
     meta = {
         "title": _report_title(unit, request),
         "as_of_date": _report_as_of_date(request, content),
@@ -354,6 +500,16 @@ def build_designer_payload(
         # 情景摘要，避免把内部运行记录带入对外交付物。
         recommendation = payload["recommendation"] if isinstance(payload["recommendation"], Mapping) else {}
         payload["recommendation"] = dict(recommendation)
+        reason_points = [
+            value for value in (
+                _public_text(recommendation.get("reason")),
+                *(_public_strings(recommendation.get("suitable_for"))),
+            ) if value
+        ]
+        if reason_points:
+            payload["recommendation"]["reason_points"] = list(dict.fromkeys(reason_points))[:3]
+        else:
+            payload["recommendation"]["reason_points"] = ["本次冻结推荐结果没有可公开的市场观点与结构适配依据。"]
         risk = payload["risk"] if isinstance(payload["risk"], Mapping) else {}
         payload["risk"] = {
             **dict(risk),
@@ -408,6 +564,12 @@ def build_collection_payload(units: list[Mapping[str, Any]], request: ReportRequ
     详细单合同图与指标仍以单元附件输出，避免跨候选混写。
     """
 
+    if request.output_type == "quote":
+        return {
+            "schema": DESIGNER_PAYLOAD_SCHEMA,
+            "meta": {"title": "推荐结构及参考报价", "as_of_date": str(request.metadata.get("as_of_date", ""))},
+            "reference_quote": _quote_from_units(units, request),
+        }
     alternatives: list[dict[str, Any]] = []
     risk_items: list[str] = []
     for index, unit in enumerate(units, start=1):

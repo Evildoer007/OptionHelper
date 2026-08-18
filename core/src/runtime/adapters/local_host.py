@@ -86,6 +86,21 @@ class LocalProjectLayout:
         return cls(skill_root=skill, project_root=project, data_root=data, result_root=result, project_identity=identity)
 
     def initialize(self) -> None:
+        # ``dir_fd`` and ``O_DIRECTORY`` are POSIX-only.  Windows must use
+        # pathname operations, but keep the same invariant: the project root
+        # and each store directory are checked as real directories before and
+        # after creation, and a symlink is never accepted.
+        supports_dir_fd = getattr(os, "supports_dir_fd", set())
+        posix_directory_api = (
+            os.name != "nt"
+            and bool(getattr(os, "O_DIRECTORY", 0))
+            and os.mkdir in supports_dir_fd
+            and os.stat in supports_dir_fd
+        )
+        if not posix_directory_api:
+            self._initialize_portable()
+            return
+
         flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
         try:
             descriptor = os.open(self.project_root, flags)
@@ -104,6 +119,36 @@ class LocalProjectLayout:
                     raise LocalHostError(f"{label}必须是非符号链接目录。")
         finally:
             os.close(descriptor)
+
+    def _initialize_portable(self) -> None:
+        """Initialize stores on platforms without POSIX directory handles.
+
+        Windows has no ``openat``/``dir_fd`` equivalent in Python.  The
+        root identity is therefore rechecked around every mutation and the
+        resulting entries are inspected with ``lstat``.  This preserves the
+        fail-closed symlink policy without making the Skill POSIX-only.
+        """
+
+        def assert_root() -> None:
+            if _path_identity(self.project_root, "研究项目目录") != self.project_identity:
+                raise LocalHostError("研究项目目录在Host初始化前发生变化。")
+
+        assert_root()
+        for name, label in (("data", "项目DataStore"), ("result", "项目ResultStore")):
+            assert_root()
+            target = self.project_root / name
+            try:
+                os.mkdir(target, mode=0o700)
+            except FileExistsError:
+                pass
+            assert_root()
+            try:
+                entry = os.lstat(target)
+            except OSError as error:
+                raise LocalHostError(f"{label}不可用。") from error
+            if stat.S_ISLNK(entry.st_mode) or not stat.S_ISDIR(entry.st_mode):
+                raise LocalHostError(f"{label}必须是非符号链接目录。")
+        assert_root()
 
 
 class LocalHostAuthority:

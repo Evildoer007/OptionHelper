@@ -645,7 +645,7 @@ def _svg_color(value: str | None, *, fallback: str | None = None) -> str | None:
         # Payoffer's report SVG uses its governed red-gold title gradient.
         # ReportLab has no SVG gradient decoder; retain the canonical brand-red
         # visual rather than dropping the supplied title band.
-        return "#C8102E"
+        return TOKEN_COLORS["brand_red"]
     if re.fullmatch(r"#[0-9A-Fa-f]{3}", candidate):
         return "#" + "".join(char * 2 for char in candidate[1:])
     return candidate if re.fullmatch(r"#[0-9A-Fa-f]{6}", candidate) else fallback
@@ -722,7 +722,7 @@ def _svg_flowable(markup: str, *, content_width: float, latin_font: str, cjk_fon
                 return ((x - offset_x) * scale_x, self.height - (y - offset_y) * scale_y)
 
             def set_paint(paint: Mapping[str, str]) -> tuple[bool, bool]:
-                fill = _svg_color(paint.get("fill"), fallback="#252B35")
+                fill = _svg_color(paint.get("fill"), fallback=TOKEN_COLORS["ink"])
                 stroke = _svg_color(paint.get("stroke"))
                 opacity = max(0.0, min(1.0, _svg_number(paint.get("opacity"), 1.0)))
                 if fill:
@@ -824,7 +824,7 @@ def _svg_flowable(markup: str, *, content_width: float, latin_font: str, cjk_fon
                     walk(child, paint)
 
             canvas.saveState()
-            walk(root, {"fill": "#252B35"})
+            walk(root, {"fill": TOKEN_COLORS["ink"]})
             canvas.restoreState()
 
     return _PayoffSvg()
@@ -847,7 +847,12 @@ def _chart_flowable(spec: Mapping[str, Any], *, content_width: float, latin_font
     series = list(spec.get("series") or [])
     width = content_width
     height = min(max(190.0, width * 0.45), 270.0)
-    palette = ("#C8102E", "#49647D", "#9C722C", "#7A8591")
+    palette = (
+        TOKEN_COLORS["brand_red"],
+        TOKEN_COLORS["blue_gray"],
+        TOKEN_COLORS["risk_gold"],
+        TOKEN_COLORS["chart_gray"],
+    )
 
     def number(value: Any) -> float | None:
         try:
@@ -855,6 +860,18 @@ def _chart_flowable(spec: Mapping[str, Any], *, content_width: float, latin_font
         except (TypeError, ValueError):
             return None
         return parsed if math.isfinite(parsed) else None
+
+    def interpolate_hex(start: str, end: str, ratio: float) -> str:
+        """Interpolate two Designer colors without introducing a new palette."""
+
+        def rgb(value: str) -> tuple[int, int, int]:
+            value = value.removeprefix("#")
+            return tuple(int(value[index : index + 2], 16) for index in (0, 2, 4))
+
+        ratio = max(0.0, min(1.0, ratio))
+        start_rgb, end_rgb = rgb(start), rgb(end)
+        channels = [round(left + (right - left) * ratio) for left, right in zip(start_rgb, end_rgb)]
+        return "#" + "".join(f"{channel:02X}" for channel in channels)
 
     class _Chart(Flowable):
         def __init__(self) -> None:
@@ -871,11 +888,11 @@ def _chart_flowable(spec: Mapping[str, Any], *, content_width: float, latin_font
             left, right, top, bottom = 44.0, 16.0, 20.0, 34.0
             plot_width, plot_height = max(1.0, self.width - left - right), max(1.0, self.height - top - bottom)
             canvas.saveState()
-            canvas.setFillColor(colors.HexColor("#FEFDFB"))
+            canvas.setFillColor(colors.HexColor(TOKEN_COLORS["paper"]))
             canvas.setStrokeColor(colors.HexColor(TOKEN_COLORS["rule_strong"]))
             canvas.setLineWidth(.55)
             canvas.rect(0, 0, self.width, self.height, fill=1, stroke=1)
-            canvas.setStrokeColor(colors.HexColor("#A8B0B8"))
+            canvas.setStrokeColor(colors.HexColor(TOKEN_COLORS["chart_gray"]))
             canvas.setLineWidth(.45)
             canvas.line(left, bottom, left, bottom + plot_height)
             canvas.line(left, bottom, left + plot_width, bottom)
@@ -891,10 +908,11 @@ def _chart_flowable(spec: Mapping[str, Any], *, content_width: float, latin_font
                         continue
                     value = number(row[2])
                     ratio = 0.5 if high == low else max(0.0, min(1.0, (value - low) / (high - low)))
-                    red = int(245 - 52 * ratio)
-                    green = int(239 - 112 * ratio)
-                    blue = int(235 - 144 * ratio)
-                    canvas.setFillColor(colors.Color(red / 255, green / 255, blue / 255))
+                    if ratio <= 0.5:
+                        fill = interpolate_hex(TOKEN_COLORS["heatmap_low"], TOKEN_COLORS["brand_red"], ratio * 2)
+                    else:
+                        fill = interpolate_hex(TOKEN_COLORS["brand_red"], TOKEN_COLORS["blue_gray"], (ratio - 0.5) * 2)
+                    canvas.setFillColor(colors.HexColor(fill))
                     canvas.rect(left + x_index * plot_width / x_count, bottom + y_index * plot_height / y_count, plot_width / x_count, plot_height / y_count, fill=1, stroke=0)
             else:
                 values = [number(item) for entry in series for item in list(entry.get("data") or [])]
@@ -909,7 +927,7 @@ def _chart_flowable(spec: Mapping[str, Any], *, content_width: float, latin_font
                     low, high = low - 1.0, high + 1.0
                 for tick in range(5):
                     y = bottom + plot_height * tick / 4
-                    canvas.setStrokeColor(colors.HexColor("#E3E5E7"))
+                    canvas.setStrokeColor(colors.HexColor(TOKEN_COLORS["rule"]))
                     canvas.setDash(2, 2)
                     canvas.line(left, y, left + plot_width, y)
                 canvas.setDash()

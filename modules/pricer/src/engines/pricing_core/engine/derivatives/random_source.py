@@ -101,10 +101,16 @@ class NpyRandomSource:
         if not isinstance(steps, int) or isinstance(steps, bool) or steps < 0:
             raise ValueError("steps必须为非负整数")
         rows, columns = self.info.shape
-        if paths > rows:
-            raise ValueError(f"paths={paths}超过随机数矩阵路径上限{rows}")
         if steps > columns:
             raise ValueError(f"steps={steps}超过随机数矩阵期限上限{columns}")
+        if paths > rows:
+            if self.info.seed is None:
+                raise ValueError("随机数矩阵路径不足，且该随机源没有可复现seed，无法按请求路径数扩展")
+            # Keep the frozen matrix as the prefix and extend only in memory.
+            # RandomState fills C-order rows, so regenerating the declared
+            # column width preserves every existing baseline draw exactly.
+            extended = np.random.RandomState(self.info.seed).standard_normal((paths, columns))
+            return np.ascontiguousarray(extended[:, :steps], dtype=DEFAULT_RANDOM_DTYPE)
         contiguous = np.ascontiguousarray(self._array[:paths, :steps])
         return np.frombuffer(
             contiguous.tobytes(order="C"),

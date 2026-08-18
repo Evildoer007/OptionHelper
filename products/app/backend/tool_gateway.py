@@ -34,7 +34,11 @@ from runtime.capability_import import load_verified_source_module, verified_capa
 from runtime.protocol.module_host import HostObjectRef, ModuleHostContextError, require_host_bound_run_contract
 from runtime.protocol.models import CallerContext, ModuleRunRef
 from runtime.ports.tool_gateway import ToolGatewayPort
-from modules.pricer.calendar_policy import requires_future_trading_calendar_for_protocol
+from modules.pricer.calendar_policy import (
+    requires_future_trading_calendar,
+    requires_future_trading_calendar_for_protocol,
+)
+from runtime.knowledger import load_registry
 
 
 class ToolGateway:
@@ -209,7 +213,7 @@ class ToolGateway:
                             for ref in data_refs
                         ):
                             raise ValidationError("正式计算DataAssetRef必须已绑定当前App任务")
-                        if tool_name in {"pricer", "backtester"} and data_refs:
+                        if tool_name in {"payoffer", "pricer", "backtester"} and data_refs:
                             if self._datafetcher is None:
                                 raise UnavailableCapabilityError(
                                     f"{tool_name}.data_store", "App DataFetcherAdapter is not configured",
@@ -342,7 +346,9 @@ class ToolGateway:
             except Exception as error:
                 raise UnavailableCapabilityError(
                     f"Capability tool {tool_name}",
-                    "the verified Capability rejected or could not execute this request",
+                    "计算内核未能完成本次请求。请检查产品条款、行情数据和交易日历后重试。",
+                    failure_code="capability_execution_failed",
+                    stage="compute",
                 ) from error
         if not isinstance(result, dict):
             raise ValidationError("Capability tool must return a JSON object")
@@ -363,20 +369,35 @@ class ToolGateway:
         request_id: str = "",
         task_id: str = "",
     ) -> list[dict[str, Any]]:
-        if module == "payoffer":
-            return []
-        if self._data_assets is None:
-            raise ValidationError("App DataStore未配置，无法绑定正式计算数据")
         raw_identity = payload.get("identity", {})
         if not isinstance(raw_identity, Mapping):
             raise ValidationError("identity必须为对象")
         frozen = existing_contract.get("resolved_contract") if isinstance(existing_contract, Mapping) else None
         frozen_identity = frozen.get("identity", {}) if isinstance(frozen, Mapping) else {}
+        # A plain Payoffer projection has neither a market-data nor an
+        # underlying precondition.  Observation products remain different:
+        # their first frozen contract must bind the schedule calendar below.
+        if module == "payoffer" and not _requires_observation_contract_calendar(frozen, payload):
+            return []
+        if self._data_assets is None:
+            raise ValidationError("App DataStore未配置，无法绑定正式计算数据")
         underlyings = frozen_identity.get("underlyings", raw_identity.get("underlyings", []))
         if isinstance(underlyings, str):
             underlyings = [item.strip() for item in underlyings.split(",") if item.strip()]
         if not isinstance(underlyings, (list, tuple)) or not underlyings:
             raise ValidationError("计算请求必须填写underlyings")
+        assets = tuple(map(str, underlyings))
+        if module == "payoffer":
+            calendar_ref = self._resolve_or_fetch_trading_calendar(
+                payload,
+                frozen,
+                assets,
+                identity,
+                request_id=request_id,
+                task_id=task_id,
+                required=True,
+            )
+            return [calendar_ref]
         requested: object = None
         if module == "pricer":
             raw_refs = payload.get("market_data_refs")
@@ -400,8 +421,8 @@ class ToolGateway:
                         return []
         else:
             requested = payload.get("historical_data", payload.get("history_reference"))
-        assets = tuple(map(str, underlyings))
         history_request = _history_fetch_request(module, payload, frozen, assets)
+        history_calendar_ref: Mapping[str, Any] | None = None
         try:
             history_ref = self._data_assets.resolve_for_compute(
                 identity,
@@ -414,6 +435,19 @@ class ToolGateway:
                 raise
             history_ref = None
 
+        if history_ref is not None and not _history_ref_covers_request(history_ref, history_request):
+            if not _empty_data_reference(requested):
+                raise UserActionError(
+                    "market_history_coverage_insufficient",
+                    "所选历史行情未覆盖本次定价或回测所需区间。请在数据获取中重新获取完整区间后重试。",
+                    stage="data",
+                    next_step="请重新获取覆盖当前标的和完整期限的日频行情，或取消锁定的历史数据后重试。",
+                )
+            # A previously attached short history must not shadow a newer
+            # complete-tenor request.  Fetch and bind a compatible asset
+            # below instead of letting the capability fail generically.
+            history_ref = None
+
         if module == "backtester" and (
             history_ref is None or not _has_verified_backtest_calendar(history_ref)
         ):
@@ -421,6 +455,8 @@ class ToolGateway:
                 raise UserActionError(
                     "backtest_calendar_evidence_required",
                     "所选历史行情未附已验证交易日历。请在数据获取中重新获取覆盖本次回测区间的行情后重试。",
+                    stage="data",
+                    next_step="请重新获取附带已验证交易日历的历史行情，或取消锁定的历史数据后重试。",
                 )
             if not task_id:
                 raise ValidationError("自动历史回测必须绑定当前App任务")
@@ -430,6 +466,7 @@ class ToolGateway:
                 request_id=request_id,
                 task_id=task_id,
             )
+            history_calendar_ref = calendar_ref
             history_ref = self._fetch_and_bind_history(
                 history_request,
                 identity,
@@ -450,50 +487,167 @@ class ToolGateway:
             else:
                 self._attach_data_ref(identity, task_id, history_ref)
         refs = [history_ref]
-        if module == "pricer":
+        if module == "backtester" and _requires_observation_contract_calendar(frozen, payload):
+            # ``resolve_for_compute`` deliberately accepts only an opaque
+            # selector from the browser.  The calendar just fetched above is
+            # an internal full DataAsset record, so reduce it to that same
+            # safe selector before routing it back through the resolver.
+            bound_calendar = (
+                _data_asset_selector(history_calendar_ref)
+                if history_calendar_ref is not None
+                else _calendar_reference_bound_to_history(history_ref)
+            )
+            calendar_ref = self._resolve_or_fetch_trading_calendar(
+                payload,
+                frozen,
+                assets,
+                identity,
+                request_id=request_id,
+                task_id=task_id,
+                required=True,
+                requested_calendar=bound_calendar,
+            )
+            refs.append(calendar_ref)
+        elif module == "pricer":
             requested_calendar = payload.get("trading_calendar_ref")
             requires_calendar = _requires_path_calendar(frozen, payload)
-            has_requested_calendar = requested_calendar is not None and requested_calendar != ""
-            if requires_calendar or has_requested_calendar:
-                try:
-                    calendar_ref = self._data_assets.resolve_for_compute(
-                        identity,
-                        requested_calendar,
-                        asset_ids=tuple(map(str, underlyings)),
-                        schema_id="trading-calendar",
-                        optional=False,
-                    )
-                except UserActionError:
-                    if has_requested_calendar or not requires_calendar:
-                        raise
-                    if self._datafetcher is None:
-                        raise UnavailableCapabilityError(
-                            "pricer.trading_calendar", "App DataFetcherAdapter is not configured",
-                        )
-                    calendar_result = self._datafetcher.dispatch(
-                        _calendar_fetch_request(payload, frozen, tuple(map(str, underlyings))),
-                        identity,
-                        request_id=f"{request_id}-calendar" if request_id else f"calendar-{uuid4().hex}",
-                    )
-                    calendar_asset = calendar_result.get("data_asset_ref")
-                    if calendar_result.get("ok") is not True or not isinstance(calendar_asset, dict):
-                        raise UserActionError(
-                            "trading_calendar_unavailable",
-                            "交易日历暂不可用，且没有完整覆盖本次区间的已验证缓存。",
-                        )
-                    self._data_assets.register(identity, calendar_asset)
-                    if self._tasks is None or not callable(getattr(self._tasks, "append_data_asset_ref", None)) or not task_id:
-                        raise ValidationError("自动交易日历必须绑定当前App任务")
-                    self._tasks.append_data_asset_ref(identity, task_id, calendar_asset)
-                    calendar_ref = self._data_assets.resolve_for_compute(
-                        identity,
-                        calendar_asset["data_asset_id"],
-                        asset_ids=tuple(map(str, underlyings)),
-                        schema_id="trading-calendar",
-                    )
-                if calendar_ref is not None:
-                    refs.append(calendar_ref)
+            calendar_ref = self._resolve_or_fetch_trading_calendar(
+                payload,
+                frozen,
+                assets,
+                identity,
+                request_id=request_id,
+                task_id=task_id,
+                required=requires_calendar,
+                requested_calendar=requested_calendar,
+            )
+            if calendar_ref is not None:
+                refs.append(calendar_ref)
         return refs
+
+    def _resolve_or_fetch_trading_calendar(
+        self,
+        payload: Mapping[str, Any],
+        resolved_contract: object,
+        underlyings: tuple[str, ...],
+        identity: SessionIdentity,
+        *,
+        request_id: str,
+        task_id: str,
+        required: bool,
+        requested_calendar: object = None,
+    ) -> dict[str, Any] | None:
+        """Provide an App-verified calendar whenever a new contract needs it.
+
+        Payoffer and Pricer both compile a new ResolvedContract before their
+        own calculator runs. Observation schedules are therefore a Host
+        concern, not a Pricer-only concern. A browser may identify an existing
+        calendar for Pricer, but it may never provide sessions or provenance.
+        """
+
+        has_requested_calendar = requested_calendar is not None and requested_calendar != ""
+        if not required and not has_requested_calendar:
+            return None
+        calendar_request = _calendar_fetch_request(payload, resolved_contract, underlyings)
+        frozen_calendar = _frozen_calendar_identity(resolved_contract)
+        try:
+            if frozen_calendar is not None and callable(getattr(self._data_assets, "resolve_frozen_trading_calendar", None)):
+                calendar_ref = self._data_assets.resolve_frozen_trading_calendar(
+                    identity,
+                    requested_calendar,
+                    asset_ids=underlyings,
+                    calendar_id=frozen_calendar["calendar_id"],
+                    calendar_revision=frozen_calendar["calendar_revision"],
+                )
+            elif (
+                not has_requested_calendar
+                and callable(getattr(self._data_assets, "resolve_trading_calendar_covering", None))
+            ):
+                # Do not let a more recently registered short calendar hide a
+                # pre-existing longer snapshot.  The exact interval is known
+                # before the first observed contract is compiled.
+                calendar_ref = self._data_assets.resolve_trading_calendar_covering(
+                    identity,
+                    asset_ids=underlyings,
+                    start_date=str(calendar_request["start_date"]),
+                    end_date=str(calendar_request["end_date"]),
+                )
+            else:
+                calendar_ref = self._data_assets.resolve_for_compute(
+                    identity,
+                    requested_calendar,
+                    asset_ids=underlyings,
+                    schema_id="trading-calendar",
+                    optional=False,
+                )
+        except UserActionError:
+            if has_requested_calendar or frozen_calendar is not None or not required:
+                raise
+            calendar_ref = None
+
+        if calendar_ref is not None and frozen_calendar is not None and not _calendar_ref_matches_identity(calendar_ref, frozen_calendar):
+            raise UserActionError(
+                "frozen_contract_calendar_missing",
+                "当前方案冻结的交易日历已不可用，不能用另一版本替代。请切换产品建立新方案版本后重试。",
+                stage="data",
+                next_step="请恢复冻结的交易日历，或切换产品建立新的方案版本后重试。",
+            )
+        if calendar_ref is not None and not _calendar_ref_covers_request(calendar_ref, calendar_request):
+            if has_requested_calendar:
+                raise UserActionError(
+                    "trading_calendar_coverage_insufficient",
+                    "所选交易日历未完整覆盖本次合约期限。请重新获取覆盖完整期限的交易日历后重试。",
+                    stage="data",
+                    next_step="请重新获取覆盖完整期限的交易日历后重试。",
+                )
+            if frozen_calendar is not None:
+                raise UserActionError(
+                    "frozen_contract_calendar_coverage_insufficient",
+                    "当前方案冻结的交易日历未完整覆盖合约期限。请切换产品建立新方案版本后重试。",
+                    stage="data",
+                    next_step="请恢复覆盖完整期限的冻结交易日历，或切换产品建立新方案版本后重试。",
+                )
+            calendar_ref = None
+
+        if calendar_ref is None:
+            if self._datafetcher is None:
+                raise UnavailableCapabilityError(
+                    "trading_calendar", "App DataFetcherAdapter is not configured",
+                )
+            calendar_result = self._datafetcher.dispatch(
+                calendar_request,
+                identity,
+                request_id=f"{request_id}-calendar" if request_id else f"calendar-{uuid4().hex}",
+            )
+            calendar_asset = calendar_result.get("data_asset_ref")
+            if calendar_result.get("ok") is not True or not isinstance(calendar_asset, dict):
+                raise UserActionError(
+                    "trading_calendar_unavailable",
+                    "交易日历暂不可用，且没有完整覆盖本次区间的已验证缓存。",
+                    stage="data",
+                    next_step="请检查数据接口配置，或在数据获取中补取交易日历后重试。",
+                )
+            self._data_assets.register(identity, calendar_asset)
+            if self._tasks is None or not callable(getattr(self._tasks, "append_data_asset_ref", None)) or not task_id:
+                raise ValidationError("自动交易日历必须绑定当前App任务")
+            self._tasks.append_data_asset_ref(identity, task_id, calendar_asset)
+            calendar_ref = self._data_assets.resolve_for_compute(
+                identity,
+                calendar_asset["data_asset_id"],
+                asset_ids=underlyings,
+                schema_id="trading-calendar",
+            )
+            if not _calendar_ref_covers_request(calendar_ref, calendar_request):
+                raise UserActionError(
+                    "trading_calendar_coverage_insufficient",
+                    "自动取得的交易日历未完整覆盖本次合约期限，请检查数据接口后重试。",
+                    stage="data",
+                    next_step="请检查数据接口并重新获取覆盖完整期限的交易日历后重试。",
+                )
+        if calendar_ref is None:
+            raise ValidationError("交易日历未能登记为正式DataAssetRef")
+        self._attach_data_ref(identity, task_id, calendar_ref)
+        return calendar_ref
 
     def _fetch_and_bind_history(
         self,
@@ -505,7 +659,12 @@ class ToolGateway:
         trading_calendar_ref: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         if self._datafetcher is None:
-            raise UnavailableCapabilityError("market_data", "App DataFetcherAdapter is not configured")
+            raise UnavailableCapabilityError(
+                "market_data",
+                "App DataFetcherAdapter is not configured",
+                failure_code="market_data_unavailable",
+                stage="data",
+            )
         if self._data_assets is None:
             raise ValidationError("App DataStore未配置，无法登记自动获取的行情")
         dispatch_kwargs: dict[str, Any] = {
@@ -519,6 +678,8 @@ class ToolGateway:
             raise UserActionError(
                 "market_data_unavailable",
                 "未能自动取得所需行情，请检查数据接口配置或缩短数据区间后重试。",
+                stage="data",
+                next_step="请检查数据接口配置，或在数据获取中补取日频行情后重试。",
             )
         self._data_assets.register(identity, asset)
         self._attach_data_ref(identity, task_id, asset)
@@ -543,7 +704,12 @@ class ToolGateway:
         """Fetch verified sessions before creating automatic backtest history."""
 
         if self._datafetcher is None:
-            raise UnavailableCapabilityError("backtester.trading_calendar", "App DataFetcherAdapter is not configured")
+            raise UnavailableCapabilityError(
+                "backtester.trading_calendar",
+                "App DataFetcherAdapter is not configured",
+                failure_code="trading_calendar_unavailable",
+                stage="data",
+            )
         if self._data_assets is None:
             raise ValidationError("App DataStore未配置，无法登记自动交易日历")
         calendar_result = self._datafetcher.dispatch(
@@ -556,6 +722,8 @@ class ToolGateway:
             raise UserActionError(
                 "trading_calendar_unavailable",
                 "交易日历暂不可用，无法为完整期限历史回测准备已验证行情。请检查数据接口后重试。",
+                stage="data",
+                next_step="请检查数据接口配置，或在数据获取中补取交易日历后重试。",
             )
         self._data_assets.register(identity, calendar_asset)
         self._attach_data_ref(identity, task_id, calendar_asset)
@@ -669,6 +837,12 @@ class ToolGateway:
             raise ValidationError("Reporter source与Module Host analysis_case_id不一致")
         if _scope_text(context, "catalog_version") and source.get("catalog_version") != context.catalog_version:
             raise ValidationError("Reporter source与Module Host catalog_version不一致")
+        if str(selection.get("output_type", "")).strip().lower() == "quote":
+            return {
+                **dict(payload),
+                "task_id": task_id,
+                "selection": self._controlled_quote_selection(selection, source, identity, task_id),
+            }
         candidate_ids = selection.get("candidate_ids")
         if not isinstance(candidate_ids, list) or len(candidate_ids) != 1 or not isinstance(candidate_ids[0], str):
             raise ValidationError("Reporter运行必须显式选择唯一candidate_id")
@@ -740,6 +914,79 @@ class ToolGateway:
                 "module_run_refs": {candidate_id: controlled_refs},
             },
         }
+
+    def _controlled_quote_selection(
+        self,
+        selection: Mapping[str, Any],
+        source: Mapping[str, Any],
+        identity: SessionIdentity,
+        task_id: str,
+    ) -> dict[str, Any]:
+        """Verify each requested Quote row against its saved task evidence.
+
+        Quote is intentionally different from Card and Report: its rows can
+        select several candidates and contract variants within one controlled
+        task source.  The browser still only sends opaque RunRefs, which are
+        compared against the current ResultStore projection before Reporter
+        receives them.
+        """
+
+        raw_items = selection.get("quote_items")
+        if not isinstance(raw_items, list) or not raw_items:
+            raise ValidationError("Quote必须逐行选择至少一个已保存运行结果")
+        candidates = {
+            str(item.get("candidate_id")): item
+            for item in source.get("candidates", ())
+            if isinstance(item, Mapping) and isinstance(item.get("candidate_id"), str)
+        }
+        controlled_items: list[dict[str, Any]] = []
+        seen: set[tuple[str, str, str]] = set()
+        expected_modules = {"payoff": "payoffer", "pricing": "pricer", "backtest": "backtester"}
+        for index, raw_item in enumerate(raw_items, start=1):
+            if not isinstance(raw_item, Mapping) or set(raw_item) != {"candidate_id", "module", "module_run_ref"}:
+                raise ValidationError(f"Quote第{index}行必须包含候选、来源模块和完整运行引用")
+            candidate_id = raw_item.get("candidate_id")
+            module = str(raw_item.get("module", "")).strip().lower()
+            candidate = candidates.get(candidate_id) if isinstance(candidate_id, str) else None
+            if candidate is None or module not in expected_modules:
+                raise ValidationError(f"Quote第{index}行不属于当前任务的可选合同")
+            raw_ref = raw_item.get("module_run_ref")
+            if not isinstance(raw_ref, Mapping):
+                raise ValidationError(f"Quote第{index}行缺少完整运行引用")
+            try:
+                reference = ModuleRunRef(**dict(raw_ref))
+            except (TypeError, ValueError) as error:
+                raise ValidationError(f"Quote第{index}行运行引用无效") from error
+            if (
+                reference.module != expected_modules[module]
+                or reference.tenant_id != identity.tenant_id
+                or reference.task_id != task_id
+            ):
+                raise ValidationError(f"Quote第{index}行运行引用超出当前租户、任务或模块范围")
+            options = candidate.get("module_run_options")
+            allowed = options.get(module) if isinstance(options, Mapping) else None
+            if not isinstance(allowed, list) or not any(
+                _same_module_run_ref(reference, option) for option in allowed if isinstance(option, Mapping)
+            ):
+                raise ValidationError(f"Quote第{index}行不是当前ResultStore已验证的参数版本")
+            signature = (candidate_id, module, reference.run_id)
+            if signature in seen:
+                raise ValidationError("Quote不得重复选择同一参数运行")
+            seen.add(signature)
+            try:
+                self._results.resolve_owned_module_run(identity, _module_run_ref_payload(reference))
+            except (KeyError, ValidationError, AuthorizationError, OSError) as error:
+                raise ValidationError(f"Quote第{index}行运行结果已失效或不再属于当前主体") from error
+            controlled_items.append({
+                "candidate_id": candidate_id,
+                "module": module,
+                "module_run_ref": _module_run_ref_payload(reference),
+            })
+        return {
+            key: selection[key]
+            for key in ("source_id", "output_type", "format", "audience", "report_run_id", "metadata")
+            if key in selection
+        } | {"source_id": str(source["source_id"]), "output_type": "quote", "quote_items": controlled_items}
 
     def _load_tool_entry(self, scripts_root: str, content_hashes: Mapping[str, str] | None = None) -> Any:
         """加载经清单校验的Capability入口，兼容受控内部调用。"""
@@ -1112,11 +1359,51 @@ def _is_run_action(payload: Mapping[str, Any]) -> bool:
 
 
 def _requires_path_calendar(resolved_contract: object, payload: Mapping[str, Any]) -> bool:
-    """Match the formal Pricer's selected-route calendar requirement."""
+    """Determine the formal Pricer calendar requirement before contract binding.
+
+    A task's first path-dependent Pricer run has no frozen contract yet.  Its
+    product terms must therefore be read from the verified runtime registry
+    before compiling the contract, otherwise the calendar arrives too late for
+    contracts with observation schedules such as Airbag 7.2.
+    """
 
     config = payload.get("pricing_config")
     method = config.get("model_method", "auto") if isinstance(config, Mapping) else "auto"
-    return requires_future_trading_calendar_for_protocol(resolved_contract, method)
+    if isinstance(resolved_contract, Mapping):
+        return requires_future_trading_calendar_for_protocol(resolved_contract, method)
+    product_id = payload.get("product_id")
+    if not isinstance(product_id, str) or not product_id.strip():
+        return False
+    product = load_registry().get("products", {}).get(product_id)
+    terms = product.get("terms") if isinstance(product, Mapping) else None
+    if not isinstance(terms, Mapping):
+        return False
+    overrides = payload.get("term_overrides", {})
+    if not isinstance(overrides, Mapping):
+        return False
+    return requires_future_trading_calendar(
+        product_id,
+        {**terms, **overrides},
+        method,
+    )
+
+
+_OBSERVATION_TERM_KEYS = frozenset({"O_KO", "O_KI", "Oc", "Otouch", "Orange", "Ovar", "Ohedge", "Oreset"})
+
+
+def _requires_observation_contract_calendar(resolved_contract: object, payload: Mapping[str, Any]) -> bool:
+    """Whether a first-run Payoffer contract must freeze observation sessions."""
+
+    if isinstance(resolved_contract, Mapping):
+        return False
+    product_id = payload.get("product_id")
+    if not isinstance(product_id, str) or not product_id.strip():
+        return False
+    product = load_registry().get("products", {}).get(product_id)
+    terms = product.get("terms") if isinstance(product, Mapping) else None
+    if not isinstance(terms, Mapping):
+        return False
+    return bool(_OBSERVATION_TERM_KEYS & set(terms))
 
 
 def _empty_data_reference(value: object) -> bool:
@@ -1130,15 +1417,42 @@ def _bind_new_contract_to_history(
     data_refs: tuple[Mapping[str, Any], ...],
     existing_contract: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
-    """Bind a first-run compute contract to Host-verified market provenance.
-
-    A Desk page may run Pricer or Backtester before Payoffer.  In that case the
-    browser only names the product and underlying; the App Host already owns
-    the authenticated historical ``DataAssetRef`` it just fetched.  Calendar
-    facts therefore come from that reference, never from browser input.
-    """
+    """Bind a first-run contract to the Host-owned market or calendar evidence."""
     value = dict(payload)
-    if module not in {"pricer", "backtester"} or existing_contract is not None:
+    if module not in {"payoffer", "pricer", "backtester"} or existing_contract is not None:
+        return value
+    if module == "payoffer":
+        calendar = next(
+            (dict(reference) for reference in data_refs if reference.get("schema_id") == "trading-calendar"),
+            None,
+        )
+        if calendar is None:
+            return value
+        coverage = calendar.get("coverage")
+        if not isinstance(coverage, Mapping):
+            raise UserActionError(
+                "trading_calendar_evidence_missing",
+                "自动获取的交易日历缺少验证信息，无法建立本次研究合同。请重试。",
+                stage="data",
+                next_step="请重新获取带交易所日历身份和覆盖区间的交易日历后重试。",
+            )
+        calendar_id = coverage.get("calendar_id")
+        calendar_revision = coverage.get("calendar_revision")
+        if not isinstance(calendar_id, str) or not calendar_id or not isinstance(calendar_revision, str) or not calendar_revision:
+            raise UserActionError(
+                "trading_calendar_evidence_missing",
+                "自动获取的交易日历缺少验证信息，无法建立本次研究合同。请重试。",
+                stage="data",
+                next_step="请重新获取带交易所日历身份和覆盖区间的交易日历后重试。",
+            )
+        raw_identity = value.get("identity", {})
+        if not isinstance(raw_identity, Mapping):
+            raise ValidationError("identity必须为对象")
+        identity = dict(raw_identity)
+        identity.setdefault("calendar_id", calendar_id)
+        identity.setdefault("calendar_revision", calendar_revision)
+        identity.setdefault("contract_start_date", _shanghai_now().date().isoformat())
+        value["identity"] = identity
         return value
     history = next(
         (dict(reference) for reference in data_refs if reference.get("schema_id") == "market-history"),
@@ -1151,13 +1465,30 @@ def _bind_new_contract_to_history(
         raise UserActionError(
             "market_history_calendar_missing",
             "自动获取的行情缺少交易日历信息，无法建立本次研究合同。请重新获取数据后重试。",
+            stage="data",
+            next_step="请重新获取附带已验证交易日历的日频行情后重试。",
         )
-    calendar_id = coverage.get("calendar_id")
-    calendar_revision = coverage.get("calendar_revision")
+    # Historical price provenance and a future observation schedule have
+    # different roles.  A path Pricer may correctly bind old close history and
+    # a newer calendar that reaches the contract's maturity.  Backtester, by
+    # contrast, replays that history and must retain its exact calendar.
+    calendar_coverage = coverage
+    if module == "pricer":
+        future_calendar = next(
+            (reference for reference in data_refs if reference.get("schema_id") == "trading-calendar"),
+            None,
+        )
+        candidate_coverage = future_calendar.get("coverage") if isinstance(future_calendar, Mapping) else None
+        if isinstance(candidate_coverage, Mapping):
+            calendar_coverage = candidate_coverage
+    calendar_id = calendar_coverage.get("calendar_id")
+    calendar_revision = calendar_coverage.get("calendar_revision")
     if not isinstance(calendar_id, str) or not calendar_id or not isinstance(calendar_revision, str) or not calendar_revision:
         raise UserActionError(
             "market_history_calendar_missing",
             "自动获取的行情缺少交易日历信息，无法建立本次研究合同。请重新获取数据后重试。",
+            stage="data",
+            next_step="请重新获取附带已验证交易日历的日频行情后重试。",
         )
     raw_identity = value.get("identity", {})
     if not isinstance(raw_identity, Mapping):
@@ -1264,6 +1595,14 @@ def _history_fetch_request(
 ) -> dict[str, Any]:
     contract = resolved_contract if isinstance(resolved_contract, Mapping) else {}
     terms = contract.get("terms", {}) if isinstance(contract.get("terms", {}), Mapping) else {}
+    if module == "backtester" and not terms:
+        product_id = payload.get("product_id")
+        product = load_registry().get("products", {}).get(product_id) if isinstance(product_id, str) else None
+        product_terms = product.get("terms") if isinstance(product, Mapping) else None
+        overrides = payload.get("term_overrides")
+        if isinstance(product_terms, Mapping):
+            term_overrides = dict(overrides) if isinstance(overrides, Mapping) else {}
+            terms = {**product_terms, **term_overrides}
     if module == "pricer":
         config = payload.get("pricing_config")
         raw_end = config.get("valuation_date") if isinstance(config, Mapping) else None
@@ -1409,6 +1748,17 @@ def _calendar_fetch_request(
     resolved_contract: object,
     underlyings: tuple[str, ...],
 ) -> dict[str, Any]:
+    if "backtest_config" in payload:
+        history_request = _history_fetch_request("backtester", payload, resolved_contract, underlyings)
+        return {
+            "action": "fetch_calendar",
+            "asset_ids": list(underlyings),
+            # The historical-data request already represents the exact range
+            # needed for a complete-tenor backtest.  Extending it here makes a
+            # calendar signed into that history fail its own coverage check.
+            "start_date": str(history_request["start_date"]),
+            "end_date": str(history_request["end_date"]),
+        }
     config = payload.get("pricing_config")
     raw_valuation = config.get("valuation_date") if isinstance(config, Mapping) else None
     try:
@@ -1417,6 +1767,13 @@ def _calendar_fetch_request(
         raise ValidationError("valuation_date必须为YYYY-MM-DD") from error
     identity = resolved_contract.get("identity", {}) if isinstance(resolved_contract, Mapping) else {}
     terms = resolved_contract.get("terms", {}) if isinstance(resolved_contract, Mapping) else {}
+    if not isinstance(terms, Mapping) or not terms:
+        product_id = payload.get("product_id")
+        product = load_registry().get("products", {}).get(product_id) if isinstance(product_id, str) else None
+        product_terms = product.get("terms") if isinstance(product, Mapping) else None
+        overrides = payload.get("term_overrides")
+        if isinstance(product_terms, Mapping):
+            terms = {**product_terms, **(dict(overrides) if isinstance(overrides, Mapping) else {})}
     raw_end = identity.get("contract_end_date") if isinstance(identity, Mapping) else None
     if raw_end:
         try:
@@ -1432,9 +1789,106 @@ def _calendar_fetch_request(
     return {
         "action": "fetch_calendar",
         "asset_ids": list(underlyings),
-        "start_date": (valuation - timedelta(days=14)).isoformat(),
-        "end_date": (maturity + timedelta(days=14)).isoformat(),
+        # Observation starts at valuation and ends at maturity.  Requiring an
+        # arbitrary two-week buffer rejects otherwise valid local calendars.
+        "start_date": valuation.isoformat(),
+        "end_date": maturity.isoformat(),
     }
+
+
+def _frozen_calendar_identity(resolved_contract: object) -> dict[str, str] | None:
+    if not isinstance(resolved_contract, Mapping):
+        return None
+    identity = resolved_contract.get("identity")
+    if not isinstance(identity, Mapping):
+        return None
+    calendar_id = identity.get("calendar_id")
+    calendar_revision = identity.get("calendar_revision")
+    if not isinstance(calendar_id, str) or not calendar_id or not isinstance(calendar_revision, str) or not calendar_revision:
+        return None
+    return {"calendar_id": calendar_id, "calendar_revision": calendar_revision}
+
+
+def _calendar_ref_matches_identity(reference: Mapping[str, Any], expected: Mapping[str, str]) -> bool:
+    coverage = reference.get("coverage")
+    if not isinstance(coverage, Mapping):
+        # Legacy test doubles have no provenance fields. Real App
+        # DataAssetRefs always carry the coverage map and are checked below.
+        return True
+    calendar_id = coverage.get("calendar_id")
+    calendar_revision = coverage.get("calendar_revision")
+    if calendar_id is None and calendar_revision is None:
+        return True
+    return calendar_id == expected["calendar_id"] and calendar_revision == expected["calendar_revision"]
+
+
+def _calendar_ref_covers_request(reference: Mapping[str, Any], request: Mapping[str, Any]) -> bool:
+    coverage = reference.get("coverage")
+    if not isinstance(coverage, Mapping):
+        # Capability validation will reject an incomplete real reference. Keep
+        # this Host selection helper compatible with narrow protocol doubles.
+        return True
+    start = coverage.get("start_date", coverage.get("start"))
+    end = coverage.get("end_date", coverage.get("end"))
+    if start is None and end is None:
+        return True
+    try:
+        available_start = date.fromisoformat(str(start))
+        available_end = date.fromisoformat(str(end))
+        required_start = date.fromisoformat(str(request["start_date"]))
+        required_end = date.fromisoformat(str(request["end_date"]))
+    except (KeyError, TypeError, ValueError):
+        return False
+    return available_start <= required_start and available_end >= required_end
+
+
+def _history_ref_covers_request(reference: Mapping[str, Any], request: Mapping[str, Any]) -> bool:
+    """Verify that a selected market-history asset covers the Host request."""
+
+    coverage = reference.get("coverage")
+    if not isinstance(coverage, Mapping):
+        return False
+    start = coverage.get("start_date", coverage.get("start"))
+    end = coverage.get("end_date", coverage.get("end"))
+    try:
+        available_start = date.fromisoformat(str(start))
+        available_end = date.fromisoformat(str(end))
+        required_start = date.fromisoformat(str(request["start_date"]))
+        required_end = date.fromisoformat(str(request["end_date"]))
+    except (KeyError, TypeError, ValueError):
+        return False
+    return available_start <= required_start and available_end >= required_end
+
+
+def _calendar_reference_bound_to_history(history_ref: Mapping[str, Any]) -> dict[str, str] | None:
+    """Return the calendar identity already committed into a history asset.
+
+    Backtester must use the exact calendar that signed its historical price
+    reference.  Picking the newest global calendar can make a legitimate
+    history asset fail formal validation merely because another task later
+    fetched a newer revision.
+    """
+
+    coverage = history_ref.get("coverage")
+    if not isinstance(coverage, Mapping):
+        return None
+    calendar_ref = coverage.get("calendar_ref")
+    if not isinstance(calendar_ref, Mapping):
+        return None
+    return _data_asset_selector(calendar_ref)
+
+
+def _data_asset_selector(reference: Mapping[str, Any]) -> dict[str, str] | None:
+    """Reduce an internal DataAsset record to the browser-safe selector."""
+
+    data_asset_id = reference.get("data_asset_id")
+    content_hash = reference.get("content_hash")
+    if not isinstance(data_asset_id, str) or not data_asset_id:
+        return None
+    value = {"data_asset_id": data_asset_id}
+    if isinstance(content_hash, str) and content_hash:
+        value["content_hash"] = content_hash
+    return value
 
 
 def _require_conversation_tool_scope(identity: SessionIdentity, tool_name: str, payload: Mapping[str, Any]) -> None:

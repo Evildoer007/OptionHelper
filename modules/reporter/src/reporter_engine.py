@@ -30,6 +30,10 @@ def build_report(
     """将显式证据冻结、交给Designer并原子写入ReportRun。"""
 
     request = value if isinstance(value, ReportRequest) else validate_request(value)
+    # Direct in-process callers may pass a constructed ReportRequest instead
+    # of the public JSON parser.  Apply the same delivery guard before any
+    # evidence is read or files are written.
+    request._validate()
     evidence = resolve_evidence(request, result_store)
     units = build_report_units(request, evidence)
     document = build_report_document(request, units)
