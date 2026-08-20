@@ -1,4 +1,4 @@
-"""Pricer市场历史读取与估值快照：close用于合同现价，adj_close用于HV。"""
+"""Pricer市场历史读取与估值快照：close用于合同现价，HV字段由DataAssetRef声明。"""
 
 from __future__ import annotations
 
@@ -90,6 +90,7 @@ def market_snapshot_from_history(
     risk_free_rate: float,
     dividend_yield: Any,
     trading_calendar: Mapping[str, Any] | None = None,
+    hv_fields_by_asset: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     required = {"date", "asset_id", "close", "adj_close"}
     if not required.issubset(history.columns):
@@ -106,8 +107,30 @@ def market_snapshot_from_history(
     common = raw.index.intersection(adjusted.index)
     raw = raw.reindex(common).dropna(); adjusted = adjusted.reindex(raw.index).dropna()
     if len(adjusted) <= hv_window: raise MarketDataError(f"估值日前样本不足，不能计算HV{hv_window}")
-    vols = (np.log(adjusted / adjusted.shift(1)).dropna().tail(hv_window).std(ddof=1) * np.sqrt(244)).to_dict()
-    result = {"valuation_date": raw.index[-1].strftime("%Y-%m-%d"), "history_start_date": raw.index[0].strftime("%Y-%m-%d"), "history_end_date": raw.index[-1].strftime("%Y-%m-%d"), "spot": {key:float(value) for key,value in raw.iloc[-1].to_dict().items()}, "historical_volatility": {key:float(value) for key,value in vols.items()}, "risk_free_rate":float(risk_free_rate), "dividend_yield":dividend_yield, "hv_window":hv_window, "spot_price_field":"close", "hv_price_field":"adj_close", "return_method":"log_return", "annualization_trading_days":244, "source":"local_close_and_adj_close"}
+    declared_hv_fields = {
+        str(asset): str((hv_fields_by_asset or {}).get(str(asset), "adj_close"))
+        for asset in underlyings
+    }
+    invalid_hv_fields = {
+        asset: field for asset, field in declared_hv_fields.items()
+        if field not in {"close", "adj_close"}
+    }
+    if invalid_hv_fields:
+        raise MarketDataError("HV价格字段只能为close或adj_close")
+    price_fields = {"close": raw, "adj_close": adjusted}
+    hv_prices = pd.DataFrame({
+        asset: price_fields[field][asset]
+        for asset, field in declared_hv_fields.items()
+    }, index=common).dropna()
+    if len(hv_prices) <= hv_window:
+        raise MarketDataError(f"估值日前样本不足，不能计算HV{hv_window}")
+    vols = (np.log(hv_prices / hv_prices.shift(1)).dropna().tail(hv_window).std(ddof=1) * np.sqrt(244)).to_dict()
+    unique_hv_fields = set(declared_hv_fields.values())
+    hv_price_field: str | dict[str, str] = (
+        next(iter(unique_hv_fields))
+        if len(unique_hv_fields) == 1 else declared_hv_fields
+    )
+    result = {"valuation_date": raw.index[-1].strftime("%Y-%m-%d"), "history_start_date": raw.index[0].strftime("%Y-%m-%d"), "history_end_date": raw.index[-1].strftime("%Y-%m-%d"), "spot": {key:float(value) for key,value in raw.iloc[-1].to_dict().items()}, "historical_volatility": {key:float(value) for key,value in vols.items()}, "risk_free_rate":float(risk_free_rate), "dividend_yield":dividend_yield, "hv_window":hv_window, "spot_price_field":"close", "hv_price_field":hv_price_field, "hv_fields_by_asset":declared_hv_fields, "return_method":"log_return", "annualization_trading_days":244, "source":"local_close_and_adj_close"}
     if trading_calendar is not None:
         result["trading_calendar"] = dict(trading_calendar)
     return result

@@ -38,12 +38,16 @@ from .identity.login_handler import AuthenticationMode, InitialProvisionRequest,
 from .identity.password_store import PasswordCredentialStore
 from .identity.session_identity import SessionIdentity
 from .model_gateway.gateway import ModelGateway
-from .model_gateway.deepseek_provider import complete_openai_compatible, decide_openai_compatible, validate_openai_base_url
+from .model_gateway.deepseek_provider import complete_openai_compatible, decide_openai_compatible, discover_openai_models, validate_openai_base_url
 from .model_gateway.provider_registry import ProviderRegistry
 from .page_registry import PAGE_MODULES, PageRegistry
 from .settings.connection_tester import ConnectionTester
 from .settings.settings_models import (
     DataInterfaceSettings,
+    ModelCatalogEntry,
+    ModelConnectionSettings,
+    ModelProviderProfile,
+    ModelSelection,
     ModelServiceSettings,
     PreferenceSettings,
     SettingsSnapshot,
@@ -51,6 +55,7 @@ from .settings.settings_models import (
     serialize_settings,
     serialize_settings_public,
 )
+from .settings.model_catalog import built_in_provider, built_in_provider_catalog
 from .settings.settings_service import SettingsService
 from .secrets.secret_ref import SecretRef
 from .secrets.secret_provider import SecretProvider
@@ -73,8 +78,8 @@ FRONTEND_ASSETS = frozenset({
     "login/index.html", "login/login-startup.js", "login/login.js",
     "optchat/index.html", "optchat/optchat.js",
     "optdesk/index.html", "optdesk/optdesk.js",
-    "settings/index.html", "settings/settings.js",
-    "shared/styles.css", "shared/refinement.css", "shared/app.js", "shared/transition-scope.js", "shared/theme-bootstrap.js", "shared/theme.js", "shared/vol-surface.js",
+    "settings/index.html", "settings/settings.js", "settings/model-providers.css", "settings/general-settings.css", "settings/settings-shell.css",
+    "shared/styles.css", "shared/refinement.css", "shared/theme-overrides.css", "shared/app.js", "shared/transition-scope.js", "shared/theme-bootstrap.js", "shared/theme.js", "shared/vol-surface.js",
 })
 _CAPABILITY_CSP = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'self'; form-action 'self'"
 
@@ -323,36 +328,154 @@ class AppServer:
             tenant = _default_settings("admin")
             self.settings.save(tenant_key, tenant)
         tenant = self._normalized_tenant_settings(identity.tenant_id, tenant)
+        principal = self._normalized_local_model_settings(identity, principal)
+        local_model = principal.model_service
+        active_connection_id = principal.active_model_connection_id
+        local_selection = principal.default_model_selection
+        if principal.model_providers and local_selection is not None:
+            selected_provider = next(
+                (item for item in principal.model_providers if item.provider_id == local_selection.provider_id),
+                None,
+            )
+            selected_model = next(
+                (item for item in selected_provider.models if item.model_id == local_selection.model_id and item.enabled),
+                None,
+            ) if selected_provider is not None else None
+            if selected_provider is not None and selected_model is not None:
+                local_model = ModelServiceSettings(
+                    "openai-compatible", selected_provider.endpoint, selected_provider.secret_ref, selected_model.model_id,
+                )
+        # Legacy connections remain readable during migration, but a migrated
+        # or newly configured provider catalog is the authoritative source of
+        # the active model.  Otherwise an old connection can silently override
+        # a model the user selected in the new UI.
+        if principal.model_connections and not (principal.model_providers and local_selection is not None):
+            active = next(
+                (connection for connection in principal.model_connections if connection.connection_id == active_connection_id),
+                principal.model_connections[0],
+            )
+            local_model = active.model_service
+            active_connection_id = active.connection_id
+        effective_model = local_model if local_model.provider_name != "unconfigured" else tenant.model_service
         return SettingsSnapshot(
             role=identity.role.value,
-            model_service=tenant.model_service,
+            model_service=effective_model,
             data_interface=tenant.data_interface,
             storage_export=principal.storage_export,
             preferences=principal.preferences,
+            model_connections=principal.model_connections,
+            active_model_connection_id=active_connection_id,
+            model_providers=principal.model_providers,
+            default_model_selection=local_selection,
         )
+
+    def model_providers_for(self, identity: SessionIdentity) -> dict[str, Any]:
+        """Expose provider-owned catalogs without credential references."""
+
+        settings = self.settings_for(identity)
+        providers = [
+            {
+                "provider_id": item.provider_id,
+                "display_name": item.display_name,
+                "endpoint": item.endpoint,
+                "protocol": item.protocol,
+                "scope": "device",
+                "credential_configured": item.secret_ref is not None,
+                "models": [
+                    {
+                        "model_id": model.model_id,
+                        "display_name": model.display_name or model.model_id,
+                        "enabled": model.enabled,
+                        "context_window": model.context_window,
+                        "max_output_tokens": model.max_output_tokens,
+                    }
+                    for model in item.models
+                ],
+            }
+            for item in settings.model_providers
+        ]
+        if not providers and settings.model_service.provider_name != "unconfigured" and settings.model_service.model_name:
+            providers.append({
+                "provider_id": "provider-default",
+                "display_name": "默认模型提供方",
+                "endpoint": settings.model_service.endpoint,
+                "protocol": "openai-chat-completions",
+                "scope": "provider",
+                "credential_configured": settings.model_service.secret_ref is not None,
+                "models": [{"model_id": settings.model_service.model_name, "display_name": settings.model_service.model_name, "enabled": True, "context_window": None, "max_output_tokens": None}],
+            })
+        builtin = []
+        for provider_id, item in built_in_provider_catalog().items():
+            builtin.append({
+                "provider_id": provider_id,
+                "display_name": str(item["display_name"]),
+                "endpoint": str(item["endpoint"]),
+                "protocol": str(item["protocol"]),
+                "models": [
+                    {"model_id": model.model_id, "display_name": model.display_name, "enabled": False}
+                    for model in item["models"]
+                ],
+            })
+        return {
+            "schema": "optionhelper.model-providers.v1",
+            "providers": providers,
+            "builtins": builtin,
+            "default_model_selection": (
+                {"provider_id": settings.default_model_selection.provider_id, "model_id": settings.default_model_selection.model_id}
+                if settings.default_model_selection else None
+            ),
+        }
+
+    def model_service_for_selection(self, identity: SessionIdentity, selection: ModelSelection | None) -> ModelServiceSettings:
+        """Resolve one enabled provider/model pair to a runnable settings value."""
+
+        settings = self.settings_for(identity)
+        selected = selection or settings.default_model_selection
+        if selected is not None:
+            provider = next((item for item in settings.model_providers if item.provider_id == selected.provider_id), None)
+            model = next((item for item in provider.models if item.model_id == selected.model_id and item.enabled), None) if provider else None
+            if provider is None or model is None or provider.secret_ref is None:
+                raise UnavailableCapabilityError("模型服务", "所选模型未配置、已停用或已更新，请在设置中心选择可用模型后重试。")
+            return ModelServiceSettings("openai-compatible", provider.endpoint, provider.secret_ref, model.model_id)
+        return settings.model_service
 
     def model_connections_for(self, identity: SessionIdentity) -> dict[str, Any]:
         """Expose the browser contract without exposing credential refs.
 
-        The persisted configuration has one active connection. It is
-        presented as a list so workspace controls never need to
-        infer provider state or receive a secret reference.
+        Device-owned profiles are returned first-class. If a user has not
+        created one, the legacy default configuration is exposed as a
+        read-compatible provider connection.
         """
-
-        model = self.settings_for(identity).model_service
-        if model.provider_name == "unconfigured" or not model.model_name:
-            connections: list[dict[str, Any]] = []
+        settings = self.settings_for(identity)
+        if settings.model_connections:
+            connections = [
+                {
+                    "connection_id": connection.connection_id,
+                    "display_name": connection.display_name,
+                    "provider_name": connection.model_service.provider_name,
+                    "endpoint": connection.model_service.endpoint,
+                    "model_name": connection.model_service.model_name,
+                    "credential_configured": connection.model_service.secret_ref is not None,
+                    "scope": "device",
+                }
+                for connection in settings.model_connections
+            ]
+            active_id = settings.active_model_connection_id
         else:
-            connections = [{
-                "connection_id": "primary",
+            model = settings.model_service
+            connections = [] if model.provider_name == "unconfigured" or not model.model_name else [{
+                "connection_id": "provider-default",
+                "display_name": "默认模型提供方",
                 "provider_name": model.provider_name,
                 "endpoint": model.endpoint,
                 "model_name": model.model_name,
                 "credential_configured": model.secret_ref is not None,
+                "scope": "provider",
             }]
+            active_id = "provider-default" if connections else None
         return {
             "schema": "optionhelper.model-connections",
-            "active_connection_id": "primary" if connections else None,
+            "active_connection_id": active_id,
             "connections": connections,
         }
 
@@ -374,6 +497,47 @@ class AppServer:
                 data = replace(snapshot.data_interface, secret_ref=reference)
                 stored = replace(stored, data_interface=data)
             self.settings.save(tenant_key, replace(stored, role="admin"))
+        elif capability == "settings.model.local.write":
+            principal = self._principal_settings(identity)
+            connections = tuple(
+                replace(
+                    connection,
+                    model_service=replace(
+                        connection.model_service,
+                        secret_ref=self.secret_reference(
+                            identity.tenant_id,
+                            "model",
+                            owner_id=identity.principal_id,
+                            connection_id=connection.connection_id,
+                        ) if connection.model_service.secret_ref else None,
+                    ),
+                )
+                for connection in snapshot.model_connections
+            )
+            active_id = snapshot.active_model_connection_id
+            active = next((connection for connection in connections if connection.connection_id == active_id), None)
+            providers = tuple(
+                replace(
+                    provider,
+                    secret_ref=self.secret_reference(
+                        identity.tenant_id,
+                        "model",
+                        owner_id=identity.principal_id,
+                        connection_id=provider.provider_id,
+                    ) if provider.secret_ref else None,
+                )
+                for provider in snapshot.model_providers
+            )
+            selection = snapshot.default_model_selection
+            principal = replace(
+                principal,
+                model_service=active.model_service if active is not None else ModelServiceSettings("unconfigured", ""),
+                model_connections=connections,
+                active_model_connection_id=active.connection_id if active is not None else None,
+                model_providers=providers,
+                default_model_selection=selection,
+            )
+            self.settings.save(identity.principal_id, replace(principal, role=identity.role.value))
         else:
             principal = self._principal_settings(identity)
             if capability == "settings.preferences.write":
@@ -401,11 +565,20 @@ class AppServer:
         digest = hashlib.sha256(tenant_id.encode("utf-8")).hexdigest()[:24]
         return f"tenant:{digest}"
 
-    def secret_reference(self, tenant_id: str, purpose: str) -> SecretRef:
+    def secret_reference(
+        self,
+        tenant_id: str,
+        purpose: str,
+        *,
+        owner_id: str | None = None,
+        connection_id: str | None = None,
+    ) -> SecretRef:
         if purpose not in {"model", "ifind"}:
             raise ValidationError("Credential purpose is not supported")
-        digest = hashlib.sha256(tenant_id.encode("utf-8")).hexdigest()[:24]
-        return SecretRef(self._secret_reference_provider, f"optionhelper/{purpose}/{digest}")
+        owner = owner_id or tenant_id
+        digest = hashlib.sha256(owner.encode("utf-8")).hexdigest()[:24]
+        suffix = "" if connection_id in {None, "primary"} and owner_id is None else f"/{connection_id or 'primary'}"
+        return SecretRef(self._secret_reference_provider, f"optionhelper/{purpose}/{digest}{suffix}")
 
     def _principal_settings(self, identity: SessionIdentity) -> SettingsSnapshot:
         try:
@@ -418,6 +591,111 @@ class AppServer:
             self.settings.save(identity.principal_id, snapshot)
         return snapshot
 
+    def _normalized_local_model_settings(self, identity: SessionIdentity, snapshot: SettingsSnapshot) -> SettingsSnapshot:
+        """Reattach valid references and safely migrate legacy model connections."""
+
+        normalized_connections: list[ModelConnectionSettings] = []
+        for connection in snapshot.model_connections:
+            try:
+                connection_id = _model_connection_id(connection.connection_id)
+                display_name = _model_display_name(connection.display_name, connection_id)
+                model = _model_from({
+                    "provider_name": connection.model_service.provider_name,
+                    "endpoint": connection.model_service.endpoint,
+                    "model_name": connection.model_service.model_name,
+                })
+                if (
+                    urlparse(model.endpoint).hostname == "api.deepseek.com"
+                    and model.model_name in {"deepseek-chat", "deepseek-reasoner"}
+                ):
+                    model = replace(model, model_name="deepseek-v4-flash")
+            except (ValidationError, ValueError):
+                continue
+            reference = self.secret_reference(
+                identity.tenant_id,
+                "model",
+                owner_id=identity.principal_id,
+                connection_id=connection_id,
+            )
+            self.secret_provider.allow_reference(reference, "模型服务凭据")
+            model = replace(
+                model,
+                secret_ref=reference if self._credential_is_saved(reference, "模型服务凭据") else None,
+            )
+            normalized_connections.append(ModelConnectionSettings(connection_id, display_name, model))
+        active_id = snapshot.active_model_connection_id
+        if active_id not in {connection.connection_id for connection in normalized_connections}:
+            active_id = normalized_connections[0].connection_id if normalized_connections else None
+        normalized_providers: list[ModelProviderProfile] = []
+        raw_providers = snapshot.model_providers
+        if not raw_providers:
+            # Never inspect or merge existing secrets.  Each old connection is
+            # preserved as one single-model provider with the same opaque key.
+            raw_providers = tuple(
+                ModelProviderProfile(
+                    provider_id=connection.connection_id,
+                    display_name=connection.display_name,
+                    endpoint=connection.model_service.endpoint,
+                    secret_ref=connection.model_service.secret_ref,
+                    models=(ModelCatalogEntry(connection.model_service.model_name, connection.model_service.model_name, True),),
+                )
+                for connection in normalized_connections
+            )
+        for provider in raw_providers:
+            try:
+                normalized_provider = _model_provider_from({
+                    "provider_id": provider.provider_id,
+                    "display_name": provider.display_name,
+                    "endpoint": provider.endpoint,
+                    "protocol": provider.protocol,
+                    "models": [
+                        {
+                            "model_id": model.model_id,
+                            "display_name": model.display_name,
+                            "enabled": model.enabled,
+                            "context_window": model.context_window,
+                            "max_output_tokens": model.max_output_tokens,
+                        }
+                        for model in provider.models
+                    ],
+                })
+            except (ValidationError, ValueError):
+                continue
+            reference = self.secret_reference(
+                identity.tenant_id, "model", owner_id=identity.principal_id, connection_id=normalized_provider.provider_id,
+            )
+            self.secret_provider.allow_reference(reference, "模型服务凭据")
+            normalized_providers.append(replace(
+                normalized_provider,
+                secret_ref=reference if self._credential_is_saved(reference, "模型服务凭据") else None,
+            ))
+        selection = snapshot.default_model_selection
+        valid_selections = {
+            (provider.provider_id, model.model_id)
+            for provider in normalized_providers for model in provider.models if model.enabled
+        }
+        if selection is None and active_id:
+            active_connection = next((item for item in normalized_connections if item.connection_id == active_id), None)
+            if active_connection is not None:
+                candidate = (active_connection.connection_id, active_connection.model_service.model_name)
+                selection = ModelSelection(*candidate) if candidate in valid_selections else None
+        if selection is not None and (selection.provider_id, selection.model_id) not in valid_selections:
+            selection = next(
+                (ModelSelection(provider.provider_id, model.model_id)
+                 for provider in normalized_providers for model in provider.models if model.enabled),
+                None,
+            )
+        normalized = replace(
+            snapshot,
+            model_connections=tuple(normalized_connections),
+            active_model_connection_id=active_id,
+            model_providers=tuple(normalized_providers),
+            default_model_selection=selection,
+        )
+        if normalized != snapshot:
+            self.settings.save(identity.principal_id, normalized)
+        return normalized
+
     def _normalized_tenant_settings(self, tenant_id: str, snapshot: SettingsSnapshot) -> SettingsSnapshot:
         model_reference = self.secret_reference(tenant_id, "model")
         data_reference = self.secret_reference(tenant_id, "ifind")
@@ -425,7 +703,7 @@ class AppServer:
         self.secret_provider.allow_reference(data_reference, "iFind数据凭据")
         model = snapshot.model_service
         if model.provider_name == "deepseek-compatible":
-            model = replace(model, provider_name="openai-compatible", model_name=model.model_name or "deepseek-chat")
+            model = replace(model, provider_name="openai-compatible", model_name=model.model_name or "deepseek-v4-flash")
         elif model.provider_name == "kimi-compatible":
             model = (
                 replace(model, provider_name="openai-compatible")
@@ -442,6 +720,16 @@ class AppServer:
                     model = ModelServiceSettings("unconfigured", "")
                 else:
                     model = replace(model, endpoint=endpoint)
+        # DeepSeek retired the legacy chat/reasoner aliases after the V4
+        # rollout.  Migrate only the official DeepSeek endpoint; arbitrary
+        # OpenAI-compatible gateways may still intentionally expose their own
+        # model ids and must remain untouched.
+        if (
+            model.provider_name == "openai-compatible"
+            and urlparse(model.endpoint).hostname == "api.deepseek.com"
+            and model.model_name in {"deepseek-chat", "deepseek-reasoner"}
+        ):
+            model = replace(model, model_name="deepseek-v4-flash")
         if model.provider_name != "unconfigured" and model.secret_ref != model_reference:
             model = replace(
                 model,
@@ -501,6 +789,81 @@ class AppServer:
             else:
                 self.secret_provider.store(reference, previous, purpose)
             raise
+
+    def local_model_snapshot(
+        self,
+        identity: SessionIdentity,
+        connection_id: str,
+        display_name: str,
+        model: ModelServiceSettings,
+        *,
+        secret_ref: SecretRef | None = None,
+    ) -> SettingsSnapshot:
+        """Build a device profile update without accepting a plaintext key."""
+
+        current = self.settings_for(identity)
+        existing = next((item for item in current.model_connections if item.connection_id == connection_id), None)
+        if secret_ref is None and existing is not None:
+            secret_ref = existing.model_service.secret_ref
+        profile = ModelConnectionSettings(
+            connection_id,
+            display_name,
+            replace(model, secret_ref=secret_ref),
+        )
+        connections = [item for item in current.model_connections if item.connection_id != connection_id]
+        connections.append(profile)
+        # Keep the deprecated one-model endpoint behavior coherent with the
+        # provider catalog migration.  Otherwise adding a second legacy
+        # connection leaves the first migrated provider selected forever.
+        provider = ModelProviderProfile(
+            provider_id=connection_id,
+            display_name=display_name,
+            endpoint=model.endpoint,
+            secret_ref=secret_ref,
+            models=(ModelCatalogEntry(model.model_name, model.model_name, True),),
+        )
+        providers = [item for item in current.model_providers if item.provider_id != connection_id]
+        providers.append(provider)
+        return replace(
+            current,
+            model_service=profile.model_service,
+            model_connections=tuple(connections),
+            active_model_connection_id=connection_id,
+            model_providers=tuple(providers),
+            default_model_selection=ModelSelection(connection_id, model.model_name),
+        )
+
+    def local_provider_snapshot(
+        self,
+        identity: SessionIdentity,
+        profile: ModelProviderProfile,
+        *,
+        secret_ref: SecretRef | None = None,
+        default_model_id: str | None = None,
+    ) -> SettingsSnapshot:
+        """Upsert one provider while preserving its credential unless replaced."""
+
+        current = self.settings_for(identity)
+        existing = next((item for item in current.model_providers if item.provider_id == profile.provider_id), None)
+        if secret_ref is None and existing is not None:
+            secret_ref = existing.secret_ref
+        updated = replace(profile, secret_ref=secret_ref)
+        providers = [item for item in current.model_providers if item.provider_id != updated.provider_id]
+        providers.append(updated)
+        eligible = {model.model_id for model in updated.models if model.enabled}
+        first_enabled = next((model.model_id for model in updated.models if model.enabled), "")
+        selected_id = default_model_id or (
+            current.default_model_selection.model_id
+            if current.default_model_selection and current.default_model_selection.provider_id == updated.provider_id
+            else first_enabled
+        )
+        if selected_id not in eligible:
+            raise ValidationError("默认模型必须是当前提供方中已启用的模型")
+        return replace(
+            current,
+            model_providers=tuple(providers),
+            default_model_selection=ModelSelection(updated.provider_id, selected_id),
+        )
 
 
 class _AppRequestHandler(BaseHTTPRequestHandler):
@@ -631,6 +994,12 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
         if path == "/":
             self._serve_frontend_asset("login/index.html")
             return
+        if path == "/app/designer-token-vars.css":
+            content, content_type = self.app.registry.read_asset("assets/designer/themes/designer-token-vars.css")
+            self._bytes(HTTPStatus.OK, content, content_type, extra_headers={
+                "Content-Security-Policy": "default-src 'none'; style-src 'self'; base-uri 'none'; object-src 'none'",
+            })
+            return
         if path.startswith("/app/frontend/"):
             self._serve_frontend_asset(path.removeprefix("/app/frontend/"))
             return
@@ -691,6 +1060,11 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
             identity = self._identity()
             self.app.policy.require(identity.role, "settings.read")
             self._json(HTTPStatus.OK, self.app.model_connections_for(identity))
+            return
+        if path == "/api/settings/model-providers":
+            identity = self._identity()
+            self.app.policy.require(identity.role, "settings.read")
+            self._json(HTTPStatus.OK, self.app.model_providers_for(identity))
             return
         if path.startswith("/api/module-host/"):
             identity = self._identity()
@@ -855,10 +1229,20 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
         if path.startswith("/api/tasks/") and path.endswith("/messages"):
             self.app.policy.require(identity.role, "conversation.write")
             task_id = path.removeprefix("/api/tasks/").removesuffix("/messages").rstrip("/")
+            _only_fields(body, {"content", "model_selection"})
+            model_selection = _conversation_model_selection(body.get("model_selection"))
             response = self.app.conversations.respond(
-                identity, task_id, str(body.get("content", "")), request_id=self.headers.get("X-Request-Id"),
+                identity,
+                task_id,
+                str(body.get("content", "")),
+                request_id=self.headers.get("X-Request-Id"),
+                selection=model_selection,
             )
-            self.app.audit.record(AuditEvent(action="conversation.model_request", principal_id=identity.principal_id, tenant_id=identity.tenant_id, outcome=response["status"], decision="allow", reference=task_id, request_id=request_id, reason=response.get("error", {}).get("capability")))
+            selection_note = (
+                f"{model_selection.provider_id}/{model_selection.model_id}"
+                if model_selection is not None else response.get("error", {}).get("capability")
+            )
+            self.app.audit.record(AuditEvent(action="conversation.model_request", principal_id=identity.principal_id, tenant_id=identity.tenant_id, outcome=response["status"], decision="allow", reference=task_id, request_id=request_id, reason=selection_note))
             status = HTTPStatus.SERVICE_UNAVAILABLE if response["status"] == "unavailable" else HTTPStatus.OK
             self._json(status, response)
             return
@@ -917,6 +1301,217 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
             preferences = _preference_from(body, current.preferences)
             snapshot = self.app.save_settings(identity, replace(current, preferences=preferences), "settings.preferences.write")
             self._json(HTTPStatus.OK, {"settings": serialize_settings_public(snapshot)})
+            return
+        if path == "/api/settings/model-provider/credential":
+            self.app.policy.require(identity.role, "settings.model.local.write")
+            _only_fields(body, {"provider_id", "display_name", "endpoint", "protocol", "models", "default_model_id", "api_key"})
+            profile = _model_provider_from(body)
+            api_key = _credential_value(body, "api_key")
+            reference = self.app.secret_reference(
+                identity.tenant_id, "model", owner_id=identity.principal_id, connection_id=profile.provider_id,
+            )
+            snapshot = self.app.local_provider_snapshot(
+                identity, profile, secret_ref=reference, default_model_id=_optional_model_id(body.get("default_model_id")),
+            )
+            saved = self.app.save_credential(
+                identity, reference, api_key, "模型服务凭据", snapshot, "settings.model.local.write",
+            )
+            self._json(HTTPStatus.OK, {"settings": serialize_settings_public(saved), "credential_status": "stored"})
+            return
+        if path == "/api/settings/model-provider":
+            self.app.policy.require(identity.role, "settings.model.local.write")
+            _only_fields(body, {"provider_id", "display_name", "endpoint", "protocol", "models", "default_model_id"})
+            profile = _model_provider_from(body)
+            current = self.app.settings_for(identity)
+            existing = next((item for item in current.model_providers if item.provider_id == profile.provider_id), None)
+            if existing and existing.secret_ref and not _same_credential_origin(existing.endpoint, profile.endpoint):
+                raise ValidationError("更换模型服务地址时，请同时重新粘贴该服务的API Key并保存。")
+            snapshot = self.app.local_provider_snapshot(
+                identity, profile, default_model_id=_optional_model_id(body.get("default_model_id")),
+            )
+            saved = self.app.save_settings(identity, snapshot, "settings.model.local.write")
+            self._json(HTTPStatus.OK, {"settings": serialize_settings_public(saved)})
+            return
+        if path == "/api/settings/model-provider/default":
+            self.app.policy.require(identity.role, "settings.model.local.write")
+            _only_fields(body, {"provider_id", "model_id"})
+            selection = ModelSelection(_model_connection_id(body.get("provider_id")), _required_model_id(body.get("model_id")))
+            current = self.app.settings_for(identity)
+            self.app.model_service_for_selection(identity, selection)
+            saved = self.app.save_settings(
+                identity, replace(current, default_model_selection=selection), "settings.model.local.write",
+            )
+            self._json(HTTPStatus.OK, {"settings": serialize_settings_public(saved)})
+            return
+        if path == "/api/settings/model-provider/delete":
+            self.app.policy.require(identity.role, "settings.model.local.write")
+            _only_fields(body, {"provider_id"})
+            provider_id = _model_connection_id(body.get("provider_id"))
+            current = self.app.settings_for(identity)
+            providers = tuple(item for item in current.model_providers if item.provider_id != provider_id)
+            if len(providers) == len(current.model_providers):
+                raise ValidationError("模型提供方不存在，请刷新设置中心后重试。")
+            next_selection = next(
+                (ModelSelection(item.provider_id, model.model_id)
+                 for item in providers for model in item.models if model.enabled),
+                None,
+            )
+            saved = self.app.save_settings(
+                identity, replace(current, model_providers=providers, default_model_selection=next_selection),
+                "settings.model.local.write",
+            )
+            reference = self.app.secret_reference(
+                identity.tenant_id, "model", owner_id=identity.principal_id, connection_id=provider_id,
+            )
+            self.app.secret_provider.allow_reference(reference, "模型服务凭据")
+            try:
+                self.app.secret_provider.delete(reference, "模型服务凭据")
+            except UnavailableCapabilityError:
+                pass
+            self._json(HTTPStatus.OK, {"settings": serialize_settings_public(saved)})
+            return
+        if path == "/api/settings/model-provider/discover":
+            self.app.policy.require(identity.role, "settings.model.local.write")
+            _only_fields(body, {"provider_id", "endpoint", "api_key"})
+            provider_id = _model_connection_id(body.get("provider_id"))
+            endpoint = validate_openai_base_url(str(body.get("endpoint", "")))
+            api_key = str(body.get("api_key", "")).strip()
+            if not api_key:
+                current = self.app.settings_for(identity)
+                provider = next((item for item in current.model_providers if item.provider_id == provider_id), None)
+                if provider is not None and provider.secret_ref is not None:
+                    api_key = self.app.secret_provider.resolve(provider.secret_ref, "模型服务凭据")
+            models = discover_openai_models(endpoint, api_key or None)
+            self._json(HTTPStatus.OK, {"models": models})
+            return
+        if path == "/api/settings/model-provider/test":
+            self.app.policy.require(identity.role, "settings.model.local.write")
+            _only_fields(body, {"provider_id", "endpoint", "model_id", "api_key"})
+            provider_id = _model_connection_id(body.get("provider_id"))
+            endpoint = validate_openai_base_url(str(body.get("endpoint", "")))
+            model_id = _required_model_id(body.get("model_id"))
+            api_key = str(body.get("api_key", "")).strip()
+            if not api_key:
+                current = self.app.settings_for(identity)
+                provider = next((item for item in current.model_providers if item.provider_id == provider_id), None)
+                if provider is None or provider.secret_ref is None:
+                    raise UnavailableCapabilityError("模型服务", "请先粘贴API Key，或保存提供方后再测试连接。")
+                api_key = self.app.secret_provider.resolve(provider.secret_ref, "模型服务凭据")
+            probe = ModelServiceSettings("openai-compatible", endpoint, SecretRef("ephemeral", "probe"), model_id)
+            complete_openai_compatible(probe, probe.secret_ref, [{"role": "user", "content": "仅返回OK。"}], resolve_secret=lambda _ref: api_key)
+            self._json(HTTPStatus.OK, {"connection": {"provider_name": provider_id, "status": "available", "detail": "模型服务连接可用。"}})
+            return
+        if path == "/api/settings/local-model/credential":
+            self.app.policy.require(identity.role, "settings.model.local.write")
+            _only_fields(body, {"connection_id", "display_name", "provider_name", "endpoint", "model_name", "api_key"})
+            connection_id = _model_connection_id(body.get("connection_id"))
+            display_name = _model_display_name(body.get("display_name"), connection_id)
+            api_key = _credential_value(body, "api_key")
+            model = _model_from(body)
+            reference = self.app.secret_reference(
+                identity.tenant_id,
+                "model",
+                owner_id=identity.principal_id,
+                connection_id=connection_id,
+            )
+            current = self.app.settings_for(identity)
+            existing = next((item for item in current.model_connections if item.connection_id == connection_id), None)
+            snapshot = self.app.local_model_snapshot(
+                identity,
+                connection_id,
+                display_name,
+                model,
+                secret_ref=reference,
+            )
+            if existing is not None and not _same_credential_origin(existing.model_service.endpoint, model.endpoint):
+                # A supplied key is present on this route, so changing the
+                # provider origin is explicitly allowed and gets a new value.
+                pass
+            saved = self.app.save_credential(
+                identity,
+                reference,
+                api_key,
+                "模型服务凭据",
+                snapshot,
+                "settings.model.local.write",
+            )
+            self._json(HTTPStatus.OK, {"settings": serialize_settings_public(saved), "credential_status": "stored"})
+            return
+        if path == "/api/settings/local-model":
+            self.app.policy.require(identity.role, "settings.model.local.write")
+            _only_fields(body, {"connection_id", "display_name", "provider_name", "endpoint", "model_name"})
+            connection_id = _model_connection_id(body.get("connection_id"))
+            display_name = _model_display_name(body.get("display_name"), connection_id)
+            model = _model_from(body)
+            current = self.app.settings_for(identity)
+            existing = next((item for item in current.model_connections if item.connection_id == connection_id), None)
+            if existing is not None and existing.model_service.secret_ref is not None and not _same_credential_origin(
+                existing.model_service.endpoint,
+                model.endpoint,
+            ):
+                raise ValidationError("更换模型服务地址时，请同时重新粘贴该服务的API Key并保存。")
+            snapshot = self.app.local_model_snapshot(identity, connection_id, display_name, model)
+            saved = self.app.save_settings(identity, snapshot, "settings.model.local.write")
+            self._json(HTTPStatus.OK, {"settings": serialize_settings_public(saved)})
+            return
+        if path == "/api/settings/local-model/active":
+            self.app.policy.require(identity.role, "settings.model.local.write")
+            _only_fields(body, {"connection_id"})
+            connection_id = _model_connection_id(body.get("connection_id"))
+            current = self.app.settings_for(identity)
+            selected = next((item for item in current.model_connections if item.connection_id == connection_id), None)
+            if selected is None:
+                raise ValidationError("模型连接不存在，请先保存该连接。")
+            saved = self.app.save_settings(
+                identity,
+                replace(
+                    current,
+                    model_service=selected.model_service,
+                    active_model_connection_id=connection_id,
+                    default_model_selection=ModelSelection(connection_id, selected.model_service.model_name),
+                ),
+                "settings.model.local.write",
+            )
+            self._json(HTTPStatus.OK, {"settings": serialize_settings_public(saved)})
+            return
+        if path == "/api/settings/local-model/delete":
+            self.app.policy.require(identity.role, "settings.model.local.write")
+            _only_fields(body, {"connection_id"})
+            connection_id = _model_connection_id(body.get("connection_id"))
+            current = self.app.settings_for(identity)
+            remaining = tuple(item for item in current.model_connections if item.connection_id != connection_id)
+            if len(remaining) == len(current.model_connections):
+                raise ValidationError("模型连接不存在，请刷新设置中心后重试。")
+            next_active = remaining[0] if remaining else None
+            providers = tuple(item for item in current.model_providers if item.provider_id != connection_id)
+            next_selection = (
+                ModelSelection(next_active.connection_id, next_active.model_service.model_name)
+                if next_active is not None else None
+            )
+            saved = self.app.save_settings(
+                identity,
+                replace(
+                    current,
+                    model_service=next_active.model_service if next_active else ModelServiceSettings("unconfigured", ""),
+                    model_connections=remaining,
+                    active_model_connection_id=next_active.connection_id if next_active else None,
+                    model_providers=providers,
+                    default_model_selection=next_selection,
+                ),
+                "settings.model.local.write",
+            )
+            reference = self.app.secret_reference(
+                identity.tenant_id,
+                "model",
+                owner_id=identity.principal_id,
+                connection_id=connection_id,
+            )
+            self.app.secret_provider.allow_reference(reference, "模型服务凭据")
+            try:
+                self.app.secret_provider.delete(reference, "模型服务凭据")
+            except UnavailableCapabilityError:
+                pass
+            self._json(HTTPStatus.OK, {"settings": serialize_settings_public(saved)})
             return
         if path == "/api/settings/model/credential":
             self.app.policy.require(identity.role, "settings.model.write")
@@ -985,12 +1580,16 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.OK, {"settings": serialize_settings_public(snapshot)})
             return
         if path == "/api/settings/test/model":
-            self.app.policy.require(identity.role, "settings.model.write")
+            if self.app.policy.allows(identity.role, "settings.model.write"):
+                capability = "settings.model.write"
+            else:
+                self.app.policy.require(identity.role, "settings.model.local.write")
+                capability = "settings.model.local.write"
             self.app.model_gateway.complete_for(identity, "settings-connection-test", "仅返回OK。")
             self.app.audit.record(AuditEvent(
                 action="settings.connection_test", principal_id=identity.principal_id,
                 tenant_id=identity.tenant_id, outcome="succeeded", decision="allow",
-                reference="model", request_id=request_id,
+                reference=capability, request_id=request_id,
             ))
             self._json(HTTPStatus.OK, {"connection": {"provider_name": "model", "status": "available", "detail": "模型服务连接可用。"}})
             return
@@ -1039,7 +1638,10 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
 
     def _serve_capability_asset(self, identity: SessionIdentity, relative: str) -> None:
         page_prefix = "assets/pages/"
-        if not relative.startswith(page_prefix):
+        shared_designer_assets = {
+            "assets/designer/themes/designer-token-vars.css",
+        }
+        if not relative.startswith(page_prefix) and relative not in shared_designer_assets:
             raise AuthorizationError("module.page", "only registered module page assets are mountable")
         parts = Path(relative).parts
         shared_page_assets = {
@@ -1047,7 +1649,9 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
             "assets/pages/module-host-presentation.css",
             "assets/pages/module-host-presentation.js",
         }
-        if relative not in shared_page_assets and (len(parts) < 4 or parts[0:2] != ("assets", "pages") or parts[2] not in PAGE_MODULES):
+        if relative not in shared_page_assets | shared_designer_assets and (
+            len(parts) < 4 or parts[0:2] != ("assets", "pages") or parts[2] not in PAGE_MODULES
+        ):
             raise ValidationError("Capability page asset path is invalid")
         self.app.policy.require(identity.role, "module.page")
         content, content_type = self.app.registry.read_asset(relative)
@@ -1233,7 +1837,7 @@ def _unavailable_public_message(error: UnavailableCapabilityError) -> str:
         return "行情或交易日历暂不可用。请检查数据获取配置后重新获取所需区间。"
     if error.failure_code == "capability_execution_failed":
         return "本次计算未完成。请检查产品条款、行情数据和交易日历后重试。"
-    return "相关本机能力暂不可用。请确认当前任务和数据配置后重试。"
+    return "相关功能暂不可用。请确认本机服务、当前任务和数据配置后重试。"
 
 
 def _reject_plain_secrets(value: Any, *, allowed_plaintext_fields: frozenset = frozenset(), depth: int = 0) -> None:
@@ -1266,6 +1870,10 @@ def _credential_fields_for(path: str) -> frozenset[str]:
         "/api/auth/login": frozenset({"password"}),
         "/api/auth/initialize": frozenset({"password"}),
         "/api/settings/model/credential": frozenset({"api_key"}),
+        "/api/settings/local-model/credential": frozenset({"api_key"}),
+        "/api/settings/model-provider/credential": frozenset({"api_key"}),
+        "/api/settings/model-provider/discover": frozenset({"api_key"}),
+        "/api/settings/model-provider/test": frozenset({"api_key"}),
         "/api/settings/data/credential": frozenset({"refresh_token"}),
     }.get(path, frozenset())
 
@@ -1296,6 +1904,93 @@ def _same_credential_origin(current_endpoint: str, next_endpoint: str) -> bool:
     except ValidationError:
         return False
     return (current.scheme, current.hostname, current.port) == (next_value.scheme, next_value.hostname, next_value.port)
+
+
+def _model_connection_id(value: object) -> str:
+    connection_id = str(value or "").strip().lower()
+    if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,47}", connection_id):
+        raise ValidationError("模型连接ID只能包含小写字母、数字、下划线和短横线")
+    return connection_id
+
+
+def _model_display_name(value: object, connection_id: str) -> str:
+    display_name = str(value or "").strip()
+    if not display_name:
+        return connection_id
+    if len(display_name) > 80 or any(ord(character) < 32 for character in display_name):
+        raise ValidationError("模型连接名称长度或字符不合法")
+    return display_name
+
+
+def _model_provider_from(value: dict[str, Any]) -> ModelProviderProfile:
+    provider_id = _model_connection_id(value.get("provider_id"))
+    display_name = _model_display_name(value.get("display_name"), provider_id)
+    endpoint = validate_openai_base_url(str(value.get("endpoint", "")))
+    protocol = str(value.get("protocol", "openai-chat-completions")).strip()
+    if protocol != "openai-chat-completions":
+        raise ValidationError("当前仅支持OpenAI兼容Chat Completions协议")
+    raw_models = value.get("models")
+    if not isinstance(raw_models, list) or not raw_models:
+        raise ValidationError("至少保留一个模型")
+    models: list[ModelCatalogEntry] = []
+    model_ids: set[str] = set()
+    for raw in raw_models:
+        if not isinstance(raw, dict):
+            raise ValidationError("模型目录条目必须是对象")
+        model_id = str(raw.get("model_id", "")).strip()
+        if not model_id or len(model_id) > 120 or any(ord(character) < 33 for character in model_id):
+            raise ValidationError("模型ID格式不合法")
+        if model_id in model_ids:
+            raise ValidationError("同一提供方内不能重复添加模型")
+        model_ids.add(model_id)
+        model_name = str(raw.get("display_name", "")).strip() or model_id
+        if len(model_name) > 120 or any(ord(character) < 32 for character in model_name):
+            raise ValidationError("模型显示名称格式不合法")
+        enabled = bool(raw.get("enabled", True))
+        context_window = _model_capacity(raw.get("context_window"), "上下文长度")
+        max_output_tokens = _model_capacity(raw.get("max_output_tokens"), "最大输出Token")
+        models.append(ModelCatalogEntry(model_id, model_name, enabled, context_window, max_output_tokens))
+    if not any(item.enabled for item in models):
+        raise ValidationError("请至少启用一个模型")
+    return ModelProviderProfile(provider_id, display_name, endpoint, protocol, None, tuple(models))
+
+
+def _model_capacity(value: object, label: str) -> int | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        raise ValidationError(f"{label}必须是正整数")
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as error:
+        raise ValidationError(f"{label}必须是正整数") from error
+    if parsed <= 0:
+        raise ValidationError(f"{label}必须是正整数")
+    return parsed
+
+
+def _required_model_id(value: object) -> str:
+    model_id = str(value or "").strip()
+    if not model_id or len(model_id) > 120 or any(ord(character) < 33 for character in model_id):
+        raise ValidationError("模型ID格式不合法")
+    return model_id
+
+
+def _optional_model_id(value: object) -> str | None:
+    if value is None or value == "":
+        return None
+    return _required_model_id(value)
+
+
+def _conversation_model_selection(value: object) -> ModelSelection | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict) or set(value).difference({"provider_id", "model_id"}):
+        raise ValidationError("model_selection格式不合法")
+    return ModelSelection(
+        _model_connection_id(value.get("provider_id")),
+        _required_model_id(value.get("model_id")),
+    )
 
 
 def _model_from(value: dict[str, Any]) -> ModelServiceSettings:
@@ -1364,7 +2059,7 @@ def _is_missing_credential(error: UnavailableCapabilityError) -> bool:
 
 
 def _capabilities_for(policy: AuthorizationPolicy, role: Role) -> list[str]:
-    candidates = ("optchat", "optdesk", "settings.read", "settings.preferences.write", "settings.model.write", "settings.storage.write", "settings.data.write", "task.create", "task.read", "conversation.tool.run", "module.page", "module.catalog", "module.run", "report.card.request", "report.quote.request", "report.full.request")
+    candidates = ("optchat", "optdesk", "settings.read", "settings.preferences.write", "settings.model.write", "settings.model.local.write", "settings.storage.write", "settings.data.write", "task.create", "task.read", "conversation.tool.run", "module.page", "module.catalog", "module.run", "report.card.request", "report.quote.request", "report.full.request")
     return [capability for capability in candidates if policy.allows(role, capability)]
 
 

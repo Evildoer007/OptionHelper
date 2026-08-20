@@ -18,6 +18,50 @@ class ModelServiceSettings:
 
 
 @dataclass(frozen=True)
+class ModelConnectionSettings:
+    """One device-owned model profile.
+
+    The model service remains a small value object so existing runtime and
+    provider adapters stay unchanged.  A connection only adds a stable local
+    id and a display label around it; the credential is still represented by
+    an opaque Host-owned reference.
+    """
+
+    connection_id: str
+    display_name: str
+    model_service: ModelServiceSettings
+
+
+@dataclass(frozen=True)
+class ModelCatalogEntry:
+    """One selectable model published by a configured provider."""
+
+    model_id: str
+    display_name: str = ""
+    enabled: bool = True
+    context_window: int | None = None
+    max_output_tokens: int | None = None
+
+
+@dataclass(frozen=True)
+class ModelProviderProfile:
+    """A local or tenant provider with one credential and many models."""
+
+    provider_id: str
+    display_name: str
+    endpoint: str
+    protocol: str = "openai-chat-completions"
+    secret_ref: SecretRef | None = None
+    models: tuple[ModelCatalogEntry, ...] = ()
+
+
+@dataclass(frozen=True)
+class ModelSelection:
+    provider_id: str
+    model_id: str
+
+
+@dataclass(frozen=True)
 class DataInterfaceSettings:
     provider_name: str
     secret_ref: SecretRef | None = None
@@ -43,6 +87,10 @@ class SettingsSnapshot:
     data_interface: DataInterfaceSettings
     storage_export: StorageExportSettings
     preferences: PreferenceSettings
+    model_connections: tuple[ModelConnectionSettings, ...] = ()
+    active_model_connection_id: str | None = None
+    model_providers: tuple[ModelProviderProfile, ...] = ()
+    default_model_selection: ModelSelection | None = None
 
 
 def serialize_settings(snapshot: SettingsSnapshot) -> dict[str, Any]:
@@ -54,6 +102,42 @@ def serialize_settings(snapshot: SettingsSnapshot) -> dict[str, Any]:
             "model_name": snapshot.model_service.model_name,
             "secret_ref": snapshot.model_service.secret_ref.redacted() if snapshot.model_service.secret_ref else None,
         },
+        "model_connections": [
+            {
+                "connection_id": connection.connection_id,
+                "display_name": connection.display_name,
+                "provider_name": connection.model_service.provider_name,
+                "endpoint": connection.model_service.endpoint,
+                "model_name": connection.model_service.model_name,
+                "secret_ref": connection.model_service.secret_ref.redacted() if connection.model_service.secret_ref else None,
+            }
+            for connection in snapshot.model_connections
+        ],
+        "active_model_connection_id": snapshot.active_model_connection_id,
+        "model_providers": [
+            {
+                "provider_id": provider.provider_id,
+                "display_name": provider.display_name,
+                "endpoint": provider.endpoint,
+                "protocol": provider.protocol,
+                "secret_ref": provider.secret_ref.redacted() if provider.secret_ref else None,
+                "models": [
+                    {
+                        "model_id": model.model_id,
+                        "display_name": model.display_name,
+                        "enabled": model.enabled,
+                        "context_window": model.context_window,
+                        "max_output_tokens": model.max_output_tokens,
+                    }
+                    for model in provider.models
+                ],
+            }
+            for provider in snapshot.model_providers
+        ],
+        "default_model_selection": (
+            {"provider_id": snapshot.default_model_selection.provider_id, "model_id": snapshot.default_model_selection.model_id}
+            if snapshot.default_model_selection else None
+        ),
         "data_interface": {
             "provider_name": snapshot.data_interface.provider_name,
             "secret_ref": snapshot.data_interface.secret_ref.redacted() if snapshot.data_interface.secret_ref else None,
@@ -77,6 +161,18 @@ def serialize_settings_public(snapshot: SettingsSnapshot) -> dict[str, Any]:
     model = value["model_service"]
     data = value["data_interface"]
     model["credential_configured"] = model.pop("secret_ref") is not None
+    connections = []
+    for connection in value.get("model_connections", []):
+        public_connection = dict(connection)
+        public_connection["credential_configured"] = public_connection.pop("secret_ref") is not None
+        connections.append(public_connection)
+    value["model_connections"] = connections
+    providers = []
+    for provider in value.get("model_providers", []):
+        public_provider = dict(provider)
+        public_provider["credential_configured"] = public_provider.pop("secret_ref") is not None
+        providers.append(public_provider)
+    value["model_providers"] = providers
     data["credential_configured"] = data.pop("secret_ref") is not None
     return value
 
@@ -93,9 +189,70 @@ def deserialize_settings(value: dict[str, Any]) -> SettingsSnapshot:
     data = value.get("data_interface", {})
     storage = value.get("storage_export", {})
     preferences = value.get("preferences", {})
+    raw_connections = value.get("model_connections", [])
+    raw_providers = value.get("model_providers", [])
     role = value.get("role", "sales")
     if role not in ("sales", "admin"):
         raise ValueError("role must be sales or admin")
+    if not isinstance(raw_connections, list):
+        raise ValueError("model_connections must be a list")
+    if not isinstance(raw_providers, list):
+        raise ValueError("model_providers must be a list")
+    connections: list[ModelConnectionSettings] = []
+    for raw_connection in raw_connections:
+        if not isinstance(raw_connection, dict):
+            raise ValueError("model connection must be an object")
+        connection_model = raw_connection.get("model_service", raw_connection)
+        if not isinstance(connection_model, dict):
+            raise ValueError("model connection model must be an object")
+        connections.append(ModelConnectionSettings(
+            connection_id=str(raw_connection.get("connection_id", "")),
+            display_name=str(raw_connection.get("display_name", "")),
+            model_service=ModelServiceSettings(
+                provider_name=str(connection_model.get("provider_name", "unconfigured")),
+                endpoint=str(connection_model.get("endpoint", "")),
+                secret_ref=secret_ref(connection_model.get("secret_ref")),
+                model_name=str(connection_model.get("model_name", "")),
+            ),
+        ))
+    active_connection = value.get("active_model_connection_id")
+    if active_connection is not None:
+        active_connection = str(active_connection)
+    providers: list[ModelProviderProfile] = []
+    for raw_provider in raw_providers:
+        if not isinstance(raw_provider, dict):
+            raise ValueError("model provider must be an object")
+        raw_models = raw_provider.get("models", [])
+        if not isinstance(raw_models, list):
+            raise ValueError("model provider models must be a list")
+        models: list[ModelCatalogEntry] = []
+        for raw_model in raw_models:
+            if not isinstance(raw_model, dict):
+                raise ValueError("model catalog entry must be an object")
+            models.append(ModelCatalogEntry(
+                model_id=str(raw_model.get("model_id", raw_model.get("id", ""))),
+                display_name=str(raw_model.get("display_name", raw_model.get("name", ""))),
+                enabled=bool(raw_model.get("enabled", True)),
+                context_window=_positive_int_or_none(raw_model.get("context_window")),
+                max_output_tokens=_positive_int_or_none(raw_model.get("max_output_tokens")),
+            ))
+        providers.append(ModelProviderProfile(
+            provider_id=str(raw_provider.get("provider_id", "")),
+            display_name=str(raw_provider.get("display_name", "")),
+            endpoint=str(raw_provider.get("endpoint", "")),
+            protocol=str(raw_provider.get("protocol", "openai-chat-completions")),
+            secret_ref=secret_ref(raw_provider.get("secret_ref")),
+            models=tuple(models),
+        ))
+    raw_selection = value.get("default_model_selection")
+    selection = None
+    if raw_selection is not None:
+        if not isinstance(raw_selection, dict):
+            raise ValueError("default_model_selection must be an object")
+        selection = ModelSelection(
+            provider_id=str(raw_selection.get("provider_id", "")),
+            model_id=str(raw_selection.get("model_id", "")),
+        )
     return SettingsSnapshot(
         role=role,
         model_service=ModelServiceSettings(
@@ -117,4 +274,19 @@ def deserialize_settings(value: dict[str, Any]) -> SettingsSnapshot:
             font_scale=float(preferences.get("font_scale", 1.0)),
             theme=preferences.get("theme", "light"),
         ),
+        model_connections=tuple(connections),
+        active_model_connection_id=active_connection,
+        model_providers=tuple(providers),
+        default_model_selection=selection,
     )
+
+
+def _positive_int_or_none(value: object) -> int | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        raise ValueError("model capacity must be a positive integer")
+    parsed = int(value)
+    if parsed <= 0:
+        raise ValueError("model capacity must be a positive integer")
+    return parsed

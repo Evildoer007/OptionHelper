@@ -299,8 +299,6 @@ __all__ = (
     "DEFAULT_SVG_DIR",
     "DefaultAssetError",
     "DefaultVisualAsset",
-    "default_assets",
-    "default_payload",
     "build_visual_template",
     "figure_asset_paths",
     "load_default_figure_payload",

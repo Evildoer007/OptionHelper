@@ -11,13 +11,13 @@ from .roles import Role
 class AuthorizationPolicy:
     _ALLOW = {
         Role.SALES: frozenset({
-            "optchat", "settings.read", "settings.preferences.write",
+            "optchat", "settings.read", "settings.preferences.write", "settings.model.local.write",
             "settings.storage.write", "task.create",
             "task.read", "conversation.write", "conversation.tool.run", "report.card.request", "report.quote.request",
         }),
         Role.ADMIN: frozenset({
             "optchat", "optdesk", "settings.read", "settings.preferences.write",
-            "settings.model.write", "settings.storage.write", "settings.data.write",
+            "settings.model.write", "settings.model.local.write", "settings.storage.write", "settings.data.write",
             "task.create", "task.read", "conversation.write", "conversation.tool.run", "module.page",
             "module.catalog", "module.run", "module.host_context", "report.card.request", "report.quote.request", "report.full.request",
         }),

@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
 
+from .presentation_patch import reject_payload_visual_overrides, validate_presentation_patch
+
 
 OUTPUT_TYPES = {"card", "quote", "report"}
 FORMATS = {"html", "pdf"}
@@ -21,6 +23,7 @@ _REQUEST_FIELDS = {
     "output_dir",
     "design_system_id",
     "template_id",
+    "presentation_patch",
     "metadata",
 }
 
@@ -42,6 +45,7 @@ class DesignerInput:
     output_dir: Path | None = None
     design_system_id: str | None = None
     template_id: str | None = None
+    presentation_patch: Mapping[str, Any] | None = None
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -62,7 +66,9 @@ class DesignerInput:
         declared_schema = payload.get("schema")
         if str(declared_schema) != DESIGNER_PAYLOAD_SCHEMA:
             raise ValueError(f"payload.schema必须为{DESIGNER_PAYLOAD_SCHEMA}。")
+        reject_payload_visual_overrides(payload)
         object.__setattr__(self, "payload", payload)
+        object.__setattr__(self, "presentation_patch", validate_presentation_patch(self.presentation_patch))
 
     @property
     def normalized_output_type(self) -> str:
@@ -80,6 +86,8 @@ class DesignerInput:
         payload = value.get("payload")
         if not isinstance(payload, Mapping):
             raise ValueError("DesignerInput需要payload。")
+        if "presentation_patch" in value and not isinstance(value.get("presentation_patch"), Mapping):
+            raise ValueError("presentation_patch必须是对象。")
         output_type = str(value.get("output_type") or "report").lower()
         return cls(
             payload=payload,
@@ -90,6 +98,7 @@ class DesignerInput:
             output_dir=Path(value["output_dir"]).resolve() if value.get("output_dir") else None,
             design_system_id=str(value["design_system_id"]) if value.get("design_system_id") else None,
             template_id=str(value["template_id"]) if value.get("template_id") else None,
+            presentation_patch=value.get("presentation_patch") if isinstance(value.get("presentation_patch"), Mapping) else None,
             metadata=value.get("metadata") if isinstance(value.get("metadata"), Mapping) else {},
         )
 

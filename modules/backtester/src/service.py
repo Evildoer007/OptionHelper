@@ -737,7 +737,6 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         assets = {
-            "/backtester.css": (PAGE_DIR / "backtester.css", "text/css; charset=utf-8"),
             "/backtester.js": (PAGE_DIR / "backtester.js", "application/javascript; charset=utf-8"),
             "/ui/style.css": (UI_DIR / "style.css", "text/css; charset=utf-8"),
             "/ui/controls.css": (UI_DIR / "controls.css", "text/css; charset=utf-8"),

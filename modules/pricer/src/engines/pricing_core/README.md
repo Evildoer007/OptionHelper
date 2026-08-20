@@ -4,7 +4,7 @@
 
 ## 一、当前状态
 
-- 原6个产品族、9个结构保持Golden回归；新增声明式离散路径MC结构，构成7个产品族、10个结构。
+- 正式目录包含6个产品族、6个结构；原9个代表结构只作为测试内的Golden迁移基线保留，不构成正式产品入口。
 - 65个`entry_status=True`的OptionReg产品均由同一离散路径、观察日、事件与现金流解释器执行；简单结构仍优先使用已验证闭式解。
 - 支持PV、Delta、Gamma、Theta、Vega、Rho、Volga和Vanna。
 - 支持Autocall公平coupon反解和Path Accumulator公平strike反解。
@@ -12,7 +12,7 @@
 - 只使用CPU，不依赖CUDA。
 - macOS已运行验证；Windows只完成代码级兼容设计，尚未实机验证。
 - 快速回归固定`paths=10、seed=20240101、threads=1`，不代表正式报价精度。
-- 默认随机矩阵存在时直接使用；文件缺失时按本次`seed`自动重建2000×800的float64矩阵，并写入可核验元数据。已有矩阵不会被新seed覆盖。删除历史无元数据矩阵后得到的是当前环境按该seed生成的新基线，不应再与旧矩阵逐路径比较。
+- 默认`seed=20240101`严格使用冻结的2000×800、float64随机矩阵并校验哈希；该文件缺失或损坏时定价拒绝。其他合法seed在内存生成对应矩阵，不会写入或覆盖基线资产。
 
 ## 二、目录
 
@@ -37,10 +37,6 @@ pricing_core/
 |BARRIER|BARRIER|REINER_RUBINSTEIN|
 |AIRBAG|AIRBAG|STATIC_REPLICATION|
 |ACCUMULATOR|STATIC_ACCUMULATOR|STATIC_REPLICATION|
-|ACCUMULATOR|PATH_ACCUMULATOR|MONTE_CARLO_CPU|
-|AUTOCALL|SNOWBALL|MONTE_CARLO_CPU|
-|AUTOCALL|PHOENIX|MONTE_CARLO_CPU|
-|AUTOCALL|TRIGGER|MONTE_CARLO_CPU|
 |OPTIONREG|声明式离散路径MC|MONTE_CARLO_CPU|
 
 可直接查询目录：
@@ -49,8 +45,8 @@ pricing_core/
 from main import list_families, list_structures, describe_structure
 
 print(list_families())
-print(list_structures("AUTOCALL"))
-print(describe_structure("AUTOCALL", "SNOWBALL"))
+print(list_structures("OPTIONREG"))
+print(describe_structure("OPTIONREG", "OPTIONREG_PATH"))
 ```
 
 ## 四、安装与测试
@@ -58,7 +54,7 @@ print(describe_structure("AUTOCALL", "SNOWBALL"))
 使用已通过项目依赖检查的Python解释器。若系统默认解释器不匹配，可设置`OPTIONHELPER_PYTHON`为绝对路径：
 
 ```bash
-cd /Users/haoranxu/Desktop/OptionHelper/modules/pricer/src/modules/pricer/engines/pricing_core
+cd /Users/haoranxu/Desktop/OptionHelper/modules/pricer/src/engines/pricing_core
 "${OPTIONHELPER_PYTHON:-python3}" run_tests.py
 ```
 
@@ -148,42 +144,9 @@ Vanilla核心Greek使用解析公式。其他结构使用统一中央差分、�
 
 显式`carry`优先于`risk_free_rate-dividend_yield`。Rho在显式carry或显式远期曲线存在时保持该曲线不变，只扰动贴现利率；否则保持股息率不变并重建carry。
 
-## 八、统一反解
+## 八、历史反解基线
 
-```python
-from main import solve_option
-
-solution = solve_option(
-    "AUTOCALL",
-    "SNOWBALL",
-    parameters,
-    "MONTE_CARLO_CPU",
-    {
-        "variable": "coupon",
-        "target_pv_points_100": 0.0,
-        "lower_bound": -100.0,
-        "upper_bound": 100.0,
-        "solver_absolute_tolerance": 1e-8,
-        "target_pv_absolute_tolerance": 1e-3,
-        "maximum_iterations": 100,
-    },
-    output="TERMINAL_AND_JSON",
-)
-
-print(solution.result.value)
-print(solution.result.contract_patch)
-```
-
-当前支持：
-
-|结构|反解变量|
-|---|---|
-|Snowball|coupon|
-|Phoenix|coupon|
-|Trigger|coupon|
-|Path Accumulator|strike|
-
-`contract_patch`可直接更新原合约后重新定价。反解结果必须同时满足求根收敛和目标PV残差容差。
+雪球、凤凰、触发器和累购的反解逻辑仅保留在测试基线中，用于复核旧Golden；它们不是Pricer正式产品目录或公开定价入口。正式产品统一通过`ResolvedContract→OPTIONREG_PATH→evaluate_contract`执行。
 
 ## 九、iFinD收盘市场快照
 
@@ -245,7 +208,7 @@ market = snapshot.to_market_parameters()
 ## 十二、已知边界
 
 - 10条路径仅用于快速回归。
-- 当前固定随机矩阵最多支持2000条路径和800步。
+- 默认冻结矩阵有2000条、800步；超过2000条时仅在内存按同一seed扩展，超过800步则拒绝。
 - Forward Delta尚未实现；Duration对当前期权结构标记为不适用。
 - Windows尚未实机验收，不能声明正式通过。
 - iFinD实盘已在macOS验证指数和ETF收盘快照；Token过期、账户权限和网络状态仍由运行环境决定。

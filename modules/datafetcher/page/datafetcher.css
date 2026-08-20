@@ -1,6 +1,6 @@
 @import url("../../designer/themes/designer-token-vars.css");
 
-:root { --font:Arial,"Microsoft YaHei","PingFang SC","Noto Sans CJK SC",sans-serif; --mono:Arial,"Microsoft YaHei","PingFang SC","Noto Sans CJK SC",sans-serif; }
+:root { --font:Arial,"PingFang SC","Noto Sans CJK SC",sans-serif; --mono:Arial,"PingFang SC","Noto Sans CJK SC",sans-serif; }
 * { box-sizing:border-box; } body { margin:0; color:var(--ink); background:var(--paper); font:14px var(--font); } button,input,select,textarea { font:inherit; }
 .app-shell { min-width:1225px; min-height:100vh; }.topbar { display:flex; align-items:center; gap:20px; height:62px; padding:0 24px; border-bottom:1px solid var(--rule); background:var(--surface); }.brand { display:flex; align-items:center; gap:12px; }.brand-logo { display:block; width:148px; height:auto; }.brand-separator { width:1px; height:24px; background:var(--color-rule); }.module-title { font-size:15px; font-weight:650; }.topbar-status { min-width:0; margin-left:auto; overflow:hidden; color:var(--muted); font-size:12px; text-overflow:ellipsis; white-space:nowrap; }
 .button { height:34px; padding:0 12px; border:1px solid var(--color-paper-border); border-radius:8px; background:var(--color-surface); color:var(--ink); font-size:12px; font-weight:600; cursor:pointer; }.button-primary { border-color:var(--red); background:var(--red); color:var(--color-surface); }.button-primary:hover { background:var(--red-deep); }.button-quiet { background:transparent; }.button:disabled { opacity:.6; cursor:wait; }

@@ -1,8 +1,4 @@
-"""Pricer人工页面的独立本机服务。
-
-本文件只处理Pricer页面、Pricer输入和`output_pricing`运行记录；不导入
-Backtester或Payoffer。产品合同与路径现金流仅通过共享Runtime Contract API读取。
-"""
+"""Pricer页面目录与正式Module Host定价服务。"""
 
 from __future__ import annotations
 
@@ -12,7 +8,6 @@ import hashlib
 import io
 import json
 import os
-import threading
 from datetime import date, datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -27,11 +22,9 @@ from runtime.contracts.contract_api import (
     ContractResolutionError,
     RESOLVED_CONTRACT_SCHEMA_ID,
     ResolvedContract,
-    resolve_contract,
     verify_product_snapshot_binding,
 )
 from runtime.contracts.contract_types import semantic_hash
-from runtime.contracts.input_adapter import is_explicit_demo_pricing_config
 from runtime.knowledger import load_registry
 from runtime.protocol.models import (
     DataAssetRef,
@@ -68,9 +61,6 @@ VENDOR_DIR = PAGE_DIR / "vendor"
 ICON_DIR = PROJECT_ROOT / "assets" / "icons"
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("OPTIONHELPER_PRICER_PORT", "4280"))
-MAX_BODY_BYTES = 1_500_000
-RESULT_TABLE_NAME = "pricing_results.csv"
-RESULT_TABLE_LOCK = threading.Lock()
 
 
 class PricerWebInputError(ValueError):
@@ -80,8 +70,6 @@ class PricerWebInputError(ValueError):
 def static_assets() -> dict[str, tuple[Path, str]]:
     """页面在开发仓库和发行Skill均使用的根资源路径。"""
     return {
-        "/icons/optionhelper-logo.svg": (ICON_DIR / "optionhelper-logo.svg", "image/svg+xml"),
-        "/assets/icons/optionhelper-logo.svg": (ICON_DIR / "optionhelper-logo.svg", "image/svg+xml"),
         "/icons/optionhelper-app-icon-tile-light.svg": (ICON_DIR / "optionhelper-app-icon-tile-light.svg", "image/svg+xml"),
         "/assets/icons/optionhelper-app-icon-tile-light.svg": (ICON_DIR / "optionhelper-app-icon-tile-light.svg", "image/svg+xml"),
         "/ui/style.css": (UI_DIR / "style.css", "text/css; charset=utf-8"),
@@ -92,13 +80,12 @@ def static_assets() -> dict[str, tuple[Path, str]]:
 
 
 class PricerRuntime:
-    """Pricer页面的目录读取、输入编译、定价和结果落盘。"""
+    """Pricer目录读取、正式输入编译、定价和结果落盘。"""
 
     module_name = "pricer"
 
     def __init__(self, *, data_port: Any | None = None, result_store: Any | None = None) -> None:
         # 正式行情和交易日历只能由App Host注入的DataAssetReadPort读取。
-        # 独立页面仅支持显式MC10演示，绝不退回到项目内本地CSV。
         self._host_data_port = data_port is not None
         self.data_port = data_port
         self.result_store = result_store or LocalResultStore(RESULT_ROOT)
@@ -148,77 +135,11 @@ class PricerRuntime:
             "ok": True,
             "module": self.module_name,
             "products": products,
-            "config_fields": list(PricingConfig.__dataclass_fields__),
+            "config_fields": [
+                name for name in PricingConfig.__dataclass_fields__
+                if name not in {"demo_mode", "demo_calendar"}
+            ],
         }
-
-    def run(self, body: Mapping[str, Any]) -> dict[str, Any]:
-        """独立页面入口：只运行显式中证500MC10演示。"""
-        if _has_standalone_formal_market_input(body):
-            raise PricerWebInputError("正式行情和交易日历只能由App任务上下文绑定；独立页面不接受DataAssetRef或物理路径。")
-        product_id = _text(body.get("product_id"), "product_id")
-        config = _with_default_valuation_date(_pricing_config(body))
-        explicit_demo = (
-            product_id == "2.1"
-            and is_explicit_demo_pricing_config(config.to_dict())
-        )
-        if not explicit_demo:
-            raise PricerWebInputError("独立页面仅允许显式中证5002.1看涨期权MC10演示；正式定价请从App任务运行。")
-        identity = _identity_with_pricing_reference(_identity(body), body)
-        if "reference_prices" not in identity:
-            raise PricerWebInputError("MC10演示缺少显式demo spot对应的合同起始参考价")
-        contract = resolve_contract(
-            product_id,
-            identity=identity,
-            term_overrides=_term_overrides(body),
-            registry=load_registry(),
-            trading_dates=None,
-        )
-        task_id = _identifier(body.get("task_id"), "task")
-        run_id = _identifier(body.get("run_id"), "run")
-        try:
-            result = price(PricingInput(
-                contract=contract,
-                pricing_config=config,
-                historical_data=None,
-                market_data_refs=(),
-            ))
-        except (TypeError, ValueError) as error:
-            raise PricerWebInputError(str(error)) from error
-        if explicit_demo:
-            result = replace(
-                result,
-                market_snapshot={
-                    **result.market_snapshot,
-                    "source": "explicit_demo_market_snapshot",
-                    "data_lineage": {
-                        "mode": "explicit_demo_only",
-                        "data_asset_ref": None,
-                        "statement": "市场快照与估值日历均由本次MC10演示输入显式提供；未读取或推断行情数据。",
-                    },
-                    "trading_calendar": dict(config.demo_calendar or {}),
-                },
-            )
-        market = result.market_snapshot
-        resolved_contract = redact_public_money_compatibility(contract.to_protocol_dict())
-        output = {
-            "ok": True,
-            "module": self.module_name,
-            "task_id": task_id,
-            "run_id": run_id,
-            "contract_fingerprint": contract.contract_fingerprint,
-            "resolved_contract": resolved_contract,
-            "market_snapshot": market,
-            "pricing": redact_public_money_compatibility(result.to_public_percent_dict()),
-        }
-        request = {
-            "product_id": product_id,
-            "identity": identity,
-            "term_overrides": _term_overrides(body),
-            "pricing_config": config.to_dict(),
-            "created_at": _now(),
-        }
-        _write_run(task_id, run_id, request, output)
-        return output
 
     def run_formal(
         self,
@@ -235,18 +156,8 @@ class PricerRuntime:
         if not isinstance(host_context, ModuleHostContext):
             raise PricerWebInputError("正式Pricer调用必须由Host注入ModuleHostContext")
         _require_host_contract(contract, host_context)
-        explicit_demo = (
-            len(protocol_input.market_data_refs) == 0
-            and protocol_input.trading_calendar_ref is None
-            and is_explicit_demo_pricing_config(protocol_input.pricing_config)
-        )
         if len(protocol_input.market_data_refs) == 0:
-            if not explicit_demo:
-                raise PricerWebInputError("正式Pricer当前要求唯一受控market_data_ref")
-            if contract.product_id != "2.1":
-                raise PricerWebInputError("无行情数据的MC10演示仅支持2.1看涨期权；离散路径结构必须绑定真实DataAssetRef与交易日历")
-            historical = None
-            data_ref = None
+            raise PricerWebInputError("正式Pricer当前要求唯一受控market_data_ref")
         elif len(protocol_input.market_data_refs) == 1:
             if not self._host_data_port:
                 raise PricerWebInputError("正式Pricer必须由Host注入只读DataAssetRef端口")
@@ -269,7 +180,7 @@ class PricerRuntime:
                 contract=contract,
                 pricing_config=config,
                 historical_data=historical,
-                market_data_refs=() if data_ref is None else (data_ref,),
+                market_data_refs=(data_ref,),
                 trading_calendar_data=calendar_data,
                 trading_calendar_ref=calendar_ref,
                 observed_contract_state=observed_state,
@@ -277,44 +188,24 @@ class PricerRuntime:
         except (TypeError, ValueError, PricerInputDefaultError) as error:
             raise PricerWebInputError(str(error)) from error
 
-        if explicit_demo:
-            pricing_result = replace(
-                pricing_result,
-                market_snapshot={
-                    **pricing_result.market_snapshot,
-                    "source": "explicit_demo_market_snapshot",
-                    "data_lineage": {
-                        "mode": "explicit_demo_only",
-                        "data_asset_ref": None,
-                        "statement": "市场快照与估值日历均由本次MC10演示输入显式提供；未读取或推断行情数据。",
-                    },
-                    "trading_calendar": dict(config.demo_calendar or {}),
-                },
-            )
-
         task_id = str(host_context.task_id)
         run_id = f"run-{uuid4().hex[:12]}"
-        effective_tenant = tenant_id or (
-            data_ref.tenant_id if data_ref is not None else
-            calendar_ref.tenant_id if calendar_ref is not None else "local"
-        )
-        if data_ref is not None and effective_tenant != data_ref.tenant_id:
+        effective_tenant = tenant_id or data_ref.tenant_id
+        if effective_tenant != data_ref.tenant_id:
             raise PricerWebInputError("DataAssetRef.tenant_id与Host tenant不一致")
         if calendar_ref is not None and effective_tenant != calendar_ref.tenant_id:
             raise PricerWebInputError("trading_calendar_ref.tenant_id与Host tenant不一致")
-        data_refs = [] if data_ref is None else [_data_ref_dict(data_ref)]
+        data_refs = [_data_ref_dict(data_ref)]
         if calendar_ref is not None:
             data_refs.append(_data_ref_dict(calendar_ref))
         private_input_snapshot = {
             "contract": contract.to_protocol_dict(),
             "pricing_config": config.to_dict(),
-            "market_data_refs": [] if data_ref is None else [_data_ref_dict(data_ref)],
+            "market_data_refs": [_data_ref_dict(data_ref)],
             "trading_calendar_ref": None if calendar_ref is None else _data_ref_dict(calendar_ref),
             "observed_contract_state": observed_state,
         }
         limitations = list(pricing_result.limitations)
-        if explicit_demo:
-            limitations.append("MC10演示仅使用显式输入的市场快照和估值日历，未绑定DataAssetRef，不可用于报价。")
         status = "succeeded" if pricing_result.status == "priced" else "unsupported"
         execution_fingerprint = semantic_hash(private_input_snapshot)
         input_snapshot = redact_public_money_compatibility(private_input_snapshot)
@@ -330,8 +221,8 @@ class PricerRuntime:
             "run_id": run_id,
             "analysis_case_id": analysis_case_id,
             "tenant_id": effective_tenant,
-            "created_by": data_ref.created_by if data_ref is not None else "explicit-demo",
-            "access_scope": list(data_ref.access_scope) if data_ref is not None else ["read"],
+            "created_by": data_ref.created_by,
+            "access_scope": list(data_ref.access_scope),
             "candidate_id": candidate_id,
             "catalog_version": catalog_version,
             "execution_fingerprint": execution_fingerprint,
@@ -662,63 +553,6 @@ def _read_json(path: Path) -> dict[str, Any]:
     return value
 
 
-def _identity(body: Mapping[str, Any]) -> dict[str, Any]:
-    supplied = body.get("identity", {})
-    if not isinstance(supplied, Mapping):
-        raise PricerWebInputError("identity必须为对象")
-    underlyings = supplied.get("underlyings", ["000905.SH"])
-    if isinstance(underlyings, str):
-        underlyings = [item.strip() for item in underlyings.split(",") if item.strip()]
-    if not isinstance(underlyings, list):
-        raise PricerWebInputError("identity.underlyings必须为列表")
-    identity = {
-        "contract_id": supplied.get("contract_id"),
-        "underlyings": underlyings,
-        "contract_start_date": supplied.get("contract_start_date"),
-    }
-    if supplied.get("reference_prices") is not None:
-        identity["reference_prices"] = supplied["reference_prices"]
-    return {key: value for key, value in identity.items() if value is not None}
-
-
-def _identity_with_pricing_reference(identity: Mapping[str, Any], body: Mapping[str, Any]) -> dict[str, Any]:
-    result = dict(identity)
-    if "reference_prices" in result:
-        return result
-    supplied = body.get("pricing_config", {})
-    if not isinstance(supplied, Mapping):
-        return result
-    raw_single, raw_multi = supplied.get("S0Raw"), supplied.get("S0RawVec")
-    assets = result["underlyings"]
-    if raw_single is not None and len(assets) == 1:
-        result["reference_prices"] = {assets[0]: raw_single}
-    elif isinstance(raw_multi, Mapping) and set(raw_multi) == set(assets):
-        result["reference_prices"] = dict(raw_multi)
-    return result
-
-
-def _term_overrides(body: Mapping[str, Any]) -> dict[str, Any]:
-    value = body.get("term_overrides", {})
-    if not isinstance(value, Mapping):
-        raise PricerWebInputError("term_overrides必须为对象")
-    identity_only = {"U", "underlyingOrder", "priceBasis", "premiumSign", "exercisePolicy"}
-    protected_scale_terms = {"N", "Nvar", "Nvega"}
-    supplied_scale_terms = sorted(protected_scale_terms.intersection(value))
-    if supplied_scale_terms:
-        raise PricerWebInputError("合同现金流规模由冻结ResolvedContract决定，页面不得覆盖：" + "、".join(supplied_scale_terms))
-    return {key: item for key, item in value.items() if key not in identity_only}
-
-
-def _pricing_config(body: Mapping[str, Any]) -> PricingConfig:
-    supplied = body.get("pricing_config", {})
-    if not isinstance(supplied, Mapping):
-        raise PricerWebInputError("pricing_config必须为对象")
-    values = dict(supplied)
-    for key in ("S0Raw", "S0RawVec", "hist", "histMulti"):
-        values.pop(key, None)
-    return PricingConfig.from_mapping({key: value for key, value in values.items() if value is not None})
-
-
 def _with_default_valuation_date(config: PricingConfig) -> PricingConfig:
     """Apply the device-local default once, before any DataAsset lookup."""
     return config if config.valuation_date is not None else replace(
@@ -726,151 +560,8 @@ def _with_default_valuation_date(config: PricingConfig) -> PricingConfig:
     )
 
 
-def _has_standalone_formal_market_input(body: Mapping[str, Any]) -> bool:
-    """独立页面不解析DataAssetRef或历史路径，正式绑定只走run_formal。"""
-    if any(key in body for key in (
-        "market_data_refs", "trading_calendar_ref", "history_path", "history_reference",
-        "observed_contract_state",
-    )):
-        return True
-    supplied = body.get("pricing_config", {})
-    return isinstance(supplied, Mapping) and any(
-        key in supplied for key in ("history_reference", "hist", "histMulti")
-    )
-
-
-def _text(value: Any, name: str) -> str:
-    text = str(value).strip() if value is not None else ""
-    if not text:
-        raise PricerWebInputError(f"{name}不能为空")
-    return text
-
-
-def _identifier(value: Any, prefix: str) -> str:
-    text = str(value).strip() if value is not None else ""
-    return text or f"{prefix}-{uuid4().hex[:12]}"
-
-
 def _now() -> str:
     return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
-
-
-def _project_reference(path: Path) -> str:
-    try:
-        return str(path.relative_to(PROJECT_ROOT))
-    except ValueError:
-        return str(path)
-
-
-def _greek_percent(value: Any) -> float | str:
-    """结果汇总只读取正式GreekValue的百分比敏感度。"""
-    return value.get("pv_percent_value", value.get("value", "")) if isinstance(value, Mapping) else ""
-
-
-def _write_json(path: Path, data: Any) -> None:
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2, allow_nan=False) + "\n", encoding="utf-8")
-
-
-def _validated_output_contract_fingerprint(output: Mapping[str, Any]) -> str:
-    fingerprint = output.get("contract_fingerprint")
-    resolved_contract = output.get("resolved_contract")
-    pricing = output.get("pricing")
-    if (
-        not isinstance(fingerprint, str)
-        or len(fingerprint) != 64
-        or any(character not in "0123456789abcdef" for character in fingerprint)
-    ):
-        raise ValueError("Pricer输出缺少有效contract_fingerprint")
-    if not isinstance(resolved_contract, Mapping) or resolved_contract.get("contract_fingerprint") != fingerprint:
-        raise ValueError("resolved_contract.contract_fingerprint与Pricer输出不一致")
-    if not isinstance(pricing, Mapping) or pricing.get("contract_fingerprint") != fingerprint:
-        raise ValueError("pricing.contract_fingerprint与Pricer输出不一致")
-    return fingerprint
-
-
-def _write_run(task_id: str, run_id: str, request: Mapping[str, Any], output: Mapping[str, Any]) -> None:
-    contract_fingerprint = _validated_output_contract_fingerprint(output)
-    folder = RESULT_ROOT / "output_pricing" / task_id / run_id
-    folder.mkdir(parents=True, exist_ok=False)
-    _write_json(folder / "input.json", request)
-    _write_json(folder / "resolved_contract.json", output["resolved_contract"])
-    _write_json(folder / "result.json", output)
-    _write_json(folder / "manifest.json", {
-        "module": "pricer",
-        "task_id": task_id,
-        "run_id": run_id,
-        "contract_fingerprint": contract_fingerprint,
-        "created_at": _now(),
-        "files": ["input.json", "resolved_contract.json", "result.json", "manifest.json"],
-    })
-    _rebuild_pricing_results_table()
-
-
-def _rebuild_pricing_results_table() -> None:
-    """从所有Pricer运行明细重建产品结果总表，不替代任何运行目录。"""
-    output_root = RESULT_ROOT / "output_pricing"
-    headers = [
-        "生成时间", "任务编号", "运行编号", "产品编号", "产品名称", "标的", "估值日", "定价方法",
-        "PV(%)", "口径", "Delta(%)", "Gamma(%)", "Vega(%)", "Theta(%)", "Rho(%)", "波动率", "HV窗口",
-        "无风险利率R_f", "分红率q", "标准误差(%)", "结果目录",
-    ]
-    rows: list[dict[str, Any]] = []
-    for result_path in output_root.glob("*/*/result.json"):
-        manifest_path = result_path.with_name("manifest.json")
-        input_path = result_path.with_name("input.json")
-        try:
-            output = json.loads(result_path.read_text(encoding="utf-8"))
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            request = json.loads(input_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
-        if not isinstance(output, Mapping) or not isinstance(request, Mapping) or output.get("module") != "pricer":
-            continue
-        contract = output.get("resolved_contract", {})
-        identity = contract.get("identity", {}) if isinstance(contract, Mapping) else {}
-        pricing = output.get("pricing", {})
-        market = output.get("market_snapshot", {})
-        if not isinstance(pricing, Mapping):
-            pricing = {}
-        if not isinstance(market, Mapping):
-            market = {}
-        greeks = pricing.get("greeks", {})
-        if not isinstance(greeks, Mapping):
-            greeks = {}
-        rows.append({
-            "生成时间": manifest.get("created_at", ""),
-            "任务编号": output.get("task_id", ""),
-            "运行编号": output.get("run_id", ""),
-            "产品编号": pricing.get("product_id", output.get("product_id", request.get("product_id", ""))),
-            "产品名称": identity.get("name_zh", ""),
-            "标的": ",".join(identity.get("underlyings", [])),
-            "估值日": market.get("valuation_date", ""),
-            "定价方法": pricing.get("method", ""),
-            "PV(%)": pricing.get("pv_percent", ""),
-            "口径": pricing.get("value_basis", "pv_percent"),
-            "Delta(%)": _greek_percent(greeks.get("delta")),
-            "Gamma(%)": _greek_percent(greeks.get("gamma")),
-            "Vega(%)": _greek_percent(greeks.get("vega")),
-            "Theta(%)": _greek_percent(greeks.get("theta")),
-            "Rho(%)": _greek_percent(greeks.get("rho")),
-            "波动率": market.get("historical_volatility", ""),
-            "HV窗口": market.get("hv_window", ""),
-            "无风险利率R_f": market.get("risk_free_rate", ""),
-            "分红率q": market.get("dividend_yield", ""),
-            "标准误差(%)": pricing.get("standard_error_percent", ""),
-            "结果目录": _project_reference(result_path.parent),
-        })
-    rows.sort(key=lambda row: (str(row["生成时间"]), str(row["任务编号"]), str(row["运行编号"])))
-    table = io.StringIO(newline="")
-    writer = csv.DictWriter(table, fieldnames=headers, extrasaction="ignore")
-    writer.writeheader()
-    writer.writerows(rows)
-    output_root.mkdir(parents=True, exist_ok=True)
-    target = output_root / RESULT_TABLE_NAME
-    temporary = target.with_suffix(".csv.tmp")
-    with RESULT_TABLE_LOCK:
-        temporary.write_text("\ufeff" + table.getvalue(), encoding="utf-8")
-        temporary.replace(target)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -881,8 +572,6 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         assets = {
-            "/pricer.css": (PAGE_DIR / "pricer.css", "text/css; charset=utf-8"),
-            "/pricer.js": (PAGE_DIR / "pricer.js", "application/javascript; charset=utf-8"),
             **static_assets(),
         }
         if self.path == "/api/status":
@@ -894,20 +583,6 @@ class Handler(BaseHTTPRequestHandler):
         if self.path in assets:
             return self._file(*assets[self.path])
         return self._json(HTTPStatus.NOT_FOUND, {"ok": False, "message": "未找到资源"})
-
-    def do_POST(self) -> None:  # noqa: N802
-        if self.path != "/api/run":
-            return self._json(HTTPStatus.NOT_FOUND, {"ok": False, "message": "未找到接口"})
-        try:
-            length = int(self.headers.get("Content-Length", "0"))
-            if length <= 0 or length > MAX_BODY_BYTES:
-                raise PricerWebInputError("请求体大小无效")
-            body = json.loads(self.rfile.read(length).decode("utf-8"))
-            if not isinstance(body, Mapping):
-                raise PricerWebInputError("请求体必须为JSON对象")
-            return self._json(HTTPStatus.OK, self.runtime.run(body))
-        except Exception as error:
-            return self._json(HTTPStatus.BAD_REQUEST, {"ok": False, "message": str(error)})
 
     def _file(self, path: Path, content_type: str) -> None:
         if not path.is_file():
@@ -929,7 +604,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def run_host(*, host: str = HOST, port: int = PORT) -> None:
-    """供core.module_host调用；保留原有Pricer页面和API。"""
+    """提供页面预览、静态资源和产品目录；正式定价由Module Host调用。"""
     server = ThreadingHTTPServer((host, port), Handler)
     try:
         server.serve_forever()

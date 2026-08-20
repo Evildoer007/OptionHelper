@@ -15,6 +15,7 @@ from .design_renderer import DesignerDependencyError, render
 from .design_system_builder import DESIGN_SYSTEM_SCHEMA, build_design_system
 from .models import DESIGNER_ARTIFACT_MANIFEST_SCHEMA, DESIGNER_PAYLOAD_SCHEMA, DesignerInput
 from .pdf_renderer import runtime_status as pdf_runtime_status
+from .presentation_patch import PRESENTATION_PATCH_SCHEMA
 
 
 def _profile() -> dict[str, Any]:
@@ -25,6 +26,7 @@ def _profile() -> dict[str, Any]:
         "design_system_schema": DESIGN_SYSTEM_SCHEMA,
         "payload_schema": DESIGNER_PAYLOAD_SCHEMA,
         "artifact_manifest_schema": DESIGNER_ARTIFACT_MANIFEST_SCHEMA,
+        "presentation_patch_schema": PRESENTATION_PATCH_SCHEMA,
         "design_system_hash": theme.token_hash,
         "output_types": ["card", "quote", "report"],
         "modules": list(theme.tokens["modules"]),

@@ -188,6 +188,7 @@ def _frontmatter_errors(skill: Path) -> list[str]:
 
 
 def _link_errors(root: Path) -> list[str]:
+    root = root.expanduser().resolve()
     errors: list[str] = []
     for path in _walk_files(root):
         if path.suffix.lower() not in {".md", ".html", ".css"}:
@@ -207,7 +208,11 @@ def _link_errors(root: Path) -> list[str]:
             except ValueError:
                 errors.append(f"资源链接越出Skill根目录：{_relative(root, path)} -> {raw}")
                 continue
-            if not resolved.exists():
+            relative = _relative(root, resolved)
+            if relative == "capability-manifest.json":
+                errors.append(f"资源链接不属于内容树：{_relative(root, path)} -> {raw}")
+                continue
+            if not resolved.is_file():
                 errors.append(f"资源链接不存在：{_relative(root, path)} -> {raw}")
     return errors
 
@@ -278,7 +283,7 @@ def _structure_errors(root: Path) -> list[str]:
     for module in MODULES:
         required.extend((f"references/module-guides/{module}.md", f"scripts/modules/{module}/__init__.py", f"scripts/modules/{module}/service.py", f"scripts/modules/{module}/config.py", f"scripts/modules/{module}/models.py"))
     for module in PAGE_MODULES:
-        required.extend((f"assets/pages/{module}/{module}.html", f"assets/pages/{module}/{module}.css", f"assets/pages/{module}/{module}.js"))
+        required.append(f"assets/pages/{module}/{module}.html")
     errors.extend(f"缺少{relative}" for relative in required if not (root / relative).exists())
     modules_root = root / "scripts" / "modules"
     if modules_root.is_dir():

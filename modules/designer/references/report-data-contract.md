@@ -26,9 +26,11 @@
 }
 ```
 
-Designer只消费`optionhelper.designer-payload`，且顶层`schema`字段必须存在并逐字匹配。其他schema或缺失schema均会被拒绝，不做版本转换、默认补齐或兼容读取。设计系统描述固定为`optionhelper.design-system`。内建`report-standard`的七个章节依次为：核心结论、结构推荐、合同参数、收益结构、估值定价、历史回测、风险提示。若传入`sections`，其值必须严格等于该顺序；`research`和`meta.section_titles`均不属于公开契约。`risk`始终位于内建报告末尾。`recommendation`表现Reporter冻结的选择理由、适用条件、不适用情形和主要权衡。Report固定A4与Card的HTML壳和主题均由Designer内部固定，公开`DesignerInput`、Tool与CLI不接受`layout`或`html_report_layout`。payload的`meta`不参与版式选择。
+Designer只消费`optionhelper.designer-payload`，且顶层`schema`字段必须存在并逐字匹配。其他schema或缺失schema均会被拒绝，不做版本转换、默认补齐或兼容读取。设计系统描述固定为`optionhelper.design-system`。内建`report-standard`默认七个章节依次为：核心结论、结构推荐、合同参数、收益结构、估值定价、历史回测、风险提示。Card和Quote也各有自己的标准结构。默认结构不等于内容上限：用户明确要求单次调整时，由Designer在冻结事实之后应用`presentation_patch`，标准模板和Reporter事实保持不变。Report固定A4与Card的HTML壳和主题均由Designer内部固定，公开`DesignerInput`、Tool与CLI不接受`layout`或`html_report_layout`。payload的`meta`不参与版式选择。
 
 `template_id`只选择Designer治理的`assets/templates/*.template.json`。模板定义可选择、命名和排序已有内容块，不能携带HTML、CSS、数值、公式或外部路径；缺少可展示事实的块直接省略。这样可以新增模板，而不要求模型修改Python或手写HTML。
+
+`presentation_patch`是一次性交付展示指令，schema固定为`optionhelper.presentation-patch/v1.0.0`。它支持增加、删除、改名和移动板块，修改或隐藏已有展示值，并追加安全的文本、指标、表格、数学公式和图表。值操作使用指向冻结Payload副本的JSON Pointer；原Payload、标准模板和Reporter事实不被修改。所有改动在返回的内部回执中记录原值与展示值，HTML和PDF正文不展示该回执。Patch不接受HTML、脚本、CSS、颜色、字体、间距、圆角、阴影或外链字段；图表仍使用固定Token色板。没有可展示事实的标准块继续省略，不渲染“未提供”。
 
 `reference_quote`只在`output_type="quote"`时必填。它是冻结的交易参考事实，不得从估值、Greek、收益图或回测结果推导。每个`groups`元素必须包含`title`、`columns`和`rows`；列由`key`、`label`和`format`组成，`format`只能为`text`、`number`或`percent`。不同结构应分组声明各自字段，行必须完整给出该组所有列值，不能以空值或“未提供”占位。
 
@@ -84,9 +86,9 @@ Designer只消费`optionhelper.designer-payload`，且顶层`schema`字段必须
 
 Designer只改变读者格式，不改写冻结事实。普通数值、指标、Greek、参数表、事件统计和图表数值最多保留两位小数，使用千分位并移除无意义尾零；百分比同样最多两位并保留`%`，例如`34.234%`显示为`34.23%`，`30.00%`显示为`30%`。日期、代码、公式、原始JSON和事实哈希不参与数值格式化。
 
-Card固定为210mm宽度、高度随完整内容自然延展，无损益图、无交互图。其内容是同一Report事实的简版：推荐结构、挂钩标的、推荐依据、估值日与方法、最多四项核心估值指标、已提供的Greeks、四项核心回测指标、四项产品专属回测指标及最多2项风险提示。没有已冻结事实时不生成对应块，不填默认数字。PDF导出使用A4自然分页，不因复杂期权结构或完整指标而拒绝交付。
+标准Card固定为210mm宽度、高度随完整内容自然延展，无损益图、无交互图。其默认内容是同一Report事实的简版：推荐结构、挂钩标的、推荐依据、估值日与方法、最多四项核心估值指标、已提供的Greeks、四项核心回测指标、四项产品专属回测指标及最多2项风险提示。没有已冻结事实时不生成对应块，不填默认数字。用户明确要求的单次增删和追加由`presentation_patch`负责。PDF导出使用A4自然分页，不因复杂期权结构或完整指标而拒绝交付。
 
-Report固定为连续A4正文并完整展示七个章节。HTML宽屏提供左侧章节目录，PDF隐藏导航。在“估值定价”中展开估值方法、估值日、全部估值指标、五个Greeks、假设、风险曲线、Greek曲面与已提供定价情景。在“历史回测”中展开样本定义、核心统计、路径事件、产品专属统计、年度统计、标的表现与全部已提供图表。
+Report固定为连续A4正文。未提供`presentation_patch`时按标准七章展示；用户明确单次调整后，HTML目录和PDF正文按当前有效章节同步变化。在“估值定价”中展开估值方法、估值日、全部估值指标、五个Greeks、假设、风险曲线、Greek曲面与已提供定价情景。在“历史回测”中展开样本定义、核心统计、路径事件、产品专属统计、年度统计、标的表现与全部已提供图表。
 
 ## 6. 渲染校验
 

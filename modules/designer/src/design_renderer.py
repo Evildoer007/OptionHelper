@@ -20,6 +20,7 @@ from .config import DesignerConfig, load_designer_config
 from .design_system_builder import build_design_system
 from .models import DESIGNER_ARTIFACT_MANIFEST_SCHEMA, DesignerInput
 from .pdf_renderer import PdfRuntimeError, render_pdf
+from .presentation_patch import apply_presentation_patch
 from .template_definition import default_template_id, load_template_definition
 from .renderer import (
     PUBLIC_BRAND,
@@ -31,6 +32,7 @@ from .renderer import (
     esc,
     esc_rendered,
     render_html,
+    render_presentation_content,
     rich_text,
     text,
     validate_payload,
@@ -201,6 +203,8 @@ def _card_data_table(rows: list[Mapping[str, Any]]) -> str:
 def _card_body(
     payload: Mapping[str, Any],
     sections: tuple[tuple[str, str, str], ...] | None = None,
+    custom_content: Mapping[str, tuple[Mapping[str, Any], ...]] | None = None,
+    appended_content: Mapping[str, tuple[Mapping[str, Any], ...]] | None = None,
 ) -> str:
     """Render the concise view of the same frozen facts as a Report.
 
@@ -213,6 +217,8 @@ def _card_body(
         ("contract-highlights", "关键合同条款"), ("pricing", "估值摘要"),
         ("backtest", "回测摘要"), ("risk", "主要风险"),
     ))
+    custom_content = custom_content or {}
+    appended_content = appended_content or {}
 
     def card_unit(value: Any) -> str:
         unit = text(value)
@@ -341,16 +347,28 @@ def _card_body(
         "risk": risk_block,
     }
     blocks: list[str] = []
+
+    def render_section(section_id: str, title: str, block: str) -> str:
+        if block.startswith("custom:"):
+            body = render_presentation_content(custom_content.get(section_id, ()))
+            return f'<section class="card-custom"><h2>{esc(title)}</h2>{body}</section>' if body else ""
+        body = renderers[block](title)
+        appended = render_presentation_content(appended_content.get(section_id, ()))
+        if appended:
+            body = body + f'<div class="card-appended">{appended}</div>'
+        return body
+
     position = 0
     while position < len(sections):
-        _, title, block = sections[position]
+        section_id, title, block = sections[position]
         if block == "pricing" and position + 1 < len(sections) and sections[position + 1][2] == "backtest":
-            left, right = pricing_block(title), backtest_block(sections[position + 1][1])
+            next_id, next_title, next_block = sections[position + 1]
+            left, right = render_section(section_id, title, block), render_section(next_id, next_title, next_block)
             if left or right:
                 blocks.append('<section class="card-analysis-grid">' + left + right + "</section>")
             position += 2
             continue
-        rendered = renderers[block](title)
+        rendered = render_section(section_id, title, block)
         if rendered:
             blocks.append(rendered if block not in {"pricing", "backtest"} else '<section class="card-analysis-grid">' + rendered + "</section>")
         position += 1
@@ -362,6 +380,8 @@ def render_card_html(
     *,
     config: DesignerConfig | Mapping[str, Any] | None = None,
     section_definition: tuple[tuple[str, str, str], ...] | None = None,
+    custom_content: Mapping[str, tuple[Mapping[str, Any], ...]] | None = None,
+    appended_content: Mapping[str, tuple[Mapping[str, Any], ...]] | None = None,
     template_shell: str = "card.html",
 ) -> str:
     """Render the minimal Card from the same frozen payload as a Report."""
@@ -376,7 +396,7 @@ def render_card_html(
         .replace("__REPORT_THEME__", config.read_report_theme())
         .replace("__BRAND__", html.escape(PUBLIC_BRAND))
         .replace("__DESIGN_SYSTEM_ID__", html.escape(theme.design_system_id))
-        .replace("__CARD_BODY__", _card_body(safe_payload, section_definition))
+        .replace("__CARD_BODY__", _card_body(safe_payload, section_definition, custom_content, appended_content))
     )
 
 
@@ -429,6 +449,8 @@ def render_quote_html(
     *,
     config: DesignerConfig | Mapping[str, Any] | None = None,
     section_definition: tuple[tuple[str, str, str], ...] | None = None,
+    custom_content: Mapping[str, tuple[Mapping[str, Any], ...]] | None = None,
+    appended_content: Mapping[str, tuple[Mapping[str, Any], ...]] | None = None,
     template_shell: str = "quote.html",
 ) -> str:
     """Render explicit, grouped reference quotes without any inferred prices."""
@@ -436,20 +458,34 @@ def render_quote_html(
     safe_payload = _normalise_payload(payload, output_type="quote")
     config = load_designer_config(config)
     definition = section_definition or (("reference-quote", QUOTE_DELIVERY_TITLE, "reference_quote"),)
-    if len(definition) != 1 or definition[0][2] != "reference_quote":
-        raise ValueError("Quote模板只能包含reference_quote内容块。")
+    custom_content = custom_content or {}
+    appended_content = appended_content or {}
     theme = build_design_system()
     template = config.read_template(template_shell)
     meta = as_dict(safe_payload.get("meta"))
     title = text(meta.get("quote_title")) or QUOTE_DELIVERY_TITLE
     quote = _reference_quote(safe_payload)
+    blocks: list[str] = []
+    for section_id, section_title, block in definition:
+        if block == "reference_quote":
+            body = _quote_body(safe_payload)
+        elif block.startswith("custom:"):
+            body = render_presentation_content(custom_content.get(section_id, ()))
+        else:
+            raise ValueError(f"Quote模板不支持内容块：{block}。")
+        body += render_presentation_content(appended_content.get(section_id, ()))
+        if body:
+            blocks.append(
+                body if block == "reference_quote" and section_title == QUOTE_DELIVERY_TITLE else
+                f'<section class="quote-custom"><h2>{esc(section_title)}</h2>{body}</section>'
+            )
     return (
         template.replace("__TITLE__", esc(title))
         .replace("__REPORT_THEME__", config.read_report_theme())
         .replace("__BRAND__", esc(PUBLIC_BRAND))
         .replace("__DESIGN_SYSTEM_ID__", esc(theme.design_system_id))
         .replace("__IDENTITY__", _quote_identity(quote))
-        .replace("__QUOTE_BODY__", _quote_body(safe_payload))
+        .replace("__QUOTE_BODY__", "".join(blocks))
     )
 
 
@@ -573,6 +609,8 @@ def render(
         request.template_id or default_template_id(request.normalized_output_type),
         request.normalized_output_type,
     )
+    presentation = apply_presentation_patch(payload, template.sections, request.presentation_patch)
+    payload = dict(presentation.payload)
     if request.design_system_id and request.design_system_id != theme.design_system_id:
         raise ValueError(
             f"设计系统标识不匹配：输入={request.design_system_id}，当前={theme.design_system_id}"
@@ -587,14 +625,18 @@ def render(
         html_content = render_card_html(
             payload,
             config=config,
-            section_definition=tuple((item.id, item.title, item.block) for item in template.sections),
+            section_definition=tuple((item.id, item.title, item.block) for item in presentation.sections),
+            custom_content=presentation.custom_content,
+            appended_content=presentation.appended_content,
             template_shell=template.shell,
         )
     elif request.normalized_output_type == "quote":
         html_content = render_quote_html(
             payload,
             config=config,
-            section_definition=tuple((item.id, item.title, item.block) for item in template.sections),
+            section_definition=tuple((item.id, item.title, item.block) for item in presentation.sections),
+            custom_content=presentation.custom_content,
+            appended_content=presentation.appended_content,
             template_shell=template.shell,
         )
     else:
@@ -604,7 +646,9 @@ def render(
             echarts_path,
             design_system_id=theme.design_system_id,
             config=config,
-            section_definition=tuple((item.id, item.title, item.block) for item in template.sections),
+            section_definition=tuple((item.id, item.title, item.block) for item in presentation.sections),
+            custom_content=dict(presentation.custom_content),
+            appended_content=dict(presentation.appended_content),
             template_shell=template.shell,
         )
     _assert_public_delivery_text(html_content)
@@ -632,6 +676,7 @@ def render(
             "design_system_id": theme.design_system_id,
             "design_system_hash": theme.token_hash,
             "template_id": template.id,
+            "presentation_patch": request.presentation_patch,
         }
     )
     requires_echarts = '<script src=' in html_content
@@ -680,6 +725,8 @@ def render(
     result["presentation_input_hash"] = presentation_input_hash
     result["artifact_hash"] = manifest["artifact_hash"]
     result["artifact_manifest"] = manifest
+    if presentation.receipt is not None:
+        result["presentation_receipt"] = dict(presentation.receipt)
     return result
 
 

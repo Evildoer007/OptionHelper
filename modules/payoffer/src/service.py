@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import json
 import os
+from hashlib import sha256
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Mapping
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import urlparse
 from uuid import uuid4
 
 from runtime.bootstrap import bootstrap_runtime
@@ -20,6 +21,7 @@ from runtime.ports.result_store import ResultStorePort
 from runtime.protocol.module_host import ModuleHostContext
 
 from .asset_resolver import DefaultAssetError, figure_asset_paths, verify_contract_snapshot_binding
+from .config import DEFAULT_MAINTENANCE_ENV, DEFAULT_PORT, HOST, PORT_ENV
 from .impl.engine import (
     PayoffEngineError,
     load_registry,
@@ -39,8 +41,117 @@ PAGE_DIR = RUNTIME_PATHS.module_page_dir("payoffer")
 PAGE = PAGE_DIR / "payoffer.html"
 PAYOFF_UI_DIR = PAGE_DIR / "ui"
 BRAND_ASSET_DIR = RUNTIME_PATHS.project_root / "assets" / "icons"
-HOST = "127.0.0.1"
-PORT = int(os.environ.get("OPTIONHELPER_PAYOFF_PYTHON_PORT", "4181"))
+DESIGNER_TOKEN_CSS = RUNTIME_PATHS.project_root / (
+    "assets/designer/themes/designer-token-vars.css"
+    if RUNTIME_PATHS.mode == "release"
+    else "modules/designer/assets/themes/designer-token-vars.css"
+)
+PORT = int(os.environ.get(PORT_ENV, str(DEFAULT_PORT)))
+
+
+def _product_for_request(product_id: object) -> tuple[str, dict[str, Any]]:
+    identifier = str(product_id or "").strip()
+    product = load_registry().get("products", {}).get(identifier)
+    if not isinstance(product, dict):
+        raise PayoffEngineError("必须提供有效的product_id")
+    return identifier, product
+
+
+def _maintenance_enabled() -> bool:
+    """默认资产写权限只在开发仓库的显式管理员维护进程中存在。"""
+    return RUNTIME_PATHS.mode == "development" and os.environ.get(DEFAULT_MAINTENANCE_ENV, "").strip() == "1"
+
+
+def _maintenance_manager():
+    if not _maintenance_enabled():
+        raise PayoffEngineError("默认资产维护未启用；请从Desk管理员高级操作进入")
+    from modules.payoffer.maintenance import default_asset_manager
+
+    return default_asset_manager
+
+
+def default_example_payload(product_id: object) -> dict[str, Any]:
+    """读取固定默认SVG；该路径不构造本次合同，也不写任何资产。"""
+    identifier, product = _product_for_request(product_id)
+    name_zh = str(product["identity"]["name_zh"])
+    paths = figure_asset_paths(name_zh)
+    try:
+        svg = paths["svg"].read_text(encoding="utf-8")
+        svg_hash = sha256(paths["svg"].read_bytes()).hexdigest()
+        json_hash = sha256(paths["json"].read_bytes()).hexdigest()
+    except OSError as error:
+        raise PayoffEngineError(f"缺少{name_zh}的固定默认资产") from error
+    return {
+        "ok": True,
+        "module": "payoffer",
+        "view_mode": "default_example",
+        "read_only": True,
+        "product_id": identifier,
+        "name_zh": name_zh,
+        "svg": svg,
+        "default_asset": {"json_hash": json_hash, "svg_hash": svg_hash},
+    }
+
+
+def default_maintenance_plan(product_id: object, reason: object) -> dict[str, Any]:
+    identifier, product = _product_for_request(product_id)
+    confirmed_reason = str(reason or "").strip()
+    manager = _maintenance_manager()
+    try:
+        updates = manager.plan_default_asset_refresh(
+            approved_product_id=identifier,
+            approval_reason=confirmed_reason,
+        )
+    except manager.DefaultAssetMaintenanceError as error:
+        raise PayoffEngineError(str(error)) from error
+    selected = [update for update in updates if update["product_id"] == identifier]
+    if updates and len(selected) != len(updates):
+        raise PayoffEngineError("检测到其他产品的默认资产差异；请逐产品完成审核")
+    return {
+        "ok": True,
+        "module": "payoffer",
+        "product_id": identifier,
+        "name_zh": str(product["identity"]["name_zh"]),
+        "maintenance_enabled": True,
+        "has_changes": bool(selected),
+        "changes": [
+            {
+                "changed_fields": list(update["changed_fields"]),
+                "before_json_hash": update["before_json_hash"],
+                "before_svg_hash": update["before_svg_hash"],
+                "after_json_hash": sha256(update["content"]).hexdigest(),
+                "after_svg_hash": sha256(update["svg_content"]).hexdigest(),
+            }
+            for update in selected
+        ],
+        "confirmation_text": f"确认更新默认示例：{product['identity']['name_zh']}",
+    }
+
+
+def publish_default_example(body: Mapping[str, Any]) -> dict[str, Any]:
+    identifier, product = _product_for_request(body.get("product_id"))
+    reason = str(body.get("reason", "")).strip()
+    approval_id = str(body.get("approval_id", "")).strip()
+    expected = f"确认更新默认示例：{product['identity']['name_zh']}"
+    if str(body.get("confirmation", "")).strip() != expected:
+        raise PayoffEngineError(f"二次确认文字不一致；请输入：{expected}")
+    manager = _maintenance_manager()
+    try:
+        record = manager.publish_default_assets(
+            approval_id,
+            approved_product_id=identifier,
+            approval_reason=reason,
+        )
+    except manager.DefaultAssetMaintenanceError as error:
+        raise PayoffEngineError(str(error)) from error
+    return {
+        "ok": True,
+        "module": "payoffer",
+        "status": "default_example_updated",
+        "product_id": identifier,
+        "approval_id": record["approval_id"],
+        "updated_assets": len(record["updates"]),
+    }
 
 
 def catalog_payload() -> dict[str, object]:
@@ -121,7 +232,7 @@ def call_tool(
 ) -> Mapping[str, Any]:
     """正式run由Host注入上下文与Store；页面payload不能提供Host事实。"""
     body = dict(request)
-    action = str(body.pop("action", "run" if "contract" in body else "catalog")).strip().lower()
+    action = str(body.pop("action", "catalog")).strip().lower()
     if action == "catalog":
         return catalog_payload()
     if action == "preview":
@@ -229,32 +340,29 @@ class Handler(BaseHTTPRequestHandler):
             if parsed.path in {"/", "/payoffer.html"}:
                 self._respond(HTTPStatus.OK, PAGE.read_bytes(), "text/html; charset=utf-8")
                 return
-            if parsed.path == "/payoffer.css":
-                self._respond(HTTPStatus.OK, (PAGE_DIR / "payoffer.css").read_bytes(), "text/css; charset=utf-8")
-                return
-            if parsed.path == "/payoffer.js":
-                self._respond(HTTPStatus.OK, (PAGE_DIR / "payoffer.js").read_bytes(), "application/javascript; charset=utf-8")
-                return
             if parsed.path == "/date_input.js":
                 self._respond(HTTPStatus.OK, (PAGE_DIR / "date_input.js").read_bytes(), "application/javascript; charset=utf-8")
                 return
-            if parsed.path in {"/style.css", "/ui/style.css"}:
+            if parsed.path == "/ui/style.css":
                 self._respond(HTTPStatus.OK, (PAYOFF_UI_DIR / "style.css").read_bytes(), "text/css; charset=utf-8")
                 return
-            if parsed.path in {"/controls.css", "/ui/controls.css"}:
+            if parsed.path == "/ui/controls.css":
                 self._respond(HTTPStatus.OK, (PAYOFF_UI_DIR / "controls.css").read_bytes(), "text/css; charset=utf-8")
                 return
+            if parsed.path == "/designer/themes/designer-token-vars.css":
+                self._respond(HTTPStatus.OK, DESIGNER_TOKEN_CSS.read_bytes(), "text/css; charset=utf-8")
+                return
             if parsed.path == "/api/status":
-                self._json(HTTPStatus.OK, {"ok": True, "module": "payoffer", "engine": "python_registry_dsl", "port": PORT})
+                self._json(HTTPStatus.OK, {
+                    "ok": True,
+                    "module": "payoffer",
+                    "engine": "python_registry_dsl",
+                    "port": PORT,
+                    "default_maintenance_enabled": _maintenance_enabled(),
+                })
                 return
             if parsed.path == "/api/catalog":
                 self._json(HTTPStatus.OK, catalog_payload())
-                return
-            if parsed.path == "/api/preview.svg":
-                product_id = parse_qs(parsed.query).get("product_id", [""])[0]
-                name_zh, _, _ = _preview_request({"product_id": product_id})
-                payload = preview_payload(name_zh)
-                self._respond(HTTPStatus.OK, _preview_svg(name_zh, payload).encode("utf-8"), "image/svg+xml; charset=utf-8")
                 return
             self._json(HTTPStatus.NOT_FOUND, {"ok": False, "message": "未找到接口"})
         except PayoffEngineError as error:
@@ -270,6 +378,18 @@ class Handler(BaseHTTPRequestHandler):
                 name_zh, term_overrides, identity = _preview_request(body)
                 payload = preview_payload(name_zh, term_overrides, identity)
                 self._json(HTTPStatus.OK, {"ok": True, "preview": payload, "svg": _preview_svg(name_zh, payload)})
+                return
+            if parsed.path == "/api/default":
+                self._json(HTTPStatus.OK, default_example_payload(body.get("product_id")))
+                return
+            if parsed.path == "/api/default-maintenance/plan":
+                self._json(
+                    HTTPStatus.OK,
+                    default_maintenance_plan(body.get("product_id"), body.get("reason")),
+                )
+                return
+            if parsed.path == "/api/default-maintenance/publish":
+                self._json(HTTPStatus.OK, publish_default_example(body))
                 return
             if parsed.path == "/api/run":
                 name_zh, term_overrides, identity = _preview_request(body)

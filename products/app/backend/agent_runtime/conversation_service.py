@@ -8,12 +8,13 @@ from typing import Any, Protocol
 from ..errors import UnavailableCapabilityError
 from ..identity.session_identity import SessionIdentity
 from ..model_gateway.gateway import ModelGateway
+from ..settings.settings_models import ModelSelection
 from ..task_runtime.task_service import TaskService
 from .redaction import redact_text
 
 
 class AgentLoopPort(Protocol):
-    def run(self, identity: SessionIdentity, task_id: str, message: str) -> dict[str, Any]: ...
+    def run(self, identity: SessionIdentity, task_id: str, message: str, *, selection: ModelSelection | None = None) -> dict[str, Any]: ...
 
 
 class ConversationService:
@@ -24,7 +25,15 @@ class ConversationService:
         self._locks: dict[tuple[str, str, str], Lock] = {}
         self._locks_guard = Lock()
 
-    def respond(self, identity: SessionIdentity, task_id: str, message: str, *, request_id: str | None = None) -> dict[str, Any]:
+    def respond(
+        self,
+        identity: SessionIdentity,
+        task_id: str,
+        message: str,
+        *,
+        request_id: str | None = None,
+        selection: ModelSelection | None = None,
+    ) -> dict[str, Any]:
         """Serialize one task and replay an identical HTTP retry.
 
         The lock prevents two different request ids from concurrently reaching
@@ -33,16 +42,21 @@ class ConversationService:
         released, including after an App restart.
         """
         with self._task_lock(identity, task_id):
-            replay = self._task_service.get_conversation_response(identity, task_id, request_id, message)
+            replay_key = _replay_key(message, selection)
+            replay = self._task_service.get_conversation_response(identity, task_id, request_id, replay_key)
             if replay is not None:
                 return replay
             if self._task_service.is_cancelled(identity, task_id):
                 response = _cancelled_response()
-                self._task_service.record_conversation_response(identity, task_id, request_id, message, response)
+                self._task_service.record_conversation_response(identity, task_id, request_id, replay_key, response)
                 return response
             recorded = self._task_service.append_message(identity, task_id, "user", message, status="pending_model")
             if self._agent_loop is not None:
-                response = self._agent_loop.run(identity, task_id, message)
+                response = (
+                    self._agent_loop.run(identity, task_id, message)
+                    if selection is None
+                    else self._agent_loop.run(identity, task_id, message, selection=selection)
+                )
                 response = _safe_response(response, identity)
                 assistant = self._task_service.append_message(
                     identity,
@@ -52,10 +66,10 @@ class ConversationService:
                     status=str(response.get("status", "recorded")),
                 )
                 completed = {**response, "message": recorded, "assistant_message": assistant}
-                self._task_service.record_conversation_response(identity, task_id, request_id, message, completed)
+                self._task_service.record_conversation_response(identity, task_id, request_id, replay_key, completed)
                 return completed
             try:
-                assistant_text = redact_text(self._gateway.complete_for(identity, task_id, message), identity, limit=4_000)
+                assistant_text = redact_text(self._gateway.complete_for(identity, task_id, message, selection=selection), identity, limit=4_000)
             except UnavailableCapabilityError as error:
                 unavailable = {
                     "status": "unavailable",
@@ -63,7 +77,7 @@ class ConversationService:
                     "error": {"capability": error.capability, "next_step": error.next_step},
                     "state": {"code": "unavailable", "terminal": True, "retryable": True},
                 }
-                self._task_service.record_conversation_response(identity, task_id, request_id, message, unavailable)
+                self._task_service.record_conversation_response(identity, task_id, request_id, replay_key, unavailable)
                 return unavailable
             except Exception:
                 unavailable = {
@@ -72,14 +86,14 @@ class ConversationService:
                     "error": {"capability": "model", "next_step": "模型服务暂不可用，请稍后重试。"},
                     "state": {"code": "unavailable", "terminal": True, "retryable": True},
                 }
-                self._task_service.record_conversation_response(identity, task_id, request_id, message, unavailable)
+                self._task_service.record_conversation_response(identity, task_id, request_id, replay_key, unavailable)
                 return unavailable
             assistant = self._task_service.append_message(identity, task_id, "assistant", assistant_text, status="completed")
             completed = {
                 "status": "completed", "message": recorded, "assistant_message": assistant,
                 "state": {"code": "completed", "terminal": True, "retryable": False},
             }
-            self._task_service.record_conversation_response(identity, task_id, request_id, message, completed)
+            self._task_service.record_conversation_response(identity, task_id, request_id, replay_key, completed)
             return completed
 
     def _task_lock(self, identity: SessionIdentity, task_id: str) -> Lock:
@@ -93,6 +107,14 @@ def _cancelled_response() -> dict[str, Any]:
         "status": "cancelled", "text": "本次任务已取消；请新建任务后继续。", "observations": [], "rounds": 0,
         "state": {"code": "cancelled", "terminal": True, "retryable": False},
     }
+
+
+def _replay_key(message: str, selection: ModelSelection | None) -> str:
+    """Bind idempotency to both user text and the selected model identity."""
+
+    if selection is None:
+        return message
+    return f"{message}\x1f{selection.provider_id}\x1f{selection.model_id}"
 
 
 def _safe_response(response: dict[str, Any], identity: SessionIdentity) -> dict[str, Any]:

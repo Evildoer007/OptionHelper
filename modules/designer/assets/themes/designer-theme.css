@@ -18,12 +18,9 @@ FORM: Read模式。详细报告只有一种连续A4版式。
   --rule: var(--color-rule);
   --rule-strong: var(--color-rule-strong);
   --red: var(--color-brand-red);
-  --red-deep: var(--color-brand-red-deep);
-  --red-pale: var(--color-brand-red-soft);
+  --on-brand: var(--color-on-brand);
   --blue: var(--color-blue-gray);
-  --blue-pale: var(--color-blue-gray-soft);
   --gold: var(--color-risk-gold);
-  --gold-pale: var(--color-risk-gold-soft);
 }
 
 * { box-sizing: border-box; }
@@ -103,7 +100,7 @@ a { color: inherit; }
 }
 
 .report-toc a:hover,
-.report-toc a:focus-visible { color: var(--red-deep); }
+.report-toc a:focus-visible { color: var(--red); }
 
 .report-toc a span {
   color: var(--red);
@@ -131,7 +128,7 @@ a { color: inherit; }
   align-items: end;
   padding: 4mm 0 4.5mm;
   border-top: 1px solid var(--gold);
-  border-bottom: 1px solid var(--color-red-border-soft);
+  border-bottom: 1px solid var(--rule-strong);
 }
 
 .report-head::before {
@@ -251,7 +248,7 @@ a { color: inherit; }
 }
 
 .evidence-step:first-child dd,
-.evidence-step:nth-child(2) dd { color: var(--red-deep); }
+.evidence-step:nth-child(2) dd { color: var(--red); }
 
 .report-section {
   padding: 24px 0 16px;
@@ -286,6 +283,30 @@ a { color: inherit; }
 
 .section-title { flex: 0 0 auto; }
 
+.presentation-paragraph { margin: 0 0 var(--space-sm); }
+
+.presentation-chart__image {
+  display: block;
+  width: 100%;
+  height: auto;
+  margin: var(--space-sm) 0;
+}
+
+.card-custom,
+.quote-custom,
+.card-appended {
+  min-width: 0;
+}
+
+.card-custom,
+.quote-custom {
+  padding-top: var(--space-sm);
+  border-top: var(--border-hairline) solid var(--rule);
+}
+
+.card-custom h2,
+.quote-custom h2 { color: var(--red); }
+
 .report-section h2::after {
   content: "";
   flex: 1 1 auto;
@@ -297,7 +318,7 @@ a { color: inherit; }
 
 /* The final risk boundary is deliberately more visible than ordinary
    reading dividers without making the whole report visually alarmist. */
-.report-section#section-risk h2::after { background: var(--red-deep); }
+.report-section#section-risk h2::after { background: var(--red); }
 
 .report-section h3 {
   margin: 13px 0 4px;
@@ -329,12 +350,12 @@ a { color: inherit; }
   border-top: 1px solid var(--color-gold-border);
   border-bottom: 1px solid var(--color-gold-border);
   border-left: 1px solid var(--gold);
-  background: var(--gold-pale);
+  background: var(--paper);
 }
 
 .conclusion-band__label {
   margin: 0 0 5px !important;
-  color: var(--red-deep);
+  color: var(--red);
   font-size: var(--type-meta);
   font-weight: 780;
   letter-spacing: .08em;
@@ -435,10 +456,10 @@ a { color: inherit; }
 
 .alternative__tags span {
   padding: 2px 6px;
-  border: 1px solid var(--color-red-tag-border);
+  border: 1px solid var(--rule-strong);
   border-radius: 4px;
-  background: var(--red-pale);
-  color: var(--red-deep);
+  background: var(--ground);
+  color: var(--red);
   font-size: var(--type-meta);
   font-weight: 650;
   line-height: 1.4;
@@ -478,12 +499,12 @@ a { color: inherit; }
   display: grid;
   place-items: center;
   min-height: 180px;
-  color: var(--red-deep);
-  background: var(--red-pale);
+  color: var(--red);
+  background: var(--ground);
 }
 
 .chart-error {
-  color: var(--red-deep);
+  color: var(--red);
   font-size: var(--type-table);
 }
 
@@ -509,7 +530,7 @@ a { color: inherit; }
   padding: 11px 15px;
   border-top: 1px solid var(--rule-strong);
   border-bottom: 1px solid var(--rule-strong);
-  background: var(--blue-pale);
+  background: var(--ground);
   color: var(--ink-soft);
   font-family: var(--font-math);
   font-size: var(--type-formula);
@@ -537,7 +558,7 @@ a { color: inherit; }
   border-bottom: 0;
   border-left: 1px solid var(--gold);
   border-radius: 0;
-  background: var(--gold-pale);
+  background: var(--paper);
   color: var(--color-gold-ink);
 }
 
@@ -634,7 +655,7 @@ thead {
 }
 
 th {
-  color: var(--color-table-head-ink);
+  color: var(--ink);
   font-size: var(--type-table);
   font-weight: 760;
   line-height: 1.45;
@@ -984,7 +1005,7 @@ body.report-profile-a4 .disclaimer { margin-top: 12px; padding-top: 10px; line-h
 
 .designer-card > h1 {
   padding-bottom: 5px;
-  border-bottom: var(--border-accent) solid var(--red-deep);
+  border-bottom: var(--border-accent) solid var(--red);
   font-size: var(--type-card-title);
   line-height: 1.2;
 }
@@ -1144,7 +1165,7 @@ body.report-profile-a4 .disclaimer { margin-top: 12px; padding-top: 10px; line-h
 .designer-card .card-risk {
   margin-top: auto;
   padding-top: 7px;
-  border-top: var(--border-accent) solid var(--red-deep);
+  border-top: var(--border-accent) solid var(--red);
 }
 
 .designer-card .card-risk p {
@@ -1243,7 +1264,7 @@ body.report-profile-a4 .disclaimer { margin-top: 12px; padding-top: 10px; line-h
 }
 
 .quote-table th {
-  color: var(--red-deep);
+  color: var(--red);
   font-weight: 760;
 }
 

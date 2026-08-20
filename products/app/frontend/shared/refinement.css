@@ -2043,14 +2043,14 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
 }
 
 .workspace-shell.workspace-shell--desk[data-workspace-shell] .report-drawer-toggle:focus-visible {
-  outline: 2px solid rgba(200, 16, 46, .38);
+  outline: 2px solid var(--color-blue-gray);
   outline-offset: 2px;
 }
 
 .workspace-shell.workspace-shell--desk[data-workspace-shell] .report-drawer-toggle.is-active {
   border-color: transparent;
-  background: var(--red-pale);
-  color: var(--red-deep);
+  background: var(--canvas);
+  color: var(--ink);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -2340,7 +2340,7 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
 .workspace-body input,
 .workspace-body select,
 .workspace-body textarea {
-  font-family: Arial, "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-family: var(--font);
 }
 
 .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .mode-switch--rail::before {

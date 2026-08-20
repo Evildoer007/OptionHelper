@@ -11,7 +11,7 @@ from runtime.contracts.contract_api import ResolvedContract
 from ...diagnostics import pricing_evidence, vanilla_market_snapshot
 from ...model_router import PRODUCT_CAPABILITIES, ProductCapability, capability_for
 from ...observed_state import ObservedContractState, ObservedStateError
-from ...precision_gate import assess_quote_precision
+from ...mc_run_assessment import assess_monte_carlo_run
 from ...product_pricing_adapter import ProductNotAvailable, ProductPricingAdapter
 from ...risk_engine import scenario_values, vanilla_risk_outputs
 from .engine.derivatives.models import MarketState
@@ -62,7 +62,7 @@ def _unsupported(contract: ResolvedContract, config: Any, state: ObservedContrac
         input_snapshot={"contract": contract.to_protocol_dict(), "pricing_config": _config_dict(config), "optionreg_allowed_methods": list(allowed)},
         resolved_pricing_config=_config_dict(config), observed_contract_state=state.to_dict(), limitations=(reason,), messages=(reason,),
         precision_status="not_priced", quote_eligible=False,
-        path_count=int(config.path_count) if getattr(config, "model_method", "") == "monte_carlo" else None,
+        path_count=int(config.path_count) if getattr(config, "model_method", "") == "monte_carlo" and config.path_count is not None else None,
     )
 
 
@@ -144,10 +144,10 @@ def _price_with_risk(adapter: ProductPricingAdapter, contract: ResolvedContract,
         snapshot["asset_dividend_yields"] = {asset_id: _asset_value(config.dividend_yield, asset_id, "dividend_yield") for asset_id in contract.underlyings}
         snapshot["correlation"] = config.correlation
     probabilities = {"in_the_money": result.diagnostics.get("black_scholes_analytics", {}).get("model_in_the_money_probability", result.diagnostics.get("model_in_the_money_probability")), "knock_in": {"status": "not_applicable", "reason": "未由通用路径概率解释器单列"}, "knock_out": {"status": "not_applicable", "reason": "未由通用路径概率解释器单列"}}
-    precision = assess_quote_precision(
+    precision = assess_monte_carlo_run(
         result,
         method=adapter.method,
-        path_count=int(config.path_count),
+        path_count=int(config.path_count) if adapter.method == "monte_carlo" else 0,
         demo_mode=bool(config.demo_mode),
     )
     messages = tuple(result.warnings)

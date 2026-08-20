@@ -17,6 +17,7 @@ from typing import Any, Protocol
 
 from ..errors import AuthorizationError, UnavailableCapabilityError, ValidationError
 from ..identity.session_identity import SessionIdentity
+from ..settings.settings_models import ModelSelection
 from .redaction import has_hidden_reasoning, redact_text
 
 
@@ -42,7 +43,7 @@ class ContextPort(Protocol):
 
 
 class DecisionPort(Protocol):
-    def decide_for(self, identity: SessionIdentity, task_id: str, context: Mapping[str, Any]) -> Mapping[str, Any]: ...
+    def decide_for(self, identity: SessionIdentity, task_id: str, context: Mapping[str, Any], *, selection: ModelSelection | None = None) -> Mapping[str, Any]: ...
 
 
 class ConversationToolPort(Protocol):
@@ -50,7 +51,9 @@ class ConversationToolPort(Protocol):
 
 
 class RecommenderPort(Protocol):
-    def run_fixed(self, identity: SessionIdentity, task_id: str, prompt: str, arguments: Mapping[str, Any]) -> Mapping[str, Any]: ...
+    def run_fixed(
+        self, identity: SessionIdentity, task_id: str, prompt: str, arguments: Mapping[str, Any], *, selection: ModelSelection | None = None,
+    ) -> Mapping[str, Any]: ...
 
 
 class ObservationPort(Protocol):
@@ -120,7 +123,7 @@ class AgentLoop:
         self._is_cancelled = is_cancelled or (lambda _identity, _task_id: False)
         self._observation_builder = observation_builder
 
-    def run(self, identity: SessionIdentity, task_id: str, message: str) -> dict[str, Any]:
+    def run(self, identity: SessionIdentity, task_id: str, message: str, *, selection: ModelSelection | None = None) -> dict[str, Any]:
         started = monotonic()
         observations: list[dict[str, Any]] = []
         seen_calls: set[str] = set()
@@ -132,8 +135,11 @@ class AgentLoop:
             try:
                 context = self._context_builder.build(identity, task_id, message)
                 if round_number == 1 and _should_run_fixed_recommendation(message, context):
-                    raw = self._recommender.run_fixed(
-                        identity, task_id, message, {"workflow": _fixed_recommendation_workflow(message)},
+                    arguments = {"workflow": _fixed_recommendation_workflow(message)}
+                    raw = (
+                        self._recommender.run_fixed(identity, task_id, message, arguments)
+                        if selection is None
+                        else self._recommender.run_fixed(identity, task_id, message, arguments, selection=selection)
                     )
                     observations.append(_observation("recommender.run", raw, identity))
                     return _recommendation_outcome(raw, observations, round_number)
@@ -147,7 +153,11 @@ class AgentLoop:
                     round_number=round_number,
                     max_rounds=self._max_rounds,
                 )
-                decision = AgentDecision.from_mapping(self._gateway.decide_for(identity, task_id, decision_context))
+                if selection is None:
+                    raw_decision = self._gateway.decide_for(identity, task_id, decision_context)
+                else:
+                    raw_decision = self._gateway.decide_for(identity, task_id, decision_context, selection=selection)
+                decision = AgentDecision.from_mapping(raw_decision)
             except (UnavailableCapabilityError, AuthorizationError, ValidationError, ValueError) as error:
                 return _result(
                     "unavailable",
@@ -197,7 +207,11 @@ class AgentLoop:
             seen_calls.add(call_key)
             try:
                 if decision.tool == "recommender.run":
-                    raw = self._recommender.run_fixed(identity, task_id, message, decision.arguments)
+                    raw = (
+                        self._recommender.run_fixed(identity, task_id, message, decision.arguments)
+                        if selection is None
+                        else self._recommender.run_fixed(identity, task_id, message, decision.arguments, selection=selection)
+                    )
                 else:
                     raw = self._tool_executor.call(identity, task_id, decision.tool, decision.arguments)
                 observation = _observation(decision.tool, raw, identity)

@@ -1,8 +1,8 @@
 @import url("../../../designer/themes/designer-token-vars.css");
 
 :root {
-  --font: Arial, "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", sans-serif;
-  --mono: Arial, "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", sans-serif;
+  --font: Arial, "PingFang SC", "Noto Sans CJK SC", sans-serif;
+  --mono: Arial, "PingFang SC", "Noto Sans CJK SC", sans-serif;
 }
 
 * { box-sizing: border-box; }

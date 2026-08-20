@@ -17,6 +17,7 @@ artifact = render(DesignerInput(
     output_type="report",       # card、quote或report
     format="html",              # html或pdf
     template_id="report-standard",
+    presentation_patch=None,      # 仅用户明确要求时传入一次性展示调整
 ))
 ```
 
@@ -31,7 +32,7 @@ artifact_response = call_tool({"action": "render", "payload": payload})
 这些仍只由`design_tokens.py`管理。Tool请求可显式传入`config`对象，未知
 字段或不合法策略会以`invalid_configuration`拒绝。可用策略字段为
 `default_asset_mode`、`allow_portable_assets`、`allow_pdf`和
-`allow_pdf`。
+`require_declared_design_system_version`。
 
 `build_design_system()`返回`design_system_id`、令牌哈希、CSS变量、
 组件规则、离线ECharts主题和Payoffer SVG主题。`render()`返回HTML及设计
@@ -67,11 +68,12 @@ OptChat、OptDesk、研究简报、完整研究报告、ECharts和Payoffer SVG�
 
 - Designer不向用户追问研究条件、产品选择或计算参数；缺失事实统一退回Reporter一次汇总。
 - Designer不重新打开统一就绪门禁，不检查或读取数据凭据，也不触发取数、估值或回测。它只接受Reporter已经冻结的事实、交付形式和覆盖状态。
-- 研究简报不渲染损益图。完整研究报告按已有正式结果选择必要图表，图内不重复放标题，标题和图注由报告版式统一管理。
-- Quote只渲染Reporter冻结的`reference_quote`表，不渲染损益图、ECharts或估值图。Reporter可从明确选择的已保存结构与参数运行结果生成该表；Designer不把估值或回测结果解释为报价。
-- Card固定210mm宽度、高度随完整内容自然延展，不保留空白占位；固定展示结构推荐、推荐理由、关键合同条款、估值摘要、回测摘要、主要风险，无损益图、SVG、ECharts或其他图表。PDF导出按A4自然分页，不因复杂结构或完整指标而拒绝交付。
-- 内建完整研究报告为连续A4正文，宽屏HTML提供左侧七章目录，PDF不显示目录；阅读顺序为核心结论、结构推荐、合同参数、收益结构、估值定价、历史回测、风险提示。选择理由、适用条件、不适用情形和主要权衡归入“结构推荐”，Designer不得自行推导或补写。
+- 标准Card不渲染损益图。完整研究报告按已有正式结果选择必要图表，图内不重复放标题，标题和图注由报告版式统一管理。用户明确要求在单次交付追加图表时，只能通过受校验的`presentation_patch`使用已给出的展示数据。
+- 标准Quote只渲染Reporter冻结的`reference_quote`表，不把估值或回测结果解释为报价。用户明确要求的单次说明、公式、表格或图表可通过`presentation_patch`追加，不改写报价事实。
+- 标准Card为210mm宽度、高度随完整内容自然延展，不保留空白占位；默认展示结构推荐、推荐理由、关键合同条款、估值摘要、回测摘要、主要风险。PDF导出按A4自然分页，不因复杂结构或完整指标而拒绝交付。
+- 内建完整研究报告为连续A4正文，宽屏HTML提供左侧目录，PDF不显示目录；默认阅读顺序为核心结论、结构推荐、合同参数、收益结构、估值定价、历史回测、风险提示。Card和Quote同样保留各自标准结构。标准结构是无额外要求时的默认值，不是不可突破的上限。
 - `assets/templates/*.template.json`是实际运行时模板定义。模板只能选择、命名和排序已有内容块，不能嵌入HTML、CSS、公式或数值；通过`template_id`选择。一个内容块在同一模板中只能出现一次。内建`report-standard`和`card-standard`保持现有HTML壳、主题和版式不变。
+- 只有用户明确要求单次调整时才传入`presentation_patch`。它可增删、改名、移动板块，修改或隐藏展示值，追加文本、指标、表格、公式和图表；它只作用于当前渲染副本，不修改Reporter事实或标准模板。颜色、字体、间距、表格规范和图表主题不可通过Patch覆盖。
 - 内容块没有可展示事实时直接省略；上游明确交接的部分完成或失败说明可以作为真实状态呈现。模板不得自行增加内部说明、审计内容、默认风险或重复章节。
 - 产物正文不出现系统品牌、工具名、运行标识、文件路径、审计过程或内部机器字段。
 - Designer不自行选择输出目录；产物只由Reporter写入安装目录之外的项目Store。

@@ -74,6 +74,66 @@ def _css_variables(tokens: Mapping[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def build_app_token_stylesheet() -> str:
+    """Build the managed light and dark token file consumed by App pages.
+
+    Reports remain light by default because they never set ``data-theme``.
+    App surfaces opt into the same semantic token names with
+    ``[data-theme="dark"]`` rather than maintaining a page-local palette.
+    """
+
+    tokens = token_dict()
+    lines = [
+        "/* Generated from modules/designer/src/design_tokens.py. */",
+        f"/* designer-token-hash:{token_hash()} */",
+        _css_variables(tokens),
+        "",
+        '[data-theme="dark"] {',
+    ]
+    for name, value in tokens["dark_colors"].items():
+        lines.append(f"  --color-{name.replace('_', '-')}: {value};")
+    for name, state in tokens["states"].items():
+        state_name = name.replace("_", "-")
+        if name == "ready":
+            color_name, surface_name = "blue-gray", "blue-gray-soft"
+        elif name == "failed":
+            color_name, surface_name = "brand-red", "brand-red-soft"
+        else:
+            color_name, surface_name = "risk-gold", "risk-gold-soft"
+        lines.append(f"  --state-{state_name}-color: var(--color-{color_name});")
+        lines.append(f"  --state-{state_name}-surface: var(--color-{surface_name});")
+    for position, color_name in enumerate(("brand-red", "blue-gray", "risk-gold", "muted", "ink-soft"), start=1):
+        lines.append(f"  --chart-color-{position}: var(--color-{color_name});")
+    lines.append("}")
+    lines.extend(
+        (
+            "",
+            ":root {",
+            "  --red: var(--color-brand-red);",
+            "  --red-deep: var(--color-brand-red);",
+            "  --on-brand: var(--color-on-brand);",
+            "  --gold: var(--color-risk-gold);",
+            "  --ink: var(--color-ink);",
+            "  --muted: var(--color-muted);",
+            "  --rule: var(--color-rule);",
+            "  --rule-soft: var(--color-rule);",
+            "  --paper: var(--color-paper);",
+            "  --surface: var(--color-surface);",
+            "  --surface-muted: var(--color-ground);",
+            "  --desk: var(--color-ground);",
+            "  --wash: var(--color-blue-gray-soft);",
+            "  --blue: var(--color-blue-gray);",
+            "  --ok: var(--color-blue-gray);",
+            "  --warning: var(--color-risk-gold);",
+            "  --danger: var(--color-brand-red);",
+            "  --font: var(--font-sans);",
+            "  --mono: var(--font-sans);",
+            "}",
+        )
+    )
+    return "\n".join(lines) + "\n"
+
+
 def _component_rules(tokens: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
     colors = tokens["colors"]
     return {
@@ -159,4 +219,4 @@ def build_design_system_json() -> str:
     return json.dumps(build_design_system().to_dict(), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
-__all__ = ["DESIGN_SYSTEM_SCHEMA", "DESIGN_SYSTEM_ID", "DesignSystem", "build_design_system", "build_design_system_json", "theme_path"]
+__all__ = ["DESIGN_SYSTEM_SCHEMA", "DESIGN_SYSTEM_ID", "DesignSystem", "build_app_token_stylesheet", "build_design_system", "build_design_system_json", "theme_path"]

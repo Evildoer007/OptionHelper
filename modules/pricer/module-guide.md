@@ -16,7 +16,7 @@ PricingInput = {ResolvedContract, PricingConfig, market_data_refs, trading_calen
 
 `pricing_methods`来自OptionReg，实际运行能力来自Pricer，两者不相交则返回`unsupported`。存续期路径结构必须先由可见不复权价格形成`ObservedContractState`；历史不足时不得假设未发生事件。该状态应由Core正式协议独立冻结，Pricer不得把它伪装为定价参数。
 
-正式Monte Carlo严格使用`path_count`设置的路径数。`MC10`仅作为显式`demo/logic-only`探针，与正式市场定价隔离。
+Monte Carlo严格使用调用方显式提供的`path_count`，只校验为正整数，不代替用户选择路径数或设置精度阈值。低路径数逻辑探针仅存在于测试夹具，不属于正式页面或Tool协议。
 
 面向用户的估值、回测和报告只展示百分比。`S0Raw`仅用于真实价格与标准化合同换算，不作为面向用户字段；内部现金流、点数、金额和名义本金不得投影到页面、正式Tool、CSV或报告。内部每100点数仅用于Golden、共同随机数回归和可复验计算。
 

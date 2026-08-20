@@ -31,6 +31,8 @@ PayoffInput = {ResolvedContract}
 - 用户明确变更期限、行权价、参与率或其他条款并要求重算时，Host将变更编译为新的`ResolvedContract`后直接运行；不改写此前收益图或此前结果。
 - 不自动调用Pricer、Backtester或Reporter。报告中的收益图由Reporter和Designer采用报告版式重新表现；资料库默认示例图保持不变。
 - 独立`payoffer.html`是开发预览页。其本地Store结果仅供本机核对，不能直接生成正式Card或Report；正式交付必须由App Host提交受控ModuleRun，再由Reporter显式选择并验证。
+- 页面明确分为“默认示例”和“本次运行”。默认示例直接读取固定SVG并保持只读；切换到本次运行后，条款修改只生成当前ResolvedContract结果，不会写回默认资产。
+- 默认资产更新只在Desk管理员显式启用的高级维护进程中出现。管理员先填写维护原因并检查OptionReg差异，再输入审批号和指定确认文字完成二次确认；发布过程归档旧JSON/SVG并支持失败回滚。页面临时参数不能直接成为资料库默认值。
 
 ## 用户可见进度
 

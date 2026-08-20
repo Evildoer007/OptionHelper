@@ -1,8 +1,8 @@
 @import url("../../../designer/themes/designer-token-vars.css");
 
 :root {
-  --font: Arial, "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", sans-serif;
-  --mono: Arial, "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", sans-serif;
+  --font: Arial, "PingFang SC", "Noto Sans CJK SC", sans-serif;
+  --mono: Arial, "PingFang SC", "Noto Sans CJK SC", sans-serif;
 }
 
 * { box-sizing: border-box; }
@@ -37,42 +37,6 @@ textarea:focus-visible {
 
 .app-shell { min-width: 1225px; min-height: 100vh; }
 
-.topbar {
-  display: flex;
-  height: 62px;
-  align-items: center;
-  gap: 20px;
-  padding: 0 24px;
-  border-bottom: 1px solid var(--rule);
-  background: var(--surface);
-}
-
-.brand { display: flex; min-width: 0; align-items: center; gap: 12px; }
-
-.brand-logo { display: block; flex: 0 0 auto; width: 148px; height: auto; }
-
-.brand-separator { width: 1px; height: 24px; background: var(--color-rule); }
-
-.module-title {
-  color: var(--ink);
-  font-size: 15px;
-  font-weight: 650;
-  letter-spacing: -.015em;
-  white-space: nowrap;
-}
-
-.topbar-status {
-  min-width: 0;
-  margin-left: auto;
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 500;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.topbar-actions,
 .canvas-toolbar-actions { display: flex; align-items: center; gap: 8px; }
 
 .file-button,
@@ -111,7 +75,7 @@ textarea:focus-visible {
 
 .workbench {
   display: grid;
-  height: calc(100vh - 62px);
+  height: 100vh;
   overflow: hidden;
 }
 
@@ -318,6 +282,4 @@ textarea:focus-visible {
   .app-shell { min-width: 1065px; }
   .library-panel,
   .inspector-panel { padding: 18px 14px; }
-  .topbar { padding: 0 16px; }
-  .topbar-status { display: none; }
 }

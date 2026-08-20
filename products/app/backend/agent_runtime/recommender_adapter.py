@@ -37,6 +37,7 @@ from runtime.protocol.models import ModuleRunRef
 from ..errors import AuthorizationError, UnavailableCapabilityError, ValidationError
 from ..identity.session_identity import SessionIdentity
 from ..model_gateway.gateway import ModelGateway
+from ..settings.settings_models import ModelSelection
 from ..page_registry import PageRegistry
 from ..stores.contract_store import ContractStore
 from ..stores.result_store import ResultStore
@@ -55,22 +56,32 @@ _MODULE_RUN_REF_FIELDS = (
 class AppAgentPort(AgentPort):
     """Maps Recommender's typed step requests to the provider-neutral gateway."""
 
-    def __init__(self, gateway: ModelGateway, identity: SessionIdentity, task_id: str) -> None:
+    def __init__(self, gateway: ModelGateway, identity: SessionIdentity, task_id: str, selection: ModelSelection | None = None) -> None:
         self._gateway = gateway
         self._identity = identity
         self._task_id = task_id
+        self._selection = selection
 
     def capability(self) -> ModelCapability:
-        capability = self._gateway.capability_for(self._identity)
+        capability = (
+            self._gateway.capability_for(self._identity)
+            if self._selection is None
+            else self._gateway.capability_for(self._identity, selection=self._selection)
+        )
         return ModelCapability.from_mapping(capability)
 
     def run_step(self, role: str, payload: Mapping[str, Any]) -> Mapping[str, Any]:
-        response = self._gateway.decide_for(self._identity, self._task_id, {
+        context = {
             "operation": "recommender_fixed_step",
             "role": str(role),
             "input": _safe_model_payload(payload),
             "rule": "只返回该步骤的结构化result；不得调用工具、不得产生金融数值。",
-        })
+        }
+        response = (
+            self._gateway.decide_for(self._identity, self._task_id, context)
+            if self._selection is None
+            else self._gateway.decide_for(self._identity, self._task_id, context, selection=self._selection)
+        )
         if not isinstance(response, Mapping) or set(response) != {"action", "result"} or response.get("action") != "final":
             raise ValidationError("Recommender步骤必须返回{action:'final',result:{...}}")
         result = response.get("result")
@@ -148,7 +159,9 @@ class RecommenderAdapter:
         self._tasks = task_service
         self._tools = tool_executor
 
-    def run_fixed(self, identity: SessionIdentity, task_id: str, prompt: str, arguments: Mapping[str, Any]) -> Mapping[str, Any]:
+    def run_fixed(
+        self, identity: SessionIdentity, task_id: str, prompt: str, arguments: Mapping[str, Any], *, selection: ModelSelection | None = None,
+    ) -> Mapping[str, Any]:
         task = self._tasks.get(identity, task_id)
         catalog_version = str(self._registry.manifest["catalog_version"])
         messages = task.get("messages", [])
@@ -275,7 +288,7 @@ class RecommenderAdapter:
             candidate_contracts={},
         )
         service = RecommenderService(
-            agent_port=AppAgentPort(self._gateway, identity, task_id),
+            agent_port=AppAgentPort(self._gateway, identity, task_id, selection),
             knowledge_port=AppKnowledgePort(self._registry.capability_root, catalog_version),
             tool_port=AppToolPort(self._tools, identity, task_id),
         )

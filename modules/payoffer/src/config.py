@@ -1,12 +1,10 @@
-"""Payoffer运行配置。默认示例资产不属于本配置，也不能由运行时覆盖。"""
+"""Payoffer本机服务配置。默认资产不属于运行配置。"""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+HOST = "127.0.0.1"
+DEFAULT_PORT = 4181
+PORT_ENV = "OPTIONHELPER_PAYOFF_PYTHON_PORT"
+DEFAULT_MAINTENANCE_ENV = "OPTIONHELPER_PAYOFFER_DEFAULT_MAINTENANCE"
 
-
-@dataclass(frozen=True)
-class PayofferConfig:
-    task_id: str = ""
-    run_id: str = ""
-
+__all__ = ("HOST", "DEFAULT_PORT", "PORT_ENV", "DEFAULT_MAINTENANCE_ENV")

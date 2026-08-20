@@ -8,7 +8,6 @@ from hashlib import sha256
 from math import isclose
 from typing import Any, Mapping, Sequence
 
-from runtime.contracts.input_adapter import is_explicit_demo_pricing_config
 from runtime.protocol.models import DataAssetRef
 
 from .market_resolver import (
@@ -36,10 +35,9 @@ def compile_pricer_input_defaults(
 ) -> dict[str, Any]:
     """Compile a friendly Pricer request without inventing a market reference.
 
-    A regular contract gets its valuation date and true contract start price
-    from the sole bound DataAssetRef.  The only zero-data exception is the
-    visible CSI500 European-call MC10 demonstration, whose complete market
-    snapshot is required to be explicit in the request.
+    Every contract gets its valuation date and true contract start price from
+    the sole bound DataAssetRef.  This compiler never manufactures a market
+    reference from an unbound request.
     """
     if not isinstance(request, Mapping):
         raise PricerInputDefaultError("Pricer输入必须为对象")
@@ -47,7 +45,6 @@ def compile_pricer_input_defaults(
     auto_contract_start_date = values.pop("auto_contract_start_date", False)
     if not isinstance(auto_contract_start_date, bool):
         raise PricerInputDefaultError("auto_contract_start_date必须为布尔值")
-    product_id = str(values.get("product_id", "")).strip()
     config_value = values.get("pricing_config")
     if not isinstance(config_value, Mapping):
         raise PricerInputDefaultError("pricing_config必须为对象")
@@ -56,22 +53,8 @@ def compile_pricer_input_defaults(
     if not isinstance(identity_value, Mapping):
         raise PricerInputDefaultError("identity必须为对象")
     identity = deepcopy(dict(identity_value))
-    underlyings = _underlyings(identity)
-
     if not data_refs:
-        if product_id != "2.1" or not is_explicit_demo_pricing_config(config):
-            raise PricerInputDefaultError("请先绑定真实DataAssetRef；绑定行情后自动填充S₀Raw。")
-        if underlyings != ("000905.SH",):
-            raise PricerInputDefaultError("无行情数据的MC10演示仅支持中证500单标的000905.SH")
-        valuation_date = _iso_date(config.get("valuation_date"), "MC10演示valuation_date")
-        start = identity.get("contract_start_date") or valuation_date
-        if _iso_date(start, "合同起始日") != valuation_date:
-            raise PricerInputDefaultError("CSI500 MC10演示的合同起始日必须等于显式演示估值日")
-        _set_or_check_references(identity, {underlyings[0]: float(config["spot"])})
-        identity["contract_start_date"] = valuation_date
-        values["identity"] = identity
-        values["pricing_config"] = config
-        return values
+        raise PricerInputDefaultError("请先绑定真实DataAssetRef；绑定行情后自动填充S₀Raw。")
 
     refs = tuple(_data_asset_ref(item) for item in data_refs)
     history_refs = tuple(ref for ref in refs if ref.schema_id == "market-history")

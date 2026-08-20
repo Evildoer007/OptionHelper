@@ -1040,16 +1040,11 @@ def preview_payload(
     if not product["identity"]["entry_status"]:
         return {
             "module": "payoffer", "name_zh": product["identity"]["name_zh"],
-            "runtime_status": "blocked", "message": "该产品条款或路径仍待合同确认，不能用Po、P、BT运行；仅可查看既有只读资料图。", "paths": [],
+            "runtime_status": "blocked", "message": "该产品条款或路径仍待合同确认，不能用Po、P、BT运行；仅可查看既有只读资料图。", "path_panels": [],
         }
     contract = build_payoff_input(name_zh, term_overrides, identity)
     payoff_result = render_payoff(PayoffInput(contract=contract))
-    return {
-        **dict(payoff_result.payload),
-        # 页面展示使用的历史字段仅在预览适配层生成，正式PayoffResult不复制路径。
-        "paths": payoff_result.payload["path_panels"],
-        "runtime_status": "enabled",
-    }
+    return {**dict(payoff_result.payload), "runtime_status": "enabled"}
 
 
 def _store_payoff_result(

@@ -35,6 +35,25 @@
       .source-detail .formula { display:block; margin-top:5px; white-space:normal; overflow-wrap:anywhere; }
       .runtime-payoff-form .runtime-payoff-field textarea[readonly] { background:var(--wash); color:var(--color-muted); }
       .runtime-payoff-result { margin:0; color:var(--muted); font-size:11px; line-height:1.55; overflow-wrap:anywhere; }
+      .view-switch { display:grid; grid-template-columns:1fr 1fr; gap:3px; margin-top:12px; padding:3px; border:1px solid var(--color-paper-border); border-radius:10px; background:var(--wash); }
+      .view-switch button { min-height:34px; border:0; border-radius:7px; background:transparent; color:var(--muted); font-size:12px; font-weight:650; cursor:pointer; }
+      .view-switch button[aria-selected="true"] { background:var(--color-surface); color:var(--ink); box-shadow:0 2px 7px rgba(37,37,37,.09); }
+      .mode-explanation { margin:9px 0 0; color:var(--muted); font-size:11px; line-height:1.55; }
+      .scope-notice { display:flex; align-items:center; gap:8px; min-width:0; color:var(--muted); font-size:11px; }
+      .scope-notice::before { width:7px; height:7px; border-radius:50%; background:var(--gold); content:""; flex:0 0 auto; }
+      .default-summary { padding:12px 0 2px; }
+      .default-summary strong { display:block; color:var(--ink); font-size:12px; }
+      .default-summary p { margin:5px 0 0; color:var(--muted); font-size:11px; line-height:1.55; }
+      .advanced-maintenance { margin-top:8px; border-top:1px solid var(--rule); }
+      .advanced-maintenance summary { padding:13px 0; color:var(--color-ink-soft); font-size:11px; font-weight:700; cursor:pointer; }
+      .advanced-maintenance-panel { display:grid; gap:9px; padding:0 0 4px; }
+      .advanced-maintenance-panel label { display:grid; gap:5px; color:var(--muted); font-size:11px; font-weight:650; }
+      .advanced-maintenance-panel textarea { min-height:64px; padding:7px; border:1px solid var(--rule); border-radius:7px; resize:vertical; color:var(--ink); font:11px/1.45 var(--font); }
+      .maintenance-plan { margin:0; padding:9px 10px; border:1px solid var(--rule); border-radius:8px; background:var(--wash); color:var(--muted); font-size:11px; line-height:1.55; }
+      .maintenance-plan.ready { border-color:var(--gold); background:var(--color-red-surface); color:var(--ink); }
+      .danger-confirm { border-color:var(--red); color:var(--red); }
+      .danger-confirm:disabled { border-color:var(--rule); color:var(--color-chart-gray); }
+      [hidden] { display:none !important; }
     </style>
     <style>
       .readonly .canvas-viewport { padding: 24px; background: var(--color-blue-gray-soft); }
@@ -56,10 +75,11 @@
     <div class="app-shell readonly">
       <header class="topbar">
         <div class="brand"><img class="brand-logo" src="../../icons/optionhelper-logo.svg" alt="OptionHelper"><span class="brand-separator" aria-hidden="true"></span><span class="module-title">收益结构</span></div>
+        <div class="scope-notice" id="scopeNotice">开发预览：本地结果不能直接用于正式Card或Report</div>
         <div class="topbar-status" id="modeBadge">正在连接本机服务</div>
         <div class="topbar-actions">
           <button class="button button-primary" id="previewButton">预览收益图</button>
-          <button class="button button-primary" id="runtimePayoffButton">保存收益结构</button>
+          <button class="button button-primary" id="runtimePayoffButton">生成本次结果</button>
           <button class="button button-quiet" id="recheckButton">重新读取资料库</button>
         </div>
       </header>
@@ -71,11 +91,16 @@
           <p class="panel-copy">选择产品并查看已登记条款与收益路径。</p>
           <label class="field-label" for="productSelect">产品</label>
           <select id="productSelect" class="product-select"><option value="">请选择产品</option></select>
+          <div class="view-switch" role="tablist" aria-label="收益图模式">
+            <button id="defaultModeButton" type="button" role="tab" aria-selected="true">默认示例</button>
+            <button id="runtimeModeButton" type="button" role="tab" aria-selected="false">本次运行</button>
+          </div>
+          <p class="mode-explanation" id="modeExplanation">默认示例来自资料库，只读查看，不产生本次运行结果。</p>
           <button class="button button-primary wide" id="openPreviewButton" disabled>预览本次收益图</button>
           <div class="binding-card" id="bindingCard"><span>尚未选择产品</span></div>
           <div class="scenario-heading"><span>产品路径</span><small id="scenarioCount">0</small></div>
           <ol class="scenario-list" id="scenarioList"></ol>
-          <div class="library-note" id="libraryNote">默认条款保持只读。本次修改仅保存到当前研究任务。</div>
+          <div class="library-note" id="libraryNote">默认示例与本次运行严格分离。修改条款时进入本次运行。</div>
         </aside>
         <div class="panel-resizer panel-resizer-left" id="libraryResizer" role="separator" aria-label="调整产品结构面板宽度" aria-orientation="vertical" tabindex="0"></div>
 
@@ -85,14 +110,14 @@
             <div class="canvas-toolbar-actions">
               <div class="zoom-control" aria-label="画布缩放"><button class="zoom-button" id="zoomOutButton" title="缩小">−</button><label class="zoom-input-wrap"><input id="zoomInput" type="number" min="20" max="200" step="1" inputmode="numeric" aria-label="画布缩放百分比" value="100"><em>%</em></label><button class="zoom-button" id="zoomInButton" title="放大">+</button><button class="zoom-fit" id="zoomFitButton" title="适应画布">适应</button></div>
               <button class="button button-quiet" id="canvasPreviewButton">更新预览</button>
-              <button class="button button-primary" id="canvasRunButton">保存收益结构</button>
+              <button class="button button-primary" id="canvasRunButton">生成本次结果</button>
             </div>
           </div>
           <div class="notice-area" id="noticeArea" aria-live="polite" aria-atomic="true"></div>
           <div class="canvas-viewport" id="canvasViewport">
             <div class="empty-canvas" id="emptyCanvas"><p class="section-kicker">收益结构图</p><h2>选择产品后生成收益图</h2><p>收益图按当前产品条款计算。</p></div>
           </div>
-          <div class="canvas-footer"><span>可使用滚轮或缩放工具查看完整路径图</span><span>结果保存到当前研究任务</span></div>
+          <div class="canvas-footer"><span>可使用滚轮或缩放工具查看完整路径图</span><span>开发页结果与正式Host结果隔离</span></div>
         </section>
         <div class="panel-resizer panel-resizer-right" id="inspectorResizer" role="separator" aria-label="调整条款参数面板宽度" aria-orientation="vertical" tabindex="0"></div>
 
@@ -100,7 +125,7 @@
           <div class="panel-kicker">条款参数</div>
           <h2 id="inspectorTitle">未选择产品</h2>
           <div class="source-detail" id="sourceDetail">选择产品后显示路径来源与条款字段。</div>
-          <div class="inspector-group">
+          <div class="inspector-group" id="runtimeIdentityGroup">
             <div class="group-title">合同身份</div>
             <p class="drag-hint" id="identityRule">合同身份与条款覆盖共同解析为本次合约。标的代码与参考价必须一一对应。</p>
             <div class="parameter-grid contract-identity-grid" id="identityFields">
@@ -111,12 +136,12 @@
             </div>
           </div>
           <div class="inspector-group">
-            <div class="group-title">本次条款覆盖</div>
+            <div class="group-title" id="termsGroupTitle">默认示例条款</div>
             <p class="drag-hint" id="runtimeRule">默认条款来自OptionReg；只有改动后的字段才会作为term_overrides提交。</p>
             <div class="parameter-grid runtime-parameter-grid" id="parameterFields"></div>
             <div class="runtime-actions"><button class="button button-quiet small" id="applyParametersButton">解析并更新收益图</button><button class="button button-quiet small" id="restoreDefaultsButton">恢复OptionReg默认值</button></div>
           </div>
-          <div class="inspector-group">
+          <div class="inspector-group" id="runtimeImportGroup">
             <div class="group-title">导入合同或条款</div>
             <p class="hint">可粘贴条款覆盖或既有结果；导入后只回填可编辑字段。</p>
             <textarea id="parameterJson" class="runtime-import" placeholder='例如：{"term_overrides":{"K":100},"identity":{"underlyings":["000905.SH"]}}'></textarea>
@@ -126,21 +151,43 @@
             <div class="group-title">路径说明</div>
             <div class="source-detail" id="selectedPathDetail">选择路径后显示判断条件与损益表达。</div>
           </div>
-          <div class="inspector-group reset-group">
+          <div class="inspector-group reset-group" id="defaultGovernanceGroup">
             <div class="group-title">资料库权限</div>
-            <div class="lock-card"><strong>默认资产只读</strong>本页不会写入figures中的固定默认SVG。默认资产仅在确认资料库结构错误后，随Python规格的受控重建流程更新。</div>
+            <div class="lock-card"><strong>普通操作只读</strong>Runtime不会写入figures。默认资产仅可由Desk管理员高级操作同步已确认的OptionReg变更。</div>
+            <details class="advanced-maintenance" id="advancedMaintenance" hidden>
+              <summary>高级操作：更新默认示例</summary>
+              <div class="advanced-maintenance-panel">
+                <p class="hint">这里只发布已写入OptionReg且经过人工确认的默认资产差异。当前页面临时参数不会直接成为资料库默认值。</p>
+                <label>维护原因<textarea id="maintenanceReason" maxlength="500" placeholder="说明已确认的资料库变更及核对依据"></textarea></label>
+                <button class="button button-quiet small" id="checkDefaultUpdateButton" type="button">检查默认资产差异</button>
+                <p class="maintenance-plan" id="maintenancePlan" aria-live="polite">尚未检查。</p>
+                <button class="button button-quiet small danger-confirm" id="openDefaultUpdateButton" type="button" disabled>进入二次确认</button>
+              </div>
+            </details>
           </div>
         </aside>
       </main>
 
       <dialog class="publish-review-dialog runtime-payoff-dialog" id="runtimePayoffDialog" aria-labelledby="runtimePayoffTitle">
         <form class="publish-review-card runtime-payoff-form" id="runtimePayoffForm">
-          <div class="publish-review-head"><div><span class="panel-kicker">收益结构</span><h2 id="runtimePayoffTitle">保存收益结构</h2></div><button class="dialog-close" id="runtimePayoffClose" type="button" aria-label="关闭">×</button></div>
-          <p class="publish-review-copy">确认产品与关键条款后，将本次收益结构保存到当前研究任务。</p>
+          <div class="publish-review-head"><div><span class="panel-kicker">本次运行</span><h2 id="runtimePayoffTitle">生成开发预览结果</h2></div><button class="dialog-close" id="runtimePayoffClose" type="button" aria-label="关闭">×</button></div>
+          <p class="publish-review-copy">确认产品与关键条款后，结果写入隔离的本地预览Store。不能直接用于正式Card或Report。</p>
           <label class="runtime-payoff-field"><span>产品</span><input id="runtimePayoffProduct" readonly></label>
           <p class="runtime-payoff-fields" id="runtimePayoffFields">先选择产品。</p>
           <p class="runtime-payoff-message" id="runtimePayoffMessage" aria-live="polite"></p>
-          <div class="publish-review-actions"><button class="button button-quiet" id="runtimePayoffCancel" type="button">取消</button><button class="button button-primary" id="runtimePayoffSubmit" type="submit">保存收益结构</button></div>
+          <div class="publish-review-actions"><button class="button button-quiet" id="runtimePayoffCancel" type="button">取消</button><button class="button button-primary" id="runtimePayoffSubmit" type="submit">生成本次结果</button></div>
+        </form>
+      </dialog>
+
+      <dialog class="publish-review-dialog runtime-payoff-dialog" id="defaultUpdateDialog" aria-labelledby="defaultUpdateTitle">
+        <form class="publish-review-card runtime-payoff-form" id="defaultUpdateForm">
+          <div class="publish-review-head"><div><span class="panel-kicker">管理员高级操作</span><h2 id="defaultUpdateTitle">确认更新默认示例</h2></div><button class="dialog-close" id="defaultUpdateClose" type="button" aria-label="关闭">×</button></div>
+          <p class="publish-review-copy">该操作会替换所选产品的默认JSON/SVG，并将旧资产归档。Runtime结果不受影响。</p>
+          <label class="runtime-payoff-field"><span>审批号</span><input id="defaultApprovalId" autocomplete="off" required></label>
+          <label class="runtime-payoff-field"><span id="defaultConfirmationLabel">二次确认文字</span><input id="defaultConfirmation" autocomplete="off" required></label>
+          <p class="runtime-payoff-fields" id="defaultUpdateSummary">必须与差异检查结果一致。</p>
+          <p class="runtime-payoff-message" id="defaultUpdateMessage" aria-live="polite"></p>
+          <div class="publish-review-actions"><button class="button button-quiet" id="defaultUpdateCancel" type="button">取消</button><button class="button button-primary" id="defaultUpdateSubmit" type="submit">确认并归档发布</button></div>
         </form>
       </dialog>
     </div>
@@ -150,7 +197,11 @@
     <script src="./date_input.js"></script>
     <script>
       const $ = id => document.getElementById(id);
-      const state = { products: [], product: null, preview: null, previewPayload: null, previewSignature: null, selectedPathIndex: 0, zoom: 1, zoomMode: 'fit', previewRequestId: 0 };
+      const state = {
+        products: [], product: null, preview: null, previewPayload: null, previewSignature: null,
+        defaultExample: null, viewMode: 'default', maintenanceEnabled: false, maintenancePlan: null,
+        selectedPathIndex: 0, zoom: 1, zoomMode: 'fit', previewRequestId: 0
+      };
       const apiBase = location.protocol === 'file:' ? 'http://127.0.0.1:4181' : '';
       const apiUrl = path => apiBase + path;
       const selectValues = {
@@ -177,6 +228,45 @@
         $('canvasState').textContent = message;
         const dot = mode === 'ready' ? 'valid' : mode === 'busy' ? 'edit' : mode === 'dirty' ? 'dirty' : '';
         $('stateDot').className = 'state-dot ' + dot;
+      }
+
+      function updateModeChrome() {
+        const runtime = state.viewMode === 'runtime';
+        $('defaultModeButton').setAttribute('aria-selected', String(!runtime));
+        $('runtimeModeButton').setAttribute('aria-selected', String(runtime));
+        $('modeExplanation').textContent = runtime
+          ? '本次运行使用当前合同身份和条款覆盖，只写ResultStore，不修改默认示例。'
+          : '默认示例来自资料库，只读查看，不产生本次运行结果。';
+        $('termsGroupTitle').textContent = runtime ? '本次条款覆盖' : '默认示例条款';
+        $('runtimeIdentityGroup').hidden = !runtime;
+        $('runtimeImportGroup').hidden = !runtime;
+        $('runtimePayoffButton').hidden = !runtime;
+        $('canvasRunButton').hidden = !runtime;
+        $('canvasPreviewButton').hidden = !runtime;
+        $('advancedMaintenance').hidden = runtime || !state.maintenanceEnabled;
+        $('openPreviewButton').textContent = runtime ? '预览本次收益图' : '查看默认示例图';
+        $('previewButton').textContent = runtime ? '预览收益图' : '查看默认图';
+        renderParameters({ preserve: true });
+      }
+
+      async function switchViewMode(mode) {
+        if (!['default', 'runtime'].includes(mode) || state.viewMode === mode) return;
+        state.viewMode = mode;
+        state.maintenancePlan = null;
+        $('maintenancePlan').textContent = '尚未检查。';
+        $('maintenancePlan').className = 'maintenance-plan';
+        $('openDefaultUpdateButton').disabled = true;
+        updateModeChrome();
+        if (!state.product) return;
+        if (mode === 'default') await showDefaultExample();
+        else {
+          state.preview = null;
+          state.previewSignature = null;
+          renderLibrary();
+          renderSelectedPath();
+          setCanvasState('条款待预览', 'dirty');
+          showNotice('已进入本次运行。修改只影响当前ResolvedContract和本次结果。');
+        }
       }
 
       function defaultValue(field) {
@@ -234,7 +324,7 @@
           $('sourceDetail').textContent = '选择产品后显示路径来源与条款字段。';
           return;
         }
-        ['openPreviewButton', 'previewButton', 'runtimePayoffButton', 'canvasPreviewButton', 'canvasRunButton'].forEach(id => { $(id).disabled = false; });
+        ['openPreviewButton', 'previewButton'].forEach(id => { $(id).disabled = false; });
         const before = preserve ? {
           contract_id: $('contractId').value,
           underlyings: $('contractUnderlyings').value,
@@ -256,10 +346,13 @@
         const before = preserve ? Object.fromEntries(termInputs().map(item => [item.dataset.key, item.value])) : {};
         $('parameterFields').innerHTML = state.product.payoff_fields.map(termField).join('') || '<p class="parameter-empty">该产品尚未登记可覆盖条款。</p>';
         termInputs().forEach(item => { if (Object.hasOwn(before, item.dataset.key)) item.value = before[item.dataset.key]; });
-        const enabled = state.product.runtime_status === 'enabled';
-        const message = enabled
-          ? '默认条款来自OptionReg。页面仅提交与默认值不同的term_overrides，并由本机服务解析为ResolvedContract。'
-          : '该产品尚未完整录入。页面只能载入既有正式资料图，不能预览新参数或生成本次结果。';
+        const runtime = state.viewMode === 'runtime';
+        const enabled = runtime && state.product.runtime_status === 'enabled';
+        const message = !runtime
+          ? '当前显示资料库默认条款。切换到“本次运行”后才可编辑，普通修改不会写回默认资产。'
+          : enabled
+            ? '默认条款来自OptionReg。页面仅提交与默认值不同的term_overrides，并由本机服务解析为ResolvedContract。'
+            : '该产品尚未完整录入。页面只能载入既有正式资料图，不能预览新参数或生成本次结果。';
         $('runtimeRule').textContent = message;
         [...document.querySelectorAll('#identityFields input, #identityFields textarea, #parameterFields .term-input')].forEach(input => { input.disabled = !enabled; });
         $('applyParametersButton').disabled = !enabled;
@@ -344,7 +437,7 @@
       }
 
       function markInputDirty() {
-        if (!state.product || state.product.runtime_status !== 'enabled') return;
+        if (!state.product || state.viewMode !== 'runtime' || state.product.runtime_status !== 'enabled') return;
         try {
           const current = state.previewSignature === currentSignature();
           setCanvasState(current ? '收益图已更新' : '条款待预览', current ? 'ready' : 'dirty');
@@ -388,6 +481,13 @@
 
       function renderLibrary() {
         if (!state.product) return;
+        if (state.viewMode === 'default') {
+          const scope = state.product.underlying_scope === 'multi_underlying' ? '多标的结构' : '单标的结构';
+          $('bindingCard').innerHTML = '<strong>' + escapeHtml(state.product.product_id + ' ' + state.product.canonical_name) + '</strong><span>' + scope + '；资料库默认示例；固定JSON/SVG只读。</span>';
+          $('scenarioCount').textContent = '默认图';
+          $('scenarioList').innerHTML = '<li class="preview">已载入固定默认SVG；切换到“本次运行”可按当前合同重新计算。</li>';
+          return;
+        }
         const blocked = state.preview?.runtime_status === 'blocked';
         const paths = state.preview?.paths || [];
         const scope = state.product.underlying_scope === 'multi_underlying' ? '多标的结构' : '单标的结构';
@@ -406,6 +506,12 @@
       }
 
       function renderSelectedPath() {
+        if (state.viewMode === 'default') {
+          $('inspectorTitle').textContent = state.product ? state.product.canonical_name + '默认示例' : '未选择产品';
+          $('sourceDetail').textContent = state.product ? '来源：资料库固定默认JSON/SVG，仅用于示例查看。' : '选择产品后显示默认示例。';
+          $('selectedPathDetail').textContent = '默认图保留完整标题、路径、端点和视觉样式；普通页面操作不会修改。';
+          return;
+        }
         const path = state.preview?.paths?.[state.selectedPathIndex];
         if (!path) {
           $('inspectorTitle').textContent = state.product ? state.product.canonical_name + '合同输入' : '未选择产品';
@@ -511,8 +617,103 @@
         catch (error) { current = false; }
         setCanvasState(enabled ? (current ? '收益图已更新' : '条款待预览') : '正式资料图已载入', current || !enabled ? 'ready' : 'dirty');
         showNotice(enabled
-          ? '已按当前受控合同计算' + state.preview.paths.length + '条收益路径。'
+          ? '已按当前受控合同计算' + state.preview.path_panels.length + '条收益路径。'
           : '已载入既有正式默认图。该产品尚未完整录入，不能生成本次参数图。');
+      }
+
+      function renderSvg(svg) {
+        const stage = document.createElement('div');
+        stage.className = 'canvas-stage';
+        stage.innerHTML = svg;
+        $('canvasViewport').replaceChildren(stage);
+        requestAnimationFrame(() => {
+          if (state.zoomMode === 'fit') fitZoom();
+          else stage.style.setProperty('--zoom', state.zoom);
+        });
+      }
+
+      async function showDefaultExample() {
+        if (!state.product) return;
+        setCanvasState('正在读取默认示例', 'busy');
+        const productId = state.product.product_id;
+        try {
+          const data = await request('/api/default', { product_id: productId });
+          if (state.product?.product_id !== productId || state.viewMode !== 'default') return;
+          state.defaultExample = data;
+          state.preview = null;
+          renderSvg(data.svg);
+          renderLibrary();
+          renderSelectedPath();
+          setCanvasState('默认示例只读', 'ready');
+          showNotice('已载入资料库固定默认图。切换到“本次运行”后，参数修改只生成本次结果。');
+        } catch (error) {
+          setCanvasState('默认示例读取失败');
+          showNotice(error.message, 'error');
+          throw error;
+        }
+      }
+
+      async function checkDefaultUpdate() {
+        if (!state.product || state.viewMode !== 'default') return;
+        const reason = $('maintenanceReason').value.trim();
+        $('maintenancePlan').textContent = '正在核对OptionReg与默认资产…';
+        $('maintenancePlan').className = 'maintenance-plan';
+        $('openDefaultUpdateButton').disabled = true;
+        try {
+          const plan = await request('/api/default-maintenance/plan', {
+            product_id: state.product.product_id,
+            reason
+          });
+          state.maintenancePlan = plan;
+          if (!plan.has_changes) {
+            $('maintenancePlan').textContent = '当前默认JSON/SVG已与OptionReg一致，无需更新。';
+            return;
+          }
+          const changed = plan.changes.flatMap(item => item.changed_fields).join('、');
+          $('maintenancePlan').textContent = '发现可发布差异：' + changed + '。请复核原因后进入二次确认。';
+          $('maintenancePlan').className = 'maintenance-plan ready';
+          $('openDefaultUpdateButton').disabled = false;
+        } catch (error) {
+          state.maintenancePlan = null;
+          $('maintenancePlan').textContent = error.message;
+          showNotice(error.message, 'error');
+        }
+      }
+
+      function openDefaultUpdateDialog() {
+        if (!state.maintenancePlan?.has_changes || !state.product) return;
+        $('defaultApprovalId').value = identifier('payoffer_default');
+        $('defaultConfirmation').value = '';
+        $('defaultConfirmationLabel').textContent = '请输入：' + state.maintenancePlan.confirmation_text;
+        $('defaultUpdateSummary').textContent = '产品：' + state.product.product_id + ' ' + state.product.canonical_name + '。发布后旧JSON/SVG进入维护历史。';
+        $('defaultUpdateMessage').textContent = '';
+        $('defaultUpdateDialog').showModal();
+      }
+
+      async function publishDefaultUpdate(event) {
+        event.preventDefault();
+        if (!state.product || !state.maintenancePlan?.has_changes) return;
+        $('defaultUpdateSubmit').disabled = true;
+        $('defaultUpdateMessage').textContent = '正在归档并发布默认示例…';
+        try {
+          const result = await request('/api/default-maintenance/publish', {
+            product_id: state.product.product_id,
+            reason: $('maintenanceReason').value.trim(),
+            approval_id: $('defaultApprovalId').value.trim(),
+            confirmation: $('defaultConfirmation').value.trim()
+          });
+          $('defaultUpdateDialog').close();
+          state.maintenancePlan = null;
+          $('maintenancePlan').textContent = '已按审批号' + result.approval_id + '发布并归档。正式签发前仍须通过Golden回归。';
+          $('maintenancePlan').className = 'maintenance-plan';
+          $('openDefaultUpdateButton').disabled = true;
+          await showDefaultExample();
+        } catch (error) {
+          $('defaultUpdateMessage').textContent = error.message;
+          $('defaultUpdateMessage').className = 'runtime-payoff-message error';
+        } finally {
+          $('defaultUpdateSubmit').disabled = false;
+        }
       }
 
       async function request(path, body) {
@@ -524,7 +725,17 @@
         return data;
       }
 
+      async function loadServiceStatus() {
+        const response = await fetch(apiUrl('/api/status'));
+        const data = await response.json();
+        if (!response.ok || !data.ok) throw new Error(data.message || '无法读取服务状态');
+        state.maintenanceEnabled = data.default_maintenance_enabled === true;
+        $('advancedMaintenance').hidden = state.viewMode !== 'default' || !state.maintenanceEnabled;
+        return data;
+      }
+
       async function preview() {
+        if (state.viewMode !== 'runtime') await switchViewMode('runtime');
         const payload = buildRequestPayload();
         const signature = JSON.stringify(payload);
         const requestId = ++state.previewRequestId;
@@ -546,6 +757,7 @@
 
       async function openRuntimeDialog() {
         if (!state.product) return showNotice('请先选择产品。', 'error');
+        if (state.viewMode !== 'runtime') return showNotice('请先切换到“本次运行”。默认示例模式不会生成Runtime结果。', 'error');
         if (state.product.runtime_status !== 'enabled') return showNotice('当前产品只支持正式资料图预览，不能生成本次参数图。', 'error');
         try {
           if (!state.preview || state.previewSignature !== currentSignature()) await preview();
@@ -571,12 +783,12 @@
         const runId = identifier('run');
         $('runtimePayoffSubmit').disabled = true;
         $('runtimePayoffMessage').className = 'runtime-payoff-message';
-        $('runtimePayoffMessage').textContent = '正在保存收益结构…';
+        $('runtimePayoffMessage').textContent = '正在生成本次Runtime结果…';
         try {
           const result = await request('/api/run', { ...state.previewPayload, task_id: taskId, run_id: runId });
           $('runtimePayoffDialog').close();
-          showNotice('收益结构已保存到当前研究任务。');
-          setCanvasState('收益结构已保存', 'ready');
+          showNotice('开发预览结果已写入隔离Store。正式Card或Report须经App Host和Reporter。');
+          setCanvasState('本次结果已生成', 'ready');
         } catch (error) {
           $('runtimePayoffMessage').textContent = error.message;
           $('runtimePayoffMessage').className = 'runtime-payoff-message error';
@@ -599,9 +811,9 @@
           const source = JSON.parse($('parameterJson').value || '{}');
           if (!source || Array.isArray(source) || typeof source !== 'object') throw new Error('必须是JSON对象');
           if (Object.hasOwn(source, 'resolved_contract')) throw new Error('旧resolved_contract不是可导入的正式合同；请导入受控input_snapshot中的payoff_input.contract，或使用display_contract仅回填展示条款。');
-          const controlledContract = source.contract || source.PayoffInput?.contract || source.payoff_input?.contract || null;
+          const controlledContract = source.payoff_input?.contract || null;
           const displayContract = source.display_contract || null;
-          const terms = source.term_overrides || controlledContract?.terms || displayContract?.terms || source.terms || source;
+          const terms = source.term_overrides || controlledContract?.terms || displayContract?.terms || null;
           if (!terms || Array.isArray(terms) || typeof terms !== 'object') throw new Error('未找到term_overrides或ResolvedContract.terms');
           let count = 0;
           termInputs().forEach(item => {
@@ -632,6 +844,8 @@
         state.preview = null;
         state.previewPayload = null;
         state.previewSignature = null;
+        state.defaultExample = null;
+        state.maintenancePlan = null;
         state.selectedPathIndex = 0;
         if (!state.product) return;
         state.zoomMode = 'fit';
@@ -640,11 +854,13 @@
         $('openPreviewButton').disabled = false;
         renderLibrary();
         renderSelectedPath();
-        setCanvasState('条款待预览', 'dirty');
         $('noticeArea').replaceChildren();
+        if (state.viewMode === 'default') await showDefaultExample();
+        else setCanvasState('条款待预览', 'dirty');
       }
 
       async function loadCatalog() {
+        await loadServiceStatus();
         const response = await fetch(apiUrl('/api/catalog'));
         let data;
         try { data = await response.json(); }
@@ -657,9 +873,12 @@
         await selectProduct();
       }
 
+      const previewForMode = () => (state.viewMode === 'default' ? showDefaultExample() : preview()).catch(() => {});
       $('productSelect').addEventListener('change', () => selectProduct().catch(error => showNotice(error.message, 'error')));
-      $('previewButton').addEventListener('click', () => preview().catch(() => {}));
-      $('openPreviewButton').addEventListener('click', () => preview().catch(() => {}));
+      $('defaultModeButton').addEventListener('click', () => switchViewMode('default').catch(error => showNotice(error.message, 'error')));
+      $('runtimeModeButton').addEventListener('click', () => switchViewMode('runtime').catch(error => showNotice(error.message, 'error')));
+      $('previewButton').addEventListener('click', previewForMode);
+      $('openPreviewButton').addEventListener('click', previewForMode);
       $('canvasPreviewButton').addEventListener('click', () => preview().catch(() => {}));
       $('applyParametersButton').addEventListener('click', () => preview().catch(() => {}));
       $('restoreDefaultsButton').addEventListener('click', restoreDefaults);
@@ -670,6 +889,11 @@
       $('runtimePayoffClose').addEventListener('click', () => $('runtimePayoffDialog').close());
       $('runtimePayoffCancel').addEventListener('click', () => $('runtimePayoffDialog').close());
       $('runtimePayoffForm').addEventListener('submit', runRuntime);
+      $('checkDefaultUpdateButton').addEventListener('click', () => checkDefaultUpdate());
+      $('openDefaultUpdateButton').addEventListener('click', openDefaultUpdateDialog);
+      $('defaultUpdateClose').addEventListener('click', () => $('defaultUpdateDialog').close());
+      $('defaultUpdateCancel').addEventListener('click', () => $('defaultUpdateDialog').close());
+      $('defaultUpdateForm').addEventListener('submit', publishDefaultUpdate);
       $('zoomOutButton').addEventListener('click', () => setZoom(state.zoom - .05));
       $('zoomInButton').addEventListener('click', () => setZoom(state.zoom + .05));
       $('zoomInput').addEventListener('input', event => setZoom(Number(event.target.value) / 100));
@@ -685,10 +909,11 @@
       new ResizeObserver(() => { if (state.preview && state.zoomMode === 'fit') fitZoom(); }).observe($('canvasViewport'));
 
       if (location.protocol === 'file:') setServiceStatus('正在连接本机服务');
+      updateModeChrome();
       loadCatalog()
         .then(() => {
           setServiceStatus('本机服务已连接');
-          if (location.protocol === 'file:') showNotice('已连接本机服务。可在本页选择产品、调整条款并保存收益结构。');
+          if (location.protocol === 'file:') showNotice('已连接本机服务。默认示例只读；本次运行结果属于开发预览，正式Card或Report须经App Host和Reporter。');
         })
         .catch(error => {
           setServiceStatus('未连接本机服务', true);

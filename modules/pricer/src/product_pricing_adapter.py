@@ -91,6 +91,8 @@ class ProductPricingAdapter:
         if self.route.capability.adapter == "european_vanilla":
             observed_state.validate_european_vanilla()
         if self.method == "monte_carlo":
+            if self.config.path_count is None:
+                raise ProductNotAvailable("Monte Carlo必须显式提供path_count")
             start_value = contract.identity.get("contract_start_date")
             observed_state.validate_path_events(
                 contract_start_date=None if start_value is None else str(start_value),
@@ -160,10 +162,8 @@ class ProductPricingAdapter:
             )
             result = real_spot_greeks(result, self.reference_price)
         result = _apply_value_basis(result, self.contract.product_id)
-        # ``reprice`` is an internal base/Greek/risk-grid primitive.  It may be
-        # invoked many times within one public valuation, but it never owns the
-        # quotation decision: only optionhelper_core.price applies the single
-        # path-count and relative-standard-error gate to the completed result.
+        # ``reprice`` is an internal base/Greek/risk-grid primitive. It records
+        # neither a public precision classification nor a quotation decision.
         return replace(
             result,
             precision_status="not_assessed",

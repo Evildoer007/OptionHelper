@@ -8,12 +8,13 @@ import base64
 from copy import deepcopy
 import html
 import json
+import math
 from pathlib import Path
 import re
 import shutil
 import subprocess
 import tempfile
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 from .components import render_formula, render_inline_formula
 from .config import DesignerConfig, load_designer_config
@@ -482,6 +483,124 @@ def add_charts(charts: list[dict[str, Any]], section: str, specs: list[Any]) -> 
     return "".join(figures)
 
 
+def _presentation_chart(node: dict[str, Any]) -> str:
+    """Render a safe one-off chart as static SVG plus its full data table.
+
+    Standard report charts continue to use offline ECharts. A presentation
+    patch must also work in Card, Quote and PDF, so its explicit chart nodes
+    use a deterministic SVG projection driven by the same fixed token palette.
+    """
+
+    chart_type = text(node.get("chart_type") or "line").lower()
+    spec = deepcopy(node)
+    spec["type"] = chart_type
+    spec.pop("chart_type", None)
+    x_values = as_list(spec.get("x"))
+    series = [as_dict(item) for item in as_list(spec.get("series")) if text(as_dict(item).get("name"))]
+    title = text(spec.get("title") or "图表")
+    width, height = 720.0, 260.0
+    left, right, top, bottom = 52.0, 18.0, 18.0, 42.0
+    plot_width, plot_height = width - left - right, height - top - bottom
+    colors = TOKENS.chart_palette
+    svg: list[str] = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {int(width)} {int(height)}" role="img">',
+        f"<title>{esc(title)}</title>",
+        f'<line x1="{left}" y1="{top + plot_height}" x2="{left + plot_width}" y2="{top + plot_height}" stroke="{TOKENS.colors["rule_strong"]}"/>',
+        f'<line x1="{left}" y1="{top}" x2="{left}" y2="{top + plot_height}" stroke="{TOKENS.colors["rule_strong"]}"/>',
+    ]
+    if chart_type == "heatmap":
+        y_values = as_list(spec.get("y"))
+        points = [item for item in as_list(spec.get("data")) if isinstance(item, list) and len(item) == 3]
+        numeric = [float(item[2]) for item in points if isinstance(item[2], (int, float)) and math.isfinite(float(item[2]))]
+        low, high = (min(numeric), max(numeric)) if numeric else (0.0, 1.0)
+        cell_width = plot_width / max(1, len(x_values))
+        cell_height = plot_height / max(1, len(y_values))
+        for x_index, y_index, raw_value in points:
+            if not isinstance(x_index, int) or not isinstance(y_index, int) or not isinstance(raw_value, (int, float)):
+                continue
+            ratio = 0.5 if high == low else max(0.0, min(1.0, (float(raw_value) - low) / (high - low)))
+            colour = colors[0] if ratio >= 0.5 else colors[1]
+            opacity = 0.22 + ratio * 0.72
+            svg.append(
+                f'<rect x="{left + x_index * cell_width:.2f}" y="{top + y_index * cell_height:.2f}" '
+                f'width="{cell_width:.2f}" height="{cell_height:.2f}" fill="{colour}" fill-opacity="{opacity:.3f}"/>'
+            )
+    else:
+        numeric_values = [
+            float(value)
+            for item in series
+            for value in as_list(item.get("data"))
+            if isinstance(value, (int, float)) and math.isfinite(float(value))
+        ]
+        low = min([0.0, *numeric_values]) if numeric_values else 0.0
+        high = max([1.0, *numeric_values]) if numeric_values else 1.0
+
+        def point(index: int, value: float) -> tuple[float, float]:
+            x = left + (plot_width * index / max(1, len(x_values) - 1))
+            y = top + plot_height - ((value - low) / max(high - low, 1e-12)) * plot_height
+            return x, y
+
+        for series_index, item in enumerate(series):
+            values = [float(value) if isinstance(value, (int, float)) and math.isfinite(float(value)) else 0.0 for value in as_list(item.get("data"))]
+            colour = colors[series_index % len(colors)]
+            if chart_type == "bar":
+                group_width = plot_width / max(1, len(x_values))
+                bar_width = group_width * 0.72 / max(1, len(series))
+                zero_y = point(0, 0.0)[1]
+                for value_index, value in enumerate(values[: len(x_values)]):
+                    _, value_y = point(value_index, value)
+                    x = left + value_index * group_width + group_width * 0.14 + series_index * bar_width
+                    svg.append(
+                        f'<rect x="{x:.2f}" y="{min(zero_y, value_y):.2f}" width="{bar_width:.2f}" '
+                        f'height="{abs(zero_y - value_y):.2f}" fill="{colour}"/>'
+                    )
+            else:
+                points = [point(index, value) for index, value in enumerate(values[: len(x_values)])]
+                if points:
+                    path = " ".join(("M" if index == 0 else "L") + f"{x:.2f},{y:.2f}" for index, (x, y) in enumerate(points))
+                    svg.append(f'<path d="{path}" fill="none" stroke="{colour}" stroke-width="2"/>')
+                    svg.extend(f'<circle cx="{x:.2f}" cy="{y:.2f}" r="3" fill="{colour}"/>' for x, y in points)
+    svg.append("</svg>")
+    encoded = base64.b64encode("".join(svg).encode("utf-8")).decode("ascii")
+    summary = text(spec.get("accessibility_summary"))
+    summary_html = f'<p class="chart-summary">{esc(summary)}</p>' if summary else ""
+    return (
+        '<figure class="chart-figure presentation-chart">'
+        f'<figcaption>{esc(title)}</figcaption>'
+        f'<img class="presentation-chart__image" src="data:image/svg+xml;base64,{encoded}" alt="{esc(title)}">'
+        f'{summary_html}{chart_data_table(spec, x_values, series)}</figure>'
+    )
+
+
+def render_presentation_content(nodes: Sequence[dict[str, Any] | Any]) -> str:
+    """Render validated generic presentation nodes without visual overrides."""
+
+    blocks: list[str] = []
+    for raw_node in nodes:
+        node = as_dict(raw_node)
+        node_type = text(node.get("type")).lower()
+        if node_type == "paragraph" and text(node.get("text")):
+            blocks.append(f'<p class="presentation-paragraph">{rich_text(node.get("text"))}</p>')
+        elif node_type == "metrics":
+            rendered = metric_strip(as_list(node.get("items")))
+            if rendered:
+                blocks.append(rendered)
+        elif node_type == "table":
+            columns = [
+                (text(as_dict(item).get("key")), text(as_dict(item).get("label")))
+                for item in as_list(node.get("columns"))
+                if text(as_dict(item).get("key")) and text(as_dict(item).get("label"))
+            ]
+            rendered = simple_table(as_list(node.get("rows")), columns, text(node.get("caption")), "presentation-table")
+            if rendered:
+                blocks.append(rendered)
+        elif node_type == "formula" and text(node.get("formula")):
+            blocks.append(render_formula(text(node.get("formula"))))
+        elif node_type == "chart":
+            blocks.append(_presentation_chart(node))
+    return "".join(blocks)
+
+
 def embedded_svg(svg_path: Any, input_dir: Path) -> str:
     """Embed only a Reporter-provided, report-only Payoffer figure."""
 
@@ -854,6 +973,8 @@ def render_html(
     design_system_id: str = DESIGN_SYSTEM_ID,
     config: DesignerConfig | None = None,
     section_definition: Sequence[tuple[str, str, str]] | None = None,
+    custom_content: dict[str, Sequence[Mapping[str, Any]]] | None = None,
+    appended_content: dict[str, Sequence[Mapping[str, Any]]] | None = None,
     template_shell: str = "report.html",
 ) -> str:
     validate_payload(payload)
@@ -862,10 +983,9 @@ def render_html(
     if not echarts_path:
         echarts_path = config.relative_echarts_path(input_dir)
     meta = as_dict(payload.get("meta"))
-    # The seven chapter headings are immutable. The document title remains
-    # the delivery title supplied by Reporter so a delivered report can be
-    # recognised outside the system; use the institutional default only when
-    # the request did not provide one.
+    # The standard seven chapters come from the selected template. A validated
+    # one-off presentation patch may adjust this delivery's effective sections
+    # without mutating the template or Reporter facts.
     title = text(meta.get("title")) or "单个期权结构推荐报告"
     report_theme = load_report_theme(config)
     design_system = build_design_system()
@@ -882,9 +1002,13 @@ def render_html(
     section_definition = section_definition or tuple(
         (key, SECTION_TITLES[key], key) for key in SECTION_ORDER
     )
+    custom_content = custom_content or {}
+    appended_content = appended_content or {}
     sections = []
     for section_key, section_title, key in section_definition:
-        body = renderers[key]()
+        body = render_presentation_content(custom_content.get(section_key, ())) if key.startswith("custom:") else renderers[key]()
+        appended = render_presentation_content(appended_content.get(section_key, ()))
+        body += appended
         if not body:
             continue
         section_id = f"section-{section_key}"

@@ -345,15 +345,43 @@ export async function initializeWorkspace(mode, { onModeChange } = {}) {
 
 export async function configureModelPicker(picker) {
   if (!picker) return;
-  const { settings } = await request("/api/settings");
-  const providerName = String(settings?.model_service?.provider_name || "").trim();
-  const modelName = String(settings?.model_service?.model_name || "").trim();
-  const configured = providerName && providerName !== "unconfigured";
-  const option = document.createElement("option");
-  option.value = configured ? providerName : "";
-  option.textContent = configured ? (modelName ? `${providerName} / ${modelName}` : providerName) : "未配置模型";
-  picker.replaceChildren(option);
-  picker.disabled = !configured;
+  const catalog = await request("/api/settings/model-providers");
+  const enabled = (catalog.providers || []).flatMap((provider) => (provider.credential_configured ? provider.models
+    .filter((model) => model.enabled)
+    .map((model) => ({ provider, model })) : []));
+  picker.replaceChildren();
+  if (!enabled.length) {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = "未配置模型";
+    picker.append(option);
+    picker.disabled = true;
+    picker.title = "请先在设置中心添加提供方并保存API Key。";
+  } else {
+    const defaultSelection = catalog.default_model_selection || {};
+    enabled.forEach(({ provider, model }) => {
+      const option = document.createElement("option");
+      option.value = JSON.stringify({ provider_id: provider.provider_id, model_id: model.model_id });
+      option.textContent = `${provider.display_name} / ${model.display_name || model.model_id}`;
+      option.selected = provider.provider_id === defaultSelection.provider_id && model.model_id === defaultSelection.model_id;
+      picker.append(option);
+    });
+    picker.disabled = false;
+    picker.removeAttribute("title");
+  }
+  if (picker.dataset.modelPickerReady !== "true") {
+    picker.dataset.modelPickerReady = "true";
+    picker.addEventListener("change", async () => {
+      if (!picker.value) return;
+      try {
+        const selection = JSON.parse(picker.value);
+        await request("/api/settings/model-provider/default", { method: "POST", body: JSON.stringify(selection) });
+      } catch {
+        // The next refresh restores the persisted default; never block a
+        // local message just because the convenience default write failed.
+      }
+    });
+  }
   enhanceSelects(picker.parentElement || document);
 }
 

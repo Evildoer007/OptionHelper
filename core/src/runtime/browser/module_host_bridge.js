@@ -17,6 +17,26 @@
   // identity in WKWebView, where that identity can change during navigation.
   // It also keeps the context hand-off scoped to the iframe the App created.
   const bridgeNonce = query.get("bridge_nonce");
+  const allowedThemes = new Set(["light", "dark"]);
+  const allowedPreferences = new Set(["light", "dark", "auto"]);
+
+  function applyTheme(theme, preference = theme) {
+    const root = document.documentElement;
+    root.dataset.theme = allowedThemes.has(theme) ? theme : "light";
+    root.dataset.themePref = allowedPreferences.has(preference) ? preference : root.dataset.theme;
+  }
+
+  function installStandaloneTheme() {
+    let preference = "light";
+    try {
+      const stored = localStorage.getItem("oh-theme");
+      if (allowedPreferences.has(stored)) preference = stored;
+    } catch { /* Private previews may not expose local storage. */ }
+    const systemDark = window.matchMedia?.("(prefers-color-scheme: dark)").matches;
+    applyTheme(preference === "auto" ? (systemDark ? "dark" : "light") : preference, preference);
+  }
+
+  installStandaloneTheme();
   let context = null;
   let hostScope = Object.freeze({});
   let contextVersion = 0;
@@ -281,22 +301,23 @@
     style.id = "optionhelper-choice-controls";
     style.textContent = `
       .oh-choice { position: relative; display: block; min-width: 0; }
+      body.optionhelper-embedded .topbar { display: none !important; }
       .oh-choice__native { position: absolute !important; width: 1px !important; height: 1px !important; min-height: 1px !important; margin: -1px !important; padding: 0 !important; overflow: hidden !important; clip: rect(0 0 0 0) !important; opacity: 0 !important; pointer-events: none !important; }
-      .oh-choice__trigger { display: flex; width: 100%; min-height: 38px; align-items: center; justify-content: space-between; gap: 10px; padding: 0 11px; border: 1px solid var(--rule, #d7cfd0); border-radius: 8px; background: var(--surface, #fff); color: var(--ink, #2b2224); font: inherit; line-height: 1.3; text-align: left; transition: border-color .16s ease, background .16s ease, box-shadow .16s ease, color .16s ease; }
+      .oh-choice__trigger { display: flex; width: 100%; min-height: 38px; align-items: center; justify-content: space-between; gap: 10px; padding: 0 11px; border: 1px solid var(--color-rule, #e2e0dc); border-radius: 8px; background: var(--color-surface, #fff); color: var(--color-ink, #252628); font: inherit; line-height: 1.3; text-align: left; transition: border-color .16s ease, background .16s ease, box-shadow .16s ease, color .16s ease; }
       .oh-choice__value { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-      .oh-choice__chevron { width: 8px; height: 8px; flex: 0 0 8px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; color: var(--muted, #766b6d); transform: rotate(45deg) translate(-2px, -2px); transition: transform .16s ease; }
-      .oh-choice:hover .oh-choice__trigger, .oh-choice[data-open="true"] .oh-choice__trigger { border-color: var(--red, #c8102e); background: #fff8f8; }
-      .oh-choice[data-open="true"] .oh-choice__trigger { box-shadow: 0 0 0 3px rgba(200,16,46,.10); color: var(--red-deep, #9e1027); }
+      .oh-choice__chevron { width: 8px; height: 8px; flex: 0 0 8px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; color: var(--color-muted, #6b7075); transform: rotate(45deg) translate(-2px, -2px); transition: transform .16s ease; }
+      .oh-choice:hover .oh-choice__trigger, .oh-choice[data-open="true"] .oh-choice__trigger { border-color: var(--color-rule-strong, #c9c5bf); background: var(--color-ground, #f4f4f2); }
+      .oh-choice[data-open="true"] .oh-choice__trigger { box-shadow: 0 0 0 3px var(--color-ground, #f4f4f2); color: var(--color-ink, #252628); }
       .oh-choice[data-open="true"] .oh-choice__chevron { transform: rotate(225deg) translate(-1px, -1px); }
-      .oh-choice__trigger:focus-visible { outline: 3px solid rgba(200,16,46,.25); outline-offset: 2px; }
-      .oh-choice__trigger:disabled { background: #f4f2f2; color: #978e90; cursor: not-allowed; }
-      .oh-choice__native[aria-invalid="true"] ~ .oh-choice__trigger { border-color: #b71b36; background: #fff7f8; box-shadow: 0 0 0 3px rgba(183,27,54,.08); }
-      .oh-choice__menu { position: absolute; z-index: 80; top: calc(100% + 6px); right: 0; left: 0; max-height: min(280px, 42vh); padding: 5px; overflow: auto; border: 1px solid #dacacf; border-radius: 9px; background: var(--surface, #fff); box-shadow: 0 14px 28px rgba(60,40,44,.17); }
-      .oh-choice__option { display: flex; width: 100%; min-height: 32px; align-items: center; padding: 7px 9px; border: 0; border-radius: 6px; background: transparent; color: var(--ink, #2b2224); font: inherit; font-size: 12px; line-height: 1.35; text-align: left; }
-      .oh-choice__option:hover, .oh-choice__option:focus-visible { outline: 0; background: #fff0f2; color: var(--red-deep, #9e1027); }
-      .oh-choice__option[aria-selected="true"] { background: #f9e9ec; color: var(--red-deep, #9e1027); font-weight: 700; }
+      .oh-choice__trigger:focus-visible { outline: 3px solid var(--color-blue-gray, #49647d); outline-offset: 2px; }
+      .oh-choice__trigger:disabled { background: var(--color-ground, #f4f2f2); color: var(--color-muted-soft, #978e90); cursor: not-allowed; }
+      .oh-choice__native[aria-invalid="true"] ~ .oh-choice__trigger { border-color: var(--color-brand-red, #c8102e); background: var(--color-ground, #f4f4f2); box-shadow: 0 0 0 3px var(--color-ground, #f4f4f2); }
+      .oh-choice__menu { position: absolute; z-index: 80; top: calc(100% + 6px); right: 0; left: 0; max-height: min(280px, 42vh); padding: 5px; overflow: auto; border: 1px solid var(--color-rule, #e2e0dc); border-radius: 9px; background: var(--color-surface, #fff); box-shadow: 0 14px 28px var(--color-surface-shadow, rgb(44 53 62 / .08)); }
+      .oh-choice__option { display: flex; width: 100%; min-height: 32px; align-items: center; padding: 7px 9px; border: 0; border-radius: 6px; background: transparent; color: var(--color-ink, #252628); font: inherit; font-size: 12px; line-height: 1.35; text-align: left; }
+      .oh-choice__option:hover, .oh-choice__option:focus-visible { outline: 0; background: var(--color-ground, #f4f4f2); color: var(--color-ink, #252628); }
+      .oh-choice__option[aria-selected="true"] { background: var(--color-ground, #f4f4f2); color: var(--color-ink, #252628); font-weight: 700; }
       .oh-choice__option[aria-selected="true"]::after { width: 5px; height: 9px; margin-left: auto; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; content: ""; transform: rotate(45deg) translate(-2px,-1px); }
-      .oh-choice__option:disabled { color: #a09698; cursor: not-allowed; }
+      .oh-choice__option:disabled { color: var(--color-muted-soft, #a09698); cursor: not-allowed; }
     `;
     document.head.append(style);
     document.querySelectorAll("select").forEach(enhanceSelect);
@@ -535,7 +556,13 @@
   document.addEventListener("click", (event) => { void handleHostedDownload(event); }, true);
 
   window.addEventListener("message", (event) => {
-    if (event.origin !== location.origin || event.data?.type !== "optionhelper.module-host-context") return;
+    if (event.origin !== location.origin) return;
+    if (event.data?.type === "optionhelper.module-theme") {
+      if (hostedInDesk && (!bridgeNonce || event.data?.bridge_nonce !== bridgeNonce || event.source !== window.parent)) return;
+      applyTheme(event.data?.theme, event.data?.preference);
+      return;
+    }
+    if (event.data?.type !== "optionhelper.module-host-context") return;
     if (hostedInDesk && (!bridgeNonce || event.data?.bridge_nonce !== bridgeNonce)) return;
     if (!valid(event.data.context)) return;
     const suppliedVersion = Number(event.data.context_version);

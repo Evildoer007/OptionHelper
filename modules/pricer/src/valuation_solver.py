@@ -52,9 +52,12 @@ def price(pricing_input: PricingInput) -> PricingResult:
         for field in ("calendar_id", "calendar_revision"):
             if identity.get(field) != trading_calendar[field]:
                 raise ValueError(f"冻结ResolvedContract.{field}与Host验证交易日历不一致")
+    market_asset_metadata: Mapping[str, object] | None = None
     if historical is not None:
         if data_ref is not None:
-            validate_market_data_asset(data_ref, historical, pricing_input.contract.underlyings)
+            market_asset_metadata = validate_market_data_asset(
+                data_ref, historical, pricing_input.contract.underlyings,
+            )
         elif historical.storage_mode != "local-development":
             raise ValueError("Host注入HistoricalData必须同时提供已验证DataAssetRef")
         snapshot = market_snapshot_from_history(
@@ -65,6 +68,10 @@ def price(pricing_input: PricingInput) -> PricingResult:
             risk_free_rate=config.risk_free_rate,
             dividend_yield=config.dividend_yield,
             trading_calendar=trading_calendar,
+            hv_fields_by_asset=(
+                None if market_asset_metadata is None
+                else market_asset_metadata["hv_fields_by_asset"]
+            ),
         )
         requested_valuation_date = str(config.valuation_date or snapshot["valuation_date"])
         market_as_of_date = str(snapshot["valuation_date"])
@@ -151,7 +158,7 @@ def price(pricing_input: PricingInput) -> PricingResult:
         provenance = {
             key: snapshot[key]
             for key in (
-                "source_ref", "history_start_date", "history_end_date", "spot_price_field", "hv_price_field",
+                "source_ref", "history_start_date", "history_end_date", "spot_price_field", "hv_price_field", "hv_fields_by_asset",
                 "return_method", "annualization_trading_days", "data_ref", "trading_calendar",
                 "trading_calendar_ref", "data_lineage", "requested_valuation_date",
                 "effective_valuation_session", "effective_maturity_session", "market_as_of_date",

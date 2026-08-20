@@ -1,5 +1,6 @@
 import { bindComposerKeyboard, clearMessage, configureModelPicker, initializeWorkspace, message, renderMessages, renderReports, renderTaskList, request, safeJson, setTaskLocation, taskIdFromLocation } from "/app/frontend/shared/app.js";
 import { createTransitionScope } from "/app/frontend/shared/transition-scope.js";
+import { currentTheme, currentThemePreference, onThemeChange } from "/app/frontend/shared/theme.js";
 
 const modules = new Map([["datafetcher", "数据获取"], ["payoffer", "收益结构"], ["pricer", "估值定价"], ["backtester", "历史回测"], ["reporter", "研究报告"]]);
 const thinkingStates = Object.freeze([
@@ -46,6 +47,7 @@ export async function startWorkspace(initialMode) {
   const form = document.querySelector("#workspace-form");
   const input = form.elements.content;
   const submit = form.querySelector("button[type=submit]");
+  const modelPicker = document.querySelector("#workspace-model-picker");
   const status = document.querySelector("#workspace-status");
   const title = document.querySelector("#task-title");
   const taskState = document.querySelector("#task-state");
@@ -104,14 +106,14 @@ export async function startWorkspace(initialMode) {
   const setComposerSending = (button, sending) => {
     if (sending) button.classList.remove("is-sent");
     button.dataset.sending = String(sending);
-    button.disabled = sending || !input.value.trim();
+    button.disabled = sending || modelPicker.disabled || !modelPicker.value || !input.value.trim();
     button.classList.toggle("is-generating", sending);
     form.classList.toggle("is-generating", sending);
     button.setAttribute("aria-busy", String(sending));
     button.setAttribute("aria-label", sending ? "正在发送" : "发送");
   };
   const syncComposerAvailability = () => {
-    submit.disabled = submit.dataset.sending === "true" || !input.value.trim();
+    submit.disabled = submit.dataset.sending === "true" || modelPicker.disabled || !modelPicker.value || !input.value.trim();
   };
   const markComposerSent = (button) => {
     if (matchMedia("(prefers-reduced-motion: reduce)").matches) return;
@@ -179,9 +181,14 @@ export async function startWorkspace(initialMode) {
   const conversationResponsePath = (taskId, requestId) => (
     `/api/tasks/${encodeURIComponent(taskId)}/conversation-requests/${encodeURIComponent(requestId)}`
   );
-  const sendConversation = (taskId, content, requestId) => request(
+  const selectedModel = () => {
+    const raw = document.querySelector("#workspace-model-picker")?.value || "";
+    if (!raw) return null;
+    try { return JSON.parse(raw); } catch { return null; }
+  };
+  const sendConversation = (taskId, content, requestId, modelSelection) => request(
     `/api/tasks/${encodeURIComponent(taskId)}/messages`,
-    { method: "POST", body: safeJson({ content }), headers: { "X-Request-Id": requestId } },
+    { method: "POST", body: safeJson({ content, model_selection: modelSelection }), headers: { "X-Request-Id": requestId } },
   );
   const lookupConversationResponse = async (taskId, requestId) => {
     try {
@@ -192,14 +199,15 @@ export async function startWorkspace(initialMode) {
     }
   };
   const submitConversation = async (taskId, content, requestId) => {
+    const modelSelection = selectedModel();
     try {
-      return await sendConversation(taskId, content, requestId);
+      return await sendConversation(taskId, content, requestId, modelSelection);
     } catch (firstError) {
       // Explicit client-side validation is final. Network and service failures
       // may have reached the server, so reuse the same idempotency key once.
       if (firstError.status && firstError.status < 500) throw firstError;
       try {
-        return await sendConversation(taskId, content, requestId);
+        return await sendConversation(taskId, content, requestId, modelSelection);
       } catch (retryError) {
         const saved = await lookupConversationResponse(taskId, requestId);
         if (saved) return saved;
@@ -468,6 +476,23 @@ export async function startWorkspace(initialMode) {
         bridge_nonce: bridgeNonce,
       }, location.origin);
       frame.contentWindow?.postMessage({ type: "optionhelper.desk-panel-layout", layout: sharedPanelLayout, bridge_nonce: bridgeNonce }, location.origin);
+      frame.contentWindow?.postMessage({
+        type: "optionhelper.module-theme",
+        theme: currentTheme(),
+        preference: currentThemePreference(),
+        bridge_nonce: bridgeNonce,
+      }, location.origin);
+    }
+  }
+
+  function broadcastModuleTheme() {
+    for (const frame of moduleFrames.values()) {
+      frame.contentWindow?.postMessage({
+        type: "optionhelper.module-theme",
+        theme: currentTheme(),
+        preference: currentThemePreference(),
+        bridge_nonce: frame.dataset.bridgeNonce,
+      }, location.origin);
     }
   }
 
@@ -576,6 +601,7 @@ export async function startWorkspace(initialMode) {
     frame.dataset.ready = "true";
     deliverContext(moduleName);
   });
+  onThemeChange(() => broadcastModuleTheme());
 
   tabs.addEventListener("click", (event) => {
     const button = event.target.closest("[data-module]");
@@ -607,6 +633,7 @@ export async function startWorkspace(initialMode) {
     saveTransient();
     syncComposerAvailability();
   });
+  modelPicker.addEventListener("change", syncComposerAvailability);
   stream.addEventListener("click", (event) => {
     const starter = event.target.closest("[data-starter-prompt]");
     if (!starter) return;
@@ -627,7 +654,10 @@ export async function startWorkspace(initialMode) {
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     const submittedContent = input.value.trim();
-    if (!submittedContent) return;
+    if (!submittedContent || !selectedModel()) {
+      if (!selectedModel()) showWorkspaceStatus("请先在设置中心添加并保存一个可用模型。", true);
+      return;
+    }
     let pendingMessage;
     let thinkingMessage;
     setComposerSending(submit, true);
@@ -711,12 +741,10 @@ export async function startWorkspace(initialMode) {
   });
 
   const session = await initializeWorkspace(initialMode, { onModeChange: async (mode) => {
-    if (!currentTask) {
-      const task = await createTask();
-      migrateTransient("new", task.task_id);
-      await selectTask(task.task_id, false);
-    }
     await applyMode(mode);
+    if (!currentTask && mode === "desk") {
+      showWorkspaceStatus("请先新建或选择任务后再使用研究模块。", true);
+    }
   } });
   if (!session) return;
   document.querySelectorAll("[data-report-kind]").forEach((button) => {
@@ -729,16 +757,20 @@ export async function startWorkspace(initialMode) {
   });
   syncReportActions();
   const [, tasks] = await Promise.all([
-    configureModelPicker(document.querySelector("#workspace-model-picker")).catch(() => {}),
+    configureModelPicker(modelPicker).catch(() => {}),
     loadTasks(),
   ]);
   const requested = taskIdFromLocation();
   if (requested) await selectTask(requested, false).catch(() => {});
-  // Do not silently resume the first saved task.  A fresh OptDesk entry must
-  // start from an unbound task, so the module product selector remains
-  // “请选择产品”; saved tasks are resumed only through their task URL or rail.
-  if (!currentTask && initialMode === "desk") await selectTask((await createTask()).task_id, false);
-  if (!currentTask) renderMessages(stream, [], "新建任务后即可开始对话，并按需生成简单报告、详细报告或参考报价。");
+  // A workspace entry never creates or silently resumes a task. A task exists
+  // only after an explicit rail action, task URL, or the first submitted chat
+  // message; this keeps a fresh OptDesk entry unbound and product-neutral.
+  if (!currentTask) {
+    title.textContent = "未选择任务";
+    conversationTitle.textContent = "开始研究";
+    taskState.textContent = "请新建或选择任务后，再运行研究模块。";
+    renderMessages(stream, [], "新建任务后即可开始对话，并按需生成简单报告、详细报告或参考报价。");
+  }
   await applyMode(initialMode, { updateHistory: false });
   restoreTransient();
   syncComposerAvailability();

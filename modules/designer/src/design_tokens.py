@@ -23,6 +23,7 @@ class DesignTokens:
     """Immutable design tokens shared by every Designer consumer."""
 
     colors: Mapping[str, str]
+    dark_colors: Mapping[str, str]
     fonts: Mapping[str, str]
     type_scale: Mapping[str, str]
     spacing: Mapping[str, str]
@@ -46,6 +47,7 @@ class DesignTokens:
         return {
             "schema": self.system_id,
             "colors": dict(self.colors),
+            "dark_colors": dict(self.dark_colors),
             "fonts": dict(self.fonts),
             "type_scale": dict(self.type_scale),
             "spacing": dict(self.spacing),
@@ -75,42 +77,80 @@ def _freeze(value: Mapping[str, Any]) -> Mapping[str, Any]:
 
 _COLORS = {
     "brand_red": "#C8102E",
-    "brand_red_deep": "#890D26",
-    "brand_red_soft": "#FBF1F3",
-    "paper": "#FFFDFB",
-    "ground": "#F5F1F0",
+    "on_brand": "#FFFFFF",
+    "paper": "#FFFFFF",
+    "ground": "#F4F4F2",
     "surface": "#FFFFFF",
-    "ink": "#241D20",
-    "ink_soft": "#44383C",
-    "muted": "#6E5F63",
-    "muted_soft": "#75666A",
+    "ink": "#252628",
+    "ink_soft": "#404246",
+    "muted": "#6B7075",
+    "muted_soft": "#858A8E",
     "blue_gray": "#49647D",
-    "blue_gray_soft": "#F3F6F8",
-    "chart_gray": "#7E8A99",
-    "heatmap_low": "#F8E7EA",
-    "risk_gold": "#855E22",
-    "risk_gold_soft": "#FBF7EE",
-    "rule": "#E9DADC",
-    "rule_strong": "#DCC1C7",
-    "paper_border": "#E7D8DB",
-    "red_border_soft": "#E5C5CC",
-    "red_surface": "#FFFAFA",
-    "red_tag_border": "#EDD5DA",
-    "gold_border": "#EADBBD",
-    "gold_ink": "#6A5326",
-    "table_border": "#DDBCC3",
-    "table_head_ink": "#59353D",
+    "risk_gold": "#936719",
+    "rule": "#E2E0DC",
+    "rule_strong": "#C9C5BF",
+    # Compatibility names are semantic aliases, not additional colours.
+    # Downstream pages may migrate gradually without recreating a second red
+    # or the former pink surfaces.
+    "brand_red_deep": "#C8102E",
+    "brand_red_soft": "#F4F4F2",
+    "blue_gray_soft": "#F4F4F2",
+    "chart_gray": "#6B7075",
+    "heatmap_low": "#F4F4F2",
+    "risk_gold_soft": "#FCF7EA",
+    "paper_border": "#E2E0DC",
+    "red_border_soft": "#C9C5BF",
+    "red_surface": "#F4F4F2",
+    "red_tag_border": "#C9C5BF",
+    "gold_border": "#C9C5BF",
+    "gold_ink": "#936719",
+    "table_border": "#C9C5BF",
+    "table_head_ink": "#252628",
     "paper_shadow": "rgb(44 53 62 / .10)",
     "surface_shadow": "rgb(44 53 62 / .08)",
 }
 
 
+_DARK_COLORS = {
+    "brand_red": "#C8102E",
+    "on_brand": "#FFFFFF",
+    "paper": "#17191B",
+    "ground": "#111315",
+    "surface": "#1D2023",
+    "ink": "#F4F1EC",
+    "ink_soft": "#D8D2CA",
+    "muted": "#AAA39A",
+    "muted_soft": "#918A82",
+    "blue_gray": "#8DA6B9",
+    "risk_gold": "#D3A348",
+    "rule": "#34383C",
+    "rule_strong": "#4A4F54",
+    "brand_red_deep": "#C8102E",
+    "brand_red_soft": "#17191B",
+    "blue_gray_soft": "#1D2023",
+    "chart_gray": "#AAA39A",
+    "heatmap_low": "#111315",
+    "risk_gold_soft": "#17191B",
+    "paper_border": "#34383C",
+    "red_border_soft": "#4A4F54",
+    "red_surface": "#1D2023",
+    "red_tag_border": "#4A4F54",
+    "gold_border": "#4A4F54",
+    "gold_ink": "#D3A348",
+    "table_border": "#4A4F54",
+    "table_head_ink": "#F4F1EC",
+    "paper_shadow": "rgb(0 0 0 / .38)",
+    "surface_shadow": "rgb(0 0 0 / .30)",
+}
+
+
 TOKENS = DesignTokens(
     colors=_freeze(_COLORS),
+    dark_colors=_freeze(_DARK_COLORS),
     fonts=_freeze(
         {
-            "sans": 'Arial, "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", sans-serif',
-            "chinese": '"Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", Arial, sans-serif',
+            "sans": 'Arial, "PingFang SC", "Noto Sans CJK SC", sans-serif',
+            "chinese": '"PingFang SC", "Noto Sans CJK SC", sans-serif',
             "latin": 'Arial, sans-serif',
             "math": '"STIX Two Math", "Cambria Math", "Times New Roman", serif',
         }
@@ -181,8 +221,8 @@ TOKENS = DesignTokens(
         _COLORS["brand_red"],
         _COLORS["blue_gray"],
         _COLORS["risk_gold"],
-        _COLORS["chart_gray"],
-        _COLORS["brand_red_deep"],
+        _COLORS["muted"],
+        _COLORS["ink_soft"],
     ),
     chart_line_types=("solid", "dashed", "dotted"),
     chart_symbols=("circle", "rect", "triangle", "diamond"),

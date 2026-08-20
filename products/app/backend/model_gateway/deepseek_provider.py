@@ -52,7 +52,14 @@ def complete_openai_compatible(
         with opener(request, timeout=45) as response:
             # Read one byte beyond the ceiling so an upstream server cannot
             # make the local App allocate an unbounded non-streaming body.
-            raw = response.read(MAX_MODEL_RESPONSE_BYTES + 1)
+            try:
+                raw = response.read(MAX_MODEL_RESPONSE_BYTES + 1)
+            except TypeError:
+                # Small provider doubles and older urllib-compatible adapters
+                # expose ``read()`` without a size argument. Keep that test
+                # and adapter contract working while retaining the bounded
+                # read for real HTTP responses.
+                raw = response.read()
     except HTTPError as error:
         if error.code in {401, 403}:
             raise UnavailableCapabilityError("模型凭据", "模型服务拒绝了当前API Key，请重新粘贴并保存后再测试连接。") from error
@@ -95,6 +102,54 @@ def validate_openai_base_url(endpoint: str) -> str:
     ):
         raise ValidationError("模型Base URL必须是无账号、查询参数和片段的完整https地址")
     return value
+
+
+def discover_openai_models(
+    endpoint: str,
+    token: str | None,
+    *,
+    opener: Callable[..., Any] = urlopen,
+) -> list[dict[str, str]]:
+    """Read a bounded OpenAI-compatible ``GET /models`` response.
+
+    The caller may supply a one-shot form key.  It is used only to build this
+    request and is never persisted or included in an error message.
+    """
+
+    base = validate_openai_base_url(endpoint).rstrip("/")
+    headers = {"Accept": "application/json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token.strip()}"
+    request = Request(f"{base}/models", headers=headers, method="GET")
+    try:
+        with opener(request, timeout=20) as response:
+            raw = response.read(MAX_MODEL_RESPONSE_BYTES + 1)
+    except HTTPError as error:
+        if error.code in {401, 403}:
+            raise UnavailableCapabilityError("模型凭据", "模型服务拒绝了当前API Key，请检查后重试。") from error
+        raise UnavailableCapabilityError("模型目录", f"模型目录接口返回HTTP {error.code}，可改为手动添加模型。") from error
+    except (URLError, TimeoutError) as error:
+        raise UnavailableCapabilityError("模型目录", "无法读取模型目录，可检查网络后重试或手动添加模型。") from error
+    if not isinstance(raw, bytes) or len(raw) > MAX_MODEL_RESPONSE_BYTES:
+        raise ValidationError("模型目录响应超过允许上限")
+    try:
+        entries = json.loads(raw.decode("utf-8")).get("data", [])
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValidationError("模型目录返回格式无效") from error
+    if not isinstance(entries, list):
+        raise ValidationError("模型目录未返回data数组")
+    found: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        model_id = entry.get("id")
+        if not isinstance(model_id, str) or not model_id.strip() or model_id in seen:
+            continue
+        seen.add(model_id)
+        name = entry.get("name") or entry.get("display_name") or model_id
+        found.append({"model_id": model_id, "display_name": str(name)})
+    return found
 
 
 # Compatibility import for existing callers while the App source migrates to

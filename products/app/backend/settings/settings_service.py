@@ -19,7 +19,10 @@ class SettingsService:
 
     @staticmethod
     def _assert_non_sensitive(settings: SettingsSnapshot) -> None:
-        for reference in (settings.model_service.secret_ref, settings.data_interface.secret_ref):
+        references = [settings.model_service.secret_ref, settings.data_interface.secret_ref]
+        references.extend(connection.model_service.secret_ref for connection in settings.model_connections)
+        references.extend(provider.secret_ref for provider in settings.model_providers)
+        for reference in references:
             if reference is not None and not reference.provider.strip():
                 raise ValidationError("SecretRef provider is required")
         data_ref = settings.data_interface.secret_ref
