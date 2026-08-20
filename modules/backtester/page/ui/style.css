@@ -1,4 +1,4 @@
-@import url("../../../designer/themes/designer-token-vars.css");
+@import url("../../../designer/assets/themes/designer-token-vars.css");
 
 :root {
   --font: Arial, "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", sans-serif;
@@ -9,11 +9,16 @@
 
 body {
   margin: 0;
-  background: var(--desk);
+  background: var(--paper);
   color: var(--ink);
   font-family: var(--font);
   font-size: 14px;
+  font-synthesis: none;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
+
+::selection { background: rgba(200, 16, 46, .16); color: var(--ink); }
 
 button,
 input,
@@ -30,7 +35,7 @@ textarea:focus-visible {
   outline-offset: 2px;
 }
 
-.app-shell { min-width: 1120px; min-height: 100vh; }
+.app-shell { min-width: 1225px; min-height: 100vh; }
 
 .topbar {
   display: flex;
@@ -39,12 +44,12 @@ textarea:focus-visible {
   gap: 20px;
   padding: 0 24px;
   border-bottom: 1px solid var(--rule);
-  background: var(--color-blue-gray-soft);
+  background: var(--surface);
 }
 
 .brand { display: flex; min-width: 0; align-items: center; gap: 12px; }
 
-.brand-logo { display: block; width: 126px; height: auto; }
+.brand-logo { display: block; flex: 0 0 auto; width: 148px; height: auto; }
 
 .brand-separator { width: 1px; height: 24px; background: var(--color-rule); }
 
@@ -75,7 +80,7 @@ textarea:focus-visible {
   height: 34px;
   padding: 0 12px;
   border: 1px solid var(--color-paper-border);
-  border-radius: 9px;
+  border-radius: 8px;
   background: rgba(255, 255, 255, .72);
   color: var(--ink);
   font-family: var(--font);
@@ -106,7 +111,6 @@ textarea:focus-visible {
 
 .workbench {
   display: grid;
-  grid-template-columns: 267px minmax(650px, 1fr) 272px;
   height: calc(100vh - 62px);
   overflow: hidden;
 }
@@ -114,13 +118,11 @@ textarea:focus-visible {
 .library-panel,
 .inspector-panel {
   padding: 22px 18px;
-  background: rgba(255, 255, 255, .92);
+  background: var(--surface);
   overflow: auto;
   scrollbar-color: rgba(158, 16, 39, .20) transparent;
 }
 
-.library-panel { border-right: 1px solid var(--rule); }
-.inspector-panel { border-left: 1px solid var(--rule); }
 .library-panel::-webkit-scrollbar,
 .inspector-panel::-webkit-scrollbar { width: 5px; }
 .library-panel::-webkit-scrollbar-thumb,
@@ -143,25 +145,34 @@ textarea:focus-visible {
   width: 100%;
   height: 36px;
   padding: 0 10px;
-  border: 1px solid var(--color-paper-border);
+  border: 1px solid var(--rule);
   border-radius: 8px;
   background: var(--color-surface);
   color: var(--ink);
   font: 12px var(--font);
 }
 
+.product-select:disabled {
+  border-color: var(--rule);
+  background: var(--wash);
+  color: var(--muted);
+  cursor: not-allowed;
+  opacity: 1;
+}
+
 .binding-card {
   margin-top: 14px;
   padding: 11px 12px;
   border: 1px solid var(--color-rule);
-  border-radius: 10px;
-  background: var(--color-red-surface);
+  border-radius: 8px;
+  background: var(--paper);
   color: var(--muted);
   font-size: 12px;
   line-height: 1.6;
 }
 
 .binding-card strong { display: block; color: var(--ink); font-size: 13px; }
+.binding-card .lock-note { display: block; margin-top: 6px; color: var(--red-deep); }
 
 .scenario-heading {
   display: flex;
@@ -180,7 +191,7 @@ textarea:focus-visible {
 .scenario-list li {
   position: relative;
   padding: 11px 0 11px 24px;
-  border-bottom: 1px solid var(--color-ground);
+  border-bottom: 1px solid var(--rule-soft);
   color: var(--color-ink-soft);
   font-size: 12px;
   line-height: 1.45;
@@ -203,7 +214,7 @@ textarea:focus-visible {
   display: grid;
   min-width: 0;
   grid-template-rows: 50px auto 1fr 31px;
-  background: var(--desk);
+  background: var(--paper);
 }
 
 .canvas-toolbar {
@@ -212,7 +223,7 @@ textarea:focus-visible {
   justify-content: space-between;
   padding: 0 20px;
   border-bottom: 1px solid var(--rule);
-  background: rgba(255, 255, 255, .72);
+  background: var(--paper);
 }
 
 .canvas-state { display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 650; }
@@ -228,7 +239,7 @@ textarea:focus-visible {
   margin: 12px 20px 0;
   padding: 10px 12px;
   border: 1px solid var(--color-gold-border);
-  border-radius: 9px;
+  border-radius: 8px;
   background: var(--color-red-surface);
   color: var(--color-gold-ink);
   font-size: 12px;
@@ -244,7 +255,7 @@ textarea:focus-visible {
   justify-content: center;
   padding: 30px 22px 40px;
   overflow: auto;
-  background: var(--color-blue-gray-soft);
+  background: var(--paper);
 }
 
 .canvas-viewport > svg,
@@ -252,7 +263,7 @@ textarea:focus-visible {
 .canvas-stage {
   min-width: 760px;
   background: var(--color-surface);
-  box-shadow: 0 8px 24px rgba(68, 34, 42, .07);
+  box-shadow: none;
 }
 
 .empty-canvas {
@@ -262,9 +273,9 @@ textarea:focus-visible {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  border: 1px dashed var(--color-paper-border);
-  border-radius: 14px;
-  background: rgba(255, 255, 255, .56);
+  border: 1px dashed var(--color-rule-strong);
+  border-radius: 8px;
+  background: var(--surface);
   color: var(--muted);
   text-align: center;
 }
@@ -279,7 +290,7 @@ textarea:focus-visible {
   gap: 20px;
   padding: 0 20px;
   border-top: 1px solid var(--rule);
-  background: rgba(255, 255, 255, .64);
+  background: var(--paper);
   color: var(--muted);
   font-size: 10px;
 }
@@ -295,8 +306,8 @@ textarea:focus-visible {
   margin-top: 17px;
   padding: 11px 12px;
   border: 1px solid var(--color-rule);
-  border-radius: 10px;
-  background: var(--color-red-surface);
+  border-radius: 8px;
+  background: var(--paper);
   color: var(--muted);
   font-size: 11px;
   line-height: 1.55;
@@ -304,9 +315,19 @@ textarea:focus-visible {
 
 .lock-card strong { display: block; margin-bottom: 4px; color: var(--ink); font-size: 11px; }
 
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: .01ms !important;
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}
+
 @media (max-width: 1180px) {
-  .app-shell { min-width: 980px; }
-  .workbench { grid-template-columns: 235px minmax(560px, 1fr) 245px; }
+  .app-shell { min-width: 1065px; }
   .library-panel,
   .inspector-panel { padding: 18px 14px; }
   .topbar { padding: 0 16px; }

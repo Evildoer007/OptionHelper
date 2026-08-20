@@ -366,9 +366,10 @@ def assert_build_python() -> None:
         raise MacOSBuildError(f"Pillow必须固定为{PILLOW_RUNTIME_VERSION}，当前为{pillow_version}")
 
 
-def copy_tree(source: Path, destination: Path) -> None:
+def copy_tree(source: Path, destination: Path, *, extra_ignored: tuple[str, ...] = ()) -> None:
     def ignore(directory: str, names: list[str]) -> set[str]:
-        return set(shutil.ignore_patterns("__pycache__", "*.pyc", ".DS_Store")(directory, names))
+        patterns = ("__pycache__", "*.pyc", ".DS_Store", *extra_ignored)
+        return set(shutil.ignore_patterns(*patterns)(directory, names))
 
     shutil.copytree(source, destination, ignore=ignore)
 
@@ -697,7 +698,7 @@ def build_macos(
         )
         copy_tree(APP_ROOT / "backend", resources / "app" / "backend")
         copy_tree(APP_ROOT / "config", resources / "app" / "config")
-        copy_tree(APP_ROOT / "frontend", resources / "frontend")
+        copy_tree(APP_ROOT / "frontend", resources / "frontend", extra_ignored=("*.md",))
         copy_tree(source, resources / "capability" / "option-helper")
         assert_staged_capability(source, resources / "capability" / "option-helper")
         copy_tree(ROOT / "core" / "src" / "runtime", resources / "runtime")

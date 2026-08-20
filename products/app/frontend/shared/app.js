@@ -488,18 +488,45 @@ function installLayoutControls(shell) {
 export function renderTaskList(target, tasks, activeTaskId, onSelect) {
   if (!target) return;
   if (!tasks.length) {
-    target.innerHTML = '<p class="task-item task-item--empty">尚无任务</p>';
+    const empty = document.createElement("p");
+    empty.className = "task-item task-item--empty";
+    empty.textContent = "尚无任务";
+    target.replaceChildren(empty);
     return;
   }
-  target.innerHTML = tasks.map((task) => `
-    <button class="task-item" type="button" data-task-id="${escapeText(task.task_id)}" aria-current="${task.task_id === activeTaskId}">
-      <strong class="task-item__title">${escapeText(task.subject)}</strong>
-      <small>${escapeText(formatTaskDate(task.updated_at || task.created_at))}</small>
-      <span class="task-item__more" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="5" r="1.5"></circle><circle cx="12" cy="12" r="1.5"></circle><circle cx="12" cy="19" r="1.5"></circle></svg></span>
-    </button>`).join("");
-  target.querySelectorAll("[data-task-id]").forEach((button) => {
+  const createMoreIcon = () => {
+    const namespace = "http://www.w3.org/2000/svg";
+    const icon = document.createElementNS(namespace, "svg");
+    icon.setAttribute("viewBox", "0 0 24 24");
+    for (const cy of ("5", "12", "19")) {
+      const dot = document.createElementNS(namespace, "circle");
+      dot.setAttribute("cx", "12");
+      dot.setAttribute("cy", cy);
+      dot.setAttribute("r", "1.5");
+      icon.append(dot);
+    }
+    return icon;
+  };
+  const entries = tasks.map((task) => {
+    const button = document.createElement("button");
+    button.className = "task-item";
+    button.type = "button";
+    button.dataset.taskId = String(task.task_id || "");
+    button.setAttribute("aria-current", String(task.task_id === activeTaskId));
+    const taskTitle = document.createElement("strong");
+    taskTitle.className = "task-item__title";
+    taskTitle.textContent = String(task.subject || "新建研究任务");
+    const taskDate = document.createElement("small");
+    taskDate.textContent = formatTaskDate(task.updated_at || task.created_at);
+    const more = document.createElement("span");
+    more.className = "task-item__more";
+    more.setAttribute("aria-hidden", "true");
+    more.append(createMoreIcon());
+    button.append(taskTitle, taskDate, more);
     button.addEventListener("click", () => onSelect(button.dataset.taskId));
+    return button;
   });
+  target.replaceChildren(...entries);
 }
 
 function formatTaskDate(value) {
@@ -542,7 +569,7 @@ export function renderReports(target, reports) {
   }
   target.innerHTML = reports.map((report) => {
     const outputType = report.report_request?.output_type || report.report_request?.kind;
-    const title = outputType === "card" ? "Card简报" : "详细报告";
+    const title = ({ card: "简单报告", quote: "参考报价", report: "详细报告" })[outputType] || "交付物";
     const artifact = report.artifact_manifest?.find?.((item) => item.name?.endsWith(".html"));
     const href = artifact ? `/api/reports/${encodeURIComponent(report.report_run_id)}/artifacts/${encodeURIComponent(artifact.name)}` : "#";
     return `<a class="report-item" href="${href}" target="_blank" rel="noopener"><strong>${title}</strong><span class="report-meta">${escapeText(report.status || "已生成")}</span></a>`;

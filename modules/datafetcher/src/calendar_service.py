@@ -255,7 +255,7 @@ def _calendar_identity(request: CalendarRequest, tenant_id: str) -> str:
 
 def _atomic_json(path: Path, value: Mapping[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, delete=False) as handle:
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", newline="", dir=path.parent, delete=False) as handle:
         json.dump(value, handle, ensure_ascii=False, sort_keys=True, indent=2)
         temporary = Path(handle.name)
     temporary.replace(path)

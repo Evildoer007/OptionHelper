@@ -460,6 +460,7 @@ def _requested_outputs(case: RecommendationCase) -> tuple[str, ...]:
     output_type = str(case.confirmed_constraints.get("output_type", "")).strip().lower()
     deliveries = {
         "card": ("card",),
+        "quote": ("quote",),
         "report": ("report",),
         "both": ("card", "report"),
     }

@@ -1,4 +1,4 @@
-"""Standalone Skill Host security and OpenAI-compatible transport helpers.
+"""Standalone Skill Host security and generic model transport helpers.
 
 This module contains no option selection, pricing, or reporting logic.  It
 only owns the local-development identity boundary and bounded HTTP transport

@@ -207,16 +207,22 @@ def _extract_text(text: str) -> dict[str, Any]:
         result["principal_fluctuation"] = principal
     wants_card = any(word in lowered for word in ("研究简报", "简报", "卡片", "card", "简单报告"))
     wants_report = any(word in lowered for word in ("完整研究报告", "详细报告", "深度报告", "完整报告", "report"))
+    wants_quote = any(word in lowered for word in ("参考报价", "报价表", "quote"))
     card_terms = r"(?:研究简报|简报|卡片|card|简单报告)"
     report_terms = r"(?:完整研究报告|详细报告|深度报告|完整报告|report)"
+    quote_terms = r"(?:参考报价|报价表|quote)"
     negative = r"(?:不要|不需要|不用)"
     clauses = re.split(r"[，,。；;]", lowered)
     card_negated = any(re.search(rf"{negative}.{{0,12}}{card_terms}", clause) for clause in clauses)
     report_negated = any(re.search(rf"{negative}.{{0,12}}{report_terms}", clause) for clause in clauses)
+    quote_negated = any(re.search(rf"{negative}.{{0,12}}{quote_terms}", clause) for clause in clauses)
     only_report = wants_report and (card_negated or bool(re.search(rf"(?:只要|仅要|只需).{{0,12}}{report_terms}", lowered)))
     only_card = wants_card and (report_negated or bool(re.search(rf"(?:只要|仅要|只需).{{0,12}}{card_terms}", lowered)))
+    only_quote = wants_quote and bool(re.search(rf"(?:只要|仅要|只需).{{0,12}}{quote_terms}", lowered))
     wants_both = wants_card and wants_report and not card_negated and not report_negated and not only_report and not only_card
-    if only_report and not report_negated:
+    if only_quote and not quote_negated:
+        result["output_type"] = "quote"
+    elif only_report and not report_negated:
         result["output_type"] = "report"
     elif only_card and not card_negated:
         result["output_type"] = "card"
@@ -224,6 +230,8 @@ def _extract_text(text: str) -> dict[str, Any]:
         result["output_type"] = "both"
     elif wants_card:
         result["output_type"] = "card"
+    elif wants_quote and not quote_negated:
+        result["output_type"] = "quote"
     elif wants_report or "报告" in lowered:
         result["output_type"] = "report"
     wants_html = any(word in lowered for word in ("html", "网页", "web"))
@@ -437,6 +445,8 @@ def _normalize_output(value: object) -> str | None:
     text = str(value or "").strip().lower()
     if text in {"card", "研究简报", "简报", "卡片", "简单报告"}:
         return "card"
+    if text in {"quote", "参考报价", "报价表"}:
+        return "quote"
     if text in {"both", "两份", "研究简报和完整研究报告"}:
         return "both"
     if text in {"report", "完整研究报告", "详细报告", "深度报告", "完整报告", "报告"}:

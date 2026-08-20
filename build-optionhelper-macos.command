@@ -24,8 +24,8 @@ elif [[ -f "$LOCAL_PYTHON_FILE" && ! -L "$LOCAL_PYTHON_FILE" ]]; then
 fi
 
 if [[ -z "${OPTIONHELPER_PYTHON:-}" ]]; then
-  print -u2 "尚未选择用于构建的Python解释器。"
-  print -u2 "可选解释器仅供选择；枚举过程不会运行候选解释器。请设置OPTIONHELPER_PYTHON为其中一个绝对路径后重新运行："
+  print -u2 "请选择本次构建使用的Python解释器。"
+  print -u2 "可选解释器仅供选择；枚举过程不会运行候选解释器。"
   candidates=()
   [[ -n "${CONDA_PREFIX:-}" ]] && candidates+=("$CONDA_PREFIX/bin/python")
   candidates+=(
@@ -40,6 +40,7 @@ if [[ -z "${OPTIONHELPER_PYTHON:-}" ]]; then
     "$HOME"/mambaforge/bin/python
     "$HOME"/mambaforge/envs/*/bin/python
   )
+  selected_candidates=()
   typeset -A seen
   for candidate in "${candidates[@]}"; do
     [[ "$candidate" = /* && -x "$candidate" && -z "${seen[$candidate]:-}" ]] || continue
@@ -63,16 +64,38 @@ if [[ -z "${OPTIONHELPER_PYTHON:-}" ]]; then
       metadata_version=$(/usr/bin/sed -n 's/^[[:space:]]*version[[:space:]]*=[[:space:]]*//p' "$environment_root/pyvenv.cfg" | /usr/bin/head -n 1)
       [[ -n "$metadata_version" ]] && python_version="$metadata_version"
     fi
-    print -u2 "  环境名称=$environment_name；Python版本=$python_version；解释器绝对路径=$candidate"
+    selected_candidates+=("$candidate")
+    print -u2 "  [${#selected_candidates}] 环境名称=$environment_name；Python版本=$python_version；解释器绝对路径=$candidate"
   done
-  exit 1
+  if (( ${#selected_candidates} == 0 )); then
+    print -u2 "未找到可选择的Python解释器。请安装Python3.11或更高版本后重试。"
+    exit 1
+  fi
+
+  while true; do
+    if ! IFS= read -r "selection?请输入序号后按回车（直接回车取消）： "; then
+      print -u2 "未选择Python解释器，构建已取消。"
+      exit 1
+    fi
+    if [[ -z "$selection" ]]; then
+      print -u2 "未选择Python解释器，构建已取消。"
+      exit 1
+    fi
+    if [[ "$selection" == <-> ]] && (( selection >= 1 && selection <= ${#selected_candidates} )); then
+      OPTIONHELPER_PYTHON="${selected_candidates[$selection]}"
+      python_selection_source="interactive"
+      print "已选择Python解释器：$OPTIONHELPER_PYTHON"
+      break
+    fi
+    print -u2 "请输入1到${#selected_candidates}之间的序号。"
+  done
 fi
 if [[ "$OPTIONHELPER_PYTHON" != /* || ! -x "$OPTIONHELPER_PYTHON" ]]; then
   print -u2 "OPTIONHELPER_PYTHON必须是可执行的绝对Python路径。"
   exit 1
 fi
 PYTHON_BIN="$OPTIONHELPER_PYTHON"
-if [[ "$python_selection_source" == "environment" ]]; then
+if [[ "$python_selection_source" == "environment" || "$python_selection_source" == "interactive" ]]; then
   local_python_dir="${LOCAL_PYTHON_FILE:h}"
   local_python_temp="${LOCAL_PYTHON_FILE}.tmp.$$"
   /bin/mkdir -p "$local_python_dir"
@@ -101,7 +124,7 @@ check_dependencies() {
   print -u2 "$stage ${label}检查未通过，构建已停止。"
   print -u2 "$output"
   print -u2 "处理方式：请使用同一Python环境安装或恢复锁定依赖："
-  print -u2 "  \"$PYTHON_BIN\" -m pip install -r \"$ROOT/$requirements\""
+  print -u2 "  \"$PYTHON_BIN\" -m pip install -r \"$ROOT/$requirements\" --index-url \"https://pypi.tuna.tsinghua.edu.cn/simple\""
   print -u2 "修复后重新运行本命令。"
   exit "$check_exit_code"
 }

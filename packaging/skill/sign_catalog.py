@@ -68,7 +68,7 @@ def sign_catalog(
                 "snapshot_sha256": technical["snapshot_sha256"],
             }
             path = target / "product-version.json"
-            path.write_text(json.dumps(manifest, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8")
+            path.write_text(json.dumps(manifest, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8", newline="")
             refs[product_id] = f"knowledger/products/{product_id}/product-version.json"
             hashes[product_id] = _digest(path)
         catalog = {
@@ -80,7 +80,7 @@ def sign_catalog(
         }
         catalog_path = staged / "knowledger" / "catalog-version.json"
         catalog_path.parent.mkdir(parents=True, exist_ok=True)
-        catalog_path.write_text(json.dumps(catalog, ensure_ascii=False) + "\n", encoding="utf-8")
+        catalog_path.write_text(json.dumps(catalog, ensure_ascii=False) + "\n", encoding="utf-8", newline="")
         validate_published_catalog(root, version, versions_root=Path(temporary), require_source_match=True)
         archive_root.mkdir(parents=True, exist_ok=True)
         shutil.move(str(staged), str(release_root))

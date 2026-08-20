@@ -195,7 +195,8 @@ def main() -> None:
         raise SystemExit(1) from None
     for name, path in artifacts.items():
         print(f"{name}={path}")
-    print("构建验证完成：当前候选交付物已原子更新到dist。", flush=True)
+    destination = "dist" if args.platform == "macos" else "result/windows-candidate"
+    print(f"构建验证完成：当前候选交付物已原子更新到{destination}。", flush=True)
 
 
 if __name__ == "__main__":

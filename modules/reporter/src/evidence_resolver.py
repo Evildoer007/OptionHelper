@@ -8,6 +8,7 @@ Reporter从不接收结果目录，也不搜索最近一次运行。所有计算
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import replace
 from hashlib import sha256
 import json
 from pathlib import Path, PurePosixPath
@@ -439,7 +440,6 @@ def _validate_candidate_contracts(candidate_id: str, modules: Mapping[str, Mappi
 def _resolve_quote_evidence(
     request: ReportRequest,
     result_store: ResultStorePort,
-    candidates: Mapping[str, Mapping[str, Any]],
 ) -> list[dict[str, Any]]:
     """Resolve each explicitly selected Quote row without assuming the candidate default terms.
 
@@ -450,13 +450,33 @@ def _resolve_quote_evidence(
     """
 
     result: list[dict[str, Any]] = []
-    seen_contracts: set[tuple[str, str]] = set()
+    source_definitions = as_mapping(request.source_refs.get("quote_sources"), "source_refs.quote_sources")
+    source_requests: dict[str, ReportRequest] = {}
+    seen_contracts: set[str] = set()
     for index, item in enumerate(request.quote_items, start=1):
+        source_id = require_identifier(item.get("source_id"), f"quote_items[{index}].source_id")
+        raw_source = as_mapping(source_definitions.get(source_id), f"source_refs.quote_sources.{source_id}")
+        if source_id not in source_requests:
+            source_refs = as_mapping(raw_source.get("source_refs"), f"quote_sources.{source_id}.source_refs")
+            source_task_id = require_identifier(raw_source.get("task_id"), f"quote_sources.{source_id}.task_id")
+            source_case_id = require_identifier(raw_source.get("analysis_case_id"), f"quote_sources.{source_id}.analysis_case_id")
+            source_requests[source_id] = replace(
+                request,
+                task_id=source_task_id,
+                analysis_case_id=source_case_id,
+                source_refs=source_refs,
+                subject_ref={"delivery_mode": "single", "candidate_ids": []},
+                quote_items=(),
+            )
+        source_request = source_requests[source_id]
+        candidates, _ = _recommendation_set(source_request)
         candidate_id = str(item["candidate_id"])
+        if candidate_id not in candidates:
+            raise ReporterError(f"quote_items[{index}]候选不属于所选来源")
         candidate = candidates[candidate_id]
         module = str(item["module"])
         evidence = _load_module_run(
-            request,
+            source_request,
             result_store,
             candidate=candidate,
             display_module=module,
@@ -466,12 +486,12 @@ def _resolve_quote_evidence(
         if evidence.get("status") != "ready" or not isinstance(evidence.get("contract"), Mapping):
             raise ReporterError(f"quote_items[{index}]必须选择已完成且可验证的运行结果")
         contract = dict(evidence["contract"])
-        signature = (candidate_id, require_text(contract.get("contract_fingerprint"), "ResolvedContract.contract_fingerprint"))
+        signature = require_text(contract.get("contract_fingerprint"), "ResolvedContract.contract_fingerprint")
         if signature in seen_contracts:
             continue
         seen_contracts.add(signature)
         variant = deepcopy(dict(candidate))
-        variant["contract_fingerprint"] = signature[1]
+        variant["contract_fingerprint"] = signature
         modules = {
             name: evidence if name == module else {"status": "not_requested", "note": _status_note("not_requested")}
             for name in MODULE_TO_RUN
@@ -483,20 +503,20 @@ def _resolve_quote_evidence(
             "quote_module": module,
         })
     if not result:
-        raise ReporterError("Quote没有可展示的已验证合同快照")
+        raise ReporterError("组合报价没有可展示的已验证合同快照")
     return result
 
 
 def resolve_evidence(request: ReportRequest, result_store: ResultStorePort) -> dict[str, Any]:
     """解析一份正式请求的所有证据，返回仅供Reporter内部使用的对象。"""
 
-    candidates, recommender = _recommendation_set(request)
     if request.output_type == "quote":
         return {
-            "recommender": recommender,
-            "candidates": candidates,
-            "quote_evidence": _resolve_quote_evidence(request, result_store, candidates),
+            "recommender": {"status": "ready", "source": "quote-snapshots"},
+            "candidates": {},
+            "quote_evidence": _resolve_quote_evidence(request, result_store),
         }
+    candidates, recommender = _recommendation_set(request)
     raw_refs = as_mapping(request.source_refs.get("module_run_refs"), "source_refs.module_run_refs")
     candidate_evidence: dict[str, Any] = {}
     for candidate_id in request.candidate_ids:
@@ -515,6 +535,12 @@ def resolve_evidence(request: ReportRequest, result_store: ResultStorePort) -> d
                 modules[display_module] = _load_module_run(
                     request, result_store, candidate=candidate, display_module=display_module,
                     raw_ref=as_mapping(candidate_refs[display_module], f"module_run_refs.{candidate_id}.{display_module}"),
+                    # A selected ModuleRun owns its own ResolvedContract.  A
+                    # user may adjust a clause and re-run only Pricing or
+                    # Backtest; that new snapshot remains a valid single
+                    # module delivery as long as its product identity and
+                    # other controlled invariants still match the candidate.
+                    allow_contract_parameter_variant=True,
                 )
         candidate_evidence[candidate_id] = {
             "candidate": candidate,

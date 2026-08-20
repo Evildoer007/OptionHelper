@@ -320,6 +320,30 @@ class TaskService:
             raise ValidationError("Task conversation replay is invalid")
         return copy.deepcopy(response)
 
+    def get_conversation_response_by_id(
+        self, identity: SessionIdentity, task_id: str, request_id: str,
+    ) -> dict[str, Any] | None:
+        """Read one caller-owned idempotency result without replaying the model.
+
+        The response was already returned to the same authenticated caller when
+        it was recorded.  This lookup lets a browser recover from a dropped
+        response without guessing from message text or starting a second turn.
+        """
+        request_id = _request_id(request_id)
+        task = self._get_raw(identity, task_id)
+        requests = task.get("conversation_requests", {})
+        if not isinstance(requests, dict):
+            raise ValidationError("Task conversation requests are invalid")
+        record = requests.get(request_id)
+        if record is None:
+            return None
+        if not isinstance(record, dict):
+            raise ValidationError("Task conversation replay is invalid")
+        response = record.get("response")
+        if not isinstance(response, dict):
+            raise ValidationError("Task conversation replay is invalid")
+        return copy.deepcopy(response)
+
     def record_conversation_response(
         self, identity: SessionIdentity, task_id: str, request_id: str | None, content: str, response: dict[str, Any],
     ) -> None:
@@ -417,8 +441,6 @@ def _pending_recommendation(value: dict[str, Any], *, allow_approved: bool = Fal
         raise ValidationError("Recommendation continuation constraints are invalid")
     result["confirmed_constraints"] = copy.deepcopy(constraints)
     delivery = _recommendation_delivery(value.get("delivery"), required=False)
-    if delivery is None and status == "completed":
-        raise ValidationError("Recommendation continuation delivery is required after completion")
     result["delivery"] = delivery
     candidate = value.get("candidate")
     if not isinstance(candidate, dict) or set(candidate).difference({
@@ -457,17 +479,10 @@ def _recommendation_delivery(value: object, *, required: bool) -> dict[str, Any]
 
     if value is None and not required:
         return None
-    if not isinstance(value, dict) or set(value) != {"kind", "format", "html_report_layout"}:
+    if not isinstance(value, dict) or set(value) != {"kind", "format"}:
         raise ValidationError("Recommendation continuation delivery is invalid")
     kind = str(value.get("kind", "")).lower()
     output_format = str(value.get("format", "")).lower()
-    layout = value.get("html_report_layout")
-    if kind not in {"card", "report"} or output_format not in {"html", "pdf"}:
+    if kind not in {"card", "quote", "report"} or output_format not in {"html", "pdf"}:
         raise ValidationError("Recommendation continuation delivery is invalid")
-    if kind == "report" and output_format == "html":
-        if layout not in {None, "continuous"}:
-            raise ValidationError("Recommendation continuation layout is invalid")
-        layout = "continuous"
-    elif layout is not None:
-        raise ValidationError("Recommendation continuation layout is invalid")
-    return {"kind": kind, "format": output_format, "html_report_layout": layout}
+    return {"kind": kind, "format": output_format}

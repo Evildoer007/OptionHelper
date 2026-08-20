@@ -1,3 +1,7 @@
+﻿param(
+    [switch] $PathsOnly
+)
+
 $ErrorActionPreference = "SilentlyContinue"
 
 $candidatePaths = [System.Collections.Generic.List[string]]::new()
@@ -37,12 +41,14 @@ if (Test-Path -LiteralPath $condaEnvironmentFile -PathType Leaf) {
 }
 
 $seen = @{}
+$index = 0
 foreach ($candidate in $candidatePaths) {
     $absolutePath = [System.IO.Path]::GetFullPath($candidate)
     if ($seen.ContainsKey($absolutePath) -or -not (Test-Path -LiteralPath $absolutePath -PathType Leaf)) {
         continue
     }
     $seen[$absolutePath] = $true
+    $index += 1
     $environmentRoot = Split-Path $absolutePath -Parent
     $environmentName = "独立解释器"
     $pythonVersion = "选择后确认"
@@ -67,5 +73,9 @@ foreach ($candidate in $candidatePaths) {
             $pythonVersion = ($versionLine -split '=', 2)[1].Trim()
         }
     }
-    Write-Output "  环境名称=$environmentName；Python版本=$pythonVersion；解释器绝对路径=$absolutePath"
+    if ($PathsOnly) {
+        Write-Output $absolutePath
+    } else {
+        Write-Output "  [$index] 环境名称=$environmentName；Python版本=$pythonVersion；解释器绝对路径=$absolutePath"
+    }
 }

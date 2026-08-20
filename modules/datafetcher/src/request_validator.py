@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, time, timedelta
 import hashlib
 import json
 from pathlib import Path
@@ -97,6 +97,31 @@ def latest_observable_market_date(config: DataFetcherConfig) -> str:
     if parsed > today:
         raise RequestValidationError("market_data_as_of_date不得晚于当前可观测日期")
     return parsed.isoformat()
+
+
+def latest_completed_daily_market_date(
+    config: DataFetcherConfig,
+    *,
+    now: datetime | None = None,
+) -> str:
+    """Return the latest date whose daily bar can be used for cache completion.
+
+    A request may legitimately name today's valuation date, but before the
+    mainland daily close there is no completed OHLC bar to download or demand
+    from a partial cache.  This is deliberately separate from the request
+    upper bound: it never turns an intraday valuation request into a future
+    date error.
+    """
+
+    if config.market_data_as_of_date is not None:
+        return latest_observable_market_date(config)
+    local_now = now.astimezone(ZoneInfo("Asia/Shanghai")) if now is not None else datetime.now(ZoneInfo("Asia/Shanghai"))
+    completed = local_now.date()
+    if local_now.timetz().replace(tzinfo=None) < time(16, 0):
+        completed -= timedelta(days=1)
+    while completed.weekday() >= 5:
+        completed -= timedelta(days=1)
+    return completed.isoformat()
 
 
 def _calendar_evidence_identity(config: DataFetcherConfig) -> str | None:

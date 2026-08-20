@@ -20,7 +20,7 @@ from .artifact_validator import (
     validate_report_run_directory,
     validate_written_artifact,
 )
-from .models import ReporterError, ReportRequest, SCHEMA_MANIFEST, require_identifier, stable_hash, write_json
+from .models import ReporterError, ReportRequest, SCHEMA_MANIFEST, read_json, require_identifier, stable_hash, write_json
 from .payoff_report_figure import PROFILE as PAYOFF_REPORT_FIGURE_PROFILE, derive_report_payoff_svg
 
 
@@ -159,7 +159,7 @@ def _write_rendered(stage: Path, payload: Mapping[str, Any], request: ReportRequ
         output_path.write_bytes(artifact["pdf"])
         delivery_mode = "self_contained_pdf"
     else:
-        output_path.write_text(str(artifact["html"]), encoding="utf-8")
+        output_path.write_text(str(artifact["html"]), encoding="utf-8", newline="")
         delivery_mode = "portable_html"
     designer_manifest = artifact.get("artifact_manifest") if isinstance(artifact.get("artifact_manifest"), Mapping) else {}
     content_hash = validate_written_artifact(
@@ -363,6 +363,8 @@ def _copy_declared_artifacts(
     source_root: Path,
     source_manifest: Mapping[str, Any],
     stage: Path,
+    *,
+    include_derived: bool,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Copy only the public files already declared by a verified ReportRun.
 
@@ -374,6 +376,8 @@ def _copy_declared_artifacts(
 
     copied: list[dict[str, Any]] = []
     for field in ("artifacts", "derived_artifacts"):
+        if field == "derived_artifacts" and not include_derived:
+            continue
         rows = source_manifest.get(field, [])
         if not isinstance(rows, list):
             raise ReporterError(f"源ReportRun的{field}必须为数组")
@@ -434,25 +438,47 @@ def _write_reissued_contents(
 
     source_root = source_validation.get("root")
     unit = source_validation.get("unit")
-    payload = source_validation.get("payload")
+    source_payload = source_validation.get("payload")
     source_manifest = source_validation.get("manifest")
     source_brief = source_validation.get("brief")
     if not isinstance(source_root, Path) or not all(
-        isinstance(value, Mapping) for value in (unit, payload, source_manifest, source_brief)
+        isinstance(value, Mapping) for value in (unit, source_payload, source_manifest, source_brief)
     ):
         raise ReporterError("源ReportRun冻结内容无效")
-    artifacts, derived_artifacts = _copy_declared_artifacts(source_root, source_manifest, stage)
+    artifacts, derived_artifacts = _copy_declared_artifacts(
+        source_root,
+        source_manifest,
+        stage,
+        include_derived=target_request.output_type == "report",
+    )
     report_unit_hashes = source_brief.get("report_unit_semantic_fact_hashes")
     if not isinstance(report_unit_hashes, list) or not all(isinstance(item, str) and item for item in report_unit_hashes):
         raise ReporterError("源ReportRun缺少冻结ReportUnit事实哈希")
+    if target_request.output_type == source_request.output_type:
+        payload = dict(source_payload)
+    else:
+        if source_request.output_type == "quote" or target_request.output_type == "quote":
+            raise ReporterError("Quote只能由已选择的合同快照集合生成，不能转换为Card或Report")
+        routes = {
+            str(item["source_content_hash"]): str(item["path"])
+            for item in derived_artifacts
+            if isinstance(item, Mapping)
+            and item.get("kind") == "payoffer_report_figure"
+            and isinstance(item.get("source_content_hash"), str)
+            and isinstance(item.get("path"), str)
+        }
+        payload = build_designer_payload(unit, target_request, artifact_paths=routes)
     brief = build_design_brief(payload, target_request, report_unit_hashes=list(report_unit_hashes))
 
     write_json(stage / "report-request.json", target_request.to_dict())
     write_json(stage / "report-unit.json", dict(unit))
     write_json(stage / "designer-input.json", dict(payload))
     write_json(stage / "design-brief.json", brief)
-    source_report_name = str((source_manifest.get("rendered") or {}).get("path") or "report.html")
-    filename = f"{Path(source_report_name).stem}.{target_request.format}"
+    if target_request.output_type == source_request.output_type:
+        source_report_name = str((source_manifest.get("rendered") or {}).get("path") or "report.html")
+        filename = f"{Path(source_report_name).stem}.{target_request.format}"
+    else:
+        filename = f"{'card' if target_request.output_type == 'card' else 'report'}.{target_request.format}"
     rendered = _write_rendered(stage, payload, target_request, filename, designer_port=designer_port)
     designer_artifact_manifest = _persist_designer_manifest(stage, rendered, payload)
     manifest = {
@@ -503,14 +529,14 @@ def reissue_saved_report(
     source: Mapping[str, Any],
     report_run_id: object,
     output_format: object,
+    output_type: object | None = None,
     designer_port: ModulePort,
 ) -> dict[str, Any]:
-    """Render a saved ReportRun into another format without recomputation.
+    """Render a saved Contract ReportRun as Card, Report or another format.
 
     The original run remains immutable.  This creates a separate ReportRun
-    from its verified ``designer-input.json`` and copies only its declared
-    public assets.  No ResultStore, model, pricing or backtest access is part
-    of this path.
+    from its verified frozen ``ReportUnit`` and declared public assets.  No
+    ResultStore, model, pricing or backtest access is part of this path.
     """
 
     if not isinstance(source, Mapping) or set(source) != {"task_id", "report_run_id"}:
@@ -533,8 +559,15 @@ def reissue_saved_report(
     if source_request.report_run_id == target_run_id:
         raise ReporterError("转换交付必须使用新的report_run_id，原HTML不会被覆盖")
 
+    target_type = str(output_type or source_request.output_type).strip().lower()
+    if target_type not in {"card", "report", "quote"}:
+        raise ReporterError("output_type仅支持card、report或quote")
+    if source_request.output_type == "quote" and target_type != "quote":
+        raise ReporterError("请在报价结构清单中选定一条合同快照后生成简单报告或详细报告")
+    if source_request.output_type != "quote" and target_type == "quote":
+        raise ReporterError("请在报价结构清单中加入一个或多个已保存合同快照后生成参考报价")
     target_request_data = source_request.to_dict()
-    target_request_data.update({"report_run_id": target_run_id, "format": target_format})
+    target_request_data.update({"report_run_id": target_run_id, "format": target_format, "output_type": target_type})
     target_request = ReportRequest.from_mapping(target_request_data)
     target_root = output_root.resolve() / target_request.task_id / target_request.report_run_id
     if target_root.exists():
@@ -581,4 +614,69 @@ def reissue_saved_report(
     }
 
 
-__all__ = ["reissue_saved_report", "write_report_run"]
+def rerender_frozen_delivery(
+    *,
+    output_root: Path,
+    source_request: Mapping[str, Any],
+    report_unit: Mapping[str, Any],
+    source_report_run_id: object,
+    report_run_id: object,
+    output_type: object,
+    output_format: object,
+    designer_port: ModulePort,
+) -> dict[str, Any]:
+    """Create a Card or Report from an App-saved frozen delivery fact set.
+
+    Unlike format conversion from a local ReportRun directory, App persistence
+    stores the immutable ReportUnit and verified audit record rather than a
+    staging directory.  This path deliberately has no ResultStore argument:
+    rendering a second delivery cannot trigger another payoff, pricing or
+    backtest run.
+    """
+
+    source = ReportRequest.from_mapping(source_request)
+    unit = dict(report_unit)
+    if source.output_type == "quote" or unit.get("unit_type") != "ContractReportUnit":
+        raise ReporterError("简单报告或详细报告使用单合同交付事实集；参考报价使用报价结构清单中的已选快照")
+    target_type = str(output_type or "").strip().lower()
+    if target_type not in {"card", "report"}:
+        raise ReporterError("请选择Card或Report；Quote由报价结构清单的已选快照生成")
+    target_format = str(output_format or "").strip().lower()
+    if target_format not in {"html", "pdf"}:
+        raise ReporterError("format仅支持html或pdf")
+    source_run_id = require_identifier(source_report_run_id, "source_report_run_id")
+    target_run_id = require_identifier(report_run_id, "report_run_id")
+    if source_run_id == target_run_id:
+        raise ReporterError("再次生成必须使用新的report_run_id，原交付不会被覆盖")
+    target_data = source.to_dict()
+    target_data.update({"report_run_id": target_run_id, "output_type": target_type, "format": target_format})
+    target = ReportRequest.from_mapping(target_data)
+    target_root = output_root.resolve() / target.task_id / target.report_run_id
+    if target_root.exists():
+        raise ReporterError("ReportRun输出目录已存在，拒绝覆盖")
+    target_root.parent.mkdir(parents=True, exist_ok=True)
+    stage = Path(tempfile.mkdtemp(prefix=f".{target.report_run_id}-", dir=target_root.parent))
+    try:
+        outcome = _write_unit_directory(
+            stage,
+            unit,
+            target,
+            {"candidate_evidence": {}},
+            filename="card" if target.output_type == "card" else "report",
+            designer_port=designer_port,
+        )
+        manifest_path = stage / "run_manifest.json"
+        manifest = read_json(manifest_path, "run_manifest.json")
+        manifest["derived_from"] = {
+            "report_run_id": source_run_id,
+            "semantic_fact_hash": unit.get("semantic_fact_hash"),
+        }
+        write_json(manifest_path, manifest)
+        os.replace(stage, target_root)
+    except Exception:
+        shutil.rmtree(stage, ignore_errors=True)
+        raise
+    return {"directory": str(target_root), **outcome}
+
+
+__all__ = ["reissue_saved_report", "rerender_frozen_delivery", "write_report_run"]

@@ -479,9 +479,8 @@ def validate_report_run_directory(
             report_unit_hashes.append(str(item.get("semantic_fact_hash")))
             frozen_evidence_statuses.append(_frozen_evidence_status(item))
         if request.get("output_type") == "quote":
-            selected_order = list(dict.fromkeys(bundle_candidate_ids))
-            if selected_order != candidate_ids:
-                raise ReporterError("Quote合同快照的候选顺序与受控selection不一致")
+            if not request.get("quote_items"):
+                raise ReporterError("Quote缺少受控合同快照选择")
             fingerprints = []
             for item in report_units:
                 contract = item.get("contract") if isinstance(item.get("contract"), Mapping) else {}

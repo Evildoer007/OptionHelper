@@ -131,34 +131,53 @@ def build_selected_request(selection: Mapping[str, Any], *, tenant_id: str, sele
     if output_type == "quote":
         raw_items = selection.get("quote_items")
         if not isinstance(raw_items, list) or not raw_items:
-            raise ReporterError("Quote必须逐行选择至少一个已保存运行结果")
+            raise ReporterError("组合报价至少需要选择一行已保存运行结果")
         quote_items: list[dict[str, Any]] = []
-        candidate_ids: list[str] = []
-        seen: set[tuple[str, str, str]] = set()
+        quote_sources: dict[str, dict[str, Any]] = {}
+        seen: set[tuple[str, str, str, str]] = set()
         for index, raw_item in enumerate(raw_items, start=1):
-            if not isinstance(raw_item, Mapping) or set(raw_item) != {"candidate_id", "module", "module_run_ref"}:
-                raise ReporterError(f"quote_items[{index}]字段必须为candidate_id、module、module_run_ref")
+            if not isinstance(raw_item, Mapping) or set(raw_item) != {"source_id", "candidate_id", "module", "module_run_ref"}:
+                raise ReporterError(f"quote_items[{index}]字段必须为source_id、candidate_id、module、module_run_ref")
+            item_source_id = require_identifier(raw_item.get("source_id"), f"quote_items[{index}].source_id")
+            try:
+                item_source = selection_port.get_report_source(tenant_id=tenant_id, source_id=item_source_id)
+            except Exception as error:
+                raise ReporterError(f"quote_items[{index}]来源不可读取：{error}") from error
+            if not isinstance(item_source, Mapping) or item_source.get("tenant_id") != tenant_id:
+                raise ReporterError(f"quote_items[{index}]来源不属于当前租户")
+            item_candidates = item_source.get("candidates")
+            if not isinstance(item_candidates, list):
+                raise ReporterError(f"quote_items[{index}]来源缺少候选")
+            item_candidate_map = {
+                str(item.get("candidate_id")): item
+                for item in item_candidates
+                if isinstance(item, Mapping) and item.get("candidate_id")
+            }
             candidate_id = require_identifier(raw_item.get("candidate_id"), f"quote_items[{index}].candidate_id")
             module = str(raw_item.get("module", "")).strip().lower()
-            if candidate_id not in candidate_map or module not in {"payoff", "pricing", "backtest"}:
+            if candidate_id not in item_candidate_map or module not in {"payoff", "pricing", "backtest"}:
                 raise ReporterError(f"quote_items[{index}]候选或来源模块无效")
             chosen = raw_item.get("module_run_ref")
             if not isinstance(chosen, Mapping):
                 raise ReporterError(f"quote_items[{index}].module_run_ref必须为对象")
-            options = candidate_map[candidate_id].get("module_run_options")
+            options = item_candidate_map[candidate_id].get("module_run_options")
             allowed_refs = options.get(module, []) if isinstance(options, Mapping) and isinstance(options.get(module), list) else []
             if not any(
                 isinstance(option, Mapping) and all(option.get(key) == chosen.get(key) for key in _RUN_REF_FIELDS)
                 for option in allowed_refs
             ):
                 raise ReporterError(f"quote_items[{index}]的ModuleRunRef不属于当前候选")
-            signature = (candidate_id, module, str(chosen.get("run_id", "")))
+            signature = (item_source_id, candidate_id, module, str(chosen.get("run_id", "")))
             if signature in seen:
                 raise ReporterError("Quote不得重复选择同一运行")
             seen.add(signature)
-            if candidate_id not in candidate_ids:
-                candidate_ids.append(candidate_id)
+            quote_sources.setdefault(item_source_id, {
+                "task_id": require_identifier(item_source.get("task_id"), f"quote_items[{index}].source.task_id"),
+                "analysis_case_id": require_identifier(item_source.get("analysis_case_id"), f"quote_items[{index}].source.analysis_case_id"),
+                "source_refs": build_host_selection_source_refs(item_source, tenant_id),
+            })
             quote_items.append({
+                "source_id": item_source_id,
                 "candidate_id": candidate_id,
                 "module": module,
                 "module_run_ref": {key: chosen.get(key) for key in _RUN_REF_FIELDS},
@@ -170,8 +189,8 @@ def build_selected_request(selection: Mapping[str, Any], *, tenant_id: str, sele
             "report_run_id": require_identifier(selection.get("report_run_id"), "selection.report_run_id"),
             "analysis_case_id": analysis_case_id,
             "subject_type": "bundle",
-            "subject_ref": {"delivery_mode": "quote", "candidate_ids": candidate_ids},
-            "source_refs": {**dict(source_refs), "module_run_refs": {}},
+            "subject_ref": {"delivery_mode": "quote", "candidate_ids": []},
+            "source_refs": {**dict(source_refs), "module_run_refs": {}, "quote_sources": quote_sources},
             "quote_items": quote_items,
             "output_type": "quote",
             "format": output_format,
@@ -320,13 +339,13 @@ def call_tool(
                 "error": "designer_port_not_injected",
                 "message": "Host必须注入Designer ModulePort。",
             }
-        if set(body) != {"source", "report_run_id", "format"} or not isinstance(body.get("source"), Mapping):
+        if set(body).difference({"source", "report_run_id", "format", "output_type"}) or not isinstance(body.get("source"), Mapping):
             return {
                 "ok": False,
                 "module": "reporter",
                 "status": "rejected",
                 "error": "derive_request_invalid",
-                "message": "转换必须提交source、report_run_id和format。",
+                "message": "转换必须提交source、report_run_id和format；可选指定card或report。",
             }
         try:
             target = output_root or default_report_output_root(RUNTIME_PATHS)
@@ -336,6 +355,7 @@ def call_tool(
                 source=body["source"],
                 report_run_id=body["report_run_id"],
                 output_format=body["format"],
+                output_type=body.get("output_type"),
                 designer_port=designer_port,
             )
             request = json.loads((Path(outcome["directory"]) / "report-request.json").read_text(encoding="utf-8"))

@@ -294,7 +294,7 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
 
 .workspace-shell.workspace-shell--desk[data-workspace-shell] .send-control:disabled {
   cursor: default;
-  opacity: .22;
+  opacity: .48;
 }
 
 @media (min-width: 701px) {
@@ -2408,9 +2408,6 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
 .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .task-item:hover .task-item__more,
 .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .task-item:focus-visible .task-item__more,
 .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .task-item__more[aria-expanded="true"] { opacity: .72; }
-
-.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .task-item:hover small,
-.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .task-item:focus-visible small { opacity: 0; }
 
 /* Keep task actions quiet until the pointer reaches that task. */
 .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .task-item__more {

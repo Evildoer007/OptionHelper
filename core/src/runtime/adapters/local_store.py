@@ -217,9 +217,32 @@ class LocalDataStore:
             (stage / "manifest.json").write_text(
                 canonical_json({"storage_ref": ref.storage_ref, "metadata": _data_ref_metadata(ref)}) + "\n",
                 encoding="utf-8",
+                newline="",
             )
             final.parent.mkdir(parents=True, exist_ok=True)
             _publish_directory(stage, final, f"DataAsset：{data_asset_id}")
+        return ref
+
+    def get_ref(self, *, tenant_id: str, data_asset_id: str) -> DataAssetRef:
+        """Read one committed immutable asset reference and verify it in full."""
+
+        self._assert_root_unchanged()
+        tenant = _safe_id(tenant_id, "tenant_id")
+        asset = _safe_id(data_asset_id, "data_asset_id")
+        asset_dir = _inside(self.root, _tenant_root(self.root, tenant) / "assets" / asset)
+        manifest_path = _inside(asset_dir, asset_dir / "manifest.json")
+        try:
+            manifest = _json_mapping(_read_regular_bytes(manifest_path, "DataAsset清单"), "DataAsset清单")
+            storage_ref = manifest["storage_ref"]
+            metadata = manifest["metadata"]
+            if not isinstance(storage_ref, str) or not isinstance(metadata, Mapping):
+                raise StoreIntegrityError("DataAsset清单缺少受控引用或元数据")
+            ref = DataAssetRef(**{**dict(metadata), "storage_ref": storage_ref})
+        except (KeyError, TypeError, ValueError, StoreError) as error:
+            raise StoreIntegrityError("DataAsset清单无效") from error
+        if ref.tenant_id != tenant or ref.data_asset_id != asset:
+            raise StoreIntegrityError("DataAsset清单身份与存储位置不一致")
+        self.resolve(ref, tenant_id=tenant)
         return ref
 
     def _verified_payload(self, ref: DataAssetRef, *, tenant_id: str) -> tuple[Path, bytes]:

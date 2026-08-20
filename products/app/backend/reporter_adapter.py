@@ -15,6 +15,7 @@ for _source in (_ROOT / "core" / "src", _ROOT / "modules" / "reporter" / "src", 
 
 from modules.designer.service import call_tool as designer_call_tool
 from modules.reporter.artifact_validator import validate_report_run_directory
+from modules.reporter.export_service import rerender_frozen_delivery
 from modules.reporter.models import ReporterError
 from modules.reporter.selection_facts import build_host_selection_source_refs
 from modules.reporter.service import build_selected_request, call_tool as reporter_call_tool
@@ -138,8 +139,10 @@ class ReporterAdapter:
             task_id = _optional_identifier(request.get("task_id"), "task_id")
             catalog = ports.list_report_sources(tenant_id=principal.tenant_id, task_id=task_id, query=_optional_text(request.get("query")))
             return {"ok": True, "module": "reporter", **_public_catalog(catalog)}
+        if action == "rerender":
+            return self._rerender(request, principal)
         if action != "run":
-            raise ValidationError("Reporter action must be status, catalog, list_sources or run")
+            raise ValidationError("Reporter action must be status, catalog, list_sources, run or rerender")
         selection = request.get("selection")
         if not isinstance(selection, Mapping):
             raise ValidationError("Reporter run requires one controlled selection object")
@@ -193,6 +196,64 @@ class ReporterAdapter:
             "status": "completed" if delivery["status"] == "succeeded" else "partial", "report_run_ref": report_ref,
             "output": {"report": delivery["report"], "children": children},
             "preview_url": base, "download_url": _artifact_url(report_ref["report_run_id"], delivery["report"], download=True),
+        }
+
+    def _rerender(self, request: Mapping[str, Any], principal: SessionIdentity) -> dict[str, Any]:
+        """Render another Card or Report from a saved delivery fact set only."""
+
+        allowed = {"action", "task_id", "source_report_run_id", "output_type", "format", "report_run_id"}
+        unknown = set(request).difference(allowed)
+        if unknown:
+            raise ValidationError(f"Reporter re-render contains unsupported fields: {','.join(sorted(unknown))}")
+        source_run_id = _identifier(request.get("source_report_run_id"), "source_report_run_id")
+        target_run_id = _identifier(request.get("report_run_id"), "report_run_id")
+        output_type = str(request.get("output_type", "")).strip().lower()
+        output_format = str(request.get("format", "")).strip().lower()
+        if output_type not in {"card", "report"} or output_format not in {"html", "pdf"}:
+            raise ValidationError("冻结交付只能生成HTML或PDF格式的Card或Report")
+        try:
+            source = self._results.get_owned_report_run(principal, source_run_id)
+        except (KeyError, AuthorizationError) as error:
+            raise ValidationError("源交付不存在或不可访问") from error
+        task_id = _identifier(source.get("task_id"), "source.task_id")
+        host_task = _optional_identifier(request.get("task_id"), "task_id")
+        if host_task is not None and host_task != task_id:
+            raise ValidationError("目标任务必须与冻结交付所属任务一致")
+        source_request = source.get("report_request")
+        audit = source_request.get("reporter_audit") if isinstance(source_request, Mapping) else None
+        root = audit.get("root") if isinstance(audit, Mapping) else None
+        unit = root.get("report_unit") if isinstance(root, Mapping) else None
+        if not isinstance(source_request, Mapping) or not isinstance(unit, Mapping):
+            raise ValidationError("源交付缺少可验证的冻结事实集")
+        original_request = {key: value for key, value in source_request.items() if key != "reporter_audit"}
+        with tempfile.TemporaryDirectory(prefix="report-rerender-", dir=self._staging_root()) as temporary:
+            try:
+                outcome = rerender_frozen_delivery(
+                    output_root=Path(temporary) / "runs",
+                    source_request=original_request,
+                    report_unit=unit,
+                    source_report_run_id=source_run_id,
+                    report_run_id=target_run_id,
+                    output_type=output_type,
+                    output_format=output_format,
+                    designer_port=self._designer,
+                )
+                report_root = _report_root(Path(temporary) / "runs", task_id, target_run_id)
+                delivery = _verified_report_delivery(report_root, expected_request=None)
+            except ReporterError as error:
+                raise ValidationError(str(error)) from error
+            committed_request = {**dict(delivery["request"]), "reporter_audit": delivery["audit"]}
+            report_ref = self._results.commit_report_run(
+                principal, task_id, committed_request, delivery["artifacts"], status=delivery["status"],
+            )
+        return {
+            "ok": True,
+            "module": "reporter",
+            "status": "completed" if delivery["status"] == "succeeded" else "partial",
+            "report_run_ref": report_ref,
+            "output": {"report": delivery["report"], "children": []},
+            "preview_url": _artifact_url(report_ref["report_run_id"], delivery["report"]),
+            "download_url": _artifact_url(report_ref["report_run_id"], delivery["report"], download=True),
         }
 
     def _staging_root(self) -> str:

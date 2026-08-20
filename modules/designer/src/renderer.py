@@ -1021,7 +1021,7 @@ def main() -> None:
         output_path.write_bytes(artifact["pdf"])
         print(f"已生成PDF：{output_path}")
         return
-    output_path.write_text(artifact["html"], encoding="utf-8")
+    output_path.write_text(artifact["html"], encoding="utf-8", newline="")
     if asset_mode == "portable":
         materialize_portable_assets(artifact.get("portable_assets", []), output_path.parent)
     print(f"已生成HTML：{output_path}")

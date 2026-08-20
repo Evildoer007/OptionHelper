@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Any, Iterable, Mapping, Sequence
 
 import pandas as pd
@@ -11,7 +12,14 @@ class DataQualityError(ValueError):
     code = "quality_error"
 
 
-def observed_edge_intervals(frame: pd.DataFrame, asset_id: str, start_date: str, end_date: str) -> tuple[tuple[str, str], ...]:
+def observed_edge_intervals(
+    frame: pd.DataFrame,
+    asset_id: str,
+    start_date: str,
+    end_date: str,
+    *,
+    latest_completed_date: str | None = None,
+) -> tuple[tuple[str, str], ...]:
     """仅按已观测日期范围补齐缓存边缘，不推断中间交易日。
 
     没有显式交易日历时，法定节假日与停牌日不能被普通工作日规则判定为缺口。
@@ -23,11 +31,18 @@ def observed_edge_intervals(frame: pd.DataFrame, asset_id: str, start_date: str,
     if dates.empty:
         return ((start_date, end_date),)
     earliest, latest = str(dates.min()), str(dates.max())
+    cutoff = date.fromisoformat(latest_completed_date) if latest_completed_date else date.fromisoformat(end_date)
+    requested_days = [
+        value.date()
+        for value in pd.date_range(start_date, end_date, freq="D")
+        if value.weekday() < 5 and value.date() <= cutoff
+    ]
+    leading = [value for value in requested_days if value.isoformat() < earliest]
+    trailing = [value for value in requested_days if value.isoformat() > latest]
     intervals: list[tuple[str, str]] = []
-    if start_date < earliest:
-        intervals.append((start_date, (pd.Timestamp(earliest) - pd.Timedelta(days=1)).strftime("%Y-%m-%d")))
-    if latest < end_date:
-        intervals.append(((pd.Timestamp(latest) + pd.Timedelta(days=1)).strftime("%Y-%m-%d"), end_date))
+    for group in (leading, trailing):
+        if group:
+            intervals.append((group[0].isoformat(), group[-1].isoformat()))
     return tuple(intervals)
 
 

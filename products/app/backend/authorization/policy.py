@@ -13,13 +13,13 @@ class AuthorizationPolicy:
         Role.SALES: frozenset({
             "optchat", "settings.read", "settings.preferences.write",
             "settings.storage.write", "task.create",
-            "task.read", "conversation.write", "conversation.tool.run", "report.card.request",
+            "task.read", "conversation.write", "conversation.tool.run", "report.card.request", "report.quote.request",
         }),
         Role.ADMIN: frozenset({
             "optchat", "optdesk", "settings.read", "settings.preferences.write",
             "settings.model.write", "settings.storage.write", "settings.data.write",
             "task.create", "task.read", "conversation.write", "conversation.tool.run", "module.page",
-            "module.catalog", "module.run", "module.host_context", "report.card.request", "report.full.request",
+            "module.catalog", "module.run", "module.host_context", "report.card.request", "report.quote.request", "report.full.request",
         }),
     }
 

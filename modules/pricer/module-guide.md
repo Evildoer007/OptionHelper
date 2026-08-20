@@ -23,7 +23,7 @@ PricingInput = {ResolvedContract, PricingConfig, market_data_refs, trading_calen
 ## 交互边界
 
 - 页面正式运行只能通过App任务上下文取得已绑定的`DataAssetRef`和必要的`trading-calendar`。页面不得提交物理路径、读取本地CSV或自行伪造行情、日历和合同状态。
-- 运行前先复用当前任务覆盖本次标的、估值日、字段和口径的DataAssetRef。统一就绪门禁已确认iFind配置；无法复用且需要新数据时，按DataFetcher指南取得数据。运行时数据能力不可用则保留估值条件并停止，不猜测市场输入或无提示改用本地数据。
+- 运行前先复用当前任务覆盖本次标的、估值日、字段和口径的DataAssetRef。无法复用且需要新数据时，先确认iFind，再按DataFetcher指南取得数据。运行时数据能力不可用则保留估值条件并停止，不猜测市场输入或无提示改用本地数据。
 - 历史行情DataAssetRef只提供现价、历史波动率和历史数据。路径型Monte Carlo另用独立`trading-calendar`引用读取未来交易日期，未来价格始终由Pricer模拟。
 - 用户输入日期保留为`requested_valuation_date`，未填写时默认今天。若请求日尚无可用数据，则采用DataAssetRef中所有标的均有覆盖的最新数据日作为`effective_valuation_session`；不得使用请求区间的截止日冒充实际数据日。结果同时披露请求日期、有效估值日和有效到期交易日。
 - Black-Scholes和仅终值的普通香草Monte Carlo不强制获取完整未来日历；离散路径结构必须覆盖有效估值交易日至合同到期日前最后一个交易日。

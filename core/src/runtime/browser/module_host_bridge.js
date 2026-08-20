@@ -41,33 +41,6 @@
     }, location.origin);
   }
 
-  function applyEmbeddedLayout() {
-    if (!hostedInDesk) return;
-    document.documentElement.classList.add("optionhelper-embedded");
-    if (document.body) document.body.classList.add("optionhelper-embedded");
-    if (document.getElementById("optionhelper-embedded-module-style")) return;
-    const style = document.createElement("style");
-    style.id = "optionhelper-embedded-module-style";
-    style.textContent = `
-      html.optionhelper-embedded, body.optionhelper-embedded, body.optionhelper-embedded .app-shell {
-        width: 100%; min-width: 0 !important; min-height: 100%; height: 100%; overflow: hidden;
-      }
-      body.optionhelper-embedded .topbar { display: none !important; }
-      body.optionhelper-embedded .workbench { height: 100vh !important; min-height: 0; }
-      body.optionhelper-embedded select {
-        appearance: none; -webkit-appearance: none; padding-right: 31px !important;
-        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 14 14' fill='none'%3E%3Cpath d='m3.5 5.25 3.5 3.5 3.5-3.5' stroke='%23766b6d' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") !important;
-        background-repeat: no-repeat !important; background-position: right 9px center !important; background-size: 14px !important;
-      }
-      body.optionhelper-embedded select:hover { border-color: #c9b6ba !important; background-color: #fffafb !important; }
-      body.optionhelper-embedded select:focus { border-color: #c8102e !important; box-shadow: 0 0 0 3px rgba(200, 16, 46, .10) !important; outline: 0; }
-    `;
-    document.head.append(style);
-  }
-
-  applyEmbeddedLayout();
-  document.addEventListener("DOMContentLoaded", applyEmbeddedLayout, { once: true });
-
   const panelLayoutKey = "optionhelper.desk-panel-widths";
 
   function clampPanelWidth(value, minimum, maximum, fallback) {

@@ -51,7 +51,7 @@ _SECRET_PATTERNS = (
 _MARKDOWN_LINK = re.compile(r"!?\[[^\]]*\]\(([^)\s]+)(?:\s+[^)]*)?\)")
 _HTML_LINK = re.compile(r"\b(?:href|src)\s*=\s*['\"]([^'\"]+)['\"]", re.IGNORECASE)
 _CSS_LINK = re.compile(r"(?:@import\s+(?:url\()?|url\()\s*['\"]?([^'\"\)\s]+)", re.IGNORECASE)
-_CREDENTIAL_NAMES = {".env", "credentials.json", "credentials.yaml", "credentials.yml", "secrets.json", "secrets.yaml", "secrets.yml", "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519"}
+_CREDENTIAL_NAMES = {".env", "memory.md", "credentials.json", "credentials.yaml", "credentials.yml", "secrets.json", "secrets.yaml", "secrets.yml", "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519"}
 _CREDENTIAL_SUFFIXES = (".pem", ".key", ".p12", ".pfx")
 _DEVELOPMENT_PATH_PARTS = frozenset({"dev", "development", "docs", "eval", "evals", "example", "examples", "test", "tests"})
 
@@ -217,6 +217,8 @@ def _code_errors(root: Path) -> list[str]:
     for path in _walk_files(root):
         relative = _relative(root, path)
         parts = relative.split("/")
+        if ".optionhelper" in parts:
+            errors.append(f"候选包包含项目本地配置：{relative}")
         if any(is_finder_copy_name(part) for part in parts):
             errors.append(f"候选包包含Finder副本：{relative}")
         if is_development_artifact_path(relative):
@@ -337,6 +339,8 @@ def _capability_interface_errors(root: Path) -> list[str]:
     """检查当前跨模块Capability接口确实随包进入发行物。"""
     required = {
         "assets/pages/module-host-bridge.js": "module-host bridge",
+        "assets/pages/module-host-presentation.css": "Capability自有Desk展示样式",
+        "assets/pages/module-host-presentation.js": "Capability自有Desk展示开关",
         "assets/pages/datafetcher/datafetcher.js": "DataFetcher动态下载页面Bridge",
         "assets/designer/vendor/echarts.min.js": "Reporter portable ECharts资源",
         "scripts/tool_entry.py": "Core正式Tool入口",
@@ -436,7 +440,6 @@ def _capability_interface_errors(root: Path) -> list[str]:
             ("--project-request", "单行自然语言项目入口"),
             ("run_project_request", "项目级完整研究流程"),
             ("public_project_result", "人类友好公开结果投影"),
-            ('or "continuous"', "完整HTML默认连续版式"),
         ):
             if token not in tool_text:
                 errors.append(f"Tool入口未声明{label}")
@@ -999,7 +1002,14 @@ def _formal_compute_protocol_errors(root: Path, python: str, environment: Mappin
         """
     )
     completed = subprocess.run(
-        [python, "-c", probe], cwd=cwd, env=dict(environment), capture_output=True, text=True, check=False,
+        [python, "-c", probe],
+        cwd=cwd,
+        env=dict(environment),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
     )
     if completed.returncode == 0:
         return []
@@ -1016,6 +1026,9 @@ def probe_runtime(
     root = root.expanduser().resolve()
     environment = os.environ.copy()
     environment["PYTHONDONTWRITEBYTECODE"] = "1"
+    environment["PYTHONUTF8"] = "1"
+    environment["PYTHONIOENCODING"] = "utf-8"
+    environment.pop("IFIND_REFRESH_TOKEN", None)
     scripts_root = str(root / "scripts")
     environment["PYTHONPATH"] = scripts_root + (os.pathsep + environment["PYTHONPATH"] if environment.get("PYTHONPATH") else "")
     with tempfile.TemporaryDirectory(prefix="optionhelper-store-") as store:
@@ -1025,7 +1038,15 @@ def probe_runtime(
         environment["OPTIONHELPER_RUNTIME_ROOT"] = str(runtime_root)
         environment["OPTIONHELPER_DATA_ROOT"] = str(data_root)
         environment["OPTIONHELPER_RESULT_ROOT"] = str(result_root)
-        environment["IFIND_REFRESH_TOKEN"] = "runtime-probe-configuration"
+        memory = Path(store) / ".optionhelper" / "memory.md"
+        memory.parent.mkdir(parents=True, exist_ok=True)
+        memory.write_text(
+            "# OptionHelper本地配置\n\n## iFinD数据API\n\n"
+            "- IFIND_REFRESH_TOKEN: runtime-probe-configuration\n"
+            "- updated_at: 2000-01-01T00:00:00+00:00\n",
+            encoding="utf-8",
+            newline="",
+        )
         commands = [
             (
                 "readiness",
@@ -1043,7 +1064,16 @@ def probe_runtime(
         errors: list[str] = []
         module_host_output: str | None = None
         for label, command in commands:
-            completed = subprocess.run(command, cwd=store, env=environment, capture_output=True, text=True, check=False)
+            completed = subprocess.run(
+                command,
+                cwd=store,
+                env=environment,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                check=False,
+            )
             if completed.returncode:
                 errors.append(f"运行时探测失败：{' '.join(command[1:])}\n{completed.stderr.strip()}")
             elif label == "module_host":
@@ -1059,6 +1089,7 @@ def probe_runtime(
                 "--result-root", str(result_root), "--runtime-root", str(root / ".optionhelper" / "runtime"),
             ],
             cwd=store, env=environment, capture_output=True, text=True, check=False,
+            encoding="utf-8", errors="replace",
         )
         if rejected.returncode == 0 or "inside_installation" not in rejected.stdout:
             errors.append("外部Store预检未真实拒绝安装目录内的DataStore")

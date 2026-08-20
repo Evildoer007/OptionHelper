@@ -74,7 +74,7 @@ FRONTEND_ASSETS = frozenset({
     "optchat/index.html", "optchat/optchat.js",
     "optdesk/index.html", "optdesk/optdesk.js",
     "settings/index.html", "settings/settings.js",
-    "shared/styles.css", "shared/refinement.css", "shared/module-host.css", "shared/app.js", "shared/transition-scope.js", "shared/theme-bootstrap.js", "shared/theme.js", "shared/vol-surface.js",
+    "shared/styles.css", "shared/refinement.css", "shared/app.js", "shared/transition-scope.js", "shared/theme-bootstrap.js", "shared/theme.js", "shared/vol-surface.js",
 })
 _CAPABILITY_CSP = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'self'; form-action 'self'"
 
@@ -654,6 +654,17 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
             self.app.tasks.get(identity, task_id)
             self._json(HTTPStatus.OK, {"reports": self.app.results.list_report_runs(identity, task_id)})
             return
+        if path.startswith("/api/tasks/") and "/conversation-requests/" in path:
+            identity = self._identity()
+            self.app.policy.require(identity.role, "conversation.write")
+            task_id, request_id = path.removeprefix("/api/tasks/").split("/conversation-requests/", 1)
+            if not task_id or not request_id or "/" in request_id:
+                raise KeyError(path)
+            response = self.app.tasks.get_conversation_response_by_id(identity, task_id, request_id)
+            if response is None:
+                raise KeyError(path)
+            self._json(HTTPStatus.OK, {"response": response})
+            return
         if path.startswith("/api/reports/") and "/artifacts/" in path:
             identity = self._identity()
             report_run_id, artifact_name = path.removeprefix("/api/reports/").split("/artifacts/", 1)
@@ -869,8 +880,8 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
                 # no client path or ModuleRunRef is accepted on this route.
                 _only_fields(body, {"kind", "format"})
                 kind = str(body.get("kind", "")).strip().lower()
-                if kind not in {"card", "report"}:
-                    raise ValidationError("report kind must be card or report")
+                if kind not in {"card", "quote", "report"}:
+                    raise ValidationError("report kind must be card, quote or report")
                 output_format = str(body.get("format", "html")).strip().lower()
                 if output_format not in {"html", "pdf"}:
                     raise ValidationError("report format must be html or pdf")
@@ -881,9 +892,9 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
             if not isinstance(selection, dict):
                 raise ValidationError("report request requires one controlled selection")
             kind = str(selection.get("output_type", ""))
-            capability = {"card": "report.card.request", "report": "report.full.request"}.get(kind)
+            capability = {"card": "report.card.request", "quote": "report.quote.request", "report": "report.full.request"}.get(kind)
             if capability is None:
-                raise ValidationError("selection.output_type must be card or report")
+                raise ValidationError("selection.output_type must be card, quote or report")
             self.app.policy.require(identity.role, capability)
             source_id = selection.get("source_id")
             if not isinstance(source_id, str) or not source_id:
@@ -1011,9 +1022,9 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
                     raise ValidationError("selection.source_id is required")
                 source = self.app.results.get_owned_report_source(identity, source_id)
                 kind = str(selection.get("output_type", ""))
-                capability = {"card": "report.card.request", "report": "report.full.request"}.get(kind)
+                capability = {"card": "report.card.request", "quote": "report.quote.request", "report": "report.full.request"}.get(kind)
                 if capability is None:
-                    raise ValidationError("selection.output_type must be card or report")
+                    raise ValidationError("selection.output_type must be card, quote or report")
                 self.app.policy.require(identity.role, capability)
                 body = {"action": "run", "task_id": source["task_id"], "kind": kind, "selection": selection}
             result = self.app.tool_dispatcher.dispatch(
@@ -1031,8 +1042,12 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
         if not relative.startswith(page_prefix):
             raise AuthorizationError("module.page", "only registered module page assets are mountable")
         parts = Path(relative).parts
-        shared_bridge = relative == "assets/pages/module-host-bridge.js"
-        if not shared_bridge and (len(parts) < 4 or parts[0:2] != ("assets", "pages") or parts[2] not in PAGE_MODULES):
+        shared_page_assets = {
+            "assets/pages/module-host-bridge.js",
+            "assets/pages/module-host-presentation.css",
+            "assets/pages/module-host-presentation.js",
+        }
+        if relative not in shared_page_assets and (len(parts) < 4 or parts[0:2] != ("assets", "pages") or parts[2] not in PAGE_MODULES):
             raise ValidationError("Capability page asset path is invalid")
         self.app.policy.require(identity.role, "module.page")
         content, content_type = self.app.registry.read_asset(relative)
@@ -1349,7 +1364,7 @@ def _is_missing_credential(error: UnavailableCapabilityError) -> bool:
 
 
 def _capabilities_for(policy: AuthorizationPolicy, role: Role) -> list[str]:
-    candidates = ("optchat", "optdesk", "settings.read", "settings.preferences.write", "settings.model.write", "settings.storage.write", "settings.data.write", "task.create", "task.read", "conversation.tool.run", "module.page", "module.catalog", "module.run", "report.card.request", "report.full.request")
+    candidates = ("optchat", "optdesk", "settings.read", "settings.preferences.write", "settings.model.write", "settings.storage.write", "settings.data.write", "task.create", "task.read", "conversation.tool.run", "module.page", "module.catalog", "module.run", "report.card.request", "report.quote.request", "report.full.request")
     return [capability for capability in candidates if policy.allows(role, capability)]
 
 

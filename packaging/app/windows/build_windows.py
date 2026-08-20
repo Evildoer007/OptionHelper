@@ -72,7 +72,16 @@ def _hash(path: Path) -> str:
 
 
 def _run(command: list[str], *, cwd: Path | None = None, env: dict[str, str] | None = None) -> None:
-    completed = subprocess.run(command, cwd=cwd, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    completed = subprocess.run(
+        command,
+        cwd=cwd,
+        env=env,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
     if completed.returncode:
         raise WindowsBuildError(f"命令失败：{' '.join(command)}\n{completed.stdout}")
 
@@ -191,9 +200,15 @@ def _verify_backend(package: Path) -> None:
     # from a physical _internal/reportlab directory.
 
 
-def _copy_tree(source: Path, target: Path) -> None:
+def _copy_tree(source: Path, target: Path, *, extra_ignored: tuple[str, ...] = ()) -> None:
     def ignore(_directory: str, names: list[str]) -> set[str]:
-        return {name for name in names if name in {"__pycache__", ".pytest_cache", ".DS_Store"} or name.endswith(".pyc")}
+        patterns = shutil.ignore_patterns(*extra_ignored)(_directory, names)
+        return {
+            name for name in names
+            if name in {"__pycache__", ".pytest_cache", ".DS_Store"}
+            or name.endswith(".pyc")
+            or name in patterns
+        }
 
     shutil.copytree(source, target, ignore=ignore)
 
@@ -305,7 +320,7 @@ def build_windows(
         _copy_tree(backend, resources / "backend" / "OptionHelperBackend")
         _copy_tree(APP_ROOT / "backend", resources / "app" / "backend")
         _copy_tree(APP_ROOT / "config", resources / "app" / "config")
-        _copy_tree(APP_ROOT / "frontend", resources / "frontend")
+        _copy_tree(APP_ROOT / "frontend", resources / "frontend", extra_ignored=("*.md",))
         _copy_tree(capability_root, resources / "capability" / "option-helper")
         _assert_staged_capability(capability_root, resources / "capability" / "option-helper")
         _copy_tree(ROOT / "core" / "src" / "runtime", resources / "runtime")
@@ -316,7 +331,7 @@ def build_windows(
         ])
         staged_icon = copy_application_icon(resources, application_icon)
         manifest = _manifest(app_version, capability, capability_manifest, application_icon)
-        (resources / "app-manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+        (resources / "app-manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, sort_keys=True, indent=2) + "\n", encoding="utf-8", newline="")
         required = (app / "OptionHelper.exe", resources / "backend" / "OptionHelperBackend" / "OptionHelperBackend.exe", resources / "frontend" / "optchat" / "index.html", staged_icon)
         if not all(path.is_file() for path in required):
             raise WindowsBuildError("Windows App缺少必需资源")
@@ -346,9 +361,9 @@ def build_windows(
         shutil.copy2(staged_zip, output)
         shutil.copy2(staged_zip, archive_installer)
         checksum = release_root / f"{installer_name}.sha256"
-        checksum.write_text(f"{_hash(archive_installer)}  {installer_name}\n", encoding="utf-8")
+        checksum.write_text(f"{_hash(archive_installer)}  {installer_name}\n", encoding="utf-8", newline="")
         app_manifest = release_root / "app-manifest-windows.json"
-        app_manifest.write_text(json.dumps(manifest, ensure_ascii=False, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+        app_manifest.write_text(json.dumps(manifest, ensure_ascii=False, sort_keys=True, indent=2) + "\n", encoding="utf-8", newline="")
         release_manifest = release_root / "platform-release-manifest-windows.json"
         release_manifest.write_text(json.dumps({
             "schema": f"optionhelper.platform-release-manifest/{RELEASE_VERSION}", "app_version": app_version,
@@ -360,7 +375,7 @@ def build_windows(
             "design_system_id": manifest["design_system_id"], "signing_identity": "unsigned",
             "application_icon": manifest["application_icon"],
             "signature_status": "unsigned_local_candidate", "notarized": False, "release_status": "local_candidate",
-        }, ensure_ascii=False, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+        }, ensure_ascii=False, sort_keys=True, indent=2) + "\n", encoding="utf-8", newline="")
     return {"installer": output, "manifest": app_manifest, "release_manifest": release_manifest}
 
 
@@ -393,6 +408,12 @@ def check_prerequisites(capability_root: Path) -> None:
         raise WindowsBuildError("缺少dotnet SDK 8，无法构建WebView2 Windows壳")
     if shutil.which("powershell") is None:
         raise WindowsBuildError("缺少PowerShell，无法验证Windows EXE应用图标")
-    installed = subprocess.run(["dotnet", "--list-sdks"], text=True, capture_output=True)
+    installed = subprocess.run(
+        ["dotnet", "--list-sdks"],
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        capture_output=True,
+    )
     if installed.returncode or not any(line.lstrip().startswith("8.") for line in installed.stdout.splitlines()):
         raise WindowsBuildError("需要dotnet SDK 8，当前环境不满足Windows App构建前置")

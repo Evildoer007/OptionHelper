@@ -63,6 +63,7 @@ export async function startWorkspace(initialMode) {
   let modeSwitchRevision = 0;
   let activeModeTransition = null;
   let workspaceStatusTimer = 0;
+  let pendingConversationRequest = null;
   const moduleFrames = new Map();
   const moduleContexts = new Map();
   const moduleContextVersions = new Map();
@@ -173,10 +174,43 @@ export async function startWorkspace(initialMode) {
     stream.scrollTop = stream.scrollHeight;
     return thinking;
   };
+  const newConversationRequestId = () => globalThis.crypto?.randomUUID?.()
+    || `chat-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const conversationResponsePath = (taskId, requestId) => (
+    `/api/tasks/${encodeURIComponent(taskId)}/conversation-requests/${encodeURIComponent(requestId)}`
+  );
+  const sendConversation = (taskId, content, requestId) => request(
+    `/api/tasks/${encodeURIComponent(taskId)}/messages`,
+    { method: "POST", body: safeJson({ content }), headers: { "X-Request-Id": requestId } },
+  );
+  const lookupConversationResponse = async (taskId, requestId) => {
+    try {
+      return (await request(conversationResponsePath(taskId, requestId))).response || null;
+    } catch (error) {
+      if (error.status === 404) return null;
+      throw error;
+    }
+  };
+  const submitConversation = async (taskId, content, requestId) => {
+    try {
+      return await sendConversation(taskId, content, requestId);
+    } catch (firstError) {
+      // Explicit client-side validation is final. Network and service failures
+      // may have reached the server, so reuse the same idempotency key once.
+      if (firstError.status && firstError.status < 500) throw firstError;
+      try {
+        return await sendConversation(taskId, content, requestId);
+      } catch (retryError) {
+        const saved = await lookupConversationResponse(taskId, requestId);
+        if (saved) return saved;
+        throw retryError;
+      }
+    }
+  };
   const syncReportActions = () => {
     const hasTask = Boolean(currentTask?.task_id);
     reportActions?.querySelectorAll("[data-report-kind]").forEach((button) => {
-      const capability = button.dataset.reportKind === "report" ? "report.full.request" : "report.card.request";
+      const kind = button.dataset.reportKind;
       const permitted = button.dataset.permitted !== "false";
       button.disabled = !hasTask || !permitted;
       button.hidden = !permitted;
@@ -184,7 +218,7 @@ export async function startWorkspace(initialMode) {
       else button.setAttribute("aria-describedby", "report-feedback");
       button.title = !hasTask
         ? "请先选择任务"
-        : capability === "report.full.request" ? "生成详细Report" : "生成简洁Card";
+        : kind === "report" ? "生成详细报告" : kind === "quote" ? "生成参考报价" : "生成简单报告";
     });
   };
 
@@ -216,6 +250,9 @@ export async function startWorkspace(initialMode) {
       chatAtBottom: currentMode === "chat" ? atBottom : Boolean(previous.chatAtBottom),
       deskAtBottom: currentMode === "desk" ? atBottom : Boolean(previous.deskAtBottom),
       assistantOpen,
+      pendingConversation: pendingConversationRequest?.taskId === currentTask?.task_id
+        ? pendingConversationRequest
+        : null,
     };
     try { sessionStorage.setItem(transientKey(), JSON.stringify(state)); } catch { /* Tab state is optional. */ }
     return state;
@@ -235,6 +272,13 @@ export async function startWorkspace(initialMode) {
   const restoreTransient = () => {
     const state = readTransient();
     input.value = state.draft || "";
+    const pending = state.pendingConversation;
+    pendingConversationRequest = pending
+      && pending.taskId === currentTask?.task_id
+      && typeof pending.requestId === "string"
+      && typeof pending.content === "string"
+      ? pending
+      : null;
     assistantOpen = Boolean(state.assistantOpen);
     setAssistantOpen(assistantOpen, { persist: false });
     requestAnimationFrame(() => {
@@ -349,6 +393,7 @@ export async function startWorkspace(initialMode) {
     const { task } = await request(`/api/tasks/${encodeURIComponent(taskId)}`);
     if (currentTask?.task_id && currentTask.task_id !== task.task_id) disposeModuleFrames();
     currentTask = task;
+    pendingConversationRequest = null;
     clearReportFeedback();
     syncReportActions();
     title.textContent = task.subject;
@@ -411,16 +456,6 @@ export async function startWorkspace(initialMode) {
     }
   }
 
-  function applyHostedModulePresentation(frame) {
-    const doc = frame.contentDocument;
-    if (!doc?.head || doc.documentElement.dataset.optionhelperAppHosted === "true") return;
-    doc.documentElement.dataset.optionhelperAppHosted = "true";
-    const link = doc.createElement("link");
-    link.rel = "stylesheet";
-    link.href = "/app/frontend/shared/module-host.css";
-    doc.head.append(link);
-  }
-
   function deliverContext(moduleName) {
     const frame = moduleFrames.get(moduleName);
     const context = moduleContexts.get(moduleName);
@@ -473,7 +508,6 @@ export async function startWorkspace(initialMode) {
         frame.dataset.bridgeNonce = bridgeNonce;
         frame.setAttribute("aria-hidden", "true");
         frame.addEventListener("load", () => {
-          applyHostedModulePresentation(frame);
           // Delivery on load means the context is not dependent on a single
           // child ready event surviving a WKWebView navigation.
           frame.dataset.ready = "true";
@@ -609,10 +643,14 @@ export async function startWorkspace(initialMode) {
       dissolveComposerInput(submittedContent);
       input.value = "";
       saveTransient();
-      const requestId = globalThis.crypto?.randomUUID?.() || `chat-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-      const response = await request(`/api/tasks/${encodeURIComponent(currentTask.task_id)}/messages`, {
-        method: "POST", body: safeJson({ content: submittedContent }), headers: { "X-Request-Id": requestId },
-      });
+      const requestId = pendingConversationRequest?.taskId === currentTask.task_id
+        && pendingConversationRequest.content === submittedContent
+        ? pendingConversationRequest.requestId
+        : newConversationRequestId();
+      pendingConversationRequest = { taskId: currentTask.task_id, requestId, content: submittedContent };
+      saveTransient();
+      const response = await submitConversation(currentTask.task_id, submittedContent, requestId);
+      pendingConversationRequest = null;
       markComposerSent(submit);
       input.value = "";
       saveTransient();
@@ -620,22 +658,8 @@ export async function startWorkspace(initialMode) {
       await selectTask(currentTask.task_id, false);
     } catch (error) {
       pendingMessage?.remove();
-      let messagePersisted = false;
-      if (currentTask) {
-        await selectTask(currentTask.task_id, false).catch(() => {});
-        const submittedMessagePersisted = currentTask?.messages
-          ?.slice?.(-2)
-          .some((entry) => entry.role === "user" && entry.content === submittedContent);
-        if (submittedMessagePersisted) {
-          messagePersisted = true;
-          input.value = "";
-          saveTransient();
-        }
-      }
-      if (!messagePersisted) {
-        input.value = submittedContent;
-        saveTransient();
-      }
+      input.value = submittedContent;
+      saveTransient();
       const recovery = error.body?.error?.next_step || error.body?.next_step;
       const failureMessage = error.status === 409 && error.body?.error === "stale_task_contract"
         ? (error.body.message || "当前任务的合同来自旧产品目录。请新建研究任务后继续。")
@@ -661,7 +685,8 @@ export async function startWorkspace(initialMode) {
       if (result.status === "needs_input") {
         showReportFeedback("当前任务还没有可用于生成报告的正式结果。请先完成收益结构、估值定价或历史回测中的至少一项分析。", true);
       } else if (result.status === "completed") {
-        showReportFeedback(button.dataset.reportKind === "card" ? "Card已生成，可在报告列表中预览或下载。" : "详细Report已生成，可在报告列表中预览或下载。");
+        const label = ({ card: "简单报告", report: "详细报告", quote: "参考报价" })[button.dataset.reportKind] || "交付物";
+        showReportFeedback(`${label}已生成，可在报告列表中预览或下载。`);
       } else {
         showReportFeedback("报告暂未生成。请先完成当前任务的正式分析结果。", true);
       }
@@ -695,7 +720,11 @@ export async function startWorkspace(initialMode) {
   } });
   if (!session) return;
   document.querySelectorAll("[data-report-kind]").forEach((button) => {
-    const capability = button.dataset.reportKind === "report" ? "report.full.request" : "report.card.request";
+    const capability = ({
+      card: "report.card.request",
+      quote: "report.quote.request",
+      report: "report.full.request",
+    })[button.dataset.reportKind];
     button.dataset.permitted = String(session.capabilities.includes(capability));
   });
   syncReportActions();
@@ -709,7 +738,7 @@ export async function startWorkspace(initialMode) {
   // start from an unbound task, so the module product selector remains
   // “请选择产品”; saved tasks are resumed only through their task URL or rail.
   if (!currentTask && initialMode === "desk") await selectTask((await createTask()).task_id, false);
-  if (!currentTask) renderMessages(stream, [], "新建任务后即可开始对话，并按需生成Card或Report。");
+  if (!currentTask) renderMessages(stream, [], "新建任务后即可开始对话，并按需生成简单报告、详细报告或参考报价。");
   await applyMode(initialMode, { updateHistory: false });
   restoreTransient();
   syncComposerAvailability();

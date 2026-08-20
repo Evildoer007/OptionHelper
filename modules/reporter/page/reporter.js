@@ -48,9 +48,11 @@
   function renderSources() {
     const select = $('sourceSelect'); const sources = state.catalog?.sources || [];
     select.innerHTML = sources.length ? sources.map(source => `<option value="${esc(source.source_id)}">${esc(source.label || source.source_id)} · ${esc(source.task_id)}</option>`).join('') : '<option>暂无可用报告来源</option>';
-    select.disabled = !sources.length; state.source = activeSource(); state.selected.clear(); state.runRefs = {}; state.quoteItems = []; renderCandidates();
+    select.disabled = !sources.length; state.source = activeSource(); state.selected.clear(); state.runRefs = {};
+    if (selectedValue('outputType') !== 'quote') state.quoteItems = [];
+    renderCandidates();
   }
-  function quoteKey(item) { return `${item.candidate_id}/${item.module}/${item.module_run_ref.run_id}`; }
+  function quoteKey(item) { return `${item.source_id}/${item.candidate_id}/${item.module}/${item.module_run_ref.run_id}`; }
   function renderQuoteItems() {
     const panel = $('quoteItems'); const isQuote = selectedValue('outputType') === 'quote';
     panel.hidden = !isQuote;
@@ -62,13 +64,13 @@
       state.quoteItems.splice(Number(button.dataset.removeQuote), 1); renderCandidates();
     }));
   }
-  function quoteCandidate(candidate) {
+  function quoteCandidate(candidate, source) {
     const rows = ['payoff','pricing','backtest'].map(module => {
       const options = Array.isArray(candidate.module_run_options?.[module]) ? candidate.module_run_options[module] : [];
       return options.map((run, index) => {
-        const item = {candidate_id:candidate.candidate_id, module, module_run_ref:run};
+        const item = {source_id:source.source_id, candidate_id:candidate.candidate_id, module, module_run_ref:run};
         const added = state.quoteItems.some(existing => quoteKey(existing) === quoteKey(item));
-        return `<div class="quote-run"><div><strong>${({payoff:'收益结构',pricing:'估值定价',backtest:'历史回测'})[module]}</strong><span>参数版本${index + 1}</span></div><button class="quote-add" type="button" data-quote-candidate="${esc(candidate.candidate_id)}" data-quote-module="${module}" data-quote-index="${index}" ${added ? 'disabled' : ''}>${added ? '已加入' : '加入报价表'}</button></div>`;
+        return `<div class="quote-run"><div><strong>${({payoff:'收益结构',pricing:'估值定价',backtest:'历史回测'})[module]}</strong><span>参数版本${index + 1}</span></div><button class="quote-add" type="button" data-quote-source="${esc(source.source_id)}" data-quote-candidate="${esc(candidate.candidate_id)}" data-quote-module="${module}" data-quote-index="${index}" ${added ? 'disabled' : ''}>${added ? '已加入' : '加入报价表'}</button></div>`;
       }).join('');
     }).join('');
     return `<article class="candidate" data-candidate="${esc(candidate.candidate_id)}"><div class="candidate-head"><div class="candidate-title">${esc(candidate.product_name)}<div class="candidate-subtitle">${esc(candidate.product_id)} · ${esc((candidate.underlyings || []).join('、'))} · 版本${esc(candidate.product_version)}</div></div></div>${rows || '<p class="missing-note">暂无可用于报价的已保存运行结果。</p>'}</article>`;
@@ -78,13 +80,15 @@
     if (!source) { list.innerHTML = ''; $('sourceDetail').textContent = '当前任务尚无可用于生成报告的分析结果。'; renderQuoteItems(); updateControls(); return; }
     $('sourceDetail').innerHTML = `任务：<b>${esc(source.label || source.task_id)}</b><br>候选数量：${esc((source.candidates || []).length)}<br>资料状态：已保存`;
     if (isQuote) {
-      list.innerHTML = (source.candidates || []).map(quoteCandidate).join('');
+      const sources = state.catalog?.sources || [];
+      list.innerHTML = sources.map(item => `<section class="quote-source"><h3>${esc(item.label || '已保存任务')}</h3>${(item.candidates || []).map(candidate => quoteCandidate(candidate, item)).join('')}</section>`).join('');
       list.querySelectorAll('[data-quote-candidate]').forEach(button => button.addEventListener('click', () => {
-        const candidate = source.candidates.find(item => item.candidate_id === button.dataset.quoteCandidate);
+        const itemSource = sources.find(item => item.source_id === button.dataset.quoteSource);
+        const candidate = itemSource?.candidates?.find(item => item.candidate_id === button.dataset.quoteCandidate);
         const module = button.dataset.quoteModule; const index = Number(button.dataset.quoteIndex);
         const run = candidate?.module_run_options?.[module]?.[index];
         if (!candidate || !run) return;
-        state.quoteItems.push({candidate_id:candidate.candidate_id, module, module_run_ref:run, product_name:candidate.product_name, version:index + 1});
+        state.quoteItems.push({source_id:itemSource.source_id, source_label:itemSource.label, candidate_id:candidate.candidate_id, module, module_run_ref:run, product_name:candidate.product_name, version:index + 1});
         renderCandidates();
       }));
       renderQuoteItems(); updateControls(); return;
@@ -115,7 +119,7 @@
   }
   async function loadSources() {
     notice('正在读取当前任务的分析结果。');
-    const task = $('taskFilter').value.trim(); const response = await fetch(`/api/report-sources${task ? `?task_id=${encodeURIComponent(task)}` : ''}`); const data = await response.json();
+    const task = $('taskFilter').value.trim(); const quote = selectedValue('outputType') === 'quote'; const response = await fetch(`/api/report-sources${task && !quote ? `?task_id=${encodeURIComponent(task)}` : ''}`); const data = await response.json();
     if (!response.ok) { state.ready = false; clearSourceState(); notice(data.message || '当前Host未提供可选择的结果目录。', 'error'); return; }
     state.ready = true; state.catalog = data; renderSources(); notice((data.sources || []).length ? '请选择候选及需要纳入报告的分析内容。' : '当前任务尚无可用的分析结果。');
   }
@@ -128,7 +132,7 @@
     if (type !== 'quote' && !state.selected.size) { notice('请先选择至少一个分析结果。', 'error'); return; }
     const modules = selectedModules();
     if (type === 'quote') {
-      const selection = { source_id: source.source_id, quote_items: state.quoteItems.map(item => ({candidate_id:item.candidate_id, module:item.module, module_run_ref:item.module_run_ref})), output_type: type, format, audience: $('audience').value, report_run_id: identifier(type), metadata: { title: '推荐结构及参考报价' } };
+      const selection = { source_id: source.source_id, quote_items: state.quoteItems.map(item => ({source_id:item.source_id, candidate_id:item.candidate_id, module:item.module, module_run_ref:item.module_run_ref})), output_type: type, format, audience: $('audience').value, report_run_id: identifier(type), metadata: { title: '推荐结构及参考报价' } };
       $('generateButton').disabled = true; notice('正在按已选合同快照整理参考报价。');
       try { const response = await fetch('/api/run', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({selection})}); const data = await response.json(); if (!response.ok || !data.ok) throw new Error(data.message || '报价表生成失败'); $('previewPanel').hidden = false; $('previewTitle').textContent = '参考报价预览'; $('reportPreview').src = data.preview_url; $('downloadLink').href = data.download_url; state.delivery = format === 'html' ? {source:{task_id:source.task_id, report_run_id:selection.report_run_id}, outputType:type} : null; $('convertPdfButton').hidden = !state.delivery; $('childReports').innerHTML = ''; notice(format === 'html' ? 'HTML报价表已保存，不会重新计算。' : '报价表已保存，可以预览或下载。'); } catch (error) { notice(error.message || '报价表生成失败。', 'error'); } finally { updateControls(); }
       return;
@@ -164,5 +168,5 @@
   async function boot() {
     try { const response = await fetch('/api/status'); const data = await response.json(); const stateNode = $('serviceState'); const usable = data.status === 'available'; stateNode.textContent = usable ? '报告服务可用' : '报告服务暂不可用'; stateNode.dataset.state = usable ? 'ready' : 'error'; if (!usable) notice('报告服务尚未就绪，请检查当前任务和本机配置。', 'error'); await loadSources(); } catch { $('serviceState').textContent = '本机服务未启动'; $('serviceState').dataset.state = 'error'; notice('无法连接报告服务。', 'error'); }
   }
-  $('refreshButton').addEventListener('click', () => loadSources().catch(error => notice(error.message, 'error'))); $('taskFilter').addEventListener('change', () => loadSources().catch(error => notice(error.message, 'error'))); $('sourceSelect').addEventListener('change', renderCandidates); $('generateButton').addEventListener('click', generate); $('convertPdfButton').addEventListener('click', convertPdf); document.querySelectorAll('input[name="outputType"]').forEach(node => node.addEventListener('change', renderCandidates)); document.querySelectorAll('input[name="format"],input[data-module],#deliveryMode').forEach(node => node.addEventListener('change', updateControls)); bindResizer('sourceResizer', '--library-width', 1, 220, 420); bindResizer('settingsResizer', '--inspector-width', -1, 300, 520); boot();
+  $('refreshButton').addEventListener('click', () => loadSources().catch(error => notice(error.message, 'error'))); $('taskFilter').addEventListener('change', () => loadSources().catch(error => notice(error.message, 'error'))); $('sourceSelect').addEventListener('change', renderCandidates); $('generateButton').addEventListener('click', generate); $('convertPdfButton').addEventListener('click', convertPdf); document.querySelectorAll('input[name="outputType"]').forEach(node => node.addEventListener('change', () => loadSources().catch(error => notice(error.message, 'error')))); document.querySelectorAll('input[name="format"],input[data-module],#deliveryMode').forEach(node => node.addEventListener('change', updateControls)); bindResizer('sourceResizer', '--library-width', 1, 220, 420); bindResizer('settingsResizer', '--inspector-width', -1, 300, 520); boot();
 })();

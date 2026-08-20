@@ -42,6 +42,7 @@ from .quality_validator import DataQualityError, validate_daily_history
 from .request_validator import (
     RequestValidationError,
     cache_identity,
+    latest_completed_daily_market_date,
     latest_observable_market_date,
     request_fingerprint,
     validate_request,
@@ -405,7 +406,7 @@ def _persist_run(config: DataFetcherConfig, request: DataRequest | CalendarReque
         if run.error is not None:
             artifacts["error.json"] = dict(run.error)
         for filename, value in artifacts.items():
-            (staging / filename).write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
+            (staging / filename).write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8", newline="")
         file_hashes = {
             filename: hashlib.sha256((staging / filename).read_bytes()).hexdigest()
             for filename in sorted(artifacts)
@@ -507,6 +508,19 @@ def _interval_requests(request: DataRequest, match: CacheMatch | None) -> tuple[
     return requests, match.frame, match.provider
 
 
+def _completed_calendar_sessions(
+    evidence: VerifiedCalendarEvidence | None,
+    *,
+    latest_completed_date: str,
+) -> Mapping[str, tuple[str, ...]] | None:
+    if evidence is None:
+        return None
+    return {
+        asset_id: tuple(session for session in sessions if session <= latest_completed_date)
+        for asset_id, sessions in evidence.dates_by_asset.items()
+    }
+
+
 def _resolve_data(
     cache: LocalCache,
     request: DataRequest,
@@ -524,8 +538,11 @@ def _resolve_data(
             locks.enter_context(cache.fetch_lock(identity))
 
         calendar_evidence = _expected_trading_dates(request, config, caller)
-        expected_trading_dates = calendar_evidence.dates_by_asset if calendar_evidence is not None else None
         latest_observable_date = latest_observable_market_date(config)
+        latest_completed_date = latest_completed_daily_market_date(config)
+        expected_trading_dates = _completed_calendar_sessions(
+            calendar_evidence, latest_completed_date=latest_completed_date,
+        )
         data_asset_ref_key = _data_asset_ref_key(caller, request)
         matches = [] if request.cache_policy == "force_refresh" else [
             cache.lookup(
@@ -533,6 +550,7 @@ def _resolve_data(
                 name,
                 tenant_id=caller.tenant_id,
                 expected_trading_dates=expected_trading_dates,
+                latest_completed_date=latest_completed_date,
                 data_asset_ref_key=data_asset_ref_key,
             )
             for name in request.source_priority

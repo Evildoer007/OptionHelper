@@ -41,7 +41,7 @@ from verify_skill import (
 SOURCE_MAP = Path(__file__).with_name("package-source-map.json")
 _SAFE_TOP_LEVEL = ("references", "scripts", "assets", "LICENSES")
 _BANNED_SOURCE_ROOTS = {"blueprint", "data", "dist", "evals", "history", "products", "result"}
-_EXCLUDED_PATH_PARTS = {"__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", "blueprint", "history", "result"}
+_EXCLUDED_PATH_PARTS = {"__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".optionhelper", "blueprint", "history", "result"}
 _FROZEN_NUMERICAL_ASSET = "engines/pricing_core/data/rand_normal.npy"
 
 
@@ -109,7 +109,7 @@ def _validate_source_map(config: object) -> dict[str, object]:
         for item in entries:
             if not isinstance(item, dict):
                 raise SkillBuildError(f"Source Map.{kind}包含非对象项")
-            allowed = {"source", "target", "transform"} if kind == "files" else {"source", "target", "exclude"}
+            allowed = {"source", "target", "transform"} if kind == "files" else {"source", "target", "exclude", "transform"}
             if not set(item).issubset(allowed) or not {"source", "target"}.issubset(item):
                 raise SkillBuildError(f"Source Map.{kind}条目字段无效")
             source = _relative(item["source"], f"{kind}.source")
@@ -130,6 +130,14 @@ def _validate_source_map(config: object) -> dict[str, object]:
                 excludes = item.get("exclude", [])
                 if not isinstance(excludes, list) or not all(isinstance(value, str) and value for value in excludes):
                     raise SkillBuildError("树白名单exclude必须是字符串数组")
+                transform = item.get("transform")
+                if transform not in {None, "page_theme_links"}:
+                    raise SkillBuildError(f"不支持的目录转换：{transform}")
+                if transform == "page_theme_links" and (source, target) != (
+                    "modules/backtester/page",
+                    "assets/pages/backtester",
+                ):
+                    raise SkillBuildError("页面主题路径转换只能用于回测页面")
             targets.append(target)
     if len(targets) != len(set(targets)):
         raise SkillBuildError("Source Map存在重复目标")
@@ -214,7 +222,16 @@ def _copy_file(source: Path, target: Path, *, transform: str | None = None) -> N
         text = text.replace("](CONTEXT.md)", "](references/context.md)")
         for module in MODULES:
             text = text.replace(f"](modules/{module}/module-guide.md)", f"](references/module-guides/{module}.md)")
-        target.write_text(text, encoding="utf-8")
+        target.write_text(text, encoding="utf-8", newline="")
+        shutil.copymode(source, target)
+        return
+    if transform == "page_theme_links":
+        text = source.read_text(encoding="utf-8")
+        source_link = "../../../designer/assets/themes/designer-token-vars.css"
+        target_link = "../../../designer/themes/designer-token-vars.css"
+        if source_link not in text:
+            raise SkillBuildError("回测页面缺少可转换的Designer主题链接")
+        target.write_text(text.replace(source_link, target_link), encoding="utf-8", newline="")
         shutil.copymode(source, target)
         return
     shutil.copy2(source, target)
@@ -238,10 +255,12 @@ def _tree_files(source: Path, patterns: list[str]) -> list[Path]:
     return sorted(files)
 
 
-def _copy_tree(source: Path, target: Path, patterns: list[str]) -> list[Path]:
+def _copy_tree(source: Path, target: Path, patterns: list[str], *, transform: str | None = None) -> list[Path]:
     files = _tree_files(source, patterns)
     for item in files:
-        _copy_file(item, target / item.relative_to(source))
+        relative = item.relative_to(source).as_posix()
+        item_transform = transform if transform == "page_theme_links" and relative == "ui/style.css" else None
+        _copy_file(item, target / item.relative_to(source), transform=item_transform)
     return files
 
 
@@ -556,14 +575,19 @@ def build_skill(
         for item in config["trees"]:
             assert isinstance(item, dict)
             source = repo_root / str(item["source"])
-            _copy_tree(source, staged / str(item["target"]), list(item.get("exclude", [])))
+            _copy_tree(
+                source,
+                staged / str(item["target"]),
+                list(item.get("exclude", [])),
+                transform=item.get("transform"),
+            )
         (staged / "assets/designer/templates").mkdir(parents=True, exist_ok=True)
         catalog = config["catalog"]
         assert isinstance(catalog, dict)
         catalog_target = staged / str(catalog["target"])
         if catalog_path is None:
             catalog_target.parent.mkdir(parents=True, exist_ok=True)
-            catalog_target.write_text(json.dumps(catalog_payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            catalog_target.write_text(json.dumps(catalog_payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="")
         else:
             _copy_file(catalog_path, catalog_target)
             _copy_published_catalog_snapshots(
@@ -601,7 +625,7 @@ def build_skill(
             "source_tree_hash": tree_hash(source_records),
             "source_content_hashes": {str(item["path"]): str(item["sha256"]) for item in source_records},
         }
-        (staged / "capability-manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        (staged / "capability-manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="")
         errors = [
             *verify_skill(staged),
             *verify_source_snapshot(staged, repo_root=repo_root, versions_root=versions_root),

@@ -51,7 +51,7 @@ def _published_manifest(candidate: Path, published_at: str) -> None:
         "content_tree_hash": tree_hash(entries),
         "module_content_hashes": _module_hashes(entries),
     })
-    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="")
 
 
 def sign(

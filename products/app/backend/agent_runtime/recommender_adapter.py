@@ -455,7 +455,7 @@ class AppConversationToolExecutor:
             for delivery in deliveries
             if isinstance(delivery, Mapping)
         }
-        if not requested_kinds or not requested_kinds.issubset({"card", "report"}):
+        if not requested_kinds or not requested_kinds.issubset({"card", "quote", "report"}):
             raise ValidationError("推荐交付类型无效")
         term_overrides = _term_overrides_from_constraints(
             confirmed_constraints or {}, self._registry.capability_root, product_id,
@@ -540,20 +540,19 @@ class AppConversationToolExecutor:
                 "deliveries": [],
             }
         completed: list[dict[str, Any]] = []
-        seen: set[tuple[str, str, str | None]] = set()
+        seen: set[tuple[str, str]] = set()
         reporter_partial = False
         for delivery in deliveries:
             kind = str(delivery.get("kind", "")).strip().lower()
             output_format = str(delivery.get("format", "")).strip().lower()
-            if kind not in {"card", "report"} or output_format not in {"html", "pdf"}:
+            if kind not in {"card", "quote", "report"} or output_format not in {"html", "pdf"}:
                 raise ValidationError("推荐交付类型无效")
-            # HTML完整报告的连续版式由App内部固定，Card与PDF没有可选版式。
-            layout = "continuous" if kind == "report" and output_format == "html" else None
-            signature = (kind, output_format, layout)
+            # Designer内部固定Card和连续Report版式，交付请求没有版式参数。
+            signature = (kind, output_format)
             if signature in seen:
                 continue
             seen.add(signature)
-            delivery_key = f"{task_id}:{candidate_id}:{kind}:{output_format}:{layout or ''}"
+            delivery_key = f"{task_id}:{candidate_id}:{kind}:{output_format}"
             report_run_id = f"chat-{kind}-{hashlib.sha256(delivery_key.encode()).hexdigest()[:16]}"
             report_request: dict[str, Any] = {
                 "kind": kind,
@@ -713,8 +712,8 @@ class AppConversationToolExecutor:
             return _report_needs_input()
         default_kind = "report" if identity.role.value == "admin" else "card"
         requested_kind = str(arguments.get("kind") or arguments.get("output_type") or default_kind).strip().lower()
-        if requested_kind not in {"card", "report"}:
-            raise ValidationError("交付类型只能是card或report")
+        if requested_kind not in {"card", "quote", "report"}:
+            raise ValidationError("交付类型只能是card、quote或report")
         requested_format = str(arguments.get("format") or "html").strip().lower()
         if requested_format not in {"html", "pdf"}:
             raise ValidationError("交付格式只能是html或pdf")
@@ -736,6 +735,35 @@ class AppConversationToolExecutor:
         ]
         if not available_modules:
             return _report_needs_input()
+        if requested_kind == "quote":
+            quote_module = next((name for name in _REPORT_MODULES if name in available_modules), None)
+            if quote_module is None:
+                return _report_needs_input()
+            quote_refs = _current_verified_report_refs(
+                available, [quote_module], identity=identity, task_id=task_id,
+            )
+            if quote_refs is None:
+                return _report_needs_input()
+            title = str(arguments.get("title") or candidate.get("product_name") or "参考报价").strip()
+            return {
+                "action": "run",
+                "task_id": task_id,
+                "kind": "quote",
+                "selection": {
+                    "source_id": source["source_id"],
+                    "quote_items": [{
+                        "source_id": source["source_id"],
+                        "candidate_id": candidate["candidate_id"],
+                        "module": quote_module,
+                        "module_run_ref": quote_refs[quote_module],
+                    }],
+                    "output_type": "quote",
+                    "format": requested_format,
+                    "audience": identity.audience,
+                    "report_run_id": report_run_id or f"chat-quote-{uuid4().hex[:16]}",
+                    "metadata": {"title": title},
+                },
+            }
         modules = list(_REPORT_MODULES) if requested_kind == "report" else available_modules
         module_run_refs = _current_verified_report_refs(
             available,
@@ -886,7 +914,7 @@ def _report_needs_input() -> dict[str, Any]:
     return {
         "ok": True,
         "status": "needs_input",
-        "message": "当前任务还没有可用于生成报告的正式分析结果。请先确定产品结构，并选择需要的收益图、估值或回测内容。",
+        "message": "当前任务尚无已完成分析。您可以直接发起结构推荐并生成交付，也可以先单独运行收益结构、估值或回测后再整理。",
     }
 
 
@@ -1000,7 +1028,7 @@ def _requested_outputs(arguments: Mapping[str, Any], constraints: Mapping[str, A
     output_type = str(constraints.get("output_type", "")).strip().lower()
     if output_type == "both":
         return ("card", "report")
-    if output_type in {"card", "report"}:
+    if output_type in {"card", "quote", "report"}:
         return (output_type,)
     return _text_tuple(arguments.get("requested_outputs", ()))
 
@@ -1141,7 +1169,7 @@ def _delivery_from_constraints(constraints: Mapping[str, Any]) -> dict[str, Any]
     """Translate an explicit user delivery choice without inventing one."""
 
     kind = str(constraints.get("output_type", "")).strip().lower()
-    if kind not in {"card", "report", "both"}:
+    if kind not in {"card", "quote", "report", "both"}:
         return None
     output_format = str(constraints.get("format", "html")).strip().lower()
     if output_format not in {"html", "pdf"}:
@@ -1152,9 +1180,6 @@ def _delivery_from_constraints(constraints: Mapping[str, Any]) -> dict[str, Any]
         # this report-shaped marker authorizes the combined delivery once.
         "kind": "report" if kind == "both" else kind,
         "format": output_format,
-        # 这是TaskService私有状态，为既有严格状态校验保留；客户端请求和
-        # 面向用户的交付回执均不接受或暴露该字段。
-        "html_report_layout": "continuous" if kind in {"report", "both"} and output_format == "html" else None,
     }
 
 
@@ -1462,7 +1487,7 @@ def _continuation_recommendation_set(
     output_type = str(constraints.get("output_type", "")).strip().lower() if isinstance(constraints, Mapping) else ""
     requested_outputs = (
         ("card", "report") if output_type == "both" else
-        (output_type,) if output_type in {"card", "report"} else ()
+        (output_type,) if output_type in {"card", "quote", "report"} else ()
     )
     workflow_mode = str(state.get("workflow_mode", "single_agent"))
     if workflow_mode not in {"single_agent", "multi_agent", "degraded_single_agent"}:

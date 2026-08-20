@@ -12,6 +12,11 @@ from pathlib import Path
 import sys
 
 
+# Page hosting also imports the packaged runtime directly; keep the Skill tree
+# immutable on every supported platform.
+sys.dont_write_bytecode = True
+
+
 ROOT = Path(__file__).resolve().parents[1]
 CORE_SRC = ROOT / "core" / "src"
 if str(CORE_SRC) not in sys.path:

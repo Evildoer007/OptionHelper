@@ -35,7 +35,7 @@ Backtester按每个入场日冻结`HistoricalResolvedContract`，调用共享合
 
 ## 交互边界
 
-- 运行前先复用当前任务覆盖本次标的、区间、字段、复权口径和交易日历的DataAssetRef。统一就绪门禁已确认iFind配置；无法复用且需要新数据时，按DataFetcher指南取得数据。运行时数据能力不可用则保留回测条件并停止，不猜测历史数据或无提示改用本地CSV。
+- 运行前先复用当前任务覆盖本次标的、区间、字段、复权口径和交易日历的DataAssetRef。无法复用且需要新数据时，先确认iFind，再按DataFetcher指南取得数据。运行时数据能力不可用则保留回测条件并停止，不猜测历史数据或无提示改用本地CSV。
 - 历史数据由Host按当前任务的DataAssetRef注入；不得要求普通用户提供CSV路径、Store位置或运行目录。独立页面只可查看产品目录和输入，不执行回测；正式回测必须由OptionHelper App Host绑定ResolvedContract、DataAssetRef、DataStore和ResultStore。
 - 回测区间、入场频率和观察口径能从已确认任务推导时直接使用；多个关键缺口一次列出，不逐项追问。
 - 单独调用直接给出样本范围、收益与风险统计、结构专属指标和限制，不自动生成报告。原始JSON或逐笔账本仅在用户明确要求时展示。

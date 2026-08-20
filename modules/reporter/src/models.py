@@ -114,7 +114,7 @@ def read_json_value(path: Path, label: str) -> Any:
 
 def write_json(path: Path, value: Mapping[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(canonical_json(value) + "\n", encoding="utf-8")
+    path.write_text(canonical_json(value) + "\n", encoding="utf-8", newline="")
 
 
 def module_run_ref(value: Any, field: str, *, tenant_id: str, task_id: str) -> ModuleRunRef:
@@ -145,6 +145,44 @@ def module_run_ref(value: Any, field: str, *, tenant_id: str, task_id: str) -> M
     )
     if ref.tenant_id != tenant_id or ref.task_id != task_id:
         raise ReporterError(f"{field}的tenant_id/task_id必须与ReportRequest一致")
+    return ref
+
+
+def quote_module_run_ref(value: Any, field: str, *, tenant_id: str) -> ModuleRunRef:
+    """Parse a Quote row reference without forcing it into the delivery task.
+
+    A Quote is a collection of already frozen contracts.  Its delivery task is
+    only the place where the resulting table is saved; every row retains the
+    task of the source run it selected.
+    """
+
+    raw = as_mapping(value, field)
+    forbidden = {"result_dir", "path", "latest"}.intersection(raw)
+    if forbidden:
+        raise ReporterError(f"{field}不接受物理路径字段：{','.join(sorted(forbidden))}")
+    allowed = {
+        "module", "tenant_id", "task_id", "run_id",
+        "expected_semantic_result_hash", "expected_artifact_manifest_hash",
+    }
+    unknown = set(raw).difference(allowed)
+    if unknown:
+        raise ReporterError(f"{field}含未知字段：{','.join(sorted(unknown))}")
+    semantic_result_hash = require_text(raw.get("expected_semantic_result_hash"), f"{field}.expected_semantic_result_hash")
+    artifact_manifest_hash = require_text(raw.get("expected_artifact_manifest_hash"), f"{field}.expected_artifact_manifest_hash")
+    if not re.fullmatch(r"[0-9a-f]{64}", semantic_result_hash):
+        raise ReporterError(f"{field}.expected_semantic_result_hash必须为64位小写SHA-256")
+    if not re.fullmatch(r"[0-9a-f]{64}", artifact_manifest_hash):
+        raise ReporterError(f"{field}.expected_artifact_manifest_hash必须为64位小写SHA-256")
+    ref = ModuleRunRef(
+        module=require_identifier(raw.get("module"), f"{field}.module"),
+        tenant_id=require_identifier(raw.get("tenant_id"), f"{field}.tenant_id"),
+        task_id=require_identifier(raw.get("task_id"), f"{field}.task_id"),
+        run_id=require_identifier(raw.get("run_id"), f"{field}.run_id"),
+        expected_semantic_result_hash=semantic_result_hash,
+        expected_artifact_manifest_hash=artifact_manifest_hash,
+    )
+    if ref.tenant_id != tenant_id:
+        raise ReporterError(f"{field}不属于当前租户")
     return ref
 
 
@@ -234,27 +272,31 @@ class ReportRequest:
         if self.output_type == "quote":
             if self.subject_type != "bundle" or self.delivery_mode != "quote":
                 raise ReporterError("Quote必须使用bundle subject_type和quote delivery_mode")
-            if not candidate_ids:
-                raise ReporterError("Quote必须包含至少一个候选")
             if "selected_modules" in self.subject_ref:
                 raise ReporterError("Quote不接受selected_modules，请逐行使用quote_items选择已保存运行")
             if not self.quote_items:
-                raise ReporterError("Quote必须包含至少一行quote_items")
-            seen: set[tuple[str, str, str]] = set()
+                raise ReporterError("组合报价至少需要一行quote_items")
+            quote_sources = self.source_refs.get("quote_sources")
+            if not isinstance(quote_sources, Mapping) or not quote_sources:
+                raise ReporterError("Quote必须包含每行来源的冻结证据")
+            seen: set[tuple[str, str, str, str]] = set()
             for index, item in enumerate(self.quote_items, start=1):
-                if set(item) != {"candidate_id", "module", "module_run_ref"}:
-                    raise ReporterError(f"quote_items[{index}]字段必须为candidate_id、module、module_run_ref")
+                if set(item) != {"source_id", "candidate_id", "module", "module_run_ref"}:
+                    raise ReporterError(f"quote_items[{index}]字段必须为source_id、candidate_id、module、module_run_ref")
+                source_id = require_identifier(item.get("source_id"), f"quote_items[{index}].source_id")
+                if source_id not in quote_sources:
+                    raise ReporterError(f"quote_items[{index}]来源不在当前交付事实集中")
                 candidate_id = require_identifier(item.get("candidate_id"), f"quote_items[{index}].candidate_id")
                 module = require_text(item.get("module"), f"quote_items[{index}].module").lower()
-                if candidate_id not in candidate_ids or module not in MODULE_TO_RUN:
-                    raise ReporterError(f"quote_items[{index}]候选或模块无效")
-                ref = module_run_ref(
+                if module not in MODULE_TO_RUN:
+                    raise ReporterError(f"quote_items[{index}]模块无效")
+                ref = quote_module_run_ref(
                     item.get("module_run_ref"), f"quote_items[{index}].module_run_ref",
-                    tenant_id=self.tenant_id, task_id=self.task_id,
+                    tenant_id=self.tenant_id,
                 )
                 if ref.module != MODULE_TO_RUN[module]:
                     raise ReporterError(f"quote_items[{index}].module_run_ref.module与模块不一致")
-                signature = (candidate_id, module, ref.run_id)
+                signature = (source_id, candidate_id, module, ref.run_id)
                 if signature in seen:
                     raise ReporterError("quote_items不得重复选择同一运行")
                 seen.add(signature)
@@ -308,5 +350,5 @@ __all__ = [
     "CARD_SECTION_ORDER", "REPORT_SECTION_ORDER", "ReporterError", "ReportRequest",
     "SCHEMA_DESIGN_BRIEF", "SCHEMA_DESIGNER_ARTIFACT_MANIFEST", "SCHEMA_DESIGNER_PAYLOAD",
     "SCHEMA_MANIFEST", "SCHEMA_REPORT_BUNDLE", "SCHEMA_REPORT_UNIT", "SCHEMA_REQUEST", "as_list", "as_mapping", "module_run_ref",
-    "read_json", "read_json_value", "reject_physical_paths", "require_identifier", "require_text", "stable_hash", "write_json",
+    "quote_module_run_ref", "read_json", "read_json_value", "reject_physical_paths", "require_identifier", "require_text", "stable_hash", "write_json",
 ]

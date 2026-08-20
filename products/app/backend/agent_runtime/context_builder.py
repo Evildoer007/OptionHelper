@@ -40,13 +40,17 @@ def conversation_tool_catalog(policy: AuthorizationPolicy, identity: SessionIden
         {"name": "backtester.run", "description": "基于ResolvedContract与历史数据执行回测", "actions": ["run"]},
         {
             "name": "reporter.run",
-            "description": "将当前任务已完成的正式分析整理为交付物；arguments只填kind、format或title。详细报告固定为连续A4七段正文，HTML宽屏提供左侧章节目录。",
+            "description": "将当前任务已完成的正式分析整理为交付物；arguments只填kind、format或title。详细报告默认采用连续A4正文。",
             "actions": ["run"],
             "output_types": ["card"],
         },
     ]
-    if identity.role.value == "admin":
-        tools[-1] = {**tools[-1], "output_types": ["card", "report"]}
+    output_types = ["card"]
+    if policy.allows(identity.role, "report.quote.request"):
+        output_types.append("quote")
+    if policy.allows(identity.role, "report.full.request"):
+        output_types.append("report")
+    tools[-1] = {**tools[-1], "output_types": output_types}
     return tools
 
 

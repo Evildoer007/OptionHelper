@@ -25,7 +25,10 @@
 
   function defaultWindow(reference = new Date()) {
     const end = latestWeekday(reference);
-    const start = new Date(end.getFullYear() - 3, end.getMonth(), end.getDate());
+    // Moving back whole calendar years can land on a weekend.  Keep the
+    // visible default window on weekdays; the Host still obtains a small
+    // historical buffer for exchange holidays before freezing reference prices.
+    const start = latestWeekday(new Date(end.getFullYear() - 3, end.getMonth(), end.getDate()));
     return { start: display(toIsoDate(start)), end: display(toIsoDate(end)) };
   }
 

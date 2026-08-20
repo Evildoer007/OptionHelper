@@ -293,15 +293,11 @@ class ResultStore:
                 "catalog_content_hash": candidate["catalog_content_hash"],
                 "candidates": {},
             })
-            existing = source["candidates"].get(candidate["candidate_id"])
-            if existing is not None and any(
-                existing.get(field) != candidate.get(field)
-                for field in ("contract_fingerprint", "product_version_content_hash", "analysis_basis_id", "underlyings")
-            ):
-                # A candidate identifier must not bridge two distinct frozen
-                # contracts.  Excluding the ambiguous row is safer than
-                # mixing its verified ModuleRunRefs into one selection.
-                continue
+            # A candidate can have more than one saved contract snapshot:
+            # for example after changing a strike and rerunning Pricing only.
+            # Keep every verified run option on the same candidate; the
+            # selected ModuleRunRef remains the authoritative snapshot and
+            # Reporter checks compatibility before it renders a delivery.
             row = source["candidates"].setdefault(candidate["candidate_id"], candidate)
             display_module = _report_module(str(record["module"]))
             reference = {
@@ -478,6 +474,17 @@ class ResultStore:
             raise ValidationError("ReportRunRef semantic fact hash does not match stored report")
         if reference.get("expected_artifact_manifest_hash") != record.get("expected_artifact_manifest_hash"):
             raise ValidationError("ReportRunRef artifact manifest hash does not match stored report")
+        return record
+
+    def get_owned_report_run(self, identity: SessionIdentity, report_run_id: str) -> dict[str, Any]:
+        """Read one immutable delivery for a fact-preserving re-render."""
+
+        if not isinstance(report_run_id, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", report_run_id):
+            raise ValidationError("report_run_id is invalid")
+        record = self._state.read("reports").get(report_run_id)
+        if not isinstance(record, dict):
+            raise KeyError(report_run_id)
+        self._authorize_report(identity, record)
         return record
 
     def read_report_artifact(self, identity: SessionIdentity, report_run_id: str, artifact_name: str) -> tuple[bytes, str]:

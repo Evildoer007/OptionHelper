@@ -27,8 +27,6 @@ from .stores.data_store import DataStore
 from .stores.contract_store import ContractStore
 from runtime.contracts.input_adapter import (
     ContractResolutionError,
-    explicit_demo_pricing_error,
-    is_explicit_demo_pricing_config,
 )
 from runtime.capability_import import load_verified_source_module, verified_capability_modules
 from runtime.protocol.module_host import HostObjectRef, ModuleHostContextError, require_host_bound_run_contract
@@ -100,10 +98,11 @@ class ToolGateway:
         if agent_proxy:
             self._policy.require(caller_context.role, "conversation.tool.run")
             _require_conversation_tool_scope(caller_context, tool_name, payload)
+            if tool_name == "reporter" and not read_only_action:
+                self._policy.require(caller_context.role, _report_request_capability(payload))
             granted_capability = "conversation.tool.run"
         elif tool_name == "reporter" and not read_only_action:
-            kind = payload.get("kind") if isinstance(payload, dict) else None
-            granted_capability = "report.card.request" if kind == "card" else "report.full.request"
+            granted_capability = _report_request_capability(payload)
             self._policy.require(caller_context.role, granted_capability)
         else:
             granted_capability = "module.catalog" if read_only_action else "module.run"
@@ -184,6 +183,7 @@ class ToolGateway:
                         if self._contracts is None:
                             raise ValidationError("App ContractStore未配置，无法冻结ResolvedContract")
                         friendly_payload = _business_payload(payload)
+                        friendly_payload = _without_legacy_pricer_demo_inputs(tool_name, friendly_payload)
                         new_contract_variant = _new_contract_variant_requested(friendly_payload)
                         existing = self._current_task_contract(caller_context, str(verified_context.task_id))
                         if new_contract_variant and existing is None:
@@ -405,20 +405,6 @@ class ToolGateway:
                 if not isinstance(raw_refs, list) or len(raw_refs) != 1:
                     raise ValidationError("当前Pricer页面只能选择一个DataAssetRef")
                 requested = raw_refs[0]
-            else:
-                config = payload.get("pricing_config")
-                if isinstance(config, Mapping) and config.get("demo_mode") is True:
-                    error = explicit_demo_pricing_error(config)
-                    if error is not None:
-                        raise UserActionError("invalid_demo_market_snapshot", error)
-                    if is_explicit_demo_pricing_config(config):
-                        demo_product_id = frozen_identity.get("product_id", payload.get("product_id"))
-                        if str(demo_product_id) != "2.1":
-                            raise UserActionError(
-                                "invalid_demo_market_snapshot",
-                                "无行情数据的MC10演示仅支持2.1看涨期权；其他结构请先在数据获取中绑定真实日频行情。",
-                            )
-                        return []
         else:
             requested = payload.get("historical_data", payload.get("history_reference"))
         history_request = _history_fetch_request(module, payload, frozen, assets)
@@ -924,27 +910,39 @@ class ToolGateway:
     ) -> dict[str, Any]:
         """Verify each requested Quote row against its saved task evidence.
 
-        Quote is intentionally different from Card and Report: its rows can
-        select several candidates and contract variants within one controlled
-        task source.  The browser still only sends opaque RunRefs, which are
-        compared against the current ResultStore projection before Reporter
-        receives them.
+        Quote is intentionally different from Card and Report: every row can
+        come from another saved task, while this task remains the destination
+        for the generated table.  The browser still sends opaque RunRefs only;
+        each row is re-authorized against its own saved source.
         """
 
         raw_items = selection.get("quote_items")
         if not isinstance(raw_items, list) or not raw_items:
-            raise ValidationError("Quote必须逐行选择至少一个已保存运行结果")
-        candidates = {
-            str(item.get("candidate_id")): item
-            for item in source.get("candidates", ())
-            if isinstance(item, Mapping) and isinstance(item.get("candidate_id"), str)
-        }
+            raise ValidationError("组合报价至少需要选择一行已保存运行结果")
         controlled_items: list[dict[str, Any]] = []
-        seen: set[tuple[str, str, str]] = set()
+        seen: set[tuple[str, str, str, str]] = set()
         expected_modules = {"payoff": "payoffer", "pricing": "pricer", "backtest": "backtester"}
         for index, raw_item in enumerate(raw_items, start=1):
-            if not isinstance(raw_item, Mapping) or set(raw_item) != {"candidate_id", "module", "module_run_ref"}:
+            if not isinstance(raw_item, Mapping) or set(raw_item) != {"source_id", "candidate_id", "module", "module_run_ref"}:
                 raise ValidationError(f"Quote第{index}行必须包含候选、来源模块和完整运行引用")
+            item_source_id = raw_item.get("source_id")
+            if not isinstance(item_source_id, str) or not item_source_id:
+                raise ValidationError(f"Quote第{index}行缺少已保存合同快照来源")
+            if item_source_id == source.get("source_id"):
+                item_source = source
+            else:
+                try:
+                    item_source = self._results.get_owned_report_source(identity, item_source_id)
+                except (KeyError, AuthorizationError) as error:
+                    raise ValidationError(f"Quote第{index}行来源不可访问") from error
+            item_task_id = item_source.get("task_id")
+            if not isinstance(item_task_id, str) or not item_task_id:
+                raise ValidationError(f"Quote第{index}行来源任务无效")
+            candidates = {
+                str(item.get("candidate_id")): item
+                for item in item_source.get("candidates", ())
+                if isinstance(item, Mapping) and isinstance(item.get("candidate_id"), str)
+            }
             candidate_id = raw_item.get("candidate_id")
             module = str(raw_item.get("module", "")).strip().lower()
             candidate = candidates.get(candidate_id) if isinstance(candidate_id, str) else None
@@ -960,7 +958,7 @@ class ToolGateway:
             if (
                 reference.module != expected_modules[module]
                 or reference.tenant_id != identity.tenant_id
-                or reference.task_id != task_id
+                or reference.task_id != item_task_id
             ):
                 raise ValidationError(f"Quote第{index}行运行引用超出当前租户、任务或模块范围")
             options = candidate.get("module_run_options")
@@ -969,7 +967,7 @@ class ToolGateway:
                 _same_module_run_ref(reference, option) for option in allowed if isinstance(option, Mapping)
             ):
                 raise ValidationError(f"Quote第{index}行不是当前ResultStore已验证的参数版本")
-            signature = (candidate_id, module, reference.run_id)
+            signature = (item_source_id, candidate_id, module, reference.run_id)
             if signature in seen:
                 raise ValidationError("Quote不得重复选择同一参数运行")
             seen.add(signature)
@@ -978,6 +976,7 @@ class ToolGateway:
             except (KeyError, ValidationError, AuthorizationError, OSError) as error:
                 raise ValidationError(f"Quote第{index}行运行结果已失效或不再属于当前主体") from error
             controlled_items.append({
+                "source_id": item_source_id,
                 "candidate_id": candidate_id,
                 "module": module,
                 "module_run_ref": _module_run_ref_payload(reference),
@@ -1103,6 +1102,25 @@ def _business_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
     value = dict(payload)
     for field in ("task_id", "analysis_case_id", "candidate_id", "catalog_version", "contract_fingerprint"):
         value.pop(field, None)
+    return value
+
+
+def _without_legacy_pricer_demo_inputs(tool_name: str, payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Discard retired zero-data demo fields before every formal App run.
+
+    Older Pricer pages stored ``demo_mode`` and ``demo_calendar`` in their
+    advanced-input text area.  Retaining those browser-local flags made a
+    later product selection enter a 2.1-only demonstration branch.  Formal
+    OptDesk runs always bind or acquire Host-controlled market data, so these
+    fields are neither a pricing choice nor part of a frozen contract.
+    """
+    value = dict(payload)
+    if tool_name != "pricer" or not isinstance(value.get("pricing_config"), Mapping):
+        return value
+    pricing_config = dict(value["pricing_config"])
+    pricing_config.pop("demo_mode", None)
+    pricing_config.pop("demo_calendar", None)
+    value["pricing_config"] = pricing_config
     return value
 
 
@@ -1295,7 +1313,7 @@ def _public_contract_resolution_error(error: ContractResolutionError) -> UserAct
     if "已冻结ResolvedContract" in message or "当前任务已绑定另一产品" in message:
         return UserActionError(
             "task_contract_conflict",
-            "当前任务已绑定产品与条款。若需更换产品、标的或条款，请新建研究任务；定价和回测会沿用当前任务已保存的条款。",
+            "当前任务已绑定另一版合同。请以新合同版本重新运行受影响模块；旧版结果会保留，可继续用于Card、Report或Quote。",
         )
     return ValidationError(message)
 
@@ -1626,7 +1644,16 @@ def _history_fetch_request(
         # future market-data request: cap the last entry date to the latest
         # available market day minus the contract tenor.
         entry_end = min(requested_entry_end, latest - timedelta(days=tenor_days))
-        start = _iso_date_or_default(config.get("start_date"), _years_before(entry_end, 3), "backtest_config.start_date")
+        entry_start = _iso_date_or_default(
+            config.get("start_date"), _years_before(entry_end, 3), "backtest_config.start_date",
+        )
+        # A contract can start on a weekend or exchange holiday, while a raw
+        # close only exists on a trading session.  Request a bounded lookback
+        # so the first-run contract compiler can legally freeze the latest
+        # prior close without changing the user's entry window.  Fourteen
+        # calendar days covers normal weekends and the longest domestic public
+        # holiday sequence with room for the preceding trading session.
+        start = entry_start - timedelta(days=14)
         end = entry_end + timedelta(days=tenor_days)
     else:
         raise ValidationError("只有定价与回测可以自动准备行情")
@@ -1967,17 +1994,31 @@ def _require_conversation_compute_request(tool_name: str, payload: Mapping[str, 
         raise AuthorizationError("conversation.tool.run", "backtest configuration is required")
 
 
+def _report_request_capability(payload: Mapping[str, Any]) -> str:
+    """Map a requested delivery to its policy capability, without role names."""
+
+    kind = str(payload.get("kind", "")).strip().lower()
+    return {
+        "card": "report.card.request",
+        "quote": "report.quote.request",
+        "report": "report.full.request",
+    }.get(kind, "report.full.request")
+
+
 def _require_conversation_report_request(identity: SessionIdentity, payload: Mapping[str, Any]) -> None:
     _require_scope_fields(payload, {"action", "task_id", "kind", "selection"})
     kind = str(payload.get("kind", "")).strip().lower()
     selection = payload.get("selection")
-    if kind not in {"card", "report"} or not isinstance(selection, Mapping) or selection.get("output_type") != kind:
+    if kind not in {"card", "quote", "report"} or not isinstance(selection, Mapping) or selection.get("output_type") != kind:
         raise AuthorizationError("conversation.tool.run", "report output type is invalid")
-    if kind == "report" and identity.role.value != "admin":
-        raise AuthorizationError("conversation.tool.run", "full reports require administrator approval")
-    _require_scope_fields(selection, {
-        "source_id", "candidate_ids", "selected_modules", "module_run_refs", "delivery_mode", "output_type", "format", "audience", "report_run_id", "metadata",
-    })
+    if kind == "quote":
+        _require_scope_fields(selection, {
+            "source_id", "quote_items", "output_type", "format", "audience", "report_run_id", "metadata",
+        })
+    else:
+        _require_scope_fields(selection, {
+            "source_id", "candidate_ids", "selected_modules", "module_run_refs", "delivery_mode", "output_type", "format", "audience", "report_run_id", "metadata",
+        })
 
 
 def _require_scope_fields(value: Mapping[str, Any], allowed: set[str]) -> None:

@@ -65,7 +65,7 @@ def _process_lock(path: Path):
 
 def _atomic_write_json(path: Path, value: Mapping[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, delete=False) as handle:
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", newline="", dir=path.parent, delete=False) as handle:
         json.dump(value, handle, ensure_ascii=False, sort_keys=True, indent=2)
         temporary = Path(handle.name)
     temporary.replace(path)
@@ -163,6 +163,7 @@ class LocalCache:
         *,
         tenant_id: str = "local",
         expected_trading_dates: Mapping[str, Sequence[str]] | None = None,
+        latest_completed_date: str | None = None,
         data_asset_ref_key: str | None = None,
     ) -> CacheMatch:
         identity = cache_identity(request, provider, tenant_id=tenant_id)
@@ -196,7 +197,13 @@ class LocalCache:
             missing: dict[str, tuple[tuple[str, str], ...]] = {}
             for asset_id in request.asset_ids:
                 if expected_trading_dates is None:
-                    intervals = observed_edge_intervals(frame, asset_id, request.start_date, request.end_date)
+                    intervals = observed_edge_intervals(
+                        frame,
+                        asset_id,
+                        request.start_date,
+                        request.end_date,
+                        latest_completed_date=latest_completed_date,
+                    )
                 else:
                     sessions = tuple(str(item) for item in expected_trading_dates.get(asset_id, ()))
                     observed = set(frame.loc[frame["asset_id"].astype(str).str.upper() == asset_id, "date"].astype(str))

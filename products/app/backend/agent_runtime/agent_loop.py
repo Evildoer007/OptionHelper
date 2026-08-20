@@ -696,14 +696,22 @@ def _public_candidate_field(value: object, fallback: str) -> str:
 
 
 def _should_run_fixed_recommendation(message: str, context: Mapping[str, Any]) -> bool:
-    """Bypass a generic chat decision only for a concrete recommendation case."""
+    """Start a fresh recommendation only when the request needs a new contract."""
 
     text = str(message or "")
     explicit_request = any(word in text for word in ("推荐", "适合的期权", "哪种期权", "什么期权"))
+    delivery_request = any(word in text.lower() for word in (
+        "简报", "card", "报告", "report", "参考报价", "报价表", "quote",
+    ))
     concrete_signal = bool(re.search(r"\d{6}\.(?:SH|SZ)", text, re.IGNORECASE)) or any(
         word in text for word in ("最大可承受亏损", "本金波动", "市场观点", "波动率")
     )
-    if explicit_request and concrete_signal:
+    changing_terms = any(word in text for word in (
+        "修改", "调整", "改成", "改为", "重新定价", "重新回测", "行权价", "期权费", "票息", "障碍",
+    ))
+    facts = context.get("facts")
+    has_verified_runs = isinstance(facts, Mapping) and bool(facts.get("module_run_facts"))
+    if concrete_signal and (explicit_request or delivery_request) and (not has_verified_runs or changing_terms):
         return True
     messages = context.get("messages")
     if not isinstance(messages, list) or not messages:
@@ -740,7 +748,10 @@ def _fixed_recommendation_workflow(message: object) -> str:
 
     text = str(message or "").lower()
     return "professional_report" if any(
-        marker in text for marker in ("完整研究报告", "详细报告", "深度报告", "完整报告", "生成html报告", "生成html简报", "html报告")
+        marker in text for marker in (
+            "完整研究报告", "详细报告", "深度报告", "完整报告", "生成html报告", "生成html简报", "html报告",
+            "简报", "card", "参考报价", "报价表", "quote",
+        )
     ) else "recommendation"
 
 

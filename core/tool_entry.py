@@ -21,6 +21,11 @@ import sys
 from typing import Any, Callable, Mapping, Sequence
 
 
+# A Skill installation is an immutable, hashed artifact.  Its entrypoint must
+# never let Python create ``__pycache__`` inside the installation directory.
+sys.dont_write_bytecode = True
+
+
 ROOT = Path(__file__).resolve().parents[1]
 CORE_SRC = ROOT / "core" / "src"
 if str(CORE_SRC) not in sys.path:
@@ -103,7 +108,7 @@ class ProjectRequestError(RuntimeError):
 _RECOMMENDATION_REQUEST_FIELDS = frozenset({"prompt", "constraints"})
 _REPORT_REQUEST_FIELDS = frozenset({
     "prompt", "constraints", "term_overrides", "pricing_config", "backtest_config",
-    "output_type", "format", "html_report_layout", "title", "selection",
+    "output_type", "format", "title", "selection", "quote_variants",
 })
 _MODULE_REQUEST_FIELDS = frozenset({
     "module", "product_id", "identity", "term_overrides", "pricing_config",
@@ -488,11 +493,46 @@ def _catalog_version(paths: Any) -> str:
     return DEVELOPMENT_RELEASE_ID
 
 
-def _configuration(*, require_ifind: bool = True) -> dict[str, str]:
+def _local_ifind_refresh_token(project_root: str | Path | None = None) -> str:
+    """Resolve the optional project-local Skill token without changing App/Core auth."""
+
+    # Project memory belongs to the standalone Skill only. App/Capability
+    # calls must continue through their Host SecretProvider boundary. The
+    # packaged Skill keeps this helper beside the copied entrypoint, while
+    # repository Core and App launches do not.
+    if os.environ.get("OPTIONHELPER_CAPABILITY_ROOT", "").strip():
+        return ""
+    if not (Path(__file__).resolve().with_name("environment_check.py")).is_file():
+        return ""
+    try:
+        from environment_check import load_ifind_refresh_token
+    except ImportError:
+        return ""
+    try:
+        return str(load_ifind_refresh_token(
+            project_root=project_root,
+            skill_root=Path(__file__).resolve().parents[1],
+        ) or "").strip()
+    except (OSError, ValueError):
+        return ""
+
+
+def _activate_ifind_refresh_token(token: str) -> None:
+    """Expose a resolved local token only to the current Skill process."""
+
+    if token:
+        os.environ["IFIND_REFRESH_TOKEN"] = token
+
+
+def _configuration(
+    *,
+    require_ifind: bool = True,
+    project_root: str | Path | None = None,
+) -> dict[str, str]:
     host_url = os.environ.get("OPTIONHELPER_HOST_URL", "").strip()
     if host_url:
         return {"mode": "host", "host_url": host_url}
-    ifind = os.environ.get("IFIND_REFRESH_TOKEN", "").strip()
+    ifind = _local_ifind_refresh_token(project_root)
     if require_ifind and not ifind:
         missing = ["iFind Refresh Token"]
     else:
@@ -597,9 +637,9 @@ def _agent_native_candidate(
 ) -> dict[str, Any]:
     """Turn a Host model's public recommendation into one verified candidate.
 
-    A conversational Host such as Claude, DeepSeek or Codex is already the
-    model.  It must never be asked to configure a second model gateway merely
-    to pass its researched choice into the formal calculation/report pipeline.
+    The current conversation host is already the model.  It must never be
+    asked to configure a second model gateway merely to pass its researched
+    choice into the formal calculation/report pipeline.
     The Host may choose a product and explain it, but Core still validates the
     product against OptionReg and creates all identities, hashes and run IDs.
     """
@@ -657,7 +697,7 @@ def run_recommendation_request(
     if not prompt:
         raise ProjectRequestError("request", "请提供需要筛选的期权结构需求。")
     if agent_port is None:
-        config = _configuration(require_ifind=False)
+        config = _configuration(require_ifind=False, project_root=project_root)
         if config["mode"] == "host":
             _progress(progress, "host", "正在由受控Host执行结构推荐")
             response = JsonHttpEndpoint(config["host_url"]).post("project/recommend", body)
@@ -760,7 +800,7 @@ def _fetch_local_data_asset(
         "fields": ["open", "high", "low", "close", "adj_open", "adj_high", "adj_low", "adj_close", "volume"],
         "provider": "ifind_http",
         "source_priority": ["ifind_http"],
-        "cache_policy": "force_refresh",
+        "cache_policy": "extend_only",
     }, authority.caller(request_id=request_id), config=DataFetcherConfig(
         data_root=layout.data_root,
         result_root=layout.result_root,
@@ -808,24 +848,75 @@ def _persist_calendar_bound_history_asset(
         "content_hash": calendar_ref.content_hash,
         "schema_id": calendar_ref.schema_id,
     }
+    binding_metadata = {
+        "tenant_id": data_ref.tenant_id,
+        "content_hash": data_ref.content_hash,
+        "media_type": str(bound["media_type"]),
+        "schema_id": str(bound["schema_id"]),
+        "asset_ids": tuple(str(item) for item in bound["asset_ids"]),
+        "normalized_fields": tuple(str(item) for item in bound["normalized_fields"]),
+        "coverage": dict(bound["coverage"]),
+        "row_count": int(bound["row_count"]),
+        "partition_spec": dict(bound["partition_spec"]),
+        "price_convention": dict(bound["price_convention"]),
+        "lineage": lineage,
+        "created_by": data_ref.created_by,
+        "access_scope": tuple(str(item) for item in bound["access_scope"]),
+    }
+    # The original ``raw-data-id + calendar-hash`` name made different
+    # bindings collide whenever a later request reused the same calendar.
+    # LocalDataStore signs coverage, conventions and lineage into storage_ref,
+    # so every one of those fields must participate in the immutable asset
+    # identity.  Identical bindings still reuse their existing artifact;
+    # differing six-month windows or run provenance receive another safe ref.
+    binding_identity = hashlib.sha256(json.dumps(
+        {
+            "source_storage_ref": data_ref.storage_ref,
+            "calendar_storage_ref": calendar_ref.storage_ref,
+            "metadata": binding_metadata,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    ).encode("utf-8")).hexdigest()
+    expected = {
+        **binding_metadata,
+        "data_asset_id": f"calendar-bound-{binding_identity}",
+    }
     try:
         return data_store.put_bytes(
-            tenant_id=data_ref.tenant_id,
-            data_asset_id=f"{data_ref.data_asset_id}-calendar-{calendar_ref.content_hash[:16]}",
+            tenant_id=expected["tenant_id"],
+            data_asset_id=expected["data_asset_id"],
             payload=payload,
-            media_type=str(bound["media_type"]),
-            schema_id=str(bound["schema_id"]),
-            asset_ids=tuple(str(item) for item in bound["asset_ids"]),
-            normalized_fields=tuple(str(item) for item in bound["normalized_fields"]),
-            coverage=dict(bound["coverage"]),
-            row_count=int(bound["row_count"]),
-            partition_spec=dict(bound["partition_spec"]),
-            price_convention=dict(bound["price_convention"]),
-            lineage=lineage,
-            created_by=data_ref.created_by,
-            access_scope=tuple(str(item) for item in bound["access_scope"]),
+            media_type=expected["media_type"],
+            schema_id=expected["schema_id"],
+            asset_ids=expected["asset_ids"],
+            normalized_fields=expected["normalized_fields"],
+            coverage=expected["coverage"],
+            row_count=expected["row_count"],
+            partition_spec=expected["partition_spec"],
+            price_convention=expected["price_convention"],
+            lineage=expected["lineage"],
+            created_by=expected["created_by"],
+            access_scope=expected["access_scope"],
         )
-    except (FileExistsError, OSError, PermissionError, TypeError, ValueError) as error:
+    except FileExistsError:
+        try:
+            existing = data_store.get_ref(
+                tenant_id=expected["tenant_id"], data_asset_id=expected["data_asset_id"],
+            )
+        except (AttributeError, FileNotFoundError, OSError, PermissionError, TypeError, ValueError) as error:
+            raise ProjectRequestError("datafetcher", "已有交易日历绑定行情未通过完整性校验。") from error
+        from runtime.contracts.contract_types import canonical_json
+
+        if any(
+            canonical_json(getattr(existing, key)) != canonical_json(value)
+            for key, value in expected.items()
+        ):
+            raise ProjectRequestError("datafetcher", "已有交易日历绑定行情与本次请求不一致，不能复用。")
+        return existing
+    except (OSError, PermissionError, TypeError, ValueError) as error:
         raise ProjectRequestError("datafetcher", "Host无法提交经验证交易日历绑定的历史行情。") from error
 
 
@@ -966,12 +1057,13 @@ def run_module_request(
         product_id, identity=identity, term_overrides=term_overrides,
     )
     if requires_market_history or requires_calendar:
-        token = os.environ.get("IFIND_REFRESH_TOKEN", "").strip()
+        token = _local_ifind_refresh_token(project_root)
         if not token:
             raise ProjectRequestError(
                 "configuration", "含观察条款的单模块运行或行情估值需要iFind Refresh Token。",
                 missing=("iFind Refresh Token",),
             )
+        _activate_ifind_refresh_token(token)
         if ifind_probe is not None:
             try:
                 ifind_probe(token)
@@ -1071,6 +1163,300 @@ def run_module_request(
     }
 
 
+def _quote_variant_plan(
+    body: Mapping[str, Any],
+    *,
+    candidates: Sequence[Mapping[str, Any]],
+    paths: Any,
+    task_hash: str,
+) -> list[dict[str, Any]]:
+    """Turn one conversational quote decision into independently frozen contracts."""
+
+    base_terms = _mapping_field(body, "term_overrides")
+    base_pricing = _mapping_field(body, "pricing_config")
+    supplied = body.get("quote_variants")
+    if supplied is None:
+        rows: Sequence[Mapping[str, Any]] = tuple(candidates)
+    elif isinstance(supplied, list) and supplied:
+        rows = tuple(item for item in supplied if isinstance(item, Mapping))
+        if len(rows) != len(supplied):
+            raise ProjectRequestError("request", "Quote参数版本必须是对象数组。")
+    else:
+        raise ProjectRequestError("request", "组合Quote至少需要一个参数版本。")
+
+    if not candidates:
+        raise ProjectRequestError("recommender", "当前需求没有可用于报价的推荐结构。")
+    default = dict(candidates[0])
+    variants: list[dict[str, Any]] = []
+    for index, raw in enumerate(rows, start=1):
+        selection = {
+            key: raw[key]
+            for key in _AGENT_SELECTION_FIELDS
+            if key in raw
+        }
+        if selection:
+            baseline = {
+                key: default.get(key)
+                for key in _AGENT_SELECTION_FIELDS
+                if key in default
+            }
+            candidate = _agent_native_candidate(
+                {**baseline, **selection}, paths=paths, task_hash=f"{task_hash}-quote-{index:02d}",
+            )
+        else:
+            candidate = dict(raw)
+            if not candidate.get("product_id") or not candidate.get("underlyings"):
+                candidate = dict(default)
+        candidate["candidate_id"] = f"quote-{task_hash}-{index:02d}"
+
+        raw_terms = raw.get("term_overrides", {})
+        raw_pricing = raw.get("pricing_config", {})
+        if not isinstance(raw_terms, Mapping) or not isinstance(raw_pricing, Mapping):
+            raise ProjectRequestError("request", "Quote参数版本中的term_overrides和pricing_config必须是对象。")
+        label = str(raw.get("label") or _horizon_label(raw_terms.get("T")) or f"参数版本{index}").strip()
+        variants.append({
+            "candidate": candidate,
+            "term_overrides": {**base_terms, **dict(raw_terms)},
+            "pricing_config": {**base_pricing, **dict(raw_pricing)},
+            "label": label or f"参数版本{index}",
+        })
+    return variants
+
+
+def _quote_variant_error(error: Exception) -> str:
+    """Return a concise public reason without exposing a traceback or local paths."""
+
+    if isinstance(error, ProjectRequestError):
+        message = str(error).replace("\n", " ").strip()
+        return message[:240] if message else "定价未形成可验证运行结果。"
+    from runtime.errors import error_info
+
+    return error_info(error, stage="pricer").message
+
+
+def _run_quote_delivery(
+    *,
+    body: Mapping[str, Any],
+    prompt: str,
+    case: Any,
+    candidates: Sequence[Mapping[str, Any]],
+    paths: Any,
+    layout: LocalProjectLayout,
+    authority: LocalHostAuthority,
+    result_store: LocalResultStore,
+    catalog_version: str,
+    progress: Callable[[Mapping[str, Any]], None] | None,
+) -> dict[str, Any]:
+    """Create one Quote from all recommended structures and parameter variants.
+
+    Quote rows are generated from verified Pricer runs.  They are not a manual
+    picker over old results, although those saved runs remain reusable later.
+    """
+
+    task_hash = case.task_id.removeprefix("project-")
+    task_id = case.task_id
+    analysis_case_id = case.analysis_case_id
+    variants = _quote_variant_plan(body, candidates=candidates, paths=paths, task_hash=task_hash)
+    default_horizon = _horizon_years(case.confirmed_constraints.get("horizon"))
+    data_store = importlib.import_module("runtime.adapters.local_store").LocalDataStore(layout.data_root)
+    history_cache: dict[tuple[str, ...], tuple[DataAssetRef, str]] = {}
+    calendar_cache: dict[tuple[tuple[str, ...], str, float], DataAssetRef] = {}
+    bound_history_cache: dict[tuple[str, str], DataAssetRef] = {}
+    report_candidates: list[dict[str, Any]] = []
+    quote_items: list[dict[str, Any]] = []
+    completed_runs: dict[str, dict[str, Any]] = {}
+    failures: dict[str, str] = {}
+    history_start, _ = _data_window_dates({})
+
+    for index, variant in enumerate(variants, start=1):
+        candidate = dict(variant["candidate"])
+        product_id = str(candidate["product_id"])
+        underlyings = tuple(str(item) for item in candidate["underlyings"])
+        terms = dict(variant["term_overrides"])
+        if default_horizon is not None and "T" not in terms:
+            terms["T"] = default_horizon
+        pricing_config = {
+            "valuation_date": str(variant["pricing_config"].get("valuation_date") or date.today().isoformat()),
+            "path_count": 10,
+            **dict(variant["pricing_config"]),
+        }
+        valuation_date = str(pricing_config["valuation_date"])
+        label = str(variant["label"])
+        try:
+            calendar_ref: DataAssetRef | None = None
+            requires_calendar = _request_requires_trading_calendar(
+                product_id, identity={"underlyings": list(underlyings)}, term_overrides=terms,
+            )
+            if requires_calendar:
+                try:
+                    horizon = float(terms.get("T", default_horizon or 1.0))
+                except (TypeError, ValueError) as error:
+                    raise ProjectRequestError("request", "Quote期限T必须为有效数字。") from error
+                calendar_key = (underlyings, valuation_date, horizon)
+                calendar_ref = calendar_cache.get(calendar_key)
+                if calendar_ref is None:
+                    calendar_ref = _fetch_local_calendar_asset(
+                        layout=layout, authority=authority, task_id=task_id, underlyings=underlyings,
+                        valuation_date=valuation_date, horizon_years=horizon,
+                        request_id=f"calendar-{task_hash}-{index:02d}", progress=progress,
+                        history_start_date=history_start.isoformat(),
+                    )
+                    calendar_cache[calendar_key] = calendar_ref
+
+            history = history_cache.get(underlyings)
+            if history is None:
+                history = _fetch_local_data_asset(
+                    layout=layout, authority=authority, task_id=task_id, underlyings=underlyings,
+                    data_window={}, request_id=f"data-{task_hash}-{index:02d}", progress=progress,
+                )
+                history_cache[underlyings] = history
+            data_ref, market_as_of_date = history
+            if calendar_ref is not None:
+                bound_key = (data_ref.storage_ref, calendar_ref.storage_ref)
+                bound_ref = bound_history_cache.get(bound_key)
+                if bound_ref is None:
+                    bound_ref = _persist_calendar_bound_history_asset(
+                        data_ref=data_ref, calendar_ref=calendar_ref, data_store=data_store,
+                        principal_id=authority.principal_id,
+                    )
+                    bound_history_cache[bound_key] = bound_ref
+                data_ref = bound_ref
+
+            prepared = prepare_compute_request(
+                "pricer",
+                {
+                    "product_id": product_id,
+                    "identity": {"underlyings": list(underlyings), "contract_start_date": market_as_of_date},
+                    "term_overrides": terms,
+                    "pricing_config": pricing_config,
+                },
+                data_refs=tuple(
+                    asdict(reference)
+                    for reference in (data_ref, calendar_ref)
+                    if reference is not None
+                ),
+                data_store=data_store,
+            )
+            contract = ResolvedContract(**dict(prepared["resolved_contract"]))
+            _progress(progress, "pricer", f"正在计算{label}的参考报价")
+            context = authority.context(
+                "pricer", task_id=task_id, analysis_case_id=analysis_case_id,
+                candidate_id=str(candidate["candidate_id"]), catalog_version=catalog_version,
+                contract_fingerprint=contract.contract_fingerprint,
+            )
+            pricing = call_local_tool(
+                "pricer", dict(prepared["request"]), authority=authority,
+                request_id=f"pricer-{task_hash}-{index:02d}", host_context=context,
+                result_store=result_store, data_store=data_store,
+            )
+            raw_ref = pricing.get("module_run_ref")
+            if pricing.get("ok") is not True or not isinstance(raw_ref, Mapping):
+                raise ProjectRequestError("pricer", str(pricing.get("message") or "定价未形成可验证运行结果。"))
+            reference = ModuleRunRef(**dict(raw_ref))
+            result_store.verify_module_run(reference, tenant_id=authority.tenant_id)
+            identity = dict(contract.identity)
+            report_candidate = {
+                **candidate,
+                "product_name": str(identity["name_zh"]),
+                "product_version": contract.product_version,
+                "product_version_content_hash": contract.product_snapshot_hash,
+                "catalog_content_hash": contract.registry_snapshot_hash,
+                "contract_fingerprint": contract.contract_fingerprint,
+                "analysis_basis_id": f"basis-{contract.contract_fingerprint[:20]}",
+                "underlyings": list(contract.underlyings),
+                "currency": contract.currency,
+                "price_convention": {"spot": "close", "contract_basis": identity["price_convention"]},
+                "module_run_refs": {"pricing": dict(raw_ref)},
+                "module_run_options": {"pricing": [dict(raw_ref)]},
+            }
+            report_candidates.append(report_candidate)
+            quote_items.append({
+                "candidate_id": report_candidate["candidate_id"],
+                "module": "pricing",
+                "module_run_ref": dict(raw_ref),
+            })
+            completed_runs[report_candidate["candidate_id"]] = {"pricing": dict(raw_ref)}
+            _progress(progress, "pricer", f"{label}的参考报价已完成", "completed")
+        except Exception as error:
+            failures[label] = _quote_variant_error(error)
+            _progress(progress, "pricer", f"{label}未完成定价：{failures[label]}", "failed")
+
+    if failures:
+        details = "；".join(f"{label}：{message}" for label, message in failures.items())
+        raise ProjectRequestError("pricer", f"以下报价参数未能完成；未生成不完整参考报价：{details}")
+    source_id = f"source-{task_hash}"
+    source = {
+        "source_id": source_id,
+        "tenant_id": authority.tenant_id,
+        "task_id": task_id,
+        "analysis_case_id": analysis_case_id,
+        "catalog_version": catalog_version,
+        "catalog_content_hash": report_candidates[0]["catalog_content_hash"],
+        "candidates": report_candidates,
+    }
+    selection = {
+        "source_id": source_id,
+        "quote_items": [
+            {"source_id": source_id, **item}
+            for item in quote_items
+        ],
+        "output_type": "quote",
+        "format": "html",
+        "audience": "professional",
+        "report_run_id": f"quote-{task_hash}",
+        "metadata": {
+            "title": str(body.get("title") or "组合参考报价"),
+            "as_of_date": str(date.today().isoformat()),
+        },
+    }
+    from modules.reporter.artifact_validator import validate_report_run_directory
+    from modules.reporter.service import build_selected_request, call_tool as reporter_call_tool
+
+    selection_port = _SelectionPort(source)
+    expected_request = build_selected_request(
+        selection, tenant_id=authority.tenant_id, selection_port=selection_port,
+    )
+    _progress(progress, "reporter", "正在汇总全部定价版本并生成组合参考报价")
+    report = dict(reporter_call_tool(
+        {"action": "run", "selection": selection},
+        result_store=result_store, designer_port=_DesignerPort(), selection_port=selection_port,
+        tenant_id=authority.tenant_id, output_root=layout.result_root,
+    ))
+    if report.get("ok") is not True or report.get("status") not in {"completed", "partial"}:
+        raise ProjectRequestError("reporter", str(report.get("message") or "Reporter或Designer未能生成组合参考报价。"))
+    report_name = str((report.get("output") or {}).get("report") or "")
+    report_path = (layout.result_root / task_id / selection["report_run_id"] / report_name).resolve()
+    if not report_name or not report_path.is_file() or layout.result_root not in report_path.parents:
+        raise ProjectRequestError("reporter", "组合参考报价缺少受控交付文件。")
+    try:
+        validate_report_run_directory(report_path.parent, expected_request=expected_request)
+    except Exception as error:
+        raise ProjectRequestError("reporter", "组合参考报价未通过完整性校验，请检查运行日志。") from error
+    _progress(progress, "reporter", "Reporter和Designer已完成组合参考报价", "completed")
+    primary = report_candidates[0]
+    return {
+        "ok": True,
+        "status": "completed",
+        "message": "组合参考报价已完成。",
+        "request": {"prompt": prompt, "output_type": "quote", "format": "html"},
+        "constraints": dict(case.confirmed_constraints),
+        "recommendation": {
+            "candidate_id": primary["candidate_id"],
+            "product_id": primary["product_id"],
+            "product_name": primary["product_name"],
+            "reason": primary.get("reason"),
+            "main_risks": primary.get("main_risks", []),
+            "quote_variants": [
+                {"product_id": item["product_id"], "product_name": item["product_name"], "contract_fingerprint": item["contract_fingerprint"]}
+                for item in report_candidates
+            ],
+        },
+        "module_runs": completed_runs,
+        "module_failures": failures,
+        "report": {"output_type": "quote", "format": "html", "coverage_status": "complete", "path": str(report_path)},
+    }
+
+
 def run_project_request(
     request: str | Mapping[str, Any],
     *,
@@ -1104,15 +1490,11 @@ def run_project_request(
     output_format = str(body.get("format") or "html").strip().lower()
     if output_format != "html":
         raise ProjectRequestError("request", "项目级自然语言入口当前仅交付HTML格式。")
-    layout_name = None if output_type in {"card", "quote"} else str(body.get("html_report_layout") or "continuous").strip().lower()
-    if layout_name is not None and layout_name != "continuous":
-        raise ProjectRequestError("request", "HTML详细报告固定为连续正文，不提供目录版。")
-
     model_selection = _mapping_field(body, "selection") if "selection" in body else {}
     if model_selection:
-        config = _configuration(require_ifind=True)
+        config = _configuration(require_ifind=True, project_root=project_root)
     elif agent_port is None:
-        config = _configuration(require_ifind=False)
+        config = _configuration(require_ifind=False, project_root=project_root)
         if config["mode"] == "host":
             _progress(progress, "host", "正在由受控Host执行推荐与报告流程")
             response = JsonHttpEndpoint(config["host_url"]).post("project/run", body)
@@ -1125,13 +1507,21 @@ def run_project_request(
             "不调用第二个模型服务。",
         )
     else:
-        config = {"mode": "direct", "ifind": os.environ.get("IFIND_REFRESH_TOKEN", "test-refresh-token")}
+        ifind = _local_ifind_refresh_token(project_root)
+        if not ifind:
+            raise ProjectRequestError(
+                "configuration",
+                "iFind尚未在项目memory.md中配置；请先确认保存Refresh Token后重试。",
+                missing=("iFind Refresh Token",),
+            )
+        config = {"mode": "direct", "ifind": ifind}
     if config["mode"] == "host":
         _progress(progress, "host", "正在由受控Host执行推荐与报告流程")
         response = JsonHttpEndpoint(config["host_url"]).post("project/run", body)
         if response.get("ok") is not True:
             raise ProjectRequestError("host", str(response.get("message") or "受控Host未能完成研究请求。"))
         return response
+    _activate_ifind_refresh_token(config.get("ifind", ""))
 
     paths = bootstrap_runtime()
     layout = LocalProjectLayout.create(skill_root=paths.project_root, project_root=project_root or Path.cwd())
@@ -1163,6 +1553,7 @@ def run_project_request(
     if model_selection:
         _progress(progress, "recommender", "正在验证当前对话已选择的产品结构")
         candidate = _agent_native_candidate(model_selection, paths=paths, task_hash=task_hash)
+        quote_candidates = [candidate]
         _progress(progress, "recommender", "已验证当前对话选择，未调用第二个模型服务", "completed")
     else:
         if agent_port is None:
@@ -1184,7 +1575,19 @@ def run_project_request(
         if recommendation.get("status") == "pending_question":
             raise ProjectRequestError("recommender", str(recommendation.get("next_question") or "研究条件仍不完整。"))
         candidate = _primary_ready_candidate(recommendation)
+        quote_candidates = [
+            dict(item)
+            for item in recommendation.get("candidates", ())
+            if isinstance(item, Mapping) and item.get("library_status") == "ready" and not item.get("missing_inputs")
+        ] or [candidate]
         _progress(progress, "recommender", "已完成候选结构审阅", "completed")
+
+    if output_type == "quote":
+        return _run_quote_delivery(
+            body=body, prompt=prompt, case=case, candidates=quote_candidates,
+            paths=paths, layout=layout, authority=authority, result_store=result_store,
+            catalog_version=catalog_version, progress=progress,
+        )
 
     product_id = str(candidate["product_id"])
     underlyings = tuple(str(item) for item in candidate.get("underlyings", ()))
@@ -1353,6 +1756,7 @@ def run_project_request(
         selection = {
             "source_id": source_id,
             "quote_items": [{
+                "source_id": source_id,
                 "candidate_id": report_candidate["candidate_id"],
                 "module": "payoff",
                 "module_run_ref": dict(raw_ref),
@@ -1440,7 +1844,7 @@ def run_project_request(
         "ok": True,
         "status": "completed" if full_coverage else "partial",
         "message": f"期权结构推荐和{delivery_name}已完成。" if full_coverage else f"期权结构推荐和{delivery_name}已完成，但部分计算模块未完成，交付物已明确标注缺口。",
-        "request": {"prompt": prompt, "output_type": output_type, "format": "html", "html_report_layout": layout_name},
+        "request": {"prompt": prompt, "output_type": output_type, "format": "html"},
         "constraints": {
             **dict(case.confirmed_constraints),
             **({"horizon": frozen_horizon} if frozen_horizon else {}),

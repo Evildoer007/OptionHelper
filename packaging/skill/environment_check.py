@@ -4,16 +4,32 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime
+from getpass import getpass
 from importlib import metadata
 import json
 import os
 from pathlib import Path
 import re
 import sys
+import tempfile
 from typing import Callable, Mapping
 
 
+# Configuration is executed from the installed Skill as well.  Do not leave
+# interpreter caches beside its signed content manifest.
+sys.dont_write_bytecode = True
+
+
 _REQUIREMENT = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*)==([^\s#]+)$")
+_MEMORY_FILENAME = "memory.md"
+_MEMORY_MAX_BYTES = 16 * 1024
+_MEMORY_TOKEN_LINE = re.compile(r"^\s*-\s*IFIND_REFRESH_TOKEN\s*:\s*(\S+)\s*$", re.MULTILINE)
+PYPI_MIRROR_URL = "https://pypi.tuna.tsinghua.edu.cn/simple"
+
+
+class MemoryConfigurationError(ValueError):
+    """Raised when the project-local memory file is not safe to consume."""
 
 
 def installed_version(name: str) -> str:
@@ -65,20 +81,147 @@ def check_dependencies(
     }
 
 
-def check_data_api(environ: Mapping[str, str] | None = None) -> dict[str, object]:
+def _project_root(project_root: Path | None = None) -> Path:
+    return (project_root or Path.cwd()).expanduser().resolve()
+
+
+def _assert_memory_outside_skill(project_root: Path, skill_root: Path | None) -> None:
+    if skill_root is None:
+        return
+    installation = skill_root.expanduser().resolve()
+    memory_root = project_root / ".optionhelper"
+    try:
+        memory_root.relative_to(installation)
+    except ValueError:
+        return
+    raise MemoryConfigurationError("项目memory.md不得写入Skill安装目录")
+
+
+def _memory_path(project_root: Path | None = None) -> Path:
+    return _project_root(project_root) / ".optionhelper" / _MEMORY_FILENAME
+
+
+def _read_memory_token(
+    project_root: Path | None = None,
+    *,
+    skill_root: Path | None = None,
+) -> str | None:
+    project = _project_root(project_root)
+    _assert_memory_outside_skill(project, skill_root)
+    path = _memory_path(project)
+    if path.parent.is_symlink():
+        raise MemoryConfigurationError("本地配置目录不能是符号链接")
+    if path.is_symlink():
+        raise MemoryConfigurationError("本地memory.md不是普通文件")
+    if not path.exists():
+        return None
+    if not path.is_file():
+        raise MemoryConfigurationError("本地memory.md不是普通文件")
+    try:
+        size = path.stat().st_size
+    except OSError as error:
+        raise MemoryConfigurationError("本地memory.md不可读取") from error
+    if size > _MEMORY_MAX_BYTES:
+        raise MemoryConfigurationError("本地memory.md超出允许大小")
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as error:
+        raise MemoryConfigurationError("本地memory.md编码或读取失败") from error
+    matches = _MEMORY_TOKEN_LINE.findall(text)
+    if len(matches) != 1 or any(character.isspace() for character in matches[0]):
+        raise MemoryConfigurationError("本地memory.md缺少有效的IFIND_REFRESH_TOKEN配置")
+    return matches[0]
+
+
+def load_ifind_refresh_token(
+    *,
+    project_root: Path | None = None,
+    skill_root: Path | None = None,
+) -> str | None:
+    """Read the user-confirmed project-local token without exposing it."""
+
+    return _read_memory_token(project_root, skill_root=skill_root)
+
+
+def check_data_api(
+    *,
+    project_root: Path | None = None,
+    skill_root: Path | None = None,
+) -> dict[str, object]:
     """Check iFind availability without exposing credentials or contacting a provider."""
 
-    values = os.environ if environ is None else environ
-    configured = bool(values.get("IFIND_REFRESH_TOKEN", "").strip())
+    try:
+        configured = bool(load_ifind_refresh_token(
+            project_root=project_root,
+            skill_root=skill_root,
+        ))
+        status = "configured" if configured else "missing"
+    except MemoryConfigurationError:
+        configured = False
+        status = "invalid"
     return {
         "ok": configured,
         "data_provider": {
             "name": "iFind API",
             "credential": "IFIND_REFRESH_TOKEN",
-            "status": "configured" if configured else "missing",
+            "status": status,
         },
         "note": "预检只检查iFind是否已安全配置，不发起网络或数据请求。",
     }
+
+
+def save_ifind_refresh_token(
+    token: str,
+    project_root: Path | None = None,
+    *,
+    skill_root: Path | None = None,
+) -> Path:
+    """Atomically save a user-confirmed token in the project-local memory file."""
+
+    if not isinstance(token, str) or not token.strip() or any(character.isspace() for character in token):
+        raise ValueError("IFIND_REFRESH_TOKEN不能为空且不能包含空白字符")
+    if len(token.encode("utf-8")) > _MEMORY_MAX_BYTES:
+        raise ValueError("IFIND_REFRESH_TOKEN超出允许大小")
+    project = _project_root(project_root)
+    _assert_memory_outside_skill(project, skill_root)
+    path = _memory_path(project)
+    directory = path.parent
+    if directory.exists() and directory.is_symlink():
+        raise MemoryConfigurationError("本地配置目录不能是符号链接")
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        os.chmod(directory, 0o700)
+    except OSError:
+        pass
+    if path.exists() and (path.is_symlink() or not path.is_file()):
+        raise MemoryConfigurationError("本地memory.md不是普通文件")
+    timestamp = datetime.now().astimezone().isoformat(timespec="seconds")
+    content = (
+        "# OptionHelper本地配置\n\n"
+        "## iFinD数据API\n\n"
+        f"- IFIND_REFRESH_TOKEN: {token}\n"
+        f"- updated_at: {timestamp}\n"
+    )
+    temporary_name: str | None = None
+    descriptor, temporary_name = tempfile.mkstemp(prefix=".memory-", suffix=".tmp", dir=directory)
+    try:
+        try:
+            os.fchmod(descriptor, 0o600)
+        except (AttributeError, OSError):
+            pass
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary_name, path)
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
+    finally:
+        if temporary_name and os.path.exists(temporary_name):
+            os.unlink(temporary_name)
+    return path
 
 
 def _readiness_guidance(
@@ -92,10 +235,12 @@ def _readiness_guidance(
             return "当前Python不受支持。请先确认安装或恢复Python3.11或更高版本的环境，重新选择解释器后再检查。"
         return (
             "锁定依赖未就绪。请先确认安装，再使用当前解释器执行："
-            f'"{sys.executable}" -m pip install -r "{requirements_path}"；安装后重新运行统一就绪检查。'
+            f'"{sys.executable}" -m pip install -r "{requirements_path}" '
+            f'--index-url "{PYPI_MIRROR_URL}"；安装后重新运行统一就绪检查。'
+            "清华镜像不可用时保留原始错误，不自动切换其他环境或软件源。"
         )
     if next_action == "configure_data_api":
-        return "iFind尚未配置。请在本机安全配置IFIND_REFRESH_TOKEN后重新检查；无需提供Access Token。"
+        return "iFind尚未配置。请在本机安全配置IFIND_REFRESH_TOKEN，或在项目目录运行environment_check.py --save-ifind-refresh-token后重新检查；无需提供Access Token。"
     if next_action == "fix_store":
         return "项目Store不可用。请将data、result和.optionhelper/runtime设在Skill安装目录之外后重新检查。"
     return "统一就绪检查通过，可进入工作流。"
@@ -110,19 +255,19 @@ def check_readiness(
     runtime_root: str | None = None,
     project_root: Path | None = None,
     version_lookup: Callable[[str], str] = installed_version,
-    environ: Mapping[str, str] | None = None,
 ) -> dict[str, object]:
     """Return the single first-use gate for every OptionHelper workflow."""
 
+    project = (project_root or Path.cwd()).expanduser().resolve()
     dependencies = check_dependencies(requirements_path, version_lookup=version_lookup)
     stores = check_external_stores(
         skill_root,
         data_root,
         result_root,
         runtime_root=runtime_root,
-        project_root=project_root,
+        project_root=project,
     )
-    data_api = check_data_api(environ)
+    data_api = check_data_api(project_root=project, skill_root=skill_root)
     next_action = next(
         (
             action
@@ -210,7 +355,17 @@ def main() -> None:
     parser.add_argument("--check-store", action="store_true")
     parser.add_argument("--check-data-api", action="store_true")
     parser.add_argument("--check-readiness", action="store_true")
+    parser.add_argument("--save-ifind-refresh-token", action="store_true")
     args = parser.parse_args()
+    if args.save_ifind_refresh_token:
+        try:
+            token = getpass("请输入iFinD Refresh Token（不会回显）：")
+            path = save_ifind_refresh_token(token, args.project_root, skill_root=args.skill_root)
+            print(json.dumps({"ok": True, "data_api": {"status": "configured", "storage": str(path)}}, ensure_ascii=False))
+        except (OSError, ValueError, MemoryConfigurationError) as error:
+            print(json.dumps({"ok": False, "data_api": {"status": "invalid", "reason": str(error)}}, ensure_ascii=False))
+            raise SystemExit(1)
+        return
     if args.check_readiness:
         try:
             report = check_readiness(
@@ -252,7 +407,7 @@ def main() -> None:
         )
         ok = ok and bool(report["stores"]["ok"])
     if args.check_data_api:
-        report["data_api"] = check_data_api()
+        report["data_api"] = check_data_api(project_root=args.project_root, skill_root=args.skill_root)
         ok = ok and bool(report["data_api"]["ok"])
     report["ok"] = ok
     print(json.dumps(report, ensure_ascii=False, indent=2))

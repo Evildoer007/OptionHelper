@@ -381,6 +381,11 @@ def _reference_level(contract: ResolvedContract) -> float:
 
 def _raw_reference(contract: ResolvedContract) -> np.ndarray:
     values = contract.identity.get("reference_prices")
+    if values is None and "S0" not in contract.terms and "S0Vec" not in contract.terms:
+        # 方差互换的经济条款只依赖收益率/已实现波动率，不定义合同初始价格。
+        # 候选路径仍需要一个正的原始价格起点来构造数值序列；任意统一正基准
+        # 在共享解释器中都会被同一路径首点归一化，因而不改变该类合同的现金流。
+        return np.full(len(contract.underlyings), 100.0, dtype=float)
     if not isinstance(values, Mapping) or set(values) != set(contract.underlyings):
         raise DomainCompileError("ResolvedContract必须提供逐标的reference_prices")
     return np.asarray([values[asset] for asset in contract.underlyings], dtype=float)

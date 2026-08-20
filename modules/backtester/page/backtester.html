@@ -7,6 +7,7 @@
     <link rel="icon" href="../../icons/optionhelper-app-icon-tile-light.svg">
     <link rel="stylesheet" href="./ui/style.css">
     <link rel="stylesheet" href="./ui/controls.css">
+    <link rel="stylesheet" href="../module-host-presentation.css">
     <script src="./vendor/echarts.min.js"></script>
     <style>
       .backtest-app .canvas-panel { min-height:0; grid-template-rows:50px auto minmax(0,1fr) 31px; }
@@ -24,14 +25,15 @@
     </style>
     <style>
       .backtest-app .canvas-panel { grid-template-rows: 50px auto minmax(0, 1fr) 31px; }
-      .backtest-app .canvas-viewport { padding: 24px; background: var(--color-blue-gray-soft); }
-      .backtest-app .analysis-sheet { width: min(1320px, 100%); margin: 0 auto; padding: 24px; border: 1px solid var(--color-rule); background: var(--color-surface); box-shadow: none; }
-      .backtest-app .sheet-heading { padding-bottom: 18px; border-bottom-color: var(--color-rule); }
+      .backtest-app .canvas-viewport { padding: 0 32px 56px; background: var(--paper); }
+      .backtest-app .analysis-sheet { width: min(1320px, 100%); margin: 0 auto; padding: 32px 0 56px; border: 0; background: transparent; box-shadow: none; }
+      .backtest-app .sheet-heading { padding-bottom: 22px; border-bottom-color: var(--rule-soft); }
       .backtest-app .section-kicker { color: var(--red-deep); font-family: var(--font); letter-spacing: .02em; }
-      .backtest-app .status-tag { border-color: var(--color-rule); border-radius: 999px; background: var(--color-red-surface); color: var(--muted); font-family: var(--font); }
-      .backtest-app .summary-grid { border-color: var(--color-rule); background: var(--color-rule); }
+      .backtest-app .status-tag { border-color: var(--rule); border-radius: 8px; background: var(--surface); color: var(--muted); font-family: var(--font); }
+      .backtest-app .status-tag.ok { border-color: var(--color-chart-gray); background: var(--paper); color: var(--color-ink-soft); }
+      .backtest-app .summary-grid { border-color: var(--rule-soft); background: transparent; }
       .backtest-app .summary-item { background: var(--color-surface); }
-      .backtest-app .summary-item.primary { background: var(--color-brand-red); }
+      .backtest-app .summary-item.primary { background: var(--red); }
       .backtest-app .metric-strip > div,
       .backtest-app .chart-figure,
       .backtest-app .ledger,
@@ -39,10 +41,10 @@
       .backtest-app .chart-figure figcaption { border-bottom: 1px solid var(--color-ground); }
       .backtest-app .profile-note,
       .backtest-app .module-note,
-      .backtest-app .drag-hint { border: 1px solid var(--color-rule); border-left: 1px solid var(--color-rule); border-radius: 9px; background: var(--color-red-surface); }
+      .backtest-app .drag-hint { border: 1px solid var(--rule); border-left: 1px solid var(--rule); border-radius: 8px; background: var(--paper); }
       .backtest-app .table-wrap,
       .backtest-app .audit-details { border-color: var(--color-rule); border-radius: 9px; }
-      .backtest-app .data-table th { background: var(--color-blue-gray-soft); color: var(--color-ink-soft); }
+      .backtest-app .data-table th { background: var(--wash); color: var(--color-ink-soft); }
       .backtest-app .audit-details pre { background: var(--color-ink); font-family: var(--font); }
       .backtest-app .control-field input,
       .backtest-app .control-field select,
@@ -91,6 +93,7 @@
         </form></aside>
       </main>
     </div>
+    <script src="../module-host-presentation.js"></script>
     <script src="../module-host-bridge.js"></script>
     <script src="./backtester.js"></script>
     <script>

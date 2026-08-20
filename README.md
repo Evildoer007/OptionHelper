@@ -25,7 +25,14 @@ export OPTIONHELPER_PYTHON=/absolute/path/to/python
 "$OPTIONHELPER_PYTHON" --version
 ```
 
-如果不知道可用路径，可直接运行一次macOS构建入口。首次运行只枚举候选解释器并退出，不会擅自运行某个候选。选定后在终端执行一次`export OPTIONHELPER_PYTHON=...`并重新运行，构建入口会保存这次本机选择：
+Windows（PowerShell）：
+
+```powershell
+$env:OPTIONHELPER_PYTHON = 'C:\Python311\python.exe'
+& $env:OPTIONHELPER_PYTHON --version
+```
+
+如果不知道可用路径，可直接运行一次macOS构建入口。首次运行只枚举候选解释器并退出，不会擅自运行某个候选。macOS/Linux选定后在终端执行一次`export OPTIONHELPER_PYTHON=...`；Windows请在PowerShell设置`$env:OPTIONHELPER_PYTHON=...`，再运行对应入口。
 
 ```bash
 ./build-optionhelper-macos.command
@@ -38,12 +45,22 @@ Windows运行`build-optionhelper-windows.bat`时采用相同原则，并通过`p
 运行依赖锁定在[core/requirements.lock](core/requirements.lock)，App封装依赖锁定在[packaging/build-requirements.lock](packaging/build-requirements.lock)。安装和检查命令如下：
 
 ```bash
-"$OPTIONHELPER_PYTHON" -m pip install -r core/requirements.lock -r packaging/build-requirements.lock
+"$OPTIONHELPER_PYTHON" -m pip install -r core/requirements.lock -r packaging/build-requirements.lock \
+  --index-url "https://pypi.tuna.tsinghua.edu.cn/simple"
 "$OPTIONHELPER_PYTHON" packaging/skill/environment_check.py --requirements core/requirements.lock --check-dependencies
 "$OPTIONHELPER_PYTHON" packaging/skill/environment_check.py --requirements packaging/build-requirements.lock --check-dependencies
 ```
 
-依赖检查必须全部显示`ok`。版本不一致时构建会停止，不会发布半成品。
+Windows（PowerShell）：
+
+```powershell
+& $env:OPTIONHELPER_PYTHON -m pip install -r core\requirements.lock -r packaging\build-requirements.lock `
+  --index-url "https://pypi.tuna.tsinghua.edu.cn/simple"
+& $env:OPTIONHELPER_PYTHON packaging\skill\environment_check.py --requirements core\requirements.lock --check-dependencies
+& $env:OPTIONHELPER_PYTHON packaging\skill\environment_check.py --requirements packaging\build-requirements.lock --check-dependencies
+```
+
+依赖检查必须全部显示`ok`。缺依赖或版本不一致时先停止并显示诊断；只有用户明确确认后，才使用已选解释器执行安装，不会自动换环境或发布半成品。
 
 ## 目录与权威来源
 
@@ -138,7 +155,7 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.:core/src "$OPTIONHELPER_PYTHON" packaging
 
 ## 报告交付
 
-完整研究报告固定为连续A4正文、无章节目录，HTML和PDF均按同一正文顺序呈现；章节和顺序为：核心结论、结构推荐、合同参数、收益结构、估值定价、历史回测、风险提示。研究简报Card固定呈现结构推荐、推荐理由、关键合同条款、估值摘要、回测摘要、主要风险，不含损益图。
+完整研究报告固定为连续A4正文；宽屏HTML提供左侧七章目录，PDF不显示目录，HTML和PDF按同一正文顺序呈现。章节和顺序为：核心结论、结构推荐、合同参数、收益结构、估值定价、历史回测、风险提示。研究简报Card固定呈现结构推荐、推荐理由、关键合同条款、估值摘要、回测摘要、主要风险，不含损益图。
 
 报告中的数字、单位、公式、图表和文字必须来自已验证的模块结果。Reporter与Designer不可补造缺失数据，也不可把内部JSON、字段名、运行引用或文件路径直接展示给用户。
 
