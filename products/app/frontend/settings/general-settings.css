@@ -1,0 +1,175 @@
+/* Native HTML port of DSH GeneralSection, LanguageRow and AppearanceRow.
+   The source components are React slots; the DOM below keeps their exact row
+   hierarchy and measurements while retaining OptionHelper's existing API. */
+.setup-page .dsh-general-section {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+}
+
+.setup-page .dsh-language-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 16px 0;
+  border-bottom: 1px solid var(--color-rule);
+}
+
+.setup-page .dsh-language-row__text {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: 4px;
+  padding-right: 48px;
+}
+
+.setup-page .dsh-general-title {
+  color: var(--color-ink);
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 22px;
+}
+
+.setup-page .dsh-language-menu {
+  position: relative;
+  display: inline-flex;
+  flex: 0 0 auto;
+}
+
+.setup-page .dsh-language-native {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  opacity: 0;
+  pointer-events: none;
+}
+
+.setup-page .dsh-language-selector {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 14px;
+  gap: 12px;
+  height: 36px;
+  border: 0;
+  border-radius: 18px;
+  background: var(--color-surface);
+  color: var(--color-ink);
+  font-size: 14px;
+  line-height: 22px;
+}
+
+.setup-page .dsh-language-selector:hover {
+  background: var(--color-ground);
+}
+
+.setup-page .dsh-language-selector:focus-visible {
+  outline: 2px solid var(--color-brand-red);
+  outline-offset: 2px;
+}
+
+.setup-page .dsh-language-menu__list {
+  box-sizing: border-box;
+  position: fixed;
+  z-index: 1100;
+  min-width: 218px;
+  max-width: 360px;
+  padding: 4px;
+  border: 1px solid var(--color-rule);
+  border-radius: 12px;
+  background: var(--color-surface);
+  box-shadow: 0 14px 30px var(--color-surface-shadow);
+}
+
+.setup-page .dsh-language-menu__item {
+  display: flex;
+  width: 100%;
+  min-height: 40px;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--color-ink);
+  font-size: 14px;
+  line-height: 22px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.setup-page .dsh-language-menu__item:hover,
+.setup-page .dsh-language-menu__item:focus-visible {
+  background: var(--color-blue-gray-soft);
+}
+
+.setup-page .dsh-language-menu__item[data-selected="true"]::after {
+  content: "✓";
+  flex: none;
+  margin-left: auto;
+  color: var(--color-ink);
+}
+
+.setup-page .dsh-appearance-row {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 16px 0;
+  border-bottom: 0;
+}
+
+.setup-page .dsh-theme-cubes {
+  display: flex;
+  align-items: stretch;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.setup-page .dsh-theme-cube {
+  box-sizing: border-box;
+  display: flex;
+  flex: 1 1 180px;
+  align-items: center;
+  flex-direction: column;
+  justify-content: center;
+  gap: 4px;
+  padding: 20px 32px;
+  border: 1px solid var(--color-rule);
+  border-radius: 16px;
+  background: transparent;
+  color: var(--color-ink);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 22px;
+  cursor: pointer;
+}
+
+.setup-page .dsh-theme-cube svg {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+}
+
+.setup-page .dsh-theme-cube:hover:not([aria-pressed="true"]) {
+  background: var(--color-blue-gray-soft);
+}
+
+.setup-page .dsh-theme-cube[aria-pressed="true"] {
+  border-color: var(--color-rule-strong);
+  background: var(--color-surface);
+}
+
+.setup-page .dsh-theme-cube:focus-visible {
+  outline: 2px solid var(--color-brand-red);
+  outline-offset: 2px;
+}
+
+.setup-page .dsh-general-status { margin: var(--space-md) 0 0; }
