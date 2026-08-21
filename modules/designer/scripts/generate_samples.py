@@ -18,12 +18,17 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from modules.designer import render
+from modules.designer.design_system_builder import build_app_token_stylesheet
 from modules.designer.models import DesignerInput
 
 
 def main() -> None:
     fixture = PROJECT_ROOT / "modules" / "designer" / "tests" / "fixtures" / "report-payload.example.json"
-    samples = PROJECT_ROOT / "modules" / "designer" / "assets" / "samples"
+    assets = PROJECT_ROOT / "modules" / "designer" / "assets"
+    samples = assets / "samples"
+    (assets / "themes" / "designer-token-vars.css").write_text(
+        build_app_token_stylesheet(), encoding="utf-8"
+    )
     payload = json.loads(fixture.read_text(encoding="utf-8"))
     for output_type in ("report", "card", "quote"):
         artifact = render(DesignerInput(payload=payload, output_type=output_type, asset_mode="portable"))

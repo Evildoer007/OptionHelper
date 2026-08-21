@@ -116,15 +116,10 @@ textarea:focus-visible {
   padding: 22px 18px;
   background: rgba(255, 255, 255, .92);
   overflow: auto;
-  scrollbar-color: rgba(158, 16, 39, .20) transparent;
 }
 
 .library-panel { border-right: 1px solid var(--rule); }
 .inspector-panel { border-left: 1px solid var(--rule); }
-.library-panel::-webkit-scrollbar,
-.inspector-panel::-webkit-scrollbar { width: 5px; }
-.library-panel::-webkit-scrollbar-thumb,
-.inspector-panel::-webkit-scrollbar-thumb { border-radius: 99px; background: rgba(158, 16, 39, .16); }
 
 .panel-kicker {
   margin: 0 0 8px;
@@ -254,6 +249,15 @@ textarea:focus-visible {
   background: var(--color-surface);
   box-shadow: 0 8px 24px rgba(68, 34, 42, .07);
 }
+
+/* DSH scrollbar contract, scoped to this hosted module document. */
+body { --oh-scrollbar-thumb: color-mix(in srgb, var(--color-ink) 14%, transparent); --oh-scrollbar-thumb-hover: color-mix(in srgb, var(--color-ink) 22%, transparent); --oh-scrollbar-size: 6px; }
+@supports not selector(::-webkit-scrollbar) { body, body * { scrollbar-width: thin; scrollbar-color: var(--oh-scrollbar-thumb) transparent; } }
+::-webkit-scrollbar { width: var(--oh-scrollbar-size); height: var(--oh-scrollbar-size); }
+::-webkit-scrollbar-track, ::-webkit-scrollbar-corner { background: transparent; }
+::-webkit-scrollbar-thumb { border:1px solid transparent; border-radius:999px; background:var(--oh-scrollbar-thumb); background-clip:padding-box; transition:background-color .16s ease; }
+::-webkit-scrollbar-thumb:hover { background: var(--oh-scrollbar-thumb-hover); }
+.library-panel, .inspector-panel, .canvas-viewport { scrollbar-gutter: stable; }
 
 .empty-canvas {
   display: flex;

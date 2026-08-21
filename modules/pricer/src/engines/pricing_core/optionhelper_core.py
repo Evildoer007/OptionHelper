@@ -31,7 +31,7 @@ def price(contract: ResolvedContract, pricing_config: Any, *, market_snapshot: M
         state = ObservedContractState.from_value(observed_contract_state, valuation_date=config.valuation_date)
     except ObservedStateError as error:
         raise PricingInputError(str(error)) from error
-    if contract.product_id in {"2.1", "2.2"}:
+    if contract.product_id in {"1.1", "1.2"}:
         try:
             state.validate_european_vanilla()
         except ObservedStateError as error:

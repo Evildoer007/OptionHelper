@@ -42,9 +42,48 @@ html[data-optionhelper-app-hosted="true"] {
   --wash: var(--color-blue-gray-soft);
   --font: var(--font-sans);
   --mono: var(--font-sans);
+  --oh-scrollbar-thumb: color-mix(in srgb, var(--color-ink) 14%, transparent);
+  --oh-scrollbar-thumb-hover: color-mix(in srgb, var(--color-ink) 22%, transparent);
+  --oh-scrollbar-size: 6px;
   color: var(--ink);
   background: var(--paper);
   font-family: var(--font);
+}
+
+/* Desk iframe scrollbars use the exact App-shell contract on every scroll
+ * container, including nested tables, JSON blocks and audit panes. */
+@supports not selector(::-webkit-scrollbar) {
+  html[data-optionhelper-app-hosted="true"],
+  html[data-optionhelper-app-hosted="true"] * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--oh-scrollbar-thumb) transparent;
+  }
+}
+
+html[data-optionhelper-app-hosted="true"]::-webkit-scrollbar,
+html[data-optionhelper-app-hosted="true"] *::-webkit-scrollbar {
+  width: var(--oh-scrollbar-size);
+  height: var(--oh-scrollbar-size);
+}
+
+html[data-optionhelper-app-hosted="true"]::-webkit-scrollbar-track,
+html[data-optionhelper-app-hosted="true"] *::-webkit-scrollbar-track,
+html[data-optionhelper-app-hosted="true"]::-webkit-scrollbar-corner,
+html[data-optionhelper-app-hosted="true"] *::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+html[data-optionhelper-app-hosted="true"]::-webkit-scrollbar-thumb,
+html[data-optionhelper-app-hosted="true"] *::-webkit-scrollbar-thumb {
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background-color: var(--oh-scrollbar-thumb);
+  background-clip: padding-box;
+}
+
+html[data-optionhelper-app-hosted="true"]::-webkit-scrollbar-thumb:hover,
+html[data-optionhelper-app-hosted="true"] *::-webkit-scrollbar-thumb:hover {
+  background-color: var(--oh-scrollbar-thumb-hover);
 }
 
 html[data-optionhelper-app-hosted="true"] body,
@@ -52,6 +91,7 @@ html[data-optionhelper-app-hosted="true"] button,
 html[data-optionhelper-app-hosted="true"] input,
 html[data-optionhelper-app-hosted="true"] select,
 html[data-optionhelper-app-hosted="true"] textarea {
+  color: inherit;
   font-family: var(--font) !important;
 }
 
@@ -110,9 +150,9 @@ html[data-optionhelper-app-hosted="true"] .workbench {
   overflow: hidden;
   grid-template-columns:
     var(--library-width, var(--source-width, clamp(220px, 21%, 270px)))
-    10px
+    0
     minmax(320px, 1fr)
-    10px
+    0
     var(--inspector-width, var(--settings-width, clamp(280px, 27%, 350px)))
     !important;
   background: var(--paper) !important;
@@ -130,27 +170,6 @@ html[data-optionhelper-app-hosted="true"] :is(
   border: 0 !important;
   background: var(--panel) !important;
   box-shadow: none !important;
-  scrollbar-width: thin;
-  scrollbar-color: rgba(72, 78, 74, .18) transparent;
-}
-
-html[data-optionhelper-app-hosted="true"] :is(
-  .library-panel,
-  .source-panel,
-  .inspector-panel,
-  .settings-panel
-)::-webkit-scrollbar {
-  width: 5px;
-}
-
-html[data-optionhelper-app-hosted="true"] :is(
-  .library-panel,
-  .source-panel,
-  .inspector-panel,
-  .settings-panel
-)::-webkit-scrollbar-thumb {
-  border-radius: 99px;
-  background: rgba(72, 78, 74, .18);
 }
 
 html[data-optionhelper-app-hosted="true"] :is(
@@ -194,10 +213,21 @@ html[data-optionhelper-app-hosted="true"] .settings-panel {
   display: block !important;
 }
 
+/* One permanent rule belongs to the adjoining panels. The draggable hit area
+ * overlays that exact rule instead of creating a separate gutter. */
+html[data-optionhelper-app-hosted="true"] :is(.library-panel, .source-panel) {
+  border-right: 1px solid var(--rule) !important;
+}
+
+html[data-optionhelper-app-hosted="true"] :is(.inspector-panel, .settings-panel) {
+  border-left: 1px solid var(--rule) !important;
+}
+
 html[data-optionhelper-app-hosted="true"] .panel-resizer {
   position: relative;
   display: block !important;
   width: 10px;
+  justify-self: center;
   border: 0 !important;
   background: transparent !important;
   cursor: col-resize;
@@ -206,17 +236,23 @@ html[data-optionhelper-app-hosted="true"] .panel-resizer {
 
 html[data-optionhelper-app-hosted="true"] .panel-resizer::before {
   position: absolute;
-  inset: 0 auto 0 4px;
-  width: 1px;
-  background: var(--rule);
+  top: 14px;
+  bottom: 14px;
+  left: 50%;
+  width: 2px;
+  border-radius: 99px;
+  background: color-mix(in srgb, var(--ink) 36%, transparent);
   content: "";
+  opacity: 0;
   transform-origin: center;
-  transition: background-color .16s ease, transform .16s ease;
+  transform: translateX(-50%) scaleX(.5);
+  transition: opacity .16s ease, background-color .16s ease, transform .2s ease;
 }
 
 html[data-optionhelper-app-hosted="true"] .panel-resizer:is(:hover, :focus-visible, .active)::before {
   background: var(--red);
-  transform: scaleX(2);
+  opacity: 1;
+  transform: translateX(-50%) scaleX(1);
 }
 
 html[data-optionhelper-app-hosted="true"] :is(.panel-kicker, .section-kicker) {
@@ -323,19 +359,7 @@ html[data-optionhelper-app-hosted="true"] .canvas-viewport {
   min-height: 0;
   overflow: auto;
   scrollbar-gutter: stable;
-  scrollbar-width: thin;
-  scrollbar-color: rgba(72, 78, 74, .18) transparent;
   background: var(--paper) !important;
-}
-
-html[data-optionhelper-app-hosted="true"] .canvas-viewport::-webkit-scrollbar {
-  width: 5px;
-  height: 5px;
-}
-
-html[data-optionhelper-app-hosted="true"] .canvas-viewport::-webkit-scrollbar-thumb {
-  border-radius: 99px;
-  background: rgba(72, 78, 74, .18);
 }
 
 html[data-optionhelper-app-hosted="true"] .selection-panel {
@@ -576,6 +600,8 @@ html[data-optionhelper-app-hosted="true"] .settings-panel .choice > input[type="
     .settings-panel
   ) {
     grid-column: 1 / -1;
+    border-top: 1px solid var(--rule) !important;
+    border-left: 0 !important;
   }
 
   html[data-optionhelper-app-hosted="true"] .panel-resizer {

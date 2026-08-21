@@ -18,7 +18,6 @@
     </header>
     <main class="workbench" id="workbench">
       <aside class="library-panel">
-        <p class="panel-kicker">研究对象</p>
         <h1>数据资产</h1>
         <p class="panel-copy">查看当前任务已保存的数据资产，并选择可用于估值或回测的历史行情。</p>
         <div class="asset-filter"><label class="sr-only" for="asset-search">搜索数据</label><input id="asset-search" class="control" type="search" placeholder="搜索标的或日期"></div>
@@ -29,7 +28,7 @@
       <section class="canvas-panel">
         <div class="canvas-toolbar">
           <div class="canvas-state"><span class="state-dot" id="state-dot"></span><span id="canvas-state">等待数据请求</span></div>
-          <span class="run-id" id="run-id"></span>
+          <div class="canvas-toolbar-actions"><span class="run-id" id="run-id"></span><button class="button button-primary" id="submit-request" type="submit" form="request-form">获取数据</button></div>
         </div>
         <div class="notice" id="notice" hidden aria-live="polite"></div>
         <div class="canvas-viewport">
@@ -43,7 +42,7 @@
       <div class="panel-resizer panel-resizer-right" id="inspector-resizer" role="separator" aria-label="调整数据请求面板宽度" aria-orientation="vertical" tabindex="0"></div>
       <aside class="inspector-panel">
         <form id="request-form" novalidate>
-          <p class="panel-kicker">本次数据请求</p><h2>数据请求</h2>
+          <h2>数据请求</h2>
           <p class="panel-copy">日期接受yyyy/mm/dd或yyyy-mm-dd；提交时统一转换为ISO日期。</p>
           <section class="inspector-group">
             <label class="control-field" for="asset-ids"><span>资产标识</span><textarea id="asset-ids" required aria-describedby="asset-ids-hint asset-ids-error" placeholder="例如000300.SH"></textarea><small id="asset-ids-hint">每行填写一个A股、ETF或指数代码；粘贴时会自动清理引号。</small><small class="field-error" id="asset-ids-error" role="alert"></small></label>
@@ -63,7 +62,6 @@
           </section>
           <section class="secret-card"><strong>凭据状态</strong><span id="secret-status">凭据由设置中心管理，本页不会读取或显示密钥。</span></section>
           <p class="form-message" id="form-message" aria-live="polite"></p>
-          <button class="button button-primary wide" id="submit-request" type="submit">实时获取数据</button>
         </form>
       </aside>
     </main>

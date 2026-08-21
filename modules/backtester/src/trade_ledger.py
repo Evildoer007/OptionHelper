@@ -277,7 +277,7 @@ def _gross_contract_return(contract: ResolvedContract, pnl: float) -> tuple[floa
     乘100基准作为一个合同单位。每个路径都返回收益，不能因缺少``N``而失效。
     """
     terms = contract.terms
-    if contract.product_id == "10.4":
+    if contract.product_id == "9.4":
         variance_notional = float(terms.get("Nvar", 0.0))
         if variance_notional > 0.0:
             return pnl / (variance_notional * 10_000.0), {
@@ -288,7 +288,7 @@ def _gross_contract_return(contract: ResolvedContract, pnl: float) -> tuple[floa
         value = float(terms.get(key, 0.0))
         if value > 0.0:
             return pnl / value, {"source": source, "contract_base": "100"}
-    if contract.product_id == "8.1":
+    if contract.product_id == "7.1":
         quantity = float(terms.get("q", 0.0))
         observations = float(terms.get("n_obs", 0.0))
         if quantity > 0.0 and observations > 0.0:

@@ -200,7 +200,7 @@ def verify(bundle: Path) -> dict[str, object]:
             require(status == 201 and isinstance(task, dict) and isinstance(task.get("task_id"), str), "计算验收任务创建失败")
             task_id = task["task_id"]
             base_input = {
-                "product_id": "2.1",
+                "product_id": "1.1",
                 "identity": {
                     "underlyings": ["000905.SH"],
                     "reference_prices": {"000905.SH": 100.0},
@@ -317,7 +317,7 @@ def verify(bundle: Path) -> dict[str, object]:
                 f"已绑定任务的payoffer预览失败：{tool_body}",
             )
 
-            # Airbag 7.2 has a daily observation schedule.  This is the
+            # Airbag 6.2 has a daily observation schedule.  This is the
             # regression case for the first-run calendar preparation path:
             # its formal contract must be compiled only after the Host has
             # provided a verified trading calendar.
@@ -325,14 +325,14 @@ def verify(bundle: Path) -> dict[str, object]:
                 connection,
                 "POST",
                 "/api/tasks",
-                {"subject": "成品App 7.2 Airbag路径定价验收"},
+                {"subject": "成品App 6.2 Airbag路径定价验收"},
                 {"Cookie": admin},
             )
             path_task = path_task_body.get("task")
             require(
                 status == 201 and isinstance(path_task, dict)
                 and isinstance(path_task.get("task_id"), str),
-                "7.2路径定价验收任务创建失败",
+                "6.2路径定价验收任务创建失败",
             )
             path_task_id = path_task["task_id"]
             status, context_body, _ = request(
@@ -342,19 +342,19 @@ def verify(bundle: Path) -> dict[str, object]:
                 headers={"Cookie": admin},
             )
             context = context_body.get("context")
-            require(status == 200 and isinstance(context, dict), "7.2定价缺少Module Host Context")
+            require(status == 200 and isinstance(context, dict), "6.2定价缺少Module Host Context")
             headers = {
                 "Cookie": admin,
                 "Origin": url,
                 "X-OptionHelper-Module-Context": json.dumps(context),
-                "X-OptionHelper-Request-Id": "artifact-pricer-7-2",
+                "X-OptionHelper-Request-Id": "artifact-pricer-6-2",
             }
             status, tool_body, _ = request(
                 connection,
                 "POST",
                 "/api/tools/pricer",
                 {
-                    "product_id": "7.2",
+                    "product_id": "6.2",
                     "identity": {"underlyings": ["000905.SH"]},
                     "term_overrides": {},
                     "pricing_config": {
@@ -370,17 +370,17 @@ def verify(bundle: Path) -> dict[str, object]:
                 },
                 headers,
             )
-            require(status == 200, f"7.2成品实际定价失败：{tool_body}")
+            require(status == 200, f"6.2成品实际定价失败：{tool_body}")
             path_pricer_result = tool_body.get("result")
-            require(isinstance(path_pricer_result, dict), "7.2成品实际定价没有结果对象")
+            require(isinstance(path_pricer_result, dict), "6.2成品实际定价没有结果对象")
             path_data_refs = path_pricer_result.get("data_refs")
             require(
                 isinstance(path_data_refs, list)
                 and {ref.get("schema_id") for ref in path_data_refs if isinstance(ref, dict)}
                 == {"market-history", "trading-calendar"},
-                "7.2定价没有绑定市场历史与交易日历",
+                "6.2定价没有绑定市场历史与交易日历",
             )
-            compute_status["pricer_7_2"] = summarize_compute_result(
+            compute_status["pricer_6_2"] = summarize_compute_result(
                 "pricer",
                 path_pricer_result,
                 task_id=path_task_id,
@@ -393,14 +393,14 @@ def verify(bundle: Path) -> dict[str, object]:
                 connection,
                 "POST",
                 "/api/tasks",
-                {"subject": "成品App 7.2 Airbag收益结构验收"},
+                {"subject": "成品App 6.2 Airbag收益结构验收"},
                 {"Cookie": admin},
             )
             payoff_task = payoff_task_body.get("task")
             require(
                 status == 201 and isinstance(payoff_task, dict)
                 and isinstance(payoff_task.get("task_id"), str),
-                "7.2收益结构验收任务创建失败",
+                "6.2收益结构验收任务创建失败",
             )
             payoff_task_id = payoff_task["task_id"]
             status, context_body, _ = request(
@@ -410,29 +410,29 @@ def verify(bundle: Path) -> dict[str, object]:
                 headers={"Cookie": admin},
             )
             context = context_body.get("context")
-            require(status == 200 and isinstance(context, dict), "7.2收益结构缺少Module Host Context")
+            require(status == 200 and isinstance(context, dict), "6.2收益结构缺少Module Host Context")
             headers = {
                 "Cookie": admin,
                 "Origin": url,
                 "X-OptionHelper-Module-Context": json.dumps(context),
-                "X-OptionHelper-Request-Id": "artifact-payoffer-7-2",
+                "X-OptionHelper-Request-Id": "artifact-payoffer-6-2",
             }
             status, tool_body, _ = request(
                 connection,
                 "POST",
                 "/api/tools/payoffer",
                 {
-                    "product_id": "7.2",
+                    "product_id": "6.2",
                     "identity": {"underlyings": ["000905.SH"]},
                     "term_overrides": {},
                     "task_id": payoff_task_id,
                 },
                 headers,
             )
-            require(status == 200, f"7.2成品收益结构失败：{tool_body}")
+            require(status == 200, f"6.2成品收益结构失败：{tool_body}")
             path_payoffer_result = tool_body.get("result")
-            require(isinstance(path_payoffer_result, dict), "7.2成品收益结构没有结果对象")
-            compute_status["payoffer_7_2"] = summarize_compute_result(
+            require(isinstance(path_payoffer_result, dict), "6.2成品收益结构没有结果对象")
+            compute_status["payoffer_6_2"] = summarize_compute_result(
                 "payoffer",
                 path_payoffer_result,
                 task_id=payoff_task_id,

@@ -12,15 +12,26 @@ export function initializeVolSurface(canvas) {
 
   const rowCount = 28;
   const columnCount = 46;
-  const xBuffer = new Float32Array(Math.max(rowCount, columnCount) + 1);
-  const yBuffer = new Float32Array(Math.max(rowCount, columnCount) + 1);
+  const gridWidth = columnCount + 1;
+  const gridHeight = rowCount + 1;
+  const gridSize = gridWidth * gridHeight;
+  const gridX = new Float32Array(gridSize);
+  const gridY = new Float32Array(gridSize);
+  const gridZ = new Float32Array(gridSize);
+  const gridDepth = new Float32Array(gridSize);
+  const gridLift = new Float32Array(gridSize);
   const statistics = new Float32Array(3);
   const qualityLevels = [
-    { rows: 1, columns: 2, pixelRatio: 1.25 },
-    { rows: 1, columns: 2, pixelRatio: 1 },
-    { rows: 2, columns: 3, pixelRatio: 1 },
-    { rows: 2, columns: 4, pixelRatio: 1 },
+    { rows: 1, columns: 2 },
+    { rows: 1, columns: 3 },
+    { rows: 2, columns: 3 },
+    { rows: 2, columns: 4 },
   ];
+  const strikeStep = 2 / columnCount;
+  const maturityStep = 2.63 / rowCount;
+  const heightToWorld = 0.44 / 2.35;
+  const light = normalize(-0.42, -0.55, 0.72);
+  const halfVector = normalize(light.x, light.y, light.z + 1);
 
   let width = 0;
   let height = 0;
@@ -42,9 +53,17 @@ export function initializeVolSurface(canvas) {
   let pointerPull = 0;
   let dark = currentTheme() === "dark";
 
+  function normalize(x, y, z) {
+    const length = Math.hypot(x, y, z);
+    return { x: x / length, y: y / length, z: z / length };
+  }
+
+  function clamp01(value) {
+    return Math.min(1, Math.max(0, value));
+  }
+
   function resize() {
-    const displayPixelRatio = Math.min(window.devicePixelRatio || 1, 1.25);
-    pixelRatio = Math.min(displayPixelRatio, qualityLevels[qualityIndex].pixelRatio);
+    pixelRatio = Math.min(window.devicePixelRatio || 1, 1.25);
     width = window.innerWidth;
     height = window.innerHeight;
     canvas.width = Math.round(width * pixelRatio);
@@ -69,49 +88,115 @@ export function initializeVolSurface(canvas) {
     return smile + skew + term + swell + wave;
   }
 
-  function buildLine(isRow, fixed, pointCount, clock) {
+  function buildGrid(clock) {
     const cosineYaw = Math.cos(yaw);
     const sineYaw = Math.sin(yaw);
     const cosinePitch = Math.cos(pitch);
+    let index = 0;
+
+    for (let row = 0; row < gridHeight; row += 1) {
+      const maturityValue = maturity(row);
+      for (let column = 0; column < gridWidth; column += 1, index += 1) {
+        const strike = -1 + (2 * column / columnCount);
+        const z = volatility(strike, maturityValue, clock) * span * 0.44;
+        const x = strike * span * 2.35;
+        const y = (maturityValue - 0.5) * span * 2.35;
+        const rotatedX = x * cosineYaw - y * sineYaw;
+        const rotatedY = x * sineYaw + y * cosineYaw;
+        const depth = Math.min(2.6, Math.max(0.12, 1 / (1 + rotatedY / (span * 3.2))));
+        const screenX = width / 2 + rotatedX * depth;
+        let screenY = height * 0.46 + (rotatedY * cosinePitch * 0.58 - z) * depth;
+        let lift = 0;
+
+        if (pointerPull > 0.01) {
+          const deltaX = screenX - pointerX;
+          const deltaY = screenY - pointerY;
+          lift = Math.exp(-((deltaX * deltaX + deltaY * deltaY) / (2 * 245 * 245))) * pointerPull;
+          screenY -= 150 * lift * depth;
+        }
+
+        gridX[index] = screenX;
+        gridY[index] = screenY;
+        gridZ[index] = z / (span * 0.44);
+        gridDepth[index] = depth;
+        gridLift[index] = lift;
+      }
+    }
+  }
+
+  function paintQuads(quality) {
+    const rowStep = quality.rows;
+    const columnStep = quality.columns > 2 ? 2 : 1;
+    const direction = yaw < 0 ? 1 : -1;
+
+    for (let row = rowCount - rowStep; row >= 0; row -= rowStep) {
+      const firstColumn = direction > 0 ? 0 : columnCount - columnStep;
+      const lastColumn = direction > 0 ? columnCount - columnStep : 0;
+      for (let column = firstColumn; direction > 0 ? column <= lastColumn : column >= lastColumn; column += direction * columnStep) {
+        const topLeft = row * gridWidth + column;
+        const topRight = topLeft + columnStep;
+        const bottomLeft = topLeft + rowStep * gridWidth;
+        const bottomRight = bottomLeft + columnStep;
+        const edgeX = gridX[topRight] - gridX[topLeft];
+        const edgeY = gridY[topRight] - gridY[topLeft];
+        const rowX = gridX[bottomLeft] - gridX[topLeft];
+        const rowY = gridY[bottomLeft] - gridY[topLeft];
+
+        if (Math.abs(edgeX * rowY - edgeY * rowX) < 0.5) continue;
+
+        const left = column > 0 ? topLeft - 1 : topLeft;
+        const right = column < columnCount - columnStep ? topRight + 1 : topRight;
+        const up = row > 0 ? topLeft - gridWidth : topLeft;
+        const down = row + rowStep < rowCount ? bottomLeft + gridWidth : bottomLeft;
+        const normal = normalize(
+          -((gridZ[right] - gridZ[left]) / (strikeStep * (columnStep + 1))) * heightToWorld,
+          -((gridZ[down] - gridZ[up]) / (maturityStep * (rowStep + 1))) * heightToWorld,
+          1,
+        );
+        const diffuse = Math.max(0, normal.x * light.x + normal.y * light.y + normal.z * light.z);
+        let specular = Math.max(0, normal.x * halfVector.x + normal.y * halfVector.y + normal.z * halfVector.z);
+        specular *= specular;
+        specular *= specular;
+        specular *= specular;
+
+        const normalizedHeight = (gridZ[topLeft] + gridZ[topRight] + gridZ[bottomLeft] + gridZ[bottomRight]) * 0.25;
+        const lift = (gridLift[topLeft] + gridLift[topRight] + gridLift[bottomLeft] + gridLift[bottomRight]) * 0.25;
+        const depth = (gridDepth[topLeft] + gridDepth[topRight] + gridDepth[bottomLeft] + gridDepth[bottomRight]) * 0.25;
+        const highlight = clamp01((normalizedHeight - 1.45) * 1.05 + lift * 0.75 + specular * 0.55);
+        const shade = 0.34 + 0.66 * diffuse + 0.9 * specular;
+        const fog = 0.45 + 0.55 * Math.min(1, depth);
+        const alpha = (0.055 + 0.062 * depth) * shade * fog * (1 + 2.2 * lift);
+
+        context.fillStyle = tone(highlight, alpha);
+        context.beginPath();
+        context.moveTo(gridX[topLeft], gridY[topLeft]);
+        context.lineTo(gridX[topRight], gridY[topRight]);
+        context.lineTo(gridX[bottomRight], gridY[bottomRight]);
+        context.lineTo(gridX[bottomLeft], gridY[bottomLeft]);
+        context.closePath();
+        context.fill();
+      }
+    }
+  }
+
+  function traceGridLine(isRow, fixed) {
+    const pointCount = isRow ? columnCount : rowCount;
     const midpoint = pointCount >> 1;
     let maximumLift = 0;
 
-    for (let index = 0; index <= pointCount; index += 1) {
-      const strike = isRow ? -1 + (2 * index / columnCount) : fixed;
-      const maturityValue = isRow ? fixed : maturity(index);
-      const z = volatility(strike, maturityValue, clock) * span * 0.44;
-      const x = strike * span * 2.35;
-      const y = (maturityValue - 0.5) * span * 2.35;
-      const rotatedX = x * cosineYaw - y * sineYaw;
-      const rotatedY = x * sineYaw + y * cosineYaw;
-      const depth = Math.min(2.6, Math.max(0.12, 1 / (1 + rotatedY / (span * 3.2))));
-      const screenX = width / 2 + rotatedX * depth;
-      let screenY = height * 0.46 + (rotatedY * cosinePitch * 0.58 - z) * depth;
-
-      if (pointerPull > 0.01) {
-        const deltaX = screenX - pointerX;
-        const deltaY = screenY - pointerY;
-        const lift = Math.exp(-((deltaX * deltaX + deltaY * deltaY) / (2 * 245 * 245))) * pointerPull;
-        screenY -= 150 * lift * depth;
-        maximumLift = Math.max(maximumLift, lift);
-      }
-
-      xBuffer[index] = screenX;
-      yBuffer[index] = screenY;
-      if (index === midpoint) {
-        statistics[0] = depth;
-        statistics[1] = z / (span * 0.44);
+    context.beginPath();
+    for (let point = 0; point <= pointCount; point += 1) {
+      const index = isRow ? fixed * gridWidth + point : point * gridWidth + fixed;
+      if (point === 0) context.moveTo(gridX[index], gridY[index]);
+      else context.lineTo(gridX[index], gridY[index]);
+      maximumLift = Math.max(maximumLift, gridLift[index]);
+      if (point === midpoint) {
+        statistics[0] = gridDepth[index];
+        statistics[1] = gridZ[index];
       }
     }
-
     statistics[2] = maximumLift;
-  }
-
-  function strokeLine(pointCount) {
-    context.beginPath();
-    context.moveTo(xBuffer[0], yBuffer[0]);
-    for (let index = 1; index <= pointCount; index += 1) context.lineTo(xBuffer[index], yBuffer[index]);
-    context.stroke();
+    return clamp01((statistics[1] - 1.45) * 1.05 + statistics[2] * 0.75);
   }
 
   function tone(highlight, alpha) {
@@ -124,8 +209,8 @@ export function initializeVolSurface(canvas) {
 
   function frame(now) {
     animationFrame = requestAnimationFrame(frame);
-    if (!startedAt) {
-      startedAt = now;
+    if (!startedAt) startedAt = now;
+    if (!previousFrame) {
       previousFrame = now;
       previousMeasure = now;
     }
@@ -133,15 +218,16 @@ export function initializeVolSurface(canvas) {
     const elapsed = (now - startedAt) / 1000;
     const deltaSeconds = Math.min(0.05, (now - previousFrame) / 1000);
     previousFrame = now;
-    averageFrame += ((now - previousMeasure) - averageFrame) * 0.06;
+    averageFrame += ((now - previousMeasure) - averageFrame) * 0.02;
     previousMeasure = now;
 
     if (qualityHold > 0) qualityHold -= 1;
-    else if (averageFrame > 18.5 && qualityIndex < qualityLevels.length - 1) {
-      const previousRatio = qualityLevels[qualityIndex].pixelRatio;
+    else if (averageFrame > 21 && qualityIndex < qualityLevels.length - 1) {
       qualityIndex += 1;
-      qualityHold = 150;
-      if (qualityLevels[qualityIndex].pixelRatio !== previousRatio) resize();
+      qualityHold = 300;
+    } else if (averageFrame < 9.5 && qualityIndex > 0) {
+      qualityIndex -= 1;
+      qualityHold = 300;
     }
 
     const cameraDamping = 1 - Math.exp(-2.8 * deltaSeconds);
@@ -155,28 +241,31 @@ export function initializeVolSurface(canvas) {
     context.lineJoin = "round";
     const quality = qualityLevels[qualityIndex];
     const clock = elapsed * 0.252;
+    buildGrid(clock);
+    paintQuads(quality);
 
     for (let row = 0; row <= rowCount; row += quality.rows) {
-      buildLine(true, maturity(row), columnCount, clock);
-      const highlight = Math.min(1, Math.max(0, (statistics[1] - 1.45) * 1.05 + statistics[2] * 0.75));
-      const opacity = (0.095 + 0.155 * statistics[0]) * (0.42 + 0.58 * (1 - row / rowCount))
+      const highlight = traceGridLine(true, row);
+      const opacity = (0.070 + 0.115 * statistics[0]) * (0.42 + 0.58 * (1 - row / rowCount))
         * (1 + 2.6 * statistics[2]) * (1 + 0.28 * (quality.rows - 1));
       context.strokeStyle = tone(highlight, opacity);
-      strokeLine(columnCount);
+      context.stroke();
     }
 
     for (let column = 0; column <= columnCount; column += quality.columns) {
-      buildLine(false, -1 + 2 * column / columnCount, rowCount, clock);
-      const highlight = Math.min(1, Math.max(0, (statistics[1] - 1.45) * 1.05 + statistics[2] * 0.75));
-      const opacity = (0.042 + 0.068 * statistics[0]) * (1 + 2.6 * statistics[2])
+      const highlight = traceGridLine(false, column);
+      const opacity = (0.032 + 0.052 * statistics[0]) * (1 + 2.6 * statistics[2])
         * (1 + 0.22 * (quality.columns - 2));
       context.strokeStyle = tone(highlight, opacity);
-      strokeLine(rowCount);
+      context.stroke();
     }
   }
 
   function start() {
-    if (!animationFrame) animationFrame = requestAnimationFrame(frame);
+    if (animationFrame) return;
+    previousFrame = 0;
+    previousMeasure = 0;
+    animationFrame = requestAnimationFrame(frame);
   }
 
   function stop() {
@@ -196,6 +285,12 @@ export function initializeVolSurface(canvas) {
     pointerY = event.clientY;
     targetYaw = -0.46 + (event.clientX / window.innerWidth - 0.5) * 0.1;
     targetPitch = 0.92 - (event.clientY / window.innerHeight - 0.5) * 0.08;
+  }, { passive: true });
+  window.addEventListener("pointerleave", () => {
+    pointerX = -1;
+    pointerY = -1;
+    targetYaw = -0.46;
+    targetPitch = 0.92;
   }, { passive: true });
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) stop();

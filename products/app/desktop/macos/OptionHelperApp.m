@@ -28,6 +28,7 @@
 @property(nonatomic, strong) NSWindow *window;
 @property(nonatomic, strong) WKWebView *webView;
 @property(nonatomic, strong) NSButton *railToggle;
+@property(nonatomic, strong) NSButton *reportToggle;
 @property(nonatomic) BOOL loadedURL;
 @property(nonatomic, strong) NSMutableString *startupOutput;
 @property(nonatomic, copy) NSString *themePreference;
@@ -195,10 +196,13 @@
     WKWebView *webView = [[WKWebView alloc] initWithFrame:NSZeroRect configuration:configuration];
     webView.navigationDelegate = self;
     self.window = [[OptionHelperWindow alloc] initWithContentRect:NSMakeRect(0, 0, 1320, 860)
-                                               styleMask:(NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable)
+                                               styleMask:(NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable | NSWindowStyleMaskFullSizeContentView)
                                                  backing:NSBackingStoreBuffered
                                                    defer:NO];
     self.window.title = @"OptionHelper";
+    self.window.titleVisibility = NSWindowTitleHidden;
+    self.window.titlebarAppearsTransparent = YES;
+    self.window.titlebarSeparatorStyle = NSTitlebarSeparatorStyleNone;
     self.window.delegate = self;
     self.window.contentView = webView;
     [self.window makeFirstResponder:webView];
@@ -207,6 +211,7 @@
     [NSApp activateIgnoringOtherApps:YES];
     self.webView = webView;
     [self installRailToggleForWindow:self.window];
+    [self installReportToggleForWindow:self.window];
     [webView loadRequest:[NSURLRequest requestWithURL:startupURL]];
 }
 
@@ -227,10 +232,42 @@
     button.hidden = YES;
     [titlebar addSubview:button];
     self.railToggle = button;
+    [self layoutTitlebarControls];
+}
+
+- (void)installReportToggleForWindow:(NSWindow *)window {
+    NSButton *closeButton = [window standardWindowButton:NSWindowCloseButton];
+    NSView *titlebar = closeButton.superview;
+    if (closeButton == nil || titlebar == nil) return;
+    NSButton *button = [[NSButton alloc] initWithFrame:NSZeroRect];
+    button.image = [NSImage imageWithSystemSymbolName:@"sidebar.right" accessibilityDescription:@"打开或收起报告库"];
+    button.contentTintColor = NSColor.secondaryLabelColor;
+    button.bezelStyle = NSBezelStyleInline;
+    button.bordered = NO;
+    button.target = self;
+    button.action = @selector(toggleReport:);
+    button.toolTip = @"打开或收起报告库";
+    button.hidden = YES;
+    [titlebar addSubview:button];
+    self.reportToggle = button;
+    [self layoutTitlebarControls];
+}
+
+- (void)layoutTitlebarControls {
+    NSButton *closeButton = [self.window standardWindowButton:NSWindowCloseButton];
+    NSView *titlebar = closeButton.superview;
+    if (closeButton == nil || titlebar == nil) return;
+    NSSize size = NSMakeSize(26, 24);
+    self.railToggle.frame = NSMakeRect(NSMaxX(closeButton.frame) + 94, NSMidY(closeButton.frame) - size.height / 2, size.width, size.height);
+    self.reportToggle.frame = NSMakeRect(NSMaxX(titlebar.bounds) - size.width - 14, NSMidY(closeButton.frame) - size.height / 2, size.width, size.height);
 }
 
 - (void)toggleRail:(id)sender {
     [self.webView evaluateJavaScript:@"document.querySelector('[data-rail-collapse-toggle]')?.click()" completionHandler:nil];
+}
+
+- (void)toggleReport:(id)sender {
+    [self.webView evaluateJavaScript:@"document.querySelector('[data-report-toggle]')?.click()" completionHandler:nil];
 }
 
 - (void)webView:(WKWebView *)webView didFinishNavigation:(WKNavigation *)navigation {
@@ -238,6 +275,14 @@
     [webView evaluateJavaScript:@"Boolean(document.querySelector('[data-rail-collapse-toggle]'))" completionHandler:^(id value, NSError *error) {
         weakSelf.railToggle.hidden = ![value isKindOfClass:NSNumber.class] || ![(NSNumber *)value boolValue];
     }];
+    [webView evaluateJavaScript:@"Boolean(document.querySelector('[data-report-toggle]'))" completionHandler:^(id value, NSError *error) {
+        weakSelf.reportToggle.hidden = ![value isKindOfClass:NSNumber.class] || ![(NSNumber *)value boolValue];
+    }];
+    [self layoutTitlebarControls];
+}
+
+- (void)windowDidResize:(NSNotification *)notification {
+    if (notification.object == self.window) [self layoutTitlebarControls];
 }
 
 - (void)windowWillClose:(NSNotification *)notification {
@@ -253,6 +298,7 @@
     NSString *preference = value[@"preference"];
     if (![@[@"light", @"dark", @"auto"] containsObject:preference] || ![@[@"light", @"dark"] containsObject:theme]) return;
     self.themePreference = preference;
+    self.window.appearance = [NSAppearance appearanceNamed:[theme isEqualToString:@"dark"] ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
     [self applyDockIcon:theme];
 }
 

@@ -31,11 +31,11 @@ class ProductMapping:
 
 
 _EXACT_MAPPINGS = {
-    "2.1": ProductMapping("VANILLA", "EUROPEAN_VANILLA", "supported"),
-    "2.2": ProductMapping("VANILLA", "EUROPEAN_VANILLA", "supported"),
+    "1.1": ProductMapping("VANILLA", "EUROPEAN_VANILLA", "supported"),
+    "1.2": ProductMapping("VANILLA", "EUROPEAN_VANILLA", "supported"),
     **{
         product_id: ProductMapping("AIRBAG", "AIRBAG", "supported")
-        for product_id in ("3.1", "3.2", "3.3", "3.4", "4.1", "4.2", "4.3", "4.4")
+        for product_id in ("2.1", "2.2", "2.3", "2.4", "3.1", "3.2", "3.3", "3.4")
     },
 }
 
@@ -74,7 +74,7 @@ class ProductPricingAdapter:
         if observed_state.knocked_out:
             raise ProductNotAvailable("合同已敲出并终止；已实现结算现金流只审计，不重新模拟")
         if (
-            contract.product_id == "8.1"
+            contract.product_id == "7.1"
             and observed_state.accumulated_count > 0
             and observed_state.accumulated_quantity <= 0.0
         ):
@@ -150,7 +150,7 @@ class ProductPricingAdapter:
         result = _from_run(run)
         if self.method != "monte_carlo":
             quantity = (
-                float(self.contract.terms["n_C"] if self.contract.product_id == "2.1" else self.contract.terms["n_P"])
+                float(self.contract.terms["n_C"] if self.contract.product_id == "1.1" else self.contract.terms["n_P"])
                 if self.route.capability.adapter == "european_vanilla"
                 else 1.0
             )
@@ -201,7 +201,7 @@ class ProductPricingAdapter:
                 "calendar_revision": "" if self.trading_calendar is None else self.trading_calendar["calendar_revision"],
             }
         elif self.route.capability.adapter == "european_vanilla":
-            direction = "CALL" if self.contract.product_id == "2.1" else "PUT"
+            direction = "CALL" if self.contract.product_id == "1.1" else "PUT"
             contract = {
                 "strike": float(self.contract.terms["K"]),
                 "maturity_years": float(maturity_years),
@@ -317,7 +317,7 @@ def _cashflow_basis(contract: ResolvedContract, reference_price: float) -> dict[
 
 def _apply_value_basis(result: PricingResult, product_id: str) -> PricingResult:
     """Mark the only product whose 100 points are variance, not price points."""
-    if product_id != "10.4":
+    if product_id != "9.4":
         return replace(result, value_basis="pv_points_100")
 
     def variance_unit(unit: str | None) -> str | None:
@@ -343,9 +343,9 @@ def _apply_value_basis(result: PricingResult, product_id: str) -> PricingResult:
 
 
 def _unavailable_reason(contract: ResolvedContract, allowed: tuple[str, ...], requested_method: str) -> str:
-    if contract.product_id in {"2.1", "2.2"}:
+    if contract.product_id in {"1.1", "1.2"}:
         return f"{contract.product_id}的正式香草基座只回归BLACK_SCHOLES；请求{requested_method}，OptionReg允许{list(allowed)}"
-    if contract.product_id.startswith(("3.", "4.")):
+    if contract.product_id in _EXACT_MAPPINGS:
         return f"{contract.product_id}的显式欧式组合已回归BLACK_SCHOLES；请求{requested_method}，固定随机源组合MC尚未完成逐路径回归"
     return f"{contract.product_id}尚无同时满足OptionReg条款、显式观察日程和基座方法的适配器；不得用另一套模型替代"
 
@@ -353,23 +353,23 @@ def _unavailable_reason(contract: ResolvedContract, allowed: tuple[str, ...], re
 def _portfolio_legs(contract: ResolvedContract) -> tuple[tuple[str, float, str, float], ...]:
     terms = contract.terms
     product_id = contract.product_id
-    if product_id == "3.1": values = (("long_call_k1", 1.0, "CALL", "K1"), ("short_call_k2", -1.0, "CALL", "K2"))
-    elif product_id == "3.2": values = (("long_put_k1", 1.0, "PUT", "K1"), ("short_put_k2", -1.0, "PUT", "K2"))
-    elif product_id == "3.3": values = (("long_put_k2", 1.0, "PUT", "K2"), ("short_put_k1", -1.0, "PUT", "K1"))
-    elif product_id == "3.4": values = (("short_call_k1", -1.0, "CALL", "K1"), ("long_call_k2", 1.0, "CALL", "K2"))
-    elif product_id == "4.1": values = (("long_call", 1.0, "CALL", "K"), ("long_put", 1.0, "PUT", "K"))
-    elif product_id == "4.2": values = (("long_put_kp", 1.0, "PUT", "Kp"), ("long_call_kc", 1.0, "CALL", "Kc"))
-    elif product_id == "4.3": values = (("long_call_k1", 1.0, "CALL", "K1"), ("short_call_k2", -2.0, "CALL", "K2"), ("long_call_k3", 1.0, "CALL", "K3"))
-    elif product_id == "4.4": values = (("long_call_k1", 1.0, "CALL", "K1"), ("short_call_k2", -1.0, "CALL", "K2"), ("short_call_k3", -1.0, "CALL", "K3"), ("long_call_k4", 1.0, "CALL", "K4"))
+    if product_id == "2.1": values = (("long_call_k1", 1.0, "CALL", "K1"), ("short_call_k2", -1.0, "CALL", "K2"))
+    elif product_id == "2.2": values = (("long_put_k1", 1.0, "PUT", "K1"), ("short_put_k2", -1.0, "PUT", "K2"))
+    elif product_id == "2.3": values = (("long_put_k2", 1.0, "PUT", "K2"), ("short_put_k1", -1.0, "PUT", "K1"))
+    elif product_id == "2.4": values = (("short_call_k1", -1.0, "CALL", "K1"), ("long_call_k2", 1.0, "CALL", "K2"))
+    elif product_id == "3.1": values = (("long_call", 1.0, "CALL", "K"), ("long_put", 1.0, "PUT", "K"))
+    elif product_id == "3.2": values = (("long_put_kp", 1.0, "PUT", "Kp"), ("long_call_kc", 1.0, "CALL", "Kc"))
+    elif product_id == "3.3": values = (("long_call_k1", 1.0, "CALL", "K1"), ("short_call_k2", -2.0, "CALL", "K2"), ("long_call_k3", 1.0, "CALL", "K3"))
+    elif product_id == "3.4": values = (("long_call_k1", 1.0, "CALL", "K1"), ("short_call_k2", -1.0, "CALL", "K2"), ("short_call_k3", -1.0, "CALL", "K3"), ("long_call_k4", 1.0, "CALL", "K4"))
     else: raise ValueError(f"{product_id}没有欧式组合腿定义")
     return tuple((label, float(weight), call_put, float(terms[strike])) for label, weight, call_put, strike in values)
 
 
 def _initial_cashflow(contract: ResolvedContract, quantity: float) -> float:
     """Contractual holder cashflow at time zero for closed-form structures."""
-    if contract.product_id in {"2.1", "2.2"}:
+    if contract.product_id in {"1.1", "1.2"}:
         return -quantity * float(contract.terms.get("Pi_0", 0.0))
-    if contract.product_id.startswith(("3.", "4.")):
+    if contract.product_id in _EXACT_MAPPINGS:
         return -float(contract.terms.get("P_net", 0.0))
     return 0.0
 

@@ -8,6 +8,7 @@ discovers result directories or chooses a latest run.
 from __future__ import annotations
 
 import base64
+import shutil
 from typing import Any, Mapping
 
 from .config import DesignerConfig, DesignerConfigurationError, load_designer_config
@@ -62,6 +63,11 @@ def capability(config: DesignerConfig | Mapping[str, Any] | None = None) -> dict
         "default_asset_mode": config.default_asset_mode,
         "formats": ["html", "pdf"] if pdf_available else ["html"],
         "pdf_runtime": pdf_runtime,
+        "chart_javascript_validation": {
+            "available": shutil.which("node") is not None,
+            "engine": "node --check",
+            "message": "含ECharts图表的HTML会在交付前进行JavaScript语法校验。",
+        },
     }
 
 

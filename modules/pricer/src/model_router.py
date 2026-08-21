@@ -24,11 +24,11 @@ class ModelRoute:
 
 # 只有同时完成条款、单位、状态和产品级回归的映射可以进入此表。
 PRODUCT_CAPABILITIES: dict[str, ProductCapability] = {
-    "2.1": ProductCapability("VANILLA", "EUROPEAN_VANILLA", ("black_scholes", "monte_carlo"), "european_vanilla"),
-    "2.2": ProductCapability("VANILLA", "EUROPEAN_VANILLA", ("black_scholes", "monte_carlo"), "european_vanilla"),
+    "1.1": ProductCapability("VANILLA", "EUROPEAN_VANILLA", ("black_scholes", "monte_carlo"), "european_vanilla"),
+    "1.2": ProductCapability("VANILLA", "EUROPEAN_VANILLA", ("black_scholes", "monte_carlo"), "european_vanilla"),
     **{
         product_id: ProductCapability("AIRBAG", "AIRBAG", ("black_scholes", "monte_carlo"), "european_portfolio")
-        for product_id in ("3.1", "3.2", "3.3", "3.4", "4.1", "4.2", "4.3", "4.4")
+        for product_id in ("2.1", "2.2", "2.3", "2.4", "3.1", "3.2", "3.3", "3.4")
     },
 }
 

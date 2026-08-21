@@ -15,22 +15,6 @@ const thinkingStates = Object.freeze([
   "Shaping",
 ]);
 const transientPrefix = "optionhelper.workspace.state";
-const workspaceEntryKey = "optionhelper-workspace-enter";
-
-function consumeWorkspaceEntryTransition() {
-  let shouldAnimate = false;
-  try {
-    shouldAnimate = sessionStorage.getItem(workspaceEntryKey) === "1";
-    sessionStorage.removeItem(workspaceEntryKey);
-  } catch { /* The workspace works without optional transition state. */ }
-  if (!shouldAnimate || matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-  document.documentElement.classList.add("workspace-entering");
-  requestAnimationFrame(() => window.setTimeout(() => {
-    document.documentElement.classList.remove("workspace-entering");
-  }, 340));
-}
-
-consumeWorkspaceEntryTransition();
 
 export async function startWorkspace(initialMode) {
   const shell = document.querySelector("[data-workspace-shell]");
@@ -392,8 +376,161 @@ export async function startWorkspace(initialMode) {
 
   async function loadTasks() {
     const { tasks } = await request("/api/tasks");
-    renderTaskList(rail, tasks, currentTask?.task_id, (id) => selectTask(id).catch((error) => message(status, error.message, true)));
+    renderTaskList(
+      rail,
+      tasks,
+      currentTask?.task_id,
+      (id) => selectTask(id).catch((error) => showWorkspaceStatus(error.message, true)),
+      { onRename: openTaskRenameDialog, onDelete: openTaskDeleteDialog },
+    );
     return tasks;
+  }
+
+  function resetTaskSelection() {
+    currentTask = null;
+    pendingConversationRequest = null;
+    clearReportFeedback();
+    disposeModuleFrames();
+    syncReportActions();
+    title.textContent = "未选择任务";
+    conversationTitle.textContent = "开始研究";
+    taskState.textContent = "请新建或选择任务后，再运行研究模块。";
+    renderMessages(stream, [], "新建任务后即可开始对话，并按需生成简单报告、详细报告或参考报价。");
+    renderReports(reports, []);
+    chatSurface.classList.add("chat-surface--empty");
+    mount?.replaceChildren(createModuleStart());
+    const next = new URL(location.href);
+    next.searchParams.delete("task");
+    next.searchParams.delete("module");
+    history.replaceState(null, "", next);
+  }
+
+  function createModuleStart() {
+    const start = document.createElement("div");
+    start.className = "conversation-start";
+    const content = document.createElement("div");
+    const heading = document.createElement("h2");
+    heading.textContent = "选择研究模块";
+    const copy = document.createElement("p");
+    copy.className = "conversation-start__copy";
+    copy.textContent = "各模块页面保持独立运行能力，并在OptDesk中承载同一任务上下文。";
+    content.append(heading, copy);
+    start.append(content);
+    return start;
+  }
+
+  function openTaskDialog({ title: dialogTitle, description, confirmLabel, danger = false, initialSubject = "", onConfirm }) {
+    const dialog = document.createElement("dialog");
+    dialog.className = "task-dialog";
+    dialog.setAttribute("aria-labelledby", "task-dialog-title");
+    const form = document.createElement("form");
+    form.className = "task-dialog__form";
+    const heading = document.createElement("h2");
+    heading.id = "task-dialog-title";
+    heading.textContent = dialogTitle;
+    const copy = document.createElement("p");
+    copy.className = "task-dialog__copy";
+    copy.textContent = description;
+    const feedback = document.createElement("p");
+    feedback.className = "task-dialog__feedback";
+    feedback.hidden = true;
+    feedback.setAttribute("role", "alert");
+    let subjectInput = null;
+    if (initialSubject) {
+      const label = document.createElement("label");
+      label.className = "task-dialog__field";
+      label.textContent = "任务名称";
+      subjectInput = document.createElement("input");
+      subjectInput.className = "task-rename-input";
+      subjectInput.type = "text";
+      subjectInput.name = "subject";
+      subjectInput.value = initialSubject;
+      subjectInput.maxLength = 160;
+      subjectInput.required = true;
+      label.append(subjectInput);
+      form.append(heading, copy, label, feedback);
+    } else {
+      form.append(heading, copy, feedback);
+    }
+    const actions = document.createElement("div");
+    actions.className = "task-dialog__actions";
+    const cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.className = "button-secondary";
+    cancel.textContent = "取消";
+    cancel.addEventListener("click", () => dialog.close());
+    const confirm = document.createElement("button");
+    confirm.type = "submit";
+    confirm.className = danger ? "button-danger" : "button-primary";
+    confirm.textContent = confirmLabel;
+    actions.append(cancel, confirm);
+    form.append(actions);
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const subject = subjectInput?.value.trim();
+      if (subjectInput && !subject) {
+        feedback.textContent = "请输入任务名称。";
+        feedback.hidden = false;
+        subjectInput.focus();
+        return;
+      }
+      confirm.disabled = true;
+      cancel.disabled = true;
+      try {
+        await onConfirm(subject);
+        dialog.close();
+      } catch (error) {
+        feedback.textContent = error.message || "操作未完成，请稍后重试。";
+        feedback.hidden = false;
+        confirm.disabled = false;
+        cancel.disabled = false;
+      }
+    });
+    dialog.addEventListener("close", () => dialog.remove(), { once: true });
+    dialog.append(form);
+    document.body.append(dialog);
+    dialog.showModal();
+    requestAnimationFrame(() => (subjectInput || confirm).focus());
+  }
+
+  function openTaskRenameDialog(task) {
+    openTaskDialog({
+      title: "重命名任务",
+      description: "仅更新任务在任务栏中的名称，不影响对话和模块结果。",
+      confirmLabel: "保存名称",
+      initialSubject: String(task.subject || ""),
+      onConfirm: async (subject) => {
+        const { task: updated } = await request(`/api/tasks/${encodeURIComponent(task.task_id)}/rename`, {
+          method: "POST",
+          body: safeJson({ subject }),
+        });
+        if (currentTask?.task_id === updated.task_id) {
+          currentTask = { ...currentTask, ...updated };
+          title.textContent = updated.subject;
+          conversationTitle.textContent = updated.subject;
+        }
+        await loadTasks();
+        showWorkspaceStatus("任务名称已更新。", false, 3500);
+      },
+    });
+  }
+
+  function openTaskDeleteDialog(task) {
+    openTaskDialog({
+      title: "删除任务？",
+      description: "将删除该任务及其对话记录。模块的原始结果、报告和数据资产不会被删除。",
+      confirmLabel: "删除任务",
+      danger: true,
+      onConfirm: async () => {
+        await request(`/api/tasks/${encodeURIComponent(task.task_id)}/delete`, {
+          method: "POST",
+          body: safeJson({}),
+        });
+        if (currentTask?.task_id === task.task_id) resetTaskSelection();
+        await loadTasks();
+        showWorkspaceStatus("任务已删除。", false, 3500);
+      },
+    });
   }
 
   async function selectTask(taskId, updateLocation = true) {
@@ -728,7 +865,9 @@ export async function startWorkspace(initialMode) {
     }
   }));
 
-  window.addEventListener("pagehide", saveTransient);
+  window.addEventListener("pagehide", () => {
+    saveTransient();
+  }, { once: true });
   window.addEventListener("popstate", async () => {
     const nextMode = location.pathname.startsWith("/optdesk") ? "desk" : "chat";
     if (nextMode === "desk" && shell.dataset.hasDesk !== "true") {

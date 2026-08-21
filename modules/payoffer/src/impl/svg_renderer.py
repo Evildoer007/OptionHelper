@@ -138,7 +138,7 @@ def _endpoint_markers(segments: Sequence[Sequence[Mapping[str, Any]]], scale: Ma
             y = _number(_coord_y(float(point["y"]), scale, top, height))
             if endpoint == "closed" or (x, y) not in markers:
                 markers[(x, y)] = str(endpoint)
-    return "".join(f'<circle class="curve-endpoint {endpoint}" cx="{x}" cy="{y}" r="4.4"/>' for (x, y), endpoint in markers.items())
+    return "".join(f'<circle class="curve-endpoint {endpoint}" cx="{x}" cy="{y}" r="3.4"/>' for (x, y), endpoint in markers.items())
 
 
 def _jump_svg(jumps: Sequence[Mapping[str, Any]], scale: Mapping[str, float], left: float, top: float, width: float, height: float) -> str:

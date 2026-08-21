@@ -982,7 +982,7 @@ def _formal_compute_protocol_errors(root: Path, python: str, environment: Mappin
             "tenant_id": "protocol", "created_by": "probe", "access_scope": ("read",), "partition_spec": {},
         }
         common = {
-            "product_id": "2.1",
+            "product_id": "1.1",
             "identity": {
                 "underlyings": [asset],
                 "contract_start_date": "2024-01-02",

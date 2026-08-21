@@ -76,7 +76,7 @@
       <header class="topbar">
         <div class="brand"><img class="brand-logo" src="../../icons/optionhelper-logo.svg" alt="OptionHelper"><span class="brand-separator" aria-hidden="true"></span><span class="module-title">收益结构</span></div>
         <div class="scope-notice" id="scopeNotice">开发预览：本地结果不能直接用于正式Card或Report</div>
-        <div class="topbar-status" id="modeBadge">正在连接本机服务</div>
+        <div class="topbar-status" id="modeBadge">正在连接运行服务</div>
         <div class="topbar-actions">
           <button class="button button-primary" id="previewButton">预览收益图</button>
           <button class="button button-primary" id="runtimePayoffButton">生成本次结果</button>
@@ -86,7 +86,6 @@
 
       <main class="workbench" id="workbench">
         <aside class="library-panel">
-          <div class="panel-kicker">研究对象</div>
           <h1>产品结构</h1>
           <p class="panel-copy">选择产品并查看已登记条款与收益路径。</p>
           <label class="field-label" for="productSelect">产品</label>
@@ -122,7 +121,6 @@
         <div class="panel-resizer panel-resizer-right" id="inspectorResizer" role="separator" aria-label="调整条款参数面板宽度" aria-orientation="vertical" tabindex="0"></div>
 
         <aside class="inspector-panel" id="inspectorPanel">
-          <div class="panel-kicker">条款参数</div>
           <h2 id="inspectorTitle">未选择产品</h2>
           <div class="source-detail" id="sourceDetail">选择产品后显示路径来源与条款字段。</div>
           <div class="inspector-group" id="runtimeIdentityGroup">
@@ -202,6 +200,7 @@
         defaultExample: null, viewMode: 'default', maintenanceEnabled: false, maintenancePlan: null,
         selectedPathIndex: 0, zoom: 1, zoomMode: 'fit', previewRequestId: 0
       };
+      const hostedInDesk = new URLSearchParams(location.search).get('host') === 'optdesk' && window.parent !== window;
       const apiBase = location.protocol === 'file:' ? 'http://127.0.0.1:4181' : '';
       const apiUrl = path => apiBase + path;
       const selectValues = {
@@ -726,6 +725,14 @@
       }
 
       async function loadServiceStatus() {
+        if (hostedInDesk) {
+          // Desk uses Module Host Bridge for catalog, preview and run.  The
+          // standalone /api/status endpoint is intentionally not part of the
+          // formal Tool contract, so never request it from the App origin.
+          state.maintenanceEnabled = false;
+          $('advancedMaintenance').hidden = true;
+          return { ok: true, module: 'payoffer', host: 'optdesk' };
+        }
         const response = await fetch(apiUrl('/api/status'));
         const data = await response.json();
         if (!response.ok || !data.ok) throw new Error(data.message || '无法读取服务状态');
@@ -912,7 +919,7 @@
       updateModeChrome();
       loadCatalog()
         .then(() => {
-          setServiceStatus('本机服务已连接');
+          setServiceStatus(hostedInDesk ? 'Desk运行服务已连接' : '本机服务已连接');
           if (location.protocol === 'file:') showNotice('已连接本机服务。默认示例只读；本次运行结果属于开发预览，正式Card或Report须经App Host和Reporter。');
         })
         .catch(error => {

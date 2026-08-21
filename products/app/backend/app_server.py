@@ -1226,6 +1226,22 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
             self.app.audit.record(AuditEvent(action="task.create", principal_id=identity.principal_id, tenant_id=identity.tenant_id, outcome="succeeded", decision="allow", reference=task["task_id"], request_id=request_id))
             self._json(HTTPStatus.CREATED, {"task": task})
             return
+        if path.startswith("/api/tasks/") and path.endswith("/rename"):
+            self.app.policy.require(identity.role, "conversation.write")
+            task_id = path.removeprefix("/api/tasks/").removesuffix("/rename").rstrip("/")
+            _only_fields(body, {"subject"})
+            task = self.app.tasks.rename(identity, task_id, str(body.get("subject", "")))
+            self.app.audit.record(AuditEvent(action="task.rename", principal_id=identity.principal_id, tenant_id=identity.tenant_id, outcome="succeeded", decision="allow", reference=task_id, request_id=request_id))
+            self._json(HTTPStatus.OK, {"task": task})
+            return
+        if path.startswith("/api/tasks/") and path.endswith("/delete"):
+            self.app.policy.require(identity.role, "conversation.write")
+            task_id = path.removeprefix("/api/tasks/").removesuffix("/delete").rstrip("/")
+            _only_fields(body, set())
+            task = self.app.tasks.delete(identity, task_id)
+            self.app.audit.record(AuditEvent(action="task.delete", principal_id=identity.principal_id, tenant_id=identity.tenant_id, outcome="succeeded", decision="allow", reference=task_id, request_id=request_id))
+            self._json(HTTPStatus.OK, {"task": task})
+            return
         if path.startswith("/api/tasks/") and path.endswith("/messages"):
             self.app.policy.require(identity.role, "conversation.write")
             task_id = path.removeprefix("/api/tasks/").removesuffix("/messages").rstrip("/")

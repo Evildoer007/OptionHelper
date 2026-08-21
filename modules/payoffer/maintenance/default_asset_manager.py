@@ -25,17 +25,17 @@ MODULE_ROOT = Path(__file__).resolve().parents[1]
 FIGURES_ROOT = MODULE_ROOT / "figures"
 HISTORY_ROOT = MODULE_ROOT / "maintenance" / "history"
 _CONFIRMED_REG_REFRESHES = {
-    "8.1": {
+    "7.1": {
         "terms": "confirmed_accumulator_contract_time_and_percent_basis",
         "paths": "confirmed_accumulator_contract_time_and_percent_basis",
     },
-    "9.14": {"terms": "confirmed_c_reset_correction"},
-    "9.25": {"paths": "confirmed_path_correction"},
+    "8.14": {"terms": "confirmed_c_reset_correction"},
+    "8.25": {"paths": "confirmed_path_correction"},
 }
 _OPTIONLIB_EVIDENCE = {
-    "8.1": ("Q_{\\mathrm{acc}}", "$uQ_{\\mathrm{acc}}(S_T-K)$"),
-    "9.14": ("c_{reset}=10\\%", "重置日当天1天按$c_{reset}$计息"),
-    "9.25": ("max(S_T/S_0-1,F-1)", "承担最多$1-F$的标的跌幅"),
+    "7.1": ("Q_{\\mathrm{acc}}", "$uQ_{\\mathrm{acc}}(S_T-K)$"),
+    "8.14": ("c_{reset}=10\\%", "重置日当天1天按$c_{reset}$计息"),
+    "8.25": ("max(S_T/S_0-1,F-1)", "承担最多$1-F$的标的跌幅"),
 }
 
 
@@ -119,8 +119,8 @@ def plan_default_asset_refresh(
         if current.get("name_zh") != name_zh:
             raise DefaultAssetMaintenanceError(f"默认JSON{name_zh}名称不一致")
         terms_match = payoff_template_terms_match(current["terms"], product["terms"])
-        if product_id == "8.1":
-            # 8.1的本次批准修正涉及Q_acc监测表达式；该字段通常不影响默认
+        if product_id == "7.1":
+            # 7.1的本次批准修正涉及Q_acc监测表达式；该字段通常不影响默认
             # 图形模板比对，却必须与OptionReg完整同源，避免资料资产保留旧公式。
             terms_match = semantic_hash(current["terms"]) == semantic_hash(product["terms"])
         paths_match = semantic_hash(current["paths"]) == semantic_hash(product["paths"])

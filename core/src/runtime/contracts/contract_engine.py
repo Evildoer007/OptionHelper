@@ -41,16 +41,16 @@ _ALLOWED_PATH_KEYS = frozenset({"condition", "cases"})
 _ALLOWED_CASE_KEYS = frozenset({"domain", "pnl"})
 _OBSERVATION_TERM_KEYS = frozenset({"O_KO", "O_KI", "Oc", "Otouch", "Orange", "Ovar", "Ohedge", "Oreset"})
 _DEFAULT_STRIKE_ANCHOR_KEYS = {
-    "3.1": frozenset({"K1", "K2"}),
-    "3.2": frozenset({"K1", "K2"}),
-    "3.3": frozenset({"K1", "K2"}),
-    "3.4": frozenset({"K1", "K2"}),
-    "4.2": frozenset({"Kp", "Kc"}),
-    "4.3": frozenset({"K1", "K2", "K3"}),
-    "4.4": frozenset({"K1", "K2", "K3", "K4"}),
-    "10.2": frozenset({"K1", "K2"}),
-    "10.3": frozenset({"K1", "K2"}),
-    "10.7": frozenset({"Kd", "Ku"}),
+    "2.1": frozenset({"K1", "K2"}),
+    "2.2": frozenset({"K1", "K2"}),
+    "2.3": frozenset({"K1", "K2"}),
+    "2.4": frozenset({"K1", "K2"}),
+    "3.2": frozenset({"Kp", "Kc"}),
+    "3.3": frozenset({"K1", "K2", "K3"}),
+    "3.4": frozenset({"K1", "K2", "K3", "K4"}),
+    "9.2": frozenset({"K1", "K2"}),
+    "9.3": frozenset({"K1", "K2"}),
+    "9.7": frozenset({"Kd", "Ku"}),
 }
 _FORMULA_FUNCTIONS = frozenset({
     "min", "max", "first_time", "first_time_after", "first_time_before", "first_time_levels", "first_time_below_levels", "schedule_levels", "step_levels",

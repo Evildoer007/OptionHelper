@@ -172,7 +172,6 @@
   flex: 1;
   overflow-y: auto;
   padding: 0 24px 24px;
-  scrollbar-color: var(--color-rule-strong) transparent;
 }
 
 .setup-page .setting-section {

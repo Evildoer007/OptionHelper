@@ -1,5 +1,5 @@
 import { enhanceSelects, message, request, safeJson } from "/app/frontend/shared/app.js";
-import { currentThemePreference, installThemeControls, setThemePreference } from "/app/frontend/shared/theme.js";
+import { currentThemePreference, installThemeControls } from "/app/frontend/shared/theme.js";
 
 const send = (path, payload) => request(path, { method: "POST", body: safeJson(payload) });
 const sendCredential = (path, payload) => request(path, { method: "POST", body: JSON.stringify(payload) });
@@ -14,17 +14,12 @@ const storageForm = document.querySelector("#storage-form");
 const preferenceForm = document.querySelector("#preferences-form");
 const themePreference = preferenceForm.elements.theme;
 const themeControls = preferenceForm.querySelector("[data-theme-controls]");
-const languageSelect = preferenceForm.elements.language;
-const languageMenuRoot = preferenceForm.querySelector("[data-dsh-language-menu]");
-const languageMenuTrigger = preferenceForm.querySelector("[data-dsh-language-trigger]");
-const languageMenuLabel = preferenceForm.querySelector("[data-dsh-language-label]");
 const dataState = document.querySelector("#data-credential-state");
 const dataStatus = document.querySelector("[data-data-status]");
 const modelStatus = document.querySelector("[data-model-status]");
 const modelRoot = document.querySelector("#model-provider-root");
 let dataConfigured = false;
 let providerState = { providers: [], builtins: [], default_model_selection: null, openProviderId: null, addMode: false };
-
 if (canManageData) {
   document.querySelector("#data").hidden = false;
   document.querySelector("[data-settings-data-link]").hidden = false;
@@ -34,106 +29,9 @@ if (storagePath && /Win/i.test(navigator.platform)) storagePath.textContent = "W
 
 installThemeControls(themeControls);
 let preferenceSaveQueue = Promise.resolve();
-let languageMenu = null;
-
-function syncDshLanguageMenu() {
-  if (!languageMenuLabel) return;
-  languageMenuLabel.textContent = languageSelect.selectedOptions[0]?.textContent || languageSelect.value;
-  if (!languageMenu) return;
-  languageMenu.replaceChildren(...Array.from(languageSelect.options).map((option) => {
-    const item = document.createElement("button");
-    item.type = "button";
-    item.className = "dsh-language-menu__item";
-    item.setAttribute("role", "menuitem");
-    item.dataset.selected = String(option.selected);
-    item.textContent = option.textContent;
-    item.disabled = option.disabled;
-    item.addEventListener("click", () => {
-      if (option.disabled) return;
-      languageSelect.value = option.value;
-      languageSelect.dispatchEvent(new Event("change", { bubbles: true }));
-      setDshLanguageMenuOpen(false, { focus: true });
-    });
-    return item;
-  }));
-}
-
-function placeDshLanguageMenu() {
-  if (!languageMenu || !languageMenuTrigger || languageMenu.hidden) return;
-  const rect = languageMenuTrigger.getBoundingClientRect();
-  const margin = 12;
-  const viewportWidth = window.innerWidth;
-  const viewportHeight = window.innerHeight;
-  const width = languageMenu.offsetWidth;
-  const height = languageMenu.offsetHeight;
-  languageMenu.style.left = `${Math.min(Math.max(rect.right - width, margin), viewportWidth - width - margin)}px`;
-  languageMenu.style.top = `${Math.min(Math.max(rect.bottom + 4, margin), viewportHeight - height - margin)}px`;
-}
-
-function setDshLanguageMenuOpen(open, { focus = false } = {}) {
-  if (!languageMenu || !languageMenuTrigger) return;
-  languageMenu.hidden = !open;
-  languageMenuTrigger.setAttribute("aria-expanded", String(open));
-  if (open) {
-    syncDshLanguageMenu();
-    placeDshLanguageMenu();
-    if (focus) languageMenu.querySelector('[role="menuitem"][data-selected="true"]')?.focus();
-  } else if (focus) {
-    languageMenuTrigger.focus();
-  }
-}
-
-function installDshLanguageMenu() {
-  if (!languageMenuRoot || !languageMenuTrigger) return;
-  languageMenu = document.createElement("div");
-  languageMenu.className = "dsh-language-menu__list";
-  languageMenu.id = "dsh-language-menu";
-  languageMenu.setAttribute("role", "menu");
-  languageMenu.setAttribute("aria-label", "界面语言");
-  languageMenu.hidden = true;
-  languageMenuTrigger.setAttribute("aria-controls", languageMenu.id);
-  document.body.append(languageMenu);
-  languageMenuTrigger.addEventListener("click", () => setDshLanguageMenuOpen(languageMenu.hidden, { focus: languageMenu.hidden }));
-  languageMenuTrigger.addEventListener("keydown", (event) => {
-    if (event.key === "ArrowDown" || event.key === "ArrowUp" || event.key === "Enter" || event.key === " ") {
-      event.preventDefault();
-      setDshLanguageMenuOpen(true, { focus: true });
-    } else if (event.key === "Escape") {
-      setDshLanguageMenuOpen(false);
-    }
-  });
-  languageMenu.addEventListener("keydown", (event) => {
-    const items = Array.from(languageMenu.querySelectorAll('[role="menuitem"]:not([disabled])'));
-    const current = items.indexOf(document.activeElement);
-    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-      event.preventDefault();
-      const offset = event.key === "ArrowDown" ? 1 : -1;
-      items[Math.max(0, Math.min(items.length - 1, current + offset))]?.focus();
-    } else if (event.key === "Home" || event.key === "End") {
-      event.preventDefault();
-      items[event.key === "Home" ? 0 : items.length - 1]?.focus();
-    } else if (event.key === "Escape" || event.key === "Tab") {
-      event.preventDefault();
-      setDshLanguageMenuOpen(false, { focus: event.key === "Escape" });
-    } else if (event.key === "Enter" || event.key === " ") {
-      event.preventDefault();
-      document.activeElement?.click();
-    }
-  });
-  document.addEventListener("pointerdown", (event) => {
-    if (!languageMenu.hidden && !languageMenuRoot.contains(event.target) && !languageMenu.contains(event.target)) setDshLanguageMenuOpen(false);
-  });
-  window.addEventListener("resize", placeDshLanguageMenu);
-  window.addEventListener("scroll", placeDshLanguageMenu, true);
-  languageSelect.addEventListener("change", syncDshLanguageMenu);
-  syncDshLanguageMenu();
-}
-
-installDshLanguageMenu();
 
 function preferencePayload() {
   return {
-    language: preferenceForm.elements.language.value,
     theme: themePreference.value,
   };
 }
@@ -189,10 +87,7 @@ function applySettings(settings) {
   dataStatus.classList.toggle("is-ready", dataConfigured);
   storageForm.elements.export_location_ref.value = settings.storage_export?.export_location_ref || "";
   storageForm.elements.allow_user_selected_directory.value = String(settings.storage_export?.allow_user_selected_directory !== false);
-  languageSelect.value = settings.preferences?.language || "zh-CN";
-  themePreference.value = settings.preferences?.theme || currentThemePreference();
-  setThemePreference(themePreference.value, { persist: false });
-  syncDshLanguageMenu();
+  themePreference.value = currentThemePreference();
   enhanceSelects(document);
 }
 
@@ -441,7 +336,6 @@ document.querySelectorAll(".settings-nav a").forEach((link) => link.addEventList
 }));
 setActiveSection(location.hash.slice(1) || "preferences");
 
-languageSelect.addEventListener("change", () => { void queuePreferenceSave(); });
 preferenceForm.addEventListener("submit", (event) => { event.preventDefault(); });
 
 storageForm.addEventListener("submit", async (event) => {

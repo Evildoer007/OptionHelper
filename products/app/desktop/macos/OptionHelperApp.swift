@@ -30,6 +30,7 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
     private var window: NSWindow?
     private var webView: WKWebView?
     private var railToggle: NSButton?
+    private var reportToggle: NSButton?
     private var loadedURL = false
     private var themePreference = "light"
 
@@ -171,11 +172,14 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         view.navigationDelegate = self
         let window = OptionHelperWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1320, height: 860),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
         window.title = "OptionHelper"
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        window.titlebarSeparatorStyle = .none
         window.center()
         window.contentView = view
         window.delegate = self
@@ -185,6 +189,7 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         self.window = window
         self.webView = view
         installRailToggle(in: window)
+        installReportToggle(in: window)
         view.load(URLRequest(url: startupURL))
     }
 
@@ -207,16 +212,65 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         button.isHidden = true
         titlebar.addSubview(button)
         railToggle = button
+        layoutTitlebarControls()
+    }
+
+    private func installReportToggle(in window: NSWindow) {
+        guard let closeButton = window.standardWindowButton(.closeButton), let titlebar = closeButton.superview else { return }
+        let button = NSButton(frame: .zero)
+        button.image = NSImage(systemSymbolName: "sidebar.right", accessibilityDescription: "打开或收起报告库")
+        button.contentTintColor = .secondaryLabelColor
+        button.bezelStyle = .inline
+        button.isBordered = false
+        button.target = self
+        button.action = #selector(toggleReport(_:))
+        button.toolTip = "打开或收起报告库"
+        button.isHidden = true
+        titlebar.addSubview(button)
+        reportToggle = button
+        layoutTitlebarControls()
+    }
+
+    private func layoutTitlebarControls() {
+        guard let window,
+              let closeButton = window.standardWindowButton(.closeButton),
+              let titlebar = closeButton.superview else { return }
+        let size = NSSize(width: 26, height: 24)
+        railToggle?.frame = NSRect(
+            x: closeButton.frame.maxX + 94,
+            y: closeButton.frame.midY - size.height / 2,
+            width: size.width,
+            height: size.height
+        )
+        reportToggle?.frame = NSRect(
+            x: titlebar.bounds.maxX - size.width - 14,
+            y: closeButton.frame.midY - size.height / 2,
+            width: size.width,
+            height: size.height
+        )
     }
 
     @objc private func toggleRail(_ sender: Any?) {
         webView?.evaluateJavaScript("document.querySelector('[data-rail-collapse-toggle]')?.click()")
     }
 
+    @objc private func toggleReport(_ sender: Any?) {
+        webView?.evaluateJavaScript("document.querySelector('[data-report-toggle]')?.click()")
+    }
+
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         webView.evaluateJavaScript("Boolean(document.querySelector('[data-rail-collapse-toggle]'))") { [weak self] value, _ in
             self?.railToggle?.isHidden = (value as? Bool) != true
         }
+        webView.evaluateJavaScript("Boolean(document.querySelector('[data-report-toggle]'))") { [weak self] value, _ in
+            self?.reportToggle?.isHidden = (value as? Bool) != true
+        }
+        layoutTitlebarControls()
+    }
+
+    func windowDidResize(_ notification: Notification) {
+        guard notification.object as? NSWindow === window else { return }
+        layoutTitlebarControls()
     }
 
     func windowWillClose(_ notification: Notification) {
@@ -229,6 +283,7 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
               let theme = value["theme"] as? String, let preference = value["preference"] as? String,
               ["light", "dark", "auto"].contains(preference), ["light", "dark"].contains(theme) else { return }
         themePreference = preference
+        window?.appearance = NSAppearance(named: theme == "dark" ? .darkAqua : .aqua)
         applyDockIcon(theme: theme)
     }
 

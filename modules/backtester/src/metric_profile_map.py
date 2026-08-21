@@ -23,25 +23,25 @@ def _assign(profile_id: str, display_name: str, product_ids: Iterable[str]) -> d
 
 METRIC_PROFILE_MAP: dict[str, MetricProfileSpec] = {}
 METRIC_PROFILE_MAP.update(_assign("terminal_payoff", "到期损益型", (
-    "2.1", "2.2", "3.1", "3.2", "3.3", "3.4", "4.1", "4.2", "4.3", "4.4",
-    "6.1", "6.2", "6.3", "6.4", "10.1", "10.2", "10.3",
+    "1.1", "1.2", "2.1", "2.2", "2.3", "2.4", "3.1", "3.2", "3.3", "3.4",
+    "5.1", "5.2", "5.3", "5.4", "9.1", "9.2", "9.3",
 )))
-METRIC_PROFILE_MAP.update(_assign("single_knock_out", "单敲出事件型", ("5.1", "5.2", "5.5", "5.6")))
-METRIC_PROFILE_MAP.update(_assign("single_knock_in", "单敲入事件型", ("5.3", "5.4", "5.7", "5.8")))
-METRIC_PROFILE_MAP.update(_assign("touch_binary", "触碰二元型", ("6.5", "6.6")))
-METRIC_PROFILE_MAP.update(_assign("airbag", "安全气囊型", ("7.1", "7.2", "7.3")))
-METRIC_PROFILE_MAP.update(_assign("accumulator", "累购型", ("8.1",)))
+METRIC_PROFILE_MAP.update(_assign("single_knock_out", "单敲出事件型", ("4.1", "4.2", "4.5", "4.6")))
+METRIC_PROFILE_MAP.update(_assign("single_knock_in", "单敲入事件型", ("4.3", "4.4", "4.7", "4.8")))
+METRIC_PROFILE_MAP.update(_assign("touch_binary", "触碰二元型", ("5.5", "5.6")))
+METRIC_PROFILE_MAP.update(_assign("airbag", "安全气囊型", ("6.1", "6.2", "6.3")))
+METRIC_PROFILE_MAP.update(_assign("accumulator", "累购型", ("7.1",)))
 METRIC_PROFILE_MAP.update(_assign("dual_knock_autocall", "双障碍自动赎回型", (
-    "9.1", "9.2", "9.3", "9.4", "9.5", "9.6", "9.7", "9.8", "9.9", "9.10",
-    "9.11", "9.12", "9.13", "9.14", "9.15", "9.18", "9.22", "9.23", "9.26",
+    "8.1", "8.2", "8.3", "8.4", "8.5", "8.6", "8.7", "8.8", "8.9", "8.10",
+    "8.11", "8.12", "8.13", "8.14", "8.15", "8.18", "8.22", "8.23", "8.26",
 )))
-METRIC_PROFILE_MAP.update(_assign("coupon_autocall", "票息观察型", ("9.19", "9.20", "9.24", "9.25")))
+METRIC_PROFILE_MAP.update(_assign("coupon_autocall", "票息观察型", ("8.19", "8.20", "8.24", "8.25")))
 METRIC_PROFILE_MAP.update(_assign("single_knock_out_autocall", "单敲出自动赎回型", (
-    "9.16", "9.17", "9.21", "9.27", "9.28", "9.29",
+    "8.16", "8.17", "8.21", "8.27", "8.28", "8.29",
 )))
-METRIC_PROFILE_MAP.update(_assign("shark_fin", "鲨鱼鳍型", ("10.5", "10.6", "10.7")))
-METRIC_PROFILE_MAP.update(_assign("variance_swap", "方差收益型", ("10.4",)))
-METRIC_PROFILE_MAP.update(_assign("range_accrual", "区间计息型", ("10.8",)))
+METRIC_PROFILE_MAP.update(_assign("shark_fin", "鲨鱼鳍型", ("9.5", "9.6", "9.7")))
+METRIC_PROFILE_MAP.update(_assign("variance_swap", "方差收益型", ("9.4",)))
+METRIC_PROFILE_MAP.update(_assign("range_accrual", "区间计息型", ("9.8",)))
 def metric_profile_for(product_id: str) -> MetricProfileSpec:
     try:
         return METRIC_PROFILE_MAP[str(product_id)]

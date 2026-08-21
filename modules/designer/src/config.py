@@ -25,8 +25,8 @@ _RUNTIME_ASSET_FILES = {
     "templates": frozenset((*_REQUIRED_TEMPLATE_NAMES, *_REQUIRED_TEMPLATE_DEFINITIONS)),
     "themes": frozenset({"designer-theme.css", "designer-token-vars.css"}),
     "vendor": frozenset({"echarts.min.js"}),
-    "samples": frozenset({"card.html", "quote.html", "report.html"}),
 }
+_IGNORED_ASSET_NAMES = frozenset({".DS_Store"})
 # 开发态的资源属于Designer模块；标准Skill发行包将其置于assets/designer。
 # 不由Reporter推断或透传资源路径，避免目录调整后报告失效。
 _DEFAULT_ASSET_ROOT = _MODULE_ASSET_ROOT if _MODULE_ASSET_ROOT.is_dir() else _RELEASE_ASSET_ROOT
@@ -54,21 +54,13 @@ class DesignerConfig:
         object.__setattr__(self, "asset_root", root)
         if not root.is_dir():
             raise DesignerConfigurationError(f"找不到Designer资源目录：{root}")
-        root_names = {
-            path.name
-            for path in root.iterdir()
-            if path.name
-        }
+        root_names = {path.name for path in root.iterdir() if path.name not in _IGNORED_ASSET_NAMES}
         expected_root_names = set(_RUNTIME_ASSET_FILES)
-        if root_names != expected_root_names:
-            missing = sorted(expected_root_names.difference(root_names))
-            unexpected = sorted(root_names.difference(expected_root_names))
-            detail = []
-            if missing:
-                detail.append(f"缺少{', '.join(missing)}")
-            if unexpected:
-                detail.append(f"包含未治理资源{', '.join(unexpected)}")
-            raise DesignerConfigurationError(f"Designer资源目录不符合交付清单：{'；'.join(detail)}。")
+        missing_root_names = expected_root_names.difference(root_names)
+        if missing_root_names:
+            raise DesignerConfigurationError(
+                f"Designer资源目录不符合运行时清单：缺少{', '.join(sorted(missing_root_names))}。"
+            )
         for directory, expected_files in _RUNTIME_ASSET_FILES.items():
             directory_path = root / directory
             if not directory_path.is_dir():
@@ -76,7 +68,7 @@ class DesignerConfig:
             actual_files = {
                 path.name
                 for path in directory_path.iterdir()
-                if path.name
+                if path.name not in _IGNORED_ASSET_NAMES
             }
             allowed_files = actual_files
             if directory == "templates":

@@ -8,7 +8,7 @@ html[data-theme="dark"] :is(body, .workspace-shell, .workspace-body, .setup-page
   color: var(--color-ink);
 }
 
-html[data-theme="dark"] :is(.workspace-rail, .task-rail, .settings-nav, .configured-models, .task-context, .assistant-panel, .setup-card, .connection-editor, .model-provider-card, .model-provider-add, .model-empty, .connection-item, .report-item, .conversation-start, .conversation-starter, .task-item, .message, .composer, .choice-trigger, .choice-menu, .button-secondary, .button-quiet, .settings-row, .field, .model-catalog-row) {
+html[data-theme="dark"] :is(.workspace-rail, .task-rail, .settings-nav, .configured-models, .task-context, .assistant-panel, .setup-card, .connection-editor, .model-provider-card, .model-provider-add, .model-empty, .connection-item, .report-item, .report-empty, .conversation-start, .conversation-starter, .task-item, .message, .composer, .choice-trigger, .choice-menu, .button-secondary, .button-quiet, .settings-row, .field, .model-catalog-row) {
   border-color: var(--color-rule);
   background-color: var(--color-surface);
   color: var(--color-ink);
@@ -108,7 +108,10 @@ html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-sh
   background: var(--color-surface) !important;
   border-color: var(--color-rule) !important;
   color: var(--color-ink) !important;
-  box-shadow: none !important;
+}
+
+html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .workbench-head {
+  border-bottom-color: transparent !important;
 }
 
 html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .desk-module-tabs button,
@@ -132,12 +135,17 @@ html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-sh
   color: var(--color-muted) !important;
 }
 
-html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .mode-switch--rail,
 html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-account-trigger__mark,
 html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-account-menu,
 html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .task-menu {
   background: var(--color-surface) !important;
   border-color: var(--color-rule) !important;
+  color: var(--color-ink) !important;
+}
+
+html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .mode-switch--rail {
+  border-color: color-mix(in srgb, var(--color-ink) 12%, transparent) !important;
+  background: color-mix(in srgb, var(--color-ink) 7%, transparent) !important;
   color: var(--color-ink) !important;
 }
 
@@ -149,15 +157,18 @@ html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-sh
 }
 
 html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .mode-switch button[aria-pressed="true"] {
-  background: var(--color-brand-red) !important;
-  color: var(--color-paper) !important;
-  box-shadow: none !important;
+  background: transparent !important;
+  color: var(--color-ink) !important;
 }
 
-html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .task-item:hover,
-html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .task-item[aria-current="true"],
-html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="desk"] .task-item:hover,
-html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="desk"] .task-item[aria-current="true"],
+/* The moving segment stays translucent in Dark mode instead of becoming a
+   saturated block that separates the web surface from the native shell. */
+html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .mode-switch--rail::before {
+  border-color: color-mix(in srgb, var(--color-ink) 12%, transparent) !important;
+  background: color-mix(in srgb, var(--color-paper) 78%, transparent) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .1), 0 2px 8px rgba(0, 0, 0, .22) !important;
+}
+
 html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .desk-module-tabs button:hover,
 html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .desk-module-tabs button[aria-selected="true"] {
   background: var(--color-brand-red-soft) !important;
@@ -184,7 +195,6 @@ html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-sh
   background: var(--color-paper) !important;
   border-color: var(--color-rule-strong) !important;
   color: var(--color-ink) !important;
-  box-shadow: none !important;
 }
 
 html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .composer textarea,
@@ -216,17 +226,28 @@ html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-sh
 html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .send-control:hover {
   background: var(--color-brand-red) !important;
   border-color: var(--color-brand-red) !important;
-  color: var(--color-paper) !important;
-  box-shadow: none !important;
+  color: var(--color-on-brand) !important;
+}
+
+html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .drawer-close {
+  border-color: var(--color-rule-strong);
+  background: var(--color-paper);
+  color: var(--color-muted);
+}
+
+html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .drawer-close:hover,
+html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .drawer-close:focus-visible {
+  border-color: var(--color-brand-red);
+  background: var(--color-brand-red-soft);
+  color: var(--color-brand-red);
+}
+
+html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .report-drawer-toggle {
+  display: none !important;
 }
 
 html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .message--user .message__body,
 html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .message__mark {
   background: var(--color-brand-red-soft) !important;
   color: var(--color-ink) !important;
-  box-shadow: none !important;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  html[data-theme="dark"] * { transition-duration: 0.01ms !important; }
 }

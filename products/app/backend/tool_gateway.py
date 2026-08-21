@@ -1110,7 +1110,7 @@ def _without_legacy_pricer_demo_inputs(tool_name: str, payload: Mapping[str, Any
 
     Older Pricer pages stored ``demo_mode`` and ``demo_calendar`` in their
     advanced-input text area.  Retaining those browser-local flags made a
-    later product selection enter a 2.1-only demonstration branch.  Formal
+    later product selection enter a 1.1-only demonstration branch.  Formal
     OptDesk runs always bind or acquire Host-controlled market data, so these
     fields are neither a pricing choice nor part of a frozen contract.
     """
@@ -1382,7 +1382,7 @@ def _requires_path_calendar(resolved_contract: object, payload: Mapping[str, Any
     A task's first path-dependent Pricer run has no frozen contract yet.  Its
     product terms must therefore be read from the verified runtime registry
     before compiling the contract, otherwise the calendar arrives too late for
-    contracts with observation schedules such as Airbag 7.2.
+    contracts with observation schedules such as Airbag 6.2.
     """
 
     config = payload.get("pricing_config")

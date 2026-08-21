@@ -17,7 +17,7 @@ Reporter只接收显式引用，不接收物理结果目录，也不会搜索最
   },
   "source_refs": {
     "product_version_refs": {
-      "candidate_01": {"product_id": "9.1", "product_version": "<product-release>", "content_hash": "<sha256>"}
+      "candidate_01": {"product_id": "7.1", "product_version": "<product-release>", "content_hash": "<sha256>"}
     },
     "catalog_version_ref": {"catalog_version": "<catalog-release>", "content_hash": "<sha256>"},
     "evidence_refs": {

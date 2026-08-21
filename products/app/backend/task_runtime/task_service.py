@@ -58,6 +58,48 @@ class TaskService:
     def get(self, identity: SessionIdentity, task_id: str) -> dict[str, Any]:
         return _public_task(self._get_raw(identity, task_id))
 
+    def rename(self, identity: SessionIdentity, task_id: str, subject: str) -> dict[str, Any]:
+        """Rename one owned App task without changing its module results."""
+
+        subject = subject.strip()
+        if not subject or len(subject) > 160:
+            raise ValidationError("Task subject must contain 1 to 160 characters")
+
+        def update(value: dict[str, Any]) -> dict[str, Any]:
+            task = value.get(task_id)
+            if not isinstance(task, dict):
+                raise KeyError(task_id)
+            if task.get("tenant_id") != identity.tenant_id or task.get("created_by") != identity.principal_id:
+                raise AuthorizationError("conversation.write", "task is not owned by current caller")
+            task["subject"] = subject
+            task["updated_at"] = datetime.now(timezone.utc).isoformat()
+            return value
+
+        return _public_task(self._state.update("tasks", update)[task_id])
+
+    def delete(self, identity: SessionIdentity, task_id: str) -> dict[str, Any]:
+        """Remove one owned App task index and its conversation history.
+
+        Capability-owned module results, reports, and data assets deliberately
+        remain outside this index and are never deleted by this operation.
+        """
+
+        removed: dict[str, Any] | None = None
+
+        def update(value: dict[str, Any]) -> dict[str, Any]:
+            nonlocal removed
+            task = value.get(task_id)
+            if not isinstance(task, dict):
+                raise KeyError(task_id)
+            if task.get("tenant_id") != identity.tenant_id or task.get("created_by") != identity.principal_id:
+                raise AuthorizationError("conversation.write", "task is not owned by current caller")
+            removed = value.pop(task_id)
+            return value
+
+        self._state.update("tasks", update)
+        assert removed is not None
+        return _public_task(removed)
+
     def _get_raw(self, identity: SessionIdentity, task_id: str) -> dict[str, Any]:
         task = self._state.read("tasks").get(task_id)
         if not isinstance(task, dict):

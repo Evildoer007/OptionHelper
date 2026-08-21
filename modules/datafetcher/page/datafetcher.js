@@ -112,7 +112,7 @@ function initializePage() {
     if (targets.includes('asset-ids')) $('asset-ids-error').textContent = text;
     $(targets[0])?.focus();
   };
-  const setBusy = busy => { $('submit-request').disabled = busy; $('submit-request').textContent = busy ? '正在执行请求…' : '实时获取数据'; };
+  const setBusy = busy => { $('submit-request').disabled = busy; $('submit-request').textContent = busy ? '正在执行请求…' : '获取数据'; };
   const requestJson = async (url, options) => parseServiceResponse(await fetch(url, options));
   const normalizeDate = input => { const parsed = parseAndFormatDate(input.value); input.setCustomValidity(parsed ? '' : '日期必须为真实的yyyy/mm/dd或yyyy-mm-dd'); if (parsed) input.value = parsed.display; return parsed; };
   const assetStore = new Map();

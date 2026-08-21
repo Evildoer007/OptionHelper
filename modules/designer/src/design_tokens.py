@@ -84,7 +84,7 @@ _COLORS = {
     "ink": "#252628",
     "ink_soft": "#404246",
     "muted": "#6B7075",
-    "muted_soft": "#858A8E",
+    "muted_soft": "#72777C",
     "blue_gray": "#49647D",
     "risk_gold": "#936719",
     "rule": "#E2E0DC",

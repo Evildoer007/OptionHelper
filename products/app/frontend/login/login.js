@@ -16,19 +16,8 @@ window.__volIn = () => volSurface?.reveal();
 if (window.__optionhelperVolInRequested) window.__volIn();
 installThemeControls(themeControls);
 
-function saveSessionValue(key, value) {
-  try {
-    sessionStorage.setItem(key, value);
-  } catch {
-    // The workspace handoff remains usable when WebKit disables session storage.
-  }
-}
-
 function enterWorkspace() {
-  const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
-  saveSessionValue("optionhelper-workspace-enter", "1");
-  document.documentElement.classList.add("login-leaving");
-  window.setTimeout(() => location.assign("/optchat"), reducedMotion ? 0 : 180);
+  location.assign("/optchat");
 }
 
 function installCardGlow() {

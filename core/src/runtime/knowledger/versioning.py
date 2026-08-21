@@ -81,13 +81,55 @@ def _optionlist_products(path: Path) -> list[dict[str, Any]]:
     return products
 
 
-def _optionlib_fragments(path: Path) -> dict[str, dict[str, Any]]:
+def _published_optionlist_ids(version_root: Path, catalog: Mapping[str, Any]) -> list[str]:
+    """Read the 65 frozen product IDs from ProductVersion OptionList fragments.
+
+    A published catalog may intentionally be older than the working tree.  Its
+    own frozen OptionList fragments, rather than a numeric prefix heuristic or
+    the mutable current source, are the authoritative identity set.
+    """
+    refs = catalog.get("product_manifest_refs")
+    if not isinstance(refs, Mapping):
+        raise ValueError("CatalogVersion缺少产品清单引用")
+    products: list[dict[str, Any]] = []
+    for product_id, manifest_ref in refs.items():
+        if not isinstance(product_id, str) or not isinstance(manifest_ref, str):
+            raise ValueError("CatalogVersion产品清单引用无效")
+        fragment_path = version_root / Path(manifest_ref).parent / SNAPSHOT_FILES["optionlist"]
+        try:
+            fragment_products = _optionlist_products(fragment_path)
+        except ValueError:
+            # Each ProductVersion preserves one OptionList row, not a complete
+            # 65-row list; parse that same authoritative row directly here.
+            match = re.match(
+                r"^\|\s*(\d+)\s*\|\s*(.*?)\s*\|\s*(\d+\.\d+)\s*\|\s*(.*?)\s*\|\s*(.*?)\s*\|$",
+                fragment_path.read_text(encoding="utf-8").strip(),
+            )
+            if match is None:
+                raise ValueError("ProductVersion的OptionList快照无效")
+            fragment_products = [{"sequence": int(match[1]), "product_id": match[3]}]
+        if len(fragment_products) != 1 or fragment_products[0]["product_id"] != product_id:
+            raise ValueError("ProductVersion的OptionList快照产品ID不一致")
+        products.append(fragment_products[0])
+    products.sort(key=lambda item: int(item["sequence"]))
+    if len(products) != 65 or [item["sequence"] for item in products] != list(range(1, 66)):
+        raise ValueError("CatalogVersion冻结OptionList必须精确包含65个连续产品")
+    return [item["product_id"] for item in products]
+
+
+def _optionlib_fragments(path: Path, product_ids: Sequence[str]) -> dict[str, dict[str, Any]]:
+    """Extract only the product headings declared by the authoritative OptionList.
+
+    OptionLib also contains the shared ``0.*`` chapter.  Product recognition
+    must therefore come from OptionList rather than an assumed numeric prefix.
+    """
     text = path.read_text(encoding="utf-8")
     headings = list(re.finditer(r"^###\s+(\d+\.\d+)\s+(.+?)\s*$", text, re.MULTILINE))
+    expected_ids = set(product_ids)
     result: dict[str, dict[str, Any]] = {}
     for index, match in enumerate(headings):
         product_id = match[1]
-        if int(product_id.split(".", 1)[0]) < 2:
+        if product_id not in expected_ids:
             continue
         end = headings[index + 1].start() if index + 1 < len(headings) else len(text)
         result[product_id] = {"name": match[2], "fragment": text[match.start():end].encode("utf-8")}
@@ -160,7 +202,10 @@ def _asset_differences(product: Mapping[str, Any], payload: Mapping[str, Any]) -
 
 def _write_candidate_tree(root: Path, destination: Path, version: str, built_at: str) -> None:
     list_products = _optionlist_products(root / "references" / "optionlist.md")
-    lib_products = _optionlib_fragments(root / "references" / "optionlib.md")
+    lib_products = _optionlib_fragments(
+        root / "references" / "optionlib.md",
+        [item["product_id"] for item in list_products],
+    )
     reg_products = _registry_products(root)
     baselines = _baseline_pairs(root)
     ordered_ids = [item["product_id"] for item in list_products]
@@ -435,12 +480,9 @@ def validate_published_catalog(
     if not isinstance(products, dict):
         raise ValueError("CatalogVersion必须按产品顺序映射65个真实产品ID")
     expected_ids = list(products)
-    if (
-        len(expected_ids) != 65
-        or any(re.fullmatch(r"[2-9]\.\d+|10\.\d+", product_id) is None for product_id in expected_ids)
-        or expected_ids != sorted(expected_ids, key=lambda product_id: tuple(map(int, product_id.split("."))))
-    ):
-        raise ValueError("CatalogVersion必须按OptionList顺序映射65个真实产品ID")
+    frozen_ids = _published_optionlist_ids(version_root, catalog)
+    if expected_ids != frozen_ids:
+        raise ValueError("CatalogVersion必须按冻结OptionList顺序映射65个真实产品ID")
     if require_source_match:
         current_ids = [item["product_id"] for item in _optionlist_products(root_path / "references" / "optionlist.md")]
         if expected_ids != current_ids:
@@ -587,9 +629,7 @@ def load_packaged_product_snapshot(
         raise ValueError("发行包CatalogVersion缺少产品映射")
     expected_ids = list(products)
     if (
-        len(expected_ids) != 65
-        or any(re.fullmatch(r"[2-9]\.\d+|10\.\d+", item) is None for item in expected_ids)
-        or expected_ids != sorted(expected_ids, key=lambda item: tuple(map(int, item.split("."))))
+        expected_ids != _published_optionlist_ids(package_root, catalog)
         or catalog.get("ordered_product_version_map") != products
     ):
         raise ValueError("发行包CatalogVersion产品映射无效")
