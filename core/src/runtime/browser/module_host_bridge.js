@@ -22,6 +22,7 @@
 
   function applyTheme(theme, preference = theme) {
     const root = document.documentElement;
+    if (!root?.dataset) return;
     root.dataset.theme = allowedThemes.has(theme) ? theme : "light";
     root.dataset.themePref = allowedPreferences.has(preference) ? preference : root.dataset.theme;
   }
@@ -486,6 +487,9 @@
     }
     const scopeError = applyHostScope(body);
     if (scopeError) return asResponse(400, {ok: false, message: scopeError});
+    if (action === "fetch" || action === "run") {
+      return hostedBackgroundOperation(action, body, signal);
+    }
     const response = await nativeFetch(`/api/tools/${encodeURIComponent(moduleName)}`, {
       method: "POST",
       credentials: "same-origin",
@@ -521,6 +525,79 @@
       requestHostContext("contract-updated");
     }
     return asResponse(response.status, result);
+  }
+
+  async function hostedBackgroundOperation(action, body, signal) {
+    const taskId = String(context?.task_id || "");
+    if (!taskId) return asResponse(400, {ok: false, message: "当前模块没有可运行的任务。"});
+    const headers = {
+      "Content-Type": "application/json",
+      "X-OptionHelper-Module-Context": JSON.stringify(context),
+      "X-OptionHelper-Request-Id": requestId(),
+    };
+    const submitted = await nativeFetch(`/api/tasks/${encodeURIComponent(taskId)}/operations`, {
+      method: "POST", credentials: "same-origin", headers,
+      body: JSON.stringify({module: moduleName, action, payload: body}), signal,
+    });
+    const envelope = await submitted.json();
+    if (!submitted.ok) return asResponse(submitted.status, envelope);
+    const operationId = envelope.operation?.operation_id;
+    // Compatibility with pre-operation hosts while a rolling App update is
+    // underway. The current App always returns operation_id; this branch also
+    // keeps a directly completed gateway result usable during that upgrade.
+    if (!operationId) {
+      if (envelope.result && typeof envelope.result === "object") {
+        return finalizeHostedResult(action, body, envelope.result);
+      }
+      return asResponse(500, {ok: false, message: "后台运行未返回操作标识。"});
+    }
+    const completed = await waitForHostedOperation(taskId, operationId, signal);
+    if (!completed.ok) return completed;
+    const result = await completed.clone().json().catch(() => ({}));
+    return finalizeHostedResult(action, body, result, completed);
+  }
+
+  function finalizeHostedResult(action, body, result, response = null) {
+    if (moduleName === "payoffer" && action === "run" && !result.destination && result.module_run_ref?.run_id) {
+      result.destination = "结果已保存到当前研究任务。";
+      return asResponse(200, result);
+    }
+    if (
+      action === "run"
+      && (moduleName === "pricer" || moduleName === "backtester")
+      && body.new_contract_variant === true
+      && result.resolved_contract?.identity?.product_id
+    ) {
+      resetHostContext();
+      window.parent.postMessage({
+        type: "optionhelper.module-contract-updated",
+        module: moduleName,
+        bridge_nonce: bridgeNonce,
+        run_id: result.module_run_ref?.run_id || null,
+      }, location.origin);
+      requestHostContext("contract-updated");
+    }
+    return response || asResponse(200, result);
+  }
+
+  async function waitForHostedOperation(taskId, operationId, signal) {
+    while (true) {
+      if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+      const response = await nativeFetch(
+        `/api/tasks/${encodeURIComponent(taskId)}/operations/${encodeURIComponent(operationId)}`,
+        {credentials: "same-origin", signal},
+      );
+      const envelope = await response.json();
+      if (!response.ok) return asResponse(response.status, envelope);
+      const operation = envelope.operation || {};
+      if (operation.state === "succeeded") return asResponse(200, operation.result || {});
+      if (operation.state === "failed" || operation.state === "cancelled" || operation.state === "interrupted") {
+        return asResponse(operation.state === "failed" ? 500 : 409, {
+          ok: false, error: operation.state, message: operation.message || "后台运行未完成。", ...(operation.result || {}),
+        });
+      }
+      await new Promise((resolve) => window.setTimeout(resolve, 350));
+    }
   }
 
   async function handleHostedDownload(event) {

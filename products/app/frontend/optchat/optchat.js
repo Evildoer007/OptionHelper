@@ -49,6 +49,7 @@ export async function startWorkspace(initialMode) {
   let modeSwitchRevision = 0;
   let activeModeTransition = null;
   let workspaceStatusTimer = 0;
+  let operationRefreshTimer = 0;
   let pendingConversationRequest = null;
   const moduleFrames = new Map();
   const moduleContexts = new Map();
@@ -87,6 +88,14 @@ export async function startWorkspace(initialMode) {
   };
   const showReportFeedback = (text, isError = false) => message(reportFeedback, text, isError);
   const clearReportFeedback = () => clearMessage(reportFeedback);
+  const reportFailureMessage = (error) => {
+    if (error?.status === 401 || error?.status === 403) return "当前账户没有生成该报告的权限。";
+    if (error?.status === 404) return "当前任务或报告服务不存在，请重新选择任务后再试。";
+    if (error?.status === 409) return error.body?.message || error.message || "当前任务状态不允许生成报告。";
+    if (error?.status >= 500) return "报告服务暂时不可用，请稍后重试。";
+    if (!error?.status) return "无法连接报告服务，请检查连接后重试。";
+    return error.body?.message || error.message || "报告生成失败，请稍后重试。";
+  };
   const setComposerSending = (button, sending) => {
     if (sending) button.classList.remove("is-sent");
     button.dataset.sending = String(sending);
@@ -170,10 +179,26 @@ export async function startWorkspace(initialMode) {
     if (!raw) return null;
     try { return JSON.parse(raw); } catch { return null; }
   };
+  const explicitSelectedModel = () => (
+    modelPicker?.dataset.userExplicitSelection === "true" ? selectedModel() : null
+  );
   const sendConversation = (taskId, content, requestId, modelSelection) => request(
     `/api/tasks/${encodeURIComponent(taskId)}/messages`,
-    { method: "POST", body: safeJson({ content, model_selection: modelSelection }), headers: { "X-Request-Id": requestId } },
+    { method: "POST", body: safeJson({ content, model_selection: modelSelection, background: true }), headers: { "X-Request-Id": requestId } },
   );
+  const waitForOperation = async (taskId, operationId) => {
+    while (true) {
+      const { operation } = await request(`/api/tasks/${encodeURIComponent(taskId)}/operations/${encodeURIComponent(operationId)}`);
+      if (operation.state === "succeeded") return operation.result || {};
+      if (["failed", "cancelled", "interrupted"].includes(operation.state)) {
+        const error = new Error(operation.message || "后台运行未完成。");
+        error.status = operation.state === "failed" ? 500 : 409;
+        error.body = operation.result || {};
+        throw error;
+      }
+      await new Promise((resolve) => window.setTimeout(resolve, 350));
+    }
+  };
   const lookupConversationResponse = async (taskId, requestId) => {
     try {
       return (await request(conversationResponsePath(taskId, requestId))).response || null;
@@ -182,22 +207,11 @@ export async function startWorkspace(initialMode) {
       throw error;
     }
   };
-  const submitConversation = async (taskId, content, requestId) => {
-    const modelSelection = selectedModel();
-    try {
-      return await sendConversation(taskId, content, requestId, modelSelection);
-    } catch (firstError) {
-      // Explicit client-side validation is final. Network and service failures
-      // may have reached the server, so reuse the same idempotency key once.
-      if (firstError.status && firstError.status < 500) throw firstError;
-      try {
-        return await sendConversation(taskId, content, requestId, modelSelection);
-      } catch (retryError) {
-        const saved = await lookupConversationResponse(taskId, requestId);
-        if (saved) return saved;
-        throw retryError;
-      }
-    }
+  const submitConversation = async (taskId, content, requestId, modelSelection) => {
+    const submitted = await sendConversation(taskId, content, requestId, modelSelection);
+    const operationId = submitted.operation?.operation_id;
+    if (!operationId) throw new Error("后台对话未返回操作标识。");
+    return waitForOperation(taskId, operationId);
   };
   const syncReportActions = () => {
     const hasTask = Boolean(currentTask?.task_id);
@@ -376,6 +390,14 @@ export async function startWorkspace(initialMode) {
 
   async function loadTasks() {
     const { tasks } = await request("/api/tasks");
+    const activeCount = tasks.reduce((total, task) => total + (task.active_operations?.length || 0), 0);
+    window.webkit?.messageHandlers?.optionhelperRuntime?.postMessage({type: "active_operations", count: activeCount});
+    window.clearTimeout(operationRefreshTimer);
+    if (activeCount > 0) {
+      operationRefreshTimer = window.setTimeout(() => {
+        loadTasks().catch(() => {});
+      }, 900);
+    }
     renderTaskList(
       rail,
       tasks,
@@ -814,15 +836,31 @@ export async function startWorkspace(initialMode) {
         && pendingConversationRequest.content === submittedContent
         ? pendingConversationRequest.requestId
         : newConversationRequestId();
-      pendingConversationRequest = { taskId: currentTask.task_id, requestId, content: submittedContent };
+      const explicitModelSelection = pendingConversationRequest?.taskId === currentTask.task_id
+        && pendingConversationRequest.content === submittedContent
+        ? pendingConversationRequest.modelSelection
+        : explicitSelectedModel();
+      pendingConversationRequest = {
+        taskId: currentTask.task_id,
+        requestId,
+        content: submittedContent,
+        modelSelection: explicitModelSelection,
+      };
       saveTransient();
-      const response = await submitConversation(currentTask.task_id, submittedContent, requestId);
+      const submittedTaskId = currentTask.task_id;
+      const response = await submitConversation(
+        submittedTaskId,
+        submittedContent,
+        requestId,
+        explicitModelSelection,
+      );
       pendingConversationRequest = null;
+      modelPicker.dataset.userExplicitSelection = "false";
       markComposerSent(submit);
       input.value = "";
       saveTransient();
       applyConversationStatus(response, status, taskState);
-      await selectTask(currentTask.task_id, false);
+      if (currentTask?.task_id === submittedTaskId) await selectTask(submittedTaskId, false);
     } catch (error) {
       pendingMessage?.remove();
       input.value = submittedContent;
@@ -847,8 +885,11 @@ export async function startWorkspace(initialMode) {
     if (!currentTask) { showReportFeedback("请先新建或选择任务。", true); return; }
     button.disabled = true;
     try {
-      const response = await request(`/api/tasks/${encodeURIComponent(currentTask.task_id)}/reports`, { method: "POST", body: safeJson({ kind: button.dataset.reportKind }) });
-      const result = response?.result || {};
+      const taskId = currentTask.task_id;
+      const response = await request(`/api/tasks/${encodeURIComponent(taskId)}/reports`, { method: "POST", body: safeJson({ kind: button.dataset.reportKind, background: true }) });
+      const result = response.operation?.operation_id
+        ? await waitForOperation(taskId, response.operation.operation_id)
+        : response?.result || {};
       if (result.status === "needs_input") {
         showReportFeedback("当前任务还没有可用于生成报告的正式结果。请先完成收益结构、估值定价或历史回测中的至少一项分析。", true);
       } else if (result.status === "completed") {
@@ -857,9 +898,9 @@ export async function startWorkspace(initialMode) {
       } else {
         showReportFeedback("报告暂未生成。请先完成当前任务的正式分析结果。", true);
       }
-      if (result.status === "completed") await selectTask(currentTask.task_id, false);
-    } catch {
-      showReportFeedback("当前任务还没有可用于生成报告的正式结果。请先完成收益结构、估值定价或历史回测中的至少一项分析。", true);
+      if (result.status === "completed" && currentTask?.task_id === taskId) await selectTask(taskId, false);
+    } catch (error) {
+      showReportFeedback(reportFailureMessage(error), true);
     } finally {
       syncReportActions();
     }

@@ -15,7 +15,7 @@ from datetime import date, timedelta
 from runpy import run_path
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from uuid import uuid4
 
 _CORE_SRC = Path(__file__).resolve().parents[4] / "core" / "src"
@@ -31,6 +31,7 @@ from modules.recommender.models import (
 )
 from modules.recommender.ports import AgentPort, KnowledgePort, ToolPort
 from modules.recommender.service import RecommenderService
+from modules.recommender.config import RecommenderConfig
 from modules.recommender.interaction import constraints_fingerprint, merge_confirmed_constraints
 from runtime.protocol.models import ModuleRunRef
 
@@ -43,6 +44,13 @@ from ..stores.contract_store import ContractStore
 from ..stores.result_store import ResultStore
 from ..task_runtime.task_service import TaskService
 from .tool_dispatcher import ToolDispatcher
+from .multi_agent import (
+    AgentRunConcurrencyGate,
+    AgentRunSettlementRegistry,
+    LifecycleProjection,
+    OneShotAgentRuntime,
+    resolve_recommendation_preset,
+)
 
 
 _REPORT_MODULES = ("payoff", "pricing", "backtest")
@@ -56,11 +64,56 @@ _MODULE_RUN_REF_FIELDS = (
 class AppAgentPort(AgentPort):
     """Maps Recommender's typed step requests to the provider-neutral gateway."""
 
-    def __init__(self, gateway: ModelGateway, identity: SessionIdentity, task_id: str, selection: ModelSelection | None = None) -> None:
+    def __init__(
+        self,
+        gateway: ModelGateway,
+        identity: SessionIdentity,
+        task_id: str,
+        selection: ModelSelection | None = None,
+        *,
+        preset_id: str = "sequential-deliberation",
+        is_cancelled: Callable[[SessionIdentity, str], bool] | None = None,
+        lifecycle_projection: LifecycleProjection | None = None,
+        host_multi_agent: bool = True,
+        task_service: TaskService | None = None,
+        concurrency_gate: AgentRunConcurrencyGate | None = None,
+        execution_ids: Mapping[str, str] | None = None,
+        settlement_registry: AgentRunSettlementRegistry | None = None,
+    ) -> None:
         self._gateway = gateway
         self._identity = identity
         self._task_id = task_id
         self._selection = selection
+        self._preset_id = preset_id
+        self._is_cancelled = is_cancelled
+        self._lifecycle_projection = lifecycle_projection
+        self._host_multi_agent = host_multi_agent
+        self._task_service = task_service
+        self._execution_ids = dict(execution_ids or {})
+        self._runtime = OneShotAgentRuntime(
+            gateway,
+            identity,
+            task_id,
+            preset=resolve_recommendation_preset(preset_id),
+            selection=selection,
+            is_cancelled=is_cancelled,
+            lifecycle_projection=lifecycle_projection,
+            host_multi_agent=host_multi_agent,
+            role_model_defaults=(
+                gateway.multi_agent_role_model_selections_for(identity, preset_id)
+                if hasattr(gateway, "multi_agent_role_model_selections_for") else {}
+            ),
+            event_log=task_service.session_event_log if task_service is not None else None,
+            parent_session_id=(
+                task_service.conversation_session_id(identity, task_id)
+                if task_service is not None else None
+            ),
+            concurrency_gate=concurrency_gate,
+            workflow_run_id=(execution_ids or {}).get("workflow_run_id"),
+            execution_id=(execution_ids or {}).get("execution_id"),
+            step_id_namespace=(execution_ids or {}).get("step_id_namespace"),
+            settlement_registry=settlement_registry,
+        )
 
     def capability(self) -> ModelCapability:
         capability = (
@@ -68,28 +121,48 @@ class AppAgentPort(AgentPort):
             if self._selection is None
             else self._gateway.capability_for(self._identity, selection=self._selection)
         )
-        return ModelCapability.from_mapping(capability)
+        # The App owns child orchestration. This is not a provider claim.
+        return ModelCapability.from_mapping({
+            **capability,
+            "multi_agent": self._host_multi_agent,
+            "max_parallel_agents": 3 if self._host_multi_agent else 1,
+        })
+
+    def fresh_single_agent_port(self) -> "AppAgentPort":
+        """Create a distinct fallback executor with a fresh run budget."""
+
+        return AppAgentPort(
+            self._gateway,
+            self._identity,
+            self._task_id,
+            self._selection,
+            preset_id="sequential-deliberation",
+            is_cancelled=self._is_cancelled,
+            lifecycle_projection=self._lifecycle_projection,
+            host_multi_agent=False,
+            task_service=self._task_service,
+            concurrency_gate=self._runtime.concurrency_gate,
+            execution_ids={
+                **self._execution_ids,
+                "step_id_namespace": f"{self._execution_ids.get('step_id_namespace', 'step-fallback')}:fallback",
+            },
+            settlement_registry=self._runtime.settlement_registry,
+        )
+
+    def close(self) -> None:
+        self._runtime.close()
 
     def run_step(self, role: str, payload: Mapping[str, Any]) -> Mapping[str, Any]:
-        context = {
-            "operation": "recommender_fixed_step",
-            "role": str(role),
-            "input": _safe_model_payload(payload),
-            "rule": "只返回该步骤的结构化result；不得调用工具、不得产生金融数值。",
-        }
-        response = (
-            self._gateway.decide_for(self._identity, self._task_id, context)
-            if self._selection is None
-            else self._gateway.decide_for(self._identity, self._task_id, context, selection=self._selection)
-        )
-        if not isinstance(response, Mapping) or set(response) != {"action", "result"} or response.get("action") != "final":
-            raise ValidationError("Recommender步骤必须返回{action:'final',result:{...}}")
-        result = response.get("result")
-        if not isinstance(result, Mapping):
-            raise ValidationError("Recommender步骤result必须为对象")
+        result = self._runtime.run_step(str(role), _safe_model_payload(payload))
         if _contains_hidden_model_field(result):
             raise ValidationError("Recommender步骤不得返回推理或Secret字段")
         return dict(result)
+
+    def run_steps(self, role: str, payloads: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+        results = self._runtime.run_steps(str(role), [_safe_model_payload(payload) for payload in payloads])
+        if any(_contains_hidden_model_field(result) for result in results):
+            raise ValidationError("Recommender步骤不得返回推理或Secret字段")
+        return results
 
 
 class AppKnowledgePort(KnowledgePort):
@@ -153,14 +226,33 @@ class RecommenderAdapter:
         registry: PageRegistry,
         task_service: TaskService,
         tool_executor: "AppConversationToolExecutor",
+        concurrency_gate: AgentRunConcurrencyGate | None = None,
+        settlement_registry: AgentRunSettlementRegistry | None = None,
     ) -> None:
         self._gateway = gateway
         self._registry = registry
         self._tasks = task_service
         self._tools = tool_executor
+        self._concurrency_gate = concurrency_gate
+        self._settlement_registry = settlement_registry
 
     def run_fixed(
-        self, identity: SessionIdentity, task_id: str, prompt: str, arguments: Mapping[str, Any], *, selection: ModelSelection | None = None,
+        self, identity: SessionIdentity, task_id: str, prompt: str, arguments: Mapping[str, Any], *,
+        selection: ModelSelection | None = None, execution_ids: Mapping[str, str] | None = None,
+    ) -> Mapping[str, Any]:
+        result = dict(self._run_fixed_internal(
+            identity, task_id, prompt, arguments, selection=selection, execution_ids=execution_ids,
+        ))
+        result["control"] = {
+            "resume_main_agent": True,
+            "candidate_owner": "recommender",
+            "delivery_owner": "main_agent",
+        }
+        return result
+
+    def _run_fixed_internal(
+        self, identity: SessionIdentity, task_id: str, prompt: str, arguments: Mapping[str, Any], *,
+        selection: ModelSelection | None = None, execution_ids: Mapping[str, str] | None = None,
     ) -> Mapping[str, Any]:
         task = self._tasks.get(identity, task_id)
         catalog_version = str(self._registry.manifest["catalog_version"])
@@ -193,84 +285,24 @@ class RecommenderAdapter:
                 return _confirmation_unavailable(task_id, catalog_version, pending)
             if not _binding_matches_pending(expected, pending, constraints=stored_constraints):
                 return _confirmation_invalidated(task_id, catalog_version, pending)
-            requested_delivery = _delivery_from_constraints(confirmed_constraints)
-            if pending is not None and requested_delivery is not None and requested_delivery != pending.get("delivery"):
-                pending = self._tasks.choose_pending_recommendation_delivery(
-                    identity,
-                    task_id,
-                    requested_delivery,
-                    confirmed_constraints=_persisted_constraints(confirmed_constraints),
-                )
-                if pending is None:
-                    return _confirmation_invalidated(task_id, catalog_version)
-                expected = _current_candidate_binding(
-                    pending["candidate"],
-                    _pending_constraints_from_history(pending, history),
-                    self._registry.capability_root,
-                )
-                if expected is None or not _binding_matches_pending(
-                    expected, pending, constraints=_pending_constraints_from_history(pending, history),
-                ):
-                    return _confirmation_invalidated(task_id, catalog_version, pending)
-            if pending is not None and pending.get("delivery") is None:
-                approved = self._tasks.approve_pending_recommendation(identity, task_id)
-                if approved is None or not _binding_matches_pending(expected, approved, constraints=stored_constraints):
-                    return _confirmation_invalidated(task_id, catalog_version, pending)
-                return {
-                    "route": {"fixed_recommendation_workflow": True, "route": "recommendation"},
-                    "recommendation_set": _continuation_recommendation_set(
-                        task_id, catalog_version, approved, status="pending_approval", candidate_status="approved",
-                    ),
-                    "delivery": {
-                        "status": "needs_input",
-                        "next_step": "候选已确认。如需形成交付材料，请选择研究简报或完整研究报告；若只需要当前分析结论，也可以直接继续讨论。",
-                    },
-                }
             approved = self._tasks.approve_pending_recommendation(identity, task_id)
             if approved is not None:
                 if not _binding_matches_pending(
                     expected, approved, constraints=_pending_constraints_from_history(approved, history),
                 ):
                     return _confirmation_invalidated(task_id, catalog_version, approved)
-                delivery_requests = _deliveries_from_constraints(approved["confirmed_constraints"])
-                if len(delivery_requests) > 1:
-                    delivery = self._tools.run_recommendation_deliveries(
-                        identity,
-                        task_id,
-                        analysis_case_id=str(approved["analysis_case_id"]),
-                        catalog_version=catalog_version,
-                        candidate=approved["candidate"],
-                        deliveries=delivery_requests,
-                        confirmed_constraints=_pending_constraints_from_history(approved, history),
-                    )
-                else:
-                    delivery = self._tools.run_recommendation_delivery(
-                        identity,
-                        task_id,
-                        analysis_case_id=str(approved["analysis_case_id"]),
-                        catalog_version=catalog_version,
-                        candidate=approved["candidate"],
-                        delivery=approved["delivery"],
-                        confirmed_constraints=_pending_constraints_from_history(approved, history),
-                    )
-                if delivery.get("status") == "completed":
-                    self._tasks.complete_pending_recommendation(identity, task_id)
-                analysis_status = str(delivery.get("analysis_status", "not_started")).strip().lower()
-                delivery_status = str(
-                    delivery.get("delivery_status", "completed" if delivery.get("status") == "completed" else "partial")
-                ).strip().lower()
                 return {
                     "route": {"fixed_recommendation_workflow": True, "route": "recommendation"},
                     "recommendation_set": _continuation_recommendation_set(
                         task_id,
                         catalog_version,
                         approved,
-                        status="completed" if analysis_status == "completed" and delivery_status == "completed" else "partial",
+                        status="candidate_ready",
                         candidate_status="approved",
-                        analysis_status=analysis_status,
-                        delivery_status=delivery_status,
+                        analysis_status="not_started",
+                        delivery_status="pending" if approved.get("delivery") else "not_requested",
                     ),
-                    "delivery": delivery,
+                    "next_step": "候选与合同条款已确认，控制权已交回主Agent。",
                 }
         requested_outputs = _requested_outputs(arguments, confirmed_constraints)
         case = RecommendationCase(
@@ -287,13 +319,32 @@ class RecommenderAdapter:
             approved_candidate_ids=(),
             candidate_contracts={},
         )
+        preset_id = str(arguments.get("recommendation_preset", "sequential-deliberation")).strip().lower()
+        lifecycle_projection = LifecycleProjection()
+        agent_port = AppAgentPort(
+            self._gateway,
+            identity,
+            task_id,
+            selection,
+            preset_id=preset_id,
+            is_cancelled=self._tasks.is_cancelled,
+            lifecycle_projection=lifecycle_projection,
+            task_service=self._tasks,
+            concurrency_gate=self._concurrency_gate,
+            execution_ids=execution_ids,
+            settlement_registry=self._settlement_registry,
+        )
         service = RecommenderService(
-            agent_port=AppAgentPort(self._gateway, identity, task_id, selection),
+            agent_port=agent_port,
             knowledge_port=AppKnowledgePort(self._registry.capability_root, catalog_version),
             tool_port=AppToolPort(self._tools, identity, task_id),
+            config=RecommenderConfig(agent_mode="multi", multi_agent_preset=preset_id),
         )
         workflow = str(arguments.get("workflow", "recommendation")).strip().lower()
-        result = service.recommend_fixed(case, workflow=workflow)
+        try:
+            result = service.recommend_fixed(case, workflow=workflow)
+        finally:
+            agent_port.close()
         route = result.get("route", {})
         if not isinstance(route, Mapping) or route.get("fixed_recommendation_workflow") is not True:
             raise ValidationError("App内Recommender只允许固定推荐Workflow，不允许freeform")
@@ -323,10 +374,7 @@ class RecommenderAdapter:
             return {
                 "route": dict(route),
                 "recommendation_set": _with_confirmation_terms(recommendation, continuation["candidate"], binding),
-                "delivery": {
-                    "status": "needs_input",
-                    "next_step": _confirmation_question(continuation["candidate"], binding),
-                },
+                "next_step": _confirmation_question(continuation["candidate"], binding),
             }
         return dict(result)
 
@@ -340,17 +388,21 @@ class AppConversationToolExecutor:
         registry: PageRegistry,
         results: ResultStore | None = None,
         contracts: ContractStore | None = None,
+        tasks: TaskService | None = None,
     ) -> None:
         self._dispatcher = dispatcher
         self._registry = registry
         self._results = results
         self._contracts = contracts
+        self._tasks = tasks
         self._recommender: RecommenderAdapter | None = None
 
     def bind_recommender(self, recommender: RecommenderAdapter) -> None:
         self._recommender = recommender
 
     def call(self, identity: SessionIdentity, task_id: str, name: str, arguments: Mapping[str, Any]) -> Mapping[str, Any]:
+        if name == "recommendation_delivery.run":
+            return self._run_pending_recommendation_delivery(identity, task_id, arguments)
         module, action = _tool_name(name)
         if any(key in arguments for key in ("action", "task_id", "tenant_id", "principal_id", "session_id", "host_context", "capability_token")):
             raise ValidationError("OptChat工具参数不得覆盖App路由或身份字段")
@@ -377,6 +429,51 @@ class AppConversationToolExecutor:
         else:
             payload = {**dict(arguments), "action": action, "task_id": task_id}
         return self._dispatch(identity, task_id, name, module, payload)
+
+    def _run_pending_recommendation_delivery(
+        self,
+        identity: SessionIdentity,
+        task_id: str,
+        arguments: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        """Independent main-Agent-owned delivery transition after approval."""
+
+        if self._tasks is None:
+            raise ValidationError("推荐交付状态机未配置")
+        if set(arguments).difference({"kind", "format"}):
+            raise ValidationError("推荐交付参数只允许kind或format")
+        kind = str(arguments.get("kind", "")).strip().lower()
+        output_format = str(arguments.get("format", "html")).strip().lower()
+        if kind not in {"card", "quote", "report"} or output_format not in {"html", "pdf"}:
+            return {
+                "status": "needs_input",
+                "message": "请选择Card、Quote或Report；默认生成HTML，需要PDF时请明确指定。",
+            }
+        pending = self._tasks.pending_recommendation(identity, task_id)
+        if pending is None or pending.get("status") != "approved":
+            return {"status": "needs_input", "message": "请先确认推荐候选与合同条款。"}
+        requested = {"kind": kind, "format": output_format}
+        if pending.get("delivery") is None:
+            pending = self._tasks.choose_pending_recommendation_delivery(
+                identity,
+                task_id,
+                requested,
+                confirmed_constraints=dict(pending["confirmed_constraints"]),
+            )
+        if pending is None or pending.get("delivery") != requested:
+            raise ValidationError("当前候选已绑定不同交付类型")
+        result = self.run_recommendation_delivery(
+            identity,
+            task_id,
+            analysis_case_id=str(pending["analysis_case_id"]),
+            catalog_version=str(pending["catalog_version"]),
+            candidate=pending["candidate"],
+            delivery=requested,
+            confirmed_constraints=pending["confirmed_constraints"],
+        )
+        if result.get("status") == "completed":
+            self._tasks.complete_pending_recommendation(identity, task_id)
+        return result
 
     def _report_binding(self, identity: SessionIdentity, task_id: str) -> dict[str, str] | None:
         """Derive Reporter matching fields from the task's immutable contract binding."""
@@ -1094,14 +1191,13 @@ def _pending_recommendation_state(
     product_id = str(raw_candidate.get("product_id", "")).strip()
     if not candidate_id or not product_id or not ordered_underlyings:
         return None
-    delivery = _delivery_from_constraints(confirmed_constraints)
     return {
         "status": "pending_approval",
         "analysis_case_id": analysis_case_id,
         "catalog_version": catalog_version,
         "workflow_mode": str(recommendation.get("workflow_mode", "single_agent")),
         "confirmed_constraints": dict(confirmed_constraints),
-        "delivery": delivery,
+        "delivery": None,
         "candidate": {
             "candidate_id": candidate_id,
             "product_id": product_id,
@@ -1132,8 +1228,6 @@ def _may_resume_pending(
     status = str(pending.get("status", "")).strip().lower()
     if status == "pending_approval":
         return explicit_candidate_confirmation
-    if status == "approved":
-        return _delivery_from_constraints(current_constraints) is not None
     return False
 
 
@@ -1176,42 +1270,6 @@ def _candidate_constraints_fingerprint(constraints: Mapping[str, Any]) -> str:
         if key in {"underlying", "horizon", "market_view", "max_loss", "principal_fluctuation", "term_overrides"}
     }
     return constraints_fingerprint(candidate_fields)
-
-
-def _delivery_from_constraints(constraints: Mapping[str, Any]) -> dict[str, Any] | None:
-    """Translate an explicit user delivery choice without inventing one."""
-
-    kind = str(constraints.get("output_type", "")).strip().lower()
-    if kind not in {"card", "quote", "report", "both"}:
-        return None
-    output_format = str(constraints.get("format", "html")).strip().lower()
-    if output_format not in {"html", "pdf"}:
-        return None
-    return {
-        # TaskService stores one approval marker.  For a dual request the
-        # original output_type remains "both" in confirmed_constraints and
-        # this report-shaped marker authorizes the combined delivery once.
-        "kind": "report" if kind == "both" else kind,
-        "format": output_format,
-    }
-
-
-def _deliveries_from_constraints(constraints: Mapping[str, Any]) -> tuple[dict[str, Any], ...]:
-    """Return the exact user-requested delivery set in stable render order."""
-
-    marker = _delivery_from_constraints(constraints)
-    if marker is None:
-        return ()
-    if str(constraints.get("output_type", "")).strip().lower() != "both":
-        return (marker,)
-    output_format = str(constraints.get("format", "html")).strip().lower()
-    return (
-        {"kind": "card", "format": output_format},
-        {
-            "kind": "report",
-            "format": output_format,
-        },
-    )
 
 
 def _selected_candidate_id(prompt: object, recommendation: object) -> str | None:
@@ -1533,7 +1591,7 @@ def _confirmation_unavailable(
         "recommendation_set": _continuation_recommendation_set(
             task_id, catalog_version, pending, status="unavailable", analysis_status="not_started", delivery_status="unavailable",
         ),
-        "delivery": {"status": "needs_input", "next_step": "当前候选条款暂无法受控校验。请稍后重试推荐。"},
+        "next_step": "当前候选条款暂无法受控校验。请稍后重试推荐。",
     }
 
 
@@ -1547,7 +1605,7 @@ def _confirmation_invalidated(
         "recommendation_set": _continuation_recommendation_set(
             task_id, catalog_version, pending, status="pending_approval", analysis_status="not_started", delivery_status="pending",
         ),
-        "delivery": {"status": "needs_input", "next_step": "检测到条件已变化，原候选条款已失效。请重新确认新的候选和条款。"},
+        "next_step": "检测到条件已变化，原候选条款已失效。请重新确认新的候选和条款。",
     }
 
 

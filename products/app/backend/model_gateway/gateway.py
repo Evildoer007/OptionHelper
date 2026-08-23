@@ -3,14 +3,30 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any, Callable
 
 from ..errors import UnavailableCapabilityError
 from ..identity.session_identity import SessionIdentity
 from ..secrets.secret_provider import SecretProvider
-from ..settings.settings_models import ModelSelection, ModelServiceSettings, SettingsSnapshot
+from ..settings.settings_models import (
+    MULTI_AGENT_RECOMMENDATION_ROLES,
+    ModelSelection,
+    ModelServiceSettings,
+    SettingsSnapshot,
+)
 from ..settings.settings_service import SettingsService
 from .provider_registry import ProviderRegistry
+from .request_control import ModelRequestControl
+
+
+@dataclass(frozen=True)
+class ResolvedAgentModelRoute:
+    """Frozen model identity and dispatch selection for one AgentRun."""
+
+    model_selection: ModelSelection
+    dispatch_selection: ModelSelection | None
+    source: str
 
 
 class ModelGateway:
@@ -19,18 +35,97 @@ class ModelGateway:
         self._providers = providers
         self._secrets = secrets
 
-    def complete_for(self, identity: SessionIdentity, task_id: str, message: str, *, selection: ModelSelection | None = None) -> str:
+    def complete_for(
+        self, identity: SessionIdentity, task_id: str, message: str, *,
+        selection: ModelSelection | None = None,
+        request_control: ModelRequestControl | None = None,
+    ) -> str:
         del task_id
         model, secret_ref = self._configured(identity, selection)
-        return self._providers.complete(model, secret_ref, [{"role": "user", "content": message}])
+        return self._providers.complete(
+            model, secret_ref, [{"role": "user", "content": message}], request_control=request_control,
+        )
 
-    def decide_for(self, identity: SessionIdentity, task_id: str, context: Mapping[str, Any], *, selection: ModelSelection | None = None) -> Mapping[str, Any]:
+    def complete_with_metadata_for(
+        self,
+        identity: SessionIdentity,
+        task_id: str,
+        message: str,
+        *,
+        selection: ModelSelection | None = None,
+        request_control: ModelRequestControl | None = None,
+    ) -> Mapping[str, Any]:
+        del task_id
+        model, secret_ref = self._configured(identity, selection)
+        return self._providers.complete_with_metadata(
+            model,
+            secret_ref,
+            [{"role": "user", "content": message}],
+            request_control=request_control,
+        )
+
+    def decide_for(
+        self, identity: SessionIdentity, task_id: str, context: Mapping[str, Any], *,
+        selection: ModelSelection | None = None,
+        request_control: ModelRequestControl | None = None,
+    ) -> Mapping[str, Any]:
         """Provider-neutral structured decision boundary for the App Agent."""
         del task_id
         if not isinstance(context, Mapping):
             raise ValueError("Agent decision context must be an object")
         model, secret_ref = self._configured(identity, selection)
-        return self._providers.decide(model, secret_ref, dict(context))
+        return self._providers.decide(model, secret_ref, dict(context), request_control=request_control)
+
+    def resolve_agent_model_route(
+        self,
+        identity: SessionIdentity,
+        *,
+        explicit_selection: ModelSelection | None,
+        preset_role_selection: ModelSelection | None,
+    ) -> ResolvedAgentModelRoute:
+        """Resolve and validate one role route without silent provider fallback."""
+
+        settings = self._load(identity)
+        if explicit_selection is not None:
+            selected = explicit_selection
+            source = "user_explicit"
+        elif preset_role_selection is not None:
+            selected = preset_role_selection
+            source = "preset_role_default"
+        else:
+            selected = settings.default_model_selection
+            source = "session_default"
+        model, _secret_ref = self._configured(identity, selected)
+        if selected is not None:
+            return ResolvedAgentModelRoute(selected, selected, source)
+        audit_selection = ModelSelection(
+            provider_id=model.provider_name,
+            model_id=model.model_name or model.provider_name,
+        )
+        return ResolvedAgentModelRoute(audit_selection, None, source)
+
+    def multi_agent_role_model_selections_for(
+        self, identity: SessionIdentity, preset_id: str,
+    ) -> Mapping[str, ModelSelection]:
+        settings = self._load(identity)
+        configured = settings.multi_agent_preset_role_models.get(str(preset_id), {})
+        return {
+            role: selection for role, selection in configured.items()
+            if role in MULTI_AGENT_RECOMMENDATION_ROLES
+        }
+
+    def multi_agent_recommendation_preset_for(self, identity: SessionIdentity) -> str:
+        return self._load(identity).multi_agent_recommendation_preset_id
+
+    def require_bounded_request_control(
+        self, identity: SessionIdentity, *, selection: ModelSelection | None,
+    ) -> None:
+        model, _secret_ref = self._configured(identity, selection)
+        if not self._providers.supports_bounded_request_control(model.provider_name):
+            raise UnavailableCapabilityError(
+                "bounded_request_control",
+                "当前模型Provider未声明受控请求期限，不能启动多Agent子运行。",
+            )
 
     def capability_for(self, identity: SessionIdentity, *, selection: ModelSelection | None = None) -> dict[str, Any]:
         """Expose only non-secret provider capabilities to App workflows."""
@@ -42,6 +137,12 @@ class ModelGateway:
             "multi_agent": False,
             "max_parallel_agents": 1,
         }
+
+    def model_binding_for(self, identity: SessionIdentity, *, selection: ModelSelection | None = None) -> dict[str, str]:
+        """Return the non-secret resolved model identity for one AgentRun audit event."""
+
+        model, _secret_ref = self._configured(identity, selection)
+        return {"provider_id": model.provider_name, "model_id": model.model_name or model.provider_name}
 
     def _configured(self, identity: SessionIdentity, selection: ModelSelection | None = None) -> tuple[ModelServiceSettings, Any]:
         settings = self._load(identity)

@@ -1,12 +1,13 @@
 """Settings data that may contain references but never secret material."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from ..secrets.secret_ref import SecretRef
 
 
 RoleName = Literal["sales", "admin"]
+MULTI_AGENT_RECOMMENDATION_ROLES = frozenset({"Intent", "Research", "Critic"})
 
 
 @dataclass(frozen=True)
@@ -91,6 +92,8 @@ class SettingsSnapshot:
     active_model_connection_id: str | None = None
     model_providers: tuple[ModelProviderProfile, ...] = ()
     default_model_selection: ModelSelection | None = None
+    multi_agent_recommendation_preset_id: str = "sequential-deliberation"
+    multi_agent_preset_role_models: dict[str, dict[str, ModelSelection]] = field(default_factory=dict)
 
 
 def serialize_settings(snapshot: SettingsSnapshot) -> dict[str, Any]:
@@ -138,6 +141,15 @@ def serialize_settings(snapshot: SettingsSnapshot) -> dict[str, Any]:
             {"provider_id": snapshot.default_model_selection.provider_id, "model_id": snapshot.default_model_selection.model_id}
             if snapshot.default_model_selection else None
         ),
+        "multi_agent_recommendation_preset_id": snapshot.multi_agent_recommendation_preset_id,
+        "multi_agent_preset_role_models": {
+            preset_id: {
+                role: {"provider_id": selection.provider_id, "model_id": selection.model_id}
+                for role, selection in role_models.items()
+                if role in MULTI_AGENT_RECOMMENDATION_ROLES
+            }
+            for preset_id, role_models in snapshot.multi_agent_preset_role_models.items()
+        },
         "data_interface": {
             "provider_name": snapshot.data_interface.provider_name,
             "secret_ref": snapshot.data_interface.secret_ref.redacted() if snapshot.data_interface.secret_ref else None,
@@ -253,6 +265,23 @@ def deserialize_settings(value: dict[str, Any]) -> SettingsSnapshot:
             provider_id=str(raw_selection.get("provider_id", "")),
             model_id=str(raw_selection.get("model_id", "")),
         )
+    raw_role_models = value.get("multi_agent_preset_role_models", {})
+    if not isinstance(raw_role_models, dict):
+        raise ValueError("multi_agent_preset_role_models must be an object")
+    role_models: dict[str, dict[str, ModelSelection]] = {}
+    for preset_id, raw_roles in raw_role_models.items():
+        if not isinstance(raw_roles, dict):
+            raise ValueError("multi-agent preset role models must be an object")
+        role_models[str(preset_id)] = {}
+        for role, raw_role_selection in raw_roles.items():
+            if str(role) not in MULTI_AGENT_RECOMMENDATION_ROLES:
+                continue
+            if not isinstance(raw_role_selection, dict):
+                raise ValueError("multi-agent role model selection must be an object")
+            role_models[str(preset_id)][str(role)] = ModelSelection(
+                provider_id=str(raw_role_selection.get("provider_id", "")),
+                model_id=str(raw_role_selection.get("model_id", "")),
+            )
     return SettingsSnapshot(
         role=role,
         model_service=ModelServiceSettings(
@@ -278,6 +307,10 @@ def deserialize_settings(value: dict[str, Any]) -> SettingsSnapshot:
         active_model_connection_id=active_connection,
         model_providers=tuple(providers),
         default_model_selection=selection,
+        multi_agent_recommendation_preset_id=str(
+            value.get("multi_agent_recommendation_preset_id", "sequential-deliberation")
+        ),
+        multi_agent_preset_role_models=role_models,
     )
 
 

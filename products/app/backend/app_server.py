@@ -18,14 +18,21 @@ from http import HTTPStatus
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import parse_qs, unquote, urlparse
 
 from .agent_runtime.conversation_service import ConversationService
 from .agent_runtime.context_builder import ContextBuilder, ResultStoreObservationBuilder
 from .agent_runtime.agent_loop import AgentLoop
 from .agent_runtime.recommender_adapter import AppConversationToolExecutor, RecommenderAdapter
+from .agent_runtime.multi_agent import (
+    AgentRunConcurrencyGate,
+    AgentRunSettlementRegistry,
+    recommendation_presets,
+)
 from .agent_runtime.tool_dispatcher import ToolDispatcher
+from .agent_runtime.durability_checkpoint import DurabilityCheckpointStore
+from .agent_runtime.runtime_telemetry import RuntimeTelemetry
 from .audit.audit_models import AuditEvent
 from .audit.audit_service import LocalAuditService
 from .authorization.policy import AuthorizationPolicy
@@ -38,12 +45,13 @@ from .identity.login_handler import AuthenticationMode, InitialProvisionRequest,
 from .identity.password_store import PasswordCredentialStore
 from .identity.session_identity import SessionIdentity
 from .model_gateway.gateway import ModelGateway
-from .model_gateway.deepseek_provider import complete_openai_compatible, decide_openai_compatible, discover_openai_models, validate_openai_base_url
+from .model_gateway.deepseek_provider import complete_openai_compatible, complete_openai_compatible_with_metadata, decide_openai_compatible, discover_openai_models, validate_openai_base_url
 from .model_gateway.provider_registry import ProviderRegistry
 from .page_registry import PAGE_MODULES, PageRegistry
 from .settings.connection_tester import ConnectionTester
 from .settings.settings_models import (
     DataInterfaceSettings,
+    MULTI_AGENT_RECOMMENDATION_ROLES,
     ModelCatalogEntry,
     ModelConnectionSettings,
     ModelProviderProfile,
@@ -66,7 +74,9 @@ from .stores.result_store import ResultStore
 from .stores.session_store import LocalSessionStore
 from .stores.settings_store import LocalSettingsStore
 from .task_runtime.job_runner import JobRunner
+from .task_runtime.job_registry import AppJobWorker, JobRegistry
 from .task_runtime.idempotency_store import ToolIdempotencyStore
+from .task_runtime.operation_service import OperationCancelled, TaskOperationService
 from .task_runtime.task_service import TaskService
 from .tool_gateway import ToolGateway
 from .reporter_adapter import ReporterAdapter
@@ -79,7 +89,7 @@ FRONTEND_ASSETS = frozenset({
     "optchat/index.html", "optchat/optchat.js",
     "optdesk/index.html", "optdesk/optdesk.js",
     "settings/index.html", "settings/settings.js", "settings/model-providers.css", "settings/general-settings.css", "settings/settings-shell.css",
-    "shared/styles.css", "shared/refinement.css", "shared/theme-overrides.css", "shared/app.js", "shared/transition-scope.js", "shared/theme-bootstrap.js", "shared/theme.js", "shared/vol-surface.js",
+    "shared/styles.css", "shared/refinement.css", "shared/theme-overrides.css", "shared/app.js", "shared/transition-scope.js", "shared/theme-bootstrap.js", "shared/theme.js", "shared/scrollbar-activity.js", "shared/vol-surface.js",
 })
 _CAPABILITY_CSP = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'self'; form-action 'self'"
 
@@ -163,35 +173,83 @@ class AppServer:
         self.provider_registry = ProviderRegistry()
         self.provider_registry.register(
             "openai-compatible",
-            lambda settings, reference, messages: complete_openai_compatible(
+            lambda settings, reference, messages, request_control=None: complete_openai_compatible(
                 settings,
                 reference,
                 messages,
                 resolve_secret=lambda ref: self.secret_provider.resolve(ref, "模型服务凭据"),
+                request_control=request_control,
             ),
-            decision=lambda settings, reference, context: decide_openai_compatible(
+            decision=lambda settings, reference, context, request_control=None: decide_openai_compatible(
                 settings,
                 reference,
                 context,
                 resolve_secret=lambda ref: self.secret_provider.resolve(ref, "模型服务凭据"),
+                request_control=request_control,
             ),
+            completion_with_metadata=lambda settings, reference, messages, request_control=None: complete_openai_compatible_with_metadata(
+                settings,
+                reference,
+                messages,
+                resolve_secret=lambda ref: self.secret_provider.resolve(ref, "模型服务凭据"),
+                request_control=request_control,
+            ),
+            bounded_request_control=True,
         )
         self.tool_idempotency = ToolIdempotencyStore(self._documents._root / "tool-idempotency.sqlite3")
+        self.job_registry = JobRegistry(self._documents._root / "calculation-jobs.sqlite3")
+        self.dispatch_checkpoints = DurabilityCheckpointStore(self.tasks.session_event_log)
+        def verified_job_proof(record):
+            if record.module_run_ref is None:
+                return None
+            recovery_identity = SessionIdentity(
+                record.owner_id, record.tenant_id, Role.ADMIN, f"job-recovery:{record.job_id}",
+            )
+            self.results.resolve_owned_module_run(recovery_identity, record.module_run_ref)
+            return record.module_run_ref
+
+        self.job_registry.recover_interrupted(verified_job_proof)
+        self.job_registry.validate_succeeded_proofs(verified_job_proof)
+        def reconciled_job_state(job_id: str):
+            try:
+                record = self.job_registry.get(job_id)
+                return record.state, record.module_run_ref
+            except (KeyError, ValidationError):
+                return None
+
+        self.tool_idempotency.reconcile_claims(reconciled_job_state)
+        self.dispatch_checkpoints.reconcile_succeeded(
+            set(self.job_registry.succeeded_operation_ids())
+        )
+        self.job_worker = AppJobWorker(4)
+        self.operations = TaskOperationService(self._documents._root / "task-operations.sqlite3")
+        self.runtime_telemetry = RuntimeTelemetry(self.tasks.session_event_log, self.job_registry)
         self.tool_dispatcher = ToolDispatcher(
-            self.gateway, JobRunner(), self.tasks, self.results, self.data_assets, self.tool_idempotency,
+            self.gateway, JobRunner(self.job_registry, self.job_worker), self.tasks,
+            self.results, self.data_assets, self.tool_idempotency,
         )
         self.model_gateway = ModelGateway(self.settings_for, self.provider_registry, self.secret_provider)
+        self.agent_run_concurrency_gate = AgentRunConcurrencyGate(6)
+        self.agent_run_settlement_registry = AgentRunSettlementRegistry(self.tasks.session_event_log)
+        def settled_operation_state(operation_id: str) -> str | None:
+            record = self.job_registry.get_by_operation(operation_id)
+            return record.state if record is not None else None
+
+        self.dispatch_checkpoints.recover_incomplete(settled_operation_state)
         self.conversation_tools = AppConversationToolExecutor(
             self.tool_dispatcher,
             self.registry,
             self.results,
             self.contracts,
+            self.tasks,
         )
         self.recommender = RecommenderAdapter(
             gateway=self.model_gateway,
             registry=self.registry,
             task_service=self.tasks,
             tool_executor=self.conversation_tools,
+            concurrency_gate=self.agent_run_concurrency_gate,
+            settlement_registry=self.agent_run_settlement_registry,
         )
         self.conversation_tools.bind_recommender(self.recommender)
         self.conversations = ConversationService(
@@ -210,6 +268,8 @@ class AppServer:
                 recommender=self.recommender,
                 is_cancelled=self.tasks.is_cancelled,
                 observation_builder=ResultStoreObservationBuilder(self.results),
+                dispatch_checkpoints=self.dispatch_checkpoints,
+                conversation_session_id=self.tasks.conversation_session_id,
             ),
         )
         self.connection_tester = ConnectionTester(self.datafetcher)
@@ -235,6 +295,7 @@ class AppServer:
         return self.url
 
     def shutdown(self) -> None:
+        self.operations.shutdown()
         if self._httpd is not None:
             self._httpd.shutdown()
             self._httpd.server_close()
@@ -367,6 +428,8 @@ class AppServer:
             active_model_connection_id=active_connection_id,
             model_providers=principal.model_providers,
             default_model_selection=local_selection,
+            multi_agent_recommendation_preset_id=principal.multi_agent_recommendation_preset_id,
+            multi_agent_preset_role_models=principal.multi_agent_preset_role_models,
         )
 
     def model_providers_for(self, identity: SessionIdentity) -> dict[str, Any]:
@@ -424,6 +487,14 @@ class AppServer:
                 {"provider_id": settings.default_model_selection.provider_id, "model_id": settings.default_model_selection.model_id}
                 if settings.default_model_selection else None
             ),
+            "multi_agent_preset_role_models": {
+                preset_id: {
+                    role: {"provider_id": selection.provider_id, "model_id": selection.model_id}
+                    for role, selection in role_models.items()
+                    if role in MULTI_AGENT_RECOMMENDATION_ROLES
+                }
+                for preset_id, role_models in settings.multi_agent_preset_role_models.items()
+            },
         }
 
     def model_service_for_selection(self, identity: SessionIdentity, selection: ModelSelection | None) -> ModelServiceSettings:
@@ -536,6 +607,8 @@ class AppServer:
                 active_model_connection_id=active.connection_id if active is not None else None,
                 model_providers=providers,
                 default_model_selection=selection,
+                multi_agent_recommendation_preset_id=snapshot.multi_agent_recommendation_preset_id,
+                multi_agent_preset_role_models=snapshot.multi_agent_preset_role_models,
             )
             self.settings.save(identity.principal_id, replace(principal, role=identity.role.value))
         else:
@@ -691,6 +764,16 @@ class AppServer:
             active_model_connection_id=active_id,
             model_providers=tuple(normalized_providers),
             default_model_selection=selection,
+            multi_agent_preset_role_models={
+                preset_id: {
+                    role: route
+                    for role, route in role_models.items()
+                    if role in MULTI_AGENT_RECOMMENDATION_ROLES
+                    and (route.provider_id, route.model_id) in valid_selections
+                }
+                for preset_id, role_models in snapshot.multi_agent_preset_role_models.items()
+                if preset_id in {"sequential-deliberation", "independent-council"}
+            },
         )
         if normalized != snapshot:
             self.settings.save(identity.principal_id, normalized)
@@ -859,10 +942,23 @@ class AppServer:
         )
         if selected_id not in eligible:
             raise ValidationError("默认模型必须是当前提供方中已启用的模型")
+        valid_selections = {
+            (provider.provider_id, model.model_id)
+            for provider in providers for model in provider.models if model.enabled
+        }
+        role_models = {
+            preset_id: {
+                role: selection for role, selection in mappings.items()
+                if role in MULTI_AGENT_RECOMMENDATION_ROLES
+                and (selection.provider_id, selection.model_id) in valid_selections
+            }
+            for preset_id, mappings in current.multi_agent_preset_role_models.items()
+        }
         return replace(
             current,
             model_providers=tuple(providers),
             default_model_selection=ModelSelection(updated.provider_id, selected_id),
+            multi_agent_preset_role_models=role_models,
         )
 
 
@@ -1014,7 +1110,35 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
         if path == "/api/tasks":
             identity = self._identity()
             self.app.policy.require(identity.role, "task.read")
-            self._json(HTTPStatus.OK, {"tasks": self.app.tasks.list(identity)})
+            tasks = self.app.tasks.list(identity)
+            active = self.app.operations.active_summaries(identity, [str(task["task_id"]) for task in tasks])
+            self._json(HTTPStatus.OK, {"tasks": [{**task, "active_operations": active.get(str(task["task_id"]), [])} for task in tasks]})
+            return
+        if path == "/api/runtime/active-operations":
+            identity = self._identity()
+            self.app.policy.require(identity.role, "task.read")
+            tasks = self.app.tasks.list(identity)
+            active = self.app.operations.active_summaries(identity, [str(task["task_id"]) for task in tasks])
+            self._json(HTTPStatus.OK, {"active_count": sum(len(value) for value in active.values())})
+            return
+        if path.startswith("/api/tasks/") and path.endswith("/operations"):
+            identity = self._identity()
+            self.app.policy.require(identity.role, "task.read")
+            task_id = path.removeprefix("/api/tasks/").removesuffix("/operations").rstrip("/")
+            self.app.tasks.get(identity, task_id)
+            self._json(HTTPStatus.OK, {"operations": [item.public(include_result=True) for item in self.app.operations.list(identity, task_id)]})
+            return
+        if path.startswith("/api/tasks/") and "/operations/" in path:
+            identity = self._identity()
+            self.app.policy.require(identity.role, "task.read")
+            task_id, operation_id = path.removeprefix("/api/tasks/").split("/operations/", 1)
+            if not task_id or not operation_id or "/" in operation_id:
+                raise KeyError(path)
+            self.app.tasks.get(identity, task_id)
+            operation = self.app.operations.get(identity, operation_id)
+            if operation.task_id != task_id:
+                raise KeyError(path)
+            self._json(HTTPStatus.OK, {"operation": operation.public(include_result=True)})
             return
         if path.startswith("/api/tasks/") and path.endswith("/reports"):
             identity = self._identity()
@@ -1065,6 +1189,45 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
             identity = self._identity()
             self.app.policy.require(identity.role, "settings.read")
             self._json(HTTPStatus.OK, self.app.model_providers_for(identity))
+            return
+        if path == "/api/settings/multi-agent-presets":
+            identity = self._identity()
+            self.app.policy.require(identity.role, "settings.read")
+            settings = self.app.settings_for(identity)
+            presets = recommendation_presets()
+            self._json(HTTPStatus.OK, {
+                "selected_preset_id": settings.multi_agent_recommendation_preset_id,
+                "presets": [
+                    {
+                        "preset_id": preset.preset_id,
+                        "version": preset.version,
+                        "display_name": preset.display_name,
+                        "execution_strategy": preset.execution_strategy,
+                        "enabled": preset.enabled,
+                        "disabled_reason": preset.disabled_reason,
+                        "roles": ["Intent", "Research", "Critic"],
+                    }
+                    for preset in presets.values()
+                ],
+                "role_models": serialize_settings_public(settings)["multi_agent_preset_role_models"],
+                "available_models": [
+                    {
+                        "provider_id": provider.provider_id,
+                        "provider_name": provider.display_name,
+                        "model_id": model.model_id,
+                        "model_name": model.display_name,
+                    }
+                    for provider in settings.model_providers
+                    for model in provider.models
+                    if model.enabled and provider.secret_ref is not None
+                ],
+            })
+            return
+        if path == "/api/internal/runtime-telemetry":
+            identity = self._identity()
+            if identity.role is not Role.ADMIN:
+                raise AuthorizationError("runtime.telemetry.read", "administrator access is required")
+            self._json(HTTPStatus.OK, self.app.runtime_telemetry.snapshot())
             return
         if path.startswith("/api/module-host/"):
             identity = self._identity()
@@ -1226,6 +1389,68 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
             self.app.audit.record(AuditEvent(action="task.create", principal_id=identity.principal_id, tenant_id=identity.tenant_id, outcome="succeeded", decision="allow", reference=task["task_id"], request_id=request_id))
             self._json(HTTPStatus.CREATED, {"task": task})
             return
+        if path == "/api/runtime/shutdown":
+            self.app.policy.require(identity.role, "task.read")
+            _only_fields(body, set())
+            count = self.app.operations.interrupt_active("用户确认退出OptionHelper，未完成运行已中断。")
+            self._json(HTTPStatus.OK, {"interrupted": count})
+            return
+        if path.startswith("/api/tasks/") and path.endswith("/operations"):
+            self.app.policy.require(identity.role, "module.run")
+            task_id = path.removeprefix("/api/tasks/").removesuffix("/operations").rstrip("/")
+            self.app.tasks.get(identity, task_id)
+            _only_fields(body, {"module", "action", "payload"})
+            module = str(body.get("module", "")).strip()
+            action = str(body.get("action", "")).strip().lower()
+            payload = body.get("payload")
+            if module not in PAGE_MODULES or action not in {"fetch", "run"} or not isinstance(payload, dict):
+                raise ValidationError("Task operation request is invalid")
+            module_context = self._module_host_context(module)
+            if str(module_context.get("task_id", "")) != task_id:
+                raise ValidationError("Module Host context does not match task operation")
+            controlled_payload = {**payload, "action": action, "task_id": task_id}
+            if module == "reporter":
+                selection = controlled_payload.get("selection")
+                if not isinstance(selection, dict):
+                    raise ValidationError("Reporter page requires one controlled selection")
+                source_id = selection.get("source_id")
+                if not isinstance(source_id, str) or not source_id:
+                    raise ValidationError("selection.source_id is required")
+                source = self.app.results.get_owned_report_source(identity, source_id)
+                kind = str(selection.get("output_type", ""))
+                capability = {"card": "report.card.request", "quote": "report.quote.request", "report": "report.full.request"}.get(kind)
+                if capability is None:
+                    raise ValidationError("selection.output_type must be card, quote or report")
+                self.app.policy.require(identity.role, capability)
+                controlled_payload = {"action": "run", "task_id": source["task_id"], "kind": kind, "selection": selection}
+            module_request_id = self.headers.get("X-OptionHelper-Request-Id", "")
+            operation = self.app.operations.submit(
+                identity,
+                task_id=task_id,
+                module=module,
+                kind=action,
+                operation=lambda cancelled: _dispatch_background_tool(
+                    self.app.tool_dispatcher, module, controlled_payload, identity,
+                    module_context=module_context,
+                    request_id=module_request_id,
+                    cancelled=cancelled,
+                ),
+            )
+            self.app.audit.record(AuditEvent(action="task.operation.submit", principal_id=identity.principal_id, tenant_id=identity.tenant_id, outcome="queued", decision="allow", reference=operation.operation_id, request_id=request_id))
+            self._json(HTTPStatus.ACCEPTED, {"operation": operation.public()})
+            return
+        if path.startswith("/api/tasks/") and path.endswith("/cancel") and "/operations/" in path:
+            self.app.policy.require(identity.role, "conversation.write")
+            task_id, operation_id = path.removeprefix("/api/tasks/").removesuffix("/cancel").split("/operations/", 1)
+            if not task_id or not operation_id or "/" in operation_id:
+                raise KeyError(path)
+            self.app.tasks.get(identity, task_id)
+            _only_fields(body, set())
+            operation = self.app.operations.cancel(identity, operation_id)
+            if operation.task_id != task_id:
+                raise KeyError(path)
+            self._json(HTTPStatus.OK, {"operation": operation.public()})
+            return
         if path.startswith("/api/tasks/") and path.endswith("/rename"):
             self.app.policy.require(identity.role, "conversation.write")
             task_id = path.removeprefix("/api/tasks/").removesuffix("/rename").rstrip("/")
@@ -1245,8 +1470,23 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
         if path.startswith("/api/tasks/") and path.endswith("/messages"):
             self.app.policy.require(identity.role, "conversation.write")
             task_id = path.removeprefix("/api/tasks/").removesuffix("/messages").rstrip("/")
-            _only_fields(body, {"content", "model_selection"})
+            _only_fields(body, {"content", "model_selection", "background"})
             model_selection = _conversation_model_selection(body.get("model_selection"))
+            if body.get("background") is True:
+                content = str(body.get("content", ""))
+                conversation_request_id = self.headers.get("X-Request-Id")
+                operation = self.app.operations.submit(
+                    identity,
+                    task_id=task_id,
+                    module="optchat",
+                    kind="conversation",
+                    operation=lambda cancelled: _dispatch_background_conversation(
+                        self.app.conversations, identity, task_id, content,
+                        request_id=conversation_request_id, selection=model_selection, cancelled=cancelled,
+                    ),
+                )
+                self._json(HTTPStatus.ACCEPTED, {"operation": operation.public()})
+                return
             response = self.app.conversations.respond(
                 identity,
                 task_id,
@@ -1265,6 +1505,7 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
         if path.startswith("/api/tasks/") and path.endswith("/cancel"):
             self.app.policy.require(identity.role, "conversation.write")
             task_id = path.removeprefix("/api/tasks/").removesuffix("/cancel").rstrip("/")
+            self.app.operations.cancel_task(identity, task_id)
             task = self.app.tasks.cancel(identity, task_id)
             self.app.audit.record(AuditEvent(action="task.cancel", principal_id=identity.principal_id, tenant_id=identity.tenant_id, outcome="succeeded", decision="allow", reference=task_id, request_id=request_id))
             self._json(HTTPStatus.OK, {"task": task})
@@ -1278,7 +1519,7 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
                 # OptChat declares only the public delivery type.  The
                 # App-owned executor selects current, verified task evidence;
                 # no client path or ModuleRunRef is accepted on this route.
-                _only_fields(body, {"kind", "format"})
+                _only_fields(body, {"kind", "format", "background"})
                 kind = str(body.get("kind", "")).strip().lower()
                 if kind not in {"card", "quote", "report"}:
                     raise ValidationError("report kind must be card, quote or report")
@@ -1286,6 +1527,18 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
                 if output_format not in {"html", "pdf"}:
                     raise ValidationError("report format must be html or pdf")
                 arguments = {"kind": kind, "format": output_format}
+                if body.get("background") is True:
+                    operation = self.app.operations.submit(
+                        identity,
+                        task_id=task_id,
+                        module="reporter",
+                        kind="report",
+                        operation=lambda cancelled: _dispatch_background_report(
+                            self.app.conversation_tools, identity, task_id, arguments, cancelled,
+                        ),
+                    )
+                    self._json(HTTPStatus.ACCEPTED, {"operation": operation.public()})
+                    return
                 result = self.app.conversation_tools.call(identity, task_id, "reporter.run", arguments)
                 self._json(HTTPStatus.OK, {"result": result})
                 return
@@ -1359,6 +1612,57 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
             )
             self._json(HTTPStatus.OK, {"settings": serialize_settings_public(saved)})
             return
+        if path == "/api/settings/multi-agent-preset/default":
+            self.app.policy.require(identity.role, "settings.model.local.write")
+            _only_fields(body, {"preset_id"})
+            preset_id = str(body.get("preset_id", "")).strip()
+            preset = recommendation_presets().get(preset_id)
+            if preset is None or not preset.enabled:
+                raise ValidationError("MultiAgent预设未启用")
+            current = self.app.settings_for(identity)
+            saved = self.app.save_settings(
+                identity,
+                replace(current, multi_agent_recommendation_preset_id=preset_id),
+                "settings.model.local.write",
+            )
+            self._json(HTTPStatus.OK, {"settings": serialize_settings_public(saved)})
+            return
+        if path == "/api/settings/multi-agent-role-models":
+            self.app.policy.require(identity.role, "settings.model.local.write")
+            _only_fields(body, {"preset_id", "role_models"})
+            preset_id = str(body.get("preset_id", "")).strip()
+            if preset_id not in {"sequential-deliberation", "independent-council"}:
+                raise ValidationError("MultiAgent预设未启用")
+            raw_role_models = body.get("role_models")
+            if not isinstance(raw_role_models, dict):
+                raise ValidationError("role_models必须为对象")
+            allowed_roles = MULTI_AGENT_RECOMMENDATION_ROLES
+            selected_roles: dict[str, ModelSelection] = {}
+            for role, raw_selection in raw_role_models.items():
+                if role not in allowed_roles or not isinstance(raw_selection, dict):
+                    raise ValidationError("MultiAgent角色模型映射无效")
+                _only_fields(raw_selection, {"provider_id", "model_id"})
+                selection = ModelSelection(
+                    _model_connection_id(raw_selection.get("provider_id")),
+                    _required_model_id(raw_selection.get("model_id")),
+                )
+                self.app.model_service_for_selection(identity, selection)
+                selected_roles[role] = selection
+            current = self.app.settings_for(identity)
+            mappings = {
+                key: dict(value) for key, value in current.multi_agent_preset_role_models.items()
+            }
+            if selected_roles:
+                mappings[preset_id] = selected_roles
+            else:
+                mappings.pop(preset_id, None)
+            saved = self.app.save_settings(
+                identity,
+                replace(current, multi_agent_preset_role_models=mappings),
+                "settings.model.local.write",
+            )
+            self._json(HTTPStatus.OK, {"settings": serialize_settings_public(saved)})
+            return
         if path == "/api/settings/model-provider/delete":
             self.app.policy.require(identity.role, "settings.model.local.write")
             _only_fields(body, {"provider_id"})
@@ -1372,8 +1676,25 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
                  for item in providers for model in item.models if model.enabled),
                 None,
             )
+            valid_selections = {
+                (item.provider_id, model.model_id)
+                for item in providers for model in item.models if model.enabled
+            }
+            role_models = {
+                preset_id: {
+                role: selection for role, selection in mappings.items()
+                if role in MULTI_AGENT_RECOMMENDATION_ROLES
+                and (selection.provider_id, selection.model_id) in valid_selections
+                }
+                for preset_id, mappings in current.multi_agent_preset_role_models.items()
+            }
             saved = self.app.save_settings(
-                identity, replace(current, model_providers=providers, default_model_selection=next_selection),
+                identity, replace(
+                    current,
+                    model_providers=providers,
+                    default_model_selection=next_selection,
+                    multi_agent_preset_role_models=role_models,
+                ),
                 "settings.model.local.write",
             )
             reference = self.app.secret_reference(
@@ -1504,6 +1825,18 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
                 ModelSelection(next_active.connection_id, next_active.model_service.model_name)
                 if next_active is not None else None
             )
+            valid_selections = {
+                (provider.provider_id, model.model_id)
+                for provider in providers for model in provider.models if model.enabled
+            }
+            role_models = {
+                preset_id: {
+                    role: selection for role, selection in mappings.items()
+                    if role in MULTI_AGENT_RECOMMENDATION_ROLES
+                    and (selection.provider_id, selection.model_id) in valid_selections
+                }
+                for preset_id, mappings in current.multi_agent_preset_role_models.items()
+            }
             saved = self.app.save_settings(
                 identity,
                 replace(
@@ -1513,6 +1846,7 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
                     active_model_connection_id=next_active.connection_id if next_active else None,
                     model_providers=providers,
                     default_model_selection=next_selection,
+                    multi_agent_preset_role_models=role_models,
                 ),
                 "settings.model.local.write",
             )
@@ -2018,6 +2352,59 @@ def _model_from(value: dict[str, Any]) -> ModelServiceSettings:
     if not model_name:
         raise ValidationError("model_name is required for an OpenAI-compatible provider")
     return ModelServiceSettings(provider_name, endpoint, None, model_name)
+
+
+def _dispatch_background_tool(
+    dispatcher: ToolDispatcher,
+    module: str,
+    payload: dict[str, Any],
+    identity: SessionIdentity,
+    *,
+    module_context: dict[str, Any],
+    request_id: str,
+    cancelled: Callable[[], bool],
+) -> dict[str, Any]:
+    """Run the existing module gateway outside the request lifetime."""
+    if cancelled():
+        raise OperationCancelled()
+    result = dispatcher.dispatch(module, payload, identity, module_context=module_context, request_id=request_id)
+    if cancelled() and isinstance(result, dict) and result.get("cancelled") is True:
+        raise OperationCancelled()
+    return result
+
+
+def _dispatch_background_conversation(
+    conversations: ConversationService,
+    identity: SessionIdentity,
+    task_id: str,
+    content: str,
+    *,
+    request_id: str | None,
+    selection: ModelSelection | None,
+    cancelled: Callable[[], bool],
+) -> dict[str, Any]:
+    """Persist the normal conversation response while its view is absent."""
+    if cancelled():
+        raise OperationCancelled()
+    response = conversations.respond(identity, task_id, content, request_id=request_id, selection=selection)
+    if response.get("status") == "cancelled":
+        raise OperationCancelled()
+    return response
+
+
+def _dispatch_background_report(
+    conversation_tools: Any,
+    identity: SessionIdentity,
+    task_id: str,
+    arguments: dict[str, str],
+    cancelled: Callable[[], bool],
+) -> dict[str, Any]:
+    if cancelled():
+        raise OperationCancelled()
+    result = conversation_tools.call(identity, task_id, "reporter.run", arguments)
+    if cancelled() and result.get("cancelled") is True:
+        raise OperationCancelled()
+    return result
 
 
 def _data_from(value: dict[str, Any]) -> DataInterfaceSettings:

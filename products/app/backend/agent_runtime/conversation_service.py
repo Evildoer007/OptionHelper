@@ -11,10 +11,16 @@ from ..model_gateway.gateway import ModelGateway
 from ..settings.settings_models import ModelSelection
 from ..task_runtime.task_service import TaskService
 from .redaction import redact_text
+from .durability_checkpoint import DurabilityCheckpointStore, stable_operation_id
 
 
 class AgentLoopPort(Protocol):
     def run(self, identity: SessionIdentity, task_id: str, message: str, *, selection: ModelSelection | None = None) -> dict[str, Any]: ...
+
+    def run_with_execution(
+        self, identity: SessionIdentity, task_id: str, message: str, *,
+        selection: ModelSelection | None = None, execution_ids: dict[str, str],
+    ) -> dict[str, Any]: ...
 
 
 class ConversationService:
@@ -22,6 +28,7 @@ class ConversationService:
         self._task_service = task_service
         self._gateway = gateway
         self._agent_loop = agent_loop
+        self._dispatch_checkpoints = DurabilityCheckpointStore(task_service.session_event_log)
         self._locks: dict[tuple[str, str, str], Lock] = {}
         self._locks_guard = Lock()
 
@@ -46,55 +53,136 @@ class ConversationService:
             replay = self._task_service.get_conversation_response(identity, task_id, request_id, replay_key)
             if replay is not None:
                 return replay
-            if self._task_service.is_cancelled(identity, task_id):
-                response = _cancelled_response()
-                self._task_service.record_conversation_response(identity, task_id, request_id, replay_key, response)
-                return response
-            recorded = self._task_service.append_message(identity, task_id, "user", message, status="pending_model")
-            if self._agent_loop is not None:
+            request_state = self._task_service.begin_conversation_request(
+                identity, task_id, request_id, replay_key,
+            )
+            was_cancelled = self._task_service.is_cancelled(identity, task_id)
+            recorded = self._task_service.append_message(
+                identity,
+                task_id,
+                "user",
+                message,
+                status="pending_model",
+                message_id=request_state.get("user_message_id") if request_state else None,
+                created_at=request_state.get("user_message_created_at") if request_state else None,
+            )
+            if request_state and request_state.get("status") in {"execution_started", "recovery_required"}:
+                response = request_state.get("recovery_response")
+                if not isinstance(response, dict):
+                    response = _interrupted_execution_response()
+                    request_state = self._task_service.mark_conversation_recovery_required(
+                        identity, task_id, str(request_id), replay_key, response,
+                    )
+                assistant = self._task_service.append_message(
+                    identity,
+                    task_id,
+                    "assistant",
+                    str(response["text"]),
+                    status="recovery_required",
+                    message_id=request_state.get("assistant_message_id"),
+                    created_at=request_state.get("assistant_message_created_at") or request_state.get("recovery_required_at"),
+                )
+                return {**response, "message": recorded, "assistant_message": assistant}
+            if request_state and request_state.get("status") == "model_settled":
+                raw_response = request_state.get("model_response")
+                if not isinstance(raw_response, dict):
+                    raise RuntimeError("Settled conversation request has no model response")
+                response = dict(raw_response)
+            else:
+                if was_cancelled:
+                    response = _cancelled_response()
+                else:
+                    request_state = self._task_service.mark_conversation_execution_started(
+                        identity, task_id, request_id, replay_key,
+                    ) or request_state
+                    response = self._run_model(
+                        identity, task_id, message, selection,
+                        execution_ids=_execution_ids(request_state),
+                    )
+                settled = self._task_service.settle_conversation_model(
+                    identity, task_id, request_id, replay_key, response,
+                )
+                if settled is not None:
+                    request_state = settled
+            assistant = None
+            assistant_text = response.get("text")
+            if isinstance(assistant_text, str) and assistant_text.strip():
+                assistant = self._task_service.append_message(
+                    identity,
+                    task_id,
+                    "assistant",
+                    assistant_text,
+                    status=str(response.get("status", "recorded")),
+                    message_id=request_state.get("assistant_message_id") if request_state else None,
+                    created_at=request_state.get("assistant_message_created_at") if request_state else None,
+                )
+            completed = {**response, "message": recorded}
+            if assistant is not None:
+                completed["assistant_message"] = assistant
+            self._task_service.complete_conversation_request(
+                identity, task_id, request_id, replay_key, completed,
+            )
+            return completed
+
+    def _run_model(
+        self,
+        identity: SessionIdentity,
+        task_id: str,
+        message: str,
+        selection: ModelSelection | None,
+        *,
+        execution_ids: dict[str, str],
+    ) -> dict[str, Any]:
+        if self._task_service.is_cancelled(identity, task_id):
+            return _cancelled_response()
+        if self._agent_loop is not None:
+            controlled_run = getattr(self._agent_loop, "run_with_execution", None)
+            if callable(controlled_run):
+                response = controlled_run(
+                    identity, task_id, message, selection=selection, execution_ids=execution_ids,
+                )
+            else:
                 response = (
                     self._agent_loop.run(identity, task_id, message)
                     if selection is None
                     else self._agent_loop.run(identity, task_id, message, selection=selection)
                 )
-                response = _safe_response(response, identity)
-                assistant = self._task_service.append_message(
-                    identity,
-                    task_id,
-                    "assistant",
-                    str(response.get("text", "当前未生成答复。")),
-                    status=str(response.get("status", "recorded")),
-                )
-                completed = {**response, "message": recorded, "assistant_message": assistant}
-                self._task_service.record_conversation_response(identity, task_id, request_id, replay_key, completed)
-                return completed
-            try:
-                assistant_text = redact_text(self._gateway.complete_for(identity, task_id, message, selection=selection), identity, limit=4_000)
-            except UnavailableCapabilityError as error:
-                unavailable = {
-                    "status": "unavailable",
-                    "message": recorded,
-                    "error": {"capability": error.capability, "next_step": error.next_step},
-                    "state": {"code": "unavailable", "terminal": True, "retryable": True},
-                }
-                self._task_service.record_conversation_response(identity, task_id, request_id, replay_key, unavailable)
-                return unavailable
-            except Exception:
-                unavailable = {
-                    "status": "unavailable",
-                    "message": recorded,
-                    "error": {"capability": "model", "next_step": "模型服务暂不可用，请稍后重试。"},
-                    "state": {"code": "unavailable", "terminal": True, "retryable": True},
-                }
-                self._task_service.record_conversation_response(identity, task_id, request_id, replay_key, unavailable)
-                return unavailable
-            assistant = self._task_service.append_message(identity, task_id, "assistant", assistant_text, status="completed")
-            completed = {
-                "status": "completed", "message": recorded, "assistant_message": assistant,
+            return _safe_response(response, identity)
+        try:
+            session_id = self._task_service.conversation_session_id(identity, task_id)
+            checkpoint = self._dispatch_checkpoints.checkpoint(
+                session_id,
+                operation_id=stable_operation_id(execution_ids.get("model_step_id", task_id), "fallback_model"),
+                operation_kind="main_model",
+                safe_metadata={"task_id_hash": stable_operation_id(task_id)},
+            )
+            text = redact_text(
+                self._gateway.complete_for(identity, task_id, message, selection=selection),
+                identity,
+                limit=4_000,
+            )
+            self._dispatch_checkpoints.succeeded(checkpoint)
+            return {
+                "status": "completed",
+                "text": text,
                 "state": {"code": "completed", "terminal": True, "retryable": False},
             }
-            self._task_service.record_conversation_response(identity, task_id, request_id, replay_key, completed)
-            return completed
+        except UnavailableCapabilityError as error:
+            if "checkpoint" in locals():
+                self._dispatch_checkpoints.failed(checkpoint)
+            return {
+                "status": "unavailable",
+                "error": {"capability": error.capability, "next_step": error.next_step},
+                "state": {"code": "unavailable", "terminal": True, "retryable": True},
+            }
+        except Exception:
+            if "checkpoint" in locals():
+                self._dispatch_checkpoints.failed(checkpoint)
+            return {
+                "status": "unavailable",
+                "error": {"capability": "model", "next_step": "模型服务暂不可用，请稍后重试。"},
+                "state": {"code": "unavailable", "terminal": True, "retryable": True},
+            }
 
     def _task_lock(self, identity: SessionIdentity, task_id: str) -> Lock:
         key = (identity.tenant_id, identity.principal_id, task_id)
@@ -106,6 +194,31 @@ def _cancelled_response() -> dict[str, Any]:
     return {
         "status": "cancelled", "text": "本次任务已取消；请新建任务后继续。", "observations": [], "rounds": 0,
         "state": {"code": "cancelled", "terminal": True, "retryable": False},
+    }
+
+
+def _execution_ids(request_state: dict[str, Any] | None) -> dict[str, str]:
+    if not isinstance(request_state, dict):
+        return {}
+    return {
+        key: str(request_state[key])
+        for key in (
+            "execution_id", "workflow_run_id", "step_id_namespace",
+            "model_step_id", "recommender_step_id", "tool_step_id_namespace",
+        )
+        if isinstance(request_state.get(key), str) and str(request_state[key]).strip()
+    }
+
+
+def _interrupted_execution_response() -> dict[str, Any]:
+    return {
+        "status": "recovery_required",
+        "text": "上次执行在外部调用完成状态落盘前中断。为避免重复调用，本请求不会自动重放；请新建一次请求后重试。",
+        "error": {
+            "capability": "conversation_execution_recovery",
+            "next_step": "确认后使用新的请求标识重试；原请求将保留用于审计。",
+        },
+        "state": {"code": "recovery_required", "terminal": True, "retryable": True},
     }
 
 

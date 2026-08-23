@@ -19,6 +19,8 @@ from ..errors import AuthorizationError, UnavailableCapabilityError, ValidationE
 from ..identity.session_identity import SessionIdentity
 from ..settings.settings_models import ModelSelection
 from .redaction import has_hidden_reasoning, redact_text
+from .durability_checkpoint import DurabilityCheckpointStore, stable_operation_id
+from .session_context import SessionId
 
 
 _ACTIONS = frozenset({"final", "ask_user", "call_tool"})
@@ -52,7 +54,8 @@ class ConversationToolPort(Protocol):
 
 class RecommenderPort(Protocol):
     def run_fixed(
-        self, identity: SessionIdentity, task_id: str, prompt: str, arguments: Mapping[str, Any], *, selection: ModelSelection | None = None,
+        self, identity: SessionIdentity, task_id: str, prompt: str, arguments: Mapping[str, Any], *,
+        selection: ModelSelection | None = None, execution_ids: Mapping[str, str] | None = None,
     ) -> Mapping[str, Any]: ...
 
 
@@ -111,6 +114,8 @@ class AgentLoop:
         timeout_seconds: float = 45.0,
         is_cancelled: Callable[[SessionIdentity, str], bool] | None = None,
         observation_builder: ObservationPort | None = None,
+        dispatch_checkpoints: DurabilityCheckpointStore | None = None,
+        conversation_session_id: Callable[[SessionIdentity, str], SessionId] | None = None,
     ) -> None:
         if not 1 <= max_rounds <= 8 or timeout_seconds <= 0:
             raise ValueError("AgentLoop配置无效")
@@ -122,8 +127,27 @@ class AgentLoop:
         self._timeout_seconds = timeout_seconds
         self._is_cancelled = is_cancelled or (lambda _identity, _task_id: False)
         self._observation_builder = observation_builder
+        self._dispatch_checkpoints = dispatch_checkpoints
+        self._conversation_session_id = conversation_session_id
 
-    def run(self, identity: SessionIdentity, task_id: str, message: str, *, selection: ModelSelection | None = None) -> dict[str, Any]:
+    def run_with_execution(
+        self,
+        identity: SessionIdentity,
+        task_id: str,
+        message: str,
+        *,
+        selection: ModelSelection | None = None,
+        execution_ids: Mapping[str, str],
+    ) -> dict[str, Any]:
+        return self.run(
+            identity, task_id, message, selection=selection, execution_ids=execution_ids,
+        )
+
+    def run(
+        self, identity: SessionIdentity, task_id: str, message: str, *,
+        selection: ModelSelection | None = None,
+        execution_ids: Mapping[str, str] | None = None,
+    ) -> dict[str, Any]:
         started = monotonic()
         observations: list[dict[str, Any]] = []
         seen_calls: set[str] = set()
@@ -135,14 +159,33 @@ class AgentLoop:
             try:
                 context = self._context_builder.build(identity, task_id, message)
                 if round_number == 1 and _should_run_fixed_recommendation(message, context):
-                    arguments = {"workflow": _fixed_recommendation_workflow(message)}
-                    raw = (
-                        self._recommender.run_fixed(identity, task_id, message, arguments)
-                        if selection is None
-                        else self._recommender.run_fixed(identity, task_id, message, arguments, selection=selection)
-                    )
+                    arguments = {
+                        "workflow": _fixed_recommendation_workflow(message),
+                        "main_agent_controlled": True,
+                        "recommendation_preset": _controlled_recommendation_preset(
+                            message, _configured_recommendation_preset(self._gateway, identity),
+                        ),
+                    }
+                    if execution_ids is None:
+                        raw = (
+                            self._recommender.run_fixed(identity, task_id, message, arguments)
+                            if selection is None
+                            else self._recommender.run_fixed(identity, task_id, message, arguments, selection=selection)
+                        )
+                    else:
+                        raw = (
+                            self._recommender.run_fixed(
+                                identity, task_id, message, arguments, execution_ids=execution_ids,
+                            )
+                            if selection is None
+                            else self._recommender.run_fixed(
+                                identity, task_id, message, arguments,
+                                selection=selection, execution_ids=execution_ids,
+                            )
+                        )
                     observations.append(_observation("recommender.run", raw, identity))
-                    return _recommendation_outcome(raw, observations, round_number)
+                    if not _recommender_returns_to_main_agent(raw):
+                        return _recommendation_outcome(raw, observations, round_number)
                 if round_number == 1 and _explicit_delivery_kinds(message) == ("card", "report"):
                     tool_names = {str(item.get("name")) for item in context.get("tool_catalog", []) if isinstance(item, Mapping)}
                     if "reporter.run" in tool_names:
@@ -153,11 +196,32 @@ class AgentLoop:
                     round_number=round_number,
                     max_rounds=self._max_rounds,
                 )
-                if selection is None:
-                    raw_decision = self._gateway.decide_for(identity, task_id, decision_context)
-                else:
-                    raw_decision = self._gateway.decide_for(identity, task_id, decision_context, selection=selection)
-                decision = AgentDecision.from_mapping(raw_decision)
+                checkpoint = None
+                if self._dispatch_checkpoints is not None and self._conversation_session_id is not None:
+                    step_namespace = str((execution_ids or {}).get("model_step_id", task_id))
+                    checkpoint = self._dispatch_checkpoints.checkpoint(
+                        self._conversation_session_id(identity, task_id),
+                        operation_id=stable_operation_id(step_namespace, "decision", round_number),
+                        operation_kind="main_agent_decision",
+                        safe_metadata={"round": round_number},
+                    )
+                try:
+                    if selection is None:
+                        raw_decision = self._gateway.decide_for(identity, task_id, decision_context)
+                    else:
+                        raw_decision = self._gateway.decide_for(identity, task_id, decision_context, selection=selection)
+                except Exception:
+                    if checkpoint is not None:
+                        self._dispatch_checkpoints.failed(checkpoint)
+                    raise
+                try:
+                    decision = AgentDecision.from_mapping(raw_decision)
+                except Exception:
+                    if checkpoint is not None:
+                        self._dispatch_checkpoints.failed(checkpoint)
+                    raise
+                if checkpoint is not None:
+                    self._dispatch_checkpoints.succeeded(checkpoint)
             except (UnavailableCapabilityError, AuthorizationError, ValidationError, ValueError) as error:
                 return _result(
                     "unavailable",
@@ -207,11 +271,32 @@ class AgentLoop:
             seen_calls.add(call_key)
             try:
                 if decision.tool == "recommender.run":
-                    raw = (
-                        self._recommender.run_fixed(identity, task_id, message, decision.arguments)
-                        if selection is None
-                        else self._recommender.run_fixed(identity, task_id, message, decision.arguments, selection=selection)
-                    )
+                    forwarded_arguments = {
+                        **dict(decision.arguments),
+                        "main_agent_controlled": True,
+                        "recommendation_preset": _controlled_recommendation_preset(
+                            message, _configured_recommendation_preset(self._gateway, identity),
+                        ),
+                    }
+                    if execution_ids is None:
+                        raw = (
+                            self._recommender.run_fixed(identity, task_id, message, forwarded_arguments)
+                            if selection is None
+                            else self._recommender.run_fixed(
+                                identity, task_id, message, forwarded_arguments, selection=selection,
+                            )
+                        )
+                    else:
+                        raw = (
+                            self._recommender.run_fixed(
+                                identity, task_id, message, forwarded_arguments, execution_ids=execution_ids,
+                            )
+                            if selection is None
+                            else self._recommender.run_fixed(
+                                identity, task_id, message, forwarded_arguments,
+                                selection=selection, execution_ids=execution_ids,
+                            )
+                        )
                 else:
                     raw = self._tool_executor.call(identity, task_id, decision.tool, decision.arguments)
                 observation = _observation(decision.tool, raw, identity)
@@ -229,7 +314,11 @@ class AgentLoop:
                         observation["facts_status"] = "unavailable"
                 observations.append(observation)
                 if decision.tool == "recommender.run":
+                    if _recommender_returns_to_main_agent(raw):
+                        continue
                     return _recommendation_outcome(raw, observations, round_number)
+                if decision.tool == "recommendation_delivery.run":
+                    return _main_agent_delivery_outcome(raw, observations, round_number)
                 if decision.tool == "reporter.run":
                     if str(raw.get("status", "")).lower() == "needs_input":
                         return _result(
@@ -528,6 +617,13 @@ def _recommendation_follow_up(value: Mapping[str, Any]) -> str | None:
     return None
 
 
+def _recommender_returns_to_main_agent(value: Mapping[str, Any]) -> bool:
+    """Only the App-owned adapter may hand control back to the parent Agent."""
+
+    control = value.get("control")
+    return isinstance(control, Mapping) and control.get("resume_main_agent") is True
+
+
 def _recommendation_outcome(
     raw: Mapping[str, Any],
     observations: list[dict[str, Any]],
@@ -637,6 +733,22 @@ def _delivery_completion(raw: Mapping[str, Any], requested_kind: str) -> tuple[s
         "completed",
         f"完整研究报告已生成。{preview_text}" if has_preview else f"完整研究报告已生成，{preview_text}",
     )
+
+
+def _main_agent_delivery_outcome(
+    raw: Mapping[str, Any], observations: list[dict[str, Any]], round_number: int,
+) -> dict[str, Any]:
+    """Translate the independent delivery state machine without re-entering Recommender."""
+
+    status = str(raw.get("status", "")).strip().lower()
+    if status == "completed":
+        kind = str(raw.get("kind", "report")).strip().lower()
+        completed_status, text = _delivery_completion({"delivery": raw}, kind)
+        return _result(completed_status, text, observations, round_number)
+    next_step = str(raw.get("next_step") or "当前分析部分完成，但未生成文件；请检查缺少的分析输入后重试。")
+    if status == "needs_input":
+        return _result("needs_input", next_step, observations, round_number, action="ask_user")
+    return _result("partial", next_step, observations, round_number)
 
 
 def _has_approvable_candidate(recommendation: Mapping[str, Any] | None) -> bool:
@@ -767,6 +879,20 @@ def _fixed_recommendation_workflow(message: object) -> str:
             "简报", "card", "参考报价", "报价表", "quote",
         )
     ) else "recommendation"
+
+
+def _controlled_recommendation_preset(message: object, configured_default: str) -> str:
+    """Select only a published preset from explicit, deterministic user intent."""
+
+    text = str(message or "").lower()
+    if any(marker in text for marker in ("独立评审团", "并行评审", "独立评审", "independent council")):
+        return "independent-council"
+    return configured_default if configured_default in {"sequential-deliberation", "independent-council"} else "sequential-deliberation"
+
+
+def _configured_recommendation_preset(gateway: object, identity: SessionIdentity) -> str:
+    resolver = getattr(gateway, "multi_agent_recommendation_preset_for", None)
+    return str(resolver(identity)) if callable(resolver) else "sequential-deliberation"
 
 
 def _confirmation_text(value: object) -> bool:

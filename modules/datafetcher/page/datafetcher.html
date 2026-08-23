@@ -19,10 +19,8 @@
     <main class="workbench" id="workbench">
       <aside class="library-panel">
         <h1>数据资产</h1>
-        <p class="panel-copy">查看当前任务已保存的数据资产，并选择可用于估值或回测的历史行情。</p>
         <div class="asset-filter"><label class="sr-only" for="asset-search">搜索数据</label><input id="asset-search" class="control" type="search" placeholder="搜索标的或日期"></div>
         <div class="asset-list" id="asset-list" aria-live="polite"><p class="empty-list">当前任务尚无数据资产。</p></div>
-        <p class="library-note">数据资产保存行情区间、字段和质量信息，不包含数据接口凭据。</p>
       </aside>
       <div class="panel-resizer panel-resizer-left" id="library-resizer" role="separator" aria-label="调整数据资产面板宽度" aria-orientation="vertical" tabindex="0"></div>
       <section class="canvas-panel">
@@ -33,8 +31,7 @@
         <div class="notice" id="notice" hidden aria-live="polite"></div>
         <div class="canvas-viewport">
           <section class="result-sheet" id="result-sheet">
-            <header class="sheet-heading"><div><p class="section-kicker">数据结果</p><h2>行情与质量</h2><p>获取完成后显示数据区间、字段、质量检查和可用资产。</p></div></header>
-            <div class="empty-canvas" id="empty-canvas"><strong>尚未获取数据</strong><span>在右侧填写数据请求后开始获取。</span></div>
+            <div class="empty-canvas" id="empty-canvas"><strong>尚无数据结果</strong><span>请先填写右侧必填项。</span></div>
             <div id="result-content" hidden></div>
           </section>
         </div>
@@ -43,17 +40,15 @@
       <aside class="inspector-panel">
         <form id="request-form" novalidate>
           <h2>数据请求</h2>
-          <p class="panel-copy">日期接受yyyy/mm/dd或yyyy-mm-dd；提交时统一转换为ISO日期。</p>
           <section class="inspector-group">
-            <label class="control-field" for="asset-ids"><span>资产标识</span><textarea id="asset-ids" required aria-describedby="asset-ids-hint asset-ids-error" placeholder="例如000300.SH"></textarea><small id="asset-ids-hint">每行填写一个A股、ETF或指数代码；粘贴时会自动清理引号。</small><small class="field-error" id="asset-ids-error" role="alert"></small></label>
+            <label class="control-field" for="asset-ids"><span>资产标识</span><textarea id="asset-ids" required aria-describedby="asset-ids-hint asset-ids-error" placeholder="例如000300.SH"></textarea><small id="asset-ids-hint">每行填写一个代码。</small><small class="field-error" id="asset-ids-error" role="alert"></small></label>
             <div class="control-grid"><label class="control-field" for="start-date"><span>开始日期</span><input class="date-input" id="start-date" type="text" inputmode="numeric" autocomplete="off" placeholder="yyyy/mm/dd" required></label><label class="control-field" for="end-date"><span>结束日期</span><input class="date-input" id="end-date" type="text" inputmode="numeric" autocomplete="off" placeholder="yyyy/mm/dd" required></label></div>
 <div class="control-grid"><label class="control-field" for="frequency"><span>频率</span><select id="frequency"><option value="1d">日频1d</option></select></label><label class="control-field" for="adjustment"><span>复权口径</span><select id="adjustment"><option value="auto" selected>自动：股票/ETF前复权，指数不复权</option><option value="none">不复权</option><option value="forward">前复权</option><option value="both">原始价格与前复权价格并存</option></select></label></div>
-            <label class="control-field" for="fields"><span>价格数据</span><input id="fields" value="close" required><small>系统根据资产类型自动处理复权口径，并保留原始收盘价。</small></label>
+            <label class="control-field" for="fields"><span>价格数据</span><input id="fields" value="close" required><small>股票和ETF前复权，指数不复权。</small></label>
           </section>
           <section class="inspector-group">
             <h3>数据源与保存</h3>
             <label class="control-field" for="provider-priority"><span>数据服务</span><select id="provider-priority" required><option value="ifind_http" selected>iFinD</option></select><small>凭据与连接状态由设置中心统一管理。</small></label>
-            <p class="panel-copy">获取成功后，数据将保存到当前任务，供估值、回测和报告复用。</p>
             <details class="advanced-options"><summary>高级选项：缓存、本地CSV与离线模式</summary>
               <label class="control-field" for="cache-policy"><span>缓存策略</span><select id="cache-policy"><option value="force_refresh" selected>实时请求，不复用缓存</option><option value="extend_only">只补覆盖缺口</option><option value="reuse">只复用缓存</option></select></label>
               <label class="control-field" for="local-csv"><span>受控本地CSV</span><input id="local-csv" value="" placeholder="market/510300.SH_daily.csv"><small>填写后才启用本地CSV，且仅允许受控目录内相对路径。</small></label>

@@ -1945,7 +1945,7 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
 }
 
 .workspace-shell.workspace-shell--desk[data-workspace-shell] .desk-surface {
-  grid-template-rows: 54px 38px minmax(0, 1fr);
+  grid-template-rows: 54px minmax(0, 1fr);
   background: #f7f8f7;
 }
 

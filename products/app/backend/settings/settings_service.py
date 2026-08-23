@@ -1,7 +1,9 @@
 """Local settings orchestration and secret-safe validation."""
 
+from dataclasses import replace
+
 from ..errors import ValidationError
-from .settings_models import SettingsSnapshot
+from .settings_models import MULTI_AGENT_RECOMMENDATION_ROLES, SettingsSnapshot
 from ..stores.settings_store import SettingsStore
 
 
@@ -10,12 +12,26 @@ class SettingsService:
         self._store = store
 
     def load(self, principal_id: str) -> SettingsSnapshot:
-        return self._store.load(principal_id)
+        return self._normalize_multi_agent_roles(self._store.load(principal_id))
 
     def save(self, principal_id: str, settings: SettingsSnapshot) -> None:
+        settings = self._normalize_multi_agent_roles(settings)
         self._assert_non_sensitive(settings)
 
         self._store.save(principal_id, settings)
+
+    @staticmethod
+    def _normalize_multi_agent_roles(settings: SettingsSnapshot) -> SettingsSnapshot:
+        return replace(
+            settings,
+            multi_agent_preset_role_models={
+                preset_id: {
+                    role: selection for role, selection in role_models.items()
+                    if role in MULTI_AGENT_RECOMMENDATION_ROLES
+                }
+                for preset_id, role_models in settings.multi_agent_preset_role_models.items()
+            },
+        )
 
     @staticmethod
     def _assert_non_sensitive(settings: SettingsSnapshot) -> None:
@@ -38,3 +54,19 @@ class SettingsService:
             raise ValidationError("export_location_ref must be a controlled opaque reference")
         if settings.preferences.theme not in {"light", "dark", "auto"}:
             raise ValidationError("theme must be light, dark, or auto")
+        allowed_presets = {"sequential-deliberation", "independent-council"}
+        if settings.multi_agent_recommendation_preset_id not in allowed_presets:
+            raise ValidationError("MultiAgent默认预设无效")
+        allowed_roles = MULTI_AGENT_RECOMMENDATION_ROLES
+        enabled = {
+            (provider.provider_id, model.model_id)
+            for provider in settings.model_providers
+            for model in provider.models
+            if model.enabled
+        }
+        for preset_id, role_models in settings.multi_agent_preset_role_models.items():
+            if preset_id not in allowed_presets or not isinstance(role_models, dict):
+                raise ValidationError("MultiAgent预设角色模型映射无效")
+            for role, selection in role_models.items():
+                if role not in allowed_roles or (selection.provider_id, selection.model_id) not in enabled:
+                    raise ValidationError("MultiAgent角色模型必须引用当前已启用模型")

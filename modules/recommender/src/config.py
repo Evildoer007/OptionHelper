@@ -11,6 +11,7 @@ class RecommenderConfig:
     agent_mode: str = "auto"
     max_candidates: int = 3
     max_agent_rounds: int = 4
+    multi_agent_preset: str = "sequential-deliberation"
     max_research_queries: int = 5
     port_timeout_seconds: float = 20.0
     model_gateway_url: str | None = None
@@ -24,6 +25,11 @@ class RecommenderConfig:
             raise ValueError("max_candidates必须位于1至3")
         if self.max_agent_rounds < 1:
             raise ValueError("max_agent_rounds必须为正数")
+        if self.multi_agent_preset not in {
+            "sequential-deliberation",
+            "independent-council",
+        }:
+            raise ValueError("multi_agent_preset未启用")
 
     @classmethod
     def from_environment(cls) -> "RecommenderConfig":
@@ -34,4 +40,3 @@ class RecommenderConfig:
             tool_gateway_url=os.environ.get("OPTIONHELPER_TOOL_GATEWAY_URL") or None,
             port_timeout_seconds=float(os.environ.get("OPTIONHELPER_RECOMMENDER_TIMEOUT", "20")),
         )
-

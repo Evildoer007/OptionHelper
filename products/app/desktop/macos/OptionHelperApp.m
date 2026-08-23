@@ -22,16 +22,38 @@
 
 @end
 
+@interface OptionHelperTitlebarDragView : NSView
+@end
+
+@implementation OptionHelperTitlebarDragView
+
+- (BOOL)mouseDownCanMoveWindow {
+    return YES;
+}
+
+- (BOOL)acceptsFirstMouse:(NSEvent *)event {
+    return YES;
+}
+
+- (void)mouseDown:(NSEvent *)event {
+    [self.window performWindowDragWithEvent:event];
+}
+
+@end
+
 @interface OptionHelperAppDelegate : NSObject <NSApplicationDelegate, NSWindowDelegate, WKScriptMessageHandler, WKNavigationDelegate>
 @property(nonatomic, strong) NSTask *backend;
 @property(nonatomic, strong) NSPipe *startupPipe;
 @property(nonatomic, strong) NSWindow *window;
 @property(nonatomic, strong) WKWebView *webView;
+@property(nonatomic, strong) OptionHelperTitlebarDragView *titlebarDragView;
 @property(nonatomic, strong) NSButton *railToggle;
 @property(nonatomic, strong) NSButton *reportToggle;
 @property(nonatomic) BOOL loadedURL;
 @property(nonatomic, strong) NSMutableString *startupOutput;
 @property(nonatomic, copy) NSString *themePreference;
+@property(nonatomic) NSInteger activeOperationCount;
+@property(nonatomic) BOOL closeAfterInterrupt;
 @end
 
 @implementation OptionHelperAppDelegate
@@ -191,8 +213,13 @@
     WKUserScript *startupScript = [[WKUserScript alloc] initWithSource:@"document.documentElement.dataset.nativeShell='macos';if (location.pathname === '/') document.documentElement.classList.add('login-boot');"
                                                          injectionTime:WKUserScriptInjectionTimeAtDocumentStart
                                                       forMainFrameOnly:YES];
+    WKUserScript *runtimeStatusScript = [[WKUserScript alloc] initWithSource:@"(()=>{const post=(count)=>window.webkit?.messageHandlers?.optionhelperRuntime?.postMessage({type:'active_operations',count});const refresh=()=>fetch('/api/runtime/active-operations').then((response)=>response.ok?response.json():{active_count:0}).then((value)=>post(Number(value.active_count)||0)).catch(()=>post(0));addEventListener('pageshow',refresh);setInterval(refresh,1400);refresh();})();"
+                                                              injectionTime:WKUserScriptInjectionTimeAtDocumentEnd
+                                                           forMainFrameOnly:YES];
     [configuration.userContentController addUserScript:startupScript];
+    [configuration.userContentController addUserScript:runtimeStatusScript];
     [configuration.userContentController addScriptMessageHandler:self name:@"optionhelperTheme"];
+    [configuration.userContentController addScriptMessageHandler:self name:@"optionhelperRuntime"];
     WKWebView *webView = [[WKWebView alloc] initWithFrame:NSZeroRect configuration:configuration];
     webView.navigationDelegate = self;
     self.window = [[OptionHelperWindow alloc] initWithContentRect:NSMakeRect(0, 0, 1320, 860)
@@ -203,6 +230,7 @@
     self.window.titleVisibility = NSWindowTitleHidden;
     self.window.titlebarAppearsTransparent = YES;
     self.window.titlebarSeparatorStyle = NSTitlebarSeparatorStyleNone;
+    self.window.movableByWindowBackground = YES;
     self.window.delegate = self;
     self.window.contentView = webView;
     [self.window makeFirstResponder:webView];
@@ -210,9 +238,20 @@
     [self.window makeKeyAndOrderFront:nil];
     [NSApp activateIgnoringOtherApps:YES];
     self.webView = webView;
+    [self installTitlebarDragViewForWindow:self.window];
     [self installRailToggleForWindow:self.window];
     [self installReportToggleForWindow:self.window];
     [webView loadRequest:[NSURLRequest requestWithURL:startupURL]];
+}
+
+- (void)installTitlebarDragViewForWindow:(NSWindow *)window {
+    NSButton *closeButton = [window standardWindowButton:NSWindowCloseButton];
+    NSView *titlebar = closeButton.superview;
+    if (closeButton == nil || titlebar == nil) return;
+    OptionHelperTitlebarDragView *dragView = [[OptionHelperTitlebarDragView alloc] initWithFrame:NSZeroRect];
+    [titlebar addSubview:dragView];
+    self.titlebarDragView = dragView;
+    [self layoutTitlebarControls];
 }
 
 - (void)installRailToggleForWindow:(NSWindow *)window {
@@ -260,6 +299,9 @@
     NSSize size = NSMakeSize(26, 24);
     self.railToggle.frame = NSMakeRect(NSMaxX(closeButton.frame) + 94, NSMidY(closeButton.frame) - size.height / 2, size.width, size.height);
     self.reportToggle.frame = NSMakeRect(NSMaxX(titlebar.bounds) - size.width - 14, NSMidY(closeButton.frame) - size.height / 2, size.width, size.height);
+    CGFloat dragLeading = (self.railToggle != nil ? NSMaxX(self.railToggle.frame) : NSMaxX(closeButton.frame) + 120) + 8;
+    CGFloat dragTrailing = (self.reportToggle != nil ? NSMinX(self.reportToggle.frame) : NSMaxX(titlebar.bounds) - 40) - 8;
+    self.titlebarDragView.frame = NSMakeRect(dragLeading, 0, MAX(0, dragTrailing - dragLeading), NSHeight(titlebar.bounds));
 }
 
 - (void)toggleRail:(id)sender {
@@ -285,13 +327,34 @@
     if (notification.object == self.window) [self layoutTitlebarControls];
 }
 
+- (BOOL)windowShouldClose:(NSWindow *)sender {
+    if (sender != self.window || self.closeAfterInterrupt || self.activeOperationCount == 0) return YES;
+    NSAlert *alert = [[NSAlert alloc] init];
+    alert.messageText = @"仍有任务正在运行";
+    alert.informativeText = @"退出会停止这些运行，并将它们标记为中断。";
+    [alert addButtonWithTitle:@"退出并停止"];
+    [alert addButtonWithTitle:@"取消"];
+    if ([alert runModal] != NSAlertFirstButtonReturn) return NO;
+    self.closeAfterInterrupt = YES;
+    [self.webView evaluateJavaScript:@"fetch('/api/runtime/shutdown',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).catch(()=>{}).finally(()=>window.webkit?.messageHandlers?.optionhelperRuntime?.postMessage({type:'shutdown_complete'}));" completionHandler:nil];
+    return NO;
+}
+
 - (void)windowWillClose:(NSNotification *)notification {
-    if (notification.object == self.window) {
-        [NSApp terminate:nil];
-    }
+    if (notification.object == self.window) [NSApp terminate:nil];
 }
 
 - (void)userContentController:(WKUserContentController *)userContentController didReceiveScriptMessage:(WKScriptMessage *)message {
+    if ([message.name isEqualToString:@"optionhelperRuntime"] && [message.body isKindOfClass:[NSDictionary class]]) {
+        NSDictionary *runtime = (NSDictionary *)message.body;
+        if ([runtime[@"type"] isEqualToString:@"active_operations"] && [runtime[@"count"] isKindOfClass:NSNumber.class]) {
+            self.activeOperationCount = MAX(0, [runtime[@"count"] integerValue]);
+        } else if ([runtime[@"type"] isEqualToString:@"shutdown_complete"]) {
+            self.activeOperationCount = 0;
+            [self.window performClose:nil];
+        }
+        return;
+    }
     if (![message.name isEqualToString:@"optionhelperTheme"] || ![message.body isKindOfClass:[NSDictionary class]]) return;
     NSDictionary *value = (NSDictionary *)message.body;
     NSString *theme = value[@"theme"];

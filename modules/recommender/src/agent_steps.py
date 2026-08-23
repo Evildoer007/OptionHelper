@@ -78,6 +78,37 @@ class AgentStepRunner:
         self.audit.append(role.lower(), "complete", agent_role=port_role, input_value=request, output_value=result)
         return dict(result)
 
+    def run_many(self, role: str, payloads: list[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+        """Run independent fresh children when the App port provides them."""
+        if not payloads:
+            return []
+        batch = getattr(self.port, "run_steps", None)
+        if not callable(batch):
+            return [self.run(role, payload) for payload in payloads]
+        port_role = role if self.workflow_mode == "multi_agent" else f"SingleAgent.{role}"
+        requests = [
+            {
+                "workflow": "optionhelper.recommender",
+                "role_rule": ROLE_RULES[role],
+                "required_output": _required_output(role),
+                "input": dict(payload),
+            }
+            for payload in payloads
+        ]
+        try:
+            results = batch(port_role, requests)
+            if not isinstance(results, list) or len(results) != len(requests):
+                raise ValueError("Agent批量步骤返回数量无效")
+            for request, result in zip(requests, results, strict=True):
+                _validate_role_result(role, result)
+                self.audit.append(role.lower(), "complete", agent_role=port_role, input_value=request, output_value=result,
+                                  detail={"independent_agent_run": True})
+            return [dict(result) for result in results]
+        except Exception as error:
+            self.audit.append(role.lower(), "failed", agent_role=port_role, input_value=requests, output_value=None,
+                              detail={"error_type": type(error).__name__, "message": str(error)})
+            raise
+
 
 def _required_output(role: str) -> Mapping[str, Any]:
     if role == "Intent":

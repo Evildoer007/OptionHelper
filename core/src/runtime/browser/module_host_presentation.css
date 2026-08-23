@@ -42,8 +42,9 @@ html[data-optionhelper-app-hosted="true"] {
   --wash: var(--color-blue-gray-soft);
   --font: var(--font-sans);
   --mono: var(--font-sans);
-  --oh-scrollbar-thumb: color-mix(in srgb, var(--color-ink) 14%, transparent);
-  --oh-scrollbar-thumb-hover: color-mix(in srgb, var(--color-ink) 22%, transparent);
+  --oh-scrollbar-ink: var(--color-ink, var(--ink, #25282b));
+  --oh-scrollbar-thumb: color-mix(in srgb, var(--oh-scrollbar-ink) 14%, transparent);
+  --oh-scrollbar-thumb-hover: color-mix(in srgb, var(--oh-scrollbar-ink) 22%, transparent);
   --oh-scrollbar-size: 6px;
   color: var(--ink);
   background: var(--paper);
@@ -84,6 +85,65 @@ html[data-optionhelper-app-hosted="true"] *::-webkit-scrollbar-thumb {
 html[data-optionhelper-app-hosted="true"]::-webkit-scrollbar-thumb:hover,
 html[data-optionhelper-app-hosted="true"] *::-webkit-scrollbar-thumb:hover {
   background-color: var(--oh-scrollbar-thumb-hover);
+}
+
+html[data-optionhelper-app-hosted="true"][data-oh-scrollbar-overlay="enabled"] [data-oh-scrollbar-overlay-ready="true"]::-webkit-scrollbar {
+  width: 0 !important;
+  height: 0 !important;
+}
+
+html[data-optionhelper-app-hosted="true"][data-oh-scrollbar-overlay="enabled"] [data-oh-scrollbar-overlay-ready="true"]::-webkit-scrollbar-thumb,
+html[data-optionhelper-app-hosted="true"][data-oh-scrollbar-overlay="enabled"] [data-oh-scrollbar-overlay-ready="true"]::-webkit-scrollbar-thumb:hover {
+  background-color: transparent !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+  opacity: 0 !important;
+}
+
+/* The embedded modules load asynchronously.  Their visible scroll surfaces are
+ * stable, but waiting for each surface's first ResizeObserver pass leaves a
+ * native thumb visible in WKWebView for one frame (and sometimes indefinitely
+ * after a module switch).  Hide native painting for this exact controller
+ * registry as soon as the overlay controller is available; the controller
+ * remains responsible for the independent visible thumb and its timer. */
+html[data-optionhelper-app-hosted="true"][data-oh-scrollbar-overlay="enabled"] :is(
+  .library-panel,
+  .source-panel,
+  .inspector-panel,
+  .settings-panel,
+  .canvas-viewport,
+  .selection-panel,
+  .json-block,
+  .preview-table-wrap,
+  .table-wrap,
+  .audit-details pre,
+  .trade-inspector,
+  .ledger,
+  textarea
+)::-webkit-scrollbar {
+  width: 0 !important;
+  height: 0 !important;
+}
+
+html[data-optionhelper-app-hosted="true"][data-oh-scrollbar-overlay="enabled"] :is(
+  .library-panel,
+  .source-panel,
+  .inspector-panel,
+  .settings-panel,
+  .canvas-viewport,
+  .selection-panel,
+  .json-block,
+  .preview-table-wrap,
+  .table-wrap,
+  .audit-details pre,
+  .trade-inspector,
+  .ledger,
+  textarea
+)::-webkit-scrollbar-thumb {
+  background-color: transparent !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+  opacity: 0 !important;
 }
 
 html[data-optionhelper-app-hosted="true"] body,

@@ -175,13 +175,30 @@ class RecommenderService:
             tool_started = any(event.stage.startswith("tool.") for event in audit.events)
             if initial_mode == "multi_agent" and not tool_started:
                 audit.append("fallback", "degraded", agent_role=None, input_value={"from": "multi_agent"},
-                             output_value={"to": "degraded_single_agent"},
-                             detail={"error_type": type(first_error).__name__, "message": str(first_error)})
+                             output_value={
+                                 "protocol_mode": "degraded_single_agent",
+                                 "execution_semantics": "sequential_single_model_fallback",
+                             },
+                             detail={
+                                 "error_type": type(first_error).__name__, "message": str(first_error),
+                                 "execution_semantics": "sequential_single_model_fallback",
+                                 "session_semantics": "fresh_one_shot_child_per_step",
+                                 "shared_continuous_session": False,
+                             })
                 audit.mode = "degraded_single_agent"
+                fallback_port = None
                 try:
-                    return self._run_fixed(case, route, run_id, "degraded_single_agent", audit)
+                    fallback_factory = getattr(self.agent_port, "fresh_single_agent_port", None)
+                    fallback_port = fallback_factory() if callable(fallback_factory) else self.agent_port
+                    return self._run_fixed(
+                        case, route, run_id, "degraded_single_agent", audit, agent_port=fallback_port,
+                    )
                 except Exception as second_error:
                     return self._unavailable_set(case, route, run_id, "degraded_single_agent", audit, second_error)
+                finally:
+                    close_fallback = getattr(fallback_port, "close", None)
+                    if fallback_port is not self.agent_port and callable(close_fallback):
+                        close_fallback()
             return self._unavailable_set(case, route, run_id, initial_mode, audit, first_error)
 
     def _workflow_mode(self, capability: ModelCapability) -> str:
@@ -198,9 +215,11 @@ class RecommenderService:
         run_id: str,
         mode: str,
         audit: AuditRecorder,
+        *,
+        agent_port: AgentPort | None = None,
     ) -> RecommendationSet:
         runner = AgentStepRunner(
-            port=self.agent_port,
+            port=agent_port or self.agent_port,
             workflow_mode="multi_agent" if mode == "multi_agent" else "single_agent",
             audit=audit,
         )
@@ -219,12 +238,21 @@ class RecommenderService:
         )
         audit.append("evidence", "complete", agent_role=None, input_value={"queries": queries},
                      output_value={"evidence_ids": [item.evidence_id for item in evidence], "catalog_version": case.catalog_version})
-        research = runner.run("Research", {
+        research_payload = {
             "case": case.to_dict(),
             "intent": dict(intent),
             "evidence": [item.to_dict(include_excerpt=True) for item in evidence],
             "max_candidates": self.config.max_candidates,
-        })
+        }
+        if mode == "multi_agent" and self.config.multi_agent_preset == "independent-council":
+            independent_research = runner.run_many("Research", [research_payload, research_payload])
+            research = _merge_independent_research(independent_research)
+            audit.append(
+                "council", "complete", agent_role=None, input_value=research_payload,
+                output_value=research, detail={"agent_runs": len(independent_research)},
+            )
+        else:
+            research = runner.run("Research", research_payload)
         critic = runner.run("Critic", {
             "case": case.to_dict(),
             "proposals": research.get("proposals", ()),
@@ -437,6 +465,24 @@ def _strings(value: Any) -> tuple[str, ...]:
     if isinstance(value, str) or not isinstance(value, Sequence):
         return ()
     return tuple(str(item).strip() for item in value if str(item).strip())
+
+
+def _merge_independent_research(rows: Sequence[Mapping[str, Any]]) -> Mapping[str, Any]:
+    """Deterministically aggregate fresh council outputs before Critic sees them."""
+
+    proposals: dict[str, Mapping[str, Any]] = {}
+    for row in rows:
+        values = row.get("proposals", ())
+        if isinstance(values, (str, bytes)) or not isinstance(values, Sequence):
+            raise RecommendationValidationError("独立评审团Research.proposals必须为数组")
+        for proposal in values:
+            if not isinstance(proposal, Mapping):
+                raise RecommendationValidationError("独立评审团Research.proposals必须为对象数组")
+            product_id = str(proposal.get("product_id", "")).strip()
+            if not product_id:
+                raise RecommendationValidationError("独立评审团候选缺少product_id")
+            proposals.setdefault(product_id, dict(proposal))
+    return {"proposals": list(proposals.values())}
 
 
 def _research_queries(case: RecommendationCase) -> tuple[str, ...]:

@@ -28,8 +28,8 @@
   --space-7: 32px;
   --space-8: 40px;
   --scrollbar-size: 6px;
-  --scrollbar-thumb: color-mix(in srgb, var(--color-ink) 14%, transparent);
-  --scrollbar-thumb-hover: color-mix(in srgb, var(--color-ink) 22%, transparent);
+  --scrollbar-thumb: color-mix(in srgb, var(--scrollbar-ink) 14%, transparent);
+  --scrollbar-thumb-hover: color-mix(in srgb, var(--scrollbar-ink) 22%, transparent);
   --task-row-state-surface: color-mix(in srgb, var(--color-ink) 8%, transparent);
   --task-menu-state-surface: color-mix(in srgb, var(--color-ink) 14%, transparent);
 }
@@ -49,6 +49,15 @@ body {
   min-height: 100vh;
   margin: 0;
   background: var(--canvas);
+}
+
+body.workspace-body {
+  height: 100vh;
+  height: 100dvh;
+  min-height: 0;
+  max-height: 100dvh;
+  overflow: hidden;
+  overscroll-behavior: none;
 }
 
 button,
@@ -432,7 +441,9 @@ textarea:focus-visible {
 
 .task-list__row { position: relative; display: flex; align-items: stretch; min-width: 0; }
 .task-list__row .task-item { min-width: 0; flex: 1; padding-right: 32px; }
-.task-item__title { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.task-item__title { display: flex; min-width: 0; align-items: center; gap: 7px; overflow: hidden; white-space: nowrap; }
+.task-item__title > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.task-item__running-dot { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 999px; background: var(--accent, #c8102e); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent, #c8102e) 14%, transparent); }
 .task-menu-trigger {
   position: absolute;
   top: 50%;
@@ -524,43 +535,71 @@ textarea:focus-visible {
 /* DSH scrollbar contract: one token pair serves every App-owned surface.
    Safari/WebKit and Firefox take separate rendering paths by design. */
 .workspace-body,
-.setup-page {
-  --scrollbar-thumb: color-mix(in srgb, var(--color-ink) 14%, transparent);
-  --scrollbar-thumb-hover: color-mix(in srgb, var(--color-ink) 22%, transparent);
+.setup-page,
+.login-page {
+  --scrollbar-ink: var(--color-ink, var(--ink, #25282b));
+  --scrollbar-thumb: color-mix(in srgb, var(--scrollbar-ink) 14%, transparent);
+  --scrollbar-thumb-hover: color-mix(in srgb, var(--scrollbar-ink) 22%, transparent);
 }
 @supports not selector(::-webkit-scrollbar) {
   .workspace-body,
   .workspace-body *,
   .setup-page,
-  .setup-page * {
+  .setup-page *,
+  .login-page,
+  .login-page * {
     scrollbar-width: thin;
     scrollbar-color: var(--scrollbar-thumb) transparent;
   }
 }
-.workspace-body :is(.task-rail, .message-stream, .task-context, .desk-module-tabs, .desk-panel, .choice-menu, .payoff-library, .payoff-inspector, .payoff-canvas, textarea),
-.setup-page :is(.settings-options, .choice-menu, textarea) {
+.workspace-body :is(.task-rail, .message-stream, .task-context, .desk-panel, .choice-menu, .payoff-library, .payoff-inspector, .payoff-canvas, textarea),
+.setup-page :is(.settings-options, .choice-menu, textarea),
+.login-page :is(.login-shell, textarea) {
   scrollbar-gutter: stable;
 }
 .workspace-body::-webkit-scrollbar,
 .workspace-body ::-webkit-scrollbar,
 .setup-page::-webkit-scrollbar,
-.setup-page ::-webkit-scrollbar { width: var(--scrollbar-size); height: var(--scrollbar-size); }
+.setup-page ::-webkit-scrollbar,
+.login-page::-webkit-scrollbar,
+.login-page ::-webkit-scrollbar { width: var(--scrollbar-size); height: var(--scrollbar-size); }
 .workspace-body::-webkit-scrollbar-track,
 .workspace-body ::-webkit-scrollbar-track,
 .setup-page::-webkit-scrollbar-track,
-.setup-page ::-webkit-scrollbar-track { background: transparent; }
+.setup-page ::-webkit-scrollbar-track,
+.login-page::-webkit-scrollbar-track,
+.login-page ::-webkit-scrollbar-track { background: transparent; }
 .workspace-body::-webkit-scrollbar-thumb,
 .workspace-body ::-webkit-scrollbar-thumb,
 .setup-page::-webkit-scrollbar-thumb,
-.setup-page ::-webkit-scrollbar-thumb { border: 1px solid transparent; border-radius: 999px; background-color: var(--scrollbar-thumb); background-clip: padding-box; }
+.setup-page ::-webkit-scrollbar-thumb,
+.login-page::-webkit-scrollbar-thumb,
+.login-page ::-webkit-scrollbar-thumb { border: 1px solid transparent; border-radius: 999px; background-color: var(--scrollbar-thumb); background-clip: padding-box; }
 .workspace-body::-webkit-scrollbar-thumb:hover,
 .workspace-body ::-webkit-scrollbar-thumb:hover,
 .setup-page::-webkit-scrollbar-thumb:hover,
-.setup-page ::-webkit-scrollbar-thumb:hover { background-color: var(--scrollbar-thumb-hover); }
+.setup-page ::-webkit-scrollbar-thumb:hover,
+.login-page::-webkit-scrollbar-thumb:hover,
+.login-page ::-webkit-scrollbar-thumb:hover { background-color: var(--scrollbar-thumb-hover); }
 .workspace-body::-webkit-scrollbar-corner,
 .workspace-body ::-webkit-scrollbar-corner,
 .setup-page::-webkit-scrollbar-corner,
-.setup-page ::-webkit-scrollbar-corner { background: transparent; }
+.setup-page ::-webkit-scrollbar-corner,
+.login-page::-webkit-scrollbar-corner,
+.login-page ::-webkit-scrollbar-corner { background: transparent; }
+
+html[data-oh-scrollbar-overlay="enabled"] [data-oh-scrollbar-overlay-ready="true"]::-webkit-scrollbar {
+  width: 0 !important;
+  height: 0 !important;
+}
+
+html[data-oh-scrollbar-overlay="enabled"] [data-oh-scrollbar-overlay-ready="true"]::-webkit-scrollbar-thumb,
+html[data-oh-scrollbar-overlay="enabled"] [data-oh-scrollbar-overlay-ready="true"]::-webkit-scrollbar-thumb:hover {
+  background-color: transparent !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+  opacity: 0 !important;
+}
 
 .rail-footer {
   margin-top: var(--space-4);
@@ -697,6 +736,7 @@ textarea:focus-visible {
   border-bottom: 1px solid #d5d1cb;
   background: #f1f0ed;
   overflow-x: auto;
+  overflow-y: hidden;
 }
 
 .desk-module-tabs button {
@@ -3249,6 +3289,10 @@ textarea:focus-visible {
 .desk-surface .desk-module-tabs { min-height: 0; }
 .desk-surface .work-stage { min-height: 0; }
 
+.desk-surface,
+.desk-surface .work-stage,
+.desk-surface .module-stage { overflow: hidden; }
+
 .assistant-region {
   position: relative;
   grid-row: 3;
@@ -3885,12 +3929,16 @@ textarea:focus-visible {
   position: relative;
   padding: 34px 34px 30px;
   overflow: hidden;
-  border: 1px solid rgba(228, 230, 234, .9);
+  border: 1px solid color-mix(in srgb, var(--login-ink) 10%, transparent);
   border-radius: 14px;
-  background: rgba(255, 255, 255, .8);
-  box-shadow: 0 1px 2px rgba(20, 22, 26, .05), 0 10px 24px -10px rgba(20, 22, 26, .14), 0 32px 64px -32px rgba(20, 22, 26, .22);
-  -webkit-backdrop-filter: blur(22px) saturate(1.5);
-  backdrop-filter: blur(22px) saturate(1.5);
+  background: color-mix(in srgb, var(--login-card) 76%, transparent);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--login-card) 58%, transparent),
+    0 1px 2px color-mix(in srgb, var(--login-ink) 5%, transparent),
+    0 10px 24px -10px color-mix(in srgb, var(--login-ink) 14%, transparent),
+    0 32px 64px -32px color-mix(in srgb, var(--login-ink) 22%, transparent);
+  -webkit-backdrop-filter: blur(18px) saturate(118%);
+  backdrop-filter: blur(18px) saturate(118%);
 }
 
 .login-card::before {
@@ -3900,7 +3948,7 @@ textarea:focus-visible {
   left: 14px;
   height: 1px;
   border-radius: 1px;
-  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, .95) 22%, rgba(255, 255, 255, .95) 78%, transparent);
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--login-card) 72%, transparent) 22%, color-mix(in srgb, var(--login-card) 72%, transparent) 78%, transparent);
   content: "";
   pointer-events: none;
 }
@@ -4326,9 +4374,4 @@ html.login-boot .login-theme {
   .login-page *::before,
   .login-page *::after { animation: none !important; transition: none !important; }
   #login-vol-surface { display: none; }
-  .login-card {
-    background: var(--login-card);
-    -webkit-backdrop-filter: none;
-    backdrop-filter: none;
-  }
 }

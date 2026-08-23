@@ -32,6 +32,11 @@ def conversation_tool_catalog(policy: AuthorizationPolicy, identity: SessionIden
     tools = [
         {"name": "knowledger.search", "description": "查询受治理期权资料库", "actions": ["search"]},
         {"name": "recommender.run", "description": "运行一次固定结构推荐流程", "actions": ["run"]},
+        {
+            "name": "recommendation_delivery.run",
+            "description": "对已确认候选运行独立计算与交付状态机；arguments只填kind或format",
+            "actions": ["run"],
+        },
         {"name": "datafetcher.status", "description": "查询数据能力状态", "actions": ["status"]},
         {"name": "datafetcher.fetch", "description": "按受控Provider获取市场数据", "actions": ["fetch"]},
         {"name": "datafetcher.fetch_calendar", "description": "获取中国交易所未来交易日期，不读取未来价格", "actions": ["fetch_calendar"]},
@@ -79,9 +84,15 @@ class ContextBuilder:
     def build(self, identity: SessionIdentity, task_id: str, latest_message: str) -> dict[str, Any]:
         task = self._tasks.get(identity, task_id)
         contract = self._contracts.get(identity, task_id)
-        messages = task.get("messages", [])
-        if not isinstance(messages, list):
-            messages = []
+        recommendation = self._tasks.pending_recommendation(identity, task_id)
+        facts = {
+            "resolved_contract": _contract_fact(contract),
+            "recommendation_candidate": _recommendation_candidate_fact(recommendation),
+            "data_asset_refs": _refs(task.get("data_asset_refs")),
+            "module_run_refs": _refs(task.get("run_refs")),
+            "module_run_facts": self._module_run_facts(identity, task.get("run_refs")),
+        }
+        surface = self._tasks.model_surface(identity, task_id, controlled_facts=facts)
         return {
             "task": {
                 "task_id": task_id,
@@ -93,14 +104,13 @@ class ContextBuilder:
             # inside the App boundary.
             "caller": {"role": identity.role.value, "audience": identity.audience},
             "catalog_version": self._catalog_version,
-            "messages": [_message_fact(row, identity) for row in messages[-self._max_messages:] if isinstance(row, Mapping)],
+            "messages": [
+                _surface_message_fact(row, identity)
+                for row in surface.messages[-self._max_messages:]
+                if isinstance(row, Mapping)
+            ],
             "latest_message": _redact_text(latest_message, identity),
-            "facts": {
-                "resolved_contract": _contract_fact(contract),
-                "data_asset_refs": _refs(task.get("data_asset_refs")),
-                "module_run_refs": _refs(task.get("run_refs")),
-                "module_run_facts": self._module_run_facts(identity, task.get("run_refs")),
-            },
+            "facts": dict(surface.controlled_facts),
             "tool_catalog": conversation_tool_catalog(self._policy, identity),
             "decision_protocol": {
                 "actions": ["final", "ask_user", "call_tool"],
@@ -150,6 +160,35 @@ def _message_fact(value: Mapping[str, Any], identity: SessionIdentity) -> dict[s
     }
 
 
+def _surface_message_fact(value: Mapping[str, Any], identity: SessionIdentity) -> dict[str, Any]:
+    role = str(value.get("role", "user"))
+    if role not in {"user", "assistant", "system", "tool"}:
+        role = "user"
+    if role == "assistant" and isinstance(value.get("tool_call"), Mapping):
+        call = value["tool_call"]
+        return {
+            "role": "assistant",
+            "tool_call": {
+                "call_id": _safe_text(call.get("call_id"), 160, identity),
+                "name": _safe_text(call.get("name"), 160, identity),
+                "arguments": _safe_mapping(call.get("arguments")),
+            },
+        }
+    result: dict[str, Any] = {
+        "role": role,
+        "content": _safe_text(value.get("content", ""), 2_000, identity),
+    }
+    if role == "tool":
+        result.update({
+            "call_id": _safe_text(value.get("call_id"), 160, identity),
+            "name": _safe_text(value.get("name"), 160, identity),
+            "is_error": bool(value.get("is_error", False)),
+        })
+    if value.get("kind") == "context_summary":
+        result["kind"] = "context_summary"
+    return result
+
+
 def _contract_fact(value: Mapping[str, Any] | None) -> dict[str, Any] | None:
     if not isinstance(value, Mapping):
         return None
@@ -164,6 +203,26 @@ def _contract_fact(value: Mapping[str, Any] | None) -> dict[str, Any] | None:
         "identity": _safe_mapping(identity),
         "terms": _safe_mapping(contract.get("terms")),
         "path_count": len(contract.get("paths", [])) if isinstance(contract.get("paths"), list) else 0,
+    }
+
+
+def _recommendation_candidate_fact(value: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """Expose only the control state needed by the parent Agent."""
+
+    if not isinstance(value, Mapping):
+        return None
+    candidate = value.get("candidate")
+    if not isinstance(candidate, Mapping):
+        return None
+    status = str(value.get("status", "")).strip().lower()
+    if status not in {"pending_approval", "approved"}:
+        return None
+    return {
+        "status": status,
+        "product_id": _safe_text(candidate.get("product_id"), 80),
+        "product_name": _safe_text(candidate.get("product_name"), 160),
+        "underlyings": [_safe_text(item, 80) for item in candidate.get("underlyings", [])[:8]],
+        "delivery_selected": value.get("delivery") is not None,
     }
 
 

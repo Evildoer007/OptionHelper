@@ -18,8 +18,11 @@ const dataState = document.querySelector("#data-credential-state");
 const dataStatus = document.querySelector("[data-data-status]");
 const modelStatus = document.querySelector("[data-model-status]");
 const modelRoot = document.querySelector("#model-provider-root");
+const multiAgentRoot = document.querySelector("#multi-agent-preset-root");
+const multiAgentStatus = document.querySelector("[data-multi-agent-status]");
 let dataConfigured = false;
 let providerState = { providers: [], builtins: [], default_model_selection: null, openProviderId: null, addMode: false };
+let multiAgentState = { presets: [], selected_preset_id: "sequential-deliberation", role_models: {}, available_models: [] };
 if (canManageData) {
   document.querySelector("#data").hidden = false;
   document.querySelector("[data-settings-data-link]").hidden = false;
@@ -172,6 +175,169 @@ async function refreshProviders() {
   renderProviders();
 }
 
+const rolePresentation = {
+  "sequential-deliberation": {
+    Intent: { name: "Interpreter", description: "解析目标与约束" },
+    Research: { name: "Selector", description: "生成并比较候选" },
+    Critic: { name: "Reviewer", description: "复核规则与证据" },
+  },
+  "independent-council": {
+    Intent: { name: "Interpreter", description: "解析目标与约束" },
+    Research: { name: "Selector", description: "同时用于两个独立Selector" },
+    Critic: { name: "Reviewer", description: "合并候选并完成复核" },
+  },
+};
+
+const presetPresentation = {
+  "sequential-deliberation": {
+    summary: "顺序筛选",
+    description: "Interpreter依次交给Selector和Reviewer，形成受控候选。",
+  },
+  "product-trader-loop": {
+    summary: "产品交易闭环",
+    description: "ProductManager与Trader在冻结前反复修改结构并按需计算。",
+  },
+  "independent-council": {
+    summary: "独立评审",
+    description: "两个独立Selector并行工作，由Reviewer汇总复核。",
+  },
+  "constraint-ranking": {
+    summary: "约束排序",
+    description: "Generator生成候选，Scorer补齐指标，Ranker按约束和排序键选出结果。",
+  },
+  "adversarial-review": {
+    summary: "对抗复核",
+    description: "Proposer提出方案，Challenger寻找反例，Arbiter基于证据裁决。",
+  },
+};
+
+function presetDiagram(preset) {
+  const presentation = presetPresentation[preset.preset_id] || {
+    summary: "推荐预设",
+    description: "该预设尚未提供可视化说明。",
+  };
+  const id = `preset-${preset.preset_id.replace(/[^a-z0-9-]/g, "")}`;
+  const arrow = `${id}-arrow`;
+  const node = (x, y, width, label, accent = false) => `<g class="preset-diagram__node ${accent ? "is-accent" : ""}"><rect x="${x}" y="${y}" width="${width}" height="48" rx="8"/><text x="${x + width / 2}" y="${y + 29}" text-anchor="middle">${label}</text></g>`;
+  const moduleStrip = `<g class="preset-diagram__module"><rect x="148" y="116" width="264" height="28" rx="6"/><text x="280" y="135" text-anchor="middle">按需模块：Payoffer · Pricer · Backtester</text></g>`;
+  let body = "";
+  if (preset.preset_id === "sequential-deliberation") {
+    body = `<g class="preset-diagram__links"><path d="M148 80H204" marker-end="url(#${arrow})"/><path d="M356 80H412" marker-end="url(#${arrow})"/></g>${node(12, 56, 136, "Interpreter", true)}${node(220, 56, 136, "Selector")}${node(428, 56, 120, "Reviewer")}`;
+  } else if (preset.preset_id === "product-trader-loop") {
+    body = `<g class="preset-diagram__links"><path d="M168 64H392" marker-end="url(#${arrow})"/><path d="M392 88H168" marker-end="url(#${arrow})"/></g>${node(12, 40, 156, "ProductManager", true)}${node(392, 40, 156, "Trader", true)}${moduleStrip}`;
+  } else if (preset.preset_id === "independent-council") {
+    body = `<g class="preset-diagram__links"><path d="M116 68H144V44H172" marker-end="url(#${arrow})"/><path d="M116 92H144V116H172" marker-end="url(#${arrow})"/><path d="M284 44H360V68H416" marker-end="url(#${arrow})"/><path d="M284 116H360V92H416" marker-end="url(#${arrow})"/></g>${node(12, 56, 104, "Interpreter", true)}${node(172, 20, 112, "Selector A")}${node(172, 92, 112, "Selector B")}${node(416, 56, 132, "Reviewer")}`;
+  } else if (preset.preset_id === "constraint-ranking") {
+    body = `<g class="preset-diagram__links"><path d="M148 80H204" marker-end="url(#${arrow})"/><path d="M356 80H412" marker-end="url(#${arrow})"/></g>${node(12, 56, 136, "Generator", true)}${node(220, 56, 136, "Scorer")}${node(428, 56, 120, "Ranker")}${moduleStrip}`;
+  } else if (preset.preset_id === "adversarial-review") {
+    body = `<g class="preset-diagram__links"><path d="M168 64H204" marker-end="url(#${arrow})"/><path d="M204 88H168" marker-end="url(#${arrow})"/><path d="M356 64H392" marker-end="url(#${arrow})"/></g>${node(12, 40, 156, "Proposer", true)}${node(204, 40, 152, "Challenger")}${node(392, 40, 156, "Arbiter")}${moduleStrip}`;
+  } else {
+    body = `<text class="preset-diagram__empty" x="280" y="84" text-anchor="middle">暂未提供可视化说明</text>`;
+  }
+  return `<figure class="multi-agent-preset-diagram"><svg viewBox="0 0 560 160" role="img" aria-labelledby="${id}-title ${id}-desc"><title id="${id}-title">${escapeHtml(preset.display_name)}：${escapeHtml(presentation.summary)}</title><desc id="${id}-desc">${escapeHtml(presentation.description)}</desc><defs><marker id="${arrow}" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="var(--color-muted)"/></marker></defs>${body}</svg><figcaption>${escapeHtml(presentation.summary)}<span>${escapeHtml(presentation.description)}</span></figcaption></figure>`;
+}
+
+function roleModelValue(selection) {
+  return selection ? `${selection.provider_id}\u001f${selection.model_id}` : "";
+}
+
+function roleModelOptions(selectedValue) {
+  const inherited = `<option value="" ${selectedValue ? "" : "selected"}>继承本轮会话模型</option>`;
+  const options = multiAgentState.available_models.map((model) => {
+    const value = `${model.provider_id}\u001f${model.model_id}`;
+    const label = `${model.provider_name} · ${model.model_name || model.model_id}`;
+    return `<option value="${escapeHtml(value)}" ${value === selectedValue ? "selected" : ""}>${escapeHtml(label)}</option>`;
+  }).join("");
+  return inherited + options;
+}
+
+function roleDisplay(presetId, role) {
+  return rolePresentation[presetId]?.[role] || { name: role, description: "该Agent的模型配置" };
+}
+
+function renderMultiAgentPresets() {
+  const selected = multiAgentState.presets.find((preset) => preset.preset_id === multiAgentState.selected_preset_id);
+  multiAgentStatus.textContent = selected?.enabled ? "已启用" : "不可用";
+  multiAgentStatus.classList.toggle("is-ready", Boolean(selected?.enabled));
+  const presetRows = multiAgentState.presets.map((preset) => {
+    const presentation = presetPresentation[preset.preset_id] || { summary: "推荐预设" };
+    const selectedClass = preset.preset_id === multiAgentState.selected_preset_id ? "is-selected" : "";
+    const status = preset.enabled ? "可用" : "规划中";
+    const detail = preset.enabled ? `${escapeHtml(preset.version)} · ${status}` : escapeHtml(preset.disabled_reason || status);
+    return `<article class="multi-agent-preset-card ${preset.enabled ? "" : "is-disabled"} ${selectedClass}">
+      <label class="multi-agent-preset-card__head">
+        <input type="radio" name="multi-agent-preset" value="${escapeHtml(preset.preset_id)}" ${preset.preset_id === multiAgentState.selected_preset_id ? "checked" : ""} ${preset.enabled && canEditModel ? "" : "disabled"}>
+        <span class="multi-agent-preset-copy"><strong>${escapeHtml(preset.display_name)}</strong><small>${escapeHtml(presentation.summary)}</small></span>
+        <span class="multi-agent-preset-state">${status}</span>
+      </label>
+      ${presetDiagram(preset)}
+      <p class="multi-agent-preset-detail">${detail}</p>
+    </article>`;
+  }).join("");
+  if (!selected) {
+    multiAgentRoot.innerHTML = `<div class="model-empty"><strong>未找到可用预设</strong><p>请刷新设置或检查App版本。</p></div>`;
+    return;
+  }
+  const configuredRoles = multiAgentState.role_models[selected.preset_id] || {};
+  const roleRows = selected.roles.map((role) => {
+    const selectedValue = roleModelValue(configuredRoles[role]);
+    const display = roleDisplay(selected.preset_id, role);
+    if (!multiAgentState.available_models.length) {
+      return `<div class="multi-agent-role-row is-empty"><span><strong>${escapeHtml(display.name)}</strong><small>${escapeHtml(display.description)}</small></span><p>请先在“模型”中启用至少一个模型。</p></div>`;
+    }
+    return `<label class="multi-agent-role-row"><span><strong>${escapeHtml(display.name)}</strong><small>${escapeHtml(display.description)}</small></span><select name="role-${escapeHtml(role)}" data-role="${escapeHtml(role)}" data-choice ${canEditModel ? "" : "disabled"}>${roleModelOptions(selectedValue)}</select></label>`;
+  }).join("");
+  const hasModels = multiAgentState.available_models.length > 0;
+  multiAgentRoot.innerHTML = `<div class="multi-agent-preset-list" role="radiogroup" aria-label="Recommender多智能体预设">${presetRows}</div>
+    <form class="multi-agent-role-form" data-multi-agent-role-form novalidate>
+      <div class="multi-agent-role-head"><div><strong>${escapeHtml(selected.display_name)}的Agent模型</strong><small>仅配置本预设当前实际运行的Agent。未指定时继承本轮会话模型。</small></div></div>
+      <div class="multi-agent-role-list">${roleRows}</div>
+      <div class="multi-agent-role-actions"><p class="form-result" data-form-result="multi-agent" role="status" aria-live="polite"></p>${hasModels ? `<button class="model-primary-button" type="submit" ${canEditModel ? "" : "disabled"}>保存Agent模型</button>` : `<a class="model-secondary-button" href="#model">前往配置模型</a>`}</div>
+    </form>`;
+  enhanceSelects(multiAgentRoot);
+}
+
+async function refreshMultiAgentPresets() {
+  multiAgentState = await request("/api/settings/multi-agent-presets");
+  renderMultiAgentPresets();
+}
+
+multiAgentRoot.addEventListener("change", async (event) => {
+  const control = event.target.closest('input[name="multi-agent-preset"]');
+  if (!control) return;
+  try {
+    await send("/api/settings/multi-agent-preset/default", { preset_id: control.value });
+    multiAgentState.selected_preset_id = control.value;
+    renderMultiAgentPresets();
+  } catch (error) {
+    await refreshMultiAgentPresets();
+    message(resultFor("multi-agent"), error.message, true);
+  }
+});
+
+multiAgentRoot.addEventListener("submit", async (event) => {
+  const form = event.target.closest("[data-multi-agent-role-form]");
+  if (!form) return;
+  event.preventDefault();
+  const roleModels = {};
+  form.querySelectorAll("select[data-role]").forEach((select) => {
+    if (!select.value) return;
+    const [providerId, modelId] = select.value.split("\u001f");
+    roleModels[select.dataset.role] = { provider_id: providerId, model_id: modelId };
+  });
+  const button = form.querySelector('button[type="submit"]');
+  button.disabled = true;
+  try {
+    await send("/api/settings/multi-agent-role-models", {
+      preset_id: multiAgentState.selected_preset_id,
+      role_models: roleModels,
+    });
+    await refreshMultiAgentPresets();
+    message(resultFor("multi-agent"), "Agent模型已保存。", false);
+  } catch (error) { message(resultFor("multi-agent"), error.message, true); }
+  finally { button.disabled = false; }
+});
+
 function newCustomProvider() {
   const providerId = `provider-${Date.now().toString(36)}`;
   return { provider_id: providerId, display_name: "自定义提供方", endpoint: "", protocol: "openai-chat-completions", credential_configured: false, models: [{ model_id: "", display_name: "", enabled: true }] };
@@ -229,6 +395,7 @@ async function saveProvider(form) {
     providerState.openProviderId = payload.provider_id;
     applySettings(response.settings);
     await refreshProviders();
+    await refreshMultiAgentPresets();
   } catch (error) { showProviderResult(form, error.message, true); }
   finally { button.disabled = false; }
 }
@@ -291,7 +458,7 @@ modelRoot.addEventListener("click", async (event) => {
   if (action === "delete-provider") {
     const provider = providerState.providers.find((item) => item.provider_id === providerId);
     if (!provider || !confirm(`删除“${provider.display_name}”及其本机凭据？`)) return;
-    try { await send("/api/settings/model-provider/delete", { provider_id: providerId }); providerState.openProviderId = null; await refreshProviders(); }
+    try { await send("/api/settings/model-provider/delete", { provider_id: providerId }); providerState.openProviderId = null; await refreshProviders(); await refreshMultiAgentPresets(); }
     catch (error) { window.alert(error.message); }
     return;
   }
@@ -372,3 +539,4 @@ if (!canManageData) dataForm.querySelectorAll("input, select, button").forEach((
 const settingsResponse = await request("/api/settings");
 applySettings(settingsResponse.settings);
 await refreshProviders();
+await refreshMultiAgentPresets();

@@ -87,7 +87,6 @@
       <main class="workbench" id="workbench">
         <aside class="library-panel">
           <h1>产品结构</h1>
-          <p class="panel-copy">选择产品并查看已登记条款与收益路径。</p>
           <label class="field-label" for="productSelect">产品</label>
           <select id="productSelect" class="product-select"><option value="">请选择产品</option></select>
           <div class="view-switch" role="tablist" aria-label="收益图模式">
@@ -99,7 +98,6 @@
           <div class="binding-card" id="bindingCard"><span>尚未选择产品</span></div>
           <div class="scenario-heading"><span>产品路径</span><small id="scenarioCount">0</small></div>
           <ol class="scenario-list" id="scenarioList"></ol>
-          <div class="library-note" id="libraryNote">默认示例与本次运行严格分离。修改条款时进入本次运行。</div>
         </aside>
         <div class="panel-resizer panel-resizer-left" id="libraryResizer" role="separator" aria-label="调整产品结构面板宽度" aria-orientation="vertical" tabindex="0"></div>
 
@@ -114,7 +112,7 @@
           </div>
           <div class="notice-area" id="noticeArea" aria-live="polite" aria-atomic="true"></div>
           <div class="canvas-viewport" id="canvasViewport">
-            <div class="empty-canvas" id="emptyCanvas"><p class="section-kicker">收益结构图</p><h2>选择产品后生成收益图</h2><p>收益图按当前产品条款计算。</p></div>
+            <div class="empty-canvas" id="emptyCanvas"><h2>尚未选择产品</h2><p>请从左侧选择一个产品。</p></div>
           </div>
           <div class="canvas-footer"><span>可使用滚轮或缩放工具查看完整路径图</span><span>开发页结果与正式Host结果隔离</span></div>
         </section>
@@ -209,6 +207,20 @@
         observation_price: [['close', '收盘价'], ['open', '开盘价'], ['high', '最高价'], ['low', '最低价']]
       };
       const escapeHtml = value => String(value ?? '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;');
+      const safeSvgElement = source => {
+        const documentNode = new DOMParser().parseFromString(String(source ?? ''), 'image/svg+xml');
+        const svg = documentNode.documentElement;
+        if (svg.localName !== 'svg' || documentNode.querySelector('parsererror')) throw new Error('收益图格式无效。');
+        svg.querySelectorAll('script,foreignObject,iframe,object,embed').forEach(node => node.remove());
+        svg.querySelectorAll('*').forEach(node => {
+          [...node.attributes].forEach(attribute => {
+            const name = attribute.name.toLowerCase();
+            const value = attribute.value.trim().toLowerCase();
+            if (name.startsWith('on') || ((name === 'href' || name.endsWith(':href')) && value.startsWith('javascript:'))) node.removeAttribute(attribute.name);
+          });
+        });
+        return document.importNode(svg, true);
+      };
       const termInputs = () => [...document.querySelectorAll('.term-input')];
       const { parseDateInput, formatDateInput } = window.PayofferDateInput;
       const identifier = prefix => prefix + '_' + new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14);
@@ -602,7 +614,7 @@
         state.selectedPathIndex = 0;
         const stage = document.createElement('div');
         stage.className = 'canvas-stage';
-        stage.innerHTML = response.svg;
+        stage.replaceChildren(safeSvgElement(response.svg));
         $('canvasViewport').replaceChildren(stage);
         requestAnimationFrame(() => {
           if (state.zoomMode === 'fit') fitZoom();
@@ -623,7 +635,7 @@
       function renderSvg(svg) {
         const stage = document.createElement('div');
         stage.className = 'canvas-stage';
-        stage.innerHTML = svg;
+        stage.replaceChildren(safeSvgElement(svg));
         $('canvasViewport').replaceChildren(stage);
         requestAnimationFrame(() => {
           if (state.zoomMode === 'fit') fitZoom();

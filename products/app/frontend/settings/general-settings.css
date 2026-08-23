@@ -21,9 +21,8 @@
 }
 
 .setup-page .dsh-theme-cubes {
-  display: flex;
-  align-items: stretch;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
   padding: 0;
   border: 0;
@@ -34,7 +33,7 @@
 .setup-page .dsh-theme-cube {
   box-sizing: border-box;
   display: flex;
-  flex: 1 1 180px;
+  min-width: 0;
   align-items: center;
   flex-direction: column;
   justify-content: center;

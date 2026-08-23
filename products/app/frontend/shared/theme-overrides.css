@@ -61,11 +61,13 @@ html[data-theme="dark"] .login-page {
   --login-ring: color-mix(in srgb, var(--color-brand-red) 28%, transparent);
 }
 
-html[data-theme="dark"] :is(.login-card, .login-environment, .login-theme, .login-input, .login-check__box) {
+html[data-theme="dark"] :is(.login-environment, .login-theme, .login-input, .login-check__box) {
   border-color: var(--color-rule);
   background: var(--color-surface);
   color: var(--color-ink);
 }
+
+html[data-theme="dark"] .login-card { color: var(--color-ink); }
 
 html[data-theme="dark"] .workspace-shell--desk .workspace-rail,
 html[data-theme="dark"] .workspace-shell--desk .task-rail,

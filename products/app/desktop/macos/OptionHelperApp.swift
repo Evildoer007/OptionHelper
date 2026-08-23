@@ -23,16 +23,29 @@ private final class OptionHelperWindow: NSWindow {
     }
 }
 
+private final class OptionHelperTitlebarDragView: NSView {
+    override var mouseDownCanMoveWindow: Bool { true }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func mouseDown(with event: NSEvent) {
+        window?.performDrag(with: event)
+    }
+}
+
 @main
 final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavigationDelegate, WKScriptMessageHandler {
     private var backend: Process?
     private var startupPipe: Pipe?
     private var window: NSWindow?
     private var webView: WKWebView?
+    private var titlebarDragView: OptionHelperTitlebarDragView?
     private var railToggle: NSButton?
     private var reportToggle: NSButton?
     private var loadedURL = false
     private var themePreference = "light"
+    private var activeOperationCount = 0
+    private var closeAfterInterrupt = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
@@ -49,6 +62,7 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
     func applicationWillTerminate(_ notification: Notification) {
         startupPipe?.fileHandleForReading.readabilityHandler = nil
         webView?.configuration.userContentController.removeScriptMessageHandler(forName: "optionhelperTheme")
+        webView?.configuration.userContentController.removeScriptMessageHandler(forName: "optionhelperRuntime")
         NSApp.removeObserver(self, forKeyPath: #keyPath(NSApplication.effectiveAppearance))
         if let backend, backend.isRunning {
             backend.terminate()
@@ -166,8 +180,15 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
             injectionTime: .atDocumentStart,
             forMainFrameOnly: true
         )
+        let runtimeStatusScript = WKUserScript(
+            source: "(()=>{const post=(count)=>window.webkit?.messageHandlers?.optionhelperRuntime?.postMessage({type:'active_operations',count});const refresh=()=>fetch('/api/runtime/active-operations').then((response)=>response.ok?response.json():{active_count:0}).then((value)=>post(Number(value.active_count)||0)).catch(()=>post(0));addEventListener('pageshow',refresh);setInterval(refresh,1400);refresh();})();",
+            injectionTime: .atDocumentEnd,
+            forMainFrameOnly: true
+        )
         configuration.userContentController.addUserScript(startupScript)
+        configuration.userContentController.addUserScript(runtimeStatusScript)
         configuration.userContentController.add(self, name: "optionhelperTheme")
+        configuration.userContentController.add(self, name: "optionhelperRuntime")
         let view = WKWebView(frame: .zero, configuration: configuration)
         view.navigationDelegate = self
         let window = OptionHelperWindow(
@@ -180,6 +201,7 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.titlebarSeparatorStyle = .none
+        window.isMovableByWindowBackground = true
         window.center()
         window.contentView = view
         window.delegate = self
@@ -188,9 +210,18 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         NSApp.activate(ignoringOtherApps: true)
         self.window = window
         self.webView = view
+        installTitlebarDragView(in: window)
         installRailToggle(in: window)
         installReportToggle(in: window)
         view.load(URLRequest(url: startupURL))
+    }
+
+    private func installTitlebarDragView(in window: NSWindow) {
+        guard let closeButton = window.standardWindowButton(.closeButton), let titlebar = closeButton.superview else { return }
+        let dragView = OptionHelperTitlebarDragView(frame: .zero)
+        titlebar.addSubview(dragView)
+        titlebarDragView = dragView
+        layoutTitlebarControls()
     }
 
     private func installRailToggle(in window: NSWindow) {
@@ -248,6 +279,14 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
             width: size.width,
             height: size.height
         )
+        let dragLeading = (railToggle?.frame.maxX ?? closeButton.frame.maxX + 120) + 8
+        let dragTrailing = (reportToggle?.frame.minX ?? titlebar.bounds.maxX - 40) - 8
+        titlebarDragView?.frame = NSRect(
+            x: dragLeading,
+            y: 0,
+            width: max(0, dragTrailing - dragLeading),
+            height: titlebar.bounds.height
+        )
     }
 
     @objc private func toggleRail(_ sender: Any?) {
@@ -273,12 +312,35 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         layoutTitlebarControls()
     }
 
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        guard sender === window else { return true }
+        if closeAfterInterrupt || activeOperationCount == 0 { return true }
+        let alert = NSAlert()
+        alert.messageText = "仍有任务正在运行"
+        alert.informativeText = "退出会停止这些运行，并将它们标记为中断。"
+        alert.addButton(withTitle: "退出并停止")
+        alert.addButton(withTitle: "取消")
+        guard alert.runModal() == .alertFirstButtonReturn else { return false }
+        closeAfterInterrupt = true
+        webView?.evaluateJavaScript("fetch('/api/runtime/shutdown',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).catch(()=>{}).finally(()=>window.webkit?.messageHandlers?.optionhelperRuntime?.postMessage({type:'shutdown_complete'}));")
+        return false
+    }
+
     func windowWillClose(_ notification: Notification) {
         guard notification.object as? NSWindow === window else { return }
         NSApp.terminate(nil)
     }
 
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        if message.name == "optionhelperRuntime", let value = message.body as? [String: Any] {
+            if value["type"] as? String == "active_operations", let count = value["count"] as? Int {
+                activeOperationCount = max(0, count)
+            } else if value["type"] as? String == "shutdown_complete" {
+                activeOperationCount = 0
+                window?.performClose(nil)
+            }
+            return
+        }
         guard message.name == "optionhelperTheme", let value = message.body as? [String: Any],
               let theme = value["theme"] as? String, let preference = value["preference"] as? String,
               ["light", "dark", "auto"].contains(preference), ["light", "dark"].contains(theme) else { return }

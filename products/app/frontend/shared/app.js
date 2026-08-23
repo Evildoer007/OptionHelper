@@ -31,7 +31,7 @@ export function safeJson(value, { allowSecrets = new Set() } = {}) {
 
 export function escapeText(value) {
   const element = document.createElement("span");
-  element.textContent = String(value || "");
+  element.textContent = String(value ?? "");
   return element.innerHTML;
 }
 
@@ -369,10 +369,12 @@ export async function configureModelPicker(picker) {
     picker.disabled = false;
     picker.removeAttribute("title");
   }
+  picker.dataset.userExplicitSelection = "false";
   if (picker.dataset.modelPickerReady !== "true") {
     picker.dataset.modelPickerReady = "true";
     picker.addEventListener("change", async () => {
       if (!picker.value) return;
+      picker.dataset.userExplicitSelection = "true";
       try {
         const selection = JSON.parse(picker.value);
         await request("/api/settings/model-provider/default", { method: "POST", body: JSON.stringify(selection) });
@@ -607,7 +609,16 @@ export function renderTaskList(target, tasks, activeTaskId, onSelect, actions = 
     button.setAttribute("aria-current", String(task.task_id === activeTaskId));
     const taskTitle = document.createElement("strong");
     taskTitle.className = "task-item__title";
-    taskTitle.textContent = String(task.subject || "新建研究任务");
+    const titleText = doc.createElement("span");
+    titleText.textContent = String(task.subject || "新建研究任务");
+    taskTitle.append(titleText);
+    if (Array.isArray(task.active_operations) && task.active_operations.length) {
+      const running = doc.createElement("span");
+      running.className = "task-item__running-dot";
+      running.setAttribute("aria-label", "正在运行");
+      running.title = "正在运行";
+      taskTitle.append(running);
+    }
     const taskDate = document.createElement("small");
     taskDate.textContent = formatTaskDate(task.updated_at || task.created_at);
     button.append(taskTitle, taskDate);

@@ -17,21 +17,25 @@ from urllib.request import Request, urlopen
 from ..errors import UnavailableCapabilityError, ValidationError
 from ..secrets.secret_ref import SecretRef
 from ..settings.settings_models import ModelServiceSettings
+from .request_control import ModelRequestControl
 
 
 MAX_MODEL_RESPONSE_BYTES = 512 * 1024
 
 
-def complete_openai_compatible(
+def complete_openai_compatible_with_metadata(
     settings: ModelServiceSettings,
     secret_ref: SecretRef,
     messages: list[dict[str, str]],
     *,
     resolve_secret: Callable[[SecretRef], str],
     opener: Callable[..., Any] = urlopen,
-) -> str:
-    """Return one non-streaming compatible completion without logging a key."""
+    request_control: ModelRequestControl | None = None,
+) -> dict[str, Any]:
+    """Return text and authentic usage when the compatible service supplies it."""
 
+    if request_control is not None:
+        request_control.raise_if_cancelled()
     endpoint = _completion_endpoint(settings.endpoint)
     token = resolve_secret(secret_ref)
     model_name = settings.model_name.strip()
@@ -49,7 +53,8 @@ def complete_openai_compatible(
         method="POST",
     )
     try:
-        with opener(request, timeout=45) as response:
+        timeout = request_control.remaining_seconds(45) if request_control is not None else 45
+        with opener(request, timeout=timeout) as response:
             # Read one byte beyond the ceiling so an upstream server cannot
             # make the local App allocate an unbounded non-streaming body.
             try:
@@ -66,6 +71,8 @@ def complete_openai_compatible(
         raise UnavailableCapabilityError("模型服务上游", f"模型服务返回HTTP {error.code}，请检查模型名称、Base URL或稍后重试。") from error
     except (URLError, TimeoutError) as error:
         raise UnavailableCapabilityError("模型服务网络", "无法连接模型服务，请检查网络和Base URL后重试。") from error
+    if request_control is not None:
+        request_control.raise_if_cancelled()
     if not isinstance(raw, bytes) or len(raw) > MAX_MODEL_RESPONSE_BYTES:
         raise ValidationError("模型服务响应超过允许上限")
 
@@ -76,7 +83,40 @@ def complete_openai_compatible(
         raise ValidationError("模型服务返回格式无可用文本") from error
     if not isinstance(content, str) or not content.strip():
         raise ValidationError("模型服务未返回有效文本")
-    return content.strip()
+    return {"text": content.strip(), "usage": _provider_usage(value.get("usage"))}
+
+
+def complete_openai_compatible(
+    settings: ModelServiceSettings,
+    secret_ref: SecretRef,
+    messages: list[dict[str, str]],
+    *,
+    resolve_secret: Callable[[SecretRef], str],
+    opener: Callable[..., Any] = urlopen,
+    request_control: ModelRequestControl | None = None,
+) -> str:
+    """Return one non-streaming compatible completion without logging a key."""
+
+    return str(complete_openai_compatible_with_metadata(
+        settings,
+        secret_ref,
+        messages,
+        resolve_secret=resolve_secret,
+        opener=opener,
+        request_control=request_control,
+    )["text"])
+
+
+def _provider_usage(value: object) -> dict[str, int] | None:
+    if not isinstance(value, Mapping):
+        return None
+    allowed = ("prompt_tokens", "completion_tokens", "total_tokens")
+    result = {
+        key: int(value[key])
+        for key in allowed
+        if isinstance(value.get(key), int) and not isinstance(value.get(key), bool) and int(value[key]) >= 0
+    }
+    return result or None
 
 
 def _completion_endpoint(endpoint: str) -> str:
@@ -164,6 +204,7 @@ def decide_openai_compatible(
     *,
     resolve_secret: Callable[[SecretRef], str],
     opener: Callable[..., Any] = urlopen,
+    request_control: ModelRequestControl | None = None,
 ) -> dict[str, Any]:
     """Return one normalized Agent decision from an OpenAI-compatible model.
 
@@ -191,6 +232,7 @@ def decide_openai_compatible(
         "当前任务已有可用正式分析结果时，用户说报告、详细报告、深度报告、完整报告或完整研究报告，调用reporter.run并传arguments:{\"kind\":\"report\"}。"
         "当前任务已有可用正式分析结果时，用户说参考报价、报价表或quote，调用reporter.run并传arguments:{\"kind\":\"quote\"}。"
         "若用户同时提出新的标的、市场观点、期限或条款并要求Card、Report或Quote，先调用recommender.run形成候选和新的合同版本；用户确认合同后，由正常计算流程自动生成所要求交付，不能把缺少历史运行结果当成Quote不可用。"
+        "recommender.run只生成或确认候选，返回后必须由主Agent决定下一步；已确认候选需要计算或交付时调用recommendation_delivery.run，Recommender本身不生成报告。"
         "正式交付首次生成时，由Reporter冻结已验证结果，再由Designer按固定模板生成；不得自行编写HTML、PDF、Python或图表。"
         "同一任务已有正式交付后，用户补要card、report或PDF时，必须复用该次已冻结的交付输入重新渲染，不得重跑模型、取数、定价、回测或重新编排金融事实。"
         "参考报价首次请求可随推荐和收益结构计算直接生成；后续可从已保存合同版本中选择主结构、备选结构或不同参数版本组合，不得手写报价表。"
@@ -209,6 +251,7 @@ def decide_openai_compatible(
         ],
         resolve_secret=resolve_secret,
         opener=opener,
+        request_control=request_control,
     )
     value = _json_object(raw)
     if recommender_step:

@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 import json
 from pathlib import Path
 import sqlite3
+from typing import Callable
 
 from ..errors import ValidationError
 
@@ -28,32 +29,42 @@ class ToolIdempotencyStore:
                     input_hash TEXT NOT NULL,
                     state TEXT NOT NULL,
                     run_ref_json TEXT,
+                    operation_id TEXT,
+                    job_id TEXT,
                     updated_at TEXT NOT NULL,
                     PRIMARY KEY (tenant_id, task_id, module, action, idempotency_key)
                 )
                 """
             )
+            columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(tool_idempotency)")}
+            if "operation_id" not in columns:
+                connection.execute("ALTER TABLE tool_idempotency ADD COLUMN operation_id TEXT")
+            if "job_id" not in columns:
+                connection.execute("ALTER TABLE tool_idempotency ADD COLUMN job_id TEXT")
 
     def claim(
         self, *, tenant_id: str, task_id: str, module: str, action: str,
-        idempotency_key: str, input_hash: str,
+        idempotency_key: str, input_hash: str, operation_id: str | None = None,
+        job_id: str | None = None,
     ) -> tuple[str, dict[str, str] | None]:
         scope = (tenant_id, task_id, module, action, idempotency_key)
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
-                "SELECT input_hash, state, run_ref_json FROM tool_idempotency WHERE tenant_id=? AND task_id=? AND module=? AND action=? AND idempotency_key=?",
+                "SELECT input_hash,state,run_ref_json,operation_id,job_id FROM tool_idempotency WHERE tenant_id=? AND task_id=? AND module=? AND action=? AND idempotency_key=?",
                 scope,
             ).fetchone()
             if row is None:
                 connection.execute(
-                    "INSERT INTO tool_idempotency (tenant_id,task_id,module,action,idempotency_key,input_hash,state,run_ref_json,updated_at) VALUES (?, ?, ?, ?, ?, ?, 'claimed', NULL, ?)",
-                    (*scope, input_hash, _now()),
+                    "INSERT INTO tool_idempotency (tenant_id,task_id,module,action,idempotency_key,input_hash,state,run_ref_json,operation_id,job_id,updated_at) VALUES (?, ?, ?, ?, ?, ?, 'claimed', NULL, ?, ?, ?)",
+                    (*scope, input_hash, operation_id, job_id, _now()),
                 )
                 connection.commit()
-                return "owner", None
+                return "new", None
             if row[0] != input_hash:
                 raise ValidationError("同一幂等键不能对应不同租户、任务、模块、动作或输入")
+            if operation_id is not None and row[3] not in {None, operation_id}:
+                raise ValidationError("同一幂等键不能对应不同operation_id")
             if row[1] == "uncertain":
                 connection.commit()
                 return "uncertain", None
@@ -67,7 +78,7 @@ class ToolIdempotencyStore:
             if not isinstance(reference, dict):
                 raise ValidationError("持久幂等索引中的ModuleRunRef无效")
             connection.commit()
-            return "replay", {str(key): str(value) for key, value in reference.items()}
+            return "completed", {str(key): str(value) for key, value in reference.items()}
 
     def mark_uncertain(
         self, *, tenant_id: str, task_id: str, module: str, action: str,
@@ -132,6 +143,48 @@ class ToolIdempotencyStore:
                 (*scope, input_hash),
             )
             connection.commit()
+
+    def reconcile_claims(
+        self,
+        job_state: Callable[[str], str | tuple[str, dict[str, str] | None] | None],
+    ) -> dict[str, int]:
+        """Resolve stale claims without ever replaying an uncertain operation."""
+
+        counts = {"completed": 0, "released": 0, "uncertain": 0}
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT tenant_id,task_id,module,action,idempotency_key,input_hash,job_id "
+                "FROM tool_idempotency WHERE state IN ('claimed','uncertain')"
+            ).fetchall()
+            for row in rows:
+                outcome = job_state(str(row[6])) if row[6] else None
+                state, reference = outcome if isinstance(outcome, tuple) else (outcome, None)
+                if state == "succeeded" and reference is not None:
+                    connection.execute(
+                        "UPDATE tool_idempotency SET state='completed',run_ref_json=?,updated_at=? "
+                        "WHERE tenant_id=? AND task_id=? AND module=? AND action=? AND idempotency_key=? AND input_hash=? AND state IN ('claimed','uncertain')",
+                        (
+                            json.dumps(reference, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+                            _now(), *tuple(row[:6]),
+                        ),
+                    )
+                    counts["completed"] += 1
+                    continue
+                if state == "failed":
+                    cursor = connection.execute(
+                        "DELETE FROM tool_idempotency WHERE tenant_id=? AND task_id=? AND module=? AND action=? AND idempotency_key=? AND input_hash=? AND state='claimed'",
+                        tuple(row[:6]),
+                    )
+                    if cursor.rowcount:
+                        counts["released"] += 1
+                else:
+                    cursor = connection.execute(
+                        "UPDATE tool_idempotency SET state='uncertain',updated_at=? WHERE tenant_id=? AND task_id=? AND module=? AND action=? AND idempotency_key=? AND input_hash=? AND state='claimed'",
+                        (_now(), *tuple(row[:6])),
+                    )
+                    if cursor.rowcount:
+                        counts["uncertain"] += 1
+        return counts
 
     def _connect(self) -> sqlite3.Connection:
         return sqlite3.connect(self._path, timeout=10.0, isolation_level=None)

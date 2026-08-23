@@ -18,26 +18,23 @@
       <main class="workbench">
         <aside class="source-panel">
           <h1>报告来源</h1>
-          <p>选择当前任务中已完成的分析结果。</p>
           <label for="taskFilter">任务筛选</label>
           <input id="taskFilter" autocomplete="off" placeholder="任务名称或标识，可留空">
           <label for="sourceSelect">研究与合同来源</label>
           <select id="sourceSelect" disabled><option>等待受控结果目录</option></select>
           <div class="source-detail" id="sourceDetail">选择来源后显示候选、产品版本与资料状态。</div>
-          <div class="source-foot">同一任务中的多个候选可分别生成报告，不同合同不会合并为同一结构。</div>
         </aside>
         <div class="panel-resizer" id="sourceResizer" role="separator" aria-label="调整报告来源面板宽度" aria-orientation="vertical" tabindex="0"></div>
 
         <section class="selection-panel">
           <div class="section-head">
-            <div><span class="panel-kicker">报告内容</span><h2>候选与分析结果</h2></div>
+            <div><h2>选择分析结果</h2></div>
             <div class="top-actions"><button id="refreshButton" class="button button-quiet">刷新结果</button><button id="generateButton" class="button button-primary" disabled>生成并保存</button></div>
           </div>
           <div class="selection-count" id="selectionCount">未选择候选</div>
           <div class="notice" id="notice" role="status">正在读取当前租户可用的报告来源。</div>
           <div class="quote-items" id="quoteItems" hidden aria-live="polite"></div>
           <div class="candidate-list" id="candidateList"></div>
-          <div class="missing-note">未完成的分析不会被补写；报告只使用当前任务中真实保存的结果。</div>
         </section>
 
         <div class="panel-resizer" id="settingsResizer" role="separator" aria-label="调整交付设置面板宽度" aria-orientation="vertical" tabindex="0"></div>
@@ -51,7 +48,7 @@
           <div class="setting-group"><label>报告版式</label><p class="rule">完整报告采用连续A4正文。</p></div>
           <fieldset class="setting-group" id="moduleGroup"><legend>纳入内容</legend><label class="choice"><input type="checkbox" data-module="recommender" checked><span>产品建议</span></label><label class="choice"><input type="checkbox" data-module="payoff" checked><span>收益结构</span></label><label class="choice"><input type="checkbox" data-module="pricing" checked><span>估值定价</span></label><label class="choice"><input type="checkbox" data-module="backtest" checked><span>历史回测</span></label></fieldset>
           <div class="setting-group"><label for="audience">受众</label><select id="audience"><option value="professional">专业用户</option></select></div>
-          <p class="rule" id="formatRule">内容等级决定报告深度，HTML与PDF决定交付格式。</p>
+          <p class="rule" id="formatRule"></p>
         </aside>
       </main>
 
