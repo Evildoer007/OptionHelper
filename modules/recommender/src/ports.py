@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
-from typing import Any, Mapping, Protocol
+from typing import Any, Mapping, Protocol, Sequence
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urljoin, urlparse
 from urllib.request import Request, urlopen
@@ -25,6 +25,8 @@ class AgentPort(Protocol):
 
     def run_step(self, role: str, payload: Mapping[str, Any]) -> Mapping[str, Any]: ...
 
+    def run_named_steps(self, requests: Mapping[str, Mapping[str, Any]]) -> Mapping[str, Mapping[str, Any]]: ...
+
 
 class KnowledgePort(Protocol):
     def search(self, payload: Mapping[str, Any]) -> Mapping[str, Any]: ...
@@ -32,6 +34,22 @@ class KnowledgePort(Protocol):
 
 class ToolPort(Protocol):
     def call(self, module: str, payload: Mapping[str, Any]) -> Mapping[str, Any]: ...
+
+
+class CandidateEvaluationPort(ToolPort, Protocol):
+    """Host-only preselection port required by calculation-aware Modes."""
+
+    def evaluate_candidate(
+        self,
+        *,
+        candidate: Mapping[str, Any],
+        confirmed_constraints: Mapping[str, Any],
+        modules: Sequence[str],
+        term_overrides: Mapping[str, Any],
+        candidate_version_id: str,
+        round_no: int,
+        input_fingerprints: Mapping[str, str] | None = None,
+    ) -> Mapping[str, Any]: ...
 
 
 @dataclass(frozen=True)
@@ -99,6 +117,17 @@ class HttpAgentPort:
         if not isinstance(result, Mapping):
             raise PortError(f"Agent角色{role}必须返回JSON对象")
         return dict(result)
+
+    def run_named_steps(self, requests: Mapping[str, Mapping[str, Any]]) -> Mapping[str, Mapping[str, Any]]:
+        """Portable heterogeneous-role fallback.
+
+        HTTP hosts without an explicit heterogeneous batch endpoint still get
+        one request per role.  The App implementation may run independent
+        children concurrently; this adapter deliberately preserves role and
+        result identity rather than pretending one request is a council.
+        """
+
+        return {str(role): self.run_step(str(role), payload) for role, payload in requests.items()}
 
 
 @dataclass(frozen=True)

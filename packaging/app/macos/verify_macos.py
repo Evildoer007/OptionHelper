@@ -20,6 +20,12 @@ class AppVerificationError(RuntimeError):
     pass
 
 
+# The frozen numerical runtime may compile its first Numba kernel during the
+# 6.2 path-dependent pricing probe.  Keep this artifact-level timeout longer
+# than ordinary UI requests so a cold machine is not reported as a broken DMG.
+ARTIFACT_REQUEST_TIMEOUT_SECONDS = 120
+
+
 def request(
     connection: http.client.HTTPConnection,
     method: str,
@@ -139,7 +145,11 @@ def verify(bundle: Path) -> dict[str, object]:
         try:
             url = wait_for_url(process)
             parsed = urlparse(url)
-            connection = http.client.HTTPConnection(parsed.hostname, parsed.port, timeout=20)
+            connection = http.client.HTTPConnection(
+                parsed.hostname,
+                parsed.port,
+                timeout=ARTIFACT_REQUEST_TIMEOUT_SECONDS,
+            )
             status, health, _ = request(connection, "GET", "/api/health")
             require(status == 200 and health.get("status") == "ok", "App健康检查失败")
             capability = health.get("capability", {})

@@ -8,6 +8,7 @@ Capability failures rather than synthetic financial output.
 from __future__ import annotations
 
 from datetime import date, datetime, time, timedelta
+import hashlib
 import importlib
 from pathlib import Path
 import re
@@ -89,6 +90,7 @@ class ToolGateway:
         module_context: object | None = None,
         request_id: str = "",
         agent_proxy: bool = False,
+        candidate_variant: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         if not isinstance(payload, dict):
             raise ValidationError("Tool payload must be an object")
@@ -113,6 +115,9 @@ class ToolGateway:
         )
         _reject_path_payload(payload)
         compute_run = tool_name in {"payoffer", "pricer", "backtester"} and _is_run_action(payload)
+        if candidate_variant is not None and (not agent_proxy or not compute_run):
+            raise ValidationError("候选合同版本仅允许App内部预选计算使用")
+        candidate_variant = _candidate_variant_request(candidate_variant) if candidate_variant is not None else None
         verified_context = None
         if tool_name in PAGE_MODULES:
             if module_context is None:
@@ -133,6 +138,11 @@ class ToolGateway:
                 return self._reporter.dispatch(payload, caller_context)
             if verified_context is None:
                 raise ValidationError("Reporter运行缺少已验证Module Host context")
+            if str(payload.get("action", "")).strip().lower() == "rerender":
+                return self._reporter.dispatch(
+                    self._controlled_reporter_rerender_request(payload, caller_context, verified_context),
+                    caller_context,
+                )
             return self._reporter.dispatch(
                 self._controlled_reporter_request(payload, caller_context, verified_context),
                 caller_context,
@@ -162,19 +172,20 @@ class ToolGateway:
                     # Preloading inside the verified loader prevents development
                     # or Eval ``modules.*`` objects from being reused.
                     load_verified_capability_service(tool_name, scripts_root)
-                    # Payoffer preview is a non-persistent display request.  The
-                    # browser bridge attaches Host scope so the App can verify
-                    # the request, but those fields are not part of the
-                    # Capability's preview schema.  Passing them through only
+                    # Payoffer default and preview actions are non-persistent
+                    # display requests.  The browser bridge attaches Host scope
+                    # so the App can verify the request, but those fields are not
+                    # part of the Capability display schemas.  Passing them through only
                     # fails after a task has an active contract, where the
                     # bridge includes catalog and contract identifiers.
                     effective_payload = (
                         _business_payload(payload)
-                        if tool_name == "payoffer" and str(payload.get("action", "")).strip().lower() == "preview"
+                        if tool_name == "payoffer" and str(payload.get("action", "")).strip().lower() in {"default", "preview"}
                         else payload
                     )
                     effective_context = verified_context
                     bound_data_store = None
+                    compiler_data_store = None
                     if compute_run:
                         if not verified_context.task_id:
                             raise ValidationError("计算模块必须绑定App任务")
@@ -185,10 +196,22 @@ class ToolGateway:
                         friendly_payload = _business_payload(payload)
                         friendly_payload = _without_legacy_pricer_demo_inputs(tool_name, friendly_payload)
                         new_contract_variant = _new_contract_variant_requested(friendly_payload)
+                        if candidate_variant is not None and new_contract_variant:
+                            raise ValidationError("候选预选不得切换活动合同")
                         existing = self._current_task_contract(caller_context, str(verified_context.task_id))
+                        candidate_contract = (
+                            self._contracts.get_candidate_variant(
+                                caller_context,
+                                str(verified_context.task_id),
+                                str(candidate_variant["candidate_key"]),
+                                str(candidate_variant["candidate_version_id"]),
+                            )
+                            if candidate_variant is not None
+                            else None
+                        )
                         if new_contract_variant and existing is None:
                             raise ValidationError("当前任务尚未建立合同，不能切换方案版本")
-                        active_contract = None if new_contract_variant else existing
+                        active_contract = candidate_contract if candidate_variant is not None else None if new_contract_variant else existing
                         friendly_payload = _reuse_task_contract_identity(friendly_payload, active_contract)
                         data_refs = self._resolve_compute_data_refs(
                             tool_name,
@@ -213,16 +236,24 @@ class ToolGateway:
                             for ref in data_refs
                         ):
                             raise ValidationError("正式计算DataAssetRef必须已绑定当前App任务")
-                        if tool_name in {"payoffer", "pricer", "backtester"} and data_refs:
+                        # The shared input compiler must verify every attached
+                        # DataAssetRef before it freezes a contract. Payoffer
+                        # never receives this port, but an observation product
+                        # still needs the Host-owned calendar to resolve its
+                        # immutable schedule before the formal PayoffInput is
+                        # created.
+                        if data_refs:
                             if self._datafetcher is None:
                                 raise UnavailableCapabilityError(
                                     f"{tool_name}.data_store", "App DataFetcherAdapter is not configured",
                                 )
-                            bound_data_store = self._datafetcher.bind_data_store(
+                            compiler_data_store = self._datafetcher.bind_data_store(
                                 caller_context,
                                 task_id=str(verified_context.task_id),
                                 data_refs=tuple(data_refs),
                             )
+                            if tool_name in {"pricer", "backtester"}:
+                                bound_data_store = compiler_data_store
                         friendly_payload = _bind_new_contract_to_history(
                             tool_name,
                             friendly_payload,
@@ -243,21 +274,32 @@ class ToolGateway:
                         if tool_name in {"pricer", "backtester"} and active_contract is None:
                             friendly_payload = _compile_new_contract_identity_from_history(
                                 tool_name,
-                                friendly_payload,
-                                data_refs=tuple(data_refs),
-                                data_store=bound_data_store,
-                            )
+                            friendly_payload,
+                            data_refs=tuple(data_refs),
+                            data_store=compiler_data_store,
+                        )
                         prepared = tool_entry.prepare_compute_request(
                             tool_name,
                             friendly_payload,
                             data_refs=tuple(data_refs),
                             resolved_contract=None if legacy_calendar_upgrade else active_contract.get("resolved_contract") if active_contract else None,
-                            data_store=bound_data_store,
+                            data_store=compiler_data_store,
                         )
                         if not isinstance(prepared, Mapping) or not isinstance(prepared.get("request"), Mapping):
                             raise ValidationError("Capability返回的正式计算输入无效")
                         effective_payload = dict(prepared["request"])
-                        if new_contract_variant:
+                        if candidate_variant is not None:
+                            binding = self._contracts.put_candidate_variant(
+                                caller_context,
+                                str(verified_context.task_id),
+                                str(candidate_variant["candidate_key"]),
+                                str(candidate_variant["candidate_version_id"]),
+                                prepared,
+                                catalog_version=str(self._registry.manifest["catalog_version"]),
+                                parent_version_id=candidate_variant.get("parent_version_id"),
+                                revision=int(candidate_variant["revision"]),
+                            )
+                        elif new_contract_variant:
                             binding = self._contracts.activate_new_variant(
                                 caller_context,
                                 str(verified_context.task_id),
@@ -284,7 +326,8 @@ class ToolGateway:
                             caller_context,
                             verified_context,
                             binding,
-                            new_candidate=new_contract_variant,
+                            new_candidate=new_contract_variant or candidate_variant is not None,
+                            candidate_variant=candidate_variant,
                         )
                     _reject_path_payload(effective_payload)
                     bound_store = None
@@ -292,6 +335,8 @@ class ToolGateway:
                         if self._results is None or effective_context.task_id is None:
                             raise ValidationError("计算模块必须绑定App任务与ResultStore")
                         bound_store = self._results.bind_module_store(caller_context, effective_context.task_id)
+                        if candidate_variant is not None:
+                            bound_store = _CandidateVariantResultStore(bound_store, candidate_variant)
                     authorize = getattr(tool_entry, "_authorize_verified_app_call", None)
                     if not callable(authorize):
                         raise UnavailableCapabilityError(
@@ -318,7 +363,7 @@ class ToolGateway:
                     )
                     if (
                         read_only_action
-                        and tool_name in {"pricer", "backtester"}
+                        and tool_name in {"payoffer", "pricer", "backtester"}
                         and str(payload.get("action", "")).strip().lower() == "catalog"
                         and verified_context is not None
                         and verified_context.task_id
@@ -331,7 +376,11 @@ class ToolGateway:
                     if compute_run:
                         if not isinstance(result, Mapping):
                             raise ValidationError("Capability计算结果必须为对象")
-                        result = _bind_compute_result(result, effective_context)
+                        result = _bind_compute_result(
+                            result,
+                            effective_context,
+                            candidate_variant=candidate_variant,
+                        )
             except (UserActionError, UnavailableCapabilityError):
                 # This class is only created by an App-owned preflight.  Its
                 # message is a fixed, reviewed next step and contains no
@@ -772,6 +821,7 @@ class ToolGateway:
         binding: Mapping[str, Any],
         *,
         new_candidate: bool = False,
+        candidate_variant: Mapping[str, Any] | None = None,
     ) -> Any:
         fingerprint = binding.get("contract_fingerprint")
         if not isinstance(fingerprint, str) or len(fingerprint) != 64:
@@ -780,11 +830,16 @@ class ToolGateway:
         contract_ref = binding.get("contract_ref")
         if not isinstance(contract_ref, Mapping):
             raise ValidationError("Host contract_ref绑定无效")
+        candidate_id = (
+            _candidate_variant_candidate_id(candidate_variant)
+            if candidate_variant is not None
+            else f"candidate-{fingerprint[:24]}" if new_candidate else context.candidate_id or f"candidate-{fingerprint[:24]}"
+        )
         return self._registry.bind_contract_context(
             identity,
             context,
             analysis_case_id=context.analysis_case_id or f"case-{fingerprint[:24]}",
-            candidate_id=f"candidate-{fingerprint[:24]}" if new_candidate else context.candidate_id or f"candidate-{fingerprint[:24]}",
+            candidate_id=candidate_id,
             catalog_version=catalog_version,
             contract_fingerprint=fingerprint,
             contract_ref=HostObjectRef.from_payload(contract_ref, "contract_ref"),
@@ -899,6 +954,53 @@ class ToolGateway:
                 "selected_modules": list(selected_modules),
                 "module_run_refs": {candidate_id: controlled_refs},
             },
+        }
+
+    def _controlled_reporter_rerender_request(
+        self,
+        payload: Mapping[str, Any],
+        identity: SessionIdentity,
+        context: Any,
+    ) -> dict[str, Any]:
+        """Authorize a PDF re-render against one immutable report delivery.
+
+        Re-rendering is not a new analysis request.  The browser may name only
+        the source ReportRun and the new delivery identifier; ResultStore
+        confirms ownership and task scope before Reporter receives the request.
+        """
+
+        if self._results is None:
+            raise ValidationError("Reporter另存交付缺少App ResultStore")
+        task_id = getattr(context, "task_id", None)
+        if not isinstance(task_id, str) or not task_id:
+            raise ValidationError("Reporter另存交付必须绑定当前任务")
+        allowed = {"action", "task_id", "source_report_run_id", "output_type", "format", "report_run_id"}
+        unknown = set(payload).difference(allowed)
+        if unknown:
+            raise ValidationError(f"Reporter另存交付含未知字段：{','.join(sorted(unknown))}")
+        source_run_id = payload.get("source_report_run_id")
+        if not isinstance(source_run_id, str) or not source_run_id:
+            raise ValidationError("Reporter另存交付缺少source_report_run_id")
+        try:
+            source = self._results.get_owned_report_run(identity, source_run_id)
+        except (KeyError, AuthorizationError) as error:
+            raise ValidationError("源报告不存在或不可访问") from error
+        if source.get("task_id") != task_id:
+            raise ValidationError("源报告不属于当前任务")
+        source_request = source.get("report_request")
+        source_kind = str(source_request.get("output_type", "")).strip().lower() if isinstance(source_request, Mapping) else ""
+        if source_kind not in {"card", "report"}:
+            raise ValidationError("参考报价不能在当前页面另存为PDF")
+        output_type = str(payload.get("output_type", "")).strip().lower()
+        if output_type != source_kind:
+            raise ValidationError("另存交付类型必须与源报告一致")
+        return {
+            "action": "rerender",
+            "task_id": task_id,
+            "source_report_run_id": source_run_id,
+            "output_type": source_kind,
+            "format": payload.get("format"),
+            "report_run_id": payload.get("report_run_id"),
         }
 
     def _controlled_quote_selection(
@@ -1079,6 +1181,7 @@ def _is_read_only_action(payload: Mapping[str, Any]) -> bool:
     action = payload.get("action", "run")
     return isinstance(action, str) and action.strip().lower() in {
         "catalog",
+        "default",
         "status",
         "list_assets",
         "list_report_sources",
@@ -1136,6 +1239,28 @@ def _new_contract_variant_requested(payload: dict[str, Any]) -> bool:
     if not isinstance(requested, bool):
         raise ValidationError("new_contract_variant必须为布尔值")
     return requested
+
+
+def _candidate_variant_request(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate the server-only identity for one immutable preselection contract."""
+
+    allowed = {"candidate_key", "candidate_version_id", "parent_version_id", "revision"}
+    if set(value) != allowed:
+        raise ValidationError("候选合同版本身份字段无效")
+    result = dict(value)
+    for field in ("candidate_key", "candidate_version_id"):
+        item = result.get(field)
+        if not isinstance(item, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]*", item):
+            raise ValidationError(f"候选合同{field}无效")
+    parent = result.get("parent_version_id")
+    if parent is not None and (
+        not isinstance(parent, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]*", parent)
+    ):
+        raise ValidationError("候选合同parent_version_id无效")
+    revision = result.get("revision")
+    if isinstance(revision, bool) or not isinstance(revision, int) or revision < 1:
+        raise ValidationError("候选合同revision无效")
+    return result
 
 
 def _reuse_task_contract_identity(
@@ -1318,7 +1443,55 @@ def _public_contract_resolution_error(error: ContractResolutionError) -> UserAct
     return ValidationError(message)
 
 
-def _bind_compute_result(result: Mapping[str, Any], context: Any) -> dict[str, Any]:
+def _candidate_variant_candidate_id(candidate_variant: Mapping[str, Any]) -> str:
+    """Derive one Host-owned computation identity from an immutable version."""
+
+    candidate_key = str(candidate_variant["candidate_key"])
+    version_id = str(candidate_variant["candidate_version_id"])
+    digest = hashlib.sha256(f"{candidate_key}:{version_id}".encode("utf-8")).hexdigest()[:24]
+    return f"candidate-{digest}"
+
+
+class _CandidateVariantResultStore:
+    """Insert immutable CandidateVersion evidence before the module commits."""
+
+    def __init__(self, delegate: Any, candidate_variant: Mapping[str, Any]) -> None:
+        self._delegate = delegate
+        self._candidate_key = str(candidate_variant["candidate_key"])
+        self._candidate_version_id = str(candidate_variant["candidate_version_id"])
+
+    def commit_module_run(self, *, module: str, tenant_id: str, task_id: str, run_id: str, files: Mapping[str, Any]) -> Any:
+        committed = dict(files)
+        raw_result = committed.get("result.json")
+        if isinstance(raw_result, Mapping):
+            result = dict(raw_result)
+            for field, expected in (
+                ("candidate_key", self._candidate_key),
+                ("candidate_version_id", self._candidate_version_id),
+            ):
+                supplied = result.get(field)
+                if supplied is not None and supplied != expected:
+                    raise ValidationError("ModuleRun候选版本身份与Host不一致")
+                result[field] = expected
+            committed["result.json"] = result
+        return self._delegate.commit_module_run(
+            module=module,
+            tenant_id=tenant_id,
+            task_id=task_id,
+            run_id=run_id,
+            files=committed,
+        )
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._delegate, name)
+
+
+def _bind_compute_result(
+    result: Mapping[str, Any],
+    context: Any,
+    *,
+    candidate_variant: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     """Attach the already verified Host binding before immutable run storage."""
 
     bound = {
@@ -1335,6 +1508,13 @@ def _bind_compute_result(result: Mapping[str, Any], context: Any) -> dict[str, A
         if supplied is not None and supplied != expected:
             raise ValidationError(f"Capability计算结果{field}与Host绑定冲突")
         value[field] = expected
+    if candidate_variant is not None:
+        for field in ("candidate_key", "candidate_version_id"):
+            supplied = value.get(field)
+            expected = str(candidate_variant[field])
+            if supplied is not None and supplied != expected:
+                raise ValidationError("ModuleRun候选版本身份与Host不一致")
+            value[field] = expected
     return value
 
 
@@ -1997,7 +2177,7 @@ def _require_conversation_compute_request(tool_name: str, payload: Mapping[str, 
 def _report_request_capability(payload: Mapping[str, Any]) -> str:
     """Map a requested delivery to its policy capability, without role names."""
 
-    kind = str(payload.get("kind", "")).strip().lower()
+    kind = str(payload.get("kind") or payload.get("output_type") or "").strip().lower()
     return {
         "card": "report.card.request",
         "quote": "report.quote.request",

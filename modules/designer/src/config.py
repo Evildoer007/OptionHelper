@@ -15,9 +15,11 @@ from typing import Any, Mapping
 
 _MODULE_ASSET_ROOT = Path(__file__).resolve().parents[1] / "assets"
 _RELEASE_ASSET_ROOT = Path(__file__).resolve().parents[3] / "assets" / "designer"
-_REQUIRED_TEMPLATE_NAMES = ("card.html", "quote.html", "report.html")
+_REQUIRED_TEMPLATE_NAMES = ("card.html", "multicard.html", "multireport.html", "quote.html", "report.html")
 _REQUIRED_TEMPLATE_DEFINITIONS = (
     "card-standard.template.json",
+    "multicard-standard.template.json",
+    "multireport-standard.template.json",
     "quote-standard.template.json",
     "report-standard.template.json",
 )

@@ -9,6 +9,7 @@ local-development Host完成正式计算、Reporter和Designer闭环。
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 from dataclasses import asdict
 from datetime import date, timedelta
 import hashlib
@@ -31,7 +32,7 @@ CORE_SRC = ROOT / "core" / "src"
 if str(CORE_SRC) not in sys.path:
     sys.path.insert(0, str(CORE_SRC))
 
-from runtime.bootstrap import bootstrap_runtime
+from runtime.bootstrap import BootstrapError, bootstrap_runtime, local_runtime_scope
 from runtime.adapters.local_host import (
     JsonHttpEndpoint,
     LocalHostAuthority,
@@ -103,6 +104,27 @@ class ProjectRequestError(RuntimeError):
         super().__init__(message)
         self.stage = stage
         self.missing = tuple(missing)
+
+
+@contextmanager
+def _cli_project_store_scope() -> Any:
+    """Initialize the local project Store before a released CLI resolves runtime.
+
+    The App supplies its own scoped Store.  A project-level Skill CLI has no
+    App Host, so it owns one explicit current-project scope instead of asking
+    the user to export three implementation variables before every command.
+    Development source already has a valid runtime and remains unchanged.
+    """
+
+    try:
+        bootstrap_runtime(mutate_sys_path=False)
+    except BootstrapError:
+        layout = LocalProjectLayout.create(skill_root=ROOT, project_root=Path.cwd())
+        layout.initialize()
+        with local_runtime_scope(layout.data_root, layout.result_root):
+            yield
+    else:
+        yield
 
 
 _RECOMMENDATION_REQUEST_FIELDS = frozenset({"prompt", "constraints"})
@@ -314,7 +336,7 @@ def _call_validated_tool(
         raise ToolDispatchError(f"未知模块：{module}")
     _reject_untrusted_request_fields(request)
     action = str(request.get("action", "run" if {"contract", "payoff_input"}.intersection(request) else "catalog")).strip().lower()
-    if action in {"catalog", "status"}:
+    if action in {"catalog", "default", "status"}:
         if "module.catalog" not in caller_context.capabilities or "module.catalog" not in host_context.request_policy:
             raise ToolDispatchError("只读目录调用必须同时由CallerContext和ModuleHostContext授权module.catalog")
     elif not set(caller_context.capabilities).intersection(host_context.request_policy).intersection(
@@ -334,8 +356,8 @@ def _call_validated_tool(
         and not is_explicit_demo_pricing_config(request.get("pricing_config"))
     )
     if data_store is not None:
-        if module not in {"payoffer", "pricer", "backtester"} or action != "run":
-            raise ToolDispatchError("外置DataStorePort仅允许Host注入正式计算模块")
+        if module not in {"pricer", "backtester"} or action != "run":
+            raise ToolDispatchError("外置DataStorePort仅允许Host注入正式Pricer或Backtester运行")
         if not callable(getattr(data_store, "read_bytes", None)):
             raise ToolDispatchError("正式计算模块必须由Host注入DataStorePort")
     elif needs_data_store and action == "run":
@@ -1932,34 +1954,35 @@ def main() -> None:
         print(json.dumps(tool_catalog(), ensure_ascii=False, indent=2))
         return
     try:
-        def emit(event: Mapping[str, Any]) -> None:
-            print(json.dumps(dict(event), ensure_ascii=False), file=sys.stderr, flush=True)
+        with _cli_project_store_scope():
+            def emit(event: Mapping[str, Any]) -> None:
+                print(json.dumps(dict(event), ensure_ascii=False), file=sys.stderr, flush=True)
 
-        if args.recommend_request is not None:
-            result = run_recommendation_request(str(args.recommend_request), progress=emit)
-            output = public_recommendation_result(result)
-        elif args.recommend_json is not None:
-            value = json.loads(args.recommend_json)
-            if not isinstance(value, Mapping):
-                raise ProjectRequestError("request", "结构推荐JSON必须是对象。")
-            result = run_recommendation_request(value, progress=emit)
-            output = public_recommendation_result(result)
-        elif args.module_json is not None:
-            value = json.loads(args.module_json)
-            if not isinstance(value, Mapping):
-                raise ProjectRequestError("request", "单模块JSON必须是对象。")
-            output = run_module_request(value, progress=emit)
-        else:
-            request: str | Mapping[str, Any]
-            if args.project_json is not None:
-                value = json.loads(args.project_json)
+            if args.recommend_request is not None:
+                result = run_recommendation_request(str(args.recommend_request), progress=emit)
+                output = public_recommendation_result(result)
+            elif args.recommend_json is not None:
+                value = json.loads(args.recommend_json)
                 if not isinstance(value, Mapping):
-                    raise ProjectRequestError("request", "项目报告JSON必须是对象。")
-                request = value
+                    raise ProjectRequestError("request", "结构推荐JSON必须是对象。")
+                result = run_recommendation_request(value, progress=emit)
+                output = public_recommendation_result(result)
+            elif args.module_json is not None:
+                value = json.loads(args.module_json)
+                if not isinstance(value, Mapping):
+                    raise ProjectRequestError("request", "单模块JSON必须是对象。")
+                output = run_module_request(value, progress=emit)
             else:
-                request = str(args.project_request)
-            result = run_project_request(request, progress=emit)
-            output = public_project_result(result)
+                request: str | Mapping[str, Any]
+                if args.project_json is not None:
+                    value = json.loads(args.project_json)
+                    if not isinstance(value, Mapping):
+                        raise ProjectRequestError("request", "项目报告JSON必须是对象。")
+                    request = value
+                else:
+                    request = str(args.project_request)
+                result = run_project_request(request, progress=emit)
+                output = public_project_result(result)
         print(json.dumps(output, ensure_ascii=False, indent=2))
     except (ProjectRequestError, LocalHostError, ToolDispatchError, json.JSONDecodeError) as error:
         stage = error.stage if isinstance(error, ProjectRequestError) else "host"

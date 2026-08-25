@@ -62,7 +62,7 @@ class DataFetcherAdapter:
         action = _action(request)
         settings = self._settings_for(principal)
         interface = settings.data_interface
-        requires_ifind = action in {"fetch", "fetch_calendar", "test_connection"}
+        requires_ifind = _requires_ifind(request, action)
         if requires_ifind and (interface.provider_name != "ifind-http" or interface.secret_ref is None):
             raise UnavailableCapabilityError(
                 "datafetcher.configuration",
@@ -77,12 +77,15 @@ class DataFetcherAdapter:
             )
         if self._secret_provider is None:
             if calendar_ref is None:
-                return self._app_datafetcher_call(dict(request), _caller(principal, request_id), None)
+                return self._app_datafetcher_call(
+                    dict(request), _caller(principal, request_id), None, None,
+                )
             return self._app_datafetcher_call(
-                dict(request), _caller(principal, request_id), None,
+                dict(request), _caller(principal, request_id), None, None,
                 trading_calendar_ref=calendar_ref,
             )
-        secret_ref = interface.secret_ref
+        expose_configuration = action in {"status", "catalog", "list_assets"}
+        secret_ref = interface.secret_ref if requires_ifind or expose_configuration else None
         if calendar_ref is None:
             return self._app_datafetcher_call(
                 dict(request),
@@ -221,6 +224,39 @@ def _action(request: dict[str, Any]) -> str:
     if not isinstance(value, str):
         raise ValidationError("DataFetcher action must be a string")
     return value.strip().lower()
+
+
+def _requires_ifind(request: Mapping[str, Any], action: str) -> bool:
+    """Apply the Host credential gate only when the effective request can call iFind."""
+
+    if action in {"fetch_calendar", "test_connection"}:
+        return True
+    if action != "fetch":
+        return False
+    source = request.get("request", request.get("data_request", request))
+    if not isinstance(source, Mapping):
+        return True
+
+    raw_priority = source.get("source_priority")
+    if isinstance(raw_priority, str):
+        providers = [item.strip().lower() for item in raw_priority.split(",") if item.strip()]
+    elif isinstance(raw_priority, (list, tuple)):
+        providers = [str(item).strip().lower() for item in raw_priority if str(item).strip()]
+    elif raw_priority is None:
+        providers = []
+    else:
+        return True
+
+    provider = source.get("provider")
+    if isinstance(provider, str) and provider.strip():
+        normalized = provider.strip().lower()
+        if normalized not in providers:
+            providers.insert(0, normalized)
+    elif provider is not None:
+        return True
+    if not providers:
+        return True
+    return any(provider in {"ifind_http", "ifind_sdk"} for provider in providers)
 
 
 def _reject_untrusted_context(value: object) -> None:

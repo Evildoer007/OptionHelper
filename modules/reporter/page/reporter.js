@@ -1,10 +1,36 @@
 (() => {
   const $ = id => document.getElementById(id);
-  const state = { catalog: null, source: null, selected: new Set(), runRefs: {}, quoteItems: [], ready: false, delivery: null };
+  const state = { catalog: null, source: null, selected: new Set(), runRefs: {}, quoteItems: [], ready: false, delivery: null, pendingReport: null, pendingPdf: null };
   const esc = value => String(value ?? '').replace(/[&<>'"]/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[char]));
   const selectedValue = name => document.querySelector(`input[name="${name}"]:checked`)?.value;
   const selectedModules = () => [...document.querySelectorAll('[data-module]:checked')].map(node => node.dataset.module);
   const identifier = prefix => `${prefix}_${new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14)}`;
+  const requestIdentifier = prefix => globalThis.crypto?.randomUUID?.() || `${identifier(prefix)}_${Math.random().toString(36).slice(2)}`;
+
+  function attemptFor(selection) {
+    const stable = {...selection}; delete stable.report_run_id;
+    const fingerprint = JSON.stringify(stable);
+    if (state.pendingReport?.fingerprint === fingerprint) {
+      selection.report_run_id = state.pendingReport.reportRunId;
+      return state.pendingReport;
+    }
+    const attempt = {fingerprint, requestId:requestIdentifier('report'), reportRunId:identifier(selection.output_type)};
+    state.pendingReport = attempt; selection.report_run_id = attempt.reportRunId;
+    return attempt;
+  }
+  function settleAttempt(attempt) {
+    if (state.pendingReport?.requestId === attempt.requestId) state.pendingReport = null;
+  }
+  function pendingPdfAttempt(source, outputType) {
+    const fingerprint = JSON.stringify({source, outputType, format:'pdf'});
+    if (state.pendingPdf?.fingerprint === fingerprint) return state.pendingPdf;
+    const attempt = {fingerprint, requestId:requestIdentifier('report-pdf'), reportRunId:identifier(`${outputType}-pdf`)};
+    state.pendingPdf = attempt;
+    return attempt;
+  }
+  function settlePdfAttempt(attempt) {
+    if (state.pendingPdf?.requestId === attempt.requestId) state.pendingPdf = null;
+  }
 
   function notice(text, tone = '') { $('notice').textContent = text; $('notice').dataset.tone = tone; }
   function activeSource() { return state.catalog?.sources?.find(item => item.source_id === $('sourceSelect').value) || null; }
@@ -19,7 +45,8 @@
     $('referenceQuotePanel').hidden = !isQuote;
     $('deliveryModeGroup').hidden = isQuote;
     $('moduleGroup').hidden = isQuote;
-    $('formatRule').textContent = format === 'pdf' ? 'PDF采用固定页式；若Designer缺少PDF依赖，将真实显示不可用。' : isQuote ? '参考报价按当前选中的结构与参数运行结果整理，不包含Greeks、回测或图表。' : outputType === 'card' ? '简报不使用章节目录或损益图。' : '完整报告固定为连续A4正文。';
+    const comparison = $('deliveryMode').value === 'comparison';
+    $('formatRule').textContent = format === 'pdf' ? 'PDF与HTML使用同一组冻结事实，不会重新运行计算模块。' : isQuote ? '参考报价按当前选中的结构与参数运行结果整理，不包含Greeks、回测或图表。' : comparison && outputType === 'card' ? 'MultiCard横向展示候选的关键条款、五项Greeks、回测摘要和风险，不包含图表。' : comparison ? 'MultiReport完整展示候选合同、收益、估值、回测和风险对比。' : outputType === 'card' ? '简报不使用章节目录或损益图。' : '完整报告固定为连续A4正文。';
     const count = isQuote ? state.quoteItems.length : state.selected.size; const moduleCount = selectedModules().length;
     $('selectionCount').textContent = isQuote ? (count ? `已加入${count}条报价行` : '未加入报价行') : (count ? `已选择${count}个候选` : '未选择候选');
     const unavailableReason = !state.ready
@@ -132,9 +159,10 @@
     if (type !== 'quote' && !state.selected.size) { notice('请先选择至少一个分析结果。', 'error'); return; }
     const modules = selectedModules();
     if (type === 'quote') {
-      const selection = { source_id: source.source_id, quote_items: state.quoteItems.map(item => ({source_id:item.source_id, candidate_id:item.candidate_id, module:item.module, module_run_ref:item.module_run_ref})), output_type: type, format, audience: $('audience').value, report_run_id: identifier(type), metadata: { title: '推荐结构及参考报价' } };
+      const selection = { source_id: source.source_id, quote_items: state.quoteItems.map(item => ({source_id:item.source_id, candidate_id:item.candidate_id, module:item.module, module_run_ref:item.module_run_ref})), output_type: type, format, audience: $('audience').value, metadata: { title: '推荐结构及参考报价' } };
+      const attempt = attemptFor(selection);
       $('generateButton').disabled = true; notice('正在按已选合同快照整理参考报价。');
-      try { const response = await fetch('/api/run', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({selection})}); const data = await response.json(); if (!response.ok || !data.ok) throw new Error(data.message || '报价表生成失败'); $('previewPanel').hidden = false; $('previewTitle').textContent = '参考报价预览'; $('reportPreview').src = data.preview_url; $('downloadLink').href = data.download_url; state.delivery = format === 'html' ? {source:{task_id:source.task_id, report_run_id:selection.report_run_id}, outputType:type} : null; $('convertPdfButton').hidden = !state.delivery; $('childReports').innerHTML = ''; notice(format === 'html' ? 'HTML报价表已保存，不会重新计算。' : '报价表已保存，可以预览或下载。'); } catch (error) { notice(error.message || '报价表生成失败。', 'error'); } finally { updateControls(); }
+      try { const response = await fetch('/api/run', {method:'POST',headers:{'Content-Type':'application/json','X-OptionHelper-Request-Id':attempt.requestId},body:JSON.stringify({selection})}); const data = await response.json(); if (!response.ok || !data.ok) throw new Error(data.message || '报价表生成失败'); settleAttempt(attempt); $('previewPanel').hidden = false; $('previewTitle').textContent = '参考报价预览'; $('reportPreview').src = data.preview_url; $('downloadLink').href = data.download_url; state.delivery = null; $('convertPdfButton').hidden = true; $('childReports').innerHTML = ''; notice(format === 'html' ? 'HTML报价表已保存，不会重新计算。' : '报价表已保存，可以预览或下载。'); } catch (error) { notice(error.message || '报价表生成失败。', 'error'); } finally { updateControls(); }
       return;
     }
     const moduleRunRefs = {};
@@ -150,18 +178,25 @@
       });
       moduleRunRefs[candidateId] = refs;
     });
-    const selection = { source_id: source.source_id, candidate_ids: [...state.selected], selected_modules: modules, module_run_refs: moduleRunRefs, delivery_mode: $('deliveryMode').value, output_type: type, format, audience: $('audience').value, report_run_id: identifier(type), metadata: { title: source.label || '场外衍生品研究报告' } };
+    const deliveryMode = $('deliveryMode').value;
+    const deliveryTitle = deliveryMode === 'comparison'
+      ? (type === 'card' ? 'MultiCard对比卡片' : 'MultiReport对比报告')
+      : (source.label || '场外衍生品研究报告');
+    const selection = { source_id: source.source_id, candidate_ids: [...state.selected], selected_modules: modules, module_run_refs: moduleRunRefs, delivery_mode: deliveryMode, output_type: type, format, audience: $('audience').value, metadata: { title: deliveryTitle } };
+    const attempt = attemptFor(selection);
     $('generateButton').disabled = true; notice('正在整理分析结果并生成报告。');
-    try { const response = await fetch('/api/run', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({selection})}); const data = await response.json(); if (!response.ok || !data.ok) throw new Error(data.message || '报告生成失败'); $('previewPanel').hidden = false; $('previewTitle').textContent = type === 'quote' ? '参考报价预览' : type === 'card' ? '研究简报预览' : '完整研究报告预览'; $('reportPreview').src = data.preview_url; $('downloadLink').href = data.download_url; state.delivery = format === 'html' ? {source:{task_id:source.task_id, report_run_id:selection.report_run_id}, outputType:type} : null; $('convertPdfButton').hidden = !state.delivery; $('childReports').innerHTML = (data.output?.children || []).map(item => `<a href="${esc(item.preview_url)}" target="reportPreview">查看${esc(item.candidate_id)}独立报告</a><a href="${esc(item.download_url)}">下载</a>`).join(''); notice(format === 'html' ? 'HTML已保存。需要PDF时可直接另存，不会重新计算。' : '报告已保存，可以预览或下载。'); } catch (error) { notice(error.message || '报告生成失败。', 'error'); } finally { updateControls(); }
+    try { const response = await fetch('/api/run', {method:'POST',headers:{'Content-Type':'application/json','X-OptionHelper-Request-Id':attempt.requestId},body:JSON.stringify({selection})}); const data = await response.json(); if (!response.ok || !data.ok) throw new Error(data.message || '报告生成失败'); settleAttempt(attempt); $('previewPanel').hidden = false; $('previewTitle').textContent = deliveryMode === 'comparison' ? (type === 'card' ? 'MultiCard对比卡片预览' : 'MultiReport对比报告预览') : type === 'card' ? '研究简报预览' : '完整研究报告预览'; $('reportPreview').src = data.preview_url; $('downloadLink').href = data.download_url; state.delivery = format === 'html' ? {source:{task_id:source.task_id, report_run_id:selection.report_run_id}, outputType:type} : null; $('convertPdfButton').hidden = !state.delivery; $('childReports').innerHTML = (data.output?.children || []).map(item => `<a href="${esc(item.preview_url)}" target="reportPreview">查看${esc(item.candidate_id)}独立报告</a><a href="${esc(item.download_url)}">下载</a>`).join(''); notice(format === 'html' ? 'HTML已保存。需要PDF时可直接另存，不会重新计算。' : '报告已保存，可以预览或下载。'); } catch (error) { notice(error.message || '报告生成失败。', 'error'); } finally { updateControls(); }
   }
   async function convertPdf() {
     if (!state.delivery) return;
     const source = state.delivery.source;
+    const attempt = pendingPdfAttempt(source, state.delivery.outputType);
     $('convertPdfButton').disabled = true; notice('正在基于已保存的报告内容生成PDF，不会重新运行模型或计算模块。');
     try {
-      const response = await fetch('/api/run', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({derive:{source, report_run_id:identifier(`${state.delivery.outputType}-pdf`), format:'pdf'}})});
+      const response = await fetch('/api/run', {method:'POST', headers:{'Content-Type':'application/json','X-OptionHelper-Request-Id':attempt.requestId}, body:JSON.stringify({derive:{source, report_run_id:attempt.reportRunId, format:'pdf'}})});
       const data = await response.json();
       if (!response.ok || !data.ok) throw new Error(data.message || 'PDF转换失败');
+      settlePdfAttempt(attempt);
       $('previewTitle').textContent = 'PDF交付预览'; $('reportPreview').src = data.preview_url; $('downloadLink').href = data.download_url; $('convertPdfButton').hidden = true; state.delivery = null; notice('PDF已另存为新的交付，不影响原HTML。');
     } catch (error) { notice(error.message || 'PDF转换失败。', 'error'); $('convertPdfButton').disabled = false; }
   }

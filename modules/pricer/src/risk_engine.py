@@ -6,7 +6,11 @@ from dataclasses import replace
 from typing import Any, Callable, Mapping
 
 
-PriceOne = Callable[[Any, float], Any]
+PriceOne = Callable[..., Any]
+
+_SURFACE_GREEKS = frozenset({"delta", "gamma", "theta", "vega"})
+_SCENARIO_GREEKS = frozenset({*_SURFACE_GREEKS, "rho"})
+_VEGA_ONLY = frozenset({"vega"})
 
 
 def vanilla_risk_outputs(*, price_one: PriceOne, market: Any, maturity_years: float, reference_price: float, method: str, spot_factor: str = "单标的现价", actual_spot_coordinates: bool = False) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
@@ -18,7 +22,20 @@ def vanilla_risk_outputs(*, price_one: PriceOne, market: Any, maturity_years: fl
     # point between two real exchange sessions.  Keep the base PV intact and
     # expose that point as unavailable instead of asking the path engine to
     # manufacture a weekday observation.
-    grid = [[_risk_price(price_one, local_market, time_value) for local_market in spot_markets] for time_value in time_values]
+    scenario_time_indices = _scenario_time_indices(len(time_values))
+    scenario_spot_indices = {0, 2, 4}
+    grid = [
+        [
+            _risk_price(
+                price_one,
+                local_market,
+                time_value,
+                _SCENARIO_GREEKS if time_index in scenario_time_indices and spot_index in scenario_spot_indices else _SURFACE_GREEKS,
+            )
+            for spot_index, local_market in enumerate(spot_markets)
+        ]
+        for time_index, time_value in enumerate(time_values)
+    ]
     spot_values = [local_market.spot if actual_spot_coordinates else _raw_spot(local_market.spot, reference_price) for local_market in spot_markets]
     time_days = [round(value * 365.0, 6) for value in time_values]
 
@@ -29,7 +46,7 @@ def vanilla_risk_outputs(*, price_one: PriceOne, market: Any, maturity_years: fl
     ]
     vol_shift = (-0.10, -0.05, 0.0, 0.05, 0.10)
     vol_markets = [replace(market, volatility=max(1e-8, market.volatility + shift)) for shift in vol_shift]
-    vol_results = [_risk_price(price_one, local_market, maturity_years) for local_market in vol_markets]
+    vol_results = [_risk_price(price_one, local_market, maturity_years, _VEGA_ONLY) for local_market in vol_markets]
     curves.append(_curve("vega_volatility", "Vega-Volatility", "波动率", "decimal", "Vega", "pv_points_100_per_1pct_volatility", [item.volatility for item in vol_markets], vol_results, "vega", method))
 
     surfaces = [_surface(name, label, unit, spot_values, time_days, grid, greek, method, spot_factor) for name, label, unit, greek in (
@@ -61,7 +78,7 @@ def scenario_values(*, price_one: PriceOne, market: Any, maturity_years: float, 
             local = replace(local, volatility=max(1e-8, local.volatility + float(scenario["volatility_shift"])))
         if "rate_shift" in scenario:
             local = replace(local, risk_free_rate=local.risk_free_rate + float(scenario["rate_shift"]))
-        priced = _risk_price(price_one, local, maturity_years)
+        priced = _risk_price(price_one, local, maturity_years, _SCENARIO_GREEKS)
         result, reason = priced
         rows.append({
             "name": scenario["name"],
@@ -93,9 +110,9 @@ def _raw_spot(normalized_spot: float, reference_price: float) -> float:
     return normalized_spot * reference_price / 100.0
 
 
-def _risk_price(price_one: PriceOne, market: Any, maturity_years: float) -> tuple[Any | None, str | None]:
+def _risk_price(price_one: PriceOne, market: Any, maturity_years: float, risk_greeks: frozenset[str]) -> tuple[Any | None, str | None]:
     try:
-        return price_one(market, maturity_years), None
+        return price_one(market, maturity_years, risk_greeks=risk_greeks), None
     except ValueError as error:
         message = str(error)
         expected_calendar_errors = (
@@ -173,7 +190,7 @@ def _surface(key: str, name: str, z_unit: str, spots: list[float], times: list[f
 
 
 def _spot_time_scenarios(grid: list[list[Any]], shifts: tuple[float, ...], time_days: list[float], spots: list[float], method: str, spot_factor: str) -> list[dict[str, Any]]:
-    time_indices = tuple(sorted({0, len(time_days) // 2, len(time_days) - 1}))
+    time_indices = _scenario_time_indices(len(time_days))
     rows = []
     for time_index in time_indices:
         for spot_index in (0, 2, 4):
@@ -191,6 +208,10 @@ def _spot_time_scenarios(grid: list[list[Any]], shifts: tuple[float, ...], time_
                 "random_source": _random_source((result, reason)),
             })
     return rows
+
+
+def _scenario_time_indices(time_count: int) -> tuple[int, ...]:
+    return tuple(sorted({0, time_count // 2, time_count - 1}))
 
 
 __all__ = ("scenario_values", "vanilla_risk_outputs")

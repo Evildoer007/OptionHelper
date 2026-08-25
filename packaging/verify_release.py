@@ -33,6 +33,9 @@ class ReleaseVerificationError(RuntimeError):
     pass
 
 
+PLATFORMS = ("macos", "windows")
+
+
 def _read_json(path: Path, label: str) -> dict[str, object]:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
@@ -46,6 +49,46 @@ def _read_json(path: Path, label: str) -> dict[str, object]:
 def _require(condition: bool, message: str) -> None:
     if not condition:
         raise ReleaseVerificationError(message)
+
+
+def installer_name(version: str, platform: str) -> str:
+    if platform == "macos":
+        return f"OptionHelper-{version}-macOS-arm64.dmg"
+    if platform == "windows":
+        return f"OptionHelper-{version}-windows-x86_64.zip"
+    raise ReleaseVerificationError(f"不支持的平台：{platform}")
+
+
+def platform_archive_names(version: str, platform: str) -> set[str]:
+    installer = installer_name(version, platform)
+    if platform == "macos":
+        return {
+            installer,
+            f"{installer}.sha256",
+            "app-manifest.json",
+            "platform-release-manifest.json",
+        }
+    return {
+        installer,
+        f"{installer}.sha256",
+        "app-manifest-windows.json",
+        "platform-release-manifest-windows.json",
+    }
+
+
+def archived_platforms(version_root: Path, version: str) -> set[str]:
+    """Return complete platform records and reject a partial formal archive."""
+
+    completed: set[str] = set()
+    for platform in PLATFORMS:
+        names = platform_archive_names(version, platform)
+        present = {name for name in names if (version_root / name).is_file()}
+        if present and present != names:
+            missing = ", ".join(sorted(names - present))
+            raise ReleaseVerificationError(f"正式归档中的{platform}平台记录不完整，缺少：{missing}")
+        if present:
+            completed.add(platform)
+    return completed
 
 
 def _published_capability(manifest: dict[str, object]) -> None:
@@ -180,7 +223,12 @@ def _verify_macos_runtime(dmg: Path) -> None:
                         raise ReleaseVerificationError(f"DMG卸载失败：{detached.stdout}{detached.stderr}{forced.stdout}{forced.stderr}")
 
 
-def _verify_macos_release(version_root: Path, capability: dict[str, object]) -> None:
+def _verify_macos_release(
+    version_root: Path,
+    capability: dict[str, object],
+    *,
+    verify_installed_bundle: bool,
+) -> None:
     dmg = version_root / f"OptionHelper-{RELEASE_VERSION}-macOS-arm64.dmg"
     app_manifest_path = version_root / "app-manifest.json"
     platform_manifest_path = version_root / "platform-release-manifest.json"
@@ -203,6 +251,8 @@ def _verify_macos_release(version_root: Path, capability: dict[str, object]) -> 
         raise ReleaseVerificationError(f"macOS Platform Manifest无效：{error}") from error
     expected_checksum = f"{file_hash(dmg)}  {dmg.name}\n"
     _require(checksum_path.read_text(encoding="utf-8") == expected_checksum, "macOS DMG校验文件不匹配")
+    if not verify_installed_bundle:
+        return
     verify_dmg_install_layout(
         dmg,
         expected_content_tree_hash=str(capability["content_tree_hash"]),
@@ -225,9 +275,34 @@ def _verify_windows_release(version_root: Path, capability: dict[str, object]) -
         app_manifest.get("capability_manifest_hash") == file_hash(version_root / "capability-manifest.json"),
         "Windows App Manifest未绑定正式Capability Manifest",
     )
-    _require(platform_manifest.get("app_manifest_hash") == file_hash(app_manifest_path), "Windows Platform Manifest未绑定App Manifest")
     expected_installer = {"filename": installer.name, "sha256": file_hash(installer), "size": installer.stat().st_size}
-    _require(platform_manifest.get("installer") == expected_installer, "Windows Platform Manifest未绑定安装ZIP")
+    expected_manifest = {
+        "schema": f"optionhelper.platform-release-manifest/{RELEASE_VERSION}",
+        "app_version": RELEASE_VERSION,
+        "platform": "windows",
+        "architecture": "x86_64",
+        "installer": expected_installer,
+        "app_manifest_hash": file_hash(app_manifest_path),
+        "capability_version": app_manifest.get("capability_version"),
+        "catalog_version": app_manifest.get("catalog_version"),
+        "capability_manifest_hash": app_manifest.get("capability_manifest_hash"),
+        "capability_content_tree_hash": app_manifest.get("capability_content_tree_hash"),
+        "protocol_id": app_manifest.get("protocol_id"),
+        "design_system_id": app_manifest.get("design_system_id"),
+        "signing_identity": "unsigned",
+        "signature_status": "unsigned_local_candidate",
+        "notarized": False,
+        "release_status": "local_candidate",
+        "application_icon": app_manifest.get("application_icon"),
+    }
+    mismatches = [
+        field for field, expected in expected_manifest.items()
+        if platform_manifest.get(field) != expected
+    ]
+    _require(
+        not mismatches,
+        "Windows Platform Manifest字段无效：" + ", ".join(mismatches),
+    )
     _require(checksum_path.read_text(encoding="utf-8") == f"{file_hash(installer)}  {installer.name}\n", "Windows安装ZIP校验文件不匹配")
     with tempfile.TemporaryDirectory(prefix="optionhelper-release-windows-") as temporary_name:
         with zipfile.ZipFile(installer) as package:
@@ -247,12 +322,8 @@ def _verify_windows_release(version_root: Path, capability: dict[str, object]) -
 def _verify_delivery_copy(version_root: Path, platform: str, delivery_root: Path | None) -> None:
     if delivery_root is None:
         return
-    installer_name = (
-        f"OptionHelper-{RELEASE_VERSION}-macOS-arm64.dmg"
-        if platform == "macos"
-        else f"OptionHelper-{RELEASE_VERSION}-windows-x86_64.zip"
-    )
-    expected = {"option-helper.zip", installer_name}
+    installer = installer_name(RELEASE_VERSION, platform)
+    expected = {"option-helper.zip", installer}
     _require(delivery_root.is_dir(), f"当前交付目录不存在：{delivery_root}")
     actual = {path.name for path in delivery_root.iterdir()}
     _require(actual == expected, "当前交付目录只能包含当次Skill ZIP和安装物")
@@ -263,6 +334,64 @@ def _verify_delivery_copy(version_root: Path, platform: str, delivery_root: Path
         )
 
 
+def verify_release_core(
+    *,
+    version: str = RELEASE_VERSION,
+    versions_root: Path = ROOT / "versions",
+) -> tuple[Path, dict[str, object]]:
+    """Validate the immutable Catalog and Capability without a platform runtime.
+
+    A Windows installer can be appended on Windows after macOS has signed the
+    shared Capability, and vice versa.  The common archive must be checked in
+    either case, but the other platform's native runtime verifier is not a
+    portable prerequisite for that append-only transaction.
+    """
+
+    try:
+        require_release_version(version)
+    except ValueError as error:
+        raise ReleaseVerificationError(str(error)) from error
+    resolved_versions = versions_root.expanduser().resolve()
+    version_root = resolved_versions / version
+    _require(version_root.is_dir(), f"版本归档不存在：{version_root}")
+    capability = _verify_skill_archive(version_root)
+    _verify_catalog(version_root, resolved_versions)
+    return version_root, capability
+
+
+def verify_formal_archive(
+    *,
+    version: str = RELEASE_VERSION,
+    versions_root: Path = ROOT / "versions",
+    native_platform: str | None = None,
+) -> tuple[Path, dict[str, object], set[str]]:
+    """Verify every completed installer in one immutable formal archive.
+
+    This is the precondition for appending another platform: common Skill and
+    Catalog records alone do not establish that the first installer, its
+    manifests and checksum still agree.  Native bundle checks are performed
+    only for the platform being built or explicitly requested: an archive can
+    therefore be safely supplemented on the other operating system without
+    pretending its native verification is portable.
+    """
+
+    if native_platform is not None and native_platform not in PLATFORMS:
+        raise ReleaseVerificationError(f"不支持的平台：{native_platform}")
+    version_root, capability = verify_release_core(version=version, versions_root=versions_root)
+    completed = archived_platforms(version_root, version)
+    _require(completed, "正式归档缺少任何完整平台记录，不能追加安装物")
+    for platform in sorted(completed):
+        if platform == "macos":
+            _verify_macos_release(
+                version_root,
+                capability,
+                verify_installed_bundle=native_platform == "macos",
+            )
+        else:
+            _verify_windows_release(version_root, capability)
+    return version_root, capability, completed
+
+
 def verify_release(
     *,
     version: str = RELEASE_VERSION,
@@ -271,30 +400,19 @@ def verify_release(
     delivery_root: Path | None = None,
 ) -> dict[str, Path]:
     """Verify a release without comparing it to the mutable development tree."""
-    try:
-        require_release_version(version)
-    except ValueError as error:
-        raise ReleaseVerificationError(str(error)) from error
-    if platform not in {"macos", "windows"}:
+    if platform not in PLATFORMS:
         raise ReleaseVerificationError(f"不支持的平台：{platform}")
-    versions_root = versions_root.expanduser().resolve()
-    version_root = versions_root / version
-    _require(version_root.is_dir(), f"版本归档不存在：{version_root}")
-    capability = _verify_skill_archive(version_root)
-    _verify_catalog(version_root, versions_root)
-    if platform == "macos":
-        _verify_macos_release(version_root, capability)
-    else:
-        _verify_windows_release(version_root, capability)
+    version_root, _capability, completed = verify_formal_archive(
+        version=version,
+        versions_root=versions_root,
+        native_platform=platform,
+    )
+    _require(platform in completed, f"版本归档缺少{platform}完整平台记录")
     _verify_delivery_copy(version_root, platform, delivery_root)
     return {
         "archive": version_root,
         "skill_zip": version_root / "option-helper.zip",
-        "installer": version_root / (
-            f"OptionHelper-{RELEASE_VERSION}-macOS-arm64.dmg"
-            if platform == "macos"
-            else f"OptionHelper-{RELEASE_VERSION}-windows-x86_64.zip"
-        ),
+        "installer": version_root / installer_name(version, platform),
     }
 
 

@@ -206,10 +206,16 @@ def candidate_path(
         return _variance_path(contract, value)
     if axis == "n_in":
         return _range_count_path(contract, int(round(value)))
-    points = _observation_count(contract)
+    frozen_grid = _candidate_frozen_grid(contract, terminal_period_end=template.terminal_period_end)
+    points = len(frozen_grid[0]) if frozen_grid is not None else _observation_count(contract)
     normalized_reference = _normalized_reference(contract)
     target = _terminal_normalized(contract, axis, value, normalized_reference)
-    fractions = np.linspace(0.0, 1.0, points)
+    times = (
+        frozen_grid[1]
+        if frozen_grid is not None
+        else np.linspace(0.0, float(contract.terms["T"]), points)
+    )
+    fractions = times / float(contract.terms["T"])
     # 收益图横轴只改变终值。候选历史的非终值观察点必须固定，否则改变S_T时会
     # 连带改变tau、累计量和派息次数，把不同路径状态伪装成一条单变量损益曲线。
     # 各模板在其最后一个路标后保持该水平，最后一个观察点才设为横轴终值。
@@ -227,10 +233,14 @@ def candidate_path(
     raw_reference = _raw_reference(contract)
     normalized = _normalized_reference(contract)
     raw_values = values / normalized[None, :] * raw_reference[None, :]
-    dates = _display_dates(contract, points, terminal_period_end=template.terminal_period_end)
+    dates = (
+        frozen_grid[0]
+        if frozen_grid is not None
+        else _display_dates(contract, points, terminal_period_end=template.terminal_period_end)
+    )
     return PricePath.from_values(
         raw_values,
-        times=np.linspace(0.0, float(contract.terms["T"]), points),
+        times=times,
         asset_ids=contract.underlyings,
         dates=dates,
     )
@@ -414,6 +424,122 @@ def _observation_count(contract: ResolvedContract) -> int:
     return max(25, int(contract.terms.get("n_obs", 0)), int(np.ceil(float(contract.terms.get("T", 1.0)) * 252)) + 1)
 
 
+def _candidate_frozen_grid(
+    contract: ResolvedContract,
+    *,
+    terminal_period_end: bool = False,
+) -> tuple[pd.DatetimeIndex, np.ndarray] | None:
+    """返回以真实日期锚定的候选路径日期与合同时间网格。
+
+    冻结观察日只描述可观察的期点，不能本身冒充完整价格路径。候选路径须额外
+    保留合同起点和结算终点，再由真实日历间隔映射到合同期限。这样月度第4期不会
+    被错误压缩成11个观察点中的第4个，日度累购也不会把超过``n_obs``的本地预览
+    日历误认为合同观察期。
+    """
+    snapshots = tuple(contract.resolved_schedules.values())
+    if not snapshots:
+        return None
+    try:
+        schedule_dates = tuple(
+            pd.Timestamp(item).normalize()
+            for snapshot in snapshots
+            for item in snapshot["dates"]
+        )
+    except (KeyError, TypeError, ValueError) as error:
+        raise DomainCompileError("ResolvedContract冻结观察日无效") from error
+    if not schedule_dates:
+        raise DomainCompileError("ResolvedContract冻结观察日为空")
+    observed_dates = pd.DatetimeIndex(sorted(set(schedule_dates)))
+    first_date = observed_dates[0]
+    contract_start = contract.identity.get("contract_start_date")
+    contract_end = contract.identity.get("contract_end_date")
+    try:
+        daily_snapshots = tuple(snapshot for snapshot in snapshots if snapshot.get("selector") == "daily")
+        monthly_snapshots = tuple(
+            snapshot
+            for snapshot in snapshots
+            if isinstance(snapshot.get("selector"), str)
+            and (
+                str(snapshot["selector"]) == "monthly_last"
+                or str(snapshot["selector"]).startswith("monthly_")
+            )
+        )
+        lower = pd.Timestamp(contract_start).normalize() if contract_start else _derived_contract_start(first_date, monthly_snapshots)
+        upper = pd.Timestamp(contract_end).normalize() if contract_end else _derived_contract_end(
+            contract, lower, daily_snapshots, monthly_snapshots,
+            terminal_period_end=terminal_period_end,
+        )
+    except (TypeError, ValueError, KeyError) as error:
+        raise DomainCompileError("ResolvedContract合同期限无法确定候选观察日") from error
+    if upper <= lower:
+        raise DomainCompileError("ResolvedContract合同起止日必须严格递增")
+    dates = pd.DatetimeIndex(sorted({lower, *(item for item in observed_dates if lower <= item <= upper), upper}))
+    if daily_snapshots and "n_obs" in contract.terms:
+        daily_dates = {
+            pd.Timestamp(item).normalize()
+            for snapshot in daily_snapshots
+            for item in snapshot["dates"]
+            if lower <= pd.Timestamp(item).normalize() <= upper
+        }
+        max_observations = int(contract.terms["n_obs"])
+        if len(daily_dates) > max_observations:
+            raise DomainCompileError("ResolvedContract日度冻结观察日超过n_obs，无法生成候选收益路径")
+    if len(dates) < 2:
+        raise DomainCompileError("ResolvedContract合同期限内冻结观察日不足两个")
+    elapsed_days = float((dates[-1] - dates[0]).days)
+    if elapsed_days <= 0.0:
+        raise DomainCompileError("ResolvedContract候选路径日期间隔必须为正")
+    times = (dates - dates[0]).days.to_numpy(dtype=float) / elapsed_days * float(contract.terms["T"])
+    return dates, times
+
+
+def _derived_contract_start(first_observation: pd.Timestamp, monthly_snapshots: Sequence[Mapping[str, Any]]) -> pd.Timestamp:
+    """开发预览缺少Host身份日期时，从冻结日程得到一个不与首期观察重合的起点。"""
+    if monthly_snapshots:
+        return first_observation.to_period("M").start_time.normalize()
+    return first_observation - pd.Timedelta(days=1)
+
+
+def _derived_contract_end(
+    contract: ResolvedContract,
+    lower: pd.Timestamp,
+    daily_snapshots: Sequence[Mapping[str, Any]],
+    monthly_snapshots: Sequence[Mapping[str, Any]],
+    *,
+    terminal_period_end: bool,
+) -> pd.Timestamp:
+    """开发预览用合同登记的观察数量确定必要结算终点。"""
+    if daily_snapshots and "n_obs" in contract.terms:
+        observation_count = int(contract.terms["n_obs"])
+        try:
+            return pd.Timestamp(daily_snapshots[0]["dates"][observation_count - 1]).normalize()
+        except (IndexError, KeyError, TypeError, ValueError) as error:
+            raise ValueError("冻结日度观察日不足n_obs") from error
+    tenure = float(contract.terms["T"])
+    if monthly_snapshots:
+        monthly_count = int(round(tenure * 12.0))
+        if monthly_count <= 0 or not np.isclose(tenure * 12.0, monthly_count, rtol=0.0, atol=1e-12):
+            raise ValueError("月度观察合同T必须对应完整月数")
+        try:
+            final_observation = max(
+                pd.Timestamp(snapshot["dates"][monthly_count - 1]).normalize()
+                for snapshot in monthly_snapshots
+            )
+            # 独立开发预览没有Host冻结的实际到期日。普通候选必须把结算终点
+            # 放在最后一个月度观察日之后，否则所有终值都会被误当作当月敲出；
+            # 只有明确要求“到期日恰为月末”的候选，才让该观察日同时作为终点。
+            # 结算点还须与最后观察日拉开Core的到期容差，否则相邻交易日仍会
+            # 被``terminal_event_time``视为实际到期观察。11个工作日覆盖该
+            # 容差，且仍落在本地预览冻结日历内。
+            return final_observation if terminal_period_end else final_observation + pd.offsets.BDay(11)
+        except (IndexError, KeyError, TypeError, ValueError) as error:
+            raise ValueError("冻结月度观察日不足合同期限") from error
+    tenor_days = int(round(tenure * 365.25))
+    if tenor_days <= 0:
+        raise ValueError("T必须为正")
+    return lower + pd.Timedelta(days=tenor_days)
+
+
 def _display_dates(contract: ResolvedContract, points: int, *, terminal_period_end: bool = False) -> pd.DatetimeIndex | None:
     """仅为收益图候选路径构造可复核的交易日序列。
 
@@ -433,13 +559,20 @@ def _display_dates(contract: ResolvedContract, points: int, *, terminal_period_e
 
 
 def _variance_path(contract: ResolvedContract, sigma: float) -> PricePath:
-    points = max(25, int(contract.terms.get("n_obs", 0)) + 1)
+    frozen_grid = _candidate_frozen_grid(contract)
+    if frozen_grid is None:
+        points = max(25, int(contract.terms.get("n_obs", 0)) + 1)
+        dates = None
+        times = np.linspace(0.0, float(contract.terms["T"]), points)
+    else:
+        dates, times = frozen_grid
+        points = len(dates)
     annual_days = float(contract.terms.get("annualization_days", 244))
     target_log = max(0.0, sigma) / 100.0 / max(annual_days, 1.0) ** 0.5
     returns = np.resize(np.asarray([target_log, -target_log], dtype=float), points - 1)
     raw_reference = _raw_reference(contract)[0]
     values = raw_reference * np.exp(np.concatenate(([0.0], np.cumsum(returns))))
-    return PricePath.from_values(values, times=np.linspace(0.0, float(contract.terms["T"]), points), asset_ids=contract.underlyings)
+    return PricePath.from_values(values, times=times, asset_ids=contract.underlyings, dates=dates)
 
 
 def _range_count_path(contract: ResolvedContract, target_count: int) -> PricePath:
@@ -450,10 +583,26 @@ def _range_count_path(contract: ResolvedContract, target_count: int) -> PricePat
     outside = upper * 1.08
     normalized_reference = _normalized_reference(contract)[0]
     raw_reference = _raw_reference(contract)[0]
-    values = np.full(observations, outside / normalized_reference * raw_reference, dtype=float)
+    frozen_grid = _candidate_frozen_grid(contract)
+    if frozen_grid is None:
+        dates = None
+        times = np.linspace(0.0, float(contract.terms["T"]), observations)
+        observation_indices = np.arange(observations)
+    else:
+        dates, times = frozen_grid
+        frozen_observations = {
+            pd.Timestamp(item).normalize()
+            for snapshot in contract.resolved_schedules.values()
+            for item in snapshot["dates"]
+        }
+        observation_indices = np.asarray(
+            [index for index, date in enumerate(dates) if date in frozen_observations],
+            dtype=int,
+        )
+    values = np.full(len(times), outside / normalized_reference * raw_reference, dtype=float)
     if count:
-        values[:count] = inside / normalized_reference * raw_reference
-    return PricePath.from_values(values, times=np.linspace(0.0, float(contract.terms["T"]), observations), asset_ids=contract.underlyings)
+        values[observation_indices[:count]] = inside / normalized_reference * raw_reference
+    return PricePath.from_values(values, times=times, asset_ids=contract.underlyings, dates=dates)
 
 
 def term_variables(contract: ResolvedContract, catalog: Mapping[str, Any]) -> dict[str, Any]:

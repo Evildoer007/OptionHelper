@@ -154,6 +154,7 @@ def calculate_standard_greeks(
     basis: ResultBasis,
     price_market: PriceMarket,
     theta_roll: Callable[[StandardGreekConvention], ThetaRollValue],
+    requested_greeks: tuple[str, ...] | None = None,
 ) -> tuple[dict[str, GreekValue], dict[str, GreekValue], dict[str, object]]:
     """Calculate core and extended Greeks using common bump definitions.
 
@@ -161,6 +162,14 @@ def calculate_standard_greeks(
     every call.  That invariant gives structured products common-random-number
     finite differences instead of differences between unrelated simulations.
     """
+
+    allowed_greeks = frozenset({"delta", "gamma", "theta", "vega", "rho", "vanna", "volga"})
+    selected_greeks = allowed_greeks if requested_greeks is None else frozenset(requested_greeks)
+    unknown_greeks = selected_greeks - allowed_greeks
+    if unknown_greeks:
+        raise ValueError("requested_greeks包含未知Greek：" + ", ".join(sorted(unknown_greeks)))
+    if not selected_greeks:
+        raise ValueError("requested_greeks不能为空")
 
     convention = StandardGreekConvention.from_valuation_config(config)
     base = _require_finite("base_price_points_100", base_price_points_100)
@@ -173,94 +182,68 @@ def calculate_standard_greeks(
         raise ValueError("STANDARD Greek要求volatility大于0")
     rate_bump = convention.risk_free_rate_absolute_bump
 
-    spot_up = _require_finite(
-        "spot_up_price", price_market(replace(market, spot=market.spot + spot_bump))
-    )
-    spot_down = _require_finite(
-        "spot_down_price", price_market(replace(market, spot=market.spot - spot_bump))
-    )
-    volatility_up = _require_finite(
-        "volatility_up_price",
-        price_market(replace(market, volatility=market.volatility + volatility_bump)),
-    )
-    volatility_down = _require_finite(
-        "volatility_down_price",
-        price_market(replace(market, volatility=market.volatility - volatility_bump)),
-    )
-    rate_up = _require_finite(
-        "rate_up_price",
-        price_market(replace(market, risk_free_rate=market.risk_free_rate + rate_bump)),
-    )
-    rate_down = _require_finite(
-        "rate_down_price",
-        price_market(replace(market, risk_free_rate=market.risk_free_rate - rate_bump)),
-    )
-    rolled = theta_roll(convention)
-    if rolled.calendar_day_shift <= 0:
-        raise ValueError("Theta自然日推进必须为正数")
+    spot_up = spot_down = None
+    if selected_greeks & {"delta", "gamma", "vanna"}:
+        spot_up = _require_finite(
+            "spot_up_price", price_market(replace(market, spot=market.spot + spot_bump))
+        )
+        spot_down = _require_finite(
+            "spot_down_price", price_market(replace(market, spot=market.spot - spot_bump))
+        )
 
-    delta = (spot_up - spot_down) / (2.0 * spot_bump)
-    gamma = (spot_up - 2.0 * base + spot_down) / (spot_bump * spot_bump)
-    theta = (rolled.price_points_100 - base) / rolled.calendar_day_shift
-    vega = (
-        (volatility_up - volatility_down)
-        / (2.0 * volatility_bump)
-        * 0.01
-    )
-    rho = (rate_up - rate_down) / (2.0 * rate_bump) * 0.01
-    volga = (
-        (volatility_up - 2.0 * base + volatility_down)
-        / (volatility_bump * volatility_bump)
-        * 0.01 * 0.01
-    )
+    volatility_up = volatility_down = None
+    if selected_greeks & {"vega", "volga", "vanna"}:
+        volatility_up = _require_finite(
+            "volatility_up_price",
+            price_market(replace(market, volatility=market.volatility + volatility_bump)),
+        )
+        volatility_down = _require_finite(
+            "volatility_down_price",
+            price_market(replace(market, volatility=market.volatility - volatility_bump)),
+        )
 
-    cross_up_up = _require_finite(
-        "vanna_spot_up_volatility_up_price",
-        price_market(
-            replace(
-                market,
-                spot=market.spot + spot_bump,
-                volatility=market.volatility + volatility_bump,
-            )
-        ),
-    )
-    cross_up_down = _require_finite(
-        "vanna_spot_up_volatility_down_price",
-        price_market(
-            replace(
-                market,
-                spot=market.spot + spot_bump,
-                volatility=market.volatility - volatility_bump,
-            )
-        ),
-    )
-    cross_down_up = _require_finite(
-        "vanna_spot_down_volatility_up_price",
-        price_market(
-            replace(
-                market,
-                spot=market.spot - spot_bump,
-                volatility=market.volatility + volatility_bump,
-            )
-        ),
-    )
-    cross_down_down = _require_finite(
-        "vanna_spot_down_volatility_down_price",
-        price_market(
-            replace(
-                market,
-                spot=market.spot - spot_bump,
-                volatility=market.volatility - volatility_bump,
-            )
-        ),
-    )
-    vanna = (
-        cross_up_up - cross_up_down - cross_down_up + cross_down_down
-    ) / (4.0 * spot_bump * volatility_bump) * 0.01
+    rate_up = rate_down = None
+    if "rho" in selected_greeks:
+        rate_up = _require_finite(
+            "rate_up_price",
+            price_market(replace(market, risk_free_rate=market.risk_free_rate + rate_bump)),
+        )
+        rate_down = _require_finite(
+            "rate_down_price",
+            price_market(replace(market, risk_free_rate=market.risk_free_rate - rate_bump)),
+        )
 
-    core = {
-        "delta": make_risk_value(
-            delta,
+    rolled = None
+    if "theta" in selected_greeks:
+        rolled = theta_roll(convention)
+        if rolled.calendar_day_shift <= 0:
+            raise ValueError("Theta自然日推进必须为正数")
+
+    cross_values = None
+    if "vanna" in selected_greeks:
+        cross_values = (
+            _require_finite(
+                "vanna_spot_up_volatility_up_price",
+                price_market(replace(market, spot=market.spot + spot_bump, volatility=market.volatility + volatility_bump)),
+            ),
+            _require_finite(
+                "vanna_spot_up_volatility_down_price",
+                price_market(replace(market, spot=market.spot + spot_bump, volatility=market.volatility - volatility_bump)),
+            ),
+            _require_finite(
+                "vanna_spot_down_volatility_up_price",
+                price_market(replace(market, spot=market.spot - spot_bump, volatility=market.volatility + volatility_bump)),
+            ),
+            _require_finite(
+                "vanna_spot_down_volatility_down_price",
+                price_market(replace(market, spot=market.spot - spot_bump, volatility=market.volatility - volatility_bump)),
+            ),
+        )
+
+    core: dict[str, GreekValue] = {}
+    if "delta" in selected_greeks:
+        core["delta"] = make_risk_value(
+            (spot_up - spot_down) / (2.0 * spot_bump),
             unit="pv_points_100_per_spot",
             bump=spot_bump,
             difference="central",
@@ -269,9 +252,10 @@ def calculate_standard_greeks(
                 "spot_absolute_bump": spot_bump,
                 "spot_relative_bump": convention.spot_relative_bump,
             },
-        ),
-        "gamma": make_risk_value(
-            gamma,
+        )
+    if "gamma" in selected_greeks:
+        core["gamma"] = make_risk_value(
+            (spot_up - 2.0 * base + spot_down) / (spot_bump * spot_bump),
             unit="pv_points_100_per_spot_squared",
             bump=spot_bump,
             difference="central",
@@ -280,9 +264,10 @@ def calculate_standard_greeks(
                 "spot_absolute_bump": spot_bump,
                 "spot_relative_bump": convention.spot_relative_bump,
             },
-        ),
-        "theta": make_risk_value(
-            theta,
+        )
+    if "theta" in selected_greeks:
+        core["theta"] = make_risk_value(
+            (rolled.price_points_100 - base) / rolled.calendar_day_shift,
             unit="pv_points_100_per_calendar_day",
             bump=float(rolled.calendar_day_shift),
             difference="forward_roll",
@@ -292,9 +277,10 @@ def calculate_standard_greeks(
                 "calendar_day_shift": rolled.calendar_day_shift,
                 "trading_day_shift": rolled.trading_day_shift,
             },
-        ),
-        "vega": make_risk_value(
-            vega,
+        )
+    if "vega" in selected_greeks:
+        core["vega"] = make_risk_value(
+            (volatility_up - volatility_down) / (2.0 * volatility_bump) * 0.01,
             unit="pv_points_100_per_1pct_volatility",
             bump=volatility_bump,
             difference="central",
@@ -303,9 +289,10 @@ def calculate_standard_greeks(
                 "volatility_absolute_bump": volatility_bump,
                 "reported_volatility_change": 0.01,
             },
-        ),
-        "rho": make_risk_value(
-            rho,
+        )
+    if "rho" in selected_greeks:
+        core["rho"] = make_risk_value(
+            (rate_up - rate_down) / (2.0 * rate_bump) * 0.01,
             unit="pv_points_100_per_1pct_rate",
             bump=rate_bump,
             difference="central",
@@ -314,11 +301,14 @@ def calculate_standard_greeks(
                 "risk_free_rate_absolute_bump": rate_bump,
                 "reported_rate_change": 0.01,
             },
-        ),
-    }
-    extended = {
-        "volga": make_risk_value(
-            volga,
+        )
+
+    extended: dict[str, GreekValue] = {}
+    if "volga" in selected_greeks:
+        extended["volga"] = make_risk_value(
+            (volatility_up - 2.0 * base + volatility_down)
+            / (volatility_bump * volatility_bump)
+            * 0.01 * 0.01,
             unit="pv_points_100_per_1pct_volatility_squared",
             bump=volatility_bump,
             difference="central_second_order",
@@ -327,9 +317,12 @@ def calculate_standard_greeks(
                 "volatility_absolute_bump": volatility_bump,
                 "reported_volatility_change": 0.01,
             },
-        ),
-        "vanna": make_risk_value(
-            vanna,
+        )
+    if "vanna" in selected_greeks:
+        cross_up_up, cross_up_down, cross_down_up, cross_down_down = cross_values
+        extended["vanna"] = make_risk_value(
+            (cross_up_up - cross_up_down - cross_down_up + cross_down_down)
+            / (4.0 * spot_bump * volatility_bump) * 0.01,
             unit="pv_points_100_per_spot_per_1pct_volatility",
             bump=spot_bump,
             difference="central_cross",
@@ -340,14 +333,13 @@ def calculate_standard_greeks(
                 "volatility_absolute_bump": volatility_bump,
                 "reported_volatility_change": 0.01,
             },
-        ),
-    }
+        )
     diagnostics = {
         "convention": convention.as_dict(),
         "effective_spot_absolute_bump": spot_bump,
         "effective_volatility_absolute_bump": volatility_bump,
         "effective_risk_free_rate_absolute_bump": rate_bump,
-        "theta_roll": {
+        "theta_roll": None if rolled is None else {
             "calendar_day_shift": rolled.calendar_day_shift,
             "trading_day_shift": rolled.trading_day_shift,
             "description": rolled.description,

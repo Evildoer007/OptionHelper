@@ -207,8 +207,13 @@ def _display_module(name: str, raw: Mapping[str, Any], *, artifact_paths: Mappin
         },
     }
     status = value["status"]
-    if status in {"cancelled", "timed_out"}:
+    terminal_note = None
+    if status == "cancelled":
         value["status"] = "failed"
+        terminal_note = "该项分析已取消，未形成可用结果。"
+    elif status == "timed_out":
+        value["status"] = "failed"
+        terminal_note = "该项分析已超时，未形成可用结果。"
     elif status not in _DISPLAY_STATUS:
         # 冻结ReportUnit保留原始状态供受控清单追溯；公开Designer投影只使用
         # 已发布的展示状态和自然语言说明，不携带内部状态枚举。
@@ -219,6 +224,11 @@ def _display_module(name: str, raw: Mapping[str, Any], *, artifact_paths: Mappin
     note = _public_text(source.get("note"))
     if note:
         value["note"] = note
+    elif terminal_note:
+        # Terminal module states are not equivalent to an analysis that was
+        # never requested.  Preserve the truthful reader-facing distinction
+        # even when the upstream runtime did not supply a public note.
+        value["note"] = terminal_note
     artifacts = source.get("artifacts", [])
     value["charts"] = public_chart_specs(value.get("charts"))
     if value.get("status") == "ready":
@@ -475,6 +485,11 @@ def build_designer_payload(
         "as_of_date": _report_as_of_date(request, content),
     }
     recommendation = _public_recommendation(content.get("recommendation"))
+    candidate = unit.get("candidate") if isinstance(unit.get("candidate"), Mapping) else {}
+    if not _public_text(recommendation.get("reason")):
+        frozen_reason = _public_text(candidate.get("reason"))
+        if frozen_reason:
+            recommendation["reason"] = frozen_reason
     public_limitations = _public_unit_limitations(unit)
     payload = {
         "schema": DESIGNER_PAYLOAD_SCHEMA,
@@ -508,8 +523,6 @@ def build_designer_payload(
         ]
         if reason_points:
             payload["recommendation"]["reason_points"] = list(dict.fromkeys(reason_points))[:3]
-        else:
-            payload["recommendation"]["reason_points"] = ["本次冻结推荐结果没有可公开的市场观点与结构适配依据。"]
         risk = payload["risk"] if isinstance(payload["risk"], Mapping) else {}
         payload["risk"] = {
             **dict(risk),
@@ -557,7 +570,17 @@ def _comparison_tags(unit: Mapping[str, Any], candidate: Mapping[str, Any]) -> l
     return tags
 
 
-def build_collection_payload(units: list[Mapping[str, Any]], request: ReportRequest) -> dict[str, Any]:
+def _frozen_candidate_rank(unit: Mapping[str, Any]) -> int:
+    candidate = unit.get("candidate") if isinstance(unit.get("candidate"), Mapping) else {}
+    return int(candidate["rank"]) if isinstance(candidate.get("rank"), int) else 10_000
+
+
+def build_collection_payload(
+    units: list[Mapping[str, Any]],
+    request: ReportRequest,
+    *,
+    artifact_paths: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
     """组合/批量索引/比较的同页Designer内容。
 
     这不是Reporter自制页面：候选比较作为Designer的结构推荐内容渲染。
@@ -569,6 +592,34 @@ def build_collection_payload(units: list[Mapping[str, Any]], request: ReportRequ
             "schema": DESIGNER_PAYLOAD_SCHEMA,
             "meta": {"title": "推荐结构及参考报价", "as_of_date": str(request.metadata.get("as_of_date", ""))},
             "reference_quote": _quote_from_units(units, request),
+        }
+    if request.delivery_mode == "comparison":
+        ordered = sorted(units, key=_frozen_candidate_rank)
+        candidates: list[dict[str, Any]] = []
+        for index, unit in enumerate(ordered):
+            candidate = unit.get("candidate") if isinstance(unit.get("candidate"), Mapping) else {}
+            subject = unit.get("subject") if isinstance(unit.get("subject"), Mapping) else {}
+            rank = candidate.get("rank") if isinstance(candidate.get("rank"), int) else index + 1
+            underlyings = _public_strings(candidate.get("underlyings", subject.get("underlyings", [])))
+            candidates.append({
+                "label": f"方案{chr(65 + index)}" if index < 26 else f"方案{index + 1}",
+                "rank": rank,
+                "is_primary": candidate.get("is_primary") is True,
+                "title": _public_text(candidate.get("product_name") or subject.get("product_name"), f"候选{index + 1}"),
+                "underlyings": "、".join(underlyings),
+                "facts": build_designer_payload(unit, request, artifact_paths=artifact_paths),
+            })
+        return {
+            "schema": DESIGNER_PAYLOAD_SCHEMA,
+            "meta": {
+                "title": _public_text(
+                    request.metadata.get("title"),
+                    "MultiCard对比卡片" if request.output_type == "card" else "MultiReport对比报告",
+                ),
+                "as_of_date": str(request.metadata.get("as_of_date", "")),
+            },
+            "sections": list(CARD_SECTION_ORDER) if request.output_type == "card" else list(REPORT_SECTION_ORDER),
+            "comparison": {"delivery_mode": "comparison", "candidates": candidates},
         }
     alternatives: list[dict[str, Any]] = []
     risk_items: list[str] = []
@@ -584,7 +635,7 @@ def build_collection_payload(units: list[Mapping[str, Any]], request: ReportRequ
         })
         risk_items.extend(item for item in (content.get("risk", {}) or {}).get("items", []) if isinstance(item, str))
     is_card = request.output_type == "card"
-    is_comparison = request.delivery_mode == "comparison"
+    is_comparison = False
     next_report_note = (
         "该比较页不以任一候选的图替代其他候选；完整结果需另行生成对应单结构报告。"
         if is_comparison
@@ -659,7 +710,11 @@ def render_with_designer(
         "asset_mode": "portable",
         "input_dir": str(output_dir),
     }
-    template_id = str(request.metadata.get("template_id", "")).strip()
+    template_id = (
+        "multicard-standard" if request.delivery_mode == "comparison" and request.output_type == "card"
+        else "multireport-standard" if request.delivery_mode == "comparison" and request.output_type == "report"
+        else str(request.metadata.get("template_id", "")).strip()
+    )
     if template_id:
         tool_request["template_id"] = template_id
     try:

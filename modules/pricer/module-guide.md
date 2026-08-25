@@ -2,7 +2,7 @@
 
 ## 职责
 
-基于`ResolvedContract`、`PricingConfig`、受控市场资产和必要的`ObservedContractState`估值，返回PV、公平条款、Greeks、情景、概率、风险分析、误差和限制。
+基于`ResolvedContract`、`PricingConfig`、受控市场资产和必要的`ObservedContractState`估值，返回PV、公平条款、Greeks、情景、风险分析、误差和限制。历史敲入、敲出、票息触发和存续时间统计由Backtester负责。
 
 ## 实施基座
 

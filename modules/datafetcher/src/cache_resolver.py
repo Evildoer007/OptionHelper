@@ -191,7 +191,7 @@ class LocalCache:
             if (
                 not isinstance(expected_hash, str)
                 or actual_hash != expected_hash
-                or (reference is not None and (not isinstance(reference, Mapping) or reference.get("content_hash") != expected_hash))
+                or (reference is not None and not isinstance(reference, Mapping))
             ):
                 return self._miss(provider, identity, request)
             missing: dict[str, tuple[tuple[str, str], ...]] = {}

@@ -63,8 +63,11 @@ class ToolIdempotencyStore:
                 return "new", None
             if row[0] != input_hash:
                 raise ValidationError("同一幂等键不能对应不同租户、任务、模块、动作或输入")
-            if operation_id is not None and row[3] not in {None, operation_id}:
-                raise ValidationError("同一幂等键不能对应不同operation_id")
+            # ``operation_id`` and ``job_id`` identify the first physical
+            # dispatch attempt.  A repeated logical request may have a new
+            # request_id and therefore a different attempt identity; it must
+            # observe the existing claim rather than be rejected before the
+            # state machine can return busy, uncertain, or the saved result.
             if row[1] == "uncertain":
                 connection.commit()
                 return "uncertain", None

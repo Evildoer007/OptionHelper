@@ -82,6 +82,7 @@ class ConversationService:
                     message_id=request_state.get("assistant_message_id"),
                     created_at=request_state.get("assistant_message_created_at") or request_state.get("recovery_required_at"),
                 )
+                self._emit_process_event(identity, task_id, request_id, "terminal", "failed", "本次请求已中断，等待你重新发起。")
                 return {**response, "message": recorded, "assistant_message": assistant}
             if request_state and request_state.get("status") == "model_settled":
                 raw_response = request_state.get("model_response")
@@ -104,6 +105,7 @@ class ConversationService:
                 )
                 if settled is not None:
                     request_state = settled
+            self._emit_process_event(identity, task_id, request_id, "answer", "completed", "正在整理并写入本轮答复。")
             assistant = None
             assistant_text = response.get("text")
             if isinstance(assistant_text, str) and assistant_text.strip():
@@ -122,6 +124,13 @@ class ConversationService:
             self._task_service.complete_conversation_request(
                 identity, task_id, request_id, replay_key, completed,
             )
+            terminal_status = "cancelled" if response.get("status") == "cancelled" else (
+                "failed" if response.get("status") in {"unavailable", "timed_out", "blocked"} else "completed"
+            )
+            terminal_summary = "本次处理已取消。" if terminal_status == "cancelled" else (
+                "本次处理未能完成，请按提示补充或重试。" if terminal_status == "failed" else "本轮处理已完成。"
+            )
+            self._emit_process_event(identity, task_id, request_id, "terminal", terminal_status, terminal_summary)
             return completed
 
     def _run_model(
@@ -149,6 +158,8 @@ class ConversationService:
                 )
             return _safe_response(response, identity)
         try:
+            self._emit_process_event(identity, task_id, execution_ids.get("request_id"), "routing", "completed", "已识别为常规对话，交由主Agent处理。")
+            self._emit_process_event(identity, task_id, execution_ids.get("request_id"), "agent_run", "started", "主Agent正在分析需求。")
             session_id = self._task_service.conversation_session_id(identity, task_id)
             checkpoint = self._dispatch_checkpoints.checkpoint(
                 session_id,
@@ -162,6 +173,7 @@ class ConversationService:
                 limit=4_000,
             )
             self._dispatch_checkpoints.succeeded(checkpoint)
+            self._emit_process_event(identity, task_id, execution_ids.get("request_id"), "agent_run", "completed", "主Agent已完成本轮分析。")
             return {
                 "status": "completed",
                 "text": text,
@@ -189,6 +201,19 @@ class ConversationService:
         with self._locks_guard:
             return self._locks.setdefault(key, Lock())
 
+    def _emit_process_event(
+        self,
+        identity: SessionIdentity,
+        task_id: str,
+        request_id: str | None,
+        event_type: str,
+        status: str,
+        summary: str,
+    ) -> None:
+        self._task_service.append_visible_process_event(
+            identity, task_id, request_id, event_type, status, summary,
+        )
+
 
 def _cancelled_response() -> dict[str, Any]:
     return {
@@ -204,7 +229,7 @@ def _execution_ids(request_state: dict[str, Any] | None) -> dict[str, str]:
         key: str(request_state[key])
         for key in (
             "execution_id", "workflow_run_id", "step_id_namespace",
-            "model_step_id", "recommender_step_id", "tool_step_id_namespace",
+            "model_step_id", "recommender_step_id", "tool_step_id_namespace", "request_id",
         )
         if isinstance(request_state.get(key), str) and str(request_state[key]).strip()
     }

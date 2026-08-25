@@ -18,7 +18,7 @@ from http import HTTPStatus
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 from urllib.parse import parse_qs, unquote, urlparse
 
 from .agent_runtime.conversation_service import ConversationService
@@ -30,6 +30,7 @@ from .agent_runtime.multi_agent import (
     AgentRunSettlementRegistry,
     recommendation_presets,
 )
+from .agent_runtime import multi_agent as multi_agent_runtime
 from .agent_runtime.tool_dispatcher import ToolDispatcher
 from .agent_runtime.durability_checkpoint import DurabilityCheckpointStore
 from .agent_runtime.runtime_telemetry import RuntimeTelemetry
@@ -51,6 +52,7 @@ from .page_registry import PAGE_MODULES, PageRegistry
 from .settings.connection_tester import ConnectionTester
 from .settings.settings_models import (
     DataInterfaceSettings,
+    MULTI_AGENT_DEFAULT_REVIEW_POLICY_ID,
     MULTI_AGENT_RECOMMENDATION_ROLES,
     ModelCatalogEntry,
     ModelConnectionSettings,
@@ -89,9 +91,65 @@ FRONTEND_ASSETS = frozenset({
     "optchat/index.html", "optchat/optchat.js",
     "optdesk/index.html", "optdesk/optdesk.js",
     "settings/index.html", "settings/settings.js", "settings/model-providers.css", "settings/general-settings.css", "settings/settings-shell.css",
-    "shared/styles.css", "shared/refinement.css", "shared/theme-overrides.css", "shared/app.js", "shared/transition-scope.js", "shared/theme-bootstrap.js", "shared/theme.js", "shared/scrollbar-activity.js", "shared/vol-surface.js",
+    "shared/styles.css", "shared/refinement.css", "shared/theme-overrides.css", "shared/app.js", "shared/transition-scope.js", "shared/theme-bootstrap.js", "shared/theme.js", "shared/scrollbar-activity.js", "shared/vol-surface.js", "shared/thinking-orb.js", "shared/thinking-orbs-engine.js",
 })
 _CAPABILITY_CSP = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'self'; form-action 'self'"
+_RECOMMENDATION_MODE_IDS = (
+    "sequential-deliberation", "product-trader-loop", "independent-council", "constraint-ranking",
+)
+_RECOMMENDATION_MODE_ROLE_FALLBACKS = {
+    "sequential-deliberation": ("Intent", "Research", "Critic"),
+    "product-trader-loop": ("Structurer", "Trader", "Reviewer"),
+    "independent-council": ("Framer", "Matcher", "Hedger", "Moderator"),
+    "constraint-ranking": ("Specifier", "Generator", "Reviewer"),
+}
+_REVIEW_POLICY_ROLE_FALLBACKS = {"standard-review": ()}
+
+
+def _catalog_value(item: object, name: str, default: Any = None) -> Any:
+    return item.get(name, default) if isinstance(item, Mapping) else getattr(item, name, default)
+
+
+def _catalog_roles(item: object, fallback: tuple[str, ...]) -> list[str]:
+    roles = _catalog_value(item, "roles")
+    if isinstance(roles, (list, tuple)) and all(isinstance(role, str) and role for role in roles):
+        return list(roles)
+    defaults = _catalog_value(item, "role_model_defaults", {})
+    if isinstance(defaults, Mapping) and defaults:
+        return [str(role) for role in defaults]
+    return list(fallback)
+
+
+def _review_policies() -> Mapping[str, object]:
+    """Read the runtime registry once available; keep settings safe during rollout."""
+
+    factory = getattr(multi_agent_runtime, "review_policies", None)
+    if callable(factory):
+        return factory()
+    return {
+        MULTI_AGENT_DEFAULT_REVIEW_POLICY_ID: {
+            "policy_id": MULTI_AGENT_DEFAULT_REVIEW_POLICY_ID,
+            "version": "v1",
+            "display_name": "标准复核",
+            "enabled": True,
+            "disabled_reason": None,
+        },
+        "strict-review": {
+            "policy_id": "strict-review",
+            "version": "v1",
+            "display_name": "严格复核",
+            "enabled": False,
+            "disabled_reason": "严格复核协议尚未发布。",
+        },
+    }
+
+
+def _review_policy_roles(policy_id: str, policy: object) -> list[str]:
+    """Expose only additional policy-owned runs, not a Mode's terminal role."""
+
+    if policy_id == MULTI_AGENT_DEFAULT_REVIEW_POLICY_ID:
+        return []
+    return _catalog_roles(policy, _REVIEW_POLICY_ROLE_FALLBACKS.get(policy_id, ()))
 
 
 class AppServer:
@@ -150,8 +208,13 @@ class AppServer:
             runtime_root=self._capability_runtime_root,
         )
         self.secret_provider = secret_provider or _platform_secret_provider(self._documents._root)
-        self._secret_reference_provider = (
-            "local-secret" if self.secret_provider.supports("local-secret") else "keychain"
+        self._secret_reference_provider = next(
+            (
+                provider_name
+                for provider_name in ("keychain", "credential-manager", "local-secret", "managed-secret")
+                if self.secret_provider.supports(provider_name)
+            ),
+            "keychain",
         )
         self.datafetcher = DataFetcherAdapter(
             self.settings_for,
@@ -252,6 +315,10 @@ class AppServer:
             settlement_registry=self.agent_run_settlement_registry,
         )
         self.conversation_tools.bind_recommender(self.recommender)
+        # Complete any durable prepared candidate confirmation before the
+        # server starts accepting ordinary module requests. Prepared contracts
+        # are hidden by ContractStore until this idempotent recovery commits.
+        self.conversation_tools.reconcile_prepared_recommendation_approvals()
         self.conversations = ConversationService(
             self.tasks,
             self.model_gateway,
@@ -270,6 +337,7 @@ class AppServer:
                 observation_builder=ResultStoreObservationBuilder(self.results),
                 dispatch_checkpoints=self.dispatch_checkpoints,
                 conversation_session_id=self.tasks.conversation_session_id,
+                visible_event_sink=self.tasks.append_visible_process_event,
             ),
         )
         self.connection_tester = ConnectionTester(self.datafetcher)
@@ -430,6 +498,8 @@ class AppServer:
             default_model_selection=local_selection,
             multi_agent_recommendation_preset_id=principal.multi_agent_recommendation_preset_id,
             multi_agent_preset_role_models=principal.multi_agent_preset_role_models,
+            multi_agent_review_policy_id=principal.multi_agent_review_policy_id,
+            multi_agent_review_policy_role_models=principal.multi_agent_review_policy_role_models,
         )
 
     def model_providers_for(self, identity: SessionIdentity) -> dict[str, Any]:
@@ -460,7 +530,7 @@ class AppServer:
         if not providers and settings.model_service.provider_name != "unconfigured" and settings.model_service.model_name:
             providers.append({
                 "provider_id": "provider-default",
-                "display_name": "默认模型提供方",
+                "display_name": "默认Provider",
                 "endpoint": settings.model_service.endpoint,
                 "protocol": "openai-chat-completions",
                 "scope": "provider",
@@ -494,6 +564,13 @@ class AppServer:
                     if role in MULTI_AGENT_RECOMMENDATION_ROLES
                 }
                 for preset_id, role_models in settings.multi_agent_preset_role_models.items()
+            },
+            "multi_agent_review_policy_role_models": {
+                policy_id: {
+                    role: {"provider_id": selection.provider_id, "model_id": selection.model_id}
+                    for role, selection in role_models.items()
+                }
+                for policy_id, role_models in settings.multi_agent_review_policy_role_models.items()
             },
         }
 
@@ -536,7 +613,7 @@ class AppServer:
             model = settings.model_service
             connections = [] if model.provider_name == "unconfigured" or not model.model_name else [{
                 "connection_id": "provider-default",
-                "display_name": "默认模型提供方",
+                "display_name": "默认Provider",
                 "provider_name": model.provider_name,
                 "endpoint": model.endpoint,
                 "model_name": model.model_name,
@@ -609,6 +686,8 @@ class AppServer:
                 default_model_selection=selection,
                 multi_agent_recommendation_preset_id=snapshot.multi_agent_recommendation_preset_id,
                 multi_agent_preset_role_models=snapshot.multi_agent_preset_role_models,
+                multi_agent_review_policy_id=snapshot.multi_agent_review_policy_id,
+                multi_agent_review_policy_role_models=snapshot.multi_agent_review_policy_role_models,
             )
             self.settings.save(identity.principal_id, replace(principal, role=identity.role.value))
         else:
@@ -772,7 +851,16 @@ class AppServer:
                     and (route.provider_id, route.model_id) in valid_selections
                 }
                 for preset_id, role_models in snapshot.multi_agent_preset_role_models.items()
-                if preset_id in {"sequential-deliberation", "independent-council"}
+                if preset_id in set(_RECOMMENDATION_MODE_IDS)
+            },
+            multi_agent_review_policy_role_models={
+                policy_id: {
+                    role: route
+                    for role, route in role_models.items()
+                    if (route.provider_id, route.model_id) in valid_selections
+                }
+                for policy_id, role_models in snapshot.multi_agent_review_policy_role_models.items()
+                if policy_id == MULTI_AGENT_DEFAULT_REVIEW_POLICY_ID
             },
         )
         if normalized != snapshot:
@@ -954,11 +1042,19 @@ class AppServer:
             }
             for preset_id, mappings in current.multi_agent_preset_role_models.items()
         }
+        review_role_models = {
+            policy_id: {
+                role: selection for role, selection in mappings.items()
+                if (selection.provider_id, selection.model_id) in valid_selections
+            }
+            for policy_id, mappings in current.multi_agent_review_policy_role_models.items()
+        }
         return replace(
             current,
             model_providers=tuple(providers),
             default_model_selection=ModelSelection(updated.provider_id, selected_id),
             multi_agent_preset_role_models=role_models,
+            multi_agent_review_policy_role_models=review_role_models,
         )
 
 
@@ -1147,6 +1243,22 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
             self.app.tasks.get(identity, task_id)
             self._json(HTTPStatus.OK, {"reports": self.app.results.list_report_runs(identity, task_id)})
             return
+        if path.startswith("/api/tasks/") and "/conversation-requests/" in path and path.endswith("/events"):
+            identity = self._identity()
+            self.app.policy.require(identity.role, "conversation.write")
+            task_id, request_id = path.removeprefix("/api/tasks/").split("/conversation-requests/", 1)
+            request_id = request_id.removesuffix("/events").rstrip("/")
+            if not task_id or not request_id or "/" in request_id:
+                raise KeyError(path)
+            raw_after_seq = parse_qs(parsed.query).get("after_seq", ["0"])[0]
+            try:
+                after_seq = int(str(raw_after_seq))
+            except (TypeError, ValueError) as error:
+                raise ValidationError("Conversation process event cursor is invalid") from error
+            self._json(HTTPStatus.OK, self.app.tasks.visible_process_events(
+                identity, task_id, request_id, after_seq=after_seq,
+            ))
+            return
         if path.startswith("/api/tasks/") and "/conversation-requests/" in path:
             identity = self._identity()
             self.app.policy.require(identity.role, "conversation.write")
@@ -1195,6 +1307,7 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
             self.app.policy.require(identity.role, "settings.read")
             settings = self.app.settings_for(identity)
             presets = recommendation_presets()
+            review_policies = _review_policies()
             self._json(HTTPStatus.OK, {
                 "selected_preset_id": settings.multi_agent_recommendation_preset_id,
                 "presets": [
@@ -1205,11 +1318,28 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
                         "execution_strategy": preset.execution_strategy,
                         "enabled": preset.enabled,
                         "disabled_reason": preset.disabled_reason,
-                        "roles": ["Intent", "Research", "Critic"],
+                        "roles": _catalog_roles(
+                            preset,
+                            _RECOMMENDATION_MODE_ROLE_FALLBACKS.get(preset.preset_id, ()),
+                        ),
                     }
-                    for preset in presets.values()
+                    for preset_id, preset in presets.items()
+                    if preset_id in _RECOMMENDATION_MODE_IDS
                 ],
                 "role_models": serialize_settings_public(settings)["multi_agent_preset_role_models"],
+                "selected_review_policy_id": settings.multi_agent_review_policy_id,
+                "review_policies": [
+                    {
+                        "policy_id": policy_id,
+                        "version": _catalog_value(policy, "version", "v1"),
+                        "display_name": _catalog_value(policy, "display_name", policy_id),
+                        "enabled": bool(_catalog_value(policy, "enabled", False)),
+                        "disabled_reason": _catalog_value(policy, "disabled_reason"),
+                        "roles": _review_policy_roles(policy_id, policy),
+                    }
+                    for policy_id, policy in review_policies.items()
+                ],
+                "review_policy_role_models": serialize_settings_public(settings)["multi_agent_review_policy_role_models"],
                 "available_models": [
                     {
                         "provider_id": provider.provider_id,
@@ -1403,13 +1533,40 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
             module = str(body.get("module", "")).strip()
             action = str(body.get("action", "")).strip().lower()
             payload = body.get("payload")
-            if module not in PAGE_MODULES or action not in {"fetch", "run"} or not isinstance(payload, dict):
+            allowed_actions = {"fetch", "run"}
+            if module == "reporter":
+                allowed_actions.add("rerender")
+            if module not in PAGE_MODULES or action not in allowed_actions or not isinstance(payload, dict):
                 raise ValidationError("Task operation request is invalid")
             module_context = self._module_host_context(module)
             if str(module_context.get("task_id", "")) != task_id:
                 raise ValidationError("Module Host context does not match task operation")
             controlled_payload = {**payload, "action": action, "task_id": task_id}
-            if module == "reporter":
+            if module == "reporter" and action == "rerender":
+                source_run_id = payload.get("source_report_run_id")
+                if not isinstance(source_run_id, str) or not source_run_id:
+                    raise ValidationError("Reporter PDF交付缺少source_report_run_id")
+                try:
+                    source_run = self.app.results.get_owned_report_run(identity, source_run_id)
+                except (KeyError, AuthorizationError) as error:
+                    raise ValidationError("源报告不存在或不可访问") from error
+                if source_run.get("task_id") != task_id:
+                    raise ValidationError("源报告不属于当前任务")
+                source_request = source_run.get("report_request")
+                kind = str(source_request.get("output_type", "")).strip().lower() if isinstance(source_request, dict) else ""
+                capability = {"card": "report.card.request", "report": "report.full.request"}.get(kind)
+                if capability is None:
+                    raise ValidationError("参考报价不能在当前页面另存为PDF")
+                self.app.policy.require(identity.role, capability)
+                controlled_payload = {
+                    "action": "rerender",
+                    "task_id": task_id,
+                    "source_report_run_id": source_run_id,
+                    "output_type": kind,
+                    "format": payload.get("format"),
+                    "report_run_id": payload.get("report_run_id"),
+                }
+            elif module == "reporter":
                 selection = controlled_payload.get("selection")
                 if not isinstance(selection, dict):
                     raise ValidationError("Reporter page requires one controlled selection")
@@ -1435,6 +1592,8 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
                     request_id=module_request_id,
                     cancelled=cancelled,
                 ),
+                request_id=module_request_id or None,
+                input_hash=_json_hash(controlled_payload) if module_request_id else None,
             )
             self.app.audit.record(AuditEvent(action="task.operation.submit", principal_id=identity.principal_id, tenant_id=identity.tenant_id, outcome="queued", decision="allow", reference=operation.operation_id, request_id=request_id))
             self._json(HTTPStatus.ACCEPTED, {"operation": operation.public()})
@@ -1463,6 +1622,14 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
             self.app.policy.require(identity.role, "conversation.write")
             task_id = path.removeprefix("/api/tasks/").removesuffix("/delete").rstrip("/")
             _only_fields(body, set())
+            stopping = self.app.operations.cancel_task(identity, task_id)
+            if any(operation.state in {"queued", "running", "cancel_requested"} for operation in stopping):
+                raise UserActionError(
+                    "task_operations_stopping",
+                    "当前任务仍有正在停止的后台运行，暂不能删除。",
+                    stage="task",
+                    next_step="请等待后台运行停止后，再删除当前任务。",
+                )
             task = self.app.tasks.delete(identity, task_id)
             self.app.audit.record(AuditEvent(action="task.delete", principal_id=identity.principal_id, tenant_id=identity.tenant_id, outcome="succeeded", decision="allow", reference=task_id, request_id=request_id))
             self._json(HTTPStatus.OK, {"task": task})
@@ -1528,6 +1695,7 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
                     raise ValidationError("report format must be html or pdf")
                 arguments = {"kind": kind, "format": output_format}
                 if body.get("background") is True:
+                    report_request_id = self.headers.get("X-Request-Id", "")
                     operation = self.app.operations.submit(
                         identity,
                         task_id=task_id,
@@ -1536,6 +1704,8 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
                         operation=lambda cancelled: _dispatch_background_report(
                             self.app.conversation_tools, identity, task_id, arguments, cancelled,
                         ),
+                        request_id=report_request_id or None,
+                        input_hash=_json_hash(arguments) if report_request_id else None,
                     )
                     self._json(HTTPStatus.ACCEPTED, {"operation": operation.public()})
                     return
@@ -1573,8 +1743,26 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/settings/model-provider/credential":
             self.app.policy.require(identity.role, "settings.model.local.write")
-            _only_fields(body, {"provider_id", "display_name", "endpoint", "protocol", "models", "default_model_id", "api_key"})
+            _only_fields(body, {"provider_id", "original_provider_id", "display_name", "endpoint", "protocol", "models", "default_model_id", "api_key"})
             profile = _model_provider_from(body)
+            original_provider_id = _model_connection_id(body.get("original_provider_id", profile.provider_id))
+            current = self.app.settings_for(identity)
+            original_exists = any(item.provider_id == original_provider_id for item in current.model_providers)
+            target_exists = any(item.provider_id == profile.provider_id for item in current.model_providers)
+            if original_exists and original_provider_id != profile.provider_id:
+                raise UserActionError(
+                    "provider_identity_locked",
+                    "已保存的Provider ID不可修改。",
+                    stage="settings",
+                    next_step="请新建Provider并确认可用后，再删除旧配置。",
+                )
+            if target_exists and original_provider_id != profile.provider_id:
+                raise UserActionError(
+                    "provider_identity_conflict",
+                    "该Provider ID已存在，不能覆盖另一项配置。",
+                    stage="settings",
+                    next_step="请为新Provider填写不同的Provider ID。",
+                )
             api_key = _credential_value(body, "api_key")
             reference = self.app.secret_reference(
                 identity.tenant_id, "model", owner_id=identity.principal_id, connection_id=profile.provider_id,
@@ -1589,10 +1777,25 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/settings/model-provider":
             self.app.policy.require(identity.role, "settings.model.local.write")
-            _only_fields(body, {"provider_id", "display_name", "endpoint", "protocol", "models", "default_model_id"})
+            _only_fields(body, {"provider_id", "original_provider_id", "display_name", "endpoint", "protocol", "models", "default_model_id"})
             profile = _model_provider_from(body)
             current = self.app.settings_for(identity)
+            original_provider_id = _model_connection_id(body.get("original_provider_id", profile.provider_id))
+            if original_provider_id != profile.provider_id:
+                raise UserActionError(
+                    "provider_identity_locked",
+                    "已保存的Provider ID不可修改。",
+                    stage="settings",
+                    next_step="请新建Provider并确认可用后，再删除旧配置。",
+                )
             existing = next((item for item in current.model_providers if item.provider_id == profile.provider_id), None)
+            if existing is None:
+                raise UserActionError(
+                    "provider_credential_required",
+                    "新增Provider时必须同时填写并保存API Key。",
+                    stage="settings",
+                    next_step="请粘贴该Provider的API Key后重新保存。",
+                )
             if existing and existing.secret_ref and not _same_credential_origin(existing.endpoint, profile.endpoint):
                 raise ValidationError("更换模型服务地址时，请同时重新粘贴该服务的API Key并保存。")
             snapshot = self.app.local_provider_snapshot(
@@ -1631,12 +1834,15 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
             self.app.policy.require(identity.role, "settings.model.local.write")
             _only_fields(body, {"preset_id", "role_models"})
             preset_id = str(body.get("preset_id", "")).strip()
-            if preset_id not in {"sequential-deliberation", "independent-council"}:
+            preset = recommendation_presets().get(preset_id)
+            if preset is None or not preset.enabled:
                 raise ValidationError("MultiAgent预设未启用")
             raw_role_models = body.get("role_models")
             if not isinstance(raw_role_models, dict):
                 raise ValidationError("role_models必须为对象")
-            allowed_roles = MULTI_AGENT_RECOMMENDATION_ROLES
+            allowed_roles = set(_catalog_roles(
+                preset, _RECOMMENDATION_MODE_ROLE_FALLBACKS.get(preset_id, ()),
+            ))
             selected_roles: dict[str, ModelSelection] = {}
             for role, raw_selection in raw_role_models.items():
                 if role not in allowed_roles or not isinstance(raw_selection, dict):
@@ -1659,6 +1865,58 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
             saved = self.app.save_settings(
                 identity,
                 replace(current, multi_agent_preset_role_models=mappings),
+                "settings.model.local.write",
+            )
+            self._json(HTTPStatus.OK, {"settings": serialize_settings_public(saved)})
+            return
+        if path == "/api/settings/multi-agent-review-policy/default":
+            self.app.policy.require(identity.role, "settings.model.local.write")
+            _only_fields(body, {"review_policy_id"})
+            policy_id = str(body.get("review_policy_id", "")).strip()
+            policy = _review_policies().get(policy_id)
+            if policy is None or not bool(_catalog_value(policy, "enabled", False)):
+                raise ValidationError("MultiAgent复核策略未启用")
+            current = self.app.settings_for(identity)
+            saved = self.app.save_settings(
+                identity,
+                replace(current, multi_agent_review_policy_id=policy_id),
+                "settings.model.local.write",
+            )
+            self._json(HTTPStatus.OK, {"settings": serialize_settings_public(saved)})
+            return
+        if path == "/api/settings/multi-agent-review-policy-role-models":
+            self.app.policy.require(identity.role, "settings.model.local.write")
+            _only_fields(body, {"review_policy_id", "role_models"})
+            policy_id = str(body.get("review_policy_id", "")).strip()
+            policy = _review_policies().get(policy_id)
+            if policy is None or not bool(_catalog_value(policy, "enabled", False)):
+                raise ValidationError("MultiAgent复核策略未启用")
+            raw_role_models = body.get("role_models")
+            if not isinstance(raw_role_models, dict):
+                raise ValidationError("role_models必须为对象")
+            allowed_roles = set(_review_policy_roles(policy_id, policy))
+            selected_roles: dict[str, ModelSelection] = {}
+            for role, raw_selection in raw_role_models.items():
+                if role not in allowed_roles or not isinstance(raw_selection, dict):
+                    raise ValidationError("MultiAgent复核角色模型映射无效")
+                _only_fields(raw_selection, {"provider_id", "model_id"})
+                selection = ModelSelection(
+                    _model_connection_id(raw_selection.get("provider_id")),
+                    _required_model_id(raw_selection.get("model_id")),
+                )
+                self.app.model_service_for_selection(identity, selection)
+                selected_roles[role] = selection
+            current = self.app.settings_for(identity)
+            mappings = {
+                key: dict(value) for key, value in current.multi_agent_review_policy_role_models.items()
+            }
+            if selected_roles:
+                mappings[policy_id] = selected_roles
+            else:
+                mappings.pop(policy_id, None)
+            saved = self.app.save_settings(
+                identity,
+                replace(current, multi_agent_review_policy_role_models=mappings),
                 "settings.model.local.write",
             )
             self._json(HTTPStatus.OK, {"settings": serialize_settings_public(saved)})
@@ -1688,12 +1946,20 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
                 }
                 for preset_id, mappings in current.multi_agent_preset_role_models.items()
             }
+            review_role_models = {
+                policy_id: {
+                    role: selection for role, selection in mappings.items()
+                    if (selection.provider_id, selection.model_id) in valid_selections
+                }
+                for policy_id, mappings in current.multi_agent_review_policy_role_models.items()
+            }
             saved = self.app.save_settings(
                 identity, replace(
                     current,
                     model_providers=providers,
                     default_model_selection=next_selection,
                     multi_agent_preset_role_models=role_models,
+                    multi_agent_review_policy_role_models=review_role_models,
                 ),
                 "settings.model.local.write",
             )
@@ -1837,6 +2103,13 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
                 }
                 for preset_id, mappings in current.multi_agent_preset_role_models.items()
             }
+            review_role_models = {
+                policy_id: {
+                    role: selection for role, selection in mappings.items()
+                    if (selection.provider_id, selection.model_id) in valid_selections
+                }
+                for policy_id, mappings in current.multi_agent_review_policy_role_models.items()
+            }
             saved = self.app.save_settings(
                 identity,
                 replace(
@@ -1847,6 +2120,7 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
                     model_providers=providers,
                     default_model_selection=next_selection,
                     multi_agent_preset_role_models=role_models,
+                    multi_agent_review_policy_role_models=review_role_models,
                 ),
                 "settings.model.local.write",
             )
@@ -1959,7 +2233,7 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
             action = str(body.get("action", "run")).strip().lower()
             self.app.policy.require(
                 identity.role,
-                "module.catalog" if action in {"catalog", "status", "list_assets"} else "module.run",
+                "module.catalog" if action in {"catalog", "default", "status", "list_assets"} else "module.run",
             )
             module_context = self._module_host_context(tool)
             if tool == "reporter" and body.get("action") == "run":
@@ -2242,9 +2516,9 @@ def _credential_value(value: dict[str, Any], field: str) -> str:
 
 
 def _platform_secret_provider(app_data_root: Path) -> SecretProvider:
-    from .secrets.local_secret_store import LocalSecretStore
+    from .secrets.platform_provider import platform_secret_provider
 
-    return SecretProvider({"local-secret": LocalSecretStore(app_data_root / "credentials")})
+    return platform_secret_provider(app_data_root)
 
 
 def _same_credential_origin(current_endpoint: str, next_endpoint: str) -> bool:

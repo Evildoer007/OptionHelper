@@ -323,7 +323,7 @@ def _evaluate_candidate(
             cached = (
                 int(outcome.selected_path),
                 int(outcome.selected_case),
-                float(outcome.pnl),
+                _public_payoff_percent(contract, float(outcome.pnl)),
                 deepcopy(outcome.monitor_values),
             )
             evaluation_cache[key] = cached
@@ -331,6 +331,25 @@ def _evaluate_candidate(
         if selected_path == path_index and selected_case == case_index:
             return pnl, template, deepcopy(monitor_values)
     return None
+
+
+def _public_payoff_percent(contract: ResolvedContract, raw_pnl: float) -> float:
+    """将共享解释器的合同结算尺度投影为公开收益率。
+
+    绝大多数产品的Core现金流已是以内部100基准表示的百分比。方差互换的
+    ``N_V*(sigma²-K²)``则是方差结算点数，必须除以冻结的内部方差基准后才是
+    对外图形、Reporter事实和SVG一致使用的百分比。此处仅改变公开表示，不改
+    Core的现金流、合同公式或默认资产。
+    """
+    if contract.product_id != "9.4":
+        return raw_pnl
+    try:
+        variance_base = float(contract.terms["Nvar"])
+    except (KeyError, TypeError, ValueError) as error:
+        raise PayoffEngineError("9.4方差互换缺少有效内部方差结算基准") from error
+    if not np.isfinite(variance_base) or variance_base <= 0.0:
+        raise PayoffEngineError("9.4方差互换内部方差结算基准必须为正有限数")
+    return raw_pnl / variance_base
 
 
 def _probe_value(domain: CompiledDomain, scale: Mapping[str, float]) -> float:
@@ -422,25 +441,30 @@ def _case_seed(
     if not samples:
         return None
     probe_indices = sorted({0, len(samples) - 1, *(int(round(index)) for index in np.linspace(0, len(samples) - 1, min(7, len(samples))) )})
-    best: tuple[int, float, tuple[float, CandidateTemplate, dict[str, Any]]] | None = None
-    for template in templates:
-        hits: list[tuple[float, tuple[float, CandidateTemplate, dict[str, Any]]]] = []
-        for index in probe_indices:
-            x_value, endpoint, interval = samples[index]
-            trial = inward_value(x_value, interval, scale) if endpoint == "open" else x_value
-            result = _evaluate_candidate(
-                contract, axis, _safe_axis_trial(axis, trial, scale), path_index, case_index,
-                (template,), template, evaluation_cache, fixed=True,
-            )
-            if result is not None:
-                hits.append((abs(x_value - probe), result))
-        if not hits:
-            continue
-        hits.sort(key=lambda item: item[0])
-        candidate = (len(hits), -hits[0][0], hits[0][1])
-        if best is None or candidate[:2] > best[:2]:
-            best = candidate
-    return None if best is None else best[2]
+    # 首轮保持轻量探针。递降障碍等状态有时只在很窄的终值区间可行，七个等距
+    # 探针可能刚好全部错过；仅在没有任何合法候选时再完整扫描当前图的采样点。
+    for indices in (probe_indices, tuple(range(len(samples)))):
+        best: tuple[int, float, tuple[float, CandidateTemplate, dict[str, Any]]] | None = None
+        for template in templates:
+            hits: list[tuple[float, tuple[float, CandidateTemplate, dict[str, Any]]]] = []
+            for index in indices:
+                x_value, endpoint, interval = samples[index]
+                trial = inward_value(x_value, interval, scale) if endpoint == "open" else x_value
+                result = _evaluate_candidate(
+                    contract, axis, _safe_axis_trial(axis, trial, scale), path_index, case_index,
+                    (template,), template, evaluation_cache, fixed=True,
+                )
+                if result is not None:
+                    hits.append((abs(x_value - probe), result))
+            if not hits:
+                continue
+            hits.sort(key=lambda item: item[0])
+            candidate = (len(hits), -hits[0][0], hits[0][1])
+            if best is None or candidate[:2] > best[:2]:
+                best = candidate
+        if best is not None:
+            return best[2]
+    return None
 
 
 def _annotate_boundaries(segments: list[list[dict[str, Any]]]) -> tuple[list[dict[str, float]], list[dict[str, float]]]:
@@ -755,6 +779,8 @@ def _template_path_views(
             raise PayoffEngineError("默认视觉模板的路径或分段索引越界")
         if len(set(case_indexes)) != len(case_indexes) or any(index < 0 or index >= len(compiled[path_index]) for index in case_indexes):
             raise PayoffEngineError("默认视觉模板的分段索引无效")
+        if set(case_indexes) != set(range(len(compiled[path_index]))):
+            raise PayoffEngineError("默认视觉模板必须完整覆盖路径的全部分段")
         expected_axis = _path_axis([compiled[path_index][index] for index in case_indexes])
         expected_kind = "conditional_terminal_metric" if expected_axis in {"S_T", "r_T", "W_T"} else "path_statistic_slice"
         if axis != expected_axis or chart_kind != expected_kind or not title:

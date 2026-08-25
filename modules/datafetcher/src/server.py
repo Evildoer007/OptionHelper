@@ -45,6 +45,19 @@ class Handler(BaseHTTPRequestHandler):
             return self._file(PAGE_DIR / "datafetcher.css", "text/css; charset=utf-8")
         if self.path == "/datafetcher.js":
             return self._file(PAGE_DIR / "datafetcher.js", "application/javascript; charset=utf-8")
+        shared_browser_root = RUNTIME_PATHS.project_root / "core" / "src" / "runtime" / "browser"
+        shared_resources = {
+            "/module-host-presentation.css": (shared_browser_root / "module_host_presentation.css", "text/css; charset=utf-8"),
+            "/module-host-presentation.js": (shared_browser_root / "module_host_presentation.js", "application/javascript; charset=utf-8"),
+            "/module-host-bridge.js": (shared_browser_root / "module_host_bridge.js", "application/javascript; charset=utf-8"),
+            "/designer/themes/designer-token-vars.css": (
+                RUNTIME_PATHS.project_root / "modules" / "designer" / "assets" / "themes" / "designer-token-vars.css",
+                "text/css; charset=utf-8",
+            ),
+        }
+        if self.path in shared_resources:
+            path, content_type = shared_resources[self.path]
+            return self._file(path, content_type)
         return self._json(HTTPStatus.NOT_FOUND, {"ok": False, "message": "未找到资源"})
 
     def do_POST(self) -> None:  # noqa: N802

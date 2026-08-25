@@ -117,6 +117,16 @@ class ModelGateway:
     def multi_agent_recommendation_preset_for(self, identity: SessionIdentity) -> str:
         return self._load(identity).multi_agent_recommendation_preset_id
 
+    def multi_agent_review_policy_for(self, identity: SessionIdentity) -> str:
+        return self._load(identity).multi_agent_review_policy_id
+
+    def multi_agent_review_policy_role_model_selections_for(
+        self, identity: SessionIdentity, policy_id: str,
+    ) -> Mapping[str, ModelSelection]:
+        """Return the selected policy-local role routes without inheriting preset slots."""
+
+        return dict(self._load(identity).multi_agent_review_policy_role_models.get(str(policy_id), {}))
+
     def require_bounded_request_control(
         self, identity: SessionIdentity, *, selection: ModelSelection | None,
     ) -> None:

@@ -4,7 +4,7 @@
   const moduleName = location.pathname.split("/").filter(Boolean).at(-2);
   const routes = {
     datafetcher: {"/api/status": "status", "/api/assets": "list_assets", "/api/fetch": "fetch"},
-    payoffer: {"/api/catalog": "catalog", "/api/preview": "preview", "/api/run": "run"},
+    payoffer: {"/api/catalog": "catalog", "/api/default": "default", "/api/preview": "preview", "/api/run": "run"},
     pricer: {"/api/catalog": "catalog", "/api/run": "run"},
     backtester: {"/api/catalog": "catalog", "/api/run": "run"},
     reporter: {"/api/status": "status", "/api/report-sources": "list_report_sources", "/api/run": "run"},
@@ -346,6 +346,19 @@
       && ["task_id", "analysis_case_id", "candidate_id", "catalog_version", "contract_fingerprint"].every((field) => value[field] === null || typeof value[field] === "string")
       && Number.isSafeInteger(expiresAt) && expiresAt * 1000 > Date.now();
   }
+  function activeHostContext() {
+    if (!context) return null;
+    const token = /^oh\.([0-9]{1,12})\.[0-9a-f]{64}$/.exec(String(context.capability_token || ""));
+    const expiresAt = Number(token?.[1]);
+    // A host context is validated before the Gateway dispatches the request.
+    // Renew it before it becomes marginal instead of letting an idle Desk page
+    // submit one known-expired request after its five-minute lease ends.
+    if (!Number.isSafeInteger(expiresAt) || expiresAt * 1000 <= Date.now() + 15_000) {
+      resetHostContext();
+      return null;
+    }
+    return context;
+  }
   function requestId() { return crypto.randomUUID ? crypto.randomUUID() : `req_${Date.now()}_${Math.random().toString(36).slice(2)}`; }
   function asResponse(status, body) {
     return new Response(JSON.stringify(body), {status, headers: {"Content-Type": "application/json"}});
@@ -354,7 +367,8 @@
     return new DOMException("Module Host request was aborted", "AbortError");
   }
   function waitForHostContext(signal) {
-    if (context) return context;
+    const current = activeHostContext();
+    if (current) return Promise.resolve(current);
     if (signal?.aborted) throw abortError();
     requestHostContext("fetch");
     return new Promise((resolve, reject) => {
@@ -393,7 +407,7 @@
     return null;
   }
   function normalizeHostedRequest(body, action) {
-    if (action === "run" && hostScope.contract_fingerprint && body.new_contract_variant !== true) {
+    if (moduleName !== "payoffer" && action === "run" && hostScope.contract_fingerprint && body.new_contract_variant !== true) {
       delete body.product_id;
       delete body.identity;
       delete body.term_overrides;
@@ -406,6 +420,17 @@
   }
   function requestedSignal(input, init) {
     return init.signal || (typeof Request !== "undefined" && input instanceof Request ? input.signal : undefined);
+  }
+  function requestedOperationId(input, init) {
+    const supplied = init.headers || (typeof Request !== "undefined" && input instanceof Request ? input.headers : null);
+    let value = null;
+    if (supplied && typeof supplied.get === "function") value = supplied.get("X-OptionHelper-Request-Id");
+    else if (Array.isArray(supplied)) {
+      value = supplied.find(([name]) => String(name).toLowerCase() === "x-optionhelper-request-id")?.[1] || null;
+    } else if (supplied && typeof supplied === "object") {
+      value = supplied["X-OptionHelper-Request-Id"] || supplied["x-optionhelper-request-id"] || null;
+    }
+    return /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(String(value || "")) ? String(value) : "";
   }
   function dataAssetDownloadId(url) {
     if (moduleName !== "datafetcher" || url.origin !== location.origin) return undefined;
@@ -420,8 +445,8 @@
     }
   }
   async function hostedDataAssetDownload(url, signal) {
-    if (!context && hostedInDesk) await waitForHostContext(signal);
-    if (!context && hostedInDesk) {
+    const hostContext = hostedInDesk ? await waitForHostContext(signal) : activeHostContext();
+    if (!hostContext && hostedInDesk) {
       return asResponse(503, {
         ok: false,
         error: "module_context_timeout",
@@ -431,13 +456,13 @@
         next_step: "请保持当前OptDesk页面打开；上下文将自动重新同步。",
       });
     }
-    if (!context) return nativeFetch(url, {signal});
+    if (!hostContext) return nativeFetch(url, {signal});
     return nativeFetch(url.pathname, {
       method: "POST",
       credentials: "same-origin",
       headers: {
         "Content-Type": "application/json",
-        "X-OptionHelper-Module-Context": JSON.stringify(context),
+        "X-OptionHelper-Module-Context": JSON.stringify(hostContext),
         "X-OptionHelper-Request-Id": requestId(),
       },
       body: "{}",
@@ -446,7 +471,7 @@
   }
   async function hostedFetch(input, init = {}) {
     const url = new URL(typeof input === "string" ? input : input.url, location.href);
-    const action = routes[moduleName]?.[url.pathname];
+    let action = routes[moduleName]?.[url.pathname];
     const method = requestedMethod(input, init);
     const signal = requestedSignal(input, init);
     const downloadId = dataAssetDownloadId(url);
@@ -461,8 +486,8 @@
     // Module pages load before their parent can post the signed context.  If
     // their initial catalog fetch falls through to the App root, it becomes a
     // GET /api/catalog request and fails before the bridge is installed.
-    if (!context && hostedInDesk) await waitForHostContext(signal);
-    if (!context && hostedInDesk) {
+    const hostContext = hostedInDesk ? await waitForHostContext(signal) : activeHostContext();
+    if (!hostContext && hostedInDesk) {
       return asResponse(503, {
         ok: false,
         error: "module_context_timeout",
@@ -472,11 +497,28 @@
         next_step: "请保持当前OptDesk页面打开；上下文将自动重新同步。",
       });
     }
-    if (!context) return nativeFetch(input, init);
+    if (!hostContext) return nativeFetch(input, init);
     let body = {};
     const rawBody = init.body ?? (typeof Request !== "undefined" && input instanceof Request && method !== "GET" ? await input.clone().text() : undefined);
     if (rawBody) {
       try { body = JSON.parse(rawBody); } catch { return asResponse(400, {ok: false, message: "Module Host只接受JSON请求"}); }
+    }
+    // Reporter keeps its standalone ``derive`` request so the page remains
+    // usable outside OptDesk.  In Desk that request must become a distinct
+    // App operation: a PDF is rendered from a saved ReportRun, not submitted
+    // as a new report selection.
+    if (moduleName === "reporter" && action === "run" && body.derive && typeof body.derive === "object") {
+      const derive = body.derive;
+      const source = derive.source;
+      if (!source || typeof source !== "object") {
+        return asResponse(400, {ok: false, message: "PDF交付缺少已保存报告来源。"});
+      }
+      body = {
+        source_report_run_id: source.report_run_id,
+        report_run_id: derive.report_run_id,
+        format: derive.format,
+      };
+      action = "rerender";
     }
     body.action = action;
     normalizeHostedRequest(body, action);
@@ -487,15 +529,15 @@
     }
     const scopeError = applyHostScope(body);
     if (scopeError) return asResponse(400, {ok: false, message: scopeError});
-    if (action === "fetch" || action === "run") {
-      return hostedBackgroundOperation(action, body, signal);
+    if (action === "fetch" || action === "run" || action === "rerender") {
+      return hostedBackgroundOperation(action, body, signal, hostContext, requestedOperationId(input, init));
     }
     const response = await nativeFetch(`/api/tools/${encodeURIComponent(moduleName)}`, {
       method: "POST",
       credentials: "same-origin",
       headers: {
         "Content-Type": "application/json",
-        "X-OptionHelper-Module-Context": JSON.stringify(context),
+        "X-OptionHelper-Module-Context": JSON.stringify(hostContext),
         "X-OptionHelper-Request-Id": requestId(),
       },
       body: JSON.stringify(body),
@@ -509,9 +551,9 @@
     if (
       response.ok
       && action === "run"
-      && (moduleName === "pricer" || moduleName === "backtester")
+      && (moduleName === "payoffer" || moduleName === "pricer" || moduleName === "backtester")
       && body.new_contract_variant === true
-      && result.resolved_contract?.identity?.product_id
+      && (result.resolved_contract?.identity?.product_id || result.module_run_ref?.run_id)
     ) {
       // Do not let the next run inherit the previous product's scope while
       // Desk activates the new contract version.
@@ -527,13 +569,13 @@
     return asResponse(response.status, result);
   }
 
-  async function hostedBackgroundOperation(action, body, signal) {
-    const taskId = String(context?.task_id || "");
+  async function hostedBackgroundOperation(action, body, signal, hostContext, requestedId = "") {
+    const taskId = String(hostContext?.task_id || "");
     if (!taskId) return asResponse(400, {ok: false, message: "当前模块没有可运行的任务。"});
     const headers = {
       "Content-Type": "application/json",
-      "X-OptionHelper-Module-Context": JSON.stringify(context),
-      "X-OptionHelper-Request-Id": requestId(),
+      "X-OptionHelper-Module-Context": JSON.stringify(hostContext),
+      "X-OptionHelper-Request-Id": requestedId || requestId(),
     };
     const submitted = await nativeFetch(`/api/tasks/${encodeURIComponent(taskId)}/operations`, {
       method: "POST", credentials: "same-origin", headers,
@@ -560,13 +602,12 @@
   function finalizeHostedResult(action, body, result, response = null) {
     if (moduleName === "payoffer" && action === "run" && !result.destination && result.module_run_ref?.run_id) {
       result.destination = "结果已保存到当前研究任务。";
-      return asResponse(200, result);
     }
     if (
       action === "run"
-      && (moduleName === "pricer" || moduleName === "backtester")
+      && (moduleName === "payoffer" || moduleName === "pricer" || moduleName === "backtester")
       && body.new_contract_variant === true
-      && result.resolved_contract?.identity?.product_id
+      && (result.resolved_contract?.identity?.product_id || result.module_run_ref?.run_id)
     ) {
       resetHostContext();
       window.parent.postMessage({

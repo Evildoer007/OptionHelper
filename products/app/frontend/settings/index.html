@@ -25,7 +25,7 @@
             <h1 class="settings-nav__title">设置</h1>
             <nav class="connection-list settings-nav" aria-label="设置项目">
               <a class="connection-item" href="#preferences"><svg class="settings-nav__icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 17h16M8 4v6M16 14v6"/><circle cx="8" cy="7" r="2"/><circle cx="16" cy="17" r="2"/></svg><strong>通用设置</strong></a>
-              <a class="connection-item" href="#model"><svg class="settings-nav__icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5.5C5 4.1 8.1 3 12 3s7 1.1 7 2.5v5c0 1.4-3.1 2.5-7 2.5s-7-1.1-7-2.5zM5 5.5C5 6.9 8.1 8 12 8s7-1.1 7-2.5M5 10.5v5c0 1.4 3.1 2.5 7 2.5M16 16.5v4M14 18.5h4"/></svg><strong>模型</strong></a>
+              <a class="connection-item" href="#model"><svg class="settings-nav__icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5.5C5 4.1 8.1 3 12 3s7 1.1 7 2.5v5c0 1.4-3.1 2.5-7 2.5s-7-1.1-7-2.5zM5 5.5C5 6.9 8.1 8 12 8s7-1.1 7-2.5M5 10.5v5c0 1.4 3.1 2.5 7 2.5M16 16.5v4M14 18.5h4"/></svg><strong>模型配置</strong></a>
               <a class="connection-item" href="#multi-agent"><svg class="settings-nav__icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="6" r="2.5"/><circle cx="6" cy="16" r="2.5"/><circle cx="18" cy="16" r="2.5"/><path d="M10.5 8l-3 5.5M13.5 8l3 5.5M8.5 16h7"/></svg><strong>多智能体预设</strong></a>
               <a class="connection-item" href="#data" data-settings-data-link hidden><svg class="settings-nav__icon" viewBox="0 0 24 24" aria-hidden="true"><ellipse cx="12" cy="5.5" rx="7" ry="2.7"/><path d="M5 5.5v6.5c0 1.5 3.1 2.7 7 2.7s7-1.2 7-2.7V5.5M5 12v6.5c0 1.5 3.1 2.7 7 2.7s7-1.2 7-2.7V12"/></svg><strong>数据接口</strong></a>
               <a class="connection-item" href="#storage"><svg class="settings-nav__icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7.5h16v11H4zM7 4.5h10v3H7zM8 12h8M12 9v6"/></svg><strong>存储与导出</strong></a>
@@ -52,12 +52,13 @@
               </form>
             </section>
             <section id="model" class="setting-section" hidden>
-              <div class="setting-section__head"><div><h2>模型</h2><p>填入各提供方的API密钥即可使用其模型。</p></div><span class="connection-status" data-model-status hidden>未配置</span></div>
+              <div class="setting-section__head"><div><h2>模型配置</h2><p>填入各Provider的API密钥即可使用其模型。</p></div><span class="connection-status" data-model-status hidden>未配置</span></div>
               <div id="model-provider-root" class="model-provider-root" aria-live="polite"></div>
             </section>
             <section id="multi-agent" class="setting-section" hidden>
               <div class="setting-section__head"><div><h2>多智能体预设</h2><p>仅在进入Recommender时生效。普通对话继续使用主Agent。</p></div><span class="connection-status" data-multi-agent-status>读取中</span></div>
               <div id="multi-agent-preset-root" class="multi-agent-preset-root" aria-live="polite"></div>
+              <div id="review-policy-root" class="review-policy-root" aria-live="polite"></div>
             </section>
             <section id="data" class="setting-section" hidden>
               <div class="setting-section__head"><div><h2>数据接口</h2><p>连接iFind市场数据。</p></div><span class="connection-status" data-data-status>未配置</span></div>

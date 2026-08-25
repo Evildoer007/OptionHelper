@@ -19,16 +19,30 @@ const dataStatus = document.querySelector("[data-data-status]");
 const modelStatus = document.querySelector("[data-model-status]");
 const modelRoot = document.querySelector("#model-provider-root");
 const multiAgentRoot = document.querySelector("#multi-agent-preset-root");
+const reviewPolicyRoot = document.querySelector("#review-policy-root");
 const multiAgentStatus = document.querySelector("[data-multi-agent-status]");
 let dataConfigured = false;
 let providerState = { providers: [], builtins: [], default_model_selection: null, openProviderId: null, addMode: false };
-let multiAgentState = { presets: [], selected_preset_id: "sequential-deliberation", role_models: {}, available_models: [] };
+let multiAgentState = {
+  presets: [], selected_preset_id: "sequential-deliberation", role_models: {},
+  review_policies: [], selected_review_policy_id: "standard-review", review_policy_role_models: {}, available_models: [],
+};
 if (canManageData) {
   document.querySelector("#data").hidden = false;
   document.querySelector("[data-settings-data-link]").hidden = false;
 }
 const storagePath = document.querySelector("[data-default-storage-path]");
 if (storagePath && /Win/i.test(navigator.platform)) storagePath.textContent = "Windows：用户目录/AppData/Local/OptionHelper/local-state";
+
+const settingsClose = document.querySelector(".settings-close");
+settingsClose?.addEventListener("click", (event) => {
+  const referrer = document.referrer ? new URL(document.referrer) : null;
+  const returnsToWorkspace = referrer?.origin === location.origin
+    && ["/optchat", "/optdesk"].includes(referrer.pathname);
+  if (!returnsToWorkspace) return;
+  event.preventDefault();
+  history.back();
+});
 
 installThemeControls(themeControls);
 let preferenceSaveQueue = Promise.resolve();
@@ -119,6 +133,7 @@ function modelRow(model, selected, index) {
 function providerEditor(provider) {
   const configured = Boolean(provider.credential_configured);
   const builtIn = providerState.builtins.some((item) => item.provider_id === provider.provider_id);
+  const providerIdLocked = builtIn || provider.draft !== true;
   const defaultId = providerState.default_model_selection?.provider_id === provider.provider_id
     ? providerState.default_model_selection.model_id
     : provider.models.find((model) => model.enabled)?.model_id || "";
@@ -127,9 +142,9 @@ function providerEditor(provider) {
     <div class="model-provider-editor__header"><strong>${escapeHtml(provider.display_name)}</strong><span>${escapeHtml(provider.provider_id)}</span></div>
     <label class="provider-key-field"><span>API密钥</span><input name="api_key" type="password" autocomplete="new-password" placeholder="${configured ? "••••••••••••（已保存）" : "输入API密钥"}"><small>${configured ? "已保存。留空将保留当前密钥。" : "保存后仅写入当前设备的凭据存储。"}</small></label>
     <details class="provider-advanced"><summary>自定义设置</summary><div class="provider-advanced__content">
-      <label>提供方名称<input name="display_name" value="${escapeHtml(provider.display_name)}" autocomplete="off"></label>
+      <label>Provider名称<input name="display_name" value="${escapeHtml(provider.display_name)}" autocomplete="off"></label>
       <label>API地址<input name="endpoint" value="${escapeHtml(provider.endpoint)}" inputmode="url" autocomplete="off"></label>
-      <label>提供方ID<input name="provider_id" value="${escapeHtml(provider.provider_id)}" autocomplete="off" ${builtIn ? "readonly" : ""}><small>${builtIn ? "内置提供方标识不可修改。" : "仅用于本机识别。"}</small></label>
+      <label>Provider ID<input name="provider_id" value="${escapeHtml(provider.provider_id)}" autocomplete="off" ${providerIdLocked ? "readonly" : ""}><small>${providerIdLocked ? "保存后用于绑定本机凭据，不可修改。" : "首次保存前可自定义；保存后不可修改。"}</small></label>
       <div class="model-catalog-head"><div><strong>模型目录</strong><small>仅启用的模型会显示在对话选择器中。</small></div><div><button class="model-link-button" type="button" data-model-action="discover-models">获取模型</button><button class="model-link-button" type="button" data-model-action="add-model">添加模型</button></div></div>
       <div class="model-catalog" data-model-catalog>${rows}</div>
       <button class="model-test-button" type="button" data-model-action="test-provider">测试连接</button>
@@ -150,9 +165,9 @@ function renderProvider(provider) {
 
 function addProviderPanel() {
   const plus = `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v10M3 8h10"/></svg>`;
-  if (!providerState.addMode) return `<div class="model-add-actions"><button class="model-add-provider" type="button" data-model-action="show-add-provider">${plus}添加提供方</button><button class="model-add-provider" type="button" data-model-action="add-custom">${plus}添加自定义提供方</button></div>`;
+  if (!providerState.addMode) return `<div class="model-add-actions"><button class="model-add-provider" type="button" data-model-action="show-add-provider">${plus}添加Provider</button><button class="model-add-provider" type="button" data-model-action="add-custom">${plus}添加自定义Provider</button></div>`;
   const choices = providerState.builtins.map((provider) => `<button type="button" class="model-provider-choice" data-model-action="add-builtin" data-provider-id="${escapeHtml(provider.provider_id)}"><strong>${escapeHtml(provider.display_name)}</strong><span>${escapeHtml(provider.endpoint)}</span></button>`).join("");
-  return `<section class="model-provider-add"><div><h3>添加提供方</h3><p>选择一个内置提供方。</p></div><div class="model-provider-choices">${choices}</div><div class="model-provider-add__actions"><button class="model-secondary-button" type="button" data-model-action="hide-add-provider">取消</button></div></section>`;
+  return `<section class="model-provider-add"><div><h3>添加Provider</h3><p>选择一个内置Provider。</p></div><div class="model-provider-choices">${choices}</div><div class="model-provider-add__actions"><button class="model-secondary-button" type="button" data-model-action="hide-add-provider">取消</button></div></section>`;
 }
 
 function renderProviders() {
@@ -164,7 +179,7 @@ function renderProviders() {
     modelRoot.innerHTML = `<div class="model-empty"><strong>模型服务由管理员维护</strong><p>当前账户没有本机模型配置权限。</p></div>`;
     return;
   }
-  const empty = !providers.length ? `<div class="model-empty"><strong>尚未配置模型服务</strong><p>添加任一提供方，启用至少一个模型并保存API Key后即可开始对话。</p></div>` : "";
+  const empty = !providers.length ? `<div class="model-empty"><strong>尚未配置模型服务</strong><p>添加任一Provider，启用至少一个模型并保存API Key后即可开始对话。</p></div>` : "";
   modelRoot.innerHTML = `${empty}${providers.map(renderProvider).join("")}${addProviderPanel()}`;
   enhanceSelects(modelRoot);
 }
@@ -182,9 +197,20 @@ const rolePresentation = {
     Critic: { name: "Reviewer", description: "复核规则与证据" },
   },
   "independent-council": {
-    Intent: { name: "Interpreter", description: "解析目标与约束" },
-    Research: { name: "Selector", description: "同时用于两个独立Selector" },
-    Critic: { name: "Reviewer", description: "合并候选并完成复核" },
+    Framer: { name: "Framer", description: "明确需求边界和比较框架" },
+    Matcher: { name: "Matcher", description: "独立匹配候选与约束" },
+    Hedger: { name: "Hedger", description: "识别风险暴露与对冲条件" },
+    Moderator: { name: "Moderator", description: "汇总独立意见并形成结论" },
+  },
+  "product-trader-loop": {
+    Structurer: { name: "Structurer", description: "提出候选、条款调整和验证计划" },
+    Trader: { name: "Trader", description: "基于Host事实接受或退回候选" },
+    Reviewer: { name: "Reviewer", description: "复核最终候选版本与事实引用" },
+  },
+  "constraint-ranking": {
+    Specifier: { name: "Specifier", description: "将用户要求转换为硬约束与排序规则" },
+    Generator: { name: "Generator", description: "从受控证据生成候选" },
+    Reviewer: { name: "Reviewer", description: "只批准或拒绝确定性排序结果" },
   },
 };
 
@@ -195,19 +221,15 @@ const presetPresentation = {
   },
   "product-trader-loop": {
     summary: "产品交易闭环",
-    description: "ProductManager与Trader在冻结前反复修改结构并按需计算。",
+    description: "Structurer与Trader基于同一CandidateVersion迭代，变更版本后才重新评估。",
   },
   "independent-council": {
-    summary: "独立评审",
-    description: "两个独立Selector并行工作，由Reviewer汇总复核。",
+    summary: "异构评审",
+    description: "Framer先定边界，Matcher与Hedger独立判断，再由Moderator汇总。",
   },
   "constraint-ranking": {
     summary: "约束排序",
-    description: "Generator生成候选，Scorer补齐指标，Ranker按约束和排序键选出结果。",
-  },
-  "adversarial-review": {
-    summary: "对抗复核",
-    description: "Proposer提出方案，Challenger寻找反例，Arbiter基于证据裁决。",
+    description: "Specifier定义约束，Generator生成候选，确定性引擎排序，Reviewer终审。",
   },
 };
 
@@ -219,18 +241,15 @@ function presetDiagram(preset) {
   const id = `preset-${preset.preset_id.replace(/[^a-z0-9-]/g, "")}`;
   const arrow = `${id}-arrow`;
   const node = (x, y, width, label, accent = false) => `<g class="preset-diagram__node ${accent ? "is-accent" : ""}"><rect x="${x}" y="${y}" width="${width}" height="48" rx="8"/><text x="${x + width / 2}" y="${y + 29}" text-anchor="middle">${label}</text></g>`;
-  const moduleStrip = `<g class="preset-diagram__module"><rect x="148" y="116" width="264" height="28" rx="6"/><text x="280" y="135" text-anchor="middle">按需模块：Payoffer · Pricer · Backtester</text></g>`;
   let body = "";
   if (preset.preset_id === "sequential-deliberation") {
     body = `<g class="preset-diagram__links"><path d="M148 80H204" marker-end="url(#${arrow})"/><path d="M356 80H412" marker-end="url(#${arrow})"/></g>${node(12, 56, 136, "Interpreter", true)}${node(220, 56, 136, "Selector")}${node(428, 56, 120, "Reviewer")}`;
   } else if (preset.preset_id === "product-trader-loop") {
-    body = `<g class="preset-diagram__links"><path d="M168 64H392" marker-end="url(#${arrow})"/><path d="M392 88H168" marker-end="url(#${arrow})"/></g>${node(12, 40, 156, "ProductManager", true)}${node(392, 40, 156, "Trader", true)}${moduleStrip}`;
+    body = `<g class="preset-diagram__links"><path d="M132 44H176" marker-end="url(#${arrow})"/><path d="M384 44H428" marker-end="url(#${arrow})"/><path d="M488 68V100" marker-end="url(#${arrow})"/><path d="M428 84H84Q72 84 72 72V68" fill="none" stroke-dasharray="5 4" marker-end="url(#${arrow})"/></g>${node(12, 20, 120, "Structurer", true)}${node(176, 20, 208, "Host Modules")}${node(428, 20, 120, "Trader")}${node(428, 100, 120, "Reviewer")}`;
   } else if (preset.preset_id === "independent-council") {
-    body = `<g class="preset-diagram__links"><path d="M116 68H144V44H172" marker-end="url(#${arrow})"/><path d="M116 92H144V116H172" marker-end="url(#${arrow})"/><path d="M284 44H360V68H416" marker-end="url(#${arrow})"/><path d="M284 116H360V92H416" marker-end="url(#${arrow})"/></g>${node(12, 56, 104, "Interpreter", true)}${node(172, 20, 112, "Selector A")}${node(172, 92, 112, "Selector B")}${node(416, 56, 132, "Reviewer")}`;
+    body = `<g class="preset-diagram__links"><path d="M124 80H152" marker-end="url(#${arrow})"/><path d="M264 80H292" marker-end="url(#${arrow})"/><path d="M404 80H432" marker-end="url(#${arrow})"/></g>${node(12, 56, 112, "Framer", true)}${node(152, 56, 112, "Matcher")}${node(292, 56, 112, "Hedger")}${node(432, 56, 116, "Moderator", true)}`;
   } else if (preset.preset_id === "constraint-ranking") {
-    body = `<g class="preset-diagram__links"><path d="M148 80H204" marker-end="url(#${arrow})"/><path d="M356 80H412" marker-end="url(#${arrow})"/></g>${node(12, 56, 136, "Generator", true)}${node(220, 56, 136, "Scorer")}${node(428, 56, 120, "Ranker")}${moduleStrip}`;
-  } else if (preset.preset_id === "adversarial-review") {
-    body = `<g class="preset-diagram__links"><path d="M168 64H204" marker-end="url(#${arrow})"/><path d="M204 88H168" marker-end="url(#${arrow})"/><path d="M356 64H392" marker-end="url(#${arrow})"/></g>${node(12, 40, 156, "Proposer", true)}${node(204, 40, 152, "Challenger")}${node(392, 40, 156, "Arbiter")}${moduleStrip}`;
+    body = `<g class="preset-diagram__links"><path d="M124 44H148" marker-end="url(#${arrow})"/><path d="M260 44H284" marker-end="url(#${arrow})"/><path d="M412 44H436" marker-end="url(#${arrow})"/><path d="M492 68V100" marker-end="url(#${arrow})"/></g>${node(12, 20, 112, "Specifier", true)}${node(148, 20, 112, "Generator")}${node(284, 20, 128, "Host Modules")}${node(436, 20, 112, "Ranker", true)}${node(436, 100, 112, "Reviewer")}`;
   } else {
     body = `<text class="preset-diagram__empty" x="280" y="84" text-anchor="middle">暂未提供可视化说明</text>`;
   }
@@ -253,6 +272,17 @@ function roleModelOptions(selectedValue) {
 
 function roleDisplay(presetId, role) {
   return rolePresentation[presetId]?.[role] || { name: role, description: "该Agent的模型配置" };
+}
+
+function roleRows(roles, configuredRoles, displayFor, fieldName, disabled) {
+  return roles.map((role) => {
+    const selectedValue = roleModelValue(configuredRoles[role]);
+    const display = displayFor(role);
+    if (!multiAgentState.available_models.length) {
+      return `<div class="multi-agent-role-row is-empty"><span><strong>${escapeHtml(display.name)}</strong><small>${escapeHtml(display.description)}</small></span><p>请先在“模型配置”中启用至少一个模型。</p></div>`;
+    }
+    return `<label class="multi-agent-role-row"><span><strong>${escapeHtml(display.name)}</strong><small>${escapeHtml(display.description)}</small></span><select name="${escapeHtml(fieldName)}-${escapeHtml(role)}" data-role="${escapeHtml(role)}" data-choice ${canEditModel && !disabled ? "" : "disabled"}>${roleModelOptions(selectedValue)}</select></label>`;
+  }).join("");
 }
 
 function renderMultiAgentPresets() {
@@ -279,22 +309,35 @@ function renderMultiAgentPresets() {
     return;
   }
   const configuredRoles = multiAgentState.role_models[selected.preset_id] || {};
-  const roleRows = selected.roles.map((role) => {
-    const selectedValue = roleModelValue(configuredRoles[role]);
-    const display = roleDisplay(selected.preset_id, role);
-    if (!multiAgentState.available_models.length) {
-      return `<div class="multi-agent-role-row is-empty"><span><strong>${escapeHtml(display.name)}</strong><small>${escapeHtml(display.description)}</small></span><p>请先在“模型”中启用至少一个模型。</p></div>`;
-    }
-    return `<label class="multi-agent-role-row"><span><strong>${escapeHtml(display.name)}</strong><small>${escapeHtml(display.description)}</small></span><select name="role-${escapeHtml(role)}" data-role="${escapeHtml(role)}" data-choice ${canEditModel ? "" : "disabled"}>${roleModelOptions(selectedValue)}</select></label>`;
-  }).join("");
+  const presetRoleRows = roleRows(
+    selected.roles, configuredRoles, (role) => roleDisplay(selected.preset_id, role), "role", !selected.enabled,
+  );
   const hasModels = multiAgentState.available_models.length > 0;
   multiAgentRoot.innerHTML = `<div class="multi-agent-preset-list" role="radiogroup" aria-label="Recommender多智能体预设">${presetRows}</div>
     <form class="multi-agent-role-form" data-multi-agent-role-form novalidate>
-      <div class="multi-agent-role-head"><div><strong>${escapeHtml(selected.display_name)}的Agent模型</strong><small>仅配置本预设当前实际运行的Agent。未指定时继承本轮会话模型。</small></div></div>
-      <div class="multi-agent-role-list">${roleRows}</div>
+      <div class="multi-agent-role-head"><div><strong>${escapeHtml(selected.display_name)}的Agent模型</strong><small>仅配置本预设当前实际运行的Agent。未指定时继承本轮会话模型；本轮显式模型会优先覆盖角色槽。</small></div></div>
+      <div class="multi-agent-role-list">${presetRoleRows}</div>
       <div class="multi-agent-role-actions"><p class="form-result" data-form-result="multi-agent" role="status" aria-live="polite"></p>${hasModels ? `<button class="model-primary-button" type="submit" ${canEditModel ? "" : "disabled"}>保存Agent模型</button>` : `<a class="model-secondary-button" href="#model">前往配置模型</a>`}</div>
     </form>`;
+  renderReviewPolicies();
   enhanceSelects(multiAgentRoot);
+}
+
+function renderReviewPolicies() {
+  const selected = multiAgentState.review_policies.find((policy) => policy.policy_id === multiAgentState.selected_review_policy_id);
+  if (!selected) {
+    reviewPolicyRoot.innerHTML = `<div class="model-empty"><strong>未找到复核策略</strong><p>请刷新设置或检查App版本。</p></div>`;
+    return;
+  }
+  const policyRows = multiAgentState.review_policies.map((policy) => {
+    const status = policy.enabled ? "可用" : "规划中";
+    const detail = policy.enabled ? `${escapeHtml(policy.version)} · ${status}` : escapeHtml(policy.disabled_reason || status);
+    return `<article class="review-policy-card ${policy.enabled ? "" : "is-disabled"} ${policy.policy_id === selected.policy_id ? "is-selected" : ""}">
+      <label class="review-policy-card__head"><input type="radio" name="review-policy" value="${escapeHtml(policy.policy_id)}" ${policy.policy_id === selected.policy_id ? "checked" : ""} ${policy.enabled && canEditModel ? "" : "disabled"}><span><strong>${escapeHtml(policy.display_name)}</strong><small>独立于推荐Mode的复核协议</small></span><em>${status}</em></label><p>${detail}</p>
+    </article>`;
+  }).join("");
+  reviewPolicyRoot.innerHTML = `<div class="review-policy-head"><div><h3>复核策略</h3><p>标准复核已可用；严格复核将在协议发布后开放。</p></div></div><div class="review-policy-list" role="radiogroup" aria-label="复核策略">${policyRows}</div>
+    <div class="multi-agent-role-form"><div class="multi-agent-role-head"><div><strong>使用当前Mode的终审角色</strong><small>标准复核不增加独立AgentRun，也不新增模型槽。Mode1、Mode2和Mode4由Reviewer终审，Mode3由Moderator终审。</small></div></div></div>`;
 }
 
 async function refreshMultiAgentPresets() {
@@ -312,6 +355,19 @@ multiAgentRoot.addEventListener("change", async (event) => {
   } catch (error) {
     await refreshMultiAgentPresets();
     message(resultFor("multi-agent"), error.message, true);
+  }
+});
+
+reviewPolicyRoot.addEventListener("change", async (event) => {
+  const control = event.target.closest('input[name="review-policy"]');
+  if (!control) return;
+  try {
+    await send("/api/settings/multi-agent-review-policy/default", { review_policy_id: control.value });
+    multiAgentState.selected_review_policy_id = control.value;
+    renderReviewPolicies();
+  } catch (error) {
+    await refreshMultiAgentPresets();
+    message(resultFor("review-policy"), error.message, true);
   }
 });
 
@@ -340,14 +396,14 @@ multiAgentRoot.addEventListener("submit", async (event) => {
 
 function newCustomProvider() {
   const providerId = `provider-${Date.now().toString(36)}`;
-  return { provider_id: providerId, display_name: "自定义提供方", endpoint: "", protocol: "openai-chat-completions", credential_configured: false, models: [{ model_id: "", display_name: "", enabled: true }] };
+  return { provider_id: providerId, display_name: "自定义Provider", endpoint: "", protocol: "openai-chat-completions", credential_configured: false, draft: true, models: [{ model_id: "", display_name: "", enabled: true }] };
 }
 
 function addBuiltin(providerId) {
   const source = providerState.builtins.find((provider) => provider.provider_id === providerId);
   if (!source) return;
   const existing = providerState.providers.some((provider) => provider.provider_id === source.provider_id);
-  const provider = { ...source, models: source.models.map((model, index) => ({ ...model, enabled: index === 0 })), credential_configured: false };
+  const provider = { ...source, models: source.models.map((model, index) => ({ ...model, enabled: index === 0 })), credential_configured: false, draft: true };
   if (!existing) providerState.providers = [...providerState.providers, provider];
   providerState.openProviderId = provider.provider_id;
   providerState.addMode = false;
@@ -361,7 +417,12 @@ function catalogPayload(form) {
     display_name: row.querySelector('[name^="model_name-"]').value.trim(),
     enabled: row.querySelector('[name^="enabled-"]').checked,
   })).filter((model) => model.model_id);
-  const defaultModelId = form.querySelector('input[name="default_model"]:checked')?.value || models.find((model) => model.enabled)?.model_id || "";
+  const selectedRow = form.querySelector('input[name="default_model"]:checked')?.closest("[data-model-row]");
+  const selectedModelId = selectedRow?.querySelector('[name^="model_id-"]')?.value.trim() || "";
+  const selectedIsEnabled = Boolean(selectedRow?.querySelector('[name^="enabled-"]')?.checked);
+  const defaultModelId = selectedIsEnabled && selectedModelId
+    ? selectedModelId
+    : models.find((model) => model.enabled)?.model_id || "";
   return {
     provider_id: form.elements.provider_id.value.trim().toLowerCase(),
     display_name: form.elements.display_name.value.trim(),
@@ -376,10 +437,11 @@ function showProviderResult(form, text, error = false) { message(form.querySelec
 
 async function saveProvider(form) {
   const payload = catalogPayload(form);
+  const originalProviderId = form.dataset.providerId;
   const apiKey = form.elements.api_key.value.trim();
   const current = providerState.providers.find((provider) => provider.provider_id === form.dataset.providerId);
   if (!payload.provider_id || !payload.endpoint || !payload.models.some((model) => model.enabled)) {
-    showProviderResult(form, "请填写提供方ID、Base URL，并至少启用一个模型。", true);
+    showProviderResult(form, "请填写Provider ID、Base URL，并至少启用一个模型。", true);
     return;
   }
   if (!apiKey && !current?.credential_configured) {
@@ -390,8 +452,8 @@ async function saveProvider(form) {
   button.disabled = true;
   try {
     const response = apiKey
-      ? await sendCredential("/api/settings/model-provider/credential", { ...payload, api_key: apiKey })
-      : await send("/api/settings/model-provider", payload);
+      ? await sendCredential("/api/settings/model-provider/credential", { ...payload, original_provider_id: originalProviderId, api_key: apiKey })
+      : await send("/api/settings/model-provider", { ...payload, original_provider_id: originalProviderId });
     providerState.openProviderId = payload.provider_id;
     applySettings(response.settings);
     await refreshProviders();
@@ -419,7 +481,7 @@ async function testProvider(form) {
 async function discoverModels(form) {
   const payload = catalogPayload(form);
   if (!payload.provider_id || !payload.endpoint) {
-    showProviderResult(form, "请先填写提供方ID和Base URL。", true);
+    showProviderResult(form, "请先填写Provider ID和Base URL。", true);
     return;
   }
   const button = form.querySelector('[data-model-action="discover-models"]');
@@ -478,6 +540,35 @@ modelRoot.addEventListener("submit", async (event) => {
   if (!form) return;
   event.preventDefault();
   await saveProvider(form);
+});
+
+modelRoot.addEventListener("change", (event) => {
+  const control = event.target;
+  if (!(control instanceof HTMLInputElement)) return;
+  const row = control.closest("[data-model-row]");
+  if (control.name === "default_model" && control.checked) {
+    const enabled = row?.querySelector('[name^="enabled-"]');
+    if (enabled instanceof HTMLInputElement) enabled.checked = true;
+    return;
+  }
+  if (!control.name.startsWith("enabled-") || control.checked) return;
+  const defaultControl = row?.querySelector('input[name="default_model"]');
+  if (!(defaultControl instanceof HTMLInputElement) || !defaultControl.checked) return;
+  defaultControl.checked = false;
+  const ownerForm = control.form;
+  if (!ownerForm) return;
+  const replacement = Array.from(ownerForm.querySelectorAll("[data-model-row]"))
+    .find((candidate) => candidate.querySelector('[name^="enabled-"]')?.checked)
+    ?.querySelector('input[name="default_model"]');
+  if (replacement instanceof HTMLInputElement) replacement.checked = true;
+});
+
+modelRoot.addEventListener("input", (event) => {
+  const control = event.target;
+  if (!(control instanceof HTMLInputElement) || !control.name.startsWith("model_id-")) return;
+  const row = control.closest("[data-model-row]");
+  const defaultControl = row?.querySelector('input[name="default_model"]');
+  if (defaultControl instanceof HTMLInputElement) defaultControl.value = control.value.trim();
 });
 
 function validateData() {

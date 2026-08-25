@@ -51,13 +51,13 @@
 .selection-panel .top-actions .button{min-width:0;white-space:nowrap}
 .selection-panel > .selection-count{margin:6px 0 0;color:var(--muted);font-size:12px}
 
-/* DSH scrollbar contract, scoped to this hosted module document. */
+/* Standalone module scrollbar. OptDesk supplies the hosted overlay scrollbar. */
 body { --oh-scrollbar-thumb: color-mix(in srgb, var(--color-ink) 14%, transparent); --oh-scrollbar-thumb-hover: color-mix(in srgb, var(--color-ink) 22%, transparent); --oh-scrollbar-size: 6px; }
-@supports not selector(::-webkit-scrollbar) { body, body * { scrollbar-width: thin; scrollbar-color: var(--oh-scrollbar-thumb) transparent; } }
-::-webkit-scrollbar { width: var(--oh-scrollbar-size); height: var(--oh-scrollbar-size); }
-::-webkit-scrollbar-track, ::-webkit-scrollbar-corner { background: transparent; }
-::-webkit-scrollbar-thumb { border:1px solid transparent; border-radius:999px; background:var(--oh-scrollbar-thumb); background-clip:padding-box; transition:background-color .16s ease; }
-::-webkit-scrollbar-thumb:hover { background: var(--oh-scrollbar-thumb-hover); }
+@supports not selector(::-webkit-scrollbar) { html:not([data-optionhelper-app-hosted="true"]), html:not([data-optionhelper-app-hosted="true"]) * { scrollbar-width: thin; scrollbar-color: var(--oh-scrollbar-thumb) transparent; } }
+html:not([data-optionhelper-app-hosted="true"])::-webkit-scrollbar, html:not([data-optionhelper-app-hosted="true"]) *::-webkit-scrollbar { width: var(--oh-scrollbar-size); height: var(--oh-scrollbar-size); }
+html:not([data-optionhelper-app-hosted="true"])::-webkit-scrollbar-track, html:not([data-optionhelper-app-hosted="true"]) *::-webkit-scrollbar-track, html:not([data-optionhelper-app-hosted="true"])::-webkit-scrollbar-corner, html:not([data-optionhelper-app-hosted="true"]) *::-webkit-scrollbar-corner { background: transparent; }
+html:not([data-optionhelper-app-hosted="true"])::-webkit-scrollbar-thumb, html:not([data-optionhelper-app-hosted="true"]) *::-webkit-scrollbar-thumb { border:1px solid transparent; border-radius:999px; background:var(--oh-scrollbar-thumb); background-clip:padding-box; transition:background-color .16s ease; }
+html:not([data-optionhelper-app-hosted="true"])::-webkit-scrollbar-thumb:hover, html:not([data-optionhelper-app-hosted="true"]) *::-webkit-scrollbar-thumb:hover { background: var(--oh-scrollbar-thumb-hover); }
 .selection-panel { scrollbar-gutter: stable; }
 
 .settings-panel textarea{
@@ -80,3 +80,9 @@ body { --oh-scrollbar-thumb: color-mix(in srgb, var(--color-ink) 14%, transparen
 .quote-item button:hover,.quote-add:hover{border-color:var(--red);background:var(--color-brand-red-soft)}
 .quote-run{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:7px 0;border-top:1px solid var(--line);font-size:12px}
 .quote-run:first-child{margin-top:10px}.quote-run span{color:var(--muted);font-size:11px}
+
+/* OptDesk keeps the Reporter controls denser than the delivered A4 report. */
+.source-panel h1,.settings-panel h2{font-size:17px}
+.section-head h2,.preview-head h2{font-size:18px}
+.candidate-title{font-size:13px}
+.button-primary{color:var(--color-on-brand)}

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import asdict
 from functools import lru_cache
 from hashlib import sha256
@@ -12,7 +13,54 @@ import numpy as np
 from runtime.contracts.contract_types import semantic_hash
 
 from .common_metrics import event_happened, monitor_values, number_summary, paired_monitor_values
-from .metric_profile_map import MetricProfileSpec, metric_profile_for
+from .metric_profile_map import MetricProfileSpec, metric_profile_for, required_profile_output_keys
+
+
+_OPTIONAL_DIAGNOSTIC_REQUIREMENTS: dict[str, dict[str, Any]] = {
+    "zero_return_regions": {
+        "status": "unavailable",
+        "reason_code": "zero_return_regions_not_exposed_by_shared_contract_core",
+        "producer": "runtime.contracts",
+        "required_facts": [
+            "settlement_variable_names",
+            "zero_return_roots_or_regions",
+            "root_domain_conditions",
+            "price_unit_and_normalization",
+        ],
+    },
+    "cashflow_leg_decomposition": {
+        "status": "unavailable",
+        "reason_code": "cashflow_leg_roles_not_exposed_by_shared_contract_core",
+        "producer": "runtime.contracts.evaluate_contract",
+        "required_facts": [
+            "cashflow_leg_id",
+            "cashflow_economic_role",
+            "cashflow_leg_gross_return",
+        ],
+    },
+    "periodic_purchase_cashflows": {
+        "status": "unavailable",
+        "reason_code": "periodic_purchase_cashflows_not_exposed_by_shared_contract_core",
+        "producer": "runtime.contracts.evaluate_contract",
+        "required_facts": [
+            "observation_date",
+            "observation_price",
+            "period_purchase_quantity",
+            "period_cashflow_gross_return",
+        ],
+    },
+    "synchronous_path_coverage": {
+        "status": "unavailable",
+        "reason_code": "synchronous_path_coverage_not_exposed_by_path_replay",
+        "producer": "modules.backtester.path_replay",
+        "required_facts": [
+            "observation_count_by_asset",
+            "common_observation_count",
+            "alignment_policy",
+            "dropped_session_count_by_asset",
+        ],
+    },
+}
 
 
 def profile_for_product(product_id: str) -> MetricProfileSpec:
@@ -88,7 +136,6 @@ def specialized_metrics(
             "knock_out_vs_full_term": _accumulator_outcomes(trades),
             "contract_purchase_price": _finite_term(terms, "K"),
             "quantity_multiplier": _finite_term(terms, "m"),
-            "periodic_purchase_cashflows": {"status": "not_exposed_by_shared_contract_core"},
         })
     elif profile_spec.profile_id == "variance_swap":
         realized = monitor_values(trades, "sigma_realized")
@@ -120,7 +167,10 @@ def specialized_metrics(
         })
     if "S0Vec" in terms:
         result["multi_underlying_terminal"] = _multi_underlying_terminal(trades)
-    gaps = _metric_gaps(profile_spec.profile_id, terms)
+    optional_diagnostics = _optional_diagnostics(profile_spec.profile_id, terms)
+    if optional_diagnostics:
+        result["optional_diagnostics"] = optional_diagnostics
+    gaps = _required_output_gaps(profile_spec.profile_id, result)
     result["metric_coverage"] = {
         "status": "partial" if gaps else "complete",
         "gaps": gaps,
@@ -134,6 +184,19 @@ def _select_events(source: Mapping[str, Any], names: Sequence[str]) -> dict[str,
 
 def _select_monitors(source: Mapping[str, Any], names: Sequence[str]) -> dict[str, Any]:
     return {name: source[name] for name in names if name in source}
+
+
+def _required_output_gaps(profile_id: str, result: Mapping[str, Any]) -> list[str]:
+    """验证既有专属指标投影；不在覆盖层补算或猜测任何事实。"""
+    gaps: list[str] = []
+    for key in required_profile_output_keys(profile_id):
+        if key not in result:
+            gaps.append(f"missing_required_output:{key}")
+            continue
+        value = result[key]
+        if isinstance(value, (Mapping, Sequence)) and not isinstance(value, (str, bytes)) and not value:
+            gaps.append(f"empty_required_output:{key}")
+    return gaps
 
 
 def _terminal_performance_sign(values: np.ndarray) -> dict[str, Any]:
@@ -325,13 +388,16 @@ def _return_summary(values: Sequence[float]) -> dict[str, Any]:
     return {"percent": number_summary(values)}
 
 
-def _metric_gaps(profile_id: str, terms: Mapping[str, Any]) -> list[str]:
-    gaps = {
-        "terminal_payoff": ["break_even_not_derived_from_shared_contract"],
-        "accumulator": ["periodic_purchase_cashflows_not_exposed_by_shared_contract_core"],
-        "airbag": ["participation_and_floor_cashflow_decomposition_not_exposed"],
-        "shark_fin": ["participation_and_floor_cashflow_decomposition_not_exposed"],
-    }.get(profile_id, []).copy()
+def _optional_diagnostics(profile_id: str, terms: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    """声明非核心诊断所缺的最小上游事实，不从产品公式或字段顺序反推。"""
+
+    names: list[str] = []
+    if profile_id == "terminal_payoff":
+        names.append("zero_return_regions")
+    if profile_id in {"airbag", "shark_fin"}:
+        names.append("cashflow_leg_decomposition")
+    if profile_id == "accumulator":
+        names.append("periodic_purchase_cashflows")
     if "S0Vec" in terms:
-        gaps.append("synchronous_multi_underlying_coverage_not_estimated_from_single_sample")
-    return gaps
+        names.append("synchronous_path_coverage")
+    return {name: deepcopy(_OPTIONAL_DIAGNOSTIC_REQUIREMENTS[name]) for name in names}

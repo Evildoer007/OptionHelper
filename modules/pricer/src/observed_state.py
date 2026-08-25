@@ -6,7 +6,10 @@ from dataclasses import dataclass, replace
 from datetime import date
 import hashlib
 import json
+import re
 from typing import Any, Mapping
+
+from runtime.contracts.contract_api import bind_term_symbols, resolve_schedule
 
 
 class ObservedStateError(ValueError):
@@ -229,6 +232,83 @@ class ObservedContractState:
         if unsupported:
             raise ObservedStateError("存续路径定价尚未实现历史事件：" + ",".join(unsupported))
 
+    def validate_observation_bounds(
+        self,
+        *,
+        contract_start_date: str,
+        contract_terms: Mapping[str, Any],
+        trading_sessions: tuple[str, ...],
+    ) -> None:
+        """Cross-check reported path state against the verified calendar.
+
+        Historical counters are facts, not free model parameters.  Their
+        upper bounds come from the frozen contract selector evaluated on the
+        same verified sessions used by the Host.
+        """
+        if not self.occurred_events:
+            return
+        start = _date(contract_start_date, "contract_start_date")
+        valuation = _date(self.valuation_date, "valuation_date")
+        try:
+            sessions = tuple(date.fromisoformat(str(value)) for value in trading_sessions)
+        except ValueError as error:
+            raise ObservedStateError("已验证交易sessions必须为YYYY-MM-DD") from error
+        if not sessions or sessions != tuple(sorted(set(sessions))):
+            raise ObservedStateError("已验证交易sessions必须严格递增且不重复")
+        completed = tuple(value for value in sessions if start <= value <= valuation)
+        if not completed:
+            raise ObservedStateError("已验证交易sessions未覆盖合同起始日至估值日")
+
+        stage = self.observation_stage
+        if stage is not None and stage >= len(completed):
+            raise ObservedStateError(
+                f"observation_stage={stage}超过估值日前已完成交易观察上限{len(completed) - 1}"
+            )
+
+        if self.has_accumulated_count:
+            coupon_observations = _selected_observation_count(
+                contract_terms, "n_coupon", sessions, start, valuation,
+            )
+            if coupon_observations is not None and self.accumulated_count > coupon_observations:
+                raise ObservedStateError(
+                    f"accumulated_count={self.accumulated_count}超过已完成票息观察数{coupon_observations}"
+                )
+
+        if self.has_accumulated_quantity:
+            quantity_observations = _selected_observation_count(
+                contract_terms, "Q_acc", sessions, start, valuation,
+            )
+            q = contract_terms.get("q")
+            multiplier = contract_terms.get("m")
+            if (
+                quantity_observations is not None
+                and isinstance(q, (int, float)) and not isinstance(q, bool)
+                and isinstance(multiplier, (int, float)) and not isinstance(multiplier, bool)
+            ):
+                maximum = quantity_observations * float(q) * float(multiplier)
+                if self.accumulated_quantity > maximum:
+                    raise ObservedStateError(
+                        f"accumulated_quantity={self.accumulated_quantity}超过合同累计数量上限{maximum}"
+                    )
+
+    def completed_observation_count(
+        self,
+        *,
+        contract_start_date: str,
+        contract_terms: Mapping[str, Any],
+        monitor_key: str,
+        trading_sessions: tuple[str, ...],
+    ) -> int:
+        start = _date(contract_start_date, "contract_start_date")
+        valuation = _date(self.valuation_date, "valuation_date")
+        sessions = tuple(date.fromisoformat(str(value)) for value in trading_sessions)
+        count = _selected_observation_count(
+            contract_terms, monitor_key, sessions, start, valuation,
+        )
+        if count is None:
+            raise ObservedStateError(f"冻结合同缺少{monitor_key}观察日程")
+        return count
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "valuation_date": self.valuation_date,
@@ -265,3 +345,25 @@ def _date(value: object, label: str) -> date:
         return date.fromisoformat(value)
     except ValueError as error:
         raise ObservedStateError(f"{label}必须为YYYY-MM-DD") from error
+
+
+def _selected_observation_count(
+    terms: Mapping[str, Any],
+    monitor_key: str,
+    sessions: tuple[date, ...],
+    start: date,
+    valuation: date,
+) -> int | None:
+    monitor = terms.get("monitor")
+    if not isinstance(monitor, Mapping) or not isinstance(monitor.get(monitor_key), str):
+        return None
+    match = re.search(r"\bS_t\[([A-Za-z_][A-Za-z0-9_]*)\]", str(monitor[monitor_key]))
+    if match is None:
+        raise ObservedStateError(f"{monitor_key}未绑定明确观察日程")
+    bindings = bind_term_symbols(terms)
+    selector = bindings.get(match.group(1))
+    if selector is None:
+        raise ObservedStateError(f"{monitor_key}观察日程未在冻结合同中解析")
+    eligible = tuple(value for value in sessions if value >= start)
+    selected = resolve_schedule(selector, tuple(value.isoformat() for value in eligible))
+    return sum(date.fromisoformat(str(value)[:10]) <= valuation for value in selected)

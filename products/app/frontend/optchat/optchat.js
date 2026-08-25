@@ -1,23 +1,35 @@
 import { bindComposerKeyboard, clearMessage, configureModelPicker, initializeWorkspace, message, renderMessages, renderReports, renderTaskList, request, safeJson, setTaskLocation, taskIdFromLocation } from "/app/frontend/shared/app.js";
+import { createThinkingOrb } from "/app/frontend/shared/thinking-orb.js";
 import { createTransitionScope } from "/app/frontend/shared/transition-scope.js";
 import { currentTheme, currentThemePreference, onThemeChange } from "/app/frontend/shared/theme.js";
 
 const modules = new Map([["datafetcher", "数据获取"], ["payoffer", "收益结构"], ["pricer", "估值定价"], ["backtester", "历史回测"], ["reporter", "研究报告"]]);
-const thinkingStates = Object.freeze([
-  "Working",
-  "Searching",
-  "Solving",
-  "Listening",
-  "Connecting",
-  "Weaving",
-  "Composing",
-  "Breathing",
-  "Shaping",
-]);
+const processOrbStates = Object.freeze({
+  request: "listening",
+  routing: "searching",
+  agent_run: "solving",
+  host_module: "connecting",
+  candidate_cycle: "weaving",
+  answer: "composing",
+  terminal: "shaping",
+});
 const transientPrefix = "optionhelper.workspace.state";
 
 export async function startWorkspace(initialMode) {
   const shell = document.querySelector("[data-workspace-shell]");
+  let workspaceRevealTimer = 0;
+  let workspaceRevealed = false;
+  const revealWorkspace = () => {
+    if (workspaceRevealed) return;
+    workspaceRevealed = true;
+    window.clearTimeout(workspaceRevealTimer);
+    shell.dataset.initializing = "false";
+    shell.setAttribute("aria-busy", "false");
+    document.body.classList.remove("workspace-body--initializing");
+  };
+  // Never leave the native window behind a loading surface if a local service
+  // responds slowly or a module fails during initial restoration.
+  workspaceRevealTimer = window.setTimeout(revealWorkspace, 2800);
   const rail = document.querySelector("#rail-task-list");
   const stream = document.querySelector("#conversation-stream");
   const chatSurface = document.querySelector("#chat-surface");
@@ -47,14 +59,18 @@ export async function startWorkspace(initialMode) {
   let assistantOpen = false;
   let restoringScroll = false;
   let modeSwitchRevision = 0;
+  let taskSelectionRevision = 0;
+  let moduleMountRevision = 0;
   let activeModeTransition = null;
   let workspaceStatusTimer = 0;
   let operationRefreshTimer = 0;
   let pendingConversationRequest = null;
+  let pendingReportRequest = null;
+  let activeProcessPlayback = null;
   const moduleFrames = new Map();
   const moduleContexts = new Map();
   const moduleContextVersions = new Map();
-  let moduleContextRefreshPromise = null;
+  const moduleContextRefreshes = new Map();
   let moduleIndicatorFrame = 0;
   const panelLayoutKey = "optionhelper.desk-panel-widths";
   const clampPanelWidth = (value, minimum, maximum, fallback) => {
@@ -136,40 +152,91 @@ export async function startWorkspace(initialMode) {
     stream.scrollTop = stream.scrollHeight;
     return pending;
   };
-  const appendThinkingIndicator = () => {
-    const thinking = document.createElement("article");
-    thinking.className = "message message--assistant message--thinking";
-    thinking.setAttribute("role", "status");
-    const orbs = document.createElement("span");
-    orbs.className = "thinking-orbs";
-    orbs.setAttribute("aria-hidden", "true");
-    for (let index = 0; index < 3; index += 1) orbs.append(document.createElement("i"));
-    const copy = document.createElement("span");
-    copy.className = "thinking-copy";
-    let stateIndex = 0;
-    const setThinkingState = () => {
-      const state = thinkingStates[stateIndex];
-      thinking.setAttribute("aria-label", `正在处理：${state}`);
-      copy.dataset.thinkingState = state.toLowerCase();
-      copy.textContent = state;
-      if (!matchMedia("(prefers-reduced-motion: reduce)").matches) {
-        copy.classList.remove("is-changing");
-        void copy.offsetWidth;
-        copy.classList.add("is-changing");
-      }
-    };
-    setThinkingState();
-    const stateTimer = window.setInterval(() => {
-      stateIndex = (stateIndex + 1) % thinkingStates.length;
-      setThinkingState();
-    }, 940);
-    thinking.disposeThinking = () => window.clearInterval(stateTimer);
-    thinking.append(orbs, copy);
-    stream.append(thinking);
+  const processEventsPath = (taskId, requestId, afterSeq = 0) => (
+    `/api/tasks/${encodeURIComponent(taskId)}/conversation-requests/${encodeURIComponent(requestId)}/events?after_seq=${afterSeq}`
+  );
+  const appendProcessPanel = () => {
+    const panel = document.createElement("article");
+    panel.className = "message message--assistant message--process";
+    const details = document.createElement("details");
+    details.open = true;
+    const summary = document.createElement("summary");
+    const orb = createThinkingOrb({ state: "working", size: 20 });
+    const summaryLabel = document.createElement("span");
+    summaryLabel.textContent = "运行过程";
+    summary.append(orb.element, summaryLabel);
+    const state = document.createElement("span");
+    state.className = "process-state";
+    state.textContent = "正在获取进度";
+    const events = document.createElement("ol");
+    events.className = "process-events";
+    details.append(summary, state, events);
+    panel.append(details);
+    stream.append(panel);
     stream.scrollTop = stream.scrollHeight;
-    return thinking;
+    return { panel, details, state, events, orb, nextSeq: 0 };
   };
-  const newConversationRequestId = () => globalThis.crypto?.randomUUID?.()
+  const appendProcessEvents = (playback, rows, terminal = false) => {
+    for (const row of rows || []) {
+      if (!Number.isInteger(row?.seq) || row.seq <= playback.nextSeq || typeof row?.summary !== "string") continue;
+      const item = document.createElement("li");
+      item.dataset.status = String(row.status || "started");
+      item.textContent = row.summary;
+      playback.events.append(item);
+      playback.nextSeq = row.seq;
+      playback.orb.setState(processOrbStates[row.type] || "working");
+    }
+    if (terminal) {
+      playback.state.textContent = "本轮处理已结束";
+      playback.panel.dataset.terminal = "true";
+      playback.orb.setState("shaping");
+      playback.orb.setPaused(true);
+    } else if (playback.nextSeq > 0) {
+      playback.state.textContent = "正在运行";
+    }
+    stream.scrollTop = stream.scrollHeight;
+  };
+  const startProcessPlayback = (taskId, requestId, { restore = false } = {}) => {
+    const playback = appendProcessPanel();
+    let stopped = false;
+    let timer = 0;
+    const poll = async () => {
+      if (stopped) return;
+      try {
+        const payload = await request(processEventsPath(taskId, requestId, playback.nextSeq));
+        appendProcessEvents(playback, payload.events, payload.terminal === true);
+        if (payload.terminal === true) { stopped = true; return; }
+      } catch (error) {
+        if (error.status !== 404) {
+          playback.state.textContent = "进度暂不可用";
+          playback.orb.setState("breathing");
+        }
+      }
+      if (!stopped) timer = window.setTimeout(poll, 350);
+    };
+    void poll();
+    return {
+      ...playback,
+      stop() {
+        stopped = true;
+        window.clearTimeout(timer);
+        playback.orb.destroy();
+      },
+      restore,
+    };
+  };
+  const lastConversationRequestId = (messages) => {
+    const last = [...(messages || [])].reverse().find((entry) => entry?.role === "assistant");
+    const match = String(last?.message_id || "").match(/^request-(.+)-assistant$/);
+    return match?.[1] || "";
+  };
+  const restoreLatestProcess = (task) => {
+    const requestId = lastConversationRequestId(task?.messages);
+    if (!requestId || currentTask?.task_id !== task.task_id) return;
+    activeProcessPlayback?.stop();
+    activeProcessPlayback = startProcessPlayback(task.task_id, requestId, { restore: true });
+  };
+  const newWorkspaceRequestId = () => globalThis.crypto?.randomUUID?.()
     || `chat-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   const conversationResponsePath = (taskId, requestId) => (
     `/api/tasks/${encodeURIComponent(taskId)}/conversation-requests/${encodeURIComponent(requestId)}`
@@ -194,6 +261,7 @@ export async function startWorkspace(initialMode) {
         const error = new Error(operation.message || "后台运行未完成。");
         error.status = operation.state === "failed" ? 500 : 409;
         error.body = operation.result || {};
+        error.operationTerminal = true;
         throw error;
       }
       await new Promise((resolve) => window.setTimeout(resolve, 350));
@@ -241,6 +309,34 @@ export async function startWorkspace(initialMode) {
       sessionStorage.removeItem(transientKey(fromTaskId));
     } catch { /* Tab state is optional. */ }
   };
+  const updateTransient = (taskId, updates) => {
+    const state = { ...readTransient(taskId), ...updates };
+    try { sessionStorage.setItem(transientKey(taskId), JSON.stringify(state)); } catch { /* Tab state is optional. */ }
+    return state;
+  };
+  const settleConversationRequest = (taskId, requestId, { draft, keepPending = false } = {}) => {
+    const state = readTransient(taskId);
+    const pending = state.pendingConversation;
+    const matches = pending?.taskId === taskId && pending?.requestId === requestId;
+    updateTransient(taskId, {
+      draft: draft ?? state.draft ?? "",
+      pendingConversation: matches ? (keepPending ? pending : null) : (pending || null),
+    });
+    if (currentTask?.task_id === taskId && pendingConversationRequest?.requestId === requestId) {
+      pendingConversationRequest = keepPending ? pendingConversationRequest : null;
+    }
+  };
+  const settleReportRequest = (taskId, requestId, { keepPending = false } = {}) => {
+    const state = readTransient(taskId);
+    const pending = state.pendingReport;
+    const matches = pending?.taskId === taskId && pending?.requestId === requestId;
+    updateTransient(taskId, {
+      pendingReport: matches ? (keepPending ? pending : null) : (pending || null),
+    });
+    if (currentTask?.task_id === taskId && pendingReportRequest?.requestId === requestId) {
+      pendingReportRequest = keepPending ? pendingReportRequest : null;
+    }
+  };
   const saveTransient = () => {
     const previous = readTransient();
     const maxScroll = Math.max(0, stream.scrollHeight - stream.clientHeight);
@@ -258,6 +354,9 @@ export async function startWorkspace(initialMode) {
       assistantOpen,
       pendingConversation: pendingConversationRequest?.taskId === currentTask?.task_id
         ? pendingConversationRequest
+        : null,
+      pendingReport: pendingReportRequest?.taskId === currentTask?.task_id
+        ? pendingReportRequest
         : null,
     };
     try { sessionStorage.setItem(transientKey(), JSON.stringify(state)); } catch { /* Tab state is optional. */ }
@@ -284,6 +383,21 @@ export async function startWorkspace(initialMode) {
       && typeof pending.requestId === "string"
       && typeof pending.content === "string"
       ? pending
+      : null;
+    if (pendingConversationRequest) {
+      activeProcessPlayback?.stop();
+      activeProcessPlayback = startProcessPlayback(
+        pendingConversationRequest.taskId,
+        pendingConversationRequest.requestId,
+        { restore: true },
+      );
+    }
+    const pendingReport = state.pendingReport;
+    pendingReportRequest = pendingReport
+      && pendingReport.taskId === currentTask?.task_id
+      && typeof pendingReport.requestId === "string"
+      && typeof pendingReport.kind === "string"
+      ? pendingReport
       : null;
     assistantOpen = Boolean(state.assistantOpen);
     setAssistantOpen(assistantOpen, { persist: false });
@@ -319,6 +433,15 @@ export async function startWorkspace(initialMode) {
     };
     restoringScroll = true;
     const previousMode = currentMode;
+    const enteringDeskFromChat = previousMode === "chat" && nextMode === "desk";
+    shell.dataset.assistantSwitching = "false";
+    if (enteringDeskFromChat) {
+      // Chat renders this same region as its in-flow composer. Desk turns it
+      // into a floating assistant panel, so never carry a hidden Chat state
+      // into an open Desk drawer or let the in-flow composer repaint mid-swap.
+      setAssistantOpen(false, { persist: false });
+      shell.dataset.assistantSwitching = "true";
+    }
     currentMode = nextMode;
     if (previousMode !== currentMode) clearWorkspaceStatus();
     shell.dataset.switching = "true";
@@ -334,7 +457,7 @@ export async function startWorkspace(initialMode) {
       const next = new URL(modePath(currentMode), location.origin);
       if (currentTask?.task_id) next.searchParams.set("task", currentTask.task_id);
       if (currentMode === "desk" && currentModule) next.searchParams.set("module", currentModule);
-      history.pushState({ mode: currentMode, task: currentTask?.task_id || "" }, "", `${next.pathname}${next.search}`);
+      history.replaceState({ mode: currentMode, task: currentTask?.task_id || "" }, "", `${next.pathname}${next.search}`);
     }
     if (nextMode === "desk" && currentTask) await mountModule(currentModule, false);
     if (!isCurrentTransition()) return;
@@ -358,6 +481,7 @@ export async function startWorkspace(initialMode) {
       restoringScroll = false;
       saveTransient();
       shell.dataset.switching = "false";
+      shell.dataset.assistantSwitching = "false";
     };
     transition.frame(() => {
       if (!isCurrentTransition()) return;
@@ -411,6 +535,7 @@ export async function startWorkspace(initialMode) {
   function resetTaskSelection() {
     currentTask = null;
     pendingConversationRequest = null;
+    pendingReportRequest = null;
     clearReportFeedback();
     disposeModuleFrames();
     syncReportActions();
@@ -439,6 +564,39 @@ export async function startWorkspace(initialMode) {
     content.append(heading, copy);
     start.append(content);
     return start;
+  }
+
+  function showModuleLoading(moduleName, { replace = false } = {}) {
+    if (!mount) return;
+    if (replace) mount.replaceChildren();
+    let loading = mount.querySelector("[data-module-loading]");
+    if (!loading) {
+      loading = document.createElement("div");
+      loading.className = "module-stage__loading";
+      loading.dataset.moduleLoading = "true";
+      loading.setAttribute("role", "status");
+      loading.setAttribute("aria-live", "polite");
+      mount.append(loading);
+    }
+    loading.dataset.module = moduleName;
+    loading.textContent = `正在打开${modules.get(moduleName) || "研究模块"}…`;
+    mount.dataset.loading = "true";
+    mount.setAttribute("aria-busy", "true");
+  }
+
+  function clearModuleLoading(moduleName, taskId) {
+    if (!mount || currentTask?.task_id !== taskId || currentModule !== moduleName) return;
+    mount.querySelector(`[data-module-loading][data-module="${moduleName}"]`)?.remove();
+    mount.dataset.loading = "false";
+    mount.setAttribute("aria-busy", "false");
+  }
+
+  function showModuleLoadFailure(moduleName, taskId) {
+    if (!mount || currentTask?.task_id !== taskId) return;
+    const loading = mount.querySelector(`[data-module-loading][data-module="${moduleName}"]`);
+    if (loading) loading.textContent = `${modules.get(moduleName) || "研究模块"}暂未就绪，请稍后重试。`;
+    mount.dataset.loading = "error";
+    mount.setAttribute("aria-busy", "false");
   }
 
   function openTaskDialog({ title: dialogTitle, description, confirmLabel, danger = false, initialSubject = "", onConfirm }) {
@@ -556,27 +714,44 @@ export async function startWorkspace(initialMode) {
   }
 
   async function selectTask(taskId, updateLocation = true) {
+    const selectionRevision = ++taskSelectionRevision;
+    moduleMountRevision += 1;
+    const isCurrentSelection = () => selectionRevision === taskSelectionRevision;
     if (currentTask) saveTransient();
+    activeProcessPlayback?.stop();
+    activeProcessPlayback = null;
     const { task } = await request(`/api/tasks/${encodeURIComponent(taskId)}`);
-    if (currentTask?.task_id && currentTask.task_id !== task.task_id) disposeModuleFrames();
+    if (!isCurrentSelection()) return null;
+    if (currentTask?.task_id && currentTask.task_id !== task.task_id) {
+      disposeModuleFrames();
+      if (currentMode === "desk") showModuleLoading(currentModule, { replace: true });
+    }
     currentTask = task;
     pendingConversationRequest = null;
+    pendingReportRequest = null;
     clearReportFeedback();
     syncReportActions();
     title.textContent = task.subject;
     conversationTitle.textContent = task.subject;
     taskState.textContent = "当前任务会保留对话、模块运行记录和关联报告。";
     renderMessages(stream, task.messages || [], "可直接输入任务要求，或选择一个研究起点。");
+    restoreLatestProcess(task);
     chatSurface.classList.toggle("chat-surface--empty", !task.messages?.length);
     const { reports: reportRuns } = await request(`/api/tasks/${encodeURIComponent(taskId)}/reports`).catch(() => ({ reports: [] }));
+    if (!isCurrentSelection()) return null;
     renderReports(reports, reportRuns);
     if (updateLocation) setTaskLocation(task.task_id, { module: currentMode === "desk" ? currentModule : "" });
     await loadTasks();
+    if (!isCurrentSelection()) return null;
     restoreTransient();
-    if (currentMode === "desk") await mountModule(currentModule, false);
+    if (currentMode === "desk") {
+      await mountModule(currentModule, false);
+    }
+    return task;
   }
 
   function disposeModuleFrames() {
+    moduleMountRevision += 1;
     for (const frame of moduleFrames.values()) {
       frame.src = "about:blank";
       frame.remove();
@@ -584,6 +759,7 @@ export async function startWorkspace(initialMode) {
     moduleFrames.clear();
     moduleContexts.clear();
     moduleContextVersions.clear();
+    moduleContextRefreshes.clear();
   }
 
   function syncModuleTabIndicator(animate = true) {
@@ -661,27 +837,56 @@ export async function startWorkspace(initialMode) {
   }
 
   async function refreshModuleContext(moduleName) {
-    if (!currentTask || !moduleFrames.has(moduleName)) return;
-    const task = `?task_id=${encodeURIComponent(currentTask.task_id)}`;
-    const { context } = await request(`/api/module-host/${encodeURIComponent(moduleName)}${task}`);
-    setModuleContext(moduleName, context);
-    deliverContext(moduleName);
+    const existing = moduleContextRefreshes.get(moduleName);
+    if (existing) return existing;
+    if (!currentTask || !moduleFrames.has(moduleName)) return null;
+    const taskId = currentTask.task_id;
+    const frame = moduleFrames.get(moduleName);
+    const task = `?task_id=${encodeURIComponent(taskId)}`;
+    let refresh;
+    refresh = request(`/api/module-host/${encodeURIComponent(moduleName)}${task}`).then(({ context }) => {
+      // The response is scoped to the frame and task that requested it.  A
+      // completed request from a discarded iframe must not overwrite the
+      // context of the newly selected task.
+      if (currentTask?.task_id !== taskId || moduleFrames.get(moduleName) !== frame) return null;
+      setModuleContext(moduleName, context);
+      deliverContext(moduleName);
+      return context;
+    }).finally(() => {
+      if (moduleContextRefreshes.get(moduleName) === refresh) moduleContextRefreshes.delete(moduleName);
+    });
+    moduleContextRefreshes.set(moduleName, refresh);
+    return refresh;
   }
 
   async function refreshMountedModuleContexts() {
-    if (moduleContextRefreshPromise) return moduleContextRefreshPromise;
-    moduleContextRefreshPromise = Promise.all(
-      [...moduleFrames.keys()].map((moduleName) => refreshModuleContext(moduleName)),
-    ).finally(() => { moduleContextRefreshPromise = null; });
-    return moduleContextRefreshPromise;
+    return Promise.all([...moduleFrames.keys()].map((moduleName) => refreshModuleContext(moduleName)));
+  }
+
+  function childNeedsFreshModuleContext(moduleName, contextVersion) {
+    if (!moduleContexts.has(moduleName)) return true;
+    const childVersion = Number(contextVersion);
+    const parentVersion = moduleContextVersions.get(moduleName) || 0;
+    // A matching version means the child has exhausted the same lease Desk
+    // still holds.  Refresh through the App so the new signed context keeps
+    // the current task, permission and contract binding.  A lagging child
+    // receives the already-issued context without another server request.
+    return Number.isSafeInteger(childVersion) && childVersion >= parentVersion;
   }
 
   async function mountModule(moduleName, updateLocation = true) {
     if (!modules.has(moduleName) || !currentTask) return;
+    const taskId = currentTask.task_id;
+    const mountRevision = ++moduleMountRevision;
+    const isCurrentMount = () => (
+      mountRevision === moduleMountRevision && currentTask?.task_id === taskId
+    );
     const previousModule = currentModule;
+    if (!moduleFrames.has(moduleName) || mount?.querySelector("[data-module-loading]")) showModuleLoading(moduleName);
     try {
-      const task = `?task_id=${encodeURIComponent(currentTask.task_id)}`;
+      const task = `?task_id=${encodeURIComponent(taskId)}`;
       const { context } = await request(`/api/module-host/${encodeURIComponent(moduleName)}${task}`);
+      if (!isCurrentMount()) return null;
       let frame = moduleFrames.get(moduleName);
       if (!frame) {
         const bridgeNonce = createModuleBridgeNonce();
@@ -690,14 +895,20 @@ export async function startWorkspace(initialMode) {
         frame.src = `/capability/assets/pages/${encodeURIComponent(moduleName)}/${encodeURIComponent(moduleName)}.html?host=optdesk&bridge_nonce=${encodeURIComponent(bridgeNonce)}`;
         frame.className = "module-frame";
         frame.dataset.bridgeNonce = bridgeNonce;
+        frame.dataset.taskId = taskId;
         frame.setAttribute("aria-hidden", "true");
         frame.addEventListener("load", () => {
           // Delivery on load means the context is not dependent on a single
           // child ready event surviving a WKWebView navigation.
           frame.dataset.ready = "true";
           deliverContext(moduleName);
+          clearModuleLoading(moduleName, taskId);
         });
-        frame.addEventListener("error", () => showWorkspaceStatus(`${modules.get(moduleName)}页面未能载入。`, true, 7000), { once: true });
+        frame.addEventListener("error", () => {
+          if (!isCurrentMount()) return;
+          showModuleLoadFailure(moduleName, taskId);
+          showWorkspaceStatus(`${modules.get(moduleName)}页面未能载入。`, true, 7000);
+        }, { once: true });
         moduleFrames.set(moduleName, frame);
         mount.querySelector(".conversation-start")?.remove();
         mount.append(frame);
@@ -708,15 +919,20 @@ export async function startWorkspace(initialMode) {
       if (updateLocation) setTaskLocation(currentTask.task_id, { module: moduleName });
       activateFrame(moduleName);
       deliverContext(moduleName);
+      if (frame.dataset.ready === "true") clearModuleLoading(moduleName, taskId);
+      return frame;
     } catch (error) {
+      if (!isCurrentMount()) return null;
       currentModule = previousModule;
       setActiveModule(previousModule, false);
       const staleTask = error.status === 409 && error.body?.error === "stale_task_contract";
+      showModuleLoadFailure(moduleName, taskId);
       showWorkspaceStatus(
         staleTask ? (error.body.message || "当前任务的合同来自旧产品目录。请新建研究任务后继续。") : "模块暂未就绪，请稍后重试。",
         true,
         7000,
       );
+      return null;
     }
   }
 
@@ -747,7 +963,12 @@ export async function startWorkspace(initialMode) {
     }
     if (event.data?.type === "optionhelper.module-host-context-request") {
       frame.dataset.ready = "true";
-      deliverContext(moduleName);
+      const refresh = childNeedsFreshModuleContext(moduleName, event.data.context_version)
+        ? refreshModuleContext(moduleName)
+        : Promise.resolve(deliverContext(moduleName));
+      void refresh.catch(() => {
+        showWorkspaceStatus("模块上下文暂未同步。请稍后重试。", true, 7000);
+      });
       return;
     }
     if (event.data?.type === "optionhelper.module-contract-updated") {
@@ -818,7 +1039,9 @@ export async function startWorkspace(initialMode) {
       return;
     }
     let pendingMessage;
-    let thinkingMessage;
+    let processPlayback;
+    let submittedTaskId = "";
+    let requestId = "";
     setComposerSending(submit, true);
     clearWorkspaceStatus();
     try {
@@ -828,14 +1051,13 @@ export async function startWorkspace(initialMode) {
         await selectTask(task.task_id);
       }
       pendingMessage = appendPendingMessage(submittedContent);
-      thinkingMessage = appendThinkingIndicator();
       dissolveComposerInput(submittedContent);
       input.value = "";
       saveTransient();
-      const requestId = pendingConversationRequest?.taskId === currentTask.task_id
+      requestId = pendingConversationRequest?.taskId === currentTask.task_id
         && pendingConversationRequest.content === submittedContent
         ? pendingConversationRequest.requestId
-        : newConversationRequestId();
+        : newWorkspaceRequestId();
       const explicitModelSelection = pendingConversationRequest?.taskId === currentTask.task_id
         && pendingConversationRequest.content === submittedContent
         ? pendingConversationRequest.modelSelection
@@ -847,34 +1069,63 @@ export async function startWorkspace(initialMode) {
         modelSelection: explicitModelSelection,
       };
       saveTransient();
-      const submittedTaskId = currentTask.task_id;
+      submittedTaskId = currentTask.task_id;
+      activeProcessPlayback?.stop();
+      processPlayback = startProcessPlayback(submittedTaskId, requestId);
+      activeProcessPlayback = processPlayback;
       const response = await submitConversation(
         submittedTaskId,
         submittedContent,
         requestId,
         explicitModelSelection,
       );
-      pendingConversationRequest = null;
-      modelPicker.dataset.userExplicitSelection = "false";
-      markComposerSent(submit);
-      input.value = "";
-      saveTransient();
-      applyConversationStatus(response, status, taskState);
-      if (currentTask?.task_id === submittedTaskId) await selectTask(submittedTaskId, false);
+      settleConversationRequest(submittedTaskId, requestId, { draft: "" });
+      if (currentTask?.task_id === submittedTaskId) {
+        modelPicker.dataset.userExplicitSelection = "false";
+        markComposerSent(submit);
+        input.value = "";
+        saveTransient();
+        applyConversationStatus(response, status, taskState);
+        await selectTask(submittedTaskId, false);
+      }
     } catch (error) {
+      if (!submittedTaskId || !requestId) {
+        showWorkspaceStatus(error.message || "新建任务未完成，请稍后重试。", true);
+        return;
+      }
+      // A completed response can be durable even when its HTTP response was
+      // interrupted on the way back to the browser. Recover by request id,
+      // never by comparing message text or creating another model turn.
+      const recoveredResponse = submittedTaskId && requestId
+        ? await lookupConversationResponse(submittedTaskId, requestId).catch(() => null)
+        : null;
+      if (recoveredResponse) {
+        pendingMessage?.remove();
+        settleConversationRequest(submittedTaskId, requestId, { draft: "" });
+        if (currentTask?.task_id === submittedTaskId) {
+          modelPicker.dataset.userExplicitSelection = "false";
+          input.value = "";
+          saveTransient();
+          applyConversationStatus(recoveredResponse, status, taskState);
+          await selectTask(submittedTaskId, false).catch(() => {});
+        }
+        return;
+      }
       pendingMessage?.remove();
-      input.value = submittedContent;
-      saveTransient();
+      settleConversationRequest(submittedTaskId, requestId, { draft: submittedContent, keepPending: true });
       const recovery = error.body?.error?.next_step || error.body?.next_step;
       const failureMessage = error.status === 409 && error.body?.error === "stale_task_contract"
         ? (error.body.message || "当前任务的合同来自旧产品目录。请新建研究任务后继续。")
         : error.status === 503
         ? `${recovery || "模型暂不可用，请在设置中心检查模型服务。"}任务内容已保留。`
         : error.message;
-      showWorkspaceStatus(failureMessage, true);
+      if (currentTask?.task_id === submittedTaskId) {
+        input.value = submittedContent;
+        saveTransient();
+        showWorkspaceStatus(failureMessage, true);
+      }
     } finally {
-      thinkingMessage?.disposeThinking?.();
-      thinkingMessage?.remove();
+      processPlayback?.stop();
       setComposerSending(submit, false);
     }
   });
@@ -884,22 +1135,38 @@ export async function startWorkspace(initialMode) {
   document.querySelectorAll("[data-report-kind]").forEach((button) => button.addEventListener("click", async () => {
     if (!currentTask) { showReportFeedback("请先新建或选择任务。", true); return; }
     button.disabled = true;
+    const taskId = currentTask.task_id;
+    const kind = button.dataset.reportKind;
+    const requestId = pendingReportRequest?.taskId === taskId
+      && pendingReportRequest.kind === kind
+      ? pendingReportRequest.requestId
+      : newWorkspaceRequestId();
+    pendingReportRequest = { taskId, kind, requestId };
+    saveTransient();
+    let operationId = "";
     try {
-      const taskId = currentTask.task_id;
-      const response = await request(`/api/tasks/${encodeURIComponent(taskId)}/reports`, { method: "POST", body: safeJson({ kind: button.dataset.reportKind, background: true }) });
-      const result = response.operation?.operation_id
-        ? await waitForOperation(taskId, response.operation.operation_id)
+      const response = await request(`/api/tasks/${encodeURIComponent(taskId)}/reports`, {
+        method: "POST",
+        body: safeJson({ kind, background: true }),
+        headers: { "X-Request-Id": requestId },
+      });
+      operationId = response.operation?.operation_id || "";
+      const result = operationId
+        ? await waitForOperation(taskId, operationId)
         : response?.result || {};
+      settleReportRequest(taskId, requestId);
       if (result.status === "needs_input") {
         showReportFeedback("当前任务还没有可用于生成报告的正式结果。请先完成收益结构、估值定价或历史回测中的至少一项分析。", true);
       } else if (result.status === "completed") {
-        const label = ({ card: "简单报告", report: "详细报告", quote: "参考报价" })[button.dataset.reportKind] || "交付物";
+        const label = ({ card: "简单报告", report: "详细报告", quote: "参考报价" })[kind] || "交付物";
         showReportFeedback(`${label}已生成，可在报告列表中预览或下载。`);
       } else {
         showReportFeedback("报告暂未生成。请先完成当前任务的正式分析结果。", true);
       }
       if (result.status === "completed" && currentTask?.task_id === taskId) await selectTask(taskId, false);
     } catch (error) {
+      if (error.operationTerminal) settleReportRequest(taskId, requestId);
+      else settleReportRequest(taskId, requestId, { keepPending: true });
       showReportFeedback(reportFailureMessage(error), true);
     } finally {
       syncReportActions();
@@ -955,6 +1222,7 @@ export async function startWorkspace(initialMode) {
   restoreTransient();
   syncComposerAvailability();
   if (initialMode === "desk" && currentTask) await mountModule(currentModule, false);
+  requestAnimationFrame(() => requestAnimationFrame(revealWorkspace));
 }
 
 function applyConversationStatus(response, status, taskState) {

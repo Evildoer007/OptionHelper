@@ -2,14 +2,66 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import Any, Mapping, Sequence
 
 from .candidate_critic import critique_candidates
 from .interaction import constraints_fingerprint
-from .models import EvidenceRef, RecommendationCandidate, RecommendationValidationError
+from .models import CandidateVersion, EvidenceRef, RecommendationCandidate, RecommendationValidationError
 
 
 _STATUS_SCORE = {"ready": 0, "partial": 20, "conflict": 40, "unavailable": 60}
+
+
+def _stable_id(prefix: str, value: Mapping[str, Any]) -> str:
+    """由受控输入生成内部稳定身份；绝不将该摘要写入客户文本。"""
+
+    canonical = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return f"{prefix}_{hashlib.sha256(canonical.encode('utf-8')).hexdigest()[:24]}"
+
+
+def _candidate_identity(
+    row: Mapping[str, Any],
+    refs: Sequence[EvidenceRef],
+    constraints_hash: str,
+) -> CandidateVersion:
+    """生成不依赖展示排名的候选身份及不可变版本快照。"""
+
+    evidence_ref_ids = tuple(item.evidence_id for item in refs)
+    candidate_key = _stable_id("ck", {
+        "product_id": str(row["product_id"]),
+        "underlyings": [str(item).upper() for item in row.get("underlyings", ())],
+    })
+    candidate_fingerprint = hashlib.sha256(json.dumps({
+        "candidate_key": candidate_key,
+        "product_id": str(row["product_id"]),
+        "underlyings": [str(item).upper() for item in row.get("underlyings", ())],
+        "catalog_version": refs[0].catalog_version,
+        "constraints_fingerprint": constraints_hash,
+        "evidence_ref_ids": list(evidence_ref_ids),
+        "generation_reason": str(row["reason"]).strip(),
+    }, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+    version_id = _stable_id("cv", {
+        "candidate_key": candidate_key,
+        "catalog_version": refs[0].catalog_version,
+        "constraints_fingerprint": constraints_hash,
+        "candidate_fingerprint": candidate_fingerprint,
+        "evidence": sorted(f"{item.evidence_id}:{item.excerpt_hash}" for item in refs),
+    })
+    return CandidateVersion(
+        candidate_key=candidate_key,
+        version_id=version_id,
+        revision=1,
+        parent=None,
+        product_id=str(row["product_id"]),
+        underlyings=tuple(str(item).strip().upper() for item in row.get("underlyings", ())),
+        catalog_version=refs[0].catalog_version,
+        constraints_fingerprint=constraints_hash,
+        evidence_ref_ids=evidence_ref_ids,
+        candidate_fingerprint=candidate_fingerprint,
+        generation_reason=str(row["reason"]).strip(),
+    )
 
 
 def _controlled_product_evidence(product_id: str, evidence: Sequence[EvidenceRef]) -> tuple[tuple[EvidenceRef, ...], str | None]:
@@ -77,6 +129,8 @@ def build_candidates(
     max_candidates: int = 3,
     confirmed_constraints: Mapping[str, Any] | None = None,
 ) -> tuple[tuple[RecommendationCandidate, ...], tuple[Mapping[str, Any], ...]]:
+    if isinstance(max_candidates, bool) or not isinstance(max_candidates, int) or not 1 <= max_candidates <= 10:
+        raise RecommendationValidationError("max_candidates必须位于1至10")
     proposals = research.get("proposals", ())
     if isinstance(proposals, (str, bytes)) or not isinstance(proposals, Sequence):
         raise RecommendationValidationError("Research.proposals必须为数组")
@@ -162,15 +216,22 @@ def build_candidates(
 
     accepted_rows.sort(key=lambda item: (item[0], str(item[1].get("product_id"))))
     candidates: list[RecommendationCandidate] = []
+    constraints_hash = constraints_fingerprint(confirmed_constraints)
     for rank, (_, row) in enumerate(accepted_rows[:max_candidates], start=1):
         row = dict(row)
+        refs = tuple(evidence_index[item] for item in row["evidence_ref_ids"])
+        candidate_version = _candidate_identity(row, refs, constraints_hash)
         row["candidate_id"] = f"{run_id}_candidate_{rank:02d}"
         row["rank"] = rank
         row["candidate_status"] = "candidate"
-        row["constraints_fingerprint"] = constraints_fingerprint(confirmed_constraints)
+        row["constraints_fingerprint"] = constraints_hash
         row["module_run_refs"] = []
         row["module_statuses"] = {}
         row["key_terms"] = []
+        row["candidate_key"] = candidate_version.candidate_key
+        row["candidate_version_id"] = candidate_version.version_id
+        row["candidate_version"] = candidate_version.to_dict()
+        row["evaluation_records"] = []
         candidates.append(RecommendationCandidate.from_mapping(row, evidence_index=evidence_index))
     for _, row in accepted_rows[max_candidates:]:
         rejected.append({"product_id": row["product_id"], "reason": "超出最大候选数量", "source": "aggregation"})

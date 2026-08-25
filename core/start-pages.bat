@@ -12,7 +12,18 @@ if /I "%PROJECT_ROOT%"=="%SKILL_ROOT%" (
   echo OPTIONHELPER_PROJECT_ROOT不得位于Skill安装目录内。 1>&2
   exit /b 1
 )
-set "STATE_FILE=%PROJECT_ROOT%\.optionhelper\runtime\python-path"
+rem A released Skill is read-only.  The readiness gate and the module Host
+rem must use the same project-owned Store roots.
+set "RUNTIME_ROOT=%PROJECT_ROOT%\.optionhelper\runtime"
+set "DATA_ROOT=%PROJECT_ROOT%\data"
+set "RESULT_ROOT=%PROJECT_ROOT%\result"
+if not exist "%RUNTIME_ROOT%" mkdir "%RUNTIME_ROOT%"
+if not exist "%DATA_ROOT%" mkdir "%DATA_ROOT%"
+if not exist "%RESULT_ROOT%" mkdir "%RESULT_ROOT%"
+set "OPTIONHELPER_RUNTIME_ROOT=%RUNTIME_ROOT%"
+set "OPTIONHELPER_DATA_ROOT=%DATA_ROOT%"
+set "OPTIONHELPER_RESULT_ROOT=%RESULT_ROOT%"
+set "STATE_FILE=%RUNTIME_ROOT%\python-path"
 if "%~1"=="--check-environment" set "CHECK_ENV=1"
 set "MODULE_NAME=%~1"
 if "%MODULE_NAME%"=="" set "MODULE_NAME=payoffer"
@@ -66,7 +77,7 @@ if defined PERSIST_SELECTION (
   for %%I in ("%STATE_FILE%") do if not exist "%%~dpI" mkdir "%%~dpI"
   > "%STATE_FILE%" echo %PYTHON_BIN%
 )
-"%PYTHON_BIN%" "%CHECKER%" --requirements "%SCRIPT_DIR%requirements.lock" --check-readiness --skill-root "%SKILL_ROOT%" --project-root "%PROJECT_ROOT%" --data-root "%PROJECT_ROOT%\data" --result-root "%PROJECT_ROOT%\result" --runtime-root "%PROJECT_ROOT%\.optionhelper\runtime"
+"%PYTHON_BIN%" "%CHECKER%" --requirements "%SCRIPT_DIR%requirements.lock" --check-readiness --skill-root "%SKILL_ROOT%" --project-root "%PROJECT_ROOT%" --data-root "%DATA_ROOT%" --result-root "%RESULT_ROOT%" --runtime-root "%RUNTIME_ROOT%"
 if errorlevel 1 exit /b %errorlevel%
 
 if defined CHECK_ENV (

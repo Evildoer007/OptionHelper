@@ -7,7 +7,19 @@ from ..secrets.secret_ref import SecretRef
 
 
 RoleName = Literal["sales", "admin"]
-MULTI_AGENT_RECOMMENDATION_ROLES = frozenset({"Intent", "Research", "Critic"})
+MULTI_AGENT_RECOMMENDATION_PRESET_ROLES = {
+    "sequential-deliberation": frozenset({"Intent", "Research", "Critic"}),
+    "product-trader-loop": frozenset({"Structurer", "Trader", "Reviewer"}),
+    "independent-council": frozenset({"Framer", "Matcher", "Hedger", "Moderator"}),
+    "constraint-ranking": frozenset({"Specifier", "Generator", "Reviewer"}),
+}
+MULTI_AGENT_RECOMMENDATION_ROLES = frozenset().union(*MULTI_AGENT_RECOMMENDATION_PRESET_ROLES.values())
+MULTI_AGENT_ENABLED_RECOMMENDATION_PRESET_IDS = frozenset(MULTI_AGENT_RECOMMENDATION_PRESET_ROLES)
+MULTI_AGENT_DEFAULT_REVIEW_POLICY_ID = "standard-review"
+MULTI_AGENT_ENABLED_REVIEW_POLICY_IDS = frozenset({MULTI_AGENT_DEFAULT_REVIEW_POLICY_ID})
+MULTI_AGENT_REVIEW_POLICY_ROLES = {
+    MULTI_AGENT_DEFAULT_REVIEW_POLICY_ID: frozenset(),
+}
 
 
 @dataclass(frozen=True)
@@ -94,6 +106,8 @@ class SettingsSnapshot:
     default_model_selection: ModelSelection | None = None
     multi_agent_recommendation_preset_id: str = "sequential-deliberation"
     multi_agent_preset_role_models: dict[str, dict[str, ModelSelection]] = field(default_factory=dict)
+    multi_agent_review_policy_id: str = MULTI_AGENT_DEFAULT_REVIEW_POLICY_ID
+    multi_agent_review_policy_role_models: dict[str, dict[str, ModelSelection]] = field(default_factory=dict)
 
 
 def serialize_settings(snapshot: SettingsSnapshot) -> dict[str, Any]:
@@ -150,6 +164,14 @@ def serialize_settings(snapshot: SettingsSnapshot) -> dict[str, Any]:
             }
             for preset_id, role_models in snapshot.multi_agent_preset_role_models.items()
         },
+        "multi_agent_review_policy_id": snapshot.multi_agent_review_policy_id,
+        "multi_agent_review_policy_role_models": {
+            policy_id: {
+                role: {"provider_id": selection.provider_id, "model_id": selection.model_id}
+                for role, selection in role_models.items()
+            }
+            for policy_id, role_models in snapshot.multi_agent_review_policy_role_models.items()
+        },
         "data_interface": {
             "provider_name": snapshot.data_interface.provider_name,
             "secret_ref": snapshot.data_interface.secret_ref.redacted() if snapshot.data_interface.secret_ref else None,
@@ -203,8 +225,8 @@ def deserialize_settings(value: dict[str, Any]) -> SettingsSnapshot:
     preferences = value.get("preferences", {})
     raw_connections = value.get("model_connections", [])
     raw_providers = value.get("model_providers", [])
-    role = value.get("role", "sales")
-    if role not in ("sales", "admin"):
+    principal_role = value.get("role", "sales")
+    if principal_role not in ("sales", "admin"):
         raise ValueError("role must be sales or admin")
     if not isinstance(raw_connections, list):
         raise ValueError("model_connections must be a list")
@@ -273,17 +295,43 @@ def deserialize_settings(value: dict[str, Any]) -> SettingsSnapshot:
         if not isinstance(raw_roles, dict):
             raise ValueError("multi-agent preset role models must be an object")
         role_models[str(preset_id)] = {}
-        for role, raw_role_selection in raw_roles.items():
-            if str(role) not in MULTI_AGENT_RECOMMENDATION_ROLES:
+        for role_name, raw_role_selection in raw_roles.items():
+            if str(role_name) not in MULTI_AGENT_RECOMMENDATION_ROLES:
                 continue
             if not isinstance(raw_role_selection, dict):
                 raise ValueError("multi-agent role model selection must be an object")
-            role_models[str(preset_id)][str(role)] = ModelSelection(
+            role_models[str(preset_id)][str(role_name)] = ModelSelection(
                 provider_id=str(raw_role_selection.get("provider_id", "")),
                 model_id=str(raw_role_selection.get("model_id", "")),
             )
+    raw_review_role_models = value.get("multi_agent_review_policy_role_models", {})
+    if not isinstance(raw_review_role_models, dict):
+        raise ValueError("multi_agent_review_policy_role_models must be an object")
+    review_role_models: dict[str, dict[str, ModelSelection]] = {}
+    for policy_id, raw_roles in raw_review_role_models.items():
+        if not isinstance(raw_roles, dict):
+            raise ValueError("multi-agent review policy role models must be an object")
+        review_role_models[str(policy_id)] = {}
+        for role_name, raw_role_selection in raw_roles.items():
+            if not isinstance(role_name, str) or not role_name.strip():
+                raise ValueError("multi-agent review policy role must be a non-empty string")
+            if not isinstance(raw_role_selection, dict):
+                raise ValueError("multi-agent review role model selection must be an object")
+            review_role_models[str(policy_id)][role_name] = ModelSelection(
+                provider_id=str(raw_role_selection.get("provider_id", "")),
+                model_id=str(raw_role_selection.get("model_id", "")),
+            )
+    preset_id = str(value.get("multi_agent_recommendation_preset_id", "sequential-deliberation"))
+    if preset_id == "adversarial-review":
+        legacy_models = role_models.pop("adversarial-review", {})
+        if legacy_models and "sequential-deliberation" not in role_models:
+            role_models["sequential-deliberation"] = legacy_models
+        preset_id = "sequential-deliberation"
+    review_policy_id = str(value.get("multi_agent_review_policy_id", MULTI_AGENT_DEFAULT_REVIEW_POLICY_ID))
+    if review_policy_id == "adversarial-review":
+        review_policy_id = MULTI_AGENT_DEFAULT_REVIEW_POLICY_ID
     return SettingsSnapshot(
-        role=role,
+        role=principal_role,
         model_service=ModelServiceSettings(
             provider_name=str(model.get("provider_name", "unconfigured")),
             endpoint=str(model.get("endpoint", "")),
@@ -307,10 +355,10 @@ def deserialize_settings(value: dict[str, Any]) -> SettingsSnapshot:
         active_model_connection_id=active_connection,
         model_providers=tuple(providers),
         default_model_selection=selection,
-        multi_agent_recommendation_preset_id=str(
-            value.get("multi_agent_recommendation_preset_id", "sequential-deliberation")
-        ),
+        multi_agent_recommendation_preset_id=preset_id,
         multi_agent_preset_role_models=role_models,
+        multi_agent_review_policy_id=review_policy_id,
+        multi_agent_review_policy_role_models=review_role_models,
     )
 
 

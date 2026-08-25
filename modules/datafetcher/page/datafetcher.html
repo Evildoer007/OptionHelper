@@ -41,22 +41,48 @@
         <form id="request-form" novalidate>
           <h2>数据请求</h2>
           <section class="inspector-group">
+            <h3>请求范围</h3>
             <label class="control-field" for="asset-ids"><span>资产标识</span><textarea id="asset-ids" required aria-describedby="asset-ids-hint asset-ids-error" placeholder="例如000300.SH"></textarea><small id="asset-ids-hint">每行填写一个代码。</small><small class="field-error" id="asset-ids-error" role="alert"></small></label>
             <div class="control-grid"><label class="control-field" for="start-date"><span>开始日期</span><input class="date-input" id="start-date" type="text" inputmode="numeric" autocomplete="off" placeholder="yyyy/mm/dd" required></label><label class="control-field" for="end-date"><span>结束日期</span><input class="date-input" id="end-date" type="text" inputmode="numeric" autocomplete="off" placeholder="yyyy/mm/dd" required></label></div>
-<div class="control-grid"><label class="control-field" for="frequency"><span>频率</span><select id="frequency"><option value="1d">日频1d</option></select></label><label class="control-field" for="adjustment"><span>复权口径</span><select id="adjustment"><option value="auto" selected>自动：股票/ETF前复权，指数不复权</option><option value="none">不复权</option><option value="forward">前复权</option><option value="both">原始价格与前复权价格并存</option></select></label></div>
-            <label class="control-field" for="fields"><span>价格数据</span><input id="fields" value="close" required><small>股票和ETF前复权，指数不复权。</small></label>
           </section>
           <section class="inspector-group">
-            <h3>数据源与保存</h3>
-            <label class="control-field" for="provider-priority"><span>数据服务</span><select id="provider-priority" required><option value="ifind_http" selected>iFinD</option></select><small>凭据与连接状态由设置中心统一管理。</small></label>
-            <details class="advanced-options"><summary>高级选项：缓存、本地CSV与离线模式</summary>
-              <label class="control-field" for="cache-policy"><span>缓存策略</span><select id="cache-policy"><option value="force_refresh" selected>实时请求，不复用缓存</option><option value="extend_only">只补覆盖缺口</option><option value="reuse">只复用缓存</option></select></label>
-              <label class="control-field" for="local-csv"><span>受控本地CSV</span><input id="local-csv" value="" placeholder="market/510300.SH_daily.csv"><small>填写后才启用本地CSV，且仅允许受控目录内相对路径。</small></label>
-              <label class="check-field"><input id="offline" type="checkbox"><span>离线模式：仅使用显式缓存或本地CSV</span></label>
+            <h3>数据口径</h3>
+            <div class="read-only-row"><span>频率</span><strong>日频1d</strong></div>
+            <input id="frequency" type="hidden" value="1d">
+            <label class="control-field" for="adjustment"><span>复权口径</span><select id="adjustment"><option value="auto" selected>自动适配中国市场</option><option value="none">不复权</option><option value="forward">前复权</option><option value="both">原始价格与前复权价格并存</option></select><small id="adjustment-hint">股票和ETF使用前复权，指数不复权；按标的逐一解析。</small></label>
+            <div class="read-only-row"><span>标准字段</span><strong>close＋adj_close</strong></div>
+            <input id="fields" type="hidden" value="close,adj_close">
+            <details class="advanced-options" id="field-options"><summary>增加OHLCV字段</summary>
+              <div class="field-choice-grid" aria-label="附加行情字段">
+                <label class="check-field"><input class="extra-field" type="checkbox" value="open"><span>open</span></label>
+                <label class="check-field"><input class="extra-field" type="checkbox" value="high"><span>high</span></label>
+                <label class="check-field"><input class="extra-field" type="checkbox" value="low"><span>low</span></label>
+                <label class="check-field"><input class="extra-field" type="checkbox" value="volume"><span>volume</span></label>
+              </div>
             </details>
           </section>
-          <section class="secret-card"><strong>凭据状态</strong><span id="secret-status">凭据由设置中心管理，本页不会读取或显示密钥。</span></section>
-          <p class="form-message" id="form-message" aria-live="polite"></p>
+          <section class="inspector-group">
+            <h3>数据来源</h3>
+            <div class="source-options" role="radiogroup" aria-label="选择数据来源">
+              <label class="source-option"><input name="source-mode" type="radio" value="ifind_http" checked><span><strong>iFinD实时行情</strong><small>默认远程数据服务</small></span></label>
+              <label class="source-option"><input name="source-mode" type="radio" value="local"><span><strong>受控本地数据</strong><small>读取Host已登记的标准行情文件</small></span></label>
+            </div>
+            <section class="secret-card" id="ifind-status-card"><strong>iFinD凭据状态</strong><span id="secret-status">凭据由设置中心管理，本页不会读取或显示密钥。</span></section>
+            <p class="retention-note" id="local-source-note" hidden>本页不接收文件路径。Local模式仅按标的读取Host受控数据目录中的标准行情文件。</p>
+          </section>
+          <section class="inspector-group">
+            <h3>获取策略</h3>
+            <div class="strategy-options" role="radiogroup" aria-label="选择获取策略">
+              <label class="strategy-option"><input name="cache-policy" type="radio" value="force_refresh" checked><span><strong>实时获取</strong><small>不复用已有缓存</small></span></label>
+              <label class="strategy-option"><input name="cache-policy" type="radio" value="extend_only"><span><strong>补齐缺口</strong><small>复用覆盖并补拉缺失区间</small></span></label>
+              <label class="strategy-option"><input name="cache-policy" type="radio" value="reuse"><span><strong>仅用已保存数据</strong><small>不调用远程数据服务</small></span></label>
+            </div>
+          </section>
+          <section class="inspector-group request-summary" aria-labelledby="request-summary-title">
+            <h3 id="request-summary-title">提交摘要</h3>
+            <dl id="request-summary"></dl>
+            <p class="retention-note">成功结果写入受控DataStore，形成当前任务的DataAssetRef，供估值、回测与报告复现。这是任务资产留存，不是本地数据源回退。</p>
+          </section>
         </form>
       </aside>
     </main>

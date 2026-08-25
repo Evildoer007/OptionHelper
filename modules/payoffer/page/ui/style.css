@@ -76,7 +76,7 @@ textarea:focus-visible {
   padding: 0 12px;
   border: 1px solid var(--color-paper-border);
   border-radius: 9px;
-  background: rgba(255, 255, 255, .72);
+  background: color-mix(in srgb, var(--color-surface) 72%, transparent);
   color: var(--ink);
   font-family: var(--font);
   font-size: 12px;
@@ -95,7 +95,7 @@ textarea:focus-visible {
 .button-primary {
   border-color: var(--red);
   background: var(--red);
-  color: var(--color-surface);
+  color: var(--color-on-brand);
   font-weight: 650;
 }
 
@@ -114,7 +114,7 @@ textarea:focus-visible {
 .library-panel,
 .inspector-panel {
   padding: 22px 18px;
-  background: rgba(255, 255, 255, .92);
+  background: color-mix(in srgb, var(--color-surface) 92%, transparent);
   overflow: auto;
 }
 
@@ -207,7 +207,7 @@ textarea:focus-visible {
   justify-content: space-between;
   padding: 0 20px;
   border-bottom: 1px solid var(--rule);
-  background: rgba(255, 255, 255, .72);
+  background: color-mix(in srgb, var(--color-surface) 72%, transparent);
 }
 
 .canvas-state { display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 650; }
@@ -245,18 +245,18 @@ textarea:focus-visible {
 .canvas-viewport > svg,
 .canvas-viewport > img,
 .canvas-stage {
-  min-width: 760px;
+  min-width: 0;
   background: var(--color-surface);
   box-shadow: 0 8px 24px rgba(68, 34, 42, .07);
 }
 
-/* DSH scrollbar contract, scoped to this hosted module document. */
+/* Standalone module scrollbar. OptDesk supplies the hosted overlay scrollbar. */
 body { --oh-scrollbar-thumb: color-mix(in srgb, var(--color-ink) 14%, transparent); --oh-scrollbar-thumb-hover: color-mix(in srgb, var(--color-ink) 22%, transparent); --oh-scrollbar-size: 6px; }
-@supports not selector(::-webkit-scrollbar) { body, body * { scrollbar-width: thin; scrollbar-color: var(--oh-scrollbar-thumb) transparent; } }
-::-webkit-scrollbar { width: var(--oh-scrollbar-size); height: var(--oh-scrollbar-size); }
-::-webkit-scrollbar-track, ::-webkit-scrollbar-corner { background: transparent; }
-::-webkit-scrollbar-thumb { border:1px solid transparent; border-radius:999px; background:var(--oh-scrollbar-thumb); background-clip:padding-box; transition:background-color .16s ease; }
-::-webkit-scrollbar-thumb:hover { background: var(--oh-scrollbar-thumb-hover); }
+@supports not selector(::-webkit-scrollbar) { html:not([data-optionhelper-app-hosted="true"]), html:not([data-optionhelper-app-hosted="true"]) * { scrollbar-width: thin; scrollbar-color: var(--oh-scrollbar-thumb) transparent; } }
+html:not([data-optionhelper-app-hosted="true"])::-webkit-scrollbar, html:not([data-optionhelper-app-hosted="true"]) *::-webkit-scrollbar { width: var(--oh-scrollbar-size); height: var(--oh-scrollbar-size); }
+html:not([data-optionhelper-app-hosted="true"])::-webkit-scrollbar-track, html:not([data-optionhelper-app-hosted="true"]) *::-webkit-scrollbar-track, html:not([data-optionhelper-app-hosted="true"])::-webkit-scrollbar-corner, html:not([data-optionhelper-app-hosted="true"]) *::-webkit-scrollbar-corner { background: transparent; }
+html:not([data-optionhelper-app-hosted="true"])::-webkit-scrollbar-thumb, html:not([data-optionhelper-app-hosted="true"]) *::-webkit-scrollbar-thumb { border:1px solid transparent; border-radius:999px; background:var(--oh-scrollbar-thumb); background-clip:padding-box; transition:background-color .16s ease; }
+html:not([data-optionhelper-app-hosted="true"])::-webkit-scrollbar-thumb:hover, html:not([data-optionhelper-app-hosted="true"]) *::-webkit-scrollbar-thumb:hover { background: var(--oh-scrollbar-thumb-hover); }
 .library-panel, .inspector-panel, .canvas-viewport { scrollbar-gutter: stable; }
 
 .empty-canvas {
@@ -268,7 +268,7 @@ body { --oh-scrollbar-thumb: color-mix(in srgb, var(--color-ink) 14%, transparen
   justify-content: center;
   border: 1px dashed var(--color-paper-border);
   border-radius: 14px;
-  background: rgba(255, 255, 255, .56);
+  background: color-mix(in srgb, var(--color-surface) 56%, transparent);
   color: var(--muted);
   text-align: center;
 }
@@ -283,7 +283,7 @@ body { --oh-scrollbar-thumb: color-mix(in srgb, var(--color-ink) 14%, transparen
   gap: 20px;
   padding: 0 20px;
   border-top: 1px solid var(--rule);
-  background: rgba(255, 255, 255, .64);
+  background: color-mix(in srgb, var(--color-surface) 64%, transparent);
   color: var(--muted);
   font-size: 10px;
 }

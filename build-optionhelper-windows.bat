@@ -8,6 +8,8 @@ set "STATUS=0"
 set "ROOT=%~dp0"
 set "VERSION=%OPTIONHELPER_VERSION%"
 if not defined VERSION set "VERSION=v1.0.0"
+set "LOCAL_PYTHON_FILE=%ROOT%.optionhelper\runtime\build-python-path"
+set "PYTHON_SELECTION_SOURCE="
 
 if /I not "%OS%"=="Windows_NT" (
   echo This build must run on a Windows machine.
@@ -40,6 +42,28 @@ if not defined DOTNET8 (
   echo dotnet SDK 8 is required.
   set "STATUS=1"
   goto :done
+)
+
+if defined OPTIONHELPER_PYTHON (
+  set "PYTHON_SELECTION_SOURCE=environment"
+) else if exist "%LOCAL_PYTHON_FILE%" (
+  set /p "OPTIONHELPER_PYTHON=" < "%LOCAL_PYTHON_FILE%"
+  if not defined OPTIONHELPER_PYTHON (
+    echo 本机保存的Python解释器已失效，将重新列出候选环境。
+  ) else (
+    if exist "!OPTIONHELPER_PYTHON!" (
+      if exist "!OPTIONHELPER_PYTHON!\NUL" (
+        echo 本机保存的Python解释器已失效，将重新列出候选环境。
+        set "OPTIONHELPER_PYTHON="
+      ) else (
+        set "PYTHON_SELECTION_SOURCE=local"
+        echo 已使用本机保存的Python解释器：!OPTIONHELPER_PYTHON!
+      )
+    ) else (
+      echo 本机保存的Python解释器已失效，将重新列出候选环境。
+      set "OPTIONHELPER_PYTHON="
+    )
+  )
 )
 
 if not defined OPTIONHELPER_PYTHON (
@@ -78,6 +102,7 @@ if not defined OPTIONHELPER_PYTHON (
     goto :choose_python
   )
   for %%Q in (!PYTHON_CHOICE!) do set "OPTIONHELPER_PYTHON=!PYTHON_CANDIDATE_%%Q!"
+  set "PYTHON_SELECTION_SOURCE=interactive"
   echo 已选择Python解释器：!OPTIONHELPER_PYTHON!
 )
 set "PYTHON_BIN=%OPTIONHELPER_PYTHON%"
@@ -97,6 +122,8 @@ if exist "%PYTHON_BIN%\NUL" (
   set "STATUS=1"
   goto :done
 )
+if /I "%PYTHON_SELECTION_SOURCE%"=="environment" call :persist_python "%PYTHON_BIN%"
+if /I "%PYTHON_SELECTION_SOURCE%"=="interactive" call :persist_python "%PYTHON_BIN%"
 
 echo OptionHelper Windows candidate build
 echo [1/3] Checking runtime dependencies...
@@ -139,3 +166,9 @@ if "%CANDIDATE:~2,1%"=="/" exit /b 0
 :not_absolute
 echo OPTIONHELPER_PYTHON must be an absolute python.exe path.
 exit /b 1
+
+:persist_python
+for %%I in ("%LOCAL_PYTHON_FILE%") do if not exist "%%~dpI" mkdir "%%~dpI"
+> "%LOCAL_PYTHON_FILE%" echo %~1
+echo 已将本次选择保存为本机设置：%LOCAL_PYTHON_FILE%
+exit /b 0

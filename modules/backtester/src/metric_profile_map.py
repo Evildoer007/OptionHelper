@@ -17,6 +17,35 @@ class MetricProfileSpec:
     unsupported_reason: str | None = None
 
 
+# 每类报告必须存在的最小顶层事实。这里只声明输出契约，不计算指标。
+REQUIRED_PROFILE_OUTPUT_KEYS: dict[str, tuple[str, ...]] = {
+    "terminal_payoff": (
+        "terminal_performance", "terminal_performance_sign", "terminal_segments",
+        "selected_path_case_gross_return",
+    ),
+    "single_knock_out": ("events", "trigger_vs_untriggered"),
+    "single_knock_in": ("events", "knock_in_outcomes"),
+    "touch_binary": ("events", "touch_vs_untouched"),
+    "airbag": ("events", "buffer_outcomes", "knock_in_outcomes", "selected_path_case_gross_return"),
+    "accumulator": (
+        "events", "accumulated_quantity", "gross_return_per_accumulated_unit",
+        "knock_out_vs_full_term", "contract_purchase_price", "quantity_multiplier",
+    ),
+    "dual_knock_autocall": ("events", "three_outcome_summary", "conditional_summary"),
+    "coupon_autocall": ("events", "coupon_observations", "coupon_payment"),
+    "single_knock_out_autocall": ("events", "trigger_vs_untriggered"),
+    "shark_fin": (
+        "events", "trigger_vs_untriggered", "terminal_performance",
+        "selected_path_case_gross_return",
+    ),
+    "variance_swap": (
+        "realized_volatility", "realized_variance", "realized_volatility_vs_strike",
+        "volatility_buckets", "variance_gross_return",
+    ),
+    "range_accrual": ("range_observations", "in_range_observation_ratio", "range_accrual_gross_return"),
+}
+
+
 def _assign(profile_id: str, display_name: str, product_ids: Iterable[str]) -> dict[str, MetricProfileSpec]:
     return {product_id: MetricProfileSpec(profile_id, display_name) for product_id in product_ids}
 
@@ -49,6 +78,13 @@ def metric_profile_for(product_id: str) -> MetricProfileSpec:
         raise KeyError(f"产品{product_id}未绑定Backtester MetricProfile") from error
 
 
+def required_profile_output_keys(profile_id: str) -> tuple[str, ...]:
+    try:
+        return REQUIRED_PROFILE_OUTPUT_KEYS[profile_id]
+    except KeyError as error:
+        raise KeyError(f"MetricProfile {profile_id}未定义必需输出") from error
+
+
 def validate_metric_profile_coverage(product_ids: Iterable[str]) -> tuple[str, ...]:
     product_id_set = {str(item) for item in product_ids}
     mapped = set(METRIC_PROFILE_MAP)
@@ -59,4 +95,10 @@ def validate_metric_profile_coverage(product_ids: Iterable[str]) -> tuple[str, .
         issues.append(f"未映射产品：{','.join(missing)}")
     if extra:
         issues.append(f"无对应OptionReg产品的映射：{','.join(extra)}")
+    missing_output_contracts = sorted({
+        spec.profile_id for spec in METRIC_PROFILE_MAP.values()
+        if spec.profile_id not in REQUIRED_PROFILE_OUTPUT_KEYS
+    })
+    if missing_output_contracts:
+        issues.append(f"未定义必需输出的Profile：{','.join(missing_output_contracts)}")
     return tuple(issues)

@@ -18,7 +18,7 @@ OptionHelper是期权结构研究与交付系统。本仓库维护同一套权�
 
 ### 1.选择Python解释器
 
-开发构建首次运行时由开发者选择一个Python3.11及以上的解释器。设置后，macOS构建入口会把绝对路径保存在当前仓库的本机忽略目录`.optionhelper/runtime/build-python-path`，后续从Finder双击时继续使用同一解释器。也可以随时通过`OPTIONHELPER_PYTHON`明确更换：
+开发构建首次运行时由开发者选择一个Python3.11及以上的解释器。设置后，macOS和Windows构建入口都会把绝对路径保存在当前仓库的本机忽略目录`.optionhelper/runtime/build-python-path`，后续从Finder双击或直接运行入口时继续使用同一解释器。也可以随时通过`OPTIONHELPER_PYTHON`明确更换：
 
 ```bash
 export OPTIONHELPER_PYTHON=/absolute/path/to/python
@@ -32,7 +32,7 @@ $env:OPTIONHELPER_PYTHON = 'C:\Python311\python.exe'
 & $env:OPTIONHELPER_PYTHON --version
 ```
 
-如果不知道可用路径，可直接运行一次macOS构建入口。首次运行只枚举候选解释器并退出，不会擅自运行某个候选。macOS/Linux选定后在终端执行一次`export OPTIONHELPER_PYTHON=...`；Windows请在PowerShell设置`$env:OPTIONHELPER_PYTHON=...`，再运行对应入口。
+如果不知道可用路径，可直接运行对应构建入口。入口只读取环境元数据并列出候选，不会擅自运行某个候选；选择后才用该解释器检查依赖并继续本次构建。选择会保存为本机设置。需要临时改用其他解释器时，再显式设置`OPTIONHELPER_PYTHON`。
 
 ```bash
 ./build-optionhelper-macos.command
@@ -72,7 +72,7 @@ Windows（PowerShell）：
 - `assets/icons/`：正式公共图标。App壳层开发源位于`products/app/frontend/`，五个模块页面由Capability提供。
 - `data/`、`result/`：开发仓库的本地数据和运行结果，不进入Skill发行包。已安装Skill使用宿主项目目录下的外部Store。
 - `dist/`：可替换的当前候选交付目录。macOS候选构建成功后只保留`option-helper.zip`和DMG，可删除后重新构建，不承担版本追溯职责。
-- `versions/`：不可覆盖的正式签发归档，是版本追溯的唯一权威来源。唯一正式目标为`versions/v1.0.0`；已存在时签发器会拒绝覆盖。
+- `versions/`：不可覆盖的正式签发归档，是版本追溯的唯一权威来源。唯一正式目标为`versions/v1.0.0`。已签发的Catalog、Capability、Skill ZIP和每个平台安装物均不可覆盖；同一正式版本只允许补充尚未归档的平台安装物，且必须复用归档中的签发Skill。
 
 不要手工修改`products/app/capability/`、`dist/`或`versions/`中的生成内容。修改权威开发源后应重新构建，并以Manifest、内容哈希和运行探针验证同一次构建。
 
@@ -127,10 +127,10 @@ Windows候选写入`result/windows-candidate/`，不会替换macOS的`dist/`或�
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.:core/src "$OPTIONHELPER_PYTHON" packaging/release.py --version v1.0.0 --platform macos
 ```
 
-签发前`versions/`不得含旧版归档，且`versions/v1.0.0`必须不存在。签发成功后：
+首次签发前`versions/`不得含旧版归档，且`versions/v1.0.0`必须不存在。首次签发后，可以在另一平台用同一命令补充尚未归档的平台安装物；补充流程只从归档的签发Skill构建，不读取可变开发源码，也不会改写已有文件。重复签发已归档的平台仍会拒绝。签发成功后：
 
 - `versions/v1.0.0/`保存不可覆盖的正式追溯材料、Manifest、哈希、Skill ZIP和安装物。
-- `dist/`保存与本次签发对应的当前交付副本。
+- `dist/`保存最近一次签发动作对应的当前交付副本。
 - 后续普通开发构建只更新`dist/`，不修改`versions/v1.0.0/`。
 
 若存在旧版归档，先在获得明确授权后原样迁移至项目外可恢复目录；签发器不会删除、覆盖或把旧归档解释为当前版本历史。
@@ -155,7 +155,7 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.:core/src "$OPTIONHELPER_PYTHON" packaging
 
 ## 报告交付
 
-完整研究报告固定为连续A4正文；宽屏HTML提供左侧七章目录，PDF不显示目录，HTML和PDF按同一正文顺序呈现。章节和顺序为：核心结论、结构推荐、合同参数、收益结构、估值定价、历史回测、风险提示。研究简报Card固定呈现结构推荐、推荐理由、关键合同条款、估值摘要、回测摘要、主要风险，不含损益图。
+完整研究报告默认采用连续A4正文；宽屏HTML提供左侧目录，PDF不显示目录。单结构报告默认依次呈现核心结论、结构推荐、合同参数、收益结构、估值定价、历史回测、风险提示。研究简报Card默认呈现结构推荐、推荐理由、关键合同条款、估值摘要、回测摘要、主要风险，不含损益图。用户明确要求补充说明或多结构比较时可以调整展示结构，但金融数值、合同条款、指标、表格、公式和图表必须来自Reporter冻结事实，不能由Designer或Presentation Patch改写。
 
 报告中的数字、单位、公式、图表和文字必须来自已验证的模块结果。Reporter与Designer不可补造缺失数据，也不可把内部JSON、字段名、运行引用或文件路径直接展示给用户。
 

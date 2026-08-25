@@ -16,7 +16,7 @@ html[data-theme="dark"] :is(.workspace-rail, .task-rail, .settings-nav, .configu
 
 html[data-theme="dark"] :is(input, select, textarea, .choice-trigger, .choice-menu, .choice-option, .model-provider-editor input, .model-provider-editor button) {
   border-color: var(--color-rule-strong);
-  background-color: var(--color-surface);
+  background-color: var(--color-paper);
   color: var(--color-ink);
 }
 
@@ -204,6 +204,14 @@ html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-sh
   color: var(--color-ink) !important;
 }
 
+html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .composer textarea {
+  background: transparent !important;
+}
+
+html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .assistant-region .composer {
+  background: transparent !important;
+}
+
 html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .composer textarea::placeholder {
   color: var(--color-muted) !important;
 }
@@ -252,4 +260,201 @@ html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-sh
 html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .message__mark {
   background: var(--color-brand-red-soft) !important;
   color: var(--color-ink) !important;
+}
+
+/* Shared shell elements that still inherit light-only literals from the
+   original workbench receive the same text and rule hierarchy as the rest of
+   the dark workspace. Embedded Desk modules keep their own theme boundary. */
+html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] :is(
+  .conversation-start__copy,
+  .conversation-start__note,
+  .assistant-panel__head span,
+  .assistant-panel__close,
+  .rail-account-trigger,
+  .task-item--empty
+) {
+  color: var(--color-muted) !important;
+}
+
+html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] :is(
+  .conversation-start h2,
+  .assistant-panel__head strong
+) {
+  color: var(--color-ink) !important;
+}
+
+html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .assistant-panel__head,
+html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .assistant-panel__transcript,
+html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .assistant-panel__transcript .message-stream {
+  border-color: var(--color-rule) !important;
+  background: var(--color-surface) !important;
+}
+
+/* The command body is a real panel only when the Desk assistant is open.
+   Chat renders the same subtree with display: contents, so its background
+   must not become a full-width rectangle behind the floating composer. */
+html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="desk"] .assistant-panel > .desk-command-dock__body {
+  border-color: var(--color-rule) !important;
+  background: var(--color-surface) !important;
+}
+
+html[data-theme="light"] .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .assistant-panel > .desk-command-dock__body,
+html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .assistant-panel > .desk-command-dock__body {
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .assistant-panel__close:hover {
+  background: var(--color-brand-red-soft) !important;
+  color: var(--color-brand-red) !important;
+}
+
+/* Keep the account control and its open state inside the dark shell. */
+html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-account-trigger,
+html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-account-trigger:hover,
+html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-account-trigger[aria-expanded="true"] {
+  background: var(--color-surface) !important;
+  color: var(--color-ink) !important;
+}
+
+html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-account-trigger__mark {
+  border-color: var(--color-rule) !important;
+  background: var(--color-ground) !important;
+  color: var(--color-ink) !important;
+}
+
+html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-account-menu__identity strong,
+html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-account-menu__item {
+  color: var(--color-ink) !important;
+}
+
+html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-account-menu__identity span {
+  color: var(--color-muted) !important;
+}
+
+html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-account-menu__separator {
+  background: var(--color-rule) !important;
+}
+
+html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-account-menu__item:hover,
+html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-account-menu__item:focus-visible {
+  background: var(--color-paper) !important;
+  color: var(--color-ink) !important;
+}
+
+html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-account-menu__item--logout,
+html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-account-menu__item--logout:hover,
+html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-account-menu__item--logout:focus-visible {
+  color: var(--color-brand-red) !important;
+}
+
+/* Quiet non-interactive separators in the dark shell. Keep the red tab and
+   splitter indicators unchanged; only legacy pale rules are tokenized here. */
+html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-footer,
+html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .task-rail,
+html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .workspace-rail,
+html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="desk"] .workbench-head,
+html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="desk"] .desk-module-tabs,
+html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="desk"] .desk-command-dock,
+html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="desk"] .desk-status-strip {
+  border-color: var(--color-rule) !important;
+}
+
+/* WKWebView can retain -webkit-text-fill-color over a normal color rule. */
+html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .composer textarea {
+  color: var(--color-ink) !important;
+  -webkit-text-fill-color: var(--color-ink) !important;
+}
+
+html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .composer textarea::placeholder {
+  color: var(--color-muted) !important;
+  -webkit-text-fill-color: var(--color-muted) !important;
+  opacity: 1 !important;
+}
+
+/* Chat paints only the form itself. Its layout wrappers stay transparent so
+   the material samples the conversation beneath instead of a rectangular
+   backing strip. Geometry is shared; themes only supply color tokens. */
+html[data-theme="light"] .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] :is(.assistant-region, .assistant-panel, .assistant-panel > .desk-command-dock__body, .assistant-region .composer),
+html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] :is(.assistant-region, .assistant-panel, .assistant-panel > .desk-command-dock__body, .assistant-region .composer) {
+  border-color: transparent !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+html[data-theme="light"] .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .assistant-region .composer form,
+html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .assistant-region .composer form {
+  overflow: hidden;
+  border-color: color-mix(in srgb, var(--color-ink) 14%, transparent) !important;
+  background: color-mix(in srgb, var(--color-surface) 68%, transparent) !important;
+  box-shadow:
+    0 4px 12px color-mix(in srgb, var(--color-ink) 6%, transparent),
+    inset 0 1px 0 color-mix(in srgb, var(--color-paper) 46%, transparent) !important;
+  -webkit-backdrop-filter: blur(12px) saturate(112%);
+  backdrop-filter: blur(12px) saturate(112%);
+}
+
+/* The model control belongs to the same neutral material as the composer.
+   Avoid the legacy rose-tinted fill in Light mode while keeping identical
+   geometry and interaction across themes. */
+html[data-theme="light"] .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .assistant-region .model-picker :is(select, .choice-trigger),
+html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .assistant-region .model-picker :is(select, .choice-trigger) {
+  background-color: color-mix(in srgb, var(--color-ink) 5%, var(--color-surface)) !important;
+  color: var(--color-ink) !important;
+}
+
+html[data-theme="light"] .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .assistant-region .model-picker :is(select:enabled:hover, select:focus, .choice:hover .choice-trigger, .choice[data-open="true"] .choice-trigger),
+html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .assistant-region .model-picker :is(select:enabled:hover, select:focus, .choice:hover .choice-trigger, .choice[data-open="true"] .choice-trigger) {
+  background-color: color-mix(in srgb, var(--color-ink) 8%, var(--color-surface)) !important;
+  color: var(--color-ink) !important;
+}
+
+/* Chat content keeps the same hierarchy in Dark mode; these final rules
+   replace the remaining light-only literals in the legacy chat skin. */
+html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] :is(
+  .conversation-start h2,
+  .conversation-starter strong,
+  .message__body
+) {
+  color: var(--color-ink) !important;
+}
+
+html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] :is(
+  .conversation-start__copy,
+  .conversation-starter span,
+  .conversation-start__note,
+  .message__meta,
+  .message__origin,
+  .model-picker__label
+) {
+  color: var(--color-muted) !important;
+}
+
+html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] :is(
+  .conversation-start__mark,
+  .message__mark
+) {
+  background: color-mix(in srgb, var(--color-brand-red) 12%, var(--color-surface)) !important;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-brand-red) 18%, transparent) !important;
+}
+
+html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .conversation-starter {
+  border-color: var(--color-rule) !important;
+  background: var(--color-surface) !important;
+  color: var(--color-ink) !important;
+}
+
+html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .conversation-starter:hover,
+html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .conversation-starter:focus-visible {
+  border-color: var(--color-rule-strong) !important;
+  background: var(--color-brand-red-soft) !important;
+  color: var(--color-ink) !important;
+  box-shadow: 0 8px 20px color-mix(in srgb, var(--color-ink) 12%, transparent) !important;
+}
+
+html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .message--user .message__body {
+  background: var(--color-brand-red-soft) !important;
+  color: var(--color-ink) !important;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-brand-red) 18%, transparent) !important;
 }

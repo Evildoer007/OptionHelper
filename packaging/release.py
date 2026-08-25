@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime
+from hashlib import sha256
 import json
 from pathlib import Path
 import shutil
@@ -35,7 +36,13 @@ from release_contract import RELEASE_VERSION, require_published_at, require_rele
 from sign_capability import sign as sign_capability
 from sign_catalog import sign_catalog
 from verify_app import verify_app
-from verify_release import verify_release
+from verify_release import (
+    ReleaseVerificationError,
+    archived_platforms as _archived_platforms,
+    installer_name as _installer_name,
+    platform_archive_names as _platform_archive_names,
+    verify_formal_archive,
+)
 from verify_skill import probe_runtime, verify_skill, verify_zip
 
 
@@ -87,12 +94,44 @@ def extract_skill(archive: Path, destination: Path) -> Path:
     return destination / "option-helper"
 
 
-def _installer_name(version: str, platform: str) -> str:
-    return (
-        f"OptionHelper-{version}-macOS-arm64.dmg"
-        if platform == "macos"
-        else f"OptionHelper-{version}-windows-x86_64.zip"
-    )
+def _file_hash(path: Path) -> str:
+    digest = sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _archive_file_hashes(root: Path) -> dict[Path, str]:
+    return {
+        path.relative_to(root): _file_hash(path)
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
+
+
+def _assert_append_only(existing: Path, staged: Path, *, version: str, platform: str) -> None:
+    """Ensure a second platform build cannot rewrite formal common artifacts."""
+
+    before = _archive_file_hashes(existing)
+    after = _archive_file_hashes(staged)
+    missing = sorted(str(path) for path in before.keys() - after.keys())
+    changed = sorted(str(path) for path in before.keys() & after.keys() if before[path] != after[path])
+    if missing or changed:
+        details = []
+        if missing:
+            details.append("丢失：" + ", ".join(missing))
+        if changed:
+            details.append("被改写：" + ", ".join(changed))
+        raise ReleaseError("补充平台安装物不得改写既有正式归档；" + "；".join(details))
+    added = {str(path) for path in after.keys() - before.keys()}
+    expected = _platform_archive_names(version, platform)
+    if added != expected:
+        raise ReleaseError(
+            "补充平台安装物产生了未授权的归档文件；"
+            f"实际：{', '.join(sorted(added)) or '无'}；"
+            f"允许：{', '.join(sorted(expected))}"
+        )
 
 
 def assert_final_layout(
@@ -147,18 +186,24 @@ def _legacy_archives(versions_root: Path) -> list[Path]:
 
 
 def _commit_release(version_stage: Path, delivery_stage: Path, *, versions_root: Path) -> None:
-    """Commit the verified archive and delivery with rollback across both roots."""
+    """Commit a verified first release or an append-only platform supplement."""
     target = versions_root / RELEASE_VERSION
-    if target.exists():
-        raise ReleaseError(f"正式归档已存在，拒绝覆盖：{target}")
     versions_root.mkdir(parents=True, exist_ok=True)
+    backup: Path | None = None
+    if target.exists():
+        backup = versions_root / f".{RELEASE_VERSION}-backup-{uuid.uuid4().hex}"
+        target.rename(backup)
     version_stage.rename(target)
     try:
         replace_delivery_root(delivery_stage)
     except BaseException:
         if target.exists() and not version_stage.exists():
             target.rename(version_stage)
+        if backup is not None and backup.exists() and not target.exists():
+            backup.rename(target)
         raise
+    if backup is not None and backup.exists():
+        shutil.rmtree(backup)
 
 
 def release(version: str, *, platform: str, published_at: str) -> dict[str, Path]:
@@ -176,8 +221,19 @@ def release(version: str, *, platform: str, published_at: str) -> dict[str, Path
     versions_root = ROOT / "versions"
     if _legacy_archives(versions_root):
         raise ReleaseError("versions含旧版本归档；请先按授权迁移到可恢复目录后再签发唯一v1.0.0")
-    if (versions_root / version).exists():
-        raise ReleaseError(f"正式归档已存在，拒绝覆盖：{versions_root / version}")
+    existing_archive = versions_root / version
+    existing_platforms: set[str] = set()
+    if existing_archive.exists():
+        if not existing_archive.is_dir():
+            raise ReleaseError(f"正式归档路径不是目录：{existing_archive}")
+        try:
+            existing_platforms = _archived_platforms(existing_archive, version)
+        except ReleaseVerificationError as error:
+            raise ReleaseError(str(error)) from error
+        if platform in existing_platforms:
+            raise ReleaseError(f"{platform}安装物已正式归档，拒绝重复签发：{existing_archive}")
+        if not existing_platforms:
+            raise ReleaseError("正式归档缺少任何完整平台记录，不能在不明状态上追加安装物")
 
     with tempfile.TemporaryDirectory(prefix="optionhelper-release-") as temporary_name:
         temporary = Path(temporary_name)
@@ -185,45 +241,58 @@ def release(version: str, *, platform: str, published_at: str) -> dict[str, Path
         transaction_root = transaction_versions / version
         delivery_stage = temporary / "dist"
         delivery_stage.mkdir()
-        knowledger_candidate = temporary / "knowledger-candidate"
+        if existing_archive.exists():
+            _progress("完整复验既有平台安装物、Manifest和校验文件，准备补充缺失平台安装物")
+            try:
+                verify_formal_archive(
+                    version=version,
+                    versions_root=versions_root,
+                    native_platform=platform,
+                )
+            except ReleaseVerificationError as error:
+                raise ReleaseError(f"既有正式归档复验失败：{error}") from error
+            shutil.copytree(existing_archive, transaction_root)
+            signed_zip = transaction_root / "option-helper.zip"
+            shutil.copy2(signed_zip, delivery_stage / "option-helper.zip")
+        else:
+            knowledger_candidate = temporary / "knowledger-candidate"
+            _progress("生成并验证Knowledger候选快照")
+            build_candidate(ROOT, knowledger_candidate, version=version, built_at=published_at)
+            sign_catalog(
+                knowledger_candidate,
+                version=version,
+                published_at=published_at,
+                root=ROOT,
+                versions_root=transaction_versions,
+            )
+            validate_published_catalog(ROOT, version, versions_root=transaction_versions, require_source_match=True)
 
-        _progress("生成并验证Knowledger候选快照")
-        build_candidate(ROOT, knowledger_candidate, version=version, built_at=published_at)
-        sign_catalog(
-            knowledger_candidate,
-            version=version,
-            published_at=published_at,
-            root=ROOT,
-            versions_root=transaction_versions,
-        )
-        validate_published_catalog(ROOT, version, versions_root=transaction_versions, require_source_match=True)
+            _progress("构建并验证同源Skill与App开发契约")
+            skill_candidate = build_skill(
+                temporary / "skill",
+                catalog_version=version,
+                repo_root=ROOT,
+                versions_root=transaction_versions,
+            )
+            errors = [
+                *verify_skill(skill_candidate),
+                *verify_source_snapshot(skill_candidate, repo_root=ROOT, versions_root=transaction_versions),
+                *probe_runtime(skill_candidate),
+                *verify_app(ROOT / "products" / "app", capability_root=skill_candidate),
+            ]
+            if errors:
+                raise ReleaseError("Skill/App同源验收失败：\n" + "\n".join(sorted(set(errors))))
 
-        _progress("构建并验证同源Skill与App开发契约")
-        skill_candidate = build_skill(
-            temporary / "skill",
-            catalog_version=version,
-            repo_root=ROOT,
-            versions_root=transaction_versions,
-        )
-        errors = [
-            *verify_skill(skill_candidate),
-            *verify_source_snapshot(skill_candidate, repo_root=ROOT, versions_root=transaction_versions),
-            *probe_runtime(skill_candidate),
-            *verify_app(ROOT / "products" / "app", capability_root=skill_candidate),
-        ]
-        if errors:
-            raise ReleaseError("Skill/App同源验收失败：\n" + "\n".join(sorted(set(errors))))
-
-        _progress("签发Capability并复验ZIP")
-        signed_zip = sign_capability(
-            skill_candidate,
-            transaction_root,
-            published_at,
-            versions_root=transaction_versions,
-        )
-        if verify_zip(signed_zip):
-            raise ReleaseError("签发Skill ZIP未通过解压验收")
-        shutil.copy2(signed_zip, delivery_stage / "option-helper.zip")
+            _progress("签发Capability并复验ZIP")
+            signed_zip = sign_capability(
+                skill_candidate,
+                transaction_root,
+                published_at,
+                versions_root=transaction_versions,
+            )
+            if verify_zip(signed_zip):
+                raise ReleaseError("签发Skill ZIP未通过解压验收")
+            shutil.copy2(signed_zip, delivery_stage / "option-helper.zip")
 
         _progress(f"由本次签发Skill构建{platform}安装物")
         capability_root = extract_skill(signed_zip, temporary / "extracted")
@@ -241,9 +310,18 @@ def release(version: str, *, platform: str, published_at: str) -> dict[str, Path
         else:
             build_windows(version, capability_root, dist_root=delivery_stage, versions_root=transaction_versions)
 
-        _progress("验收归档ZIP、Manifest、安装物、签名与运行链")
+        _progress("验收完整归档的ZIP、Manifest、安装物、签名与运行链")
+        if existing_archive.exists():
+            _assert_append_only(existing_archive, transaction_root, version=version, platform=platform)
         assert_final_layout(version, platform=platform, dist=delivery_stage, versions_root=transaction_versions)
-        verify_release(version=version, platform=platform, versions_root=transaction_versions)
+        try:
+            verify_formal_archive(
+                version=version,
+                versions_root=transaction_versions,
+                native_platform=platform,
+            )
+        except ReleaseVerificationError as error:
+            raise ReleaseError(f"正式归档验收失败：{error}") from error
 
         _progress("原子提交唯一正式版本和当前交付物")
         _commit_release(transaction_root, delivery_stage, versions_root=versions_root)

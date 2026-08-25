@@ -14,8 +14,8 @@
     <script type="module" src="/app/frontend/shared/theme.js"></script>
     <script type="module" src="/app/frontend/shared/scrollbar-activity.js"></script>
   </head>
-  <body class="workspace-body">
-    <div class="workspace-shell workspace-shell--desk" data-workspace-shell data-mode="desk" data-has-desk="false" data-report-open="false">
+  <body class="workspace-body workspace-body--initializing">
+    <div class="workspace-shell workspace-shell--desk" data-workspace-shell data-mode="desk" data-switching="false" data-has-desk="false" data-report-open="false" data-initializing="true" aria-busy="true">
       <aside class="workspace-rail workspace-rail--unbranded">
         <section class="rail-mode-area" aria-label="工作模式"><div class="mode-switch mode-switch--rail" data-mode-switch><button type="button" data-mode="chat">OptChat</button></div></section>
         <button class="rail-new-task" type="button" data-new-task><span aria-hidden="true">＋</span><span class="rail-new-task__label">新建任务</span></button>

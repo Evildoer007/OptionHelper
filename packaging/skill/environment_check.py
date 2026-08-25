@@ -404,6 +404,7 @@ def main() -> None:
             args.data_root,
             args.result_root,
             runtime_root=args.runtime_root,
+            project_root=args.project_root,
         )
         ok = ok and bool(report["stores"]["ok"])
     if args.check_data_api:

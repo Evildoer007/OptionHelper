@@ -2,19 +2,25 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Mapping, Sequence
 
 import numpy as np
 import pandas as pd
 
-from runtime.contracts.contract_api import ContractResolutionError, PricePath, ResolvedContract, evaluate_contract
+from runtime.contracts.contract_api import (
+    PricePath,
+    ResolvedContract,
+    compute_monitor_values,
+    evaluate_contract,
+)
 
 from .entry_generator import BacktestInputError, BacktestUnsupportedError
 from .historical_data import HistoricalData, required_contract_fields
 
 
 _TERMINATION_EVENTS = ("tau_out", "tau_out_1", "tau_out_2", "tau_hedge", "tau_touch")
+_OBSERVATION_SCHEDULE_KEYS = ("O_KO", "O_KI", "Oc", "Otouch", "Orange", "Ovar", "Ohedge", "Oreset")
 
 
 @dataclass(frozen=True)
@@ -23,6 +29,7 @@ class AlignedHistory:
 
     close: pd.DataFrame
     price_fields: Mapping[str, pd.DataFrame]
+    trading_sessions: pd.DatetimeIndex
 
 
 @dataclass(frozen=True)
@@ -38,15 +45,34 @@ class ReplayedPath:
 
 def assert_supported_schedule(contract: ResolvedContract) -> None:
     """拒绝当前公共合同接口不能稳定回放的观察语义。"""
-    observation_keys = {"O_KO", "O_KI", "Oc", "Otouch", "Orange", "Ovar", "Ohedge", "Oreset"}
-    for key in observation_keys:
+    for key in _OBSERVATION_SCHEDULE_KEYS:
         selector = contract.terms.get(key)
         if isinstance(selector, str) and selector.startswith("weekly_"):
             raise BacktestUnsupportedError("weekly_observation_schedule_not_accepted_by_backtester_contract_calendar")
     if "n_obs" in contract.terms:
-        selectors = [contract.terms[key] for key in observation_keys if isinstance(contract.terms.get(key), str)]
+        selectors = [contract.terms[key] for key in _OBSERVATION_SCHEDULE_KEYS if isinstance(contract.terms.get(key), str)]
         if selectors and any(selector != "daily" for selector in selectors):
             raise BacktestUnsupportedError("observation_count_tenor_requires_unavailable_absolute_schedule_interface")
+
+
+def requires_daily_observation(contract: ResolvedContract) -> bool:
+    """合同存在逐日观察时，不能以跨标的价格交集替代受控交易日历。"""
+    return any(contract.terms.get(key) == "daily" for key in _OBSERVATION_SCHEDULE_KEYS)
+
+
+def assert_daily_observation_sessions(
+    controlled_sessions: pd.DatetimeIndex,
+    observed_sessions: pd.DatetimeIndex,
+    *,
+    entry_date: pd.Timestamp,
+    terminal_date: pd.Timestamp,
+) -> None:
+    """逐日观察的合同窗口内，每个受控交易日都必须有全部标的价格。"""
+    required = controlled_sessions[(controlled_sessions >= entry_date) & (controlled_sessions <= terminal_date)]
+    missing = required.difference(observed_sessions)
+    if len(missing):
+        dates = ",".join(date.strftime("%Y-%m-%d") for date in missing)
+        raise BacktestInputError(f"daily_observation_sessions_missing:{dates}")
 
 
 def aligned_history(historical_data: HistoricalData, underlyings: Sequence[str], contract: ResolvedContract) -> AlignedHistory:
@@ -72,7 +98,7 @@ def aligned_history(historical_data: HistoricalData, underlyings: Sequence[str],
         if matrix.isna().any().any():
             raise BacktestInputError(f"alignment_failed：{field_name}与close无法按交易日对齐")
         fields[field_name] = matrix
-    return AlignedHistory(close=close, price_fields=fields)
+    return AlignedHistory(close=close, price_fields=fields, trading_sessions=pd.DatetimeIndex(close.index))
 
 
 def contract_stop_position(
@@ -126,34 +152,115 @@ def replay_path(
     values: np.ndarray,
     price_fields: Mapping[str, np.ndarray],
 ) -> ReplayedPath:
-    """以共享解释器回放，并在最早有效提前终止点截断路径。"""
+    """以共享解释器回放，并在最早有效提前终止点截断路径。
+
+    提前结算的经济事实只能来自终止日前的真实行情。共享解释器把``T``
+    解释为价格路径终点，因此直接把前缀交给解释器会把``tau_out < T``
+    误判为到期事件；而先跑完整历史再复制path/case又会读取终止后的行情。
+    本函数先在真实前缀上识别最早终止，再以终止日价格平坦延展到合同到期
+    仅供解释器完成合同期内的路径选择。输出仍保留真实前缀及其监控事实。
+    """
     times = np.asarray((dates - dates[0]).days, dtype=float) / 365.0
-    try:
-        full_outcome = evaluate_contract(contract, _price_path(contract, values, times, dates, price_fields))
-    except ValueError as original_error:
-        if not _is_early_settlement_endpoint_error(original_error):
-            raise BacktestInputError(str(original_error)) from original_error
-        contract_times = _complete_count_tenor_times(contract, times, len(dates))
-        if np.array_equal(contract_times, times):
-            raise BacktestInputError(str(original_error)) from original_error
-        times = contract_times
-        try:
-            full_outcome = evaluate_contract(contract, _price_path(contract, values, times, dates, price_fields))
-        except ValueError as error:
-            raise BacktestInputError(str(error)) from error
-    if not _has_termination(full_outcome.monitor_values):
-        return ReplayedPath(dates, values, times, dict(price_fields), full_outcome)
+    times = _complete_count_tenor_times(contract, times, len(dates))
     for end in range(1, len(dates) - 1):
         candidate_dates = dates[: end + 1]
         candidate_times = times[: end + 1]
         candidate_fields = {name: field[: end + 1] for name, field in price_fields.items()}
         try:
-            outcome = evaluate_contract(contract, _price_path(contract, values[: end + 1], candidate_times, candidate_dates, candidate_fields))
+            prefix_path = _path_with_controlled_terminal(
+                contract,
+                dates=candidate_dates,
+                values=values[: end + 1],
+                times=candidate_times,
+                price_fields=candidate_fields,
+                controlled_dates=dates,
+                controlled_times=times,
+            )
+            prefix_monitors = compute_monitor_values(contract, prefix_path)
         except ValueError:
             continue
-        if _has_termination(outcome.monitor_values):
-            return ReplayedPath(candidate_dates, values[: end + 1], candidate_times, candidate_fields, outcome)
-    return ReplayedPath(dates, values, times, dict(price_fields), full_outcome)
+        if not _has_termination(prefix_monitors, through_time=float(candidate_times[-1])):
+            continue
+        prefix_monitors = _monitor_values_through(prefix_monitors, float(candidate_times[-1]))
+        outcome = _evaluate_terminated_prefix(
+            contract,
+            dates=candidate_dates,
+            values=values[: end + 1],
+            times=candidate_times,
+            price_fields=candidate_fields,
+            prefix_monitors=prefix_monitors,
+            controlled_dates=dates,
+            controlled_times=times,
+        )
+        if outcome is None:
+            # 例如累购的``tau_out``只影响到期收益分段，并不终止合同；
+            # 合同现金流仍在到期日，因此必须继续保留完整真实路径。
+            continue
+        return ReplayedPath(candidate_dates, values[: end + 1], candidate_times, candidate_fields, outcome)
+    try:
+        outcome = evaluate_contract(contract, _price_path(contract, values, times, dates, price_fields))
+    except ValueError as error:
+        raise BacktestInputError(str(error)) from error
+    return ReplayedPath(dates, values, times, dict(price_fields), outcome)
+
+
+def _evaluate_terminated_prefix(
+    contract: ResolvedContract,
+    *,
+    dates: pd.DatetimeIndex,
+    values: np.ndarray,
+    times: np.ndarray,
+    price_fields: Mapping[str, np.ndarray],
+    prefix_monitors: Mapping[str, Any],
+    controlled_dates: pd.DatetimeIndex,
+    controlled_times: np.ndarray,
+) -> Any | None:
+    """以平坦合成终点解释已发生提前结算，不读取实际后缀行情。"""
+    if "T" not in contract.terms:
+        raise BacktestInputError("early_termination_without_contract_tenor")
+    try:
+        outcome = evaluate_contract(
+            contract,
+            _path_with_controlled_terminal(
+                contract,
+                dates=dates,
+                values=values,
+                times=times,
+                price_fields=price_fields,
+                controlled_dates=controlled_dates,
+                controlled_times=controlled_times,
+            ),
+        )
+    except ValueError as error:
+        raise BacktestInputError(str(error)) from error
+    if any(float(flow.time) > float(times[-1]) + 1e-12 for flow in outcome.cashflows):
+        return None
+    return replace(outcome, monitor_values=dict(prefix_monitors))
+
+
+def _path_with_controlled_terminal(
+    contract: ResolvedContract,
+    *,
+    dates: pd.DatetimeIndex,
+    values: np.ndarray,
+    times: np.ndarray,
+    price_fields: Mapping[str, np.ndarray],
+    controlled_dates: pd.DatetimeIndex,
+    controlled_times: np.ndarray,
+) -> PricePath:
+    """用受控交易日历平坦延展价格，不读取终止后真实行情。"""
+    if len(controlled_dates) != len(controlled_times) or not np.array_equal(controlled_dates[:len(dates)], dates):
+        raise BacktestInputError("early_termination_controlled_calendar_mismatch")
+    if len(controlled_dates) == len(dates):
+        return _price_path(contract, values, times, dates, price_fields)
+    extension_size = len(controlled_dates) - len(dates)
+    return _price_path(
+        contract,
+        np.vstack((values, np.repeat(values[-1:], extension_size, axis=0))),
+        controlled_times,
+        controlled_dates,
+        {name: np.vstack((field, np.repeat(field[-1:], extension_size, axis=0))) for name, field in price_fields.items()},
+    )
 
 
 def _complete_count_tenor_times(contract: ResolvedContract, actual: np.ndarray, observation_count: int) -> np.ndarray:
@@ -163,16 +270,6 @@ def _complete_count_tenor_times(contract: ResolvedContract, actual: np.ndarray, 
     if expected is None or tenor is None or observation_count != int(expected) or actual[-1] <= 0.0:
         return actual
     return actual * (float(tenor) / actual[-1])
-
-
-def _is_early_settlement_endpoint_error(error: ValueError) -> bool:
-    """仅识别共享解释器明确声明的未终止路径期限不足错误。"""
-    message = str(error)
-    return isinstance(error, ContractResolutionError) and all(marker in message for marker in (
-        "价格路径终点",
-        "年早于合同期限",
-        "未终止路径须覆盖至合同到期日或其相邻交易日",
-    ))
 
 
 def entry_hv_feature(
@@ -197,7 +294,10 @@ def entry_hv_feature(
         prices = scoped.loc[scoped["asset_id"] == asset, price_field].to_numpy(dtype=float)
         if len(prices) < window + 1:
             return {"status": "not_available", "reason": "insufficient_pre_entry_adj_close", "hv_window": window}
-        returns = np.diff(np.log(prices[-(window + 1):]))
+        window_prices = prices[-(window + 1):]
+        if not np.isfinite(window_prices).all() or (window_prices <= 0).any():
+            return {"status": "not_available", "reason": "invalid_pre_entry_adj_close", "hv_window": window}
+        returns = np.diff(np.log(window_prices))
         by_asset[asset] = float(np.std(returns, ddof=1) * np.sqrt(244.0))
     result: dict[str, Any] = {
         "status": "available", "as_of": _date_text(entry_date), "hv_window": window,
@@ -228,11 +328,23 @@ def _price_path(
     )
 
 
-def _has_termination(monitors: Mapping[str, Any]) -> bool:
+def _has_termination(monitors: Mapping[str, Any], *, through_time: float | None = None) -> bool:
     return any(
-        isinstance(monitors.get(name), (int, float, np.number)) and np.isfinite(float(monitors[name]))
+        isinstance(monitors.get(name), (int, float, np.number))
+        and np.isfinite(float(monitors[name]))
+        and (through_time is None or float(monitors[name]) <= through_time + 1e-12)
         for name in _TERMINATION_EVENTS
     )
+
+
+def _monitor_values_through(monitors: Mapping[str, Any], through_time: float) -> dict[str, Any]:
+    """不让为日历解析附加的平坦终点伪造终止事件。"""
+    result = dict(monitors)
+    for name in _TERMINATION_EVENTS:
+        value = result.get(name)
+        if isinstance(value, (int, float, np.number)) and np.isfinite(float(value)) and float(value) > through_time + 1e-12:
+            result[name] = float("inf")
+    return result
 
 
 def _date_text(value: Any) -> str:

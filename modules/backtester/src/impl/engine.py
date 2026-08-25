@@ -18,7 +18,15 @@ from ..entry_generator import BacktestInputError, BacktestUnsupportedError, Zero
 from ..historical_data import HistoricalData
 from ..metric_profile_map import MetricProfileSpec
 from ..metric_profiles import metric_profile_hash, profile_for_product, specialized_metrics
-from ..path_replay import aligned_history, assert_supported_schedule, contract_stop_position, entry_hv_feature, replay_path
+from ..path_replay import (
+    aligned_history,
+    assert_daily_observation_sessions,
+    assert_supported_schedule,
+    contract_stop_position,
+    entry_hv_feature,
+    replay_path,
+    requires_daily_observation,
+)
 from ..trade_ledger import HistoricalResolvedContract, TradeResult, build_trade_result, freeze_trade_contract
 from .config import BacktestConfig
 
@@ -142,7 +150,10 @@ class BacktestResult:
             "branch_coverage": branch_coverage(self.contract, self.trades),
             "annual_summary": summary["annual_summary"],
             "price_convention_evidence": {
-                "contract_settlement": {"field": "close", "adjustment": "unadjusted"},
+                "contract_settlement": {
+                    "field": str(self.contract.terms.get("observation_price", "close")),
+                    "adjustment": "unadjusted",
+                },
                 "entry_reference": {
                     "field": "close",
                     "adjustment": "unadjusted",
@@ -191,6 +202,7 @@ def backtest(backtest_input: Any) -> BacktestResult:
         raise BacktestUnsupportedError(profile_spec.unsupported_reason or "metric_profile_unsupported")
     assert_supported_schedule(contract)
     history = aligned_history(historical_data, contract.underlyings, contract)
+    daily_observation = requires_daily_observation(contract)
     skipped: list[dict[str, str]] = []
     trades: list[TradeResult] = []
     positions, missing_explicit = entry_positions(history.close.index, config)
@@ -207,7 +219,7 @@ def backtest(backtest_input: Any) -> BacktestResult:
             start,
             contract,
             config.complete_tenor,
-            trading_sessions=historical_data.trading_sessions,
+            trading_sessions=historical_data.trading_sessions if daily_observation else history.trading_sessions,
             calendar_coverage_end=historical_data.calendar_coverage_end,
         )
         if stop is None:
@@ -221,6 +233,13 @@ def backtest(backtest_input: Any) -> BacktestResult:
         entry_spots = {asset: float(values[0, index]) for index, asset in enumerate(contract.underlyings)}
         fields = {name: matrix.iloc[start : stop + 1].to_numpy(dtype=float) for name, matrix in history.price_fields.items()}
         try:
+            if daily_observation:
+                assert_daily_observation_sessions(
+                    historical_data.trading_sessions,
+                    dates,
+                    entry_date=history.close.index[start],
+                    terminal_date=history.close.index[stop],
+                )
             evaluation_contract, _ = freeze_trade_contract(contract, entry_date=entry_date, trading_dates=dates, entry_spots=entry_spots)
             replay = replay_path(evaluation_contract, dates=dates, values=values, price_fields=fields)
             final_contract, historical_contract = freeze_trade_contract(
@@ -228,6 +247,7 @@ def backtest(backtest_input: Any) -> BacktestResult:
                 entry_date=entry_date,
                 trading_dates=replay.dates,
                 entry_spots=entry_spots,
+                frozen_schedule_source=evaluation_contract,
             )
             if not replay.outcome.cashflows:
                 _skip_or_reject(skipped, config, entry_date, "shared_interpreter_returned_no_cashflows")

@@ -116,6 +116,7 @@ class AgentLoop:
         observation_builder: ObservationPort | None = None,
         dispatch_checkpoints: DurabilityCheckpointStore | None = None,
         conversation_session_id: Callable[[SessionIdentity, str], SessionId] | None = None,
+        visible_event_sink: Callable[[SessionIdentity, str, str | None, str, str, str], None] | None = None,
     ) -> None:
         if not 1 <= max_rounds <= 8 or timeout_seconds <= 0:
             raise ValueError("AgentLoop配置无效")
@@ -129,6 +130,7 @@ class AgentLoop:
         self._observation_builder = observation_builder
         self._dispatch_checkpoints = dispatch_checkpoints
         self._conversation_session_id = conversation_session_id
+        self._visible_event_sink = visible_event_sink
 
     def run_with_execution(
         self,
@@ -148,9 +150,25 @@ class AgentLoop:
         selection: ModelSelection | None = None,
         execution_ids: Mapping[str, str] | None = None,
     ) -> dict[str, Any]:
+        # A normal conversation turn is a recovery boundary as well.  This
+        # keeps a crash after candidate activation from making an uncommitted
+        # contract visible to an unrelated tool call in the next turn.
+        reconcile = getattr(self._tool_executor, "reconcile_prepared_recommendation_approvals", None)
+        if callable(reconcile):
+            try:
+                reconcile()
+            except (AuthorizationError, ValidationError):
+                return _result(
+                    "unavailable",
+                    "当前无法恢复上一轮候选确认，请重新确认候选后继续。",
+                    [],
+                    0,
+                )
         started = monotonic()
         observations: list[dict[str, Any]] = []
         seen_calls: set[str] = set()
+        request_id = str((execution_ids or {}).get("request_id") or "").strip() or None
+        self._emit_visible_event(identity, task_id, request_id, "routing", "started", "正在判断本次请求的处理路径。")
         for round_number in range(1, self._max_rounds + 1):
             if self._is_cancelled(identity, task_id):
                 return _result("cancelled", "本次任务已取消。", observations, round_number - 1)
@@ -159,6 +177,15 @@ class AgentLoop:
             try:
                 context = self._context_builder.build(identity, task_id, message)
                 if round_number == 1 and _should_run_fixed_recommendation(message, context):
+                    self._emit_visible_event(identity, task_id, request_id, "routing", "completed", "已识别为结构推荐需求，进入Recommender。")
+                    if _ambiguous_recommendation_preset(message):
+                        return _result(
+                            "needs_input",
+                            _ambiguous_preset_message(message),
+                            observations,
+                            0,
+                            action="ask_user",
+                        )
                     arguments = {
                         "workflow": _fixed_recommendation_workflow(message),
                         "main_agent_controlled": True,
@@ -166,6 +193,10 @@ class AgentLoop:
                             message, _configured_recommendation_preset(self._gateway, identity),
                         ),
                     }
+                    self._emit_visible_event(
+                        identity, task_id, request_id, "agent_run", "started",
+                        _preset_started_summary(str(arguments["recommendation_preset"])),
+                    )
                     if execution_ids is None:
                         raw = (
                             self._recommender.run_fixed(identity, task_id, message, arguments)
@@ -184,6 +215,7 @@ class AgentLoop:
                             )
                         )
                     observations.append(_observation("recommender.run", raw, identity))
+                    self._emit_visible_event(identity, task_id, request_id, "agent_run", "completed", "Recommender已完成候选分析。")
                     if not _recommender_returns_to_main_agent(raw):
                         return _recommendation_outcome(raw, observations, round_number)
                 if round_number == 1 and _explicit_delivery_kinds(message) == ("card", "report"):
@@ -196,6 +228,9 @@ class AgentLoop:
                     round_number=round_number,
                     max_rounds=self._max_rounds,
                 )
+                if round_number == 1:
+                    self._emit_visible_event(identity, task_id, request_id, "routing", "completed", "已识别为常规对话，交由主Agent处理。")
+                    self._emit_visible_event(identity, task_id, request_id, "agent_run", "started", "主Agent正在分析需求。")
                 checkpoint = None
                 if self._dispatch_checkpoints is not None and self._conversation_session_id is not None:
                     step_namespace = str((execution_ids or {}).get("model_step_id", task_id))
@@ -250,11 +285,13 @@ class AgentLoop:
                         observations,
                         round_number,
                     )
+                self._emit_visible_event(identity, task_id, request_id, "agent_run", "completed", "主Agent已完成本轮分析。")
                 return _result("partial" if _has_failure(observations) else "completed", text, observations, round_number)
             if decision.action == "ask_user":
                 text = _user_text(decision.text, identity)
                 if has_hidden_reasoning(decision.text) or (_has_financial_number(text) and not _has_valid_fact_citations(text, (), observations, _context_facts(context))):
                     return _result("partial", "模型不能在未引用受控事实时给出金融数字。", observations, round_number)
+                self._emit_visible_event(identity, task_id, request_id, "agent_run", "completed", "主Agent已完成本轮分析。")
                 return _result("needs_input", text, observations, round_number, action="ask_user")
             assert decision.tool is not None and decision.arguments is not None
             tool_names = {str(item.get("name")) for item in context.get("tool_catalog", []) if isinstance(item, Mapping)}
@@ -270,7 +307,18 @@ class AgentLoop:
                 )
             seen_calls.add(call_key)
             try:
+                module_summary = _host_module_summary(decision.tool)
+                if module_summary is not None:
+                    self._emit_visible_event(identity, task_id, request_id, "host_module", "started", module_summary[0])
                 if decision.tool == "recommender.run":
+                    if _ambiguous_recommendation_preset(message):
+                        return _result(
+                            "needs_input",
+                            _ambiguous_preset_message(message),
+                            observations,
+                            round_number,
+                            action="ask_user",
+                        )
                     forwarded_arguments = {
                         **dict(decision.arguments),
                         "main_agent_controlled": True,
@@ -300,6 +348,9 @@ class AgentLoop:
                 else:
                     raw = self._tool_executor.call(identity, task_id, decision.tool, decision.arguments)
                 observation = _observation(decision.tool, raw, identity)
+                if module_summary is not None:
+                    completed_status = "failed" if observation.get("status") in {"failed", "unsupported"} else "completed"
+                    self._emit_visible_event(identity, task_id, request_id, "host_module", completed_status, module_summary[1])
                 if self._observation_builder is not None:
                     try:
                         facts = self._observation_builder.facts_for(identity, task_id, decision.tool, raw)
@@ -353,6 +404,8 @@ class AgentLoop:
                         error_next_step="检查Reporter、Designer及正式分析结果后重试。",
                     )
             except UnavailableCapabilityError as error:
+                if _host_module_summary(decision.tool) is not None:
+                    self._emit_visible_event(identity, task_id, request_id, "host_module", "failed", "模块运行未完成，正在返回可用结果。")
                 observations.append({"tool": decision.tool, "status": "failed", "error": _safe_error(error)})
                 if decision.tool == "reporter.run":
                     next_step = _user_text(error.next_step, identity)
@@ -365,6 +418,8 @@ class AgentLoop:
                         error_next_step=next_step,
                     )
             except (AuthorizationError, ValidationError) as error:
+                if _host_module_summary(decision.tool) is not None:
+                    self._emit_visible_event(identity, task_id, request_id, "host_module", "failed", "模块运行未完成，正在返回可用结果。")
                 observations.append({"tool": decision.tool, "status": "failed", "error": _safe_error(error)})
                 if decision.tool == "reporter.run":
                     return _result(
@@ -375,6 +430,8 @@ class AgentLoop:
                         action="ask_user",
                     )
             except Exception:
+                if _host_module_summary(decision.tool) is not None:
+                    self._emit_visible_event(identity, task_id, request_id, "host_module", "failed", "模块运行未完成，正在返回可用结果。")
                 observations.append({"tool": decision.tool, "status": "failed", "error": "工具未完成"})
             if self._is_cancelled(identity, task_id):
                 return _result("cancelled", "本次任务已取消。", observations, round_number)
@@ -457,6 +514,49 @@ class AgentLoop:
             observations,
             round_number,
         )
+
+    def _emit_visible_event(
+        self,
+        identity: SessionIdentity,
+        task_id: str,
+        request_id: str | None,
+        event_type: str,
+        status: str,
+        summary: str,
+    ) -> None:
+        if self._visible_event_sink is not None:
+            self._visible_event_sink(identity, task_id, request_id, event_type, status, summary)
+
+
+def _preset_started_summary(preset_id: str) -> str:
+    labels = {
+        "sequential-deliberation": "已选定Mode1，正在依次完成意图、研究与复核。",
+        "product-trader-loop": "已选定Mode2，正在进行产品与交易约束校验。",
+        "independent-council": "已选定Mode3，正在组织独立评审。",
+        "constraint-ranking": "已选定Mode4，正在生成并排序候选结构。",
+    }
+    return labels.get(preset_id, "已选定Recommender模式，正在开始候选分析。")
+
+
+def _host_module_summary(tool_name: str) -> tuple[str, str] | None:
+    labels = {
+        "payoffer.run": "收益结构模块正在运行。",
+        "pricer.run": "估值定价模块正在运行。",
+        "backtester.run": "历史回测模块正在运行。",
+        "reporter.run": "正在生成交付材料。",
+        "recommendation_delivery.run": "正在汇总已验证结果。",
+    }
+    starts = labels.get(tool_name)
+    if starts is None:
+        return None
+    completed = {
+        "payoffer.run": "收益结构模块已返回结果。",
+        "pricer.run": "估值定价模块已返回结果。",
+        "backtester.run": "历史回测模块已返回结果。",
+        "reporter.run": "交付材料已生成或已返回所需输入。",
+        "recommendation_delivery.run": "已完成已验证结果汇总。",
+    }
+    return starts, completed[tool_name]
 
 
 def _result(
@@ -885,9 +985,44 @@ def _controlled_recommendation_preset(message: object, configured_default: str) 
     """Select only a published preset from explicit, deterministic user intent."""
 
     text = str(message or "").lower()
-    if any(marker in text for marker in ("独立评审团", "并行评审", "独立评审", "independent council")):
+    if any(marker in text for marker in _MODE_ONE_MARKERS):
+        return "sequential-deliberation"
+    if any(marker in text for marker in _MODE_TWO_MARKERS):
+        return "product-trader-loop"
+    if any(marker in text for marker in _MODE_THREE_MARKERS):
         return "independent-council"
-    return configured_default if configured_default in {"sequential-deliberation", "independent-council"} else "sequential-deliberation"
+    if any(marker in text for marker in _MODE_FOUR_MARKERS):
+        return "constraint-ranking"
+    return configured_default if configured_default in {
+        "sequential-deliberation", "product-trader-loop", "independent-council", "constraint-ranking",
+    } else "sequential-deliberation"
+
+
+_MODE_TWO_MARKERS = (
+    "mode 2", "mode2", "产品交易闭环", "产品团队和交易团队", "交易员复核",
+)
+_MODE_ONE_MARKERS = (
+    "mode 1", "mode1", "顺序审议", "顺序讨论", "依次澄清检索复核", "sequential deliberation",
+)
+_MODE_THREE_MARKERS = (
+    "mode 3", "mode3", "独立评审团", "独立评审", "独立委员会", "independent council",
+)
+_MODE_FOUR_MARKERS = (
+    "mode 4", "mode4", "约束排序", "按历史胜率", "按期权费", "gamma不能", "gamma不高于",
+)
+
+
+def _ambiguous_recommendation_preset(message: object) -> bool:
+    text = str(message or "").lower()
+    groups = (_MODE_ONE_MARKERS, _MODE_TWO_MARKERS, _MODE_THREE_MARKERS, _MODE_FOUR_MARKERS)
+    return sum(any(marker in text for marker in markers) for markers in groups) > 1
+
+
+def _ambiguous_preset_message(message: object) -> str:
+    text = str(message or "").lower()
+    if any(marker in text for marker in _MODE_TWO_MARKERS) and any(marker in text for marker in _MODE_FOUR_MARKERS):
+        return "你同时指定了Mode 2和Mode 4。请确认使用产品交易闭环，还是约束排序。"
+    return "你同时指定了多个多智能体预设。请只保留一个Mode后继续。"
 
 
 def _configured_recommendation_preset(gateway: object, identity: SessionIdentity) -> str:

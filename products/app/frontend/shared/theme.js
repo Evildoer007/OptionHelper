@@ -25,6 +25,14 @@ function savePreference(preference) {
   try { localStorage.setItem(THEME_KEY, preference); } catch { /* A local cache is optional. */ }
 }
 
+function storedPreference() {
+  try {
+    const saved = localStorage.getItem(THEME_KEY);
+    if (ALLOWED.has(saved)) return saved;
+  } catch { /* The DOM bootstrap value remains the fallback. */ }
+  return preferenceOf(document.documentElement.dataset.themePref);
+}
+
 function updateFavicon(theme) {
   const link = document.querySelector('link[rel="icon"]');
   if (link) link.href = favicon[theme];
@@ -97,13 +105,13 @@ function installDocumentThemeControls() {
 }
 
 export function initializeTheme() {
-  const root = document.documentElement;
-  let preference = preferenceOf(root.dataset.themePref);
-  if (!root.dataset.themePref) {
-    try { preference = preferenceOf(localStorage.getItem(THEME_KEY)); } catch { /* Default stays light. */ }
-  }
-  setThemePreference(preference, { persist: false });
+  setThemePreference(storedPreference(), { persist: false });
   return currentTheme();
+}
+
+function syncStoredTheme() {
+  const preference = storedPreference();
+  if (preference !== currentThemePreference()) setThemePreference(preference, { persist: false });
 }
 
 systemTheme?.addEventListener("change", () => {
@@ -111,6 +119,10 @@ systemTheme?.addEventListener("change", () => {
 });
 
 initializeTheme();
+window.addEventListener?.("pageshow", syncStoredTheme);
+document.addEventListener?.("visibilitychange", () => {
+  if (!document.hidden) syncStoredTheme();
+});
 // Theme controls remain usable even when a page-specific module cannot load.
 // Login still installs its own group idempotently for its local event contract.
 installDocumentThemeControls();

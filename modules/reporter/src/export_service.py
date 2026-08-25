@@ -20,7 +20,17 @@ from .artifact_validator import (
     validate_report_run_directory,
     validate_written_artifact,
 )
-from .models import ReporterError, ReportRequest, SCHEMA_MANIFEST, read_json, require_identifier, stable_hash, write_json
+from .models import (
+    CARD_SECTION_ORDER,
+    REPORT_SECTION_ORDER,
+    ReporterError,
+    ReportRequest,
+    SCHEMA_MANIFEST,
+    read_json,
+    require_identifier,
+    stable_hash,
+    write_json,
+)
 from .payoff_report_figure import PROFILE as PAYOFF_REPORT_FIGURE_PROFILE, derive_report_payoff_svg
 
 
@@ -41,8 +51,8 @@ def _write_artifacts(
     """复制已验证源产物，并仅为Report生成安全的Payoffer派生图。
 
     ``artifacts``始终记录不变的ModuleRun源文件副本；``derived_artifacts``
-    仅记录本ReportRun内的新文件。Card不会获得任何SVG路径，因此不会使用
-    图形，即使同一Run携带了Payoffer源产物。
+    仅记录本ReportRun内的新文件。Card保留已验真的源产物以支持后续再次
+    渲染为Report，但不会获得可嵌入的报告SVG路径。
     """
 
     candidate_evidence = evidence.get("candidate_evidence")
@@ -91,6 +101,10 @@ def _write_artifacts(
                     continue
                 if not derive_payoff_figure:
                     # Card只交付文字情景；不向Designer暴露可嵌入的SVG路径。
+                    continue
+                if content_hash in routes:
+                    # Identical frozen payoff figures share one immutable
+                    # report projection even when several candidates refer to it.
                     continue
                 report_name = f"report-payoff-{content_hash[:16]}.svg"
                 report_relative = relative.parent / report_name
@@ -294,13 +308,22 @@ def write_report_run(
                 stage,
                 evidence,
                 request,
-                derive_payoff_figure=False,
+                derive_payoff_figure=(
+                    request.output_type == "report"
+                    and request.delivery_mode == "comparison"
+                ),
             )
-            summary_payload = build_collection_payload(units, request)
+            summary_payload = build_collection_payload(units, request, artifact_paths=routes)
             brief = build_design_brief(summary_payload, request, report_unit_hashes=[str(item.get("semantic_fact_hash", "")) for item in units])
             write_json(stage / "designer-input.json", summary_payload)
             write_json(stage / "design-brief.json", brief)
-            main_name = "quote" if request.output_type == "quote" else "index" if request.delivery_mode == "batch" else "report"
+            main_name = (
+                "quote" if request.output_type == "quote"
+                else "index" if request.delivery_mode == "batch"
+                else "multicard" if request.delivery_mode == "comparison" and request.output_type == "card"
+                else "multireport" if request.delivery_mode == "comparison"
+                else "report"
+            )
             rendered = _write_rendered(stage, summary_payload, request, f"{main_name}.{'pdf' if request.format == 'pdf' else 'html'}", designer_port=designer_port)
             designer_artifact_manifest = _persist_designer_manifest(stage, rendered, summary_payload)
             child_outputs = []
@@ -406,6 +429,47 @@ def _copy_declared_artifacts(
     )
 
 
+def _derive_saved_payoff_figures(
+    stage: Path,
+    artifacts: list[dict[str, Any]],
+) -> tuple[dict[str, str], list[dict[str, Any]]]:
+    """Derive Report-only payoff figures from copied, hash-verified sources."""
+
+    routes: dict[str, str] = {}
+    derived_rows: list[dict[str, Any]] = []
+    for row in artifacts:
+        if row.get("module") != "payoff" or row.get("media_type") != "image/svg+xml":
+            continue
+        candidate_id = str(row.get("candidate_id") or "").strip()
+        source_path = str(row.get("path") or "").strip()
+        source_hash = str(row.get("content_hash") or "").strip()
+        if not candidate_id or not source_path or not source_hash:
+            raise ReporterError("已保存Payoffer源产物声明不完整")
+        if source_hash in routes:
+            continue
+        source = validate_hashed_artifact(stage, source_path, source_hash, "已保存Payoffer源产物")
+        source_relative = Path(source_path)
+        report_relative = source_relative.parent / f"report-payoff-{source_hash[:16]}.svg"
+        report_path = stage / report_relative
+        if report_path.exists() or report_path.is_symlink():
+            raise ReporterError(f"报告Payoffer派生图路径冲突：{report_relative}")
+        report_path.write_bytes(derive_report_payoff_svg(source.read_bytes(), expected_source_hash=source_hash))
+        report_hash = sha256_file(report_path)
+        routes.setdefault(source_hash, report_relative.as_posix())
+        derived_rows.append({
+            "candidate_id": candidate_id,
+            "module": "payoff",
+            "kind": "payoffer_report_figure",
+            "profile": PAYOFF_REPORT_FIGURE_PROFILE,
+            "source_path": source_path,
+            "source_content_hash": source_hash,
+            "path": report_relative.as_posix(),
+            "media_type": "image/svg+xml",
+            "content_hash": report_hash,
+        })
+    return routes, derived_rows
+
+
 def _source_report_directory(
     output_root: Path,
     *,
@@ -454,7 +518,22 @@ def _write_reissued_contents(
     report_unit_hashes = source_brief.get("report_unit_semantic_fact_hashes")
     if not isinstance(report_unit_hashes, list) or not all(isinstance(item, str) and item for item in report_unit_hashes):
         raise ReporterError("源ReportRun缺少冻结ReportUnit事实哈希")
-    if target_request.output_type == source_request.output_type:
+    if source_request.delivery_mode == "comparison":
+        routes = {
+            str(item["source_content_hash"]): str(item["path"])
+            for item in derived_artifacts
+            if isinstance(item, Mapping)
+            and item.get("kind") == "payoffer_report_figure"
+            and isinstance(item.get("source_content_hash"), str)
+            and isinstance(item.get("path"), str)
+        }
+        if target_request.output_type == "report" and not routes:
+            routes, derived_artifacts = _derive_saved_payoff_figures(stage, artifacts)
+        units = unit.get("report_units") if isinstance(unit.get("report_units"), list) else []
+        if len(units) < 2:
+            raise ReporterError("冻结对比交付缺少候选ReportUnit")
+        payload = build_collection_payload(units, target_request, artifact_paths=routes)
+    elif target_request.output_type == source_request.output_type:
         payload = dict(source_payload)
     else:
         if source_request.output_type == "quote" or target_request.output_type == "quote":
@@ -474,7 +553,10 @@ def _write_reissued_contents(
     write_json(stage / "report-unit.json", dict(unit))
     write_json(stage / "designer-input.json", dict(payload))
     write_json(stage / "design-brief.json", brief)
-    if target_request.output_type == source_request.output_type:
+    if source_request.delivery_mode == "comparison":
+        stem = "multicard" if target_request.output_type == "card" else "multireport"
+        filename = f"{stem}.{target_request.format}"
+    elif target_request.output_type == source_request.output_type:
         source_report_name = str((source_manifest.get("rendered") or {}).get("path") or "report.html")
         filename = f"{Path(source_report_name).stem}.{target_request.format}"
     else:

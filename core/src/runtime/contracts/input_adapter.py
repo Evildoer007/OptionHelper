@@ -133,6 +133,12 @@ def prepare_compute_request(
     )
     if unsupported_refs:
         raise ContractResolutionError("计算请求包含不支持的DataAssetRef.schema_id")
+    if len(calendar_refs) > 1:
+        # One formal contract has exactly one authenticated observation
+        # calendar.  Accepting the first of several supplied assets would make
+        # the frozen schedule depend on caller ordering and leave unbound data
+        # in the request, including for Payoffer.
+        raise ContractResolutionError("计算请求最多绑定一个交易日历DataAssetRef")
     calendar = verified_trading_calendar(calendar_refs[0], data_store) if calendar_refs else None
     resolver_identity = dict(identity)
     if calendar is not None:
@@ -331,26 +337,51 @@ def bind_verified_calendar_to_history(
         raise ContractResolutionError("历史行情必须使用market-history DataAssetRef")
     calendar = verified_trading_calendar(calendar_ref, data_store)
     coverage = deepcopy(dict(history["coverage"]))
-    start = coverage.get("start_date", coverage.get("start"))
-    end = coverage.get("end_date", coverage.get("end"))
-    try:
-        start_day = date.fromisoformat(str(start)).isoformat()
-        end_day = date.fromisoformat(str(end)).isoformat()
-    except ValueError as error:
-        raise ContractResolutionError("历史行情DataAssetRef.coverage必须声明YYYY-MM-DD起止日") from error
-    if start_day > end_day:
-        raise ContractResolutionError("历史行情DataAssetRef.coverage起止日无效")
-    sessions = tuple(day for day in calendar["sessions"] if start_day <= day <= end_day)
-    if not sessions or sessions[0] != start_day or sessions[-1] != end_day:
-        raise ContractResolutionError("Host验证交易日历未完整覆盖历史行情DataAssetRef")
+    sessions = _history_sessions_in_calendar(coverage, calendar)
     coverage.update({
         "calendar_id": calendar["calendar_id"],
         "calendar_revision": calendar["calendar_revision"],
         "sessions": list(sessions),
+        # Coverage boundaries are canonicalized to actual observed sessions.
+        # A request or metadata boundary may be a weekend/holiday and must not
+        # be treated as a required trading session.
+        "start_date": sessions[0],
+        "end_date": sessions[-1],
         "calendar_coverage_end": sessions[-1],
         "calendar_ref": calendar["calendar_ref"],
     })
     return {**history, "coverage": coverage}
+
+
+def _history_sessions_in_calendar(
+    coverage: Mapping[str, Any],
+    calendar: Mapping[str, Any],
+) -> tuple[str, ...]:
+    """Validate a history session set without treating metadata dates as sessions.
+
+    The persisted history asset is authoritative for which sessions were
+    actually observed.  The verified calendar must contain that set, and it
+    must contain every calendar session between the observed first and last
+    session.  This accepts non-trading request/metadata boundaries while still
+    rejecting an internal missing trading day.
+    """
+
+    raw_history_sessions = coverage.get("sessions")
+    if isinstance(raw_history_sessions, (str, bytes)) or not isinstance(raw_history_sessions, (list, tuple)):
+        raise ContractResolutionError("历史行情DataAssetRef.coverage必须声明实际交易sessions")
+    try:
+        history_sessions = tuple(date.fromisoformat(str(value)).isoformat() for value in raw_history_sessions)
+    except (TypeError, ValueError) as error:
+        raise ContractResolutionError("历史行情DataAssetRef.coverage.sessions必须为YYYY-MM-DD") from error
+    if not history_sessions or history_sessions != tuple(sorted(history_sessions)) or len(set(history_sessions)) != len(history_sessions):
+        raise ContractResolutionError("历史行情DataAssetRef.coverage.sessions必须严格递增且不重复")
+    calendar_sessions = tuple(str(value) for value in calendar.get("sessions", ()))
+    if any(day not in set(calendar_sessions) for day in history_sessions):
+        raise ContractResolutionError("Host验证交易日历未覆盖历史行情实际交易日")
+    expected = tuple(day for day in calendar_sessions if history_sessions[0] <= day <= history_sessions[-1])
+    if history_sessions != expected:
+        raise ContractResolutionError("Host验证交易日历未完整覆盖历史行情实际交易日集合")
+    return history_sessions
 
 
 def _require_history_calendar_matches_verified_calendar(
@@ -371,25 +402,12 @@ def _require_history_calendar_matches_verified_calendar(
     coverage = history.get("coverage")
     if history.get("schema_id") != "market-history" or not isinstance(coverage, Mapping):
         raise ContractResolutionError("BacktestInput历史行情必须声明交易日历覆盖")
-    start = coverage.get("start_date", coverage.get("start"))
-    end = coverage.get("end_date", coverage.get("end"))
-    try:
-        start_day = date.fromisoformat(str(start)).isoformat()
-        end_day = date.fromisoformat(str(end)).isoformat()
-    except ValueError as error:
-        raise ContractResolutionError("历史行情DataAssetRef.coverage必须声明YYYY-MM-DD起止日") from error
-    expected_sessions = [
-        session for session in calendar["sessions"]
-        if start_day <= session <= end_day
-    ]
+    history_sessions = _history_sessions_in_calendar(coverage, calendar)
     if (
-        not expected_sessions
-        or expected_sessions[0] != start_day
-        or expected_sessions[-1] != end_day
-        or coverage.get("calendar_id") != calendar["calendar_id"]
+        coverage.get("calendar_id") != calendar["calendar_id"]
         or coverage.get("calendar_revision") != calendar["calendar_revision"]
-        or coverage.get("sessions") != expected_sessions
-        or coverage.get("calendar_coverage_end") != expected_sessions[-1]
+        or tuple(str(value) for value in coverage.get("sessions", ())) != history_sessions
+        or coverage.get("calendar_coverage_end") != history_sessions[-1]
     ):
         raise ContractResolutionError(
             "BacktestInput历史行情必须使用已持久化的Host验证交易日历；请重新获取该回测区间行情。"

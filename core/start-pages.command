@@ -13,7 +13,19 @@ if [[ "$PROJECT_ROOT" == "$SCRIPT_DIR" || "$PROJECT_ROOT" == "$SCRIPT_DIR"/* ]];
   exit 1
 fi
 
-STATE_FILE="$PROJECT_ROOT/.optionhelper/runtime/python-path"
+# A released Skill is read-only.  Keep all mutable state in the project
+# selected by the user, then pass those exact roots to the module Host after
+# the readiness check.  The check and the actual run must not resolve
+# different Store locations.
+RUNTIME_ROOT="$PROJECT_ROOT/.optionhelper/runtime"
+DATA_ROOT="$PROJECT_ROOT/data"
+RESULT_ROOT="$PROJECT_ROOT/result"
+mkdir -p "$RUNTIME_ROOT" "$DATA_ROOT" "$RESULT_ROOT"
+export OPTIONHELPER_RUNTIME_ROOT="$RUNTIME_ROOT"
+export OPTIONHELPER_DATA_ROOT="$DATA_ROOT"
+export OPTIONHELPER_RESULT_ROOT="$RESULT_ROOT"
+
+STATE_FILE="$RUNTIME_ROOT/python-path"
 typeset -a candidates
 candidates=()
 
@@ -90,8 +102,8 @@ if [[ -n "${PERSIST_SELECTION:-}" ]]; then
 fi
 "$PYTHON_BIN" "$CHECKER" --requirements "$SCRIPT_DIR/requirements.lock" --check-readiness \
   --skill-root "$SCRIPT_DIR" --project-root "$PROJECT_ROOT" \
-  --data-root "$PROJECT_ROOT/data" --result-root "$PROJECT_ROOT/result" \
-  --runtime-root "$PROJECT_ROOT/.optionhelper/runtime"
+  --data-root "$DATA_ROOT" --result-root "$RESULT_ROOT" \
+  --runtime-root "$RUNTIME_ROOT"
 
 if [[ "${1:-}" == "--check-environment" ]]; then
   exec "$PYTHON_BIN" "$SCRIPT_DIR/module_host.py" --list

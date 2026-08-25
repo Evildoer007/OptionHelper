@@ -40,13 +40,23 @@ def actual_n_obs(
     return count
 
 
+def bind_accumulator_remaining_count(formula: str, remaining_count: int) -> str:
+    """Bind Q_acc's path-length argument without changing payoff n_obs."""
+    pattern = r"(accumulated_quantity\([^)]*?,\s*)(?:n_obs|\d+)(\s*,\s*T_contract\s*\))"
+    compiled, replacements = re.subn(pattern, rf"\g<1>{int(remaining_count)}\g<2>", formula)
+    if replacements != 1:
+        raise ValueError("累购Q_acc公式未能唯一绑定剩余观察数")
+    return compiled
+
+
 def _n_obs_selector(terms: Mapping[str, Any]) -> object | None:
     monitor = terms.get("monitor")
     if not isinstance(monitor, Mapping):
         return None
     formulas = [
         str(formula) for formula in monitor.values()
-        if isinstance(formula, str) and re.search(r"\bn_obs\b", formula)
+        if isinstance(formula, str)
+        and (re.search(r"\bn_obs\b", formula) or "accumulated_quantity(" in formula)
     ]
     if not formulas:
         return None
@@ -68,4 +78,4 @@ def _n_obs_selector(terms: Mapping[str, Any]) -> object | None:
     return selectors[0]
 
 
-__all__ = ("actual_n_obs",)
+__all__ = ("actual_n_obs", "bind_accumulator_remaining_count")

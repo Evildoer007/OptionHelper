@@ -65,7 +65,6 @@
     {"source": "modules/payoffer/figures", "target": "assets/payoffer/figures", "exclude": ["**/__pycache__/**", "**/*.pyc", ".DS_Store"]},
     {"source": "modules/designer/assets/templates", "target": "assets/designer/templates", "exclude": ["**/__pycache__/**", "**/*.pyc", ".DS_Store"]},
     {"source": "modules/designer/assets/themes", "target": "assets/designer/themes", "exclude": ["**/__pycache__/**", "**/*.pyc", ".DS_Store"]},
-    {"source": "modules/designer/assets/samples", "target": "assets/designer/samples", "exclude": ["**/__pycache__/**", "**/*.pyc", ".DS_Store"]},
     {"source": "modules/designer/assets/vendor", "target": "assets/designer/vendor", "exclude": ["**/__pycache__/**", "**/*.pyc", ".DS_Store"]}
   ]
 }

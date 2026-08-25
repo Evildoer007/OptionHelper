@@ -45,8 +45,8 @@ def release_runtime_scope(runtime_root: str | Path) -> Iterator[Path]:
 def local_runtime_scope(data_root: str | Path, result_root: str | Path) -> Iterator[tuple[Path, Path]]:
     """Bind one standalone Host's external writable stores for this call.
 
-    Development source may live in the repository, but local user data never
-    does.  The scope is process-local and avoids mutating environment
+    Development source and released Skills both use this scope for a local
+    project Host.  It is process-local and avoids mutating environment
     variables, so nested module imports cannot silently select repository or
     system-default storage.
     """
@@ -113,8 +113,11 @@ def _configured_release_root() -> Path | None:
 
 def _external_release_roots(release: Path) -> tuple[Path, Path]:
     """发行Skill只能使用显式且安装目录外的可写Store。"""
+    scoped_local_roots = _SCOPED_DEVELOPMENT_STORE_ROOTS.get()
     scoped_runtime_root = _SCOPED_RELEASE_RUNTIME_ROOT.get()
-    if scoped_runtime_root is not None:
+    if scoped_local_roots is not None:
+        data_root, result_root = scoped_local_roots
+    elif scoped_runtime_root is not None:
         data_root = (scoped_runtime_root / "data").resolve()
         result_root = (scoped_runtime_root / "result").resolve()
     else:

@@ -66,8 +66,7 @@ def main() -> int:
     runtime_root.mkdir(parents=True, exist_ok=True)
     os.environ["OPTIONHELPER_RUNTIME_ROOT"] = str(runtime_root)
     from backend.app_server import AppServer
-    from backend.secrets.local_secret_store import LocalSecretStore
-    from backend.secrets.secret_provider import SecretProvider
+    from backend.secrets.platform_provider import platform_secret_provider
 
     stopped = threading.Event()
 
@@ -86,13 +85,10 @@ def main() -> int:
         # Development builds intentionally use the loopback-only direct-entry
         # identity. Account provisioning is not part of the current workflow.
         authentication_mode="local-development",
-        # This launcher is the loopback-only development App. Keep credential
-        # values in its owner-only local store so repeated ad-hoc rebuilds do
-        # not trigger Keychain ACL prompts. Settings, tasks and reports still
-        # receive only opaque SecretRef metadata.
-        secret_provider=SecretProvider({
-            "local-secret": LocalSecretStore(runtime_root / "credentials"),
-        }),
+        # Native builds use the current user's OS credential vault. Existing
+        # owner-only local records migrate once after the first successful
+        # Keychain/Credential Manager write and are then removed.
+        secret_provider=platform_secret_provider(runtime_root),
     )
     if args.verification_fixture:
         from backend.verification_fixture import install_compute_verification_fixture

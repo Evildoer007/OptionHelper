@@ -325,14 +325,27 @@ def _validate_derived_payoff_figures(
         validate_report_payoff_svg(derived_path.read_bytes(), expected_source_hash=source_hash)
     payoff = payload.get("payoff") if isinstance(payload.get("payoff"), Mapping) else {}
     report_svg_path = payoff.get("report_svg_path") if isinstance(payoff, Mapping) else None
-    if not is_report and report_svg_path:
+    comparison = payload.get("comparison") if isinstance(payload.get("comparison"), Mapping) else {}
+    comparison_paths = {
+        str(path)
+        for candidate in comparison.get("candidates", [])
+        if isinstance(candidate, Mapping)
+        for facts in [candidate.get("facts")]
+        if isinstance(facts, Mapping)
+        for module in [facts.get("payoff")]
+        if isinstance(module, Mapping)
+        for path in [module.get("report_svg_path")]
+        if isinstance(path, str) and path
+    }
+    declared_payload_paths = ({str(report_svg_path)} if report_svg_path else set()) | comparison_paths
+    if not is_report and declared_payload_paths:
         raise ReporterError("Card的Designer输入不得包含Payoffer SVG路径")
-    if not report_svg_path:
+    if not declared_payload_paths:
         if derived_paths:
             raise ReporterError("未嵌入报告图时不得声明Payoffer派生产物")
         return
-    if not is_report or str(report_svg_path) not in derived_paths or len(derived_paths) != 1:
-        raise ReporterError("Designer输入的Payoffer SVG必须唯一指向本ReportRun派生图")
+    if not is_report or declared_payload_paths != derived_paths:
+        raise ReporterError("Designer输入的Payoffer SVG必须完整指向本ReportRun派生图")
 
 
 def validate_report_run_directory(

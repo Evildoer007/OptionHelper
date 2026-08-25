@@ -17,6 +17,7 @@ import re
 from typing import Any, Mapping
 
 from .config import DesignerConfig, load_designer_config
+from .comparison_renderer import render_multicard_html, render_multireport_html
 from .design_system_builder import build_design_system
 from .models import DESIGNER_ARTIFACT_MANIFEST_SCHEMA, DesignerInput
 from .pdf_renderer import PdfRuntimeError, render_pdf
@@ -203,7 +204,6 @@ def _card_data_table(rows: list[Mapping[str, Any]]) -> str:
 def _card_body(
     payload: Mapping[str, Any],
     sections: tuple[tuple[str, str, str], ...] | None = None,
-    custom_content: Mapping[str, tuple[Mapping[str, Any], ...]] | None = None,
     appended_content: Mapping[str, tuple[Mapping[str, Any], ...]] | None = None,
 ) -> str:
     """Render the concise view of the same frozen facts as a Report.
@@ -217,7 +217,6 @@ def _card_body(
         ("contract-highlights", "关键合同条款"), ("pricing", "估值摘要"),
         ("backtest", "回测摘要"), ("risk", "主要风险"),
     ))
-    custom_content = custom_content or {}
     appended_content = appended_content or {}
 
     def card_unit(value: Any) -> str:
@@ -349,9 +348,6 @@ def _card_body(
     blocks: list[str] = []
 
     def render_section(section_id: str, title: str, block: str) -> str:
-        if block.startswith("custom:"):
-            body = render_presentation_content(custom_content.get(section_id, ()))
-            return f'<section class="card-custom"><h2>{esc(title)}</h2>{body}</section>' if body else ""
         body = renderers[block](title)
         appended = render_presentation_content(appended_content.get(section_id, ()))
         if appended:
@@ -380,7 +376,6 @@ def render_card_html(
     *,
     config: DesignerConfig | Mapping[str, Any] | None = None,
     section_definition: tuple[tuple[str, str, str], ...] | None = None,
-    custom_content: Mapping[str, tuple[Mapping[str, Any], ...]] | None = None,
     appended_content: Mapping[str, tuple[Mapping[str, Any], ...]] | None = None,
     template_shell: str = "card.html",
 ) -> str:
@@ -396,7 +391,7 @@ def render_card_html(
         .replace("__REPORT_THEME__", config.read_report_theme())
         .replace("__BRAND__", html.escape(PUBLIC_BRAND))
         .replace("__DESIGN_SYSTEM_ID__", html.escape(theme.design_system_id))
-        .replace("__CARD_BODY__", _card_body(safe_payload, section_definition, custom_content, appended_content))
+        .replace("__CARD_BODY__", _card_body(safe_payload, section_definition, appended_content))
     )
 
 
@@ -449,7 +444,6 @@ def render_quote_html(
     *,
     config: DesignerConfig | Mapping[str, Any] | None = None,
     section_definition: tuple[tuple[str, str, str], ...] | None = None,
-    custom_content: Mapping[str, tuple[Mapping[str, Any], ...]] | None = None,
     appended_content: Mapping[str, tuple[Mapping[str, Any], ...]] | None = None,
     template_shell: str = "quote.html",
 ) -> str:
@@ -458,7 +452,6 @@ def render_quote_html(
     safe_payload = _normalise_payload(payload, output_type="quote")
     config = load_designer_config(config)
     definition = section_definition or (("reference-quote", QUOTE_DELIVERY_TITLE, "reference_quote"),)
-    custom_content = custom_content or {}
     appended_content = appended_content or {}
     theme = build_design_system()
     template = config.read_template(template_shell)
@@ -469,8 +462,6 @@ def render_quote_html(
     for section_id, section_title, block in definition:
         if block == "reference_quote":
             body = _quote_body(safe_payload)
-        elif block.startswith("custom:"):
-            body = render_presentation_content(custom_content.get(section_id, ()))
         else:
             raise ValueError(f"Quote模板不支持内容块：{block}。")
         body += render_presentation_content(appended_content.get(section_id, ()))
@@ -604,9 +595,15 @@ def render(
     }
     payload["sections"] = list(sections_by_output[request.normalized_output_type])
     theme = build_design_system()
+    comparison_mode = isinstance(payload.get("comparison"), Mapping)
+    automatic_template_id = (
+        "multicard-standard" if comparison_mode and request.normalized_output_type == "card"
+        else "multireport-standard" if comparison_mode and request.normalized_output_type == "report"
+        else default_template_id(request.normalized_output_type)
+    )
     template = load_template_definition(
         config,
-        request.template_id or default_template_id(request.normalized_output_type),
+        request.template_id or automatic_template_id,
         request.normalized_output_type,
     )
     presentation = apply_presentation_patch(payload, template.sections, request.presentation_patch)
@@ -621,12 +618,21 @@ def render(
         if request.asset_mode == "portable"
         else config.relative_echarts_path(request.output_dir or input_dir)
     )
-    if request.normalized_output_type == "card":
+    if template.id == "multicard-standard":
+        html_content = render_multicard_html(payload, config=config, template_shell=template.shell)
+    elif template.id == "multireport-standard":
+        html_content = render_multireport_html(
+            payload,
+            input_dir,
+            echarts_path,
+            config=config,
+            template_shell=template.shell,
+        )
+    elif request.normalized_output_type == "card":
         html_content = render_card_html(
             payload,
             config=config,
             section_definition=tuple((item.id, item.title, item.block) for item in presentation.sections),
-            custom_content=presentation.custom_content,
             appended_content=presentation.appended_content,
             template_shell=template.shell,
         )
@@ -635,7 +641,6 @@ def render(
             payload,
             config=config,
             section_definition=tuple((item.id, item.title, item.block) for item in presentation.sections),
-            custom_content=presentation.custom_content,
             appended_content=presentation.appended_content,
             template_shell=template.shell,
         )
@@ -647,7 +652,6 @@ def render(
             design_system_id=theme.design_system_id,
             config=config,
             section_definition=tuple((item.id, item.title, item.block) for item in presentation.sections),
-            custom_content=dict(presentation.custom_content),
             appended_content=dict(presentation.appended_content),
             template_shell=template.shell,
         )

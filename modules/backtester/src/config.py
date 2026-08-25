@@ -1,4 +1,4 @@
-"""Backtester公开配置入口。实现保留在core.config。"""
+"""Backtester公开配置入口，唯一实现位于本模块impl.config。"""
 
 from .impl.config import BacktestConfig, BacktestConfigError
 

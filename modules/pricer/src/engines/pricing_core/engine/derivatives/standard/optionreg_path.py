@@ -129,14 +129,22 @@ def _contract_with_maturity(
     """Keep count-based terms aligned with actual selected calendar dates."""
     terms = {**contract.terms, "T": maturity_years}
     if contract.terms.get("n_obs") is not None:
-        from modules.pricer.observation_schedule import actual_n_obs
+        from modules.pricer.observation_schedule import actual_n_obs, bind_accumulator_remaining_count
 
-        terms["n_obs"] = actual_n_obs(
+        remaining_observations = actual_n_obs(
             contract,
             sessions=trading_sessions,
             as_of=as_of,
             remaining_years=remaining_years,
         )
+        if contract.product_id == "7.1" and "Q_acc" in contract.terms.get("monitor", {}):
+            monitor = dict(terms.get("monitor", {}))
+            monitor["Q_acc"] = bind_accumulator_remaining_count(
+                str(monitor["Q_acc"]), remaining_observations,
+            )
+            terms["monitor"] = monitor
+        else:
+            terms["n_obs"] = remaining_observations
     return replace(contract, terms=terms, contract_fingerprint="")
 
 
@@ -252,6 +260,9 @@ def price_optionreg_path_monte_carlo(
             description="OptionReg离散路径同随机源缩短一个自然日重估",
         )
 
+    requested_greeks = dict(config.diagnostics).get("requested_greeks")
+    if requested_greeks is not None and not isinstance(requested_greeks, tuple):
+        raise ValueError("requested_greeks必须为内部冻结tuple")
     greeks, extended, risk_diagnostics = calculate_standard_greeks(
         base_price_points_100=base_points,
         market=market,
@@ -259,6 +270,7 @@ def price_optionreg_path_monte_carlo(
         basis=instrument.basis,
         price_market=price_market,
         theta_roll=theta_roll,
+        requested_greeks=requested_greeks,
     )
     converted = convert_points_100(base_points, instrument.basis)
     if len(raw_values) <= 1:

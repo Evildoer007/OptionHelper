@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import date
 from typing import Any, Iterable, Mapping, Sequence
 
 import pandas as pd
@@ -20,30 +19,22 @@ def observed_edge_intervals(
     *,
     latest_completed_date: str | None = None,
 ) -> tuple[tuple[str, str], ...]:
-    """仅按已观测日期范围补齐缓存边缘，不推断中间交易日。
+    """无验证日历时只判断请求内是否已有观测，不推断任何交易日。
 
-    没有显式交易日历时，法定节假日与停牌日不能被普通工作日规则判定为缺口。
-    因此本函数只识别请求范围落在已观测范围之外的边缘区间；中间日期完整性由
-    ``calendar_completeness`` 明确标记为 ``unverified``。
+    已有观测即可安全复用，并由``calendar_completeness=unverified``明确不声明
+    区间完整；主动更新必须使用force_refresh。请求内完全没有观测时才允许获取
+    整个区间，不重复拉取缓存锚点。
     """
 
-    dates = frame.loc[frame["asset_id"].astype(str).str.upper() == asset_id, "date"]
-    if dates.empty:
-        return ((start_date, end_date),)
-    earliest, latest = str(dates.min()), str(dates.max())
-    cutoff = date.fromisoformat(latest_completed_date) if latest_completed_date else date.fromisoformat(end_date)
-    requested_days = [
-        value.date()
-        for value in pd.date_range(start_date, end_date, freq="D")
-        if value.weekday() < 5 and value.date() <= cutoff
-    ]
-    leading = [value for value in requested_days if value.isoformat() < earliest]
-    trailing = [value for value in requested_days if value.isoformat() > latest]
-    intervals: list[tuple[str, str]] = []
-    for group in (leading, trailing):
-        if group:
-            intervals.append((group[0].isoformat(), group[-1].isoformat()))
-    return tuple(intervals)
+    completed_end = min(end_date, latest_completed_date or end_date)
+    if start_date > completed_end:
+        return ()
+    dates = frame.loc[
+        frame["asset_id"].astype(str).str.upper() == asset_id,
+        "date",
+    ].astype(str)
+    observed_in_request = dates.between(start_date, completed_end).any()
+    return () if observed_in_request else ((start_date, completed_end),)
 
 
 def validate_daily_history(

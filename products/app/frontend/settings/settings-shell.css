@@ -98,6 +98,7 @@
 .setup-page .settings-nav .connection-item::before { content: none; }
 
 .setup-page .settings-nav__icon {
+  display: block;
   flex: none;
   width: 18px;
   height: 18px;
@@ -177,6 +178,9 @@
 .setup-page .setting-section {
   width: 100%;
   max-width: 720px;
+  margin-top: 32px;
+  padding-top: 30px;
+  border-top: 1px solid var(--color-rule);
 }
 
 .setup-page .setting-section__head {
@@ -238,6 +242,18 @@
 
 html[data-theme="dark"] body.setup-page { background: var(--color-ground); }
 html[data-theme="dark"] .setup-page .setup-card { background: var(--color-surface); }
+
+html[data-theme="dark"] .setup-page .form-result:not(:empty) {
+  border: 1px solid var(--color-rule);
+  background: var(--state-ready-surface);
+  color: var(--state-ready-color);
+}
+
+html[data-theme="dark"] .setup-page :is(.form-result.notice--error, .form-result.error):not(:empty) {
+  border-color: var(--color-rule-strong);
+  background: var(--state-failed-surface);
+  color: var(--state-failed-color);
+}
 html[data-theme="dark"] .setup-page :is(.configured-models, .connection-editor, .settings-nav) { background: transparent; }
 html[data-theme="dark"] .setup-page .settings-nav .connection-item { background: transparent; }
 html[data-theme="dark"] .setup-page .settings-nav .connection-item:hover { background: var(--color-paper); }

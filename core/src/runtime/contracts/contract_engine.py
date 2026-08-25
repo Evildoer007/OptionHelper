@@ -48,9 +48,6 @@ _DEFAULT_STRIKE_ANCHOR_KEYS = {
     "3.2": frozenset({"Kp", "Kc"}),
     "3.3": frozenset({"K1", "K2", "K3"}),
     "3.4": frozenset({"K1", "K2", "K3", "K4"}),
-    "9.2": frozenset({"K1", "K2"}),
-    "9.3": frozenset({"K1", "K2"}),
-    "9.7": frozenset({"Kd", "Ku"}),
 }
 _FORMULA_FUNCTIONS = frozenset({
     "min", "max", "first_time", "first_time_after", "first_time_before", "first_time_levels", "first_time_below_levels", "schedule_levels", "step_levels",
@@ -103,7 +100,7 @@ def _default_strike_anchor(
     overrides: Mapping[str, Any],
     catalog: Mapping[str, Any],
 ) -> tuple[dict[str, Any], bool]:
-    """将显式多执行价产品的默认经济坐标整体平移至最低执行价100。"""
+    """将线性多执行价产品的默认价格坐标整体平移至最低执行价100。"""
     strike_keys = _DEFAULT_STRIKE_ANCHOR_KEYS.get(product_id)
     if strike_keys is None:
         return dict(terms), False
@@ -115,15 +112,15 @@ def _default_strike_anchor(
     strikes = [terms[key] for key in strike_keys]
     if any(isinstance(value, bool) or not isinstance(value, (int, float, np.number)) or not np.isfinite(float(value)) or float(value) <= 0 for value in strikes):
         raise ContractResolutionError(f"{product_id}多执行价锚定要求执行价为正有限数值")
-    scale = _NORMALIZED_PRICE_BASE / min(float(value) for value in strikes)
+    translation = _NORMALIZED_PRICE_BASE - min(float(value) for value in strikes)
     anchored: dict[str, Any] = {}
     for key, value in terms.items():
         if key not in price_keys:
             anchored[key] = value
         elif isinstance(value, (int, float, np.number)) and not isinstance(value, bool):
-            anchored[key] = float(value) * scale
+            anchored[key] = float(value) + translation
         elif isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
-            anchored[key] = [float(item) * scale for item in value]
+            anchored[key] = [float(item) + translation for item in value]
         else:
             raise ContractResolutionError(f"{product_id}可报价price条款{key}无法按同一坐标锚定")
     return anchored, True
@@ -488,6 +485,13 @@ class PriceSeries:
 
 
 @dataclass(frozen=True)
+class _FrozenObservationSchedule:
+    """ResolvedContract中已冻结的真实观察日，不允许由运行路径重新推导。"""
+
+    dates: tuple[pd.Timestamp, ...]
+
+
+@dataclass(frozen=True)
 class PricePath:
     """完整单标的或多标的真实市场价格路径，首维为合同时间。
 
@@ -706,8 +710,14 @@ def _resolve_contract(
     unknown = set(overrides) - set(defaults)
     if unknown:
         raise ContractResolutionError(f"本次条款覆盖含未登记字段：{','.join(sorted(unknown))}")
-    final_terms, default_strike_anchored = _default_strike_anchor(
-        str(product_id), {**defaults, **overrides}, overrides, source_registry["term_catalog"],
+    price_convention = str(supplied_identity.get("price_convention") or "normalized_100")
+    unanchored_terms = {**defaults, **overrides}
+    # 市场绝对价格合同已由Host冻结真实S0Raw，不能为展示坐标改写其经济条款。
+    # 仅线性多执行价的默认标准化预览采用整体平移，期权费与其他非价格条款保持原值。
+    final_terms, default_strike_anchored = (
+        _default_strike_anchor(str(product_id), unanchored_terms, overrides, source_registry["term_catalog"])
+        if price_convention == "normalized_100"
+        else (dict(unanchored_terms), False)
     )
     _validate_terms(final_terms, source_registry["term_catalog"])
     if "S0Vec" in final_terms:
@@ -718,7 +728,6 @@ def _resolve_contract(
             raise ContractResolutionError(
                 f"{product_id}为多标的结构，underlyings数量必须与S0Vec长度{required_assets}一致"
             )
-    price_convention = str(supplied_identity.get("price_convention") or "normalized_100")
     if price_convention == "normalized_100" and references is None:
         # A normalized contract's S0/S0Vec is its declared price coordinate,
         # not an implicit market quote.  Freeze that coordinate explicitly so
@@ -1304,6 +1313,14 @@ def _formula_context(contract: ResolvedContract, price_path: PricePath) -> dict[
         raise ContractResolutionError("价格路径asset_ids必须与ResolvedContract.underlyings完全一致")
     catalog = _shared_term_catalog()
     variables = bind_term_symbols(contract.terms, catalog)
+    # 正式合同中的观察日已在ResolvedContract冻结。无论路径是否带日期，都必须
+    # 先注入冻结日程；随后由_FrozenObservationSchedule显式拒绝无日期路径，
+    # 禁止退回monthly_last等selector按时间网格重新推导观察点。
+    for key, snapshot in contract.resolved_schedules.items():
+        symbol = str(catalog[key]["symbol"])
+        variables[symbol] = _FrozenObservationSchedule(
+            tuple(pd.Timestamp(value).normalize() for value in snapshot["dates"]),
+        )
     # 公式中的T是当前实际结算终点，用于ACT/365票息与期权费的实际天数折算。
     # 合同期限仍保留在ResolvedContract；evaluate_contract随后拒绝半程未终止路径，
     # 只有已发生的提前终止事件才能在合同到期前结算。
@@ -1403,12 +1420,25 @@ def _require_maturity_observation(values: object, maturity: object) -> bool:
     if not isinstance(values, ObservedValues):
         raise FormulaError("require_maturity_observation第一个参数必须为观察价格序列")
     terminal = _nonnegative_number(maturity, "require_maturity_observation到期时点")
-    if not len(values.times) or not np.isclose(values.times[-1], terminal, rtol=0.0, atol=1e-12):
+    if not len(values.times) or not _at_contractual_maturity(values.times[-1], terminal):
         raise FormulaError("合同约定的观察日程必须包含实际到期日")
     return True
 
 
 def _schedule_positions(schedule: object, times: np.ndarray, dates: pd.DatetimeIndex | None) -> np.ndarray:
+    if isinstance(schedule, _FrozenObservationSchedule):
+        if dates is None:
+            raise FormulaError("ResolvedContract冻结观察日要求价格路径提供真实日期")
+        path_dates = pd.DatetimeIndex(dates).normalize()
+        all_frozen_dates = pd.DatetimeIndex(schedule.dates)
+        required = np.asarray(
+            (all_frozen_dates >= path_dates[0]) & (all_frozen_dates <= path_dates[-1]), dtype=bool,
+        )
+        frozen_dates = all_frozen_dates[required]
+        positions = path_dates.get_indexer(frozen_dates)
+        if (positions < 0).any():
+            raise ContractResolutionError("价格路径缺少ResolvedContract冻结的合同观察日")
+        return positions.astype(int)
     if isinstance(schedule, str):
         if not _is_observation_schedule(schedule):
             raise FormulaError(f"无效观察日程：{schedule}")
@@ -1451,6 +1481,13 @@ def _schedule_observation_ordinals(
     有日期的历史路径以输入的合同观察集合顺序编号；无日期的周期模拟路径则按
     绝对合同时间推定序号，以便分期障碍日程不会从中途路径重新从第1期开始。
     """
+    if isinstance(schedule, _FrozenObservationSchedule):
+        if dates is None:
+            raise FormulaError("ResolvedContract冻结观察日要求价格路径提供真实日期")
+        positions_in_schedule = pd.DatetimeIndex(schedule.dates).get_indexer(pd.DatetimeIndex(dates)[positions].normalize())
+        if (positions_in_schedule < 0).any():
+            raise ContractResolutionError("价格路径观察日不属于ResolvedContract冻结日程")
+        return positions_in_schedule.astype(int) + 1
     if not isinstance(schedule, str) or dates is not None:
         return np.arange(1, len(positions) + 1, dtype=int)
     observation_times = times[positions]
@@ -1719,9 +1756,14 @@ def _terminal_event_time(value: object, maturity: object) -> float:
     """
     vector = _event_vector(value)
     terminal = _nonnegative_number(maturity, "terminal_event_time到期时点")
-    if not len(vector.times) or not np.isclose(vector.times[-1], terminal, rtol=0.0, atol=1e-12):
+    if not len(vector.times) or not _at_contractual_maturity(vector.times[-1], terminal):
         return inf
     return float(terminal) if bool(vector.values[-1]) else inf
+
+
+def _at_contractual_maturity(value: object, maturity: object) -> bool:
+    """将节假日前最后交易日与结算端点采用同一合同容差。"""
+    return abs(float(value) - float(maturity)) <= _MATURITY_TIME_TOLERANCE
 
 
 def _reset_knockout_time(

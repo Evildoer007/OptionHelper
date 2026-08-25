@@ -10,6 +10,7 @@ from pathlib import Path
 import re
 from typing import Any, Callable, Mapping
 
+import numpy as np
 import pandas as pd
 
 from runtime.protocol.models import DataAssetRef
@@ -108,11 +109,15 @@ def normalize_history_frame(frame: pd.DataFrame) -> pd.DataFrame:
     data["asset_id"] = data["asset_id"].astype(str).str.strip()
     for column in selected[2:]:
         data[column] = pd.to_numeric(data[column], errors="coerce")
-    invalid = data["date"].isna() | data["asset_id"].eq("") | data["close"].isna() | (data["close"] <= 0)
-    for column in selected[3:]:
-        invalid = invalid | data[column].isna() | (data[column] <= 0)
+    invalid = data["date"].isna() | data["asset_id"].eq("")
+    contract_fields = [column for column in ("close", "open", "high", "low") if column in data.columns]
+    for column in contract_fields:
+        invalid = invalid | ~np.isfinite(data[column]) | (data[column] < 0)
     if invalid.any():
         raise HistoricalDataError("历史行情含无效date、asset_id或价格字段")
+    first_rows = data.sort_values(["asset_id", "date"]).groupby("asset_id", sort=False).head(1)
+    if (first_rows[contract_fields] <= 0).any().any():
+        raise HistoricalDataError("每个标的首个合同价格观察必须严格为正")
     if data.duplicated(["date", "asset_id"]).any():
         raise HistoricalDataError("历史行情含重复date、asset_id")
     if (data["date"].dt.dayofweek >= 5).any():
@@ -363,18 +368,52 @@ def _coverage_matches(declared: Any, expected: Mapping[str, Any]) -> bool:
         return False
     if "by_asset" in declared and dict(declared["by_asset"]) != expected["by_asset"]:
         return False
-    if not all(key not in declared or declared[key] == expected[key] for key in ("date_start", "date_end", "trading_day_rows")):
+    if "trading_day_rows" in declared and declared["trading_day_rows"] != expected["trading_day_rows"]:
         return False
     declared_sessions = _trading_sessions(declared)
     expected_sessions = _trading_sessions(expected)
     if not declared_sessions.equals(expected_sessions):
         return False
+    if not _metadata_boundaries_enclose_sessions(declared, declared_sessions):
+        return False
     return _calendar_coverage_end(declared) <= declared_sessions[-1]
 
 
+def _metadata_boundaries_enclose_sessions(coverage: Mapping[str, Any], sessions: pd.DatetimeIndex) -> bool:
+    """允许请求落在非交易日，但不允许元数据排除已观测交易日。
+
+    ``sessions`` 是唯一用于合同期限与每日观察的覆盖事实；``date_*`` 与
+    ``start/end_date`` 可能是数据请求边界，周末或节假日不应被误当成缺失
+    行情。它们仍须是有效日期，并且必须包住实际观测的首末交易日。
+    ``calendar_coverage_end`` 则仍是合同日历覆盖证据，必须由
+    :func:`_calendar_coverage_end` 约束在最后一个实际 session 之内。
+    """
+    boundaries = (
+        ("date_start", "start_date", "start"),
+        ("date_end", "end_date", "end"),
+    )
+    for names, actual in zip(boundaries, (sessions[0], sessions[-1]), strict=True):
+        for name in names:
+            if name not in coverage:
+                continue
+            value = coverage[name]
+            if not isinstance(value, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+                return False
+            try:
+                boundary = pd.Timestamp(pd.to_datetime(value, format="%Y-%m-%d", errors="raise"))
+            except (TypeError, ValueError):
+                return False
+            if (name.endswith("start") or name in {"date_start", "start_date"}) and boundary > actual:
+                return False
+            if (name.endswith("end") or name in {"date_end", "end_date"}) and boundary < actual:
+                return False
+    return True
+
+
 def _all_assets_cover_sessions(data: pd.DataFrame, sessions: pd.DatetimeIndex) -> bool:
+    """每个标的日期必须来自受控日历；跨标的缺口由intersection显式处理。"""
     expected = set(sessions)
-    return all(set(group["date"]) == expected for _, group in data.groupby("asset_id", sort=False))
+    return all(bool(observed := set(group["date"])) and observed <= expected for _, group in data.groupby("asset_id", sort=False))
 
 
 def _calendar_is_source_declared(supplied: Mapping[str, Any] | None) -> bool:

@@ -61,6 +61,19 @@ VENDOR_DIR = PAGE_DIR / "vendor"
 ICON_DIR = PROJECT_ROOT / "assets" / "icons"
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("OPTIONHELPER_PRICER_PORT", "4280"))
+_TEST_ONLY_PRICING_FIELDS = frozenset({"demo_mode", "demo_calendar"})
+
+
+def _path_summaries(product: Mapping[str, Any]) -> list[dict[str, str]]:
+    """仅投影产品路径名称与条件，避免向Catalog暴露收益表达式。"""
+    summaries: list[dict[str, str]] = []
+    for index, path in enumerate(product.get("paths", ()), start=1):
+        condition = str(path.get("condition", "")).strip()
+        summaries.append({
+            "title": f"路径{index}",
+            "condition": "全部情形" if not condition or condition.casefold() == "true" else condition,
+        })
+    return summaries
 
 
 class PricerWebInputError(ValueError):
@@ -74,8 +87,11 @@ def static_assets() -> dict[str, tuple[Path, str]]:
         "/assets/icons/optionhelper-app-icon-tile-light.svg": (ICON_DIR / "optionhelper-app-icon-tile-light.svg", "image/svg+xml"),
         "/ui/style.css": (UI_DIR / "style.css", "text/css; charset=utf-8"),
         "/ui/controls.css": (UI_DIR / "controls.css", "text/css; charset=utf-8"),
+        "/ui/greeks-workbench.css": (UI_DIR / "greeks-workbench.css", "text/css; charset=utf-8"),
         "/ui/date-control.js": (UI_DIR / "date-control.js", "application/javascript; charset=utf-8"),
+        "/ui/greeks-workbench.js": (UI_DIR / "greeks-workbench.js", "application/javascript; charset=utf-8"),
         "/vendor/echarts.min.js": (VENDOR_DIR / "echarts.min.js", "application/javascript; charset=utf-8"),
+        "/vendor/echarts-gl.min.js": (VENDOR_DIR / "echarts-gl.min.js", "application/javascript; charset=utf-8"),
     }
 
 
@@ -122,6 +138,8 @@ class PricerRuntime:
                 "canonical_name": product["identity"]["name_zh"],
                 "entry_status": product["identity"]["entry_status"],
                 "underlying_scope": "multi_underlying" if "S0Vec" in terms else "single_underlying",
+                "path_count": len(product["paths"]),
+                "path_summaries": _path_summaries(product),
                 "payoff_fields": fields,
                 "pricing_methods": terms["pricing_methods"],
                 "pricer_status": "supported" if mapping.status == "supported" else "unsupported",
@@ -137,7 +155,7 @@ class PricerRuntime:
             "products": products,
             "config_fields": [
                 name for name in PricingConfig.__dataclass_fields__
-                if name not in {"demo_mode", "demo_calendar"}
+                if name not in _TEST_ONLY_PRICING_FIELDS
             ],
         }
 
@@ -368,6 +386,7 @@ def _formal_pricing_input(
     request: ProtocolPricingInput | Mapping[str, Any],
 ) -> tuple[ProtocolPricingInput, Any]:
     if isinstance(request, ProtocolPricingInput):
+        _validate_formal_pricing_config(request.pricing_config)
         verify_product_snapshot_binding(request.contract, load_registry())
         observed_state = request.observed_contract_state
         return request, (
@@ -399,6 +418,7 @@ def _formal_pricing_input(
     refs = values.get("market_data_refs")
     if not isinstance(config, Mapping):
         raise PricerWebInputError("PricingInput.pricing_config必须为对象")
+    _validate_formal_pricing_config(config)
     if isinstance(refs, (str, bytes)) or not isinstance(refs, (tuple, list)):
         raise PricerWebInputError("PricingInput.market_data_refs必须为DataAssetRef列表")
     observed_state_value = values.get("observed_contract_state")
@@ -423,6 +443,14 @@ def _formal_pricing_input(
         ),
         observed_contract_state=observed_state,
     ), None if observed_state is None else observed_state.to_protocol_dict()
+
+
+def _validate_formal_pricing_config(config: Mapping[str, Any]) -> None:
+    forbidden = _TEST_ONLY_PRICING_FIELDS.intersection(config)
+    if forbidden:
+        raise PricerWebInputError(
+            "正式PricingInput.pricing_config不接受测试字段：" + "、".join(sorted(forbidden))
+        )
 
 
 def _require_host_contract(contract: ResolvedContract, context: ModuleHostContext) -> None:

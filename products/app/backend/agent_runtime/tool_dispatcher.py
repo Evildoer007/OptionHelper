@@ -59,12 +59,14 @@ class ToolDispatcher:
         module_context: object | None = None,
         request_id: str = "",
         agent_proxy: bool = False,
+        candidate_variant: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         action = str(payload.get("action", "")).strip().lower()
         compute_read_action = tool_name in {"payoffer", "pricer", "backtester"} and action not in {"", "run"}
         if action in {"catalog", "status", "list_assets", "list_report_sources"}:
             _, result = self._jobs.run(lambda: self._gateway.dispatch(
-                tool_name, payload, identity, module_context=module_context, request_id=request_id, agent_proxy=agent_proxy,
+                tool_name, payload, identity, module_context=module_context, request_id=request_id,
+                agent_proxy=agent_proxy, candidate_variant=candidate_variant,
             ))
             return result
         if compute_read_action:
@@ -74,7 +76,8 @@ class ToolDispatcher:
             # App-level silent success.  Future writing actions must be added
             # explicitly to the run-class gate rather than relying on this.
             _, result = self._jobs.run(lambda: self._gateway.dispatch(
-                tool_name, payload, identity, module_context=module_context, request_id=request_id, agent_proxy=agent_proxy,
+                tool_name, payload, identity, module_context=module_context, request_id=request_id,
+                agent_proxy=agent_proxy, candidate_variant=candidate_variant,
             ))
             if result.get("ok") is False:
                 raise ValidationError(str(result.get("message", f"Capability tool {tool_name} rejected the request")))
@@ -102,6 +105,7 @@ class ToolDispatcher:
                     request_id=request_id,
                     agent_proxy=agent_proxy,
                     operation_id=operation_id,
+                    candidate_variant=candidate_variant,
                 )
             idempotency_key = _idempotency_key(supplied_key or request_id)
             with self._idempotency_lock(identity, task_id, tool_name, idempotency_key):
@@ -130,6 +134,7 @@ class ToolDispatcher:
                         idempotency_key=idempotency_key,
                         input_hash=input_hash,
                         operation_id=operation_id,
+                        candidate_variant=candidate_variant,
                     )
                 except _CommittedRunPendingError as error:
                     self._idempotency.mark_uncertain(
@@ -148,6 +153,7 @@ class ToolDispatcher:
             module_context=module_context,
             request_id=request_id,
             agent_proxy=agent_proxy,
+            candidate_variant=candidate_variant,
         )
 
     def _dispatch_mutating(
@@ -163,6 +169,7 @@ class ToolDispatcher:
         idempotency_key: str | None = None,
         input_hash: str | None = None,
         operation_id: str | None = None,
+        candidate_variant: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         gateway_payload = dict(payload)
         if tool_name in {"payoffer", "pricer", "backtester"}:
@@ -182,7 +189,8 @@ class ToolDispatcher:
         )
         try:
             execution, result = self._jobs.run(lambda: self._gateway.dispatch(
-                tool_name, gateway_payload, identity, module_context=module_context, request_id=request_id, agent_proxy=agent_proxy,
+                tool_name, gateway_payload, identity, module_context=module_context, request_id=request_id,
+                agent_proxy=agent_proxy, candidate_variant=candidate_variant,
             ), task_id=task_id if tool_name in {"payoffer", "pricer", "backtester"} else None,
                 module=tool_name if tool_name in {"payoffer", "pricer", "backtester"} else None,
                 job_id=stable_operation_id(checkpoint.operation_id, "job") if tool_name in {"payoffer", "pricer", "backtester"} else None,
@@ -316,6 +324,7 @@ class ToolDispatcher:
         *,
         module_context: object,
         request_id: str,
+        candidate_variant: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Run a server-originated OptChat tool under proxy, not Desk, authority."""
         _require_task_data_scope(self._tasks, identity, tool_name, payload)
@@ -326,6 +335,7 @@ class ToolDispatcher:
             module_context=module_context,
             request_id=request_id,
             agent_proxy=True,
+            candidate_variant=candidate_variant,
         )
 
 

@@ -242,10 +242,10 @@ def _asset_uses_calendar_evidence(
 
 
 def _data_asset_ref_key(caller: CallerContext, request: DataRequest) -> str:
-    """同一原始缓存内按主体和日历证据选择语义正确的DataAssetRef。"""
+    """同一原始缓存内按主体和完整请求选择语义正确的DataAssetRef。"""
 
     evidence = request.calendar_evidence_identity or "unverified"
-    return f"{_owner_partition(caller.principal_id)}:{evidence}"
+    return f"{_owner_partition(caller.principal_id)}:{evidence}:{request_fingerprint(request)}"
 
 
 def _existing_data_asset(store: LocalDataStore, *, asset_id: str, caller: CallerContext, content_hash: str) -> DataAssetRef:
@@ -464,9 +464,11 @@ def _fetch_provider(
             if protected_error is None:
                 protected_error = last_error
             continue
+        charged = False
         try:
             frame = provider.fetch(request, config)
             quota_used += units
+            charged = True
             normalized = normalize_daily_history(
                 frame,
                 request,
@@ -475,12 +477,15 @@ def _fetch_provider(
             calls.append({"provider": name, "outcome": "succeeded", "quota_units": units})
             return name, normalized, quota_used
         except ProviderError as error:
-            quota_used += units
+            if not charged:
+                quota_used += units
             calls.append({"provider": name, "outcome": error.code, "quota_units": units})
             last_error = error
             if protected_error is None and isinstance(error, (ProviderUnauthorized, ProviderQuotaExceeded)):
                 protected_error = error
         except (DataNormalizationError, DataQualityError) as error:
+            if not charged:
+                quota_used += units
             calls.append({"provider": name, "outcome": getattr(error, "code", "normalization_error"), "quota_units": units})
             last_error = error
     if config.offline or request.offline:
@@ -521,6 +526,21 @@ def _completed_calendar_sessions(
     }
 
 
+def _request_view(frame: pd.DataFrame, request: DataRequest) -> pd.DataFrame:
+    """从宽缓存生成本次请求视图，避免改变缓存本体覆盖。"""
+
+    assets = frame["asset_id"].astype(str).str.upper()
+    dates = frame["date"].astype(str)
+    view = frame.loc[
+        assets.isin(request.asset_ids) & dates.between(request.start_date, request.end_date)
+    ].copy()
+    observed_assets = set(view["asset_id"].astype(str).str.upper())
+    missing_assets = sorted(set(request.asset_ids).difference(observed_assets))
+    if missing_assets:
+        raise DataQualityError(f"缓存请求视图未覆盖标的：{','.join(missing_assets)}")
+    return view.sort_values(["asset_id", "date"]).reset_index(drop=True)
+
+
 def _resolve_data(
     cache: LocalCache,
     request: DataRequest,
@@ -557,6 +577,7 @@ def _resolve_data(
         ]
         full_match = next((match for match in matches if match.complete and match.frame is not None and match.metadata), None)
         if full_match is not None:
+            request_frame = _request_view(full_match.frame, request)
             reference = full_match.metadata.get("data_asset_ref")
             asset_ref: DataAssetRef | None = _asset_ref(reference) if isinstance(reference, Mapping) else None
             if asset_ref is not None:
@@ -570,17 +591,28 @@ def _resolve_data(
             else:
                 invalid_match = None
             quality = validate_daily_history(
-                full_match.frame, request.fields, start_date=request.start_date, end_date=request.end_date,
+                request_frame, request.fields, start_date=request.start_date, end_date=request.end_date,
                 expected_trading_dates=expected_trading_dates,
                 latest_observable_date=latest_observable_date,
             )
             if asset_ref is not None:
                 same_owner = asset_ref.created_by == caller.principal_id and "read" in asset_ref.access_scope
                 if same_owner and _asset_uses_calendar_evidence(asset_ref, calendar_evidence):
-                    return asset_ref, quality, "cache_hit", full_match.frame
-            rebound_decision = "cache_rebound" if asset_ref is None or asset_ref.created_by != caller.principal_id else "cache_revalidated"
+                    return asset_ref, quality, "cache_hit", request_frame
+            references = full_match.metadata.get("data_asset_refs")
+            owner = _owner_partition(caller.principal_id)
+            evidence = request.calendar_evidence_identity or "unverified"
+            same_evidence_prefix = f"{owner}:{evidence}:"
+            owner_prefix = f"{owner}:"
+            reference_keys = tuple(references) if isinstance(references, Mapping) else ()
+            if any(str(key).startswith(same_evidence_prefix) for key in reference_keys):
+                rebound_decision = "cache_hit"
+            elif any(str(key).startswith(owner_prefix) for key in reference_keys):
+                rebound_decision = "cache_revalidated"
+            else:
+                rebound_decision = "cache_rebound"
             rebound_ref = _asset_reference(
-                full_match.frame,
+                request_frame,
                 request,
                 config,
                 full_match.provider,
@@ -594,7 +626,7 @@ def _resolve_data(
                 cache_identity(request, full_match.provider, tenant_id=caller.tenant_id),
                 full_match.frame,
                 {
-                    "content_hash": rebound_ref.content_hash,
+                    "content_hash": daily_content_hash(full_match.frame),
                     "provider": full_match.provider,
                     "data_asset_ref": asdict(rebound_ref),
                     "updated_at": _now(),
@@ -602,7 +634,7 @@ def _resolve_data(
                 },
                 data_asset_ref_key=data_asset_ref_key,
             )
-            return rebound_ref, quality, rebound_decision, full_match.frame
+            return rebound_ref, quality, rebound_decision, request_frame
         else:
             invalid_match = None
 
@@ -626,7 +658,8 @@ def _resolve_data(
                 raise DataFetcherError("不同Provider数据不得自动混合")
             selected_provider = provider
             fetched_frames.append(frame)
-        frame = merge_daily_history(cached_frame, *fetched_frames)
+        cache_frame = merge_daily_history(cached_frame, *fetched_frames)
+        frame = _request_view(cache_frame, request)
         quality = validate_daily_history(
             frame, request.fields, start_date=request.start_date, end_date=request.end_date,
             expected_trading_dates=expected_trading_dates,
@@ -646,9 +679,9 @@ def _resolve_data(
         )
         cache.save(
             cache_identity(request, selected_provider or "local", tenant_id=caller.tenant_id),
-            frame,
+            cache_frame,
             {
-                "content_hash": asset_ref.content_hash,
+                "content_hash": daily_content_hash(cache_frame),
                 "provider": selected_provider,
                 "data_asset_ref": asdict(asset_ref),
                 "updated_at": _now(),
@@ -990,6 +1023,19 @@ def _validate_host_secret_port(value: object) -> Callable[[SecretRef], str]:
     return value
 
 
+def _app_fetch_requires_secret(source: Mapping[str, Any]) -> bool:
+    """仅iFind DataRequest需要Host凭据注入；Local仍由受控路径门禁保护。"""
+
+    try:
+        request = DataRequest.from_mapping(source)
+    except ValueError as error:
+        raise RequestValidationError(str(error)) from error
+    providers = tuple(item.strip().lower() for item in request.source_priority if item and item.strip())
+    if request.provider and request.provider.strip().lower() not in providers:
+        providers = (request.provider.strip().lower(), *providers)
+    return not providers or any(provider in {"ifind_http", "ifind_sdk"} for provider in providers)
+
+
 def call_tool_from_app(
     request: Mapping[str, Any],
     *,
@@ -1025,14 +1071,28 @@ def call_tool_from_app(
         return {**status, "assets": list_data_assets(caller=caller_context)}
     if action not in {"fetch", "fetch_calendar", "test_connection"}:
         return {"ok": False, "module": "datafetcher", "status": "failed", "error": {"code": "unsupported_action", "message": "DataFetcher不支持该action"}}
-    managed_secret_ref = _validate_host_secret_ref(secret_ref)
-    managed_secret_port = _validate_host_secret_port(secret_port)
-    config = replace(
-        DataFetcherConfig.from_runtime(),
-        ifind_secret_ref=managed_secret_ref,
-        ifind_secret_port=managed_secret_port,
-        trading_calendar_ref=trading_calendar_ref,
+    task_id = payload.pop("task_id", "local")
+    # These fields are authenticated App Host scope, not DataRequest fields.
+    # They arrive with every Desk module request so the host can bind the run
+    # to the current task/contract, but DataFetcher only accepts data inputs.
+    for field in ("analysis_case_id", "candidate_id", "catalog_version", "contract_fingerprint"):
+        payload.pop(field, None)
+    source = payload.pop("request", payload.pop("data_request", payload))
+    if action != "test_connection" and not isinstance(source, Mapping):
+        raise RequestValidationError("DataRequest必须为对象")
+    requires_secret = action in {"fetch_calendar", "test_connection"} or (
+        action == "fetch" and _app_fetch_requires_secret(source)
     )
+    base_config = DataFetcherConfig.from_runtime()
+    if requires_secret:
+        config = replace(
+            base_config,
+            ifind_secret_ref=_validate_host_secret_ref(secret_ref),
+            ifind_secret_port=_validate_host_secret_port(secret_port),
+            trading_calendar_ref=trading_calendar_ref,
+        )
+    else:
+        config = replace(base_config, trading_calendar_ref=trading_calendar_ref)
     if action == "test_connection":
         try:
             IFindHttpProvider().test_connection(config)
@@ -1062,15 +1122,6 @@ def call_tool_from_app(
                 "detail": "iFind凭据验证通过，可用于数据请求。",
             },
         }
-    task_id = payload.pop("task_id", "local")
-    # These fields are authenticated App Host scope, not DataRequest fields.
-    # They arrive with every Desk module request so the host can bind the run
-    # to the current task/contract, but DataFetcher only accepts data inputs.
-    for field in ("analysis_case_id", "candidate_id", "catalog_version", "contract_fingerprint"):
-        payload.pop(field, None)
-    source = payload.pop("request", payload.pop("data_request", payload))
-    if not isinstance(source, Mapping):
-        raise RequestValidationError("DataRequest必须为对象")
     if action == "fetch_calendar":
         return fetch_calendar_data(source, caller_context, config=config, task_id=str(task_id)).to_dict()
     return fetch_data(source, caller_context, config=config, task_id=str(task_id)).to_dict()

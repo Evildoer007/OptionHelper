@@ -222,7 +222,13 @@ class ResultStore:
             raise ValidationError("ModuleRunRef artifact manifest hash does not match stored result")
         return record
 
-    def verified_fact_summary(self, identity: SessionIdentity, reference: dict[str, str]) -> dict[str, Any]:
+    def verified_fact_summary(
+        self,
+        identity: SessionIdentity,
+        reference: dict[str, str],
+        *,
+        expected_binding: Mapping[str, str] | None = None,
+    ) -> dict[str, Any]:
         """Project selected numerical facts from one still-verifiable ModuleRun.
 
         This is intentionally a presentation projection, not a second pricer
@@ -238,12 +244,33 @@ class ResultStore:
             raise ValidationError("已验证ModuleRun缺少可读取结果") from error
         if not isinstance(result, dict) or semantic_hash(result) != record.get("expected_semantic_result_hash"):
             raise ValidationError("ModuleRun事实哈希不匹配")
+        expected = dict(expected_binding or {})
+        allowed_expected = {
+            "analysis_case_id", "candidate_id", "catalog_version", "contract_fingerprint",
+            "candidate_key", "candidate_version_id",
+        }
+        if set(expected).difference(allowed_expected):
+            raise ValidationError("ModuleRun事实绑定包含未知字段")
+        for field, value in expected.items():
+            if not isinstance(value, str) or not value:
+                raise ValidationError(f"ModuleRun预期绑定{field}无效")
+            actual = record.get("analysis_case_id") if field == "analysis_case_id" else result.get(field)
+            if actual != value:
+                raise ValidationError(f"ModuleRun事实与预期{field}不一致")
         run_ref = {
             "module": str(record["module"]),
             "run_id": str(record["run_id"]),
             "result_hash": str(record["expected_semantic_result_hash"]),
+            "contract_fingerprint": str(result.get("contract_fingerprint", "")),
         }
-        facts = _result_facts(str(record["module"]), result, run_ref["result_hash"])
+        facts = [
+            {
+                **fact,
+                "module": run_ref["module"],
+                "contract_fingerprint": run_ref["contract_fingerprint"],
+            }
+            for fact in _result_facts(str(record["module"]), result, run_ref["result_hash"])
+        ]
         return {"run_ref": run_ref, "facts": facts}
 
     def list_report_sources(self, *, tenant_id: str, task_id: str | None = None, query: str | None = None) -> dict[str, Any]:
@@ -656,6 +683,7 @@ def _result_facts(module: str, result: dict[str, Any], result_hash: str) -> list
     return [
         {
             "fact_ref": _fact_ref(result_hash, path, value),
+            "metric": path,
             "label": label,
             "value": value,
             **({"unit": unit} if unit else {}),
@@ -691,6 +719,15 @@ def _store_id(value: object, prefix: str) -> str:
     if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", text) and text not in {".", ".."}:
         return text
     return f"{prefix}-{hashlib.sha256(text.encode('utf-8')).hexdigest()[:24]}"
+
+
+def _candidate_variant_store_id(value: object, field: str) -> str:
+    """Keep CandidateVersion identifiers stable under ContractStore's grammar."""
+
+    text = str(value or "")
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}", text):
+        raise ValidationError(f"ModuleRun{field}无效")
+    return text
 
 
 def _module_run_key(module: object, run_id: object) -> str:
@@ -740,6 +777,16 @@ def _module_run_files(
         "candidate",
     )
     value["candidate_id"] = candidate_id
+    candidate_key = value.get("candidate_key")
+    candidate_version_id = value.get("candidate_version_id")
+    if (candidate_key is None) != (candidate_version_id is None):
+        raise ValidationError("ModuleRun候选版本身份必须同时包含candidate_key和candidate_version_id")
+    if candidate_key is not None:
+        value["candidate_key"] = _candidate_variant_store_id(candidate_key, "candidate_key")
+        value["candidate_version_id"] = _candidate_variant_store_id(
+            candidate_version_id,
+            "candidate_version_id",
+        )
     catalog_version = value.get("catalog_version")
     if not isinstance(catalog_version, str) or not catalog_version.strip():
         if status in {"succeeded", "partial"}:
@@ -775,6 +822,9 @@ def _module_run_files(
         "data_refs": "data_refs.json",
         "limitations": "limitations.json",
     }
+    if candidate_key is not None:
+        manifest["candidate_key"] = value["candidate_key"]
+        manifest["candidate_version_id"] = value["candidate_version_id"]
     files: dict[str, Any] = {
         "input_snapshot.json": {"module": module, "task_id": task_id, "analysis_case_id": analysis_case_id},
         "resolved_contract.json": resolved_contract,

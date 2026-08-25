@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import json
 import os
+from hmac import compare_digest
 from hashlib import sha256
 from http import HTTPStatus
+from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from ipaddress import ip_address
 from pathlib import Path
+from secrets import token_urlsafe
 from typing import Any, Mapping
 from urllib.parse import urlparse
 from uuid import uuid4
@@ -47,6 +51,15 @@ DESIGNER_TOKEN_CSS = RUNTIME_PATHS.project_root / (
     else "modules/designer/assets/themes/designer-token-vars.css"
 )
 PORT = int(os.environ.get(PORT_ENV, str(DEFAULT_PORT)))
+_MAINTENANCE_COOKIE = "OptionHelperPayofferMaintenance"
+_MAINTENANCE_TOKEN = token_urlsafe(32)
+_FILE_PREVIEW_API_PATHS = frozenset({
+    "/api/status",
+    "/api/catalog",
+    "/api/default",
+    "/api/preview",
+    "/api/run",
+})
 
 
 def _product_for_request(product_id: object) -> tuple[str, dict[str, Any]]:
@@ -89,8 +102,21 @@ def default_example_payload(product_id: object) -> dict[str, Any]:
         "product_id": identifier,
         "name_zh": name_zh,
         "svg": svg,
+        "path_summaries": _path_summaries(product),
         "default_asset": {"json_hash": json_hash, "svg_hash": svg_hash},
     }
+
+
+def _path_summaries(product: Mapping[str, Any]) -> list[dict[str, str]]:
+    """仅投影左栏需要的路径名称与条件，不暴露收益表达式。"""
+    summaries: list[dict[str, str]] = []
+    for index, path in enumerate(product.get("paths", ()), start=1):
+        condition = str(path.get("condition", "")).strip()
+        summaries.append({
+            "title": f"路径{index}",
+            "condition": "全部情形" if not condition or condition.casefold() == "true" else condition,
+        })
+    return summaries
 
 
 def default_maintenance_plan(product_id: object, reason: object) -> dict[str, Any]:
@@ -235,6 +261,8 @@ def call_tool(
     action = str(body.pop("action", "catalog")).strip().lower()
     if action == "catalog":
         return catalog_payload()
+    if action == "default":
+        return default_example_payload(body.get("product_id"))
     if action == "preview":
         name_zh, term_overrides, identity = _preview_request(body)
         payload = preview_payload(name_zh, term_overrides, identity)
@@ -256,7 +284,7 @@ def call_tool(
         "ok": False,
         "module": "payoffer",
         "status": "unsupported",
-        "message": f"Payoffer不支持action={action}；仅支持catalog、preview、run。",
+        "message": f"Payoffer不支持action={action}；仅支持catalog、default、preview、run。",
     }
 
 
@@ -293,21 +321,64 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args: object) -> None:
         print(f"[Payoff] {format % args}")
 
-    def _respond(self, status: int, body: bytes, content_type: str) -> None:
+    def _respond(
+        self,
+        status: int,
+        body: bytes,
+        content_type: str,
+        *,
+        headers: Mapping[str, str] | None = None,
+    ) -> None:
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
-        self.send_header("Access-Control-Allow-Origin", "*")
+        response_headers = dict(self._file_preview_cors_headers())
+        response_headers.update(headers or {})
+        for name, value in response_headers.items():
+            self.send_header(name, value)
         self.end_headers()
         self.wfile.write(body)
 
-    def _json(self, status: int, payload: object) -> None:
+    def _json(
+        self,
+        status: int,
+        payload: object,
+        *,
+        headers: Mapping[str, str] | None = None,
+    ) -> None:
         try:
             encoded = json.dumps(payload, ensure_ascii=False, allow_nan=False).encode("utf-8")
         except (TypeError, ValueError) as error:
             raise PayoffEngineError("Payoffer公开JSON包含不安全或不可序列化的值") from error
-        self._respond(status, encoded, "application/json; charset=utf-8")
+        self._respond(status, encoded, "application/json; charset=utf-8", headers=headers)
+
+    def _file_preview_cors_headers(self) -> dict[str, str]:
+        """仅允许保留的file://开发页面访问普通预览接口。"""
+        if self.headers.get("Origin") != "null":
+            return {}
+        if urlparse(self.path).path not in _FILE_PREVIEW_API_PATHS:
+            return {}
+        return {"Access-Control-Allow-Origin": "null", "Vary": "Origin"}
+
+    def _maintenance_request_authorized(self) -> bool:
+        """维护写入口只接受当前本机页面建立的同源会话。"""
+        try:
+            if not ip_address(self.client_address[0]).is_loopback:
+                return False
+        except ValueError:
+            return False
+        origin = self.headers.get("Origin", "")
+        port = self.server.server_address[1]
+        if origin not in {f"http://127.0.0.1:{port}", f"http://localhost:{port}"}:
+            return False
+        cookie = SimpleCookie()
+        try:
+            cookie.load(self.headers.get("Cookie", ""))
+        except Exception:
+            return False
+        token = cookie.get(_MAINTENANCE_COOKIE)
+        return token is not None and compare_digest(token.value, _MAINTENANCE_TOKEN)
 
     def _request_json(self) -> dict:
         length = int(self.headers.get("Content-Length", "0"))
@@ -323,12 +394,19 @@ class Handler(BaseHTTPRequestHandler):
         return value
 
     def do_OPTIONS(self) -> None:  # noqa: N802
-        self.send_response(HTTPStatus.NO_CONTENT)
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
-        self.send_header("Access-Control-Max-Age", "600")
-        self.end_headers()
+        if self._file_preview_cors_headers():
+            self._respond(
+                HTTPStatus.NO_CONTENT,
+                b"",
+                "text/plain; charset=utf-8",
+                headers={
+                    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+                    "Access-Control-Allow-Headers": "Content-Type",
+                    "Access-Control-Max-Age": "600",
+                },
+            )
+            return
+        self._json(HTTPStatus.FORBIDDEN, {"ok": False, "message": "不允许跨源访问本机Payoffer服务"})
 
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
@@ -353,13 +431,26 @@ class Handler(BaseHTTPRequestHandler):
                 self._respond(HTTPStatus.OK, DESIGNER_TOKEN_CSS.read_bytes(), "text/css; charset=utf-8")
                 return
             if parsed.path == "/api/status":
-                self._json(HTTPStatus.OK, {
-                    "ok": True,
-                    "module": "payoffer",
-                    "engine": "python_registry_dsl",
-                    "port": PORT,
-                    "default_maintenance_enabled": _maintenance_enabled(),
-                })
+                maintenance_enabled = _maintenance_enabled()
+                response_headers = None
+                if maintenance_enabled:
+                    response_headers = {
+                        "Set-Cookie": (
+                            f"{_MAINTENANCE_COOKIE}={_MAINTENANCE_TOKEN}; "
+                            "HttpOnly; SameSite=Strict; Path=/api/default-maintenance"
+                        )
+                    }
+                self._json(
+                    HTTPStatus.OK,
+                    {
+                        "ok": True,
+                        "module": "payoffer",
+                        "engine": "python_registry_dsl",
+                        "port": PORT,
+                        "default_maintenance_enabled": maintenance_enabled,
+                    },
+                    headers=response_headers,
+                )
                 return
             if parsed.path == "/api/catalog":
                 self._json(HTTPStatus.OK, catalog_payload())
@@ -373,6 +464,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
         try:
+            if parsed.path.startswith("/api/default-maintenance/") and not self._maintenance_request_authorized():
+                self._json(HTTPStatus.FORBIDDEN, {"ok": False, "message": "默认资产维护授权无效"})
+                return
             body = self._request_json()
             if parsed.path == "/api/preview":
                 name_zh, term_overrides, identity = _preview_request(body)

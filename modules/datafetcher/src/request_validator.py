@@ -197,6 +197,8 @@ def validate_request(value: DataRequest, config: DataFetcherConfig, caller: Call
         raise RequestValidationError(f"未知Provider：{','.join(sorted(unknown))}")
     if "wind" in priority and not config.wind_enabled:
         raise RequestValidationError("Wind未通过本次运行的受控启用，不能作为默认或回退Provider")
+    if value.local_csv and "local" not in priority:
+        raise RequestValidationError("local_csv必须显式选择local Provider，不能被远程Provider静默忽略")
     if value.quota_limit is not None and value.quota_limit < 0:
         raise RequestValidationError("quota_limit不能为负数")
 

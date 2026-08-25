@@ -135,6 +135,7 @@ def freeze_trade_contract(
     entry_date: str,
     trading_dates: pd.DatetimeIndex,
     entry_spots: Mapping[str, float],
+    frozen_schedule_source: ResolvedContract | None = None,
 ) -> tuple[ResolvedContract, HistoricalResolvedContract]:
     """以该笔真实交易日和参考价生成不可变ResolvedContract。"""
     identity = deep_thaw(contract.identity)
@@ -145,7 +146,7 @@ def freeze_trade_contract(
         "reference_prices": dict(entry_spots),
         "reference_price_provenance": _reference_price_provenance(entry_spots),
     })
-    schedules = _resolved_schedule_snapshot(contract, trading_dates)
+    schedules = _resolved_schedule_snapshot(contract, trading_dates, frozen_schedule_source=frozen_schedule_source)
     trade_contract = replace(
         contract,
         identity=identity,
@@ -180,7 +181,9 @@ def build_trade_result(
     """把共享解释器结果转为一笔可复算账本，不再解释产品公式。"""
     cashflows = tuple(_dated_cashflow(flow, replay.dates, replay.times) for flow in replay.outcome.cashflows)
     entry_spots = {asset: float(replay.values[0, index]) for index, asset in enumerate(contract.underlyings)}
-    settlement_spots = {asset: float(replay.values[-1, index]) for index, asset in enumerate(contract.underlyings)}
+    observation_field = str(contract.terms.get("observation_price", "close"))
+    observed_values = replay.values if observation_field == "close" else replay.price_fields[observation_field]
+    settlement_spots = {asset: float(observed_values[-1, index]) for index, asset in enumerate(contract.underlyings)}
     performances = {asset: settlement_spots[asset] / entry_spots[asset] - 1.0 for asset in contract.underlyings}
     pnl = float(sum(float(item["amount"]) for item in cashflows))
     gross_return, normalization = _gross_contract_return(contract, pnl)
@@ -206,6 +209,7 @@ def build_trade_result(
         entry_features=entry_features,
         data_flags={
             "contract_price_field": historical_data.contract_price_field,
+            **({"contract_observation_price_field": observation_field} if observation_field != "close" else {}),
             "contract_adjustment": historical_data.contract_adjustment,
             "entry_hv_price_field": historical_data.hv_price_field,
             "entry_hv_adjustment": historical_data.hv_adjustment,
@@ -224,7 +228,26 @@ def build_trade_result(
     )
 
 
-def _resolved_schedule_snapshot(contract: ResolvedContract, trading_dates: pd.DatetimeIndex) -> dict[str, Any]:
+def _resolved_schedule_snapshot(
+    contract: ResolvedContract,
+    trading_dates: pd.DatetimeIndex,
+    *,
+    frozen_schedule_source: ResolvedContract | None = None,
+) -> dict[str, Any]:
+    if frozen_schedule_source is not None:
+        start = _date_text(trading_dates[0])
+        terminal = _date_text(trading_dates[-1])
+        frozen = deep_thaw(frozen_schedule_source.resolved_schedules)
+        scoped = {
+            key: {
+                "selector": value["selector"],
+                "status": "resolved",
+                "dates": [date for date in value["dates"] if start <= date <= terminal],
+            }
+            for key, value in frozen.items()
+        }
+        if all(value["dates"] for value in scoped.values()):
+            return scoped
     actual = resolve_schedules(contract.terms, trading_dates)
     return {
         key: {

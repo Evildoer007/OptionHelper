@@ -60,6 +60,51 @@ body.workspace-body {
   overscroll-behavior: none;
 }
 
+body.workspace-body::before {
+  position: fixed;
+  z-index: 1000;
+  top: 50%;
+  left: 50%;
+  width: 28px;
+  height: 28px;
+  background: url("/app/assets/icons/optionhelper-mark.svg") center / contain no-repeat;
+  content: "";
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, -50%) scale(.96);
+  transition: opacity .14s ease, transform .18s cubic-bezier(.16, 1, .3, 1);
+}
+
+body.workspace-body--initializing::before {
+  opacity: .78;
+  transform: translate(-50%, -50%) scale(1);
+}
+
+.workspace-shell[data-initializing="true"] {
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.workspace-shell[data-initializing="false"] {
+  animation: workspace-shell-reveal .18s cubic-bezier(.16, 1, .3, 1) both;
+}
+
+@keyframes workspace-shell-reveal {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body.workspace-body::before {
+    transition: none;
+  }
+
+  .workspace-shell[data-initializing="false"] {
+    animation: none;
+  }
+}
+
 button,
 input,
 select,
@@ -3203,7 +3248,7 @@ html[data-oh-scrollbar-overlay="enabled"] [data-oh-scrollbar-overlay-ready="true
   left: 0;
   min-height: 0;
   pointer-events: none;
-  transition: opacity .36s ease, transform .48s cubic-bezier(.16, 1, .3, 1);
+  transition: transform .24s cubic-bezier(.16, 1, .3, 1);
 }
 .chat-surface {
   display: grid;
@@ -3211,12 +3256,14 @@ html[data-oh-scrollbar-overlay="enabled"] [data-oh-scrollbar-overlay-ready="true
   background: var(--surface);
   opacity: 1;
   transform: translateY(0);
-  transition: opacity .36s ease, transform .48s cubic-bezier(.16, 1, .3, 1), grid-template-rows .26s cubic-bezier(.16, 1, .3, 1);
+  visibility: visible;
+  transition: transform .24s cubic-bezier(.16, 1, .3, 1), grid-template-rows .26s cubic-bezier(.16, 1, .3, 1);
 }
-.desk-surface { display: grid; grid-template-rows: 54px 43px minmax(0, 1fr); background: #eaedeb; opacity: 0; transform: translateY(14px) scale(.992); }
-.workspace-shell.workspace-shell--desk[data-mode="chat"] .chat-surface { pointer-events: auto; }
-.workspace-shell.workspace-shell--desk[data-mode="desk"] .chat-surface { opacity: 0; pointer-events: none; transform: translateY(-8px) scale(.996); }
-.workspace-shell.workspace-shell--desk[data-mode="desk"] .desk-surface { opacity: 1; pointer-events: auto; transform: translateY(0) scale(1); }
+.desk-surface { display: grid; grid-template-rows: 54px 43px minmax(0, 1fr); visibility: hidden; background: #eaedeb; opacity: 1; transform: translateY(8px) scale(.998); }
+.workspace-shell.workspace-shell--desk[data-mode="chat"] .chat-surface { visibility: visible; pointer-events: auto; transform: translateY(0) scale(1); }
+.workspace-shell.workspace-shell--desk[data-mode="chat"] .desk-surface { visibility: hidden; pointer-events: none; transform: translateY(8px) scale(.998); transition: none; }
+.workspace-shell.workspace-shell--desk[data-mode="desk"] .chat-surface { visibility: hidden; pointer-events: none; transform: translateY(-6px) scale(.998); transition: none; }
+.workspace-shell.workspace-shell--desk[data-mode="desk"] .desk-surface { visibility: visible; pointer-events: auto; transform: translateY(0) scale(1); }
 
 .conversation-scroll-stage {
   position: relative;
@@ -3763,6 +3810,22 @@ html[data-oh-scrollbar-overlay="enabled"] [data-oh-scrollbar-overlay-ready="true
   min-height: 100%;
 }
 
+.module-stage__loading {
+  position: absolute;
+  z-index: 2;
+  inset: 0;
+  display: grid;
+  min-height: 0;
+  place-items: center;
+  padding: 24px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 14px;
+  font-weight: 620;
+  letter-spacing: -.01em;
+  transition: opacity .18s ease;
+}
+
 .module-frame {
   position: absolute;
   inset: 0;
@@ -4243,8 +4306,6 @@ html.login-boot .login-theme {
   width: min(380px, 74vw);
   height: auto;
   overflow: visible;
-  animation: login-splash-drift 2.083s cubic-bezier(.08, .62, .18, 1) both;
-  will-change: transform;
 }
 
 .login-splash__stage {
@@ -4285,9 +4346,17 @@ html.login-boot .login-theme {
 }
 @keyframes login-splash-ping { from { opacity: .75; transform: scale(.42); } to { opacity: 0; transform: scale(1.9); } }
 
-@keyframes login-splash-drift { from { transform: scale(.982); } to { transform: scale(1); } }
-
-.login-splash__logo * {
+.login-splash__logo :is(
+  .login-splash__disc,
+  .login-splash__arc,
+  .login-splash__payoff,
+  .login-splash__candidate,
+  .login-splash__sweep,
+  .login-splash__tick,
+  .login-splash__dot--start,
+  .login-splash__dot--end,
+  .login-splash__rule
+) {
   transform-box: fill-box;
   transform-origin: center;
   will-change: transform, opacity;
@@ -4348,9 +4417,8 @@ html.login-boot .login-theme {
 .login-splash__dot--end { animation: login-dot-in .35s cubic-bezier(.22, .78, .3, 1) 1.05s both; }
 @keyframes login-dot-in { from { opacity: 0; transform: scale(.3); } to { opacity: 1; transform: scale(1); } }
 
-.login-splash__word--option { animation: login-word-in .567s cubic-bezier(.16, 1, .3, 1) .667s both; }
-.login-splash__word--helper { animation: login-word-in .567s cubic-bezier(.16, 1, .3, 1) .8s both; }
-@keyframes login-word-in { from { opacity: 0; transform: translateX(-18px); } to { opacity: 1; transform: none; } }
+.login-splash__word { animation: login-word-reveal .42s ease-out .667s both; }
+@keyframes login-word-reveal { from { opacity: 0; } to { opacity: 1; } }
 
 .login-splash__rule {
   transform-origin: left center;

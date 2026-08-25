@@ -10,12 +10,12 @@ Backtester按每个入场日冻结`HistoricalResolvedContract`，调用共享合
 
 `BacktestInput={ResolvedContract,BacktestConfig,HistoricalData}`。
 
-`HistoricalData`保存交易日历史表及其`DataAssetRef`。合同观察、障碍判断与现金流结算只使用不复权`close`；本地CSV至少包含`date`、`asset_id`、`close`，需要入场HV特征或分组时另需前复权`adj_close`。`DataAssetRef`分别记录合同结算与HV字段及复权口径；`close=adj_close`仅在资产来源明确声明时允许。DataFetcher来源由外层同时注入ModulePort和共享`DataStorePort`读取已验证的`DataAssetRef`；模块不导入DataFetcher内部实现，也不猜测其存储路径。
+`HistoricalData`保存交易日历史表及其`DataAssetRef`。每笔`S0Raw`代理固定取入场日未复权`close`；合同观察、障碍判断与现金流结算服从`ResolvedContract.observation_price`，默认使用未复权`close`，显式指定时使用对应未复权`open`、`high`或`low`。本地CSV至少包含`date`、`asset_id`、`close`及合同明确要求的观察字段，需要入场HV特征或分组时另需前复权`adj_close`。`DataAssetRef`分别记录合同结算与HV字段及复权口径；`close=adj_close`仅在资产来源明确声明时允许。DataFetcher来源由外层同时注入ModulePort和共享`DataStorePort`读取已验证的`DataAssetRef`；模块不导入DataFetcher内部实现，也不猜测其存储路径。
 
 输出`BacktestResult`包含：
 
 - 公共统计、显式MetricProfile和结构专属指标
-- 完整逐笔账本、现金流审计、事件、合同毛收益率百分比、数据标记与限制
+- 公开逐笔结算、事件、合同毛收益率百分比、数据标记与限制；原始现金流只进入私有审计账本
 - 合同、逐笔合同、数据和账本指纹
 - 合同声明、样本已观察及未观察的path/case覆盖证据；单路径烟测不得表述为全分支覆盖
 
@@ -25,7 +25,7 @@ Backtester按每个入场日冻结`HistoricalResolvedContract`，调用共享合
 
 ## 3.口径与拒绝规则
 
-现金流时间按实际自然日ACT/365计算；交易日窗口、观察计数和波动率年化不替代该口径。`complete_tenor=true`必须使用DataAssetRef原始声明的严格递增交易日sessions及日历覆盖终点，到期日在周末或节假日时只取该受控日历中到期日前最后一个session；缺少权威日历、覆盖不到期日或任一标的缺session均跳过或拒绝，绝不用固定自然日容差。多标的只按共同交易日对齐，缺标的不复用单标的价格。缺观察、零有效样本及未被共享合同接口表达的语义均明确拒绝。
+现金流时间按实际自然日ACT/365计算；交易日窗口、观察计数和波动率年化不替代该口径。`complete_tenor=true`必须使用DataAssetRef原始声明的严格递增交易日sessions及日历覆盖终点，到期日在周末或节假日时只取该受控日历中到期日前最后一个session；缺少权威日历、覆盖不到期日或共同交易日不足均跳过或拒绝，绝不用固定自然日容差。多标的只按共同交易日对齐，缺标的不复用其他标的价格。缺观察、零有效样本及未被共享合同接口表达的语义均明确拒绝。
 
 公开逐笔和汇总结果统一使用合同毛收益率百分比。内部无量纲基准仅用于将共享解释器的合同现金流归一化，页面和正式配置不暴露名义本金、保证金或期权费分母。胜率为正合同毛收益样本数除以有效收益样本数，并同时返回分子和分母。原始现金流金额仅作非公开审计产物；期权费、资金成本、费用、税费、对冲和滑点未建模时，`client_net_return`与`client_net_pnl`均明确为`not_modelled`。
 

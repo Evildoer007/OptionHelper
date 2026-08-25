@@ -1,7 +1,8 @@
-"""Validated one-off presentation changes applied after frozen facts.
+"""Validated display-only adjustments applied after Reporter freezes facts.
 
-The patch changes only one delivery. It cannot alter visual tokens, execute
-markup, or persist a new standard template.
+The patch changes one delivery's reading order or approved labels.  It cannot
+add, remove, hide or rewrite a financial fact, and it cannot persist a new
+standard template.
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ from typing import Any, Mapping, Sequence
 from .template_definition import TemplateSection
 
 
-PRESENTATION_PATCH_SCHEMA = "optionhelper.presentation-patch/v1.0.0"
+PRESENTATION_PATCH_SCHEMA = "optionhelper.presentation-patch"
 _SECTION_ID = re.compile(r"[a-z][a-z0-9-]{0,63}\Z")
 _FORBIDDEN_KEYS = frozenset({
     "color", "colors", "palette", "theme", "style", "styles", "css",
@@ -27,25 +28,32 @@ _MARKUP = re.compile(r"<\s*/?\s*[A-Za-z]|javascript\s*:", re.IGNORECASE)
 # unambiguous visual keys here; presentation_patch itself uses the stricter
 # list above because its vocabulary is fully controlled by Designer.
 _PAYLOAD_VISUAL_KEYS = frozenset({"color", "colors", "palette", "theme", "css", "font", "fonts", "spacing"})
-_CONTENT_FIELDS = {
-    "paragraph": frozenset({"type", "text"}),
-    "metrics": frozenset({"type", "items"}),
-    "table": frozenset({"type", "caption", "columns", "rows"}),
-    "formula": frozenset({"type", "formula"}),
-    "chart": frozenset({
-        "type", "chart_type", "id", "title", "x", "y", "data", "series",
-        "x_axis_name", "y_axis_name", "z_axis_name", "value_format",
-        "value_suffix", "source_note", "accessibility_summary",
-    }),
-}
 _OPERATION_FIELDS = {
-    "add_section": frozenset({"op", "id", "title", "position", "content"}),
-    "remove_section": frozenset({"op", "section"}),
     "rename_section": frozenset({"op", "section", "title"}),
     "move_section": frozenset({"op", "section", "position"}),
-    "set_value": frozenset({"op", "path", "value"}),
-    "remove_value": frozenset({"op", "path"}),
-    "append_content": frozenset({"op", "section", "content"}),
+    "append_notice": frozenset({"op", "section", "notice"}),
+}
+
+# A caller may select a reader-facing synonym, but not write a factual claim
+# into a chapter heading.  The block still comes from the shipped template.
+_SECTION_TITLE_ALIASES = {
+    "conclusion": frozenset({"核心结论", "结论摘要"}),
+    "recommendation": frozenset({"结构推荐", "推荐结构"}),
+    "parameters": frozenset({"合同参数", "合同条款"}),
+    "payoff": frozenset({"收益结构", "收益结构分析"}),
+    "pricing": frozenset({"估值定价", "估值摘要"}),
+    "backtest": frozenset({"历史回测", "回测摘要"}),
+    "risk": frozenset({"风险提示", "主要风险"}),
+    "reason": frozenset({"推荐理由", "推荐依据"}),
+    "contract_highlights": frozenset({"关键合同条款", "合同要点"}),
+    "reference_quote": frozenset({"推荐结构及参考报价", "参考报价"}),
+}
+
+# These notices are Designer-owned reader guidance, not caller-supplied
+# content.  They deliberately contain no product, contract or result value.
+_NOTICE_TEXT = {
+    "methodology": "本节内容以已冻结的合同条款、数据引用和模块计算结果为准。",
+    "reader_note": "本说明仅用于阅读，不构成新的产品条款、估值结论或投资建议。",
 }
 
 
@@ -53,7 +61,6 @@ _OPERATION_FIELDS = {
 class EffectivePresentation:
     payload: Mapping[str, Any]
     sections: tuple[TemplateSection, ...]
-    custom_content: Mapping[str, tuple[Mapping[str, Any], ...]]
     appended_content: Mapping[str, tuple[Mapping[str, Any], ...]]
     receipt: Mapping[str, Any] | None
 
@@ -81,39 +88,6 @@ def _reject_visual_keys(value: Any, trail: str = "presentation_patch") -> None:
         raise ValueError(f"{trail}不接受HTML或脚本。")
 
 
-def _validate_content(raw: Any, field: str) -> tuple[Mapping[str, Any], ...]:
-    if not isinstance(raw, list) or not raw:
-        raise ValueError(f"presentation_patch的{field}必须是非空内容数组。")
-    nodes: list[Mapping[str, Any]] = []
-    for index, item in enumerate(raw):
-        if not isinstance(item, Mapping):
-            raise ValueError(f"presentation_patch的{field}[{index}]必须是对象。")
-        node = deepcopy(dict(item))
-        node_type = str(node.get("type") or "").strip().lower()
-        allowed = _CONTENT_FIELDS.get(node_type)
-        if allowed is None:
-            raise ValueError(f"presentation_patch不支持内容类型：{node_type or '空'}。")
-        unknown = set(node).difference(allowed)
-        if unknown:
-            raise ValueError(f"presentation_patch内容包含不支持字段：{', '.join(sorted(map(str, unknown)))}。")
-        if node_type == "paragraph":
-            _plain_text(node.get("text"), f"{field}[{index}].text")
-        elif node_type == "formula":
-            _plain_text(node.get("formula"), f"{field}[{index}].formula")
-        elif node_type == "metrics":
-            if not isinstance(node.get("items"), list) or not node["items"]:
-                raise ValueError("presentation_patch的metrics.items必须是非空数组。")
-        elif node_type == "table":
-            if not isinstance(node.get("columns"), list) or not isinstance(node.get("rows"), list):
-                raise ValueError("presentation_patch的table必须包含columns和rows数组。")
-        elif node_type == "chart":
-            if str(node.get("chart_type") or "").lower() not in {"line", "bar", "heatmap"}:
-                raise ValueError("presentation_patch的chart_type仅支持line、bar或heatmap。")
-        _reject_visual_keys(node, f"presentation_patch.{field}[{index}]")
-        nodes.append(node)
-    return tuple(nodes)
-
-
 def validate_presentation_patch(value: Mapping[str, Any] | None) -> Mapping[str, Any] | None:
     if value is None:
         return None
@@ -139,25 +113,17 @@ def validate_presentation_patch(value: Mapping[str, Any] | None) -> Mapping[str,
         unknown_fields = set(operation).difference(allowed)
         if unknown_fields:
             raise ValueError(f"presentation_patch操作包含不支持字段：{', '.join(sorted(map(str, unknown_fields)))}。")
-        if op in {"add_section", "remove_section", "rename_section", "move_section", "append_content"}:
-            key = "id" if op == "add_section" else "section"
-            section_id = _plain_text(operation.get(key), f"operations[{index}].{key}")
+        if op in {"rename_section", "move_section", "append_notice"}:
+            section_id = _plain_text(operation.get("section"), f"operations[{index}].section")
             if not _SECTION_ID.fullmatch(section_id):
                 raise ValueError("presentation_patch章节id只能使用小写字母、数字和连字符。")
-        if op in {"add_section", "rename_section"}:
+        if op == "rename_section":
             _plain_text(operation.get("title"), f"operations[{index}].title")
-        if op in {"add_section", "move_section"} and "position" in operation:
+        if op == "move_section" and "position" in operation:
             if not isinstance(operation["position"], int) or isinstance(operation["position"], bool) or operation["position"] < 0:
                 raise ValueError("presentation_patch.position必须是非负整数。")
-        if op in {"add_section", "append_content"}:
-            _validate_content(operation.get("content"), f"operations[{index}].content")
-        if op in {"set_value", "remove_value"}:
-            pointer = _plain_text(operation.get("path"), f"operations[{index}].path")
-            if not pointer.startswith("/") or pointer in {"/schema", "/sections"}:
-                raise ValueError("presentation_patch值路径必须是安全JSON Pointer。")
-            segments = [_decode_pointer(segment) for segment in pointer.split("/")[1:]]
-            if any(str(segment).lower().replace("-", "_") in _FORBIDDEN_KEYS for segment in segments):
-                raise ValueError("presentation_patch不接受颜色、字体或样式路径。")
+        if op == "append_notice" and str(operation.get("notice") or "").strip() not in _NOTICE_TEXT:
+            raise ValueError("presentation_patch.notice仅支持受控说明类型。")
         _reject_visual_keys(operation, f"presentation_patch.operations[{index}]")
     return patch
 
@@ -176,34 +142,6 @@ def reject_payload_visual_overrides(value: Any, trail: str = "payload") -> None:
             reject_payload_visual_overrides(item, f"{trail}[{index}]")
 
 
-def _decode_pointer(value: str) -> str:
-    return value.replace("~1", "/").replace("~0", "~")
-
-
-def _pointer_parent(root: Any, pointer: str) -> tuple[Any, str | int]:
-    parts = [_decode_pointer(part) for part in pointer.split("/")[1:]]
-    if not parts:
-        raise ValueError("presentation_patch不能替换整个Payload。")
-    current = root
-    for part in parts[:-1]:
-        if isinstance(current, list):
-            if not part.isdigit() or int(part) >= len(current):
-                raise ValueError(f"presentation_patch路径不存在：{pointer}。")
-            current = current[int(part)]
-        elif isinstance(current, Mapping) and part in current:
-            current = current[part]
-        else:
-            raise ValueError(f"presentation_patch路径不存在：{pointer}。")
-    final: str | int = parts[-1]
-    if isinstance(current, list):
-        if not str(final).isdigit() or int(final) >= len(current):
-            raise ValueError(f"presentation_patch路径不存在：{pointer}。")
-        final = int(final)
-    elif not isinstance(current, Mapping) or final not in current:
-        raise ValueError(f"presentation_patch路径不存在：{pointer}。")
-    return current, final
-
-
 def _section_index(sections: Sequence[TemplateSection], section_id: str) -> int:
     for index, section in enumerate(sections):
         if section.id == section_id:
@@ -219,58 +157,34 @@ def apply_presentation_patch(
     safe_patch = validate_presentation_patch(patch)
     result = deepcopy(dict(payload))
     effective_sections = list(sections)
-    custom: dict[str, tuple[Mapping[str, Any], ...]] = {}
     appended: dict[str, list[Mapping[str, Any]]] = {}
     if safe_patch is None:
-        return EffectivePresentation(result, tuple(effective_sections), custom, {}, None)
+        return EffectivePresentation(result, tuple(effective_sections), {}, None)
 
     changes: list[dict[str, Any]] = []
     for index, raw_operation in enumerate(safe_patch["operations"]):
         operation = dict(raw_operation)
         op = str(operation["op"]).lower()
-        if op == "set_value":
-            parent, key = _pointer_parent(result, str(operation["path"]))
-            previous = deepcopy(parent[key])
-            parent[key] = deepcopy(operation["value"])
-            changes.append({"op": op, "path": operation["path"], "before": previous, "after": deepcopy(operation["value"])})
-        elif op == "remove_value":
-            parent, key = _pointer_parent(result, str(operation["path"]))
-            previous = deepcopy(parent[key])
-            if isinstance(parent, list):
-                parent.pop(int(key))
-            else:
-                del parent[key]
-            changes.append({"op": op, "path": operation["path"], "before": previous})
-        elif op == "remove_section":
-            position = _section_index(effective_sections, str(operation["section"]))
-            removed = effective_sections.pop(position)
-            custom.pop(removed.id, None)
-            appended.pop(removed.id, None)
-            changes.append({"op": op, "section": removed.id})
-        elif op == "rename_section":
+        if op == "rename_section":
             position = _section_index(effective_sections, str(operation["section"]))
             current = effective_sections[position]
-            effective_sections[position] = TemplateSection(current.id, str(operation["title"]).strip(), current.block)
-            changes.append({"op": op, "section": current.id, "before": current.title, "after": operation["title"]})
+            title = str(operation["title"]).strip()
+            if title not in _SECTION_TITLE_ALIASES.get(current.block, frozenset()):
+                raise ValueError(f"presentation_patch章节{current.id}不支持该展示标题。")
+            effective_sections[position] = TemplateSection(current.id, title, current.block)
+            changes.append({"op": op, "section": current.id, "before": current.title, "after": title})
         elif op == "move_section":
             position = _section_index(effective_sections, str(operation["section"]))
             current = effective_sections.pop(position)
             destination = min(int(operation.get("position", len(effective_sections))), len(effective_sections))
             effective_sections.insert(destination, current)
             changes.append({"op": op, "section": current.id, "position": destination})
-        elif op == "add_section":
-            section_id = str(operation["id"])
-            if any(section.id == section_id for section in effective_sections):
-                raise ValueError(f"presentation_patch章节id重复：{section_id}。")
-            destination = min(int(operation.get("position", len(effective_sections))), len(effective_sections))
-            effective_sections.insert(destination, TemplateSection(section_id, str(operation["title"]).strip(), f"custom:{section_id}"))
-            custom[section_id] = _validate_content(operation["content"], f"operations[{index}].content")
-            changes.append({"op": op, "section": section_id, "position": destination})
-        elif op == "append_content":
+        elif op == "append_notice":
             section_id = str(operation["section"])
             _section_index(effective_sections, section_id)
-            appended.setdefault(section_id, []).extend(_validate_content(operation["content"], f"operations[{index}].content"))
-            changes.append({"op": op, "section": section_id})
+            notice = str(operation["notice"]).strip()
+            appended.setdefault(section_id, []).append({"type": "paragraph", "text": _NOTICE_TEXT[notice]})
+            changes.append({"op": op, "section": section_id, "notice": notice})
 
     receipt = {
         "schema": PRESENTATION_PATCH_SCHEMA,
@@ -280,7 +194,6 @@ def apply_presentation_patch(
     return EffectivePresentation(
         payload=result,
         sections=tuple(effective_sections),
-        custom_content=custom,
         appended_content={key: tuple(value) for key, value in appended.items()},
         receipt=receipt,
     )

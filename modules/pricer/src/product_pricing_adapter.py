@@ -12,7 +12,7 @@ from .config import PricingConfig
 from .calendar_policy import requires_future_trading_calendar
 from .greeks import add_time_zero_cashflow, real_spot_greeks, scale_result
 from .model_router import resolve_route
-from .observation_schedule import actual_n_obs
+from .observation_schedule import actual_n_obs, bind_accumulator_remaining_count
 from .observed_state import ObservedContractState
 from .engines.pricing_core.engine.derivatives.results import GreekValue, PricingResult
 from .engines.pricing_core.main import price_option
@@ -88,6 +88,11 @@ class ProductPricingAdapter:
             raise ProductNotAvailable(_unavailable_reason(contract, allowed, config.model_method))
         if self.route.capability.adapter not in {"european_vanilla", "european_portfolio", "optionreg_path"}:
             raise ProductNotAvailable(f"{contract.product_id}没有已验证的{self.route.capability.adapter}参数适配")
+        self.trading_calendar = _validated_trading_calendar(
+            self.market_snapshot.get("trading_calendar"),
+            as_of=_as_of(self.config.valuation_date),
+            demo_mode=self.config.demo_mode,
+        ) if self._requires_trading_calendar else None
         if self.route.capability.adapter == "european_vanilla":
             observed_state.validate_european_vanilla()
         if self.method == "monte_carlo":
@@ -101,6 +106,15 @@ class ProductPricingAdapter:
                 requires_accumulated_quantity="Q_acc" in contract.terms.get("monitor", {}),
                 unsupported_midlife_aggregate="n_in" in contract.terms.get("monitor", {}),
             )
+            if _is_midlife(observed_state, start_value) and contract.product_id == "9.4":
+                raise ProductNotAvailable("存续方差互换缺少估值日前已实现方差，不能仅模拟剩余路径")
+            if observed_state.occurred_events:
+                history_sessions = _verified_state_sessions(self.market_snapshot, self.trading_calendar)
+                observed_state.validate_observation_bounds(
+                    contract_start_date=str(start_value),
+                    contract_terms=contract.terms,
+                    trading_sessions=history_sessions,
+                )
         if self.method != "monte_carlo" and len(contract.underlyings) != 1:
             raise ProductNotAvailable("该闭式结构仅支持单标的")
         self.asset = contract.underlyings[0]
@@ -108,11 +122,6 @@ class ProductPricingAdapter:
         if not isinstance(references, Mapping) or set(references) != set(contract.underlyings):
             raise ProductNotAvailable("定价必须提供合同起始参考价reference_prices")
         self.reference_price = _number(references[self.asset], "reference_prices")
-        self.trading_calendar = _validated_trading_calendar(
-            self.market_snapshot.get("trading_calendar"),
-            as_of=_as_of(self.config.valuation_date),
-            demo_mode=self.config.demo_mode,
-        ) if self._requires_trading_calendar else None
 
     @property
     def family(self) -> str:
@@ -135,13 +144,14 @@ class ProductPricingAdapter:
             self.method,
         )
 
-    def reprice(self, *, spot: float | None = None, volatility: float | None = None, risk_free_rate: float | None = None, maturity_years: float | None = None) -> PricingResult:
+    def reprice(self, *, spot: float | None = None, volatility: float | None = None, risk_free_rate: float | None = None, maturity_years: float | None = None, risk_greeks: frozenset[str] | None = None) -> PricingResult:
         """同一基座入口的受控重估；供PV、Greek和风险网格共同使用。"""
         parameters = self._parameters(
             spot=self._spot() if spot is None else spot,
             volatility=self._volatility() if volatility is None else volatility,
             risk_free_rate=float(self.config.risk_free_rate) if risk_free_rate is None else risk_free_rate,
             maturity_years=self._maturity() if maturity_years is None else maturity_years,
+            risk_greeks=risk_greeks,
         )
         engine_method = "MONTE_CARLO_CPU" if self.method == "monte_carlo" else (
             "STATIC_REPLICATION" if self.route.capability.adapter == "european_portfolio" else "BLACK_SCHOLES"
@@ -171,7 +181,7 @@ class ProductPricingAdapter:
             path_count=int(self.config.path_count) if self.method == "monte_carlo" else None,
         )
 
-    def _parameters(self, *, spot: float, volatility: float, risk_free_rate: float, maturity_years: float) -> dict[str, Any]:
+    def _parameters(self, *, spot: float, volatility: float, risk_free_rate: float, maturity_years: float, risk_greeks: frozenset[str] | None = None) -> dict[str, Any]:
         if spot <= 0.0 or volatility <= 0.0 or maturity_years <= 0.0:
             raise ValueError("受控重估的spot、volatility和maturity_years必须为正数")
         config = {"greek_bumps": {
@@ -181,6 +191,8 @@ class ProductPricingAdapter:
         }}
         if self.method == "monte_carlo":
             config.update({"paths": int(self.config.path_count), "seed": int(self.config.random_seed)})
+            if risk_greeks is not None:
+                config["diagnostics"] = {"requested_greeks": tuple(sorted(risk_greeks))}
         basis = _cashflow_basis(self.contract, self.reference_price)
         if self.method == "monte_carlo":
             contract = {
@@ -190,6 +202,7 @@ class ProductPricingAdapter:
                 remaining_years=float(maturity_years),
                 trading_calendar=self.trading_calendar,
                 as_of=_as_of(self.config.valuation_date),
+                completed_observations=self._completed_accumulator_observations(),
                 ),
                 "basis": basis,
                 "asset_spots": [_asset_number(self.config.spot, asset, "spot") for asset in self.contract.underlyings],
@@ -254,6 +267,18 @@ class ProductPricingAdapter:
             contract_start_date=str(self.contract.identity.get("contract_start_date"))
         )
         return (int(state["calendar_day"]) - 1) / 365.0
+
+    def _completed_accumulator_observations(self) -> int:
+        start_value = self.contract.identity.get("contract_start_date")
+        if self.contract.product_id != "7.1" or not _is_midlife(self.observed_state, start_value):
+            return 0
+        sessions = _verified_state_sessions(self.market_snapshot, self.trading_calendar)
+        return self.observed_state.completed_observation_count(
+            contract_start_date=str(start_value),
+            contract_terms=self.contract.terms,
+            monitor_key="Q_acc",
+            trading_sessions=sessions,
+        )
 
 
 def _from_run(run: Any) -> PricingResult:
@@ -381,6 +406,7 @@ def _contract_with_maturity(
     remaining_years: float | None = None,
     trading_calendar: Mapping[str, Any] | None = None,
     as_of: date | None = None,
+    completed_observations: int = 0,
 ) -> ResolvedContract:
     """Create an immutable remaining-term view for controlled time revalue."""
     remaining_tenor = float(maturity_years if remaining_years is None else remaining_years)
@@ -392,12 +418,19 @@ def _contract_with_maturity(
         session_values = trading_calendar.get("sessions")
         if isinstance(session_values, (str, bytes)) or not isinstance(session_values, (tuple, list)):
             raise ValueError("n_obs路径合同重估必须提供显式交易sessions")
-        terms["n_obs"] = actual_n_obs(
+        remaining_observations = actual_n_obs(
             contract,
             sessions=session_values,
             as_of=as_of,
             remaining_years=remaining_tenor,
         )
+        terms["n_obs"] = remaining_observations + int(completed_observations)
+        if contract.product_id == "7.1" and completed_observations:
+            monitor = dict(terms.get("monitor", {}))
+            monitor["Q_acc"] = bind_accumulator_remaining_count(
+                str(monitor["Q_acc"]), remaining_observations,
+            )
+            terms["monitor"] = monitor
     hedge_schedule = terms.get("hedge_schedule")
     if trading_calendar is not None and as_of is not None and isinstance(hedge_schedule, (tuple, list)):
         session_values = trading_calendar.get("sessions")
@@ -429,6 +462,32 @@ def _as_of(value: str | None) -> date:
         return date.fromisoformat(value)
     except ValueError as error:
         raise ValueError("valuation_date必须为YYYY-MM-DD") from error
+
+
+def _is_midlife(observed_state: ObservedContractState, start_value: object) -> bool:
+    return (
+        observed_state.lifecycle_status == "active"
+        and observed_state.valuation_date is not None
+        and start_value is not None
+        and date.fromisoformat(observed_state.valuation_date) > date.fromisoformat(str(start_value))
+    )
+
+
+def _verified_state_sessions(
+    market_snapshot: Mapping[str, Any],
+    trading_calendar: Mapping[str, Any] | None,
+) -> tuple[str, ...]:
+    """Combine verified history and future-calendar sessions for state bounds."""
+    data_ref = market_snapshot.get("data_ref")
+    coverage = data_ref.get("coverage") if isinstance(data_ref, Mapping) else None
+    history = coverage.get("sessions") if isinstance(coverage, Mapping) else None
+    future = trading_calendar.get("sessions") if isinstance(trading_calendar, Mapping) else None
+    if isinstance(history, (str, bytes)) or not isinstance(history, (tuple, list)):
+        raise ProductNotAvailable("存续路径状态校验需要已验证DataAssetRef.coverage.sessions")
+    values = {str(value) for value in history}
+    if isinstance(future, (tuple, list)):
+        values.update(str(value) for value in future)
+    return tuple(sorted(values))
 
 
 def _number(value: Any, label: str) -> float:

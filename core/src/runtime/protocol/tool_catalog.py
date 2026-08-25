@@ -35,6 +35,8 @@ def tool_catalog() -> dict[str, dict[str, object]]:
         declared_actions = ("catalog", "status", *operations)
         if module == "datafetcher":
             declared_actions += ("list_assets",)
+        if module == "payoffer":
+            declared_actions += ("default",)
         if module == "reporter":
             declared_actions += ("list_report_sources",)
         actions = [{"action": action, "required_policy": _POLICIES.get(action, "module.catalog")} for action in declared_actions]

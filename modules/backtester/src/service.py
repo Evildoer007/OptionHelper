@@ -61,6 +61,18 @@ MAX_BODY_BYTES = 1_500_000
 _IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,79}")
 
 
+def _path_summaries(product: Mapping[str, Any]) -> list[dict[str, str]]:
+    """仅投影产品路径名称与条件，避免向Catalog暴露收益表达式。"""
+    summaries: list[dict[str, str]] = []
+    for index, path in enumerate(product.get("paths", ()), start=1):
+        condition = str(path.get("condition", "")).strip()
+        summaries.append({
+            "title": f"路径{index}",
+            "condition": "全部情形" if not condition or condition.casefold() == "true" else condition,
+        })
+    return summaries
+
+
 class BacktesterWebInputError(ValueError):
     """页面请求不满足Backtester输入边界。"""
 
@@ -106,6 +118,7 @@ class BacktesterRuntime:
                 "domain": catalog[key]["domain"],
                 "default_value": value,
             } for key, value in terms.items() if key not in {
+                "S0", "S0Vec",
                 "monitor", "pricing_methods", "constraints", "derived_terms", "margin_call", "payoff_figure_basis",
                 "payoff_normalizer",
             }]
@@ -114,6 +127,8 @@ class BacktesterRuntime:
                 "canonical_name": product["identity"]["name_zh"],
                 "entry_status": product["identity"]["entry_status"],
                 "underlying_scope": "multi_underlying" if "S0Vec" in terms else "single_underlying",
+                "path_count": len(product["paths"]),
+                "path_summaries": _path_summaries(product),
                 "payoff_fields": fields,
                 "pricing_methods": terms["pricing_methods"],
             })
@@ -218,6 +233,7 @@ class BacktesterRuntime:
             return self._formal_failure(
                 contract=contract, task_id=task_id, run_id=run_id, created_at=created_at,
                 analysis_case_id=host_context.analysis_case_id, candidate_id=host_context.candidate_id,
+                catalog_version=host_context.catalog_version,
                 result_store=result_store, input_snapshot=input_snapshot, data_refs=data_refs, limitations=limitations,
                 stage="historical_data", error_code="historical_data_reference_invalid", error=error,
             )
@@ -226,7 +242,10 @@ class BacktesterRuntime:
         try:
             _validate_formal_data_ref(data_ref, tenant_id=self._tenant_id)
             store = self._formal_data_store()
-            payload = store.read_bytes(data_ref, tenant_id=self._tenant_id)
+            try:
+                payload = store.read_bytes(data_ref, tenant_id=self._tenant_id)
+            except Exception as error:
+                raise BacktesterWebInputError("DataStore读取历史资产失败") from error
             if not isinstance(payload, bytes):
                 raise BacktesterWebInputError("data_store.read_bytes必须返回bytes")
             if sha256(payload).hexdigest() != data_ref.content_hash:
@@ -239,6 +258,7 @@ class BacktesterRuntime:
             return self._formal_failure(
                 contract=contract, task_id=task_id, run_id=run_id, created_at=created_at,
                 analysis_case_id=host_context.analysis_case_id, candidate_id=host_context.candidate_id,
+                catalog_version=host_context.catalog_version,
                 result_store=result_store, input_snapshot=input_snapshot, data_refs=data_refs, limitations=limitations,
                 stage="historical_data", error_code="historical_data_unavailable", error=error,
             )
@@ -250,6 +270,7 @@ class BacktesterRuntime:
             return self._formal_failure(
                 contract=contract, task_id=task_id, run_id=run_id, created_at=created_at,
                 analysis_case_id=host_context.analysis_case_id, candidate_id=host_context.candidate_id,
+                catalog_version=host_context.catalog_version,
                 result_store=result_store, input_snapshot=input_snapshot, data_refs=data_refs, limitations=limitations,
                 stage="backtest_config", error_code="backtest_config_invalid", error=error,
             )
@@ -261,6 +282,7 @@ class BacktesterRuntime:
             return self._formal_failure(
                 contract=contract, task_id=task_id, run_id=run_id, created_at=created_at,
                 analysis_case_id=host_context.analysis_case_id, candidate_id=host_context.candidate_id,
+                catalog_version=host_context.catalog_version,
                 result_store=result_store, input_snapshot=input_snapshot, data_refs=data_refs, limitations=limitations,
                 stage="path_replay", error_code=error_code, error=error,
             )
@@ -322,6 +344,7 @@ class BacktesterRuntime:
         created_at: str,
         analysis_case_id: str,
         candidate_id: str,
+        catalog_version: str,
         result_store: Any,
         input_snapshot: Mapping[str, Any],
         data_refs: list[dict[str, Any]],
@@ -348,7 +371,7 @@ class BacktesterRuntime:
             "run_id": run_id,
             "analysis_case_id": analysis_case_id,
             "candidate_id": candidate_id,
-            "catalog_version": DEVELOPMENT_RELEASE_ID,
+            "catalog_version": catalog_version,
             "contract_fingerprint": contract.contract_fingerprint,
             "created_at": created_at,
             "resolved_contract": contract.to_protocol_dict(),

@@ -10,9 +10,11 @@ from collections import Counter
 from copy import deepcopy
 import json
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from runtime.contracts.contract_api import load_registry, resolve_contract
+from runtime.protocol.models import DataAssetRef, ModuleRunRef
+from runtime.protocol.module_host import ModuleHostContext
 
 from .historical_data import HistoricalData
 from .impl.config import BacktestConfig
@@ -22,7 +24,7 @@ from .models import BacktestInput
 
 MATRIX_COLUMNS = (
     "product_id", "product_name", "contract_fingerprint", "strike_terms", "data_asset_ref", "entry_rule", "complete_tenor",
-    "smoke", "formal_evidence",
+    "smoke", "formal_evidence", "metric_profile", "specialized_metrics", "metric_coverage",
     "sample_count", "skipped_count", "skipped_entries", "skipped_reason_counts", "observed_events",
     "observed_path_cases", "ledger", "ledger_hash", "branch_coverage", "gross_contract_return",
     "win_rate", "client_net_return", "client_net_pnl",
@@ -69,6 +71,142 @@ def replay_catalog_matrix(historical_data: HistoricalData, config: BacktestConfi
     return rows
 
 
+def formal_catalog_evidence_matrix(
+    config: BacktestConfig,
+    *,
+    single_asset_ref: DataAssetRef,
+    multi_asset_ref: DataAssetRef,
+    data_store: Any,
+    result_store: Any,
+    host_context_factory: Callable[[Any], ModuleHostContext],
+    tenant_id: str,
+) -> list[dict[str, Any]]:
+    """逐产品执行正式Host、DataStore与ResultStore回环并返回证据矩阵。"""
+
+    from .service import BacktesterRuntime
+
+    if not isinstance(config, BacktestConfig):
+        raise TypeError("config必须为BacktestConfig")
+    registry = load_registry()
+    runtime = BacktesterRuntime(data_store=data_store, result_store=result_store, tenant_id=tenant_id)
+    rows: list[dict[str, Any]] = []
+    for product_id, product in registry["products"].items():
+        data_ref = multi_asset_ref if "S0Vec" in product["terms"] else single_asset_ref
+        underlyings = list(data_ref.asset_ids)
+        try:
+            contract = resolve_contract(
+                product_id,
+                identity={
+                    "underlyings": underlyings,
+                    "calendar_id": str(data_ref.coverage["calendar_id"]),
+                    "calendar_revision": str(data_ref.coverage["calendar_revision"]),
+                },
+                registry=registry,
+                trading_dates=tuple(data_ref.coverage["sessions"]),
+            )
+            host_context = host_context_factory(contract)
+            output = runtime.run_formal({
+                "contract": contract.to_protocol_dict(),
+                "backtest_config": config.to_dict(),
+                "historical_data": data_ref,
+            }, host_context=host_context)
+            rows.append(_formal_evidence_row(
+                product_id=product_id,
+                product_name=str(product["identity"]["name_zh"]),
+                contract=contract,
+                data_ref=data_ref,
+                output=output,
+                host_context=host_context,
+                result_store=result_store,
+                tenant_id=tenant_id,
+            ))
+        except Exception as error:
+            rows.append({
+                "product_id": product_id,
+                "product_name": str(product["identity"]["name_zh"]),
+                "formal_evidence_status": "blocked",
+                "run_status": "not_started",
+                "error": {"type": type(error).__name__, "message": str(error)},
+                "contract_fingerprint": None,
+                "data_asset_id": data_ref.data_asset_id,
+                "data_content_hash": data_ref.content_hash,
+                "host_context_bound": False,
+                "data_store_verified": False,
+                "module_run_ref": None,
+                "module_run_resolved": False,
+                "commit_marker_verified": False,
+                "public_artifacts": [],
+                "sample_count": 0,
+                "branch_coverage_status": "not_executed",
+            })
+    return rows
+
+
+def _formal_evidence_row(
+    *,
+    product_id: str,
+    product_name: str,
+    contract: Any,
+    data_ref: DataAssetRef,
+    output: Mapping[str, Any],
+    host_context: ModuleHostContext,
+    result_store: Any,
+    tenant_id: str,
+) -> dict[str, Any]:
+    reference = ModuleRunRef(**dict(output["module_run_ref"]))
+    run_directory = result_store.resolve_module_run(reference, tenant_id=tenant_id)
+    stored_manifest = json.loads((run_directory / "manifest.json").read_text(encoding="utf-8"))
+    stored_input = json.loads((run_directory / "input_snapshot.json").read_text(encoding="utf-8"))
+    marker = json.loads((run_directory / "commit_marker.json").read_text(encoding="utf-8"))
+    run_status = str(output["status"])
+    backtest_payload = output.get("backtest") if isinstance(output.get("backtest"), Mapping) else {}
+    public_artifacts = list(stored_manifest.get("artifacts", []))
+    host_bound = all((
+        output.get("task_id") == host_context.task_id,
+        output.get("analysis_case_id") == host_context.analysis_case_id,
+        output.get("candidate_id") == host_context.candidate_id,
+        output.get("contract_fingerprint") == contract.contract_fingerprint,
+    ))
+    output_refs = output.get("data_refs")
+    output_ref = output_refs[0] if isinstance(output_refs, list) and len(output_refs) == 1 else {}
+    input_ref = stored_input["historical_data"]
+    data_verified = all(
+        isinstance(reference, Mapping)
+        and reference.get("data_asset_id") == data_ref.data_asset_id
+        and reference.get("content_hash") == data_ref.content_hash
+        for reference in (input_ref, output_ref)
+    )
+    committed = marker.get("committed") is True
+    sample_count = int(backtest_payload.get("sample_count", 0))
+    branch_coverage_status = dict(backtest_payload.get("branch_coverage", {})).get("status", "not_available")
+    evidence_verified = all((
+        host_bound,
+        data_verified,
+        committed,
+        run_status == "succeeded",
+        sample_count >= 1,
+        branch_coverage_status in {"complete", "partial"},
+    ))
+    return {
+        "product_id": product_id,
+        "product_name": product_name,
+        "formal_evidence_status": "verified" if evidence_verified else "invalid",
+        "run_status": run_status,
+        "error": output.get("error"),
+        "contract_fingerprint": contract.contract_fingerprint,
+        "data_asset_id": data_ref.data_asset_id,
+        "data_content_hash": data_ref.content_hash,
+        "host_context_bound": host_bound,
+        "data_store_verified": data_verified,
+        "module_run_ref": dict(output["module_run_ref"]),
+        "module_run_resolved": True,
+        "commit_marker_verified": committed,
+        "public_artifacts": public_artifacts,
+        "sample_count": sample_count,
+        "branch_coverage_status": branch_coverage_status,
+    }
+
+
 def write_catalog_replay_matrix(rows: Sequence[Mapping[str, Any]], directory: Path) -> tuple[Path, Path]:
     """从同一内存行集写出JSON和CSV，不写入仓库默认result目录。"""
 
@@ -105,6 +243,9 @@ def _base_row(
         "complete_tenor": config.complete_tenor,
         "smoke": {"status": "blocked", "reason": "not_run"},
         "formal_evidence": _formal_evidence(historical_data),
+        "metric_profile": None,
+        "specialized_metrics": None,
+        "metric_coverage": {"status": "blocked", "gaps": ["product_replay_not_completed"]},
         "sample_count": 0,
         "skipped_count": 0,
         "skipped_entries": [],
@@ -143,6 +284,7 @@ def _completed_row(
     ledger = list(payload["trade_ledger"])
     coverage = dict(payload["branch_coverage"])
     skipped = list(payload["skipped_entries"])
+    specialized = deepcopy(payload["specialized_metrics"])
     return {
         **base,
         "smoke": {
@@ -151,6 +293,9 @@ def _completed_row(
             "sample_status": "partial" if coverage["status"] != "complete" or skipped else "complete",
         },
         "contract_fingerprint": payload["contract_fingerprint"],
+        "metric_profile": deepcopy(payload["metric_profile"]),
+        "specialized_metrics": specialized,
+        "metric_coverage": deepcopy(specialized["metric_coverage"]),
         "strike_terms": _strike_terms(contract),
         "data_asset_ref": deepcopy(payload["data_asset_ref"]),
         "sample_count": int(payload["sample_count"]),
@@ -228,4 +373,9 @@ def _csv_value(value: Any) -> Any:
     return value
 
 
-__all__ = ("MATRIX_COLUMNS", "replay_catalog_matrix", "write_catalog_replay_matrix")
+__all__ = (
+    "MATRIX_COLUMNS",
+    "formal_catalog_evidence_matrix",
+    "replay_catalog_matrix",
+    "write_catalog_replay_matrix",
+)

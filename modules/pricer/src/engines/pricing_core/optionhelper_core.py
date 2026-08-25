@@ -100,13 +100,39 @@ def _price_with_risk(adapter: ProductPricingAdapter, contract: ResolvedContract,
     asset = contract.underlyings[0]
     references = contract.identity.get("reference_prices")
     reference_price = float(references[asset])
-    def price_one(local_market: MarketState, maturity: float) -> PricingResult:
-        return adapter.reprice(
+    repriced_nodes: dict[tuple[MarketState, float, frozenset[str] | None], PricingResult] = {}
+
+    def price_one(local_market: MarketState, maturity: float, *, risk_greeks: frozenset[str] | None = None) -> PricingResult:
+        # The workbench consumes one shared Spot-Time grid, but its base node
+        # also appears as the headline PV and the zero-volatility curve point.
+        # Reuse that exact market/tenor result inside this pricing run so the
+        # complete contract/path interpreter is not executed three times.
+        node = (local_market, float(maturity))
+        key = (*node, risk_greeks)
+        cached = repriced_nodes.get(key)
+        if cached is not None:
+            return cached
+        if risk_greeks is not None:
+            complete = repriced_nodes.get((*node, None))
+            if complete is not None:
+                return complete
+            for (cached_market, cached_maturity, cached_greeks), cached_result in repriced_nodes.items():
+                if (
+                    cached_market == local_market
+                    and cached_maturity == float(maturity)
+                    and cached_greeks is not None
+                    and cached_greeks.issuperset(risk_greeks)
+                ):
+                    return cached_result
+        result = adapter.reprice(
             spot=local_market.spot,
             volatility=local_market.volatility,
             risk_free_rate=local_market.risk_free_rate,
             maturity_years=maturity,
+            risk_greeks=risk_greeks,
         )
+        repriced_nodes[key] = result
+        return result
 
     maturity_years = float(config.time_to_maturity or contract.terms["T"])
     result = price_one(market, maturity_years)

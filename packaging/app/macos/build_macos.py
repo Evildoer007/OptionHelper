@@ -78,6 +78,27 @@ PYINSTALLER_VERSION = "6.21.0"
 FINDER_COPY_PATTERN = re.compile(r"^(?P<base>.+) (?P<copy>\d+)(?P<suffix>(?:\.[^.]+)*)$")
 
 
+def backend_runtime_modules() -> tuple[str, ...]:
+    """Return every App backend module that must survive freezing.
+
+    PyInstaller does not reliably follow the launcher's delayed import of the
+    App server into every relative submodule.  Deriving the hidden-import list
+    from the checked-in backend package keeps newly added runtime modules from
+    disappearing only in the packaged App.
+    """
+
+    modules: set[str] = set()
+    source_root = APP_ROOT / "backend"
+    for source in source_root.rglob("*.py"):
+        relative = source.relative_to(APP_ROOT).with_suffix("")
+        parts = relative.parts
+        if parts[-1] == "__init__":
+            parts = parts[:-1]
+        if parts:
+            modules.add(".".join(parts))
+    return tuple(sorted(modules))
+
+
 def file_hash(path: Path) -> str:
     digest = sha256()
     with path.open("rb") as handle:
@@ -417,6 +438,10 @@ def backend_build_command(workspace: Path) -> list[str]:
     # The packaged verifier enables the launcher's explicit compute fixture.
     # Keep its App-owned installer module in the frozen import graph as well.
     command.extend(("--hidden-import", "backend.verification_fixture"))
+    explicit_backend_modules = {"backend.app_server", "backend.verification_fixture"}
+    for module in backend_runtime_modules():
+        if module not in explicit_backend_modules:
+            command.extend(("--hidden-import", module))
     for module in NUMERIC_RUNTIME_MODULES:
         command.extend(("--hidden-import", module))
     for module in PDF_RUNTIME_MODULES:

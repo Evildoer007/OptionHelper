@@ -349,6 +349,109 @@ html[data-optionhelper-app-hosted="true"] :is(
   line-height: 1.62 !important;
 }
 
+/* Five-module information hierarchy: one heading, one rule and one field
+ * rhythm per semantic parameter group.  Module-owned IDs and form controls
+ * remain untouched; only their hosted presentation is normalized here. */
+html[data-optionhelper-app-hosted="true"] :is(
+  .inspector-group,
+  .setting-group,
+  .module-parameter-section
+) {
+  margin: 0 !important;
+  padding: 16px 0 !important;
+  border: 0 !important;
+  border-bottom: 1px solid var(--rule) !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+html[data-optionhelper-app-hosted="true"] :is(
+  .group-title,
+  .setting-group > h3,
+  .module-parameter-section > h3,
+  .parameter-subtitle
+) {
+  margin: 0 0 10px !important;
+  color: var(--color-ink-soft, var(--ink)) !important;
+  font: 650 12px/1.45 var(--font) !important;
+  letter-spacing: 0 !important;
+}
+
+html[data-optionhelper-app-hosted="true"] .parameter-subtitle {
+  margin-top: 14px !important;
+  padding-top: 14px;
+  border-top: 1px solid var(--rule);
+}
+
+html[data-optionhelper-app-hosted="true"] :is(.module-advanced, .library-advanced) {
+  margin: 0 !important;
+  padding: 14px 0 !important;
+  border: 0 !important;
+  border-bottom: 1px solid var(--rule) !important;
+  background: transparent !important;
+}
+
+html[data-optionhelper-app-hosted="true"] :is(.module-advanced, .library-advanced) > summary {
+  color: var(--color-ink-soft, var(--ink));
+  cursor: pointer;
+  font: 650 12px/1.45 var(--font);
+  list-style-position: outside;
+}
+
+html[data-optionhelper-app-hosted="true"] :is(.module-advanced, .library-advanced)[open] > summary {
+  margin-bottom: 12px;
+}
+
+html[data-optionhelper-app-hosted="true"] .formula {
+  white-space: nowrap;
+}
+
+html[data-optionhelper-app-hosted="true"] .formula :is(sub, sup) {
+  position: static;
+  font-size: .72em;
+  line-height: 0;
+}
+
+html[data-optionhelper-app-hosted="true"] :is(.parameter-field, .term-fields .field) > span:first-child {
+  display: inline-flex;
+  align-items: baseline;
+  line-height: 1.45;
+}
+
+html[data-optionhelper-app-hosted="true"] .field-symbol {
+  display: inline-flex;
+  align-items: baseline;
+  margin-left: 5px;
+  color: var(--red);
+  font-family: var(--font);
+  font-size: 1em;
+  font-weight: 650;
+  line-height: 1;
+  vertical-align: baseline;
+}
+
+html[data-optionhelper-app-hosted="true"] .field-symbol .formula {
+  color: inherit;
+  font-family: inherit;
+  font-size: inherit;
+  line-height: inherit;
+}
+
+html[data-optionhelper-app-hosted="true"] .field-symbol :is(sub, sup) {
+  position: relative;
+  font-size: .72em;
+  line-height: 1;
+  vertical-align: baseline;
+}
+
+html[data-optionhelper-app-hosted="true"] .field-symbol sub {
+  top: .2em;
+}
+
+html[data-optionhelper-app-hosted="true"] .field-symbol sup {
+  top: -.35em;
+}
+
 html[data-optionhelper-app-hosted="true"] :is(
   .button,
   button.button,
@@ -372,7 +475,7 @@ html[data-optionhelper-app-hosted="true"] :is(.button, .file-button):hover:not(:
 html[data-optionhelper-app-hosted="true"] .button-primary {
   border-color: var(--red) !important;
   background: var(--red) !important;
-  color: #fff !important;
+  color: var(--color-on-brand, #fff) !important;
 }
 
 html[data-optionhelper-app-hosted="true"] .button-primary:hover:not(:disabled) {

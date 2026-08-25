@@ -847,27 +847,38 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
   }
 }
 
-/* One persistent workspace: Chat recedes while Desk enters the same canvas. */
+/* One persistent workspace with exclusive painting. The outgoing surface is
+   hidden before the incoming surface moves into place, so WebKit never blends
+   two full-page layers during a mode switch. */
 .workspace-shell[data-workspace-shell] .chat-surface,
 .workspace-shell[data-workspace-shell] .desk-surface {
-  will-change: opacity, transform;
+  will-change: transform;
 }
 
 .workspace-shell[data-workspace-shell][data-mode="desk"] .chat-surface {
-  opacity: 0;
-  transform: translateY(-8px) scale(.996);
+  visibility: hidden;
+  opacity: 1;
+  transform: translateY(-6px) scale(.998);
+  transition: none;
 }
 
 .workspace-shell[data-workspace-shell][data-mode="desk"] .desk-surface {
+  visibility: visible;
   opacity: 1;
   transform: translateY(0) scale(1);
 }
 
-/* Chat is already mounted beneath Desk.  Let it take the canvas immediately
-   so a fading Desk border cannot briefly draw across the conversation. */
-.workspace-shell[data-workspace-shell][data-switching="true"][data-mode="chat"] .desk-surface {
+/* The reverse direction follows the same exclusive rule. */
+.workspace-shell[data-workspace-shell][data-mode="chat"] .chat-surface {
+  visibility: visible;
+  opacity: 1;
+  transform: translateY(0) scale(1);
+}
+
+.workspace-shell[data-workspace-shell][data-mode="chat"] .desk-surface {
   visibility: hidden;
-  opacity: 0;
+  opacity: 1;
+  transform: translateY(8px) scale(.998);
   transition: none;
 }
 
@@ -878,6 +889,16 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
 .workspace-shell[data-workspace-shell][data-switching="true"][data-mode="chat"] .assistant-region {
   border-top-color: transparent;
   transition: background-color .42s ease;
+}
+
+/* The shared composer changes from an in-flow Chat row to a fixed Desk
+   affordance. Keep that one region out of the compositor during the hand-off
+   so WebKit cannot expose a transient panel or a falling composer. */
+.workspace-shell[data-workspace-shell][data-assistant-switching="true"] .assistant-region {
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
+  transition: none !important;
 }
 
 .workspace-shell[data-workspace-shell][data-switching="false"] .chat-surface,
@@ -1238,80 +1259,56 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
   to { background-position: -120% 0; }
 }
 
-/* The thinking state only appears while an actual model request is open. */
-.workspace-shell.workspace-shell--desk[data-workspace-shell] .message--thinking {
-  width: min(var(--conversation-column-max), calc(100% - var(--conversation-column-reserve)));
-  min-height: 28px;
-  align-items: center;
-  gap: 8px;
+.workspace-shell.workspace-shell--desk[data-workspace-shell] .message--process {
+  max-width: min(680px, 92%);
+  margin: 2px 0 4px;
+}
+
+.message--process details {
+  border: 1px solid color-mix(in srgb, var(--line) 82%, var(--accent) 18%);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface) 94%, var(--accent) 6%);
+  padding: 10px 12px;
+}
+
+.message--process summary {
+  cursor: pointer;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 20px;
+}
+
+.message--process summary .thinking-orbs {
+  display: inline-block;
+  width: 20px;
+  height: 20px;
+  margin: 0 7px 0 2px;
+  vertical-align: -5px;
+}
+
+.process-state {
+  display: inline-block;
+  margin: 7px 0 0 20px;
   color: var(--muted);
   font-size: 12px;
-  animation: thinking-indicator-in .16s cubic-bezier(.22, 1, .36, 1) both;
 }
 
-.thinking-orbs {
-  position: relative;
-  display: inline-flex;
-  width: 27px;
-  height: 17px;
-  align-items: center;
-  justify-content: center;
-}
-
-.thinking-orbs::before,
-.thinking-orbs::after {
-  position: absolute;
-  width: 15px;
-  height: 15px;
-  border: 1px solid rgba(137, 13, 38, .20);
-  border-radius: 50%;
-  content: "";
-}
-
-.thinking-orbs::before { transform: rotate(28deg) scaleX(.58); }
-.thinking-orbs::after { transform: rotate(-28deg) scaleX(.58); }
-
-.thinking-orbs i {
-  position: absolute;
-  width: 3px;
-  height: 3px;
-  border-radius: 50%;
-  background: var(--red);
-  animation: thinking-orbit .95s cubic-bezier(.42, 0, .58, 1) infinite;
-}
-
-.thinking-orbs i:nth-child(1) { animation-delay: 0s; }
-.thinking-orbs i:nth-child(2) { animation-delay: -.32s; }
-.thinking-orbs i:nth-child(3) { animation-delay: -.64s; }
-
-.thinking-copy {
-  min-width: 76px;
+.process-events {
+  display: grid;
+  gap: 6px;
+  margin: 9px 0 0;
+  padding: 0 0 0 20px;
   color: var(--muted);
-  font-variant-numeric: tabular-nums;
+  font-size: 12.5px;
+  line-height: 1.55;
 }
 
-.thinking-copy.is-changing {
-  animation: thinking-copy-change .22s cubic-bezier(.16, 1, .3, 1) both;
-}
+.process-events li[data-status="failed"],
+.process-events li[data-status="cancelled"] { color: var(--danger); }
 
-.workspace-shell.workspace-shell--desk[data-mode="desk"] .assistant-panel__transcript .message--thinking {
-  width: 100%;
-}
-
-@keyframes thinking-orbit {
-  0%, 100% { opacity: .42; transform: translateX(-8px) scale(.82); }
-  50% { opacity: 1; transform: translateX(8px) scale(1); }
-}
-
-@keyframes thinking-indicator-in {
-  from { opacity: 0; transform: translateY(3px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-
-@keyframes thinking-copy-change {
-  from { opacity: .38; transform: translateY(2px); }
-  to { opacity: 1; transform: translateY(0); }
-}
+.message--process[data-terminal="true"] details { background: var(--surface); }
+.message--process[data-terminal="true"] .thinking-orbs { opacity: .68; }
 
 /* A successful send resolves to a drawn check for one short beat, then returns
    to the normal arrow. It never persists as a separate application state. */
@@ -1347,16 +1344,12 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
 @media (prefers-reduced-motion: reduce) {
   .workspace-shell.workspace-shell--desk[data-workspace-shell] .desk-module-tabs__indicator,
   .workspace-shell.workspace-shell--desk[data-workspace-shell] .composer form.is-generating,
-  .workspace-shell.workspace-shell--desk[data-workspace-shell] .thinking-orbs i,
-  .workspace-shell.workspace-shell--desk[data-workspace-shell] .thinking-copy,
-  .workspace-shell.workspace-shell--desk[data-workspace-shell] .message--thinking,
   .workspace-shell.workspace-shell--desk[data-workspace-shell] .send-control.is-sent .send-success {
     animation: none !important;
     transition: none !important;
   }
 
   .workspace-shell.workspace-shell--desk[data-workspace-shell] .composer form.is-generating { background-image: none; }
-  .thinking-orbs i { opacity: .72; transform: none; }
 }
 
 /* Keep the OptionHelper palette while using a denser, calmer desktop rhythm:
@@ -2242,7 +2235,54 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
 .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .workbench-head { border-bottom-color: transparent; }
 .workspace-shell.workspace-shell--desk[data-workspace-shell] .workbench-head h1 { font-size: 15px; }
 .workspace-shell.workspace-shell--desk[data-workspace-shell] .work-area { grid-template-rows: 54px minmax(0, 1fr) var(--assistant-height); }
-.workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .work-area { grid-template-rows: 54px minmax(0, 1fr) 150px; }
+
+@media (min-width: 701px) {
+  .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .work-area {
+    --chat-composer-clearance: 148px;
+    position: relative;
+    grid-template-rows: 54px minmax(0, 1fr);
+  }
+
+  .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .conversation-scroll-stage {
+    grid-row: 2;
+  }
+
+  .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .chat-surface:not(.chat-surface--empty) .message-stream {
+    padding-bottom: var(--chat-composer-clearance);
+    scroll-padding-bottom: var(--chat-composer-clearance);
+  }
+
+  .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .assistant-region {
+    position: absolute;
+    z-index: 12;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    grid-row: auto;
+    min-height: 0;
+    padding: 0 24px 16px;
+    border: 0;
+    background: transparent;
+    box-shadow: none;
+    pointer-events: none;
+  }
+
+  .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .assistant-panel,
+  .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .assistant-panel > .desk-command-dock__body,
+  .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .assistant-region .composer {
+    border: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .assistant-panel > .desk-command-dock__body {
+    pointer-events: none;
+  }
+
+  .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .assistant-region .composer {
+    pointer-events: auto;
+  }
+}
 
 .workspace-shell.workspace-shell--desk[data-workspace-shell] .conversation-start {
   width: min(760px, calc(100% - 42px));
@@ -2279,7 +2319,6 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
   padding-left: max(22px, calc((100% - 820px) / 2));
 }
 
-.workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .assistant-region { padding: 10px 24px 16px; }
 .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .composer,
 .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .assistant-region .composer { width: min(820px, calc(100% - 28px)); }
 
@@ -2749,6 +2788,15 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
   flex: 0 0 18px;
 }
 
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-account-menu__item > svg {
+  stroke-width: 1.8;
+}
+
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-account-menu__item--logout > svg {
+  transform: scale(1.16);
+  transform-origin: center;
+}
+
 .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .task-item__chat svg {
   width: 18px;
   height: 18px;
@@ -2758,15 +2806,15 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
 .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-footer,
 .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .rail-footer,
 .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="desk"] .rail-footer {
-  padding-top: 8px;
+  padding-top: 6px;
   border-top: 1px solid #deddda;
 }
 
 .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-account-trigger {
-  min-height: 36px;
-  gap: 8px;
-  padding: 3px 7px;
-  border-radius: 9px;
+  min-height: 28px;
+  gap: 6px;
+  padding: 1px 7px;
+  border-radius: 7px;
   background: transparent !important;
 }
 
@@ -2776,27 +2824,27 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
 }
 
 .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-account-trigger__mark {
-  width: 26px;
-  height: 26px;
-  flex-basis: 26px;
-  font-size: 10px;
+  width: 22px;
+  height: 22px;
+  flex-basis: 22px;
+  font-size: 9px;
 }
 
-.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-account-trigger__name { font-size: 13px; }
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-account-trigger__name { font-size: 12.5px; }
 
 @media (min-width: 701px) {
   .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-rail-collapsed="true"] .rail-account-trigger {
-    width: 36px;
-    min-width: 36px;
-    max-width: 36px;
-    height: 36px;
-    min-height: 36px;
+    width: 32px;
+    min-width: 32px;
+    max-width: 32px;
+    height: 32px;
+    min-height: 32px;
     padding: 0;
   }
 
   .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-rail-collapsed="true"] .rail-account-trigger__mark {
-    width: 26px;
-    height: 26px;
-    flex-basis: 26px;
+    width: 22px;
+    height: 22px;
+    flex-basis: 22px;
   }
 }

@@ -649,9 +649,12 @@ def canonical_greeks(rows: list[Any]) -> list[dict[str, Any]]:
         label = _GREEK_KEY.get(text(row.get("label")).casefold())
         if label and label not in source:
             source[label] = row
+    if not source:
+        return []
     ordered: list[dict[str, Any]] = []
     for label in GREEK_ORDER:
         if label not in source:
+            ordered.append({"label": label, "value": "—", "status": "not_applicable"})
             continue
         row = dict(source[label])
         row["label"] = label
@@ -752,7 +755,20 @@ def render_payoff(data: dict[str, Any], input_dir: Path) -> str:
     module = as_dict(data.get("payoff"))
     if text(module.get("status") or "pending").lower() != "ready":
         return status_box(module)
-    blocks = [embedded_svg(module.get("report_svg_path"), input_dir)]
+    figures = []
+    if text(module.get("report_svg_path")):
+        figures.append({"label": "收益结构", "path": module.get("report_svg_path")})
+    figures.extend(as_dict(item) for item in as_list(module.get("report_svg_paths")))
+    rendered_figures = []
+    for figure in figures:
+        image = embedded_svg(figure.get("path"), input_dir)
+        if not image:
+            continue
+        label = text(figure.get("label"))
+        rendered_figures.append(
+            f'<div class="comparison-payoff-figure">{f"<h3>{esc(label)}</h3>" if label else ""}{image}</div>'
+        )
+    blocks = [f'<div class="comparison-payoff-grid">{"".join(rendered_figures)}</div>' if rendered_figures else ""]
     formula_html = formula_block(module)
     if formula_html:
         blocks.append(formula_html)
@@ -763,6 +779,7 @@ def render_payoff(data: dict[str, Any], input_dir: Path) -> str:
             scenarios.append(f'<div class="scenario"><h3>{esc(row.get("title"))}</h3><p>{rich_text(row.get("rule"))}</p></div>')
     if scenarios:
         blocks.append('<div class="scenario-grid">' + "".join(scenarios) + "</div>")
+    blocks.append(detail_tables(as_list(module.get("detail_tables"))))
     return "".join(block for block in blocks if block)
 
 
@@ -805,6 +822,7 @@ def render_pricing(data: dict[str, Any], charts: list[dict[str, Any]]) -> str:
             )
         )
     blocks.append(add_charts(charts, "pricing", as_list(module.get("charts"))))
+    blocks.append(detail_tables(as_list(module.get("detail_tables"))))
     assumptions = item_list(as_list(module.get("assumptions")))
     if assumptions:
         blocks.append(f"<h3>估值假设</h3>{assumptions}")
@@ -871,7 +889,7 @@ def render_parameters(data: dict[str, Any]) -> str:
 
     rows = [*unique_rows("common_input"), *unique_rows("payoff_input")]
     visible = parameter_table(rows, "合同参数")
-    return visible
+    return visible + detail_tables(as_list(module.get("detail_tables")))
 
 
 def render_risk(data: dict[str, Any]) -> str:
@@ -973,7 +991,6 @@ def render_html(
     design_system_id: str = DESIGN_SYSTEM_ID,
     config: DesignerConfig | None = None,
     section_definition: Sequence[tuple[str, str, str]] | None = None,
-    custom_content: dict[str, Sequence[Mapping[str, Any]]] | None = None,
     appended_content: dict[str, Sequence[Mapping[str, Any]]] | None = None,
     template_shell: str = "report.html",
 ) -> str:
@@ -984,8 +1001,8 @@ def render_html(
         echarts_path = config.relative_echarts_path(input_dir)
     meta = as_dict(payload.get("meta"))
     # The standard seven chapters come from the selected template. A validated
-    # one-off presentation patch may adjust this delivery's effective sections
-    # without mutating the template or Reporter facts.
+    # one-off presentation patch may only reorder known sections or append
+    # Designer-owned reader notices. It cannot add or remove fact blocks.
     title = text(meta.get("title")) or "单个期权结构推荐报告"
     report_theme = load_report_theme(config)
     design_system = build_design_system()
@@ -1002,11 +1019,10 @@ def render_html(
     section_definition = section_definition or tuple(
         (key, SECTION_TITLES[key], key) for key in SECTION_ORDER
     )
-    custom_content = custom_content or {}
     appended_content = appended_content or {}
     sections = []
     for section_key, section_title, key in section_definition:
-        body = render_presentation_content(custom_content.get(section_key, ())) if key.startswith("custom:") else renderers[key]()
+        body = renderers[key]()
         appended = render_presentation_content(appended_content.get(section_key, ()))
         body += appended
         if not body:

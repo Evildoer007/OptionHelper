@@ -697,8 +697,16 @@ def _svg_flowable(markup: str, *, content_width: float, latin_font: str, cjk_fon
         offset_x = offset_y = 0.0
     if source_width <= 0 or source_height <= 0:
         raise PdfRuntimeError("收益图SVG缺少有效画布尺寸。")
-    width = content_width
-    height = min(width * source_height / source_width, 310.0)
+    maximum_height = 310.0
+
+    def fitted_size(available_width: float) -> tuple[float, float]:
+        """Fit the SVG without changing its aspect ratio."""
+
+        width_limit = max(1.0, min(content_width, available_width))
+        scale = min(width_limit / source_width, maximum_height / source_height)
+        return source_width * scale, source_height * scale
+
+    width, height = fitted_size(content_width)
     styles = _svg_styles(root)
 
     class _PayoffSvg(Flowable):
@@ -708,9 +716,10 @@ def _svg_flowable(markup: str, *, content_width: float, latin_font: str, cjk_fon
             self.height = height
 
         def wrap(self, available_width: float, available_height: float) -> tuple[float, float]:
-            if available_width < self.width:
-                self.width = available_width
-                self.height = min(self.width * source_height / source_width, 310.0)
+            # Ignore the current page's remaining height.  A too-tall figure
+            # should move to the next page rather than shrink into the leftover
+            # strip at the bottom of the current one.
+            self.width, self.height = fitted_size(available_width)
             return self.width, self.height
 
         def draw(self) -> None:
@@ -993,10 +1002,33 @@ def render_pdf(html_content: str, *, chart_specs: Mapping[str, Mapping[str, Any]
     from reportlab.lib.enums import TA_LEFT
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.styles import ParagraphStyle
-    from reportlab.platypus import BaseDocTemplate, CondPageBreak, HRFlowable, KeepTogether, PageTemplate, Spacer, Frame
+    from reportlab.platypus import (
+        BaseDocTemplate,
+        CondPageBreak,
+        Frame,
+        HRFlowable,
+        KeepTogether,
+        PageTemplate,
+        Spacer,
+        Table,
+        TableStyle,
+    )
 
     _pdfmetrics, latin_font, cjk_font = _register_fonts()
-    blocks = _extract_blocks(html_content)
+    comparison_candidates = re.findall(
+        r'<article\b[^>]*class=["\'][^"\']*\bcomparison-candidate\b[^"\']*["\'][^>]*>.*?</article>',
+        html_content,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    document_html = html_content
+    if comparison_candidates:
+        document_html = re.sub(
+            r'<article\b[^>]*class=["\'][^"\']*\bcomparison-candidate\b[^"\']*["\'][^>]*>.*?</article>',
+            "",
+            html_content,
+            flags=re.DOTALL | re.IGNORECASE,
+        )
+    blocks = _extract_blocks(document_html)
     if not blocks:
         raise PdfRuntimeError("PDF输入未包含可交付的公开内容。")
 
@@ -1039,54 +1071,75 @@ def render_pdf(html_content: str, *, chart_specs: Mapping[str, Mapping[str, Any]
                                  textColor=colors.HexColor(TOKEN_COLORS["ink_soft"])),
     }
 
-    flowables: list[object] = []
-    for kind, level, raw in blocks:
-        if kind == "heading":
-            if level == 1:
-                flowables.append(_paragraph(str(raw), styles["title"], latin_font=latin_font, cjk_font=cjk_font))
-                flowables.append(HRFlowable(width="100%", thickness=1.25, color=colors.HexColor(TOKEN_COLORS["brand_red"]), spaceAfter=4))
-            elif level == 2:
-                # Do not strand a report chapter title at the bottom of a
-                # page. Reserve room for its rule and first line of evidence;
-                # ReportLab then moves the complete opening to the next A4
-                # page when the current page cannot hold that minimum.
-                if not compact:
-                    flowables.append(CondPageBreak(72))
-                heading = _paragraph(str(raw), styles["section"], latin_font=latin_font, cjk_font=cjk_font)
-                rule = HRFlowable(width="100%", thickness=.45, color=colors.HexColor(TOKEN_COLORS["rule_strong"]), spaceAfter=5)
-                flowables.append(KeepTogether([heading, rule]) if not compact else heading)
-                if compact:
-                    flowables.append(rule)
-            else:
-                flowables.append(_paragraph(str(raw), styles["subsection"], latin_font=latin_font, cjk_font=cjk_font))
-            continue
-        if kind == "metric_grid":
-            rows = raw if isinstance(raw, list) else []
-            flowables.append(_metric_grid_flowable(rows, content_width=content_width, styles=styles, latin_font=latin_font, cjk_font=cjk_font))
-            flowables.append(Spacer(1, 4))
-            continue
-        if kind == "table":
-            rows = raw if isinstance(raw, list) else []
-            if rows:
-                flowables.append(_table_flowable(rows, content_width=content_width, styles=styles, latin_font=latin_font, cjk_font=cjk_font, compact=compact))
-                flowables.append(Spacer(1, 5))
-            continue
-        if kind == "svg":
-            flowables.append(_svg_flowable(str(raw), content_width=content_width, latin_font=latin_font, cjk_font=cjk_font))
-            flowables.append(Spacer(1, 5))
-            continue
-        if kind == "chart":
-            spec = (chart_specs or {}).get(str(raw))
-            if spec is None:
-                raise PdfRuntimeError(f"报告图表{raw}缺少受控静态图规格。")
-            flowables.append(_chart_flowable(spec, content_width=content_width, latin_font=latin_font, cjk_font=cjk_font))
-            flowables.append(Spacer(1, 4))
-            continue
-        if kind == "item":
-            flowables.append(_paragraph("• " + str(raw), styles["item"], latin_font=latin_font, cjk_font=cjk_font))
-            continue
-        style = styles["caption"] if kind == "caption" else styles["body"]
-        flowables.append(_paragraph(str(raw), style, latin_font=latin_font, cjk_font=cjk_font))
+    def block_flowables(source_blocks: list[PdfBlock], *, available_width: float) -> list[object]:
+        result: list[object] = []
+        for kind, level, raw in source_blocks:
+            if kind == "heading":
+                if level == 1:
+                    result.append(_paragraph(str(raw), styles["title"], latin_font=latin_font, cjk_font=cjk_font))
+                    result.append(HRFlowable(width="100%", thickness=1.25, color=colors.HexColor(TOKEN_COLORS["brand_red"]), spaceAfter=4))
+                elif level == 2:
+                    if not compact:
+                        result.append(CondPageBreak(72))
+                    heading = _paragraph(str(raw), styles["section"], latin_font=latin_font, cjk_font=cjk_font)
+                    rule = HRFlowable(width="100%", thickness=.45, color=colors.HexColor(TOKEN_COLORS["rule_strong"]), spaceAfter=5)
+                    result.append(KeepTogether([heading, rule]) if not compact else heading)
+                    if compact:
+                        result.append(rule)
+                else:
+                    result.append(_paragraph(str(raw), styles["subsection"], latin_font=latin_font, cjk_font=cjk_font))
+                continue
+            if kind == "metric_grid":
+                rows = raw if isinstance(raw, list) else []
+                result.append(_metric_grid_flowable(rows, content_width=available_width, styles=styles, latin_font=latin_font, cjk_font=cjk_font))
+                result.append(Spacer(1, 4))
+                continue
+            if kind == "table":
+                rows = raw if isinstance(raw, list) else []
+                if rows:
+                    result.append(_table_flowable(rows, content_width=available_width, styles=styles, latin_font=latin_font, cjk_font=cjk_font, compact=compact))
+                    result.append(Spacer(1, 5))
+                continue
+            if kind == "svg":
+                result.append(_svg_flowable(str(raw), content_width=available_width, latin_font=latin_font, cjk_font=cjk_font))
+                result.append(Spacer(1, 5))
+                continue
+            if kind == "chart":
+                spec = (chart_specs or {}).get(str(raw))
+                if spec is None:
+                    raise PdfRuntimeError(f"报告图表{raw}缺少受控静态图规格。")
+                result.append(_chart_flowable(spec, content_width=available_width, latin_font=latin_font, cjk_font=cjk_font))
+                result.append(Spacer(1, 4))
+                continue
+            if kind == "item":
+                result.append(_paragraph("• " + str(raw), styles["item"], latin_font=latin_font, cjk_font=cjk_font))
+                continue
+            style = styles["caption"] if kind == "caption" else styles["body"]
+            result.append(_paragraph(str(raw), style, latin_font=latin_font, cjk_font=cjk_font))
+        return result
+
+    flowables = block_flowables(blocks, available_width=content_width)
+    if comparison_candidates:
+        columns = 2 if len(comparison_candidates) == 2 else 3
+        cell_width = content_width / columns
+        cells = [
+            block_flowables(_extract_blocks(fragment), available_width=cell_width - 12)
+            for fragment in comparison_candidates
+        ]
+        rows = [cells[index:index + columns] for index in range(0, len(cells), columns)]
+        if len(rows[-1]) < columns:
+            rows[-1].extend([[] for _ in range(columns - len(rows[-1]))])
+        comparison_grid = Table(rows, colWidths=[cell_width] * columns, hAlign="LEFT", splitByRow=1)
+        comparison_grid.setStyle(TableStyle([
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("BOX", (0, 0), (-1, -1), .55, colors.HexColor(TOKEN_COLORS["rule_strong"])),
+            ("INNERGRID", (0, 0), (-1, -1), .4, colors.HexColor(TOKEN_COLORS["rule"])),
+            ("TOPPADDING", (0, 0), (-1, -1), 7),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+            ("LEFTPADDING", (0, 0), (-1, -1), 6),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+        ]))
+        flowables.append(comparison_grid)
 
     page_height = _card_page_height(flowables, content_width=content_width, top=top, bottom=bottom) if compact else report_page_height
     buffer = BytesIO()

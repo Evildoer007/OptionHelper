@@ -312,15 +312,16 @@
     [self.webView evaluateJavaScript:@"document.querySelector('[data-report-toggle]')?.click()" completionHandler:nil];
 }
 
-- (void)webView:(WKWebView *)webView didFinishNavigation:(WKNavigation *)navigation {
-    __weak typeof(self) weakSelf = self;
-    [webView evaluateJavaScript:@"Boolean(document.querySelector('[data-rail-collapse-toggle]'))" completionHandler:^(id value, NSError *error) {
-        weakSelf.railToggle.hidden = ![value isKindOfClass:NSNumber.class] || ![(NSNumber *)value boolValue];
-    }];
-    [webView evaluateJavaScript:@"Boolean(document.querySelector('[data-report-toggle]'))" completionHandler:^(id value, NSError *error) {
-        weakSelf.reportToggle.hidden = ![value isKindOfClass:NSNumber.class] || ![(NSNumber *)value boolValue];
-    }];
+- (void)syncWorkspaceTitlebarControlsForURL:(NSURL *)url {
+    NSString *route = [[url.path stringByTrimmingCharactersInSet:[NSCharacterSet characterSetWithCharactersInString:@"/"]] lowercaseString];
+    BOOL showsWorkspaceControls = [route isEqualToString:@"optchat"] || [route isEqualToString:@"optdesk"];
+    self.railToggle.hidden = !showsWorkspaceControls;
+    self.reportToggle.hidden = !showsWorkspaceControls;
     [self layoutTitlebarControls];
+}
+
+- (void)webView:(WKWebView *)webView didFinishNavigation:(WKNavigation *)navigation {
+    [self syncWorkspaceTitlebarControlsForURL:webView.URL];
 }
 
 - (void)windowDidResize:(NSNotification *)notification {

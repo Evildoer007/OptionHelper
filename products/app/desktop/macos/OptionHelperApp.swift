@@ -297,14 +297,18 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         webView?.evaluateJavaScript("document.querySelector('[data-report-toggle]')?.click()")
     }
 
-    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        webView.evaluateJavaScript("Boolean(document.querySelector('[data-rail-collapse-toggle]'))") { [weak self] value, _ in
-            self?.railToggle?.isHidden = (value as? Bool) != true
-        }
-        webView.evaluateJavaScript("Boolean(document.querySelector('[data-report-toggle]'))") { [weak self] value, _ in
-            self?.reportToggle?.isHidden = (value as? Bool) != true
-        }
+    private func syncWorkspaceTitlebarControls(for url: URL?) {
+        let route = url?.path
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            .lowercased()
+        let showsWorkspaceControls = route == "optchat" || route == "optdesk"
+        railToggle?.isHidden = !showsWorkspaceControls
+        reportToggle?.isHidden = !showsWorkspaceControls
         layoutTitlebarControls()
+    }
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        syncWorkspaceTitlebarControls(for: webView.url)
     }
 
     func windowDidResize(_ notification: Notification) {

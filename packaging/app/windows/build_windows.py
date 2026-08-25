@@ -63,6 +63,21 @@ MINIMUM_BUILD_PYTHON = (3, 11)
 PYINSTALLER_VERSION = "6.21.0"
 
 
+def backend_runtime_modules() -> tuple[str, ...]:
+    """Return every App backend module that must survive freezing."""
+
+    modules: set[str] = set()
+    source_root = APP_ROOT / "backend"
+    for source in source_root.rglob("*.py"):
+        relative = source.relative_to(APP_ROOT).with_suffix("")
+        parts = relative.parts
+        if parts[-1] == "__init__":
+            parts = parts[:-1]
+        if parts:
+            modules.add(".".join(parts))
+    return tuple(sorted(modules))
+
+
 def _hash(path: Path) -> str:
     digest = sha256()
     with path.open("rb") as handle:
@@ -132,6 +147,8 @@ def backend_build_command(workspace: Path, icon: Path = WINDOWS_APP_ICON) -> lis
         "--paths", str(APP_ROOT), "--icon", str(icon),
         "--exclude-module", "runtime", "--exclude-module", "modules",
     ]
+    for module in backend_runtime_modules():
+        command.extend(("--hidden-import", module))
     for module in NUMERIC_RUNTIME_MODULES:
         command.extend(("--hidden-import", module))
     for module in PDF_RUNTIME_MODULES:

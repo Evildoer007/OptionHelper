@@ -487,7 +487,6 @@ a { color: inherit; }
 .payoff-figure img {
   display: block;
   width: min(100%, 158mm);
-  max-height: 96mm;
   height: auto;
   margin: auto;
   object-fit: contain;
@@ -799,6 +798,12 @@ body.report-profile-a4 .disclaimer { margin-top: 12px; padding-top: 10px; line-h
   .metric:last-child { border-bottom: 0; }
   .chart,
   body.report-profile-a4 .chart { height: 250px; }
+  .comparison-card-document { width: 100%; margin: 0; padding: 22px 16px 30px; box-shadow: none; }
+  .comparison-document-head { display: block; }
+  .comparison-document-head__meta { margin-top: 10px; }
+  .comparison-candidate-grid,
+  .comparison-report .alternative-grid,
+  .comparison-payoff-grid { grid-template-columns: 1fr; }
 }
 
 @page {
@@ -853,7 +858,7 @@ body.report-profile-a4 .disclaimer { margin-top: 12px; padding-top: 10px; line-h
   .module-state,
   .chart-figure,
   .payoff-figure { break-inside: avoid; }
-  .payoff-figure img { width: 100%; max-width: 170mm; max-height: 112mm; }
+  .payoff-figure img { width: 100%; max-width: 170mm; height: auto; }
   a { text-decoration: none; }
 }
 
@@ -866,6 +871,104 @@ body.report-profile-a4 .disclaimer { margin-top: 12px; padding-top: 10px; line-h
     animation-duration: 0ms !important;
     animation-iteration-count: 1 !important;
   }
+}
+
+/* MultiCard and MultiReport share the standard research-paper tokens. */
+.designer-multicard-page {
+  margin: 0;
+  background: var(--ground);
+}
+
+.comparison-card-document {
+  width: min(210mm, calc(100% - 32px));
+  margin: 24px auto;
+  padding: 12mm;
+  background: var(--paper);
+  border-top: 3px solid var(--red);
+  box-shadow: 0 18px 38px var(--color-paper-shadow);
+}
+
+.comparison-document-head {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 24px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--red);
+}
+
+.comparison-document-head__brand {
+  margin: 0 0 4px;
+  color: var(--blue);
+  font-size: var(--type-meta);
+  font-weight: 720;
+}
+
+.comparison-document-head h1 {
+  margin: 0;
+  color: var(--ink);
+  font-size: var(--type-report-title-a4);
+}
+
+.comparison-document-head__meta {
+  display: flex;
+  gap: 18px;
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--type-meta);
+}
+
+.comparison-document-head__meta div { min-width: 74px; }
+.comparison-document-head__meta dt { font-weight: 650; }
+.comparison-document-head__meta dd { margin: 3px 0 0; color: var(--ink); }
+
+.comparison-candidate-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.comparison-candidate-grid:has(> :nth-child(2):last-child) {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.comparison-candidate {
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid var(--rule-strong);
+  border-top: 3px solid var(--blue);
+  background: var(--surface);
+  overflow-wrap: anywhere;
+}
+
+.comparison-candidate[data-preferred="true"] { border-top-color: var(--red); }
+.comparison-candidate__eyebrow { display: flex; justify-content: space-between; gap: 8px; color: var(--blue); font-size: var(--type-meta); font-weight: 720; }
+.comparison-candidate__eyebrow strong { color: var(--red); }
+.comparison-candidate h2 { margin: 6px 0 0; font-size: var(--type-section); }
+.comparison-candidate h3 { margin: 12px 0 5px; color: var(--blue); font-size: var(--type-table); }
+.comparison-candidate__asset { margin: 3px 0 10px; color: var(--muted); font-size: var(--type-meta); }
+.comparison-candidate .table-wrap { overflow: visible; }
+.comparison-candidate table { min-width: 0; margin: 0; font-size: var(--type-meta); table-layout: fixed; }
+.comparison-candidate th, .comparison-candidate td { padding: 5px 4px; overflow-wrap: anywhere; }
+.comparison-candidate .plain-list, .comparison-candidate .risk-list { margin: 0; padding-left: 18px; font-size: var(--type-meta); }
+.comparison-candidate__risk { margin-top: 12px; padding-top: 8px; border-top: 1px solid var(--red); }
+.comparison-state { color: var(--gold); font-size: var(--type-meta); }
+
+.comparison-report-shell { grid-template-columns: minmax(0, 34mm) minmax(0, 210mm); }
+.comparison-report .alternative-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.comparison-report .alternative { min-width: 0; overflow-wrap: anywhere; }
+.comparison-payoff-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.comparison-payoff-figure { min-width: 0; }
+.comparison-payoff-figure h3 { margin-top: 0; }
+.comparison-payoff-figure .payoff-figure { margin: 0; }
+.comparison-payoff-figure img { width: 100%; height: auto; }
+
+@media print {
+  .comparison-card-document { width: 210mm; margin: 0; padding: 8mm; box-shadow: none; }
+  .comparison-candidate-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .comparison-candidate { break-inside: avoid; }
+  .comparison-payoff-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 /* Shared module-page and App shell contract.  These selectors are intentionally

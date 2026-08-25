@@ -19,8 +19,8 @@ from .config import DesignerConfig, DesignerConfigurationError
 TEMPLATE_SCHEMA = "optionhelper.designer-template"
 _TEMPLATE_ID = re.compile(r"[a-z][a-z0-9-]{0,63}\Z")
 _OUTPUT_BLOCKS = {
-    "report": frozenset({"conclusion", "recommendation", "parameters", "payoff", "pricing", "backtest", "risk"}),
-    "card": frozenset({"recommendation", "reason", "contract_highlights", "pricing", "backtest", "risk"}),
+    "report": frozenset({"conclusion", "recommendation", "parameters", "payoff", "pricing", "backtest", "risk", "comparison"}),
+    "card": frozenset({"recommendation", "reason", "contract_highlights", "pricing", "backtest", "risk", "comparison"}),
     "quote": frozenset({"reference_quote"}),
 }
 
@@ -81,7 +81,7 @@ def load_template_definition(config: DesignerConfig, template_id: str, output_ty
     if raw.get("output_type") != output_type:
         raise DesignerConfigurationError(f"模板{requested_id}不适用于{output_type}。")
     shell = _require_text(raw.get("shell"), "shell")
-    if shell not in {"card.html", "quote.html", "report.html"}:
+    if shell not in {"card.html", "multicard.html", "multireport.html", "quote.html", "report.html"}:
         raise DesignerConfigurationError(f"模板{requested_id}引用了不受支持的HTML壳。")
     raw_sections = raw.get("sections")
     if not isinstance(raw_sections, list) or not raw_sections:
