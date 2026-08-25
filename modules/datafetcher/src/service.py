@@ -11,6 +11,7 @@ from dataclasses import asdict, replace
 from datetime import datetime, timezone
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -67,6 +68,9 @@ class OfflineMiss(DataFetcherError):
 
 class CacheMiss(DataFetcherError):
     code = "cache_miss"
+
+
+CHART_SERIES_MAX_POINTS = 180
 
 
 def _now() -> str:
@@ -142,6 +146,53 @@ def _coverage(
     if calendar_evidence is not None and calendar_evidence.calendar_ref:
         coverage["calendar_ref"] = dict(calendar_evidence.calendar_ref)
     return coverage
+
+
+def _chart_series(
+    frame: pd.DataFrame,
+    request: DataRequest,
+    *,
+    max_points: int = CHART_SERIES_MAX_POINTS,
+) -> tuple[Mapping[str, Any], ...]:
+    """为页面生成完整请求区间的轻量行情走势，不替代正式数据资产。"""
+
+    if frame.empty or max_points < 2:
+        return ()
+    preferred_field = "close" if request.adjustment == "none" else "adj_close"
+    fallback_field = "adj_close" if preferred_field == "close" else "close"
+    series: list[Mapping[str, Any]] = []
+    for asset_id in request.asset_ids:
+        asset_frame = frame.loc[frame["asset_id"].astype(str).str.upper().eq(asset_id)].copy()
+        selected_frame: pd.DataFrame | None = None
+        field = ""
+        for candidate in (preferred_field, fallback_field):
+            if candidate not in asset_frame.columns:
+                continue
+            values = pd.to_numeric(asset_frame[candidate], errors="coerce")
+            candidate_frame = asset_frame.assign(**{candidate: values})
+            candidate_frame = candidate_frame.loc[values.notna(), ["date", candidate]].sort_values("date")
+            candidate_frame = candidate_frame.loc[
+                candidate_frame[candidate].map(lambda value: math.isfinite(float(value)) and float(value) > 0)
+            ]
+            if not candidate_frame.empty:
+                field = candidate
+                selected_frame = candidate_frame
+                break
+        if selected_frame is None:
+            continue
+        length = len(selected_frame)
+        if length > max_points:
+            indices = sorted({
+                round(index * (length - 1) / (max_points - 1))
+                for index in range(max_points)
+            })
+            selected_frame = selected_frame.iloc[indices]
+        points = tuple(
+            {"date": str(row["date"]), "value": float(row[field])}
+            for row in selected_frame.to_dict(orient="records")
+        )
+        series.append({"asset_id": asset_id, "field": field, "points": points})
+    return tuple(series)
 
 
 def _expected_trading_dates(
@@ -782,7 +833,14 @@ def fetch_data(
             {column: (None if pd.isna(value) else value) for column, value in row.items()}
             for row in frame.head(12).to_dict(orient="records")
         )
-        return DataFetchResult(ok=True, run=run, quality_report=quality, data_preview=preview)
+        chart_series = _chart_series(frame, validated)
+        return DataFetchResult(
+            ok=True,
+            run=run,
+            quality_report=quality,
+            data_preview=preview,
+            chart_series=chart_series,
+        )
     except Exception as error:
         fallback = raw_request or DataRequest(asset_ids=(), start_date="", end_date="", fields=())
         try:

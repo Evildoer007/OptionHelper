@@ -300,7 +300,7 @@ class ToolGateway:
                                 revision=int(candidate_variant["revision"]),
                             )
                         elif new_contract_variant:
-                            binding = self._contracts.activate_new_variant(
+                            binding = self._contracts.preview_new_variant(
                                 caller_context,
                                 str(verified_context.task_id),
                                 prepared,
@@ -381,6 +381,21 @@ class ToolGateway:
                             effective_context,
                             candidate_variant=candidate_variant,
                         )
+                        if (
+                            new_contract_variant
+                            and candidate_variant is None
+                            and result.get("ok") is True
+                            and result.get("status") in {"succeeded", "partial"}
+                        ):
+                            activated = self._contracts.activate_new_variant(
+                                caller_context,
+                                str(verified_context.task_id),
+                                prepared,
+                                catalog_version=str(self._registry.manifest["catalog_version"]),
+                                expected_contract_fingerprint=str(existing["contract_fingerprint"]),
+                            )
+                            if activated.get("contract_fingerprint") != effective_context.contract_fingerprint:
+                                raise ValidationError("计算结果与新激活方案的ResolvedContract不一致")
             except (UserActionError, UnavailableCapabilityError):
                 # This class is only created by an App-owned preflight.  Its
                 # message is a fixed, reviewed next step and contains no

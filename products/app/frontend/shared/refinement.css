@@ -1158,20 +1158,6 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
 .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="desk"] .rail-collapse-toggle { color: rgba(121, 132, 125, .58); }
 .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="desk"] .rail-collapse-toggle:hover { color: rgba(121, 132, 125, .9); }
 
-/* The chat composer owns a fixed track on desktop. Its padding and controls
-   therefore cannot be clipped by the work area's overflow boundary. */
-@media (min-width: 701px) {
-  .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .work-area {
-    grid-template-rows: 62px minmax(0, 1fr) 164px;
-  }
-
-  .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .assistant-region {
-    box-sizing: border-box;
-    min-block-size: 164px;
-    padding: 14px 24px 20px;
-  }
-}
-
 .workspace-shell.workspace-shell--desk[data-workspace-shell][data-navigating="settings"] .workspace-rail,
 .workspace-shell.workspace-shell--desk[data-workspace-shell][data-navigating="settings"] .work-area {
   opacity: .96;
@@ -1272,7 +1258,7 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
 }
 
 .message--process summary {
-  cursor: pointer;
+  cursor: default;
   color: var(--text);
   font-size: 13px;
   font-weight: 650;
@@ -1742,7 +1728,7 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
 }
 
 .workspace-shell.workspace-shell--desk[data-workspace-shell] .work-area { grid-template-rows: 56px minmax(0, 1fr) var(--assistant-height); }
-.workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .work-area { grid-template-rows: 56px minmax(0, 1fr) 164px; }
+.workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .work-area { grid-template-rows: 56px minmax(0, 1fr); }
 .workspace-shell.workspace-shell--desk[data-workspace-shell] .conversation__header { padding: 14px 22px 10px; }
 .workspace-shell.workspace-shell--desk[data-workspace-shell] .conversation__header h2 { font-size: 16px; }
 .workspace-shell.workspace-shell--desk[data-workspace-shell] .conversation__header p { font-size: 12px; }
@@ -2091,7 +2077,7 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
   margin-top: 10px !important;
   padding: 0 9px !important;
   border-radius: 9px !important;
-  color: #302b28 !important;
+  color: var(--ink) !important;
   font-weight: 590;
 }
 
@@ -2238,18 +2224,18 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
 
 @media (min-width: 701px) {
   .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .work-area {
-    --chat-composer-clearance: 148px;
+    --chat-composer-clearance: 0px;
     position: relative;
     grid-template-rows: 54px minmax(0, 1fr);
   }
 
   .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .conversation-scroll-stage {
     grid-row: 2;
+    margin-bottom: var(--chat-composer-clearance);
   }
 
-  .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .chat-surface:not(.chat-surface--empty) .message-stream {
-    padding-bottom: var(--chat-composer-clearance);
-    scroll-padding-bottom: var(--chat-composer-clearance);
+  .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .chat-surface--empty .conversation-start:not(.is-leaving) {
+    transform: none;
   }
 
   .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .assistant-region {
@@ -2289,7 +2275,7 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
   padding: 12px 0 18px;
 }
 
-.workspace-shell.workspace-shell--desk[data-workspace-shell] .conversation-start__mark { display: none; }
+.workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="desk"] .conversation-start__mark { display: none; }
 .workspace-shell.workspace-shell--desk[data-workspace-shell] .conversation-start h2 {
   margin-top: 0;
   font-size: clamp(24px, 2.6vw, 30px);
@@ -2404,7 +2390,10 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
 }
 
 /* Shared task actions are buttons in both OptChat and OptDesk. */
-.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .task-list__row .task-item { padding-right: 38px; }
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .task-list__row .task-item {
+  padding-right: 38px;
+  cursor: default;
+}
 .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .task-list__row:is(:hover, :focus-within, :has(.task-menu-trigger[aria-expanded="true"])) .task-item { background: var(--task-row-state-surface); color: var(--ink); }
 .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .task-menu-trigger {
   position: absolute;
@@ -2412,22 +2401,23 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
   right: 4px;
   z-index: 3;
   display: grid;
-  width: 26px;
-  height: 26px;
+  width: 21px;
+  height: 21px;
   padding: 0;
   border: 0;
   border-radius: 50%;
   background: transparent;
-  color: #514d49;
+  color: color-mix(in srgb, var(--ink) 72%, var(--muted));
   place-items: center;
   opacity: 0;
+  cursor: default;
   transform: translateY(-50%);
   transition: opacity 140ms ease, background-color 140ms ease, color 140ms ease;
 }
 .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .task-list__row:is(:hover, :focus-within) .task-menu-trigger,
 .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .task-menu-trigger[aria-expanded="true"] { opacity: 1; }
 .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .task-menu-trigger:is(:hover, :focus-visible, [aria-expanded="true"]) { background: var(--task-menu-state-surface); }
-.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .task-menu-trigger svg { display: block; width: 14px; height: 14px; }
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .task-menu-trigger svg { display: block; width: 11px; height: 11px; }
 body > .task-menu {
   position: fixed;
   top: auto;
@@ -2453,7 +2443,7 @@ body > .task-menu .task-menu__action {
   border-radius: 10px;
   background: transparent;
   color: var(--ink);
-  cursor: pointer;
+  cursor: default;
   font: inherit;
   font-size: 14px;
   line-height: 22px;
@@ -2820,13 +2810,14 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
 
 .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-account-trigger:hover,
 .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-account-trigger[aria-expanded="true"] {
-  background: #ebecea !important;
+  background: var(--task-row-state-surface) !important;
 }
 
 .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-account-trigger__mark {
   width: 22px;
   height: 22px;
   flex-basis: 22px;
+  background: transparent;
   font-size: 9px;
 }
 

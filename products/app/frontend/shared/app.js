@@ -397,7 +397,7 @@ function installLayoutControls(shell) {
   const railSplitter = shell.querySelector('[data-workspace-splitter="rail"]');
   const contextSplitter = shell.querySelector('[data-workspace-splitter="context"]');
   const limits = {
-    rail: { variable: "--rail-width", minimum: 246, maximum: 440, fallback: 300 },
+    rail: { variable: "--rail-width", minimum: 197, maximum: 440, fallback: 300 },
     report: { variable: "--report-width", minimum: 280, maximum: 480, fallback: 332 },
   };
   const readStored = (key, fallback) => {
@@ -711,7 +711,7 @@ export function renderMessages(target, messages, emptyText = "输入任务要求
   if (!target) return;
   target.closest(".chat-surface")?.classList.toggle("chat-surface--empty", !messages?.length);
   if (!messages?.length) {
-    target.innerHTML = `<section class="conversation-start"><div><h2>开始一项结构化产品研究</h2><p class="conversation-start__copy">描述研究目标，或选择一个研究起点。</p><div class="conversation-starters"><button class="conversation-starter" type="button" data-starter-prompt="请根据我的标的、期限和风险偏好筛选合适的期权结构。"><strong>筛选候选结构</strong><span>根据标的、期限与风险约束缩小范围。</span></button><button class="conversation-starter" type="button" data-starter-prompt="请帮助我设计期权产品条款。"><strong>设计产品条款</strong><span>整理执行价、障碍与票息等条款。</span></button><button class="conversation-starter" type="button" data-starter-prompt="请列出本次估值需要的市场与模型输入。"><strong>准备估值输入</strong><span>梳理现价、波动率与利率假设。</span></button><button class="conversation-starter" type="button" data-starter-prompt="请建立本次期权结构的历史回测方案。"><strong>建立回测方案</strong><span>定义样本区间、入场与观察规则。</span></button></div><p class="conversation-start__note">${escapeText(emptyText)}</p></div></section>`;
+    target.innerHTML = `<section class="conversation-start"><div><div class="conversation-start__mark" aria-hidden="true"><img src="/capability/assets/icons/optionhelper-app-icon-tile-light.svg" alt=""></div><h2>开始一项结构化产品研究</h2><p class="conversation-start__copy">描述研究目标，或选择一个研究起点。</p><div class="conversation-starters"><button class="conversation-starter" type="button" data-starter-prompt="请根据我的标的、期限和风险偏好筛选合适的期权结构。"><strong>筛选候选结构</strong><span>根据标的、期限与风险约束缩小范围。</span></button><button class="conversation-starter" type="button" data-starter-prompt="请帮助我设计期权产品条款。"><strong>设计产品条款</strong><span>整理执行价、障碍与票息等条款。</span></button><button class="conversation-starter" type="button" data-starter-prompt="请列出本次估值需要的市场与模型输入。"><strong>准备估值输入</strong><span>梳理现价、波动率与利率假设。</span></button><button class="conversation-starter" type="button" data-starter-prompt="请建立本次期权结构的历史回测方案。"><strong>建立回测方案</strong><span>定义样本区间、入场与观察规则。</span></button></div><p class="conversation-start__note">${escapeText(emptyText)}</p></div></section>`;
     return;
   }
   target.innerHTML = messages.map((entry) => `

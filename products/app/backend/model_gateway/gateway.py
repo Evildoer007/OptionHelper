@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -46,6 +46,26 @@ class ModelGateway:
             model, secret_ref, [{"role": "user", "content": message}], request_control=request_control,
         )
 
+    def complete_messages_for(
+        self,
+        identity: SessionIdentity,
+        task_id: str,
+        messages: Sequence[Mapping[str, str]],
+        *,
+        selection: ModelSelection | None = None,
+        request_control: ModelRequestControl | None = None,
+    ) -> str:
+        """Complete an Agent turn without flattening role or tool boundaries."""
+
+        del task_id
+        model, secret_ref = self._configured(identity, selection)
+        return self._providers.complete(
+            model,
+            secret_ref,
+            _validated_messages(messages),
+            request_control=request_control,
+        )
+
     def complete_with_metadata_for(
         self,
         identity: SessionIdentity,
@@ -61,6 +81,64 @@ class ModelGateway:
             model,
             secret_ref,
             [{"role": "user", "content": message}],
+            request_control=request_control,
+        )
+
+    def complete_messages_with_metadata_for(
+        self,
+        identity: SessionIdentity,
+        task_id: str,
+        messages: Sequence[Mapping[str, str]],
+        *,
+        selection: ModelSelection | None = None,
+        request_control: ModelRequestControl | None = None,
+    ) -> Mapping[str, Any]:
+        del task_id
+        model, secret_ref = self._configured(identity, selection)
+        return self._providers.complete_with_metadata(
+            model,
+            secret_ref,
+            _validated_messages(messages),
+            request_control=request_control,
+        )
+
+    def stream_for(
+        self,
+        identity: SessionIdentity,
+        task_id: str,
+        message: str,
+        *,
+        selection: ModelSelection | None = None,
+        request_control: ModelRequestControl | None = None,
+    ) -> Iterable[Mapping[str, Any]]:
+        """Stream one configured model response through the provider registry."""
+
+        del task_id
+        model, secret_ref = self._configured(identity, selection)
+        return self._providers.stream(
+            model,
+            secret_ref,
+            [{"role": "user", "content": message}],
+            request_control=request_control,
+        )
+
+    def stream_messages_for(
+        self,
+        identity: SessionIdentity,
+        task_id: str,
+        messages: Sequence[Mapping[str, str]],
+        *,
+        selection: ModelSelection | None = None,
+        request_control: ModelRequestControl | None = None,
+    ) -> Iterable[Mapping[str, Any]]:
+        """Stream an Agent turn while preserving assistant and tool messages."""
+
+        del task_id
+        model, secret_ref = self._configured(identity, selection)
+        return self._providers.stream(
+            model,
+            secret_ref,
+            _validated_messages(messages),
             request_control=request_control,
         )
 
@@ -182,3 +260,19 @@ class ModelGateway:
         if callable(self._settings):
             return self._settings(identity)
         return self._settings.load(identity.principal_id)
+
+
+def _validated_messages(messages: Sequence[Mapping[str, str]]) -> list[dict[str, str]]:
+    if isinstance(messages, (str, bytes)) or not messages:
+        raise ValueError("messages must be a non-empty sequence")
+    allowed_roles = {"system", "user", "assistant", "tool"}
+    result: list[dict[str, str]] = []
+    for item in messages:
+        if not isinstance(item, Mapping):
+            raise ValueError("each message must be an object")
+        role = item.get("role")
+        content = item.get("content")
+        if role not in allowed_roles or not isinstance(content, str) or not content:
+            raise ValueError("each message must contain a valid role and content")
+        result.append({"role": str(role), "content": content})
+    return result

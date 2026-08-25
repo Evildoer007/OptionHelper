@@ -210,10 +210,36 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         NSApp.activate(ignoringOtherApps: true)
         self.window = window
         self.webView = view
-        installTitlebarDragView(in: window)
-        installRailToggle(in: window)
-        installReportToggle(in: window)
+        ensureTitlebarControls(in: window)
+        DispatchQueue.main.async { [weak self, weak window] in
+            guard let self, let window else { return }
+            self.ensureTitlebarControls(in: window)
+            self.syncWorkspaceTitlebarControls(for: self.webView?.url)
+        }
         view.load(URLRequest(url: startupURL))
+    }
+
+    private func ensureTitlebarControls(in window: NSWindow) {
+        guard let closeButton = window.standardWindowButton(.closeButton),
+              let titlebar = closeButton.superview else { return }
+
+        if let titlebarDragView, titlebarDragView.superview !== titlebar {
+            titlebarDragView.removeFromSuperview()
+            self.titlebarDragView = nil
+        }
+        if let railToggle, railToggle.superview !== titlebar {
+            railToggle.removeFromSuperview()
+            self.railToggle = nil
+        }
+        if let reportToggle, reportToggle.superview !== titlebar {
+            reportToggle.removeFromSuperview()
+            self.reportToggle = nil
+        }
+
+        if titlebarDragView == nil { installTitlebarDragView(in: window) }
+        if railToggle == nil { installRailToggle(in: window) }
+        if reportToggle == nil { installReportToggle(in: window) }
+        layoutTitlebarControls()
     }
 
     private func installTitlebarDragView(in window: NSWindow) {
@@ -308,12 +334,20 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        if let window { ensureTitlebarControls(in: window) }
         syncWorkspaceTitlebarControls(for: webView.url)
     }
 
     func windowDidResize(_ notification: Notification) {
         guard notification.object as? NSWindow === window else { return }
-        layoutTitlebarControls()
+        if let window { ensureTitlebarControls(in: window) }
+        syncWorkspaceTitlebarControls(for: webView?.url)
+    }
+
+    func windowDidBecomeKey(_ notification: Notification) {
+        guard notification.object as? NSWindow === window else { return }
+        if let window { ensureTitlebarControls(in: window) }
+        syncWorkspaceTitlebarControls(for: webView?.url)
     }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {

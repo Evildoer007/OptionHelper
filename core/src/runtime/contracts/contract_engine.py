@@ -126,7 +126,13 @@ def _default_strike_anchor(
     return anchored, True
 
 
-def _schedule_snapshot(terms: Mapping[str, Any], trading_dates: Sequence[Any] | None = None) -> dict[str, Any]:
+def _schedule_snapshot(
+    terms: Mapping[str, Any],
+    trading_dates: Sequence[Any] | None = None,
+    *,
+    contract_start_date: Any = None,
+    contract_end_date: Any = None,
+) -> dict[str, Any]:
     """冻结合同登记的观察选择器。
 
     含观察条款的正式合同必须在Host已验证的交易日历上解析，不能只冻结selector。
@@ -139,6 +145,12 @@ def _schedule_snapshot(terms: Mapping[str, Any], trading_dates: Sequence[Any] | 
     dates = pd.to_datetime(list(trading_dates), errors="coerce")
     if not len(dates) or dates.isna().any() or not dates.is_monotonic_increasing or dates.has_duplicates:
         raise ContractResolutionError("合同交易日历须为非空、严格递增的有效日期")
+    dates = _contract_calendar_window(
+        terms,
+        dates,
+        contract_start_date=contract_start_date,
+        contract_end_date=contract_end_date,
+    )
     times = np.arange(len(dates), dtype=float)
     snapshot = {
         key: {
@@ -151,6 +163,39 @@ def _schedule_snapshot(terms: Mapping[str, Any], trading_dates: Sequence[Any] | 
     if any(not value["dates"] for value in snapshot.values()):
         raise ContractResolutionError("Host验证交易日历未解析出全部合同观察日")
     return snapshot
+
+
+def _contract_calendar_window(
+    terms: Mapping[str, Any],
+    dates: pd.DatetimeIndex,
+    *,
+    contract_start_date: Any,
+    contract_end_date: Any,
+) -> pd.DatetimeIndex:
+    """Limit an authenticated exchange calendar to the contract's lifespan."""
+
+    if contract_start_date in {None, ""}:
+        return dates
+    start = pd.to_datetime(contract_start_date, errors="coerce")
+    if pd.isna(start):
+        raise ContractResolutionError("identity.contract_start_date不是有效日期")
+    if contract_end_date not in {None, ""}:
+        end = pd.to_datetime(contract_end_date, errors="coerce")
+        if pd.isna(end):
+            raise ContractResolutionError("identity.contract_end_date不是有效日期")
+    else:
+        tenor = terms.get("T")
+        if isinstance(tenor, bool) or not isinstance(tenor, (int, float, np.number)) or not np.isfinite(float(tenor)) or float(tenor) <= 0:
+            raise ContractResolutionError("合同缺少可用于冻结观察日历的有效期限T")
+        end = start + pd.Timedelta(days=round(float(tenor) * 365.0))
+    if end < start:
+        raise ContractResolutionError("identity.contract_end_date不得早于contract_start_date")
+    window = dates[(dates >= start) & (dates <= end)]
+    if not len(window):
+        raise ContractResolutionError("Host验证交易日历未覆盖合同起始日至到期日")
+    if (end - window[-1]).days > round(_MATURITY_TIME_TOLERANCE * 365.0):
+        raise ContractResolutionError("Host验证交易日历未覆盖合同到期日前最后交易日")
+    return window
 
 
 def _require_observation_calendar_identity(identity: Mapping[str, Any], terms: Mapping[str, Any]) -> None:
@@ -804,7 +849,12 @@ def _resolve_contract(
         resolved_schedules=(
             deep_thaw(frozen_resolved_schedules)
             if frozen_resolved_schedules is not None
-            else _schedule_snapshot(final_terms, trading_dates)
+            else _schedule_snapshot(
+                final_terms,
+                trading_dates,
+                contract_start_date=resolved_identity.get("contract_start_date"),
+                contract_end_date=resolved_identity.get("contract_end_date"),
+            )
         ),
         registry_snapshot_hash=registry_snapshot_hash,
         product_snapshot_hash=product_snapshot_hash,

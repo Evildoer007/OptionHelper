@@ -15,6 +15,17 @@ import tempfile
 import time
 from urllib.parse import urlparse
 
+ROOT = Path(__file__).resolve().parents[3]
+AGENT_RUNTIME_PACKAGING = ROOT / "packaging" / "app" / "agent_runtime"
+import sys
+if str(AGENT_RUNTIME_PACKAGING) not in sys.path:
+    sys.path.insert(0, str(AGENT_RUNTIME_PACKAGING))
+from build_runtime import (  # noqa: E402
+    RuntimeBuildError,
+    probe_runtime_process,
+    verify_staged_runtime,
+)
+
 
 class AppVerificationError(RuntimeError):
     pass
@@ -112,11 +123,32 @@ def wait_for_url(process: subprocess.Popen[str], timeout: float = 45.0) -> str:
     raise AppVerificationError("App Host启动超时")
 
 
+def verify_agent_runtime(resources: Path) -> dict[str, object]:
+    """Verify the optional Resources runtime without claiming platform support."""
+
+    manifest_path = resources / "app-manifest.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise AppVerificationError("App Manifest不可解析，无法验证Agent运行时") from error
+    summary = manifest.get("agent_runtime", {"status": "disabled"})
+    if not isinstance(summary, dict):
+        raise AppVerificationError("App Manifest中的Agent运行时字段无效")
+    try:
+        verified = verify_staged_runtime(resources, "macos-arm64", summary)
+        if verified.get("status") == "local_verified":
+            probe_runtime_process(resources / str(verified["resource_path"]))
+    except RuntimeBuildError as error:
+        raise AppVerificationError(str(error)) from error
+    return dict(verified)
+
+
 def verify(bundle: Path) -> dict[str, object]:
     bundle = bundle.expanduser().resolve()
     resources = bundle / "Contents" / "Resources"
     backend = resources / "backend" / "OptionHelperBackend" / "OptionHelperBackend"
     require(backend.is_file(), "App缺少内置后端")
+    runtime_summary = verify_agent_runtime(resources)
     subprocess.run(
         ["codesign", "--verify", "--deep", "--verbose=2", str(bundle)],
         check=True,
@@ -452,6 +484,7 @@ def verify(bundle: Path) -> dict[str, object]:
             require(status == 200, "本地管理员身份无法访问OptDesk")
             return {
                 "status": "verified",
+                "agent_runtime": runtime_summary,
                 "capability_version": capability.get("capability_version"),
                 "modules": tool_status,
                 "compute_runs": compute_status,

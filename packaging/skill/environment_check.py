@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import re
 import sys
+import sysconfig
 import tempfile
 from typing import Callable, Mapping
 
@@ -26,6 +27,8 @@ _MEMORY_FILENAME = "memory.md"
 _MEMORY_MAX_BYTES = 16 * 1024
 _MEMORY_TOKEN_LINE = re.compile(r"^\s*-\s*IFIND_REFRESH_TOKEN\s*:\s*(\S+)\s*$", re.MULTILINE)
 PYPI_MIRROR_URL = "https://pypi.tuna.tsinghua.edu.cn/simple"
+_DEPENDENCY_CACHE_FILENAME = "dependency-readiness.json"
+_DEPENDENCY_CACHE_SCHEMA = 1
 
 
 class MemoryConfigurationError(ValueError):
@@ -57,11 +60,125 @@ def read_requirements(path: Path) -> list[tuple[str, str]]:
     return requirements
 
 
+def _sha256_file(path: Path) -> str:
+    import hashlib
+
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _stat_fingerprint(path: Path) -> dict[str, object] | None:
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    return {"path": str(path.resolve()), "mtime_ns": stat.st_mtime_ns, "size": stat.st_size}
+
+
+def _environment_fingerprint(requirements_path: Path) -> dict[str, object]:
+    roots: list[Path] = []
+    candidates = [Path(sys.executable), Path(sys.prefix)]
+    purelib = sysconfig.get_paths().get("purelib")
+    if purelib:
+        candidates.append(Path(purelib))
+    candidates.extend((Path(sys.prefix) / "conda-meta", Path(sys.prefix) / "pyvenv.cfg"))
+    for candidate in candidates:
+        if str(candidate) and candidate not in roots:
+            roots.append(candidate)
+    return {
+        "requirements_sha256": _sha256_file(requirements_path),
+        "python_executable": str(Path(sys.executable).resolve()),
+        "python_version": sys.version.split()[0],
+        "platform": sys.platform,
+        "environment_state": [item for root in roots if (item := _stat_fingerprint(root)) is not None],
+    }
+
+
+def _dependency_cache_path(cache_root: Path) -> Path:
+    return cache_root / _DEPENDENCY_CACHE_FILENAME
+
+
+def _read_dependency_cache(cache_root: Path, requirements_path: Path, fingerprint: Mapping[str, object]) -> dict[str, object] | None:
+    path = _dependency_cache_path(cache_root)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, Mapping) or payload.get("schema") != _DEPENDENCY_CACHE_SCHEMA:
+        return None
+    key = _sha256_file(requirements_path)
+    entries = payload.get("entries")
+    entry = entries.get(key) if isinstance(entries, Mapping) else None
+    if not isinstance(entry, Mapping) or entry.get("fingerprint") != dict(fingerprint):
+        return None
+    report = entry.get("report")
+    if not isinstance(report, Mapping) or not bool(report.get("ok")):
+        return None
+    return dict(report)
+
+
+def _write_dependency_cache(
+    cache_root: Path,
+    requirements_path: Path,
+    fingerprint: Mapping[str, object],
+    report: Mapping[str, object],
+) -> None:
+    cache_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    path = _dependency_cache_path(cache_root)
+    payload: dict[str, object] = {"schema": _DEPENDENCY_CACHE_SCHEMA, "entries": {}}
+    try:
+        existing = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(existing, Mapping) and existing.get("schema") == _DEPENDENCY_CACHE_SCHEMA:
+            payload["entries"] = dict(existing.get("entries") or {})
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        pass
+    entries = payload["entries"]
+    if not isinstance(entries, dict):
+        entries = {}
+        payload["entries"] = entries
+    entries[_sha256_file(requirements_path)] = {
+        "fingerprint": dict(fingerprint),
+        "report": dict(report),
+    }
+    temporary_name: str | None = None
+    descriptor, temporary_name = tempfile.mkstemp(prefix=".dependency-readiness-", suffix=".tmp", dir=cache_root)
+    try:
+        try:
+            os.fchmod(descriptor, 0o600)
+        except (AttributeError, OSError):
+            pass
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as stream:
+            json.dump(payload, stream, ensure_ascii=False, sort_keys=True, indent=2)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary_name, path)
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
+    finally:
+        if temporary_name and os.path.exists(temporary_name):
+            os.unlink(temporary_name)
+
+
 def check_dependencies(
     requirements_path: Path,
     *,
     version_lookup: Callable[[str], str] = installed_version,
+    cache_root: Path | None = None,
+    force: bool = False,
 ) -> dict[str, object]:
+    requirements_path = requirements_path.expanduser().resolve()
+    fingerprint = _environment_fingerprint(requirements_path) if cache_root is not None else None
+    if cache_root is not None and not force and fingerprint is not None:
+        cached = _read_dependency_cache(cache_root, requirements_path, fingerprint)
+        if cached is not None:
+            cached["cache"] = {"status": "hit"}
+            return cached
     findings: list[dict[str, object]] = []
     for name, expected in read_requirements(requirements_path):
         try:
@@ -72,17 +189,34 @@ def check_dependencies(
             status = "missing"
         findings.append({"name": name, "expected": expected, "actual": actual, "status": status})
     python_ok = sys.version_info >= (3, 11)
-    return {
+    report: dict[str, object] = {
         "ok": python_ok and all(item["status"] == "ok" for item in findings),
         "python": {"required": ">=3.11", "actual": sys.version.split()[0], "status": "ok" if python_ok else "unsupported"},
         "requirements": findings,
         "data_provider": {"name": "iFind API", "credential": "IFIND_REFRESH_TOKEN"},
         "note": "Skill不会自动安装依赖或修改Python环境。",
     }
+    report["cache"] = {"status": "bypass" if cache_root is None else "miss"}
+    if cache_root is not None and bool(report["ok"]) and fingerprint is not None and not force:
+        _write_dependency_cache(cache_root, requirements_path, fingerprint, report)
+    return report
 
 
 def _project_root(project_root: Path | None = None) -> Path:
     return (project_root or Path.cwd()).expanduser().resolve()
+
+
+def _dependency_cache_root(project_root: Path | None, skill_root: Path | None) -> Path | None:
+    if project_root is None:
+        return None
+    cache_root = (_project_root(project_root) / ".optionhelper" / "runtime").resolve()
+    if skill_root is None:
+        return cache_root
+    try:
+        cache_root.relative_to(skill_root.expanduser().resolve())
+    except ValueError:
+        return cache_root
+    return None
 
 
 def _assert_memory_outside_skill(project_root: Path, skill_root: Path | None) -> None:
@@ -255,11 +389,18 @@ def check_readiness(
     runtime_root: str | None = None,
     project_root: Path | None = None,
     version_lookup: Callable[[str], str] = installed_version,
+    force_dependencies: bool = False,
 ) -> dict[str, object]:
     """Return the single first-use gate for every OptionHelper workflow."""
 
     project = (project_root or Path.cwd()).expanduser().resolve()
-    dependencies = check_dependencies(requirements_path, version_lookup=version_lookup)
+    cache_root = _dependency_cache_root(project, skill_root)
+    dependencies = check_dependencies(
+        requirements_path,
+        version_lookup=version_lookup,
+        cache_root=cache_root,
+        force=force_dependencies,
+    )
     stores = check_external_stores(
         skill_root,
         data_root,
@@ -345,7 +486,12 @@ def check_external_stores(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="检查OptionHelper Skill依赖与外部Store")
-    parser.add_argument("--requirements", type=Path, default=Path(__file__).with_name("requirements.lock"))
+    parser.add_argument(
+        "--requirements",
+        type=Path,
+        action="append",
+        help="锁定依赖文件；可重复传入多个文件",
+    )
     parser.add_argument("--skill-root", type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument("--data-root")
     parser.add_argument("--result-root")
@@ -355,8 +501,12 @@ def main() -> None:
     parser.add_argument("--check-store", action="store_true")
     parser.add_argument("--check-data-api", action="store_true")
     parser.add_argument("--check-readiness", action="store_true")
+    parser.add_argument("--force-dependencies", action="store_true", help="忽略本地就绪缓存并完整检查依赖")
     parser.add_argument("--save-ifind-refresh-token", action="store_true")
     args = parser.parse_args()
+    requirement_paths = args.requirements or [Path(__file__).with_name("requirements.lock")]
+    if args.check_readiness and len(requirement_paths) != 1:
+        parser.error("--check-readiness一次只能检查一个依赖文件")
     if args.save_ifind_refresh_token:
         try:
             token = getpass("请输入iFinD Refresh Token（不会回显）：")
@@ -369,12 +519,13 @@ def main() -> None:
     if args.check_readiness:
         try:
             report = check_readiness(
-                args.requirements,
+                requirement_paths[0],
                 args.skill_root,
                 args.data_root,
                 args.result_root,
                 runtime_root=args.runtime_root,
                 project_root=args.project_root,
+                force_dependencies=args.force_dependencies,
             )
         except (OSError, ValueError) as error:
             report = {
@@ -394,10 +545,30 @@ def main() -> None:
     ok = True
     if check_dependencies_requested:
         try:
-            report["dependencies"] = check_dependencies(args.requirements)
+            cache_root = _dependency_cache_root(args.project_root, args.skill_root)
+            if len(requirement_paths) == 1:
+                report["dependencies"] = check_dependencies(
+                    requirement_paths[0],
+                    cache_root=cache_root,
+                    force=args.force_dependencies,
+                )
+            else:
+                reports = {
+                    str(path): check_dependencies(path, cache_root=cache_root, force=args.force_dependencies)
+                    for path in requirement_paths
+                }
+                report["dependencies"] = reports
+                report["cache"] = {
+                    "status": "hit"
+                    if all(item.get("cache", {}).get("status") == "hit" for item in reports.values())
+                    else "miss"
+                }
+                ok = all(bool(item["ok"]) for item in reports.values())
         except (OSError, ValueError) as error:
             report["dependencies"] = {"ok": False, "status": "invalid_lock", "reason": str(error)}
-        ok = ok and bool(report["dependencies"]["ok"])
+            ok = False
+        if len(requirement_paths) == 1:
+            ok = ok and bool(report["dependencies"]["ok"])
     if check_store_requested:
         report["stores"] = check_external_stores(
             args.skill_root,

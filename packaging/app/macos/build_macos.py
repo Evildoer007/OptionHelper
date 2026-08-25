@@ -26,6 +26,15 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[3]
 APP_ROOT = ROOT / "products" / "app"
 APP_ICON = ROOT / "assets" / "icons" / "optionhelper-app-icon-tile-light.icns"
+DMG_VOLUME_NAME = "OptionHelper"
+DMG_BACKGROUND = Path(__file__).resolve().parent / "assets" / "optionhelper-dmg-background.png"
+DMG_BUNDLE_BACKGROUND = Path("Contents/Resources/installer/optionhelper-dmg-background.png")
+DMG_WINDOW_SIZE = (760, 460)
+DMG_ICON_SIZE = 128
+DMG_ICON_POSITIONS = {
+    "OptionHelper.app": (180, 230),
+    "Applications": (580, 230),
+}
 DIST_ROOT = ROOT / "dist"
 VERSIONS_ROOT = ROOT / "versions"
 SKILL_PACKAGING = ROOT / "packaging" / "skill"
@@ -36,6 +45,17 @@ if str(ROOT / "packaging") not in sys.path:
 
 from verify_skill import content_tree_entries, tree_hash, verify_skill
 from release_contract import RELEASE_VERSION, require_release_version
+
+AGENT_RUNTIME_PACKAGING = ROOT / "packaging" / "app" / "agent_runtime"
+if str(AGENT_RUNTIME_PACKAGING) not in sys.path:
+    sys.path.insert(0, str(AGENT_RUNTIME_PACKAGING))
+from build_runtime import (  # noqa: E402
+    RuntimeBuildError,
+    probe_runtime_process,
+    resolve_runtime_candidate,
+    stage_runtime_candidate,
+    verify_staged_runtime,
+)
 
 
 class MacOSBuildError(RuntimeError):
@@ -107,20 +127,310 @@ def file_hash(path: Path) -> str:
     return digest.hexdigest()
 
 
-def run(command: list[str], *, cwd: Path | None = None, env: dict[str, str] | None = None) -> None:
+def run(command: list[str], *, cwd: Path | None = None, env: dict[str, str] | None = None) -> str:
     completed = subprocess.run(command, cwd=cwd, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     if completed.returncode:
         raise MacOSBuildError(f"命令失败：{' '.join(command)}\n{completed.stdout}")
+    return completed.stdout
 
 
 def prepare_dmg_layout(bundle: Path, destination: Path) -> Path:
     """Create the conventional drag-to-Applications DMG layout."""
     if not bundle.is_dir() or bundle.name != "OptionHelper.app":
         raise MacOSBuildError("DMG布局缺少OptionHelper.app")
+    if not DMG_BACKGROUND.is_file():
+        raise MacOSBuildError(f"缺少DMG背景资源：{DMG_BACKGROUND}")
+    if not (bundle / DMG_BUNDLE_BACKGROUND).is_file():
+        raise MacOSBuildError("OptionHelper.app缺少已签名DMG背景资源")
     destination.mkdir(parents=True, exist_ok=False)
     shutil.copytree(bundle, destination / bundle.name, symlinks=True)
     (destination / "Applications").symlink_to("/Applications", target_is_directory=True)
     return destination
+
+
+def _write_finder_metadata(mountpoint: Path) -> Path:
+    """Write the Finder layout deterministically without launching Finder."""
+    try:
+        from ds_store import DSStore
+        from mac_alias import Alias
+    except ImportError as error:
+        raise MacOSBuildError("当前Python环境缺少ds-store或mac-alias构建依赖") from error
+
+    background = mountpoint / "OptionHelper.app" / DMG_BUNDLE_BACKGROUND
+    if not background.is_file():
+        raise MacOSBuildError("DMG布局缺少已签名背景资源")
+    width, height = DMG_WINDOW_SIZE
+    bwsp = {
+        "ShowStatusBar": False,
+        "WindowBounds": f"{{{{160, 140}}, {{{width}, {height}}}}}",
+        "ContainerShowSidebar": False,
+        "PreviewPaneVisibility": False,
+        "SidebarWidth": 180,
+        "ShowTabView": False,
+        "ShowToolbar": False,
+        "ShowPathbar": False,
+        "ShowSidebar": False,
+    }
+    icvp = {
+        "viewOptionsVersion": 1,
+        "backgroundType": 2,
+        "backgroundImageAlias": Alias.for_file(str(background)).to_bytes(),
+        "backgroundColorRed": 1.0,
+        "backgroundColorGreen": 1.0,
+        "backgroundColorBlue": 1.0,
+        "gridOffsetX": 0.0,
+        "gridOffsetY": 0.0,
+        "gridSpacing": 100.0,
+        "arrangeBy": "none",
+        "showIconPreview": False,
+        "showItemInfo": False,
+        "labelOnBottom": True,
+        "textSize": 13.0,
+        "iconSize": float(DMG_ICON_SIZE),
+        "scrollPositionX": 0.0,
+        "scrollPositionY": 0.0,
+    }
+    metadata = mountpoint / ".DS_Store"
+    with DSStore.open(str(metadata), "w+") as store:
+        store["."]["vSrn"] = ("long", 1)
+        store["."]["bwsp"] = bwsp
+        store["."]["icvp"] = icvp
+        store["."]["icvl"] = (b"type", b"icnv")
+        for name, position in DMG_ICON_POSITIONS.items():
+            store[name]["Iloc"] = position
+    return metadata
+
+
+def _plist_output(output: str | bytes | None) -> dict[str, Any] | None:
+    """Parse structured ``hdiutil`` output; empty tool output is unstructured."""
+    if output is None:
+        return None
+    raw = output if isinstance(output, bytes) else output.encode()
+    start = raw.find(b"<?xml")
+    if start < 0:
+        start = raw.find(b"bplist00")
+    if start < 0:
+        return None
+    try:
+        value = plistlib.loads(raw[start:])
+    except (plistlib.InvalidFileException, ValueError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _system_entities(document: dict[str, Any]) -> list[dict[str, Any]]:
+    entities = document.get("system-entities")
+    if isinstance(entities, list):
+        return [entity for entity in entities if isinstance(entity, dict)]
+    images = document.get("images")
+    if isinstance(images, list):
+        for image in reversed(images):
+            if isinstance(image, dict) and isinstance(image.get("system-entities"), list):
+                return [entity for entity in image["system-entities"] if isinstance(entity, dict)]
+    return []
+
+
+def _attached_mountpoint(output: str) -> Path:
+    """Extract the mountpoint from this attach operation, never global state."""
+    document = _plist_output(output)
+    if document is not None:
+        for entity in reversed(_system_entities(document)):
+            mountpoint = entity.get("mount-point")
+            if isinstance(mountpoint, str) and mountpoint:
+                return Path(mountpoint)
+    raise MacOSBuildError("hdiutil未返回本次DMG挂载点的结构化信息")
+
+
+def _attached_device(output: str) -> str | None:
+    document = _plist_output(output)
+    if document is not None:
+        for entity in reversed(_system_entities(document)):
+            device = entity.get("dev-entry")
+            if isinstance(device, str) and device.startswith("/dev/"):
+                return device
+    return None
+
+
+def _attached_image_target(output: str, image: Path) -> tuple[Path | None, str | None]:
+    document = _plist_output(output)
+    if document is None:
+        return None, None
+    images = document.get("images")
+    if not isinstance(images, list):
+        return None, None
+    for record in images:
+        if not isinstance(record, dict):
+            continue
+        image_path = record.get("image-path")
+        if not isinstance(image_path, str):
+            continue
+        if Path(os.path.realpath(image_path)) != Path(os.path.realpath(image)):
+            continue
+        entities = _system_entities(record)
+        mountpoint = next((entity.get("mount-point") for entity in reversed(entities) if entity.get("mount-point")), None)
+        device = next((entity.get("dev-entry") for entity in reversed(entities) if entity.get("dev-entry")), None)
+        return (
+            Path(mountpoint) if isinstance(mountpoint, str) else None,
+            device if isinstance(device, str) else None,
+        )
+    return None, None
+
+
+def _disk_info_field(output: str | bytes | None, field: str) -> str:
+    if output is None:
+        raise MacOSBuildError(f"diskutil信息缺少{field}")
+    if isinstance(output, bytes):
+        output = output.decode(errors="replace")
+    match = re.search(rf"^\s*{re.escape(field)}:\s*(.+?)\s*$", output, re.MULTILINE)
+    if not match:
+        raise MacOSBuildError(f"diskutil信息缺少{field}")
+    return match.group(1)
+
+
+def _temporary_volume_name() -> str:
+    return f"OptionHelper-build-{uuid.uuid4().hex[:10]}"
+
+
+def _validate_finder_metadata_hygiene(metadata: bytes) -> None:
+    """Reject stale volume identities while allowing Finder's backing-image bookmark."""
+    stale_fragments = (
+        b"OptionHelper-build-",
+        b"optionhelper-branded-smoke",
+        b"/Volumes/OptionHelper-",
+    )
+    if any(fragment in metadata for fragment in stale_fragments):
+        raise MacOSBuildError("Finder背景别名仍引用临时卷")
+    if b"OptionHelper" not in metadata or b"OptionHelper.app" not in metadata:
+        raise MacOSBuildError("Finder背景别名未绑定OptionHelper安装卷")
+    if b"optionhelper-dmg-background.png" not in metadata:
+        raise MacOSBuildError("Finder背景别名缺少背景文件名")
+    if b"/OptionHelper.app/Contents/Resources/installer/optionhelper-dmg-background.png" not in metadata:
+        raise MacOSBuildError("Finder背景别名缺少安装卷内相对路径")
+
+
+def _preserve_writable_image(writable: Path) -> Path:
+    """Copy a still-mounted work image outside the caller's temp workspace."""
+    recovery_root = Path(tempfile.mkdtemp(prefix="optionhelper-dmg-recovery-"))
+    recovery_image = recovery_root / writable.name
+    try:
+        shutil.copy2(writable, recovery_image)
+    except BaseException:
+        shutil.rmtree(recovery_root, ignore_errors=True)
+        raise
+    return recovery_image
+
+
+def build_styled_dmg(layout: Path, output: Path, workspace: Path) -> None:
+    """Write Finder metadata on the final volume before compressing it."""
+    if output.exists():
+        raise MacOSBuildError("DMG输出文件已存在")
+    workspace.mkdir(parents=True, exist_ok=True)
+    writable = workspace / f"{output.stem}-writable.dmg"
+    mountpoint: Path | None = None
+    active_mountpoint: Path | None = None
+    temporary_volume_name = _temporary_volume_name()
+    source_directory: Path | None = None
+    attached = False
+    succeeded = False
+    active_device: str | None = None
+    try:
+        # Finder metadata is created on the final mounted volume. Never copy
+        # a stale alias from a staging directory into the image.
+        source_directory = Path(tempfile.mkdtemp(prefix="optionhelper-dmg-source-", dir=workspace))
+        shutil.copytree(
+            layout,
+            source_directory,
+            symlinks=True,
+            dirs_exist_ok=True,
+            ignore=shutil.ignore_patterns(".DS_Store"),
+        )
+        run([
+            "hdiutil", "create", "-volname", temporary_volume_name,
+            "-srcfolder", str(source_directory), "-fs", "HFS+", "-format", "UDRW",
+            "-ov", str(writable),
+        ])
+        if not writable.is_file():
+            raise MacOSBuildError("hdiutil未生成可写DMG工作盘")
+        # Keep the volume mountable for direct metadata generation while
+        # suppressing hdiutil's automatic Finder window.
+        attach_output = run(["hdiutil", "attach", "-plist", "-readwrite", "-noautoopen", str(writable)])
+        attached = True
+        active_device = _attached_device(attach_output)
+        try:
+            mountpoint = _attached_mountpoint(attach_output)
+        except MacOSBuildError:
+            try:
+                info_output = run(["hdiutil", "info", "-plist"])
+                mountpoint, info_device = _attached_image_target(info_output, writable)
+                active_device = info_device or active_device
+                if mountpoint is None:
+                    raise MacOSBuildError("hdiutil信息未找到本次DMG挂载点")
+                active_mountpoint = mountpoint
+            except MacOSBuildError:
+                pass
+            raise
+        active_mountpoint = mountpoint
+        device = _disk_info_field(run(["diskutil", "info", str(mountpoint)]), "Device Identifier")
+        active_device = f"/dev/{device}"
+        run(["diskutil", "rename", device, DMG_VOLUME_NAME])
+        final_mountpoint = Path(_disk_info_field(run(["diskutil", "info", device]), "Mount Point"))
+        active_mountpoint = final_mountpoint
+        metadata = _write_finder_metadata(final_mountpoint)
+        run(["sync"])
+        _validate_finder_metadata_hygiene(metadata.read_bytes())
+        allowed_entries = {"OptionHelper.app", "Applications", ".DS_Store"}
+        for entry in final_mountpoint.iterdir():
+            if entry.name in allowed_entries:
+                continue
+            if entry.is_dir() and not entry.is_symlink():
+                shutil.rmtree(entry)
+            else:
+                entry.unlink()
+        run(["hdiutil", "detach", str(final_mountpoint)])
+        attached = False
+        active_mountpoint = None
+        run([
+            "hdiutil", "convert", str(writable), "-format", "UDZO",
+            "-imagekey", "zlib-level=9", "-ov", "-o", str(output),
+        ])
+        if not output.is_file():
+            raise MacOSBuildError("hdiutil未生成DMG安装物")
+        succeeded = True
+    finally:
+        original_error = sys.exc_info()[1]
+        cleanup_errors: list[BaseException] = []
+        if attached:
+            detach_targets = [target for target in (active_mountpoint, active_device) if target is not None]
+            for detach_target in detach_targets:
+                try:
+                    run(["hdiutil", "detach", "-force", str(detach_target)])
+                except BaseException as error:
+                    cleanup_errors.append(error)
+                else:
+                    attached = False
+                    break
+            if attached:
+                try:
+                    recovery_image = _preserve_writable_image(writable)
+                    cleanup_errors.append(MacOSBuildError(
+                        f"DMG挂载设备未能卸载；可恢复工作盘：{recovery_image}"
+                    ))
+                except BaseException as error:
+                    cleanup_errors.append(MacOSBuildError(f"DMG挂载设备未能卸载，工作盘备份失败：{error}"))
+        for cleanup in (
+            lambda: writable.unlink() if not attached and writable.exists() else None,
+            lambda: shutil.rmtree(source_directory) if source_directory is not None and source_directory.exists() else None,
+            lambda: output.unlink() if not succeeded and output.exists() else None,
+        ):
+            try:
+                cleanup()
+            except BaseException as error:
+                cleanup_errors.append(error)
+        if cleanup_errors:
+            details = "；".join(str(error) for error in cleanup_errors)
+            if original_error is None:
+                raise cleanup_errors[0]
+            raise MacOSBuildError(f"{original_error}；清理阶段：{details}") from original_error
 
 
 def verify_dmg_install_layout(
@@ -136,14 +446,29 @@ def verify_dmg_install_layout(
         mountpoint = Path(temporary_name) / "mounted"
         mountpoint.mkdir()
         attached = False
+        attached_device: str | None = None
         try:
-            run([
-                "hdiutil", "attach", "-readonly", "-nobrowse",
+            attach_output = run([
+                "hdiutil", "attach", "-plist", "-readonly", "-nobrowse",
                 "-mountpoint", str(mountpoint), str(dmg_path),
             ])
             attached = True
+            attached_device = _attached_device(attach_output)
+            if attached_device is None:
+                try:
+                    device = _disk_info_field(run(["diskutil", "info", str(mountpoint)]), "Device Identifier")
+                    attached_device = f"/dev/{device}"
+                except MacOSBuildError:
+                    pass
             app = mountpoint / "OptionHelper.app"
             applications = mountpoint / "Applications"
+            root_entries = {
+                entry.name for entry in mountpoint.iterdir()
+                if entry.name != ".DS_Store"
+            }
+            if root_entries != {"OptionHelper.app", "Applications"}:
+                extras = ", ".join(sorted(root_entries - {"OptionHelper.app", "Applications"}))
+                raise MacOSBuildError(f"DMG根目录含非安装入口：{extras or '布局不完整'}")
             if not app.is_dir():
                 raise MacOSBuildError("DMG打开后缺少OptionHelper.app")
             if not applications.is_symlink() or os.readlink(applications) != "/Applications":
@@ -154,9 +479,36 @@ def verify_dmg_install_layout(
                 raise MacOSBuildError("DMG内置Capability content_tree_hash与当次Skill不一致")
             if file_hash(embedded / "capability-manifest.json") != expected_manifest_hash:
                 raise MacOSBuildError("DMG内置Capability Manifest哈希与当次Skill不一致")
+            background_image = app / DMG_BUNDLE_BACKGROUND
+            if not background_image.is_file() or file_hash(background_image) != file_hash(DMG_BACKGROUND):
+                raise MacOSBuildError("DMG背景资源缺失或内容不一致")
+            finder_metadata = mountpoint / ".DS_Store"
+            if not finder_metadata.is_file():
+                raise MacOSBuildError("DMG缺少Finder安装布局元数据")
+            _validate_finder_metadata_hygiene(finder_metadata.read_bytes())
         finally:
+            original_error = sys.exc_info()[1]
+            detach_error: BaseException | None = None
             if attached:
-                run(["hdiutil", "detach", str(mountpoint)])
+                detach_targets = [mountpoint] + ([attached_device] if attached_device else [])
+                for target in detach_targets:
+                    try:
+                        run(["hdiutil", "detach", str(target)])
+                    except BaseException as error:
+                        try:
+                            run(["hdiutil", "detach", "-force", str(target)])
+                        except BaseException as force_error:
+                            detach_error = force_error
+                            continue
+                    detach_error = None
+                    attached = False
+                    break
+            if detach_error is not None:
+                if original_error is None:
+                    raise detach_error
+                raise MacOSBuildError(
+                    f"{original_error}；DMG卸载失败：{detach_error}"
+                ) from original_error
 
 
 def _commit_release_artifacts(
@@ -259,6 +611,7 @@ def app_manifest(
     *,
     shell_language: str,
     build_tool: str,
+    agent_runtime: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
         "app_version": app_version,
@@ -273,6 +626,11 @@ def app_manifest(
         "shell_language": shell_language,
         "build_tool": build_tool,
         "signing": {"method": "ad-hoc", "notarized": False},
+        "agent_runtime": agent_runtime or {
+            "status": "disabled",
+            "resource_path": None,
+            "manifest_path": None,
+        },
     }
 
 
@@ -649,6 +1007,7 @@ def verify_bundle(bundle: Path, expected_manifest: dict[str, Any]) -> None:
         resources / "assets" / "icons" / "optionhelper-app-icon-tile-dark.svg",
         resources / "assets" / "icons" / "optionhelper-app-icon-tile-light.icns",
         resources / "assets" / "icons" / "optionhelper-app-icon-tile-dark.icns",
+        resources / "installer" / DMG_BACKGROUND.name,
     ]
     missing = [str(path) for path in required if not path.exists()]
     if missing:
@@ -667,6 +1026,16 @@ def verify_bundle(bundle: Path, expected_manifest: dict[str, Any]) -> None:
         raise MacOSBuildError("Bundle Capability Manifest哈希不匹配")
     if actual["capability_content_tree_hash"] != tree_hash(content_tree_entries(capability)):
         raise MacOSBuildError("Bundle Capability目录树哈希不匹配")
+    try:
+        runtime_summary = verify_staged_runtime(
+            resources,
+            "macos-arm64",
+            actual.get("agent_runtime", {"status": "disabled"}),
+        )
+        if runtime_summary.get("status") == "local_verified":
+            probe_runtime_process(resources / str(runtime_summary["resource_path"]))
+    except RuntimeBuildError as error:
+        raise MacOSBuildError(str(error)) from error
 
 
 def build_macos(
@@ -676,6 +1045,7 @@ def build_macos(
     dist_root: Path = DIST_ROOT,
     versions_root: Path = VERSIONS_ROOT,
     transaction_stage: bool = False,
+    agent_runtime_path: Path | None = None,
 ) -> dict[str, Path]:
     try:
         require_release_version(app_version)
@@ -712,15 +1082,11 @@ def build_macos(
         resources.mkdir(parents=True)
         copy_app_icon(bundle)
         copy_theme_icon_assets(resources)
+        installer_assets = resources / "installer"
+        installer_assets.mkdir()
+        shutil.copy2(DMG_BACKGROUND, installer_assets / DMG_BACKGROUND.name)
         write_info_plist(bundle, app_version)
         _shell, shell_language, build_tool = compile_shell(bundle)
-        manifest = app_manifest(
-            app_version,
-            capability,
-            capability_manifest_hash,
-            shell_language=shell_language,
-            build_tool=build_tool,
-        )
         copy_tree(APP_ROOT / "backend", resources / "app" / "backend")
         copy_tree(APP_ROOT / "config", resources / "app" / "config")
         copy_tree(APP_ROOT / "frontend", resources / "frontend", extra_ignored=("*.md",))
@@ -728,6 +1094,23 @@ def build_macos(
         assert_staged_capability(source, resources / "capability" / "option-helper")
         copy_tree(ROOT / "core" / "src" / "runtime", resources / "runtime")
         copy_licenses(resources / "LICENSES", source)
+        try:
+            runtime_candidate = resolve_runtime_candidate(
+                "macos-arm64",
+                explicit=agent_runtime_path,
+                repository_root=ROOT,
+            )
+            runtime_summary = stage_runtime_candidate(resources, "macos-arm64", runtime_candidate)
+        except RuntimeBuildError as error:
+            raise MacOSBuildError(str(error)) from error
+        manifest = app_manifest(
+            app_version,
+            capability,
+            capability_manifest_hash,
+            shell_language=shell_language,
+            build_tool=build_tool,
+            agent_runtime=runtime_summary,
+        )
         write_json(resources / "app-manifest.json", manifest)
         _progress("正在构建后端运行时")
         backend = build_backend(temporary, resources)
@@ -747,7 +1130,7 @@ def build_macos(
         _progress("正在生成DMG安装物")
         built_dmg = temporary / f"OptionHelper-{app_version}-macOS-arm64.dmg"
         dmg_layout = prepare_dmg_layout(bundle, temporary / "dmg-layout")
-        run(["hdiutil", "create", "-volname", "OptionHelper", "-srcfolder", str(dmg_layout), "-format", "UDZO", str(built_dmg)])
+        build_styled_dmg(dmg_layout, built_dmg, temporary)
         run(["hdiutil", "verify", str(built_dmg)])
         if built_dmg.stat().st_size > MAX_DMG_BYTES:
             raise MacOSBuildError(

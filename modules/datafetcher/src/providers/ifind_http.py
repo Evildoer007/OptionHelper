@@ -7,7 +7,7 @@ SecretRef解析。
 字段口径：open、high、low、close用于原始市场尺度；对应adj_open、adj_high、adj_low、
 adj_close按请求口径提供；不复权时它是close的审计别名。
 普通价格指数不适用证券复权，四个adj_*字段分别等于原始OHLC。
-股票和ETF会额外请求CPS=2前复权OHLC。
+股票和ETF会按请求额外获取CPS=2前复权或CPS=3后复权OHLC。
 """
 
 from __future__ import annotations
@@ -261,13 +261,14 @@ def _canonical_raw(payload: Mapping[str, Any], *, include_volume: bool = False) 
     return result.sort_values(["date", "asset_id"]).reset_index(drop=True)
 
 
-def _adjusted_ohlc_from_cps_2(payload: Mapping[str, Any]) -> pd.DataFrame:
+def _adjusted_ohlc(payload: Mapping[str, Any], adjustment: str) -> pd.DataFrame:
     raw = pd.DataFrame(_table_rows(payload))
     result = pd.DataFrame({"date": pd.to_datetime(raw["date"], errors="coerce").dt.strftime("%Y-%m-%d"), "asset_id": raw["asset_id"].astype(str).str.strip()})
     for raw_name, adjusted_name in zip(RAW_OHLC_COLUMNS, ADJ_OHLC_COLUMNS, strict=True):
         result[adjusted_name] = _numeric(raw, raw_name, required=True)
     if result.isna().any(axis=None) or (result[list(ADJ_OHLC_COLUMNS)] <= 0).any(axis=None) or result.duplicated(["date", "asset_id"]).any():
-        raise IFindDownloadError("iFind前复权OHLC含无效或重复记录")
+        label = "后复权" if adjustment == "backward" else "前复权"
+        raise IFindDownloadError(f"iFind{label}OHLC含无效或重复记录")
     return result
 
 
@@ -289,21 +290,24 @@ def download_history(
         ),
         include_volume=include_volume,
     )
-    if asset_type in {"stock", "etf"} and adjustment in {"forward", "both"}:
-        adjusted = _adjusted_ohlc_from_cps_2(
+    if asset_type in {"stock", "etf"} and adjustment in {"forward", "backward", "both"}:
+        adjusted_cps = 3 if adjustment == "backward" else 2
+        adjusted = _adjusted_ohlc(
             history_response(
                 access_token,
                 code=code,
                 indicators="open,high,low,close",
                 start_date=start_date,
                 end_date=end_date,
-                cps=2,
+                cps=adjusted_cps,
                 timeout_seconds=timeout_seconds,
-            )
+            ),
+            adjustment,
         )
         result = raw.merge(adjusted, on=["date", "asset_id"], how="inner", validate="one_to_one")
         if len(result) != len(raw):
-            raise IFindDownloadError("不复权与前复权历史交易日未能一一对应")
+            label = "后复权" if adjustment == "backward" else "前复权"
+            raise IFindDownloadError(f"不复权与{label}历史交易日未能一一对应")
     else:
         result = raw.copy()
         for raw_name, adjusted_name in zip(RAW_OHLC_COLUMNS, ADJ_OHLC_COLUMNS, strict=True):
@@ -320,10 +324,10 @@ class IFindHttpProvider:
 
     @staticmethod
     def estimate_quota(request: DataRequest) -> int:
-        # 只有股票/ETF确实需要前复权字段时才额外请求CPS=2。
+        # 只有股票/ETF确实需要复权字段时才额外请求对应口径。
         multiplier = sum(
             2 if any(field.startswith("adj_") for field in request.fields)
-            and china_market_convention(asset_id, request.adjustment)["effective_adjustment"] in {"forward", "both"} else 1
+            and china_market_convention(asset_id, request.adjustment)["effective_adjustment"] in {"forward", "backward", "both"} else 1
             for asset_id in request.asset_ids
         )
         return multiplier

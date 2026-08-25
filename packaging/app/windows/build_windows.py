@@ -31,6 +31,17 @@ if str(ROOT / "packaging") not in sys.path:
 from verify_skill import content_tree_entries, tree_hash, verify_skill
 from release_contract import RELEASE_VERSION, require_release_version
 
+AGENT_RUNTIME_PACKAGING = ROOT / "packaging" / "app" / "agent_runtime"
+if str(AGENT_RUNTIME_PACKAGING) not in sys.path:
+    sys.path.insert(0, str(AGENT_RUNTIME_PACKAGING))
+from build_runtime import (  # noqa: E402
+    RuntimeBuildError,
+    probe_runtime_process,
+    resolve_runtime_candidate,
+    stage_runtime_candidate,
+    verify_staged_runtime,
+)
+
 
 class WindowsBuildError(RuntimeError):
     pass
@@ -242,6 +253,7 @@ def _manifest(
     capability: dict[str, object],
     capability_manifest: Path,
     icon: Path = WINDOWS_APP_ICON,
+    agent_runtime: dict[str, object] | None = None,
 ) -> dict[str, object]:
     layer_count = _validate_application_icon(icon)
     return {
@@ -257,6 +269,11 @@ def _manifest(
         "shell_language": "csharp",
         "build_tool": "dotnet",
         "signing": {"method": "unsigned", "notarized": False},
+        "agent_runtime": agent_runtime or {
+            "status": "disabled",
+            "resource_path": None,
+            "manifest_path": None,
+        },
         "application_icon": {
             "source": WINDOWS_APP_ICON_RELATIVE.as_posix(),
             "packaged_path": "Resources/icons/OptionHelper.ico",
@@ -277,6 +294,7 @@ def build_windows(
     *,
     dist_root: Path,
     versions_root: Path = ROOT / "versions",
+    agent_runtime_path: Path | None = None,
 ) -> dict[str, Path]:
     try:
         require_release_version(app_version)
@@ -342,12 +360,30 @@ def build_windows(
         _assert_staged_capability(capability_root, resources / "capability" / "option-helper")
         _copy_tree(ROOT / "core" / "src" / "runtime", resources / "runtime")
         _copy_tree(ROOT / "LICENSES", resources / "LICENSES" / "capability")
+        try:
+            runtime_candidate = resolve_runtime_candidate(
+                "windows-x64",
+                explicit=agent_runtime_path,
+                repository_root=ROOT,
+            )
+            runtime_summary = stage_runtime_candidate(resources, "windows-x64", runtime_candidate)
+            runtime_summary = verify_staged_runtime(resources, "windows-x64", runtime_summary)
+            if runtime_summary.get("status") == "local_verified":
+                probe_runtime_process(resources / str(runtime_summary["resource_path"]))
+        except RuntimeBuildError as error:
+            raise WindowsBuildError(str(error)) from error
         _run([
             str(resources / "backend" / "OptionHelperBackend" / "OptionHelperBackend.exe"),
             "--probe-pdf-runtime", "--resource-dir", str(resources),
         ])
         staged_icon = copy_application_icon(resources, application_icon)
-        manifest = _manifest(app_version, capability, capability_manifest, application_icon)
+        manifest = _manifest(
+            app_version,
+            capability,
+            capability_manifest,
+            application_icon,
+            agent_runtime=runtime_summary,
+        )
         (resources / "app-manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, sort_keys=True, indent=2) + "\n", encoding="utf-8", newline="")
         required = (app / "OptionHelper.exe", resources / "backend" / "OptionHelperBackend" / "OptionHelperBackend.exe", resources / "frontend" / "optchat" / "index.html", staged_icon)
         if not all(path.is_file() for path in required):

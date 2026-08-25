@@ -32,6 +32,7 @@ from runtime.knowledger.versioning import build_candidate, validate_published_ca
 from build_macos import build_macos
 from build_windows import build_windows
 from build_skill import build_skill, verify_source_snapshot
+from environment_check import check_dependencies
 from release_contract import RELEASE_VERSION, require_published_at, require_release_version
 from sign_capability import sign as sign_capability
 from sign_catalog import sign_catalog
@@ -48,6 +49,22 @@ from verify_skill import probe_runtime, verify_skill, verify_zip
 
 class ReleaseError(RuntimeError):
     pass
+
+
+def _assert_release_dependencies() -> None:
+    """Release never trusts the routine dependency cache."""
+
+    failures: list[str] = []
+    for relative in ("core/requirements.lock", "packaging/build-requirements.lock"):
+        path = ROOT / relative
+        if not path.is_file():
+            failures.append(f"缺少锁定依赖文件：{relative}")
+            continue
+        report = check_dependencies(path, force=True)
+        if not bool(report.get("ok")):
+            failures.append(relative)
+    if failures:
+        raise ReleaseError("正式发布依赖全检未通过：" + "、".join(failures))
 
 
 def _progress(message: str) -> None:
@@ -217,6 +234,7 @@ def release(version: str, *, platform: str, published_at: str) -> dict[str, Path
         require_published_at(published_at)
     except ValueError as error:
         raise ReleaseError(str(error)) from error
+    _assert_release_dependencies()
 
     versions_root = ROOT / "versions"
     if _legacy_archives(versions_root):

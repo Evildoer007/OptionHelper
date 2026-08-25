@@ -234,6 +234,13 @@ class ToolDispatcher:
         if result.get("ok") is False:
             if tool_name == "datafetcher":
                 raise UserActionError("datafetcher_request_rejected", _datafetcher_failure_message(result))
+            if tool_name == "pricer":
+                raise UserActionError(
+                    "pricer_request_rejected",
+                    _pricer_failure_message(result),
+                    stage="compute",
+                    next_step="请检查定价方法、Monte Carlo路径数、合同期限和市场参数后重新运行。",
+                )
             raise ValidationError(str(result.get("message", f"Capability tool {tool_name} rejected the request")))
 
         data_asset_ref = result.get("data_asset_ref")
@@ -395,6 +402,31 @@ def _datafetcher_failure_message(result: Mapping[str, Any]) -> str:
     if message and len(message) <= 240 and not any(item in message.lower() for item in forbidden):
         return message
     return "数据请求未完成，请检查标的、日期与数据服务后重试。"
+
+
+def _pricer_failure_message(result: Mapping[str, Any]) -> str:
+    """Project the Pricer's reviewed financial-input explanation to the UI."""
+
+    candidates: list[object] = [result.get("message")]
+    pricing = result.get("pricing")
+    if isinstance(pricing, Mapping):
+        messages = pricing.get("messages")
+        if isinstance(messages, list):
+            candidates.extend(messages)
+    limitations = result.get("limitations")
+    if isinstance(limitations, list):
+        candidates.extend(limitations)
+    forbidden = ("/", "\\", "token", "secret", "password", "credential", "traceback")
+    safe = []
+    for candidate in candidates:
+        if not isinstance(candidate, str):
+            continue
+        message = candidate.strip()
+        if message and len(message) <= 240 and not any(item in message.lower() for item in forbidden):
+            safe.append(message)
+    if safe:
+        return "；".join(dict.fromkeys(safe))
+    return "定价请求未完成，请检查定价方法、Monte Carlo路径数、合同期限和市场参数后重试。"
 
 
 def _tool_input_hash(payload: Mapping[str, Any]) -> str:

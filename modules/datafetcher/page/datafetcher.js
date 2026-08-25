@@ -80,6 +80,16 @@ function cacheDecisionLabel(value) {
   }[value] || '已完成');
 }
 
+function dataSourceLabel(data) {
+  const lineageProvider = data?.data_asset_ref?.lineage?.provider;
+  const successfulCall = (Array.isArray(data?.provider_calls) ? data.provider_calls : [])
+    .find(call => ['succeeded', 'success'].includes(String(call?.outcome || '').toLowerCase()));
+  const provider = String(lineageProvider || successfulCall?.provider || '').toLowerCase();
+  if (provider === 'local') return '本地数据';
+  if (provider) return '实时数据';
+  return ['cache_hit', 'cache_revalidated', 'cache_rebound'].includes(data?.cache_decision) ? '本地数据' : '实时数据';
+}
+
 function buildFetchRequest(values) {
   const start = parseAndFormatDate(values.startDate);
   const endInput = parseAndFormatDate(values.endDate);
@@ -87,30 +97,17 @@ function buildFetchRequest(values) {
   if (!start || !end) throw new Error('日期必须为真实的yyyy/mm/dd或yyyy-mm-dd。');
   if (start.iso > end.iso) throw new Error('开始日期不得晚于结束日期。');
   const assetIds = splitList(values.assetIds).map(item => item.toUpperCase());
-  const fields = [...new Set(['close', 'adj_close', ...splitList(values.fields).map(item => item.toLowerCase())])];
+  const requestedFields = splitList(values.fields).map(item => item.toLowerCase());
+  const fields = [...new Set(['close', 'adj_close', ...requestedFields.flatMap(field => (
+    ['open', 'high', 'low', 'close'].includes(field) ? [field, `adj_${field}`] : [field]
+  ))])];
   const sourceMode = String(values.sourceMode || values.providerPriority || 'ifind_http').trim().toLowerCase();
   if (!assetIds.length) throw new Error('请至少填写一个资产标识。');
   const invalidAsset = assetIds.find(item => !/^\d{6}\.(?:SH|SZ)$/.test(item));
   if (invalidAsset) throw new Error(`资产标识“${invalidAsset}”格式不正确，请使用000300.SH或399001.SZ。`);
-  if (!['ifind_http', 'local'].includes(sourceMode)) throw new Error('请选择iFinD或受控本地数据。');
+  if (!['ifind_http', 'local'].includes(sourceMode)) throw new Error('请选择实时数据或本地数据。');
   const request = {asset_ids: assetIds, start_date: start.iso, end_date: end.iso, fields, provider: sourceMode, frequency: values.frequency || '1d', adjustment: values.adjustment, cache_policy: values.cachePolicy, offline: values.cachePolicy === 'reuse'};
   return request;
-}
-
-function requestSummary(values) {
-  const assets = splitList(values.assetIds).map(item => item.toUpperCase());
-  const fields = [...new Set(['close', 'adj_close', ...splitList(values.fields).map(item => item.toLowerCase())])];
-  const sourceMode = String(values.sourceMode || 'ifind_http').toLowerCase();
-  const strategy = ({force_refresh: '实时获取', extend_only: '补齐缺口', reuse: '仅用已保存数据'}[values.cachePolicy] || '未选择');
-  return [
-    ['来源', sourceMode === 'local' ? '受控本地数据' : 'iFinD实时行情'],
-    ['标的', assets.length ? `${assets.length}个` : '尚未填写'],
-    ['日期', values.startDate && values.endDate ? `${values.startDate}至${values.endDate}` : '尚未完整填写'],
-    ['字段', fields.join('、')],
-    ['口径', values.adjustment === 'auto' ? '按标的自动适配' : values.adjustment],
-    ['策略', strategy],
-    ['留存', '受控DataStore＋DataAssetRef'],
-  ];
 }
 
 function resultViewModel(data) {
@@ -127,8 +124,15 @@ function resultViewModel(data) {
     const rows = detail.row_count == null ? '行数未提供' : `${detail.row_count}行`;
     return [`${assetId}覆盖`, `${range}，${rows}`];
   });
-  const calls = Array.isArray(data.provider_calls) ? data.provider_calls : [];
   return {
+    overview: [
+      ['数据来源', dataSourceLabel(data)],
+      ['标的', (ref.asset_ids || []).join('、') || '未提供'],
+      ['覆盖区间', [coverage.start_date, coverage.end_date].filter(Boolean).join('至') || '未提供'],
+      ['记录数', ref.row_count ?? '未提供'],
+      ['行情字段', Array.isArray(ref.normalized_fields) && ref.normalized_fields.length ? ref.normalized_fields.join('、') : '未提供'],
+      ['保存状态', ref.data_asset_id || ref.content_hash ? '已保存到当前任务' : '待保存'],
+    ],
     coverage: [
       ['标的', (ref.asset_ids || []).join('、') || '未提供'],
       ['覆盖区间', [coverage.start_date, coverage.end_date].filter(Boolean).join('至') || '未提供'],
@@ -144,12 +148,47 @@ function resultViewModel(data) {
       ['重复行', quality.duplicate_rows ?? '未提供'],
       ['乱序行', quality.unordered_rows ?? '未提供'],
     ],
-    provider: [
-      ['服务调用', calls.length ? [...new Set(calls.map(call => call.provider).filter(Boolean))].join('、') || `${calls.length}次` : '无远程调用记录'],
-      ['额度使用', data.quota_usage?.used ?? '未提供'],
-      ['告警', Array.isArray(data.warnings) && data.warnings.length ? `${data.warnings.length}项` : '无'],
-      ['DataAssetRef', ref.data_asset_id || ref.content_hash || '未生成'],
-    ],
+  };
+}
+
+function chartViewModel(rawSeries) {
+  const source = Array.isArray(rawSeries) ? rawSeries : [];
+  const cleaned = source.map(series => {
+    const points = (Array.isArray(series?.points) ? series.points : [])
+      .map(point => ({date: String(point?.date || ''), rawValue: Number(point?.value)}))
+      .filter(point => point.date && Number.isFinite(point.rawValue) && point.rawValue > 0 && Number.isFinite(Date.parse(point.date.includes('T') ? point.date : `${point.date}T00:00:00Z`)))
+      .sort((left, right) => left.date.localeCompare(right.date));
+    return {assetId: String(series?.asset_id || ''), field: String(series?.field || ''), points};
+  }).filter(series => series.assetId && series.points.length);
+  const normalized = cleaned.length > 1;
+  const series = cleaned.map(item => {
+    const baseline = item.points[0]?.rawValue;
+    if (normalized && !Number.isFinite(baseline)) return null;
+    return {
+      ...item,
+      points: item.points.map(point => ({
+        ...point,
+        timestamp: Date.parse(point.date.includes('T') ? point.date : `${point.date}T00:00:00Z`),
+        value: normalized ? point.rawValue / baseline : point.rawValue,
+      })),
+    };
+  }).filter(Boolean);
+  const points = series.flatMap(item => item.points);
+  if (!points.length) return {series: [], normalized, minDate: 0, maxDate: 0, minValue: 0, maxValue: 0};
+  let minValue = Math.min(...points.map(point => point.value));
+  let maxValue = Math.max(...points.map(point => point.value));
+  if (minValue === maxValue) {
+    const padding = Math.abs(minValue || 1) * 0.05;
+    minValue -= padding;
+    maxValue += padding;
+  }
+  return {
+    series,
+    normalized,
+    minDate: Math.min(...points.map(point => point.timestamp)),
+    maxDate: Math.max(...points.map(point => point.timestamp)),
+    minValue,
+    maxValue,
   };
 }
 
@@ -166,12 +205,12 @@ function resultSummary(data) {
 function credentialStatusText(data) {
   const status = data?.credential_status;
   const configured = typeof data?.configured === 'boolean' ? data.configured : status?.configured;
-  if (configured === false) return 'iFinD Refresh Token尚未配置，请前往设置中心完成配置。';
+  if (configured === false) return '未配置，请前往设置中心。';
   if (configured === true) {
-    if (status?.remote_provider === 'available') return 'iFinD Refresh Token已配置，连接验证通过。';
-    return 'iFinD Refresh Token已配置，连接状态尚未验证。';
+    if (status?.remote_provider === 'available') return '已连接。';
+    return '已配置，尚未验证。';
   }
-  return '凭据由SecretRef或本机环境管理，本页不会读取或显示密钥。';
+  return '连接状态未知。';
 }
 
 async function parseServiceResponse(response) {
@@ -220,16 +259,73 @@ function initializePage() {
       const select = document.createElement('button'); select.type = 'button'; select.className = 'asset-select'; select.innerHTML = '<strong></strong><span></span>';
       const coverage = ref.coverage || {}; const range = [coverage.start_date, coverage.end_date].filter(Boolean).join('至');
       select.querySelector('strong').textContent = (ref.asset_ids || item.asset_ids || []).join('、') || '已保存数据'; select.querySelector('span').textContent = `${ref.row_count ?? '—'}行${range ? `，${range}` : ''}`;
-      select.addEventListener('click', () => { const ids = ref.asset_ids || item.asset_ids; if (Array.isArray(ids) && ids.length) { $('asset-ids').value = ids.join('\n'); updateRequestSummary(); } });
+      select.addEventListener('click', () => { const ids = ref.asset_ids || item.asset_ids; if (Array.isArray(ids) && ids.length) { $('asset-ids').value = ids.join('\n'); syncSourceVisibility(); } });
       const download = document.createElement('a'); download.className = 'asset-download'; download.href = `/api/assets/${encodeURIComponent(id)}/download`; download.textContent = ref.media_type === 'application/json' ? '下载JSON' : '下载CSV';
       entry.append(select, download); list.append(entry);
     });
   }
   function addAsset(item) { const ref = item?.data_asset_ref || item; const key = ref?.data_asset_id || ref?.content_hash; if (key) assetStore.set(key, item); renderAssets(); }
-  function appendSummarySection(parent, title, rows, description) { const section = document.createElement('section'); section.className = 'result-section'; section.innerHTML = '<h3></h3><p></p><div class="summary-list"></div>'; section.querySelector('h3').textContent = title; section.querySelector('p').textContent = description; rows.forEach(([label, value]) => { const item = document.createElement('div'); item.className = 'summary-item'; item.innerHTML = '<span></span><strong></strong>'; item.querySelector('span').textContent = label; item.querySelector('strong').textContent = String(value); section.querySelector('.summary-list').append(item); }); parent.append(section); }
-  function appendAuditDetails(parent, value) { const details = document.createElement('details'); details.className = 'audit-details'; details.innerHTML = '<summary>查看原始审计数据</summary><pre class="json-block"></pre>'; details.querySelector('pre').textContent = JSON.stringify(value ?? null, null, 2); parent.append(details); }
+  function appendSummarySection(parent, title, rows, description = '') { const section = document.createElement('section'); section.className = 'result-section'; section.innerHTML = '<h3></h3><p hidden></p><div class="summary-list"></div>'; section.querySelector('h3').textContent = title; if (description) { const copy = section.querySelector('p'); copy.textContent = description; copy.hidden = false; } rows.forEach(([label, value]) => { const item = document.createElement('div'); item.className = 'summary-item'; item.innerHTML = '<span></span><strong></strong>'; item.querySelector('span').textContent = label; item.querySelector('strong').textContent = String(value); section.querySelector('.summary-list').append(item); }); parent.append(section); }
+  function appendAuditDetails(parent, value) { const details = document.createElement('details'); details.className = 'audit-details'; details.innerHTML = '<summary>技术详情</summary><pre class="json-block"></pre>'; details.querySelector('pre').textContent = JSON.stringify(value ?? null, null, 2); parent.append(details); }
+  function appendMarketChart(parent, rawSeries) {
+    const view = chartViewModel(rawSeries);
+    const section = document.createElement('section');
+    section.className = 'market-chart';
+    section.innerHTML = '<div class="market-chart__heading"><div><h3>行情走势</h3><p></p></div><div class="market-chart__legend" aria-label="图例"></div></div><div class="market-chart__stage"></div><div class="market-chart__tooltip" hidden></div>';
+    section.querySelector('.market-chart__heading p').textContent = view.normalized ? '多标的按首个有效观测归一，基准=1。' : '展示完整请求区间的收盘走势抽样。';
+    const stage = section.querySelector('.market-chart__stage');
+    if (!view.series.length) {
+      stage.classList.add('market-chart__stage--empty');
+      stage.textContent = '暂无可绘制的价格数据';
+      parent.append(section);
+      return;
+    }
+    const namespace = 'http://www.w3.org/2000/svg';
+    const width = 760; const height = 270; const left = 58; const right = 18; const top = 18; const bottom = 34;
+    const plotWidth = width - left - right; const plotHeight = height - top - bottom;
+    const dateSpan = Math.max(1, view.maxDate - view.minDate); const valueSpan = Math.max(Number.EPSILON, view.maxValue - view.minValue);
+    const xFor = timestamp => left + ((timestamp - view.minDate) / dateSpan) * plotWidth;
+    const yFor = value => top + (1 - ((value - view.minValue) / valueSpan)) * plotHeight;
+    const formatNumber = value => new Intl.NumberFormat('zh-CN', {maximumFractionDigits: view.normalized ? 4 : 4}).format(value);
+    const svg = document.createElementNS(namespace, 'svg');
+    svg.setAttribute('viewBox', `0 0 ${width} ${height}`); svg.setAttribute('role', 'img'); svg.setAttribute('aria-label', view.normalized ? '多标的归一化行情走势图，基准为1' : `${view.series[0].assetId}行情走势图`);
+    const axes = document.createElementNS(namespace, 'g'); axes.setAttribute('class', 'market-chart__axes');
+    const bottomAxis = document.createElementNS(namespace, 'line'); bottomAxis.setAttribute('class', 'market-chart__axis-line'); bottomAxis.setAttribute('x1', left); bottomAxis.setAttribute('x2', width - right); bottomAxis.setAttribute('y1', height - bottom); bottomAxis.setAttribute('y2', height - bottom); axes.append(bottomAxis);
+    const leftAxis = document.createElementNS(namespace, 'line'); leftAxis.setAttribute('class', 'market-chart__axis-line'); leftAxis.setAttribute('x1', left); leftAxis.setAttribute('x2', left); leftAxis.setAttribute('y1', top); leftAxis.setAttribute('y2', height - bottom); axes.append(leftAxis);
+    for (let index = 0; index <= 4; index += 1) {
+      const value = view.maxValue - (valueSpan * index / 4); const y = top + (plotHeight * index / 4);
+      const tick = document.createElementNS(namespace, 'line'); tick.setAttribute('class', 'market-chart__axis-tick'); tick.setAttribute('x1', left - 4); tick.setAttribute('x2', left); tick.setAttribute('y1', y); tick.setAttribute('y2', y); axes.append(tick);
+      const label = document.createElementNS(namespace, 'text'); label.setAttribute('class', 'market-chart__axis-label'); label.setAttribute('x', left - 9); label.setAttribute('y', y + 4); label.setAttribute('text-anchor', 'end'); label.textContent = formatNumber(value); axes.append(label);
+    }
+    const dateLabel = timestamp => new Date(timestamp).toISOString().slice(0, 10);
+    for (const [timestamp, anchor] of [[view.minDate, 'start'], [view.maxDate, 'end']]) { const x = anchor === 'start' ? left : width - right; const tick = document.createElementNS(namespace, 'line'); tick.setAttribute('class', 'market-chart__axis-tick'); tick.setAttribute('x1', x); tick.setAttribute('x2', x); tick.setAttribute('y1', height - bottom); tick.setAttribute('y2', height - bottom + 4); axes.append(tick); const label = document.createElementNS(namespace, 'text'); label.setAttribute('class', 'market-chart__axis-label market-chart__date'); label.setAttribute('x', x); label.setAttribute('y', height - 8); label.setAttribute('text-anchor', anchor); label.textContent = dateLabel(timestamp); axes.append(label); }
+    svg.append(axes);
+    const legend = section.querySelector('.market-chart__legend');
+    const hoverPoints = [];
+    view.series.forEach((series, index) => {
+      const colorIndex = (index % 6) + 1;
+      const item = document.createElement('span'); item.style.setProperty('--series-color', `var(--data-series-${colorIndex})`); item.innerHTML = '<i aria-hidden="true"></i><b></b>'; item.querySelector('b').textContent = series.assetId; legend.append(item);
+      const path = document.createElementNS(namespace, 'path');
+      path.setAttribute('class', 'market-chart__line'); path.style.setProperty('--series-color', `var(--data-series-${colorIndex})`);
+      path.setAttribute('d', series.points.map((point, pointIndex) => `${pointIndex ? 'L' : 'M'}${xFor(point.timestamp).toFixed(2)},${yFor(point.value).toFixed(2)}`).join(' ')); svg.append(path);
+      const marker = document.createElementNS(namespace, 'circle'); marker.setAttribute('class', 'market-chart__marker'); marker.setAttribute('r', '4'); marker.style.setProperty('--series-color', `var(--data-series-${colorIndex})`); marker.hidden = true; svg.append(marker); hoverPoints.push({series, marker});
+    });
+    const guide = document.createElementNS(namespace, 'line'); guide.setAttribute('class', 'market-chart__guide'); guide.setAttribute('y1', top); guide.setAttribute('y2', height - bottom); guide.hidden = true; svg.append(guide);
+    const hitArea = document.createElementNS(namespace, 'rect'); hitArea.setAttribute('class', 'market-chart__hit'); hitArea.setAttribute('x', left); hitArea.setAttribute('y', top); hitArea.setAttribute('width', plotWidth); hitArea.setAttribute('height', plotHeight); svg.append(hitArea);
+    const tooltip = section.querySelector('.market-chart__tooltip');
+    const hideHover = () => { guide.hidden = true; tooltip.hidden = true; hoverPoints.forEach(item => { item.marker.hidden = true; }); };
+    hitArea.addEventListener('pointermove', event => {
+      const bounds = svg.getBoundingClientRect(); const pointerX = Math.max(left, Math.min(width - right, ((event.clientX - bounds.left) / bounds.width) * width)); const targetTime = view.minDate + ((pointerX - left) / plotWidth) * dateSpan;
+      guide.setAttribute('x1', pointerX); guide.setAttribute('x2', pointerX); guide.hidden = false;
+      const rows = hoverPoints.map(({series, marker}) => { const point = series.points.reduce((nearest, candidate) => Math.abs(candidate.timestamp - targetTime) < Math.abs(nearest.timestamp - targetTime) ? candidate : nearest); marker.setAttribute('cx', xFor(point.timestamp)); marker.setAttribute('cy', yFor(point.value)); marker.hidden = false; return `${series.assetId}  ${formatNumber(point.value)}`; });
+      const nearestDate = hoverPoints[0].series.points.reduce((nearest, candidate) => Math.abs(candidate.timestamp - targetTime) < Math.abs(nearest.timestamp - targetTime) ? candidate : nearest).date;
+      tooltip.textContent = `${nearestDate}　${rows.join('　')}`; tooltip.hidden = false; tooltip.style.left = `${Math.min(78, Math.max(12, (event.clientX - bounds.left) / bounds.width * 100))}%`;
+    });
+    hitArea.addEventListener('pointerleave', hideHover); hitArea.addEventListener('pointercancel', hideHover);
+    stage.append(svg); parent.append(section);
+  }
   function renderResult(data) {
-    const content = $('result-content'); content.replaceChildren(); const metrics = document.createElement('div'); metrics.className = 'result-grid'; resultSummary(data).forEach(metric => { const node = document.createElement('div'); node.className = 'result-metric'; node.innerHTML = '<span></span><strong></strong>'; node.querySelector('span').textContent = metric.label; node.querySelector('strong').textContent = String(metric.value); metrics.append(node); }); content.append(metrics);
+    const content = $('result-content'); content.replaceChildren();
     if (data.ok === false) {
       const failure = document.createElement('section'); failure.className = 'result-section failure-card';
       failure.innerHTML = '<h3>请求未完成</h3><p class="failure-reason"></p><p class="failure-next" hidden></p><small class="failure-code"></small>';
@@ -242,16 +338,16 @@ function initializePage() {
       $('empty-canvas').hidden = true; content.hidden = false; return;
     }
     const view = resultViewModel(data);
-    appendSummarySection(content, '数据范围', view.coverage, '本次DataAssetRef的标的、日期与逐标的覆盖。');
-    const schema = document.createElement('section'); schema.className = 'result-section'; schema.innerHTML = '<h3>字段Schema</h3><p>标准化字段按实际DataAssetRef展示。</p><div class="tag-list"></div>'; (view.fields.length ? view.fields : ['未提供']).forEach(value => { const tag = document.createElement('span'); tag.className = 'tag'; tag.textContent = value; schema.querySelector('.tag-list').append(tag); }); content.append(schema);
-    appendSummarySection(content, '数据质量', view.quality, '交易日历没有可靠证据时明确标记为未验证，不以工作日推断缺口。');
-    appendSummarySection(content, '来源与留存', view.provider, '展示Provider调用、额度和本次正式DataAssetRef。');
-    if (Array.isArray(data.data_preview) && data.data_preview.length) { const section = document.createElement('section'); section.className = 'result-section'; section.innerHTML = '<h3>数据预览</h3><p>仅展示服务返回的预览行。</p><div class="preview-table-wrap"><table class="preview-table"><thead></thead><tbody></tbody></table></div>'; const columns = [...new Set(data.data_preview.flatMap(row => Object.keys(row)))]; const head = document.createElement('tr'); columns.forEach(key => { const cell = document.createElement('th'); cell.textContent = key; head.append(cell); }); section.querySelector('thead').append(head); data.data_preview.forEach(row => { const tr = document.createElement('tr'); columns.forEach(key => { const cell = document.createElement('td'); cell.textContent = row[key] ?? ''; tr.append(cell); }); section.querySelector('tbody').append(tr); }); content.append(section); }
-    appendAuditDetails(content, {quality_report: data.quality_report ?? null, provider_calls: data.provider_calls ?? [], quota_usage: data.quota_usage ?? null, warnings: data.warnings ?? [], data_asset_ref: data.data_asset_ref ?? null});
+    appendMarketChart(content, data.chart_series);
+    appendSummarySection(content, '数据概览', view.overview);
+    appendSummarySection(content, '数据质量', view.quality);
+    const schema = document.createElement('section'); schema.className = 'result-section'; schema.innerHTML = '<h3>行情字段</h3><div class="tag-list"></div>'; (view.fields.length ? view.fields : ['未提供']).forEach(value => { const tag = document.createElement('span'); tag.className = 'tag'; tag.textContent = value; schema.querySelector('.tag-list').append(tag); }); content.append(schema);
+    if (Array.isArray(data.data_preview) && data.data_preview.length) { const section = document.createElement('section'); section.className = 'result-section'; section.innerHTML = '<h3>数据预览</h3><div class="preview-table-wrap"><table class="preview-table"><thead></thead><tbody></tbody></table></div>'; const columns = [...new Set(data.data_preview.flatMap(row => Object.keys(row)))]; const head = document.createElement('tr'); columns.forEach(key => { const cell = document.createElement('th'); cell.textContent = key; head.append(cell); }); section.querySelector('thead').append(head); data.data_preview.forEach(row => { const tr = document.createElement('tr'); columns.forEach(key => { const cell = document.createElement('td'); cell.textContent = row[key] ?? ''; tr.append(cell); }); section.querySelector('tbody').append(tr); }); content.append(section); }
+    appendAuditDetails(content, {data_fetch_run_id: data.data_fetch_run_id ?? null, cache_decision: data.cache_decision ?? null, quality_report: data.quality_report ?? null, provider_calls: data.provider_calls ?? [], quota_usage: data.quota_usage ?? null, warnings: data.warnings ?? [], data_asset_ref: data.data_asset_ref ?? null});
     $('empty-canvas').hidden = true; content.hidden = false;
   }
   async function loadAssets() { assetLoadError = false; try { const data = await requestJson('/api/assets'); const items = Array.isArray(data.assets) ? data.assets : Array.isArray(data) ? data : []; assetStore.clear(); items.forEach(addAsset); renderAssets(); } catch (_) { assetLoadError = true; renderAssets(); } }
-  async function loadStatus() { try { const data = await requestJson('/api/status'); $('service-status').textContent = data.status === 'available' ? '本机服务已就绪' : (data.status || '服务状态未知'); $('secret-status').textContent = credentialStatusText(data); } catch (_) { $('service-status').textContent = '本机服务未启动'; $('secret-status').textContent = '无法读取凭据状态。'; } }
+  async function loadStatus() { try { const data = await requestJson('/api/status'); $('service-status').textContent = data.status === 'available' ? '本机服务已就绪' : (data.status || '服务状态未知'); $('secret-status').textContent = credentialStatusText(data); } catch (_) { $('service-status').textContent = '本机服务未启动'; $('secret-status').textContent = '无法读取连接状态。'; } }
   const defaults = defaultDateRange();
   if (!$('start-date').value.trim()) $('start-date').value = defaults.start;
   if (!$('end-date').value.trim()) $('end-date').value = defaults.end;
@@ -272,19 +368,20 @@ function initializePage() {
     input.addEventListener('blur', () => { if (input.value.trim()) normalizeDate(input); });
   }
   const selected = name => document.querySelector(`input[name="${name}"]:checked`)?.value;
-  const formValues = () => ({assetIds: $('asset-ids').value, startDate: $('start-date').value, endDate: $('end-date').value, fields: [$('fields').value, ...[...document.querySelectorAll('.extra-field:checked')].map(node => node.value)].join(','), frequency: $('frequency').value, adjustment: $('adjustment').value, sourceMode: selected('source-mode'), cachePolicy: selected('cache-policy')});
-  function updateRequestSummary() { const values = formValues(); $('local-source-note').hidden = values.sourceMode !== 'local'; $('ifind-status-card').hidden = values.sourceMode !== 'ifind_http'; const list = $('request-summary'); list.replaceChildren(); requestSummary(values).forEach(([label, value]) => { const term = document.createElement('dt'); term.textContent = label; const description = document.createElement('dd'); description.textContent = value; list.append(term, description); }); }
-  $('request-form').addEventListener('input', updateRequestSummary);
-  $('request-form').addEventListener('change', updateRequestSummary);
-  updateRequestSummary();
+  const fieldControls = [...document.querySelectorAll('.extra-field')];
+  const formValues = () => ({assetIds: $('asset-ids').value, startDate: $('start-date').value, endDate: $('end-date').value, fields: fieldControls.filter(node => node.checked).map(node => node.value).join(','), frequency: $('frequency').value, adjustment: $('adjustment').value, sourceMode: selected('source-mode'), cachePolicy: selected('cache-policy')});
+  function syncSourceVisibility() { const values = formValues(); $('local-source-note').hidden = values.sourceMode !== 'local'; $('ifind-status-card').hidden = values.sourceMode !== 'ifind_http'; const selectedFields = fieldControls.filter(node => node.checked).length; $('field-summary').textContent = selectedFields === fieldControls.length ? '全部字段' : `${selectedFields}项字段`; }
+  $('request-form').addEventListener('input', syncSourceVisibility);
+  $('request-form').addEventListener('change', syncSourceVisibility);
+  syncSourceVisibility();
   $('asset-search').addEventListener('input', renderAssets); $('refresh-assets').addEventListener('click', loadAssets);
-  $('request-form').addEventListener('submit', async event => { event.preventDefault(); clearFieldErrors(); let request; try { request = buildFetchRequest(formValues()); $('asset-ids').value = request.asset_ids.join('\n'); $('start-date').value = request.start_date.replaceAll('-', '/'); $('end-date').value = request.end_date.replaceAll('-', '/'); updateRequestSummary(); } catch (error) { state('请求配置错误', 'failed'); message(error.message, 'failed'); showInputError(error.message); return; }
+  $('request-form').addEventListener('submit', async event => { event.preventDefault(); clearFieldErrors(); let request; try { request = buildFetchRequest(formValues()); $('asset-ids').value = request.asset_ids.join('\n'); $('start-date').value = request.start_date.replaceAll('-', '/'); $('end-date').value = request.end_date.replaceAll('-', '/'); syncSourceVisibility(); } catch (error) { state('请求配置错误', 'failed'); message(error.message, 'failed'); showInputError(error.message); return; }
     state('正在检查数据与缓存', 'running'); message('正在获取数据并核验保存状态。'); setBusy(true); $('result-content').hidden = true; $('empty-canvas').hidden = false;
-    try { const data = await requestJson('/api/fetch', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(request)}); renderResult(data); addAsset(data); $('run-id').textContent = data.data_fetch_run_id || ''; state('请求完成', 'complete'); message(`请求完成：${data.cache_decision || '服务未返回缓存决策'}。`); } catch (error) { if (error.payload) { renderResult(error.payload); $('run-id').textContent = error.payload.data_fetch_run_id || ''; } state('请求失败', 'failed'); message(error.message, 'failed'); } finally { setBusy(false); }
+    try { const data = await requestJson('/api/fetch', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(request)}); renderResult(data); addAsset(data); state('请求完成', 'complete'); message('数据获取完成。'); } catch (error) { if (error.payload) renderResult(error.payload); state('请求失败', 'failed'); message(error.message, 'failed'); } finally { setBusy(false); }
   });
   function bindResizer(id, variable, minimum, maximum) { const resizer = $(id); const workbench = $('workbench'); const current = () => parseInt(getComputedStyle(workbench).getPropertyValue(variable), 10) || minimum; const set = value => { const next = Math.max(minimum, Math.min(maximum, value)); workbench.style.setProperty(variable, `${next}px`); resizer.setAttribute('aria-valuenow', String(next)); }; const direction = variable === '--library-width' ? 1 : -1; let startX = 0; let startValue = 0; const finish = () => { resizer.classList.remove('active'); document.removeEventListener('pointermove', move); document.removeEventListener('pointerup', finish); }; const move = event => set(startValue + direction * (event.clientX - startX)); resizer.setAttribute('aria-valuemin', minimum); resizer.setAttribute('aria-valuemax', maximum); set(current()); resizer.addEventListener('pointerdown', event => { startX = event.clientX; startValue = current(); resizer.classList.add('active'); document.addEventListener('pointermove', move); document.addEventListener('pointerup', finish); }); resizer.addEventListener('keydown', event => { if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return; event.preventDefault(); if (event.key === 'Home') return set(minimum); if (event.key === 'End') return set(maximum); set(current() + direction * (event.key === 'ArrowRight' ? 8 : -8)); }); }
   bindResizer('library-resizer', '--library-width', 220, 420); bindResizer('inspector-resizer', '--inspector-width', 300, 520); loadStatus(); loadAssets();
 }
 
-if (typeof module === 'object' && module.exports) module.exports = {parseAndFormatDate, formatDateTyping, defaultDateRange, nearestWeekday, normalizeCurrentWeekendEndDate, splitList, buildFetchRequest, requestSummary, resultSummary, resultViewModel, credentialStatusText, parseServiceResponse};
+if (typeof module === 'object' && module.exports) module.exports = {parseAndFormatDate, formatDateTyping, defaultDateRange, nearestWeekday, normalizeCurrentWeekendEndDate, splitList, buildFetchRequest, resultSummary, resultViewModel, chartViewModel, credentialStatusText, parseServiceResponse};
 if (typeof document !== 'undefined' && document.getElementById) initializePage();

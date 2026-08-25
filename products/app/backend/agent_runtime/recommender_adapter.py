@@ -12,10 +12,12 @@ import json
 import math
 import re
 import sys
+from dataclasses import replace
 from datetime import date, timedelta
 from runpy import run_path
 from collections.abc import Mapping, Sequence
 from pathlib import Path
+from threading import RLock, Timer
 from typing import Any, Callable
 from uuid import uuid4
 
@@ -33,7 +35,7 @@ from modules.recommender.models import (
 )
 from modules.recommender.agent_steps import canonical_hash
 from modules.recommender.ports import AgentPort, KnowledgePort, ToolPort
-from modules.recommender.service import RecommenderService
+from modules.recommender.service import RecommendationInputRequired, RecommenderService
 from modules.recommender.config import RecommenderConfig
 from modules.recommender.interaction import constraints_fingerprint, merge_confirmed_constraints
 from runtime.protocol.models import ModuleRunRef
@@ -54,6 +56,7 @@ from .multi_agent import (
     OneShotAgentRuntime,
     resolve_recommendation_preset,
 )
+from .runtime_recommender import RuntimeBackedAgentPort, ShadowRuntimeAgentPort
 
 
 _REPORT_MODULES = ("payoff", "pricing", "backtest")
@@ -62,6 +65,245 @@ _MODULE_RUN_REF_FIELDS = (
     "module", "tenant_id", "task_id", "run_id",
     "expected_semantic_result_hash", "expected_artifact_manifest_hash",
 )
+
+_REASONING_BATCH_CHUNKS = 128
+_REASONING_BATCH_CHARACTERS = 4_096
+_REASONING_FLUSH_INTERVAL_SECONDS = 0.4
+_REASONING_REQUEST_MAX_CHARACTERS = 512_000
+_REASONING_REQUEST_MAX_EVENTS = 4_096
+_REASONING_EVENT_MAX_CHARACTERS = 64_000
+
+
+class RuntimeEventPersistenceSink:
+    """Persist provider reasoning in bounded, run-isolated batches.
+
+    Runtime transport delivery remains per chunk. Only the durable projection
+    is coalesced. The lock and run-specific key prevent parallel Mode3 roles
+    from sharing text. Persistence failures are diagnostics-only and never
+    alter the authoritative Recommender result.
+    """
+
+    _TERMINAL_TYPES = frozenset({
+        "turn.completed", "turn.failed", "turn.cancelled",
+        "agent.completed", "agent.failed", "agent.cancelled",
+        "workflow.completed", "workflow.failed", "workflow.cancelled",
+        "runtime.closed", "runtime.error",
+    })
+
+    def __init__(
+        self,
+        persist: Callable[[Any], object],
+        *,
+        batch_chunks: int = _REASONING_BATCH_CHUNKS,
+        batch_characters: int = _REASONING_BATCH_CHARACTERS,
+        max_characters: int = _REASONING_REQUEST_MAX_CHARACTERS,
+        max_events: int = _REASONING_REQUEST_MAX_EVENTS,
+        flush_interval_seconds: float = _REASONING_FLUSH_INTERVAL_SECONDS,
+        timer_factory: Callable[[float, Callable[[], None]], Any] = Timer,
+    ) -> None:
+        if min(batch_chunks, batch_characters, max_characters, max_events) < 1:
+            raise ValueError("Reasoning持久化边界必须是正整数")
+        if not callable(timer_factory) or not math.isfinite(flush_interval_seconds) or flush_interval_seconds <= 0:
+            raise ValueError("Reasoning持久化时间窗口必须是有限正数")
+        self._persist = persist
+        self._batch_chunks = batch_chunks
+        self._batch_characters = batch_characters
+        self._max_characters = max_characters
+        self._max_events = max_events
+        self._flush_interval_seconds = float(flush_interval_seconds)
+        self._timer_factory = timer_factory
+        self._lock = RLock()
+        self._states: dict[tuple[object, ...], dict[str, Any]] = {}
+        self._closed = False
+        self.persistence_failures = 0
+
+    def __call__(self, event: Any) -> None:
+        with self._lock:
+            if self._closed:
+                return
+            if event.type == "assistant.reasoning_delta":
+                self._append_reasoning(event)
+                return
+            if event.type in self._TERMINAL_TYPES:
+                if event.agent_run_id:
+                    self._flush_run(event, terminal=True)
+                else:
+                    self._flush_all(terminal=True)
+            else:
+                self._flush_key(self._key(event), terminal=False)
+            self._safe_persist(event)
+
+    def flush(self) -> None:
+        with self._lock:
+            self._flush_all(terminal=True)
+
+    def close(self) -> None:
+        with self._lock:
+            if self._closed:
+                return
+            self._flush_all(terminal=True)
+            self._closed = True
+
+    @property
+    def active_timer_count(self) -> int:
+        with self._lock:
+            return sum(1 for state in self._states.values() if state.get("timer") is not None)
+
+    @staticmethod
+    def _key(event: Any) -> tuple[object, ...]:
+        return (
+            event.workflow_id, event.session_id, event.agent_run_id,
+            event.turn, event.step,
+        )
+
+    def _append_reasoning(self, event: Any) -> None:
+        key = self._key(event)
+        state = self._states.setdefault(key, {
+            "template": event,
+            "parts": [],
+            "chunks": 0,
+            "accepted_chars": 0,
+            "provider_chars": 0,
+            "persisted_events": 0,
+            "available": False,
+            "truncated": False,
+            "timer": None,
+        })
+        state["template"] = event
+        text = str(event.payload.get("delta", ""))
+        state["provider_chars"] += len(text)
+        state["available"] = state["available"] or event.payload.get("available") is True or bool(text)
+        remaining = max(0, self._max_characters - state["accepted_chars"])
+        accepted = text[:remaining]
+        if accepted:
+            state["parts"].append(accepted)
+            state["accepted_chars"] += len(accepted)
+        if len(accepted) < len(text):
+            state["truncated"] = True
+        state["chunks"] += 1
+        buffered = sum(len(part) for part in state["parts"])
+        if (
+            state["persisted_events"] < self._max_events - 1
+            and (
+                state["chunks"] >= self._batch_chunks
+                or buffered >= self._batch_characters
+            )
+        ):
+            self._flush_key(key, terminal=False)
+        elif state["persisted_events"] < self._max_events - 1:
+            self._schedule_timer(key, state)
+
+    def _schedule_timer(self, key: tuple[object, ...], state: dict[str, Any]) -> None:
+        if self._closed or state.get("timer") is not None:
+            return
+        holder: dict[str, Any] = {}
+        timer: Any = None
+
+        def fire() -> None:
+            self._timer_fired(key, holder["timer"])
+
+        try:
+            timer = self._timer_factory(self._flush_interval_seconds, fire)
+            holder["timer"] = timer
+            if hasattr(timer, "daemon"):
+                timer.daemon = True
+            state["timer"] = timer
+            timer.start()
+        except Exception:
+            if timer is not None:
+                try:
+                    timer.cancel()
+                except Exception:
+                    pass
+            state["timer"] = None
+            self.persistence_failures += 1
+
+    def _timer_fired(self, key: tuple[object, ...], timer: Any) -> None:
+        with self._lock:
+            state = self._states.get(key)
+            if self._closed or state is None or state.get("timer") is not timer:
+                return
+            state["timer"] = None
+            self._flush_key(key, terminal=False)
+
+    def _cancel_timer(self, state: dict[str, Any]) -> None:
+        timer = state.get("timer")
+        state["timer"] = None
+        if timer is not None:
+            try:
+                timer.cancel()
+            except Exception:
+                self.persistence_failures += 1
+
+    def _flush_all(self, *, terminal: bool) -> None:
+        for key in tuple(self._states):
+            self._flush_key(key, terminal=terminal)
+
+    def _flush_run(self, event: Any, *, terminal: bool) -> None:
+        prefix = (event.workflow_id, event.session_id, event.agent_run_id)
+        for key in tuple(self._states):
+            if key[:3] == prefix:
+                self._flush_key(key, terminal=terminal)
+
+    def _flush_key(self, key: tuple[object, ...], *, terminal: bool) -> None:
+        state = self._states.get(key)
+        if state is None:
+            return
+        self._cancel_timer(state)
+        content = "".join(state["parts"])
+        state["parts"] = []
+        state["chunks"] = 0
+        reserved_terminal_slot = 0 if terminal else 1
+        slots = max(0, self._max_events - state["persisted_events"] - reserved_terminal_slot)
+        pieces = [
+            content[index:index + _REASONING_EVENT_MAX_CHARACTERS]
+            for index in range(0, len(content), _REASONING_EVENT_MAX_CHARACTERS)
+        ]
+        selected_pieces = pieces[:slots]
+        deferred_content = "".join(pieces[slots:])
+        if terminal and deferred_content:
+            state["truncated"] = True
+        elif deferred_content:
+            state["parts"] = [deferred_content]
+        for index, piece in enumerate(selected_pieces):
+            is_last_slot = index == len(selected_pieces) - 1
+            self._persist_batch(state, piece, terminal=terminal and is_last_slot)
+        if (
+            terminal
+            and not pieces
+            and state["available"]
+            and (state["truncated"] or state["persisted_events"] == 0)
+            and state["persisted_events"] < self._max_events
+        ):
+            self._persist_batch(state, "", terminal=True)
+        if terminal:
+            self._states.pop(key, None)
+        elif state["parts"] and state["persisted_events"] < self._max_events - 1:
+            self._schedule_timer(key, state)
+
+    def _persist_batch(self, state: dict[str, Any], content: str, *, terminal: bool) -> None:
+        template = state["template"]
+        payload: dict[str, Any] = {
+            "available": state["available"],
+            "chars": len(content),
+        }
+        if content:
+            payload["delta"] = content
+        if terminal and state["truncated"]:
+            payload["truncated"] = True
+            payload["provider_chars"] = state["provider_chars"]
+        state["persisted_events"] += 1
+        self._safe_persist(replace(
+            template,
+            event_id=f"reasoning-batch-{uuid4().hex}",
+            payload=payload,
+        ))
+
+    def _safe_persist(self, event: Any) -> None:
+        try:
+            self._persist(event)
+        except Exception:
+            self.persistence_failures += 1
 
 
 class AppAgentPort(AgentPort):
@@ -297,6 +539,14 @@ class AppToolPort(ToolPort):
                 input_fingerprints=input_fingerprints,
                 market_data_ref=market_data_ref,
             )
+            if str(result.get("status", "")).strip().lower() == "needs_input":
+                raise RecommendationInputRequired(
+                    "path_count",
+                    str(result.get("message") or "该候选需要明确Monte Carlo路径数后才能估值。"),
+                )
+        except RecommendationInputRequired:
+            self._emit_visible_event("host_module", "needs_input", "请补充Monte Carlo路径数后继续候选验证。")
+            raise
         except Exception:
             self._emit_visible_event("host_module", "failed", "候选验证模块未完成。")
             raise
@@ -327,6 +577,8 @@ class RecommenderAdapter:
         tool_executor: "AppConversationToolExecutor",
         concurrency_gate: AgentRunConcurrencyGate | None = None,
         settlement_registry: AgentRunSettlementRegistry | None = None,
+        agent_runtime_mode: str = "disabled",
+        agent_runtime_session_root: Path | None = None,
     ) -> None:
         self._gateway = gateway
         self._registry = registry
@@ -334,6 +586,11 @@ class RecommenderAdapter:
         self._tools = tool_executor
         self._concurrency_gate = concurrency_gate
         self._settlement_registry = settlement_registry
+        runtime_mode = str(agent_runtime_mode or "disabled").strip().lower()
+        if runtime_mode not in {"disabled", "shadow", "active"}:
+            raise ValidationError("Agent Runtime模式必须是disabled、shadow或active")
+        self._agent_runtime_mode = runtime_mode
+        self._agent_runtime_session_root = agent_runtime_session_root
 
     def run_fixed(
         self, identity: SessionIdentity, task_id: str, prompt: str, arguments: Mapping[str, Any], *,
@@ -426,7 +683,7 @@ class RecommenderAdapter:
             if request_id is not None
             else None
         )
-        agent_port = AppAgentPort(
+        legacy_agent_port = AppAgentPort(
             self._gateway,
             identity,
             task_id,
@@ -439,6 +696,61 @@ class RecommenderAdapter:
             execution_ids=execution_ids,
             settlement_registry=self._settlement_registry,
         )
+        agent_port: AgentPort = legacy_agent_port
+        runtime_persistence_sink: RuntimeEventPersistenceSink | None = None
+        if self._agent_runtime_mode in {"shadow", "active"}:
+            runtime_parent_session = self._tasks.conversation_session_id(identity, task_id)
+            runtime_event_log = self._tasks.session_event_log
+            runtime_event_log.ensure_session(runtime_parent_session, kind="conversation")
+
+            def persist_runtime_event(event):
+                projected = replace(
+                    event,
+                    payload={**dict(event.payload), "runtime_mode": self._agent_runtime_mode},
+                )
+                runtime_event_log.append(
+                    runtime_parent_session,
+                    "runtime.event",
+                    {"runtime_event": projected.to_dict()},
+                    event_id=f"runtime:{projected.event_id}",
+                    ignorable=True,
+                )
+
+            runtime_persistence_sink = RuntimeEventPersistenceSink(persist_runtime_event)
+
+            runtime_workflow_id = str((execution_ids or {}).get("workflow_run_id") or f"runtime-{uuid4().hex}")
+            try:
+                runtime_agent_port = RuntimeBackedAgentPort(
+                    self._gateway,
+                    identity,
+                    task_id,
+                    preset_id=preset_id,
+                    selection=selection,
+                    role_model_defaults=(
+                        self._gateway.multi_agent_role_model_selections_for(identity, preset_id)
+                        if hasattr(self._gateway, "multi_agent_role_model_selections_for") else {}
+                    ),
+                    is_cancelled=self._tasks.is_cancelled,
+                    event_sink=runtime_persistence_sink,
+                    session_root=self._agent_runtime_session_root,
+                    root_session_id=str(runtime_parent_session),
+                    workflow_id=runtime_workflow_id,
+                )
+            except Exception as error:
+                if self._agent_runtime_mode == "active":
+                    raise
+                runtime_event_log.append(
+                    runtime_parent_session,
+                    "runtime.shadow_failure",
+                    {"workflow_id": runtime_workflow_id, "error_type": type(error).__name__},
+                    ignorable=True,
+                )
+            else:
+                if self._agent_runtime_mode == "active":
+                    legacy_agent_port.close()
+                    agent_port = runtime_agent_port
+                else:
+                    agent_port = ShadowRuntimeAgentPort(legacy_agent_port, runtime_agent_port)
         review_policy_for = getattr(self._gateway, "multi_agent_review_policy_for", None)
         review_policy_id = (
             str(review_policy_for(identity)).strip().lower()
@@ -455,7 +767,11 @@ class RecommenderAdapter:
         try:
             result = service.recommend_fixed(case, workflow=workflow)
         finally:
-            agent_port.close()
+            try:
+                agent_port.close()
+            finally:
+                if runtime_persistence_sink is not None:
+                    runtime_persistence_sink.close()
         route = result.get("route", {})
         if not isinstance(route, Mapping) or route.get("fixed_recommendation_workflow") is not True:
             raise ValidationError("App内Recommender只允许固定推荐Workflow，不允许freeform")
@@ -915,6 +1231,15 @@ class AppConversationToolExecutor:
         contract_fingerprint = str(stored_variant.get("contract_fingerprint", ""))
         if not isinstance(resolved_contract, Mapping) or not re.fullmatch(r"[0-9a-f]{64}", contract_fingerprint):
             raise ValidationError("候选预选计算缺少有效ResolvedContract")
+        pricing_config = (
+            _pricing_config_for_resolved_contract(resolved_contract, confirmed_constraints)
+            if "pricer" in requested_modules else None
+        )
+        if "pricer" in requested_modules and pricing_config is None:
+            return {
+                "status": "needs_input",
+                "message": "该候选需要Monte Carlo估值。请明确提供路径数，例如“MC路径数10000”。",
+            }
         binding = {
             "analysis_case_id": _confirmation_analysis_case_id(contract_fingerprint),
             "candidate_id": _candidate_variant_module_identity(candidate_key, version_id),
@@ -950,7 +1275,7 @@ class AppConversationToolExecutor:
                     ))
                     statuses[module] = "unsupported"
                     continue
-                payload.update({"pricing_config": {"model_method": "auto"}, "market_data_refs": [data_ref]})
+                payload.update({"pricing_config": pricing_config, "market_data_refs": [data_ref]})
             elif module == "backtester":
                 if data_ref is None:
                     records.append(_unavailable_evaluation(
@@ -1240,6 +1565,20 @@ class AppConversationToolExecutor:
         }
         if not requested_kinds or not requested_kinds.issubset({"card", "quote", "report"}):
             raise ValidationError("推荐交付类型无效")
+        pricing_config: dict[str, Any] | None = None
+        if "report" in requested_kinds:
+            resolved_contract = expected.get("resolved_contract")
+            if not isinstance(resolved_contract, Mapping):
+                return {
+                    "status": "partial",
+                    "next_step": "冻结候选缺少正式合同快照，已停止交付。请重新推荐。",
+                }
+            pricing_config = _pricing_config_for_resolved_contract(resolved_contract, confirmed_constraints or {})
+            if pricing_config is None:
+                return {
+                    "status": "needs_input",
+                    "message": "该候选需要Monte Carlo估值。请明确提供路径数，例如“MC路径数10000”。",
+                }
         term_overrides = (
             dict(expected.get("term_overrides", {}))
             if isinstance(expected.get("term_overrides"), Mapping)
@@ -1284,7 +1623,7 @@ class AppConversationToolExecutor:
                 detail_payloads = {
                     "pricing": {
                         **compute_base,
-                        "pricing_config": {"model_method": "auto"},
+                        "pricing_config": pricing_config,
                         "market_data_refs": [data_ref],
                     },
                     "backtest": {
@@ -2157,6 +2496,32 @@ def _candidate_constraints_fingerprint(constraints: Mapping[str, Any]) -> str:
         if key in {"underlying", "horizon", "market_view", "max_loss", "principal_fluctuation", "term_overrides"}
     }
     return constraints_fingerprint(candidate_fields)
+
+
+def _pricing_config_for_resolved_contract(
+    contract: Mapping[str, Any],
+    confirmed_constraints: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """Build the one formal Pricer configuration from a frozen contract.
+
+    ``auto`` retains Pricer's established BS preference for contracts that
+    support both methods. A Monte Carlo-only contract cannot be dispatched
+    until the user has provided a positive path count. This function is used
+    by both candidate evaluation and report detail valuation.
+    """
+
+    terms = contract.get("terms")
+    if not isinstance(terms, Mapping):
+        raise ValidationError("冻结候选缺少正式合同条款")
+    methods = tuple(str(value).strip() for value in terms.get("pricing_methods", ()) if str(value).strip())
+    if "black_scholes" in methods:
+        return {"model_method": "auto"}
+    if "monte_carlo" not in methods:
+        raise ValidationError("冻结候选未声明可用定价方法")
+    value = confirmed_constraints.get("path_count")
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        return None
+    return {"model_method": "auto", "path_count": value}
 
 
 def _selected_candidate_id(prompt: object, recommendation: object) -> str | None:

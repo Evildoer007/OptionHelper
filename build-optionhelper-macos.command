@@ -109,29 +109,34 @@ fi
 cd "$ROOT"
 
 check_dependencies() {
-  local stage="$1"
-  local label="$2"
-  local requirements="$3"
   local output
   local check_exit_code
 
-  print "$stage 正在检查${label}…"
-  if output=$("$PYTHON_BIN" packaging/skill/environment_check.py --requirements "$requirements" --check-dependencies 2>&1); then
-    print "$stage ${label}检查通过。"
+  print "[1/3] 正在检查运行环境和锁定依赖…"
+  if output=$("$PYTHON_BIN" packaging/skill/environment_check.py \
+      --requirements "$ROOT/core/requirements.lock" \
+      --requirements "$ROOT/packaging/build-requirements.lock" \
+      --project-root "$ROOT" --check-dependencies 2>&1); then
+    if print -r -- "$output" | /usr/bin/grep -q '"status": "hit"'; then
+      print "[1/3] 运行条件已就绪，复用上次检查。"
+    else
+      print "[1/3] 运行条件检查通过。"
+    fi
     return 0
   fi
   check_exit_code=$?
-  print -u2 "$stage ${label}检查未通过，构建已停止。"
+  print -u2 "运行环境和锁定依赖检查未通过，构建已停止。"
   print -u2 "$output"
   print -u2 "处理方式：请使用同一Python环境安装或恢复锁定依赖："
-  print -u2 "  \"$PYTHON_BIN\" -m pip install -r \"$ROOT/$requirements\" --index-url \"https://pypi.tuna.tsinghua.edu.cn/simple\""
+  print -u2 "  \"$PYTHON_BIN\" -m pip install -r \"$ROOT/core/requirements.lock\" --index-url \"https://pypi.tuna.tsinghua.edu.cn/simple\""
+  print -u2 "  \"$PYTHON_BIN\" -m pip install -r \"$ROOT/packaging/build-requirements.lock\" --index-url \"https://pypi.tuna.tsinghua.edu.cn/simple\""
   print -u2 "修复后重新运行本命令。"
   exit "$check_exit_code"
 }
 
 print "OptionHelper macOS候选构建"
-check_dependencies "[1/3]" "运行依赖" "core/requirements.lock"
-check_dependencies "[2/3]" "打包工具" "packaging/build-requirements.lock"
+check_dependencies
+print "[2/3] 运行条件已就绪，准备构建Skill、App和DMG。"
 print "[3/3] 正在构建Skill、App和DMG。此过程可能需要数分钟，下面会持续显示阶段进度。"
 if "$PYTHON_BIN" packaging/build_current.py --version "$VERSION" --platform macos; then
   exit 0

@@ -238,10 +238,36 @@
     [self.window makeKeyAndOrderFront:nil];
     [NSApp activateIgnoringOtherApps:YES];
     self.webView = webView;
-    [self installTitlebarDragViewForWindow:self.window];
-    [self installRailToggleForWindow:self.window];
-    [self installReportToggleForWindow:self.window];
+    [self ensureTitlebarControlsForWindow:self.window];
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self ensureTitlebarControlsForWindow:self.window];
+        [self syncWorkspaceTitlebarControlsForURL:self.webView.URL];
+    });
     [webView loadRequest:[NSURLRequest requestWithURL:startupURL]];
+}
+
+- (void)ensureTitlebarControlsForWindow:(NSWindow *)window {
+    NSButton *closeButton = [window standardWindowButton:NSWindowCloseButton];
+    NSView *titlebar = closeButton.superview;
+    if (closeButton == nil || titlebar == nil) return;
+
+    if (self.titlebarDragView != nil && self.titlebarDragView.superview != titlebar) {
+        [self.titlebarDragView removeFromSuperview];
+        self.titlebarDragView = nil;
+    }
+    if (self.railToggle != nil && self.railToggle.superview != titlebar) {
+        [self.railToggle removeFromSuperview];
+        self.railToggle = nil;
+    }
+    if (self.reportToggle != nil && self.reportToggle.superview != titlebar) {
+        [self.reportToggle removeFromSuperview];
+        self.reportToggle = nil;
+    }
+
+    if (self.titlebarDragView == nil) [self installTitlebarDragViewForWindow:window];
+    if (self.railToggle == nil) [self installRailToggleForWindow:window];
+    if (self.reportToggle == nil) [self installReportToggleForWindow:window];
+    [self layoutTitlebarControls];
 }
 
 - (void)installTitlebarDragViewForWindow:(NSWindow *)window {
@@ -321,11 +347,20 @@
 }
 
 - (void)webView:(WKWebView *)webView didFinishNavigation:(WKNavigation *)navigation {
+    [self ensureTitlebarControlsForWindow:self.window];
     [self syncWorkspaceTitlebarControlsForURL:webView.URL];
 }
 
 - (void)windowDidResize:(NSNotification *)notification {
-    if (notification.object == self.window) [self layoutTitlebarControls];
+    if (notification.object != self.window) return;
+    [self ensureTitlebarControlsForWindow:self.window];
+    [self syncWorkspaceTitlebarControlsForURL:self.webView.URL];
+}
+
+- (void)windowDidBecomeKey:(NSNotification *)notification {
+    if (notification.object != self.window) return;
+    [self ensureTitlebarControlsForWindow:self.window];
+    [self syncWorkspaceTitlebarControlsForURL:self.webView.URL];
 }
 
 - (BOOL)windowShouldClose:(NSWindow *)sender {

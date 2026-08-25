@@ -71,14 +71,13 @@ class ContractStore:
         module page from replacing a scheme selected in another window.
         """
 
-        task = self._state.read("tasks").get(task_id)
-        if not isinstance(task, dict) or task.get("tenant_id") != identity.tenant_id or task.get("created_by") != identity.principal_id:
-            raise AuthorizationError("contract.variant", "task is not owned by current caller")
-        if not isinstance(expected_contract_fingerprint, str) or len(expected_contract_fingerprint) != 64:
-            raise ValidationError("当前ResolvedContract指纹无效")
-        replacement = self._record(identity, task_id, prepared, catalog_version=catalog_version)
-        if replacement["contract_fingerprint"] == expected_contract_fingerprint:
-            raise ValidationError("新方案必须使用不同的ResolvedContract")
+        replacement = self.preview_new_variant(
+            identity,
+            task_id,
+            prepared,
+            catalog_version=catalog_version,
+            expected_contract_fingerprint=expected_contract_fingerprint,
+        )
         key = f"{identity.tenant_id}:{task_id}"
 
         def update(value: dict[str, Any]) -> dict[str, Any]:
@@ -100,6 +99,40 @@ class ContractStore:
             return value
 
         return self._state.update("contracts", update)[key]
+
+    def preview_new_variant(
+        self,
+        identity: SessionIdentity,
+        task_id: str,
+        prepared: Mapping[str, Any],
+        *,
+        catalog_version: str,
+        expected_contract_fingerprint: str,
+    ) -> dict[str, Any]:
+        """Validate a new scheme without changing the task's active contract.
+
+        Calculators need the new contract identity before execution, but a
+        failed calculation must not replace the last successful scheme.  The
+        caller may use this immutable preview for authorization and result
+        binding, then call :meth:`activate_new_variant` only after a successful
+        durable calculation.
+        """
+
+        self._require_task_owner(identity, task_id, action="contract.variant")
+        if not isinstance(expected_contract_fingerprint, str) or len(expected_contract_fingerprint) != 64:
+            raise ValidationError("当前ResolvedContract指纹无效")
+        existing = self._state.read("contracts").get(f"{identity.tenant_id}:{task_id}")
+        if not isinstance(existing, Mapping):
+            raise ValidationError("当前任务没有可切换的ResolvedContract")
+        if existing.get("contract_fingerprint") != expected_contract_fingerprint:
+            raise ValidationError("当前任务的ResolvedContract已变化；请刷新后重试")
+        history = existing.get("contract_history", [])
+        if not isinstance(history, list) or not all(isinstance(item, Mapping) for item in history):
+            raise ValidationError("当前任务的ResolvedContract历史无效")
+        replacement = self._record(identity, task_id, prepared, catalog_version=catalog_version)
+        if replacement["contract_fingerprint"] == expected_contract_fingerprint:
+            raise ValidationError("新方案必须使用不同的ResolvedContract")
+        return replacement
 
     def upgrade_legacy_calendar_evidence(
         self,

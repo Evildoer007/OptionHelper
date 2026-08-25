@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from typing import Any
 
 from ..errors import UnavailableCapabilityError
@@ -15,6 +15,7 @@ from .request_control import ModelRequestControl
 ModelCompletion = Callable[..., str]
 ModelCompletionWithMetadata = Callable[..., Mapping[str, Any]]
 ModelDecision = Callable[..., Mapping[str, Any]]
+ModelStream = Callable[..., Iterable[Mapping[str, Any]]]
 
 
 class ProviderRegistry:
@@ -29,6 +30,7 @@ class ProviderRegistry:
         self._providers: dict[str, ModelCompletion] = {}
         self._decision_providers: dict[str, ModelDecision] = {}
         self._metadata_providers: dict[str, ModelCompletionWithMetadata] = {}
+        self._stream_providers: dict[str, ModelStream] = {}
         self._bounded_request_control: dict[str, bool] = {}
 
     def register(
@@ -38,6 +40,7 @@ class ProviderRegistry:
         *,
         decision: ModelDecision | None = None,
         completion_with_metadata: ModelCompletionWithMetadata | None = None,
+        stream: ModelStream | None = None,
         bounded_request_control: bool = False,
     ) -> None:
         name = provider_name.strip()
@@ -53,6 +56,10 @@ class ProviderRegistry:
             if not callable(completion_with_metadata):
                 raise ValueError("completion_with_metadata adapter must be callable")
             self._metadata_providers[name] = completion_with_metadata
+        if stream is not None:
+            if not callable(stream):
+                raise ValueError("stream adapter must be callable")
+            self._stream_providers[name] = stream
 
     def complete(
         self, settings: ModelServiceSettings, secret_ref: SecretRef, messages: list[dict[str, str]], *,
@@ -138,6 +145,45 @@ class ProviderRegistry:
         if usage is not None and not isinstance(usage, Mapping):
             raise ValueError("model metadata usage must be an object when present")
         return {"text": str(value["text"]), "usage": dict(usage) if isinstance(usage, Mapping) else None}
+
+    def stream(
+        self,
+        settings: ModelServiceSettings,
+        secret_ref: SecretRef,
+        messages: list[dict[str, str]],
+        *,
+        request_control: ModelRequestControl | None = None,
+    ) -> Iterable[Mapping[str, Any]]:
+        """Return the provider's normalized stream without owning secrets.
+
+        Streaming is optional.  Providers that only implement the existing
+        completion contract remain fully compatible and fail explicitly when a
+        caller requests streaming instead of silently falling back to a
+        partial or fabricated stream.
+        """
+
+        provider_name = self._canonical_name(settings.provider_name)
+        adapter = self._stream_providers.get(provider_name)
+        if adapter is None:
+            raise UnavailableCapabilityError(
+                "模型流式输出",
+                "当前Provider未注册流式适配器，请继续使用非流式模型调用。",
+            )
+        value = _invoke_adapter(
+            adapter,
+            settings,
+            secret_ref,
+            messages,
+            request_control=request_control,
+            bounded_request_control=self._bounded_request_control.get(provider_name, False),
+        )
+        if isinstance(value, (str, bytes)) or value is None:
+            raise ValueError("model stream adapter must return an iterable of events")
+        try:
+            iter(value)
+        except TypeError as error:
+            raise ValueError("model stream adapter must return an iterable of events") from error
+        return value
 
     @classmethod
     def _canonical_name(cls, provider_name: str) -> str:

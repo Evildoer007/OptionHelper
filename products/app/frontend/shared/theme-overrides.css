@@ -256,7 +256,6 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
   display: none !important;
 }
 
-html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .message--user .message__body,
 html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .message__mark {
   background: var(--color-brand-red-soft) !important;
   color: var(--color-ink) !important;
@@ -290,6 +289,21 @@ html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-sh
   background: var(--color-surface) !important;
 }
 
+html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="desk"] .assistant-panel__transcript :is(.conversation-start, .conversation-starter) {
+  border-color: var(--color-rule) !important;
+  background: var(--color-surface) !important;
+  color: var(--color-ink) !important;
+}
+
+html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="desk"] .assistant-panel__transcript .conversation-starter:hover {
+  border-color: var(--color-rule-strong) !important;
+  background: var(--color-paper) !important;
+}
+
+html[data-theme="dark"] .conversation-start__mark img {
+  content: url("/capability/assets/icons/optionhelper-app-icon-tile-dark.svg");
+}
+
 /* The command body is a real panel only when the Desk assistant is open.
    Chat renders the same subtree with display: contents, so its background
    must not become a full-width rectangle behind the floating composer. */
@@ -312,15 +326,20 @@ html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-sh
 
 /* Keep the account control and its open state inside the dark shell. */
 html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-account-trigger,
+html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-account-trigger:focus-visible {
+  background: transparent !important;
+  color: var(--color-ink) !important;
+}
+
 html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-account-trigger:hover,
 html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-account-trigger[aria-expanded="true"] {
-  background: var(--color-surface) !important;
+  background: var(--task-row-state-surface) !important;
   color: var(--color-ink) !important;
 }
 
 html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-account-trigger__mark {
   border-color: var(--color-rule) !important;
-  background: var(--color-ground) !important;
+  background: transparent !important;
   color: var(--color-ink) !important;
 }
 
@@ -453,8 +472,9 @@ html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-sh
   box-shadow: 0 8px 20px color-mix(in srgb, var(--color-ink) 12%, transparent) !important;
 }
 
+html[data-theme="light"] .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .message--user .message__body,
 html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .message--user .message__body {
-  background: var(--color-brand-red-soft) !important;
+  background: color-mix(in srgb, var(--color-ink) 7%, var(--color-surface)) !important;
   color: var(--color-ink) !important;
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-brand-red) 18%, transparent) !important;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-ink) 10%, transparent) !important;
 }

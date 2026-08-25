@@ -76,7 +76,7 @@ def _path_summaries(product: Mapping[str, Any]) -> list[dict[str, str]]:
     return summaries
 
 
-class PricerWebInputError(ValueError):
+class PricerWebInputError(ContractResolutionError):
     """Pricer页面请求未满足合同或定价输入边界。"""
 
 

@@ -47,7 +47,7 @@
   font-size: 14px;
   font-weight: 400;
   line-height: 22px;
-  cursor: pointer;
+  cursor: default;
 }
 
 .setup-page .dsh-theme-cube svg {

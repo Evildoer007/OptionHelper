@@ -126,25 +126,28 @@ if /I "%PYTHON_SELECTION_SOURCE%"=="environment" call :persist_python "%PYTHON_B
 if /I "%PYTHON_SELECTION_SOURCE%"=="interactive" call :persist_python "%PYTHON_BIN%"
 
 echo OptionHelper Windows candidate build
-echo [1/3] Checking runtime dependencies...
-"%PYTHON_BIN%" "%ROOT%packaging\skill\environment_check.py" --requirements "%ROOT%core\requirements.lock" --check-dependencies
+echo [1/3] Checking runtime dependencies and locked packages...
+set "CHECK_OUTPUT=%TEMP%\optionhelper-dependency-check-%RANDOM%.json"
+"%PYTHON_BIN%" "%ROOT%packaging\skill\environment_check.py" --requirements "%ROOT%core\requirements.lock" --requirements "%ROOT%packaging\build-requirements.lock" --project-root "%ROOT%" --check-dependencies > "%CHECK_OUTPUT%"
 if errorlevel 1 (
-  echo Python dependencies do not match core\requirements.lock.
+  echo Python dependencies do not match the locked requirements.
   echo If you confirm installation, run:
   echo   "%PYTHON_BIN%" -m pip install -r "%ROOT%core\requirements.lock" --index-url "https://pypi.tuna.tsinghua.edu.cn/simple"
-  set "STATUS=1"
-  goto :done
-)
-echo [2/3] Checking packaging tools...
-"%PYTHON_BIN%" "%ROOT%packaging\skill\environment_check.py" --requirements "%ROOT%packaging\build-requirements.lock" --check-dependencies
-if errorlevel 1 (
-  echo Python build dependencies do not match packaging\build-requirements.lock.
-  echo If you confirm installation, run:
   echo   "%PYTHON_BIN%" -m pip install -r "%ROOT%packaging\build-requirements.lock" --index-url "https://pypi.tuna.tsinghua.edu.cn/simple"
+  type "%CHECK_OUTPUT%"
+  del /q "%CHECK_OUTPUT%" >nul 2>&1
   set "STATUS=1"
   goto :done
 )
+findstr /C:"\"status\": \"hit\"" "%CHECK_OUTPUT%" >nul 2>&1
+if not errorlevel 1 (
+  echo [1/3] Runtime is ready; reusing the previous dependency check.
+) else (
+  echo [1/3] Runtime dependency check passed.
+)
+del /q "%CHECK_OUTPUT%" >nul 2>&1
 
+echo [2/3] Runtime is ready; preparing the Windows candidate.
 echo [3/3] Building Skill and Windows candidate. Detailed stage progress follows.
 "%PYTHON_BIN%" "%ROOT%packaging\build_current.py" --version "%VERSION%" --platform windows
 set "STATUS=%ERRORLEVEL%"

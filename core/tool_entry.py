@@ -130,7 +130,7 @@ def _cli_project_store_scope() -> Any:
 _RECOMMENDATION_REQUEST_FIELDS = frozenset({"prompt", "constraints"})
 _REPORT_REQUEST_FIELDS = frozenset({
     "prompt", "constraints", "term_overrides", "pricing_config", "backtest_config",
-    "output_type", "format", "title", "selection", "quote_variants",
+    "output_type", "format", "title", "selection", "selections", "delivery_mode", "quote_variants",
 })
 _MODULE_REQUEST_FIELDS = frozenset({
     "module", "product_id", "identity", "term_overrides", "pricing_config",
@@ -668,7 +668,7 @@ def _agent_native_candidate(
 
     unknown = set(selection).difference(_AGENT_SELECTION_FIELDS)
     if unknown:
-        raise ProjectRequestError("request", "正式报告选择只接受产品、标的和面向读者的研究理由，不接受内部引用或运行字段。")
+        raise ProjectRequestError("request", "正式报告选择只接受产品、标的和面向读者的研究理由。")
     product_id = str(selection.get("product_id") or "").strip()
     raw_underlyings = selection.get("underlyings")
     if isinstance(raw_underlyings, str):
@@ -702,6 +702,73 @@ def _agent_native_candidate(
     }
 
 
+def _project_delivery_mode(body: Mapping[str, Any], prompt: str, *, output_type: str) -> str:
+    """Resolve single versus comparison delivery without creating new output types."""
+
+    explicit = str(body.get("delivery_mode") or "").strip().lower()
+    request_lower = prompt.casefold()
+    inferred = "comparison" if any(token in request_lower for token in (
+        "multicard", "multireport", "横向对比", "对比卡片", "对比报告",
+    )) else "single"
+    delivery_mode = explicit or inferred
+    if delivery_mode not in {"single", "comparison"}:
+        raise ProjectRequestError("request", "交付方式只能选择单结构或横向对比。")
+    if output_type == "quote" and delivery_mode == "comparison":
+        raise ProjectRequestError("request", "参考报价已经按多结构汇总，不使用横向对比模式。")
+    return delivery_mode
+
+
+def _explicit_project_candidates(
+    body: Mapping[str, Any],
+    *,
+    paths: Any,
+    task_hash: str,
+) -> list[dict[str, Any]]:
+    """Validate one or more conversation-selected products in user order."""
+
+    has_single = "selection" in body and body.get("selection") is not None
+    has_multiple = "selections" in body and body.get("selections") is not None
+    if has_single and has_multiple:
+        raise ProjectRequestError("request", "单结构选择和多候选选择不能同时提交。")
+    if has_multiple:
+        raw = body.get("selections")
+        if not isinstance(raw, list) or not raw or not all(isinstance(item, Mapping) for item in raw):
+            raise ProjectRequestError("request", "多候选选择必须是非空的结构选择数组。")
+        candidates = [
+            _agent_native_candidate(item, paths=paths, task_hash=f"{task_hash}-{index:02d}")
+            for index, item in enumerate(raw, start=1)
+        ]
+    elif has_single:
+        raw = body.get("selection")
+        if not isinstance(raw, Mapping):
+            raise ProjectRequestError("request", "结构选择必须是对象。")
+        candidates = [_agent_native_candidate(raw, paths=paths, task_hash=task_hash)]
+    else:
+        return []
+    for rank, candidate in enumerate(candidates, start=1):
+        candidate["rank"] = rank
+    return candidates
+
+
+def _ordered_ready_candidates(values: object) -> list[dict[str, Any]]:
+    """Return executable recommender candidates in stable frozen-rank order."""
+
+    candidates = [
+        dict(item)
+        for item in values if isinstance(item, Mapping)
+        and item.get("library_status") == "ready" and not item.get("missing_inputs")
+    ] if isinstance(values, list) else []
+
+    def rank(item: tuple[int, Mapping[str, Any]]) -> tuple[int, int]:
+        try:
+            value = int(item[1].get("rank") or 1_000_000)
+        except (TypeError, ValueError):
+            value = 1_000_000
+        return value, item[0]
+
+    return [item for _, item in sorted(enumerate(candidates), key=rank)]
+
+
 def run_recommendation_request(
     request: str | Mapping[str, Any],
     *,
@@ -721,15 +788,14 @@ def run_recommendation_request(
     if agent_port is None:
         config = _configuration(require_ifind=False, project_root=project_root)
         if config["mode"] == "host":
-            _progress(progress, "host", "正在由受控Host执行结构推荐")
+            _progress(progress, "recommendation", "正在分析需求并整理候选结构")
             response = JsonHttpEndpoint(config["host_url"]).post("project/recommend", body)
             if response.get("ok") is not True:
-                raise ProjectRequestError("host", str(response.get("message") or "受控Host未能完成结构推荐。"))
+                raise ProjectRequestError("host", str(response.get("message") or "研究服务未能完成结构推荐。"))
             return response
         raise ProjectRequestError(
             "request",
-            "当前Skill由对话模型负责理解和推荐；请将已验证的结构选择通过--project-json提交，"
-            "不调用第二个模型服务。",
+            "当前对话尚未完成候选确认，暂不能生成正式交付；请在已集成OptionHelper的对话入口中重试。",
         )
     paths = bootstrap_runtime()
     layout = LocalProjectLayout.create(skill_root=paths.project_root, project_root=project_root or Path.cwd())
@@ -741,13 +807,13 @@ def run_recommendation_request(
         prompt=prompt, workflow="recommendation", requested_outputs=(), body=body,
         paths=paths, layout=layout, authority=authority,
     )
-    _progress(progress, "recommender", "正在整理市场观点并审阅候选结构")
+    _progress(progress, "recommendation", "正在分析需求并整理候选结构")
     result = RecommenderService(
         agent_port=agent_port, knowledge_port=_LocalKnowledgePort(paths, case.catalog_version),
     ).recommend_fixed(case, workflow="recommendation")
     recommendation = result.get("recommendation_set")
     if not isinstance(recommendation, Mapping):
-        raise ProjectRequestError("recommender", "Recommender没有返回可验证的推荐结果。")
+        raise ProjectRequestError("recommender", "未能形成可验证的候选结构。")
     status = str(recommendation.get("status") or "unavailable")
     if status == "pending_question":
         return {
@@ -766,7 +832,7 @@ def run_recommendation_request(
         }
         for item in recommendation.get("candidates", ()) if isinstance(item, Mapping)
     ]
-    _progress(progress, "recommender", "结构筛选完成，未调用计算或报告模块", "completed")
+    _progress(progress, "recommendation", "候选结构已整理完成", "completed")
     return {
         "ok": True,
         "status": "completed",
@@ -814,7 +880,7 @@ def _fetch_local_data_asset(
     from modules.datafetcher.service import fetch_data
 
     start_date, end_date = _data_window_dates(data_window)
-    _progress(progress, "datafetcher", "正在通过iFind获取并校验标的历史行情")
+    _progress(progress, "data", "正在准备市场数据")
     result = fetch_data({
         "asset_ids": [str(item) for item in underlyings],
         "start_date": start_date.isoformat(),
@@ -836,7 +902,7 @@ def _fetch_local_data_asset(
         )
     data_ref = result.run.data_asset_ref
     valuation_date = _latest_available_data_date(data_ref, requested_date=end_date)
-    _progress(progress, "datafetcher", "iFind行情已冻结为本次计算数据", "completed")
+    _progress(progress, "data", "市场数据已准备完成", "completed")
     return data_ref, valuation_date
 
 
@@ -1002,7 +1068,7 @@ def _fetch_local_calendar_asset(
         except ValueError as error:
             raise ProjectRequestError("datafetcher", "交易日历历史起始日必须为YYYY-MM-DD。") from error
     end = requested + timedelta(days=round(max(float(horizon_years), 1.0 / 365.0) * 365.0) + 14)
-    _progress(progress, "datafetcher", "正在通过iFind获取估值日至合同到期日的中国交易日历")
+    _progress(progress, "calendar", "正在准备估值所需交易日历")
     result = fetch_calendar_data({
         "asset_ids": [str(item) for item in underlyings],
         "start_date": start.isoformat(),
@@ -1018,7 +1084,7 @@ def _fetch_local_calendar_asset(
             "datafetcher",
             str(error.get("message") or "交易日历暂不可用，且没有完整覆盖本次区间的已验证缓存。"),
         )
-    _progress(progress, "datafetcher", "中国交易日历已冻结，未来价格仍由Pricer模拟", "completed")
+    _progress(progress, "calendar", "交易日历已准备完成", "completed")
     return result.run.data_asset_ref
 
 
@@ -1163,7 +1229,8 @@ def run_module_request(
         candidate_id=f"direct-{task_hash}", catalog_version=catalog_version,
         contract_fingerprint=str(prepared["contract_fingerprint"]),
     )
-    _progress(progress, module, f"正在按本次确认参数运行{module}")
+    module_label = {"payoff": "收益结构", "pricing": "估值", "backtest": "历史回测"}.get(module, "计算")
+    _progress(progress, module, f"正在完成{module_label}计算")
     result = call_local_tool(
         module, dict(prepared["request"]), authority=authority,
         request_id=f"{module}-{task_hash}", host_context=context,
@@ -1175,7 +1242,7 @@ def run_module_request(
     )
     if result.get("ok") is not True:
         raise ProjectRequestError(module, str(result.get("message") or f"{module}未能完成。"))
-    _progress(progress, module, f"{module}已按本次确认参数完成", "completed")
+    _progress(progress, module, f"{module_label}计算已完成", "completed")
     return {
         "ok": True,
         "status": str(result.get("status") or "completed"),
@@ -1360,7 +1427,7 @@ def _run_quote_delivery(
                 data_store=data_store,
             )
             contract = ResolvedContract(**dict(prepared["resolved_contract"]))
-            _progress(progress, "pricer", f"正在计算{label}的参考报价")
+            _progress(progress, "quote", f"正在完成{label}的参考报价")
             context = authority.context(
                 "pricer", task_id=task_id, analysis_case_id=analysis_case_id,
                 candidate_id=str(candidate["candidate_id"]), catalog_version=catalog_version,
@@ -1398,10 +1465,10 @@ def _run_quote_delivery(
                 "module_run_ref": dict(raw_ref),
             })
             completed_runs[report_candidate["candidate_id"]] = {"pricing": dict(raw_ref)}
-            _progress(progress, "pricer", f"{label}的参考报价已完成", "completed")
+            _progress(progress, "quote", f"{label}的参考报价已完成", "completed")
         except Exception as error:
             failures[label] = _quote_variant_error(error)
-            _progress(progress, "pricer", f"{label}未完成定价：{failures[label]}", "failed")
+            _progress(progress, "quote", f"{label}未完成参考报价：{failures[label]}", "failed")
 
     if failures:
         details = "；".join(f"{label}：{message}" for label, message in failures.items())
@@ -1438,23 +1505,23 @@ def _run_quote_delivery(
     expected_request = build_selected_request(
         selection, tenant_id=authority.tenant_id, selection_port=selection_port,
     )
-    _progress(progress, "reporter", "正在汇总全部定价版本并生成组合参考报价")
+    _progress(progress, "delivery", "正在生成组合参考报价")
     report = dict(reporter_call_tool(
         {"action": "run", "selection": selection},
         result_store=result_store, designer_port=_DesignerPort(), selection_port=selection_port,
         tenant_id=authority.tenant_id, output_root=layout.result_root,
     ))
     if report.get("ok") is not True or report.get("status") not in {"completed", "partial"}:
-        raise ProjectRequestError("reporter", str(report.get("message") or "Reporter或Designer未能生成组合参考报价。"))
+        raise ProjectRequestError("reporter", str(report.get("message") or "正式交付服务未能生成组合参考报价。"))
     report_name = str((report.get("output") or {}).get("report") or "")
     report_path = (layout.result_root / task_id / selection["report_run_id"] / report_name).resolve()
     if not report_name or not report_path.is_file() or layout.result_root not in report_path.parents:
-        raise ProjectRequestError("reporter", "组合参考报价缺少受控交付文件。")
+        raise ProjectRequestError("reporter", "组合参考报价未返回可打开的HTML交付文件。")
     try:
         validate_report_run_directory(report_path.parent, expected_request=expected_request)
     except Exception as error:
         raise ProjectRequestError("reporter", "组合参考报价未通过完整性校验，请检查运行日志。") from error
-    _progress(progress, "reporter", "Reporter和Designer已完成组合参考报价", "completed")
+    _progress(progress, "delivery", "组合参考报价已生成，正在打开", "completed")
     primary = report_candidates[0]
     return {
         "ok": True,
@@ -1476,6 +1543,204 @@ def _run_quote_delivery(
         "module_runs": completed_runs,
         "module_failures": failures,
         "report": {"output_type": "quote", "format": "html", "coverage_status": "complete", "path": str(report_path)},
+    }
+
+
+def _run_project_candidate(
+    *,
+    body: Mapping[str, Any],
+    candidate: Mapping[str, Any],
+    candidate_index: int,
+    case: Any,
+    layout: LocalProjectLayout,
+    authority: LocalHostAuthority,
+    result_store: LocalResultStore,
+    catalog_version: str,
+    caches: dict[str, dict[Any, Any]],
+    progress: Callable[[Mapping[str, Any]], None] | None,
+) -> dict[str, Any]:
+    """Freeze and run one candidate for either single or comparison delivery."""
+
+    task_hash = case.task_id.removeprefix("project-")
+    request_suffix = f"{task_hash}-{candidate_index:02d}"
+    task_id = case.task_id
+    analysis_case_id = case.analysis_case_id
+    candidate_id = str(candidate["candidate_id"])
+    candidate_label = str(candidate.get("product_name") or candidate.get("product_id") or candidate_id)
+    product_id = str(candidate["product_id"])
+    underlyings = tuple(str(item) for item in candidate.get("underlyings", ()))
+    requested_pricing = _mapping_field(body, "pricing_config")
+    term_overrides = _mapping_field(body, "term_overrides")
+    horizon_years = _horizon_years(case.confirmed_constraints.get("horizon"))
+    if horizon_years is not None and "T" not in term_overrides:
+        term_overrides["T"] = horizon_years
+    effective_horizon = float(term_overrides.get("T", horizon_years or 1.0))
+    valuation_date = str(requested_pricing.get("valuation_date") or date.today().isoformat())
+    history_start, _ = _data_window_dates({})
+
+    calendar_key = (underlyings, valuation_date, effective_horizon, history_start.isoformat())
+    calendar_ref = caches["calendars"].get(calendar_key)
+    if calendar_ref is None:
+        calendar_ref = _fetch_local_calendar_asset(
+            layout=layout,
+            authority=authority,
+            task_id=task_id,
+            underlyings=underlyings,
+            valuation_date=valuation_date,
+            horizon_years=effective_horizon,
+            request_id=f"calendar-{request_suffix}",
+            progress=progress,
+            history_start_date=history_start.isoformat(),
+        )
+        caches["calendars"][calendar_key] = calendar_ref
+
+    history = caches["history"].get(underlyings)
+    if history is None:
+        history = _fetch_local_data_asset(
+            layout=layout,
+            authority=authority,
+            task_id=task_id,
+            underlyings=underlyings,
+            data_window={},
+            request_id=f"data-{request_suffix}",
+            progress=progress,
+        )
+        caches["history"][underlyings] = history
+    data_ref, market_as_of_date = history
+    data_store = importlib.import_module("runtime.adapters.local_store").LocalDataStore(layout.data_root)
+    binding_key = (data_ref.storage_ref, calendar_ref.storage_ref)
+    bound_ref = caches["bound_history"].get(binding_key)
+    if bound_ref is None:
+        bound_ref = _persist_calendar_bound_history_asset(
+            data_ref=data_ref,
+            calendar_ref=calendar_ref,
+            data_store=data_store,
+            principal_id=authority.principal_id,
+        )
+        caches["bound_history"][binding_key] = bound_ref
+    data_ref = bound_ref
+
+    pricing_config = {"valuation_date": valuation_date, "path_count": 10, **requested_pricing}
+    pricing_request = prepare_compute_request(
+        "pricer",
+        {
+            "product_id": product_id,
+            "identity": {"underlyings": list(underlyings), "contract_start_date": market_as_of_date},
+            "term_overrides": term_overrides,
+            "pricing_config": pricing_config,
+        },
+        data_refs=(asdict(data_ref), asdict(calendar_ref)),
+        data_store=data_store,
+    )
+    contract_payload = dict(pricing_request["resolved_contract"])
+    contract = ResolvedContract(**contract_payload)
+    _progress(progress, "data", f"{candidate_label}的市场数据已准备完成", "completed")
+
+    payoff_context = authority.context(
+        "payoffer",
+        task_id=task_id,
+        analysis_case_id=analysis_case_id,
+        candidate_id=candidate_id,
+        catalog_version=catalog_version,
+        contract_fingerprint=contract.contract_fingerprint,
+    )
+    _progress(progress, "calculation", f"正在完成{candidate_label}的收益结构计算")
+    payoff = call_local_tool(
+        "payoffer",
+        {"action": "run", "payoff_input": {"contract": contract_payload}},
+        authority=authority,
+        request_id=f"payoff-{request_suffix}",
+        host_context=payoff_context,
+        result_store=result_store,
+    )
+    if payoff.get("ok") is not True or str(payoff.get("status", "")).lower() not in {"succeeded", "completed", "partial"}:
+        raise ProjectRequestError("payoffer", str(payoff.get("message") or f"{candidate_label}的收益结构模块未能完成。"))
+    payoff_raw_ref = payoff.get("module_run_ref")
+    if not isinstance(payoff_raw_ref, Mapping):
+        raise ProjectRequestError("payoffer", f"{candidate_label}的收益结构模块缺少可验证运行引用。")
+    payoff_ref = ModuleRunRef(**dict(payoff_raw_ref))
+    result_store.verify_module_run(payoff_ref, tenant_id=authority.tenant_id)
+    _progress(progress, "calculation", f"{candidate_label}的收益结构计算已完成", "completed")
+
+    completed_refs: dict[str, dict[str, Any]] = {"payoff": dict(payoff_raw_ref)}
+    module_failures: dict[str, str] = {}
+    backtest_request = prepare_compute_request(
+        "backtester",
+        {
+            "action": "run",
+            "product_id": product_id,
+            "identity": {"underlyings": list(underlyings), "contract_start_date": market_as_of_date},
+            "term_overrides": term_overrides,
+            "backtest_config": {
+                "start_date": str(data_ref.coverage.get("start") or data_ref.coverage.get("start_date")),
+                "end_date": market_as_of_date,
+                "entry_rule": "monthly",
+                "complete_tenor": True,
+                **_mapping_field(body, "backtest_config"),
+            },
+        },
+        data_refs=(asdict(data_ref), asdict(calendar_ref)),
+        resolved_contract=contract_payload,
+        data_store=data_store,
+    )
+    for module, public_name, module_request in (
+        ("pricer", "pricing", dict(pricing_request["request"])),
+        ("backtester", "backtest", dict(backtest_request["request"])),
+    ):
+        module_label = {"pricer": "估值", "backtester": "历史回测"}[module]
+        _progress(progress, "calculation", f"正在完成{candidate_label}的{module_label}计算")
+        module_context = authority.context(
+            module,
+            task_id=task_id,
+            analysis_case_id=analysis_case_id,
+            candidate_id=candidate_id,
+            catalog_version=catalog_version,
+            contract_fingerprint=contract.contract_fingerprint,
+            result_refs=(payoff_ref,),
+        )
+        try:
+            module_result = call_local_tool(
+                module,
+                module_request,
+                authority=authority,
+                request_id=f"{module}-{request_suffix}",
+                host_context=module_context,
+                result_store=result_store,
+                data_store=data_store,
+            )
+            module_raw_ref = module_result.get("module_run_ref")
+            if module_result.get("ok") is not True or not isinstance(module_raw_ref, Mapping):
+                raise ProjectRequestError(module, str(module_result.get("message") or f"{module}未形成可验证运行引用。"))
+            verified_ref = ModuleRunRef(**dict(module_raw_ref))
+            result_store.verify_module_run(verified_ref, tenant_id=authority.tenant_id)
+            completed_refs[public_name] = dict(module_raw_ref)
+            _progress(progress, "calculation", f"{candidate_label}的{module_label}计算已完成", "completed")
+        except Exception:
+            module_failures[public_name] = "正式模块未完成，报告已标注覆盖缺口。"
+            _progress(progress, "calculation", f"{candidate_label}的{module_label}未完成，报告将标注覆盖缺口", "partial")
+
+    identity = dict(contract.identity)
+    report_candidate = {
+        **dict(candidate),
+        "candidate_id": candidate_id,
+        "product_name": str(identity["name_zh"]),
+        "product_version": contract.product_version,
+        "product_version_content_hash": contract.product_snapshot_hash,
+        "contract_fingerprint": contract.contract_fingerprint,
+        "analysis_basis_id": f"basis-{contract.contract_fingerprint[:20]}",
+        "underlyings": list(contract.underlyings),
+        "currency": contract.currency,
+        "price_convention": {"spot": "close", "contract_basis": identity["price_convention"]},
+        "module_run_refs": completed_refs,
+        "module_run_options": {name: [reference] for name, reference in completed_refs.items()},
+    }
+    return {
+        "candidate": report_candidate,
+        "module_refs": completed_refs,
+        "module_failures": module_failures,
+        "catalog_content_hash": contract.registry_snapshot_hash,
+        "valuation_date": valuation_date,
+        "frozen_horizon": _horizon_label(contract.terms.get("T")),
     }
 
 
@@ -1503,30 +1768,30 @@ def run_project_request(
         raise ProjectRequestError("request", "请提供需要研究的期权结构需求。")
     explicit_output = str(body.get("output_type") or "").strip().lower()
     request_lower = prompt.casefold()
-    requested_card = any(token in request_lower for token in ("简报", "简单报告", "card"))
-    requested_report = any(token in request_lower for token in ("详细报告", "深度报告", "完整报告"))
+    requested_card = any(token in request_lower for token in ("简报", "简单报告", "卡片", "card"))
+    requested_report = any(token in request_lower for token in ("详细报告", "深度报告", "完整报告", "report"))
     requested_quote = any(token in request_lower for token in ("参考报价", "quote", "报价表"))
     output_type = explicit_output or ("quote" if requested_quote else "card" if requested_card and not requested_report else "report")
     if output_type not in {"card", "quote", "report"}:
         raise ProjectRequestError("request", "交付类型只能选择研究简报、参考报价或详细报告。")
+    delivery_mode = _project_delivery_mode(body, prompt, output_type=output_type)
     output_format = str(body.get("format") or "html").strip().lower()
     if output_format != "html":
         raise ProjectRequestError("request", "项目级自然语言入口当前仅交付HTML格式。")
-    model_selection = _mapping_field(body, "selection") if "selection" in body else {}
-    if model_selection:
+    has_explicit_selection = any(key in body and body.get(key) is not None for key in ("selection", "selections"))
+    if has_explicit_selection:
         config = _configuration(require_ifind=True, project_root=project_root)
     elif agent_port is None:
         config = _configuration(require_ifind=False, project_root=project_root)
         if config["mode"] == "host":
-            _progress(progress, "host", "正在由受控Host执行推荐与报告流程")
+            _progress(progress, "workflow", "正在分析需求并整理候选结构")
             response = JsonHttpEndpoint(config["host_url"]).post("project/run", body)
             if response.get("ok") is not True:
-                raise ProjectRequestError("host", str(response.get("message") or "受控Host未能完成研究请求。"))
+                raise ProjectRequestError("host", str(response.get("message") or "研究服务未能完成研究请求。"))
             return response
         raise ProjectRequestError(
             "request",
-            "当前Skill由对话模型负责理解和推荐；请先提交已验证的selection，"
-            "不调用第二个模型服务。",
+            "当前对话尚未完成候选确认，暂不能生成正式交付；请在已集成OptionHelper的对话入口中重试。",
         )
     else:
         ifind = _local_ifind_refresh_token(project_root)
@@ -1538,10 +1803,10 @@ def run_project_request(
             )
         config = {"mode": "direct", "ifind": ifind}
     if config["mode"] == "host":
-        _progress(progress, "host", "正在由受控Host执行推荐与报告流程")
+        _progress(progress, "workflow", "正在分析需求并整理候选结构")
         response = JsonHttpEndpoint(config["host_url"]).post("project/run", body)
         if response.get("ok") is not True:
-            raise ProjectRequestError("host", str(response.get("message") or "受控Host未能完成研究请求。"))
+            raise ProjectRequestError("host", str(response.get("message") or "研究服务未能完成研究请求。"))
         return response
     _activate_ifind_refresh_token(config.get("ifind", ""))
 
@@ -1550,19 +1815,19 @@ def run_project_request(
     layout.initialize()
     authority = LocalHostAuthority(layout)
     result_store = LocalResultStore(layout.result_root)
-    _progress(progress, "preflight", "已建立项目级受控Store和本机身份", "completed")
+    _progress(progress, "preflight", "运行条件已就绪", "completed")
 
     if ifind_probe is not None:
-        _progress(progress, "ifind", "正在验证iFind Refresh Token")
+        _progress(progress, "data", "正在检查数据服务配置")
         try:
             ifind_probe(config["ifind"])
         except Exception as error:
             raise ProjectRequestError("ifind", "iFind凭据验证失败，请检查Refresh Token或网络后重试。") from error
-        _progress(progress, "ifind", "iFind凭据验证通过", "completed")
+        _progress(progress, "data", "数据服务配置已就绪", "completed")
     else:
         # DataFetcher的正式iFind Provider在真实取数前完成唯一一次
         # Refresh Token→Access Token交换；Host不重复换取或持久化Access Token。
-        _progress(progress, "ifind", "iFind Refresh Token已配置，将在正式取数时自动鉴权", "completed")
+        _progress(progress, "data", "数据服务配置已就绪", "completed")
 
     catalog_version = _catalog_version(paths)
     case = _recommendation_case(
@@ -1572,37 +1837,38 @@ def run_project_request(
     task_hash = case.task_id.removeprefix("project-")
     task_id = case.task_id
     analysis_case_id = case.analysis_case_id
-    if model_selection:
-        _progress(progress, "recommender", "正在验证当前对话已选择的产品结构")
-        candidate = _agent_native_candidate(model_selection, paths=paths, task_hash=task_hash)
-        quote_candidates = [candidate]
-        _progress(progress, "recommender", "已验证当前对话选择，未调用第二个模型服务", "completed")
+    explicit_candidates = _explicit_project_candidates(body, paths=paths, task_hash=task_hash)
+    if explicit_candidates:
+        if delivery_mode == "single" and output_type != "quote" and len(explicit_candidates) != 1:
+            raise ProjectRequestError("request", "单结构交付只能提交一个候选；多个候选请使用横向对比。")
+        _progress(progress, "recommendation", "正在核对当前对话中的结构选择")
+        candidate = explicit_candidates[0]
+        comparison_candidates = explicit_candidates
+        quote_candidates = explicit_candidates
+        _progress(progress, "recommendation", "结构选择已核对完成", "completed")
     else:
         if agent_port is None:
             raise ProjectRequestError(
                 "request",
-                "当前Skill由对话模型负责理解和推荐；请先提交已验证的selection，"
-                "不调用第二个模型服务。",
+                "当前对话尚未完成候选确认，暂不能生成正式交付；请在已集成OptionHelper的对话入口中重试。",
             )
         from modules.recommender.service import RecommenderService
 
-        _progress(progress, "recommender", "正在检索产品资料并审阅候选结构")
+        _progress(progress, "recommendation", "正在分析需求并整理候选结构")
         recommendation_result = RecommenderService(
             agent_port=agent_port,
             knowledge_port=_LocalKnowledgePort(paths, catalog_version),
         ).recommend_fixed(case, workflow="professional_report")
         recommendation = recommendation_result.get("recommendation_set")
         if not isinstance(recommendation, Mapping):
-            raise ProjectRequestError("recommender", "Recommender没有返回可验证的推荐结果。")
+            raise ProjectRequestError("recommender", "未能形成可验证的候选结构。")
         if recommendation.get("status") == "pending_question":
             raise ProjectRequestError("recommender", str(recommendation.get("next_question") or "研究条件仍不完整。"))
         candidate = _primary_ready_candidate(recommendation)
-        quote_candidates = [
-            dict(item)
-            for item in recommendation.get("candidates", ())
-            if isinstance(item, Mapping) and item.get("library_status") == "ready" and not item.get("missing_inputs")
-        ] or [candidate]
-        _progress(progress, "recommender", "已完成候选结构审阅", "completed")
+        ready_candidates = _ordered_ready_candidates(recommendation.get("candidates")) or [candidate]
+        comparison_candidates = ready_candidates
+        quote_candidates = ready_candidates
+        _progress(progress, "recommendation", "候选结构已整理完成", "completed")
 
     if output_type == "quote":
         return _run_quote_delivery(
@@ -1611,208 +1877,89 @@ def run_project_request(
             catalog_version=catalog_version, progress=progress,
         )
 
-    product_id = str(candidate["product_id"])
-    underlyings = tuple(str(item) for item in candidate.get("underlyings", ()))
-    requested_pricing = _mapping_field(body, "pricing_config")
-    term_overrides = _mapping_field(body, "term_overrides")
-    horizon_years = _horizon_years(case.confirmed_constraints.get("horizon"))
-    if horizon_years is not None and "T" not in term_overrides:
-        term_overrides["T"] = horizon_years
-    effective_horizon = float(term_overrides.get("T", horizon_years or 1.0))
-    valuation_date = str(requested_pricing.get("valuation_date") or date.today().isoformat())
-    data_window: dict[str, Any] = {}
-    history_start, _ = _data_window_dates(data_window)
-    # The project flow always invokes Backtester.  It therefore obtains one
-    # verified calendar before history, then gives the same ref to both the
-    # DataFetcher quality gate and the contract compiler.
-    calendar_ref = _fetch_local_calendar_asset(
-        layout=layout,
-        authority=authority,
-        task_id=task_id,
-        underlyings=underlyings,
-        valuation_date=valuation_date,
-        horizon_years=effective_horizon,
-        request_id=f"calendar-{task_hash}",
-        progress=progress,
-        history_start_date=history_start.isoformat(),
-    )
-    data_ref, market_as_of_date = _fetch_local_data_asset(
-        layout=layout, authority=authority, task_id=task_id, underlyings=underlyings,
-        data_window=data_window, request_id=f"data-{task_hash}", progress=progress,
-    )
-    data_store = importlib.import_module("runtime.adapters.local_store").LocalDataStore(layout.data_root)
-    data_ref = _persist_calendar_bound_history_asset(
-        data_ref=data_ref, calendar_ref=calendar_ref, data_store=data_store,
-        principal_id=authority.principal_id,
-    )
-    pricing_config = {
-        "valuation_date": valuation_date,
-        "path_count": 10,
-        **requested_pricing,
-    }
-    pricing_request = prepare_compute_request(
-        "pricer",
-        {
-            "product_id": product_id,
-            "identity": {"underlyings": list(underlyings), "contract_start_date": market_as_of_date},
-            "term_overrides": term_overrides,
-            "pricing_config": pricing_config,
-        },
-        data_refs=(
-            (asdict(data_ref), asdict(calendar_ref))
-            if calendar_ref is not None else
-            (asdict(data_ref),)
-        ),
-        data_store=data_store,
-    )
-    contract_payload = dict(pricing_request["resolved_contract"])
-    contract = ResolvedContract(**contract_payload)
-    frozen_horizon = _horizon_label(contract.terms.get("T"))
-    _progress(progress, "datafetcher", "iFind行情已冻结为DataAssetRef", "completed")
+    if delivery_mode == "comparison" and len(comparison_candidates) < 2:
+        raise ProjectRequestError("recommender", "横向对比至少需要两个可执行候选，请补充另一个结构或调整推荐条件。")
 
-    context = authority.context(
-        "payoffer", task_id=task_id, analysis_case_id=analysis_case_id,
-        candidate_id=str(candidate["candidate_id"]), catalog_version=catalog_version,
-        contract_fingerprint=contract.contract_fingerprint,
-    )
-    _progress(progress, "payoffer", "正在运行正式收益结构模块")
-    payoff = call_local_tool(
-        "payoffer", {"action": "run", "payoff_input": {"contract": contract_payload}},
-        authority=authority, request_id=f"payoff-{task_hash}",
-        host_context=context, result_store=result_store,
-    )
-    if payoff.get("ok") is not True or str(payoff.get("status", "")).lower() not in {"succeeded", "completed", "partial"}:
-        raise ProjectRequestError("payoffer", str(payoff.get("message") or "正式收益结构模块未能完成。"))
-    raw_ref = payoff.get("module_run_ref")
-    if not isinstance(raw_ref, Mapping):
-        raise ProjectRequestError("payoffer", "正式收益结构模块缺少可验证运行引用。")
-    module_ref = ModuleRunRef(**dict(raw_ref))
-    result_store.verify_module_run(module_ref, tenant_id=authority.tenant_id)
-    _progress(progress, "payoffer", "正式收益结构结果已验证", "completed")
-
-    completed_refs: dict[str, dict[str, Any]] = {"payoff": dict(raw_ref)}
-    module_failures: dict[str, str] = {}
-    if output_type != "quote":
-        backtest_request = prepare_compute_request(
-            "backtester",
-            {
-                "action": "run",
-                "product_id": product_id,
-                "identity": {
-                    "underlyings": list(underlyings),
-                    "contract_start_date": market_as_of_date,
-                },
-                "term_overrides": term_overrides,
-                "backtest_config": {
-                    "start_date": str(data_ref.coverage.get("start") or data_ref.coverage.get("start_date")),
-                    "end_date": market_as_of_date,
-                    "entry_rule": "monthly",
-                    "complete_tenor": True,
-                    **_mapping_field(body, "backtest_config"),
-                },
-            },
-            data_refs=(asdict(data_ref), asdict(calendar_ref)),
-            resolved_contract=contract_payload,
-            data_store=data_store,
-        )
-        for module, display_name, module_request in (
-            ("pricer", "pricing", dict(pricing_request["request"])),
-            ("backtester", "backtest", dict(backtest_request["request"])),
-        ):
-            _progress(progress, module, f"正在运行正式{module}模块")
-            module_context = authority.context(
-                module, task_id=task_id, analysis_case_id=analysis_case_id,
-                candidate_id=str(candidate["candidate_id"]), catalog_version=catalog_version,
-                contract_fingerprint=contract.contract_fingerprint,
-                result_refs=(module_ref,),
-            )
-            try:
-                module_result = call_local_tool(
-                    module, module_request,
-                    authority=authority,
-                    request_id=f"{module}-{task_hash}",
-                    host_context=module_context,
-                    result_store=result_store,
-                    data_store=data_store,
-                )
-                module_raw_ref = module_result.get("module_run_ref")
-                if module_result.get("ok") is not True or not isinstance(module_raw_ref, Mapping):
-                    raise ProjectRequestError(module, str(module_result.get("message") or f"{module}未形成可验证运行引用。"))
-                verified_ref = ModuleRunRef(**dict(module_raw_ref))
-                result_store.verify_module_run(verified_ref, tenant_id=authority.tenant_id)
-                completed_refs[display_name] = dict(module_raw_ref)
-                _progress(progress, module, f"正式{module}结果已验证", "completed")
-            except Exception:
-                module_failures[display_name] = "正式模块未完成，报告已标注覆盖缺口。"
-                _progress(progress, module, f"正式{module}暂未完成，报告将明确标注缺口", "partial")
-
-    identity = dict(contract.identity)
     source_id = f"source-{task_hash}"
-    report_run_id = f"report-{task_hash}"
-    report_candidate = {
-        **candidate,
-        "candidate_id": str(candidate["candidate_id"]),
-        "product_name": str(identity["name_zh"]),
-        "product_version": contract.product_version,
-        "product_version_content_hash": contract.product_snapshot_hash,
-        "contract_fingerprint": contract.contract_fingerprint,
-        "analysis_basis_id": f"basis-{contract.contract_fingerprint[:20]}",
-        "underlyings": list(contract.underlyings),
-        "currency": contract.currency,
-        "price_convention": {"spot": "close", "contract_basis": identity["price_convention"]},
-        "module_run_refs": completed_refs,
-        "module_run_options": {name: [reference] for name, reference in completed_refs.items()},
+    report_run_id = f"{'multi' if delivery_mode == 'comparison' else 'report'}-{task_hash}"
+    selected_candidates = comparison_candidates if delivery_mode == "comparison" else [candidate]
+    caches: dict[str, dict[Any, Any]] = {"history": {}, "calendars": {}, "bound_history": {}}
+    executions = [
+        _run_project_candidate(
+            body=body,
+            candidate=item,
+            candidate_index=index,
+            case=case,
+            layout=layout,
+            authority=authority,
+            result_store=result_store,
+            catalog_version=catalog_version,
+            caches=caches,
+            progress=progress,
+        )
+        for index, item in enumerate(selected_candidates, start=1)
+    ]
+    report_candidates = [dict(item["candidate"]) for item in executions]
+    all_module_refs = {
+        item["candidate"]["candidate_id"]: dict(item["module_refs"])
+        for item in executions
     }
+    module_failures = {
+        f"{item['candidate']['candidate_id']}:{module}": message
+        for item in executions
+        for module, message in item["module_failures"].items()
+    }
+    catalog_hashes = {str(item["catalog_content_hash"]) for item in executions}
+    if len(catalog_hashes) != 1:
+        raise ProjectRequestError("reporter", "对比候选不是由同一产品目录快照生成，不能混合交付。")
+    report_candidate = report_candidates[0]
+    completed_refs = all_module_refs[report_candidate["candidate_id"]]
+    frozen_horizon = str(executions[0]["frozen_horizon"] or "")
+    valuation_date = str(executions[0]["valuation_date"])
     source = {
         "source_id": source_id,
         "tenant_id": authority.tenant_id,
         "task_id": task_id,
         "analysis_case_id": analysis_case_id,
         "catalog_version": catalog_version,
-        # A report source is bound to the registry snapshot that compiled the
-        # exact ResolvedContract, never to a mutable catalog label alone.
-        "catalog_content_hash": contract.registry_snapshot_hash,
-        "candidates": [report_candidate],
+        "catalog_content_hash": catalog_hashes.pop(),
+        "candidates": report_candidates,
     }
-    if output_type == "quote":
-        selection = {
-            "source_id": source_id,
-            "quote_items": [{
-                "source_id": source_id,
-                "candidate_id": report_candidate["candidate_id"],
-                "module": "payoff",
-                "module_run_ref": dict(raw_ref),
-            }],
-            "output_type": "quote",
-            "format": "html",
-            "audience": "professional",
-            "report_run_id": report_run_id,
-            "metadata": {
-                "title": str(body.get("title") or f"{identity['name_zh']}参考报价"),
-                "as_of_date": valuation_date,
-            },
+    selected_modules = [
+        name for name in ("payoff", "pricing", "backtest")
+        if any(name in refs for refs in all_module_refs.values())
+    ]
+    selected_module_refs = {
+        candidate_id: {name: refs.get(name) for name in selected_modules}
+        for candidate_id, refs in all_module_refs.items()
+    }
+    default_title = (
+        "多结构研究简报" if delivery_mode == "comparison" and output_type == "card"
+        else "多结构完整报告" if delivery_mode == "comparison"
+        else f"{report_candidate['product_name']}结构{'简报' if output_type == 'card' else '研究'}"
+    )
+    selection = {
+        "source_id": source_id,
+        "candidate_ids": [item["candidate_id"] for item in report_candidates],
+        "selected_modules": selected_modules,
+        "module_run_refs": selected_module_refs,
+        "delivery_mode": delivery_mode,
+        "output_type": output_type,
+        "format": "html",
+        "audience": "professional",
+        "report_run_id": report_run_id,
+        "metadata": {
+            "title": str(body.get("title") or default_title),
+            "as_of_date": valuation_date,
         }
-    else:
-        selection = {
-            "source_id": source_id,
-            "candidate_ids": [report_candidate["candidate_id"]],
-            "selected_modules": [name for name in ("payoff", "pricing", "backtest") if name in completed_refs],
-            "module_run_refs": {report_candidate["candidate_id"]: completed_refs},
-            "delivery_mode": "single",
-            "output_type": output_type,
-            "format": "html",
-            "audience": "professional",
-            "report_run_id": report_run_id,
-            "metadata": {
-                "title": str(body.get("title") or f"{identity['name_zh']}结构{'简报' if output_type == 'card' else '研究'}"),
-                "as_of_date": valuation_date,
-            },
-        }
+    }
     from modules.reporter.artifact_validator import validate_report_run_directory
     from modules.reporter.service import build_selected_request, call_tool as reporter_call_tool
 
-    delivery_name = {"card": "HTML简报", "quote": "HTML参考报价", "report": "HTML详细报告"}[output_type]
-    _progress(progress, "reporter", f"Reporter正在冻结事实并交由Designer生成{delivery_name}")
+    delivery_name = {"card": "研究简报", "quote": "参考报价", "report": "完整研究报告"}[output_type]
+    if delivery_mode == "comparison":
+        delivery_name = "多结构研究简报" if output_type == "card" else "多结构完整报告"
+    _progress(progress, "delivery", f"正在生成{delivery_name}")
     selection_port = _SelectionPort(source)
     expected_report_request = build_selected_request(
         selection, tenant_id=authority.tenant_id, selection_port=selection_port,
@@ -1830,43 +1977,37 @@ def run_project_request(
     # is a valid delivery state; the project result below keeps it partial rather
     # than throwing away the artifact or claiming complete coverage.
     if report.get("ok") is not True or report.get("status") not in {"completed", "partial"}:
-        raise ProjectRequestError("reporter", str(report.get("message") or "Reporter或Designer未能生成正式报告。"))
+        raise ProjectRequestError("reporter", str(report.get("message") or "正式交付服务未能生成报告。"))
     report_name = str((report.get("output") or {}).get("report") or "")
     report_path = (layout.result_root / task_id / report_run_id / report_name).resolve()
     if not report_name or not report_path.is_file() or layout.result_root not in report_path.parents:
-        raise ProjectRequestError("reporter", "报告完成状态缺少受控交付文件。")
+        raise ProjectRequestError("reporter", "报告完成状态未返回可打开的HTML交付文件。")
     try:
         report_validation = validate_report_run_directory(
             report_path.parent, expected_request=expected_report_request,
         )
     except Exception as error:
-        raise ProjectRequestError("reporter", "Reporter或Designer交付物未通过完整性校验，请检查运行日志。") from error
-    report_unit = report_validation["unit"]
-    report_modules = report_unit.get("modules") if isinstance(report_unit, Mapping) else None
-    verified_report_modules = {
-        name
-        for name in ("payoff", "pricing", "backtest")
-        if isinstance(report_modules, Mapping)
-        and isinstance(report_modules.get(name), Mapping)
-        and report_modules[name].get("status") == "ready"
-    }
-    _progress(progress, "reporter", f"Reporter和Designer已完成正式{delivery_name}", "completed")
+        raise ProjectRequestError("reporter", "HTML交付未通过完整性校验，请检查运行日志。") from error
+    frozen_statuses = report_validation.get("frozen_evidence_statuses")
+    evidence_verified = isinstance(frozen_statuses, list) and bool(frozen_statuses) and all(
+        status == "verified" for status in frozen_statuses
+    )
+    _progress(progress, "delivery", "HTML交付已生成，正在打开", "completed")
     full_coverage = (
         not module_failures
-        and (
-            output_type == "quote"
-            or (
-                set(completed_refs) == {"payoff", "pricing", "backtest"}
-                and verified_report_modules == {"payoff", "pricing", "backtest"}
-                and report_unit.get("evidence_status") == "verified"
-            )
-        )
+        and all(set(refs) == {"payoff", "pricing", "backtest"} for refs in all_module_refs.values())
+        and evidence_verified
     )
     return {
         "ok": True,
         "status": "completed" if full_coverage else "partial",
         "message": f"期权结构推荐和{delivery_name}已完成。" if full_coverage else f"期权结构推荐和{delivery_name}已完成，但部分计算模块未完成，交付物已明确标注缺口。",
-        "request": {"prompt": prompt, "output_type": output_type, "format": "html"},
+        "request": {
+            "prompt": prompt,
+            "output_type": output_type,
+            **({"delivery_mode": "comparison"} if delivery_mode == "comparison" else {}),
+            "format": "html",
+        },
         "constraints": {
             **dict(case.confirmed_constraints),
             **({"horizon": frozen_horizon} if frozen_horizon else {}),
@@ -1878,12 +2019,12 @@ def run_project_request(
         ],
         "recommendation": {
             "candidate_id": report_candidate["candidate_id"],
-            "product_id": product_id,
+            "product_id": report_candidate["product_id"],
             "product_name": report_candidate["product_name"],
             "reason": report_candidate.get("reason"),
             "main_risks": report_candidate.get("main_risks", []),
         },
-        "module_runs": completed_refs,
+        "module_runs": all_module_refs if delivery_mode == "comparison" else completed_refs,
         "module_failures": module_failures,
         "report": {
             "output_type": output_type,
@@ -1964,20 +2105,20 @@ def main() -> None:
             elif args.recommend_json is not None:
                 value = json.loads(args.recommend_json)
                 if not isinstance(value, Mapping):
-                    raise ProjectRequestError("request", "结构推荐JSON必须是对象。")
+                    raise ProjectRequestError("request", "结构推荐请求格式无效。")
                 result = run_recommendation_request(value, progress=emit)
                 output = public_recommendation_result(result)
             elif args.module_json is not None:
                 value = json.loads(args.module_json)
                 if not isinstance(value, Mapping):
-                    raise ProjectRequestError("request", "单模块JSON必须是对象。")
+                    raise ProjectRequestError("request", "单模块请求格式无效。")
                 output = run_module_request(value, progress=emit)
             else:
                 request: str | Mapping[str, Any]
                 if args.project_json is not None:
                     value = json.loads(args.project_json)
                     if not isinstance(value, Mapping):
-                        raise ProjectRequestError("request", "项目报告JSON必须是对象。")
+                        raise ProjectRequestError("request", "研究交付请求格式无效。")
                     request = value
                 else:
                     request = str(args.project_request)

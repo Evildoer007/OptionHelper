@@ -7,9 +7,11 @@ port, then prints a machine-readable URL for the native WKWebView shell.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import signal
+import stat
 import sys
 import threading
 from pathlib import Path
@@ -29,6 +31,39 @@ def configure_resource_imports(resources: Path) -> None:
         value = str(root.resolve())
         if root.is_dir() and value not in sys.path:
             sys.path.insert(0, value)
+
+
+def configure_agent_runtime(resources: Path) -> Path | None:
+    """Expose only a validated, bundled runtime executable to the App Host."""
+
+    environment_key = "OPTIONHELPER_AGENT_RUNTIME_PATH"
+    os.environ.pop(environment_key, None)
+    executable_name = "optionhelper-agent-runtime.exe" if os.name == "nt" else "optionhelper-agent-runtime"
+    candidate = resources / "agent-runtime" / executable_name
+    manifest_path = resources / "app-manifest.json"
+    runtime_manifest: dict[str, object] = {}
+    if manifest_path.is_file():
+        try:
+            app_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            runtime_manifest = dict(app_manifest.get("agent_runtime", {}))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as error:
+            raise RuntimeError("成品Agent运行时Manifest无效") from error
+    executable = candidate.is_file() and (
+        os.name == "nt" or bool(candidate.stat().st_mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH))
+    )
+    if executable:
+        expected_hash = str(runtime_manifest.get("sha256", "")).strip()
+        actual_hash = hashlib.sha256(candidate.read_bytes()).hexdigest()
+        if runtime_manifest.get("status") != "local_verified" or expected_hash != actual_hash:
+            raise RuntimeError("成品Agent运行时未通过Manifest和哈希校验")
+        os.environ[environment_key] = str(candidate.resolve())
+        os.environ["OPTIONHELPER_AGENT_RUNTIME_MODE"] = "active"
+        os.environ["OPTIONHELPER_AGENT_RUNTIME_VERSION"] = expected_hash[:12]
+        return candidate.resolve()
+    mode = os.environ.get("OPTIONHELPER_AGENT_RUNTIME_MODE", "disabled").strip().lower()
+    if bool(getattr(sys, "frozen", False)) and mode in {"active", "shadow"}:
+        raise RuntimeError("成品Agent运行时缺少Resources内置可执行文件")
+    return None
 
 
 def main() -> int:
@@ -65,6 +100,7 @@ def main() -> int:
     runtime_root = args.data_dir.expanduser().resolve()
     runtime_root.mkdir(parents=True, exist_ok=True)
     os.environ["OPTIONHELPER_RUNTIME_ROOT"] = str(runtime_root)
+    configure_agent_runtime(resources)
     from backend.app_server import AppServer
     from backend.secrets.platform_provider import platform_secret_provider
 

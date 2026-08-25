@@ -16,6 +16,14 @@ from typing import Any
 _UNDERLYING = re.compile(r"(?<![A-Za-z0-9])(?P<code>\d{6}\.(?:SH|SZ))(?![A-Za-z0-9])", re.IGNORECASE)
 _HORIZON = re.compile(r"(?P<number>\d+|[一二三四五六七八九十两]+)\s*(?P<unit>个?月|月|年|个?季度|季度|季)")
 _LOSS = re.compile(r"(?:最大(?:可承受)?(?:亏损|损失|回撤)?|最大亏损?|亏损(?:不超过|上限为|控制在|改为)?|回撤(?:不超过|上限为|控制在|改为)?|最大(?:可承受)?(?:亏损|损失|回撤)?改为)\s*(?P<value>\d+(?:\.\d+)?)\s*[%％]")
+_PATH_COUNT = re.compile(
+    r"(?:"
+    r"(?:mc|monte\s*carlo|蒙特卡洛)(?:模拟)?(?:路径(?:数)?|样本数)?\s*(?:为|是|=|：|:)?\s*(?P<mc>\d+)"
+    r"|"
+    r"(?P<plain>\d+)\s*(?:条|个)?(?:模拟)?路径(?:数)?"
+    r")",
+    re.IGNORECASE,
+)
 _CHINESE_NUMBER = {"一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9, "十": 10}
 _REQUIRED = ("underlying", "horizon", "market_view", "max_loss", "principal_fluctuation")
 _NEGATION = r"(?:不|别|否|难以|不会|不再|未(?!来)|无)"
@@ -63,6 +71,9 @@ def normalize_confirmed_constraints(value: Mapping[str, Any] | None) -> dict[str
     term_overrides = _normalize_term_overrides(source.get("term_overrides"))
     if term_overrides:
         result["term_overrides"] = term_overrides
+    path_count = _normalize_path_count(source.get("path_count"))
+    if path_count is not None:
+        result["path_count"] = path_count
     return result
 
 
@@ -89,6 +100,10 @@ def merge_confirmed_constraints(existing: Mapping[str, Any] | None, messages: Se
         confirmation = _confirmation(text)
         if pending_field == "principal_fluctuation" and confirmation is not None:
             result["principal_fluctuation"] = confirmation
+        if pending_field == "path_count":
+            path_count = _normalize_path_count(text)
+            if path_count is not None:
+                result["path_count"] = path_count
         pending_field = None
     return normalize_confirmed_constraints(result)
 
@@ -244,7 +259,30 @@ def _extract_text(text: str) -> dict[str, Any]:
     term_overrides = _extract_term_overrides(text)
     if term_overrides:
         result["term_overrides"] = term_overrides
+    path_count = _path_count_from_text(text)
+    if path_count is not None:
+        result["path_count"] = path_count
     return result
+
+
+def _normalize_path_count(value: object) -> int | None:
+    """Accept only an explicitly supplied positive integer path count."""
+
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value > 0 else None
+    if isinstance(value, str) and re.fullmatch(r"\d+", value.strip()):
+        parsed = int(value.strip())
+        return parsed if parsed > 0 else None
+    return None
+
+
+def _path_count_from_text(text: str) -> int | None:
+    match = _PATH_COUNT.search(str(text or ""))
+    if match is None:
+        return None
+    return _normalize_path_count(match.group("mc") or match.group("plain"))
 
 
 def _normalize_term_overrides(value: object) -> dict[str, str | float]:
@@ -472,6 +510,8 @@ def _number(value: str) -> int | None:
 
 
 def _pending_field(text: str) -> str | None:
+    if "路径数" in text or "路径" in text and any(term in text.lower() for term in ("mc", "monte carlo", "蒙特卡洛")):
+        return "path_count"
     if "本金" in text or "净值" in text:
         return "principal_fluctuation"
     if "最大" in text and any(word in text for word in ("亏损", "回撤", "损失")):

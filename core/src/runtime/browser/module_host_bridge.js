@@ -2,6 +2,9 @@
 (() => {
   "use strict";
   const moduleName = location.pathname.split("/").filter(Boolean).at(-2);
+  if (moduleName && document.documentElement?.dataset) {
+    document.documentElement.dataset.optionhelperModule = moduleName;
+  }
   const routes = {
     datafetcher: {"/api/status": "status", "/api/assets": "list_assets", "/api/fetch": "fetch"},
     payoffer: {"/api/catalog": "catalog", "/api/default": "default", "/api/preview": "preview", "/api/run": "run"},
@@ -63,25 +66,65 @@
   }
 
   const panelLayoutKey = "optionhelper.desk-panel-widths";
+  const panelLayoutBounds = Object.freeze({
+    left: {minimum: 220, maximum: 420, fallback: 280},
+    right: {minimum: 300, maximum: 520, fallback: 340},
+    compactLeft: 180,
+    compactRight: 240,
+    center: 360,
+    compactCenter: 300,
+  });
 
   function clampPanelWidth(value, minimum, maximum, fallback) {
     const parsed = Number.parseInt(value, 10);
     return Number.isFinite(parsed) ? Math.max(minimum, Math.min(maximum, parsed)) : fallback;
   }
 
+  function normalizePanelLayout(layout) {
+    return {
+      left: clampPanelWidth(layout?.left, panelLayoutBounds.left.minimum, panelLayoutBounds.left.maximum, panelLayoutBounds.left.fallback),
+      right: clampPanelWidth(layout?.right, panelLayoutBounds.right.minimum, panelLayoutBounds.right.maximum, panelLayoutBounds.right.fallback),
+    };
+  }
+
   function readPanelLayout(workbench) {
     const style = getComputedStyle(workbench);
     const left = style.getPropertyValue("--library-width") || style.getPropertyValue("--source-width");
     const right = style.getPropertyValue("--inspector-width") || style.getPropertyValue("--settings-width");
-    return {
-      left: clampPanelWidth(left, 220, 420, 280),
-      right: clampPanelWidth(right, 300, 520, 340),
-    };
+    return normalizePanelLayout({left, right});
+  }
+
+  function effectivePanelLayout(workbench, layout) {
+    const preferred = normalizePanelLayout(layout);
+    const width = Math.max(0, workbench.clientWidth || document.documentElement.clientWidth || window.innerWidth || 0);
+    if (!width) return preferred;
+    const compact = width < 980;
+    const minimumLeft = compact ? panelLayoutBounds.compactLeft : panelLayoutBounds.left.minimum;
+    const minimumRight = compact ? panelLayoutBounds.compactRight : panelLayoutBounds.right.minimum;
+    const centerWidth = compact ? panelLayoutBounds.compactCenter : panelLayoutBounds.center;
+    const sideBudget = Math.max(minimumLeft + minimumRight, width - centerWidth);
+    let left = preferred.left;
+    let right = preferred.right;
+    const excess = left + right - sideBudget;
+    if (excess > 0) {
+      const leftRoom = Math.max(0, left - minimumLeft);
+      const rightRoom = Math.max(0, right - minimumRight);
+      const room = leftRoom + rightRoom;
+      if (room > 0) {
+        left -= excess * (leftRoom / room);
+        right -= excess * (rightRoom / room);
+      }
+      if (left + right > sideBudget) {
+        const ratio = sideBudget / (minimumLeft + minimumRight);
+        left = minimumLeft * ratio;
+        right = minimumRight * ratio;
+      }
+    }
+    return {left: Math.floor(left), right: Math.floor(right)};
   }
 
   function applyPanelLayout(workbench, layout) {
-    const left = clampPanelWidth(layout?.left, 220, 420, 280);
-    const right = clampPanelWidth(layout?.right, 300, 520, 340);
+    const {left, right} = effectivePanelLayout(workbench, layout);
     workbench.style.setProperty("--library-width", `${left}px`);
     workbench.style.setProperty("--source-width", `${left}px`);
     workbench.style.setProperty("--inspector-width", `${right}px`);
@@ -94,7 +137,7 @@
   }
 
   function persistPanelLayout(workbench) {
-    const layout = readPanelLayout(workbench);
+    const layout = normalizePanelLayout(readPanelLayout(workbench));
     try { localStorage.setItem(panelLayoutKey, JSON.stringify(layout)); }
     catch { /* Storage may be unavailable in a standalone private preview. */ }
     window.parent.postMessage({
@@ -110,14 +153,16 @@
     const workbench = document.querySelector(".workbench");
     if (!workbench || workbench.dataset.optionhelperSharedLayout === "true") return;
     workbench.dataset.optionhelperSharedLayout = "true";
-    applyPanelLayout(workbench, storedPanelLayout() || readPanelLayout(workbench));
-    let committedLayout = JSON.stringify(readPanelLayout(workbench));
+    let preferredLayout = normalizePanelLayout(storedPanelLayout() || readPanelLayout(workbench));
+    applyPanelLayout(workbench, preferredLayout);
+    let committedLayout = JSON.stringify(preferredLayout);
     let pendingCommit = 0;
     const commitCurrentLayout = () => {
       pendingCommit = 0;
-      const nextLayout = readPanelLayout(workbench);
+      const nextLayout = normalizePanelLayout(readPanelLayout(workbench));
       const serialized = JSON.stringify(nextLayout);
       if (serialized === committedLayout) return;
+      preferredLayout = nextLayout;
       committedLayout = serialized;
       persistPanelLayout(workbench);
     };
@@ -129,24 +174,25 @@
       if (!event.target?.closest?.(".panel-resizer")) return;
       scheduleCommit();
     };
-    new MutationObserver(scheduleCommit).observe(workbench, { attributes: true, attributeFilter: ["style"] });
     document.addEventListener("pointerup", commit, true);
     document.addEventListener("keyup", commit, true);
+    new ResizeObserver(() => applyPanelLayout(workbench, preferredLayout)).observe(workbench);
     window.addEventListener("storage", (event) => {
       if (event.key !== panelLayoutKey || !event.newValue) return;
-      try { applyPanelLayout(workbench, JSON.parse(event.newValue)); }
+      try {
+        preferredLayout = normalizePanelLayout(JSON.parse(event.newValue));
+        committedLayout = JSON.stringify(preferredLayout);
+        applyPanelLayout(workbench, preferredLayout);
+      }
       catch { /* Ignore malformed external storage events. */ }
     });
     window.addEventListener("message", (event) => {
       if (event.origin !== location.origin || event.source !== window.parent) return;
       if (event.data?.type !== "optionhelper.desk-panel-layout") return;
       if (event.data?.bridge_nonce && event.data.bridge_nonce !== bridgeNonce) return;
-      const layout = {
-        left: clampPanelWidth(event.data?.layout?.left, 220, 420, 280),
-        right: clampPanelWidth(event.data?.layout?.right, 300, 520, 340),
-      };
-      committedLayout = JSON.stringify(layout);
-      applyPanelLayout(workbench, layout);
+      preferredLayout = normalizePanelLayout(event.data?.layout);
+      committedLayout = JSON.stringify(preferredLayout);
+      applyPanelLayout(workbench, preferredLayout);
     });
   }
 
@@ -202,6 +248,10 @@
     trigger.setAttribute("aria-expanded", String(open));
     menu.hidden = !open;
     if (open && focus) (menu.querySelector('[role="option"][aria-selected="true"]:not([disabled])') || menu.querySelector('[role="option"]:not([disabled])'))?.focus();
+  }
+
+  function closeChoiceControls() {
+    document.querySelectorAll('[data-oh-choice][data-open="true"]').forEach((choice) => setChoiceOpen(choice, false));
   }
 
   function moveChoice(select, direction) {
@@ -675,6 +725,11 @@
 
   window.addEventListener("message", (event) => {
     if (event.origin !== location.origin) return;
+    if (event.data?.type === "optionhelper.module-visibility") {
+      if (hostedInDesk && (!bridgeNonce || event.data?.bridge_nonce !== bridgeNonce || event.source !== window.parent)) return;
+      if (event.data?.active !== true) closeChoiceControls();
+      return;
+    }
     if (event.data?.type === "optionhelper.module-theme") {
       if (hostedInDesk && (!bridgeNonce || event.data?.bridge_nonce !== bridgeNonce || event.source !== window.parent)) return;
       applyTheme(event.data?.theme, event.data?.preference);

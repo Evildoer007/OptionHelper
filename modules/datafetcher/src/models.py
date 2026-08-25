@@ -205,6 +205,7 @@ class DataFetchResult:
     run: DataFetchRun
     quality_report: Mapping[str, Any] | None = None
     data_preview: tuple[Mapping[str, Any], ...] = ()
+    chart_series: tuple[Mapping[str, Any], ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         result = self.run.to_dict()
@@ -214,4 +215,12 @@ class DataFetchResult:
             result["quality_report"] = dict(self.quality_report)
         if self.data_preview:
             result["data_preview"] = [dict(row) for row in self.data_preview]
+        result["chart_series"] = [
+            {
+                "asset_id": str(series.get("asset_id", "")),
+                "field": str(series.get("field", "")),
+                "points": [dict(point) for point in series.get("points", ())],
+            }
+            for series in self.chart_series
+        ]
         return result

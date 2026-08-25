@@ -381,6 +381,141 @@ class _PublicHtmlParser(HTMLParser):
             parts.append(data)
 
 
+class _ComparisonMatrixParser(HTMLParser):
+    """Project a MultiCard comparison matrix into PDF candidate columns."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=False)
+        self.candidates: list[str] = []
+        self.rows: list[tuple[str, list[str]]] = []
+        self._candidate_index: int | None = None
+        self._candidate_depth = 0
+        self._candidate_parts: list[str] = []
+        self._row_active = False
+        self._row_depth = 0
+        self._row_label: list[str] = []
+        self._row_cells: list[str] = []
+        self._cell_index: int | None = None
+        self._cell_depth = 0
+        self._cell_parts: list[str] = []
+        self._label_active = False
+        self._label_depth = 0
+
+    @staticmethod
+    def _class_names(attrs: list[tuple[str, str | None]]) -> set[str]:
+        return set((dict(attrs).get("class") or "").split())
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        classes = self._class_names(attrs)
+        raw = self.get_starttag_text() or f"<{tag}>"
+        if "comparison-matrix__candidate" in classes:
+            self._candidate_index = len(self.candidates)
+            self._candidate_parts = []
+            self._candidate_depth = 0
+            return
+        if "comparison-matrix__row" in classes:
+            self._row_active = True
+            self._row_depth = 0
+            self._row_label = []
+            self._row_cells = []
+            return
+        if "comparison-matrix__section-label" in classes and self._row_active:
+            self._label_active = True
+            self._label_depth = 0
+            return
+        if "comparison-matrix__cell" in classes and self._row_active:
+            self._cell_index = len(self._row_cells)
+            self._cell_parts = []
+            self._cell_depth = 0
+            return
+        if self._candidate_index is not None:
+            self._candidate_parts.append(raw)
+            self._candidate_depth += 1
+        elif self._cell_index is not None:
+            self._cell_parts.append(raw)
+            self._cell_depth += 1
+        elif self._label_active:
+            self._label_depth += 1
+        elif self._row_active:
+            self._row_depth += 1
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        raw = self.get_starttag_text() or f"<{tag}/>"
+        if self._candidate_index is not None:
+            self._candidate_parts.append(raw)
+        elif self._cell_index is not None:
+            self._cell_parts.append(raw)
+
+    def handle_endtag(self, tag: str) -> None:
+        if self._candidate_index is not None:
+            if self._candidate_depth:
+                self._candidate_parts.append(f"</{tag}>")
+                self._candidate_depth -= 1
+            else:
+                self.candidates.append("".join(self._candidate_parts))
+                self._candidate_index = None
+                self._candidate_parts = []
+            return
+        if self._cell_index is not None:
+            if self._cell_depth:
+                self._cell_parts.append(f"</{tag}>")
+                self._cell_depth -= 1
+            else:
+                self._row_cells.append("".join(self._cell_parts))
+                self._cell_index = None
+                self._cell_parts = []
+            return
+        if self._label_active:
+            if self._label_depth:
+                self._label_depth -= 1
+            else:
+                self._label_active = False
+            return
+        if self._row_active:
+            if self._row_depth:
+                self._row_depth -= 1
+                return
+            self.rows.append(("".join(self._row_label).strip(), self._row_cells))
+            self._row_active = False
+            self._row_depth = 0
+            self._row_label = []
+            self._row_cells = []
+
+    def handle_data(self, data: str) -> None:
+        if self._candidate_index is not None:
+            self._candidate_parts.append(data)
+        elif self._cell_index is not None:
+            self._cell_parts.append(data)
+        elif self._label_active:
+            self._row_label.append(data)
+
+    def handle_entityref(self, name: str) -> None:
+        self.handle_data(f"&{name};")
+
+    def handle_charref(self, name: str) -> None:
+        self.handle_data(f"&#{name};")
+
+    def result(self) -> dict[str, Any]:
+        return {"candidates": list(self.candidates), "rows": list(self.rows)}
+
+
+def _comparison_matrix_groups(html_content: str) -> list[dict[str, Any]]:
+    matrices = re.findall(
+        r'<section\b[^>]*class=["\'][^"\']*\bcomparison-matrix\b[^"\']*["\'][^>]*>.*?</section>',
+        html_content,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    groups: list[dict[str, Any]] = []
+    for matrix in matrices:
+        parser = _ComparisonMatrixParser()
+        parser.feed(matrix)
+        parser.close()
+        group = parser.result()
+        if len(group["candidates"]) >= 2:
+            groups.append(group)
+    return groups
+
+
 def _extract_blocks(html_content: str) -> list[PdfBlock]:
     parser = _PublicHtmlParser()
     parser.feed(html_content)
@@ -1015,15 +1150,11 @@ def render_pdf(html_content: str, *, chart_specs: Mapping[str, Mapping[str, Any]
     )
 
     _pdfmetrics, latin_font, cjk_font = _register_fonts()
-    comparison_candidates = re.findall(
-        r'<article\b[^>]*class=["\'][^"\']*\bcomparison-candidate\b[^"\']*["\'][^>]*>.*?</article>',
-        html_content,
-        flags=re.DOTALL | re.IGNORECASE,
-    )
+    comparison_groups = _comparison_matrix_groups(html_content)
     document_html = html_content
-    if comparison_candidates:
+    if comparison_groups:
         document_html = re.sub(
-            r'<article\b[^>]*class=["\'][^"\']*\bcomparison-candidate\b[^"\']*["\'][^>]*>.*?</article>',
+            r'<section\b[^>]*class=["\'][^"\']*\bcomparison-matrix\b[^"\']*["\'][^>]*>.*?</section>',
             "",
             html_content,
             flags=re.DOTALL | re.IGNORECASE,
@@ -1119,27 +1250,65 @@ def render_pdf(html_content: str, *, chart_specs: Mapping[str, Mapping[str, Any]
         return result
 
     flowables = block_flowables(blocks, available_width=content_width)
-    if comparison_candidates:
-        columns = 2 if len(comparison_candidates) == 2 else 3
-        cell_width = content_width / columns
-        cells = [
+    for comparison_group in comparison_groups:
+        comparison_candidates = list(comparison_group["candidates"])
+        comparison_rows = list(comparison_group["rows"])
+        columns = len(comparison_candidates)
+        label_width = 25 * 72 / 25.4
+        cell_width = (content_width - label_width) / columns
+        header_cells = [[]]
+        header_cells.extend(
             block_flowables(_extract_blocks(fragment), available_width=cell_width - 12)
             for fragment in comparison_candidates
-        ]
-        rows = [cells[index:index + columns] for index in range(0, len(cells), columns)]
-        if len(rows[-1]) < columns:
-            rows[-1].extend([[] for _ in range(columns - len(rows[-1]))])
-        comparison_grid = Table(rows, colWidths=[cell_width] * columns, hAlign="LEFT", splitByRow=1)
-        comparison_grid.setStyle(TableStyle([
+        )
+        header_table = Table(
+            [header_cells],
+            colWidths=[label_width, *([cell_width] * columns)],
+            hAlign="LEFT",
+            splitByRow=1,
+        )
+        header_table.setStyle(TableStyle([
             ("VALIGN", (0, 0), (-1, -1), "TOP"),
-            ("BOX", (0, 0), (-1, -1), .55, colors.HexColor(TOKEN_COLORS["rule_strong"])),
-            ("INNERGRID", (0, 0), (-1, -1), .4, colors.HexColor(TOKEN_COLORS["rule"])),
-            ("TOPPADDING", (0, 0), (-1, -1), 7),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+            ("LINEABOVE", (0, 0), (-1, 0), 1.0, colors.HexColor(TOKEN_COLORS["brand_red"])),
+            ("LINEBELOW", (0, 0), (-1, 0), .55, colors.HexColor(TOKEN_COLORS["rule_strong"])),
+            ("LINEBEFORE", (1, 0), (-1, 0), .35, colors.HexColor(TOKEN_COLORS["rule"])),
             ("LEFTPADDING", (0, 0), (-1, -1), 6),
             ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+            ("TOPPADDING", (0, 0), (-1, -1), 7),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
         ]))
-        flowables.append(comparison_grid)
+        flowables.append(header_table)
+        for label, cells in comparison_rows:
+            row_cells = [[
+                [_paragraph(label, styles["subsection"], latin_font=latin_font, cjk_font=cjk_font)],
+                *[
+                    block_flowables(
+                        _extract_blocks(cells[index] if index < len(cells) else ""),
+                        available_width=cell_width - 12,
+                    )
+                    for index in range(columns)
+                ],
+            ]]
+            row_table = Table(
+                row_cells,
+                colWidths=[label_width, *([cell_width] * columns)],
+                hAlign="LEFT",
+                splitByRow=1,
+            )
+            row_style = [
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("LINEBELOW", (0, 0), (-1, -1), .35, colors.HexColor(TOKEN_COLORS["rule"])),
+                ("LINEBEFORE", (1, 0), (-1, 0), .35, colors.HexColor(TOKEN_COLORS["rule"])),
+                ("LINEAFTER", (0, 0), (0, 0), .55, colors.HexColor(TOKEN_COLORS["rule_strong"])),
+                ("LEFTPADDING", (0, 0), (-1, -1), 6),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+                ("TOPPADDING", (0, 0), (-1, -1), 6),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+            ]
+            if label == "主要风险":
+                row_style.append(("LINEABOVE", (0, 0), (-1, 0), .9, colors.HexColor(TOKEN_COLORS["brand_red"])))
+            row_table.setStyle(TableStyle(row_style))
+            flowables.append(row_table)
 
     page_height = _card_page_height(flowables, content_width=content_width, top=top, bottom=bottom) if compact else report_page_height
     buffer = BytesIO()

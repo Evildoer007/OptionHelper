@@ -253,7 +253,47 @@ function presetDiagram(preset) {
   } else {
     body = `<text class="preset-diagram__empty" x="280" y="84" text-anchor="middle">暂未提供可视化说明</text>`;
   }
-  return `<figure class="multi-agent-preset-diagram"><svg viewBox="0 0 560 160" role="img" aria-labelledby="${id}-title ${id}-desc"><title id="${id}-title">${escapeHtml(preset.display_name)}：${escapeHtml(presentation.summary)}</title><desc id="${id}-desc">${escapeHtml(presentation.description)}</desc><defs><marker id="${arrow}" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="var(--color-muted)"/></marker></defs>${body}</svg><figcaption>${escapeHtml(presentation.summary)}<span>${escapeHtml(presentation.description)}</span></figcaption></figure>`;
+  return `<figure class="multi-agent-preset-diagram" data-preset-diagram role="button" tabindex="0" aria-label="放大查看${escapeHtml(preset.display_name)}模式图"><svg viewBox="0 0 560 160" role="img" aria-labelledby="${id}-title ${id}-desc"><title id="${id}-title">${escapeHtml(preset.display_name)}：${escapeHtml(presentation.summary)}</title><desc id="${id}-desc">${escapeHtml(presentation.description)}</desc><defs><marker id="${arrow}" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="var(--color-muted)"/></marker></defs>${body}</svg><figcaption>${escapeHtml(presentation.summary)}<span>${escapeHtml(presentation.description)}</span></figcaption></figure>`;
+}
+
+let presetDiagramDialog = null;
+
+function closePresetDiagram() {
+  if (presetDiagramDialog?.open) presetDiagramDialog.close();
+}
+
+function openPresetDiagram(source) {
+  closePresetDiagram();
+  const dialog = document.createElement("dialog");
+  const title = source.querySelector("figcaption")?.firstChild?.textContent?.trim() || "模式图";
+  const heading = document.createElement("h2");
+  const content = document.createElement("div");
+  const close = document.createElement("button");
+  const diagram = source.querySelector("svg")?.cloneNode(true);
+  dialog.className = "preset-diagram-dialog";
+  dialog.setAttribute("aria-label", `放大查看${title}`);
+  heading.textContent = title;
+  content.className = "preset-diagram-dialog__content";
+  close.type = "button";
+  close.className = "preset-diagram-dialog__close";
+  close.setAttribute("aria-label", "关闭模式图");
+  close.textContent = "×";
+  if (diagram) {
+    diagram.removeAttribute("aria-labelledby");
+    content.append(diagram);
+  }
+  dialog.append(close, heading, content);
+  document.body.append(dialog);
+  presetDiagramDialog = dialog;
+  close.addEventListener("click", closePresetDiagram);
+  dialog.addEventListener("click", (event) => { if (event.target === dialog) closePresetDiagram(); });
+  dialog.addEventListener("close", () => {
+    const trigger = source.isConnected ? source : null;
+    dialog.remove();
+    if (presetDiagramDialog === dialog) presetDiagramDialog = null;
+    trigger?.focus();
+  }, { once: true });
+  dialog.showModal();
 }
 
 function roleModelValue(selection) {
@@ -356,6 +396,19 @@ multiAgentRoot.addEventListener("change", async (event) => {
     await refreshMultiAgentPresets();
     message(resultFor("multi-agent"), error.message, true);
   }
+});
+
+multiAgentRoot.addEventListener("click", (event) => {
+  const diagram = event.target.closest("[data-preset-diagram]");
+  if (!diagram) return;
+  openPresetDiagram(diagram);
+});
+
+multiAgentRoot.addEventListener("keydown", (event) => {
+  const diagram = event.target.closest("[data-preset-diagram]");
+  if (!diagram || !["Enter", " "].includes(event.key)) return;
+  event.preventDefault();
+  openPresetDiagram(diagram);
 });
 
 reviewPolicyRoot.addEventListener("change", async (event) => {

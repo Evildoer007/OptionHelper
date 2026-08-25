@@ -20,7 +20,7 @@ class RequestValidationError(ValueError):
 
 _FIELD_ALIASES = {"adjusted_close": "adj_close", "adjusted_open": "adj_open", "adjusted_high": "adj_high", "adjusted_low": "adj_low"}
 _VALID_FREQUENCIES = {"1d", "daily", "d"}
-_VALID_ADJUSTMENTS = {"auto", "none", "forward", "raw", "both"}
+_VALID_ADJUSTMENTS = {"auto", "none", "forward", "backward", "raw", "both"}
 _VALID_CACHE_POLICIES = {"reuse", "extend_only", "force_refresh"}
 
 
@@ -179,7 +179,7 @@ def validate_request(value: DataRequest, config: DataFetcherConfig, caller: Call
         raise RequestValidationError("当前DataFetcher仅支持日频数据")
     adjustment = value.adjustment.strip().lower()
     if adjustment not in _VALID_ADJUSTMENTS:
-        raise RequestValidationError("adjustment必须为auto、none、raw、forward或both")
+        raise RequestValidationError("adjustment不受支持")
     cache_policy = value.cache_policy.strip().lower()
     if cache_policy not in _VALID_CACHE_POLICIES:
         raise RequestValidationError("cache_policy必须为reuse、extend_only或force_refresh")

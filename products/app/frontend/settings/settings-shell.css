@@ -258,3 +258,63 @@ html[data-theme="dark"] .setup-page :is(.configured-models, .connection-editor, 
 html[data-theme="dark"] .setup-page .settings-nav .connection-item { background: transparent; }
 html[data-theme="dark"] .setup-page .settings-nav .connection-item:hover { background: var(--color-paper); }
 html[data-theme="dark"] .setup-page .settings-nav .connection-item[aria-current] { background: var(--color-ground); }
+
+/* Settings controls keep the same geometry in both themes. The older setup
+   rules use light-only surfaces, so remap those surfaces and their copy here
+   at the page boundary instead of changing the form behavior. */
+html[data-theme="dark"] .setup-page .setup-form .field input,
+html[data-theme="dark"] .setup-page .setup-form .field select,
+html[data-theme="dark"] .setup-page .setup-form .field .choice-trigger,
+html[data-theme="dark"] .setup-page .advanced-options__body input {
+  border-color: var(--color-rule-strong) !important;
+  background: var(--color-paper) !important;
+  color: var(--color-ink) !important;
+  -webkit-text-fill-color: var(--color-ink) !important;
+}
+
+html[data-theme="dark"] .setup-page .setup-form .field input::placeholder,
+html[data-theme="dark"] .setup-page .setup-form .field textarea::placeholder,
+html[data-theme="dark"] .setup-page .advanced-options__body input::placeholder {
+  color: var(--color-muted-soft) !important;
+  -webkit-text-fill-color: var(--color-muted-soft) !important;
+}
+
+html[data-theme="dark"] .setup-page .setup-form .field label,
+html[data-theme="dark"] .setup-page .setup-form .field-hint,
+html[data-theme="dark"] .setup-page .setup-form .field-note,
+html[data-theme="dark"] .setup-page .field-spec,
+html[data-theme="dark"] .setup-page .field-optional,
+html[data-theme="dark"] .setup-page .advanced-options summary,
+html[data-theme="dark"] .setup-page .advanced-options__body label,
+html[data-theme="dark"] .setup-page .advanced-options__body small {
+  color: var(--color-muted) !important;
+}
+
+html[data-theme="dark"] .setup-page .storage-location {
+  border-color: var(--color-rule) !important;
+  background: var(--color-surface) !important;
+  color: var(--color-muted) !important;
+}
+
+html[data-theme="dark"] .setup-page .storage-location strong,
+html[data-theme="dark"] .setup-page .storage-location span {
+  color: var(--color-ink) !important;
+}
+
+html[data-theme="dark"] .setup-page .storage-location small {
+  color: var(--color-muted) !important;
+}
+
+html[data-theme="dark"] .setup-page .form-foot {
+  border-top-color: var(--color-rule) !important;
+}
+
+/* The focused preset diagram remains accessible without a brand-red frame. */
+.setup-page .multi-agent-preset-diagram[data-preset-diagram]:focus-visible {
+  outline: 2px solid var(--color-rule-strong);
+  outline-offset: 2px;
+}
+
+.setup-page .multi-agent-role-actions {
+  margin-bottom: 12px;
+}

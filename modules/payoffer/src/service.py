@@ -198,6 +198,7 @@ def catalog_payload() -> dict[str, object]:
                 "runtime_status": "enabled" if product["identity"]["entry_status"] else "blocked",
                 "formula_mode": "shared_cashflow_interpreter",
                 "path_count": len(product["paths"]),
+                "path_summaries": _path_summaries(product),
                 "payoff_fields": fields,
             }
         )

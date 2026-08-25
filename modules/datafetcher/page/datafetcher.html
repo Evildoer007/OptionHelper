@@ -26,7 +26,7 @@
       <section class="canvas-panel">
         <div class="canvas-toolbar">
           <div class="canvas-state"><span class="state-dot" id="state-dot"></span><span id="canvas-state">等待数据请求</span></div>
-          <div class="canvas-toolbar-actions"><span class="run-id" id="run-id"></span><button class="button button-primary" id="submit-request" type="submit" form="request-form">获取数据</button></div>
+          <div class="canvas-toolbar-actions"><button class="button button-primary" id="submit-request" type="submit" form="request-form">获取数据</button></div>
         </div>
         <div class="notice" id="notice" hidden aria-live="polite"></div>
         <div class="canvas-viewport">
@@ -42,33 +42,33 @@
           <h2>数据请求</h2>
           <section class="inspector-group">
             <h3>请求范围</h3>
-            <label class="control-field" for="asset-ids"><span>资产标识</span><textarea id="asset-ids" required aria-describedby="asset-ids-hint asset-ids-error" placeholder="例如000300.SH"></textarea><small id="asset-ids-hint">每行填写一个代码。</small><small class="field-error" id="asset-ids-error" role="alert"></small></label>
+            <label class="control-field" for="asset-ids"><span>资产标识</span><textarea id="asset-ids" autocomplete="off" spellcheck="false" autocorrect="off" autocapitalize="off" required aria-describedby="asset-ids-error" placeholder="例如000300.SH"></textarea><small class="field-error" id="asset-ids-error" role="alert"></small></label>
             <div class="control-grid"><label class="control-field" for="start-date"><span>开始日期</span><input class="date-input" id="start-date" type="text" inputmode="numeric" autocomplete="off" placeholder="yyyy/mm/dd" required></label><label class="control-field" for="end-date"><span>结束日期</span><input class="date-input" id="end-date" type="text" inputmode="numeric" autocomplete="off" placeholder="yyyy/mm/dd" required></label></div>
           </section>
           <section class="inspector-group">
             <h3>数据口径</h3>
-            <div class="read-only-row"><span>频率</span><strong>日频1d</strong></div>
+            <div class="read-only-row"><span>频率</span><strong>日频</strong></div>
             <input id="frequency" type="hidden" value="1d">
-            <label class="control-field" for="adjustment"><span>复权口径</span><select id="adjustment"><option value="auto" selected>自动适配中国市场</option><option value="none">不复权</option><option value="forward">前复权</option><option value="both">原始价格与前复权价格并存</option></select><small id="adjustment-hint">股票和ETF使用前复权，指数不复权；按标的逐一解析。</small></label>
-            <div class="read-only-row"><span>标准字段</span><strong>close＋adj_close</strong></div>
-            <input id="fields" type="hidden" value="close,adj_close">
-            <details class="advanced-options" id="field-options"><summary>增加OHLCV字段</summary>
-              <div class="field-choice-grid" aria-label="附加行情字段">
-                <label class="check-field"><input class="extra-field" type="checkbox" value="open"><span>open</span></label>
-                <label class="check-field"><input class="extra-field" type="checkbox" value="high"><span>high</span></label>
-                <label class="check-field"><input class="extra-field" type="checkbox" value="low"><span>low</span></label>
-                <label class="check-field"><input class="extra-field" type="checkbox" value="volume"><span>volume</span></label>
+            <label class="control-field" for="adjustment"><span>复权口径</span><select id="adjustment"><option value="none">不复权</option><option value="forward" selected>前复权</option><option value="backward">后复权</option></select></label>
+            <div class="read-only-row"><span>行情字段</span><strong id="field-summary">全部字段</strong></div>
+            <details class="advanced-options" id="field-options"><summary>选择字段</summary>
+              <div class="field-choice-grid" aria-label="选择行情字段">
+                <label class="check-field"><input class="extra-field" type="checkbox" value="open" checked><span>开盘价</span></label>
+                <label class="check-field"><input class="extra-field" type="checkbox" value="high" checked><span>最高价</span></label>
+                <label class="check-field"><input class="extra-field" type="checkbox" value="low" checked><span>最低价</span></label>
+                <label class="check-field"><input class="extra-field" type="checkbox" value="close" checked disabled><span>收盘价</span></label>
+                <label class="check-field"><input class="extra-field" type="checkbox" value="volume" checked><span>成交量</span></label>
               </div>
             </details>
           </section>
           <section class="inspector-group">
             <h3>数据来源</h3>
             <div class="source-options" role="radiogroup" aria-label="选择数据来源">
-              <label class="source-option"><input name="source-mode" type="radio" value="ifind_http" checked><span><strong>iFinD实时行情</strong><small>默认远程数据服务</small></span></label>
-              <label class="source-option"><input name="source-mode" type="radio" value="local"><span><strong>受控本地数据</strong><small>读取Host已登记的标准行情文件</small></span></label>
+              <label class="source-option"><input name="source-mode" type="radio" value="ifind_http" checked><span><strong>实时数据</strong><small>在线获取行情</small></span></label>
+              <label class="source-option"><input name="source-mode" type="radio" value="local"><span><strong>本地数据</strong><small>使用已保存行情</small></span></label>
             </div>
-            <section class="secret-card" id="ifind-status-card"><strong>iFinD凭据状态</strong><span id="secret-status">凭据由设置中心管理，本页不会读取或显示密钥。</span></section>
-            <p class="retention-note" id="local-source-note" hidden>本页不接收文件路径。Local模式仅按标的读取Host受控数据目录中的标准行情文件。</p>
+            <section class="secret-card" id="ifind-status-card"><strong>连接状态</strong><span id="secret-status">正在检查连接配置。</span></section>
+            <p class="retention-note" id="local-source-note" hidden>仅使用已保存行情，不调用远程数据服务。</p>
           </section>
           <section class="inspector-group">
             <h3>获取策略</h3>
@@ -77,11 +77,6 @@
               <label class="strategy-option"><input name="cache-policy" type="radio" value="extend_only"><span><strong>补齐缺口</strong><small>复用覆盖并补拉缺失区间</small></span></label>
               <label class="strategy-option"><input name="cache-policy" type="radio" value="reuse"><span><strong>仅用已保存数据</strong><small>不调用远程数据服务</small></span></label>
             </div>
-          </section>
-          <section class="inspector-group request-summary" aria-labelledby="request-summary-title">
-            <h3 id="request-summary-title">提交摘要</h3>
-            <dl id="request-summary"></dl>
-            <p class="retention-note">成功结果写入受控DataStore，形成当前任务的DataAssetRef，供估值、回测与报告复现。这是任务资产留存，不是本地数据源回退。</p>
           </section>
         </form>
       </aside>

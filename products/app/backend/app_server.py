@@ -11,7 +11,10 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
+import shutil
+import sys
 import threading
 from dataclasses import replace
 from http import HTTPStatus
@@ -47,6 +50,7 @@ from .identity.password_store import PasswordCredentialStore
 from .identity.session_identity import SessionIdentity
 from .model_gateway.gateway import ModelGateway
 from .model_gateway.deepseek_provider import complete_openai_compatible, complete_openai_compatible_with_metadata, decide_openai_compatible, discover_openai_models, validate_openai_base_url
+from .model_gateway.openai_compatible_stream import stream_openai_compatible
 from .model_gateway.provider_registry import ProviderRegistry
 from .page_registry import PAGE_MODULES, PageRegistry
 from .settings.connection_tester import ConnectionTester
@@ -94,9 +98,55 @@ FRONTEND_ASSETS = frozenset({
     "shared/styles.css", "shared/refinement.css", "shared/theme-overrides.css", "shared/app.js", "shared/transition-scope.js", "shared/theme-bootstrap.js", "shared/theme.js", "shared/scrollbar-activity.js", "shared/vol-surface.js", "shared/thinking-orb.js", "shared/thinking-orbs-engine.js",
 })
 _CAPABILITY_CSP = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'self'; form-action 'self'"
+_AGENT_RUNTIME_MODES = frozenset({"disabled", "shadow", "active"})
 _RECOMMENDATION_MODE_IDS = (
     "sequential-deliberation", "product-trader-loop", "independent-council", "constraint-ranking",
 )
+
+
+def _agent_runtime_source_entrypoint() -> Path:
+    return Path(__file__).resolve().parents[1] / "runtime" / "agent_engine" / "runtime.js"
+
+
+def _resolve_agent_runtime_mode(explicit: str | None) -> str:
+    configured = str(explicit).strip().lower() if explicit is not None else os.environ.get(
+        "OPTIONHELPER_AGENT_RUNTIME_MODE", "",
+    ).strip().lower()
+    if configured:
+        if configured not in _AGENT_RUNTIME_MODES:
+            raise ValidationError("Agent运行时模式必须是disabled、shadow或active")
+        return configured
+    runtime_path = os.environ.get("OPTIONHELPER_AGENT_RUNTIME_PATH", "").strip()
+    if runtime_path and Path(runtime_path).expanduser().is_file():
+        return "active"
+    if not bool(getattr(sys, "frozen", False)) and _agent_runtime_source_entrypoint().is_file() and shutil.which("node"):
+        return "active"
+    return "disabled"
+
+
+def _agent_runtime_public_status(mode: str) -> dict[str, Any]:
+    runtime_path = os.environ.get("OPTIONHELPER_AGENT_RUNTIME_PATH", "").strip()
+    bundled_ready = bool(runtime_path and Path(runtime_path).expanduser().is_file())
+    source_ready = bool(
+        not getattr(sys, "frozen", False)
+        and _agent_runtime_source_entrypoint().is_file()
+        and shutil.which("node")
+    )
+    available = bundled_ready or source_ready
+    if mode == "disabled":
+        reason = "Agent运行时已显式关闭。"
+    elif available:
+        reason = "Agent运行时已通过本机入口探测。"
+    else:
+        reason = "未找到可用的Agent运行时。"
+    return {
+        "runtime_status": "available" if available and mode in {"active", "shadow"} else "unavailable",
+        "runtime_mode": mode,
+        "runtime_version": os.environ.get(
+            "OPTIONHELPER_AGENT_RUNTIME_VERSION", "source" if source_ready else "unknown",
+        ),
+        "runtime_reason": reason,
+    }
 _RECOMMENDATION_MODE_ROLE_FALLBACKS = {
     "sequential-deliberation": ("Intent", "Research", "Critic"),
     "product-trader-loop": ("Structurer", "Trader", "Reviewer"),
@@ -167,6 +217,7 @@ class AppServer:
         *,
         allow_unverified_capability: bool = False,
         authentication_mode: AuthenticationMode = "local-development",
+        agent_runtime_mode: str | None = None,
     ) -> None:
         if host != "127.0.0.1":
             raise ValidationError("Local App mode must bind to a loopback address")
@@ -257,6 +308,13 @@ class AppServer:
                 resolve_secret=lambda ref: self.secret_provider.resolve(ref, "模型服务凭据"),
                 request_control=request_control,
             ),
+            stream=lambda settings, reference, messages, request_control=None: stream_openai_compatible(
+                settings,
+                reference,
+                messages,
+                resolve_secret=lambda ref: self.secret_provider.resolve(ref, "模型服务凭据"),
+                request_control=request_control,
+            ),
             bounded_request_control=True,
         )
         self.tool_idempotency = ToolIdempotencyStore(self._documents._root / "tool-idempotency.sqlite3")
@@ -306,6 +364,8 @@ class AppServer:
             self.contracts,
             self.tasks,
         )
+        self.agent_runtime_mode = _resolve_agent_runtime_mode(agent_runtime_mode)
+        self.agent_runtime_status = _agent_runtime_public_status(self.agent_runtime_mode)
         self.recommender = RecommenderAdapter(
             gateway=self.model_gateway,
             registry=self.registry,
@@ -313,6 +373,8 @@ class AppServer:
             tool_executor=self.conversation_tools,
             concurrency_gate=self.agent_run_concurrency_gate,
             settlement_registry=self.agent_run_settlement_registry,
+            agent_runtime_mode=self.agent_runtime_mode,
+            agent_runtime_session_root=self._documents._root / "agent-runtime-sessions",
         )
         self.conversation_tools.bind_recommender(self.recommender)
         # Complete any durable prepared candidate confirmation before the
@@ -363,6 +425,9 @@ class AppServer:
         return self.url
 
     def shutdown(self) -> None:
+        close_runtimes = getattr(self.recommender, "close_all_runtimes", None)
+        if callable(close_runtimes):
+            close_runtimes()
         self.operations.shutdown()
         if self._httpd is not None:
             self._httpd.shutdown()
@@ -1309,6 +1374,7 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
             presets = recommendation_presets()
             review_policies = _review_policies()
             self._json(HTTPStatus.OK, {
+                **self.app.agent_runtime_status,
                 "selected_preset_id": settings.multi_agent_recommendation_preset_id,
                 "presets": [
                     {
@@ -1630,6 +1696,9 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
                     stage="task",
                     next_step="请等待后台运行停止后，再删除当前任务。",
                 )
+            close_runtime = getattr(self.app.recommender, "close_task_runtime", None)
+            if callable(close_runtime):
+                close_runtime(identity, task_id, reason="task_deleted")
             task = self.app.tasks.delete(identity, task_id)
             self.app.audit.record(AuditEvent(action="task.delete", principal_id=identity.principal_id, tenant_id=identity.tenant_id, outcome="succeeded", decision="allow", reference=task_id, request_id=request_id))
             self._json(HTTPStatus.OK, {"task": task})
@@ -1673,6 +1742,9 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
             self.app.policy.require(identity.role, "conversation.write")
             task_id = path.removeprefix("/api/tasks/").removesuffix("/cancel").rstrip("/")
             self.app.operations.cancel_task(identity, task_id)
+            cancel_runtime = getattr(self.app.recommender, "cancel_task_runtime", None)
+            if callable(cancel_runtime):
+                cancel_runtime(identity, task_id, reason="parent_task_cancelled")
             task = self.app.tasks.cancel(identity, task_id)
             self.app.audit.record(AuditEvent(action="task.cancel", principal_id=identity.principal_id, tenant_id=identity.tenant_id, outcome="succeeded", decision="allow", reference=task_id, request_id=request_id))
             self._json(HTTPStatus.OK, {"task": task})

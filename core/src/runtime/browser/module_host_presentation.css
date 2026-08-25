@@ -42,6 +42,15 @@ html[data-optionhelper-app-hosted="true"] {
   --wash: var(--color-blue-gray-soft);
   --font: var(--font-sans);
   --mono: var(--font-sans);
+  --oh-type-panel-title: 700 18px/1.28 var(--font);
+  --oh-type-result-title: 700 22px/1.28 var(--font);
+  --oh-type-workspace-title: 650 16px/1.35 var(--font);
+  --oh-type-section-title: 650 15px/1.4 var(--font);
+  --oh-type-label: 650 12px/1.45 var(--font);
+  --oh-type-control: 400 12px/1.45 var(--font);
+  --oh-type-helper: 400 11px/1.62 var(--font);
+  --oh-type-metadata: 400 10px/1.5 var(--font);
+  --oh-type-metric: 650 14px/1.4 var(--font);
   --oh-scrollbar-ink: var(--color-ink, var(--ink, #25282b));
   --oh-scrollbar-thumb: color-mix(in srgb, var(--oh-scrollbar-ink) 14%, transparent);
   --oh-scrollbar-thumb-hover: color-mix(in srgb, var(--oh-scrollbar-ink) 22%, transparent);
@@ -90,6 +99,10 @@ html[data-optionhelper-app-hosted="true"] *::-webkit-scrollbar-thumb:hover {
 html[data-optionhelper-app-hosted="true"][data-oh-scrollbar-overlay="enabled"] [data-oh-scrollbar-overlay-ready="true"]::-webkit-scrollbar {
   width: 0 !important;
   height: 0 !important;
+}
+
+html[data-optionhelper-app-hosted="true"][data-oh-scrollbar-overlay="enabled"] [data-oh-scrollbar-overlay-ready="true"] {
+  scrollbar-gutter: auto !important;
 }
 
 html[data-optionhelper-app-hosted="true"][data-oh-scrollbar-overlay="enabled"] [data-oh-scrollbar-overlay-ready="true"]::-webkit-scrollbar-thumb,
@@ -155,6 +168,17 @@ html[data-optionhelper-app-hosted="true"] textarea {
   font-family: var(--font) !important;
 }
 
+html[data-optionhelper-app-hosted="true"] input[type="number"] {
+  appearance: textfield !important;
+  -moz-appearance: textfield !important;
+}
+
+html[data-optionhelper-app-hosted="true"] input[type="number"]::-webkit-inner-spin-button,
+html[data-optionhelper-app-hosted="true"] input[type="number"]::-webkit-outer-spin-button {
+  margin: 0 !important;
+  -webkit-appearance: none !important;
+}
+
 html[data-optionhelper-app-hosted="true"] select {
   appearance: none;
   -webkit-appearance: none;
@@ -211,7 +235,7 @@ html[data-optionhelper-app-hosted="true"] .workbench {
   grid-template-columns:
     var(--library-width, var(--source-width, clamp(220px, 21%, 270px)))
     0
-    minmax(320px, 1fr)
+    minmax(0, 1fr)
     0
     var(--inspector-width, var(--settings-width, clamp(280px, 27%, 350px)))
     !important;
@@ -283,6 +307,10 @@ html[data-optionhelper-app-hosted="true"] :is(.inspector-panel, .settings-panel)
   border-left: 1px solid var(--rule) !important;
 }
 
+html[data-optionhelper-app-hosted="true"] :is(.inspector-panel, .settings-panel) {
+  padding-bottom: 88px !important;
+}
+
 html[data-optionhelper-app-hosted="true"] .panel-resizer {
   position: relative;
   display: block !important;
@@ -326,14 +354,56 @@ html[data-optionhelper-app-hosted="true"] :is(
   .library-panel h1,
   .source-panel h1,
   .inspector-panel h2,
-  .settings-panel h2,
-  .section-head h2
+  .settings-panel h2
 ) {
   margin: 0;
   color: var(--ink);
-  font-size: 18px !important;
-  line-height: 1.28;
+  font: var(--oh-type-panel-title) !important;
   letter-spacing: -.02em;
+}
+
+html[data-optionhelper-app-hosted="true"] :is(
+  .section-head h2,
+  .preview-head h2,
+  .empty-canvas h2,
+  .empty-canvas strong
+) {
+  font: var(--oh-type-workspace-title) !important;
+}
+
+html[data-optionhelper-app-hosted="true"] :is(.sheet-heading h1, .sheet-heading h2) {
+  font: var(--oh-type-result-title) !important;
+  letter-spacing: -.025em !important;
+}
+
+html[data-optionhelper-app-hosted="true"] :is(
+  .report-section > h2,
+  .result-section > h3,
+  .market-chart__heading h3
+) {
+  font: var(--oh-type-section-title) !important;
+}
+
+/* Left rails share one reading rhythm in OptDesk: title, field label, then
+ * control.  Keep this in the host contract so the five independently-built
+ * module pages do not drift apart again. */
+html[data-optionhelper-app-hosted="true"] :is(
+  .library-panel,
+  .source-panel
+) > h1 {
+  margin: 0 0 16px !important;
+}
+
+html[data-optionhelper-app-hosted="true"] .library-panel > .field-label {
+  margin: 0 0 8px !important;
+}
+
+html[data-optionhelper-app-hosted="true"][data-optionhelper-module="datafetcher"] .library-panel > .asset-filter + .asset-list {
+  margin-top: 16px;
+}
+
+html[data-optionhelper-app-hosted="true"][data-optionhelper-module="reporter"] .source-panel > h1 + label {
+  margin-top: 0;
 }
 
 html[data-optionhelper-app-hosted="true"] :is(
@@ -345,8 +415,76 @@ html[data-optionhelper-app-hosted="true"] :is(
   .rule
 ) {
   color: var(--muted) !important;
-  font-size: 11px !important;
-  line-height: 1.62 !important;
+  font: var(--oh-type-helper) !important;
+}
+
+html[data-optionhelper-app-hosted="true"] :is(
+  .field-label,
+  .control-field,
+  .term-fields .field > span:first-child,
+  .setting-group > label,
+  .setting-group > legend,
+  .choice,
+  .scenario-heading,
+  .scenario-title,
+  .candidate-title
+) {
+  font: var(--oh-type-label) !important;
+}
+
+html[data-optionhelper-app-hosted="true"] :is(
+  input,
+  select,
+  textarea,
+  .compact-control,
+  .canvas-state,
+  .status-tag
+) {
+  font: var(--oh-type-control) !important;
+}
+
+html[data-optionhelper-app-hosted="true"] :is(
+  .control-field small,
+  .hint,
+  .notice,
+  .message,
+  .candidate-subtitle,
+  .selection-count,
+  .run-row,
+  .sheet-heading p,
+  .report-section > p,
+  .result-section > p,
+  .summary-item > span,
+  .result-metric > span,
+  .scenario-condition
+) {
+  font: var(--oh-type-helper) !important;
+}
+
+html[data-optionhelper-app-hosted="true"] :is(
+  .run-id,
+  .scenario-list li::before,
+  .scenario-heading small,
+  .fingerprint,
+  .market-chart__axis-label,
+  .market-chart__legend span,
+  .json-block
+) {
+  font: var(--oh-type-metadata) !important;
+}
+
+html[data-optionhelper-app-hosted="true"] :is(
+  .result-metric > strong,
+  .summary-item > strong,
+  .slip-cell > strong,
+  .metric-strip strong,
+  .greek-metric strong
+) {
+  font: var(--oh-type-metric) !important;
+}
+
+html[data-optionhelper-app-hosted="true"] .scenario-condition .formula {
+  font: inherit !important;
 }
 
 /* Five-module information hierarchy: one heading, one rule and one field
@@ -373,7 +511,7 @@ html[data-optionhelper-app-hosted="true"] :is(
 ) {
   margin: 0 0 10px !important;
   color: var(--color-ink-soft, var(--ink)) !important;
-  font: 650 12px/1.45 var(--font) !important;
+  font: var(--oh-type-label) !important;
   letter-spacing: 0 !important;
 }
 
@@ -394,7 +532,7 @@ html[data-optionhelper-app-hosted="true"] :is(.module-advanced, .library-advance
 html[data-optionhelper-app-hosted="true"] :is(.module-advanced, .library-advanced) > summary {
   color: var(--color-ink-soft, var(--ink));
   cursor: pointer;
-  font: 650 12px/1.45 var(--font);
+  font: var(--oh-type-label);
   list-style-position: outside;
 }
 
@@ -430,6 +568,10 @@ html[data-optionhelper-app-hosted="true"] .field-symbol {
   vertical-align: baseline;
 }
 
+html[data-optionhelper-app-hosted="true"][data-optionhelper-module="payoffer"] .field-symbol {
+  color: var(--color-muted);
+}
+
 html[data-optionhelper-app-hosted="true"] .field-symbol .formula {
   color: inherit;
   font-family: inherit;
@@ -463,8 +605,7 @@ html[data-optionhelper-app-hosted="true"] :is(
   background: var(--paper);
   color: var(--ink);
   box-shadow: none !important;
-  font-size: 11px !important;
-  font-weight: 650;
+  font: var(--oh-type-label) !important;
 }
 
 html[data-optionhelper-app-hosted="true"] :is(.button, .file-button):hover:not(:disabled) {
@@ -502,7 +643,7 @@ html[data-optionhelper-app-hosted="true"] :is(
 ):focus-visible {
   outline: 2px solid var(--color-blue-gray) !important;
   outline-offset: 1px !important;
-  border-color: var(--red) !important;
+  border-color: var(--color-rule-strong) !important;
 }
 
 html[data-optionhelper-app-hosted="true"] :is(
@@ -547,6 +688,41 @@ html[data-optionhelper-app-hosted="true"] :is(
   border-radius: 10px !important;
   background: var(--paper) !important;
   box-shadow: none !important;
+}
+
+/* Pricer and Backtester expose the same audit disclosure.  Keep the disclosure
+ * itself identical while allowing each module to retain its own audit payload. */
+html[data-optionhelper-app-hosted="true"] .audit-details {
+  margin-top: 20px !important;
+  padding: 0 !important;
+  overflow: hidden;
+  border: 1px solid var(--rule) !important;
+  border-radius: 10px !important;
+  background: var(--paper) !important;
+}
+
+html[data-optionhelper-app-hosted="true"] .audit-details > summary {
+  padding: 12px 14px !important;
+  color: var(--ink) !important;
+  font: var(--oh-type-label) !important;
+  line-height: 1.45 !important;
+  cursor: pointer;
+  list-style-position: inside;
+}
+
+html[data-optionhelper-app-hosted="true"] .audit-details[open] > summary {
+  border-bottom: 1px solid var(--rule) !important;
+}
+
+html[data-optionhelper-app-hosted="true"] .audit-details > :is(pre, .table-wrap) {
+  margin: 12px !important;
+  max-width: none;
+}
+
+html[data-optionhelper-app-hosted="true"] .audit-details > .table-wrap {
+  overflow: auto;
+  border: 1px solid var(--rule) !important;
+  border-radius: 8px !important;
 }
 
 html[data-optionhelper-app-hosted="true"] :is(.notice, .notice-area .notice) {
@@ -602,8 +778,7 @@ html[data-optionhelper-app-hosted="true"] .choice-trigger {
   border-radius: 7px;
   background: var(--surface, #fff);
   color: var(--ink, #2b2224);
-  font: inherit;
-  font-size: 11px;
+  font: var(--oh-type-control);
   line-height: 1.3;
   text-align: left;
 }
@@ -679,8 +854,7 @@ html[data-optionhelper-app-hosted="true"] .choice-option {
   border-radius: 6px;
   background: transparent;
   color: var(--ink, #2b2224);
-  font: inherit;
-  font-size: 11px;
+  font: var(--oh-type-control);
   line-height: 1.35;
   text-align: left;
 }

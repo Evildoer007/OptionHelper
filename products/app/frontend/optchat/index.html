@@ -39,7 +39,7 @@
         <div class="workspace-content">
           <section class="chat-surface" id="chat-surface" aria-label="任务对话">
             <h2 class="sr-only" id="conversation-title">开始研究</h2>
-            <div class="conversation-scroll-stage" id="chat-scroll-stage"><div class="message-stream" id="conversation-stream" aria-live="polite"></div></div>
+            <div class="conversation-scroll-stage" id="chat-scroll-stage"><div class="message-stream" id="conversation-stream" data-runtime-process="true" aria-live="polite"></div><p class="sr-only" id="runtime-live-status" role="status" aria-live="polite" aria-atomic="true"></p></div>
           </section>
           <section class="desk-surface" id="desk-surface" aria-label="研究模块" aria-hidden="true" inert>
             <nav class="desk-module-tabs" id="module-tabs" role="tablist" aria-label="研究模块"><span class="desk-module-tabs__indicator" aria-hidden="true"></span><button type="button" role="tab" data-module="datafetcher" aria-controls="module-mount">数据获取</button><button type="button" role="tab" data-module="payoffer" aria-controls="module-mount">收益结构</button><button type="button" role="tab" data-module="pricer" aria-controls="module-mount">估值定价</button><button type="button" role="tab" data-module="backtester" aria-controls="module-mount">历史回测</button><button type="button" role="tab" data-module="reporter" aria-controls="module-mount">研究报告</button></nav>

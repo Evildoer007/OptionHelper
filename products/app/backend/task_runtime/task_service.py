@@ -11,7 +11,7 @@ import hashlib
 import json
 import re
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Mapping
 from uuid import uuid4
 
 from ..errors import AuthorizationError, ValidationError
@@ -742,14 +742,18 @@ class TaskService:
                 raise ValidationError("Conversation process events are invalid")
             if len(events) >= 160:
                 raise ValidationError("Conversation process event limit exceeded")
+            sources, next_seq = _visible_process_event_cursor_state(record, events)
             appended = {
-                "seq": len(events) + 1,
+                "seq": next_seq,
                 "type": normalized_type,
                 "status": normalized_status,
                 "summary": normalized_summary,
                 "created_at": _utc_now(),
             }
             events.append(appended)
+            sources[f"local:{next_seq}"] = next_seq
+            record["visible_process_event_sources"] = sources
+            record["visible_process_event_next_seq"] = next_seq + 1
             task["updated_at"] = appended["created_at"]
             return tasks
 
@@ -776,27 +780,86 @@ class TaskService:
         record = requests.get(normalized_id)
         if not isinstance(record, dict):
             raise KeyError(normalized_id)
+        workflow_id = str(record.get("workflow_run_id", "")).strip()
+        runtime_events: list[tuple[str, dict[str, Any]]] = []
+        if workflow_id:
+            session_id = SessionId(str(task.get("conversation_session_id", "")))
+            for row in self._event_log.replay(session_id):
+                if row.event_type != "runtime.event" or not isinstance(row.data, Mapping):
+                    continue
+                runtime_event = row.data.get("runtime_event")
+                if not isinstance(runtime_event, Mapping) or str(runtime_event.get("workflow_id", "")) != workflow_id:
+                    continue
+                projected = _browser_runtime_event(runtime_event)
+                if projected is not None:
+                    runtime_events.append((f"runtime:{row.event_id}", projected))
+
+        def update_cursor(tasks: dict[str, Any]) -> dict[str, Any]:
+            current = _owned_task(tasks, identity, task_id, "conversation.read")
+            requests = current.get("conversation_requests", {})
+            if not isinstance(requests, dict):
+                raise ValidationError("Task conversation requests are invalid")
+            current_record = requests.get(normalized_id)
+            if not isinstance(current_record, dict):
+                raise KeyError(normalized_id)
+            current_events = current_record.get("visible_process_events", [])
+            if not isinstance(current_events, list):
+                raise ValidationError("Conversation process events are invalid")
+            sources, next_seq = _visible_process_event_cursor_with_runtime(
+                current_record, current_events, runtime_events,
+            )
+            if current_record.get("visible_process_event_sources") != sources:
+                current_record["visible_process_event_sources"] = sources
+            if current_record.get("visible_process_event_next_seq") != next_seq:
+                current_record["visible_process_event_next_seq"] = next_seq
+            return tasks
+
+        # The document-store lock makes source allocation atomic with local
+        # event appends. Runtime rows are immutable and are assigned once by
+        # their persisted event id, so a late row never renumbers old rows.
+        self._state.update("tasks", update_cursor)
+        task = self._get_raw(identity, task_id)
+        record = task.get("conversation_requests", {}).get(normalized_id)
+        if not isinstance(record, dict):
+            raise KeyError(normalized_id)
         raw_events = record.get("visible_process_events", [])
         if not isinstance(raw_events, list):
             raise ValidationError("Conversation process events are invalid")
-        events: list[dict[str, Any]] = []
-        expected = 1
+        sources, next_seq = _visible_process_event_cursor_with_runtime(
+            record, raw_events, runtime_events,
+        )
+        merged: list[tuple[int, dict[str, Any]]] = []
+        used_sequences: set[int] = set()
         for raw in raw_events:
-            if not isinstance(raw, dict) or raw.get("seq") != expected:
+            if not isinstance(raw, dict):
+                raise ValidationError("Conversation process event sequence is invalid")
+            sequence = raw.get("seq")
+            if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence < 1:
+                raise ValidationError("Conversation process event sequence is invalid")
+            if sources.get(f"local:{sequence}") != sequence or sequence in used_sequences:
                 raise ValidationError("Conversation process event sequence is invalid")
             event = {
-                "seq": expected,
                 "type": _visible_event_type(raw.get("type")),
                 "status": _visible_event_status(raw.get("status")),
                 "summary": _visible_event_summary(raw.get("summary")),
                 "created_at": _visible_event_time(raw.get("created_at")),
             }
-            if expected > after_seq:
-                events.append(event)
-            expected += 1
+            merged.append((sequence, event))
+            used_sequences.add(sequence)
+        for source_key, event in runtime_events:
+            sequence = sources.get(source_key)
+            if not isinstance(sequence, int) or sequence < 1 or sequence in used_sequences:
+                raise ValidationError("Conversation process event sequence is invalid")
+            merged.append((sequence, event))
+            used_sequences.add(sequence)
+        merged.sort(key=lambda item: item[0])
+        events: list[dict[str, Any]] = []
+        for sequence, event in merged:
+            if sequence > after_seq:
+                events.append({"seq": sequence, **event})
         return {
             "events": events,
-            "next_seq": expected - 1,
+            "next_seq": max((sequence for sequence, _event in merged), default=next_seq - 1),
             "terminal": str(record.get("status", "")) in {"completed", "recovery_required"},
         }
 
@@ -900,6 +963,8 @@ class TaskService:
                     "summary": "已接收请求，正在准备处理。",
                     "created_at": now,
                 }],
+                "visible_process_event_sources": {"local:1": 1},
+                "visible_process_event_next_seq": 2,
             }
             requests[normalized_id] = record
             task["updated_at"] = now
@@ -1093,6 +1158,171 @@ def _visible_event_time(value: object) -> str:
     if not timestamp or len(timestamp) > 64:
         raise ValidationError("Conversation process event timestamp is invalid")
     return timestamp
+
+
+def _visible_process_event_cursor_state(
+    record: Mapping[str, Any], events: list[object],
+) -> tuple[dict[str, int], int]:
+    """Return and validate the durable source-to-cursor map for one request.
+
+    Older request records only contain local events with their original
+    sequence. Those sequences become the initial immutable cursor values. New
+    runtime rows are added by persisted event id and never sorted by time.
+    """
+
+    raw_sources = record.get("visible_process_event_sources")
+    if raw_sources is None:
+        sources: dict[str, int] = {}
+    elif not isinstance(raw_sources, dict):
+        raise ValidationError("Conversation process event cursor map is invalid")
+    else:
+        sources = {}
+        used: dict[int, str] = {}
+        for raw_key, raw_value in raw_sources.items():
+            key = str(raw_key).strip()
+            if not key or len(key) > 256:
+                raise ValidationError("Conversation process event cursor map is invalid")
+            if isinstance(raw_value, bool) or not isinstance(raw_value, int) or raw_value < 1:
+                raise ValidationError("Conversation process event cursor map is invalid")
+            previous = used.get(raw_value)
+            if previous is not None and previous != key:
+                raise ValidationError("Conversation process event cursor map is invalid")
+            sources[key] = raw_value
+            used[raw_value] = key
+
+    used = {sequence: key for key, sequence in sources.items()}
+    maximum = max(sources.values(), default=0)
+    local_sequences: set[int] = set()
+    for raw in events:
+        if not isinstance(raw, dict):
+            raise ValidationError("Conversation process event sequence is invalid")
+        sequence = raw.get("seq")
+        if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence < 1:
+            raise ValidationError("Conversation process event sequence is invalid")
+        if sequence in local_sequences:
+            raise ValidationError("Conversation process event sequence is invalid")
+        local_sequences.add(sequence)
+        source_key = f"local:{sequence}"
+        mapped = sources.get(source_key)
+        if mapped is not None and mapped != sequence:
+            raise ValidationError("Conversation process event cursor map is invalid")
+        previous = used.get(sequence)
+        if previous is not None and previous != source_key:
+            raise ValidationError("Conversation process event cursor map is invalid")
+        sources[source_key] = sequence
+        used[sequence] = source_key
+        maximum = max(maximum, sequence)
+
+    raw_next = record.get("visible_process_event_next_seq")
+    if raw_next is not None and (isinstance(raw_next, bool) or not isinstance(raw_next, int) or raw_next < 1):
+        raise ValidationError("Conversation process event cursor is invalid")
+    next_seq = max(maximum + 1, int(raw_next or 1))
+    return sources, next_seq
+
+
+def _visible_process_event_cursor_with_runtime(
+    record: Mapping[str, Any],
+    events: list[object],
+    runtime_events: list[tuple[str, dict[str, Any]]],
+) -> tuple[dict[str, int], int]:
+    sources, next_seq = _visible_process_event_cursor_state(record, events)
+    used = set(sources.values())
+    for source_key, _event in runtime_events:
+        if not isinstance(source_key, str) or not source_key.strip():
+            raise ValidationError("Conversation process event source is invalid")
+        existing = sources.get(source_key)
+        if existing is not None:
+            continue
+        while next_seq in used:
+            next_seq += 1
+        sources[source_key] = next_seq
+        used.add(next_seq)
+        next_seq += 1
+    return sources, next_seq
+
+
+def _browser_runtime_event(value: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Project a persisted RuntimeEvent without exposing its authority fields."""
+
+    event_type = str(value.get("type", "")).strip().lower()
+    timestamp = str(value.get("timestamp", "")).strip()
+    payload = value.get("payload")
+    if not event_type or not timestamp or not isinstance(payload, Mapping):
+        return None
+    status = str(payload.get("status", "")).strip().lower()
+    if status not in {
+        "queued", "starting", "running", "waiting_tool", "waiting_parent",
+        "completed", "failed", "cancelled", "interrupted", "recovered",
+    }:
+        suffix = event_type.rsplit(".", 1)[-1]
+        status = {
+            "started": "started", "ready": "started", "completed": "completed",
+            "failed": "failed", "cancelled": "cancelled", "interrupted": "interrupted",
+            "recovered": "recovered", "closed": "completed",
+        }.get(suffix, "running")
+    safe_payload: dict[str, Any] = {}
+    if event_type in {"assistant.text_delta", "assistant.reasoning_delta"}:
+        delta = payload.get("delta", payload.get("text", ""))
+        if isinstance(delta, str):
+            safe_payload["delta"] = delta[:64_000]
+        if event_type == "assistant.reasoning_delta":
+            safe_payload["available"] = bool(safe_payload.get("delta")) or payload.get("available") is True
+            raw_chars = payload.get("chars", len(str(delta)))
+            safe_payload["chars"] = min(
+                raw_chars if isinstance(raw_chars, int) and not isinstance(raw_chars, bool) and raw_chars >= 0 else len(str(delta)),
+                512_000,
+            )
+            if payload.get("truncated") is True:
+                safe_payload["truncated"] = True
+            provider_chars = payload.get("provider_chars")
+            if isinstance(provider_chars, int) and not isinstance(provider_chars, bool) and provider_chars >= safe_payload["chars"]:
+                safe_payload["provider_chars"] = min(provider_chars, 10_000_000)
+    elif event_type == "assistant.message":
+        text = payload.get("text")
+        if isinstance(text, str):
+            safe_payload["text"] = text[:64_000]
+    elif event_type.startswith("agent."):
+        safe_payload = {
+            "role_id": str(payload.get("role_id", payload.get("role", "Agent")))[:80],
+            "status": status,
+        }
+        model = payload.get("model_id")
+        if isinstance(model, str) and model:
+            safe_payload["model_id"] = model[:160]
+    elif event_type.startswith("tool."):
+        safe_payload = {
+            "tool_name": str(payload.get("tool_name", payload.get("module", "")))[:80],
+            "status": status,
+        }
+    elif event_type == "usage.updated":
+        usage = payload.get("usage", payload)
+        if isinstance(usage, Mapping):
+            safe_payload["usage"] = {
+                str(key): int(item)
+                for key, item in usage.items()
+                if isinstance(item, int) and not isinstance(item, bool) and item >= 0
+            }
+    elif event_type.startswith("compaction."):
+        safe_payload = {"status": status}
+    role = str(safe_payload.get("role_id", ""))
+    tool = str(safe_payload.get("tool_name", ""))
+    summary = (
+        f"{role or 'Agent'}正在处理本轮分工。" if event_type.startswith("agent.")
+        else f"{tool or '研究模块'}正在运行。" if event_type.startswith("tool.")
+        else "正在生成答复。" if event_type.startswith("assistant.")
+        else "正在整理上下文。" if event_type.startswith("compaction.")
+        else "研究流程正在运行。"
+    )
+    return {
+        "type": event_type,
+        "status": status,
+        "summary": summary,
+        "created_at": timestamp,
+        "agent_run_id": str(value.get("agent_run_id") or "")[:160],
+        "turn": value.get("turn") if isinstance(value.get("turn"), int) else None,
+        "step": value.get("step") if isinstance(value.get("step"), int) else None,
+        "payload": safe_payload,
+    }
 
 
 def _content_hash(content: object) -> str:

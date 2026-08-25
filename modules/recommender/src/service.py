@@ -30,6 +30,15 @@ class RecommenderUnavailable(RuntimeError):
     """必要正式端口未注入或不可达。"""
 
 
+class RecommendationInputRequired(RuntimeError):
+    """A contract-specific input is required before any pricing dispatch."""
+
+    def __init__(self, field: str, question: str) -> None:
+        super().__init__(question)
+        self.field = str(field)
+        self.question = str(question)
+
+
 _ROUTE_TOOLS = {
     "chat": frozenset(),
     "knowledge": frozenset({"knowledger"}),
@@ -215,6 +224,20 @@ class RecommenderService:
             if self.config.multi_agent_preset == "constraint-ranking":
                 return self._run_constraint_ranking(case, route, run_id, initial_mode, audit)
             return self._run_fixed(case, route, run_id, initial_mode, audit)
+        except RecommendationInputRequired as required:
+            audit.append(
+                "clarification", "pending", agent_role=None,
+                input_value={"confirmed_constraints": dict(case.confirmed_constraints)},
+                output_value={"missing": [required.field]},
+                detail={"reason": required.question},
+            )
+            return RecommendationSet(
+                schema=RECOMMENDATION_SET_SCHEMA, task_id=case.task_id, run_id=run_id,
+                analysis_case_id=case.analysis_case_id, catalog_version=case.catalog_version, route=route.route,
+                workflow_mode=initial_mode, status="pending_question", primary_candidate_id=None, candidates=(),
+                missing_information=(required.field,), next_question=required.question,
+                requested_outputs=case.requested_outputs, audit_trail=tuple(audit.events),
+            )
         except Exception as first_error:
             tool_started = any(event.stage.startswith("tool.") for event in audit.events)
             if (

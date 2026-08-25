@@ -65,7 +65,12 @@ def china_market_convention(asset_id: str, adjustment: str = "auto") -> Mapping[
     exchange = _EXCHANGES[suffix]
     asset_class = _supported_asset_class(code, suffix)
     requested_adjustment = adjustment.lower()
-    effective_adjustment = "none" if asset_class == "index" else ("forward" if requested_adjustment == "auto" else "none" if requested_adjustment == "raw" else requested_adjustment)
+    effective_adjustment = (
+        "none" if asset_class == "index" else
+        "forward" if requested_adjustment == "auto" else
+        "none" if requested_adjustment == "raw" else
+        requested_adjustment
+    )
     unadjusted = effective_adjustment == "none"
     return {
         "exchange": exchange,
