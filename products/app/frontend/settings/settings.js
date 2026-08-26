@@ -1,4 +1,4 @@
-import { enhanceSelects, message, request, safeJson } from "/app/frontend/shared/app.js";
+import { clearMessage, enhanceSelects, message, request, safeJson } from "/app/frontend/shared/app.js";
 import { currentThemePreference, installThemeControls } from "/app/frontend/shared/theme.js";
 
 const send = (path, payload) => request(path, { method: "POST", body: safeJson(payload) });
@@ -26,6 +26,7 @@ let providerState = { providers: [], builtins: [], default_model_selection: null
 let multiAgentState = {
   presets: [], selected_preset_id: "sequential-deliberation", role_models: {},
   review_policies: [], selected_review_policy_id: "standard-review", review_policy_role_models: {}, available_models: [],
+  runtime_status: null, runtime_mode: "", runtime_version: "", runtime_reason: "", runtime_available: false,
 };
 if (canManageData) {
   document.querySelector("#data").hidden = false;
@@ -60,7 +61,7 @@ function queuePreferenceSave() {
     .then(async () => {
       try {
         await send("/api/settings/preferences", payload);
-        message(resultFor("preferences"), "已保存。", false);
+        clearMessage(resultFor("preferences"));
       } catch (error) {
         const current = await request("/api/settings").catch(() => null);
         if (current?.settings) applySettings(current.settings);
@@ -192,6 +193,10 @@ async function refreshProviders() {
 
 const rolePresentation = {
   "sequential-deliberation": {
+    Interpreter: { name: "Interpreter", description: "解析目标与约束" },
+    Selector: { name: "Selector", description: "生成并比较候选" },
+    Reviewer: { name: "Reviewer", description: "复核规则与证据" },
+    // Compatibility for settings saved before the neutral role migration.
     Intent: { name: "Interpreter", description: "解析目标与约束" },
     Research: { name: "Selector", description: "生成并比较候选" },
     Critic: { name: "Reviewer", description: "复核规则与证据" },
@@ -210,6 +215,7 @@ const rolePresentation = {
   "constraint-ranking": {
     Specifier: { name: "Specifier", description: "将用户要求转换为硬约束与排序规则" },
     Generator: { name: "Generator", description: "从受控证据生成候选" },
+    Evaluator: { name: "Evaluator", description: "逐个验证候选并返回事实引用" },
     Reviewer: { name: "Reviewer", description: "只批准或拒绝确定性排序结果" },
   },
 };
@@ -240,6 +246,7 @@ function presetDiagram(preset) {
   };
   const id = `preset-${preset.preset_id.replace(/[^a-z0-9-]/g, "")}`;
   const arrow = `${id}-arrow`;
+  const viewBox = preset.preset_id === "constraint-ranking" ? "0 0 560 220" : "0 0 560 160";
   const node = (x, y, width, label, accent = false) => `<g class="preset-diagram__node ${accent ? "is-accent" : ""}"><rect x="${x}" y="${y}" width="${width}" height="48" rx="8"/><text x="${x + width / 2}" y="${y + 29}" text-anchor="middle">${label}</text></g>`;
   let body = "";
   if (preset.preset_id === "sequential-deliberation") {
@@ -247,13 +254,13 @@ function presetDiagram(preset) {
   } else if (preset.preset_id === "product-trader-loop") {
     body = `<g class="preset-diagram__links"><path d="M132 44H176" marker-end="url(#${arrow})"/><path d="M384 44H428" marker-end="url(#${arrow})"/><path d="M488 68V100" marker-end="url(#${arrow})"/><path d="M428 84H84Q72 84 72 72V68" fill="none" stroke-dasharray="5 4" marker-end="url(#${arrow})"/></g>${node(12, 20, 120, "Structurer", true)}${node(176, 20, 208, "Host Modules")}${node(428, 20, 120, "Trader")}${node(428, 100, 120, "Reviewer")}`;
   } else if (preset.preset_id === "independent-council") {
-    body = `<g class="preset-diagram__links"><path d="M124 80H152" marker-end="url(#${arrow})"/><path d="M264 80H292" marker-end="url(#${arrow})"/><path d="M404 80H432" marker-end="url(#${arrow})"/></g>${node(12, 56, 112, "Framer", true)}${node(152, 56, 112, "Matcher")}${node(292, 56, 112, "Hedger")}${node(432, 56, 116, "Moderator", true)}`;
+    body = `<g class="preset-diagram__links"><path d="M124 80H152"/><path d="M152 80V44H176" marker-end="url(#${arrow})"/><path d="M152 80V124H176" marker-end="url(#${arrow})"/><path d="M288 44H348V80"/><path d="M288 124H348V80"/><path d="M348 80H428" marker-end="url(#${arrow})"/></g>${node(12, 56, 112, "Framer", true)}${node(176, 20, 112, "Matcher")}${node(176, 100, 112, "Hedger")}${node(428, 56, 116, "Moderator", true)}`;
   } else if (preset.preset_id === "constraint-ranking") {
-    body = `<g class="preset-diagram__links"><path d="M124 44H148" marker-end="url(#${arrow})"/><path d="M260 44H284" marker-end="url(#${arrow})"/><path d="M412 44H436" marker-end="url(#${arrow})"/><path d="M492 68V100" marker-end="url(#${arrow})"/></g>${node(12, 20, 112, "Specifier", true)}${node(148, 20, 112, "Generator")}${node(284, 20, 128, "Host Modules")}${node(436, 20, 112, "Ranker", true)}${node(436, 100, 112, "Reviewer")}`;
+    body = `<g class="preset-diagram__links"><path d="M124 110H148" marker-end="url(#${arrow})"/><path d="M260 110H272"/><path d="M272 110V44H284" marker-end="url(#${arrow})"/><path d="M272 110V124H284" marker-end="url(#${arrow})"/><path d="M396 44H412V110"/><path d="M396 124H412V110"/><path d="M412 110H428" marker-end="url(#${arrow})"/><path d="M484 134V156" marker-end="url(#${arrow})"/></g>${node(12, 86, 112, "Specifier", true)}${node(148, 86, 112, "Generator")}${node(284, 20, 112, "Candidate A")}${node(284, 100, 112, "Candidate B")}${node(428, 86, 112, "Ranker", true)}${node(428, 156, 112, "Reviewer")}`;
   } else {
     body = `<text class="preset-diagram__empty" x="280" y="84" text-anchor="middle">暂未提供可视化说明</text>`;
   }
-  return `<figure class="multi-agent-preset-diagram" data-preset-diagram role="button" tabindex="0" aria-label="放大查看${escapeHtml(preset.display_name)}模式图"><svg viewBox="0 0 560 160" role="img" aria-labelledby="${id}-title ${id}-desc"><title id="${id}-title">${escapeHtml(preset.display_name)}：${escapeHtml(presentation.summary)}</title><desc id="${id}-desc">${escapeHtml(presentation.description)}</desc><defs><marker id="${arrow}" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="var(--color-muted)"/></marker></defs>${body}</svg><figcaption>${escapeHtml(presentation.summary)}<span>${escapeHtml(presentation.description)}</span></figcaption></figure>`;
+  return `<figure class="multi-agent-preset-diagram" data-preset-diagram role="button" tabindex="0" aria-label="放大查看${escapeHtml(preset.display_name)}模式图"><svg viewBox="${viewBox}" role="img" aria-labelledby="${id}-title ${id}-desc"><title id="${id}-title">${escapeHtml(preset.display_name)}：${escapeHtml(presentation.summary)}</title><desc id="${id}-desc">${escapeHtml(presentation.description)}</desc><defs><marker id="${arrow}" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="var(--color-muted)"/></marker></defs>${body}</svg><figcaption>${escapeHtml(presentation.summary)}<span>${escapeHtml(presentation.description)}</span></figcaption></figure>`;
 }
 
 let presetDiagramDialog = null;
@@ -325,20 +332,97 @@ function roleRows(roles, configuredRoles, displayFor, fieldName, disabled) {
   }).join("");
 }
 
+function isRecord(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function textValue(value) {
+  return value === null || value === undefined ? "" : String(value).trim();
+}
+
+function readRuntimeState(source = multiAgentState) {
+  const rawStatus = source.runtime_status;
+  const statusObject = isRecord(rawStatus) ? rawStatus : {};
+  const statusValue = typeof rawStatus === "boolean"
+    ? (rawStatus ? "available" : "unavailable")
+    : statusObject.status ?? statusObject.state ?? rawStatus;
+  const status = textValue(statusValue).toLowerCase() || "unknown";
+  const explicitAvailable = typeof source.runtime_available === "boolean"
+    ? source.runtime_available
+    : statusObject.available;
+  const mode = textValue(source.runtime_mode || statusObject.mode).toLowerCase();
+  const statusAvailable = typeof explicitAvailable === "boolean"
+    ? explicitAvailable
+    : ["available", "ready", "ok", "running", "enabled", "active", "shadow"].includes(status);
+  return {
+    status,
+    available: statusAvailable && mode !== "disabled",
+    mode,
+    version: textValue(source.runtime_version || statusObject.version),
+    reason: textValue(source.runtime_reason || statusObject.reason || statusObject.message),
+  };
+}
+
+function normalizeMultiAgentState(payload) {
+  const response = isRecord(payload) ? payload : {};
+  const state = {
+    ...response,
+    presets: Array.isArray(response.presets) ? response.presets : [],
+    selected_preset_id: textValue(response.selected_preset_id) || "sequential-deliberation",
+    role_models: isRecord(response.role_models) ? response.role_models : {},
+    review_policies: Array.isArray(response.review_policies) ? response.review_policies : [],
+    selected_review_policy_id: textValue(response.selected_review_policy_id) || "standard-review",
+    review_policy_role_models: isRecord(response.review_policy_role_models) ? response.review_policy_role_models : {},
+    available_models: Array.isArray(response.available_models) ? response.available_models : [],
+  };
+  return { ...state, runtime_available: readRuntimeState(state).available };
+}
+
+function runtimeStatusText(runtime) {
+  if (runtime.available) return "Runtime可用";
+  if (runtime.status === "unknown") return "Runtime状态未知";
+  return "Runtime不可用";
+}
+
+function presetStatusText(preset) {
+  return preset?.enabled ? "Preset已启用" : "Preset未启用";
+}
+
+function modeIsAvailable(preset, runtime = readRuntimeState()) {
+  return Boolean(preset?.enabled && runtime.available);
+}
+
+function modeStatusText(preset, runtime) {
+  return modeIsAvailable(preset, runtime) ? "Mode可用" : "Mode不可用";
+}
+
 function renderMultiAgentPresets() {
+  const runtime = readRuntimeState();
   const selected = multiAgentState.presets.find((preset) => preset.preset_id === multiAgentState.selected_preset_id);
-  multiAgentStatus.textContent = selected?.enabled ? "已启用" : "不可用";
-  multiAgentStatus.classList.toggle("is-ready", Boolean(selected?.enabled));
+  const selectedStatus = selected
+    ? `${presetStatusText(selected)} · ${runtimeStatusText(runtime)} · ${modeStatusText(selected, runtime)}`
+    : "未找到Preset";
+  multiAgentStatus.textContent = selectedStatus;
+  multiAgentStatus.classList.toggle("is-ready", Boolean(selected && modeIsAvailable(selected, runtime)));
   const presetRows = multiAgentState.presets.map((preset) => {
     const presentation = presetPresentation[preset.preset_id] || { summary: "推荐预设" };
     const selectedClass = preset.preset_id === multiAgentState.selected_preset_id ? "is-selected" : "";
-    const status = preset.enabled ? "可用" : "规划中";
-    const detail = preset.enabled ? `${escapeHtml(preset.version)} · ${status}` : escapeHtml(preset.disabled_reason || status);
-    return `<article class="multi-agent-preset-card ${preset.enabled ? "" : "is-disabled"} ${selectedClass}">
+    const modeAvailable = modeIsAvailable(preset, runtime);
+    const status = presetStatusText(preset);
+    const runtimeStatus = runtimeStatusText(runtime);
+    const modeStatus = modeStatusText(preset, runtime);
+    const detailParts = [
+      preset.enabled ? `Preset版本${textValue(preset.version)}` : `Preset原因${textValue(preset.disabled_reason) || "未启用"}`,
+      runtime.version ? `Runtime版本${runtime.version}` : "",
+      runtime.mode ? `Runtime模式${runtime.mode}` : "",
+      runtime.reason ? `Runtime原因${runtime.reason}` : "",
+    ].filter(Boolean);
+    const detail = escapeHtml(detailParts.join(" · ") || "未返回Preset或Runtime详情。");
+    return `<article class="multi-agent-preset-card ${modeAvailable ? "" : "is-disabled"} ${selectedClass}">
       <label class="multi-agent-preset-card__head">
-        <input type="radio" name="multi-agent-preset" value="${escapeHtml(preset.preset_id)}" ${preset.preset_id === multiAgentState.selected_preset_id ? "checked" : ""} ${preset.enabled && canEditModel ? "" : "disabled"}>
+        <input type="radio" name="multi-agent-preset" value="${escapeHtml(preset.preset_id)}" ${preset.preset_id === multiAgentState.selected_preset_id ? "checked" : ""} ${modeAvailable && canEditModel ? "" : "disabled"}>
         <span class="multi-agent-preset-copy"><strong>${escapeHtml(preset.display_name)}</strong><small>${escapeHtml(presentation.summary)}</small></span>
-        <span class="multi-agent-preset-state">${status}</span>
+        <span class="multi-agent-preset-state"><span>${status}</span><span>${runtimeStatus}</span><span>${modeStatus}</span></span>
       </label>
       ${presetDiagram(preset)}
       <p class="multi-agent-preset-detail">${detail}</p>
@@ -350,14 +434,14 @@ function renderMultiAgentPresets() {
   }
   const configuredRoles = multiAgentState.role_models[selected.preset_id] || {};
   const presetRoleRows = roleRows(
-    selected.roles, configuredRoles, (role) => roleDisplay(selected.preset_id, role), "role", !selected.enabled,
+    selected.roles, configuredRoles, (role) => roleDisplay(selected.preset_id, role), "role", !modeIsAvailable(selected, runtime),
   );
   const hasModels = multiAgentState.available_models.length > 0;
   multiAgentRoot.innerHTML = `<div class="multi-agent-preset-list" role="radiogroup" aria-label="Recommender多智能体预设">${presetRows}</div>
     <form class="multi-agent-role-form" data-multi-agent-role-form novalidate>
-      <div class="multi-agent-role-head"><div><strong>${escapeHtml(selected.display_name)}的Agent模型</strong><small>仅配置本预设当前实际运行的Agent。未指定时继承本轮会话模型；本轮显式模型会优先覆盖角色槽。</small></div></div>
+      <div class="multi-agent-role-head"><div><strong>${escapeHtml(selected.display_name)}的Agent模型</strong><small>${modeIsAvailable(selected, runtime) ? "仅配置本预设当前实际运行的Agent。未指定时继承本轮会话模型；本轮显式模型会优先覆盖角色槽。" : "当前Runtime不可用，暂不能配置或运行此Mode。"}</small></div></div>
       <div class="multi-agent-role-list">${presetRoleRows}</div>
-      <div class="multi-agent-role-actions"><p class="form-result" data-form-result="multi-agent" role="status" aria-live="polite"></p>${hasModels ? `<button class="model-primary-button" type="submit" ${canEditModel ? "" : "disabled"}>保存Agent模型</button>` : `<a class="model-secondary-button" href="#model">前往配置模型</a>`}</div>
+      <div class="multi-agent-role-actions"><p class="form-result" data-form-result="multi-agent" role="status" aria-live="polite"></p>${hasModels ? `<button class="model-primary-button" type="submit" ${canEditModel && modeIsAvailable(selected, runtime) ? "" : "disabled"}>保存Agent模型</button>` : `<a class="model-secondary-button" href="#model">前往配置模型</a>`}</div>
     </form>`;
   renderReviewPolicies();
   enhanceSelects(multiAgentRoot);
@@ -381,7 +465,7 @@ function renderReviewPolicies() {
 }
 
 async function refreshMultiAgentPresets() {
-  multiAgentState = await request("/api/settings/multi-agent-presets");
+  multiAgentState = normalizeMultiAgentState(await request("/api/settings/multi-agent-presets"));
   renderMultiAgentPresets();
 }
 

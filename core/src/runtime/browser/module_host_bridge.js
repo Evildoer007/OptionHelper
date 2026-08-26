@@ -22,6 +22,7 @@
   const bridgeNonce = query.get("bridge_nonce");
   const allowedThemes = new Set(["light", "dark"]);
   const allowedPreferences = new Set(["light", "dark", "auto"]);
+  const directOperationResultModules = new Set(["pricer", "backtester"]);
 
   function applyTheme(theme, preference = theme) {
     const root = document.documentElement;
@@ -413,8 +414,43 @@
   function asResponse(status, body) {
     return new Response(JSON.stringify(body), {status, headers: {"Content-Type": "application/json"}});
   }
+  function asParsedResponse(status, body) {
+    const create = () => {
+      const response = new Response(null, {status, headers: {"Content-Type": "application/json"}});
+      Object.defineProperty(response, "json", {value: async () => body});
+      Object.defineProperty(response, "clone", {value: create});
+      return response;
+    };
+    return create();
+  }
   function abortError() {
     return new DOMException("Module Host request was aborted", "AbortError");
+  }
+  function wait(delay, signal) {
+    if (signal?.aborted) return Promise.reject(abortError());
+    return new Promise((resolve, reject) => {
+      const timer = window.setTimeout(() => {
+        signal?.removeEventListener("abort", abort);
+        resolve();
+      }, delay);
+      const abort = () => {
+        window.clearTimeout(timer);
+        signal?.removeEventListener("abort", abort);
+        reject(abortError());
+      };
+      signal?.addEventListener("abort", abort, {once: true});
+    });
+  }
+  function retryDelay(failures) {
+    return Math.min(4_000, 500 * (2 ** Math.min(Math.max(0, failures - 1), 3)));
+  }
+  function operationConnectionState(state, operationId) {
+    window.dispatchEvent(new CustomEvent("optionhelper.module-operation-connection", {
+      detail: {state, operation_id: operationId, module: moduleName},
+    }));
+  }
+  function isRecoverableResponse(response) {
+    return response.status === 408 || response.status === 425 || response.status === 429 || response.status >= 500;
   }
   function waitForHostContext(signal) {
     const current = activeHostContext();
@@ -622,16 +658,14 @@
   async function hostedBackgroundOperation(action, body, signal, hostContext, requestedId = "") {
     const taskId = String(hostContext?.task_id || "");
     if (!taskId) return asResponse(400, {ok: false, message: "当前模块没有可运行的任务。"});
+    const stableRequestId = requestedId || requestId();
     const headers = {
       "Content-Type": "application/json",
       "X-OptionHelper-Module-Context": JSON.stringify(hostContext),
-      "X-OptionHelper-Request-Id": requestedId || requestId(),
+      "X-OptionHelper-Request-Id": stableRequestId,
     };
-    const submitted = await nativeFetch(`/api/tasks/${encodeURIComponent(taskId)}/operations`, {
-      method: "POST", credentials: "same-origin", headers,
-      body: JSON.stringify({module: moduleName, action, payload: body}), signal,
-    });
-    const envelope = await submitted.json();
+    const submission = await submitHostedOperation(taskId, action, body, headers, signal, stableRequestId);
+    const {response: submitted, envelope} = submission;
     if (!submitted.ok) return asResponse(submitted.status, envelope);
     const operationId = envelope.operation?.operation_id;
     // Compatibility with pre-operation hosts while a rolling App update is
@@ -643,10 +677,38 @@
       }
       return asResponse(500, {ok: false, message: "后台运行未返回操作标识。"});
     }
-    const completed = await waitForHostedOperation(taskId, operationId, signal);
+    const directResult = directOperationResultModules.has(moduleName);
+    const completed = await waitForHostedOperation(taskId, operationId, signal, {includeResult: !directResult});
     if (!completed.ok) return completed;
+    if (directResult) {
+      const outcome = await fetchHostedOperationResult(taskId, operationId, signal);
+      if (!outcome.response.ok) return outcome.response;
+      return finalizeHostedResult(action, body, outcome.result, outcome.response);
+    }
     const result = await completed.clone().json().catch(() => ({}));
     return finalizeHostedResult(action, body, result, completed);
+  }
+
+  async function submitHostedOperation(taskId, action, body, headers, signal, recoveryId) {
+    let failures = 0;
+    while (true) {
+      if (signal?.aborted) throw abortError();
+      try {
+        const response = await nativeFetch(`/api/tasks/${encodeURIComponent(taskId)}/operations`, {
+          method: "POST", credentials: "same-origin", headers,
+          body: JSON.stringify({module: moduleName, action, payload: body}), signal,
+        });
+        if (!response.ok && isRecoverableResponse(response)) throw new Error(`Operation submission unavailable: ${response.status}`);
+        const envelope = await response.json();
+        if (failures) operationConnectionState("connected", recoveryId);
+        return {response, envelope};
+      } catch (error) {
+        if (signal?.aborted || error?.name === "AbortError") throw error;
+        failures += 1;
+        operationConnectionState("recovering", recoveryId);
+        await wait(retryDelay(failures), signal);
+      }
+    }
   }
 
   function finalizeHostedResult(action, body, result, response = null) {
@@ -671,23 +733,64 @@
     return response || asResponse(200, result);
   }
 
-  async function waitForHostedOperation(taskId, operationId, signal) {
+  async function waitForHostedOperation(taskId, operationId, signal, {includeResult = true} = {}) {
+    let failures = 0;
     while (true) {
       if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
-      const response = await nativeFetch(
-        `/api/tasks/${encodeURIComponent(taskId)}/operations/${encodeURIComponent(operationId)}`,
-        {credentials: "same-origin", signal},
-      );
-      const envelope = await response.json();
-      if (!response.ok) return asResponse(response.status, envelope);
-      const operation = envelope.operation || {};
-      if (operation.state === "succeeded") return asResponse(200, operation.result || {});
-      if (operation.state === "failed" || operation.state === "cancelled" || operation.state === "interrupted") {
-        return asResponse(operation.state === "failed" ? 500 : 409, {
-          ok: false, error: operation.state, message: operation.message || "后台运行未完成。", ...(operation.result || {}),
-        });
+      try {
+        const suffix = includeResult ? "" : "?include_result=false";
+        const response = await nativeFetch(
+          `/api/tasks/${encodeURIComponent(taskId)}/operations/${encodeURIComponent(operationId)}${suffix}`,
+          {credentials: "same-origin", signal},
+        );
+        if (!response.ok && isRecoverableResponse(response)) throw new Error(`Operation status unavailable: ${response.status}`);
+        const envelope = await response.json();
+        if (!response.ok) return asResponse(response.status, envelope);
+        if (failures) operationConnectionState("connected", operationId);
+        failures = 0;
+        const operation = envelope.operation || {};
+        if (operation.state === "succeeded") return asResponse(200, operation.result || {});
+        if (operation.state === "failed" || operation.state === "cancelled" || operation.state === "interrupted") {
+          return asResponse(operation.state === "failed" ? 500 : 409, {
+            ok: false, error: operation.state, message: operation.message || "后台运行未完成。", ...(operation.result || {}),
+          });
+        }
+        await wait(750, signal);
+      } catch (error) {
+        if (signal?.aborted || error?.name === "AbortError") throw error;
+        failures += 1;
+        operationConnectionState("recovering", operationId);
+        await wait(retryDelay(failures), signal);
       }
-      await new Promise((resolve) => window.setTimeout(resolve, 350));
+    }
+  }
+
+  async function fetchHostedOperationResult(taskId, operationId, signal) {
+    let failures = 0;
+    while (true) {
+      if (signal?.aborted) throw abortError();
+      try {
+        const response = await nativeFetch(
+          `/api/tasks/${encodeURIComponent(taskId)}/operations/${encodeURIComponent(operationId)}/result`,
+          {credentials: "same-origin", signal},
+        );
+        if (response.status === 202) {
+          await response.json();
+          await wait(750, signal);
+          continue;
+        }
+        if (!response.ok && isRecoverableResponse(response)) throw new Error(`Operation result unavailable: ${response.status}`);
+        const result = await response.json();
+        if (!response.ok) return {response: asResponse(response.status, result), result: null};
+        if (!result || typeof result !== "object" || Array.isArray(result)) throw new Error("Operation result is not a JSON object");
+        if (failures) operationConnectionState("connected", operationId);
+        return {response: asParsedResponse(response.status, result), result};
+      } catch (error) {
+        if (signal?.aborted || error?.name === "AbortError") throw error;
+        failures += 1;
+        operationConnectionState("recovering", operationId);
+        await wait(retryDelay(failures), signal);
+      }
     }
   }
 

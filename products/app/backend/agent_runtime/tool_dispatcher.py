@@ -230,8 +230,23 @@ class ToolDispatcher:
         input_hash: str | None,
     ) -> dict[str, Any]:
         if result.get("status") == "unavailable":
-            raise UnavailableCapabilityError(f"Capability tool {tool_name}", str(result.get("reason", "the Capability reported unavailable")))
+            failure = _structured_failure_fields(result)
+            raise UnavailableCapabilityError(
+                f"Capability tool {tool_name}",
+                failure["next_step"] if failure is not None else str(result.get("reason", "the Capability reported unavailable")),
+                **({
+                    "failure_code": failure["failure_code"],
+                    "stage": failure["stage"],
+                    "message": failure["message"],
+                } if failure is not None else {}),
+            )
         if result.get("ok") is False:
+            failure = _structured_failure_fields(result)
+            if failure is not None:
+                raise UserActionError(
+                    failure["failure_code"], failure["message"],
+                    stage=failure["stage"], next_step=failure["next_step"],
+                )
             if tool_name == "datafetcher":
                 raise UserActionError("datafetcher_request_rejected", _datafetcher_failure_message(result))
             if tool_name == "pricer":
@@ -382,6 +397,25 @@ def _task_data_asset_ref(value: object) -> tuple[str, str | None]:
         raw_hash = value.get("content_hash")
         return str(value["data_asset_id"]), str(raw_hash) if isinstance(raw_hash, str) else None
     raise ValidationError("OptChat计算只能引用当前任务的DataAssetRef")
+
+
+def _structured_failure_fields(result: Mapping[str, Any]) -> dict[str, str] | None:
+    """Reuse a Capability's reviewed public failure without reclassifying it."""
+
+    nested = result.get("error")
+    source = nested if isinstance(nested, Mapping) else result
+    failure_code = source.get("failure_code", source.get("code"))
+    message = source.get("message", result.get("message", result.get("reason")))
+    stage = source.get("stage", result.get("stage"))
+    next_step = source.get("next_step", result.get("next_step"))
+    if not all(isinstance(value, str) and value for value in (failure_code, message, stage, next_step)):
+        return None
+    return {
+        "failure_code": failure_code,
+        "message": message,
+        "stage": stage,
+        "next_step": next_step,
+    }
 
 
 def _datafetcher_failure_message(result: Mapping[str, Any]) -> str:

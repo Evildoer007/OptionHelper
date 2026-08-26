@@ -134,10 +134,21 @@ check_dependencies() {
   exit "$check_exit_code"
 }
 
+prepare_agent_runtime_tools() {
+  if ! command -v npm >/dev/null 2>&1; then
+    print -u2 "缺少Node.js/npm，无法构建原生Agent运行时。"
+    exit 1
+  fi
+  print "正在恢复锁定的Agent运行时构建工具…"
+  npm ci --prefix "$ROOT/packaging/app/agent_runtime" --ignore-scripts
+}
+
 print "OptionHelper macOS候选构建"
 check_dependencies
+prepare_agent_runtime_tools
 print "[2/3] 运行条件已就绪，准备构建Skill、App和DMG。"
 print "[3/3] 正在构建Skill、App和DMG。此过程可能需要数分钟，下面会持续显示阶段进度。"
+export OPTIONHELPER_REQUIRE_NATIVE_RUNTIME=1
 if "$PYTHON_BIN" packaging/build_current.py --version "$VERSION" --platform macos; then
   exit 0
 else

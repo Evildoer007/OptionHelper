@@ -21,10 +21,12 @@ import sys
 if str(AGENT_RUNTIME_PACKAGING) not in sys.path:
     sys.path.insert(0, str(AGENT_RUNTIME_PACKAGING))
 from build_runtime import (  # noqa: E402
+    LOCAL_VERIFIED,
     RuntimeBuildError,
     probe_runtime_process,
     verify_staged_runtime,
 )
+from name_boundary import assert_name_boundary_clean
 
 
 class AppVerificationError(RuntimeError):
@@ -124,20 +126,23 @@ def wait_for_url(process: subprocess.Popen[str], timeout: float = 45.0) -> str:
 
 
 def verify_agent_runtime(resources: Path) -> dict[str, object]:
-    """Verify the optional Resources runtime without claiming platform support."""
+    """Verify the required Resources runtime and its local proof."""
 
     manifest_path = resources / "app-manifest.json"
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise AppVerificationError("App Manifest不可解析，无法验证Agent运行时") from error
-    summary = manifest.get("agent_runtime", {"status": "disabled"})
+    summary = manifest.get("agent_runtime")
     if not isinstance(summary, dict):
-        raise AppVerificationError("App Manifest中的Agent运行时字段无效")
+        raise AppVerificationError("App Manifest缺少已验证Agent运行时")
+    if summary.get("status") != LOCAL_VERIFIED or summary.get("support_status") != LOCAL_VERIFIED:
+        raise AppVerificationError("App Manifest中的Agent运行时不是local_verified")
     try:
         verified = verify_staged_runtime(resources, "macos-arm64", summary)
-        if verified.get("status") == "local_verified":
-            probe_runtime_process(resources / str(verified["resource_path"]))
+        probe = probe_runtime_process(resources / str(verified["resource_path"]))
+        if probe.get("status") != LOCAL_VERIFIED or probe.get("support_status") != LOCAL_VERIFIED:
+            raise RuntimeBuildError("macOS Agent运行时探测未记录local_verified")
     except RuntimeBuildError as error:
         raise AppVerificationError(str(error)) from error
     return dict(verified)
@@ -148,9 +153,13 @@ def verify(bundle: Path) -> dict[str, object]:
     resources = bundle / "Contents" / "Resources"
     backend = resources / "backend" / "OptionHelperBackend" / "OptionHelperBackend"
     require(backend.is_file(), "App缺少内置后端")
+    try:
+        assert_name_boundary_clean(bundle, paths=(bundle,))
+    except AssertionError as error:
+        raise AppVerificationError(str(error)) from error
     runtime_summary = verify_agent_runtime(resources)
     subprocess.run(
-        ["codesign", "--verify", "--deep", "--verbose=2", str(bundle)],
+        ["codesign", "--verify", "--deep", "--strict", "--verbose=2", str(bundle)],
         check=True,
         text=True,
         stdout=subprocess.PIPE,

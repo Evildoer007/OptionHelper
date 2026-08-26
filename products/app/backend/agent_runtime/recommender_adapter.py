@@ -34,13 +34,13 @@ from modules.recommender.models import (
     RecommendationSet,
 )
 from modules.recommender.agent_steps import canonical_hash
-from modules.recommender.ports import AgentPort, KnowledgePort, ToolPort
+from modules.recommender.ports import AgentPort, AgentRunReceipt, AgentStepResult, KnowledgePort, ToolPort
 from modules.recommender.service import RecommendationInputRequired, RecommenderService
 from modules.recommender.config import RecommenderConfig
 from modules.recommender.interaction import constraints_fingerprint, merge_confirmed_constraints
 from runtime.protocol.models import ModuleRunRef
 
-from ..errors import AuthorizationError, UnavailableCapabilityError, ValidationError
+from ..errors import AuthorizationError, UnavailableCapabilityError, UserActionError, ValidationError
 from ..identity.session_identity import SessionIdentity
 from ..model_gateway.gateway import ModelGateway
 from ..settings.settings_models import ModelSelection
@@ -57,10 +57,46 @@ from .multi_agent import (
     resolve_recommendation_preset,
 )
 from .runtime_recommender import RuntimeBackedAgentPort, ShadowRuntimeAgentPort
+from .runtime_tool_bridge import RuntimeToolBridge
 
 
 _REPORT_MODULES = ("payoff", "pricing", "backtest")
 _REPORT_TO_COMPUTE_MODULE = {"payoff": "payoffer", "pricing": "pricer", "backtest": "backtester"}
+_RUNTIME_ROLE_TOOLS = {
+    "sequential-deliberation": {
+        "Interpreter": (),
+        "Selector": (),
+        "Reviewer": (),
+    },
+    "product-trader-loop": {
+        "Structurer": ("search_option_structures", "create_candidate_version"),
+        "Trader": (
+            "evaluate_candidate_payoff", "evaluate_candidate_pricing",
+            "evaluate_candidate_backtest", "get_verified_fact", "compare_candidate_versions",
+        ),
+        "Reviewer": ("get_verified_fact", "compare_candidate_versions"),
+    },
+    "independent-council": {
+        "Framer": (),
+        "Matcher": (
+            "search_option_structures", "evaluate_candidate_payoff",
+            "evaluate_candidate_pricing", "evaluate_candidate_backtest", "get_verified_fact",
+        ),
+        "Hedger": (
+            "evaluate_candidate_pricing", "evaluate_candidate_backtest", "get_verified_fact",
+        ),
+        "Moderator": ("get_verified_fact", "compare_candidate_versions"),
+    },
+    "constraint-ranking": {
+        "Specifier": (),
+        "Generator": ("search_option_structures", "create_candidate_version"),
+        "Evaluator": (
+            "evaluate_candidate_payoff", "evaluate_candidate_pricing",
+            "evaluate_candidate_backtest", "get_verified_fact",
+        ),
+        "Reviewer": ("get_verified_fact", "compare_candidate_versions"),
+    },
+}
 _MODULE_RUN_REF_FIELDS = (
     "module", "tenant_id", "task_id", "run_id",
     "expected_semantic_result_hash", "expected_artifact_manifest_hash",
@@ -380,6 +416,7 @@ class AppAgentPort(AgentPort):
             **capability,
             "multi_agent": self._host_multi_agent,
             "max_parallel_agents": 3 if self._host_multi_agent else 1,
+            "independent_child_sessions": self._host_multi_agent,
         })
 
     def fresh_single_agent_port(self) -> "AppAgentPort":
@@ -406,19 +443,44 @@ class AppAgentPort(AgentPort):
     def close(self) -> None:
         self._runtime.close()
 
-    def run_step(self, role: str, payload: Mapping[str, Any]) -> Mapping[str, Any]:
-        result = self._runtime.run_step(str(role), _safe_model_payload(payload))
+    def run_step(self, role: str, payload: Mapping[str, Any]) -> AgentStepResult:
+        safe_payload = _safe_model_payload(payload)
+        run = self._runtime.run_step_result(str(role), safe_payload)
+        result = dict(run.result or {})
         if _contains_hidden_model_field(result):
             raise ValidationError("Recommender步骤不得返回推理或Secret字段")
-        return dict(result)
+        return AgentStepResult(
+            receipt=AgentRunReceipt(
+                agent_run_id=run.agent_run_id,
+                child_session_id=run.child_session_id,
+                role=str(role),
+                input_hash=canonical_hash(safe_payload),
+                output_hash=canonical_hash(result),
+            ),
+            result=result,
+        )
 
-    def run_steps(self, role: str, payloads: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
-        results = self._runtime.run_steps(str(role), [_safe_model_payload(payload) for payload in payloads])
+    def run_steps(self, role: str, payloads: Sequence[Mapping[str, Any]]) -> list[AgentStepResult]:
+        safe_payloads = [_safe_model_payload(payload) for payload in payloads]
+        runs = self._runtime.run_steps_results(str(role), safe_payloads)
+        results = [dict(run.result or {}) for run in runs]
         if any(_contains_hidden_model_field(result) for result in results):
             raise ValidationError("Recommender步骤不得返回推理或Secret字段")
-        return results
+        return [
+            AgentStepResult(
+                receipt=AgentRunReceipt(
+                    agent_run_id=run.agent_run_id,
+                    child_session_id=run.child_session_id,
+                    role=str(role),
+                    input_hash=canonical_hash(payload),
+                    output_hash=canonical_hash(result),
+                ),
+                result=result,
+            )
+            for run, payload, result in zip(runs, safe_payloads, results, strict=True)
+        ]
 
-    def run_named_steps(self, requests: Mapping[str, Mapping[str, Any]]) -> Mapping[str, Mapping[str, Any]]:
+    def run_named_steps(self, requests: Mapping[str, Mapping[str, Any]]) -> Mapping[str, AgentStepResult]:
         """Publish one independent child run for every named Recommender role.
 
         ``OneShotAgentRuntime.run_steps`` is intentionally homogeneous: it
@@ -591,6 +653,204 @@ class RecommenderAdapter:
             raise ValidationError("Agent Runtime模式必须是disabled、shadow或active")
         self._agent_runtime_mode = runtime_mode
         self._agent_runtime_session_root = agent_runtime_session_root
+        self._runtime_lock = RLock()
+        self._task_runtimes: dict[tuple[str, str, str], dict[str, Any]] = {}
+        self._runtime_idle_seconds = 15 * 60.0
+
+    @staticmethod
+    def _runtime_task_key(identity: SessionIdentity, task_id: str) -> tuple[str, str, str]:
+        return (str(identity.tenant_id), str(identity.principal_id), str(task_id).strip())
+
+    def _get_or_create_task_runtime(
+        self,
+        identity: SessionIdentity,
+        task_id: str,
+        *,
+        preset_id: str,
+        selection: ModelSelection | None,
+        execution_ids: Mapping[str, str] | None,
+    ) -> dict[str, Any]:
+        """Reuse one runtime scope for the authenticated Task.
+
+        The conversation may call Recommender more than once while it is
+        awaiting confirmation. The Child runtime must remain the same scope;
+        a new legacy AppAgentPort is still created per authoritative request.
+        """
+
+        key = self._runtime_task_key(identity, task_id)
+        with self._runtime_lock:
+            existing = self._task_runtimes.get(key)
+            if existing is not None and existing.get("preset_id") == preset_id:
+                if int(existing.get("active_count", 0)) != 0:
+                    raise ValidationError("同一Task已有Recommender运行，不能并发复用Child Session")
+                timer = existing.get("idle_timer")
+                if timer is not None:
+                    timer.cancel()
+                    existing["idle_timer"] = None
+                begin_request = getattr(existing.get("runtime"), "begin_parent_request", None)
+                if callable(begin_request):
+                    begin_request()
+                existing["active_count"] = int(existing.get("active_count", 0)) + 1
+                return existing
+            if existing is not None:
+                self._close_runtime_entry(existing, reason="preset_changed")
+                self._task_runtimes.pop(key, None)
+
+            runtime_parent_session = self._tasks.conversation_session_id(identity, task_id)
+            runtime_event_log = self._tasks.session_event_log
+            runtime_event_log.ensure_session(runtime_parent_session, kind="conversation")
+            runtime_mode = self._agent_runtime_mode
+
+            def persist_runtime_event(event):
+                projected = replace(
+                    event,
+                    payload={**dict(event.payload), "runtime_mode": runtime_mode},
+                )
+                runtime_event_log.append(
+                    runtime_parent_session,
+                    "runtime.event",
+                    {"runtime_event": projected.to_dict()},
+                    event_id=f"runtime:{projected.event_id}",
+                    ignorable=True,
+                )
+
+            persistence_sink = RuntimeEventPersistenceSink(persist_runtime_event)
+            runtime_workflow_id = str(
+                (execution_ids or {}).get("workflow_run_id") or f"runtime-{uuid4().hex}"
+            )
+            try:
+                bridge_factory = getattr(self._tools, "runtime_tool_bridge", None)
+                runtime_tool_bridge = bridge_factory() if callable(bridge_factory) else None
+                runtime_agent_port = RuntimeBackedAgentPort(
+                    self._gateway,
+                    identity,
+                    task_id,
+                    preset_id=preset_id,
+                    selection=selection,
+                    role_model_defaults=(
+                        self._gateway.multi_agent_role_model_selections_for(identity, preset_id)
+                        if hasattr(self._gateway, "multi_agent_role_model_selections_for") else {}
+                    ),
+                    is_cancelled=self._tasks.is_cancelled,
+                    event_sink=persistence_sink,
+                    session_root=self._agent_runtime_session_root,
+                    root_session_id=str(runtime_parent_session),
+                    workflow_id=runtime_workflow_id,
+                    tool_bridge=runtime_tool_bridge,
+                    allowed_tools_by_role=_RUNTIME_ROLE_TOOLS.get(preset_id, {}),
+                )
+            except Exception:
+                persistence_sink.close()
+                raise
+            entry = {
+                "runtime": runtime_agent_port,
+                "persistence_sink": persistence_sink,
+                "preset_id": preset_id,
+                "workflow_id": runtime_workflow_id,
+                "active_count": 1,
+                "idle_timer": None,
+            }
+            self._task_runtimes[key] = entry
+            return entry
+
+    @staticmethod
+    def _close_runtime_entry(entry: Mapping[str, Any], *, reason: str) -> None:
+        timer = entry.get("idle_timer")
+        if timer is not None:
+            timer.cancel()
+        runtime = entry.get("runtime")
+        sink = entry.get("persistence_sink")
+        try:
+            close = getattr(runtime, "close", None)
+            if callable(close):
+                close()
+        finally:
+            close_sink = getattr(sink, "close", None)
+            if callable(close_sink):
+                close_sink()
+
+    def _release_task_runtime(self, identity: SessionIdentity, task_id: str, entry: Mapping[str, Any]) -> None:
+        key = self._runtime_task_key(identity, task_id)
+        with self._runtime_lock:
+            current = self._task_runtimes.get(key)
+            if current is not entry:
+                return
+            current["active_count"] = max(0, int(current.get("active_count", 1)) - 1)
+            if current["active_count"]:
+                return
+            workflow_id = str(current.get("workflow_id", ""))
+            timer = Timer(
+                self._runtime_idle_seconds,
+                self._expire_task_runtime,
+                args=(key, workflow_id),
+            )
+            timer.daemon = True
+            current["idle_timer"] = timer
+            timer.start()
+
+    def _expire_task_runtime(self, key: tuple[str, str, str], workflow_id: str) -> None:
+        with self._runtime_lock:
+            entry = self._task_runtimes.get(key)
+            if (
+                entry is None
+                or str(entry.get("workflow_id", "")) != workflow_id
+                or int(entry.get("active_count", 0)) != 0
+            ):
+                return
+            self._task_runtimes.pop(key, None)
+        self._close_runtime_entry(entry, reason="idle_timeout")
+
+    def close_task_runtime(
+        self,
+        identity: SessionIdentity,
+        task_id: str,
+        reason: str = "task_closed",
+    ) -> Mapping[str, Any]:
+        key = self._runtime_task_key(identity, task_id)
+        with self._runtime_lock:
+            entry = self._task_runtimes.pop(key, None)
+        if entry is None:
+            return {"status": "not_found", "task_id": str(task_id)}
+        self._close_runtime_entry(entry, reason=str(reason)[:120])
+        return {"status": "closed", "task_id": str(task_id), "workflow_id": entry.get("workflow_id")}
+
+    def cancel_task_runtime(
+        self,
+        identity: SessionIdentity,
+        task_id: str,
+        reason: str = "task_cancelled",
+    ) -> Mapping[str, Any]:
+        key = self._runtime_task_key(identity, task_id)
+        with self._runtime_lock:
+            entry = self._task_runtimes.get(key)
+        if entry is None:
+            return {"status": "not_found", "task_id": str(task_id)}
+        runtime = entry.get("runtime")
+        controller = getattr(runtime, "controller", None)
+        cancel = getattr(controller, "cancel", None)
+        if not callable(cancel):
+            cancel = getattr(runtime, "cancel", None)
+        if not callable(cancel):
+            raise ValidationError("Agent Runtime缺少Task取消入口")
+        result = cancel(str(reason)[:120])
+        return dict(result) if isinstance(result, Mapping) else {"status": "cancelled"}
+
+    def close_all_runtimes(self) -> Mapping[str, Any]:
+        with self._runtime_lock:
+            entries = tuple(self._task_runtimes.values())
+            self._task_runtimes.clear()
+        failures: list[str] = []
+        for entry in entries:
+            try:
+                self._close_runtime_entry(entry, reason="all_runtimes_closed")
+            except Exception as error:
+                failures.append(f"{type(error).__name__}:{error}")
+        return {"status": "closed" if not failures else "partial", "closed_count": len(entries), "failures": failures}
+
+    def close(self) -> Mapping[str, Any]:
+        """Close every Task-scoped runtime when the adapter itself is torn down."""
+
+        return self.close_all_runtimes()
 
     def run_fixed(
         self, identity: SessionIdentity, task_id: str, prompt: str, arguments: Mapping[str, Any], *,
@@ -658,6 +918,10 @@ class RecommenderAdapter:
             )
         active_fingerprint_at_start = _recommendation_start_active_fingerprint(self._tools, identity, task_id)
         requested_outputs = _requested_outputs(arguments, confirmed_constraints)
+        requested_candidate_count = _requested_candidate_count_argument(arguments)
+        case_constraints = dict(confirmed_constraints)
+        if requested_candidate_count is not None:
+            case_constraints["_requested_candidate_count"] = requested_candidate_count
         case = RecommendationCase(
             analysis_case_id=f"chat-{task_id}",
             task_id=task_id,
@@ -668,7 +932,7 @@ class RecommenderAdapter:
             requested_outputs=requested_outputs,
             audience=identity.audience,
             conversation_ref=f"task:{task_id}",
-            confirmed_constraints=confirmed_constraints,
+            confirmed_constraints=case_constraints,
             approved_candidate_ids=(),
             candidate_contracts={},
         )
@@ -697,57 +961,37 @@ class RecommenderAdapter:
             settlement_registry=self._settlement_registry,
         )
         agent_port: AgentPort = legacy_agent_port
-        runtime_persistence_sink: RuntimeEventPersistenceSink | None = None
+        runtime_entry: Mapping[str, Any] | None = None
+        runtime_agent_port: RuntimeBackedAgentPort | None = None
+        legacy_closed = False
         if self._agent_runtime_mode in {"shadow", "active"}:
-            runtime_parent_session = self._tasks.conversation_session_id(identity, task_id)
-            runtime_event_log = self._tasks.session_event_log
-            runtime_event_log.ensure_session(runtime_parent_session, kind="conversation")
-
-            def persist_runtime_event(event):
-                projected = replace(
-                    event,
-                    payload={**dict(event.payload), "runtime_mode": self._agent_runtime_mode},
-                )
-                runtime_event_log.append(
-                    runtime_parent_session,
-                    "runtime.event",
-                    {"runtime_event": projected.to_dict()},
-                    event_id=f"runtime:{projected.event_id}",
-                    ignorable=True,
-                )
-
-            runtime_persistence_sink = RuntimeEventPersistenceSink(persist_runtime_event)
-
-            runtime_workflow_id = str((execution_ids or {}).get("workflow_run_id") or f"runtime-{uuid4().hex}")
             try:
-                runtime_agent_port = RuntimeBackedAgentPort(
-                    self._gateway,
+                runtime_entry = self._get_or_create_task_runtime(
                     identity,
                     task_id,
                     preset_id=preset_id,
                     selection=selection,
-                    role_model_defaults=(
-                        self._gateway.multi_agent_role_model_selections_for(identity, preset_id)
-                        if hasattr(self._gateway, "multi_agent_role_model_selections_for") else {}
-                    ),
-                    is_cancelled=self._tasks.is_cancelled,
-                    event_sink=runtime_persistence_sink,
-                    session_root=self._agent_runtime_session_root,
-                    root_session_id=str(runtime_parent_session),
-                    workflow_id=runtime_workflow_id,
+                    execution_ids=execution_ids,
                 )
             except Exception as error:
                 if self._agent_runtime_mode == "active":
+                    legacy_agent_port.close()
                     raise
-                runtime_event_log.append(
-                    runtime_parent_session,
+                parent_session = self._tasks.conversation_session_id(identity, task_id)
+                self._tasks.session_event_log.ensure_session(parent_session, kind="conversation")
+                self._tasks.session_event_log.append(
+                    parent_session,
                     "runtime.shadow_failure",
-                    {"workflow_id": runtime_workflow_id, "error_type": type(error).__name__},
+                    {"error_type": type(error).__name__},
+                    event_id=f"runtime-shadow-failure:{uuid4().hex}",
                     ignorable=True,
                 )
+                runtime_entry = None
             else:
+                runtime_agent_port = runtime_entry["runtime"]
                 if self._agent_runtime_mode == "active":
                     legacy_agent_port.close()
+                    legacy_closed = True
                     agent_port = runtime_agent_port
                 else:
                     agent_port = ShadowRuntimeAgentPort(legacy_agent_port, runtime_agent_port)
@@ -760,18 +1004,25 @@ class RecommenderAdapter:
             agent_port=agent_port,
             knowledge_port=AppKnowledgePort(self._registry.capability_root, catalog_version),
             tool_port=AppToolPort(self._tools, identity, task_id, visible_event_sink=visible_event_sink),
-            config=RecommenderConfig(agent_mode="multi", multi_agent_preset=preset_id),
+            config=RecommenderConfig(
+                agent_mode="multi" if arguments.get("require_multi_agent") is True else "auto",
+                multi_agent_preset=preset_id,
+            ),
             review_policy_id=review_policy_id,
         )
         workflow = str(arguments.get("workflow", "recommendation")).strip().lower()
         try:
             result = service.recommend_fixed(case, workflow=workflow)
         finally:
-            try:
+            # RuntimeBackedAgentPort is Task-scoped and is closed only by the
+            # lifecycle methods below. The authoritative legacy port remains
+            # request-scoped, including in shadow mode.
+            if runtime_entry is None:
                 agent_port.close()
-            finally:
-                if runtime_persistence_sink is not None:
-                    runtime_persistence_sink.close()
+            elif not legacy_closed:
+                legacy_agent_port.close()
+            if runtime_entry is not None:
+                self._release_task_runtime(identity, task_id, runtime_entry)
         route = result.get("route", {})
         if not isinstance(route, Mapping) or route.get("fixed_recommendation_workflow") is not True:
             raise ValidationError("App内Recommender只允许固定推荐Workflow，不允许freeform")
@@ -881,7 +1132,7 @@ class RecommenderAdapter:
                 task_id, catalog_version, approved, status="candidate_ready", candidate_status="approved",
                 analysis_status="not_started", delivery_status="pending" if approved.get("delivery") else "not_requested",
             ),
-            "next_step": "候选与合同条款已确认，控制权已交回主Agent。",
+            "next_step": "候选与合同条款已确认，可以继续必要计算或生成交付。",
         }
 
 
@@ -905,6 +1156,56 @@ class AppConversationToolExecutor:
 
     def bind_recommender(self, recommender: RecommenderAdapter) -> None:
         self._recommender = recommender
+
+    def runtime_tool_bridge(self) -> RuntimeToolBridge:
+        """Build the task-bound bridge used by direct runtime Child Sessions.
+
+        The bridge is connected to the existing Host dispatcher and stores;
+        the child still receives no tool permission unless the selected role
+        explicitly declares one in the runtime workflow.
+        """
+
+        def module_context_for(module: str, payload: Mapping[str, Any], identity: SessionIdentity) -> object:
+            task_id = str(payload.get("task_id") or "").strip()
+            if not task_id:
+                raise ValidationError("Runtime业务工具缺少Task绑定")
+            return self._registry.service_context(
+                identity,
+                module,
+                task_id=task_id,
+                analysis_case_id=payload.get("analysis_case_id"),
+                candidate_id=payload.get("candidate_id"),
+                catalog_version=str(payload.get("catalog_version") or self._registry.manifest["catalog_version"]),
+                contract_fingerprint=payload.get("contract_fingerprint"),
+            )
+
+        def search_handler(
+            identity: SessionIdentity,
+            task_id: str,
+            payload: Mapping[str, Any],
+            _connection: object,
+        ) -> Mapping[str, Any]:
+            del identity, task_id
+            query = payload.get("query", "")
+            queries = payload.get("queries", [query])
+            if isinstance(queries, (str, bytes)) or not isinstance(queries, Sequence):
+                queries = [query]
+            return AppKnowledgePort(
+                self._registry.capability_root,
+                str(self._registry.manifest["catalog_version"]),
+            ).search({
+                "catalog_version": str(self._registry.manifest["catalog_version"]),
+                "queries": [str(item) for item in queries],
+            })
+
+        return RuntimeToolBridge(
+            dispatcher=self._dispatcher,
+            result_store=self._results,
+            candidate_store=self._contracts,
+            task_service=self._tasks,
+            module_context_for=module_context_for,
+            search_handler=search_handler,
+        )
 
     def reconcile_prepared_recommendation_approvals(self) -> int:
         """Idempotently close prepared cross-Store candidate confirmations.
@@ -1204,32 +1505,25 @@ class AppConversationToolExecutor:
         data_ref = dict(market_data_ref) if isinstance(market_data_ref, Mapping) else None
         if needs_market_data and data_ref is None:
             raise ValidationError("候选批次缺少共享行情快照")
-        # Create the immutable CandidateVariant before dispatching modules. Its
-        # fingerprint is the stable identity for both preselection and any
-        # later approved delivery, so ResultStore can keep its strict four-part
-        # binding while a verified preselection RunRef is genuinely reusable.
+        # A preview is sufficient to select the pricing route, but it is not a
+        # formal CandidateVariant.  The latter must be written only after the
+        # Host has compiled the contract against its verified DataAssetRef.
+        # Otherwise a preselection contract would lack S0Raw, contract start
+        # date and, where required, the verified observation calendar.
         stored_variant = self._contracts.get_candidate_variant(identity, task_id, candidate_key, version_id)
         if not isinstance(stored_variant, Mapping):
-            resolved_contract = _preview_candidate_contract(
+            resolved_contract = _candidate_routing_contract(
                 self._registry.capability_root,
                 product_id=product_id,
-                underlyings=ordered_underlyings,
                 term_overrides=controlled_overrides,
             )
-            contract_fingerprint = str(resolved_contract.get("contract_fingerprint", ""))
-            stored_variant = self._contracts.put_candidate_variant(
-                identity,
-                task_id,
-                candidate_key,
-                version_id,
-                {"contract_fingerprint": contract_fingerprint, "resolved_contract": resolved_contract},
-                catalog_version=catalog_version,
-                parent_version_id=parent_version_id,
-                revision=revision,
-            )
-        resolved_contract = stored_variant.get("resolved_contract")
-        contract_fingerprint = str(stored_variant.get("contract_fingerprint", ""))
-        if not isinstance(resolved_contract, Mapping) or not re.fullmatch(r"[0-9a-f]{64}", contract_fingerprint):
+            contract_fingerprint = ""
+        else:
+            resolved_contract = stored_variant.get("resolved_contract")
+            contract_fingerprint = str(stored_variant.get("contract_fingerprint", ""))
+        if not isinstance(resolved_contract, Mapping) or (
+            isinstance(stored_variant, Mapping) and not re.fullmatch(r"[0-9a-f]{64}", contract_fingerprint)
+        ):
             raise ValidationError("候选预选计算缺少有效ResolvedContract")
         pricing_config = (
             _pricing_config_for_resolved_contract(resolved_contract, confirmed_constraints)
@@ -1241,13 +1535,16 @@ class AppConversationToolExecutor:
                 "message": "该候选需要Monte Carlo估值。请明确提供路径数，例如“MC路径数10000”。",
             }
         binding = {
-            "analysis_case_id": _confirmation_analysis_case_id(contract_fingerprint),
             "candidate_id": _candidate_variant_module_identity(candidate_key, version_id),
             "catalog_version": catalog_version,
-            "contract_fingerprint": contract_fingerprint,
             "candidate_key": candidate_key,
             "candidate_version_id": version_id,
         }
+        if contract_fingerprint:
+            binding.update({
+                "analysis_case_id": _confirmation_analysis_case_id(contract_fingerprint),
+                "contract_fingerprint": contract_fingerprint,
+            })
         candidate_variant = {
             "candidate_key": candidate_key,
             "candidate_version_id": version_id,
@@ -1286,8 +1583,17 @@ class AppConversationToolExecutor:
                     continue
                 payload.update({"backtest_config": {}, "historical_data": data_ref})
             try:
+                # Candidate metadata is present from the first calculation,
+                # but no preview contract exists.  ToolGateway therefore
+                # compiles the formal Host contract and writes that exact
+                # prepared object into the CandidateVariant without touching
+                # the task's active contract.
+                dispatch_binding = binding if isinstance(stored_variant, Mapping) else {
+                    "candidate_id": binding["candidate_id"],
+                    "catalog_version": catalog_version,
+                }
                 response = self._dispatch(
-                    identity, task_id, f"{module}.run", module, payload, binding=binding,
+                    identity, task_id, f"{module}.run", module, payload, binding=dispatch_binding,
                     candidate_variant=candidate_variant,
                 )
                 status = _normalized_module_status(response)
@@ -1295,6 +1601,22 @@ class AppConversationToolExecutor:
                 reference = ModuleRunRef(**dict(raw_ref)) if isinstance(raw_ref, Mapping) else None
                 if status in {"succeeded", "partial"} and reference is None:
                     raise ValidationError(f"{module}成功结果缺少ModuleRunRef")
+                if reference is not None and not isinstance(stored_variant, Mapping):
+                    stored_variant = self._contracts.get_candidate_variant(
+                        identity, task_id, candidate_key, version_id,
+                    )
+                    resolved_contract = stored_variant.get("resolved_contract")
+                    contract_fingerprint = str(stored_variant.get("contract_fingerprint", ""))
+                    if not isinstance(resolved_contract, Mapping) or not re.fullmatch(r"[0-9a-f]{64}", contract_fingerprint):
+                        raise ValidationError("Host冻结的CandidateVariant无效")
+                    binding = {
+                        "analysis_case_id": _confirmation_analysis_case_id(contract_fingerprint),
+                        "candidate_id": _candidate_variant_module_identity(candidate_key, version_id),
+                        "catalog_version": catalog_version,
+                        "contract_fingerprint": contract_fingerprint,
+                        "candidate_key": candidate_key,
+                        "candidate_version_id": version_id,
+                    }
                 limitation = None if reference is not None else str(
                     response.get("message") or response.get("reason") or f"{module}未完成预选计算"
                 )
@@ -1591,13 +1913,10 @@ class AppConversationToolExecutor:
         reusable = self._verified_frozen_module_runs(identity, task_id, module_run_refs, binding)
         analysis = reusable.get("payoff")
         if analysis is None:
-            try:
-                analysis = self._dispatch(
-                    identity, task_id, "payoffer.run", "payoffer", compute_base, binding=binding,
-                    candidate_variant=frozen_candidate_variant,
-                )
-            except (AuthorizationError, UnavailableCapabilityError, ValidationError):
-                analysis = {"ok": False, "status": "failed"}
+            analysis = self._dispatch(
+                identity, task_id, "payoffer.run", "payoffer", compute_base, binding=binding,
+                candidate_variant=frozen_candidate_variant,
+            )
         analysis_status = _analysis_status(analysis)
         if analysis.get("ok") is not True or str(analysis.get("status", "")).lower() not in {"succeeded", "completed", "partial"}:
             return {
@@ -1637,19 +1956,27 @@ class AppConversationToolExecutor:
                         continue
                     response = reusable.get(display_module)
                     if response is None:
-                        try:
-                            response = self._dispatch(
-                                identity,
-                                task_id,
-                                f"{compute_module}.run",
-                                compute_module,
-                                detail_payloads[display_module],
-                                binding=binding,
-                                candidate_variant=frozen_candidate_variant,
-                            )
-                        except (AuthorizationError, UnavailableCapabilityError, ValidationError):
-                            response = {"ok": False, "status": "failed"}
+                        response = self._dispatch(
+                            identity,
+                            task_id,
+                            f"{compute_module}.run",
+                            compute_module,
+                            detail_payloads[display_module],
+                            binding=binding,
+                            candidate_variant=frozen_candidate_variant,
+                        )
                     analysis_runs[display_module] = response
+                    if response.get("ok") is not True:
+                        failure = _public_failure_metadata(response)
+                        if failure is not None:
+                            return {
+                                "status": "partial",
+                                "analysis_status": "partial",
+                                "delivery_status": "not_requested",
+                                "missing_modules": [display_module],
+                                "deliveries": [],
+                                **failure,
+                            }
                     if (
                         response.get("ok") is not True
                         or _analysis_status(response) != "completed"
@@ -1707,19 +2034,10 @@ class AppConversationToolExecutor:
                     "next_step": _incomplete_report_next_step(missing_analysis_modules),
                     "completed": completed,
                 }
-            try:
-                report = _with_report_delivery(
-                    self._dispatch(identity, task_id, "reporter.run", "reporter", prepared),
-                    prepared,
-                )
-            except (AuthorizationError, UnavailableCapabilityError, ValidationError):
-                return {
-                    "status": "partial",
-                    "analysis_status": aggregate_analysis_status,
-                    "delivery_status": "not_requested",
-                    "next_step": _undelivered_card_next_step(kind),
-                    "completed": completed,
-                }
+            report = _with_report_delivery(
+                self._dispatch(identity, task_id, "reporter.run", "reporter", prepared),
+                prepared,
+            )
             report_status = str(report.get("status", "")).lower()
             if report.get("ok") is not True or report_status not in {"succeeded", "completed", "partial"}:
                 return {
@@ -1802,12 +2120,29 @@ class AppConversationToolExecutor:
             "fields": ["close", "adj_close"], "provider": "ifind_http", "frequency": "1d",
             "adjustment": "forward", "cache_policy": "force_refresh", "offline": False,
         }
-        try:
-            response = self._dispatch(identity, task_id, "datafetcher.fetch", "datafetcher", request)
-        except (AuthorizationError, UnavailableCapabilityError, ValidationError):
-            return None
+        response = self._dispatch(identity, task_id, "datafetcher.fetch", "datafetcher", request)
         raw_ref = response.get("data_asset_ref") if isinstance(response, Mapping) else None
-        if response.get("ok") is not True or not isinstance(raw_ref, Mapping):
+        if not isinstance(response, Mapping):
+            raise ValidationError("DataFetcher返回无效响应")
+        if response.get("ok") is not True:
+            failure_code = response.get("failure_code", response.get("code"))
+            message = response.get("message", response.get("reason"))
+            stage = response.get("stage")
+            next_step = response.get("next_step")
+            if (
+                isinstance(failure_code, str) and failure_code
+                and isinstance(message, str) and message
+                and isinstance(stage, str) and stage
+                and isinstance(next_step, str) and next_step
+            ):
+                raise UserActionError(
+                    failure_code,
+                    message,
+                    stage=stage,
+                    next_step=next_step,
+                )
+            raise ValidationError("DataFetcher未返回可用行情数据")
+        if not isinstance(raw_ref, Mapping):
             return None
         asset_id = raw_ref.get("data_asset_id")
         content_hash = raw_ref.get("content_hash")
@@ -2214,6 +2549,33 @@ def _requested_outputs(arguments: Mapping[str, Any], constraints: Mapping[str, A
     return _text_tuple(arguments.get("requested_outputs", ()))
 
 
+def _requested_candidate_count_argument(arguments: Mapping[str, Any]) -> int | None:
+    values: list[object] = []
+    for key in ("requested_candidate_count", "candidate_count", "selection_spec", "candidate_selection"):
+        if key in arguments:
+            values.append(arguments[key])
+    scalars: list[int] = []
+    for raw in values:
+        value = raw
+        if isinstance(raw, Mapping):
+            nested = [raw[key] for key in ("requested_candidate_count", "candidate_count") if key in raw]
+            if not nested:
+                continue
+            if len(nested) > 1 and nested[0] != nested[1]:
+                raise ValidationError("候选数量字段冲突")
+            value = nested[0]
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValidationError("requested_candidate_count必须为1至10的整数")
+        scalars.append(value)
+    if scalars and any(item != scalars[0] for item in scalars[1:]):
+        raise ValidationError("候选数量字段冲突")
+    if not scalars:
+        return None
+    if not 1 <= scalars[0] <= 10:
+        raise ValidationError("requested_candidate_count必须位于1至10")
+    return scalars[0]
+
+
 def _same_pending_user_turn(value: object, prompt: object) -> bool:
     return (
         isinstance(value, Mapping)
@@ -2496,6 +2858,25 @@ def _candidate_constraints_fingerprint(constraints: Mapping[str, Any]) -> str:
         if key in {"underlying", "horizon", "market_view", "max_loss", "principal_fluctuation", "term_overrides"}
     }
     return constraints_fingerprint(candidate_fields)
+
+
+def _public_failure_metadata(response: Mapping[str, Any]) -> dict[str, str] | None:
+    """Keep a direct dispatcher response in the App's existing public shape."""
+
+    nested = response.get("error")
+    source = nested if isinstance(nested, Mapping) else response
+    failure_code = source.get("failure_code", source.get("code"))
+    message = source.get("message", response.get("message", response.get("reason")))
+    stage = source.get("stage", response.get("stage"))
+    next_step = source.get("next_step", response.get("next_step"))
+    if not all(isinstance(value, str) and value for value in (failure_code, message, stage, next_step)):
+        return None
+    return {
+        "failure_code": failure_code,
+        "message": message,
+        "stage": stage,
+        "next_step": next_step,
+    }
 
 
 def _pricing_config_for_resolved_contract(
@@ -2796,26 +3177,29 @@ def _active_contract_matches(
     return all(terms.get(key) == expected for key, expected in term_overrides.items())
 
 
-def _preview_candidate_contract(
+def _candidate_routing_contract(
     capability_root: Path,
     *,
     product_id: str,
-    underlyings: Sequence[str],
     term_overrides: Mapping[str, Any],
 ) -> Mapping[str, Any]:
-    """Compile a read-only candidate snapshot when calculation data is absent."""
+    """Read only the registered pricing route before Host compilation.
 
-    try:
-        from runtime.contracts.contract_engine import resolve_contract
+    Observation products cannot be resolved safely without a verified calendar,
+    and every product needs a verified history-derived identity before it may be
+    frozen.  The route is therefore the sole pre-compilation fact retained here;
+    Core and the Host remain the only source of a ResolvedContract.
+    """
 
-        return resolve_contract(
-            product_id,
-            identity={"underlyings": tuple(underlyings)},
-            term_overrides=dict(term_overrides),
-            registry=_load_capability_registry(capability_root),
-        ).to_protocol_dict()
-    except Exception as error:
-        raise ValidationError("候选条款无法通过Core合同校验") from error
+    registry = _load_capability_registry(capability_root)
+    product = registry.get("products", {}).get(product_id)
+    terms = product.get("terms") if isinstance(product, Mapping) else None
+    if not isinstance(terms, Mapping):
+        raise ValidationError("候选产品缺少已登记定价条款")
+    methods = terms.get("pricing_methods")
+    if isinstance(methods, (str, bytes)) or not isinstance(methods, Sequence):
+        raise ValidationError("候选产品未声明可用定价方法")
+    return {"terms": {"pricing_methods": list(methods)}}
 
 
 def _with_confirmation_terms(

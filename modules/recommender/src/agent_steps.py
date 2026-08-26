@@ -8,16 +8,16 @@ import json
 from typing import Any, Mapping
 
 from .models import AuditEvent
-from .ports import AgentPort
+from .ports import AgentPort, AgentStepResult
 
 
 ROLE_RULES = {
     # Mode 1 keeps its published names while retaining the established wire
     # protocol and saved model-slot identifiers.  Do not rename these keys:
     # old callers, persisted settings and strict result validators use them.
-    "Intent": "Interpreter：只提取用户已确认事实、缺失信息和检索查询；不得推荐产品。",
-    "Research": "Selector：只能从输入evidence选择产品；每个候选必须引用evidence_id。",
-    "Critic": "Reviewer：只能审阅Research已有product_id；不得新增产品或删除不利证据。",
+    "Intent": "只提取用户已确认事实、缺失信息和检索查询；不得推荐产品。",
+    "Research": "只能从输入evidence选择产品；每个候选必须引用evidence_id。",
+    "Critic": "只能审阅Research已有product_id；不得新增产品或删除不利证据。",
     "Framer": "只框定用户已确认事实、目标、约束和检索查询；不得推荐产品、不得生成金融指标。",
     "Matcher": "只能从输入evidence提出匹配目标与约束的产品候选；每个候选必须引用evidence_id；不得生成金融指标。",
     "Hedger": "只能从输入evidence独立审视候选的适配边界和风险，并以产品候选形式提出意见；每个候选必须引用evidence_id；不得生成金融指标。",
@@ -32,11 +32,7 @@ ROLE_RULES = {
 }
 
 
-MODE_ONE_ROLE_NAMES = {
-    "Intent": "Interpreter",
-    "Research": "Selector",
-    "Critic": "Reviewer",
-}
+MODE_ONE_ROLE_NAMES = {"Intent": "Intent", "Research": "Research", "Critic": "Critic"}
 
 
 def canonical_hash(value: Any) -> str:
@@ -72,12 +68,49 @@ class AuditRecorder:
 
 
 @dataclass
+class AgentReceiptLedger:
+    workflow_mode: str
+    _agent_run_ids: set[str] = field(default_factory=set, init=False)
+    _child_session_ids: set[str] = field(default_factory=set, init=False)
+
+    def validate(
+        self,
+        role: str,
+        port_role: str,
+        request: Mapping[str, Any],
+        step: AgentStepResult,
+    ) -> Mapping[str, Any]:
+        if not isinstance(step, AgentStepResult):
+            raise ValueError(f"{role}必须返回AgentStepResult")
+        receipt = step.receipt
+        if receipt.role != port_role:
+            raise ValueError(f"{role}运行凭证角色不匹配")
+        if receipt.input_hash != canonical_hash(request):
+            raise ValueError(f"{role}运行凭证输入哈希不匹配")
+        if receipt.output_hash != canonical_hash(step.result):
+            raise ValueError(f"{role}运行凭证输出哈希不匹配")
+        if self.workflow_mode == "multi_agent":
+            if receipt.agent_run_id in self._agent_run_ids:
+                raise ValueError("多Agent工作流重复使用agent_run_id")
+            if receipt.child_session_id in self._child_session_ids:
+                raise ValueError("多Agent工作流重复使用child_session_id")
+        self._agent_run_ids.add(receipt.agent_run_id)
+        self._child_session_ids.add(receipt.child_session_id)
+        _validate_role_result(role, step.result)
+        return dict(step.result)
+
+
+@dataclass
 class AgentStepRunner:
     port: AgentPort
     workflow_mode: str
     audit: AuditRecorder
+    receipt_ledger: AgentReceiptLedger = field(init=False)
 
-    def run(self, role: str, payload: Mapping[str, Any]) -> Mapping[str, Any]:
+    def __post_init__(self) -> None:
+        self.receipt_ledger = AgentReceiptLedger(self.workflow_mode)
+
+    def build_request(self, role: str, payload: Mapping[str, Any]) -> tuple[str, Mapping[str, Any]]:
         if role not in ROLE_RULES:
             raise ValueError(f"未知Agent角色：{role}")
         port_role = role if self.workflow_mode == "multi_agent" else f"SingleAgent.{role}"
@@ -87,15 +120,28 @@ class AgentStepRunner:
             "required_output": _required_output(role),
             "input": dict(payload),
         }
+        return port_role, request
+
+    def accept(
+        self,
+        role: str,
+        port_role: str,
+        request: Mapping[str, Any],
+        step: AgentStepResult,
+    ) -> Mapping[str, Any]:
         try:
-            result = self.port.run_step(port_role, request)
-            _validate_role_result(role, result)
+            result = self.receipt_ledger.validate(role, port_role, request, step)
         except Exception as error:
             self.audit.append(role.lower(), "failed", agent_role=port_role, input_value=request, output_value=None,
                               detail={"error_type": type(error).__name__, "message": str(error)})
             raise
         self.audit.append(role.lower(), "complete", agent_role=port_role, input_value=request, output_value=result)
         return dict(result)
+
+    def run(self, role: str, payload: Mapping[str, Any]) -> Mapping[str, Any]:
+        port_role, request = self.build_request(role, payload)
+        step = self.port.run_step(port_role, request)
+        return self.accept(role, port_role, request, step)
 
     def run_many(self, role: str, payloads: list[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
         """Run independent fresh children when the App port provides them."""
@@ -118,11 +164,13 @@ class AgentStepRunner:
             results = batch(port_role, requests)
             if not isinstance(results, list) or len(results) != len(requests):
                 raise ValueError("Agent批量步骤返回数量无效")
-            for request, result in zip(requests, results, strict=True):
-                _validate_role_result(role, result)
+            normalized: list[Mapping[str, Any]] = []
+            for request, step in zip(requests, results, strict=True):
+                result = self.receipt_ledger.validate(role, port_role, request, step)
                 self.audit.append(role.lower(), "complete", agent_role=port_role, input_value=request, output_value=result,
                                   detail={"independent_agent_run": True})
-            return [dict(result) for result in results]
+                normalized.append(result)
+            return normalized
         except Exception as error:
             self.audit.append(role.lower(), "failed", agent_role=port_role, input_value=requests, output_value=None,
                               detail={"error_type": type(error).__name__, "message": str(error)})
@@ -162,8 +210,8 @@ class AgentStepRunner:
                 raise ValueError("具名Agent步骤返回角色集合无效")
             normalized: dict[str, Mapping[str, Any]] = {}
             for role, request in requests.items():
-                result = results[port_roles[role]]
-                _validate_role_result(role, result)
+                step = results[port_roles[role]]
+                result = self.receipt_ledger.validate(role, port_roles[role], request, step)
                 self.audit.append(
                     role.lower(), "complete", agent_role=port_roles[role], input_value=request,
                     output_value=result, detail={"independent_agent_run": True},

@@ -148,10 +148,10 @@ def _agent_runtime_public_status(mode: str) -> dict[str, Any]:
         "runtime_reason": reason,
     }
 _RECOMMENDATION_MODE_ROLE_FALLBACKS = {
-    "sequential-deliberation": ("Intent", "Research", "Critic"),
+    "sequential-deliberation": ("Interpreter", "Selector", "Reviewer"),
     "product-trader-loop": ("Structurer", "Trader", "Reviewer"),
     "independent-council": ("Framer", "Matcher", "Hedger", "Moderator"),
-    "constraint-ranking": ("Specifier", "Generator", "Reviewer"),
+    "constraint-ranking": ("Specifier", "Generator", "Evaluator", "Reviewer"),
 }
 _REVIEW_POLICY_ROLE_FALLBACKS = {"standard-review": ()}
 
@@ -308,12 +308,13 @@ class AppServer:
                 resolve_secret=lambda ref: self.secret_provider.resolve(ref, "模型服务凭据"),
                 request_control=request_control,
             ),
-            stream=lambda settings, reference, messages, request_control=None: stream_openai_compatible(
+            stream=lambda settings, reference, messages, request_control=None, tools=None: stream_openai_compatible(
                 settings,
                 reference,
                 messages,
                 resolve_secret=lambda ref: self.secret_provider.resolve(ref, "模型服务凭据"),
                 request_control=request_control,
+                tools=tools,
             ),
             bounded_request_control=True,
         )
@@ -1289,6 +1290,30 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
             self.app.tasks.get(identity, task_id)
             self._json(HTTPStatus.OK, {"operations": [item.public(include_result=True) for item in self.app.operations.list(identity, task_id)]})
             return
+        if path.startswith("/api/tasks/") and path.endswith("/result") and "/operations/" in path:
+            identity = self._identity()
+            self.app.policy.require(identity.role, "task.read")
+            task_id, operation_id = path.removeprefix("/api/tasks/").removesuffix("/result").split("/operations/", 1)
+            if not task_id or not operation_id or "/" in operation_id:
+                raise KeyError(path)
+            self.app.tasks.get(identity, task_id)
+            operation = self.app.operations.get(identity, operation_id)
+            if operation.task_id != task_id:
+                raise KeyError(path)
+            if operation.state == "succeeded":
+                self._json(HTTPStatus.OK, operation.result or {})
+                return
+            if operation.state in {"failed", "cancelled", "interrupted"}:
+                status = HTTPStatus.INTERNAL_SERVER_ERROR if operation.state == "failed" else HTTPStatus.CONFLICT
+                self._json(status, {
+                    **(operation.result or {}),
+                    "ok": False,
+                    "error": operation.state,
+                    "message": operation.message or "后台运行未完成。",
+                })
+                return
+            self._json(HTTPStatus.ACCEPTED, {"operation": operation.public(include_result=False)})
+            return
         if path.startswith("/api/tasks/") and "/operations/" in path:
             identity = self._identity()
             self.app.policy.require(identity.role, "task.read")
@@ -1299,7 +1324,8 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
             operation = self.app.operations.get(identity, operation_id)
             if operation.task_id != task_id:
                 raise KeyError(path)
-            self._json(HTTPStatus.OK, {"operation": operation.public(include_result=True)})
+            include_result = parse_qs(parsed.query).get("include_result", ["true"])[0].strip().casefold() not in {"0", "false", "no"}
+            self._json(HTTPStatus.OK, {"operation": operation.public(include_result=include_result)})
             return
         if path.startswith("/api/tasks/") and path.endswith("/reports"):
             identity = self._identity()
@@ -2527,6 +2553,8 @@ def _diagnostic_id(request_id: str, failure_code: str, stage: str) -> str:
 def _unavailable_public_message(error: UnavailableCapabilityError) -> str:
     """Map reviewed App failures to a user-actionable, non-sensitive message."""
 
+    if isinstance(error.message, str) and error.message:
+        return error.message
     if error.capability == "datafetcher.configuration":
         return "请先在设置中心填写并保存iFind数据凭据，然后重试。"
     if error.capability in {"market_data", "backtester.trading_calendar"}:

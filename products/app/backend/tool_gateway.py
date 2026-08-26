@@ -401,6 +401,11 @@ class ToolGateway:
                 # message is a fixed, reviewed next step and contains no
                 # capability path, exception trace or credential detail.
                 raise
+            except (AuthorizationError, ValidationError):
+                # These are already classified App/Capability boundary
+                # failures.  Rewrapping them as an engine outage loses the
+                # caller's actionable category and next step.
+                raise
             except ContractResolutionError as error:
                 # The shared input compiler only emits reviewed, user-facing
                 # field and contract messages.  Keeping these as a validation

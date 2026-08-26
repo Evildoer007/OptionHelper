@@ -1,18 +1,18 @@
-/* Native HTML port of the DSH general appearance section. */
-.setup-page .dsh-general-section {
+/* OptionHelper native general appearance controls. */
+.setup-page .optionhelper-general-section {
   display: flex;
   flex-direction: column;
   width: 100%;
 }
 
-.setup-page .dsh-general-title {
+.setup-page .optionhelper-general-title {
   color: var(--color-ink);
   font-size: 14px;
   font-weight: 400;
   line-height: 22px;
 }
 
-.setup-page .dsh-appearance-row {
+.setup-page .optionhelper-appearance-row {
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -20,7 +20,7 @@
   border-bottom: 0;
 }
 
-.setup-page .dsh-theme-cubes {
+.setup-page .optionhelper-theme-cubes {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
@@ -30,7 +30,7 @@
   background: transparent;
 }
 
-.setup-page .dsh-theme-cube {
+.setup-page .optionhelper-theme-cube {
   box-sizing: border-box;
   display: flex;
   min-width: 0;
@@ -50,24 +50,24 @@
   cursor: default;
 }
 
-.setup-page .dsh-theme-cube svg {
+.setup-page .optionhelper-theme-cube svg {
   width: 16px;
   height: 16px;
   margin: 0;
 }
 
-.setup-page .dsh-theme-cube:hover:not([aria-pressed="true"]) {
+.setup-page .optionhelper-theme-cube:hover:not([aria-pressed="true"]) {
   background: var(--color-blue-gray-soft);
 }
 
-.setup-page .dsh-theme-cube[aria-pressed="true"] {
+.setup-page .optionhelper-theme-cube[aria-pressed="true"] {
   border-color: var(--color-rule-strong);
   background: var(--color-surface);
 }
 
-.setup-page .dsh-theme-cube:focus-visible {
+.setup-page .optionhelper-theme-cube:focus-visible {
   outline: 2px solid var(--color-brand-red);
   outline-offset: 2px;
 }
 
-.setup-page .dsh-general-status { margin: var(--space-md) 0 0; }
+.setup-page .optionhelper-general-status { margin: var(--space-md) 0 0; }

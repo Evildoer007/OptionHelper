@@ -32,35 +32,11 @@
       .runtime-actions .button { width:100%; }
       .runtime-import { width:100%; min-height:96px; margin-top:8px; padding:8px; border:1px solid var(--rule); background:var(--color-surface); color:var(--ink); font:10px/1.5 var(--mono); resize:vertical; }
       .scenario-list li { cursor: default; }
-      .scenario-list li:hover { color:var(--red); }
-      .scenario-list li.selected { color:var(--red); font-weight:700; }
       .scenario-kind { display:block; margin-top:3px; color:var(--muted); font:10px var(--mono); }
       .canvas-viewport .canvas-stage > svg { display:block; width:100%; height:auto; }
       .source-detail .formula { display:block; margin-top:5px; white-space:normal; overflow-wrap:anywhere; }
-      .runtime-payoff-form .runtime-payoff-field textarea[readonly] { background:var(--wash); color:var(--color-muted); }
-      .runtime-payoff-result { margin:0; color:var(--muted); font-size:11px; line-height:1.55; overflow-wrap:anywhere; }
       .canvas-toolbar-primary { display:flex; min-width:0; align-items:center; gap:12px; }
-      .view-switch { display:flex; min-height:28px; align-items:center; gap:7px; margin:0; padding:3px 7px; border:1px solid var(--color-paper-border); border-radius:9px; background:var(--wash); color:var(--ink); cursor:default; }
-      .view-switch__label { color:var(--ink); font-size:11px; font-weight:650; line-height:1; white-space:nowrap; }
-      .view-switch input { position:absolute; width:1px; height:1px; overflow:hidden; opacity:0; pointer-events:none; }
-      .view-switch__track { position:relative; width:34px; height:20px; flex:0 0 34px; border:1px solid var(--rule); border-radius:999px; background:var(--color-surface); transition:border-color .16s ease, background-color .16s ease; }
-      .view-switch__track::after { position:absolute; top:3px; left:3px; width:12px; height:12px; border-radius:50%; background:var(--color-chart-gray); content:""; transition:transform .18s ease, background-color .16s ease; }
-      .view-switch input:checked + .view-switch__track { border-color:var(--red); background:var(--color-red-surface); }
-      .view-switch input:checked + .view-switch__track::after { background:var(--red); transform:translateX(14px); }
-      .view-switch input:focus-visible + .view-switch__track { outline:2px solid var(--color-red-border-soft); outline-offset:2px; }
       .scope-notice { min-width:0; color:var(--muted); font-size:11px; }
-      .default-summary { padding:12px 0 2px; }
-      .default-summary strong { display:block; color:var(--ink); font-size:12px; }
-      .default-summary p { margin:5px 0 0; color:var(--muted); font-size:11px; line-height:1.55; }
-      .advanced-maintenance { margin-top:8px; border-top:1px solid var(--rule); }
-      .advanced-maintenance summary { padding:13px 0; color:var(--color-ink-soft); font-size:11px; font-weight:700; cursor: default; }
-      .advanced-maintenance-panel { display:grid; gap:9px; padding:0 0 4px; }
-      .advanced-maintenance-panel label { display:grid; gap:5px; color:var(--muted); font-size:11px; font-weight:650; }
-      .advanced-maintenance-panel textarea { min-height:64px; padding:7px; border:1px solid var(--rule); border-radius:7px; resize:vertical; color:var(--ink); font:11px/1.45 var(--font); }
-      .maintenance-plan { margin:0; padding:9px 10px; border:1px solid var(--rule); border-radius:8px; background:var(--wash); color:var(--muted); font-size:11px; line-height:1.55; }
-      .maintenance-plan.ready { border-color:var(--color-rule-strong); background:var(--wash); color:var(--ink); }
-      .danger-confirm { border-color:var(--red); color:var(--red); }
-      .danger-confirm:disabled { border-color:var(--rule); color:var(--color-chart-gray); }
       [hidden] { display:none !important; }
     </style>
     <style>
@@ -73,7 +49,6 @@
       .readonly .contract-identity-grid .parameter-field input,
       .readonly .contract-identity-grid .parameter-field textarea,
       .readonly .runtime-import { border-color: var(--color-paper-border); border-radius: 7px; font-family: var(--font); }
-      .readonly .source-detail .formula { font-family: "Cambria Math", "STIX Two Math", "Times New Roman", serif; }
       .readonly .runtime-actions .button { border-radius: 8px; }
       .readonly .lock-card { border-top: 1px solid var(--color-rule); }
     </style>
@@ -84,10 +59,7 @@
         <div class="brand"><img class="brand-logo" src="../../icons/optionhelper-logo.svg" alt="OptionHelper"><span class="brand-separator" aria-hidden="true"></span><span class="module-title">收益结构</span></div>
         <div class="scope-notice" id="scopeNotice">开发预览：本地结果不能直接用于正式Card或Report</div>
         <div class="topbar-status" id="modeBadge">正在连接运行服务</div>
-        <div class="topbar-actions">
-          <button class="button button-primary" id="runtimePayoffButton" hidden>生成结果</button>
-          <button class="button button-quiet" id="recheckButton">重新读取资料库</button>
-        </div>
+        <div class="topbar-actions"><button class="button button-quiet" id="recheckButton">重新读取资料库</button></div>
       </header>
 
       <main class="workbench" id="workbench">
@@ -105,29 +77,24 @@
           <div class="canvas-toolbar">
             <div class="canvas-toolbar-primary">
               <div class="canvas-state"><span class="state-dot" id="stateDot"></span><span id="canvasState">等待运行</span></div>
-              <label class="view-switch" id="defaultModeControl" for="defaultModeButton" data-mode="runtime">
-                <input id="defaultModeButton" type="checkbox" role="switch" aria-label="切换默认示例编辑模式">
-                <span class="view-switch__track" aria-hidden="true"></span>
-                <span class="view-switch__label" id="modeSwitchLabel">本次运行</span>
-              </label>
             </div>
             <div class="canvas-toolbar-actions">
-              <div class="zoom-control" aria-label="画布缩放"><button class="zoom-button" id="zoomOutButton" title="缩小">−</button><label class="zoom-input-wrap"><input id="zoomInput" type="number" min="10" max="200" step="1" inputmode="numeric" aria-label="画布缩放百分比" value="100"><em>%</em></label><button class="zoom-button" id="zoomInButton" title="放大">+</button><button class="zoom-fit" id="zoomFitButton" title="适应画布">适应</button></div>
-              <button class="button button-primary" id="canvasRunButton">运行结果</button>
+              <div class="zoom-control" aria-label="画布缩放" aria-hidden="true" hidden><button class="zoom-button" id="zoomOutButton" title="缩小">−</button><label class="zoom-input-wrap"><input id="zoomInput" type="number" min="10" max="200" step="1" inputmode="numeric" aria-label="画布缩放百分比" value="100"><em>%</em></label><button class="zoom-button" id="zoomInButton" title="放大">+</button><button class="zoom-fit" id="zoomFitButton" title="适应画布">适应</button></div>
+              <button class="button button-quiet" id="canvasPreviewButton" disabled>预览</button>
+              <button class="button button-primary" id="canvasSaveButton" disabled>保存</button>
             </div>
           </div>
           <div class="notice-area" id="noticeArea" aria-live="polite" aria-atomic="true"></div>
           <div class="canvas-viewport" id="canvasViewport">
-            <div class="empty-canvas" id="emptyCanvas"><h2>尚未选择产品</h2><p>请从左侧选择一个产品。</p></div>
+            <div class="empty-canvas" id="emptyCanvas"><p>请从左侧选择一个产品。</p></div>
           </div>
         </section>
         <div class="panel-resizer panel-resizer-right" id="inspectorResizer" role="separator" aria-label="调整条款参数面板宽度" aria-orientation="vertical" tabindex="0"></div>
 
         <aside class="inspector-panel" id="inspectorPanel">
           <h2 id="inspectorTitle">参数设置</h2>
-          <section class="inspector-group module-parameter-section" id="runtimeIdentityGroup">
+          <section class="inspector-group module-parameter-section" id="runtimeIdentityGroup" hidden aria-hidden="true">
             <div class="group-title">合同参数</div>
-            <p class="drag-hint" id="identityRule">标的代码与参考价必须一一对应。</p>
             <div class="parameter-grid contract-identity-grid" id="identityFields">
               <label class="parameter-field full"><span>标的代码</span><input id="contractUnderlyings" autocomplete="off" spellcheck="false" autocorrect="off" autocapitalize="off" placeholder="例如000905.SH"><small>多个标的以英文逗号分隔</small></label>
               <label class="parameter-field"><span>合同标识</span><input id="contractId" autocomplete="off" placeholder="留空自动生成"></label>
@@ -136,8 +103,6 @@
             </div>
           </section>
           <section class="inspector-group module-parameter-section">
-            <div class="group-title" id="termsGroupTitle">结构条款</div>
-            <p class="drag-hint" id="runtimeRule">修改用于当前结果。</p>
             <div class="parameter-grid runtime-parameter-grid" id="parameterFields"></div>
             <div class="runtime-actions" hidden><button class="button button-quiet small" id="applyParametersButton" hidden>解析并更新收益图</button><button class="button button-quiet small" id="restoreDefaultsButton" hidden>恢复默认值</button></div>
           </section>
@@ -152,43 +117,10 @@
               <div class="group-title advanced-path-title">路径说明</div>
               <div class="source-detail" id="sourceDetail">选择产品后显示路径来源与条款字段。</div>
               <div class="source-detail" id="selectedPathDetail">选择路径后显示判断条件与损益表达。</div>
-              <section class="advanced-maintenance" id="advancedMaintenance" hidden>
-                <div class="group-title advanced-path-title">默认示例维护</div>
-                <div class="advanced-maintenance-panel">
-                  <p class="hint">仅发布已经写入OptionReg并完成人工确认的默认资产变更。本页临时参数不会成为资料库默认值。</p>
-                  <label>维护原因<textarea id="maintenanceReason" maxlength="500" placeholder="说明已确认的资料库变更及核对依据"></textarea></label>
-                  <button class="button button-quiet small" id="checkDefaultUpdateButton" type="button">检查默认资产差异</button>
-                  <p class="maintenance-plan" id="maintenancePlan" aria-live="polite">尚未检查。</p>
-                  <button class="button button-quiet small danger-confirm" id="openDefaultUpdateButton" type="button" disabled>进入二次确认</button>
-                </div>
-              </section>
             </div>
           </details>
         </aside>
       </main>
-
-      <dialog class="publish-review-dialog runtime-payoff-dialog" id="runtimePayoffDialog" aria-labelledby="runtimePayoffTitle">
-        <form class="publish-review-card runtime-payoff-form" id="runtimePayoffForm">
-          <div class="publish-review-head"><div><span class="panel-kicker">结果确认</span><h2 id="runtimePayoffTitle">生成结果</h2></div><button class="dialog-close" id="runtimePayoffClose" type="button" aria-label="关闭">×</button></div>
-          <p class="publish-review-copy">确认产品与关键条款后，结果写入隔离的本地预览Store。不能直接用于正式Card或Report。</p>
-          <label class="runtime-payoff-field"><span>产品</span><input id="runtimePayoffProduct" readonly></label>
-          <p class="runtime-payoff-fields" id="runtimePayoffFields">先选择产品。</p>
-          <p class="runtime-payoff-message" id="runtimePayoffMessage" aria-live="polite"></p>
-          <div class="publish-review-actions"><button class="button button-quiet" id="runtimePayoffCancel" type="button">取消</button><button class="button button-primary" id="runtimePayoffSubmit" type="submit">生成结果</button></div>
-        </form>
-      </dialog>
-
-      <dialog class="publish-review-dialog runtime-payoff-dialog" id="defaultUpdateDialog" aria-labelledby="defaultUpdateTitle">
-        <form class="publish-review-card runtime-payoff-form" id="defaultUpdateForm">
-          <div class="publish-review-head"><div><span class="panel-kicker">管理员高级操作</span><h2 id="defaultUpdateTitle">确认更新默认示例</h2></div><button class="dialog-close" id="defaultUpdateClose" type="button" aria-label="关闭">×</button></div>
-          <p class="publish-review-copy">该操作会替换所选产品的默认JSON/SVG，并将旧资产归档。当前任务结果不受影响。</p>
-          <label class="runtime-payoff-field"><span>审批号</span><input id="defaultApprovalId" autocomplete="off" required></label>
-          <label class="runtime-payoff-field"><span id="defaultConfirmationLabel">二次确认文字</span><input id="defaultConfirmation" autocomplete="off" required></label>
-          <p class="runtime-payoff-fields" id="defaultUpdateSummary">必须与差异检查结果一致。</p>
-          <p class="runtime-payoff-message" id="defaultUpdateMessage" aria-live="polite"></p>
-          <div class="publish-review-actions"><button class="button button-quiet" id="defaultUpdateCancel" type="button">取消</button><button class="button button-primary" id="defaultUpdateSubmit" type="submit">确认并归档发布</button></div>
-        </form>
-      </dialog>
     </div>
 
     <script src="../module-host-presentation.js"></script>
@@ -198,8 +130,7 @@
       const $ = id => document.getElementById(id);
       const state = {
         products: [], product: null, taskContract: null, preview: null, previewPayload: null, previewSignature: null,
-        defaultExample: null, viewMode: 'runtime', maintenanceEnabled: false, maintenancePlan: null,
-        selectedPathIndex: 0, zoom: 1, zoomMode: 'fit', previewRequestId: 0, inputsDirty: false
+        selectedPathIndex: 0, zoom: 1, zoomMode: 'fit', previewRequestId: 0, inputsDirty: false, saving: false
       };
       let canvasPan = null;
       const hostedInDesk = new URLSearchParams(location.search).get('host') === 'optdesk' && window.parent !== window;
@@ -248,43 +179,14 @@
         $('stateDot').className = 'state-dot ' + dot;
       }
 
-      function updateModeChrome() {
-        const editingDefault = state.viewMode === 'default';
+      function updateRuntimeChrome() {
         const editable = state.product?.runtime_status === 'enabled';
-        $('defaultModeButton').checked = editingDefault;
-        $('defaultModeButton').setAttribute('aria-checked', String(editingDefault));
-        $('defaultModeControl').dataset.mode = editingDefault ? 'default' : 'runtime';
-        $('modeSwitchLabel').textContent = editingDefault ? '修改默认示例' : '本次运行';
         $('appShell').classList.toggle('editing', editable);
         $('appShell').classList.toggle('readonly', !editable);
-        $('appShell').classList.toggle('editing-default', editingDefault);
-        $('runtimeIdentityGroup').hidden = false;
+        // 合同身份仍由任务绑定或默认合同自动维护，但不作为收益图可视化参数展示。
+        $('runtimeIdentityGroup').hidden = true;
         $('runtimeImportGroup').hidden = false;
-        $('runtimePayoffButton').hidden = true;
-        $('canvasRunButton').hidden = false;
-        $('canvasRunButton').textContent = '运行结果';
-        $('advancedMaintenance').hidden = !editingDefault || !state.maintenanceEnabled;
         renderParameters();
-      }
-
-      async function switchViewMode(mode) {
-        if (!['default', 'runtime'].includes(mode) || state.viewMode === mode) return;
-        state.viewMode = mode;
-        state.maintenancePlan = null;
-        $('maintenancePlan').textContent = '尚未检查。';
-        $('maintenancePlan').className = 'maintenance-plan';
-        $('openDefaultUpdateButton').disabled = true;
-        state.inputsDirty = false;
-        updateModeChrome();
-        if (!state.product) return;
-        state.preview = null;
-        state.previewPayload = null;
-        state.previewSignature = null;
-        state.defaultExample = null;
-        if (mode === 'runtime') hydrateActiveTaskContract();
-        renderLibrary();
-        renderSelectedPath();
-        showPreviewPlaceholder('等待运行', '点击“运行结果”后显示完整图形。');
       }
 
       function defaultValue(field) {
@@ -337,7 +239,7 @@
 
       function renderIdentity({ preserve = false } = {}) {
         if (!state.product) {
-          ['runtimePayoffButton', 'canvasRunButton', 'applyParametersButton', 'restoreDefaultsButton'].forEach(id => { $(id).disabled = true; });
+          ['canvasPreviewButton', 'canvasSaveButton', 'applyParametersButton', 'restoreDefaultsButton'].forEach(id => { $(id).disabled = true; });
           $('bindingCard').innerHTML = '<span>尚未选择产品</span>';
           $('scenarioCount').textContent = '--';
           $('scenarioList').innerHTML = '<li class="preview">选择产品后显示</li>';
@@ -345,7 +247,8 @@
           $('sourceDetail').textContent = '选择产品后显示路径来源与条款字段。';
           return;
         }
-        $('canvasRunButton').disabled = false;
+        $('canvasPreviewButton').disabled = false;
+        $('canvasSaveButton').disabled = false;
         const before = preserve ? {
           contract_id: $('contractId').value,
           underlyings: $('contractUnderlyings').value,
@@ -368,12 +271,6 @@
         $('parameterFields').innerHTML = state.product.payoff_fields.map(termField).join('') || '<p class="parameter-empty">该产品尚未登记可覆盖条款。</p>';
         termInputs().forEach(item => { if (Object.hasOwn(before, item.dataset.key)) item.value = before[item.dataset.key]; });
         const enabled = state.product.runtime_status === 'enabled';
-        const message = !enabled
-          ? '该产品当前仅支持查看已登记的默认示例。'
-          : state.viewMode === 'default'
-            ? '修改用于默认示例，发布前需要差异检查和二次确认。'
-            : '修改用于当前结果。';
-        $('runtimeRule').textContent = message;
         [...document.querySelectorAll('#identityFields input, #identityFields textarea')].forEach(input => { input.disabled = !enabled; });
         termInputs().forEach(input => {
           input.disabled = !enabled;
@@ -381,8 +278,8 @@
         });
         $('applyParametersButton').disabled = !enabled;
         $('restoreDefaultsButton').disabled = !enabled;
-        $('runtimePayoffButton').disabled = !enabled;
-        $('canvasRunButton').disabled = !enabled;
+        $('canvasPreviewButton').disabled = !enabled;
+        $('canvasSaveButton').disabled = !enabled;
       }
 
       function parseTermValue(item) {
@@ -428,7 +325,7 @@
       }
 
       function hydrateActiveTaskContract() {
-        if (!isActiveTaskContract() || state.viewMode !== 'runtime') return;
+        if (!isActiveTaskContract()) return;
         const identity = state.taskContract.identity || {};
         if (Array.isArray(identity.underlyings)) $('contractUnderlyings').value = identity.underlyings.join(',');
         $('contractId').value = identity.contract_id || '';
@@ -583,12 +480,6 @@
       }
 
       function renderSelectedPath() {
-        if (state.viewMode === 'default') {
-          $('inspectorTitle').textContent = '参数设置';
-          $('sourceDetail').textContent = state.product ? '当前参数用于默认示例候选稿。' : '选择产品后显示合同参数。';
-          $('selectedPathDetail').textContent = '修改后先预览，确认发布后才会更新资料库。';
-          return;
-        }
         const path = state.preview?.paths?.[state.selectedPathIndex];
         if (!path) {
           $('inspectorTitle').textContent = '参数设置';
@@ -762,11 +653,9 @@
         const empty = document.createElement('div');
         empty.className = 'empty-canvas';
         empty.id = 'emptyCanvas';
-        const heading = document.createElement('h2');
-        heading.textContent = title;
         const copy = document.createElement('p');
         copy.textContent = message;
-        empty.append(heading, copy);
+        empty.append(copy);
         $('canvasViewport').replaceChildren(empty);
         $('noticeArea').replaceChildren();
         setCanvasState(title === '等待运行' ? '等待运行' : title);
@@ -797,101 +686,6 @@
           : '已载入既有正式默认图。该产品尚未完整录入，不能生成参数图。');
       }
 
-      function renderSvg(svg) {
-        const stage = createCanvasStage(svg);
-        $('canvasViewport').replaceChildren(stage);
-        requestAnimationFrame(() => {
-          if (state.zoomMode === 'fit') fitZoom();
-          else setZoom(state.zoom);
-          updateCanvasPanState();
-        });
-      }
-
-      async function showDefaultExample() {
-        if (!state.product) return;
-        setCanvasState('正在读取默认示例', 'busy');
-        const productId = state.product.product_id;
-        try {
-          const data = await request('/api/default', { product_id: productId });
-          if (state.product?.product_id !== productId || state.viewMode !== 'default') return;
-          state.defaultExample = data;
-          state.preview = null;
-          state.inputsDirty = false;
-          renderSvg(data.svg);
-          renderLibrary();
-          renderSelectedPath();
-          setCanvasState('默认示例已载入', 'ready');
-          showNotice('已载入资料库默认示例。');
-        } catch (error) {
-          setCanvasState('默认示例读取失败');
-          showNotice(error.message, 'error');
-          throw error;
-        }
-      }
-
-      async function checkDefaultUpdate() {
-        if (!state.product || state.viewMode !== 'default') return;
-        const reason = $('maintenanceReason').value.trim();
-        $('maintenancePlan').textContent = '正在核对OptionReg与默认资产…';
-        $('maintenancePlan').className = 'maintenance-plan';
-        $('openDefaultUpdateButton').disabled = true;
-        try {
-          const plan = await request('/api/default-maintenance/plan', {
-            product_id: state.product.product_id,
-            reason
-          });
-          state.maintenancePlan = plan;
-          if (!plan.has_changes) {
-            $('maintenancePlan').textContent = '当前默认JSON/SVG已与OptionReg一致，无需更新。';
-            return;
-          }
-          const changed = plan.changes.flatMap(item => item.changed_fields).join('、');
-          $('maintenancePlan').textContent = '发现可发布差异：' + changed + '。请复核原因后进入二次确认。';
-          $('maintenancePlan').className = 'maintenance-plan ready';
-          $('openDefaultUpdateButton').disabled = false;
-        } catch (error) {
-          state.maintenancePlan = null;
-          $('maintenancePlan').textContent = error.message;
-          showNotice(error.message, 'error');
-        }
-      }
-
-      function openDefaultUpdateDialog() {
-        if (!state.maintenancePlan?.has_changes || !state.product) return;
-        $('defaultApprovalId').value = identifier('payoffer_default');
-        $('defaultConfirmation').value = '';
-        $('defaultConfirmationLabel').textContent = '请输入：' + state.maintenancePlan.confirmation_text;
-        $('defaultUpdateSummary').textContent = '产品：' + state.product.product_id + ' ' + state.product.canonical_name + '。发布后旧JSON/SVG进入维护历史。';
-        $('defaultUpdateMessage').textContent = '';
-        $('defaultUpdateDialog').showModal();
-      }
-
-      async function publishDefaultUpdate(event) {
-        event.preventDefault();
-        if (!state.product || !state.maintenancePlan?.has_changes) return;
-        $('defaultUpdateSubmit').disabled = true;
-        $('defaultUpdateMessage').textContent = '正在归档并发布默认示例…';
-        try {
-          const result = await request('/api/default-maintenance/publish', {
-            product_id: state.product.product_id,
-            reason: $('maintenanceReason').value.trim(),
-            approval_id: $('defaultApprovalId').value.trim(),
-            confirmation: $('defaultConfirmation').value.trim()
-          });
-          $('defaultUpdateDialog').close();
-          state.maintenancePlan = null;
-          $('maintenancePlan').textContent = '已按审批号' + result.approval_id + '发布并归档。正式签发前仍须通过Golden回归。';
-          $('maintenancePlan').className = 'maintenance-plan';
-          $('openDefaultUpdateButton').disabled = true;
-          await showDefaultExample();
-        } catch (error) {
-          $('defaultUpdateMessage').textContent = error.message;
-          $('defaultUpdateMessage').className = 'runtime-payoff-message error';
-        } finally {
-          $('defaultUpdateSubmit').disabled = false;
-        }
-      }
-
       async function request(path, body) {
         const response = await fetch(apiUrl(path), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
         let data;
@@ -906,15 +700,11 @@
           // Desk uses Module Host Bridge for catalog, preview and run.  The
           // standalone /api/status endpoint is intentionally not part of the
           // formal Tool contract, so never request it from the App origin.
-          state.maintenanceEnabled = false;
-          $('advancedMaintenance').hidden = true;
           return { ok: true, module: 'payoffer', host: 'optdesk' };
         }
         const response = await fetch(apiUrl('/api/status'));
         const data = await response.json();
         if (!response.ok || !data.ok) throw new Error(data.message || '无法读取服务状态');
-        state.maintenanceEnabled = data.default_maintenance_enabled === true;
-        $('advancedMaintenance').hidden = state.viewMode !== 'default' || !state.maintenanceEnabled;
         return data;
       }
 
@@ -938,52 +728,42 @@
         }
       }
 
-      async function openRuntimeDialog() {
+      async function saveRuntime() {
+        if (state.saving) return;
         if (!state.product) return showNotice('请先选择产品。', 'error');
-        if (state.viewMode !== 'runtime') return showNotice('关闭“编辑默认示例”后再生成当前结果。', 'error');
-        if (state.product.runtime_status !== 'enabled') return showNotice('当前产品只支持正式资料图预览，不能生成参数图。', 'error');
+        if (state.product.runtime_status !== 'enabled') return showNotice('当前产品尚未接入参数化收益图。', 'error');
+        state.saving = true;
+        $('canvasPreviewButton').disabled = true;
+        $('canvasSaveButton').disabled = true;
+        setCanvasState('正在保存', 'busy');
         try {
-          if (!state.preview || state.previewSignature !== currentSignature()) await preview();
+          const current = currentSignature();
+          if (!state.preview || state.previewSignature !== current) await preview();
           const displayContract = state.preview?.display_contract;
-          if (!displayContract || displayContract.projection_status !== 'display_only') throw new Error('当前运行尚未形成可展示的合同投影，请检查合同身份和条款覆盖。');
-          $('runtimePayoffProduct').value = state.product.product_id + ' ' + state.product.canonical_name;
-          const overridden = Object.keys(state.previewPayload?.term_overrides || {});
-          const underlyings = Array.isArray(displayContract?.identity?.underlyings) ? displayContract.identity.underlyings.join('、') : '未填写';
-          const terms = overridden.length ? overridden.slice(0, 4).join('、') : '默认条款';
-          $('runtimePayoffFields').textContent = '标的：' + underlyings + '。关键条款：' + terms + '。';
-          $('runtimePayoffMessage').textContent = '';
-          $('runtimePayoffMessage').className = 'runtime-payoff-message';
-          if (!$('runtimePayoffDialog').open) $('runtimePayoffDialog').showModal();
-        } catch (error) {
-          showNotice('当前条款尚不能生成收益图，请检查产品与关键条款后重试。', 'error');
-        }
-      }
-
-      async function runRuntime(event) {
-        event.preventDefault();
-        if (!state.product || !state.previewPayload) return;
-        const taskId = identifier('payoff');
-        const runId = identifier('run');
-        $('runtimePayoffSubmit').disabled = true;
-        $('runtimePayoffMessage').className = 'runtime-payoff-message';
-        $('runtimePayoffMessage').textContent = '正在生成结果…';
-        try {
-          const newContractVariant = requiresContractVariant(state.preview?.display_contract);
-          const result = await request('/api/run', {
+          if (!displayContract || displayContract.projection_status !== 'display_only') {
+            throw new Error('当前参数尚未形成可保存的合同投影，请检查后重试。');
+          }
+          const taskId = identifier('payoff');
+          const runId = identifier('run');
+          const newContractVariant = requiresContractVariant(displayContract);
+          await request('/api/run', {
             ...state.previewPayload,
             new_contract_variant: newContractVariant,
             task_id: taskId,
             run_id: runId
           });
           if (newContractVariant && hostedInDesk) await refreshActiveTaskContract();
-          $('runtimePayoffDialog').close();
           showNotice(runtimeSuccessNotice());
-          setCanvasState('结果已生成', 'ready');
+          setCanvasState('结果已保存', 'ready');
         } catch (error) {
-          $('runtimePayoffMessage').textContent = error.message;
-          $('runtimePayoffMessage').className = 'runtime-payoff-message error';
+          setCanvasState('保存失败');
+          showNotice(error.message, 'error');
+          throw error;
         } finally {
-          $('runtimePayoffSubmit').disabled = false;
+          state.saving = false;
+          const enabled = state.product?.runtime_status === 'enabled';
+          $('canvasPreviewButton').disabled = !enabled;
+          $('canvasSaveButton').disabled = !enabled;
         }
       }
 
@@ -1041,23 +821,21 @@
         state.preview = null;
         state.previewPayload = null;
         state.previewSignature = null;
-        state.defaultExample = null;
-        state.maintenancePlan = null;
         state.selectedPathIndex = 0;
         state.inputsDirty = false;
         if (!state.product) {
-          updateModeChrome();
+          updateRuntimeChrome();
           showPreviewPlaceholder('尚未选择产品', '请从左侧选择一个产品。');
           return;
         }
         state.zoomMode = 'fit';
         renderIdentity();
         renderParameters();
-        if (state.viewMode === 'runtime') hydrateActiveTaskContract();
-        updateModeChrome();
+        hydrateActiveTaskContract();
+        updateRuntimeChrome();
         renderLibrary();
         renderSelectedPath();
-        showPreviewPlaceholder('等待运行', '点击“运行结果”后显示完整图形。');
+        showPreviewPlaceholder('等待预览', '点击“预览”更新收益图，点击“保存”写入本次结果。');
       }
 
       async function loadCatalog() {
@@ -1074,28 +852,13 @@
         await selectProduct();
       }
 
-      const previewForMode = () => (
-        state.viewMode === 'default' && !state.inputsDirty ? showDefaultExample() : preview()
-      ).catch(() => {});
-      const handlePrimaryAction = () => (
-        state.viewMode === 'default' ? previewForMode() : openRuntimeDialog()
-      );
       $('productSelect').addEventListener('change', () => selectProduct().catch(error => showNotice(error.message, 'error')));
-      $('defaultModeButton').addEventListener('change', event => switchViewMode(event.target.checked ? 'default' : 'runtime').catch(error => showNotice(error.message, 'error')));
       $('applyParametersButton').addEventListener('click', () => preview().catch(() => {}));
       $('restoreDefaultsButton').addEventListener('click', restoreDefaults);
-      $('runtimePayoffButton').addEventListener('click', () => openRuntimeDialog());
-      $('canvasRunButton').addEventListener('click', () => handlePrimaryAction().catch(error => showNotice(error.message, 'error')));
+      $('canvasPreviewButton').addEventListener('click', () => preview().catch(() => {}));
+      $('canvasSaveButton').addEventListener('click', () => saveRuntime().catch(() => {}));
       $('recheckButton').addEventListener('click', () => loadCatalog().then(() => showNotice('产品目录已重新读取。')).catch(error => showNotice(error.message, 'error')));
       $('importParametersButton').addEventListener('click', importParameters);
-      $('runtimePayoffClose').addEventListener('click', () => $('runtimePayoffDialog').close());
-      $('runtimePayoffCancel').addEventListener('click', () => $('runtimePayoffDialog').close());
-      $('runtimePayoffForm').addEventListener('submit', runRuntime);
-      $('checkDefaultUpdateButton').addEventListener('click', () => checkDefaultUpdate());
-      $('openDefaultUpdateButton').addEventListener('click', openDefaultUpdateDialog);
-      $('defaultUpdateClose').addEventListener('click', () => $('defaultUpdateDialog').close());
-      $('defaultUpdateCancel').addEventListener('click', () => $('defaultUpdateDialog').close());
-      $('defaultUpdateForm').addEventListener('submit', publishDefaultUpdate);
       $('zoomOutButton').addEventListener('click', () => setZoom(state.zoom - .05));
       $('zoomInButton').addEventListener('click', () => setZoom(state.zoom + .05));
       $('zoomInput').addEventListener('input', event => setZoom(Number(event.target.value) / 100));
@@ -1117,7 +880,7 @@
       new ResizeObserver(() => { if (state.zoomMode === 'fit' && $('canvasViewport').querySelector('.canvas-stage')) fitZoom(); }).observe($('canvasViewport'));
 
       if (location.protocol === 'file:') setServiceStatus('正在连接本机服务');
-      updateModeChrome();
+      updateRuntimeChrome();
       loadCatalog()
         .then(() => {
           setServiceStatus(hostedInDesk ? 'Desk运行服务已连接' : '本机服务已连接');

@@ -7,6 +7,7 @@ from .settings_models import (
     MULTI_AGENT_DEFAULT_REVIEW_POLICY_ID,
     MULTI_AGENT_ENABLED_RECOMMENDATION_PRESET_IDS,
     MULTI_AGENT_ENABLED_REVIEW_POLICY_IDS,
+    MULTI_AGENT_LEGACY_ROLE_ALIASES,
     MULTI_AGENT_RECOMMENDATION_PRESET_ROLES,
     MULTI_AGENT_REVIEW_POLICY_ROLES,
     SettingsSnapshot,
@@ -40,8 +41,10 @@ class SettingsService:
         )
         preset_role_models = {
             configured_preset_id: {
-                role: selection for role, selection in role_models.items()
-                if role in MULTI_AGENT_RECOMMENDATION_PRESET_ROLES.get(configured_preset_id, frozenset())
+                MULTI_AGENT_LEGACY_ROLE_ALIASES.get(role, role): selection
+                for role, selection in role_models.items()
+                if MULTI_AGENT_LEGACY_ROLE_ALIASES.get(role, role)
+                in MULTI_AGENT_RECOMMENDATION_PRESET_ROLES.get(configured_preset_id, frozenset())
             }
             for configured_preset_id, role_models in settings.multi_agent_preset_role_models.items()
             if configured_preset_id in MULTI_AGENT_ENABLED_RECOMMENDATION_PRESET_IDS
@@ -50,8 +53,10 @@ class SettingsService:
             legacy_roles = settings.multi_agent_preset_role_models.get("adversarial-review", {})
             if legacy_roles and "sequential-deliberation" not in preset_role_models:
                 preset_role_models["sequential-deliberation"] = {
-                    role: selection for role, selection in legacy_roles.items()
-                    if role in MULTI_AGENT_RECOMMENDATION_PRESET_ROLES["sequential-deliberation"]
+                    MULTI_AGENT_LEGACY_ROLE_ALIASES.get(role, role): selection
+                    for role, selection in legacy_roles.items()
+                    if MULTI_AGENT_LEGACY_ROLE_ALIASES.get(role, role)
+                    in MULTI_AGENT_RECOMMENDATION_PRESET_ROLES["sequential-deliberation"]
                 }
         return replace(
             settings,

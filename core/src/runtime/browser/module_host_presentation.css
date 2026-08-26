@@ -58,6 +58,9 @@ html[data-optionhelper-app-hosted="true"] {
   color: var(--ink);
   background: var(--paper);
   font-family: var(--font);
+  font-synthesis: none;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 /* Desk iframe scrollbars use the exact App-shell contract on every scroll
@@ -421,6 +424,7 @@ html[data-optionhelper-app-hosted="true"] :is(
 html[data-optionhelper-app-hosted="true"] :is(
   .field-label,
   .control-field,
+  .source-panel > label,
   .term-fields .field > span:first-child,
   .setting-group > label,
   .setting-group > legend,
@@ -487,6 +491,94 @@ html[data-optionhelper-app-hosted="true"] .scenario-condition .formula {
   font: inherit !important;
 }
 
+/* Payoffer, Pricer and Backtester share one product/path rail in OptDesk.
+ * Keep module-owned markup and behavior intact while preventing local
+ * surface, border and state rules from changing the shared reading rhythm. */
+html[data-optionhelper-app-hosted="true"]:is(
+  [data-optionhelper-module="payoffer"],
+  [data-optionhelper-module="pricer"],
+  [data-optionhelper-module="backtester"]
+) .library-panel :is(.product-select, .binding-card, .scenario-list) {
+  font-family: var(--font) !important;
+}
+
+html[data-optionhelper-app-hosted="true"]:is(
+  [data-optionhelper-module="payoffer"],
+  [data-optionhelper-module="pricer"],
+  [data-optionhelper-module="backtester"]
+) .library-panel .product-select {
+  border: 1px solid var(--rule) !important;
+  border-radius: 8px !important;
+  background: var(--surface) !important;
+  color: var(--ink) !important;
+  font: var(--oh-type-control) !important;
+}
+
+html[data-optionhelper-app-hosted="true"]:is(
+  [data-optionhelper-module="payoffer"],
+  [data-optionhelper-module="pricer"],
+  [data-optionhelper-module="backtester"]
+) .library-panel .binding-card {
+  border: 1px solid var(--rule) !important;
+  border-radius: 10px !important;
+  background: var(--paper) !important;
+  color: var(--muted) !important;
+  font: 400 12px/1.6 var(--font) !important;
+}
+
+html[data-optionhelper-app-hosted="true"]:is(
+  [data-optionhelper-module="payoffer"],
+  [data-optionhelper-module="pricer"],
+  [data-optionhelper-module="backtester"]
+) .library-panel .binding-card > strong {
+  color: var(--ink) !important;
+  font: 650 13px/1.45 var(--font) !important;
+}
+
+html[data-optionhelper-app-hosted="true"]:is(
+  [data-optionhelper-module="payoffer"],
+  [data-optionhelper-module="pricer"],
+  [data-optionhelper-module="backtester"]
+) .library-panel .binding-card > span {
+  color: var(--muted) !important;
+  font: 400 12px/1.6 var(--font) !important;
+}
+
+html[data-optionhelper-app-hosted="true"]:is(
+  [data-optionhelper-module="payoffer"],
+  [data-optionhelper-module="pricer"],
+  [data-optionhelper-module="backtester"]
+) .library-panel .scenario-list li {
+  border-bottom: 1px solid var(--rule-soft) !important;
+  color: var(--color-ink-soft) !important;
+  font: 400 12px/1.45 var(--font) !important;
+}
+
+html[data-optionhelper-app-hosted="true"]:is(
+  [data-optionhelper-module="payoffer"],
+  [data-optionhelper-module="pricer"],
+  [data-optionhelper-module="backtester"]
+) .library-panel .scenario-list li::before {
+  color: var(--color-chart-gray) !important;
+  font: var(--oh-type-metadata) !important;
+}
+
+html[data-optionhelper-app-hosted="true"]:is(
+  [data-optionhelper-module="payoffer"],
+  [data-optionhelper-module="pricer"],
+  [data-optionhelper-module="backtester"]
+) .library-panel .scenario-list li:is(:hover, .selected) {
+  color: var(--red-deep) !important;
+}
+
+html[data-optionhelper-app-hosted="true"]:is(
+  [data-optionhelper-module="payoffer"],
+  [data-optionhelper-module="pricer"],
+  [data-optionhelper-module="backtester"]
+) .library-panel .scenario-list li.selected {
+  font-weight: 650 !important;
+}
+
 /* Five-module information hierarchy: one heading, one rule and one field
  * rhythm per semantic parameter group.  Module-owned IDs and form controls
  * remain untouched; only their hosted presentation is normalized here. */
@@ -521,7 +613,11 @@ html[data-optionhelper-app-hosted="true"] .parameter-subtitle {
   border-top: 1px solid var(--rule);
 }
 
-html[data-optionhelper-app-hosted="true"] :is(.module-advanced, .library-advanced) {
+html[data-optionhelper-app-hosted="true"] .module-advanced {
+  display: none !important;
+}
+
+html[data-optionhelper-app-hosted="true"] .library-advanced {
   margin: 0 !important;
   padding: 14px 0 !important;
   border: 0 !important;
@@ -529,14 +625,14 @@ html[data-optionhelper-app-hosted="true"] :is(.module-advanced, .library-advance
   background: transparent !important;
 }
 
-html[data-optionhelper-app-hosted="true"] :is(.module-advanced, .library-advanced) > summary {
+html[data-optionhelper-app-hosted="true"] .library-advanced > summary {
   color: var(--color-ink-soft, var(--ink));
   cursor: pointer;
   font: var(--oh-type-label);
   list-style-position: outside;
 }
 
-html[data-optionhelper-app-hosted="true"] :is(.module-advanced, .library-advanced)[open] > summary {
+html[data-optionhelper-app-hosted="true"] .library-advanced[open] > summary {
   margin-bottom: 12px;
 }
 

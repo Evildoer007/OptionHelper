@@ -16,11 +16,13 @@ class UnavailableCapabilityError(RuntimeError):
         *,
         failure_code: str = "capability_unavailable",
         stage: str = "capability",
+        message: str | None = None,
     ) -> None:
         self.capability = capability
         self.next_step = next_step
         self.failure_code = failure_code
         self.stage = stage
+        self.message = message
         super().__init__(f"{capability} is unavailable: {next_step}")
 
 

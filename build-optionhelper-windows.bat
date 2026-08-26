@@ -147,8 +147,23 @@ if not errorlevel 1 (
 )
 del /q "%CHECK_OUTPUT%" >nul 2>&1
 
+where npm >nul 2>&1
+if errorlevel 1 (
+  echo Node.js/npm is required to build the native Agent Runtime.
+  set "STATUS=1"
+  goto :done
+)
+echo Restoring locked Agent Runtime build tools...
+call npm ci --prefix "%ROOT%packaging\app\agent_runtime" --ignore-scripts
+if errorlevel 1 (
+  echo Failed to restore locked Agent Runtime build tools.
+  set "STATUS=1"
+  goto :done
+)
+
 echo [2/3] Runtime is ready; preparing the Windows candidate.
 echo [3/3] Building Skill and Windows candidate. Detailed stage progress follows.
+set "OPTIONHELPER_REQUIRE_NATIVE_RUNTIME=1"
 "%PYTHON_BIN%" "%ROOT%packaging\build_current.py" --version "%VERSION%" --platform windows
 set "STATUS=%ERRORLEVEL%"
 :done

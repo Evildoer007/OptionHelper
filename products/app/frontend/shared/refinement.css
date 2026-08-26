@@ -2532,6 +2532,38 @@ body > .task-menu .task-menu__action--danger:focus-visible { background: var(--r
   }
 }
 
+/* Keep the recent-task heading close to the new-task action, while reserving
+   a separate right-side column for each date before the overflow control. */
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .task-rail {
+  margin-top: 8px;
+  padding-top: 4px;
+}
+
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .task-list__row .task-item {
+  grid-template-columns: minmax(0, 1fr) max-content;
+  column-gap: 10px;
+  padding-right: 31px;
+}
+
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .task-list__row .task-item small {
+  justify-self: end;
+  white-space: nowrap;
+}
+
+/* Chat and Desk share the same workbench header. The legacy Desk-only grid
+   used a taller first row and wider padding, which made the task title jump
+   when data-mode changed. */
+@media (min-width: 701px) {
+  .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="desk"] .work-area {
+    grid-template-rows: 54px minmax(0, 1fr) var(--assistant-height);
+  }
+
+  .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="desk"] .workbench-head {
+    min-height: 54px;
+    padding: 0 24px;
+  }
+}
+
 /* The macOS WKWebView extends beneath the transparent native title bar. Keep
    the existing controls and routes intact while letting each App surface paint
    its own title-bar material. */

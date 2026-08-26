@@ -397,8 +397,17 @@
     NSString *preference = value[@"preference"];
     if (![@[@"light", @"dark", @"auto"] containsObject:preference] || ![@[@"light", @"dark"] containsObject:theme]) return;
     self.themePreference = preference;
-    self.window.appearance = [NSAppearance appearanceNamed:[theme isEqualToString:@"dark"] ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
-    [self applyDockIcon:theme];
+    if ([preference isEqualToString:@"auto"]) {
+        self.window.appearance = nil;
+        NSAppearanceName appearance = [NSApp.effectiveAppearance bestMatchFromAppearancesWithNames:@[NSAppearanceNameDarkAqua, NSAppearanceNameAqua]];
+        [self applyDockIcon:[appearance isEqualToString:NSAppearanceNameDarkAqua] ? @"dark" : @"light"];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self.webView evaluateJavaScript:@"window.OptionHelperTheme?.refreshSystemTheme?.();" completionHandler:nil];
+        });
+    } else {
+        self.window.appearance = [NSAppearance appearanceNamed:[theme isEqualToString:@"dark"] ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
+        [self applyDockIcon:theme];
+    }
 }
 
 - (void)observeValueForKeyPath:(NSString *)keyPath

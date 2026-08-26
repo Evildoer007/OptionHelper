@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """OptionHelper结构化Tool及项目级Skill Host入口。
 
-``call_tool``保持App授权边界；``--project-request``供无对话模型的批处理
-模式使用。已有对话模型的Host通过``--project-json``提交已验证选择，再由
-local-development Host完成正式计算、Reporter和Designer闭环。
+``call_tool``保持App授权边界；``--project-request``仅供无对话模型的批处理
+模式使用。已有对话模型的Host直接调用``run_project_request``提交已验证选择，
+再由local-development Host完成正式计算、Reporter和Designer闭环。
 """
 
 from __future__ import annotations
@@ -2089,7 +2089,6 @@ def main() -> None:
     group.add_argument("--recommend-json", help="执行单行JSON结构推荐请求")
     group.add_argument("--module-json", help="执行单行JSON单模块计算请求")
     group.add_argument("--project-request", help="批处理模式：调用独立模型完成推荐、计算和HTML正式交付")
-    group.add_argument("--project-json", help="对话Agent模式：提交已选择产品并执行正式报告链路")
     args = parser.parse_args()
     if args.list:
         print(json.dumps(tool_catalog(), ensure_ascii=False, indent=2))
@@ -2114,15 +2113,7 @@ def main() -> None:
                     raise ProjectRequestError("request", "单模块请求格式无效。")
                 output = run_module_request(value, progress=emit)
             else:
-                request: str | Mapping[str, Any]
-                if args.project_json is not None:
-                    value = json.loads(args.project_json)
-                    if not isinstance(value, Mapping):
-                        raise ProjectRequestError("request", "研究交付请求格式无效。")
-                    request = value
-                else:
-                    request = str(args.project_request)
-                result = run_project_request(request, progress=emit)
+                result = run_project_request(str(args.project_request), progress=emit)
                 output = public_project_result(result)
         print(json.dumps(output, ensure_ascii=False, indent=2))
     except (ProjectRequestError, LocalHostError, ToolDispatchError, json.JSONDecodeError) as error:

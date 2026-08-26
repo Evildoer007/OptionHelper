@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 from hashlib import sha256
 import json
+import os
 from pathlib import Path
 import shutil
 import sys
@@ -15,7 +16,7 @@ import zipfile
 
 
 ROOT = Path(__file__).resolve().parents[1]
-for path in (ROOT / "packaging", ROOT / "packaging" / "skill", ROOT / "packaging" / "app", ROOT / "packaging" / "app" / "macos", ROOT / "packaging" / "app" / "windows"):
+for path in (ROOT / "packaging", ROOT / "packaging" / "skill", ROOT / "packaging" / "app", ROOT / "packaging" / "app" / "macos", ROOT / "packaging" / "app" / "windows", ROOT / "packaging" / "app" / "agent_runtime"):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
@@ -25,6 +26,7 @@ from build_macos import build_macos
 from build_windows import build_windows
 from verify_skill import probe_runtime, verify_skill, verify_zip
 from release_contract import RELEASE_VERSION, require_release_version
+from build_runtime import RUNTIME_ARTIFACT_ENV, REQUIRE_NATIVE_RUNTIME_ENV, build_runtime
 
 
 class CurrentBuildError(RuntimeError):
@@ -163,10 +165,31 @@ def build_current(version: str, platform: str) -> dict[str, Path]:
         # itself remains isolated from the immutable versions/ archive.
         candidate_history = temporary / "history"
         _progress(5, total_steps, "正在打包平台应用和安装物")
+        runtime_candidate = None
+        if os.environ.get(REQUIRE_NATIVE_RUNTIME_ENV, "").strip() == "1" and not os.environ.get(
+            RUNTIME_ARTIFACT_ENV, "",
+        ).strip():
+            runtime_target = "macos-arm64" if platform == "macos" else "windows-x64"
+            runtime_candidate = build_runtime(
+                runtime_target,
+                output_root=temporary / "agent-runtime",
+            ).artifact
         if platform == "macos":
-            artifacts = build_macos(version, skill, dist_root=stage, versions_root=candidate_history)
+            platform_kwargs = {
+                "dist_root": stage,
+                "versions_root": candidate_history,
+            }
+            if runtime_candidate is not None:
+                platform_kwargs["agent_runtime_path"] = runtime_candidate
+            artifacts = build_macos(version, skill, **platform_kwargs)
         else:
-            artifacts = build_windows(version, skill, dist_root=stage, versions_root=candidate_history)
+            platform_kwargs = {
+                "dist_root": stage,
+                "versions_root": candidate_history,
+            }
+            if runtime_candidate is not None:
+                platform_kwargs["agent_runtime_path"] = runtime_candidate
+            artifacts = build_windows(version, skill, **platform_kwargs)
         _progress(6, total_steps, "正在核对Skill与安装物的内容绑定")
         _verify_platform_binding(stage / "option-helper.zip", artifacts, platform)
         _verify_layout(stage, version, platform)

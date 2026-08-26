@@ -50,16 +50,56 @@ AGENT_RUNTIME_PACKAGING = ROOT / "packaging" / "app" / "agent_runtime"
 if str(AGENT_RUNTIME_PACKAGING) not in sys.path:
     sys.path.insert(0, str(AGENT_RUNTIME_PACKAGING))
 from build_runtime import (  # noqa: E402
+    ALLOW_SOURCE_RUNTIME_FALLBACK_ENV,
+    LOCAL_VERIFIED,
+    REQUIRE_NATIVE_RUNTIME_ENV,
     RuntimeBuildError,
     probe_runtime_process,
+    prepare_staged_runtime,
     resolve_runtime_candidate,
-    stage_runtime_candidate,
     verify_staged_runtime,
 )
+from name_boundary import assert_name_boundary_clean
 
 
 class MacOSBuildError(RuntimeError):
     pass
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    normalized = value.strip().casefold()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise MacOSBuildError(f"环境变量{name}必须是布尔值")
+
+
+def _runtime_required(explicit: bool | None, *, formal: bool) -> bool:
+    if explicit is not None:
+        return explicit
+    return _env_flag(REQUIRE_NATIVE_RUNTIME_ENV, formal)
+
+
+def _source_fallback_enabled(explicit: bool | None, *, required: bool) -> bool:
+    if required:
+        return False
+    if explicit is not None:
+        return explicit
+    return _env_flag(ALLOW_SOURCE_RUNTIME_FALLBACK_ENV, True)
+
+
+def _assert_source_name_boundary() -> None:
+    try:
+        assert_name_boundary_clean(
+            ROOT,
+            paths=(APP_ROOT / "backend", APP_ROOT / "frontend", APP_ROOT / "runtime"),
+        )
+    except AssertionError as error:
+        raise MacOSBuildError(str(error)) from error
 
 
 def _progress(message: str) -> None:
@@ -473,6 +513,10 @@ def verify_dmg_install_layout(
                 raise MacOSBuildError("DMG打开后缺少OptionHelper.app")
             if not applications.is_symlink() or os.readlink(applications) != "/Applications":
                 raise MacOSBuildError("DMG打开后缺少指向/Applications的拖拽入口")
+            try:
+                assert_name_boundary_clean(app, paths=(app,))
+            except AssertionError as error:
+                raise MacOSBuildError(str(error)) from error
             embedded = app / "Contents" / "Resources" / "capability" / "option-helper"
             embedded_manifest = verified_capability(embedded)
             if embedded_manifest.get("content_tree_hash") != expected_content_tree_hash:
@@ -628,6 +672,7 @@ def app_manifest(
         "signing": {"method": "ad-hoc", "notarized": False},
         "agent_runtime": agent_runtime or {
             "status": "disabled",
+            "support_status": "development_only",
             "resource_path": None,
             "manifest_path": None,
         },
@@ -645,6 +690,10 @@ def platform_release_manifest(
     """Describe one immutable macOS installer without claiming Apple release approval."""
     if not app_manifest_path.is_file() or not dmg_path.is_file():
         raise MacOSBuildError("PlatformReleaseManifest缺少App Manifest或DMG")
+    agent_runtime = capability.get(
+        "agent_runtime",
+        {"status": "disabled", "support_status": "development_only"},
+    )
     return {
         "schema": f"optionhelper.platform-release-manifest/{RELEASE_VERSION}",
         "app_version": app_version,
@@ -657,6 +706,8 @@ def platform_release_manifest(
         "capability_content_tree_hash": capability["capability_content_tree_hash"],
         "protocol_id": capability["protocol_id"],
         "design_system_id": capability["design_system_id"],
+        "agent_runtime": agent_runtime,
+        "native_support_status": agent_runtime.get("status") if isinstance(agent_runtime, dict) else None,
         "installer": {"filename": dmg_path.name, "sha256": file_hash(dmg_path), "size": dmg_path.stat().st_size},
         "installer_hash": file_hash(dmg_path),
         "signing_identity": "ad-hoc",
@@ -708,6 +759,12 @@ def verify_platform_release_manifest(path: Path, *, app_manifest_path: Path, dmg
         "formal_distribution_status": "formal_distribution_unavailable",
         "gatekeeper_distribution": "unavailable",
     }
+    if "agent_runtime" in app_manifest:
+        runtime = app_manifest["agent_runtime"]
+        if not isinstance(runtime, dict):
+            raise MacOSBuildError("App Manifest中的Agent运行时字段无效")
+        checks["agent_runtime"] = runtime
+        checks["native_support_status"] = runtime.get("status")
     for key, expected in checks.items():
         if value.get(key) != expected:
             raise MacOSBuildError(f"PlatformReleaseManifest字段不匹配：{key}")
@@ -995,7 +1052,12 @@ def compile_shell(bundle: Path) -> tuple[Path, str, str]:
     return output, "objective-c", "clang"
 
 
-def verify_bundle(bundle: Path, expected_manifest: dict[str, Any]) -> None:
+def verify_bundle(
+    bundle: Path,
+    expected_manifest: dict[str, Any],
+    *,
+    require_native_runtime: bool = True,
+) -> None:
     resources = bundle / "Contents" / "Resources"
     required = [
         bundle / "Contents" / "Info.plist", bundle / "Contents" / "MacOS" / "OptionHelper",
@@ -1027,12 +1089,18 @@ def verify_bundle(bundle: Path, expected_manifest: dict[str, Any]) -> None:
     if actual["capability_content_tree_hash"] != tree_hash(content_tree_entries(capability)):
         raise MacOSBuildError("Bundle Capability目录树哈希不匹配")
     try:
+        assert_name_boundary_clean(bundle, paths=(bundle,))
+    except AssertionError as error:
+        raise MacOSBuildError(str(error)) from error
+    try:
         runtime_summary = verify_staged_runtime(
             resources,
             "macos-arm64",
             actual.get("agent_runtime", {"status": "disabled"}),
         )
-        if runtime_summary.get("status") == "local_verified":
+        if require_native_runtime and runtime_summary.get("status") != LOCAL_VERIFIED:
+            raise RuntimeBuildError("正式App缺少local_verified原生Agent运行时")
+        if runtime_summary.get("status") == LOCAL_VERIFIED:
             probe_runtime_process(resources / str(runtime_summary["resource_path"]))
     except RuntimeBuildError as error:
         raise MacOSBuildError(str(error)) from error
@@ -1046,6 +1114,8 @@ def build_macos(
     versions_root: Path = VERSIONS_ROOT,
     transaction_stage: bool = False,
     agent_runtime_path: Path | None = None,
+    require_native_runtime: bool | None = None,
+    allow_source_runtime_fallback: bool | None = None,
 ) -> dict[str, Path]:
     try:
         require_release_version(app_version)
@@ -1056,6 +1126,16 @@ def build_macos(
     assert_build_python()
     dist_root = dist_root.resolve()
     versions_root = versions_root.resolve()
+    native_runtime_required = _runtime_required(
+        require_native_runtime,
+        formal=transaction_stage or versions_root == VERSIONS_ROOT.resolve(),
+    )
+    source_fallback_enabled = _source_fallback_enabled(
+        allow_source_runtime_fallback,
+        required=native_runtime_required,
+    )
+    if native_runtime_required:
+        _assert_source_name_boundary()
     output_dmg = dist_root / f"OptionHelper-{app_version}-macOS-arm64.dmg"
     release_root = versions_root / app_version
     if output_dmg.exists():
@@ -1100,7 +1180,13 @@ def build_macos(
                 explicit=agent_runtime_path,
                 repository_root=ROOT,
             )
-            runtime_summary = stage_runtime_candidate(resources, "macos-arm64", runtime_candidate)
+            runtime_summary = prepare_staged_runtime(
+                resources,
+                "macos-arm64",
+                runtime_candidate,
+                required=native_runtime_required,
+                allow_source_fallback=source_fallback_enabled,
+            )
         except RuntimeBuildError as error:
             raise MacOSBuildError(str(error)) from error
         manifest = app_manifest(
@@ -1111,12 +1197,19 @@ def build_macos(
             build_tool=build_tool,
             agent_runtime=runtime_summary,
         )
+        # The verifier compares the persisted JSON contract, so normalize any
+        # tuple-like probe values before retaining the in-memory expectation.
+        manifest = json.loads(json.dumps(manifest, ensure_ascii=False, allow_nan=False))
         write_json(resources / "app-manifest.json", manifest)
         _progress("正在构建后端运行时")
         backend = build_backend(temporary, resources)
         run([str(backend), "--probe-pdf-runtime", "--resource-dir", str(resources)])
         probe_backend_startup(backend, resources, temporary)
-        verify_bundle(bundle, manifest)
+        verify_bundle(
+            bundle,
+            manifest,
+            require_native_runtime=native_runtime_required,
+        )
         assert_no_finder_conflicts(bundle)
         bundle_size = _backend_size(bundle)
         if bundle_size > MAX_APP_BUNDLE_BYTES:

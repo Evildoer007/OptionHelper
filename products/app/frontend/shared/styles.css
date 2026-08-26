@@ -578,7 +578,7 @@ textarea:focus-visible {
 .button-danger { min-height: 34px; padding: 0 13px; border: 1px solid var(--red-deep); border-radius: var(--radius-control); background: var(--red-deep); color: #fff; font: inherit; font-size: 12px; font-weight: 700; }
 .button-danger:hover { border-color: #700916; background: #700916; }
 
-/* DSH scrollbar contract: one token pair serves every App-owned surface.
+/* OptionHelper scrollbar contract: one token pair serves every App-owned surface.
    Safari/WebKit and Firefox take separate rendering paths by design. */
 .workspace-body,
 .setup-page,

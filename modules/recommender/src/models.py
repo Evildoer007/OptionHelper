@@ -486,6 +486,7 @@ class ModelCapability:
     tool_calling: bool = True
     multi_agent: bool = False
     max_parallel_agents: int = 1
+    independent_child_sessions: bool = False
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> "ModelCapability":
@@ -496,11 +497,16 @@ class ModelCapability:
             tool_calling=bool(data.get("tool_calling", False)),
             multi_agent=bool(data.get("multi_agent", False)),
             max_parallel_agents=max(1, int(data.get("max_parallel_agents", 1))),
+            independent_child_sessions=bool(data.get("independent_child_sessions", False)),
         )
 
     @property
     def supports_multi_agent_workflow(self) -> bool:
-        return self.structured_output and self.tool_calling and self.multi_agent and self.max_parallel_agents >= 3
+        return (
+            self.structured_output
+            and self.multi_agent
+            and self.independent_child_sessions
+        )
 
 
 @dataclass(frozen=True)

@@ -7,6 +7,7 @@ import argparse
 from datetime import datetime
 from hashlib import sha256
 import json
+import os
 from pathlib import Path
 import shutil
 import sys
@@ -22,6 +23,7 @@ for path in (
     ROOT / "packaging",
     ROOT / "packaging" / "skill",
     ROOT / "packaging" / "app",
+    ROOT / "packaging" / "app" / "agent_runtime",
     ROOT / "packaging" / "app" / "macos",
     ROOT / "packaging" / "app" / "windows",
 ):
@@ -31,6 +33,7 @@ for path in (
 from runtime.knowledger.versioning import build_candidate, validate_published_catalog
 from build_macos import build_macos
 from build_windows import build_windows
+from build_runtime import REQUIRE_NATIVE_RUNTIME_ENV
 from build_skill import build_skill, verify_source_snapshot
 from environment_check import check_dependencies
 from release_contract import RELEASE_VERSION, require_published_at, require_release_version
@@ -45,6 +48,7 @@ from verify_release import (
     verify_formal_archive,
 )
 from verify_skill import probe_runtime, verify_skill, verify_zip
+from name_boundary import assert_name_boundary_clean
 
 
 class ReleaseError(RuntimeError):
@@ -65,6 +69,46 @@ def _assert_release_dependencies() -> None:
             failures.append(relative)
     if failures:
         raise ReleaseError("正式发布依赖全检未通过：" + "、".join(failures))
+
+
+def _assert_release_name_boundary() -> None:
+    try:
+        assert_name_boundary_clean(
+            ROOT,
+            paths=(
+                ROOT / "products" / "app" / "backend",
+                ROOT / "products" / "app" / "frontend",
+                ROOT / "products" / "app" / "runtime",
+                ROOT / "products" / "app" / "config",
+                ROOT / "packaging" / "app",
+            ),
+        )
+    except AssertionError as error:
+        raise ReleaseError(str(error)) from error
+
+
+def _build_windows_formal(
+    version: str,
+    capability_root: Path,
+    *,
+    dist_root: Path,
+    versions_root: Path,
+) -> dict[str, Path]:
+    """Force the formal runtime gate even when history is transaction-staged."""
+    previous = os.environ.get(REQUIRE_NATIVE_RUNTIME_ENV)
+    os.environ[REQUIRE_NATIVE_RUNTIME_ENV] = "1"
+    try:
+        return build_windows(
+            version,
+            capability_root,
+            dist_root=dist_root,
+            versions_root=versions_root,
+        )
+    finally:
+        if previous is None:
+            os.environ.pop(REQUIRE_NATIVE_RUNTIME_ENV, None)
+        else:
+            os.environ[REQUIRE_NATIVE_RUNTIME_ENV] = previous
 
 
 def _progress(message: str) -> None:
@@ -234,6 +278,7 @@ def release(version: str, *, platform: str, published_at: str) -> dict[str, Path
         require_published_at(published_at)
     except ValueError as error:
         raise ReleaseError(str(error)) from error
+    _assert_release_name_boundary()
     _assert_release_dependencies()
 
     versions_root = ROOT / "versions"
@@ -326,7 +371,12 @@ def release(version: str, *, platform: str, published_at: str) -> dict[str, Path
                 transaction_stage=True,
             )
         else:
-            build_windows(version, capability_root, dist_root=delivery_stage, versions_root=transaction_versions)
+            _build_windows_formal(
+                version,
+                capability_root,
+                dist_root=delivery_stage,
+                versions_root=transaction_versions,
+            )
 
         _progress("验收完整归档的ZIP、Manifest、安装物、签名与运行链")
         if existing_archive.exists():

@@ -50,9 +50,9 @@ function syncControls(scope = document, preference = currentThemePreference()) {
   });
 }
 
-function dispatch(theme, preference, iconTheme = resolvedTheme(preference)) {
+function dispatch(theme, preference, iconTheme = resolvedTheme(preference), { notifyNative = true } = {}) {
   updateFavicon(iconTheme);
-  notifyNativeShell(iconTheme, preference);
+  if (notifyNative) notifyNativeShell(iconTheme, preference);
   subscribers.forEach((subscriber) => subscriber(theme, preference));
   document.dispatchEvent(new CustomEvent("optionhelper:themechange", { detail: { theme, preference } }));
 }
@@ -65,7 +65,7 @@ export function currentThemePreference() {
   return preferenceOf(document.documentElement.dataset.themePref);
 }
 
-export function setThemePreference(value, { persist = true } = {}) {
+export function setThemePreference(value, { persist = true, notifyNative = true } = {}) {
   const preference = preferenceOf(value);
   const iconTheme = resolvedTheme(preference);
   const theme = pageTheme(preference);
@@ -74,8 +74,13 @@ export function setThemePreference(value, { persist = true } = {}) {
   root.dataset.theme = theme;
   if (persist) savePreference(preference);
   syncControls(document, preference);
-  dispatch(theme, preference, iconTheme);
+  dispatch(theme, preference, iconTheme, { notifyNative });
   return theme;
+}
+
+export function refreshSystemTheme() {
+  if (currentThemePreference() !== "auto") return currentTheme();
+  return setThemePreference("auto", { persist: false, notifyNative: false });
 }
 
 export function onThemeChange(subscriber) {
@@ -115,7 +120,7 @@ function syncStoredTheme() {
 }
 
 systemTheme?.addEventListener("change", () => {
-  if (currentThemePreference() === "auto") setThemePreference("auto", { persist: false });
+  if (currentThemePreference() === "auto") refreshSystemTheme();
 });
 
 initializeTheme();
@@ -130,6 +135,7 @@ window.OptionHelperTheme = Object.freeze({
   currentTheme,
   currentThemePreference,
   setThemePreference,
+  refreshSystemTheme,
   onThemeChange,
   installThemeControls,
 });

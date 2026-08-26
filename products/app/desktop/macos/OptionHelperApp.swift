@@ -383,8 +383,17 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
               let theme = value["theme"] as? String, let preference = value["preference"] as? String,
               ["light", "dark", "auto"].contains(preference), ["light", "dark"].contains(theme) else { return }
         themePreference = preference
-        window?.appearance = NSAppearance(named: theme == "dark" ? .darkAqua : .aqua)
-        applyDockIcon(theme: theme)
+        if preference == "auto" {
+            window?.appearance = nil
+            let appearance = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua])
+            applyDockIcon(theme: appearance == .darkAqua ? "dark" : "light")
+            DispatchQueue.main.async { [weak self] in
+                self?.webView?.evaluateJavaScript("window.OptionHelperTheme?.refreshSystemTheme?.();", completionHandler: nil)
+            }
+        } else {
+            window?.appearance = NSAppearance(named: theme == "dark" ? .darkAqua : .aqua)
+            applyDockIcon(theme: theme)
+        }
     }
 
     override func observeValue(

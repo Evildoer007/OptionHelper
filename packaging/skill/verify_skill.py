@@ -441,6 +441,8 @@ def _capability_interface_errors(root: Path) -> list[str]:
     tool_entry = root / "scripts" / "tool_entry.py"
     if tool_entry.is_file():
         tool_text = tool_entry.read_text(encoding="utf-8", errors="ignore")
+        if "--project-json" in tool_text:
+            errors.append("Tool入口不得暴露对话JSON项目参数")
         for token, label in (
             ("--project-request", "单行自然语言项目入口"),
             ("run_project_request", "项目级完整研究流程"),

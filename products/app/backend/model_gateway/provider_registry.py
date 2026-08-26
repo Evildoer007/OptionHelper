@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 from collections.abc import Callable, Iterable, Mapping
 from typing import Any
@@ -150,9 +151,10 @@ class ProviderRegistry:
         self,
         settings: ModelServiceSettings,
         secret_ref: SecretRef,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         *,
         request_control: ModelRequestControl | None = None,
+        tools: list[dict[str, Any]] | None = None,
     ) -> Iterable[Mapping[str, Any]]:
         """Return the provider's normalized stream without owning secrets.
 
@@ -169,6 +171,15 @@ class ProviderRegistry:
                 "模型流式输出",
                 "当前Provider未注册流式适配器，请继续使用非流式模型调用。",
             )
+        adapter_kwargs: dict[str, Any] = {}
+        if tools:
+            parameters = inspect.signature(adapter).parameters.values()
+            if not any(item.name == "tools" or item.kind == item.VAR_KEYWORD for item in parameters):
+                raise UnavailableCapabilityError(
+                    "模型工具调用",
+                    "当前Provider流式适配器未声明工具Schema支持。",
+                )
+            adapter_kwargs["tools"] = tools
         value = _invoke_adapter(
             adapter,
             settings,
@@ -176,6 +187,7 @@ class ProviderRegistry:
             messages,
             request_control=request_control,
             bounded_request_control=self._bounded_request_control.get(provider_name, False),
+            adapter_kwargs=adapter_kwargs,
         )
         if isinstance(value, (str, bytes)) or value is None:
             raise ValueError("model stream adapter must return an iterable of events")
@@ -199,6 +211,7 @@ def _invoke_adapter(
     *args: Any,
     request_control: ModelRequestControl | None,
     bounded_request_control: bool = False,
+    adapter_kwargs: Mapping[str, Any] | None = None,
 ) -> Any:
     """Use only the capability declared at provider registration."""
 
@@ -208,5 +221,5 @@ def _invoke_adapter(
             "当前Provider未声明受控请求期限，不能用于多Agent子运行。",
         )
     if bounded_request_control:
-        return adapter(*args, request_control=request_control)
-    return adapter(*args)
+        return adapter(*args, request_control=request_control, **dict(adapter_kwargs or {}))
+    return adapter(*args, **dict(adapter_kwargs or {}))

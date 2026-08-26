@@ -35,16 +35,54 @@ AGENT_RUNTIME_PACKAGING = ROOT / "packaging" / "app" / "agent_runtime"
 if str(AGENT_RUNTIME_PACKAGING) not in sys.path:
     sys.path.insert(0, str(AGENT_RUNTIME_PACKAGING))
 from build_runtime import (  # noqa: E402
+    ALLOW_SOURCE_RUNTIME_FALLBACK_ENV,
+    LOCAL_VERIFIED,
+    REQUIRE_NATIVE_RUNTIME_ENV,
     RuntimeBuildError,
-    probe_runtime_process,
+    prepare_staged_runtime,
     resolve_runtime_candidate,
-    stage_runtime_candidate,
-    verify_staged_runtime,
 )
+from name_boundary import assert_name_boundary_clean
 
 
 class WindowsBuildError(RuntimeError):
     pass
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    normalized = value.strip().casefold()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise WindowsBuildError(f"环境变量{name}必须是布尔值")
+
+
+def _runtime_required(explicit: bool | None, *, formal: bool) -> bool:
+    if explicit is not None:
+        return explicit
+    return _env_flag(REQUIRE_NATIVE_RUNTIME_ENV, formal)
+
+
+def _source_fallback_enabled(explicit: bool | None, *, required: bool) -> bool:
+    if required:
+        return False
+    if explicit is not None:
+        return explicit
+    return _env_flag(ALLOW_SOURCE_RUNTIME_FALLBACK_ENV, True)
+
+
+def _assert_source_name_boundary() -> None:
+    try:
+        assert_name_boundary_clean(
+            ROOT,
+            paths=(APP_ROOT / "backend", APP_ROOT / "frontend", APP_ROOT / "runtime"),
+        )
+    except AssertionError as error:
+        raise WindowsBuildError(str(error)) from error
 
 
 def _progress(message: str) -> None:
@@ -271,6 +309,7 @@ def _manifest(
         "signing": {"method": "unsigned", "notarized": False},
         "agent_runtime": agent_runtime or {
             "status": "disabled",
+            "support_status": "development_only",
             "resource_path": None,
             "manifest_path": None,
         },
@@ -295,11 +334,23 @@ def build_windows(
     dist_root: Path,
     versions_root: Path = ROOT / "versions",
     agent_runtime_path: Path | None = None,
+    require_native_runtime: bool | None = None,
+    allow_source_runtime_fallback: bool | None = None,
 ) -> dict[str, Path]:
     try:
         require_release_version(app_version)
     except ValueError as error:
         raise WindowsBuildError(str(error)) from error
+    native_runtime_required = _runtime_required(
+        require_native_runtime,
+        formal=versions_root.resolve() == (ROOT / "versions").resolve(),
+    )
+    source_fallback_enabled = _source_fallback_enabled(
+        allow_source_runtime_fallback,
+        required=native_runtime_required,
+    )
+    if native_runtime_required:
+        _assert_source_name_boundary()
     _progress("正在验证当次Capability")
     check_prerequisites(capability_root)
     if verify_skill(capability_root):
@@ -366,10 +417,13 @@ def build_windows(
                 explicit=agent_runtime_path,
                 repository_root=ROOT,
             )
-            runtime_summary = stage_runtime_candidate(resources, "windows-x64", runtime_candidate)
-            runtime_summary = verify_staged_runtime(resources, "windows-x64", runtime_summary)
-            if runtime_summary.get("status") == "local_verified":
-                probe_runtime_process(resources / str(runtime_summary["resource_path"]))
+            runtime_summary = prepare_staged_runtime(
+                resources,
+                "windows-x64",
+                runtime_candidate,
+                required=native_runtime_required,
+                allow_source_fallback=source_fallback_enabled,
+            )
         except RuntimeBuildError as error:
             raise WindowsBuildError(str(error)) from error
         _run([
@@ -410,6 +464,13 @@ def build_windows(
             for member, source in expected_executables.items():
                 if archive.read(member) != source.read_bytes():
                     raise WindowsBuildError(f"Windows ZIP内EXE与图标验收后的文件不一致：{member}")
+        try:
+            assert_name_boundary_clean(
+                temporary,
+                paths=(app, staged_zip),
+            )
+        except AssertionError as error:
+            raise WindowsBuildError(str(error)) from error
         output = dist_root / installer_name
         shutil.copy2(staged_zip, output)
         shutil.copy2(staged_zip, archive_installer)
@@ -427,6 +488,8 @@ def build_windows(
             "capability_content_tree_hash": manifest["capability_content_tree_hash"], "protocol_id": manifest["protocol_id"],
             "design_system_id": manifest["design_system_id"], "signing_identity": "unsigned",
             "application_icon": manifest["application_icon"],
+            "agent_runtime": manifest["agent_runtime"],
+            "native_support_status": manifest["agent_runtime"].get("status"),
             "signature_status": "unsigned_local_candidate", "notarized": False, "release_status": "local_candidate",
         }, ensure_ascii=False, sort_keys=True, indent=2) + "\n", encoding="utf-8", newline="")
     return {"installer": output, "manifest": app_manifest, "release_manifest": release_manifest}

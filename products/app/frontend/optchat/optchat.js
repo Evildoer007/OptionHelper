@@ -152,9 +152,11 @@ export function normalizeRuntimeEvent(row) {
   const rawTool = row.tool || row.tool_name || row.module || payload.tool || payload.tool_name || payload.module;
   const summary = runtimePayloadText(row, payload, ["summary", "display_message", "label", "message"]);
   const toolLabel = runtimeToolLabel(rawTool, summary);
-  const delta = family === "assistant" || family === "reasoning"
-    ? runtimeDeltaText(row.delta ?? row.text ?? payload.delta ?? payload.text)
-    : "";
+  const delta = family === "reasoning"
+    ? runtimeDeltaText(row.delta ?? row.text ?? payload.delta ?? payload.text ?? payload.reasoning_delta ?? payload.reasoning)
+    : family === "assistant"
+      ? runtimeDeltaText(row.delta ?? row.text ?? payload.delta ?? payload.text)
+      : "";
   const usage = family === "usage"
     ? normalizeRuntimeUsage(payload.usage || row.usage || payload || row)
     : normalizeRuntimeUsage(payload.usage || row.usage);
@@ -170,7 +172,7 @@ export function normalizeRuntimeEvent(row) {
     toolKey: safeRuntimeKey(row.call_id || row.tool_call_id || payload.call_id || payload.tool_call_id || `${toolLabel}:${row.agent_run_id || payload.agent_run_id || "main"}`),
     toolLabel,
     delta,
-    reasoningAvailable: family === "reasoning" && (Boolean(delta) || payload.available === true || payload.reasoning_available === true || row.reasoning_available === true || payload.truncated === true || row.truncated === true),
+    reasoningAvailable: family === "reasoning" && Boolean(delta),
     reasoningChars: Number.isInteger(payload.chars) && payload.chars >= 0 ? payload.chars : null,
     truncated: family === "reasoning" && (payload.truncated === true || row.truncated === true),
     providerChars: Number.isInteger(payload.provider_chars) && payload.provider_chars >= 0
@@ -187,13 +189,10 @@ export function projectRuntimeEvent(event) {
     ...event,
     timelineLabel: event.summary,
     showTimeline: !isDelta && event.family !== "usage",
-    showReasoning: event.family === "reasoning" && event.reasoningAvailable === true,
+    showReasoning: event.family === "reasoning" && event.reasoningAvailable === true && Boolean(event.delta),
     assistantDelta: event.family === "assistant" && event.type === "assistant.text_delta" ? event.delta : "",
     reasoningDelta: event.family === "reasoning" ? event.delta : "",
-    reasoningNotice: event.family === "reasoning" && !event.delta
-      ? `模型已返回深度思考过程${event.reasoningChars === null ? "。" : `（${event.reasoningChars}字）。`}`
-      : "",
-    reasoningTruncationNotice: event.family === "reasoning" && event.truncated
+    reasoningTruncationNotice: event.family === "reasoning" && Boolean(event.delta) && event.truncated
       ? "模型思考过程已按展示上限截断"
       : "",
     isTerminal: runtimeTerminalStatuses.has(event.status),
@@ -598,15 +597,14 @@ export async function startWorkspace(initialMode) {
       playback.assistantBody.textContent = playback.answerText;
       playback.assistantOutput.hidden = !playback.answerText;
     }
-    if (projection.showReasoning) {
-      const reasoningChunk = projection.reasoningDelta || (!playback.reasoningText ? projection.reasoningNotice : "");
-      playback.reasoningText = appendRuntimeDelta(playback.reasoningText, reasoningChunk, runtimeReasoningTextLimit);
+    if (projection.showReasoning && projection.reasoningDelta) {
+      playback.reasoningText = appendRuntimeDelta(playback.reasoningText, projection.reasoningDelta, runtimeReasoningTextLimit);
       playback.reasoningBody.textContent = playback.reasoningText;
       if (projection.reasoningTruncationNotice) {
         playback.reasoningLimitNotice.textContent = projection.reasoningTruncationNotice;
         playback.reasoningLimitNotice.hidden = false;
       }
-      playback.reasoning.hidden = !playback.reasoningText && playback.reasoningLimitNotice.hidden;
+      playback.reasoning.hidden = false;
     }
     if (projection.usage) {
       playback.usage = projection.usage;

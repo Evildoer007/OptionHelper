@@ -23,7 +23,11 @@ Intent、Research和Critic不调用市场数据。只有Executor即将运行需�
 
 资料状态不是`ready`的候选可以保留为研究结果，但不得进入Executor，状态固定为`pending_terms`。固定流程内同一候选、同一模块最多执行一次，Tool开始后不得回退重跑。用户覆盖期限、波动率、行权价等已允许参数时，先生成新合同，再只重跑受影响模块；不得沿用旧合同的计算结果。
 
-是否执行真实多Agent由宿主`AgentPort`声明的独立子运行能力决定，不取决于模型Provider是否兼容某个接口。宿主支持独立子运行时，按预设创建独立AgentRun；宿主不支持时，以同一顺序执行`single_agent`并在审计记录标记降级，面向用户不得伪称多Agent。多Agent在任何模块Tool调用前失败可降级为`single_agent`；Tool调用开始后不重跑流程，避免重复副作用。
+是否执行真实多Agent由宿主`AgentPort`声明的结构化输出和独立子会话能力共同决定，不取决于特定服务接口。默认策略为`auto`：能力成立时按`Intent→Research→Critic`分别创建独立子会话；能力不足时执行同一状态机的`single_agent`路径。用户明确要求必须多Agent时，能力不足必须返回不可用，不得降级，任何情况下都不得伪称多Agent。多Agent在任何金融Tool调用前失败可降级为`single_agent`；Tool调用开始后不重跑流程，避免重复副作用。
+
+每个角色结果必须携带`AgentRunReceipt`，包含唯一`agent_run_id`、唯一`child_session_id`、角色、输入哈希、输出哈希和状态；正文通过当前严格Schema后才能进入下一阶段。App与Skill共用`begin_recommendation`、`submit_agent_result`、`cancel_recommendation`状态机和确定性聚合器。App适配器调用现有子会话Runtime，Skill适配器调用宿主原生子Agent能力，任何一侧都不得复制状态机或另建模型系统。工作流快照只保存角色、哈希、运行凭证、Catalog绑定和阶段状态，不保存推理文本、模型凭据、数据凭据或完整聊天记录。
+
+多Agent执行策略属于顶层工作流能力，不属于Recommender专有能力。Payoffer、Pricer、Backtester、Reporter和Designer当前继续按确定性模块执行，未来工作流可按需声明自己的`AgentExecutionPolicy`。任何Agent均不得投票改写估值、Greeks、回测、合同或Reporter冻结事实。
 
 ## 对话与确认
 
@@ -47,7 +51,7 @@ Intent、Research和Critic不调用市场数据。只有Executor即将运行需�
 
 ## 输出
 
-候选必含`candidate_id`、`product_id`、有序`underlyings`、`rank`、`reason`、`suitable_for`、`not_suitable_for`、`main_risks`和`library_status`。输出最多一个主候选和两个备选。审计仅保存输入输出哈希、步骤、角色、模式、状态和错误，不保存模型凭据。
+候选必含`candidate_id`、`product_id`、有序`underlyings`、`rank`、`reason`、`suitable_for`、`not_suitable_for`、`main_risks`和`library_status`。输出最多一个主候选和两个备选。审计仅保存输入输出哈希、步骤、角色、模式、状态、运行凭证和错误，不保存推理文本或模型凭据。
 
 ## 用户可见进度
 

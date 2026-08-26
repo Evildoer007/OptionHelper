@@ -10,6 +10,7 @@ from ..errors import UnavailableCapabilityError
 from ..identity.session_identity import SessionIdentity
 from ..secrets.secret_provider import SecretProvider
 from ..settings.settings_models import (
+    MULTI_AGENT_LEGACY_ROLE_ALIASES,
     MULTI_AGENT_RECOMMENDATION_ROLES,
     ModelSelection,
     ModelServiceSettings,
@@ -126,10 +127,11 @@ class ModelGateway:
         self,
         identity: SessionIdentity,
         task_id: str,
-        messages: Sequence[Mapping[str, str]],
+        messages: Sequence[Mapping[str, Any]],
         *,
         selection: ModelSelection | None = None,
         request_control: ModelRequestControl | None = None,
+        tools: Sequence[Mapping[str, Any]] | None = None,
     ) -> Iterable[Mapping[str, Any]]:
         """Stream an Agent turn while preserving assistant and tool messages."""
 
@@ -140,6 +142,7 @@ class ModelGateway:
             secret_ref,
             _validated_messages(messages),
             request_control=request_control,
+            tools=list(tools or ()),
         )
 
     def decide_for(
@@ -188,8 +191,9 @@ class ModelGateway:
         settings = self._load(identity)
         configured = settings.multi_agent_preset_role_models.get(str(preset_id), {})
         return {
-            role: selection for role, selection in configured.items()
-            if role in MULTI_AGENT_RECOMMENDATION_ROLES
+            MULTI_AGENT_LEGACY_ROLE_ALIASES.get(role, role): selection
+            for role, selection in configured.items()
+            if MULTI_AGENT_LEGACY_ROLE_ALIASES.get(role, role) in MULTI_AGENT_RECOMMENDATION_ROLES
         }
 
     def multi_agent_recommendation_preset_for(self, identity: SessionIdentity) -> str:
@@ -262,17 +266,28 @@ class ModelGateway:
         return self._settings.load(identity.principal_id)
 
 
-def _validated_messages(messages: Sequence[Mapping[str, str]]) -> list[dict[str, str]]:
+def _validated_messages(messages: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     if isinstance(messages, (str, bytes)) or not messages:
         raise ValueError("messages must be a non-empty sequence")
     allowed_roles = {"system", "user", "assistant", "tool"}
-    result: list[dict[str, str]] = []
+    result: list[dict[str, Any]] = []
     for item in messages:
         if not isinstance(item, Mapping):
             raise ValueError("each message must be an object")
         role = item.get("role")
         content = item.get("content")
-        if role not in allowed_roles or not isinstance(content, str) or not content:
+        if role not in allowed_roles or not isinstance(content, str):
             raise ValueError("each message must contain a valid role and content")
-        result.append({"role": str(role), "content": content})
+        message: dict[str, Any] = {"role": str(role), "content": content}
+        if role == "assistant" and item.get("tool_calls") is not None:
+            tool_calls = item.get("tool_calls")
+            if not isinstance(tool_calls, list):
+                raise ValueError("assistant tool_calls must be an array")
+            message["tool_calls"] = [dict(call) for call in tool_calls if isinstance(call, Mapping)]
+        if role == "tool":
+            tool_call_id = item.get("tool_call_id")
+            if not isinstance(tool_call_id, str) or not tool_call_id.strip():
+                raise ValueError("tool messages require tool_call_id")
+            message["tool_call_id"] = tool_call_id.strip()
+        result.append(message)
     return result

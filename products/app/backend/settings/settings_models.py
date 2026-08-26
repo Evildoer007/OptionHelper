@@ -8,10 +8,15 @@ from ..secrets.secret_ref import SecretRef
 
 RoleName = Literal["sales", "admin"]
 MULTI_AGENT_RECOMMENDATION_PRESET_ROLES = {
-    "sequential-deliberation": frozenset({"Intent", "Research", "Critic"}),
+    "sequential-deliberation": frozenset({"Interpreter", "Selector", "Reviewer"}),
     "product-trader-loop": frozenset({"Structurer", "Trader", "Reviewer"}),
     "independent-council": frozenset({"Framer", "Matcher", "Hedger", "Moderator"}),
-    "constraint-ranking": frozenset({"Specifier", "Generator", "Reviewer"}),
+    "constraint-ranking": frozenset({"Specifier", "Generator", "Evaluator", "Reviewer"}),
+}
+MULTI_AGENT_LEGACY_ROLE_ALIASES: dict[str, str] = {
+    "Intent": "Interpreter",
+    "Research": "Selector",
+    "Critic": "Reviewer",
 }
 MULTI_AGENT_RECOMMENDATION_ROLES = frozenset().union(*MULTI_AGENT_RECOMMENDATION_PRESET_ROLES.values())
 MULTI_AGENT_ENABLED_RECOMMENDATION_PRESET_IDS = frozenset(MULTI_AGENT_RECOMMENDATION_PRESET_ROLES)
@@ -158,9 +163,12 @@ def serialize_settings(snapshot: SettingsSnapshot) -> dict[str, Any]:
         "multi_agent_recommendation_preset_id": snapshot.multi_agent_recommendation_preset_id,
         "multi_agent_preset_role_models": {
             preset_id: {
-                role: {"provider_id": selection.provider_id, "model_id": selection.model_id}
+                MULTI_AGENT_LEGACY_ROLE_ALIASES.get(role, role): {
+                    "provider_id": selection.provider_id,
+                    "model_id": selection.model_id,
+                }
                 for role, selection in role_models.items()
-                if role in MULTI_AGENT_RECOMMENDATION_ROLES
+                if MULTI_AGENT_LEGACY_ROLE_ALIASES.get(role, role) in MULTI_AGENT_RECOMMENDATION_ROLES
             }
             for preset_id, role_models in snapshot.multi_agent_preset_role_models.items()
         },
@@ -296,11 +304,12 @@ def deserialize_settings(value: dict[str, Any]) -> SettingsSnapshot:
             raise ValueError("multi-agent preset role models must be an object")
         role_models[str(preset_id)] = {}
         for role_name, raw_role_selection in raw_roles.items():
-            if str(role_name) not in MULTI_AGENT_RECOMMENDATION_ROLES:
+            role = MULTI_AGENT_LEGACY_ROLE_ALIASES.get(str(role_name), str(role_name))
+            if role not in MULTI_AGENT_RECOMMENDATION_ROLES:
                 continue
             if not isinstance(raw_role_selection, dict):
                 raise ValueError("multi-agent role model selection must be an object")
-            role_models[str(preset_id)][str(role_name)] = ModelSelection(
+            role_models[str(preset_id)][role] = ModelSelection(
                 provider_id=str(raw_role_selection.get("provider_id", "")),
                 model_id=str(raw_role_selection.get("model_id", "")),
             )

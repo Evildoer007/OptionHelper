@@ -2,6 +2,8 @@
 
 OptionHelper是期权结构研究与交付系统。本仓库维护同一套权威源码，并由它生成可安装Skill、OptionHelper App和平台安装物。内部能力包括DataFetcher、Recommender、Payoffer、Pricer、Backtester、Reporter和Designer。
 
+Recommender的App入口与Skill入口共用同一状态机、严格角色Schema、运行凭证和确定性聚合器。结构推荐默认自动适配宿主能力：可证明独立子会话时执行多Agent，否则执行同一流程的单Agent路径。其他模块默认保持确定性执行，但顶层工作流架构不限制未来按正式策略接入多Agent。用户无需配置模型或选择Agent模式。
+
 当前实现以[OptionHelper总设计蓝图](blueprint/OptionHelper总设计蓝图.html)为架构依据。金融口径、正式输入、结果引用和报告交付均由受控协议衔接，不允许页面、模型或临时脚本绕过模块自行计算或拼接报告。
 
 ## 文档分工
