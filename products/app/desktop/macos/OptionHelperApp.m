@@ -1,5 +1,6 @@
 #import <Cocoa/Cocoa.h>
 #import <WebKit/WebKit.h>
+#import <math.h>
 
 @interface OptionHelperWindow : NSWindow
 @end
@@ -54,6 +55,10 @@
 @property(nonatomic, copy) NSString *themePreference;
 @property(nonatomic) NSInteger activeOperationCount;
 @property(nonatomic) BOOL closeAfterInterrupt;
+@property(nonatomic) CGFloat uiScale;
+@property(nonatomic, strong) NSURL *uiPreferencesURL;
+@property(nonatomic, strong) NSMenuItem *zoomInMenuItem;
+@property(nonatomic, strong) NSMenuItem *zoomOutMenuItem;
 @end
 
 @implementation OptionHelperAppDelegate
@@ -63,6 +68,7 @@
     [self installMainMenu];
     self.startupOutput = [NSMutableString string];
     self.themePreference = @"light";
+    self.uiScale = 1.0;
     [NSApp addObserver:self
             forKeyPath:@"effectiveAppearance"
                options:NSKeyValueObservingOptionNew
@@ -71,6 +77,9 @@
 }
 
 - (void)applicationWillTerminate:(NSNotification *)notification {
+    [self.webView.configuration.userContentController removeScriptMessageHandlerForName:@"optionhelperTheme"];
+    [self.webView.configuration.userContentController removeScriptMessageHandlerForName:@"optionhelperRuntime"];
+    [self.webView.configuration.userContentController removeScriptMessageHandlerForName:@"optionhelperUIScale"];
     [NSApp removeObserver:self forKeyPath:@"effectiveAppearance"];
     if (self.backend.running) {
         [self.backend terminate];
@@ -121,6 +130,9 @@
         [self showFailure:@"无法创建本地数据目录"];
         return;
     }
+    self.uiPreferencesURL = [support URLByAppendingPathComponent:@"ui-preferences.json" isDirectory:NO];
+    self.uiScale = [self loadUIScale];
+    [self updateScaleMenuAvailability];
 
     self.backend = [[NSTask alloc] init];
     self.backend.executableURL = [NSURL fileURLWithPath:backendPath];
@@ -210,7 +222,8 @@
     WKWebViewConfiguration *configuration = [[WKWebViewConfiguration alloc] init];
     // Show the splash before the login page's module graph is evaluated.  The
     // login module owns the timer and always removes this class again.
-    WKUserScript *startupScript = [[WKUserScript alloc] initWithSource:@"document.documentElement.dataset.nativeShell='macos';if (location.pathname === '/') document.documentElement.classList.add('login-boot');"
+    NSString *startupSource = [NSString stringWithFormat:@"document.documentElement.dataset.nativeShell='macos';document.documentElement.dataset.uiScale='%.4f';document.documentElement.style.setProperty('--native-titlebar-height','%.4fpx');document.documentElement.style.setProperty('--native-titlebar-collapsed-leading-safe-area','%.4fpx');if (location.pathname === '/') document.documentElement.classList.add('login-boot');", self.uiScale, 36.0 / self.uiScale, 166.0 / self.uiScale];
+    WKUserScript *startupScript = [[WKUserScript alloc] initWithSource:startupSource
                                                          injectionTime:WKUserScriptInjectionTimeAtDocumentStart
                                                       forMainFrameOnly:YES];
     WKUserScript *runtimeStatusScript = [[WKUserScript alloc] initWithSource:@"(()=>{const post=(count)=>window.webkit?.messageHandlers?.optionhelperRuntime?.postMessage({type:'active_operations',count});const refresh=()=>fetch('/api/runtime/active-operations').then((response)=>response.ok?response.json():{active_count:0}).then((value)=>post(Number(value.active_count)||0)).catch(()=>post(0));addEventListener('pageshow',refresh);setInterval(refresh,1400);refresh();})();"
@@ -220,7 +233,10 @@
     [configuration.userContentController addUserScript:runtimeStatusScript];
     [configuration.userContentController addScriptMessageHandler:self name:@"optionhelperTheme"];
     [configuration.userContentController addScriptMessageHandler:self name:@"optionhelperRuntime"];
+    [configuration.userContentController addScriptMessageHandler:self name:@"optionhelperUIScale"];
     WKWebView *webView = [[WKWebView alloc] initWithFrame:NSZeroRect configuration:configuration];
+    webView.allowsMagnification = NO;
+    webView.pageZoom = self.uiScale;
     webView.navigationDelegate = self;
     self.window = [[OptionHelperWindow alloc] initWithContentRect:NSMakeRect(0, 0, 1320, 860)
                                                styleMask:(NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable | NSWindowStyleMaskFullSizeContentView)
@@ -347,8 +363,13 @@
 }
 
 - (void)webView:(WKWebView *)webView didFinishNavigation:(WKNavigation *)navigation {
+    [self syncUIScaleToPage];
     [self ensureTitlebarControlsForWindow:self.window];
     [self syncWorkspaceTitlebarControlsForURL:webView.URL];
+}
+
+- (void)webView:(WKWebView *)webView didCommitNavigation:(WKNavigation *)navigation {
+    [self syncUIScaleToPage];
 }
 
 - (void)windowDidResize:(NSNotification *)notification {
@@ -381,6 +402,15 @@
 }
 
 - (void)userContentController:(WKUserContentController *)userContentController didReceiveScriptMessage:(WKScriptMessage *)message {
+    if ([message.name isEqualToString:@"optionhelperUIScale"] && [message.body isKindOfClass:[NSDictionary class]]) {
+        NSDictionary *value = message.body;
+        NSNumber *requestedScale = value[@"scale"];
+        NSNumber *acceptedScale = [value[@"type"] isEqualToString:@"set_ui_scale"] && [requestedScale isKindOfClass:[NSNumber class]]
+            ? [self validatedUIScale:requestedScale.doubleValue]
+            : nil;
+        if (acceptedScale != nil) [self applyUIScale:acceptedScale.doubleValue persist:YES notifyPage:YES];
+        return;
+    }
     if ([message.name isEqualToString:@"optionhelperRuntime"] && [message.body isKindOfClass:[NSDictionary class]]) {
         NSDictionary *runtime = (NSDictionary *)message.body;
         if ([runtime[@"type"] isEqualToString:@"active_operations"] && [runtime[@"count"] isKindOfClass:NSNumber.class]) {
@@ -451,8 +481,88 @@
     [self addEditItem:@"粘贴" action:@selector(paste:) key:@"v" modifiers:NSEventModifierFlagCommand toMenu:editMenu];
     [self addEditItem:@"全选" action:@selector(selectAll:) key:@"a" modifiers:NSEventModifierFlagCommand toMenu:editMenu];
     [mainMenu addItem:editMenuItem];
+
+    NSMenu *viewMenu = [[NSMenu alloc] initWithTitle:@"显示"];
+    NSMenuItem *viewMenuItem = [[NSMenuItem alloc] initWithTitle:@"" action:nil keyEquivalent:@""];
+    viewMenuItem.submenu = viewMenu;
+    self.zoomInMenuItem = [[NSMenuItem alloc] initWithTitle:@"放大" action:@selector(increaseUIScale:) keyEquivalent:@"+"];
+    self.zoomInMenuItem.keyEquivalentModifierMask = NSEventModifierFlagCommand;
+    self.zoomInMenuItem.target = self;
+    [viewMenu addItem:self.zoomInMenuItem];
+    self.zoomOutMenuItem = [[NSMenuItem alloc] initWithTitle:@"缩小" action:@selector(decreaseUIScale:) keyEquivalent:@"-"];
+    self.zoomOutMenuItem.keyEquivalentModifierMask = NSEventModifierFlagCommand;
+    self.zoomOutMenuItem.target = self;
+    [viewMenu addItem:self.zoomOutMenuItem];
+    [viewMenu addItem:[NSMenuItem separatorItem]];
+    NSMenuItem *actualSize = [[NSMenuItem alloc] initWithTitle:@"实际大小" action:@selector(resetUIScale:) keyEquivalent:@"0"];
+    actualSize.keyEquivalentModifierMask = NSEventModifierFlagCommand;
+    actualSize.target = self;
+    [viewMenu addItem:actualSize];
+    [mainMenu addItem:viewMenuItem];
     NSApp.mainMenu = mainMenu;
+    [self updateScaleMenuAvailability];
 }
+
+- (NSArray<NSNumber *> *)uiScaleSteps {
+    return @[@0.8, @0.9, @1.0, @1.1, @1.25, @1.4];
+}
+
+- (NSNumber *)validatedUIScale:(double)value {
+    for (NSNumber *step in [self uiScaleSteps]) {
+        if (fabs(step.doubleValue - value) < 0.0001) return step;
+    }
+    return nil;
+}
+
+- (CGFloat)loadUIScale {
+    NSData *data = self.uiPreferencesURL == nil ? nil : [NSData dataWithContentsOfURL:self.uiPreferencesURL];
+    if (data == nil) return 1.0;
+    NSDictionary *object = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+    if (![object isKindOfClass:[NSDictionary class]] || [object[@"schema_version"] integerValue] != 1) return 1.0;
+    NSNumber *accepted = [self validatedUIScale:[object[@"ui_scale"] doubleValue]];
+    return accepted == nil ? 1.0 : accepted.doubleValue;
+}
+
+- (void)persistUIScale {
+    if (self.uiPreferencesURL == nil) return;
+    NSDictionary *object = @{@"schema_version": @1, @"ui_scale": @(self.uiScale)};
+    NSData *data = [NSJSONSerialization dataWithJSONObject:object options:NSJSONWritingPrettyPrinted error:nil];
+    [data writeToURL:self.uiPreferencesURL options:NSDataWritingAtomic error:nil];
+}
+
+- (void)applyUIScale:(CGFloat)scale persist:(BOOL)persist notifyPage:(BOOL)notifyPage {
+    NSNumber *accepted = [self validatedUIScale:scale];
+    if (accepted == nil) return;
+    self.uiScale = accepted.doubleValue;
+    self.webView.pageZoom = self.uiScale;
+    if (persist) [self persistUIScale];
+    [self updateScaleMenuAvailability];
+    if (notifyPage) [self syncUIScaleToPage];
+}
+
+- (void)syncUIScaleToPage {
+    if (self.webView == nil) return;
+    NSString *script = [NSString stringWithFormat:@"document.documentElement.dataset.uiScale='%.4f';document.documentElement.style.setProperty('--native-titlebar-height','%.4fpx');document.documentElement.style.setProperty('--native-titlebar-collapsed-leading-safe-area','%.4fpx');window.OptionHelperUIScale?.syncFromNative?.(%.4f);", self.uiScale, 36.0 / self.uiScale, 166.0 / self.uiScale, self.uiScale];
+    [self.webView evaluateJavaScript:script completionHandler:nil];
+}
+
+- (void)changeUIScaleBy:(NSInteger)offset {
+    NSArray<NSNumber *> *steps = [self uiScaleSteps];
+    NSInteger current = [steps indexOfObject:@(self.uiScale)];
+    if (current == NSNotFound) current = [steps indexOfObject:@1.0];
+    NSInteger next = MAX(0, MIN((NSInteger)steps.count - 1, current + offset));
+    [self applyUIScale:steps[next].doubleValue persist:YES notifyPage:YES];
+}
+
+- (void)updateScaleMenuAvailability {
+    NSArray<NSNumber *> *steps = [self uiScaleSteps];
+    self.zoomOutMenuItem.enabled = self.uiScale > steps.firstObject.doubleValue;
+    self.zoomInMenuItem.enabled = self.uiScale < steps.lastObject.doubleValue;
+}
+
+- (void)increaseUIScale:(id)sender { [self changeUIScaleBy:1]; }
+- (void)decreaseUIScale:(id)sender { [self changeUIScaleBy:-1]; }
+- (void)resetUIScale:(id)sender { [self applyUIScale:1.0 persist:YES notifyPage:YES]; }
 
 - (void)addEditItem:(NSString *)title action:(SEL)action key:(NSString *)key modifiers:(NSEventModifierFlags)modifiers toMenu:(NSMenu *)menu {
     NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:title action:action keyEquivalent:key];

@@ -54,6 +54,7 @@ PAGE_DIR = RUNTIME_PATHS.module_page_dir("backtester")
 PAGE = PAGE_DIR / "backtester.html"
 UI_DIR = PAGE_DIR / "ui"
 VENDOR_DIR = PAGE_DIR / "vendor"
+BROWSER_DIR = PROJECT_ROOT / "core" / "src" / "runtime" / "browser"
 BRAND_ASSET_DIR = PROJECT_ROOT / "assets" / "icons"
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("OPTIONHELPER_BACKTESTER_PORT", "4281"))
@@ -775,7 +776,8 @@ class Handler(BaseHTTPRequestHandler):
             "/backtester.js": (PAGE_DIR / "backtester.js", "application/javascript; charset=utf-8"),
             "/ui/style.css": (UI_DIR / "style.css", "text/css; charset=utf-8"),
             "/ui/controls.css": (UI_DIR / "controls.css", "text/css; charset=utf-8"),
-            "/vendor/echarts.min.js": (VENDOR_DIR / "echarts.min.js", "application/javascript; charset=utf-8"),
+            "/plotly-chart-system.js": (BROWSER_DIR / "plotly_chart_system.js", "application/javascript; charset=utf-8"),
+            "/vendor/plotly-optionhelper.min.js": (BROWSER_DIR / "vendor" / "plotly-optionhelper.min.js", "application/javascript; charset=utf-8"),
         }
         if self.path == "/api/status":
             return self._json(HTTPStatus.OK, {"ok": True, "module": "backtester"})

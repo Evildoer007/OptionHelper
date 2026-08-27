@@ -21,7 +21,7 @@ from ..enums import PricingMethod
 from ..instruments import OptionRegPathOption
 from ..models import MarketState, ValuationConfig, ValuationState
 from ..results import PricingResult
-from .risk import ThetaRollValue, calculate_standard_greeks
+from .risk import ThetaNotApplicableError, ThetaRollValue, calculate_standard_greeks
 
 
 _IMPLEMENTATION_ID = "standard-optionreg-discrete-mc"
@@ -242,7 +242,7 @@ def price_optionreg_path_monte_carlo(
         maturity = float(instrument.resolved_contract.terms["T"])
         rolled_maturity = maturity - convention.theta_calendar_day_shift / 365.0
         if rolled_maturity <= 0.0:
-            raise ValueError("合同剩余期限不足以计算Theta")
+            raise ThetaNotApplicableError("合同剩余期限不足以计算Theta")
         rolled_contract = _contract_with_maturity(
             instrument.resolved_contract,
             rolled_maturity,

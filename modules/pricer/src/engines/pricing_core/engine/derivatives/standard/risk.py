@@ -15,6 +15,10 @@ from ..results import GreekValue
 PriceMarket = Callable[[MarketState], float]
 
 
+class ThetaNotApplicableError(ValueError):
+    """The contract has no full roll interval left for a Theta estimate."""
+
+
 def effective_dividend_yield(market: MarketState, *, future: bool = False) -> float:
     """Return the dividend yield implied by the selected carry convention.
 
@@ -214,9 +218,13 @@ def calculate_standard_greeks(
         )
 
     rolled = None
+    theta_unavailable_reason = None
     if "theta" in selected_greeks:
-        rolled = theta_roll(convention)
-        if rolled.calendar_day_shift <= 0:
+        try:
+            rolled = theta_roll(convention)
+        except ThetaNotApplicableError as error:
+            theta_unavailable_reason = str(error)
+        if rolled is not None and rolled.calendar_day_shift <= 0:
             raise ValueError("Theta自然日推进必须为正数")
 
     cross_values = None
@@ -266,18 +274,35 @@ def calculate_standard_greeks(
             },
         )
     if "theta" in selected_greeks:
-        core["theta"] = make_risk_value(
-            (rolled.price_points_100 - base) / rolled.calendar_day_shift,
-            unit="pv_points_100_per_calendar_day",
-            bump=float(rolled.calendar_day_shift),
-            difference="forward_roll",
-            basis=basis,
-            time_basis="calendar_day",
-            bump_details={
-                "calendar_day_shift": rolled.calendar_day_shift,
-                "trading_day_shift": rolled.trading_day_shift,
-            },
-        )
+        if rolled is None:
+            core["theta"] = GreekValue(
+                value=None,
+                unit="pv_points_100_per_calendar_day",
+                bump=float(convention.theta_calendar_day_shift),
+                difference="not_applicable",
+                time_basis="calendar_day",
+                bump_details={
+                    "calendar_day_shift": convention.theta_calendar_day_shift,
+                    "trading_day_shift": convention.theta_trading_day_shift,
+                },
+                pv_percent_unit="pv_percent_per_calendar_day",
+                pv_points_100_unit="pv_points_100_per_calendar_day",
+                status="not_applicable",
+                reason=theta_unavailable_reason,
+            )
+        else:
+            core["theta"] = make_risk_value(
+                (rolled.price_points_100 - base) / rolled.calendar_day_shift,
+                unit="pv_points_100_per_calendar_day",
+                bump=float(rolled.calendar_day_shift),
+                difference="forward_roll",
+                basis=basis,
+                time_basis="calendar_day",
+                bump_details={
+                    "calendar_day_shift": rolled.calendar_day_shift,
+                    "trading_day_shift": rolled.trading_day_shift,
+                },
+            )
     if "vega" in selected_greeks:
         core["vega"] = make_risk_value(
             (volatility_up - volatility_down) / (2.0 * volatility_bump) * 0.01,
@@ -334,16 +359,29 @@ def calculate_standard_greeks(
                 "reported_volatility_change": 0.01,
             },
         )
+    if "theta" not in selected_greeks:
+        theta_roll_diagnostics = None
+    elif rolled is None:
+        theta_roll_diagnostics = {
+            "calendar_day_shift": convention.theta_calendar_day_shift,
+            "trading_day_shift": convention.theta_trading_day_shift,
+            "status": "not_applicable",
+            "reason": theta_unavailable_reason,
+        }
+    else:
+        theta_roll_diagnostics = {
+            "calendar_day_shift": rolled.calendar_day_shift,
+            "trading_day_shift": rolled.trading_day_shift,
+            "description": rolled.description,
+            "status": "available",
+        }
+
     diagnostics = {
         "convention": convention.as_dict(),
         "effective_spot_absolute_bump": spot_bump,
         "effective_volatility_absolute_bump": volatility_bump,
         "effective_risk_free_rate_absolute_bump": rate_bump,
-        "theta_roll": None if rolled is None else {
-            "calendar_day_shift": rolled.calendar_day_shift,
-            "trading_day_shift": rolled.trading_day_shift,
-            "description": rolled.description,
-        },
+        "theta_roll": theta_roll_diagnostics,
         "common_random_numbers_required": True,
         "canonical_value_basis": "PV_POINTS_100",
         "risk_free_rate_shock_convention": (
@@ -357,6 +395,7 @@ def calculate_standard_greeks(
 
 __all__ = [
     "StandardGreekConvention",
+    "ThetaNotApplicableError",
     "ThetaRollValue",
     "calculate_standard_greeks",
     "effective_dividend_yield",

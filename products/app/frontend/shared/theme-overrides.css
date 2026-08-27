@@ -1,4 +1,8 @@
 /* App-wide semantic theme layer. Values are defined only by Designer tokens. */
+:root {
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
 html[data-theme="dark"] {
   color-scheme: dark;
 }
@@ -477,4 +481,25 @@ html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-sh
   background: color-mix(in srgb, var(--color-ink) 7%, var(--color-surface)) !important;
   color: var(--color-ink) !important;
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-ink) 10%, transparent) !important;
+}
+
+/* ChatGPT-style workspace material. Only the rail surface is translucent;
+   labels, icons, controls and hit targets retain their normal opacity. */
+html[data-theme="light"] .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .workspace-rail--unbranded {
+  border-right-color: color-mix(in srgb, var(--color-ink) 10%, transparent) !important;
+  background: color-mix(in srgb, var(--color-ground) 88%, transparent) !important;
+  -webkit-backdrop-filter: blur(18px) saturate(112%);
+  backdrop-filter: blur(18px) saturate(112%);
+}
+
+html[data-theme="dark"] .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .workspace-rail--unbranded {
+  border-right-color: color-mix(in srgb, var(--color-ink) 14%, transparent) !important;
+  background: color-mix(in srgb, var(--color-paper) 84%, transparent) !important;
+  -webkit-backdrop-filter: blur(18px) saturate(108%);
+  backdrop-filter: blur(18px) saturate(108%);
+}
+
+html[data-theme="light"] .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .workspace-rail--unbranded :is(.rail-mode-area, .task-rail, .rail-footer),
+html[data-theme="dark"] .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .workspace-rail--unbranded :is(.rail-mode-area, .task-rail, .rail-footer) {
+  background: transparent !important;
 }

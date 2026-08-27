@@ -1,5 +1,6 @@
 import { clearMessage, enhanceSelects, message, request, safeJson } from "/app/frontend/shared/app.js";
 import { currentThemePreference, installThemeControls } from "/app/frontend/shared/theme.js";
+import { setScale } from "/app/frontend/shared/ui-scale.js";
 
 const send = (path, payload) => request(path, { method: "POST", body: safeJson(payload) });
 const sendCredential = (path, payload) => request(path, { method: "POST", body: JSON.stringify(payload) });
@@ -14,13 +15,13 @@ const storageForm = document.querySelector("#storage-form");
 const preferenceForm = document.querySelector("#preferences-form");
 const themePreference = preferenceForm.elements.theme;
 const themeControls = preferenceForm.querySelector("[data-theme-controls]");
+const uiScale = document.querySelector("#preference-ui-scale");
 const dataState = document.querySelector("#data-credential-state");
 const dataStatus = document.querySelector("[data-data-status]");
 const modelStatus = document.querySelector("[data-model-status]");
 const modelRoot = document.querySelector("#model-provider-root");
 const multiAgentRoot = document.querySelector("#multi-agent-preset-root");
 const reviewPolicyRoot = document.querySelector("#review-policy-root");
-const multiAgentStatus = document.querySelector("[data-multi-agent-status]");
 let dataConfigured = false;
 let providerState = { providers: [], builtins: [], default_model_selection: null, openProviderId: null, addMode: false };
 let multiAgentState = {
@@ -76,6 +77,11 @@ themeControls?.addEventListener("optionhelper:themecontrol", (event) => {
   void queuePreferenceSave();
 });
 
+uiScale?.addEventListener("change", () => setScale(uiScale.value));
+document.addEventListener("optionhelper:uiscalechange", (event) => {
+  if (uiScale) uiScale.value = String(event.detail.scale);
+});
+
 function escapeHtml(value) {
   return String(value ?? "").replace(/[&<>\"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]);
 }
@@ -106,6 +112,7 @@ function applySettings(settings) {
   storageForm.elements.export_location_ref.value = settings.storage_export?.export_location_ref || "";
   storageForm.elements.allow_user_selected_directory.value = String(settings.storage_export?.allow_user_selected_directory !== false);
   themePreference.value = currentThemePreference();
+  if (uiScale) uiScale.value = String(window.OptionHelperUIScale?.current?.() || 1);
   enhanceSelects(document);
 }
 
@@ -378,54 +385,23 @@ function normalizeMultiAgentState(payload) {
   return { ...state, runtime_available: readRuntimeState(state).available };
 }
 
-function runtimeStatusText(runtime) {
-  if (runtime.available) return "Runtime可用";
-  if (runtime.status === "unknown") return "Runtime状态未知";
-  return "Runtime不可用";
-}
-
-function presetStatusText(preset) {
-  return preset?.enabled ? "Preset已启用" : "Preset未启用";
-}
-
 function modeIsAvailable(preset, runtime = readRuntimeState()) {
   return Boolean(preset?.enabled && runtime.available);
-}
-
-function modeStatusText(preset, runtime) {
-  return modeIsAvailable(preset, runtime) ? "Mode可用" : "Mode不可用";
 }
 
 function renderMultiAgentPresets() {
   const runtime = readRuntimeState();
   const selected = multiAgentState.presets.find((preset) => preset.preset_id === multiAgentState.selected_preset_id);
-  const selectedStatus = selected
-    ? `${presetStatusText(selected)} · ${runtimeStatusText(runtime)} · ${modeStatusText(selected, runtime)}`
-    : "未找到Preset";
-  multiAgentStatus.textContent = selectedStatus;
-  multiAgentStatus.classList.toggle("is-ready", Boolean(selected && modeIsAvailable(selected, runtime)));
   const presetRows = multiAgentState.presets.map((preset) => {
     const presentation = presetPresentation[preset.preset_id] || { summary: "推荐预设" };
     const selectedClass = preset.preset_id === multiAgentState.selected_preset_id ? "is-selected" : "";
     const modeAvailable = modeIsAvailable(preset, runtime);
-    const status = presetStatusText(preset);
-    const runtimeStatus = runtimeStatusText(runtime);
-    const modeStatus = modeStatusText(preset, runtime);
-    const detailParts = [
-      preset.enabled ? `Preset版本${textValue(preset.version)}` : `Preset原因${textValue(preset.disabled_reason) || "未启用"}`,
-      runtime.version ? `Runtime版本${runtime.version}` : "",
-      runtime.mode ? `Runtime模式${runtime.mode}` : "",
-      runtime.reason ? `Runtime原因${runtime.reason}` : "",
-    ].filter(Boolean);
-    const detail = escapeHtml(detailParts.join(" · ") || "未返回Preset或Runtime详情。");
-    return `<article class="multi-agent-preset-card ${modeAvailable ? "" : "is-disabled"} ${selectedClass}">
+    return `<article class="multi-agent-preset-card ${modeAvailable ? "" : "is-disabled"} ${selectedClass}" aria-disabled="${modeAvailable ? "false" : "true"}">
       <label class="multi-agent-preset-card__head">
-        <input type="radio" name="multi-agent-preset" value="${escapeHtml(preset.preset_id)}" ${preset.preset_id === multiAgentState.selected_preset_id ? "checked" : ""} ${modeAvailable && canEditModel ? "" : "disabled"}>
+        <input type="radio" name="multi-agent-preset" value="${escapeHtml(preset.preset_id)}" aria-label="选择${escapeHtml(preset.display_name)}：${escapeHtml(presentation.summary)}" ${preset.preset_id === multiAgentState.selected_preset_id ? "checked" : ""} ${modeAvailable && canEditModel ? "" : "disabled"}>
         <span class="multi-agent-preset-copy"><strong>${escapeHtml(preset.display_name)}</strong><small>${escapeHtml(presentation.summary)}</small></span>
-        <span class="multi-agent-preset-state"><span>${status}</span><span>${runtimeStatus}</span><span>${modeStatus}</span></span>
       </label>
       ${presetDiagram(preset)}
-      <p class="multi-agent-preset-detail">${detail}</p>
     </article>`;
   }).join("");
   if (!selected) {

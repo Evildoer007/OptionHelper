@@ -293,7 +293,8 @@ def _structure_errors(root: Path) -> list[str]:
     pages_root = root / "assets" / "pages"
     if pages_root.is_dir():
         actual_pages = {path.name for path in pages_root.iterdir() if path.is_dir()}
-        if actual_pages != set(PAGE_MODULES):
+        allowed_page_directories = {*PAGE_MODULES, "vendor"}
+        if actual_pages != allowed_page_directories:
             errors.append(f"操作页面集合错误：{sorted(actual_pages)}")
     figures = root / "assets" / "payoffer" / "figures"
     if figures.is_dir():
@@ -346,6 +347,8 @@ def _capability_interface_errors(root: Path) -> list[str]:
         "assets/pages/module-host-bridge.js": "module-host bridge",
         "assets/pages/module-host-presentation.css": "Capability自有Desk展示样式",
         "assets/pages/module-host-presentation.js": "Capability自有Desk展示开关",
+        "assets/pages/plotly-chart-system.js": "Pricer与Backtester共享Plotly图形系统",
+        "assets/pages/vendor/plotly-optionhelper.min.js": "本地精简Plotly运行包",
         "assets/pages/datafetcher/datafetcher.js": "DataFetcher动态下载页面Bridge",
         "assets/designer/vendor/echarts.min.js": "Reporter portable ECharts资源",
         "scripts/tool_entry.py": "Core正式Tool入口",

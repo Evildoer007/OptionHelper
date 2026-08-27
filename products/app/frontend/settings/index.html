@@ -15,6 +15,7 @@
     <link rel="stylesheet" href="/app/frontend/settings/general-settings.css">
     <link rel="stylesheet" href="/app/frontend/settings/settings-shell.css">
     <script type="module" src="/app/frontend/shared/theme.js"></script>
+    <script type="module" src="/app/frontend/shared/ui-scale.js"></script>
     <script type="module" src="/app/frontend/shared/scrollbar-activity.js"></script>
   </head>
   <body class="setup-page">
@@ -48,6 +49,20 @@
                   </div>
                   <input id="preference-theme" name="theme" type="hidden" value="light">
                 </div>
+                <div class="optionhelper-scale-row">
+                  <div>
+                    <label class="optionhelper-general-title" for="preference-ui-scale">界面缩放</label>
+                    <p>同步调整字体、面板和组件；原生标题栏保持系统尺寸。</p>
+                  </div>
+                  <select id="preference-ui-scale" aria-label="界面缩放比例">
+                    <option value="0.8">80%</option>
+                    <option value="0.9">90%</option>
+                    <option value="1" selected>100%</option>
+                    <option value="1.1">110%</option>
+                    <option value="1.25">125%</option>
+                    <option value="1.4">140%</option>
+                  </select>
+                </div>
                 <p class="optionhelper-general-status form-result" data-form-result="preferences" role="status" aria-live="polite" hidden></p>
               </form>
             </section>
@@ -56,7 +71,7 @@
               <div id="model-provider-root" class="model-provider-root" aria-live="polite"></div>
             </section>
             <section id="multi-agent" class="setting-section" hidden>
-              <div class="setting-section__head"><div><h2>多智能体预设</h2><p>仅在进入Recommender时生效。普通对话继续使用主Agent。</p></div><span class="connection-status" data-multi-agent-status>读取中</span></div>
+              <div class="setting-section__head"><div><h2>多智能体预设</h2><p>仅在进入Recommender时生效。普通对话继续使用主Agent。</p></div></div>
               <div id="multi-agent-preset-root" class="multi-agent-preset-root" aria-live="polite"></div>
               <div id="review-policy-root" class="review-policy-root" aria-live="polite"></div>
             </section>

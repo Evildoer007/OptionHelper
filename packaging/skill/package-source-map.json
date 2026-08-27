@@ -42,6 +42,8 @@
     {"source": "core/src/runtime/browser/module_host_bridge.js", "target": "assets/pages/module-host-bridge.js"},
     {"source": "core/src/runtime/browser/module_host_presentation.js", "target": "assets/pages/module-host-presentation.js"},
     {"source": "core/src/runtime/browser/module_host_presentation.css", "target": "assets/pages/module-host-presentation.css"},
+    {"source": "core/src/runtime/browser/plotly_chart_system.js", "target": "assets/pages/plotly-chart-system.js"},
+    {"source": "core/src/runtime/browser/vendor/plotly-optionhelper.min.js", "target": "assets/pages/vendor/plotly-optionhelper.min.js"},
     {"source": "core/requirements.lock", "target": "scripts/requirements.lock"},
     {"source": "packaging/skill/environment_check.py", "target": "scripts/environment_check.py"}
   ],

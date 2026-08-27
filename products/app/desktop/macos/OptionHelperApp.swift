@@ -35,6 +35,7 @@ private final class OptionHelperTitlebarDragView: NSView {
 
 @main
 final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavigationDelegate, WKScriptMessageHandler {
+    private let uiScaleSteps: [CGFloat] = [0.8, 0.9, 1.0, 1.1, 1.25, 1.4]
     private var backend: Process?
     private var startupPipe: Pipe?
     private var window: NSWindow?
@@ -46,6 +47,10 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
     private var themePreference = "light"
     private var activeOperationCount = 0
     private var closeAfterInterrupt = false
+    private var uiScale: CGFloat = 1.0
+    private var uiPreferencesURL: URL?
+    private var zoomInMenuItem: NSMenuItem?
+    private var zoomOutMenuItem: NSMenuItem?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
@@ -63,6 +68,7 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         startupPipe?.fileHandleForReading.readabilityHandler = nil
         webView?.configuration.userContentController.removeScriptMessageHandler(forName: "optionhelperTheme")
         webView?.configuration.userContentController.removeScriptMessageHandler(forName: "optionhelperRuntime")
+        webView?.configuration.userContentController.removeScriptMessageHandler(forName: "optionhelperUIScale")
         NSApp.removeObserver(self, forKeyPath: #keyPath(NSApplication.effectiveAppearance))
         if let backend, backend.isRunning {
             backend.terminate()
@@ -109,6 +115,9 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
             showFailure("无法创建本地数据目录")
             return
         }
+        uiPreferencesURL = support.appendingPathComponent("ui-preferences.json", isDirectory: false)
+        uiScale = loadUIScale()
+        updateScaleMenuAvailability()
 
         let process = Process()
         process.executableURL = executable
@@ -175,8 +184,11 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         configuration.websiteDataStore = .default()
         // Show the splash before the login page's module graph is evaluated.
         // The login module owns the timer and always removes this class again.
+        let scaleValue = javascriptNumber(uiScale)
+        let titlebarHeight = javascriptNumber(36 / uiScale)
+        let collapsedSafeArea = javascriptNumber(166 / uiScale)
         let startupScript = WKUserScript(
-            source: "document.documentElement.dataset.nativeShell='macos';if (location.pathname === '/') document.documentElement.classList.add('login-boot');",
+            source: "document.documentElement.dataset.nativeShell='macos';document.documentElement.dataset.uiScale='\(scaleValue)';document.documentElement.style.setProperty('--native-titlebar-height','\(titlebarHeight)px');document.documentElement.style.setProperty('--native-titlebar-collapsed-leading-safe-area','\(collapsedSafeArea)px');if (location.pathname === '/') document.documentElement.classList.add('login-boot');",
             injectionTime: .atDocumentStart,
             forMainFrameOnly: true
         )
@@ -189,7 +201,10 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         configuration.userContentController.addUserScript(runtimeStatusScript)
         configuration.userContentController.add(self, name: "optionhelperTheme")
         configuration.userContentController.add(self, name: "optionhelperRuntime")
+        configuration.userContentController.add(self, name: "optionhelperUIScale")
         let view = WKWebView(frame: .zero, configuration: configuration)
+        view.allowsMagnification = false
+        view.pageZoom = uiScale
         view.navigationDelegate = self
         let window = OptionHelperWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1320, height: 860),
@@ -334,8 +349,13 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        syncUIScaleToPage()
         if let window { ensureTitlebarControls(in: window) }
         syncWorkspaceTitlebarControls(for: webView.url)
+    }
+
+    func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+        syncUIScaleToPage()
     }
 
     func windowDidResize(_ notification: Notification) {
@@ -370,6 +390,12 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
     }
 
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        if message.name == "optionhelperUIScale", let value = message.body as? [String: Any],
+           value["type"] as? String == "set_ui_scale", let scale = value["scale"] as? NSNumber,
+           let accepted = validatedUIScale(scale.doubleValue) {
+            applyUIScale(accepted, persist: true, notifyPage: true)
+            return
+        }
         if message.name == "optionhelperRuntime", let value = message.body as? [String: Any] {
             if value["type"] as? String == "active_operations", let count = value["count"] as? Int {
                 activeOperationCount = max(0, count)
@@ -441,8 +467,90 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         addEditItem("全选", action: #selector(NSResponder.selectAll(_:)), key: "a", to: editMenu)
         mainMenu.addItem(editMenuItem)
 
+        let viewMenu = NSMenu(title: "显示")
+        let viewMenuItem = NSMenuItem()
+        viewMenuItem.submenu = viewMenu
+        let zoomIn = NSMenuItem(title: "放大", action: #selector(increaseUIScale(_:)), keyEquivalent: "+")
+        zoomIn.keyEquivalentModifierMask = .command
+        zoomIn.target = self
+        viewMenu.addItem(zoomIn)
+        let zoomOut = NSMenuItem(title: "缩小", action: #selector(decreaseUIScale(_:)), keyEquivalent: "-")
+        zoomOut.keyEquivalentModifierMask = .command
+        zoomOut.target = self
+        viewMenu.addItem(zoomOut)
+        viewMenu.addItem(.separator())
+        let actualSize = NSMenuItem(title: "实际大小", action: #selector(resetUIScale(_:)), keyEquivalent: "0")
+        actualSize.keyEquivalentModifierMask = .command
+        actualSize.target = self
+        viewMenu.addItem(actualSize)
+        zoomInMenuItem = zoomIn
+        zoomOutMenuItem = zoomOut
+        mainMenu.addItem(viewMenuItem)
+
         NSApp.mainMenu = mainMenu
+        updateScaleMenuAvailability()
     }
+
+    private func validatedUIScale(_ value: Double) -> CGFloat? {
+        uiScaleSteps.first { abs(Double($0) - value) < 0.0001 }
+    }
+
+    private func javascriptNumber(_ value: CGFloat) -> String {
+        String(format: "%.4f", locale: Locale(identifier: "en_US_POSIX"), Double(value))
+    }
+
+    private func loadUIScale() -> CGFloat {
+        guard let uiPreferencesURL,
+              let data = try? Data(contentsOf: uiPreferencesURL),
+              let decoded = try? JSONSerialization.jsonObject(with: data),
+              let object = decoded as? [String: Any],
+              (object["schema_version"] as? NSNumber)?.intValue == 1,
+              let value = object["ui_scale"] as? NSNumber,
+              let accepted = validatedUIScale(value.doubleValue) else { return 1.0 }
+        return accepted
+    }
+
+    private func persistUIScale() {
+        guard let uiPreferencesURL,
+              let data = try? JSONSerialization.data(
+                withJSONObject: ["schema_version": 1, "ui_scale": Double(uiScale)],
+                options: [.prettyPrinted, .sortedKeys]
+              ) else { return }
+        try? data.write(to: uiPreferencesURL, options: .atomic)
+    }
+
+    private func applyUIScale(_ scale: CGFloat, persist: Bool, notifyPage: Bool) {
+        guard uiScaleSteps.contains(scale) else { return }
+        uiScale = scale
+        webView?.pageZoom = scale
+        if persist { persistUIScale() }
+        updateScaleMenuAvailability()
+        if notifyPage { syncUIScaleToPage() }
+    }
+
+    private func syncUIScaleToPage() {
+        guard let webView else { return }
+        let value = javascriptNumber(uiScale)
+        let titlebarHeight = javascriptNumber(36 / uiScale)
+        let collapsedSafeArea = javascriptNumber(166 / uiScale)
+        let script = "document.documentElement.dataset.uiScale='\(value)';document.documentElement.style.setProperty('--native-titlebar-height','\(titlebarHeight)px');document.documentElement.style.setProperty('--native-titlebar-collapsed-leading-safe-area','\(collapsedSafeArea)px');window.OptionHelperUIScale?.syncFromNative?.(\(value));"
+        webView.evaluateJavaScript(script, completionHandler: nil)
+    }
+
+    private func changeUIScale(by offset: Int) {
+        let currentIndex = uiScaleSteps.firstIndex(of: uiScale) ?? uiScaleSteps.firstIndex(of: 1.0)!
+        let nextIndex = max(0, min(uiScaleSteps.count - 1, currentIndex + offset))
+        applyUIScale(uiScaleSteps[nextIndex], persist: true, notifyPage: true)
+    }
+
+    private func updateScaleMenuAvailability() {
+        zoomOutMenuItem?.isEnabled = uiScale > uiScaleSteps.first!
+        zoomInMenuItem?.isEnabled = uiScale < uiScaleSteps.last!
+    }
+
+    @objc private func increaseUIScale(_ sender: Any?) { changeUIScale(by: 1) }
+    @objc private func decreaseUIScale(_ sender: Any?) { changeUIScale(by: -1) }
+    @objc private func resetUIScale(_ sender: Any?) { applyUIScale(1.0, persist: true, notifyPage: true) }
 
     private func addEditItem(
         _ title: String,

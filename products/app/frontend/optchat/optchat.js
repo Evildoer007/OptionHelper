@@ -164,6 +164,7 @@ export function normalizeRuntimeEvent(row) {
     seq: row.seq,
     type,
     family,
+    scope: String(row.scope || payload.scope || "").trim().toLowerCase(),
     status,
     summary: summary || defaultRuntimeSummary(family, status, role, toolLabel),
     createdAt: String(row.created_at || row.createdAt || row.timestamp || row.time || payload.created_at || payload.timestamp || "").trim(),
@@ -185,10 +186,12 @@ export function normalizeRuntimeEvent(row) {
 export function projectRuntimeEvent(event) {
   if (!event) return null;
   const isDelta = event.type === "assistant.text_delta" || event.type === "assistant.reasoning_delta";
+  const isMainAgent = event.scope === "main_agent";
+  const mainAgentDetail = event.family === "tool" || event.family === "compaction" || event.family === "recovery";
   return Object.freeze({
     ...event,
     timelineLabel: event.summary,
-    showTimeline: !isDelta && event.family !== "usage",
+    showTimeline: !isDelta && event.family !== "usage" && (!isMainAgent || mainAgentDetail),
     showReasoning: event.family === "reasoning" && event.reasoningAvailable === true && Boolean(event.delta),
     assistantDelta: event.family === "assistant" && event.type === "assistant.text_delta" ? event.delta : "",
     reasoningDelta: event.family === "reasoning" ? event.delta : "",
@@ -513,6 +516,7 @@ export async function startWorkspace(initialMode) {
     return {
       panel,
       details,
+      summaryLabel,
       state,
       events,
       orb,
@@ -535,6 +539,7 @@ export async function startWorkspace(initialMode) {
       usage: null,
       failures: 0,
       outcome: "",
+      runtimeScope: "",
     };
   };
   const updateProcessCard = (map, parent, key, title, event, kind) => {
@@ -571,8 +576,18 @@ export async function startWorkspace(initialMode) {
   const appendRuntimeProjection = (playback, event) => {
     const projection = projectRuntimeEvent(event);
     if (!projection) return;
-    appendProcessTimeline(playback, projection);
-    if (projection.family === "agent") {
+    if (projection.scope === "main_agent" && playback.runtimeScope !== "main_agent") {
+      playback.runtimeScope = "main_agent";
+      playback.summaryLabel.textContent = "正在回复";
+      playback.events.replaceChildren();
+      playback.agentCards.replaceChildren();
+      playback.agentCardMap.clear();
+      playback.agentCards.parentElement.hidden = true;
+    }
+    const hideMainAgentBoilerplate = playback.runtimeScope === "main_agent"
+      && ["request", "routing", "answer", "terminal"].includes(projection.type);
+    if (!hideMainAgentBoilerplate) appendProcessTimeline(playback, projection);
+    if (projection.family === "agent" && projection.role !== "MainAgent" && playback.runtimeScope !== "main_agent") {
       updateProcessCard(
         playback.agentCardMap,
         playback.agentCards,
@@ -652,6 +667,15 @@ export async function startWorkspace(initialMode) {
     playback.cancelButton.hidden = true;
     playback.orb.setState("shaping");
     playback.orb.setPaused(true);
+    playback.details.open = false;
+    if (playback.runtimeScope === "main_agent") {
+      playback.summaryLabel.textContent = "本轮答复";
+      // Text deltas are a live-generation aid. Once the canonical assistant
+      // message is committed below the process panel, keep only reasoning and
+      // actual tool activity here so reopening the panel never duplicates it.
+      playback.assistantBody.textContent = "";
+      playback.assistantOutput.hidden = true;
+    }
     setRuntimeLiveStatus(terminalCopy);
   };
   const appendProcessEvents = (playback, rows, terminal = false) => {
@@ -1475,6 +1499,7 @@ export async function startWorkspace(initialMode) {
       moduleFrameLoadTimers.delete(moduleName);
       frame.dataset.ready = "true";
       delete frame.dataset.loadError;
+      window.OptionHelperUIScale?.syncFrame?.(frame);
       deliverContext(moduleName);
       if (moduleContexts.has(moduleName)) clearModuleLoading(moduleName, taskId);
     });

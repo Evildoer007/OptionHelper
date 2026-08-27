@@ -70,4 +70,38 @@
   outline-offset: 2px;
 }
 
+.setup-page .optionhelper-scale-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 28px;
+  padding: 22px 0;
+  border-top: 1px solid var(--color-rule);
+}
+
+.setup-page .optionhelper-scale-row > div { min-width: 0; }
+
+.setup-page .optionhelper-scale-row p {
+  margin: 3px 0 0;
+  color: var(--color-muted);
+  font-size: 12px;
+  line-height: 19px;
+}
+
+.setup-page .optionhelper-scale-row select {
+  width: 132px;
+  min-width: 132px;
+  min-height: 44px;
+  padding: 0 36px 0 12px;
+  border: 1px solid var(--color-rule-strong);
+  border-radius: 9px;
+  background-color: var(--color-paper);
+  color: var(--color-ink);
+}
+
+@media (max-width: 620px) {
+  .setup-page .optionhelper-scale-row { align-items: stretch; flex-direction: column; gap: 10px; }
+  .setup-page .optionhelper-scale-row select { width: 100%; }
+}
+
 .setup-page .optionhelper-general-status { margin: var(--space-md) 0 0; }

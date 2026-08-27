@@ -440,12 +440,9 @@ def _risk_price(price_one: PriceOne, market: Any, maturity_years: float, risk_gr
         expected_calendar_errors = (
             "OptionReg路径MC注入交易sessions未覆盖完整剩余合同期限",
             "价格路径终点",
-            "合同剩余期限不足以计算Theta",
         )
         if not any(token in message for token in expected_calendar_errors):
             raise
-        if "合同剩余期限不足以计算Theta" in message:
-            return None, "风险点距到期不足一个完整Theta滚动日，标记not_applicable。"
         return None, "风险点不能与真实交易日历对齐，剩余期限内不足两个真实交易session或会截断合同路径，标记not_applicable；未补造weekday。"
 
 
@@ -455,6 +452,16 @@ def _greek(priced: tuple[Any | None, str | None], name: str) -> float | None:
         return None
     value = result.greeks.get(name)
     return value.value if value is not None else None
+
+
+def _greek_state(priced: tuple[Any | None, str | None], name: str) -> tuple[str, str | None]:
+    result, point_reason = priced
+    if result is None:
+        return "not_applicable", point_reason
+    value = result.greeks.get(name)
+    if value is None or value.value is None or value.status != "available":
+        return "not_applicable", None if value is None else value.reason
+    return "ok", None
 
 
 def _random_source(priced: tuple[Any | None, str | None]) -> dict[str, Any] | None:
@@ -483,6 +490,16 @@ def _curve(
         (result.greeks[greek] for result, _reason in priced if result is not None and greek in result.greeks),
         None,
     )
+    points = []
+    for x, value in zip(xs, priced, strict=True):
+        status, reason = _greek_state(value, greek)
+        points.append({
+            "x": x,
+            "y": _greek(value, greek),
+            "status": status,
+            "reason": reason,
+            "random_source": _random_source(value),
+        })
     return {
         "key": key, "name": name,
         "x_axis": {"name": x_name, "unit": x_unit},
@@ -490,16 +507,7 @@ def _curve(
         "method": method,
         "domain": dict(domain),
         "annotations": [dict(value) for value in annotations],
-        "points": [
-            {
-                "x": x,
-                "y": _greek(value, greek),
-                "status": "not_applicable" if value[1] else "ok",
-                "reason": value[1],
-                "random_source": _random_source(value),
-            }
-            for x, value in zip(xs, priced, strict=True)
-        ],
+        "points": points,
     }
 
 
@@ -521,12 +529,13 @@ def _surface(
     for time_index, row in enumerate(grid):
         for spot_index, priced in enumerate(row):
             result, reason = priced
+            status, greek_reason = _greek_state(priced, greek)
             data.append({
                 "value": [spot_index, time_index, _greek(priced, greek)],
                 "standard_error_points_100": None if result is None else result.standard_error_points_100,
                 "path_pv_sha256_float64": None if result is None else result.diagnostics.get("path_pv_sha256_float64"),
-                "status": "not_applicable" if reason else "ok",
-                "reason": reason,
+                "status": status,
+                "reason": greek_reason,
                 "random_source": _random_source(priced),
             })
     first_value = next(
@@ -565,7 +574,8 @@ def _spot_time_scenarios(
                 "standard_error_points_100": None if result is None else result.standard_error_points_100,
                 "standard_error_percent": None if result is None else result.standard_error_percent,
                 "value_basis": None if result is None else result.value_basis, "method": method,
-                "status": "not_applicable" if reason else "ok", "reason": reason,
+                "status": "not_applicable" if result is None else "ok",
+                "reason": reason if result is None else None,
                 "greeks": {name.capitalize(): _greek((result, reason), name) for name in ("delta", "gamma", "theta", "vega", "rho")},
                 "path_pv_sha256_float64": None if result is None else result.diagnostics.get("path_pv_sha256_float64"),
                 "random_source": _random_source((result, reason)),

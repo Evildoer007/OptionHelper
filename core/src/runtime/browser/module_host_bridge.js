@@ -839,11 +839,23 @@
     if (event.data?.type === "optionhelper.module-visibility") {
       if (hostedInDesk && (!bridgeNonce || event.data?.bridge_nonce !== bridgeNonce || event.source !== window.parent)) return;
       if (event.data?.active !== true) closeChoiceControls();
+      if (typeof CustomEvent === "function") {
+        document.dispatchEvent(new CustomEvent("optionhelper:modulevisibility", { detail: { active: event.data?.active === true } }));
+      }
       return;
     }
     if (event.data?.type === "optionhelper.module-theme") {
       if (hostedInDesk && (!bridgeNonce || event.data?.bridge_nonce !== bridgeNonce || event.source !== window.parent)) return;
       applyTheme(event.data?.theme, event.data?.preference);
+      return;
+    }
+    if (event.data?.type === "optionhelper.ui-scale") {
+      if (hostedInDesk && (!bridgeNonce || event.data?.bridge_nonce !== bridgeNonce || event.source !== window.parent)) return;
+      const scale = Number(event.data?.scale);
+      if (![0.8, 0.9, 1, 1.1, 1.25, 1.4].includes(scale)) return;
+      document.documentElement.dataset.uiScale = String(scale);
+      document.dispatchEvent(new CustomEvent("optionhelper:uiscalechange", {detail: {scale}}));
+      requestAnimationFrame(() => requestAnimationFrame(() => window.dispatchEvent(new Event("resize"))));
       return;
     }
     if (event.data?.type !== "optionhelper.module-host-context") return;

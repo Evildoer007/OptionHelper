@@ -1261,6 +1261,9 @@ def _browser_runtime_event(value: Mapping[str, Any]) -> dict[str, Any] | None:
             "recovered": "recovered", "closed": "completed",
         }.get(suffix, "running")
     safe_payload: dict[str, Any] = {}
+    runtime_scope = str(payload.get("runtime_scope", "")).strip().lower()
+    if runtime_scope not in {"main_agent", "recommender"}:
+        runtime_scope = ""
     if event_type in {"assistant.text_delta", "assistant.reasoning_delta"}:
         delta = payload.get("delta", payload.get("text", ""))
         if isinstance(delta, str):
@@ -1313,7 +1316,7 @@ def _browser_runtime_event(value: Mapping[str, Any]) -> dict[str, Any] | None:
         else "正在整理上下文。" if event_type.startswith("compaction.")
         else "研究流程正在运行。"
     )
-    return {
+    projected = {
         "type": event_type,
         "status": status,
         "summary": summary,
@@ -1323,6 +1326,9 @@ def _browser_runtime_event(value: Mapping[str, Any]) -> dict[str, Any] | None:
         "step": value.get("step") if isinstance(value.get("step"), int) else None,
         "payload": safe_payload,
     }
+    if runtime_scope:
+        projected["scope"] = runtime_scope
+    return projected
 
 
 def _content_hash(content: object) -> str:

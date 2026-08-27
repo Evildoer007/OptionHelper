@@ -27,6 +27,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 from .agent_runtime.conversation_service import ConversationService
 from .agent_runtime.context_builder import ContextBuilder, ResultStoreObservationBuilder
 from .agent_runtime.agent_loop import AgentLoop
+from .agent_runtime.conversation_agent import OptionConversationAgent
 from .agent_runtime.recommender_adapter import AppConversationToolExecutor, RecommenderAdapter
 from .agent_runtime.multi_agent import (
     AgentRunConcurrencyGate,
@@ -97,7 +98,7 @@ FRONTEND_ASSETS = frozenset({
     "optchat/index.html", "optchat/optchat.js",
     "optdesk/index.html", "optdesk/optdesk.js",
     "settings/index.html", "settings/settings.js", "settings/model-providers.css", "settings/general-settings.css", "settings/settings-shell.css",
-    "shared/styles.css", "shared/refinement.css", "shared/theme-overrides.css", "shared/app.js", "shared/transition-scope.js", "shared/theme-bootstrap.js", "shared/theme.js", "shared/scrollbar-activity.js", "shared/vol-surface.js", "shared/thinking-orb.js", "shared/thinking-orbs-engine.js",
+    "shared/styles.css", "shared/refinement.css", "shared/theme-overrides.css", "shared/app.js", "shared/transition-scope.js", "shared/theme-bootstrap.js", "shared/theme.js", "shared/ui-scale.js", "shared/scrollbar-activity.js", "shared/vol-surface.js", "shared/thinking-orb.js", "shared/thinking-orbs-engine.js",
 })
 _CAPABILITY_CSP = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'self'; form-action 'self'"
 _AGENT_RUNTIME_MODES = frozenset({"disabled", "shadow", "active"})
@@ -407,22 +408,35 @@ class AppServer:
         # server starts accepting ordinary module requests. Prepared contracts
         # are hidden by ContractStore until this idempotent recovery commits.
         self.conversation_tools.reconcile_prepared_recommendation_approvals()
+        conversation_context = ContextBuilder(
+            self.tasks,
+            self.contracts,
+            self.policy,
+            catalog_version=str(self.registry.manifest["catalog_version"]),
+            result_store=self.results,
+        )
+        conversation_observations = ResultStoreObservationBuilder(self.results)
+        self.conversation_agent = OptionConversationAgent(
+            self.model_gateway,
+            self.tasks,
+            conversation_context,
+            self.conversation_tools,
+            conversation_observations,
+            runtime_mode=self.agent_runtime_mode,
+            session_root=self._documents._root / "agent-runtime-sessions",
+            is_cancelled=self.tasks.is_cancelled,
+        )
         self.conversations = ConversationService(
             self.tasks,
             self.model_gateway,
             agent_loop=AgentLoop(
                 gateway=self.model_gateway,
-                context_builder=ContextBuilder(
-                    self.tasks,
-                    self.contracts,
-                    self.policy,
-                    catalog_version=str(self.registry.manifest["catalog_version"]),
-                    result_store=self.results,
-                ),
+                context_builder=conversation_context,
                 tool_executor=self.conversation_tools,
                 recommender=self.recommender,
                 is_cancelled=self.tasks.is_cancelled,
-                observation_builder=ResultStoreObservationBuilder(self.results),
+                observation_builder=conversation_observations,
+                conversation_agent=self.conversation_agent,
                 dispatch_checkpoints=self.dispatch_checkpoints,
                 conversation_session_id=self.tasks.conversation_session_id,
                 visible_event_sink=self.tasks.append_visible_process_event,
@@ -451,6 +465,9 @@ class AppServer:
         return self.url
 
     def shutdown(self) -> None:
+        close_conversations = getattr(self.conversation_agent, "close_all", None)
+        if callable(close_conversations):
+            close_conversations()
         close_runtimes = getattr(self.recommender, "close_all_runtimes", None)
         if callable(close_runtimes):
             close_runtimes()
@@ -2428,6 +2445,8 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
             "assets/pages/module-host-bridge.js",
             "assets/pages/module-host-presentation.css",
             "assets/pages/module-host-presentation.js",
+            "assets/pages/plotly-chart-system.js",
+            "assets/pages/vendor/plotly-optionhelper.min.js",
         }
         if relative not in shared_page_assets | shared_designer_assets and (
             len(parts) < 4 or parts[0:2] != ("assets", "pages") or parts[2] not in PAGE_MODULES

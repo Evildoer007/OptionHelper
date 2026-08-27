@@ -65,6 +65,19 @@ class ObservationPort(Protocol):
     ) -> Mapping[str, Any]: ...
 
 
+class ConversationAgentPort(Protocol):
+    def run_with_execution(
+        self,
+        identity: SessionIdentity,
+        task_id: str,
+        message: str,
+        *,
+        selection: ModelSelection | None = None,
+        execution_ids: Mapping[str, str],
+        context: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]: ...
+
+
 @dataclass(frozen=True)
 class AgentDecision:
     action: str
@@ -114,6 +127,7 @@ class AgentLoop:
         timeout_seconds: float = 45.0,
         is_cancelled: Callable[[SessionIdentity, str], bool] | None = None,
         observation_builder: ObservationPort | None = None,
+        conversation_agent: ConversationAgentPort | None = None,
         dispatch_checkpoints: DurabilityCheckpointStore | None = None,
         conversation_session_id: Callable[[SessionIdentity, str], SessionId] | None = None,
         visible_event_sink: Callable[[SessionIdentity, str, str | None, str, str, str], None] | None = None,
@@ -128,6 +142,7 @@ class AgentLoop:
         self._timeout_seconds = timeout_seconds
         self._is_cancelled = is_cancelled or (lambda _identity, _task_id: False)
         self._observation_builder = observation_builder
+        self._conversation_agent = conversation_agent
         self._dispatch_checkpoints = dispatch_checkpoints
         self._conversation_session_id = conversation_session_id
         self._visible_event_sink = visible_event_sink
@@ -213,6 +228,39 @@ class AgentLoop:
                     tool_names = {str(item.get("name")) for item in context.get("tool_catalog", []) if isinstance(item, Mapping)}
                     if "reporter.run" in tool_names:
                         return self._run_dual_delivery(identity, task_id, message, observations, round_number)
+                if round_number == 1 and self._conversation_agent is not None:
+                    try:
+                        return self._conversation_agent.run_with_execution(
+                            identity,
+                            task_id,
+                            message,
+                            selection=selection,
+                            execution_ids=dict(execution_ids or {}),
+                            context=context,
+                        )
+                    except UnavailableCapabilityError as error:
+                        # One-release compatibility path: when the dedicated
+                        # runtime is explicitly unavailable, keep the existing
+                        # strict decision loop instead of changing workflow
+                        # semantics or losing the request.
+                        if error.capability == "natural_conversation_agent":
+                            pass
+                        else:
+                            return _result(
+                                "unavailable",
+                                f"当前无法继续：{_safe_error(error)}",
+                                observations,
+                                round_number,
+                            )
+                    except (AuthorizationError, ValidationError, ValueError) as error:
+                        return _result(
+                            "unavailable",
+                            f"当前无法继续：{_safe_error(error)}",
+                            observations,
+                            round_number,
+                        )
+                    except Exception:
+                        return _result("unavailable", "当前自然对话运行时未返回可用答复。", observations, round_number)
                 decision_context = _model_context(
                     context,
                     observations=observations,

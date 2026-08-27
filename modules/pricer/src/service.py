@@ -34,6 +34,7 @@ from runtime.protocol.models import (
 from runtime.protocol.module_host import ModuleHostContext, require_host_bound_run_contract
 
 from .config import PricingConfig
+from .model_router import resolve_route
 from .models import HistoricalData, PricingInput, TradingCalendarData, validate_market_data_asset
 from .engines.pricing_core.optionhelper_core import capability_for
 from .engines.pricing_core.engine.derivatives.results import (
@@ -58,10 +59,22 @@ PAGE_DIR = RUNTIME_PATHS.module_page_dir("pricer")
 PAGE = PAGE_DIR / "pricer.html"
 UI_DIR = PAGE_DIR / "ui"
 VENDOR_DIR = PAGE_DIR / "vendor"
+BROWSER_DIR = PROJECT_ROOT / "core" / "src" / "runtime" / "browser"
 ICON_DIR = PROJECT_ROOT / "assets" / "icons"
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("OPTIONHELPER_PRICER_PORT", "4280"))
 _TEST_ONLY_PRICING_FIELDS = frozenset({"demo_mode", "demo_calendar"})
+_NON_EDITABLE_CONTRACT_TERMS = frozenset({
+    "monitor",
+    "pricing_methods",
+    "constraints",
+    "derived_terms",
+    "S0",
+    "S0Vec",
+    "N",
+    "Nvar",
+    "Nvega",
+})
 
 
 def _path_summaries(product: Mapping[str, Any]) -> list[dict[str, str]]:
@@ -90,8 +103,8 @@ def static_assets() -> dict[str, tuple[Path, str]]:
         "/ui/greeks-workbench.css": (UI_DIR / "greeks-workbench.css", "text/css; charset=utf-8"),
         "/ui/date-control.js": (UI_DIR / "date-control.js", "application/javascript; charset=utf-8"),
         "/ui/greeks-workbench.js": (UI_DIR / "greeks-workbench.js", "application/javascript; charset=utf-8"),
-        "/vendor/echarts.min.js": (VENDOR_DIR / "echarts.min.js", "application/javascript; charset=utf-8"),
-        "/vendor/echarts-gl.min.js": (VENDOR_DIR / "echarts-gl.min.js", "application/javascript; charset=utf-8"),
+        "/plotly-chart-system.js": (BROWSER_DIR / "plotly_chart_system.js", "application/javascript; charset=utf-8"),
+        "/vendor/plotly-optionhelper.min.js": (BROWSER_DIR / "vendor" / "plotly-optionhelper.min.js", "application/javascript; charset=utf-8"),
     }
 
 
@@ -113,14 +126,16 @@ class PricerRuntime:
         for product_id, product in registry["products"].items():
             terms = product["terms"]
             capability = capability_for(product_id)
+            auto_route = resolve_route(product_id, terms["pricing_methods"], "auto")
             mapping = product_mapping(product_id)
             fields = []
             for key, value in terms.items():
-                if key in {"monitor", "pricing_methods", "constraints", "derived_terms", "N", "Nvar", "Nvega"}:
+                if key in _NON_EDITABLE_CONTRACT_TERMS:
                     continue
                 # OptionReg may carry formula metadata used by the shared
-                # evaluator (for example payoff_normalizer).  Only fields
-                # declared in term_catalog are user-editable page inputs.
+                # evaluator. Internal normalized coordinates and settlement
+                # bases stay in ResolvedContract; only public term_catalog
+                # fields are projected as user-editable page inputs.
                 metadata = catalog.get(key)
                 if not isinstance(metadata, Mapping):
                     continue
@@ -145,6 +160,7 @@ class PricerRuntime:
                 "pricer_status": "supported" if mapping.status == "supported" else "unsupported",
                 "pricer_availability": mapping.status,
                 "pricer_methods": list(capability.methods) if capability else [],
+                "auto_pricer_method": auto_route.method if auto_route else None,
                 "pricer_structure": "discrete_path_monte_carlo" if mapping.structure == "OPTIONREG_PATH" else mapping.structure.casefold(),
                 "pricer_family": mapping.family,
                 "pricer_reason": mapping.reason,

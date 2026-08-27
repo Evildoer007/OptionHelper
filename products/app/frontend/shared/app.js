@@ -296,6 +296,7 @@ export async function initializeWorkspace(mode, { onModeChange } = {}) {
   }
 
   const accountMenuRoot = shell.querySelector("[data-account-menu-root]");
+  const accountRail = accountMenuRoot?.closest(".workspace-rail");
   const accountMenuToggle = accountMenuRoot?.querySelector("[data-account-menu-toggle]");
   const accountMenu = accountMenuRoot?.querySelector(".rail-account-menu");
   const logoutButton = accountMenuRoot?.querySelector("[data-logout]");
@@ -313,6 +314,7 @@ export async function initializeWorkspace(mode, { onModeChange } = {}) {
     if (!accountMenu || !accountMenuToggle) return;
     accountMenu.hidden = !open;
     accountMenuToggle.setAttribute("aria-expanded", String(open));
+    accountRail?.setAttribute("data-account-menu-open", String(open));
     if (open && focus) accountMenu.querySelector('[role="menuitem"]')?.focus();
   };
   if (accountMenuRoot && accountMenuToggle && accountMenu && accountMenuRoot.dataset.accountMenuReady !== "true") {
@@ -397,7 +399,7 @@ function installLayoutControls(shell) {
   const railSplitter = shell.querySelector('[data-workspace-splitter="rail"]');
   const contextSplitter = shell.querySelector('[data-workspace-splitter="context"]');
   const limits = {
-    rail: { variable: "--rail-width", minimum: 197, maximum: 440, fallback: 300 },
+    rail: { variable: "--rail-width", minimum: 197, maximum: 440, fallback: 360 },
     report: { variable: "--report-width", minimum: 280, maximum: 480, fallback: 332 },
   };
   const readStored = (key, fallback) => {
@@ -452,6 +454,14 @@ function installLayoutControls(shell) {
   };
   const setRailCollapsed = (collapsed, persist = false) => {
     shell.dataset.railCollapsed = String(collapsed);
+    if (collapsed) {
+      const accountRoot = shell.querySelector("[data-account-menu-root]");
+      const accountMenu = accountRoot?.querySelector(".rail-account-menu");
+      const accountToggle = accountRoot?.querySelector("[data-account-menu-toggle]");
+      if (accountMenu) accountMenu.hidden = true;
+      accountToggle?.setAttribute("aria-expanded", "false");
+      accountRoot?.closest(".workspace-rail")?.setAttribute("data-account-menu-open", "false");
+    }
     railToggle?.setAttribute("aria-expanded", String(!collapsed));
     railToggle?.setAttribute("aria-label", collapsed ? "展开任务栏" : "收起任务栏");
     railToggle?.setAttribute("title", collapsed ? "展开任务栏" : "收起任务栏");

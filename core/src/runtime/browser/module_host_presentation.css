@@ -27,6 +27,7 @@ html[data-optionhelper-app-hosted="true"] .app-shell {
  * workbench: source on the left, results in the centre and inputs on the right.
  */
 html[data-optionhelper-app-hosted="true"] {
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
   --red: var(--color-brand-red);
   --red-deep: var(--color-brand-red-deep);
   --gold: var(--color-risk-gold);
@@ -907,6 +908,38 @@ html[data-optionhelper-app-hosted="true"] .audit-details > .table-wrap {
   overflow: auto;
   border: 1px solid var(--rule) !important;
   border-radius: 8px !important;
+}
+
+/* Pricer and Backtester use one restrained three-rule table language.  Dense
+ * ledgers remain scrollable, while vertical boxes and alternating table skins
+ * are intentionally removed. */
+html[data-optionhelper-app-hosted="true"] :is(.pricing-app, .backtest-app) .table-wrap {
+  border: 0 !important;
+  border-top: 1px solid var(--rule) !important;
+  border-bottom: 1px solid var(--rule) !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+}
+
+html[data-optionhelper-app-hosted="true"] :is(.pricing-app, .backtest-app) .data-table {
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+html[data-optionhelper-app-hosted="true"] :is(.pricing-app, .backtest-app) .data-table th {
+  padding: 11px 12px;
+  border: 0;
+  border-bottom: 1px solid var(--rule);
+  background: var(--paper) !important;
+  color: var(--ink);
+}
+
+html[data-optionhelper-app-hosted="true"] :is(.pricing-app, .backtest-app) .data-table td {
+  padding: 11px 12px;
+  border: 0;
+  background-color: var(--paper);
 }
 
 html[data-optionhelper-app-hosted="true"] :is(.notice, .notice-area .notice) {
