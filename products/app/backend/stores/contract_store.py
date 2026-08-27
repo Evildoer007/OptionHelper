@@ -134,7 +134,7 @@ class ContractStore:
             raise ValidationError("新方案必须使用不同的ResolvedContract")
         return replacement
 
-    def upgrade_legacy_calendar_evidence(
+    def refresh_calendar_evidence(
         self,
         identity: SessionIdentity,
         task_id: str,
@@ -143,16 +143,14 @@ class ContractStore:
         catalog_version: str,
         expected_contract_fingerprint: str,
     ) -> dict[str, Any]:
-        """Replace only an early unverified calendar declaration.
+        """Refresh only the calendar evidence of an economically unchanged contract.
 
-        Old Desk builds could freeze a vanilla contract before historical data
-        carried provider-verified calendar provenance.  That missing evidence
-        must not make a current, otherwise identical task permanently
-        unusable.  This narrow migration accepts a newly compiled contract
-        only when every economic fact is unchanged and the old contract has no
+        A wider historical backtest can require a longer provider-verified
+        calendar snapshot than the one originally frozen into a vanilla
+        contract.  This narrow refresh accepts a newly compiled contract only
+        when every economic fact is unchanged and the old contract has no
         resolved observation schedule.  Structured contracts therefore stay
-        immutable and require a new research task instead of silently moving
-        observation dates.
+        immutable and never move observation dates silently.
         """
 
         task = self._state.read("tasks").get(task_id)
@@ -170,12 +168,23 @@ class ContractStore:
             if existing.get("contract_fingerprint") != expected_contract_fingerprint:
                 raise ValidationError("当前任务的ResolvedContract已变化；请刷新后重试")
             _require_calendar_evidence_only_change(existing, replacement)
+            history = existing.get("contract_history", [])
+            if not isinstance(history, list) or not all(isinstance(item, Mapping) for item in history):
+                raise ValidationError("当前任务的ResolvedContract历史无效")
             value[key] = {
                 **replacement,
                 "created_at": existing.get("created_at", replacement["created_at"]),
                 "active_variant_id": existing.get("active_variant_id", _variant_id(replacement)),
-                "contract_history": existing.get("contract_history", []),
+                "contract_history": [*history, _active_snapshot(existing)],
                 "candidate_contract_variants": _candidate_variants(existing),
+                "calendar_evidence_refresh": {
+                    "from_contract_fingerprint": expected_contract_fingerprint,
+                    "from_calendar_id": _calendar_fact(existing, "calendar_id"),
+                    "from_calendar_revision": _calendar_fact(existing, "calendar_revision"),
+                    "to_calendar_id": _calendar_fact(replacement, "calendar_id"),
+                    "to_calendar_revision": _calendar_fact(replacement, "calendar_revision"),
+                    "refreshed_at": datetime.now(timezone.utc).isoformat(),
+                },
                 "calendar_evidence_migration": {
                     "from_contract_fingerprint": expected_contract_fingerprint,
                     "from_calendar_id": _calendar_fact(existing, "calendar_id"),
@@ -186,6 +195,25 @@ class ContractStore:
             return value
 
         return self._state.update("contracts", update)[key]
+
+    def upgrade_legacy_calendar_evidence(
+        self,
+        identity: SessionIdentity,
+        task_id: str,
+        prepared: Mapping[str, Any],
+        *,
+        catalog_version: str,
+        expected_contract_fingerprint: str,
+    ) -> dict[str, Any]:
+        """Compatibility alias for callers using the retired migration name."""
+
+        return self.refresh_calendar_evidence(
+            identity,
+            task_id,
+            prepared,
+            catalog_version=catalog_version,
+            expected_contract_fingerprint=expected_contract_fingerprint,
+        )
 
     def put_candidate_variant(
         self,
@@ -651,16 +679,25 @@ def _require_calendar_evidence_only_change(existing: Mapping[str, Any], replacem
     target_identity = target.get("identity")
     if not isinstance(source_identity, Mapping) or not isinstance(target_identity, Mapping):
         raise ValidationError("旧ResolvedContract identity无效")
-    if not _has_unverified_calendar(source_identity):
-        raise ValidationError("当前任务不需要升级交易日历证据")
     if not _has_verified_calendar(target_identity):
         raise ValidationError("新交易日历证据无效")
+    source_calendar_id = source_identity.get("calendar_id")
+    target_calendar_id = target_identity.get("calendar_id")
+    source_calendar_revision = source_identity.get("calendar_revision")
+    target_calendar_revision = target_identity.get("calendar_revision")
+    if _has_verified_calendar(source_identity) and source_calendar_id != target_calendar_id:
+        raise ValidationError("交易日历证据刷新不得切换交易所日历")
+    if source_calendar_id == target_calendar_id and source_calendar_revision == target_calendar_revision:
+        raise ValidationError("当前任务的交易日历证据没有变化")
     if any(
         source_identity.get(field) != target_identity.get(field)
         for field in set(source_identity) | set(target_identity)
         if field not in _CALENDAR_FACTS
     ):
         raise ValidationError("交易日历升级不得改变产品或合同身份")
+    source_schedules = source.get("resolved_schedules")
+    if isinstance(source_schedules, Mapping) and source_schedules:
+        raise ValidationError("含冻结观察日的合同不得自动刷新交易日历证据")
     if any(source.get(field) != target.get(field) for field in ("terms", "term_sources", "paths", "resolved_schedules")):
         raise ValidationError("交易日历升级不得改变产品条款、收益路径或观察日")
 

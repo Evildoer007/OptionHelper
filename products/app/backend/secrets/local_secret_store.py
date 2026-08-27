@@ -92,9 +92,95 @@ class LocalSecretStore:
             except FileNotFoundError:
                 return
 
+    def stage(self, secret_ref: SecretRef, value: str) -> None:
+        """Write a migration candidate without making it runtime-visible."""
+
+        self._validate_reference(secret_ref)
+        if not isinstance(value, str) or not value.strip():
+            raise ValidationError("凭据不能为空")
+        encoded = value.encode("utf-8")
+        if len(encoded) > self._MAX_SECRET_BYTES:
+            raise ValidationError("凭据内容过大")
+        migration_root = self._migration_root()
+        target = self._staged_path(secret_ref)
+        with self._lock:
+            descriptor, temporary_name = tempfile.mkstemp(
+                prefix=".credential-migration-", suffix=".tmp", dir=migration_root,
+            )
+            try:
+                os.fchmod(descriptor, 0o600)
+                with os.fdopen(descriptor, "wb") as stream:
+                    stream.write(encoded)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.replace(temporary_name, target)
+                os.chmod(target, 0o600)
+            finally:
+                if os.path.exists(temporary_name):
+                    os.unlink(temporary_name)
+
+    def resolve_staged(self, secret_ref: SecretRef) -> str:
+        """Read a migration candidate using the same file-safety checks."""
+
+        self._validate_reference(secret_ref)
+        return self._read_path(self._staged_path(secret_ref))
+
+    def promote_staged(self, secret_ref: SecretRef) -> None:
+        """Atomically make a verified migration candidate authoritative."""
+
+        self._validate_reference(secret_ref)
+        with self._lock:
+            source = self._staged_path(secret_ref)
+            if not source.is_file() or source.is_symlink():
+                raise UnavailableCapabilityError("本机凭据缺失", "未找到已验证的凭据迁移候选")
+            os.replace(source, self._path(secret_ref))
+            os.chmod(self._path(secret_ref), 0o600)
+
+    def discard_staged(self, secret_ref: SecretRef) -> None:
+        self._validate_reference(secret_ref)
+        with self._lock:
+            try:
+                self._staged_path(secret_ref).unlink()
+            except FileNotFoundError:
+                return
+
     def _path(self, secret_ref: SecretRef) -> Path:
         material = f"{secret_ref.provider}\0{secret_ref.key}".encode("utf-8")
         return self._root / f"{hashlib.sha256(material).hexdigest()}.secret"
+
+    def _staged_path(self, secret_ref: SecretRef) -> Path:
+        material = f"{secret_ref.provider}\0{secret_ref.key}".encode("utf-8")
+        return self._migration_root() / f"{hashlib.sha256(material).hexdigest()}.candidate"
+
+    def _migration_root(self) -> Path:
+        root = self._root / ".migration"
+        root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        os.chmod(root, 0o700)
+        return root
+
+    def _read_path(self, path: Path) -> str:
+        with self._lock:
+            try:
+                metadata = path.lstat()
+            except FileNotFoundError as error:
+                raise UnavailableCapabilityError("本机凭据缺失", "未找到本机凭据") from error
+            if not stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+                raise UnavailableCapabilityError("本机凭据存储", "本机凭据文件状态异常")
+            flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+            descriptor = os.open(path, flags)
+            try:
+                value = os.read(descriptor, self._MAX_SECRET_BYTES + 1)
+            finally:
+                os.close(descriptor)
+        if not value or len(value) > self._MAX_SECRET_BYTES:
+            raise UnavailableCapabilityError("本机凭据缺失", "本机凭据为空或无效")
+        try:
+            decoded = value.decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise UnavailableCapabilityError("本机凭据缺失", "本机凭据格式无效") from error
+        if not decoded.strip():
+            raise UnavailableCapabilityError("本机凭据缺失", "本机凭据为空")
+        return decoded
 
     @classmethod
     def _validate_reference(cls, secret_ref: SecretRef) -> None:

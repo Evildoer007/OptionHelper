@@ -6,14 +6,14 @@ from dataclasses import replace
 from datetime import date
 from typing import Any, Mapping
 
-from runtime.contracts.contract_api import ResolvedContract
+from runtime.contracts.contract_api import ResolvedContract, load_registry
 
 from ...diagnostics import pricing_evidence, vanilla_market_snapshot
 from ...model_router import PRODUCT_CAPABILITIES, ProductCapability, capability_for
 from ...observed_state import ObservedContractState, ObservedStateError
 from ...mc_run_assessment import assess_monte_carlo_run
 from ...product_pricing_adapter import ProductNotAvailable, ProductPricingAdapter
-from ...risk_engine import scenario_values, vanilla_risk_outputs
+from ...risk_engine import build_risk_grid_spec, scenario_values, vanilla_risk_outputs
 from .engine.derivatives.models import MarketState
 from .engine.derivatives.results import GreekValue, PricingResult
 
@@ -46,7 +46,7 @@ def price(contract: ResolvedContract, pricing_config: Any, *, market_snapshot: M
 
 
 def _validated_config(value: Any) -> Any:
-    required = ("model_method", "valuation_date", "spot", "historical_volatility", "volatility_override", "risk_free_rate", "dividend_yield", "time_to_maturity", "path_count", "demo_mode", "random_seed", "greek_bumps", "scenarios", "hv_window")
+    required = ("model_method", "valuation_date", "spot", "historical_volatility", "volatility_override", "risk_free_rate", "dividend_yield", "time_to_maturity", "path_count", "demo_mode", "random_seed", "greek_bumps", "scenarios", "hv_window", "risk_grid")
     missing = [name for name in required if not hasattr(value, name)]
     if missing:
         raise PricingInputError("PricingConfig缺少字段：" + ",".join(missing))
@@ -136,19 +136,24 @@ def _price_with_risk(adapter: ProductPricingAdapter, contract: ResolvedContract,
 
     maturity_years = float(config.time_to_maturity or contract.terms["T"])
     result = price_one(market, maturity_years)
-    spot_factor = "单标的现价" if len(contract.underlyings) == 1 else "多标的平行比例变动（首标的现价）"
-    # ``MarketState.spot`` is always the caller's raw market price.  Vanilla
-    # adapters normalize it only inside ``price_one``; converting the risk
-    # panel coordinate a second time by ``reference_price / 100`` would turn
-    # a 7,443 index level into an impossible 554,047 display value.
+    risk_grid = build_risk_grid_spec(
+        contract=contract,
+        market=market,
+        maturity_years=maturity_years,
+        reference_price=reference_price,
+        term_catalog=load_registry()["term_catalog"],
+        config=config.risk_grid,
+        path_dependent=adapter.requires_trading_calendar,
+        trading_sessions=() if adapter.trading_calendar is None else tuple(adapter.trading_calendar["sessions"]),
+    )
     curves, surfaces, risk_scenarios = vanilla_risk_outputs(
         price_one=price_one,
         market=market,
         maturity_years=maturity_years,
         reference_price=reference_price,
         method=adapter.method,
-        spot_factor=spot_factor,
-        actual_spot_coordinates=True,
+        risk_grid=risk_grid,
+        normalized_base=float(contract.terms.get("S0", 100.0)),
     )
     try:
         submitted_scenarios = scenario_values(

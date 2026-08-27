@@ -157,7 +157,9 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.:core/src "$OPTIONHELPER_PYTHON" packaging
 
 ## 报告交付
 
-完整研究报告默认采用连续A4正文；宽屏HTML提供左侧目录，PDF不显示目录。单结构报告默认依次呈现核心结论、结构推荐、合同参数、收益结构、估值定价、历史回测、风险提示。研究简报Card默认呈现结构推荐、推荐理由、关键合同条款、估值摘要、回测摘要、主要风险，不含损益图。用户明确要求补充说明或多结构比较时可以调整展示结构，但金融数值、合同条款、指标、表格、公式和图表必须来自Reporter冻结事实，不能由Designer或Presentation Patch改写。
+正式交付包括研究简报、完整研究报告和参考报价。横向对比沿用相同公开类型：Card的comparison模式生成MultiCard，Report的comparison模式生成MultiReport，不另造输出类型。五种用户交付均由Reporter冻结事实，再由Designer生成HTML或PDF。
+
+完整研究报告默认采用连续A4正文；宽屏HTML提供左侧目录，PDF不显示目录。单结构报告默认依次呈现核心结论、结构推荐、合同参数、收益结构、估值定价、历史回测、风险提示。研究简报Card默认呈现结构推荐、推荐理由、关键合同条款、估值摘要、回测摘要、主要风险，不含损益图。MultiCard保持无图，MultiReport展示可比的收益、估值和回测事实。参考报价按标的整理多个已验证合同版本的条款，不展示Greeks、估值、回测或图表。用户明确要求补充说明或多结构比较时可以调整展示结构，但金融数值、合同条款、指标、表格、公式和图表必须来自Reporter冻结事实，不能由Designer或Presentation Patch改写。
 
 报告中的数字、单位、公式、图表和文字必须来自已验证的模块结果。Reporter与Designer不可补造缺失数据，也不可把内部JSON、字段名、运行引用或文件路径直接展示给用户。
 

@@ -17,8 +17,8 @@
 .zoom-input-wrap em { color: var(--muted); font: 10px var(--mono); font-style: normal; }
 .zoom-button:hover, .zoom-fit:hover, .zoom-input-wrap:focus-within { background: var(--wash); color: var(--red); }
 .canvas-viewport { align-items: flex-start; overscroll-behavior: contain; }
-.canvas-viewport.pan-ready { cursor: grab; }
-.canvas-viewport.is-panning { cursor: grabbing; user-select: none; }
+.canvas-viewport.pan-ready { cursor: default; }
+.canvas-viewport.is-panning { cursor: default; user-select: none; }
 .canvas-stage { --zoom: 1; width: calc(1500px * var(--zoom)); flex: 0 0 auto; background: var(--color-surface); box-shadow: 0 8px 22px rgba(37, 37, 37, .12); }
 .canvas-stage > svg, .canvas-stage > img { display: block; width: 100%; height: auto; min-width: 0; background: var(--color-surface); }
 .editing .canvas-stage { box-shadow: 0 8px 22px rgba(200, 16, 46, .16); }

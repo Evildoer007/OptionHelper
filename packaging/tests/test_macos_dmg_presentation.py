@@ -137,7 +137,9 @@ def test_dmg_background_contains_branded_visual_pixel_contract() -> None:
         image = background.convert("RGB")
         assert image.getpixel((20, 1)) == (200, 16, 46)
         assert image.getpixel((300, 235)) == (200, 16, 46)
-        assert image.getpixel((510, 235)) == (200, 16, 46)
+        assert image.getpixel((480, 235)) == (200, 16, 46)
+        assert image.getpixel((510, 235)) != (200, 16, 46)
+        assert renderer.ARROW_START_X - (180 + 64) == (580 - 64) - renderer.ARROW_TIP_X
         left_glow = image.getpixel((185, 235))
         right_glow = image.getpixel((575, 235))
         assert left_glow[0] > left_glow[2]

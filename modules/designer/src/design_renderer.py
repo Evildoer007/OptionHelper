@@ -35,6 +35,9 @@ from .renderer import (
     render_html,
     render_presentation_content,
     rich_text,
+    table_colgroup,
+    table_column_role,
+    table_density,
     text,
     validate_payload,
 )
@@ -186,16 +189,21 @@ def _card_data_table(rows: list[Mapping[str, Any]]) -> str:
         unit = text(row.get("unit"))
         if not label or not value:
             continue
+        unit_cell = (
+            f'<td class="table-cell table-cell--narrative{" table-cell--long" if len(unit) >= 24 else ""}">{esc(unit)}</td>'
+            if unit else "<td></td>"
+        )
         items.append(
             "<tr>"
-            f"<td>{esc(label)}</td><td>{esc(value)}</td>"
-            f"<td>{esc(unit)}</td>"
+            f'<td class="table-cell table-cell--narrative{" table-cell--long" if len(label) >= 24 else ""}">{esc(label)}</td>'
+            f'<td class="table-cell table-cell--numeric">{rich_text(value)}</td>'
+            f'{unit_cell}'
             "</tr>"
         )
     if not items:
         return ""
     return (
-        '<div class="table-wrap card-table-wrap"><table class="card-data-table">'
+        '<div class="table-wrap card-table-wrap"><table class="card-data-table" data-table-density="normal">'
         '<thead><tr><th scope="col">指标</th><th scope="col">数值</th><th scope="col">单位或口径</th></tr></thead>'
         f'<tbody>{"".join(items)}</tbody></table></div>'
     )
@@ -395,22 +403,102 @@ def render_card_html(
     )
 
 
-def _quote_table(group: Mapping[str, Any]) -> str:
-    """Render one product-specific quote table with the shared three-line rule."""
+_QUOTE_PANEL_TITLES = {
+    "default": "报价条款",
+    "identifier": "基础条款",
+    "numeric": "执行与价格条款",
+    "narrative": "观察与结算条款",
+}
+_QUOTE_SHARED_KEYS = frozenset({
+    "asset", "asset_id", "code", "product", "structure", "structure_name", "structure_type", "underlying",
+})
 
-    columns = [as_dict(item) for item in as_list(group.get("columns"))]
-    rows = [as_dict(item) for item in as_list(group.get("rows"))]
+
+def _quote_panel_columns(columns: list[dict[str, Any]]) -> list[tuple[str, list[dict[str, Any]]]]:
+    """Split a wide quote into readable semantic panels without losing columns."""
+
+    if len(columns) <= 8:
+        return [("", columns)]
+    shared = [
+        column for index, column in enumerate(columns)
+        if index == 0 or text(column.get("key")) in _QUOTE_SHARED_KEYS
+    ]
+    shared_keys = {text(column.get("key")) for column in shared}
+    remaining = [column for column in columns if text(column.get("key")) not in shared_keys]
+    if not remaining:
+        shared = []
+        remaining = columns
+
+    buckets: list[tuple[str, list[dict[str, Any]]]] = []
+    seen_roles: set[str] = set()
+    for column in remaining:
+        role = _quote_column_role(column)
+        if role not in seen_roles:
+            seen_roles.add(role)
+            buckets.append((role, []))
+        next(item for item in buckets if item[0] == role)[1].append(column)
+
+    panels: list[tuple[str, list[dict[str, Any]]]] = []
+    # Four non-repeated columns keep a panel useful on both A4 and desktop;
+    # this avoids a trailing one-column panel when a structure has five or
+    # six price terms.
+    capacity = max(1, 5 - len(shared))
+    if not buckets:
+        buckets = [("default", remaining)]
+    for role, bucket in buckets:
+        for offset in range(0, len(bucket), capacity):
+            chunk = bucket[offset:offset + capacity]
+            suffix = "" if offset == 0 else "（续）"
+            panels.append((_QUOTE_PANEL_TITLES.get(role, _QUOTE_PANEL_TITLES["default"]) + suffix, [*shared, *chunk]))
+    return panels
+
+
+def _quote_column_role(column: Mapping[str, Any]) -> str:
+    """Apply Quote-specific business grouping over shared table semantics."""
+
+    key = text(column.get("key")).casefold()
+    label = text(column.get("label"))
+    if key in {"maturity", "maturity_date", "term", "tenor"} or "期限" in label:
+        return "identifier"
+    if any(token in label for token in ("行权", "观察", "结算", "敲出", "敲入")):
+        return "narrative"
+    return table_column_role(key, label)
+
+
+def _quote_table_panel(columns: list[dict[str, Any]], rows: list[dict[str, Any]], panel_title: str) -> str:
+    specs = [(text(column.get("key")), text(column.get("label"))) for column in columns]
+    density = table_density(specs, rows)
     head = "".join(f'<th scope="col">{esc(column.get("label"))}</th>' for column in columns)
     body_rows: list[str] = []
     for row in rows:
         cells: list[str] = []
         for column in columns:
-            value = display_text(row.get(text(column.get("key"))), column.get("format") or "text")
-            cells.append(f"<td>{rich_text(value)}</td>")
+            key = text(column.get("key"))
+            label = text(column.get("label"))
+            value = display_text(row.get(key), column.get("format") or "text")
+            role = table_column_role(key, label)
+            long_class = " table-cell--long" if len(value) >= 24 else ""
+            cells.append(
+                f'<td class="table-cell table-cell--{role}{long_class}" data-label="{esc(label)}">{rich_text(value)}</td>'
+            )
         body_rows.append("<tr>" + "".join(cells) + "</tr>")
+    title = f'<p class="quote-table-panel__title">{esc(panel_title)}</p>' if panel_title else ""
     return (
-        '<div class="table-wrap quote-table-wrap"><table class="quote-table">'
-        f"<thead><tr>{head}</tr></thead><tbody>{''.join(body_rows)}</tbody></table></div>"
+        f'<div class="table-wrap quote-table-wrap quote-table-panel">{title}'
+        f'<table class="quote-table table-density-{density}" data-table-density="{density}">'
+        f'{table_colgroup(specs)}<thead><tr>{head}</tr></thead>'
+        f'<tbody>{"".join(body_rows)}</tbody></table></div>'
+    )
+
+
+def _quote_table(group: Mapping[str, Any]) -> str:
+    """Render all quote facts with semantic panels when the union is wide."""
+
+    columns = [as_dict(item) for item in as_list(group.get("columns"))]
+    rows = [as_dict(item) for item in as_list(group.get("rows"))]
+    return "".join(
+        _quote_table_panel(panel_columns, rows, panel_title)
+        for panel_title, panel_columns in _quote_panel_columns(columns)
     )
 
 

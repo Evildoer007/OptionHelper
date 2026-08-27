@@ -1,5 +1,5 @@
 /* Generated from modules/designer/src/design_tokens.py. */
-/* designer-token-hash:88396fc46317b5f2e082310288c5a87f8d07645eb88976dc03a3eb3eeaa32441 */
+/* designer-token-hash:9b54e565704423430ccb4ae0c75b48657d21f0380006fe2126c7beb6923fd172 */
 :root {
   --color-brand-red: #C8102E;
   --color-on-brand: #FFFFFF;
@@ -49,6 +49,12 @@
   --type-body-print: 13.333px;
   --type-table: 12px;
   --type-table-print: 12px;
+  --type-table-compact: 11px;
+  --type-table-compact-print: 11px;
+  --type-table-dense: 10px;
+  --type-table-dense-print: 10px;
+  --type-table-min: 9px;
+  --type-table-min-print: 9px;
   --type-caption: 13px;
   --type-meta: 11px;
   --type-meta-print: 12px;

@@ -60,6 +60,7 @@ class ToolDispatcher:
         request_id: str = "",
         agent_proxy: bool = False,
         candidate_variant: Mapping[str, Any] | None = None,
+        cancellation_check: Callable[[], bool] | None = None,
     ) -> dict[str, Any]:
         action = str(payload.get("action", "")).strip().lower()
         compute_read_action = tool_name in {"payoffer", "pricer", "backtester"} and action not in {"", "run"}
@@ -106,6 +107,7 @@ class ToolDispatcher:
                     agent_proxy=agent_proxy,
                     operation_id=operation_id,
                     candidate_variant=candidate_variant,
+                    cancellation_check=cancellation_check,
                 )
             idempotency_key = _idempotency_key(supplied_key or request_id)
             with self._idempotency_lock(identity, task_id, tool_name, idempotency_key):
@@ -135,6 +137,7 @@ class ToolDispatcher:
                         input_hash=input_hash,
                         operation_id=operation_id,
                         candidate_variant=candidate_variant,
+                        cancellation_check=cancellation_check,
                     )
                 except _CommittedRunPendingError as error:
                     self._idempotency.mark_uncertain(
@@ -154,6 +157,7 @@ class ToolDispatcher:
             request_id=request_id,
             agent_proxy=agent_proxy,
             candidate_variant=candidate_variant,
+            cancellation_check=cancellation_check,
         )
 
     def _dispatch_mutating(
@@ -170,6 +174,7 @@ class ToolDispatcher:
         input_hash: str | None = None,
         operation_id: str | None = None,
         candidate_variant: Mapping[str, Any] | None = None,
+        cancellation_check: Callable[[], bool] | None = None,
     ) -> dict[str, Any]:
         gateway_payload = dict(payload)
         if tool_name in {"payoffer", "pricer", "backtester"}:
@@ -191,13 +196,15 @@ class ToolDispatcher:
             execution, result = self._jobs.run(lambda: self._gateway.dispatch(
                 tool_name, gateway_payload, identity, module_context=module_context, request_id=request_id,
                 agent_proxy=agent_proxy, candidate_variant=candidate_variant,
+                cancellation_check=cancellation_check,
             ), task_id=task_id if tool_name in {"payoffer", "pricer", "backtester"} else None,
                 module=tool_name if tool_name in {"payoffer", "pricer", "backtester"} else None,
                 job_id=stable_operation_id(checkpoint.operation_id, "job") if tool_name in {"payoffer", "pricer", "backtester"} else None,
                 tenant_id=identity.tenant_id,
                 owner_id=identity.principal_id,
                 operation_id=checkpoint.operation_id,
-                defer_success=tool_name in {"payoffer", "pricer", "backtester"})
+                defer_success=tool_name in {"payoffer", "pricer", "backtester"},
+                use_worker_gate=tool_name not in {"pricer", "backtester"})
         except Exception:
             self._dispatch_checkpoints.failed(checkpoint)
             raise
@@ -246,6 +253,7 @@ class ToolDispatcher:
                 raise UserActionError(
                     failure["failure_code"], failure["message"],
                     stage=failure["stage"], next_step=failure["next_step"],
+                    retryable=failure["retryable"],
                 )
             if tool_name == "datafetcher":
                 raise UserActionError("datafetcher_request_rejected", _datafetcher_failure_message(result))
@@ -399,12 +407,12 @@ def _task_data_asset_ref(value: object) -> tuple[str, str | None]:
     raise ValidationError("OptChat计算只能引用当前任务的DataAssetRef")
 
 
-def _structured_failure_fields(result: Mapping[str, Any]) -> dict[str, str] | None:
+def _structured_failure_fields(result: Mapping[str, Any]) -> dict[str, Any] | None:
     """Reuse a Capability's reviewed public failure without reclassifying it."""
 
     nested = result.get("error")
     source = nested if isinstance(nested, Mapping) else result
-    failure_code = source.get("failure_code", source.get("code"))
+    failure_code = source.get("failure_code", source.get("error_code", source.get("code")))
     message = source.get("message", result.get("message", result.get("reason")))
     stage = source.get("stage", result.get("stage"))
     next_step = source.get("next_step", result.get("next_step"))
@@ -415,6 +423,7 @@ def _structured_failure_fields(result: Mapping[str, Any]) -> dict[str, str] | No
         "message": message,
         "stage": stage,
         "next_step": next_step,
+        "retryable": source.get("retryable") is True,
     }
 
 

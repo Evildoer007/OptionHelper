@@ -13,11 +13,13 @@ Reporter先冻结ReportUnit，再构造`DesignBrief`和Designer payload。Report
 designer_port.call_tool({
   "action": "render",
   "payload": "冻结内容投影",
-  "output_type": "card或report",
+  "output_type": "card、quote或report",
   "format": "html或pdf",
   "asset_mode": "portable"
 })
 ```
+
+横向对比不新增`output_type`：`card+comparison`交给MultiCard模板，`report+comparison`交给MultiReport模板。Quote使用`quote`及按标的分组的冻结报价事实。Designer的能力目录必须同时声明3个基础输出类型和`single、comparison、quote`交付模式。
 
 Reporter不导入Designer内部渲染器、模型、CSS、字体、颜色或PDF实现。未注入Designer port时服务返回`designer_port_not_injected`；Designer返回`missing_dependency`时Reporter明确失败，绝不写出伪PDF或伪成功清单。
 
@@ -25,4 +27,4 @@ Designer只能影响呈现。禁止新增事实、改写数值、删去来源、
 
 HTML一律请求`portable`。当报告包含ECharts图表时，Designer返回`portable_assets`；Reporter逐项校验受控相对路径、媒体类型、Base64内容、SHA-256，以及`artifact_manifest.assets`和`artifact_manifest.portable_assets`的集合一致性，随后原样落盘到ReportRun并写入`rendered.portable_assets`。Reporter不得解析、删除或改写Designer HTML，最终HTML哈希必须与Designer回执的`artifact_hash`相同。无图HTML的portable资源清单为空；含动态图表或本次收益图的Report PDF仅由Designer决定是否具备组件。组件不可用时Designer必须返回`missing_dependency`，Reporter中止且不写出成功交付物。
 
-当前Designer一次渲染一个完整合同payload。因此`combined`和`batch`的根页面明确标记为“组合索引+候选独立报告”：根页显示候选比较与逐候选摘要，每个候选的完整Payoff、估值和回测内容由独立Designer报告输出。它不声明为完整同页多合同渲染。
+Designer可一次渲染单合同Card或Report、按标的分组的Quote，以及冻结候选Bundle对应的MultiCard或MultiReport。`combined`和`batch`仍是组合索引加候选独立报告，不与正式横向对比模板混用。

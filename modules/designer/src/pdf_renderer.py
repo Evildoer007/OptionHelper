@@ -31,6 +31,14 @@ class PdfRuntimeError(RuntimeError):
 
 
 BlockKind = Literal["heading", "paragraph", "item", "caption", "table", "metric_grid", "chart", "svg"]
+class PdfTableRows(list[list[str]]):
+    """Table rows carrying the density already selected by HTML rendering."""
+
+    def __init__(self, *, density: str = "normal") -> None:
+        super().__init__()
+        self.density = density if density in {"normal", "compact", "dense"} else "normal"
+
+
 PdfBlock = tuple[BlockKind, int, str | list[list[str]]]
 
 
@@ -151,7 +159,7 @@ class _PublicHtmlParser(HTMLParser):
         self.blocks: list[PdfBlock] = []
         self._ignored = 0
         self._active: list[tuple[str, list[str]]] = []
-        self._table_rows: list[list[str]] | None = None
+        self._table_rows: PdfTableRows | None = None
         self._table_row: list[str] | None = None
         self._cell: list[str] | None = None
         self._metric_grid: list[dict[str, str]] | None = None
@@ -200,7 +208,14 @@ class _PublicHtmlParser(HTMLParser):
                 parts.append(" ")
             return
         if tag == "table":
-            self._table_rows = []
+            attributes = dict(attrs)
+            classes = set((attributes.get("class") or "").split())
+            declared_density = attributes.get("data-table-density") or ""
+            density = declared_density if declared_density in {"normal", "compact", "dense"} else next(
+                (name for name in ("dense", "compact", "normal") if f"table-density-{name}" in classes),
+                "normal",
+            )
+            self._table_rows = PdfTableRows(density=density)
             return
         if tag == "tr" and self._table_rows is not None:
             self._table_row = []
@@ -384,6 +399,8 @@ class _PublicHtmlParser(HTMLParser):
 class _ComparisonMatrixParser(HTMLParser):
     """Project a MultiCard comparison matrix into PDF candidate columns."""
 
+    _VOID_TAGS = frozenset({"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"})
+
     def __init__(self) -> None:
         super().__init__(convert_charrefs=False)
         self.candidates: list[str] = []
@@ -408,6 +425,12 @@ class _ComparisonMatrixParser(HTMLParser):
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         classes = self._class_names(attrs)
         raw = self.get_starttag_text() or f"<{tag}>"
+        if tag in self._VOID_TAGS:
+            if self._candidate_index is not None:
+                self._candidate_parts.append(raw)
+            elif self._cell_index is not None:
+                self._cell_parts.append(raw)
+            return
         if "comparison-matrix__candidate" in classes:
             self._candidate_index = len(self.candidates)
             self._candidate_parts = []
@@ -658,14 +681,30 @@ def _table_flowable(
     from reportlab.lib import colors
     from reportlab.platypus import Table, TableStyle
 
-    row_count = max((len(row) for row in rows), default=1)
-    normalized = [row + [""] * (row_count - len(row)) for row in rows]
+    column_count = max((len(row) for row in rows), default=1)
+    normalized = [row + [""] * (column_count - len(row)) for row in rows]
+    density = getattr(rows, "density", None)
+    if density not in {"normal", "compact", "dense"}:
+        if column_count >= 10:
+            density = "dense"
+        elif column_count >= 7:
+            density = "compact"
+        else:
+            density = "normal"
+    table_style = styles["table" if density == "normal" else f"table_{density}"]
+    table_head_style = styles["table_head" if density == "normal" else f"table_head_{density}"]
     data = [
-        [_paragraph(cell, styles["table_head"] if index == 0 else styles["table"], latin_font=latin_font, cjk_font=cjk_font)
+        [_paragraph(cell, table_head_style if index == 0 else table_style, latin_font=latin_font, cjk_font=cjk_font)
          for cell in row]
         for index, row in enumerate(normalized)
     ]
-    table = Table(data, colWidths=[content_width / row_count] * row_count, repeatRows=1, hAlign="LEFT")
+    max_lengths = [max((len(row[index]) for row in normalized), default=1) for index in range(column_count)]
+    min_width = min(44.0, content_width / max(column_count * 1.8, 1))
+    weights = [max(4.0, min(float(length), 28.0)) for length in max_lengths]
+    remaining = max(0.0, content_width - min_width * column_count)
+    weight_total = sum(weights) or 1.0
+    col_widths = [min_width + remaining * weight / weight_total for weight in weights]
+    table = Table(data, colWidths=col_widths, repeatRows=1, hAlign="LEFT")
     table.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(TOKEN_COLORS["brand_red_soft"])),
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor(TOKEN_COLORS["table_head_ink"])),
@@ -1195,9 +1234,17 @@ def render_pdf(html_content: str, *, chart_specs: Mapping[str, Mapping[str, Any]
         "caption": ParagraphStyle("caption", fontName=cjk_font, fontSize=8.6 if compact else 9.3, leading=12,
                                   textColor=colors.HexColor(TOKEN_COLORS["blue_gray"]), spaceBefore=4, spaceAfter=3),
         "table": ParagraphStyle("table", fontName=cjk_font, fontSize=8.0 if compact else 8.8, leading=10.5 if compact else 12,
-                                textColor=colors.HexColor(TOKEN_COLORS["ink_soft"])),
+                                wordWrap="CJK", textColor=colors.HexColor(TOKEN_COLORS["ink_soft"])),
         "table_head": ParagraphStyle("table_head", fontName=cjk_font, fontSize=8.1 if compact else 8.9,
-                                     leading=10.5 if compact else 12, textColor=colors.HexColor(TOKEN_COLORS["table_head_ink"])),
+                                     leading=10.5 if compact else 12, wordWrap="CJK", textColor=colors.HexColor(TOKEN_COLORS["table_head_ink"])),
+        "table_compact": ParagraphStyle("table_compact", parent=None, fontName=cjk_font, fontSize=7.4 if compact else 8.2,
+                                        leading=9.8 if compact else 11, wordWrap="CJK", textColor=colors.HexColor(TOKEN_COLORS["ink_soft"])),
+        "table_head_compact": ParagraphStyle("table_head_compact", parent=None, fontName=cjk_font, fontSize=7.5 if compact else 8.3,
+                                             leading=9.8 if compact else 11, wordWrap="CJK", textColor=colors.HexColor(TOKEN_COLORS["table_head_ink"])),
+        "table_dense": ParagraphStyle("table_dense", parent=None, fontName=cjk_font, fontSize=6.9 if compact else 7.6,
+                                      leading=9.1 if compact else 10.2, wordWrap="CJK", textColor=colors.HexColor(TOKEN_COLORS["ink_soft"])),
+        "table_head_dense": ParagraphStyle("table_head_dense", parent=None, fontName=cjk_font, fontSize=7.0 if compact else 7.7,
+                                           leading=9.1 if compact else 10.2, wordWrap="CJK", textColor=colors.HexColor(TOKEN_COLORS["table_head_ink"])),
         "metric": ParagraphStyle("metric", fontName=cjk_font, fontSize=8.2, leading=10.4,
                                  textColor=colors.HexColor(TOKEN_COLORS["ink_soft"])),
     }

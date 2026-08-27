@@ -148,6 +148,125 @@ def _cell_text(row: dict[str, Any], key: str) -> str:
     return display_text(value, value_format or "number")
 
 
+_TABLE_IDENTIFIER_KEYS = frozenset({
+    "asset", "asset_id", "code", "date", "formula", "symbol", "ticker", "underlying", "year",
+})
+_TABLE_NUMERIC_HINTS = frozenset({
+    "amount", "barrier", "coupon", "delta", "fee", "gamma", "k", "maturity", "notional", "premium",
+    "price", "quantity", "rate", "rho", "strike", "theta", "value", "vega", "volatility",
+})
+_TABLE_NARRATIVE_HINTS = frozenset({
+    "description", "note", "observation", "reason", "rule", "settlement", "source", "text", "unit",
+})
+
+
+def table_column_role(key: Any, label: Any = "") -> str:
+    """Classify a visible column for width and line-breaking policy.
+
+    This is presentation metadata only.  It never changes the value or the
+    order supplied by Reporter.
+    """
+
+    key_text = text(key).casefold()
+    label_text = text(label)
+    compact = re.sub(r"[\s_-]+", "", key_text + label_text.casefold())
+    if key_text in _TABLE_IDENTIFIER_KEYS or any(token in compact for token in ("标的", "代码", "日期", "symbol")):
+        return "identifier"
+    if key_text in _TABLE_NARRATIVE_HINTS or any(token in compact for token in ("观察", "结算", "规则", "来源", "说明", "口径")):
+        return "narrative"
+    if key_text in _TABLE_NUMERIC_HINTS or any(token in compact for token in (
+        "价格", "费", "票息", "比例", "数量", "期限", "执行价", "波动率", "现值", "收益", "亏损", "胜率",
+        "delta", "gamma", "vega", "theta", "rho",
+    )):
+        return "numeric"
+    return "default"
+
+
+def _plain_table_value(row: Any, key: str) -> str:
+    item = as_dict(row)
+    return _cell_text(item, key) if item else text(row)
+
+
+def table_density(columns: Sequence[tuple[str, str]], rows: Sequence[Any]) -> str:
+    """Return a bounded, table-level density tier.
+
+    Column count is the primary signal.  Long prose remains readable and
+    wraps inside the cell; it does not cause per-cell font shrinkage.
+    """
+
+    count = len(columns)
+    if count >= 10:
+        return "dense"
+    if count >= 7:
+        return "compact"
+    narrative_lengths = []
+    for key, label in columns:
+        if table_column_role(key, label) == "narrative":
+            narrative_lengths.extend(len(_plain_table_value(row, key)) for row in rows)
+    if count >= 5 and narrative_lengths and max(narrative_lengths, default=0) >= 32:
+        return "compact"
+    return "normal"
+
+
+def table_colgroup(columns: Sequence[tuple[str, str]]) -> str:
+    """Emit semantic columns without embedding widths in the payload."""
+
+    return "<colgroup>" + "".join(
+        f'<col class="table-col table-col--{table_column_role(key, label)}" data-column-key="{html.escape(key, quote=True)}">'
+        for key, label in columns
+    ) + "</colgroup>"
+
+
+_TABLE_PANEL_TITLES = {
+    "identifier": "基础信息",
+    "numeric": "数值指标",
+    "narrative": "规则与说明",
+    "default": "补充信息",
+}
+
+
+def semantic_table_panels(
+    columns: Sequence[tuple[str, str]],
+    *,
+    split_at: int = 10,
+    max_columns: int = 6,
+) -> list[tuple[str, list[tuple[str, str]]]]:
+    """Split only genuinely wide tables into readable semantic panels.
+
+    The first column is the row identity and is repeated in every panel.  All
+    other columns appear exactly once.  Tables below ``split_at`` retain their
+    original order and rely on the bounded density tier instead.
+    """
+
+    visible = list(columns)
+    if len(visible) < split_at or len(visible) <= 1:
+        return [("", visible)]
+    shared = visible[:1]
+    groups: list[tuple[str, list[tuple[str, str]]]] = []
+    for column in visible[1:]:
+        role = table_column_role(*column)
+        if groups and groups[-1][0] == role:
+            groups[-1][1].append(column)
+        else:
+            groups.append((role, [column]))
+    capacity = max(1, max_columns - len(shared))
+    panels: list[tuple[str, list[tuple[str, str]]]] = []
+    for role, group in groups:
+        panel_count = max(1, math.ceil(len(group) / capacity))
+        chunk_size = math.ceil(len(group) / panel_count)
+        for offset in range(0, len(group), chunk_size):
+            suffix = "" if offset == 0 else "（续）"
+            panels.append((_TABLE_PANEL_TITLES.get(role, _TABLE_PANEL_TITLES["default"]) + suffix, [*shared, *group[offset:offset + chunk_size]]))
+    return panels
+
+
+def _table_cell_class(key: str, label: str, value: str) -> str:
+    classes = ["table-cell", f"table-cell--{table_column_role(key, label)}"]
+    if len(value) >= 24:
+        classes.append("table-cell--long")
+    return " ".join(classes)
+
+
 def esc(value: Any) -> str:
     return html.escape(text(value), quote=True)
 
@@ -338,11 +457,13 @@ def parameter_table(rows: list[Any], caption: str) -> str:
         )
     if not table_rows:
         return ""
+    parameter_columns = [("cn", "条款"), ("symbol", "符号"), ("value", "取值"), ("source", "来源")]
+    density = table_density(parameter_columns, rows)
     return (
         '<div class="table-wrap table-wrap--parameters">'
-        f'<table class="parameter-table"><colgroup>'
-        '<col class="parameter-table__cn"><col class="parameter-table__symbol">'
-        '<col class="parameter-table__value"><col class="parameter-table__source"></colgroup><caption>' + esc(caption) + "</caption>"
+        f'<table class="parameter-table table-density-{density}" data-table-density="{density}"><colgroup>'
+        '<col class="parameter-table__cn table-col table-col--narrative"><col class="parameter-table__symbol table-col table-col--identifier">'
+        '<col class="parameter-table__value table-col table-col--narrative"><col class="parameter-table__source table-col table-col--narrative"></colgroup><caption>' + esc(caption) + "</caption>"
         '<thead><tr><th scope="col">条款</th><th scope="col">符号</th>'
         '<th scope="col">取值</th><th scope="col">来源</th></tr></thead>'
         f"<tbody>{''.join(table_rows)}</tbody></table></div>"
@@ -355,23 +476,41 @@ def simple_table(rows: list[Any], columns: list[tuple[str, str]], caption: str =
         item = as_dict(row)
         if item:
             cells = []
-            for key, _ in columns:
+            for key, label in columns:
                 value = _cell_text(item, key)
                 # Calendar and identifier columns must keep their literal
                 # source notation.  Passing ``2025`` through rich_text would
                 # legitimately apply numeric grouping and produce ``2,025``.
                 cell = esc_rendered(value) if key in {"date", "year", "code"} else rich_text(value)
-                cells.append(f"<td>{cell}</td>")
+                cells.append(
+                    f'<td class="{_table_cell_class(key, label, value)}" data-label="{esc(label)}">{cell}</td>'
+                )
             rendered.append("<tr>" + "".join(cells) + "</tr>")
     if not rendered:
         return ""
+    density = table_density(columns, rows)
     head = "".join(f'<th scope="col">{esc(title)}</th>' for _, title in columns)
     caption_html = f"<caption>{esc(caption)}</caption>" if caption else ""
     return (
         '<div class="table-wrap">'
-        f'<table class="{esc(table_class)}">{caption_html}<thead><tr>{head}</tr></thead>'
+        f'<table class="{esc(table_class)} table-density-{density}" data-table-density="{density}">'
+        f'{table_colgroup(columns)}{caption_html}<thead><tr>{head}</tr></thead>'
         f'<tbody>{"".join(rendered)}</tbody></table></div>'
     )
+
+
+def faceted_table(rows: list[Any], columns: list[tuple[str, str]], caption: str, table_class: str) -> str:
+    """Render a wide detail table as consecutive complete-width panels."""
+
+    panels = semantic_table_panels(columns)
+    rendered: list[str] = []
+    for panel_title, panel_columns in panels:
+        panel_caption = caption if not panel_title else f"{caption}·{panel_title}"
+        rendered.append(
+            f'<div class="table-panel" data-table-panel="{esc(panel_title or "single")}">'
+            f'{simple_table(rows, panel_columns, panel_caption, table_class)}</div>'
+        )
+    return "".join(rendered)
 
 
 def chart_data_table(spec: dict[str, Any], x_values: list[Any], series: list[dict[str, Any]]) -> str:
@@ -388,35 +527,41 @@ def chart_data_table(spec: dict[str, Any], x_values: list[Any], series: list[dic
             for item in as_list(spec.get("data"))
             if isinstance(item, list) and len(item) == 3
         }
-        headings = "".join(f'<th scope="col">{esc_rendered(display_text(value))}</th>' for value in x_values)
-        rows = []
-        for y_index, y_value in enumerate(y_values):
-            values = "".join(
-                f"<td>{esc_rendered(display_text(cells.get((x_index, y_index)), spec.get('value_format')))}</td>"
-                for x_index in range(len(x_values))
-            )
-            rows.append(f'<tr><th scope="row">{esc_rendered(display_text(y_value))}</th>{values}</tr>')
         title = text(spec.get("title") or "图表")
-        return (
-            '<div class="chart-data">'
-            f'<div class="table-wrap">'
-            f'<table><caption>{esc(title)}数据</caption><thead><tr><th scope="col">'
-            f'{esc(spec.get("y_axis_name") or "纵轴")}/{esc(spec.get("x_axis_name") or "横轴")}</th>{headings}</tr></thead>'
-            f'<tbody>{"".join(rows)}</tbody></table></div></div>'
-        )
-    headings = "".join(f'<th scope="col">{esc(item.get("name"))}</th>' for item in series)
-    rows = []
-    for index, x_value in enumerate(x_values):
-        values = "".join(f"<td>{esc_rendered(display_text(item['data'][index], spec.get('value_format')))}</td>" for item in series)
-        rows.append(f'<tr><th scope="row">{esc_rendered(display_text(x_value))}</th>{values}</tr>')
+        axis_label = f"{text(spec.get('y_axis_name') or '纵轴')}/{text(spec.get('x_axis_name') or '横轴')}"
+        panel_size = 5
+        panels: list[str] = []
+        for offset in range(0, len(x_values), panel_size):
+            indexes = list(range(offset, min(offset + panel_size, len(x_values))))
+            columns = [("axis", axis_label), *[(f"x_{index}", text(x_values[index])) for index in indexes]]
+            table_rows = [
+                {
+                    "axis": display_text(y_value),
+                    **{
+                        f"x_{x_index}": display_text(cells.get((x_index, y_index)), spec.get("value_format"))
+                        for x_index in indexes
+                    },
+                }
+                for y_index, y_value in enumerate(y_values)
+            ]
+            suffix = "" if len(x_values) <= panel_size else f"（第{offset // panel_size + 1}组）"
+            panels.append(simple_table(table_rows, columns, f"{title}数据{suffix}", "chart-data-table"))
+        return f'<div class="chart-data" data-table-facets="{len(panels)}">' + "".join(panels) + "</div>"
     title = text(spec.get("title") or "图表")
-    return (
-        '<div class="chart-data">'
-        f'<div class="table-wrap">'
-        f'<table><caption>{esc(title)}数据</caption><thead><tr><th scope="col">'
-        f'{esc(spec.get("x_axis_name") or "横轴")}</th>{headings}</tr></thead>'
-        f'<tbody>{"".join(rows)}</tbody></table></div></div>'
-    )
+    panel_size = 5
+    panels = []
+    for offset in range(0, len(series), panel_size):
+        chunk = series[offset:offset + panel_size]
+        columns = [("axis", text(spec.get("x_axis_name") or "横轴"))]
+        columns.extend((f"series_{index}", text(item.get("name"))) for index, item in enumerate(chunk))
+        table_rows = []
+        for index, x_value in enumerate(x_values):
+            row = {"axis": display_text(x_value)}
+            row.update({f"series_{series_index}": display_text(item["data"][index], spec.get("value_format")) for series_index, item in enumerate(chunk)})
+            table_rows.append(row)
+        suffix = "" if len(series) <= panel_size else f"（第{offset // panel_size + 1}组）"
+        panels.append(simple_table(table_rows, columns, f"{title}数据{suffix}", "chart-data-table"))
+    return f'<div class="chart-data" data-table-facets="{len(panels)}">' + "".join(panels) + "</div>"
 
 
 def add_charts(charts: list[dict[str, Any]], section: str, specs: list[Any]) -> str:
@@ -685,7 +830,7 @@ def detail_tables(tables: list[Any]) -> str:
         if not title or not columns or not rows:
             continue
         blocks.append(f"<h3>{esc(title)}</h3>")
-        blocks.append(simple_table(rows, columns, title, "result-table result-table--detail"))
+        blocks.append(faceted_table(rows, columns, title, "result-table result-table--detail"))
     return "".join(block for block in blocks if block)
 
 

@@ -76,6 +76,22 @@ class SecretProvider:
         reference = self.require_reference(reference, purpose)
         self._adapter_for(reference, purpose).delete(reference)
 
+    def migrate_to_local(self, reference: SecretRef, purpose: str) -> SecretRef:
+        """Migrate one approved legacy reference through the local adapter."""
+
+        reference = self.require_reference(reference, purpose)
+        if reference.provider == "local-secret":
+            return reference
+        local_adapter = self._adapters.get("local-secret")
+        migrate = getattr(local_adapter, "migrate_legacy", None)
+        if not callable(migrate):
+            raise UnavailableCapabilityError("凭据迁移", "当前设备没有OptionHelper本地凭据迁移能力")
+        local_reference = migrate(reference)
+        if not isinstance(local_reference, SecretRef) or local_reference.provider != "local-secret":
+            raise ValidationError("凭据迁移未返回有效的OptionHelper本地引用")
+        self.allow_reference(local_reference, purpose)
+        return local_reference
+
     def _adapter_for(self, reference: SecretRef, purpose: str) -> SecretAdapter:
         adapter = self._adapters.get(reference.provider)
         if adapter is None:

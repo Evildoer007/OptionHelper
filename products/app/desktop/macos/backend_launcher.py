@@ -72,6 +72,7 @@ def main() -> int:
     parser.add_argument("--port", type=int, default=0)
     parser.add_argument("--data-dir", type=Path)
     parser.add_argument("--resource-dir", type=Path)
+    parser.add_argument("--compute-worker", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--probe-pdf-runtime", action="store_true")
     parser.add_argument(
         "--verification-fixture",
@@ -81,12 +82,17 @@ def main() -> int:
     args = parser.parse_args()
 
     resources = (args.resource_dir or resource_root()).resolve()
+    os.environ["OPTIONHELPER_RESOURCE_ROOT"] = str(resources)
     configure_resource_imports(resources)
     capability_root = resources / "capability" / "option-helper"
     # PyInstaller modules have no repository-relative __file__ at runtime.
     # Bind the staged immutable Capability explicitly so Runtime Bootstrap
     # remains in release mode when the App is launched from a mounted DMG.
     os.environ["OPTIONHELPER_CAPABILITY_ROOT"] = str(capability_root)
+    if args.compute_worker:
+        from backend.task_runtime.compute_worker import main as compute_worker_main
+
+        return compute_worker_main()
     if args.probe_pdf_runtime:
         from modules.designer.pdf_renderer import runtime_status
 
@@ -118,13 +124,15 @@ def main() -> int:
         capability_root=capability_root,
         frontend_root=resources / "frontend",
         brand_assets_root=resources / "assets" / "icons",
-        # Development builds intentionally use the loopback-only direct-entry
-        # identity. Account provisioning is not part of the current workflow.
         authentication_mode="local-development",
-        # Native builds use the current user's OS credential vault. Existing
-        # owner-only local records migrate once after the first successful
-        # Keychain/Credential Manager write and are then removed.
-        secret_provider=platform_secret_provider(runtime_root),
+        # Model and iFind credentials live under the OptionHelper user-data
+        # directory.  The native vault remains available for one-release
+        # migration.
+        secret_provider=platform_secret_provider(
+            runtime_root.parent,
+            legacy_app_data_root=runtime_root,
+            enable_system_migration=not args.verification_fixture,
+        ),
     )
     if args.verification_fixture:
         from backend.verification_fixture import install_compute_verification_fixture

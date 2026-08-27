@@ -57,7 +57,7 @@
     <div class="app-shell editing" id="appShell">
       <header class="topbar">
         <div class="brand"><img class="brand-logo" src="../../icons/optionhelper-logo.svg" alt="OptionHelper"><span class="brand-separator" aria-hidden="true"></span><span class="module-title">收益结构</span></div>
-        <div class="scope-notice" id="scopeNotice">开发预览：本地结果不能直接用于正式Card或Report</div>
+        <div class="scope-notice" id="scopeNotice">开发预览：本地结果不能直接用于正式交付</div>
         <div class="topbar-status" id="modeBadge">正在连接运行服务</div>
         <div class="topbar-actions"><button class="button button-quiet" id="recheckButton">重新读取资料库</button></div>
       </header>
@@ -94,7 +94,6 @@
         <aside class="inspector-panel" id="inspectorPanel">
           <h2 id="inspectorTitle">参数设置</h2>
           <section class="inspector-group module-parameter-section" id="runtimeIdentityGroup" hidden aria-hidden="true">
-            <div class="group-title">合同参数</div>
             <div class="parameter-grid contract-identity-grid" id="identityFields">
               <label class="parameter-field full"><span>标的代码</span><input id="contractUnderlyings" autocomplete="off" spellcheck="false" autocorrect="off" autocapitalize="off" placeholder="例如000905.SH"><small>多个标的以英文逗号分隔</small></label>
               <label class="parameter-field"><span>合同标识</span><input id="contractId" autocomplete="off" placeholder="留空自动生成"></label>
@@ -103,6 +102,7 @@
             </div>
           </section>
           <section class="inspector-group module-parameter-section">
+            <div class="group-title" id="termsGroupTitle">结构条款</div>
             <div class="parameter-grid runtime-parameter-grid" id="parameterFields"></div>
             <div class="runtime-actions" hidden><button class="button button-quiet small" id="applyParametersButton" hidden>解析并更新收益图</button><button class="button button-quiet small" id="restoreDefaultsButton" hidden>恢复默认值</button></div>
           </section>
@@ -161,8 +161,8 @@
       const { parseDateInput, formatDateInput } = window.PayofferDateInput;
       const identifier = prefix => prefix + '_' + new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14);
       const runtimeSuccessNotice = () => hostedInDesk
-        ? '正式运行结果已写入受控Store，可供Reporter生成Card或Report。'
-        : '开发预览结果已写入隔离Store。正式Card或Report须经App Host和Reporter。';
+        ? '正式运行结果已写入受控Store，可供Reporter生成研究简报、完整研究报告、参考报价或多结构对比交付。'
+        : '开发预览结果已写入隔离Store。正式交付须经App Host和Reporter。';
 
       function showNotice(message, type = '') {
         $('noticeArea').innerHTML = '<div class="notice ' + type + '"><strong>' + (type === 'error' ? '无法执行' : '收益结构') + '</strong><span>' + escapeHtml(message) + '</span></div>';
@@ -884,7 +884,7 @@
       loadCatalog()
         .then(() => {
           setServiceStatus(hostedInDesk ? 'Desk运行服务已连接' : '本机服务已连接');
-          if (location.protocol === 'file:') showNotice('已连接本机服务。结果属于开发预览，正式Card或Report须经App Host和Reporter。');
+          if (location.protocol === 'file:') showNotice('已连接本机服务。结果属于开发预览，正式交付须经App Host和Reporter。');
         })
         .catch(error => {
           setServiceStatus('未连接本机服务', true);

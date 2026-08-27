@@ -2546,7 +2546,11 @@ body > .task-menu .task-menu__action--danger:focus-visible { background: var(--r
 }
 
 .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .task-list__row .task-item small {
+  align-self: center;
   justify-self: end;
+  margin: 0;
+  font-size: 7.7px;
+  line-height: 1;
   white-space: nowrap;
 }
 

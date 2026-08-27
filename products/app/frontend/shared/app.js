@@ -729,7 +729,11 @@ export function renderReports(target, reports) {
   }
   target.innerHTML = reports.map((report) => {
     const outputType = report.report_request?.output_type || report.report_request?.kind;
-    const title = ({ card: "简单报告", quote: "参考报价", report: "详细报告" })[outputType] || "交付物";
+    const deliveryMode = report.report_request?.subject_ref?.delivery_mode || report.report_request?.delivery_mode;
+    const comparison = deliveryMode === "comparison";
+    const title = comparison && outputType === "card" ? "MultiCard对比卡片"
+      : comparison && outputType === "report" ? "MultiReport对比报告"
+      : ({ card: "简单报告", quote: "参考报价", report: "详细报告" })[outputType] || "交付物";
     const artifact = report.artifact_manifest?.find?.((item) => item.name?.endsWith(".html"));
     const href = artifact ? `/api/reports/${encodeURIComponent(report.report_run_id)}/artifacts/${encodeURIComponent(artifact.name)}` : "#";
     return `<a class="report-item" href="${href}" target="_blank" rel="noopener"><strong>${title}</strong><span class="report-meta">${escapeText(report.status || "已生成")}</span></a>`;

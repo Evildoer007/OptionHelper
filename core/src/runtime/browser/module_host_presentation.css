@@ -236,11 +236,11 @@ html[data-optionhelper-app-hosted="true"] .workbench {
   min-height: 0;
   overflow: hidden;
   grid-template-columns:
-    var(--library-width, var(--source-width, clamp(220px, 21%, 270px)))
+    var(--library-width, var(--source-width, clamp(200px, 19%, 250px)))
     0
     minmax(0, 1fr)
     0
-    var(--inspector-width, var(--settings-width, clamp(280px, 27%, 350px)))
+    var(--inspector-width, var(--settings-width, clamp(200px, 19%, 250px)))
     !important;
   background: var(--paper) !important;
 }
@@ -613,8 +613,76 @@ html[data-optionhelper-app-hosted="true"] .parameter-subtitle {
   border-top: 1px solid var(--rule);
 }
 
-html[data-optionhelper-app-hosted="true"] .module-advanced {
+html[data-optionhelper-app-hosted="true"]:is(
+  [data-optionhelper-module="payoffer"],
+  [data-optionhelper-module="pricer"],
+  [data-optionhelper-module="backtester"]
+) .module-advanced {
+  display: block !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-bottom: 1px solid var(--rule) !important;
+  background: transparent !important;
+}
+
+html[data-optionhelper-app-hosted="true"]:is(
+  [data-optionhelper-module="payoffer"],
+  [data-optionhelper-module="pricer"],
+  [data-optionhelper-module="backtester"]
+) .module-advanced > summary {
+  padding: 16px 0 !important;
+  color: var(--color-ink-soft, var(--ink)) !important;
+  cursor: default !important;
+  font: var(--oh-type-label) !important;
+}
+
+html[data-optionhelper-app-hosted="true"]:is(
+  [data-optionhelper-module="payoffer"],
+  [data-optionhelper-module="pricer"],
+  [data-optionhelper-module="backtester"]
+) .module-advanced > .module-advanced-panel {
+  padding: 0 0 16px !important;
+}
+
+html[data-optionhelper-app-hosted="true"]:is(
+  [data-optionhelper-module="pricer"],
+  [data-optionhelper-module="backtester"]
+) .control-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  gap: 8px !important;
+}
+
+html[data-optionhelper-app-hosted="true"][data-optionhelper-module="pricer"] :is(
+  #referenceSpotGroup,
+  #referenceSpotsGroup
+)[hidden] {
   display: none !important;
+}
+
+html[data-optionhelper-app-hosted="true"]:is(
+  [data-optionhelper-module="payoffer"],
+  [data-optionhelper-module="pricer"],
+  [data-optionhelper-module="backtester"]
+) :is(.control-field, .parameter-field) {
+  min-width: 0;
+  margin-top: 9px !important;
+  gap: 5px !important;
+}
+
+html[data-optionhelper-app-hosted="true"]:is(
+  [data-optionhelper-module="payoffer"],
+  [data-optionhelper-module="pricer"],
+  [data-optionhelper-module="backtester"]
+) :is(
+  .control-field > input:not([type="hidden"]),
+  .control-field > select,
+  .parameter-field > input,
+  .parameter-field > select,
+  .term-fields input,
+  .term-fields select
+) {
+  min-height: 32px !important;
 }
 
 html[data-optionhelper-app-hosted="true"] .library-advanced {
@@ -627,7 +695,7 @@ html[data-optionhelper-app-hosted="true"] .library-advanced {
 
 html[data-optionhelper-app-hosted="true"] .library-advanced > summary {
   color: var(--color-ink-soft, var(--ink));
-  cursor: pointer;
+  cursor: default;
   font: var(--oh-type-label);
   list-style-position: outside;
 }
@@ -650,6 +718,26 @@ html[data-optionhelper-app-hosted="true"] :is(.parameter-field, .term-fields .fi
   display: inline-flex;
   align-items: baseline;
   line-height: 1.45;
+}
+
+html[data-optionhelper-app-hosted="true"]:is(
+  [data-optionhelper-module="pricer"],
+  [data-optionhelper-module="backtester"]
+) .term-fields .field > span:first-child {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  column-gap: 5px;
+  row-gap: 2px;
+  overflow-wrap: anywhere;
+}
+
+html[data-optionhelper-app-hosted="true"]:is(
+  [data-optionhelper-module="pricer"],
+  [data-optionhelper-module="backtester"]
+) .term-fields .field-symbol {
+  max-width: 100%;
+  margin-left: 0;
 }
 
 html[data-optionhelper-app-hosted="true"] .field-symbol {
@@ -802,7 +890,7 @@ html[data-optionhelper-app-hosted="true"] .audit-details > summary {
   color: var(--ink) !important;
   font: var(--oh-type-label) !important;
   line-height: 1.45 !important;
-  cursor: pointer;
+  cursor: default;
   list-style-position: inside;
 }
 
@@ -1040,4 +1128,156 @@ html[data-optionhelper-app-hosted="true"] .settings-panel .choice > input[type="
   html[data-optionhelper-app-hosted="true"] .panel-resizer {
     display: none !important;
   }
+}
+
+/* Cross-module parity pass.  These rules close the remaining presentation
+ * gaps between DataFetcher, Payoffer, Pricer, Backtester and Reporter while
+ * leaving each module's markup, state machine and result payload untouched. */
+html[data-optionhelper-app-hosted="true"] :is(
+  .control-field > span:first-child,
+  .parameter-field > span:first-child,
+  .term-fields .field > span:first-child
+) {
+  color: var(--muted) !important;
+  font: var(--oh-type-label) !important;
+}
+
+html[data-optionhelper-app-hosted="true"] :is(.control-field, .parameter-field) {
+  color: var(--muted) !important;
+}
+
+html[data-optionhelper-app-hosted="true"] :is(
+  .asset-entry strong,
+  .source-option strong,
+  .strategy-option strong
+) {
+  color: var(--ink) !important;
+  font: var(--oh-type-label) !important;
+}
+
+html[data-optionhelper-app-hosted="true"] :is(
+  .asset-entry span,
+  .source-option small,
+  .strategy-option small
+) {
+  color: var(--muted) !important;
+  font: var(--oh-type-helper) !important;
+}
+
+html[data-optionhelper-app-hosted="true"]:is(
+  [data-optionhelper-module="payoffer"],
+  [data-optionhelper-module="pricer"],
+  [data-optionhelper-module="backtester"]
+) .field-symbol {
+  color: var(--muted) !important;
+  font-family: var(--font) !important;
+}
+
+html[data-optionhelper-app-hosted="true"]:is(
+  [data-optionhelper-module="payoffer"],
+  [data-optionhelper-module="pricer"],
+  [data-optionhelper-module="backtester"]
+) :is(.state-dot.edit, .state-dot.dirty) {
+  background: var(--color-chart-gray) !important;
+  box-shadow: none !important;
+}
+
+html[data-optionhelper-app-hosted="true"] :is(.notice, .notice-area .notice) {
+  border-color: var(--rule) !important;
+  background: var(--surface) !important;
+  color: var(--muted) !important;
+  font: var(--oh-type-helper) !important;
+}
+
+html[data-optionhelper-app-hosted="true"] :is(.notice, .notice-area .notice) strong {
+  color: var(--ink) !important;
+}
+
+html[data-optionhelper-app-hosted="true"] :is(
+  .notice.failed,
+  .notice.error,
+  .notice[data-tone="error"]
+) {
+  border-color: var(--color-red-border-soft) !important;
+  background: var(--color-red-surface) !important;
+  color: var(--red-deep) !important;
+}
+
+html[data-optionhelper-app-hosted="true"] :is(
+  .notice.failed,
+  .notice.error,
+  .notice[data-tone="error"]
+) strong {
+  color: var(--red-deep) !important;
+}
+
+html[data-optionhelper-app-hosted="true"] .canvas-viewport {
+  background: var(--paper) !important;
+}
+
+html[data-optionhelper-app-hosted="true"]:is(
+  [data-optionhelper-module="payoffer"],
+  [data-optionhelper-module="pricer"],
+  [data-optionhelper-module="backtester"]
+) .canvas-stage {
+  background: var(--surface) !important;
+  box-shadow: none !important;
+}
+
+html[data-optionhelper-app-hosted="true"]:is(
+  [data-optionhelper-module="payoffer"],
+  [data-optionhelper-module="pricer"],
+  [data-optionhelper-module="backtester"]
+) .editing .canvas-stage {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--red) 42%, transparent) !important;
+}
+
+html[data-optionhelper-app-hosted="true"]:is(
+  [data-optionhelper-module="payoffer"],
+  [data-optionhelper-module="pricer"],
+  [data-optionhelper-module="backtester"]
+) .formula {
+  color: inherit !important;
+  font-family: var(--font) !important;
+  font-size: 1em !important;
+}
+
+html[data-optionhelper-app-hosted="true"] :is(
+  .valuation-slip,
+  .summary-grid
+) :is(span, .summary-item > span, .slip-cell > span) {
+  color: var(--muted) !important;
+  font: var(--oh-type-metadata) !important;
+}
+
+html[data-optionhelper-app-hosted="true"] :is(
+  .valuation-slip,
+  .summary-grid
+) :is(strong, .summary-item > strong, .slip-cell > strong) {
+  color: var(--ink) !important;
+  font: var(--oh-type-metric) !important;
+}
+
+html[data-optionhelper-app-hosted="true"] :is(
+  .metric-strip span,
+  .chart-figure figcaption span,
+  .trade-inspector dt,
+  .ledger > p
+) {
+  color: var(--muted) !important;
+  font: var(--oh-type-metadata) !important;
+}
+
+html[data-optionhelper-app-hosted="true"] :is(
+  .chart-figure figcaption,
+  .ledger h2,
+  .trade-inspector h2
+) {
+  color: var(--ink) !important;
+  font: var(--oh-type-section-title) !important;
+}
+
+html[data-optionhelper-app-hosted="true"] .metric-strip strong {
+  color: var(--ink) !important;
+  font: var(--oh-type-metric) !important;
 }

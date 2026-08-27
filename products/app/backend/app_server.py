@@ -71,6 +71,7 @@ from .settings.settings_models import (
 )
 from .settings.model_catalog import built_in_provider, built_in_provider_catalog
 from .settings.settings_service import SettingsService
+from .secrets.credential_migration import migrate_configured_credentials
 from .secrets.secret_ref import SecretRef
 from .secrets.secret_provider import SecretProvider
 from .stores.data_store import DataStore
@@ -83,6 +84,7 @@ from .task_runtime.job_runner import JobRunner
 from .task_runtime.job_registry import AppJobWorker, JobRegistry
 from .task_runtime.idempotency_store import ToolIdempotencyStore
 from .task_runtime.operation_service import OperationCancelled, TaskOperationService
+from .task_runtime.compute_process import ComputeProcessSupervisor
 from .task_runtime.task_service import TaskService
 from .tool_gateway import ToolGateway
 from .reporter_adapter import ReporterAdapter
@@ -246,7 +248,8 @@ class AppServer:
             password_store=PasswordCredentialStore(self._documents._root / "authentication" / "passwords.json"),
         )
         self.audit = LocalAuditService(self._documents)
-        self.settings = SettingsService(LocalSettingsStore(self._documents))
+        self._settings_store = LocalSettingsStore(self._documents)
+        self.settings = SettingsService(self._settings_store)
         self.tasks = TaskService(self._documents)
         self.data_assets = DataStore(self._documents)
         self.contracts = ContractStore(self._documents)
@@ -259,13 +262,16 @@ class AppServer:
             runtime_root=self._capability_runtime_root,
         )
         self.secret_provider = secret_provider or _platform_secret_provider(self._documents._root)
+        self.credential_migration = migrate_configured_credentials(
+            self._settings_store, self.secret_provider,
+        )
         self._secret_reference_provider = next(
             (
                 provider_name
-                for provider_name in ("keychain", "credential-manager", "local-secret", "managed-secret")
+                for provider_name in ("local-secret", "managed-secret", "keychain", "credential-manager")
                 if self.secret_provider.supports(provider_name)
             ),
-            "keychain",
+            "local-secret",
         )
         self.datafetcher = DataFetcherAdapter(
             self.settings_for,
@@ -273,6 +279,7 @@ class AppServer:
             LocalDataStore(self._capability_runtime_root / "data"),
             self.secret_provider,
         )
+        self.compute_supervisor = ComputeProcessSupervisor()
         self.gateway = ToolGateway(
             self.registry,
             self.policy,
@@ -283,6 +290,7 @@ class AppServer:
             self.contracts,
             self.tasks,
             capability_runtime_root=self._capability_runtime_root,
+            compute_supervisor=self.compute_supervisor,
         )
         self.provider_registry = ProviderRegistry()
         self.provider_registry.register(
@@ -331,7 +339,24 @@ class AppServer:
             return record.module_run_ref
 
         self.job_registry.recover_interrupted(verified_job_proof)
-        self.job_registry.validate_succeeded_proofs(verified_job_proof)
+        def verified_job_proofs(records):
+            requests = []
+            references = []
+            for record in records:
+                if record.module_run_ref is None:
+                    raise ValidationError("Succeeded calculation job has no verified Core proof")
+                requests.append((
+                    SessionIdentity(
+                        record.owner_id, record.tenant_id, Role.ADMIN,
+                        f"job-recovery:{record.job_id}",
+                    ),
+                    record.module_run_ref,
+                ))
+                references.append(record.module_run_ref)
+            self.results.resolve_owned_module_runs(requests)
+            return tuple(references)
+
+        self.job_registry.validate_succeeded_proofs(verified_job_proofs)
         def reconciled_job_state(job_id: str):
             try:
                 record = self.job_registry.get(job_id)
@@ -430,6 +455,7 @@ class AppServer:
         if callable(close_runtimes):
             close_runtimes()
         self.operations.shutdown()
+        self.compute_supervisor.shutdown()
         if self._httpd is not None:
             self._httpd.shutdown()
             self._httpd.server_close()
@@ -838,7 +864,9 @@ class AppServer:
             self.secret_provider.allow_reference(reference, "模型服务凭据")
             model = replace(
                 model,
-                secret_ref=reference if self._credential_is_saved(reference, "模型服务凭据") else None,
+                secret_ref=self._configured_reference(
+                    reference, connection.model_service.secret_ref, "模型服务凭据",
+                ),
             )
             normalized_connections.append(ModelConnectionSettings(connection_id, display_name, model))
         active_id = snapshot.active_model_connection_id
@@ -885,7 +913,9 @@ class AppServer:
             self.secret_provider.allow_reference(reference, "模型服务凭据")
             normalized_providers.append(replace(
                 normalized_provider,
-                secret_ref=reference if self._credential_is_saved(reference, "模型服务凭据") else None,
+                secret_ref=self._configured_reference(
+                    reference, provider.secret_ref, "模型服务凭据",
+                ),
             ))
         selection = snapshot.default_model_selection
         valid_selections = {
@@ -970,9 +1000,9 @@ class AppServer:
         if model.provider_name != "unconfigured" and model.secret_ref != model_reference:
             model = replace(
                 model,
-                secret_ref=model_reference
-                if self._credential_is_saved(model_reference, "模型服务凭据")
-                else None,
+                secret_ref=self._configured_reference(
+                    model_reference, snapshot.model_service.secret_ref, "模型服务凭据",
+                ),
             )
         data = snapshot.data_interface
         if data.provider_name not in {"unconfigured", "ifind-http"}:
@@ -980,14 +1010,30 @@ class AppServer:
         if data.provider_name != "unconfigured" and data.secret_ref != data_reference:
             data = replace(
                 data,
-                secret_ref=data_reference
-                if self._credential_is_saved(data_reference, "iFind数据凭据")
-                else None,
+                secret_ref=self._configured_reference(
+                    data_reference, snapshot.data_interface.secret_ref, "iFind数据凭据",
+                ),
             )
         normalized = replace(snapshot, role="admin", model_service=model, data_interface=data)
         if normalized != snapshot:
             self.settings.save(self._tenant_settings_key(tenant_id), normalized)
         return normalized
+
+    def _configured_reference(
+        self,
+        target: SecretRef,
+        existing: SecretRef | None,
+        purpose: str,
+    ) -> SecretRef | None:
+        """Prefer verified local storage without discarding a pending legacy ref."""
+
+        self.secret_provider.allow_reference(target, purpose)
+        if self._credential_is_saved(target, purpose):
+            return target
+        if existing is not None and existing.provider in {"keychain", "credential-manager"}:
+            self.secret_provider.allow_reference(existing, purpose)
+            return existing
+        return None
 
     def _credential_is_saved(self, reference: SecretRef, purpose: str) -> bool:
         """Reattach one exact Host-owned reference after a development rebuild."""
@@ -1204,6 +1250,7 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
                 "stage": error.stage,
                 "message": error.message,
                 "next_step": error.next_step,
+                "retryable": error.retryable,
                 "diagnostic_id": diagnostic_id,
             })
         except (ValidationError, ValueError):
@@ -1539,6 +1586,14 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
         if path == "/api/auth/logout":
             _only_fields(body, set())
             identity = self._identity()
+            close_runtime = getattr(self.app.recommender, "close_task_runtime", None)
+            for task in self.app.tasks.list(identity):
+                task_id = str(task.get("task_id", ""))
+                if not task_id:
+                    continue
+                self.app.operations.cancel_task(identity, task_id)
+                if callable(close_runtime):
+                    close_runtime(identity, task_id, reason="signed_out")
             self.app.close_session(identity)
             self._json(HTTPStatus.OK, {"status": "signed_out"}, clear_cookie=True)
             return
@@ -1646,9 +1701,9 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
                     raise ValidationError("源报告不属于当前任务")
                 source_request = source_run.get("report_request")
                 kind = str(source_request.get("output_type", "")).strip().lower() if isinstance(source_request, dict) else ""
-                capability = {"card": "report.card.request", "report": "report.full.request"}.get(kind)
+                capability = {"card": "report.card.request", "quote": "report.quote.request", "report": "report.full.request"}.get(kind)
                 if capability is None:
-                    raise ValidationError("参考报价不能在当前页面另存为PDF")
+                    raise ValidationError("源交付类型不支持另存")
                 self.app.policy.require(identity.role, capability)
                 controlled_payload = {
                     "action": "rerender",
@@ -1686,6 +1741,7 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
                 ),
                 request_id=module_request_id or None,
                 input_hash=_json_hash(controlled_payload) if module_request_id else None,
+                lane="compute" if module in {"pricer", "backtester"} else "control",
             )
             self.app.audit.record(AuditEvent(action="task.operation.submit", principal_id=identity.principal_id, tenant_id=identity.tenant_id, outcome="queued", decision="allow", reference=operation.operation_id, request_id=request_id))
             self._json(HTTPStatus.ACCEPTED, {"operation": operation.public()})
@@ -1746,6 +1802,7 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
                         self.app.conversations, identity, task_id, content,
                         request_id=conversation_request_id, selection=model_selection, cancelled=cancelled,
                     ),
+                    lane="conversation",
                 )
                 self._json(HTTPStatus.ACCEPTED, {"operation": operation.public()})
                 return
@@ -1804,6 +1861,7 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
                         ),
                         request_id=report_request_id or None,
                         input_hash=_json_hash(arguments) if report_request_id else None,
+                        lane="control",
                     )
                     self._json(HTTPStatus.ACCEPTED, {"operation": operation.public()})
                     return
@@ -2741,7 +2799,14 @@ def _dispatch_background_tool(
     """Run the existing module gateway outside the request lifetime."""
     if cancelled():
         raise OperationCancelled()
-    result = dispatcher.dispatch(module, payload, identity, module_context=module_context, request_id=request_id)
+    result = dispatcher.dispatch(
+        module,
+        payload,
+        identity,
+        module_context=module_context,
+        request_id=request_id,
+        cancellation_check=cancelled,
+    )
     if cancelled() and isinstance(result, dict) and result.get("cancelled") is True:
         raise OperationCancelled()
     return result

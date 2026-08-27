@@ -21,6 +21,9 @@ RULE = (224, 219, 214)
 TITLE = "将OptionHelper拖入Applications完成安装"
 FOOTER = "拖动OptionHelper到Applications后即可开始使用"
 SIMPLIFIED_HEITI_INDEX = 1
+ARROW_START_X = 255
+ARROW_BASE_X = 491
+ARROW_TIP_X = 505
 
 
 def _font(size: int, *, light: bool = False) -> ImageFont.FreeTypeFont:
@@ -66,11 +69,14 @@ def render_background(destination: Path) -> None:
     _centered(draw, TITLE, 36, title_font, TEXT)
     draw.line((58, 82, WINDOW_SIZE[0] - 58, 82), fill=RULE, width=1)
 
-    # The Finder icons are supplied by the DMG entries.  This fine line and
-    # arrowhead sit between their 128px icon boxes.
+    # The Finder icons are supplied by the DMG entries.  The arrow keeps the
+    # same 11px clearance from both 128px icon boxes.
     arrow_y = 235
-    draw.line((255, arrow_y, 504, arrow_y), fill=BRAND_RED, width=2)
-    draw.polygon(((504, arrow_y - 7), (518, arrow_y), (504, arrow_y + 7)), fill=BRAND_RED)
+    draw.line((ARROW_START_X, arrow_y, ARROW_BASE_X, arrow_y), fill=BRAND_RED, width=2)
+    draw.polygon(
+        ((ARROW_BASE_X, arrow_y - 7), (ARROW_TIP_X, arrow_y), (ARROW_BASE_X, arrow_y + 7)),
+        fill=BRAND_RED,
+    )
 
     draw.line((58, 390, WINDOW_SIZE[0] - 58, 390), fill=RULE, width=1)
     footer_font = _font(13, light=True)

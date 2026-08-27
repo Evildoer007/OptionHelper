@@ -55,13 +55,17 @@ class UserActionError(ValidationError):
         *,
         stage: str = "input",
         next_step: str | None = None,
+        retryable: bool = False,
     ) -> None:
         if not code or not message:
             raise ValueError("UserActionError requires a public code and message")
+        if not isinstance(retryable, bool):
+            raise ValueError("UserActionError.retryable must be boolean")
         self.code = code
         self.message = message
         self.stage = stage
         self.next_step = next_step or "请按提示调整当前任务的输入或数据后重试。"
+        self.retryable = retryable
         super().__init__(message)
 
 

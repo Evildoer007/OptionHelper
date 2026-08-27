@@ -30,6 +30,7 @@ def _profile() -> dict[str, Any]:
         "presentation_patch_schema": PRESENTATION_PATCH_SCHEMA,
         "design_system_hash": theme.token_hash,
         "output_types": ["card", "quote", "report"],
+        "delivery_modes": ["single", "comparison", "quote"],
         "modules": list(theme.tokens["modules"]),
         "modes": list(theme.tokens["modes"]),
     }
@@ -57,7 +58,7 @@ def capability(config: DesignerConfig | Mapping[str, Any] | None = None) -> dict
         "offline_assets": {
             "report_theme": config.report_theme_path.name,
             "echarts": config.echarts_asset_path.name,
-            "templates": ["card.html", "quote.html", "report.html"],
+            "templates": ["card.html", "quote.html", "report.html", "multicard.html", "multireport.html"],
         },
         "asset_modes": ["shared", "portable"] if config.allow_portable_assets else ["shared"],
         "default_asset_mode": config.default_asset_mode,

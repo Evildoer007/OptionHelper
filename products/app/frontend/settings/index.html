@@ -33,7 +33,7 @@
           </aside>
           <section class="connection-editor">
             <header class="settings-content-header">
-              <span class="setup-security">凭据仅保存在当前设备</span>
+              <span class="setup-security">凭据保存在OptionHelper本机数据目录</span>
               <a class="settings-close" href="/optchat" aria-label="关闭设置"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 3l10 10M13 3L3 13"/></svg></a>
             </header>
             <div class="settings-options">
@@ -69,7 +69,7 @@
                   <label for="ifind-refresh-token">iFind Refresh Token<span class="field-required" aria-hidden="true">必填</span></label>
                   <input id="ifind-refresh-token" name="refresh_token" type="password" autocomplete="new-password" spellcheck="false" placeholder="粘贴Refresh Token" aria-describedby="ifind-refresh-spec data-credential-state">
                   <small class="field-spec" id="ifind-refresh-spec"><span data-purpose>由App自动获取可用的访问凭据</span><span data-example hidden>iFind控制台复制的完整Refresh Token</span><span data-default hidden>未配置</span></small>
-                  <small class="field-note" id="data-credential-state">保存后仅保留在OptionHelper本机凭据存储。</small>
+                  <small class="field-note" id="data-credential-state">保存后仅写入OptionHelper本机数据目录。</small>
                 </div>
                 <div class="form-foot field--wide"><p class="form-result" data-form-result="data" role="status" aria-live="polite"></p><div><button class="button-quiet" type="button" id="test-data">测试已保存连接</button><button class="button-primary">保存iFind凭据</button></div></div>
               </form>

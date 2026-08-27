@@ -90,7 +90,7 @@ function setActiveSection(id) {
 function connectionState(target, configured, kind = "model") {
   if (!target) return;
   target.textContent = configured
-    ? "已保存至OptionHelper本机凭据存储。留空会保留当前凭据。"
+    ? "已保存至OptionHelper本机数据目录。留空会保留当前凭据。"
     : kind === "model" ? "尚未配置本机凭据。" : "尚未配置。保存Refresh Token后，App会自动获取可用访问凭据。";
 }
 
@@ -141,7 +141,7 @@ function providerEditor(provider) {
   const rows = provider.models.map((model, index) => modelRow(model, defaultId, index)).join("");
   return `<form class="model-provider-editor" data-provider-form data-provider-id="${escapeHtml(provider.provider_id)}" novalidate>
     <div class="model-provider-editor__header"><strong>${escapeHtml(provider.display_name)}</strong><span>${escapeHtml(provider.provider_id)}</span></div>
-    <label class="provider-key-field"><span>API密钥</span><input name="api_key" type="password" autocomplete="new-password" placeholder="${configured ? "••••••••••••（已保存）" : "输入API密钥"}"><small>${configured ? "已保存。留空将保留当前密钥。" : "保存后仅写入当前设备的凭据存储。"}</small></label>
+    <label class="provider-key-field"><span>API密钥</span><input name="api_key" type="password" autocomplete="new-password" placeholder="${configured ? "••••••••••••（已保存）" : "输入API密钥"}"><small>${configured ? "已保存。留空将保留当前密钥。" : "保存后仅写入OptionHelper本机数据目录。"}</small></label>
     <details class="provider-advanced"><summary>自定义设置</summary><div class="provider-advanced__content">
       <label>Provider名称<input name="display_name" value="${escapeHtml(provider.display_name)}" autocomplete="off"></label>
       <label>API地址<input name="endpoint" value="${escapeHtml(provider.endpoint)}" inputmode="url" autocomplete="off"></label>

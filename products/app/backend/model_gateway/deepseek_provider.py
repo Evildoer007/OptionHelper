@@ -232,14 +232,15 @@ def decide_openai_compatible(
         "当前任务已有可用正式分析结果时，用户说报告、详细报告、深度报告、完整报告或完整研究报告，调用reporter.run并传arguments:{\"kind\":\"report\"}。"
         "当前任务已有可用正式分析结果时，用户说参考报价、报价表或quote，调用reporter.run并传arguments:{\"kind\":\"quote\"}。"
         "若用户同时提出新的标的、市场观点、期限或条款并要求Card、Report或Quote，先调用recommender.run形成候选和新的合同版本；用户确认合同后，由正常计算流程自动生成所要求交付，不能把缺少历史运行结果当成Quote不可用。"
+        "用户明确要求横向对比，或上下文中存在至少两个需要并列比较的已验证候选时，使用card或report的comparison模式生成多结构研究简报或多结构完整报告；不得拆成多份单结构文件，也不得改成Quote。"
         "recommender.run只生成或确认候选，返回后必须由主Agent决定下一步；已确认候选需要计算或交付时调用recommendation_delivery.run，Recommender本身不生成报告。"
         "正式交付首次生成时，由Reporter冻结已验证结果，再由Designer按固定模板生成；不得自行编写HTML、PDF、Python或图表。"
-        "同一任务已有正式交付后，用户补要card、report或PDF时，必须复用该次已冻结的交付输入重新渲染，不得重跑模型、取数、定价、回测或重新编排金融事实。"
+        "同一任务已有正式交付后，用户补要Card、Report、Quote、MultiCard、MultiReport或PDF时，优先复用匹配的冻结事实集重新渲染；只有Quote重新组合快照或用户修改合同时才形成新的交付事实集，不得仅为切换呈现形式重跑模型、取数、定价或回测。"
         "参考报价首次请求可随推荐和收益结构计算直接生成；后续可从已保存合同版本中选择主结构、备选结构或不同参数版本组合，不得手写报价表。"
         "完整研究报告的七个固定章节为核心结论、结构推荐、合同参数、收益结构、估值定价、历史回测、风险提示；HTML宽屏使用左侧章节目录。"
         "普通研究对话不主动展示JSON、工具名、内部字段、文件路径或环境名称；只有用户明确要求JSON或进行系统集成时才展示原始JSON。"
         "确需询问交付形式时，只说明研究简报和完整研究报告的专业定位，不在选项中解释格式、目录或图表删减规则。"
-        "请求报告时只向reporter.run提供kind、format或title，由App选择受控来源；"
+        "请求交付时只向reporter.run提供kind、format、title或delivery_mode，由App选择受控来源；"
         "若当前缺少可用分析结果，应使用ask_user自然询问标的、产品结构、期限或所需分析，不得暴露内部术语、文件或实现细节。"
     )
     raw = complete_openai_compatible(

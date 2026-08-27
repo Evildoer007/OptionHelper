@@ -21,6 +21,38 @@
     .replaceAll("==", "=")
     .replaceAll("*", "×");
 
+  const normalizeFieldIdentifier = (value) => String(value ?? "")
+    .trim()
+    .replace(/[\s-]+/g, "_")
+    .replace(/_+/g, "_")
+    .toLowerCase();
+
+  const fieldSymbol = (field) => {
+    const symbol = String(field?.symbol ?? "").trim();
+    if (!symbol) return "";
+    const key = normalizeFieldIdentifier(field?.key);
+    return key && normalizeFieldIdentifier(symbol) === key ? "" : symbol;
+  };
+
+  const termValueLabels = new Map([
+    ["true", "是"], ["false", "否"],
+    ["European", "欧式"], ["American", "美式"], ["Bermudan", "百慕大式"],
+    ["cash", "现金结算"], ["physical", "实物交割"],
+    ["close", "收盘价"], ["open", "开盘价"], ["high", "最高价"], ["low", "最低价"],
+    ["daily", "每个交易日"], ["monthly_last", "每月最后一个交易日"],
+    ["KO_over_KI", "同日先敲出后敲入"],
+    ["include_hedge_date", "包含避险日"], ["exclude_hedge_date", "不包含避险日"],
+    ["gross_before_premium", "期权费前收益"], ["net_after_premium", "期权费后收益"],
+  ]);
+
+  const termValueLabel = (value) => {
+    const text = String(value ?? "");
+    const registered = termValueLabels.get(text);
+    if (registered) return registered;
+    const monthly = /^monthly_(\d+)(?:st|nd|rd|th)$/.exec(text);
+    return monthly ? `每月第${Number(monthly[1])}个交易日` : text;
+  };
+
   const readScript = (source, start) => {
     if (source[start] === "{") {
       const end = source.indexOf("}", start + 1);
@@ -65,7 +97,12 @@
     return `<span class="formula" aria-label="${escapeHtml(source)}">${output}</span>`;
   };
 
-  window.OptionHelperModulePresentation = Object.freeze({ formatMath, normalizeMathText });
+  window.OptionHelperModulePresentation = Object.freeze({
+    fieldSymbol,
+    formatMath,
+    normalizeMathText,
+    termValueLabel,
+  });
 
   const query = new URLSearchParams(location.search);
   if (query.get("host") !== "optdesk" || window.parent === window) return;

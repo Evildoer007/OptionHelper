@@ -199,7 +199,7 @@ class ReporterAdapter:
         }
 
     def _rerender(self, request: Mapping[str, Any], principal: SessionIdentity) -> dict[str, Any]:
-        """Render another Card or Report from a saved delivery fact set only."""
+        """Render another supported format from a saved delivery fact set only."""
 
         allowed = {"action", "task_id", "source_report_run_id", "output_type", "format", "report_run_id"}
         unknown = set(request).difference(allowed)
@@ -209,8 +209,8 @@ class ReporterAdapter:
         target_run_id = _identifier(request.get("report_run_id"), "report_run_id")
         output_type = str(request.get("output_type", "")).strip().lower()
         output_format = str(request.get("format", "")).strip().lower()
-        if output_type not in {"card", "report"} or output_format not in {"html", "pdf"}:
-            raise ValidationError("冻结交付只能生成HTML或PDF格式的Card或Report")
+        if output_type not in {"card", "quote", "report"} or output_format not in {"html", "pdf"}:
+            raise ValidationError("冻结交付只能生成HTML或PDF格式的Card、Report或Quote")
         try:
             source = self._results.get_owned_report_run(principal, source_run_id)
         except (KeyError, AuthorizationError) as error:

@@ -289,8 +289,8 @@ export async function startWorkspace(initialMode) {
     return Number.isFinite(parsed) ? Math.max(minimum, Math.min(maximum, parsed)) : fallback;
   };
   const normalizePanelLayout = (layout) => ({
-    left: clampPanelWidth(layout?.left, 220, 420, 280),
-    right: clampPanelWidth(layout?.right, 300, 520, 340),
+    left: clampPanelWidth(layout?.left, 200, 420, 250),
+    right: clampPanelWidth(layout?.right, 200, 520, 250),
   });
   let sharedPanelLayout = (() => {
     try { return normalizePanelLayout(JSON.parse(localStorage.getItem(panelLayoutKey) || "null")); }
@@ -1115,6 +1115,14 @@ export async function startWorkspace(initialMode) {
     syncModuleStageState();
   }
 
+  function showModuleRecovering(moduleName, taskId) {
+    if (!mount || currentTask?.task_id !== taskId) return;
+    const loading = moduleLoadingSurface(moduleName);
+    if (!loading || loading.dataset.state !== "loading") return;
+    loading.textContent = `正在恢复${modules.get(moduleName) || "研究模块"}连接…`;
+    syncModuleStageState(moduleName);
+  }
+
   function clearModuleLoading(moduleName, taskId) {
     if (!mount || currentTask?.task_id !== taskId) return;
     moduleLoadingSurface(moduleName)?.remove();
@@ -1408,15 +1416,29 @@ export async function startWorkspace(initialMode) {
     const frame = moduleFrames.get(moduleName);
     const task = `?task_id=${encodeURIComponent(taskId)}`;
     let refresh;
-    refresh = request(`/api/module-host/${encodeURIComponent(moduleName)}${task}`).then(({ context }) => {
-      // The response is scoped to the frame and task that requested it.  A
-      // completed request from a discarded iframe must not overwrite the
-      // context of the newly selected task.
-      if (currentTask?.task_id !== taskId || moduleFrames.get(moduleName) !== frame) return null;
-      setModuleContext(moduleName, context);
-      deliverContext(moduleName);
-      return context;
-    }).finally(() => {
+    refresh = (async () => {
+      let failures = 0;
+      const started = Date.now();
+      while (currentTask?.task_id === taskId && moduleFrames.get(moduleName) === frame) {
+        try {
+          const { context } = await request(`/api/module-host/${encodeURIComponent(moduleName)}${task}`);
+          if (currentTask?.task_id !== taskId || moduleFrames.get(moduleName) !== frame) return null;
+          setModuleContext(moduleName, context);
+          deliverContext(moduleName);
+          if (frame.dataset.ready === "true") clearModuleLoading(moduleName, taskId);
+          return context;
+        } catch (error) {
+          const terminal = [401, 403, 404].includes(error.status)
+            || (error.status === 409 && error.body?.error === "stale_task_contract");
+          if (terminal) throw error;
+          failures += 1;
+          if (Date.now() - started >= 8_000) showModuleRecovering(moduleName, taskId);
+          const delay = Math.min(4_000, 500 * (2 ** Math.min(failures - 1, 3)));
+          await new Promise((resolve) => window.setTimeout(resolve, delay));
+        }
+      }
+      return null;
+    })().finally(() => {
       if (moduleContextRefreshes.get(moduleName) === refresh) moduleContextRefreshes.delete(moduleName);
     });
     moduleContextRefreshes.set(moduleName, refresh);
@@ -1477,14 +1499,7 @@ export async function startWorkspace(initialMode) {
   async function mountModule(moduleName, updateLocation = true, { forceRetry = false } = {}) {
     if (!modules.has(moduleName) || !currentTask) return;
     const taskId = currentTask.task_id;
-    const mountRevision = ++moduleMountRevision;
-    const isCurrentMount = () => (
-      mountRevision === moduleMountRevision
-      && currentTask?.task_id === taskId
-      && currentModule === moduleName
-    );
-    moduleNavigationController?.abort();
-    moduleNavigationController = null;
+    moduleMountRevision += 1;
     currentModule = moduleName;
     setActiveModule(moduleName);
     if (updateLocation) setTaskLocation(taskId, { module: moduleName });
@@ -1510,42 +1525,16 @@ export async function startWorkspace(initialMode) {
     }
 
     showModuleLoading(moduleName);
-    const controller = new AbortController();
-    moduleNavigationController = controller;
-    let timedOut = false;
-    const contextTimeout = window.setTimeout(() => {
-      timedOut = true;
-      controller.abort();
-    }, 8_000);
-    try {
-      const task = `?task_id=${encodeURIComponent(taskId)}`;
-      const { context } = await request(`/api/module-host/${encodeURIComponent(moduleName)}${task}`, { signal: controller.signal });
-      if (!isCurrentMount()) return null;
-      if (moduleFrames.get(moduleName) !== frame) return null;
-      setModuleContext(moduleName, context);
-      deliverContext(moduleName);
-      if (frame.dataset.ready === "true") clearModuleLoading(moduleName, taskId);
-      return frame;
-    } catch (error) {
-      if (!isCurrentMount()) return null;
-      if (error.name === "AbortError" && !timedOut) return null;
+    void refreshModuleContext(moduleName).catch((error) => {
+      if (currentTask?.task_id !== taskId || moduleFrames.get(moduleName) !== frame) return;
       const staleTask = error.status === 409 && error.body?.error === "stale_task_contract";
-      const detail = timedOut
-        ? `${modules.get(moduleName)}上下文同步超时。`
-        : staleTask
-          ? (error.body.message || "当前任务的合同来自旧产品目录。请新建研究任务后继续。")
-          : `${modules.get(moduleName)}暂未就绪。`;
+      const detail = staleTask
+        ? (error.body.message || "当前任务的合同来自旧产品目录。请新建研究任务后继续。")
+        : `${modules.get(moduleName)}上下文不可用。`;
       showModuleLoadFailure(moduleName, taskId, detail);
-      showWorkspaceStatus(
-        detail,
-        true,
-        7000,
-      );
-      return null;
-    } finally {
-      window.clearTimeout(contextTimeout);
-      if (moduleNavigationController === controller) moduleNavigationController = null;
-    }
+      showWorkspaceStatus(detail, true, 7000);
+    });
+    return frame;
   }
 
   window.addEventListener("message", (event) => {

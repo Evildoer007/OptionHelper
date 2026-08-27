@@ -42,6 +42,7 @@ class JobRunner:
         owner_id: str | None = None,
         operation_id: str | None = None,
         defer_success: bool = False,
+        use_worker_gate: bool = True,
     ) -> tuple[JobExecution, T]:
         started_at = datetime.now(timezone.utc).isoformat()
         started = monotonic()
@@ -56,7 +57,7 @@ class JobRunner:
             )
             self._registry.transition(identifier, "running")
         try:
-            value = self._worker.execute(operation) if self._worker is not None else operation()
+            value = self._worker.execute(operation) if self._worker is not None and use_worker_gate else operation()
         except Exception:
             if registered:
                 self._registry.transition(identifier, "failed")

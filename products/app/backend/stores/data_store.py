@@ -7,7 +7,7 @@ accepts an arbitrary filesystem path or any provider credential.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from hashlib import sha256
 from typing import Any
 
@@ -128,6 +128,51 @@ class DataStore:
             raise ValidationError("DataAssetRef标的必须与ResolvedContract完全一致")
         if schema_id is not None and record.get("schema_id") != schema_id:
             raise ValidationError(f"DataAssetRef.schema_id必须为{schema_id}")
+        return {key: record[key] for key in _PROTOCOL_FIELDS}
+
+    def resolve_market_history_for_calendar(
+        self,
+        identity: SessionIdentity,
+        *,
+        asset_ids: tuple[str, ...],
+        calendar_id: str,
+        calendar_revision: str,
+        start_date: str,
+        end_date: str,
+    ) -> dict[str, Any] | None:
+        """Prefer history signed by the exact calendar frozen into a contract."""
+
+        try:
+            required_start = date.fromisoformat(start_date)
+            required_end = date.fromisoformat(end_date)
+        except ValueError as error:
+            raise ValidationError("历史行情覆盖区间无效") from error
+        candidates: list[dict[str, Any]] = []
+        for item in self._state.read("data_assets").values():
+            if not isinstance(item, dict):
+                continue
+            coverage = item.get("coverage")
+            if not isinstance(coverage, dict):
+                continue
+            if (
+                item.get("tenant_id") != identity.tenant_id
+                or item.get("created_by") != identity.principal_id
+                or item.get("schema_id") != "market-history"
+                or set(asset_ids) != set(item.get("asset_ids", []))
+                or coverage.get("calendar_id") != calendar_id
+                or coverage.get("calendar_revision") != calendar_revision
+            ):
+                continue
+            try:
+                available_start = date.fromisoformat(str(coverage.get("start_date", coverage.get("date_start"))))
+                available_end = date.fromisoformat(str(coverage.get("end_date", coverage.get("date_end"))))
+            except ValueError:
+                continue
+            if available_start <= required_start and available_end >= required_end:
+                candidates.append(item)
+        if not candidates:
+            return None
+        record = max(candidates, key=lambda item: (str(item.get("registered_at", "")), str(item.get("data_asset_id", ""))))
         return {key: record[key] for key in _PROTOCOL_FIELDS}
 
     def resolve_frozen_trading_calendar(

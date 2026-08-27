@@ -45,9 +45,10 @@ def conversation_tool_catalog(policy: AuthorizationPolicy, identity: SessionIden
         {"name": "backtester.run", "description": "基于ResolvedContract与历史数据执行回测", "actions": ["run"]},
         {
             "name": "reporter.run",
-            "description": "将当前任务已完成的正式分析整理为交付物；arguments只填kind、format或title。详细报告默认采用连续A4正文。",
+            "description": "将当前任务已完成的正式分析整理为交付物；arguments可填kind、format、title或delivery_mode。delivery_mode=comparison用于多结构研究简报或多结构完整报告。",
             "actions": ["run"],
             "output_types": ["card"],
+            "delivery_modes": ["single", "comparison"],
         },
     ]
     output_types = ["card"]

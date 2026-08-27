@@ -355,9 +355,11 @@ class BacktesterRuntime:
     ) -> dict[str, Any]:
         message = _safe_formal_error_message(error)
         failure = {
+            "failure_code": error_code,
             "error_code": error_code,
             "stage": stage,
             "message": message,
+            "next_step": _formal_failure_next_step(error_code, str(error)),
             "retryable": stage == "historical_data",
             "missing_inputs": ["historical_data"] if stage == "historical_data" else [],
             "upstream_refs": data_refs,
@@ -561,6 +563,16 @@ def _safe_formal_error_message(error: Exception) -> str:
     if not message or "/" in message or "\\" in message:
         return "正式历史数据读取或校验失败"
     return message
+
+
+def _formal_failure_next_step(error_code: str, message: str) -> str:
+    if error_code in {"historical_data_reference_invalid", "historical_data_unavailable"}:
+        if "交易日历" in message:
+            return "请重新获取与当前合同交易日历一致并覆盖完整回测区间的历史行情后重试。"
+        return "请重新获取覆盖完整回测区间的日频行情，并确认数据资产仍可读取后重试。"
+    if error_code == "backtest_config_invalid":
+        return "请检查回测起止日、入场规则和完整期限设置后重试。"
+    return "请检查当前产品、合同、行情和回测参数后重试。"
 
 
 def _identity(body: Mapping[str, Any]) -> dict[str, Any]:

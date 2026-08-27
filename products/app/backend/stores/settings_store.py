@@ -37,3 +37,13 @@ class LocalSettingsStore(SettingsStore):
             return value
 
         self._state.update("settings", update)
+
+    def items(self) -> tuple[tuple[str, SettingsSnapshot], ...]:
+        """Return a stable snapshot for one-time host-owned migrations."""
+
+        values = self._state.read("settings")
+        return tuple(
+            (principal_id, deserialize_settings(raw))
+            for principal_id, raw in values.items()
+            if isinstance(principal_id, str) and isinstance(raw, dict)
+        )

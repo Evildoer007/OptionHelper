@@ -92,7 +92,7 @@ class ProductPricingAdapter:
             self.market_snapshot.get("trading_calendar"),
             as_of=_as_of(self.config.valuation_date),
             demo_mode=self.config.demo_mode,
-        ) if self._requires_trading_calendar else None
+        ) if self.requires_trading_calendar else None
         if self.route.capability.adapter == "european_vanilla":
             observed_state.validate_european_vanilla()
         if self.method == "monte_carlo":
@@ -101,7 +101,7 @@ class ProductPricingAdapter:
             start_value = contract.identity.get("contract_start_date")
             observed_state.validate_path_events(
                 contract_start_date=None if start_value is None else str(start_value),
-                path_dependent=self._requires_trading_calendar,
+                path_dependent=self.requires_trading_calendar,
                 requires_accumulated_count="n_coupon" in contract.terms.get("monitor", {}),
                 requires_accumulated_quantity="Q_acc" in contract.terms.get("monitor", {}),
                 unsupported_midlife_aggregate="n_in" in contract.terms.get("monitor", {}),
@@ -136,7 +136,7 @@ class ProductPricingAdapter:
         return self.route.method
 
     @property
-    def _requires_trading_calendar(self) -> bool:
+    def requires_trading_calendar(self) -> bool:
         """Use the one formal calendar policy for every adapter reprice."""
         return requires_future_trading_calendar(
             self.contract.product_id,

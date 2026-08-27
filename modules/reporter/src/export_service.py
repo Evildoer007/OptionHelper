@@ -707,22 +707,35 @@ def rerender_frozen_delivery(
     output_format: object,
     designer_port: ModulePort,
 ) -> dict[str, Any]:
-    """Create a Card or Report from an App-saved frozen delivery fact set.
+    """Create another delivery from an App-saved frozen fact set.
 
     Unlike format conversion from a local ReportRun directory, App persistence
     stores the immutable ReportUnit and verified audit record rather than a
     staging directory.  This path deliberately has no ResultStore argument:
     rendering a second delivery cannot trigger another payoff, pricing or
-    backtest run.
+    backtest run. Single contracts support Card and Report, comparison bundles
+    support MultiCard and MultiReport, and Quote bundles support Quote only.
     """
 
     source = ReportRequest.from_mapping(source_request)
     unit = dict(report_unit)
-    if source.output_type == "quote" or unit.get("unit_type") != "ContractReportUnit":
-        raise ReporterError("简单报告或详细报告使用单合同交付事实集；参考报价使用报价结构清单中的已选快照")
+    unit_type = str(unit.get("unit_type", ""))
+    if unit_type not in {"ContractReportUnit", "ReportBundle"}:
+        raise ReporterError("冻结交付事实集类型无效")
     target_type = str(output_type or "").strip().lower()
-    if target_type not in {"card", "report"}:
-        raise ReporterError("请选择Card或Report；Quote由报价结构清单的已选快照生成")
+    if target_type not in {"card", "quote", "report"}:
+        raise ReporterError("请选择Card、Report或Quote")
+    if source.output_type == "quote":
+        if source.delivery_mode != "quote" or unit_type != "ReportBundle" or target_type != "quote":
+            raise ReporterError("参考报价只能使用原报价事实集切换HTML或PDF")
+    elif source.delivery_mode == "comparison":
+        if unit_type != "ReportBundle" or target_type not in {"card", "report"}:
+            raise ReporterError("多结构对比事实集只能生成MultiCard或MultiReport")
+    elif source.delivery_mode == "single":
+        if unit_type != "ContractReportUnit" or target_type not in {"card", "report"}:
+            raise ReporterError("单合同事实集只能生成Card或Report")
+    else:
+        raise ReporterError("当前冻结交付模式不支持App内再次生成")
     target_format = str(output_format or "").strip().lower()
     if target_format not in {"html", "pdf"}:
         raise ReporterError("format仅支持html或pdf")
@@ -739,26 +752,80 @@ def rerender_frozen_delivery(
     target_root.parent.mkdir(parents=True, exist_ok=True)
     stage = Path(tempfile.mkdtemp(prefix=f".{target.report_run_id}-", dir=target_root.parent))
     try:
-        outcome = _write_unit_directory(
-            stage,
-            unit,
-            target,
-            {"candidate_evidence": {}},
-            filename="card" if target.output_type == "card" else "report",
-            designer_port=designer_port,
+        units = unit.get("report_units") if unit_type == "ReportBundle" else [unit]
+        if not isinstance(units, list) or not units or any(not isinstance(item, Mapping) for item in units):
+            raise ReporterError("冻结交付缺少有效ReportUnit")
+        payload = (
+            build_collection_payload(units, target)
+            if unit_type == "ReportBundle"
+            else build_designer_payload(unit, target)
         )
-        manifest_path = stage / "run_manifest.json"
-        manifest = read_json(manifest_path, "run_manifest.json")
+        hashes = [str(item.get("semantic_fact_hash", "")) for item in units]
+        brief = build_design_brief(payload, target, report_unit_hashes=hashes)
+        write_json(stage / "report-request.json", target.to_dict())
+        write_json(stage / "report-unit.json", unit)
+        write_json(stage / "designer-input.json", payload)
+        write_json(stage / "design-brief.json", brief)
+        filename = (
+            "quote" if target.output_type == "quote"
+            else "multicard" if target.delivery_mode == "comparison" and target.output_type == "card"
+            else "multireport" if target.delivery_mode == "comparison"
+            else "card" if target.output_type == "card"
+            else "report"
+        )
+        report_file = f"{filename}.{target.format}"
+        rendered = _write_rendered(stage, payload, target, report_file, designer_port=designer_port)
+        designer_artifact_manifest = _persist_designer_manifest(stage, rendered, payload)
+        status = "succeeded" if all(item.get("evidence_status") == "verified" for item in units) else "partial"
+        manifest = {
+            "schema": SCHEMA_MANIFEST,
+            "tenant_id": target.tenant_id,
+            "task_id": target.task_id,
+            "report_run_id": target.report_run_id,
+            "analysis_case_id": target.analysis_case_id,
+            "status": status,
+            "delivery_realization": (
+                "quote_collection" if target.output_type == "quote"
+                else "comparison_summary" if target.delivery_mode == "comparison"
+                else "single_contract"
+            ),
+            "request_hash": stable_hash(target.to_dict()),
+            "source_refs": dict(target.source_refs),
+            "report_unit": {
+                "path": "report-unit.json",
+                "semantic_fact_hash": unit.get("semantic_fact_hash"),
+                "file_hash": sha256_file(stage / "report-unit.json"),
+            },
+            "designer_input": {"path": "designer-input.json", "hash": stable_hash(payload)},
+            "design_brief": {"path": "design-brief.json", "hash": stable_hash(brief)},
+            "designer_artifact_manifest": designer_artifact_manifest,
+            "source_runs": _source_records(unit),
+            "artifacts": [],
+            "derived_artifacts": [],
+            "artifact_delivery_mode": "rendered_from_app_frozen_fact_set",
+            "rendered": rendered,
+            "children": [],
+            "generated_at": datetime.now(UTC).isoformat(),
+        }
         manifest["derived_from"] = {
             "report_run_id": source_run_id,
             "semantic_fact_hash": unit.get("semantic_fact_hash"),
         }
-        write_json(manifest_path, manifest)
+        write_json(stage / "run_manifest.json", manifest)
         os.replace(stage, target_root)
     except Exception:
         shutil.rmtree(stage, ignore_errors=True)
         raise
-    return {"directory": str(target_root), **outcome}
+    return {
+        "directory": str(target_root),
+        "status": manifest["status"],
+        "report_unit": "report-unit.json",
+        "designer_input": "designer-input.json",
+        "design_brief": "design-brief.json",
+        "report": report_file,
+        "manifest": "run_manifest.json",
+        "children": [],
+    }
 
 
 __all__ = ["reissue_saved_report", "rerender_frozen_delivery", "write_report_run"]

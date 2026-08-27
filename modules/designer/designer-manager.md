@@ -6,14 +6,16 @@ CSS、离线ECharts主题、SVG主题、模板、字体、打印和可访问性�
 样式。`assets/themes/designer-theme.css`只保存结构规则，不能成为第二个令牌源。
 
 验收覆盖DataFetcher、Payoffer、Pricer、Backtester、Reporter页面骨架、
-OptChat/OptDesk壳层、Card、连续A4 HTML Report、PDF、
+OptChat/OptDesk壳层、研究简报Card、完整研究报告Report、参考报价Quote、
+MultiCard、MultiReport及其HTML/PDF、
 数学公式、长中文、状态、窄屏、打印、离线打开和视觉回归。视觉变化不得
 改变金融事实哈希。
 
-完整Report的七个公开章节由Designer单点治理，固定为核心结论、结构推荐、
-合同参数、收益结构、估值定价、历史回测、风险提示。Card是独立
-单页研究简报，不套用Report章节结构。任何输入字段都不得改变Report章节名称、
-数量或顺序。
+完整Report的标准七章由Designer单点治理，依次为核心结论、结构推荐、
+合同参数、收益结构、估值定价、历史回测、风险提示。Card使用独立六块研究简报，
+Quote使用按标的分组的合同条款表；MultiCard与MultiReport分别复用Card和Report
+事实形成横向比较。标准模板不接受上游任意改写；只有用户明确提出单次展示调整时，
+才使用受校验的Presentation Patch，且不得改变冻结金融事实。
 
 ## 修改与回滚
 

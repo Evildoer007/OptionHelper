@@ -2233,9 +2233,14 @@ class AppConversationToolExecutor:
         requested_format = str(arguments.get("format") or "html").strip().lower()
         if requested_format not in {"html", "pdf"}:
             raise ValidationError("交付格式只能是html或pdf")
-        allowed = {"kind", "output_type", "format", "title"}
+        allowed = {"kind", "output_type", "format", "title", "delivery_mode"}
         if set(arguments).difference(allowed):
-            raise ValidationError("OptChat报告请求只接受交付类型、格式和标题")
+            raise ValidationError("OptChat报告请求只接受交付类型、格式、标题和对比模式")
+        delivery_mode = str(arguments.get("delivery_mode") or "single").strip().lower()
+        if delivery_mode not in {"single", "comparison"}:
+            raise ValidationError("交付模式只能是single或comparison")
+        if requested_kind == "quote" and delivery_mode != "single":
+            raise ValidationError("Quote使用独立报价结构清单，不使用comparison模式")
         catalog = self._results.list_owned_report_sources(identity, task_id=task_id)
         sources = catalog.get("sources") if isinstance(catalog, Mapping) else None
         if not isinstance(sources, list) or not sources:
@@ -2281,21 +2286,45 @@ class AppConversationToolExecutor:
                 },
             }
         modules = list(_REPORT_MODULES) if requested_kind == "report" else available_modules
-        module_run_refs = _current_verified_report_refs(
-            available,
-            modules,
-            identity=identity,
-            task_id=task_id,
-        )
-        if module_run_refs is None:
-            return _report_needs_input()
+        selected_candidates = [candidate]
+        if delivery_mode == "comparison":
+            if requested_kind not in {"card", "report"}:
+                raise ValidationError("横向对比只适用于研究简报或完整研究报告")
+            selected_candidates = [
+                dict(item)
+                for item in source.get("candidates", [])
+                if isinstance(item, Mapping)
+            ]
+            selected_candidates.sort(key=lambda item: (int(item.get("rank", 10_000)), str(item.get("candidate_id", ""))))
+            if len(selected_candidates) < 2:
+                return {
+                    "status": "needs_input",
+                    "message": "当前任务只有一个可验证合同版本，至少需要两个候选才能生成多结构对比交付。",
+                }
+        refs_by_candidate: dict[str, dict[str, dict[str, str] | None]] = {}
+        for selected_candidate in selected_candidates:
+            selected_id = str(selected_candidate.get("candidate_id", ""))
+            selected_available = selected_candidate.get("module_run_refs")
+            if not selected_id or not isinstance(selected_available, Mapping):
+                return _report_needs_input()
+            selected_refs = _current_verified_report_refs(
+                selected_available,
+                modules,
+                identity=identity,
+                task_id=task_id,
+            )
+            if selected_refs is None:
+                return _report_needs_input()
+            refs_by_candidate[selected_id] = selected_refs
         title = str(arguments.get("title") or candidate.get("product_name") or "期权结构研究").strip()
+        if delivery_mode == "comparison" and "title" not in arguments:
+            title = "多结构研究简报" if requested_kind == "card" else "多结构完整报告"
         selection = {
             "source_id": source["source_id"],
-            "candidate_ids": [candidate["candidate_id"]],
+            "candidate_ids": [str(item["candidate_id"]) for item in selected_candidates],
             "selected_modules": modules,
-            "module_run_refs": {candidate["candidate_id"]: module_run_refs},
-            "delivery_mode": "single",
+            "module_run_refs": refs_by_candidate,
+            "delivery_mode": delivery_mode,
             "output_type": requested_kind,
             "format": requested_format,
             "audience": identity.audience,
@@ -2318,16 +2347,21 @@ def _with_report_delivery(response: Mapping[str, Any], prepared: Mapping[str, An
         if isinstance(selected, Sequence) and not isinstance(selected, (str, bytes)) and name in selected
     ]
     selection_refs = selection.get("module_run_refs")
-    candidate_refs = {}
+    candidate_refs: dict[str, Mapping[str, Any]] = {}
     if isinstance(selection_refs, Mapping):
         candidate_ids = selection.get("candidate_ids")
-        if isinstance(candidate_ids, Sequence) and not isinstance(candidate_ids, (str, bytes)) and len(candidate_ids) == 1:
-            raw = selection_refs.get(str(candidate_ids[0]))
-            if isinstance(raw, Mapping):
-                candidate_refs = raw
+        if isinstance(candidate_ids, Sequence) and not isinstance(candidate_ids, (str, bytes)):
+            candidate_refs = {
+                str(candidate_id): raw
+                for candidate_id in candidate_ids
+                if isinstance((raw := selection_refs.get(str(candidate_id))), Mapping)
+            }
     missing_modules = [
         name for name in _REPORT_MODULES
-        if name not in selected_modules or not isinstance(candidate_refs.get(name), Mapping)
+        if name not in selected_modules or any(
+            not isinstance(refs.get(name), Mapping)
+            for refs in candidate_refs.values()
+        )
     ] if kind == "report" and selection else []
     receipt: dict[str, Any] = {
         "kind": kind,
@@ -2335,6 +2369,7 @@ def _with_report_delivery(response: Mapping[str, Any], prepared: Mapping[str, An
     }
     if selection:
         receipt.update({
+            "delivery_mode": str(selection.get("delivery_mode") or "single"),
             "coverage_status": "partial" if missing_modules else "complete",
             "included_modules": selected_modules,
             "missing_modules": missing_modules,

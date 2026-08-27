@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import selectors
 import signal
+import stat
 import subprocess
 import tempfile
 import time
@@ -491,6 +492,44 @@ def verify(bundle: Path) -> dict[str, object]:
 
             status, _body, _ = request(connection, "GET", "/optdesk", headers={"Cookie": admin})
             require(status == 200, "本地管理员身份无法访问OptDesk")
+
+            status, _body, _ = request(
+                connection,
+                "POST",
+                "/api/settings/model/credential",
+                {
+                    "provider_name": "openai-compatible",
+                    "endpoint": "https://models.example.invalid/v1",
+                    "model_name": "artifact-model",
+                    "api_key": "artifact-model-key",
+                },
+                {"Cookie": admin},
+            )
+            require(status == 200, "成品App未能保存OptionHelper本地模型凭据")
+            status, _body, _ = request(
+                connection,
+                "POST",
+                "/api/settings/data/credential",
+                {"provider_name": "ifind-http", "refresh_token": "artifact-ifind-refresh"},
+                {"Cookie": admin},
+            )
+            require(status == 200, "成品App未能保存OptionHelper本地iFind凭据")
+            credential_root = Path(temporary) / "credentials"
+            credential_files = tuple(credential_root.glob("*.secret"))
+            require(credential_root.is_dir(), "成品App未创建OptionHelper本地凭据目录")
+            require(stat.S_IMODE(credential_root.stat().st_mode) == 0o700, "成品App凭据目录权限不是700")
+            require(len(credential_files) >= 2, "成品App未生成模型和iFind本地凭据文件")
+            require(
+                all(stat.S_IMODE(path.stat().st_mode) == 0o600 for path in credential_files),
+                "成品App凭据文件权限不是600",
+            )
+            settings_document = json.loads(
+                (Path(temporary) / "state" / "settings.json").read_text(encoding="utf-8"),
+            )
+            settings_text = json.dumps(settings_document, ensure_ascii=False)
+            require('"provider": "local-secret"' in settings_text, "成品App设置未保存local-secret引用")
+            require('"provider": "keychain"' not in settings_text, "成品App设置仍写入钥匙串引用")
+            require('"provider": "credential-manager"' not in settings_text, "成品App设置仍写入系统凭据引用")
             return {
                 "status": "verified",
                 "agent_runtime": runtime_summary,
@@ -498,6 +537,12 @@ def verify(bundle: Path) -> dict[str, object]:
                 "modules": tool_status,
                 "compute_runs": compute_status,
                 "local_admin_optdesk_status": status,
+                "credential_storage": {
+                    "provider": "local-secret",
+                    "directory_mode": "700",
+                    "file_mode": "600",
+                    "credential_files": len(credential_files),
+                },
             }
         finally:
             if connection is not None:

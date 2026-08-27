@@ -65,8 +65,8 @@ body.workspace-body::before {
   z-index: 1000;
   top: 50%;
   left: 50%;
-  width: 28px;
-  height: 28px;
+  width: 39.2px;
+  height: 39.2px;
   background: url("/app/assets/icons/optionhelper-mark.svg") center / contain no-repeat;
   content: "";
   opacity: 0;
@@ -3850,7 +3850,7 @@ html[data-oh-scrollbar-overlay="enabled"] [data-oh-scrollbar-overlay-ready="true
   font: inherit;
   font-size: 12px;
   font-weight: 680;
-  cursor: pointer;
+  cursor: default;
 }
 
 .module-stage__retry:hover { border-color: var(--red-deep); color: var(--red-deep); }

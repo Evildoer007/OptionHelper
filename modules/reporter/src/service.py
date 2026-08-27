@@ -53,6 +53,7 @@ def capability(*, result_store_configured: bool = False, designer_port_configure
         "forbidden": sorted(_FORBIDDEN),
         "formats": ["html", "pdf"],
         "output_types": ["card", "quote", "report"],
+        "delivery_modes": ["single", "comparison", "quote"],
     }
 
 
@@ -345,7 +346,7 @@ def call_tool(
                 "module": "reporter",
                 "status": "rejected",
                 "error": "derive_request_invalid",
-                "message": "转换必须提交source、report_run_id和format；可选指定card或report。",
+                "message": "转换必须提交source、report_run_id和format；可选指定card、quote或report。",
             }
         try:
             target = output_root or default_report_output_root(RUNTIME_PATHS)

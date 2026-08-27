@@ -748,11 +748,11 @@ def _recommendation_outcome(
                     observations,
                     round_number,
                 )
-        if delivery_status == "completed" and delivery.get("kind") in {"card", "report"} and delivery.get("format") == "html":
+        if delivery_status == "completed" and delivery.get("kind") in {"card", "quote", "report"} and delivery.get("format") == "html":
             status, text = _delivery_completion({"delivery": delivery}, str(delivery.get("kind")))
             return _result(status, text, observations, round_number)
         if delivery_status == "needs_input":
-            text = str(delivery.get("next_step") or "如需形成交付材料，请选择研究简报或完整研究报告；若只需要当前分析结论，也可以直接继续讨论。")
+            text = str(delivery.get("next_step") or "如需形成交付材料，可以生成研究简报、完整研究报告或参考报价；多个候选也可以生成多结构对比交付。若只需要当前分析结论，可以直接继续讨论。")
             return _result("needs_input", text, observations, round_number, action="ask_user")
         if delivery_status in {"partial", "unavailable", "failed"}:
             text = str(delivery.get("next_step") or "当前未能完成报告。请稍后重试。")
@@ -786,10 +786,16 @@ def _delivery_completion(raw: Mapping[str, Any], requested_kind: str) -> tuple[s
     has_preview = isinstance(preview, str) and preview.startswith("/api/reports/")
     preview_text = f"预览入口：{preview}" if has_preview else "可在当前任务中预览或导出。"
     is_partial = str(raw.get("status", "")).strip().lower() == "partial"
+    is_comparison = str(delivery.get("delivery_mode", "")).strip().lower() == "comparison"
     if kind == "card":
+        label = "多结构研究简报" if is_comparison else "研究简报"
         if is_partial:
-            return "partial", f"研究简报已生成。{preview_text}部分内容未能完整交付，已如实标注。"
-        return "completed", f"研究简报已生成。{preview_text}" if has_preview else f"研究简报已生成，{preview_text}"
+            return "partial", f"{label}已生成。{preview_text}部分内容未能完整交付，已如实标注。"
+        return "completed", f"{label}已生成。{preview_text}" if has_preview else f"{label}已生成，{preview_text}"
+    if kind == "quote":
+        if is_partial:
+            return "partial", f"参考报价已生成。{preview_text}部分报价内容未能完整交付，已如实标注。"
+        return "completed", f"参考报价已生成。{preview_text}" if has_preview else f"参考报价已生成，{preview_text}"
     missing = delivery.get("missing_modules")
     raw_missing = missing if isinstance(missing, list) else []
     missing_modules = [
@@ -798,17 +804,20 @@ def _delivery_completion(raw: Mapping[str, Any], requested_kind: str) -> tuple[s
     ]
     if missing_modules:
         labels = "、".join(_REPORT_MODULE_LABELS[item] for item in missing_modules)
-        delivery_text = f"研究报告已生成。{preview_text}" if has_preview else f"研究报告已生成，{preview_text}"
+        report_label = "多结构完整报告" if is_comparison else "研究报告"
+        delivery_text = f"{report_label}已生成。{preview_text}" if has_preview else f"{report_label}已生成，{preview_text}"
         delivery_text = delivery_text.rstrip("。") + "。"
         return (
             "partial",
             f"{delivery_text}本次{labels}未执行，相关章节已明确标注，不作为已完成结论。",
         )
     if is_partial:
-        return "partial", f"研究报告已生成。{preview_text}部分内容未能完整交付，已如实标注。"
+        label = "多结构完整报告" if is_comparison else "研究报告"
+        return "partial", f"{label}已生成。{preview_text}部分内容未能完整交付，已如实标注。"
+    label = "多结构完整报告" if is_comparison else "完整研究报告"
     return (
         "completed",
-        f"完整研究报告已生成。{preview_text}" if has_preview else f"完整研究报告已生成，{preview_text}",
+        f"{label}已生成。{preview_text}" if has_preview else f"{label}已生成，{preview_text}",
     )
 
 

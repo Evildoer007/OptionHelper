@@ -930,7 +930,12 @@ def probe_backend_startup(backend: Path, resources: Path, workspace: Path) -> No
     state.mkdir(parents=True, exist_ok=False)
     with log.open("w", encoding="utf-8") as handle:
         process = subprocess.Popen(
-            [str(backend), "--data-dir", str(state), "--resource-dir", str(resources)],
+            [
+                str(backend),
+                "--data-dir", str(state),
+                "--resource-dir", str(resources),
+                "--verification-fixture",
+            ],
             cwd=backend.parent,
             stdout=handle,
             stderr=subprocess.STDOUT,

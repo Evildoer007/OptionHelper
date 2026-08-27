@@ -52,8 +52,10 @@ Reporter只接收显式引用，不接收物理结果目录，也不会搜索最
 - Core LocalResultStore的`artifacts/artifact_manifest.json`及`commit_marker.json`必须通过校验；清单列出的每个文件都校验存在性、非符号链接与SHA-256。
 - 未满足当前正式协议字段的结果、合同冲突、哈希冲突或清单冲突均会拒绝生成；不会把不完整记录作为部分可信事实展示。
 
-`output_type`仅决定Card或Report的内容密度，`format`仅决定HTML或PDF。Report固定为连续正文，HTML宽屏提供左侧章节目录，PDF不显示导航；Card固定为无图简报。调用方不传递版式参数。
+`output_type`支持`card、quote、report`，`format`支持HTML或PDF。`delivery_mode=single`时Card和Report绑定一个合同快照；`delivery_mode=comparison`时Card生成MultiCard、Report生成MultiReport；Quote使用`delivery_mode=quote`及有序`quote_items`。调用方不传递版式参数，也不把MultiCard或MultiReport伪装成新的`output_type`。
 
 Card是简洁交付，固定呈现结构推荐、推荐理由、关键合同条款、估值摘要、回测摘要、主要风险；不展示收益结构章节、损益图或其他图表。
 
-Report的公开章节是不可覆盖的交付契约，必须按以下顺序、逐字输出：核心结论、结构推荐、合同参数、收益结构、估值定价、历史回测、风险提示。请求中的`metadata`、上游模块结果或调用方不得新增、替换、删除或重排这些章节；未运行模块只能在自己的固定章节说明覆盖缺口。
+Report默认使用连续A4正文，宽屏HTML显示左侧目录，PDF隐藏目录。标准公开章节按以下顺序、逐字输出：核心结论、结构推荐、合同参数、收益结构、估值定价、历史回测、风险提示。请求中的`metadata`、上游模块结果或调用方不得任意新增、替换、删除或重排这些章节；只有用户明确提出单次展示调整时，才能使用受校验的Presentation Patch，且不得改变冻结金融事实。未运行模块只能在自己的标准章节说明覆盖缺口。
+
+Quote只展示所选合同快照中的结构和合同条款，不展示Greeks、估值、回测或图表。MultiCard保持无图；MultiReport可展示候选间口径兼容的收益、估值和回测对比图及完整数据表。

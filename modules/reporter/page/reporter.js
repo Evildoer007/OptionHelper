@@ -1,6 +1,8 @@
 (() => {
   const $ = id => document.getElementById(id);
   const state = { catalog: null, source: null, selected: new Set(), runRefs: {}, quoteItems: [], ready: false, delivery: null, pendingReport: null, pendingPdf: null };
+  let bootPromise = null;
+  let initialized = false;
   const esc = value => String(value ?? '').replace(/[&<>'"]/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[char]));
   const selectedValue = name => document.querySelector(`input[name="${name}"]:checked`)?.value;
   const selectedModules = () => [...document.querySelectorAll('[data-module]:checked')].map(node => node.dataset.module);
@@ -162,7 +164,7 @@
       const selection = { source_id: source.source_id, quote_items: state.quoteItems.map(item => ({source_id:item.source_id, candidate_id:item.candidate_id, module:item.module, module_run_ref:item.module_run_ref})), output_type: type, format, audience: $('audience').value, metadata: { title: '推荐结构及参考报价' } };
       const attempt = attemptFor(selection);
       $('generateButton').disabled = true; notice('正在按已选合同快照整理参考报价。');
-      try { const response = await fetch('/api/run', {method:'POST',headers:{'Content-Type':'application/json','X-OptionHelper-Request-Id':attempt.requestId},body:JSON.stringify({selection})}); const data = await response.json(); if (!response.ok || !data.ok) throw new Error(data.message || '报价表生成失败'); settleAttempt(attempt); $('previewPanel').hidden = false; $('previewTitle').textContent = '参考报价预览'; $('reportPreview').src = data.preview_url; $('downloadLink').href = data.download_url; state.delivery = null; $('convertPdfButton').hidden = true; $('childReports').innerHTML = ''; notice(format === 'html' ? 'HTML报价表已保存，不会重新计算。' : '报价表已保存，可以预览或下载。'); } catch (error) { notice(error.message || '报价表生成失败。', 'error'); } finally { updateControls(); }
+      try { const response = await fetch('/api/run', {method:'POST',headers:{'Content-Type':'application/json','X-OptionHelper-Request-Id':attempt.requestId},body:JSON.stringify({selection})}); const data = await response.json(); if (!response.ok || !data.ok) throw new Error(data.message || '报价表生成失败'); settleAttempt(attempt); $('previewPanel').hidden = false; $('previewTitle').textContent = '参考报价预览'; $('reportPreview').src = data.preview_url; $('downloadLink').href = data.download_url; state.delivery = format === 'html' ? {source:{task_id:source.task_id, report_run_id:selection.report_run_id}, outputType:type} : null; $('convertPdfButton').hidden = !state.delivery; $('childReports').innerHTML = ''; notice(format === 'html' ? 'HTML报价表已保存，需要PDF时可直接另存，不会重新计算。' : '报价表已保存，可以预览或下载。'); } catch (error) { notice(error.message || '报价表生成失败。', 'error'); } finally { updateControls(); }
       return;
     }
     const moduleRunRefs = {};
@@ -200,8 +202,20 @@
       $('previewTitle').textContent = 'PDF交付预览'; $('reportPreview').src = data.preview_url; $('downloadLink').href = data.download_url; $('convertPdfButton').hidden = true; state.delivery = null; notice('PDF已另存为新的交付，不影响原HTML。');
     } catch (error) { notice(error.message || 'PDF转换失败。', 'error'); $('convertPdfButton').disabled = false; }
   }
-  async function boot() {
-    try { const response = await fetch('/api/status'); const data = await response.json(); const stateNode = $('serviceState'); const usable = data.status === 'available'; stateNode.textContent = usable ? '报告服务可用' : '报告服务暂不可用'; stateNode.dataset.state = usable ? 'ready' : 'error'; if (!usable) notice('报告服务尚未就绪，请检查当前任务和本机配置。', 'error'); await loadSources(); } catch { $('serviceState').textContent = '本机服务未启动'; $('serviceState').dataset.state = 'error'; notice('无法连接报告服务。', 'error'); }
+  function boot() {
+    if (initialized) return Promise.resolve();
+    if (bootPromise) return bootPromise;
+    bootPromise = (async () => {
+      try {
+        const response = await fetch('/api/status'); const data = await response.json(); const stateNode = $('serviceState'); const usable = data.status === 'available'; stateNode.textContent = usable ? '报告服务可用' : '报告服务暂不可用'; stateNode.dataset.state = usable ? 'ready' : 'error'; if (!usable) notice('报告服务尚未就绪，请检查当前任务和本机配置。', 'error'); await loadSources(); initialized = true;
+      } catch {
+        $('serviceState').textContent = '正在恢复报告服务'; $('serviceState').dataset.state = 'loading'; notice('正在恢复报告服务连接。');
+      } finally {
+        bootPromise = null;
+      }
+    })();
+    return bootPromise;
   }
-  $('refreshButton').addEventListener('click', () => loadSources().catch(error => notice(error.message, 'error'))); $('taskFilter').addEventListener('change', () => loadSources().catch(error => notice(error.message, 'error'))); $('sourceSelect').addEventListener('change', renderCandidates); $('generateButton').addEventListener('click', generate); $('convertPdfButton').addEventListener('click', convertPdf); document.querySelectorAll('input[name="outputType"]').forEach(node => node.addEventListener('change', () => loadSources().catch(error => notice(error.message, 'error')))); document.querySelectorAll('input[name="format"],input[data-module],#deliveryMode').forEach(node => node.addEventListener('change', updateControls)); bindResizer('sourceResizer', '--library-width', 1, 220, 420); bindResizer('settingsResizer', '--inspector-width', -1, 300, 520); boot();
+  window.addEventListener('optionhelper.module-host-context', () => { if (!initialized) void boot(); });
+  $('refreshButton').addEventListener('click', () => loadSources().catch(error => notice(error.message, 'error'))); $('taskFilter').addEventListener('change', () => loadSources().catch(error => notice(error.message, 'error'))); $('sourceSelect').addEventListener('change', renderCandidates); $('generateButton').addEventListener('click', generate); $('convertPdfButton').addEventListener('click', convertPdf); document.querySelectorAll('input[name="outputType"]').forEach(node => node.addEventListener('change', () => loadSources().catch(error => notice(error.message, 'error')))); document.querySelectorAll('input[name="format"],input[data-module],#deliveryMode').forEach(node => node.addEventListener('change', updateControls)); bindResizer('sourceResizer', '--library-width', 1, 220, 420); bindResizer('settingsResizer', '--inspector-width', -1, 300, 520); void boot();
 })();

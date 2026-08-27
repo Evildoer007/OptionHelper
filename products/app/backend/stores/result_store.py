@@ -10,7 +10,7 @@ import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, Iterable
 from uuid import uuid4
 
 _CORE_SRC = Path(__file__).resolve().parents[4] / "core" / "src"
@@ -193,7 +193,36 @@ class ResultStore:
 
     def resolve_owned_module_run(self, identity: SessionIdentity, reference: dict[str, str]) -> Path:
         """Resolve one Core ModuleRun only after App ownership re-authorization."""
-        self.resolve_module_run(identity, reference)
+        return self._resolve_owned_module_run(identity, reference, self._state.read("results"))
+
+    def resolve_owned_module_runs(
+        self,
+        requests: Iterable[tuple[SessionIdentity, dict[str, str]]],
+    ) -> tuple[Path, ...]:
+        """Verify a bounded group of stored runs against one result-index snapshot.
+
+        Startup recovery may need to validate every succeeded calculation job.
+        Reading the immutable proof index once avoids reparsing the complete JSON
+        document for each job while preserving the per-run Core file checks.
+        The snapshot is local to this call and is never retained as a cache.
+        """
+
+        pending = tuple(requests)
+        if not pending:
+            return ()
+        records = self._state.read("results")
+        return tuple(
+            self._resolve_owned_module_run(identity, reference, records)
+            for identity, reference in pending
+        )
+
+    def _resolve_owned_module_run(
+        self,
+        identity: SessionIdentity,
+        reference: dict[str, str],
+        records: dict[str, Any],
+    ) -> Path:
+        self._resolve_module_run(identity, reference, records)
         ref = ModuleRunRef(
             module=str(reference["module"]), tenant_id=str(reference["tenant_id"]), task_id=str(reference["task_id"]), run_id=str(reference["run_id"]),
             expected_semantic_result_hash=str(reference["expected_semantic_result_hash"]),
@@ -205,8 +234,16 @@ class ResultStore:
             raise ValidationError(f"Core ModuleRun不可用：{error}") from error
 
     def resolve_module_run(self, identity: SessionIdentity, reference: dict[str, str]) -> dict[str, Any]:
+        return self._resolve_module_run(identity, reference, self._state.read("results"))
+
+    def _resolve_module_run(
+        self,
+        identity: SessionIdentity,
+        reference: dict[str, str],
+        records: dict[str, Any],
+    ) -> dict[str, Any]:
         run_id = reference.get("run_id")
-        record = _stored_module_run(self._state.read("results"), reference.get("module"), run_id)
+        record = _stored_module_run(records, reference.get("module"), run_id)
         if not isinstance(record, dict):
             raise KeyError(str(run_id))
         if record.get("tenant_id") != identity.tenant_id:

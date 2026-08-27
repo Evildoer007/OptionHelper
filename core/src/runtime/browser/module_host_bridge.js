@@ -68,10 +68,10 @@
 
   const panelLayoutKey = "optionhelper.desk-panel-widths";
   const panelLayoutBounds = Object.freeze({
-    left: {minimum: 220, maximum: 420, fallback: 280},
-    right: {minimum: 300, maximum: 520, fallback: 340},
-    compactLeft: 180,
-    compactRight: 240,
+    left: {minimum: 200, maximum: 420, fallback: 250},
+    right: {minimum: 200, maximum: 520, fallback: 250},
+    compactLeft: 160,
+    compactRight: 200,
     center: 360,
     compactCenter: 300,
   });
@@ -459,6 +459,8 @@
     requestHostContext("fetch");
     return new Promise((resolve, reject) => {
       let settled = false;
+      let retries = 0;
+      let timer = 0;
       const finish = (value) => {
         if (settled) return;
         settled = true;
@@ -473,13 +475,13 @@
         signal?.removeEventListener("abort", abort);
         reject(abortError());
       };
-      const timer = window.setTimeout(() => {
-        // The initial ready message can be dropped while WKWebView replaces
-        // the iframe WindowProxy.  Ask again before returning a typed error;
-        // the parent answers with the latest versioned context.
-        requestHostContext("timeout");
-        finish(null);
-      }, 5000);
+      const requestAgain = () => {
+        if (settled) return;
+        requestHostContext(retries === 0 ? "timeout" : "recovery");
+        retries += 1;
+        timer = window.setTimeout(requestAgain, retryDelay(retries));
+      };
+      timer = window.setTimeout(requestAgain, 1000);
       signal?.addEventListener("abort", abort, {once: true});
       hostContextReady.then(finish);
     });
@@ -715,10 +717,16 @@
     if (moduleName === "payoffer" && action === "run" && !result.destination && result.module_run_ref?.run_id) {
       result.destination = "结果已保存到当前研究任务。";
     }
+    const returnedContractFingerprint = result.contract_fingerprint || result.resolved_contract?.contract_fingerprint || null;
+    const hostContractChanged = Boolean(
+      context?.contract_fingerprint
+      && returnedContractFingerprint
+      && returnedContractFingerprint !== context.contract_fingerprint
+    );
     if (
       action === "run"
       && (moduleName === "payoffer" || moduleName === "pricer" || moduleName === "backtester")
-      && body.new_contract_variant === true
+      && (body.new_contract_variant === true || hostContractChanged)
       && (result.resolved_contract?.identity?.product_id || result.module_run_ref?.run_id)
     ) {
       resetHostContext();
