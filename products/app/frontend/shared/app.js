@@ -365,6 +365,9 @@ export async function configureModelPicker(picker) {
       const option = document.createElement("option");
       option.value = JSON.stringify({ provider_id: provider.provider_id, model_id: model.model_id });
       option.textContent = `${provider.display_name} / ${model.display_name || model.model_id}`;
+      option.dataset.inputModalities = JSON.stringify(
+        Array.isArray(model.input_modalities) ? model.input_modalities : ["text"],
+      );
       option.selected = provider.provider_id === defaultSelection.provider_id && model.model_id === defaultSelection.model_id;
       picker.append(option);
     });
@@ -399,7 +402,7 @@ function installLayoutControls(shell) {
   const railSplitter = shell.querySelector('[data-workspace-splitter="rail"]');
   const contextSplitter = shell.querySelector('[data-workspace-splitter="context"]');
   const limits = {
-    rail: { variable: "--rail-width", minimum: 197, maximum: 440, fallback: 360 },
+    rail: { variable: "--rail-width", minimum: 197, maximum: 440, fallback: 414 },
     report: { variable: "--report-width", minimum: 280, maximum: 480, fallback: 332 },
   };
   const readStored = (key, fallback) => {
@@ -717,17 +720,282 @@ export function bindComposerKeyboard(form) {
   });
 }
 
-export function renderMessages(target, messages, emptyText = "输入任务要求后开始对话。") {
+export function reasoningSummary(text, running = false) {
+  const value = String(text ?? "");
+  if (!value) return "";
+  if (!running) return value.split("\n", 1)[0];
+  const visible = value.trimEnd();
+  return visible.slice(visible.lastIndexOf("\n") + 1);
+}
+
+export function createReasoningDisclosure(text = "", { running = false } = {}) {
+  const details = document.createElement("details");
+  details.className = "assistant-reasoning";
+  details.dataset.running = String(running);
+  const summary = document.createElement("summary");
+  const icon = document.createElement("span");
+  icon.className = "assistant-reasoning__icon";
+  icon.setAttribute("aria-hidden", "true");
+  const title = document.createElement("span");
+  title.className = "assistant-reasoning__title";
+  title.textContent = "思考";
+  const separator = document.createElement("span");
+  separator.className = "assistant-reasoning__separator";
+  separator.setAttribute("aria-hidden", "true");
+  const preview = document.createElement("span");
+  preview.className = "assistant-reasoning__preview";
+  const body = document.createElement("div");
+  body.className = "assistant-reasoning__body";
+  summary.append(icon, title, separator, preview);
+  details.append(summary, body);
+
+  const update = (nextText, nextRunning = false) => {
+    const value = String(nextText ?? "");
+    details.dataset.running = String(nextRunning);
+    preview.textContent = reasoningSummary(value, nextRunning);
+    body.textContent = value;
+    details.hidden = !value;
+    requestAnimationFrame(() => {
+      preview.scrollLeft = nextRunning ? Math.max(0, preview.scrollWidth - preview.clientWidth) : 0;
+    });
+  };
+  update(text, running);
+  return { element: details, preview, body, update };
+}
+
+function createAttachmentReference(reference, options = {}) {
+  const kind = reference?.kind === "image" ? "image" : "document";
+  const name = String(reference?.name || (kind === "image" ? "图片附件" : "研究文档"));
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = `message-attachment message-attachment--${kind}`;
+  button.setAttribute("aria-label", `${kind === "image" ? "预览" : "下载"}${name}`);
+  const mark = document.createElement("span");
+  mark.className = "message-attachment__mark";
+  mark.textContent = kind === "image" ? "图" : "文";
+  const label = document.createElement("span");
+  label.className = "message-attachment__label";
+  label.textContent = name;
+  button.append(mark, label);
+  button.addEventListener("click", () => options.onAttachmentOpen?.(reference));
+  return button;
+}
+
+function safeArtifactReference(text) {
+  const match = String(text || "").match(/\/api\/reports\/([^\s/?#]+)\/artifacts\/([^\s?#]+)/);
+  if (!match) return null;
+  let reportRunId;
+  let artifactName;
+  try {
+    reportRunId = decodeURIComponent(match[1]);
+    artifactName = decodeURIComponent(match[2]);
+  } catch {
+    return null;
+  }
+  if (!/^[A-Za-z0-9._:-]{1,160}$/.test(reportRunId)
+    || !artifactName
+    || artifactName.startsWith("/")
+    || artifactName.split("/").some((part) => !part || part === "." || part === "..")) return null;
+  const encodedName = artifactName.split("/").map(encodeURIComponent).join("/");
+  return {
+    path: `/api/reports/${encodeURIComponent(reportRunId)}/artifacts/${encodedName}`,
+    name: artifactName.split("/").at(-1) || "交付文件",
+  };
+}
+
+function createMessageArtifactCard(reference) {
+  const card = document.createElement("section");
+  card.className = "message-artifact";
+  const heading = document.createElement("div");
+  heading.className = "message-artifact__heading";
+  const title = document.createElement("strong");
+  title.textContent = reference.name;
+  const format = document.createElement("span");
+  format.textContent = reference.name.toLowerCase().endsWith(".pdf") ? "PDF" : "HTML";
+  heading.append(title, format);
+  const status = document.createElement("p");
+  status.textContent = "交付文件已生成";
+  const actions = document.createElement("div");
+  actions.className = "message-artifact__actions";
+  const preview = document.createElement("a");
+  preview.href = reference.path;
+  preview.target = "_blank";
+  preview.rel = "noopener";
+  preview.textContent = "预览";
+  const download = document.createElement("a");
+  download.href = `${reference.path}?download=1`;
+  download.textContent = "下载";
+  actions.append(preview, download);
+  card.append(heading, status, actions);
+  return card;
+}
+
+function createQuestionCard(block, options, active) {
+  const card = document.createElement("form");
+  card.className = "message-question";
+  card.dataset.questionId = String(block.question_id || "");
+  const optionRows = Array.isArray(block.options) ? block.options.slice(0, 3) : [];
+  if (optionRows.length) {
+    const choices = document.createElement("div");
+    choices.className = "message-question__choices";
+    for (const row of optionRows) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "message-question__choice";
+      button.disabled = !active;
+      const label = document.createElement("strong");
+      label.textContent = String(row?.label || "选择此项");
+      if (row?.recommended === true) {
+        const badge = document.createElement("span");
+        badge.textContent = "推荐";
+        label.append(badge);
+      }
+      const description = document.createElement("span");
+      description.textContent = String(row?.description || "");
+      button.append(label, description);
+      button.addEventListener("click", () => {
+        if (active) options.onQuestionAnswer?.(String(row?.value || row?.label || ""), block.question_id);
+      });
+      choices.append(button);
+    }
+    card.append(choices);
+  }
+  if (block.allow_free_text === true) {
+    const free = document.createElement("div");
+    free.className = "message-question__free";
+    const field = document.createElement("textarea");
+    field.rows = 2;
+    field.maxLength = 2_000;
+    field.disabled = !active;
+    field.placeholder = active ? "补充你的要求" : "该问题已处理";
+    const submit = document.createElement("button");
+    submit.type = "submit";
+    submit.textContent = active ? "发送" : "已回答";
+    submit.disabled = !active;
+    free.append(field, submit);
+    card.append(free);
+    card.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const answer = field.value.trim();
+      if (active && answer) options.onQuestionAnswer?.(answer, block.question_id);
+    });
+  }
+  return card;
+}
+
+function createConversationMessage(entry, options = {}) {
+  const article = document.createElement("article");
+  const user = entry?.role === "user";
+  article.className = `message message--${user ? "user" : "assistant"}`;
+  const messageText = String(entry?.content ?? "");
+  const actions = document.createElement("div");
+  actions.className = "message__actions";
+  const copy = document.createElement("button");
+  copy.type = "button";
+  copy.className = "message__action";
+  copy.textContent = "复制";
+  copy.setAttribute("aria-label", user ? "复制我的消息" : "复制回复");
+  let resetCopy = 0;
+  copy.addEventListener("click", async () => {
+    if (copy.dataset.busy === "true") return;
+    copy.dataset.busy = "true";
+    let copied = false;
+    try {
+      await navigator.clipboard.writeText(messageText);
+      copied = true;
+    } catch {
+      const field = document.createElement("textarea");
+      field.value = messageText;
+      field.setAttribute("readonly", "");
+      field.style.position = "fixed";
+      field.style.opacity = "0";
+      document.body.append(field);
+      field.select();
+      copied = document.execCommand("copy");
+      field.remove();
+    }
+    copy.dataset.busy = "false";
+    if (!copied) return;
+    window.clearTimeout(resetCopy);
+    copy.textContent = "已复制";
+    copy.dataset.copied = "true";
+    resetCopy = window.setTimeout(() => {
+      copy.textContent = "复制";
+      copy.dataset.copied = "false";
+    }, 1000);
+  });
+  actions.append(copy);
+  const createdAt = Date.parse(String(entry?.created_at ?? ""));
+  if (Number.isFinite(createdAt)) {
+    const time = document.createElement("time");
+    time.className = "message__time";
+    time.dateTime = new Date(createdAt).toISOString();
+    time.textContent = new Intl.DateTimeFormat("zh-CN", {
+      hour: "2-digit", minute: "2-digit", hour12: false,
+    }).format(createdAt);
+    actions.append(time);
+  }
+  if (user) {
+    const body = document.createElement("p");
+    body.className = "message__body";
+    body.textContent = messageText;
+    if (messageText) article.append(body);
+    const attachments = Array.isArray(entry?.attachments) ? entry.attachments : [];
+    if (attachments.length) {
+      const list = document.createElement("div");
+      list.className = "message-attachments";
+      list.append(...attachments.map((reference) => createAttachmentReference(reference, options)));
+      article.append(list);
+    }
+    article.append(actions);
+    return article;
+  }
+  const content = document.createElement("div");
+  content.className = "message__content";
+  const rawBlocks = Array.isArray(entry?.content_blocks) ? entry.content_blocks : [];
+  const blocks = rawBlocks.length > 0 ? rawBlocks : [{ type: "text", text: String(entry?.content ?? "") }];
+  for (const block of blocks) {
+    if (!block || typeof block !== "object") continue;
+    const type = String(block.type || "").replaceAll("_", "-");
+    const text = String(block.text ?? "");
+    if (type === "reasoning" && text) {
+      content.append(createReasoningDisclosure(text).element);
+    } else if (type === "text" && text) {
+      const body = document.createElement("p");
+      body.className = "message__body";
+      body.textContent = text;
+      content.append(body);
+    } else if (type === "question") {
+      content.append(createQuestionCard(block, options, options.questionActive === true));
+    }
+  }
+  const artifact = safeArtifactReference(messageText);
+  if (artifact) content.append(createMessageArtifactCard(artifact));
+  article.append(content, actions);
+  return article;
+}
+
+export function renderMessages(target, messages, emptyText = "输入任务要求后开始对话。", options = {}) {
   if (!target) return;
   target.closest(".chat-surface")?.classList.toggle("chat-surface--empty", !messages?.length);
   if (!messages?.length) {
     target.innerHTML = `<section class="conversation-start"><div><div class="conversation-start__mark" aria-hidden="true"><img src="/capability/assets/icons/optionhelper-app-icon-tile-light.svg" alt=""></div><h2>开始一项结构化产品研究</h2><p class="conversation-start__copy">描述研究目标，或选择一个研究起点。</p><div class="conversation-starters"><button class="conversation-starter" type="button" data-starter-prompt="请根据我的标的、期限和风险偏好筛选合适的期权结构。"><strong>筛选候选结构</strong><span>根据标的、期限与风险约束缩小范围。</span></button><button class="conversation-starter" type="button" data-starter-prompt="请帮助我设计期权产品条款。"><strong>设计产品条款</strong><span>整理执行价、障碍与票息等条款。</span></button><button class="conversation-starter" type="button" data-starter-prompt="请列出本次估值需要的市场与模型输入。"><strong>准备估值输入</strong><span>梳理现价、波动率与利率假设。</span></button><button class="conversation-starter" type="button" data-starter-prompt="请建立本次期权结构的历史回测方案。"><strong>建立回测方案</strong><span>定义样本区间、入场与观察规则。</span></button></div><p class="conversation-start__note">${escapeText(emptyText)}</p></div></section>`;
     return;
   }
-  target.innerHTML = messages.map((entry) => `
-    <article class="message message--${entry.role === "user" ? "user" : "assistant"}">
-      <p class="message__body">${escapeText(entry.content)}</p>
-    </article>`).join("");
+  let activeQuestionIndex = -1;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const entry = messages[index];
+    if (entry?.role === "user") break;
+    if (entry?.role === "assistant") {
+      if (Array.isArray(entry.content_blocks)
+        && entry.content_blocks.some((block) => block?.type === "question")) activeQuestionIndex = index;
+      break;
+    }
+  }
+  target.replaceChildren(...messages.map((entry, index) => createConversationMessage(entry, {
+    ...options,
+    questionActive: index === activeQuestionIndex,
+  })));
   target.scrollTop = target.scrollHeight;
 }
 
@@ -737,17 +1005,47 @@ export function renderReports(target, reports) {
     target.innerHTML = '<p class="report-empty">当前任务尚无报告。</p>';
     return;
   }
-  target.innerHTML = reports.map((report) => {
+  target.replaceChildren(...reports.map((report) => {
     const outputType = report.report_request?.output_type || report.report_request?.kind;
     const deliveryMode = report.report_request?.subject_ref?.delivery_mode || report.report_request?.delivery_mode;
     const comparison = deliveryMode === "comparison";
     const title = comparison && outputType === "card" ? "MultiCard对比卡片"
       : comparison && outputType === "report" ? "MultiReport对比报告"
       : ({ card: "简单报告", quote: "参考报价", report: "详细报告" })[outputType] || "交付物";
-    const artifact = report.artifact_manifest?.find?.((item) => item.name?.endsWith(".html"));
-    const href = artifact ? `/api/reports/${encodeURIComponent(report.report_run_id)}/artifacts/${encodeURIComponent(artifact.name)}` : "#";
-    return `<a class="report-item" href="${href}" target="_blank" rel="noopener"><strong>${title}</strong><span class="report-meta">${escapeText(report.status || "已生成")}</span></a>`;
-  }).join("");
+    const artifacts = Array.isArray(report.artifact_manifest) ? report.artifact_manifest : [];
+    const preferred = artifacts.find((item) => item.name?.endsWith(".html"))
+      || artifacts.find((item) => item.name?.endsWith(".pdf"))
+      || artifacts[0];
+    const card = document.createElement("article");
+    card.className = "report-item";
+    const heading = document.createElement("div");
+    heading.className = "report-item__heading";
+    const name = document.createElement("strong");
+    name.textContent = title;
+    const meta = document.createElement("span");
+    meta.className = "report-meta";
+    meta.textContent = String(report.status || "已生成");
+    heading.append(name, meta);
+    card.append(heading);
+    if (preferred?.name) {
+      const artifactPath = `/api/reports/${encodeURIComponent(report.report_run_id)}/artifacts/${encodeURIComponent(preferred.name)}`;
+      const actions = document.createElement("div");
+      actions.className = "report-item__actions";
+      const preview = document.createElement("a");
+      preview.href = artifactPath;
+      preview.target = "_blank";
+      preview.rel = "noopener";
+      preview.textContent = "预览";
+      preview.setAttribute("aria-label", `预览${title}`);
+      const download = document.createElement("a");
+      download.href = `${artifactPath}?download=1`;
+      download.textContent = "下载";
+      download.setAttribute("aria-label", `下载${title}`);
+      actions.append(preview, download);
+      card.append(actions);
+    }
+    return card;
+  }));
 }
 
 export function taskIdFromLocation() {

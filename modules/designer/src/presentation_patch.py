@@ -1,8 +1,8 @@
 """Validated display-only adjustments applied after Reporter freezes facts.
 
-The patch changes one delivery's reading order or approved labels.  It cannot
-add, remove, hide or rewrite a financial fact, and it cannot persist a new
-standard template.
+The standard templates remain unchanged. A patch may reorder, rename or hide
+their blocks, and may insert an explicitly frozen supplemental block. It never
+creates or rewrites a financial fact and never persists a new default.
 """
 
 from __future__ import annotations
@@ -31,22 +31,9 @@ _PAYLOAD_VISUAL_KEYS = frozenset({"color", "colors", "palette", "theme", "css", 
 _OPERATION_FIELDS = {
     "rename_section": frozenset({"op", "section", "title"}),
     "move_section": frozenset({"op", "section", "position"}),
+    "hide_section": frozenset({"op", "section"}),
+    "add_section": frozenset({"op", "section", "position"}),
     "append_notice": frozenset({"op", "section", "notice"}),
-}
-
-# A caller may select a reader-facing synonym, but not write a factual claim
-# into a chapter heading.  The block still comes from the shipped template.
-_SECTION_TITLE_ALIASES = {
-    "conclusion": frozenset({"核心结论", "结论摘要"}),
-    "recommendation": frozenset({"结构推荐", "推荐结构"}),
-    "parameters": frozenset({"合同参数", "合同条款"}),
-    "payoff": frozenset({"收益结构", "收益结构分析"}),
-    "pricing": frozenset({"估值定价", "估值摘要"}),
-    "backtest": frozenset({"历史回测", "回测摘要"}),
-    "risk": frozenset({"风险提示", "主要风险"}),
-    "reason": frozenset({"推荐理由", "推荐依据"}),
-    "contract_highlights": frozenset({"关键合同条款", "合同要点"}),
-    "reference_quote": frozenset({"推荐结构及参考报价", "参考报价"}),
 }
 
 # These notices are Designer-owned reader guidance, not caller-supplied
@@ -113,13 +100,13 @@ def validate_presentation_patch(value: Mapping[str, Any] | None) -> Mapping[str,
         unknown_fields = set(operation).difference(allowed)
         if unknown_fields:
             raise ValueError(f"presentation_patch操作包含不支持字段：{', '.join(sorted(map(str, unknown_fields)))}。")
-        if op in {"rename_section", "move_section", "append_notice"}:
+        if op in {"rename_section", "move_section", "hide_section", "add_section", "append_notice"}:
             section_id = _plain_text(operation.get("section"), f"operations[{index}].section")
             if not _SECTION_ID.fullmatch(section_id):
                 raise ValueError("presentation_patch章节id只能使用小写字母、数字和连字符。")
         if op == "rename_section":
             _plain_text(operation.get("title"), f"operations[{index}].title")
-        if op == "move_section" and "position" in operation:
+        if op in {"move_section", "add_section"} and "position" in operation:
             if not isinstance(operation["position"], int) or isinstance(operation["position"], bool) or operation["position"] < 0:
                 raise ValueError("presentation_patch.position必须是非负整数。")
         if op == "append_notice" and str(operation.get("notice") or "").strip() not in _NOTICE_TEXT:
@@ -149,6 +136,43 @@ def _section_index(sections: Sequence[TemplateSection], section_id: str) -> int:
     raise ValueError(f"presentation_patch找不到章节：{section_id}。")
 
 
+def _supplemental_sections(payload: Mapping[str, Any]) -> dict[str, tuple[str, tuple[Mapping[str, Any], ...]]]:
+    """Read Reporter-frozen optional sections without accepting presentation code."""
+
+    raw_sections = payload.get("supplemental_sections")
+    if raw_sections is None:
+        return {}
+    if not isinstance(raw_sections, list):
+        raise ValueError("supplemental_sections必须是数组。")
+    result: dict[str, tuple[str, tuple[Mapping[str, Any], ...]]] = {}
+    for index, raw in enumerate(raw_sections):
+        if not isinstance(raw, Mapping):
+            raise ValueError(f"supplemental_sections[{index}]必须是对象。")
+        unknown = set(raw).difference({"id", "title", "content"})
+        if unknown:
+            raise ValueError(f"supplemental_sections[{index}]包含不支持字段。")
+        section_id = _plain_text(raw.get("id"), f"supplemental_sections[{index}].id")
+        if not _SECTION_ID.fullmatch(section_id):
+            raise ValueError("supplemental_sections章节id只能使用小写字母、数字和连字符。")
+        if section_id in result:
+            raise ValueError(f"supplemental_sections存在重复章节：{section_id}。")
+        title = _plain_text(raw.get("title"), f"supplemental_sections[{index}].title")
+        content = raw.get("content")
+        if not isinstance(content, list) or not content:
+            raise ValueError(f"supplemental_sections[{index}].content必须是非空数组。")
+        nodes: list[Mapping[str, Any]] = []
+        for node_index, node in enumerate(content):
+            if not isinstance(node, Mapping):
+                raise ValueError(f"supplemental_sections[{index}].content[{node_index}]必须是对象。")
+            node_type = str(node.get("type") or "").strip().lower()
+            if node_type not in {"paragraph", "metrics", "table", "formula", "chart"}:
+                raise ValueError(f"supplemental_sections[{index}]包含不支持内容类型：{node_type or '空'}。")
+            _reject_visual_keys(node, f"supplemental_sections[{index}].content[{node_index}]")
+            nodes.append(deepcopy(dict(node)))
+        result[section_id] = (title, tuple(nodes))
+    return result
+
+
 def apply_presentation_patch(
     payload: Mapping[str, Any],
     sections: Sequence[TemplateSection],
@@ -158,6 +182,7 @@ def apply_presentation_patch(
     result = deepcopy(dict(payload))
     effective_sections = list(sections)
     appended: dict[str, list[Mapping[str, Any]]] = {}
+    supplemental = _supplemental_sections(result)
     if safe_patch is None:
         return EffectivePresentation(result, tuple(effective_sections), {}, None)
 
@@ -169,8 +194,6 @@ def apply_presentation_patch(
             position = _section_index(effective_sections, str(operation["section"]))
             current = effective_sections[position]
             title = str(operation["title"]).strip()
-            if title not in _SECTION_TITLE_ALIASES.get(current.block, frozenset()):
-                raise ValueError(f"presentation_patch章节{current.id}不支持该展示标题。")
             effective_sections[position] = TemplateSection(current.id, title, current.block)
             changes.append({"op": op, "section": current.id, "before": current.title, "after": title})
         elif op == "move_section":
@@ -179,12 +202,36 @@ def apply_presentation_patch(
             destination = min(int(operation.get("position", len(effective_sections))), len(effective_sections))
             effective_sections.insert(destination, current)
             changes.append({"op": op, "section": current.id, "position": destination})
+        elif op == "hide_section":
+            position = _section_index(effective_sections, str(operation["section"]))
+            current = effective_sections.pop(position)
+            changes.append({"op": op, "section": current.id})
+        elif op == "add_section":
+            section_id = str(operation["section"])
+            if any(item.id == section_id for item in effective_sections):
+                raise ValueError(f"presentation_patch章节已存在：{section_id}。")
+            if section_id not in supplemental:
+                raise ValueError(f"presentation_patch找不到冻结补充章节：{section_id}。")
+            title, content = supplemental[section_id]
+            card_or_quote = any(
+                item.block in {"reason", "contract_highlights", "reference_quote"}
+                for item in effective_sections
+            )
+            if card_or_quote and any(str(node.get("type")).lower() == "chart" for node in content):
+                raise ValueError("Card和Quote的补充章节不支持图表。")
+            destination = min(int(operation.get("position", len(effective_sections))), len(effective_sections))
+            effective_sections.insert(destination, TemplateSection(section_id, title, "supplemental"))
+            appended[section_id] = list(content)
+            changes.append({"op": op, "section": section_id, "position": destination})
         elif op == "append_notice":
             section_id = str(operation["section"])
             _section_index(effective_sections, section_id)
             notice = str(operation["notice"]).strip()
             appended.setdefault(section_id, []).append({"type": "paragraph", "text": _NOTICE_TEXT[notice]})
             changes.append({"op": op, "section": section_id, "notice": notice})
+
+    if not effective_sections:
+        raise ValueError("presentation_patch不能隐藏全部章节。")
 
     receipt = {
         "schema": PRESENTATION_PATCH_SCHEMA,

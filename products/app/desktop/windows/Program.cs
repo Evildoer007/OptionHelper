@@ -110,14 +110,19 @@ internal sealed class MainForm : Form
     private const uint MfByCommand = 0x0000;
     private const uint MfEnabled = 0x0000;
     private const uint MfGrayed = 0x0001;
+    private const int DwmwaUseImmersiveDarkMode = 20;
+    private const int DwmwaSystemBackdropType = 38;
+    private const int DwmsbtMainWindow = 2;
 
     private static readonly double[] ScaleSteps = [0.8, 0.9, 1.0, 1.1, 1.25, 1.4];
-    private readonly WebView2 browser = new() { Dock = DockStyle.Fill };
+    private readonly WebView2 browser = new() { Dock = DockStyle.Fill, DefaultBackgroundColor = Color.Transparent };
     private readonly string uiPreferencesPath;
     private readonly SemaphoreSlim uiScaleScriptLock = new(1, 1);
     private double uiScale;
     private bool webViewReady;
     private bool systemMenuInstalled;
+    private bool nativeBackdropEnabled;
+    private string surfaceTheme = "light";
     private string? uiScaleScriptId;
 
     internal MainForm(string url, string stateDirectory)
@@ -126,6 +131,7 @@ internal sealed class MainForm : Form
         Width = 1320;
         Height = 860;
         KeyPreview = true;
+        BackColor = Color.FromArgb(247, 247, 247);
         uiPreferencesPath = Path.Combine(stateDirectory, "ui-preferences.json");
         uiScale = UIScalePreferences.Load(uiPreferencesPath, ScaleSteps);
         Controls.Add(browser);
@@ -158,6 +164,8 @@ internal sealed class MainForm : Form
     protected override void OnHandleCreated(EventArgs eventArgs)
     {
         base.OnHandleCreated(eventArgs);
+        nativeBackdropEnabled = TryEnableSystemBackdrop();
+        ApplySurfaceTheme(surfaceTheme);
         if (systemMenuInstalled) return;
         var menu = GetSystemMenu(Handle, false);
         if (menu == IntPtr.Zero) return;
@@ -172,7 +180,13 @@ internal sealed class MainForm : Form
     protected override void OnHandleDestroyed(EventArgs eventArgs)
     {
         systemMenuInstalled = false;
+        nativeBackdropEnabled = false;
         base.OnHandleDestroyed(eventArgs);
+    }
+
+    protected override void OnPaintBackground(PaintEventArgs eventArgs)
+    {
+        if (!nativeBackdropEnabled) base.OnPaintBackground(eventArgs);
     }
 
     protected override bool ProcessCmdKey(ref Message message, Keys keyData)
@@ -225,9 +239,16 @@ internal sealed class MainForm : Form
         {
             using var document = JsonDocument.Parse(eventArgs.WebMessageAsJson);
             var root = document.RootElement;
-            if (root.ValueKind != JsonValueKind.Object
-                || !root.TryGetProperty("type", out var type)
-                || type.GetString() != "set_ui_scale"
+            if (root.ValueKind != JsonValueKind.Object || !root.TryGetProperty("type", out var type)) return;
+            if (type.GetString() == "set_theme"
+                && root.TryGetProperty("theme", out var theme)
+                && theme.GetString() is string requestedTheme
+                && requestedTheme is "light" or "dark")
+            {
+                ApplySurfaceTheme(requestedTheme);
+                return;
+            }
+            if (type.GetString() != "set_ui_scale"
                 || !root.TryGetProperty("scale", out var scale)
                 || !scale.TryGetDouble(out var requested)
                 || NormalizeScale(requested) is not double accepted) return;
@@ -279,8 +300,9 @@ internal sealed class MainForm : Form
             if (browser.CoreWebView2 is null) return;
             if (!string.IsNullOrEmpty(uiScaleScriptId)) browser.CoreWebView2.RemoveScriptToExecuteOnDocumentCreated(uiScaleScriptId);
             var scale = JavascriptNumber(uiScale);
+            var material = nativeBackdropEnabled ? "system" : "fallback";
             uiScaleScriptId = await browser.CoreWebView2.AddScriptToExecuteOnDocumentCreatedAsync(
-                $"document.documentElement.dataset.nativeShell='windows';document.documentElement.dataset.uiScale='{scale}';"
+                $"document.documentElement.dataset.nativeShell='windows';document.documentElement.dataset.nativeMaterial='{material}';document.documentElement.dataset.uiScale='{scale}';"
             );
         }
         finally
@@ -305,6 +327,55 @@ internal sealed class MainForm : Form
         DrawMenuBar(Handle);
     }
 
+    private bool TryEnableSystemBackdrop()
+    {
+        if (!OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22621)) return false;
+        try
+        {
+            var backdrop = DwmsbtMainWindow;
+            if (DwmSetWindowAttribute(Handle, DwmwaSystemBackdropType, ref backdrop, sizeof(int)) != 0) return false;
+            var margins = new Margins(-1);
+            return DwmExtendFrameIntoClientArea(Handle, ref margins) == 0;
+        }
+        catch (DllNotFoundException)
+        {
+            return false;
+        }
+        catch (EntryPointNotFoundException)
+        {
+            return false;
+        }
+    }
+
+    private void ApplySurfaceTheme(string theme)
+    {
+        surfaceTheme = theme == "dark" ? "dark" : "light";
+        BackColor = surfaceTheme == "dark" ? Color.FromArgb(31, 31, 31) : Color.FromArgb(247, 247, 247);
+        if (IsHandleCreated && OperatingSystem.IsWindowsVersionAtLeast(10, 0, 17763))
+        {
+            var dark = surfaceTheme == "dark" ? 1 : 0;
+            _ = DwmSetWindowAttribute(Handle, DwmwaUseImmersiveDarkMode, ref dark, sizeof(int));
+        }
+        Invalidate();
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct Margins
+    {
+        internal int Left;
+        internal int Right;
+        internal int Top;
+        internal int Bottom;
+
+        internal Margins(int value)
+        {
+            Left = value;
+            Right = value;
+            Top = value;
+            Bottom = value;
+        }
+    }
+
     [DllImport("user32.dll")]
     private static extern IntPtr GetSystemMenu(IntPtr window, bool revert);
 
@@ -316,6 +387,12 @@ internal sealed class MainForm : Form
 
     [DllImport("user32.dll")]
     private static extern bool DrawMenuBar(IntPtr window);
+
+    [DllImport("dwmapi.dll")]
+    private static extern int DwmSetWindowAttribute(IntPtr window, int attribute, ref int value, int valueSize);
+
+    [DllImport("dwmapi.dll")]
+    private static extern int DwmExtendFrameIntoClientArea(IntPtr window, ref Margins margins);
 }
 
 internal static class UIScalePreferences

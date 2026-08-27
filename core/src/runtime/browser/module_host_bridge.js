@@ -444,9 +444,9 @@
   function retryDelay(failures) {
     return Math.min(4_000, 500 * (2 ** Math.min(Math.max(0, failures - 1), 3)));
   }
-  function operationConnectionState(state, operationId) {
+  function operationConnectionState(state, operationId, message = "") {
     window.dispatchEvent(new CustomEvent("optionhelper.module-operation-connection", {
-      detail: {state, operation_id: operationId, module: moduleName},
+      detail: {state, operation_id: operationId, module: moduleName, message},
     }));
   }
   function isRecoverableResponse(response) {
@@ -460,6 +460,7 @@
     return new Promise((resolve, reject) => {
       let settled = false;
       let retries = 0;
+      const maximumRetries = 4;
       let timer = 0;
       const finish = (value) => {
         if (settled) return;
@@ -477,6 +478,10 @@
       };
       const requestAgain = () => {
         if (settled) return;
+        if (retries >= maximumRetries) {
+          finish(null);
+          return;
+        }
         requestHostContext(retries === 0 ? "timeout" : "recovery");
         retries += 1;
         timer = window.setTimeout(requestAgain, retryDelay(retries));
@@ -743,6 +748,7 @@
 
   async function waitForHostedOperation(taskId, operationId, signal, {includeResult = true} = {}) {
     let failures = 0;
+    let computeRecovering = false;
     while (true) {
       if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
       try {
@@ -758,6 +764,24 @@
         failures = 0;
         const operation = envelope.operation || {};
         if (operation.state === "succeeded") return asResponse(200, operation.result || {});
+        if (operation.state === "recovering") {
+          computeRecovering = true;
+          operationConnectionState(
+            "compute-recovering",
+            operationId,
+            operation.message || "计算仍在后台运行，正在恢复计算服务。",
+          );
+          await wait(750, signal);
+          continue;
+        }
+        if (computeRecovering && operation.state === "running") {
+          computeRecovering = false;
+          operationConnectionState(
+            "compute-running",
+            operationId,
+            operation.message || "计算服务已恢复，正在继续运行。",
+          );
+        }
         if (operation.state === "failed" || operation.state === "cancelled" || operation.state === "interrupted") {
           return asResponse(operation.state === "failed" ? 500 : 409, {
             ok: false, error: operation.state, message: operation.message || "后台运行未完成。", ...(operation.result || {}),

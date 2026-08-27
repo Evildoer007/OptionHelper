@@ -13,6 +13,7 @@ from .settings_models import (
     SettingsSnapshot,
 )
 from ..stores.settings_store import SettingsStore
+from .model_catalog import built_in_provider_catalog
 
 
 class SettingsService:
@@ -21,13 +22,13 @@ class SettingsService:
 
     def load(self, principal_id: str) -> SettingsSnapshot:
         loaded = self._store.load(principal_id)
-        normalized = self._normalize_multi_agent_roles(loaded)
+        normalized = self._normalize_model_capabilities(self._normalize_multi_agent_roles(loaded))
         if normalized != loaded:
             self._store.save(principal_id, normalized)
         return normalized
 
     def save(self, principal_id: str, settings: SettingsSnapshot) -> None:
-        settings = self._normalize_multi_agent_roles(settings)
+        settings = self._normalize_model_capabilities(self._normalize_multi_agent_roles(settings))
         self._assert_non_sensitive(settings)
 
         self._store.save(principal_id, settings)
@@ -76,6 +77,40 @@ class SettingsService:
                 if policy_id in MULTI_AGENT_ENABLED_REVIEW_POLICY_IDS
             },
         )
+
+    @staticmethod
+    def _normalize_model_capabilities(settings: SettingsSnapshot) -> SettingsSnapshot:
+        """Apply authoritative capabilities to built-in catalog entries.
+
+        Older settings snapshots predate capability fields and therefore
+        deserialize as text-only.  Built-in declarations are product-owned;
+        custom providers remain entirely user-declared.
+        """
+
+        builtins = built_in_provider_catalog()
+        providers = []
+        for provider in settings.model_providers:
+            builtin = builtins.get(provider.provider_id)
+            if not isinstance(builtin, dict):
+                providers.append(provider)
+                continue
+            catalog = {
+                model.model_id: model
+                for model in builtin.get("models", ())
+                if hasattr(model, "model_id")
+            }
+            models = tuple(
+                replace(
+                    model,
+                    input_modalities=catalog[model.model_id].input_modalities,
+                    reasoning_support=catalog[model.model_id].reasoning_support,
+                    tool_calling=catalog[model.model_id].tool_calling,
+                )
+                if model.model_id in catalog else model
+                for model in provider.models
+            )
+            providers.append(replace(provider, models=models))
+        return replace(settings, model_providers=tuple(providers))
 
     @staticmethod
     def _assert_non_sensitive(settings: SettingsSnapshot) -> None:

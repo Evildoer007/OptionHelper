@@ -658,16 +658,21 @@ class ToolGateway:
                 runtime_root=None,
                 content_hashes=content_hashes,
             )
-            worker_response = self._compute_supervisor.execute(execution, cancelled=cancellation_check)
+            compute_status = getattr(cancellation_check, "compute_status", None)
+            worker_response = self._compute_supervisor.execute(
+                execution,
+                cancelled=cancellation_check,
+                status_callback=compute_status if callable(compute_status) else None,
+            )
             if (
                 worker_response.get("capability_hash") != execution.capability_hash
                 or worker_response.get("execution_fingerprint") != execution.execution_fingerprint
             ):
-                raise ValidationError("计算Worker返回的Capability或执行指纹不匹配")
+                raise ValidationError("计算结果的Capability或执行指纹不匹配")
             worker_result = worker_response.get("result")
             draft = worker_response.get("draft")
             if not isinstance(worker_result, Mapping) or not isinstance(draft, Mapping):
-                raise ValidationError("计算Worker返回的结果或ModuleRunDraft无效")
+                raise ValidationError("计算结果或ModuleRunDraft无效")
             if (
                 draft.get("module") != tool_name
                 or draft.get("tenant_id") != caller_context.tenant_id
@@ -716,7 +721,7 @@ class ToolGateway:
             raise UnavailableCapabilityError(
                 f"Capability tool {tool_name}",
                 "计算进程未能完成本次请求。请检查产品条款、行情数据和交易日历后重试。",
-                failure_code="compute_worker_failed",
+                failure_code="compute_service_unavailable",
                 stage="compute",
             ) from error
 

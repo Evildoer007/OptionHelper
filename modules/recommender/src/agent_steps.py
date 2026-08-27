@@ -12,27 +12,25 @@ from .ports import AgentPort, AgentStepResult
 
 
 ROLE_RULES = {
-    # Mode 1 keeps its published names while retaining the established wire
-    # protocol and saved model-slot identifiers.  Do not rename these keys:
-    # old callers, persisted settings and strict result validators use them.
-    "Intent": "只提取用户已确认事实、缺失信息和检索查询；不得推荐产品。",
-    "Research": "只能从输入evidence选择产品；每个候选必须引用evidence_id。",
-    "Critic": "只能审阅Research已有product_id；不得新增产品或删除不利证据。",
+    "Interpreter": "只提取用户已确认事实、缺失信息和检索查询；不得推荐产品。",
+    "Selector": "只能从输入evidence选择产品；每个候选必须引用evidence_id。",
     "Framer": "只框定用户已确认事实、目标、约束和检索查询；不得推荐产品、不得生成金融指标。",
     "Matcher": "只能从输入evidence提出匹配目标与约束的产品候选；每个候选必须引用evidence_id；不得生成金融指标。",
     "Hedger": "只能从输入evidence独立审视候选的适配边界和风险，并以产品候选形式提出意见；每个候选必须引用evidence_id；不得生成金融指标。",
     "Moderator": "只能合并Framer、Matcher、Hedger和输入evidence已有内容，输出可审计候选及复核；不得新增无证据产品、不得生成金融指标。",
     "Structurer": "只能基于输入证据提出产品候选、受控条款调整和需要验证的模块；不得生成收益、估值、Greeks或回测数值。",
-    "Trader": "只能审阅Host返回的已验证指标与当前候选版本；可接受或要求受控条款调整，不得新增产品、改写模块结果或生成金融数值。",
+    "Trader": "按当前候选计划调用获授权的业务工具，只依据工具返回的FactRef接受候选或要求受控条款调整；不得新增产品、改写模块结果或生成金融数值。",
     "Specifier": "只把用户原文中的硬约束和排序要求转换为受控RankingSpec；不得生成候选、计算指标或补写用户未表达的阈值。",
     "Generator": "只能从输入evidence提出候选产品；每个候选必须引用evidence_id，不得生成金融指标或改变RankingSpec。",
-    "Reviewer": "只能对当前Mode已形成的版本谱系或确定性排序作最终批准或整体拒绝；不得改写候选、排序、合同或模块事实。",
+    "Reviewer": "Mode1只复核Selector已有候选；其他Mode只对已形成的版本谱系或确定性排序作最终批准或整体拒绝；不得新增候选、重排、改写合同或模块事实。",
     "Executor": "只能为已批准候选规划允许的Tool调用；不得生成计算数值。",
     "Freeform": "按当前路由选择最少必要工具；不得把未执行工具写成成功。",
 }
 
 
-MODE_ONE_ROLE_NAMES = {"Intent": "Intent", "Research": "Research", "Critic": "Critic"}
+MODE_ONE_ROLE_NAMES = {
+    "Interpreter": "Interpreter", "Selector": "Selector", "Reviewer": "Reviewer",
+}
 
 
 def canonical_hash(value: Any) -> str:
@@ -70,8 +68,8 @@ class AuditRecorder:
 @dataclass
 class AgentReceiptLedger:
     workflow_mode: str
-    _agent_run_ids: set[str] = field(default_factory=set, init=False)
-    _child_session_ids: set[str] = field(default_factory=set, init=False)
+    _agent_run_roles: dict[str, str] = field(default_factory=dict, init=False)
+    _child_session_roles: dict[str, str] = field(default_factory=dict, init=False)
 
     def validate(
         self,
@@ -90,12 +88,14 @@ class AgentReceiptLedger:
         if receipt.output_hash != canonical_hash(step.result):
             raise ValueError(f"{role}运行凭证输出哈希不匹配")
         if self.workflow_mode == "multi_agent":
-            if receipt.agent_run_id in self._agent_run_ids:
-                raise ValueError("多Agent工作流重复使用agent_run_id")
-            if receipt.child_session_id in self._child_session_ids:
-                raise ValueError("多Agent工作流重复使用child_session_id")
-        self._agent_run_ids.add(receipt.agent_run_id)
-        self._child_session_ids.add(receipt.child_session_id)
+            run_owner = self._agent_run_roles.get(receipt.agent_run_id)
+            session_owner = self._child_session_roles.get(receipt.child_session_id)
+            if run_owner is not None and run_owner != role:
+                raise ValueError("多Agent工作流跨角色重复使用agent_run_id")
+            if session_owner is not None and session_owner != role:
+                raise ValueError("多Agent工作流跨角色重复使用child_session_id")
+        self._agent_run_roles[receipt.agent_run_id] = role
+        self._child_session_roles[receipt.child_session_id] = role
         _validate_role_result(role, step.result)
         return dict(step.result)
 
@@ -117,7 +117,7 @@ class AgentStepRunner:
         request = {
             "workflow": "optionhelper.recommender",
             "role_rule": ROLE_RULES[role],
-            "required_output": _required_output(role),
+            "required_output": _required_output(role, payload),
             "input": dict(payload),
         }
         return port_role, request
@@ -155,7 +155,7 @@ class AgentStepRunner:
             {
                 "workflow": "optionhelper.recommender",
                 "role_rule": ROLE_RULES[role],
-                "required_output": _required_output(role),
+                "required_output": _required_output(role, payload),
                 "input": dict(payload),
             }
             for payload in payloads
@@ -201,7 +201,7 @@ class AgentStepRunner:
             requests[role] = {
                 "workflow": "optionhelper.recommender",
                 "role_rule": ROLE_RULES[role],
-                "required_output": _required_output(role),
+                "required_output": _required_output(role, payload),
                 "input": dict(payload),
             }
         try:
@@ -226,15 +226,22 @@ class AgentStepRunner:
             raise
 
 
-def _required_output(role: str) -> Mapping[str, Any]:
-    if role in {"Intent", "Framer"}:
+def _required_output(role: str, payload: Mapping[str, Any] | None = None) -> Mapping[str, Any]:
+    if role in {"Interpreter", "Framer"}:
         return {
             "confirmed_constraints": "object",
             "missing_information": "string[]",
             "next_question": "string|null",
             "research_queries": "string[]",
         }
-    if role in {"Research", "Matcher", "Hedger"}:
+    if role in {"Matcher", "Hedger"} and isinstance(payload, Mapping) and "candidate_versions" in payload:
+        return {
+            "branch_results": [{
+                "candidate_version_id": "string", "recommendation": "string",
+                "risk_conclusion": "string", "used_fact_refs": "string[]",
+            }]
+        }
+    if role in {"Selector", "Matcher", "Hedger"}:
         return {
             "proposals": [{
                 "product_id": "string", "product_name": "string|null", "underlyings": "string[]",
@@ -273,16 +280,18 @@ def _required_output(role: str) -> Mapping[str, Any]:
             },
         }
     if role == "Generator":
-        return _required_output("Research")
-    if role == "Reviewer":
-        return {"decision": "approve|reject", "reason": "string"}
-    if role == "Critic":
+        return _required_output("Selector")
+    if role == "Reviewer" and isinstance(payload, Mapping) and "proposals" in payload:
         return {
             "reviews": [{
                 "product_id": "string", "hard_reject": "boolean", "rejection_reason": "string|null",
                 "additional_not_suitable_for": "string[]", "additional_risks": "string[]", "rank_adjustment": "integer",
             }]
         }
+    if role == "Reviewer":
+        return {"decision": "approve|reject", "reason": "string"}
+    if role == "Moderator" and isinstance(payload, Mapping) and "branch_candidates" in payload:
+        return {"selected_candidate_version_ids": "string[]", "conflicts": "string[]"}
     if role == "Moderator":
         return {
             "proposals": [{
@@ -306,43 +315,59 @@ def _validate_role_result(role: str, value: object) -> None:
 
     if not isinstance(value, Mapping):
         raise ValueError(f"{role}必须返回对象")
-    if role in {"Intent", "Framer"}:
+    if role in {"Interpreter", "Framer"}:
         _closed_fields(value, {"confirmed_constraints", "missing_information", "next_question", "research_queries"}, role)
         _mapping_field(value, "confirmed_constraints")
         _strings_field(value, "missing_information")
         _strings_field(value, "research_queries")
         question = value.get("next_question")
         if question is not None and not isinstance(question, str):
-            raise ValueError("Intent.next_question必须为字符串或null")
+            raise ValueError("Interpreter.next_question必须为字符串或null")
         return
-    if role in {"Research", "Matcher", "Hedger"}:
+    if role in {"Matcher", "Hedger"} and "branch_results" in value:
+        _closed_fields(value, {"branch_results"}, role)
+        rows = _array_field(value, "branch_results")
+        for row in rows:
+            if not isinstance(row, Mapping):
+                raise ValueError(f"{role}.branch_results必须为对象数组")
+            _closed_fields(
+                row,
+                {"candidate_version_id", "recommendation", "risk_conclusion", "used_fact_refs"},
+                f"{role}.branch_result",
+            )
+            _nonempty_text(row.get("candidate_version_id"), f"{role}.candidate_version_id")
+            _nonempty_text(row.get("recommendation"), f"{role}.recommendation")
+            _nonempty_text(row.get("risk_conclusion"), f"{role}.risk_conclusion")
+            _strings_value(row.get("used_fact_refs"), f"{role}.used_fact_refs")
+        return
+    if role in {"Selector", "Matcher", "Hedger"}:
         _closed_fields(value, {"proposals"}, role)
         proposals = _array_field(value, "proposals")
         for proposal in proposals:
             if not isinstance(proposal, Mapping):
-                raise ValueError("Research.proposals必须为对象数组")
+                raise ValueError("Selector.proposals必须为对象数组")
             _closed_fields(
                 proposal,
                 {"product_id", "product_name", "underlyings", "reason", "suitable_for", "not_suitable_for", "main_risks", "library_status", "evidence_ref_ids", "missing_inputs"},
-                "Research.proposal",
+                "Selector.proposal",
             )
-            _nonempty_text(proposal.get("product_id"), "Research.proposal.product_id")
+            _nonempty_text(proposal.get("product_id"), "Selector.proposal.product_id")
             product_name = proposal.get("product_name")
             if product_name is not None and not isinstance(product_name, str):
-                raise ValueError("Research.proposal.product_name必须为字符串或null")
-            _nonempty_strings(proposal.get("underlyings"), "Research.proposal.underlyings")
-            _nonempty_text(proposal.get("reason"), "Research.proposal.reason")
+                raise ValueError("Selector.proposal.product_name必须为字符串或null")
+            _nonempty_strings(proposal.get("underlyings"), "Selector.proposal.underlyings")
+            _nonempty_text(proposal.get("reason"), "Selector.proposal.reason")
             for key in ("suitable_for", "not_suitable_for", "main_risks", "evidence_ref_ids"):
-                _strings_value(proposal.get(key), f"Research.proposal.{key}")
+                _strings_value(proposal.get(key), f"Selector.proposal.{key}")
             if "missing_inputs" in proposal:
-                _strings_value(proposal.get("missing_inputs"), "Research.proposal.missing_inputs")
+                _strings_value(proposal.get("missing_inputs"), "Selector.proposal.missing_inputs")
             if "library_status" in proposal and proposal["library_status"] not in {"ready", "partial", "conflict", "unavailable"}:
-                raise ValueError("Research.proposal.library_status无效")
+                raise ValueError("Selector.proposal.library_status无效")
         return
     if role == "Structurer":
         _closed_fields(value, {"research_queries", "proposals", "evaluation_plan"}, role)
         _strings_field(value, "research_queries")
-        _validate_role_result("Research", {"proposals": value.get("proposals")})
+        _validate_role_result("Selector", {"proposals": value.get("proposals")})
         plans = _array_field(value, "evaluation_plan")
         for plan in plans:
             if not isinstance(plan, Mapping):
@@ -384,8 +409,30 @@ def _validate_role_result(role: str, value: object) -> None:
             raise ValueError("Specifier.ranking_spec必须为对象")
         return
     if role == "Generator":
-        _validate_role_result("Research", {"proposals": value.get("proposals")})
+        _validate_role_result("Selector", {"proposals": value.get("proposals")})
         _closed_fields(value, {"proposals"}, role)
+        return
+    if role == "Reviewer" and "reviews" in value:
+        _closed_fields(value, {"reviews"}, role)
+        reviews = _array_field(value, "reviews")
+        for review in reviews:
+            if not isinstance(review, Mapping) or "product_id" not in review or "hard_reject" not in review:
+                raise ValueError("Reviewer.reviews必须包含product_id和hard_reject")
+            _closed_fields(
+                review,
+                {"product_id", "hard_reject", "rejection_reason", "additional_not_suitable_for", "additional_risks", "rank_adjustment"},
+                "Reviewer.review",
+            )
+            _nonempty_text(review.get("product_id"), "Reviewer.review.product_id")
+            if not isinstance(review["hard_reject"], bool):
+                raise ValueError("Reviewer.hard_reject必须为布尔值")
+            if review.get("rejection_reason") is not None and not isinstance(review.get("rejection_reason"), str):
+                raise ValueError("Reviewer.rejection_reason必须为字符串或null")
+            for key in ("additional_not_suitable_for", "additional_risks"):
+                if key in review:
+                    _strings_value(review[key], f"Reviewer.review.{key}")
+            if "rank_adjustment" in review and (isinstance(review["rank_adjustment"], bool) or not isinstance(review["rank_adjustment"], int)):
+                raise ValueError("Reviewer.rank_adjustment必须为整数")
         return
     if role == "Reviewer":
         _closed_fields(value, {"decision", "reason"}, role)
@@ -398,32 +445,15 @@ def _validate_role_result(role: str, value: object) -> None:
         if value.get("decision") == "reject" and not str(value.get("reason", "")).strip():
             raise ValueError("Reviewer拒绝时必须说明reason")
         return
-    if role == "Critic":
-        _closed_fields(value, {"reviews"}, role)
-        reviews = _array_field(value, "reviews")
-        for review in reviews:
-            if not isinstance(review, Mapping) or "product_id" not in review or "hard_reject" not in review:
-                raise ValueError("Critic.reviews必须包含product_id和hard_reject")
-            _closed_fields(
-                review,
-                {"product_id", "hard_reject", "rejection_reason", "additional_not_suitable_for", "additional_risks", "rank_adjustment"},
-                "Critic.review",
-            )
-            _nonempty_text(review.get("product_id"), "Critic.review.product_id")
-            if not isinstance(review["hard_reject"], bool):
-                raise ValueError("Critic.hard_reject必须为布尔值")
-            if review.get("rejection_reason") is not None and not isinstance(review.get("rejection_reason"), str):
-                raise ValueError("Critic.rejection_reason必须为字符串或null")
-            for key in ("additional_not_suitable_for", "additional_risks"):
-                if key in review:
-                    _strings_value(review[key], f"Critic.review.{key}")
-            if "rank_adjustment" in review and (isinstance(review["rank_adjustment"], bool) or not isinstance(review["rank_adjustment"], int)):
-                raise ValueError("Critic.rank_adjustment必须为整数")
+    if role == "Moderator" and "selected_candidate_version_ids" in value:
+        _closed_fields(value, {"selected_candidate_version_ids", "conflicts"}, role)
+        _nonempty_strings(value.get("selected_candidate_version_ids"), "Moderator.selected_candidate_version_ids")
+        _strings_value(value.get("conflicts"), "Moderator.conflicts")
         return
     if role == "Moderator":
         _closed_fields(value, {"proposals", "reviews"}, role)
-        _validate_role_result("Research", {"proposals": value.get("proposals")})
-        _validate_role_result("Critic", {"reviews": value.get("reviews")})
+        _validate_role_result("Selector", {"proposals": value.get("proposals")})
+        _validate_role_result("Reviewer", {"reviews": value.get("reviews")})
         return
     if role == "Executor":
         _closed_fields(value, {"tool_requests"}, role)

@@ -222,7 +222,7 @@
     WKWebViewConfiguration *configuration = [[WKWebViewConfiguration alloc] init];
     // Show the splash before the login page's module graph is evaluated.  The
     // login module owns the timer and always removes this class again.
-    NSString *startupSource = [NSString stringWithFormat:@"document.documentElement.dataset.nativeShell='macos';document.documentElement.dataset.uiScale='%.4f';document.documentElement.style.setProperty('--native-titlebar-height','%.4fpx');document.documentElement.style.setProperty('--native-titlebar-collapsed-leading-safe-area','%.4fpx');if (location.pathname === '/') document.documentElement.classList.add('login-boot');", self.uiScale, 36.0 / self.uiScale, 166.0 / self.uiScale];
+    NSString *startupSource = [NSString stringWithFormat:@"document.documentElement.dataset.nativeShell='macos';document.documentElement.dataset.nativeMaterial='system';document.documentElement.dataset.uiScale='%.4f';document.documentElement.style.setProperty('--native-titlebar-height','%.4fpx');document.documentElement.style.setProperty('--native-titlebar-collapsed-leading-safe-area','%.4fpx');if (location.pathname === '/') document.documentElement.classList.add('login-boot');", self.uiScale, 36.0 / self.uiScale, 166.0 / self.uiScale];
     WKUserScript *startupScript = [[WKUserScript alloc] initWithSource:startupSource
                                                          injectionTime:WKUserScriptInjectionTimeAtDocumentStart
                                                       forMainFrameOnly:YES];
@@ -238,6 +238,33 @@
     webView.allowsMagnification = NO;
     webView.pageZoom = self.uiScale;
     webView.navigationDelegate = self;
+    webView.underPageBackgroundColor = NSColor.clearColor;
+    webView.wantsLayer = YES;
+    webView.layer.backgroundColor = NSColor.clearColor.CGColor;
+
+    NSVisualEffectView *materialView = [[NSVisualEffectView alloc] initWithFrame:NSZeroRect];
+    materialView.material = NSVisualEffectMaterialSidebar;
+    materialView.blendingMode = NSVisualEffectBlendingModeBehindWindow;
+    materialView.state = NSVisualEffectStateFollowsWindowActiveState;
+    materialView.emphasized = NO;
+
+    NSView *contentView = [[NSView alloc] initWithFrame:NSZeroRect];
+    contentView.wantsLayer = YES;
+    contentView.layer.backgroundColor = NSColor.clearColor.CGColor;
+    materialView.translatesAutoresizingMaskIntoConstraints = NO;
+    webView.translatesAutoresizingMaskIntoConstraints = NO;
+    [contentView addSubview:materialView];
+    [contentView addSubview:webView];
+    [NSLayoutConstraint activateConstraints:@[
+        [materialView.leadingAnchor constraintEqualToAnchor:contentView.leadingAnchor],
+        [materialView.trailingAnchor constraintEqualToAnchor:contentView.trailingAnchor],
+        [materialView.topAnchor constraintEqualToAnchor:contentView.topAnchor],
+        [materialView.bottomAnchor constraintEqualToAnchor:contentView.bottomAnchor],
+        [webView.leadingAnchor constraintEqualToAnchor:contentView.leadingAnchor],
+        [webView.trailingAnchor constraintEqualToAnchor:contentView.trailingAnchor],
+        [webView.topAnchor constraintEqualToAnchor:contentView.topAnchor],
+        [webView.bottomAnchor constraintEqualToAnchor:contentView.bottomAnchor],
+    ]];
     self.window = [[OptionHelperWindow alloc] initWithContentRect:NSMakeRect(0, 0, 1320, 860)
                                                styleMask:(NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable | NSWindowStyleMaskFullSizeContentView)
                                                  backing:NSBackingStoreBuffered
@@ -247,8 +274,10 @@
     self.window.titlebarAppearsTransparent = YES;
     self.window.titlebarSeparatorStyle = NSTitlebarSeparatorStyleNone;
     self.window.movableByWindowBackground = YES;
+    self.window.backgroundColor = NSColor.clearColor;
+    self.window.opaque = NO;
     self.window.delegate = self;
-    self.window.contentView = webView;
+    self.window.contentView = contentView;
     [self.window makeFirstResponder:webView];
     [self.window center];
     [self.window makeKeyAndOrderFront:nil];

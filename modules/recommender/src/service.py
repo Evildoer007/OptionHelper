@@ -64,7 +64,7 @@ _CONTRACT_CONFIRMATION_QUESTION = (
 def capability(config: RecommenderConfig | None = None) -> dict[str, Any]:
     config = config or RecommenderConfig.from_environment()
     preset_roles = {
-        "sequential-deliberation": ("Intent", "Research", "Critic"),
+        "sequential-deliberation": ("Interpreter", "Selector", "Reviewer"),
         "product-trader-loop": ("Structurer", "Trader", "Reviewer"),
         "independent-council": ("Framer", "Matcher", "Hedger", "Moderator"),
         "constraint-ranking": ("Specifier", "Generator", "Evaluator", "Reviewer"),
@@ -83,9 +83,9 @@ def capability(config: RecommenderConfig | None = None) -> dict[str, Any]:
         "routes": ["chat", "knowledge", "data", "direct_execution", "recommendation", "professional_report", "existing_report", "maintenance", "freeform"],
         "agent_roles": list(preset_roles[config.multi_agent_preset]),
         "agent_role_display_names": {
-            "Intent": "Intent",
-            "Research": "Research",
-            "Critic": "Critic",
+            "Interpreter": "Interpreter",
+            "Selector": "Selector",
+            "Reviewer": "Reviewer",
             "Evaluator": "Evaluator",
         },
         "external_ports": configured,
@@ -223,7 +223,7 @@ class RecommenderService:
             output_value={"policy_id": "standard-review", "execution": "mode_builtin_terminal_role"},
             detail={
                 "additional_agent_run": False,
-                "mode1_terminal_role": "Critic",
+                "mode1_terminal_role": "Reviewer",
                 "mode2_terminal_role": "Reviewer",
                 "mode3_terminal_role": "Moderator",
                 "mode4_terminal_role": "Reviewer",
@@ -259,40 +259,12 @@ class RecommenderService:
                 returned_candidate_count=0,
                 audit_trail=tuple(audit.events),
             )
-        except Exception as first_error:
-            tool_started = any(event.stage.startswith("tool.") for event in audit.events)
-            if (
-                initial_mode == "multi_agent"
-                and self.config.agent_mode == "auto"
-                and not tool_started
-                and self.config.multi_agent_preset in {"sequential-deliberation", "independent-council"}
-            ):
-                audit.append("fallback", "degraded", agent_role=None, input_value={"from": "multi_agent"},
-                             output_value={
-                                 "protocol_mode": "degraded_single_agent",
-                                 "execution_semantics": "sequential_single_model_fallback",
-                             },
-                             detail={
-                                 "error_type": type(first_error).__name__, "message": str(first_error),
-                                 "execution_semantics": "sequential_single_model_fallback",
-                                 "session_semantics": "fresh_one_shot_child_per_step",
-                                 "shared_continuous_session": False,
-                             })
-                audit.mode = "degraded_single_agent"
-                fallback_port = None
-                try:
-                    fallback_factory = getattr(self.agent_port, "fresh_single_agent_port", None)
-                    fallback_port = fallback_factory() if callable(fallback_factory) else self.agent_port
-                    return self._run_fixed(
-                        case, route, run_id, "degraded_single_agent", audit, agent_port=fallback_port,
-                    )
-                except Exception as second_error:
-                    return self._unavailable_set(case, route, run_id, "degraded_single_agent", audit, second_error)
-                finally:
-                    close_fallback = getattr(fallback_port, "close", None)
-                    if fallback_port is not self.agent_port and callable(close_fallback):
-                        close_fallback()
-            return self._unavailable_set(case, route, run_id, initial_mode, audit, first_error)
+        except Exception as error:
+            # Capability selection happens before the first role starts. Once
+            # a host declares independent child sessions, a failed multi-Agent
+            # run remains failed; silently replaying it as one model changes
+            # the selected topology and can duplicate future tool effects.
+            return self._unavailable_set(case, route, run_id, initial_mode, audit, error)
 
     def _review_policy_error(self) -> RecommenderUnavailable | None:
         """Keep review-policy selection fail-closed without importing App runtime.
@@ -333,7 +305,7 @@ class RecommenderService:
             audit=audit,
         )
         council = mode == "multi_agent" and self.config.multi_agent_preset == "independent-council"
-        framing_role = "Framer" if council else "Intent"
+        framing_role = "Framer" if council else "Interpreter"
         framing = runner.run(framing_role, {
             "prompt": case.prompt,
             "confirmed_constraints": dict(case.confirmed_constraints),
@@ -368,6 +340,18 @@ class RecommenderService:
                     "role_focus": "独立识别适配边界、风险与不适合情形。",
                 },
             })
+            if bool(getattr(self.tool_port, "child_managed_evaluation", False)):
+                return self._complete_child_managed_council(
+                    case,
+                    route,
+                    run_id,
+                    mode,
+                    audit,
+                    runner,
+                    evidence=evidence,
+                    framing=framing,
+                    role_outputs=role_outputs,
+                )
             moderated = runner.run("Moderator", {
                 "case": case.to_dict(),
                 "framing": dict(framing),
@@ -385,8 +369,8 @@ class RecommenderService:
                 detail={"agent_runs": 4, "roles": ["Framer", "Matcher", "Hedger", "Moderator"]},
             )
         else:
-            research = runner.run("Research", research_payload)
-            critic = runner.run("Critic", {
+            research = runner.run("Selector", research_payload)
+            critic = runner.run("Reviewer", {
                 "case": case.to_dict(),
                 "proposals": research.get("proposals", ()),
                 "rule": "只审阅已有product_id；新增product_id将导致整步失败。",
@@ -394,6 +378,151 @@ class RecommenderService:
         return self._complete_mode_one(
             case, route, run_id, mode, audit, runner,
             evidence=evidence, research=research, critic=critic,
+        )
+
+    def _complete_child_managed_council(
+        self,
+        case: RecommendationCase,
+        route: RouteDecision,
+        run_id: str,
+        mode: str,
+        audit: AuditRecorder,
+        runner: AgentStepRunner,
+        *,
+        evidence: Sequence[Any],
+        framing: Mapping[str, Any],
+        role_outputs: Mapping[str, Mapping[str, Any]],
+    ) -> RecommendationSet:
+        """Keep Mode3 branches independent through candidate and FactRef settlement."""
+
+        register_plan = getattr(self.tool_port, "register_candidate_plan", None)
+        resolve_evaluation = getattr(self.tool_port, "resolve_candidate_evaluation", None)
+        if not callable(register_plan) or not callable(resolve_evaluation):
+            raise RecommenderUnavailable("Mode3缺少独立分支候选计划与FactRef解析端口")
+        modules = _mode3_required_modules(case)
+        term_overrides = case.confirmed_constraints.get("term_overrides", {})
+        term_overrides = dict(term_overrides) if isinstance(term_overrides, Mapping) else {}
+        branch_candidates: dict[str, tuple[RecommendationCandidate, ...]] = {}
+        rejected: list[Mapping[str, Any]] = []
+        for role in ("Matcher", "Hedger"):
+            output = role_outputs[role]
+            candidates, branch_rejected = build_candidates(
+                {"proposals": output.get("proposals", ())},
+                {"reviews": _accepting_reviews(output.get("proposals", ()))},
+                evidence=evidence,
+                run_id=f"{run_id}.{role.lower()}",
+                max_candidates=self.config.max_candidates,
+                confirmed_constraints=case.confirmed_constraints,
+            )
+            if not candidates:
+                raise RecommendationValidationError(f"Mode3{role}分支未形成通过证据门禁的候选")
+            branch_candidates[role] = candidates
+            rejected.extend(branch_rejected)
+
+        settled_by_version: dict[str, RecommendationCandidate] = {}
+        branch_results: Mapping[str, Mapping[str, Any]] = {}
+        if modules:
+            followups: dict[str, Mapping[str, Any]] = {}
+            for role, candidates in branch_candidates.items():
+                candidate_rows = []
+                for candidate in candidates:
+                    version_id = str(candidate.candidate_version_id)
+                    fingerprints = {
+                        module: canonical_hash({
+                            "mode": "independent-council",
+                            "role": role,
+                            "candidate_version_id": version_id,
+                            "module": module,
+                        })
+                        for module in modules
+                    }
+                    register_plan(
+                        candidate={**candidate.to_dict(), "catalog_version": case.catalog_version},
+                        confirmed_constraints=case.confirmed_constraints,
+                        modules=modules,
+                        term_overrides=term_overrides,
+                        candidate_version_id=version_id,
+                        round_no=1,
+                        input_fingerprints=fingerprints,
+                    )
+                    candidate_rows.append({
+                        "product_id": candidate.product_id,
+                        "candidate_key": candidate.candidate_key,
+                        "candidate_version_id": version_id,
+                        "required_modules": list(modules),
+                    })
+                followups[role] = {
+                    "candidate_versions": candidate_rows,
+                    "rule": (
+                        "逐一调用每个CandidateVersion的required_modules。工具结果回到本分支Session后，"
+                        "分别返回建议、风险结论及全部used_fact_refs。"
+                    ),
+                }
+            branch_results = runner.run_named(followups)
+
+        moderator_rows: list[Mapping[str, Any]] = []
+        for role, candidates in branch_candidates.items():
+            output_rows = branch_results.get(role, {}).get("branch_results", ()) if modules else ()
+            by_version = {
+                str(row.get("candidate_version_id", "")): row
+                for row in output_rows
+                if isinstance(row, Mapping)
+            }
+            if modules and set(by_version) != {str(item.candidate_version_id) for item in candidates}:
+                raise RecommendationValidationError(f"Mode3{role}未覆盖本分支全部CandidateVersion")
+            for candidate in candidates:
+                version_id = str(candidate.candidate_version_id)
+                fact_refs: tuple[str, ...] = ()
+                settled = candidate
+                branch_row: Mapping[str, Any] = by_version.get(version_id, {})
+                if modules:
+                    host_evaluation = resolve_evaluation(version_id)
+                    if not isinstance(host_evaluation, Mapping):
+                        raise RecommendationValidationError("Mode3分支工具结果必须解析为Host事实对象")
+                    settled = _attach_candidate_evaluation(candidate, host_evaluation)
+                    fact_refs = _fact_refs_from_verified_metrics(host_evaluation)
+                    used = tuple(_fact_ref(item, f"{role}.used_fact_refs") for item in branch_row.get("used_fact_refs", ()))
+                    if set(used) != set(fact_refs):
+                        raise RecommendationValidationError(f"Mode3{role}必须逐一引用本候选FactRef")
+                settled_by_version[version_id] = settled
+                moderator_rows.append({
+                    **_review_candidate_projection(settled, fact_refs=fact_refs),
+                    "branch": role,
+                    "branch_recommendation": str(branch_row.get("recommendation", settled.reason)),
+                    "risk_conclusion": str(branch_row.get("risk_conclusion", "；".join(settled.main_risks))),
+                })
+
+        moderated = runner.run("Moderator", {
+            "case": case.to_dict(),
+            "framing": dict(framing),
+            "branch_candidates": moderator_rows,
+            "max_candidates": self.config.max_candidates,
+            "rule": (
+                "只能从branch_candidates选择CandidateVersion并说明冲突；不得重新计算、改写FactRef或"
+                "读取任一分支的临时Reasoning。"
+            ),
+        })
+        selected_ids = tuple(str(item) for item in moderated.get("selected_candidate_version_ids", ()))
+        if len(set(selected_ids)) != len(selected_ids) or any(item not in settled_by_version for item in selected_ids):
+            raise RecommendationValidationError("Mode3 Moderator选择了未知或重复CandidateVersion")
+        selected = tuple(
+            replace(settled_by_version[version_id], rank=rank)
+            for rank, version_id in enumerate(selected_ids[: self.config.max_candidates], start=1)
+        )
+        if not selected:
+            raise RecommendationValidationError("Mode3 Moderator未选择可交付候选")
+        audit.append(
+            "council", "complete", agent_role=None,
+            input_value={"branches": moderator_rows},
+            output_value={"selected_candidate_version_ids": list(selected_ids)},
+            detail={
+                "roles": ["Framer", "Matcher", "Hedger", "Moderator"],
+                "branch_sessions_independent": True,
+                "financial_modules_owned_by_branches": bool(modules),
+            },
+        )
+        return self._finalize_candidates(
+            case, route, run_id, mode, audit, runner, selected, tuple(rejected),
         )
 
     def _complete_mode_one(
@@ -446,9 +575,15 @@ class RecommenderService:
             raise RecommenderUnavailable("Mode2需要App多Agent运行时，禁止降级为单Agent替代拓扑")
         if self.knowledge_port is None:
             raise RecommenderUnavailable("Mode2需要Knowledger正式端口")
+        child_managed = bool(getattr(self.tool_port, "child_managed_evaluation", False))
         evaluator = getattr(self.tool_port, "evaluate_candidate", None)
-        if not callable(evaluator):
-            raise RecommenderUnavailable("Mode2需要Host受控候选预选计算端口")
+        register_plan = getattr(self.tool_port, "register_candidate_plan", None)
+        resolve_evaluation = getattr(self.tool_port, "resolve_candidate_evaluation", None)
+        if child_managed:
+            if not callable(register_plan) or not callable(resolve_evaluation):
+                raise RecommenderUnavailable("Mode2缺少Child Agent候选计划与FactRef解析端口")
+        elif not callable(evaluator):
+            raise RecommenderUnavailable("Mode2需要Host受控候选评估端口")
         runner = AgentStepRunner(port=self.agent_port, workflow_mode="multi_agent", audit=audit)
         evidence = retrieve_evidence(
             self.knowledge_port,
@@ -498,26 +633,54 @@ class RecommenderService:
                         request.module: request.input_fingerprint for request in requests
                     },
                 })
-            evaluations = _bounded_evaluations(evaluator, evaluation_requests)
-            for item, evaluation in zip(plan.plans, evaluations, strict=True):
-                current = item.candidate.candidate
-                if not isinstance(evaluation, Mapping):
-                    raise RecommendationValidationError("Mode2 Host候选计算必须返回对象")
-                host_rows[str(current.candidate_key)] = _host_attachment(evaluation)
-                host_fact_rows[str(current.candidate_key)] = dict(evaluation)
-                trader_rows.append({
-                    "product_id": current.product_id,
-                    "candidate_version_id": current.candidate_version_id,
-                    "module_statuses": dict(evaluation.get("module_statuses", {})),
-                    "verified_metrics": _verified_metric_projection(evaluation),
-                    "display_terms": list(evaluation.get("display_terms", ())),
-                })
-            attached = attach_host_evaluations(plan, host_rows)
+            if child_managed:
+                for request in evaluation_requests:
+                    register_plan(**request)
+                for item, request in zip(plan.plans, evaluation_requests, strict=True):
+                    current = item.candidate.candidate
+                    trader_rows.append({
+                        "product_id": current.product_id,
+                        "candidate_key": current.candidate_key,
+                        "candidate_version_id": current.candidate_version_id,
+                        "required_modules": list(request["modules"]),
+                    })
+            else:
+                evaluations = _bounded_evaluations(evaluator, evaluation_requests)
+                for item, evaluation in zip(plan.plans, evaluations, strict=True):
+                    current = item.candidate.candidate
+                    if not isinstance(evaluation, Mapping):
+                        raise RecommendationValidationError("Mode2 Host候选计算必须返回对象")
+                    host_rows[str(current.candidate_key)] = _host_attachment(evaluation)
+                    host_fact_rows[str(current.candidate_key)] = dict(evaluation)
+                    trader_rows.append({
+                        "product_id": current.product_id,
+                        "candidate_version_id": current.candidate_version_id,
+                        "module_statuses": dict(evaluation.get("module_statuses", {})),
+                        "verified_metrics": _verified_metric_projection(evaluation),
+                        "display_terms": list(evaluation.get("display_terms", ())),
+                    })
             trader = runner.run("Trader", {
                 "round_no": plan.round_no,
                 "candidates": trader_rows,
-                "rule": "只基于Host已验证指标决定accept或rework；不得新增产品或改写计算事实。",
+                "rule": (
+                    "逐一调用每个候选required_modules对应的业务工具；工具结果回到当前Trader Session后，"
+                    "只依据已验证FactRef决定accept或rework，不得新增产品或改写计算事实。"
+                    if child_managed else
+                    "只基于Host已验证指标决定accept或rework；不得新增产品或改写计算事实。"
+                ),
             })
+            if child_managed:
+                evaluations = [
+                    resolve_evaluation(str(item.candidate.candidate.candidate_version_id))
+                    for item in plan.plans
+                ]
+                for item, evaluation in zip(plan.plans, evaluations, strict=True):
+                    current = item.candidate.candidate
+                    if not isinstance(evaluation, Mapping):
+                        raise RecommendationValidationError("Mode2 Child工具结果必须解析为Host事实对象")
+                    host_rows[str(current.candidate_key)] = _host_attachment(evaluation)
+                    host_fact_rows[str(current.candidate_key)] = dict(evaluation)
+            attached = attach_host_evaluations(plan, host_rows)
             transition = loop.apply_trader_output(
                 attached,
                 _mode2_trader_decisions(attached, trader, host_fact_rows),
@@ -578,9 +741,15 @@ class RecommenderService:
             raise RecommenderUnavailable("Mode4需要App多Agent运行时，禁止降级为单Agent替代拓扑")
         if self.knowledge_port is None:
             raise RecommenderUnavailable("Mode4需要Knowledger正式端口")
+        child_managed = bool(getattr(self.tool_port, "child_managed_evaluation", False))
         evaluator = getattr(self.tool_port, "evaluate_candidate", None)
-        if not callable(evaluator):
-            raise RecommenderUnavailable("Mode4需要Host受控候选预选计算端口")
+        register_plan = getattr(self.tool_port, "register_candidate_plan", None)
+        resolve_evaluation = getattr(self.tool_port, "resolve_candidate_evaluation", None)
+        if child_managed:
+            if not callable(register_plan) or not callable(resolve_evaluation):
+                raise RecommenderUnavailable("Mode4缺少Evaluator候选计划与FactRef解析端口")
+        elif not callable(evaluator):
+            raise RecommenderUnavailable("Mode4需要Host受控候选评估端口")
         runner = AgentStepRunner(port=self.agent_port, workflow_mode="multi_agent", audit=audit)
         requested_candidate_count = _requested_candidate_count(case)
         specifier = runner.run("Specifier", {
@@ -666,7 +835,34 @@ class RecommenderService:
                     "round_no": 1,
                     "input_fingerprints": fingerprints,
                 })
-            host_evaluations = _bounded_evaluations(evaluator, evaluation_requests)
+            if child_managed:
+                for request in evaluation_requests:
+                    register_plan(**request)
+                evaluator_payloads = [
+                    {
+                        "mode": "constraint-ranking",
+                        "candidate": {
+                            "product_id": candidate.product_id,
+                            "candidate_key": candidate.candidate_key,
+                            "candidate_version_id": str(candidate.candidate_version_id),
+                        },
+                        "required_modules": list(modules),
+                        "rule": (
+                            "逐一调用required_modules对应的业务工具；工具结果回到当前Evaluator Session后，"
+                            "返回本CandidateVersion使用的全部FactRef。"
+                        ),
+                    }
+                    for candidate in candidates
+                ]
+                evaluator_outputs = _bounded_evaluator_agents(
+                    runner, evaluator_payloads, child_managed=True,
+                )
+                host_evaluations = [
+                    resolve_evaluation(str(candidate.candidate_version_id))
+                    for candidate in candidates
+                ]
+            else:
+                host_evaluations = _bounded_evaluations(evaluator, evaluation_requests)
             evaluated_by_version: dict[str, RecommendationCandidate] = {}
             metrics_by_version = {}
             host_by_version: dict[str, Mapping[str, Any]] = {}
@@ -681,25 +877,26 @@ class RecommenderService:
                 # the last version used while constructing the request list.
                 metrics_by_version[version_id] = _mode4_metrics(host_evaluation)
 
-            evaluator_payloads = [
-                {
-                    "mode": "constraint-ranking",
-                    "candidate": {
-                        "product_id": candidate.product_id,
-                        "candidate_key": candidate.candidate_key,
-                        "candidate_version_id": version_id,
-                        "module_statuses": dict(host_by_version[version_id].get("module_statuses", {})),
-                    },
-                    "fact_refs": list(_fact_refs_from_verified_metrics(host_by_version[version_id])),
-                    "rule": "只核对当前CandidateVersion对应的Host FactRef及模块状态；不得读取或生成金融数值，不得引用其他CandidateVersion。",
-                }
-                for version_id, candidate in evaluated_by_version.items()
-            ]
-            evaluator_outputs = _bounded_evaluator_agents(runner, evaluator_payloads)
+            if not child_managed:
+                evaluator_payloads = [
+                    {
+                        "mode": "constraint-ranking",
+                        "candidate": {
+                            "product_id": candidate.product_id,
+                            "candidate_key": candidate.candidate_key,
+                            "candidate_version_id": version_id,
+                            "module_statuses": dict(host_by_version[version_id].get("module_statuses", {})),
+                        },
+                        "fact_refs": list(_fact_refs_from_verified_metrics(host_by_version[version_id])),
+                        "rule": "只核对当前CandidateVersion对应的Host FactRef及模块状态；不得读取或生成金融数值，不得引用其他CandidateVersion。",
+                    }
+                    for version_id, candidate in evaluated_by_version.items()
+                ]
+                evaluator_outputs = _bounded_evaluator_agents(runner, evaluator_payloads)
             approved_versions: set[str] = set()
             for payload, evaluator_output in zip(evaluator_payloads, evaluator_outputs, strict=True):
                 version_id = str(payload["candidate"]["candidate_version_id"])
-                fact_refs = tuple(str(item) for item in payload["fact_refs"])
+                fact_refs = _fact_refs_from_verified_metrics(host_by_version[version_id])
                 approved, projection = _validate_mode4_evaluator_result(
                     evaluator_output, version_id, fact_refs,
                 )
@@ -1339,6 +1536,8 @@ def _fact_refs_from_verified_metrics(value: Mapping[str, Any]) -> tuple[str, ...
 def _bounded_evaluator_agents(
     runner: AgentStepRunner,
     payloads: Sequence[Mapping[str, Any]],
+    *,
+    child_managed: bool = False,
 ) -> list[Mapping[str, Any]]:
     """Run one independent Evaluator AgentRun for every CandidateVersion.
 
@@ -1359,6 +1558,9 @@ def _bounded_evaluator_agents(
         request = {
             "workflow": "optionhelper.recommender",
             "role_rule": (
+                "Evaluator必须自行调用当前CandidateVersion获授权的业务工具，并只使用工具返回的FactRef；"
+                "不得引用其他CandidateVersion或改写金融事实。"
+                if child_managed else
                 "Evaluator只能核对当前CandidateVersion提供的FactRef及模块状态；"
                 "不得读取、生成或改写金融数值，不得引用其他CandidateVersion。"
             ),
@@ -1502,6 +1704,22 @@ def _research_queries(case: RecommendationCase) -> tuple[str, ...]:
         terms.append("看跌期权")
     terms.append(case.prompt)
     return tuple(dict.fromkeys(item for item in terms if item))
+
+
+def _mode3_required_modules(case: RecommendationCase) -> tuple[str, ...]:
+    """Select only calculations explicitly needed by the council request."""
+
+    text = f"{case.prompt} {dict(case.confirmed_constraints)}".casefold()
+    modules: list[str] = []
+    if any(marker in text for marker in ("收益", "损益", "payoff")):
+        modules.append("payoffer")
+    if any(marker in text for marker in (
+        "估值", "定价", "期权费", "premium", "greek", "delta", "gamma", "vega", "theta", "rho",
+    )):
+        modules.append("pricer")
+    if any(marker in text for marker in ("回测", "历史", "胜率", "win rate", "backtest")):
+        modules.append("backtester")
+    return tuple(modules)
 
 
 def _requested_candidate_count(case: RecommendationCase) -> int:

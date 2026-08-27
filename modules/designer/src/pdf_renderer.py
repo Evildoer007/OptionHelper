@@ -569,11 +569,11 @@ def _register_fonts() -> tuple[object, str, str]:
     # the delivery remains readable on another computer. The CID fallback
     # keeps minimal Linux test environments functional.
     cjk_candidates = (
-        Path("C:/Windows/Fonts/msyh.ttc"),
-        Path("/System/Library/Fonts/STHeiti Medium.ttc"),
-        Path("C:/Windows/Fonts/simsun.ttc"),
         Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"),
         Path("/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc"),
+        Path("/System/Library/Fonts/STHeiti Medium.ttc"),
+        Path("C:/Windows/Fonts/Deng.ttf"),
+        Path("C:/Windows/Fonts/simsun.ttc"),
     )
     for path in cjk_candidates:
         if not path.is_file():
@@ -736,7 +736,7 @@ def _metric_grid_flowable(
     cells: list[object] = []
     for label, value, note in rows:
         line = _mixed_markup(label, latin_font=latin_font, cjk_font=cjk_font)
-        line += "<br/>" + _mixed_markup(value or "未提供", latin_font=latin_font, cjk_font=cjk_font)
+        line += "<br/>" + _mixed_markup(value, latin_font=latin_font, cjk_font=cjk_font)
         if note:
             line += "<br/>" + _mixed_markup(note, latin_font=latin_font, cjk_font=cjk_font)
         cells.append(_rich_paragraph(line, styles["metric"]))

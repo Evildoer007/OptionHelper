@@ -483,23 +483,139 @@ html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-sh
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-ink) 10%, transparent) !important;
 }
 
-/* ChatGPT-style workspace material. Only the rail surface is translucent;
-   labels, icons, controls and hit targets retain their normal opacity. */
-html[data-theme="light"] .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .workspace-rail--unbranded {
-  border-right-color: color-mix(in srgb, var(--color-ink) 10%, transparent) !important;
-  background: color-mix(in srgb, var(--color-ground) 88%, transparent) !important;
-  -webkit-backdrop-filter: blur(18px) saturate(112%);
-  backdrop-filter: blur(18px) saturate(112%);
+/* The native shell owns the actual sidebar blur. Web content supplies only a
+   restrained theme tint so labels and controls remain readable. Browsers keep
+   the existing backdrop-filter fallback for local visual development. */
+html[data-theme="light"] {
+  --rail-material-fill: color-mix(in srgb, var(--color-ground) 84%, transparent);
+  --rail-native-material-fill: color-mix(in srgb, var(--color-ground) 58%, transparent);
+  --rail-material-border: color-mix(in srgb, var(--color-ink) 10%, transparent);
+  --rail-material-control: color-mix(in srgb, var(--color-ink) 5%, transparent);
+  --rail-material-control-hover: color-mix(in srgb, var(--color-ink) 8%, transparent);
+  --rail-material-menu: color-mix(in srgb, var(--color-paper) 96%, transparent);
 }
 
-html[data-theme="dark"] .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .workspace-rail--unbranded {
-  border-right-color: color-mix(in srgb, var(--color-ink) 14%, transparent) !important;
-  background: color-mix(in srgb, var(--color-paper) 84%, transparent) !important;
-  -webkit-backdrop-filter: blur(18px) saturate(108%);
-  backdrop-filter: blur(18px) saturate(108%);
+html[data-theme="dark"] {
+  --rail-material-fill: color-mix(in srgb, var(--color-paper) 80%, transparent);
+  --rail-native-material-fill: color-mix(in srgb, var(--color-paper) 60%, transparent);
+  --rail-material-border: color-mix(in srgb, var(--color-ink) 14%, transparent);
+  --rail-material-control: color-mix(in srgb, var(--color-ink) 7%, transparent);
+  --rail-material-control-hover: color-mix(in srgb, var(--color-ink) 11%, transparent);
+  --rail-material-menu: color-mix(in srgb, var(--color-surface) 96%, transparent);
 }
 
-html[data-theme="light"] .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .workspace-rail--unbranded :is(.rail-mode-area, .task-rail, .rail-footer),
-html[data-theme="dark"] .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .workspace-rail--unbranded :is(.rail-mode-area, .task-rail, .rail-footer) {
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-rail-collapsed="false"],
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell]:not([data-rail-collapsed]) {
+  --rail-width: 414px;
+}
+
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .workspace-rail--unbranded {
+  border-right-color: var(--rail-material-border) !important;
+  background: var(--rail-material-fill) !important;
+  color: var(--color-ink) !important;
+  -webkit-backdrop-filter: blur(18px) saturate(110%);
+  backdrop-filter: blur(18px) saturate(110%);
+}
+
+html[data-native-material="system"] .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .workspace-rail--unbranded {
+  background: var(--rail-native-material-fill) !important;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+html[data-native-shell],
+html[data-native-shell] body.workspace-body,
+html[data-native-shell] body.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] {
   background: transparent !important;
+}
+
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .workspace-rail--unbranded :is(
+  .workspace-brand,
+  .rail-mode-area,
+  .task-rail,
+  .rail-footer,
+  .task-item,
+  .rail-account-trigger
+) {
+  background: transparent !important;
+}
+
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .workspace-rail--unbranded :is(
+  .rail-kicker,
+  .task-item,
+  .task-item__title,
+  .rail-account-trigger,
+  .rail-account-trigger__copy strong,
+  .connection-link--rail,
+  .rail-collapse-toggle
+) {
+  color: var(--color-ink) !important;
+}
+
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .workspace-rail--unbranded :is(
+  .task-item small,
+  .task-item--empty,
+  .task-item__more,
+  .rail-account-trigger__copy span
+) {
+  color: var(--color-muted) !important;
+}
+
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .workspace-rail--unbranded :is(
+  .workspace-brand,
+  .mode-switch--rail
+) {
+  border-color: var(--rail-material-border) !important;
+}
+
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .workspace-rail--unbranded .mode-switch--rail {
+  background: var(--rail-material-control) !important;
+}
+
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .workspace-rail--unbranded .mode-switch--rail::before {
+  background: color-mix(in srgb, var(--color-paper) 82%, transparent) !important;
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--color-ink) 10%, transparent) !important;
+}
+
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .workspace-rail--unbranded .mode-switch button {
+  color: var(--color-muted) !important;
+}
+
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .workspace-rail--unbranded .mode-switch button[aria-pressed="true"] {
+  color: var(--color-ink) !important;
+}
+
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .workspace-rail--unbranded :is(
+  .task-item:hover,
+  .task-item[aria-current="true"],
+  .rail-account-trigger:hover,
+  .rail-account-trigger[aria-expanded="true"],
+  .connection-link--rail:hover
+) {
+  background: var(--rail-material-control-hover) !important;
+}
+
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .workspace-rail--unbranded .rail-new-task {
+  border-color: var(--rail-material-border) !important;
+  background: var(--rail-material-control) !important;
+  color: var(--color-ink) !important;
+}
+
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .workspace-rail--unbranded .rail-new-task:hover {
+  border-color: color-mix(in srgb, var(--color-ink) 18%, transparent) !important;
+  background: var(--rail-material-control-hover) !important;
+}
+
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] :is(.rail-account-menu, .task-menu) {
+  background: var(--rail-material-menu) !important;
+  -webkit-backdrop-filter: blur(14px) saturate(108%);
+  backdrop-filter: blur(14px) saturate(108%);
+}
+
+@media (max-width: 700px) {
+  .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .workspace-rail--unbranded {
+    background: var(--color-paper) !important;
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
 }

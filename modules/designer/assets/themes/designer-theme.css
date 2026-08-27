@@ -846,22 +846,6 @@ body.report-profile-a4 .disclaimer { margin-top: 12px; padding-top: 10px; line-h
   .metric:last-child { border-bottom: 0; }
   .chart,
   body.report-profile-a4 .chart { height: 250px; }
-  .comparison-card-document { width: 100%; margin: 0; padding: 22px 16px 30px; box-shadow: none; }
-  .comparison-document-head { display: block; }
-  .comparison-document-head__meta { margin-top: 10px; }
-  .comparison-matrix__header,
-  .comparison-matrix__row {
-    grid-template-columns: 1fr;
-  }
-  .comparison-matrix__corner { display: none; }
-  .comparison-matrix__candidate { border-left: 0; border-top: 1px solid var(--rule); }
-  .comparison-matrix__candidate:nth-child(2) { border-top: 3px solid var(--blue); }
-  .comparison-matrix__candidate[data-preferred="true"] { border-top-color: var(--red); }
-  .comparison-matrix__section-label { border-right: 0; border-bottom: 1px solid var(--rule-strong); }
-  .comparison-matrix__cell { border-left: 0; border-top: 1px solid var(--rule); }
-  .comparison-matrix__row[data-section="risk"] .comparison-matrix__cell { border-top: 1px solid var(--red); }
-  .comparison-report .alternative-grid,
-  .comparison-payoff-grid { grid-template-columns: 1fr; }
 }
 
 @page {
@@ -1538,6 +1522,20 @@ body.report-profile-a4 .disclaimer { margin-top: 12px; padding-top: 10px; line-h
 }
 
 @media (max-width: __BREAKPOINT_NARROW__) {
+  .comparison-card-document { width: 100%; margin: 0; padding: 22px 16px 30px; box-shadow: none; }
+  .comparison-document-head { display: block; }
+  .comparison-document-head__meta { margin-top: 10px; }
+  .comparison-matrix__header,
+  .comparison-matrix__row { grid-template-columns: 1fr; }
+  .comparison-matrix__corner { display: none; }
+  .comparison-matrix__candidate { border-left: 0; border-top: 1px solid var(--rule); }
+  .comparison-matrix__candidate:nth-child(2) { border-top: 3px solid var(--blue); }
+  .comparison-matrix__candidate[data-preferred="true"] { border-top-color: var(--red); }
+  .comparison-matrix__section-label { border-right: 0; border-bottom: 1px solid var(--rule-strong); }
+  .comparison-matrix__cell { border-left: 0; border-top: 1px solid var(--rule); }
+  .comparison-matrix__row[data-section="risk"] .comparison-matrix__cell { border-top: 1px solid var(--red); }
+  .comparison-report .alternative-grid,
+  .comparison-payoff-grid { grid-template-columns: 1fr; }
   .module-shell { padding: 0; }
   .module-shell__surface,
   .designer-card,

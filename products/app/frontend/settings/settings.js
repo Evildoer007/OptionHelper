@@ -123,16 +123,22 @@ function providerSummary(provider) {
   return `${enabled.length}个已启用模型${active ? " · 默认" : ""}`;
 }
 
-function modelRow(model, selected, index) {
+function modelRow(model, selected, index, { imageEditable = false } = {}) {
   const safeId = escapeHtml(model.model_id || "");
   const safeName = escapeHtml(model.display_name || model.model_id || "");
   const editable = !model.model_id;
-  const identity = editable
+  const inputModalities = Array.isArray(model.input_modalities) && model.input_modalities.includes("image")
+    ? ["text", "image"]
+    : ["text"];
+  const identityCore = editable
     ? `<span class="model-row-editors"><input name="model_id-${index}" value="" autocomplete="off" spellcheck="false" placeholder="模型ID" aria-label="模型ID"><input name="model_name-${index}" value="" autocomplete="off" spellcheck="false" placeholder="显示名称" aria-label="模型显示名称"></span>`
     : `<span class="model-row-copy"><strong>${safeName}</strong><small>${safeId}</small><input type="hidden" name="model_id-${index}" value="${safeId}"><input type="hidden" name="model_name-${index}" value="${safeName}"></span>`;
-  return `<div class="model-catalog-row" data-model-row>
+  const imageControl = imageEditable
+    ? `<label class="model-capability-control"><input type="checkbox" name="image_input-${index}" ${inputModalities.includes("image") ? "checked" : ""}><span>支持图片输入</span></label>`
+    : `<small class="model-capability-note">${inputModalities.includes("image") ? "支持图片输入" : "仅文本输入"}</small>`;
+  return `<div class="model-catalog-row" data-model-row data-input-modalities="${inputModalities.join(",")}">
     <label class="model-enable"><input type="checkbox" name="enabled-${index}" ${model.enabled ? "checked" : ""} aria-label="启用${safeName || "此模型"}"><span class="model-checkmark" aria-hidden="true"></span></label>
-    ${identity}
+    <span class="model-row-identity">${identityCore}${imageControl}</span>
     <label class="model-default"><input type="radio" name="default_model" value="${safeId}" ${selected === model.model_id ? "checked" : ""} aria-label="设为默认模型"><span>默认</span></label>
     <button type="button" class="model-remove" data-model-action="remove-model" aria-label="删除${safeName || "此模型"}"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 4.5h9M6 4.5V3h4v1.5M5 6.5v5M8 6.5v5M11 6.5v5M4.5 4.5l.5 9h6l.5-9"/></svg></button>
   </div>`;
@@ -145,7 +151,7 @@ function providerEditor(provider) {
   const defaultId = providerState.default_model_selection?.provider_id === provider.provider_id
     ? providerState.default_model_selection.model_id
     : provider.models.find((model) => model.enabled)?.model_id || "";
-  const rows = provider.models.map((model, index) => modelRow(model, defaultId, index)).join("");
+  const rows = provider.models.map((model, index) => modelRow(model, defaultId, index, { imageEditable: !builtIn })).join("");
   return `<form class="model-provider-editor" data-provider-form data-provider-id="${escapeHtml(provider.provider_id)}" novalidate>
     <div class="model-provider-editor__header"><strong>${escapeHtml(provider.display_name)}</strong><span>${escapeHtml(provider.provider_id)}</span></div>
     <label class="provider-key-field"><span>API密钥</span><input name="api_key" type="password" autocomplete="new-password" placeholder="${configured ? "••••••••••••（已保存）" : "输入API密钥"}"><small>${configured ? "已保存。留空将保留当前密钥。" : "保存后仅写入OptionHelper本机数据目录。"}</small></label>
@@ -203,10 +209,6 @@ const rolePresentation = {
     Interpreter: { name: "Interpreter", description: "解析目标与约束" },
     Selector: { name: "Selector", description: "生成并比较候选" },
     Reviewer: { name: "Reviewer", description: "复核规则与证据" },
-    // Compatibility for settings saved before the neutral role migration.
-    Intent: { name: "Interpreter", description: "解析目标与约束" },
-    Research: { name: "Selector", description: "生成并比较候选" },
-    Critic: { name: "Reviewer", description: "复核规则与证据" },
   },
   "independent-council": {
     Framer: { name: "Framer", description: "明确需求边界和比较框架" },
@@ -509,7 +511,7 @@ multiAgentRoot.addEventListener("submit", async (event) => {
 
 function newCustomProvider() {
   const providerId = `provider-${Date.now().toString(36)}`;
-  return { provider_id: providerId, display_name: "自定义Provider", endpoint: "", protocol: "openai-chat-completions", credential_configured: false, draft: true, models: [{ model_id: "", display_name: "", enabled: true }] };
+  return { provider_id: providerId, display_name: "自定义Provider", endpoint: "", protocol: "openai-chat-completions", credential_configured: false, draft: true, models: [{ model_id: "", display_name: "", enabled: true, input_modalities: ["text"] }] };
 }
 
 function addBuiltin(providerId) {
@@ -525,11 +527,18 @@ function addBuiltin(providerId) {
 
 function catalogPayload(form) {
   const rows = Array.from(form.querySelectorAll("[data-model-row]"));
-  const models = rows.map((row) => ({
-    model_id: row.querySelector('[name^="model_id-"]').value.trim(),
-    display_name: row.querySelector('[name^="model_name-"]').value.trim(),
-    enabled: row.querySelector('[name^="enabled-"]').checked,
-  })).filter((model) => model.model_id);
+  const models = rows.map((row) => {
+    const imageInput = row.querySelector('[name^="image_input-"]');
+    const supportsImages = imageInput instanceof HTMLInputElement
+      ? imageInput.checked
+      : row.dataset.inputModalities?.split(",").includes("image");
+    return {
+      model_id: row.querySelector('[name^="model_id-"]').value.trim(),
+      display_name: row.querySelector('[name^="model_name-"]').value.trim(),
+      enabled: row.querySelector('[name^="enabled-"]').checked,
+      input_modalities: supportsImages ? ["text", "image"] : ["text"],
+    };
+  }).filter((model) => model.model_id);
   const selectedRow = form.querySelector('input[name="default_model"]:checked')?.closest("[data-model-row]");
   const selectedModelId = selectedRow?.querySelector('[name^="model_id-"]')?.value.trim() || "";
   const selectedIsEnabled = Boolean(selectedRow?.querySelector('[name^="enabled-"]')?.checked);
@@ -603,8 +612,14 @@ async function discoverModels(form) {
     const response = await sendCredential("/api/settings/model-provider/discover", { provider_id: payload.provider_id, endpoint: payload.endpoint, api_key: form.elements.api_key.value.trim() });
     const catalog = form.querySelector("[data-model-catalog]");
     const existing = new Set(Array.from(catalog.querySelectorAll('[name^="model_id-"]')).map((input) => input.value.trim()));
+    const builtIn = providerState.builtins.some((provider) => provider.provider_id === form.dataset.providerId);
     response.models.filter((model) => !existing.has(model.model_id)).forEach((model, offset) => {
-      catalog.insertAdjacentHTML("beforeend", modelRow({ ...model, enabled: false }, "", catalog.children.length + offset));
+      catalog.insertAdjacentHTML("beforeend", modelRow(
+        { ...model, enabled: false, input_modalities: ["text"] },
+        "",
+        catalog.children.length + offset,
+        { imageEditable: !builtIn },
+      ));
     });
     showProviderResult(form, response.models.length ? "已读取模型目录，请勾选要启用的模型。" : "该服务未返回可识别模型，可手动添加。", !response.models.length);
   } catch (error) { showProviderResult(form, `${error.message}，你仍可手动添加模型。`, true); }
@@ -639,7 +654,13 @@ modelRoot.addEventListener("click", async (event) => {
   }
   if (action === "add-model" && form) {
     const catalog = form.querySelector("[data-model-catalog]");
-    catalog.insertAdjacentHTML("beforeend", modelRow({ model_id: "", display_name: "", enabled: true }, "", catalog.children.length));
+    const builtIn = providerState.builtins.some((provider) => provider.provider_id === form.dataset.providerId);
+    catalog.insertAdjacentHTML("beforeend", modelRow(
+      { model_id: "", display_name: "", enabled: true, input_modalities: ["text"] },
+      "",
+      catalog.children.length,
+      { imageEditable: !builtIn },
+    ));
     catalog.lastElementChild.querySelector('[name^="model_id-"]').focus();
     return;
   }

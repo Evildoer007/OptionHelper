@@ -97,10 +97,15 @@ def main() -> None:
     )
     payload = json.loads(fixture.read_text(encoding="utf-8"))
     for output_type in ("report", "card", "quote"):
-        artifact = render(DesignerInput(payload=payload, output_type=output_type, asset_mode="portable"))
+        artifact = render(DesignerInput(
+            payload=payload, output_type=output_type, asset_mode="shared", output_dir=samples,
+        ))
         (samples / f"{output_type}.html").write_text(artifact["html"], encoding="utf-8")
     for output_type, filename in (("card", "multicard.html"), ("report", "multireport.html")):
-        artifact = render(DesignerInput(payload=_comparison_payload(output_type), output_type=output_type, asset_mode="portable"))
+        artifact = render(DesignerInput(
+            payload=_comparison_payload(output_type), output_type=output_type,
+            asset_mode="shared", output_dir=examples,
+        ))
         (examples / filename).write_text(artifact["html"], encoding="utf-8")
 
 

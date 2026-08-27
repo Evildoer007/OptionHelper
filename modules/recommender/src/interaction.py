@@ -1,7 +1,7 @@
 """结构推荐的确定性已确认条件提取。
 
 只归一用户已经表达的条件；产品选择、条款和数值计算仍由既有
-Intent、Research、Critic、Executor流程负责。
+Interpreter、Selector、Reviewer及后续受控执行流程负责。
 """
 
 from __future__ import annotations

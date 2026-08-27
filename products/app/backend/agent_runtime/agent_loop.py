@@ -15,6 +15,8 @@ from dataclasses import dataclass
 from time import monotonic
 from typing import Any, Protocol
 
+from runtime.workflow_policy import decide_workflow
+
 from ..errors import AuthorizationError, UnavailableCapabilityError, ValidationError
 from ..identity.session_identity import SessionIdentity
 from ..settings.settings_models import ModelSelection
@@ -75,6 +77,7 @@ class ConversationAgentPort(Protocol):
         selection: ModelSelection | None = None,
         execution_ids: Mapping[str, str],
         context: Mapping[str, Any] | None = None,
+        attachments: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]: ...
 
 
@@ -154,16 +157,18 @@ class AgentLoop:
         message: str,
         *,
         selection: ModelSelection | None = None,
-        execution_ids: Mapping[str, str],
+        execution_ids: Mapping[str, str], attachments: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         return self.run(
-            identity, task_id, message, selection=selection, execution_ids=execution_ids,
+            identity, task_id, message, selection=selection,
+            execution_ids=execution_ids, attachments=attachments,
         )
 
     def run(
         self, identity: SessionIdentity, task_id: str, message: str, *,
         selection: ModelSelection | None = None,
         execution_ids: Mapping[str, str] | None = None,
+        attachments: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         # A normal conversation turn is a recovery boundary as well.  This
         # keeps a crash after candidate activation from making an uncommitted
@@ -191,13 +196,14 @@ class AgentLoop:
                 return _result("timed_out", "本次任务处理超时，未生成计算结论。", observations, round_number - 1)
             try:
                 context = self._context_builder.build(identity, task_id, message)
-                if round_number == 1 and _should_run_fixed_recommendation(message, context):
+                workflow_decision = _workflow_decision(self._gateway, identity, message, context)
+                if round_number == 1 and workflow_decision.analysis_path == "recommendation":
                     self._emit_visible_event(identity, task_id, request_id, "routing", "completed", "已识别为结构推荐需求，进入Recommender。")
                     arguments = {
                         "workflow": _fixed_recommendation_workflow(message),
                         "main_agent_controlled": True,
-                        "require_multi_agent": _requires_multi_agent(message),
-                        "recommendation_preset": "sequential-deliberation",
+                        "require_multi_agent": True,
+                        "recommendation_preset": workflow_decision.preset_id,
                     }
                     self._emit_visible_event(
                         identity, task_id, request_id, "agent_run", "started",
@@ -237,6 +243,7 @@ class AgentLoop:
                             selection=selection,
                             execution_ids=dict(execution_ids or {}),
                             context=context,
+                            attachments=attachments,
                         )
                     except UnavailableCapabilityError as error:
                         # One-release compatibility path: when the dedicated
@@ -353,8 +360,8 @@ class AgentLoop:
                     forwarded_arguments = {
                         **dict(decision.arguments),
                         "main_agent_controlled": True,
-                        "require_multi_agent": _requires_multi_agent(message),
-                        "recommendation_preset": "sequential-deliberation",
+                        "require_multi_agent": True,
+                        "recommendation_preset": _selected_recommendation_preset(self._gateway, identity),
                     }
                     if execution_ids is None:
                         raw = (
@@ -601,6 +608,8 @@ def _result(
     }
     if action:
         result["action"] = action
+        if action == "ask_user":
+            result["_user_question"] = _user_question(status, text)
     if error_capability:
         result["error"] = {
             "capability": error_capability,
@@ -609,6 +618,67 @@ def _result(
     if approval:
         result["approval"] = dict(approval)
     return result
+
+
+def _user_question(status: str, text: str) -> dict[str, Any]:
+    """Project one blocking Host question without changing workflow routing.
+
+    The natural-language question remains the authoritative conversation
+    content.  This metadata only lets OptChat render safe, replayable answer
+    controls for states that already require user input.
+    """
+
+    normalized = str(text).strip()
+    options: list[dict[str, Any]] = []
+    if status == "pending_approval":
+        options = [
+            {
+                "value": "确认采用当前候选和条款。",
+                "label": "确认当前候选",
+                "description": "继续使用已展示的候选结构与条款。",
+                "recommended": True,
+            },
+            {
+                "value": "暂不确认，请调整候选或条款。",
+                "label": "调整候选",
+                "description": "返回Recommender内部继续修改候选或约束。",
+                "recommended": False,
+            },
+        ]
+    lower = normalized.lower()
+    delivery_choices = sum((
+        any(marker in lower for marker in ("研究简报", "简单报告", "简报", "card")),
+        any(marker in lower for marker in ("完整研究报告", "详细报告", "完整报告", "report")),
+        any(marker in lower for marker in ("参考报价", "报价表", "quote")),
+    ))
+    if status == "needs_input" and (delivery_choices >= 2 or "形成交付材料" in normalized):
+        options = [
+            {
+                "value": "请生成简单报告。",
+                "label": "简单报告 Card",
+                "description": "用于快速查看核心结论、关键条款和主要风险。",
+                "recommended": True,
+            },
+            {
+                "value": "请生成详细报告。",
+                "label": "详细报告 Report",
+                "description": "用于完整保留分析依据、计算结果和风险说明。",
+                "recommended": False,
+            },
+            {
+                "value": "请生成参考报价。",
+                "label": "参考报价 Quote",
+                "description": "用于集中展示结构条款和报价字段。",
+                "recommended": False,
+            },
+        ]
+    return {
+        "type": "question",
+        "question_id": hashlib.sha256(f"{status}\x1f{normalized}".encode("utf-8")).hexdigest()[:24],
+        "prompt": normalized,
+        "options": options,
+        "allow_free_text": True,
+    }
 
 
 def _model_context(
@@ -956,51 +1026,44 @@ def _public_candidate_field(value: object, fallback: str) -> str:
 
 
 def _should_run_fixed_recommendation(message: str, context: Mapping[str, Any]) -> bool:
-    """Start a fresh recommendation only when the request needs a new contract."""
+    """Compatibility wrapper around the shared business routing policy."""
 
-    text = str(message or "")
-    explicit_request = any(word in text for word in ("推荐", "适合的期权", "哪种期权", "什么期权"))
-    delivery_request = any(word in text.lower() for word in (
-        "简报", "card", "报告", "report", "参考报价", "报价表", "quote",
-    ))
-    concrete_signal = bool(re.search(r"\d{6}\.(?:SH|SZ)", text, re.IGNORECASE)) or any(
-        word in text for word in ("最大可承受亏损", "本金波动", "市场观点", "波动率")
-    )
-    changing_terms = any(word in text for word in (
-        "修改", "调整", "改成", "改为", "重新定价", "重新回测", "行权价", "期权费", "票息", "障碍",
-    ))
     facts = context.get("facts")
-    has_verified_runs = isinstance(facts, Mapping) and bool(facts.get("module_run_facts"))
-    if concrete_signal and (explicit_request or delivery_request) and (not has_verified_runs or changing_terms):
-        return True
     messages = context.get("messages")
-    if not isinstance(messages, list) or not messages:
-        return False
-    if len(messages) >= 2:
-        previous = messages[-2]
-        if isinstance(previous, Mapping) and str(previous.get("role", "")).lower() == "assistant":
-            previous_status = str(previous.get("status", "")).lower()
-            if previous_status == "pending_approval" and _confirmation_text(text):
-                return True
-            if (
-                previous_status == "needs_input"
-                and _awaits_contract_confirmation(previous)
-                and _confirmation_text(text)
-            ):
-                return True
-            if (
-                previous_status == "needs_input"
-                and _delivery_choice_text(text)
-                and "研究简报" in str(previous.get("content", ""))
-                and "完整研究报告" in str(previous.get("content", ""))
-            ):
-                return True
-    latest = messages[-1]
-    if not isinstance(latest, Mapping) or str(latest.get("role", "")).lower() != "assistant":
-        return False
-    if str(latest.get("status", "")).lower() != "needs_input":
-        return False
-    return any(word in str(latest.get("content", "")) for word in ("标的", "期限", "观点", "亏损", "回撤", "本金", "净值"))
+    decision = decide_workflow(
+        message,
+        facts=facts if isinstance(facts, Mapping) else {},
+        messages=messages if isinstance(messages, list) else (),
+    )
+    return decision.analysis_path == "recommendation"
+
+
+def _selected_recommendation_preset(gateway: object, identity: SessionIdentity) -> str:
+    resolver = getattr(gateway, "multi_agent_recommendation_preset_for", None)
+    value = resolver(identity) if callable(resolver) else "sequential-deliberation"
+    preset_id = str(value or "").strip().lower()
+    if preset_id not in {
+        "sequential-deliberation", "product-trader-loop", "independent-council", "constraint-ranking",
+    }:
+        raise ValidationError("设置中心选择了未启用的Recommender Mode")
+    return preset_id
+
+
+def _workflow_decision(
+    gateway: object,
+    identity: SessionIdentity,
+    message: str,
+    context: Mapping[str, Any],
+):
+    facts = context.get("facts")
+    messages = context.get("messages")
+    return decide_workflow(
+        message,
+        facts=facts if isinstance(facts, Mapping) else {},
+        messages=messages if isinstance(messages, list) else (),
+        preset_id=_selected_recommendation_preset(gateway, identity),
+        execution_semantics="multi_agent",
+    )
 
 
 def _fixed_recommendation_workflow(message: object) -> str:

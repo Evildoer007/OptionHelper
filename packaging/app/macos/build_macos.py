@@ -115,9 +115,15 @@ PDF_RUNTIME_MODULES = (
     "reportlab.pdfbase.cidfonts",
     "PIL",
     "PIL.Image",
+    "pypdf",
+    "docx",
+    "openpyxl",
 )
 PDF_RUNTIME_VERSION = "5.0.0"
 PILLOW_RUNTIME_VERSION = "12.3.0"
+PYPDF_RUNTIME_VERSION = "6.16.0"
+PYTHON_DOCX_RUNTIME_VERSION = "1.2.0"
+OPENPYXL_RUNTIME_VERSION = "3.1.5"
 """The minimal deterministic runtime used for Card and Report PDF delivery."""
 
 # The build host is a broad research environment.  These packages are neither
@@ -800,6 +806,17 @@ def assert_build_python() -> None:
         raise MacOSBuildError(f"App构建缺少PDF图像组件Pillow {PILLOW_RUNTIME_VERSION}") from error
     if pillow_version != PILLOW_RUNTIME_VERSION:
         raise MacOSBuildError(f"Pillow必须固定为{PILLOW_RUNTIME_VERSION}，当前为{pillow_version}")
+    for package, expected in (
+        ("pypdf", PYPDF_RUNTIME_VERSION),
+        ("python-docx", PYTHON_DOCX_RUNTIME_VERSION),
+        ("openpyxl", OPENPYXL_RUNTIME_VERSION),
+    ):
+        try:
+            actual = metadata.version(package)
+        except metadata.PackageNotFoundError as error:
+            raise MacOSBuildError(f"App构建缺少文档解析组件{package} {expected}") from error
+        if actual != expected:
+            raise MacOSBuildError(f"{package}必须固定为{expected}，当前为{actual}")
 
 
 def copy_tree(source: Path, destination: Path, *, extra_ignored: tuple[str, ...] = ()) -> None:
@@ -1209,6 +1226,7 @@ def build_macos(
         _progress("正在构建后端运行时")
         backend = build_backend(temporary, resources)
         run([str(backend), "--probe-pdf-runtime", "--resource-dir", str(resources)])
+        run([str(backend), "--probe-compute-worker", "--resource-dir", str(resources)])
         probe_backend_startup(backend, resources, temporary)
         verify_bundle(
             bundle,

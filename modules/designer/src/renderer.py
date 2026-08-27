@@ -799,7 +799,6 @@ def canonical_greeks(rows: list[Any]) -> list[dict[str, Any]]:
     ordered: list[dict[str, Any]] = []
     for label in GREEK_ORDER:
         if label not in source:
-            ordered.append({"label": label, "value": "—", "status": "not_applicable"})
             continue
         row = dict(source[label])
         row["label"] = label
@@ -898,7 +897,9 @@ def render_recommendation(data: dict[str, Any]) -> str:
 
 def render_payoff(data: dict[str, Any], input_dir: Path) -> str:
     module = as_dict(data.get("payoff"))
-    if text(module.get("status") or "pending").lower() != "ready":
+    status = text(module.get("status") or "pending").lower()
+    comparison_view = bool(module.get("comparison_view"))
+    if status != "ready" and not comparison_view:
         return status_box(module)
     figures = []
     if text(module.get("report_svg_path")):
@@ -913,7 +914,8 @@ def render_payoff(data: dict[str, Any], input_dir: Path) -> str:
         rendered_figures.append(
             f'<div class="comparison-payoff-figure">{f"<h3>{esc(label)}</h3>" if label else ""}{image}</div>'
         )
-    blocks = [f'<div class="comparison-payoff-grid">{"".join(rendered_figures)}</div>' if rendered_figures else ""]
+    blocks = [status_box(module) if status != "ready" else ""]
+    blocks.append(f'<div class="comparison-payoff-grid">{"".join(rendered_figures)}</div>' if rendered_figures else "")
     formula_html = formula_block(module)
     if formula_html:
         blocks.append(formula_html)
@@ -930,9 +932,11 @@ def render_payoff(data: dict[str, Any], input_dir: Path) -> str:
 
 def render_pricing(data: dict[str, Any], charts: list[dict[str, Any]]) -> str:
     module = as_dict(data.get("pricing"))
-    if text(module.get("status") or "pending").lower() != "ready":
+    status = text(module.get("status") or "pending").lower()
+    comparison_view = bool(module.get("comparison_view"))
+    if status != "ready" and not comparison_view:
         return status_box(module)
-    blocks = []
+    blocks = [status_box(module) if status != "ready" else ""]
     method = text(module.get("method"))
     valuation_date = text(module.get("valuation_date"))
     if method or valuation_date:
@@ -976,9 +980,11 @@ def render_pricing(data: dict[str, Any], charts: list[dict[str, Any]]) -> str:
 
 def render_backtest(data: dict[str, Any], charts: list[dict[str, Any]]) -> str:
     module = as_dict(data.get("backtest"))
-    if text(module.get("status") or "pending").lower() != "ready":
+    status = text(module.get("status") or "pending").lower()
+    comparison_view = bool(module.get("comparison_view"))
+    if status != "ready" and not comparison_view:
         return status_box(module)
-    blocks = []
+    blocks = [status_box(module) if status != "ready" else ""]
     window = text(module.get("window"))
     entry_rule = text(module.get("entry_rule"))
     if window or entry_rule:
@@ -1146,8 +1152,8 @@ def render_html(
         echarts_path = config.relative_echarts_path(input_dir)
     meta = as_dict(payload.get("meta"))
     # The standard seven chapters come from the selected template. A validated
-    # one-off presentation patch may only reorder known sections or append
-    # Designer-owned reader notices. It cannot add or remove fact blocks.
+    # one-off patch may adjust their presentation or insert a supplemental
+    # block already frozen in the payload; it never creates financial facts.
     title = text(meta.get("title")) or "单个期权结构推荐报告"
     report_theme = load_report_theme(config)
     design_system = build_design_system()
@@ -1160,6 +1166,7 @@ def render_html(
         "risk": lambda: render_risk(payload),
         "conclusion": lambda: render_conclusion(payload),
         "parameters": lambda: render_parameters(payload),
+        "supplemental": lambda: "",
     }
     section_definition = section_definition or tuple(
         (key, SECTION_TITLES[key], key) for key in SECTION_ORDER

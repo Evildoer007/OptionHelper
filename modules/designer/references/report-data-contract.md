@@ -26,13 +26,13 @@
 }
 ```
 
-Designer只消费`optionhelper.designer-payload`，且顶层`schema`字段必须存在并逐字匹配。其他schema或缺失schema均会被拒绝，不做版本转换、默认补齐或兼容读取。设计系统描述固定为`optionhelper.design-system`。内建`report-standard`默认七个章节依次为：核心结论、结构推荐、合同参数、收益结构、估值定价、历史回测、风险提示。Card和Quote也各有自己的标准结构。默认结构不等于内容上限：补充说明和多结构比较必须先由Reporter冻结进Payload；Designer只可对已知章节排序、使用白名单别名或附加固定说明。Report固定A4与Card的HTML壳和主题均由Designer内部固定，公开`DesignerInput`、Tool与CLI不接受`layout`或`html_report_layout`。payload的`meta`不参与版式选择。
+Designer只消费`optionhelper.designer-payload`，且顶层`schema`字段必须存在并逐字匹配。其他schema或缺失schema均会被拒绝，不做版本转换、默认补齐或兼容读取。设计系统描述固定为`optionhelper.design-system`。内建`report-standard`默认七个章节依次为：核心结论、结构推荐、合同参数、收益结构、估值定价、历史回测、风险提示。Card和Quote也各有自己的标准结构。默认结构不等于内容上限：补充说明必须先由Reporter冻结进Payload；Designer只按用户明确的`presentation_patch`选择当次展示结构。Report固定A4与Card的HTML壳和主题均由Designer内部固定，公开`DesignerInput`、Tool与CLI不接受`layout`或`html_report_layout`。payload的`meta`不参与版式选择。
 
 `template_id`只选择Designer治理的`assets/templates/*.template.json`。模板定义可选择、命名和排序已有内容块，不能携带HTML、CSS、数值、公式或外部路径；缺少可展示事实的块直接省略。这样可以新增模板，而不要求模型修改Python或手写HTML。
 
 正式对比输入在顶层提供`comparison.candidates`，每个候选包含公开标签、冻结排名、真实首选标记、产品名称、挂钩标的及完整单候选`facts`，候选不少于2个。Designer按冻结排名展示，不把候选ID、Run ID、哈希或路径写入正文。MultiCard不消费候选图表；MultiReport仅合并横纵轴、单位与口径兼容的折线或柱状图，热力图按候选分别展示。
 
-`presentation_patch`是一次性交付展示指令，schema固定为`optionhelper.presentation-patch`。它只支持已知章节排序、Designer白名单章节别名，以及预置的`methodology`或`reader_note`说明；不接受新增、删除章节或任意文本。原Payload、标准模板和Reporter事实始终不变；估值、回测、报价、合同条款、指标、表格、公式和图表必须先由Reporter冻结，不能通过Patch新增、修改或隐藏。所有展示调整记录在内部回执中，HTML和PDF正文不展示该回执。Patch不接受HTML、脚本、CSS、颜色、字体、间距、圆角、阴影或外链字段。没有可展示事实的标准块继续省略，不渲染“未提供”。
+`presentation_patch`是一次性交付展示指令，schema固定为`optionhelper.presentation-patch`。它支持章节排序、改名、隐藏、固定说明，以及加入Payload中已冻结的`supplemental_sections`。补充章节内容只支持文本、指标、表格、公式和图表；Card与Quote拒绝图表。原Payload、标准模板和Reporter事实始终不变，Patch本身不能携带或修改估值、回测、报价和合同数据。所有展示调整记录在内部回执中，HTML和PDF正文不展示该回执。Patch不接受HTML、脚本、CSS、颜色、字体、间距、圆角、阴影或外链字段。没有可展示事实的标准块继续省略，不渲染“未提供”。
 
 `reference_quote`只在`output_type="quote"`时必填。它是冻结的交易参考事实，不得从估值、Greek、收益图或回测结果推导。每个`groups`元素必须包含`title`、`columns`和`rows`；列由`key`、`label`和`format`组成，`format`只能为`text`、`number`或`percent`。不同结构应分组声明各自字段，行必须完整给出该组所有列值，不能以空值或“未提供”占位。
 

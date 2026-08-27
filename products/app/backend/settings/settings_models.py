@@ -59,6 +59,9 @@ class ModelCatalogEntry:
     enabled: bool = True
     context_window: int | None = None
     max_output_tokens: int | None = None
+    input_modalities: tuple[str, ...] = ("text",)
+    reasoning_support: bool = False
+    tool_calling: bool = True
 
 
 @dataclass(frozen=True)
@@ -150,6 +153,9 @@ def serialize_settings(snapshot: SettingsSnapshot) -> dict[str, Any]:
                         "enabled": model.enabled,
                         "context_window": model.context_window,
                         "max_output_tokens": model.max_output_tokens,
+                        "input_modalities": list(model.input_modalities),
+                        "reasoning_support": model.reasoning_support,
+                        "tool_calling": model.tool_calling,
                     }
                     for model in provider.models
                 ],
@@ -277,6 +283,9 @@ def deserialize_settings(value: dict[str, Any]) -> SettingsSnapshot:
                 enabled=bool(raw_model.get("enabled", True)),
                 context_window=_positive_int_or_none(raw_model.get("context_window")),
                 max_output_tokens=_positive_int_or_none(raw_model.get("max_output_tokens")),
+                input_modalities=_input_modalities(raw_model.get("input_modalities")),
+                reasoning_support=bool(raw_model.get("reasoning_support", False)),
+                tool_calling=bool(raw_model.get("tool_calling", True)),
             ))
         providers.append(ModelProviderProfile(
             provider_id=str(raw_provider.get("provider_id", "")),
@@ -380,3 +389,14 @@ def _positive_int_or_none(value: object) -> int | None:
     if parsed <= 0:
         raise ValueError("model capacity must be a positive integer")
     return parsed
+
+
+def _input_modalities(value: object) -> tuple[str, ...]:
+    if value is None:
+        return ("text",)
+    if not isinstance(value, list):
+        raise ValueError("input_modalities must be an array")
+    modalities = tuple(dict.fromkeys(str(item).strip().lower() for item in value))
+    if not modalities or modalities[0] != "text" or any(item not in {"text", "image"} for item in modalities):
+        raise ValueError("input_modalities must start with text and may include image")
+    return modalities

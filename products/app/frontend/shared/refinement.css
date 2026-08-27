@@ -1250,6 +1250,380 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
   margin: 2px 0 4px;
 }
 
+.message--assistant .message__content {
+  display: grid;
+  width: min(760px, 78%);
+  min-width: 0;
+  gap: 8px;
+}
+
+.message--assistant .message__content > .message__body {
+  width: 100%;
+  max-width: none;
+  margin: 0;
+}
+
+.composer-attachment-area {
+  margin: 0 0 8px;
+  padding: 9px 10px;
+  border: 1px solid color-mix(in srgb, var(--line) 82%, var(--accent) 18%);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface) 96%, var(--accent) 4%);
+}
+
+.composer-attachment-area__head,
+.composer-attachment {
+  display: flex;
+  align-items: center;
+}
+
+.composer-attachment-area__head {
+  justify-content: space-between;
+  margin-bottom: 7px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.composer-attachment-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 7px;
+}
+
+.composer-attachment {
+  min-width: 0;
+  gap: 8px;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+}
+
+.composer-attachment__preview {
+  display: grid;
+  flex: 0 0 38px;
+  width: 38px;
+  height: 38px;
+  place-items: center;
+  overflow: hidden;
+  border: 0;
+  border-radius: 8px;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--surface));
+  font-weight: 700;
+}
+
+.composer-attachment__preview img { width: 100%; height: 100%; object-fit: cover; }
+
+.composer-attachment__text {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.composer-attachment__text strong,
+.composer-attachment__text small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer-attachment__text strong { font-size: 12px; font-weight: 620; }
+.composer-attachment__text small { color: var(--muted); font-size: 10px; }
+
+.composer-attachment__remove {
+  flex: 0 0 26px;
+  width: 26px;
+  height: 26px;
+  margin-left: auto;
+  border: 0;
+  border-radius: 999px;
+  color: var(--muted);
+  background: transparent;
+  font-size: 18px;
+}
+
+.composer-attachment__remove:hover,
+.composer-attachment__remove:focus-visible { color: var(--accent); background: color-mix(in srgb, var(--accent) 9%, transparent); }
+
+.composer-actions__leading { display: flex; min-width: 0; align-items: center; gap: 9px; }
+
+.composer-attach-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.composer-attach-control:hover { color: var(--accent); }
+.composer-attach-control input { position: absolute; width: 1px; height: 1px; overflow: hidden; opacity: 0; }
+.composer-drop-hint { overflow: hidden; color: var(--muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.composer[data-dragging="true"] form { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 13%, transparent); }
+
+.message-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-width: min(560px, 86%);
+}
+
+.message--user .message-attachments { justify-content: flex-end; margin-left: auto; }
+
+.message-attachment {
+  display: inline-flex;
+  min-width: 0;
+  max-width: 240px;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 9px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  color: var(--ink);
+  background: var(--surface);
+  font: inherit;
+  font-size: 11px;
+}
+
+.message-attachment__mark { color: var(--accent); font-weight: 700; }
+.message-attachment__label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.message-attachment--pending { opacity: .7; }
+
+.message-artifact,
+.message-question {
+  width: min(100%, 620px);
+  margin-top: 14px;
+  padding: 14px;
+  border: 1px solid color-mix(in srgb, var(--line) 78%, var(--accent) 22%);
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--surface) 95%, var(--accent) 5%);
+}
+
+.message-artifact__heading,
+.message-artifact__actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.message-artifact__heading span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.message-artifact p {
+  margin: 6px 0 12px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.message-artifact__actions { justify-content: flex-start; }
+
+.message-artifact__actions a {
+  padding: 7px 12px;
+  border-radius: 999px;
+  color: var(--ink);
+  background: var(--surface);
+  text-decoration: none;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.message-question__choices { display: grid; gap: 8px; }
+
+.message-question__choice {
+  display: grid;
+  gap: 4px;
+  width: 100%;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  color: var(--ink);
+  background: var(--surface);
+  text-align: left;
+}
+
+.message-question__choice:not(:disabled):hover {
+  border-color: color-mix(in srgb, var(--accent) 52%, var(--line));
+  transform: translateY(-1px);
+}
+
+.message-question__choice strong,
+.message-question__choice > span { display: block; }
+
+.message-question__choice strong span {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 2px 6px;
+  border-radius: 999px;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 11%, transparent);
+  font-size: 10px;
+}
+
+.message-question__choice > span { color: var(--muted); font-size: 11px; }
+
+.message-question__free {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.message-question__free textarea {
+  flex: 1;
+  min-height: 52px;
+  resize: vertical;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  color: var(--ink);
+  background: var(--surface);
+  font: inherit;
+}
+
+.message-question__free button {
+  min-height: 40px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 999px;
+  color: #fff;
+  background: var(--accent);
+  font-weight: 700;
+}
+
+.attachment-lightbox {
+  width: min(920px, calc(100vw - 36px));
+  max-height: calc(100vh - 36px);
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  color: var(--ink);
+  background: var(--surface);
+  box-shadow: 0 24px 70px rgba(20, 20, 24, .24);
+}
+
+.attachment-lightbox::backdrop { background: rgba(20, 20, 24, .52); backdrop-filter: blur(4px); }
+.attachment-lightbox__frame { display: grid; gap: 10px; padding: 12px; }
+.attachment-lightbox__head { display: flex; align-items: center; justify-content: space-between; }
+.attachment-lightbox__close { width: 32px; height: 32px; border: 0; border-radius: 999px; color: var(--muted); background: transparent; font-size: 22px; }
+.attachment-lightbox img { display: block; width: 100%; max-height: calc(100vh - 132px); border-radius: 10px; object-fit: contain; background: color-mix(in srgb, var(--ink) 4%, var(--surface)); }
+.attachment-lightbox p { margin: 0; color: var(--muted); font-size: 11px; text-align: center; }
+
+.message--streaming[hidden],
+.message--process[hidden] { display: none; }
+
+.assistant-reasoning {
+  width: 100%;
+  min-width: 0;
+  color: var(--muted);
+}
+
+.assistant-reasoning > summary {
+  display: flex;
+  min-height: 28px;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  padding: 2px 0;
+  cursor: pointer;
+  list-style: none;
+  color: inherit;
+  font-size: 12.5px;
+  line-height: 1.5;
+  user-select: none;
+}
+
+.assistant-reasoning > summary::-webkit-details-marker { display: none; }
+
+.assistant-reasoning__icon {
+  position: relative;
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
+  border: 1px solid color-mix(in srgb, var(--muted) 72%, transparent);
+  border-radius: 50%;
+}
+
+.assistant-reasoning__icon::before,
+.assistant-reasoning__icon::after {
+  position: absolute;
+  inset: 3px;
+  border: 1px solid color-mix(in srgb, var(--muted) 65%, transparent);
+  border-radius: 50%;
+  content: "";
+}
+
+.assistant-reasoning__icon::after {
+  inset: 5px;
+  background: currentColor;
+  border: 0;
+}
+
+.assistant-reasoning__title {
+  flex: 0 0 auto;
+  color: color-mix(in srgb, var(--text) 72%, var(--muted));
+  font-weight: 620;
+}
+
+.assistant-reasoning__separator {
+  width: 14px;
+  height: 1px;
+  flex: 0 0 14px;
+  background: color-mix(in srgb, var(--line) 88%, transparent);
+}
+
+.assistant-reasoning__preview {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: clip;
+  white-space: nowrap;
+  scroll-behavior: smooth;
+}
+
+.assistant-reasoning[data-running="true"] .assistant-reasoning__preview {
+  color: color-mix(in srgb, var(--muted) 72%, var(--red));
+  animation: reasoning-preview-pulse 1.35s ease-in-out infinite;
+}
+
+.assistant-reasoning__body {
+  max-width: 72ch;
+  padding: 6px 0 5px 21px;
+  color: color-mix(in srgb, var(--text) 62%, var(--muted));
+  font-size: 12.5px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.assistant-reasoning__notice {
+  margin: 0;
+  padding: 2px 0 4px 21px;
+  color: var(--danger);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.process-agent-reasoning {
+  grid-column: 1 / -1;
+  margin-top: 5px;
+}
+
+.process-agent-reasoning .assistant-reasoning__body {
+  max-height: 240px;
+  overflow: auto;
+}
+
+@keyframes reasoning-preview-pulse {
+  0%, 100% { opacity: 0.66; }
+  50% { opacity: 1; }
+}
+
 .message--process details {
   border: 1px solid color-mix(in srgb, var(--line) 82%, var(--accent) 18%);
   border-radius: 12px;
@@ -1335,7 +1709,19 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
     transition: none !important;
   }
 
+  .assistant-reasoning[data-running="true"] .assistant-reasoning__preview {
+    animation: none !important;
+    background: none;
+    color: var(--muted);
+  }
+
   .workspace-shell.workspace-shell--desk[data-workspace-shell] .composer form.is-generating { background-image: none; }
+}
+
+@media (max-width: 680px) {
+  .message--assistant .message__content { width: 100%; }
+  .assistant-reasoning__body { padding-inline-start: 0; }
+  .assistant-reasoning__notice { padding-inline-start: 0; }
 }
 
 /* Keep the OptionHelper palette while using a denser, calmer desktop rhythm:

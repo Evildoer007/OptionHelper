@@ -15,11 +15,15 @@ from .durability_checkpoint import DurabilityCheckpointStore, stable_operation_i
 
 
 class AgentLoopPort(Protocol):
-    def run(self, identity: SessionIdentity, task_id: str, message: str, *, selection: ModelSelection | None = None) -> dict[str, Any]: ...
+    def run(
+        self, identity: SessionIdentity, task_id: str, message: str, *,
+        selection: ModelSelection | None = None, attachments: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]: ...
 
     def run_with_execution(
         self, identity: SessionIdentity, task_id: str, message: str, *,
         selection: ModelSelection | None = None, execution_ids: dict[str, str],
+        attachments: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]: ...
 
 
@@ -40,6 +44,7 @@ class ConversationService:
         *,
         request_id: str | None = None,
         selection: ModelSelection | None = None,
+        attachments: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """Serialize one task and replay an identical HTTP retry.
 
@@ -49,7 +54,7 @@ class ConversationService:
         released, including after an App restart.
         """
         with self._task_lock(identity, task_id):
-            replay_key = _replay_key(message, selection)
+            replay_key = _replay_key(message, selection, attachments)
             replay = self._task_service.get_conversation_response(identity, task_id, request_id, replay_key)
             if replay is not None:
                 return replay
@@ -65,6 +70,7 @@ class ConversationService:
                 status="pending_model",
                 message_id=request_state.get("user_message_id") if request_state else None,
                 created_at=request_state.get("user_message_created_at") if request_state else None,
+                attachments=attachments,
             )
             if request_state and request_state.get("status") in {"execution_started", "recovery_required"}:
                 response = request_state.get("recovery_response")
@@ -99,6 +105,7 @@ class ConversationService:
                     response = self._run_model(
                         identity, task_id, message, selection,
                         execution_ids=_execution_ids(request_state),
+                        attachments=attachments or [],
                     )
                 settled = self._task_service.settle_conversation_model(
                     identity, task_id, request_id, replay_key, response,
@@ -107,6 +114,13 @@ class ConversationService:
                     request_state = settled
             self._emit_process_event(identity, task_id, request_id, "answer", "completed", "正在整理并写入本轮答复。")
             assistant = None
+            assistant_blocks = response.pop("_assistant_blocks", None)
+            user_question = response.pop("_user_question", None)
+            if isinstance(user_question, dict):
+                assistant_blocks = [
+                    *(assistant_blocks if isinstance(assistant_blocks, list) else []),
+                    user_question,
+                ]
             assistant_text = response.get("text")
             if isinstance(assistant_text, str) and assistant_text.strip():
                 assistant = self._task_service.append_message(
@@ -117,6 +131,7 @@ class ConversationService:
                     status=str(response.get("status", "recorded")),
                     message_id=request_state.get("assistant_message_id") if request_state else None,
                     created_at=request_state.get("assistant_message_created_at") if request_state else None,
+                    content_blocks=assistant_blocks if isinstance(assistant_blocks, list) else None,
                 )
             completed = {**response, "message": recorded}
             if assistant is not None:
@@ -141,6 +156,7 @@ class ConversationService:
         selection: ModelSelection | None,
         *,
         execution_ids: dict[str, str],
+        attachments: list[dict[str, Any]],
     ) -> dict[str, Any]:
         if self._task_service.is_cancelled(identity, task_id):
             return _cancelled_response()
@@ -148,14 +164,16 @@ class ConversationService:
             controlled_run = getattr(self._agent_loop, "run_with_execution", None)
             if callable(controlled_run):
                 response = controlled_run(
-                    identity, task_id, message, selection=selection, execution_ids=execution_ids,
+                    identity, task_id, message, selection=selection,
+                    execution_ids=execution_ids, attachments=attachments,
                 )
             else:
-                response = (
-                    self._agent_loop.run(identity, task_id, message)
-                    if selection is None
-                    else self._agent_loop.run(identity, task_id, message, selection=selection)
-                )
+                optional: dict[str, Any] = {}
+                if selection is not None:
+                    optional["selection"] = selection
+                if attachments:
+                    optional["attachments"] = attachments
+                response = self._agent_loop.run(identity, task_id, message, **optional)
             return _safe_response(response, identity)
         try:
             self._emit_process_event(identity, task_id, execution_ids.get("request_id"), "routing", "completed", "已识别为常规对话，交由主Agent处理。")
@@ -247,12 +265,17 @@ def _interrupted_execution_response() -> dict[str, Any]:
     }
 
 
-def _replay_key(message: str, selection: ModelSelection | None) -> str:
+def _replay_key(
+    message: str, selection: ModelSelection | None, attachments: list[dict[str, Any]] | None = None,
+) -> str:
     """Bind idempotency to both user text and the selected model identity."""
 
-    if selection is None:
-        return message
-    return f"{message}\x1f{selection.provider_id}\x1f{selection.model_id}"
+    selected = "" if selection is None else f"{selection.provider_id}\x1f{selection.model_id}"
+    attachment_key = ",".join(
+        str(item.get("attachment_id", ""))
+        for item in (attachments or []) if isinstance(item, dict)
+    )
+    return f"{message}\x1f{selected}\x1f{attachment_key}"
 
 
 def _safe_response(response: dict[str, Any], identity: SessionIdentity) -> dict[str, Any]:

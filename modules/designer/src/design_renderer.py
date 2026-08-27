@@ -290,7 +290,6 @@ def _card_body(
         for label in ("Delta", "Gamma", "Vega", "Theta", "Rho"):
             row = greeks.get(label)
             if row is None:
-                rows.append({"metric": label, "value": "—", "unit": ""})
                 continue
             value = display_text(row.get("value"), row.get("value_format"))
             if value:
@@ -356,10 +355,14 @@ def _card_body(
     blocks: list[str] = []
 
     def render_section(section_id: str, title: str, block: str) -> str:
-        body = renderers[block](title)
+        body = "" if block == "supplemental" else renderers[block](title)
         appended = render_presentation_content(appended_content.get(section_id, ()))
         if appended:
-            body = body + f'<div class="card-appended">{appended}</div>'
+            body = (
+                f'<section class="card-appended"><h2>{esc(title)}</h2>{appended}</section>'
+                if block == "supplemental"
+                else body + f'<div class="card-appended">{appended}</div>'
+            )
         return body
 
     position = 0
@@ -550,6 +553,8 @@ def render_quote_html(
     for section_id, section_title, block in definition:
         if block == "reference_quote":
             body = _quote_body(safe_payload)
+        elif block == "supplemental":
+            body = ""
         else:
             raise ValueError(f"Quote模板不支持内容块：{block}。")
         body += render_presentation_content(appended_content.get(section_id, ()))

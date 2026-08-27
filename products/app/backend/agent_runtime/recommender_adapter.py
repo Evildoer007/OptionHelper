@@ -69,7 +69,7 @@ _RUNTIME_ROLE_TOOLS = {
         "Reviewer": (),
     },
     "product-trader-loop": {
-        "Structurer": ("search_option_structures", "create_candidate_version"),
+        "Structurer": ("search_option_structures",),
         "Trader": (
             "evaluate_candidate_payoff", "evaluate_candidate_pricing",
             "evaluate_candidate_backtest", "get_verified_fact", "compare_candidate_versions",
@@ -83,13 +83,14 @@ _RUNTIME_ROLE_TOOLS = {
             "evaluate_candidate_pricing", "evaluate_candidate_backtest", "get_verified_fact",
         ),
         "Hedger": (
+            "search_option_structures", "evaluate_candidate_payoff",
             "evaluate_candidate_pricing", "evaluate_candidate_backtest", "get_verified_fact",
         ),
         "Moderator": ("get_verified_fact", "compare_candidate_versions"),
     },
     "constraint-ranking": {
         "Specifier": (),
-        "Generator": ("search_option_structures", "create_candidate_version"),
+        "Generator": ("search_option_structures",),
         "Evaluator": (
             "evaluate_candidate_payoff", "evaluate_candidate_pricing",
             "evaluate_candidate_backtest", "get_verified_fact",
@@ -323,6 +324,9 @@ class RuntimeEventPersistenceSink:
             "available": state["available"],
             "chars": len(content),
         }
+        block_index = template.payload.get("index")
+        if isinstance(block_index, int) and not isinstance(block_index, bool) and block_index >= 0:
+            payload["index"] = block_index
         if content:
             payload["delta"] = content
         if terminal and state["truncated"]:
@@ -545,15 +549,31 @@ class AppToolPort(ToolPort):
         task_id: str,
         *,
         visible_event_sink: Callable[[str, str, str], None] | None = None,
+        child_managed_evaluation: bool = False,
     ) -> None:
         self._executor = executor
         self._identity = identity
         self._task_id = task_id
         self._market_data_refs: dict[tuple[str, ...], Mapping[str, Any]] = {}
         self._visible_event_sink = visible_event_sink
+        self._child_managed_evaluation = bool(child_managed_evaluation)
 
     def call(self, module: str, payload: Mapping[str, Any]) -> Mapping[str, Any]:
         return self._executor.call(self._identity, self._task_id, f"{module}.run", payload)
+
+    @property
+    def child_managed_evaluation(self) -> bool:
+        return self._child_managed_evaluation
+
+    def register_candidate_plan(self, **plan: Any) -> Mapping[str, Any]:
+        return self._executor.register_recommendation_candidate_plan(
+            self._identity, self._task_id, **plan,
+        )
+
+    def resolve_candidate_evaluation(self, candidate_version_id: str) -> Mapping[str, Any]:
+        return self._executor.resolve_recommendation_candidate_evaluation(
+            self._identity, self._task_id, candidate_version_id,
+        )
 
     def evaluate_candidate(
         self,
@@ -936,7 +956,12 @@ class RecommenderAdapter:
             approved_candidate_ids=(),
             candidate_contracts={},
         )
-        preset_id = str(arguments.get("recommendation_preset", "sequential-deliberation")).strip().lower()
+        if self._agent_runtime_mode == "disabled":
+            raise UnavailableCapabilityError(
+                "Recommender多智能体运行时",
+                "当前App未启用Agent Runtime，不能以Legacy单Agent替代所选多智能体预设。",
+            )
+        preset_id = _saved_recommendation_preset(self._gateway, identity, arguments)
         preset = resolve_recommendation_preset(preset_id)
         lifecycle_projection = LifecycleProjection()
         request_id = str((execution_ids or {}).get("request_id") or "").strip() or None
@@ -1003,9 +1028,17 @@ class RecommenderAdapter:
         service = RecommenderService(
             agent_port=agent_port,
             knowledge_port=AppKnowledgePort(self._registry.capability_root, catalog_version),
-            tool_port=AppToolPort(self._tools, identity, task_id, visible_event_sink=visible_event_sink),
+            tool_port=AppToolPort(
+                self._tools,
+                identity,
+                task_id,
+                visible_event_sink=visible_event_sink,
+                child_managed_evaluation=(
+                    self._agent_runtime_mode == "active" and agent_port is runtime_agent_port
+                ),
+            ),
             config=RecommenderConfig(
-                agent_mode="multi" if arguments.get("require_multi_agent") is True else "auto",
+                agent_mode="multi",
                 multi_agent_preset=preset_id,
             ),
             review_policy_id=review_policy_id,
@@ -1014,6 +1047,9 @@ class RecommenderAdapter:
         try:
             result = service.recommend_fixed(case, workflow=workflow)
         finally:
+            clear_plans = getattr(self._tools, "clear_recommendation_candidate_plans", None)
+            if callable(clear_plans):
+                clear_plans(identity, task_id)
             # RuntimeBackedAgentPort is Task-scoped and is closed only by the
             # lifecycle methods below. The authoritative legacy port remains
             # request-scoped, including in shadow mode.
@@ -1153,6 +1189,8 @@ class AppConversationToolExecutor:
         self._contracts = contracts
         self._tasks = tasks
         self._recommender: RecommenderAdapter | None = None
+        self._recommendation_plan_lock = RLock()
+        self._recommendation_plans: dict[tuple[str, str, str, str], dict[str, Any]] = {}
 
     def bind_recommender(self, recommender: RecommenderAdapter) -> None:
         self._recommender = recommender
@@ -1198,6 +1236,19 @@ class AppConversationToolExecutor:
                 "queries": [str(item) for item in queries],
             })
 
+        def evaluation_handler(module: str):
+            def run(
+                identity: SessionIdentity,
+                task_id: str,
+                payload: Mapping[str, Any],
+                _connection: object,
+            ) -> Mapping[str, Any]:
+                return self.evaluate_registered_recommendation_candidate(
+                    identity, task_id, module=module, payload=payload,
+                )
+
+            return run
+
         return RuntimeToolBridge(
             dispatcher=self._dispatcher,
             result_store=self._results,
@@ -1205,7 +1256,183 @@ class AppConversationToolExecutor:
             task_service=self._tasks,
             module_context_for=module_context_for,
             search_handler=search_handler,
+            handlers={
+                "evaluate_candidate_payoff": evaluation_handler("payoffer"),
+                "evaluate_candidate_pricing": evaluation_handler("pricer"),
+                "evaluate_candidate_backtest": evaluation_handler("backtester"),
+            },
         )
+
+    def register_recommendation_candidate_plan(
+        self,
+        identity: SessionIdentity,
+        task_id: str,
+        *,
+        candidate: Mapping[str, Any],
+        confirmed_constraints: Mapping[str, Any],
+        modules: Sequence[str],
+        term_overrides: Mapping[str, Any],
+        candidate_version_id: str,
+        round_no: int,
+        input_fingerprints: Mapping[str, str] | None = None,
+    ) -> Mapping[str, Any]:
+        """Register a Host-validated candidate plan without running modules."""
+
+        if self._tasks is not None:
+            self._tasks.get(identity, task_id)
+        version_id = _identifier(candidate_version_id, "candidate_version_id")
+        candidate_value = dict(candidate)
+        if str(candidate_value.get("candidate_version_id", "")) != version_id:
+            raise ValidationError("候选计划与CandidateVersion不一致")
+        normalized_modules = tuple(str(item).strip().lower() for item in modules)
+        if (
+            not normalized_modules
+            or len(set(normalized_modules)) != len(normalized_modules)
+            or any(item not in {"payoffer", "pricer", "backtester"} for item in normalized_modules)
+        ):
+            raise ValidationError("候选计划模块无效")
+        key = (identity.tenant_id, identity.principal_id, str(task_id), version_id)
+        plan = {
+            "candidate": candidate_value,
+            "confirmed_constraints": dict(confirmed_constraints),
+            "modules": normalized_modules,
+            "term_overrides": dict(term_overrides),
+            "candidate_version_id": version_id,
+            "round_no": int(round_no),
+            "input_fingerprints": dict(input_fingerprints or {}),
+            "evaluations": {},
+            "market_data_ref": None,
+        }
+        stable_fields = (
+            "candidate", "confirmed_constraints", "modules", "term_overrides",
+            "round_no", "input_fingerprints",
+        )
+        with self._recommendation_plan_lock:
+            existing = self._recommendation_plans.get(key)
+            if existing is not None and any(existing[name] != plan[name] for name in stable_fields):
+                raise ValidationError("同一CandidateVersion不能绑定不同候选计划")
+            if existing is None:
+                self._recommendation_plans[key] = plan
+        return {"candidate_version_id": version_id, "modules": list(normalized_modules)}
+
+    def evaluate_registered_recommendation_candidate(
+        self,
+        identity: SessionIdentity,
+        task_id: str,
+        *,
+        module: str,
+        payload: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        version_id = _identifier(payload.get("candidate_version_id"), "candidate_version_id")
+        key = (identity.tenant_id, identity.principal_id, str(task_id), version_id)
+        with self._recommendation_plan_lock:
+            plan = self._recommendation_plans.get(key)
+            if plan is None:
+                raise ValidationError("CandidateVersion没有Host注册计划")
+            if module not in plan["modules"]:
+                raise AuthorizationError("agent_runtime.tool", "当前候选计划未授权该计算模块")
+            candidate = dict(plan["candidate"])
+            if str(payload.get("candidate_key", "")) != str(candidate.get("candidate_key", "")):
+                raise ValidationError("工具调用CandidateVersion身份不一致")
+            market_data_ref = plan.get("market_data_ref")
+        if module in {"pricer", "backtester"} and not isinstance(market_data_ref, Mapping):
+            market_data_ref = self.prepare_recommendation_market_data(
+                identity, task_id, candidate.get("underlyings", ()),
+            )
+            with self._recommendation_plan_lock:
+                plan["market_data_ref"] = dict(market_data_ref)
+        fingerprint = plan["input_fingerprints"].get(module)
+        result = self.evaluate_recommendation_candidate(
+            identity,
+            task_id,
+            candidate=candidate,
+            confirmed_constraints=plan["confirmed_constraints"],
+            modules=(module,),
+            term_overrides=plan["term_overrides"],
+            candidate_version_id=version_id,
+            round_no=plan["round_no"],
+            input_fingerprints={module: fingerprint} if fingerprint else None,
+            market_data_ref=market_data_ref if isinstance(market_data_ref, Mapping) else None,
+        )
+        with self._recommendation_plan_lock:
+            plan["evaluations"][module] = dict(result)
+        facts = [
+            {
+                "metric": metric,
+                "value": detail.get("value"),
+                "unit": detail.get("unit"),
+                "fact_ref": detail.get("fact_ref"),
+            }
+            for metric, detail in result.get("verified_metrics", {}).items()
+            if isinstance(detail, Mapping)
+        ]
+        return {
+            "status": str(result.get("status", "completed")),
+            "module": module,
+            "candidate_version_id": version_id,
+            "facts": facts,
+            "fact_refs": [item["fact_ref"] for item in facts if isinstance(item.get("fact_ref"), str)],
+        }
+
+    def resolve_recommendation_candidate_evaluation(
+        self,
+        identity: SessionIdentity,
+        task_id: str,
+        candidate_version_id: str,
+    ) -> Mapping[str, Any]:
+        version_id = _identifier(candidate_version_id, "candidate_version_id")
+        key = (identity.tenant_id, identity.principal_id, str(task_id), version_id)
+        with self._recommendation_plan_lock:
+            plan = self._recommendation_plans.get(key)
+            if plan is None:
+                raise ValidationError("CandidateVersion没有Host注册计划")
+            rows = {name: dict(value) for name, value in plan["evaluations"].items()}
+            required = tuple(plan["modules"])
+        if set(rows) != set(required):
+            missing = sorted(set(required).difference(rows))
+            raise ValidationError(f"Child Agent未完成计划模块：{','.join(missing)}")
+        records: list[Mapping[str, Any]] = []
+        run_refs: list[Mapping[str, Any]] = []
+        statuses: dict[str, str] = {}
+        metrics: dict[str, Mapping[str, Any]] = {}
+        display_terms: list[Mapping[str, Any]] = []
+        contract_fingerprint = ""
+        for module in required:
+            row = rows[module]
+            records.extend(item for item in row.get("evaluation_records", ()) if isinstance(item, Mapping))
+            run_refs.extend(item for item in row.get("module_run_refs", ()) if isinstance(item, Mapping))
+            statuses.update({str(name): str(status) for name, status in row.get("module_statuses", {}).items()})
+            metrics.update({
+                str(name): dict(detail)
+                for name, detail in row.get("verified_metrics", {}).items()
+                if isinstance(detail, Mapping)
+            })
+            if not display_terms:
+                display_terms = [dict(item) for item in row.get("display_terms", ()) if isinstance(item, Mapping)]
+            contract_fingerprint = str(row.get("contract_fingerprint") or contract_fingerprint)
+        return {
+            "candidate_version_id": version_id,
+            "contract_fingerprint": contract_fingerprint,
+            "evaluation_records": records,
+            "module_run_refs": run_refs,
+            "module_statuses": statuses,
+            "display_terms": display_terms,
+            "verified_metrics": metrics,
+        }
+
+    def clear_recommendation_candidate_plans(
+        self,
+        identity: SessionIdentity,
+        task_id: str,
+    ) -> int:
+        """Release request-scoped candidate plans after all Child tools settle."""
+
+        prefix = (identity.tenant_id, identity.principal_id, str(task_id))
+        with self._recommendation_plan_lock:
+            keys = [key for key in self._recommendation_plans if key[:3] == prefix]
+            for key in keys:
+                self._recommendation_plans.pop(key, None)
+        return len(keys)
 
     def reconcile_prepared_recommendation_approvals(self) -> int:
         """Idempotently close prepared cross-Store candidate confirmations.
@@ -3385,7 +3612,7 @@ def _continuation_recommendation_set(
 
     The task index retains only the chosen candidate and customer constraints,
     never the original evidence or financial result.  This projection restores
-    the typed envelope from that state without re-running Research or exposing
+    the typed envelope from that state without re-running Selector or exposing
     private identifiers to the customer-facing AgentLoop.
     """
 
@@ -3470,6 +3697,21 @@ def _approval_text(value: object) -> bool:
     if not text or any(word in text for word in ("不确认", "不同意", "取消", "不要执行", "先不要")):
         return False
     return any(word in text for word in ("确认", "同意", "按此", "按这个", "继续执行", "继续生成", "继续分析", "可以执行", "好的", "好，"))
+
+
+def _saved_recommendation_preset(
+    gateway: object,
+    identity: SessionIdentity,
+    arguments: Mapping[str, Any],
+) -> str:
+    """Use App settings as the production authority for recommendation topology."""
+
+    resolver = getattr(gateway, "multi_agent_recommendation_preset_for", None)
+    if callable(resolver):
+        return str(resolver(identity)).strip().lower()
+    # Narrow compatibility path for isolated adapters that do not own App
+    # settings. Production ModelGateway always implements the resolver.
+    return str(arguments.get("recommendation_preset", "sequential-deliberation")).strip().lower()
 
 
 def _identifier(value: object, field: str) -> str:

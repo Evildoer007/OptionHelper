@@ -416,7 +416,11 @@ def verify(bundle: Path) -> dict[str, object]:
                         "dividend_yield": 0.0,
                         "risk_free_rate": 0.02,
                         "model_method": "monte_carlo",
-                        "path_count": 100,
+                        # The release probe verifies the complete isolated
+                        # process path, not pricing precision. Ten seeded
+                        # paths keep the fixed smoke run bounded while still
+                        # exercising the path-dependent engine and surfaces.
+                        "path_count": 10,
                     },
                     "task_id": path_task_id,
                 },

@@ -1,6 +1,6 @@
 # OptionHelper Skill安装与配置
 
-这份README只解决安装、运行时配置、iFind和项目Store。对话与工作流以`SKILL.md`为准，模块输入输出以`references/module-guides/`为准。
+这份README只解决安装、Capability Runtime配置、iFind和项目Store。`scripts/runtime`是七个期权业务模块共用的Capability Runtime，不是Agent Runtime，也不创建或管理Agent。对话与工作流以`SKILL.md`为准，模块输入输出以`references/module-guides/`为准。
 
 ## 快速开始
 

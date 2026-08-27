@@ -38,6 +38,7 @@ from .agent_runtime import multi_agent as multi_agent_runtime
 from .agent_runtime.tool_dispatcher import ToolDispatcher
 from .agent_runtime.durability_checkpoint import DurabilityCheckpointStore
 from .agent_runtime.runtime_telemetry import RuntimeTelemetry
+from .attachments import AttachmentStore
 from .audit.audit_models import AuditEvent
 from .audit.audit_service import LocalAuditService
 from .authorization.policy import AuthorizationPolicy
@@ -108,7 +109,9 @@ _RECOMMENDATION_MODE_IDS = (
 
 
 def _agent_runtime_source_entrypoint() -> Path:
-    return Path(__file__).resolve().parents[1] / "runtime" / "agent_engine" / "runtime.js"
+    current = Path(__file__).resolve().parents[1] / "runtime" / "optionhelper_agent_runtime" / "dist" / "runtime.cjs"
+    legacy = Path(__file__).resolve().parents[1] / "runtime" / "agent_engine" / "runtime.js"
+    return current if current.is_file() else legacy
 
 
 def _resolve_agent_runtime_mode(explicit: str | None) -> str:
@@ -252,6 +255,7 @@ class AppServer:
         self._settings_store = LocalSettingsStore(self._documents)
         self.settings = SettingsService(self._settings_store)
         self.tasks = TaskService(self._documents)
+        self.attachments = AttachmentStore(self._documents._root / "attachments")
         self.data_assets = DataStore(self._documents)
         self.contracts = ContractStore(self._documents)
         self.results = ResultStore(self._documents)
@@ -280,7 +284,10 @@ class AppServer:
             LocalDataStore(self._capability_runtime_root / "data"),
             self.secret_provider,
         )
-        self.compute_supervisor = ComputeProcessSupervisor()
+        self.compute_supervisor = ComputeProcessSupervisor(
+            minimum_slots=1,
+            diagnostics_root=self._documents._root / "diagnostics" / "compute",
+        )
         self.gateway = ToolGateway(
             self.registry,
             self.policy,
@@ -422,6 +429,7 @@ class AppServer:
             conversation_context,
             self.conversation_tools,
             conversation_observations,
+            self.attachments,
             runtime_mode=self.agent_runtime_mode,
             session_root=self._documents._root / "agent-runtime-sessions",
             is_cancelled=self.tasks.is_cancelled,
@@ -623,16 +631,7 @@ class AppServer:
                 "protocol": item.protocol,
                 "scope": "device",
                 "credential_configured": item.secret_ref is not None,
-                "models": [
-                    {
-                        "model_id": model.model_id,
-                        "display_name": model.display_name or model.model_id,
-                        "enabled": model.enabled,
-                        "context_window": model.context_window,
-                        "max_output_tokens": model.max_output_tokens,
-                    }
-                    for model in item.models
-                ],
+                "models": [_public_model_catalog_entry(model) for model in item.models],
             }
             for item in settings.model_providers
         ]
@@ -644,7 +643,9 @@ class AppServer:
                 "protocol": "openai-chat-completions",
                 "scope": "provider",
                 "credential_configured": settings.model_service.secret_ref is not None,
-                "models": [{"model_id": settings.model_service.model_name, "display_name": settings.model_service.model_name, "enabled": True, "context_window": None, "max_output_tokens": None}],
+                "models": [_public_model_catalog_entry(
+                    ModelCatalogEntry(settings.model_service.model_name, settings.model_service.model_name, True),
+                )],
             })
         builtin = []
         for provider_id, item in built_in_provider_catalog().items():
@@ -653,10 +654,7 @@ class AppServer:
                 "display_name": str(item["display_name"]),
                 "endpoint": str(item["endpoint"]),
                 "protocol": str(item["protocol"]),
-                "models": [
-                    {"model_id": model.model_id, "display_name": model.display_name, "enabled": False}
-                    for model in item["models"]
-                ],
+                "models": [_public_model_catalog_entry(model) for model in item["models"]],
             })
         return {
             "schema": "optionhelper.model-providers.v1",
@@ -918,6 +916,9 @@ class AppServer:
                             "enabled": model.enabled,
                             "context_window": model.context_window,
                             "max_output_tokens": model.max_output_tokens,
+                            "input_modalities": list(model.input_modalities),
+                            "reasoning_support": model.reasoning_support,
+                            "tool_calling": model.tool_calling,
                         }
                         for model in provider.models
                     ],
@@ -1398,6 +1399,31 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
             self.app.tasks.get(identity, task_id)
             self._json(HTTPStatus.OK, {"reports": self.app.results.list_report_runs(identity, task_id)})
             return
+        if path.startswith("/api/tasks/") and path.endswith("/attachment-drafts"):
+            identity = self._identity()
+            self.app.policy.require(identity.role, "task.read")
+            task_id = path.removeprefix("/api/tasks/").removesuffix("/attachment-drafts").rstrip("/")
+            self.app.tasks.get(identity, task_id)
+            self._json(HTTPStatus.OK, {"attachments": self.app.tasks.pending_attachment_uploads(identity, task_id)})
+            return
+        if path.startswith("/api/tasks/") and "/attachments/" in path:
+            identity = self._identity()
+            self.app.policy.require(identity.role, "task.read")
+            task_id, encoded_attachment_id = path.removeprefix("/api/tasks/").split("/attachments/", 1)
+            attachment_id = unquote(encoded_attachment_id)
+            if not task_id or not attachment_id or "/" in attachment_id:
+                raise KeyError(path)
+            reference = self.app.tasks.attachment_reference(identity, task_id, attachment_id)
+            content = self.app.attachments.read(reference)
+            media_type = str(reference.get("media_type", "application/octet-stream"))
+            disposition = "inline" if reference.get("kind") == "image" else "attachment"
+            safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", str(reference.get("name", "attachment")))[:120]
+            self._bytes(HTTPStatus.OK, content, media_type, extra_headers={
+                "Content-Disposition": f'{disposition}; filename="{safe_name or "attachment"}"',
+                "Content-Security-Policy": "default-src 'none'; sandbox",
+                "X-Frame-Options": "DENY",
+            })
+            return
         if path.startswith("/api/tasks/") and "/conversation-requests/" in path and path.endswith("/events"):
             identity = self._identity()
             self.app.policy.require(identity.role, "conversation.write")
@@ -1581,7 +1607,17 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
 
     def _post(self, parsed: Any, request_id: str) -> None:
         path = parsed.path
-        body = self._body_json(allowed_plaintext_fields=_credential_fields_for(path))
+        attachment_upload = path.startswith("/api/tasks/") and path.endswith("/attachments")
+        preauthenticated_identity: SessionIdentity | None = None
+        if attachment_upload:
+            preauthenticated_identity = self._identity()
+            self.app.policy.require(preauthenticated_identity.role, "conversation.write")
+            upload_task_id = path.removeprefix("/api/tasks/").removesuffix("/attachments").rstrip("/")
+            self.app.tasks.get(preauthenticated_identity, upload_task_id)
+        body = self._body_json(
+            allowed_plaintext_fields=_credential_fields_for(path),
+            max_bytes=280 * 1024 * 1024 if attachment_upload else 200_000,
+        )
         if path == "/api/auth/login":
             request = LoginRequest.from_payload(body)
             outcome = self.app.create_login_session(request, client_host=str(self.client_address[0]))
@@ -1632,7 +1668,7 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
             identity = self.app.create_local_session(role, label)
             self._json(HTTPStatus.OK, {"identity": identity.public(), "mode": "local-development"}, cookie=identity.session_id)
             return
-        identity = self._identity()
+        identity = preauthenticated_identity or self._identity()
         data_asset_id = _data_asset_download_id(path)
         if data_asset_id is not None:
             _only_fields(body, set())
@@ -1788,7 +1824,7 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
             task_id = path.removeprefix("/api/tasks/").removesuffix("/delete").rstrip("/")
             _only_fields(body, set())
             stopping = self.app.operations.cancel_task(identity, task_id)
-            if any(operation.state in {"queued", "running", "cancel_requested"} for operation in stopping):
+            if any(operation.state in {"queued", "running", "recovering", "cancel_requested"} for operation in stopping):
                 raise UserActionError(
                     "task_operations_stopping",
                     "当前任务仍有正在停止的后台运行，暂不能删除。",
@@ -1802,10 +1838,38 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
             self.app.audit.record(AuditEvent(action="task.delete", principal_id=identity.principal_id, tenant_id=identity.tenant_id, outcome="succeeded", decision="allow", reference=task_id, request_id=request_id))
             self._json(HTTPStatus.OK, {"task": task})
             return
+        if path.startswith("/api/tasks/") and path.endswith("/attachments"):
+            task_id = path.removeprefix("/api/tasks/").removesuffix("/attachments").rstrip("/")
+            _only_fields(body, {"files"})
+            files = body.get("files")
+            if not isinstance(files, list):
+                raise ValidationError("附件上传必须包含files数组")
+            self.app.tasks.reclaim_orphaned_attachments()
+            references = self.app.attachments.save_encoded(files)
+            references = self.app.tasks.register_attachment_uploads(identity, task_id, references)
+            self._json(HTTPStatus.CREATED, {"attachments": references})
+            return
+        if path.startswith("/api/tasks/") and path.endswith("/attachment-drafts/discard"):
+            self.app.policy.require(identity.role, "conversation.write")
+            task_id = path.removeprefix("/api/tasks/").removesuffix("/attachment-drafts/discard").rstrip("/")
+            _only_fields(body, {"attachment_ids"})
+            attachment_ids = body.get("attachment_ids")
+            if not isinstance(attachment_ids, list):
+                raise ValidationError("Attachment draft identifiers must be an array")
+            removed = self.app.tasks.discard_attachment_uploads(identity, task_id, attachment_ids)
+            self._json(HTTPStatus.OK, {"removed": removed})
+            return
         if path.startswith("/api/tasks/") and path.endswith("/messages"):
             self.app.policy.require(identity.role, "conversation.write")
             task_id = path.removeprefix("/api/tasks/").removesuffix("/messages").rstrip("/")
-            _only_fields(body, {"content", "model_selection", "background"})
+            _only_fields(body, {"content", "attachments", "model_selection", "background"})
+            attachments = body.get("attachments", [])
+            if not isinstance(attachments, list):
+                raise ValidationError("消息附件必须是数组")
+            for reference in attachments:
+                if not isinstance(reference, Mapping):
+                    raise ValidationError("消息附件引用无效")
+                self.app.attachments.read(reference)
             model_selection = _conversation_model_selection(body.get("model_selection"))
             if body.get("background") is True:
                 content = str(body.get("content", ""))
@@ -1817,7 +1881,8 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
                     kind="conversation",
                     operation=lambda cancelled: _dispatch_background_conversation(
                         self.app.conversations, identity, task_id, content,
-                        request_id=conversation_request_id, selection=model_selection, cancelled=cancelled,
+                        request_id=conversation_request_id, selection=model_selection,
+                        attachments=attachments, cancelled=cancelled,
                     ),
                     lane="conversation",
                 )
@@ -1829,6 +1894,7 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
                 str(body.get("content", "")),
                 request_id=self.headers.get("X-Request-Id"),
                 selection=model_selection,
+                attachments=attachments,
             )
             selection_note = (
                 f"{model_selection.provider_id}/{model_selection.model_id}"
@@ -2522,13 +2588,15 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
         except AuthorizationError:
             return None
 
-    def _body_json(self, *, allowed_plaintext_fields: frozenset[str] = frozenset()) -> dict[str, Any]:
+    def _body_json(
+        self, *, allowed_plaintext_fields: frozenset[str] = frozenset(), max_bytes: int = 200_000,
+    ) -> dict[str, Any]:
         length_raw = self.headers.get("Content-Length", "0")
         try:
             length = int(length_raw)
         except ValueError as error:
             raise ValidationError("Content-Length is invalid") from error
-        if length < 0 or length > 200_000:
+        if length < 0 or length > max_bytes:
             raise ValidationError("Request body is too large")
         raw = self.rfile.read(length)
         try:
@@ -2750,7 +2818,16 @@ def _model_provider_from(value: dict[str, Any]) -> ModelProviderProfile:
         enabled = bool(raw.get("enabled", True))
         context_window = _model_capacity(raw.get("context_window"), "上下文长度")
         max_output_tokens = _model_capacity(raw.get("max_output_tokens"), "最大输出Token")
-        models.append(ModelCatalogEntry(model_id, model_name, enabled, context_window, max_output_tokens))
+        models.append(ModelCatalogEntry(
+            model_id=model_id,
+            display_name=model_name,
+            enabled=enabled,
+            context_window=context_window,
+            max_output_tokens=max_output_tokens,
+            input_modalities=_model_input_modalities(raw.get("input_modalities")),
+            reasoning_support=_model_capability_flag(raw.get("reasoning_support"), default=False, label="推理能力"),
+            tool_calling=_model_capability_flag(raw.get("tool_calling"), default=True, label="工具调用能力"),
+        ))
     if not any(item.enabled for item in models):
         raise ValidationError("请至少启用一个模型")
     return ModelProviderProfile(provider_id, display_name, endpoint, protocol, None, tuple(models))
@@ -2768,6 +2845,40 @@ def _model_capacity(value: object, label: str) -> int | None:
     if parsed <= 0:
         raise ValidationError(f"{label}必须是正整数")
     return parsed
+
+
+def _model_input_modalities(value: object) -> tuple[str, ...]:
+    if value is None:
+        return ("text",)
+    if not isinstance(value, list):
+        raise ValidationError("输入模态必须是数组")
+    modalities = tuple(dict.fromkeys(str(item).strip().lower() for item in value))
+    if not modalities or modalities[0] != "text" or any(item not in {"text", "image"} for item in modalities):
+        raise ValidationError("输入模态必须以text开始，且仅支持text和image")
+    return modalities
+
+
+def _model_capability_flag(value: object, *, default: bool, label: str) -> bool:
+    if value is None:
+        return default
+    if not isinstance(value, bool):
+        raise ValidationError(f"{label}必须是布尔值")
+    return value
+
+
+def _public_model_catalog_entry(model: ModelCatalogEntry) -> dict[str, Any]:
+    """Serialize one catalog entry without exposing any credential material."""
+
+    return {
+        "model_id": model.model_id,
+        "display_name": model.display_name or model.model_id,
+        "enabled": model.enabled,
+        "context_window": model.context_window,
+        "max_output_tokens": model.max_output_tokens,
+        "input_modalities": list(model.input_modalities),
+        "reasoning_support": model.reasoning_support,
+        "tool_calling": model.tool_calling,
+    }
 
 
 def _required_model_id(value: object) -> str:
@@ -2839,12 +2950,15 @@ def _dispatch_background_conversation(
     *,
     request_id: str | None,
     selection: ModelSelection | None,
+    attachments: list[dict[str, Any]],
     cancelled: Callable[[], bool],
 ) -> dict[str, Any]:
     """Persist the normal conversation response while its view is absent."""
     if cancelled():
         raise OperationCancelled()
-    response = conversations.respond(identity, task_id, content, request_id=request_id, selection=selection)
+    response = conversations.respond(
+        identity, task_id, content, request_id=request_id, selection=selection, attachments=attachments,
+    )
     if response.get("status") == "cancelled":
         raise OperationCancelled()
     return response

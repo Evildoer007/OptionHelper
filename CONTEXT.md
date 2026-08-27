@@ -4,9 +4,16 @@
 
 OptionHelper由一个通用`option-helper`Skill和一个可独立交付的OptionHelper App组成。两者消费同一Capability，不形成两套产品库、合同解释器或金融计算实现。
 
+- Capability：App与Skill共用的期权知识、合同、数据、计算、结果和交付能力。
+- Skill：供外部Harness读取的业务工作流、规则、工具说明和Capability包。Skill不拥有Agent生命周期。
+- External Harness：调用Skill的外部会话宿主，拥有模型、子Agent、并行、等待、取消、恢复和过程展示。
+- App Harness：OptionHelper App内置的会话与Agent宿主，拥有Main Agent、Child Session、工具桥和过程展示。
+- Recommender Mode：结构推荐内部的业务角色拓扑，不代表具体模型Provider、进程或会话实现。
+- Shared Workflow Policy：咨询、指定模块、结构推荐和正式交付的共同业务路由规则。
+
 七个内部能力模块为DataFetcher、Recommender、Payoffer、Pricer、Backtester、Reporter、Designer。五个操作页面属于DataFetcher、Payoffer、Pricer、Backtester、Reporter；Recommender由对话或工作流调用，Designer提供设计系统和渲染能力。
 
-用户意图路由、能力预检、追问、默认值和进度以`SKILL.md`为唯一行为主源。本文只定义全局事实与协议边界；各`module-guide.md`只补充本模块输入、输出和拒绝条件；`README.md`只负责安装与配置。低优先级文件不得另设对话流程或改变上层默认值。
+App与Skill必须遵循同一Shared Workflow Policy和Capability事实边界。App行为由App Harness执行，Skill行为由External Harness执行；`SKILL.md`只对Skill运行具有行为权威，不是App Agent生命周期或前端过程展示的权威。本文只定义全局事实与领域边界；各`module-guide.md`只补充模块输入、输出和拒绝条件；`README.md`只负责安装与配置。低优先级文件不得改变Shared Workflow Policy。
 
 ## 2. 产品与合同事实
 
@@ -36,6 +43,12 @@ BacktestInput  = {ResolvedContract, BacktestConfig, DataAssetRef}
 **计算操作**：由TaskOperationService持久记录、可跨页面存活的一次Pricer或Backtester运行。页面切换和iframe隐藏不改变其生命周期。
 
 **计算Worker**：只消费冻结执行快照并生成ModuleRunDraft的独立Backend进程。它没有凭据、用户目录、任务Store或结果Store写权限。
+
+**基础设施恢复**：计算Worker启动、通信或存活状态异常后，对同一计算操作和冻结执行快照进行的自动续跑。基础设施恢复不创建新的计算操作，也不改变计算输入。
+
+**Worker尝试**：计算操作在一个具体计算Worker上的单次执行。一次计算操作可以经历多次Worker尝试，但最多形成一个正式ModuleRun。
+
+**业务拒绝**：合同、行情、交易日历、权限或参数不满足运行条件时，在结果提交前形成的明确终态。业务拒绝必须说明可操作原因，不属于Worker故障。
 
 **冻结执行快照**：主进程完成合同、数据、日历、Capability版本和权限校验后形成的不可变计算输入。运行期间任务切换合同不会改变该快照。
 

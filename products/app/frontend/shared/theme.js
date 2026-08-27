@@ -38,10 +38,13 @@ function updateFavicon(theme) {
   if (link) link.href = favicon[theme];
 }
 
-function notifyNativeShell(theme, preference) {
+function notifyNativeShell(theme, preference, surfaceTheme) {
   try {
     window.webkit?.messageHandlers?.optionhelperTheme?.postMessage({ theme, preference });
   } catch { /* Browsers outside the macOS shell simply have no native receiver. */ }
+  try {
+    window.chrome?.webview?.postMessage({ type: "set_theme", theme: surfaceTheme, preference });
+  } catch { /* Browsers outside the Windows shell simply have no native receiver. */ }
 }
 
 function syncControls(scope = document, preference = currentThemePreference()) {
@@ -52,7 +55,7 @@ function syncControls(scope = document, preference = currentThemePreference()) {
 
 function dispatch(theme, preference, iconTheme = resolvedTheme(preference), { notifyNative = true } = {}) {
   updateFavicon(iconTheme);
-  if (notifyNative) notifyNativeShell(iconTheme, preference);
+  if (notifyNative) notifyNativeShell(iconTheme, preference, theme);
   subscribers.forEach((subscriber) => subscriber(theme, preference));
   document.dispatchEvent(new CustomEvent("optionhelper:themechange", { detail: { theme, preference } }));
 }

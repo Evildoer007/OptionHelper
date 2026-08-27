@@ -35,8 +35,7 @@ artifact_response = call_tool({"action": "render", "payload": payload})
 的资源模式、PDF输出和设计系统版本声明。它不存放颜色、字体或组件规则，
 这些仍只由`design_tokens.py`管理。Tool请求可显式传入`config`对象，未知
 字段或不合法策略会以`invalid_configuration`拒绝。可用策略字段为
-`default_asset_mode`、`allow_portable_assets`、`allow_pdf`和
-`require_declared_design_system_version`。
+`default_asset_mode`、`allow_portable_assets`和`allow_pdf`。
 
 `build_design_system()`返回`design_system_id`、令牌哈希、CSS变量、
 组件规则、离线ECharts主题和Payoffer SVG主题。`render()`返回HTML及设计
@@ -73,11 +72,11 @@ OptChat、OptDesk、研究简报、完整研究报告、ECharts和Payoffer SVG�
 - Designer不向用户追问研究条件、产品选择或计算参数；缺失事实统一退回Reporter一次汇总。
 - Designer不重新打开统一就绪门禁，不检查或读取数据凭据，也不触发取数、估值或回测。它只接受Reporter已经冻结的事实、交付形式和覆盖状态。
 - 标准Card无损益图，不渲染损益图。完整研究报告按已有正式结果选择必要图表，图内不重复放标题，标题和图注由报告版式统一管理。用户明确要求追加图表时，Reporter必须先把所需数据和图表定义冻结进本次Payload，Designer不能通过`presentation_patch`补造。
-- 标准Quote只渲染Reporter冻结的`reference_quote`表，不把估值或回测结果解释为报价。用户明确要求的公式、表格或图表也必须先由Reporter冻结；`presentation_patch`只可排序已知章节、使用白名单别名或附加固定说明。
+- 标准Quote只渲染Reporter冻结的`reference_quote`表，不把估值或回测结果解释为报价。用户明确要求的补充文本、指标、表格或公式必须先由Reporter冻结；Quote仍不展示图表。
 - 标准Card为210mm宽度、高度随完整内容自然延展，不保留空白占位；默认展示结构推荐、推荐理由、关键合同条款、估值摘要、回测摘要、主要风险。PDF导出按A4自然分页，不因复杂结构或完整指标而拒绝交付。
 - 内建完整研究报告为连续A4正文，宽屏HTML提供左侧目录，PDF不显示目录；单结构默认阅读顺序为核心结论、结构推荐、合同参数、收益结构、估值定价、历史回测、风险提示。Card和Quote同样保留各自标准结构。标准结构是无额外要求时的默认值，不是不可突破的上限。
 - `assets/templates/*.template.json`是实际运行时模板定义。模板只能选择、命名和排序已有内容块，不能嵌入HTML、CSS、公式或数值；通过`template_id`选择。一个内容块在同一模板中只能出现一次。内建单结构和Multi模板共用同一主题与组件；`assets/examples`中的MultiCard、MultiReport由正式渲染链生成，不维护第二套CSS或展示逻辑。
-- 只有用户明确要求单次调整时才传入`presentation_patch`。它只可排序已知章节、使用Designer白名单章节别名或附加预置的`methodology`或`reader_note`说明；不接受新增、删除章节或任意文本。它只作用于当前渲染副本，不修改Reporter事实或标准模板。估值、回测、报价、合同条款、指标、表格、公式和图表必须先由Reporter冻结，不能通过Patch新增、修改或隐藏。颜色、字体、间距、表格规范和图表主题也不可通过Patch覆盖。
+- 只有用户明确要求单次调整时才传入`presentation_patch`。它可排序、改名或隐藏当前章节，也可从Payload的`supplemental_sections`中加入一个已冻结补充章节；补充章节支持文本、指标、表格、公式，Report还支持图表。Patch只选择展示结构，不携带或改写金融事实，也不修改标准模板。颜色、字体、间距、表格规范和图表主题不可覆盖。
 - 内容块没有可展示事实时直接省略；上游明确交接的部分完成或失败说明可以作为真实状态呈现。模板不得自行增加内部说明、审计内容、默认风险或重复章节。
 - 产物正文不出现系统品牌、工具名、运行标识、文件路径、审计过程或内部机器字段。
 - Designer不自行选择输出目录；产物只由Reporter写入安装目录之外的项目Store。

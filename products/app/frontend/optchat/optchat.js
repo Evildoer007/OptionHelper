@@ -1,9 +1,30 @@
-import { bindComposerKeyboard, clearMessage, configureModelPicker, initializeWorkspace, message, renderMessages, renderReports, renderTaskList, request, safeJson, setTaskLocation, taskIdFromLocation } from "/app/frontend/shared/app.js";
+import { bindComposerKeyboard, clearMessage, configureModelPicker, createReasoningDisclosure, initializeWorkspace, message, renderMessages, renderReports, renderTaskList, request, safeJson, setTaskLocation, taskIdFromLocation } from "/app/frontend/shared/app.js";
+import { attachmentMediaType, validateAttachments } from "/app/frontend/optchat/attachment-utils.js";
 import { createThinkingOrb } from "/app/frontend/shared/thinking-orb.js";
 import { createTransitionScope } from "/app/frontend/shared/transition-scope.js";
 import { currentTheme, currentThemePreference, onThemeChange } from "/app/frontend/shared/theme.js";
 
 const modules = new Map([["datafetcher", "数据获取"], ["payoffer", "收益结构"], ["pricer", "估值定价"], ["backtester", "历史回测"], ["reporter", "研究报告"]]);
+const operationStates = new Map([
+  ["queued", "等待运行"], ["running", "运行中"], ["recovering", "正在恢复"],
+  ["cancel_requested", "正在取消"], ["succeeded", "已完成"], ["failed", "失败"],
+  ["cancelled", "已取消"], ["interrupted", "已中断"],
+]);
+const activeOperationStates = new Set(["queued", "running", "recovering", "cancel_requested"]);
+
+const attachmentFileKey = (file) => `${String(file?.name || "file").slice(0, 160)}:${Number(file?.size) || 0}:${Number(file?.lastModified) || 0}:${globalThis.crypto?.randomUUID?.() || Math.random().toString(36).slice(2)}`;
+const attachmentKindLabel = (referenceOrItem) => referenceOrItem?.kind === "image" || String(referenceOrItem?.media_type || referenceOrItem?.mediaType || "").startsWith("image/") ? "图片" : "文档";
+const attachmentDisplayName = (value) => {
+  const name = String(value?.name || "").trim();
+  return name || (attachmentKindLabel(value) === "图片" ? "图片附件" : "研究文档");
+};
+const formatAttachmentBytes = (value) => {
+  const bytes = Number(value) || 0;
+  if (bytes < 1024) return `${bytes}B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(bytes < 10 * 1024 ? 1 : 0)}KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(bytes < 10 * 1024 * 1024 ? 1 : 0)}MB`;
+};
+const randomAttachmentKey = () => globalThis.crypto?.randomUUID?.() || `attachment-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 const processOrbStates = Object.freeze({
   request: "listening",
   routing: "searching",
@@ -18,7 +39,7 @@ const runtimeEventStatuses = new Set([
   "reselecting", "completed", "succeeded", "failed", "cancelled", "interrupted", "recovered", "stopped",
 ]);
 const runtimeTerminalStatuses = new Set(["completed", "succeeded", "failed", "cancelled", "interrupted", "stopped"]);
-const runtimeSensitiveText = /(?:system[ _-]?prompt|api[ _-]?key|access[ _-]?token|refresh[ _-]?token|bearer|secret|private[ _-]?key|chain[ _-]?of[ _-]?thought|hidden[ _-]?reasoning|internal[ _-]?reasoning|tool[ _-]?arguments?|arguments?|run[ _-]?ref|module[ _-]?run[ _-]?ref|contract[ _-]?fingerprint|task[ _-]?id|request[ _-]?id|tenant[ _-]?id|principal[ _-]?id)/i;
+const runtimeSensitiveText = /(?:system[ _-]?prompt|api[ _-]?key|access[ _-]?token|refresh[ _-]?token|bearer|secret|private[ _-]?key|tool[ _-]?arguments?|arguments?|run[ _-]?ref|module[ _-]?run[ _-]?ref|contract[ _-]?fingerprint|task[ _-]?id|request[ _-]?id|tenant[ _-]?id|principal[ _-]?id)/i;
 const runtimeEventDeltaLimit = 64_000;
 const runtimeAssistantTextLimit = 64_000;
 const runtimeReasoningTextLimit = 512_000;
@@ -81,6 +102,7 @@ const runtimeFamily = (type) => {
   if (normalized === "step" || normalized.startsWith("step.")) return "step";
   if (normalized === "assistant.text_delta") return "assistant";
   if (normalized === "assistant.reasoning_delta") return "reasoning";
+  if (normalized === "assistant.block_started" || normalized === "assistant.block_completed") return "block";
   if (normalized === "assistant.message" || normalized === "answer") return "assistant";
   if (normalized === "host_module" || normalized === "tool" || normalized.startsWith("tool.")) return "tool";
   if (normalized === "compaction" || normalized.startsWith("compaction.")) return "compaction";
@@ -173,6 +195,11 @@ export function normalizeRuntimeEvent(row) {
     toolKey: safeRuntimeKey(row.call_id || row.tool_call_id || payload.call_id || payload.tool_call_id || `${toolLabel}:${row.agent_run_id || payload.agent_run_id || "main"}`),
     toolLabel,
     delta,
+    turn: Number.isInteger(row.turn) && row.turn >= 0 ? row.turn : null,
+    step: Number.isInteger(row.step) && row.step >= 0 ? row.step : null,
+    blockIndex: Number.isInteger(payload.index) && payload.index >= 0 ? payload.index : null,
+    blockType: String(payload.block_type || payload.block?.type || "").replaceAll("_", "-"),
+    completedBlock: isRecord(payload.block) ? payload.block : null,
     reasoningAvailable: family === "reasoning" && Boolean(delta),
     reasoningChars: Number.isInteger(payload.chars) && payload.chars >= 0 ? payload.chars : null,
     truncated: family === "reasoning" && (payload.truncated === true || row.truncated === true),
@@ -191,7 +218,7 @@ export function projectRuntimeEvent(event) {
   return Object.freeze({
     ...event,
     timelineLabel: event.summary,
-    showTimeline: !isDelta && event.family !== "usage" && (!isMainAgent || mainAgentDetail),
+    showTimeline: !isDelta && !["usage", "block"].includes(event.family) && (!isMainAgent || mainAgentDetail),
     showReasoning: event.family === "reasoning" && event.reasoningAvailable === true && Boolean(event.delta),
     assistantDelta: event.family === "assistant" && event.type === "assistant.text_delta" ? event.delta : "",
     reasoningDelta: event.family === "reasoning" ? event.delta : "",
@@ -258,8 +285,19 @@ export async function startWorkspace(initialMode) {
   const title = document.querySelector("#task-title");
   const taskState = document.querySelector("#task-state");
   const reports = document.querySelector("#report-list");
+  const operationList = document.querySelector("#operation-list");
   const reportFeedback = document.querySelector("#report-feedback");
   const reportActions = document.querySelector("[data-report-actions]");
+  const attachmentDropTarget = document.querySelector("[data-attachment-drop-target]");
+  const attachmentInput = document.querySelector("[data-attachment-input]");
+  const attachmentArea = document.querySelector("#composer-attachments");
+  const attachmentList = attachmentArea?.querySelector("[data-attachment-list]");
+  const attachmentCount = attachmentArea?.querySelector("[data-attachment-count]");
+  const attachmentDropHint = document.querySelector("[data-attachment-drop-hint]");
+  const lightbox = document.querySelector("#attachment-lightbox");
+  const lightboxImage = lightbox?.querySelector("[data-attachment-lightbox-image]");
+  const lightboxName = lightbox?.querySelector("[data-attachment-lightbox-name]");
+  const lightboxClose = lightbox?.querySelector("[data-attachment-lightbox-close]");
   const tabs = document.querySelector("#module-tabs");
   const moduleTabIndicator = tabs?.querySelector(".desk-module-tabs__indicator");
   const mount = document.querySelector("#module-mount");
@@ -279,6 +317,10 @@ export async function startWorkspace(initialMode) {
   let pendingReportRequest = null;
   let activeProcessPlayback = null;
   let activeConversation = null;
+  let draftAttachments = [];
+  let attachmentDragDepth = 0;
+  let attachmentDraftTaskId = "new";
+  let attachmentDraftRevision = 0;
   const moduleFrames = new Map();
   const moduleContexts = new Map();
   const moduleContextVersions = new Map();
@@ -349,7 +391,7 @@ export async function startWorkspace(initialMode) {
     button.dataset.sending = String(sending);
     if (!sending) button.dataset.cancelRequested = "false";
     button.disabled = button.dataset.cancelRequested === "true"
-      || (!sending && (modelPicker.disabled || !modelPicker.value || !input.value.trim()));
+      || (!sending && (modelPicker.disabled || !modelPicker.value || (!input.value.trim() && draftAttachments.length === 0)));
     button.classList.toggle("is-generating", sending);
     form.classList.toggle("is-generating", sending);
     button.setAttribute("aria-busy", String(sending));
@@ -360,7 +402,7 @@ export async function startWorkspace(initialMode) {
   const syncComposerAvailability = () => {
     const sending = submit.dataset.sending === "true";
     submit.disabled = submit.dataset.cancelRequested === "true"
-      || (!sending && (modelPicker.disabled || !modelPicker.value || !input.value.trim()));
+      || (!sending && (modelPicker.disabled || !modelPicker.value || (!input.value.trim() && draftAttachments.length === 0)));
     submit.setAttribute("aria-label", sending
       ? (submit.dataset.cancelRequested === "true" ? "正在取消本次处理" : "取消本次处理")
       : "发送");
@@ -382,13 +424,24 @@ export async function startWorkspace(initialMode) {
     requestAnimationFrame(() => echo.classList.add("is-running"));
     window.setTimeout(() => echo.remove(), 360);
   };
-  const appendPendingMessage = (content) => {
+  const appendPendingMessage = (content, attachments = []) => {
     const pending = document.createElement("article");
     pending.className = "message message--user message--pending";
     const body = document.createElement("p");
     body.className = "message__body";
     body.textContent = content;
-    pending.append(body);
+    if (content) pending.append(body);
+    if (attachments.length) {
+      const list = document.createElement("div");
+      list.className = "message-attachments";
+      for (const item of attachments) {
+        const chip = document.createElement("span");
+        chip.className = "message-attachment message-attachment--pending";
+        chip.textContent = attachmentDisplayName(item);
+        list.append(chip);
+      }
+      pending.append(list);
+    }
     stream.append(pending);
     stream.scrollTop = stream.scrollHeight;
     return pending;
@@ -427,10 +480,281 @@ export async function startWorkspace(initialMode) {
   const setRuntimeLiveStatus = (text) => {
     if (runtimeLiveStatus) runtimeLiveStatus.textContent = clampRuntimeText(text, 140);
   };
+  const attachmentUrl = (taskId, attachmentId) => (
+    `/api/tasks/${encodeURIComponent(taskId)}/attachments/${encodeURIComponent(attachmentId)}`
+  );
+  const closeAttachmentLightbox = () => {
+    if (!lightbox) return;
+    if (lightbox.open) lightbox.close();
+    if (lightboxImage) lightboxImage.removeAttribute("src");
+  };
+  const showAttachmentLightbox = (source, name) => {
+    if (!lightbox || !lightboxImage) return;
+    lightboxImage.src = source;
+    lightboxImage.alt = name;
+    if (lightboxName) lightboxName.textContent = name;
+    lightbox.showModal();
+  };
+  const openStoredAttachment = (reference, taskId = currentTask?.task_id) => {
+    if (!taskId || !reference?.attachment_id) return;
+    const source = attachmentUrl(taskId, reference.attachment_id);
+    if (reference.kind === "image") {
+      showAttachmentLightbox(source, attachmentDisplayName(reference));
+      return;
+    }
+    const link = document.createElement("a");
+    link.href = source;
+    link.download = attachmentDisplayName(reference);
+    document.body.append(link);
+    link.click();
+    link.remove();
+  };
+  const revokeDraftPreview = (item) => {
+    if (item?.ownedPreviewUrl && item.previewUrl) URL.revokeObjectURL(item.previewUrl);
+  };
+  const draftTaskId = () => currentTask?.task_id || "new";
+  const renderDraftAttachments = () => {
+    if (!attachmentArea || !attachmentList) return;
+    attachmentList.replaceChildren(...draftAttachments.map((item) => {
+      const row = document.createElement("article");
+      row.className = `composer-attachment composer-attachment--${attachmentKindLabel(item).toLowerCase()}`;
+      const preview = document.createElement("button");
+      preview.type = "button";
+      preview.className = "composer-attachment__preview";
+      preview.setAttribute("aria-label", `${attachmentKindLabel(item) === "图片" ? "预览" : "查看"}${item.name}`);
+      if (attachmentKindLabel(item) === "图片" && item.previewUrl) {
+        const image = document.createElement("img");
+        image.src = item.previewUrl;
+        image.alt = "";
+        preview.append(image);
+        preview.addEventListener("click", () => showAttachmentLightbox(item.previewUrl, item.name));
+      } else {
+        preview.textContent = "文";
+        preview.disabled = true;
+      }
+      const text = document.createElement("span");
+      text.className = "composer-attachment__text";
+      const name = document.createElement("strong");
+      name.textContent = item.name;
+      const meta = document.createElement("small");
+      meta.textContent = `${attachmentKindLabel(item)} ${formatAttachmentBytes(item.size)}`;
+      text.append(name, meta);
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "composer-attachment__remove";
+      remove.textContent = "×";
+      remove.setAttribute("aria-label", `移除${item.name}`);
+      remove.addEventListener("click", async () => {
+        attachmentDraftRevision += 1;
+        const target = draftAttachments.find((candidate) => candidate.key === item.key);
+        revokeDraftPreview(target);
+        draftAttachments = draftAttachments.filter((candidate) => candidate.key !== item.key);
+        renderDraftAttachments();
+        if (target?.reference?.attachment_id && currentTask?.task_id) {
+          await request(`/api/tasks/${encodeURIComponent(currentTask.task_id)}/attachment-drafts/discard`, {
+            method: "POST",
+            body: safeJson({ attachment_ids: [target.reference.attachment_id] }),
+          }).catch(() => showWorkspaceStatus("附件草稿未能从当前任务移除，请稍后重试。", true));
+        }
+        syncComposerAvailability();
+      });
+      row.append(preview, text, remove);
+      return row;
+    }));
+    attachmentArea.hidden = draftAttachments.length === 0;
+    if (attachmentCount) attachmentCount.textContent = String(draftAttachments.length);
+    if (attachmentDropHint) attachmentDropHint.textContent = draftAttachments.length
+      ? `已添加${draftAttachments.length}个附件`
+      : "可粘贴、拖放或选择文件";
+  };
+  const addDraftFiles = async (files) => {
+    if (submit.dataset.sending === "true") {
+      showWorkspaceStatus("当前回复生成完成后再添加附件。", true);
+      return false;
+    }
+    const incoming = Array.from(files || []).filter(Boolean);
+    const error = validateAttachments(incoming, {
+      existingCount: draftAttachments.length,
+      existingBytes: draftAttachments.reduce((total, item) => total + item.size, 0),
+    });
+    if (error) {
+      showWorkspaceStatus(error, true);
+      return false;
+    }
+    if (!currentTask) {
+      try {
+        await selectTask((await createTask()).task_id);
+      } catch {
+        showWorkspaceStatus("附件需要绑定研究任务，但新建任务未完成。", true);
+        return false;
+      }
+    }
+    const targetTaskId = draftTaskId();
+    attachmentDraftRevision += 1;
+    const prepared = [];
+    for (const file of incoming) {
+      if (draftAttachments.some((item) => item.name === file.name && item.size === file.size && item.lastModified === file.lastModified)) continue;
+      const mediaType = attachmentMediaType(file);
+      prepared.push({
+        key: attachmentFileKey(file),
+        file,
+        name: String(file.name || "附件").slice(0, 160),
+        mediaType,
+        media_type: mediaType,
+        size: file.size,
+        lastModified: file.lastModified,
+        kind: mediaType.startsWith("image/") ? "image" : "document",
+        previewUrl: mediaType.startsWith("image/") ? URL.createObjectURL(file) : "",
+        ownedPreviewUrl: mediaType.startsWith("image/"),
+      });
+    }
+    if (!prepared.length) return true;
+    showWorkspaceStatus("正在保存附件草稿。", false);
+    let references;
+    try {
+      references = await uploadDraftAttachments(targetTaskId, prepared);
+    } catch (uploadError) {
+      prepared.forEach(revokeDraftPreview);
+      showWorkspaceStatus(uploadError.message || "附件保存未完成。", true);
+      await restoreAttachmentDrafts();
+      return false;
+    }
+    prepared.forEach((item, index) => { item.reference = references[index]; });
+    draftAttachments.push(...prepared);
+    attachmentDraftTaskId = targetTaskId;
+    renderDraftAttachments();
+    clearWorkspaceStatus();
+    syncComposerAvailability();
+    return true;
+  };
+  const restoreAttachmentDrafts = async () => {
+    const targetTaskId = draftTaskId();
+    const revision = ++attachmentDraftRevision;
+    const references = targetTaskId === "new"
+      ? []
+      : (await request(`/api/tasks/${encodeURIComponent(targetTaskId)}/attachment-drafts`).catch(() => ({ attachments: [] }))).attachments || [];
+    if (revision !== attachmentDraftRevision || targetTaskId !== draftTaskId()) return;
+    draftAttachments.forEach(revokeDraftPreview);
+    draftAttachments = [];
+    for (const reference of references) {
+      draftAttachments.push({
+        key: randomAttachmentKey(),
+        reference,
+        name: attachmentDisplayName(reference),
+        mediaType: String(reference.media_type || ""),
+        media_type: String(reference.media_type || ""),
+        size: Number(reference.bytes) || 0,
+        lastModified: 0,
+        kind: reference.kind,
+        previewUrl: reference.kind === "image" ? attachmentUrl(targetTaskId, reference.attachment_id) : "",
+        ownedPreviewUrl: false,
+      });
+    }
+    attachmentDraftTaskId = targetTaskId;
+    renderDraftAttachments();
+    syncComposerAvailability();
+  };
+  const fileBase64 = async (file) => {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    let binary = "";
+    for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+      binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+    }
+    return btoa(binary);
+  };
+  const uploadDraftAttachments = async (taskId, items) => {
+    if (!items.length) return [];
+    const references = [];
+    for (const item of items) {
+      if (item.reference?.attachment_id) {
+        references.push(item.reference);
+        continue;
+      }
+      const response = await request(`/api/tasks/${encodeURIComponent(taskId)}/attachments`, {
+        method: "POST",
+        body: safeJson({ files: [{
+          data: await fileBase64(item.file),
+          media_type: item.mediaType,
+          name: item.name,
+        }] }),
+      });
+      if (!Array.isArray(response.attachments) || response.attachments.length !== 1) {
+        throw new Error(`${item.name}上传后未返回有效引用。`);
+      }
+      references.push(response.attachments[0]);
+    }
+    return references;
+  };
+  const clearDraftAttachments = async (taskId = draftTaskId()) => {
+    const ownsVisibleDraft = attachmentDraftTaskId === taskId && draftTaskId() === taskId;
+    if (ownsVisibleDraft) {
+      attachmentDraftRevision += 1;
+      draftAttachments.forEach(revokeDraftPreview);
+      draftAttachments = [];
+      renderDraftAttachments();
+    }
+    if (ownsVisibleDraft) syncComposerAvailability();
+  };
+  const createLiveAssistantMessage = () => {
+    const article = document.createElement("article");
+    article.className = "message message--assistant message--streaming";
+    article.hidden = true;
+    const content = document.createElement("div");
+    content.className = "message__content";
+    article.append(content);
+    return { article, content, blocks: new Map() };
+  };
+  const runtimeBlockKey = (projection, fallbackType = "text") => [
+    projection.agentKey || "main",
+    projection.turn ?? 0,
+    projection.step ?? 0,
+    projection.blockIndex ?? fallbackType,
+  ].join(":");
+  const ensureLiveBlock = (live, projection, blockType) => {
+    if (!live) return null;
+    const key = runtimeBlockKey(projection, blockType);
+    let block = live.blocks.get(key);
+    if (block) return block;
+    if (blockType === "reasoning") {
+      const disclosure = createReasoningDisclosure("", { running: true });
+      const notice = document.createElement("p");
+      notice.className = "assistant-reasoning__notice";
+      notice.hidden = true;
+      disclosure.element.append(notice);
+      block = { type: "reasoning", text: "", element: disclosure.element, disclosure, notice };
+    } else if (blockType === "text") {
+      const element = document.createElement("p");
+      element.className = "message__body";
+      block = { type: "text", text: "", element };
+    } else {
+      return null;
+    }
+    live.blocks.set(key, block);
+    live.content.append(block.element);
+    return block;
+  };
+  const updateLiveBlock = (live, projection, blockType, delta) => {
+    const block = ensureLiveBlock(live, projection, blockType);
+    if (!block || !delta) return;
+    const limit = blockType === "reasoning" ? runtimeReasoningTextLimit : runtimeAssistantTextLimit;
+    block.text = appendRuntimeDelta(block.text, delta, limit);
+    if (blockType === "reasoning") block.disclosure.update(block.text, true);
+    else block.element.textContent = block.text;
+    live.article.hidden = false;
+  };
+  const settleLiveReasoning = (live, projection = null) => {
+    if (!live) return;
+    for (const [key, block] of live.blocks) {
+      if (block.type !== "reasoning") continue;
+      if (projection && key !== runtimeBlockKey(projection, "reasoning")) continue;
+      block.disclosure.update(block.text, false);
+    }
+  };
   const appendProcessPanel = ({ onCancel = null } = {}) => {
     const panel = document.createElement("article");
     panel.className = "message message--assistant message--process";
     panel.dataset.runtimeProcess = "true";
+    panel.hidden = true;
     const details = document.createElement("details");
     details.open = true;
     const summary = document.createElement("summary");
@@ -477,28 +801,6 @@ export async function startWorkspace(initialMode) {
     const usageSection = createSection("Token usage", "process-token-usage", usageValue);
     usageSection.dataset.processUsage = "true";
 
-    const reasoning = document.createElement("details");
-    reasoning.className = "process-reasoning";
-    reasoning.hidden = true;
-    const reasoningSummary = document.createElement("summary");
-    reasoningSummary.textContent = "深度思考";
-    const reasoningBody = document.createElement("p");
-    reasoningBody.dataset.processReasoningBody = "true";
-    const reasoningLimitNotice = document.createElement("p");
-    reasoningLimitNotice.className = "process-reasoning-notice";
-    reasoningLimitNotice.dataset.processReasoningNotice = "true";
-    reasoningLimitNotice.hidden = true;
-    reasoning.append(reasoningSummary, reasoningBody, reasoningLimitNotice);
-
-    const assistantOutput = document.createElement("details");
-    assistantOutput.className = "process-assistant-output";
-    assistantOutput.hidden = true;
-    const assistantSummary = document.createElement("summary");
-    assistantSummary.textContent = "答复生成";
-    const assistantBody = document.createElement("p");
-    assistantBody.dataset.processAssistantBody = "true";
-    assistantOutput.append(assistantSummary, assistantBody);
-
     details.append(
       summary,
       state,
@@ -507,8 +809,6 @@ export async function startWorkspace(initialMode) {
       createSection("Agent", "process-agent-section", agentCards),
       createSection("工具调用", "process-tool-section", toolCards),
       usageSection,
-      reasoning,
-      assistantOutput,
     );
     panel.append(details);
     stream.append(panel);
@@ -525,17 +825,10 @@ export async function startWorkspace(initialMode) {
       toolCards,
       usageSection,
       usageValue,
-      reasoning,
-      reasoningBody,
-      reasoningLimitNotice,
-      assistantOutput,
-      assistantBody,
       agentCardMap: new Map(),
       toolCardMap: new Map(),
       pendingRows: new Map(),
       nextSeq: 0,
-      answerText: "",
-      reasoningText: "",
       usage: null,
       failures: 0,
       outcome: "",
@@ -555,7 +848,13 @@ export async function startWorkspace(initialMode) {
       status.dataset.processCardStatus = "true";
       const detail = document.createElement("p");
       detail.dataset.processCardDetail = "true";
-      card.append(heading, status, detail);
+      const reasoningHost = document.createElement("div");
+      reasoningHost.className = "process-agent-reasoning";
+      reasoningHost.hidden = true;
+      reasoningHost.dataset.processAgentReasoning = "true";
+      card.append(heading, status, detail, reasoningHost);
+      card.reasoningHost = reasoningHost;
+      card.reasoningBlocks = new Map();
       parent.append(card);
       map.set(cardKey, card);
     }
@@ -579,14 +878,19 @@ export async function startWorkspace(initialMode) {
     if (projection.scope === "main_agent" && playback.runtimeScope !== "main_agent") {
       playback.runtimeScope = "main_agent";
       playback.summaryLabel.textContent = "正在回复";
+      playback.panel.hidden = true;
       playback.events.replaceChildren();
       playback.agentCards.replaceChildren();
       playback.agentCardMap.clear();
       playback.agentCards.parentElement.hidden = true;
     }
-    const hideMainAgentBoilerplate = playback.runtimeScope === "main_agent"
-      && ["request", "routing", "answer", "terminal"].includes(projection.type);
-    if (!hideMainAgentBoilerplate) appendProcessTimeline(playback, projection);
+    const legacyBoilerplate = ["request", "routing", "answer", "terminal"].includes(projection.type);
+    const hasProcessDetail = projection.family === "tool"
+      || projection.family === "compaction"
+      || projection.family === "recovery"
+      || (!legacyBoilerplate && playback.runtimeScope !== "main_agent" && ["workflow", "agent", "turn", "step"].includes(projection.family));
+    if (hasProcessDetail) playback.panel.hidden = false;
+    if (!legacyBoilerplate) appendProcessTimeline(playback, projection);
     if (projection.family === "agent" && projection.role !== "MainAgent" && playback.runtimeScope !== "main_agent") {
       updateProcessCard(
         playback.agentCardMap,
@@ -607,19 +911,47 @@ export async function startWorkspace(initialMode) {
         "tool",
       );
     }
-    if (projection.assistantDelta) {
-      playback.answerText = appendRuntimeDelta(playback.answerText, projection.assistantDelta, runtimeAssistantTextLimit);
-      playback.assistantBody.textContent = playback.answerText;
-      playback.assistantOutput.hidden = !playback.answerText;
+    if (projection.family === "block" && playback.runtimeScope === "main_agent" && projection.blockType) {
+      if (projection.type === "assistant.block_started") {
+        ensureLiveBlock(playback.liveAssistant, projection, projection.blockType);
+      } else if (projection.type === "assistant.block_completed") {
+        const block = ensureLiveBlock(playback.liveAssistant, projection, projection.blockType);
+        const completedText = runtimeDeltaText(projection.completedBlock?.text, projection.blockType === "reasoning" ? runtimeReasoningTextLimit : runtimeAssistantTextLimit);
+        if (block && completedText && !block.text) {
+          block.text = completedText;
+          if (block.type === "reasoning") block.disclosure.update(block.text, false);
+          else block.element.textContent = block.text;
+          playback.liveAssistant.article.hidden = false;
+        }
+        if (projection.blockType === "reasoning") settleLiveReasoning(playback.liveAssistant, projection);
+      }
+    }
+    if (projection.assistantDelta && playback.runtimeScope === "main_agent") {
+      updateLiveBlock(playback.liveAssistant, projection, "text", projection.assistantDelta);
     }
     if (projection.showReasoning && projection.reasoningDelta) {
-      playback.reasoningText = appendRuntimeDelta(playback.reasoningText, projection.reasoningDelta, runtimeReasoningTextLimit);
-      playback.reasoningBody.textContent = playback.reasoningText;
-      if (projection.reasoningTruncationNotice) {
-        playback.reasoningLimitNotice.textContent = projection.reasoningTruncationNotice;
-        playback.reasoningLimitNotice.hidden = false;
+      if (playback.runtimeScope === "main_agent") {
+        updateLiveBlock(playback.liveAssistant, projection, "reasoning", projection.reasoningDelta);
+        const block = ensureLiveBlock(playback.liveAssistant, projection, "reasoning");
+        if (block?.notice && projection.reasoningTruncationNotice) {
+          block.notice.textContent = projection.reasoningTruncationNotice;
+          block.notice.hidden = false;
+        }
+      } else {
+        const card = playback.agentCardMap.get(projection.agentKey);
+        if (card?.reasoningHost) {
+          let roleBlock = card.reasoningBlocks.get(runtimeBlockKey(projection, "reasoning"));
+          if (!roleBlock) {
+            const disclosure = createReasoningDisclosure("", { running: true });
+            roleBlock = { text: "", disclosure };
+            card.reasoningBlocks.set(runtimeBlockKey(projection, "reasoning"), roleBlock);
+            card.reasoningHost.append(disclosure.element);
+            card.reasoningHost.hidden = false;
+          }
+          roleBlock.text = appendRuntimeDelta(roleBlock.text, projection.reasoningDelta, runtimeReasoningTextLimit);
+          roleBlock.disclosure.update(roleBlock.text, true);
+        }
       }
-      playback.reasoning.hidden = false;
     }
     if (projection.usage) {
       playback.usage = projection.usage;
@@ -667,14 +999,16 @@ export async function startWorkspace(initialMode) {
     playback.cancelButton.hidden = true;
     playback.orb.setState("shaping");
     playback.orb.setPaused(true);
+    settleLiveReasoning(playback.liveAssistant);
+    for (const card of playback.agentCardMap.values()) {
+      for (const block of card.reasoningBlocks || []) block[1].disclosure.update(block[1].text, false);
+    }
     playback.details.open = false;
     if (playback.runtimeScope === "main_agent") {
       playback.summaryLabel.textContent = "本轮答复";
-      // Text deltas are a live-generation aid. Once the canonical assistant
-      // message is committed below the process panel, keep only reasoning and
-      // actual tool activity here so reopening the panel never duplicates it.
-      playback.assistantBody.textContent = "";
-      playback.assistantOutput.hidden = true;
+      if (!playback.panel.querySelector('[data-process-card="tool"]') && playback.events.childElementCount === 0) {
+        playback.panel.hidden = true;
+      }
     }
     setRuntimeLiveStatus(terminalCopy);
   };
@@ -689,6 +1023,8 @@ export async function startWorkspace(initialMode) {
   };
   const startProcessPlayback = (taskId, requestId, { restore = false, onCancel = null } = {}) => {
     const playback = appendProcessPanel({ onCancel });
+    playback.liveAssistant = restore ? null : createLiveAssistantMessage();
+    if (playback.liveAssistant) stream.insertBefore(playback.liveAssistant.article, playback.panel);
     let stopped = false;
     let timer = 0;
     const poll = async () => {
@@ -780,12 +1116,28 @@ export async function startWorkspace(initialMode) {
     if (!raw) return null;
     try { return JSON.parse(raw); } catch { return null; }
   };
+  const selectedModelSupportsImages = () => {
+    const option = modelPicker?.selectedOptions?.[0];
+    try {
+      const modalities = JSON.parse(option?.dataset.inputModalities || '["text"]');
+      return Array.isArray(modalities) && modalities.includes("image");
+    } catch {
+      return false;
+    }
+  };
   const explicitSelectedModel = () => (
     modelPicker?.dataset.userExplicitSelection === "true" ? selectedModel() : null
   );
-  const sendConversation = (taskId, content, requestId, modelSelection) => request(
+  const sameAttachmentReferences = (left, right) => {
+    if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) return false;
+    return left.every((item, index) => (
+      String(item?.attachment_id || "") === String(right[index]?.attachment_id || "")
+      && String(item?.kind || "") === String(right[index]?.kind || "")
+    ));
+  };
+  const sendConversation = (taskId, content, requestId, modelSelection, attachments = []) => request(
     `/api/tasks/${encodeURIComponent(taskId)}/messages`,
-    { method: "POST", body: safeJson({ content, model_selection: modelSelection, background: true }), headers: { "X-Request-Id": requestId } },
+    { method: "POST", body: safeJson({ content, attachments, model_selection: modelSelection, background: true }), headers: { "X-Request-Id": requestId } },
   );
   const waitForOperation = async (taskId, operationId) => {
     while (true) {
@@ -809,11 +1161,73 @@ export async function startWorkspace(initialMode) {
       throw error;
     }
   };
-  const submitConversation = async (taskId, content, requestId, modelSelection) => {
-    const submitted = await sendConversation(taskId, content, requestId, modelSelection);
+  const submitConversation = async (taskId, content, requestId, modelSelection, attachments = [], onAccepted = null) => {
+    const submitted = await sendConversation(taskId, content, requestId, modelSelection, attachments);
+    await onAccepted?.();
     const operationId = submitted.operation?.operation_id;
     if (!operationId) throw new Error("后台对话未返回操作标识。");
+    void loadTasks()
+      .then(() => currentTask?.task_id === taskId ? loadCurrentTaskOperations(taskId) : null)
+      .catch(() => {});
     return waitForOperation(taskId, operationId);
+  };
+  const renderTaskOperations = (operations = [], taskId = currentTask?.task_id) => {
+    if (!operationList) return;
+    if (!taskId) {
+      operationList.innerHTML = '<p class="operation-empty">选择任务后查看运行状态。</p>';
+      return;
+    }
+    const rows = [...operations]
+      .sort((left, right) => Number(activeOperationStates.has(right.state)) - Number(activeOperationStates.has(left.state))
+        || String(right.updated_at || "").localeCompare(String(left.updated_at || "")))
+      .slice(0, 8);
+    if (!rows.length) {
+      operationList.innerHTML = '<p class="operation-empty">当前任务暂无后台运行。</p>';
+      return;
+    }
+    operationList.replaceChildren(...rows.map((operation) => {
+      const card = document.createElement("article");
+      card.className = "operation-item";
+      card.dataset.state = String(operation.state || "");
+      const heading = document.createElement("div");
+      heading.className = "operation-item__heading";
+      const name = document.createElement("strong");
+      name.textContent = modules.get(operation.module) || (operation.kind === "conversation" ? "任务对话" : "后台任务");
+      const state = document.createElement("span");
+      state.className = "operation-item__state";
+      state.textContent = operationStates.get(operation.state) || "状态未知";
+      heading.append(name, state);
+      const detail = document.createElement("p");
+      detail.textContent = String(operation.message || (activeOperationStates.has(operation.state) ? "正在处理当前请求。" : "本次运行已结束。"));
+      card.append(heading, detail);
+      if (activeOperationStates.has(operation.state)) {
+        const cancel = document.createElement("button");
+        cancel.type = "button";
+        cancel.className = "operation-item__cancel";
+        cancel.textContent = operation.state === "cancel_requested" ? "正在取消" : "取消";
+        cancel.disabled = operation.state === "cancel_requested";
+        cancel.addEventListener("click", async () => {
+          cancel.disabled = true;
+          try {
+            await request(`/api/tasks/${encodeURIComponent(taskId)}/operations/${encodeURIComponent(operation.operation_id)}/cancel`, {
+              method: "POST", body: safeJson({}),
+            });
+            await loadCurrentTaskOperations(taskId);
+          } catch (error) {
+            showWorkspaceStatus(error.message || "取消请求未完成。", true);
+            cancel.disabled = false;
+          }
+        });
+        card.append(cancel);
+      }
+      return card;
+    }));
+  };
+  const loadCurrentTaskOperations = async (taskId) => {
+    if (!taskId) { renderTaskOperations([], ""); return []; }
+    const { operations = [] } = await request(`/api/tasks/${encodeURIComponent(taskId)}/operations`);
+    if (currentTask?.task_id === taskId) renderTaskOperations(operations, taskId);
+    return operations;
   };
   const syncReportActions = () => {
     const hasTask = Boolean(currentTask?.task_id);
@@ -828,6 +1242,17 @@ export async function startWorkspace(initialMode) {
         ? "请先选择任务"
         : kind === "report" ? "生成详细报告" : kind === "quote" ? "生成参考报价" : "生成简单报告";
     });
+  };
+  const autoPreviewGeneratedHtml = (result) => {
+    const raw = String(result?.preview_url || "").trim();
+    if (!raw) return false;
+    let target;
+    try { target = new URL(raw, location.origin); } catch { return false; }
+    if (target.origin !== location.origin
+      || !target.pathname.startsWith("/api/reports/")
+      || !target.pathname.includes("/artifacts/")
+      || !target.pathname.toLowerCase().endsWith(".html")) return false;
+    return Boolean(window.open(target.href, "_blank", "noopener"));
   };
 
   const transientKey = (taskId = currentTask?.task_id || "new") => `${transientPrefix}.${taskId}`;
@@ -1055,7 +1480,9 @@ export async function startWorkspace(initialMode) {
     window.clearTimeout(operationRefreshTimer);
     if (activeCount > 0) {
       operationRefreshTimer = window.setTimeout(() => {
-        loadTasks().catch(() => {});
+        loadTasks()
+          .then(() => currentTask?.task_id ? loadCurrentTaskOperations(currentTask.task_id) : null)
+          .catch(() => {});
       }, 900);
     }
     renderTaskList(
@@ -1080,12 +1507,14 @@ export async function startWorkspace(initialMode) {
     taskState.textContent = "请新建或选择任务后，再运行研究模块。";
     renderMessages(stream, [], "新建任务后即可开始对话，并按需生成简单报告、详细报告或参考报价。");
     renderReports(reports, []);
+    renderTaskOperations([], "");
     chatSurface.classList.add("chat-surface--empty");
     mount?.replaceChildren(createModuleStart());
     const next = new URL(location.href);
     next.searchParams.delete("task");
     next.searchParams.delete("module");
     history.replaceState(null, "", next);
+    void restoreAttachmentDrafts();
   }
 
   function createModuleStart() {
@@ -1315,16 +1744,27 @@ export async function startWorkspace(initialMode) {
     title.textContent = task.subject;
     conversationTitle.textContent = task.subject;
     taskState.textContent = "当前任务会保留对话、模块运行记录和关联报告。";
-    renderMessages(stream, task.messages || [], "可直接输入任务要求，或选择一个研究起点。");
+    renderMessages(stream, task.messages || [], "可直接输入任务要求，或选择一个研究起点。", {
+      onAttachmentOpen: (reference) => openStoredAttachment(reference, task.task_id),
+      onQuestionAnswer: (answer) => {
+        if (submit.dataset.sending === "true" || currentTask?.task_id !== task.task_id) return;
+        input.value = String(answer || "").trim();
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+        input.focus();
+        if (input.value) form.requestSubmit();
+      },
+    });
     restoreLatestProcess(task);
     chatSurface.classList.toggle("chat-surface--empty", !task.messages?.length);
     const { reports: reportRuns } = await request(`/api/tasks/${encodeURIComponent(taskId)}/reports`).catch(() => ({ reports: [] }));
     if (!isCurrentSelection()) return null;
     renderReports(reports, reportRuns);
+    await loadCurrentTaskOperations(taskId).catch(() => renderTaskOperations([], taskId));
     if (updateLocation) setTaskLocation(task.task_id, { module: currentMode === "desk" ? currentModule : "" });
     await loadTasks();
     if (!isCurrentSelection()) return null;
     restoreTransient();
+    await restoreAttachmentDrafts();
     if (currentMode === "desk") {
       await mountModule(currentModule, false);
     }
@@ -1598,6 +2038,9 @@ export async function startWorkspace(initialMode) {
       return;
     }
     if (event.data?.type === "optionhelper.module-contract-updated") {
+      void loadTasks()
+        .then(() => currentTask?.task_id ? loadCurrentTaskOperations(currentTask.task_id) : null)
+        .catch(() => {});
       void refreshMountedModuleContexts().catch(() => {
         showWorkspaceStatus("产品方案已更新，但模块上下文暂未同步。请稍后重试。", true, 7000);
       });
@@ -1647,6 +2090,41 @@ export async function startWorkspace(initialMode) {
     saveTransient();
     syncComposerAvailability();
   });
+  attachmentInput?.addEventListener("change", () => {
+    void addDraftFiles(attachmentInput.files).finally(() => { attachmentInput.value = ""; });
+  });
+  input.addEventListener("paste", (event) => {
+    const files = Array.from(event.clipboardData?.files || []);
+    if (!files.length) return;
+    event.preventDefault();
+    void addDraftFiles(files);
+  });
+  attachmentDropTarget?.addEventListener("dragenter", (event) => {
+    if (!event.dataTransfer?.types?.includes("Files")) return;
+    event.preventDefault();
+    attachmentDragDepth += 1;
+    attachmentDropTarget.dataset.dragging = "true";
+  });
+  attachmentDropTarget?.addEventListener("dragover", (event) => {
+    if (!event.dataTransfer?.types?.includes("Files")) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+  });
+  attachmentDropTarget?.addEventListener("dragleave", () => {
+    attachmentDragDepth = Math.max(0, attachmentDragDepth - 1);
+    if (attachmentDragDepth === 0) attachmentDropTarget.dataset.dragging = "false";
+  });
+  attachmentDropTarget?.addEventListener("drop", (event) => {
+    if (!event.dataTransfer?.files?.length) return;
+    event.preventDefault();
+    attachmentDragDepth = 0;
+    attachmentDropTarget.dataset.dragging = "false";
+    void addDraftFiles(event.dataTransfer.files);
+  });
+  lightboxClose?.addEventListener("click", closeAttachmentLightbox);
+  lightbox?.addEventListener("click", (event) => {
+    if (event.target === lightbox) closeAttachmentLightbox();
+  });
   modelPicker.addEventListener("change", syncComposerAvailability);
   stream.addEventListener("click", (event) => {
     const starter = event.target.closest("[data-starter-prompt]");
@@ -1678,8 +2156,13 @@ export async function startWorkspace(initialMode) {
     event.preventDefault();
     if (submit.dataset.sending === "true") return;
     const submittedContent = input.value.trim();
-    if (!submittedContent || !selectedModel()) {
+    const submittedDrafts = [...draftAttachments];
+    if ((!submittedContent && submittedDrafts.length === 0) || !selectedModel()) {
       if (!selectedModel()) showWorkspaceStatus("请先在设置中心添加并保存一个可用模型。", true);
+      return;
+    }
+    if (submittedDrafts.some((item) => item.kind === "image") && !selectedModelSupportsImages()) {
+      showWorkspaceStatus("当前模型未声明图片输入能力，请切换支持图片的模型后发送。", true);
       return;
     }
     let pendingMessage;
@@ -1694,16 +2177,19 @@ export async function startWorkspace(initialMode) {
         migrateTransient("new", task.task_id);
         await selectTask(task.task_id);
       }
-      pendingMessage = appendPendingMessage(submittedContent);
+      submittedTaskId = currentTask.task_id;
+      const attachmentReferences = await uploadDraftAttachments(submittedTaskId, submittedDrafts);
+      pendingMessage = appendPendingMessage(submittedContent, attachmentReferences);
       dissolveComposerInput(submittedContent);
       input.value = "";
       saveTransient();
-      requestId = pendingConversationRequest?.taskId === currentTask.task_id
+      const isPendingRetry = pendingConversationRequest?.taskId === currentTask.task_id
         && pendingConversationRequest.content === submittedContent
+        && sameAttachmentReferences(pendingConversationRequest.attachments || [], attachmentReferences);
+      requestId = isPendingRetry
         ? pendingConversationRequest.requestId
         : newWorkspaceRequestId();
-      const explicitModelSelection = pendingConversationRequest?.taskId === currentTask.task_id
-        && pendingConversationRequest.content === submittedContent
+      const explicitModelSelection = isPendingRetry
         ? pendingConversationRequest.modelSelection
         : explicitSelectedModel();
       pendingConversationRequest = {
@@ -1711,9 +2197,9 @@ export async function startWorkspace(initialMode) {
         requestId,
         content: submittedContent,
         modelSelection: explicitModelSelection,
+        attachments: attachmentReferences,
       };
       saveTransient();
-      submittedTaskId = currentTask.task_id;
       activeConversation = { taskId: submittedTaskId, requestId };
       activeProcessPlayback?.stop();
       processPlayback = startProcessPlayback(submittedTaskId, requestId, {
@@ -1725,6 +2211,8 @@ export async function startWorkspace(initialMode) {
         submittedContent,
         requestId,
         explicitModelSelection,
+        attachmentReferences,
+        () => clearDraftAttachments(submittedTaskId),
       );
       settleConversationRequest(submittedTaskId, requestId, { draft: "" });
       if (currentTask?.task_id === submittedTaskId) {
@@ -1748,6 +2236,7 @@ export async function startWorkspace(initialMode) {
         : null;
       if (recoveredResponse) {
         pendingMessage?.remove();
+        await clearDraftAttachments(submittedTaskId);
         settleConversationRequest(submittedTaskId, requestId, { draft: "" });
         if (currentTask?.task_id === submittedTaskId) {
           modelPicker.dataset.userExplicitSelection = "false";
@@ -1801,6 +2290,11 @@ export async function startWorkspace(initialMode) {
         headers: { "X-Request-Id": requestId },
       });
       operationId = response.operation?.operation_id || "";
+      if (operationId) {
+        void loadTasks()
+          .then(() => currentTask?.task_id === taskId ? loadCurrentTaskOperations(taskId) : null)
+          .catch(() => {});
+      }
       const result = operationId
         ? await waitForOperation(taskId, operationId)
         : response?.result || {};
@@ -1810,6 +2304,7 @@ export async function startWorkspace(initialMode) {
       } else if (result.status === "completed") {
         const label = ({ card: "简单报告", report: "详细报告", quote: "参考报价" })[kind] || "交付物";
         showReportFeedback(`${label}已生成，可在报告列表中预览或下载。`);
+        autoPreviewGeneratedHtml(result);
       } else {
         showReportFeedback("报告暂未生成。请先完成当前任务的正式分析结果。", true);
       }
@@ -1869,9 +2364,11 @@ export async function startWorkspace(initialMode) {
     conversationTitle.textContent = "开始研究";
     taskState.textContent = "请新建或选择任务后，再运行研究模块。";
     renderMessages(stream, [], "新建任务后即可开始对话，并按需生成简单报告、详细报告或参考报价。");
+    renderTaskOperations([], "");
   }
   await applyMode(initialMode, { updateHistory: false });
   restoreTransient();
+  await restoreAttachmentDrafts();
   syncComposerAvailability();
   if (initialMode === "desk" && currentTask) await mountModule(currentModule, false);
   requestAnimationFrame(() => requestAnimationFrame(revealWorkspace));

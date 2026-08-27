@@ -21,7 +21,7 @@ def retrieve_evidence(
 ) -> tuple[EvidenceRef, ...]:
     clean_queries = tuple(dict.fromkeys(str(item).strip() for item in queries if str(item).strip()))
     if not clean_queries:
-        raise EvidenceRetrievalError("Research未提供有效检索查询")
+        raise EvidenceRetrievalError("Selector未提供有效检索查询")
     evidence: dict[str, EvidenceRef] = {}
     for query in clean_queries:
         response = port.search({

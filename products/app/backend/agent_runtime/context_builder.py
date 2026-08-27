@@ -30,6 +30,8 @@ def conversation_tool_catalog(policy: AuthorizationPolicy, identity: SessionIden
     if not policy.allows(identity.role, "conversation.tool.run"):
         return []
     tools = [
+        {"name": "attachment.search", "description": "检索当前Task已附加业务文档的文本片段", "actions": ["search"]},
+        {"name": "attachment.read", "description": "读取当前Task已附加业务文档的指定片段", "actions": ["read"]},
         {"name": "knowledger.search", "description": "查询受治理期权资料库", "actions": ["search"]},
         {"name": "recommender.run", "description": "运行一次固定结构推荐流程", "actions": ["run"]},
         {
@@ -179,6 +181,16 @@ def _surface_message_fact(value: Mapping[str, Any], identity: SessionIdentity) -
         "role": role,
         "content": _safe_text(value.get("content", ""), 2_000, identity),
     }
+    attachments = value.get("attachments")
+    if role == "user" and isinstance(attachments, list):
+        result["attachments"] = [
+            {
+                key: item[key]
+                for key in ("attachment_id", "kind", "media_type", "name", "extraction_status")
+                if key in item
+            }
+            for item in attachments[:20] if isinstance(item, Mapping)
+        ]
     if role == "tool":
         result.update({
             "call_id": _safe_text(value.get("call_id"), 160, identity),

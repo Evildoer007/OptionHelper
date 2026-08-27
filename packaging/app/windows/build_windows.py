@@ -97,9 +97,15 @@ PDF_RUNTIME_MODULES = (
     "reportlab.pdfbase.cidfonts",
     "PIL",
     "PIL.Image",
+    "pypdf",
+    "docx",
+    "openpyxl",
 )
 PDF_RUNTIME_VERSION = "5.0.0"
 PILLOW_RUNTIME_VERSION = "12.3.0"
+PYPDF_RUNTIME_VERSION = "6.16.0"
+PYTHON_DOCX_RUNTIME_VERSION = "1.2.0"
+OPENPYXL_RUNTIME_VERSION = "3.1.5"
 EXCLUDED_BACKEND_MODULES = (
     "IPython", "PySide6", "cv2", "datasets", "debugpy", "h5py",
     "jedi", "keras", "matplotlib", "pyarrow", "pytest", "sklearn", "tensorflow",
@@ -430,6 +436,10 @@ def build_windows(
             str(resources / "backend" / "OptionHelperBackend" / "OptionHelperBackend.exe"),
             "--probe-pdf-runtime", "--resource-dir", str(resources),
         ])
+        _run([
+            str(resources / "backend" / "OptionHelperBackend" / "OptionHelperBackend.exe"),
+            "--probe-compute-worker", "--resource-dir", str(resources),
+        ])
         staged_icon = copy_application_icon(resources, application_icon)
         manifest = _manifest(
             app_version,
@@ -518,6 +528,17 @@ def check_prerequisites(capability_root: Path) -> None:
         raise WindowsBuildError(f"Windows App构建缺少PDF图像组件Pillow {PILLOW_RUNTIME_VERSION}") from error
     if pillow_version != PILLOW_RUNTIME_VERSION:
         raise WindowsBuildError(f"Pillow必须固定为{PILLOW_RUNTIME_VERSION}，当前为{pillow_version}")
+    for package, expected in (
+        ("pypdf", PYPDF_RUNTIME_VERSION),
+        ("python-docx", PYTHON_DOCX_RUNTIME_VERSION),
+        ("openpyxl", OPENPYXL_RUNTIME_VERSION),
+    ):
+        try:
+            actual = metadata.version(package)
+        except metadata.PackageNotFoundError as error:
+            raise WindowsBuildError(f"Windows App构建缺少文档解析组件{package} {expected}") from error
+        if actual != expected:
+            raise WindowsBuildError(f"{package}必须固定为{expected}，当前为{actual}")
     if not (capability_root / "capability-manifest.json").is_file():
         raise WindowsBuildError("缺少已验证Capability")
     if shutil.which("dotnet") is None:

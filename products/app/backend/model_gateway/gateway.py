@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
+import re
 from typing import Any, Callable
 
 from ..errors import UnavailableCapabilityError
@@ -51,7 +52,7 @@ class ModelGateway:
         self,
         identity: SessionIdentity,
         task_id: str,
-        messages: Sequence[Mapping[str, str]],
+        messages: Sequence[Mapping[str, Any]],
         *,
         selection: ModelSelection | None = None,
         request_control: ModelRequestControl | None = None,
@@ -89,7 +90,7 @@ class ModelGateway:
         self,
         identity: SessionIdentity,
         task_id: str,
-        messages: Sequence[Mapping[str, str]],
+        messages: Sequence[Mapping[str, Any]],
         *,
         selection: ModelSelection | None = None,
         request_control: ModelRequestControl | None = None,
@@ -222,10 +223,15 @@ class ModelGateway:
     def capability_for(self, identity: SessionIdentity, *, selection: ModelSelection | None = None) -> dict[str, Any]:
         """Expose only non-secret provider capabilities to App workflows."""
         model, _secret_ref = self._configured(identity, selection)
+        catalog_model = self._selected_catalog_model(identity, selection)
         return {
             "model_id": model.model_name or model.provider_name,
             "structured_output": True,
-            "tool_calling": True,
+            "input_modalities": list(catalog_model.input_modalities) if catalog_model is not None else ["text"],
+            "context_window": catalog_model.context_window if catalog_model is not None else None,
+            "max_output_tokens": catalog_model.max_output_tokens if catalog_model is not None else None,
+            "reasoning_support": catalog_model.reasoning_support if catalog_model is not None else False,
+            "tool_calling": catalog_model.tool_calling if catalog_model is not None else True,
             "multi_agent": False,
             "max_parallel_agents": 1,
         }
@@ -265,19 +271,71 @@ class ModelGateway:
             return self._settings(identity)
         return self._settings.load(identity.principal_id)
 
+    def _selected_catalog_model(
+        self, identity: SessionIdentity, selection: ModelSelection | None,
+    ) -> Any | None:
+        """Find the exact enabled catalog entry behind a selected model.
+
+        Legacy single-model connections do not have a capability declaration;
+        their conservative text-only fallback remains intentional.
+        """
+
+        settings = self._load(identity)
+        selected = selection or settings.default_model_selection
+        if selected is None:
+            return None
+        provider = next(
+            (item for item in settings.model_providers if item.provider_id == selected.provider_id),
+            None,
+        )
+        if provider is None:
+            return None
+        return next(
+            (item for item in provider.models if item.model_id == selected.model_id and item.enabled),
+            None,
+        )
+
 
 def _validated_messages(messages: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     if isinstance(messages, (str, bytes)) or not messages:
         raise ValueError("messages must be a non-empty sequence")
     allowed_roles = {"system", "user", "assistant", "tool"}
     result: list[dict[str, Any]] = []
+    total_image_bytes = 0
     for item in messages:
         if not isinstance(item, Mapping):
             raise ValueError("each message must be an object")
         role = item.get("role")
         content = item.get("content")
-        if role not in allowed_roles or not isinstance(content, str):
+        if role not in allowed_roles or not isinstance(content, (str, list)):
             raise ValueError("each message must contain a valid role and content")
+        if isinstance(content, list):
+            if role != "user" or not content or len(content) > 24:
+                raise ValueError("multimodal content is only valid for user messages")
+            parts: list[dict[str, Any]] = []
+            for block in content:
+                if not isinstance(block, Mapping) or block.get("type") not in {"text", "image_url"}:
+                    raise ValueError("multimodal content block is invalid")
+                if block.get("type") == "text":
+                    text = block.get("text")
+                    if not isinstance(text, str) or len(text) > 128_000:
+                        raise ValueError("multimodal text block is invalid")
+                    parts.append({"type": "text", "text": text})
+                    continue
+                image_url = block.get("image_url")
+                url = image_url.get("url") if isinstance(image_url, Mapping) else None
+                if (
+                    not isinstance(url, str)
+                    or len(url) > 6 * 1024 * 1024
+                    or not re.fullmatch(r"data:image/(?:png|jpeg|webp|gif);base64,[A-Za-z0-9+/=]+", url)
+                ):
+                    raise ValueError("multimodal image block is invalid")
+                encoded = url.split(",", 1)[1]
+                total_image_bytes += len(encoded.rstrip("=")) * 3 // 4
+                if total_image_bytes > 32 * 1024 * 1024:
+                    raise ValueError("multimodal image input exceeds the request limit")
+                parts.append({"type": "image_url", "image_url": {"url": url}})
+            content = parts
         message: dict[str, Any] = {"role": str(role), "content": content}
         if role == "assistant" and item.get("tool_calls") is not None:
             tool_calls = item.get("tool_calls")

@@ -25,7 +25,7 @@ def built_in_provider_catalog() -> dict[str, dict[str, object]]:
                 _model("glm-5.3", "GLM-5.3"),
                 _model("glm-5.2", "GLM-5.2"),
                 _model("glm-5.1", "GLM-5.1"),
-                _model("glm-5v-turbo", "GLM-5V-Turbo"),
+                _model("glm-5v-turbo", "GLM-5V-Turbo", input_modalities=("text", "image")),
                 _model("minimax-m3", "MiniMax-M3"),
                 _model("kimi-k3", "Kimi-K3"),
                 _model("kimi-k2.7-code", "Kimi-K2.7-Code"),
@@ -63,7 +63,7 @@ def built_in_provider_catalog() -> dict[str, dict[str, object]]:
                 _model("glm-5.2", "GLM-5.2"),
                 _model("glm-5.1", "GLM-5.1"),
                 _model("glm-5-turbo", "GLM-5-Turbo"),
-                _model("glm-5v-turbo", "GLM-5V-Turbo"),
+                _model("glm-5v-turbo", "GLM-5V-Turbo", input_modalities=("text", "image")),
             ),
         },
     }
@@ -73,5 +73,10 @@ def built_in_provider(provider_id: str) -> dict[str, object] | None:
     return built_in_provider_catalog().get(provider_id)
 
 
-def _model(model_id: str, display_name: str) -> ModelCatalogEntry:
-    return ModelCatalogEntry(model_id=model_id, display_name=display_name, enabled=False)
+def _model(
+    model_id: str, display_name: str, *, input_modalities: tuple[str, ...] = ("text",),
+) -> ModelCatalogEntry:
+    return ModelCatalogEntry(
+        model_id=model_id, display_name=display_name, enabled=False,
+        input_modalities=input_modalities,
+    )

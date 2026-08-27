@@ -51,7 +51,12 @@
     {"source": "core/src/runtime", "target": "scripts/runtime", "exclude": ["**/__pycache__/**", "**/*.pyc", ".DS_Store", "browser/module_host_bridge.js", "protocol/schemas/README.md"]},
     {"source": "assets/icons", "target": "assets/icons", "exclude": ["**/__pycache__/**", "**/*.pyc", ".DS_Store", "generate_macos_icon.py"]},
     {"source": "modules/reporter/assets", "target": "assets/reporter", "exclude": ["**/__pycache__/**", "**/*.pyc", ".DS_Store"]},
-    {"source": "LICENSES", "target": "LICENSES", "exclude": [".DS_Store"]},
+    {"source": "LICENSES", "target": "LICENSES", "exclude": [
+      ".DS_Store",
+      "OptionHelper-Agent-Runtime-LICENSE.txt",
+      "OptionHelper-Agent-Runtime-NOTICES.txt",
+      "OptionHelper-Agent-Runtime-SOURCE-MAPPING.md"
+    ]},
     {"source": "modules/datafetcher/src", "target": "scripts/modules/datafetcher", "exclude": ["**/__pycache__/**", "**/*.pyc", "tests/**", "docs/**", "examples/**", "README.md", "CONTEXT.md", "requirements.txt", "run_tests.py", ".DS_Store"]},
     {"source": "modules/recommender/src", "target": "scripts/modules/recommender", "exclude": ["**/__pycache__/**", "**/*.pyc", "tests/**", "docs/**", "examples/**", "README.md", "CONTEXT.md", "requirements.txt", "run_tests.py", ".DS_Store"]},
     {"source": "modules/payoffer/src", "target": "scripts/modules/payoffer", "exclude": ["**/__pycache__/**", "**/*.pyc", "tests/**", "docs/**", "examples/**", "README.md", "CONTEXT.md", "requirements.txt", "run_tests.py", ".DS_Store"]},

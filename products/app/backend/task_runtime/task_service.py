@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from typing import Any, Mapping
 from uuid import uuid4
 
+from ..attachments import AttachmentStore
 from ..errors import AuthorizationError, ValidationError
 from ..authorization.roles import Role
 from ..identity.session_identity import SessionIdentity
@@ -34,6 +35,7 @@ class TaskService:
         self._state = state
         self._event_log = event_log or SessionEventLog(state._root / "session-events.sqlite3")
         self._projection_cache = ProjectionCache(self._event_log)
+        self._attachments = AttachmentStore(state._root / "attachments")
 
     @property
     def session_event_log(self) -> SessionEventLog:
@@ -62,6 +64,10 @@ class TaskService:
             # completed OptChat response projection, never provider payloads
             # or hidden model reasoning.
             "conversation_requests": {},
+            # Upload grants are private and task-scoped.  A content-addressed
+            # attachment cannot be attached to a message merely by knowing its
+            # global hash; it must first have been uploaded for this Task.
+            "pending_attachment_uploads": {},
         }
 
         def update(value: dict[str, Any]) -> dict[str, Any]:
@@ -147,6 +153,7 @@ class TaskService:
 
         self._state.update("tasks", complete_delete)
         assert removed is not None
+        self._reclaim_orphaned_attachments()
         return self._public_task(removed)
 
     def _get_raw(self, identity: SessionIdentity, task_id: str) -> dict[str, Any]:
@@ -217,6 +224,7 @@ class TaskService:
             if key not in {
                 "conversation_requests", "recommendation_state", "agent_events",
                 "conversation_session_id", "legacy_messages_migrated_at", "deletion",
+                "pending_attachment_uploads",
             }
         }
         deletion = value.get("deletion")
@@ -239,12 +247,15 @@ class TaskService:
         *,
         message_id: str | None = None,
         created_at: str | None = None,
+        content_blocks: list[dict[str, Any]] | None = None,
+        attachments: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         if role not in {"user", "assistant", "system"}:
             raise ValidationError("Unsupported conversation role")
         content = content.strip()
-        if not content or len(content) > 12000:
-            raise ValidationError("Message must contain 1 to 12000 characters")
+        safe_attachments = _validated_attachment_references(attachments or [])
+        if (not content and not safe_attachments) or len(content) > 12000:
+            raise ValidationError("Message must contain text or attachments")
         message = {
             "message_id": str(message_id or uuid4()),
             "role": role,
@@ -252,9 +263,43 @@ class TaskService:
             "status": status,
             "created_at": str(created_at or datetime.now(timezone.utc).isoformat()),
         }
+        if safe_attachments:
+            message["attachments"] = safe_attachments
+            message["content_blocks"] = [
+                *([{"type": "text", "text": content}] if content else []),
+                *[
+                    {
+                        "type": "image" if item["kind"] == "image" else "document-ref",
+                        "attachment_id": item["attachment_id"],
+                        "media_type": item["media_type"],
+                        "name": item.get("name", ""),
+                    }
+                    for item in safe_attachments
+                ],
+            ]
+        if role == "assistant" and content_blocks:
+            safe_blocks: list[dict[str, Any]] = []
+            for block in content_blocks:
+                if not isinstance(block, Mapping):
+                    continue
+                block_type = str(block.get("type", "")).replace("_", "-")
+                block_text = str(block.get("text", ""))
+                if block_type == "question":
+                    safe_blocks.append(_validated_question_block(block))
+                    continue
+                if block_type not in {"text", "reasoning"} or not block_text:
+                    continue
+                limit = 64_000 if block_type == "reasoning" else 12_000
+                safe_blocks.append({"type": block_type, "text": block_text[:limit]})
+            if safe_blocks:
+                message["content_blocks"] = safe_blocks
 
         task = self._get_raw(identity, task_id)
         session_id = SessionId(str(task["conversation_session_id"]))
+        prior_messages = transcript_messages(self._event_log.replay(session_id))
+        answered_question_id = _latest_open_question_id(prior_messages) if role == "user" else None
+        if role == "user" and safe_attachments:
+            self._require_pending_attachment_uploads(task, session_id, safe_attachments)
         self._event_log.append(
             session_id,
             "conversation.message",
@@ -262,6 +307,29 @@ class TaskService:
             event_id=f"message:{message['message_id']}",
             surface_operation="append",
         )
+        question = next(
+            (
+                block for block in message.get("content_blocks", [])
+                if isinstance(block, Mapping) and block.get("type") == "question"
+            ),
+            None,
+        )
+        if isinstance(question, Mapping):
+            self._event_log.append(
+                session_id,
+                "user_question.requested",
+                {"question": dict(question), "message_id": message["message_id"]},
+                event_id=f"question:{question['question_id']}:requested",
+                ignorable=True,
+            )
+        elif answered_question_id is not None:
+            self._event_log.append(
+                session_id,
+                "user_question.answered",
+                {"question_id": answered_question_id, "message_id": message["message_id"]},
+                event_id=f"question:{answered_question_id}:answered:{message['message_id']}",
+                ignorable=True,
+            )
 
         def update(value: dict[str, Any]) -> dict[str, Any]:
             task = value.get(task_id)
@@ -271,6 +339,12 @@ class TaskService:
                 raise AuthorizationError("conversation.write", "task is not owned by current caller")
             task["message_count"] = len(transcript_messages(self._event_log.replay(session_id)))
             task["updated_at"] = message["created_at"]
+            if role == "user" and safe_attachments:
+                pending = task.setdefault("pending_attachment_uploads", {})
+                if not isinstance(pending, dict):
+                    raise ValidationError("Task attachment upload state is invalid")
+                for reference in safe_attachments:
+                    pending.pop(reference["attachment_id"], None)
             if status == "pending_model":
                 task["status"] = "waiting_for_model"
             elif status in {
@@ -283,6 +357,166 @@ class TaskService:
         self._state.update("tasks", update)
         return message
 
+    def register_attachment_uploads(
+        self,
+        identity: SessionIdentity,
+        task_id: str,
+        references: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Authorize immutable attachment references for one future Task message."""
+
+        safe_references = _validated_attachment_references(references)
+        if not safe_references:
+            raise ValidationError("Attachment upload did not produce any references")
+        uploaded_at = _utc_now()
+
+        def update(value: dict[str, Any]) -> dict[str, Any]:
+            task = _owned_task(value, identity, task_id, "conversation.write")
+            pending = task.setdefault("pending_attachment_uploads", {})
+            if not isinstance(pending, dict):
+                raise ValidationError("Task attachment upload state is invalid")
+            for reference in safe_references:
+                pending[reference["attachment_id"]] = {
+                    "reference": copy.deepcopy(reference),
+                    "uploaded_at": uploaded_at,
+                }
+            if len(pending) > 100:
+                ordered = sorted(
+                    pending.items(),
+                    key=lambda item: str(item[1].get("uploaded_at", ""))
+                    if isinstance(item[1], Mapping) else "",
+                )
+                for attachment_id, _ in ordered[:len(pending) - 100]:
+                    pending.pop(attachment_id, None)
+            task["updated_at"] = uploaded_at
+            return value
+
+        self._state.update("tasks", update)
+        self._reclaim_orphaned_attachments()
+        return safe_references
+
+    def pending_attachment_uploads(
+        self,
+        identity: SessionIdentity,
+        task_id: str,
+    ) -> list[dict[str, Any]]:
+        task = _owned_task(self._state.read("tasks"), identity, task_id, "conversation.read")
+        pending = task.get("pending_attachment_uploads", {})
+        if not isinstance(pending, Mapping):
+            raise ValidationError("Task attachment upload state is invalid")
+        ordered = sorted(
+            (item for item in pending.values() if isinstance(item, Mapping)),
+            key=lambda item: str(item.get("uploaded_at", "")),
+        )
+        return _validated_attachment_references([
+            dict(item["reference"])
+            for item in ordered
+            if isinstance(item.get("reference"), Mapping)
+        ])
+
+    def discard_attachment_uploads(
+        self,
+        identity: SessionIdentity,
+        task_id: str,
+        attachment_ids: list[str],
+    ) -> int:
+        if not attachment_ids or len(attachment_ids) > 20 or any(
+            not isinstance(value, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", value)
+            for value in attachment_ids
+        ):
+            raise ValidationError("Attachment draft identifiers are invalid")
+        removed = 0
+
+        def update(value: dict[str, Any]) -> dict[str, Any]:
+            nonlocal removed
+            task = _owned_task(value, identity, task_id, "conversation.write")
+            pending = task.setdefault("pending_attachment_uploads", {})
+            if not isinstance(pending, dict):
+                raise ValidationError("Task attachment upload state is invalid")
+            for attachment_id in dict.fromkeys(attachment_ids):
+                if pending.pop(attachment_id, None) is not None:
+                    removed += 1
+            task["updated_at"] = _utc_now()
+            return value
+
+        self._state.update("tasks", update)
+        self._reclaim_orphaned_attachments()
+        return removed
+
+    def _reclaim_orphaned_attachments(self) -> None:
+        """Collect only after marking every surviving Task reference as live."""
+
+        try:
+            self._attachments.collect_orphans(self._live_attachment_ids())
+        except (OSError, ValidationError, ValueError):
+            # Disk governance is best effort. If durable Task/event state is
+            # unavailable or malformed, preserve every attachment for a later
+            # successful audit rather than making an incomplete mark decision.
+            return
+
+    def reclaim_orphaned_attachments(self) -> None:
+        """Run the conservative mark-and-sweep before accepting more bytes."""
+
+        self._reclaim_orphaned_attachments()
+
+    def _live_attachment_ids(self) -> set[str]:
+        task_state = self._state.read("tasks")
+        result = _attachment_ids_in(task_state)
+        for task in task_state.values():
+            if not isinstance(task, Mapping):
+                continue
+            session_id = str(task.get("conversation_session_id", "")).strip()
+            if not session_id:
+                continue
+            messages = transcript_messages(self._event_log.replay(SessionId(session_id)))
+            result.update(_attachment_ids_in(messages))
+        return result
+
+    def _require_pending_attachment_uploads(
+        self,
+        task: Mapping[str, Any],
+        session_id: SessionId,
+        references: list[dict[str, Any]],
+    ) -> None:
+        pending = task.get("pending_attachment_uploads", {})
+        if not isinstance(pending, Mapping):
+            raise ValidationError("Task attachment upload state is invalid")
+        bound: dict[str, dict[str, Any]] = {}
+        for message in transcript_messages(self._event_log.replay(session_id)):
+            message_attachments = message.get("attachments", [])
+            if not isinstance(message_attachments, list):
+                continue
+            for item in message_attachments:
+                if isinstance(item, Mapping):
+                    bound[str(item.get("attachment_id", ""))] = dict(item)
+        for reference in references:
+            grant = pending.get(reference["attachment_id"])
+            granted_reference = grant.get("reference") if isinstance(grant, Mapping) else None
+            if (
+                (not isinstance(granted_reference, Mapping) or dict(granted_reference) != reference)
+                and bound.get(reference["attachment_id"]) != reference
+            ):
+                raise AuthorizationError(
+                    "conversation.write",
+                    "attachment was not uploaded for this task",
+                )
+
+    def attachment_reference(
+        self, identity: SessionIdentity, task_id: str, attachment_id: str,
+    ) -> dict[str, Any]:
+        """Resolve an attachment only when it is referenced by an owned Task message."""
+
+        task = self._get_raw(identity, task_id)
+        session_id = SessionId(str(task["conversation_session_id"]))
+        for message in reversed(transcript_messages(self._event_log.replay(session_id))):
+            attachments = message.get("attachments", [])
+            if not isinstance(attachments, list):
+                continue
+            for reference in attachments:
+                if isinstance(reference, Mapping) and reference.get("attachment_id") == attachment_id:
+                    return dict(reference)
+        raise KeyError(attachment_id)
+
     def is_cancelled(self, identity: SessionIdentity, task_id: str) -> bool:
         return str(self.get(identity, task_id).get("status", "")) == "cancelled"
 
@@ -292,6 +526,10 @@ class TaskService:
         Cancellation is a task state only.  It never deletes an existing
         ModuleRun or changes a completed financial result.
         """
+
+        task = self._get_raw(identity, task_id)
+        session_id = SessionId(str(task["conversation_session_id"]))
+        question_id = _latest_open_question_id(transcript_messages(self._event_log.replay(session_id)))
 
         def update(value: dict[str, Any]) -> dict[str, Any]:
             task = value.get(task_id)
@@ -303,7 +541,16 @@ class TaskService:
             task["updated_at"] = datetime.now(timezone.utc).isoformat()
             return value
 
-        return self._public_task(self._state.update("tasks", update)[task_id])
+        cancelled = self._public_task(self._state.update("tasks", update)[task_id])
+        if question_id is not None:
+            self._event_log.append(
+                session_id,
+                "user_question.cancelled",
+                {"question_id": question_id},
+                event_id=f"question:{question_id}:cancelled",
+                ignorable=True,
+            )
+        return cancelled
 
     def append_run_ref(self, identity: SessionIdentity, task_id: str, reference: dict[str, str]) -> None:
         required = {
@@ -426,7 +673,7 @@ class TaskService:
         The task index never stores a ResolvedContract, module result, Provider
         response, or artifact path.  Those remain in their owning Stores.  This
         compact state merely prevents a natural-language confirmation from
-        re-running Research/Critic and selecting a different candidate.
+        re-running candidate selection and review with a different result.
         """
 
         state = _pending_recommendation(value)
@@ -1280,10 +1527,46 @@ def _browser_runtime_event(value: Mapping[str, Any]) -> dict[str, Any] | None:
             provider_chars = payload.get("provider_chars")
             if isinstance(provider_chars, int) and not isinstance(provider_chars, bool) and provider_chars >= safe_payload["chars"]:
                 safe_payload["provider_chars"] = min(provider_chars, 10_000_000)
+        block_index = payload.get("index")
+        if isinstance(block_index, int) and not isinstance(block_index, bool) and block_index >= 0:
+            safe_payload["index"] = block_index
+    elif event_type in {"assistant.block_started", "assistant.block_completed"}:
+        block_index = payload.get("index")
+        if not isinstance(block_index, int) or isinstance(block_index, bool) or block_index < 0:
+            return None
+        safe_payload["index"] = block_index
+        if event_type == "assistant.block_started":
+            block_type = str(payload.get("block_type", "")).replace("_", "-")
+            if block_type not in {"text", "reasoning", "tool-call"}:
+                return None
+            safe_payload["block_type"] = block_type
+        else:
+            block = payload.get("block")
+            if not isinstance(block, Mapping):
+                return None
+            block_type = str(block.get("type", "")).replace("_", "-")
+            if block_type in {"text", "reasoning"}:
+                safe_payload["block"] = {"type": block_type, "text": str(block.get("text", ""))[:64_000]}
+            elif block_type == "tool-call":
+                safe_payload["block"] = {"type": "tool-call", "name": str(block.get("name", ""))[:80]}
+            else:
+                return None
     elif event_type == "assistant.message":
         text = payload.get("text")
         if isinstance(text, str):
             safe_payload["text"] = text[:64_000]
+        blocks = payload.get("blocks")
+        if isinstance(blocks, list):
+            safe_blocks: list[dict[str, str]] = []
+            for block in blocks:
+                if not isinstance(block, Mapping):
+                    continue
+                block_type = str(block.get("type", "")).replace("_", "-")
+                if block_type in {"text", "reasoning"}:
+                    safe_blocks.append({"type": block_type, "text": str(block.get("text", ""))[:64_000]})
+                elif block_type == "tool-call":
+                    safe_blocks.append({"type": "tool-call", "name": str(block.get("name", ""))[:80]})
+            safe_payload["blocks"] = safe_blocks
     elif event_type.startswith("agent."):
         safe_payload = {
             "role_id": str(payload.get("role_id", payload.get("role", "Agent")))[:80],
@@ -1346,6 +1629,22 @@ def _owned_task(tasks: dict[str, Any], identity: SessionIdentity, task_id: str, 
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _attachment_ids_in(value: object) -> set[str]:
+    """Find attachment ids without trusting a single Task schema revision."""
+
+    result: set[str] = set()
+    if isinstance(value, Mapping):
+        attachment_id = value.get("attachment_id")
+        if isinstance(attachment_id, str) and re.fullmatch(r"sha256:[0-9a-f]{64}", attachment_id):
+            result.add(attachment_id)
+        for item in value.values():
+            result.update(_attachment_ids_in(item))
+    elif isinstance(value, list):
+        for item in value:
+            result.update(_attachment_ids_in(item))
+    return result
 
 
 def _pending_recommendation(value: dict[str, Any], *, allow_approved: bool = False) -> dict[str, Any]:
@@ -1566,6 +1865,118 @@ def _safe_identifier(value: object, field_name: str, *, maximum: int) -> str:
     if not text or len(text) > maximum or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]*", text):
         raise ValidationError(f"Recommendation continuation {field_name} is invalid")
     return text
+
+
+def _validated_attachment_references(value: object) -> list[dict[str, Any]]:
+    if isinstance(value, (str, bytes)) or not isinstance(value, list) or len(value) > 20:
+        raise ValidationError("Message attachments are invalid")
+    result: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    total_bytes = 0
+    for raw in value:
+        if not isinstance(raw, Mapping):
+            raise ValidationError("Message attachment reference is invalid")
+        allowed = {
+            "attachment_id", "kind", "media_type", "bytes", "name", "width", "height",
+            "original_dimensions", "extraction_status", "text_chars",
+        }
+        if set(raw).difference(allowed):
+            raise ValidationError("Message attachment reference has unknown fields")
+        attachment_id = str(raw.get("attachment_id", ""))
+        kind = str(raw.get("kind", ""))
+        media_type = str(raw.get("media_type", ""))
+        size = raw.get("bytes")
+        if (
+            not re.fullmatch(r"sha256:[0-9a-f]{64}", attachment_id)
+            or kind not in {"image", "document"}
+            or not media_type
+            or isinstance(size, bool)
+            or not isinstance(size, int)
+            or size < 1
+            or size > 20 * 1024 * 1024
+            or attachment_id in seen
+        ):
+            raise ValidationError("Message attachment reference is invalid")
+        if kind == "image" and not media_type.startswith("image/"):
+            raise ValidationError("Image attachment media type is invalid")
+        if kind == "document" and media_type.startswith("image/"):
+            raise ValidationError("Document attachment media type is invalid")
+        total_bytes += size
+        if total_bytes > 200 * 1024 * 1024:
+            raise ValidationError("Message attachments exceed the 200MB total limit")
+        seen.add(attachment_id)
+        result.append(copy.deepcopy(dict(raw)))
+    return result
+
+
+def _validated_question_block(value: Mapping[str, Any]) -> dict[str, Any]:
+    allowed = {"type", "question_id", "prompt", "options", "allow_free_text"}
+    if set(value).difference(allowed):
+        raise ValidationError("Conversation question contains unsupported fields")
+    question_id = str(value.get("question_id", ""))
+    prompt = str(value.get("prompt", "")).strip()
+    options = value.get("options", [])
+    allow_free_text = value.get("allow_free_text", True)
+    if (
+        not re.fullmatch(r"[0-9a-f]{24}", question_id)
+        or not prompt
+        or len(prompt) > 2_000
+        or not isinstance(options, list)
+        or len(options) > 3
+        or not isinstance(allow_free_text, bool)
+    ):
+        raise ValidationError("Conversation question is invalid")
+    safe_options: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for option in options:
+        if not isinstance(option, Mapping) or set(option).difference({
+            "value", "label", "description", "recommended",
+        }):
+            raise ValidationError("Conversation question option is invalid")
+        answer = str(option.get("value", "")).strip()
+        label = str(option.get("label", "")).strip()
+        description = str(option.get("description", "")).strip()
+        recommended = option.get("recommended", False)
+        if (
+            not answer
+            or len(answer) > 500
+            or not label
+            or len(label) > 80
+            or len(description) > 240
+            or not isinstance(recommended, bool)
+            or answer in seen
+        ):
+            raise ValidationError("Conversation question option is invalid")
+        seen.add(answer)
+        safe_options.append({
+            "value": answer,
+            "label": label,
+            "description": description,
+            "recommended": recommended,
+        })
+    if not safe_options and not allow_free_text:
+        raise ValidationError("Conversation question has no answer path")
+    return {
+        "type": "question",
+        "question_id": question_id,
+        "prompt": prompt,
+        "options": safe_options,
+        "allow_free_text": allow_free_text,
+    }
+
+
+def _latest_open_question_id(messages: list[dict[str, Any]]) -> str | None:
+    if not messages or messages[-1].get("role") != "assistant":
+        return None
+    blocks = messages[-1].get("content_blocks", [])
+    if not isinstance(blocks, list):
+        return None
+    for block in reversed(blocks):
+        if not isinstance(block, Mapping) or block.get("type") != "question":
+            continue
+        question_id = str(block.get("question_id", ""))
+        return question_id if re.fullmatch(r"[0-9a-f]{24}", question_id) else None
+    return None
 
 
 def _term_overrides(value: object) -> dict[str, str | int | float]:

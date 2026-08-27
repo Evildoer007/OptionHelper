@@ -2,7 +2,7 @@
 
 ## 正式入口
 
-领域入口为`recommend(RecommendationCase)`。App Agent使用`recommend_fixed(RecommendationCase)`显式进入同一固定状态机，不再经过自由路由。Tool action分别为`recommend`和`recommend_fixed`。本模块只服务`SKILL.md`定义的第三类分析工作流“结构推荐”：闲聊、知识、指定模块运行、已有结果交付、资料维护及自由组合不进入候选状态机。推荐与正式交付相互独立；当前对话大模型负责理解用户意图；Intent、Research和Critic不要求iFind。本模块不索取或记录凭据。
+领域入口为`recommend(RecommendationCase)`。App Agent使用`recommend_fixed(RecommendationCase)`显式进入同一固定状态机，不再经过自由路由。Tool action分别为`recommend`和`recommend_fixed`。本模块只服务`SKILL.md`定义的第三类分析工作流“结构推荐”：闲聊、知识、指定模块运行、已有结果交付、资料维护及自由组合不进入候选状态机。推荐与正式交付相互独立；当前对话大模型负责理解用户意图；Mode1的Interpreter、Selector和Reviewer不要求iFind。本模块不索取或记录凭据。
 
 用户已经明确指定产品时不进入候选选择，只验证该产品、标的和覆盖参数；用户指定一个或多个分析模块时直接进入相应模块；用户要求整理已有结果时直接进入Reporter。只有需要从市场观点或约束中选择结构时才运行本模块。
 
@@ -10,24 +10,33 @@
 
 该顺序不可跳过、倒置或用模型文本替代。模型只负责理解和说明；候选、合同、计算和交付均由受控端口完成。
 
-本模块是客户侧产品筛选工具。Intent、Research、Critic和聚合器都以客户已经表达的市场情景、期限、风险承受能力、本金偏好和收益目标为约束，推荐结论必须说明客户为什么适合、承担什么成本与风险以及何时不适合。发行便利、销售偏好、产品库存、页面默认选项、示例编号和更高票息均不得成为推荐理由。
+本模块是客户侧产品筛选工具。各Mode角色和确定性聚合器都以客户已经表达的市场情景、期限、风险承受能力、本金偏好和收益目标为约束，推荐结论必须说明客户为什么适合、承担什么成本与风险以及何时不适合。发行便利、销售偏好、产品库存、页面默认选项、示例编号和更高票息均不得成为推荐理由。
 
-1. `Intent`提取用户明确事实、唯一关键问题和研究查询。
-2. `Research`只使用Knowledger正式端口返回的同一`catalog_version`证据。
-3. `Critic`逐项审阅Research候选，不得新增或漏审产品。
+1. `Interpreter`提取用户明确事实、唯一关键问题和研究查询。
+2. `Selector`只使用Knowledger正式端口返回的同一`catalog_version`证据。
+3. `Reviewer`逐项审阅Selector候选，不得新增或漏审产品。
 4. 聚合器执行证据、客户适配、冲突、数量和排名门禁，形成严格`optionhelper.recommendation-set`。
 5. Host用受控合同解析器冻结候选合同。研究简报和完整研究报告只在缺少会改变合同含义的条件时，一次合并展示拟采用条款并确认；参考报价默认由当前对话直接确定多个结构、标的、期限和参数版本，用户明确指定的结构、期限、条款或已保存结果覆盖对应部分。
-6. 用户明确要求正式交付时，`Executor`先复用或取得受控DataAssetRef。参考报价对每个合同版本调用必要的Pricer，再由Reporter合并为一份Quote并交给Designer；研究简报和完整研究报告按所需模块运行后交付。未提出交付时，到候选结论或候选合同为止，不调用Reporter或Designer。
+6. 用户明确要求正式交付时，顶层工作流先复用或取得受控DataAssetRef。参考报价对每个合同版本调用必要的Pricer，再由Reporter合并为一份Quote并交给Designer；研究简报和完整研究报告按所需模块运行后交付。未提出交付时，到候选结论或候选合同为止，不调用Reporter或Designer。
 
-Intent、Research和Critic不调用市场数据。只有Executor即将运行需要新数据的Pricer或Backtester时，才先复用合格DataAssetRef；无法复用时先确认iFind，再按DataFetcher指南取得数据。缺少Python、依赖或Store时不启动运行模块，但可以完成不依赖运行时的候选研究。
+## 推荐Mode
 
-资料状态不是`ready`的候选可以保留为研究结果，但不得进入Executor，状态固定为`pending_terms`。固定流程内同一候选、同一模块最多执行一次，Tool开始后不得回退重跑。用户覆盖期限、波动率、行权价等已允许参数时，先生成新合同，再只重跑受影响模块；不得沿用旧合同的计算结果。
+- Mode1顺序研判：`Interpreter→Selector→Reviewer`。三个角色各自使用一次独立执行；只读取Knowledger，不调用金融计算模块。
+- Mode2产品交易循环：`Structurer⇄Trader→Reviewer`。Structurer提出候选版本和验证需求；Trader通过宿主受控工具按需重复调用Payoffer、Pricer或Backtester，并只引用对应CandidateVersion的已验证FactRef。最多重构2轮。
+- Mode3独立评议：Framer完成约束框定后，Matcher和Hedger在隔离上下文中并行完成候选研究与按需验证，Moderator只接收两条分支的结构化候选、风险结论和FactRef。任一必要分支失败则整体失败。
+- Mode4约束排序：`Specifier→Generator→Evaluator并行→确定性Ranker→Reviewer`。每个Evaluator只验证一个CandidateVersion；Ranker先执行硬约束过滤，再按用户顺序排序；Reviewer只能批准或拒绝。候选不足时最多返回Generator重构2轮。
 
-是否执行真实多Agent由宿主`AgentPort`声明的结构化输出和独立子会话能力共同决定，不取决于特定服务接口。默认策略为`auto`：能力成立时按`Intent→Research→Critic`分别创建独立子会话；能力不足时执行同一状态机的`single_agent`路径。用户明确要求必须多Agent时，能力不足必须返回不可用，不得降级，任何情况下都不得伪称多Agent。多Agent在任何金融Tool调用前失败可降级为`single_agent`；Tool调用开始后不重跑流程，避免重复副作用。
+App从设置中心读取Mode并要求真实多Agent，不根据对话中的Mode字样临时改写设置。Skill默认Mode1，只有用户明确指定时才切换Mode2至Mode4。
 
-每个角色结果必须携带`AgentRunReceipt`，包含唯一`agent_run_id`、唯一`child_session_id`、角色、输入哈希、输出哈希和状态；正文通过当前严格Schema后才能进入下一阶段。App与Skill共用`begin_recommendation`、`submit_agent_result`、`cancel_recommendation`状态机和确定性聚合器。App适配器调用现有子会话Runtime，Skill适配器调用宿主原生子Agent能力，任何一侧都不得复制状态机或另建模型系统。工作流快照只保存角色、哈希、运行凭证、Catalog绑定和阶段状态，不保存推理文本、模型凭据、数据凭据或完整聊天记录。
+Mode1不调用市场数据。只有后续确定需要新数据的Pricer或Backtester时，才先复用合格DataAssetRef；无法复用时先确认iFind，再按DataFetcher指南取得数据。缺少Python、依赖或Store时不启动运行模块，但可以完成不依赖计算的候选研究。
 
-多Agent执行策略属于顶层工作流能力，不属于Recommender专有能力。Payoffer、Pricer、Backtester、Reporter和Designer当前继续按确定性模块执行，未来工作流可按需声明自己的`AgentExecutionPolicy`。任何Agent均不得投票改写估值、Greeks、回测、合同或Reporter冻结事实。
+资料状态不是`ready`的候选可以保留为研究结果，但不得进入金融评估，状态固定为`pending_terms`。同一CandidateVersion和同一输入指纹重复提交时必须幂等复用；Mode2、Mode3和Mode4可因新约束或新CandidateVersion重复调用获授权模块。用户覆盖期限、波动率、行权价等已允许参数时，先生成新合同，再只重跑受影响模块；不得沿用旧合同的计算结果。
+
+Skill默认使用Mode1；用户明确指定时可使用Mode2产品交易循环、Mode3独立评议或Mode4约束排序。是否执行真实多Agent由外部Harness的结构化输出和子角色执行上下文隔离能力共同决定，不取决于特定Provider。能力成立时按所选Mode分角色执行；能力不足时由当前模型依次完成同一业务阶段并标记为`single_model`。用户明确要求必须多Agent时，能力不足必须返回不可用，不得降级，任何情况下都不得伪称多Agent。
+
+Skill只声明工作流；外部Harness的运行机制不属于OptionHelper业务步骤。正式External Harness集成所需的内部协调端口只记录在开发者集成文档中，不属于默认Skill指南。
+
+Payoffer、Pricer、Backtester、Reporter和Designer继续按确定性模块执行。任何Agent均不得投票改写估值、Greeks、回测、合同或Reporter冻结事实。
 
 ## 对话与确认
 

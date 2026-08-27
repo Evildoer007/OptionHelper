@@ -73,6 +73,7 @@ def main() -> int:
     parser.add_argument("--data-dir", type=Path)
     parser.add_argument("--resource-dir", type=Path)
     parser.add_argument("--compute-worker", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--probe-compute-worker", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--probe-pdf-runtime", action="store_true")
     parser.add_argument(
         "--verification-fixture",
@@ -93,6 +94,11 @@ def main() -> int:
         from backend.task_runtime.compute_worker import main as compute_worker_main
 
         return compute_worker_main()
+    if args.probe_compute_worker:
+        from backend.task_runtime.compute_process import probe_compute_worker
+
+        print("OPTIONHELPER_COMPUTE_WORKER=" + json.dumps(probe_compute_worker(), ensure_ascii=False, sort_keys=True), flush=True)
+        return 0
     if args.probe_pdf_runtime:
         from modules.designer.pdf_renderer import runtime_status
 
@@ -111,7 +117,6 @@ def main() -> int:
     from backend.secrets.platform_provider import platform_secret_provider
 
     stopped = threading.Event()
-
     def stop(*_unused: object) -> None:
         stopped.set()
 

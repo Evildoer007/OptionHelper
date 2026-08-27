@@ -188,7 +188,7 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         let titlebarHeight = javascriptNumber(36 / uiScale)
         let collapsedSafeArea = javascriptNumber(166 / uiScale)
         let startupScript = WKUserScript(
-            source: "document.documentElement.dataset.nativeShell='macos';document.documentElement.dataset.uiScale='\(scaleValue)';document.documentElement.style.setProperty('--native-titlebar-height','\(titlebarHeight)px');document.documentElement.style.setProperty('--native-titlebar-collapsed-leading-safe-area','\(collapsedSafeArea)px');if (location.pathname === '/') document.documentElement.classList.add('login-boot');",
+            source: "document.documentElement.dataset.nativeShell='macos';document.documentElement.dataset.nativeMaterial='system';document.documentElement.dataset.uiScale='\(scaleValue)';document.documentElement.style.setProperty('--native-titlebar-height','\(titlebarHeight)px');document.documentElement.style.setProperty('--native-titlebar-collapsed-leading-safe-area','\(collapsedSafeArea)px');if (location.pathname === '/') document.documentElement.classList.add('login-boot');",
             injectionTime: .atDocumentStart,
             forMainFrameOnly: true
         )
@@ -206,6 +206,33 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         view.allowsMagnification = false
         view.pageZoom = uiScale
         view.navigationDelegate = self
+        view.underPageBackgroundColor = .clear
+        view.wantsLayer = true
+        view.layer?.backgroundColor = NSColor.clear.cgColor
+
+        let materialView = NSVisualEffectView(frame: .zero)
+        materialView.material = .sidebar
+        materialView.blendingMode = .behindWindow
+        materialView.state = .followsWindowActiveState
+        materialView.isEmphasized = false
+
+        let contentView = NSView(frame: .zero)
+        contentView.wantsLayer = true
+        contentView.layer?.backgroundColor = NSColor.clear.cgColor
+        materialView.translatesAutoresizingMaskIntoConstraints = false
+        view.translatesAutoresizingMaskIntoConstraints = false
+        contentView.addSubview(materialView)
+        contentView.addSubview(view)
+        NSLayoutConstraint.activate([
+            materialView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+            materialView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+            materialView.topAnchor.constraint(equalTo: contentView.topAnchor),
+            materialView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
+            view.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+            view.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+            view.topAnchor.constraint(equalTo: contentView.topAnchor),
+            view.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
+        ])
         let window = OptionHelperWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1320, height: 860),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
@@ -217,8 +244,10 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         window.titlebarAppearsTransparent = true
         window.titlebarSeparatorStyle = .none
         window.isMovableByWindowBackground = true
+        window.backgroundColor = .clear
+        window.isOpaque = false
         window.center()
-        window.contentView = view
+        window.contentView = contentView
         window.delegate = self
         window.makeFirstResponder(view)
         window.makeKeyAndOrderFront(nil)

@@ -1,4 +1,4 @@
-"""将Research与Critic结果聚合为严格RecommendationCandidate。"""
+"""将Selector与Reviewer结果聚合为严格RecommendationCandidate。"""
 
 from __future__ import annotations
 
@@ -133,7 +133,7 @@ def build_candidates(
         raise RecommendationValidationError("max_candidates必须位于1至10")
     proposals = research.get("proposals", ())
     if isinstance(proposals, (str, bytes)) or not isinstance(proposals, Sequence):
-        raise RecommendationValidationError("Research.proposals必须为数组")
+        raise RecommendationValidationError("Selector.proposals必须为数组")
     review_index = critique_candidates(research, critic)
     evidence_index = {item.evidence_id: item for item in evidence}
     seen_products: set[str] = set()
@@ -142,25 +142,25 @@ def build_candidates(
 
     for position, raw in enumerate(proposals, start=1):
         if not isinstance(raw, Mapping):
-            raise RecommendationValidationError("Research.proposal必须为对象")
+            raise RecommendationValidationError("Selector.proposal必须为对象")
         row = dict(raw)
         forbidden = sorted({"candidate_status", "module_run_refs", "key_terms"} & set(row))
         if forbidden:
             raise RecommendationValidationError(
-                f"Research不得声明候选状态、模块结果或合同条款：{','.join(forbidden)}"
+                f"Selector不得声明候选状态、模块结果或合同条款：{','.join(forbidden)}"
             )
         product_id = str(row.get("product_id", "")).strip()
         if not product_id:
-            raise RecommendationValidationError("Research候选product_id不能为空")
+            raise RecommendationValidationError("Selector候选product_id不能为空")
         if product_id in seen_products:
-            raise RecommendationValidationError(f"Research重复候选：{product_id}")
+            raise RecommendationValidationError(f"Selector重复候选：{product_id}")
         seen_products.add(product_id)
         review = dict(review_index.get(product_id, {}))
         if bool(review.get("hard_reject")):
             rejected.append({
                 "product_id": product_id,
-                "reason": str(review.get("rejection_reason") or "Critic判定与已确认约束冲突").strip(),
-                "source": "Critic",
+                "reason": str(review.get("rejection_reason") or "Reviewer判定与已确认约束冲突").strip(),
+                "source": "Reviewer",
             })
             continue
         refs, gate_reason = _controlled_product_evidence(product_id, evidence)
