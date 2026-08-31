@@ -41,6 +41,7 @@ from release_contract import (
 
 MODULES = ("datafetcher", "recommender", "payoffer", "pricer", "backtester", "reporter", "designer")
 PAGE_MODULES = ("datafetcher", "payoffer", "pricer", "backtester", "reporter")
+SKILL_PAGE_MODULES: tuple[str, ...] = ()
 _TEXT_SUFFIXES = {".py", ".md", ".json", ".yaml", ".yml", ".html", ".js", ".css", ".command", ".bat", ".lock"}
 _LOCAL_ENVIRONMENT_MARKER = "Machine" + "Learning"
 _SECRET_PATTERNS = (
@@ -135,6 +136,33 @@ def tree_hash(entries: list[dict[str, object]]) -> str:
 
 def _hashes(entries: list[dict[str, object]]) -> dict[str, str]:
     return {str(item["path"]): str(item["sha256"]) for item in entries}
+
+
+_SHARED_EXACT_PATHS = frozenset({
+    "scripts/tool_entry.py",
+    "references/optionlist.md",
+    "references/optionlib.md",
+    "assets/icons/optionhelper-logo.svg",
+    "assets/icons/optionhelper-mark.svg",
+})
+_SHARED_PATH_PREFIXES = (
+    "scripts/knowledger/",
+    "scripts/runtime/",
+    "scripts/modules/",
+    "assets/payoffer/",
+    "assets/reporter/",
+    "assets/designer/",
+)
+
+
+def shared_payload_entries(entries: list[dict[str, object]]) -> list[dict[str, object]]:
+    """Select the byte-identical compute/report payload shared by Skill and App."""
+
+    return [
+        item for item in entries
+        if str(item["path"]) in _SHARED_EXACT_PATHS
+        or any(str(item["path"]).startswith(prefix) for prefix in _SHARED_PATH_PREFIXES)
+    ]
 
 
 def _selected_entries(entries: list[dict[str, object]], module: str) -> list[dict[str, object]]:
@@ -274,28 +302,21 @@ def _structure_errors(root: Path) -> list[str]:
     required = [
         "SKILL.md", "README.md", "capability-manifest.json", "references/context.md", "references/optionlist.md",
         "references/optionlib.md", "references/knowledger-manager.md", "scripts/tool_entry.py",
-        "scripts/module_host.py", "scripts/environment_check.py", "scripts/requirements.lock",
-        "scripts/knowledger/__init__.py",
+        "scripts/environment_check.py", "scripts/requirements.lock",
         "scripts/knowledger/optionreg.py", "scripts/knowledger/catalog-version.json", "scripts/runtime",
         "scripts/modules", "assets/icons", "assets/payoffer/figures/json", "assets/payoffer/figures/svg",
         "assets/designer/themes", "assets/designer/vendor", "LICENSES",
     ]
     for module in MODULES:
         required.extend((f"references/module-guides/{module}.md", f"scripts/modules/{module}/__init__.py", f"scripts/modules/{module}/service.py", f"scripts/modules/{module}/config.py", f"scripts/modules/{module}/models.py"))
-    for module in PAGE_MODULES:
-        required.append(f"assets/pages/{module}/{module}.html")
     errors.extend(f"缺少{relative}" for relative in required if not (root / relative).exists())
     modules_root = root / "scripts" / "modules"
     if modules_root.is_dir():
         actual_modules = {path.name for path in modules_root.iterdir() if path.is_dir()}
         if actual_modules != set(MODULES):
             errors.append(f"内部模块集合错误：{sorted(actual_modules)}")
-    pages_root = root / "assets" / "pages"
-    if pages_root.is_dir():
-        actual_pages = {path.name for path in pages_root.iterdir() if path.is_dir()}
-        allowed_page_directories = {*PAGE_MODULES, "vendor"}
-        if actual_pages != allowed_page_directories:
-            errors.append(f"操作页面集合错误：{sorted(actual_pages)}")
+    if (root / "assets" / "pages").exists():
+        errors.append("Skill不得包含App操作页面")
     figures = root / "assets" / "payoffer" / "figures"
     if figures.is_dir():
         json_names = {path.stem for path in (figures / "json").glob("*.json")}
@@ -344,12 +365,6 @@ def _tool_catalog_protocol_id(path: Path) -> str | None:
 def _capability_interface_errors(root: Path) -> list[str]:
     """检查当前跨模块Capability接口确实随包进入发行物。"""
     required = {
-        "assets/pages/module-host-bridge.js": "module-host bridge",
-        "assets/pages/module-host-presentation.css": "Capability自有Desk展示样式",
-        "assets/pages/module-host-presentation.js": "Capability自有Desk展示开关",
-        "assets/pages/plotly-chart-system.js": "Pricer与Backtester共享Plotly图形系统",
-        "assets/pages/vendor/plotly-optionhelper.min.js": "本地精简Plotly运行包",
-        "assets/pages/datafetcher/datafetcher.js": "DataFetcher动态下载页面Bridge",
         "assets/designer/vendor/echarts.min.js": "Reporter portable ECharts资源",
         "scripts/tool_entry.py": "Core正式Tool入口",
         "scripts/runtime/protocol/models.py": "CallerContext协议模型",
@@ -367,19 +382,13 @@ def _capability_interface_errors(root: Path) -> list[str]:
         "scripts/modules/reporter/models.py": "Reporter RunRef模型",
         "scripts/modules/reporter/report_unit_builder.py": "Reporter RunRef证据单元",
         "scripts/modules/reporter/service.py": "Reporter ResultSelectionPort适配",
+        "scripts/modules/designer/comparison_renderer.py": "Designer多结构正式渲染实现",
+        "assets/designer/templates/multicard-standard.template.json": "Designer多结构研究简报模板契约",
+        "assets/designer/templates/multicard.html": "Designer多结构研究简报HTML模板",
+        "assets/designer/templates/multireport-standard.template.json": "Designer多结构完整报告模板契约",
+        "assets/designer/templates/multireport.html": "Designer多结构完整报告HTML模板",
     }
     errors = [f"缺少{label}：{relative}" for relative, label in required.items() if not (root / relative).is_file()]
-    bridge = root / "assets" / "pages" / "module-host-bridge.js"
-    if bridge.is_file():
-        bridge_text = bridge.read_text(encoding="utf-8", errors="ignore")
-        for token, label in (
-            ("ModuleHostContext", "ModuleHostContext"),
-            ("X-OptionHelper-Request-Id", "幂等request id"),
-            ("dataAssetDownloadId", "DataFetcher动态下载"),
-            ("optionhelper.module-download-error", "DataFetcher下载错误事件"),
-        ):
-            if token not in bridge_text:
-                errors.append(f"module-host bridge未声明{label}")
     caller_schema = root / "scripts" / "runtime" / "protocol" / "schemas" / "caller-context.schema.json"
     if caller_schema.is_file():
         try:
@@ -438,15 +447,11 @@ def _capability_interface_errors(root: Path) -> list[str]:
         path = root / relative
         if path.is_file() and "expected_artifact_manifest_hash" not in path.read_text(encoding="utf-8", errors="ignore"):
             errors.append(f"Reporter未绑定ModuleRunRef外部锚：{relative}")
-    datafetcher_page = root / "assets" / "pages" / "datafetcher" / "datafetcher.js"
-    if datafetcher_page.is_file() and "/api/assets/" not in datafetcher_page.read_text(encoding="utf-8", errors="ignore"):
-        errors.append("DataFetcher页面未接入动态下载Bridge")
     tool_entry = root / "scripts" / "tool_entry.py"
     if tool_entry.is_file():
         tool_text = tool_entry.read_text(encoding="utf-8", errors="ignore")
-        if "--project-json" in tool_text:
-            errors.append("Tool入口不得暴露对话JSON项目参数")
         for token, label in (
+            ("--project-json", "当前对话结构化项目入口"),
             ("--project-request", "单行自然语言项目入口"),
             ("run_project_request", "项目级完整研究流程"),
             ("public_project_result", "人类友好公开结果投影"),
@@ -498,9 +503,10 @@ def _manifest_errors(root: Path, entries: list[dict[str, object]]) -> list[str]:
     required = {
         "manifest_schema", "package_status", "capability_version", "catalog_version", "catalog_source",
         "release_status", "formal_release", "execution_scope",
-        "protocol_id", "design_system_id", "hash_spec_id", "modules", "page_modules",
+        "protocol_id", "design_system_id", "hash_spec_id", "package_kind", "modules", "page_modules",
         "contract_core_hash", "tool_catalog_hash", "content_tree_hash", "content_hashes", "content_tree_entries",
-        "module_content_hashes", "source_map_hash", "source_tree_hash", "source_content_hashes",
+        "module_content_hashes", "shared_payload_hash", "shared_payload_entries", "shared_content_hashes",
+        "source_map_hash", "source_tree_hash", "source_content_hashes",
     }
     errors.extend(f"Capability Manifest缺少字段：{field}" for field in sorted(required - set(manifest)))
     if manifest.get("manifest_schema") != CAPABILITY_MANIFEST_SCHEMA:
@@ -539,8 +545,10 @@ def _manifest_errors(root: Path, entries: list[dict[str, object]]) -> list[str]:
         errors.append("内容树哈希规范标识不匹配")
     if tuple(manifest.get("modules", ())) != MODULES:
         errors.append("Manifest七模块顺序或集合不正确")
-    if tuple(manifest.get("page_modules", ())) != PAGE_MODULES:
-        errors.append("Manifest五个操作页面顺序或集合不正确")
+    if manifest.get("package_kind") != "skill":
+        errors.append("Skill Manifest的package_kind必须为skill")
+    if tuple(manifest.get("page_modules", ())) != SKILL_PAGE_MODULES:
+        errors.append("Skill Manifest不得声明App操作页面")
     if "release_id" in manifest:
         errors.append("Capability Manifest不得包含release_id")
     actual_hashes = _hashes(entries)
@@ -550,6 +558,14 @@ def _manifest_errors(root: Path, entries: list[dict[str, object]]) -> list[str]:
         errors.append("Capability文件哈希不一致")
     if manifest.get("content_tree_hash") != tree_hash(entries):
         errors.append("Capability目录树总哈希不一致")
+    shared_entries = shared_payload_entries(entries)
+    shared_hashes = _hashes(shared_entries)
+    if manifest.get("shared_payload_entries") != shared_entries:
+        errors.append("共享计算载荷记录不一致")
+    if manifest.get("shared_content_hashes") != shared_hashes:
+        errors.append("共享计算载荷文件哈希不一致")
+    if manifest.get("shared_payload_hash") != tree_hash(shared_entries):
+        errors.append("共享计算载荷总哈希不一致")
     try:
         actual_module_hashes = _module_hashes(entries)
     except SkillVerificationError as error:
@@ -789,12 +805,13 @@ def _formal_compute_protocol_errors(root: Path, python: str, environment: Mappin
         """
         import importlib
         import inspect
-        from dataclasses import replace
+        from dataclasses import asdict, replace
         from hashlib import sha256
         from pathlib import Path
         from tool_entry import _authorize_verified_app_call, call_tool, prepare_compute_request
         from tool_entry import ToolDispatchError
-        from runtime.adapters.local_store import LocalResultStore
+        from runtime.adapters.local_store import LocalDataStore, LocalResultStore
+        from runtime.contracts.contract_types import deep_thaw
         from runtime.protocol.models import CallerContext, ModuleRunRef
         from runtime.protocol.module_host import ModuleHostContext
 
@@ -970,22 +987,21 @@ def _formal_compute_protocol_errors(root: Path, python: str, environment: Mappin
             b"2024-01-05,000905.SH,5030.0,5030.0\\n"
         )
 
-        class ProbeMarketDataStore:
-            def read_bytes(self, data_ref, *, tenant_id):
-                assert tenant_id == "protocol"
-                assert data_ref.data_asset_id == "protocol-market"
-                return market_payload
-
-        ref = {
-            "data_asset_id": "protocol-market",
-            "storage_ref": "data:protocol:protocol-market:" + "a" * 64 + ":" + "b" * 64,
-            "media_type": "text/csv", "schema_id": "market-history",
-            "asset_ids": (asset,), "normalized_fields": ("date", "asset_id", "close", "adj_close"),
-            "coverage": {"start": "2024-01-02", "end": "2024-01-05", "sessions": ["2024-01-02", "2024-01-03", "2024-01-04", "2024-01-05"], "calendar_id": "CN-SSE", "calendar_revision": "protocol-fixture"},
-            "row_count": 4, "price_convention": {"adjustment": "close_and_adj_close"},
-            "content_hash": sha256(market_payload).hexdigest(), "lineage": {"probe": "formal-compute"},
-            "tenant_id": "protocol", "created_by": "probe", "access_scope": ("read",), "partition_spec": {},
-        }
+        probe_data_store = LocalDataStore(Path.cwd() / "formal-probe-data")
+        ref = deep_thaw(asdict(probe_data_store.put_bytes(
+            tenant_id="protocol",
+            data_asset_id="protocol-market",
+            payload=market_payload,
+            media_type="text/csv",
+            schema_id="market-history",
+            asset_ids=(asset,),
+            normalized_fields=("date", "asset_id", "close", "adj_close"),
+            coverage={"start": "2024-01-02", "end": "2024-01-05", "sessions": ["2024-01-02", "2024-01-03", "2024-01-04", "2024-01-05"], "calendar_id": "CN-SSE", "calendar_revision": "protocol-fixture"},
+            row_count=4,
+            price_convention={"adjustment": "close_and_adj_close"},
+            lineage={"probe": "formal-compute"},
+            created_by="probe",
+        )))
         common = {
             "product_id": "1.1",
             "identity": {
@@ -1001,9 +1017,14 @@ def _formal_compute_protocol_errors(root: Path, python: str, environment: Mappin
                 "pricer",
                 {**common, "pricing_config": {"valuation_date": "2024-01-05", "model_method": "black_scholes"}},
                 data_refs=(ref,),
-                data_store=ProbeMarketDataStore(),
+                data_store=probe_data_store,
             ),
-            "backtester": prepare_compute_request("backtester", {**common, "backtest_config": {"entry_rule": "explicit", "entry_dates": ["2024-01-02"]}}, data_refs=(ref,)),
+            "backtester": prepare_compute_request(
+                "backtester",
+                {**common, "backtest_config": {"entry_rule": "explicit", "entry_dates": ["2024-01-02"]}},
+                data_refs=(ref,),
+                data_store=probe_data_store,
+            ),
         }
         assert len({value["contract_fingerprint"] for value in prepared.values()}) == 1
         assert set(prepared["payoffer"]["request"]) == {"action", "payoff_input"}
@@ -1068,11 +1089,9 @@ def probe_runtime(
                 ],
             ),
             ("tool_entry", [python, str(root / "scripts" / "tool_entry.py"), "--list"]),
-            ("module_host", [python, str(root / "scripts" / "module_host.py"), "--list"]),
             ("modules", [python, "-c", "import importlib; [importlib.import_module(f'modules.{name}.service') for name in " + repr(MODULES) + "]"]),
         ]
         errors: list[str] = []
-        module_host_output: str | None = None
         for label, command in commands:
             completed = subprocess.run(
                 command,
@@ -1086,12 +1105,7 @@ def probe_runtime(
             )
             if completed.returncode:
                 errors.append(f"运行时探测失败：{' '.join(command[1:])}\n{completed.stderr.strip()}")
-            elif label == "module_host":
-                module_host_output = completed.stdout
         errors.extend(_formal_compute_protocol_errors(root, python, environment, store))
-        if module_host_output is not None:
-            errors.extend(_page_catalog_errors(module_host_output))
-            errors.extend((page_probe or _page_http_errors)(root))
         rejected = subprocess.run(
             [
                 python, str(root / "scripts" / "environment_check.py"), "--check-store",
