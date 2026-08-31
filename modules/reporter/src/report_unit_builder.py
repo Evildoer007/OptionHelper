@@ -52,7 +52,7 @@ _TERM_SYMBOLS = {
     "knock_out_barrier": "Hₖₒ", "barrier": "H",
 }
 _TERM_VALUE_TEXT = {
-    "black_scholes": "Black-Scholes", "monte_carlo": "蒙特卡洛", "cash": "现金结算",
+    "analytical": "Analytical", "monte_carlo": "Monte Carlo", "cash": "现金结算",
     "european": "欧式", "american": "美式", "close": "收盘价", "monthly": "每月",
     "daily": "每日", "weekly": "每周",
     "cny_per_spot": "人民币/标的价格点",
