@@ -512,7 +512,14 @@ export async function startWorkspace(initialMode) {
     requestAnimationFrame(() => echo.classList.add("is-running"));
     window.setTimeout(() => echo.remove(), 360);
   };
+  const enterActiveConversation = () => {
+    chatSurface.classList.remove("chat-surface--empty");
+    for (const child of Array.from(stream.children)) {
+      if (child.classList.contains("conversation-start")) child.remove();
+    }
+  };
   const appendPendingMessage = (content, attachments = []) => {
+    enterActiveConversation();
     const pending = document.createElement("article");
     pending.className = "message message--user message--pending";
     const body = document.createElement("p");
@@ -2051,6 +2058,19 @@ export async function startWorkspace(initialMode) {
     });
   }
 
+  function renderTaskConversation(task) {
+    renderMessages(stream, task?.messages || [], "可直接输入任务要求，或选择一个研究起点。", {
+      onAttachmentOpen: (reference) => openStoredAttachment(reference, task.task_id),
+      onQuestionAnswer: (answer) => {
+        if (submit.dataset.sending === "true" || currentTask?.task_id !== task.task_id) return;
+        input.value = String(answer || "").trim();
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+        input.focus();
+        if (input.value) form.requestSubmit();
+      },
+    });
+  }
+
   async function selectTask(taskId, updateLocation = true) {
     const selectionRevision = ++taskSelectionRevision;
     moduleMountRevision += 1;
@@ -2072,18 +2092,8 @@ export async function startWorkspace(initialMode) {
     title.textContent = task.subject;
     conversationTitle.textContent = task.subject;
     taskState.textContent = "当前任务会保留对话、模块运行记录和关联报告。";
-    renderMessages(stream, task.messages || [], "可直接输入任务要求，或选择一个研究起点。", {
-      onAttachmentOpen: (reference) => openStoredAttachment(reference, task.task_id),
-      onQuestionAnswer: (answer) => {
-        if (submit.dataset.sending === "true" || currentTask?.task_id !== task.task_id) return;
-        input.value = String(answer || "").trim();
-        input.dispatchEvent(new Event("input", { bubbles: true }));
-        input.focus();
-        if (input.value) form.requestSubmit();
-      },
-    });
+    renderTaskConversation(task);
     restoreLatestProcess(task);
-    chatSurface.classList.toggle("chat-surface--empty", !task.messages?.length);
     const { reports: reportRuns } = await request(`/api/tasks/${encodeURIComponent(taskId)}/reports`).catch(() => ({ reports: [] }));
     if (!isCurrentSelection()) return null;
     renderReports(reports, reportRuns);
@@ -2632,6 +2642,7 @@ export async function startWorkspace(initialMode) {
         return;
       }
       pendingMessage?.remove();
+      if (currentTask?.task_id === submittedTaskId) renderTaskConversation(currentTask);
       const retryableTransport = !error.operationTerminal && ![401, 403, 404].includes(error.status);
       if (pendingConversationRequest?.requestId === requestId) {
         pendingConversationRequest.status = retryableTransport ? "uncertain" : "failed";
