@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import binascii
 from hashlib import sha256
+from copy import deepcopy
 from pathlib import Path, PurePosixPath
 from typing import Any, Mapping
 
@@ -120,13 +121,41 @@ def validate_written_artifact(
     return validate_artifact_bytes(path.read_bytes(), output_format=output_format, expected_hash=expected_hash, label=label)
 
 
+def _designer_semantic_fact_hash(payload: Mapping[str, Any]) -> str:
+    value = deepcopy(dict(payload))
+    meta = dict(value.get("meta") or {})
+    for key in ("output_type", "format", "asset_mode", "design_system_id", "design_system_hash"):
+        meta.pop(key, None)
+    value["meta"] = meta
+    return stable_hash(value)
+
+
+def _designer_presentation_input_hash(
+    *, semantic_fact_hash: str, output_type: str, output_format: str,
+    asset_mode: str, design_system_id: object, design_system_hash: object,
+    template_id: object, presentation_patch: Mapping[str, Any] | None,
+) -> str:
+    return stable_hash({
+        "semantic_fact_hash": semantic_fact_hash,
+        "output_type": output_type,
+        "format": output_format,
+        "asset_mode": asset_mode,
+        "design_system_id": design_system_id,
+        "design_system_hash": design_system_hash,
+        "template_id": template_id,
+        "presentation_patch": presentation_patch,
+    })
+
+
 def validate_designer_artifact(
     artifact: Mapping[str, Any],
     *,
     output_format: str,
     output_type: str,
-    expected_frozen_payload_hash: str,
+    expected_payload: Mapping[str, Any],
     expected_asset_mode: str,
+    expected_presentation_patch: Mapping[str, Any] | None,
+    expected_template_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """按公开Designer Tool契约验证返回产物，拒绝伪报成功。"""
 
@@ -153,8 +182,26 @@ def validate_designer_artifact(
             raise ReporterError(f"Designer Tool产物缺少{field}")
         if artifact.get(field) != manifest.get(field):
             raise ReporterError(f"Designer artifact_manifest.{field}与产物不一致")
+    expected_frozen_payload_hash = stable_hash(expected_payload)
     if manifest.get("content_sha256") != expected_frozen_payload_hash:
         raise ReporterError("Designer artifact_manifest未绑定冻结designer-input事实哈希")
+    if expected_template_id and manifest.get("template_id") != expected_template_id:
+        raise ReporterError("Designer artifact_manifest.template_id与请求不一致")
+    expected_semantic_hash = _designer_semantic_fact_hash(expected_payload)
+    if artifact.get("semantic_fact_hash") != expected_semantic_hash:
+        raise ReporterError("Designer semantic_fact_hash未绑定冻结公开事实")
+    expected_presentation_hash = _designer_presentation_input_hash(
+        semantic_fact_hash=expected_semantic_hash,
+        output_type=output_type,
+        output_format=output_format,
+        asset_mode=expected_asset_mode,
+        design_system_id=artifact.get("design_system_id"),
+        design_system_hash=artifact.get("design_system_hash"),
+        template_id=manifest.get("template_id"),
+        presentation_patch=expected_presentation_patch,
+    )
+    if artifact.get("presentation_input_hash") != expected_presentation_hash:
+        raise ReporterError("Designer presentation_input_hash未绑定本次展示输入")
     payload = artifact.get("pdf") if output_format == "pdf" else artifact.get("html")
     if not isinstance(payload, bytes if output_format == "pdf" else str):
         raise ReporterError("Designer Tool产物内容类型不正确")
@@ -169,6 +216,51 @@ def validate_designer_artifact(
         output_format=output_format,
         expected_asset_mode=expected_asset_mode,
     )
+
+
+def validate_presentation_receipt(receipt: Any, patch: Mapping[str, Any] | None) -> None:
+    """Bind Designer's presentation receipt to the exact Reporter patch."""
+
+    if patch is None:
+        if receipt is not None:
+            raise ReporterError("Designer返回了未请求的presentation_receipt")
+        return
+    if not isinstance(receipt, Mapping) or receipt.get("schema") != "optionhelper.presentation-patch":
+        raise ReporterError("Designer未返回当前presentation_patch的有效回执")
+    if set(receipt).difference({"schema", "applied_at", "changes"}) or not isinstance(receipt.get("applied_at"), str) or not receipt["applied_at"]:
+        raise ReporterError("Designer presentation_receipt顶层字段无效")
+    operations = patch.get("operations")
+    changes = receipt.get("changes")
+    if not isinstance(operations, list) or not isinstance(changes, list) or len(changes) != len(operations):
+        raise ReporterError("Designer presentation_receipt与请求操作数量不一致")
+    for index, (operation, change) in enumerate(zip(operations, changes, strict=True)):
+        if not isinstance(operation, Mapping) or not isinstance(change, Mapping):
+            raise ReporterError(f"Designer presentation_receipt.changes[{index}]无效")
+        op = str(operation.get("op") or "").lower()
+        section = str(operation.get("section") or "")
+        expected_fields = {
+            "rename_section": {"op", "section", "before", "after"},
+            "move_section": {"op", "section", "position"},
+            "hide_section": {"op", "section"},
+            "add_section": {"op", "section", "position"},
+            "append_notice": {"op", "section", "notice"},
+        }.get(op)
+        if expected_fields is None or set(change) != expected_fields:
+            raise ReporterError(f"Designer presentation_receipt.changes[{index}]字段无效")
+        if change.get("op") != op or change.get("section") != section:
+            raise ReporterError(f"Designer presentation_receipt.changes[{index}]未对应请求操作")
+        if op == "rename_section":
+            if not isinstance(change.get("before"), str) or not change["before"] or change.get("after") != operation.get("title"):
+                raise ReporterError(f"Designer presentation_receipt.changes[{index}]标题不一致")
+        if op == "append_notice" and change.get("notice") != operation.get("notice"):
+            raise ReporterError(f"Designer presentation_receipt.changes[{index}]说明类型不一致")
+        if op in {"move_section", "add_section"}:
+            if not isinstance(operation.get("position"), int) or isinstance(operation.get("position"), bool):
+                raise ReporterError(f"presentation_patch.operations[{index}]缺少显式位置")
+            if not isinstance(change.get("position"), int) or isinstance(change.get("position"), bool):
+                raise ReporterError(f"Designer presentation_receipt.changes[{index}]缺少生效位置")
+            if change.get("position") != operation.get("position"):
+                raise ReporterError(f"Designer presentation_receipt.changes[{index}]生效位置不一致")
 
 
 def _validate_portable_assets(
@@ -408,6 +500,13 @@ def validate_report_run_directory(
         raise ReporterError("run_manifest.json的design_brief哈希不一致")
     if brief.get("frozen_payload_hash") != payload_hash:
         raise ReporterError("design-brief.json不对应designer-input.json")
+    presentation_patch = brief.get("presentation_patch")
+    presentation_patch_hash = brief.get("presentation_patch_hash")
+    if presentation_patch is None:
+        if presentation_patch_hash is not None:
+            raise ReporterError("design-brief.json含无对应补丁的presentation_patch_hash")
+    elif not isinstance(presentation_patch, Mapping) or presentation_patch_hash != stable_hash(presentation_patch):
+        raise ReporterError("design-brief.json的presentation_patch哈希不一致")
 
     rendered = manifest.get("rendered")
     receipt_ref = manifest.get("designer_artifact_manifest")
@@ -424,6 +523,22 @@ def validate_report_run_directory(
     designer = rendered.get("designer")
     if not isinstance(designer, Mapping) or designer.get("artifact_manifest") != receipt:
         raise ReporterError("run_manifest.json中的Designer回执与持久化清单不一致")
+    validate_presentation_receipt(designer.get("presentation_receipt"), presentation_patch)
+    expected_semantic_hash = _designer_semantic_fact_hash(payload)
+    if receipt.get("semantic_fact_hash") != expected_semantic_hash:
+        raise ReporterError("Designer落盘回执未绑定冻结公开事实")
+    expected_presentation_hash = _designer_presentation_input_hash(
+        semantic_fact_hash=expected_semantic_hash,
+        output_type=str(request.get("output_type", "")),
+        output_format=str(request.get("format", "")),
+        asset_mode=str(designer.get("asset_mode", "")),
+        design_system_id=designer.get("design_system_id"),
+        design_system_hash=designer.get("design_system_hash"),
+        template_id=receipt.get("template_id"),
+        presentation_patch=presentation_patch if isinstance(presentation_patch, Mapping) else None,
+    )
+    if receipt.get("presentation_input_hash") != expected_presentation_hash:
+        raise ReporterError("Designer落盘回执未绑定本次展示输入")
     if rendered.get("format") != request.get("format") or receipt.get("format") != request.get("format"):
         raise ReporterError("Designer回执的format与report-request.json不一致")
     if "layout" in receipt or "layout" in designer:
@@ -582,5 +697,5 @@ def validate_report_run_directory(
 
 __all__ = [
     "resolve_artifact_path", "sha256_file", "validate_artifact_bytes", "validate_designer_artifact",
-    "validate_hashed_artifact", "validate_report_run_directory", "validate_written_artifact",
+    "validate_hashed_artifact", "validate_presentation_receipt", "validate_report_run_directory", "validate_written_artifact",
 ]
