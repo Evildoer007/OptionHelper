@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import re
 
+from .interaction import delivery_preferences_from_text
 from .models import RouteDecision
 
 
@@ -15,7 +16,7 @@ _RECOMMEND = ("推荐", "适合什么", "选什么", "买什么", "哪种", "什
 _MARKET_VIEW = ("看涨", "看跌", "震荡", "波动率", "行情", "期限", "目标收益", "最大亏损", "风险偏好")
 _DATA = ("下载数据", "获取数据", "行情数据", "历史数据", "收盘价", "复权", "ifind", "wind")
 _RUN = ("定价", "估值", "算一下", "计算", "greeks", "回测", "收益图", "payoffer", "pricer", "backtester", "运行")
-_KNOWLEDGE = ("是什么", "解释", "条款", "比较", "区别", "损益", "敲入", "敲出")
+_KNOWLEDGE = ("是什么", "解释", "介绍", "了解", "条款", "比较", "区别", "损益", "敲入", "敲出", "适用情景")
 _MAINTENANCE = ("新增产品", "修改optionlib", "修改optionreg", "发布产品", "资料维护", "入库")
 _EXISTING = ("已有结果", "这次结果", "这些结果", "run_id", "modulerun", "已运行")
 _CHAT = ("你好", "您好", "谢谢", "在吗", "早上好", "下午好", "晚上好")
@@ -32,7 +33,10 @@ def route_intent(prompt: str) -> RouteDecision:
     if not text:
         raise ValueError("prompt不能为空")
 
-    has_report = _contains(text, _REPORT)
+    requested_deliveries, declined_deliveries = delivery_preferences_from_text(text.lower())
+    has_report = bool(requested_deliveries) or (
+        _contains(text, _REPORT) and not declined_deliveries
+    )
     has_recommend = _contains(text, _RECOMMEND)
     has_market_view = _contains(text, _MARKET_VIEW)
     has_run = _contains(text, _RUN)
@@ -43,6 +47,9 @@ def route_intent(prompt: str) -> RouteDecision:
         return RouteDecision("maintenance", 0.98, "请求涉及产品资料维护或发布", False, "single")
     if has_report and _contains(text, _EXISTING):
         return RouteDecision("existing_report", 0.96, "请求基于已有运行结果生成报告", False, "single")
+    explicit_education = _contains(text, ("介绍", "了解", "解释", "是什么", "适用情景"))
+    if explicit_education and not has_recommend and not has_run and not has_report:
+        return RouteDecision("knowledge", 0.9, "请求教育性介绍，不进入正式推荐流程", False, "single")
     structure_selection = has_recommend or (has_market_view and bool(re.search(r"(结构|产品|策略)", text)))
     if has_report and structure_selection and not _contains(text, _EXISTING):
         return RouteDecision(
