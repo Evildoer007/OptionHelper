@@ -15,7 +15,10 @@ from .instruments import (
     FixedCashflowOption,
     OptionInstrument,
     OptionRegPathOption,
+    RangeAccrualOption,
     StaticAccumulatorOption,
+    VarianceSwapOption,
+    WorstOfCallOption,
 )
 from .models import MarketState, SolveTarget, ValuationConfig, ValuationState
 from .registry import EngineRegistry
@@ -24,6 +27,11 @@ from .standard.airbag import price_airbag_standard
 from .standard.barrier import price_barrier_standard
 from .standard.digital import price_binary_standard
 from .standard.fixed_cashflow import price_fixed_cashflow_standard
+from .standard.analytical_expectations import (
+    price_range_accrual_standard,
+    price_variance_swap_standard,
+    price_worst_of_standard,
+)
 from .standard.static_accumulator import price_static_accumulator_standard
 from .standard.vanilla import price_vanilla_standard
 from .standard.optionreg_path import price_optionreg_path_monte_carlo
@@ -59,6 +67,9 @@ _INSTRUMENT_TYPES = {
     "CompositeOption": CompositeOption,
     "StaticAccumulatorOption": StaticAccumulatorOption,
     "OptionRegPathOption": OptionRegPathOption,
+    "RangeAccrualOption": RangeAccrualOption,
+    "VarianceSwapOption": VarianceSwapOption,
+    "WorstOfCallOption": WorstOfCallOption,
 }
 _PRICE_HANDLERS = {
     "price_vanilla_standard": price_vanilla_standard,
@@ -68,6 +79,9 @@ _PRICE_HANDLERS = {
     "price_airbag_standard": price_airbag_standard,
     "price_static_accumulator_standard": price_static_accumulator_standard,
     "price_optionreg_path_monte_carlo": price_optionreg_path_monte_carlo,
+    "price_range_accrual_standard": price_range_accrual_standard,
+    "price_variance_swap_standard": price_variance_swap_standard,
+    "price_worst_of_standard": price_worst_of_standard,
 }
 
 for _route in _CATALOG.ENGINE_ROUTES.values():
