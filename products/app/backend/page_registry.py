@@ -127,6 +127,7 @@ class PageRegistry:
         candidate_id: str | None = None,
         catalog_version: str | None = None,
         contract_fingerprint: str | None = None,
+        contract_ref: HostObjectRef | None = None,
     ) -> dict[str, Any]:
         return self._issue_context(
             identity,
@@ -136,6 +137,7 @@ class PageRegistry:
             candidate_id=candidate_id,
             catalog_version=catalog_version,
             contract_fingerprint=contract_fingerprint,
+            contract_ref=contract_ref,
             require_bridge=True,
             request_policy=("module.catalog",) if task_id is None else ("module.catalog", "module.run", "result.select"),
         )
@@ -150,6 +152,7 @@ class PageRegistry:
         candidate_id: str | None = None,
         catalog_version: str | None = None,
         contract_fingerprint: str | None = None,
+        contract_ref: HostObjectRef | None = None,
     ) -> dict[str, Any]:
         """Issue a server-only OptChat context without mounting a page.
 
@@ -166,6 +169,7 @@ class PageRegistry:
             candidate_id=candidate_id,
             catalog_version=catalog_version,
             contract_fingerprint=contract_fingerprint,
+            contract_ref=contract_ref,
             require_bridge=False,
             request_policy=("conversation.tool.run",),
         )
@@ -326,6 +330,8 @@ class PageRegistry:
         module_name: str,
         context_payload: object,
         request_id: str,
+        *,
+        consume_request_id: bool = True,
     ) -> ModuleHostContext:
         """Re-authorize an iframe request against its session-bound context.
 
@@ -364,13 +370,46 @@ class PageRegistry:
                     principal_id=identity.principal_id,
                     audience=identity.audience,
                 )
-                request_ids = record["request_ids"]
-                if request_id in request_ids:
-                    raise ValidationError("Module Host request was already used")
-                request_ids.add(request_id)
+                if consume_request_id:
+                    request_ids = record["request_ids"]
+                    if request_id in request_ids:
+                        raise ValidationError("Module Host request was already used")
+                    request_ids.add(request_id)
         except ModuleHostContextError as error:
             raise ValidationError("Module Host context is invalid") from error
         return context
+
+    def renew_task_operation_context(
+        self, identity: SessionIdentity, context: ModuleHostContext,
+    ) -> dict[str, Any]:
+        """Issue fresh server-held authority for one already accepted operation.
+
+        The browser context is fully verified before the operation is queued.
+        A long queue must not extend that browser token; it receives a new
+        short-lived context carrying exactly the frozen, in-memory scope.
+        """
+
+        if (
+            not isinstance(context, ModuleHostContext)
+            or context.host_kind != "app"
+            or not context.task_id
+            or "module.run" not in context.request_policy
+        ):
+            raise ValidationError("Task operation Module Host context is invalid")
+        return self._issue_context(
+            identity,
+            context.module,
+            analysis_case_id=context.analysis_case_id,
+            task_id=context.task_id,
+            candidate_id=context.candidate_id,
+            catalog_version=context.catalog_version,
+            contract_fingerprint=context.contract_fingerprint,
+            require_bridge=False,
+            request_policy=context.request_policy,
+            contract_ref=context.contract_ref,
+            config_ref=context.config_ref,
+            result_refs=context.result_refs,
+        )
 
     def _purge_contexts(self) -> None:
         now = int(time.time())
