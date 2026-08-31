@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from itertools import pairwise
 from typing import Any
 
 from ._validation import (
@@ -140,6 +141,78 @@ class StaticAccumulatorOption(OptionInstrument):
 
 
 @dataclass(frozen=True, kw_only=True)
+class WorstOfCallOption(OptionInstrument):
+    """两标的终值相对表现最小值看涨。"""
+
+    strike: float
+    maturity_years: float
+    normalized_spots: tuple[float, float]
+    volatilities: tuple[float, float]
+    dividend_yields: tuple[float, float]
+    correlation: float
+
+    def __post_init__(self) -> None:
+        _require_positive("strike", self.strike)
+        _require_positive("maturity_years", self.maturity_years)
+        for label, values in (
+            ("normalized_spots", self.normalized_spots),
+            ("volatilities", self.volatilities),
+            ("dividend_yields", self.dividend_yields),
+        ):
+            if len(values) != 2:
+                raise ValueError(f"{label}必须包含两个标的值")
+        for value in self.normalized_spots:
+            _require_positive("normalized_spots", value)
+        for value in self.volatilities:
+            _require_positive("volatilities", value)
+        for value in self.dividend_yields:
+            _require_finite("dividend_yields", value)
+        _require_finite("correlation", self.correlation)
+        if not -1.0 < float(self.correlation) < 1.0:
+            raise ValueError("correlation必须严格位于-1和1之间")
+
+
+@dataclass(frozen=True, kw_only=True)
+class VarianceSwapOption(OptionInstrument):
+    """按真实观察间隔年化的方差互换。"""
+
+    strike_volatility: float
+    annualization_days: int
+    observation_times: tuple[float, ...]
+    maturity_years: float
+
+    def __post_init__(self) -> None:
+        _require_positive("strike_volatility", self.strike_volatility)
+        _require_positive_int("annualization_days", self.annualization_days)
+        _require_positive("maturity_years", self.maturity_years)
+        if len(self.observation_times) < 2:
+            raise ValueError("Variance Swap至少需要两个观察时点")
+        _require_strict_times("observation_times", self.observation_times)
+
+
+@dataclass(frozen=True, kw_only=True)
+class RangeAccrualOption(OptionInstrument):
+    """逐观察日计息的区间累计结构。"""
+
+    lower: float
+    upper: float
+    maximum_coupon: float
+    observation_times: tuple[float, ...]
+    maturity_years: float
+
+    def __post_init__(self) -> None:
+        _require_positive("lower", self.lower)
+        _require_positive("upper", self.upper)
+        if self.lower >= self.upper:
+            raise ValueError("Range Accrual下界必须小于上界")
+        require_nonnegative_real("maximum_coupon", self.maximum_coupon)
+        _require_positive("maturity_years", self.maturity_years)
+        if not self.observation_times:
+            raise ValueError("Range Accrual观察时点不得为空")
+        _require_nondecreasing_times("observation_times", self.observation_times)
+
+
+@dataclass(frozen=True, kw_only=True)
 class AutocallOption(OptionInstrument):
     kind: AutocallKind
     call_put: CallPut
@@ -234,3 +307,17 @@ def _require_weight(label: str, value: float) -> None:
     require_finite_real(label, value)
     if not 0.0 <= float(value) <= 1.0:
         raise ValueError(f"{label}必须位于0和1之间")
+
+
+def _require_strict_times(label: str, values: tuple[float, ...]) -> None:
+    for value in values:
+        require_nonnegative_real(label, value)
+    if any(right <= left for left, right in pairwise(values)):
+        raise ValueError(f"{label}必须严格递增")
+
+
+def _require_nondecreasing_times(label: str, values: tuple[float, ...]) -> None:
+    for value in values:
+        require_nonnegative_real(label, value)
+    if any(right <= left for left, right in pairwise(values)):
+        raise ValueError(f"{label}必须严格递增")
