@@ -1,11 +1,11 @@
 # 统一衍生品定价框架
 
-本目录是Pricer唯一的内部数值引擎，按“产品族+具体结构+定价方法”统一期权定价。原六族九结构的Golden与固定随机源作为迁移基线保留在测试与审计资料中。
+本目录是Pricer唯一的内部数值引擎，按“产品族+具体结构+定价方法”统一期权定价。历史Golden与固定随机源仅作为数值回归基线保留。
 
 ## 一、当前状态
 
-- 正式目录包含6个产品族、6个结构；原9个代表结构只作为测试内的Golden迁移基线保留，不构成正式产品入口。
-- 65个`entry_status=True`的OptionReg产品均由同一离散路径、观察日、事件与现金流解释器执行；简单结构仍优先使用已验证闭式解。
+- 正式目录包含10个产品族、10个结构。
+- 65个`entry_status=True`产品均保留统一的离散路径Monte Carlo入口；其中34个产品已通过产品级解析定价验证，并默认优先使用解析实现。
 - 支持PV、Delta、Gamma、Theta、Vega、Rho、Volga和Vanna。
 - 支持Autocall公平coupon反解和Path Accumulator公平strike反解。
 - 支持iFinD HTTP收盘行情和离线市场快照。
@@ -33,11 +33,15 @@ pricing_core/
 |产品族|结构|方法|
 |---|---|---|
 |VANILLA|EUROPEAN_VANILLA|BLACK_SCHOLES|
+|CASHFLOW|FIXED_CASHFLOW|DISCOUNTED_CASHFLOW|
 |DIGITAL|BINARY|BINARY_ANALYTIC|
 |BARRIER|BARRIER|REINER_RUBINSTEIN|
 |AIRBAG|AIRBAG|STATIC_REPLICATION|
 |ACCUMULATOR|STATIC_ACCUMULATOR|STATIC_REPLICATION|
-|OPTIONREG|声明式离散路径MC|MONTE_CARLO_CPU|
+|MULTI_ASSET|WORST_OF_CALL|WORST_OF_ANALYTIC|
+|VOLATILITY|VARIANCE_SWAP|VARIANCE_EXPECTATION|
+|ACCRUAL|RANGE_ACCRUAL|RANGE_ACCRUAL_ANALYTIC|
+|OPTIONREG|OPTIONREG_PATH|MONTE_CARLO_CPU|
 
 可直接查询目录：
 
