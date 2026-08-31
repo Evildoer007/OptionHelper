@@ -117,6 +117,42 @@ class NpyRandomSource:
             dtype=contiguous.dtype,
         ).reshape(contiguous.shape)
 
+    def iter_batches(
+        self,
+        paths: int,
+        steps: int,
+        *,
+        batch_size: int = 2048,
+    ):
+        """Yield deterministic row batches without materialising an expanded matrix.
+
+        The frozen source is laid out as ``(path, 800 draws)``.  Expansion must
+        therefore advance ``RandomState`` by complete 800-column rows even when
+        a product consumes fewer draws.  This preserves the exact legacy prefix
+        and seed semantics while bounding peak memory for large path counts.
+        """
+        if not isinstance(paths, int) or isinstance(paths, bool) or paths <= 0:
+            raise ValueError("paths必须为正整数")
+        if not isinstance(steps, int) or isinstance(steps, bool) or steps < 0:
+            raise ValueError("steps必须为非负整数")
+        if not isinstance(batch_size, int) or isinstance(batch_size, bool) or batch_size <= 0:
+            raise ValueError("batch_size必须为正整数")
+        rows, columns = self.info.shape
+        if steps > columns:
+            raise ValueError(f"steps={steps}超过随机数矩阵期限上限{columns}")
+        if paths <= rows:
+            for start in range(0, paths, batch_size):
+                stop = min(paths, start + batch_size)
+                yield self._array[start:stop, :steps]
+            return
+        if self.info.seed is None:
+            raise ValueError("随机数矩阵路径不足，且该随机源没有可复现seed，无法按请求路径数扩展")
+        generator = np.random.RandomState(self.info.seed)
+        for start in range(0, paths, batch_size):
+            count = min(batch_size, paths - start)
+            complete_rows = generator.standard_normal((count, columns))
+            yield np.ascontiguousarray(complete_rows[:, :steps], dtype=DEFAULT_RANDOM_DTYPE)
+
     @classmethod
     def generated(cls, seed: int) -> "NpyRandomSource":
         """Build the matrix for ``seed`` in memory without touching source assets."""
