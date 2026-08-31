@@ -19,6 +19,7 @@
       "G": "N * g"
     },
     "pricing_methods": [
+      "analytical",
       "monte_carlo"
     ]
   },
