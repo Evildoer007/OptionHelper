@@ -404,7 +404,7 @@ export async function configureModelPicker(picker) {
   if (!picker) return;
   const catalog = await request("/api/settings/model-providers");
   const enabled = (catalog.providers || []).flatMap((provider) => (provider.credential_configured ? provider.models
-    .filter((model) => model.enabled)
+    .filter((model) => model.enabled && model.verification_state === "verified" && model.current_revision_match === true)
     .map((model) => ({ provider, model })) : []));
   picker.replaceChildren();
   if (!enabled.length) {
@@ -413,7 +413,7 @@ export async function configureModelPicker(picker) {
     option.textContent = "未配置模型";
     picker.append(option);
     picker.disabled = true;
-    picker.title = "请先在设置中心添加提供方并保存API Key。";
+    picker.title = "请先在设置中心保存Provider和API Key，并测试要使用的模型。";
   } else {
     const defaultSelection = catalog.default_model_selection || {};
     enabled.forEach(({ provider, model }) => {
