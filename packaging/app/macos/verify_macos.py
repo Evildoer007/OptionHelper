@@ -8,6 +8,7 @@ import http.client
 import json
 import os
 from pathlib import Path
+import plistlib
 import selectors
 import signal
 import stat
@@ -27,7 +28,25 @@ from build_runtime import (  # noqa: E402
     probe_runtime_process,
     verify_staged_runtime,
 )
-from name_boundary import assert_name_boundary_clean
+from name_boundary import assert_agent_runtime_delivery_clean
+APP_PACKAGING = ROOT / "packaging" / "app"
+if str(APP_PACKAGING) not in sys.path:
+    sys.path.insert(0, str(APP_PACKAGING))
+from platform_payload import (  # noqa: E402
+    MACOS_ALLOWED_RESOURCE_ENTRIES,
+    MACOS_BUILD_INPUTS,
+    MACOS_PAYLOAD_ROOTS,
+    MACOS_SOURCE_MAPPINGS,
+    MACOS_STRICT_DIRECTORY_PAYLOADS,
+    PlatformPayloadError,
+    assert_outer_resource_layout,
+    read_packaged_verification_fixture_identity,
+    verify_outer_payload_manifest,
+)
+from python_runtime_licenses import (  # noqa: E402
+    PythonRuntimeLicenseError,
+    verify_python_runtime_licenses,
+)
 
 
 class AppVerificationError(RuntimeError):
@@ -38,6 +57,13 @@ class AppVerificationError(RuntimeError):
 # 6.2 path-dependent pricing probe.  Keep this artifact-level timeout longer
 # than ordinary UI requests so a cold machine is not reported as a broken DMG.
 ARTIFACT_REQUEST_TIMEOUT_SECONDS = 120
+REQUIRED_CAPABILITY_LICENSES = (
+    "ReportLab-LICENSE.txt",
+    "Pillow-LICENSE.txt",
+    "pypdf-LICENSE.txt",
+    "python-docx-LICENSE.txt",
+    "openpyxl-LICENSE.txt",
+)
 
 
 def request(
@@ -95,6 +121,12 @@ def summarize_compute_result(
         reference.get("module") == module and reference.get("task_id") == task_id,
         f"{module}的ModuleRunRef未绑定当前任务",
     )
+    contract_fingerprint = result.get("contract_fingerprint")
+    require(
+        isinstance(contract_fingerprint, str)
+        and len(contract_fingerprint) == 64,
+        f"{module}缺少有效合同指纹",
+    )
     if module == "payoffer":
         require(isinstance(result.get("payoff_semantic_hash"), str) and result["payoff_semantic_hash"], "payoffer缺少收益结构语义结果哈希")
         expected_result = "payoff_semantic_hash"
@@ -107,6 +139,50 @@ def summarize_compute_result(
         "module_run_id": reference.get("run_id"),
         "result_section": expected_result,
     }
+
+
+def run_operation(
+    connection: http.client.HTTPConnection,
+    module: str,
+    task_id: str,
+    payload: dict[str, object],
+    headers: dict[str, str],
+) -> dict[str, object]:
+    """Submit one task-owned module run and wait for its persisted result."""
+
+    status, body, _ = request(
+        connection,
+        "POST",
+        f"/api/tasks/{task_id}/operations",
+        {"module": module, "action": "run", "payload": payload},
+        headers,
+    )
+    operation = body.get("operation") if isinstance(body, dict) else None
+    require(
+        status == 202 and isinstance(operation, dict)
+        and isinstance(operation.get("operation_id"), str),
+        f"{module}成品Operation提交失败：{body}",
+    )
+    operation_id = str(operation["operation_id"])
+    deadline = time.monotonic() + ARTIFACT_REQUEST_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        status, body, _ = request(
+            connection,
+            "GET",
+            f"/api/tasks/{task_id}/operations/{operation_id}",
+            headers={"Cookie": headers["Cookie"]},
+        )
+        operation = body.get("operation") if isinstance(body, dict) else None
+        require(status == 200 and isinstance(operation, dict), f"{module}成品Operation状态无效：{body}")
+        state = operation.get("state")
+        if state == "succeeded":
+            result = operation.get("result")
+            require(isinstance(result, dict), f"{module}成品Operation没有结果对象")
+            return result
+        if state in {"failed", "cancelled", "interrupted"}:
+            raise AppVerificationError(f"{module}成品Operation未完成：{operation}")
+        time.sleep(0.05)
+    raise AppVerificationError(f"{module}成品Operation在受控时限内未完成")
 
 
 def wait_for_url(process: subprocess.Popen[str], timeout: float = 45.0) -> str:
@@ -149,15 +225,137 @@ def verify_agent_runtime(resources: Path) -> dict[str, object]:
     return dict(verified)
 
 
-def verify(bundle: Path) -> dict[str, object]:
+def verify_delivery_metadata(
+    bundle: Path,
+    *,
+    verify_sources: bool = True,
+    repository_root: Path = ROOT,
+) -> dict[str, object]:
+    """Verify version, release state, legal payload, and development-file hygiene."""
+
+    resources = bundle / "Contents" / "Resources"
+    try:
+        manifest = json.loads((resources / "app-manifest.json").read_text(encoding="utf-8"))
+        with (bundle / "Contents" / "Info.plist").open("rb") as handle:
+            info = plistlib.load(handle)
+    except (OSError, ValueError, json.JSONDecodeError) as error:
+        raise AppVerificationError("App版本或发布记录不可解析") from error
+    require(isinstance(manifest, dict), "App Manifest必须是对象")
+    build_version = str(manifest.get("build_version", "")).removeprefix("v")
+    require(bool(build_version), "App Manifest缺少构建版本")
+    require(info.get("CFBundleShortVersionString") == build_version, "Info.plist版本与App构建版本不一致")
+    formal = manifest.get("formal_release") is True
+    expected_status = "formal_release" if formal else "local_candidate"
+    require(manifest.get("release_status") == expected_status, "App Manifest发布状态无效")
+    require(info.get("OptionHelperReleaseStatus") == expected_status, "Info.plist发布状态与App Manifest不一致")
+    require(not (resources / "runtime").exists(), "App不得重复携带Capability外层runtime源码树")
+    third_party = resources / "LICENSES" / "THIRD_PARTY.md"
+    require(third_party.is_file(), "App缺少THIRD_PARTY.md")
+    index = third_party.read_text(encoding="utf-8")
+    for name in REQUIRED_CAPABILITY_LICENSES:
+        source = repository_root / "LICENSES" / name
+        packaged = resources / "LICENSES" / "capability" / name
+        require(packaged.is_file(), f"App缺少必需第三方许可证：{name}")
+        if verify_sources:
+            require(source.is_file(), f"受控源码缺少必需第三方许可证：{name}")
+            require(packaged.read_bytes() == source.read_bytes(), f"App第三方许可证哈希不一致：{name}")
+        require(f"`capability/{name}`" in index, f"THIRD_PARTY.md未索引必需许可证：{name}")
+    try:
+        verify_outer_payload_manifest(
+            repository_root,
+            bundle,
+            manifest.get("outer_payload"),
+            source_mappings=MACOS_SOURCE_MAPPINGS,
+            payload_roots=MACOS_PAYLOAD_ROOTS,
+            build_inputs=MACOS_BUILD_INPUTS,
+            strict_directories=MACOS_STRICT_DIRECTORY_PAYLOADS,
+            verify_sources=verify_sources,
+        )
+        assert_outer_resource_layout(
+            bundle,
+            resources_relative="Contents/Resources",
+            allowed_entries=MACOS_ALLOWED_RESOURCE_ENTRIES,
+        )
+        runtime_licenses = resources / "LICENSES" / "python-runtime"
+        inventory = json.loads(
+            (runtime_licenses / "python-runtime-license-manifest.json").read_text(encoding="utf-8")
+        )
+        verify_python_runtime_licenses(runtime_licenses, inventory)
+    except (OSError, json.JSONDecodeError, PlatformPayloadError, PythonRuntimeLicenseError) as error:
+        raise AppVerificationError(str(error)) from error
+    signing = manifest.get("signing")
+    require(isinstance(signing, dict), "App Manifest缺少签名记录")
+    if formal:
+        identity = str(signing.get("identity", "")).strip()
+        require(
+            signing.get("method") == "developer-id"
+            and identity.startswith("Developer ID Application:"),
+            "正式App缺少Developer ID签名身份",
+        )
+        require(
+            signing.get("notarized") is True
+            and signing.get("app_stapled") is False
+            and signing.get("installer_stapled") is True
+            and signing.get("gatekeeper") == "accepted",
+            "正式App缺少公证、DMG staple或Gatekeeper成功记录",
+        )
+        try:
+            details = subprocess.run(
+                ["codesign", "--display", "--verbose=4", str(bundle)],
+                check=True,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                timeout=60,
+            ).stdout
+        except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+            output = getattr(error, "stdout", "") or ""
+            raise AppVerificationError(f"正式App签名检查失败：{output[-2000:]}") from error
+        require("Signature=adhoc" not in details, "正式App不得使用ad-hoc签名")
+        require(f"Authority={identity}" in details, "正式App Developer ID身份不一致")
+        try:
+            subprocess.run(
+                ["spctl", "--assess", "--type", "execute", "--verbose=4", str(bundle)],
+                check=True,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                timeout=60,
+            )
+        except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+            output = getattr(error, "stdout", "") or ""
+            raise AppVerificationError(f"正式App Gatekeeper检查失败：{output[-2000:]}") from error
+    else:
+        require(signing.get("method") == "ad-hoc", "本地候选必须明确记录ad-hoc签名")
+    return manifest
+
+
+def verify(
+    bundle: Path,
+    *,
+    verify_sources: bool = True,
+    repository_root: Path = ROOT,
+) -> dict[str, object]:
     bundle = bundle.expanduser().resolve()
     resources = bundle / "Contents" / "Resources"
+    try:
+        fixture_principal_label = read_packaged_verification_fixture_identity(
+            bundle,
+            resources_relative="Contents/Resources",
+        )
+    except PlatformPayloadError as error:
+        raise AppVerificationError(str(error)) from error
     backend = resources / "backend" / "OptionHelperBackend" / "OptionHelperBackend"
     require(backend.is_file(), "App缺少内置后端")
     try:
-        assert_name_boundary_clean(bundle, paths=(bundle,))
+        assert_agent_runtime_delivery_clean(resources)
     except AssertionError as error:
         raise AppVerificationError(str(error)) from error
+    manifest = verify_delivery_metadata(
+        bundle,
+        verify_sources=verify_sources,
+        repository_root=repository_root,
+    )
     runtime_summary = verify_agent_runtime(resources)
     subprocess.run(
         ["codesign", "--verify", "--deep", "--strict", "--verbose=2", str(bundle)],
@@ -203,7 +401,7 @@ def verify(bundle: Path) -> dict[str, object]:
                 connection,
                 "POST",
                 "/api/auth/local",
-                {"role": "admin", "principal_label": "artifact-verifier"},
+                {"role": "admin", "principal_label": fixture_principal_label},
             )
             require(
                 status == 200 and local_cookie is not None
@@ -251,51 +449,25 @@ def verify(bundle: Path) -> dict[str, object]:
             task = task_body.get("task")
             require(status == 201 and isinstance(task, dict) and isinstance(task.get("task_id"), str), "计算验收任务创建失败")
             task_id = task["task_id"]
+            underlyings = ["000905.SH"]
             base_input = {
                 "product_id": "1.1",
-                "identity": {
-                    "underlyings": ["000905.SH"],
-                    "reference_prices": {"000905.SH": 100.0},
-                },
+                "identity": {"underlyings": underlyings},
                 "term_overrides": {"K": 100.0, "T": 1.0, "Pi_0": 0.0},
                 "task_id": task_id,
             }
-            status, context_body, _ = request(
-                connection,
-                "GET",
-                f"/api/module-host/payoffer?task_id={task_id}",
-                headers={"Cookie": admin},
-            )
-            context = context_body.get("context")
-            require(status == 200 and isinstance(context, dict), "payoffer预览缺少Module Host Context")
-            headers = {
-                "Cookie": admin,
-                "Origin": url,
-                "X-OptionHelper-Module-Context": json.dumps(context),
-                "X-OptionHelper-Request-Id": "artifact-payoffer-preview",
-            }
-            status, tool_body, _ = request(
-                connection,
-                "POST",
-                "/api/tools/payoffer",
-                {"action": "preview", **base_input},
-                headers,
-            )
-            preview = tool_body.get("result")
-            require(
-                status == 200 and isinstance(preview, dict)
-                and isinstance(preview.get("preview"), dict)
-                and isinstance(preview.get("svg"), str)
-                and preview["svg"].lstrip().startswith("<svg"),
-                f"payoffer成品预览失败：{tool_body}",
-            )
             compute_requests = {
-                "payoffer": base_input,
+                "payoffer": {
+                    "product_id": base_input["product_id"],
+                    "underlyings": list(underlyings),
+                    "term_overrides": dict(base_input["term_overrides"]),
+                    "task_id": task_id,
+                },
                 "backtester": {
                     **base_input,
                     # 回测合同的起始参考价必须由已绑定历史的实际收盘价冻结；
                     # 不沿用Payoffer预览用的展示参考价100。
-                    "identity": {"underlyings": ["000905.SH"]},
+                    "identity": {"underlyings": underlyings},
                     "backtest_config": {"entry_rule": "explicit", "entry_dates": ["2022-01-04"]},
                 },
                 "pricer": {
@@ -329,16 +501,7 @@ def verify(bundle: Path) -> dict[str, object]:
                     "X-OptionHelper-Module-Context": json.dumps(context),
                     "X-OptionHelper-Request-Id": f"artifact-compute-{module}-{sequence}",
                 }
-                status, tool_body, _ = request(
-                    connection,
-                    "POST",
-                    f"/api/tools/{module}",
-                    compute_requests[module],
-                    headers,
-                )
-                require(status == 200, f"{module}成品实际计算失败：{tool_body}")
-                result = tool_body.get("result")
-                require(isinstance(result, dict), f"{module}成品实际计算没有结果对象")
+                result = run_operation(connection, module, task_id, compute_requests[module], headers)
                 compute_status[module] = summarize_compute_result(module, result, task_id=task_id)
 
             status, context_body, _ = request(
@@ -349,7 +512,68 @@ def verify(bundle: Path) -> dict[str, object]:
             )
             context = context_body.get("context")
             require(status == 200 and isinstance(context, dict), "已绑定任务的payoffer预览缺少Module Host Context")
-            scoped_preview = {"action": "preview", **base_input}
+            require(context.get("task_id") == task_id, "已绑定payoffer预览上下文未绑定当前任务")
+            contract_ref = context.get("contract_ref")
+            contract_fingerprint = context.get("contract_fingerprint")
+            require(isinstance(contract_ref, dict), "已绑定payoffer预览缺少合同引用")
+            require(
+                isinstance(contract_fingerprint, str)
+                and len(contract_fingerprint) == 64
+                and contract_ref.get("content_hash") == contract_fingerprint,
+                "已绑定payoffer预览合同引用与指纹不一致",
+            )
+            headers = {
+                "Cookie": admin,
+                "Origin": url,
+                "X-OptionHelper-Module-Context": json.dumps(context),
+                "X-OptionHelper-Request-Id": "artifact-payoffer-bound-catalog",
+            }
+            status, tool_body, _ = request(
+                connection, "POST", "/api/tools/payoffer", {"action": "catalog"}, headers,
+            )
+            catalog = tool_body.get("result") if isinstance(tool_body, dict) else None
+            task_contract = catalog.get("task_contract") if isinstance(catalog, dict) else None
+            require(
+                status == 200 and isinstance(task_contract, dict)
+                and task_contract.get("product_id") == base_input["product_id"]
+                and isinstance(task_contract.get("identity"), dict)
+                and task_contract.get("contract_fingerprint") == contract_fingerprint,
+                f"payoffer目录未返回当前任务合同：{tool_body}",
+            )
+            task_identity = task_contract["identity"]
+            task_underlyings = task_identity.get("underlyings")
+            require(
+                isinstance(task_underlyings, list)
+                and bool(task_underlyings)
+                and all(isinstance(item, str) and item.strip() for item in task_underlyings),
+                "已绑定payoffer预览的任务合同缺少有效标的",
+            )
+
+            # Module Host contexts are single-use. Fetch a fresh context after
+            # reading the task contract. The page submits only editable fields;
+            # the Host reuses and validates the task-bound contract identity.
+            status, context_body, _ = request(
+                connection,
+                "GET",
+                f"/api/module-host/payoffer?task_id={task_id}",
+                headers={"Cookie": admin},
+            )
+            context = context_body.get("context")
+            require(
+                status == 200 and isinstance(context, dict)
+                and context.get("task_id") == task_id
+                and context.get("contract_fingerprint") == contract_fingerprint
+                and isinstance(context.get("contract_ref"), dict)
+                and context["contract_ref"].get("content_hash") == contract_fingerprint,
+                "payoffer预览未取得最新任务合同上下文",
+            )
+            scoped_preview = {
+                "action": "preview",
+                "product_id": str(task_contract["product_id"]),
+                "underlyings": list(task_underlyings),
+                "term_overrides": dict(base_input["term_overrides"]),
+                "task_id": task_id,
+            }
             for field in ("analysis_case_id", "candidate_id", "catalog_version", "contract_fingerprint"):
                 if context.get(field) is not None:
                     scoped_preview[field] = context[field]
@@ -401,10 +625,10 @@ def verify(bundle: Path) -> dict[str, object]:
                 "X-OptionHelper-Module-Context": json.dumps(context),
                 "X-OptionHelper-Request-Id": "artifact-pricer-6-2",
             }
-            status, tool_body, _ = request(
+            path_pricer_result = run_operation(
                 connection,
-                "POST",
-                "/api/tools/pricer",
+                "pricer",
+                path_task_id,
                 {
                     "product_id": "6.2",
                     "identity": {"underlyings": ["000905.SH"]},
@@ -426,9 +650,6 @@ def verify(bundle: Path) -> dict[str, object]:
                 },
                 headers,
             )
-            require(status == 200, f"6.2成品实际定价失败：{tool_body}")
-            path_pricer_result = tool_body.get("result")
-            require(isinstance(path_pricer_result, dict), "6.2成品实际定价没有结果对象")
             path_data_refs = path_pricer_result.get("data_refs")
             require(
                 isinstance(path_data_refs, list)
@@ -441,57 +662,58 @@ def verify(bundle: Path) -> dict[str, object]:
                 path_pricer_result,
                 task_id=path_task_id,
             )
-
-            # Payoffer uses the same first-run contract compiler. Verify it
-            # independently so an observation calendar cannot regress to a
-            # Pricer-only App preparation path.
-            status, payoff_task_body, _ = request(
-                connection,
-                "POST",
-                "/api/tasks",
-                {"subject": "成品App 6.2 Airbag收益结构验收"},
-                {"Cookie": admin},
-            )
-            payoff_task = payoff_task_body.get("task")
+            path_contract_fingerprint = path_pricer_result.get("contract_fingerprint")
             require(
-                status == 201 and isinstance(payoff_task, dict)
-                and isinstance(payoff_task.get("task_id"), str),
-                "6.2收益结构验收任务创建失败",
+                isinstance(path_contract_fingerprint, str)
+                and len(path_contract_fingerprint) == 64,
+                "6.2定价没有返回合同指纹",
             )
-            payoff_task_id = payoff_task["task_id"]
+
+            # Reuse the data-backed 6.2 contract established by the formal
+            # Pricer Operation. Payoffer must never compile this
+            # path-dependent product from an unrelated empty task.
             status, context_body, _ = request(
                 connection,
                 "GET",
-                f"/api/module-host/payoffer?task_id={payoff_task_id}",
+                f"/api/module-host/payoffer?task_id={path_task_id}",
                 headers={"Cookie": admin},
             )
             context = context_body.get("context")
-            require(status == 200 and isinstance(context, dict), "6.2收益结构缺少Module Host Context")
+            require(
+                status == 200 and isinstance(context, dict)
+                and context.get("task_id") == path_task_id
+                and isinstance(context.get("contract_ref"), dict)
+                and isinstance(context.get("contract_fingerprint"), str)
+                and context.get("contract_fingerprint") == path_contract_fingerprint
+                and context["contract_ref"].get("content_hash") == context.get("contract_fingerprint"),
+                "6.2收益结构未复用已冻结的定价任务合同",
+            )
             headers = {
                 "Cookie": admin,
                 "Origin": url,
                 "X-OptionHelper-Module-Context": json.dumps(context),
                 "X-OptionHelper-Request-Id": "artifact-payoffer-6-2",
             }
-            status, tool_body, _ = request(
+            path_payoffer_result = run_operation(
                 connection,
-                "POST",
-                "/api/tools/payoffer",
+                "payoffer",
+                path_task_id,
                 {
                     "product_id": "6.2",
-                    "identity": {"underlyings": ["000905.SH"]},
+                    "underlyings": ["000905.SH"],
                     "term_overrides": {},
-                    "task_id": payoff_task_id,
+                    "task_id": path_task_id,
                 },
                 headers,
             )
-            require(status == 200, f"6.2成品收益结构失败：{tool_body}")
-            path_payoffer_result = tool_body.get("result")
-            require(isinstance(path_payoffer_result, dict), "6.2成品收益结构没有结果对象")
             compute_status["payoffer_6_2"] = summarize_compute_result(
                 "payoffer",
                 path_payoffer_result,
-                task_id=payoff_task_id,
+                task_id=path_task_id,
+            )
+            require(
+                path_payoffer_result.get("contract_fingerprint") == path_contract_fingerprint,
+                "6.2收益结构结果未复用定价任务合同",
             )
 
             status, _body, _ = request(connection, "GET", "/optdesk", headers={"Cookie": admin})
@@ -535,9 +757,12 @@ def verify(bundle: Path) -> dict[str, object]:
             require('"provider": "keychain"' not in settings_text, "成品App设置仍写入钥匙串引用")
             require('"provider": "credential-manager"' not in settings_text, "成品App设置仍写入系统凭据引用")
             return {
-                "status": "verified",
+                "status": "backend_api_verified",
+                "native_interaction_acceptance": "not_run",
                 "agent_runtime": runtime_summary,
                 "capability_version": capability.get("capability_version"),
+                "build_version": manifest.get("build_version"),
+                "release_status": manifest.get("release_status"),
                 "modules": tool_status,
                 "compute_runs": compute_status,
                 "local_admin_optdesk_status": status,
@@ -569,3 +794,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+    assert_outer_resource_layout,
