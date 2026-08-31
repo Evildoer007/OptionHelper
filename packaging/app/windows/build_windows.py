@@ -19,34 +19,72 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[3]
 APP_ROOT = ROOT / "products" / "app"
 SKILL_PACKAGING = ROOT / "packaging" / "skill"
+APP_PACKAGING = ROOT / "packaging" / "app"
 WINDOWS_APP_ICON = ROOT / "assets" / "icons" / "optionhelper-app-icon-tile-light.ico"
 WINDOWS_APP_ICON_RELATIVE = Path("assets/icons/optionhelper-app-icon-tile-light.ico")
 WINDOWS_ICON_SIZES = (16, 20, 24, 32, 40, 48, 64, 96, 128, 256)
 WINDOWS_ICON_LAYER_COUNT = len(WINDOWS_ICON_SIZES)
 if str(SKILL_PACKAGING) not in sys.path:
     sys.path.insert(0, str(SKILL_PACKAGING))
+if str(APP_PACKAGING) not in sys.path:
+    sys.path.insert(0, str(APP_PACKAGING))
 if str(ROOT / "packaging") not in sys.path:
     sys.path.insert(0, str(ROOT / "packaging"))
 
-from verify_skill import content_tree_entries, tree_hash, verify_skill
+from verify_skill import content_tree_entries, tree_hash
+from verify_capability import verify_app_capability
 from release_contract import RELEASE_VERSION, require_release_version
+from platform_payload import (
+    BACKEND_DESKTOP_COMMON_MODULES,
+    WINDOWS_ALLOWED_RESOURCE_ENTRIES,
+    WINDOWS_BUILD_INPUTS,
+    WINDOWS_PAYLOAD_ROOTS,
+    WINDOWS_SOURCE_MAPPINGS,
+    WINDOWS_STRICT_DIRECTORY_PAYLOADS,
+    PlatformPayloadError,
+    assert_outer_resource_layout,
+    build_outer_payload_manifest,
+    stage_verification_fixture_definition,
+)
+from python_runtime_licenses import (
+    PythonRuntimeLicenseError,
+    stage_pyinstaller_dependency_licenses,
+    verify_python_runtime_licenses,
+)
 
 AGENT_RUNTIME_PACKAGING = ROOT / "packaging" / "app" / "agent_runtime"
 if str(AGENT_RUNTIME_PACKAGING) not in sys.path:
     sys.path.insert(0, str(AGENT_RUNTIME_PACKAGING))
 from build_runtime import (  # noqa: E402
     ALLOW_SOURCE_RUNTIME_FALLBACK_ENV,
+    DEFAULT_SOURCE_ROOT,
     LOCAL_VERIFIED,
     REQUIRE_NATIVE_RUNTIME_ENV,
     RuntimeBuildError,
     prepare_staged_runtime,
     resolve_runtime_candidate,
 )
-from name_boundary import assert_name_boundary_clean
+from name_boundary import assert_agent_runtime_delivery_clean, assert_name_boundary_clean
 
 
 class WindowsBuildError(RuntimeError):
     pass
+
+
+AGENT_RUNTIME_LEGAL_FILES = (
+    "OptionHelper-Agent-Runtime-LICENSE.txt",
+    "OptionHelper-Agent-Runtime-NOTICES.txt",
+    "OptionHelper-Agent-Runtime-SOURCE-MAPPING.md",
+)
+REQUIRED_CAPABILITY_LICENSES = (
+    "ReportLab-LICENSE.txt",
+    "Pillow-LICENSE.txt",
+    "pypdf-LICENSE.txt",
+    "python-docx-LICENSE.txt",
+    "openpyxl-LICENSE.txt",
+)
+WINDOWS_SIGNING_CERT_SHA1_ENV = "OPTIONHELPER_WINDOWS_SIGNING_CERT_SHA1"
+WINDOWS_TIMESTAMP_URL = "https://timestamp.digicert.com"
 
 
 def _env_flag(name: str, default: bool = False) -> bool:
@@ -75,11 +113,12 @@ def _source_fallback_enabled(explicit: bool | None, *, required: bool) -> bool:
     return _env_flag(ALLOW_SOURCE_RUNTIME_FALLBACK_ENV, True)
 
 
-def _assert_source_name_boundary() -> None:
+def _assert_source_name_boundary(*, repo_root: Path = ROOT) -> None:
+    app_root = repo_root / "products" / "app"
     try:
         assert_name_boundary_clean(
-            ROOT,
-            paths=(APP_ROOT / "backend", APP_ROOT / "frontend", APP_ROOT / "runtime"),
+            repo_root,
+            paths=(app_root / "backend", app_root / "frontend", app_root / "runtime"),
         )
     except AssertionError as error:
         raise WindowsBuildError(str(error)) from error
@@ -114,17 +153,18 @@ EXCLUDED_BACKEND_MODULES = (
 )
 MAX_BACKEND_BYTES = 600 * 1024 * 1024
 MAX_WINDOWS_APP_BYTES = 750 * 1024 * 1024
+EXTERNAL_COMMAND_TIMEOUT_SECONDS = 900
 MINIMUM_BUILD_PYTHON = (3, 11)
 PYINSTALLER_VERSION = "6.21.0"
 
 
-def backend_runtime_modules() -> tuple[str, ...]:
+def backend_runtime_modules(*, app_root: Path = APP_ROOT) -> tuple[str, ...]:
     """Return every App backend module that must survive freezing."""
 
     modules: set[str] = set()
-    source_root = APP_ROOT / "backend"
+    source_root = app_root / "backend"
     for source in source_root.rglob("*.py"):
-        relative = source.relative_to(APP_ROOT).with_suffix("")
+        relative = source.relative_to(app_root).with_suffix("")
         parts = relative.parts
         if parts[-1] == "__init__":
             parts = parts[:-1]
@@ -142,18 +182,55 @@ def _hash(path: Path) -> str:
 
 
 def _run(command: list[str], *, cwd: Path | None = None, env: dict[str, str] | None = None) -> None:
-    completed = subprocess.run(
-        command,
-        cwd=cwd,
-        env=env,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-    )
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=cwd,
+            env=env,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=EXTERNAL_COMMAND_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as error:
+        output = error.stdout or ""
+        raise WindowsBuildError(f"命令超时：{' '.join(command)}\n{output}") from error
     if completed.returncode:
         raise WindowsBuildError(f"命令失败：{' '.join(command)}\n{completed.stdout}")
+
+
+def formal_signing_thumbprint() -> str:
+    """Require an explicit real Authenticode certificate for formal builds."""
+
+    thumbprint = os.environ.get(WINDOWS_SIGNING_CERT_SHA1_ENV, "").strip().upper()
+    if len(thumbprint) != 40 or any(character not in "0123456789ABCDEF" for character in thumbprint):
+        raise WindowsBuildError(
+            f"Windows正式发布必须通过{WINDOWS_SIGNING_CERT_SHA1_ENV}指定40位证书SHA-1指纹"
+        )
+    if shutil.which("signtool") is None:
+        raise WindowsBuildError("Windows正式发布缺少signtool，禁止生成unsigned正式归档")
+    return thumbprint
+
+
+def sign_and_verify_executable(executable: Path, thumbprint: str) -> None:
+    """Apply and verify Authenticode; unsigned output is never promoted."""
+
+    _run([
+        "signtool", "sign", "/sha1", thumbprint, "/fd", "SHA256",
+        "/td", "SHA256", "/tr", WINDOWS_TIMESTAMP_URL, str(executable),
+    ])
+    _run(["signtool", "verify", "/pa", "/all", "/v", str(executable)])
+    script = (
+        "$signature=Get-AuthenticodeSignature -LiteralPath $args[0];"
+        "if($signature.Status -ne 'Valid' -or $null -eq $signature.SignerCertificate){exit 2};"
+        "if($signature.SignerCertificate.Thumbprint -ne $args[1]){exit 3}"
+    )
+    _run([
+        "powershell", "-NoProfile", "-NonInteractive", "-Command",
+        script, str(executable), thumbprint,
+    ])
 
 
 def _validate_application_icon(icon: Path = WINDOWS_APP_ICON) -> int:
@@ -182,8 +259,11 @@ def _validate_application_icon(icon: Path = WINDOWS_APP_ICON) -> int:
     return layer_count
 
 
-def verified_capability_icon(capability_root: Path) -> Path:
-    source_icon = WINDOWS_APP_ICON
+def verified_capability_icon(
+    capability_root: Path,
+    *,
+    source_icon: Path = WINDOWS_APP_ICON,
+) -> Path:
     capability_icon = capability_root / WINDOWS_APP_ICON_RELATIVE
     _validate_application_icon(source_icon)
     _validate_application_icon(capability_icon)
@@ -192,17 +272,24 @@ def verified_capability_icon(capability_root: Path) -> Path:
     return capability_icon
 
 
-def backend_build_command(workspace: Path, icon: Path = WINDOWS_APP_ICON) -> list[str]:
+def backend_build_command(
+    workspace: Path,
+    icon: Path = WINDOWS_APP_ICON,
+    *,
+    app_root: Path = APP_ROOT,
+) -> list[str]:
     _validate_application_icon(icon)
-    launcher = APP_ROOT / "desktop" / "macos" / "backend_launcher.py"
+    launcher = app_root / "desktop" / "macos" / "backend_launcher.py"
     command = [
         sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", "--onedir",
         "--name", "OptionHelperBackend", "--distpath", str(workspace / "pyinstaller-dist"),
         "--workpath", str(workspace / "pyinstaller-work"), "--specpath", str(workspace / "pyinstaller-spec"),
-        "--paths", str(APP_ROOT), "--icon", str(icon),
+        "--paths", str(app_root), "--icon", str(icon),
         "--exclude-module", "runtime", "--exclude-module", "modules",
     ]
-    for module in backend_runtime_modules():
+    for module in backend_runtime_modules(app_root=app_root):
+        command.extend(("--hidden-import", module))
+    for module in BACKEND_DESKTOP_COMMON_MODULES:
         command.extend(("--hidden-import", module))
     for module in NUMERIC_RUNTIME_MODULES:
         command.extend(("--hidden-import", module))
@@ -215,13 +302,25 @@ def backend_build_command(workspace: Path, icon: Path = WINDOWS_APP_ICON) -> lis
     return command
 
 
-def shell_build_command(output: Path, icon: Path = WINDOWS_APP_ICON) -> list[str]:
+def shell_build_command(
+    output: Path,
+    icon: Path = WINDOWS_APP_ICON,
+    *,
+    app_root: Path = APP_ROOT,
+    intermediate_root: Path | None = None,
+) -> list[str]:
     _validate_application_icon(icon)
-    return [
-        "dotnet", "publish", str(APP_ROOT / "desktop" / "windows" / "OptionHelper.Windows.csproj"),
+    command = [
+        "dotnet", "publish", str(app_root / "desktop" / "windows" / "OptionHelper.Windows.csproj"),
         "--configuration", "Release", "--runtime", "win-x64", "--self-contained", "true",
         f"-p:ApplicationIcon={icon}", "--output", str(output),
     ]
+    if intermediate_root is not None:
+        command.extend((
+            f"-p:BaseIntermediateOutputPath={intermediate_root / 'obj'}/",
+            f"-p:BaseOutputPath={intermediate_root / 'bin'}/",
+        ))
+    return command
 
 
 def copy_application_icon(resources: Path, icon: Path = WINDOWS_APP_ICON) -> Path:
@@ -285,6 +384,25 @@ def _copy_tree(source: Path, target: Path, *, extra_ignored: tuple[str, ...] = (
     shutil.copytree(source, target, ignore=ignore)
 
 
+def _copy_agent_runtime_licenses(destination: Path, *, license_root: Path = ROOT / "LICENSES") -> None:
+    destination.mkdir(parents=True)
+    for name in AGENT_RUNTIME_LEGAL_FILES:
+        source = license_root / name
+        if not source.is_file():
+            raise WindowsBuildError(f"缺少Agent Runtime发行声明：{source}")
+        shutil.copy2(source, destination / name)
+
+
+def _verify_required_licenses(resources: Path, *, license_root: Path = ROOT / "LICENSES") -> None:
+    for name in REQUIRED_CAPABILITY_LICENSES:
+        source = license_root / name
+        packaged = resources / "LICENSES" / "capability" / name
+        if not source.is_file() or not packaged.is_file():
+            raise WindowsBuildError(f"Windows App缺少必需第三方许可证：{name}")
+        if packaged.read_bytes() != source.read_bytes():
+            raise WindowsBuildError(f"Windows App第三方许可证与受控来源不一致：{name}")
+
+
 def _assert_staged_capability(source: Path, staged: Path) -> None:
     if content_tree_entries(source) != content_tree_entries(staged):
         raise WindowsBuildError("Windows App内置Capability不是当次Skill的逐字节副本")
@@ -298,27 +416,51 @@ def _manifest(
     capability_manifest: Path,
     icon: Path = WINDOWS_APP_ICON,
     agent_runtime: dict[str, object] | None = None,
+    signing_thumbprint: str | None = None,
+    formal_release: bool = False,
+    outer_payload: dict[str, object] | None = None,
 ) -> dict[str, object]:
     layer_count = _validate_application_icon(icon)
+    if formal_release and app_version != RELEASE_VERSION:
+        raise WindowsBuildError("Windows正式App Manifest版本必须为v1.0.0")
+    normalized_thumbprint = (signing_thumbprint or "").strip().upper()
+    if formal_release and (
+        len(normalized_thumbprint) != 40
+        or any(character not in "0123456789ABCDEF" for character in normalized_thumbprint)
+    ):
+        raise WindowsBuildError("Windows正式App Manifest不得记录unsigned签名")
     return {
         "app_version": app_version,
+        "build_version": RELEASE_VERSION,
+        "release_status": "formal_release" if formal_release else "local_candidate",
+        "formal_release": formal_release,
         "bundle_id": "com.optionhelper.app",
         "platform": "windows-x86_64",
         "capability_version": capability["capability_version"],
         "catalog_version": capability["catalog_version"],
         "capability_manifest_hash": _hash(capability_manifest),
         "capability_content_tree_hash": capability["content_tree_hash"],
+        "shared_payload_hash": capability["shared_payload_hash"],
         "protocol_id": capability["protocol_id"],
         "design_system_id": capability["design_system_id"],
         "shell_language": "csharp",
         "build_tool": "dotnet",
-        "signing": {"method": "unsigned", "notarized": False},
+        "signing": (
+            {
+                "method": "authenticode",
+                "certificate_thumbprint": normalized_thumbprint,
+                "status": "valid",
+            }
+            if formal_release else
+            {"method": "unsigned", "status": "local_candidate"}
+        ),
         "agent_runtime": agent_runtime or {
             "status": "disabled",
             "support_status": "development_only",
             "resource_path": None,
             "manifest_path": None,
         },
+        "outer_payload": outer_payload or {},
         "application_icon": {
             "source": WINDOWS_APP_ICON_RELATIVE.as_posix(),
             "packaged_path": "Resources/icons/OptionHelper.ico",
@@ -342,30 +484,43 @@ def build_windows(
     agent_runtime_path: Path | None = None,
     require_native_runtime: bool | None = None,
     allow_source_runtime_fallback: bool | None = None,
+    formal_release: bool = False,
+    repo_root: Path = ROOT,
 ) -> dict[str, Path]:
     try:
         require_release_version(app_version)
     except ValueError as error:
         raise WindowsBuildError(str(error)) from error
+    repo_root = repo_root.expanduser().resolve()
+    app_root = repo_root / "products" / "app"
+    app_packaging = repo_root / "packaging" / "app"
+    application_icon_source = repo_root / "assets" / "icons" / "optionhelper-app-icon-tile-light.ico"
+    license_root = repo_root / "LICENSES"
+    runtime_source_root = app_root / "runtime" / "optionhelper_agent_runtime"
+    formal_context = formal_release or versions_root.resolve() == (ROOT / "versions").resolve()
+    signing_thumbprint = formal_signing_thumbprint() if formal_context else None
     native_runtime_required = _runtime_required(
         require_native_runtime,
-        formal=versions_root.resolve() == (ROOT / "versions").resolve(),
+        formal=formal_context,
     )
     source_fallback_enabled = _source_fallback_enabled(
         allow_source_runtime_fallback,
         required=native_runtime_required,
     )
     if native_runtime_required:
-        _assert_source_name_boundary()
+        _assert_source_name_boundary(repo_root=repo_root)
     _progress("正在验证当次Capability")
     check_prerequisites(capability_root)
-    if verify_skill(capability_root):
-        raise WindowsBuildError("Capability未通过verify_skill")
+    if verify_app_capability(capability_root):
+        raise WindowsBuildError("App Capability未通过验收")
     capability_manifest = capability_root / "capability-manifest.json"
     capability = json.loads(capability_manifest.read_text(encoding="utf-8"))
     if tree_hash(content_tree_entries(capability_root)) != capability.get("content_tree_hash"):
         raise WindowsBuildError("Capability目录树哈希与Manifest不一致")
-    application_icon = verified_capability_icon(capability_root)
+    application_icon = verified_capability_icon(
+        capability_root,
+        source_icon=application_icon_source,
+    )
 
     release_root = versions_root.resolve() / app_version
     if release_root.exists() and not release_root.is_dir():
@@ -384,19 +539,35 @@ def build_windows(
         environment = dict(os.environ)
         environment["PYINSTALLER_CONFIG_DIR"] = str(temporary / "pyinstaller-config")
         _progress("正在构建后端运行时")
-        _run(backend_build_command(temporary, application_icon), cwd=ROOT, env=environment)
+        _run(
+            backend_build_command(temporary, application_icon, app_root=app_root),
+            cwd=repo_root,
+            env=environment,
+        )
         backend = temporary / "pyinstaller-dist" / "OptionHelperBackend"
         if not (backend / "OptionHelperBackend.exe").is_file():
             raise WindowsBuildError("PyInstaller未生成OptionHelperBackend.exe")
         _verify_backend(backend)
         verify_executable_icon(backend / "OptionHelperBackend.exe", application_icon)
+        if signing_thumbprint is not None:
+            sign_and_verify_executable(backend / "OptionHelperBackend.exe", signing_thumbprint)
 
         _progress("正在构建Windows应用壳")
         shell = temporary / "shell"
-        _run(shell_build_command(shell, application_icon), cwd=ROOT)
+        _run(
+            shell_build_command(
+                shell,
+                application_icon,
+                app_root=app_root,
+                intermediate_root=temporary / "dotnet-intermediate",
+            ),
+            cwd=repo_root,
+        )
         if not (shell / "OptionHelper.exe").is_file():
             raise WindowsBuildError("dotnet未生成OptionHelper.exe")
         verify_executable_icon(shell / "OptionHelper.exe", application_icon)
+        if signing_thumbprint is not None:
+            sign_and_verify_executable(shell / "OptionHelper.exe", signing_thumbprint)
         _run([str(shell / "OptionHelper.exe"), "--check-webview2"], cwd=shell)
 
         _progress("正在组装应用资源")
@@ -410,18 +581,33 @@ def build_windows(
             else:
                 shutil.copy2(path, target)
         _copy_tree(backend, resources / "backend" / "OptionHelperBackend")
-        _copy_tree(APP_ROOT / "backend", resources / "app" / "backend")
-        _copy_tree(APP_ROOT / "config", resources / "app" / "config")
-        _copy_tree(APP_ROOT / "frontend", resources / "frontend", extra_ignored=("*.md",))
+        _copy_tree(app_root / "frontend", resources / "frontend", extra_ignored=("*.md",))
+        try:
+            stage_verification_fixture_definition(
+                repo_root,
+                app,
+                resources_relative="Resources",
+            )
+        except PlatformPayloadError as error:
+            raise WindowsBuildError(str(error)) from error
         _copy_tree(capability_root, resources / "capability" / "option-helper")
         _assert_staged_capability(capability_root, resources / "capability" / "option-helper")
-        _copy_tree(ROOT / "core" / "src" / "runtime", resources / "runtime")
-        _copy_tree(ROOT / "LICENSES", resources / "LICENSES" / "capability")
+        _copy_tree(
+            license_root,
+            resources / "LICENSES" / "capability",
+            extra_ignored=("README.md", *AGENT_RUNTIME_LEGAL_FILES),
+        )
+        _copy_agent_runtime_licenses(
+            resources / "LICENSES" / "agent-runtime",
+            license_root=license_root,
+        )
+        _verify_required_licenses(resources, license_root=license_root)
         try:
             runtime_candidate = resolve_runtime_candidate(
                 "windows-x64",
                 explicit=agent_runtime_path,
-                repository_root=ROOT,
+                repository_root=repo_root,
+                formal=formal_context,
             )
             runtime_summary = prepare_staged_runtime(
                 resources,
@@ -429,6 +615,8 @@ def build_windows(
                 runtime_candidate,
                 required=native_runtime_required,
                 allow_source_fallback=source_fallback_enabled,
+                source_root=runtime_source_root,
+                require_source_provenance=native_runtime_required,
             )
         except RuntimeBuildError as error:
             raise WindowsBuildError(str(error)) from error
@@ -441,12 +629,53 @@ def build_windows(
             "--probe-compute-worker", "--resource-dir", str(resources),
         ])
         staged_icon = copy_application_icon(resources, application_icon)
+        acceptance_entry = app / "verify-windows.py"
+        shutil.copy2(app_packaging / "windows" / "verify_windows.py", acceptance_entry)
+        verification_root = app / "verification"
+        verification_root.mkdir()
+        shutil.copy2(app_packaging / "platform_payload.py", verification_root / "platform_payload.py")
+        shutil.copy2(app_packaging / "python_runtime_licenses.py", verification_root / "python_runtime_licenses.py")
+        try:
+            license_inventory = stage_pyinstaller_dependency_licenses(
+                temporary / "pyinstaller-work" / "OptionHelperBackend" / "Analysis-00.toc",
+                resources / "LICENSES" / "python-runtime",
+                requirements_lock=repo_root / "core" / "requirements.lock",
+                repository_license_root=license_root,
+            )
+            verify_python_runtime_licenses(resources / "LICENSES" / "python-runtime", license_inventory)
+            (resources / "LICENSES" / "THIRD_PARTY.md").write_text(
+                "# 第三方许可证\n\n"
+                "- Capability许可证见`capability/`。\n"
+                "- Agent Runtime许可证、NOTICE和源码映射见`agent-runtime/`。\n"
+                "- PyInstaller冻结Python依赖的许可证与NOTICE见`python-runtime/`清单。\n",
+                encoding="utf-8",
+                newline="",
+            )
+            outer_payload = build_outer_payload_manifest(
+                repo_root,
+                app,
+                source_mappings=WINDOWS_SOURCE_MAPPINGS,
+                payload_roots=WINDOWS_PAYLOAD_ROOTS,
+                build_inputs=WINDOWS_BUILD_INPUTS,
+                strict_directories=WINDOWS_STRICT_DIRECTORY_PAYLOADS,
+            )
+            assert_outer_resource_layout(
+                app,
+                resources_relative="Resources",
+                allowed_entries=WINDOWS_ALLOWED_RESOURCE_ENTRIES,
+            )
+        except (PlatformPayloadError, PythonRuntimeLicenseError) as error:
+            raise WindowsBuildError(str(error)) from error
+        manifest_version = app_version if formal_context else "development"
         manifest = _manifest(
-            app_version,
+            manifest_version,
             capability,
             capability_manifest,
             application_icon,
             agent_runtime=runtime_summary,
+            signing_thumbprint=signing_thumbprint,
+            formal_release=formal_context,
+            outer_payload=outer_payload,
         )
         (resources / "app-manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, sort_keys=True, indent=2) + "\n", encoding="utf-8", newline="")
         required = (app / "OptionHelper.exe", resources / "backend" / "OptionHelperBackend" / "OptionHelperBackend.exe", resources / "frontend" / "optchat" / "index.html", staged_icon)
@@ -455,6 +684,9 @@ def build_windows(
         app_size = sum(path.stat().st_size for path in app.rglob("*") if path.is_file())
         if app_size > MAX_WINDOWS_APP_BYTES:
             raise WindowsBuildError(f"Windows App体积{app_size / 1024 / 1024:.1f}MB超过750MB上限")
+
+        _progress("正在运行Windows后端/API与静态包验收")
+        _run([sys.executable, str(acceptance_entry), str(app), "--source-root", str(repo_root)], cwd=temporary)
 
         _progress("正在验证安装物")
         dist_root.mkdir(parents=True, exist_ok=True)
@@ -475,10 +707,7 @@ def build_windows(
                 if archive.read(member) != source.read_bytes():
                     raise WindowsBuildError(f"Windows ZIP内EXE与图标验收后的文件不一致：{member}")
         try:
-            assert_name_boundary_clean(
-                temporary,
-                paths=(app, staged_zip),
-            )
+            assert_agent_runtime_delivery_clean(resources)
         except AssertionError as error:
             raise WindowsBuildError(str(error)) from error
         output = dist_root / installer_name
@@ -488,19 +717,28 @@ def build_windows(
         checksum.write_text(f"{_hash(archive_installer)}  {installer_name}\n", encoding="utf-8", newline="")
         app_manifest = release_root / "app-manifest-windows.json"
         app_manifest.write_text(json.dumps(manifest, ensure_ascii=False, sort_keys=True, indent=2) + "\n", encoding="utf-8", newline="")
+        shutil.copy2(capability_manifest, release_root / "app-capability-manifest-windows.json")
         release_manifest = release_root / "platform-release-manifest-windows.json"
         release_manifest.write_text(json.dumps({
-            "schema": f"optionhelper.platform-release-manifest/{RELEASE_VERSION}", "app_version": app_version,
+            "schema": f"optionhelper.platform-release-manifest/{RELEASE_VERSION}" if formal_context else "optionhelper.platform-candidate-manifest", "app_version": manifest_version,
             "platform": "windows", "architecture": "x86_64", "installer": {
                 "filename": installer_name, "sha256": _hash(archive_installer), "size": archive_installer.stat().st_size,
             }, "app_manifest_hash": _hash(app_manifest), "capability_version": manifest["capability_version"],
             "catalog_version": manifest["catalog_version"], "capability_manifest_hash": manifest["capability_manifest_hash"],
-            "capability_content_tree_hash": manifest["capability_content_tree_hash"], "protocol_id": manifest["protocol_id"],
-            "design_system_id": manifest["design_system_id"], "signing_identity": "unsigned",
+            "capability_content_tree_hash": manifest["capability_content_tree_hash"],
+            "shared_payload_hash": manifest["shared_payload_hash"], "protocol_id": manifest["protocol_id"],
+            "design_system_id": manifest["design_system_id"],
+            "signing_identity": signing_thumbprint or "unsigned",
             "application_icon": manifest["application_icon"],
             "agent_runtime": manifest["agent_runtime"],
-            "native_support_status": manifest["agent_runtime"].get("status"),
-            "signature_status": "unsigned_local_candidate", "notarized": False, "release_status": "local_candidate",
+            "agent_runtime_status": manifest["agent_runtime"].get("status"),
+            "package_static_acceptance": "passed",
+            "backend_api_acceptance": "passed",
+            "native_interaction_acceptance": "not_run",
+            "signature_status": "authenticode_validated" if formal_context else "unsigned_local_candidate",
+            "notarized": False,
+            "release_status": "formal_release" if formal_context else "local_candidate",
+            "formal_distribution_status": "ready" if formal_context else "formal_distribution_unavailable",
         }, ensure_ascii=False, sort_keys=True, indent=2) + "\n", encoding="utf-8", newline="")
     return {"installer": output, "manifest": app_manifest, "release_manifest": release_manifest}
 
@@ -545,12 +783,17 @@ def check_prerequisites(capability_root: Path) -> None:
         raise WindowsBuildError("缺少dotnet SDK 8，无法构建WebView2 Windows壳")
     if shutil.which("powershell") is None:
         raise WindowsBuildError("缺少PowerShell，无法验证Windows EXE应用图标")
-    installed = subprocess.run(
-        ["dotnet", "--list-sdks"],
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        capture_output=True,
-    )
+    try:
+        installed = subprocess.run(
+            ["dotnet", "--list-sdks"],
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            capture_output=True,
+            timeout=EXTERNAL_COMMAND_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as error:
+        raise WindowsBuildError("检查dotnet SDK 8超时") from error
     if installed.returncode or not any(line.lstrip().startswith("8.") for line in installed.stdout.splitlines()):
         raise WindowsBuildError("需要dotnet SDK 8，当前环境不满足Windows App构建前置")
+    assert_outer_resource_layout,
