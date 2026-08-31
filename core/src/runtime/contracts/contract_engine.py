@@ -10,11 +10,12 @@ from __future__ import annotations
 import ast
 import re
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 from math import inf
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from types import MappingProxyType
+from typing import Any, Callable, Mapping, Sequence
 
 import numpy as np
 import pandas as pd
@@ -40,7 +41,7 @@ _ALLOWED_IDENTITY_KEYS = frozenset({"product_id", "name_zh", "entry_status"})
 _ALLOWED_PATH_KEYS = frozenset({"condition", "cases"})
 _ALLOWED_CASE_KEYS = frozenset({"domain", "pnl"})
 _OBSERVATION_TERM_KEYS = frozenset({"O_KO", "O_KI", "Oc", "Otouch", "Orange", "Ovar", "Ohedge", "Oreset"})
-_DEFAULT_STRIKE_ANCHOR_KEYS = {
+_DEFAULT_STRIKE_NORMALIZATION_KEYS = {
     "2.1": frozenset({"K1", "K2"}),
     "2.2": frozenset({"K1", "K2"}),
     "2.3": frozenset({"K1", "K2"}),
@@ -83,7 +84,7 @@ def _shared_term_catalog() -> Mapping[str, Any]:
 
 
 def _quoteable_price_term_keys(terms: Mapping[str, Any], catalog: Mapping[str, Any]) -> frozenset[str]:
-    """TermCatalog的price类别是唯一可平移或判定覆盖的依据。"""
+    """TermCatalog的price类别是唯一可归一化或判定覆盖的依据。"""
     return frozenset(
         key
         for key, value in terms.items()
@@ -94,36 +95,41 @@ def _quoteable_price_term_keys(terms: Mapping[str, Any], catalog: Mapping[str, A
     )
 
 
-def _default_strike_anchor(
+def _default_strike_normalization(
     product_id: str,
     terms: Mapping[str, Any],
     overrides: Mapping[str, Any],
     catalog: Mapping[str, Any],
 ) -> tuple[dict[str, Any], bool]:
-    """将线性多执行价产品的默认价格坐标整体平移至最低执行价100。"""
-    strike_keys = _DEFAULT_STRIKE_ANCHOR_KEYS.get(product_id)
+    """将线性多执行价产品的默认price坐标按比例归一化。
+
+    最低执行价定义为S_raw=100%。因此所有TermCatalog声明为price的
+    数值必须共同乘以100/min_strike，才能保持同一真实raw路径上的
+    相对价格、分段边界与价差经济语义。
+    """
+    strike_keys = _DEFAULT_STRIKE_NORMALIZATION_KEYS.get(product_id)
     if strike_keys is None:
         return dict(terms), False
     if not strike_keys.issubset(terms):
-        raise ContractResolutionError(f"{product_id}多执行价锚定缺少已登记执行价条款")
+        raise ContractResolutionError(f"{product_id}多执行价归一化缺少已登记执行价条款")
     price_keys = _quoteable_price_term_keys(terms, catalog)
     if set(overrides) & price_keys:
         return dict(terms), False
     strikes = [terms[key] for key in strike_keys]
     if any(isinstance(value, bool) or not isinstance(value, (int, float, np.number)) or not np.isfinite(float(value)) or float(value) <= 0 for value in strikes):
-        raise ContractResolutionError(f"{product_id}多执行价锚定要求执行价为正有限数值")
-    translation = _NORMALIZED_PRICE_BASE - min(float(value) for value in strikes)
-    anchored: dict[str, Any] = {}
+        raise ContractResolutionError(f"{product_id}多执行价归一化要求执行价为正有限数值")
+    normalization_factor = _NORMALIZED_PRICE_BASE / min(float(value) for value in strikes)
+    normalized: dict[str, Any] = {}
     for key, value in terms.items():
         if key not in price_keys:
-            anchored[key] = value
+            normalized[key] = value
         elif isinstance(value, (int, float, np.number)) and not isinstance(value, bool):
-            anchored[key] = float(value) + translation
+            normalized[key] = float(value) * normalization_factor
         elif isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
-            anchored[key] = [float(item) + translation for item in value]
+            normalized[key] = [float(item) * normalization_factor for item in value]
         else:
-            raise ContractResolutionError(f"{product_id}可报价price条款{key}无法按同一坐标锚定")
-    return anchored, True
+            raise ContractResolutionError(f"{product_id}可报价price条款{key}无法按同一比例归一化")
+    return normalized, True
 
 
 def _schedule_snapshot(
@@ -165,6 +171,53 @@ def _schedule_snapshot(
     return snapshot
 
 
+def derive_contract_end_date(contract_start_date: object, tenor_years: object) -> str:
+    """Return the civil maturity used by every formal contract compiler."""
+
+    start = pd.to_datetime(contract_start_date, errors="coerce")
+    if pd.isna(start):
+        raise ContractResolutionError("identity.contract_start_date不是有效日期")
+    if (
+        isinstance(tenor_years, bool)
+        or not isinstance(tenor_years, (int, float, np.number))
+        or not np.isfinite(float(tenor_years))
+        or float(tenor_years) <= 0
+    ):
+        raise ContractResolutionError("合同缺少可用于冻结到期日的有效期限T")
+    return (start + pd.Timedelta(days=round(float(tenor_years) * 365.0))).date().isoformat()
+
+
+def _frozen_civil_maturity_time(identity: Mapping[str, Any]) -> float | None:
+    """Return the frozen civil settlement time when both identity dates exist."""
+
+    start_value = identity.get("contract_start_date")
+    end_value = identity.get("contract_end_date")
+    if start_value not in {None, ""} and end_value not in {None, ""}:
+        start = pd.to_datetime(start_value, errors="coerce")
+        end = pd.to_datetime(end_value, errors="coerce")
+        if pd.isna(start) or pd.isna(end) or end <= start:
+            raise ContractResolutionError("合同起止日无法形成有效ACT/365结算时点")
+        return float((end.normalize() - start.normalize()).days / 365.0)
+    return None
+
+
+def _contract_maturity_time(identity: Mapping[str, Any], terms: Mapping[str, Any]) -> float:
+    """Return the economic maturity used to validate one settlement path."""
+
+    frozen = _frozen_civil_maturity_time(identity)
+    if frozen is not None:
+        return frozen
+    tenor = terms.get("T")
+    if (
+        isinstance(tenor, bool)
+        or not isinstance(tenor, (int, float, np.number))
+        or not np.isfinite(float(tenor))
+        or float(tenor) <= 0.0
+    ):
+        raise ContractResolutionError("合同缺少可用于解释结算时点的有效期限T")
+    return float(tenor)
+
+
 def _contract_calendar_window(
     terms: Mapping[str, Any],
     dates: pd.DatetimeIndex,
@@ -184,10 +237,9 @@ def _contract_calendar_window(
         if pd.isna(end):
             raise ContractResolutionError("identity.contract_end_date不是有效日期")
     else:
-        tenor = terms.get("T")
-        if isinstance(tenor, bool) or not isinstance(tenor, (int, float, np.number)) or not np.isfinite(float(tenor)) or float(tenor) <= 0:
-            raise ContractResolutionError("合同缺少可用于冻结观察日历的有效期限T")
-        end = start + pd.Timedelta(days=round(float(tenor) * 365.0))
+        end = pd.to_datetime(
+            derive_contract_end_date(contract_start_date, terms.get("T")),
+        )
     if end < start:
         raise ContractResolutionError("identity.contract_end_date不得早于contract_start_date")
     window = dates[(dates >= start) & (dates <= end)]
@@ -281,6 +333,456 @@ class CashflowBundle:
 
 
 @dataclass(frozen=True)
+class _ReachabilityInterval:
+    lower: float = -inf
+    upper: float = inf
+    lower_closed: bool = False
+    upper_closed: bool = False
+
+    def intersection(self, other: "_ReachabilityInterval") -> "_ReachabilityInterval | None":
+        lower = max(self.lower, other.lower)
+        upper = min(self.upper, other.upper)
+        lower_closed = (
+            self.lower_closed if self.lower > other.lower
+            else other.lower_closed if other.lower > self.lower
+            else self.lower_closed and other.lower_closed
+        )
+        upper_closed = (
+            self.upper_closed if self.upper < other.upper
+            else other.upper_closed if other.upper < self.upper
+            else self.upper_closed and other.upper_closed
+        )
+        if lower < upper or (lower == upper and lower_closed and upper_closed):
+            return _ReachabilityInterval(lower, upper, lower_closed, upper_closed)
+        return None
+
+
+_ALL_REACHABILITY = (_ReachabilityInterval(),)
+_APPLICABILITY_KEYS = frozenset({"path_index", "case_index", "status", "reason_code", "evidence_hash"})
+_APPLICABILITY_REASONS = frozenset({
+    "terminal_constraints_satisfiable",
+    "terminal_constraints_contradict",
+    "terminal_schedule_event_unavailable",
+})
+
+
+def _derive_path_case_applicability(
+    identity: Mapping[str, Any],
+    terms: Mapping[str, Any],
+    paths: Sequence[Mapping[str, Any]],
+    resolved_schedules: Mapping[str, Any],
+) -> tuple[dict[str, Any], ...]:
+    """Freeze calendar-dependent path/case reachability for one contract.
+
+    OptionReg remains the owner of the complete product path set.  This
+    projection proves only terminal contradictions implied by the same frozen
+    schedules and monitor formulas used by the evaluator; unknown history
+    conditions remain active and must still be witnessed by consumers.
+    """
+
+    variables = bind_term_symbols(terms, _shared_term_catalog())
+    monitor_rules = _terminal_monitor_rules(identity, terms, resolved_schedules, variables)
+    result: list[dict[str, Any]] = []
+    for path_offset, path in enumerate(paths):
+        path_intervals, path_reasons = _terminal_formula_intervals(
+            str(path["condition"]), variables, monitor_rules,
+        )
+        for case_offset, case in enumerate(path["cases"]):
+            case_intervals, case_reasons = _terminal_formula_intervals(
+                str(case["domain"]), variables, monitor_rules,
+            )
+            combined = _intersect_interval_sets(path_intervals, case_intervals)
+            reasons = path_reasons | case_reasons
+            if combined:
+                status = "active"
+                reason_code = "terminal_constraints_satisfiable"
+            else:
+                status = "inactive"
+                reason_code = (
+                    "terminal_schedule_event_unavailable"
+                    if "terminal_schedule_event_unavailable" in reasons
+                    else "terminal_constraints_contradict"
+                )
+            evidence_hash = semantic_hash({
+                "contract_end_date": identity.get("contract_end_date"),
+                "monitor": terms.get("monitor", {}),
+                "resolved_schedules": resolved_schedules,
+                "path_condition": path["condition"],
+                "case_domain": case["domain"],
+                "status": status,
+                "reason_code": reason_code,
+            })
+            result.append({
+                "path_index": path_offset + 1,
+                "case_index": case_offset + 1,
+                "status": status,
+                "reason_code": reason_code,
+                "evidence_hash": evidence_hash,
+            })
+    return tuple(result)
+
+
+def _validate_path_case_applicability(
+    value: Sequence[Mapping[str, Any]],
+    paths: Sequence[Mapping[str, Any]],
+) -> tuple[dict[str, Any], ...]:
+    if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
+        raise ContractResolutionError("ResolvedContract.path_case_applicability必须为数组")
+    expected_refs = {
+        (path_index, case_index)
+        for path_index, path in enumerate(paths, start=1)
+        for case_index, _case in enumerate(path["cases"], start=1)
+    }
+    records: list[dict[str, Any]] = []
+    seen: set[tuple[int, int]] = set()
+    for raw in value:
+        if not isinstance(raw, Mapping) or set(raw) != _APPLICABILITY_KEYS:
+            raise ContractResolutionError("path_case_applicability记录字段无效")
+        path_index = raw.get("path_index")
+        case_index = raw.get("case_index")
+        status = raw.get("status")
+        reason_code = raw.get("reason_code")
+        evidence_hash = raw.get("evidence_hash")
+        ref = (path_index, case_index)
+        if (
+            isinstance(path_index, bool) or not isinstance(path_index, int)
+            or isinstance(case_index, bool) or not isinstance(case_index, int)
+            or ref not in expected_refs or ref in seen
+            or status not in {"active", "inactive"}
+            or reason_code not in _APPLICABILITY_REASONS
+            or not isinstance(evidence_hash, str)
+            or re.fullmatch(r"[0-9a-f]{64}", evidence_hash) is None
+        ):
+            raise ContractResolutionError("path_case_applicability记录值无效")
+        seen.add(ref)
+        records.append(dict(raw))
+    if seen != expected_refs:
+        raise ContractResolutionError("path_case_applicability必须逐一覆盖全部产品path/case")
+    return tuple(records)
+
+
+def _terminal_monitor_rules(
+    identity: Mapping[str, Any],
+    terms: Mapping[str, Any],
+    schedules: Mapping[str, Any],
+    variables: Mapping[str, Any],
+) -> dict[str, tuple[str, bool, bool, tuple[_ReachabilityInterval, ...]]]:
+    monitor = terms.get("monitor", {})
+    if not isinstance(monitor, Mapping):
+        return {}
+    end_date = str(identity.get("contract_end_date") or "")
+    catalog = _shared_term_catalog()
+    dates_by_symbol: dict[str, tuple[str, ...]] = {}
+    for key, snapshot in schedules.items():
+        entry = catalog.get(key)
+        dates = snapshot.get("dates") if isinstance(snapshot, Mapping) else None
+        if isinstance(entry, Mapping) and isinstance(entry.get("symbol"), str) and isinstance(dates, Sequence):
+            dates_by_symbol[str(entry["symbol"])] = tuple(str(item) for item in dates)
+    rules: dict[str, tuple[str, bool, bool, tuple[_ReachabilityInterval, ...]]] = {}
+    for name, expression in monitor.items():
+        try:
+            node = ast.parse(str(expression), mode="eval").body
+        except SyntaxError:
+            continue
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Name) or not node.args:
+            continue
+        function = node.func.id
+        if function not in {"terminal_event_time", "first_time", "first_time_after", "first_time_before"}:
+            continue
+        event = _terminal_event_intervals(
+            node.args[0],
+            variables,
+            {symbol: len(dates) for symbol, dates in dates_by_symbol.items()},
+        )
+        if event is None:
+            continue
+        schedule_symbol, event_intervals = event
+        dates = dates_by_symbol.get(schedule_symbol, ())
+        same_terminal_price = bool(dates) and (not end_date or dates[-1] == end_date)
+        eligible = same_terminal_price
+        terminal_position = len(dates) - 1 if eligible else -1
+        kind = "terminal" if function == "terminal_event_time" else "history"
+        if function == "first_time_after" and eligible:
+            try:
+                skipped = int(evaluate_formula(ast.unparse(node.args[1]), variables))
+            except (IndexError, TypeError, ValueError, FormulaError):
+                eligible = False
+            else:
+                eligible = terminal_position >= skipped
+        if function == "first_time_before":
+            eligible = False
+        rules[str(name)] = (kind, eligible, same_terminal_price, event_intervals)
+    return rules
+
+
+def _terminal_event_intervals(
+    node: ast.AST,
+    variables: Mapping[str, Any],
+    terminal_ordinals: Mapping[str, int],
+) -> tuple[str, tuple[_ReachabilityInterval, ...]] | None:
+    if not isinstance(node, ast.Compare) or len(node.ops) != 1 or len(node.comparators) != 1:
+        return None
+    left, operator, right = node.left, node.ops[0], node.comparators[0]
+    left_series = _scheduled_series(left)
+    right_series = _scheduled_series(right)
+    if (left_series is None) == (right_series is None):
+        return None
+    if left_series is None:
+        left, right = right, left
+        operator = _reverse_comparison(operator)
+        left_series = right_series
+    assert left_series is not None
+    series_name, schedule_symbol = left_series
+    axis = {"S_t": "S_T", "W_t": "W_T"}.get(series_name)
+    if axis is None:
+        return None
+    terminal_ordinal = terminal_ordinals.get(schedule_symbol)
+    bound_node = right
+    scheduled_level = _terminal_schedule_level(
+        bound_node,
+        expected_series=left_series,
+        terminal_ordinal=terminal_ordinal,
+        variables=variables,
+    )
+    if scheduled_level is not None:
+        bound_node = ast.Constant(scheduled_level)
+    intervals = _axis_comparison_intervals(ast.Name(id=axis), operator, bound_node, variables, axis)
+    return (schedule_symbol, intervals) if intervals is not None else None
+
+
+def _terminal_schedule_level(
+    node: ast.AST,
+    *,
+    expected_series: tuple[str, str],
+    terminal_ordinal: int | None,
+    variables: Mapping[str, Any],
+) -> float | None:
+    """Resolve schedule_levels at the frozen terminal observation ordinal."""
+
+    if (
+        terminal_ordinal is None
+        or not isinstance(node, ast.Call)
+        or not isinstance(node.func, ast.Name)
+        or node.func.id != "schedule_levels"
+        or len(node.args) != 2
+        or _scheduled_series(node.args[0]) != expected_series
+    ):
+        return None
+    try:
+        schedule = evaluate_formula(ast.unparse(node.args[1]), variables)
+    except FormulaError:
+        return None
+    if not isinstance(schedule, Sequence) or isinstance(schedule, (str, bytes)):
+        return None
+    matches: list[float] = []
+    for item in schedule:
+        if not isinstance(item, Sequence) or isinstance(item, (str, bytes)) or len(item) != 2:
+            return None
+        ordinal, level = item
+        if ordinal == terminal_ordinal:
+            try:
+                matches.append(float(level))
+            except (TypeError, ValueError):
+                return None
+    if len(matches) != 1 or not np.isfinite(matches[0]):
+        return None
+    return matches[0]
+
+
+def _scheduled_series(node: ast.AST) -> tuple[str, str] | None:
+    if not isinstance(node, ast.Subscript) or not isinstance(node.value, ast.Name):
+        return None
+    slice_node = node.slice
+    if not isinstance(slice_node, ast.Name):
+        return None
+    return node.value.id, slice_node.id
+
+
+def _terminal_formula_intervals(
+    expression: str,
+    variables: Mapping[str, Any],
+    monitor_rules: Mapping[str, tuple[str, bool, bool, tuple[_ReachabilityInterval, ...]]],
+) -> tuple[tuple[_ReachabilityInterval, ...], frozenset[str]]:
+    try:
+        root = ast.parse(expression, mode="eval").body
+    except SyntaxError:
+        return _ALL_REACHABILITY, frozenset()
+    return _terminal_node_intervals(root, variables, monitor_rules)
+
+
+def _terminal_node_intervals(
+    node: ast.AST,
+    variables: Mapping[str, Any],
+    monitor_rules: Mapping[str, tuple[str, bool, bool, tuple[_ReachabilityInterval, ...]]],
+) -> tuple[tuple[_ReachabilityInterval, ...], frozenset[str]]:
+    if isinstance(node, ast.BoolOp):
+        parts = [_terminal_node_intervals(item, variables, monitor_rules) for item in node.values]
+        if isinstance(node.op, ast.Or):
+            nonempty = tuple(interval for intervals, _ in parts for interval in intervals)
+            return nonempty, frozenset().union(*(reasons for _, reasons in parts)) if not nonempty else frozenset()
+        intervals = _ALL_REACHABILITY
+        reasons: frozenset[str] = frozenset()
+        for following, following_reasons in parts:
+            intervals = _intersect_interval_sets(intervals, following)
+            reasons |= following_reasons
+        return intervals, reasons
+    if not isinstance(node, ast.Compare):
+        return _ALL_REACHABILITY, frozenset()
+    intervals = _ALL_REACHABILITY
+    reasons: frozenset[str] = frozenset()
+    left = node.left
+    for operator, right in zip(node.ops, node.comparators):
+        piece, piece_reasons = _comparison_terminal_constraint(
+            left, operator, right, variables, monitor_rules,
+        )
+        intervals = _intersect_interval_sets(intervals, piece)
+        reasons |= piece_reasons
+        left = right
+    return intervals, reasons
+
+
+def _comparison_terminal_constraint(
+    left: ast.AST,
+    operator: ast.cmpop,
+    right: ast.AST,
+    variables: Mapping[str, Any],
+    monitor_rules: Mapping[str, tuple[str, bool, bool, tuple[_ReachabilityInterval, ...]]],
+) -> tuple[tuple[_ReachabilityInterval, ...], frozenset[str]]:
+    monitor_name, state = _monitor_infinity_comparison(left, operator, right, monitor_rules)
+    if monitor_name is not None and state is not None:
+        kind, eligible, same_terminal_price, event_intervals = monitor_rules[monitor_name]
+        if state == "finite" and kind == "terminal":
+            if not eligible:
+                return (), frozenset({"terminal_schedule_event_unavailable"})
+            return (event_intervals, frozenset()) if same_terminal_price else (_ALL_REACHABILITY, frozenset())
+        if state == "infinite" and eligible and same_terminal_price:
+            return _complement_intervals(event_intervals), frozenset()
+        return _ALL_REACHABILITY, frozenset()
+    monitor_name = _monitor_maturity_equality(left, operator, right, monitor_rules)
+    if monitor_name is not None:
+        _kind, eligible, same_terminal_price, event_intervals = monitor_rules[monitor_name]
+        if not eligible or not same_terminal_price:
+            return (), frozenset({"terminal_schedule_event_unavailable"})
+        return event_intervals, frozenset()
+    direct = _axis_comparison_intervals(left, operator, right, variables, "S_T")
+    return (direct, frozenset()) if direct is not None else (_ALL_REACHABILITY, frozenset())
+
+
+def _monitor_infinity_comparison(
+    left: ast.AST,
+    operator: ast.cmpop,
+    right: ast.AST,
+    monitor_rules: Mapping[str, Any],
+) -> tuple[str | None, str | None]:
+    if isinstance(left, ast.Name) and left.id in monitor_rules and isinstance(right, ast.Name) and right.id == "inf":
+        if isinstance(operator, ast.Eq):
+            return left.id, "infinite"
+        if isinstance(operator, ast.Lt):
+            return left.id, "finite"
+    if isinstance(right, ast.Name) and right.id in monitor_rules and isinstance(left, ast.Name) and left.id == "inf":
+        if isinstance(operator, ast.Eq):
+            return right.id, "infinite"
+        if isinstance(operator, ast.Gt):
+            return right.id, "finite"
+    return None, None
+
+
+def _monitor_maturity_equality(
+    left: ast.AST,
+    operator: ast.cmpop,
+    right: ast.AST,
+    monitor_rules: Mapping[str, Any],
+) -> str | None:
+    if not isinstance(operator, ast.Eq):
+        return None
+    if (
+        isinstance(left, ast.Name)
+        and left.id in monitor_rules
+        and isinstance(right, ast.Name)
+        and right.id in {"T", "T_contract"}
+    ):
+        return left.id
+    if (
+        isinstance(right, ast.Name)
+        and right.id in monitor_rules
+        and isinstance(left, ast.Name)
+        and left.id in {"T", "T_contract"}
+    ):
+        return right.id
+    return None
+
+
+def _axis_comparison_intervals(
+    left: ast.AST,
+    operator: ast.cmpop,
+    right: ast.AST,
+    variables: Mapping[str, Any],
+    axis: str,
+) -> tuple[_ReachabilityInterval, ...] | None:
+    left_axis = isinstance(left, ast.Name) and left.id == axis
+    right_axis = isinstance(right, ast.Name) and right.id == axis
+    if left_axis == right_axis:
+        return None
+    bound_node = right if left_axis else left
+    effective_operator = operator if left_axis else _reverse_comparison(operator)
+    try:
+        bound = float(evaluate_formula(ast.unparse(bound_node), variables))
+    except (TypeError, ValueError, FormulaError):
+        return None
+    if not np.isfinite(bound):
+        return None
+    if isinstance(effective_operator, ast.Gt):
+        return (_ReachabilityInterval(lower=bound, lower_closed=False),)
+    if isinstance(effective_operator, ast.GtE):
+        return (_ReachabilityInterval(lower=bound, lower_closed=True),)
+    if isinstance(effective_operator, ast.Lt):
+        return (_ReachabilityInterval(upper=bound, upper_closed=False),)
+    if isinstance(effective_operator, ast.LtE):
+        return (_ReachabilityInterval(upper=bound, upper_closed=True),)
+    if isinstance(effective_operator, ast.Eq):
+        return (_ReachabilityInterval(bound, bound, True, True),)
+    return None
+
+
+def _reverse_comparison(operator: ast.cmpop) -> ast.cmpop:
+    if isinstance(operator, ast.Gt):
+        return ast.Lt()
+    if isinstance(operator, ast.GtE):
+        return ast.LtE()
+    if isinstance(operator, ast.Lt):
+        return ast.Gt()
+    if isinstance(operator, ast.LtE):
+        return ast.GtE()
+    return operator
+
+
+def _intersect_interval_sets(
+    left: Sequence[_ReachabilityInterval],
+    right: Sequence[_ReachabilityInterval],
+) -> tuple[_ReachabilityInterval, ...]:
+    return tuple(
+        merged
+        for first in left
+        for second in right
+        if (merged := first.intersection(second)) is not None
+    )
+
+
+def _complement_intervals(
+    intervals: Sequence[_ReachabilityInterval],
+) -> tuple[_ReachabilityInterval, ...]:
+    if len(intervals) != 1:
+        return _ALL_REACHABILITY
+    interval = intervals[0]
+    result: list[_ReachabilityInterval] = []
+    if interval.lower != -inf:
+        result.append(_ReachabilityInterval(upper=interval.lower, upper_closed=not interval.lower_closed))
+    if interval.upper != inf:
+        result.append(_ReachabilityInterval(lower=interval.upper, lower_closed=not interval.upper_closed))
+    return tuple(result)
+
+
+@dataclass(frozen=True)
 class ResolvedContract:
     """三个子模块共同读取的本次已解析合同。"""
 
@@ -290,14 +792,25 @@ class ResolvedContract:
     paths: tuple[Mapping[str, Any], ...]
     product_version: str = ""
     resolved_schedules: Mapping[str, Any] | None = None
+    path_case_applicability: tuple[Mapping[str, Any], ...] | None = None
     contract_fingerprint: str = ""
     registry_snapshot_hash: str = ""
     product_snapshot_hash: str = ""
     product_paths_hash: str = ""
 
     def __post_init__(self) -> None:
-        identity = deep_freeze(self.identity)
         terms = deep_freeze(self.terms)
+        identity_value = deep_thaw(self.identity)
+        if not isinstance(identity_value, Mapping):
+            raise ContractResolutionError("ResolvedContract.identity必须为对象")
+        if (
+            identity_value.get("contract_start_date") not in {None, ""}
+            and identity_value.get("contract_end_date") in {None, ""}
+        ):
+            identity_value["contract_end_date"] = derive_contract_end_date(
+                identity_value["contract_start_date"], terms.get("T"),
+            )
+        identity = deep_freeze(identity_value)
         sources = deep_freeze(self.term_sources)
         paths = tuple(deep_freeze(path) for path in self.paths)
         product_version = self.product_version or str(identity.get("product_version") or "development")
@@ -317,11 +830,20 @@ class ResolvedContract:
                 raise ContractResolutionError("ResolvedContract.product_version与产品快照哈希不一致")
         schedules = deep_freeze(self.resolved_schedules or _schedule_snapshot(terms))
         _validate_resolved_schedule_snapshot(terms, schedules, identity)
+        expected_applicability = _derive_path_case_applicability(identity, terms, paths, schedules)
+        if self.path_case_applicability is not None:
+            supplied_applicability = _validate_path_case_applicability(
+                self.path_case_applicability, paths,
+            )
+            if semantic_hash(supplied_applicability) != semantic_hash(expected_applicability):
+                raise ContractResolutionError("ResolvedContract.path_case_applicability与冻结日历及monitor语义不一致")
+        applicability = deep_freeze(expected_applicability)
         fingerprint = semantic_hash({
             "identity": _economic_identity(identity),
             "terms": terms,
             "paths": paths,
             "resolved_schedules": schedules,
+            "path_case_applicability": applicability,
         })
         if self.contract_fingerprint and self.contract_fingerprint != fingerprint:
             raise ContractResolutionError("ResolvedContract.contract_fingerprint校验失败")
@@ -331,6 +853,7 @@ class ResolvedContract:
         object.__setattr__(self, "paths", paths)
         object.__setattr__(self, "product_version", product_version)
         object.__setattr__(self, "resolved_schedules", schedules)
+        object.__setattr__(self, "path_case_applicability", applicability)
         object.__setattr__(self, "contract_fingerprint", fingerprint)
 
     @property
@@ -348,6 +871,16 @@ class ResolvedContract:
     @property
     def currency(self) -> str:
         return str(self.identity["currency"])
+
+    @property
+    def active_path_case_refs(self) -> tuple[tuple[int, int], ...]:
+        """Return zero-based path/case pairs valid for this frozen contract."""
+
+        return tuple(
+            (int(item["path_index"]) - 1, int(item["case_index"]) - 1)
+            for item in self.path_case_applicability or ()
+            if item["status"] == "active"
+        )
 
     def to_dict(self) -> dict[str, Any]:
         """返回旧消费者使用的四字段外形。
@@ -369,6 +902,7 @@ class ResolvedContract:
         result.update({
             "product_version": self.product_version,
             "resolved_schedules": deep_thaw(self.resolved_schedules),
+            "path_case_applicability": deep_thaw(self.path_case_applicability),
             "contract_fingerprint": self.contract_fingerprint,
             "registry_snapshot_hash": self.registry_snapshot_hash,
             "product_snapshot_hash": self.product_snapshot_hash,
@@ -390,6 +924,8 @@ class ResolvedContract:
         """严格恢复Core受控快照，拒绝展示投影或不完整对象。"""
         if not isinstance(snapshot, Mapping):
             raise ContractResolutionError("Core受控ResolvedContract快照必须是对象")
+        if "path_case_applicability" not in snapshot:
+            raise ContractResolutionError("Core受控ResolvedContract快照缺少path_case_applicability")
         try:
             return cls(**dict(snapshot))
         except (TypeError, ValueError, ContractResolutionError) as error:
@@ -426,23 +962,64 @@ class PayoffEvaluation:
         }
 
 
+class ContractEvaluationCancelled(RuntimeError):
+    """批量合同解释在路径边界收到取消信号。"""
+
+
+@dataclass(frozen=True)
+class PreparedContractEvaluator:
+    """绑定合同与价格网格的只读解释器准备结果。"""
+
+    contract: ResolvedContract
+    contract_fingerprint: str
+    asset_ids: tuple[str, ...]
+    valuation_date: str
+    times: tuple[float, ...]
+    dates: tuple[pd.Timestamp, ...] | None
+    grid_hash: str
+    _base_variables: Mapping[str, Any] = field(repr=False, compare=False)
+    _schedule_cache: Mapping[int, tuple[np.ndarray, np.ndarray]] = field(repr=False, compare=False)
+
+
+@dataclass(frozen=True)
+class BatchPayoffEvaluation:
+    """保持输入路径顺序的逐路径合同解释结果。"""
+
+    contract_fingerprint: str
+    grid_hash: str
+    evaluations: tuple[PayoffEvaluation, ...]
+
+
 class EventVector:
-    def __init__(self, values: Any, times: Sequence[float]) -> None:
+    def __init__(self, values: Any, times: Sequence[float], *, includes_path_endpoint: bool = False) -> None:
         self.values = np.asarray(values, dtype=bool)
         self.times = np.asarray(times, dtype=float)
+        self.includes_path_endpoint = bool(includes_path_endpoint)
         if self.values.shape != self.times.shape:
             raise FormulaError("路径布尔指标与时间网格长度不一致")
 
     def __and__(self, other: object) -> "EventVector":
         other_vector = _event_vector(other, self.times)
-        return EventVector(self.values & other_vector.values, self.times)
+        return EventVector(
+            self.values & other_vector.values,
+            self.times,
+            includes_path_endpoint=self.includes_path_endpoint and other_vector.includes_path_endpoint,
+        )
 
     def __or__(self, other: object) -> "EventVector":
         other_vector = _event_vector(other, self.times)
-        return EventVector(self.values | other_vector.values, self.times)
+        return EventVector(
+            self.values | other_vector.values,
+            self.times,
+            includes_path_endpoint=self.includes_path_endpoint and other_vector.includes_path_endpoint,
+        )
 
     def __invert__(self) -> "EventVector":
-        return EventVector(~self.values, self.times)
+        return EventVector(
+            ~self.values,
+            self.times,
+            includes_path_endpoint=self.includes_path_endpoint,
+        )
 
 
 def _numeric_relation(left: object, right: object, relation: str) -> Any | None:
@@ -478,9 +1055,17 @@ def _numeric_relation(left: object, right: object, relation: str) -> Any | None:
 
 
 class ObservedValues:
-    def __init__(self, values: Sequence[float], times: Sequence[float], ordinals: Sequence[int] | None = None) -> None:
+    def __init__(
+        self,
+        values: Sequence[float],
+        times: Sequence[float],
+        ordinals: Sequence[int] | None = None,
+        *,
+        includes_path_endpoint: bool = False,
+    ) -> None:
         self.values = np.asarray(values, dtype=float)
         self.times = np.asarray(times, dtype=float)
+        self.includes_path_endpoint = bool(includes_path_endpoint)
         if self.values.shape != self.times.shape:
             raise FormulaError("观察价格与时间网格长度不一致")
         self.ordinals = np.arange(1, len(self.values) + 1, dtype=int) if ordinals is None else np.asarray(ordinals, dtype=int)
@@ -489,7 +1074,11 @@ class ObservedValues:
 
     def _compare(self, other: object, relation: str, op) -> EventVector:
         result = _numeric_relation(self.values, other, relation)
-        return EventVector(op(self.values, other) if result is None else result, self.times)
+        return EventVector(
+            op(self.values, other) if result is None else result,
+            self.times,
+            includes_path_endpoint=self.includes_path_endpoint,
+        )
 
     def __lt__(self, other: object) -> EventVector:
         return self._compare(other, "lt", np.less)
@@ -513,19 +1102,33 @@ class ObservedValues:
 class PriceSeries:
     """安全公式可索引的价格序列，支持 ``S_t[O_out]``。"""
 
-    def __init__(self, values: Sequence[float], times: Sequence[float], dates: Sequence[Any] | None = None) -> None:
+    def __init__(
+        self,
+        values: Sequence[float],
+        times: Sequence[float],
+        dates: Sequence[Any] | None = None,
+        *,
+        schedule_cache: Mapping[int, tuple[np.ndarray, np.ndarray]] | None = None,
+    ) -> None:
         self.values = np.asarray(values, dtype=float)
         self.times = np.asarray(times, dtype=float)
         self.dates = pd.to_datetime(list(dates)) if dates is not None else None
+        self._schedule_cache = schedule_cache or {}
         if self.values.ndim != 1 or self.values.shape != self.times.shape:
             raise FormulaError("价格路径必须是一维且与时间网格等长")
 
     def __getitem__(self, schedule: object) -> ObservedValues:
-        positions = _schedule_positions(schedule, self.times, self.dates)
+        cached = self._schedule_cache.get(id(schedule))
+        if cached is None:
+            positions = _schedule_positions(schedule, self.times, self.dates)
+            ordinals = _schedule_observation_ordinals(schedule, self.times, self.dates, positions)
+        else:
+            positions, ordinals = cached
         return ObservedValues(
             self.values[positions],
             self.times[positions],
-            _schedule_observation_ordinals(schedule, self.times, self.dates, positions),
+            ordinals,
+            includes_path_endpoint=bool(len(positions) and positions[-1] == len(self.values) - 1),
         )
 
 
@@ -623,6 +1226,34 @@ def get_product(product_id: str, registry: Mapping[str, Any] | None = None) -> d
     return deepcopy(dict(product))
 
 
+def overridable_term_keys(
+    product_id: str,
+    registry: Mapping[str, Any] | None = None,
+) -> frozenset[str]:
+    """Return the current Catalog terms accepted by ``resolve_contract``.
+
+    The result is derived from the same product and rule sets used by contract
+    resolution.  The immutable set exposes policy membership without implying
+    a UI order or exposing the engine's internal policy constants.
+    """
+
+    source_registry = registry if registry is not None else load_registry()
+    product = get_product(product_id, source_registry)
+    terms = product.get("terms")
+    if not isinstance(terms, Mapping):
+        raise ContractResolutionError(f"产品{product_id}缺少有效terms")
+    derived = terms.get("derived_terms", {})
+    if not isinstance(derived, Mapping):
+        raise ContractResolutionError(f"产品{product_id}.derived_terms必须为对象")
+    return frozenset(
+        str(key)
+        for key in terms
+        if key not in _RULE_TERM_KEYS
+        and key not in _IMMUTABLE_TERM_KEYS
+        and key not in derived
+    )
+
+
 def verify_product_snapshot_binding(
     contract: ResolvedContract,
     registry: Mapping[str, Any],
@@ -661,6 +1292,11 @@ def verify_product_snapshot_binding(
         ("identity", _economic_identity(contract.identity), _economic_identity(expected.identity)),
         ("terms", contract.terms, expected.terms),
         ("term_sources", contract.term_sources, expected.term_sources),
+        (
+            "path_case_applicability",
+            contract.path_case_applicability,
+            expected.path_case_applicability,
+        ),
     ):
         if semantic_hash(actual) != semantic_hash(declared):
             raise ContractResolutionError(f"ResolvedContract.{label}不属于声明ProductVersion条款快照")
@@ -756,13 +1392,14 @@ def _resolve_contract(
     if unknown:
         raise ContractResolutionError(f"本次条款覆盖含未登记字段：{','.join(sorted(unknown))}")
     price_convention = str(supplied_identity.get("price_convention") or "normalized_100")
-    unanchored_terms = {**defaults, **overrides}
-    # 市场绝对价格合同已由Host冻结真实S0Raw，不能为展示坐标改写其经济条款。
-    # 仅线性多执行价的默认标准化预览采用整体平移，期权费与其他非价格条款保持原值。
-    final_terms, default_strike_anchored = (
-        _default_strike_anchor(str(product_id), unanchored_terms, overrides, source_registry["term_catalog"])
+    unnormalized_terms = {**defaults, **overrides}
+    # 市场绝对价格合同已由Host冻结真实S_raw，不能为展示坐标改写其经济条款。
+    # 仅线性多执行价的默认normalized_100坐标按100/min_strike比例归一化；
+    # 期权费与其他非price条款保持原值。
+    final_terms, default_strike_normalized = (
+        _default_strike_normalization(str(product_id), unnormalized_terms, overrides, source_registry["term_catalog"])
         if price_convention == "normalized_100"
-        else (dict(unanchored_terms), False)
+        else (dict(unnormalized_terms), False)
     )
     _validate_terms(final_terms, source_registry["term_catalog"])
     if "S0Vec" in final_terms:
@@ -780,7 +1417,7 @@ def _resolve_contract(
         # absolute-market contract still requires a Host-supplied quote.
         references = _normalized_reference_prices(final_terms, underlyings)
     if price_convention == "normalized_100":
-        _validate_normalized_price_base(final_terms, allow_scaled_coordinate=default_strike_anchored)
+        _validate_normalized_price_base(final_terms, allow_scaled_coordinate=default_strike_normalized)
     elif price_convention == "absolute_market":
         if references is None:
             raise ContractResolutionError("absolute_market价格口径必须提供reference_prices")
@@ -903,9 +1540,158 @@ def bind_term_symbols(terms: Mapping[str, Any], term_catalog: Mapping[str, Any] 
     return variables
 
 
+def prepare_contract_evaluator(
+    contract: ResolvedContract,
+    *,
+    times: Sequence[float],
+    dates: Sequence[Any] | None,
+    asset_ids: Sequence[str],
+    valuation_date: Any = None,
+) -> PreparedContractEvaluator:
+    """一次冻结批量路径共享的合同、时间网格和观察日映射。"""
+
+    if not isinstance(contract, ResolvedContract):
+        raise ContractResolutionError("批量解释准备需要ResolvedContract")
+    assets = tuple(str(item) for item in asset_ids)
+    if assets != contract.underlyings:
+        raise ContractResolutionError("asset_ids必须与ResolvedContract.underlyings完全一致")
+    grid = np.asarray(times, dtype=float)
+    if grid.ndim != 1 or len(grid) < 2 or not np.isfinite(grid).all() or grid[0] < 0.0 or np.any(np.diff(grid) <= 0):
+        raise ContractResolutionError("时间网格须含至少两个非负有限值且严格递增")
+
+    normalized_dates: tuple[pd.Timestamp, ...] | None = None
+    if dates is not None:
+        if len(dates) != len(grid):
+            raise ContractResolutionError("日期网格与时间网格长度不一致")
+        date_index = pd.to_datetime(list(dates), errors="coerce")
+        if date_index.isna().any() or not date_index.is_monotonic_increasing or date_index.has_duplicates:
+            raise ContractResolutionError("日期网格须为严格递增的有效交易日")
+        normalized_dates = tuple(pd.Timestamp(value) for value in date_index)
+        inferred_valuation_date = pd.Timestamp(normalized_dates[0]).normalize()
+    else:
+        if contract.resolved_schedules:
+            raise ContractResolutionError("含冻结观察日的合同准备批量解释时必须提供真实日期网格")
+        inferred_valuation_date = None
+    if valuation_date is not None and valuation_date != "":
+        declared_valuation_date = pd.to_datetime(valuation_date, errors="coerce")
+        if pd.isna(declared_valuation_date):
+            raise ContractResolutionError("valuation_date必须为有效日期")
+        declared_valuation_date = pd.Timestamp(declared_valuation_date).normalize()
+        if inferred_valuation_date is not None and declared_valuation_date != inferred_valuation_date:
+            raise ContractResolutionError("valuation_date必须与日期网格首日一致")
+        inferred_valuation_date = declared_valuation_date
+    if inferred_valuation_date is None:
+        raise ContractResolutionError("无日期网格时必须显式提供valuation_date")
+
+    base_variables = _contract_formula_variables(contract)
+    schedule_cache: dict[int, tuple[np.ndarray, np.ndarray]] = {}
+    date_index = pd.DatetimeIndex(normalized_dates) if normalized_dates is not None else None
+    for value in base_variables.values():
+        if not isinstance(value, _FrozenObservationSchedule):
+            continue
+        positions = _schedule_positions(value, grid, date_index)
+        ordinals = _schedule_observation_ordinals(value, grid, date_index, positions)
+        positions.setflags(write=False)
+        ordinals.setflags(write=False)
+        schedule_cache[id(value)] = (positions, ordinals)
+
+    grid_times = tuple(float(item) for item in grid)
+    valuation_iso = inferred_valuation_date.date().isoformat()
+    grid_hash = _prepared_grid_hash(
+        contract.contract_fingerprint,
+        assets,
+        valuation_iso,
+        grid_times,
+        normalized_dates,
+    )
+    return PreparedContractEvaluator(
+        contract=contract,
+        contract_fingerprint=contract.contract_fingerprint,
+        asset_ids=assets,
+        valuation_date=valuation_iso,
+        times=grid_times,
+        dates=normalized_dates,
+        grid_hash=grid_hash,
+        _base_variables=MappingProxyType(base_variables),
+        _schedule_cache=MappingProxyType(schedule_cache),
+    )
+
+
+def evaluate_contract_batch(
+    prepared: PreparedContractEvaluator,
+    values: Sequence[Any] | np.ndarray,
+    *,
+    price_fields: Mapping[str, Sequence[Any] | np.ndarray] | None = None,
+    batch_size: int | None = None,
+    cancellation_check: Callable[[], bool] | None = None,
+) -> BatchPayoffEvaluation:
+    """按输入顺序批量调用同一合同解释语义，不聚合、不降采样。"""
+
+    if not isinstance(prepared, PreparedContractEvaluator):
+        raise ContractResolutionError("批量解释必须使用prepare_contract_evaluator的准备结果")
+    if prepared.contract.contract_fingerprint != prepared.contract_fingerprint:
+        raise ContractResolutionError("准备结果与ResolvedContract指纹不一致")
+    expected_hash = _prepared_grid_hash(
+        prepared.contract_fingerprint,
+        prepared.asset_ids,
+        prepared.valuation_date,
+        prepared.times,
+        prepared.dates,
+    )
+    if prepared.grid_hash != expected_hash:
+        raise ContractResolutionError("准备结果的合同时间网格绑定已失效")
+    paths = np.asarray(values, dtype=float)
+    expected_shape = (len(prepared.times), len(prepared.asset_ids))
+    if paths.ndim != 3 or paths.shape[0] < 1 or paths.shape[1:] != expected_shape:
+        raise ContractResolutionError("批量价格路径必须为(paths,steps,assets)且匹配准备网格")
+    if batch_size is None:
+        chunk_size = len(paths)
+    elif isinstance(batch_size, bool) or not isinstance(batch_size, int) or batch_size <= 0:
+        raise ContractResolutionError("batch_size必须为正整数")
+    else:
+        chunk_size = batch_size
+
+    normalized_fields: dict[str, np.ndarray] = {}
+    for name, field_values in dict(price_fields or {}).items():
+        field_array = np.asarray(field_values, dtype=float)
+        if field_array.shape != paths.shape:
+            raise ContractResolutionError(f"price_fields.{name}必须与批量价格路径同形状")
+        normalized_fields[name] = field_array
+
+    evaluations: list[PayoffEvaluation] = []
+    for chunk_start in range(0, len(paths), chunk_size):
+        chunk_end = min(chunk_start + chunk_size, len(paths))
+        for path_index in range(chunk_start, chunk_end):
+            if cancellation_check is not None and cancellation_check():
+                raise ContractEvaluationCancelled("批量合同解释已取消")
+            path = PricePath.from_values(
+                paths[path_index],
+                times=prepared.times,
+                dates=prepared.dates,
+                asset_ids=prepared.asset_ids,
+                price_fields={name: data[path_index] for name, data in normalized_fields.items()},
+            )
+            variables = _formula_context(
+                prepared.contract,
+                path,
+                base_variables=prepared._base_variables,
+                schedule_cache=prepared._schedule_cache,
+            )
+            evaluations.append(_evaluate_contract_variables(prepared.contract, path, variables))
+    return BatchPayoffEvaluation(prepared.contract_fingerprint, prepared.grid_hash, tuple(evaluations))
+
+
 def evaluate_contract(contract: ResolvedContract, price_path: PricePath) -> PayoffEvaluation:
     """同一解释器选择唯一经济路径、唯一分段并产出逐笔持有方现金流。"""
     variables = _formula_context(contract, price_path)
+    return _evaluate_contract_variables(contract, price_path, variables)
+
+
+def _evaluate_contract_variables(
+    contract: ResolvedContract,
+    price_path: PricePath,
+    variables: dict[str, Any],
+) -> PayoffEvaluation:
     monitor_values = compute_monitor_values(contract, price_path, variables)
     variables.update(monitor_values)
     chosen_paths = [index for index, path in enumerate(contract.paths) if _coerce_bool(evaluate_formula(path["condition"], variables))]
@@ -918,17 +1704,15 @@ def evaluate_contract(contract: ResolvedContract, price_path: PricePath) -> Payo
     if len(chosen_cases) != 1:
         raise FormulaError(f"{contract.product_id}路径{selected_path + 1}命中{len(chosen_cases)}个分段，必须唯一")
     selected_case = chosen_cases[0]
+    if (selected_path, selected_case) not in set(contract.active_path_case_refs):
+        raise FormulaError(
+            f"{contract.product_id}运行路径命中合同冻结日历下不可达的"
+            f"path{selected_path + 1}/case{selected_case + 1}"
+        )
     result = evaluate_formula(cases[selected_case]["pnl"], variables)
     if not isinstance(result, CashflowBundle):
         raise FormulaError("pnl必须返回由cash(t, amount)组成的现金流")
     return PayoffEvaluation(selected_path, selected_case, monitor_values, result.flows)
-
-
-def evaluate_payoff(contract: ResolvedContract, price_path: PricePath) -> PayoffEvaluation:
-    """兼容既有调用方的公开估值入口。"""
-    return evaluate_contract(contract, price_path)
-
-
 def _validate_settlement_endpoint(
     contract: ResolvedContract,
     price_path: PricePath,
@@ -938,7 +1722,7 @@ def _validate_settlement_endpoint(
     """未到合同期限的输入只能用于已有终止事件的完整提前结算路径。"""
     if "T" not in contract.terms:
         return
-    contractual_tenor = float(contract.terms["T"])
+    contractual_tenor = _contract_maturity_time(contract.identity, contract.terms)
     actual_tenor = float(price_path.times[-1])
     if actual_tenor > contractual_tenor + _MATURITY_TIME_TOLERANCE:
         raise ContractResolutionError(
@@ -969,12 +1753,37 @@ def compute_monitor_values(contract: ResolvedContract, price_path: PricePath, ba
         raise ContractResolutionError("terms.monitor必须为扁平公式字典")
     variables = dict(base_variables or _formula_context(contract, price_path))
     result: dict[str, Any] = {}
-    for name, expression in monitor.items():
-        if name in result or not isinstance(name, str) or not isinstance(expression, str):
-            raise ContractResolutionError("monitor必须是唯一指标名到字符串公式的映射")
+    for name in _monitor_evaluation_order(monitor):
+        expression = monitor[name]
         result[name] = evaluate_formula(expression, variables)
         variables[name] = result[name]
     return result
+
+
+def _monitor_evaluation_order(monitor: Mapping[str, Any]) -> tuple[str, ...]:
+    """Return a deterministic dependency order independent of JSON key order."""
+
+    if any(not isinstance(name, str) or not isinstance(expression, str) for name, expression in monitor.items()):
+        raise ContractResolutionError("monitor必须是唯一指标名到字符串公式的映射")
+    names = frozenset(monitor)
+    dependencies = {
+        name: frozenset(
+            node.id for node in ast.walk(_validated_formula_tree(expression))
+            if isinstance(node, ast.Name) and node.id in names
+        )
+        for name, expression in monitor.items()
+    }
+    remaining = set(names)
+    resolved: set[str] = set()
+    ordered: list[str] = []
+    while remaining:
+        ready = sorted(name for name in remaining if dependencies[name] <= resolved)
+        if not ready:
+            raise ContractResolutionError("monitor指标存在循环依赖")
+        ordered.extend(ready)
+        resolved.update(ready)
+        remaining.difference_update(ready)
+    return tuple(ordered)
 
 
 def evaluate_formula(expression: str, variables: Mapping[str, Any]) -> Any:
@@ -983,16 +1792,8 @@ def evaluate_formula(expression: str, variables: Mapping[str, Any]) -> Any:
         raise FormulaError("公式必须为非空字符串")
     if len(expression) > _MAX_FORMULA_CHARS:
         raise FormulaError("公式超过最大长度")
-    tree = _parse_formula(expression)
-    nodes = list(ast.walk(tree))
-    if len(nodes) > _MAX_FORMULA_NODES:
-        raise FormulaError("公式超过最大语法复杂度")
-    stack = [(tree, 1)]
-    while stack:
-        node, depth = stack.pop()
-        if depth > _MAX_FORMULA_DEPTH:
-            raise FormulaError("公式超过最大嵌套深度")
-        stack.extend((child, depth + 1) for child in ast.iter_child_nodes(node))
+    tree = _validated_formula_tree(expression)
+
     try:
         result = _FormulaEvaluator(variables).visit(tree.body)
     except FormulaError:
@@ -1003,6 +1804,21 @@ def evaluate_formula(expression: str, variables: Mapping[str, Any]) -> Any:
         if float(result) != inf:
             raise FormulaError("公式结果必须为有限数值")
     return result
+
+
+@lru_cache(maxsize=512)
+def _validated_formula_tree(expression: str) -> ast.Expression:
+    tree = _parse_formula(expression)
+    nodes = list(ast.walk(tree))
+    if len(nodes) > _MAX_FORMULA_NODES:
+        raise FormulaError("公式超过最大语法复杂度")
+    stack = [(tree, 1)]
+    while stack:
+        node, depth = stack.pop()
+        if depth > _MAX_FORMULA_DEPTH:
+            raise FormulaError("公式超过最大嵌套深度")
+        stack.extend((child, depth + 1) for child in ast.iter_child_nodes(node))
+    return tree
 
 
 @lru_cache(maxsize=512)
@@ -1358,19 +2174,49 @@ def _normalized_reference_prices(terms: Mapping[str, Any], underlyings: Sequence
     return None
 
 
-def _formula_context(contract: ResolvedContract, price_path: PricePath) -> dict[str, Any]:
-    if price_path.asset_ids != contract.underlyings:
-        raise ContractResolutionError("价格路径asset_ids必须与ResolvedContract.underlyings完全一致")
+def _prepared_grid_hash(
+    contract_fingerprint: str,
+    asset_ids: Sequence[str],
+    valuation_date: str,
+    times: Sequence[float],
+    dates: Sequence[Any] | None,
+) -> str:
+    return semantic_hash({
+        "contract_fingerprint": contract_fingerprint,
+        "asset_ids": list(asset_ids),
+        "valuation_date": valuation_date,
+        "times": [float(item) for item in times],
+        "dates": None if dates is None else [pd.Timestamp(item).isoformat() for item in dates],
+    })
+
+
+def _contract_formula_variables(contract: ResolvedContract) -> dict[str, Any]:
     catalog = _shared_term_catalog()
     variables = bind_term_symbols(contract.terms, catalog)
-    # 正式合同中的观察日已在ResolvedContract冻结。无论路径是否带日期，都必须
-    # 先注入冻结日程；随后由_FrozenObservationSchedule显式拒绝无日期路径，
-    # 禁止退回monthly_last等selector按时间网格重新推导观察点。
     for key, snapshot in contract.resolved_schedules.items():
         symbol = str(catalog[key]["symbol"])
         variables[symbol] = _FrozenObservationSchedule(
             tuple(pd.Timestamp(value).normalize() for value in snapshot["dates"]),
         )
+    if "T" in contract.terms:
+        variables["T_contract"] = float(contract.terms["T"])
+    return variables
+
+
+def _formula_context(
+    contract: ResolvedContract,
+    price_path: PricePath,
+    *,
+    base_variables: Mapping[str, Any] | None = None,
+    schedule_cache: Mapping[int, tuple[np.ndarray, np.ndarray]] | None = None,
+) -> dict[str, Any]:
+    if price_path.asset_ids != contract.underlyings:
+        raise ContractResolutionError("价格路径asset_ids必须与ResolvedContract.underlyings完全一致")
+    catalog = _shared_term_catalog()
+    variables = dict(base_variables) if base_variables is not None else _contract_formula_variables(contract)
+    # 正式合同中的观察日已在ResolvedContract冻结。无论路径是否带日期，都必须
+    # 先注入冻结日程；随后由_FrozenObservationSchedule显式拒绝无日期路径，
+    # 禁止退回monthly_last等selector按时间网格重新推导观察点。
     # 公式中的T是当前实际结算终点，用于ACT/365票息与期权费的实际天数折算。
     # 合同期限仍保留在ResolvedContract；evaluate_contract随后拒绝半程未终止路径，
     # 只有已发生的提前终止事件才能在合同到期前结算。
@@ -1381,10 +2227,13 @@ def _formula_context(contract: ResolvedContract, price_path: PricePath) -> dict[
                 f"{contract.product_id}合同期限为{contractual_tenor}年，价格路径必须显式提供times；"
                 "不得使用默认1年时间网格"
             )
-        # T用于现金流的实际结算时点；T_contract保留合同约定期限，供明确
-        # 只在到期观察日才可触发的事件判断，不能被相邻交易日的路径终点替代。
-        variables["T_contract"] = contractual_tenor
-        variables["T"] = float(price_path.times[-1])
+        # T是冻结合同起止日定义的ACT/365结算时点；价格路径最后一行可能只是
+        # 到期日前最后可用市场价格，不能把该数据日伪装成合同到期日。
+        # T_contract保留登记期限，供明确依赖登记期限的公式使用。
+        frozen_maturity = _frozen_civil_maturity_time(contract.identity)
+        variables["T"] = (
+            frozen_maturity if frozen_maturity is not None else float(price_path.times[-1])
+        )
     observation_price = str(contract.terms.get("observation_price", "close"))
     raw_values = price_path.values_for(observation_price)
     references = contract.identity.get("reference_prices")
@@ -1427,8 +2276,12 @@ def _formula_context(contract: ResolvedContract, price_path: PricePath) -> dict[
     values = raw_values / reference_values[None, :] * normalized_reference[None, :]
     terminal = values[-1]
     performance = raw_values / reference_values[None, :] * 100.0
-    primary_series = PriceSeries(values[:, 0], price_path.times, price_path.dates)
-    worst_series = PriceSeries(np.min(performance, axis=1), price_path.times, price_path.dates)
+    primary_series = PriceSeries(
+        values[:, 0], price_path.times, price_path.dates, schedule_cache=schedule_cache,
+    )
+    worst_series = PriceSeries(
+        np.min(performance, axis=1), price_path.times, price_path.dates, schedule_cache=schedule_cache,
+    )
     variables.update({
         "S_t": primary_series,
         "S_T": float(terminal[0]),
@@ -1466,11 +2319,11 @@ def _is_monthly_schedule(value: object) -> bool:
 
 
 def _require_maturity_observation(values: object, maturity: object) -> bool:
-    """要求观察集合包含实际结算到期点，避免未观察到$T$却套用未触发分段。"""
+    """要求冻结观察集合包含当前受控价格路径的终点。"""
     if not isinstance(values, ObservedValues):
         raise FormulaError("require_maturity_observation第一个参数必须为观察价格序列")
-    terminal = _nonnegative_number(maturity, "require_maturity_observation到期时点")
-    if not len(values.times) or not _at_contractual_maturity(values.times[-1], terminal):
+    _nonnegative_number(maturity, "require_maturity_observation到期时点")
+    if not len(values.times) or not values.includes_path_endpoint:
         raise FormulaError("合同约定的观察日程必须包含实际到期日")
     return True
 
@@ -1806,7 +2659,7 @@ def _terminal_event_time(value: object, maturity: object) -> float:
     """
     vector = _event_vector(value)
     terminal = _nonnegative_number(maturity, "terminal_event_time到期时点")
-    if not len(vector.times) or not _at_contractual_maturity(vector.times[-1], terminal):
+    if not len(vector.times) or not vector.includes_path_endpoint:
         return inf
     return float(terminal) if bool(vector.values[-1]) else inf
 
