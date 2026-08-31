@@ -1983,7 +1983,7 @@ def validate_product_spec(product_id: str, product: Mapping[str, Any], term_cata
         issues.append("terms.pricing_methods必须包含monte_carlo")
     elif len(terms["pricing_methods"]) != len(set(terms["pricing_methods"])):
         issues.append("terms.pricing_methods不得重复")
-    if set(terms.get("pricing_methods", [])) - {"black_scholes", "monte_carlo"}:
+    if set(terms.get("pricing_methods", [])) - {"analytical", "monte_carlo"}:
         issues.append("pricing_methods含未登记方法")
     if "constraints" in terms and (not isinstance(terms["constraints"], list) or not terms["constraints"]):
         issues.append("constraints只能省略或为非空列表")
