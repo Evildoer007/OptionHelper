@@ -18,15 +18,38 @@ for path in (
     ROOT / "packaging",
     ROOT / "packaging" / "skill",
     ROOT / "packaging" / "app" / "macos",
+    ROOT / "packaging" / "app",
+    ROOT / "packaging" / "app" / "agent_runtime",
 ):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
 from runtime.knowledger.versioning import validate_published_catalog
-from build_macos import file_hash, verify_dmg_install_layout, verify_platform_release_manifest
+from build_macos import (
+    EXTERNAL_COMMAND_TIMEOUT_SECONDS,
+    MacOSBuildError,
+    file_hash,
+    verify_dmg_install_layout,
+    verify_formal_app_bundle,
+    verify_formal_dmg_distribution,
+    verify_platform_release_manifest,
+)
+from build_runtime import RuntimeBuildError, verify_staged_runtime
 from release_contract import PROTOCOL_ID, RELEASE_VERSION, require_published_at, require_release_version
 from verify_macos import verify as verify_macos_bundle
 from verify_skill import content_tree_entries, tree_hash, verify_skill, verify_zip
+from verify_capability import verify_app_capability
+from platform_payload import (
+    WINDOWS_ALLOWED_RESOURCE_ENTRIES,
+    WINDOWS_BUILD_INPUTS,
+    WINDOWS_PAYLOAD_ROOTS,
+    WINDOWS_SOURCE_MAPPINGS,
+    WINDOWS_STRICT_DIRECTORY_PAYLOADS,
+    PlatformPayloadError,
+    assert_outer_resource_layout,
+    verify_outer_payload_manifest,
+)
+from python_runtime_licenses import PythonRuntimeLicenseError, verify_python_runtime_licenses
 
 
 class ReleaseVerificationError(RuntimeError):
@@ -34,6 +57,29 @@ class ReleaseVerificationError(RuntimeError):
 
 
 PLATFORMS = ("macos", "windows")
+REQUIRED_CAPABILITY_LICENSES = (
+    "ReportLab-LICENSE.txt",
+    "Pillow-LICENSE.txt",
+    "pypdf-LICENSE.txt",
+    "python-docx-LICENSE.txt",
+    "openpyxl-LICENSE.txt",
+)
+
+
+def _run_external(command: list[str], label: str) -> subprocess.CompletedProcess[str]:
+    """Run one release-verification command with the shared platform timeout."""
+
+    try:
+        return subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=EXTERNAL_COMMAND_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as error:
+        output = f"{error.stdout or ''}{error.stderr or ''}"
+        raise ReleaseVerificationError(f"{label}超时：{output}") from error
 
 
 def _read_json(path: Path, label: str) -> dict[str, object]:
@@ -67,12 +113,14 @@ def platform_archive_names(version: str, platform: str) -> set[str]:
             f"{installer}.sha256",
             "app-manifest.json",
             "platform-release-manifest.json",
+            "app-capability-manifest-macos.json",
         }
     return {
         installer,
         f"{installer}.sha256",
         "app-manifest-windows.json",
         "platform-release-manifest-windows.json",
+        "app-capability-manifest-windows.json",
     }
 
 
@@ -186,41 +234,62 @@ def _verify_platform_binding(
 
 
 def _verify_macos_runtime(dmg: Path) -> None:
+    try:
+        verify_formal_dmg_distribution(dmg)
+    except MacOSBuildError as error:
+        raise ReleaseVerificationError(f"macOS DMG公证、staple或Gatekeeper门禁失败：{error}") from error
     with tempfile.TemporaryDirectory(prefix="optionhelper-release-dmg-") as temporary_name:
         mountpoint = Path(temporary_name) / "mounted"
         mountpoint.mkdir()
         attached = False
         try:
-            completed = subprocess.run(
+            completed = _run_external(
                 ["hdiutil", "attach", "-readonly", "-nobrowse", "-mountpoint", str(mountpoint), str(dmg)],
-                capture_output=True,
-                text=True,
-                check=False,
+                "DMG挂载",
             )
             if completed.returncode:
                 raise ReleaseVerificationError(f"DMG挂载失败：{completed.stdout}{completed.stderr}")
             attached = True
             bundle = mountpoint / "OptionHelper.app"
-            completed = subprocess.run(
+            completed = _run_external(
                 ["codesign", "--verify", "--deep", "--strict", "--verbose=2", str(bundle)],
-                capture_output=True,
-                text=True,
-                check=False,
+                "DMG内App签名校验",
             )
             if completed.returncode:
                 raise ReleaseVerificationError(f"DMG内App签名校验失败：{completed.stdout}{completed.stderr}")
-            verify_macos_bundle(bundle)
+            embedded_manifest = _read_json(
+                bundle / "Contents" / "Resources" / "app-manifest.json",
+                "DMG内App Manifest",
+            )
+            signing = embedded_manifest.get("signing")
+            _require(isinstance(signing, dict), "DMG内正式App缺少签名记录")
+            identity = str(signing.get("identity", "")).strip()
+            try:
+                verify_formal_app_bundle(bundle, expected_identity=identity)
+            except MacOSBuildError as error:
+                raise ReleaseVerificationError(f"macOS App Developer ID或Gatekeeper门禁失败：{error}") from error
+            verify_macos_bundle(bundle, verify_sources=False)
         finally:
             if attached:
-                detached = subprocess.run(
-                    ["hdiutil", "detach", str(mountpoint)], capture_output=True, text=True, check=False
-                )
-                if detached.returncode:
-                    forced = subprocess.run(
-                        ["hdiutil", "detach", "-force", str(mountpoint)], capture_output=True, text=True, check=False
-                    )
+                detach_error = ""
+                try:
+                    detached = _run_external(["hdiutil", "detach", str(mountpoint)], "DMG卸载")
+                    if detached.returncode:
+                        detach_error = f"{detached.stdout}{detached.stderr}" or f"退出码{detached.returncode}"
+                except ReleaseVerificationError as error:
+                    detach_error = str(error)
+                if detach_error:
+                    try:
+                        forced = _run_external(
+                            ["hdiutil", "detach", "-force", str(mountpoint)],
+                            "DMG强制卸载",
+                        )
+                    except ReleaseVerificationError as error:
+                        raise ReleaseVerificationError(f"DMG卸载失败：{detach_error}；{error}") from error
                     if forced.returncode:
-                        raise ReleaseVerificationError(f"DMG卸载失败：{detached.stdout}{detached.stderr}{forced.stdout}{forced.stderr}")
+                        raise ReleaseVerificationError(
+                            f"DMG卸载失败：{detach_error}{forced.stdout}{forced.stderr}"
+                        )
 
 
 def _verify_macos_release(
@@ -236,15 +305,18 @@ def _verify_macos_release(
     _require(dmg.is_file(), "版本归档缺少macOS DMG")
     _require(checksum_path.is_file(), "版本归档缺少macOS DMG校验文件")
     app_manifest = _read_json(app_manifest_path, "macOS App Manifest")
+    app_capability_path = version_root / "app-capability-manifest-macos.json"
+    app_capability = _read_json(app_capability_path, "macOS App Capability Manifest")
     _verify_platform_binding(app_manifest, capability)
     _require(
-        app_manifest.get("capability_manifest_hash") == file_hash(version_root / "capability-manifest.json"),
-        "macOS App Manifest未绑定正式Capability Manifest",
+        app_manifest.get("capability_manifest_hash") == file_hash(app_capability_path),
+        "macOS App Manifest未绑定正式App Capability Manifest",
     )
     _require(
-        app_manifest.get("capability_content_tree_hash") == capability.get("content_tree_hash"),
-        "macOS App Manifest未绑定正式Capability内容树",
+        app_manifest.get("capability_content_tree_hash") == app_capability.get("content_tree_hash"),
+        "macOS App Manifest未绑定正式App Capability内容树",
     )
+    _require(app_manifest.get("shared_payload_hash") == capability.get("shared_payload_hash"), "macOS App与Skill共享载荷不一致")
     try:
         verify_platform_release_manifest(platform_manifest_path, app_manifest_path=app_manifest_path, dmg_path=dmg)
     except RuntimeError as error:
@@ -255,13 +327,18 @@ def _verify_macos_release(
         return
     verify_dmg_install_layout(
         dmg,
-        expected_content_tree_hash=str(capability["content_tree_hash"]),
-        expected_manifest_hash=file_hash(version_root / "capability-manifest.json"),
+        expected_content_tree_hash=str(app_capability["content_tree_hash"]),
+        expected_manifest_hash=file_hash(app_capability_path),
     )
     _verify_macos_runtime(dmg)
 
 
-def _verify_windows_release(version_root: Path, capability: dict[str, object]) -> None:
+def _verify_windows_release(
+    version_root: Path,
+    capability: dict[str, object],
+    *,
+    verify_installed_bundle: bool = False,
+) -> None:
     installer = version_root / f"OptionHelper-{RELEASE_VERSION}-windows-x86_64.zip"
     app_manifest_path = version_root / "app-manifest-windows.json"
     platform_manifest_path = version_root / "platform-release-manifest-windows.json"
@@ -269,13 +346,26 @@ def _verify_windows_release(version_root: Path, capability: dict[str, object]) -
     _require(installer.is_file(), "版本归档缺少Windows安装ZIP")
     _require(checksum_path.is_file(), "版本归档缺少Windows安装ZIP校验文件")
     app_manifest = _read_json(app_manifest_path, "Windows App Manifest")
+    app_capability_path = version_root / "app-capability-manifest-windows.json"
+    app_capability = _read_json(app_capability_path, "Windows App Capability Manifest")
     platform_manifest = _read_json(platform_manifest_path, "Windows Platform Manifest")
     _verify_platform_binding(app_manifest, capability)
     _require(
-        app_manifest.get("capability_manifest_hash") == file_hash(version_root / "capability-manifest.json"),
-        "Windows App Manifest未绑定正式Capability Manifest",
+        app_manifest.get("capability_manifest_hash") == file_hash(app_capability_path),
+        "Windows App Manifest未绑定正式App Capability Manifest",
     )
+    _require(app_manifest.get("shared_payload_hash") == capability.get("shared_payload_hash"), "Windows App与Skill共享载荷不一致")
     expected_installer = {"filename": installer.name, "sha256": file_hash(installer), "size": installer.stat().st_size}
+    signing = app_manifest.get("signing")
+    _require(isinstance(signing, dict), "Windows正式App缺少签名记录")
+    thumbprint = str(signing.get("certificate_thumbprint", "")).strip().upper()
+    _require(
+        signing.get("method") == "authenticode"
+        and signing.get("status") == "valid"
+        and len(thumbprint) == 40
+        and all(character in "0123456789ABCDEF" for character in thumbprint),
+        "Windows正式App不得为unsigned",
+    )
     expected_manifest = {
         "schema": f"optionhelper.platform-release-manifest/{RELEASE_VERSION}",
         "app_version": RELEASE_VERSION,
@@ -287,13 +377,24 @@ def _verify_windows_release(version_root: Path, capability: dict[str, object]) -
         "catalog_version": app_manifest.get("catalog_version"),
         "capability_manifest_hash": app_manifest.get("capability_manifest_hash"),
         "capability_content_tree_hash": app_manifest.get("capability_content_tree_hash"),
+        "shared_payload_hash": app_manifest.get("shared_payload_hash"),
         "protocol_id": app_manifest.get("protocol_id"),
         "design_system_id": app_manifest.get("design_system_id"),
-        "signing_identity": "unsigned",
-        "signature_status": "unsigned_local_candidate",
+        "signing_identity": thumbprint,
+        "signature_status": "authenticode_validated",
         "notarized": False,
-        "release_status": "local_candidate",
+        "release_status": "formal_release",
+        "formal_distribution_status": "ready",
         "application_icon": app_manifest.get("application_icon"),
+        "agent_runtime": app_manifest.get("agent_runtime"),
+        "agent_runtime_status": (
+            app_manifest.get("agent_runtime", {}).get("status")
+            if isinstance(app_manifest.get("agent_runtime"), dict)
+            else None
+        ),
+        "package_static_acceptance": "passed",
+        "backend_api_acceptance": "passed",
+        "native_interaction_acceptance": "not_run",
     }
     mismatches = [
         field for field, expected in expected_manifest.items()
@@ -310,13 +411,92 @@ def _verify_windows_release(version_root: Path, capability: dict[str, object]) -
             _require(damaged is None, f"Windows安装ZIP CRC无效：{damaged}")
             package.extractall(temporary_name)
         embedded = Path(temporary_name) / "OptionHelper" / "Resources" / "capability" / "option-helper"
-        errors = verify_skill(embedded)
-        _require(not errors, "Windows安装ZIP内置Capability无效：" + "\n".join(errors))
+        app = Path(temporary_name) / "OptionHelper"
+        resources = app / "Resources"
+        for name in REQUIRED_CAPABILITY_LICENSES:
+            packaged = resources / "LICENSES" / "capability" / name
+            _require(packaged.is_file(), f"Windows安装ZIP缺少必需第三方许可证：{name}")
+        third_party = resources / "LICENSES" / "THIRD_PARTY.md"
+        _require(third_party.is_file(), "Windows安装ZIP缺少THIRD_PARTY.md")
+        _require("`python-runtime/`" in third_party.read_text(encoding="utf-8"), "Windows THIRD_PARTY.md未索引冻结依赖许可证")
+        _require(not (resources / "runtime").exists(), "Windows安装ZIP重复携带Capability外层runtime源码树")
+        try:
+            verify_outer_payload_manifest(
+                ROOT,
+                app,
+                app_manifest.get("outer_payload"),
+                source_mappings=WINDOWS_SOURCE_MAPPINGS,
+                payload_roots=WINDOWS_PAYLOAD_ROOTS,
+                build_inputs=WINDOWS_BUILD_INPUTS,
+                strict_directories=WINDOWS_STRICT_DIRECTORY_PAYLOADS,
+                verify_sources=False,
+            )
+            assert_outer_resource_layout(
+                app,
+                resources_relative="Resources",
+                allowed_entries=WINDOWS_ALLOWED_RESOURCE_ENTRIES,
+            )
+            runtime_licenses = resources / "LICENSES" / "python-runtime"
+            inventory = _read_json(
+                runtime_licenses / "python-runtime-license-manifest.json",
+                "Windows Python运行时许可证Manifest",
+            )
+            verify_python_runtime_licenses(runtime_licenses, inventory)
+        except (PlatformPayloadError, PythonRuntimeLicenseError) as error:
+            raise ReleaseVerificationError(str(error)) from error
+        verifier = app / "verify-windows.py"
+        _require(verifier.is_file(), "Windows安装ZIP缺少后端/API验收入口")
+        _require((app / "OptionHelper.exe").is_file(), "Windows安装ZIP缺少应用入口")
+        _require(
+            (app / "Resources" / "backend" / "OptionHelperBackend" / "OptionHelperBackend.exe").is_file(),
+            "Windows安装ZIP缺少后端入口",
+        )
+        for module in ("datafetcher", "payoffer", "pricer", "backtester", "reporter"):
+            _require(
+                (embedded / "assets" / "pages" / module / f"{module}.html").is_file(),
+                f"Windows安装ZIP缺少{module}页面",
+            )
+        errors = verify_app_capability(embedded)
+        _require(not errors, "Windows安装ZIP内置App Capability无效：" + "\n".join(errors))
         _require(
             (embedded / "capability-manifest.json").read_bytes()
-            == (version_root / "capability-manifest.json").read_bytes(),
+            == app_capability_path.read_bytes(),
             "Windows安装ZIP内置Capability Manifest不一致",
         )
+        embedded_app_manifest = resources / "app-manifest.json"
+        _require(embedded_app_manifest.is_file(), "Windows安装ZIP缺少内置App Manifest")
+        _require(
+            embedded_app_manifest.read_bytes() == app_manifest_path.read_bytes(),
+            "Windows安装ZIP内置App Manifest与归档不一致",
+        )
+        runtime = app_manifest.get("agent_runtime")
+        _require(isinstance(runtime, dict), "Windows App Manifest缺少Agent Runtime记录")
+        manifest_hash = runtime.get("manifest_sha256")
+        _require(
+            isinstance(manifest_hash, str)
+            and len(manifest_hash) == 64
+            and all(character in "0123456789abcdef" for character in manifest_hash),
+            "Windows App Manifest未绑定Agent Runtime清单哈希",
+        )
+        try:
+            verify_staged_runtime(resources, "windows-x64", runtime)
+        except RuntimeBuildError as error:
+            raise ReleaseVerificationError(f"Windows Agent Runtime绑定无效：{error}") from error
+        if verify_installed_bundle:
+            try:
+                subprocess.run(
+                    [sys.executable, str(verifier), str(app)],
+                    check=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    timeout=3600,
+                )
+            except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+                output = getattr(error, "stdout", "") or ""
+                raise ReleaseVerificationError(f"Windows后端/API验收失败：{output[-2000:]}") from error
 
 
 def _verify_delivery_copy(version_root: Path, platform: str, delivery_root: Path | None) -> None:
@@ -388,7 +568,11 @@ def verify_formal_archive(
                 verify_installed_bundle=native_platform == "macos",
             )
         else:
-            _verify_windows_release(version_root, capability)
+            _verify_windows_release(
+                version_root,
+                capability,
+                verify_installed_bundle=native_platform == "windows",
+            )
     return version_root, capability, completed
 
 
