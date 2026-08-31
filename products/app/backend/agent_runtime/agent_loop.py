@@ -33,7 +33,7 @@ _INTERNAL_TEXT = re.compile(
     r"contract_ref|candidate_id|task_id|artifact_manifest|manifest\.json|文件路径|"
     r"resolved_?contract|caller_?context|host_?context|module_?host_?context|tool_?gateway|"
     r"catalog_version|contract_fingerprint|analysis_case_id|principal_id|request_id|tenant_id|"
-    r"capability_manifest)"
+    r"capability_manifest|\brecommender\b|\bhost\b)"
 )
 _REPORT_MODULE_LABELS = {
     "payoff": "收益结构",
@@ -170,20 +170,6 @@ class AgentLoop:
         execution_ids: Mapping[str, str] | None = None,
         attachments: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        # A normal conversation turn is a recovery boundary as well.  This
-        # keeps a crash after candidate activation from making an uncommitted
-        # contract visible to an unrelated tool call in the next turn.
-        reconcile = getattr(self._tool_executor, "reconcile_prepared_recommendation_approvals", None)
-        if callable(reconcile):
-            try:
-                reconcile()
-            except (AuthorizationError, ValidationError):
-                return _result(
-                    "unavailable",
-                    "当前无法恢复上一轮候选确认，请重新确认候选后继续。",
-                    [],
-                    0,
-                )
         started = monotonic()
         observations: list[dict[str, Any]] = []
         seen_calls: set[str] = set()
@@ -198,7 +184,7 @@ class AgentLoop:
                 context = self._context_builder.build(identity, task_id, message)
                 workflow_decision = _workflow_decision(self._gateway, identity, message, context)
                 if round_number == 1 and workflow_decision.analysis_path == "recommendation":
-                    self._emit_visible_event(identity, task_id, request_id, "routing", "completed", "已识别为结构推荐需求，进入Recommender。")
+                    self._emit_visible_event(identity, task_id, request_id, "routing", "completed", "已识别为结构推荐需求，开始候选分析。")
                     arguments = {
                         "workflow": _fixed_recommendation_workflow(message),
                         "main_agent_controlled": True,
@@ -227,9 +213,13 @@ class AgentLoop:
                             )
                         )
                     observations.append(_observation("recommender.run", raw, identity))
-                    self._emit_visible_event(identity, task_id, request_id, "agent_run", "completed", "Recommender已完成候选分析。")
+                    self._emit_visible_event(identity, task_id, request_id, "agent_run", "completed", "候选分析已完成。")
                     if not _recommender_returns_to_main_agent(raw):
                         return _recommendation_outcome(raw, observations, round_number)
+                    # Recommender persists the authoritative ordered candidate
+                    # state.  The parent Agent must observe that committed state,
+                    # never the context captured before recommendation ran.
+                    context = self._context_builder.build(identity, task_id, message)
                 if round_number == 1 and _explicit_delivery_kinds(message) == ("card", "report"):
                     tool_names = {str(item.get("name")) for item in context.get("tool_catalog", []) if isinstance(item, Mapping)}
                     if "reporter.run" in tool_names:
@@ -655,19 +645,19 @@ def _user_question(status: str, text: str) -> dict[str, Any]:
         options = [
             {
                 "value": "请生成简单报告。",
-                "label": "简单报告 Card",
+                "label": "研究简报",
                 "description": "用于快速查看核心结论、关键条款和主要风险。",
                 "recommended": True,
             },
             {
                 "value": "请生成详细报告。",
-                "label": "详细报告 Report",
+                "label": "研究报告",
                 "description": "用于完整保留分析依据、计算结果和风险说明。",
                 "recommended": False,
             },
             {
                 "value": "请生成参考报价。",
-                "label": "参考报价 Quote",
+                "label": "参考报价",
                 "description": "用于集中展示结构条款和报价字段。",
                 "recommended": False,
             },
@@ -759,6 +749,30 @@ def _public_business_facts(value: object) -> dict[str, Any]:
             for projected in [_fact_projection(row.get("facts") if isinstance(row.get("facts"), list) else [])]
             if projected
         ]
+    recommendation = value.get("recommendation_candidate")
+    if isinstance(recommendation, Mapping):
+        candidates = recommendation.get("candidates")
+        facts["recommendation"] = {
+            "status": str(recommendation.get("status", ""))[:80],
+            "candidate_count": int(recommendation.get("candidate_count", 0) or 0),
+            "approved_candidate_ids": [
+                str(item)[:160]
+                for item in recommendation.get("approved_candidate_ids", [])[:10]
+                if isinstance(item, str)
+            ],
+            "candidates": [
+                {
+                    key: item[key]
+                    for key in (
+                        "ordinal", "candidate_id", "product_id", "product_name",
+                        "underlyings", "key_terms", "approval_status",
+                    )
+                    if key in item
+                }
+                for item in candidates[:10]
+                if isinstance(item, Mapping)
+            ] if isinstance(candidates, list) else [],
+        }
     return facts
 
 
@@ -988,10 +1002,10 @@ def _candidate_confirmation_text(recommendation: Mapping[str, Any]) -> str:
     if not isinstance(candidates, list):
         return "当前没有可确认的候选。"
     visible: list[str] = []
-    for index, candidate in enumerate(candidates[:3]):
+    for index, candidate in enumerate(candidates):
         if not isinstance(candidate, Mapping) or str(candidate.get("library_status", "")) != "ready":
             continue
-        label = "主候选" if index == 0 else "备选"
+        label = f"候选{index + 1}"
         name = _public_candidate_field(candidate.get("product_name"), "候选结构")
         reason = _public_candidate_field(candidate.get("reason"), "与已确认的市场观点和风险约束匹配")
         risks = _public_candidate_items(candidate.get("main_risks"), "仍需关注结构自身的损失风险")
@@ -1002,7 +1016,7 @@ def _candidate_confirmation_text(recommendation: Mapping[str, Any]) -> str:
     if not visible:
         return "当前没有可确认的候选。"
     instruction = (
-        "存在多个实质不同的候选，请明确选择主候选或某个备选后再继续。"
+        "存在多个实质不同的候选，请明确选择一个或多个候选；多选顺序即后续比较顺序。"
         if len(visible) > 1
         else "如只需查看推荐，可继续讨论；如需正式分析或生成报告，请确认采用该候选。"
     )
