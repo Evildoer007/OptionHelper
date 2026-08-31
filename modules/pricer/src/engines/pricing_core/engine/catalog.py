@@ -10,6 +10,7 @@ CORE_GREEKS = ("Delta", "Gamma", "Theta", "Vega", "Rho")
 EXTENDED_RISKS = ("Volga", "Vanna", "Duration", "Forward Delta")
 
 FAMILY_STRUCTURES = {
+    "CASHFLOW": ("FIXED_CASHFLOW",),
     "VANILLA": ("EUROPEAN_VANILLA",),
     "DIGITAL": ("BINARY",),
     "BARRIER": ("BARRIER",),
@@ -19,6 +20,12 @@ FAMILY_STRUCTURES = {
 }
 
 ENGINE_ROUTES = {
+    "STANDARD_FIXED_CASHFLOW_DISCOUNTING": {
+        "instrument_type": "FixedCashflowOption",
+        "method": "DISCOUNTED_CASHFLOW",
+        "price_handler": "price_fixed_cashflow_standard",
+        "solve_handler": None,
+    },
     "STANDARD_VANILLA_BLACK_SCHOLES": {
         "instrument_type": "EuropeanVanillaOption",
         "method": "BLACK_SCHOLES",
@@ -93,6 +100,7 @@ _MARKET_FIELDS = {
     "optional": ("dividend_yield", "carry", "forward_curve", "source"),
 }
 _STATE_FIELDS_BY_STRUCTURE = {
+    "FIXED_CASHFLOW": (),
     "EUROPEAN_VANILLA": (),
     "BINARY": (),
     "BARRIER": (),
@@ -115,6 +123,18 @@ _MONTE_CARLO_CONFIG_FIELDS = {
 }
 
 _STRUCTURES: dict[str, dict[str, Any]] = {
+    "FIXED_CASHFLOW": {
+        "family": "CASHFLOW",
+        "route_id": "STANDARD_FIXED_CASHFLOW_DISCOUNTING",
+        "contract": {
+            "required": ("amount", "maturity_years", "basis"),
+            "optional": (),
+            "choices": {},
+            "nested": {},
+        },
+        "solve_targets": (),
+        "core_greeks": deepcopy(_STANDARD_CORE_RISKS),
+    },
     "EUROPEAN_VANILLA": {
         "family": "VANILLA",
         "route_id": "STANDARD_VANILLA_BLACK_SCHOLES",
