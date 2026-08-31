@@ -22,7 +22,7 @@ from runtime.ports.result_store import ResultStorePort
 from .artifact_validator import validate_hashed_artifact, validate_written_artifact
 from .config import DEFAULT_REPORTER_CONFIG, default_report_output_root
 from .export_service import reissue_saved_report
-from .models import DISPLAY_MODULES, ReporterError, require_identifier, require_text
+from .models import DISPLAY_MODULES, ReporterError, ReporterUnavailableError, require_identifier, require_text
 from .reporter_engine import build_report
 from .selection_facts import build_host_selection_source_refs
 
@@ -53,7 +53,7 @@ def capability(*, result_store_configured: bool = False, designer_port_configure
         "forbidden": sorted(_FORBIDDEN),
         "formats": ["html", "pdf"],
         "output_types": ["card", "quote", "report"],
-        "delivery_modes": ["single", "comparison", "quote"],
+        "delivery_modes": ["single", "combined", "batch", "comparison", "quote"],
     }
 
 
@@ -86,7 +86,11 @@ def _selection_catalog(selection_port: ResultSelectionPort | None, *, tenant_id:
                     "expected_semantic_result_hash", "expected_artifact_manifest_hash", "status",
                 )}
             candidates.append({
-                **{key: candidate.get(key) for key in ("candidate_id", "product_id", "product_name", "product_version", "contract_fingerprint", "analysis_basis_id", "underlyings", "currency", "price_convention")},
+                **{key: candidate.get(key) for key in (
+                    "candidate_id", "source_candidate_id", "candidate_version_id",
+                    "product_id", "product_name", "product_version", "contract_fingerprint",
+                    "analysis_basis_id", "underlyings", "currency", "price_convention",
+                ) if candidate.get(key) is not None},
                 "module_run_refs": {
                     name: projected for name, ref in refs.items()
                     if name in {"payoff", "pricing", "backtest"} and (projected := public_ref(ref)) is not None
@@ -156,8 +160,10 @@ def build_selected_request(selection: Mapping[str, Any], *, tenant_id: str, sele
             }
             candidate_id = require_identifier(raw_item.get("candidate_id"), f"quote_items[{index}].candidate_id")
             module = str(raw_item.get("module", "")).strip().lower()
-            if candidate_id not in item_candidate_map or module not in {"payoff", "pricing", "backtest"}:
+            if candidate_id not in item_candidate_map:
                 raise ReporterError(f"quote_items[{index}]候选或来源模块无效")
+            if module != "pricing":
+                raise ReporterError(f"quote_items[{index}]：Quote只接受Pricing正式报价结果")
             chosen = raw_item.get("module_run_ref")
             if not isinstance(chosen, Mapping):
                 raise ReporterError(f"quote_items[{index}].module_run_ref必须为对象")
@@ -271,6 +277,19 @@ def _report_url(task_id: str, report_run_id: str, filename: str, *, candidate_id
 def _generated_response(outcome: Mapping[str, Any], *, request: Mapping[str, Any]) -> dict[str, Any]:
     report_name = str(outcome.get("report", ""))
     task_id, report_run_id = str(request["task_id"]), str(request["report_run_id"])
+    subject_ref = request.get("subject_ref") if isinstance(request.get("subject_ref"), Mapping) else {}
+    delivery_mode = str(subject_ref.get("delivery_mode", "single"))
+    output_format = str(request.get("format", "html"))
+    recommendation = (
+        request.get("source_refs", {}).get("evidence_refs", {}).get("recommendation_set", {}).get("payload", {})
+        if isinstance(request.get("source_refs"), Mapping)
+        else {}
+    )
+    candidate_names = {
+        str(item.get("candidate_id")): str(item.get("product_name") or item.get("candidate_id"))
+        for item in recommendation.get("candidates", [])
+        if isinstance(item, Mapping) and item.get("candidate_id")
+    } if isinstance(recommendation, Mapping) else {}
     children = []
     for raw in outcome.get("children", []) if isinstance(outcome.get("children"), list) else []:
         if not isinstance(raw, Mapping):
@@ -279,15 +298,32 @@ def _generated_response(outcome: Mapping[str, Any], *, request: Mapping[str, Any
         if isinstance(candidate_id, str) and isinstance(child_report, str):
             children.append({
                 "candidate_id": candidate_id, "report": child_report,
+                "display_name": f"{candidate_names.get(candidate_id, candidate_id)}独立报告",
                 "preview_url": _report_url(task_id, report_run_id, child_report, candidate_id=candidate_id),
                 "download_url": _report_url(task_id, report_run_id, child_report, candidate_id=candidate_id, download=True),
             })
     delivery_status = "completed" if outcome.get("status") == "succeeded" else "partial"
+    report_delivery = {
+        "role": "primary",
+        "display_name": str(request.get("metadata", {}).get("title") or "报告") if isinstance(request.get("metadata"), Mapping) else "报告",
+        "report": report_name,
+        "preview_url": _report_url(task_id, report_run_id, report_name),
+        "download_url": _report_url(task_id, report_run_id, report_name, download=True),
+    }
+    deliveries = [report_delivery, *({**item, "role": "candidate"} for item in children)]
+    can_save_pdf = output_format == "html" and delivery_mode in {"single", "comparison", "quote"}
     return {
         "ok": True,
         "module": "reporter",
         "status": delivery_status,
-        "output": {"report": report_name, "children": children},
+        "output": {
+            "report": report_name,
+            "children": children,
+            "deliveries": deliveries,
+            "delivery_mode": delivery_mode,
+            "format": output_format,
+            "can_save_pdf": can_save_pdf,
+        },
         "preview_url": _report_url(task_id, report_run_id, report_name),
         "download_url": _report_url(task_id, report_run_id, report_name, download=True),
     }
@@ -390,6 +426,8 @@ def call_tool(
         return {"ok": False, "module": "reporter", "status": "failed", "error": "selection_validation_failed", "message": str(error)}
     try:
         outcome = run_report(body, result_store=result_store, designer_port=designer_port, output_root=output_root)
+    except ReporterUnavailableError as error:
+        return {"ok": False, "module": "reporter", "status": "unavailable", "error": "report_unavailable", "message": str(error)}
     except ReporterError as error:
         return {"ok": False, "module": "reporter", "status": "failed", "error": "report_validation_failed", "message": str(error)}
     return _generated_response(outcome, request=body)
