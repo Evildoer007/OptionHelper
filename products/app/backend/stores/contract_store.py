@@ -8,6 +8,8 @@ import json
 import re
 from typing import Any, Mapping
 
+from runtime.contracts.contract_api import ContractResolutionError, ResolvedContract
+from runtime.protocol.module_host import HostObjectRef
 from runtime.protocol.version import RESOLVED_CONTRACT_SCHEMA_ID
 
 from ..errors import AuthorizationError, ValidationError
@@ -52,6 +54,22 @@ class ContractStore:
             return value
 
         return self._state.update("contracts", update)[key]
+
+    def preview_initial(
+        self,
+        identity: SessionIdentity,
+        task_id: str,
+        prepared: Mapping[str, Any],
+        *,
+        catalog_version: str,
+    ) -> dict[str, Any]:
+        """Validate a first preview without creating an active task contract."""
+
+        self._require_task_owner(identity, task_id, action="contract.preview")
+        existing = self._state.read("contracts").get(f"{identity.tenant_id}:{task_id}")
+        if existing is not None and not _is_candidate_container(existing):
+            raise ValidationError("当前任务已有活动ResolvedContract")
+        return self._record(identity, task_id, prepared, catalog_version=catalog_version)
 
     def activate_new_variant(
         self,
@@ -547,6 +565,40 @@ class ContractStore:
         if not isinstance(contract_ref, Mapping) or contract_ref.get("schema_id") != RESOLVED_CONTRACT_SCHEMA_ID:
             return None
         return value
+
+    def resolve_ref(
+        self,
+        identity: SessionIdentity,
+        task_id: str,
+        reference: HostObjectRef,
+        *,
+        catalog_version: str,
+    ) -> dict[str, Any]:
+        """Resolve one signed Host reference to an owned, valid Core contract."""
+
+        if not isinstance(reference, HostObjectRef):
+            raise ValidationError("Host contract_ref无效")
+        value = self.get_current(identity, task_id, catalog_version=catalog_version)
+        if value is None:
+            raise ValidationError("Host contract_ref没有当前任务的有效合同")
+        stored_ref = value.get("contract_ref")
+        if not isinstance(stored_ref, Mapping) or dict(stored_ref) != reference.to_payload():
+            raise ValidationError("Host contract_ref与当前任务合同不一致")
+        snapshot = value.get("resolved_contract")
+        try:
+            contract = ResolvedContract.from_controlled_snapshot(snapshot)
+        except ContractResolutionError as error:
+            raise ValidationError("Host contract_ref指向的Core合同无效") from error
+        if (
+            contract.contract_fingerprint != reference.content_hash
+            or value.get("contract_fingerprint") != contract.contract_fingerprint
+            or value.get("product_version") != contract.product_version
+            or value.get("registry_snapshot_hash") != contract.registry_snapshot_hash
+            or value.get("product_snapshot_hash") != contract.product_snapshot_hash
+            or value.get("product_paths_hash") != contract.product_paths_hash
+        ):
+            raise ValidationError("Host contract_ref与Core合同快照绑定不一致")
+        return {**value, "resolved_contract": contract.to_controlled_snapshot()}
 
     def _require_task_owner(self, identity: SessionIdentity, task_id: str, *, action: str) -> None:
         task = self._state.read("tasks").get(task_id)
