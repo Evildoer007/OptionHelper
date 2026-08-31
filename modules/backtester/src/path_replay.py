@@ -15,8 +15,9 @@ from runtime.contracts.contract_api import (
     evaluate_contract,
 )
 
-from .entry_generator import BacktestInputError, BacktestUnsupportedError
+from .entry_generator import BacktestInputError, BacktestUnsupportedError, BacktestWindowError
 from .historical_data import HistoricalData, required_contract_fields
+from .impl.config import BacktestConfig
 
 
 _TERMINATION_EVENTS = ("tau_out", "tau_out_1", "tau_out_2", "tau_hedge", "tau_touch")
@@ -41,6 +42,30 @@ class ReplayedPath:
     times: np.ndarray
     price_fields: Mapping[str, np.ndarray]
     outcome: Any
+
+
+@dataclass(frozen=True)
+class EffectiveBacktestWindow:
+    """由真实行情、受控日历和合同期限共同确定的可回测入场窗口。"""
+
+    mode: str
+    start_date: str
+    end_date: str
+    requested_start: str | None
+    requested_end: str | None
+    market_as_of_session: str
+    latest_complete_entry_session: str
+
+    def to_dict(self) -> dict[str, str | None]:
+        return {
+            "mode": self.mode,
+            "start_date": self.start_date,
+            "end_date": self.end_date,
+            "requested_start": self.requested_start,
+            "requested_end": self.requested_end,
+            "market_as_of_session": self.market_as_of_session,
+            "latest_complete_entry_session": self.latest_complete_entry_session,
+        }
 
 
 def assert_supported_schedule(contract: ResolvedContract) -> None:
@@ -75,6 +100,39 @@ def assert_daily_observation_sessions(
         raise BacktestInputError(f"daily_observation_sessions_missing:{dates}")
 
 
+def controlled_schedule_source(
+    contract: ResolvedContract,
+    historical_data: HistoricalData,
+    observed_dates: pd.DatetimeIndex,
+    entry_spots: Mapping[str, float],
+) -> ResolvedContract:
+    """按受控日历冻结观察日，并确认每个必要观察日都有完整价格。"""
+    from .trade_ledger import freeze_trade_contract
+
+    controlled_dates = historical_data.trading_sessions[
+        (historical_data.trading_sessions >= observed_dates[0])
+        & (historical_data.trading_sessions <= observed_dates[-1])
+    ]
+    schedule_source, _ = freeze_trade_contract(
+        contract,
+        entry_date=_date_text(observed_dates[0]),
+        trading_dates=controlled_dates,
+        entry_spots=entry_spots,
+    )
+    required_dates = {
+        pd.Timestamp(date)
+        for schedule in schedule_source.resolved_schedules.values()
+        for date in schedule["dates"]
+    }
+    missing = sorted(required_dates - set(observed_dates))
+    if missing:
+        raise BacktestInputError(
+            "contract_observation_sessions_missing:"
+            + ",".join(_date_text(value) for value in missing)
+        )
+    return schedule_source
+
+
 def aligned_history(historical_data: HistoricalData, underlyings: Sequence[str], contract: ResolvedContract) -> AlignedHistory:
     """只保留所有标的共同存在的真实交易日，不填补跨标的价格。"""
     data = historical_data.frame
@@ -105,10 +163,8 @@ def contract_stop_position(
     index: pd.DatetimeIndex,
     start: int,
     contract: ResolvedContract,
-    complete_tenor: bool,
     *,
     trading_sessions: pd.DatetimeIndex,
-    calendar_coverage_end: pd.Timestamp | None,
 ) -> tuple[int | None, str | None]:
     """按受控交易日历定位合同终点，绝不以工作日猜测到期。"""
     entry_date = index[start]
@@ -123,26 +179,219 @@ def contract_stop_position(
             if stop >= start:
                 return int(stop), None
             return None, "missing_controlled_calendar_session_price"
-        if not complete_tenor and start < len(index) - 1:
-            return len(index) - 1, None
         return None, "insufficient_observation_count_tenor"
     if "T" not in contract.terms:
         return None, "contract_tenor_missing"
     maturity = entry_date + pd.Timedelta(days=float(contract.terms["T"]) * 365.0)
-    if calendar_coverage_end is None or calendar_coverage_end < maturity:
-        if not complete_tenor and start < len(index) - 1:
-            return len(index) - 1, None
-        return None, "calendar_not_covered_to_contract_maturity"
+    maturity_date = maturity.normalize()
+    calendar_closed = maturity_date in trading_sessions or bool((trading_sessions > maturity_date).any())
+    if not calendar_closed:
+        return None, "controlled_calendar_not_closed_through_maturity"
     expected = trading_sessions[(trading_sessions >= entry_date) & (trading_sessions <= maturity)]
-    if len(expected):
-        terminal_session = expected[-1]
-        stop = index.get_indexer([terminal_session])[0]
-        if stop >= start:
-            return int(stop), None
-        return None, "missing_controlled_calendar_session_price"
-    if not complete_tenor and start < len(index) - 1:
-        return len(index) - 1, None
-    return None, "insufficient_tenor"
+    if not len(expected):
+        return None, "insufficient_tenor"
+    # 到期日可以是周末或节假日。合同终点只能由受控交易日集合向前
+    # 归一化，不能拿自然日到期与最后行情日直接比较，也不引入容差天数。
+    terminal_session = expected[-1]
+    stop = index.get_indexer([terminal_session])[0]
+    if stop >= start:
+        return int(stop), None
+    return None, "missing_controlled_calendar_session_price"
+
+
+def _resolve_effective_backtest_window(
+    history: AlignedHistory,
+    historical_data: HistoricalData,
+    contract: ResolvedContract,
+    config: BacktestConfig,
+) -> EffectiveBacktestWindow:
+    """计算唯一有效窗口；不使用浏览器日期、工作日猜测或期限倒减。"""
+    observed = history.trading_sessions
+    controlled = historical_data.trading_sessions
+    verified_observed = observed[observed.isin(controlled)]
+    if not len(verified_observed):
+        raise BacktestWindowError(
+            "历史行情与受控交易日历没有共同会话",
+            code="no_aligned_market_session",
+            details={"reason": "no_aligned_market_session"},
+        )
+    market_as_of = verified_observed[-1]
+
+    def complete_stop(entry_date: pd.Timestamp) -> tuple[int | None, str | None]:
+        start = observed.get_indexer([entry_date])[0]
+        if start < 0:
+            return None, "entry_date_not_in_aligned_trading_calendar"
+        stop, reason = contract_stop_position(
+            observed,
+            int(start),
+            contract,
+            trading_sessions=controlled,
+        )
+        if stop is None:
+            return None, reason
+        if stop <= start:
+            return None, "insufficient_path"
+        dates = observed[start : stop + 1]
+        if requires_daily_observation(contract):
+            try:
+                assert_daily_observation_sessions(
+                    controlled,
+                    dates,
+                    entry_date=entry_date,
+                    terminal_date=observed[stop],
+                )
+            except BacktestInputError as error:
+                return None, str(error)
+        try:
+            entry_spots = {
+                asset_id: float(history.close.iloc[start, asset_index])
+                for asset_index, asset_id in enumerate(contract.underlyings)
+            }
+            controlled_schedule_source(contract, historical_data, dates, entry_spots)
+        except (BacktestInputError, ValueError) as error:
+            return None, str(error)
+        return int(stop), None
+
+    latest_complete: pd.Timestamp | None = None
+    failure_reason = "insufficient_complete_tenor"
+    for entry_date in reversed(verified_observed):
+        stop, reason = complete_stop(entry_date)
+        if stop is None:
+            failure_reason = reason or failure_reason
+            continue
+        latest_complete = entry_date
+        break
+    if latest_complete is None:
+        raise BacktestWindowError(
+            "历史数据中没有可完成合同期限的入场交易日",
+            code="no_complete_entry_session",
+            details={
+                "market_as_of_session": _date_text(market_as_of),
+                "latest_complete_entry_session": None,
+                "reason": failure_reason,
+            },
+        )
+
+    requested_start = pd.Timestamp(config.start_date) if config.start_date else None
+    requested_end = pd.Timestamp(config.end_date) if config.end_date else None
+    explicit_dates = pd.DatetimeIndex(pd.to_datetime(list(config.entry_dates or ())))
+    requested_ceiling = max(
+        [value for value in (requested_end, explicit_dates.max() if len(explicit_dates) else None) if value is not None],
+        default=None,
+    )
+    if requested_ceiling is not None and requested_ceiling > latest_complete:
+        details = {
+            "requested_end": _date_text(requested_ceiling),
+            "market_as_of_session": _date_text(market_as_of),
+            "latest_complete_entry_session": _date_text(latest_complete),
+            "suggested_end_date": _date_text(latest_complete),
+            "reason": "requested_end_after_latest_complete_entry_session",
+        }
+        raise BacktestWindowError(
+            "请求的入场截止日超过最新可完整回放的入场交易日",
+            code="entry_window_exceeds_complete_history",
+            details=details,
+        )
+
+    if config.entry_rule == "explicit":
+        for entry_date in explicit_dates:
+            _, reason = complete_stop(entry_date)
+            if reason is None:
+                continue
+            raise BacktestWindowError(
+                f"指定入场日不能形成完整合同期限回放：{reason}",
+                code="explicit_entry_incomplete",
+                details={
+                    "requested_entry": _date_text(entry_date),
+                    "requested_end": _date_text(explicit_dates.max()),
+                    "market_as_of_session": _date_text(market_as_of),
+                    "latest_complete_entry_session": _date_text(latest_complete),
+                    "reason": reason,
+                },
+            )
+
+    if config.entry_rule == "explicit":
+        effective_start = requested_start or explicit_dates.min()
+        effective_end = requested_end or explicit_dates.max()
+        outside = explicit_dates[(explicit_dates < effective_start) | (explicit_dates > effective_end)]
+        if len(outside):
+            raise BacktestWindowError(
+                "指定入场日超出显式入场窗口",
+                code="explicit_entry_outside_requested_window",
+                details={
+                    "requested_start": _date_text(effective_start),
+                    "requested_end": _date_text(effective_end),
+                    "outside_entry_dates": [_date_text(value) for value in outside],
+                    "market_as_of_session": _date_text(market_as_of),
+                    "latest_complete_entry_session": _date_text(latest_complete),
+                    "reason": "explicit_entry_outside_requested_window",
+                },
+            )
+        mode = "explicit"
+    else:
+        effective_end = requested_end or latest_complete
+        if requested_start is None:
+            target = effective_end - pd.DateOffset(years=3)
+            candidates = verified_observed[(verified_observed >= target) & (verified_observed <= effective_end)]
+            effective_start = next((value for value in candidates if complete_stop(value)[0] is not None), None)
+            if effective_start is None:
+                raise BacktestWindowError(
+                    "最近三年窗口内没有可完整回放的入场交易日",
+                    code="no_complete_entry_session_in_automatic_window",
+                    details={
+                        "requested_start": _date_text(target),
+                        "requested_end": _date_text(effective_end),
+                        "market_as_of_session": _date_text(market_as_of),
+                        "latest_complete_entry_session": _date_text(latest_complete),
+                        "reason": "no_complete_entry_session_on_or_after_three_year_boundary",
+                    },
+                )
+        else:
+            effective_start = requested_start
+        mode = "automatic" if requested_start is None and requested_end is None else "explicit_bounds"
+    if effective_start > effective_end:
+        raise BacktestWindowError(
+            "入场起始日不得晚于入场截止日",
+            code="invalid_entry_window_order",
+            details={
+                "requested_start": _date_text(effective_start),
+                "requested_end": _date_text(effective_end),
+                "market_as_of_session": _date_text(market_as_of),
+                "latest_complete_entry_session": _date_text(latest_complete),
+                "reason": "start_after_end",
+            },
+        )
+    return EffectiveBacktestWindow(
+        mode=mode,
+        start_date=_date_text(effective_start),
+        end_date=_date_text(effective_end),
+        requested_start=config.start_date,
+        requested_end=config.end_date,
+        market_as_of_session=_date_text(market_as_of),
+        latest_complete_entry_session=_date_text(latest_complete),
+    )
+
+
+def plan_backtest_window(
+    contract: ResolvedContract,
+    config: BacktestConfig,
+    historical_data: HistoricalData,
+) -> EffectiveBacktestWindow:
+    """公开窗口规划入口：合同、配置、历史数据映射为唯一完整入场窗口。"""
+    if not isinstance(contract, ResolvedContract):
+        raise TypeError("contract必须为ResolvedContract")
+    if not isinstance(config, BacktestConfig):
+        raise TypeError("config必须为BacktestConfig")
+    if not isinstance(historical_data, HistoricalData):
+        raise TypeError("historical_data必须为HistoricalData")
+    historical_data.validate_integrity()
+    assert_supported_schedule(contract)
+    return _resolve_effective_backtest_window(
+        aligned_history(historical_data, contract.underlyings, contract),
+        historical_data,
+        contract,
+        config,
+    )
 
 
 def replay_path(
