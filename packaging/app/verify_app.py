@@ -13,17 +13,23 @@ SKILL_PACKAGING = ROOT / "packaging" / "skill"
 if str(SKILL_PACKAGING) not in sys.path:
     sys.path.insert(0, str(SKILL_PACKAGING))
 
-from verify_skill import verify_skill
+from verify_capability import verify_app_capability
+
+
+APP_RUNTIME_SOURCE_DIRECTORIES = ("backend", "frontend", "desktop", "config", "runtime")
 
 
 def verify_app(app_root: Path, *, capability_root: Path | None) -> list[str]:
     errors: list[str] = []
-    expected = ["backend", "frontend", "desktop", "config", "locks", "tests", "packaging"]
-    errors.extend(f"App缺少{item}/" for item in expected if not (app_root / item).exists())
+    errors.extend(
+        f"App缺少{item}/"
+        for item in APP_RUNTIME_SOURCE_DIRECTORIES
+        if not (app_root / item).is_dir()
+    )
     if capability_root is None:
         errors.append("App验收必须显式提供已验证Capability根目录")
     else:
-        errors.extend(verify_skill(capability_root.resolve()))
+        errors.extend(verify_app_capability(capability_root.resolve()))
     for relative in ("backend/reporter_adapter.py", "backend/stores/result_store.py"):
         adapter = app_root / relative
         if not adapter.is_file():
