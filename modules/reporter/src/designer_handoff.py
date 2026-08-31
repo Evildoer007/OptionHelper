@@ -16,7 +16,8 @@ from typing import Any, Mapping
 
 from runtime.ports.module import ModulePort
 
-from .artifact_validator import validate_designer_artifact
+from .artifact_validator import validate_designer_artifact, validate_presentation_receipt
+from .evidence_resolver import validate_supplemental_sections
 from .models import (
     CARD_SECTION_ORDER,
     REPORT_SECTION_ORDER,
@@ -26,7 +27,7 @@ from .models import (
     ReportRequest,
     stable_hash,
 )
-from .report_unit_builder import normalize_parameter_groups, public_chart_specs
+from .report_unit_builder import PUBLIC_NUMERIC_UNITS, normalize_parameter_groups, public_chart_specs
 
 
 DESIGNER_PAYLOAD_SCHEMA = SCHEMA_DESIGNER_PAYLOAD
@@ -39,7 +40,9 @@ DESIGNER_CONSTRAINTS = [
 ]
 _DISPLAY_STATUS = {"ready", "not_run", "failed", "unsupported", "partial"}
 _INTERNAL_DELIVERY_TEXT = re.compile(
-    r"(?i)(optionhelper|app\s+host|reporter|designer|reportunit|modulerun|审计|run[_ ]?id|runref|source[_ ]?id|manifest|hash|文件路径|物理路径|module[_ ]?run)"
+    r"(?i)(optionhelper|app\s+host|reporter|designer|reportunit|modulerun|multicard|multireport|"
+    r"run[_ ]?id|runref|source[_ ]?id|manifest|hash|文件路径|物理路径|module[_ ]?run|"
+    r"/(?:users|home|srv|mnt|volumes|applications|library|system|usr|bin|sbin|dev|proc|root|run|media|data|workspace|workspaces|private|tmp|var|etc|opt)(?:/|\b)|[a-z]:[\\/])"
 )
 _FORBIDDEN_PUBLIC_ECONOMICS = re.compile(
     r"(?i)(cny|人民币|名义本金|amount|\bpnl\b|p\s*&\s*l|cashflow|现金流|每100份合同|points_100|点数)"
@@ -47,8 +50,8 @@ _FORBIDDEN_PUBLIC_ECONOMICS = re.compile(
 _PUBLIC_MODULE_NAMES = {"payoff": "收益结构", "pricing": "估值定价", "backtest": "历史回测"}
 _DISPLAY_MODULE_FIELDS = {
     "payoff": ("formula", "formula_mathml", "scenarios"),
-    "pricing": ("method", "valuation_date", "metrics", "greeks", "assumptions", "scenario_rows", "charts"),
-    "backtest": ("window", "entry_rule", "metrics", "card_metrics", "detail_tables", "event_statistics", "charts"),
+    "pricing": ("method", "valuation_date", "precision_status", "quote_eligible", "metrics", "greeks", "assumptions", "scenario_rows", "charts", "limitations"),
+    "backtest": ("window", "as_of_date", "entry_rule", "metrics", "card_metrics", "detail_tables", "event_statistics", "charts"),
 }
 _FORBIDDEN_MODULE_FIELD_FRAGMENTS = (
     "amount", "pnl", "cashflow", "points_100", "point_value", "currency",
@@ -59,15 +62,17 @@ _FORBIDDEN_MODULE_FIELD_FRAGMENTS = (
     "product_version",
 )
 _PUBLIC_VALUE_KEYS = {
-    "label", "value", "note", "value_format", "title", "rule", "formula", "formula_mathml",
+    "label", "value", "note", "unit", "value_format", "title", "rule", "formula", "formula_mathml",
     "id", "method", "valuation_date", "name", "type", "data", "x", "y", "series", "columns", "rows",
     "event", "monitor", "sample_count", "valid_return_sample_count", "positive_return_count", "win_rate",
     "average_gross_return", "median_gross_return", "minimum_gross_return", "maximum_gross_return",
     "max_loss_gross_return", "trigger_count", "trigger_rate", "average_days", "median_days", "count",
     "rate", "year", "average", "median", "minimum", "maximum", "true_rate", "condition", "payoff",
     "source", "cn", "en", "symbol", "description", "accessibility_summary", "source_note",
-    "x_axis_name", "y_axis_name", "z_axis_name",
+    "x_axis_name", "y_axis_name", "z_axis_name", "as_of_date", "precision_status",
+    "quote_eligible", "limitations",
 }
+_HTML_MARKUP = re.compile(r"<\s*/?\s*[a-zA-Z][^>]*>")
 _PUBLIC_LIMITATION_TEXT = {
     "exchange_calendar_not_exposed_by_data_source_weekday_validation_only": "数据源未提供可核验的交易日历，本次仅按工作日校验样本日期。",
     "no_nav_curve_is_generated": "本次回测按到期损益统计，未生成持有期净值曲线。",
@@ -109,10 +114,32 @@ _GENERIC_RECOMMENDATION_TEXT = frozenset({
 
 def _public_text(value: Any, fallback: str = "") -> str:
     text = str(value or "").strip()
-    if _FORBIDDEN_PUBLIC_ECONOMICS.search(text):
+    if _INTERNAL_DELIVERY_TEXT.search(text) or _FORBIDDEN_PUBLIC_ECONOMICS.search(text):
         return fallback
     text = re.sub(r"(?i)optionhelper", "", text).strip(" -_/|：:")
     return text or fallback
+
+
+def _public_supplemental_sections(value: Any) -> list[dict[str, Any]]:
+    """Project frozen supplements while rejecting internal delivery vocabulary."""
+
+    if not isinstance(value, list):
+        return []
+    validated = validate_supplemental_sections(value)
+
+    def project(raw: Any, field: str) -> Any:
+        if isinstance(raw, str):
+            public = _public_text(raw)
+            if raw.strip() and not public:
+                raise ReporterError(f"{field}包含内部交付信息或非公开经济口径")
+            return public
+        if isinstance(raw, list):
+            return [project(item, f"{field}[{index}]") for index, item in enumerate(raw)]
+        if isinstance(raw, Mapping):
+            return {str(key): project(item, f"{field}.{key}") for key, item in raw.items()}
+        return deepcopy(raw)
+
+    return [project(section, f"supplemental_sections[{index}]") for index, section in enumerate(validated)]
 
 
 def _public_strings(value: Any) -> list[str]:
@@ -178,20 +205,25 @@ def _public_limitations(values: Any) -> list[str]:
     return result
 
 
-def _public_module_value(value: Any) -> Any:
+def _public_module_value(value: Any, *, field: str = "") -> Any:
     """Remove any non-reader economics from a selected module field."""
 
     if isinstance(value, str):
+        if field == "unit":
+            unit = value.strip()
+            return unit if unit in PUBLIC_NUMERIC_UNITS else ""
+        if field != "formula_mathml" and _HTML_MARKUP.search(value):
+            return ""
         return _public_text(value)
     if isinstance(value, list):
-        return [item for raw in value if (item := _public_module_value(raw)) not in (None, "", [], {})]
+        return [item for raw in value if (item := _public_module_value(raw, field=field)) not in (None, "", [], {})]
     if isinstance(value, Mapping):
         return {
             str(key): item
             for key, raw in value.items()
             if str(key) in _PUBLIC_VALUE_KEYS
             if not any(fragment in str(key).casefold() for fragment in _FORBIDDEN_MODULE_FIELD_FRAGMENTS)
-            if (item := _public_module_value(raw)) not in (None, "", [], {})
+            if (item := _public_module_value(raw, field=str(key))) not in (None, "", [], {})
         }
     return deepcopy(value)
 
@@ -290,14 +322,27 @@ def _public_unit_limitations(unit: Mapping[str, Any]) -> list[str]:
 
 
 def _report_as_of_date(request: ReportRequest, content: Mapping[str, Any]) -> str:
-    supplied = str(request.metadata.get("as_of_date", "")).strip()
-    if supplied:
-        return supplied
+    del request
     pricing = content.get("pricing") if isinstance(content.get("pricing"), Mapping) else {}
     valuation_date = str(pricing.get("valuation_date") or "").strip()
     if valuation_date:
         return valuation_date
+    backtest = content.get("backtest") if isinstance(content.get("backtest"), Mapping) else {}
+    backtest_date = str(backtest.get("as_of_date") or "").strip()
+    if backtest_date:
+        return backtest_date
     return ""
+
+
+def _collection_as_of_date(request: ReportRequest, units: list[Mapping[str, Any]]) -> str:
+    dates = {
+        value
+        for unit in units
+        if isinstance(unit, Mapping)
+        for content in [unit.get("content") if isinstance(unit.get("content"), Mapping) else {}]
+        if (value := _report_as_of_date(request, content))
+    }
+    return next(iter(dates)) if len(dates) == 1 else ""
 
 
 def _rows_by_label(rows: Any) -> dict[str, dict[str, Any]]:
@@ -362,50 +407,36 @@ def _structured_conclusion(payload: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def _quote_term_value(row: Mapping[str, Any]) -> tuple[str, str] | None:
-    """Return one public, reader-facing contract term for a Quote row."""
-
-    label = _public_text(row.get("label"))
-    value = _public_text(row.get("value"))
-    note = _public_text(row.get("note"))
-    if not label or not value or label in _QUOTE_EXCLUDED_TERMS:
-        return None
-    return label, f"{value}{note}" if label == "期限" and note else value
-
-
-def _quote_premium_value(symbol: str, value: Any) -> str:
-    """Format only the contract's normalized premium convention for Quote."""
-
-    if isinstance(value, Real) and not isinstance(value, bool) and isfinite(float(value)):
-        percent = float(value) * 100 if symbol == "p" else float(value)
-        return f"{percent:,.2f}".rstrip("0").rstrip(".") + "%"
-    return _public_text(value)
-
-
-def _quote_terms(unit: Mapping[str, Any], content: Mapping[str, Any]) -> list[tuple[str, str]]:
-    """Return basic contract terms only, including the normalized option premium."""
-
-    highlights = content.get("contract_highlights") if isinstance(content.get("contract_highlights"), list) else []
-    terms = [item for highlight in highlights if isinstance(highlight, Mapping) and (item := _quote_term_value(highlight))]
-    labels = {label for label, _ in terms}
-    contract = unit.get("contract") if isinstance(unit.get("contract"), Mapping) else {}
-    raw_terms = contract.get("terms") if isinstance(contract.get("terms"), Mapping) else {}
-    for symbol, label in _QUOTE_PREMIUM_TERMS.items():
-        if label in labels or symbol not in raw_terms:
-            continue
-        value = _quote_premium_value(symbol, raw_terms[symbol])
-        if value:
-            terms.append((label, value))
-            labels.add(label)
-    return terms
-
-
 def _quote_from_units(units: list[Mapping[str, Any]], request: ReportRequest) -> dict[str, Any]:
-    """Build the standard Quote table from explicitly selected frozen runs."""
+    """Build Quote exclusively from explicit, qualified frozen pricing facts."""
 
     grouped: dict[tuple[str, ...], dict[str, Any]] = {}
+    quote_dates: set[str] = set()
     for unit in units:
         content = unit.get("content") if isinstance(unit.get("content"), Mapping) else {}
+        quote_fact = content.get("quote_fact") if isinstance(content.get("quote_fact"), Mapping) else None
+        if not isinstance(quote_fact, Mapping):
+            raise ReporterError("Quote缺少明确冻结的报价事实，当前不可用")
+        if quote_fact.get("schema") != "optionhelper.reference-quote-fact" or quote_fact.get("quote_eligible") is not True:
+            raise ReporterError("Quote报价事实未通过资格校验，当前不可用")
+        quote_date = _public_text(quote_fact.get("applicable_date"))
+        source = quote_fact.get("source") if isinstance(quote_fact.get("source"), Mapping) else {}
+        provider = _public_text(source.get("provider"))
+        reference_id = _public_text(source.get("reference_id"))
+        if not quote_date or not provider or not reference_id:
+            raise ReporterError("Quote报价事实缺少来源或适用日期，当前不可用")
+        raw_terms = quote_fact.get("terms")
+        if not isinstance(raw_terms, list) or not raw_terms:
+            raise ReporterError("Quote报价事实没有可展示条款，当前不可用")
+        terms: list[tuple[str, str]] = []
+        for raw_term in raw_terms:
+            if not isinstance(raw_term, Mapping):
+                raise ReporterError("Quote报价事实条款无效")
+            label, term_value = _public_text(raw_term.get("label")), _public_text(raw_term.get("value"))
+            if not label or not term_value:
+                raise ReporterError("Quote报价事实条款缺少名称或数值")
+            terms.append((label, term_value))
+        quote_dates.add(quote_date)
         recommendation = _public_recommendation(content.get("recommendation"))
         subject = unit.get("subject") if isinstance(unit.get("subject"), Mapping) else {}
         structure = _public_text(
@@ -417,12 +448,9 @@ def _quote_from_units(units: list[Mapping[str, Any]], request: ReportRequest) ->
         underlyings = tuple(_public_strings(subject.get("underlyings")))
         if not underlyings:
             raise ReporterError("Quote合同快照缺少真实挂钩标的")
-        terms = _quote_terms(unit, content)
-        if not any(label == "期限" for label, _ in terms) or len(terms) < 2:
-            raise ReporterError("Quote合同快照缺少期限或可展示的基本条款，请重新选择有效运行结果")
         group = grouped.setdefault(underlyings, {"rows": [], "labels": []})
         row = {"structure": structure}
-        for label, value in _quote_terms(unit, content):
+        for label, value in terms:
             if label in row:
                 continue
             row[label] = value
@@ -453,10 +481,16 @@ def _quote_from_units(units: list[Mapping[str, Any]], request: ReportRequest) ->
 
     if not groups:
         raise ReporterError("参考报价缺少可展示的已选结构")
-    as_of_date = str(request.metadata.get("as_of_date", "")).strip()
+    if len(quote_dates) != 1:
+        raise ReporterError("Quote所选报价事实的适用日期不一致，请按日期分别生成")
     return {
-        **({"quote_date": as_of_date} if as_of_date else {}),
-        "note": "本表按本次明确选择的结构及参数运行结果整理。实际交易前请与交易台确认最终报价。",
+        "quote_date": next(iter(quote_dates)),
+        "note": (
+            "风险提示：本参考报价基于所列估值日、合同条款及市场数据计算，"
+            "仅供结构比较，不构成交易要约或成交承诺。市场价格、波动率、利率、"
+            "流动性及对冲成本变化可能导致实际成交条件和估值结果发生变化，"
+            "最终条款以正式交易确认为准。"
+        ),
         "groups": groups,
     }
 
@@ -472,13 +506,14 @@ def build_designer_payload(
     content = unit.get("content") if isinstance(unit.get("content"), Mapping) else {}
     artifact_paths = artifact_paths or {}
     if request.output_type == "quote":
+        reference_quote = _quote_from_units([unit], request)
         return {
             "schema": DESIGNER_PAYLOAD_SCHEMA,
             "meta": {
                 "title": _report_title(unit, request),
-                "as_of_date": _report_as_of_date(request, content),
+                "as_of_date": reference_quote["quote_date"],
             },
-            "reference_quote": _quote_from_units([unit], request),
+            "reference_quote": reference_quote,
         }
     meta = {
         "title": _report_title(unit, request),
@@ -541,7 +576,65 @@ def build_designer_payload(
             "not_suitable_for": list(recommendation.get("not_suitable_for", [])) if isinstance(recommendation.get("not_suitable_for"), list) else [],
         }
         payload["conclusion"] = _structured_conclusion(payload)
+    supplemental = _public_supplemental_sections(content.get("supplemental_sections"))
+    if supplemental:
+        payload["supplemental_sections"] = supplemental
     return payload
+
+
+def _collection_supplemental_sections(units: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Keep shared supplements global and preserve conflicting ids by owner.
+
+    Candidate payloads retain their own complete supplements.  When two
+    candidates reuse one section id with different frozen content, a global
+    Designer patch cannot address both by that id.  Project those conflicts
+    as explicitly attributed, unique sections instead of silently dropping
+    either candidate's fact.
+    """
+
+    if not units:
+        return []
+    by_unit: list[dict[str, dict[str, Any]]] = []
+    ordered_first: list[dict[str, Any]] = []
+    for index, unit in enumerate(units):
+        content = unit.get("content") if isinstance(unit.get("content"), Mapping) else {}
+        sections = _public_supplemental_sections(content.get("supplemental_sections"))
+        section_map = {str(section["id"]): deepcopy(dict(section)) for section in sections if section.get("id")}
+        by_unit.append(section_map)
+        if index == 0:
+            ordered_first = list(section_map.values())
+    shared = [
+        section for section in ordered_first
+        if all(unit_sections.get(str(section["id"])) == section for unit_sections in by_unit[1:])
+    ]
+    all_ids = {
+        section_id
+        for unit_sections in by_unit
+        for section_id in unit_sections
+    }
+    conflicting_ids = {
+        section_id
+        for section_id in all_ids
+        if len({
+            stable_hash(unit_sections[section_id])
+            for unit_sections in by_unit
+            if section_id in unit_sections
+        }) > 1
+    }
+    attributed: list[dict[str, Any]] = []
+    for index, unit_sections in enumerate(by_unit, start=1):
+        marker = _PUBLIC_CANDIDATE_INDEX[index] if index < len(_PUBLIC_CANDIDATE_INDEX) else str(index)
+        for section_id, section in unit_sections.items():
+            if section_id not in conflicting_ids:
+                continue
+            suffix = stable_hash(section)[:10]
+            public_id = f"candidate-{index}-{section_id[:34]}-{suffix}"
+            attributed.append({
+                **deepcopy(section),
+                "id": public_id,
+                "title": f"候选{marker}：{section['title']}",
+            })
+    return [*shared, *attributed]
 
 
 def _public_candidate_title(index: int, name: object) -> str:
@@ -587,11 +680,14 @@ def build_collection_payload(
     详细单合同图与指标仍以单元附件输出，避免跨候选混写。
     """
 
+    supplemental_sections = _collection_supplemental_sections(units)
     if request.output_type == "quote":
+        reference_quote = _quote_from_units(units, request)
         return {
             "schema": DESIGNER_PAYLOAD_SCHEMA,
-            "meta": {"title": "推荐结构及参考报价", "as_of_date": str(request.metadata.get("as_of_date", ""))},
-            "reference_quote": _quote_from_units(units, request),
+            "meta": {"title": "推荐结构及参考报价", "as_of_date": reference_quote["quote_date"]},
+            "reference_quote": reference_quote,
+            **({"supplemental_sections": supplemental_sections} if supplemental_sections else {}),
         }
     if request.delivery_mode == "comparison":
         ordered = sorted(units, key=_frozen_candidate_rank)
@@ -614,12 +710,13 @@ def build_collection_payload(
             "meta": {
                 "title": _public_text(
                     request.metadata.get("title"),
-                    "MultiCard对比卡片" if request.output_type == "card" else "MultiReport对比报告",
+                    "多结构研究简报" if request.output_type == "card" else "多结构完整研究报告",
                 ),
-                "as_of_date": str(request.metadata.get("as_of_date", "")),
+                "as_of_date": _collection_as_of_date(request, units),
             },
             "sections": list(CARD_SECTION_ORDER) if request.output_type == "card" else list(REPORT_SECTION_ORDER),
             "comparison": {"delivery_mode": "comparison", "candidates": candidates},
+            **({"supplemental_sections": supplemental_sections} if supplemental_sections else {}),
         }
     alternatives: list[dict[str, Any]] = []
     risk_items: list[str] = []
@@ -655,7 +752,7 @@ def build_collection_payload(
         "schema": DESIGNER_PAYLOAD_SCHEMA,
         "meta": {
             "title": _public_text(request.metadata.get("title"), "结构化产品候选比较"),
-            "as_of_date": str(request.metadata.get("as_of_date", "")),
+            "as_of_date": _collection_as_of_date(request, units),
         },
         "sections": list(CARD_SECTION_ORDER) if is_card else list(REPORT_SECTION_ORDER),
         "conclusion": {
@@ -676,10 +773,71 @@ def build_collection_payload(
             "disclaimer": "风险提示：候选比较不构成投资建议或正式报价；各候选的合同条款与运行状态须独立核对。",
         },
         **({"card_modules": []} if is_card else {}),
+        **({"supplemental_sections": supplemental_sections} if supplemental_sections else {}),
     }
 
 
+def _presentation_patch(payload: Mapping[str, Any], request: ReportRequest) -> dict[str, Any] | None:
+    """Build the single formal presentation patch for every delivery type."""
+
+    explicit_patch = request.metadata.get("presentation_patch")
+    if explicit_patch is not None and not isinstance(explicit_patch, Mapping):
+        raise ReporterError("metadata.presentation_patch必须是对象")
+    if isinstance(explicit_patch, Mapping):
+        if explicit_patch.get("schema") != "optionhelper.presentation-patch":
+            raise ReporterError("metadata.presentation_patch.schema不是当前正式协议")
+        if not isinstance(explicit_patch.get("operations"), list) or not explicit_patch["operations"]:
+            raise ReporterError("metadata.presentation_patch.operations必须是非空数组")
+    operations = (
+        deepcopy(list(explicit_patch.get("operations", [])))
+        if isinstance(explicit_patch, Mapping) and isinstance(explicit_patch.get("operations"), list)
+        else []
+    )
+    section_count = len(payload.get("sections", [])) if isinstance(payload.get("sections"), list) else (1 if request.output_type == "quote" else 0)
+    for index, operation in enumerate(operations):
+        if not isinstance(operation, Mapping):
+            raise ReporterError(f"metadata.presentation_patch.operations[{index}]必须是对象")
+        operation = dict(operation)
+        operations[index] = operation
+        op = str(operation.get("op") or "").lower()
+        if op == "rename_section":
+            title = str(operation.get("title") or "").strip()
+            if not title or _public_text(title) != title:
+                raise ReporterError(f"metadata.presentation_patch.operations[{index}].title包含内部交付信息")
+        elif op == "add_section":
+            operation.setdefault("position", section_count)
+            section_count += 1
+        elif op == "move_section":
+            operation.setdefault("position", max(section_count - 1, 0))
+        elif op == "hide_section":
+            section_count = max(section_count - 1, 0)
+    added_sections = {
+        str(operation.get("section"))
+        for operation in operations
+        if isinstance(operation, Mapping) and str(operation.get("op") or "").lower() == "add_section"
+    }
+    supplemental = payload.get("supplemental_sections")
+    base_section_count = len(payload.get("sections", [])) if isinstance(payload.get("sections"), list) else (1 if request.output_type == "quote" else 0)
+    if isinstance(supplemental, list):
+        for section in supplemental:
+            if not isinstance(section, Mapping) or not section.get("id"):
+                continue
+            section_id = str(section["id"])
+            if section_id in added_sections:
+                continue
+            operations.append({
+                "op": "add_section",
+                "section": section_id,
+                "position": base_section_count + len(added_sections),
+            })
+            added_sections.add(section_id)
+    if not operations:
+        return None
+    return {"schema": "optionhelper.presentation-patch", "operations": operations}
+
+
 def build_design_brief(payload: Mapping[str, Any], request: ReportRequest, *, report_unit_hashes: list[str]) -> dict[str, Any]:
+    patch = _presentation_patch(payload, request)
     return {
         "schema": DESIGN_BRIEF_SCHEMA,
         "report_run_id": request.report_run_id,
@@ -690,6 +848,7 @@ def build_design_brief(payload: Mapping[str, Any], request: ReportRequest, *, re
         "frozen_payload_hash": stable_hash(payload),
         "report_unit_semantic_fact_hashes": report_unit_hashes,
         "constraints": list(DESIGNER_CONSTRAINTS),
+        **({"presentation_patch": patch, "presentation_patch_hash": stable_hash(patch)} if patch else {}),
     }
 
 
@@ -717,35 +876,42 @@ def render_with_designer(
     )
     if template_id:
         tool_request["template_id"] = template_id
+    patch = _presentation_patch(payload, request)
+    if patch:
+        tool_request["presentation_patch"] = patch
     try:
         response = designer_port.call_tool(tool_request)
     except Exception as error:
-        raise ReporterError(f"Designer Tool调用失败：{error}") from error
+        raise ReporterError("报告呈现服务调用失败，请稍后重试") from error
     if not isinstance(response, Mapping) or response.get("ok") is not True:
-        message = response.get("message") if isinstance(response, Mapping) else "无结构化响应"
-        error_code = response.get("error") if isinstance(response, Mapping) else "designer_tool_error"
-        raise ReporterError(f"Designer渲染未完成：{error_code}：{message}")
+        raise ReporterError("报告呈现未完成，请检查呈现能力后重试")
     artifact = response.get("artifact")
     if not isinstance(artifact, Mapping):
-        raise ReporterError("Designer Tool未返回artifact")
+        raise ReporterError("报告呈现结果不完整，请重新生成")
     result = dict(artifact)
     if request.format == "pdf":
         encoded = result.pop("pdf_base64", None)
         if not isinstance(encoded, str):
-            raise ReporterError("Designer Tool未返回PDF字节")
+            raise ReporterError("报告呈现结果缺少PDF内容，请重新生成")
         try:
             result["pdf"] = base64.b64decode(encoded, validate=True)
         except ValueError as error:
-            raise ReporterError("Designer Tool返回的PDF不是有效Base64") from error
+            raise ReporterError("报告呈现结果中的PDF内容无效，请重新生成") from error
     elif not isinstance(result.get("html"), str):
-        raise ReporterError("Designer Tool未返回HTML")
-    result["_validated_portable_assets"] = validate_designer_artifact(
-        result,
-        output_format=request.format,
-        output_type=request.output_type,
-        expected_frozen_payload_hash=stable_hash(payload),
-        expected_asset_mode="portable",
-    )
+        raise ReporterError("报告呈现结果缺少HTML内容，请重新生成")
+    try:
+        validate_presentation_receipt(result.get("presentation_receipt"), patch)
+        result["_validated_portable_assets"] = validate_designer_artifact(
+            result,
+            output_format=request.format,
+            output_type=request.output_type,
+            expected_payload=payload,
+            expected_asset_mode="portable",
+            expected_presentation_patch=patch,
+            expected_template_id=template_id or None,
+        )
+    except ReporterError as error:
+        raise ReporterError("报告呈现结果未通过交付校验，请重新生成") from error
     return result
 
 
