@@ -74,7 +74,7 @@ def _comparison_payload(output_type: str) -> dict:
     return {
         "schema": DESIGNER_PAYLOAD_SCHEMA,
         "meta": {
-            "title": "MultiCard对比卡片" if output_type == "card" else "MultiReport对比报告",
+            "title": "多结构研究简报" if output_type == "card" else "多结构完整研究报告",
             "as_of_date": "2026-08-24",
         },
         "sections": (
