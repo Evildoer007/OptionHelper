@@ -5,6 +5,10 @@ an authorization failure.  A caller must never receive a fabricated successful
 model, data, or financial-module response.
 """
 
+from __future__ import annotations
+
+from typing import Mapping
+
 
 class UnavailableCapabilityError(RuntimeError):
     """Raised when a source-stage App integration has no approved implementation."""
@@ -56,16 +60,24 @@ class UserActionError(ValidationError):
         stage: str = "input",
         next_step: str | None = None,
         retryable: bool = False,
+        details: Mapping[str, str] | None = None,
     ) -> None:
         if not code or not message:
             raise ValueError("UserActionError requires a public code and message")
         if not isinstance(retryable, bool):
             raise ValueError("UserActionError.retryable must be boolean")
+        public_details = dict(details or {})
+        if any(
+            not isinstance(key, str) or not key or not isinstance(value, str) or not value
+            for key, value in public_details.items()
+        ):
+            raise ValueError("UserActionError.details must contain non-empty string fields")
         self.code = code
         self.message = message
         self.stage = stage
         self.next_step = next_step or "请按提示调整当前任务的输入或数据后重试。"
         self.retryable = retryable
+        self.details = public_details
         super().__init__(message)
 
 
