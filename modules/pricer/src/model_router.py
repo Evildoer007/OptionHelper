@@ -14,6 +14,7 @@ class ProductCapability:
     structure: str
     methods: tuple[str, ...]
     adapter: str
+    analytical_engine_method: str | None = None
 
 
 @dataclass(frozen=True)
@@ -24,11 +25,35 @@ class ModelRoute:
 
 # 只有同时完成条款、单位、状态和产品级回归的映射可以进入此表。
 PRODUCT_CAPABILITIES: dict[str, ProductCapability] = {
-    "1.1": ProductCapability("VANILLA", "EUROPEAN_VANILLA", ("black_scholes", "monte_carlo"), "european_vanilla"),
-    "1.2": ProductCapability("VANILLA", "EUROPEAN_VANILLA", ("black_scholes", "monte_carlo"), "european_vanilla"),
+    "1.1": ProductCapability("VANILLA", "EUROPEAN_VANILLA", ("analytical", "monte_carlo"), "european_vanilla", "BLACK_SCHOLES"),
+    "1.2": ProductCapability("VANILLA", "EUROPEAN_VANILLA", ("analytical", "monte_carlo"), "european_vanilla", "BLACK_SCHOLES"),
     **{
-        product_id: ProductCapability("AIRBAG", "AIRBAG", ("black_scholes", "monte_carlo"), "european_portfolio")
+        product_id: ProductCapability("AIRBAG", "AIRBAG", ("analytical", "monte_carlo"), "european_portfolio", "STATIC_REPLICATION")
         for product_id in ("2.1", "2.2", "2.3", "2.4", "3.1", "3.2", "3.3", "3.4")
+    },
+    **{
+        product_id: ProductCapability("BARRIER", "BARRIER", ("analytical", "monte_carlo"), "barrier", "REINER_RUBINSTEIN")
+        for product_id in ("4.1", "4.2", "4.3", "4.4", "4.5", "4.6", "4.7", "4.8")
+    },
+    **{
+        product_id: ProductCapability("DIGITAL", "BINARY", ("analytical", "monte_carlo"), "binary", "BINARY_ANALYTIC")
+        for product_id in ("5.1", "5.2", "5.3", "5.4")
+    },
+    **{
+        product_id: ProductCapability("AIRBAG", "AIRBAG", ("analytical", "monte_carlo"), "touch_portfolio", "STATIC_REPLICATION")
+        for product_id in ("5.5", "5.6")
+    },
+    **{
+        product_id: ProductCapability("AIRBAG", "AIRBAG", ("analytical", "monte_carlo"), "airbag_portfolio", "STATIC_REPLICATION")
+        for product_id in ("6.1", "6.2", "6.3")
+    },
+    **{
+        product_id: ProductCapability("AIRBAG", "AIRBAG", ("analytical", "monte_carlo"), "terminal_portfolio", "STATIC_REPLICATION")
+        for product_id in ("9.2", "9.3")
+    },
+    **{
+        product_id: ProductCapability("BARRIER", "BARRIER", ("analytical", "monte_carlo"), "sharkfin", "REINER_RUBINSTEIN")
+        for product_id in ("9.5", "9.6")
     },
 }
 
@@ -49,7 +74,7 @@ def capability_for(product_id: str) -> ProductCapability | None:
     return PRODUCT_CAPABILITIES.get(str(product_id))
 
 
-def resolve_route(product_id: str, optionreg_methods: Iterable[object], requested_method: str) -> ModelRoute | None:
+def resolve_route(product_id: str, optionreg_methods: Iterable[object], requested_method: object) -> ModelRoute | None:
     capability = capability_for(product_id)
     if capability is None:
         return None
@@ -57,7 +82,8 @@ def resolve_route(product_id: str, optionreg_methods: Iterable[object], requeste
     available = tuple(method for method in capability.methods if method in allowed)
     if not available:
         return None
-    selected = "black_scholes" if requested_method == "auto" and "black_scholes" in available else (available[0] if requested_method == "auto" else requested_method)
+    requested = None if requested_method is None else str(requested_method).strip()
+    selected = available[0] if not requested else requested
     return ModelRoute(capability=capability, method=selected) if selected in available else None
 
 
