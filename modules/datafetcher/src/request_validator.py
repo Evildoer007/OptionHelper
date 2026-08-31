@@ -20,15 +20,19 @@ class RequestValidationError(ValueError):
 
 _FIELD_ALIASES = {"adjusted_close": "adj_close", "adjusted_open": "adj_open", "adjusted_high": "adj_high", "adjusted_low": "adj_low"}
 _VALID_FREQUENCIES = {"1d", "daily", "d"}
-_VALID_ADJUSTMENTS = {"auto", "none", "forward", "backward", "raw", "both"}
+_VALID_ADJUSTMENTS = {"auto", "none", "forward"}
 _VALID_CACHE_POLICIES = {"reuse", "extend_only", "force_refresh"}
 
 
 def _parse_date(value: str, name: str) -> str:
     try:
-        return date.fromisoformat(value).isoformat()
+        parsed = date.fromisoformat(value)
     except (TypeError, ValueError) as error:
         raise RequestValidationError(f"{name}必须为YYYY-MM-DD") from error
+    canonical = parsed.isoformat()
+    if canonical != value:
+        raise RequestValidationError(f"{name}必须为YYYY-MM-DD")
+    return canonical
 
 
 def _local_csv_root(config: DataFetcherConfig) -> Path:
@@ -107,10 +111,10 @@ def latest_completed_daily_market_date(
     """Return the latest date whose daily bar can be used for cache completion.
 
     A request may legitimately name today's valuation date, but before the
-    mainland daily close there is no completed OHLC bar to download or demand
-    from a partial cache.  This is deliberately separate from the request
-    upper bound: it never turns an intraday valuation request into a future
-    date error.
+    mainland daily close there is no completed OHLC bar to demand from a
+    partial cache. This is only an observable calendar-date boundary; it does
+    not infer weekends, holidays or exchange sessions. Verified calendar
+    evidence performs the trading-session selection later in the service.
     """
 
     if config.market_data_as_of_date is not None:
@@ -118,8 +122,6 @@ def latest_completed_daily_market_date(
     local_now = now.astimezone(ZoneInfo("Asia/Shanghai")) if now is not None else datetime.now(ZoneInfo("Asia/Shanghai"))
     completed = local_now.date()
     if local_now.timetz().replace(tzinfo=None) < time(16, 0):
-        completed -= timedelta(days=1)
-    while completed.weekday() >= 5:
         completed -= timedelta(days=1)
     return completed.isoformat()
 
@@ -199,6 +201,8 @@ def validate_request(value: DataRequest, config: DataFetcherConfig, caller: Call
         raise RequestValidationError("Wind未通过本次运行的受控启用，不能作为默认或回退Provider")
     if value.local_csv and "local" not in priority:
         raise RequestValidationError("local_csv必须显式选择local Provider，不能被远程Provider静默忽略")
+    if not isinstance(value.offline, bool):
+        raise RequestValidationError("offline必须为布尔值")
     if value.quota_limit is not None and value.quota_limit < 0:
         raise RequestValidationError("quota_limit不能为负数")
 
@@ -214,7 +218,7 @@ def validate_request(value: DataRequest, config: DataFetcherConfig, caller: Call
         adjustment=adjustment,
         source_priority=priority,
         cache_policy=cache_policy,
-        offline=bool(value.offline),
+        offline=value.offline,
         local_csv=value.local_csv,
         local_source_fingerprint=local_source_fingerprint,
         calendar_evidence_identity=_calendar_evidence_identity(config),
