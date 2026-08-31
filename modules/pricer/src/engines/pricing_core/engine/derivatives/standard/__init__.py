@@ -4,6 +4,11 @@ from .airbag import price_airbag_standard
 from .barrier import price_barrier_standard
 from .digital import price_binary_standard
 from .fixed_cashflow import price_fixed_cashflow_standard
+from .analytical_expectations import (
+    price_range_accrual_standard,
+    price_variance_swap_standard,
+    price_worst_of_standard,
+)
 from .static_accumulator import price_static_accumulator_standard
 from .vanilla import (
     BlackScholesAnalytics,
@@ -17,8 +22,11 @@ __all__ = [
     "price_barrier_standard",
     "price_binary_standard",
     "price_fixed_cashflow_standard",
+    "price_range_accrual_standard",
     "price_static_accumulator_standard",
+    "price_variance_swap_standard",
     "price_vanilla_standard",
+    "price_worst_of_standard",
     "BlackScholesAnalytics",
     "calculate_black_scholes_analytics",
     "calculate_risk_neutral_density_from_in_the_money_probability",
