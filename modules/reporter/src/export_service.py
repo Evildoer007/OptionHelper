@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from hashlib import sha256
 import os
 from pathlib import Path
 import shutil
@@ -41,6 +42,16 @@ def _destination_name(candidate_id: str, module: str, name: str) -> Path:
     return Path("artifacts") / candidate_id / module / clean_name
 
 
+def _public_delivery_stem(request: ReportRequest) -> str:
+    if request.output_type == "quote":
+        return "quote"
+    if request.delivery_mode == "comparison":
+        return "comparison-card" if request.output_type == "card" else "comparison-report"
+    if request.delivery_mode == "batch":
+        return "index"
+    return "card" if request.output_type == "card" else "report"
+
+
 def _write_artifacts(
     stage: Path,
     evidence: Mapping[str, Any],
@@ -68,11 +79,11 @@ def _write_artifacts(
         for module, raw_module in modules.items():
             if not isinstance(raw_module, Mapping) or raw_module.get("status") != "ready":
                 continue
-            run_dir = raw_module.get("_run_dir")
+            bundle = raw_module.get("_bundle")
             manifest = raw_module.get("artifact_manifest") if isinstance(raw_module.get("artifact_manifest"), Mapping) else {}
             artifacts = manifest.get("artifacts") if isinstance(manifest.get("artifacts"), list) else []
-            if not isinstance(run_dir, Path):
-                raise ReporterError("已验证ModuleRun缺少ResultStore临时解析目录")
+            if not isinstance(bundle, Mapping):
+                raise ReporterError("已验证ModuleRun缺少ResultStore受控字节包")
             for artifact in artifacts:
                 if not isinstance(artifact, Mapping):
                     continue
@@ -81,7 +92,9 @@ def _write_artifacts(
                 name = artifact.get("name")
                 if not all(isinstance(item, str) and item for item in (storage_ref, content_hash, name)):
                     raise ReporterError("ArtifactRef不完整")
-                source = validate_hashed_artifact(run_dir, storage_ref, content_hash, f"ArtifactRef源文件：{storage_ref}")
+                source = bundle.get(storage_ref)
+                if not isinstance(source, bytes) or sha256(source).hexdigest() != content_hash:
+                    raise ReporterError(f"ArtifactRef源文件内容哈希不一致：{storage_ref}")
                 # 所有ModuleRun文件都会被Core哈希验真，但只有result.json和
                 # artifacts/**是公开交付物；快照、数据引用与private/**绝不复制。
                 if not is_public_module_artifact(storage_ref, module=str(module)):
@@ -91,7 +104,7 @@ def _write_artifacts(
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 if destination.exists():
                     raise ReporterError(f"报告产物中ArtifactRef重名：{relative}")
-                shutil.copyfile(source, destination)
+                destination.write_bytes(source)
                 validate_hashed_artifact(stage, relative.as_posix(), content_hash, f"复制后的ArtifactRef：{relative}")
                 rows.append({
                     "candidate_id": candidate_id, "module": module, "name": name, "path": relative.as_posix(),
@@ -195,6 +208,7 @@ def _write_rendered(stage: Path, payload: Mapping[str, Any], request: ReportRequ
             "asset_mode": artifact.get("asset_mode"),
             "source_artifact_hash": designer_manifest.get("artifact_hash"),
             "artifact_manifest": dict(designer_manifest),
+            **({"presentation_receipt": dict(artifact["presentation_receipt"])} if isinstance(artifact.get("presentation_receipt"), Mapping) else {}),
         },
     }
 
@@ -317,13 +331,7 @@ def write_report_run(
             brief = build_design_brief(summary_payload, request, report_unit_hashes=[str(item.get("semantic_fact_hash", "")) for item in units])
             write_json(stage / "designer-input.json", summary_payload)
             write_json(stage / "design-brief.json", brief)
-            main_name = (
-                "quote" if request.output_type == "quote"
-                else "index" if request.delivery_mode == "batch"
-                else "multicard" if request.delivery_mode == "comparison" and request.output_type == "card"
-                else "multireport" if request.delivery_mode == "comparison"
-                else "report"
-            )
+            main_name = _public_delivery_stem(request)
             rendered = _write_rendered(stage, summary_payload, request, f"{main_name}.{'pdf' if request.format == 'pdf' else 'html'}", designer_port=designer_port)
             designer_artifact_manifest = _persist_designer_manifest(stage, rendered, summary_payload)
             child_outputs = []
@@ -554,8 +562,7 @@ def _write_reissued_contents(
     write_json(stage / "designer-input.json", dict(payload))
     write_json(stage / "design-brief.json", brief)
     if source_request.delivery_mode == "comparison":
-        stem = "multicard" if target_request.output_type == "card" else "multireport"
-        filename = f"{stem}.{target_request.format}"
+        filename = f"{_public_delivery_stem(target_request)}.{target_request.format}"
     elif target_request.output_type == source_request.output_type:
         source_report_name = str((source_manifest.get("rendered") or {}).get("path") or "report.html")
         filename = f"{Path(source_report_name).stem}.{target_request.format}"
@@ -714,7 +721,7 @@ def rerender_frozen_delivery(
     staging directory.  This path deliberately has no ResultStore argument:
     rendering a second delivery cannot trigger another payoff, pricing or
     backtest run. Single contracts support Card and Report, comparison bundles
-    support MultiCard and MultiReport, and Quote bundles support Quote only.
+    support the corresponding multi-structure deliveries, and Quote bundles support Quote only.
     """
 
     source = ReportRequest.from_mapping(source_request)
@@ -730,7 +737,7 @@ def rerender_frozen_delivery(
             raise ReporterError("参考报价只能使用原报价事实集切换HTML或PDF")
     elif source.delivery_mode == "comparison":
         if unit_type != "ReportBundle" or target_type not in {"card", "report"}:
-            raise ReporterError("多结构对比事实集只能生成MultiCard或MultiReport")
+            raise ReporterError("多结构对比事实集只能生成多结构研究简报或多结构完整研究报告")
     elif source.delivery_mode == "single":
         if unit_type != "ContractReportUnit" or target_type not in {"card", "report"}:
             raise ReporterError("单合同事实集只能生成Card或Report")
@@ -766,13 +773,7 @@ def rerender_frozen_delivery(
         write_json(stage / "report-unit.json", unit)
         write_json(stage / "designer-input.json", payload)
         write_json(stage / "design-brief.json", brief)
-        filename = (
-            "quote" if target.output_type == "quote"
-            else "multicard" if target.delivery_mode == "comparison" and target.output_type == "card"
-            else "multireport" if target.delivery_mode == "comparison"
-            else "card" if target.output_type == "card"
-            else "report"
-        )
+        filename = _public_delivery_stem(target)
         report_file = f"{filename}.{target.format}"
         rendered = _write_rendered(stage, payload, target, report_file, designer_port=designer_port)
         designer_artifact_manifest = _persist_designer_manifest(stage, rendered, payload)
