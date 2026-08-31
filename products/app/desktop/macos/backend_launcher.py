@@ -13,6 +13,7 @@ import os
 import signal
 import stat
 import sys
+import tempfile
 import threading
 from pathlib import Path
 
@@ -66,12 +67,26 @@ def configure_agent_runtime(resources: Path) -> Path | None:
     return None
 
 
+def require_isolated_fixture_directory(runtime_root: Path) -> None:
+    """Reject verification data outside an empty operating-system temp tree."""
+
+    temporary_roots = {Path(tempfile.gettempdir()).resolve()}
+    if os.name != "nt":
+        temporary_roots.update({Path("/tmp").resolve(), Path("/private/tmp").resolve()})
+    candidate = runtime_root.resolve()
+    if not any(candidate == root or root in candidate.parents for root in temporary_roots):
+        raise RuntimeError("验收Fixture必须使用系统临时目录")
+    if candidate.exists() and any(candidate.iterdir()):
+        raise RuntimeError("验收Fixture必须使用全新空目录")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="OptionHelper macOS App Host")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=0)
     parser.add_argument("--data-dir", type=Path)
     parser.add_argument("--resource-dir", type=Path)
+    parser.add_argument("--initialization-token", help=argparse.SUPPRESS)
     parser.add_argument("--compute-worker", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--probe-compute-worker", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--probe-pdf-runtime", action="store_true")
@@ -110,6 +125,10 @@ def main() -> int:
     if args.data_dir is None:
         parser.error("运行App必须提供--data-dir")
     runtime_root = args.data_dir.expanduser().resolve()
+    if args.verification_fixture:
+        require_isolated_fixture_directory(runtime_root)
+    elif not args.initialization_token:
+        parser.error("正式App启动缺少初始化能力")
     runtime_root.mkdir(parents=True, exist_ok=True)
     os.environ["OPTIONHELPER_RUNTIME_ROOT"] = str(runtime_root)
     configure_agent_runtime(resources)
@@ -129,7 +148,8 @@ def main() -> int:
         capability_root=capability_root,
         frontend_root=resources / "frontend",
         brand_assets_root=resources / "assets" / "icons",
-        authentication_mode="local-development",
+        authentication_mode="local-development" if args.verification_fixture else "managed",
+        initialization_token=None if args.verification_fixture else args.initialization_token,
         # Model and iFind credentials live under the OptionHelper user-data
         # directory.  The native vault remains available for one-release
         # migration.
