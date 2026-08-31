@@ -46,6 +46,11 @@ _PUBLIC_PERCENT_TEXT_REPLACEMENTS = (
     ("pv_points_100", "pv_percent"),
 )
 
+_PUBLIC_METHOD_LABELS = {
+    "analytical": "Analytical",
+    "monte_carlo": "Monte Carlo",
+}
+
 
 def _percent_unit(unit: object) -> object:
     if not isinstance(unit, str):
@@ -158,6 +163,9 @@ def project_public_percent(value: Any) -> Any:
         for key, item in value.items():
             field = str(key).casefold()
             if field in _MACHINE_POINT_FIELDS:
+                continue
+            if field == "method" and item in _PUBLIC_METHOD_LABELS:
+                result[str(key)] = _PUBLIC_METHOD_LABELS[str(item)]
                 continue
             if field == "value_basis":
                 result[str(key)] = _percent_value_basis(item)
@@ -329,6 +337,11 @@ class PricingResult:
         explicit public projection instead.
         """
         payload = project_public_percent(self.to_dict())
+        # Public callers select one of two stable method categories. Engine
+        # implementation identifiers and numerical diagnostics remain in the
+        # Store-only audit projection assembled by the Pricer service.
+        payload.pop("implementation_id", None)
+        payload.pop("diagnostics", None)
         payload["risk_curves"] = [
             _public_percent_curve(value)
             for value in self.to_dict().get("risk_curves", [])
