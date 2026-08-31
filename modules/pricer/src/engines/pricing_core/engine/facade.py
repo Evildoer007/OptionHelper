@@ -1143,6 +1143,12 @@ def _build_instrument(derivatives: Any, structure: str, contract: dict[str, Any]
             call_put=_strict_enum(derivatives.CallPut, "contract.call_put", contract["call_put"]),
             future=contract.get("future", False),
         )
+    if structure == "FIXED_CASHFLOW":
+        return derivatives.FixedCashflowOption(
+            basis=basis,
+            amount=contract["amount"],
+            maturity_years=contract["maturity_years"],
+        )
     if structure == "OPTIONREG_PATH":
         return derivatives.OptionRegPathOption(
             basis=basis,
@@ -1227,7 +1233,7 @@ def _build_instrument(derivatives: Any, structure: str, contract: dict[str, Any]
 def _build_airbag(derivatives: Any, basis: Any, value: Any):
     if isinstance(value, (str, bytes)) or not isinstance(value, (list, tuple)) or not value:
         raise ValueError("AIRBAG.contract.legs必须为非空显式腿列表")
-    supported = {"EUROPEAN_VANILLA", "BINARY", "BARRIER"}
+    supported = {"FIXED_CASHFLOW", "EUROPEAN_VANILLA", "BINARY", "BARRIER"}
     legs = []
     for index, item in enumerate(value):
         label = f"AIRBAG.contract.legs[{index}]"
