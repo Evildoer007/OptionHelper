@@ -46,9 +46,13 @@ def install_metadata_writer(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_dmg_layout_contains_branded_background_and_drag_targets() -> None:
     assert renderer.WINDOW_SIZE == builder.DMG_WINDOW_SIZE
+    assert renderer.PIXEL_SIZE == tuple(
+        dimension * renderer.RENDER_SCALE for dimension in builder.DMG_WINDOW_SIZE
+    )
     with Image.open(builder.DMG_BACKGROUND) as background:
-        assert background.size == builder.DMG_WINDOW_SIZE
-        assert background.getpixel((20, 40)) == (247, 244, 240)
+        assert background.size == renderer.PIXEL_SIZE
+        assert background.info["dpi"] == pytest.approx((144.0, 144.0), abs=0.1)
+        assert background.getpixel(renderer.scale_point((20, 40))) == (247, 244, 240)
 
     with tempfile.TemporaryDirectory() as temporary_name:
         temporary = Path(temporary_name)
@@ -135,28 +139,28 @@ def test_dmg_background_contains_branded_visual_pixel_contract() -> None:
     assert renderer.FOOTER == "拖动OptionHelper到Applications后即可开始使用"
     with Image.open(builder.DMG_BACKGROUND) as background:
         image = background.convert("RGB")
-        assert image.getpixel((20, 1)) == (200, 16, 46)
-        assert image.getpixel((300, 235)) == (200, 16, 46)
-        assert image.getpixel((480, 235)) == (200, 16, 46)
-        assert image.getpixel((510, 235)) != (200, 16, 46)
+        assert image.getpixel(renderer.scale_point((20, 1))) == (200, 16, 46)
+        assert image.getpixel(renderer.scale_point((300, 235))) == (200, 16, 46)
+        assert image.getpixel(renderer.scale_point((480, 235))) == (200, 16, 46)
+        assert image.getpixel(renderer.scale_point((510, 235))) != (200, 16, 46)
         assert renderer.ARROW_START_X - (180 + 64) == (580 - 64) - renderer.ARROW_TIP_X
-        left_glow = image.getpixel((185, 235))
-        right_glow = image.getpixel((575, 235))
+        left_glow = image.getpixel(renderer.scale_point((185, 235)))
+        right_glow = image.getpixel(renderer.scale_point((575, 235)))
         assert left_glow[0] > left_glow[2]
         assert right_glow[2] > right_glow[0]
 
         title_pixels = [
             image.getpixel((x, y))
-            for y in range(30, 65)
-            for x in range(140, 620)
+            for y in range(renderer.scale(30), renderer.scale(65))
+            for x in range(renderer.scale(140), renderer.scale(620))
         ]
         footer_pixels = [
             image.getpixel((x, y))
-            for y in range(405, 435)
-            for x in range(200, 560)
+            for y in range(renderer.scale(405), renderer.scale(435))
+            for x in range(renderer.scale(200), renderer.scale(560))
         ]
-        assert sum(sum(pixel) < 600 for pixel in title_pixels) > 100
-        assert sum(sum(pixel) < 600 for pixel in footer_pixels) > 100
+        assert sum(sum(pixel) < 600 for pixel in title_pixels) > 400
+        assert sum(sum(pixel) < 600 for pixel in footer_pixels) > 400
 
 
 def test_dmg_verifier_rejects_hidden_files_other_than_finder_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -239,6 +243,76 @@ def test_dmg_build_writes_finder_metadata_before_compression(monkeypatch: pytest
         assert "-noautoopen" in commands[1]
         assert "-nobrowse" not in commands[1]
         assert not any(command[:2] == ["osascript", "-e"] for command in commands)
+
+
+def test_dmg_build_removes_read_only_source_tree_with_preserved_symlink(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    bundle = make_bundle(tmp_path)
+    layout = builder.prepare_dmg_layout(bundle, tmp_path / "layout")
+    frontend = layout / "OptionHelper.app" / "Contents" / "Resources" / "frontend"
+    login = frontend / "login"
+    login.mkdir(parents=True)
+    (frontend / "shared.js").write_bytes(b"shared")
+    (login / "shared-link.js").symlink_to("../shared.js")
+    frontend.chmod(0o555)
+    login.chmod(0o555)
+    output = tmp_path / "OptionHelper.dmg"
+    mountpoint = tmp_path / "mounted"
+    copied_source: Path | None = None
+
+    def fake_run(command: list[str], **_kwargs: object) -> str:
+        nonlocal copied_source
+        if command[:2] == ["hdiutil", "create"]:
+            copied_source = Path(command[command.index("-srcfolder") + 1])
+            copied_link = (
+                copied_source
+                / "OptionHelper.app"
+                / "Contents"
+                / "Resources"
+                / "frontend"
+                / "login"
+                / "shared-link.js"
+            )
+            assert copied_source.is_dir() and not copied_source.is_symlink()
+            assert copied_link.is_symlink()
+            Path(command[-1]).write_bytes(b"writable")
+        elif command[:2] == ["hdiutil", "attach"]:
+            mountpoint.mkdir()
+            return "attached"
+        elif command[:2] == ["diskutil", "info"]:
+            if command[-1] == str(mountpoint):
+                return "Device Identifier: disk-test\n"
+            return f"Mount Point: {mountpoint}\n"
+        elif command[:2] == ["hdiutil", "convert"]:
+            Path(command[command.index("-o") + 1]).write_bytes(b"compressed")
+        return ""
+
+    monkeypatch.setattr(builder, "_attached_mountpoint", lambda _output: mountpoint)
+    monkeypatch.setattr(builder, "run", fake_run)
+    install_metadata_writer(monkeypatch)
+    try:
+        builder.build_styled_dmg(layout, output, tmp_path)
+    finally:
+        login.chmod(0o755)
+        frontend.chmod(0o755)
+
+    assert output.read_bytes() == b"compressed"
+    assert copied_source is not None and not copied_source.exists()
+    assert not list(tmp_path.glob("optionhelper-dmg-source-*"))
+
+
+def test_dmg_source_cleanup_refuses_a_directory_outside_the_build_workspace(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "optionhelper-dmg-source-outside"
+    outside.mkdir()
+
+    with pytest.raises(builder.MacOSBuildError, match="不属于当前构建工作区"):
+        builder._remove_temporary_dmg_source(outside, workspace)
+
+    assert outside.is_dir()
 
 
 def test_dmg_build_failure_does_not_create_output(monkeypatch: pytest.MonkeyPatch) -> None:
