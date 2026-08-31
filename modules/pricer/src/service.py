@@ -34,7 +34,6 @@ from runtime.protocol.models import (
 from runtime.protocol.module_host import ModuleHostContext, require_host_bound_run_contract
 
 from .config import PricingConfig
-from .model_router import resolve_route
 from .models import HistoricalData, PricingInput, TradingCalendarData, validate_market_data_asset
 from .engines.pricing_core.optionhelper_core import capability_for
 from .engines.pricing_core.engine.derivatives.results import (
@@ -271,7 +270,6 @@ class PricerRuntime:
         for product_id, product in registry["products"].items():
             terms = product["terms"]
             capability = capability_for(product_id)
-            auto_route = resolve_route(product_id, terms["pricing_methods"], "auto")
             mapping = product_mapping(product_id)
             fields = []
             for key, value in terms.items():
@@ -305,7 +303,6 @@ class PricerRuntime:
                 "pricer_status": "supported" if mapping.status == "supported" else "unsupported",
                 "pricer_availability": mapping.status,
                 "pricer_methods": list(capability.methods) if capability else [],
-                "auto_pricer_method": auto_route.method if auto_route else None,
                 "pricer_structure": "discrete_path_monte_carlo" if mapping.structure == "OPTIONREG_PATH" else mapping.structure.casefold(),
                 "pricer_family": mapping.family,
                 "pricer_reason": mapping.reason,
@@ -392,6 +389,7 @@ class PricerRuntime:
         analysis_case_id = str(host_context.analysis_case_id)
         catalog_version = str(host_context.catalog_version)
         candidate_id = str(host_context.candidate_id)
+        private_pricing_audit = pricing_result.to_dict()
         pricing_payload = redact_public_money_compatibility(pricing_result.to_public_percent_dict())
         pricing_payload["price_convention"] = _quote_price_convention(contract)
         quote_fact = _reporter_quote_fact(
@@ -434,6 +432,7 @@ class PricerRuntime:
         files = _module_run_files(
             output,
             controlled_contract=contract.to_protocol_dict(),
+            private_pricing_audit=private_pricing_audit,
         )
         require_host_bound_run_contract(output, host_context)
         reference = self.result_store.commit_module_run(
@@ -668,6 +667,7 @@ def _module_run_files(
     output: Mapping[str, Any],
     *,
     controlled_contract: Mapping[str, Any] | None = None,
+    private_pricing_audit: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build public result artifacts plus the one Store-only contract snapshot."""
     output = redact_public_money_compatibility(output)
@@ -715,6 +715,8 @@ def _module_run_files(
         "artifacts/pricing_result.json": dict(output),
         "artifacts/pricing_result.csv": _pricing_csv(output),
     }
+    if private_pricing_audit is not None:
+        files["private/audit_pricing_result.json"] = dict(private_pricing_audit)
     if status in {"succeeded", "partial"}:
         files["result.json"] = dict(output)
     else:
