@@ -708,7 +708,20 @@ class AppServer:
                 "protocol": item.protocol,
                 "scope": "device",
                 "credential_configured": item.secret_ref is not None,
-                "models": [_public_model_catalog_entry(model) for model in item.models],
+                "models": [
+                    {
+                        **_public_model_catalog_entry(model),
+                        **self._settings_store.model_verification_status(
+                            tenant_id=identity.tenant_id,
+                            principal_id=identity.principal_id,
+                            provider_id=item.provider_id,
+                            model_id=model.model_id,
+                            endpoint=item.endpoint,
+                            secret_ref=item.secret_ref,
+                        ),
+                    }
+                    for model in item.models
+                ],
             }
             for item in settings.model_providers
         ]
@@ -770,6 +783,29 @@ class AppServer:
                 raise UnavailableCapabilityError("模型服务", "所选模型未配置、已停用或已更新，请在设置中心选择可用模型后重试。")
             return ModelServiceSettings("openai-compatible", provider.endpoint, provider.secret_ref, model.model_id)
         return settings.model_service
+
+    def record_model_connection_verification(
+        self,
+        identity: SessionIdentity,
+        *,
+        selection: ModelSelection,
+        expected_reference: SecretRef,
+        endpoint: str,
+        probe: Mapping[str, Any],
+    ) -> None:
+        matched = self._settings_store.save_model_verification_for_current_reference(
+            settings_key=identity.principal_id,
+            tenant_id=identity.tenant_id,
+            principal_id=identity.principal_id,
+            provider_id=selection.provider_id,
+            model_id=selection.model_id,
+            endpoint=endpoint,
+            secret_ref=expected_reference,
+            verified=bool(probe.get("verified")),
+            capabilities=dict(probe.get("effective", {})) if isinstance(probe.get("effective"), Mapping) else {},
+        )
+        if not matched:
+            raise ValidationError("模型配置或API Key已变化，请重新发起连接测试")
 
     def model_connections_for(self, identity: SessionIdentity) -> dict[str, Any]:
         """Expose the browser contract without exposing credential refs.
@@ -849,6 +885,7 @@ class AppServer:
                             "model",
                             owner_id=identity.principal_id,
                             connection_id=connection.connection_id,
+                            revision=connection.model_service.secret_ref.revision,
                         ) if connection.model_service.secret_ref else None,
                     ),
                 )
@@ -864,6 +901,7 @@ class AppServer:
                         "model",
                         owner_id=identity.principal_id,
                         connection_id=provider.provider_id,
+                        revision=provider.secret_ref.revision,
                     ) if provider.secret_ref else None,
                 )
                 for provider in snapshot.model_providers
@@ -1019,6 +1057,7 @@ class AppServer:
                 "model",
                 owner_id=identity.principal_id,
                 connection_id=connection_id,
+                revision=connection.model_service.secret_ref.revision if connection.model_service.secret_ref else None,
             )
             self.secret_provider.allow_reference(reference, "模型服务凭据")
             model = replace(
@@ -1071,6 +1110,7 @@ class AppServer:
                 continue
             reference = self.secret_reference(
                 identity.tenant_id, "model", owner_id=identity.principal_id, connection_id=normalized_provider.provider_id,
+                revision=provider.secret_ref.revision if provider.secret_ref else None,
             )
             self.secret_provider.allow_reference(reference, "模型服务凭据")
             normalized_providers.append(replace(
@@ -2202,6 +2242,7 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
             api_key = _credential_value(body, "api_key")
             reference = self.app.secret_reference(
                 identity.tenant_id, "model", owner_id=identity.principal_id, connection_id=profile.provider_id,
+                revision=f"rev-{uuid4().hex}",
             )
             snapshot = self.app.local_provider_snapshot(
                 identity, profile, secret_ref=reference, default_model_id=_optional_model_id(body.get("default_model_id")),
@@ -2452,6 +2493,7 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
                 "model",
                 owner_id=identity.principal_id,
                 connection_id=connection_id,
+                revision=f"rev-{uuid4().hex}",
             )
             current = self.app.settings_for(identity)
             existing = next((item for item in current.model_connections if item.connection_id == connection_id), None)
@@ -2578,7 +2620,9 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
             _only_fields(body, {"provider_name", "endpoint", "model_name", "api_key"})
             api_key = _credential_value(body, "api_key")
             settings = _model_from(body)
-            reference = self.app.secret_reference(identity.tenant_id, "model")
+            reference = self.app.secret_reference(
+                identity.tenant_id, "model", revision=f"rev-{uuid4().hex}",
+            )
             current = self.app.settings_for(identity)
             snapshot = self.app.save_credential(
                 identity,
@@ -2649,12 +2693,52 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
             else:
                 self.app.policy.require(identity.role, "settings.model.local.write")
                 capability = "settings.model.local.write"
-            probe = self.app.model_gateway.probe_settings_capabilities_for(
-                identity,
-                "settings-capability-probe",
+            _only_fields(body, {"provider_id", "model_id"})
+            raw_provider_id = body.get("provider_id")
+            raw_model_id = body.get("model_id")
+            if (raw_provider_id is None) != (raw_model_id is None):
+                raise ValidationError("测试模型时必须同时提供Provider ID和模型ID")
+            selection = (
+                ModelSelection(
+                    _model_connection_id(raw_provider_id),
+                    _required_model_id(raw_model_id),
+                )
+                if raw_provider_id is not None else None
+            )
+            configured = self.app.model_service_for_selection(identity, selection)
+            if configured.secret_ref is None:
+                raise UnavailableCapabilityError("模型服务", "请先保存Provider和API Key后再测试连接。")
+            probe = (
+                self.app.model_gateway.probe_settings_capabilities_for(
+                    identity,
+                    "settings-capability-probe",
+                    selection=selection,
+                )
+                if selection is not None else
+                self.app.model_gateway.probe_settings_capabilities_for(
+                    identity,
+                    "settings-capability-probe",
+                )
             )
             verified = bool(probe.get("verified"))
             model = probe.get("model") if isinstance(probe.get("model"), dict) else {}
+            resolved_selection = ModelSelection(
+                str(model.get("provider_id", "")),
+                str(model.get("model_id", "")),
+            )
+            current_settings = self.app.settings_for(identity)
+            current_provider = next((
+                item for item in current_settings.model_providers
+                if item.provider_id == resolved_selection.provider_id
+            ), None)
+            if current_provider is not None and configured.secret_ref.revision is not None:
+                self.app.record_model_connection_verification(
+                    identity,
+                    selection=resolved_selection,
+                    expected_reference=configured.secret_ref,
+                    endpoint=configured.endpoint,
+                    probe=probe,
+                )
             connection = {
                 "provider_name": str(model.get("provider_id", "model")),
                 "model_id": str(model.get("model_id", "")),
