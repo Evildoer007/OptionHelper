@@ -44,6 +44,10 @@ class ReporterError(ValueError):
     """Reporter请求、证据或交付物不满足受控契约。"""
 
 
+class ReporterUnavailableError(ReporterError):
+    """所选正式证据不足以生成请求的公开交付。"""
+
+
 def require_text(value: Any, field: str) -> str:
     result = str(value).strip() if value is not None else ""
     if not result:
@@ -288,8 +292,8 @@ class ReportRequest:
                     raise ReporterError(f"quote_items[{index}]来源不在当前交付事实集中")
                 candidate_id = require_identifier(item.get("candidate_id"), f"quote_items[{index}].candidate_id")
                 module = require_text(item.get("module"), f"quote_items[{index}].module").lower()
-                if module not in MODULE_TO_RUN:
-                    raise ReporterError(f"quote_items[{index}]模块无效")
+                if module != "pricing":
+                    raise ReporterError(f"quote_items[{index}]：Quote只接受Pricer冻结的报价事实")
                 ref = quote_module_run_ref(
                     item.get("module_run_ref"), f"quote_items[{index}].module_run_ref",
                     tenant_id=self.tenant_id,
@@ -347,7 +351,7 @@ class ReportRequest:
 
 __all__ = [
     "DISPLAY_MODULES", "MODULE_TO_RUN",
-    "CARD_SECTION_ORDER", "REPORT_SECTION_ORDER", "ReporterError", "ReportRequest",
+    "CARD_SECTION_ORDER", "REPORT_SECTION_ORDER", "ReporterError", "ReporterUnavailableError", "ReportRequest",
     "SCHEMA_DESIGN_BRIEF", "SCHEMA_DESIGNER_ARTIFACT_MANIFEST", "SCHEMA_DESIGNER_PAYLOAD",
     "SCHEMA_MANIFEST", "SCHEMA_REPORT_BUNDLE", "SCHEMA_REPORT_UNIT", "SCHEMA_REQUEST", "as_list", "as_mapping", "module_run_ref",
     "quote_module_run_ref", "read_json", "read_json_value", "reject_physical_paths", "require_identifier", "require_text", "stable_hash", "write_json",
