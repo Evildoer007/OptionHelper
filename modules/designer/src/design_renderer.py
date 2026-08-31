@@ -29,6 +29,7 @@ from .renderer import (
     as_dict,
     as_list,
     canonical_greeks,
+    display_basis,
     display_text,
     esc,
     esc_rendered,
@@ -39,6 +40,7 @@ from .renderer import (
     table_column_role,
     table_density,
     text,
+    unique_metric_rows_by_label,
     validate_payload,
 )
 
@@ -72,6 +74,17 @@ def _reference_quote(payload: Mapping[str, Any]) -> dict[str, Any]:
     """
 
     quote = as_dict(payload.get("reference_quote"))
+    quality_status = text(quote.get("quality_status")).lower()
+    precision = text(quote.get("precision")).lower()
+    precision_status = text(quote.get("precision_status")).lower()
+    if (
+        quote.get("is_demo") is True
+        or quote.get("quote_eligible") is False
+        or quality_status in {"demo", "unverified", "invalid", "failed", "low_precision"}
+        or precision in {"demo", "low", "low_precision", "unverified"}
+        or precision_status in {"demo_only", "not_assessed", "not_priced"}
+    ):
+        raise ValueError("Quote只能渲染Reporter已验证的正式报价事实。")
     groups = as_list(quote.get("groups"))
     if not quote or not groups:
         raise ValueError("Quote需要包含至少一组明确reference_quote报价事实。")
@@ -162,7 +175,9 @@ _VISIBLE_INTERNAL_TEXT = re.compile(
     r"(?<![a-z0-9_])(?:app\s+host|reporter|designer|reportunit|modulerun)(?![a-z0-9_])|"
     r"(?<![a-z0-9_])(?:run[_\s-]?(?:ref|id)|source[_\s-]?id|"
     r"(?:artifact|semantic|presentation|content)[_\s-]?hash|manifest)(?![a-z0-9_])|"
-    r"审计|文件路径|物理路径|绝对路径|(?:^|\s)[~\\/][^\s<]+|[a-z]:[\\/])"
+    r"(?:audit|private)[_\s-]*(?:trail|id|hash|manifest|payload|metadata)|"
+    r"protocol[_\s-]*(?:object|payload|schema)|内部(?:路径|字段|协议对象)|"
+    r"文件路径|物理路径|绝对路径|(?:^|\s)[~\\/][^\s<]+|[a-z]:[\\/])"
 )
 
 
@@ -236,6 +251,20 @@ def _card_body(
     backtest = as_dict(payload.get("backtest"))
     risk = as_dict(payload.get("risk"))
 
+    def module_state(module: Mapping[str, Any]) -> str:
+        status = text(module.get("status") or "pending").lower()
+        labels = {
+            "ready": "已完成", "partial": "部分完成", "failed": "运行失败",
+            "not_run": "未运行", "unsupported": "不适用", "pending": "待处理",
+        }
+        note = text(module.get("note"))
+        return (
+            f'<div class="module-state" data-status="{esc(status)}">'
+            f'<strong>{esc(labels.get(status, status))}</strong>'
+            + (f'<span>{esc(note)}</span>' if note else "")
+            + "</div>"
+        )
+
     def recommendation_block(title: str) -> str:
         headline = text(recommendation.get("headline") or recommendation.get("structure_name"))
         underlyings = text(recommendation.get("underlyings"))
@@ -279,23 +308,24 @@ def _card_body(
         )
 
     def pricing_block(title: str) -> str:
-        if text(pricing.get("status")).lower() != "ready":
-            return ""
+        status = text(pricing.get("status") or "pending").lower()
         rows: list[dict[str, Any]] = []
-        for row in (as_dict(item) for item in as_list(pricing.get("metrics"))[:4]):
-            value = display_text(row.get("value"), row.get("value_format"))
-            if text(row.get("label")) and value:
-                rows.append({"metric": text(row.get("label")), "value": value, "unit": card_unit(row.get("note"))})
-        greeks = {text(row.get("label")): row for row in canonical_greeks(as_list(pricing.get("greeks")))}
-        for label in ("Delta", "Gamma", "Vega", "Theta", "Rho"):
-            row = greeks.get(label)
-            if row is None:
-                continue
-            value = display_text(row.get("value"), row.get("value_format"))
-            if value:
-                rows.append({"metric": label, "value": value, "unit": card_unit(row.get("unit"))})
+        if status in {"ready", "partial"}:
+            for row in (as_dict(item) for item in as_list(pricing.get("metrics"))[:4]):
+                value = display_text(row.get("value"), row.get("value_format"))
+                if text(row.get("label")) and value:
+                    rows.append({"metric": text(row.get("label")), "value": value, "unit": card_unit(display_basis(row))})
+            greeks = {text(row.get("label")): row for row in canonical_greeks(as_list(pricing.get("greeks")))}
+            for label in ("Delta", "Gamma", "Vega", "Theta", "Rho"):
+                row = greeks.get(label)
+                if row is None:
+                    continue
+                value = display_text(row.get("value"), row.get("value_format"))
+                if value:
+                    rows.append({"metric": label, "value": value, "unit": card_unit(display_basis(row))})
         table = _card_data_table(rows)
-        if not table:
+        state = module_state(pricing) if status == "partial" else ""
+        if not table and not state:
             return ""
         detail = "；".join(
             value for value in (
@@ -303,39 +333,35 @@ def _card_body(
                 f"方法：{text(pricing.get('method'))}" if text(pricing.get("method")) else "",
             ) if value
         )
-        return f'<div class="card-analysis"><h2>{esc(title)}</h2>{table}' + (f'<p class="card-data-note">{esc(detail)}</p>' if detail else "") + "</div>"
+        return f'<div class="card-analysis"><h2>{esc(title)}</h2>{state}{table}' + (f'<p class="card-data-note">{esc(detail)}</p>' if detail else "") + "</div>"
 
     def backtest_block(title: str) -> str:
-        if text(backtest.get("status")).lower() != "ready":
-            return ""
-        metrics_by_label = {
-            text(as_dict(item).get("label")): as_dict(item)
-            for item in as_list(backtest.get("metrics")) if text(as_dict(item).get("label"))
-        }
+        status = text(backtest.get("status") or "pending").lower()
+        metric_rows = list(as_list(backtest.get("metrics")))
         for table in (as_dict(item) for item in as_list(backtest.get("detail_tables"))):
             if text(table.get("title")) == "公共回测统计":
-                for item in as_list(table.get("rows")):
-                    row = as_dict(item)
-                    if text(row.get("label")):
-                        metrics_by_label.setdefault(text(row.get("label")), row)
+                metric_rows.extend(as_list(table.get("rows")))
+        metrics_by_label = unique_metric_rows_by_label(metric_rows, "回测摘要")
         rows: list[dict[str, Any]] = []
-        for labels in (("样本数",), ("胜率", "历史正收益样本占比"), ("平均损益", "平均收益"), ("最差损益", "最大亏损")):
-            row = next((metrics_by_label[label] for label in labels if metrics_by_label.get(label, {}).get("value") is not None), None)
-            if row:
-                rows.append({"metric": text(row.get("label")), "value": display_text(row.get("value"), row.get("value_format")), "unit": text(row.get("note"))})
-        for row in (as_dict(item) for item in as_list(backtest.get("card_metrics"))[:4]):
-            value = display_text(row.get("value"), row.get("value_format"))
-            if text(row.get("label")) and value:
-                rows.append({"metric": text(row.get("label")), "value": value, "unit": text(row.get("note"))})
+        if status in {"ready", "partial"}:
+            for labels in (("样本数",), ("胜率", "历史正收益样本占比"), ("平均损益", "平均收益"), ("最差损益", "最大亏损")):
+                row = next((metrics_by_label[label] for label in labels if metrics_by_label.get(label, {}).get("value") is not None), None)
+                if row:
+                    rows.append({"metric": text(row.get("label")), "value": display_text(row.get("value"), row.get("value_format")), "unit": card_unit(display_basis(row))})
+            for row in (as_dict(item) for item in as_list(backtest.get("card_metrics"))[:4]):
+                value = display_text(row.get("value"), row.get("value_format"))
+                if text(row.get("label")) and value:
+                    rows.append({"metric": text(row.get("label")), "value": value, "unit": card_unit(display_basis(row))})
         table = _card_data_table(rows)
-        if not table:
+        state = module_state(backtest) if status == "partial" else ""
+        if not table and not state:
             return ""
         details = [
             f"样本区间：{text(backtest.get('window'))}" if text(backtest.get("window")) else "",
             f"入场规则：{text(backtest.get('entry_rule'))}" if text(backtest.get("entry_rule")) else "",
         ]
         detail = "；".join(item for item in details if item)
-        return f'<div class="card-analysis"><h2>{esc(title)}</h2>{table}' + (f'<p class="card-data-note">{esc(detail)}</p>' if detail else "") + "</div>"
+        return f'<div class="card-analysis"><h2>{esc(title)}</h2>{state}{table}' + (f'<p class="card-data-note">{esc(detail)}</p>' if detail else "") + "</div>"
 
     def risk_block(title: str) -> str:
         values = [text(item) for item in as_list(risk.get("items")) if text(item)][:2]
@@ -415,6 +441,60 @@ _QUOTE_PANEL_TITLES = {
 _QUOTE_SHARED_KEYS = frozenset({
     "asset", "asset_id", "code", "product", "structure", "structure_name", "structure_type", "underlying",
 })
+_QUOTE_EMPTY_VALUES = frozenset({"", "-", "—", "–", "na", "n/a", "不适用"})
+_QUOTE_COMPARISON_LABEL_TOKENS = (
+    "行权",
+    "执行价",
+    "期权费",
+    "权利金",
+    "报价",
+    "价格",
+    "票息",
+    "收益",
+    "估值",
+)
+
+
+def _quote_has_value(value: Any, value_format: Any = "text") -> bool:
+    rendered = display_text(value, value_format or "text").strip().casefold()
+    return rendered not in _QUOTE_EMPTY_VALUES
+
+
+def _quote_common_terms(
+    columns: list[dict[str, Any]],
+    rows: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Lift identical non-comparison facts out of a multi-structure matrix."""
+
+    if len(rows) < 2:
+        return [], columns
+    common: list[dict[str, Any]] = []
+    remaining: list[dict[str, Any]] = []
+    for index, column in enumerate(columns):
+        key = text(column.get("key"))
+        label = text(column.get("label"))
+        value_format = column.get("format") or "text"
+        values = [display_text(row.get(key), value_format).strip() for row in rows]
+        may_lift = (
+            index > 0
+            and key not in _QUOTE_SHARED_KEYS
+            and not any(token in label for token in _QUOTE_COMPARISON_LABEL_TOKENS)
+            and all(_quote_has_value(row.get(key), value_format) for row in rows)
+            and len(set(values)) == 1
+        )
+        (common if may_lift else remaining).append(column)
+    return common, remaining
+
+
+def _quote_common_terms_html(columns: list[dict[str, Any]], rows: list[dict[str, Any]]) -> str:
+    if not columns or not rows:
+        return ""
+    items = "；".join(
+        f"<span><b>{esc(column.get('label'))}</b>"
+        f"{rich_text(display_text(rows[0].get(text(column.get('key'))), column.get('format') or 'text'))}</span>"
+        for column in columns
+    )
+    return f'<p class="quote-common-terms"><strong>共同条款</strong>{items}</p>'
 
 
 def _quote_panel_columns(columns: list[dict[str, Any]]) -> list[tuple[str, list[dict[str, Any]]]]:
@@ -495,14 +575,32 @@ def _quote_table_panel(columns: list[dict[str, Any]], rows: list[dict[str, Any]]
 
 
 def _quote_table(group: Mapping[str, Any]) -> str:
-    """Render all quote facts with semantic panels when the union is wide."""
+    """Render all facts compactly, without repeating inapplicable structures."""
 
     columns = [as_dict(item) for item in as_list(group.get("columns"))]
     rows = [as_dict(item) for item in as_list(group.get("rows"))]
-    return "".join(
-        _quote_table_panel(panel_columns, rows, panel_title)
-        for panel_title, panel_columns in _quote_panel_columns(columns)
-    )
+    common_columns, table_columns = _quote_common_terms(columns, rows)
+    panels: list[str] = []
+    for panel_title, panel_columns in _quote_panel_columns(table_columns):
+        identity_keys = {
+            text(column.get("key"))
+            for index, column in enumerate(panel_columns)
+            if index == 0 or text(column.get("key")) in _QUOTE_SHARED_KEYS
+        }
+        fact_columns = [
+            column for column in panel_columns
+            if text(column.get("key")) not in identity_keys
+        ]
+        panel_rows = [
+            row for row in rows
+            if not panel_title or not fact_columns or any(
+                _quote_has_value(row.get(text(column.get("key"))), column.get("format") or "text")
+                for column in fact_columns
+            )
+        ]
+        if panel_rows:
+            panels.append(_quote_table_panel(panel_columns, panel_rows, panel_title))
+    return _quote_common_terms_html(common_columns, rows) + "".join(panels)
 
 
 def _quote_identity(quote: Mapping[str, Any]) -> str:
@@ -699,7 +797,16 @@ def render(
         request.template_id or automatic_template_id,
         request.normalized_output_type,
     )
-    presentation = apply_presentation_patch(payload, template.sections, request.presentation_patch)
+    if comparison_mode:
+        required_shell = "multicard.html" if request.normalized_output_type == "card" else "multireport.html"
+        if request.normalized_output_type in {"card", "report"} and template.shell != required_shell:
+            raise ValueError(f"多结构{request.normalized_output_type}模板必须使用{required_shell}壳。")
+    presentation = apply_presentation_patch(
+        payload,
+        template.sections,
+        request.presentation_patch,
+        output_type=request.normalized_output_type,
+    )
     payload = dict(presentation.payload)
     if request.design_system_id and request.design_system_id != theme.design_system_id:
         raise ValueError(
@@ -711,15 +818,23 @@ def render(
         if request.asset_mode == "portable"
         else config.relative_echarts_path(request.output_dir or input_dir)
     )
-    if template.id == "multicard-standard":
-        html_content = render_multicard_html(payload, config=config, template_shell=template.shell)
-    elif template.id == "multireport-standard":
+    if comparison_mode and request.normalized_output_type == "card":
+        html_content = render_multicard_html(
+            payload,
+            config=config,
+            template_shell=template.shell,
+            section_definition=tuple((item.id, item.title, item.block) for item in presentation.sections),
+            appended_content=presentation.appended_content,
+        )
+    elif comparison_mode and request.normalized_output_type == "report":
         html_content = render_multireport_html(
             payload,
             input_dir,
             echarts_path,
             config=config,
             template_shell=template.shell,
+            section_definition=tuple((item.id, item.title, item.block) for item in presentation.sections),
+            appended_content=presentation.appended_content,
         )
     elif request.normalized_output_type == "card":
         html_content = render_card_html(
