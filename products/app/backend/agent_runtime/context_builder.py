@@ -224,17 +224,60 @@ def _recommendation_candidate_fact(value: Mapping[str, Any] | None) -> dict[str,
 
     if not isinstance(value, Mapping):
         return None
-    candidate = value.get("candidate")
-    if not isinstance(candidate, Mapping):
-        return None
     status = str(value.get("status", "")).strip().lower()
-    if status not in {"pending_approval", "approved"}:
+    if status not in {"pending_approval", "approval_prepared", "approved"}:
         return None
+    candidate_ids = value.get("candidate_ids")
+    contracts = value.get("candidate_contracts")
+    approved = value.get("approved_candidate_ids")
+    if (
+        not isinstance(candidate_ids, list)
+        or not candidate_ids
+        or not isinstance(contracts, Mapping)
+        or not isinstance(approved, list)
+    ):
+        return None
+    candidates: list[dict[str, Any]] = []
+    for index, candidate_id in enumerate(candidate_ids[:10], start=1):
+        if not isinstance(candidate_id, str):
+            return None
+        contract = contracts.get(candidate_id)
+        candidate = contract.get("candidate") if isinstance(contract, Mapping) else None
+        public_projection = contract.get("public_projection") if isinstance(contract, Mapping) else None
+        if not isinstance(candidate, Mapping):
+            return None
+        overrides = contract.get("term_overrides") if isinstance(contract, Mapping) else None
+        candidates.append({
+            "ordinal": index,
+            "candidate_id": _safe_text(candidate_id, 160),
+            "product_id": _safe_text(candidate.get("product_id"), 80),
+            "product_name": _safe_text(candidate.get("product_name"), 160),
+            "underlyings": [
+                _safe_text(item, 80)
+                for item in candidate.get("underlyings", [])[:8]
+            ] if isinstance(candidate.get("underlyings"), list) else [],
+            "key_terms": _safe_mapping(overrides) if isinstance(overrides, Mapping) else {},
+            "approval_status": _safe_text(contract.get("approval_status"), 80),
+            "reason": _safe_text(public_projection.get("reason"), 800) if isinstance(public_projection, Mapping) else "",
+            "suitable_for": [
+                _safe_text(item, 800) for item in public_projection.get("suitable_for", [])[:16]
+            ] if isinstance(public_projection, Mapping) and isinstance(public_projection.get("suitable_for"), list) else [],
+            "not_suitable_for": [
+                _safe_text(item, 800) for item in public_projection.get("not_suitable_for", [])[:16]
+            ] if isinstance(public_projection, Mapping) and isinstance(public_projection.get("not_suitable_for"), list) else [],
+            "main_risks": [
+                _safe_text(item, 800) for item in public_projection.get("main_risks", [])[:16]
+            ] if isinstance(public_projection, Mapping) and isinstance(public_projection.get("main_risks"), list) else [],
+            "proposed_terms": list(public_projection.get("key_terms", [])) if isinstance(public_projection, Mapping) else [],
+        })
     return {
         "status": status,
-        "product_id": _safe_text(candidate.get("product_id"), 80),
-        "product_name": _safe_text(candidate.get("product_name"), 160),
-        "underlyings": [_safe_text(item, 80) for item in candidate.get("underlyings", [])[:8]],
+        "candidate_count": len(candidates),
+        "candidate_ids": [item["candidate_id"] for item in candidates],
+        "approved_candidate_ids": [
+            _safe_text(item, 160) for item in approved[:10] if isinstance(item, str)
+        ],
+        "candidates": candidates,
         "delivery_selected": value.get("delivery") is not None,
     }
 
