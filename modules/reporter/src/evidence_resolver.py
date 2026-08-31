@@ -1,8 +1,7 @@
 """显式引用的Reporter证据解析。
 
-Reporter从不接收结果目录，也不搜索最近一次运行。所有计算模块均由Core
-``ResultStorePort.resolve_module_run``解析；解析出的临时路径仅用于读取和复制
-本次受控产物，绝不写入ReportUnit。
+Reporter从不接收结果目录，也不搜索最近一次运行。所有计算模块均通过Core
+``ResultStorePort``验真并读取不可变字节包；物理目录不会跨越正式端口。
 """
 
 from __future__ import annotations
@@ -11,6 +10,7 @@ from copy import deepcopy
 from dataclasses import replace
 from hashlib import sha256
 import json
+import math
 from pathlib import Path, PurePosixPath
 import re
 from typing import Any, Mapping
@@ -20,17 +20,15 @@ from runtime.ports.result_store import ResultStorePort
 from .models import (
     MODULE_TO_RUN,
     ReporterError,
+    ReporterUnavailableError,
     ReportRequest,
     as_list,
     as_mapping,
     module_run_ref,
-    read_json,
-    read_json_value,
     require_identifier,
     require_text,
     stable_hash,
 )
-from .artifact_validator import validate_hashed_artifact
 
 
 RECOMMENDATION_SCHEMA = "optionhelper.recommendation-set"
@@ -38,6 +36,26 @@ READY_STATUSES = {"succeeded"}
 TERMINAL_NONREADY = {"failed", "unsupported", "cancelled", "timed_out", "partial"}
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _SAFE_ARTIFACT = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-/")
+_DATE = re.compile(r"\d{4}-\d{2}-\d{2}\Z")
+_QUOTE_FACT_SCHEMA = "optionhelper.reference-quote-fact"
+_QUOTE_TERM_UNITS = {
+    "price_normalized_percent", "market_price", "percent", "year",
+    "date", "count", "text",
+}
+_PAYOFF_FACT_SCHEMA = "optionhelper.reporter-payoff-facts"
+_SUPPLEMENTAL_ID = re.compile(r"[a-z][a-z0-9-]{0,63}\Z")
+_SUPPLEMENTAL_NODE_TYPES = {"paragraph", "metrics", "table", "formula", "chart"}
+_SUPPLEMENTAL_FORBIDDEN_KEYS = {"html", "script", "javascript", "css", "style", "color", "font", "src", "href"}
+_SUPPLEMENTAL_NODE_FIELDS = {
+    "paragraph": {"type", "text"},
+    "metrics": {"type", "items"},
+    "table": {"type", "columns", "rows", "caption"},
+    "formula": {"type", "formula"},
+    "chart": {"type", "chart_type", "title", "x", "y", "data", "series", "accessibility_summary", "x_axis_name", "y_axis_name"},
+}
+_SUPPLEMENTAL_METRIC_FIELDS = {"label", "value", "value_format", "note"}
+_SUPPLEMENTAL_COLUMN_FIELDS = {"key", "label"}
+_SUPPLEMENTAL_SERIES_FIELDS = {"name", "data"}
 
 
 def _safe_relative(value: Any, field: str) -> Path:
@@ -50,14 +68,29 @@ def _safe_relative(value: Any, field: str) -> Path:
     return Path(*path.parts)
 
 
-def _inside(root: Path, value: Path, field: str) -> Path:
-    root = root.resolve()
-    target = (root / value).resolve(strict=False)
-    if target != root and root not in target.parents:
-        raise ReporterError(f"{field}越出ResultStore解析目录")
-    if target.is_symlink():
-        raise ReporterError(f"{field}不能是符号链接")
-    return target
+def _bundle_bytes(bundle: Mapping[str, bytes], value: Any, field: str) -> bytes:
+    name = _safe_relative(value, field).as_posix()
+    payload = bundle.get(name)
+    if not isinstance(payload, bytes):
+        raise ReporterError(f"{field}未由ResultStore返回受控字节")
+    return payload
+
+
+def _bundle_json(bundle: Mapping[str, bytes], value: Any, field: str) -> dict[str, Any]:
+    payload = _bundle_bytes(bundle, value, field)
+    try:
+        raw = json.loads(payload)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ReporterError(f"{field}不是有效JSON：{error}") from error
+    return as_mapping(raw, field)
+
+
+def _bundle_json_value(bundle: Mapping[str, bytes], value: Any, field: str) -> Any:
+    payload = _bundle_bytes(bundle, value, field)
+    try:
+        return json.loads(payload)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ReporterError(f"{field}不是有效JSON：{error}") from error
 
 
 def _status_note(status: str, error: Mapping[str, Any] | None = None, reason: Any = None) -> str:
@@ -75,7 +108,7 @@ def _status_note(status: str, error: Mapping[str, Any] | None = None, reason: An
     return labels.get(status, "该模块没有可展示的本次运行结果。")
 
 
-def _terminal_error(run_dir: Path, manifest: Mapping[str, Any]) -> Mapping[str, Any] | None:
+def _terminal_error(bundle: Mapping[str, bytes], manifest: Mapping[str, Any]) -> Mapping[str, Any] | None:
     """读取Core正式error.json，保留失败原因但不读取任何结果数值。"""
 
     if isinstance(manifest.get("error"), Mapping):
@@ -84,10 +117,9 @@ def _terminal_error(run_dir: Path, manifest: Mapping[str, Any]) -> Mapping[str, 
     if not isinstance(relative_value, str):
         return None
     try:
-        path = _inside(run_dir, _safe_relative(relative_value, "manifest.error"), "manifest.error")
+        return _bundle_json(bundle, relative_value, "error.json")
     except ReporterError:
         return None
-    return read_json(path, "error.json") if path.is_file() and not path.is_symlink() else None
 
 
 def _required_candidate(raw: Mapping[str, Any], *, request: ReportRequest) -> dict[str, Any]:
@@ -136,6 +168,16 @@ def _required_candidate(raw: Mapping[str, Any], *, request: ReportRequest) -> di
             "key_terms": list(value.get("key_terms", [])) if isinstance(value.get("key_terms", []), list) else [],
             "evidence_refs": list(value.get("evidence_refs", [])) if isinstance(value.get("evidence_refs", []), list) else [],
         }
+        if value.get("candidate_version_id") is not None:
+            candidate["candidate_version_id"] = require_identifier(
+                value.get("candidate_version_id"), "RecommendationCandidate.candidate_version_id",
+            )
+        if value.get("source_candidate_id") is not None:
+            candidate["source_candidate_id"] = require_identifier(
+                value.get("source_candidate_id"), "RecommendationCandidate.source_candidate_id",
+            )
+        if value.get("supplemental_sections") is not None:
+            candidate["supplemental_sections"] = validate_supplemental_sections(value.get("supplemental_sections"))
         version_ref = as_mapping(request.source_refs["product_version_refs"].get(candidate_id), f"product_version_refs.{candidate_id}")
         if require_text(version_ref.get("product_id"), f"product_version_refs.{candidate_id}.product_id") != product_id:
             raise ReporterError(f"候选{candidate_id}的product_id与product_version_refs不一致")
@@ -151,6 +193,120 @@ def _required_candidate(raw: Mapping[str, Any], *, request: ReportRequest) -> di
         return candidate
     except (ReporterError, TypeError, ValueError) as error:
         raise ReporterError(f"RecommendationCandidate不满足正式协议：{error}") from error
+
+
+def _reject_supplemental_markup(value: Any, field: str) -> None:
+    if isinstance(value, Mapping):
+        for key, nested in value.items():
+            normalized = str(key).strip().lower().replace("-", "_")
+            if normalized in _SUPPLEMENTAL_FORBIDDEN_KEYS or normalized.endswith("_color"):
+                raise ReporterError(f"{field}不接受视觉、HTML或脚本字段")
+            _reject_supplemental_markup(nested, f"{field}.{key}")
+    elif isinstance(value, list):
+        for index, nested in enumerate(value):
+            _reject_supplemental_markup(nested, f"{field}[{index}]")
+    elif isinstance(value, str) and (re.search(r"<\s*/?\s*[A-Za-z]", value) or "javascript:" in value.casefold()):
+        raise ReporterError(f"{field}不接受HTML或脚本")
+
+
+def _validate_supplemental_node(node: Mapping[str, Any], field: str) -> None:
+    def public_scalar(value: Any, scalar_field: str) -> None:
+        if isinstance(value, str) and value.strip():
+            return
+        if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(float(value)):
+            return
+        raise ReporterError(f"{scalar_field}必须是公开标量")
+
+    node_type = str(node.get("type", "")).strip().lower()
+    allowed = _SUPPLEMENTAL_NODE_FIELDS.get(node_type)
+    if allowed is None:
+        raise ReporterError("supplemental_sections含不受支持的内容类型")
+    if set(node).difference(allowed):
+        raise ReporterError(f"{field}含未知字段")
+    if node_type == "metrics":
+        for index, raw in enumerate(as_list(node.get("items"), f"{field}.items")):
+            item = as_mapping(raw, f"{field}.items[{index}]")
+            if set(item).difference(_SUPPLEMENTAL_METRIC_FIELDS):
+                raise ReporterError(f"{field}.items[{index}]含未知字段")
+            if not isinstance(item.get("label"), str) or not item["label"].strip() or "value" not in item:
+                raise ReporterError(f"{field}.items[{index}]缺少公开标签或数值")
+            for key, value in item.items():
+                public_scalar(value, f"{field}.items[{index}].{key}")
+    elif node_type == "table":
+        if "caption" in node and (not isinstance(node["caption"], str) or not node["caption"].strip()):
+            raise ReporterError(f"{field}.caption必须是非空字符串")
+        column_keys: set[str] = set()
+        for index, raw in enumerate(as_list(node.get("columns"), f"{field}.columns")):
+            column = as_mapping(raw, f"{field}.columns[{index}]")
+            if set(column).difference(_SUPPLEMENTAL_COLUMN_FIELDS):
+                raise ReporterError(f"{field}.columns[{index}]含未知字段")
+            column_keys.add(require_text(column.get("key"), f"{field}.columns[{index}].key"))
+            require_text(column.get("label"), f"{field}.columns[{index}].label")
+        for index, raw in enumerate(as_list(node.get("rows"), f"{field}.rows")):
+            row = as_mapping(raw, f"{field}.rows[{index}]")
+            if set(row) != column_keys:
+                raise ReporterError(f"{field}.rows[{index}]必须完整对应已声明列")
+            for key, value in row.items():
+                public_scalar(value, f"{field}.rows[{index}].{key}")
+    elif node_type == "chart":
+        for key in ("chart_type", "title", "accessibility_summary", "x_axis_name", "y_axis_name"):
+            if key in node and (not isinstance(node[key], str) or not node[key].strip()):
+                raise ReporterError(f"{field}.{key}必须是非空字符串")
+        for key in ("x", "y"):
+            if key not in node:
+                continue
+            for index, value in enumerate(as_list(node[key], f"{field}.{key}", allow_empty=True)):
+                if not isinstance(value, str) and (
+                    not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(float(value))
+                ):
+                    raise ReporterError(f"{field}.{key}[{index}]必须是文字或有限数值")
+        for index, point in enumerate(as_list(node["data"], f"{field}.data", allow_empty=True) if "data" in node else []):
+            if not isinstance(point, list) or len(point) != 3:
+                raise ReporterError(f"{field}.data[{index}]必须是三元数值数组")
+            for point_index, value in enumerate(point):
+                if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(float(value)):
+                    raise ReporterError(f"{field}.data[{index}][{point_index}]必须是有限数值")
+        for index, raw in enumerate(as_list(node["series"], f"{field}.series", allow_empty=True) if "series" in node else []):
+            series = as_mapping(raw, f"{field}.series[{index}]")
+            if set(series).difference(_SUPPLEMENTAL_SERIES_FIELDS):
+                raise ReporterError(f"{field}.series[{index}]含未知字段")
+            if not isinstance(series.get("name"), str) or not series["name"].strip():
+                raise ReporterError(f"{field}.series[{index}].name不能为空")
+            for value_index, value in enumerate(as_list(series.get("data"), f"{field}.series[{index}].data", allow_empty=True)):
+                if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(float(value)):
+                    raise ReporterError(f"{field}.series[{index}].data[{value_index}]必须是有限数值")
+    elif node_type == "paragraph":
+        if not isinstance(node.get("text"), str) or not node["text"].strip():
+            raise ReporterError(f"{field}.text不能为空")
+    elif node_type == "formula":
+        if not isinstance(node.get("formula"), str) or not node["formula"].strip():
+            raise ReporterError(f"{field}.formula不能为空")
+
+
+def validate_supplemental_sections(value: Any) -> list[dict[str, Any]]:
+    sections: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for index, raw in enumerate(as_list(value, "RecommendationCandidate.supplemental_sections", allow_empty=True)):
+        section = as_mapping(raw, f"RecommendationCandidate.supplemental_sections[{index}]")
+        if set(section).difference({"id", "title", "content"}):
+            raise ReporterError("supplemental_sections含未知字段")
+        section_id = require_text(section.get("id"), f"supplemental_sections[{index}].id")
+        if not _SUPPLEMENTAL_ID.fullmatch(section_id) or section_id in seen:
+            raise ReporterError("supplemental_sections.id无效或重复")
+        if section_id in {"conclusion", "recommendation", "parameters", "payoff", "pricing", "backtest", "risk"}:
+            raise ReporterError("补充章节不得覆盖7个核心章节")
+        content = as_list(section.get("content"), f"supplemental_sections[{index}].content")
+        for node_index, raw_node in enumerate(content):
+            node = as_mapping(raw_node, f"supplemental_sections[{index}].content[{node_index}]")
+            _validate_supplemental_node(node, f"supplemental_sections[{index}].content[{node_index}]")
+            _reject_supplemental_markup(node, f"supplemental_sections[{index}].content[{node_index}]")
+        seen.add(section_id)
+        sections.append({
+            "id": section_id,
+            "title": require_text(section.get("title"), f"supplemental_sections[{index}].title"),
+            "content": deepcopy(content),
+        })
+    return sections
 
 
 def _recommendation_set(request: ReportRequest) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
@@ -246,7 +402,7 @@ def _contract_fields(raw: Mapping[str, Any], field: str) -> dict[str, Any]:
 
 
 def _artifact_manifest(
-    run_dir: Path,
+    bundle: Mapping[str, bytes],
     manifest: Mapping[str, Any],
     ref_hash: str,
     ref_manifest_hash: str,
@@ -256,10 +412,7 @@ def _artifact_manifest(
     # commit_marker.json把语义哈希和清单文件哈希绑定。上游模块可回填同一相对路径，
     # 但Reporter不要求不存在的manifest.artifact_manifest_hash字段。
     relative = _safe_relative(manifest.get("artifact_manifest", "artifacts/artifact_manifest.json"), "manifest.artifact_manifest")
-    path = _inside(run_dir, relative, "manifest.artifact_manifest")
-    if not path.is_file() or path.is_symlink():
-        raise ReporterError("artifact_manifest不是受控普通文件")
-    payload = path.read_bytes()
+    payload = _bundle_bytes(bundle, relative.as_posix(), "manifest.artifact_manifest")
     actual_manifest_hash = sha256(payload).hexdigest()
     try:
         raw = json.loads(payload)
@@ -267,8 +420,7 @@ def _artifact_manifest(
         raise ReporterError(f"artifact_manifest不是有效JSON：{error}") from error
     if not isinstance(raw, dict):
         raise ReporterError("artifact_manifest必须为对象")
-    marker_path = _inside(run_dir, Path("commit_marker.json"), "commit_marker")
-    marker = read_json(marker_path, "commit_marker.json")
+    marker = _bundle_json(bundle, "commit_marker.json", "commit_marker.json")
     if actual_manifest_hash != ref_manifest_hash:
         raise ReporterError("artifact_manifest与ModuleRunRef外部锚点不一致")
     if marker.get("committed") is not True or marker.get("artifact_manifest_hash") != actual_manifest_hash:
@@ -286,11 +438,15 @@ def _artifact_manifest(
         raise ReporterError("artifact_manifest必须列出受控file_hashes，至少覆盖result.json")
     if "result.json" not in file_hashes:
         raise ReporterError("artifact_manifest未覆盖result.json")
+    expected_bundle_names = set(str(name) for name in file_hashes) | {relative.as_posix(), "commit_marker.json"}
+    if set(bundle) != expected_bundle_names:
+        raise ReporterError("ResultStore返回的ModuleRun字节包与产物清单不一致")
     for name, expected_hash in file_hashes.items():
-        if not isinstance(expected_hash, str) or len(expected_hash) != 64:
+        if not isinstance(expected_hash, str) or not _SHA256.fullmatch(expected_hash):
             raise ReporterError(f"artifact_manifest.file_hashes.{name}不是有效SHA-256")
         reference = _safe_relative(name, f"artifact_manifest.file_hashes.{name}").as_posix()
-        validate_hashed_artifact(run_dir, reference, expected_hash, f"artifact_manifest.file_hashes.{name}")
+        if sha256(_bundle_bytes(bundle, reference, f"artifact_manifest.file_hashes.{name}")).hexdigest() != expected_hash:
+            raise ReporterError(f"artifact_manifest.file_hashes.{name}内容哈希不一致")
     artifacts = raw.get("artifacts")
     if not isinstance(artifacts, list):
         # Core的LocalResultStore以file_hashes为规范账本。将其投影为无路径外泄的
@@ -321,17 +477,17 @@ def _load_module_run(
     candidate: Mapping[str, Any],
     display_module: str,
     raw_ref: Mapping[str, Any],
-    allow_contract_parameter_variant: bool = False,
 ) -> dict[str, Any]:
     run_module = MODULE_TO_RUN[display_module]
     ref = module_run_ref(raw_ref, f"module_run_refs.{candidate['candidate_id']}.{display_module}", tenant_id=request.tenant_id, task_id=request.task_id)
     try:
-        run_dir = result_store.resolve_module_run(ref, tenant_id=request.tenant_id)
+        result_store.verify_module_run(ref, tenant_id=request.tenant_id)
+        bundle = result_store.read_module_run_bundle(ref, tenant_id=request.tenant_id)
     except Exception as error:
-        raise ReporterError(f"无法通过ResultStore解析{display_module}的ModuleRunRef：{error}") from error
-    if not isinstance(run_dir, Path) or not run_dir.is_dir() or run_dir.is_symlink():
-        raise ReporterError(f"ResultStore未返回有效{display_module}运行目录")
-    manifest = read_json(_inside(run_dir, Path("manifest.json"), "manifest"), "manifest.json")
+        raise ReporterError(f"无法通过ResultStore验真并读取{display_module}的ModuleRunRef：{error}") from error
+    if not isinstance(bundle, Mapping) or not bundle or any(not isinstance(name, str) or not isinstance(payload, bytes) for name, payload in bundle.items()):
+        raise ReporterError(f"ResultStore未返回有效{display_module}运行字节包")
+    manifest = _bundle_json(bundle, "manifest.json", "manifest.json")
     if manifest.get("module") != run_module:
         raise ReporterError(f"{display_module}运行模块不一致：期望{run_module}")
     checks = {
@@ -339,7 +495,7 @@ def _load_module_run(
         "task_id": request.task_id,
         "run_id": ref.run_id,
         "analysis_case_id": request.analysis_case_id,
-        "candidate_id": candidate["candidate_id"],
+        "candidate_id": candidate.get("source_candidate_id", candidate["candidate_id"]),
         "semantic_result_hash": ref.expected_semantic_result_hash,
     }
     for key, expected in checks.items():
@@ -347,7 +503,7 @@ def _load_module_run(
             raise ReporterError(f"{display_module} manifest.{key}与请求/引用不一致")
     lifecycle = str(manifest.get("lifecycle_status", manifest.get("status", ""))).lower()
     if lifecycle in TERMINAL_NONREADY:
-        error = _terminal_error(run_dir, manifest)
+        error = _terminal_error(bundle, manifest)
         return {
             "status": lifecycle,
             "note": _status_note(lifecycle, error, manifest.get("reason")),
@@ -363,18 +519,24 @@ def _load_module_run(
         }
     try:
         execution_fingerprint = require_text(manifest.get("execution_fingerprint"), "manifest.execution_fingerprint")
-        contract_path = _inside(run_dir, _safe_relative(manifest.get("resolved_contract", "resolved_contract.json"), "manifest.resolved_contract"), "manifest.resolved_contract")
-        contract = _contract_fields(read_json(contract_path, "resolved_contract.json"), "resolved_contract")
+        contract = _contract_fields(
+            _bundle_json(bundle, manifest.get("resolved_contract", "resolved_contract.json"), "resolved_contract.json"),
+            "resolved_contract",
+        )
     except ReporterError as error:
         raise ReporterError(f"{display_module}运行不满足正式协议：{error}") from error
     # 以下均为已声明对象之间的冲突或受控文件篡改，必须拒绝生成，不能降级混用。
-    if (
-        not allow_contract_parameter_variant
-        and require_text(manifest.get("contract_fingerprint"), "manifest.contract_fingerprint") != str(candidate.get("contract_fingerprint"))
-    ):
+    if require_text(manifest.get("contract_fingerprint"), "manifest.contract_fingerprint") != str(candidate.get("contract_fingerprint")):
         raise ReporterError("manifest.contract_fingerprint与候选合同快照不一致")
-    result_path = _inside(run_dir, _safe_relative(manifest.get("result", "result.json"), "manifest.result"), "manifest.result")
-    result = read_json(result_path, "result.json")
+    candidate_version_id = candidate.get("candidate_version_id")
+    manifest_candidate_version_id = manifest.get("candidate_version_id")
+    if candidate_version_id is not None or manifest_candidate_version_id is not None:
+        if (
+            require_identifier(candidate_version_id, "RecommendationCandidate.candidate_version_id")
+            != require_identifier(manifest_candidate_version_id, "manifest.candidate_version_id")
+        ):
+            raise ReporterError("manifest.candidate_version_id与RecommendationCandidate不一致")
+    result = _bundle_json(bundle, manifest.get("result", "result.json"), "result.json")
     if result.get("semantic_result_hash") and result.get("semantic_result_hash") != ref.expected_semantic_result_hash:
         raise ReporterError("result.semantic_result_hash与ModuleRunRef不一致")
     if stable_hash(result) != ref.expected_semantic_result_hash:
@@ -394,7 +556,7 @@ def _load_module_run(
         "catalog_version_ref.content_hash",
     ):
         raise ReporterError("ResolvedContract.registry_snapshot_hash与Catalog证据不一致")
-    if not allow_contract_parameter_variant and contract["analysis_basis_id"] != candidate["analysis_basis_id"]:
+    if contract["analysis_basis_id"] != candidate["analysis_basis_id"]:
         raise ReporterError("ResolvedContract.analysis_basis_id与RecommendationCandidate不一致")
     if contract["underlyings"] != candidate["underlyings"]:
         raise ReporterError("ResolvedContract.underlyings顺序与RecommendationCandidate不一致")
@@ -403,10 +565,16 @@ def _load_module_run(
     if contract["price_convention"] != candidate["price_convention"]:
         raise ReporterError("ResolvedContract.price_convention与RecommendationCandidate不一致")
     artifact_manifest, artifact_manifest_hash = _artifact_manifest(
-        run_dir, manifest, ref.expected_semantic_result_hash, ref.expected_artifact_manifest_hash, run_module,
+        bundle, manifest, ref.expected_semantic_result_hash, ref.expected_artifact_manifest_hash, run_module,
     )
-    limitations_path = _inside(run_dir, _safe_relative(manifest.get("limitations", "limitations.json"), "manifest.limitations"), "manifest.limitations")
-    limitations_raw = read_json_value(limitations_path, "limitations.json") if limitations_path.suffix == ".json" and limitations_path.exists() else []
+    public_result = deepcopy(result)
+    if display_module == "payoff":
+        facts = _payoff_facts(bundle, artifact_manifest, result)
+        public_result.pop("path_panels", None)
+        public_result.pop("paths", None)
+        public_result["reporter_payoff_facts"] = facts
+    limitations_name = _safe_relative(manifest.get("limitations", "limitations.json"), "manifest.limitations").as_posix()
+    limitations_raw = _bundle_json_value(bundle, limitations_name, "limitations.json") if limitations_name.endswith(".json") else []
     return {
         "status": "ready",
         "note": "已按显式ModuleRunRef、合同快照和产物清单完成验证。",
@@ -416,10 +584,107 @@ def _load_module_run(
             "artifact_manifest_hash": artifact_manifest_hash,
         },
         "contract": contract,
-        "result": result,
+        "result": public_result,
         "artifact_manifest": artifact_manifest,
         "limitations": limitations_raw if isinstance(limitations_raw, list) else [],
-        "_run_dir": run_dir,
+        "_bundle": dict(bundle),
+    }
+
+
+def _payoff_facts(
+    bundle: Mapping[str, bytes],
+    artifact_manifest: Mapping[str, Any],
+    result: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Read only Payoffer's controlled machine-fact projection."""
+
+    raw: Any = None
+    file_hashes = artifact_manifest.get("file_hashes")
+    if isinstance(file_hashes, Mapping) and "artifacts/payoff.json" in file_hashes:
+        artifact = _bundle_json(bundle, "artifacts/payoff.json", "artifacts/payoff.json")
+        raw = artifact.get("reporter_payoff_facts")
+        declared_hash = artifact.get("reporter_payoff_facts_hash")
+    else:
+        raw = result.get("reporter_payoff_facts")
+        declared_hash = result.get("reporter_payoff_facts_hash")
+    facts = as_mapping(raw, "reporter_payoff_facts")
+    if (
+        facts.get("schema") != _PAYOFF_FACT_SCHEMA
+        or facts.get("projection_status") != "controlled_percent_machine_facts"
+        or facts.get("payoff_unit") != "percent"
+        or facts.get("source") != "runtime.contracts.evaluate_contract"
+        or facts.get("discounting") != "not_applied"
+        or not isinstance(facts.get("paths"), list)
+        or not facts["paths"]
+    ):
+        raise ReporterError("Payoffer reporter_payoff_facts不满足正式公开协议")
+    if not isinstance(declared_hash, str) or declared_hash != stable_hash(facts):
+        raise ReporterError("Payoffer reporter_payoff_facts_hash与冻结事实不一致")
+    return deepcopy(facts)
+
+
+def _quote_fact(result: Mapping[str, Any], contract: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate one explicit Pricer quote fact; never infer price terms from contracts."""
+
+    pricing = result.get("pricing") if isinstance(result.get("pricing"), Mapping) else result
+    precision_status = require_text(pricing.get("precision_status"), "pricing.precision_status")
+    if pricing.get("quote_eligible") is not True or precision_status in {"demo_only", "not_assessed", "not_priced"}:
+        raise ReporterUnavailableError("所选估值未通过正式报价资格或精度门槛，当前Quote不可用")
+    raw = pricing.get("reporter_quote_fact", result.get("reporter_quote_fact"))
+    if not isinstance(raw, Mapping):
+        raise ReporterUnavailableError("所选Pricer结果没有冻结报价事实，当前Quote不可用")
+    fact = dict(raw)
+    if fact.get("schema") != _QUOTE_FACT_SCHEMA or fact.get("quote_eligible") is not True:
+        raise ReporterUnavailableError("冻结报价事实缺少正式资格，当前Quote不可用")
+    if require_text(fact.get("precision_status"), "reporter_quote_fact.precision_status") != precision_status:
+        raise ReporterError("冻结报价事实的precision_status与Pricer不一致")
+    pricing_basis = require_text(pricing.get("price_convention"), "pricing.price_convention")
+    fact_basis = require_text(fact.get("price_convention"), "reporter_quote_fact.price_convention")
+    contract_convention = as_mapping(contract.get("price_convention"), "ResolvedContract.price_convention")
+    contract_basis = require_text(contract_convention.get("contract_basis"), "ResolvedContract.price_convention.contract_basis")
+    if pricing_basis not in {"normalized_100", "absolute_market"}:
+        raise ReporterError("pricing.price_convention不是正式价格口径")
+    if pricing_basis != fact_basis or pricing_basis != contract_basis:
+        raise ReporterError("报价事实、Pricing与合同的price_convention不一致")
+    applicable_date = require_text(fact.get("applicable_date"), "reporter_quote_fact.applicable_date")
+    if not _DATE.fullmatch(applicable_date):
+        raise ReporterError("reporter_quote_fact.applicable_date必须为YYYY-MM-DD")
+    source = as_mapping(fact.get("source"), "reporter_quote_fact.source")
+    source_fact = {
+        "provider": require_text(source.get("provider"), "reporter_quote_fact.source.provider"),
+        "reference_id": require_text(source.get("reference_id"), "reporter_quote_fact.source.reference_id"),
+    }
+    terms: list[dict[str, Any]] = []
+    for index, raw_term in enumerate(as_list(fact.get("terms"), "reporter_quote_fact.terms"), start=1):
+        term = as_mapping(raw_term, f"reporter_quote_fact.terms[{index}]")
+        if set(term).difference({"symbol", "label", "value", "unit", "note"}):
+            raise ReporterError("reporter_quote_fact.terms含未受控字段")
+        value = term.get("value")
+        if isinstance(value, (Mapping, list, tuple, bool)) or value is None:
+            raise ReporterError("reporter_quote_fact.terms.value必须为明确标量")
+        unit = require_text(term.get("unit"), f"reporter_quote_fact.terms[{index}].unit")
+        if unit not in _QUOTE_TERM_UNITS:
+            raise ReporterError("reporter_quote_fact.terms.unit不是正式公开单位")
+        if (
+            (unit == "price_normalized_percent" and pricing_basis != "normalized_100")
+            or (unit == "market_price" and pricing_basis != "absolute_market")
+        ):
+            raise ReporterError("reporter_quote_fact条款单位与价格口径不一致")
+        terms.append({
+            "symbol": require_text(term.get("symbol"), f"reporter_quote_fact.terms[{index}].symbol"),
+            "label": require_text(term.get("label"), f"reporter_quote_fact.terms[{index}].label"),
+            "value": value,
+            "unit": unit,
+            **({"note": require_text(term.get("note"), f"reporter_quote_fact.terms[{index}].note")} if term.get("note") else {}),
+        })
+    return {
+        "schema": _QUOTE_FACT_SCHEMA,
+        "source": source_fact,
+        "applicable_date": applicable_date,
+        "quote_eligible": True,
+        "precision_status": precision_status,
+        "price_convention": pricing_basis,
+        "terms": terms,
     }
 
 
@@ -475,20 +740,22 @@ def _resolve_quote_evidence(
             raise ReporterError(f"quote_items[{index}]候选不属于所选来源")
         candidate = candidates[candidate_id]
         module = str(item["module"])
+        if module != "pricing":
+            raise ReporterError(f"quote_items[{index}]：Quote只接受Pricer冻结的报价事实")
         evidence = _load_module_run(
             source_request,
             result_store,
             candidate=candidate,
             display_module=module,
             raw_ref=as_mapping(item["module_run_ref"], f"quote_items[{index}].module_run_ref"),
-            allow_contract_parameter_variant=True,
         )
         if evidence.get("status") != "ready" or not isinstance(evidence.get("contract"), Mapping):
             raise ReporterError(f"quote_items[{index}]必须选择已完成且可验证的运行结果")
         contract = dict(evidence["contract"])
+        quote_fact = _quote_fact(evidence["result"], contract)
         signature = require_text(contract.get("contract_fingerprint"), "ResolvedContract.contract_fingerprint")
         if signature in seen_contracts:
-            continue
+            raise ReporterError("Quote不得为同一合同选择多个Pricing运行")
         seen_contracts.add(signature)
         variant = deepcopy(dict(candidate))
         variant["contract_fingerprint"] = signature
@@ -501,6 +768,7 @@ def _resolve_quote_evidence(
             "modules": modules,
             "contract": contract,
             "quote_module": module,
+            "quote_fact": quote_fact,
         })
     if not result:
         raise ReporterError("组合报价没有可展示的已验证合同快照")
@@ -535,12 +803,6 @@ def resolve_evidence(request: ReportRequest, result_store: ResultStorePort) -> d
                 modules[display_module] = _load_module_run(
                     request, result_store, candidate=candidate, display_module=display_module,
                     raw_ref=as_mapping(candidate_refs[display_module], f"module_run_refs.{candidate_id}.{display_module}"),
-                    # A selected ModuleRun owns its own ResolvedContract.  A
-                    # user may adjust a clause and re-run only Pricing or
-                    # Backtest; that new snapshot remains a valid single
-                    # module delivery as long as its product identity and
-                    # other controlled invariants still match the candidate.
-                    allow_contract_parameter_variant=True,
                 )
         candidate_evidence[candidate_id] = {
             "candidate": candidate,
