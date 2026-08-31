@@ -18,6 +18,7 @@
       "tau_touch": "first_time(S_t[O_touch] >= H_touch)"
     },
     "pricing_methods": [
+      "analytical",
       "monte_carlo"
     ]
   },
