@@ -25,6 +25,7 @@ def summarize_common_metrics(
     contract: Any,
     *,
     include_annual: bool,
+    entry_hv_bins: Sequence[float] | None = None,
 ) -> dict[str, Any]:
     """由唯一逐笔账本派生所有非产品专属统计。"""
     returns = np.asarray([trade.gross_contract_return for trade in trades], dtype=float)
@@ -51,6 +52,79 @@ def summarize_common_metrics(
         "three_outcome_summary": three_outcome_summary(trades),
         "conditional_summary": conditional_summary(trades),
         "annual_summary": annual_summary(trades, contract) if include_annual else [],
+        "entry_hv_group_summary": entry_hv_group_summary(trades, entry_hv_bins),
+    }
+
+
+def entry_hv_group_summary(
+    trades: Sequence[Any],
+    bins: Sequence[float] | None,
+) -> dict[str, Any]:
+    """按入场时已冻结的HistVol特征汇总合同毛收益率。
+
+    分组只消费``entry_hv_feature``的无前视结果，不在指标层重新计算波动率。
+    """
+    normalized_bins = tuple(float(value) for value in bins or ())
+    empty = {
+        "status": "not_requested",
+        "display_unit": "percentage",
+        "value_encoding": "decimal_ratio",
+        "bins": list(normalized_bins),
+        "grouped_sample_count": 0,
+        "ungrouped_sample_count": 0,
+        "ungrouped_reasons": {},
+        "groups": [],
+    }
+    if not normalized_bins:
+        return empty
+
+    grouped_returns: list[list[float]] = [[] for _ in range(len(normalized_bins) + 1)]
+    ungrouped_reasons: dict[str, int] = {}
+    for trade in trades:
+        feature = getattr(trade, "entry_features", {})
+        grouping = feature.get("grouping") if isinstance(feature, Mapping) else None
+        bucket = grouping.get("bucket") if isinstance(grouping, Mapping) else None
+        feature_bins = grouping.get("bins") if isinstance(grouping, Mapping) else None
+        valid_bins = (
+            isinstance(feature_bins, Sequence)
+            and not isinstance(feature_bins, (str, bytes))
+            and len(feature_bins) == len(normalized_bins)
+            and all(np.isclose(float(actual), expected) for actual, expected in zip(feature_bins, normalized_bins))
+        )
+        if isinstance(bucket, int) and not isinstance(bucket, bool) and 0 <= bucket < len(grouped_returns) and valid_bins:
+            grouped_returns[bucket].append(float(trade.gross_contract_return))
+            continue
+        reason = str(feature.get("reason") or "invalid_entry_hv_grouping") if isinstance(feature, Mapping) else "invalid_entry_hv_grouping"
+        ungrouped_reasons[reason] = ungrouped_reasons.get(reason, 0) + 1
+
+    groups = []
+    for bucket, values in enumerate(grouped_returns):
+        returns = np.asarray(values, dtype=float)
+        positive_count = int(np.sum(returns > 0.0))
+        groups.append({
+            "bucket": bucket,
+            "lower_bound": normalized_bins[bucket - 1] if bucket else None,
+            "upper_bound": normalized_bins[bucket] if bucket < len(normalized_bins) else None,
+            "sample_count": len(values),
+            "valid_return_sample_count": len(values),
+            "positive_return_count": positive_count,
+            "win_rate": positive_count / len(values) if values else None,
+            "average_gross_return": float(returns.mean()) if len(returns) else None,
+            "median_gross_return": float(np.median(returns)) if len(returns) else None,
+            "minimum_gross_return": float(returns.min()) if len(returns) else None,
+            "maximum_gross_return": float(returns.max()) if len(returns) else None,
+            "max_loss_gross_return": max(0.0, -float(returns.min())) if len(returns) else None,
+        })
+    grouped_count = sum(len(values) for values in grouped_returns)
+    ungrouped_count = sum(ungrouped_reasons.values())
+    status = "available" if grouped_count and not ungrouped_count else "partial" if grouped_count else "not_available"
+    return {
+        **empty,
+        "status": status,
+        "grouped_sample_count": grouped_count,
+        "ungrouped_sample_count": ungrouped_count,
+        "ungrouped_reasons": ungrouped_reasons,
+        "groups": groups,
     }
 
 
