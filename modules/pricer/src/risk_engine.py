@@ -440,9 +440,14 @@ def _risk_price(price_one: PriceOne, market: Any, maturity_years: float, risk_gr
             "OptionReg路径MC注入交易sessions未覆盖完整剩余合同期限",
             "价格路径终点",
             "风险期限节点早于首个冻结观察日",
+            "Reiner-Rubinstein解析公式在当前利率、股息率与波动率组合下没有实数解",
+            "Reiner-Rubinstein解析公式要求波动率高于双精度数值稳定边界",
+            "Reiner-Rubinstein解析公式超出双精度数值稳定范围",
         )
         if not any(token in message for token in expected_calendar_errors):
             raise
+        if "Reiner-Rubinstein" in message:
+            return None, message + "，该风险点标记not_applicable。"
         return None, "风险点不能与真实交易日历对齐，剩余期限内不足两个真实交易session或会截断合同路径，标记not_applicable；未补造weekday。"
 
 
