@@ -26,6 +26,7 @@ class DesignTokens:
     dark_colors: Mapping[str, str]
     fonts: Mapping[str, str]
     type_scale: Mapping[str, str]
+    pdf_type_scale: Mapping[str, float]
     spacing: Mapping[str, str]
     radii: Mapping[str, str]
     borders: Mapping[str, str]
@@ -50,6 +51,7 @@ class DesignTokens:
             "dark_colors": dict(self.dark_colors),
             "fonts": dict(self.fonts),
             "type_scale": dict(self.type_scale),
+            "pdf_type_scale": dict(self.pdf_type_scale),
             "spacing": dict(self.spacing),
             "radii": dict(self.radii),
             "borders": dict(self.borders),
@@ -199,6 +201,33 @@ TOKENS = DesignTokens(
             "card_table": "9px",
             "card_unit": "8px",
             "card_risk": "9.5px",
+        }
+    ),
+    pdf_type_scale=_freeze(
+        {
+            "report_title": 20.0,
+            "card_title": 16.0,
+            "report_section": 14.0,
+            "card_section": 10.5,
+            "report_subsection": 11.5,
+            "card_subsection": 9.2,
+            "report_body": 10.1,
+            "card_body": 9.1,
+            "report_caption": 9.3,
+            "card_caption": 8.6,
+            "report_table": 8.8,
+            "card_table": 8.0,
+            "report_table_head": 8.9,
+            "card_table_head": 8.1,
+            "report_table_compact": 8.2,
+            "card_table_compact": 7.4,
+            "report_table_head_compact": 8.3,
+            "card_table_head_compact": 7.5,
+            "report_table_dense": 7.6,
+            "card_table_dense": 6.9,
+            "report_table_head_dense": 7.7,
+            "card_table_head_dense": 7.0,
+            "metric": 8.2,
         }
     ),
     spacing=_freeze(
