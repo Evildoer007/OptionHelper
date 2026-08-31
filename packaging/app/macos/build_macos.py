@@ -1138,6 +1138,7 @@ def backend_build_command(workspace: Path, *, app_root: Path = APP_ROOT) -> list
     # Designer verifies the pinned runtime through importlib.metadata inside the
     # frozen process; preserve that distribution metadata alongside the PYZ.
     command.extend(("--copy-metadata", "reportlab"))
+    command.extend(("--collect-data", "certifi"))
     for module in EXCLUDED_BACKEND_MODULES:
         command.extend(("--exclude-module", module))
     command.append(str(launcher))
