@@ -1,7 +1,4 @@
 /* App-wide semantic theme layer. Values are defined only by Designer tokens. */
-:root {
-  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
-}
 
 html[data-theme="dark"] {
   color-scheme: dark;
@@ -65,7 +62,7 @@ html[data-theme="dark"] .login-page {
   --login-ring: color-mix(in srgb, var(--color-brand-red) 28%, transparent);
 }
 
-html[data-theme="dark"] :is(.login-environment, .login-theme, .login-input, .login-check__box) {
+html[data-theme="dark"] :is(.login-theme, .login-input, .login-check__box) {
   border-color: var(--color-rule);
   background: var(--color-surface);
   color: var(--color-ink);
@@ -487,8 +484,8 @@ html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-sh
    restrained theme tint so labels and controls remain readable. Browsers keep
    the existing backdrop-filter fallback for local visual development. */
 html[data-theme="light"] {
-  --rail-material-fill: color-mix(in srgb, var(--color-ground) 84%, transparent);
-  --rail-native-material-fill: color-mix(in srgb, var(--color-ground) 58%, transparent);
+  --rail-material-fill: color-mix(in srgb, var(--color-ground) 72%, transparent);
+  --rail-native-material-fill: color-mix(in srgb, var(--color-ground) 22%, transparent);
   --rail-material-border: color-mix(in srgb, var(--color-ink) 10%, transparent);
   --rail-material-control: color-mix(in srgb, var(--color-ink) 5%, transparent);
   --rail-material-control-hover: color-mix(in srgb, var(--color-ink) 8%, transparent);
@@ -496,8 +493,8 @@ html[data-theme="light"] {
 }
 
 html[data-theme="dark"] {
-  --rail-material-fill: color-mix(in srgb, var(--color-paper) 80%, transparent);
-  --rail-native-material-fill: color-mix(in srgb, var(--color-paper) 60%, transparent);
+  --rail-material-fill: color-mix(in srgb, var(--color-paper) 70%, transparent);
+  --rail-native-material-fill: color-mix(in srgb, var(--color-paper) 28%, transparent);
   --rail-material-border: color-mix(in srgb, var(--color-ink) 14%, transparent);
   --rail-material-control: color-mix(in srgb, var(--color-ink) 7%, transparent);
   --rail-material-control-hover: color-mix(in srgb, var(--color-ink) 11%, transparent);
@@ -513,8 +510,8 @@ html[data-theme="dark"] {
   border-right-color: var(--rail-material-border) !important;
   background: var(--rail-material-fill) !important;
   color: var(--color-ink) !important;
-  -webkit-backdrop-filter: blur(18px) saturate(110%);
-  backdrop-filter: blur(18px) saturate(110%);
+  -webkit-backdrop-filter: blur(22px) saturate(118%);
+  backdrop-filter: blur(22px) saturate(118%);
 }
 
 html[data-native-material="system"] .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .workspace-rail--unbranded {
