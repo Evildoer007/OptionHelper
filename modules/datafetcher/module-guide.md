@@ -17,11 +17,13 @@
 
 缓存身份包含租户、资产、字段、频率、复权、Provider和显式本地CSV的内容身份；同机相同身份在查缓存至落盘期间串行。原始CSV可跨日历证据复用，但每个`DataAssetRef`再按创建主体和日历证据隔离，未验证请求不会复用带日历谱系的引用。没有显式交易所日历时只补已观测范围外的边缘区间，不以工作日推断中间缺口；有显式日历时仅补请求日期区间内缺失的session。
 
-当前正式支持通过iFind API获取中国A股、ETF和指数日线，本地CSV只用于用户明确选择的离线任务。合同与回测结算数据必须能提供不复权`close`。历史行情的OHLC、复权、缺失值和HV输入质量校验保持不变。历史行情的结束日不得晚于Host确认的可观测行情日；未来日期只允许通过独立`trading-calendar`请求取得，日历资产不含价格，不执行OHLC字段审计，也不使用工作日推算。页面不得读取或暴露Provider明文凭据。
+当前正式支持通过iFind API获取中国A股、ETF和指数日线；LocalProvider只读取Host受控DataStore内的CSV，不代表远程缓存。远程缓存复用仍保留`ifind_http`来源，并由`cache_policy`决定实时获取、补齐或仅复用。合同与回测结算数据必须能提供不复权`close`。历史行情检查缺失值、重复记录、正值约束以及原始和复权OHLC关系。历史行情的结束日不得晚于Host确认的可观测行情日；未来日期只允许通过独立`trading-calendar`请求取得，日历资产不含价格，不执行OHLC字段审计，也不使用工作日推算。页面不得读取或暴露Provider明文凭据。
 
 `fetch_calendar`按SSE或SZSE调用iFind`get_trade_dates`。多交易所标的只保留各交易所交易日交集。Provider不可用时只复用同租户、同标的、同交易所且完整覆盖请求区间的已验证缓存；覆盖不足时明确失败。
 
 历史行情需要已验证交易日完整性时，Host将同一租户、同一主体可读的`trading-calendar` `DataAssetRef`注入`DataFetcherConfig.trading_calendar_ref`。DataFetcher通过DataStore核验其字节、哈希、交易所映射、覆盖范围和session交集，并将`calendar_ref`写入历史行情`coverage`及`lineage.trading_calendar_ref`。未注入时质量只能是`unverified`，不会伪装为完整。
+
+单日行情请求若Provider明确返回空数据，只能沿上述已验证日历回退到所有请求标的共同的最近交易日；没有验证日历、没有共同session或多日区间整体为空时明确失败，不用weekday推断。
 
 缓存复用完全由DataFetcher内部完成。Agent和其他模块不得直接读取`datafetcher-cache`、`index.json`、`calendar-index.json`或缓存资产，也不得把历史行情日期、普通工作日或临时脚本当作未来交易日历。
 
@@ -32,6 +34,7 @@
 - 已配置但失败时，分别说明凭据无效或过期、网络不可用、Provider异常、数据权限不足，不把所有失败都归类为未配置。
 - 默认使用iFind API实时获取或刷新中国市场数据；只有用户明确选择离线数据时才使用本地CSV，不把本地CSV作为无提示回退。
 - iFind只要求Host保存Refresh Token，短期访问凭据由Provider自动获取和更新。不得要求用户同时维护两种Token。
+- 连接测试成功后，DataFetcher按租户、主体和SecretRef修订号记录当前进程内的已验证状态；Token失败或连接失败会清除该状态。状态只含摘要，不含Secret值。
 - Host配置的`timeout_seconds`会同时传入iFind的Refresh Token交换、行情和交易日历HTTP请求。Wind默认禁用；即使Host显式启用，取数前仍必须通过SDK和会话探测，不把“已启用”当作“已可用”。
 - 日期、字段和复权口径能按任务目标确定时直接使用；确有歧义时一次合并确认。不得要求普通用户提供Provider字段名、物理文件路径或Store位置。
 - 单独调用只返回数据质量结论、预览和受控引用，不自动触发推荐、定价、回测或报告。
