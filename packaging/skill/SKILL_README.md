@@ -14,7 +14,7 @@
 
 配置完成后，用户可以直接提问、指定模块、调整参数或要求结构推荐。当前对话负责调用现成模块；用户不需要填写JSON，不需要手写Python或HTML，也不需要临时`.py`或手工HTML。
 
-对话框架执行完整项目工作流时，使用Skill自带的`scripts/tool_entry.py --project-json`公开入口；不要导入内部Python函数，也不要在临时目录编写驱动脚本。Monte Carlo不设置最低路径数，Pricer结果会保留实际路径数、标准误和精度状态。
+对话框架执行完整项目工作流时，使用Skill自带的`scripts/tool_entry.py --project-json`公开入口；不要导入内部Python函数，也不要在临时目录编写驱动脚本。Pricer公开方法只有`Analytical`和`Monte Carlo`：支持解析定价时优先`Analytical`，否则使用`Monte Carlo`。Monte Carlo不设置最低路径数，Pricer结果会保留实际路径数、标准误和精度状态。
 
 ## 1.安装
 
