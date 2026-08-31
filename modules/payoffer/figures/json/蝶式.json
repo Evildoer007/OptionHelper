@@ -12,7 +12,7 @@
     "K3": 110.0,
     "P_net": 2.5,
     "pricing_methods": [
-      "black_scholes",
+      "analytical",
       "monte_carlo"
     ],
     "constraints": [
