@@ -37,9 +37,10 @@ internal static class Program
 
         var state = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "OptionHelper", "local-state");
         Directory.CreateDirectory(state);
+        var initializationToken = Guid.NewGuid().ToString("N");
         using var process = new Process
         {
-            StartInfo = new ProcessStartInfo(backend, $"--host 127.0.0.1 --port 0 --data-dir \"{state}\" --resource-dir \"{resources}\"")
+            StartInfo = new ProcessStartInfo(backend, $"--host 127.0.0.1 --port 0 --data-dir \"{state}\" --resource-dir \"{resources}\" --initialization-token {initializationToken}")
             {
                 WorkingDirectory = Path.GetDirectoryName(backend)!,
                 UseShellExecute = false,
@@ -56,7 +57,7 @@ internal static class Program
             started = true;
             backendErrorTask = process.StandardError.ReadToEndAsync();
             var url = await WaitForUrl(process, TimeSpan.FromSeconds(45));
-            Application.Run(new MainForm(url, state));
+            Application.Run(new MainForm(url, state, initializationToken));
         }
         catch (Exception error)
         {
@@ -117,6 +118,7 @@ internal sealed class MainForm : Form
     private static readonly double[] ScaleSteps = [0.8, 0.9, 1.0, 1.1, 1.25, 1.4];
     private readonly WebView2 browser = new() { Dock = DockStyle.Fill, DefaultBackgroundColor = Color.Transparent };
     private readonly string uiPreferencesPath;
+    private readonly string initializationToken;
     private readonly SemaphoreSlim uiScaleScriptLock = new(1, 1);
     private double uiScale;
     private bool webViewReady;
@@ -125,7 +127,7 @@ internal sealed class MainForm : Form
     private string surfaceTheme = "light";
     private string? uiScaleScriptId;
 
-    internal MainForm(string url, string stateDirectory)
+    internal MainForm(string url, string stateDirectory, string initializationToken)
     {
         Text = "OptionHelper";
         Width = 1320;
@@ -133,6 +135,7 @@ internal sealed class MainForm : Form
         KeyPreview = true;
         BackColor = Color.FromArgb(247, 247, 247);
         uiPreferencesPath = Path.Combine(stateDirectory, "ui-preferences.json");
+        this.initializationToken = initializationToken;
         uiScale = UIScalePreferences.Load(uiPreferencesPath, ScaleSteps);
         Controls.Add(browser);
         Shown += async (_, _) =>
@@ -302,7 +305,7 @@ internal sealed class MainForm : Form
             var scale = JavascriptNumber(uiScale);
             var material = nativeBackdropEnabled ? "system" : "fallback";
             uiScaleScriptId = await browser.CoreWebView2.AddScriptToExecuteOnDocumentCreatedAsync(
-                $"document.documentElement.dataset.nativeShell='windows';document.documentElement.dataset.nativeMaterial='{material}';document.documentElement.dataset.uiScale='{scale}';"
+                $"document.documentElement.dataset.nativeShell='windows';document.documentElement.dataset.nativeMaterial='{material}';document.documentElement.dataset.uiScale='{scale}';if(location.pathname==='/')window.__optionhelperInitializationToken='{initializationToken}';"
             );
         }
         finally
