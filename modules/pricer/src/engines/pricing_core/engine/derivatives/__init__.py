@@ -17,7 +17,10 @@ from .instruments import (
     OptionInstrument,
     OptionRegPathOption,
     OptionLeg,
+    RangeAccrualOption,
     StaticAccumulatorOption,
+    VarianceSwapOption,
+    WorstOfCallOption,
 )
 from .models import (
     MarketState,
@@ -48,6 +51,7 @@ __all__ = [
     "OptionInstrument",
     "OptionRegPathOption",
     "OptionLeg",
+    "RangeAccrualOption",
     "PricingMethod",
     "PricingResult",
     "RandomMatrixInfo",
@@ -57,8 +61,10 @@ __all__ = [
     "SolveResult",
     "SolveTarget",
     "StaticAccumulatorOption",
+    "VarianceSwapOption",
     "ValuationConfig",
     "ValuationState",
+    "WorstOfCallOption",
     "price",
     "solve",
 ]
