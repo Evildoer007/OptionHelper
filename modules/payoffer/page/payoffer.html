@@ -34,7 +34,10 @@
       .runtime-import { width:100%; min-height:96px; margin-top:8px; padding:8px; border:1px solid var(--rule); background:var(--color-surface); color:var(--ink); font:10px/1.5 var(--mono); resize:vertical; }
       .scenario-list li { cursor: default; }
       .scenario-kind { display:block; margin-top:3px; color:var(--muted); font:10px var(--mono); }
-      .canvas-viewport .canvas-stage > svg { display:block; width:100%; height:auto; }
+      .canvas-viewport .canvas-stage > svg { display:block; width:100%; height:100%; }
+      .canvas-size-grid { grid-template-columns:1fr; }
+      .canvas-size-grid .parameter-field { grid-template-columns:minmax(0,.9fr) minmax(112px,1.1fr); }
+      .canvas-size-note { margin:8px 0 0; color:var(--muted); font-size:10px; line-height:1.5; }
       .source-detail .formula { display:block; margin-top:5px; white-space:normal; overflow-wrap:anywhere; }
       .canvas-toolbar-primary { display:flex; min-width:0; align-items:center; gap:12px; }
       .scope-notice { min-width:0; color:var(--muted); font-size:11px; }
@@ -82,7 +85,7 @@
             <div class="canvas-toolbar-actions">
               <div class="zoom-control" aria-label="画布缩放" aria-hidden="true" hidden><button class="zoom-button" id="zoomOutButton" title="缩小">−</button><label class="zoom-input-wrap"><input id="zoomInput" type="number" min="10" max="200" step="1" inputmode="numeric" aria-label="画布缩放百分比" value="100"><em>%</em></label><button class="zoom-button" id="zoomInButton" title="放大">+</button><button class="zoom-fit" id="zoomFitButton" title="适应画布">适应</button></div>
               <button class="button button-quiet" id="canvasDefaultButton" disabled>查看默认图</button>
-              <button class="button button-quiet" id="canvasPreviewButton" disabled>Runtime预览</button>
+              <button class="button button-quiet" id="canvasPreviewButton" disabled>预览</button>
               <button class="button button-primary" id="canvasSaveButton" disabled>保存</button>
             </div>
           </div>
@@ -107,6 +110,14 @@
             <div class="group-title" id="termsGroupTitle">结构条款</div>
             <div class="parameter-grid runtime-parameter-grid" id="parameterFields"></div>
             <div class="runtime-actions" hidden><button class="button button-quiet small" id="applyParametersButton" hidden>解析并更新收益图</button><button class="button button-quiet small" id="restoreDefaultsButton" hidden>恢复默认值</button></div>
+          </section>
+          <section class="inspector-group module-parameter-section" id="canvasSizeGroup" hidden>
+            <div class="group-title">图片尺寸</div>
+            <div class="parameter-grid canvas-size-grid">
+              <label class="parameter-field"><span>图片宽度</span><input id="canvasWidth" type="number" min="240" max="6000" step="1" inputmode="numeric" value="1200"><em>px</em></label>
+              <label class="parameter-field"><span>图片高度</span><input id="canvasHeight" type="number" min="180" max="6000" step="1" inputmode="numeric" placeholder="载入后显示"><em>px</em></label>
+            </div>
+            <p class="canvas-size-note">调整预览画布尺寸，不改变合同条款和收益计算。</p>
           </section>
           <details class="module-advanced" id="runtimeImportGroup">
             <summary>高级设置</summary>
@@ -226,6 +237,9 @@
           $(id).hidden = hostedInDesk;
         });
         $('runtimeImportGroup').hidden = !editable;
+        $('canvasSizeGroup').hidden = !hostedInDesk;
+        $('canvasWidth').disabled = !hostedInDesk || !state.product;
+        $('canvasHeight').disabled = !hostedInDesk || !state.product;
         $('maintenancePanel').hidden = !(localDevelopmentPreview && state.maintenanceEnabled && !hostedInDesk);
         $('scopeNotice').textContent = hostedInDesk
           ? (hasHostTaskContract() ? '受控Runtime预览：合同身份与交易日历来自App Host' : '首次Runtime预览：填写标的和条款后提交App Host')
@@ -683,6 +697,53 @@
         updateCanvasPanState();
       }
 
+      function canvasDimension(input, naturalValue, label) {
+        if (input.dataset.custom !== 'true') return naturalValue;
+        const value = Number(input.value);
+        const minimum = Number(input.min);
+        const maximum = Number(input.max);
+        if (!Number.isInteger(value) || value < minimum || value > maximum) {
+          throw new Error(label + '必须是' + minimum + '至' + maximum + '之间的整数像素值');
+        }
+        return value;
+      }
+
+      function applyCanvasDimensions() {
+        const stage = $('canvasViewport').querySelector('.canvas-stage');
+        if (!stage) return;
+        const naturalWidth = Number(stage.dataset.naturalCanvasWidth) || 1200;
+        const naturalHeight = Number(stage.dataset.naturalCanvasHeight) || 800;
+        const width = canvasDimension($('canvasWidth'), naturalWidth, '图片宽度');
+        const height = canvasDimension($('canvasHeight'), naturalHeight, '图片高度');
+        stage.dataset.canvasWidth = String(width);
+        stage.dataset.canvasHeight = String(height);
+        const svg = stage.querySelector(':scope > svg');
+        if (svg) {
+          svg.setAttribute('width', String(width));
+          svg.setAttribute('height', String(height));
+        }
+        if ($('canvasWidth').dataset.custom !== 'true') $('canvasWidth').value = String(Math.round(naturalWidth));
+        if ($('canvasHeight').dataset.custom !== 'true') $('canvasHeight').value = String(Math.round(naturalHeight));
+        if (state.zoomMode === 'fit') fitZoom();
+        else setZoom(state.zoom);
+      }
+
+      function updateCanvasDimension(event) {
+        const input = event.currentTarget;
+        const custom = input.value.trim() !== '';
+        input.dataset.custom = String(custom);
+        input.setCustomValidity('');
+        if (!custom) return;
+        try { applyCanvasDimensions(); }
+        catch (error) { input.setCustomValidity(error.message); }
+      }
+
+      function commitCanvasDimension(event) {
+        updateCanvasDimension(event);
+        if (event.currentTarget.dataset.custom !== 'true') applyCanvasDimensions();
+        event.currentTarget.reportValidity();
+      }
+
       function zoomAtPointer(event) {
         const viewport = $('canvasViewport');
         const stage = viewport.querySelector('.canvas-stage');
@@ -743,13 +804,21 @@
       function createCanvasStage(svgSource) {
         const svg = safeSvgElement(svgSource);
         const viewBox = String(svg.getAttribute('viewBox') || '').trim().split(/[\s,]+/).map(Number);
-        const width = viewBox.length === 4 && Number.isFinite(viewBox[2]) && viewBox[2] > 0 ? viewBox[2] : parseFloat(svg.getAttribute('width')) || 1200;
-        const height = viewBox.length === 4 && Number.isFinite(viewBox[3]) && viewBox[3] > 0 ? viewBox[3] : parseFloat(svg.getAttribute('height')) || 800;
+        const naturalWidth = viewBox.length === 4 && Number.isFinite(viewBox[2]) && viewBox[2] > 0 ? viewBox[2] : parseFloat(svg.getAttribute('width')) || 1200;
+        const naturalHeight = viewBox.length === 4 && Number.isFinite(viewBox[3]) && viewBox[3] > 0 ? viewBox[3] : parseFloat(svg.getAttribute('height')) || 800;
+        const width = canvasDimension($('canvasWidth'), naturalWidth, '图片宽度');
+        const height = canvasDimension($('canvasHeight'), naturalHeight, '图片高度');
         svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+        svg.setAttribute('width', String(width));
+        svg.setAttribute('height', String(height));
         const stage = document.createElement('div');
         stage.className = 'canvas-stage';
+        stage.dataset.naturalCanvasWidth = String(naturalWidth);
+        stage.dataset.naturalCanvasHeight = String(naturalHeight);
         stage.dataset.canvasWidth = String(width);
         stage.dataset.canvasHeight = String(height);
+        if ($('canvasWidth').dataset.custom !== 'true') $('canvasWidth').value = String(Math.round(naturalWidth));
+        if ($('canvasHeight').dataset.custom !== 'true') $('canvasHeight').value = String(Math.round(naturalHeight));
         stage.replaceChildren(svg);
         return stage;
       }
@@ -1086,6 +1155,10 @@
       $('zoomInButton').addEventListener('click', () => setZoom(state.zoom + .05));
       $('zoomInput').addEventListener('input', event => setZoom(Number(event.target.value) / 100));
       $('zoomFitButton').addEventListener('click', fitZoom);
+      $('canvasWidth').addEventListener('input', updateCanvasDimension);
+      $('canvasHeight').addEventListener('input', updateCanvasDimension);
+      $('canvasWidth').addEventListener('change', commitCanvasDimension);
+      $('canvasHeight').addEventListener('change', commitCanvasDimension);
       $('canvasViewport').addEventListener('wheel', zoomAtPointer, { passive: false });
       $('canvasViewport').addEventListener('pointerdown', startCanvasPan);
       $('canvasViewport').addEventListener('pointermove', moveCanvasPan);
