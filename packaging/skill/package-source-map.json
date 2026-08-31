@@ -9,13 +9,7 @@
     "reporter",
     "designer"
   ],
-  "page_modules": [
-    "datafetcher",
-    "payoffer",
-    "pricer",
-    "backtester",
-    "reporter"
-  ],
+  "page_modules": [],
   "catalog": {
     "source_root": "versions",
     "file_name": "knowledger/catalog-version.json",
@@ -36,23 +30,27 @@
     {"source": "references/optionlib.md", "target": "references/optionlib.md"},
     {"source": "references/knowledger-manager.md", "target": "references/knowledger-manager.md"},
     {"source": "references/optionreg.py", "target": "scripts/knowledger/optionreg.py"},
-    {"source": "core/src/runtime/knowledger/__init__.py", "target": "scripts/knowledger/__init__.py"},
+    {"source": "assets/icons/optionhelper-logo.svg", "target": "assets/icons/optionhelper-logo.svg"},
+    {"source": "assets/icons/optionhelper-mark.svg", "target": "assets/icons/optionhelper-mark.svg"},
     {"source": "core/tool_entry.py", "target": "scripts/tool_entry.py"},
-    {"source": "core/module_host.py", "target": "scripts/module_host.py"},
-    {"source": "core/src/runtime/browser/module_host_bridge.js", "target": "assets/pages/module-host-bridge.js"},
-    {"source": "core/src/runtime/browser/module_host_presentation.js", "target": "assets/pages/module-host-presentation.js"},
-    {"source": "core/src/runtime/browser/module_host_presentation.css", "target": "assets/pages/module-host-presentation.css"},
-    {"source": "core/src/runtime/browser/plotly_chart_system.js", "target": "assets/pages/plotly-chart-system.js"},
-    {"source": "core/src/runtime/browser/vendor/plotly-optionhelper.min.js", "target": "assets/pages/vendor/plotly-optionhelper.min.js"},
     {"source": "core/requirements.lock", "target": "scripts/requirements.lock"},
     {"source": "packaging/skill/environment_check.py", "target": "scripts/environment_check.py"}
   ],
   "trees": [
-    {"source": "core/src/runtime", "target": "scripts/runtime", "exclude": ["**/__pycache__/**", "**/*.pyc", ".DS_Store", "browser/module_host_bridge.js", "protocol/schemas/README.md"]},
-    {"source": "assets/icons", "target": "assets/icons", "exclude": ["**/__pycache__/**", "**/*.pyc", ".DS_Store", "generate_macos_icon.py"]},
+    {"source": "core/src/runtime", "target": "scripts/runtime", "exclude": [
+      "**/__pycache__/**",
+      "**/*.pyc",
+      ".DS_Store",
+      "browser/**",
+      "protocol/schemas/README.md"
+    ]},
     {"source": "modules/reporter/assets", "target": "assets/reporter", "exclude": ["**/__pycache__/**", "**/*.pyc", ".DS_Store"]},
     {"source": "LICENSES", "target": "LICENSES", "exclude": [
       ".DS_Store",
+      "README.md",
+      "LibreChat-LICENSE.txt",
+      "Plotly.js-LICENSE.txt",
+      "ThinkingOrbs-LICENSE.txt",
       "OptionHelper-Agent-Runtime-LICENSE.txt",
       "OptionHelper-Agent-Runtime-NOTICES.txt",
       "OptionHelper-Agent-Runtime-SOURCE-MAPPING.md"
@@ -64,13 +62,8 @@
     {"source": "modules/backtester/src", "target": "scripts/modules/backtester", "exclude": ["**/__pycache__/**", "**/*.pyc", "tests/**", "docs/**", "examples/**", "README.md", "CONTEXT.md", "requirements.txt", "run_tests.py", ".DS_Store", "catalog_replay_matrix.py"]},
     {"source": "modules/reporter/src", "target": "scripts/modules/reporter", "exclude": ["**/__pycache__/**", "**/*.pyc", "tests/**", "docs/**", "examples/**", "README.md", "CONTEXT.md", "requirements.txt", "run_tests.py", ".DS_Store"]},
     {"source": "modules/designer/src", "target": "scripts/modules/designer", "exclude": ["**/__pycache__/**", "**/*.pyc", "tests/**", "docs/**", "examples/**", "README.md", "CONTEXT.md", "requirements.txt", "run_tests.py", ".DS_Store"]},
-    {"source": "modules/datafetcher/page", "target": "assets/pages/datafetcher", "exclude": ["**/__pycache__/**", "**/*.pyc", ".DS_Store"]},
-    {"source": "modules/payoffer/page", "target": "assets/pages/payoffer", "exclude": ["**/__pycache__/**", "**/*.pyc", ".DS_Store"]},
-    {"source": "modules/pricer/page", "target": "assets/pages/pricer", "exclude": ["**/__pycache__/**", "**/*.pyc", ".DS_Store"]},
-    {"source": "modules/backtester/page", "target": "assets/pages/backtester", "exclude": ["**/__pycache__/**", "**/*.pyc", ".DS_Store"], "transform": "page_theme_links"},
-    {"source": "modules/reporter/page", "target": "assets/pages/reporter", "exclude": ["**/__pycache__/**", "**/*.pyc", ".DS_Store"]},
     {"source": "modules/payoffer/figures", "target": "assets/payoffer/figures", "exclude": ["**/__pycache__/**", "**/*.pyc", ".DS_Store"]},
-    {"source": "modules/designer/assets/templates", "target": "assets/designer/templates", "exclude": ["**/__pycache__/**", "**/*.pyc", ".DS_Store"]},
+    {"source": "modules/designer/assets/templates", "target": "assets/designer/templates", "exclude": ["**/__pycache__/**", "**/*.pyc", "samples/**", "examples/**", ".DS_Store"]},
     {"source": "modules/designer/assets/themes", "target": "assets/designer/themes", "exclude": ["**/__pycache__/**", "**/*.pyc", ".DS_Store"]},
     {"source": "modules/designer/assets/vendor", "target": "assets/designer/vendor", "exclude": ["**/__pycache__/**", "**/*.pyc", ".DS_Store"]}
   ]
