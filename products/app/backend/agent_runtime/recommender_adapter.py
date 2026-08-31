@@ -13,7 +13,7 @@ import math
 import re
 import sys
 from dataclasses import replace
-from datetime import date, timedelta
+from datetime import date
 from runpy import run_path
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -37,8 +37,13 @@ from modules.recommender.agent_steps import canonical_hash
 from modules.recommender.ports import AgentPort, AgentRunReceipt, AgentStepResult, KnowledgePort, ToolPort
 from modules.recommender.service import RecommendationInputRequired, RecommenderService
 from modules.recommender.config import RecommenderConfig
-from modules.recommender.interaction import constraints_fingerprint, merge_confirmed_constraints
+from modules.recommender.interaction import (
+    classify_term_change,
+    constraints_fingerprint,
+    merge_confirmed_constraints,
+)
 from runtime.protocol.models import ModuleRunRef
+from runtime.contracts.input_adapter import compile_compute_data_requirements
 
 from ..errors import AuthorizationError, UnavailableCapabilityError, UserActionError, ValidationError
 from ..identity.session_identity import SessionIdentity
@@ -47,8 +52,9 @@ from ..settings.settings_models import ModelSelection
 from ..page_registry import PageRegistry
 from ..stores.contract_store import ContractStore
 from ..stores.result_store import ResultStore
-from ..task_runtime.task_service import TaskService
+from ..task_runtime.task_service import PENDING_RECOMMENDATION_SCHEMA_ID, TaskService
 from .tool_dispatcher import ToolDispatcher
+from .redaction import redact_text
 from .multi_agent import (
     AgentRunConcurrencyGate,
     AgentRunSettlementRegistry,
@@ -596,7 +602,7 @@ class AppToolPort(ToolPort):
         underlyings = candidate.get("underlyings", ())
         if round_no > 1:
             self._emit_visible_event("candidate_cycle", "reselecting", "候选未满足约束，正在重新筛选。")
-        self._emit_visible_event("host_module", "started", "Host正在运行候选验证模块。")
+        self._emit_visible_event("host_module", "started", "正在运行候选验证。")
         ordered_underlyings = tuple(str(item).strip() for item in underlyings if str(item).strip()) if isinstance(underlyings, Sequence) and not isinstance(underlyings, (str, bytes)) else ()
         market_data_ref = None
         if {str(item).strip().lower() for item in modules}.intersection({"pricer", "backtester"}):
@@ -638,7 +644,7 @@ class AppToolPort(ToolPort):
             for value in statuses.values()
         ) else "completed"
         self._emit_visible_event("host_module", completed_status, (
-            "Host已返回候选验证结果。" if completed_status == "completed" else "候选验证模块未全部完成。"
+            "候选验证结果已返回。" if completed_status == "completed" else "候选验证模块未全部完成。"
         ))
         return result
 
@@ -897,40 +903,94 @@ class RecommenderAdapter:
         if not history or not _same_pending_user_turn(history[-1], prompt):
             history.append({"role": "user", "content": str(prompt), "status": "pending_model"})
         confirmed_constraints = merge_confirmed_constraints({}, history)
-        pending = self._tasks.pending_recommendation(identity, task_id)
+        term_change_status = _host_term_change_status(prompt)
+        try:
+            pending = self._tasks.pending_recommendation(identity, task_id)
+        except ValidationError:
+            return _confirmation_unavailable(task_id, catalog_version)
         if isinstance(pending, Mapping) and pending.get("status") == "invalid":
             return _confirmation_unavailable(task_id, catalog_version, pending)
-        # TaskService intentionally keeps a compact, non-financial continuation
-        # record. Product-owned term overrides remain in the authenticated task
-        # conversation and are deterministically recovered from the turns that
-        # preceded the current reply. This keeps one source of truth without
-        # weakening TaskService's persisted-state allow-list.
-        stored_constraints = _pending_constraints_from_history(pending, history)
-        if isinstance(pending, Mapping) and pending.get("status") == "approval_prepared":
+        # Shared selection constraints stay compact. Product-owned term
+        # overrides are frozen once in each CandidateContract and are merged
+        # only while validating that candidate's exact binding.
+        stored_constraints = _pending_shared_constraints(pending)
+        pending_status = str(pending.get("status", "")).strip().lower() if isinstance(pending, Mapping) else ""
+        if pending_status in {"pending_approval", "approval_prepared"} and term_change_status == "unresolved":
+            if pending_status == "approval_prepared":
+                operation_id = pending.get("approval_operation_id")
+                if isinstance(operation_id, str) and operation_id:
+                    pending = self._tasks.reopen_prepared_recommendation_approval(
+                        identity, task_id, operation_id,
+                    )
+            return _unparsed_term_change(task_id, catalog_version, pending)
+        if pending_status in {"pending_approval", "approval_prepared"} and term_change_status == "rejected":
+            if pending_status == "approval_prepared":
+                operation_id = pending.get("approval_operation_id")
+                if isinstance(operation_id, str) and operation_id:
+                    pending = self._tasks.reopen_prepared_recommendation_approval(
+                        identity, task_id, operation_id,
+                    )
+            return _rejected_term_change(task_id, catalog_version, pending)
+        if pending_status == "approval_prepared" and term_change_status in {"applied", "cleared"}:
+            operation_id = pending.get("approval_operation_id")
+            if isinstance(operation_id, str) and operation_id:
+                self._tasks.invalidate_prepared_recommendation_approval(
+                    identity, task_id, operation_id,
+                )
+        if pending_status == "approval_prepared" and term_change_status not in {"applied", "cleared"}:
+            approved_candidate_ids = _approved_candidate_ids(pending)
+            if not _current_constraints_match_pending(
+                pending,
+                confirmed_constraints,
+                approved_candidate_ids,
+                stored_constraints,
+            ):
+                operation_id = pending.get("approval_operation_id")
+                if isinstance(operation_id, str) and operation_id:
+                    self._tasks.invalidate_prepared_recommendation_approval(
+                        identity, task_id, operation_id,
+                    )
+                return _confirmation_invalidated(task_id, catalog_version, pending)
             return self._resume_prepared_recommendation_approval(
                 identity, task_id, catalog_version, pending, stored_constraints,
             )
-        if _may_resume_pending(
+        approved_candidate_ids = _selected_candidate_ids(prompt, arguments, pending)
+        if (
+            isinstance(pending, Mapping)
+            and pending.get("status") == "pending_approval"
+            and not approved_candidate_ids
+            and _has_candidate_selection_intent(prompt)
+        ):
+            return {
+                "status": "needs_input",
+                "message": "未能识别要批准的候选。请按候选序号、candidate_id或产品名称重新选择。",
+            }
+        if term_change_status not in {"applied", "cleared"} and _may_resume_pending(
             pending,
             confirmed_constraints,
             catalog_version,
-            explicit_candidate_confirmation=_approval_text(prompt),
+            approved_candidate_ids=approved_candidate_ids,
             stored_constraints=stored_constraints,
         ):
             assert pending is not None
-            expected = _pending_candidate_binding(
+            expected = _pending_candidate_bindings(
                 self._tools,
                 identity,
                 task_id,
                 pending,
+                approved_candidate_ids,
                 stored_constraints,
                 self._registry.capability_root,
             )
-            if expected is None:
+            if expected is None or not _bindings_match_pending(
+                expected, pending, approved_candidate_ids, constraints=stored_constraints,
+            ):
                 return _confirmation_unavailable(task_id, catalog_version, pending)
-            if not _binding_matches_pending(expected, pending, constraints=stored_constraints):
-                return _confirmation_invalidated(task_id, catalog_version, pending)
-            prepared = self._tasks.prepare_pending_recommendation_approval(identity, task_id)
+            prepared = self._tasks.prepare_pending_recommendation_approval(
+                identity,
+                task_id,
+                approved_candidate_ids=list(approved_candidate_ids),
+            )
             if prepared is None:
                 return _confirmation_unavailable(task_id, catalog_version, pending)
             return self._resume_prepared_recommendation_approval(
@@ -1065,55 +1125,63 @@ class RecommenderAdapter:
         if "freeform" in result:
             raise ValidationError("App内Recommender不得返回freeform")
         recommendation = result.get("recommendation_set")
-        selected_candidate_id = _selected_candidate_id(prompt, recommendation)
         continuation = _pending_recommendation_state(
             recommendation,
+            identity=identity,
             analysis_case_id=case.analysis_case_id,
             catalog_version=catalog_version,
             confirmed_constraints=confirmed_constraints,
             preset_id=preset.preset_id,
-            preset_version=preset.version,
-            selected_candidate_id=selected_candidate_id,
+            preset_revision=preset.revision,
         )
         if continuation is not None:
-            binding = _evaluated_candidate_binding(
-                recommendation,
-                continuation,
-                continuation["confirmed_constraints"],
-            ) or _current_candidate_binding(
-                continuation["candidate"],
-                continuation["confirmed_constraints"],
-                self._registry.capability_root,
-            )
-            if binding is None:
-                return _confirmation_unavailable(task_id, catalog_version)
-            continuation["analysis_case_id"] = _confirmation_analysis_case_id(binding["contract_fingerprint"])
             continuation["workflow_mode"] = str(recommendation.get("workflow_mode", "single_agent"))
             continuation["confirmed_constraints"] = _persisted_constraints(continuation["confirmed_constraints"])
-            raw_binding_overrides = binding.get("term_overrides")
-            if isinstance(raw_binding_overrides, Mapping):
-                frozen_overrides = dict(raw_binding_overrides)
-            else:
-                frozen_overrides = _term_overrides_from_constraints(
-                    confirmed_constraints, self._registry.capability_root, continuation["candidate"]["product_id"],
-                )
-            continuation["contract_fingerprint"] = binding["contract_fingerprint"]
-            continuation["term_overrides"] = frozen_overrides
-            continuation["term_overrides_fingerprint"] = _term_overrides_fingerprint(frozen_overrides)
-            continuation["expected_active_contract_fingerprint"] = active_fingerprint_at_start
             freeze = getattr(self._tools, "freeze_recommendation_candidate", None)
-            if callable(freeze):
-                try:
-                    freeze(identity, task_id, continuation, binding)
-                except (AuthorizationError, ValidationError):
+            bindings: dict[str, Mapping[str, Any]] = {}
+            for candidate_id in continuation["candidate_ids"]:
+                contract = continuation["candidate_contracts"][candidate_id]
+                binding = _evaluated_candidate_binding(
+                    recommendation,
+                    candidate_id,
+                    confirmed_constraints,
+                ) or _current_candidate_binding(
+                    contract["candidate"],
+                    confirmed_constraints,
+                    self._registry.capability_root,
+                )
+                if binding is None:
                     return _confirmation_unavailable(task_id, catalog_version)
+                raw_binding_overrides = binding.get("term_overrides")
+                frozen_overrides = (
+                    dict(raw_binding_overrides)
+                    if isinstance(raw_binding_overrides, Mapping)
+                    else _term_overrides_from_constraints(
+                        confirmed_constraints,
+                        self._registry.capability_root,
+                        contract["candidate"]["product_id"],
+                    )
+                )
+                contract["contract_fingerprint"] = binding["contract_fingerprint"]
+                contract["term_overrides"] = frozen_overrides
+                contract["term_overrides_fingerprint"] = _term_overrides_fingerprint(frozen_overrides)
+                contract["expected_active_contract_fingerprint"] = active_fingerprint_at_start
+                contract["public_projection"]["key_terms"] = _public_display_terms(
+                    binding.get("display_terms"), identity,
+                )
+                bindings[candidate_id] = binding
+                if callable(freeze):
+                    try:
+                        freeze(identity, task_id, continuation, binding)
+                    except (AuthorizationError, ValidationError):
+                        return _confirmation_unavailable(task_id, catalog_version)
             self._tasks.save_pending_recommendation(identity, task_id, continuation)
             return {
                 "route": dict(route),
-                "recommendation_set": _with_confirmation_terms(recommendation, continuation["candidate"], binding),
-                "next_step": _confirmation_question(continuation["candidate"], binding),
+                "recommendation_set": _with_confirmation_terms(recommendation, continuation, bindings),
+                "next_step": _confirmation_question(continuation, bindings),
             }
-        if _requires_exact_pending_state(recommendation, selected_candidate_id):
+        if _requires_exact_pending_state(recommendation):
             return _confirmation_unavailable(task_id, catalog_version)
         return dict(result)
 
@@ -1130,13 +1198,25 @@ class RecommenderAdapter:
         operation_id = pending.get("approval_operation_id")
         if not isinstance(operation_id, str) or not operation_id:
             return _confirmation_unavailable(task_id, catalog_version, pending)
-        expected = _pending_candidate_binding(
-            self._tools, identity, task_id, pending, stored_constraints, self._registry.capability_root,
-        )
-        if expected is None or not _binding_matches_pending(expected, pending, constraints=stored_constraints):
+        if not _pending_preset_is_current(pending):
             self._tasks.invalidate_prepared_recommendation_approval(identity, task_id, operation_id)
             return _confirmation_invalidated(task_id, catalog_version, pending)
-        activate = getattr(self._tools, "activate_recommendation_candidate", None)
+        approved_candidate_ids = _approved_candidate_ids(pending)
+        expected = _pending_candidate_bindings(
+            self._tools,
+            identity,
+            task_id,
+            pending,
+            approved_candidate_ids,
+            stored_constraints,
+            self._registry.capability_root,
+        )
+        if expected is None or not _bindings_match_pending(
+            expected, pending, approved_candidate_ids, constraints=stored_constraints,
+        ):
+            self._tasks.invalidate_prepared_recommendation_approval(identity, task_id, operation_id)
+            return _confirmation_invalidated(task_id, catalog_version, pending)
+        activate = getattr(self._tools, "activate_recommendation_candidates", None)
         if not callable(activate):
             return _confirmation_unavailable(task_id, catalog_version, pending)
         try:
@@ -1148,11 +1228,14 @@ class RecommenderAdapter:
             self._tasks.invalidate_prepared_recommendation_approval(identity, task_id, operation_id)
             return _confirmation_invalidated(task_id, catalog_version, pending)
         approved = self._tasks.commit_prepared_recommendation_approval(identity, task_id, operation_id)
-        if approved is None or not _binding_matches_pending(
-            expected, approved, constraints=_pending_constraints(approved),
+        if approved is None or not _bindings_match_pending(
+            expected,
+            approved,
+            approved_candidate_ids,
+            constraints=_pending_constraints(approved),
         ):
             return _confirmation_unavailable(task_id, catalog_version, pending)
-        finalize = getattr(self._tools, "commit_recommendation_candidate_activation", None)
+        finalize = getattr(self._tools, "commit_recommendation_candidate_activations", None)
         if not callable(finalize):
             return _confirmation_unavailable(task_id, catalog_version, pending)
         try:
@@ -1434,45 +1517,7 @@ class AppConversationToolExecutor:
                 self._recommendation_plans.pop(key, None)
         return len(keys)
 
-    def reconcile_prepared_recommendation_approvals(self) -> int:
-        """Idempotently close prepared cross-Store candidate confirmations.
-
-        A candidate activation is hidden from ordinary module access until the
-        matching Task approval commits.  This startup/request recovery finishes
-        that short durable sequence without re-running a recommendation,
-        rebuilding a contract, or giving any child agent Store authority.
-        """
-
-        if self._tasks is None or self._contracts is None:
-            return 0
-        settled = 0
-        for identity, task_id, pending in self._tasks.prepared_recommendation_approvals():
-            operation_id = pending.get("approval_operation_id")
-            if not isinstance(operation_id, str) or not operation_id:
-                continue
-            try:
-                if pending.get("status") == "approval_prepared":
-                    self.activate_recommendation_candidate(identity, task_id, pending)
-                    committed = self._tasks.commit_prepared_recommendation_approval(identity, task_id, operation_id)
-                    if committed is None or committed.get("status") != "approved":
-                        continue
-                self.commit_recommendation_candidate_activation(identity, task_id, operation_id)
-                settled += 1
-            except (AuthorizationError, ValidationError):
-                # No compensating activation rollback: the activation is
-                # invisible until Task commit. A stale prepared record is
-                # closed rather than being silently re-targeted.
-                try:
-                    self._tasks.invalidate_prepared_recommendation_approval(identity, task_id, operation_id)
-                except (AuthorizationError, ValidationError):
-                    pass
-        return settled
-
     def call(self, identity: SessionIdentity, task_id: str, name: str, arguments: Mapping[str, Any]) -> Mapping[str, Any]:
-        # A request is also a recovery boundary.  If a previous process died
-        # mid-confirmation, reconcile before any ordinary module can resolve a
-        # contract for this task.
-        self.reconcile_prepared_recommendation_approvals()
         if name == "recommendation_delivery.run":
             return self._run_pending_recommendation_delivery(identity, task_id, arguments)
         module, action = _tool_name(name)
@@ -1529,13 +1574,15 @@ class AppConversationToolExecutor:
         identity: SessionIdentity,
         task_id: str,
         pending: Mapping[str, Any],
+        candidate_id: str,
     ) -> Mapping[str, Any] | None:
         if self._contracts is None:
             raise ValidationError("候选合同版本需要ContractStore")
-        candidate = pending.get("candidate")
-        version = pending.get("candidate_version")
-        if not isinstance(candidate, Mapping) or not isinstance(version, Mapping):
+        contract = _pending_candidate_contract(pending, candidate_id)
+        if contract is None:
             return None
+        candidate = contract["candidate"]
+        version = contract["candidate_version"]
         record = self._contracts.get_candidate_variant(
             identity,
             task_id,
@@ -1545,7 +1592,7 @@ class AppConversationToolExecutor:
         if not isinstance(record, Mapping):
             return None
         if (
-            record.get("contract_fingerprint") != pending.get("contract_fingerprint")
+            record.get("contract_fingerprint") != contract.get("contract_fingerprint")
             or record.get("catalog_version") != pending.get("catalog_version")
         ):
             return None
@@ -1556,7 +1603,7 @@ class AppConversationToolExecutor:
         resolved_contract = record.get("resolved_contract")
         if not isinstance(resolved_contract, Mapping):
             return None
-        constraints = _pending_constraints(pending)
+        constraints = _pending_candidate_constraints(pending, candidate_id)
         return {
             "candidate_id": str(candidate.get("candidate_id", "")),
             "constraints_fingerprint": constraints_fingerprint(constraints),
@@ -1566,7 +1613,7 @@ class AppConversationToolExecutor:
                 _load_capability_registry(self._registry.capability_root),
                 constraints,
             ),
-            "term_overrides": dict(pending.get("term_overrides", {})),
+            "term_overrides": dict(contract.get("term_overrides", {})),
             "resolved_contract": dict(resolved_contract),
             "candidate_variant": {
                 "candidate_key": str(version.get("candidate_key", "")),
@@ -1588,9 +1635,11 @@ class AppConversationToolExecutor:
 
         if self._contracts is None:
             raise ValidationError("候选合同版本需要ContractStore")
-        version = pending.get("candidate_version")
-        if not isinstance(version, Mapping):
-            raise ValidationError("待确认候选缺少精确版本")
+        candidate_id = _identifier(binding.get("candidate_id"), "candidate_id")
+        contract = _pending_candidate_contract(pending, candidate_id)
+        if contract is None:
+            raise ValidationError("待确认候选不属于当前有序候选集合")
+        version = contract["candidate_version"]
         candidate_key = str(version.get("candidate_key", ""))
         candidate_version_id = str(version.get("candidate_version_id", ""))
         stored = self._contracts.get_candidate_variant(identity, task_id, candidate_key, candidate_version_id)
@@ -1612,7 +1661,7 @@ class AppConversationToolExecutor:
                 revision=int(version.get("revision", 0)),
             )
         if (
-            stored.get("contract_fingerprint") != pending.get("contract_fingerprint")
+            stored.get("contract_fingerprint") != contract.get("contract_fingerprint")
             or stored.get("catalog_version") != pending.get("catalog_version")
         ):
             raise ValidationError("候选合同版本与待确认绑定不一致")
@@ -1625,7 +1674,7 @@ class AppConversationToolExecutor:
             )
         return stored
 
-    def activate_recommendation_candidate(
+    def activate_recommendation_candidates(
         self,
         identity: SessionIdentity,
         task_id: str,
@@ -1633,22 +1682,45 @@ class AppConversationToolExecutor:
     ) -> Mapping[str, Any]:
         if self._contracts is None:
             raise ValidationError("候选合同版本需要ContractStore")
-        version = pending.get("candidate_version")
-        if not isinstance(version, Mapping):
-            raise ValidationError("待确认候选缺少精确版本")
+        candidate_ids = _approved_candidate_ids(pending)
+        if not candidate_ids:
+            raise ValidationError("审批操作缺少approved_candidate_ids")
+        verified: dict[str, Mapping[str, Any]] = {}
+        for candidate_id in candidate_ids:
+            contract = _pending_candidate_contract(pending, candidate_id)
+            if contract is None:
+                raise ValidationError("审批候选不属于当前CandidateContract集合")
+            version = contract["candidate_version"]
+            record = self._contracts.get_candidate_variant(
+                identity,
+                task_id,
+                str(version.get("candidate_key", "")),
+                str(version.get("candidate_version_id", "")),
+            )
+            if not isinstance(record, Mapping) or record.get("contract_fingerprint") != contract.get("contract_fingerprint"):
+                raise ValidationError("审批候选与冻结CandidateVariant不一致")
+            verified[candidate_id] = record
+        if len(candidate_ids) > 1:
+            # 多结构比较保留每个已验证CandidateContract，不把其中任意一个
+            # 伪装成Task唯一活动合同。Reporter按用户顺序消费全部RunRef。
+            return {"candidate_contracts": verified, "activation": "comparison"}
+        candidate_id = candidate_ids[0]
+        contract = _pending_candidate_contract(pending, candidate_id)
+        assert contract is not None
+        version = contract["candidate_version"]
         activated = self._contracts.activate_candidate_variant(
             identity,
             task_id,
             str(version.get("candidate_key", "")),
             str(version.get("candidate_version_id", "")),
-            expected_active_contract_fingerprint=pending.get("expected_active_contract_fingerprint"),
+            expected_active_contract_fingerprint=contract.get("expected_active_contract_fingerprint"),
             approval_operation_id=str(pending.get("approval_operation_id", "")).strip() or None,
         )
-        if activated.get("contract_fingerprint") != pending.get("contract_fingerprint"):
+        if activated.get("contract_fingerprint") != contract.get("contract_fingerprint"):
             raise ValidationError("激活合同与待确认候选不一致")
         return activated
 
-    def commit_recommendation_candidate_activation(
+    def commit_recommendation_candidate_activations(
         self,
         identity: SessionIdentity,
         task_id: str,
@@ -1656,6 +1728,9 @@ class AppConversationToolExecutor:
     ) -> Mapping[str, Any] | None:
         if self._contracts is None:
             raise ValidationError("候选合同版本需要ContractStore")
+        pending = self._tasks.pending_recommendation(identity, task_id) if self._tasks is not None else None
+        if isinstance(pending, Mapping) and len(_approved_candidate_ids(pending)) > 1:
+            return {"status": "comparison_bound", "approved_candidate_ids": _approved_candidate_ids(pending)}
         return self._contracts.commit_candidate_variant_activation(identity, task_id, operation_id)
 
     def evaluate_recommendation_candidate(
@@ -1940,22 +2015,26 @@ class AppConversationToolExecutor:
         if kind not in {"card", "quote", "report"} or output_format not in {"html", "pdf"}:
             return {
                 "status": "needs_input",
-                "message": "请选择Card、Quote或Report；默认生成HTML，需要PDF时请明确指定。",
+                "message": "请选择研究简报、参考报价或研究报告；默认生成HTML，需要PDF时请明确指定。",
             }
         pending = self._tasks.pending_recommendation(identity, task_id)
         if pending is None or pending.get("status") != "approved":
             return {"status": "needs_input", "message": "请先确认推荐候选与合同条款。"}
         requested = {"kind": kind, "format": output_format}
         frozen_constraints = _pending_constraints(pending)
-        expected = _pending_candidate_binding(
+        approved_candidate_ids = _approved_candidate_ids(pending)
+        expected = _pending_candidate_bindings(
             self,
             identity,
             task_id,
             pending,
+            approved_candidate_ids,
             frozen_constraints,
             self._registry.capability_root,
         )
-        if expected is None or not _binding_matches_pending(expected, pending, constraints=frozen_constraints):
+        if expected is None or not _bindings_match_pending(
+            expected, pending, approved_candidate_ids, constraints=frozen_constraints,
+        ):
             return {"status": "needs_input", "message": "候选精确版本或合同绑定已失效，请重新推荐。"}
         if pending.get("delivery") is None:
             pending = self._tasks.choose_pending_recommendation_delivery(
@@ -1965,18 +2044,33 @@ class AppConversationToolExecutor:
             )
         if pending is None or pending.get("delivery") != requested:
             raise ValidationError("当前候选已绑定不同交付类型")
-        result = self.run_recommendation_delivery(
-            identity,
-            task_id,
-            analysis_case_id=str(pending["analysis_case_id"]),
-            catalog_version=str(pending["catalog_version"]),
-            candidate=pending["candidate"],
-            delivery=requested,
-            confirmed_constraints=frozen_constraints,
-            frozen_binding=expected,
-            frozen_candidate_variant=expected.get("candidate_variant") if isinstance(expected, Mapping) else None,
-            module_run_refs=pending.get("module_run_refs"),
-        )
+        if len(approved_candidate_ids) == 1:
+            candidate_id = approved_candidate_ids[0]
+            contract = _pending_candidate_contract(pending, candidate_id)
+            assert contract is not None
+            binding = expected[candidate_id]
+            result = self.run_recommendation_delivery(
+                identity,
+                task_id,
+                analysis_case_id=str(pending["analysis_case_id"]),
+                catalog_version=str(pending["catalog_version"]),
+                candidate=contract["candidate"],
+                delivery=requested,
+                confirmed_constraints=frozen_constraints,
+                frozen_binding=binding,
+                frozen_candidate_variant=binding.get("candidate_variant"),
+                module_run_refs=contract.get("module_run_refs"),
+            )
+        else:
+            result = self.run_recommendation_candidate_set_delivery(
+                identity,
+                task_id,
+                pending=pending,
+                approved_candidate_ids=approved_candidate_ids,
+                bindings=expected,
+                delivery=requested,
+                confirmed_constraints=frozen_constraints,
+            )
         if result.get("status") == "completed":
             self._tasks.complete_pending_recommendation(identity, task_id)
         return result
@@ -2039,6 +2133,81 @@ class AppConversationToolExecutor:
                 }
         return result
 
+    def run_recommendation_candidate_set_delivery(
+        self,
+        identity: SessionIdentity,
+        task_id: str,
+        *,
+        pending: Mapping[str, Any],
+        approved_candidate_ids: Sequence[str],
+        bindings: Mapping[str, Mapping[str, Any]],
+        delivery: Mapping[str, Any],
+        confirmed_constraints: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Prepare every approved candidate, then render one ordered comparison."""
+
+        report_candidate_ids: list[str] = []
+        for candidate_id in approved_candidate_ids:
+            contract = _pending_candidate_contract(pending, candidate_id)
+            binding = bindings.get(candidate_id)
+            if contract is None or not isinstance(binding, Mapping):
+                raise ValidationError("多候选交付缺少已批准CandidateContract")
+            prepared = self.run_recommendation_deliveries(
+                identity,
+                task_id,
+                analysis_case_id=str(pending["analysis_case_id"]),
+                catalog_version=str(pending["catalog_version"]),
+                candidate=contract["candidate"],
+                deliveries=(delivery,),
+                confirmed_constraints=confirmed_constraints,
+                frozen_binding=binding,
+                frozen_candidate_variant=binding.get("candidate_variant"),
+                module_run_refs=contract.get("module_run_refs"),
+                prepare_only=True,
+            )
+            if prepared.get("status") != "completed":
+                return prepared
+            variant = binding.get("candidate_variant")
+            if not isinstance(variant, Mapping):
+                raise ValidationError("多候选交付缺少CandidateVersion绑定")
+            report_candidate_ids.append(_candidate_variant_module_identity(
+                _identifier(variant.get("candidate_key"), "candidate_key"),
+                _identifier(variant.get("candidate_version_id"), "candidate_version_id"),
+            ))
+        kind = str(delivery.get("kind", "")).strip().lower()
+        output_format = str(delivery.get("format", "")).strip().lower()
+        prepared_report = self._prepare_report(
+            identity,
+            task_id,
+            {
+                "kind": kind,
+                "format": output_format,
+                "delivery_mode": "comparison",
+                "candidate_ids": report_candidate_ids,
+            },
+            report_run_id=f"chat-{kind}-{hashlib.sha256((task_id + ':' + ':'.join(approved_candidate_ids)).encode()).hexdigest()[:16]}",
+        )
+        if prepared_report.get("status") == "needs_input":
+            return prepared_report
+        report = _with_report_delivery(
+            self._dispatch(identity, task_id, "reporter.run", "reporter", prepared_report),
+            prepared_report,
+        )
+        report_status = str(report.get("status", "")).lower()
+        if report.get("ok") is not True or report_status not in {"succeeded", "completed", "partial"}:
+            return {"status": "partial", "delivery_status": "partial", "deliveries": []}
+        receipt = dict(report.get("delivery", {}))
+        completed = (
+            report_status in {"succeeded", "completed"}
+            and str(receipt.get("coverage_status", "complete")).lower() == "complete"
+        )
+        return {
+            "status": "completed" if completed else "partial",
+            "analysis_status": "completed",
+            "delivery_status": "completed" if completed else "partial",
+            "deliveries": [receipt],
+        }
+
     def run_recommendation_deliveries(
         self,
         identity: SessionIdentity,
@@ -2052,6 +2221,7 @@ class AppConversationToolExecutor:
         frozen_binding: Mapping[str, Any] | None = None,
         frozen_candidate_variant: Mapping[str, Any] | None = None,
         module_run_refs: Sequence[Mapping[str, Any]] | None = None,
+        prepare_only: bool = False,
     ) -> dict[str, Any]:
         """Run the exact analysis coverage required by the requested delivery."""
 
@@ -2114,14 +2284,19 @@ class AppConversationToolExecutor:
         }
         if not requested_kinds or not requested_kinds.issubset({"card", "quote", "report"}):
             raise ValidationError("推荐交付类型无效")
+        required_modules = (
+            ("pricing",)
+            if requested_kinds == {"quote"}
+            else _REPORT_MODULES
+        )
+        resolved_contract = expected.get("resolved_contract")
+        if not isinstance(resolved_contract, Mapping):
+            return {
+                "status": "partial",
+                "next_step": "冻结候选缺少正式合同快照，已停止交付。请重新推荐。",
+            }
         pricing_config: dict[str, Any] | None = None
-        if "report" in requested_kinds:
-            resolved_contract = expected.get("resolved_contract")
-            if not isinstance(resolved_contract, Mapping):
-                return {
-                    "status": "partial",
-                    "next_step": "冻结候选缺少正式合同快照，已停止交付。请重新推荐。",
-                }
+        if "pricing" in required_modules:
             pricing_config = _pricing_config_for_resolved_contract(resolved_contract, confirmed_constraints or {})
             if pricing_config is None:
                 return {
@@ -2138,92 +2313,104 @@ class AppConversationToolExecutor:
             "identity": {"underlyings": ordered_underlyings}, "term_overrides": term_overrides,
         }
         reusable = self._verified_frozen_module_runs(identity, task_id, module_run_refs, binding)
-        analysis = reusable.get("payoff")
-        if analysis is None:
-            analysis = self._dispatch(
-                identity, task_id, "payoffer.run", "payoffer", compute_base, binding=binding,
-                candidate_variant=frozen_candidate_variant,
+        missing_before_run = [name for name in required_modules if name not in reusable]
+        data_ref = None
+        if any(name in {"pricing", "backtest"} for name in missing_before_run):
+            data_ref = self._fetch_report_market_data(
+                identity,
+                task_id,
+                ordered_underlyings,
+                resolved_contract=resolved_contract,
             )
-        analysis_status = _analysis_status(analysis)
-        if analysis.get("ok") is not True or str(analysis.get("status", "")).lower() not in {"succeeded", "completed", "partial"}:
-            return {
-                "status": "partial",
-                "analysis_status": analysis_status,
-                "delivery_status": "not_requested",
-                "next_step": "当前未能完成正式收益分析。请稍后重试，或调整标的和市场观点后重新筛选。",
-            }
-        if not _analysis_binding_matches(analysis, binding, tenant_id=identity.tenant_id, task_id=task_id):
-            return {
-                "status": "partial",
-                "analysis_status": "failed",
-                "delivery_status": "not_requested",
-                "next_step": "当前分析结果未能与已确认候选条款一致绑定，已停止生成交付材料。请重新确认后再试。",
-            }
-        analysis_runs: dict[str, Mapping[str, Any]] = {"payoff": analysis}
+        detail_payloads = {
+            "payoff": compute_base,
+            "pricing": {
+                **compute_base,
+                "pricing_config": pricing_config,
+                "market_data_refs": [data_ref] if data_ref is not None else [],
+            },
+            "backtest": {
+                **compute_base,
+                "backtest_config": {},
+                "historical_data": data_ref,
+            },
+        }
+        analysis_runs: dict[str, Mapping[str, Any]] = {}
         missing_analysis_modules: list[str] = []
-        if "report" in requested_kinds:
-            data_ref = self._fetch_report_market_data(identity, task_id, ordered_underlyings)
-            if data_ref is None:
-                missing_analysis_modules.extend(("pricing", "backtest"))
-            else:
-                detail_payloads = {
-                    "pricing": {
-                        **compute_base,
-                        "pricing_config": pricing_config,
-                        "market_data_refs": [data_ref],
-                    },
-                    "backtest": {
-                        **compute_base,
-                        "backtest_config": {},
-                        "historical_data": data_ref,
-                    },
+        terminal_failures: list[str] = []
+        for display_module in required_modules:
+            compute_module = _REPORT_TO_COMPUTE_MODULE[display_module]
+            response = reusable.get(display_module)
+            if response is None:
+                if display_module in {"pricing", "backtest"} and data_ref is None:
+                    missing_analysis_modules.append(display_module)
+                    continue
+                response = self._dispatch(
+                    identity,
+                    task_id,
+                    f"{compute_module}.run",
+                    compute_module,
+                    detail_payloads[display_module],
+                    binding=binding,
+                    candidate_variant=frozen_candidate_variant,
+                )
+            analysis_runs[display_module] = response
+            status = _analysis_status(response)
+            if response.get("ok") is not True:
+                failure = _public_failure_metadata(response)
+                if failure is not None:
+                    return {
+                        "status": "partial",
+                        "analysis_status": status,
+                        "delivery_status": "not_requested",
+                        "missing_modules": [display_module],
+                        "deliveries": [],
+                        **failure,
+                    }
+                return {
+                    "status": "partial",
+                    "analysis_status": status,
+                    "delivery_status": "not_requested",
+                    "missing_modules": [display_module],
+                    "deliveries": [],
+                    "next_step": _incomplete_report_next_step([display_module]),
                 }
-                for display_module, compute_module in _REPORT_TO_COMPUTE_MODULE.items():
-                    if display_module == "payoff":
-                        continue
-                    response = reusable.get(display_module)
-                    if response is None:
-                        response = self._dispatch(
-                            identity,
-                            task_id,
-                            f"{compute_module}.run",
-                            compute_module,
-                            detail_payloads[display_module],
-                            binding=binding,
-                            candidate_variant=frozen_candidate_variant,
-                        )
-                    analysis_runs[display_module] = response
-                    if response.get("ok") is not True:
-                        failure = _public_failure_metadata(response)
-                        if failure is not None:
-                            return {
-                                "status": "partial",
-                                "analysis_status": "partial",
-                                "delivery_status": "not_requested",
-                                "missing_modules": [display_module],
-                                "deliveries": [],
-                                **failure,
-                            }
-                    if (
-                        response.get("ok") is not True
-                        or _analysis_status(response) != "completed"
-                        or not _analysis_binding_matches(
-                            response, binding, tenant_id=identity.tenant_id, task_id=task_id,
-                            module=compute_module,
-                        )
-                    ):
-                        missing_analysis_modules.append(display_module)
-        aggregate_analysis_status = "partial" if missing_analysis_modules else analysis_status
+            if (
+                response.get("ok") is not True
+                or status != "completed"
+                or not _analysis_binding_matches(
+                    response,
+                    binding,
+                    tenant_id=identity.tenant_id,
+                    task_id=task_id,
+                    module=compute_module,
+                )
+            ):
+                missing_analysis_modules.append(display_module)
+                terminal_failures.append(status)
+        aggregate_analysis_status = (
+            terminal_failures[0]
+            if len(required_modules) == 1 and len(terminal_failures) == 1
+            else "partial" if missing_analysis_modules
+            else "completed"
+        )
         # A full report is only meaningful when its requested analysis coverage
         # is complete. Do not pass an incomplete selection to Reporter: that
         # would make an apparently formal report out of partial evidence.
-        if "report" in requested_kinds and missing_analysis_modules:
+        if missing_analysis_modules:
             return {
                 "status": "partial",
                 "analysis_status": aggregate_analysis_status,
                 "delivery_status": "not_requested",
                 "missing_modules": list(missing_analysis_modules),
                 "next_step": _incomplete_report_next_step(missing_analysis_modules),
+                "deliveries": [],
+            }
+        if prepare_only:
+            return {
+                "status": "completed",
+                "analysis_status": aggregate_analysis_status,
+                "delivery_status": "not_requested",
                 "deliveries": [],
             }
         completed: list[dict[str, Any]] = []
@@ -2336,16 +2523,27 @@ class AppConversationToolExecutor:
         return reusable
 
     def _fetch_report_market_data(
-        self, identity: SessionIdentity, task_id: str, underlyings: Sequence[str],
+        self,
+        identity: SessionIdentity,
+        task_id: str,
+        underlyings: Sequence[str],
+        *,
+        resolved_contract: Mapping[str, Any],
     ) -> dict[str, str] | None:
-        """Fetch one task-owned daily asset before detailed pricing and backtest."""
+        """Fetch one contract-derived task asset before missing computations."""
 
         today = date.today()
+        requirements = compile_compute_data_requirements(
+            "backtester",
+            {"product_id": resolved_contract.get("product_id", "")},
+            resolved_contract,
+        )
+        history_years = max(3, math.ceil(requirements.tenor_years) + 3)
         request = {
             "action": "fetch", "task_id": task_id, "asset_ids": list(underlyings),
-            "start_date": (today - timedelta(days=730)).isoformat(), "end_date": today.isoformat(),
-            "fields": ["close", "adj_close"], "provider": "ifind_http", "frequency": "1d",
-            "adjustment": "forward", "cache_policy": "force_refresh", "offline": False,
+            "start_date": _years_before_date(today, history_years).isoformat(), "end_date": today.isoformat(),
+            "fields": list(requirements.historical_fields), "provider": "ifind_http", "frequency": "1d",
+            "adjustment": "forward", "cache_policy": "reuse", "offline": True,
         }
         response = self._dispatch(identity, task_id, "datafetcher.fetch", "datafetcher", request)
         raw_ref = response.get("data_asset_ref") if isinstance(response, Mapping) else None
@@ -2460,22 +2658,52 @@ class AppConversationToolExecutor:
         requested_format = str(arguments.get("format") or "html").strip().lower()
         if requested_format not in {"html", "pdf"}:
             raise ValidationError("交付格式只能是html或pdf")
-        allowed = {"kind", "output_type", "format", "title", "delivery_mode"}
+        allowed = {"kind", "output_type", "format", "title", "delivery_mode", "candidate_ids"}
         if set(arguments).difference(allowed):
             raise ValidationError("OptChat报告请求只接受交付类型、格式、标题和对比模式")
         delivery_mode = str(arguments.get("delivery_mode") or "single").strip().lower()
         if delivery_mode not in {"single", "comparison"}:
             raise ValidationError("交付模式只能是single或comparison")
-        if requested_kind == "quote" and delivery_mode != "single":
-            raise ValidationError("Quote使用独立报价结构清单，不使用comparison模式")
+        requested_candidate_ids = arguments.get("candidate_ids")
+        if requested_candidate_ids is not None:
+            if isinstance(requested_candidate_ids, (str, bytes)) or not isinstance(requested_candidate_ids, Sequence):
+                raise ValidationError("Reporter候选必须使用有序candidate_ids")
+            requested_candidate_ids = [str(item).strip() for item in requested_candidate_ids]
+            if (
+                not requested_candidate_ids
+                or any(not item for item in requested_candidate_ids)
+                or len(set(requested_candidate_ids)) != len(requested_candidate_ids)
+            ):
+                raise ValidationError("Reporter候选candidate_ids不能为空或重复")
         catalog = self._results.list_owned_report_sources(identity, task_id=task_id)
         sources = catalog.get("sources") if isinstance(catalog, Mapping) else None
         if not isinstance(sources, list) or not sources:
             return _report_needs_input()
-        try:
-            source, candidate = _best_report_candidate(sources, expected_binding=expected_binding)
-        except ValidationError:
-            return _report_needs_input()
+        selected_candidates: list[dict[str, Any]] = []
+        if requested_candidate_ids is not None:
+            source = None
+            for raw_source in sources:
+                if not isinstance(raw_source, Mapping):
+                    continue
+                index = {
+                    str(item.get("candidate_id", "")): dict(item)
+                    for item in raw_source.get("candidates", ())
+                    if isinstance(item, Mapping)
+                }
+                if all(candidate_id in index for candidate_id in requested_candidate_ids):
+                    source = raw_source
+                    selected_candidates = [index[candidate_id] for candidate_id in requested_candidate_ids]
+                    break
+            if source is None or not selected_candidates:
+                return _report_needs_input()
+            candidate = selected_candidates[0]
+            delivery_mode = "comparison" if len(selected_candidates) > 1 else "single"
+        else:
+            try:
+                source, candidate = _best_report_candidate(sources, expected_binding=expected_binding)
+            except ValidationError:
+                return _report_needs_input()
+            selected_candidates = [dict(candidate)]
         available = candidate.get("module_run_refs")
         available_modules = [
             name for name in _REPORT_MODULES
@@ -2484,14 +2712,25 @@ class AppConversationToolExecutor:
         if not available_modules:
             return _report_needs_input()
         if requested_kind == "quote":
-            quote_module = next((name for name in _REPORT_MODULES if name in available_modules), None)
-            if quote_module is None:
-                return _report_needs_input()
-            quote_refs = _current_verified_report_refs(
-                available, [quote_module], identity=identity, task_id=task_id,
-            )
-            if quote_refs is None:
-                return _report_needs_input()
+            quote_items: list[dict[str, Any]] = []
+            for selected_candidate in selected_candidates:
+                selected_available = selected_candidate.get("module_run_refs")
+                quote_module = "pricing"
+                if not isinstance(selected_available, Mapping) or not isinstance(
+                    selected_available.get(quote_module), Mapping,
+                ):
+                    return _report_needs_input()
+                quote_refs = _current_verified_report_refs(
+                    selected_available, [quote_module], identity=identity, task_id=task_id,
+                )
+                if quote_refs is None:
+                    return _report_needs_input()
+                quote_items.append({
+                    "source_id": source["source_id"],
+                    "candidate_id": selected_candidate["candidate_id"],
+                    "module": quote_module,
+                    "module_run_ref": quote_refs[quote_module],
+                })
             title = str(arguments.get("title") or candidate.get("product_name") or "参考报价").strip()
             return {
                 "action": "run",
@@ -2499,12 +2738,7 @@ class AppConversationToolExecutor:
                 "kind": "quote",
                 "selection": {
                     "source_id": source["source_id"],
-                    "quote_items": [{
-                        "source_id": source["source_id"],
-                        "candidate_id": candidate["candidate_id"],
-                        "module": quote_module,
-                        "module_run_ref": quote_refs[quote_module],
-                    }],
+                    "quote_items": quote_items,
                     "output_type": "quote",
                     "format": requested_format,
                     "audience": identity.audience,
@@ -2513,8 +2747,7 @@ class AppConversationToolExecutor:
                 },
             }
         modules = list(_REPORT_MODULES) if requested_kind == "report" else available_modules
-        selected_candidates = [candidate]
-        if delivery_mode == "comparison":
+        if delivery_mode == "comparison" and requested_candidate_ids is None:
             if requested_kind not in {"card", "report"}:
                 raise ValidationError("横向对比只适用于研究简报或完整研究报告")
             selected_candidates = [
@@ -2618,6 +2851,13 @@ def _analysis_status(response: Mapping[str, Any]) -> str:
     aliases = {"succeeded": "completed", "complete": "completed", "timeout": "timed_out", "unavailable": "unsupported"}
     normalized = aliases.get(status, status)
     return normalized if normalized in {"completed", "partial", "failed", "unsupported", "cancelled", "timed_out"} else "failed"
+
+
+def _years_before_date(value: date, years: int) -> date:
+    try:
+        return value.replace(year=value.year - years)
+    except ValueError:
+        return value.replace(year=value.year - years, day=28)
 
 
 def _best_report_candidate(
@@ -2849,87 +3089,131 @@ def _same_pending_user_turn(value: object, prompt: object) -> bool:
 def _pending_recommendation_state(
     recommendation: object,
     *,
+    identity: SessionIdentity,
     analysis_case_id: str,
     catalog_version: str,
     confirmed_constraints: Mapping[str, Any],
     preset_id: str,
-    preset_version: str,
-    selected_candidate_id: str | None = None,
+    preset_revision: str,
 ) -> dict[str, Any] | None:
-    """Project one approved-later selection; financial facts stay out of TaskService."""
+    """Project the complete ordered candidate set onto the TaskService schema."""
 
     if not isinstance(recommendation, Mapping) or str(recommendation.get("status", "")).lower() != "pending_approval":
         return None
     candidates = recommendation.get("candidates")
     if not isinstance(candidates, list):
         return None
-    if len(candidates) != 1 and not selected_candidate_id:
-        # 多候选必须由客户明确选择，不能把“确认”默认为第一名。
-        return None
-    primary_id = selected_candidate_id or str(recommendation.get("primary_candidate_id", "")).strip()
-    raw_candidate = next(
-        (item for item in candidates if isinstance(item, Mapping) and str(item.get("candidate_id", "")).strip() == primary_id),
-        None,
-    )
-    if not isinstance(raw_candidate, Mapping) or str(raw_candidate.get("library_status", "")) != "ready":
-        return None
-    missing_inputs = raw_candidate.get("missing_inputs", ())
-    if (
-        isinstance(missing_inputs, Sequence)
-        and not isinstance(missing_inputs, str)
-        and any(str(item).strip() for item in missing_inputs)
-    ):
-        return None
-    underlyings = raw_candidate.get("underlyings")
-    if isinstance(underlyings, str) or not isinstance(underlyings, Sequence):
-        return None
-    ordered_underlyings = [str(item).strip() for item in underlyings if str(item).strip()]
-    candidate_id = str(raw_candidate.get("candidate_id", "")).strip()
-    product_id = str(raw_candidate.get("product_id", "")).strip()
-    if not candidate_id or not product_id or not ordered_underlyings:
-        return None
-    version = _pending_candidate_version(raw_candidate)
-    if version is None:
-        return None
     ranking_spec = _pending_ranking_spec(recommendation, preset_id)
     if preset_id == "constraint-ranking" and ranking_spec is None:
         return None
-    module_run_refs = _pending_module_run_refs(raw_candidate.get("module_run_refs", ()))
-    if module_run_refs is None:
+    candidate_ids: list[str] = []
+    candidate_contracts: dict[str, dict[str, Any]] = {}
+    for raw_candidate in candidates:
+        if not isinstance(raw_candidate, Mapping) or str(raw_candidate.get("library_status", "")) != "ready":
+            continue
+        missing_inputs = raw_candidate.get("missing_inputs", ())
+        if (
+            isinstance(missing_inputs, Sequence)
+            and not isinstance(missing_inputs, str)
+            and any(str(item).strip() for item in missing_inputs)
+        ):
+            continue
+        underlyings = raw_candidate.get("underlyings")
+        if isinstance(underlyings, str) or not isinstance(underlyings, Sequence):
+            continue
+        ordered_underlyings = [str(item).strip() for item in underlyings if str(item).strip()]
+        candidate_id = str(raw_candidate.get("candidate_id", "")).strip()
+        product_id = str(raw_candidate.get("product_id", "")).strip()
+        version = _pending_candidate_version(raw_candidate)
+        module_run_refs = _pending_module_run_refs(raw_candidate.get("module_run_refs", ()))
+        raw_overrides = raw_candidate.get("term_overrides", {})
+        if (
+            not candidate_id
+            or candidate_id in candidate_contracts
+            or not product_id
+            or not ordered_underlyings
+            or version is None
+            or module_run_refs is None
+            or not isinstance(raw_overrides, Mapping)
+        ):
+            continue
+        term_overrides = {str(key): value for key, value in raw_overrides.items()}
+        contract_fingerprint = str(raw_candidate.get("contract_fingerprint", "")).strip()
+        if not re.fullmatch(r"[0-9a-f]{64}", contract_fingerprint):
+            contract_fingerprint = "0" * 64
+        candidate_ids.append(candidate_id)
+        candidate_contracts[candidate_id] = {
+            "candidate": {
+                "candidate_id": candidate_id,
+                "product_id": product_id,
+                "product_name": str(raw_candidate.get("product_name", "")).strip(),
+                "underlyings": ordered_underlyings,
+                "library_status": "ready",
+            },
+            "candidate_version": version,
+            "contract_fingerprint": contract_fingerprint,
+            "term_overrides": term_overrides,
+            "term_overrides_fingerprint": _term_overrides_fingerprint(term_overrides),
+            "expected_active_contract_fingerprint": None,
+            "module_run_refs": module_run_refs,
+            "approval_status": "pending_approval",
+            "public_projection": _public_candidate_projection(raw_candidate, identity),
+        }
+    if not candidate_ids:
         return None
-    contract_fingerprint = str(raw_candidate.get("contract_fingerprint", "")).strip()
-    if not re.fullmatch(r"[0-9a-f]{64}", contract_fingerprint):
-        contract_fingerprint = "0" * 64
-    raw_overrides = raw_candidate.get("term_overrides", {})
-    if not isinstance(raw_overrides, Mapping):
-        return None
-    term_overrides = {str(key): value for key, value in raw_overrides.items()}
     return {
         "status": "pending_approval",
-        "state_schema": "exact-candidate-v1",
+        "state_schema": PENDING_RECOMMENDATION_SCHEMA_ID,
         "analysis_case_id": analysis_case_id,
         "catalog_version": catalog_version,
         "workflow_mode": str(recommendation.get("workflow_mode", "single_agent")),
-        "preset": {"preset_id": preset_id, "preset_version": preset_version},
+        "preset": {"preset_id": preset_id, "preset_revision": preset_revision},
         "confirmed_constraints": dict(confirmed_constraints),
-        "contract_fingerprint": contract_fingerprint,
-        "term_overrides": term_overrides,
-        "term_overrides_fingerprint": _term_overrides_fingerprint(term_overrides),
-        "expected_active_contract_fingerprint": None,
         "ranking_spec_id": ranking_spec["ranking_spec_id"] if ranking_spec is not None else None,
         "ranking_spec_fingerprint": ranking_spec["ranking_spec_fingerprint"] if ranking_spec is not None else None,
         "ranking_spec": ranking_spec,
-        "module_run_refs": module_run_refs,
         "delivery": None,
-        "candidate": {
-            "candidate_id": candidate_id,
-            "product_id": product_id,
-            "product_name": str(raw_candidate.get("product_name", "")).strip(),
-            "underlyings": ordered_underlyings,
-            "library_status": "ready",
-        },
-        "candidate_version": version,
+        "candidate_ids": candidate_ids,
+        "candidate_contracts": candidate_contracts,
+        "approved_candidate_ids": [],
     }
+
+
+def _public_candidate_projection(
+    candidate: Mapping[str, Any], identity: SessionIdentity,
+) -> dict[str, Any]:
+    """Keep only the reviewed customer-facing candidate explanation."""
+
+    def text(value: object, fallback: str = "") -> str:
+        cleaned = redact_text(value, identity, limit=800).strip()
+        return cleaned if cleaned and "[REDACTED]" not in cleaned else fallback
+
+    def items(value: object) -> list[str]:
+        if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
+            return []
+        return [cleaned for item in value[:16] if (cleaned := text(item))]
+
+    return {
+        "reason": text(candidate.get("reason"), "与已确认的市场观点和风险约束匹配。"),
+        "suitable_for": items(candidate.get("suitable_for")),
+        "not_suitable_for": items(candidate.get("not_suitable_for")),
+        "main_risks": items(candidate.get("main_risks")),
+        "key_terms": _public_display_terms(candidate.get("key_terms"), identity),
+    }
+
+
+def _public_display_terms(value: object, identity: SessionIdentity) -> list[dict[str, str]]:
+    if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
+        return []
+    result: list[dict[str, str]] = []
+    for row in value[:64]:
+        if not isinstance(row, Mapping):
+            continue
+        label = redact_text(row.get("label"), identity, limit=120).strip()
+        display = redact_text(row.get("value"), identity, limit=240).strip()
+        if label and display and "[REDACTED]" not in label and "[REDACTED]" not in display:
+            result.append({"label": label, "value": display})
+    return result
 
 
 def _pending_candidate_version(candidate: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -3008,13 +3292,13 @@ def _pending_module_run_refs(value: object) -> list[dict[str, str]] | None:
     return sorted(rows, key=lambda item: (item["module"], item["run_id"]))
 
 
-def _requires_exact_pending_state(recommendation: object, selected_candidate_id: str | None) -> bool:
+def _requires_exact_pending_state(recommendation: object) -> bool:
     if not isinstance(recommendation, Mapping) or str(recommendation.get("status", "")).lower() != "pending_approval":
         return False
     candidates = recommendation.get("candidates")
     if not isinstance(candidates, list):
         return False
-    return len(candidates) == 1 or selected_candidate_id is not None
+    return bool(candidates)
 
 
 def _may_resume_pending(
@@ -3022,88 +3306,128 @@ def _may_resume_pending(
     current_constraints: Mapping[str, Any],
     catalog_version: str,
     *,
-    explicit_candidate_confirmation: bool = False,
+    approved_candidate_ids: Sequence[str] = (),
     stored_constraints: Mapping[str, Any] | None = None,
 ) -> bool:
     if (
         not isinstance(pending, Mapping)
-        or pending.get("state_schema") != "exact-candidate-v1"
+        or pending.get("state_schema") != PENDING_RECOMMENDATION_SCHEMA_ID
         or str(pending.get("catalog_version", "")) != catalog_version
     ):
         return False
+    if not _pending_preset_is_current(pending):
+        return False
+    if not _current_constraints_match_pending(
+        pending,
+        current_constraints,
+        approved_candidate_ids,
+        stored_constraints,
+    ):
+        return False
+    status = str(pending.get("status", "")).strip().lower()
+    if status == "pending_approval":
+        return bool(approved_candidate_ids)
+    return False
+
+
+def _current_constraints_match_pending(
+    pending: Mapping[str, Any],
+    current_constraints: Mapping[str, Any],
+    approved_candidate_ids: Sequence[str],
+    stored_constraints: Mapping[str, Any] | None,
+) -> bool:
     try:
         exact_constraints = _pending_constraints(pending)
     except (TypeError, ValueError, ValidationError):
         return False
     stored = stored_constraints if isinstance(stored_constraints, Mapping) else exact_constraints
-    if not isinstance(stored, Mapping):
+    current_shared = dict(current_constraints)
+    current_term_overrides = current_shared.pop("term_overrides", {})
+    stored_shared = dict(stored)
+    stored_shared.pop("term_overrides", None)
+    if _candidate_constraints_fingerprint(current_shared) != _candidate_constraints_fingerprint(stored_shared):
         return False
-    # 只有会改变候选或合同解释的条件发生变化时才重建候选；交付种类
-    # 与格式是已确认结构之后的独立选择。
-    if _candidate_constraints_fingerprint(current_constraints) != _candidate_constraints_fingerprint(stored):
+    if current_term_overrides:
+        if not isinstance(current_term_overrides, Mapping) or not approved_candidate_ids:
+            return False
+        for candidate_id in approved_candidate_ids:
+            contract = _pending_candidate_contract(pending, candidate_id)
+            frozen_terms = contract.get("term_overrides") if isinstance(contract, Mapping) else None
+            if not isinstance(frozen_terms, Mapping) or any(
+                frozen_terms.get(str(key)) != value
+                for key, value in current_term_overrides.items()
+            ):
+                return False
+    return True
+
+
+def _pending_preset_is_current(pending: Mapping[str, Any]) -> bool:
+    """Bind every resumable approval transition to the frozen Preset content."""
+
+    preset = pending.get("preset")
+    if not isinstance(preset, Mapping):
         return False
-    status = str(pending.get("status", "")).strip().lower()
-    if status == "pending_approval":
-        return explicit_candidate_confirmation
-    return False
+    try:
+        current = resolve_recommendation_preset(str(preset.get("preset_id", "")))
+    except (KeyError, TypeError, ValueError, ValidationError):
+        return False
+    return str(preset.get("preset_revision", "")) == current.revision
 
 
 def _persisted_constraints(constraints: Mapping[str, Any]) -> dict[str, Any]:
     """Project user constraints onto the TaskService continuation schema.
 
-    Product-owned term overrides are deliberately not duplicated into the task
-    state. They are recovered from the task's authenticated message history by
-    :func:`_pending_constraints_from_history` before any binding or execution.
+    Product-owned term overrides are deliberately not duplicated into the
+    shared constraint object; each CandidateContract owns its frozen copy.
     """
 
     return {key: value for key, value in constraints.items() if key != "term_overrides"}
 
 
-def _pending_constraints_from_history(
-    pending: Mapping[str, Any] | None,
-    history: Sequence[object],
-) -> dict[str, Any]:
-    """Recover the frozen pre-reply constraints for a persisted candidate."""
+def _pending_shared_constraints(pending: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Recover the shared constraints from the authoritative pending state."""
 
     if not isinstance(pending, Mapping):
         return {}
     stored = pending.get("confirmed_constraints")
     if not isinstance(stored, Mapping):
         return {}
-    try:
-        frozen = _pending_constraints(pending)
-    except (TypeError, ValueError, ValidationError):
-        return {}
-    # A pending candidate is created after the final user turn. On a later
-    # confirmation or adjustment, the final turn is new and must not silently
-    # become part of the old contract. Excluding it makes a changed override
-    # invalidate the candidate rather than execute it under altered terms.
-    earlier_turns: Sequence[object] = history[:-1] if history else ()
-    recovered = merge_confirmed_constraints(dict(stored), earlier_turns)
-    recovered_overrides = recovered.get("term_overrides", {})
-    frozen_overrides = frozen.get("term_overrides", {})
-    if recovered_overrides and (
-        not isinstance(frozen_overrides, Mapping)
-        or any(frozen_overrides.get(key) != value for key, value in recovered_overrides.items())
-    ):
-        return recovered
-    return frozen
+    return dict(stored)
 
 
 def _pending_constraints(pending: Mapping[str, Any]) -> dict[str, Any]:
-    """Rebuild the frozen, exact contract inputs from a validated continuation."""
+    """Return shared selection constraints; per-candidate terms stay in their contracts."""
 
     stored = pending.get("confirmed_constraints")
-    overrides = pending.get("term_overrides")
-    fingerprint = str(pending.get("term_overrides_fingerprint", ""))
-    if not isinstance(stored, Mapping) or not isinstance(overrides, Mapping):
+    if not isinstance(stored, Mapping):
+        raise ValidationError("待确认候选缺少冻结条件")
+    return dict(stored)
+
+
+def _pending_candidate_constraints(
+    pending: Mapping[str, Any],
+    candidate_id: str,
+    *,
+    shared_constraints: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Combine shared selection constraints with one candidate's frozen terms."""
+
+    constraints = (
+        dict(shared_constraints)
+        if isinstance(shared_constraints, Mapping)
+        else _pending_constraints(pending)
+    )
+    contract = _pending_candidate_contract(pending, candidate_id)
+    if contract is None:
+        raise ValidationError("待确认候选不属于当前有序候选集合")
+    term_overrides = contract.get("term_overrides")
+    if not isinstance(term_overrides, Mapping):
         raise ValidationError("待确认候选缺少冻结条款")
-    normalized = {str(key): value for key, value in overrides.items()}
-    if _term_overrides_fingerprint(normalized) != fingerprint:
-        raise ValidationError("待确认候选冻结条款指纹不一致")
-    result = dict(stored)
-    result["term_overrides"] = normalized
-    return result
+    if term_overrides:
+        constraints["term_overrides"] = dict(term_overrides)
+    else:
+        constraints.pop("term_overrides", None)
+    return constraints
 
 
 def _term_overrides_fingerprint(value: Mapping[str, Any]) -> str:
@@ -3117,7 +3441,15 @@ def _candidate_constraints_fingerprint(constraints: Mapping[str, Any]) -> str:
     candidate_fields = {
         key: value
         for key, value in constraints.items()
-        if key in {"underlying", "horizon", "market_view", "max_loss", "principal_fluctuation", "term_overrides"}
+        if key in {
+            "underlying",
+            "horizon",
+            "market_view",
+            "max_loss",
+            "principal_fluctuation",
+            "path_count",
+            "term_overrides",
+        }
     }
     return constraints_fingerprint(candidate_fields)
 
@@ -3167,30 +3499,89 @@ def _pricing_config_for_resolved_contract(
     return {"model_method": "auto", "path_count": value}
 
 
-def _selected_candidate_id(prompt: object, recommendation: object) -> str | None:
-    """仅接受明确编号、名称或排序选择，不把泛确认解释为主候选选择。"""
+def _selected_candidate_ids(
+    prompt: object,
+    arguments: Mapping[str, Any],
+    pending: Mapping[str, Any] | None,
+) -> list[str]:
+    """Resolve an ordered user selection to authoritative candidate IDs."""
 
-    if not isinstance(recommendation, Mapping):
-        return None
-    rows = recommendation.get("candidates")
-    if isinstance(rows, (str, bytes)) or not isinstance(rows, Sequence):
-        return None
-    candidates = [dict(item) for item in rows if isinstance(item, Mapping)]
-    if len(candidates) <= 1:
-        return None
+    if not isinstance(pending, Mapping):
+        return []
+    raw_ids = pending.get("candidate_ids")
+    raw_contracts = pending.get("candidate_contracts")
+    if (
+        isinstance(raw_ids, (str, bytes))
+        or not isinstance(raw_ids, Sequence)
+        or not isinstance(raw_contracts, Mapping)
+    ):
+        return []
+    candidate_ids = [str(item).strip() for item in raw_ids if str(item).strip()]
+    if not candidate_ids or len(set(candidate_ids)) != len(candidate_ids):
+        return []
+    supplied = arguments.get("approved_candidate_ids")
+    if supplied is not None:
+        if isinstance(supplied, (str, bytes)) or not isinstance(supplied, Sequence):
+            raise ValidationError("approved_candidate_ids必须是有序数组")
+        selected = [str(item).strip() for item in supplied]
+        if not selected or any(not item for item in selected) or len(set(selected)) != len(selected):
+            raise ValidationError("approved_candidate_ids不能为空或重复")
+        if any(item not in raw_contracts for item in selected):
+            raise ValidationError("approved_candidate_ids包含未知candidate_id")
+        return selected
     text = str(prompt or "").strip().lower()
-    rank_match = re.search(r"(?:第|选择|选)([123])(?:个|号|名|项|候选)?", text)
-    if rank_match:
-        rank = int(rank_match.group(1))
-        selected = next((item for item in candidates if item.get("rank") == rank), None)
-        if selected is not None:
-            return str(selected.get("candidate_id", "")).strip() or None
-    for candidate in candidates:
-        product_id = str(candidate.get("product_id", "")).strip().lower()
-        product_name = str(candidate.get("product_name", "")).strip().lower()
-        if (product_id and product_id in text) or (product_name and product_name in text):
-            return str(candidate.get("candidate_id", "")).strip() or None
-    return None
+    direct = sorted(
+        (
+            (text.find(candidate_id.lower()), candidate_id)
+            for candidate_id in candidate_ids
+            if candidate_id.lower() in text
+        ),
+        key=lambda item: item[0],
+    )
+    if direct:
+        return [candidate_id for _, candidate_id in direct]
+    ranked: list[tuple[int, str]] = []
+    for matched in re.finditer(r"(?:第|选择|选|候选)\s*(\d{1,2})(?:个|号|名|项)?", text):
+        rank = int(matched.group(1))
+        if 1 <= rank <= len(candidate_ids):
+            ranked.append((matched.start(), candidate_ids[rank - 1]))
+    if ranked:
+        ordered = [candidate_id for _, candidate_id in sorted(ranked)]
+        return list(dict.fromkeys(ordered))
+    chinese_numbers = {
+        "一": 1, "二": 2, "三": 3, "四": 4, "五": 5,
+        "六": 6, "七": 7, "八": 8, "九": 9, "十": 10,
+    }
+    chinese_ranked: list[tuple[int, str]] = []
+    for matched in re.finditer(r"(?:第|选择|选|候选)\s*([一二三四五六七八九十])(?:个|号|名|项)?", text):
+        rank = chinese_numbers[matched.group(1)]
+        if 1 <= rank <= len(candidate_ids):
+            chinese_ranked.append((matched.start(), candidate_ids[rank - 1]))
+    if chinese_ranked:
+        ordered = [candidate_id for _, candidate_id in sorted(chinese_ranked)]
+        return list(dict.fromkeys(ordered))
+    named: list[tuple[int, str]] = []
+    for candidate_id in candidate_ids:
+        contract = raw_contracts.get(candidate_id)
+        candidate = contract.get("candidate") if isinstance(contract, Mapping) else None
+        if not isinstance(candidate, Mapping):
+            continue
+        for field in ("product_id", "product_name"):
+            value = str(candidate.get(field, "")).strip().lower()
+            position = text.find(value) if value else -1
+            if position >= 0:
+                named.append((position, candidate_id))
+                break
+    if named:
+        return list(dict.fromkeys(candidate_id for _, candidate_id in sorted(named)))
+    if len(candidate_ids) == 1 and _approval_text(prompt):
+        return list(candidate_ids)
+    return []
+
+
+def _has_candidate_selection_intent(prompt: object) -> bool:
+    text = str(prompt or "").strip().casefold()
+    return bool(re.search(r"(?:选择|选|候选|第|全部|都选|前两个|多选)", text))
 
 
 def _current_candidate_binding(
@@ -3239,7 +3630,7 @@ def _current_candidate_binding(
 
 def _evaluated_candidate_binding(
     recommendation: object,
-    continuation: Mapping[str, Any],
+    candidate_id: str,
     constraints: Mapping[str, Any],
 ) -> dict[str, Any] | None:
     """Use the exact Host-evaluated contract identity when a Mode already has one."""
@@ -3249,7 +3640,6 @@ def _evaluated_candidate_binding(
     rows = recommendation.get("candidates")
     if isinstance(rows, (str, bytes)) or not isinstance(rows, Sequence):
         return None
-    candidate_id = str(continuation.get("candidate", {}).get("candidate_id", "")) if isinstance(continuation.get("candidate"), Mapping) else ""
     candidate = next(
         (row for row in rows if isinstance(row, Mapping) and str(row.get("candidate_id", "")) == candidate_id),
         None,
@@ -3276,23 +3666,59 @@ def _evaluated_candidate_binding(
     }
 
 
-def _pending_candidate_binding(
+def _pending_candidate_contract(
+    pending: Mapping[str, Any], candidate_id: str,
+) -> Mapping[str, Any] | None:
+    contracts = pending.get("candidate_contracts")
+    if not isinstance(contracts, Mapping):
+        return None
+    contract = contracts.get(candidate_id)
+    return contract if isinstance(contract, Mapping) else None
+
+
+def _approved_candidate_ids(pending: Mapping[str, Any]) -> list[str]:
+    value = pending.get("approved_candidate_ids")
+    if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
+        return []
+    result = [str(item).strip() for item in value if str(item).strip()]
+    return result if len(result) == len(set(result)) else []
+
+
+def _pending_candidate_bindings(
     tool_executor: object,
     identity: SessionIdentity,
     task_id: str,
     pending: Mapping[str, Any],
+    candidate_ids: Sequence[str],
     constraints: Mapping[str, Any],
     capability_root: Path,
-) -> Mapping[str, Any] | None:
+) -> dict[str, Mapping[str, Any]] | None:
     exact = getattr(tool_executor, "recommendation_candidate_binding", None)
-    if callable(exact):
-        try:
-            return exact(identity, task_id, pending)
-        except (AuthorizationError, ValidationError):
+    result: dict[str, Mapping[str, Any]] = {}
+    for candidate_id in candidate_ids:
+        contract = _pending_candidate_contract(pending, candidate_id)
+        if contract is None:
             return None
-    # Compatibility for isolated legacy ports only. AppConversationToolExecutor
-    # always exposes the exact CandidateVariant lookup above.
-    return _current_candidate_binding(pending["candidate"], constraints, capability_root)
+        candidate_constraints = _pending_candidate_constraints(
+            pending,
+            candidate_id,
+            shared_constraints=constraints,
+        )
+        if callable(exact):
+            try:
+                binding = exact(identity, task_id, pending, candidate_id)
+            except (AuthorizationError, ValidationError):
+                return None
+        else:
+            candidate = contract.get("candidate")
+            binding = (
+                _current_candidate_binding(candidate, candidate_constraints, capability_root)
+                if isinstance(candidate, Mapping) else None
+            )
+        if not isinstance(binding, Mapping):
+            return None
+        result[candidate_id] = binding
+    return result
 
 
 def _term_overrides_from_constraints(
@@ -3465,7 +3891,9 @@ def _candidate_routing_contract(
 
 
 def _with_confirmation_terms(
-    recommendation: object, candidate: Mapping[str, Any], binding: Mapping[str, Any],
+    recommendation: object,
+    pending: Mapping[str, Any],
+    bindings: Mapping[str, Mapping[str, Any]],
 ) -> dict[str, Any]:
     result = dict(recommendation) if isinstance(recommendation, Mapping) else {"status": "pending_approval"}
     rows = result.get("candidates")
@@ -3473,7 +3901,9 @@ def _with_confirmation_terms(
         prepared = []
         for item in rows:
             current = dict(item) if isinstance(item, Mapping) else item
-            if isinstance(current, dict) and current.get("candidate_id") == candidate.get("candidate_id"):
+            candidate_id = str(current.get("candidate_id", "")) if isinstance(current, dict) else ""
+            binding = bindings.get(candidate_id)
+            if isinstance(current, dict) and isinstance(binding, Mapping):
                 current["candidate_status"] = "pending_confirmation"
                 current["key_terms"] = list(binding["display_terms"])
             prepared.append(current)
@@ -3483,23 +3913,42 @@ def _with_confirmation_terms(
     return result
 
 
-def _confirmation_question(candidate: Mapping[str, Any], binding: Mapping[str, Any]) -> str:
+def _confirmation_question(
+    pending: Mapping[str, Any], bindings: Mapping[str, Mapping[str, Any]],
+) -> str:
+    candidate_ids = pending.get("candidate_ids")
+    contracts = pending.get("candidate_contracts")
+    if not isinstance(candidate_ids, Sequence) or isinstance(candidate_ids, (str, bytes)) or not isinstance(contracts, Mapping):
+        return "请明确选择需要继续的候选。"
+    if len(candidate_ids) > 1:
+        choices = []
+        for index, candidate_id in enumerate(candidate_ids, start=1):
+            contract = contracts.get(candidate_id)
+            candidate = contract.get("candidate") if isinstance(contract, Mapping) else None
+            title = str(candidate.get("product_name") or candidate.get("product_id") or candidate_id) if isinstance(candidate, Mapping) else str(candidate_id)
+            choices.append(f"{index}.{title}")
+        return "候选为" + "；".join(choices) + "。请明确选择一个或多个候选；多选顺序即后续对比顺序，也可一次说明需要调整的条款。"
+    candidate_id = str(candidate_ids[0])
+    contract = contracts.get(candidate_id)
+    candidate = contract.get("candidate") if isinstance(contract, Mapping) else {}
+    binding = bindings.get(candidate_id, {})
     terms = binding.get("display_terms") if isinstance(binding.get("display_terms"), Sequence) else ()
     summary = "；".join(f"{item.get('label')}：{item.get('value')}" for item in terms if isinstance(item, Mapping))
-    title = str(candidate.get("product_name") or candidate.get("product_id") or "该候选")
+    title = str(candidate.get("product_name") or candidate.get("product_id") or "该候选") if isinstance(candidate, Mapping) else "该候选"
     return f"拟采用{title}。{summary}。请明确回复“确认按此候选和条款继续”，或一次说明需要调整的条件。"
 
 
-def _binding_matches_pending(
-    binding: Mapping[str, Any], pending: Mapping[str, Any], *, constraints: Mapping[str, Any] | None = None,
+def _bindings_match_pending(
+    bindings: Mapping[str, Mapping[str, Any]],
+    pending: Mapping[str, Any],
+    candidate_ids: Sequence[str],
+    *,
+    constraints: Mapping[str, Any] | None = None,
 ) -> bool:
-    candidate = pending.get("candidate")
-    version = pending.get("candidate_version")
     try:
         frozen_constraints = dict(constraints) if isinstance(constraints, Mapping) else _pending_constraints(pending)
     except (TypeError, ValueError, ValidationError):
         return False
-    term_overrides = pending.get("term_overrides")
     preset = pending.get("preset")
     preset_id = str(preset.get("preset_id", "")) if isinstance(preset, Mapping) else ""
     ranking_spec_id = pending.get("ranking_spec_id")
@@ -3515,21 +3964,42 @@ def _binding_matches_pending(
             and isinstance(ranking_spec, Mapping)
             and ranking_spec.get("ranking_spec_id") == ranking_spec_id
             and ranking_spec.get("ranking_spec_fingerprint") == ranking_spec_fingerprint
-            and binding.get("ranking_spec_anchor") == dict(ranking_spec)
         )
     )
-    return (
-        isinstance(candidate, Mapping)
-        and isinstance(version, Mapping)
-        and isinstance(term_overrides, Mapping)
-        and isinstance(frozen_constraints, Mapping)
-        and binding.get("candidate_id") == candidate.get("candidate_id")
-        and binding.get("constraints_fingerprint") == constraints_fingerprint(frozen_constraints)
-        and binding.get("contract_fingerprint") == pending.get("contract_fingerprint")
-        and binding.get("contract_fingerprint") == _confirmation_contract_fingerprint(pending.get("analysis_case_id"))
-        and _term_overrides_fingerprint(term_overrides) == pending.get("term_overrides_fingerprint")
-        and ranking_valid
-    )
+    if not ranking_valid or not isinstance(frozen_constraints, Mapping):
+        return False
+    for candidate_id in candidate_ids:
+        contract = _pending_candidate_contract(pending, candidate_id)
+        binding = bindings.get(candidate_id)
+        if contract is None or not isinstance(binding, Mapping):
+            return False
+        try:
+            candidate_constraints = _pending_candidate_constraints(
+                pending,
+                candidate_id,
+                shared_constraints=frozen_constraints,
+            )
+        except (TypeError, ValueError, ValidationError):
+            return False
+        expected_constraints = constraints_fingerprint(candidate_constraints)
+        candidate = contract.get("candidate")
+        version = contract.get("candidate_version")
+        term_overrides = contract.get("term_overrides")
+        if not (
+            isinstance(candidate, Mapping)
+            and isinstance(version, Mapping)
+            and isinstance(term_overrides, Mapping)
+            and binding.get("candidate_id") == candidate_id == candidate.get("candidate_id")
+            and binding.get("constraints_fingerprint") == expected_constraints
+            and binding.get("contract_fingerprint") == contract.get("contract_fingerprint")
+            and _term_overrides_fingerprint(term_overrides) == contract.get("term_overrides_fingerprint")
+            and (
+                preset_id != "constraint-ranking"
+                or binding.get("ranking_spec_anchor") == dict(ranking_spec)
+            )
+        ):
+            return False
+    return True
 
 
 def _recommendation_start_active_fingerprint(
@@ -3610,41 +4080,58 @@ def _continuation_recommendation_set(
 ) -> dict[str, Any]:
     """Return the one public RecommendationSet schema on every App continuation.
 
-    The task index retains only the chosen candidate and customer constraints,
-    never the original evidence or financial result.  This projection restores
-    the typed envelope from that state without re-running Selector or exposing
-    private identifiers to the customer-facing AgentLoop.
+    The task state retains the complete ordered candidate set and per-candidate
+    contract bindings, never the original evidence payload or financial result.
+    This projection restores the typed envelope without re-running Selector or
+    exposing private runtime identifiers to the customer-facing AgentLoop.
     """
 
     state = dict(pending or {})
     constraints = state.get("confirmed_constraints")
-    candidate_data = state.get("candidate")
-    candidate: RecommendationCandidate | None = None
-    if isinstance(constraints, Mapping) and isinstance(candidate_data, Mapping):
-        try:
-            candidate = RecommendationCandidate(
-                candidate_id=_identifier(candidate_data.get("candidate_id"), "candidate_id"),
-                product_id=_identifier(candidate_data.get("product_id"), "product_id"),
-                underlyings=tuple(str(item).strip() for item in candidate_data.get("underlyings", ()) if str(item).strip()),
-                rank=1,
-                reason="已按客户确认条件保留该候选。",
-                suitable_for=(),
-                not_suitable_for=(),
-                main_risks=(),
-                library_status="ready",
-                product_name=str(candidate_data.get("product_name", "")).strip() or None,
-                candidate_status=candidate_status,
-                constraints_fingerprint=constraints_fingerprint(constraints),
-            )
-        except (TypeError, ValueError, ValidationError):
-            candidate = None
+    candidate_ids = state.get("candidate_ids")
+    candidate_contracts = state.get("candidate_contracts")
+    approved_candidate_ids = _approved_candidate_ids(state)
+    candidates: list[RecommendationCandidate] = []
+    if (
+        isinstance(constraints, Mapping)
+        and isinstance(candidate_ids, Sequence)
+        and not isinstance(candidate_ids, (str, bytes))
+        and isinstance(candidate_contracts, Mapping)
+    ):
+        for rank, candidate_id in enumerate(candidate_ids, start=1):
+            contract = candidate_contracts.get(str(candidate_id))
+            candidate_data = contract.get("candidate") if isinstance(contract, Mapping) else None
+            public_projection = contract.get("public_projection") if isinstance(contract, Mapping) else None
+            if not isinstance(candidate_data, Mapping) or not isinstance(public_projection, Mapping):
+                continue
+            try:
+                candidates.append(RecommendationCandidate(
+                    candidate_id=_identifier(candidate_data.get("candidate_id"), "candidate_id"),
+                    product_id=_identifier(candidate_data.get("product_id"), "product_id"),
+                    underlyings=tuple(str(item).strip() for item in candidate_data.get("underlyings", ()) if str(item).strip()),
+                    rank=rank,
+                    reason=str(public_projection.get("reason", "")),
+                    suitable_for=tuple(map(str, public_projection.get("suitable_for", ()))),
+                    not_suitable_for=tuple(map(str, public_projection.get("not_suitable_for", ()))),
+                    main_risks=tuple(map(str, public_projection.get("main_risks", ()))),
+                    library_status="ready",
+                    product_name=str(candidate_data.get("product_name", "")).strip() or None,
+                    key_terms=tuple(
+                        dict(item) for item in public_projection.get("key_terms", ())
+                        if isinstance(item, Mapping)
+                    ),
+                    candidate_status=(candidate_status if str(candidate_id) in approved_candidate_ids else "candidate"),
+                    constraints_fingerprint=constraints_fingerprint(constraints),
+                ))
+            except (TypeError, ValueError, ValidationError):
+                continue
     output_type = str(constraints.get("output_type", "")).strip().lower() if isinstance(constraints, Mapping) else ""
     requested_outputs = (
         ("card", "report") if output_type == "both" else
         (output_type,) if output_type in {"card", "quote", "report"} else ()
     )
     workflow_mode = str(state.get("workflow_mode", "single_agent"))
-    if workflow_mode not in {"single_agent", "multi_agent", "degraded_single_agent"}:
+    if workflow_mode not in {"single_agent", "multi_agent"}:
         workflow_mode = "single_agent"
     result = RecommendationSet(
         schema=RECOMMENDATION_SET_SCHEMA,
@@ -3655,13 +4142,15 @@ def _continuation_recommendation_set(
         route="recommendation",
         workflow_mode=workflow_mode,
         status=status,
-        primary_candidate_id=candidate.candidate_id if candidate is not None else None,
-        candidates=(candidate,) if candidate is not None else (),
+        primary_candidate_id=(candidates[0].candidate_id if candidates else None),
+        candidates=tuple(candidates),
         analysis_status=analysis_status,
         delivery_status=delivery_status,
         requested_outputs=requested_outputs,
     )
-    return result.to_dict()
+    public = result.to_dict()
+    public["approved_candidate_ids"] = list(approved_candidate_ids)
+    return public
 
 
 def _confirmation_unavailable(
@@ -3694,9 +4183,65 @@ def _confirmation_invalidated(
 
 def _approval_text(value: object) -> bool:
     text = str(value or "").strip().lower()
-    if not text or any(word in text for word in ("不确认", "不同意", "取消", "不要执行", "先不要")):
+    if not text or re.search(
+        r"(?:不|别|无需|不用|不要|禁止)[^，。！？,.!?]*(?:确认|同意|执行|批准)", text,
+    ) or any(word in text for word in ("不同意", "取消", "先不要")):
         return False
     return any(word in text for word in ("确认", "同意", "按此", "按这个", "继续执行", "继续生成", "继续分析", "可以执行", "好的", "好，"))
+
+
+def _host_term_change_status(value: object) -> str:
+    """Fail closed when the formal parser sees an unparsed term-edit intent."""
+
+    status = classify_term_change(value)
+    if status != "none":
+        return status
+    text = str(value or "").strip().casefold()
+    action = r"(?:改|调|调整|设|设置|变|替换|取消|删除|恢复|默认)"
+    subject = r"(?:期限|观察(?:方式|频率|日程)?|气囊(?:水平|障碍)?|条款|参数)"
+    clauses = (item for item in re.split(r"[，,。；;！？!?]", text) if item.strip())
+    return "unresolved" if any(
+        re.search(subject, clause) and re.search(action, clause)
+        for clause in clauses
+    ) else "none"
+
+
+def _unparsed_term_change(
+    task_id: str,
+    catalog_version: str,
+    pending: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    return {
+        "route": {"fixed_recommendation_workflow": True, "route": "recommendation"},
+        "recommendation_set": _continuation_recommendation_set(
+            task_id,
+            catalog_version,
+            pending,
+            status="pending_approval",
+            analysis_status="not_started",
+            delivery_status="pending",
+        ),
+        "next_step": "检测到条款修改意图，但未能解析出完整的新条款。请明确修改字段和数值后再确认。",
+    }
+
+
+def _rejected_term_change(
+    task_id: str,
+    catalog_version: str,
+    pending: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    return {
+        "route": {"fixed_recommendation_workflow": True, "route": "recommendation"},
+        "recommendation_set": _continuation_recommendation_set(
+            task_id,
+            catalog_version,
+            pending,
+            status="pending_approval",
+            analysis_status="not_started",
+            delivery_status="pending",
+        ),
+        "next_step": "已保留当前候选的原条款，未写入任何修改。请单独确认后再继续。",
+    }
 
 
 def _saved_recommendation_preset(
