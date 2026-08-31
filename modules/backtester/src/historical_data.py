@@ -13,6 +13,7 @@ from typing import Any, Callable, Mapping
 import numpy as np
 import pandas as pd
 
+from runtime.contracts.contract_types import deep_thaw
 from runtime.protocol.models import DataAssetRef
 
 
@@ -196,7 +197,10 @@ def load_port_historical_data(
         raise DataFetcherPortUnavailable("无法通过注入DataStore读取DataFetcher历史资产") from error
     if sha256(payload).hexdigest() != asset_ref.content_hash:
         raise HistoricalDataError("DataStore返回内容与DataAssetRef.content_hash不一致")
-    return HistoricalData.from_frame(frame, data_asset_ref=asdict(asset_ref))
+    return HistoricalData.from_frame(
+        frame,
+        data_asset_ref=deep_thaw(asdict(asset_ref)),
+    )
 
 
 def required_contract_fields(observation_price: str) -> tuple[str, ...]:
@@ -285,7 +289,11 @@ def _protocol_data_asset_ref(reference: Mapping[str, Any]) -> DataAssetRef:
 
 def validate_data_asset_ref(reference: Mapping[str, Any]) -> dict[str, Any]:
     """以Core DataAssetRef作为唯一协议模型并返回可序列化规范值。"""
-    canonical = json.loads(json.dumps(asdict(_protocol_data_asset_ref(reference)), ensure_ascii=False, allow_nan=False))
+    canonical = json.loads(json.dumps(
+        deep_thaw(asdict(_protocol_data_asset_ref(reference))),
+        ensure_ascii=False,
+        allow_nan=False,
+    ))
     storage_ref = str(canonical["storage_ref"])
     if not _is_opaque_storage_ref(storage_ref):
         raise HistoricalDataError("DataAssetRef.storage_ref必须为受控opaque引用，禁止裸物理路径")
@@ -372,11 +380,11 @@ def _coverage_matches(declared: Any, expected: Mapping[str, Any]) -> bool:
         return False
     declared_sessions = _trading_sessions(declared)
     expected_sessions = _trading_sessions(expected)
-    if not declared_sessions.equals(expected_sessions):
+    if not expected_sessions.isin(declared_sessions).all():
         return False
-    if not _metadata_boundaries_enclose_sessions(declared, declared_sessions):
+    if not _metadata_boundaries_enclose_sessions(declared, expected_sessions):
         return False
-    return _calendar_coverage_end(declared) <= declared_sessions[-1]
+    return _calendar_coverage_end(declared) >= declared_sessions[-1]
 
 
 def _metadata_boundaries_enclose_sessions(coverage: Mapping[str, Any], sessions: pd.DatetimeIndex) -> bool:
@@ -385,8 +393,8 @@ def _metadata_boundaries_enclose_sessions(coverage: Mapping[str, Any], sessions:
     ``sessions`` 是唯一用于合同期限与每日观察的覆盖事实；``date_*`` 与
     ``start/end_date`` 可能是数据请求边界，周末或节假日不应被误当成缺失
     行情。它们仍须是有效日期，并且必须包住实际观测的首末交易日。
-    ``calendar_coverage_end`` 则仍是合同日历覆盖证据，必须由
-    :func:`_calendar_coverage_end` 约束在最后一个实际 session 之内。
+    ``calendar_coverage_end`` 是日历元数据边界，可以落在非交易日，但
+    合同期限判断只消费显式``sessions``集合，不据此猜测任何交易日。
     """
     boundaries = (
         ("date_start", "start_date", "start"),
@@ -411,7 +419,7 @@ def _metadata_boundaries_enclose_sessions(coverage: Mapping[str, Any], sessions:
 
 
 def _all_assets_cover_sessions(data: pd.DataFrame, sessions: pd.DatetimeIndex) -> bool:
-    """每个标的日期必须来自受控日历；跨标的缺口由intersection显式处理。"""
+    """每个标的日期必须来自受控日历；日历可延伸到尚无行情的已验证会话。"""
     expected = set(sessions)
     return all(bool(observed := set(group["date"])) and observed <= expected for _, group in data.groupby("asset_id", sort=False))
 
@@ -467,7 +475,7 @@ def _trading_sessions(coverage: Mapping[str, Any]) -> pd.DatetimeIndex:
 
 
 def _calendar_coverage_end(coverage: Mapping[str, Any]) -> pd.Timestamp:
-    """日历覆盖终点不得越过CSV实际声明的最后交易session。"""
+    """返回受控日历证据覆盖终点；该日期可以是非交易日。"""
     value = coverage.get("calendar_coverage_end", coverage.get("date_end", coverage.get("end")))
     if not isinstance(value, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
         raise HistoricalDataError("DataAssetRef.coverage必须声明YYYY-MM-DD日历覆盖终点")
@@ -476,8 +484,8 @@ def _calendar_coverage_end(coverage: Mapping[str, Any]) -> pd.Timestamp:
     except (TypeError, ValueError) as error:
         raise HistoricalDataError("DataAssetRef.coverage日历覆盖终点无效") from error
     sessions = _trading_sessions(coverage)
-    if end > sessions[-1]:
-        raise HistoricalDataError("DataAssetRef.coverage日历覆盖终点不得晚于已声明的最后交易session")
+    if end < sessions[-1]:
+        raise HistoricalDataError("DataAssetRef.coverage日历覆盖终点不得早于已声明的最后交易session")
     return end
 
 
