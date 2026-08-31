@@ -296,6 +296,7 @@ def backend_build_command(
     for module in PDF_RUNTIME_MODULES:
         command.extend(("--hidden-import", module))
     command.extend(("--copy-metadata", "reportlab"))
+    command.extend(("--collect-data", "certifi"))
     for module in EXCLUDED_BACKEND_MODULES:
         command.extend(("--exclude-module", module))
     command.append(str(launcher))
