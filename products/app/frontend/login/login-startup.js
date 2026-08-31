@@ -7,7 +7,6 @@
   const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
   const shielded = [
     document.querySelector(".login-wrap"),
-    document.querySelector(".login-environment"),
     document.querySelector(".login-theme"),
   ].filter(Boolean);
 
