@@ -50,6 +50,7 @@ class LocalSettingsStore(SettingsStore):
             for principal_id, raw in values.items()
             if isinstance(principal_id, str)
             and not principal_id.startswith("data-verification:")
+            and not principal_id.startswith("model-verification:")
             and isinstance(raw, dict)
         )
 
@@ -226,6 +227,108 @@ class LocalSettingsStore(SettingsStore):
 
         self._state.update("settings", update)
 
+    def save_model_verification_for_current_reference(
+        self,
+        *,
+        settings_key: str,
+        tenant_id: str,
+        principal_id: str,
+        provider_id: str,
+        model_id: str,
+        endpoint: str,
+        secret_ref: SecretRef,
+        verified: bool,
+        capabilities: dict[str, Any] | None = None,
+    ) -> bool:
+        """Atomically bind one active probe to the exact model configuration."""
+
+        verification_key = _model_verification_key(tenant_id, principal_id, provider_id, model_id)
+        matched = False
+
+        def update(value: dict[str, Any]) -> dict[str, Any]:
+            nonlocal matched
+            settings = value.get(settings_key)
+            providers = settings.get("model_providers") if isinstance(settings, dict) else None
+            provider = next((
+                item for item in providers
+                if isinstance(item, dict) and item.get("provider_id") == provider_id
+            ), None) if isinstance(providers, list) else None
+            models = provider.get("models") if isinstance(provider, dict) else None
+            model = next((
+                item for item in models
+                if isinstance(item, dict) and item.get("model_id") == model_id and item.get("enabled") is True
+            ), None) if isinstance(models, list) else None
+            if (
+                not isinstance(provider, dict)
+                or model is None
+                or provider.get("endpoint") != endpoint
+                or provider.get("secret_ref") != secret_ref.redacted()
+            ):
+                return value
+            matched = True
+            if not verified:
+                value.pop(verification_key, None)
+                return value
+            if secret_ref.revision is None:
+                raise ValueError("Verified model credentials require a SecretRef revision")
+            value[verification_key] = {
+                "tenant_hash": hashlib.sha256(tenant_id.encode("utf-8")).hexdigest(),
+                "principal_hash": hashlib.sha256(principal_id.encode("utf-8")).hexdigest(),
+                "provider_id_hash": hashlib.sha256(provider_id.encode("utf-8")).hexdigest(),
+                "model_id_hash": hashlib.sha256(model_id.encode("utf-8")).hexdigest(),
+                "endpoint_hash": hashlib.sha256(endpoint.encode("utf-8")).hexdigest(),
+                "secret_ref_hash": _secret_ref_hash(secret_ref),
+                "secret_ref_revision": secret_ref.revision,
+                "status": "verified",
+                "verified_at": datetime.now(timezone.utc).isoformat(),
+                "capabilities": _safe_model_capabilities(capabilities),
+            }
+            return value
+
+        self._state.update("settings", update)
+        return matched
+
+    def model_verification_status(
+        self,
+        *,
+        tenant_id: str,
+        principal_id: str,
+        provider_id: str,
+        model_id: str,
+        endpoint: str,
+        secret_ref: SecretRef | None,
+    ) -> dict[str, Any]:
+        """Return non-secret probe state for one exact model binding."""
+
+        configured = secret_ref is not None
+        if secret_ref is None or secret_ref.revision is None:
+            return {
+                "verification_state": "configured_unverified" if configured else "not_configured",
+                "verified_at": None,
+                "current_revision_match": False,
+                "verified_capabilities": {},
+            }
+        record = self._state.read("settings").get(
+            _model_verification_key(tenant_id, principal_id, provider_id, model_id)
+        )
+        revision_match = bool(
+            isinstance(record, dict)
+            and record.get("tenant_hash") == hashlib.sha256(tenant_id.encode("utf-8")).hexdigest()
+            and record.get("principal_hash") == hashlib.sha256(principal_id.encode("utf-8")).hexdigest()
+            and record.get("provider_id_hash") == hashlib.sha256(provider_id.encode("utf-8")).hexdigest()
+            and record.get("model_id_hash") == hashlib.sha256(model_id.encode("utf-8")).hexdigest()
+            and record.get("endpoint_hash") == hashlib.sha256(endpoint.encode("utf-8")).hexdigest()
+            and record.get("secret_ref_revision") == secret_ref.revision
+            and record.get("secret_ref_hash") == _secret_ref_hash(secret_ref)
+        )
+        verified = bool(revision_match and record.get("status") == "verified")
+        return {
+            "verification_state": "verified" if verified else "configured_unverified",
+            "verified_at": record.get("verified_at") if verified else None,
+            "current_revision_match": revision_match,
+            "verified_capabilities": dict(record.get("capabilities", {})) if verified else {},
+        }
+
 
 def _data_verification_key(tenant_id: str, principal_id: str) -> str:
     digest = hashlib.sha256(f"{tenant_id}\0{principal_id}".encode("utf-8")).hexdigest()
@@ -235,3 +338,16 @@ def _data_verification_key(tenant_id: str, principal_id: str) -> str:
 def _secret_ref_hash(secret_ref: SecretRef) -> str:
     material = f"{secret_ref.provider}\0{secret_ref.key}\0{secret_ref.revision or ''}"
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+def _model_verification_key(tenant_id: str, principal_id: str, provider_id: str, model_id: str) -> str:
+    material = f"{tenant_id}\0{principal_id}\0{provider_id}\0{model_id}"
+    return f"model-verification:{hashlib.sha256(material.encode('utf-8')).hexdigest()}"
+
+
+def _safe_model_capabilities(value: dict[str, Any] | None) -> dict[str, bool]:
+    source = value if isinstance(value, dict) else {}
+    return {
+        key: bool(source.get(key))
+        for key in ("streaming", "tool_calling", "tool_result_continuation", "reasoning", "cancellation", "bounded_timeout")
+    }
