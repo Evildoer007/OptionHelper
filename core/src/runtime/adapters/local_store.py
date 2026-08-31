@@ -73,15 +73,19 @@ def _tenant_root(root: Path, tenant: str) -> Path:
     return root if tenant == "local" else _inside(root, root / "tenants" / tenant)
 
 
-def _write_value(path: Path, value: bytes | str | Mapping[str, Any]) -> bytes:
+def _encode_value(value: bytes | str | Mapping[str, Any]) -> bytes:
     if isinstance(value, bytes):
-        payload = value
+        return value
     elif isinstance(value, str):
-        payload = value.encode("utf-8")
+        return value.encode("utf-8")
     elif isinstance(value, Mapping):
-        payload = (canonical_json(value) + "\n").encode("utf-8")
+        return (canonical_json(value) + "\n").encode("utf-8")
     else:
         raise StoreError("Store只接受bytes、str或JSON对象")
+
+
+def _write_value(path: Path, value: bytes | str | Mapping[str, Any]) -> bytes:
+    payload = _encode_value(value)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(payload)
     return payload
@@ -290,8 +294,17 @@ class LocalResultStore:
         if root != self.root or identity != self._root_identity:
             raise StoreError("ResultStore根目录在运行期间发生变化")
 
-    def commit_module_run(self, *, module: str, tenant_id: str, task_id: str, run_id: str, files: Mapping[str, bytes | str | Mapping[str, Any]]) -> ModuleRunRef:
-        self._assert_root_unchanged()
+    def predict_module_run_ref(self, *, module: str, tenant_id: str, task_id: str, run_id: str, files: Mapping[str, bytes | str | Mapping[str, Any]]) -> ModuleRunRef:
+        """Compute the immutable external anchor before publishing any bytes."""
+
+        _, _, _, _, artifact_manifest, reference = self._prepare_module_run(
+            module=module, tenant_id=tenant_id, task_id=task_id, run_id=run_id, files=files,
+        )
+        if sha256(artifact_manifest).hexdigest() != reference.expected_artifact_manifest_hash:
+            raise StoreIntegrityError("ModuleRun预提交产物清单哈希不一致")
+        return reference
+
+    def _prepare_module_run(self, *, module: str, tenant_id: str, task_id: str, run_id: str, files: Mapping[str, bytes | str | Mapping[str, Any]]) -> tuple[str, str, str, dict[str, bytes], bytes, ModuleRunRef]:
         if module not in _MODULE_DIR:
             raise StoreError("ResultStore仅接收三个并列计算模块")
         tenant, task, run = _safe_id(tenant_id, "tenant_id"), _safe_id(task_id, "task_id"), _safe_id(run_id, "run_id")
@@ -301,13 +314,11 @@ class LocalResultStore:
             raise StoreError(f"ModuleRun提交缺少正式文件：{','.join(sorted(missing))}")
         if "artifacts/artifact_manifest.json" in files or "commit_marker.json" in files:
             raise StoreError("产物清单与提交标记由ResultStore生成")
-        raw_manifest = files["manifest.json"]
-        manifest_value = _json_mapping(raw_manifest, "manifest.json")
+        manifest_value = _json_mapping(files["manifest.json"], "manifest.json")
         if manifest_value.get("status") not in _FINAL_RUN_STATES:
             raise StoreError("ModuleRun只提交合法终态")
         status = str(manifest_value["status"])
-        manifest_identity = {"module": module, "tenant_id": tenant, "task_id": task, "run_id": run}
-        for field, expected in manifest_identity.items():
+        for field, expected in {"module": module, "tenant_id": tenant, "task_id": task, "run_id": run}.items():
             if field in manifest_value and manifest_value[field] != expected:
                 raise StoreError(f"manifest.json.{field}与ResultStore提交身份不一致")
         has_result, has_error = "result.json" in files, "error.json" in files
@@ -315,56 +326,59 @@ class LocalResultStore:
             raise StoreError(f"{status}必须且只能包含真实result.json")
         if status in {"failed", "unsupported", "cancelled", "timed_out"} and (not has_error or has_result):
             raise StoreError(f"{status}必须且只能包含error.json")
+        raw_result = files.get("result.json")
+        result_value = {} if raw_result is None else _json_mapping(raw_result, "result.json")
+        if status in {"succeeded", "partial"}:
+            _validate_success_contract(manifest_value, files["resolved_contract.json"], result_value)
+        if raw_result is None:
+            result_hash = semantic_hash({"status": status, "error": _json_mapping(files["error.json"], "error.json")})
+        else:
+            result_hash = semantic_hash(result_value)
+        declared_result_hash = manifest_value.get("semantic_result_hash")
+        if declared_result_hash is not None and declared_result_hash != result_hash:
+            raise StoreError("manifest.json.semantic_result_hash与最终stored_result不一致")
+        values = dict(files)
+        values["manifest.json"] = {**dict(manifest_value), "semantic_result_hash": result_hash}
+        encoded = {name: _encode_value(value) for name, value in values.items()}
+        hashes = {name: sha256(payload).hexdigest() for name, payload in encoded.items()}
+        artifact_manifest = _encode_value({
+            "module": module, "tenant_id": tenant, "task_id": task, "run_id": run,
+            "semantic_result_hash": result_hash, "file_hashes": hashes,
+        })
+        reference = ModuleRunRef(
+            module=module, tenant_id=tenant, task_id=task, run_id=run,
+            expected_semantic_result_hash=result_hash,
+            expected_artifact_manifest_hash=sha256(artifact_manifest).hexdigest(),
+        )
+        return tenant, task, run, encoded, artifact_manifest, reference
+
+    def commit_module_run(self, *, module: str, tenant_id: str, task_id: str, run_id: str, files: Mapping[str, bytes | str | Mapping[str, Any]]) -> ModuleRunRef:
+        self._assert_root_unchanged()
+        tenant, task, run, encoded, artifact_manifest, reference = self._prepare_module_run(
+            module=module, tenant_id=tenant_id, task_id=task_id, run_id=run_id, files=files,
+        )
         tenant_root = _tenant_root(self.root, tenant)
         final = _inside(self.root, tenant_root / _MODULE_DIR[module] / task / run)
         if final.exists():
             raise FileExistsError(f"ModuleRun已存在：{run_id}")
         staging_root = _inside(self.root, tenant_root / ".staging")
         staging_root.mkdir(parents=True, exist_ok=True)
-        raw_result = files.get("result.json")
-        result_value = {} if raw_result is None else _json_mapping(raw_result, "result.json")
-        if status in {"succeeded", "partial"}:
-            _validate_success_contract(manifest_value, files["resolved_contract.json"], result_value)
-        if raw_result is None:
-            raw_error = files["error.json"]
-            error_value = _json_mapping(raw_error, "error.json")
-            result_hash = semantic_hash({"status": status, "error": error_value})
-        else:
-            result_hash = semantic_hash(result_value)
-        declared_result_hash = manifest_value.get("semantic_result_hash")
-        if declared_result_hash is not None and declared_result_hash != result_hash:
-            raise StoreError("manifest.json.semantic_result_hash与最终stored_result不一致")
-        committed_files = dict(files)
-        committed_files["manifest.json"] = {
-            **dict(manifest_value),
-            "semantic_result_hash": result_hash,
-        }
         with tempfile.TemporaryDirectory(prefix="run-", dir=staging_root) as temporary:
             stage = Path(temporary)
-            hashes: dict[str, str] = {}
-            for name, value in committed_files.items():
-                payload = _write_value(stage / _safe_relative(name), value)
-                hashes[name] = sha256(payload).hexdigest()
-            artifact_manifest = _write_value(stage / "artifacts" / "artifact_manifest.json", {"module": module, "tenant_id": tenant, "task_id": task, "run_id": run, "semantic_result_hash": result_hash, "file_hashes": hashes})
-            artifact_manifest_hash = sha256(artifact_manifest).hexdigest()
+            for name, payload in encoded.items():
+                _write_value(stage / _safe_relative(name), payload)
+            _write_value(stage / "artifacts" / "artifact_manifest.json", artifact_manifest)
             _write_value(stage / "commit_marker.json", {
                 "committed": True,
-                "semantic_result_hash": result_hash,
-                "artifact_manifest_hash": artifact_manifest_hash,
+                "semantic_result_hash": reference.expected_semantic_result_hash,
+                "artifact_manifest_hash": reference.expected_artifact_manifest_hash,
             })
             final.parent.mkdir(parents=True, exist_ok=True)
             _publish_directory(stage, final, f"ModuleRun：{run_id}")
         committed_manifest = _inside(final, final / "artifacts" / "artifact_manifest.json")
-        if sha256(_read_regular_bytes(committed_manifest, "ModuleRun产物清单")).hexdigest() != artifact_manifest_hash:
+        if sha256(_read_regular_bytes(committed_manifest, "ModuleRun产物清单")).hexdigest() != reference.expected_artifact_manifest_hash:
             raise StoreIntegrityError("ModuleRun发布后的产物清单与提交快照不一致")
-        return ModuleRunRef(
-            module=module,
-            tenant_id=tenant,
-            task_id=task,
-            run_id=run,
-            expected_semantic_result_hash=result_hash,
-            expected_artifact_manifest_hash=artifact_manifest_hash,
-        )
+        return reference
 
     def resolve_module_run(self, ref: ModuleRunRef, *, tenant_id: str) -> Path:
         self._assert_root_unchanged()
@@ -477,6 +491,22 @@ class LocalResultStore:
         if sha256(payload).hexdigest() != expected:
             raise StoreIntegrityError(f"ModuleRun文件哈希不一致：{key}")
         return payload
+
+    def read_module_run_bundle(self, ref: ModuleRunRef, *, tenant_id: str) -> dict[str, bytes]:
+        """Return the complete verified immutable run as bytes, never a path."""
+
+        run_dir = self.resolve_module_run(ref, tenant_id=tenant_id)
+        artifact = _read_regular_bytes(run_dir / "artifacts" / "artifact_manifest.json", "ModuleRun产物清单")
+        try:
+            file_hashes = json.loads(artifact)["file_hashes"]
+        except (KeyError, TypeError, json.JSONDecodeError) as error:
+            raise StoreIntegrityError("ModuleRun产物清单无效") from error
+        if not isinstance(file_hashes, Mapping):
+            raise StoreIntegrityError("ModuleRun产物清单无效")
+        bundle = {name: self.read_module_run_file(ref, str(name), tenant_id=tenant_id) for name in file_hashes}
+        bundle["artifacts/artifact_manifest.json"] = artifact
+        bundle["commit_marker.json"] = _read_regular_bytes(run_dir / "commit_marker.json", "ModuleRun提交标记")
+        return bundle
 
 
 __all__ = ("LocalDataStore", "LocalResultStore", "StoreError", "StoreIntegrityError")
