@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build a verified v1.0.0 candidate without touching immutable history."""
+"""Build a verified development candidate without touching immutable history."""
 
 from __future__ import annotations
 
@@ -11,8 +11,11 @@ from pathlib import Path
 import shutil
 import sys
 import tempfile
+from types import SimpleNamespace
+from typing import Iterator
 import uuid
 import zipfile
+from contextlib import contextmanager
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -20,17 +23,56 @@ for path in (ROOT / "packaging", ROOT / "packaging" / "skill", ROOT / "packaging
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
-from build_skill import build_skill, verify_source_snapshot, write_zip
-from verify_app import verify_app
-from build_macos import build_macos
-from build_windows import build_windows
-from verify_skill import probe_runtime, verify_skill, verify_zip
 from release_contract import RELEASE_VERSION, require_release_version
-from build_runtime import RUNTIME_ARTIFACT_ENV, REQUIRE_NATIVE_RUNTIME_ENV, build_runtime
+from source_snapshot import (
+    SourceSnapshotError,
+    frozen_source_snapshot,
+    snapshot_module_environment,
+)
+
+# Test seams remain unbound in production. Downstream build logic is imported
+# only after the read-only source snapshot exists.
+build_skill = verify_source_snapshot = write_zip = None
+build_app_capability = verify_app = None
+build_macos = build_windows = None
+probe_runtime = verify_skill = verify_zip = None
+build_runtime = None
 
 
 class CurrentBuildError(RuntimeError):
     pass
+
+
+@contextmanager
+def _snapshot_build_logic(snapshot_root: Path) -> Iterator[SimpleNamespace]:
+    with snapshot_module_environment(snapshot_root, ROOT):
+        from build_skill import build_skill as frozen_build_skill
+        from build_skill import verify_source_snapshot as frozen_verify_source_snapshot
+        from build_skill import write_zip as frozen_write_zip
+        from build_capability import build_app_capability as frozen_build_app_capability
+        from verify_app import verify_app as frozen_verify_app
+        from build_macos import build_macos as frozen_build_macos
+        from build_windows import build_windows as frozen_build_windows
+        from verify_skill import probe_runtime as frozen_probe_runtime
+        from verify_skill import verify_skill as frozen_verify_skill
+        from verify_skill import verify_zip as frozen_verify_zip
+        from build_runtime import build_runtime as frozen_build_runtime
+        from release_contract import require_release_version as frozen_require_release_version
+
+        yield SimpleNamespace(
+            build_skill=frozen_build_skill,
+            verify_source_snapshot=frozen_verify_source_snapshot,
+            write_zip=frozen_write_zip,
+            build_app_capability=frozen_build_app_capability,
+            verify_app=frozen_verify_app,
+            build_macos=frozen_build_macos,
+            build_windows=frozen_build_windows,
+            probe_runtime=frozen_probe_runtime,
+            verify_skill=frozen_verify_skill,
+            verify_zip=frozen_verify_zip,
+            build_runtime=frozen_build_runtime,
+            require_release_version=frozen_require_release_version,
+        )
 
 
 def _progress(step: int, total: int, message: str) -> None:
@@ -59,10 +101,10 @@ def _skill_zip_manifest(archive: Path) -> tuple[dict[str, object], str]:
 
 
 def _verify_platform_binding(skill_zip: Path, artifacts: dict[str, Path], platform: str) -> None:
-    skill, skill_manifest_hash = _skill_zip_manifest(skill_zip)
-    expected_tree_hash = skill.get("content_tree_hash")
-    if not isinstance(expected_tree_hash, str) or not expected_tree_hash:
-        raise CurrentBuildError("当次Skill ZIP缺少content_tree_hash")
+    skill, _skill_manifest_hash = _skill_zip_manifest(skill_zip)
+    expected_shared_hash = skill.get("shared_payload_hash")
+    if not isinstance(expected_shared_hash, str) or not expected_shared_hash:
+        raise CurrentBuildError("当次Skill ZIP缺少shared_payload_hash")
 
     try:
         app_manifest_path = artifacts["manifest"]
@@ -74,10 +116,12 @@ def _verify_platform_binding(skill_zip: Path, artifacts: dict[str, Path], platfo
         raise CurrentBuildError(f"无法读取当次App发行绑定记录：{error}") from error
 
     for label, manifest in (("App", app), ("Platform", release)):
-        if manifest.get("capability_content_tree_hash") != expected_tree_hash:
-            raise CurrentBuildError(f"{label} Capability content_tree_hash与当次Skill ZIP不一致")
-        if manifest.get("capability_manifest_hash") != skill_manifest_hash:
-            raise CurrentBuildError(f"{label} Capability Manifest哈希与当次Skill ZIP不一致")
+        if manifest.get("shared_payload_hash") != expected_shared_hash:
+            raise CurrentBuildError(f"{label}共享计算载荷与当次Skill ZIP不一致")
+        if manifest.get("catalog_version") != skill.get("catalog_version"):
+            raise CurrentBuildError(f"{label} Catalog与当次Skill ZIP不一致")
+        if manifest.get("protocol_id") != skill.get("protocol_id"):
+            raise CurrentBuildError(f"{label}协议与当次Skill ZIP不一致")
 
     expected_installer = {
         "filename": installer.name,
@@ -116,7 +160,7 @@ def _replace_dist(staged: Path) -> None:
     _replace_delivery(staged, ROOT / "dist")
 
 
-def _verify_layout(stage: Path, version: str, platform: str) -> None:
+def _verify_layout(stage: Path, version: str, platform: str, *, verify_zip_fn) -> None:
     installer = (
         f"OptionHelper-{version}-macOS-arm64.dmg"
         if platform == "macos"
@@ -126,38 +170,54 @@ def _verify_layout(stage: Path, version: str, platform: str) -> None:
     expected = {"option-helper.zip", installer}
     if names != expected:
         raise CurrentBuildError(f"dist候选包含非交付物：{', '.join(sorted(names - expected))}")
-    if verify_zip(stage / "option-helper.zip"):
+    if verify_zip_fn(stage / "option-helper.zip"):
         raise CurrentBuildError("候选Skill ZIP未通过解压验收")
     if (stage / "OptionHelper.app").exists():
         raise CurrentBuildError("dist不得保留裸.app")
 
 
 def build_current(version: str, platform: str) -> dict[str, Path]:
-    try:
-        require_release_version(version)
-    except ValueError as error:
-        raise CurrentBuildError(str(error)) from error
     if platform not in {"macos", "windows"}:
         raise CurrentBuildError(f"不支持的平台：{platform}")
     total_steps = 7
     _progress(1, total_steps, "正在准备临时构建目录")
-    with tempfile.TemporaryDirectory(prefix="optionhelper-current-") as temporary_name:
+    with (
+        tempfile.TemporaryDirectory(prefix="optionhelper-current-") as temporary_name,
+        frozen_source_snapshot(ROOT, Path(temporary_name) / "source-snapshot") as snapshot,
+        _snapshot_build_logic(snapshot.root) as logic,
+    ):
+        try:
+            logic.require_release_version(version)
+        except ValueError as error:
+            raise CurrentBuildError(str(error)) from error
         temporary = Path(temporary_name)
         stage = temporary / "dist"
         stage.mkdir()
         _progress(2, total_steps, "正在从当前源码构建临时Skill候选")
-        skill = build_skill(temporary / "skill", candidate=True, repo_root=ROOT)
-        _progress(3, total_steps, "正在验证Skill内容、运行时和App契约")
-        errors = [*verify_skill(skill), *verify_source_snapshot(skill, repo_root=ROOT), *probe_runtime(skill)]
+        skill = logic.build_skill(temporary / "skill", candidate=True, repo_root=snapshot.root)
+        _progress(3, total_steps, "正在验证Skill并组装独立App能力包")
+        errors = [
+            *logic.verify_skill(skill),
+            *logic.verify_source_snapshot(skill, repo_root=snapshot.root),
+            *logic.probe_runtime(skill),
+        ]
         if errors:
-            raise CurrentBuildError(f"{RELEASE_VERSION}候选Skill未通过验收：\n" + "\n".join(errors))
-        app_errors = verify_app(ROOT / "products" / "app", capability_root=skill)
+            raise CurrentBuildError("候选Skill未通过验收：\n" + "\n".join(errors))
+        app_capability = logic.build_app_capability(
+            temporary / "app-capability",
+            skill,
+            repo_root=snapshot.root,
+        )
+        app_errors = logic.verify_app(
+            snapshot.root / "products" / "app",
+            capability_root=app_capability,
+        )
         if app_errors:
             raise CurrentBuildError("App开发源未通过当次Capability验收：\n" + "\n".join(app_errors))
         _progress(4, total_steps, "正在归档并校验Skill ZIP")
-        skill_zip = write_zip(skill)
-        if verify_zip(skill_zip):
-            raise CurrentBuildError(f"{RELEASE_VERSION}候选Skill ZIP未通过解压验收")
+        skill_zip = logic.write_zip(skill)
+        if logic.verify_zip(skill_zip):
+            raise CurrentBuildError("候选Skill ZIP未通过解压验收")
         shutil.copy2(skill_zip, stage / "option-helper.zip")
 
         # The platform builders own their temporary version directory and
@@ -165,38 +225,41 @@ def build_current(version: str, platform: str) -> dict[str, Path]:
         # itself remains isolated from the immutable versions/ archive.
         candidate_history = temporary / "history"
         _progress(5, total_steps, "正在打包平台应用和安装物")
-        runtime_candidate = None
-        if os.environ.get(REQUIRE_NATIVE_RUNTIME_ENV, "").strip() == "1" and not os.environ.get(
-            RUNTIME_ARTIFACT_ENV, "",
-        ).strip():
-            runtime_target = "macos-arm64" if platform == "macos" else "windows-x64"
-            runtime_candidate = build_runtime(
-                runtime_target,
-                output_root=temporary / "agent-runtime",
-            ).artifact
+        runtime_target = "macos-arm64" if platform == "macos" else "windows-x64"
+        runtime_candidate = logic.build_runtime(
+            runtime_target,
+            output_root=temporary / "agent-runtime",
+            source_root=snapshot.agent_runtime_source,
+            postject_path=snapshot.agent_runtime_build_tools / "node_modules" / ".bin" / (
+                "postject.cmd" if os.name == "nt" else "postject"
+            ),
+        ).artifact
         if platform == "macos":
             platform_kwargs = {
                 "dist_root": stage,
                 "versions_root": candidate_history,
+                "agent_runtime_path": runtime_candidate,
+                "require_native_runtime": True,
+                "repo_root": snapshot.root,
             }
-            if runtime_candidate is not None:
-                platform_kwargs["agent_runtime_path"] = runtime_candidate
-            artifacts = build_macos(version, skill, **platform_kwargs)
+            artifacts = logic.build_macos(version, app_capability, **platform_kwargs)
         else:
             platform_kwargs = {
                 "dist_root": stage,
                 "versions_root": candidate_history,
+                "agent_runtime_path": runtime_candidate,
+                "require_native_runtime": True,
+                "repo_root": snapshot.root,
             }
-            if runtime_candidate is not None:
-                platform_kwargs["agent_runtime_path"] = runtime_candidate
-            artifacts = build_windows(version, skill, **platform_kwargs)
+            artifacts = logic.build_windows(version, app_capability, **platform_kwargs)
         _progress(6, total_steps, "正在核对Skill与安装物的内容绑定")
         _verify_platform_binding(stage / "option-helper.zip", artifacts, platform)
-        _verify_layout(stage, version, platform)
+        _verify_layout(stage, version, platform, verify_zip_fn=logic.verify_zip)
         installer = artifacts["dmg"] if platform == "macos" else artifacts["installer"]
         result = {"skill_zip": stage / "option-helper.zip", "installer": installer}
         delivery_root = ROOT / "dist" if platform == "macos" else ROOT / "result" / "windows-candidate"
         _progress(7, total_steps, "正在原子发布本次候选交付物")
+        snapshot.verify_current()
         if platform == "macos":
             _replace_dist(stage)
         else:
@@ -206,14 +269,14 @@ def build_current(version: str, platform: str) -> dict[str, Path]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="一键构建OptionHelper v1.0.0候选；macOS写dist，Windows隔离到result/windows-candidate"
+        description="一键构建OptionHelper开发候选；macOS写dist，Windows隔离到result/windows-candidate"
     )
     parser.add_argument("--version", default=RELEASE_VERSION)
     parser.add_argument("--platform", choices=("macos", "windows"), required=True)
     args = parser.parse_args()
     try:
         artifacts = build_current(args.version, args.platform)
-    except CurrentBuildError as error:
+    except (CurrentBuildError, SourceSnapshotError) as error:
         print(f"构建失败：{error}", file=sys.stderr, flush=True)
         raise SystemExit(1) from None
     for name, path in artifacts.items():
