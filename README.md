@@ -2,6 +2,8 @@
 
 OptionHelper是期权结构研究与交付系统。本仓库维护同一套权威源码，并由它生成可安装Skill、OptionHelper App和平台安装物。内部能力包括DataFetcher、Recommender、Payoffer、Pricer、Backtester、Reporter和Designer。
 
+Skill与App独立组装。Skill面向外部Agent Host，包含业务工作流、模块指南、环境检查和共享计算载荷，不包含五模块页面或App运行壳。App包含共享计算载荷、五模块页面、OptChat、OptDesk、Settings、Login、App后端、Agent Runtime和原生壳，不包含`SKILL.md`、Skill安装说明或模块指南。两者通过共享文件哈希、Catalog和协议标识确认同源，不互相整包复制。
+
 Recommender的App入口与Skill入口共用同一状态机、严格角色Schema、运行凭证和确定性聚合器。结构推荐默认自动适配宿主能力：可证明独立子会话时执行多Agent，否则执行同一流程的单Agent路径。其他模块默认保持确定性执行，但顶层工作流架构不限制未来按正式策略接入多Agent。用户无需配置模型或选择Agent模式。
 
 当前实现以[OptionHelper总设计蓝图](blueprint/OptionHelper总设计蓝图.html)为架构依据。金融口径、正式输入、结果引用和报告交付均由受控协议衔接，不允许页面、模型或临时脚本绕过模块自行计算或拼接报告。
@@ -157,9 +159,9 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.:core/src "$OPTIONHELPER_PYTHON" packaging
 
 ## 报告交付
 
-正式交付包括研究简报、完整研究报告和参考报价。横向对比沿用相同公开类型：Card的comparison模式生成MultiCard，Report的comparison模式生成MultiReport，不另造输出类型。五种用户交付均由Reporter冻结事实，再由Designer生成HTML或PDF。
+正式交付包括研究简报、完整研究报告和参考报价。横向对比沿用相同公开类型，分别生成多结构研究简报或多结构完整研究报告，不另造输出类型。所有用户交付均由Reporter冻结事实，再由Designer生成HTML或PDF。
 
-完整研究报告默认采用连续A4正文；宽屏HTML提供左侧目录，PDF不显示目录。单结构报告默认依次呈现核心结论、结构推荐、合同参数、收益结构、估值定价、历史回测、风险提示。研究简报Card默认呈现结构推荐、推荐理由、关键合同条款、估值摘要、回测摘要、主要风险，不含损益图。MultiCard保持无图，MultiReport展示可比的收益、估值和回测事实。参考报价按标的整理多个已验证合同版本的条款，不展示Greeks、估值、回测或图表。用户明确要求补充说明或多结构比较时可以调整展示结构，但金融数值、合同条款、指标、表格、公式和图表必须来自Reporter冻结事实，不能由Designer或Presentation Patch改写。
+完整研究报告默认采用连续A4正文；宽屏HTML提供左侧目录，PDF不显示目录。单结构报告默认依次呈现核心结论、结构推荐、合同参数、收益结构、估值定价、历史回测、风险提示。研究简报默认呈现结构推荐、推荐理由、关键合同条款、估值摘要、回测摘要、主要风险，不含损益图。多结构研究简报保持无图，多结构完整研究报告展示可比的收益、估值和回测事实。参考报价按标的整理多个已验证合同版本的条款，不展示Greeks、估值、回测或图表。用户明确要求补充说明或多结构比较时可以调整展示结构，但金融数值、合同条款、指标、表格、公式和图表必须来自Reporter冻结事实，不能由Designer或Presentation Patch改写。
 
 报告中的数字、单位、公式、图表和文字必须来自已验证的模块结果。Reporter与Designer不可补造缺失数据，也不可把内部JSON、字段名、运行引用或文件路径直接展示给用户。
 
