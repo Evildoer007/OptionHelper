@@ -133,6 +133,53 @@ def display_text(value: Any, value_format: Any = "number") -> str:
     return _number_text(numeric) + suffix
 
 
+def display_basis(row: Mapping[str, Any]) -> str:
+    """Return the frozen reader-facing unit and methodological note once."""
+
+    parts: list[str] = []
+    for key in ("unit", "note"):
+        value = text(row.get(key))
+        if value and value not in parts:
+            parts.append(value)
+    return "；".join(parts)
+
+
+def unique_metric_rows_by_label(rows: list[Any], context: str) -> dict[str, dict[str, Any]]:
+    """Index reader metrics without silently overwriting conflicting facts."""
+
+    result: dict[str, dict[str, Any]] = {}
+    for raw in rows:
+        row = as_dict(raw)
+        label = text(row.get("label"))
+        if not label:
+            continue
+        existing = result.get(label)
+        if existing is not None and (
+            existing.get("value") != row.get("value")
+            or text(existing.get("value_format")) != text(row.get("value_format"))
+            or display_basis(existing) != display_basis(row)
+        ):
+            raise ValueError(f"{context}存在同名但事实冲突的指标：{label}。")
+        result.setdefault(label, row)
+    return result
+
+
+def _axis_text(value: Any, axis_name: Any = "") -> str:
+    """Format a category label without corrupting calendar or code semantics.
+
+    Numeric price and scenario axes still use the public two-decimal notation.
+    Calendar, date and code axes are identifiers, so their frozen notation is
+    preserved and a year such as ``2024`` never becomes ``2,024``.
+    """
+
+    if value is None:
+        return ""
+    label = text(axis_name)
+    if any(token in label for token in ("年", "日期", "时间", "代码", "标识")):
+        return str(value)
+    return display_text(value)
+
+
 def _cell_text(row: dict[str, Any], key: str) -> str:
     """Format a table cell without treating dates, codes or formulas as numbers."""
 
@@ -375,7 +422,7 @@ def validate_payload(payload: dict[str, Any]) -> None:
 
     for module_name in ("pricing", "backtest"):
         module = as_dict(payload.get(module_name))
-        if text(module.get("status") or "pending").lower() == "ready":
+        if text(module.get("status") or "pending").lower() in {"ready", "partial"}:
             for position, raw_chart in enumerate(as_list(module.get("charts")), start=1):
                 validate_chart(raw_chart, f"{module_name}.charts[{position}]")
 
@@ -421,8 +468,8 @@ def metric_strip(rows: list[Any]) -> str:
         value = display_text(item.get("value"), item.get("value_format"))
         if not label or not value:
             continue
-        note = text(item.get("note"))
-        note_html = f'<div class="metric__note">{esc(note)}</div>' if note else ""
+        basis = display_basis(item)
+        note_html = f'<div class="metric__note">{esc(basis)}</div>' if basis else ""
         items.append(
             '<div class="metric">'
             f'<div class="metric__value">{esc_rendered(value)}</div>'
@@ -533,10 +580,13 @@ def chart_data_table(spec: dict[str, Any], x_values: list[Any], series: list[dic
         panels: list[str] = []
         for offset in range(0, len(x_values), panel_size):
             indexes = list(range(offset, min(offset + panel_size, len(x_values))))
-            columns = [("axis", axis_label), *[(f"x_{index}", text(x_values[index])) for index in indexes]]
+            columns = [
+                ("axis", axis_label),
+                *[(f"x_{index}", _axis_text(x_values[index], spec.get("x_axis_name"))) for index in indexes],
+            ]
             table_rows = [
                 {
-                    "axis": display_text(y_value),
+                    "axis": _axis_text(y_value, spec.get("y_axis_name")),
                     **{
                         f"x_{x_index}": display_text(cells.get((x_index, y_index)), spec.get("value_format"))
                         for x_index in indexes
@@ -556,7 +606,7 @@ def chart_data_table(spec: dict[str, Any], x_values: list[Any], series: list[dic
         columns.extend((f"series_{index}", text(item.get("name"))) for index, item in enumerate(chunk))
         table_rows = []
         for index, x_value in enumerate(x_values):
-            row = {"axis": display_text(x_value)}
+            row = {"axis": _axis_text(x_value, spec.get("x_axis_name"))}
             row.update({f"series_{series_index}": display_text(item["data"][index], spec.get("value_format")) for series_index, item in enumerate(chunk)})
             table_rows.append(row)
         suffix = "" if len(series) <= panel_size else f"（第{offset // panel_size + 1}组）"
@@ -785,6 +835,28 @@ def formula_block(module: dict[str, Any]) -> str:
     return render_formula(formula=formula or formula_mathml, formula_mathml=formula_mathml)
 
 
+def comparison_formula_grid(module: Mapping[str, Any]) -> str:
+    """Render each frozen comparison formula with its candidate attribution."""
+
+    cards: list[str] = []
+    for raw in as_list(module.get("comparison_formulas")):
+        item = as_dict(raw)
+        label = text(item.get("label"))
+        formula_mathml = text(item.get("formula_mathml"))
+        formula = text(item.get("formula"))
+        if not label or (not formula_mathml and not formula):
+            continue
+        rendered = render_formula(
+            formula=formula or formula_mathml,
+            formula_mathml=formula_mathml,
+        )
+        cards.append(
+            '<div class="comparison-payoff-figure comparison-payoff-formula">'
+            f'<h3>{esc(label)}</h3>{rendered}</div>'
+        )
+    return f'<div class="comparison-payoff-grid">{"".join(cards)}</div>' if cards else ""
+
+
 def canonical_greeks(rows: list[Any]) -> list[dict[str, Any]]:
     """Render the five core sensitivities in the contract's fixed reader order."""
 
@@ -886,12 +958,47 @@ def render_recommendation(data: dict[str, Any]) -> str:
         if title or summary or tags:
             card = '<article class="alternative">' + f'<h3>{esc(title) if title else "备选结构"}</h3>'
             if summary:
-                card += f'<p>{esc(summary)}</p>'
+                card += f'<p>{rich_text(summary)}</p>'
             if tags:
                 card += '<div class="alternative__tags">' + "".join(tags) + "</div>"
             alternatives.append(card + "</article>")
     if alternatives:
         blocks.append('<div class="alternative-grid">' + "".join(alternatives) + "</div>")
+    comparison_candidates = []
+    for raw in as_list(module.get("comparison_candidates")):
+        item = as_dict(raw)
+        label = text(item.get("label"))
+        title = text(item.get("title"))
+        if not label or not title:
+            continue
+        parts = [
+            '<article class="alternative comparison-candidate-detail">',
+            f'<h3>{esc(label)}：{esc(title)}{" · 首选方案" if item.get("is_primary") else ""}</h3>',
+        ]
+        underlyings = text(item.get("underlyings"))
+        if underlyings:
+            parts.append(f'<p>挂钩标的：{esc(underlyings)}</p>')
+        reason_points = [value for value in as_list(item.get("reason_points")) if text(value)]
+        if text(item.get("reason")) and item.get("reason") not in reason_points:
+            reason_points.insert(0, item.get("reason"))
+        for heading, values in (
+            ("推荐理由", reason_points),
+            ("适用条件", as_list(item.get("suitable_for"))),
+            ("不适用情形", as_list(item.get("not_suitable_for"))),
+            ("主要权衡", as_list(item.get("tradeoffs"))),
+        ):
+            rendered = item_list(values)
+            if rendered:
+                parts.append(f'<h4>{heading}</h4>{rendered}')
+        for section in as_list(item.get("supplemental_sections")):
+            supplemental = as_dict(section)
+            rendered = render_presentation_content(as_list(supplemental.get("content")))
+            if rendered:
+                parts.append(f'<h4>{esc(label)}：{esc(supplemental.get("title"))}</h4>{rendered}')
+        parts.append("</article>")
+        comparison_candidates.append("".join(parts))
+    if comparison_candidates:
+        blocks.append('<div class="alternative-grid comparison-candidate-details">' + "".join(comparison_candidates) + "</div>")
     return "".join(block for block in blocks if block)
 
 
@@ -899,7 +1006,7 @@ def render_payoff(data: dict[str, Any], input_dir: Path) -> str:
     module = as_dict(data.get("payoff"))
     status = text(module.get("status") or "pending").lower()
     comparison_view = bool(module.get("comparison_view"))
-    if status != "ready" and not comparison_view:
+    if status not in {"ready", "partial"} and not comparison_view:
         return status_box(module)
     figures = []
     if text(module.get("report_svg_path")):
@@ -919,6 +1026,9 @@ def render_payoff(data: dict[str, Any], input_dir: Path) -> str:
     formula_html = formula_block(module)
     if formula_html:
         blocks.append(formula_html)
+    formulas_html = comparison_formula_grid(module)
+    if formulas_html:
+        blocks.append(formulas_html)
     scenarios = []
     for item in as_list(module.get("scenarios")):
         row = as_dict(item)
@@ -934,7 +1044,7 @@ def render_pricing(data: dict[str, Any], charts: list[dict[str, Any]]) -> str:
     module = as_dict(data.get("pricing"))
     status = text(module.get("status") or "pending").lower()
     comparison_view = bool(module.get("comparison_view"))
-    if status != "ready" and not comparison_view:
+    if status not in {"ready", "partial"} and not comparison_view:
         return status_box(module)
     blocks = [status_box(module) if status != "ready" else ""]
     method = text(module.get("method"))
@@ -951,10 +1061,12 @@ def render_pricing(data: dict[str, Any], charts: list[dict[str, Any]]) -> str:
     if pricing_parameters:
         blocks.append("<h3>估值参数</h3>")
         blocks.append(parameter_table(pricing_parameters, "估值参数"))
+    greek_rows = canonical_greeks(as_list(module.get("greeks")))
+    greek_rows = [{**row, "basis": display_basis(row)} for row in greek_rows]
     blocks.append(
         simple_table(
-            canonical_greeks(as_list(module.get("greeks"))),
-            [("label", "Greek"), ("value", "数值"), ("unit", "单位")],
+            greek_rows,
+            [("label", "Greek"), ("value", "数值"), ("basis", "单位或口径")],
             "Greeks",
             "result-table result-table--greeks",
         )
@@ -982,7 +1094,7 @@ def render_backtest(data: dict[str, Any], charts: list[dict[str, Any]]) -> str:
     module = as_dict(data.get("backtest"))
     status = text(module.get("status") or "pending").lower()
     comparison_view = bool(module.get("comparison_view"))
-    if status != "ready" and not comparison_view:
+    if status not in {"ready", "partial"} and not comparison_view:
         return status_box(module)
     blocks = [status_box(module) if status != "ready" else ""]
     window = text(module.get("window"))
@@ -1002,19 +1114,24 @@ def render_backtest(data: dict[str, Any], charts: list[dict[str, Any]]) -> str:
     card_metrics = as_list(module.get("card_metrics"))
     if card_metrics:
         blocks.append("<h3>产品专属统计</h3>")
+        card_metrics = [{**as_dict(row), "basis": display_basis(as_dict(row))} for row in card_metrics]
         blocks.append(
             simple_table(
                 card_metrics,
-                [("label", "指标"), ("value", "统计值"), ("note", "口径")],
+                [("label", "指标"), ("value", "统计值"), ("basis", "单位或口径")],
                 "产品专属统计",
                 "result-table result-table--specialized",
             )
         )
     blocks.append(add_charts(charts, "backtest", as_list(module.get("charts"))))
+    event_statistics = [
+        {**as_dict(row), "basis": display_basis(as_dict(row))}
+        for row in as_list(module.get("event_statistics"))
+    ]
     blocks.append(
         simple_table(
-            as_list(module.get("event_statistics")),
-            [("label", "路径事件"), ("value", "统计值"), ("note", "口径")],
+            event_statistics,
+            [("label", "路径事件"), ("value", "统计值"), ("basis", "单位或口径")],
             "路径事件统计",
             "result-table result-table--events",
         )
@@ -1222,16 +1339,17 @@ def render_html(
 	function markChartUnavailable(id,message){const el=document.getElementById(id);if(!el)return;el.classList.add("chart--unavailable");el.textContent=message||"图表资源加载失败，请使用下方完整数据表。";}
 	function markChartsUnavailable(){chartSpecs.forEach(spec=>markChartUnavailable(spec.id));}
 	function publicNumber(value,valueFormat){let number=Number(value);if(!Number.isFinite(number))return String(value??"");if(valueFormat==="percent")number*=100;if(number!==0&&Math.round(number*100)===0){const [mantissa,exponent]=number.toExponential(2).split("e");const superscript={"-":"⁻","0":"⁰","1":"¹","2":"²","3":"³","4":"⁴","5":"⁵","6":"⁶","7":"⁷","8":"⁸","9":"⁹"};return `${mantissa.replace(/0+$/,'').replace(/\.$/,'')}×10${[...String(Number(exponent))].map(char=>superscript[char]||char).join("")}${valueFormat==="percent"?"%":""}`;}return new Intl.NumberFormat("zh-CN",{maximumFractionDigits:2}).format(number)+(valueFormat==="percent"?"%":"");}
+	function publicCategory(value,axisName){return /年|日期|时间|代码|标识/.test(String(axisName||""))?String(value??""):publicNumber(value,"number");}
 	function renderChart(spec){
 	  const el=document.getElementById(spec.id);if(!el)return;
 	  const isHeatmap=spec.type==="heatmap";const type=spec.type==="bar"?"bar":"line";
 	  const points=spec.x.length;const series=Array.isArray(spec.series)?spec.series:[];
 	  const hasLegend=!isHeatmap&&series.length>1;const chart=echarts.init(el,null,{renderer:"svg"});
 	  if(isHeatmap){
-	    chart.setOption({animation:false,color:palette,tooltip:{position:"top",formatter:item=>`${spec.x_axis_name||"横轴"}：${publicNumber(spec.x[item.data[0]],"number")}<br>${spec.y_axis_name||"纵轴"}：${publicNumber(spec.y[item.data[1]],"number")}<br>${spec.z_axis_name||"数值"}：${publicNumber(item.data[2],spec.value_format)}${spec.value_suffix||""}`},grid:{left:72,right:24,top:30,bottom:94},xAxis:{type:"category",name:spec.x_axis_name||"",nameLocation:"middle",nameGap:27,data:spec.x,axisLine:{lineStyle:{color:chartTheme.axis.line}},axisLabel:{color:chartTheme.axis.label,fontSize:chartTheme.textStyle.fontSize,formatter:value=>publicNumber(value,"number")}},yAxis:{type:"category",name:spec.y_axis_name||"",nameLocation:"middle",nameGap:48,data:spec.y,axisLine:{lineStyle:{color:chartTheme.axis.line}},axisLabel:{color:chartTheme.axis.label,fontSize:chartTheme.textStyle.fontSize,formatter:value=>publicNumber(value,"number")}},visualMap:{min:Math.min(...spec.data.map(item=>Number(item[2]))),max:Math.max(...spec.data.map(item=>Number(item[2]))),calculable:false,orient:"horizontal",left:"center",bottom:6,textStyle:{color:chartTheme.axis.label,fontSize:chartTheme.textStyle.fontSize},inRange:{color:[chartTheme.heatmap.low,palette[0],palette[1]]}},series:[{name:spec.z_axis_name||"数值",type:"heatmap",data:spec.data,label:{show:false},emphasis:{itemStyle:{shadowBlur:8}}}]});
+	    chart.setOption({animation:false,color:palette,tooltip:{position:"top",formatter:item=>`${spec.x_axis_name||"横轴"}：${publicCategory(spec.x[item.data[0]],spec.x_axis_name)}<br>${spec.y_axis_name||"纵轴"}：${publicCategory(spec.y[item.data[1]],spec.y_axis_name)}<br>${spec.z_axis_name||"数值"}：${publicNumber(item.data[2],spec.value_format)}${spec.value_suffix||""}`},grid:{left:72,right:24,top:30,bottom:94},xAxis:{type:"category",name:spec.x_axis_name||"",nameLocation:"middle",nameGap:27,data:spec.x,axisLine:{lineStyle:{color:chartTheme.axis.line}},axisLabel:{color:chartTheme.axis.label,fontSize:chartTheme.textStyle.fontSize,formatter:value=>publicCategory(value,spec.x_axis_name)}},yAxis:{type:"category",name:spec.y_axis_name||"",nameLocation:"middle",nameGap:48,data:spec.y,axisLine:{lineStyle:{color:chartTheme.axis.line}},axisLabel:{color:chartTheme.axis.label,fontSize:chartTheme.textStyle.fontSize,formatter:value=>publicCategory(value,spec.y_axis_name)}},visualMap:{min:Math.min(...spec.data.map(item=>Number(item[2]))),max:Math.max(...spec.data.map(item=>Number(item[2]))),calculable:false,orient:"horizontal",left:"center",bottom:6,textStyle:{color:chartTheme.axis.label,fontSize:chartTheme.textStyle.fontSize},inRange:{color:[chartTheme.heatmap.low,palette[0],palette[1]]}},series:[{name:spec.z_axis_name||"数值",type:"heatmap",data:spec.data,label:{show:false},emphasis:{itemStyle:{shadowBlur:8}}}]});
 	    chartInstances.push(chart);return;
 	  }
-	  chart.setOption({animation:false,color:palette,tooltip:{trigger:"axis",valueFormatter:value=>`${publicNumber(value,spec.value_format)}${spec.value_suffix||""}`},legend:{show:hasLegend,top:2,textStyle:{color:chartTheme.textStyle.color,fontFamily:chartTheme.textStyle.fontFamily,fontSize:chartTheme.textStyle.fontSize}},grid:{left:58,right:18,top:hasLegend?48:28,bottom:78},xAxis:{type:"category",name:spec.x_axis_name||"",nameLocation:"middle",nameGap:24,data:spec.x,axisLine:{lineStyle:{color:chartTheme.axis.line}},axisLabel:{color:chartTheme.axis.label,fontSize:chartTheme.textStyle.fontSize,interval:0,rotate:points>14?42:0,formatter:value=>publicNumber(value,"number")}},yAxis:{type:"value",name:spec.y_axis_name||"",nameTextStyle:{color:chartTheme.axis.label},axisLabel:{color:chartTheme.axis.label,fontSize:chartTheme.textStyle.fontSize,formatter:value=>publicNumber(value,spec.value_format)},splitLine:{lineStyle:{color:chartTheme.axis.split,type:"dashed"}}},series:series.map((item,seriesIndex)=>({name:item.name,type,smooth:false,symbol:type==="line"?symbols[seriesIndex%symbols.length]:"none",showSymbol:type==="line"&&points<=60,symbolSize:5,barMaxWidth:42,data:item.data,itemStyle:{color:palette[seriesIndex%palette.length]},lineStyle:{width:2,type:lineTypes[seriesIndex%lineTypes.length]}}))});
+	  chart.setOption({animation:false,color:palette,tooltip:{trigger:"axis",valueFormatter:value=>`${publicNumber(value,spec.value_format)}${spec.value_suffix||""}`},legend:{show:hasLegend,top:2,textStyle:{color:chartTheme.textStyle.color,fontFamily:chartTheme.textStyle.fontFamily,fontSize:chartTheme.textStyle.fontSize}},grid:{left:58,right:18,top:hasLegend?48:28,bottom:78},xAxis:{type:"category",name:spec.x_axis_name||"",nameLocation:"middle",nameGap:24,data:spec.x,axisLine:{lineStyle:{color:chartTheme.axis.line}},axisLabel:{color:chartTheme.axis.label,fontSize:chartTheme.textStyle.fontSize,interval:0,rotate:points>14?42:0,formatter:value=>publicCategory(value,spec.x_axis_name)}},yAxis:{type:"value",name:spec.y_axis_name||"",nameTextStyle:{color:chartTheme.axis.label},axisLabel:{color:chartTheme.axis.label,fontSize:chartTheme.textStyle.fontSize,formatter:value=>publicNumber(value,spec.value_format)},splitLine:{lineStyle:{color:chartTheme.axis.split,type:"dashed"}}},series:series.map((item,seriesIndex)=>({name:item.name,type,smooth:false,symbol:type==="line"?symbols[seriesIndex%symbols.length]:"none",showSymbol:type==="line"&&points<=60,symbolSize:5,barMaxWidth:42,data:item.data,itemStyle:{color:palette[seriesIndex%palette.length]},lineStyle:{width:2,type:lineTypes[seriesIndex%lineTypes.length]}}))});
 	  chartInstances.push(chart);
 	}
 	function initialiseCharts(){if(!window.echarts){markChartsUnavailable();return;}chartSpecs.forEach(spec=>{try{renderChart(spec);}catch(error){markChartUnavailable(spec.id,"图表初始化失败，请使用下方完整数据表。");console.error("图表初始化失败",spec.id,error);}});}
