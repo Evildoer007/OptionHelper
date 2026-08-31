@@ -68,10 +68,13 @@ def china_market_convention(asset_id: str, adjustment: str = "auto") -> Mapping[
     effective_adjustment = (
         "none" if asset_class == "index" else
         "forward" if requested_adjustment == "auto" else
-        "none" if requested_adjustment == "raw" else
         requested_adjustment
     )
     unadjusted = effective_adjustment == "none"
+    adjustment_label = (
+        "unadjusted_adj_fields_alias_raw" if unadjusted else
+        "forward_adjusted_for_adj_fields"
+    )
     return {
         "exchange": exchange,
         "asset_class": asset_class,
@@ -82,8 +85,7 @@ def china_market_convention(asset_id: str, adjustment: str = "auto") -> Mapping[
         "raw_close_retained": True,
         "corporate_action_adjustment": (
             "not_applicable" if asset_class == "index" else
-            "unadjusted_adj_fields_alias_raw" if unadjusted else
-            "forward_adjusted_for_adj_fields"
+            adjustment_label
         ),
         "requested_adjustment": requested_adjustment,
         "effective_adjustment": effective_adjustment,
