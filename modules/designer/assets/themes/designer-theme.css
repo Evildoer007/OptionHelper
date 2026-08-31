@@ -917,7 +917,7 @@ body.report-profile-a4 .disclaimer { margin-top: 12px; padding-top: 10px; line-h
   }
 }
 
-/* MultiCard and MultiReport share the standard research-paper tokens. */
+/* 多结构简报与完整报告共享标准研究纸Token。 */
 .designer-multicard-page {
   margin: 0;
   background: var(--ground);
@@ -994,8 +994,12 @@ body.report-profile-a4 .disclaimer { margin-top: 12px; padding-top: 10px; line-h
 }
 
 .comparison-matrix__corner {
+  display: flex;
+  align-items: end;
+  padding: 10px 9px;
   border-right: 1px solid var(--rule-strong);
 }
+.comparison-matrix__corner h3 { margin: 0; color: var(--blue); font-size: var(--type-table); }
 
 .comparison-matrix__candidate {
   min-width: 0;
@@ -1033,6 +1037,13 @@ body.report-profile-a4 .disclaimer { margin-top: 12px; padding-top: 10px; line-h
   word-break: normal;
 }
 .comparison-matrix__cell:empty { min-height: 10px; }
+.comparison-matrix__supplement {
+  grid-column: 2 / -1;
+  min-width: 0;
+  padding: 10px;
+  overflow-wrap: break-word;
+  word-break: normal;
+}
 .comparison-matrix__cell .table-wrap { overflow: visible; }
 .comparison-matrix__cell table { min-width: 0; margin: 0; font-size: var(--type-meta); table-layout: auto; }
 .comparison-matrix__cell th, .comparison-matrix__cell td { padding: 5px 4px; overflow-wrap: break-word; word-break: normal; }
@@ -1446,6 +1457,26 @@ body.report-profile-a4 .disclaimer { margin-top: 12px; padding-top: 10px; line-h
   line-height: 1.45;
 }
 
+.quote-common-terms {
+  margin: 0 0 4mm;
+  padding: 8px 0;
+  border-top: var(--border-hairline) solid var(--rule);
+  border-bottom: var(--border-hairline) solid var(--rule);
+  font-size: var(--type-table);
+  line-height: 1.4;
+}
+
+.quote-common-terms strong {
+  margin-right: 18px;
+  color: var(--blue);
+  font-size: var(--type-meta);
+  font-weight: 720;
+}
+
+.quote-common-terms span { color: var(--ink); }
+.quote-common-terms span + span { margin-left: 18px; }
+.quote-common-terms b { margin-right: 6px; color: var(--muted); font-weight: 500; }
+
 .quote-table-wrap { margin: 0 0 5mm; }
 
 .quote-table-panel { break-inside: auto; }
@@ -1533,6 +1564,7 @@ body.report-profile-a4 .disclaimer { margin-top: 12px; padding-top: 10px; line-h
   .comparison-matrix__candidate[data-preferred="true"] { border-top-color: var(--red); }
   .comparison-matrix__section-label { border-right: 0; border-bottom: 1px solid var(--rule-strong); }
   .comparison-matrix__cell { border-left: 0; border-top: 1px solid var(--rule); }
+  .comparison-matrix__supplement { grid-column: 1; }
   .comparison-matrix__row[data-section="risk"] .comparison-matrix__cell { border-top: 1px solid var(--red); }
   .comparison-report .alternative-grid,
   .comparison-payoff-grid { grid-template-columns: 1fr; }
@@ -1560,6 +1592,9 @@ body.report-profile-a4 .disclaimer { margin-top: 12px; padding-top: 10px; line-h
   .quote-identity { grid-template-columns: repeat(2, minmax(0, 1fr)); border-top: var(--border-hairline) solid var(--rule); border-left: 0; }
   .quote-identity div { padding: 7px 10px 0 0; }
   .quote-table-panel__title { margin-top: 12px; }
+  .quote-common-terms strong,
+  .quote-common-terms span { display: block; margin: 0 0 4px; }
+  .quote-common-terms span + span { margin-left: 0; }
   .quote-table,
   .quote-table thead,
   .quote-table tbody,
