@@ -12,6 +12,7 @@ from .instruments import (
     BinaryOption,
     CompositeOption,
     EuropeanVanillaOption,
+    FixedCashflowOption,
     OptionInstrument,
     OptionRegPathOption,
     StaticAccumulatorOption,
@@ -22,6 +23,7 @@ from .results import PricingResult, SolveResult
 from .standard.airbag import price_airbag_standard
 from .standard.barrier import price_barrier_standard
 from .standard.digital import price_binary_standard
+from .standard.fixed_cashflow import price_fixed_cashflow_standard
 from .standard.static_accumulator import price_static_accumulator_standard
 from .standard.vanilla import price_vanilla_standard
 from .standard.optionreg_path import price_optionreg_path_monte_carlo
@@ -51,6 +53,7 @@ _CATALOG = _load_product_catalog()
 REGISTRY = EngineRegistry()
 _INSTRUMENT_TYPES = {
     "EuropeanVanillaOption": EuropeanVanillaOption,
+    "FixedCashflowOption": FixedCashflowOption,
     "BinaryOption": BinaryOption,
     "BarrierOption": BarrierOption,
     "CompositeOption": CompositeOption,
@@ -60,6 +63,7 @@ _INSTRUMENT_TYPES = {
 _PRICE_HANDLERS = {
     "price_vanilla_standard": price_vanilla_standard,
     "price_binary_standard": price_binary_standard,
+    "price_fixed_cashflow_standard": price_fixed_cashflow_standard,
     "price_barrier_standard": price_barrier_standard,
     "price_airbag_standard": price_airbag_standard,
     "price_static_accumulator_standard": price_static_accumulator_standard,
