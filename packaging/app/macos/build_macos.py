@@ -679,6 +679,7 @@ def verify_dmg_install_layout(
                 raise MacOSBuildError(f"DMG根目录含非安装入口：{extras or '布局不完整'}")
             if not app.is_dir():
                 raise MacOSBuildError("DMG打开后缺少OptionHelper.app")
+            verify_installable_bundle_permissions(app)
             if not applications.is_symlink() or os.readlink(applications) != "/Applications":
                 raise MacOSBuildError("DMG打开后缺少指向/Applications的拖拽入口")
             try:
@@ -1299,6 +1300,57 @@ def assert_no_finder_conflicts(root: Path) -> None:
         raise MacOSBuildError(f"App构建目录出现同步冲突副本：{names}")
 
 
+def normalize_installable_bundle_permissions(bundle: Path) -> None:
+    """Restore standard install permissions after copying the read-only source snapshot.
+
+    The frozen build input is intentionally not writable.  ``copy2`` and
+    ``copytree`` preserve those modes, but an App carrying 0444 files or 0555
+    directories cannot be replaced by Finder after its first installation.
+    Code signing protects delivered bytes; resource write bits are not an
+    integrity boundary.
+    """
+
+    if not bundle.is_dir() or bundle.is_symlink() or bundle.name != "OptionHelper.app":
+        raise MacOSBuildError("安装权限归一化目标不是OptionHelper.app")
+    for path in (bundle, *sorted(bundle.rglob("*"))):
+        if path.is_symlink():
+            continue
+        metadata = path.stat()
+        if stat.S_ISDIR(metadata.st_mode):
+            path.chmod(0o755)
+        elif stat.S_ISREG(metadata.st_mode):
+            executable = bool(metadata.st_mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH))
+            path.chmod(0o755 if executable else 0o644)
+        else:
+            raise MacOSBuildError(f"App包含不支持的文件类型：{path.relative_to(bundle)}")
+
+
+def verify_installable_bundle_permissions(bundle: Path) -> None:
+    """Reject an App whose stored modes would block Finder replacement."""
+
+    invalid: list[str] = []
+    for path in (bundle, *sorted(bundle.rglob("*"))):
+        if path.is_symlink():
+            continue
+        metadata = path.stat()
+        actual = stat.S_IMODE(metadata.st_mode)
+        if stat.S_ISDIR(metadata.st_mode):
+            expected = 0o755
+        elif stat.S_ISREG(metadata.st_mode):
+            executable = bool(metadata.st_mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH))
+            expected = 0o755 if executable else 0o644
+        else:
+            invalid.append(f"{path.relative_to(bundle)}=unsupported")
+            continue
+        if actual != expected:
+            relative = "." if path == bundle else path.relative_to(bundle).as_posix()
+            invalid.append(f"{relative}={actual:04o}, expected={expected:04o}")
+    if invalid:
+        details = "；".join(invalid[:8])
+        suffix = f"；另有{len(invalid) - 8}项" if len(invalid) > 8 else ""
+        raise MacOSBuildError(f"App资源权限会阻止Finder覆盖安装：{details}{suffix}")
+
+
 def write_info_plist(bundle: Path, app_version: str, *, formal_release: bool = False) -> None:
     public_version = app_version.removeprefix("v")
     plist = {
@@ -1368,6 +1420,7 @@ def verify_bundle(
     require_native_runtime: bool = True,
     repo_root: Path = ROOT,
 ) -> None:
+    verify_installable_bundle_permissions(bundle)
     resources = bundle / "Contents" / "Resources"
     required = [
         bundle / "Contents" / "Info.plist", bundle / "Contents" / "MacOS" / "OptionHelper",
@@ -1594,6 +1647,7 @@ def build_macos(
         )
         manifest = json.loads(json.dumps(manifest, ensure_ascii=False, allow_nan=False))
         write_json(resources / "app-manifest.json", manifest)
+        normalize_installable_bundle_permissions(bundle)
         run([str(backend), "--probe-pdf-runtime", "--resource-dir", str(resources)])
         probe_compute_worker(backend, resources, temporary)
         probe_backend_startup(backend, resources, temporary)
@@ -1629,6 +1683,7 @@ def build_macos(
         else:
             run(["codesign", "--force", "--deep", "--sign", "-", str(bundle)])
             run(["codesign", "--verify", "--deep", "--strict", "--verbose=2", str(bundle)])
+        verify_installable_bundle_permissions(bundle)
         _progress("正在生成DMG安装物")
         built_dmg = temporary / f"OptionHelper-{app_version}-macOS-arm64.dmg"
         dmg_layout = prepare_dmg_layout(
