@@ -23,6 +23,40 @@ from .settings.settings_models import SettingsSnapshot
 
 _RESERVED_CONTEXT_KEYS = {"app_context", "tenant_id", "principal_id", "secret_ref", "credential_ref"}
 _SECRET_KEYS = {"password", "token", "access_token", "refresh_token", "api_key", "secret", "secret_value", "private_key"}
+_FAILURE_PROJECTIONS = {
+    "unauthorized": (
+        "iFind凭据未通过验证。",
+        "请在设置中心保存当前凭据并完成连接测试后重试。",
+    ),
+    "quota_exceeded": (
+        "iFind数据额度不足。",
+        "请等待额度恢复或切换具备可用额度的正式数据连接后重试。",
+    ),
+    "account_permission_denied": (
+        "当前iFind账号已失效或不可用于数据接口。",
+        "请在设置中心保存有效凭据并完成连接测试后重试。",
+    ),
+    "device_limit_exceeded": (
+        "iFind设备或IP授权数量已达上限。",
+        "请在iFind侧释放旧设备或更新授权后，再到设置中心完成连接测试。",
+    ),
+    "field_permission_denied": (
+        "当前iFind账号无权读取所需行情字段。",
+        "请调整为当前iFind账号有权限的行情字段后重试。",
+    ),
+    "market_permission_denied": (
+        "当前iFind账号无权读取所需市场。",
+        "请确认当前iFind账号已开通对应市场权限后重试。",
+    ),
+    "provider_input_error": (
+        "数据服务拒绝了当前标的、日期或字段组合。",
+        "请检查标的、日期、频率和字段组合后重试。",
+    ),
+    "no_data": (
+        "所选标的和日期区间没有可验证行情。",
+        "请确认标的和日期区间；单日无数据时需先取得覆盖此前交易日的正式交易日历。",
+    ),
+}
 
 
 class DataFetcherAdapter:
@@ -34,12 +68,18 @@ class DataFetcherAdapter:
         services: object,
         data_store: DataStoreReadPort | None = None,
         secret_provider: SecretProvider | None = None,
+        verification_for: Callable[[SessionIdentity, SecretRef | None], bool] | None = None,
+        revoke_verification: Callable[[SessionIdentity, SecretRef], None] | None = None,
+        mark_temporarily_unavailable: Callable[[SessionIdentity, SecretRef], None] | None = None,
     ) -> None:
         self._settings_for = settings_for
         self._app_datafetcher_call = getattr(services, "call_app_datafetcher", None)
         self._app_datafetcher_read = getattr(services, "read_app_datafetcher_asset", None)
         self._data_store = data_store
         self._secret_provider = secret_provider
+        self._verification_for = verification_for
+        self._revoke_verification = revoke_verification
+        self._mark_temporarily_unavailable = mark_temporarily_unavailable
 
     def dispatch(
         self,
@@ -48,6 +88,7 @@ class DataFetcherAdapter:
         *,
         request_id: str = "",
         trading_calendar_ref: Mapping[str, Any] | None = None,
+        expected_secret_ref: SecretRef | None = None,
     ) -> dict[str, Any]:
         """Dispatch one App-owned request, optionally with Host calendar evidence.
 
@@ -62,6 +103,8 @@ class DataFetcherAdapter:
         action = _action(request)
         settings = self._settings_for(principal)
         interface = settings.data_interface
+        if expected_secret_ref is not None and interface.secret_ref != expected_secret_ref:
+            raise ValidationError("数据凭据版本已变化，请重新发起连接测试")
         requires_ifind = _requires_ifind(request, action)
         if requires_ifind and (interface.provider_name != "ifind-http" or interface.secret_ref is None):
             raise UnavailableCapabilityError(
@@ -70,37 +113,80 @@ class DataFetcherAdapter:
                 failure_code="data_interface_configuration",
                 stage="data",
             )
+        if (
+            requires_ifind
+            and action != "test_connection"
+            and (
+                self._verification_for is None
+                or not self._verification_for(principal, interface.secret_ref)
+            )
+        ):
+            raise UnavailableCapabilityError(
+                "datafetcher.verification",
+                "请先在设置中心验证当前iFind数据连接。",
+                failure_code="data_interface_unverified",
+                stage="data",
+            )
         if not callable(self._app_datafetcher_call):
             raise UnavailableCapabilityError(
                 "datafetcher.app_secret_port",
                 "the verified DataFetcher service cannot receive the App caller and SecretRef",
             )
-        if self._secret_provider is None:
-            if calendar_ref is None:
-                return self._app_datafetcher_call(
-                    dict(request), _caller(principal, request_id), None, None,
-                )
-            return self._app_datafetcher_call(
-                dict(request), _caller(principal, request_id), None, None,
-                trading_calendar_ref=calendar_ref,
-            )
         expose_configuration = action in {"status", "catalog", "list_assets"}
-        secret_ref = interface.secret_ref if requires_ifind or expose_configuration else None
+        secret_ref = (
+            interface.secret_ref
+            if self._secret_provider is not None and (requires_ifind or expose_configuration)
+            else None
+        )
+        call_kwargs: dict[str, Any] = {}
+        if calendar_ref is not None:
+            call_kwargs["trading_calendar_ref"] = calendar_ref
         if calendar_ref is None:
-            return self._app_datafetcher_call(
+            result = self._app_datafetcher_call(
                 dict(request),
                 _caller(principal, request_id),
                 secret_ref,
                 self._secret_port(secret_ref),
             )
-        return self._app_datafetcher_call(
-            dict(request),
-            _caller(principal, request_id),
-            secret_ref,
-            self._secret_port(secret_ref),
-            trading_calendar_ref=calendar_ref,
+        else:
+            result = self._app_datafetcher_call(
+                dict(request),
+                _caller(principal, request_id),
+                secret_ref,
+                self._secret_port(secret_ref),
+                **call_kwargs,
+            )
+        if not isinstance(result, dict):
+            raise ValidationError("DataFetcher App port must return an object")
+        failure_code = _failure_code(result)
+        if requires_ifind and interface.secret_ref is not None:
+            if (
+                failure_code in {"unauthorized", "account_permission_denied"}
+                and self._revoke_verification is not None
+            ):
+                self._revoke_verification(principal, interface.secret_ref)
+            elif failure_code == "device_limit_exceeded" and self._mark_temporarily_unavailable is not None:
+                self._mark_temporarily_unavailable(principal, interface.secret_ref)
+        result = _project_datafetcher_failure(result)
+        if not expose_configuration:
+            return result
+        verified = bool(
+            interface.secret_ref is not None
+            and self._verification_for is not None
+            and self._verification_for(principal, interface.secret_ref)
         )
+        public_status = {
+            "configured": interface.secret_ref is not None,
+            "state": "verified" if verified else "configured_unverified" if interface.secret_ref else "not_configured",
+            "source": "app_host_secret_ref" if interface.secret_ref else "none",
+            "remote_provider": "available" if verified else "not_checked" if interface.secret_ref else "not_configured",
+        }
+        return {**result, "credential_status": public_status}
 
+    def requires_ifind(self, request: Mapping[str, Any]) -> bool:
+        """Expose the adapter's single provider decision to its App Host owner."""
+
+        return _requires_ifind(request, _action(dict(request)))
     def _secret_port(self, expected_ref: SecretRef | None) -> Callable[[SecretRef], str] | None:
         if expected_ref is None or self._secret_provider is None:
             return None
@@ -150,6 +236,52 @@ class DataFetcherAdapter:
                 "pricing.data_store", "App Host has no configured DataStorePort",
             )
         return _BoundDataStore(principal, task_id, data_refs, self._data_store)
+
+
+def _project_datafetcher_failure(result: Mapping[str, Any]) -> dict[str, Any]:
+    """Attach the App's fixed actionable fields to reviewed DataFetcher codes."""
+
+    if result.get("ok") is not False:
+        return dict(result)
+    nested = result.get("error")
+    nested = nested if isinstance(nested, Mapping) else {}
+    code = str(nested.get("code", result.get("status", ""))).strip()
+    projection = _FAILURE_PROJECTIONS.get(code)
+    if projection is None:
+        return {
+            "ok": False,
+            "module": "datafetcher",
+            "status": "failed",
+            "error": {"code": "unclassified_data_failure"},
+        }
+    message, next_step = projection
+    error: dict[str, Any] = {
+        "code": code,
+        "failure_code": code,
+        "stage": "data",
+        "message": message,
+        "next_step": next_step,
+        "retryable": False,
+    }
+    for field in ("reason_code", "provider_error_code", "http_status"):
+        candidate = nested.get(field)
+        if isinstance(candidate, str) and candidate and field != "http_status":
+            error[field] = candidate
+        elif field == "http_status" and isinstance(candidate, int) and not isinstance(candidate, bool):
+            error[field] = candidate
+    return {"ok": False, "module": "datafetcher", "status": "failed", "error": error}
+
+
+def _failure_code(result: Mapping[str, Any]) -> str:
+    nested = result.get("error")
+    nested = nested if isinstance(nested, Mapping) else {}
+    return str(nested.get("code", result.get("status", ""))).strip()
+
+
+def _datafetcher_failure_fields(result: Mapping[str, Any]) -> dict[str, Any] | None:
+    projected = _project_datafetcher_failure(result)
+    error = projected.get("error")
+    return dict(error) if isinstance(error, Mapping) and "failure_code" in error else None
 
 
 class _BoundDataStore:
