@@ -6,6 +6,7 @@ from enum import Enum
 
 
 class PricingMethod(Enum):
+    DISCOUNTED_CASHFLOW = "discounted_cashflow"
     BLACK_SCHOLES = "black_scholes"
     BINARY_ANALYTIC = "binary_analytic"
     REINER_RUBINSTEIN = "reiner_rubinstein"
