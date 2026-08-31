@@ -20,10 +20,14 @@ from runtime.bootstrap import bootstrap_runtime
 from runtime.adapters.local_store import LocalResultStore, StoreError
 from runtime.contracts.contract_api import (
     ContractResolutionError,
+    FormulaError,
+    PreparedContractEvaluator,
     RESOLVED_CONTRACT_SCHEMA_ID,
     ResolvedContract,
-    evaluate_contract,
+    evaluate_contract_batch,
     get_product,
+    overridable_term_keys,
+    prepare_contract_evaluator,
     resolve_contract,
     verify_product_snapshot_binding,
 )
@@ -36,6 +40,7 @@ from runtime.protocol.version import DEVELOPMENT_RELEASE_ID
 from ..asset_resolver import (
     DefaultAssetError,
     DefaultVisualAsset,
+    figure_asset_paths,
     load_default_figure_payload,
     payoff_template_paths_match,
     payoff_template_terms_match,
@@ -60,13 +65,16 @@ from .svg_renderer import render_svg as render_svg_text
 MODULE_ROOT = Path(__file__).resolve().parents[4]
 RUNTIME_PATHS = bootstrap_runtime(MODULE_ROOT)
 RESULT_ROOT = RUNTIME_PATHS.result_root
-_INTERNAL_SCALE_TERM_KEYS = frozenset({"N", "Nvar", "Nvega", "G"})
 # 收益经济仍由Core以100为基准计算。该常量只留在模块内部，公开投影不得泄露
 # 其名义/点数含义；用户看到的同一数值一律是百分比。
 _INTERNAL_PERCENT_BASE = 100.0
 _PAYOFF_UNIT = "percent"
 _REPORTER_PAYOFF_BASES = frozenset({"net_after_premium", "gross_before_premium"})
-_PUBLIC_HIDDEN_TERM_KEYS = _INTERNAL_SCALE_TERM_KEYS | frozenset({"S0", "S0Vec"})
+# ``S0``/``S0Vec`` are display-only coordinates, not user-overridable terms.
+_PAGE_HIDDEN_TERM_KEYS = frozenset({"S0", "S0Vec"})
+# Internal scale terms may remain in Core's controlled contract, but never in
+# the public contract projection or its visual term bindings.
+_PUBLIC_CONTRACT_HIDDEN_TERM_KEYS = _PAGE_HIDDEN_TERM_KEYS | frozenset({"N", "Nvar", "Nvega", "G"})
 _REPORTER_PAYOFF_FACTS_SCHEMA = "optionhelper.reporter-payoff-facts"
 # ``S_0`` is already the coordinate-system reference line.  It is a price
 # term in TermCatalog, but it is not a contractual strike/barrier threshold.
@@ -89,6 +97,9 @@ class PayoffEngineError(ValueError):
 
 CandidateEvaluation = tuple[int, int, float, dict[str, Any]]
 EvaluationCache = dict[tuple[str, float, CandidateTemplate], CandidateEvaluation]
+PreparedGridKey = tuple[tuple[str, ...], tuple[float, ...], tuple[str, ...] | None]
+PreparedEvaluatorCache = dict[PreparedGridKey, PreparedContractEvaluator]
+_AXIS_STATISTIC_TEMPLATE = CandidateTemplate("axis-statistic", ())
 
 
 @dataclass(frozen=True)
@@ -167,13 +178,20 @@ def _registry_with_default_figure(name_zh: str) -> tuple[str, dict[str, Any], di
 
 
 def payoff_term_fields(product: Mapping[str, Any], registry: Mapping[str, Any] | None = None) -> list[dict[str, Any]]:
-    """输出人工页面所需的条款字段目录；默认值来自固定默认JSON。"""
+    """输出可由Core ``resolve_contract`` 接受的人工覆盖字段目录。"""
     source = registry or load_registry()
     catalog = source["term_catalog"]
     terms = product["terms"]
+    product_id = str(product.get("identity", {}).get("product_id", "")).strip()
+    if not product_id:
+        raise PayoffEngineError("OptionReg产品缺少product_id")
+    try:
+        allowed_keys = overridable_term_keys(product_id, source) - _PAGE_HIDDEN_TERM_KEYS
+    except ContractResolutionError as error:
+        raise PayoffEngineError(str(error)) from error
     fields: list[dict[str, Any]] = []
     for key, value in terms.items():
-        if key in {"monitor", "pricing_methods", "constraints", "derived_terms", *_PUBLIC_HIDDEN_TERM_KEYS}:
+        if key not in allowed_keys:
             continue
         definition = catalog[key]
         fields.append(
@@ -305,6 +323,7 @@ def _evaluate_candidate(
     templates: tuple[CandidateTemplate, ...],
     preferred: CandidateTemplate | None,
     evaluation_cache: EvaluationCache,
+    prepared_cache: PreparedEvaluatorCache,
     *,
     fixed: bool = False,
 ) -> tuple[float, CandidateTemplate, dict[str, Any]] | None:
@@ -313,11 +332,55 @@ def _evaluate_candidate(
     else:
         ordered = (preferred, *(template for template in templates if template != preferred)) if preferred is not None else templates
     for template in ordered:
-        key = (axis, float(value), template)
+        # ``candidate_path`` deliberately ignores historical templates for
+        # path-statistic axes.  Keying those evaluations by every template
+        # used to rebuild an identical Core formula context and settle the
+        # exact same candidate dozens of times during seed discovery.
+        # Keep the caller's template in the returned state, while sharing the
+        # immutable interpreter result inside this render only.
+        cache_template = _AXIS_STATISTIC_TEMPLATE if axis in {"sigma_realized", "n_in"} else template
+        key = (axis, float(value), cache_template)
         cached = evaluation_cache.get(key)
         if cached is None:
             try:
-                outcome = evaluate_contract(contract, candidate_path(contract, axis, value, template))
+                price_path = candidate_path(contract, axis, value, template)
+                grid_key: PreparedGridKey = (
+                    price_path.asset_ids,
+                    tuple(float(item) for item in price_path.times),
+                    None if price_path.dates is None else tuple(str(item) for item in price_path.dates),
+                )
+                prepared = prepared_cache.get(grid_key)
+                if prepared is None:
+                    valuation_date = None
+                    if price_path.dates is None:
+                        valuation_date = contract.identity.get("contract_start_date") or date(2000, 1, 1).isoformat()
+                    prepared = prepare_contract_evaluator(
+                        contract,
+                        times=price_path.times,
+                        dates=price_path.dates,
+                        asset_ids=price_path.asset_ids,
+                        # Core requires an explicit grid identity when a
+                        # product has no calendar-sensitive observation dates.
+                        # Formal contracts use their frozen start date; the
+                        # deterministic local date only names an otherwise
+                        # dateless development grid and never enters formulas.
+                        valuation_date=valuation_date,
+                    )
+                    prepared_cache[grid_key] = prepared
+                price_fields = {
+                    name: np.expand_dims(field, axis=0)
+                    for name, field in dict(price_path.price_fields or {}).items()
+                }
+                outcome = evaluate_contract_batch(
+                    prepared,
+                    np.expand_dims(price_path.values, axis=0),
+                    price_fields=price_fields or None,
+                ).evaluations[0]
+            except FormulaError:
+                # Core会拒绝命中inactive分段或未形成唯一path/case的候选历史。
+                # 该候选不能作为当前active分段的见证，继续尝试其他确定性模板；
+                # 若全部失败，外层仍会失败关闭，绝不放宽合同解释器。
+                continue
             except Exception as error:
                 raise PayoffEngineError(f"{contract.product_id}无法由共享解释器结算展示候选路径：{error}") from error
             cached = (
@@ -380,6 +443,7 @@ def _case_segments(
     domain: CompiledDomain,
     template: CandidateTemplate,
     evaluation_cache: EvaluationCache,
+    prepared_cache: PreparedEvaluatorCache,
 ) -> list[list[dict[str, Any]]]:
     output: list[list[dict[str, Any]]] = []
     found = False
@@ -391,7 +455,7 @@ def _case_segments(
             trial = _safe_axis_trial(axis, trial, scale)
             evaluation = _evaluate_candidate(
                 contract, axis, trial, path_index, case_index, (template,), template,
-                evaluation_cache, fixed=True,
+                evaluation_cache, prepared_cache, fixed=True,
             )
             if evaluation is None:
                 if active:
@@ -427,6 +491,7 @@ def _case_seed(
     domain: CompiledDomain,
     templates: tuple[CandidateTemplate, ...],
     evaluation_cache: EvaluationCache,
+    prepared_cache: PreparedEvaluatorCache,
 ) -> tuple[float, CandidateTemplate, dict[str, Any]] | None:
     """选择覆盖当前分段最多终值的固定候选历史。
 
@@ -452,7 +517,7 @@ def _case_seed(
                 trial = inward_value(x_value, interval, scale) if endpoint == "open" else x_value
                 result = _evaluate_candidate(
                     contract, axis, _safe_axis_trial(axis, trial, scale), path_index, case_index,
-                    (template,), template, evaluation_cache, fixed=True,
+                    (template,), template, evaluation_cache, prepared_cache, fixed=True,
                 )
                 if result is not None:
                     hits.append((abs(x_value - probe), result))
@@ -808,19 +873,34 @@ def render_paths(contract: ResolvedContract, visual_template: Mapping[str, Any])
     # 同一图的同一横轴点与候选历史在探针、相邻分段端点间会重复出现。缓存完整
     # 共享解释器结果，既不重写经济逻辑，也不跨合同复用任何状态。
     evaluation_cache: EvaluationCache = {}
+    prepared_cache: PreparedEvaluatorCache = {}
+    active_path_case_refs = set(contract.active_path_case_refs)
+    if not active_path_case_refs:
+        raise PayoffEngineError(f"{contract.product_id}的ResolvedContract没有可达收益分段")
     payoff_basis, premium_offset = _payoff_figure_basis(contract)
     rendered: list[RenderedPath] = []
     for view in _template_path_views(visual_template, compiled):
         path_index = view["path_index"]
         path = contract.paths[path_index]
         domains = compiled[path_index]
-        case_indexes = view["case_indexes"]
+        # 默认JSON继续绑定产品级完整paths；Runtime只采样Core随冻结合同签发的
+        # active分段。Payoffer不重算可达性，也不因日期自行删改经济路径。
+        case_indexes = [
+            case_index
+            for case_index in view["case_indexes"]
+            if (path_index, case_index) in active_path_case_refs
+        ]
+        if not case_indexes:
+            continue
         axis = view["axis"]
-        x_scale = axis_scale(axis, domains, contract)
+        x_scale = axis_scale(axis, [domains[index] for index in case_indexes], contract)
         case_seeds: list[tuple[int, CompiledDomain, tuple[float, CandidateTemplate, dict[str, Any]]]] = []
         for case_index in case_indexes:
             domain = domains[case_index]
-            seed = _case_seed(contract, axis, x_scale, path_index, case_index, domain, templates, evaluation_cache)
+            seed = _case_seed(
+                contract, axis, x_scale, path_index, case_index, domain,
+                templates, evaluation_cache, prepared_cache,
+            )
             if seed is not None:
                 case_seeds.append((case_index, domain, seed))
                 continue
@@ -844,7 +924,7 @@ def render_paths(contract: ResolvedContract, visual_template: Mapping[str, Any])
             for case_index, domain, _ in entries:
                 case_segments = _case_segments(
                     contract, axis, x_scale, path_index, case_index, domain,
-                    fixed_template, evaluation_cache,
+                    fixed_template, evaluation_cache, prepared_cache,
                 )
                 segments.extend(case_segments)
                 reporter_fact_sources.append((case_index + 1, domain, case_segments))
@@ -928,7 +1008,7 @@ def _display_contract(contract: ResolvedContract) -> dict[str, Any]:
         for key in ("product_id", "name_zh", "entry_status", "contract_id", "underlyings")
         if key in identity
     }
-    hidden_terms = _PUBLIC_HIDDEN_TERM_KEYS | {
+    hidden_terms = _PUBLIC_CONTRACT_HIDDEN_TERM_KEYS | {
         "monitor", "derived_terms", "constraints", "pricing_methods",
     }
     return {
@@ -953,7 +1033,7 @@ def _template_term_bindings(asset: DefaultVisualAsset, contract: ResolvedContrac
         str(key): _json_safe(deep_thaw(contract.terms[key]))
         for key in template_terms
         if key in contract.terms
-        and key not in _PUBLIC_HIDDEN_TERM_KEYS
+        and key not in _PUBLIC_CONTRACT_HIDDEN_TERM_KEYS
         and key != "derived_terms"
     }
 
@@ -1057,20 +1137,43 @@ def render_payoff(payoff_input: PayoffInput) -> PayoffResult:
     return PayoffResult(payload=result, svg=svg)
 
 
+def preview_result(
+    name_zh: str,
+    term_overrides: Mapping[str, Any] | None = None,
+    identity: Mapping[str, Any] | None = None,
+) -> PayoffResult:
+    """Return the single preview render result without exposing SVG in payload."""
+    _, product, _ = _registry_with_default_figure(name_zh)
+    if not product["identity"]["entry_status"]:
+        try:
+            svg = figure_asset_paths(product["identity"]["name_zh"])["svg"].read_text(encoding="utf-8")
+        except OSError as error:
+            raise PayoffEngineError("受限产品缺少既有只读资料图") from error
+        return PayoffResult(
+            payload={
+                "module": "payoffer",
+                "name_zh": product["identity"]["name_zh"],
+                "runtime_status": "blocked",
+                "message": "该产品条款或路径仍待合同确认，不能用Po、P、BT运行；仅可查看既有只读资料图。",
+                "path_panels": [],
+            },
+            svg=svg,
+        )
+    contract = build_payoff_input(name_zh, term_overrides, identity)
+    payoff_result = render_payoff(PayoffInput(contract=contract))
+    return PayoffResult(
+        payload={**dict(payoff_result.payload), "runtime_status": "enabled"},
+        svg=payoff_result.svg,
+    )
+
+
 def preview_payload(
     name_zh: str,
     term_overrides: Mapping[str, Any] | None = None,
     identity: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    _, product, _ = _registry_with_default_figure(name_zh)
-    if not product["identity"]["entry_status"]:
-        return {
-            "module": "payoffer", "name_zh": product["identity"]["name_zh"],
-            "runtime_status": "blocked", "message": "该产品条款或路径仍待合同确认，不能用Po、P、BT运行；仅可查看既有只读资料图。", "path_panels": [],
-        }
-    contract = build_payoff_input(name_zh, term_overrides, identity)
-    payoff_result = render_payoff(PayoffInput(contract=contract))
-    return {**dict(payoff_result.payload), "runtime_status": "enabled"}
+    """Public read-only convenience projection of :func:`preview_result`."""
+    return dict(preview_result(name_zh, term_overrides, identity).payload)
 
 
 def _store_payoff_result(
