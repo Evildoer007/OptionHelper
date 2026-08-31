@@ -19,6 +19,15 @@ class ZeroValidSamplesError(BacktestInputError):
     """候选入场日存在但没有任何完整有效样本。"""
 
 
+class BacktestWindowError(BacktestInputError):
+    """请求的入场窗口不能形成完整期限回放。"""
+
+    def __init__(self, message: str, *, code: str, details: dict[str, object]) -> None:
+        super().__init__(message)
+        self.code = code
+        self.details = details
+
+
 def entry_positions(index: pd.DatetimeIndex, config: BacktestConfig) -> tuple[list[int], tuple[str, ...]]:
     """生成候选入场位置，并返回不在对齐交易日历内的指定日期。"""
     missing_explicit: tuple[str, ...] = ()
