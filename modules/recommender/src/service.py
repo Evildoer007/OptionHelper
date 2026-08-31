@@ -21,7 +21,13 @@ from .constraint_ranking import (
 from .config import RecommenderConfig
 from .evidence_retriever import retrieve_evidence
 from .executor import ALLOWED_MODULES, execute
-from .interaction import merge_confirmed_constraints, missing_required_constraints, question_for_missing_constraints
+from .interaction import (
+    delivery_preferences_from_text,
+    merge_confirmed_constraints,
+    missing_required_constraints,
+    question_for_missing_constraints,
+    requested_candidate_count_from_text,
+)
 from .intent_router import route_intent
 from .models import CandidateContract, EvaluationRecord, ModelCapability, RECOMMENDATION_SET_SCHEMA, RecommendationCase, RecommendationCandidate, RecommendationSet, RouteDecision, RecommendationValidationError, public_text
 from .ports import AgentPort, AgentStepResult, HttpAgentPort, HttpEndpoint, HttpKnowledgePort, HttpToolPort, KnowledgePort, ToolPort
@@ -130,6 +136,9 @@ class RecommenderService:
             route_name = str(workflow).strip().lower()
             if route_name not in {"recommendation", "professional_report"}:
                 raise ValueError("固定Recommender workflow仅支持recommendation或professional_report")
+            requested_deliveries, declined_deliveries = delivery_preferences_from_text(case.prompt.lower())
+            if route_name == "professional_report" and declined_deliveries and not requested_deliveries:
+                route_name = "recommendation"
             route = RouteDecision(
                 route=route_name,
                 confidence=1.0,
@@ -299,6 +308,7 @@ class RecommenderService:
         agent_port: AgentPort | None = None,
     ) -> RecommendationSet:
         requested_candidate_count = _requested_candidate_count(case)
+        candidate_limit = min(requested_candidate_count, self.config.max_candidates)
         runner = AgentStepRunner(
             port=agent_port or self.agent_port,
             workflow_mode="multi_agent" if mode == "multi_agent" else "single_agent",
@@ -325,7 +335,7 @@ class RecommenderService:
             "case": case.to_dict(),
             "intent": dict(framing),
             "evidence": [item.to_dict(include_excerpt=True) for item in evidence],
-            "max_candidates": self.config.max_candidates,
+            "max_candidates": candidate_limit,
         }
         if council:
             role_outputs = runner.run_named({
@@ -358,7 +368,7 @@ class RecommenderService:
                 "matcher": dict(role_outputs["Matcher"]),
                 "hedger": dict(role_outputs["Hedger"]),
                 "evidence": [item.to_dict(include_excerpt=True) for item in evidence],
-                "max_candidates": self.config.max_candidates,
+                "max_candidates": candidate_limit,
                 "rule": "只能汇总已有候选及受控证据；每个候选均须给出对应reviews，不得计算或编造财务指标。",
             })
             research = {"proposals": moderated["proposals"]}
@@ -395,6 +405,7 @@ class RecommenderService:
     ) -> RecommendationSet:
         """Keep Mode3 branches independent through candidate and FactRef settlement."""
 
+        candidate_limit = min(_requested_candidate_count(case), self.config.max_candidates)
         register_plan = getattr(self.tool_port, "register_candidate_plan", None)
         resolve_evaluation = getattr(self.tool_port, "resolve_candidate_evaluation", None)
         if not callable(register_plan) or not callable(resolve_evaluation):
@@ -411,7 +422,7 @@ class RecommenderService:
                 {"reviews": _accepting_reviews(output.get("proposals", ()))},
                 evidence=evidence,
                 run_id=f"{run_id}.{role.lower()}",
-                max_candidates=self.config.max_candidates,
+                max_candidates=candidate_limit,
                 confirmed_constraints=case.confirmed_constraints,
             )
             if not candidates:
@@ -496,7 +507,7 @@ class RecommenderService:
             "case": case.to_dict(),
             "framing": dict(framing),
             "branch_candidates": moderator_rows,
-            "max_candidates": self.config.max_candidates,
+            "max_candidates": candidate_limit,
             "rule": (
                 "只能从branch_candidates选择CandidateVersion并说明冲突；不得重新计算、改写FactRef或"
                 "读取任一分支的临时Reasoning。"
@@ -507,7 +518,7 @@ class RecommenderService:
             raise RecommendationValidationError("Mode3 Moderator选择了未知或重复CandidateVersion")
         selected = tuple(
             replace(settled_by_version[version_id], rank=rank)
-            for rank, version_id in enumerate(selected_ids[: self.config.max_candidates], start=1)
+            for rank, version_id in enumerate(selected_ids[:candidate_limit], start=1)
         )
         if not selected:
             raise RecommendationValidationError("Mode3 Moderator未选择可交付候选")
@@ -540,8 +551,9 @@ class RecommenderService:
     ) -> RecommendationSet:
         """Apply the sole deterministic Mode 1 aggregation and approval path."""
 
+        candidate_limit = min(_requested_candidate_count(case), self.config.max_candidates)
         candidates, rejected = build_candidates(
-            research, critic, evidence=evidence, run_id=run_id, max_candidates=self.config.max_candidates,
+            research, critic, evidence=evidence, run_id=run_id, max_candidates=candidate_limit,
             confirmed_constraints=case.confirmed_constraints,
         )
         audit.append(
@@ -585,6 +597,7 @@ class RecommenderService:
         elif not callable(evaluator):
             raise RecommenderUnavailable("Mode2需要Host受控候选评估端口")
         runner = AgentStepRunner(port=self.agent_port, workflow_mode="multi_agent", audit=audit)
+        candidate_limit = min(_requested_candidate_count(case), self.config.max_candidates)
         evidence = retrieve_evidence(
             self.knowledge_port,
             catalog_version=case.catalog_version,
@@ -594,7 +607,7 @@ class RecommenderService:
         structurer = runner.run("Structurer", {
             "case": case.to_dict(),
             "evidence": evidence_payload,
-            "max_candidates": self.config.max_candidates,
+            "max_candidates": candidate_limit,
             "round_no": 1,
             "rule": "提出候选及每个候选需要验证的模块；计算结果只能由Host返回。",
         })
@@ -603,7 +616,7 @@ class RecommenderService:
             {"reviews": _accepting_reviews(structurer.get("proposals", ()))},
             evidence=evidence,
             run_id=run_id,
-            max_candidates=self.config.max_candidates,
+            max_candidates=candidate_limit,
             confirmed_constraints=case.confirmed_constraints,
         )
         if not candidates:
@@ -752,6 +765,7 @@ class RecommenderService:
             raise RecommenderUnavailable("Mode4需要Host受控候选评估端口")
         runner = AgentStepRunner(port=self.agent_port, workflow_mode="multi_agent", audit=audit)
         requested_candidate_count = _requested_candidate_count(case)
+        candidate_limit = min(requested_candidate_count, self.config.max_candidates)
         specifier = runner.run("Specifier", {
             "prompt": case.prompt,
             "confirmed_constraints": dict(case.confirmed_constraints),
@@ -783,7 +797,7 @@ class RecommenderService:
                 "case": case.to_dict(),
                 "ranking_spec": spec.to_dict(),
                 "evidence": [item.to_dict(include_excerpt=True) for item in evidence],
-                "max_candidates": requested_candidate_count,
+                "max_candidates": candidate_limit,
                 "generation_round": generation_round,
                 "previous_rejections": list(rejected_rows),
                 "feedback": dict(generator_feedback),
@@ -794,7 +808,7 @@ class RecommenderService:
                 {"reviews": _accepting_reviews(generator.get("proposals", ()))},
                 evidence=evidence,
                 run_id=f"{run_id}.mode4g{generation_round}",
-                max_candidates=requested_candidate_count,
+                max_candidates=candidate_limit,
                 confirmed_constraints=case.confirmed_constraints,
             )
             rejected_rows.extend(generated_rejected)
@@ -806,7 +820,7 @@ class RecommenderService:
                     ),
                     "rejected": list(generated_rejected),
                 }
-                if generation_round == 2:
+                if generation_round == 2 and not candidates:
                     return self._empty_recommendation(
                         case, route, run_id, mode, audit, tuple(rejected_rows),
                         f"Mode4两轮Generator后仍未形成{requested_candidate_count}个通过证据门禁的候选。",
@@ -814,7 +828,8 @@ class RecommenderService:
                         ranking_spec_fingerprint=spec.ranking_spec_fingerprint,
                         ranking_spec=spec.to_dict(),
                     )
-                continue
+                if generation_round == 1:
+                    continue
 
             evaluation_requests: list[dict[str, Any]] = []
             for candidate in candidates:
@@ -926,7 +941,7 @@ class RecommenderService:
                     ),
                     "rejected": list(rejected_rows),
                 }
-                if generation_round == 2:
+                if generation_round == 2 and not evaluated:
                     return self._empty_recommendation(
                         case, route, run_id, mode, audit, tuple(rejected_rows),
                         f"Mode4两轮Generator后仍未形成{requested_candidate_count}个通过Evaluator FactRef核对的候选。",
@@ -934,8 +949,13 @@ class RecommenderService:
                         ranking_spec_fingerprint=spec.ranking_spec_fingerprint,
                         ranking_spec=spec.to_dict(),
                     )
-                continue
-            ranking = rank_candidates(spec, evaluated, metrics_by_version)
+                if generation_round == 1:
+                    continue
+            approved_metrics = {
+                version_id: metrics_by_version[version_id]
+                for version_id in approved_versions
+            }
+            ranking = rank_candidates(spec, evaluated, approved_metrics)
             rejected_rows.extend({
                 "candidate_key": item.candidate_key,
                 "candidate_version_id": item.version_id,
@@ -951,7 +971,7 @@ class RecommenderService:
                 ),
                 "rejected": list(rejected_rows),
             }
-            if generation_round == 2:
+            if generation_round == 2 and not ranking.ranked_candidates:
                 return self._empty_recommendation(
                     case, route, run_id, mode, audit, tuple(rejected_rows),
                     f"Mode4两轮Generator后仍未形成{requested_candidate_count}个满足硬约束的候选。",
@@ -959,6 +979,8 @@ class RecommenderService:
                     ranking_spec_fingerprint=spec.ranking_spec_fingerprint,
                     ranking_spec=spec.to_dict(),
                 )
+            if generation_round == 2:
+                break
         if ranking is None or not ranking.ranked_candidates:
             raise RecommendationValidationError("Mode4未形成确定性排序")
         reviewer = runner.run("Reviewer", {
@@ -1116,6 +1138,11 @@ class RecommenderService:
             status = "partial"
             analysis_status = "partial"
         limitations: list[str] = []
+        if len(candidates) < requested_candidate_count:
+            limitations.append(
+                f"请求{requested_candidate_count}个候选，证据、约束与复核门禁后仅"
+                f"{len(candidates)}个合格；已保留全部合格候选。"
+            )
         limitations.extend(
             f"候选{item.candidate_id}资料状态为{item.library_status}，未调用计算模块。"
             for item in candidates if item.candidate_status == "pending_terms"
@@ -1743,6 +1770,10 @@ def _requested_candidate_count(case: RecommendationCase) -> int:
     for attribute in ("requested_candidate_count", "candidate_count", "selection_spec", "candidate_selection"):
         if hasattr(case, attribute):
             values.append(getattr(case, attribute))
+    if not values:
+        natural_count = requested_candidate_count_from_text(case.prompt)
+        if natural_count is not None:
+            values.append(natural_count)
     return _normalize_requested_candidate_count(values)
 
 
@@ -1815,6 +1846,14 @@ def _requested_outputs(case: RecommendationCase) -> tuple[str, ...]:
     """合并显式调用参数与客户已确认的交付偏好，不推断计算模块。"""
 
     requested = [str(item).strip().lower() for item in case.requested_outputs if str(item).strip()]
+    _, declined = delivery_preferences_from_text(case.prompt.lower())
+    aliases = {
+        "card": {"card"},
+        "quote": {"quote"},
+        "report": {"report", "reporting", "reporter"},
+    }
+    declined_aliases = set().union(*(aliases[item] for item in declined)) if declined else set()
+    requested = [item for item in requested if item not in declined_aliases]
     output_type = str(case.confirmed_constraints.get("output_type", "")).strip().lower()
     deliveries = {
         "card": ("card",),
