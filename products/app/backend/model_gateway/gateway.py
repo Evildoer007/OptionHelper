@@ -416,6 +416,12 @@ def _validated_messages(messages: Sequence[Mapping[str, Any]]) -> list[dict[str,
                 parts.append({"type": "image_url", "image_url": {"url": url}})
             content = parts
         message: dict[str, Any] = {"role": str(role), "content": content}
+        if role == "assistant" and item.get("reasoning_content") is not None:
+            reasoning_content = item.get("reasoning_content")
+            if not isinstance(reasoning_content, str) or len(reasoning_content) > 512_000:
+                raise ValueError("assistant reasoning_content must be bounded text")
+            if reasoning_content:
+                message["reasoning_content"] = reasoning_content
         if role == "assistant" and item.get("tool_calls") is not None:
             tool_calls = item.get("tool_calls")
             if not isinstance(tool_calls, list):
