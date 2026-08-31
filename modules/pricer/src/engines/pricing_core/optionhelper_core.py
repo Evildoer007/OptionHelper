@@ -23,7 +23,7 @@ class PricingInputError(ValueError):
 
 
 def price(contract: ResolvedContract, pricing_config: Any, *, market_snapshot: Mapping[str, Any] | None = None, observed_contract_state: ObservedContractState | Mapping[str, Any] | None = None) -> PricingResult:
-    """唯一合同适配入口。数值PV和Greek只来自standard.vanilla。"""
+    """唯一合同适配入口。PV和Greek只来自正式产品路由对应的数值基座。"""
     if not isinstance(contract, ResolvedContract):
         raise PricingInputError("Pricer只接受ResolvedContract")
     config = _validated_config(pricing_config)
@@ -54,9 +54,15 @@ def _validated_config(value: Any) -> Any:
 
 
 def _unsupported(contract: ResolvedContract, config: Any, state: ObservedContractState, allowed: tuple[str, ...], reason: str) -> PricingResult:
+    requested_method = getattr(config, "model_method", None)
+    public_method = (
+        requested_method
+        if requested_method in {"analytical", "monte_carlo"}
+        else ("analytical" if "analytical" in allowed else "monte_carlo")
+    )
     return PricingResult(
         pv_amount=None, pv_percent=None, pv_points_100=None, currency=contract.currency,
-        method="unsupported", implementation_id="optionhelper.unsupported", status="unsupported", product_id=contract.product_id,
+        method=public_method, implementation_id="optionhelper.unsupported", status="unsupported", product_id=contract.product_id,
         contract_fingerprint=contract.contract_fingerprint,
         greeks={name: GreekValue(value=None, unit=None, bump=None, difference="not_applicable", status="not_applicable", reason=reason) for name in ("delta", "gamma", "vega", "theta", "rho")},
         input_snapshot={"contract": contract.to_protocol_dict(), "pricing_config": _config_dict(config), "optionreg_allowed_methods": list(allowed)},
