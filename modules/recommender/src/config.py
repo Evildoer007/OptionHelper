@@ -11,7 +11,7 @@ from .models import CandidateSelectionSpec, RecommendationValidationError
 @dataclass(frozen=True)
 class RecommenderConfig:
     agent_mode: str = "auto"
-    max_candidates: int = 3
+    max_candidates: int = 10
     max_loop_rounds: int = 2
     max_agent_rounds: int = 4
     multi_agent_preset: str = "sequential-deliberation"
