@@ -15,6 +15,7 @@ from typing import Any
 
 _UNDERLYING = re.compile(r"(?<![A-Za-z0-9])(?P<code>\d{6}\.(?:SH|SZ))(?![A-Za-z0-9])", re.IGNORECASE)
 _HORIZON = re.compile(r"(?P<number>\d+|[一二三四五六七八九十两]+)\s*(?P<unit>个?月|月|年|个?季度|季度|季)")
+_YEAR_AND_HALF = re.compile(r"(?P<number>\d+|[一二三四五六七八九十两]+)\s*年半")
 _LOSS = re.compile(r"(?:最大(?:可承受)?(?:亏损|损失|回撤)?|最大亏损?|亏损(?:不超过|上限为|控制在|改为)?|回撤(?:不超过|上限为|控制在|改为)?|最大(?:可承受)?(?:亏损|损失|回撤)?改为)\s*(?P<value>\d+(?:\.\d+)?)\s*[%％]")
 _PATH_COUNT = re.compile(
     r"(?:"
@@ -24,9 +25,23 @@ _PATH_COUNT = re.compile(
     r")",
     re.IGNORECASE,
 )
+_CANDIDATE_COUNT = re.compile(
+    r"(?:"
+    r"(?:推荐|筛选|选出|选|列出|提供|给出|给我|返回|想要|需要|要)\s*"
+    r"(?P<number>\d+|[一二三四五六七八九十两]+)\s*"
+    r"(?:个(?!月)|种|项|款|只)[^，,。；;！？!?]{0,8}?(?:候选|结构|产品|结果)"
+    r"|(?:候选|结构|产品)(?:数量|个数)\s*(?:为|是|=|：|:)?\s*"
+    r"(?P<explicit>\d+|[一二三四五六七八九十两]+)"
+    r"(?!(?:\d|[.%％]|\s*(?:个?月|年|季度|季|周|天)))"
+    r")"
+)
 _CHINESE_NUMBER = {"一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9, "十": 10}
 _REQUIRED = ("underlying", "horizon", "market_view", "max_loss", "principal_fluctuation")
-_NEGATION = r"(?:不|别|否|难以|不会|不再|未(?!来)|无)"
+_NEGATION = r"(?:不再|不会|没有|并非|并不|难以|未(?!来)|没|别|否|无|不)"
+_SEMANTIC_BOUNDARY = re.compile(
+    r"[，,。；;！？!?]|(?:改为|改成|调整为|转为|变为|"
+    r"改|反而|而是|而会|但是|但|而)"
+)
 _QUESTIONS = {
     "underlying": "请补充标的代码，例如000905.SH。",
     "horizon": "请确认投资期限，例如3个月。",
@@ -34,6 +49,12 @@ _QUESTIONS = {
     "max_loss": "请确认最大可承受亏损，例如30%。",
     "principal_fluctuation": "请确认是否接受本金波动。",
 }
+_TERM_FIELD = (
+    r"(?:执行价|执行水平|行权价|票息|票面收益|参与率|权利金|期权费|"
+    r"敲出|敲入|气囊障碍|结算|行权方式|(?<![a-z0-9])k(?=\d|[^a-z0-9]|$))"
+)
+_TERM_ACTION = r"(?:改|调|调整|设|设置|变|替换)"
+_TERM_REJECTION = r"(?:不要|不用|无需|不需要|别|拒绝|不接受|不(?:改|调|调整|设|设置|变|替换))"
 
 
 def normalize_confirmed_constraints(value: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -112,6 +133,8 @@ def _merge_user_constraints(existing: dict[str, Any], extracted: Mapping[str, An
     """后续表达只覆盖它真正说明的维度，不能抹掉已确认的波动观点。"""
 
     value = dict(extracted)
+    negated_outputs = set(value.pop("_negated_outputs", ()))
+    term_operations = value.pop("_term_override_operations", ())
     previous_view = str(existing.get("market_view", ""))
     current_view = str(value.get("market_view", ""))
     if previous_view:
@@ -130,12 +153,30 @@ def _merge_user_constraints(existing: dict[str, Any], extracted: Mapping[str, An
             value["market_view"] = merged
         else:
             existing.pop("market_view", None)
-    overrides = value.pop("term_overrides", None)
+    if negated_outputs and "output_type" not in value:
+        current_output = str(existing.get("output_type", ""))
+        remaining = ({"card", "report"} if current_output == "both" else {current_output}) - negated_outputs
+        if remaining == {"card", "report"}:
+            existing["output_type"] = "both"
+        elif len(remaining) == 1 and next(iter(remaining)) in {"card", "quote", "report"}:
+            existing["output_type"] = next(iter(remaining))
+        else:
+            existing.pop("output_type", None)
     existing.update(value)
-    if isinstance(overrides, Mapping):
+    if isinstance(term_operations, Sequence) and not isinstance(term_operations, (str, bytes)):
         merged_overrides = dict(existing.get("term_overrides", {}))
-        merged_overrides.update(overrides)
-        existing["term_overrides"] = merged_overrides
+        for operation in term_operations:
+            if not isinstance(operation, Sequence) or isinstance(operation, (str, bytes)) or len(operation) < 2:
+                continue
+            action, key = str(operation[0]), str(operation[1])
+            if action == "remove":
+                merged_overrides.pop(key, None)
+            elif action == "set" and len(operation) == 3:
+                merged_overrides[key] = operation[2]
+        if merged_overrides:
+            existing["term_overrides"] = merged_overrides
+        else:
+            existing.pop("term_overrides", None)
 
 
 def _view_parts(value: str) -> tuple[str, str]:
@@ -220,35 +261,13 @@ def _extract_text(text: str) -> dict[str, Any]:
     principal = _principal_from_text(text)
     if principal is not None:
         result["principal_fluctuation"] = principal
-    wants_card = any(word in lowered for word in ("研究简报", "简报", "卡片", "card", "简单报告"))
-    wants_report = any(word in lowered for word in ("完整研究报告", "详细报告", "深度报告", "完整报告", "report"))
-    wants_quote = any(word in lowered for word in ("参考报价", "报价表", "quote"))
-    card_terms = r"(?:研究简报|简报|卡片|card|简单报告)"
-    report_terms = r"(?:完整研究报告|详细报告|深度报告|完整报告|report)"
-    quote_terms = r"(?:参考报价|报价表|quote)"
-    negative = r"(?:不要|不需要|不用)"
-    clauses = re.split(r"[，,。；;]", lowered)
-    card_negated = any(re.search(rf"{negative}.{{0,12}}{card_terms}", clause) for clause in clauses)
-    report_negated = any(re.search(rf"{negative}.{{0,12}}{report_terms}", clause) for clause in clauses)
-    quote_negated = any(re.search(rf"{negative}.{{0,12}}{quote_terms}", clause) for clause in clauses)
-    only_report = wants_report and (card_negated or bool(re.search(rf"(?:只要|仅要|只需).{{0,12}}{report_terms}", lowered)))
-    only_card = wants_card and (report_negated or bool(re.search(rf"(?:只要|仅要|只需).{{0,12}}{card_terms}", lowered)))
-    only_quote = wants_quote and bool(re.search(rf"(?:只要|仅要|只需).{{0,12}}{quote_terms}", lowered))
-    wants_both = wants_card and wants_report and not card_negated and not report_negated and not only_report and not only_card
-    if only_quote and not quote_negated:
-        result["output_type"] = "quote"
-    elif only_report and not report_negated:
-        result["output_type"] = "report"
-    elif only_card and not card_negated:
-        result["output_type"] = "card"
-    elif wants_both:
+    affirmed_outputs, negated_outputs = delivery_preferences_from_text(lowered)
+    if {"card", "report"}.issubset(affirmed_outputs):
         result["output_type"] = "both"
-    elif wants_card:
-        result["output_type"] = "card"
-    elif wants_quote and not quote_negated:
-        result["output_type"] = "quote"
-    elif wants_report or "报告" in lowered:
-        result["output_type"] = "report"
+    elif len(affirmed_outputs) == 1:
+        result["output_type"] = next(iter(affirmed_outputs))
+    if negated_outputs:
+        result["_negated_outputs"] = tuple(sorted(negated_outputs))
     wants_html = any(word in lowered for word in ("html", "网页", "web"))
     wants_pdf = "pdf" in lowered
     replaces_html = bool(re.search(r"(?:不要|不需要).{0,8}html|(?:改为|改成).{0,8}pdf", lowered))
@@ -256,9 +275,9 @@ def _extract_text(text: str) -> dict[str, Any]:
         result["format"] = "pdf"
     elif wants_html:
         result["format"] = "html"
-    term_overrides = _extract_term_overrides(text)
-    if term_overrides:
-        result["term_overrides"] = term_overrides
+    term_operations = _term_override_operations(text)
+    if term_operations:
+        result["_term_override_operations"] = term_operations
     path_count = _path_count_from_text(text)
     if path_count is not None:
         result["path_count"] = path_count
@@ -276,6 +295,18 @@ def _normalize_path_count(value: object) -> int | None:
         parsed = int(value.strip())
         return parsed if parsed > 0 else None
     return None
+
+
+def requested_candidate_count_from_text(value: object) -> int | None:
+    """提取用户明确要求的候选数量，不从期限或产品编号推断。"""
+
+    match = _CANDIDATE_COUNT.search(str(value or ""))
+    if match is None:
+        return None
+    token = match.group("number") or match.group("explicit")
+    if token.isdigit() and len(token) > 1 and token.startswith("0"):
+        return None
+    return _number(token)
 
 
 def _path_count_from_text(text: str) -> int | None:
@@ -310,24 +341,22 @@ def _normalize_term_overrides(value: object) -> dict[str, str | float]:
     return result
 
 
-def _extract_term_overrides(text: str) -> dict[str, str | float]:
-    """Extract only explicit, customer-facing contract terms.
-
-    These are intentionally conservative.  Ambiguous product-specific terms
-    remain unchanged and are shown for confirmation rather than guessed.
-    """
-
+def _extract_term_overrides_from_clause(text: str) -> dict[str, str | float]:
     compact = re.sub(r"\s+", "", text).lower()
     result: dict[str, str | float] = {}
+    changed_number = (
+        r"(?:(?:从|由)[0-9]+(?:\.[0-9]+)?[%％]?(?:改为|改成|调整到|调整为|变为)"
+        r"|(?:调整|改)?[为是]?)([0-9]+(?:\.[0-9]+)?)"
+    )
 
     numeric_patterns = (
-        ("K4", r"第四执行(?:价|水平)[为是]?([0-9]+(?:\.[0-9]+)?)"),
-        ("K3", r"第三执行(?:价|水平)[为是]?([0-9]+(?:\.[0-9]+)?)"),
-        ("K2", r"第二执行(?:价|水平)[为是]?([0-9]+(?:\.[0-9]+)?)"),
-        ("K1", r"第一执行(?:价|水平)[为是]?([0-9]+(?:\.[0-9]+)?)"),
-        ("K", r"(?<![一二三四五六七八九十])执行(?:价|水平)(?:调整|改)?[为是]?([0-9]+(?:\.[0-9]+)?)"),
-        ("P_net", r"净(?:权利金|期权费)[为是]?([0-9]+(?:\.[0-9]+)?)"),
-        ("Pi_0", r"(?<!净)(?:权利金|期权费)[为是]?([0-9]+(?:\.[0-9]+)?)"),
+        ("K4", rf"第四执行(?:价|水平){changed_number}"),
+        ("K3", rf"第三执行(?:价|水平){changed_number}"),
+        ("K2", rf"第二执行(?:价|水平){changed_number}"),
+        ("K1", rf"第一执行(?:价|水平){changed_number}"),
+        ("K", rf"(?<![一二三四五六七八九十])执行(?:价|水平){changed_number}"),
+        ("P_net", rf"净(?:权利金|期权费){changed_number}"),
+        ("Pi_0", rf"(?<!净)(?:权利金|期权费){changed_number}"),
     )
     for key, pattern in numeric_patterns:
         match = re.search(pattern, compact)
@@ -335,8 +364,8 @@ def _extract_term_overrides(text: str) -> dict[str, str | float]:
             result[key] = float(match.group(1))
 
     rate_patterns = (
-        ("c", r"(?:票息|票面收益)[为是]?([0-9]+(?:\.[0-9]+)?)%"),
-        ("alpha", r"参与率[为是]?([0-9]+(?:\.[0-9]+)?)%"),
+        ("c", rf"(?:票息|票面收益){changed_number}[%％]"),
+        ("alpha", rf"参与率{changed_number}[%％]"),
     )
     for key, pattern in rate_patterns:
         match = re.search(pattern, compact)
@@ -344,9 +373,9 @@ def _extract_term_overrides(text: str) -> dict[str, str | float]:
             result[key] = float(match.group(1)) / 100.0
 
     barrier_patterns = (
-        ("H_KO", r"敲出障碍(?:水平)?[为是]?([0-9]+(?:\.[0-9]+)?)"),
-        ("H_KI", r"敲入障碍(?:水平)?[为是]?([0-9]+(?:\.[0-9]+)?)"),
-        ("B", r"(?<!敲出)(?<!敲入)(?:气囊)?障碍(?:水平)?[为是]?([0-9]+(?:\.[0-9]+)?)"),
+        ("H_KO", rf"敲出障碍(?:水平)?{changed_number}"),
+        ("H_KI", rf"敲入障碍(?:水平)?{changed_number}"),
+        ("B", rf"(?<!敲出)(?<!敲入)(?:气囊)?障碍(?:水平)?{changed_number}"),
     )
     for key, pattern in barrier_patterns:
         match = re.search(pattern, compact)
@@ -371,8 +400,161 @@ def _extract_term_overrides(text: str) -> dict[str, str | float]:
     return result
 
 
+def _term_override_operations(text: str) -> tuple[tuple[object, ...], ...]:
+    operations: list[tuple[object, ...]] = []
+    last_keys: tuple[str, ...] = ()
+    for clause in _clauses(text):
+        keys = _mentioned_term_keys(clause)
+        if keys:
+            last_keys = keys
+        elif last_keys and _inherits_term_keys(clause):
+            keys = last_keys
+        removals = keys if keys and re.search(r"(?:恢复|改回|还原|使用|用)?默认|取消|删除|移除|清除|不再使用", clause) else ()
+        if removals:
+            operations.extend(("remove", key) for key in removals)
+            continue
+        if keys and _rejects_term_change(clause):
+            operations = [operation for operation in operations if str(operation[1]) not in keys]
+            continue
+        updates = _extract_term_overrides_from_clause(clause)
+        if not updates and keys:
+            updates = _implied_term_override(clause, keys)
+        operations.extend(("set", key, value) for key, value in updates.items())
+    return tuple(operations)
+
+
+def _inherits_term_keys(clause: str) -> bool:
+    return bool(
+        re.search(r"(?:恢复|改回|还原|使用|用)?默认|(?:取消|删除|移除|清除)|(?:不要|别|无需|不用).{0,6}(?:改|调|调整|设|设置|变)|(?:改为|改成|调整到|调整为|设为|变为)\s*\d", clause)
+    )
+
+
+def _implied_term_override(clause: str, keys: Sequence[str]) -> dict[str, str | float]:
+    if len(keys) != 1:
+        return {}
+    match = re.search(r"(?:改为|改成|调整到|调整为|设为|变为)\s*(\d+(?:\.\d+)?)\s*([%％]?)", clause)
+    if match is None:
+        return {}
+    key = str(keys[0])
+    amount = float(match.group(1))
+    if key in {"c", "alpha"}:
+        return {key: amount / 100.0} if match.group(2) else {}
+    if key in {"K", "K1", "K2", "K3", "K4", "Pi_0", "P_net", "H_KO", "H_KI", "B"}:
+        return {key: amount}
+    return {}
+
+
+def classify_term_change(value: object) -> str:
+    """返回条款修改语义，供Host区分应用、清除、拒绝和未解析修改。"""
+
+    text = str(value or "").strip().lower()
+    if not text:
+        return "none"
+    operations = _term_override_operations(text)
+    if operations:
+        return "cleared" if operations[-1][0] == "remove" else "applied"
+    mentioned = any(_mentioned_term_keys(clause) for clause in _clauses(text))
+    if mentioned and any(_rejects_term_change(clause) for clause in _clauses(text)):
+        return "rejected"
+    if mentioned and re.search(r"(?:改|调|调整|设|设置|变|替换|取消|删除|恢复|默认)", text):
+        return "unresolved"
+    if re.search(r"(?:恢复|改回|还原).{0,4}默认|(?:取消|删除|移除|清除).{0,4}(?:覆盖|条款|参数)", text):
+        return "unresolved"
+    if not re.search(r"(?:无需|不用|不要|别).{0,6}(?:调整|修改).{0,6}(?:条款|参数)", text) and re.search(
+        r"(?:(?:调整|修改|改动|变更).{0,6}(?:条款|参数)|(?:条款|参数).{0,6}(?:调整|修改|改动|变更))",
+        text,
+    ):
+        return "unresolved"
+    return "none"
+
+
+def _mentioned_term_keys(clause: str) -> tuple[str, ...]:
+    lowered = clause.lower()
+    keys: list[str] = []
+    if re.search(r"(?:执行价|执行水平|行权价|(?<![a-z0-9])k(?=\d|[^a-z0-9]|$))", lowered):
+        keys.append("K")
+    if re.search(r"(?:票息|票面收益)", lowered):
+        keys.append("c")
+    if re.search(r"(?:参与率)", lowered):
+        keys.append("alpha")
+    if re.search(r"(?:净权利金|净期权费)", lowered):
+        keys.append("P_net")
+    elif re.search(r"(?:权利金|期权费)", lowered):
+        keys.append("Pi_0")
+    keys.extend(_barrier_feature_keys(lowered, "敲出", "H_KO", "O_KO"))
+    keys.extend(_barrier_feature_keys(lowered, "敲入", "H_KI", "O_KI"))
+    if "气囊障碍" in lowered:
+        keys.append("B")
+    if "结算" in lowered:
+        keys.append("settlement")
+    if "行权方式" in lowered or "行权风格" in lowered:
+        keys.append("exercise_style")
+    return tuple(dict.fromkeys(keys))
+
+
+def _barrier_feature_keys(text: str, marker: str, barrier_key: str, observation_key: str) -> tuple[str, ...]:
+    keys: list[str] = []
+    for match in re.finditer(marker, text):
+        following = re.search(r"(?:敲出|敲入)", text[match.end():])
+        end = match.end() + following.start() if following else len(text)
+        segment = text[match.start():end]
+        barrier = bool(re.search(r"障碍|障碍水平", segment))
+        observation = bool(re.search(r"观察|频率|日程|方式", segment))
+        if not barrier and not observation:
+            keys.extend((barrier_key, observation_key))
+        else:
+            if barrier:
+                keys.append(barrier_key)
+            if observation:
+                keys.append(observation_key)
+    return tuple(keys)
+
+
+def _rejects_term_change(clause: str) -> bool:
+    number = r"\d+(?:\.\d+)?[%％]?"
+    return bool(
+        re.search(rf"{_TERM_REJECTION}.{{0,16}}(?:{_TERM_ACTION}|{_TERM_FIELD})", clause)
+        or re.search(rf"{_TERM_ACTION}.{{0,8}}{_TERM_REJECTION}", clause)
+        or re.search(rf"{_TERM_FIELD}.{{0,8}}{_TERM_REJECTION}.{{0,8}}{number}", clause)
+        or re.search(rf"{_TERM_FIELD}.{{0,6}}{number}.{{0,4}}(?:{_TERM_REJECTION}|取消)", clause)
+    )
+
+
+def _clauses(text: str) -> tuple[str, ...]:
+    return tuple(item for item in (part.strip().lower() for part in re.split(r"[，,。；;！？!?]", text)) if item)
+
+
+def delivery_preferences_from_text(text: str) -> tuple[set[str], set[str]]:
+    """返回当前表达中明确要求和明确拒绝的交付类型。"""
+
+    patterns = {
+        "card": r"(?:研究简报|简报|卡片|card|简单报告)",
+        "quote": r"(?:参考报价|报价表|quote)",
+        "report": r"(?:完整研究报告|详细报告|深度报告|完整报告|report|(?<!简)报告)",
+    }
+    matches: list[tuple[int, int, str, bool]] = []
+    for kind, pattern in patterns.items():
+        for match in re.finditer(pattern, text):
+            matches.append((match.start(), match.end(), kind, _delivery_is_negated(text, match.start(), match.end())))
+    active: set[str] = set()
+    negated: set[str] = set()
+    previous_end = 0
+    for start, end, kind, is_negated in sorted(matches):
+        bridge = text[previous_end:start]
+        if not is_negated and re.search(r"(?:改为|改成|换成|只要|仅要|只需)", bridge):
+            active.clear()
+        if is_negated:
+            active.discard(kind)
+            negated.add(kind)
+        else:
+            active.add(kind)
+            negated.discard(kind)
+        previous_end = end
+    return active, negated
+
+
 def _normalize_horizon(value: object) -> str | None:
-    text = str(value or "").strip()
+    text = _expand_natural_horizon(str(value or "").strip())
     matches = tuple(_HORIZON.finditer(text))
     if not matches:
         return "3个月" if "一季" in text else None
@@ -388,13 +570,13 @@ def _normalize_horizon(value: object) -> str | None:
             f"{number}个月"
         )
         before = text[max(0, match.start() - 10):match.start()]
-        after = text[match.end():min(len(text), match.end() + 16)]
+        after = text[match.end():min(len(text), match.end() + 12)]
         context = before + match.group(0) + after
         score = 0
         if re.search(r"(?:未来|期限|持有|投资|合同|到期|存续)", context):
             score += 4
-        if re.search(r"(?:近|过去|历史|回测|样本|统计)$", before) or re.search(
-            r"(?:%|％|分位|历史|回测|样本|统计|表现|收益率|波动率)", after,
+        if re.search(r"(?:近|过去|历史|回测|样本|统计)\s*$", before) or re.match(
+            r"\s*(?:的)?(?:分位|历史|回测|样本|统计|表现|收益率|波动率)", after,
         ):
             score -= 4
         candidates.append((score, match.start(), normalized))
@@ -404,31 +586,86 @@ def _normalize_horizon(value: object) -> str | None:
     return max(eligible, key=lambda item: (item[0], item[1]))[2]
 
 
+def _expand_natural_horizon(text: str) -> str:
+    """把常用自然期限转换为统一月份表达，保留前后语境供窗口判别。"""
+
+    def year_and_half(match: re.Match[str]) -> str:
+        number = _number(match.group("number"))
+        return f"{number * 12 + 6}个月" if number is not None else match.group(0)
+
+    expanded = _YEAR_AND_HALF.sub(year_and_half, text)
+    return expanded.replace("半年", "6个月")
+
+
 def _normalize_market_view(value: object) -> str | None:
     text = str(value or "").strip().lower()
     if not text:
         return None
-    direction = (
-        "上涨" if _affirmed(text, ("上涨", "看涨", "上行", "走高")) else
-        "看跌" if _affirmed(text, ("下跌", "看跌", "下行", "走低")) else
-        "震荡" if _affirmed(text, ("震荡", "横盘")) else ""
+    direction_choices: tuple[tuple[str, tuple[str, ...]], ...] = (
+        ("上涨", ("上涨", "看涨", "上行", "走高")),
+        ("看跌", ("下跌", "看跌", "下行", "走低")),
+        ("震荡", ("震荡", "横盘")),
     )
-    volatility = (
-        "波动率上升" if _affirmed(text, ("波动率上升", "波动率上行", "隐含波动率上升", "隐波上升", "波动加大", "波动增大", "iv上升")) else
-        "波动率下降" if _affirmed(text, ("波动率下降", "波动率下行", "隐含波动率下降", "隐波下降", "iv下降")) else ""
-    )
+    if not re.search(r"(?:隐含波动率|波动率|隐波|iv)", text):
+        direction_choices = (
+            ("上涨", ("上涨", "看涨", "上行", "走高", "上升")),
+            ("看跌", ("下跌", "看跌", "下行", "走低", "下降")),
+            direction_choices[2],
+        )
+    direction = _latest_market_expression(text, direction_choices) or ""
+    volatility_expression = _latest_market_expression(text, (
+        ("波动率上升", ("波动率上升", "波动率上行", "隐含波动率上升", "隐波上升", "波动加大", "波动增大", "iv上升")),
+        ("波动率下降", ("波动率下降", "波动率下行", "隐含波动率下降", "隐波下降", "iv下降")),
+    ))
+    volatility = volatility_expression or ""
+    volatility_markers = tuple(re.finditer(r"(?:隐含波动率|波动率|隐波|iv)", text))
+    if volatility_markers:
+        tail = text[volatility_markers[-1].start():]
+        stop = re.search(r"(?:但是|但|而)(?:价格|标的|指数)", tail)
+        if stop:
+            tail = tail[:stop.start()]
+        inherited = _latest_market_expression(tail, (
+            ("波动率上升", ("上升", "上行", "加大", "增大")),
+            ("波动率下降", ("下降", "下行", "减小", "降低")),
+        ))
+        if inherited is not None:
+            volatility = inherited
     return "+".join(part for part in (direction, volatility) if part) or None
 
 
-def _affirmed(text: str, terms: Sequence[str]) -> bool:
-    """只接受未被局部否定的市场判断；否定本身不推断反方向。"""
+def _latest_market_expression(text: str, choices: Sequence[tuple[str, Sequence[str]]]) -> str | None:
+    """返回最后一次观点表达；末次否定会清除同维度的旧观点。"""
 
-    for term in terms:
-        for match in re.finditer(re.escape(term), text):
-            prefix = text[max(0, match.start() - 10):match.start()]
-            if not re.search(rf"{_NEGATION}.{{0,8}}$", prefix):
-                return True
-    return False
+    matches: list[tuple[int, str, bool]] = []
+    for normalized, terms in choices:
+        for term in terms:
+            for match in re.finditer(re.escape(term), text):
+                matches.append((match.end(), normalized, _is_locally_negated(text, match.start())))
+    if not matches:
+        return None
+    _, normalized, negated = max(matches, key=lambda item: item[0])
+    return "" if negated else normalized
+
+
+def _is_locally_negated(text: str, position: int) -> bool:
+    local = _local_prefix(text, position)
+    return bool(re.search(rf"{_NEGATION}.{{0,8}}$", local))
+
+
+def _delivery_is_negated(text: str, start: int, end: int) -> bool:
+    if _is_locally_negated(text, start) or re.search(r"(?:取消|放弃).{0,6}$", _local_prefix(text, start)):
+        return True
+    suffix = re.split(r"[，,。；;！？!?]", text[end:], maxsplit=1)[0]
+    return bool(re.match(
+        r"\s*(?:(?:我|我们|本人)\s*)?(?:不要|不用|无需|不需要|不想要|没(?:有)?必要|取消|放弃|作罢)",
+        suffix,
+    ))
+
+
+def _local_prefix(text: str, position: int) -> str:
+    prefix = text[:position]
+    boundaries = tuple(_SEMANTIC_BOUNDARY.finditer(prefix))
+    return prefix[boundaries[-1].end():] if boundaries else prefix
 
 
 def _normalize_loss(value: object) -> str | None:
@@ -473,6 +710,8 @@ def _principal_from_text(text: str) -> bool | None:
     if not compact:
         return None
     if re.search(r"(?:不接受|不能接受|不愿接受|拒绝).{0,8}(?:本金|净值).{0,6}(?:波动|亏损|损失)", compact):
+        return False
+    if re.search(r"(?:接受|可接受|可以接受|能接受|承受)?.{0,4}(?:本金|净值).{0,6}(?:不|无|不能)(?:发生)?(?:波动|亏损|损失)", compact):
         return False
     if re.search(r"(?:接受|可接受|可以接受|能接受|承受).{0,8}(?:本金|净值).{0,6}(?:波动|亏损|损失)", compact):
         return True
@@ -535,6 +774,7 @@ def _confirmation(text: str) -> bool | None:
 
 
 __all__ = (
-    "extract_confirmed_constraints", "merge_confirmed_constraints", "missing_required_constraints",
+    "classify_term_change", "extract_confirmed_constraints", "merge_confirmed_constraints", "missing_required_constraints",
     "normalize_confirmed_constraints", "question_for_missing_constraint", "question_for_missing_constraints",
+    "requested_candidate_count_from_text",
 )
