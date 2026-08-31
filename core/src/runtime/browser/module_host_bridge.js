@@ -22,7 +22,7 @@
   const bridgeNonce = query.get("bridge_nonce");
   const allowedThemes = new Set(["light", "dark"]);
   const allowedPreferences = new Set(["light", "dark", "auto"]);
-  const directOperationResultModules = new Set(["pricer", "backtester"]);
+  const directOperationResultModules = new Set(["payoffer", "pricer", "backtester"]);
 
   function applyTheme(theme, preference = theme) {
     const root = document.documentElement;
@@ -414,6 +414,21 @@
   function asResponse(status, body) {
     return new Response(JSON.stringify(body), {status, headers: {"Content-Type": "application/json"}});
   }
+  function pageResultEnvelope(response, envelope) {
+    const hasResult = envelope
+      && typeof envelope === "object"
+      && !Array.isArray(envelope)
+      && Object.prototype.hasOwnProperty.call(envelope, "result");
+    const result = hasResult ? envelope.result : envelope;
+    if (
+      !response.ok
+      || !result
+      || typeof result !== "object"
+      || Array.isArray(result)
+      || Object.prototype.hasOwnProperty.call(result, "ok")
+    ) return result;
+    return {ok: true, ...result};
+  }
   function asParsedResponse(status, body) {
     const create = () => {
       const response = new Response(null, {status, headers: {"Content-Type": "application/json"}});
@@ -444,9 +459,9 @@
   function retryDelay(failures) {
     return Math.min(4_000, 500 * (2 ** Math.min(Math.max(0, failures - 1), 3)));
   }
-  function operationConnectionState(state, operationId, message = "") {
+  function operationConnectionState(state, operationId, message = "", metadata = {}) {
     window.dispatchEvent(new CustomEvent("optionhelper.module-operation-connection", {
-      detail: {state, operation_id: operationId, module: moduleName, message},
+      detail: {state, operation_id: operationId, module: moduleName, message, ...metadata},
     }));
   }
   function isRecoverableResponse(response) {
@@ -460,7 +475,6 @@
     return new Promise((resolve, reject) => {
       let settled = false;
       let retries = 0;
-      const maximumRetries = 4;
       let timer = 0;
       const finish = (value) => {
         if (settled) return;
@@ -478,10 +492,6 @@
       };
       const requestAgain = () => {
         if (settled) return;
-        if (retries >= maximumRetries) {
-          finish(null);
-          return;
-        }
         requestHostContext(retries === 0 ? "timeout" : "recovery");
         retries += 1;
         timer = window.setTimeout(requestAgain, retryDelay(retries));
@@ -505,8 +515,6 @@
       delete body.identity;
       delete body.term_overrides;
     }
-    if (moduleName === "backtester" && action === "run" && typeof body.history_reference === "string"
-      && /[\\/]/.test(body.history_reference)) delete body.history_reference;
   }
   function requestedMethod(input, init) {
     return String(init.method || (typeof Request !== "undefined" && input instanceof Request ? input.method : "GET")).toUpperCase();
@@ -637,7 +645,7 @@
       signal,
     });
     const envelope = await response.json();
-    const result = envelope.result || envelope;
+    const result = pageResultEnvelope(response, envelope);
     if (moduleName === "payoffer" && action === "run" && !result.destination && result.module_run_ref?.run_id) {
       result.destination = "结果已保存到当前研究任务。";
     }
@@ -675,25 +683,68 @@
     const {response: submitted, envelope} = submission;
     if (!submitted.ok) return asResponse(submitted.status, envelope);
     const operationId = envelope.operation?.operation_id;
-    // Compatibility with pre-operation hosts while a rolling App update is
-    // underway. The current App always returns operation_id; this branch also
-    // keeps a directly completed gateway result usable during that upgrade.
     if (!operationId) {
-      if (envelope.result && typeof envelope.result === "object") {
-        return finalizeHostedResult(action, body, envelope.result);
-      }
       return asResponse(500, {ok: false, message: "后台运行未返回操作标识。"});
     }
     const directResult = directOperationResultModules.has(moduleName);
-    const completed = await waitForHostedOperation(taskId, operationId, signal, {includeResult: !directResult});
+    operationConnectionState("submitted", operationId, "后台任务已提交。");
+    let completed;
+    let cancelledByCaller = false;
+    let cancelController = null;
+    let cancelRequest = null;
+    try {
+      completed = await waitForHostedOperation(taskId, operationId, signal, {includeResult: !directResult});
+    } catch (error) {
+      if (error?.name !== "AbortError") throw error;
+      cancelledByCaller = true;
+      operationConnectionState("cancelling", operationId, "正在等待后台确认取消。");
+      cancelController = new AbortController();
+      cancelRequest = cancelHostedOperation(taskId, operationId, headers, cancelController.signal);
+      try {
+        completed = await waitForHostedOperation(taskId, operationId, undefined, {includeResult: !directResult});
+      } finally {
+        cancelController.abort();
+        await cancelRequest.catch(() => {});
+      }
+    }
     if (!completed.ok) return completed;
     if (directResult) {
-      const outcome = await fetchHostedOperationResult(taskId, operationId, signal);
+      // Once the operation is terminal, its result is authoritative. A late
+      // local abort must not turn an already-succeeded operation into a
+      // client-side cancellation.
+      const outcome = await fetchHostedOperationResult(taskId, operationId, undefined);
       if (!outcome.response.ok) return outcome.response;
-      return finalizeHostedResult(action, body, outcome.result, outcome.response);
+      return finalizeHostedResult(action, body, outcome.result, outcome.response, hostContext);
     }
     const result = await completed.clone().json().catch(() => ({}));
-    return finalizeHostedResult(action, body, result, completed);
+    return finalizeHostedResult(action, body, result, completed, hostContext);
+  }
+
+  async function cancelHostedOperation(taskId, operationId, headers, signal) {
+    let failures = 0;
+    while (!signal?.aborted) {
+      try {
+        const response = await nativeFetch(
+          `/api/tasks/${encodeURIComponent(taskId)}/operations/${encodeURIComponent(operationId)}/cancel`,
+          {method: "POST", credentials: "same-origin", headers, body: "{}", signal},
+        );
+        if (response.ok || response.status === 409) return;
+        if (!isRecoverableResponse(response)) {
+          operationConnectionState("cancel-pending", operationId, "取消请求未被接受，正在核对后台任务状态。");
+          return;
+        }
+      } catch (error) {
+        if (signal?.aborted || error?.name === "AbortError") return;
+      }
+      failures += 1;
+      operationConnectionState("cancel-pending", operationId, "取消请求将在连接恢复后自动重试。");
+      try {
+        await wait(retryDelay(failures), signal);
+      } catch (error) {
+        if (signal?.aborted || error?.name === "AbortError") return;
+        throw error;
+      }
+    }
   }
 
   async function submitHostedOperation(taskId, action, body, headers, signal, recoveryId) {
@@ -703,30 +754,29 @@
       try {
         const response = await nativeFetch(`/api/tasks/${encodeURIComponent(taskId)}/operations`, {
           method: "POST", credentials: "same-origin", headers,
-          body: JSON.stringify({module: moduleName, action, payload: body}), signal,
+          body: JSON.stringify({module: moduleName, action, payload: body}),
         });
         if (!response.ok && isRecoverableResponse(response)) throw new Error(`Operation submission unavailable: ${response.status}`);
         const envelope = await response.json();
-        if (failures) operationConnectionState("connected", recoveryId);
+        if (failures) operationConnectionState("connected", "", "提交连接已恢复。", {request_id: recoveryId});
         return {response, envelope};
       } catch (error) {
         if (signal?.aborted || error?.name === "AbortError") throw error;
         failures += 1;
-        operationConnectionState("recovering", recoveryId);
+        operationConnectionState("recovering", "", "正在恢复任务提交连接。", {request_id: recoveryId});
         await wait(retryDelay(failures), signal);
       }
     }
   }
 
-  function finalizeHostedResult(action, body, result, response = null) {
+  function finalizeHostedResult(action, body, result, response = null, requestContext = context) {
     if (moduleName === "payoffer" && action === "run" && !result.destination && result.module_run_ref?.run_id) {
       result.destination = "结果已保存到当前研究任务。";
     }
     const returnedContractFingerprint = result.contract_fingerprint || result.resolved_contract?.contract_fingerprint || null;
     const hostContractChanged = Boolean(
-      context?.contract_fingerprint
-      && returnedContractFingerprint
-      && returnedContractFingerprint !== context.contract_fingerprint
+      returnedContractFingerprint
+      && returnedContractFingerprint !== (requestContext?.contract_fingerprint || null)
     );
     if (
       action === "run"
@@ -749,6 +799,7 @@
   async function waitForHostedOperation(taskId, operationId, signal, {includeResult = true} = {}) {
     let failures = 0;
     let computeRecovering = false;
+    let lastStatusSignature = "";
     while (true) {
       if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
       try {
@@ -763,6 +814,16 @@
         if (failures) operationConnectionState("connected", operationId);
         failures = 0;
         const operation = envelope.operation || {};
+        const progress = typeof operation.progress === "number" ? operation.progress : Number.NaN;
+        const metadata = {
+          stage: typeof operation.stage === "string" ? operation.stage : "",
+          ...(Number.isFinite(progress) ? {progress} : {}),
+        };
+        const statusSignature = JSON.stringify([operation.state || "queued", metadata.stage, metadata.progress ?? null, operation.message || ""]);
+        if (statusSignature !== lastStatusSignature) {
+          lastStatusSignature = statusSignature;
+          operationConnectionState(operation.state || "queued", operationId, operation.message || "", metadata);
+        }
         if (operation.state === "succeeded") return asResponse(200, operation.result || {});
         if (operation.state === "recovering") {
           computeRecovering = true;
@@ -783,6 +844,10 @@
           );
         }
         if (operation.state === "failed" || operation.state === "cancelled" || operation.state === "interrupted") {
+          if (!includeResult) {
+            const outcome = await fetchHostedOperationResult(taskId, operationId, signal);
+            return outcome.response;
+          }
           return asResponse(operation.state === "failed" ? 500 : 409, {
             ok: false, error: operation.state, message: operation.message || "后台运行未完成。", ...(operation.result || {}),
           });
@@ -811,9 +876,19 @@
           await wait(750, signal);
           continue;
         }
-        if (!response.ok && isRecoverableResponse(response)) throw new Error(`Operation result unavailable: ${response.status}`);
         const result = await response.json();
-        if (!response.ok) return {response: asResponse(response.status, result), result: null};
+        if (!response.ok) {
+          if (
+            result
+            && typeof result === "object"
+            && !Array.isArray(result)
+            && (typeof result.failure_code === "string" || typeof result.stage === "string")
+          ) {
+            return {response: asResponse(response.status, result), result: null};
+          }
+          if (isRecoverableResponse(response)) throw new Error(`Operation result unavailable: ${response.status}`);
+          return {response: asResponse(response.status, result), result: null};
+        }
         if (!result || typeof result !== "object" || Array.isArray(result)) throw new Error("Operation result is not a JSON object");
         if (failures) operationConnectionState("connected", operationId);
         return {response: asParsedResponse(response.status, result), result};
@@ -841,9 +916,21 @@
       return;
     }
     const objectUrl = URL.createObjectURL(await response.blob());
+    const contentType = String(response.headers.get("Content-Type") || "").split(";", 1)[0].trim().toLowerCase();
+    const extension = contentType === "application/json" ? "json" : contentType === "text/csv" ? "csv" : "";
+    if (!extension) {
+      URL.revokeObjectURL(objectUrl);
+      window.dispatchEvent(new CustomEvent("optionhelper.module-download-error", {detail: {status: 415}}));
+      return;
+    }
+    const disposition = String(response.headers.get("Content-Disposition") || "");
+    const declaredName = disposition.match(/filename="([A-Za-z0-9][A-Za-z0-9_.-]{0,132})"/i)?.[1] || "";
+    const filename = declaredName.toLowerCase().endsWith(`.${extension}`)
+      ? declaredName
+      : `${assetId}.${extension}`;
     const target = document.createElement("a");
     target.href = objectUrl;
-    target.download = `${assetId}.csv`;
+    target.download = filename;
     target.hidden = true;
     target.dataset.optionhelperDownload = "native";
     document.body.append(target);
