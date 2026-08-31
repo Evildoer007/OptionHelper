@@ -1,9 +1,5 @@
 #!/usr/bin/env python3
-"""验证App将要使用的同一份已验证Capability。
-
-开发态和测试态绝不把Capability写入``products/app/capability``。平台构建器直接
-接收本次构建的Skill目录，并把它复制到最终安装物；这避免同步盘生成树被再次读取。
-"""
+"""验证App将要使用的独立Capability。"""
 
 from __future__ import annotations
 
@@ -18,7 +14,7 @@ SKILL_PACKAGING = ROOT / "packaging" / "skill"
 if str(SKILL_PACKAGING) not in sys.path:
     sys.path.insert(0, str(SKILL_PACKAGING))
 
-from verify_skill import verify_skill
+from verify_capability import verify_app_capability
 
 
 class AppBuildError(RuntimeError):
@@ -38,19 +34,19 @@ def _finder_copies(root: Path) -> list[Path]:
     return sorted(path for path in root.rglob("*") if _is_finder_copy(path))
 
 
-def validated_capability(skill_root: Path) -> Path:
-    """Return one verified, conflict-free Capability without staging a copy."""
-    skill_root = skill_root.resolve()
-    if not skill_root.is_dir():
-        raise AppBuildError(f"Capability目录不存在：{skill_root}")
-    errors = verify_skill(skill_root)
+def validated_capability(capability_root: Path) -> Path:
+    """Return one verified, conflict-free App Capability."""
+    capability_root = capability_root.resolve()
+    if not capability_root.is_dir():
+        raise AppBuildError(f"Capability目录不存在：{capability_root}")
+    errors = verify_app_capability(capability_root)
     if errors:
-        raise AppBuildError("Skill候选未通过验收：\n" + "\n".join(errors))
-    conflicts = _finder_copies(skill_root)
+        raise AppBuildError("App Capability未通过验收：\n" + "\n".join(errors))
+    conflicts = _finder_copies(capability_root)
     if conflicts:
-        names = ", ".join(path.relative_to(skill_root).as_posix() for path in conflicts)
-        raise AppBuildError(f"Skill候选含同步冲突副本，拒绝使用：{names}")
-    return skill_root
+        names = ", ".join(path.relative_to(capability_root).as_posix() for path in conflicts)
+        raise AppBuildError(f"App Capability含同步冲突副本，拒绝使用：{names}")
+    return capability_root
 
 
 def main() -> None:
