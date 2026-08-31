@@ -12,6 +12,7 @@
     "K": 100.0,
     "Pi_0": 5.0,
     "pricing_methods": [
+      "analytical",
       "monte_carlo"
     ],
     "constraints": [
