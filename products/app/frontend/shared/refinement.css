@@ -1158,13 +1158,6 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
 .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="desk"] .rail-collapse-toggle { color: rgba(121, 132, 125, .58); }
 .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="desk"] .rail-collapse-toggle:hover { color: rgba(121, 132, 125, .9); }
 
-.workspace-shell.workspace-shell--desk[data-workspace-shell][data-navigating="settings"] .workspace-rail,
-.workspace-shell.workspace-shell--desk[data-workspace-shell][data-navigating="settings"] .work-area {
-  opacity: .96;
-  transform: translateY(-2px);
-  transition: opacity .13s ease, transform .13s ease;
-}
-
 /* Mode-specific rail rules may recolor the workspace, never the expanded
    transparent horizontal logo container. */
 .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-rail-collapsed="false"] .workspace-brand,
@@ -1252,7 +1245,8 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
 
 .message--assistant .message__content {
   display: grid;
-  width: min(760px, 78%);
+  width: min(760px, 100%);
+  max-width: 100%;
   min-width: 0;
   gap: 8px;
 }
@@ -1346,20 +1340,29 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
 .composer-attachment__remove:hover,
 .composer-attachment__remove:focus-visible { color: var(--accent); background: color-mix(in srgb, var(--accent) 9%, transparent); }
 
-.composer-actions__leading { display: flex; min-width: 0; align-items: center; gap: 9px; }
+.composer-actions__leading,
+.composer-actions__trailing { display: flex; min-width: 0; align-items: center; gap: 9px; }
+
+.composer-actions__leading { flex: 1 1 180px; overflow: hidden; }
+.composer-actions__trailing { max-width: 100%; flex: 0 1 auto; justify-content: flex-end; margin-inline-start: auto; }
 
 .composer-attach-control {
   display: inline-flex;
+  flex: 0 0 auto;
   align-items: center;
   gap: 4px;
+  padding: 0;
+  border: 0;
   color: var(--muted);
+  background: transparent;
   font-size: 11px;
   font-weight: 600;
   cursor: pointer;
 }
 
 .composer-attach-control:hover { color: var(--accent); }
-.composer-attach-control input { position: absolute; width: 1px; height: 1px; overflow: hidden; opacity: 0; }
+.composer-attach-control:focus-visible { color: var(--accent); outline: 2px solid color-mix(in srgb, var(--accent) 35%, transparent); outline-offset: 3px; }
+.composer-attachment-input { position: absolute; width: 1px; height: 1px; overflow: hidden; opacity: 0; pointer-events: none; }
 .composer-drop-hint { overflow: hidden; color: var(--muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .composer[data-dragging="true"] form { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 13%, transparent); }
 
@@ -1524,9 +1527,10 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
 }
 
 .assistant-reasoning > summary {
-  display: flex;
+  display: grid;
+  grid-template-columns: 14px auto 14px minmax(0, 1fr);
   min-height: 28px;
-  align-items: center;
+  align-items: start;
   gap: 7px;
   min-width: 0;
   padding: 2px 0;
@@ -1579,17 +1583,16 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
 
 .assistant-reasoning__preview {
   min-width: 0;
-  flex: 1 1 auto;
-  overflow: hidden;
-  text-overflow: clip;
-  white-space: nowrap;
-  scroll-behavior: smooth;
+  max-width: 72ch;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
 }
 
 .assistant-reasoning[data-running="true"] .assistant-reasoning__preview {
   color: color-mix(in srgb, var(--muted) 72%, var(--red));
-  animation: reasoning-preview-pulse 1.35s ease-in-out infinite;
 }
+
+.assistant-reasoning[open] .assistant-reasoning__preview { display: none; }
 
 .assistant-reasoning__body {
   max-width: 72ch;
@@ -1617,11 +1620,6 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
 .process-agent-reasoning .assistant-reasoning__body {
   max-height: 240px;
   overflow: auto;
-}
-
-@keyframes reasoning-preview-pulse {
-  0%, 100% { opacity: 0.66; }
-  50% { opacity: 1; }
 }
 
 .message--process details {
@@ -1709,11 +1707,7 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
     transition: none !important;
   }
 
-  .assistant-reasoning[data-running="true"] .assistant-reasoning__preview {
-    animation: none !important;
-    background: none;
-    color: var(--muted);
-  }
+  .assistant-reasoning[data-running="true"] .assistant-reasoning__preview { color: var(--muted); }
 
   .workspace-shell.workspace-shell--desk[data-workspace-shell] .composer form.is-generating { background-image: none; }
 }
@@ -1722,6 +1716,14 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
   .message--assistant .message__content { width: 100%; }
   .assistant-reasoning__body { padding-inline-start: 0; }
   .assistant-reasoning__notice { padding-inline-start: 0; }
+}
+
+@media (max-width: 520px) {
+  .composer-actions__leading,
+  .composer-actions__trailing { width: 100%; }
+  .composer-actions__trailing { flex: 1 1 100%; }
+  .composer-actions__trailing .model-picker { min-width: 0; flex: 1 1 auto; }
+  .composer-actions__trailing .model-picker :is(select, .choice, .choice-trigger) { width: 100%; max-width: 100%; }
 }
 
 /* Keep the OptionHelper palette while using a denser, calmer desktop rhythm:
@@ -2695,14 +2697,23 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
 .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .assistant-region .composer { width: min(820px, calc(100% - 28px)); }
 
 .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .composer form {
-  min-height: 108px;
-  padding: 12px 13px 10px;
+  min-height: 88px;
+  gap: 5px;
+  padding: 10px 12px 8px;
   border-color: #DBDBDB;
   border-radius: 18px;
   box-shadow: 0 6px 24px rgba(38, 38, 38, .08);
 }
 
-.workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .composer textarea { min-height: 34px; }
+.workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .composer textarea {
+  min-height: 30px;
+  max-height: 120px;
+  overflow-y: hidden;
+}
+
+.workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .composer textarea[data-overflow="true"] {
+  overflow-y: auto;
+}
 
 @media (min-width: 701px) {
   .workspace-shell.workspace-shell--desk[data-workspace-shell][data-rail-collapsed="true"] { --rail-effective-width: 56px; }
@@ -2777,21 +2788,21 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
 
 /* Shared task actions are buttons in both OptChat and OptDesk. */
 .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .task-list__row .task-item {
-  padding-right: 38px;
+  padding-right: 46px;
   cursor: default;
 }
 .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .task-list__row:is(:hover, :focus-within, :has(.task-menu-trigger[aria-expanded="true"])) .task-item { background: var(--task-row-state-surface); color: var(--ink); }
 .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .task-menu-trigger {
   position: absolute;
   top: 50%;
-  right: 4px;
+  right: 2px;
   z-index: 3;
   display: grid;
-  width: 21px;
-  height: 21px;
+  width: 36px;
+  height: 36px;
   padding: 0;
   border: 0;
-  border-radius: 50%;
+  border-radius: 9px;
   background: transparent;
   color: color-mix(in srgb, var(--ink) 72%, var(--muted));
   place-items: center;
@@ -2803,7 +2814,7 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
 .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .task-list__row:is(:hover, :focus-within) .task-menu-trigger,
 .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .task-menu-trigger[aria-expanded="true"] { opacity: 1; }
 .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .task-menu-trigger:is(:hover, :focus-visible, [aria-expanded="true"]) { background: var(--task-menu-state-surface); }
-.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .task-menu-trigger svg { display: block; width: 11px; height: 11px; }
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .task-menu-trigger svg { display: block; width: 12px; height: 12px; }
 body > .task-menu {
   position: fixed;
   top: auto;
@@ -3233,7 +3244,7 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
 }
 
 .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-account-trigger {
-  min-height: 28px;
+  min-height: 36px;
   gap: 6px;
   padding: 1px 7px;
   border-radius: 7px;
@@ -3257,11 +3268,11 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
 
 @media (min-width: 701px) {
   .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-rail-collapsed="true"] .rail-account-trigger {
-    width: 32px;
-    min-width: 32px;
-    max-width: 32px;
-    height: 32px;
-    min-height: 32px;
+    width: 36px;
+    min-width: 36px;
+    max-width: 36px;
+    height: 36px;
+    min-height: 36px;
     padding: 0;
   }
 
@@ -3269,5 +3280,16 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
     width: 22px;
     height: 22px;
     flex-basis: 22px;
+  }
+}
+
+@media (pointer: coarse) {
+  .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .task-menu-trigger {
+    width: 44px;
+    height: 44px;
+  }
+
+  .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-account-trigger {
+    min-height: 44px;
   }
 }
