@@ -98,6 +98,13 @@ class DataStore:
             record = self.get(identity, requested_id)
             if isinstance(requested, dict) and requested.get("content_hash") not in {None, record.get("content_hash")}:
                 raise ValidationError("DataAssetRef.content_hash与App登记记录不一致")
+            if schema_id == "market-history" and not _market_history_metadata_consistent(record):
+                raise UserActionError(
+                    "market_history_metadata_inconsistent",
+                    "当前行情资产的覆盖声明与实际行数不一致，请重新获取行情后重试。",
+                    stage="data",
+                    next_step="请重新获取当前标的所需区间的日频行情。",
+                )
         else:
             candidates = [
                 item for item in self._state.read("data_assets").values()
@@ -106,6 +113,7 @@ class DataStore:
                 and item.get("created_by") == identity.principal_id
                 and set(asset_ids) == set(item.get("asset_ids", []))
                 and (schema_id is None or item.get("schema_id") == schema_id)
+                and (schema_id != "market-history" or _market_history_metadata_consistent(item))
             ]
             if not candidates:
                 if optional:
@@ -159,6 +167,7 @@ class DataStore:
                 or item.get("created_by") != identity.principal_id
                 or item.get("schema_id") != "market-history"
                 or set(asset_ids) != set(item.get("asset_ids", []))
+                or not _market_history_metadata_consistent(item)
                 or coverage.get("calendar_id") != calendar_id
                 or coverage.get("calendar_revision") != calendar_revision
             ):
@@ -195,7 +204,15 @@ class DataStore:
 
         requested_id = _requested_asset_id(requested)
         if requested_id:
-            record = self.get(identity, requested_id)
+            try:
+                record = self.get(identity, requested_id)
+            except KeyError as error:
+                raise UserActionError(
+                    "frozen_contract_calendar_missing",
+                    "当前方案冻结的交易日历已不可用，不能用另一版本替代。",
+                    stage="data",
+                    next_step="请在当前产品中建立新的方案版本后重试。",
+                ) from error
             if isinstance(requested, dict) and requested.get("content_hash") not in {None, record.get("content_hash")}:
                 raise ValidationError("DataAssetRef.content_hash与App登记记录不一致")
             candidates = [record]
@@ -221,6 +238,19 @@ class DataStore:
         record = max(candidates, key=lambda item: (str(item.get("registered_at", "")), str(item.get("data_asset_id", ""))))
         if record.get("created_by") != identity.principal_id:
             raise AuthorizationError("data.read", "data asset is not owned by current caller")
+        coverage = record.get("coverage")
+        if (
+            record.get("schema_id") != "trading-calendar"
+            or not isinstance(coverage, dict)
+            or coverage.get("calendar_id") != calendar_id
+            or coverage.get("calendar_revision") != calendar_revision
+        ):
+            raise UserActionError(
+                "frozen_contract_calendar_missing",
+                "当前方案冻结的交易日历已不可用，不能用另一版本替代。",
+                stage="data",
+                next_step="请恢复该交易日历，或在当前产品中建立新的方案版本后重试。",
+            )
         if set(asset_ids) != set(record.get("asset_ids", [])):
             raise ValidationError("DataAssetRef标的必须与ResolvedContract完全一致")
         return {key: record[key] for key in _PROTOCOL_FIELDS}
@@ -293,6 +323,55 @@ _PROTOCOL_FIELDS = (
     "coverage", "row_count", "price_convention", "content_hash", "lineage", "tenant_id",
     "created_by", "access_scope", "partition_spec",
 )
+
+
+def _market_history_metadata_consistent(record: dict[str, Any]) -> bool:
+    """Check self-consistency before selecting a history asset for compute.
+
+    Capability code remains responsible for validating the underlying bytes.
+    This Host-side check only prevents a known-invalid coverage declaration
+    from being selected repeatedly when automatic acquisition can replace it.
+    """
+
+    coverage = record.get("coverage")
+    if not isinstance(coverage, dict):
+        return False
+    sessions = coverage.get("sessions")
+    if sessions is None:
+        return True
+    if not isinstance(sessions, (list, tuple)) or not sessions:
+        return False
+    try:
+        parsed_sessions = tuple(date.fromisoformat(str(value)) for value in sessions)
+    except ValueError:
+        return False
+    if tuple(sorted(set(parsed_sessions))) != parsed_sessions:
+        return False
+    by_asset = coverage.get("by_asset")
+    if not isinstance(by_asset, dict):
+        return False
+    asset_ids = record.get("asset_ids")
+    if not isinstance(asset_ids, (list, tuple)) or set(by_asset) != set(asset_ids):
+        return False
+    counts: list[int] = []
+    for asset_id in asset_ids:
+        item = by_asset.get(asset_id)
+        if not isinstance(item, dict):
+            return False
+        count = item.get("row_count")
+        if not isinstance(count, int) or isinstance(count, bool) or count < 0:
+            return False
+        counts.append(count)
+        if item.get("start_date") not in sessions or item.get("end_date") not in sessions:
+            return False
+    row_count = record.get("row_count")
+    if not isinstance(row_count, int) or isinstance(row_count, bool) or sum(counts) != row_count:
+        return False
+    if len(asset_ids) == 1 and row_count != len(sessions):
+        return False
+    declared_start = coverage.get("start_date", coverage.get("start"))
+    declared_end = coverage.get("end_date", coverage.get("end"))
+    return declared_start == str(sessions[0]) and declared_end == str(sessions[-1])
 
 
 def _requested_asset_id(value: object) -> str | None:
