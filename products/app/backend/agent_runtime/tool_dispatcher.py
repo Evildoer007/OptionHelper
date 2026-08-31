@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from threading import Lock
 from typing import Any, Iterator, Mapping
 
@@ -18,6 +18,7 @@ from ..task_runtime.idempotency_store import ToolIdempotencyStore
 from ..task_runtime.task_service import TaskService
 from ..tool_gateway import ToolGateway
 from .durability_checkpoint import DurabilityCheckpointStore, stable_operation_id
+from runtime.protocol.models import ModuleRunRef
 
 
 @dataclass
@@ -286,13 +287,18 @@ class ToolDispatcher:
             return {**result, "job": execution.__dict__}
 
         existing = result.get("module_run_ref")
-        if isinstance(existing, dict):
-            if existing.get("module") != tool_name or existing.get("task_id") != task_id or existing.get("tenant_id") != identity.tenant_id:
-                raise ValidationError("Capability ModuleRunRef does not match authenticated App scope")
-            self._results.resolve_module_run(identity, existing)
-            reference = dict(existing)
-        else:
-            reference = self._results.commit_module_run(identity, task_id, tool_name, result)
+        if not isinstance(existing, Mapping):
+            raise ValidationError("Successful compute Capability response requires a complete ModuleRunRef")
+        try:
+            parsed_reference = ModuleRunRef(**dict(existing))
+        except (TypeError, ValueError) as error:
+            raise ValidationError("Capability ModuleRunRef is incomplete or invalid") from error
+        reference = asdict(parsed_reference)
+        if reference != dict(existing):
+            raise ValidationError("Capability ModuleRunRef contains unsupported fields")
+        if parsed_reference.module != tool_name or parsed_reference.task_id != task_id or parsed_reference.tenant_id != identity.tenant_id:
+            raise ValidationError("Capability ModuleRunRef does not match authenticated App scope")
+        self._results.resolve_module_run(identity, reference)
         # The immutable Core-backed proof is durable before mutable Task and
         # idempotency projections are updated.
         self._jobs.record_module_run_proof(execution.job_id, reference)
