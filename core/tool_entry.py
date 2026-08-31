@@ -2,8 +2,8 @@
 """OptionHelper结构化Tool及项目级Skill Host入口。
 
 ``call_tool``保持App授权边界；``--project-request``仅供无对话模型的批处理
-模式使用。已有对话模型的Host直接调用``run_project_request``提交已验证选择，
-再由local-development Host完成正式计算、Reporter和Designer闭环。
+模式使用。已有对话模型通过``--project-json``提交已验证选择，不导入内部Python
+函数，再由local-development Host完成正式计算、Reporter和Designer闭环。
 """
 
 from __future__ import annotations
@@ -42,13 +42,16 @@ from runtime.adapters.local_host import (
 from runtime.adapters.local_store import LocalResultStore
 from runtime.contracts.contract_api import ResolvedContract
 from runtime.contracts.input_adapter import (
-    is_explicit_demo_pricing_config,
+    compile_compute_data_requirements as _compile_compute_data_requirements,
     prepare_compute_request as _prepare_compute_request,
 )
 from runtime.protocol.models import CallerContext, DataAssetRef, ModuleRunRef
 from runtime.protocol.module_host import ModuleHostContext
 from runtime.protocol.tool_catalog import MODULES, tool_catalog
 from runtime.protocol.version import DEVELOPMENT_RELEASE_ID, require_release_id
+
+
+_DEFAULT_QUOTE_PATH_COUNT = 10
 
 
 class ToolDispatchError(ValueError):
@@ -249,24 +252,25 @@ def prepare_compute_request(
     if module not in {"payoffer", "pricer", "backtester"}:
         raise ToolDispatchError(f"模块{module}不是计算模块")
     bootstrap_runtime()
-    friendly_request = request
-    if module == "pricer" and resolved_contract is None:
-        # Pricer owns its market-date and contract-reference compilation.  Core
-        # remains the only contract resolver and receives an already data-backed
-        # identity, never a fabricated S0Raw.
-        from modules.pricer.input_defaults import compile_pricer_input_defaults
-
-        friendly_request = compile_pricer_input_defaults(
-            request, data_refs=data_refs, data_store=data_store,
-        )
     return _prepare_compute_request(
         module,
-        friendly_request,
+        request,
         data_refs=data_refs,
         resolved_contract=resolved_contract,
         data_store=data_store,
         product_snapshot_provider=product_snapshot_provider,
     )
+
+
+def compile_compute_data_requirements(
+    module: str,
+    request: Mapping[str, Any],
+    resolved_contract: Mapping[str, Any] | None = None,
+) -> Any:
+    """Expose Core's immutable data demand to verified Hosts."""
+
+    bootstrap_runtime()
+    return _compile_compute_data_requirements(module, request, resolved_contract)
 
 
 def call_tool(
@@ -336,7 +340,7 @@ def _call_validated_tool(
         raise ToolDispatchError(f"未知模块：{module}")
     _reject_untrusted_request_fields(request)
     action = str(request.get("action", "run" if {"contract", "payoff_input"}.intersection(request) else "catalog")).strip().lower()
-    if action in {"catalog", "default", "status"}:
+    if action in {"catalog", "default", "preview", "status"}:
         if "module.catalog" not in caller_context.capabilities or "module.catalog" not in host_context.request_policy:
             raise ToolDispatchError("只读目录调用必须同时由CallerContext和ModuleHostContext授权module.catalog")
     elif not set(caller_context.capabilities).intersection(host_context.request_policy).intersection(
@@ -350,11 +354,7 @@ def _call_validated_tool(
             host_context.task_id is not None and reference.task_id != host_context.task_id
         ):
             raise ToolDispatchError("ModuleHostContext结果引用超出CallerContext租户或任务范围")
-    needs_data_store = module == "backtester" or (
-        module == "pricer"
-        and action == "run"
-        and not is_explicit_demo_pricing_config(request.get("pricing_config"))
-    )
+    needs_data_store = module in {"pricer", "backtester"} and action == "run"
     if data_store is not None:
         if module not in {"pricer", "backtester"} or action != "run":
             raise ToolDispatchError("外置DataStorePort仅允许Host注入正式Pricer或Backtester运行")
@@ -1165,7 +1165,14 @@ def run_module_request(
         )
         history_start = _data_window_dates(data_window)[0] if requires_market_history else None
         if requires_calendar:
-            effective_horizon = horizon_years or float(term_overrides.get("T", 1.0))
+            effective_horizon = _compile_compute_data_requirements(
+                module,
+                {
+                    "product_id": product_id,
+                    "identity": identity,
+                    "term_overrides": term_overrides,
+                },
+            ).tenor_years
             calendar_ref = _fetch_local_calendar_asset(
                 layout=layout,
                 authority=authority,
@@ -1195,8 +1202,8 @@ def run_module_request(
             raise ProjectRequestError("datafetcher", "正式Backtester运行缺少经验证交易日历。")
         else:
             # Payoffer has no history asset to determine an observed close.
-            # Its explicit requested contract start is still frozen with the
-            # verified future schedule, never inferred from a price bar.
+            # Core freezes the requested start and derives maturity only after
+            # merging the registered terms with explicit overrides.
             identity.setdefault("contract_start_date", valuation_date)
 
     if module == "payoffer":
@@ -1212,8 +1219,10 @@ def run_module_request(
         friendly = {
             "action": "run", "product_id": product_id, "identity": identity, "term_overrides": term_overrides,
             "backtest_config": {
-                "start_date": str(data_ref.coverage.get("start") or data_ref.coverage.get("start_date")),
-                "end_date": market_as_of_date, "entry_rule": "monthly", "complete_tenor": True,
+                # When the user supplies no explicit bounds, the Backtester
+                # owns the only valid complete-tenor window calculation.  A
+                # market-as-of date is not itself a lawful latest entry date.
+                "entry_rule": "monthly", "complete_tenor": True,
                 **_mapping_field(body, "backtest_config"),
             },
         }
@@ -1366,7 +1375,7 @@ def _run_quote_delivery(
             terms["T"] = default_horizon
         pricing_config = {
             "valuation_date": str(variant["pricing_config"].get("valuation_date") or date.today().isoformat()),
-            "path_count": 10,
+            "path_count": _DEFAULT_QUOTE_PATH_COUNT,
             **dict(variant["pricing_config"]),
         }
         valuation_date = str(pricing_config["valuation_date"])
@@ -1378,7 +1387,14 @@ def _run_quote_delivery(
             )
             if requires_calendar:
                 try:
-                    horizon = float(terms.get("T", default_horizon or 1.0))
+                    horizon = _compile_compute_data_requirements(
+                        "pricer",
+                        {
+                            "product_id": product_id,
+                            "identity": {"underlyings": list(underlyings)},
+                            "term_overrides": terms,
+                        },
+                    ).tenor_years
                 except (TypeError, ValueError) as error:
                     raise ProjectRequestError("request", "Quote期限T必须为有效数字。") from error
                 calendar_key = (underlyings, valuation_date, horizon)
@@ -1441,6 +1457,19 @@ def _run_quote_delivery(
             raw_ref = pricing.get("module_run_ref")
             if pricing.get("ok") is not True or not isinstance(raw_ref, Mapping):
                 raise ProjectRequestError("pricer", str(pricing.get("message") or "定价未形成可验证运行结果。"))
+            pricing_result = pricing.get("pricing")
+            if not isinstance(pricing_result, Mapping) or pricing_result.get("quote_eligible") is not True:
+                precision_status = str(
+                    pricing_result.get("precision_status")
+                    if isinstance(pricing_result, Mapping)
+                    else "not_assessed"
+                )
+                raise ProjectRequestError(
+                    "pricer",
+                    f"定价已完成，但报价资格状态为{precision_status}，当前结果不可用于正式参考报价。",
+                )
+            if not isinstance(pricing_result.get("reporter_quote_fact"), Mapping):
+                raise ProjectRequestError("pricer", "定价已完成，但没有形成Reporter所需的冻结报价事实。")
             reference = ModuleRunRef(**dict(raw_ref))
             result_store.verify_module_run(reference, tenant_id=authority.tenant_id)
             identity = dict(contract.identity)
@@ -1458,6 +1487,11 @@ def _run_quote_delivery(
                 "module_run_refs": {"pricing": dict(raw_ref)},
                 "module_run_options": {"pricing": [dict(raw_ref)]},
             }
+            # Local project runs freeze the ResolvedContract directly and do
+            # not use App ContractStore CandidateVersion identities.  Keeping
+            # a Recommender-only version id here would falsely claim that the
+            # Pricer manifest was bound to that App record.
+            report_candidate.pop("candidate_version_id", None)
             report_candidates.append(report_candidate)
             quote_items.append({
                 "candidate_id": report_candidate["candidate_id"],
@@ -1574,7 +1608,14 @@ def _run_project_candidate(
     horizon_years = _horizon_years(case.confirmed_constraints.get("horizon"))
     if horizon_years is not None and "T" not in term_overrides:
         term_overrides["T"] = horizon_years
-    effective_horizon = float(term_overrides.get("T", horizon_years or 1.0))
+    effective_horizon = _compile_compute_data_requirements(
+        "pricer",
+        {
+            "product_id": product_id,
+            "identity": {"underlyings": list(underlyings)},
+            "term_overrides": term_overrides,
+        },
+    ).tenor_years
     valuation_date = str(requested_pricing.get("valuation_date") or date.today().isoformat())
     history_start, _ = _data_window_dates({})
 
@@ -1672,8 +1713,8 @@ def _run_project_candidate(
             "identity": {"underlyings": list(underlyings), "contract_start_date": market_as_of_date},
             "term_overrides": term_overrides,
             "backtest_config": {
-                "start_date": str(data_ref.coverage.get("start") or data_ref.coverage.get("start_date")),
-                "end_date": market_as_of_date,
+                # Absence of user bounds means automatic complete-tenor
+                # planning, not an explicit request through the last price.
                 "entry_rule": "monthly",
                 "complete_tenor": True,
                 **_mapping_field(body, "backtest_config"),
@@ -1734,6 +1775,10 @@ def _run_project_candidate(
         "module_run_refs": completed_refs,
         "module_run_options": {name: [reference] for name, reference in completed_refs.items()},
     }
+    # This standalone flow is contract-fingerprint bound, not App
+    # CandidateVersion bound.  Do not project an unpersisted version id into
+    # Reporter evidence.
+    report_candidate.pop("candidate_version_id", None)
     return {
         "candidate": report_candidate,
         "module_refs": completed_refs,
@@ -2088,6 +2133,7 @@ def main() -> None:
     group.add_argument("--recommend-request", help="仅执行结构推荐，不取数、不计算、不生成报告")
     group.add_argument("--recommend-json", help="执行单行JSON结构推荐请求")
     group.add_argument("--module-json", help="执行单行JSON单模块计算请求")
+    group.add_argument("--project-json", help="执行单行JSON项目请求，不再调用第二个模型解释需求")
     group.add_argument("--project-request", help="批处理模式：调用独立模型完成推荐、计算和HTML正式交付")
     args = parser.parse_args()
     if args.list:
@@ -2112,6 +2158,12 @@ def main() -> None:
                 if not isinstance(value, Mapping):
                     raise ProjectRequestError("request", "单模块请求格式无效。")
                 output = run_module_request(value, progress=emit)
+            elif args.project_json is not None:
+                value = json.loads(args.project_json)
+                if not isinstance(value, Mapping):
+                    raise ProjectRequestError("request", "项目请求格式无效。")
+                result = run_project_request(value, progress=emit)
+                output = public_project_result(result)
             else:
                 result = run_project_request(str(args.project_request), progress=emit)
                 output = public_project_result(result)
