@@ -27,6 +27,18 @@ class OptionInstrument:
 
 
 @dataclass(frozen=True, kw_only=True)
+class FixedCashflowOption(OptionInstrument):
+    """One deterministic contractual payment at maturity, in 100-point units."""
+
+    amount: float
+    maturity_years: float
+
+    def __post_init__(self) -> None:
+        _require_finite("amount", self.amount)
+        _require_positive("maturity_years", self.maturity_years)
+
+
+@dataclass(frozen=True, kw_only=True)
 class OptionRegPathOption(OptionInstrument):
     """A resolved OptionReg contract valued by the shared path interpreter.
 
