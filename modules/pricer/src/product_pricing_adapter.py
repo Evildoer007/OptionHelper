@@ -11,7 +11,7 @@ from runtime.contracts.contract_api import ResolvedContract
 from .config import PricingConfig
 from .calendar_policy import requires_future_trading_calendar
 from .greeks import add_time_zero_cashflow, real_spot_greeks, scale_result
-from .model_router import resolve_route
+from .model_router import capability_for, resolve_route
 from .observation_schedule import actual_n_obs, bind_accumulator_remaining_count
 from .observed_state import ObservedContractState
 from .engines.pricing_core.engine.derivatives.results import GreekValue, PricingResult
@@ -40,23 +40,32 @@ _EXACT_MAPPINGS = {
     },
 }
 
+_ANALYTICAL_ADAPTERS = frozenset({
+    "european_vanilla",
+    "european_portfolio",
+    "barrier",
+    "binary",
+    "touch_portfolio",
+    "airbag_portfolio",
+    "terminal_portfolio",
+    "sharkfin",
+})
+
 def product_mapping(product_id: str) -> ProductMapping:
     """OptionReg产品的唯一正式基座归属。"""
     product_id = str(product_id)
-    if product_id in _EXACT_MAPPINGS:
-        return _EXACT_MAPPINGS[product_id]
-    route = resolve_route(product_id, ("monte_carlo",), "monte_carlo")
-    if route is not None and route.capability.adapter == "optionreg_path":
-        return ProductMapping("OPTIONREG", "OPTIONREG_PATH", "supported")
+    capability = capability_for(product_id)
+    if capability is not None:
+        return ProductMapping(capability.family, capability.structure, "supported")
     return ProductMapping("UNCLASSIFIED", "UNCLASSIFIED", "not_available", "产品未登记为OptionReg可执行MC结构")
 
 
 class ProductPricingAdapter:
     """唯一适配器：只编译参数并调用正式``main.price_option``入口。
 
-    简单终值产品保留已有闭式路由；其他entry_status=True产品统一编译成
-    ``OPTIONREG_PATH``并由同一离散路径、monitor、condition、cases/cash
-    解释器估值。
+    产品级验证通过的结构编译到各自解析实现；其余entry_status=True产品统一
+    编译成``OPTIONREG_PATH``并由同一离散路径、monitor、condition、
+    cases/cash解释器进行Monte Carlo估值。
     """
 
     _EXACT_PRODUCT_IDS = tuple(_EXACT_MAPPINGS)
@@ -87,7 +96,7 @@ class ProductPricingAdapter:
             raise ProductNotAvailable(mapping.reason or _unavailable_reason(contract, allowed, config.model_method))
         if self.route is None:
             raise ProductNotAvailable(_unavailable_reason(contract, allowed, config.model_method))
-        if self.route.capability.adapter not in {"european_vanilla", "european_portfolio", "optionreg_path"}:
+        if self.route.capability.adapter not in _ANALYTICAL_ADAPTERS | {"optionreg_path"}:
             raise ProductNotAvailable(f"{contract.product_id}没有已验证的{self.route.capability.adapter}参数适配")
         self.trading_calendar = _validated_trading_calendar(
             self.market_snapshot.get("trading_calendar"),
@@ -96,6 +105,10 @@ class ProductPricingAdapter:
         ) if self.requires_trading_calendar else None
         if self.route.capability.adapter == "european_vanilla":
             observed_state.validate_european_vanilla()
+        if self.method == "analytical" and self.route.capability.adapter in {
+            "barrier", "touch_portfolio", "airbag_portfolio", "sharkfin"
+        } and (observed_state.occurred_events or observed_state.knocked_in):
+            raise ProductNotAvailable("存续路径事件已发生时请使用Monte Carlo，以冻结观察状态继续估值")
         if self.method == "monte_carlo":
             if self.config.path_count is None:
                 raise ProductNotAvailable("Monte Carlo必须显式提供path_count")
@@ -164,9 +177,13 @@ class ProductPricingAdapter:
             maturity_years=self._maturity() if maturity_years is None else maturity_years,
             risk_greeks=risk_greeks,
         )
-        engine_method = "MONTE_CARLO_CPU" if self.method == "monte_carlo" else (
-            "STATIC_REPLICATION" if self.route.capability.adapter == "european_portfolio" else "BLACK_SCHOLES"
+        engine_method = (
+            "MONTE_CARLO_CPU"
+            if self.method == "monte_carlo"
+            else self.route.capability.analytical_engine_method
         )
+        if engine_method is None:
+            raise ProductNotAvailable(f"{self.contract.product_id}没有已验证的解析引擎")
         if self.method == "monte_carlo":
             assert self._prepared_optionreg is not None
             result = _with_standard_error(self._prepared_optionreg.price(parameters))
@@ -174,11 +191,7 @@ class ProductPricingAdapter:
             run = price_option(self.family, self.structure, parameters, engine_method, output="NONE")
             result = _from_run(run)
         if self.method != "monte_carlo":
-            quantity = (
-                float(self.contract.terms["n_C"] if self.contract.product_id == "1.1" else self.contract.terms["n_P"])
-                if self.route.capability.adapter == "european_vanilla"
-                else 1.0
-            )
+            quantity = _analytical_quantity(self.contract)
             result = scale_result(result, quantity)
             result = add_time_zero_cashflow(
                 result,
@@ -241,13 +254,15 @@ class ProductPricingAdapter:
                 "call_put": direction,
                 "basis": basis,
             }
+        elif self.route.capability.adapter == "barrier":
+            contract = _barrier_contract(self.contract, maturity_years, basis)
+        elif self.route.capability.adapter == "binary":
+            contract = _binary_contract(self.contract, maturity_years, basis)
+        elif self.route.capability.adapter == "sharkfin":
+            contract = _sharkfin_contract(self.contract, maturity_years, basis)
         else:
             contract = {
-                "legs": [
-                    {"weight": weight, "structure": "EUROPEAN_VANILLA", "method": "BLACK_SCHOLES", "label": label,
-                     "contract": {"strike": strike, "maturity_years": float(maturity_years), "call_put": call_put, "basis": basis}}
-                    for label, weight, call_put, strike in _portfolio_legs(self.contract)
-                ],
+                "legs": _analytical_portfolio_legs(self.contract, maturity_years, basis),
                 "basis": basis,
             }
         return {
@@ -400,18 +415,13 @@ def _apply_value_basis(result: PricingResult, product_id: str) -> PricingResult:
 
 
 def _unavailable_reason(contract: ResolvedContract, allowed: tuple[str, ...], requested_method: str) -> str:
-    available = resolve_route(contract.product_id, allowed, "auto")
-    if requested_method == "black_scholes" and "monte_carlo" in allowed:
+    available = resolve_route(contract.product_id, allowed, None)
+    if requested_method == "analytical" and "analytical" not in allowed and "monte_carlo" in allowed:
         return (
-            f"{contract.product_id}的收益取决于路径或观察事件，不适用Black-Scholes闭式定价；"
-            "请选择Monte Carlo或按产品自动选择"
+            f"{contract.product_id}尚无经过产品级验证的Analytical实现；"
+            "请选择Monte Carlo"
         )
-    if requested_method == "monte_carlo" and "black_scholes" in allowed:
-        return (
-            f"{contract.product_id}当前没有已验证的Monte Carlo实现；"
-            "请选择Black-Scholes或按产品自动选择"
-        )
-    if requested_method == "auto" and available is None:
+    if not requested_method and available is None:
         return f"{contract.product_id}尚未登记可执行定价模型，请检查OptionReg产品配置"
     available_methods = "、".join(allowed) if allowed else "无"
     return f"{contract.product_id}不支持所选定价方法{requested_method}；产品登记方法为{available_methods}"
@@ -432,10 +442,260 @@ def _portfolio_legs(contract: ResolvedContract) -> tuple[tuple[str, float, str, 
     return tuple((label, float(weight), call_put, float(terms[strike])) for label, weight, call_put, strike in values)
 
 
+def _vanilla_leg(
+    label: str,
+    weight: float,
+    call_put: str,
+    strike: float,
+    maturity_years: float,
+    basis: Mapping[str, Any],
+) -> dict[str, Any]:
+    return {
+        "weight": float(weight),
+        "structure": "EUROPEAN_VANILLA",
+        "method": "BLACK_SCHOLES",
+        "label": label,
+        "contract": {
+            "strike": float(strike),
+            "maturity_years": float(maturity_years),
+            "call_put": call_put,
+            "basis": dict(basis),
+        },
+    }
+
+
+def _fixed_cashflow_leg(
+    label: str,
+    weight: float,
+    amount: float,
+    maturity_years: float,
+    basis: Mapping[str, Any],
+) -> dict[str, Any]:
+    return {
+        "weight": float(weight),
+        "structure": "FIXED_CASHFLOW",
+        "method": "DISCOUNTED_CASHFLOW",
+        "label": label,
+        "contract": {
+            "amount": float(amount),
+            "maturity_years": float(maturity_years),
+            "basis": dict(basis),
+        },
+    }
+
+
+def _binary_leg(
+    label: str,
+    weight: float,
+    call_put: str,
+    strike: float,
+    payout_type: str,
+    payout: float,
+    maturity_years: float,
+    basis: Mapping[str, Any],
+) -> dict[str, Any]:
+    return {
+        "weight": float(weight),
+        "structure": "BINARY",
+        "method": "BINARY_ANALYTIC",
+        "label": label,
+        "contract": {
+            "strike": float(strike),
+            "maturity_years": float(maturity_years),
+            "call_put": call_put,
+            "payout_type": payout_type,
+            "payout": float(payout),
+            "basis": dict(basis),
+        },
+    }
+
+
+def _barrier_leg(
+    label: str,
+    weight: float,
+    call_put: str,
+    strike: float,
+    barrier: float,
+    knock: str,
+    rebate: float,
+    rebate_at_hit: bool,
+    maturity_years: float,
+    basis: Mapping[str, Any],
+) -> dict[str, Any]:
+    return {
+        "weight": float(weight),
+        "structure": "BARRIER",
+        "method": "REINER_RUBINSTEIN",
+        "label": label,
+        "contract": {
+            "strike": float(strike),
+            "barrier": float(barrier),
+            "maturity_years": float(maturity_years),
+            "call_put": call_put,
+            "knock": knock,
+            "monitoring": "Daily",
+            "rebate": float(rebate),
+            "rebate_at_hit": bool(rebate_at_hit),
+            "basis": dict(basis),
+        },
+    }
+
+
+def _barrier_contract(
+    contract: ResolvedContract,
+    maturity_years: float,
+    basis: Mapping[str, Any],
+) -> dict[str, Any]:
+    product_id = contract.product_id
+    terms = contract.terms
+    call_put = "CALL" if product_id in {"4.1", "4.2", "4.3", "4.4"} else "PUT"
+    knock = "Out" if product_id in {"4.1", "4.2", "4.5", "4.6"} else "In"
+    barrier_key = "H_KO" if knock == "Out" else "H_KI"
+    return {
+        "strike": float(terms["K"]),
+        "barrier": float(terms[barrier_key]),
+        "maturity_years": float(maturity_years),
+        "call_put": call_put,
+        "knock": knock,
+        "monitoring": "Daily",
+        "rebate": 0.0,
+        "rebate_at_hit": True,
+        "basis": dict(basis),
+    }
+
+
+def _binary_contract(
+    contract: ResolvedContract,
+    maturity_years: float,
+    basis: Mapping[str, Any],
+) -> dict[str, Any]:
+    product_id = contract.product_id
+    cash = product_id in {"5.1", "5.2"}
+    return {
+        "strike": float(contract.terms["K"]),
+        "maturity_years": float(maturity_years),
+        "call_put": "CALL" if product_id in {"5.1", "5.3"} else "PUT",
+        "payout_type": "Cash-or-Nothing" if cash else "Asset-or-Nothing",
+        "payout": float(contract.terms.get("A", 0.0)),
+        "basis": dict(basis),
+    }
+
+
+def _sharkfin_contract(
+    contract: ResolvedContract,
+    maturity_years: float,
+    basis: Mapping[str, Any],
+) -> dict[str, Any]:
+    terms = contract.terms
+    return {
+        "strike": float(terms["K"]),
+        "barrier": float(terms["H_KO"]),
+        "maturity_years": float(maturity_years),
+        "call_put": "CALL" if contract.product_id == "9.5" else "PUT",
+        "knock": "Out",
+        "monitoring": "Daily",
+        "rebate": float(terms["eta"]) * float(terms.get("S0", 100.0)),
+        "rebate_at_hit": True,
+        "basis": dict(basis),
+    }
+
+
+def _analytical_portfolio_legs(
+    contract: ResolvedContract,
+    maturity_years: float,
+    basis: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    product_id = contract.product_id
+    terms = contract.terms
+    if product_id in _EXACT_MAPPINGS and product_id not in {"1.1", "1.2"}:
+        return [
+            _vanilla_leg(label, weight, call_put, strike, maturity_years, basis)
+            for label, weight, call_put, strike in _portfolio_legs(contract)
+        ]
+    if product_id in {"5.5", "5.6"}:
+        rebate_at_hit = product_id == "5.5"
+        common = {
+            "call_put": "CALL",
+            "strike": float(terms.get("S0", 100.0)),
+            "barrier": float(terms["Htouch"]),
+            "knock": "Out",
+            "rebate_at_hit": rebate_at_hit,
+            "maturity_years": maturity_years,
+            "basis": basis,
+        }
+        touch_legs = [
+            _barrier_leg("rebated_barrier", 1.0, rebate=float(terms["A"]), **common),
+            _barrier_leg("zero_rebate_barrier", -1.0, rebate=0.0, **common),
+        ]
+        if product_id == "5.5":
+            return touch_legs
+        return [
+            _fixed_cashflow_leg(
+                "maturity_cashflow",
+                1.0,
+                float(terms["A"]),
+                maturity_years,
+                basis,
+            ),
+            *(
+                {**leg, "weight": -float(leg["weight"])}
+                for leg in touch_legs
+            ),
+        ]
+    if product_id in {"6.1", "6.2", "6.3"}:
+        spot = float(terms.get("S0", 100.0))
+        barrier = float(terms["B"])
+        legs: list[dict[str, Any]] = []
+        if product_id == "6.1":
+            legs.append(_vanilla_leg("long_call", 1.0, "CALL", spot, maturity_years, basis))
+        elif product_id == "6.2":
+            cap_strike = spot * (1.0 + float(terms["r_cap"]))
+            legs.extend((
+                _vanilla_leg("long_call", 1.0, "CALL", spot, maturity_years, basis),
+                _vanilla_leg("short_cap_call", -1.0, "CALL", cap_strike, maturity_years, basis),
+                _barrier_leg("long_knock_in_cap_call", 1.0, "CALL", cap_strike, barrier, "In", 0.0, True, maturity_years, basis),
+            ))
+        else:
+            alpha = float(terms["alpha"])
+            legs.extend((
+                _vanilla_leg("participation_call", alpha, "CALL", spot, maturity_years, basis),
+                _barrier_leg("knock_in_call_top_up", 1.0 - alpha, "CALL", spot, barrier, "In", 0.0, True, maturity_years, basis),
+            ))
+        legs.append(_barrier_leg("short_knock_in_put", -1.0, "PUT", spot, barrier, "In", 0.0, True, maturity_years, basis))
+        return legs
+    if product_id in {"9.2", "9.3"}:
+        spot = float(terms.get("S0", 100.0))
+        lower = float(terms["K1"])
+        upper = float(terms["K2"])
+        alpha = float(terms["alpha"])
+        floor_return = (lower - spot) / spot
+        return [
+            _binary_leg("floor_cash", floor_return, "PUT", lower, "Cash-or-Nothing", 1.0, maturity_years, basis),
+            _binary_leg("middle_asset", 1.0 / spot, "CALL", lower, "Asset-or-Nothing", 0.0, maturity_years, basis),
+            _binary_leg("middle_cash", -1.0, "CALL", lower, "Cash-or-Nothing", 1.0, maturity_years, basis),
+            _binary_leg("upper_asset_adjustment", (alpha - 1.0) / spot, "CALL", upper, "Asset-or-Nothing", 0.0, maturity_years, basis),
+            _binary_leg("upper_cash_adjustment", 1.0 - alpha, "CALL", upper, "Cash-or-Nothing", 1.0, maturity_years, basis),
+        ]
+    raise ValueError(f"{product_id}没有解析组合腿定义")
+
+
+def _analytical_quantity(contract: ResolvedContract) -> float:
+    terms = contract.terms
+    if contract.product_id in {"1.1", "4.1", "4.2", "4.3", "4.4"}:
+        return float(terms.get("n_C", 1.0))
+    if contract.product_id in {"1.2", "4.5", "4.6", "4.7", "4.8"}:
+        return float(terms.get("n_P", 1.0))
+    if contract.product_id in {"5.3", "5.4"}:
+        return float(terms.get("asset_unit", 1.0))
+    return 1.0
+
+
 def _initial_cashflow(contract: ResolvedContract, quantity: float) -> float:
     """Contractual holder cashflow at time zero for closed-form structures."""
-    if contract.product_id in {"1.1", "1.2"}:
+    if contract.product_id in {"1.1", "1.2", "4.1", "4.2", "4.3", "4.4", "4.5", "4.6", "4.7", "4.8", "5.1", "5.2", "5.3", "5.4", "5.5", "5.6"}:
         return -quantity * float(contract.terms.get("Pi_0", 0.0))
+    if contract.product_id in {"6.1", "6.2", "6.3", "9.5", "9.6"}:
+        return -float(contract.terms.get("N", 0.0)) * float(contract.terms.get("p", 0.0))
     if contract.product_id in _EXACT_MAPPINGS:
         return -float(contract.terms.get("P_net", 0.0))
     return 0.0
