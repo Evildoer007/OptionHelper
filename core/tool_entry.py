@@ -51,7 +51,6 @@ from runtime.protocol.tool_catalog import MODULES, tool_catalog
 from runtime.protocol.version import DEVELOPMENT_RELEASE_ID, require_release_id
 
 
-_DEFAULT_QUOTE_PATH_COUNT = 10
 
 
 class ToolDispatchError(ValueError):
@@ -1213,7 +1212,7 @@ def run_module_request(
     elif module == "pricer":
         friendly = {
             "action": "run", "product_id": product_id, "identity": identity, "term_overrides": term_overrides,
-            "pricing_config": {"valuation_date": valuation_date, "path_count": 10, **requested_pricing},
+            "pricing_config": {"valuation_date": valuation_date, **requested_pricing},
         }
     else:
         friendly = {
@@ -1375,7 +1374,6 @@ def _run_quote_delivery(
             terms["T"] = default_horizon
         pricing_config = {
             "valuation_date": str(variant["pricing_config"].get("valuation_date") or date.today().isoformat()),
-            "path_count": _DEFAULT_QUOTE_PATH_COUNT,
             **dict(variant["pricing_config"]),
         }
         valuation_date = str(pricing_config["valuation_date"])
@@ -1661,7 +1659,7 @@ def _run_project_candidate(
         caches["bound_history"][binding_key] = bound_ref
     data_ref = bound_ref
 
-    pricing_config = {"valuation_date": valuation_date, "path_count": 10, **requested_pricing}
+    pricing_config = {"valuation_date": valuation_date, **requested_pricing}
     pricing_request = prepare_compute_request(
         "pricer",
         {
