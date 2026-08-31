@@ -20,6 +20,10 @@ from ..settings.settings_models import (
 from ..settings.settings_service import SettingsService
 from .provider_registry import ProviderRegistry
 from .request_control import ModelRequestControl
+from .capability_probe import probe_provider_capabilities
+
+
+SETTINGS_MODEL_CAPABILITY_PROBE_SCHEMA_ID = "optionhelper.settings-model-capability-probe"
 
 
 @dataclass(frozen=True)
@@ -231,9 +235,84 @@ class ModelGateway:
             "context_window": catalog_model.context_window if catalog_model is not None else None,
             "max_output_tokens": catalog_model.max_output_tokens if catalog_model is not None else None,
             "reasoning_support": catalog_model.reasoning_support if catalog_model is not None else False,
-            "tool_calling": catalog_model.tool_calling if catalog_model is not None else True,
+            "tool_calling": catalog_model.tool_calling if catalog_model is not None else False,
             "multi_agent": False,
             "max_parallel_agents": 1,
+        }
+
+    def probe_capabilities_for(
+        self,
+        identity: SessionIdentity,
+        task_id: str,
+        *,
+        selection: ModelSelection | None = None,
+        timeout_seconds: float = 8.0,
+    ) -> dict[str, Any]:
+        """Actively probe a configured Provider without exposing its credential."""
+
+        del task_id
+        model, secret_ref = self._configured(identity, selection)
+
+        def invoke(messages, tools, control):
+            return self._providers.stream(
+                model,
+                secret_ref,
+                [dict(item) for item in messages],
+                request_control=control,
+                tools=[dict(item) for item in tools],
+            )
+
+        return probe_provider_capabilities(
+            invoke,
+            timeout_seconds=timeout_seconds,
+            bounded_request_control=self._providers.supports_bounded_request_control(model.provider_name),
+        )
+
+    def probe_settings_capabilities_for(
+        self,
+        identity: SessionIdentity,
+        task_id: str,
+        *,
+        selection: ModelSelection | None = None,
+        timeout_seconds: float = 8.0,
+    ) -> dict[str, Any]:
+        """Return the stable, non-secret capability contract consumed by Settings.
+
+        Declared catalog metadata and actively observed behavior remain
+        separate.  Settings must not advertise tool-capable multi-Agent use
+        unless both sources agree and the bounded request probe succeeds.
+        """
+
+        declared = self.capability_for(identity, selection=selection)
+        observed = self.probe_capabilities_for(
+            identity,
+            task_id,
+            selection=selection,
+            timeout_seconds=timeout_seconds,
+        )
+        binding = self.model_binding_for(identity, selection=selection)
+        effective = {
+            "streaming": bool(observed.get("streaming")),
+            "tool_calling": bool(declared.get("tool_calling")) and bool(observed.get("tool_calling")),
+            "tool_result_continuation": bool(observed.get("tool_result_continuation")),
+            "reasoning": bool(declared.get("reasoning_support")) and bool(observed.get("reasoning")),
+            "cancellation": bool(observed.get("cancellation")),
+            "bounded_timeout": bool(observed.get("bounded_timeout")),
+        }
+        verified = bool(observed.get("verified")) and all(
+            effective[key]
+            for key in ("streaming", "tool_calling", "tool_result_continuation", "cancellation", "bounded_timeout")
+        )
+        return {
+            "schema": SETTINGS_MODEL_CAPABILITY_PROBE_SCHEMA_ID,
+            "status": "verified" if verified else "unverified",
+            "detected": True,
+            "initialized": bool(observed.get("streaming")),
+            "verified": verified,
+            "model": dict(binding),
+            "declared": dict(declared),
+            "observed": dict(observed),
+            "effective": effective,
         }
 
     def model_binding_for(self, identity: SessionIdentity, *, selection: ModelSelection | None = None) -> dict[str, str]:
