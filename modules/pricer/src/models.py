@@ -161,7 +161,7 @@ def validate_market_data_asset(
         historical.rows,
         required=historical.storage_mode == "host-injected",
     )
-    if coverage != dict(historical.coverage or {}):
+    if _protocol_value(coverage) != _protocol_value(historical.coverage or {}):
         raise ValueError("DataAssetRef与HistoricalData.coverage不一致")
     _validate_history_sessions(historical.rows, coverage["sessions"])
     return {
@@ -227,6 +227,15 @@ def _validate_market_price_convention(
             raise ValueError(f"DataAssetRef.price_convention.{asset}.HV字段与市场口径不一致")
         hv_fields[asset] = str(hv_field)
     return {"hv_fields_by_asset": hv_fields}
+
+
+def _protocol_value(value: Any) -> Any:
+    """Normalize immutable Core containers without weakening field equality."""
+    if isinstance(value, Mapping):
+        return {str(key): _protocol_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return tuple(_protocol_value(item) for item in value)
+    return value
 
 
 def validate_trading_calendar_asset(
