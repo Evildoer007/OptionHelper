@@ -13,6 +13,7 @@ from ..instruments import (
     BinaryOption,
     CompositeOption,
     EuropeanVanillaOption,
+    FixedCashflowOption,
 )
 from ..models import MarketState, ValuationConfig, ValuationState
 from ..results import GreekValue, PricingResult
@@ -20,7 +21,7 @@ from .risk import make_risk_value
 
 
 _IMPLEMENTATION_ID = "standard-airbag"
-_SUPPORTED_LEG_TYPES = (EuropeanVanillaOption, BinaryOption, BarrierOption)
+_SUPPORTED_LEG_TYPES = (FixedCashflowOption, EuropeanVanillaOption, BinaryOption, BarrierOption)
 
 
 def price_airbag_standard(
@@ -48,7 +49,7 @@ def price_airbag_standard(
     for leg in instrument.legs:
         if not isinstance(leg.instrument, _SUPPORTED_LEG_TYPES):
             raise ValueError(
-                "Airbag STANDARD腿只支持EuropeanVanillaOption、BinaryOption或BarrierOption"
+                "Airbag STANDARD腿只支持FixedCashflowOption、EuropeanVanillaOption、BinaryOption或BarrierOption"
             )
         leg_config = replace(config, method=leg.method)
         leg_result = price(
