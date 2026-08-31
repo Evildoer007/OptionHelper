@@ -17,6 +17,7 @@
       "sigma_realized": "(realized_variance(S_t[O_var], n_ann) * 10000) ** 0.5"
     },
     "pricing_methods": [
+      "analytical",
       "monte_carlo"
     ],
     "constraints": [
