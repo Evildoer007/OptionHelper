@@ -17,8 +17,8 @@ from urllib.request import Request, urlopen
 from ..errors import UnavailableCapabilityError, ValidationError
 from ..secrets.secret_ref import SecretRef
 from ..settings.settings_models import ModelServiceSettings
+from .https_transport import open_verified_https
 from .request_control import ModelRequestControl
-
 
 MAX_MODEL_RESPONSE_BYTES = 512 * 1024
 
@@ -54,7 +54,7 @@ def complete_openai_compatible_with_metadata(
     )
     try:
         timeout = request_control.remaining_seconds(45) if request_control is not None else 45
-        with opener(request, timeout=timeout) as response:
+        with open_verified_https(request, timeout=timeout, opener=opener) as response:
             # Read one byte beyond the ceiling so an upstream server cannot
             # make the local App allocate an unbounded non-streaming body.
             try:
@@ -66,11 +66,9 @@ def complete_openai_compatible_with_metadata(
                 # read for real HTTP responses.
                 raw = response.read()
     except HTTPError as error:
-        if error.code in {401, 403}:
-            raise UnavailableCapabilityError("模型凭据", "模型服务拒绝了当前API Key，请重新粘贴并保存后再测试连接。") from error
-        raise UnavailableCapabilityError("模型服务上游", f"模型服务返回HTTP {error.code}，请检查模型名称、Base URL或稍后重试。") from error
+        raise model_http_error(error.code) from error
     except (URLError, TimeoutError) as error:
-        raise UnavailableCapabilityError("模型服务网络", "无法连接模型服务，请检查网络和Base URL后重试。") from error
+        raise model_network_error(timed_out=isinstance(error, TimeoutError)) from error
     if request_control is not None:
         request_control.raise_if_cancelled()
     if not isinstance(raw, bytes) or len(raw) > MAX_MODEL_RESPONSE_BYTES:
@@ -144,6 +142,83 @@ def validate_openai_base_url(endpoint: str) -> str:
     return value
 
 
+def model_http_error(status_code: int) -> UnavailableCapabilityError:
+    """Project one upstream status into a safe, actionable App failure.
+
+    Provider response bodies are deliberately ignored because they can echo
+    request content or credentials.  The HTTP status is sufficient for the
+    user-facing recovery categories used by Settings and OptChat.
+    """
+
+    if status_code in {401, 403}:
+        return UnavailableCapabilityError(
+            "模型凭据",
+            "请重新粘贴有效API Key并保存，然后再次测试连接。",
+            failure_code="model_credential_rejected",
+            stage="model",
+            message="模型API Key未通过验证。",
+        )
+    if status_code == 402:
+        return UnavailableCapabilityError(
+            "模型账户额度",
+            "请在模型服务商账户中补充余额或恢复可用额度后重试。",
+            failure_code="model_balance_unavailable",
+            stage="model",
+            message="模型账户余额或可用额度不足。",
+        )
+    if status_code == 404:
+        return UnavailableCapabilityError(
+            "模型服务配置",
+            "请核对Base URL和模型ID，或先重新获取模型目录。",
+            failure_code="model_not_found",
+            stage="model",
+            message="当前模型或API地址不可用。",
+        )
+    if status_code == 429:
+        return UnavailableCapabilityError(
+            "模型服务限流",
+            "请等待请求额度或并发恢复后重试。",
+            failure_code="model_rate_limited",
+            stage="model",
+            message="模型服务当前请求过多或额度已受限。",
+        )
+    if status_code in {400, 422}:
+        return UnavailableCapabilityError(
+            "模型请求",
+            "请核对所选模型及其接口兼容性后重试。",
+            failure_code="model_request_rejected",
+            stage="model",
+            message="模型服务拒绝了当前请求。",
+        )
+    if 500 <= status_code <= 599:
+        return UnavailableCapabilityError(
+            "模型服务上游",
+            "请稍后重试；若持续失败，请检查服务商运行状态。",
+            failure_code="model_upstream_unavailable",
+            stage="model",
+            message="模型服务上游暂时不可用。",
+        )
+    return UnavailableCapabilityError(
+        "模型服务上游",
+        "请检查模型服务商状态、Base URL和账户权限后重试。",
+        failure_code="model_http_failure",
+        stage="model",
+        message="模型服务请求未完成。",
+    )
+
+
+def model_network_error(*, timed_out: bool = False) -> UnavailableCapabilityError:
+    """Return a public network failure without reflecting socket details."""
+
+    return UnavailableCapabilityError(
+        "模型服务网络",
+        "请检查当前设备网络、代理和Base URL后重试。",
+        failure_code="model_request_timeout" if timed_out else "model_network_unavailable",
+        stage="model",
+        message="模型服务连接超时。" if timed_out else "无法连接模型服务。",
+    )
+
+
 def discover_openai_models(
     endpoint: str,
     token: str | None,
@@ -162,14 +237,12 @@ def discover_openai_models(
         headers["Authorization"] = f"Bearer {token.strip()}"
     request = Request(f"{base}/models", headers=headers, method="GET")
     try:
-        with opener(request, timeout=20) as response:
+        with open_verified_https(request, timeout=20, opener=opener) as response:
             raw = response.read(MAX_MODEL_RESPONSE_BYTES + 1)
     except HTTPError as error:
-        if error.code in {401, 403}:
-            raise UnavailableCapabilityError("模型凭据", "模型服务拒绝了当前API Key，请检查后重试。") from error
-        raise UnavailableCapabilityError("模型目录", f"模型目录接口返回HTTP {error.code}，可改为手动添加模型。") from error
+        raise model_http_error(error.code) from error
     except (URLError, TimeoutError) as error:
-        raise UnavailableCapabilityError("模型目录", "无法读取模型目录，可检查网络后重试或手动添加模型。") from error
+        raise model_network_error(timed_out=isinstance(error, TimeoutError)) from error
     if not isinstance(raw, bytes) or len(raw) > MAX_MODEL_RESPONSE_BYTES:
         raise ValidationError("模型目录响应超过允许上限")
     try:
