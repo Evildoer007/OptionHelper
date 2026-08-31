@@ -225,6 +225,31 @@
   color: var(--state-ready-color);
 }
 
+.setup-page .runtime-status-list {
+  margin: 24px 0 0;
+  border-top: 1px solid var(--color-rule-strong);
+  border-bottom: 1px solid var(--color-rule-strong);
+}
+
+.setup-page .runtime-status-list > div {
+  display: grid;
+  grid-template-columns: minmax(118px, 0.34fr) minmax(0, 1fr);
+  gap: 24px;
+  padding: 16px 0;
+  border-top: 1px solid var(--color-rule);
+}
+
+.setup-page .runtime-status-list > div:first-child { border-top: 0; }
+.setup-page .runtime-status-list dt { color: var(--color-muted); font-size: 13px; line-height: 21px; }
+.setup-page .runtime-status-list dd { display: flex; min-width: 0; align-items: flex-start; flex-direction: column; gap: 3px; margin: 0; }
+.setup-page .runtime-status-list strong { color: var(--color-ink); font-size: 14px; font-weight: 500; line-height: 21px; }
+.setup-page .runtime-status-list span { color: var(--color-muted); font-size: 12px; line-height: 19px; }
+.setup-page .runtime-status-action { margin-top: 8px; }
+
+@media (max-width: 620px) {
+  .setup-page .runtime-status-list > div { grid-template-columns: 1fr; gap: 4px; }
+}
+
 @media (max-width: 680px) {
   .setup-page .setup { padding: 0; }
   .setup-page .setup-card {
