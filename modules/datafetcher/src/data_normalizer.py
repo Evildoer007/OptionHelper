@@ -9,6 +9,7 @@ import pandas as pd
 
 from .market_conventions import market_conventions
 from .models import DataRequest
+from .quality_validator import validate_ohlc_relationships
 
 
 _ALIASES = {
@@ -76,6 +77,11 @@ def normalize_daily_history(
     future_rows = provider_assets & result["date"].notna() & result["date"].gt(canonical_cutoff)
     if future_rows.any():
         raise DataNormalizationError("Provider返回未来行情日期")
+    for column in ("open", "high", "low", "close", "adj_open", "adj_high", "adj_low", "adj_close"):
+        if column in result.columns:
+            result[column] = pd.to_numeric(result[column], errors="coerce")
+    validate_ohlc_relationships(result)
+    validate_ohlc_relationships(result, "adj_")
     if "close" not in result.columns:
         raise DataNormalizationError("Provider数据缺少请求字段：close")
     for asset_id, convention in market_conventions(request.asset_ids, request.adjustment).items():
