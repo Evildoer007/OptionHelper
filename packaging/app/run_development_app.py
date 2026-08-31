@@ -18,6 +18,7 @@ for path in (ROOT / "packaging" / "skill", ROOT / "packaging" / "app", ROOT / "p
         sys.path.insert(0, str(path))
 
 from build_app import AppBuildError, validated_capability
+from build_capability import build_app_capability
 from build_skill import build_skill, verify_source_snapshot
 from verify_skill import probe_runtime, verify_skill
 from verify_app import verify_app
@@ -42,7 +43,7 @@ def build_development_capability(workspace: Path, catalog_version: str) -> Path:
     if errors:
         raise DevelopmentLaunchError("开发Capability未通过验收：\n" + "\n".join(errors))
     try:
-        capability = validated_capability(skill)
+        capability = validated_capability(build_app_capability(workspace / "app-capability", skill, repo_root=ROOT))
     except AppBuildError as error:
         raise DevelopmentLaunchError(str(error)) from error
     app_errors = verify_app(ROOT / "products" / "app", capability_root=capability)
