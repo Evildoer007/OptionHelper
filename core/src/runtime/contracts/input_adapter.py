@@ -8,15 +8,19 @@ App supplies only authenticated data references and Host scope.
 from __future__ import annotations
 
 from copy import deepcopy
+import csv
+from dataclasses import dataclass
 from datetime import date
 from hashlib import sha256
+from io import StringIO
 import json
-from math import isfinite
+from math import isclose, isfinite
 from typing import Any, Mapping, Sequence
 
 from .contract_engine import (
     ContractResolutionError,
     ResolvedContract,
+    derive_contract_end_date,
     load_registry,
     resolve_contract,
     verify_product_snapshot_binding,
@@ -35,56 +39,78 @@ _COMMON_FIELDS = frozenset({
     # forwards it to a formal calculator input.
     "auto_contract_start_date",
 })
-_DEMO_MARKET_REQUIRED = frozenset({
-    "valuation_date", "spot", "volatility_override", "time_to_maturity",
-    "risk_free_rate", "dividend_yield", "demo_calendar",
-})
+_OBSERVATION_TERM_KEYS = frozenset({"O_KO", "O_KI", "Oc", "Otouch", "Orange", "Ovar", "Ohedge", "Oreset"})
 
 
-def explicit_demo_pricing_error(config: Mapping[str, Any] | object) -> str | None:
-    """Validate the only zero-DataAssetRef Pricer exception.
+@dataclass(frozen=True)
+class ComputeDataRequirements:
+    """Core-owned market and calendar demand for one calculator request."""
 
-    This is deliberately narrow: MC10 is a visible UI demonstration for the
-    European call example, not a back-door market-data source.  It must carry
-    its whole market assumption and a declaration that no discrete path
-    calendar is being fabricated.  All other Pricer runs require one verified
-    ``DataAssetRef``.
-    """
-    if not isinstance(config, Mapping) or config.get("demo_mode") is not True:
-        return "正式定价必须绑定唯一DataAssetRef；MC10演示需显式demo_mode=true。"
-    if config.get("model_method") != "monte_carlo" or config.get("path_count") != 10:
-        return "无行情数据的演示仅允许model_method=monte_carlo、path_count=10和demo_mode=true。"
-    missing = sorted(name for name in _DEMO_MARKET_REQUIRED if config.get(name) is None)
-    if missing:
-        return "MC10演示缺少显式市场快照字段：" + "、".join(missing)
+    history_required: bool
+    future_calendar_required: bool
+    historical_fields: tuple[str, ...]
+    observation_price: str
+    tenor_years: float
+    observation_count: int | None
+
+
+def compile_compute_data_requirements(
+    module: str,
+    request: Mapping[str, Any],
+    resolved_contract: Mapping[str, Any] | None = None,
+) -> ComputeDataRequirements:
+    if module not in _CALCULATORS or not isinstance(request, Mapping):
+        raise ContractResolutionError("计算数据需求必须绑定正式计算模块")
+    if isinstance(resolved_contract, Mapping):
+        terms = resolved_contract.get("terms")
+    else:
+        product_id = request.get("product_id")
+        product = load_registry().get("products", {}).get(product_id) if isinstance(product_id, str) else None
+        registered = product.get("terms") if isinstance(product, Mapping) else None
+        overrides = request.get("term_overrides", {})
+        if not isinstance(registered, Mapping) or not isinstance(overrides, Mapping):
+            terms = {}
+        else:
+            terms = {**registered, **dict(overrides)}
+    terms = terms if isinstance(terms, Mapping) else {}
+    observation_price = str(terms.get("observation_price", "close"))
+    if observation_price not in {"close", "open", "high", "low"}:
+        raise ContractResolutionError("合同observation_price必须为close、open、high或low")
+    fields = ["close", "adj_close"]
+    if observation_price not in fields:
+        fields.append(observation_price)
+    if "T" not in terms:
+        raise ContractResolutionError("合同条款必须显式提供期限T")
     try:
-        valuation_date = str(config["valuation_date"])
-        date.fromisoformat(valuation_date)
-    except (TypeError, ValueError):
-        return "MC10演示valuation_date必须为YYYY-MM-DD。"
-    for field, strictly_positive in (("spot", True), ("volatility_override", True), ("time_to_maturity", True), ("risk_free_rate", False), ("dividend_yield", False)):
-        value = config[field]
-        if isinstance(value, bool) or not isinstance(value, (int, float)) or not isfinite(float(value)):
-            return f"MC10演示{field}必须为有限数值。"
-        if strictly_positive and float(value) <= 0:
-            return f"MC10演示{field}必须为正数。"
-    calendar = config["demo_calendar"]
-    if not isinstance(calendar, Mapping):
-        return "MC10演示demo_calendar必须为对象。"
-    expected_calendar = {
-        "calendar_id": "demo-european-vanilla",
-        "calendar_revision": "single-session-demo",
-        "sessions": [valuation_date],
-        "discrete_path": False,
-    }
-    if dict(calendar) != expected_calendar:
-        return "MC10演示demo_calendar必须声明仅估值日，且不得伪造离散路径交易日历。"
-    return None
-
-
-def is_explicit_demo_pricing_config(config: Mapping[str, Any] | object) -> bool:
-    """Return whether a Pricer request can lawfully omit a DataAssetRef."""
-    return explicit_demo_pricing_error(config) is None
+        tenor = float(terms["T"])
+    except (TypeError, ValueError) as error:
+        raise ContractResolutionError("合同期限T必须为有效数字") from error
+    if not isfinite(tenor) or tenor <= 0:
+        raise ContractResolutionError("合同期限T必须为正有限数值")
+    raw_observation_count = terms.get("n_obs")
+    if raw_observation_count is None:
+        observation_count = None
+    else:
+        try:
+            numeric_observation_count = float(raw_observation_count)
+        except (TypeError, ValueError) as error:
+            raise ContractResolutionError("合同n_obs必须为正整数") from error
+        if (
+            not isfinite(numeric_observation_count)
+            or numeric_observation_count <= 0
+            or not numeric_observation_count.is_integer()
+        ):
+            raise ContractResolutionError("合同n_obs必须为正整数")
+        observation_count = int(numeric_observation_count)
+    has_observations = bool(_OBSERVATION_TERM_KEYS.intersection(terms)) or bool(terms.get("monitor"))
+    return ComputeDataRequirements(
+        history_required=True,
+        future_calendar_required=module == "payoffer" and has_observations or module == "pricer" and has_observations,
+        historical_fields=tuple(fields),
+        observation_price=observation_price,
+        tenor_years=tenor,
+        observation_count=observation_count,
+    )
 
 
 def prepare_compute_request(
@@ -111,7 +137,7 @@ def prepare_compute_request(
     if module == "pricer":
         allowed.update({"market_data_refs", "trading_calendar_ref"})
     if module == "backtester":
-        allowed.update({"historical_data", "history_reference"})
+        allowed.add("historical_data")
     unknown = set(values) - allowed
     if unknown:
         raise ContractResolutionError("计算请求含未知字段：" + ",".join(sorted(unknown)))
@@ -133,6 +159,14 @@ def prepare_compute_request(
     )
     if unsupported_refs:
         raise ContractResolutionError("计算请求包含不支持的DataAssetRef.schema_id")
+    if resolved_contract is None and (module in {"pricer", "backtester"} or history_refs):
+        values = _bind_data_backed_contract_identity(module, values, history_refs, data_store)
+        identity = values.get("identity", {})
+        overrides = values.get("term_overrides", {})
+    if resolved_contract is None:
+        values = _freeze_first_contract_end_date(module, values)
+        identity = values.get("identity", {})
+        overrides = values.get("term_overrides", {})
     if len(calendar_refs) > 1:
         # One formal contract has exactly one authenticated observation
         # calendar.  Accepting the first of several supplied assets would make
@@ -185,9 +219,9 @@ def prepare_compute_request(
         config = values.get("pricing_config")
         if not isinstance(config, Mapping):
             raise ContractResolutionError("pricing_config必须为对象")
-        if len(history_refs) == 0 and not calendar_refs and is_explicit_demo_pricing_config(config):
-            pass
-        elif len(history_refs) != 1 or len(calendar_refs) > 1:
+        if "demo_mode" in config or "demo_calendar" in config:
+            raise ContractResolutionError("正式PricingInput不接受demo_mode或demo_calendar")
+        if len(history_refs) != 1 or len(calendar_refs) > 1:
             raise ContractResolutionError("PricingInput必须绑定唯一DataAssetRef历史行情，交易日历最多一项")
         formal = {
             "action": "run",
@@ -246,6 +280,177 @@ def prepare_compute_request(
         "product_snapshot_hash": contract.product_snapshot_hash,
         "product_paths_hash": contract.product_paths_hash,
     }
+
+
+def _bind_data_backed_contract_identity(
+    module: str,
+    request: Mapping[str, Any],
+    history_refs: Sequence[Mapping[str, Any]],
+    data_store: DataStoreReadPort | None,
+) -> dict[str, Any]:
+    if len(history_refs) != 1 or data_store is None or not callable(getattr(data_store, "read_bytes", None)):
+        raise ContractResolutionError(f"{module}首次合同必须由Host绑定唯一market-history DataAssetRef")
+    reference = DataAssetRef(**dict(history_refs[0]))
+    try:
+        payload = data_store.read_bytes(reference, tenant_id=reference.tenant_id)
+    except (OSError, PermissionError, TypeError, ValueError) as error:
+        raise ContractResolutionError("Host无法读取首次合同的历史行情") from error
+    if not isinstance(payload, bytes) or sha256(payload).hexdigest() != reference.content_hash:
+        raise ContractResolutionError("首次合同历史行情字节与DataAssetRef哈希不一致")
+    rows = _market_history_rows(payload)
+    value = deepcopy(dict(request))
+    raw_identity = value.get("identity", {})
+    if not isinstance(raw_identity, Mapping):
+        raise ContractResolutionError("identity必须为对象")
+    identity = deepcopy(dict(raw_identity))
+    underlyings = identity.get("underlyings")
+    if isinstance(underlyings, str):
+        assets = tuple(item.strip() for item in underlyings.split(",") if item.strip())
+    elif isinstance(underlyings, (list, tuple)):
+        assets = tuple(str(item).strip() for item in underlyings if str(item).strip())
+    else:
+        assets = ()
+    if not assets or len(set(assets)) != len(assets):
+        raise ContractResolutionError("identity.underlyings必须为无重复标的列表")
+    if module == "payoffer":
+        supplied_start = identity.get("contract_start_date")
+        if supplied_start not in {None, ""}:
+            start = _iso_date(supplied_start, "identity.contract_start_date")
+        else:
+            coverage_end = reference.coverage.get("end_date")
+            start = _latest_common_history_date(
+                rows,
+                assets,
+                _iso_date(coverage_end, "DataAssetRef.coverage.end_date"),
+            )
+    elif module == "pricer":
+        config = value.get("pricing_config")
+        if not isinstance(config, Mapping):
+            raise ContractResolutionError("pricing_config必须为对象")
+        valuation = _iso_date(config.get("valuation_date"), "pricing_config.valuation_date")
+        auto_start = value.pop("auto_contract_start_date", False)
+        if not isinstance(auto_start, bool):
+            raise ContractResolutionError("auto_contract_start_date必须为布尔值")
+        supplied_start = identity.get("contract_start_date")
+        if auto_start and supplied_start not in {None, ""}:
+            raise ContractResolutionError("自动合同起始日不得同时提交具体日期")
+        start = _iso_date(supplied_start or valuation, "identity.contract_start_date")
+        if start > valuation:
+            raise ContractResolutionError("合同起始日不得晚于请求估值日")
+        if auto_start:
+            start = _latest_common_history_date(rows, assets, valuation)
+    else:
+        config = value.get("backtest_config")
+        config = config if isinstance(config, Mapping) else {}
+        start_value = first_backtest_entry(config, reference.coverage)
+        start = _iso_date(start_value, "identity.contract_start_date")
+        supplied_start = identity.get("contract_start_date")
+        if supplied_start not in {None, ""} and _iso_date(
+            supplied_start, "identity.contract_start_date",
+        ) != start:
+            raise ContractResolutionError(
+                "identity.contract_start_date与正式回测入场区间不一致"
+            )
+    expected = _reference_prices(rows, assets, start)
+    supplied = identity.get("reference_prices")
+    if supplied is not None:
+        if not isinstance(supplied, Mapping) or set(supplied) != set(expected):
+            raise ContractResolutionError("identity.reference_prices必须逐一覆盖标的")
+        for asset, expected_value in expected.items():
+            try:
+                actual = float(supplied[asset])
+            except (TypeError, ValueError) as error:
+                raise ContractResolutionError(f"reference_prices.{asset}必须为正数") from error
+            if actual <= 0 or not isclose(actual, expected_value, rel_tol=1e-10, abs_tol=1e-8):
+                raise ContractResolutionError(f"reference_prices.{asset}与Host验证的未复权close不一致")
+    identity["contract_start_date"] = start
+    identity["reference_prices"] = expected
+    value["identity"] = identity
+    return value
+
+
+def _freeze_first_contract_end_date(module: str, request: Mapping[str, Any]) -> dict[str, Any]:
+    """Close a first formal contract with Core's sole civil-tenor rule."""
+
+    value = deepcopy(dict(request))
+    raw_identity = value.get("identity", {})
+    if not isinstance(raw_identity, Mapping):
+        raise ContractResolutionError("identity必须为对象")
+    identity = deepcopy(dict(raw_identity))
+    start = identity.get("contract_start_date")
+    if start in {None, ""} or identity.get("contract_end_date") not in {None, ""}:
+        return value
+    requirements = compile_compute_data_requirements(module, value)
+    identity["contract_end_date"] = derive_contract_end_date(start, requirements.tenor_years)
+    value["identity"] = identity
+    return value
+
+
+def _market_history_rows(payload: bytes) -> tuple[dict[str, Any], ...]:
+    try:
+        text = payload.decode("utf-8-sig")
+        reader = csv.DictReader(StringIO(text))
+    except UnicodeDecodeError as error:
+        raise ContractResolutionError("历史行情CSV编码无效") from error
+    required = {"date", "asset_id", "close", "adj_close"}
+    if reader.fieldnames is None or not required.issubset(reader.fieldnames):
+        raise ContractResolutionError("历史行情必须含date、asset_id、close、adj_close")
+    rows: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for raw in reader:
+        try:
+            day = date.fromisoformat(str(raw["date"]).strip()).isoformat()
+            asset = str(raw["asset_id"]).strip()
+            close = float(raw["close"])
+            adjusted = float(raw["adj_close"])
+        except (TypeError, ValueError) as error:
+            raise ContractResolutionError("历史行情含无效date、asset_id、close或adj_close") from error
+        if not asset or not isfinite(close) or not isfinite(adjusted) or close <= 0 or adjusted <= 0 or (day, asset) in seen:
+            raise ContractResolutionError("历史行情含无效或重复的date、asset_id、close、adj_close")
+        seen.add((day, asset))
+        rows.append({"date": day, "asset_id": asset, "close": close})
+    if not rows:
+        raise ContractResolutionError("历史行情为空")
+    return tuple(sorted(rows, key=lambda item: (item["date"], item["asset_id"])))
+
+
+def _latest_common_history_date(rows: Sequence[Mapping[str, Any]], assets: Sequence[str], cutoff: str) -> str:
+    dates_by_asset = {
+        asset: {str(row["date"]) for row in rows if row["asset_id"] == asset and str(row["date"]) <= cutoff}
+        for asset in assets
+    }
+    common = set.intersection(*(values for values in dates_by_asset.values())) if dates_by_asset else set()
+    if not common:
+        raise ContractResolutionError("DataAssetRef未覆盖全部标的在请求估值日或此前的共同未复权close")
+    return max(common)
+
+
+def _reference_prices(rows: Sequence[Mapping[str, Any]], assets: Sequence[str], cutoff: str) -> dict[str, float]:
+    values: dict[str, float] = {}
+    for asset in assets:
+        matches = [row for row in rows if row["asset_id"] == asset and str(row["date"]) <= cutoff]
+        if not matches:
+            raise ContractResolutionError(f"DataAssetRef未覆盖{asset}在合同起始日或此前的未复权close")
+        values[asset] = float(matches[-1]["close"])
+    return values
+
+
+def first_backtest_entry(config: Mapping[str, Any], coverage: Mapping[str, Any]) -> object:
+    """Return the first declared backtest entry from formal request or coverage fields."""
+
+    entries = config.get("entry_dates")
+    candidates = list(entries) if isinstance(entries, list) else []
+    candidates.extend((config.get("start_date"), coverage.get("start_date")))
+    return next((item for item in candidates if item not in {None, ""}), None)
+
+
+def _iso_date(value: object, label: str) -> str:
+    if not isinstance(value, str):
+        raise ContractResolutionError(f"{label}必须为YYYY-MM-DD")
+    try:
+        return date.fromisoformat(value).isoformat()
+    except ValueError as error:
+        raise ContractResolutionError(f"{label}必须为YYYY-MM-DD") from error
 
 
 def _canonical_data_ref(value: Mapping[str, Any]) -> dict[str, Any]:
@@ -309,7 +514,12 @@ def verified_trading_calendar(
         raise ContractResolutionError("Host验证交易日历交易日必须为YYYY-MM-DD") from error
     if not normalized or normalized != tuple(sorted(normalized)) or len(set(normalized)) != len(normalized):
         raise ContractResolutionError("Host验证交易日历交易日必须严格递增且不重复")
-    if coverage.get("sessions") not in (None, list(normalized)):
+    declared_sessions = coverage.get("sessions")
+    if declared_sessions is not None and (
+        isinstance(declared_sessions, (str, bytes))
+        or not isinstance(declared_sessions, Sequence)
+        or tuple(str(item) for item in declared_sessions) != normalized
+    ):
         raise ContractResolutionError("Host验证交易日历覆盖声明与内容不一致")
     return {
         "calendar_ref": deepcopy(dict(value)),
@@ -473,8 +683,8 @@ def _verify_friendly_request(
 
 __all__ = (
     "bind_verified_calendar_to_history",
-    "explicit_demo_pricing_error",
-    "is_explicit_demo_pricing_config",
+    "compile_compute_data_requirements",
+    "ComputeDataRequirements",
     "prepare_compute_request",
     "verified_trading_calendar",
 )
