@@ -19,6 +19,7 @@
       "n_in": "count(S_t[O_range] >= L and S_t[O_range] <= U)"
     },
     "pricing_methods": [
+      "analytical",
       "monte_carlo"
     ],
     "constraints": [
