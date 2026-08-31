@@ -3,7 +3,7 @@
   "$id": "optionhelper://schemas/resolved-contract",
   "title": "ResolvedContract",
   "type": "object",
-  "required": ["identity", "terms", "term_sources", "paths", "product_version", "resolved_schedules", "contract_fingerprint", "registry_snapshot_hash", "product_snapshot_hash", "product_paths_hash"],
+  "required": ["identity", "terms", "term_sources", "paths", "product_version", "resolved_schedules", "path_case_applicability", "contract_fingerprint", "registry_snapshot_hash", "product_snapshot_hash", "product_paths_hash"],
   "additionalProperties": false,
   "properties": {
     "identity": {"type": "object"},
@@ -12,6 +12,22 @@
     "paths": {"type": "array", "minItems": 1},
     "product_version": {"type": "string", "minLength": 1},
     "resolved_schedules": {"type": "object"},
+    "path_case_applicability": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["path_index", "case_index", "status", "reason_code", "evidence_hash"],
+        "additionalProperties": false,
+        "properties": {
+          "path_index": {"type": "integer", "minimum": 1},
+          "case_index": {"type": "integer", "minimum": 1},
+          "status": {"enum": ["active", "inactive"]},
+          "reason_code": {"enum": ["terminal_constraints_satisfiable", "terminal_constraints_contradict", "terminal_schedule_event_unavailable"]},
+          "evidence_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        }
+      }
+    },
     "contract_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "registry_snapshot_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "product_snapshot_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
