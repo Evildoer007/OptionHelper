@@ -10,7 +10,7 @@ import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 from uuid import uuid4
 
 _CORE_SRC = Path(__file__).resolve().parents[4] / "core" / "src"
@@ -46,13 +46,27 @@ class ResultStore:
         self._require_task_owner(identity, task_id)
         run_id = _store_id(result.get("run_id") or uuid4(), "run")
         files, normalized_result = _module_run_files(identity, task_id, module, run_id, result)
-        reference = self._commit_files(identity, task_id, module, run_id, files, normalized_result)
+        reference = self._commit_files(
+            identity, task_id, module, run_id, files, normalized_result,
+            defer_publication=False,
+        )
         return reference
 
-    def bind_module_store(self, identity: SessionIdentity, task_id: str) -> "_BoundModuleResultStore":
-        """Return a Core ResultStorePort scoped to one authenticated App task."""
+    def bind_module_store(
+        self,
+        identity: SessionIdentity,
+        task_id: str,
+        module: str,
+        *,
+        defer_publication: bool = False,
+    ) -> "_BoundModuleResultStore":
+        """Return a Core ResultStorePort scoped to one authenticated module run."""
         self._require_task_owner(identity, task_id)
-        return _BoundModuleResultStore(self, identity, task_id)
+        if module not in {"payoffer", "pricer", "backtester"}:
+            raise ValidationError("ModuleRun module is invalid")
+        if not isinstance(defer_publication, bool):
+            raise ValidationError("ModuleRun publication mode is invalid")
+        return _BoundModuleResultStore(self, identity, task_id, module, defer_publication)
 
     def _commit_files(
         self,
@@ -62,6 +76,8 @@ class ResultStore:
         run_id: str,
         files: dict[str, Any],
         normalized_result: dict[str, Any],
+        *,
+        defer_publication: bool,
     ) -> dict[str, str]:
         if module not in {"payoffer", "pricer", "backtester"}:
             raise ValidationError("ModuleRun module is invalid")
@@ -70,14 +86,13 @@ class ResultStore:
         records = self._state.read("results")
         if record_key in records:
             raise ValidationError("ModuleRun records are immutable; create a new run_id")
-        expected_hash = _expected_core_result_hash(files)
-        pending_reference = {
-            "module": module,
-            "tenant_id": identity.tenant_id,
-            "task_id": task_id,
-            "run_id": run_id,
-            "expected_semantic_result_hash": expected_hash,
-        }
+        try:
+            predicted_ref = self._core.predict_module_run_ref(
+                module=module, tenant_id=identity.tenant_id, task_id=task_id, run_id=run_id, files=files,
+            )
+        except StoreError as error:
+            raise ValidationError(f"Core ModuleRun预提交校验失败：{error}") from error
+        pending_reference = _module_run_ref_dict(predicted_ref)
         manifest = files.get("manifest.json")
         manifest = manifest if isinstance(manifest, dict) else {}
         analysis_case_id = _store_id(
@@ -87,7 +102,7 @@ class ResultStore:
         record = {
             **pending_reference,
             "reference_schema": MODULE_RUN_REF_SCHEMA,
-            "anchor_state": "pending_commit",
+            "anchor_state": "prepared",
             "created_by": identity.principal_id,
             "created_at": datetime.now(timezone.utc).isoformat(),
             "analysis_case_id": analysis_case_id,
@@ -102,14 +117,11 @@ class ResultStore:
         except (StoreError, FileExistsError) as error:
             self._remove_recovery(record_key)
             raise ValidationError(f"Core ModuleRun提交失败：{error}") from error
-        if pending_reference != {
-            "module": core_ref.module, "tenant_id": core_ref.tenant_id, "task_id": core_ref.task_id,
-            "run_id": core_ref.run_id, "expected_semantic_result_hash": core_ref.expected_semantic_result_hash,
-        }:
+        if pending_reference != _module_run_ref_dict(core_ref):
             raise ValidationError("Core ModuleRun返回引用与预提交恢复记录不一致")
         reference = _module_run_ref_dict(core_ref)
         record.update(reference)
-        record["anchor_state"] = "anchored"
+        record["anchor_state"] = "staged" if defer_publication else "anchored"
         self._replace_recovery(record_key, record)
 
         def update(value: dict[str, Any]) -> dict[str, Any]:
@@ -144,12 +156,11 @@ class ResultStore:
                     # RunRef and must never be reinterpreted as one.
                     self._remove_recovery(record_key)
                     continue
-                if record.get("anchor_state") != "anchored":
-                    # Never bless an unanchored run from mutable store bytes
-                    # during automatic startup recovery.
+                if record.get("anchor_state") not in {"prepared", "staged", "anchored"}:
+                    self._remove_recovery(record_key)
                     continue
                 ref = ModuleRunRef(**{key: record[key] for key in current_fields})
-                self._core.resolve_module_run(ref, tenant_id=ref.tenant_id)
+                self._core.verify_module_run(ref, tenant_id=ref.tenant_id)
             except (KeyError, TypeError, ValueError, StoreError, FileNotFoundError, PermissionError):
                 self._remove_recovery(record_key)
                 continue
@@ -168,6 +179,28 @@ class ResultStore:
             self._remove_recovery(record_key)
             repaired += 1
         return repaired
+
+    def publish_module_run(
+        self, identity: SessionIdentity, reference: ModuleRunRef | Mapping[str, str],
+    ) -> None:
+        """Make one verified staged run visible after its contract CAS succeeds."""
+
+        payload = _module_run_ref_dict(reference) if isinstance(reference, ModuleRunRef) else dict(reference)
+        ref = self._owned_module_run_ref(identity, payload, self._state.read("results"))
+        try:
+            self._core.verify_module_run(ref, tenant_id=identity.tenant_id)
+        except (StoreError, FileNotFoundError, PermissionError) as error:
+            raise ValidationError(f"Core ModuleRun不可发布：{error}") from error
+        record_key = _module_run_key(ref.module, ref.run_id)
+
+        def update(value: dict[str, Any]) -> dict[str, Any]:
+            record = value.get(record_key)
+            if not isinstance(record, dict) or record.get("anchor_state") != "staged":
+                raise ValidationError("ModuleRun不处于待发布状态")
+            record["anchor_state"] = "anchored"
+            return value
+
+        self._state.update("results", update)
 
     def _write_recovery(self, key: str, record: dict[str, Any]) -> None:
         def update(value: dict[str, Any]) -> dict[str, Any]:
@@ -191,14 +224,24 @@ class ResultStore:
             return value
         self._state.update("result_recovery", update)
 
-    def resolve_owned_module_run(self, identity: SessionIdentity, reference: dict[str, str]) -> Path:
-        """Resolve one Core ModuleRun only after App ownership re-authorization."""
-        return self._resolve_owned_module_run(identity, reference, self._state.read("results"))
+    def verify_owned_module_run(self, identity: SessionIdentity, reference: dict[str, str]) -> None:
+        """Re-authorize and verify one immutable Core run without exposing its path."""
 
-    def resolve_owned_module_runs(
+        ref = self._owned_module_run_ref(identity, reference, self._state.read("results"))
+        try:
+            self._core.verify_module_run(ref, tenant_id=identity.tenant_id)
+        except (StoreError, FileNotFoundError, PermissionError) as error:
+            raise ValidationError(f"Core ModuleRun不可用：{error}") from error
+
+    def resolve_owned_module_run(self, identity: SessionIdentity, reference: dict[str, str]) -> None:
+        """Current Agent dispatcher verification hook; intentionally returns no path."""
+
+        self.verify_owned_module_run(identity, reference)
+
+    def verify_owned_module_runs(
         self,
         requests: Iterable[tuple[SessionIdentity, dict[str, str]]],
-    ) -> tuple[Path, ...]:
+    ) -> None:
         """Verify a bounded group of stored runs against one result-index snapshot.
 
         Startup recovery may need to validate every succeeded calculation job.
@@ -209,32 +252,52 @@ class ResultStore:
 
         pending = tuple(requests)
         if not pending:
-            return ()
+            return
         records = self._state.read("results")
-        return tuple(
-            self._resolve_owned_module_run(identity, reference, records)
-            for identity, reference in pending
-        )
+        for identity, reference in pending:
+            ref = self._owned_module_run_ref(identity, reference, records)
+            try:
+                self._core.verify_module_run(ref, tenant_id=identity.tenant_id)
+            except (StoreError, FileNotFoundError, PermissionError) as error:
+                raise ValidationError(f"Core ModuleRun不可用：{error}") from error
 
-    def _resolve_owned_module_run(
+    def _owned_module_run_ref(
         self,
         identity: SessionIdentity,
         reference: dict[str, str],
         records: dict[str, Any],
-    ) -> Path:
+    ) -> ModuleRunRef:
         self._resolve_module_run(identity, reference, records)
-        ref = ModuleRunRef(
+        return ModuleRunRef(
             module=str(reference["module"]), tenant_id=str(reference["tenant_id"]), task_id=str(reference["task_id"]), run_id=str(reference["run_id"]),
             expected_semantic_result_hash=str(reference["expected_semantic_result_hash"]),
             expected_artifact_manifest_hash=str(reference["expected_artifact_manifest_hash"]),
         )
+
+    def read_owned_module_run_file(self, identity: SessionIdentity, reference: dict[str, str], name: str) -> bytes:
+        ref = self._owned_module_run_ref(identity, reference, self._state.read("results"))
         try:
-            return self._core.resolve_module_run(ref, tenant_id=identity.tenant_id)
+            return self._core.read_module_run_file(ref, name, tenant_id=identity.tenant_id)
         except (StoreError, FileNotFoundError, PermissionError) as error:
-            raise ValidationError(f"Core ModuleRun不可用：{error}") from error
+            raise ValidationError(f"Core ModuleRun不可读取：{error}") from error
+
+    def read_owned_module_run_bundle(self, identity: SessionIdentity, reference: dict[str, str]) -> dict[str, bytes]:
+        ref = self._owned_module_run_ref(identity, reference, self._state.read("results"))
+        try:
+            return self._core.read_module_run_bundle(ref, tenant_id=identity.tenant_id)
+        except (StoreError, FileNotFoundError, PermissionError) as error:
+            raise ValidationError(f"Core ModuleRun不可读取：{error}") from error
 
     def resolve_module_run(self, identity: SessionIdentity, reference: dict[str, str]) -> dict[str, Any]:
-        return self._resolve_module_run(identity, reference, self._state.read("results"))
+        record = self._resolve_module_run(identity, reference, self._state.read("results"))
+        try:
+            semantic_name = "result.json" if record.get("status") in {"succeeded", "partial"} else "error.json"
+            semantic_value = json.loads(self.read_owned_module_run_file(identity, reference, semantic_name))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise ValidationError("Core ModuleRun缺少可验证语义结果") from error
+        if not isinstance(semantic_value, dict):
+            raise ValidationError("Core ModuleRun语义结果无效")
+        return {**record, "result": semantic_value}
 
     def _resolve_module_run(
         self,
@@ -273,11 +336,10 @@ class ResultStore:
         before the App reads the immutable indexed result.  Neither tenant,
         principal, paths, raw payloads nor arbitrary fields leave this method.
         """
-        run_directory = self.resolve_owned_module_run(identity, reference)
         record = self.resolve_module_run(identity, reference)
         try:
-            result = json.loads((run_directory / "result.json").read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as error:
+            result = json.loads(self.read_owned_module_run_file(identity, reference, "result.json"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
             raise ValidationError("已验证ModuleRun缺少可读取结果") from error
         if not isinstance(result, dict) or semantic_hash(result) != record.get("expected_semantic_result_hash"):
             raise ValidationError("ModuleRun事实哈希不匹配")
@@ -324,17 +386,22 @@ class ResultStore:
         needle = (query or "").strip().lower()
         grouped: dict[str, dict[str, Any]] = {}
         for record in self._state.read("results").values():
-            if not isinstance(record, dict) or record.get("tenant_id") != tenant_id:
+            if (
+                not isinstance(record, dict)
+                or record.get("tenant_id") != tenant_id
+                or record.get("anchor_state") != "anchored"
+            ):
                 continue
             if record.get("module") not in {"payoffer", "pricer", "backtester"} or not _completed(record.get("result")):
                 continue
             if task_id is not None and record.get("task_id") != task_id:
                 continue
-            run_dir = self._verified_report_record(record, tenant_id)
-            if run_dir is None:
+            verified_run = self._verified_report_record(record, tenant_id)
+            if verified_run is None:
                 continue
             try:
-                candidate = _report_candidate(record, _verified_contract_snapshot(run_dir))
+                verified_contract, verified_result = verified_run
+                candidate = _report_candidate({**record, "result": verified_result}, verified_contract)
             except ValidationError:
                 # Reporter只能消费带有Core合同快照哈希的正式结果。旧索引
                 # 记录不能靠临时派生标签伪装成当前可交付来源。
@@ -404,7 +471,7 @@ class ResultStore:
             sources.append(source)
         return {"tenant_id": tenant_id, "sources": sources}
 
-    def _verified_report_record(self, record: dict[str, Any], tenant_id: str) -> Path | None:
+    def _verified_report_record(self, record: dict[str, Any], tenant_id: str) -> tuple[dict[str, Any], dict[str, Any]] | None:
         """Only enumerate calculation runs whose Core commit remains intact."""
         try:
             reference = ModuleRunRef(
@@ -415,8 +482,10 @@ class ResultStore:
                 expected_semantic_result_hash=str(record["expected_semantic_result_hash"]),
                 expected_artifact_manifest_hash=str(record["expected_artifact_manifest_hash"]),
             )
-            return self._core.resolve_module_run(reference, tenant_id=tenant_id)
-        except (KeyError, TypeError, ValueError, StoreError, FileNotFoundError, PermissionError):
+            contract = json.loads(self._core.read_module_run_file(reference, "resolved_contract.json", tenant_id=tenant_id))
+            result = json.loads(self._core.read_module_run_file(reference, "result.json", tenant_id=tenant_id))
+            return (contract, result) if isinstance(contract, dict) and isinstance(result, dict) else None
+        except (KeyError, TypeError, ValueError, StoreError, FileNotFoundError, PermissionError, UnicodeDecodeError, json.JSONDecodeError):
             return None
 
     def list_owned_report_sources(self, identity: SessionIdentity, *, task_id: str | None = None, query: str | None = None) -> dict[str, Any]:
@@ -600,16 +669,45 @@ class ResultStore:
 class _BoundModuleResultStore:
     """ResultStorePort adapter that cannot escape its authenticated task."""
 
-    def __init__(self, owner: ResultStore, identity: SessionIdentity, task_id: str) -> None:
+    def __init__(
+        self,
+        owner: ResultStore,
+        identity: SessionIdentity,
+        task_id: str,
+        module: str,
+        defer_publication: bool,
+    ) -> None:
         self._owner = owner
         self._identity = identity
         self._task_id = task_id
+        self._module = module
+        self._defer_publication = defer_publication
+
+    def predict_module_run_ref(
+        self,
+        *,
+        module: str,
+        tenant_id: str,
+        task_id: str,
+        run_id: str,
+        files: Mapping[str, Any],
+    ) -> ModuleRunRef:
+        self._require_write_scope(module, tenant_id, task_id)
+        try:
+            return self._owner._core.predict_module_run_ref(
+                module=module,
+                tenant_id=tenant_id,
+                task_id=task_id,
+                run_id=run_id,
+                files=files,
+            )
+        except (StoreError, FileNotFoundError, PermissionError) as error:
+            raise ValidationError(f"Core ModuleRun无法预提交：{error}") from error
 
     def commit_module_run(
         self, *, module: str, tenant_id: str, task_id: str, run_id: str, files: dict[str, Any],
     ) -> ModuleRunRef:
-        if tenant_id != self._identity.tenant_id or task_id != self._task_id:
-            raise AuthorizationError("result.write", "ModuleRun scope does not match authenticated App task")
+        self._require_write_scope(module, tenant_id, task_id)
         committed_files = dict(files)
         raw_result = committed_files.get("result.json")
         manifest = committed_files.get("manifest.json")
@@ -637,43 +735,64 @@ class _BoundModuleResultStore:
                 "analysis_case_id": analysis_case_id,
                 "status": lifecycle_status,
             }
-        else:
+        elif lifecycle_status in {"failed", "unsupported", "cancelled", "timed_out"}:
+            error_result = files.get("error.json")
+            if not isinstance(error_result, Mapping):
+                raise ValidationError("失败ModuleRun缺少正式error.json")
             normalized_result = {
-            "ok": False,
-            "module": module,
-            "status": "failed",
-            "error": files.get("error.json", {"message": "module did not provide result.json"}),
+                "ok": False,
+                "module": module,
+                "status": lifecycle_status,
+                "error": dict(error_result),
             }
+        else:
+            raise ValidationError("ModuleRun manifest缺少正式终态")
         reference = self._owner._commit_files(
-            self._identity, task_id, module, _store_id(run_id, "run"), committed_files, normalized_result,
+            self._identity,
+            task_id,
+            module,
+            _store_id(run_id, "run"),
+            committed_files,
+            normalized_result,
+            defer_publication=self._defer_publication,
         )
         return ModuleRunRef(**reference)
-
-    def resolve_module_run(self, ref: ModuleRunRef, *, tenant_id: str) -> Path:
-        if tenant_id != self._identity.tenant_id or ref.task_id != self._task_id:
-            raise AuthorizationError("result.read", "ModuleRun scope does not match authenticated App task")
-        return self._owner.resolve_owned_module_run(self._identity, {
-            "module": ref.module,
-            "tenant_id": ref.tenant_id,
-            "task_id": ref.task_id,
-            "run_id": ref.run_id,
-            "expected_semantic_result_hash": ref.expected_semantic_result_hash,
-            "expected_artifact_manifest_hash": ref.expected_artifact_manifest_hash,
-        })
 
     def verify_module_run(self, ref: ModuleRunRef, *, tenant_id: str) -> None:
         """Verify a scoped RunRef without exposing a directory to new callers."""
 
-        self.resolve_module_run(ref, tenant_id=tenant_id)
-
-    def read_module_run_file(self, ref: ModuleRunRef, name: str, *, tenant_id: str) -> bytes:
+        if ref.module != self._module:
+            raise AuthorizationError("result.read", "ModuleRun module does not match authenticated App module")
         if tenant_id != self._identity.tenant_id or ref.task_id != self._task_id:
             raise AuthorizationError("result.read", "ModuleRun scope does not match authenticated App task")
-        self._owner.resolve_module_run(self._identity, _module_run_ref_dict(ref))
+        self._owner.verify_owned_module_run(self._identity, _module_run_ref_dict(ref))
+
+    def read_module_run_file(self, ref: ModuleRunRef, name: str, *, tenant_id: str) -> bytes:
+        if ref.module != self._module:
+            raise AuthorizationError("result.read", "ModuleRun module does not match authenticated App module")
+        if tenant_id != self._identity.tenant_id or ref.task_id != self._task_id:
+            raise AuthorizationError("result.read", "ModuleRun scope does not match authenticated App task")
+        self._owner.verify_owned_module_run(self._identity, _module_run_ref_dict(ref))
         try:
             return self._owner._core.read_module_run_file(ref, name, tenant_id=tenant_id)
         except (StoreError, FileNotFoundError, PermissionError) as error:
             raise ValidationError(f"Core ModuleRun不可读取：{error}") from error
+
+    def read_module_run_bundle(self, ref: ModuleRunRef, *, tenant_id: str) -> dict[str, bytes]:
+        if ref.module != self._module:
+            raise AuthorizationError("result.read", "ModuleRun module does not match authenticated App module")
+        if tenant_id != self._identity.tenant_id or ref.task_id != self._task_id:
+            raise AuthorizationError("result.read", "ModuleRun scope does not match authenticated App task")
+        return self._owner.read_owned_module_run_bundle(
+            self._identity,
+            _module_run_ref_dict(ref),
+        )
+
+    def _require_write_scope(self, module: str, tenant_id: str, task_id: str) -> None:
+        if module != self._module:
+            raise AuthorizationError("result.write", "ModuleRun module does not match authenticated App module")
+        if tenant_id != self._identity.tenant_id or task_id != self._task_id:
+            raise AuthorizationError("result.write", "ModuleRun scope does not match authenticated App task")
 
 
 _PRICING_FACTS = (
@@ -807,13 +926,17 @@ def _module_run_files(
     resolved_contract = dict(contract) if isinstance(contract, dict) else {}
     if status in {"succeeded", "partial"} and not resolved_contract:
         raise ValidationError("成功ModuleRun缺少resolved_contract")
-    analysis_case_id = _store_id(value.get("analysis_case_id") or task_id, "case")
+    raw_analysis_case_id = value.get("analysis_case_id")
+    if status in {"succeeded", "partial"} and not isinstance(raw_analysis_case_id, str):
+        raise ValidationError("成功ModuleRun缺少analysis_case_id")
+    analysis_case_id = _store_id(raw_analysis_case_id, "case") if isinstance(raw_analysis_case_id, str) else ""
     contract_fingerprint = str(resolved_contract.get("contract_fingerprint") or value.get("contract_fingerprint") or "")
-    candidate_id = _store_id(
-        value.get("candidate_id") or f"candidate_{hashlib.sha256((contract_fingerprint or safe_run_id).encode('utf-8')).hexdigest()[:24]}",
-        "candidate",
-    )
-    value["candidate_id"] = candidate_id
+    raw_candidate_id = value.get("candidate_id")
+    if status in {"succeeded", "partial"} and not isinstance(raw_candidate_id, str):
+        raise ValidationError("成功ModuleRun缺少candidate_id")
+    candidate_id = _store_id(raw_candidate_id, "candidate") if isinstance(raw_candidate_id, str) else ""
+    if candidate_id:
+        value["candidate_id"] = candidate_id
     candidate_key = value.get("candidate_key")
     candidate_version_id = value.get("candidate_version_id")
     if (candidate_key is None) != (candidate_version_id is None):
@@ -833,9 +956,13 @@ def _module_run_files(
         catalog_version = catalog_version.strip()
     value["catalog_version"] = catalog_version
     execution_fingerprint = value.get("execution_fingerprint")
-    if not isinstance(execution_fingerprint, str) or not execution_fingerprint:
-        execution_fingerprint = semantic_hash({"module": module, "task_id": task_id, "run_id": safe_run_id, "result": value})
-    value["execution_fingerprint"] = execution_fingerprint
+    if status in {"succeeded", "partial"} and (
+        not isinstance(execution_fingerprint, str)
+        or re.fullmatch(r"[0-9a-f]{64}", execution_fingerprint) is None
+    ):
+        raise ValidationError("成功ModuleRun缺少有效execution_fingerprint")
+    if isinstance(execution_fingerprint, str) and execution_fingerprint:
+        value["execution_fingerprint"] = execution_fingerprint
     semantic_result_hash = semantic_hash(value) if status in {"succeeded", "partial"} else ""
     limitations = value.get("limitations")
     if not isinstance(limitations, list) or any(not isinstance(item, str) for item in limitations):
@@ -883,22 +1010,6 @@ def _module_run_files(
     return files, value
 
 
-def _expected_core_result_hash(files: dict[str, Any]) -> str:
-    manifest = files.get("manifest.json")
-    if not isinstance(manifest, dict):
-        raise ValidationError("ModuleRun manifest无效")
-    status = str(manifest.get("status", ""))
-    if "result.json" in files:
-        value = files["result.json"]
-        if not isinstance(value, dict):
-            raise ValidationError("ModuleRun result无效")
-        return semantic_hash(value)
-    error = files.get("error.json")
-    if not isinstance(error, dict):
-        raise ValidationError("ModuleRun error无效")
-    return semantic_hash({"status": status, "error": error})
-
-
 def _sha256(value: object) -> str:
     encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
@@ -939,7 +1050,47 @@ def _report_visible(identity: SessionIdentity, record: dict[str, Any]) -> bool:
 
 
 def _report_projection(record: dict[str, Any]) -> dict[str, Any]:
-    return {key: record[key] for key in ("tenant_id", "task_id", "report_run_id", "status", "created_at", "report_request", "artifact_manifest", "expected_semantic_fact_hash", "expected_artifact_manifest_hash")}
+    request = record.get("report_request")
+    request = request if isinstance(request, dict) else {}
+    subject_ref = request.get("subject_ref")
+    subject_ref = subject_ref if isinstance(subject_ref, dict) else {}
+    delivery_mode = subject_ref.get("delivery_mode", request.get("delivery_mode"))
+    delivery_mode = str(delivery_mode) if delivery_mode in {"single", "combined", "batch", "comparison", "quote"} else None
+    artifacts = record.get("artifact_manifest")
+    artifacts = artifacts if isinstance(artifacts, list) else []
+    return {
+        "task_id": record["task_id"],
+        "report_run_id": record["report_run_id"],
+        "status": record["status"],
+        "created_at": record["created_at"],
+        "output_type": request.get("output_type"),
+        "delivery_mode": delivery_mode,
+        "comparison": delivery_mode == "comparison",
+        "format": request.get("format"),
+        "artifacts": [
+            {
+                **{key: item.get(key) for key in ("name", "content_type", "size")},
+                "display_name": _artifact_display_name(request, item),
+            }
+            for item in artifacts if isinstance(item, dict)
+        ],
+    }
+
+
+def _artifact_display_name(request: Mapping[str, Any], artifact: Mapping[str, Any]) -> str:
+    name = PurePosixPath(str(artifact.get("name", "artifact"))).name
+    metadata = request.get("metadata")
+    title = metadata.get("title") if isinstance(metadata, Mapping) else None
+    content_type = str(artifact.get("content_type", ""))
+    if (
+        isinstance(title, str)
+        and 0 < len(title.strip()) <= 120
+        and not any(ord(character) < 32 for character in title)
+        and content_type in {"text/html; charset=utf-8", "application/pdf"}
+    ):
+        suffix = ".pdf" if content_type == "application/pdf" else ".html"
+        return f"{title.strip()}{suffix}"
+    return name
 
 
 def _report_module(module: str) -> str:
@@ -951,19 +1102,6 @@ def _source_id(tenant_id: str, task_id: str, analysis_case_id: str, catalog_cont
         f"{tenant_id}:{task_id}:{analysis_case_id}:{catalog_content_hash}".encode("utf-8")
     ).hexdigest()[:24]
     return f"source_{digest}"
-
-
-def _verified_contract_snapshot(run_dir: Path) -> dict[str, Any]:
-    """Read the Core-verified contract snapshot without exposing its path."""
-
-    path = run_dir / "resolved_contract.json"
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError, TypeError) as error:
-        raise ValidationError("formal ModuleRun has no readable resolved contract") from error
-    if not isinstance(raw, dict):
-        raise ValidationError("formal ModuleRun resolved contract is invalid")
-    return raw
 
 
 def _report_candidate(record: dict[str, Any], verified_contract: dict[str, Any]) -> dict[str, Any]:
