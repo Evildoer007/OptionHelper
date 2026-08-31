@@ -9,8 +9,12 @@ const remember = document.querySelector("#login-remember");
 const submit = document.querySelector("#login-submit");
 const eye = document.querySelector("#login-eye");
 const status = document.querySelector("#login-status");
+const heading = document.querySelector(".login-head h1");
 const themeControls = document.querySelector(".login-theme");
 const volSurface = initializeVolSurface(document.querySelector("#login-vol-surface"));
+const initializationToken = typeof window.__optionhelperInitializationToken === "string"
+  ? window.__optionhelperInitializationToken
+  : "";
 
 window.__volIn = () => volSurface?.reveal();
 if (window.__optionhelperVolInRequested) window.__volIn();
@@ -18,6 +22,13 @@ installThemeControls(themeControls);
 
 function enterWorkspace() {
   location.assign("/optchat");
+}
+
+function loginErrorMessage(error) {
+  if (error.body?.failure_code === "account_store_unreadable") {
+    return "账号数据无法读取，请恢复后重试。";
+  }
+  return error.body?.message || error.message || "无法连接服务，请重新启动OptionHelper后重试。";
 }
 
 function installCardGlow() {
@@ -40,40 +51,91 @@ function installCardGlow() {
   }, { passive: true });
 }
 
-eye.addEventListener("click", () => {
-  const wasVisible = eye.getAttribute("aria-pressed") === "true";
-  eye.setAttribute("aria-pressed", String(!wasVisible));
-  eye.setAttribute("aria-label", wasVisible ? "显示密码" : "隐藏密码");
-  eye.title = eye.getAttribute("aria-label");
-  password.type = wasVisible ? "password" : "text";
-  password.focus({ preventScroll: true });
-});
-
-document.querySelector("#login-forgot").addEventListener("click", (event) => {
-  event.preventDefault();
-  status.textContent = "开发阶段无需重置密码，任意填写后即可进入。";
-});
-
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
   status.textContent = "";
   submit.disabled = true;
-  submit.textContent = "登录中";
+  const initializing = form.dataset.mode === "initialize";
+  if (!account.value.trim() || !password.value) {
+    status.textContent = initializing ? "请填写管理员账号和密码。" : "请填写账号和密码。";
+    submit.disabled = false;
+    return;
+  }
+  submit.textContent = initializing ? "正在创建" : "正在登录";
   try {
-    // Development-only presentation login: typed values are never read,
-    // persisted or sent. The loopback AppServer creates its fixed local identity.
+    if (initializing) {
+      await request("/api/auth/initialize", {
+        method: "POST",
+        headers: { "X-OptionHelper-Initialization-Token": initializationToken },
+        body: safeJson({ account: account.value.trim(), password: password.value }, { allowSecrets: new Set(["password"]) }),
+      });
+      window.__optionhelperInitializationToken = undefined;
+      form.dataset.mode = "login";
+      heading.textContent = "登录OptionHelper";
+      password.value = "";
+      password.autocomplete = "current-password";
+      remember.closest("label").hidden = false;
+      status.textContent = "管理员账号已创建，请登录。";
+      submit.disabled = false;
+      submit.textContent = "登录";
+      password.focus();
+      return;
+    }
     await request("/api/auth/login", {
       method: "POST",
-      body: safeJson({ account: "", password: "", remember: remember.checked }, { allowSecrets: new Set(["password"]) }),
+      body: safeJson({ account: account.value.trim(), password: password.value, remember: remember.checked }, { allowSecrets: new Set(["password"]) }),
     });
     enterWorkspace();
   } catch (error) {
-    status.textContent = Number.isInteger(error?.status)
-      ? `本机服务暂不可用，返回${error.status}。`
-      : "无法连接本机服务，请确认AppServer已启动。";
+    status.textContent = loginErrorMessage(error);
     submit.disabled = false;
-    submit.textContent = "登录";
+    submit.textContent = initializing ? "创建账号" : "登录";
   }
+});
+
+async function bootstrapLogin() {
+  submit.disabled = true;
+  try {
+    await request("/api/me");
+    enterWorkspace();
+    return;
+  } catch (error) {
+    if (![401, 403].includes(error.status)) {
+      status.textContent = loginErrorMessage(error);
+    }
+  }
+
+  try {
+    const value = await request("/api/auth/initialization");
+    if (value.initialization_required === true) {
+      form.dataset.mode = "initialize";
+      heading.textContent = "创建管理员账号";
+      password.autocomplete = "new-password";
+      remember.closest("label").hidden = true;
+      submit.textContent = "创建账号";
+      if (!initializationToken) {
+        status.textContent = "账号初始化能力不可用，请重新启动OptionHelper后重试。";
+        return;
+      }
+    }
+  } catch (error) {
+    status.textContent = error.body?.failure_code === "account_store_unreadable"
+      ? loginErrorMessage(error)
+      : "无法连接服务，请重新启动OptionHelper后重试。";
+  } finally {
+    submit.disabled = form.dataset.mode === "initialize" && !initializationToken;
+  }
+}
+
+bootstrapLogin();
+
+eye.addEventListener("click", () => {
+  const visible = eye.getAttribute("aria-pressed") === "true";
+  eye.setAttribute("aria-pressed", String(!visible));
+  eye.setAttribute("aria-label", visible ? "显示密码" : "隐藏密码");
+  eye.title = eye.getAttribute("aria-label");
+  password.type = visible ? "password" : "text";
+  password.focus({ preventScroll: true });
 });
 
 installCardGlow();
