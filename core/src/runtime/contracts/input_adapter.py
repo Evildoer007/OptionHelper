@@ -105,7 +105,10 @@ def compile_compute_data_requirements(
     has_observations = bool(_OBSERVATION_TERM_KEYS.intersection(terms)) or bool(terms.get("monitor"))
     return ComputeDataRequirements(
         history_required=True,
-        future_calendar_required=module == "payoffer" and has_observations or module == "pricer" and has_observations,
+        # Numerical method selection does not alter the legal contract. Any
+        # observed contract still needs authenticated sessions so Core can
+        # freeze its schedule before Payoffer or Pricer executes.
+        future_calendar_required=module in {"payoffer", "pricer"} and has_observations,
         historical_fields=tuple(fields),
         observation_price=observation_price,
         tenor_years=tenor,
