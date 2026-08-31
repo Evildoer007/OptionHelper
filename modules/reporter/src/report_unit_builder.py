@@ -372,33 +372,114 @@ _MONITOR_LABELS = {
 }
 
 
-def _specialized_metric_rows(backtest: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """Select up to four supplied, percentage-only profile facts.
+_SPECIALIZED_PROFILE_ROOTS = {
+    "terminal_payoff": {"terminal_performance", "terminal_performance_sign", "terminal_segments", "selected_path_case_gross_return"},
+    "single_knock_out": {"events", "trigger_vs_untriggered"},
+    "single_knock_in": {"events", "knock_in_outcomes"},
+    "touch_binary": {"events", "touch_vs_untouched"},
+    "airbag": {"events", "buffer_outcomes", "knock_in_outcomes", "selected_path_case_gross_return"},
+    "accumulator": {"events", "accumulated_quantity", "gross_return_per_accumulated_unit", "knock_out_vs_full_term", "contract_purchase_price", "quantity_multiplier"},
+    "dual_knock_autocall": {"events", "three_outcome_summary", "conditional_summary"},
+    "coupon_autocall": {"events", "coupon_observations", "coupon_payment"},
+    "single_knock_out_autocall": {"events", "trigger_vs_untriggered"},
+    "shark_fin": {"events", "trigger_vs_untriggered", "terminal_performance", "selected_path_case_gross_return"},
+    "variance_swap": {"realized_volatility", "realized_variance", "realized_volatility_vs_strike", "volatility_buckets", "variance_gross_return"},
+    "range_accrual": {"range_observations", "in_range_observation_ratio", "range_accrual_gross_return"},
+}
+_SPECIALIZED_LEAVES = {
+    "average", "median", "minimum", "maximum",
+    "positive_count", "flat_count", "negative_count", "positive_rate", "negative_rate",
+    "sample_count", "trigger_count", "trigger_rate", "average_days", "median_days",
+    "true_count", "false_count", "true_rate", "count", "rate",
+    "paid_observation_count", "scheduled_observation_count", "unpaid_observation_count", "observation_hit_rate",
+    "knock_out_count", "full_term_count", "knock_out_rate", "triggered_count", "untriggered_count", "triggered_rate",
+    "below_strike_count", "at_or_above_strike_count", "below_strike_rate",
+    "non_negative_terminal_rate", "negative_terminal_rate",
+    "strike_volatility", "contract_purchase_price", "quantity_multiplier", "underlying_count", "observed_trade_count",
+}
+_SPECIALIZED_LABELS = {
+    "terminal_performance": "到期表现",
+    "terminal_performance_sign": "到期表现方向",
+    "positive_rate": "正表现占比",
+    "negative_rate": "负表现占比",
+    "non_negative_terminal_rate": "非负到期表现占比",
+    "negative_terminal_rate": "负到期表现占比",
+    "in_range_observation_ratio": "区间内观察比例",
+    "observation_hit_rate": "票息观察命中比例",
+    "triggered_rate": "触发比例",
+    "knock_out_rate": "敲出比例",
+    "below_strike_rate": "低于执行水平占比",
+    "contract_purchase_price": "合同买入价格",
+    "quantity_multiplier": "数量倍数",
+}
 
-    Backtester owns each profile calculation.  Reporter merely exposes a small
-    declared subset of its percentage ratios, never derives a new statistic
-    from trades, cashflows or raw event records.
-    """
+
+def _specialized_label(path: tuple[str, ...]) -> str:
+    exact = {
+        ("terminal_performance_sign", "positive_rate"): "到期正表现占比",
+        ("terminal_performance_sign", "negative_rate"): "到期负表现占比",
+        ("in_range_observation_ratio", "average"): "区间内观察比例",
+        ("coupon_payment", "observation_hit_rate", "average"): "平均票息观察命中比例",
+    }
+    if path in exact:
+        return exact[path]
+    translated = [_SPECIALIZED_LABELS.get(part, _BACKTEST_LABELS.get(part, part.replace("_", " "))) for part in path]
+    return " / ".join(translated)
+
+
+def _specialized_value_format(path: tuple[str, ...]) -> str:
+    joined = ".".join(path)
+    if any(token in joined for token in ("_rate", "gross_return", "terminal_performance", "variance", "ratio")):
+        return "percent"
+    return "number"
+
+
+def _specialized_metric_note(path: tuple[str, ...]) -> str:
+    if (
+        any(root in path for root in ("realized_volatility", "realized_volatility_vs_strike"))
+        and "variance" not in ".".join(path)
+    ):
+        return "Backtester产品专属统计；波动率单位为百分点"
+    return "Backtester产品专属统计"
+
+
+def _flatten_specialized(value: Any, path: tuple[str, ...], rows: list[dict[str, Any]]) -> None:
+    if isinstance(value, Mapping):
+        for key, nested in value.items():
+            name = str(key)
+            if name in _SPECIALIZED_LEAVES or isinstance(nested, (Mapping, list)):
+                _flatten_specialized(nested, (*path, name), rows)
+        return
+    if isinstance(value, list):
+        for index, nested in enumerate(value, start=1):
+            _flatten_specialized(nested, (*path, f"第{index}项"), rows)
+        return
+    if not path or path[-1] not in _SPECIALIZED_LEAVES:
+        return
+    numeric = _safe_number(value)
+    if numeric is None:
+        return
+    rows.append(_metric(
+        _specialized_label(path), numeric, _specialized_metric_note(path),
+        value_format=_specialized_value_format(path),
+    ))
+
+
+def _specialized_metric_rows(backtest: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Project every numeric leaf under the profile's explicit public whitelist."""
 
     specialized = backtest.get("specialized_metrics")
     if not isinstance(specialized, Mapping):
         return []
-    labels = {
-        "terminal_return_sign.positive_rate": "到期正表现占比",
-        "terminal_return_sign.negative_rate": "到期负表现占比",
-        "coupon_payment.payment_rate.average": "票息支付比例",
-        "non_negative_terminal_rate": "非负到期表现占比",
-        "in_range_observation_ratio.average": "区间内观察比例",
-    }
+    profile_id = str(specialized.get("profile_id", ""))
+    allowed_roots = _SPECIALIZED_PROFILE_ROOTS.get(profile_id)
+    if not allowed_roots:
+        return []
     rows: list[dict[str, Any]] = []
-    for path, label in labels.items():
-        value: Any = specialized
-        for part in path.split("."):
-            value = value.get(part) if isinstance(value, Mapping) else None
-        percent = _safe_ratio(value)
-        if percent is not None:
-            rows.append(_metric(label, percent, "Backtester产品专属统计", value_format="percent"))
-    return rows[:4]
+    for root in sorted(allowed_roots):
+        if root in specialized:
+            _flatten_specialized(specialized[root], (root,), rows)
+    return rows
 def _public_value_format(key: str) -> str:
     return "percent" if key.endswith(("_rate", "_return", "_percent")) else "number"
 
@@ -418,6 +499,7 @@ _PERCENT_GREEK_UNITS = {
     "_per_1pct_rate": "百分比/利率变化1个百分点",
     "_per_spot_per_1pct_volatility": "百分比/标的价格点/波动率变化1个百分点",
 }
+PUBLIC_NUMERIC_UNITS = frozenset({"百分比敏感度", *_PERCENT_GREEK_UNITS.values()})
 
 
 def _percent_greek_unit(value: Any) -> str:
@@ -817,31 +899,52 @@ def _payoff_content(module: Mapping[str, Any]) -> dict[str, Any]:
     if status != "ready":
         return value
     result = module.get("result") if isinstance(module.get("result"), Mapping) else {}
-    value.update(_formula(result))
-    paths = result.get("path_panels", result.get("paths", []))
+    facts = result.get("reporter_payoff_facts")
+    if not isinstance(facts, Mapping) or (
+        facts.get("schema") != "optionhelper.reporter-payoff-facts"
+        or facts.get("projection_status") != "controlled_percent_machine_facts"
+        or facts.get("source") != "runtime.contracts.evaluate_contract"
+        or facts.get("discounting") != "not_applied"
+        or facts.get("payoff_unit") != "percent"
+    ):
+        raise ReporterError("Payoffer reporter_payoff_facts不满足正式公开协议")
+    paths = facts.get("paths")
+    if not isinstance(paths, list) or not paths:
+        raise ReporterError("Payoffer reporter_payoff_facts.paths不能为空")
     scenarios: list[dict[str, str]] = []
-    if isinstance(paths, list):
-        for path_index, raw in enumerate(paths, start=1):
-            if not isinstance(raw, Mapping):
-                continue
-            path_title = _text(raw.get("title") or raw.get("name") or f"路径{path_index}")
-            condition = _math_text(raw.get("condition_tex") or raw.get("condition") or raw.get("domain"))
-            payoff = _payoff_math_text(raw.get("payoff_tex") or raw.get("description"))
-            pieces = raw.get("piece_summaries")
-            if isinstance(pieces, list) and pieces:
-                for piece_index, piece in enumerate(pieces, start=1):
-                    if not isinstance(piece, Mapping):
-                        continue
-                    piece_condition = _math_text(piece.get("condition_tex") or piece.get("condition") or piece.get("domain"))
-                    piece_payoff = _payoff_math_text(piece.get("payoff_tex") or piece.get("payoff") or piece.get("description"))
-                    if piece_condition or piece_payoff:
-                        scenarios.append({
-                            "title": f"{path_title}·情形{piece_index}",
-                            "rule": "；".join(filter(None, (f"条件：{piece_condition}" if piece_condition else "", f"收益：{piece_payoff}" if piece_payoff else ""))),
-                        })
-            elif condition or payoff:
-                scenarios.append({"title": path_title, "rule": "；".join(filter(None, (f"条件：{condition}" if condition else "", f"收益：{payoff}" if payoff else "")))})
-    value["scenarios"] = scenarios[:5]
+    endpoint = {"open": "开", "closed": "闭", "not_a_domain_boundary": "非边界"}
+    for path_index, raw in enumerate(paths, start=1):
+        if not isinstance(raw, Mapping):
+            raise ReporterError("reporter_payoff_facts.paths必须为对象数组")
+        path_title = _text(raw.get("title") or f"路径{path_index}")
+        axis = raw.get("axis") if isinstance(raw.get("axis"), Mapping) else {}
+        axis_label = _text(axis.get("label") or axis.get("unit") or "横轴")
+        segments = raw.get("scenario_segments")
+        if not isinstance(segments, list) or not segments:
+            raise ReporterError("reporter_payoff_facts路径缺少scenario_segments")
+        for segment_index, segment in enumerate(segments, start=1):
+            if not isinstance(segment, Mapping):
+                raise ReporterError("reporter_payoff_facts.scenario_segments必须为对象数组")
+            domain = segment.get("domain") if isinstance(segment.get("domain"), Mapping) else {}
+            payoff = segment.get("payoff") if isinstance(segment.get("payoff"), Mapping) else {}
+            lower, upper = _safe_number(domain.get("lower")), _safe_number(domain.get("upper"))
+            minimum, maximum = _safe_number(payoff.get("minimum_percent")), _safe_number(payoff.get("maximum_percent"))
+            if lower is None or upper is None or lower > upper or minimum is None or maximum is None or minimum > maximum or payoff.get("unit") != "percent":
+                raise ReporterError("reporter_payoff_facts分段定义域或收益范围无效")
+            lower_kind, upper_kind = str(domain.get("lower_endpoint")), str(domain.get("upper_endpoint"))
+            if lower_kind not in endpoint or upper_kind not in endpoint:
+                raise ReporterError("reporter_payoff_facts端点类型无效")
+            condition = f"{axis_label}从{_decimal_text(lower)}至{_decimal_text(upper)}，左端{endpoint[lower_kind]}、右端{endpoint[upper_kind]}"
+            payoff_text = (
+                f"{_decimal_text(minimum)}%"
+                if math.isclose(minimum, maximum, rel_tol=0.0, abs_tol=1e-12)
+                else f"{_decimal_text(minimum)}%至{_decimal_text(maximum)}%"
+            )
+            scenarios.append({
+                "title": f"{path_title}·情景{segment_index}",
+                "rule": f"条件：{condition}；收益率：{payoff_text}",
+            })
+    value["scenarios"] = scenarios
     value["artifacts"] = _artifact_rows(module)
     return value
 
@@ -868,7 +971,11 @@ def _pricing_content(module: Mapping[str, Any]) -> dict[str, Any]:
         raise ReporterError("估值结果不满足当前百分比正式协议")
     value["method"] = _text(pricing.get("method"))
     market_snapshot = pricing.get("market_snapshot") if isinstance(pricing.get("market_snapshot"), Mapping) else {}
-    value["valuation_date"] = _text(pricing.get("valuation_date") or market_snapshot.get("valuation_date"))
+    value["valuation_date"] = _text(
+        pricing.get("valuation_date")
+        or market_snapshot.get("valuation_date")
+        or market_snapshot.get("market_as_of_date")
+    )
     value["metrics"] = [
         _metric("估值PV", percent, "标准化百分比口径", value_format="percent"),
     ]
@@ -882,6 +989,15 @@ def _pricing_content(module: Mapping[str, Any]) -> dict[str, Any]:
     value["charts"] = public_chart_specs(_safe_pricing_charts(pricing, result))
     value["scenario_rows"] = _public_pricing_scenarios(pricing, result)
     value["artifacts"] = _artifact_rows(module)
+    precision_status = _text(pricing.get("precision_status"))
+    quote_eligible = pricing.get("quote_eligible") is True
+    value["precision_status"] = precision_status or "未声明"
+    value["quote_eligible"] = quote_eligible
+    value["limitations"] = []
+    if not quote_eligible or precision_status in {"", "demo_only", "not_assessed", "not_priced"}:
+        value["status"] = "partial"
+        value["note"] = "本次估值为测试或受限精度结果，不可用于正式报价。"
+        value["limitations"].append("本次估值未通过正式报价资格或精度门槛，不可用于正式报价。")
     return value
 
 
@@ -1099,6 +1215,7 @@ def _backtest_content(module: Mapping[str, Any], contract: Mapping[str, Any] | N
     start = _text(market.get("date_start"))
     end = _text(market.get("date_end"))
     value["window"] = "至".join(item for item in (start, end) if item)
+    value["as_of_date"] = end
     value["entry_rule"] = _text(config.get("entry_rule"))
     valid_sample_count = common["valid_return_sample_count"]
     public_keys = (
@@ -1269,7 +1386,7 @@ def _backtest_content(module: Mapping[str, Any], contract: Mapping[str, Any] | N
         })
     value["detail_tables"] = detail_tables
     value["event_statistics"] = []
-    value["card_metrics"] = specialized_rows
+    value["card_metrics"] = specialized_rows[:4]
     value["limitations"] = [
         "合约毛收益率按合同条款计算；客户净收益未建模，未扣除交易费、资金成本、税费、对冲及滑点。",
         *[item for item in coverage_limitations if isinstance(item, str)],
@@ -1346,7 +1463,7 @@ def _module_summary(name: str, module: Mapping[str, Any]) -> dict[str, Any]:
             "expected_semantic_result_hash": getattr(module.get("ref"), "expected_semantic_result_hash", None),
             "expected_artifact_manifest_hash": getattr(module.get("ref"), "expected_artifact_manifest_hash", None),
         } if module.get("ref") is not None else None,
-        "run": {key: value for key, value in record.items() if key != "_run_dir"},
+        "run": dict(record),
         "artifacts": _artifact_rows(module),
         "limitations": list(module.get("limitations", [])) if isinstance(module.get("limitations"), list) else [],
     }
@@ -1374,9 +1491,8 @@ def _contract_report_unit(request: ReportRequest, candidate_evidence: Mapping[st
         "recommendation_source": {key: value for key, value in recommender.items() if key in {"source", "run_id", "semantic_result_hash", "status"}},
     }
     selected_compute = [name for name in MODULE_TO_RUN if name in request.selected_modules]
-    complete_compute = [name for name in MODULE_TO_RUN]
-    complete_statuses = [str(module_content[name].get("status")) for name in complete_compute]
-    if all(status == "ready" for status in complete_statuses):
+    complete_statuses = [str(module_content[name].get("status")) for name in selected_compute]
+    if selected_compute and all(status == "ready" for status in complete_statuses):
         evidence_status = "verified"
     else:
         evidence_status = "partial"
@@ -1398,11 +1514,19 @@ def _contract_report_unit(request: ReportRequest, candidate_evidence: Mapping[st
             "contract_highlights": _contract_highlights(contract),
             **module_content,
             "parameters": parameter_groups,
+            **({"quote_fact": deepcopy(candidate_evidence["quote_fact"])} if isinstance(candidate_evidence.get("quote_fact"), Mapping) else {}),
+            **({"supplemental_sections": deepcopy(candidate["supplemental_sections"])} if isinstance(candidate.get("supplemental_sections"), list) and candidate["supplemental_sections"] else {}),
             "audit": {
                 "recommender": dict(recommender),
                 "source_refs": source_refs,
                 "limitations": [
                     *([] if selected_compute else ["本次未包含收益、估值或历史回测的已验证计算结果，不能作为完整量化结论。"]),
+                    *[
+                        limitation
+                        for module_value in module_content.values()
+                        for limitation in (module_value.get("limitations", []) if isinstance(module_value.get("limitations"), list) else [])
+                        if isinstance(limitation, str) and limitation
+                    ],
                 ],
             },
             "risk": {"items": _risk_items(candidate), "disclaimer": DISCLAIMER},
@@ -1458,4 +1582,7 @@ def build_report_document(request: ReportRequest, units: list[Mapping[str, Any]]
     return document
 
 
-__all__ = ["DISCLAIMER", "build_report_document", "build_report_units", "normalize_parameter_groups", "public_chart_specs"]
+__all__ = [
+    "DISCLAIMER", "PUBLIC_NUMERIC_UNITS", "build_report_document", "build_report_units",
+    "normalize_parameter_groups", "public_chart_specs",
+]
