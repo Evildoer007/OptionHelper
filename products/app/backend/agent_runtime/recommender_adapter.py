@@ -3479,8 +3479,7 @@ def _pricing_config_for_resolved_contract(
 ) -> dict[str, Any] | None:
     """Build the one formal Pricer configuration from a frozen contract.
 
-    ``auto`` retains Pricer's established BS preference for contracts that
-    support both methods. A Monte Carlo-only contract cannot be dispatched
+    Analytical is selected when the frozen product supports it. A Monte Carlo-only contract cannot be dispatched
     until the user has provided a positive path count. This function is used
     by both candidate evaluation and report detail valuation.
     """
@@ -3489,14 +3488,14 @@ def _pricing_config_for_resolved_contract(
     if not isinstance(terms, Mapping):
         raise ValidationError("冻结候选缺少正式合同条款")
     methods = tuple(str(value).strip() for value in terms.get("pricing_methods", ()) if str(value).strip())
-    if "black_scholes" in methods:
-        return {"model_method": "auto"}
+    if "analytical" in methods:
+        return {"model_method": "analytical"}
     if "monte_carlo" not in methods:
         raise ValidationError("冻结候选未声明可用定价方法")
     value = confirmed_constraints.get("path_count")
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         return None
-    return {"model_method": "auto", "path_count": value}
+    return {"model_method": "monte_carlo", "path_count": value}
 
 
 def _selected_candidate_ids(
