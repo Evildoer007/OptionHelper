@@ -907,9 +907,9 @@ def _formal_compute_protocol_errors(root: Path, python: str, environment: Mappin
             "3.1", "3.2", "3.3", "3.4",
             "4.1", "4.2", "4.3", "4.4", "4.5", "4.6", "4.7", "4.8",
             "5.1", "5.2", "5.3", "5.4", "5.5", "5.6",
-            "6.1", "6.2", "6.3", "9.2", "9.3", "9.5", "9.6",
+            "6.1", "6.2", "6.3", "9.1", "9.2", "9.3", "9.4", "9.5", "9.6", "9.8",
         }
-        assert len(registry_products) == 65 and len(analytical_ids) == 31
+        assert len(registry_products) == 65 and len(analytical_ids) == 34
         for product_id, product in registry_products.items():
             methods = list(product["terms"]["pricing_methods"])
             expected_methods = (
