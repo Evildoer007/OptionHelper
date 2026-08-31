@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from datetime import date
+from datetime import date, timedelta
 from typing import Any, Mapping
 
 from runtime.contracts.contract_api import ResolvedContract
@@ -16,6 +16,7 @@ from .observation_schedule import actual_n_obs, bind_accumulator_remaining_count
 from .observed_state import ObservedContractState
 from .engines.pricing_core.engine.derivatives.results import GreekValue, PricingResult
 from .engines.pricing_core.main import price_option
+from .engines.pricing_core.prepared_optionreg import PreparedOptionRegPricer
 
 
 class ProductNotAvailable(ValueError):
@@ -122,6 +123,16 @@ class ProductPricingAdapter:
         if not isinstance(references, Mapping) or set(references) != set(contract.underlyings):
             raise ProductNotAvailable("定价必须提供合同起始参考价reference_prices")
         self.reference_price = _number(references[self.asset], "reference_prices")
+        self._basis = _cashflow_basis(self.contract, self.reference_price)
+        self._valuation_state = (
+            self.observed_state.valuation_state(
+                contract_start_date=str(self.contract.identity.get("contract_start_date"))
+            )
+            if self.method == "monte_carlo"
+            else {}
+        )
+        self._resolved_contract_by_maturity: dict[float, ResolvedContract] = {}
+        self._prepared_optionreg = PreparedOptionRegPricer() if self.method == "monte_carlo" else None
 
     @property
     def family(self) -> str:
@@ -156,8 +167,12 @@ class ProductPricingAdapter:
         engine_method = "MONTE_CARLO_CPU" if self.method == "monte_carlo" else (
             "STATIC_REPLICATION" if self.route.capability.adapter == "european_portfolio" else "BLACK_SCHOLES"
         )
-        run = price_option(self.family, self.structure, parameters, engine_method, output="NONE")
-        result = _from_run(run)
+        if self.method == "monte_carlo":
+            assert self._prepared_optionreg is not None
+            result = _with_standard_error(self._prepared_optionreg.price(parameters))
+        else:
+            run = price_option(self.family, self.structure, parameters, engine_method, output="NONE")
+            result = _from_run(run)
         if self.method != "monte_carlo":
             quantity = (
                 float(self.contract.terms["n_C"] if self.contract.product_id == "1.1" else self.contract.terms["n_P"])
@@ -193,17 +208,22 @@ class ProductPricingAdapter:
             config.update({"paths": int(self.config.path_count), "seed": int(self.config.random_seed)})
             if risk_greeks is not None:
                 config["diagnostics"] = {"requested_greeks": tuple(sorted(risk_greeks))}
-        basis = _cashflow_basis(self.contract, self.reference_price)
+        basis = self._basis
         if self.method == "monte_carlo":
+            maturity_key = float(maturity_years)
+            resolved_contract = self._resolved_contract_by_maturity.get(maturity_key)
+            if resolved_contract is None:
+                resolved_contract = _contract_with_maturity(
+                    self.contract,
+                    maturity_key + self._elapsed_years(),
+                    remaining_years=maturity_key,
+                    trading_calendar=self.trading_calendar,
+                    as_of=_as_of(self.config.valuation_date),
+                    completed_observations=self._completed_accumulator_observations(),
+                )
+                self._resolved_contract_by_maturity[maturity_key] = resolved_contract
             contract = {
-                "resolved_contract": _contract_with_maturity(
-                self.contract,
-                float(maturity_years) + self._elapsed_years(),
-                remaining_years=float(maturity_years),
-                trading_calendar=self.trading_calendar,
-                as_of=_as_of(self.config.valuation_date),
-                completed_observations=self._completed_accumulator_observations(),
-                ),
+                "resolved_contract": resolved_contract,
                 "basis": basis,
                 "asset_spots": [_asset_number(self.config.spot, asset, "spot") for asset in self.contract.underlyings],
                 "asset_volatilities": [self._asset_volatility(asset) for asset in self.contract.underlyings],
@@ -241,9 +261,7 @@ class ProductPricingAdapter:
                 "source": str(self.market_snapshot.get("source_ref") or self.market_snapshot.get("source") or "pricing_config"),
             },
             "config": config,
-            "valuation_state": self.observed_state.valuation_state(
-                contract_start_date=str(self.contract.identity.get("contract_start_date"))
-            ) if self.method == "monte_carlo" else {},
+            "valuation_state": self._valuation_state,
         }
 
     def _spot(self) -> float:
@@ -311,6 +329,20 @@ def _from_run(run: Any) -> PricingResult:
     )
 
 
+def _with_standard_error(result: PricingResult) -> PricingResult:
+    """Promote the kernel diagnostic onto the shared Pricer result contract."""
+    value = result.diagnostics.get("standard_error_points_100")
+    if value is None:
+        return result
+    standard_error = float(value)
+    return replace(
+        result,
+        standard_error=standard_error,
+        standard_error_points_100=standard_error,
+        standard_error_percent=standard_error / 100.0,
+    )
+
+
 def _cashflow_basis(contract: ResolvedContract, reference_price: float) -> dict[str, Any]:
     """Build the only scale used to project a 100-point value into money.
 
@@ -368,11 +400,21 @@ def _apply_value_basis(result: PricingResult, product_id: str) -> PricingResult:
 
 
 def _unavailable_reason(contract: ResolvedContract, allowed: tuple[str, ...], requested_method: str) -> str:
-    if contract.product_id in {"1.1", "1.2"}:
-        return f"{contract.product_id}的正式香草基座只回归BLACK_SCHOLES；请求{requested_method}，OptionReg允许{list(allowed)}"
-    if contract.product_id in _EXACT_MAPPINGS:
-        return f"{contract.product_id}的显式欧式组合已回归BLACK_SCHOLES；请求{requested_method}，固定随机源组合MC尚未完成逐路径回归"
-    return f"{contract.product_id}尚无同时满足OptionReg条款、显式观察日程和基座方法的适配器；不得用另一套模型替代"
+    available = resolve_route(contract.product_id, allowed, "auto")
+    if requested_method == "black_scholes" and "monte_carlo" in allowed:
+        return (
+            f"{contract.product_id}的收益取决于路径或观察事件，不适用Black-Scholes闭式定价；"
+            "请选择Monte Carlo或按产品自动选择"
+        )
+    if requested_method == "monte_carlo" and "black_scholes" in allowed:
+        return (
+            f"{contract.product_id}当前没有已验证的Monte Carlo实现；"
+            "请选择Black-Scholes或按产品自动选择"
+        )
+    if requested_method == "auto" and available is None:
+        return f"{contract.product_id}尚未登记可执行定价模型，请检查OptionReg产品配置"
+    available_methods = "、".join(allowed) if allowed else "无"
+    return f"{contract.product_id}不支持所选定价方法{requested_method}；产品登记方法为{available_methods}"
 
 
 def _portfolio_legs(contract: ResolvedContract) -> tuple[tuple[str, float, str, float], ...]:
@@ -410,7 +452,14 @@ def _contract_with_maturity(
 ) -> ResolvedContract:
     """Create an immutable remaining-term view for controlled time revalue."""
     remaining_tenor = float(maturity_years if remaining_years is None else remaining_years)
-    terms = {**contract.terms, "T": maturity_years}
+    scenario_identity, scenario_schedules, scenario_maturity = _scenario_contract_window(
+        contract,
+        as_of=as_of,
+        remaining_years=remaining_tenor,
+        total_maturity_years=float(maturity_years),
+        trading_calendar=trading_calendar,
+    )
+    terms = {**contract.terms, "T": scenario_maturity}
     observations = contract.terms.get("n_obs")
     if observations is not None:
         if trading_calendar is None or as_of is None:
@@ -441,7 +490,86 @@ def _contract_with_maturity(
                 item for item in hedge_schedule
                 if isinstance(item, (tuple, list)) and len(item) == 2 and int(item[0]) <= available_months
             ]
-    return replace(contract, terms=terms, contract_fingerprint="")
+    return replace(
+        contract,
+        identity=scenario_identity,
+        terms=terms,
+        resolved_schedules=scenario_schedules,
+        path_case_applicability=None,
+        contract_fingerprint="",
+    )
+
+
+def _scenario_contract_window(
+    contract: ResolvedContract,
+    *,
+    as_of: date | None,
+    remaining_years: float,
+    total_maturity_years: float,
+    trading_calendar: Mapping[str, Any] | None,
+) -> tuple[dict[str, Any], dict[str, Any], float]:
+    """Bind an internal time-risk node to one self-consistent contract window.
+
+    The public ResolvedContract remains unchanged. A materially shorter time
+    node is a hypothetical contract scenario, so its civil end, registered
+    tenor and frozen observation schedules must move together. The original
+    legal end is retained for the headline value and its adjacent last-market-
+    session endpoint.
+    """
+    identity = dict(contract.identity)
+    schedules = {
+        key: {
+            "selector": value["selector"],
+            "status": value["status"],
+            "dates": list(value["dates"]),
+        }
+        for key, value in contract.resolved_schedules.items()
+    }
+    start_value = identity.get("contract_start_date")
+    end_value = identity.get("contract_end_date")
+    if as_of is None or start_value in {None, ""} or end_value in {None, ""}:
+        return identity, schedules, float(total_maturity_years)
+
+    contract_start = date.fromisoformat(str(start_value))
+    legal_end = date.fromisoformat(str(end_value))
+    scenario_remaining_days = round(float(remaining_years) * 365.0)
+    if scenario_remaining_days <= 0:
+        raise ValueError("风险期限节点必须晚于估值日")
+    scenario_end = as_of + timedelta(days=scenario_remaining_days)
+    # The exchange's last observation can precede a civil maturity across a
+    # weekend or holiday closure. Keep the legal end only for that exact,
+    # injected terminal session; never infer an arbitrary calendar tolerance.
+    terminal_session = _last_calendar_session_on_or_before(trading_calendar, legal_end)
+    if scenario_end == legal_end or scenario_end == terminal_session:
+        return identity, schedules, float(contract.terms["T"])
+
+    if scenario_end >= legal_end:
+        return identity, schedules, float(contract.terms["T"])
+    if scenario_end <= contract_start:
+        raise ValueError("风险期限节点不得早于合同起始日")
+
+    identity["contract_end_date"] = scenario_end.isoformat()
+    for key, snapshot in schedules.items():
+        selected = [value for value in snapshot["dates"] if str(value) <= scenario_end.isoformat()]
+        if not selected:
+            raise ValueError("风险期限节点早于首个冻结观察日")
+        snapshot["dates"] = selected
+    scenario_maturity = (scenario_end - contract_start).days / 365.0
+    return identity, schedules, scenario_maturity
+
+
+def _last_calendar_session_on_or_before(
+    trading_calendar: Mapping[str, Any] | None,
+    legal_end: date,
+) -> date | None:
+    if not isinstance(trading_calendar, Mapping):
+        return None
+    raw_sessions = trading_calendar.get("sessions")
+    if isinstance(raw_sessions, (str, bytes)) or not isinstance(raw_sessions, (tuple, list)):
+        return None
+    parsed_sessions = (date.fromisoformat(str(value)) for value in raw_sessions)
+    sessions = [value for value in parsed_sessions if value <= legal_end]
+    return max(sessions, default=None)
 
 
 def _completed_monthly_observations(sessions: object, as_of: date, target_ordinal: int) -> int:
