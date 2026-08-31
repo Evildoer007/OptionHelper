@@ -76,7 +76,7 @@ class PricingConfig:
     risk_free_rate: float = 0.0
     dividend_yield: float | dict[str, float] = 0.0
     time_to_maturity: float | None = None
-    model_method: str = "auto"
+    model_method: str | None = None
     # Monte Carlo路径数必须由调用方显式指定；Pricer不替用户选择精度。
     path_count: int | None = None
     # 测试夹具专用，不属于页面或正式Tool公开输入。
@@ -95,8 +95,8 @@ class PricingConfig:
             raise PricingConfigError("risk_grid必须为RiskGridConfig或对象")
         if self.hv_window not in {5, 10, 20, 60, 122, 244}:
             raise PricingConfigError("hv_window只能为5、10、20、60、122或244")
-        if self.model_method not in {"auto", "black_scholes", "monte_carlo"}:
-            raise PricingConfigError("model_method只能为auto、black_scholes或monte_carlo")
+        if self.model_method not in {None, "analytical", "monte_carlo"}:
+            raise PricingConfigError("model_method只能为analytical、monte_carlo或省略")
         if self.path_count is not None and (
             not isinstance(self.path_count, int) or isinstance(self.path_count, bool) or self.path_count <= 0
         ):
