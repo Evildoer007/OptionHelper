@@ -16,6 +16,7 @@ import os
 from pathlib import Path
 import re
 import tempfile
+import threading
 from typing import Any, Callable, Mapping
 from uuid import uuid4
 
@@ -23,6 +24,7 @@ import pandas as pd
 
 from runtime.adapters.local_store import LocalDataStore, StoreError
 from runtime.bootstrap import bootstrap_runtime
+from runtime.contracts.contract_types import deep_thaw
 
 from .cache_resolver import CacheIndexError, CacheMatch, LocalCache
 from .config import DataFetcherConfig
@@ -38,7 +40,16 @@ from .calendar_service import (
 from .models import CalendarRequest, CallerContext, DataAssetRef, DataFetchResult, DataFetchRun, DataRequest, SecretRef
 from .market_conventions import hv_input_requirements, market_conventions
 from .providers import IFindHttpProvider, IFindSdkProvider, LocalCsvProvider, WindProvider
-from .providers.base import ProviderError, ProviderQuotaExceeded, ProviderUnauthorized, ProviderUnavailable
+from .providers.base import (
+    ProviderAccountPermissionDenied,
+    ProviderDeviceLimitExceeded,
+    ProviderError,
+    ProviderFieldPermissionDenied,
+    ProviderNoData,
+    ProviderQuotaExceeded,
+    ProviderUnauthorized,
+    ProviderUnavailable,
+)
 from .quality_validator import DataQualityError, validate_daily_history
 from .request_validator import (
     RequestValidationError,
@@ -71,6 +82,8 @@ class CacheMiss(DataFetcherError):
 
 
 CHART_SERIES_MAX_POINTS = 180
+_VERIFIED_CONNECTIONS: set[str] = set()
+_VERIFIED_CONNECTIONS_LOCK = threading.Lock()
 
 
 def _now() -> str:
@@ -121,12 +134,14 @@ def _coverage(
     }
     conventions = market_conventions(request.asset_ids, request.adjustment)
     exchanges = sorted({str(value["exchange"]) for value in conventions.values()})
+    # Market-history coverage describes rows that actually exist in this
+    # immutable asset. A verified exchange calendar may extend beyond the
+    # latest completed daily bar; those dates belong to the calendar asset.
+    sessions = sorted(str(value) for value in frame["date"].dropna().unique())
     if calendar_evidence is None:
-        sessions = sorted(str(value) for value in frame["date"].dropna().unique())
         calendar_id = "UNVERIFIED-" + "+".join(exchanges)
         calendar_revision = "unverified"
     else:
-        sessions = sorted({session for values in calendar_evidence.dates_by_asset.values() for session in values})
         calendar_id = calendar_evidence.calendar_id
         calendar_revision = calendar_evidence.calendar_revision
     coverage = {
@@ -146,6 +161,21 @@ def _coverage(
     if calendar_evidence is not None and calendar_evidence.calendar_ref:
         coverage["calendar_ref"] = dict(calendar_evidence.calendar_ref)
     return coverage
+
+
+def _asset_coverage_matches_frame(asset_ref: DataAssetRef, frame: pd.DataFrame) -> bool:
+    """Reject cached metadata that claims rows absent from the cached CSV."""
+
+    declared_sessions = asset_ref.coverage.get("sessions")
+    if not isinstance(declared_sessions, (list, tuple)):
+        return False
+    actual_sessions = tuple(sorted(str(value) for value in frame["date"].dropna().unique()))
+    if tuple(str(value) for value in declared_sessions) != actual_sessions:
+        return False
+    if asset_ref.row_count != len(frame):
+        return False
+    actual_assets = {str(value) for value in frame["asset_id"].dropna().unique()}
+    return set(asset_ref.asset_ids) == actual_assets
 
 
 def _chart_series(
@@ -199,11 +229,19 @@ def _expected_trading_dates(
     request: DataRequest,
     config: DataFetcherConfig,
     caller: CallerContext,
+    *,
+    fallback_before: str | None = None,
 ) -> VerifiedCalendarEvidence | None:
     """只接受带身份、版本和完整覆盖声明的显式交易所日历。"""
 
     if config.trading_calendar_ref is not None:
-        return calendar_evidence_for_history(config.trading_calendar_ref, request, caller, config)
+        return calendar_evidence_for_history(
+            config.trading_calendar_ref,
+            request,
+            caller,
+            config,
+            fallback_before=fallback_before,
+        )
     conventions = market_conventions(request.asset_ids)
     validated_by_exchange: dict[str, tuple[str, ...]] = {}
     calendar_ids: list[str] = []
@@ -253,6 +291,9 @@ def _expected_trading_dates(
         calendar_revisions.append(str(calendar_revision))
     expected = {
         asset_id: tuple(
+            session for session in validated_by_exchange[str(convention["exchange"])]
+            if session < fallback_before
+        ) if fallback_before is not None else tuple(
             session for session in validated_by_exchange[str(convention["exchange"])]
             if request.start_date <= session <= request.end_date
         )
@@ -451,7 +492,7 @@ def _persist_run(config: DataFetcherConfig, request: DataRequest | CalendarReque
             "quota_usage.json": dict(run.quota_usage),
         }
         if run.data_asset_ref is not None:
-            artifacts["data_asset_ref.json"] = asdict(run.data_asset_ref)
+            artifacts["data_asset_ref.json"] = deep_thaw(asdict(run.data_asset_ref))
         if quality is not None:
             artifacts["quality_report.json"] = dict(quality)
         if run.error is not None:
@@ -492,6 +533,20 @@ def _provider_order(request: DataRequest, cached_provider: str | None = None) ->
     return request.source_priority
 
 
+def _provider_call(provider: str, outcome: str, quota_units: int, error: ProviderError | None = None) -> dict[str, Any]:
+    """生成不含Provider原文或凭据的调用审计记录。"""
+
+    call: dict[str, Any] = {"provider": provider, "outcome": outcome, "quota_units": quota_units}
+    if error is not None:
+        if error.reason_code:
+            call["reason_code"] = error.reason_code
+        if error.provider_code:
+            call["provider_error_code"] = error.provider_code
+        if error.http_status is not None:
+            call["http_status"] = error.http_status
+    return call
+
+
 def _fetch_provider(
     request: DataRequest,
     config: DataFetcherConfig,
@@ -510,7 +565,7 @@ def _fetch_provider(
             continue
         units = int(provider.estimate_quota(request))
         if quota_used + units > limit:
-            calls.append({"provider": name, "outcome": "quota_exceeded", "quota_units": units})
+            calls.append(_provider_call(name, "quota_exceeded", units))
             last_error = ProviderQuotaExceeded("请求超过DataFetcher额度保护上限")
             if protected_error is None:
                 protected_error = last_error
@@ -525,12 +580,12 @@ def _fetch_provider(
                 request,
                 latest_observable_date=latest_observable_market_date(config),
             )
-            calls.append({"provider": name, "outcome": "succeeded", "quota_units": units})
+            calls.append(_provider_call(name, "succeeded", units))
             return name, normalized, quota_used
         except ProviderError as error:
             if not charged:
                 quota_used += units
-            calls.append({"provider": name, "outcome": error.code, "quota_units": units})
+            calls.append(_provider_call(name, error.code, units, error))
             last_error = error
             if protected_error is None and isinstance(error, (ProviderUnauthorized, ProviderQuotaExceeded)):
                 protected_error = error
@@ -577,6 +632,43 @@ def _completed_calendar_sessions(
     }
 
 
+def _latest_pending_session(
+    expected_trading_dates: Mapping[str, tuple[str, ...]] | None,
+    latest_completed_date: str,
+) -> str | None:
+    """只允许Host最新已完成自然日恰为共同交易Session时进入待发布态。"""
+
+    if not expected_trading_dates:
+        return None
+    if all(sessions and max(sessions) == latest_completed_date for sessions in expected_trading_dates.values()):
+        return latest_completed_date
+    return None
+
+
+def _previous_verified_session_request(
+    request: DataRequest,
+    config: DataFetcherConfig,
+    caller: CallerContext,
+) -> DataRequest | None:
+    """单日空行情只沿已验证交易所日历回退，不推断工作日。"""
+
+    if request.start_date != request.end_date:
+        return None
+    evidence = _expected_trading_dates(
+        request,
+        config,
+        caller,
+        fallback_before=request.end_date,
+    )
+    if evidence is None:
+        return None
+    common = set.intersection(*(set(values) for values in evidence.dates_by_asset.values()))
+    if not common:
+        return None
+    session = max(common)
+    return replace(request, start_date=session, end_date=session)
+
+
 def _request_view(frame: pd.DataFrame, request: DataRequest) -> pd.DataFrame:
     """从宽缓存生成本次请求视图，避免改变缓存本体覆盖。"""
 
@@ -614,6 +706,7 @@ def _resolve_data(
         expected_trading_dates = _completed_calendar_sessions(
             calendar_evidence, latest_completed_date=latest_completed_date,
         )
+        latest_pending_session = _latest_pending_session(expected_trading_dates, latest_completed_date)
         data_asset_ref_key = _data_asset_ref_key(caller, request)
         matches = [] if request.cache_policy == "force_refresh" else [
             cache.lookup(
@@ -645,10 +738,15 @@ def _resolve_data(
                 request_frame, request.fields, start_date=request.start_date, end_date=request.end_date,
                 expected_trading_dates=expected_trading_dates,
                 latest_observable_date=latest_observable_date,
+                latest_pending_session=latest_pending_session,
             )
             if asset_ref is not None:
                 same_owner = asset_ref.created_by == caller.principal_id and "read" in asset_ref.access_scope
-                if same_owner and _asset_uses_calendar_evidence(asset_ref, calendar_evidence):
+                if (
+                    same_owner
+                    and _asset_uses_calendar_evidence(asset_ref, calendar_evidence)
+                    and _asset_coverage_matches_frame(asset_ref, request_frame)
+                ):
                     return asset_ref, quality, "cache_hit", request_frame
             references = full_match.metadata.get("data_asset_refs")
             owner = _owner_partition(caller.principal_id)
@@ -679,7 +777,7 @@ def _resolve_data(
                 {
                     "content_hash": daily_content_hash(full_match.frame),
                     "provider": full_match.provider,
-                    "data_asset_ref": asdict(rebound_ref),
+                    "data_asset_ref": deep_thaw(asdict(rebound_ref)),
                     "updated_at": _now(),
                     "tenant_id": caller.tenant_id,
                 },
@@ -697,14 +795,24 @@ def _resolve_data(
             raise CacheMiss("缓存覆盖不足但没有可补齐区间")
         fetched_frames: list[pd.DataFrame] = []
         selected_provider: str | None = cached_provider
+        latest_session_pending_no_data = False
         for interval in interval_requests:
-            provider, frame, quota_usage["used"] = _fetch_provider(
-                interval,
-                config,
-                _provider_order(interval, cached_provider),
-                calls,
-                quota_usage["used"],
-            )
+            try:
+                provider, frame, quota_usage["used"] = _fetch_provider(
+                    interval,
+                    config,
+                    _provider_order(interval, cached_provider),
+                    calls,
+                    quota_usage["used"],
+                )
+            except ProviderNoData:
+                if (
+                    cached_frame is not None
+                    and interval.start_date == interval.end_date == latest_pending_session
+                ):
+                    latest_session_pending_no_data = True
+                    continue
+                raise
             if selected_provider is not None and provider != selected_provider:
                 raise DataFetcherError("不同Provider数据不得自动混合")
             selected_provider = provider
@@ -715,8 +823,13 @@ def _resolve_data(
             frame, request.fields, start_date=request.start_date, end_date=request.end_date,
             expected_trading_dates=expected_trading_dates,
             latest_observable_date=latest_observable_date,
+            latest_pending_session=latest_pending_session,
         )
-        cache_decision = "cache_extended" if cached_frame is not None else "cache_miss_fetched"
+        cache_decision = (
+            "latest_session_pending"
+            if latest_session_pending_no_data
+            else "cache_extended" if cached_frame is not None else "cache_miss_fetched"
+        )
         asset_ref = _asset_reference(
             frame,
             request,
@@ -734,7 +847,7 @@ def _resolve_data(
             {
                 "content_hash": daily_content_hash(cache_frame),
                 "provider": selected_provider,
-                "data_asset_ref": asdict(asset_ref),
+                "data_asset_ref": deep_thaw(asdict(asset_ref)),
                 "updated_at": _now(),
                 "tenant_id": caller.tenant_id,
             },
@@ -757,6 +870,17 @@ def _failure_result(
 ) -> DataFetchResult:
     code = getattr(error, "code", "failed")
     status = "quota_exceeded" if code == "quota_exceeded" else "unauthorized" if code == "unauthorized" else "failed"
+    public_error = {
+        "code": code,
+        "message": str(error) if isinstance(error, (RequestValidationError, CalendarValidationError, ProviderError, DataFetcherError, DataQualityError, CacheIndexError)) else "DataFetcher内部错误",
+    }
+    if isinstance(error, ProviderError):
+        if error.reason_code:
+            public_error["reason_code"] = error.reason_code
+        if error.provider_code:
+            public_error["provider_error_code"] = error.provider_code
+        if error.http_status is not None:
+            public_error["http_status"] = error.http_status
     audited_quota_used = max(
         quota_used,
         sum(
@@ -773,7 +897,7 @@ def _failure_result(
         cache_decision=cache_decision,
         provider_calls=tuple(calls),
         quota_usage={"used": audited_quota_used, "limit": _quota_limit(request, config)},
-        error={"code": code, "message": str(error) if isinstance(error, (RequestValidationError, CalendarValidationError, ProviderError, DataFetcherError, DataQualityError, CacheIndexError)) else "DataFetcher内部错误"},
+        error=public_error,
         tenant_id=caller.tenant_id,
     )
     run = _persist_run(config, request, run, None)
@@ -802,6 +926,7 @@ def fetch_data(
     calls: list[dict[str, Any]] = []
     quota_usage = {"used": 0}
     raw_request: DataRequest | None = None
+    warnings: list[str] = []
     try:
         task_id = _safe_task_id(task_id)
         if isinstance(request, DataRequest):
@@ -816,7 +941,23 @@ def fetch_data(
         validated = validate_request(raw_request, effective_config, caller)
         request_hash = request_fingerprint(validated)
         cache = LocalCache(Path(effective_config.cache_root or Path(effective_config.data_root or RUNTIME_PATHS.data_root) / "datafetcher-cache"))
-        asset_ref, quality, cache_decision, frame = _resolve_data(cache, validated, effective_config, request_hash, calls, quota_usage, caller)
+        try:
+            asset_ref, quality, cache_decision, frame = _resolve_data(
+                cache, validated, effective_config, request_hash, calls, quota_usage, caller,
+            )
+        except ProviderNoData:
+            fallback = _previous_verified_session_request(validated, effective_config, caller)
+            if fallback is None:
+                raise
+            asset_ref, quality, cache_decision, frame = _resolve_data(
+                cache, fallback, effective_config, request_hash, calls, quota_usage, caller,
+            )
+            warnings.append(f"请求日期无可用日线，已按验证交易日历使用最近交易日{fallback.end_date}")
+        if quality.get("calendar_completeness") == "latest_session_pending":
+            warnings.append(
+                "latest_session_pending：最后一个已验证交易日的日线尚未发布，"
+                f"本次资产仅使用截至{asset_ref.coverage['end_date']}的完整行情"
+            )
         run = DataFetchRun(
             data_fetch_run_id=run_id,
             task_id=task_id,
@@ -825,6 +966,7 @@ def fetch_data(
             cache_decision=cache_decision,
             provider_calls=tuple(calls),
             quota_usage={"used": quota_usage["used"], "limit": _quota_limit(validated, effective_config)},
+            warnings=tuple(warnings),
             data_asset_ref=asset_ref,
             tenant_id=caller.tenant_id,
         )
@@ -918,7 +1060,7 @@ def fetch_calendar_data(
         )
 
 
-def capability(*, app_configured: bool | None = None) -> dict[str, Any]:
+def capability(*, app_configured: bool | None = None, app_verified: bool = False) -> dict[str, Any]:
     """只报告可调用能力，不探测或输出凭据。"""
 
     result: dict[str, Any] = {
@@ -937,14 +1079,15 @@ def capability(*, app_configured: bool | None = None) -> dict[str, Any]:
         "data_schemas": ["market-history", "trading-calendar"],
     }
     if app_configured is not None:
+        verified = bool(app_configured and app_verified)
         result.update({
             "configured": app_configured,
             "credentials": "app_host_secret_ref_only",
             "credential_status": {
                 "configured": app_configured,
-                "state": "configured_unverified" if app_configured else "not_configured",
+                "state": "verified" if verified else "configured_unverified" if app_configured else "not_configured",
                 "source": "app_host_secret_ref" if app_configured else "none",
-                "remote_provider": "not_checked" if app_configured else "not_configured",
+                "remote_provider": "available" if verified else "not_checked" if app_configured else "not_configured",
             },
         })
     return result
@@ -1067,6 +1210,19 @@ def _is_host_secret_ref(value: object) -> bool:
     return isinstance(value, SecretRef) and value.provider.strip().lower() in _HOST_SECRET_PROVIDERS
 
 
+def _verification_key(caller: CallerContext, secret_ref: SecretRef | None) -> str | None:
+    if not _is_host_secret_ref(secret_ref):
+        return None
+    payload = "\0".join((
+        caller.tenant_id,
+        caller.principal_id,
+        secret_ref.provider,
+        secret_ref.key,
+        secret_ref.revision or "",
+    ))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 def _validate_host_secret_ref(value: object) -> SecretRef:
     if not isinstance(value, SecretRef):
         raise RequestValidationError("App DataFetcher缺少Core SecretRef")
@@ -1120,7 +1276,10 @@ def call_tool_from_app(
     action = _app_action(payload)
     payload.pop("action", None)
     configured = _is_host_secret_ref(secret_ref) and callable(secret_port)
-    status = capability(app_configured=configured)
+    verification_key = _verification_key(caller_context, secret_ref)
+    with _VERIFIED_CONNECTIONS_LOCK:
+        verified = verification_key in _VERIFIED_CONNECTIONS if verification_key is not None else False
+    status = capability(app_configured=configured, app_verified=verified)
     if action == "status":
         return status
     if action == "catalog":
@@ -1152,28 +1311,60 @@ def call_tool_from_app(
     else:
         config = replace(base_config, trading_calendar_ref=trading_calendar_ref)
     if action == "test_connection":
+        def failed_connection(error: ProviderError, status_name: str, detail: str) -> dict[str, Any]:
+            if verification_key is not None:
+                with _VERIFIED_CONNECTIONS_LOCK:
+                    _VERIFIED_CONNECTIONS.discard(verification_key)
+            connection: dict[str, Any] = {
+                "provider_name": "ifind-http",
+                "status": status_name,
+                "reason_code": error.reason_code,
+                "detail": detail,
+            }
+            if error.provider_code:
+                connection["provider_error_code"] = error.provider_code
+            if error.http_status is not None:
+                connection["http_status"] = error.http_status
+            return {
+                **capability(app_configured=True, app_verified=False),
+                "connection": connection,
+            }
+
         try:
             IFindHttpProvider().test_connection(config)
-        except ProviderUnauthorized:
-            return {
-                **status,
-                "connection": {
-                    "provider_name": "ifind-http",
-                    "status": "unauthorized",
-                    "detail": "iFind凭据验证失败，请在设置中心重新保存Refresh Token后重试。",
-                },
-            }
-        except ProviderUnavailable:
-            return {
-                **status,
-                "connection": {
-                    "provider_name": "ifind-http",
-                    "status": "unavailable",
-                    "detail": "iFind连接暂不可用，请检查网络后重试。",
-                },
-            }
+        except ProviderDeviceLimitExceeded as error:
+            return failed_connection(
+                error,
+                "device_limit_exceeded",
+                "iFind设备或IP使用数量受限，请在iFind侧释放旧设备或更新授权后重试。",
+            )
+        except ProviderAccountPermissionDenied as error:
+            return failed_connection(
+                error,
+                "account_permission_denied",
+                "iFind账号无权完成Token验证，请确认账号状态和QuantAPI权限。",
+            )
+        except ProviderFieldPermissionDenied as error:
+            return failed_connection(
+                error,
+                "field_permission_denied",
+                "iFind账号缺少连接验证所需权限，请联系数据管理员确认授权。",
+            )
+        except ProviderUnauthorized as error:
+            return failed_connection(
+                error,
+                "unauthorized",
+                "iFind Refresh Token无效或已失效，请重新保存当前Refresh Token后重试。",
+            )
+        except ProviderQuotaExceeded as error:
+            return failed_connection(error, "quota_exceeded", "iFind调用额度或频次受限，请稍后重试。")
+        except ProviderUnavailable as error:
+            return failed_connection(error, "unavailable", "iFind连接暂不可用，请检查网络或服务状态后重试。")
+        if verification_key is not None:
+            with _VERIFIED_CONNECTIONS_LOCK:
+                _VERIFIED_CONNECTIONS.add(verification_key)
         return {
-            **status,
+            **capability(app_configured=True, app_verified=True),
             "connection": {
                 "provider_name": "ifind-http",
                 "status": "available",
