@@ -1,4 +1,4 @@
-import { bindComposerKeyboard, clearMessage, configureModelPicker, createReasoningDisclosure, initializeWorkspace, message, renderMessages, renderReports, renderTaskList, request, safeJson, setTaskLocation, taskIdFromLocation } from "/app/frontend/shared/app.js";
+import { bindComposerKeyboard, clearMessage, configureModelPicker, createReasoningDisclosure, initializeWorkspace, message, renderMessages, renderReports, renderTaskList, request, safeJson, setTaskLocation, settingsURLFor, taskIdFromLocation } from "/app/frontend/shared/app.js";
 import { attachmentMediaType, validateAttachments } from "/app/frontend/optchat/attachment-utils.js";
 import { createThinkingOrb } from "/app/frontend/shared/thinking-orb.js";
 import { createTransitionScope } from "/app/frontend/shared/transition-scope.js";
@@ -10,7 +10,74 @@ const operationStates = new Map([
   ["cancel_requested", "正在取消"], ["succeeded", "已完成"], ["failed", "失败"],
   ["cancelled", "已取消"], ["interrupted", "已中断"],
 ]);
+const operationOutcomeStates = new Map([
+  ["needs_input", "等待输入"], ["pending_approval", "等待确认"], ["partial", "部分完成"],
+  ["stopped_duplicate", "已安全停止"], ["max_rounds", "等待继续"], ["timed_out", "已超时"],
+  ["blocked", "受限"], ["cancelled", "已取消"], ["unavailable", "暂不可用"],
+]);
 const activeOperationStates = new Set(["queued", "running", "recovering", "cancel_requested"]);
+const terminalOperationStates = new Set(["succeeded", "failed", "cancelled", "interrupted"]);
+
+const prioritizedOperationRows = (operations = [], limit = 8) => [...operations]
+  .sort((left, right) => Number(activeOperationStates.has(right.state)) - Number(activeOperationStates.has(left.state))
+    || String(right.updated_at || "").localeCompare(String(left.updated_at || "")))
+  .slice(0, limit);
+
+const loadOperationResultWithin = (loadResult, taskId, operationId, { signal, timeoutMs }) => new Promise((resolve, reject) => {
+  const controller = new AbortController();
+  let settled = false;
+  let timer = 0;
+  const finish = (callback, value) => {
+    if (settled) return;
+    settled = true;
+    globalThis.clearTimeout(timer);
+    signal?.removeEventListener?.("abort", abort);
+    callback(value);
+  };
+  const abort = () => {
+    controller.abort();
+    const error = new Error("Operation result hydration aborted");
+    error.name = "AbortError";
+    finish(reject, error);
+  };
+  if (signal?.aborted) {
+    abort();
+    return;
+  }
+  signal?.addEventListener?.("abort", abort, { once: true });
+  timer = globalThis.setTimeout(abort, Math.max(250, Number(timeoutMs) || 6_000));
+  Promise.resolve()
+    .then(() => loadResult(taskId, operationId, { signal: controller.signal }))
+    .then((value) => finish(resolve, value), (error) => finish(reject, error));
+});
+
+export async function hydrateOperationHistory(taskId, operations = [], loadResult, { signal, timeoutMs = 6_000 } = {}) {
+  if (!taskId || typeof loadResult !== "function") return operations;
+  const visibleIds = new Set(prioritizedOperationRows(operations)
+    .filter((operation) => terminalOperationStates.has(operation?.state))
+    .map((operation) => operation.operation_id));
+  const hydrated = await Promise.all(operations.map(async (operation) => {
+    if (!visibleIds.has(operation?.operation_id)) return operation;
+    let result;
+    try {
+      result = await loadOperationResultWithin(loadResult, taskId, operation.operation_id, { signal, timeoutMs });
+    } catch (error) {
+      const status = Number(error?.status);
+      if (!Number.isInteger(status) || status < 400 || [401, 403, 404].includes(status)) return operation;
+      result = error?.body && typeof error.body === "object" ? error.body : {};
+    }
+    const detail = result && typeof result === "object" ? result : {};
+    return {
+      ...operation,
+      result: detail,
+      failure_code: detail.failure_code || operation.failure_code,
+      stage: detail.stage || operation.stage,
+      next_step: detail.next_step || operation.next_step,
+      diagnostic_id: detail.diagnostic_id || operation.diagnostic_id,
+    };
+  }));
+  return hydrated;
+}
 
 const attachmentFileKey = (file) => `${String(file?.name || "file").slice(0, 160)}:${Number(file?.size) || 0}:${Number(file?.lastModified) || 0}:${globalThis.crypto?.randomUUID?.() || Math.random().toString(36).slice(2)}`;
 const attachmentKindLabel = (referenceOrItem) => referenceOrItem?.kind === "image" || String(referenceOrItem?.media_type || referenceOrItem?.mediaType || "").startsWith("image/") ? "图片" : "文档";
@@ -266,7 +333,7 @@ export async function startWorkspace(initialMode) {
   // Never leave the native window behind a loading surface if a local service
   // responds slowly or a module fails during initial restoration.
   workspaceRevealTimer = window.setTimeout(revealWorkspace, 2800);
-  const rail = document.querySelector("#rail-task-list");
+  const taskLists = Array.from(document.querySelectorAll("[data-task-list]"));
   const stream = document.querySelector("#conversation-stream");
   const chatSurface = document.querySelector("#chat-surface");
   const chatScrollStage = document.querySelector("#chat-scroll-stage");
@@ -289,6 +356,7 @@ export async function startWorkspace(initialMode) {
   const reportFeedback = document.querySelector("#report-feedback");
   const reportActions = document.querySelector("[data-report-actions]");
   const attachmentDropTarget = document.querySelector("[data-attachment-drop-target]");
+  const attachmentTrigger = document.querySelector("[data-attachment-trigger]");
   const attachmentInput = document.querySelector("[data-attachment-input]");
   const attachmentArea = document.querySelector("#composer-attachments");
   const attachmentList = attachmentArea?.querySelector("[data-attachment-list]");
@@ -313,10 +381,14 @@ export async function startWorkspace(initialMode) {
   let activeModeTransition = null;
   let workspaceStatusTimer = 0;
   let operationRefreshTimer = 0;
+  let operationHistoryHydrationController = null;
+  let operationHistoryLoadRevision = 0;
   let pendingConversationRequest = null;
   let pendingReportRequest = null;
   let activeProcessPlayback = null;
   let activeConversation = null;
+  const reconnectingOperations = new Set();
+  let operationRefreshHadActive = false;
   let draftAttachments = [];
   let attachmentDragDepth = 0;
   let attachmentDraftTaskId = "new";
@@ -325,6 +397,7 @@ export async function startWorkspace(initialMode) {
   const moduleContexts = new Map();
   const moduleContextVersions = new Map();
   const moduleContextRefreshes = new Map();
+  const moduleContextRefreshGenerations = new Map();
   const moduleFrameLoadTimers = new Map();
   let moduleIndicatorFrame = 0;
   let composerClearanceFrame = 0;
@@ -360,6 +433,15 @@ export async function startWorkspace(initialMode) {
     });
   };
 
+  const syncComposerInputHeight = () => {
+    input.style.height = "auto";
+    const maximum = 120;
+    const height = Math.min(maximum, Math.max(30, input.scrollHeight));
+    input.style.height = `${height}px`;
+    input.dataset.overflow = String(input.scrollHeight > maximum);
+    syncChatComposerClearance();
+  };
+
   const createModuleBridgeNonce = () => crypto.randomUUID
     ? crypto.randomUUID()
     : `bridge-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -382,7 +464,13 @@ export async function startWorkspace(initialMode) {
     if (error?.status === 401 || error?.status === 403) return "当前账户没有生成该报告的权限。";
     if (error?.status === 404) return "当前任务或报告服务不存在，请重新选择任务后再试。";
     if (error?.status === 409) return error.body?.message || error.message || "当前任务状态不允许生成报告。";
-    if (error?.status >= 500) return "报告服务暂时不可用，请稍后重试。";
+    if (error?.status >= 500) {
+      return error.body?.next_step
+        || error.body?.error?.next_step
+        || error.body?.message
+        || error.message
+        || "报告服务暂时不可用，请稍后重试。";
+    }
     if (!error?.status) return "无法连接报告服务，请检查连接后重试。";
     return error.body?.message || error.message || "报告生成失败，请稍后重试。";
   };
@@ -1061,8 +1149,29 @@ export async function startWorkspace(initialMode) {
       restore,
     };
   };
-  const cancelTaskRequest = async (taskId, requestId) => {
-    if (!taskId || !requestId) return;
+  const publishModuleOperationCancel = (moduleName, operationId) => {
+    const frame = moduleFrames.get(moduleName);
+    if (!frame || !operationId) return;
+    try {
+      const FrameCustomEvent = frame.contentWindow?.CustomEvent;
+      if (FrameCustomEvent) {
+        frame.contentWindow.dispatchEvent(new FrameCustomEvent("optionhelper.module-operation-cancel", {
+          detail: { module: moduleName, operation_id: operationId },
+        }));
+        return;
+      }
+    } catch {
+      // A not-yet-loaded frame falls through to the controlled bridge message.
+    }
+    frame.contentWindow?.postMessage({
+      type: "optionhelper.module-operation-cancel",
+      module: moduleName,
+      operation_id: operationId,
+      bridge_nonce: frame.dataset.bridgeNonce,
+    }, location.origin);
+  };
+  const cancelOperationRequest = async (taskId, operationId, { requestId = "", module = "" } = {}) => {
+    if (!taskId || !operationId) return;
     if (activeConversation?.taskId === taskId && activeConversation.requestId === requestId) {
       submit.dataset.cancelRequested = "true";
       submit.disabled = true;
@@ -1074,10 +1183,11 @@ export async function startWorkspace(initialMode) {
       activeProcessPlayback.cancelButton.textContent = "正在取消";
     }
     try {
-      await request(`/api/tasks/${encodeURIComponent(taskId)}/cancel`, {
+      await request(`/api/tasks/${encodeURIComponent(taskId)}/operations/${encodeURIComponent(operationId)}/cancel`, {
         method: "POST",
         body: safeJson({}),
       });
+      if (module) publishModuleOperationCancel(module, operationId);
       showWorkspaceStatus("正在取消本轮处理。", false);
       setRuntimeLiveStatus("正在取消本轮处理。");
     } catch (error) {
@@ -1092,6 +1202,19 @@ export async function startWorkspace(initialMode) {
       showWorkspaceStatus(error.message || "取消请求未完成，请稍后重试。", true);
     }
   };
+  const cancelConversationRequest = async (taskId, requestId, operationId) => {
+    if (!taskId || !requestId) return;
+    if (!operationId) {
+      if (activeConversation?.taskId === taskId && activeConversation.requestId === requestId) {
+        activeConversation.cancelWhenAccepted = true;
+        submit.dataset.cancelRequested = "true";
+        submit.disabled = true;
+        submit.setAttribute("aria-label", "正在等待后台接受取消请求");
+      }
+      return;
+    }
+    await cancelOperationRequest(taskId, operationId, { requestId });
+  };
   const lastConversationRequestId = (messages) => {
     const last = [...(messages || [])].reverse().find((entry) => entry?.role === "assistant");
     const match = String(last?.message_id || "").match(/^request-(.+)-assistant$/);
@@ -1103,7 +1226,7 @@ export async function startWorkspace(initialMode) {
     activeProcessPlayback?.stop();
     activeProcessPlayback = startProcessPlayback(task.task_id, requestId, {
       restore: true,
-      onCancel: () => cancelTaskRequest(task.task_id, requestId),
+      onCancel: () => cancelConversationRequest(task.task_id, requestId, activeConversation?.operationId),
     });
   };
   const newWorkspaceRequestId = () => globalThis.crypto?.randomUUID?.()
@@ -1128,29 +1251,65 @@ export async function startWorkspace(initialMode) {
   const explicitSelectedModel = () => (
     modelPicker?.dataset.userExplicitSelection === "true" ? selectedModel() : null
   );
-  const sameAttachmentReferences = (left, right) => {
-    if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) return false;
-    return left.every((item, index) => (
-      String(item?.attachment_id || "") === String(right[index]?.attachment_id || "")
-      && String(item?.kind || "") === String(right[index]?.kind || "")
-    ));
-  };
   const sendConversation = (taskId, content, requestId, modelSelection, attachments = []) => request(
     `/api/tasks/${encodeURIComponent(taskId)}/messages`,
     { method: "POST", body: safeJson({ content, attachments, model_selection: modelSelection, background: true }), headers: { "X-Request-Id": requestId } },
   );
-  const waitForOperation = async (taskId, operationId) => {
+  const readOperationResult = async (taskId, operationId, onUpdate) => {
+    let failures = 0;
     while (true) {
-      const { operation } = await request(`/api/tasks/${encodeURIComponent(taskId)}/operations/${encodeURIComponent(operationId)}`);
-      if (operation.state === "succeeded") return operation.result || {};
-      if (["failed", "cancelled", "interrupted"].includes(operation.state)) {
-        const error = new Error(operation.message || "后台运行未完成。");
-        error.status = operation.state === "failed" ? 500 : 409;
-        error.body = operation.result || {};
-        error.operationTerminal = true;
-        throw error;
+      try {
+        return await request(`/api/tasks/${encodeURIComponent(taskId)}/operations/${encodeURIComponent(operationId)}/result`);
+      } catch (error) {
+        if ([401, 403, 404].includes(error.status)) throw error;
+        failures += 1;
+        onUpdate?.({ state: "recovering", message: "计算已完成，正在恢复结果读取。", recovery_attempts: failures });
+        await new Promise((resolve) => window.setTimeout(resolve, Math.min(4_000, 500 * (2 ** Math.min(failures - 1, 3)))));
       }
-      await new Promise((resolve) => window.setTimeout(resolve, 350));
+    }
+  };
+  const readOperationFailure = async (taskId, operationId, operation) => {
+    try {
+      await request(`/api/tasks/${encodeURIComponent(taskId)}/operations/${encodeURIComponent(operationId)}/result`);
+    } catch (source) {
+      const sourceStatus = Number(source.status);
+      if (!Number.isInteger(sourceStatus) || sourceStatus < 400) throw source;
+      if ([401, 403, 404].includes(sourceStatus)) throw source;
+      const body = source.body && typeof source.body === "object" ? source.body : {};
+      const detail = [body.message || operation.message, body.next_step, body.error?.next_step]
+        .filter(Boolean)
+        .join(" ");
+      const error = new Error(detail || "后台运行未完成。");
+      error.status = sourceStatus;
+      error.body = body;
+      error.operationTerminal = true;
+      throw error;
+    }
+    const error = new Error(operation.message || "后台运行未完成。");
+    error.status = operation.state === "failed" ? 500 : 409;
+    error.body = {};
+    error.operationTerminal = true;
+    throw error;
+  };
+  const waitForOperation = async (taskId, operationId, onUpdate = null) => {
+    let failures = 0;
+    while (true) {
+      try {
+        const { operation } = await request(`/api/tasks/${encodeURIComponent(taskId)}/operations/${encodeURIComponent(operationId)}?include_result=false`);
+        failures = 0;
+        onUpdate?.(operation);
+        if (operation.state === "succeeded") return readOperationResult(taskId, operationId, onUpdate);
+        if (["failed", "cancelled", "interrupted"].includes(operation.state)) {
+          return readOperationFailure(taskId, operationId, operation);
+        }
+      } catch (error) {
+        if (error.operationTerminal || [401, 403, 404].includes(error.status)) throw error;
+        failures += 1;
+        onUpdate?.({ state: "recovering", message: "状态连接暂时中断，正在恢复。", recovery_attempts: failures });
+        await new Promise((resolve) => window.setTimeout(resolve, Math.min(4_000, 500 * (2 ** Math.min(failures - 1, 3)))));
+        continue;
+      }
+      await new Promise((resolve) => window.setTimeout(resolve, 750));
     }
   };
   const lookupConversationResponse = async (taskId, requestId) => {
@@ -1163,13 +1322,35 @@ export async function startWorkspace(initialMode) {
   };
   const submitConversation = async (taskId, content, requestId, modelSelection, attachments = [], onAccepted = null) => {
     const submitted = await sendConversation(taskId, content, requestId, modelSelection, attachments);
-    await onAccepted?.();
     const operationId = submitted.operation?.operation_id;
     if (!operationId) throw new Error("后台对话未返回操作标识。");
+    await onAccepted?.(operationId);
     void loadTasks()
       .then(() => currentTask?.task_id === taskId ? loadCurrentTaskOperations(taskId) : null)
       .catch(() => {});
-    return waitForOperation(taskId, operationId);
+    return waitForOperation(taskId, operationId, (operation) => {
+      if (activeConversation?.taskId === taskId && activeConversation.requestId === requestId) {
+        activeConversation.operationId = operationId;
+        activeConversation.state = operation.state;
+      }
+      if (currentTask?.task_id === taskId) {
+        setRuntimeLiveStatus(operation.message || operationStates.get(operation.state) || "正在处理当前请求。");
+      }
+    });
+  };
+  const operationDetailText = (operation) => {
+    const result = operation?.result && typeof operation.result === "object" ? operation.result : {};
+    const resultStatus = String(result.status || "").trim().toLowerCase();
+    const primary = String(
+      (operation?.state === "succeeded" && resultStatus && resultStatus !== "completed" ? result.message : "")
+      || operation?.message
+      || (activeOperationStates.has(operation?.state) ? "正在处理当前请求。" : "本次运行已结束。"),
+    );
+    const recovery = Number(operation?.recovery_attempts) > 0
+      ? `已恢复${Number(operation.recovery_attempts)}次。`
+      : "";
+    const nextStep = operation?.state === "failed" ? String(result.next_step || operation?.next_step || "") : "";
+    return [primary, recovery, nextStep].filter(Boolean).join(" ");
   };
   const renderTaskOperations = (operations = [], taskId = currentTask?.task_id) => {
     if (!operationList) return;
@@ -1177,10 +1358,7 @@ export async function startWorkspace(initialMode) {
       operationList.innerHTML = '<p class="operation-empty">选择任务后查看运行状态。</p>';
       return;
     }
-    const rows = [...operations]
-      .sort((left, right) => Number(activeOperationStates.has(right.state)) - Number(activeOperationStates.has(left.state))
-        || String(right.updated_at || "").localeCompare(String(left.updated_at || "")))
-      .slice(0, 8);
+    const rows = prioritizedOperationRows(operations);
     if (!rows.length) {
       operationList.innerHTML = '<p class="operation-empty">当前任务暂无后台运行。</p>';
       return;
@@ -1195,11 +1373,20 @@ export async function startWorkspace(initialMode) {
       name.textContent = modules.get(operation.module) || (operation.kind === "conversation" ? "任务对话" : "后台任务");
       const state = document.createElement("span");
       state.className = "operation-item__state";
-      state.textContent = operationStates.get(operation.state) || "状态未知";
+      const resultStatus = String(operation?.result?.status || "").trim().toLowerCase();
+      state.textContent = operation.state === "succeeded" && operationOutcomeStates.has(resultStatus)
+        ? operationOutcomeStates.get(resultStatus)
+        : operationStates.get(operation.state) || "状态未知";
       heading.append(name, state);
       const detail = document.createElement("p");
-      detail.textContent = String(operation.message || (activeOperationStates.has(operation.state) ? "正在处理当前请求。" : "本次运行已结束。"));
+      detail.textContent = operationDetailText(operation);
       card.append(heading, detail);
+      if (operation.diagnostic_id) {
+        const diagnostic = document.createElement("small");
+        diagnostic.className = "operation-item__diagnostic";
+        diagnostic.textContent = `诊断编号：${operation.diagnostic_id}`;
+        card.append(diagnostic);
+      }
       if (activeOperationStates.has(operation.state)) {
         const cancel = document.createElement("button");
         cancel.type = "button";
@@ -1209,9 +1396,7 @@ export async function startWorkspace(initialMode) {
         cancel.addEventListener("click", async () => {
           cancel.disabled = true;
           try {
-            await request(`/api/tasks/${encodeURIComponent(taskId)}/operations/${encodeURIComponent(operation.operation_id)}/cancel`, {
-              method: "POST", body: safeJson({}),
-            });
+            await cancelOperationRequest(taskId, operation.operation_id, { module: operation.module });
             await loadCurrentTaskOperations(taskId);
           } catch (error) {
             showWorkspaceStatus(error.message || "取消请求未完成。", true);
@@ -1224,10 +1409,100 @@ export async function startWorkspace(initialMode) {
     }));
   };
   const loadCurrentTaskOperations = async (taskId) => {
+    const loadRevision = ++operationHistoryLoadRevision;
+    operationHistoryHydrationController?.abort();
+    operationHistoryHydrationController = null;
     if (!taskId) { renderTaskOperations([], ""); return []; }
-    const { operations = [] } = await request(`/api/tasks/${encodeURIComponent(taskId)}/operations`);
+    const { operations = [] } = await request(`/api/tasks/${encodeURIComponent(taskId)}/operations?include_result=false`);
+    if (loadRevision !== operationHistoryLoadRevision) return operations;
     if (currentTask?.task_id === taskId) renderTaskOperations(operations, taskId);
+    const controller = new AbortController();
+    operationHistoryHydrationController = controller;
+    void hydrateOperationHistory(taskId, operations, (ownedTaskId, operationId, options) => request(
+      `/api/tasks/${encodeURIComponent(ownedTaskId)}/operations/${encodeURIComponent(operationId)}/result`,
+      options,
+    ), { signal: controller.signal }).then((hydrated) => {
+      if (!controller.signal.aborted && currentTask?.task_id === taskId) renderTaskOperations(hydrated, taskId);
+    }).finally(() => {
+      if (operationHistoryHydrationController === controller) operationHistoryHydrationController = null;
+    });
     return operations;
+  };
+  const resumePendingConversation = async (pending) => {
+    if (!pending?.operationId || pending.taskId !== currentTask?.task_id) return;
+    const key = `conversation:${pending.operationId}`;
+    if (reconnectingOperations.has(key)) return;
+    reconnectingOperations.add(key);
+    activeConversation = {
+      taskId: pending.taskId,
+      requestId: pending.requestId,
+      operationId: pending.operationId,
+      cancelWhenAccepted: false,
+    };
+    setComposerSending(submit, true);
+    try {
+      const response = await waitForOperation(pending.taskId, pending.operationId, (operation) => {
+        if (activeConversation?.operationId === pending.operationId) activeConversation.state = operation.state;
+        if (currentTask?.task_id === pending.taskId) {
+          setRuntimeLiveStatus(operation.message || operationStates.get(operation.state) || "正在恢复后台对话。");
+        }
+      });
+      settleConversationRequest(pending.taskId, pending.requestId, { draft: "" });
+      if (currentTask?.task_id === pending.taskId) {
+        applyConversationStatus(response, status, taskState);
+        await selectTask(pending.taskId, false);
+      }
+    } catch (error) {
+      const recovered = await lookupConversationResponse(pending.taskId, pending.requestId).catch(() => null);
+      if (recovered) {
+        settleConversationRequest(pending.taskId, pending.requestId, { draft: "" });
+        if (currentTask?.task_id === pending.taskId) {
+          applyConversationStatus(recovered, status, taskState);
+          await selectTask(pending.taskId, false).catch(() => {});
+        }
+      } else {
+        settleConversationRequest(pending.taskId, pending.requestId);
+        if (currentTask?.task_id === pending.taskId) showWorkspaceStatus(error.message || "后台对话未完成。", true);
+      }
+    } finally {
+      if (activeConversation?.operationId === pending.operationId) activeConversation = null;
+      reconnectingOperations.delete(key);
+      setComposerSending(submit, false);
+    }
+  };
+  const resumePendingReport = async (pending) => {
+    if (!pending?.operationId || pending.taskId !== currentTask?.task_id) return;
+    const key = `report:${pending.operationId}`;
+    if (reconnectingOperations.has(key)) return;
+    reconnectingOperations.add(key);
+    try {
+      const result = await waitForOperation(pending.taskId, pending.operationId, (operation) => {
+        if (pendingReportRequest?.operationId === pending.operationId) pendingReportRequest.status = operation.state;
+        if (currentTask?.task_id === pending.taskId) {
+          showReportFeedback(operation.message || operationStates.get(operation.state) || "正在恢复报告生成。", false);
+        }
+      });
+      settleReportRequest(pending.taskId, pending.requestId);
+      if (currentTask?.task_id === pending.taskId) {
+        if (result.status === "completed") {
+          showReportFeedback("交付物处理完成。报告列表已更新。", false);
+          autoPreviewGeneratedHtml(result);
+        } else {
+          showReportFeedback("报告暂未生成。请先完成当前任务的正式分析结果。", true);
+        }
+        await selectTask(pending.taskId, false);
+      }
+    } catch (error) {
+      settleReportRequest(pending.taskId, pending.requestId);
+      if (currentTask?.task_id === pending.taskId) showReportFeedback(reportFailureMessage(error), true);
+    } finally {
+      reconnectingOperations.delete(key);
+      syncReportActions();
+    }
+  };
+  const resumeTransientOperations = () => {
+    if (pendingConversationRequest?.operationId) void resumePendingConversation({ ...pendingConversationRequest });
+    if (pendingReportRequest?.operationId) void resumePendingReport({ ...pendingReportRequest });
   };
   const syncReportActions = () => {
     const hasTask = Boolean(currentTask?.task_id);
@@ -1277,9 +1552,13 @@ export async function startWorkspace(initialMode) {
     const state = readTransient(taskId);
     const pending = state.pendingConversation;
     const matches = pending?.taskId === taskId && pending?.requestId === requestId;
+    const livePending = pendingConversationRequest?.taskId === taskId
+      && pendingConversationRequest.requestId === requestId
+      ? pendingConversationRequest
+      : pending;
     updateTransient(taskId, {
       draft: draft ?? state.draft ?? "",
-      pendingConversation: matches ? (keepPending ? pending : null) : (pending || null),
+      pendingConversation: matches ? (keepPending ? livePending : null) : (pending || null),
     });
     if (currentTask?.task_id === taskId && pendingConversationRequest?.requestId === requestId) {
       pendingConversationRequest = keepPending ? pendingConversationRequest : null;
@@ -1336,6 +1615,7 @@ export async function startWorkspace(initialMode) {
   const restoreTransient = () => {
     const state = readTransient();
     input.value = state.draft || "";
+    syncComposerInputHeight();
     const pending = state.pendingConversation;
     pendingConversationRequest = pending
       && pending.taskId === currentTask?.task_id
@@ -1363,6 +1643,7 @@ export async function startWorkspace(initialMode) {
     requestAnimationFrame(() => {
       stream.scrollTop = Number(currentMode === "desk" ? state.deskScrollTop : state.chatScrollTop) || 0;
     });
+    resumeTransientOperations();
   };
 
   const placeConversation = () => {
@@ -1377,6 +1658,40 @@ export async function startWorkspace(initialMode) {
   };
 
   const modePath = (mode) => mode === "desk" ? "/optdesk" : "/optchat";
+  const syncReportSurface = (mode) => {
+    const desk = mode === "desk";
+    const reportToggle = shell.querySelector("[data-report-toggle]");
+    const panel = shell.querySelector("#task-context");
+    const openLabel = desk ? "打开报告库" : "打开任务与交付";
+    const closeLabel = desk ? "收起报告库" : "收起任务与交付";
+    if (reportToggle) {
+      reportToggle.dataset.openLabel = openLabel;
+      reportToggle.dataset.closeLabel = closeLabel;
+      const label = shell.dataset.reportOpen === "true" ? closeLabel : openLabel;
+      reportToggle.setAttribute("aria-label", label);
+      reportToggle.setAttribute("title", label);
+      const accessibleText = reportToggle.querySelector(".sr-only");
+      if (accessibleText) accessibleText.textContent = label;
+    }
+    if (panel) panel.setAttribute("aria-label", desk ? "报告库" : "任务与交付");
+    const kicker = panel?.querySelector("[data-report-panel-kicker]");
+    const heading = panel?.querySelector("[data-report-panel-title]");
+    const close = panel?.querySelector("[data-report-close]");
+    const operations = panel?.querySelector("[data-report-task-operations]");
+    const copy = panel?.querySelector("[data-report-panel-copy]");
+    if (kicker) kicker.textContent = desk ? "报告" : "当前任务";
+    if (heading) heading.textContent = desk ? "报告库" : "任务与交付";
+    if (close) close.setAttribute("aria-label", closeLabel);
+    if (operations) {
+      operations.hidden = desk;
+      operations.inert = desk;
+    }
+    if (copy) {
+      copy.textContent = desk
+        ? "交付保存在当前设备，可按需预览、下载或切换格式。"
+        : "运行状态与交付物均绑定当前任务。结果状态未知时不会自动重算。";
+    }
+  };
   const applyMode = async (mode, { updateHistory = true } = {}) => {
     activeModeTransition?.dispose();
     const nextMode = mode === "desk" ? "desk" : "chat";
@@ -1406,6 +1721,8 @@ export async function startWorkspace(initialMode) {
     if (previousMode !== currentMode) clearWorkspaceStatus();
     shell.dataset.switching = "true";
     shell.dataset.mode = currentMode;
+    syncReportSurface(currentMode);
+    document.title = currentMode === "desk" ? "OptDesk | OptionHelper" : "OptChat | OptionHelper";
     const deskSurface = document.querySelector("#desk-surface");
     chatSurface.inert = currentMode !== "chat";
     deskSurface.inert = currentMode !== "desk";
@@ -1476,22 +1793,33 @@ export async function startWorkspace(initialMode) {
   async function loadTasks() {
     const { tasks } = await request("/api/tasks");
     const activeCount = tasks.reduce((total, task) => total + (task.active_operations?.length || 0), 0);
-    window.webkit?.messageHandlers?.optionhelperRuntime?.postMessage({type: "active_operations", count: activeCount});
+    const selectedTask = tasks.find((task) => task.task_id === currentTask?.task_id);
+    if (selectedTask?.active_operations?.length) {
+      renderTaskOperations(selectedTask.active_operations, selectedTask.task_id);
+    } else if (operationRefreshHadActive && activeCount === 0 && currentTask?.task_id) {
+      void loadCurrentTaskOperations(currentTask.task_id).catch(() => {});
+    }
+    operationRefreshHadActive = activeCount > 0;
+    window.webkit?.messageHandlers?.optionhelperRuntime?.postMessage({type: "active_operations", state: "ready", count: activeCount});
     window.clearTimeout(operationRefreshTimer);
     if (activeCount > 0) {
       operationRefreshTimer = window.setTimeout(() => {
-        loadTasks()
-          .then(() => currentTask?.task_id ? loadCurrentTaskOperations(currentTask.task_id) : null)
-          .catch(() => {});
+        loadTasks().catch(() => {});
       }, 900);
     }
-    renderTaskList(
-      rail,
-      tasks,
-      currentTask?.task_id,
-      (id) => selectTask(id).catch((error) => showWorkspaceStatus(error.message, true)),
-      { onRename: openTaskRenameDialog, onDelete: openTaskDeleteDialog },
-    );
+    taskLists.forEach((taskList) => {
+      renderTaskList(
+        taskList,
+        tasks,
+        currentTask?.task_id,
+        (id) => selectTask(id)
+          .then(() => {
+            if (taskList.matches("[data-mobile-task-list]")) document.querySelector("[data-task-history-close]")?.click();
+          })
+          .catch((error) => showWorkspaceStatus(error.message, true)),
+        { onRename: openTaskRenameDialog, onDelete: openTaskDeleteDialog },
+      );
+    });
     return tasks;
   }
 
@@ -1785,6 +2113,7 @@ export async function startWorkspace(initialMode) {
     moduleContexts.clear();
     moduleContextVersions.clear();
     moduleContextRefreshes.clear();
+    moduleContextRefreshGenerations.clear();
   }
 
   function syncModuleTabIndicator(animate = true) {
@@ -1872,9 +2201,13 @@ export async function startWorkspace(initialMode) {
     moduleContextVersions.set(moduleName, (moduleContextVersions.get(moduleName) || 0) + 1);
   }
 
-  async function refreshModuleContext(moduleName) {
+  async function refreshModuleContext(moduleName, { force = false } = {}) {
+    if (force) {
+      moduleContextRefreshGenerations.set(moduleName, (moduleContextRefreshGenerations.get(moduleName) || 0) + 1);
+    }
+    const generation = moduleContextRefreshGenerations.get(moduleName) || 0;
     const existing = moduleContextRefreshes.get(moduleName);
-    if (existing) return existing;
+    if (existing && !force) return existing;
     if (!currentTask || !moduleFrames.has(moduleName)) return null;
     const taskId = currentTask.task_id;
     const frame = moduleFrames.get(moduleName);
@@ -1883,10 +2216,18 @@ export async function startWorkspace(initialMode) {
     refresh = (async () => {
       let failures = 0;
       const started = Date.now();
-      while (currentTask?.task_id === taskId && moduleFrames.get(moduleName) === frame) {
+      while (
+        currentTask?.task_id === taskId
+        && moduleFrames.get(moduleName) === frame
+        && (moduleContextRefreshGenerations.get(moduleName) || 0) === generation
+      ) {
         try {
           const { context } = await request(`/api/module-host/${encodeURIComponent(moduleName)}${task}`);
-          if (currentTask?.task_id !== taskId || moduleFrames.get(moduleName) !== frame) return null;
+          if (
+            currentTask?.task_id !== taskId
+            || moduleFrames.get(moduleName) !== frame
+            || (moduleContextRefreshGenerations.get(moduleName) || 0) !== generation
+          ) return null;
           setModuleContext(moduleName, context);
           deliverContext(moduleName);
           if (frame.dataset.ready === "true") clearModuleLoading(moduleName, taskId);
@@ -1910,7 +2251,7 @@ export async function startWorkspace(initialMode) {
   }
 
   async function refreshMountedModuleContexts() {
-    return Promise.all([...moduleFrames.keys()].map((moduleName) => refreshModuleContext(moduleName)));
+    return Promise.all([...moduleFrames.keys()].map((moduleName) => refreshModuleContext(moduleName, { force: true })));
   }
 
   function childNeedsFreshModuleContext(moduleName, contextVersion) {
@@ -2011,6 +2352,11 @@ export async function startWorkspace(initialMode) {
     // because WebKit changed the proxy object identity.
     if (event.origin !== location.origin || !frame) return;
     if (event.data?.bridge_nonce !== frame?.dataset.bridgeNonce) return;
+    if (event.data?.type === "optionhelper.open-settings") {
+      const section = event.data?.section === "data" ? "data" : "";
+      location.assign(settingsURLFor(location, section));
+      return;
+    }
     if (event.data?.type === "optionhelper.desk-panel-layout-change") {
       sharedPanelLayout = normalizePanelLayout(event.data.layout);
       try { localStorage.setItem(panelLayoutKey, JSON.stringify(sharedPanelLayout)); } catch { /* optional */ }
@@ -2087,8 +2433,19 @@ export async function startWorkspace(initialMode) {
     if (!restoringScroll) saveTransient();
   }, { passive: true });
   input.addEventListener("input", () => {
+    if (pendingConversationRequest?.status === "uncertain") {
+      pendingConversationRequest = null;
+    }
     saveTransient();
+    syncComposerInputHeight();
     syncComposerAvailability();
+  });
+  attachmentTrigger?.addEventListener("click", () => {
+    if (submit.dataset.sending === "true") {
+      showWorkspaceStatus("当前回复生成完成后再添加附件。", true);
+      return;
+    }
+    attachmentInput?.click();
   });
   attachmentInput?.addEventListener("change", () => {
     void addDraftFiles(attachmentInput.files).finally(() => { attachmentInput.value = ""; });
@@ -2130,6 +2487,7 @@ export async function startWorkspace(initialMode) {
     const starter = event.target.closest("[data-starter-prompt]");
     if (!starter) return;
     input.value = starter.dataset.starterPrompt || "";
+    syncComposerInputHeight();
     saveTransient();
     input.focus();
   });
@@ -2149,7 +2507,8 @@ export async function startWorkspace(initialMode) {
     if (submit.dataset.cancelRequested === "true") return;
     const taskId = activeConversation?.taskId || currentTask?.task_id;
     const requestId = activeConversation?.requestId || pendingConversationRequest?.requestId;
-    void cancelTaskRequest(taskId, requestId);
+    const operationId = activeConversation?.operationId || pendingConversationRequest?.operationId;
+    void cancelConversationRequest(taskId, requestId, operationId);
   });
 
   form.addEventListener("submit", async (event) => {
@@ -2178,47 +2537,71 @@ export async function startWorkspace(initialMode) {
         await selectTask(task.task_id);
       }
       submittedTaskId = currentTask.task_id;
-      const attachmentReferences = await uploadDraftAttachments(submittedTaskId, submittedDrafts);
-      pendingMessage = appendPendingMessage(submittedContent, attachmentReferences);
+      const resumeUncertain = pendingConversationRequest?.taskId === currentTask.task_id
+        && pendingConversationRequest.status === "uncertain";
+      const effectiveContent = resumeUncertain ? pendingConversationRequest.content : submittedContent;
+      const attachmentReferences = resumeUncertain
+        ? (pendingConversationRequest.attachments || [])
+        : await uploadDraftAttachments(submittedTaskId, submittedDrafts);
+      pendingMessage = appendPendingMessage(effectiveContent, attachmentReferences);
       dissolveComposerInput(submittedContent);
       input.value = "";
+      syncComposerInputHeight();
       saveTransient();
-      const isPendingRetry = pendingConversationRequest?.taskId === currentTask.task_id
-        && pendingConversationRequest.content === submittedContent
-        && sameAttachmentReferences(pendingConversationRequest.attachments || [], attachmentReferences);
-      requestId = isPendingRetry
+      requestId = resumeUncertain
         ? pendingConversationRequest.requestId
         : newWorkspaceRequestId();
-      const explicitModelSelection = isPendingRetry
+      const explicitModelSelection = resumeUncertain
         ? pendingConversationRequest.modelSelection
         : explicitSelectedModel();
       pendingConversationRequest = {
         taskId: currentTask.task_id,
         requestId,
-        content: submittedContent,
+        content: effectiveContent,
         modelSelection: explicitModelSelection,
         attachments: attachmentReferences,
+        operationId: resumeUncertain ? pendingConversationRequest.operationId || "" : "",
+        status: "submitting",
       };
       saveTransient();
-      activeConversation = { taskId: submittedTaskId, requestId };
+      activeConversation = {
+        taskId: submittedTaskId,
+        requestId,
+        operationId: pendingConversationRequest.operationId,
+        cancelWhenAccepted: false,
+      };
       activeProcessPlayback?.stop();
       processPlayback = startProcessPlayback(submittedTaskId, requestId, {
-        onCancel: () => cancelTaskRequest(submittedTaskId, requestId),
+        onCancel: () => cancelConversationRequest(submittedTaskId, requestId, activeConversation?.operationId),
       });
       activeProcessPlayback = processPlayback;
       const response = await submitConversation(
         submittedTaskId,
-        submittedContent,
+        effectiveContent,
         requestId,
         explicitModelSelection,
         attachmentReferences,
-        () => clearDraftAttachments(submittedTaskId),
+        async (operationId) => {
+          if (pendingConversationRequest?.requestId === requestId) {
+            pendingConversationRequest.operationId = operationId;
+            pendingConversationRequest.status = "accepted";
+            saveTransient();
+          }
+          if (activeConversation?.requestId === requestId) {
+            activeConversation.operationId = operationId;
+            if (activeConversation.cancelWhenAccepted) {
+              await cancelConversationRequest(submittedTaskId, requestId, operationId);
+            }
+          }
+          await clearDraftAttachments(submittedTaskId);
+        },
       );
       settleConversationRequest(submittedTaskId, requestId, { draft: "" });
       if (currentTask?.task_id === submittedTaskId) {
         modelPicker.dataset.userExplicitSelection = "false";
         markComposerSent(submit);
         input.value = "";
+        syncComposerInputHeight();
         saveTransient();
         applyConversationStatus(response, status, taskState);
         await selectTask(submittedTaskId, false);
@@ -2241,6 +2624,7 @@ export async function startWorkspace(initialMode) {
         if (currentTask?.task_id === submittedTaskId) {
           modelPicker.dataset.userExplicitSelection = "false";
           input.value = "";
+          syncComposerInputHeight();
           saveTransient();
           applyConversationStatus(recoveredResponse, status, taskState);
           await selectTask(submittedTaskId, false).catch(() => {});
@@ -2248,7 +2632,14 @@ export async function startWorkspace(initialMode) {
         return;
       }
       pendingMessage?.remove();
-      settleConversationRequest(submittedTaskId, requestId, { draft: submittedContent, keepPending: true });
+      const retryableTransport = !error.operationTerminal && ![401, 403, 404].includes(error.status);
+      if (pendingConversationRequest?.requestId === requestId) {
+        pendingConversationRequest.status = retryableTransport ? "uncertain" : "failed";
+      }
+      settleConversationRequest(submittedTaskId, requestId, {
+        draft: pendingConversationRequest?.content || submittedContent,
+        keepPending: retryableTransport,
+      });
       const recovery = error.body?.error?.next_step || error.body?.next_step;
       const failureMessage = error.status === 409 && error.body?.error === "stale_task_contract"
         ? (error.body.message || "当前任务的合同来自旧产品目录。请新建研究任务后继续。")
@@ -2256,7 +2647,8 @@ export async function startWorkspace(initialMode) {
         ? `${recovery || "模型暂不可用，请在设置中心检查模型服务。"}任务内容已保留。`
         : error.message;
       if (currentTask?.task_id === submittedTaskId) {
-        input.value = submittedContent;
+        input.value = pendingConversationRequest?.content || submittedContent;
+        syncComposerInputHeight();
         saveTransient();
         showWorkspaceStatus(failureMessage, true);
       }
@@ -2269,6 +2661,7 @@ export async function startWorkspace(initialMode) {
     }
   });
   bindComposerKeyboard(form);
+  syncComposerInputHeight();
   syncComposerAvailability();
 
   document.querySelectorAll("[data-report-kind]").forEach((button) => button.addEventListener("click", async () => {
@@ -2291,19 +2684,27 @@ export async function startWorkspace(initialMode) {
       });
       operationId = response.operation?.operation_id || "";
       if (operationId) {
+        if (pendingReportRequest?.requestId === requestId) {
+          pendingReportRequest.operationId = operationId;
+          pendingReportRequest.status = "accepted";
+          saveTransient();
+        }
         void loadTasks()
           .then(() => currentTask?.task_id === taskId ? loadCurrentTaskOperations(taskId) : null)
           .catch(() => {});
       }
       const result = operationId
-        ? await waitForOperation(taskId, operationId)
+        ? await waitForOperation(taskId, operationId, (operation) => {
+          if (pendingReportRequest?.requestId === requestId) pendingReportRequest.status = operation.state;
+          showReportFeedback(operation.message || operationStates.get(operation.state) || "正在生成交付物。");
+        })
         : response?.result || {};
       settleReportRequest(taskId, requestId);
       if (result.status === "needs_input") {
         showReportFeedback("当前任务还没有可用于生成报告的正式结果。请先完成收益结构、估值定价或历史回测中的至少一项分析。", true);
       } else if (result.status === "completed") {
         const label = ({ card: "简单报告", report: "详细报告", quote: "参考报价" })[kind] || "交付物";
-        showReportFeedback(`${label}已生成，可在报告列表中预览或下载。`);
+        showReportFeedback(`${label}处理完成。报告列表会明确显示完整完成或部分完成状态。`);
         autoPreviewGeneratedHtml(result);
       } else {
         showReportFeedback("报告暂未生成。请先完成当前任务的正式分析结果。", true);
@@ -2399,4 +2800,22 @@ function applyConversationStatus(response, status, taskState) {
   }
 }
 
-if (location.pathname.startsWith("/optchat")) await startWorkspace("chat");
+export function showWorkspaceStartupFailure(error) {
+  const shell = document.querySelector("[data-workspace-shell]");
+  shell?.setAttribute("aria-busy", "false");
+  if (shell) shell.dataset.initializing = "false";
+  document.body.classList.remove("workspace-body--initializing");
+  const status = document.querySelector("#workspace-status");
+  const signedOut = error?.status === 401 || error?.status === 403;
+  message(
+    status,
+    signedOut
+      ? "登录状态已失效，请重新登录。"
+      : `工作台初始化未完成：${error?.message || "请确认App Host正在运行后重试。"}`,
+    true,
+  );
+}
+
+if (location.pathname.startsWith("/optchat")) {
+  void startWorkspace("chat").catch(showWorkspaceStartupFailure);
+}
