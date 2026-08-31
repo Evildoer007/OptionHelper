@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 import hashlib
 import json
+import math
+import re
 from typing import Any, Mapping, Sequence
 
 from .candidate_critic import critique_candidates
@@ -61,6 +64,94 @@ def _candidate_identity(
         evidence_ref_ids=evidence_ref_ids,
         candidate_fingerprint=candidate_fingerprint,
         generation_reason=str(row["reason"]).strip(),
+    )
+
+
+def create_term_variant(
+    candidate: RecommendationCandidate,
+    *,
+    term_overrides: Mapping[str, str | int | float],
+    constraints_fingerprint: str,
+    generation_reason: str = "user_term_override",
+) -> RecommendationCandidate:
+    """生成同产品的下一候选版本，供Host重新解析并冻结合同。
+
+    该纯函数不调用Research、Selector、合同引擎或计算模块。新版本保留产品、
+    标的和证据身份，清除旧合同及运行引用；Host据此解析新合同，并按正式模块
+    输入依赖决定需要重跑的计算。
+    """
+
+    previous = candidate.candidate_version
+    if previous is None or candidate.candidate_version_id != previous.version_id:
+        raise RecommendationValidationError("条款调整需要完整CandidateVersion")
+    if not re.fullmatch(r"[0-9a-f]{64}", str(constraints_fingerprint)):
+        raise RecommendationValidationError("新约束指纹必须为64位小写十六进制")
+    if not isinstance(term_overrides, Mapping):
+        raise RecommendationValidationError("term_overrides必须为对象")
+    normalized: dict[str, str | int | float] = {}
+    for raw_key, raw_value in term_overrides.items():
+        key = str(raw_key).strip()
+        if not key:
+            raise RecommendationValidationError("term_overrides字段名不能为空")
+        if isinstance(raw_value, bool) or not isinstance(raw_value, (str, int, float)):
+            raise RecommendationValidationError(f"term_overrides.{key}必须为字符串或有限数值")
+        if isinstance(raw_value, float) and not math.isfinite(raw_value):
+            raise RecommendationValidationError(f"term_overrides.{key}必须为有限数值")
+        if isinstance(raw_value, str) and not raw_value.strip():
+            raise RecommendationValidationError(f"term_overrides.{key}不能为空")
+        normalized[key] = raw_value
+    normalized = {key: normalized[key] for key in sorted(normalized)}
+    reason = str(generation_reason).strip()
+    if not reason:
+        raise RecommendationValidationError("generation_reason不能为空")
+    if (
+        normalized == dict(candidate.term_overrides)
+        and constraints_fingerprint == candidate.constraints_fingerprint
+    ):
+        return candidate
+    revision = previous.revision + 1
+    candidate_fingerprint = hashlib.sha256(json.dumps({
+        "candidate_key": previous.candidate_key,
+        "product_id": previous.product_id,
+        "underlyings": list(previous.underlyings),
+        "catalog_version": previous.catalog_version,
+        "constraints_fingerprint": constraints_fingerprint,
+        "evidence_ref_ids": list(previous.evidence_ref_ids),
+        "parent_fingerprint": previous.candidate_fingerprint,
+        "term_overrides": normalized,
+        "generation_reason": reason,
+    }, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+    version_id = _stable_id("cv", {
+        "candidate_key": previous.candidate_key,
+        "parent": previous.version_id,
+        "revision": revision,
+        "candidate_fingerprint": candidate_fingerprint,
+    })
+    version = CandidateVersion(
+        candidate_key=previous.candidate_key,
+        version_id=version_id,
+        revision=revision,
+        parent=previous.version_id,
+        product_id=previous.product_id,
+        underlyings=previous.underlyings,
+        catalog_version=previous.catalog_version,
+        constraints_fingerprint=constraints_fingerprint,
+        evidence_ref_ids=previous.evidence_ref_ids,
+        candidate_fingerprint=candidate_fingerprint,
+        generation_reason=reason,
+    )
+    return replace(
+        candidate,
+        key_terms=(),
+        candidate_status="candidate",
+        constraints_fingerprint=constraints_fingerprint,
+        module_run_refs=(),
+        module_statuses={},
+        candidate_version_id=version.version_id,
+        candidate_version=version,
+        evaluation_records=(),
+        contract_fingerprint=None,
+        term_overrides=normalized,
     )
 
 
