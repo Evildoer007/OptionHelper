@@ -84,12 +84,20 @@ class DesignerConfig:
                         "Designer模板目录仅允许HTML壳和.template.json定义："
                         f"{', '.join(sorted(invalid_templates))}。"
                     )
+            else:
+                unexpected = sorted(actual_files.difference(expected_files))
+                if unexpected:
+                    raise DesignerConfigurationError(
+                        f"Designer资源目录{directory}不符合运行时清单："
+                        f"存在未登记文件{', '.join(unexpected)}。"
+                    )
             if not expected_files.issubset(allowed_files):
                 missing = sorted(expected_files.difference(actual_files))
                 detail = []
                 if missing:
                     detail.append(f"缺少{', '.join(missing)}")
                 raise DesignerConfigurationError(f"Designer资源目录{directory}不符合交付清单：{'；'.join(detail)}。")
+        self._validate_template_definitions()
         if not self.report_theme_path.is_file():
             raise DesignerConfigurationError(f"找不到Designer视觉主题：{self.report_theme_path}")
         if not self.echarts_asset_path.is_file():
@@ -134,6 +142,25 @@ class DesignerConfig:
         if path.parent != self.template_root.resolve() or not path.is_file() or path.is_symlink():
             raise DesignerConfigurationError(f"找不到Designer模板定义：{template_id}。")
         return path
+
+    def _validate_template_definitions(self) -> None:
+        """Validate every managed definition so draft JSON cannot ship silently."""
+
+        import json
+        from .template_definition import load_template_definition
+
+        for path in sorted(self.template_root.glob("*.template.json")):
+            try:
+                raw = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+                raise DesignerConfigurationError(f"Designer模板定义无效：{path.name}：{error}") from error
+            if not isinstance(raw, Mapping):
+                raise DesignerConfigurationError(f"Designer模板定义必须是对象：{path.name}")
+            output_type = str(raw.get("output_type") or "").strip()
+            if output_type not in {"card", "quote", "report"}:
+                raise DesignerConfigurationError(f"Designer模板定义output_type无效：{path.name}")
+            template_id = path.name.removesuffix(".template.json")
+            load_template_definition(self, template_id, output_type)
 
     def read_template(self, name: str) -> str:
         """Read an immutable, shipped HTML shell for one public output type."""
