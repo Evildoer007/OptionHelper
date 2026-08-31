@@ -14,6 +14,7 @@ from runtime.protocol.models import (
     DataAssetRef,
     SecretRef as SecretRef,
 )
+from runtime.contracts.contract_types import deep_thaw
 
 
 @dataclass(frozen=True)
@@ -93,6 +94,10 @@ class DataRequest:
         except (TypeError, ValueError):
             raise ValueError("quota_limit必须为整数") from None
 
+        offline = payload.get("offline", False)
+        if not isinstance(offline, bool):
+            raise ValueError("offline必须为布尔值")
+
         return cls(
             asset_ids=asset_ids,
             start_date=str(payload.get("start_date", "")),
@@ -103,7 +108,7 @@ class DataRequest:
             adjustment=str(payload.get("adjustment", "auto")),
             source_priority=source_priority,
             cache_policy=str(payload.get("cache_policy", "force_refresh")),
-            offline=bool(payload.get("offline", False)),
+            offline=offline,
             local_csv=str(payload["local_csv"]) if payload.get("local_csv") else None,
             quota_limit=quota_limit,
         )
@@ -187,7 +192,7 @@ class DataFetchRun:
     expected_data_asset_hash: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        value = asdict(self)
+        value = deep_thaw(asdict(self))
         if self.expected_manifest_hash and self.expected_data_asset_hash:
             value["data_fetch_run_ref"] = {
                 "tenant_id": self.tenant_id,
