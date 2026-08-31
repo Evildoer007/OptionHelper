@@ -14,13 +14,14 @@ import platform
 import plistlib
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
 import time
 from urllib.request import urlopen
 import uuid
-from typing import Any
+from typing import Any, Callable
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -38,19 +39,46 @@ DMG_ICON_POSITIONS = {
 DIST_ROOT = ROOT / "dist"
 VERSIONS_ROOT = ROOT / "versions"
 SKILL_PACKAGING = ROOT / "packaging" / "skill"
+APP_PACKAGING = ROOT / "packaging" / "app"
 if str(SKILL_PACKAGING) not in sys.path:
     sys.path.insert(0, str(SKILL_PACKAGING))
+if str(APP_PACKAGING) not in sys.path:
+    sys.path.insert(0, str(APP_PACKAGING))
 if str(ROOT / "packaging") not in sys.path:
     sys.path.insert(0, str(ROOT / "packaging"))
+MACOS_PACKAGING = Path(__file__).resolve().parent
+if str(MACOS_PACKAGING) not in sys.path:
+    sys.path.insert(0, str(MACOS_PACKAGING))
 
-from verify_skill import content_tree_entries, tree_hash, verify_skill
+from verify_skill import content_tree_entries, tree_hash
+from verify_capability import verify_app_capability
 from release_contract import RELEASE_VERSION, require_release_version
+from verify_macos import verify as verify_frozen_macos_app
+from platform_payload import (
+    BACKEND_DESKTOP_COMMON_MODULES,
+    MACOS_ALLOWED_RESOURCE_ENTRIES,
+    MACOS_BUILD_INPUTS,
+    MACOS_PAYLOAD_ROOTS,
+    MACOS_SOURCE_MAPPINGS,
+    MACOS_STRICT_DIRECTORY_PAYLOADS,
+    PlatformPayloadError,
+    assert_outer_resource_layout,
+    build_outer_payload_manifest,
+    stage_verification_fixture_definition,
+    verify_outer_payload_manifest,
+)
+from python_runtime_licenses import (
+    PythonRuntimeLicenseError,
+    stage_pyinstaller_dependency_licenses,
+    verify_python_runtime_licenses,
+)
 
 AGENT_RUNTIME_PACKAGING = ROOT / "packaging" / "app" / "agent_runtime"
 if str(AGENT_RUNTIME_PACKAGING) not in sys.path:
     sys.path.insert(0, str(AGENT_RUNTIME_PACKAGING))
 from build_runtime import (  # noqa: E402
     ALLOW_SOURCE_RUNTIME_FALLBACK_ENV,
+    DEFAULT_SOURCE_ROOT,
     LOCAL_VERIFIED,
     REQUIRE_NATIVE_RUNTIME_ENV,
     RuntimeBuildError,
@@ -59,7 +87,7 @@ from build_runtime import (  # noqa: E402
     resolve_runtime_candidate,
     verify_staged_runtime,
 )
-from name_boundary import assert_name_boundary_clean
+from name_boundary import assert_agent_runtime_delivery_clean, assert_name_boundary_clean
 
 
 class MacOSBuildError(RuntimeError):
@@ -92,11 +120,12 @@ def _source_fallback_enabled(explicit: bool | None, *, required: bool) -> bool:
     return _env_flag(ALLOW_SOURCE_RUNTIME_FALLBACK_ENV, True)
 
 
-def _assert_source_name_boundary() -> None:
+def _assert_source_name_boundary(*, repo_root: Path = ROOT) -> None:
+    app_root = repo_root / "products" / "app"
     try:
         assert_name_boundary_clean(
-            ROOT,
-            paths=(APP_ROOT / "backend", APP_ROOT / "frontend", APP_ROOT / "runtime"),
+            repo_root,
+            paths=(app_root / "backend", app_root / "frontend", app_root / "runtime"),
         )
     except AssertionError as error:
         raise MacOSBuildError(str(error)) from error
@@ -139,12 +168,22 @@ EXCLUDED_BACKEND_MODULES = (
 MAX_BACKEND_BYTES = 600 * 1024 * 1024
 MAX_APP_BUNDLE_BYTES = 750 * 1024 * 1024
 MAX_DMG_BYTES = 300 * 1024 * 1024
+EXTERNAL_COMMAND_TIMEOUT_SECONDS = 900
 MINIMUM_BUILD_PYTHON = (3, 11)
 PYINSTALLER_VERSION = "6.21.0"
 FINDER_COPY_PATTERN = re.compile(r"^(?P<base>.+) (?P<copy>\d+)(?P<suffix>(?:\.[^.]+)*)$")
+MACOS_SIGNING_IDENTITY_ENV = "OPTIONHELPER_MACOS_SIGNING_IDENTITY"
+MACOS_NOTARY_PROFILE_ENV = "OPTIONHELPER_MACOS_NOTARY_PROFILE"
+REQUIRED_CAPABILITY_LICENSES = (
+    "ReportLab-LICENSE.txt",
+    "Pillow-LICENSE.txt",
+    "pypdf-LICENSE.txt",
+    "python-docx-LICENSE.txt",
+    "openpyxl-LICENSE.txt",
+)
 
 
-def backend_runtime_modules() -> tuple[str, ...]:
+def backend_runtime_modules(*, app_root: Path = APP_ROOT) -> tuple[str, ...]:
     """Return every App backend module that must survive freezing.
 
     PyInstaller does not reliably follow the launcher's delayed import of the
@@ -154,9 +193,9 @@ def backend_runtime_modules() -> tuple[str, ...]:
     """
 
     modules: set[str] = set()
-    source_root = APP_ROOT / "backend"
+    source_root = app_root / "backend"
     for source in source_root.rglob("*.py"):
-        relative = source.relative_to(APP_ROOT).with_suffix("")
+        relative = source.relative_to(app_root).with_suffix("")
         parts = relative.parts
         if parts[-1] == "__init__":
             parts = parts[:-1]
@@ -174,18 +213,100 @@ def file_hash(path: Path) -> str:
 
 
 def run(command: list[str], *, cwd: Path | None = None, env: dict[str, str] | None = None) -> str:
-    completed = subprocess.run(command, cwd=cwd, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=cwd,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=EXTERNAL_COMMAND_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as error:
+        output = error.stdout or ""
+        raise MacOSBuildError(f"命令超时：{' '.join(command)}\n{output}") from error
     if completed.returncode:
         raise MacOSBuildError(f"命令失败：{' '.join(command)}\n{completed.stdout}")
     return completed.stdout
 
 
-def prepare_dmg_layout(bundle: Path, destination: Path) -> Path:
+def formal_signing_configuration() -> tuple[str, str]:
+    """Return real release credentials without accepting ad-hoc substitutes."""
+
+    identity = os.environ.get(MACOS_SIGNING_IDENTITY_ENV, "").strip()
+    profile = os.environ.get(MACOS_NOTARY_PROFILE_ENV, "").strip()
+    if not identity.startswith("Developer ID Application:"):
+        raise MacOSBuildError(
+            f"正式macOS发布必须通过{MACOS_SIGNING_IDENTITY_ENV}指定Developer ID Application身份"
+        )
+    if not profile:
+        raise MacOSBuildError(
+            f"正式macOS发布必须通过{MACOS_NOTARY_PROFILE_ENV}指定notarytool钥匙串配置"
+        )
+    identities = run(["security", "find-identity", "-v", "-p", "codesigning"])
+    if identity not in identities:
+        raise MacOSBuildError("当前钥匙串未找到指定Developer ID Application签名身份")
+    return identity, profile
+
+
+def verify_formal_app_bundle(
+    bundle: Path,
+    *,
+    expected_identity: str | None = None,
+    require_gatekeeper: bool = True,
+) -> None:
+    """Require Developer ID trust, and Gatekeeper after notarization is complete."""
+
+    run(["codesign", "--verify", "--deep", "--strict", "--verbose=2", str(bundle)])
+    details = run(["codesign", "--display", "--verbose=4", str(bundle)])
+    if "Signature=adhoc" in details or "TeamIdentifier=not set" in details:
+        raise MacOSBuildError("正式macOS App不得使用ad-hoc签名")
+    if "Authority=Developer ID Application:" not in details:
+        raise MacOSBuildError("正式macOS App缺少Developer ID Application Authority")
+    if expected_identity is not None and f"Authority={expected_identity}" not in details:
+        raise MacOSBuildError("正式macOS App签名身份与发布配置不一致")
+    if require_gatekeeper:
+        run(["spctl", "--assess", "--type", "execute", "--verbose=4", str(bundle)])
+
+
+def verify_formal_dmg_distribution(dmg: Path) -> None:
+    """Require a stapled notarization ticket and Gatekeeper acceptance."""
+
+    run(["xcrun", "stapler", "validate", str(dmg)])
+    run([
+        "spctl", "--assess", "--type", "open",
+        "--context", "context:primary-signature", "--verbose=4", str(dmg),
+    ])
+
+
+def require_formal_signing_record(signing: dict[str, Any]) -> str:
+    """Validate the persisted trust claim before it can enter a formal record."""
+
+    identity = str(signing.get("identity", "")).strip()
+    if signing.get("method") != "developer-id" or not identity.startswith("Developer ID Application:"):
+        raise MacOSBuildError("正式macOS记录缺少Developer ID签名身份")
+    if not (
+        signing.get("notarized") is True
+        and signing.get("app_stapled") is False
+        and signing.get("installer_stapled") is True
+        and signing.get("gatekeeper") == "accepted"
+    ):
+        raise MacOSBuildError("正式macOS记录缺少公证、DMG staple或Gatekeeper成功记录")
+    return identity
+
+
+def prepare_dmg_layout(
+    bundle: Path,
+    destination: Path,
+    *,
+    background_source: Path = DMG_BACKGROUND,
+) -> Path:
     """Create the conventional drag-to-Applications DMG layout."""
     if not bundle.is_dir() or bundle.name != "OptionHelper.app":
         raise MacOSBuildError("DMG布局缺少OptionHelper.app")
-    if not DMG_BACKGROUND.is_file():
-        raise MacOSBuildError(f"缺少DMG背景资源：{DMG_BACKGROUND}")
+    if not background_source.is_file():
+        raise MacOSBuildError(f"缺少DMG背景资源：{background_source}")
     if not (bundle / DMG_BUNDLE_BACKGROUND).is_file():
         raise MacOSBuildError("OptionHelper.app缺少已签名DMG背景资源")
     destination.mkdir(parents=True, exist_ok=False)
@@ -366,6 +487,45 @@ def _preserve_writable_image(writable: Path) -> Path:
     return recovery_image
 
 
+def _remove_temporary_dmg_source(source_directory: Path, workspace: Path) -> None:
+    """Remove only the builder-owned DMG source, including read-only snapshot copies."""
+    if not source_directory.exists() and not source_directory.is_symlink():
+        return
+    workspace_root = workspace.resolve()
+    if (
+        source_directory.is_symlink()
+        or source_directory.parent.resolve() != workspace_root
+        or not source_directory.name.startswith("optionhelper-dmg-source-")
+    ):
+        raise MacOSBuildError("拒绝清理不属于当前构建工作区的DMG源目录")
+
+    try:
+        pending = [source_directory]
+        while pending:
+            directory = pending.pop()
+            metadata = directory.stat(follow_symlinks=False)
+            if not stat.S_ISDIR(metadata.st_mode):
+                raise MacOSBuildError("临时DMG源包含异常目录对象")
+            directory.chmod(
+                stat.S_IMODE(metadata.st_mode)
+                | stat.S_IRUSR
+                | stat.S_IWUSR
+                | stat.S_IXUSR,
+                follow_symlinks=False,
+            )
+            with os.scandir(directory) as entries:
+                pending.extend(
+                    Path(entry.path)
+                    for entry in entries
+                    if entry.is_dir(follow_symlinks=False)
+                )
+        shutil.rmtree(source_directory)
+    except MacOSBuildError:
+        raise
+    except OSError as error:
+        raise MacOSBuildError(f"临时DMG源目录清理失败：{error}") from error
+
+
 def build_styled_dmg(layout: Path, output: Path, workspace: Path) -> None:
     """Write Finder metadata on the final volume before compressing it."""
     if output.exists():
@@ -465,7 +625,7 @@ def build_styled_dmg(layout: Path, output: Path, workspace: Path) -> None:
                     cleanup_errors.append(MacOSBuildError(f"DMG挂载设备未能卸载，工作盘备份失败：{error}"))
         for cleanup in (
             lambda: writable.unlink() if not attached and writable.exists() else None,
-            lambda: shutil.rmtree(source_directory) if source_directory is not None and source_directory.exists() else None,
+            lambda: _remove_temporary_dmg_source(source_directory, workspace) if source_directory is not None else None,
             lambda: output.unlink() if not succeeded and output.exists() else None,
         ):
             try:
@@ -484,6 +644,8 @@ def verify_dmg_install_layout(
     *,
     expected_content_tree_hash: str,
     expected_manifest_hash: str,
+    runtime_probe: Callable[[Path], object] | None = None,
+    background_source: Path | None = None,
 ) -> None:
     """Mount the image and verify install layout plus the embedded Capability."""
     if not dmg_path.is_file():
@@ -520,7 +682,7 @@ def verify_dmg_install_layout(
             if not applications.is_symlink() or os.readlink(applications) != "/Applications":
                 raise MacOSBuildError("DMG打开后缺少指向/Applications的拖拽入口")
             try:
-                assert_name_boundary_clean(app, paths=(app,))
+                assert_agent_runtime_delivery_clean(app / "Contents" / "Resources")
             except AssertionError as error:
                 raise MacOSBuildError(str(error)) from error
             embedded = app / "Contents" / "Resources" / "capability" / "option-helper"
@@ -530,12 +692,16 @@ def verify_dmg_install_layout(
             if file_hash(embedded / "capability-manifest.json") != expected_manifest_hash:
                 raise MacOSBuildError("DMG内置Capability Manifest哈希与当次Skill不一致")
             background_image = app / DMG_BUNDLE_BACKGROUND
-            if not background_image.is_file() or file_hash(background_image) != file_hash(DMG_BACKGROUND):
-                raise MacOSBuildError("DMG背景资源缺失或内容不一致")
+            if not background_image.is_file():
+                raise MacOSBuildError("DMG背景资源缺失")
+            if background_source is not None and file_hash(background_image) != file_hash(background_source):
+                raise MacOSBuildError("DMG背景资源内容不一致")
             finder_metadata = mountpoint / ".DS_Store"
             if not finder_metadata.is_file():
                 raise MacOSBuildError("DMG缺少Finder安装布局元数据")
             _validate_finder_metadata_hygiene(finder_metadata.read_bytes())
+            if runtime_probe is not None:
+                runtime_probe(app)
         finally:
             original_error = sys.exc_info()[1]
             detach_error: BaseException | None = None
@@ -632,9 +798,9 @@ def _validate_transaction_stage(release_root: Path) -> None:
 
 
 def verified_capability(capability_root: Path) -> dict[str, Any]:
-    errors = verify_skill(capability_root)
+    errors = verify_app_capability(capability_root)
     if errors:
-        raise MacOSBuildError("Capability未通过verify_skill：\n" + "\n".join(errors))
+        raise MacOSBuildError("App Capability未通过验收：\n" + "\n".join(errors))
     manifest_path = capability_root / "capability-manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     actual_tree_hash = tree_hash(content_tree_entries(capability_root))
@@ -662,26 +828,50 @@ def app_manifest(
     shell_language: str,
     build_tool: str,
     agent_runtime: dict[str, Any] | None = None,
+    outer_payload: dict[str, object] | None = None,
 ) -> dict[str, Any]:
+    formal = app_version == RELEASE_VERSION
     return {
         "app_version": app_version,
+        "build_version": RELEASE_VERSION,
+        "release_status": "formal_release" if formal else "local_candidate",
+        "formal_release": formal,
         "bundle_id": "com.optionhelper.app",
         "platform": "macos-arm64",
         "capability_version": capability["capability_version"],
         "catalog_version": capability["catalog_version"],
         "capability_manifest_hash": capability_manifest_hash,
         "capability_content_tree_hash": capability["content_tree_hash"],
+        "shared_payload_hash": capability["shared_payload_hash"],
         "protocol_id": capability["protocol_id"],
         "design_system_id": capability["design_system_id"],
         "shell_language": shell_language,
         "build_tool": build_tool,
-        "signing": {"method": "ad-hoc", "notarized": False},
+        "signing": (
+            {
+                "method": "developer-id",
+                "identity": os.environ.get(MACOS_SIGNING_IDENTITY_ENV, "").strip(),
+                "notarized": True,
+                "app_stapled": False,
+                "installer_stapled": True,
+                "gatekeeper": "accepted",
+            }
+            if formal else
+            {
+                "method": "ad-hoc",
+                "notarized": False,
+                "app_stapled": False,
+                "installer_stapled": False,
+                "gatekeeper": "unavailable",
+            }
+        ),
         "agent_runtime": agent_runtime or {
             "status": "disabled",
             "support_status": "development_only",
             "resource_path": None,
             "manifest_path": None,
         },
+        "outer_payload": outer_payload or {},
     }
 
 
@@ -700,8 +890,15 @@ def platform_release_manifest(
         "agent_runtime",
         {"status": "disabled", "support_status": "development_only"},
     )
+    formal = app_version == RELEASE_VERSION
+    signing = capability.get("signing")
+    if not isinstance(signing, dict):
+        if formal:
+            raise MacOSBuildError("App Manifest缺少签名记录")
+        signing = {"method": "ad-hoc", "notarized": False}
+    signing_identity = require_formal_signing_record(signing) if formal else "ad-hoc"
     return {
-        "schema": f"optionhelper.platform-release-manifest/{RELEASE_VERSION}",
+        "schema": f"optionhelper.platform-release-manifest/{RELEASE_VERSION}" if formal else "optionhelper.platform-candidate-manifest",
         "app_version": app_version,
         "platform": "macos",
         "architecture": "arm64",
@@ -710,19 +907,23 @@ def platform_release_manifest(
         "catalog_version": capability["catalog_version"],
         "capability_manifest_hash": capability["capability_manifest_hash"],
         "capability_content_tree_hash": capability["capability_content_tree_hash"],
+        "shared_payload_hash": capability["shared_payload_hash"],
         "protocol_id": capability["protocol_id"],
         "design_system_id": capability["design_system_id"],
         "agent_runtime": agent_runtime,
-        "native_support_status": agent_runtime.get("status") if isinstance(agent_runtime, dict) else None,
+        "agent_runtime_status": agent_runtime.get("status") if isinstance(agent_runtime, dict) else None,
+        "package_static_acceptance": "passed",
+        "backend_api_acceptance": "passed",
+        "native_interaction_acceptance": "not_run",
         "installer": {"filename": dmg_path.name, "sha256": file_hash(dmg_path), "size": dmg_path.stat().st_size},
         "installer_hash": file_hash(dmg_path),
-        "signing_identity": "ad-hoc",
-        "signature_status": "ad-hoc_validated",
-        "notarized": False,
-        "notarization_status": "unavailable",
-        "release_status": "local_candidate",
-        "formal_distribution_status": "formal_distribution_unavailable",
-        "gatekeeper_distribution": "unavailable",
+        "signing_identity": signing_identity,
+        "signature_status": "developer_id_validated" if formal else "ad-hoc_validated",
+        "notarized": formal,
+        "notarization_status": "accepted" if formal else "unavailable",
+        "release_status": "formal_release" if formal else "local_candidate",
+        "formal_distribution_status": "ready" if formal else "formal_distribution_unavailable",
+        "gatekeeper_distribution": "accepted" if formal else "unavailable",
         "created_at": created_at or datetime.now(UTC).isoformat().replace("+00:00", "Z"),
     }
 
@@ -744,8 +945,15 @@ def verify_platform_release_manifest(path: Path, *, app_manifest_path: Path, dmg
     installer = value.get("installer")
     if not isinstance(installer, dict):
         raise MacOSBuildError("PlatformReleaseManifest缺少installer")
+    formal = app_manifest.get("app_version") == RELEASE_VERSION
+    signing = app_manifest.get("signing")
+    if not isinstance(signing, dict):
+        if formal:
+            raise MacOSBuildError("App Manifest缺少签名记录")
+        signing = {"method": "ad-hoc", "notarized": False}
+    signing_identity = require_formal_signing_record(signing) if formal else "ad-hoc"
     checks = {
-        "schema": f"optionhelper.platform-release-manifest/{RELEASE_VERSION}",
+        "schema": f"optionhelper.platform-release-manifest/{RELEASE_VERSION}" if formal else "optionhelper.platform-candidate-manifest",
         "platform": "macos",
         "architecture": "arm64",
         "app_version": app_manifest.get("app_version"),
@@ -754,23 +962,27 @@ def verify_platform_release_manifest(path: Path, *, app_manifest_path: Path, dmg
         "catalog_version": app_manifest.get("catalog_version"),
         "capability_manifest_hash": app_manifest.get("capability_manifest_hash"),
         "capability_content_tree_hash": app_manifest.get("capability_content_tree_hash"),
+        "shared_payload_hash": app_manifest.get("shared_payload_hash"),
         "protocol_id": app_manifest.get("protocol_id"),
         "design_system_id": app_manifest.get("design_system_id"),
         "installer_hash": file_hash(dmg_path),
-        "signing_identity": "ad-hoc",
-        "signature_status": "ad-hoc_validated",
-        "notarized": False,
-        "notarization_status": "unavailable",
-        "release_status": "local_candidate",
-        "formal_distribution_status": "formal_distribution_unavailable",
-        "gatekeeper_distribution": "unavailable",
+        "signing_identity": signing_identity,
+        "signature_status": "developer_id_validated" if formal else "ad-hoc_validated",
+        "notarized": formal,
+        "notarization_status": "accepted" if formal else "unavailable",
+        "release_status": "formal_release" if formal else "local_candidate",
+        "formal_distribution_status": "ready" if formal else "formal_distribution_unavailable",
+        "gatekeeper_distribution": "accepted" if formal else "unavailable",
     }
     if "agent_runtime" in app_manifest:
         runtime = app_manifest["agent_runtime"]
         if not isinstance(runtime, dict):
             raise MacOSBuildError("App Manifest中的Agent运行时字段无效")
         checks["agent_runtime"] = runtime
-        checks["native_support_status"] = runtime.get("status")
+        checks["agent_runtime_status"] = runtime.get("status")
+    checks["package_static_acceptance"] = "passed"
+    checks["backend_api_acceptance"] = "passed"
+    checks["native_interaction_acceptance"] = "not_run"
     for key, expected in checks.items():
         if value.get(key) != expected:
             raise MacOSBuildError(f"PlatformReleaseManifest字段不匹配：{key}")
@@ -827,9 +1039,14 @@ def copy_tree(source: Path, destination: Path, *, extra_ignored: tuple[str, ...]
     shutil.copytree(source, destination, ignore=ignore)
 
 
-def copy_licenses(destination: Path, capability_root: Path) -> None:
+def copy_licenses(destination: Path, capability_root: Path, *, license_root: Path = ROOT / "LICENSES") -> None:
     destination.mkdir(parents=True)
     copy_tree(capability_root / "LICENSES", destination / "capability")
+    for name in REQUIRED_CAPABILITY_LICENSES:
+        source = license_root / name
+        if not source.is_file() or not source.read_bytes():
+            raise MacOSBuildError(f"缺少必需第三方许可证：{source}")
+        shutil.copy2(source, destination / "capability" / name)
     pyinstaller_license = Path(__file__).resolve().parents[4] / ".missing"
     assert_build_python()
     try:
@@ -843,25 +1060,62 @@ def copy_licenses(destination: Path, capability_root: Path) -> None:
             raise MacOSBuildError("无法定位PyInstaller许可证")
         pyinstaller_license = candidates[0]
     shutil.copy2(pyinstaller_license, destination / "PyInstaller-COPYING.txt")
+    runtime_license_root = destination / "agent-runtime"
+    runtime_license_root.mkdir()
+    runtime_legal_files = (
+        "OptionHelper-Agent-Runtime-LICENSE.txt",
+        "OptionHelper-Agent-Runtime-NOTICES.txt",
+        "OptionHelper-Agent-Runtime-SOURCE-MAPPING.md",
+    )
+    for name in runtime_legal_files:
+        source = license_root / name
+        if not source.is_file():
+            raise MacOSBuildError(f"缺少Agent Runtime发行声明：{source}")
+        shutil.copy2(source, runtime_license_root / name)
     (destination / "THIRD_PARTY.md").write_text(
         "# 第三方许可证\n\n"
         "- PyInstaller 6.21.0：见`PyInstaller-COPYING.txt`。\n"
         "- ReportLab 5.0.0：见`capability/ReportLab-LICENSE.txt`。\n"
         "- Pillow 12.3.0：见`capability/Pillow-LICENSE.txt`。\n"
+        "- pypdf 6.16.0：见`capability/pypdf-LICENSE.txt`。\n"
+        "- python-docx 1.2.0：见`capability/python-docx-LICENSE.txt`。\n"
+        "- openpyxl 3.1.5：见`capability/openpyxl-LICENSE.txt`。\n"
         "- ECharts许可证随Capability页面供应，Apache-2.0声明保留在对应vendor文件头。\n"
+        "- Agent Runtime许可证、NOTICE和源码映射见`agent-runtime/`。\n"
+        "- PyInstaller冻结Python依赖的许可证与NOTICE见`python-runtime/`清单。\n"
         "- Capability自身归档见`capability/`。\n",
         encoding="utf-8",
     )
 
 
-def backend_build_command(workspace: Path) -> list[str]:
+def verify_required_licenses(resources: Path, *, license_root: Path = ROOT / "LICENSES") -> None:
+    """Bind every declared runtime dependency to the repository license bytes."""
+
+    third_party = resources / "LICENSES" / "THIRD_PARTY.md"
+    if not third_party.is_file():
+        raise MacOSBuildError("App缺少THIRD_PARTY.md")
+    index = third_party.read_text(encoding="utf-8")
+    for name in REQUIRED_CAPABILITY_LICENSES:
+        source = license_root / name
+        packaged = resources / "LICENSES" / "capability" / name
+        if not source.is_file() or not packaged.is_file():
+            raise MacOSBuildError(f"App缺少必需第三方许可证：{name}")
+        if packaged.read_bytes() != source.read_bytes():
+            raise MacOSBuildError(f"App第三方许可证与受控来源不一致：{name}")
+        if f"`capability/{name}`" not in index:
+            raise MacOSBuildError(f"THIRD_PARTY.md未索引必需许可证：{name}")
+    if "`python-runtime/`" not in index:
+        raise MacOSBuildError("THIRD_PARTY.md未索引PyInstaller冻结依赖许可证")
+
+
+def backend_build_command(workspace: Path, *, app_root: Path = APP_ROOT) -> list[str]:
     """Return the reproducible, minimal PyInstaller command for App Host."""
-    launcher = APP_ROOT / "desktop" / "macos" / "backend_launcher.py"
+    launcher = app_root / "desktop" / "macos" / "backend_launcher.py"
     dist = workspace / "pyinstaller-dist"
     command = [
         sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", "--onedir",
         "--name", "OptionHelperBackend", "--distpath", str(dist), "--workpath", str(workspace / "pyinstaller-work"),
-        "--specpath", str(workspace / "pyinstaller-spec"), "--paths", str(APP_ROOT),
+        "--specpath", str(workspace / "pyinstaller-spec"), "--paths", str(app_root),
     ]
     # The launcher imports the AppServer after configuring resource paths.
     # Make the module an explicit PyInstaller root so a rebuilt App cannot
@@ -871,9 +1125,11 @@ def backend_build_command(workspace: Path) -> list[str]:
     # Keep its App-owned installer module in the frozen import graph as well.
     command.extend(("--hidden-import", "backend.verification_fixture"))
     explicit_backend_modules = {"backend.app_server", "backend.verification_fixture"}
-    for module in backend_runtime_modules():
+    for module in backend_runtime_modules(app_root=app_root):
         if module not in explicit_backend_modules:
             command.extend(("--hidden-import", module))
+    for module in BACKEND_DESKTOP_COMMON_MODULES:
+        command.extend(("--hidden-import", module))
     for module in NUMERIC_RUNTIME_MODULES:
         command.extend(("--hidden-import", module))
     for module in PDF_RUNTIME_MODULES:
@@ -912,19 +1168,49 @@ def verify_backend_payload(package: Path) -> None:
 
 
 def copy_backend_bundle(package: Path, resources: Path) -> Path:
-    """Preserve PyInstaller's shared-library symlinks inside the signed App."""
+    """Stage a regular-file-only backend tree for exact Manifest closure."""
     target = resources / "backend" / "OptionHelperBackend"
     target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(package, target, symlinks=True)
+    shutil.copytree(package, target, symlinks=False)
     return target
 
 
-def build_backend(workspace: Path, resources: Path) -> Path:
+def probe_compute_worker(backend: Path, resources: Path, workspace: Path) -> None:
+    """Run the frozen worker probe with isolated external Stores.
+
+    Importing the released contract layer performs the same Store-boundary
+    check as a normal App run.  The build probe has no user runtime yet, so it
+    supplies a disposable, workspace-local pair of Stores instead of
+    accidentally inheriting the host's project or Skill directory.
+    """
+    runtime_root = workspace / "compute-worker-probe-runtime"
+    data_root = runtime_root / "data"
+    result_root = runtime_root / "result"
+    data_root.mkdir(parents=True, exist_ok=False)
+    result_root.mkdir(parents=True, exist_ok=False)
+    environment = dict(os.environ)
+    environment["OPTIONHELPER_RUNTIME_ROOT"] = str(runtime_root)
+    environment["OPTIONHELPER_DATA_ROOT"] = str(data_root)
+    environment["OPTIONHELPER_RESULT_ROOT"] = str(result_root)
+    diagnostic_root = runtime_root / "diagnostics"
+    environment["OPTIONHELPER_COMPUTE_PROBE_DIAGNOSTICS"] = str(diagnostic_root)
+    try:
+        run(
+            [str(backend), "--probe-compute-worker", "--resource-dir", str(resources)],
+            env=environment,
+        )
+    except MacOSBuildError as error:
+        diagnostic = diagnostic_root / "compute.log"
+        detail = diagnostic.read_text(encoding="utf-8", errors="replace") if diagnostic.is_file() else ""
+        raise MacOSBuildError(f"{error}\nCompute Worker诊断：\n{detail or '未生成诊断记录'}") from error
+
+
+def build_backend(workspace: Path, resources: Path, *, app_root: Path = APP_ROOT) -> Path:
     dist = workspace / "pyinstaller-dist"
-    command = backend_build_command(workspace)
+    command = backend_build_command(workspace, app_root=app_root)
     environment = dict(os.environ)
     environment["PYINSTALLER_CONFIG_DIR"] = str(workspace / "pyinstaller-config")
-    run(command, cwd=ROOT, env=environment)
+    run(command, cwd=app_root.parent.parent, env=environment)
     package = dist / "OptionHelperBackend"
     executable = package / "OptionHelperBackend"
     if not executable.is_file():
@@ -1013,7 +1299,8 @@ def assert_no_finder_conflicts(root: Path) -> None:
         raise MacOSBuildError(f"App构建目录出现同步冲突副本：{names}")
 
 
-def write_info_plist(bundle: Path, app_version: str) -> None:
+def write_info_plist(bundle: Path, app_version: str, *, formal_release: bool = False) -> None:
+    public_version = app_version.removeprefix("v")
     plist = {
         "CFBundleDevelopmentRegion": "zh_CN",
         "CFBundleExecutable": "OptionHelper",
@@ -1022,23 +1309,23 @@ def write_info_plist(bundle: Path, app_version: str) -> None:
         "CFBundleInfoDictionaryVersion": "6.0",
         "CFBundleName": "OptionHelper",
         "CFBundlePackageType": "APPL",
-        "CFBundleShortVersionString": app_version.removeprefix("v"),
-        "CFBundleVersion": app_version.removeprefix("v"),
+        "CFBundleShortVersionString": public_version,
+        "CFBundleVersion": public_version,
         "LSMinimumSystemVersion": "13.0",
         "NSHighResolutionCapable": True,
+        "OptionHelperReleaseStatus": "formal_release" if formal_release else "local_candidate",
     }
     with (bundle / "Contents" / "Info.plist").open("wb") as handle:
         plistlib.dump(plist, handle, sort_keys=True)
 
 
-def copy_app_icon(bundle: Path) -> None:
-    if not APP_ICON.is_file():
-        raise MacOSBuildError(f"缺少macOS应用图标：{APP_ICON}")
-    shutil.copy2(APP_ICON, bundle / "Contents" / "Resources" / "OptionHelper.icns")
+def copy_app_icon(bundle: Path, *, app_icon: Path = APP_ICON) -> None:
+    if not app_icon.is_file():
+        raise MacOSBuildError(f"缺少macOS应用图标：{app_icon}")
+    shutil.copy2(app_icon, bundle / "Contents" / "Resources" / "OptionHelper.icns")
 
 
-def copy_theme_icon_assets(resources: Path) -> None:
-    source_root = ROOT / "assets" / "icons"
+def copy_theme_icon_assets(resources: Path, *, source_root: Path = ROOT / "assets" / "icons") -> None:
     target_root = resources / "assets" / "icons"
     target_root.mkdir(parents=True, exist_ok=True)
     for name in (
@@ -1053,11 +1340,11 @@ def copy_theme_icon_assets(resources: Path) -> None:
         shutil.copy2(source, target_root / name)
 
 
-def compile_shell(bundle: Path) -> tuple[Path, str, str]:
+def compile_shell(bundle: Path, *, app_root: Path = APP_ROOT) -> tuple[Path, str, str]:
     output = bundle / "Contents" / "MacOS" / "OptionHelper"
     output.parent.mkdir(parents=True)
     swift = [
-        "xcrun", "swiftc", str(APP_ROOT / "desktop" / "macos" / "OptionHelperApp.swift"),
+        "xcrun", "swiftc", str(app_root / "desktop" / "macos" / "OptionHelperApp.swift"),
         "-framework", "Cocoa", "-framework", "WebKit", "-o", str(output),
     ]
     try:
@@ -1067,7 +1354,7 @@ def compile_shell(bundle: Path) -> tuple[Path, str, str]:
         if output.exists():
             output.unlink()
     objc = [
-        "xcrun", "clang", "-fobjc-arc", str(APP_ROOT / "desktop" / "macos" / "OptionHelperApp.m"),
+        "xcrun", "clang", "-fobjc-arc", str(app_root / "desktop" / "macos" / "OptionHelperApp.m"),
         "-framework", "Cocoa", "-framework", "WebKit", "-o", str(output),
     ]
     run(objc)
@@ -1079,13 +1366,14 @@ def verify_bundle(
     expected_manifest: dict[str, Any],
     *,
     require_native_runtime: bool = True,
+    repo_root: Path = ROOT,
 ) -> None:
     resources = bundle / "Contents" / "Resources"
     required = [
         bundle / "Contents" / "Info.plist", bundle / "Contents" / "MacOS" / "OptionHelper",
-        resources / "backend" / "OptionHelperBackend" / "OptionHelperBackend", resources / "app" / "backend" / "app_server.py",
+        resources / "backend" / "OptionHelperBackend" / "OptionHelperBackend",
         resources / "frontend" / "optchat" / "index.html", resources / "capability" / "option-helper" / "capability-manifest.json",
-        resources / "runtime" / "protocol" / "models.py", resources / "LICENSES", resources / "app-manifest.json",
+        resources / "LICENSES", resources / "app-manifest.json",
         resources / "OptionHelper.icns",
         resources / "assets" / "icons" / "optionhelper-app-icon-tile-light.svg",
         resources / "assets" / "icons" / "optionhelper-app-icon-tile-dark.svg",
@@ -1096,6 +1384,21 @@ def verify_bundle(
     missing = [str(path) for path in required if not path.exists()]
     if missing:
         raise MacOSBuildError("Bundle缺少资源：" + ", ".join(missing))
+    forbidden_sources = (resources / "app" / "backend", resources / "app" / "config")
+    if any(path.exists() for path in forbidden_sources):
+        raise MacOSBuildError("Bundle不得携带冻结后端之外的原始backend/config源码")
+    if (resources / "runtime").exists():
+        raise MacOSBuildError("Bundle不得重复携带Capability外层runtime源码树")
+    verify_required_licenses(resources, license_root=repo_root / "LICENSES")
+    for name in (
+        "OptionHelper-Agent-Runtime-LICENSE.txt",
+        "OptionHelper-Agent-Runtime-NOTICES.txt",
+        "OptionHelper-Agent-Runtime-SOURCE-MAPPING.md",
+    ):
+        matches = list(resources.rglob(name))
+        expected = resources / "LICENSES" / "agent-runtime" / name
+        if matches != [expected]:
+            raise MacOSBuildError(f"Agent Runtime发行声明必须唯一：{name}")
     with (bundle / "Contents" / "Info.plist").open("rb") as handle:
         bundle_info = plistlib.load(handle)
     if bundle_info.get("CFBundleIconFile") != "OptionHelper.icns":
@@ -1103,15 +1406,43 @@ def verify_bundle(
     actual = json.loads((resources / "app-manifest.json").read_text(encoding="utf-8"))
     if actual != expected_manifest:
         raise MacOSBuildError("Bundle app-manifest不匹配")
+    try:
+        verify_outer_payload_manifest(
+            repo_root,
+            bundle,
+            actual.get("outer_payload"),
+            source_mappings=MACOS_SOURCE_MAPPINGS,
+            payload_roots=MACOS_PAYLOAD_ROOTS,
+            build_inputs=MACOS_BUILD_INPUTS,
+            strict_directories=MACOS_STRICT_DIRECTORY_PAYLOADS,
+        )
+        assert_outer_resource_layout(
+            bundle,
+            resources_relative="Contents/Resources",
+            allowed_entries=MACOS_ALLOWED_RESOURCE_ENTRIES,
+        )
+        runtime_licenses = resources / "LICENSES" / "python-runtime"
+        license_inventory = json.loads(
+            (runtime_licenses / "python-runtime-license-manifest.json").read_text(encoding="utf-8")
+        )
+        verify_python_runtime_licenses(runtime_licenses, license_inventory)
+    except (OSError, json.JSONDecodeError, PlatformPayloadError, PythonRuntimeLicenseError) as error:
+        raise MacOSBuildError(str(error)) from error
+    expected_version = str(actual.get("build_version", "")).removeprefix("v")
+    if bundle_info.get("CFBundleShortVersionString") != expected_version:
+        raise MacOSBuildError("Info.plist版本与App构建版本不一致")
+    expected_status = "formal_release" if actual.get("formal_release") is True else "local_candidate"
+    if bundle_info.get("OptionHelperReleaseStatus") != expected_status:
+        raise MacOSBuildError("Info.plist发布状态与App Manifest不一致")
     capability = resources / "capability" / "option-helper"
-    if verify_skill(capability):
-        raise MacOSBuildError("Bundle内置Capability未通过verify_skill")
+    if verify_app_capability(capability):
+        raise MacOSBuildError("Bundle内置App Capability未通过验收")
     if actual["capability_manifest_hash"] != file_hash(capability / "capability-manifest.json"):
         raise MacOSBuildError("Bundle Capability Manifest哈希不匹配")
     if actual["capability_content_tree_hash"] != tree_hash(content_tree_entries(capability)):
         raise MacOSBuildError("Bundle Capability目录树哈希不匹配")
     try:
-        assert_name_boundary_clean(bundle, paths=(bundle,))
+        assert_agent_runtime_delivery_clean(resources)
     except AssertionError as error:
         raise MacOSBuildError(str(error)) from error
     try:
@@ -1138,6 +1469,7 @@ def build_macos(
     agent_runtime_path: Path | None = None,
     require_native_runtime: bool | None = None,
     allow_source_runtime_fallback: bool | None = None,
+    repo_root: Path = ROOT,
 ) -> dict[str, Path]:
     try:
         require_release_version(app_version)
@@ -1146,18 +1478,29 @@ def build_macos(
     if platform.system() != "Darwin" or platform.machine() != "arm64":
         raise MacOSBuildError("macOS arm64构建必须在本机arm64 macOS执行")
     assert_build_python()
+    repo_root = repo_root.expanduser().resolve()
+    app_root = repo_root / "products" / "app"
+    app_icon = repo_root / "assets" / "icons" / "optionhelper-app-icon-tile-light.icns"
+    dmg_background = repo_root / "packaging" / "app" / "macos" / "assets" / DMG_BACKGROUND.name
+    license_root = repo_root / "LICENSES"
+    runtime_source_root = app_root / "runtime" / "optionhelper_agent_runtime"
     dist_root = dist_root.resolve()
     versions_root = versions_root.resolve()
     native_runtime_required = _runtime_required(
         require_native_runtime,
         formal=transaction_stage or versions_root == VERSIONS_ROOT.resolve(),
     )
+    formal_release = transaction_stage or versions_root == VERSIONS_ROOT.resolve()
+    signing_identity: str | None = None
+    notary_profile: str | None = None
+    if formal_release:
+        signing_identity, notary_profile = formal_signing_configuration()
     source_fallback_enabled = _source_fallback_enabled(
         allow_source_runtime_fallback,
         required=native_runtime_required,
     )
     if native_runtime_required:
-        _assert_source_name_boundary()
+        _assert_source_name_boundary(repo_root=repo_root)
     output_dmg = dist_root / f"OptionHelper-{app_version}-macOS-arm64.dmg"
     release_root = versions_root / app_version
     if output_dmg.exists():
@@ -1182,25 +1525,32 @@ def build_macos(
         bundle = temporary / "OptionHelper.app"
         resources = bundle / "Contents" / "Resources"
         resources.mkdir(parents=True)
-        copy_app_icon(bundle)
-        copy_theme_icon_assets(resources)
+        copy_app_icon(bundle, app_icon=app_icon)
+        copy_theme_icon_assets(resources, source_root=repo_root / "assets" / "icons")
         installer_assets = resources / "installer"
         installer_assets.mkdir()
-        shutil.copy2(DMG_BACKGROUND, installer_assets / DMG_BACKGROUND.name)
-        write_info_plist(bundle, app_version)
-        _shell, shell_language, build_tool = compile_shell(bundle)
-        copy_tree(APP_ROOT / "backend", resources / "app" / "backend")
-        copy_tree(APP_ROOT / "config", resources / "app" / "config")
-        copy_tree(APP_ROOT / "frontend", resources / "frontend", extra_ignored=("*.md",))
+        shutil.copy2(dmg_background, installer_assets / DMG_BACKGROUND.name)
+        try:
+            stage_verification_fixture_definition(
+                repo_root,
+                bundle,
+                resources_relative="Contents/Resources",
+            )
+        except PlatformPayloadError as error:
+            raise MacOSBuildError(str(error)) from error
+        manifest_version = app_version if formal_release else "development"
+        write_info_plist(bundle, app_version, formal_release=formal_release)
+        _shell, shell_language, build_tool = compile_shell(bundle, app_root=app_root)
+        copy_tree(app_root / "frontend", resources / "frontend", extra_ignored=("*.md",))
         copy_tree(source, resources / "capability" / "option-helper")
         assert_staged_capability(source, resources / "capability" / "option-helper")
-        copy_tree(ROOT / "core" / "src" / "runtime", resources / "runtime")
-        copy_licenses(resources / "LICENSES", source)
+        copy_licenses(resources / "LICENSES", source, license_root=license_root)
         try:
             runtime_candidate = resolve_runtime_candidate(
                 "macos-arm64",
                 explicit=agent_runtime_path,
-                repository_root=ROOT,
+                repository_root=repo_root,
+                formal=formal_release,
             )
             runtime_summary = prepare_staged_runtime(
                 resources,
@@ -1208,30 +1558,50 @@ def build_macos(
                 runtime_candidate,
                 required=native_runtime_required,
                 allow_source_fallback=source_fallback_enabled,
+                source_root=runtime_source_root,
+                require_source_provenance=native_runtime_required,
             )
         except RuntimeBuildError as error:
             raise MacOSBuildError(str(error)) from error
+        _progress("正在构建后端运行时")
+        backend = build_backend(temporary, resources, app_root=app_root)
+        try:
+            license_inventory = stage_pyinstaller_dependency_licenses(
+                temporary / "pyinstaller-work" / "OptionHelperBackend" / "Analysis-00.toc",
+                resources / "LICENSES" / "python-runtime",
+                requirements_lock=repo_root / "core" / "requirements.lock",
+                repository_license_root=license_root,
+            )
+            verify_python_runtime_licenses(resources / "LICENSES" / "python-runtime", license_inventory)
+            outer_payload = build_outer_payload_manifest(
+                repo_root,
+                bundle,
+                source_mappings=MACOS_SOURCE_MAPPINGS,
+                payload_roots=MACOS_PAYLOAD_ROOTS,
+                build_inputs=MACOS_BUILD_INPUTS,
+                strict_directories=MACOS_STRICT_DIRECTORY_PAYLOADS,
+            )
+        except (PlatformPayloadError, PythonRuntimeLicenseError) as error:
+            raise MacOSBuildError(str(error)) from error
         manifest = app_manifest(
-            app_version,
+            manifest_version,
             capability,
             capability_manifest_hash,
             shell_language=shell_language,
             build_tool=build_tool,
             agent_runtime=runtime_summary,
+            outer_payload=outer_payload,
         )
-        # The verifier compares the persisted JSON contract, so normalize any
-        # tuple-like probe values before retaining the in-memory expectation.
         manifest = json.loads(json.dumps(manifest, ensure_ascii=False, allow_nan=False))
         write_json(resources / "app-manifest.json", manifest)
-        _progress("正在构建后端运行时")
-        backend = build_backend(temporary, resources)
         run([str(backend), "--probe-pdf-runtime", "--resource-dir", str(resources)])
-        run([str(backend), "--probe-compute-worker", "--resource-dir", str(resources)])
+        probe_compute_worker(backend, resources, temporary)
         probe_backend_startup(backend, resources, temporary)
         verify_bundle(
             bundle,
             manifest,
             require_native_runtime=native_runtime_required,
+            repo_root=repo_root,
         )
         assert_no_finder_conflicts(bundle)
         bundle_size = _backend_size(bundle)
@@ -1241,23 +1611,58 @@ def build_macos(
                 f"{MAX_APP_BUNDLE_BYTES // 1024 // 1024}MB上限；请检查重复资源和无关依赖"
             )
         _progress("正在签名并验证应用包")
-        run(["codesign", "--force", "--deep", "--sign", "-", str(bundle)])
-        run(["codesign", "--verify", "--deep", "--strict", "--verbose=2", str(bundle)])
+        if formal_release:
+            assert signing_identity is not None
+            run([
+                "codesign", "--force", "--deep", "--options", "runtime", "--timestamp",
+                "--sign", signing_identity, str(bundle),
+            ])
+            # Gatekeeper is meaningful only after the containing DMG has been
+            # accepted by notarytool and stapled.  Before that point, verify
+            # the Developer ID signature itself without falsely requiring an
+            # unavailable notarization ticket.
+            verify_formal_app_bundle(
+                bundle,
+                expected_identity=signing_identity,
+                require_gatekeeper=False,
+            )
+        else:
+            run(["codesign", "--force", "--deep", "--sign", "-", str(bundle)])
+            run(["codesign", "--verify", "--deep", "--strict", "--verbose=2", str(bundle)])
         _progress("正在生成DMG安装物")
         built_dmg = temporary / f"OptionHelper-{app_version}-macOS-arm64.dmg"
-        dmg_layout = prepare_dmg_layout(bundle, temporary / "dmg-layout")
+        dmg_layout = prepare_dmg_layout(
+            bundle,
+            temporary / "dmg-layout",
+            background_source=dmg_background,
+        )
         build_styled_dmg(dmg_layout, built_dmg, temporary)
         run(["hdiutil", "verify", str(built_dmg)])
+        if formal_release:
+            assert notary_profile is not None
+            run([
+                "xcrun", "notarytool", "submit", str(built_dmg),
+                "--keychain-profile", notary_profile, "--wait",
+            ])
+            run(["xcrun", "stapler", "staple", str(built_dmg)])
+            verify_formal_dmg_distribution(built_dmg)
         if built_dmg.stat().st_size > MAX_DMG_BYTES:
             raise MacOSBuildError(
                 f"macOS安装物体积{built_dmg.stat().st_size / 1024 / 1024:.1f}MB超过"
                 f"{MAX_DMG_BYTES // 1024 // 1024}MB上限；请检查重复资源和无关运行时依赖"
             )
         _progress("正在验证安装物")
+        def installed_runtime_probe(installed_bundle: Path) -> None:
+            verify_frozen_macos_app(installed_bundle, repository_root=repo_root)
+            if formal_release:
+                verify_formal_app_bundle(installed_bundle, expected_identity=signing_identity)
+
         verify_dmg_install_layout(
             built_dmg,
             expected_content_tree_hash=str(capability["content_tree_hash"]),
             expected_manifest_hash=capability_manifest_hash,
+            runtime_probe=installed_runtime_probe,
+            background_source=dmg_background,
         )
         dist_root.mkdir(parents=True, exist_ok=True)
         versions_root.mkdir(parents=True, exist_ok=True)
@@ -1272,7 +1677,7 @@ def build_macos(
             write_json(app_manifest_path, manifest)
             release_manifest_path = output_stage / "platform-release-manifest.json"
             write_json(release_manifest_path, platform_release_manifest(
-                app_version=app_version, app_manifest_path=app_manifest_path, dmg_path=dmg, capability=manifest,
+                app_version=manifest_version, app_manifest_path=app_manifest_path, dmg_path=dmg, capability=manifest,
             ))
             verify_platform_release_manifest(release_manifest_path, app_manifest_path=app_manifest_path, dmg_path=dmg)
             assert_no_finder_conflicts(output_stage)
@@ -1283,8 +1688,10 @@ def build_macos(
             checksum.write_text(f"{file_hash(archive_stage)}  {dmg.name}\n", encoding="utf-8")
             archive_manifest = history_stage / "app-manifest.json"
             archive_release = history_stage / "platform-release-manifest.json"
+            archive_capability = history_stage / "app-capability-manifest-macos.json"
             shutil.copy2(app_manifest_path, archive_manifest)
             shutil.copy2(release_manifest_path, archive_release)
+            shutil.copy2(source / "capability-manifest.json", archive_capability)
             verify_platform_release_manifest(archive_release, app_manifest_path=archive_manifest, dmg_path=archive_stage)
             assert_no_finder_conflicts(history_stage)
             _progress("正在写入临时交付记录")
@@ -1293,7 +1700,7 @@ def build_macos(
                 output_dmg=output_dmg,
                 history_stage=history_stage,
                 release_root=release_root,
-                archive_names=(archive_stage.name, checksum.name, archive_manifest.name, archive_release.name),
+                archive_names=(archive_stage.name, checksum.name, archive_manifest.name, archive_release.name, archive_capability.name),
                 transaction_stage=transaction_stage,
             )
             try:
@@ -1305,7 +1712,7 @@ def build_macos(
                     output_dmg=output_dmg,
                     history_stage=history_stage,
                     release_root=release_root,
-                    archive_names=(archive_stage.name, checksum.name, archive_manifest.name, archive_release.name),
+                    archive_names=(archive_stage.name, checksum.name, archive_manifest.name, archive_release.name, archive_capability.name),
                     created_root=created_release_root,
                 )
                 raise
@@ -1318,7 +1725,7 @@ def build_macos(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="构建签名但未公证的OptionHelper macOS App")
+    parser = argparse.ArgumentParser(description="构建受控OptionHelper macOS安装物；正式归档必须签名并公证")
     parser.add_argument("--app-version", required=True)
     parser.add_argument("--capability-root", type=Path, required=True)
     args = parser.parse_args()
@@ -1329,3 +1736,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+    assert_outer_resource_layout,
