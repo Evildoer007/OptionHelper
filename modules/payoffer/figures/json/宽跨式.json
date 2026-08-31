@@ -11,7 +11,7 @@
     "Kc": 110.0,
     "P_net": 8.0,
     "pricing_methods": [
-      "black_scholes",
+      "analytical",
       "monte_carlo"
     ],
     "constraints": [
