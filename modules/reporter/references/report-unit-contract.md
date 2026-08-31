@@ -12,6 +12,6 @@ ReportRequest + ResultStorePort
   -> HTML或PDF + run_manifest.json
 ```
 
-`semantic_fact_hash`只覆盖冻结事实，不覆盖交付模板、HTML/PDF、受众或报告运行编号。因此同一合同事实可以派生Card或Report并切换HTML/PDF而不改变事实哈希；同一ReportBundle可以派生MultiCard或MultiReport。Quote由本次有序选择的一个或多个合同快照重新冻结为ReportBundle，不从Card或Report的HTML反向提取事实。
+`semantic_fact_hash`只覆盖冻结事实，不覆盖交付模板、HTML/PDF、受众或报告运行编号。因此同一合同事实可以派生研究简报或完整研究报告并切换HTML/PDF而不改变事实哈希；同一ReportBundle可以派生多结构研究简报或多结构完整研究报告。参考报价由本次有序选择的一个或多个合同快照重新冻结为ReportBundle，不从研究简报或完整研究报告的HTML反向提取事实。
 
 `run_manifest.json`记录请求哈希、ReportUnit文件和事实哈希、Designer输入与设计简报哈希、所有ModuleRunRef、产物路径/哈希、Designer设计系统版本、实际交付文件哈希和真实运行状态。未运行、失败、不支持和部分完成均保留其原因，不能用默认图、示例数值或空白结论替代；不满足正式协议的运行结果会被拒绝，不能作为部分可信事实保存。
