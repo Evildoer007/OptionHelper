@@ -50,6 +50,8 @@ class Handler(BaseHTTPRequestHandler):
             "/module-host-presentation.css": (shared_browser_root / "module_host_presentation.css", "text/css; charset=utf-8"),
             "/module-host-presentation.js": (shared_browser_root / "module_host_presentation.js", "application/javascript; charset=utf-8"),
             "/module-host-bridge.js": (shared_browser_root / "module_host_bridge.js", "application/javascript; charset=utf-8"),
+            "/date-input-control.js": (shared_browser_root / "date_input_control.js", "application/javascript; charset=utf-8"),
+            "/date-input-control.css": (shared_browser_root / "date_input_control.css", "text/css; charset=utf-8"),
             "/designer/themes/designer-token-vars.css": (
                 RUNTIME_PATHS.project_root / "modules" / "designer" / "assets" / "themes" / "designer-token-vars.css",
                 "text/css; charset=utf-8",
