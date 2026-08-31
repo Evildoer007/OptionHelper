@@ -15,18 +15,53 @@ from dataclasses import asdict
 from datetime import date, timedelta
 from io import StringIO
 import json
+import os
+from pathlib import Path
+import re
+import sys
 from typing import TYPE_CHECKING
 
 from runtime.adapters.local_store import LocalDataStore
+from runtime.contracts.contract_types import deep_thaw
 
 from .authorization.roles import Role
-from .identity.identity_provider import LocalAuthenticationRequest
 
 if TYPE_CHECKING:
     from .app_server import AppServer
 
 
-FIXTURE_PRINCIPAL_LABEL = "artifact-verifier"
+_FIXTURE_IDENTITY_SCHEMA = "optionhelper.verification-fixture-identity"
+_FIXTURE_IDENTITY_RELATIVE = Path("config") / "verification-fixture.json"
+
+
+def _fixture_identity_definition_path() -> Path:
+    if bool(getattr(sys, "frozen", False)):
+        packaged_root = os.environ.get("OPTIONHELPER_RESOURCE_ROOT", "").strip()
+        if not packaged_root:
+            raise RuntimeError("冻结App未绑定受控资源目录")
+        return Path(packaged_root).expanduser().absolute() / _FIXTURE_IDENTITY_RELATIVE
+    return Path(__file__).resolve().parents[1] / _FIXTURE_IDENTITY_RELATIVE
+
+
+def _load_fixture_principal_label() -> str:
+    path = _fixture_identity_definition_path()
+    if path.is_symlink() or not path.is_file() or path.stat().st_size > 4096:
+        raise RuntimeError("受控验收Fixture身份定义不存在或不安全")
+    try:
+        definition = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise RuntimeError("受控验收Fixture身份定义无效") from error
+    if not isinstance(definition, dict) or set(definition) != {"schema", "principal_label"}:
+        raise RuntimeError("受控验收Fixture身份定义字段无效")
+    if definition.get("schema") != _FIXTURE_IDENTITY_SCHEMA:
+        raise RuntimeError("受控验收Fixture身份定义Schema无效")
+    principal_label = definition.get("principal_label")
+    if not isinstance(principal_label, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{2,63}", principal_label):
+        raise RuntimeError("受控验收Fixture身份标签无效")
+    return principal_label
+
+
+FIXTURE_PRINCIPAL_LABEL = _load_fixture_principal_label()
 FIXTURE_ASSET_ID = "artifact-compute-market"
 FIXTURE_ASSET = "000905.SH"
 FIXTURE_ASSETS = (FIXTURE_ASSET, "000300.SH")
@@ -42,8 +77,11 @@ def install_compute_verification_fixture(app: "AppServer") -> None:
     desktop launcher invocation.
     """
 
-    identity = app.identity_provider.authenticate(
-        LocalAuthenticationRequest(role=Role.ADMIN, principal_label=FIXTURE_PRINCIPAL_LABEL),
+    app.login_handler.bind_fixed_local_identity(FIXTURE_PRINCIPAL_LABEL)
+    identity = app.login_handler.authenticate_local(
+        Role.ADMIN,
+        FIXTURE_PRINCIPAL_LABEL,
+        client_host="127.0.0.1",
     )
     # Default Backtester windows use three years of pre-entry history plus
     # the full product tenor.  Keep an eight-year historical buffer so the
@@ -94,7 +132,7 @@ def install_compute_verification_fixture(app: "AppServer") -> None:
             lineage={"fixture": "packaged-app-compute-verification-v1", "synthetic": True},
             created_by=identity.principal_id,
         )
-        app.data_assets.register(identity, asdict(calendar))
+        app.data_assets.register(identity, deep_thaw(asdict(calendar)))
         reference = store.put_bytes(
             tenant_id=identity.tenant_id,
             data_asset_id=market_asset_id,
@@ -104,8 +142,8 @@ def install_compute_verification_fixture(app: "AppServer") -> None:
             asset_ids=asset_ids,
             normalized_fields=("date", "asset_id", "open", "high", "low", "close", "adj_close", "volume"),
             coverage={
-                "start": sessions[0],
-                "end": sessions[-1],
+                "start_date": sessions[0],
+                "end_date": sessions[-1],
                 "sessions": sessions,
                 "calendar_id": "CN-SSE",
                 "calendar_revision": "artifact-compute-fixture-v1",
@@ -155,7 +193,7 @@ def install_compute_verification_fixture(app: "AppServer") -> None:
             lineage={"fixture": "packaged-app-compute-verification-v1", "synthetic": True},
             created_by=identity.principal_id,
         )
-        app.data_assets.register(identity, asdict(reference))
+        app.data_assets.register(identity, deep_thaw(asdict(reference)))
 
 
 def _business_sessions(start: date, *, count: int) -> tuple[str, ...]:
