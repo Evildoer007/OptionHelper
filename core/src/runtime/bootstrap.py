@@ -5,6 +5,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
+import json
 import os
 from pathlib import Path
 import sys
@@ -89,9 +90,29 @@ def discover_project_root(start: str | Path | None = None) -> Path:
     raise BootstrapError("无法定位OptionHelper开发仓库；可设置OPTIONHELPER_PROJECT_ROOT")
 
 
+def _release_package_kind(root: Path) -> str | None:
+    manifest = root / "capability-manifest.json"
+    if not manifest.is_file():
+        return None
+    try:
+        payload = json.loads(manifest.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None
+    package_kind = payload.get("package_kind") if isinstance(payload, dict) else None
+    return package_kind if package_kind in {"skill", "app"} else None
+
+
+def _is_release_root(root: Path) -> bool:
+    """Recognize either standalone Skill delivery or desktop App capability."""
+
+    if not (root / "scripts" / "knowledger" / "optionreg.py").is_file():
+        return False
+    return (root / "SKILL.md").is_file() or _release_package_kind(root) == "app"
+
+
 def _release_root(start: Path) -> Path | None:
     for root in (start, *start.parents):
-        if (root / "SKILL.md").is_file() and (root / "scripts" / "knowledger" / "optionreg.py").is_file():
+        if _is_release_root(root):
             return root
     return None
 
@@ -103,10 +124,7 @@ def _configured_release_root() -> Path | None:
     if not raw_root:
         return None
     candidate = Path(raw_root).expanduser().resolve()
-    if not (
-        (candidate / "SKILL.md").is_file()
-        and (candidate / "scripts" / "knowledger" / "optionreg.py").is_file()
-    ):
+    if not _is_release_root(candidate):
         raise BootstrapError("App注入的Capability根目录不完整")
     return candidate
 
