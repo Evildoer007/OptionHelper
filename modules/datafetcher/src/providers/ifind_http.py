@@ -7,12 +7,13 @@ SecretRef解析。
 字段口径：open、high、low、close用于原始市场尺度；对应adj_open、adj_high、adj_low、
 adj_close按请求口径提供；不复权时它是close的审计别名。
 普通价格指数不适用证券复权，四个adj_*字段分别等于原始OHLC。
-股票和ETF会按请求额外获取CPS=2前复权或CPS=3后复权OHLC。
+股票和ETF会按请求额外获取CPS=2前复权OHLC。
 """
 
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Mapping
 
 import pandas as pd
@@ -21,7 +22,17 @@ import requests
 from ..config import DataFetcherConfig, SecretPortUnavailable, resolve_secret
 from ..market_conventions import china_market_convention
 from ..models import CalendarRequest, DataRequest
-from .base import ProviderQuotaExceeded, ProviderUnauthorized, ProviderUnavailable
+from .base import (
+    ProviderAccountPermissionDenied,
+    ProviderDeviceLimitExceeded,
+    ProviderFieldPermissionDenied,
+    ProviderInputError,
+    ProviderMarketPermissionDenied,
+    ProviderNoData,
+    ProviderQuotaExceeded,
+    ProviderUnauthorized,
+    ProviderUnavailable,
+)
 
 
 TOKEN_URL = "https://quantapi.51ifind.com/api/v1/get_access_token"
@@ -36,10 +47,73 @@ CANONICAL_COLUMNS = ("date", "asset_id", *RAW_OHLC_COLUMNS, *ADJ_OHLC_COLUMNS)
 class IFindDownloadError(RuntimeError):
     """iFind鉴权、取数或返回格式不符合预期。"""
 
-    def __init__(self, message: str, *, quota_exceeded: bool = False, unauthorized: bool = False) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        category: str | None = None,
+        provider_code: str | None = None,
+        http_status: int | None = None,
+        quota_exceeded: bool = False,
+        unauthorized: bool = False,
+    ) -> None:
         super().__init__(message)
-        self.quota_exceeded = quota_exceeded
-        self.unauthorized = unauthorized
+        self.category = category or ("quota" if quota_exceeded else "token_invalid" if unauthorized else "unavailable")
+        self.provider_code = provider_code
+        self.http_status = http_status
+        self.quota_exceeded = self.category == "quota"
+        self.unauthorized = self.category == "token_invalid"
+
+
+def _rejection_category(url: str, detail: str, status_code: int | None = None) -> str:
+    """分类可操作原因，但不传播可能含凭据或请求内容的Provider原文。"""
+
+    value = detail.lower()
+    if status_code is not None and status_code >= 500:
+        return "unavailable"
+    if status_code == 429 or any(marker in value for marker in ("额度", "quota", "频次", "rate limit")):
+        return "quota"
+    if any(marker in value for marker in ("device exceed", "ip exceed", "device limit", "ip limit", "ip address", "设备", "终端", "设备数", "ip数量", "ip限制")):
+        return "device_limit"
+    permission = status_code == 403 or any(marker in value for marker in ("权限", "permission", "forbidden"))
+    if permission and any(marker in value for marker in ("字段", "指标", "indicator", "field")):
+        return "field_permission"
+    if url == TOKEN_URL and any(marker in value for marker in ("account disabled", "account expired", "账号过期", "账号状态", "账户状态", "用户已禁用")):
+        return "account_permission"
+    token_subject = any(marker in value for marker in ("refresh token", "access token", "token", "credential", "鉴权", "认证"))
+    invalid_state = any(marker in value for marker in ("invalid", "expired", "revoked", "失效", "过期", "无效"))
+    if status_code == 401 or (token_subject and invalid_state):
+        return "token_invalid"
+    if permission:
+        return "account_permission" if url == TOKEN_URL else "market_permission"
+    if status_code in {400, 422}:
+        return "input"
+    if any(marker in value for marker in ("参数", "输入", "格式", "parameter", "invalid input")):
+        return "input"
+    return "unavailable"
+
+
+def _safe_provider_code(value: object) -> str | None:
+    """只保留短结构化错误码，不保留可能含请求或凭据的自由文本。"""
+
+    if isinstance(value, bool) or not isinstance(value, (str, int)):
+        return None
+    code = str(value).strip()
+    if not code or len(code) > 64 or re.fullmatch(r"[-A-Za-z0-9_.:]+", code) is None:
+        return None
+    return code
+
+
+def _error_payload(response: requests.Response) -> tuple[str, str | None]:
+    try:
+        payload = response.json()
+    except (TypeError, ValueError):
+        return "", None
+    if not isinstance(payload, Mapping):
+        return "", None
+    detail = str(payload.get("errmsg") or payload.get("message") or "")
+    provider_code = _safe_provider_code(payload.get("errorcode", payload.get("code")))
+    return detail, provider_code
 
 
 def _post(
@@ -54,13 +128,15 @@ def _post(
     try:
         response = requests.post(url, headers=dict(headers), json=payload, timeout=timeout_seconds)
     except requests.RequestException as error:
-        raise IFindDownloadError("iFind HTTPS连接失败") from error
+        raise IFindDownloadError("iFind HTTPS连接失败", category="unavailable") from error
     if not response.ok:
-        # Provider可能回显请求头或令牌；结果和错误只保留状态码。
+        # Provider自由文本只用于边界内分类；对外仅保留状态码与安全结构化错误码。
+        detail, provider_code = _error_payload(response)
         raise IFindDownloadError(
             f"iFind数据请求失败，状态码={response.status_code}",
-            quota_exceeded=response.status_code == 429,
-            unauthorized=response.status_code in {401, 403},
+            category=_rejection_category(url, detail, response.status_code),
+            provider_code=provider_code,
+            http_status=response.status_code,
         )
     try:
         result = response.json()
@@ -73,15 +149,12 @@ def _post(
     except (TypeError, ValueError) as error:
         raise IFindDownloadError("iFind返回错误码无效") from error
     if error_code != 0:
-        # errmsg可能回显凭据或请求信息，只把额度分类保留在内部错误类型中。
+        # errmsg可能回显凭据或请求信息，只保留分类，不传播原文。
         detail = str(result.get("errmsg") or "").lower()
         raise IFindDownloadError(
             "iFind数据请求被拒绝",
-            quota_exceeded=("额度" in detail or "quota" in detail),
-            unauthorized=any(
-                marker in detail
-                for marker in ("token", "auth", "credential", "鉴权", "认证", "权限")
-            ),
+            category=_rejection_category(url, detail),
+            provider_code=_safe_provider_code(result.get("errorcode")),
         )
     return result
 
@@ -94,7 +167,7 @@ def get_access_token(refresh_token: str, *, timeout_seconds: int = 30) -> str:
     )
     token = result.get("data", {}).get("access_token") if isinstance(result.get("data"), Mapping) else None
     if not isinstance(token, str) or not token:
-        raise IFindDownloadError("iFind未返回有效access_token")
+        raise IFindDownloadError("iFind未返回有效access_token", category="token_invalid")
     return token
 
 
@@ -228,7 +301,7 @@ def _table_rows(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
                     row[key] = series[index]
             rows.append(row)
     if not rows:
-        raise IFindDownloadError("iFind历史行情未解析出有效日线记录")
+        raise IFindDownloadError("iFind历史行情未解析出有效日线记录", category="no_data")
     return rows
 
 
@@ -261,14 +334,13 @@ def _canonical_raw(payload: Mapping[str, Any], *, include_volume: bool = False) 
     return result.sort_values(["date", "asset_id"]).reset_index(drop=True)
 
 
-def _adjusted_ohlc(payload: Mapping[str, Any], adjustment: str) -> pd.DataFrame:
+def _adjusted_ohlc(payload: Mapping[str, Any]) -> pd.DataFrame:
     raw = pd.DataFrame(_table_rows(payload))
     result = pd.DataFrame({"date": pd.to_datetime(raw["date"], errors="coerce").dt.strftime("%Y-%m-%d"), "asset_id": raw["asset_id"].astype(str).str.strip()})
     for raw_name, adjusted_name in zip(RAW_OHLC_COLUMNS, ADJ_OHLC_COLUMNS, strict=True):
         result[adjusted_name] = _numeric(raw, raw_name, required=True)
     if result.isna().any(axis=None) or (result[list(ADJ_OHLC_COLUMNS)] <= 0).any(axis=None) or result.duplicated(["date", "asset_id"]).any():
-        label = "后复权" if adjustment == "backward" else "前复权"
-        raise IFindDownloadError(f"iFind{label}OHLC含无效或重复记录")
+        raise IFindDownloadError("iFind前复权OHLC含无效或重复记录")
     return result
 
 
@@ -290,8 +362,7 @@ def download_history(
         ),
         include_volume=include_volume,
     )
-    if asset_type in {"stock", "etf"} and adjustment in {"forward", "backward", "both"}:
-        adjusted_cps = 3 if adjustment == "backward" else 2
+    if asset_type in {"stock", "etf"} and adjustment == "forward":
         adjusted = _adjusted_ohlc(
             history_response(
                 access_token,
@@ -299,15 +370,13 @@ def download_history(
                 indicators="open,high,low,close",
                 start_date=start_date,
                 end_date=end_date,
-                cps=adjusted_cps,
+                cps=2,
                 timeout_seconds=timeout_seconds,
             ),
-            adjustment,
         )
         result = raw.merge(adjusted, on=["date", "asset_id"], how="inner", validate="one_to_one")
         if len(result) != len(raw):
-            label = "后复权" if adjustment == "backward" else "前复权"
-            raise IFindDownloadError(f"不复权与{label}历史交易日未能一一对应")
+            raise IFindDownloadError("不复权与前复权历史交易日未能一一对应")
     else:
         result = raw.copy()
         for raw_name, adjusted_name in zip(RAW_OHLC_COLUMNS, ADJ_OHLC_COLUMNS, strict=True):
@@ -327,7 +396,7 @@ class IFindHttpProvider:
         # 只有股票/ETF确实需要复权字段时才额外请求对应口径。
         multiplier = sum(
             2 if any(field.startswith("adj_") for field in request.fields)
-            and china_market_convention(asset_id, request.adjustment)["effective_adjustment"] in {"forward", "backward", "both"} else 1
+            and china_market_convention(asset_id, request.adjustment)["effective_adjustment"] == "forward" else 1
             for asset_id in request.asset_ids
         )
         return multiplier
@@ -353,14 +422,7 @@ class IFindHttpProvider:
                 for asset_id in request.asset_ids
             ]
         except IFindDownloadError as error:
-            if error.quota_exceeded:
-                raise ProviderQuotaExceeded("iFind额度不足") from error
-            if error.unauthorized:
-                raise ProviderUnauthorized("iFind鉴权失败") from error
-            # IFindDownloadError only contains messages sanitized by this
-            # provider boundary.  Preserve that actionable reason instead of
-            # collapsing every data/shape/network failure into one sentence.
-            raise ProviderUnavailable(str(error)) from error
+            self._raise_provider_error(error)
         return pd.concat(frames, ignore_index=True)
 
     def fetch_calendar(self, request: CalendarRequest, config: DataFetcherConfig) -> Mapping[str, tuple[str, ...]]:
@@ -390,11 +452,7 @@ class IFindHttpProvider:
                 for exchange in exchanges
             }
         except IFindDownloadError as error:
-            if error.quota_exceeded:
-                raise ProviderQuotaExceeded("iFind额度不足") from error
-            if error.unauthorized:
-                raise ProviderUnauthorized("iFind鉴权失败") from error
-            raise ProviderUnavailable("iFind交易日历请求失败") from error
+            self._raise_provider_error(error, calendar=True)
 
     def test_connection(self, config: DataFetcherConfig) -> None:
         """以同一受控凭据边界完成最小鉴权，不请求市场数据。"""
@@ -407,11 +465,48 @@ class IFindHttpProvider:
 
     @staticmethod
     def _raise_access_error(error: IFindDownloadError) -> None:
-        if error.quota_exceeded:
-            raise ProviderQuotaExceeded("iFind额度不足") from error
-        if error.unauthorized:
-            raise ProviderUnauthorized("iFind鉴权失败") from error
-        raise ProviderUnavailable("iFind连接暂不可用") from error
+        context = {
+            "reason_code": error.category,
+            "provider_code": error.provider_code,
+            "http_status": error.http_status,
+        }
+        if error.category == "quota":
+            raise ProviderQuotaExceeded("iFind额度不足", **context) from error
+        if error.category == "token_invalid":
+            raise ProviderUnauthorized("iFind Refresh Token无效或已失效", **context) from error
+        if error.category == "account_permission":
+            raise ProviderAccountPermissionDenied("iFind账号无权完成Token验证", **context) from error
+        if error.category == "device_limit":
+            raise ProviderDeviceLimitExceeded("iFind设备或IP使用限制阻止Token验证", **context) from error
+        if error.category == "field_permission":
+            raise ProviderFieldPermissionDenied("iFind账号缺少连接验证所需权限", **context) from error
+        raise ProviderUnavailable("iFind连接暂不可用", **context) from error
+
+    @staticmethod
+    def _raise_provider_error(error: IFindDownloadError, *, calendar: bool = False) -> None:
+        context = {
+            "reason_code": error.category,
+            "provider_code": error.provider_code,
+            "http_status": error.http_status,
+        }
+        if error.category == "quota":
+            raise ProviderQuotaExceeded("iFind额度不足", **context) from error
+        if error.category == "token_invalid":
+            raise ProviderUnauthorized("iFind Refresh Token无效或已失效", **context) from error
+        if error.category == "account_permission":
+            raise ProviderAccountPermissionDenied("iFind账号无权访问当前接口", **context) from error
+        if error.category == "device_limit":
+            raise ProviderDeviceLimitExceeded("iFind设备或IP使用限制阻止本次请求", **context) from error
+        if error.category == "field_permission":
+            raise ProviderFieldPermissionDenied("iFind未授权本次行情字段", **context) from error
+        if error.category == "market_permission":
+            raise ProviderMarketPermissionDenied("iFind未授权本次市场行情", **context) from error
+        if error.category == "input":
+            raise ProviderInputError("iFind拒绝本次行情请求参数", **context) from error
+        if error.category == "no_data":
+            raise ProviderNoData("iFind在请求日期未返回日线行情", **context) from error
+        message = "iFind交易日历请求失败" if calendar else str(error)
+        raise ProviderUnavailable(message, **context) from error
 
     @staticmethod
     def _refresh_token(config: DataFetcherConfig) -> str:
