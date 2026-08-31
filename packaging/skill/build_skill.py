@@ -24,7 +24,7 @@ if str(ROOT / "packaging" / "skill") not in sys.path:
 from verify_skill import (
     HASH_SPEC_ID,
     MODULES,
-    PAGE_MODULES,
+    SKILL_PAGE_MODULES,
     SkillVerificationError,
     _module_hashes,
     _tool_catalog_protocol_id,
@@ -32,6 +32,7 @@ from verify_skill import (
     is_development_artifact_path,
     is_credential_file,
     probe_runtime,
+    shared_payload_entries,
     tree_hash,
     verify_skill,
     verify_zip,
@@ -67,6 +68,10 @@ class SkillBuildError(RuntimeError):
     pass
 
 
+def _source_map_path(repo_root: Path) -> Path:
+    return repo_root / "packaging" / "skill" / "package-source-map.json"
+
+
 def _relative(value: object, label: str) -> str:
     if not isinstance(value, str) or not value or "\\" in value:
         raise SkillBuildError(f"{label}必须是非空POSIX相对路径")
@@ -92,8 +97,8 @@ def _validate_source_map(config: object) -> dict[str, object]:
         raise SkillBuildError("Source Map Schema无效")
     if not isinstance(config["modules"], list) or not isinstance(config["page_modules"], list):
         raise SkillBuildError("Source Map模块清单必须是数组")
-    if tuple(config["modules"]) != MODULES or tuple(config["page_modules"]) != PAGE_MODULES:
-        raise SkillBuildError("Source Map必须登记固定七模块和五页面")
+    if tuple(config["modules"]) != MODULES or tuple(config["page_modules"]) != SKILL_PAGE_MODULES:
+        raise SkillBuildError("Skill Source Map必须登记固定七模块且不得包含App页面")
     catalog = config["catalog"]
     if not isinstance(catalog, dict) or set(catalog) != {"source_root", "file_name", "target"}:
         raise SkillBuildError("Source Map.catalog无效")
@@ -145,6 +150,20 @@ def _validate_source_map(config: object) -> dict[str, object]:
         for right in targets:
             if left != right and right.startswith(f"{left}/"):
                 raise SkillBuildError(f"Source Map目标重叠：{left} 与 {right}")
+    for file_entry in config["files"]:
+        assert isinstance(file_entry, dict)
+        file_source = PurePosixPath(str(file_entry["source"]))
+        for tree_entry in config["trees"]:
+            assert isinstance(tree_entry, dict)
+            tree_source = PurePosixPath(str(tree_entry["source"]))
+            try:
+                relative = file_source.relative_to(tree_source)
+            except ValueError:
+                continue
+            if not _excluded(Path(relative.as_posix()), list(tree_entry.get("exclude", []))):
+                raise SkillBuildError(
+                    f"Source Map同一源文件被复制到多个发行路径：{file_source}"
+                )
     return config
 
 
@@ -454,9 +473,10 @@ def verify_source_snapshot(
     """确认候选Manifest仍对应当前Source Map选择的开发源。"""
     try:
         manifest = json.loads((skill_root / "capability-manifest.json").read_text(encoding="utf-8"))
-        source_map_hash = sha256(SOURCE_MAP.read_bytes()).hexdigest()
-        config = load_source_map(SOURCE_MAP)
         repo_root = repo_root.expanduser().resolve()
+        source_map_path = _source_map_path(repo_root)
+        source_map_hash = sha256(source_map_path.read_bytes()).hexdigest()
+        config = load_source_map(source_map_path)
         technical = manifest.get("release_status") == "technical_candidate"
         if technical:
             catalog_path = None
@@ -539,7 +559,22 @@ def build_skill(
     versions_root: Path | None = None,
 ) -> Path:
     repo_root = repo_root.expanduser().resolve()
-    config = load_source_map(SOURCE_MAP)
+    required_designer_sources = {
+        "modules/designer/src/comparison_renderer.py": "scripts/modules/designer/comparison_renderer.py",
+        "modules/designer/assets/templates/multicard-standard.template.json": "assets/designer/templates/multicard-standard.template.json",
+        "modules/designer/assets/templates/multicard.html": "assets/designer/templates/multicard.html",
+        "modules/designer/assets/templates/multireport-standard.template.json": "assets/designer/templates/multireport-standard.template.json",
+        "modules/designer/assets/templates/multireport.html": "assets/designer/templates/multireport.html",
+    }
+    missing_designer_sources = [
+        source for source in required_designer_sources if not (repo_root / source).is_file()
+    ]
+    if missing_designer_sources:
+        raise SkillBuildError(
+            "缺少Designer正式多结构发行源文件：" + ", ".join(missing_designer_sources)
+        )
+    source_map_path = _source_map_path(repo_root)
+    config = load_source_map(source_map_path)
     if candidate == (catalog_version is not None):
         raise SkillBuildError("必须且只能选择--candidate或--catalog-version")
     catalog_path: Path | None
@@ -598,6 +633,8 @@ def build_skill(
             )
         entries = content_tree_entries(staged)
         hashes = {str(item["path"]): str(item["sha256"]) for item in entries}
+        shared_entries = shared_payload_entries(entries)
+        shared_hashes = {str(item["path"]): str(item["sha256"]) for item in shared_entries}
         contract_entries = [item for item in entries if str(item["path"]).startswith("scripts/runtime/contracts/")]
         if not contract_entries:
             raise SkillBuildError("候选包缺少共享合同核心")
@@ -613,15 +650,19 @@ def build_skill(
             "protocol_id": _protocol_id(repo_root),
             "design_system_id": "optionhelper.design-system",
             "hash_spec_id": HASH_SPEC_ID,
+            "package_kind": "skill",
             "modules": list(MODULES),
-            "page_modules": list(PAGE_MODULES),
+            "page_modules": list(SKILL_PAGE_MODULES),
             "contract_core_hash": tree_hash(contract_entries),
             "tool_catalog_hash": hashes.get("scripts/runtime/protocol/tool_catalog.py"),
             "content_tree_hash": tree_hash(entries),
             "content_hashes": hashes,
             "content_tree_entries": entries,
             "module_content_hashes": _module_hashes(entries),
-            "source_map_hash": sha256(SOURCE_MAP.read_bytes()).hexdigest(),
+            "shared_payload_hash": tree_hash(shared_entries),
+            "shared_payload_entries": shared_entries,
+            "shared_content_hashes": shared_hashes,
+            "source_map_hash": sha256(source_map_path.read_bytes()).hexdigest(),
             "source_tree_hash": tree_hash(source_records),
             "source_content_hashes": {str(item["path"]): str(item["sha256"]) for item in source_records},
         }
