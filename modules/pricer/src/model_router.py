@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Iterable
 
 from runtime.contracts.contract_api import load_registry
 
@@ -55,6 +55,9 @@ PRODUCT_CAPABILITIES: dict[str, ProductCapability] = {
         product_id: ProductCapability("BARRIER", "BARRIER", ("analytical", "monte_carlo"), "sharkfin", "REINER_RUBINSTEIN")
         for product_id in ("9.5", "9.6")
     },
+    "9.1": ProductCapability("MULTI_ASSET", "WORST_OF_CALL", ("analytical", "monte_carlo"), "worst_of", "WORST_OF_ANALYTIC"),
+    "9.4": ProductCapability("VOLATILITY", "VARIANCE_SWAP", ("analytical", "monte_carlo"), "variance_swap", "VARIANCE_EXPECTATION"),
+    "9.8": ProductCapability("ACCRUAL", "RANGE_ACCRUAL", ("analytical", "monte_carlo"), "range_accrual", "RANGE_ACCRUAL_ANALYTIC"),
 }
 
 # Every executable OptionReg entry has the same formal discrete-path fallback.
@@ -87,4 +90,4 @@ def resolve_route(product_id: str, optionreg_methods: Iterable[object], requeste
     return ModelRoute(capability=capability, method=selected) if selected in available else None
 
 
-__all__ = ("ModelRoute", "ProductCapability", "PRODUCT_CAPABILITIES", "capability_for", "resolve_route")
+__all__ = ("PRODUCT_CAPABILITIES", "ModelRoute", "ProductCapability", "capability_for", "resolve_route")
