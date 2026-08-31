@@ -17,6 +17,7 @@
       "tau_out": "first_time(S_t[O_out] <= H_out)"
     },
     "pricing_methods": [
+      "analytical",
       "monte_carlo"
     ],
     "constraints": [
