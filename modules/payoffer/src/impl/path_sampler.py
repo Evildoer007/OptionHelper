@@ -465,32 +465,80 @@ def _candidate_frozen_grid(
             )
         )
         lower = pd.Timestamp(contract_start).normalize() if contract_start else _derived_contract_start(first_date, monthly_snapshots)
-        upper = pd.Timestamp(contract_end).normalize() if contract_end else _derived_contract_end(
-            contract, lower, daily_snapshots, monthly_snapshots,
-            terminal_period_end=terminal_period_end,
-        )
+        if contract_end:
+            upper = pd.Timestamp(contract_end).normalize()
+        elif _has_host_frozen_calendar(contract):
+            # Host正式合同必须冻结实际结算日。月度观察日并不必然等于到期日；
+            # 不能为了画图在最后观察日后自行推迟结算日并伪造合同路径。
+            raise DomainCompileError("正式ResolvedContract缺少identity.contract_end_date，不能推定收益图结算日")
+        else:
+            upper = _derived_contract_end(
+                contract, lower, daily_snapshots, monthly_snapshots,
+                terminal_period_end=terminal_period_end,
+            )
+        if daily_snapshots and "n_obs" in contract.terms:
+            expected_observations = int(contract.terms["n_obs"])
+            daily_dates = sorted({
+                pd.Timestamp(item).normalize()
+                for snapshot in daily_snapshots
+                for item in snapshot["dates"]
+                if lower <= pd.Timestamp(item).normalize() <= upper
+            })
+            if len(daily_dates) < expected_observations:
+                raise DomainCompileError("ResolvedContract日度冻结观察日数量与n_obs不一致，无法生成候选收益路径")
+            # n_obs是日度观察合同的受控期数，不是自然年内所有交易日的
+            # 上限校验值。Host可能冻结到理论ACT/365到期日的完整日历，
+            # 候选路径仍必须与Pricer和Backtester一样在第n_obs个真实观察日收口。
+            upper = daily_dates[expected_observations - 1]
+    except DomainCompileError:
+        raise
     except (TypeError, ValueError, KeyError) as error:
         raise DomainCompileError("ResolvedContract合同期限无法确定候选观察日") from error
     if upper <= lower:
         raise DomainCompileError("ResolvedContract合同起止日必须严格递增")
+    if _requires_maturity_observation(contract):
+        maturity_observations = observed_dates[(observed_dates > lower) & (observed_dates <= upper)]
+        if not len(maturity_observations):
+            raise DomainCompileError("ResolvedContract到期日前缺少冻结观察日")
+        # ``require_maturity_observation``要求终值本身属于冻结观察集合。Host日历
+        # 可能把理论ACT/365到期日落在周末或节假日之后；候选路径必须收口在
+        # 到期日前最后一个真实观察日，不能把非观察日终值附加到其后。
+        upper = maturity_observations[-1]
     dates = pd.DatetimeIndex(sorted({lower, *(item for item in observed_dates if lower <= item <= upper), upper}))
-    if daily_snapshots and "n_obs" in contract.terms:
-        daily_dates = {
-            pd.Timestamp(item).normalize()
-            for snapshot in daily_snapshots
-            for item in snapshot["dates"]
-            if lower <= pd.Timestamp(item).normalize() <= upper
-        }
-        max_observations = int(contract.terms["n_obs"])
-        if len(daily_dates) > max_observations:
-            raise DomainCompileError("ResolvedContract日度冻结观察日超过n_obs，无法生成候选收益路径")
     if len(dates) < 2:
         raise DomainCompileError("ResolvedContract合同期限内冻结观察日不足两个")
     elapsed_days = float((dates[-1] - dates[0]).days)
     if elapsed_days <= 0.0:
         raise DomainCompileError("ResolvedContract候选路径日期间隔必须为正")
-    times = (dates - dates[0]).days.to_numpy(dtype=float) / elapsed_days * float(contract.terms["T"])
+    identity_end = pd.Timestamp(contract_end).normalize() if contract_end else None
+    if contract_start and identity_end is not None and dates[-1] == identity_end:
+        # 完整覆盖Host冻结起止日的正式路径必须使用真实ACT/365时钟。
+        # 将367天跨闰日合同压回登记T=1会把真实到期观察误判为提前观察。
+        times = (dates - dates[0]).days.to_numpy(dtype=float) / 365.0
+    else:
+        # 日度n_obs等候选会按登记观察期提前收口；该路径的经济期限仍由条款T定义。
+        times = (dates - dates[0]).days.to_numpy(dtype=float) / elapsed_days * float(contract.terms["T"])
     return dates, times
+
+
+def _requires_maturity_observation(contract: ResolvedContract) -> bool:
+    monitor = contract.terms.get("monitor", {})
+    return isinstance(monitor, Mapping) and any(
+        "require_maturity_observation" in str(expression)
+        for expression in monitor.values()
+    )
+
+
+def _has_host_frozen_calendar(contract: ResolvedContract) -> bool:
+    """Host日历存在时，候选路径只能使用合同中冻结的实际期限。"""
+    identity = contract.identity
+    calendar_id = str(identity.get("calendar_id") or "")
+    revision = str(identity.get("calendar_revision") or "")
+    return bool(
+        calendar_id
+        and revision
+        and not (calendar_id.startswith("payoffer-local-") and revision == "local-development")
+    )
 
 
 def _derived_contract_start(first_observation: pd.Timestamp, monthly_snapshots: Sequence[Mapping[str, Any]]) -> pd.Timestamp:
@@ -528,9 +576,8 @@ def _derived_contract_end(
             # 独立开发预览没有Host冻结的实际到期日。普通候选必须把结算终点
             # 放在最后一个月度观察日之后，否则所有终值都会被误当作当月敲出；
             # 只有明确要求“到期日恰为月末”的候选，才让该观察日同时作为终点。
-            # 结算点还须与最后观察日拉开Core的到期容差，否则相邻交易日仍会
-            # 被``terminal_event_time``视为实际到期观察。11个工作日覆盖该
-            # 容差，且仍落在本地预览冻结日历内。
+            # 该分支只服务独立开发预览，并在本地日历中保留与最后观察日
+            # 不同的结算点；正式Host合同始终使用冻结的contract_end_date。
             return final_observation if terminal_period_end else final_observation + pd.offsets.BDay(11)
         except (IndexError, KeyError, TypeError, ValueError) as error:
             raise ValueError("冻结月度观察日不足合同期限") from error
@@ -599,6 +646,10 @@ def _range_count_path(contract: ResolvedContract, target_count: int) -> PricePat
             [index for index, date in enumerate(dates) if date in frozen_observations],
             dtype=int,
         )
+        if len(observation_indices) != observations:
+            raise DomainCompileError(
+                "区间计息冻结观察日数量与n_obs不一致，不能构造收益图候选路径"
+            )
     values = np.full(len(times), outside / normalized_reference * raw_reference, dtype=float)
     if count:
         values[observation_indices[:count]] = inside / normalized_reference * raw_reference
