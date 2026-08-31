@@ -13,6 +13,7 @@ from ..results import GreekValue
 
 
 PriceMarket = Callable[[MarketState], float]
+PriceMarkets = Callable[[tuple[MarketState, ...]], tuple[float, ...]]
 
 
 class ThetaNotApplicableError(ValueError):
@@ -157,6 +158,7 @@ def calculate_standard_greeks(
     config: ValuationConfig,
     basis: ResultBasis,
     price_market: PriceMarket,
+    price_markets: PriceMarkets | None = None,
     theta_roll: Callable[[StandardGreekConvention], ThetaRollValue],
     requested_greeks: tuple[str, ...] | None = None,
 ) -> tuple[dict[str, GreekValue], dict[str, GreekValue], dict[str, object]]:
@@ -172,8 +174,9 @@ def calculate_standard_greeks(
     unknown_greeks = selected_greeks - allowed_greeks
     if unknown_greeks:
         raise ValueError("requested_greeks包含未知Greek：" + ", ".join(sorted(unknown_greeks)))
-    if not selected_greeks:
-        raise ValueError("requested_greeks不能为空")
+    # An explicitly empty internal request is the low-cost headline-PV probe
+    # used by the 65-product acceptance matrix. Public pricing omits this
+    # diagnostic and therefore continues to calculate the complete Greek set.
 
     convention = StandardGreekConvention.from_valuation_config(config)
     base = _require_finite("base_price_points_100", base_price_points_100)
@@ -187,35 +190,43 @@ def calculate_standard_greeks(
     rate_bump = convention.risk_free_rate_absolute_bump
 
     spot_up = spot_down = None
-    if selected_greeks & {"delta", "gamma", "vanna"}:
-        spot_up = _require_finite(
-            "spot_up_price", price_market(replace(market, spot=market.spot + spot_bump))
-        )
-        spot_down = _require_finite(
-            "spot_down_price", price_market(replace(market, spot=market.spot - spot_bump))
-        )
-
     volatility_up = volatility_down = None
-    if selected_greeks & {"vega", "volga", "vanna"}:
-        volatility_up = _require_finite(
-            "volatility_up_price",
-            price_market(replace(market, volatility=market.volatility + volatility_bump)),
-        )
-        volatility_down = _require_finite(
-            "volatility_down_price",
-            price_market(replace(market, volatility=market.volatility - volatility_bump)),
-        )
-
     rate_up = rate_down = None
+    core_markets: list[MarketState] = []
+    core_labels: list[str] = []
+    if selected_greeks & {"delta", "gamma", "vanna"}:
+        core_labels.extend(("spot_up_price", "spot_down_price"))
+        core_markets.extend((
+            replace(market, spot=market.spot + spot_bump),
+            replace(market, spot=market.spot - spot_bump),
+        ))
+    if selected_greeks & {"vega", "volga", "vanna"}:
+        core_labels.extend(("volatility_up_price", "volatility_down_price"))
+        core_markets.extend((
+            replace(market, volatility=market.volatility + volatility_bump),
+            replace(market, volatility=market.volatility - volatility_bump),
+        ))
     if "rho" in selected_greeks:
-        rate_up = _require_finite(
-            "rate_up_price",
-            price_market(replace(market, risk_free_rate=market.risk_free_rate + rate_bump)),
+        core_labels.extend(("rate_up_price", "rate_down_price"))
+        core_markets.extend((
+            replace(market, risk_free_rate=market.risk_free_rate + rate_bump),
+            replace(market, risk_free_rate=market.risk_free_rate - rate_bump),
+        ))
+    if core_markets:
+        values = (
+            price_markets(tuple(core_markets))
+            if price_markets is not None
+            else tuple(price_market(item) for item in core_markets)
         )
-        rate_down = _require_finite(
-            "rate_down_price",
-            price_market(replace(market, risk_free_rate=market.risk_free_rate - rate_bump)),
-        )
+        if len(values) != len(core_labels):
+            raise ValueError("批量Greek重估结果数量与请求不一致")
+        priced = {
+            label: _require_finite(label, value)
+            for label, value in zip(core_labels, values, strict=True)
+        }
+        spot_up, spot_down = priced.get("spot_up_price"), priced.get("spot_down_price")
+        volatility_up, volatility_down = priced.get("volatility_up_price"), priced.get("volatility_down_price")
+        rate_up, rate_down = priced.get("rate_up_price"), priced.get("rate_down_price")
 
     rolled = None
     theta_unavailable_reason = None
@@ -229,23 +240,28 @@ def calculate_standard_greeks(
 
     cross_values = None
     if "vanna" in selected_greeks:
-        cross_values = (
-            _require_finite(
-                "vanna_spot_up_volatility_up_price",
-                price_market(replace(market, spot=market.spot + spot_bump, volatility=market.volatility + volatility_bump)),
-            ),
-            _require_finite(
-                "vanna_spot_up_volatility_down_price",
-                price_market(replace(market, spot=market.spot + spot_bump, volatility=market.volatility - volatility_bump)),
-            ),
-            _require_finite(
-                "vanna_spot_down_volatility_up_price",
-                price_market(replace(market, spot=market.spot - spot_bump, volatility=market.volatility + volatility_bump)),
-            ),
-            _require_finite(
-                "vanna_spot_down_volatility_down_price",
-                price_market(replace(market, spot=market.spot - spot_bump, volatility=market.volatility - volatility_bump)),
-            ),
+        cross_labels = (
+            "vanna_spot_up_volatility_up_price",
+            "vanna_spot_up_volatility_down_price",
+            "vanna_spot_down_volatility_up_price",
+            "vanna_spot_down_volatility_down_price",
+        )
+        cross_markets = (
+            replace(market, spot=market.spot + spot_bump, volatility=market.volatility + volatility_bump),
+            replace(market, spot=market.spot + spot_bump, volatility=market.volatility - volatility_bump),
+            replace(market, spot=market.spot - spot_bump, volatility=market.volatility + volatility_bump),
+            replace(market, spot=market.spot - spot_bump, volatility=market.volatility - volatility_bump),
+        )
+        cross_prices = (
+            price_markets(cross_markets)
+            if price_markets is not None
+            else tuple(price_market(item) for item in cross_markets)
+        )
+        if len(cross_prices) != len(cross_labels):
+            raise ValueError("批量Vanna重估结果数量与请求不一致")
+        cross_values = tuple(
+            _require_finite(label, value)
+            for label, value in zip(cross_labels, cross_prices, strict=True)
         )
 
     core: dict[str, GreekValue] = {}
