@@ -10,7 +10,7 @@
     "K": 100.0,
     "P_net": 14.0,
     "pricing_methods": [
-      "black_scholes",
+      "analytical",
       "monte_carlo"
     ]
   },
