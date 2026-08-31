@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from enum import Enum
 import re
+from collections.abc import Mapping
 from typing import Any
 
 from .enums import PricingMethod
@@ -148,7 +149,7 @@ def project_public_percent(value: Any) -> Any:
     kernel result.  Internal ``PricingResult`` instances and acceptance matrix
     evidence keep their 100-point values for reproducible comparison.
     """
-    if isinstance(value, dict):
+    if isinstance(value, Mapping):
         if "pv_percent_value" in value and "pv_points_100_value" in value:
             return _public_percent_greek(value)
         result: dict[str, Any] = {}
@@ -171,8 +172,12 @@ def project_public_percent(value: Any) -> Any:
             diagnostics.pop("canonical_value_basis", None)
         if "pv_percent" not in result and isinstance(point_pv, (int, float)):
             result["pv_percent"] = float(point_pv) / 100.0
-        if "standard_error_percent" not in result and isinstance(point_standard_error, (int, float)):
-            result["standard_error_percent"] = float(point_standard_error) / 100.0
+        if "standard_error_percent" not in result and "standard_error_points_100" in value:
+            result["standard_error_percent"] = (
+                None
+                if point_standard_error is None
+                else float(point_standard_error) / 100.0
+            )
         return result
     if isinstance(value, list):
         return [project_public_percent(item) for item in value]
@@ -198,7 +203,7 @@ def redact_public_money_compatibility(value: Any) -> Any:
     snapshots after the public result has adopted the 100-point contract
     basis.
     """
-    if isinstance(value, dict):
+    if isinstance(value, Mapping):
         is_contract_identity = {
             "product_id", "underlyings",
         }.issubset({str(key) for key in value})
@@ -299,7 +304,7 @@ class PricingResult:
         def normalize(value: Any) -> Any:
             if isinstance(value, Enum):
                 return value.value
-            if isinstance(value, dict):
+            if isinstance(value, Mapping):
                 return {str(key): normalize(item) for key, item in value.items()}
             if isinstance(value, (list, tuple)):
                 return [normalize(item) for item in value]
