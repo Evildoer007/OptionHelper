@@ -1,25 +1,13 @@
-function parseAndFormatDate(value) {
-  const match = /^(\d{4})([-/])(\d{2})\2(\d{2})$/.exec(String(value).trim());
-  if (!match) return null;
-  const [year, month, day] = [Number(match[1]), Number(match[3]), Number(match[4])];
-  const date = new Date(Date.UTC(year, month - 1, day));
-  if (year < 1 || date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) return null;
-  const iso = `${match[1]}-${match[3]}-${match[4]}`;
-  return {iso, display: iso.replaceAll('-', '/')};
-}
+const OptionHelperDateInput = typeof module === 'object' && module.exports
+  ? require('../../../core/src/runtime/browser/date_input_control.js')
+  : globalThis.OptionHelperDateInput;
 
-function formatDateTyping(value) {
-  const digits = String(value || '').replace(/\D/g, '').slice(0, 8);
-  if (digits.length <= 4) return digits;
-  if (digits.length <= 6) return `${digits.slice(0, 4)}/${digits.slice(4)}`;
-  return `${digits.slice(0, 4)}/${digits.slice(4, 6)}/${digits.slice(6)}`;
+function parseAndFormatDate(value) {
+  return OptionHelperDateInput.parseAndFormat(value);
 }
 
 function defaultDateRange(now = new Date()) {
   const end = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  // 日频行情在周末不能形成新的观测。默认取最近工作日，避免首次打开
-  // 数据页就在服务端被拒绝为“未来日期”。交易所节假日仍由服务端日历校验。
-  while (end.getDay() === 0 || end.getDay() === 6) end.setDate(end.getDate() - 1);
   const start = new Date(end);
   start.setFullYear(end.getFullYear() - 3);
   if (start.getMonth() !== end.getMonth()) start.setDate(0);
@@ -29,27 +17,6 @@ function defaultDateRange(now = new Date()) {
     String(value.getDate()).padStart(2, '0'),
   ].join('/');
   return {start: display(start), end: display(end)};
-}
-
-function nearestWeekday(value) {
-  const date = new Date(`${value.iso}T00:00:00Z`);
-  while (date.getUTCDay() === 0 || date.getUTCDay() === 6) date.setUTCDate(date.getUTCDate() - 1);
-  const iso = date.toISOString().slice(0, 10);
-  return {iso, display: iso.replaceAll('-', '/')};
-}
-
-function normalizeCurrentWeekendEndDate(value, now = new Date()) {
-  // 只把“今天恰逢周末”的默认行情截止日回退到周五。历史周末仍是合法的
-  // 区间边界，交易日完整性由后端日历证据判断，不能在页面改写历史请求。
-  const current = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate());
-  const requested = Date.parse(`${value.iso}T00:00:00Z`);
-  const dayDistance = (current - requested) / 86_400_000;
-  const currentIsWeekend = now.getDay() === 0 || now.getDay() === 6;
-  const requestedDay = new Date(requested).getUTCDay();
-  const requestedIsWeekend = requestedDay === 0 || requestedDay === 6;
-  return currentIsWeekend && requestedIsWeekend && dayDistance >= 0 && dayDistance <= 1
-    ? nearestWeekday(value)
-    : value;
 }
 
 function splitList(value) {
@@ -67,7 +34,19 @@ function splitList(value) {
     .filter(Boolean);
 }
 
-function cacheDecisionLabel(value) {
+const CACHE_REUSE_DECISIONS = new Set([
+  'cache_hit', 'cache_revalidated', 'cache_rebound',
+  'verified_cache_reused', 'verified_cache_fallback', 'latest_session_pending',
+]);
+
+function latestSessionPendingLabel(coverageEnd) {
+  return coverageEnd
+    ? `最后交易日日线待发布，当前数据截至${coverageEnd}`
+    : '最后交易日日线待发布，当前数据截止日未提供';
+}
+
+function cacheDecisionLabel(value, coverageEnd = '') {
+  if (value === 'latest_session_pending') return latestSessionPendingLabel(coverageEnd);
   return ({
     cache_hit: '使用已保存数据',
     cache_revalidated: '复核已保存数据',
@@ -80,20 +59,51 @@ function cacheDecisionLabel(value) {
   }[value] || '已完成');
 }
 
+function calendarCompletenessLabel(value, coverageEnd = '') {
+  if (value === 'complete') return '已验证完整';
+  if (value === 'incomplete') return '已验证但不完整';
+  if (value === 'latest_session_pending') return latestSessionPendingLabel(coverageEnd);
+  return '未验证';
+}
+
+function assetIndexViewModel(item) {
+  const ref = item?.data_asset_ref || item || {};
+  const coverage = ref.coverage || {};
+  const lineage = ref.lineage || {};
+  const schema = String(ref.schema_id || '');
+  const cacheDecision = String(lineage.cache_decision || item?.cache_decision || '');
+  const provider = String(lineage.provider || item?.provider || '').toLowerCase();
+  const calendar = String(item?.quality_report?.calendar_completeness || '');
+  const assetType = schema === 'market-history' ? '历史行情' : schema === 'trading-calendar' ? '交易日历' : '数据资产';
+  const source = provider === 'local'
+    ? 'Host受控CSV'
+    : provider === 'ifind_http'
+      ? (CACHE_REUSE_DECISIONS.has(cacheDecision) ? 'iFind缓存' : 'iFind')
+      : '来源未提供';
+  let quality = '状态未提供';
+  if (schema === 'trading-calendar') quality = '已验证';
+  else if (cacheDecision === 'latest_session_pending' || calendar === 'latest_session_pending') quality = '末日待发布';
+  else if (calendar === 'complete') quality = '日历已验证';
+  else if (calendar === 'incomplete') quality = '日历不完整';
+  else if (calendar === 'unverified' || coverage.calendar_revision === 'unverified') quality = '日历未验证';
+  else if (coverage.calendar_revision) quality = '日历已验证';
+  return {assetType, source, quality};
+}
+
 function dataSourceLabel(data) {
   const lineageProvider = data?.data_asset_ref?.lineage?.provider;
   const successfulCall = (Array.isArray(data?.provider_calls) ? data.provider_calls : [])
     .find(call => ['succeeded', 'success'].includes(String(call?.outcome || '').toLowerCase()));
   const provider = String(lineageProvider || successfulCall?.provider || '').toLowerCase();
-  if (provider === 'local') return '本地数据';
-  if (provider) return '实时数据';
-  return ['cache_hit', 'cache_revalidated', 'cache_rebound'].includes(data?.cache_decision) ? '本地数据' : '实时数据';
+  if (provider === 'local') return 'Host受控CSV';
+  if (['cache_hit', 'cache_revalidated', 'cache_rebound'].includes(data?.cache_decision)) return 'iFind远程缓存';
+  if (provider) return 'iFind远程行情';
+  return '数据来源未提供';
 }
 
 function buildFetchRequest(values) {
   const start = parseAndFormatDate(values.startDate);
-  const endInput = parseAndFormatDate(values.endDate);
-  const end = endInput && normalizeCurrentWeekendEndDate(endInput, values.now);
+  const end = parseAndFormatDate(values.endDate);
   if (!start || !end) throw new Error('日期必须为真实的yyyy/mm/dd或yyyy-mm-dd。');
   if (start.iso > end.iso) throw new Error('开始日期不得晚于结束日期。');
   const assetIds = splitList(values.assetIds).map(item => item.toUpperCase());
@@ -106,7 +116,8 @@ function buildFetchRequest(values) {
   const invalidAsset = assetIds.find(item => !/^\d{6}\.(?:SH|SZ)$/.test(item));
   if (invalidAsset) throw new Error(`资产标识“${invalidAsset}”格式不正确，请使用000300.SH或399001.SZ。`);
   if (!['ifind_http', 'local'].includes(sourceMode)) throw new Error('请选择实时数据或本地数据。');
-  const request = {asset_ids: assetIds, start_date: start.iso, end_date: end.iso, fields, provider: sourceMode, frequency: values.frequency || '1d', adjustment: values.adjustment, cache_policy: values.cachePolicy, offline: values.cachePolicy === 'reuse'};
+  const cachePolicy = sourceMode === 'local' ? 'force_refresh' : values.cachePolicy;
+  const request = {asset_ids: assetIds, start_date: start.iso, end_date: end.iso, fields, provider: sourceMode, frequency: values.frequency || '1d', adjustment: values.adjustment, cache_policy: cachePolicy, offline: sourceMode === 'local' || cachePolicy === 'reuse'};
   return request;
 }
 
@@ -143,7 +154,7 @@ function resultViewModel(data) {
     fields: Array.isArray(ref.normalized_fields) ? ref.normalized_fields : [],
     quality: [
       ['观测行', observed.status === 'valid' ? `有效，${observed.row_count ?? ref.row_count ?? '—'}行` : (observed.status || '未提供')],
-      ['交易日历完整性', calendar === 'complete' ? '已验证完整' : calendar === 'incomplete' ? '已验证但不完整' : '未验证'],
+      ['交易日历完整性', calendarCompletenessLabel(calendar, coverage.end_date)],
       ['缺失值', quality.missing_values ?? '未提供'],
       ['重复行', quality.duplicate_rows ?? '未提供'],
       ['乱序行', quality.unordered_rows ?? '未提供'],
@@ -199,7 +210,7 @@ function resultSummary(data) {
     {label: '保存状态', value: '未保存'},
   ];
   const ref = data.data_asset_ref || {};
-  return [{label: '获取方式', value: cacheDecisionLabel(data.cache_decision)}, {label: '记录数', value: ref.row_count ?? '暂无'}, {label: '保存状态', value: ref.data_asset_id || ref.content_hash ? '已保存到当前任务' : '待保存'}];
+  return [{label: '获取方式', value: cacheDecisionLabel(data.cache_decision, ref.coverage?.end_date)}, {label: '记录数', value: ref.row_count ?? '暂无'}, {label: '保存状态', value: ref.data_asset_id || ref.content_hash ? '已保存到当前任务' : '待保存'}];
 }
 
 function credentialStatusText(data) {
@@ -211,6 +222,22 @@ function credentialStatusText(data) {
     return '已配置，尚未验证。';
   }
   return '连接状态未知。';
+}
+
+function dataSettingsFailure(data) {
+  const code = data?.failure_code || data?.error?.failure_code || data?.error?.code || '';
+  const detail = `${data?.message || ''} ${data?.next_step || ''} ${data?.error?.message || ''} ${data?.error?.next_step || ''}`;
+  return ['data_interface_configuration', 'data_interface_unverified', 'unauthorized', 'account_permission_denied'].includes(code)
+    || /(?:(?:iFind|数据接口).*(?:凭据|认证|授权|验证|配置)|(?:凭据|认证|授权).*(?:iFind|数据接口))/i.test(detail);
+}
+
+function openDataSettings() {
+  const bridgeNonce = new URLSearchParams(location.search).get('bridge_nonce');
+  if (window.parent !== window && bridgeNonce) {
+    window.parent.postMessage({type: 'optionhelper.open-settings', module: 'datafetcher', section: 'data', bridge_nonce: bridgeNonce}, location.origin);
+    return;
+  }
+  location.assign('/settings#data');
 }
 
 async function parseServiceResponse(response) {
@@ -242,7 +269,6 @@ function initializePage() {
   };
   const setBusy = busy => { $('submit-request').disabled = busy; $('submit-request').textContent = busy ? '正在执行请求…' : '获取数据'; };
   const requestJson = async (url, options) => parseServiceResponse(await fetch(url, options));
-  const normalizeDate = input => { const parsed = parseAndFormatDate(input.value); input.setCustomValidity(parsed ? '' : '日期必须为真实的yyyy/mm/dd或yyyy-mm-dd'); if (parsed) input.value = parsed.display; return parsed; };
   const assetStore = new Map();
   let assetLoadError = false;
   function renderAssets() {
@@ -256,9 +282,11 @@ function initializePage() {
       const ref = item.data_asset_ref || item; const id = ref.data_asset_id || ref.content_hash || item.id;
       if (!id) return;
       const entry = document.createElement('div'); entry.className = 'asset-entry';
-      const select = document.createElement('button'); select.type = 'button'; select.className = 'asset-select'; select.innerHTML = '<strong></strong><span></span>';
+      const select = document.createElement('button'); select.type = 'button'; select.className = 'asset-select'; select.innerHTML = '<strong></strong><span class="asset-range"></span><span class="asset-meta"></span>';
       const coverage = ref.coverage || {}; const range = [coverage.start_date, coverage.end_date].filter(Boolean).join('至');
-      select.querySelector('strong').textContent = (ref.asset_ids || item.asset_ids || []).join('、') || '已保存数据'; select.querySelector('span').textContent = `${ref.row_count ?? '—'}行${range ? `，${range}` : ''}`;
+      select.querySelector('strong').textContent = (ref.asset_ids || item.asset_ids || []).join('、') || '已保存数据'; select.querySelector('.asset-range').textContent = `${ref.row_count ?? '—'}行${range ? `，${range}` : ''}`;
+      const indexView = assetIndexViewModel(item); const meta = select.querySelector('.asset-meta');
+      [indexView.assetType, indexView.source, indexView.quality].forEach(value => { const label = document.createElement('span'); label.textContent = value; meta.append(label); });
       select.addEventListener('click', () => { const ids = ref.asset_ids || item.asset_ids; if (Array.isArray(ids) && ids.length) { $('asset-ids').value = ids.join('\n'); syncSourceVisibility(); } });
       const download = document.createElement('a'); download.className = 'asset-download'; download.href = `/api/assets/${encodeURIComponent(id)}/download`; download.textContent = ref.media_type === 'application/json' ? '下载JSON' : '下载CSV';
       entry.append(select, download); list.append(entry);
@@ -333,6 +361,7 @@ function initializePage() {
       const nextStep = data.error?.next_step || data.next_step;
       if (nextStep) { const node = failure.querySelector('.failure-next'); node.textContent = nextStep; node.hidden = false; }
       failure.querySelector('.failure-code').textContent = data.error?.code ? `错误代码：${data.error.code}` : '';
+      if (dataSettingsFailure(data)) { const action = document.createElement('button'); action.type = 'button'; action.className = 'button button-quiet'; action.textContent = '打开设置中心的数据接口'; action.addEventListener('click', openDataSettings); failure.append(action); }
       content.append(failure);
       if (Array.isArray(data.provider_calls) && data.provider_calls.length) appendAuditDetails(content, {provider_calls: data.provider_calls, quota_usage: data.quota_usage ?? null});
       $('empty-canvas').hidden = true; content.hidden = false; return;
@@ -348,40 +377,42 @@ function initializePage() {
   }
   async function loadAssets() { assetLoadError = false; try { const data = await requestJson('/api/assets'); const items = Array.isArray(data.assets) ? data.assets : Array.isArray(data) ? data : []; assetStore.clear(); items.forEach(addAsset); renderAssets(); } catch (_) { assetLoadError = true; renderAssets(); } }
   async function loadStatus() { try { const data = await requestJson('/api/status'); $('service-status').textContent = data.status === 'available' ? '本机服务已就绪' : (data.status || '服务状态未知'); $('secret-status').textContent = credentialStatusText(data); } catch (_) { $('service-status').textContent = '本机服务未启动'; $('secret-status').textContent = '无法读取连接状态。'; } }
+  let refreshInFlight = null;
+  function refreshDataFetcherState() {
+    if (refreshInFlight) return refreshInFlight;
+    const control = $('refresh-assets');
+    control.disabled = true;
+    control.textContent = '刷新中…';
+    refreshInFlight = Promise.all([loadStatus(), loadAssets()]).finally(() => {
+      refreshInFlight = null;
+      control.disabled = false;
+      control.textContent = '刷新';
+    });
+    return refreshInFlight;
+  }
   const defaults = defaultDateRange();
   if (!$('start-date').value.trim()) $('start-date').value = defaults.start;
   if (!$('end-date').value.trim()) $('end-date').value = defaults.end;
   for (const id of ['start-date', 'end-date']) {
     const input = $(id);
-    input.addEventListener('input', () => {
-      input.setCustomValidity('');
-      input.value = formatDateTyping(input.value);
-    });
-    input.addEventListener('paste', event => {
-      const text = event.clipboardData?.getData('text');
-      const parsed = parseAndFormatDate(text);
-      if (!parsed) return;
-      event.preventDefault();
-      input.value = parsed.display;
-      input.setCustomValidity('');
-    });
-    input.addEventListener('blur', () => { if (input.value.trim()) normalizeDate(input); });
+    OptionHelperDateInput.bind(input, id === 'start-date' ? '开始日期' : '结束日期');
   }
   const selected = name => document.querySelector(`input[name="${name}"]:checked`)?.value;
   const fieldControls = [...document.querySelectorAll('.extra-field')];
   const formValues = () => ({assetIds: $('asset-ids').value, startDate: $('start-date').value, endDate: $('end-date').value, fields: fieldControls.filter(node => node.checked).map(node => node.value).join(','), frequency: $('frequency').value, adjustment: $('adjustment').value, sourceMode: selected('source-mode'), cachePolicy: selected('cache-policy')});
-  function syncSourceVisibility() { const values = formValues(); $('local-source-note').hidden = values.sourceMode !== 'local'; $('ifind-status-card').hidden = values.sourceMode !== 'ifind_http'; const selectedFields = fieldControls.filter(node => node.checked).length; $('field-summary').textContent = selectedFields === fieldControls.length ? '全部字段' : `${selectedFields}项字段`; }
+  function syncSourceVisibility() { const values = formValues(); const local = values.sourceMode === 'local'; $('local-source-note').hidden = !local; $('ifind-status-card').hidden = local; const cacheControls = [...document.querySelectorAll('input[name="cache-policy"]')]; if (local) cacheControls.find(node => node.value === 'force_refresh').checked = true; cacheControls.forEach(node => { node.disabled = local && node.value !== 'force_refresh'; }); const selectedFields = fieldControls.filter(node => node.checked).length; $('field-summary').textContent = selectedFields === fieldControls.length ? '全部字段' : `${selectedFields}项字段`; }
   $('request-form').addEventListener('input', syncSourceVisibility);
   $('request-form').addEventListener('change', syncSourceVisibility);
   syncSourceVisibility();
-  $('asset-search').addEventListener('input', renderAssets); $('refresh-assets').addEventListener('click', loadAssets);
-  $('request-form').addEventListener('submit', async event => { event.preventDefault(); clearFieldErrors(); let request; try { request = buildFetchRequest(formValues()); $('asset-ids').value = request.asset_ids.join('\n'); $('start-date').value = request.start_date.replaceAll('-', '/'); $('end-date').value = request.end_date.replaceAll('-', '/'); syncSourceVisibility(); } catch (error) { state('请求配置错误', 'failed'); message(error.message, 'failed'); showInputError(error.message); return; }
+  $('asset-search').addEventListener('input', renderAssets); $('refresh-assets').addEventListener('click', () => { void refreshDataFetcherState(); });
+  document.addEventListener('optionhelper:modulevisibility', event => { if (event.detail?.active === true) void refreshDataFetcherState(); });
+  $('request-form').addEventListener('submit', async event => { event.preventDefault(); clearFieldErrors(); let request; try { const values=formValues(); values.startDate=OptionHelperDateInput.read($('start-date'),'开始日期'); values.endDate=OptionHelperDateInput.read($('end-date'),'结束日期'); request = buildFetchRequest(values); $('asset-ids').value = request.asset_ids.join('\n'); OptionHelperDateInput.set($('start-date'),request.start_date,'开始日期'); OptionHelperDateInput.set($('end-date'),request.end_date,'结束日期'); syncSourceVisibility(); } catch (error) { state('请求配置错误', 'failed'); message(error.message, 'failed'); showInputError(error.message); return; }
     state('正在检查数据与缓存', 'running'); message('正在获取数据并核验保存状态。'); setBusy(true); $('result-content').hidden = true; $('empty-canvas').hidden = false;
     try { const data = await requestJson('/api/fetch', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(request)}); renderResult(data); addAsset(data); state('请求完成', 'complete'); message('数据获取完成。'); } catch (error) { if (error.payload) renderResult(error.payload); state('请求失败', 'failed'); message(error.message, 'failed'); } finally { setBusy(false); }
   });
   function bindResizer(id, variable, minimum, maximum) { const resizer = $(id); const workbench = $('workbench'); const current = () => parseInt(getComputedStyle(workbench).getPropertyValue(variable), 10) || minimum; const set = value => { const next = Math.max(minimum, Math.min(maximum, value)); workbench.style.setProperty(variable, `${next}px`); resizer.setAttribute('aria-valuenow', String(next)); }; const direction = variable === '--library-width' ? 1 : -1; let startX = 0; let startValue = 0; const finish = () => { resizer.classList.remove('active'); document.removeEventListener('pointermove', move); document.removeEventListener('pointerup', finish); }; const move = event => set(startValue + direction * (event.clientX - startX)); resizer.setAttribute('aria-valuemin', minimum); resizer.setAttribute('aria-valuemax', maximum); set(current()); resizer.addEventListener('pointerdown', event => { startX = event.clientX; startValue = current(); resizer.classList.add('active'); document.addEventListener('pointermove', move); document.addEventListener('pointerup', finish); }); resizer.addEventListener('keydown', event => { if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return; event.preventDefault(); if (event.key === 'Home') return set(minimum); if (event.key === 'End') return set(maximum); set(current() + direction * (event.key === 'ArrowRight' ? 8 : -8)); }); }
-  bindResizer('library-resizer', '--library-width', 220, 420); bindResizer('inspector-resizer', '--inspector-width', 300, 520); loadStatus(); loadAssets();
+  bindResizer('library-resizer', '--library-width', 220, 420); bindResizer('inspector-resizer', '--inspector-width', 300, 520); void refreshDataFetcherState();
 }
 
-if (typeof module === 'object' && module.exports) module.exports = {parseAndFormatDate, formatDateTyping, defaultDateRange, nearestWeekday, normalizeCurrentWeekendEndDate, splitList, buildFetchRequest, resultSummary, resultViewModel, chartViewModel, credentialStatusText, parseServiceResponse};
+if (typeof module === 'object' && module.exports) module.exports = {parseAndFormatDate, defaultDateRange, splitList, buildFetchRequest, resultSummary, resultViewModel, chartViewModel, credentialStatusText, dataSettingsFailure, assetIndexViewModel, parseServiceResponse};
 if (typeof document !== 'undefined' && document.getElementById) initializePage();
