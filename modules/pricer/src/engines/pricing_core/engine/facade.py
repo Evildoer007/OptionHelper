@@ -1164,6 +1164,33 @@ def _build_instrument(derivatives: Any, structure: str, contract: dict[str, Any]
             calendar_id=str(contract.get("calendar_id", "")),
             calendar_revision=str(contract.get("calendar_revision", "")),
         )
+    if structure == "WORST_OF_CALL":
+        return derivatives.WorstOfCallOption(
+            basis=basis,
+            strike=contract["strike"],
+            maturity_years=contract["maturity_years"],
+            normalized_spots=tuple(contract["normalized_spots"]),
+            volatilities=tuple(contract["volatilities"]),
+            dividend_yields=tuple(contract["dividend_yields"]),
+            correlation=contract["correlation"],
+        )
+    if structure == "VARIANCE_SWAP":
+        return derivatives.VarianceSwapOption(
+            basis=basis,
+            strike_volatility=contract["strike_volatility"],
+            annualization_days=contract["annualization_days"],
+            observation_times=tuple(contract["observation_times"]),
+            maturity_years=contract["maturity_years"],
+        )
+    if structure == "RANGE_ACCRUAL":
+        return derivatives.RangeAccrualOption(
+            basis=basis,
+            lower=contract["lower"],
+            upper=contract["upper"],
+            maximum_coupon=contract["maximum_coupon"],
+            observation_times=tuple(contract["observation_times"]),
+            maturity_years=contract["maturity_years"],
+        )
     if structure == "BINARY":
         return derivatives.BinaryOption(
             basis=basis,
