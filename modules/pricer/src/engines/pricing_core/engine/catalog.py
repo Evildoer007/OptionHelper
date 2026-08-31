@@ -5,7 +5,6 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
-
 CORE_GREEKS = ("Delta", "Gamma", "Theta", "Vega", "Rho")
 EXTENDED_RISKS = ("Volga", "Vanna", "Duration", "Forward Delta")
 
@@ -16,6 +15,9 @@ FAMILY_STRUCTURES = {
     "BARRIER": ("BARRIER",),
     "AIRBAG": ("AIRBAG",),
     "ACCUMULATOR": ("STATIC_ACCUMULATOR",),
+    "MULTI_ASSET": ("WORST_OF_CALL",),
+    "VOLATILITY": ("VARIANCE_SWAP",),
+    "ACCRUAL": ("RANGE_ACCRUAL",),
     "OPTIONREG": ("OPTIONREG_PATH",),
 }
 
@@ -54,6 +56,24 @@ ENGINE_ROUTES = {
         "instrument_type": "StaticAccumulatorOption",
         "method": "STATIC_REPLICATION",
         "price_handler": "price_static_accumulator_standard",
+        "solve_handler": None,
+    },
+    "STANDARD_WORST_OF_ANALYTIC": {
+        "instrument_type": "WorstOfCallOption",
+        "method": "WORST_OF_ANALYTIC",
+        "price_handler": "price_worst_of_standard",
+        "solve_handler": None,
+    },
+    "STANDARD_VARIANCE_EXPECTATION": {
+        "instrument_type": "VarianceSwapOption",
+        "method": "VARIANCE_EXPECTATION",
+        "price_handler": "price_variance_swap_standard",
+        "solve_handler": None,
+    },
+    "STANDARD_RANGE_ACCRUAL_ANALYTIC": {
+        "instrument_type": "RangeAccrualOption",
+        "method": "RANGE_ACCRUAL_ANALYTIC",
+        "price_handler": "price_range_accrual_standard",
         "solve_handler": None,
     },
     "STANDARD_OPTIONREG_DISCRETE_MONTE_CARLO": {
@@ -106,6 +126,9 @@ _STATE_FIELDS_BY_STRUCTURE = {
     "BARRIER": (),
     "AIRBAG": (),
     "STATIC_ACCUMULATOR": (),
+    "WORST_OF_CALL": (),
+    "VARIANCE_SWAP": (),
+    "RANGE_ACCRUAL": (),
     "OPTIONREG_PATH": (
         "trading_day", "calendar_day", "knocked_in", "knocked_out",
         "accumulated_count", "accumulated_quantity", "observation_stage",
@@ -235,6 +258,42 @@ _STRUCTURES: dict[str, dict[str, Any]] = {
                     "熔断固定赔付增强",
                 ),
             },
+            "nested": {},
+        },
+        "solve_targets": (),
+        "core_greeks": deepcopy(_STANDARD_CORE_RISKS),
+    },
+    "WORST_OF_CALL": {
+        "family": "MULTI_ASSET",
+        "route_id": "STANDARD_WORST_OF_ANALYTIC",
+        "contract": {
+            "required": ("strike", "maturity_years", "normalized_spots", "volatilities", "dividend_yields", "correlation", "basis"),
+            "optional": (),
+            "choices": {},
+            "nested": {},
+        },
+        "solve_targets": (),
+        "core_greeks": deepcopy(_STANDARD_CORE_RISKS),
+    },
+    "VARIANCE_SWAP": {
+        "family": "VOLATILITY",
+        "route_id": "STANDARD_VARIANCE_EXPECTATION",
+        "contract": {
+            "required": ("strike_volatility", "annualization_days", "observation_times", "maturity_years", "basis"),
+            "optional": (),
+            "choices": {},
+            "nested": {},
+        },
+        "solve_targets": (),
+        "core_greeks": deepcopy(_STANDARD_CORE_RISKS),
+    },
+    "RANGE_ACCRUAL": {
+        "family": "ACCRUAL",
+        "route_id": "STANDARD_RANGE_ACCRUAL_ANALYTIC",
+        "contract": {
+            "required": ("lower", "upper", "maximum_coupon", "observation_times", "maturity_years", "basis"),
+            "optional": (),
+            "choices": {},
             "nested": {},
         },
         "solve_targets": (),
