@@ -10,8 +10,9 @@ from typing import Any, Callable, Mapping
 
 PriceOne = Callable[..., Any]
 
-_SURFACE_GREEKS = frozenset({"delta", "gamma", "theta", "vega"})
-_SCENARIO_GREEKS = frozenset({*_SURFACE_GREEKS, "rho"})
+_SURFACE_GREEKS = frozenset({"delta", "gamma", "theta", "vega", "rho"})
+_SCENARIO_GREEKS = _SURFACE_GREEKS
+_SPOT_CURVE_GREEKS = frozenset({"delta", "gamma"})
 _VEGA_ONLY = frozenset({"vega"})
 _RHO_ONLY = frozenset({"rho"})
 
@@ -165,14 +166,16 @@ def vanilla_risk_outputs(
                 price_one,
                 local_market,
                 time_value,
-                _SCENARIO_GREEKS if time_index in scenario_time_indices and spot_index in scenario_spot_indices else _SURFACE_GREEKS,
+                _SCENARIO_GREEKS
+                if time_index in scenario_time_indices and spot_index in scenario_spot_indices
+                else _SURFACE_GREEKS,
             )
             for spot_index, local_market in enumerate(surface_markets)
         ]
         for time_index, time_value in enumerate(time_values)
     ]
     curve_results = [
-        _risk_price(price_one, local_market, maturity_years, _SURFACE_GREEKS)
+        _risk_price(price_one, local_market, maturity_years, _SPOT_CURVE_GREEKS)
         for local_market in curve_markets
     ]
     curve_spot_values = _spot_axis_values(risk_grid.spot_curve_normalized, reference_price, normalized_base, risk_grid)
@@ -210,15 +213,11 @@ def vanilla_risk_outputs(
         ("theta_surface", "Theta曲面", "pv_points_100_per_calendar_day", "theta"),
         ("vega_surface", "Vega曲面", "pv_points_100_per_1pct_volatility", "vega"),
     )]
-    rate_grid = [
-        [_risk_price(price_one, local_market, time_value, _RHO_ONLY) for local_market in rate_markets]
-        for time_value in time_values
-    ]
     surfaces.append(_surface(
         "rho_surface", "Rho曲面", "pv_points_100_per_1pct_rate",
-        rate_values, time_days, rate_grid, "rho", method,
-        "无风险利率", "decimal_rate",
-        _grid_domain(rate_values, risk_grid.mode, rate_annotations), rate_annotations,
+        surface_spot_values, time_days, grid, "rho", method,
+        risk_grid.spot_axis_name, risk_grid.spot_axis_unit,
+        surface_domain, annotations,
     ))
     spot_shifts = tuple(round(local.spot / market.spot - 1.0, 12) for local in surface_markets)
     scenarios = _spot_time_scenarios(grid, spot_shifts, time_days, surface_spot_values, method, risk_grid.spot_axis_name, scenario_spot_indices)
@@ -440,6 +439,7 @@ def _risk_price(price_one: PriceOne, market: Any, maturity_years: float, risk_gr
         expected_calendar_errors = (
             "OptionReg路径MC注入交易sessions未覆盖完整剩余合同期限",
             "价格路径终点",
+            "风险期限节点早于首个冻结观察日",
         )
         if not any(token in message for token in expected_calendar_errors):
             raise
