@@ -26,6 +26,7 @@
             <h1 class="settings-nav__title">设置</h1>
             <nav class="connection-list settings-nav" aria-label="设置项目">
               <a class="connection-item" href="#preferences"><svg class="settings-nav__icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 17h16M8 4v6M16 14v6"/><circle cx="8" cy="7" r="2"/><circle cx="16" cy="17" r="2"/></svg><strong>通用设置</strong></a>
+              <a class="connection-item" href="#runtime"><svg class="settings-nav__icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16v11H4zM8 21h8M12 17v4M7 10h2M11 10h6M7 13h4"/></svg><strong>运行状态</strong></a>
               <a class="connection-item" href="#model"><svg class="settings-nav__icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5.5C5 4.1 8.1 3 12 3s7 1.1 7 2.5v5c0 1.4-3.1 2.5-7 2.5s-7-1.1-7-2.5zM5 5.5C5 6.9 8.1 8 12 8s7-1.1 7-2.5M5 10.5v5c0 1.4 3.1 2.5 7 2.5M16 16.5v4M14 18.5h4"/></svg><strong>模型配置</strong></a>
               <a class="connection-item" href="#multi-agent"><svg class="settings-nav__icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="6" r="2.5"/><circle cx="6" cy="16" r="2.5"/><circle cx="18" cy="16" r="2.5"/><path d="M10.5 8l-3 5.5M13.5 8l3 5.5M8.5 16h7"/></svg><strong>多智能体预设</strong></a>
               <a class="connection-item" href="#data" data-settings-data-link hidden><svg class="settings-nav__icon" viewBox="0 0 24 24" aria-hidden="true"><ellipse cx="12" cy="5.5" rx="7" ry="2.7"/><path d="M5 5.5v6.5c0 1.5 3.1 2.7 7 2.7s7-1.2 7-2.7V5.5M5 12v6.5c0 1.5 3.1 2.7 7 2.7s7-1.2 7-2.7V12"/></svg><strong>数据接口</strong></a>
@@ -34,7 +35,7 @@
           </aside>
           <section class="connection-editor">
             <header class="settings-content-header">
-              <span class="setup-security">凭据保存在OptionHelper本机数据目录</span>
+              <span class="setup-security">凭据保存在当前设备的OptionHelper数据目录</span>
               <a class="settings-close" href="/optchat" aria-label="关闭设置"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 3l10 10M13 3L3 13"/></svg></a>
             </header>
             <div class="settings-options">
@@ -66,8 +67,19 @@
                 <p class="optionhelper-general-status form-result" data-form-result="preferences" role="status" aria-live="polite" hidden></p>
               </form>
             </section>
+            <section id="runtime" class="setting-section" hidden>
+              <div class="setting-section__head"><div><h2>运行状态</h2><p>区分已声明配置、实时探测和正式能力验证。</p></div><button class="button-quiet" type="button" id="refresh-runtime">刷新状态</button></div>
+              <dl class="runtime-status-list" aria-live="polite">
+                <div><dt>App Host</dt><dd><strong data-runtime-host>尚未探测</strong><span data-runtime-host-detail>等待读取App Host状态</span></dd></div>
+                <div><dt>Capability</dt><dd><strong data-runtime-capability>尚未探测</strong><span data-runtime-capability-detail>等待校验模块资源</span></dd></div>
+                <div><dt>Python环境</dt><dd><strong>App内置运行时</strong><span>随App Host运行；公共接口未提供独立依赖明细，不标记为单独已验证。</span></dd></div>
+                <div><dt>默认模型</dt><dd><strong data-runtime-model>未验证</strong><span data-runtime-model-detail>保存Provider只代表已声明，不代表工具调用能力可用。</span><button class="button-quiet runtime-status-action" type="button" id="verify-model-capability">验证完整模型能力</button></dd></div>
+                <div><dt>iFind数据</dt><dd><strong data-runtime-data>未配置</strong><span data-runtime-data-detail>保存Refresh Token后仍需在数据接口页执行连接测试。</span></dd></div>
+              </dl>
+              <p class="form-result" data-form-result="runtime" role="status" aria-live="polite"></p>
+            </section>
             <section id="model" class="setting-section" hidden>
-              <div class="setting-section__head"><div><h2>模型配置</h2><p>填入各Provider的API密钥即可使用其模型。</p></div><span class="connection-status" data-model-status hidden>未配置</span></div>
+              <div class="setting-section__head"><div><h2>模型配置</h2><p>填入各Provider的API密钥并保存后，仍需完成能力验证才能确认正式工具调用可用。</p></div><span class="connection-status" data-model-status>未配置</span></div>
               <div id="model-provider-root" class="model-provider-root" aria-live="polite"></div>
             </section>
             <section id="multi-agent" class="setting-section" hidden>
@@ -84,15 +96,15 @@
                   <label for="ifind-refresh-token">iFind Refresh Token<span class="field-required" aria-hidden="true">必填</span></label>
                   <input id="ifind-refresh-token" name="refresh_token" type="password" autocomplete="new-password" spellcheck="false" placeholder="粘贴Refresh Token" aria-describedby="ifind-refresh-spec data-credential-state">
                   <small class="field-spec" id="ifind-refresh-spec"><span data-purpose>由App自动获取可用的访问凭据</span><span data-example hidden>iFind控制台复制的完整Refresh Token</span><span data-default hidden>未配置</span></small>
-                  <small class="field-note" id="data-credential-state">保存后仅写入OptionHelper本机数据目录。</small>
+                  <small class="field-note" id="data-credential-state">保存后仅写入当前设备的OptionHelper数据目录。</small>
                 </div>
                 <div class="form-foot field--wide"><p class="form-result" data-form-result="data" role="status" aria-live="polite"></p><div><button class="button-quiet" type="button" id="test-data">测试已保存连接</button><button class="button-primary">保存iFind凭据</button></div></div>
               </form>
             </section>
             <section id="storage" class="setting-section" hidden>
-              <div class="setting-section__head"><div><h2>存储与导出</h2><p>管理本机结果位置与导出行为。</p></div></div>
+              <div class="setting-section__head"><div><h2>存储与导出</h2><p>管理结果存储位置与导出行为。</p></div></div>
               <p>任务对话、运行记录和结果默认保存在当前设备的OptionHelper专用目录，不会散落到软件安装目录。</p>
-              <div class="storage-location" aria-label="默认本机数据位置">
+              <div class="storage-location" aria-label="默认数据位置">
                 <strong>默认位置</strong>
                 <span data-default-storage-path>macOS：用户资源库/Application Support/OptionHelper/local-state</span>
                 <small>卸载或删除App不会自动删除这里的数据；需要清理时请在Finder中单独处理。</small>
@@ -100,8 +112,8 @@
               <form id="storage-form" class="setup-form" novalidate>
                 <div class="field field--wide" data-field-spec>
                   <label for="export-location-ref">高级导出位置标识<span class="field-optional">可选</span></label>
-                  <input id="export-location-ref" name="export_location_ref" placeholder="保留空白，使用默认本机结果目录" aria-describedby="export-location-spec">
-                  <small class="field-spec" id="export-location-spec"><span data-purpose>引用管理员提供的受控导出位置</span><span data-example hidden>team/report-export</span><span data-default hidden>本机结果目录</span></small>
+                  <input id="export-location-ref" name="export_location_ref" placeholder="保留空白，使用默认结果目录" aria-describedby="export-location-spec">
+                  <small class="field-spec" id="export-location-spec"><span data-purpose>引用管理员提供的受控导出位置</span><span data-example hidden>team/report-export</span><span data-default hidden>默认结果目录</span></small>
                   <small class="field-note">这里不是Finder路径选择器，仅填写管理员提供的位置标识。</small>
                 </div>
                 <div class="field" data-field-spec>
