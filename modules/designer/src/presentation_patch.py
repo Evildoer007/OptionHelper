@@ -136,7 +136,9 @@ def _section_index(sections: Sequence[TemplateSection], section_id: str) -> int:
     raise ValueError(f"presentation_patch找不到章节：{section_id}。")
 
 
-def _supplemental_sections(payload: Mapping[str, Any]) -> dict[str, tuple[str, tuple[Mapping[str, Any], ...]]]:
+def validated_supplemental_sections(
+    payload: Mapping[str, Any],
+) -> dict[str, tuple[str, tuple[Mapping[str, Any], ...]]]:
     """Read Reporter-frozen optional sections without accepting presentation code."""
 
     raw_sections = payload.get("supplemental_sections")
@@ -177,12 +179,16 @@ def apply_presentation_patch(
     payload: Mapping[str, Any],
     sections: Sequence[TemplateSection],
     patch: Mapping[str, Any] | None,
+    *,
+    output_type: str,
 ) -> EffectivePresentation:
+    if output_type not in {"card", "report", "quote"}:
+        raise ValueError(f"不支持的交付类型：{output_type}。")
     safe_patch = validate_presentation_patch(patch)
     result = deepcopy(dict(payload))
     effective_sections = list(sections)
     appended: dict[str, list[Mapping[str, Any]]] = {}
-    supplemental = _supplemental_sections(result)
+    supplemental = validated_supplemental_sections(result)
     if safe_patch is None:
         return EffectivePresentation(result, tuple(effective_sections), {}, None)
 
@@ -213,11 +219,9 @@ def apply_presentation_patch(
             if section_id not in supplemental:
                 raise ValueError(f"presentation_patch找不到冻结补充章节：{section_id}。")
             title, content = supplemental[section_id]
-            card_or_quote = any(
-                item.block in {"reason", "contract_highlights", "reference_quote"}
-                for item in effective_sections
-            )
-            if card_or_quote and any(str(node.get("type")).lower() == "chart" for node in content):
+            if output_type in {"card", "quote"} and any(
+                str(node.get("type")).lower() == "chart" for node in content
+            ):
                 raise ValueError("Card和Quote的补充章节不支持图表。")
             destination = min(int(operation.get("position", len(effective_sections))), len(effective_sections))
             effective_sections.insert(destination, TemplateSection(section_id, title, "supplemental"))
