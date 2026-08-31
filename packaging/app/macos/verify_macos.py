@@ -478,7 +478,7 @@ def verify(
                         "historical_volatility": 0.20,
                         "dividend_yield": 0.0,
                         "risk_free_rate": 0.02,
-                        "model_method": "black_scholes",
+                        "model_method": "analytical",
                     },
                 },
             }
