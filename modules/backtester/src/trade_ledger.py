@@ -139,10 +139,13 @@ def freeze_trade_contract(
 ) -> tuple[ResolvedContract, HistoricalResolvedContract]:
     """以该笔真实交易日和参考价生成不可变ResolvedContract。"""
     identity = deep_thaw(contract.identity)
+    # 历史入场会改变合同起始日，原合同的civil到期日不得沿用，
+    # 也不得被最后一个实际观察交易日覆盖。ResolvedContract会按新
+    # contract_start_date与合同T重新冻结civil contract_end_date。
+    identity.pop("contract_end_date", None)
     identity.update({
         "contract_id": f"{identity['contract_id']}@{entry_date}",
         "contract_start_date": entry_date,
-        "contract_end_date": _date_text(trading_dates[-1]),
         "reference_prices": dict(entry_spots),
         "reference_price_provenance": _reference_price_provenance(entry_spots),
     })
@@ -151,6 +154,7 @@ def freeze_trade_contract(
         contract,
         identity=identity,
         resolved_schedules=schedules,
+        path_case_applicability=None,
         contract_fingerprint="",
     )
     historical = HistoricalResolvedContract(
@@ -296,8 +300,8 @@ def _gross_contract_return(contract: ResolvedContract, pnl: float) -> tuple[floa
     """将解释器现金流映射为无货币单位的每100合同单位收益。
 
     ``N``、``Nvar``等仅是合同公式的规模变量，而非用户可选择的收益率分母。
-    没有规模变量的价格型合同本身已在内部100基准上结算；累购以首期约定数量
-    乘100基准作为一个合同单位。每个路径都返回收益，不能因缺少``N``而失效。
+    没有规模变量的合同现金流本身已在内部100基准上结算。每个路径都返回
+    收益，不能因缺少``N``而失效，也不能再次除以公式已经消化的观察数量。
     """
     terms = contract.terms
     if contract.product_id == "9.4":
@@ -311,14 +315,6 @@ def _gross_contract_return(contract: ResolvedContract, pnl: float) -> tuple[floa
         value = float(terms.get(key, 0.0))
         if value > 0.0:
             return pnl / value, {"source": source, "contract_base": "100"}
-    if contract.product_id == "7.1":
-        quantity = float(terms.get("q", 0.0))
-        observations = float(terms.get("n_obs", 0.0))
-        if quantity > 0.0 and observations > 0.0:
-            return pnl / (quantity * observations * 100.0), {
-                "source": "accumulator_full_term_contractual_purchase_scale",
-                "contract_base": "100",
-            }
     return pnl / 100.0, {"source": "normalized_unit_contract", "contract_base": "100"}
 
 
