@@ -29,6 +29,9 @@ class BacktestConfig:
     entry_hv_window: int | None = None
     entry_hv_bins: tuple[float, ...] | None = None
 
+    def __post_init__(self) -> None:
+        _validate_config(self)
+
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
         data["entry_dates"] = list(self.entry_dates) if self.entry_dates is not None else None
@@ -52,24 +55,44 @@ class BacktestConfig:
             supplied["entry_hv_window"] = int(supplied["entry_hv_window"])
         if supplied.get("entry_hv_bins") is not None:
             supplied["entry_hv_bins"] = tuple(float(item) for item in supplied["entry_hv_bins"])
-        config = cls(**supplied)
-        if config.entry_rule not in {"daily", "monthly", "explicit"}:
-            raise BacktestConfigError("entry_rule只能为daily、monthly或explicit")
-        if config.entry_rule == "explicit" and not config.entry_dates:
-            raise BacktestConfigError("entry_rule=explicit时必须提供entry_dates")
-        if config.missing_data_policy not in {"drop_trade", "reject"}:
-            raise BacktestConfigError("missing_data_policy只能为drop_trade或reject")
-        if config.alignment_policy != "intersection":
-            raise BacktestConfigError("首期多标的对齐仅支持intersection")
-        if config.statistics_frequency not in {"all", "year"}:
-            raise BacktestConfigError("statistics_frequency只能为all或year")
-        if config.entry_hv_window is not None and config.entry_hv_window not in {5, 10, 20, 60, 122, 244}:
-            raise BacktestConfigError("entry_hv_window只能为5、10、20、60、122或244")
-        if config.entry_hv_bins is not None and (not config.entry_hv_bins or any(value <= 0 for value in config.entry_hv_bins) or tuple(sorted(set(config.entry_hv_bins)) ) != config.entry_hv_bins):
+        return cls(**supplied)
+
+
+def _validate_config(config: BacktestConfig) -> None:
+    if config.entry_rule not in {"daily", "monthly", "explicit"}:
+        raise BacktestConfigError("entry_rule只能为daily、monthly或explicit")
+    if config.entry_dates is not None:
+        if not isinstance(config.entry_dates, tuple):
+            raise BacktestConfigError("entry_dates必须为ISO日期元组")
+        for item in config.entry_dates:
+            _iso_date(item, "entry_dates")
+    if config.entry_rule == "explicit" and not config.entry_dates:
+        raise BacktestConfigError("entry_rule=explicit时必须提供entry_dates")
+    if config.entry_rule != "explicit" and config.entry_dates:
+        raise BacktestConfigError("entry_rule非explicit时不得提供entry_dates")
+    for field in ("start_date", "end_date"):
+        value = getattr(config, field)
+        if value is not None:
+            _iso_date(value, field)
+    if config.start_date is not None and config.end_date is not None and config.start_date > config.end_date:
+        raise BacktestConfigError("start_date不得晚于end_date")
+    if not isinstance(config.complete_tenor, bool):
+        raise BacktestConfigError("complete_tenor必须为布尔值")
+    if config.missing_data_policy not in {"drop_trade", "reject"}:
+        raise BacktestConfigError("missing_data_policy只能为drop_trade或reject")
+    if config.alignment_policy != "intersection":
+        raise BacktestConfigError("首期多标的对齐仅支持intersection")
+    if config.statistics_frequency not in {"all", "year"}:
+        raise BacktestConfigError("statistics_frequency只能为all或year")
+    if config.entry_hv_window is not None and config.entry_hv_window not in {5, 10, 20, 60, 122, 244}:
+        raise BacktestConfigError("entry_hv_window只能为5、10、20、60、122或244")
+    if config.entry_hv_bins is not None:
+        if not isinstance(config.entry_hv_bins, tuple):
+            raise BacktestConfigError("entry_hv_bins必须为数值元组")
+        if not config.entry_hv_bins or any(value <= 0 for value in config.entry_hv_bins) or tuple(sorted(set(config.entry_hv_bins))) != config.entry_hv_bins:
             raise BacktestConfigError("entry_hv_bins必须为严格递增的正数边界")
-        if config.entry_hv_bins is not None and config.entry_hv_window is None:
+        if config.entry_hv_window is None:
             raise BacktestConfigError("entry_hv_bins必须与entry_hv_window同时提供")
-        return config
 
 
 def _iso_date(value: Any, field: str) -> str:
