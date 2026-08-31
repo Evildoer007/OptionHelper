@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Mapping
+from collections.abc import Mapping
 
 from .model_router import resolve_route
 
@@ -28,7 +28,10 @@ def requires_future_trading_calendar(
     route = resolve_route(str(product_id), allowed, model_method)
     if route is None:
         return False
-    return route.method == "monte_carlo" and bool(terms.get("monitor"))
+    return bool(terms.get("monitor")) and (
+        route.method == "monte_carlo"
+        or route.capability.adapter in {"variance_swap", "range_accrual"}
+    )
 
 
 def requires_future_trading_calendar_for_protocol(
