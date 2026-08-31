@@ -11,7 +11,7 @@
     "Pi_0": 5.0,
     "n_P": 1.0,
     "pricing_methods": [
-      "black_scholes",
+      "analytical",
       "monte_carlo"
     ]
   },
