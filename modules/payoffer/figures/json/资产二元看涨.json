@@ -11,6 +11,7 @@
     "Pi_0": 50.0,
     "asset_unit": 1.0,
     "pricing_methods": [
+      "analytical",
       "monte_carlo"
     ]
   },
