@@ -62,9 +62,14 @@ def replay_catalog_matrix(historical_data: HistoricalData, config: BacktestConfi
             )
             payload = backtest(BacktestInput(contract, config, historical_data)).to_dict()
         except Exception as error:  # 产品级阻断必须留在矩阵，不能因为单项失败丢行。
+            smoke: dict[str, Any] = {"status": "blocked", "reason": f"{type(error).__name__}:{error}"}
+            if hasattr(error, "code"):
+                smoke["error_code"] = str(error.code)
+            if hasattr(error, "details"):
+                smoke["details"] = dict(error.details)
             rows.append({
                 **base,
-                "smoke": {"status": "blocked", "reason": f"{type(error).__name__}:{error}"},
+                "smoke": smoke,
             })
             continue
         rows.append(_completed_row(base, payload, contract))
