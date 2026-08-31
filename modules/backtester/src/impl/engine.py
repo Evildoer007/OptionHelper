@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Mapping
 
 from runtime.contracts.contract_api import ResolvedContract
@@ -14,7 +14,7 @@ from runtime.contracts.contract_types import deep_thaw, semantic_hash
 
 from ..branch_coverage import branch_coverage
 from ..common_metrics import summarize_common_metrics
-from ..entry_generator import BacktestInputError, BacktestUnsupportedError, ZeroValidSamplesError, entry_positions
+from ..entry_generator import BacktestInputError, BacktestUnsupportedError, BacktestWindowError, ZeroValidSamplesError, entry_positions
 from ..historical_data import HistoricalData
 from ..metric_profile_map import MetricProfileSpec
 from ..metric_profiles import metric_profile_hash, profile_for_product, specialized_metrics
@@ -23,8 +23,10 @@ from ..path_replay import (
     assert_daily_observation_sessions,
     assert_supported_schedule,
     contract_stop_position,
+    controlled_schedule_source,
     entry_hv_feature,
     replay_path,
+    _resolve_effective_backtest_window,
     requires_daily_observation,
 )
 from ..trade_ledger import HistoricalResolvedContract, TradeResult, build_trade_result, freeze_trade_contract
@@ -58,6 +60,7 @@ class BacktestResult:
     execution_fingerprint: str
     ledger_hash: str
     metric_profile_hash: str
+    effective_entry_window: Mapping[str, Any]
 
     @property
     def product_id(self) -> str:
@@ -72,6 +75,7 @@ class BacktestResult:
             self.trades,
             self.contract,
             include_annual=self.config.statistics_frequency == "year",
+            entry_hv_bins=self.config.entry_hv_bins,
         )
         generic["common_metrics"]["skipped_count"] = len(self.skipped_entries)
         specialized = specialized_metrics(
@@ -91,6 +95,7 @@ class BacktestResult:
             "monitor_summary": generic["monitor_summary"],
             "outcome_summary": generic["outcome_summary"],
             "annual_summary": generic["annual_summary"],
+            "entry_hv_group_summary": generic["entry_hv_group_summary"],
             "metric_profile": {
                 "profile_id": self.metric_profile_spec.profile_id,
                 "display_name": self.metric_profile_spec.display_name,
@@ -116,6 +121,7 @@ class BacktestResult:
             "entry_hv_adjustment": self.historical_data.hv_adjustment,
             "entry_hv_window": self.config.entry_hv_window,
             "entry_hv_bins": list(self.config.entry_hv_bins or ()),
+            "effective_entry_window": dict(self.effective_entry_window),
         }
         common_keys = (
             "sample_count", "skipped_count", "valid_return_sample_count", "positive_return_count", "win_rate",
@@ -129,6 +135,7 @@ class BacktestResult:
             "underlyings": list(self.underlyings),
             "contract_fingerprint": self.contract.contract_fingerprint,
             "backtest_config": self.config.to_dict(),
+            "effective_entry_window": dict(self.effective_entry_window),
             "sample_definition": sample_definition,
             "sample_count": summary["sample_count"],
             "skipped_count": summary["skipped_count"],
@@ -149,6 +156,7 @@ class BacktestResult:
             "outcome_summary": summary["outcome_summary"],
             "branch_coverage": branch_coverage(self.contract, self.trades),
             "annual_summary": summary["annual_summary"],
+            "entry_hv_group_summary": summary["entry_hv_group_summary"],
             "price_convention_evidence": {
                 "contract_settlement": {
                     "field": str(self.contract.terms.get("observation_price", "close")),
@@ -178,6 +186,7 @@ class BacktestResult:
             "economic_convention": payload["economic_convention"],
             "metric_profile": payload["metric_profile"],
             "specialized_metrics": payload["specialized_metrics"],
+            "entry_hv_group_summary": payload["entry_hv_group_summary"],
             "data_asset_ref": payload["data_asset_ref"],
         })
         return payload
@@ -196,6 +205,12 @@ def backtest(backtest_input: Any) -> BacktestResult:
     contract = backtest_input.contract
     config = backtest_input.backtest_config
     historical_data = backtest_input.historical_data
+    if not config.complete_tenor:
+        raise BacktestWindowError(
+            "Backtester只允许完整合同期限回放",
+            code="complete_tenor_required",
+            details={"reason": "partial_tenor_not_allowed"},
+        )
     historical_data.validate_integrity()
     profile_spec = profile_for_product(contract.product_id)
     if not profile_spec.supported:
@@ -203,9 +218,15 @@ def backtest(backtest_input: Any) -> BacktestResult:
     assert_supported_schedule(contract)
     history = aligned_history(historical_data, contract.underlyings, contract)
     daily_observation = requires_daily_observation(contract)
+    effective_window = _resolve_effective_backtest_window(history, historical_data, contract, config)
+    effective_config = replace(
+        config,
+        start_date=str(effective_window.start_date),
+        end_date=str(effective_window.end_date),
+    )
     skipped: list[dict[str, str]] = []
     trades: list[TradeResult] = []
-    positions, missing_explicit = entry_positions(history.close.index, config)
+    positions, missing_explicit = entry_positions(history.close.index, effective_config)
     for entry_date in missing_explicit:
         _skip_or_reject(skipped, config, entry_date, "entry_date_not_in_aligned_trading_calendar")
     for ordinal, start in enumerate(positions, 1):
@@ -218,9 +239,7 @@ def backtest(backtest_input: Any) -> BacktestResult:
             history.close.index,
             start,
             contract,
-            config.complete_tenor,
-            trading_sessions=historical_data.trading_sessions if daily_observation else history.trading_sessions,
-            calendar_coverage_end=historical_data.calendar_coverage_end,
+            trading_sessions=historical_data.trading_sessions,
         )
         if stop is None:
             _skip_or_reject(skipped, config, entry_date, reason or "insufficient_tenor")
@@ -240,7 +259,14 @@ def backtest(backtest_input: Any) -> BacktestResult:
                     entry_date=history.close.index[start],
                     terminal_date=history.close.index[stop],
                 )
-            evaluation_contract, _ = freeze_trade_contract(contract, entry_date=entry_date, trading_dates=dates, entry_spots=entry_spots)
+            schedule_source = controlled_schedule_source(contract, historical_data, dates, entry_spots)
+            evaluation_contract, _ = freeze_trade_contract(
+                contract,
+                entry_date=entry_date,
+                trading_dates=dates,
+                entry_spots=entry_spots,
+                frozen_schedule_source=schedule_source,
+            )
             replay = replay_path(evaluation_contract, dates=dates, values=values, price_fields=fields)
             final_contract, historical_contract = freeze_trade_contract(
                 contract,
@@ -295,6 +321,7 @@ def backtest(backtest_input: Any) -> BacktestResult:
         execution_fingerprint=execution_fingerprint,
         ledger_hash=ledger_hash,
         metric_profile_hash=profile_hash,
+        effective_entry_window=effective_window.to_dict(),
     )
 
 
