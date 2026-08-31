@@ -8,17 +8,17 @@
   <link rel="alternate icon" href="../../../assets/icons/optionhelper-app-icon-tile-light.svg">
   <link rel="stylesheet" href="./datafetcher.css">
   <link rel="stylesheet" href="../module-host-presentation.css">
+  <link rel="stylesheet" href="../date-input-control.css">
 </head>
 <body>
   <div class="app-shell">
     <header class="topbar">
       <div class="brand"><img class="brand-logo" src="../../icons/optionhelper-logo.svg" onerror="this.onerror=null;this.src='../../../assets/icons/optionhelper-logo.svg'" alt="OptionHelper"><span class="brand-separator"></span><span class="module-title">数据获取</span></div>
       <p class="topbar-status" id="service-status">正在检查本机服务</p>
-      <div class="topbar-actions"><button class="button button-quiet" id="refresh-assets" type="button">刷新资产索引</button></div>
     </header>
     <main class="workbench" id="workbench">
       <aside class="library-panel">
-        <h1>数据资产</h1>
+        <div class="library-heading"><h1>数据资产</h1><button class="button button-quiet library-refresh" id="refresh-assets" type="button" aria-label="刷新数据资产和连接状态">刷新</button></div>
         <div class="asset-filter"><label class="sr-only" for="asset-search">搜索数据</label><input id="asset-search" class="control" type="search" placeholder="搜索标的或日期"></div>
         <div class="asset-list" id="asset-list" aria-live="polite"><p class="empty-list">当前任务尚无数据资产。</p></div>
       </aside>
@@ -49,7 +49,7 @@
             <h3>数据口径</h3>
             <div class="read-only-row"><span>频率</span><strong>日频</strong></div>
             <input id="frequency" type="hidden" value="1d">
-            <label class="control-field" for="adjustment"><span>复权口径</span><select id="adjustment"><option value="none">不复权</option><option value="forward" selected>前复权</option><option value="backward">后复权</option></select></label>
+            <label class="control-field" for="adjustment"><span>复权口径</span><select id="adjustment"><option value="auto" selected>按资产自动适配</option><option value="none">不复权</option><option value="forward">前复权</option></select></label>
             <div class="read-only-row"><span>行情字段</span><strong id="field-summary">全部字段</strong></div>
             <details class="advanced-options" id="field-options"><summary>选择字段</summary>
               <div class="field-choice-grid" aria-label="选择行情字段">
@@ -64,18 +64,18 @@
           <section class="inspector-group">
             <h3>数据来源</h3>
             <div class="source-options" role="radiogroup" aria-label="选择数据来源">
-              <label class="source-option"><input name="source-mode" type="radio" value="ifind_http" checked><span><strong>实时数据</strong><small>在线获取行情</small></span></label>
-              <label class="source-option"><input name="source-mode" type="radio" value="local"><span><strong>本地数据</strong><small>使用已保存行情</small></span></label>
+              <label class="source-option"><input name="source-mode" type="radio" value="ifind_http" checked><span><strong>iFind远程行情</strong><small>远程获取并留存任务数据资产</small></span></label>
+              <label class="source-option"><input name="source-mode" type="radio" value="local"><span><strong>Host受控CSV</strong><small>读取Host管理的数据文件</small></span></label>
             </div>
             <section class="secret-card" id="ifind-status-card"><strong>连接状态</strong><span id="secret-status">正在检查连接配置。</span></section>
-            <p class="retention-note" id="local-source-note" hidden>仅使用已保存行情，不调用远程数据服务。</p>
+            <p class="retention-note" id="local-source-note" hidden>由Host读取受控DataStore内的CSV；页面不接收文件路径，也不会调用远程数据服务。</p>
           </section>
           <section class="inspector-group">
             <h3>获取策略</h3>
             <div class="strategy-options" role="radiogroup" aria-label="选择获取策略">
-              <label class="strategy-option"><input name="cache-policy" type="radio" value="force_refresh" checked><span><strong>实时获取</strong><small>不复用已有缓存</small></span></label>
-              <label class="strategy-option"><input name="cache-policy" type="radio" value="extend_only"><span><strong>补齐缺口</strong><small>复用覆盖并补拉缺失区间</small></span></label>
-              <label class="strategy-option"><input name="cache-policy" type="radio" value="reuse"><span><strong>仅用已保存数据</strong><small>不调用远程数据服务</small></span></label>
+              <label class="strategy-option"><input name="cache-policy" type="radio" value="force_refresh" checked><span><strong>重新读取来源</strong><small>跳过缓存，读取所选数据来源</small></span></label>
+              <label class="strategy-option"><input name="cache-policy" type="radio" value="extend_only"><span><strong>复用并补齐</strong><small>复用远程缓存并补拉缺失区间</small></span></label>
+              <label class="strategy-option"><input name="cache-policy" type="radio" value="reuse"><span><strong>仅复用远程缓存</strong><small>保持iFind来源，不发起远程请求</small></span></label>
             </div>
           </section>
         </form>
@@ -84,6 +84,7 @@
   </div>
   <script src="../module-host-presentation.js"></script>
   <script src="../module-host-bridge.js"></script>
+  <script src="../date-input-control.js"></script>
   <script src="./datafetcher.js"></script>
 </body>
 </html>
