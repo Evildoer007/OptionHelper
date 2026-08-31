@@ -811,6 +811,7 @@ def _formal_compute_protocol_errors(root: Path, python: str, environment: Mappin
         from tool_entry import _authorize_verified_app_call, call_tool, prepare_compute_request
         from tool_entry import ToolDispatchError
         from runtime.adapters.local_store import LocalDataStore, LocalResultStore
+        from runtime.contracts.contract_api import load_registry
         from runtime.contracts.contract_types import deep_thaw
         from runtime.protocol.models import CallerContext, ModuleRunRef
         from runtime.protocol.module_host import ModuleHostContext
@@ -900,6 +901,32 @@ def _formal_compute_protocol_errors(root: Path, python: str, environment: Mappin
             authorization=_authorize_verified_app_call(caller, context),
         )
         assert isinstance(catalog, dict), "catalog response must be a JSON object"
+        registry_products = load_registry()["products"]
+        analytical_ids = {
+            "1.1", "1.2", "2.1", "2.2", "2.3", "2.4",
+            "3.1", "3.2", "3.3", "3.4",
+            "4.1", "4.2", "4.3", "4.4", "4.5", "4.6", "4.7", "4.8",
+            "5.1", "5.2", "5.3", "5.4", "5.5", "5.6",
+            "6.1", "6.2", "6.3", "9.2", "9.3", "9.5", "9.6",
+        }
+        assert len(registry_products) == 65 and len(analytical_ids) == 31
+        for product_id, product in registry_products.items():
+            methods = list(product["terms"]["pricing_methods"])
+            expected_methods = (
+                ["analytical", "monte_carlo"]
+                if product_id in analytical_ids
+                else ["monte_carlo"]
+            )
+            assert methods == expected_methods, (product_id, methods)
+        catalog_products = catalog.get("products")
+        assert isinstance(catalog_products, list) and len(catalog_products) == 65
+        assert {
+            row["product_id"]: row["pricer_methods"]
+            for row in catalog_products
+        } == {
+            product_id: product["terms"]["pricing_methods"]
+            for product_id, product in registry_products.items()
+        }
 
         run_caller = replace(
             caller, capabilities=("module.run",), request_id="release-probe-run-authorization"
@@ -1015,7 +1042,7 @@ def _formal_compute_protocol_errors(root: Path, python: str, environment: Mappin
             "payoffer": prepare_compute_request("payoffer", common),
             "pricer": prepare_compute_request(
                 "pricer",
-                {**common, "pricing_config": {"valuation_date": "2024-01-05", "model_method": "black_scholes"}},
+                {**common, "pricing_config": {"valuation_date": "2024-01-05", "model_method": "analytical"}},
                 data_refs=(ref,),
                 data_store=probe_data_store,
             ),
