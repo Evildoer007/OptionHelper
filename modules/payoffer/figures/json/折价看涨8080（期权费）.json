@@ -13,6 +13,7 @@
     "alpha": 0.8,
     "p": 0.2,
     "pricing_methods": [
+      "analytical",
       "monte_carlo"
     ],
     "constraints": [
