@@ -11,6 +11,9 @@ class PricingMethod(Enum):
     BINARY_ANALYTIC = "binary_analytic"
     REINER_RUBINSTEIN = "reiner_rubinstein"
     STATIC_REPLICATION = "static_replication"
+    WORST_OF_ANALYTIC = "worst_of_analytic"
+    VARIANCE_EXPECTATION = "variance_expectation"
+    RANGE_ACCRUAL_ANALYTIC = "range_accrual_analytic"
     MONTE_CARLO_CPU = "monte_carlo_cpu"
 
 
