@@ -40,7 +40,7 @@ from .historical_data import (
     load_port_historical_data,
     validate_data_asset_ref,
 )
-from .entry_generator import BacktestInputError, ZeroValidSamplesError
+from .entry_generator import BacktestInputError, BacktestWindowError, ZeroValidSamplesError
 from .impl.config import BacktestConfig
 from .impl.engine import backtest
 from .models import BacktestInput
@@ -58,6 +58,11 @@ BROWSER_DIR = PROJECT_ROOT / "core" / "src" / "runtime" / "browser"
 BRAND_ASSET_DIR = PROJECT_ROOT / "assets" / "icons"
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("OPTIONHELPER_BACKTESTER_PORT", "4281"))
+_NON_EDITABLE_CONTRACT_TERMS = frozenset({
+    "monitor", "pricing_methods", "constraints", "derived_terms",
+    "margin_call", "payoff_figure_basis", "payoff_normalizer",
+    "S0", "S0Vec", "N", "Nvar", "Nvega", "G",
+})
 MAX_BODY_BYTES = 1_500_000
 _IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,79}")
 
@@ -118,16 +123,14 @@ class BacktesterRuntime:
                 "unit": catalog[key]["unit"],
                 "domain": catalog[key]["domain"],
                 "default_value": value,
-            } for key, value in terms.items() if key not in {
-                "S0", "S0Vec",
-                "monitor", "pricing_methods", "constraints", "derived_terms", "margin_call", "payoff_figure_basis",
-                "payoff_normalizer",
-            }]
+            } for key, value in terms.items() if key not in _NON_EDITABLE_CONTRACT_TERMS]
+            expected_underlying_count = len(terms["S0Vec"]) if "S0Vec" in terms else 1
             products.append({
                 "product_id": product_id,
                 "canonical_name": product["identity"]["name_zh"],
                 "entry_status": product["identity"]["entry_status"],
                 "underlying_scope": "multi_underlying" if "S0Vec" in terms else "single_underlying",
+                "expected_underlying_count": expected_underlying_count,
                 "path_count": len(product["paths"]),
                 "path_summaries": _path_summaries(product),
                 "payoff_fields": fields,
@@ -279,7 +282,10 @@ class BacktesterRuntime:
         try:
             result = backtest(BacktestInput(contract, config, history))
         except (BacktestInputError, HistoricalDataError, ValueError) as error:
-            error_code = "zero_valid_samples" if isinstance(error, ZeroValidSamplesError) else "backtest_execution_failed"
+            if isinstance(error, BacktestWindowError):
+                error_code = error.code
+            else:
+                error_code = "zero_valid_samples" if isinstance(error, ZeroValidSamplesError) else "backtest_execution_failed"
             return self._formal_failure(
                 contract=contract, task_id=task_id, run_id=run_id, created_at=created_at,
                 analysis_case_id=host_context.analysis_case_id, candidate_id=host_context.candidate_id,
@@ -365,6 +371,8 @@ class BacktesterRuntime:
             "missing_inputs": ["historical_data"] if stage == "historical_data" else [],
             "upstream_refs": data_refs,
         }
+        if isinstance(error, BacktestWindowError):
+            failure["details"] = dict(error.details)
         output = {
             "ok": False,
             "schema": "optionhelper.backtester.run",
@@ -774,6 +782,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
         assets = {
             "/backtester.js": (PAGE_DIR / "backtester.js", "application/javascript; charset=utf-8"),
+            "/date-input-control.js": (BROWSER_DIR / "date_input_control.js", "application/javascript; charset=utf-8"),
+            "/date-input-control.css": (BROWSER_DIR / "date_input_control.css", "text/css; charset=utf-8"),
             "/ui/style.css": (UI_DIR / "style.css", "text/css; charset=utf-8"),
             "/ui/controls.css": (UI_DIR / "controls.css", "text/css; charset=utf-8"),
             "/plotly-chart-system.js": (BROWSER_DIR / "plotly_chart_system.js", "application/javascript; charset=utf-8"),
