@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import sys
 import tempfile
 from pathlib import Path
@@ -21,7 +22,7 @@ from modules.reporter.selection_facts import build_host_selection_source_refs
 from modules.reporter.service import build_selected_request, call_tool as reporter_call_tool
 from runtime.protocol.models import ModuleRunRef
 
-from .errors import UnavailableCapabilityError, ValidationError
+from .errors import AuthorizationError, UnavailableCapabilityError, ValidationError
 from .identity.session_identity import SessionIdentity
 from .stores.result_store import ResultStore
 
@@ -39,14 +40,30 @@ class _ScopedResultPorts:
     def __init__(self, results: ResultStore, principal: SessionIdentity) -> None:
         self._results, self._principal = results, principal
 
-    def resolve_module_run(self, ref: ModuleRunRef, *, tenant_id: str) -> Path:
+    def close(self) -> None:
+        return None
+
+    def _reference(self, ref: ModuleRunRef, *, tenant_id: str) -> dict[str, str]:
         if tenant_id != self._principal.tenant_id:
             raise PermissionError("ModuleRunRef跨租户访问被拒绝")
-        return self._results.resolve_owned_module_run(self._principal, {
+        return {
             "module": ref.module, "tenant_id": ref.tenant_id, "task_id": ref.task_id, "run_id": ref.run_id,
             "expected_semantic_result_hash": ref.expected_semantic_result_hash,
             "expected_artifact_manifest_hash": ref.expected_artifact_manifest_hash,
-        })
+        }
+
+    def verify_module_run(self, ref: ModuleRunRef, *, tenant_id: str) -> None:
+        self._results.verify_owned_module_run(self._principal, self._reference(ref, tenant_id=tenant_id))
+
+    def read_module_run_file(self, ref: ModuleRunRef, name: str, *, tenant_id: str) -> bytes:
+        return self._results.read_owned_module_run_file(
+            self._principal, self._reference(ref, tenant_id=tenant_id), name,
+        )
+
+    def read_module_run_bundle(self, ref: ModuleRunRef, *, tenant_id: str) -> dict[str, bytes]:
+        return self._results.read_owned_module_run_bundle(
+            self._principal, self._reference(ref, tenant_id=tenant_id),
+        )
 
     def list_report_sources(self, *, tenant_id: str, task_id: str | None = None, query: str | None = None) -> dict[str, Any]:
         if tenant_id != self._principal.tenant_id:
@@ -71,47 +88,121 @@ class _ScopedResultPorts:
         for raw_candidate in source.get("candidates", []):
             if not isinstance(raw_candidate, Mapping):
                 continue
-            verified_options: dict[str, list[dict[str, str]]] = {}
             raw_options = raw_candidate.get("module_run_options")
             if not isinstance(raw_options, Mapping):
                 continue
+            versions: dict[tuple[str, str, str], dict[str, Any]] = {}
             for module, source_options in raw_options.items():
                 if module not in {"payoff", "pricing", "backtest"} or not isinstance(source_options, list):
                     continue
-                rows: list[dict[str, str]] = []
+                expected_run_module = {"payoff": "payoffer", "pricing": "pricer", "backtest": "backtester"}[module]
                 for raw_ref in source_options:
                     if not isinstance(raw_ref, Mapping):
                         continue
                     try:
-                        run_module = str(raw_ref.get("module") or {
-                            "payoff": "payoffer", "pricing": "pricer", "backtest": "backtester",
-                        }[module])
+                        run_module = str(raw_ref["module"])
+                        if run_module != expected_run_module:
+                            continue
                         ref = ModuleRunRef(
                             module=run_module, tenant_id=str(raw_ref["tenant_id"]), task_id=str(raw_ref["task_id"]), run_id=str(raw_ref["run_id"]),
                             expected_semantic_result_hash=str(raw_ref["expected_semantic_result_hash"]),
                             expected_artifact_manifest_hash=str(raw_ref["expected_artifact_manifest_hash"]),
                         )
-                        self.resolve_module_run(ref, tenant_id=self._principal.tenant_id)
-                    except (KeyError, TypeError, ValueError, PermissionError, ValidationError, OSError):
+                        self._results.verify_owned_module_run(self._principal, {
+                            "module": ref.module, "tenant_id": ref.tenant_id, "task_id": ref.task_id,
+                            "run_id": ref.run_id,
+                            "expected_semantic_result_hash": ref.expected_semantic_result_hash,
+                            "expected_artifact_manifest_hash": ref.expected_artifact_manifest_hash,
+                        })
+                        reference = {
+                            "module": ref.module, "tenant_id": ref.tenant_id, "task_id": ref.task_id,
+                            "run_id": ref.run_id,
+                            "expected_semantic_result_hash": ref.expected_semantic_result_hash,
+                            "expected_artifact_manifest_hash": ref.expected_artifact_manifest_hash,
+                        }
+                        manifest = json.loads(self._results.read_owned_module_run_file(
+                            self._principal, reference, "manifest.json",
+                        ))
+                        contract = json.loads(self._results.read_owned_module_run_file(
+                            self._principal, reference, "resolved_contract.json",
+                        ))
+                        if not isinstance(manifest, Mapping) or not isinstance(contract, Mapping):
+                            continue
+                        fingerprint = str(contract.get("contract_fingerprint") or "")
+                        source_candidate_id = str(manifest.get("candidate_id") or "")
+                        candidate_version_id = str(manifest.get("candidate_version_id") or "")
+                        catalog_candidate_id = str(
+                            raw_candidate.get("source_candidate_id") or raw_candidate.get("candidate_id") or ""
+                        )
+                        if (
+                            len(fingerprint) != 64
+                            or manifest.get("contract_fingerprint") != fingerprint
+                            or not source_candidate_id
+                            or source_candidate_id != catalog_candidate_id
+                            or contract.get("registry_snapshot_hash") != source.get("catalog_content_hash")
+                        ):
+                            continue
+                    except (KeyError, TypeError, ValueError, PermissionError, ValidationError, OSError, UnicodeDecodeError, json.JSONDecodeError):
                         continue
-                    rows.append({
+                    key = (candidate_version_id, fingerprint, source_candidate_id)
+                    version = versions.setdefault(key, {"contract": dict(contract), "options": {}})
+                    version["options"].setdefault(module, []).append({
                         "module": ref.module, "tenant_id": ref.tenant_id, "task_id": ref.task_id, "run_id": ref.run_id,
                         "expected_semantic_result_hash": ref.expected_semantic_result_hash,
                         "expected_artifact_manifest_hash": ref.expected_artifact_manifest_hash, "status": "succeeded",
                     })
-                if rows:
-                    verified_options[module] = rows
-            if verified_options:
+
+            if not versions:
+                continue
+            distinct_contracts = {key[1] for key in versions}
+            for (candidate_version_id, fingerprint, source_candidate_id), version in sorted(versions.items()):
+                # Multiple contract snapshots are selectable only when the
+                # upstream run froze an explicit candidate version.  An
+                # unversioned variant is omitted instead of becoming a UI
+                # option that the formal contract gate must later reject.
+                if len(distinct_contracts) > 1 and not candidate_version_id:
+                    continue
+                contract = version["contract"]
+                identity = contract.get("identity") if isinstance(contract.get("identity"), Mapping) else {}
+                price_convention = contract.get("price_convention", identity.get("price_convention"))
+                if isinstance(price_convention, str):
+                    price_convention = {"spot": "close", "contract_basis": price_convention}
+                if not isinstance(price_convention, Mapping):
+                    continue
+                variant_id = str(raw_candidate.get("candidate_id") or source_candidate_id)
+                if len(versions) > 1:
+                    suffix = hashlib.sha256(f"{candidate_version_id}:{fingerprint}".encode("utf-8")).hexdigest()[:16]
+                    variant_id = f"{variant_id[:100]}-{suffix}"
+                verified_options = {
+                    module: sorted(rows, key=lambda item: (item["run_id"], item["expected_semantic_result_hash"]))
+                    for module, rows in version["options"].items()
+                }
                 single_refs = {
                     module: rows[0]
                     for module, rows in verified_options.items()
                     if len(rows) == 1
                 }
-                candidates.append({
+                candidate = {
                     **dict(raw_candidate),
+                    "candidate_id": variant_id,
+                    "source_candidate_id": source_candidate_id,
+                    "product_id": identity.get("product_id"),
+                    "product_name": identity.get("name_zh"),
+                    "product_version": contract.get("product_version"),
+                    "product_version_content_hash": contract.get("product_snapshot_hash"),
+                    "contract_fingerprint": fingerprint,
+                    "analysis_basis_id": contract.get(
+                        "analysis_basis_id", identity.get("analysis_basis_id", f"basis-{fingerprint[:20]}"),
+                    ),
+                    "underlyings": list(identity.get("underlyings", [])),
+                    "currency": identity.get("currency"),
+                    "price_convention": dict(price_convention),
                     "module_run_options": verified_options,
                     "module_run_refs": single_refs,
-                })
+                }
+                if candidate_version_id:
+                    candidate["candidate_version_id"] = candidate_version_id
+                candidates.append(candidate)
         if not candidates:
             return None
         verified = {key: value for key, value in source.items() if key != "candidates"}
@@ -131,8 +222,19 @@ class ReporterAdapter:
         self._designer = _DesignerPort()
 
     def dispatch(self, request: dict[str, Any], principal: SessionIdentity) -> dict[str, Any]:
-        action = str(request.get("action", "status")).strip().lower()
         ports = _ScopedResultPorts(self._results, principal)
+        try:
+            return self._dispatch_with_ports(request, principal, ports)
+        finally:
+            ports.close()
+
+    def _dispatch_with_ports(
+        self,
+        request: dict[str, Any],
+        principal: SessionIdentity,
+        ports: _ScopedResultPorts,
+    ) -> dict[str, Any]:
+        action = str(request.get("action", "status")).strip().lower()
         if action in {"status", "catalog"}:
             return dict(reporter_call_tool({"action": action}, result_store=ports, designer_port=self._designer, selection_port=ports, tenant_id=principal.tenant_id))
         if action in {"list_sources", "list_report_sources"}:
@@ -185,16 +287,26 @@ class ReporterAdapter:
         base = _artifact_url(report_ref["report_run_id"], delivery["report"])
         children = [{
             "candidate_id": item["candidate_id"], "report": item["artifact_name"],
+            "display_name": item["display_name"],
             "preview_url": _artifact_url(report_ref["report_run_id"], item["artifact_name"]),
             "download_url": _artifact_url(report_ref["report_run_id"], item["artifact_name"], download=True),
         } for item in delivery["children"]]
+        deliveries = [{
+            "role": "primary", "display_name": delivery["display_name"], "report": delivery["report"],
+            "preview_url": base,
+            "download_url": _artifact_url(report_ref["report_run_id"], delivery["report"], download=True),
+        }, *({**item, "role": "candidate"} for item in children)]
         return {
             "ok": True, "module": "reporter",
             # The App's longstanding API uses completed for a fully verified
             # delivery.  Keep partial explicit so incomplete reports are
             # never promoted to completed.
             "status": "completed" if delivery["status"] == "succeeded" else "partial", "report_run_ref": report_ref,
-            "output": {"report": delivery["report"], "children": children},
+            "output": {
+                "report": delivery["report"], "children": children, "deliveries": deliveries,
+                "delivery_mode": delivery["delivery_mode"], "format": delivery["format"],
+                "can_save_pdf": delivery["can_save_pdf"],
+            },
             "preview_url": base, "download_url": _artifact_url(report_ref["report_run_id"], delivery["report"], download=True),
         }
 
@@ -251,7 +363,16 @@ class ReporterAdapter:
             "module": "reporter",
             "status": "completed" if delivery["status"] == "succeeded" else "partial",
             "report_run_ref": report_ref,
-            "output": {"report": delivery["report"], "children": []},
+            "output": {
+                "report": delivery["report"], "children": [],
+                "deliveries": [{
+                    "role": "primary", "display_name": delivery["display_name"], "report": delivery["report"],
+                    "preview_url": _artifact_url(report_ref["report_run_id"], delivery["report"]),
+                    "download_url": _artifact_url(report_ref["report_run_id"], delivery["report"], download=True),
+                }],
+                "delivery_mode": delivery["delivery_mode"], "format": delivery["format"],
+                "can_save_pdf": delivery["can_save_pdf"],
+            },
             "preview_url": _artifact_url(report_ref["report_run_id"], delivery["report"]),
             "download_url": _artifact_url(report_ref["report_run_id"], delivery["report"], download=True),
         }
@@ -279,6 +400,13 @@ def _verified_report_delivery(root: Path, *, expected_request: Mapping[str, Any]
         raise ValidationError(f"Reporter ReportRun完整性校验失败：{error}") from error
     artifacts: list[dict[str, Any]] = []
     root_artifact = _add_rendered(artifacts, validation, artifact_prefix="")
+    request = validation["request"]
+    subject_ref = request.get("subject_ref") if isinstance(request.get("subject_ref"), Mapping) else {}
+    delivery_mode = str(subject_ref.get("delivery_mode", "single"))
+    output_format = str(request.get("format", "html"))
+    metadata = request.get("metadata") if isinstance(request.get("metadata"), Mapping) else {}
+    display_name = str(metadata.get("title") or "报告")
+    can_save_pdf = output_format == "html" and delivery_mode in {"single", "comparison", "quote"}
     audit = {"schema": "optionhelper.app-reporter-audit", "root": _audit_record(validation), "children": []}
     children = []
     for child in validation["children"]:
@@ -287,11 +415,29 @@ def _verified_report_delivery(root: Path, *, expected_request: Mapping[str, Any]
         artifact_name = _add_rendered(
             artifacts, child_validation, artifact_prefix=_child_artifact_prefix(candidate_id),
         )
-        audit["children"].append({"candidate_id": candidate_id, "artifact_name": artifact_name, **_audit_record(child_validation)})
-        children.append({"candidate_id": candidate_id, "artifact_name": artifact_name})
+        unit = child_validation.get("unit") if isinstance(child_validation.get("unit"), Mapping) else {}
+        subject = unit.get("subject") if isinstance(unit.get("subject"), Mapping) else {}
+        child_display_name = f"{subject.get('product_name') or candidate_id}独立报告"
+        audit["children"].append({
+            "candidate_id": candidate_id, "artifact_name": artifact_name,
+            "display_name": child_display_name, **_audit_record(child_validation),
+        })
+        children.append({
+            "candidate_id": candidate_id, "artifact_name": artifact_name,
+            "display_name": child_display_name,
+        })
+    audit["public_delivery"] = {
+        "delivery_mode": delivery_mode, "format": output_format, "can_save_pdf": can_save_pdf,
+        "deliveries": [
+            {"role": "primary", "display_name": display_name, "artifact_name": root_artifact},
+            *({"role": "candidate", **item} for item in children),
+        ],
+    }
     return {
-        "request": validation["request"], "artifacts": artifacts, "report": root_artifact,
-        "children": children, "audit": audit, "status": validation["delivery_status"],
+        "request": request, "artifacts": artifacts, "report": root_artifact,
+        "display_name": display_name, "children": children, "audit": audit,
+        "delivery_mode": delivery_mode, "format": output_format, "can_save_pdf": can_save_pdf,
+        "status": validation["delivery_status"],
     }
 
 
