@@ -177,9 +177,10 @@ function applySettings(settings) {
 
 function providerSummary(provider) {
   const enabled = provider.models.filter((model) => model.enabled);
+  const verified = enabled.filter((model) => model.verification_state === "verified" && model.current_revision_match === true);
   const selection = providerState.default_model_selection;
   const active = selection?.provider_id === provider.provider_id;
-  return `${enabled.length}个已启用模型${active ? " · 默认" : ""}`;
+  return `${enabled.length}个已启用模型，${verified.length}个已验证${active ? " · 默认" : ""}`;
 }
 
 function modelRow(model, selected, index, { imageEditable = false } = {}) {
@@ -246,8 +247,11 @@ function addProviderPanel() {
 function renderProviders() {
   const providers = providerState.providers;
   const active = providers.some((provider) => provider.credential_configured && provider.models.some((model) => model.enabled));
-  modelStatus.textContent = modelProbe?.verified ? "已验证" : active ? "已声明" : "未配置";
-  modelStatus.classList.toggle("is-ready", Boolean(modelProbe?.verified));
+  const verified = providers.some((provider) => provider.models.some(
+    (model) => model.enabled && model.verification_state === "verified" && model.current_revision_match === true,
+  ));
+  modelStatus.textContent = verified ? "已验证" : active ? "已声明" : "未配置";
+  modelStatus.classList.toggle("is-ready", verified);
   renderModelProbe(active);
   if (!canEditModel) {
     modelRoot.innerHTML = `<div class="model-empty"><strong>模型服务由管理员维护</strong><p>当前账户没有模型配置权限。</p></div>`;
@@ -261,6 +265,19 @@ function renderProviders() {
 async function refreshProviders() {
   const response = await request("/api/settings/model-providers");
   providerState = { ...providerState, ...response, openProviderId: providerState.openProviderId };
+  const selection = providerState.default_model_selection || {};
+  const selectedProvider = providerState.providers.find((provider) => provider.provider_id === selection.provider_id);
+  const selectedModel = selectedProvider?.models.find((model) => model.model_id === selection.model_id);
+  if (selectedModel?.verification_state === "verified" && selectedModel.current_revision_match === true) {
+    modelProbe = {
+      verified: true,
+      generation: configurationGeneration,
+      model: { provider_id: selection.provider_id, model_id: selection.model_id },
+      effective: selectedModel.verified_capabilities || {},
+    };
+  } else {
+    modelProbe = null;
+  }
   renderProviders();
 }
 
@@ -717,11 +734,22 @@ async function testProvider(form) {
     showProviderResult(form, "请先填写Base URL并选择一个启用模型。", true);
     return;
   }
+  const current = providerState.providers.find((provider) => provider.provider_id === payload.provider_id);
+  if (apiKey || !current?.credential_configured) {
+    showProviderResult(form, "请先保存Provider和API Key，再测试当前模型。", true);
+    return;
+  }
   const button = form.querySelector('[data-model-action="test-provider"]');
   button.disabled = true;
   try {
-    const value = await sendCredential("/api/settings/model-provider/test", { provider_id: payload.provider_id, endpoint: payload.endpoint, model_id: payload.default_model_id, api_key: apiKey });
-    showProviderResult(form, value.connection?.detail || "模型服务连接已探测；这不代表完整工具能力已验证。");
+    const value = await send("/api/settings/test/model", {
+      provider_id: payload.provider_id,
+      model_id: payload.default_model_id,
+    });
+    providerState.openProviderId = payload.provider_id;
+    await refreshProviders();
+    const refreshedForm = modelRoot.querySelector(`[data-provider-form][data-provider-id="${CSS.escape(payload.provider_id)}"]`);
+    showProviderResult(refreshedForm || form, value.connection?.detail || "模型能力验证已完成。", value.connection?.status !== "available");
   } catch (error) { showProviderResult(form, error.message, true); }
   finally { button.disabled = false; }
 }
