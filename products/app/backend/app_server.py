@@ -10,19 +10,21 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import hmac
 import json
 import os
 import re
 import shutil
 import sys
 import threading
-from dataclasses import replace
+from dataclasses import asdict, replace
 from http import HTTPStatus
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable, Mapping
 from urllib.parse import parse_qs, unquote, urlparse
+from uuid import uuid4
 
 from .agent_runtime.conversation_service import ConversationService
 from .agent_runtime.context_builder import ContextBuilder, ResultStoreObservationBuilder
@@ -36,7 +38,7 @@ from .agent_runtime.multi_agent import (
 )
 from .agent_runtime import multi_agent as multi_agent_runtime
 from .agent_runtime.tool_dispatcher import ToolDispatcher
-from .agent_runtime.durability_checkpoint import DurabilityCheckpointStore
+from .agent_runtime.durability_checkpoint import DurabilityCheckpointStore, stable_operation_id
 from .agent_runtime.runtime_telemetry import RuntimeTelemetry
 from .attachments import AttachmentStore
 from .audit.audit_models import AuditEvent
@@ -46,7 +48,7 @@ from .authorization.roles import Role
 from .capability_service import CapabilityServiceCaller
 from .datafetcher_adapter import DataFetcherAdapter
 from .errors import AuthorizationError, CapabilityIntegrityError, UnavailableCapabilityError, UserActionError, ValidationError
-from .identity.identity_provider import IdentityProvider, LocalAuthenticationRequest, LocalAuthProvider
+from .identity.identity_provider import IdentityProvider, LocalAuthProvider
 from .identity.login_handler import AuthenticationMode, InitialProvisionRequest, LoginHandler, LoginOutcome, LoginRequest
 from .identity.password_store import PasswordCredentialStore
 from .identity.session_identity import SessionIdentity
@@ -92,11 +94,13 @@ from .tool_gateway import ToolGateway
 from .reporter_adapter import ReporterAdapter
 from desktop.common.paths import AppPaths
 from runtime.adapters.local_store import LocalDataStore
+from runtime.protocol.models import ModuleRunRef
+from runtime.protocol.module_host import HostObjectRef
 
 
 FRONTEND_ASSETS = frozenset({
     "login/index.html", "login/login-startup.js", "login/login.js",
-    "optchat/index.html", "optchat/optchat.js",
+    "optchat/index.html", "optchat/optchat.js", "optchat/attachment-utils.js",
     "optdesk/index.html", "optdesk/optdesk.js",
     "settings/index.html", "settings/settings.js", "settings/model-providers.css", "settings/general-settings.css", "settings/settings-shell.css",
     "shared/styles.css", "shared/refinement.css", "shared/theme-overrides.css", "shared/app.js", "shared/transition-scope.js", "shared/theme-bootstrap.js", "shared/theme.js", "shared/ui-scale.js", "shared/scrollbar-activity.js", "shared/vol-surface.js", "shared/thinking-orb.js", "shared/thinking-orbs-engine.js",
@@ -109,9 +113,7 @@ _RECOMMENDATION_MODE_IDS = (
 
 
 def _agent_runtime_source_entrypoint() -> Path:
-    current = Path(__file__).resolve().parents[1] / "runtime" / "optionhelper_agent_runtime" / "dist" / "runtime.cjs"
-    legacy = Path(__file__).resolve().parents[1] / "runtime" / "agent_engine" / "runtime.js"
-    return current if current.is_file() else legacy
+    return Path(__file__).resolve().parents[1] / "runtime" / "optionhelper_agent_runtime" / "dist" / "runtime.cjs"
 
 
 def _resolve_agent_runtime_mode(explicit: str | None) -> str:
@@ -185,14 +187,14 @@ def _review_policies() -> Mapping[str, object]:
     return {
         MULTI_AGENT_DEFAULT_REVIEW_POLICY_ID: {
             "policy_id": MULTI_AGENT_DEFAULT_REVIEW_POLICY_ID,
-            "version": "v1",
+            "version": "initial",
             "display_name": "标准复核",
             "enabled": True,
             "disabled_reason": None,
         },
         "strict-review": {
             "policy_id": "strict-review",
-            "version": "v1",
+            "version": "initial",
             "display_name": "严格复核",
             "enabled": False,
             "disabled_reason": "严格复核协议尚未发布。",
@@ -223,6 +225,7 @@ class AppServer:
         *,
         allow_unverified_capability: bool = False,
         authentication_mode: AuthenticationMode = "local-development",
+        initialization_token: str | None = None,
         agent_runtime_mode: str | None = None,
     ) -> None:
         if host != "127.0.0.1":
@@ -251,6 +254,8 @@ class AppServer:
             mode=authentication_mode,
             password_store=PasswordCredentialStore(self._documents._root / "authentication" / "passwords.json"),
         )
+        self._initialization_token = _validated_initialization_token(initialization_token)
+        self._initialization_lock = threading.RLock()
         self.audit = LocalAuditService(self._documents)
         self._settings_store = LocalSettingsStore(self._documents)
         self.settings = SettingsService(self._settings_store)
@@ -283,6 +288,9 @@ class AppServer:
             self.capability_services,
             LocalDataStore(self._capability_runtime_root / "data"),
             self.secret_provider,
+            verification_for=self.data_connection_verified,
+            revoke_verification=self.revoke_data_connection_verification,
+            mark_temporarily_unavailable=self.mark_data_connection_temporarily_unavailable,
         )
         self.compute_supervisor = ComputeProcessSupervisor(
             minimum_slots=1,
@@ -343,7 +351,7 @@ class AppServer:
             recovery_identity = SessionIdentity(
                 record.owner_id, record.tenant_id, Role.ADMIN, f"job-recovery:{record.job_id}",
             )
-            self.results.resolve_owned_module_run(recovery_identity, record.module_run_ref)
+            self.results.verify_owned_module_run(recovery_identity, record.module_run_ref)
             return record.module_run_ref
 
         self.job_registry.recover_interrupted(verified_job_proof)
@@ -361,7 +369,7 @@ class AppServer:
                     record.module_run_ref,
                 ))
                 references.append(record.module_run_ref)
-            self.results.resolve_owned_module_runs(requests)
+            self.results.verify_owned_module_runs(requests)
             return tuple(references)
 
         self.job_registry.validate_succeeded_proofs(verified_job_proofs)
@@ -378,6 +386,51 @@ class AppServer:
         )
         self.job_worker = AppJobWorker(4)
         self.operations = TaskOperationService(self._documents._root / "task-operations.sqlite3")
+        def recovered_operation_result(operation, request_id: str, input_hash: str):
+            dispatch_operation_id = stable_operation_id(
+                operation.tenant_id,
+                operation.task_id,
+                operation.module,
+                input_hash,
+                request_id,
+            )
+            job = self.job_registry.get_by_operation(dispatch_operation_id)
+            if (
+                job is None
+                or job.state != "succeeded"
+                or job.module_run_ref is None
+                or job.tenant_id != operation.tenant_id
+                or job.owner_id != operation.owner_id
+                or job.task_id != operation.task_id
+                or job.module != operation.module
+            ):
+                return None
+            try:
+                reference = ModuleRunRef(**dict(job.module_run_ref))
+            except (TypeError, ValueError):
+                return None
+            canonical_reference = asdict(reference)
+            if canonical_reference != job.module_run_ref or (
+                reference.tenant_id != operation.tenant_id
+                or reference.task_id != operation.task_id
+                or reference.module != operation.module
+            ):
+                return None
+            identity = SessionIdentity(
+                operation.owner_id,
+                operation.tenant_id,
+                Role.ADMIN,
+                f"operation-recovery:{operation.operation_id}",
+            )
+            try:
+                self.tasks.get(identity, operation.task_id)
+                stored = self.results.resolve_module_run(identity, canonical_reference)
+            except (KeyError, AuthorizationError, ValidationError):
+                return None
+            result = stored.get("result")
+            return {**result, "module_run_ref": canonical_reference} if isinstance(result, dict) else None
+
+        self.operations.recover_succeeded(recovered_operation_result)
         self.runtime_telemetry = RuntimeTelemetry(self.tasks.session_event_log, self.job_registry)
         self.tool_dispatcher = ToolDispatcher(
             self.gateway, JobRunner(self.job_registry, self.job_worker), self.tasks,
@@ -411,10 +464,6 @@ class AppServer:
             agent_runtime_session_root=self._documents._root / "agent-runtime-sessions",
         )
         self.conversation_tools.bind_recommender(self.recommender)
-        # Complete any durable prepared candidate confirmation before the
-        # server starts accepting ordinary module requests. Prepared contracts
-        # are hidden by ContractStore until this idempotent recovery commits.
-        self.conversation_tools.reconcile_prepared_recommendation_approvals()
         conversation_context = ContextBuilder(
             self.tasks,
             self.contracts,
@@ -508,26 +557,46 @@ class AppServer:
         if morsel is None:
             raise AuthorizationError("session", "an authenticated App session is required")
         try:
-            record = self.sessions.load(morsel.value)
-            return SessionIdentity(
+            binding = self.login_handler.session_binding()
+            record = self.sessions.load(morsel.value, **binding)
+            identity = SessionIdentity(
                 principal_id=str(record["principal_id"]),
                 tenant_id=str(record["tenant_id"]),
                 role=Role(str(record["role"])),
                 session_id=str(record["session_id"]),
                 audience=str(record.get("audience", "option-helper-app")),
             )
+            return self.login_handler.require_session_identity(identity)
         except (KeyError, ValueError) as error:
             raise AuthorizationError("session", "session is invalid or expired") from error
 
-    def create_local_session(self, role: Role, principal_label: str | None, *, remember: bool = False) -> SessionIdentity:
-        identity = self.identity_provider.authenticate(LocalAuthenticationRequest(role=role, principal_label=principal_label))
-        self.sessions.save(identity, remember=remember)
+    def create_local_session(
+        self,
+        role: Role,
+        principal_label: str | None,
+        *,
+        remember: bool = False,
+        client_host: str = "127.0.0.1",
+    ) -> SessionIdentity:
+        identity = self.login_handler.authenticate_local(
+            role,
+            principal_label,
+            client_host=client_host,
+        )
+        binding = self.login_handler.session_binding()
+        self.sessions.save(identity, remember=remember, **binding)
         self.audit.record(AuditEvent(action="identity.local.authenticate", principal_id=identity.principal_id, outcome="succeeded", tenant_id=identity.tenant_id, decision="allow"))
         return identity
 
     def create_login_session(self, request: LoginRequest, *, client_host: str) -> LoginOutcome:
         outcome = self.login_handler.authenticate(request, client_host=client_host)
-        self.sessions.save(outcome.identity, remember=outcome.remember)
+        self.sessions.save(
+            outcome.identity,
+            remember=outcome.remember,
+            authentication_mode=outcome.mode,
+            issuer=outcome.issuer,
+            account_generation=outcome.account_generation,
+        )
         self.audit.record(AuditEvent(
             action="identity.login.authenticate",
             principal_id=outcome.identity.principal_id,
@@ -552,10 +621,18 @@ class AppServer:
         request: InitialProvisionRequest,
         *,
         client_host: str,
+        initialization_token: str,
     ) -> None:
         """Persist one managed local admin verifier without logging its password."""
 
-        account = self.login_handler.provision_initial_administrator(request, client_host=client_host)
+        if self.login_handler.is_local_development:
+            self.login_handler.provision_initial_administrator(request, client_host=client_host)
+        with self._initialization_lock:
+            expected = self._initialization_token
+            if expected is None or not hmac.compare_digest(initialization_token, expected):
+                raise AuthorizationError("account.initialize", "initialization capability is invalid")
+            account = self.login_handler.provision_initial_administrator(request, client_host=client_host)
+            self._initialization_token = None
         self.audit.record(AuditEvent(
             action="identity.account.initialize",
             principal_id=account.principal_id,
@@ -744,11 +821,19 @@ class AppServer:
             except KeyError:
                 stored = _default_settings("admin")
             if capability == "settings.model.write":
-                reference = self.secret_reference(identity.tenant_id, "model") if snapshot.model_service.secret_ref else None
+                reference = self.secret_reference(
+                    identity.tenant_id,
+                    "model",
+                    revision=snapshot.model_service.secret_ref.revision if snapshot.model_service.secret_ref else None,
+                ) if snapshot.model_service.secret_ref else None
                 model = replace(snapshot.model_service, secret_ref=reference)
                 stored = replace(stored, model_service=model)
             else:
-                reference = self.secret_reference(identity.tenant_id, "ifind") if snapshot.data_interface.secret_ref else None
+                reference = self.secret_reference(
+                    identity.tenant_id,
+                    "ifind",
+                    revision=snapshot.data_interface.secret_ref.revision if snapshot.data_interface.secret_ref else None,
+                ) if snapshot.data_interface.secret_ref else None
                 data = replace(snapshot.data_interface, secret_ref=reference)
                 stored = replace(stored, data_interface=data)
             self.settings.save(tenant_key, replace(stored, role="admin"))
@@ -831,13 +916,72 @@ class AppServer:
         *,
         owner_id: str | None = None,
         connection_id: str | None = None,
+        revision: str | None = None,
     ) -> SecretRef:
         if purpose not in {"model", "ifind"}:
             raise ValidationError("Credential purpose is not supported")
         owner = owner_id or tenant_id
         digest = hashlib.sha256(owner.encode("utf-8")).hexdigest()[:24]
         suffix = "" if connection_id in {None, "primary"} and owner_id is None else f"/{connection_id or 'primary'}"
-        return SecretRef(self._secret_reference_provider, f"optionhelper/{purpose}/{digest}{suffix}")
+        return SecretRef(self._secret_reference_provider, f"optionhelper/{purpose}/{digest}{suffix}", revision)
+
+    def data_connection_verified(self, identity: SessionIdentity, reference: SecretRef | None) -> bool:
+        return self._settings_store.data_verification_available(
+            tenant_id=identity.tenant_id,
+            principal_id=identity.principal_id,
+            secret_ref=reference,
+        )
+
+    def public_settings(self, identity: SessionIdentity, snapshot: SettingsSnapshot | None = None) -> dict[str, Any]:
+        """Project settings plus revision-bound, non-secret data connection state."""
+
+        current = snapshot or self.settings_for(identity)
+        public = serialize_settings_public(current)
+        data = public.get("data_interface")
+        if not isinstance(data, dict):
+            raise ValidationError("Settings公开投影缺少数据接口")
+        data.update(self._settings_store.data_verification_status(
+            tenant_id=identity.tenant_id,
+            principal_id=identity.principal_id,
+            secret_ref=current.data_interface.secret_ref,
+        ))
+        return public
+
+    def record_data_connection_verification(
+        self,
+        identity: SessionIdentity,
+        *,
+        available: bool,
+        expected_reference: SecretRef | None = None,
+    ) -> None:
+        reference = expected_reference or self.settings_for(identity).data_interface.secret_ref
+        if reference is None:
+            return
+        matched = self._settings_store.save_data_verification_for_current_reference(
+            settings_key=self._tenant_settings_key(identity.tenant_id),
+            tenant_id=identity.tenant_id,
+            principal_id=identity.principal_id,
+            secret_ref=reference,
+            available=available,
+        )
+        if not matched:
+            raise ValidationError("数据凭据版本已变化，请重新发起连接测试")
+
+    def revoke_data_connection_verification(self, identity: SessionIdentity, reference: SecretRef) -> None:
+        self._settings_store.revoke_data_verification(
+            tenant_id=identity.tenant_id,
+            principal_id=identity.principal_id,
+            secret_ref=reference,
+        )
+
+    def mark_data_connection_temporarily_unavailable(
+        self, identity: SessionIdentity, reference: SecretRef,
+    ) -> None:
+        self._settings_store.mark_data_verification_temporarily_unavailable(
+            tenant_id=identity.tenant_id,
+            principal_id=identity.principal_id,
+            secret_ref=reference,
+        )
 
     def _principal_settings(self, identity: SessionIdentity) -> SettingsSnapshot:
         try:
@@ -982,8 +1126,16 @@ class AppServer:
         return normalized
 
     def _normalized_tenant_settings(self, tenant_id: str, snapshot: SettingsSnapshot) -> SettingsSnapshot:
-        model_reference = self.secret_reference(tenant_id, "model")
-        data_reference = self.secret_reference(tenant_id, "ifind")
+        model_reference = self.secret_reference(
+            tenant_id,
+            "model",
+            revision=snapshot.model_service.secret_ref.revision if snapshot.model_service.secret_ref else None,
+        )
+        data_reference = self.secret_reference(
+            tenant_id,
+            "ifind",
+            revision=snapshot.data_interface.secret_ref.revision if snapshot.data_interface.secret_ref else None,
+        )
         self.secret_provider.allow_reference(model_reference, "模型服务凭据")
         self.secret_provider.allow_reference(data_reference, "iFind数据凭据")
         model = snapshot.model_service
@@ -1270,21 +1422,33 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
                 "next_step": error.next_step,
                 "retryable": error.retryable,
                 "diagnostic_id": diagnostic_id,
+                **error.details,
             })
         except (ValidationError, ValueError):
+            authentication_input = parsed.path in {"/api/auth/login", "/api/auth/initialize"}
             diagnostic_id = _diagnostic_id(
                 self.headers.get("X-OptionHelper-Request-Id") or request_id,
-                "input_invalid",
-                "input",
+                "authentication_input_invalid" if authentication_input else "input_invalid",
+                "authentication" if authentication_input else "input",
             )
-            self._audit_operational_failure(request_id, failure_code="input_invalid", stage="input")
+            failure_code = "authentication_input_invalid" if authentication_input else "input_invalid"
+            failure_stage = "authentication" if authentication_input else "input"
+            self._audit_operational_failure(request_id, failure_code=failure_code, stage=failure_stage)
             self._json(HTTPStatus.BAD_REQUEST, {
                 "error": "invalid_request",
-                "failure_code": "input_invalid",
-                "stage": "input",
-                "message": "本次输入不完整或格式不正确。请检查日期、条款和定价参数后重试。",
-                "detail": "请求不符合受控输入规则",
-                "next_step": "请检查日期、标的、条款与定价或回测参数后重试。",
+                "failure_code": failure_code,
+                "stage": failure_stage,
+                "message": (
+                    "请检查账号和密码后重试；创建管理员时密码不得少于12个字符。"
+                    if authentication_input else
+                    "本次输入不完整或格式不正确。请检查日期、条款和定价参数后重试。"
+                ),
+                "detail": "认证输入不符合要求" if authentication_input else "请求不符合受控输入规则",
+                "next_step": (
+                    "请完整填写账号和密码。"
+                    if authentication_input else
+                    "请检查日期、标的、条款与定价或回测参数后重试。"
+                ),
                 "diagnostic_id": diagnostic_id,
             })
         except KeyError:
@@ -1353,7 +1517,13 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
             self.app.policy.require(identity.role, "task.read")
             task_id = path.removeprefix("/api/tasks/").removesuffix("/operations").rstrip("/")
             self.app.tasks.get(identity, task_id)
-            self._json(HTTPStatus.OK, {"operations": [item.public(include_result=True) for item in self.app.operations.list(identity, task_id)]})
+            include_result = parse_qs(parsed.query).get("include_result", ["false"])[0].strip().casefold() in {"1", "true", "yes"}
+            self._json(HTTPStatus.OK, {
+                "operations": [
+                    item.public(include_result=include_result)
+                    for item in self.app.operations.list(identity, task_id)
+                ],
+            })
             return
         if path.startswith("/api/tasks/") and path.endswith("/result") and "/operations/" in path:
             identity = self._identity()
@@ -1471,7 +1641,7 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
         if path == "/api/settings":
             identity = self._identity()
             self.app.policy.require(identity.role, "settings.read")
-            self._json(HTTPStatus.OK, {"settings": serialize_settings_public(self.app.settings_for(identity))})
+            self._json(HTTPStatus.OK, {"settings": self.app.public_settings(identity)})
             return
         if path == "/api/settings/model-connections":
             identity = self._identity()
@@ -1495,7 +1665,7 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
                 "presets": [
                     {
                         "preset_id": preset.preset_id,
-                        "version": preset.version,
+                        "revision": preset.revision,
                         "display_name": preset.display_name,
                         "execution_strategy": preset.execution_strategy,
                         "enabled": preset.enabled,
@@ -1513,7 +1683,7 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
                 "review_policies": [
                     {
                         "policy_id": policy_id,
-                        "version": _catalog_value(policy, "version", "v1"),
+                        "version": _catalog_value(policy, "version", "initial"),
                         "display_name": _catalog_value(policy, "display_name", policy_id),
                         "enabled": bool(_catalog_value(policy, "enabled", False)),
                         "disabled_reason": _catalog_value(policy, "disabled_reason"),
@@ -1574,6 +1744,10 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
                     candidate_id=f"candidate-{fingerprint[:24]}" if binding is not None else None,
                     catalog_version=str(binding["catalog_version"]) if binding is not None else None,
                     contract_fingerprint=fingerprint if binding is not None else None,
+                    contract_ref=(
+                        HostObjectRef.from_payload(binding["contract_ref"], "contract_ref")
+                        if binding is not None else None
+                    ),
                 ),
             })
             return
@@ -1607,6 +1781,8 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
 
     def _post(self, parsed: Any, request_id: str) -> None:
         path = parsed.path
+        if path == "/api/auth/initialize":
+            self._require_same_origin_json()
         attachment_upload = path.startswith("/api/tasks/") and path.endswith("/attachments")
         preauthenticated_identity: SessionIdentity | None = None
         if attachment_upload:
@@ -1630,10 +1806,14 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/auth/initialize":
             request = InitialProvisionRequest.from_payload(body)
-            self.app.provision_initial_administrator(request, client_host=str(self.client_address[0]))
+            self.app.provision_initial_administrator(
+                request,
+                client_host=str(self.client_address[0]),
+                initialization_token=self.headers.get("X-OptionHelper-Initialization-Token", ""),
+            )
             self._json(
                 HTTPStatus.CREATED,
-                {"status": "initialized", "message": "首个本机管理员账号已创建。请使用该账号登录。"},
+                {"status": "initialized", "message": "管理员账号已创建。请使用该账号登录。"},
             )
             return
         if path == "/api/auth/logout":
@@ -1665,7 +1845,11 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
             label = body.get("principal_label")
             if label is not None and not isinstance(label, str):
                 raise ValidationError("principal_label must be a string")
-            identity = self.app.create_local_session(role, label)
+            identity = self.app.create_local_session(
+                role,
+                label,
+                client_host=str(self.client_address[0]),
+            )
             self._json(HTTPStatus.OK, {"identity": identity.public(), "mode": "local-development"}, cookie=identity.session_id)
             return
         identity = preauthenticated_identity or self._identity()
@@ -1693,11 +1877,17 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
                 identity,
                 request_id=self.headers.get("X-OptionHelper-Request-Id", ""),
             )
-            for field in ("data_asset_id", "tenant_id", "created_by", "content_hash", "media_type"):
+            for field in ("data_asset_id", "tenant_id", "created_by", "content_hash", "media_type", "schema_id"):
                 if reference.get(field) != registered.get(field):
                     raise ValidationError(f"DataAsset download {field} does not match its App registration")
-            if not str(reference["media_type"]).lower().startswith("text/csv"):
-                raise ValidationError("DataFetcher page downloads only registered CSV assets")
+            media_type = str(reference["media_type"]).split(";", 1)[0].strip().lower()
+            schema_id = str(reference.get("schema_id", "")).strip()
+            if media_type == "text/csv":
+                extension, response_type = "csv", "text/csv; charset=utf-8"
+            elif media_type == "application/json" and schema_id == "trading-calendar":
+                extension, response_type = "json", "application/json; charset=utf-8"
+            else:
+                raise ValidationError("DataFetcher page downloads only registered CSV or trading-calendar JSON assets")
             self.app.audit.record(AuditEvent(
                 action="data_asset.download",
                 principal_id=identity.principal_id,
@@ -1707,8 +1897,8 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
                 reference=data_asset_id,
                 request_id=request_id,
             ))
-            self._bytes(HTTPStatus.OK, content, "text/csv; charset=utf-8", extra_headers={
-                "Content-Disposition": f'attachment; filename="{data_asset_id}.csv"',
+            self._bytes(HTTPStatus.OK, content, response_type, extra_headers={
+                "Content-Disposition": f'attachment; filename="{data_asset_id}.{extension}"',
                 "Content-Security-Policy": "default-src 'none'; sandbox",
                 "X-Frame-Options": "DENY",
             })
@@ -1738,8 +1928,16 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
                 allowed_actions.add("rerender")
             if module not in PAGE_MODULES or action not in allowed_actions or not isinstance(payload, dict):
                 raise ValidationError("Task operation request is invalid")
+            module_request_id = self.headers.get("X-OptionHelper-Request-Id", "")
             module_context = self._module_host_context(module)
-            if str(module_context.get("task_id", "")) != task_id:
+            verified_operation_context = self.app.registry.validate_host_request(
+                identity,
+                module,
+                module_context,
+                module_request_id,
+                consume_request_id=False,
+            )
+            if verified_operation_context.task_id != task_id:
                 raise ValidationError("Module Host context does not match task operation")
             controlled_payload = {**payload, "action": action, "task_id": task_id}
             if module == "reporter" and action == "rerender":
@@ -1780,7 +1978,6 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
                     raise ValidationError("selection.output_type must be card, quote or report")
                 self.app.policy.require(identity.role, capability)
                 controlled_payload = {"action": "run", "task_id": source["task_id"], "kind": kind, "selection": selection}
-            module_request_id = self.headers.get("X-OptionHelper-Request-Id", "")
             operation = self.app.operations.submit(
                 identity,
                 task_id=task_id,
@@ -1788,13 +1985,15 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
                 kind=action,
                 operation=lambda cancelled: _dispatch_background_tool(
                     self.app.tool_dispatcher, module, controlled_payload, identity,
-                    module_context=module_context,
+                    module_context=self.app.registry.renew_task_operation_context(
+                        identity, verified_operation_context,
+                    ),
                     request_id=module_request_id,
                     cancelled=cancelled,
                 ),
                 request_id=module_request_id or None,
                 input_hash=_json_hash(controlled_payload) if module_request_id else None,
-                lane="compute" if module in {"pricer", "backtester"} else "control",
+                lane="compute" if module in {"payoffer", "pricer", "backtester"} else "control",
             )
             self.app.audit.record(AuditEvent(action="task.operation.submit", principal_id=identity.principal_id, tenant_id=identity.tenant_id, outcome="queued", decision="allow", reference=operation.operation_id, request_id=request_id))
             self._json(HTTPStatus.ACCEPTED, {"operation": operation.public()})
@@ -1806,9 +2005,7 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
                 raise KeyError(path)
             self.app.tasks.get(identity, task_id)
             _only_fields(body, set())
-            operation = self.app.operations.cancel(identity, operation_id)
-            if operation.task_id != task_id:
-                raise KeyError(path)
+            operation = self.app.operations.cancel_for_task(identity, task_id, operation_id)
             self._json(HTTPStatus.OK, {"operation": operation.public()})
             return
         if path.startswith("/api/tasks/") and path.endswith("/rename"):
@@ -1978,7 +2175,7 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
             current = self.app.settings_for(identity)
             preferences = _preference_from(body, current.preferences)
             snapshot = self.app.save_settings(identity, replace(current, preferences=preferences), "settings.preferences.write")
-            self._json(HTTPStatus.OK, {"settings": serialize_settings_public(snapshot)})
+            self._json(HTTPStatus.OK, {"settings": self.app.public_settings(identity, snapshot)})
             return
         if path == "/api/settings/model-provider/credential":
             self.app.policy.require(identity.role, "settings.model.local.write")
@@ -2012,7 +2209,7 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
             saved = self.app.save_credential(
                 identity, reference, api_key, "模型服务凭据", snapshot, "settings.model.local.write",
             )
-            self._json(HTTPStatus.OK, {"settings": serialize_settings_public(saved), "credential_status": "stored"})
+            self._json(HTTPStatus.OK, {"settings": self.app.public_settings(identity, saved), "credential_status": "stored"})
             return
         if path == "/api/settings/model-provider":
             self.app.policy.require(identity.role, "settings.model.local.write")
@@ -2041,7 +2238,7 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
                 identity, profile, default_model_id=_optional_model_id(body.get("default_model_id")),
             )
             saved = self.app.save_settings(identity, snapshot, "settings.model.local.write")
-            self._json(HTTPStatus.OK, {"settings": serialize_settings_public(saved)})
+            self._json(HTTPStatus.OK, {"settings": self.app.public_settings(identity, saved)})
             return
         if path == "/api/settings/model-provider/default":
             self.app.policy.require(identity.role, "settings.model.local.write")
@@ -2052,7 +2249,7 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
             saved = self.app.save_settings(
                 identity, replace(current, default_model_selection=selection), "settings.model.local.write",
             )
-            self._json(HTTPStatus.OK, {"settings": serialize_settings_public(saved)})
+            self._json(HTTPStatus.OK, {"settings": self.app.public_settings(identity, saved)})
             return
         if path == "/api/settings/multi-agent-preset/default":
             self.app.policy.require(identity.role, "settings.model.local.write")
@@ -2067,7 +2264,7 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
                 replace(current, multi_agent_recommendation_preset_id=preset_id),
                 "settings.model.local.write",
             )
-            self._json(HTTPStatus.OK, {"settings": serialize_settings_public(saved)})
+            self._json(HTTPStatus.OK, {"settings": self.app.public_settings(identity, saved)})
             return
         if path == "/api/settings/multi-agent-role-models":
             self.app.policy.require(identity.role, "settings.model.local.write")
@@ -2106,7 +2303,7 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
                 replace(current, multi_agent_preset_role_models=mappings),
                 "settings.model.local.write",
             )
-            self._json(HTTPStatus.OK, {"settings": serialize_settings_public(saved)})
+            self._json(HTTPStatus.OK, {"settings": self.app.public_settings(identity, saved)})
             return
         if path == "/api/settings/multi-agent-review-policy/default":
             self.app.policy.require(identity.role, "settings.model.local.write")
@@ -2121,7 +2318,7 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
                 replace(current, multi_agent_review_policy_id=policy_id),
                 "settings.model.local.write",
             )
-            self._json(HTTPStatus.OK, {"settings": serialize_settings_public(saved)})
+            self._json(HTTPStatus.OK, {"settings": self.app.public_settings(identity, saved)})
             return
         if path == "/api/settings/multi-agent-review-policy-role-models":
             self.app.policy.require(identity.role, "settings.model.local.write")
@@ -2158,7 +2355,7 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
                 replace(current, multi_agent_review_policy_role_models=mappings),
                 "settings.model.local.write",
             )
-            self._json(HTTPStatus.OK, {"settings": serialize_settings_public(saved)})
+            self._json(HTTPStatus.OK, {"settings": self.app.public_settings(identity, saved)})
             return
         if path == "/api/settings/model-provider/delete":
             self.app.policy.require(identity.role, "settings.model.local.write")
@@ -2210,7 +2407,7 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
                 self.app.secret_provider.delete(reference, "模型服务凭据")
             except UnavailableCapabilityError:
                 pass
-            self._json(HTTPStatus.OK, {"settings": serialize_settings_public(saved)})
+            self._json(HTTPStatus.OK, {"settings": self.app.public_settings(identity, saved)})
             return
         if path == "/api/settings/model-provider/discover":
             self.app.policy.require(identity.role, "settings.model.local.write")
@@ -2277,7 +2474,7 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
                 snapshot,
                 "settings.model.local.write",
             )
-            self._json(HTTPStatus.OK, {"settings": serialize_settings_public(saved), "credential_status": "stored"})
+            self._json(HTTPStatus.OK, {"settings": self.app.public_settings(identity, saved), "credential_status": "stored"})
             return
         if path == "/api/settings/local-model":
             self.app.policy.require(identity.role, "settings.model.local.write")
@@ -2294,7 +2491,7 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
                 raise ValidationError("更换模型服务地址时，请同时重新粘贴该服务的API Key并保存。")
             snapshot = self.app.local_model_snapshot(identity, connection_id, display_name, model)
             saved = self.app.save_settings(identity, snapshot, "settings.model.local.write")
-            self._json(HTTPStatus.OK, {"settings": serialize_settings_public(saved)})
+            self._json(HTTPStatus.OK, {"settings": self.app.public_settings(identity, saved)})
             return
         if path == "/api/settings/local-model/active":
             self.app.policy.require(identity.role, "settings.model.local.write")
@@ -2314,7 +2511,7 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
                 ),
                 "settings.model.local.write",
             )
-            self._json(HTTPStatus.OK, {"settings": serialize_settings_public(saved)})
+            self._json(HTTPStatus.OK, {"settings": self.app.public_settings(identity, saved)})
             return
         if path == "/api/settings/local-model/delete":
             self.app.policy.require(identity.role, "settings.model.local.write")
@@ -2374,7 +2571,7 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
                 self.app.secret_provider.delete(reference, "模型服务凭据")
             except UnavailableCapabilityError:
                 pass
-            self._json(HTTPStatus.OK, {"settings": serialize_settings_public(saved)})
+            self._json(HTTPStatus.OK, {"settings": self.app.public_settings(identity, saved)})
             return
         if path == "/api/settings/model/credential":
             self.app.policy.require(identity.role, "settings.model.write")
@@ -2396,13 +2593,17 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
                 tenant_id=identity.tenant_id, outcome="succeeded", decision="allow",
                 reference=reference.key, request_id=request_id,
             ))
-            self._json(HTTPStatus.OK, {"settings": serialize_settings_public(snapshot), "credential_status": "stored"})
+            self._json(HTTPStatus.OK, {"settings": self.app.public_settings(identity, snapshot), "credential_status": "stored"})
             return
         if path == "/api/settings/data/credential":
             self.app.policy.require(identity.role, "settings.data.write")
             _only_fields(body, {"provider_name", "refresh_token"})
             refresh_token = _credential_value(body, "refresh_token")
-            reference = self.app.secret_reference(identity.tenant_id, "ifind")
+            reference = self.app.secret_reference(
+                identity.tenant_id,
+                "ifind",
+                revision=f"rev-{uuid4().hex}",
+            )
             credential = {"refresh_token": refresh_token}
             credential_record = json.dumps(credential, separators=(",", ":"))
             current = self.app.settings_for(identity)
@@ -2419,7 +2620,7 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
                 tenant_id=identity.tenant_id, outcome="succeeded", decision="allow",
                 reference=reference.key, request_id=request_id,
             ))
-            self._json(HTTPStatus.OK, {"settings": serialize_settings_public(snapshot), "credential_status": "stored"})
+            self._json(HTTPStatus.OK, {"settings": self.app.public_settings(identity, snapshot), "credential_status": "stored"})
             return
         if path in {"/api/settings/model", "/api/settings/data", "/api/settings/storage"}:
             current = self.app.settings_for(identity)
@@ -2440,7 +2641,7 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
                 snapshot = replace(current, storage_export=_storage_from(body))
                 capability = "settings.storage.write"
             snapshot = self.app.save_settings(identity, snapshot, capability)
-            self._json(HTTPStatus.OK, {"settings": serialize_settings_public(snapshot)})
+            self._json(HTTPStatus.OK, {"settings": self.app.public_settings(identity, snapshot)})
             return
         if path == "/api/settings/test/model":
             if self.app.policy.allows(identity.role, "settings.model.write"):
@@ -2448,18 +2649,57 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
             else:
                 self.app.policy.require(identity.role, "settings.model.local.write")
                 capability = "settings.model.local.write"
-            self.app.model_gateway.complete_for(identity, "settings-connection-test", "仅返回OK。")
+            probe = self.app.model_gateway.probe_settings_capabilities_for(
+                identity,
+                "settings-capability-probe",
+            )
+            verified = bool(probe.get("verified"))
+            model = probe.get("model") if isinstance(probe.get("model"), dict) else {}
+            connection = {
+                "provider_name": str(model.get("provider_id", "model")),
+                "model_id": str(model.get("model_id", "")),
+                "status": "available" if verified else "unavailable",
+                "detail": (
+                    "模型服务流式、工具调用、工具续接、取消和超时能力均已验证。"
+                    if verified else
+                    "模型服务未通过完整能力验证，不可用于正式工具调用。"
+                ),
+                "capability_probe": probe,
+            }
             self.app.audit.record(AuditEvent(
                 action="settings.connection_test", principal_id=identity.principal_id,
-                tenant_id=identity.tenant_id, outcome="succeeded", decision="allow",
+                tenant_id=identity.tenant_id, outcome=str(connection["status"]), decision="allow",
                 reference=capability, request_id=request_id,
             ))
-            self._json(HTTPStatus.OK, {"connection": {"provider_name": "model", "status": "available", "detail": "模型服务连接可用。"}})
+            self._json(HTTPStatus.OK, {"connection": connection})
             return
         if path.startswith("/api/settings/test/"):
             self.app.policy.require(identity.role, "settings.data.write")
             provider = path.removeprefix("/api/settings/test/")
-            result = self.app.connection_tester.test(provider, identity, request_id=request_id)
+            tested_ref = (
+                self.app.settings_for(identity).data_interface.secret_ref
+                if provider == "ifind" else None
+            )
+            try:
+                result = self.app.connection_tester.test(
+                    provider,
+                    identity,
+                    request_id=request_id,
+                    expected_secret_ref=tested_ref,
+                )
+            except Exception:
+                raise
+            if provider == "ifind":
+                if result.status == "available":
+                    self.app.record_data_connection_verification(
+                        identity, available=True, expected_reference=tested_ref,
+                    )
+                elif tested_ref is not None and result.status in {
+                    "unauthorized", "account_permission_denied",
+                }:
+                    self.app.revoke_data_connection_verification(identity, tested_ref)
+                elif tested_ref is not None and result.status == "device_limit_exceeded":
+                    self.app.mark_data_connection_temporarily_unavailable(identity, tested_ref)
             self.app.audit.record(AuditEvent(
                 action="settings.connection_test", principal_id=identity.principal_id,
                 tenant_id=identity.tenant_id, outcome=result.status, decision="allow",
@@ -2470,25 +2710,16 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
         if path.startswith("/api/tools/"):
             tool = path.removeprefix("/api/tools/")
             action = str(body.get("action", "run")).strip().lower()
-            self.app.policy.require(
-                identity.role,
-                "module.catalog" if action in {"catalog", "default", "status", "list_assets"} else "module.run",
-            )
+            datafetcher_run = tool == "datafetcher" and action == "fetch"
+            reporter_source_list = tool == "reporter" and action == "list_report_sources"
+            if (
+                action not in {"catalog", "default", "preview", "status", "list_assets"}
+                and not datafetcher_run
+                and not reporter_source_list
+            ):
+                raise ValidationError("正式run、fetch与rerender必须通过当前任务的Task Operation提交")
+            self.app.policy.require(identity.role, "module.run" if datafetcher_run else "module.catalog")
             module_context = self._module_host_context(tool)
-            if tool == "reporter" and body.get("action") == "run":
-                selection = body.get("selection")
-                if not isinstance(selection, dict):
-                    raise ValidationError("Reporter page requires one controlled selection")
-                source_id = selection.get("source_id")
-                if not isinstance(source_id, str) or not source_id:
-                    raise ValidationError("selection.source_id is required")
-                source = self.app.results.get_owned_report_source(identity, source_id)
-                kind = str(selection.get("output_type", ""))
-                capability = {"card": "report.card.request", "quote": "report.quote.request", "report": "report.full.request"}.get(kind)
-                if capability is None:
-                    raise ValidationError("selection.output_type must be card, quote or report")
-                self.app.policy.require(identity.role, capability)
-                body = {"action": "run", "task_id": source["task_id"], "kind": kind, "selection": selection}
             result = self.app.tool_dispatcher.dispatch(
                 tool, body, identity,
                 module_context=module_context,
@@ -2508,6 +2739,8 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
             raise AuthorizationError("module.page", "only registered module page assets are mountable")
         parts = Path(relative).parts
         shared_page_assets = {
+            "assets/pages/date-input-control.js",
+            "assets/pages/date-input-control.css",
             "assets/pages/module-host-bridge.js",
             "assets/pages/module-host-presentation.css",
             "assets/pages/module-host-presentation.js",
@@ -2607,6 +2840,16 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
             raise ValidationError("Request body must be a JSON object")
         _reject_plain_secrets(value, allowed_plaintext_fields=allowed_plaintext_fields)
         return value
+
+    def _require_same_origin_json(self) -> None:
+        content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().casefold()
+        if content_type != "application/json":
+            raise AuthorizationError("account.initialize", "initialization requires JSON")
+        if self.headers.get("Origin") != self.app.url:
+            raise AuthorizationError("account.initialize", "initialization origin is invalid")
+        expected_host = urlparse(self.app.url).netloc
+        if self.headers.get("Host") != expected_host:
+            raise AuthorizationError("account.initialize", "initialization host is invalid")
 
     def _json(
         self,
@@ -2745,6 +2988,14 @@ def _credential_fields_for(path: str) -> frozenset[str]:
         "/api/settings/model-provider/test": frozenset({"api_key"}),
         "/api/settings/data/credential": frozenset({"refresh_token"}),
     }.get(path, frozenset())
+
+
+def _validated_initialization_token(value: str | None) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9_-]{32,128}", value):
+        raise ValidationError("Initialization capability is invalid")
+    return value
 
 
 def _only_fields(value: dict[str, Any], allowed: set[str]) -> None:
@@ -2929,14 +3180,19 @@ def _dispatch_background_tool(
     """Run the existing module gateway outside the request lifetime."""
     if cancelled():
         raise OperationCancelled()
-    result = dispatcher.dispatch(
-        module,
-        payload,
-        identity,
-        module_context=module_context,
-        request_id=request_id,
-        cancellation_check=cancelled,
-    )
+    try:
+        result = dispatcher.dispatch(
+            module,
+            payload,
+            identity,
+            module_context=module_context,
+            request_id=request_id,
+            cancellation_check=cancelled,
+        )
+    except UserActionError as error:
+        if cancelled() and error.code == "compute_cancelled":
+            raise OperationCancelled() from error
+        raise
     if cancelled() and isinstance(result, dict) and result.get("cancelled") is True:
         raise OperationCancelled()
     return result
