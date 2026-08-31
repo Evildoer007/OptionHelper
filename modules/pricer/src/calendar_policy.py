@@ -25,7 +25,7 @@ def requires_future_trading_calendar(
     allowed = terms.get("pricing_methods", ())
     if not isinstance(allowed, (list, tuple, set, frozenset)):
         return False
-    route = resolve_route(str(product_id), allowed, str(model_method))
+    route = resolve_route(str(product_id), allowed, model_method)
     if route is None:
         return False
     return route.method == "monte_carlo" and bool(terms.get("monitor"))
