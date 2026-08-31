@@ -20,10 +20,21 @@ from typing import Any, Literal, Mapping
 from xml.etree import ElementTree
 
 from .design_tokens import TOKENS
+from .renderer import display_text
 
 
 REPORTLAB_VERSION = "5.0.0"
 TOKEN_COLORS = TOKENS.colors
+PDF_CHART_PALETTE = TOKENS.chart_palette
+
+
+def _pdf_size(name: str) -> float:
+    """Read one PDF point size from the shared Designer token source."""
+
+    value = TOKENS.pdf_type_scale.get(name)
+    if not isinstance(value, (int, float)) or isinstance(value, bool) or value <= 0:
+        raise PdfRuntimeError(f"PDF字号Token无效：{name}。")
+    return float(value)
 
 
 class PdfRuntimeError(RuntimeError):
@@ -404,7 +415,7 @@ class _ComparisonMatrixParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=False)
         self.candidates: list[str] = []
-        self.rows: list[tuple[str, list[str]]] = []
+        self.rows: list[tuple[str, list[str], bool]] = []
         self._candidate_index: int | None = None
         self._candidate_depth = 0
         self._candidate_parts: list[str] = []
@@ -412,6 +423,7 @@ class _ComparisonMatrixParser(HTMLParser):
         self._row_depth = 0
         self._row_label: list[str] = []
         self._row_cells: list[str] = []
+        self._row_is_supplement = False
         self._cell_index: int | None = None
         self._cell_depth = 0
         self._cell_parts: list[str] = []
@@ -441,6 +453,7 @@ class _ComparisonMatrixParser(HTMLParser):
             self._row_depth = 0
             self._row_label = []
             self._row_cells = []
+            self._row_is_supplement = False
             return
         if "comparison-matrix__section-label" in classes and self._row_active:
             self._label_active = True
@@ -448,6 +461,12 @@ class _ComparisonMatrixParser(HTMLParser):
             return
         if "comparison-matrix__cell" in classes and self._row_active:
             self._cell_index = len(self._row_cells)
+            self._cell_parts = []
+            self._cell_depth = 0
+            return
+        if "comparison-matrix__supplement" in classes and self._row_active:
+            self._row_is_supplement = True
+            self._cell_index = 0
             self._cell_parts = []
             self._cell_depth = 0
             return
@@ -498,7 +517,7 @@ class _ComparisonMatrixParser(HTMLParser):
             if self._row_depth:
                 self._row_depth -= 1
                 return
-            self.rows.append(("".join(self._row_label).strip(), self._row_cells))
+            self.rows.append(("".join(self._row_label).strip(), self._row_cells, self._row_is_supplement))
             self._row_active = False
             self._row_depth = 0
             self._row_label = []
@@ -534,7 +553,7 @@ def _comparison_matrix_groups(html_content: str) -> list[dict[str, Any]]:
         parser.feed(matrix)
         parser.close()
         group = parser.result()
-        if len(group["candidates"]) >= 2:
+        if group["candidates"]:
             groups.append(group)
     return groups
 
@@ -769,8 +788,10 @@ def _card_page_height(flowables: list[object], *, content_width: float, top: flo
     content_height = 0.0
     for flowable in flowables:
         _width, height = flowable.wrap(content_width, 100_000)
-        content_height += max(0.0, height)
-    return content_height + top + bottom + 200
+        before = float(flowable.getSpaceBefore()) if hasattr(flowable, "getSpaceBefore") else 0.0
+        after = float(flowable.getSpaceAfter()) if hasattr(flowable, "getSpaceAfter") else 0.0
+        content_height += max(0.0, height) + max(0.0, before) + max(0.0, after)
+    return content_height + top + bottom + 24
 
 
 def _svg_number(value: str | None, fallback: float = 0.0) -> float:
@@ -1030,12 +1051,7 @@ def _chart_flowable(spec: Mapping[str, Any], *, content_width: float, latin_font
     series = list(spec.get("series") or [])
     width = content_width
     height = min(max(190.0, width * 0.45), 270.0)
-    palette = (
-        TOKEN_COLORS["brand_red"],
-        TOKEN_COLORS["blue_gray"],
-        TOKEN_COLORS["risk_gold"],
-        TOKEN_COLORS["chart_gray"],
-    )
+    palette = PDF_CHART_PALETTE
 
     def number(value: Any) -> float | None:
         try:
@@ -1145,7 +1161,8 @@ def _chart_flowable(spec: Mapping[str, Any], *, content_width: float, latin_font
                 canvas.setFillColor(colors.HexColor(TOKEN_COLORS["muted"]))
                 for tick in range(5):
                     value = low + (high - low) * tick / 4
-                    canvas.drawRightString(left - 5, bottom + plot_height * tick / 4 - 2, f"{value:.2g}")
+                    label = display_text(value, spec.get("value_format")) + str(spec.get("value_suffix") or "")
+                    canvas.drawRightString(left - 5, bottom + plot_height * tick / 4 - 2, label)
                 if x_values:
                     labels = [str(x_values[index]) for index in range(0, len(x_values), max(1, math.ceil(len(x_values) / 6)))]
                     for index, label in enumerate(labels):
@@ -1219,33 +1236,33 @@ def render_pdf(html_content: str, *, chart_specs: Mapping[str, Mapping[str, Any]
     left, right, top, bottom = ((18, 18, 18, 16) if is_card else (42, 42, 52, 36))
     content_width = page_width - left - right
     compact = is_card
-    body_size = 9.1 if compact else 10.1
+    body_size = _pdf_size("card_body" if compact else "report_body")
     styles = {
-        "title": ParagraphStyle("title", fontName=cjk_font, fontSize=16 if compact else 20, leading=20 if compact else 25,
+        "title": ParagraphStyle("title", fontName=cjk_font, fontSize=_pdf_size("card_title" if compact else "report_title"), leading=20 if compact else 25,
                                 textColor=colors.HexColor(TOKEN_COLORS["ink"]), spaceAfter=7 if compact else 13, alignment=TA_LEFT),
-        "section": ParagraphStyle("section", fontName=cjk_font, fontSize=10.5 if compact else 14, leading=13 if compact else 18,
+        "section": ParagraphStyle("section", fontName=cjk_font, fontSize=_pdf_size("card_section" if compact else "report_section"), leading=13 if compact else 18,
                                   textColor=colors.HexColor(TOKEN_COLORS["brand_red_deep"]), spaceBefore=7 if compact else 13, spaceAfter=4),
-        "subsection": ParagraphStyle("subsection", fontName=cjk_font, fontSize=9.2 if compact else 11.5, leading=12 if compact else 15,
-                                     textColor=colors.HexColor(TOKEN_COLORS["ink_soft"]), spaceBefore=6, spaceAfter=3),
+        "subsection": ParagraphStyle("subsection", fontName=cjk_font, fontSize=_pdf_size("card_subsection" if compact else "report_subsection"), leading=12 if compact else 15,
+                                     textColor=colors.HexColor(TOKEN_COLORS["ink_soft"]), spaceBefore=6, spaceAfter=3, keepWithNext=True),
         "body": ParagraphStyle("body", fontName=cjk_font, fontSize=body_size, leading=body_size * 1.58,
                                textColor=colors.HexColor(TOKEN_COLORS["ink"]), spaceAfter=4),
         "item": ParagraphStyle("item", fontName=cjk_font, fontSize=body_size, leading=body_size * 1.52,
                                textColor=colors.HexColor(TOKEN_COLORS["ink"]), leftIndent=10, firstLineIndent=-8, spaceAfter=2),
-        "caption": ParagraphStyle("caption", fontName=cjk_font, fontSize=8.6 if compact else 9.3, leading=12,
+        "caption": ParagraphStyle("caption", fontName=cjk_font, fontSize=_pdf_size("card_caption" if compact else "report_caption"), leading=12,
                                   textColor=colors.HexColor(TOKEN_COLORS["blue_gray"]), spaceBefore=4, spaceAfter=3),
-        "table": ParagraphStyle("table", fontName=cjk_font, fontSize=8.0 if compact else 8.8, leading=10.5 if compact else 12,
+        "table": ParagraphStyle("table", fontName=cjk_font, fontSize=_pdf_size("card_table" if compact else "report_table"), leading=10.5 if compact else 12,
                                 wordWrap="CJK", textColor=colors.HexColor(TOKEN_COLORS["ink_soft"])),
-        "table_head": ParagraphStyle("table_head", fontName=cjk_font, fontSize=8.1 if compact else 8.9,
+        "table_head": ParagraphStyle("table_head", fontName=cjk_font, fontSize=_pdf_size("card_table_head" if compact else "report_table_head"),
                                      leading=10.5 if compact else 12, wordWrap="CJK", textColor=colors.HexColor(TOKEN_COLORS["table_head_ink"])),
-        "table_compact": ParagraphStyle("table_compact", parent=None, fontName=cjk_font, fontSize=7.4 if compact else 8.2,
+        "table_compact": ParagraphStyle("table_compact", parent=None, fontName=cjk_font, fontSize=_pdf_size("card_table_compact" if compact else "report_table_compact"),
                                         leading=9.8 if compact else 11, wordWrap="CJK", textColor=colors.HexColor(TOKEN_COLORS["ink_soft"])),
-        "table_head_compact": ParagraphStyle("table_head_compact", parent=None, fontName=cjk_font, fontSize=7.5 if compact else 8.3,
+        "table_head_compact": ParagraphStyle("table_head_compact", parent=None, fontName=cjk_font, fontSize=_pdf_size("card_table_head_compact" if compact else "report_table_head_compact"),
                                              leading=9.8 if compact else 11, wordWrap="CJK", textColor=colors.HexColor(TOKEN_COLORS["table_head_ink"])),
-        "table_dense": ParagraphStyle("table_dense", parent=None, fontName=cjk_font, fontSize=6.9 if compact else 7.6,
+        "table_dense": ParagraphStyle("table_dense", parent=None, fontName=cjk_font, fontSize=_pdf_size("card_table_dense" if compact else "report_table_dense"),
                                       leading=9.1 if compact else 10.2, wordWrap="CJK", textColor=colors.HexColor(TOKEN_COLORS["ink_soft"])),
-        "table_head_dense": ParagraphStyle("table_head_dense", parent=None, fontName=cjk_font, fontSize=7.0 if compact else 7.7,
+        "table_head_dense": ParagraphStyle("table_head_dense", parent=None, fontName=cjk_font, fontSize=_pdf_size("card_table_head_dense" if compact else "report_table_head_dense"),
                                            leading=9.1 if compact else 10.2, wordWrap="CJK", textColor=colors.HexColor(TOKEN_COLORS["table_head_ink"])),
-        "metric": ParagraphStyle("metric", fontName=cjk_font, fontSize=8.2, leading=10.4,
+        "metric": ParagraphStyle("metric", fontName=cjk_font, fontSize=_pdf_size("metric"), leading=10.4,
                                  textColor=colors.HexColor(TOKEN_COLORS["ink_soft"])),
     }
 
@@ -1325,7 +1342,24 @@ def render_pdf(html_content: str, *, chart_specs: Mapping[str, Mapping[str, Any]
             ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
         ]))
         flowables.append(header_table)
-        for label, cells in comparison_rows:
+        for label, cells, is_supplement in comparison_rows:
+            if is_supplement:
+                supplement = []
+                if label:
+                    supplement.append(_paragraph(label, styles["subsection"], latin_font=latin_font, cjk_font=cjk_font))
+                supplement.extend(
+                    block_flowables(_extract_blocks(cells[0] if cells else ""), available_width=content_width - 12)
+                )
+                supplement_table = Table([[supplement]], colWidths=[content_width], hAlign="LEFT", splitByRow=1)
+                supplement_table.setStyle(TableStyle([
+                    ("LINEBELOW", (0, 0), (-1, -1), .35, colors.HexColor(TOKEN_COLORS["rule"])),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 6),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+                    ("TOPPADDING", (0, 0), (-1, -1), 6),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+                ]))
+                flowables.append(supplement_table)
+                continue
             row_cells = [[
                 [_paragraph(label, styles["subsection"], latin_font=latin_font, cjk_font=cjk_font)],
                 *[
