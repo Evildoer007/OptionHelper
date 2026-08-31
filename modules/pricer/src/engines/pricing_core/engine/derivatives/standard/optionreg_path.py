@@ -25,6 +25,19 @@ from .risk import ThetaNotApplicableError, ThetaRollValue, calculate_standard_gr
 
 
 _IMPLEMENTATION_ID = "standard-optionreg-discrete-mc"
+_PATH_BATCH_SIZE = 2048
+_CACHED_DRAW_LIMIT = 2_000_000
+_PREPARED_SESSION_LIMIT = 4
+
+
+def _remember_session(
+    sessions: dict[tuple[Any, ...], "_PathPricingSession"],
+    key: tuple[Any, ...],
+    session: "_PathPricingSession",
+) -> None:
+    sessions[key] = session
+    while len(sessions) > _PREPARED_SESSION_LIMIT:
+        sessions.pop(next(iter(sessions)))
 
 
 def _session_dates(
@@ -145,7 +158,133 @@ def _contract_with_maturity(
             terms["monitor"] = monitor
         else:
             terms["n_obs"] = remaining_observations
-    return replace(contract, terms=terms, contract_fingerprint="")
+    return replace(
+        contract,
+        terms=terms,
+        path_case_applicability=None,
+        contract_fingerprint="",
+    )
+
+
+class _PathPricingSession:
+    """Prepared contract, calendar and CRN draws shared by one risk revaluation."""
+
+    def __init__(
+        self,
+        instrument: OptionRegPathOption,
+        market: MarketState,
+        config: ValuationConfig,
+        valuation_state: ValuationState | None,
+    ) -> None:
+        if config.method is not PricingMethod.MONTE_CARLO_CPU:
+            raise ValueError("OptionReg路径结构只支持MONTE_CARLO_CPU")
+        self.instrument = instrument
+        self.config = config
+        self.valuation_state = valuation_state
+        self.contract = _contract_for_state(
+            instrument.resolved_contract,
+            valuation_state,
+            instrument.trading_sessions,
+        )
+        self.dates, self.relative_times = _session_dates(instrument, market, valuation_state)
+        self.elapsed = _elapsed_years(valuation_state)
+        self.times = self.relative_times + self.elapsed
+        self.steps = len(self.dates) - 1
+        _, _, _, correlation = _asset_inputs(instrument, market)
+        self.asset_count = len(self.contract.underlyings)
+        if self.asset_count > 1:
+            eigenvalues, eigenvectors = np.linalg.eigh(correlation)
+            self.correlation_root = (
+                eigenvectors * np.sqrt(np.clip(eigenvalues, 0.0, None))
+            ) @ eigenvectors.T
+        else:
+            self.correlation_root = None
+        self.dt = np.diff(self.relative_times)
+        self.sqrt_dt = np.sqrt(self.dt)
+        # ``runtime`` remains an OptionHelper integration dependency.  Import
+        # the public prepared evaluator only when the OPTIONREG_PATH plugin is
+        # instantiated, so the frozen nine-structure base stays standalone.
+        from runtime.contracts.contract_api import prepare_contract_evaluator
+        self.prepared_evaluator = prepare_contract_evaluator(
+            self.contract,
+            times=self.times,
+            dates=self.dates,
+            asset_ids=self.contract.underlyings,
+            valuation_date=self.dates[0],
+        )
+        draw_count = config.paths * self.steps * self.asset_count
+        self.cached_draws = None
+        if draw_count <= _CACHED_DRAW_LIMIT:
+            batches = tuple(self._draw_batches())
+            self.cached_draws = (
+                batches[0]
+                if len(batches) == 1
+                else np.concatenate(batches, axis=0)
+            )
+
+    def _draw_batches(self, *, batch_size: int = _PATH_BATCH_SIZE):
+        source = self.config.monte_carlo.random_source
+        for normals in source.iter_batches(
+            self.config.paths,
+            self.steps * self.asset_count,
+            batch_size=batch_size,
+        ):
+            draws = normals.reshape(len(normals), self.steps, self.asset_count)
+            if self.correlation_root is not None:
+                draws = draws @ self.correlation_root.T
+            yield draws
+
+    def raw_values(self, market: MarketState) -> np.ndarray:
+        return self.raw_values_many((market,))[0]
+
+    def raw_values_many(self, markets: tuple[MarketState, ...]) -> tuple[np.ndarray, ...]:
+        if not markets:
+            return ()
+        discounted = tuple(np.empty(self.config.paths, dtype=float) for _ in markets)
+        start = 0
+        per_market_batch = max(1, _PATH_BATCH_SIZE // len(markets))
+        batches = (
+            (
+                self.cached_draws[index:index + per_market_batch]
+                for index in range(0, len(self.cached_draws), per_market_batch)
+            )
+            if self.cached_draws is not None
+            else self._draw_batches(batch_size=per_market_batch)
+        )
+        from runtime.contracts.contract_api import evaluate_contract_batch
+        for draws in batches:
+            count = len(draws)
+            path_blocks = []
+            for market in markets:
+                spots, volatilities, dividend_yields, _ = _asset_inputs(self.instrument, market)
+                carry = market.risk_free_rate - dividend_yields if market.carry is None else market.carry
+                drift = (carry - 0.5 * volatilities ** 2)[None, None, :] * self.dt[None, :, None]
+                diffusion_scale = volatilities[None, None, :] * self.sqrt_dt[None, :, None]
+                paths = np.empty((count, self.steps + 1, self.asset_count), dtype=float)
+                # PricePath holds actual market prices. The shared interpreter
+                # applies reference normalization exactly once.
+                paths[:, 0, :] = spots
+                paths[:, 1:, :] = spots * np.exp(np.cumsum(drift + diffusion_scale * draws, axis=1))
+                path_blocks.append(paths)
+            combined_paths = np.concatenate(path_blocks, axis=0)
+            if not np.isfinite(combined_paths).all() or np.any(combined_paths <= 0.0):
+                raise ValueError("模拟价格路径必须为有限正数")
+            settlements = evaluate_contract_batch(
+                self.prepared_evaluator,
+                combined_paths,
+                batch_size=len(combined_paths),
+            ).evaluations
+            for market_index, market in enumerate(markets):
+                block_start = market_index * count
+                for offset, settlement in enumerate(settlements[block_start:block_start + count]):
+                    discounted[market_index][start + offset] = sum(
+                        flow.amount * math.exp(
+                            -market.risk_free_rate * max(0.0, flow.time - self.elapsed)
+                        )
+                        for flow in settlement.cashflows
+                    )
+            start += count
+        return discounted
 
 
 def _raw_path_values(
@@ -154,54 +293,7 @@ def _raw_path_values(
     config: ValuationConfig,
     valuation_state: ValuationState | None = None,
 ) -> np.ndarray:
-    if config.method is not PricingMethod.MONTE_CARLO_CPU:
-        raise ValueError("OptionReg路径结构只支持MONTE_CARLO_CPU")
-    contract = _contract_for_state(
-        instrument.resolved_contract,
-        valuation_state,
-        instrument.trading_sessions,
-    )
-    dates, relative_times = _session_dates(instrument, market, valuation_state)
-    elapsed = _elapsed_years(valuation_state)
-    times = relative_times + elapsed
-    steps = len(dates) - 1
-    source = config.monte_carlo.random_source
-    normals = source.load(config.paths, steps * len(contract.underlyings))
-    spots, volatilities, dividend_yields, correlation = _asset_inputs(instrument, market)
-    asset_count = len(spots)
-    if asset_count > 1:
-        draws = normals.reshape(config.paths, steps, asset_count)
-        eigenvalues, eigenvectors = np.linalg.eigh(correlation)
-        draws = draws @ ((eigenvectors * np.sqrt(np.clip(eigenvalues, 0.0, None))) @ eigenvectors.T).T
-    else:
-        draws = normals[:, :, None]
-    dt = np.diff(relative_times)
-    carry = market.risk_free_rate - dividend_yields if market.carry is None else market.carry
-    increments = (
-        (carry - 0.5 * volatilities ** 2)[None, None, :] * dt[None, :, None]
-        + volatilities[None, None, :] * np.sqrt(dt)[None, :, None] * draws
-    )
-    paths = np.empty((config.paths, steps + 1, asset_count), dtype=float)
-    # PricePath holds actual market prices. The shared OptionReg interpreter
-    # applies the contract-reference normalization exactly once, so its
-    # bump-and-revalue Greeks are already in actual-price coordinates.
-    paths[:, 0, :] = spots
-    paths[:, 1:, :] = spots * np.exp(np.cumsum(increments, axis=1))
-    discounted = np.empty(config.paths, dtype=float)
-    # ``runtime`` is an OptionHelper integration dependency, not a dependency
-    # of the frozen nine-structure base.  Import it only when this explicit
-    # OPTIONREG_PATH route has been selected.
-    from runtime.contracts.contract_engine import PricePath, evaluate_contract
-    for index, values in enumerate(paths):
-        settlement = evaluate_contract(
-            contract,
-            PricePath.from_values(values, times=times, dates=dates, asset_ids=contract.underlyings),
-        )
-        discounted[index] = sum(
-            flow.amount * math.exp(-market.risk_free_rate * max(0.0, flow.time - elapsed))
-            for flow in settlement.cashflows
-        )
-    return discounted
+    return _PathPricingSession(instrument, market, config, valuation_state).raw_values(market)
 
 
 def _price_points(
@@ -223,20 +315,79 @@ def _price_points(
     return float(raw_values.mean() / basis.cashflow_scale * 100.0), raw_values
 
 
+def _session_price_points(
+    session: _PathPricingSession,
+    market: MarketState,
+) -> tuple[float, np.ndarray]:
+    raw_values = session.raw_values(market)
+    basis = session.instrument.basis
+    if basis.cashflow_scale is None:
+        return float(raw_values.mean()), raw_values
+    if basis.cashflow_scale_kind == "variance_notional":
+        return float(raw_values.mean() / basis.cashflow_scale), raw_values
+    return float(raw_values.mean() / basis.cashflow_scale * 100.0), raw_values
+
+
+def _session_price_points_many(
+    session: _PathPricingSession,
+    markets: tuple[MarketState, ...],
+) -> tuple[float, ...]:
+    raw_sets = session.raw_values_many(markets)
+    basis = session.instrument.basis
+    if basis.cashflow_scale is None:
+        return tuple(float(values.mean()) for values in raw_sets)
+    if basis.cashflow_scale_kind == "variance_notional":
+        return tuple(float(values.mean() / basis.cashflow_scale) for values in raw_sets)
+    return tuple(float(values.mean() / basis.cashflow_scale * 100.0) for values in raw_sets)
+
+
 def price_optionreg_path_monte_carlo(
     instrument: OptionRegPathOption,
     market: MarketState,
     config: ValuationConfig,
     valuation_state: ValuationState | None = None,
+    *,
+    prepared_sessions: dict[tuple[Any, ...], _PathPricingSession] | None = None,
 ) -> PricingResult:
     """Price OptionReg cashflow paths and calculate CRN bump-and-revalue Greeks."""
     if valuation_state is not None and valuation_state.knocked_out:
         raise ValueError("已终止合同必须提供历史结算现金流，不能重新模拟")
-    priced_sessions, _ = _session_dates(instrument, market, valuation_state)
-    base_points, raw_values = _price_points(instrument, market, config, valuation_state)
+    session_key = (
+        float(instrument.resolved_contract.terms["T"]),
+        market.as_of,
+        config.paths,
+        config.seed,
+        config.monte_carlo.random_source.info.sha256,
+        tuple(instrument.asset_spots),
+        tuple(instrument.asset_volatilities),
+        tuple(instrument.asset_dividend_yields),
+        instrument.correlation,
+        instrument.trading_sessions,
+        instrument.calendar_id,
+        instrument.calendar_revision,
+        None if valuation_state is None else (
+            valuation_state.trading_day,
+            valuation_state.calendar_day,
+            valuation_state.knocked_in,
+            valuation_state.knocked_out,
+            valuation_state.accumulated_count,
+            valuation_state.accumulated_quantity,
+            valuation_state.observation_stage,
+        ),
+    )
+    session = None if prepared_sessions is None else prepared_sessions.get(session_key)
+    if session is None:
+        session = _PathPricingSession(instrument, market, config, valuation_state)
+        if prepared_sessions is not None:
+            _remember_session(prepared_sessions, session_key, session)
+    priced_sessions = session.dates
+    base_points, raw_values = _session_price_points(session, market)
 
     def price_market(local_market: MarketState) -> float:
-        return _price_points(instrument, local_market, config, valuation_state)[0]
+        return _session_price_points(session, local_market)[0]
+
+    def price_markets(local_markets: tuple[MarketState, ...]) -> tuple[float, ...]:
+        return _session_price_points_many(session, local_markets)
 
     def theta_roll(convention) -> ThetaRollValue:
         maturity = float(instrument.resolved_contract.terms["T"])
@@ -250,9 +401,23 @@ def price_optionreg_path_monte_carlo(
             as_of=market.as_of,
             remaining_years=rolled_maturity - _elapsed_years(valuation_state),
         )
-        rolled_points, _ = _price_points(
-            replace(instrument, resolved_contract=rolled_contract), market, config, valuation_state
-        )
+        rolled_instrument = replace(instrument, resolved_contract=rolled_contract)
+        if prepared_sessions is None:
+            rolled_points, _ = _price_points(
+                rolled_instrument, market, config, valuation_state
+            )
+        else:
+            rolled_session_key = (
+                rolled_maturity,
+                *session_key[1:],
+            )
+            rolled_session = prepared_sessions.get(rolled_session_key)
+            if rolled_session is None:
+                rolled_session = _PathPricingSession(
+                    rolled_instrument, market, config, valuation_state
+                )
+                _remember_session(prepared_sessions, rolled_session_key, rolled_session)
+            rolled_points, _ = _session_price_points(rolled_session, market)
         return ThetaRollValue(
             price_points_100=rolled_points,
             calendar_day_shift=convention.theta_calendar_day_shift,
@@ -269,6 +434,7 @@ def price_optionreg_path_monte_carlo(
         config=config,
         basis=instrument.basis,
         price_market=price_market,
+        price_markets=price_markets,
         theta_roll=theta_roll,
         requested_greeks=requested_greeks,
     )
@@ -305,7 +471,7 @@ def price_optionreg_path_monte_carlo(
             "asset_count": len(instrument.resolved_contract.underlyings),
             "path_coordinate": "actual market price; shared interpreter normalizes once",
             "spot_risk_factor": "single_asset" if len(instrument.resolved_contract.underlyings) == 1 else "parallel_proportional_all_assets",
-            "shared_contract_interpreter": "runtime.contracts.contract_engine.evaluate_contract",
+            "shared_contract_interpreter": "runtime.contracts.contract_api.evaluate_contract_batch",
             **({
                 "calendar": {
                     "calendar_id": instrument.calendar_id,
@@ -403,7 +569,12 @@ def _contract_for_state(
         monitor["n_coupon"] = f"({monitor['n_coupon']}) + {valuation_state.accumulated_count}"
     if monitor == dict(contract.terms.get("monitor", {})) and terms == dict(contract.terms):
         return contract
-    return replace(contract, terms={**terms, "monitor": monitor}, contract_fingerprint="")
+    return replace(
+        contract,
+        terms={**terms, "monitor": monitor},
+        path_case_applicability=None,
+        contract_fingerprint="",
+    )
 
 
 def _completed_selector_observations(
