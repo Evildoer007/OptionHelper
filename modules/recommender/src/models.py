@@ -1081,6 +1081,7 @@ class RecommendationSet:
         }
         deliveries = {
             "card": "研究简报",
+            "quote": "参考报价",
             "report": "完整研究报告",
         }
         recommendations = []
