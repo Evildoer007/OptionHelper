@@ -20,6 +20,9 @@ from .risk import (
 
 
 _IMPLEMENTATION_ID = "standard-barrier"
+_MIN_ANALYTICAL_VOLATILITY = math.sqrt(math.ulp(1.0))
+_MAX_LOG_FLOAT = math.log(float.fromhex("0x1.fffffffffffffp+1023"))
+_MIN_LOG_NORMAL = math.log(float.fromhex("0x1.0p-1022"))
 _FREQUENCY_TO_DT = {
     "Continuous": 0.0,
     "HalfDaily": 1 / 488,
@@ -27,6 +30,34 @@ _FREQUENCY_TO_DT = {
     "Weekly": 1 / 52,
     "Monthly": 1 / 12,
 }
+
+
+def _rr_lambda(*, carry: float, volatility: float, rate: float) -> float:
+    """Return the real Reiner-Rubinstein exponent for its valid domain."""
+    miu = (carry - volatility ** 2 / 2) / (volatility ** 2)
+    radicand = miu ** 2 + 2 * rate / (volatility ** 2)
+    if radicand < 0.0:
+        raise ValueError(
+            "Reiner-Rubinstein解析公式在当前利率、股息率与波动率组合下没有实数解"
+        )
+    return math.sqrt(radicand)
+
+
+def _stable_exponential(exponent: float) -> float:
+    """Evaluate an RR exponential only inside the finite double domain."""
+    if exponent > _MAX_LOG_FLOAT:
+        raise ValueError(
+            "Reiner-Rubinstein解析公式超出双精度数值稳定范围；请改用Monte Carlo"
+        )
+    if exponent < _MIN_LOG_NORMAL:
+        return 0.0
+    return math.exp(exponent)
+
+
+def _barrier_power(ratio: float, exponent: float) -> float:
+    if ratio <= 0.0:
+        raise ValueError("Reiner-Rubinstein障碍比率必须为正数")
+    return _stable_exponential(exponent * math.log(ratio))
 
 
 def _normal_cdf(value: float) -> float:
@@ -123,6 +154,10 @@ def _premium(
     dividend: float,
 ) -> float:
     """BGK-adjusted Reiner-Rubinstein construction blocks."""
+    if volatility < _MIN_ANALYTICAL_VOLATILITY:
+        raise ValueError(
+            "Reiner-Rubinstein解析公式要求波动率高于双精度数值稳定边界；请改用Monte Carlo"
+        )
     observation_dt = _FREQUENCY_TO_DT.get(monitoring, 0.0)
 
     if spot > barrier:
@@ -141,7 +176,7 @@ def _premium(
     carry = rate - dividend
 
     miu = (carry - volatility ** 2 / 2) / (volatility ** 2)
-    lambda_ = math.sqrt(miu ** 2 + 2 * rate / (volatility ** 2))
+    lambda_ = _rr_lambda(carry=carry, volatility=volatility, rate=rate)
     z = (
         math.log(adjusted_barrier / spot) / (volatility * math.sqrt(maturity))
         + lambda_ * volatility * math.sqrt(maturity)
@@ -180,6 +215,11 @@ def _premium(
         else 0.0
     )
     volatility_root_time = volatility * math.sqrt(maturity)
+    barrier_ratio = adjusted_barrier / spot
+    power_miu = _barrier_power(barrier_ratio, 2 * miu)
+    power_miu_plus_one = _barrier_power(barrier_ratio, 2 * (miu + 1))
+    power_lambda_plus = _barrier_power(barrier_ratio, miu + lambda_)
+    power_lambda_minus = _barrier_power(barrier_ratio, miu - lambda_)
 
     aa = (
         i1 * spot * math.exp((carry - rate) * maturity) * _normal_cdf(i1 * x1)
@@ -193,40 +233,40 @@ def _premium(
     )
     cc = (
         i1 * spot * math.exp((carry - rate) * maturity)
-        * (adjusted_barrier / spot) ** (2 * (miu + 1))
+        * power_miu_plus_one
         * _normal_cdf(i2 * y1)
         - i1 * strike * math.exp(-rate * maturity)
-        * (adjusted_barrier / spot) ** (2 * miu)
+        * power_miu
         * _normal_cdf(i2 * y1 - i2 * volatility_root_time)
     )
     dd = (
         i1 * spot * math.exp((carry - rate) * maturity)
-        * (adjusted_barrier / spot) ** (2 * (miu + 1))
+        * power_miu_plus_one
         * _normal_cdf(i2 * y2)
         - i1 * strike * math.exp(-rate * maturity)
-        * (adjusted_barrier / spot) ** (2 * miu)
+        * power_miu
         * _normal_cdf(i2 * y2 - i2 * volatility_root_time)
     )
     ee = rebate * math.exp(-rate * maturity) * (
         _normal_cdf(i2 * x2 - i2 * volatility_root_time)
-        - (adjusted_barrier / spot) ** (2 * miu)
+        - power_miu
         * _normal_cdf(i2 * y2 - i2 * volatility_root_time)
     )
     ff = rebate * (
-        (adjusted_barrier / spot) ** (miu + lambda_) * _normal_cdf(i2 * z)
-        + (adjusted_barrier / spot) ** (miu - lambda_)
+        power_lambda_plus * _normal_cdf(i2 * z)
+        + power_lambda_minus
         * _normal_cdf(i2 * z - 2 * i2 * lambda_ * volatility_root_time)
     )
 
     discounted_rebate = rebate * math.exp(-rate * maturity)
     pmax = (
         1 - _normal_cdf((beta - alpha * maturity) / math.sqrt(maturity))
-        + math.exp(2 * alpha * beta)
+        + _stable_exponential(2 * alpha * beta)
         * _normal_cdf((-beta - alpha * maturity) / math.sqrt(maturity))
     )
     pmin = (
         1 - _normal_cdf((-beta + alpha * maturity) / math.sqrt(maturity))
-        + math.exp(2 * alpha * beta)
+        + _stable_exponential(2 * alpha * beta)
         * _normal_cdf((beta + alpha * maturity) / math.sqrt(maturity))
     )
     mo = discounted_rebate * pmax
