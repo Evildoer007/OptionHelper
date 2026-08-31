@@ -72,7 +72,12 @@
         "action": {"const": "run"},
         "run_id": {"type": "string", "minLength": 1},
         "contract": {"$ref": "#/$defs/resolved_contract"},
-        "pricing_config": {"type": "object"},
+        "pricing_config": {
+          "type": "object",
+          "properties": {
+            "model_method": {"enum": ["analytical", "monte_carlo"]}
+          }
+        },
         "market_data_refs": {"type": "array", "items": {"$ref": "#/$defs/data_asset_ref"}},
         "observed_contract_state": {"$ref": "#/$defs/observed_contract_state"},
         "trading_calendar_ref": {
