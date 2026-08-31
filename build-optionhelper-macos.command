@@ -1,6 +1,5 @@
 #!/bin/zsh
-# One-click macOS v1.0.0 local-candidate build. It never overwrites
-# the formal archive under versions/v1.0.0.
+# One-click macOS local-candidate build. It never writes the formal archive.
 set -euo pipefail
 
 ROOT="${0:A:h}"
@@ -139,8 +138,8 @@ prepare_agent_runtime_tools() {
     print -u2 "缺少Node.js/npm，无法构建原生Agent运行时。"
     exit 1
   fi
-  print "正在恢复锁定的Agent运行时构建工具…"
-  npm ci --prefix "$ROOT/packaging/app/agent_runtime" --ignore-scripts
+  print "正在恢复两套锁定的Agent运行时构建依赖…"
+  "$PYTHON_BIN" "$ROOT/packaging/app/agent_runtime/restore_dependencies.py"
 }
 
 print "OptionHelper macOS候选构建"
