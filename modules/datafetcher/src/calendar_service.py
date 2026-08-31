@@ -13,6 +13,7 @@ import threading
 from typing import Any, Mapping, Sequence
 
 from runtime.adapters.local_store import LocalDataStore, StoreError
+from runtime.contracts.contract_types import deep_thaw
 from runtime.protocol.models import CallerContext, DataAssetRef
 
 from .cache_resolver import _process_lock
@@ -20,7 +21,15 @@ from .config import DataFetcherConfig
 from .market_conventions import UnsupportedChinaAsset, china_market_convention
 from .models import CalendarRequest, DataRequest
 from .providers import IFindHttpProvider
-from .providers.base import ProviderError, ProviderQuotaExceeded, ProviderUnauthorized, ProviderUnavailable
+from .providers.base import (
+    ProviderError,
+    ProviderFieldPermissionDenied,
+    ProviderInputError,
+    ProviderMarketPermissionDenied,
+    ProviderQuotaExceeded,
+    ProviderUnauthorized,
+    ProviderUnavailable,
+)
 
 
 CALENDAR_SCHEMA = "trading-calendar"
@@ -132,6 +141,8 @@ def calendar_evidence_for_history(
     request: DataRequest,
     caller: CallerContext,
     config: DataFetcherConfig,
+    *,
+    fallback_before: str | None = None,
 ) -> VerifiedCalendarEvidence:
     """从受控日历资产读取可消费的历史质量证据。
 
@@ -194,10 +205,21 @@ def calendar_evidence_for_history(
     coverage_sessions = coverage.get("sessions")
     if not isinstance(payload_sessions, Sequence) or isinstance(payload_sessions, (str, bytes)):
         raise CalendarValidationError("trading_calendar_ref缺少sessions")
-    if tuple(payload_sessions) != expected_intersection or coverage_sessions != list(expected_intersection):
+    if (
+        tuple(payload_sessions) != expected_intersection
+        or isinstance(coverage_sessions, (str, bytes))
+        or not isinstance(coverage_sessions, Sequence)
+        or tuple(coverage_sessions) != expected_intersection
+    ):
         raise CalendarValidationError("trading_calendar_ref交易日交集与覆盖声明不一致")
     dates_by_asset = {
-        asset_id: tuple(value for value in verified_by_exchange[exchange] if request.start_date <= value <= request.end_date)
+        asset_id: tuple(
+            value for value in verified_by_exchange[exchange]
+            if value < fallback_before
+        ) if fallback_before is not None else tuple(
+            value for value in verified_by_exchange[exchange]
+            if request.start_date <= value <= request.end_date
+        )
         for asset_id, exchange in exchanges.items()
     }
     if not all(dates_by_asset.values()):
@@ -311,7 +333,7 @@ class CalendarCache:
             index["entries"][f"{identity}:{ref.content_hash}:{owner}"] = {
                 "calendar_identity": identity,
                 "payload_path": relative,
-                "data_asset_ref": asdict(ref),
+                "data_asset_ref": deep_thaw(asdict(ref)),
                 "tenant_id": caller.tenant_id,
                 "provider": "ifind_http",
                 "updated_at": datetime.now(timezone.utc).isoformat(),
@@ -541,7 +563,14 @@ def fetch_calendar_asset(
                 calls.append({"provider": "ifind_http", "endpoint": "get_trade_dates", "outcome": error.code, "quota_units": 0})
                 cached = cache.lookup(request, caller, store)
                 if cached is None:
-                    if isinstance(error, (CalendarValidationError, ProviderQuotaExceeded, ProviderUnauthorized)):
+                    if isinstance(error, (
+                        CalendarValidationError,
+                        ProviderFieldPermissionDenied,
+                        ProviderInputError,
+                        ProviderMarketPermissionDenied,
+                        ProviderQuotaExceeded,
+                        ProviderUnauthorized,
+                    )):
                         raise _attach_provider_calls(error, calls)
                     unavailable = ProviderUnavailable("交易日历暂不可用，且没有完整覆盖本次区间的已验证缓存")
                     raise _attach_provider_calls(unavailable, calls) from error
