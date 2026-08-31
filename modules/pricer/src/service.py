@@ -75,6 +75,27 @@ _NON_EDITABLE_CONTRACT_TERMS = frozenset({
     "Nvar",
     "Nvega",
 })
+_QUOTE_TERM_EXCLUSIONS = _NON_EDITABLE_CONTRACT_TERMS | frozenset({
+    "exercise_style",
+    "settlement",
+    "observation_price",
+    "margin_call",
+    "event_priority",
+    "hedge_ki_history_policy",
+    "payoff_figure_basis",
+    "annualization_days",
+})
+_QUOTE_TERM_LABELS = {
+    "Pi_0": "期权费",
+    "P_net": "净期权费",
+}
+_SCHEDULE_LABELS = {
+    "daily": "每个交易日",
+    "monthly_last": "每月最后交易日",
+    "maturity": "到期日",
+}
+_QUOTE_PRICE_CONVENTIONS = frozenset({"normalized_100", "absolute_market"})
+_QUOTE_TEXT_UNITS = frozenset({"enum", "flag", "schedule", "schedule_selector", "unit"})
 
 
 def _path_summaries(product: Mapping[str, Any]) -> list[dict[str, str]]:
@@ -89,8 +110,131 @@ def _path_summaries(product: Mapping[str, Any]) -> list[dict[str, str]]:
     return summaries
 
 
+def _quote_price_convention(contract: ResolvedContract) -> str:
+    value = contract.identity.get("price_convention")
+    if not isinstance(value, str) or value not in _QUOTE_PRICE_CONVENTIONS:
+        raise PricerWebInputError("ResolvedContract.price_convention不是Pricer正式报价口径")
+    return value
+
+
+def _quote_public_unit(catalog_unit: str, price_convention: str) -> str:
+    if catalog_unit == "price":
+        return "price_normalized_percent" if price_convention == "normalized_100" else "market_price"
+    if catalog_unit in {"normalized_point", "rate", "volatility"}:
+        return "percent"
+    if catalog_unit == "year":
+        return "year"
+    if catalog_unit in {"day", "count", "observation_count"}:
+        return "count"
+    if catalog_unit in _QUOTE_TEXT_UNITS:
+        return "text"
+    raise PricerWebInputError(f"报价条款单位不受支持：{catalog_unit}")
+
+
+def _quote_display_value(value: Any, catalog_unit: str, price_convention: str) -> str:
+    if isinstance(value, (list, tuple)):
+        return "、".join(_quote_display_value(item, catalog_unit, price_convention) for item in value)
+    if isinstance(value, Mapping):
+        return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    if isinstance(value, bool):
+        return "是" if value else "否"
+    if catalog_unit == "year" and isinstance(value, (int, float)):
+        months = float(value) * 12.0
+        if abs(months - round(months)) < 1e-9 and round(months) < 12:
+            return f"{round(months)}个月"
+        return f"{float(value):g}年"
+    if catalog_unit == "price" and isinstance(value, (int, float)):
+        suffix = "%" if price_convention == "normalized_100" else ""
+        return f"{float(value):g}{suffix}"
+    if catalog_unit == "normalized_point" and isinstance(value, (int, float)):
+        return f"{float(value):g}%"
+    if catalog_unit in {"rate", "volatility"} and isinstance(value, (int, float)):
+        return f"{float(value) * 100:g}%"
+    if catalog_unit == "day" and isinstance(value, (int, float)):
+        return f"{float(value):g}天"
+    if catalog_unit in {"count", "observation_count"} and isinstance(value, (int, float)):
+        return f"{float(value):g}次"
+    if catalog_unit == "schedule_selector":
+        return _SCHEDULE_LABELS.get(str(value), str(value))
+    return str(value)
+
+
+def _reporter_quote_fact(
+    *,
+    contract: ResolvedContract,
+    pricing: Mapping[str, Any],
+    data_ref: DataAssetRef,
+) -> dict[str, Any] | None:
+    """Freeze the exact contract and valuation facts consumed by Reporter Quote."""
+    if pricing.get("quote_eligible") is not True:
+        return None
+    price_convention = _quote_price_convention(contract)
+    registry = load_registry()
+    catalog = registry["term_catalog"]
+    terms: list[dict[str, str]] = []
+    for key, value in contract.terms.items():
+        if key in _QUOTE_TERM_EXCLUSIONS:
+            continue
+        if key not in catalog:
+            raise PricerWebInputError(f"报价条款未注册：{key}")
+        metadata = catalog[key]
+        symbol = metadata.get("symbol")
+        catalog_unit = metadata.get("unit")
+        name = metadata.get("name_zh")
+        if not isinstance(symbol, str) or not symbol.strip():
+            raise PricerWebInputError(f"报价条款{key}缺少受控symbol")
+        if not isinstance(catalog_unit, str) or not catalog_unit:
+            raise PricerWebInputError(f"报价条款{key}缺少受控unit")
+        if not isinstance(name, str) or not name.strip():
+            raise PricerWebInputError(f"报价条款{key}缺少中文名称")
+        terms.append({
+            "symbol": symbol,
+            "label": _QUOTE_TERM_LABELS.get(key, name),
+            "value": _quote_display_value(value, catalog_unit, price_convention),
+            "unit": _quote_public_unit(catalog_unit, price_convention),
+        })
+    if not terms:
+        raise PricerWebInputError("正式报价没有可公开的受控条款")
+    lineage = data_ref.lineage
+    provider = str(lineage.get("provider") or lineage.get("source") or "受控市场数据")
+    applicable_date = str(pricing.get("market_snapshot", {}).get("valuation_date") or "")
+    try:
+        date.fromisoformat(applicable_date)
+    except ValueError as error:
+        raise PricerWebInputError("正式报价缺少有效估值日") from error
+    precision_status = pricing.get("precision_status")
+    if not isinstance(precision_status, str) or not precision_status:
+        raise PricerWebInputError("正式报价缺少precision_status")
+    return {
+        "schema": "optionhelper.reference-quote-fact",
+        "source": {"provider": provider, "reference_id": data_ref.data_asset_id},
+        "applicable_date": applicable_date,
+        "quote_eligible": True,
+        "precision_status": precision_status,
+        "price_convention": price_convention,
+        "terms": terms,
+    }
+
+
 class PricerWebInputError(ContractResolutionError):
-    """Pricer页面请求未满足合同或定价输入边界。"""
+    """Pricer请求未满足合同或定价输入边界。"""
+
+    code = "pricer_input_invalid"
+    status = "needs_input"
+    stage = "pricer_input"
+    retryable = False
+
+    def to_protocol_dict(self) -> dict[str, Any]:
+        """Stable module-owned classification for Host error projection."""
+        return {
+            "ok": False,
+            "module": "pricer",
+            "status": self.status,
+            "failure_code": self.code,
+            "stage": self.stage,
+            "message": str(self),
+            "retryable": self.retryable,
+        }
 
 
 def static_assets() -> dict[str, tuple[Path, str]]:
@@ -101,7 +245,8 @@ def static_assets() -> dict[str, tuple[Path, str]]:
         "/ui/style.css": (UI_DIR / "style.css", "text/css; charset=utf-8"),
         "/ui/controls.css": (UI_DIR / "controls.css", "text/css; charset=utf-8"),
         "/ui/greeks-workbench.css": (UI_DIR / "greeks-workbench.css", "text/css; charset=utf-8"),
-        "/ui/date-control.js": (UI_DIR / "date-control.js", "application/javascript; charset=utf-8"),
+        "/date-input-control.js": (BROWSER_DIR / "date_input_control.js", "application/javascript; charset=utf-8"),
+        "/date-input-control.css": (BROWSER_DIR / "date_input_control.css", "text/css; charset=utf-8"),
         "/ui/greeks-workbench.js": (UI_DIR / "greeks-workbench.js", "application/javascript; charset=utf-8"),
         "/plotly-chart-system.js": (BROWSER_DIR / "plotly_chart_system.js", "application/javascript; charset=utf-8"),
         "/vendor/plotly-optionhelper.min.js": (BROWSER_DIR / "vendor" / "plotly-optionhelper.min.js", "application/javascript; charset=utf-8"),
@@ -247,6 +392,15 @@ class PricerRuntime:
         analysis_case_id = str(host_context.analysis_case_id)
         catalog_version = str(host_context.catalog_version)
         candidate_id = str(host_context.candidate_id)
+        pricing_payload = redact_public_money_compatibility(pricing_result.to_public_percent_dict())
+        pricing_payload["price_convention"] = _quote_price_convention(contract)
+        quote_fact = _reporter_quote_fact(
+            contract=contract,
+            pricing=pricing_payload,
+            data_ref=data_ref,
+        )
+        if quote_fact is not None:
+            pricing_payload["reporter_quote_fact"] = quote_fact
         output: dict[str, Any] = {
             "ok": status == "succeeded",
             "module": "pricer",
@@ -266,7 +420,7 @@ class PricerRuntime:
             "input_snapshot": input_snapshot,
             "limitations": limitations,
             "market_snapshot": pricing_result.market_snapshot,
-            "pricing": redact_public_money_compatibility(pricing_result.to_public_percent_dict()),
+            "pricing": pricing_payload,
         }
         # DataAssetRef provenance is Host-controlled but may include arbitrary
         # metadata.  Project the whole public envelope once, after every
@@ -289,11 +443,20 @@ class PricerRuntime:
             run_id=run_id,
             files=files,
         )
-        run_dir = self.result_store.resolve_module_run(reference, tenant_id=effective_tenant)
+        stored_run = self.result_store.read_module_run_bundle(
+            reference,
+            tenant_id=effective_tenant,
+        )
         output.update({
             "module_run_ref": asdict(reference),
-            "artifact_manifest": _read_json(run_dir / "artifacts" / "artifact_manifest.json"),
-            "commit_marker": _read_json(run_dir / "commit_marker.json"),
+            "artifact_manifest": _json_object_bytes(
+                stored_run["artifacts/artifact_manifest.json"],
+                "ModuleRun产物清单",
+            ),
+            "commit_marker": _json_object_bytes(
+                stored_run["commit_marker.json"],
+                "ModuleRun提交标记",
+            ),
         })
         return redact_public_money_compatibility(project_public_percent(output))
 
@@ -590,10 +753,13 @@ def _pricing_csv(output: Mapping[str, Any]) -> str:
     return "\ufeff" + stream.getvalue()
 
 
-def _read_json(path: Path) -> dict[str, Any]:
-    value = json.loads(path.read_text(encoding="utf-8"))
+def _json_object_bytes(payload: bytes, label: str) -> dict[str, Any]:
+    try:
+        value = json.loads(payload)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError(f"{label}必须为有效JSON") from error
     if not isinstance(value, dict):
-        raise ValueError(f"{path.name}必须为JSON对象")
+        raise ValueError(f"{label}必须为JSON对象")
     return value
 
 
