@@ -12,7 +12,7 @@ from math import isfinite
 import re
 from typing import TYPE_CHECKING, Any, Mapping
 
-from runtime.contracts.contract_types import semantic_hash
+from runtime.contracts.contract_types import deep_freeze, semantic_hash
 
 if TYPE_CHECKING:
     from runtime.contracts.contract_api import ResolvedContract
@@ -76,8 +76,10 @@ class DataAssetRef:
                 raise ValueError(f"DataAssetRef.{name}必须为非空字符串元组")
             object.__setattr__(self, name, tuple(value))
         for name in ("coverage", "price_convention", "lineage", "partition_spec"):
-            if not isinstance(getattr(self, name), Mapping):
+            value = getattr(self, name)
+            if not isinstance(value, Mapping):
                 raise ValueError(f"DataAssetRef.{name}必须为对象")
+            object.__setattr__(self, name, deep_freeze(value))
 
 
 @dataclass(frozen=True)
