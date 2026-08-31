@@ -2,21 +2,22 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import date, timedelta
-from typing import Any, Mapping
+from typing import Any
 
 from runtime.contracts.contract_api import ResolvedContract
 
-from .config import PricingConfig
 from .calendar_policy import requires_future_trading_calendar
+from .config import PricingConfig
+from .engines.pricing_core.engine.derivatives.results import GreekValue, PricingResult
+from .engines.pricing_core.main import price_option
+from .engines.pricing_core.prepared_optionreg import PreparedOptionRegPricer
 from .greeks import add_time_zero_cashflow, real_spot_greeks, scale_result
 from .model_router import capability_for, resolve_route
 from .observation_schedule import actual_n_obs, bind_accumulator_remaining_count
 from .observed_state import ObservedContractState
-from .engines.pricing_core.engine.derivatives.results import GreekValue, PricingResult
-from .engines.pricing_core.main import price_option
-from .engines.pricing_core.prepared_optionreg import PreparedOptionRegPricer
 
 
 class ProductNotAvailable(ValueError):
@@ -49,6 +50,9 @@ _ANALYTICAL_ADAPTERS = frozenset({
     "airbag_portfolio",
     "terminal_portfolio",
     "sharkfin",
+    "worst_of",
+    "variance_swap",
+    "range_accrual",
 })
 
 def product_mapping(product_id: str) -> ProductMapping:
@@ -109,10 +113,15 @@ class ProductPricingAdapter:
             "barrier", "touch_portfolio", "airbag_portfolio", "sharkfin"
         } and (observed_state.occurred_events or observed_state.knocked_in):
             raise ProductNotAvailable("存续路径事件已发生时请使用Monte Carlo，以冻结观察状态继续估值")
+        start_value = contract.identity.get("contract_start_date")
+        if _valuation_after_contract_start(observed_state, start_value):
+            if contract.product_id == "9.4":
+                raise ProductNotAvailable("存续方差互换缺少估值日前已实现方差，不能只估算剩余观察期")
+            if contract.product_id == "9.8":
+                raise ProductNotAvailable("存续区间计息缺少估值日前累计区间内观察数，不能只估算剩余观察期")
         if self.method == "monte_carlo":
             if self.config.path_count is None:
                 raise ProductNotAvailable("Monte Carlo必须显式提供path_count")
-            start_value = contract.identity.get("contract_start_date")
             observed_state.validate_path_events(
                 contract_start_date=None if start_value is None else str(start_value),
                 path_dependent=self.requires_trading_calendar,
@@ -120,8 +129,6 @@ class ProductPricingAdapter:
                 requires_accumulated_quantity="Q_acc" in contract.terms.get("monitor", {}),
                 unsupported_midlife_aggregate="n_in" in contract.terms.get("monitor", {}),
             )
-            if _is_midlife(observed_state, start_value) and contract.product_id == "9.4":
-                raise ProductNotAvailable("存续方差互换缺少估值日前已实现方差，不能仅模拟剩余路径")
             if observed_state.occurred_events:
                 history_sessions = _verified_state_sessions(self.market_snapshot, self.trading_calendar)
                 observed_state.validate_observation_bounds(
@@ -129,8 +136,10 @@ class ProductPricingAdapter:
                     contract_terms=contract.terms,
                     trading_sessions=history_sessions,
                 )
-        if self.method != "monte_carlo" and len(contract.underlyings) != 1:
-            raise ProductNotAvailable("该闭式结构仅支持单标的")
+        if self.method != "monte_carlo":
+            expected_assets = 2 if self.route.capability.adapter == "worst_of" else 1
+            if len(contract.underlyings) != expected_assets:
+                raise ProductNotAvailable(f"该解析结构必须包含{expected_assets}个标的")
         self.asset = contract.underlyings[0]
         references = contract.identity.get("reference_prices")
         if not isinstance(references, Mapping) or set(references) != set(contract.underlyings):
@@ -260,6 +269,48 @@ class ProductPricingAdapter:
             contract = _binary_contract(self.contract, maturity_years, basis)
         elif self.route.capability.adapter == "sharkfin":
             contract = _sharkfin_contract(self.contract, maturity_years, basis)
+        elif self.route.capability.adapter == "worst_of":
+            correlation = _two_asset_correlation(self.config.correlation)
+            references = self.contract.identity["reference_prices"]
+            contract = {
+                "strike": float(self.contract.terms["K"]),
+                "maturity_years": float(maturity_years),
+                "normalized_spots": tuple(
+                    _asset_number(self.config.spot, asset, "spot")
+                    / float(references[asset])
+                    * float(self.contract.terms["S0Vec"][index])
+                    for index, asset in enumerate(self.contract.underlyings)
+                ),
+                "volatilities": tuple(self._asset_volatility(asset) for asset in self.contract.underlyings),
+                "dividend_yields": tuple(
+                    _asset_number(self.config.dividend_yield, asset, "dividend_yield")
+                    for asset in self.contract.underlyings
+                ),
+                "correlation": correlation,
+                "basis": basis,
+            }
+        elif self.route.capability.adapter == "variance_swap":
+            contract = {
+                "strike_volatility": float(self.contract.terms["Ksig"]),
+                "annualization_days": int(self.contract.terms["annualization_days"]),
+                "observation_times": _analytical_observation_times(
+                    self.trading_calendar, _as_of(self.config.valuation_date), maturity_years,
+                ),
+                "maturity_years": float(maturity_years),
+                "basis": basis,
+            }
+        elif self.route.capability.adapter == "range_accrual":
+            observation_times = _analytical_observation_times(
+                self.trading_calendar, _as_of(self.config.valuation_date), maturity_years,
+            )
+            contract = {
+                "lower": float(self.contract.terms["Hlow"]),
+                "upper": float(self.contract.terms["Hup"]),
+                "maximum_coupon": float(self.contract.terms["c_max"]),
+                "observation_times": observation_times,
+                "maturity_years": float(maturity_years),
+                "basis": basis,
+            }
         else:
             contract = {
                 "legs": _analytical_portfolio_legs(self.contract, maturity_years, basis),
@@ -694,7 +745,7 @@ def _initial_cashflow(contract: ResolvedContract, quantity: float) -> float:
     """Contractual holder cashflow at time zero for closed-form structures."""
     if contract.product_id in {"1.1", "1.2", "4.1", "4.2", "4.3", "4.4", "4.5", "4.6", "4.7", "4.8", "5.1", "5.2", "5.3", "5.4", "5.5", "5.6"}:
         return -quantity * float(contract.terms.get("Pi_0", 0.0))
-    if contract.product_id in {"6.1", "6.2", "6.3", "9.5", "9.6"}:
+    if contract.product_id in {"6.1", "6.2", "6.3", "9.1", "9.5", "9.6", "9.8"}:
         return -float(contract.terms.get("N", 0.0)) * float(contract.terms.get("p", 0.0))
     if contract.product_id in _EXACT_MAPPINGS:
         return -float(contract.terms.get("P_net", 0.0))
@@ -861,6 +912,14 @@ def _is_midlife(observed_state: ObservedContractState, start_value: object) -> b
     )
 
 
+def _valuation_after_contract_start(observed_state: ObservedContractState, start_value: object) -> bool:
+    return (
+        observed_state.valuation_date is not None
+        and start_value is not None
+        and date.fromisoformat(observed_state.valuation_date) > date.fromisoformat(str(start_value))
+    )
+
+
 def _verified_state_sessions(
     market_snapshot: Mapping[str, Any],
     trading_calendar: Mapping[str, Any] | None,
@@ -894,6 +953,39 @@ def _asset_number(value: Any, asset: str, label: str) -> float:
         value = value[asset]
     result = _number(value, label) if label in {"spot", "volatility"} else float(value)
     return result
+
+
+def _two_asset_correlation(value: Any) -> float:
+    if value is None:
+        return 0.0
+    if not isinstance(value, (tuple, list)) or len(value) != 2 or any(
+        not isinstance(row, (tuple, list)) or len(row) != 2 for row in value
+    ):
+        raise ProductNotAvailable("Worst-Of解析定价需要2×2相关矩阵")
+    if float(value[0][0]) != 1.0 or float(value[1][1]) != 1.0 or float(value[0][1]) != float(value[1][0]):
+        raise ProductNotAvailable("Worst-Of相关矩阵必须对称且对角线为1")
+    correlation = float(value[0][1])
+    if not -1.0 < correlation < 1.0:
+        raise ProductNotAvailable("Worst-Of解析定价的相关系数必须严格位于-1和1之间")
+    return correlation
+
+
+def _analytical_observation_times(
+    trading_calendar: Mapping[str, Any] | None,
+    as_of: date,
+    maturity_years: float,
+) -> tuple[float, ...]:
+    if trading_calendar is None:
+        raise ProductNotAvailable("观察型解析结构必须使用冻结交易日历")
+    target = as_of + timedelta(days=round(float(maturity_years) * 365.0))
+    selected = tuple(
+        date.fromisoformat(str(value))
+        for value in trading_calendar["sessions"]
+        if as_of <= date.fromisoformat(str(value)) <= target
+    )
+    if len(selected) < 2 or (target - selected[-1]).days > 14:
+        raise ProductNotAvailable("冻结交易日历未覆盖解析结构的完整期限")
+    return tuple((value - as_of).days / 365.0 for value in selected)
 
 
 def _validated_trading_calendar(value: Any, *, as_of: date, demo_mode: bool) -> dict[str, Any]:
