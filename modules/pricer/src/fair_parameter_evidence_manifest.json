@@ -1,0 +1,31 @@
+{
+  "schema_id": "optionhelper.pricer-fair-parameter-evidence",
+  "manifest_version": "1",
+  "entries": {
+    "optionreg.registry": {
+      "development_source_path": "references/optionreg.py",
+      "release_source_path": "scripts/knowledger/optionreg.py",
+      "source_sha256": "4977d3886fa90647de84a9b4dc6dc77acba3e732b2f01a1c44b0f4d8f2725016",
+      "release_source_sha256": "4977d3886fa90647de84a9b4dc6dc77acba3e732b2f01a1c44b0f4d8f2725016"
+    },
+    "pricer.model_router.capabilities": {
+      "development_source_path": "modules/pricer/src/model_router.py",
+      "release_source_path": "scripts/modules/pricer/model_router.py",
+      "source_sha256": "40d6e75e51b1da9218388f38f58acb4e78bca4fa31f71fd7936ab7c998b81a15",
+      "release_source_sha256": "40d6e75e51b1da9218388f38f58acb4e78bca4fa31f71fd7936ab7c998b81a15"
+    },
+    "pricer.product_acceptance_matrix": {
+      "development_source_path": "modules/pricer/tests/fixtures/product_acceptance_matrix.json",
+      "release_source_path": null,
+      "source_sha256": "5c76ca3e783ae0f1c8b67015bdb7616b3adc6c9697aaf0199b36813f99c06b26",
+      "release_source_sha256": null
+    },
+    "pricer.fair_parameter.cashflow_evidence": {
+      "development_source_path": "modules/pricer/tests/test_fair_parameter_cashflow_evidence.py",
+      "release_source_path": null,
+      "source_sha256": "105fd9175fbdc0d6d2c435ac07542f41540627fe9d948e6b6ae02a358aa27489",
+      "release_source_sha256": null
+    }
+  },
+  "manifest_hash": "a9fd2f21f51205b05dffcc9263dd3ce6cd3e17b32346f630372a5bcb154c0bbe"
+}
