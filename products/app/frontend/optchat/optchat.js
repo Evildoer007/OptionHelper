@@ -2822,7 +2822,7 @@ export function showWorkspaceStartupFailure(error) {
     status,
     signedOut
       ? "登录状态已失效，请重新登录。"
-      : `工作台初始化未完成：${error?.message || "请确认App Host正在运行后重试。"}`,
+      : `工作台初始化未完成：${error?.message || "请确认OptionHelper服务可用后重试。"}`,
     true,
   );
 }
