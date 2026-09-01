@@ -1,0 +1,16 @@
+OptionHelper Agent Runtime selective adaptation notice
+
+This repository contains a selective, product-specific source adaptation of
+runtime modules from the upstream repository identified in
+OptionHelper-Agent-Runtime-SOURCE-MAPPING.md. The adaptation is not a copy of
+the upstream application, front end, command-line interface, plugin system,
+shell integration, file-editing tools, telemetry, external agent providers,
+skill system, or desktop shell.
+
+Only the MIT-licensed runtime modules listed in the source mapping were
+adapted for the OptionHelper agent execution boundary. OptionHelper keeps
+ownership of authentication, task identity, contracts, market snapshots,
+calculation modules, result storage, reports, and delivery artifacts.
+
+No upstream package is loaded by the product at runtime. The license file and
+source mapping are retained with distributed artifacts for provenance review.
