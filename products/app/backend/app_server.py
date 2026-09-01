@@ -34,6 +34,9 @@ from .agent_runtime.recommender_adapter import AppConversationToolExecutor, Reco
 from .agent_runtime.multi_agent import (
     AgentRunConcurrencyGate,
     AgentRunSettlementRegistry,
+    default_agent_instructions,
+    effective_agent_instructions,
+    effective_preset_revision,
     recommendation_presets,
 )
 from .agent_runtime import multi_agent as multi_agent_runtime
@@ -692,6 +695,7 @@ class AppServer:
             default_model_selection=local_selection,
             multi_agent_recommendation_preset_id=principal.multi_agent_recommendation_preset_id,
             multi_agent_preset_role_models=principal.multi_agent_preset_role_models,
+            multi_agent_preset_agent_instructions=principal.multi_agent_preset_agent_instructions,
             multi_agent_review_policy_id=principal.multi_agent_review_policy_id,
             multi_agent_review_policy_role_models=principal.multi_agent_review_policy_role_models,
         )
@@ -916,6 +920,7 @@ class AppServer:
                 default_model_selection=selection,
                 multi_agent_recommendation_preset_id=snapshot.multi_agent_recommendation_preset_id,
                 multi_agent_preset_role_models=snapshot.multi_agent_preset_role_models,
+                multi_agent_preset_agent_instructions=snapshot.multi_agent_preset_agent_instructions,
                 multi_agent_review_policy_id=snapshot.multi_agent_review_policy_id,
                 multi_agent_review_policy_role_models=snapshot.multi_agent_review_policy_role_models,
             )
@@ -1699,13 +1704,25 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
             settings = self.app.settings_for(identity)
             presets = recommendation_presets()
             review_policies = _review_policies()
+            agent_files = {
+                preset_id: dict(effective_agent_instructions(
+                    preset,
+                    settings.multi_agent_preset_agent_instructions.get(preset_id, {}),
+                ))
+                for preset_id, preset in presets.items()
+                if preset_id in _RECOMMENDATION_MODE_IDS
+            }
+            default_agent_files = {
+                preset_id: default_agent_instructions(preset_id)
+                for preset_id in _RECOMMENDATION_MODE_IDS
+            }
             self._json(HTTPStatus.OK, {
                 **self.app.agent_runtime_status,
                 "selected_preset_id": settings.multi_agent_recommendation_preset_id,
                 "presets": [
                     {
                         "preset_id": preset.preset_id,
-                        "revision": preset.revision,
+                        "revision": effective_preset_revision(preset, agent_files[preset_id]),
                         "display_name": preset.display_name,
                         "execution_strategy": preset.execution_strategy,
                         "enabled": preset.enabled,
@@ -1719,6 +1736,8 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
                     if preset_id in _RECOMMENDATION_MODE_IDS
                 ],
                 "role_models": serialize_settings_public(settings)["multi_agent_preset_role_models"],
+                "agent_files": agent_files,
+                "default_agent_files": default_agent_files,
                 "selected_review_policy_id": settings.multi_agent_review_policy_id,
                 "review_policies": [
                     {
@@ -2342,6 +2361,69 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
             saved = self.app.save_settings(
                 identity,
                 replace(current, multi_agent_preset_role_models=mappings),
+                "settings.model.local.write",
+            )
+            self._json(HTTPStatus.OK, {"settings": self.app.public_settings(identity, saved)})
+            return
+        if path == "/api/settings/multi-agent-role-config":
+            self.app.policy.require(identity.role, "settings.model.local.write")
+            _only_fields(body, {"preset_id", "role_models", "agent_files"})
+            preset_id = str(body.get("preset_id", "")).strip()
+            preset = recommendation_presets().get(preset_id)
+            if preset is None or not preset.enabled:
+                raise ValidationError("MultiAgent预设未启用")
+            allowed_roles = set(_catalog_roles(
+                preset, _RECOMMENDATION_MODE_ROLE_FALLBACKS.get(preset_id, ()),
+            ))
+            raw_role_models = body.get("role_models")
+            if not isinstance(raw_role_models, dict):
+                raise ValidationError("role_models必须为对象")
+            selected_roles: dict[str, ModelSelection] = {}
+            for role, raw_selection in raw_role_models.items():
+                if role not in allowed_roles or not isinstance(raw_selection, dict):
+                    raise ValidationError("MultiAgent角色模型映射无效")
+                _only_fields(raw_selection, {"provider_id", "model_id"})
+                selection = ModelSelection(
+                    _model_connection_id(raw_selection.get("provider_id")),
+                    _required_model_id(raw_selection.get("model_id")),
+                )
+                self.app.model_service_for_selection(identity, selection)
+                selected_roles[role] = selection
+            raw_agent_files = body.get("agent_files")
+            if not isinstance(raw_agent_files, dict) or set(raw_agent_files) != allowed_roles:
+                raise ValidationError("必须提交当前预设全部Agent的AGENT.md")
+            selected_agent_files = {
+                role: _agent_instruction_content(raw_agent_files[role])
+                for role in sorted(allowed_roles)
+            }
+            defaults = default_agent_instructions(preset_id)
+            overrides = {
+                role: content
+                for role, content in selected_agent_files.items()
+                if content != defaults.get(role)
+            }
+            current = self.app.settings_for(identity)
+            role_mappings = {
+                key: dict(value) for key, value in current.multi_agent_preset_role_models.items()
+            }
+            instruction_mappings = {
+                key: dict(value) for key, value in current.multi_agent_preset_agent_instructions.items()
+            }
+            if selected_roles:
+                role_mappings[preset_id] = selected_roles
+            else:
+                role_mappings.pop(preset_id, None)
+            if overrides:
+                instruction_mappings[preset_id] = overrides
+            else:
+                instruction_mappings.pop(preset_id, None)
+            saved = self.app.save_settings(
+                identity,
+                replace(
+                    current,
+                    multi_agent_preset_role_models=role_mappings,
+                    multi_agent_preset_agent_instructions=instruction_mappings,
+                ),
                 "settings.model.local.write",
             )
             self._json(HTTPStatus.OK, {"settings": self.app.public_settings(identity, saved)})
@@ -3086,6 +3168,17 @@ def _only_fields(value: dict[str, Any], allowed: set[str]) -> None:
     unexpected = set(value).difference(allowed)
     if unexpected:
         raise ValidationError(f"请求包含不允许的字段：{', '.join(sorted(unexpected))}")
+
+
+def _agent_instruction_content(value: object) -> str:
+    if not isinstance(value, str):
+        raise ValidationError("AGENT.md必须为文本")
+    content = value.replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not content or len(content) > 16_000:
+        raise ValidationError("每份AGENT.md必须为1至16000个字符")
+    if "\x00" in content or any(ord(character) < 32 and character not in "\n\t" for character in content):
+        raise ValidationError("AGENT.md包含不支持的控制字符")
+    return content
 
 
 def _credential_value(value: dict[str, Any], field: str) -> str:
