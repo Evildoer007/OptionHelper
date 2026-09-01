@@ -13,6 +13,11 @@ from typing import Any, Mapping, Sequence
 
 
 CANVAS_WIDTH = 1200
+DEFAULT_CANVAS_HEIGHT = 566
+MIN_CANVAS_WIDTH = 240
+MAX_CANVAS_WIDTH = 6000
+MIN_CANVAS_HEIGHT = 180
+MAX_CANVAS_HEIGHT = 6000
 OUTER_MARGIN = 16
 CARD_WIDTH = 578
 CARD_GAP = 12
@@ -20,6 +25,25 @@ CARD_BASE_HEIGHT = 400
 PLOT_LEFT = 38
 PLOT_RIGHT = 540
 _TOKEN_PATTERN = re.compile(r"^([A-Za-z])_(?:\{(.+)\}|(.+))$")
+
+
+def normalize_render_options(value: Mapping[str, Any] | None) -> dict[str, int]:
+    """校验仅影响SVG像素尺寸的展示参数。"""
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping) or set(value) != {"width", "height"}:
+        raise ValueError("render_options必须且只能包含width与height")
+    normalized: dict[str, int] = {}
+    for key, minimum, maximum, label in (
+        ("width", MIN_CANVAS_WIDTH, MAX_CANVAS_WIDTH, "图片宽度"),
+        ("height", MIN_CANVAS_HEIGHT, MAX_CANVAS_HEIGHT, "图片高度"),
+    ):
+        raw = value.get(key)
+        if isinstance(raw, bool) or not isinstance(raw, int) or not minimum <= raw <= maximum:
+            raise ValueError(f"{label}必须是{minimum}至{maximum}之间的整数像素值")
+        normalized[key] = raw
+    return normalized
+
 
 _THRESHOLD_META: dict[str, tuple[str, str, str]] = {
     "K": ("执行价", "#1F5FA8", "9 4"), "K_1": ("执行价1", "#1F5FA8", "9 4"),
@@ -242,23 +266,46 @@ def _reference_value(path: Mapping[str, Any]) -> float:
     return float(path.get("axis", {}).get("reference_value", 0.0))
 
 
-def _layout_cards(paths: Sequence[Mapping[str, Any]], columns: int) -> tuple[list[_CardLayout], float]:
+def _layout_cards(
+    paths: Sequence[Mapping[str, Any]],
+    columns: int,
+    *,
+    canvas_width: float = CANVAS_WIDTH,
+    canvas_height: float | None = None,
+    legend_reserve: float = 62.0,
+) -> tuple[list[_CardLayout], float]:
     sketches: list[tuple[float, float, tuple[_Annotation, ...], float]] = []
+    card_width = (
+        canvas_width - 2 * OUTER_MARGIN
+        if columns == 1
+        else (canvas_width - 2 * OUTER_MARGIN - CARD_GAP * (columns - 1)) / columns
+    )
     for index, path in enumerate(paths):
-        card_width = CANVAS_WIDTH - 2 * OUTER_MARGIN if columns == 1 else CARD_WIDTH
         card_x = OUTER_MARGIN + (index % columns) * (card_width + CARD_GAP)
-        plot_left, plot_right = card_x + PLOT_LEFT, card_x + card_width - (CARD_WIDTH - PLOT_RIGHT)
+        plot_padding = min(PLOT_LEFT, max(18.0, card_width * 0.08))
+        plot_left, plot_right = card_x + plot_padding, card_x + card_width - plot_padding
         annotations = _annotation_layout(path, plot_left, plot_right)
         rows = 1 + max((annotation.row for annotation in annotations), default=-1)
         card_height = CARD_BASE_HEIGHT + max(0, rows - 2) * 22.0
         sketches.append((card_x, card_width, annotations, card_height))
+    row_count = max(1, (len(sketches) + columns - 1) // columns)
+    requested_row_height = None
+    if canvas_height is not None:
+        available = canvas_height - 92.0 - legend_reserve - CARD_GAP * (row_count - 1)
+        requested_row_height = max(72.0, available / row_count)
     layouts: list[_CardLayout] = []
     y = 92.0
     for start in range(0, len(sketches), columns):
         row = sketches[start:start + columns]
-        row_height = max(item[3] for item in row)
+        row_height = requested_row_height if requested_row_height is not None else max(item[3] for item in row)
         for offset, (x, width, annotations, height) in enumerate(row):
-            layouts.append(_CardLayout(x=x, y=y, width=width, height=height, annotations=annotations))
+            layouts.append(_CardLayout(
+                x=x,
+                y=y,
+                width=width,
+                height=row_height if requested_row_height is not None else height,
+                annotations=annotations,
+            ))
         y += row_height + 12.0
     return layouts, y
 
@@ -266,9 +313,16 @@ def _layout_cards(paths: Sequence[Mapping[str, Any]], columns: int) -> tuple[lis
 def _card(path: Mapping[str, Any], index: int, layout: _CardLayout) -> str:
     card_x, card_y, card_width, card_height = layout.x, layout.y, layout.width, layout.height
     annotation_rows = 1 + max((annotation.row for annotation in layout.annotations), default=-1)
-    left, right = card_x + PLOT_LEFT, card_x + card_width - (CARD_WIDTH - PLOT_RIGHT)
-    top = card_y + 76 + annotation_rows * 20.0
-    bottom = card_y + card_height - 46
+    plot_padding = min(PLOT_LEFT, max(18.0, card_width * 0.08))
+    left, right = card_x + plot_padding, card_x + card_width - plot_padding
+    natural_header = 76.0 + annotation_rows * 20.0
+    header = min(natural_header, max(34.0, card_height * 0.42))
+    footer = min(46.0, max(14.0, card_height * 0.16))
+    if card_height - header - footer < 24.0:
+        header = max(28.0, card_height * 0.44)
+        footer = max(10.0, card_height * 0.12)
+    top = card_y + header
+    bottom = max(top + 12.0, card_y + card_height - footer)
     width, height = right - left, bottom - top
     scale = path["scale"]
     reference = _reference_value(path)
@@ -318,13 +372,16 @@ def _legend_items(paths: Sequence[Mapping[str, Any]]) -> list[dict[str, str | fl
     return items
 
 
-def _legend_rows(items: Sequence[Mapping[str, str | float]]) -> list[list[dict[str, str | float]]]:
+def _legend_rows(
+    items: Sequence[Mapping[str, str | float]],
+    canvas_width: float = CANVAS_WIDTH,
+) -> list[list[dict[str, str | float]]]:
     rows: list[list[dict[str, str | float]]] = [[]]
     used = 0.0
     for source in items:
         item = dict(source)
         width = float(item["width"])
-        if used and used + width > CANVAS_WIDTH - 2 * OUTER_MARGIN - 10:
+        if used and used + width > canvas_width - 2 * OUTER_MARGIN - 10:
             rows.append([])
             used = 0.0
         item["x"] = OUTER_MARGIN + used
@@ -346,23 +403,39 @@ def _legend_svg(rows: Sequence[Sequence[Mapping[str, str | float]]], height: flo
     return "".join(parts)
 
 
-def render_svg(payload: Mapping[str, Any]) -> str:
+def render_svg(
+    payload: Mapping[str, Any],
+    render_options: Mapping[str, Any] | None = None,
+) -> str:
     """根据Python运行时路径渲染，不读取默认SVG或历史Editor文件。"""
+    options = normalize_render_options(render_options)
+    canvas_width = float(options.get("width", CANVAS_WIDTH))
+    requested_height = float(options["height"]) if "height" in options else None
     paths = list(payload.get("paths", []))
-    columns = 1 if len(paths) == 1 else 2
-    layouts, cards_bottom = _layout_cards(paths, columns)
-    legend_rows = _legend_rows(_legend_items(paths))
-    height = max(566.0, cards_bottom + 62.0 + (len(legend_rows) - 1) * 28.0)
+    columns = 1 if len(paths) == 1 or canvas_width < 760 else 2
+    legend_rows = _legend_rows(_legend_items(paths), canvas_width)
+    legend_reserve = 62.0 + (len(legend_rows) - 1) * 28.0
+    layouts, cards_bottom = _layout_cards(
+        paths,
+        columns,
+        canvas_width=canvas_width,
+        canvas_height=requested_height,
+        legend_reserve=legend_reserve,
+    )
+    height = requested_height if requested_height is not None else max(
+        float(DEFAULT_CANVAS_HEIGHT),
+        cards_bottom + legend_reserve,
+    )
     cards = "".join(_card(path, index, layouts[index]) for index, path in enumerate(paths))
     legend = _legend_svg(legend_rows, height)
     name = escape(str(payload.get("name_zh", "")))
     footer_y = height - 50 - (len(legend_rows) - 1) * 28
-    return f'''<svg xmlns="http://www.w3.org/2000/svg" width="{CANVAS_WIDTH}" height="{_number(height)}" viewBox="0 0 {CANVAS_WIDTH} {_number(height)}" role="img" aria-labelledby="title desc">
+    return f'''<svg xmlns="http://www.w3.org/2000/svg" width="{_number(canvas_width)}" height="{_number(height)}" viewBox="0 0 {_number(canvas_width)} {_number(height)}" role="img" aria-labelledby="title desc">
   <title id="title">{name}路径Payoff图</title><desc id="desc">由Python Payoffer根据本次ResolvedContract计算并由共享现金流解释器逐点核对的参数化路径Payoff图。</desc>
   <defs><linearGradient id="everbright-red-gold" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#C8102E"/><stop offset="1" stop-color="#D89B27"/></linearGradient><style>
   .cn{{font-family:"PingFang SC","Microsoft YaHei","Noto Sans CJK SC",Arial,sans-serif}}.card{{fill:#fff;stroke:#CFCFCF;stroke-width:1.1}}.card-accent{{stroke:#C8102E;stroke-width:4.5}}.scenario-no{{font-size:17px;font-weight:700;fill:#252525}}.scenario-note{{font-size:10.5px;fill:#6F7780}}.axis-title{{font-size:12px;font-weight:600;fill:#252525}}.reference-label,.range-label{{font-size:12px;fill:#4F4F4F}}.axis{{stroke:#252525;stroke-width:1.3}}.axis-arrow{{fill:#252525}}.threshold{{stroke-width:1;opacity:.82}}.threshold-value{{font-size:11px;font-weight:700}}.payoff-guide{{stroke:#B9BEC7;stroke-width:1;stroke-dasharray:3 4}}.payoff-level-label{{font-size:11px;font-weight:600;fill:#6F7780}}.payoff-line{{fill:none;stroke:#C8102E;stroke-width:2.6;stroke-linecap:round;stroke-linejoin:round}}.payoff-jump{{stroke:#C8102E;stroke-width:1.4;stroke-dasharray:4 3;fill:none}}.curve-turn{{fill:#6B3FA0;stroke:#fff;stroke-width:1.2}}.curve-endpoint{{stroke:#C8102E;stroke-width:1.7}}.curve-endpoint.open{{fill:#fff}}.curve-endpoint.closed{{fill:#C8102E}}.global-legend{{font-size:12px;fill:#555}}.global-legend .token-sub{{font-size:9px}}
   </style></defs>
-  <rect width="{CANVAS_WIDTH}" height="{_number(height)}" fill="#fff"/><rect x="{OUTER_MARGIN}" y="16" width="{CANVAS_WIDTH - 2 * OUTER_MARGIN}" height="56" fill="url(#everbright-red-gold)"/><rect x="{OUTER_MARGIN}" y="16" width="8" height="56" fill="#A80F28"/><text class="cn" x="38" y="52" fill="#fff" font-size="26" font-weight="700">{name}</text>
+  <rect width="{_number(canvas_width)}" height="{_number(height)}" fill="#fff"/><rect x="{OUTER_MARGIN}" y="16" width="{_number(canvas_width - 2 * OUTER_MARGIN)}" height="56" fill="url(#everbright-red-gold)"/><rect x="{OUTER_MARGIN}" y="16" width="8" height="56" fill="#A80F28"/><text class="cn" x="38" y="52" fill="#fff" font-size="26" font-weight="700">{name}</text>
   {cards}
-  <line x1="{OUTER_MARGIN}" y1="{_number(footer_y)}" x2="{CANVAS_WIDTH - OUTER_MARGIN}" y2="{_number(footer_y)}" stroke="#C8102E" stroke-width="1.4"/><g class="cn" data-global-legend="true">{legend}</g>
+  <line x1="{OUTER_MARGIN}" y1="{_number(footer_y)}" x2="{_number(canvas_width - OUTER_MARGIN)}" y2="{_number(footer_y)}" stroke="#C8102E" stroke-width="1.4"/><g class="cn" data-global-legend="true">{legend}</g>
 </svg>'''
