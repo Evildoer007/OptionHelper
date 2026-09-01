@@ -158,6 +158,15 @@ textarea:focus-visible {
 
 .binding-card strong { display: block; color: var(--ink); font-size: 13px; }
 
+.research-object-field {
+  display: grid;
+  gap: 7px;
+  margin-top: 14px;
+}
+
+.research-object-field .field-label { margin: 0; }
+.research-object-field small { color: var(--muted); font-size: 10px; line-height: 1.5; }
+
 .scenario-heading {
   display: flex;
   justify-content: space-between;
