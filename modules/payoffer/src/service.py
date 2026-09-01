@@ -39,7 +39,8 @@ from .impl.engine import (
     run_payoff,
     run_runtime,
 )
-from .models import PayoffInput
+from .impl.svg_renderer import normalize_render_options
+from .models import PayoffInput, PayoffResult
 
 
 MODULE_ROOT = Path(__file__).resolve().parents[3]
@@ -299,9 +300,10 @@ def _preview_response(
     name_zh: str,
     term_overrides: Mapping[str, Any] | None,
     identity: Mapping[str, Any] | None,
+    render_options: Mapping[str, Any] | None = None,
 ) -> tuple[dict[str, Any], str]:
     """消费引擎同一次计算产出的payload与SVG，服务层绝不重复渲染。"""
-    return _rendered_preview_response(preview_result(name_zh, term_overrides, identity))
+    return _rendered_preview_response(preview_result(name_zh, term_overrides, identity, render_options))
 
 
 def _rendered_preview_response(result: Any) -> tuple[dict[str, Any], str]:
@@ -320,7 +322,7 @@ def _preview_request(
     """开发预览只接受当前页面的product_id、term_overrides与identity输入。"""
     allowed = {
         "product_id", "term_overrides", "identity", "task_id", "run_id",
-        "new_contract_variant", "development_preview",
+        "new_contract_variant", "development_preview", "render_options",
     }
     unknown = set(body) - allowed
     if unknown:
@@ -343,6 +345,15 @@ def _preview_request(
     if not isinstance(development_preview, bool):
         raise PayoffEngineError("development_preview必须是布尔值")
     return product_id, name_zh, product, term_overrides, supplied_identity, development_preview
+
+
+def _render_options(body: Mapping[str, Any]) -> dict[str, int] | None:
+    if "render_options" not in body:
+        return None
+    try:
+        return normalize_render_options(body.get("render_options"))
+    except ValueError as error:
+        raise PayoffEngineError(str(error)) from error
 
 
 def _require_host_market_identity(
@@ -378,8 +389,8 @@ def _require_host_market_identity(
 
 def _hosted_preview_input(body: Mapping[str, Any], host_context: ModuleHostContext) -> PayoffInput:
     """恢复Host受控合同并核验不可由页面替换的合同绑定。"""
-    if set(body) != {"product_id", "resolved_contract"}:
-        raise PayoffEngineError("Desk Runtime预览只接受product_id与Host注入的resolved_contract")
+    if set(body) not in ({"product_id", "resolved_contract"}, {"product_id", "resolved_contract", "render_options"}):
+        raise PayoffEngineError("Desk Runtime预览只接受product_id、Host注入的resolved_contract与图片尺寸")
     if host_context.module != "payoffer" or "module.catalog" not in host_context.request_policy:
         raise PayoffEngineError("Desk Runtime预览必须由Host授权payoffer module.catalog")
     required = {
@@ -472,12 +483,16 @@ def call_tool(
     if action == "preview":
         if isinstance(host_context, ModuleHostContext):
             payoff_input = _hosted_preview_input(body, host_context)
-            payload, svg = _rendered_preview_response(render_payoff(payoff_input))
+            rendered = render_payoff(payoff_input, _render_options(body))
+            payload, svg = _rendered_preview_response(PayoffResult(
+                payload={**dict(rendered.payload), "runtime_status": "enabled"},
+                svg=rendered.svg,
+            ))
         else:
             product_id, name_zh, product, term_overrides, identity, development_preview = _preview_request(body)
             _require_development_preview(development_preview, "预览")
             _require_local_development_identity(identity, product)
-            payload, svg = _preview_response(name_zh, term_overrides, identity)
+            payload, svg = _preview_response(name_zh, term_overrides, identity, _render_options(body))
         return {"ok": True, "module": "payoffer", "preview": payload, "svg": svg}
     if action == "run":
         if not isinstance(host_context, ModuleHostContext) or result_store is None or not tenant_id:
@@ -491,6 +506,7 @@ def call_tool(
             host_context=host_context,
             result_store=result_store,
             tenant_id=tenant_id,
+            render_options=_render_options(body),
         )
     return {
         "ok": False,
@@ -687,7 +703,7 @@ class Handler(BaseHTTPRequestHandler):
                 _, name_zh, product, term_overrides, identity, development_preview = _preview_request(body)
                 _require_development_preview(development_preview, "预览")
                 _require_local_development_identity(identity, product)
-                payload, svg = _preview_response(name_zh, term_overrides, identity)
+                payload, svg = _preview_response(name_zh, term_overrides, identity, _render_options(body))
                 self._json(HTTPStatus.OK, {"ok": True, "preview": payload, "svg": svg})
                 return
             if parsed.path == "/api/default":
@@ -712,6 +728,7 @@ class Handler(BaseHTTPRequestHandler):
                     identity,
                     str(body.get("task_id", "")),
                     str(body.get("run_id", "")),
+                    _render_options(body),
                 )
                 self._json(HTTPStatus.OK, result)
                 return
