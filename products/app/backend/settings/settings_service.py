@@ -50,6 +50,18 @@ class SettingsService:
             for configured_preset_id, role_models in settings.multi_agent_preset_role_models.items()
             if configured_preset_id in MULTI_AGENT_ENABLED_RECOMMENDATION_PRESET_IDS
         }
+        preset_agent_instructions = {
+            configured_preset_id: {
+                MULTI_AGENT_LEGACY_ROLE_ALIASES.get(role, role): content.replace("\r\n", "\n").replace("\r", "\n").strip()
+                for role, content in role_instructions.items()
+                if MULTI_AGENT_LEGACY_ROLE_ALIASES.get(role, role)
+                in MULTI_AGENT_RECOMMENDATION_PRESET_ROLES.get(configured_preset_id, frozenset())
+                and isinstance(content, str) and content.strip()
+            }
+            for configured_preset_id, role_instructions in settings.multi_agent_preset_agent_instructions.items()
+            if configured_preset_id in MULTI_AGENT_ENABLED_RECOMMENDATION_PRESET_IDS
+            and isinstance(role_instructions, dict)
+        }
         if settings.multi_agent_recommendation_preset_id == "adversarial-review":
             legacy_roles = settings.multi_agent_preset_role_models.get("adversarial-review", {})
             if legacy_roles and "sequential-deliberation" not in preset_role_models:
@@ -62,6 +74,7 @@ class SettingsService:
         return replace(
             settings,
             multi_agent_preset_role_models=preset_role_models,
+            multi_agent_preset_agent_instructions=preset_agent_instructions,
             multi_agent_recommendation_preset_id=preset_id,
             multi_agent_review_policy_id=(
                 MULTI_AGENT_DEFAULT_REVIEW_POLICY_ID
@@ -150,6 +163,16 @@ class SettingsService:
             for role, selection in role_models.items():
                 if role not in MULTI_AGENT_RECOMMENDATION_PRESET_ROLES[preset_id] or (selection.provider_id, selection.model_id) not in enabled:
                     raise ValidationError("MultiAgent角色模型必须引用当前已启用模型")
+        for preset_id, role_instructions in settings.multi_agent_preset_agent_instructions.items():
+            if preset_id not in allowed_presets or not isinstance(role_instructions, dict):
+                raise ValidationError("MultiAgent预设Agent指令映射无效")
+            for role, content in role_instructions.items():
+                if role not in MULTI_AGENT_RECOMMENDATION_PRESET_ROLES[preset_id]:
+                    raise ValidationError("MultiAgent Agent角色无效")
+                if not isinstance(content, str) or not content.strip() or len(content) > 16_000:
+                    raise ValidationError("每份AGENT.md必须为1至16000个字符")
+                if "\x00" in content or any(ord(character) < 32 and character not in "\n\t" for character in content):
+                    raise ValidationError("AGENT.md包含不支持的控制字符")
         for policy_id, role_models in settings.multi_agent_review_policy_role_models.items():
             if policy_id not in MULTI_AGENT_ENABLED_REVIEW_POLICY_IDS or not isinstance(role_models, dict):
                 raise ValidationError("MultiAgent复核策略角色模型映射无效")
