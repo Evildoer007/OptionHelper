@@ -72,6 +72,11 @@
           <label class="field-label" for="productSelect">产品</label>
           <select id="productSelect" class="product-select"><option value="">请选择产品</option></select>
           <div class="binding-card" id="bindingCard"><span>尚未选择产品</span></div>
+          <div class="research-object-field" id="contractUnderlyingsField" hidden>
+            <label class="field-label" for="contractUnderlyings">研究标的</label>
+            <input id="contractUnderlyings" class="control" autocomplete="off" spellcheck="false" autocorrect="off" autocapitalize="off" placeholder="例如000905.SH">
+            <small>仅在首次建立任务合同时使用；多个标的以英文逗号分隔。</small>
+          </div>
           <div class="scenario-heading"><span>产品路径</span><small id="scenarioCount">0</small></div>
           <ol class="scenario-list" id="scenarioList"></ol>
         </aside>
@@ -100,7 +105,6 @@
           <h2 id="inspectorTitle">参数设置</h2>
           <section class="inspector-group module-parameter-section" id="runtimeIdentityGroup" hidden aria-hidden="true">
             <div class="parameter-grid contract-identity-grid" id="identityFields">
-              <label class="parameter-field full" id="contractUnderlyingsField"><span>标的代码</span><input id="contractUnderlyings" autocomplete="off" spellcheck="false" autocorrect="off" autocapitalize="off" placeholder="例如000905.SH"><small>多个标的以英文逗号分隔</small></label>
               <label class="parameter-field" id="contractIdField"><span>合同标识</span><input id="contractId" autocomplete="off" placeholder="留空自动生成"></label>
               <label class="parameter-field" id="contractStartDateField"><span>合同起始日</span><input id="contractStartDate" class="date-input" type="text" inputmode="numeric" autocomplete="off" placeholder="yyyy/mm/dd" aria-describedby="contractStartDateHint"><small id="contractStartDateHint">统一显示yyyy/mm/dd；提交时转换为ISO日期</small></label>
               <label class="parameter-field full" id="contractReferencePricesField"><span>标的价格参考</span><textarea id="contractReferencePrices" spellcheck="false" aria-label="标的价格参考JSON"></textarea><small>按标的填写参考价格，用于生成本次相对收益率。</small></label>
@@ -117,7 +121,7 @@
               <label class="parameter-field"><span>图片宽度</span><input id="canvasWidth" type="number" min="240" max="6000" step="1" inputmode="numeric" value="1200"><em>px</em></label>
               <label class="parameter-field"><span>图片高度</span><input id="canvasHeight" type="number" min="180" max="6000" step="1" inputmode="numeric" placeholder="载入后显示"><em>px</em></label>
             </div>
-            <p class="canvas-size-note">调整预览画布尺寸，不改变合同条款和收益计算。</p>
+            <p class="canvas-size-note">控制预览和保存SVG的像素尺寸，不改变合同条款和收益计算。</p>
           </section>
           <details class="module-advanced" id="runtimeImportGroup">
             <summary>高级设置</summary>
@@ -187,7 +191,7 @@
       const { toIso: parseDateInput, toDisplay: formatDateInput, bind: bindDateInput, read: readDateInput, set: setDateInput } = window.OptionHelperDateInput;
       const runtimeSuccessNotice = () => hostedInDesk
         ? '正式运行结果已写入受控Store，可供Reporter生成研究简报、完整研究报告、参考报价或多结构对比交付。'
-        : '开发预览结果已写入隔离Store。正式交付须经App Host和Reporter。';
+        : '开发预览结果已写入隔离存储。正式交付须通过OptionHelper生成。';
 
       function showNotice(message, type = '') {
         $('noticeArea').innerHTML = '<div class="notice ' + type + '"><strong>' + (type === 'error' ? '无法执行' : '收益结构') + '</strong><span>' + escapeHtml(message) + '</span></div>';
@@ -217,8 +221,8 @@
       }
 
       function runtimeAvailabilityMessage() {
-        if (hostedInDesk && !hasHostTaskContract()) return '当前任务尚未建立受控合同。请填写真实标的代码和本次条款后提交Runtime预览，由App Host处理合同创建；默认图仍保持只读。';
-        if (hostedInDesk) return '当前条款将基于App Host已绑定的受控合同运行。';
+        if (hostedInDesk && !hasHostTaskContract()) return '当前任务尚未建立受控合同。请选择研究标的和本次条款后点击预览，由OptionHelper建立合同；默认图仍保持只读。';
+        if (hostedInDesk) return '当前条款将基于任务已绑定的受控合同运行。';
         if (localDevelopmentPreview) return '本机开发预览使用明确标记的标准化示例，不可用于正式交付。';
         return '独立页面默认只读。仅以?mode=local-development-preview显式启动时可使用标准化开发示例。';
       }
@@ -227,12 +231,12 @@
         const editable = canRuntimePreview();
         $('appShell').classList.toggle('editing', editable);
         $('appShell').classList.toggle('readonly', !editable);
-        // Desk只编辑Host明确允许的顶层标的代码；合同日期、参考价和日历均不属于页面输入。
+        // 研究标的是首建合同信息，不属于右侧结构条款；合同建立后由任务上下文接管并隐藏。
         const hostedUnderlyings = hostedInDesk && hostAllowsRequestField('underlyings');
-        const showIdentity = hostedUnderlyings || localDevelopmentPreview;
+        const showIdentity = localDevelopmentPreview;
         $('runtimeIdentityGroup').hidden = !showIdentity;
         $('runtimeIdentityGroup').setAttribute('aria-hidden', String(!showIdentity));
-        $('contractUnderlyingsField').hidden = hostedInDesk && !hostedUnderlyings;
+        $('contractUnderlyingsField').hidden = hostedInDesk ? (!hostedUnderlyings || hasHostTaskContract()) : !localDevelopmentPreview;
         ['contractIdField', 'contractStartDateField', 'contractReferencePricesField'].forEach(id => {
           $(id).hidden = hostedInDesk;
         });
@@ -242,7 +246,7 @@
         $('canvasHeight').disabled = !hostedInDesk || !state.product;
         $('maintenancePanel').hidden = !(localDevelopmentPreview && state.maintenanceEnabled && !hostedInDesk);
         $('scopeNotice').textContent = hostedInDesk
-          ? (hasHostTaskContract() ? '受控Runtime预览：合同身份与交易日历来自App Host' : '首次Runtime预览：填写标的和条款后提交App Host')
+          ? (hasHostTaskContract() ? '预览：使用当前任务的合同身份与交易日历' : '首次预览：选择研究标的和条款后建立合同')
           : (localDevelopmentPreview ? '本机开发预览：标准化示例不可正式交付' : '默认只读图：独立开发预览需显式启用');
         renderParameters({ preserve });
       }
@@ -459,11 +463,11 @@
         if (!response.ok || !data.ok) throw new Error(data.message || 'App合同目录读取失败');
         const contract = data.task_contract;
         if (!contract || contract.contract_fingerprint !== fingerprint) {
-          throw new Error('App Host上下文与当前任务合同不一致，请重新打开收益结构模块。');
+          throw new Error('当前页面与任务合同不一致，请重新打开收益结构模块。');
         }
         applyHostTaskContract(contract);
         if (state.product?.product_id === contract.product_id && canRuntimePreview()) {
-          showNotice('已同步当前任务的受控合同，可按现有条款生成Runtime预览。');
+          showNotice('已同步当前任务的受控合同，可按现有条款生成预览。');
         }
       }
 
@@ -531,7 +535,10 @@
       function buildRequestPayload() {
         if (!state.product) throw new Error('请选择产品');
         const payload = { product_id: state.product.product_id, term_overrides: collectTermOverrides() };
-        if (hostedInDesk) payload.underlyings = collectUnderlyings();
+        if (hostedInDesk) {
+          payload.underlyings = collectUnderlyings();
+          payload.render_options = collectRenderOptions();
+        }
         else payload.identity = collectIdentity();
         if (localDevelopmentPreview) payload.development_preview = true;
         return payload;
@@ -708,24 +715,29 @@
         return value;
       }
 
-      function applyCanvasDimensions() {
+      function requestedCanvasDimensions() {
         const stage = $('canvasViewport').querySelector('.canvas-stage');
-        if (!stage) return;
+        if (!stage) throw new Error('请先载入收益图，再设置图片尺寸');
         const naturalWidth = Number(stage.dataset.naturalCanvasWidth) || 1200;
         const naturalHeight = Number(stage.dataset.naturalCanvasHeight) || 800;
         const width = canvasDimension($('canvasWidth'), naturalWidth, '图片宽度');
         const height = canvasDimension($('canvasHeight'), naturalHeight, '图片高度');
-        stage.dataset.canvasWidth = String(width);
-        stage.dataset.canvasHeight = String(height);
-        const svg = stage.querySelector(':scope > svg');
-        if (svg) {
-          svg.setAttribute('width', String(width));
-          svg.setAttribute('height', String(height));
+        return { width, height };
+      }
+
+      function collectRenderOptions() {
+        return requestedCanvasDimensions();
+      }
+
+      function markCanvasSizeDirty() {
+        if (!state.product || state.product.runtime_status !== 'enabled') return;
+        state.inputsDirty = true;
+        try {
+          const current = state.previewSignature === currentSignature();
+          setCanvasState(current ? '收益图已更新' : '尺寸待应用', current ? 'ready' : 'dirty');
+        } catch (error) {
+          setCanvasState('尺寸待修正');
         }
-        if ($('canvasWidth').dataset.custom !== 'true') $('canvasWidth').value = String(Math.round(naturalWidth));
-        if ($('canvasHeight').dataset.custom !== 'true') $('canvasHeight').value = String(Math.round(naturalHeight));
-        if (state.zoomMode === 'fit') fitZoom();
-        else setZoom(state.zoom);
       }
 
       function updateCanvasDimension(event) {
@@ -733,14 +745,16 @@
         const custom = input.value.trim() !== '';
         input.dataset.custom = String(custom);
         input.setCustomValidity('');
-        if (!custom) return;
-        try { applyCanvasDimensions(); }
+        if (!custom) return markCanvasSizeDirty();
+        try {
+          requestedCanvasDimensions();
+          markCanvasSizeDirty();
+        }
         catch (error) { input.setCustomValidity(error.message); }
       }
 
       function commitCanvasDimension(event) {
         updateCanvasDimension(event);
-        if (event.currentTarget.dataset.custom !== 'true') applyCanvasDimensions();
         event.currentTarget.reportValidity();
       }
 
@@ -817,6 +831,8 @@
         stage.dataset.naturalCanvasHeight = String(naturalHeight);
         stage.dataset.canvasWidth = String(width);
         stage.dataset.canvasHeight = String(height);
+        stage.style.width = String(width) + 'px';
+        stage.style.height = String(height) + 'px';
         if ($('canvasWidth').dataset.custom !== 'true') $('canvasWidth').value = String(Math.round(naturalWidth));
         if ($('canvasHeight').dataset.custom !== 'true') $('canvasHeight').value = String(Math.round(naturalHeight));
         stage.replaceChildren(svg);
@@ -1184,7 +1200,7 @@
       loadCatalog()
         .then(() => {
           setServiceStatus(hostedInDesk ? 'Desk运行服务已连接' : '本机服务已连接');
-          if (location.protocol === 'file:') showNotice('已连接本机服务。结果属于开发预览，正式交付须经App Host和Reporter。');
+          if (location.protocol === 'file:') showNotice('已连接本机服务。结果属于开发预览，正式交付须通过OptionHelper生成。');
         })
         .catch(error => {
           setServiceStatus('未连接本机服务', true);
