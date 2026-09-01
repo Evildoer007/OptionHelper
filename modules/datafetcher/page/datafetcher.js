@@ -76,7 +76,7 @@ function assetIndexViewModel(item) {
   const calendar = String(item?.quality_report?.calendar_completeness || '');
   const assetType = schema === 'market-history' ? '历史行情' : schema === 'trading-calendar' ? '交易日历' : '数据资产';
   const source = provider === 'local'
-    ? 'Host受控CSV'
+    ? '本地CSV'
     : provider === 'ifind_http'
       ? (CACHE_REUSE_DECISIONS.has(cacheDecision) ? 'iFind缓存' : 'iFind')
       : '来源未提供';
@@ -95,7 +95,7 @@ function dataSourceLabel(data) {
   const successfulCall = (Array.isArray(data?.provider_calls) ? data.provider_calls : [])
     .find(call => ['succeeded', 'success'].includes(String(call?.outcome || '').toLowerCase()));
   const provider = String(lineageProvider || successfulCall?.provider || '').toLowerCase();
-  if (provider === 'local') return 'Host受控CSV';
+  if (provider === 'local') return '本地CSV';
   if (['cache_hit', 'cache_revalidated', 'cache_rebound'].includes(data?.cache_decision)) return 'iFind远程缓存';
   if (provider) return 'iFind远程行情';
   return '数据来源未提供';
@@ -382,11 +382,13 @@ function initializePage() {
     if (refreshInFlight) return refreshInFlight;
     const control = $('refresh-assets');
     control.disabled = true;
-    control.textContent = '刷新中…';
+    control.setAttribute('aria-busy', 'true');
+    control.title = '正在刷新数据资产和连接状态';
     refreshInFlight = Promise.all([loadStatus(), loadAssets()]).finally(() => {
       refreshInFlight = null;
       control.disabled = false;
-      control.textContent = '刷新';
+      control.removeAttribute('aria-busy');
+      control.title = '刷新数据资产和连接状态';
     });
     return refreshInFlight;
   }
