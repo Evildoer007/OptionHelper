@@ -757,6 +757,10 @@ class RecommenderAdapter:
                         self._gateway.multi_agent_role_model_selections_for(identity, preset_id)
                         if hasattr(self._gateway, "multi_agent_role_model_selections_for") else {}
                     ),
+                    role_instructions=(
+                        self._gateway.multi_agent_role_instructions_for(identity, preset_id)
+                        if hasattr(self._gateway, "multi_agent_role_instructions_for") else {}
+                    ),
                     is_cancelled=self._tasks.is_cancelled,
                     event_sink=persistence_sink,
                     session_root=self._agent_runtime_session_root,
