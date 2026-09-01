@@ -168,7 +168,7 @@
   async function loadSources() {
     notice('正在读取当前任务的分析结果。');
     const task = $('taskFilter').value.trim(); const quote = selectedValue('outputType') === 'quote'; const response = await fetch(`/api/report-sources${task && !quote ? `?task_id=${encodeURIComponent(task)}` : ''}`); const data = await response.json();
-    if (!response.ok) { state.ready = false; clearSourceState(); notice(data.message || '当前Host未提供可选择的结果目录。', 'error'); return; }
+    if (!response.ok) { state.ready = false; clearSourceState(); notice(data.message || '当前任务没有可选择的结果。', 'error'); return; }
     state.ready = true; state.catalog = data; renderSources(); notice((data.sources || []).length ? '请选择候选及需要纳入报告的分析内容。' : '当前任务尚无可用的分析结果。');
   }
   async function generate() {
