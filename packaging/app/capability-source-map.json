@@ -1,0 +1,36 @@
+{
+  "schema": "optionhelper.app-capability-source-map",
+  "page_modules": [
+    "datafetcher",
+    "payoffer",
+    "pricer",
+    "backtester",
+    "reporter"
+  ],
+  "files": [
+    {"source": "core/module_host.py", "target": "scripts/module_host.py"},
+    {"source": "core/src/runtime/browser/module_host_bridge.js", "target": "assets/pages/module-host-bridge.js"},
+    {"source": "core/src/runtime/browser/module_host_presentation.css", "target": "assets/pages/module-host-presentation.css"},
+    {"source": "core/src/runtime/browser/module_host_presentation.js", "target": "assets/pages/module-host-presentation.js"},
+    {"source": "core/src/runtime/browser/date_input_control.js", "target": "assets/pages/date-input-control.js"},
+    {"source": "core/src/runtime/browser/date_input_control.css", "target": "assets/pages/date-input-control.css"},
+    {"source": "core/src/runtime/browser/plotly_chart_system.js", "target": "assets/pages/plotly-chart-system.js"},
+    {"source": "core/src/runtime/browser/vendor/plotly-optionhelper.min.js", "target": "assets/pages/vendor/plotly-optionhelper.min.js"},
+    {"source": "assets/icons/optionhelper-app-icon-tile-light.svg", "target": "assets/icons/optionhelper-app-icon-tile-light.svg"},
+    {"source": "assets/icons/optionhelper-app-icon-tile-dark.svg", "target": "assets/icons/optionhelper-app-icon-tile-dark.svg"},
+    {"source": "assets/icons/optionhelper-app-icon-tile-light.icns", "target": "assets/icons/optionhelper-app-icon-tile-light.icns"},
+    {"source": "assets/icons/optionhelper-app-icon-tile-dark.icns", "target": "assets/icons/optionhelper-app-icon-tile-dark.icns"},
+    {"source": "assets/icons/optionhelper-app-icon-tile-light.ico", "target": "assets/icons/optionhelper-app-icon-tile-light.ico"},
+    {"source": "assets/icons/optionhelper-app-icon-tile-dark.ico", "target": "assets/icons/optionhelper-app-icon-tile-dark.ico"},
+    {"source": "LICENSES/LibreChat-LICENSE.txt", "target": "LICENSES/LibreChat-LICENSE.txt"},
+    {"source": "LICENSES/Plotly.js-LICENSE.txt", "target": "LICENSES/Plotly.js-LICENSE.txt"},
+    {"source": "LICENSES/ThinkingOrbs-LICENSE.txt", "target": "LICENSES/ThinkingOrbs-LICENSE.txt"}
+  ],
+  "trees": [
+    {"source": "modules/datafetcher/page", "target": "assets/pages/datafetcher"},
+    {"source": "modules/payoffer/page", "target": "assets/pages/payoffer"},
+    {"source": "modules/pricer/page", "target": "assets/pages/pricer"},
+    {"source": "modules/backtester/page", "target": "assets/pages/backtester", "transform": "page_theme_links"},
+    {"source": "modules/reporter/page", "target": "assets/pages/reporter"}
+  ]
+}
