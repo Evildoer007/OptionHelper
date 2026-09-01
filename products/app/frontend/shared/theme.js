@@ -25,11 +25,17 @@ function savePreference(preference) {
   try { localStorage.setItem(THEME_KEY, preference); } catch { /* A local cache is optional. */ }
 }
 
-function storedPreference() {
+function cachedPreference() {
   try {
     const saved = localStorage.getItem(THEME_KEY);
     if (ALLOWED.has(saved)) return saved;
   } catch { /* The DOM bootstrap value remains the fallback. */ }
+  return null;
+}
+
+function storedPreference() {
+  const saved = cachedPreference();
+  if (saved) return saved;
   return preferenceOf(document.documentElement.dataset.themePref);
 }
 
@@ -81,6 +87,15 @@ export function setThemePreference(value, { persist = true, notifyNative = true 
   return theme;
 }
 
+export function applyServerThemePreference(value) {
+  const saved = cachedPreference();
+  if (saved) {
+    if (saved !== currentThemePreference()) setThemePreference(saved, { persist: false });
+    return currentTheme();
+  }
+  return setThemePreference(preferenceOf(value), { persist: true });
+}
+
 export function refreshSystemTheme() {
   if (currentThemePreference() !== "auto") return currentTheme();
   return setThemePreference("auto", { persist: false, notifyNative: false });
@@ -128,6 +143,7 @@ systemTheme?.addEventListener("change", () => {
 
 initializeTheme();
 window.addEventListener?.("pageshow", syncStoredTheme);
+window.addEventListener?.("focus", syncStoredTheme);
 document.addEventListener?.("visibilitychange", () => {
   if (!document.hidden) syncStoredTheme();
 });
@@ -138,6 +154,7 @@ window.OptionHelperTheme = Object.freeze({
   currentTheme,
   currentThemePreference,
   setThemePreference,
+  applyServerThemePreference,
   refreshSystemTheme,
   onThemeChange,
   installThemeControls,
