@@ -18,8 +18,8 @@
     </header>
     <main class="workbench" id="workbench">
       <aside class="library-panel">
-        <div class="library-heading"><h1>数据资产</h1><button class="button button-quiet library-refresh" id="refresh-assets" type="button" aria-label="刷新数据资产和连接状态">刷新</button></div>
-        <div class="asset-filter"><label class="sr-only" for="asset-search">搜索数据</label><input id="asset-search" class="control" type="search" placeholder="搜索标的或日期"></div>
+        <div class="library-heading"><h1>数据资产</h1></div>
+        <div class="asset-filter"><label class="sr-only" for="asset-search">搜索数据</label><input id="asset-search" class="control" type="search" placeholder="搜索标的或日期"><button class="button button-quiet library-refresh" id="refresh-assets" type="button" aria-label="刷新数据资产和连接状态" title="刷新数据资产和连接状态"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M15.7 6.2A6.5 6.5 0 1 0 16.4 13"/><path d="M15.7 2.8v3.8h-3.8"/></svg><span class="sr-only">刷新</span></button></div>
         <div class="asset-list" id="asset-list" aria-live="polite"><p class="empty-list">当前任务尚无数据资产。</p></div>
       </aside>
       <div class="panel-resizer panel-resizer-left" id="library-resizer" role="separator" aria-label="调整数据资产面板宽度" aria-orientation="vertical" tabindex="0"></div>
@@ -65,10 +65,10 @@
             <h3>数据来源</h3>
             <div class="source-options" role="radiogroup" aria-label="选择数据来源">
               <label class="source-option"><input name="source-mode" type="radio" value="ifind_http" checked><span><strong>iFind远程行情</strong><small>远程获取并留存任务数据资产</small></span></label>
-              <label class="source-option"><input name="source-mode" type="radio" value="local"><span><strong>Host受控CSV</strong><small>读取Host管理的数据文件</small></span></label>
+              <label class="source-option"><input name="source-mode" type="radio" value="local"><span><strong>本地CSV</strong><small>读取已导入的数据文件</small></span></label>
             </div>
             <section class="secret-card" id="ifind-status-card"><strong>连接状态</strong><span id="secret-status">正在检查连接配置。</span></section>
-            <p class="retention-note" id="local-source-note" hidden>由Host读取受控DataStore内的CSV；页面不接收文件路径，也不会调用远程数据服务。</p>
+            <p class="retention-note" id="local-source-note" hidden>读取已导入并受控保存的CSV；页面不接收文件路径，也不会调用远程数据服务。</p>
           </section>
           <section class="inspector-group">
             <h3>获取策略</h3>
