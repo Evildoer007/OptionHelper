@@ -48,6 +48,25 @@
         "state_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
       }
     },
+    "pricing_objective": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["mode"],
+          "properties": {"mode": {"const": "valuation"}}
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["mode", "target_id"],
+          "properties": {
+            "mode": {"const": "fair_parameter"},
+            "target_id": {"type": "string", "minLength": 1}
+          }
+        }
+      ]
+    },
     "payoffer_input": {
       "type": "object",
       "additionalProperties": false,
@@ -78,6 +97,7 @@
             "model_method": {"enum": ["analytical", "monte_carlo"]}
           }
         },
+        "pricing_objective": {"$ref": "#/$defs/pricing_objective"},
         "market_data_refs": {"type": "array", "items": {"$ref": "#/$defs/data_asset_ref"}},
         "observed_contract_state": {"$ref": "#/$defs/observed_contract_state"},
         "trading_calendar_ref": {
