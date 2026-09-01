@@ -10,8 +10,8 @@ export function initializeVolSurface(canvas) {
   const context = canvas.getContext("2d");
   if (!context) return null;
 
-  const rowCount = 28;
-  const columnCount = 46;
+  const rowCount = 34;
+  const columnCount = 58;
   const gridWidth = columnCount + 1;
   const gridHeight = rowCount + 1;
   const gridSize = gridWidth * gridHeight;
@@ -165,7 +165,7 @@ export function initializeVolSurface(canvas) {
         const highlight = clamp01((normalizedHeight - 1.45) * 1.05 + lift * 0.75 + specular * 0.55);
         const shade = 0.34 + 0.66 * diffuse + 0.9 * specular;
         const fog = 0.45 + 0.55 * Math.min(1, depth);
-        const alpha = (0.055 + 0.062 * depth) * shade * fog * (1 + 2.2 * lift);
+        const alpha = (0.046 + 0.052 * depth) * shade * fog * (1 + 2.2 * lift);
 
         context.fillStyle = tone(highlight, alpha);
         context.beginPath();
@@ -237,7 +237,7 @@ export function initializeVolSurface(canvas) {
     pointerPull += (((pointerX < 0) ? 0 : 1) - pointerPull) * pullDamping;
 
     context.clearRect(0, 0, width, height);
-    context.lineWidth = 1;
+    context.lineWidth = 0.72;
     context.lineJoin = "round";
     const quality = qualityLevels[qualityIndex];
     const clock = elapsed * 0.252;
@@ -246,7 +246,7 @@ export function initializeVolSurface(canvas) {
 
     for (let row = 0; row <= rowCount; row += quality.rows) {
       const highlight = traceGridLine(true, row);
-      const opacity = (0.070 + 0.115 * statistics[0]) * (0.42 + 0.58 * (1 - row / rowCount))
+      const opacity = (0.044 + 0.074 * statistics[0]) * (0.42 + 0.58 * (1 - row / rowCount))
         * (1 + 2.6 * statistics[2]) * (1 + 0.28 * (quality.rows - 1));
       context.strokeStyle = tone(highlight, opacity);
       context.stroke();
@@ -254,7 +254,7 @@ export function initializeVolSurface(canvas) {
 
     for (let column = 0; column <= columnCount; column += quality.columns) {
       const highlight = traceGridLine(false, column);
-      const opacity = (0.032 + 0.052 * statistics[0]) * (1 + 2.6 * statistics[2])
+      const opacity = (0.021 + 0.034 * statistics[0]) * (1 + 2.6 * statistics[2])
         * (1 + 0.22 * (quality.columns - 2));
       context.strokeStyle = tone(highlight, opacity);
       context.stroke();
