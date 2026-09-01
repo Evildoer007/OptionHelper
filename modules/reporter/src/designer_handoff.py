@@ -50,7 +50,13 @@ _FORBIDDEN_PUBLIC_ECONOMICS = re.compile(
 _PUBLIC_MODULE_NAMES = {"payoff": "收益结构", "pricing": "估值定价", "backtest": "历史回测"}
 _DISPLAY_MODULE_FIELDS = {
     "payoff": ("formula", "formula_mathml", "scenarios"),
-    "pricing": ("method", "valuation_date", "precision_status", "quote_eligible", "metrics", "greeks", "assumptions", "scenario_rows", "charts", "limitations"),
+    "pricing": (
+        "method", "valuation_date", "precision_status", "quote_eligible", "metrics", "greeks",
+        "assumptions", "scenario_rows", "charts", "limitations", "kind", "target_id",
+        "target_value", "solution", "base_parameter", "residual", "quote_basis",
+        "quote_value_basis", "value_basis", "solution_uncertainty", "formal_quote_status",
+        "formal_quote_reason", "quote_delivery_status", "final_valuation",
+    ),
     "backtest": ("window", "as_of_date", "entry_rule", "metrics", "card_metrics", "detail_tables", "event_statistics", "charts"),
 }
 _FORBIDDEN_MODULE_FIELD_FRAGMENTS = (
@@ -70,7 +76,15 @@ _PUBLIC_VALUE_KEYS = {
     "rate", "year", "average", "median", "minimum", "maximum", "true_rate", "condition", "payoff",
     "source", "cn", "en", "symbol", "description", "accessibility_summary", "source_note",
     "x_axis_name", "y_axis_name", "z_axis_name", "as_of_date", "precision_status",
-    "quote_eligible", "limitations",
+    "quote_eligible", "limitations", "kind", "target_id", "target_value", "solution",
+    "base_parameter", "residual", "quote_basis", "quote_value_basis", "value_basis",
+    "solution_uncertainty", "formal_quote_status", "formal_quote_reason", "quote_delivery_status",
+    "final_valuation", "confidence_level", "absolute_error_upper_bound", "lower", "upper",
+    "parameter_error_gate", "independent_batch_count", "path_count", "random_paths_generated",
+    "slope_stability_status", "primary_batch_included", "certified_interval", "status",
+    "pv_percent", "variance_percent", "standard_error_percent", "greeks", "risk_curves",
+    "risk_surfaces", "risk_scenarios", "scenario_pv", "method", "valuation_date", "reason",
+    "quote_reason",
 }
 _HTML_MARKUP = re.compile(r"<\s*/?\s*[a-zA-Z][^>]*>")
 _PUBLIC_LIMITATION_TEXT = {
