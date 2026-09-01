@@ -31,7 +31,7 @@ internal static class Program
         var backend = Path.Combine(resources, "backend", "OptionHelperBackend", "OptionHelperBackend.exe");
         if (!File.Exists(backend))
         {
-            MessageBox.Show("找不到内置App Host。", "OptionHelper", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            MessageBox.Show("找不到内置应用服务。", "OptionHelper", MessageBoxButtons.OK, MessageBoxIcon.Error);
             return;
         }
 
@@ -75,7 +75,7 @@ internal static class Program
                 if (!string.IsNullOrWhiteSpace(backendError))
                     detail += $"\n\n后端错误：\n{backendError}";
             }
-            MessageBox.Show($"App Host未能启动。\n{detail}", "OptionHelper", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            MessageBox.Show($"应用服务未能启动。\n{detail}", "OptionHelper", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
         finally
         {
