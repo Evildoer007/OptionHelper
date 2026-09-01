@@ -956,6 +956,8 @@ def _pricing_content(module: Mapping[str, Any]) -> dict[str, Any]:
         return value
     result = module.get("result") if isinstance(module.get("result"), Mapping) else {}
     pricing = result.get("pricing") if isinstance(result.get("pricing"), Mapping) else result
+    if pricing.get("result_kind") == "fair_parameter_solution":
+        return _fair_parameter_content(module, pricing)
     standard_error_percent = pricing.get("standard_error_percent")
     percent = pricing.get("pv_percent")
     valid_pv = _safe_number(percent) is not None
@@ -998,6 +1000,169 @@ def _pricing_content(module: Mapping[str, Any]) -> dict[str, Any]:
         value["status"] = "partial"
         value["note"] = "本次估值为测试或受限精度结果，不可用于正式报价。"
         value["limitations"].append("本次估值未通过正式报价资格或精度门槛，不可用于正式报价。")
+    return value
+
+
+_FAIR_VALUE_BASIS_LABELS = {
+    "pv_percent": "标准化现值百分比",
+    "variance_percent": "方差百分比",
+}
+_FAIR_QUOTE_BASIS_LABELS = {
+    "incremental_net_value": "增量净价值",
+    "direct_value": "直接价值",
+    "target_value": "目标价值",
+}
+_FAIR_PUBLIC_UNCERTAINTY_FIELDS = frozenset({
+    "status", "precision_status", "quote_eligible", "quote_delivery_status",
+    "formal_quote_status", "formal_quote_reason", "absolute_error_upper_bound",
+    "lower", "upper", "confidence_level", "reason", "quote_reason",
+    "parameter_error_gate", "independent_batch_count", "path_count",
+    "random_paths_generated", "slope_stability_status", "primary_batch_included",
+})
+
+
+def _fair_public_uncertainty(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Retain only reader-facing uncertainty facts in the frozen ReportUnit."""
+
+    result: dict[str, Any] = {}
+    for key in _FAIR_PUBLIC_UNCERTAINTY_FIELDS:
+        if key not in value or value[key] is None:
+            continue
+        item = value[key]
+        if key in {"absolute_error_upper_bound", "lower", "upper", "confidence_level"}:
+            numeric = _safe_number(item)
+            if numeric is not None:
+                result[key] = numeric
+        elif key in {"quote_eligible", "primary_batch_included"}:
+            if isinstance(item, bool):
+                result[key] = item
+        elif key in {"independent_batch_count", "path_count", "random_paths_generated"}:
+            if isinstance(item, int) and not isinstance(item, bool) and item >= 0:
+                result[key] = item
+        elif isinstance(item, str) and item.strip():
+            result[key] = item
+    interval = value.get("certified_interval")
+    if isinstance(interval, Mapping):
+        lower, upper = _safe_number(interval.get("lower")), _safe_number(interval.get("upper"))
+        if lower is not None and upper is not None and lower <= upper:
+            result["certified_interval"] = {"lower": lower, "upper": upper}
+    return result
+
+
+def _fair_public_final_valuation(value: Mapping[str, Any], *, value_basis: str) -> dict[str, Any]:
+    """Keep final value and verified Greek rows, excluding contract/proof fields."""
+
+    result: dict[str, Any] = {"value_basis": value_basis, value_basis: float(value[value_basis])}
+    for key in ("status", "method", "valuation_date", "precision_status"):
+        if isinstance(value.get(key), str) and value[key].strip():
+            result[key] = value[key]
+    standard_error = _safe_number(value.get("standard_error_percent"))
+    if standard_error is not None:
+        result["standard_error_percent"] = standard_error
+    result["greeks"] = _public_greek_rows(value.get("greeks", {}))
+    return result
+
+
+def _fair_parameter_content(module: Mapping[str, Any], pricing: Mapping[str, Any]) -> dict[str, Any]:
+    """Render the verified fair solve as a research estimate, never as a quote."""
+
+    value_basis = str(pricing.get("value_basis") or pricing.get("quote_value_basis") or "").strip()
+    if value_basis not in _FAIR_VALUE_BASIS_LABELS:
+        raise ReporterError("公平参数结果缺少受控价值口径")
+    if pricing.get("quote_eligible") is not False:
+        raise ReporterError("公平参数研究结果不得具备正式报价资格")
+    if pricing.get("precision_status") != "research_only":
+        raise ReporterError("公平参数结果必须标记research_only")
+    for key in ("formal_quote_status", "quote_delivery_status"):
+        if pricing.get(key) not in (None, "research_only"):
+            raise ReporterError(f"公平参数结果{key}必须标记research_only")
+    final = pricing.get("final_valuation") if isinstance(pricing.get("final_valuation"), Mapping) else None
+    if final is None or final.get("value_basis") != value_basis:
+        raise ReporterError("公平参数结果缺少与目标一致的final_valuation")
+    final_value = _safe_number(final.get(value_basis))
+    if final_value is None:
+        raise ReporterError("公平参数final_valuation缺少受控价值")
+    if not _public_greeks_are_verified(final.get("greeks")):
+        raise ReporterError("公平参数final_valuation的Greeks未通过公开校验")
+    uncertainty = pricing.get("solution_uncertainty")
+    if not isinstance(uncertainty, Mapping):
+        raise ReporterError("公平参数结果缺少solution_uncertainty")
+    if any(str(key) in {"identity", "bound_evidence", "bound_sources", "bound_source_details", "evaluations"} for key in uncertainty):
+        raise ReporterError("公平参数solution_uncertainty包含内部证明字段")
+
+    quote_basis = str(pricing.get("quote_basis") or pricing.get("quote_value_basis") or "").strip()
+    quote_basis_label = _FAIR_QUOTE_BASIS_LABELS.get(quote_basis, quote_basis or "目标口径")
+    value_basis_label = _FAIR_VALUE_BASIS_LABELS[value_basis]
+    target_id = _text(pricing.get("target_id")) or "目标参数"
+    target_value = _safe_number(pricing.get("target_value"))
+    solution = _safe_number(pricing.get("solution"))
+    base_parameter = _safe_number(pricing.get("base_parameter"))
+    residual = _safe_number(pricing.get("residual"))
+    if any(item is None for item in (target_value, solution, base_parameter, residual)):
+        raise ReporterError("公平参数结果缺少有限目标、参数解或残差")
+
+    public_final = _fair_public_final_valuation(final, value_basis=value_basis)
+    public_uncertainty = _fair_public_uncertainty(uncertainty)
+    precision_status = _text(public_uncertainty.get("precision_status")) or "research_only"
+    value: dict[str, Any] = {
+        "status": "ready",
+        "kind": "fair_parameter",
+        "note": "公平参数反解已完成，仅限研究：" + (_text(pricing.get("formal_quote_reason")) or "尚未取得正式报价资格。"),
+        "method": _text(pricing.get("method")),
+        "target_id": target_id,
+        "target_value": target_value,
+        "solution": solution,
+        "base_parameter": base_parameter,
+        "residual": residual,
+        "quote_basis": quote_basis,
+        "quote_value_basis": _text(pricing.get("quote_value_basis")) or value_basis,
+        "value_basis": value_basis,
+        "formal_quote_status": _text(pricing.get("formal_quote_status")) or "research_only",
+        "quote_delivery_status": _text(pricing.get("quote_delivery_status")) or "research_only",
+        "formal_quote_reason": _text(pricing.get("formal_quote_reason")),
+        "precision_status": precision_status,
+        "quote_eligible": False,
+        "solution_uncertainty": public_uncertainty,
+        "final_valuation": public_final,
+        "metrics": [
+            _metric(f"目标值（{quote_basis_label}）", target_value, f"公平参数目标：{target_id}", value_format="percent" if value_basis.endswith("_percent") else "number"),
+            _metric(f"参数解（{target_id}）", solution, "公平参数研究估计", value_format="number"),
+            _metric(f"基础参数（{target_id}）", base_parameter, "基础合同参数", value_format="number"),
+            _metric("求解残差", residual, f"目标口径：{quote_basis_label}", value_format="percent" if value_basis.endswith("_percent") else "number"),
+            _metric(f"最终估值（{value_basis_label}）", final_value, "最终候选合同的实际价值口径", value_format="percent" if value_basis.endswith("_percent") else "number"),
+        ],
+        "greeks": deepcopy(public_final["greeks"]),
+        "assumptions": [
+            f"目标口径：{quote_basis_label}；价值口径：{value_basis_label}。",
+            "最终估值的资格不等同于公平参数结果的正式报价资格。",
+        ],
+        "charts": public_chart_specs(_safe_pricing_charts(final, final)),
+        "scenario_rows": _public_pricing_scenarios(final, final) if value_basis == "pv_percent" else [],
+        "artifacts": _artifact_rows(module),
+        "limitations": [
+            _text(pricing.get("formal_quote_reason")) or "公平参数结果尚未取得正式报价资格。",
+            "本结果为研究估计，不得使用普通报价事实或最终估值资格生成Quote。",
+        ],
+    }
+    absolute_error = _safe_number(uncertainty.get("absolute_error_upper_bound"))
+    if absolute_error is not None:
+        value["metrics"].append(_metric("参数绝对误差上界", absolute_error, "solution_uncertainty给出的上界", value_format="number"))
+    interval = uncertainty.get("certified_interval")
+    if isinstance(interval, Mapping) and _safe_number(interval.get("lower")) is not None and _safe_number(interval.get("upper")) is not None:
+        value["metrics"].append(_metric(
+            "认证参数区间",
+            f"{_decimal_text(interval['lower'])}至{_decimal_text(interval['upper'])}",
+            "仅作研究范围展示",
+            value_format="text",
+        ))
+    standard_error = _safe_number(final.get("standard_error_percent"))
+    if standard_error is not None:
+        value["metrics"].append(_metric(
+            f"最终估值标准误（{value_basis_label}）",
+            standard_error,
+            "最终估值结果的标准误，不是参数误差门槛",
+            value_format="percent",
+        ))
     return value
 
 
