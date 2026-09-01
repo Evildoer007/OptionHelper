@@ -20,9 +20,16 @@
       && typeof window.AbortController === "function"
       && typeof window.requestAnimationFrame === "function"
       && typeof window.fetch === "function";
-    if (!canEnhance) return { stop() {} };
+    if (!canEnhance) {
+      splash?.classList.add("is-fallback");
+      return { stop() {} };
+    }
 
     const logoAsset = "/app/assets/icons/optionhelper-logo.svg";
+    const startMs = 516;
+    const flyMs = 960;
+    const stagger = .5;
+    const particleStep = 2;
     const canvas = document.createElement("canvas");
     const loadController = new AbortController();
     let logo = null;
@@ -34,8 +41,6 @@
     let active = false;
     let assembled = false;
     let frameId = 0;
-    let activationTimer = 0;
-    let assemblyTimer = 0;
 
     const assemble = () => {
       if (stopped || assembled) return;
@@ -94,7 +99,7 @@
       const wordRects = wordElements.map((word) => word?.getBoundingClientRect?.()).filter(Boolean);
       const discRect = logo.querySelector(".login-splash__reference-disc")?.getBoundingClientRect?.();
       if (!context || !stageRect || wordRects.length !== 2 || !discRect) {
-        assemble();
+        fallback();
         return;
       }
 
@@ -108,7 +113,7 @@
         sampleCanvas.height = Math.max(1, Math.round(bottom - top));
         const sampleContext = sampleCanvas.getContext?.("2d", { willReadFrequently: true });
         if (!sampleContext) {
-          assemble();
+          fallback();
           return;
         }
         const viewBox = logo.viewBox.baseVal;
@@ -137,7 +142,6 @@
         const originX = discRect.left + discRect.width / 2 - stageRect.left;
         const originY = discRect.top + discRect.height / 2 - stageRect.top;
         const particles = [];
-        const particleStep = 2;
         for (let y = 0; y < sampleCanvas.height; y += particleStep) {
           for (let x = 0; x < sampleCanvas.width; x += particleStep) {
             if (pixels[(y * sampleCanvas.width + x) * 4 + 3] <= 60) continue;
@@ -150,7 +154,7 @@
               targetY,
               startX: originX + Math.cos(angle) * spread,
               startY: originY + Math.sin(angle) * spread,
-              delay: ((targetX - (left - stageRect.left)) / (right - left)) * .5,
+              delay: ((targetX - (left - stageRect.left)) / (right - left)) * stagger,
               bend: (Math.random() - .5) * .16,
               size: .55 + Math.random() * .85,
               speed: .88 + Math.random() * .26,
@@ -168,7 +172,7 @@
         glow.height = glowSize;
         const glowContext = glow.getContext?.("2d");
         if (!glowContext) {
-          assemble();
+          fallback();
           return;
         }
         const gradient = glowContext.createRadialGradient(
@@ -191,7 +195,7 @@
         const frame = (now) => {
           if (stopped) return;
           if (!firstFrame) firstFrame = now;
-          const elapsed = (now - firstFrame - 430) / 800;
+          const elapsed = (now - firstFrame - startMs) / flyMs;
           if (elapsed < 0) {
             frameId = window.requestAnimationFrame(frame);
             return;
@@ -199,7 +203,7 @@
           context.clearRect(0, 0, stageRect.width, stageRect.height);
           let moving = false;
           particles.forEach((particle) => {
-            let progress = ((elapsed - particle.delay) / .5) * particle.speed;
+            let progress = ((elapsed - particle.delay) / (1 - stagger)) * particle.speed;
             if (progress < 0) {
               progress = 0;
               moving = true;
@@ -248,27 +252,27 @@
         };
         frameId = window.requestAnimationFrame(frame);
       } catch (_error) {
-        assemble();
+        fallback();
       }
     };
 
     const activate = (preparedLogo) => {
       if (stopped || active) return;
       active = true;
-      clearTimeout(activationTimer);
       logo = preparedLogo;
       stage.append(canvas, logo);
+      splash.classList.remove("is-fallback");
       splash.classList.add("has-reference-animation");
-      assemblyTimer = setTimeout(assemble, 1480);
       drawSparks();
     };
 
     const fallback = () => {
-      if (active || stopped) return;
+      if (stopped) return;
       stopped = true;
-      clearTimeout(activationTimer);
       canvas.remove();
       logo?.remove();
+      splash.classList.remove("has-reference-animation", "is-assembled");
+      splash.classList.add("is-fallback");
     };
 
     fetch(logoAsset, {
@@ -284,23 +288,14 @@
       .catch((error) => {
         if (error?.name !== "AbortError") fallback();
       });
-    activationTimer = setTimeout(fallback, 420);
-
-    const settleOnResize = () => {
-      if (active && !assembled) assemble();
-    };
-    window.addEventListener?.("resize", settleOnResize, { passive: true });
 
     return {
       stop() {
         stopped = true;
         loadController.abort();
-        clearTimeout(activationTimer);
-        clearTimeout(assemblyTimer);
         if (frameId && typeof window.cancelAnimationFrame === "function") {
           window.cancelAnimationFrame(frameId);
         }
-        window.removeEventListener?.("resize", settleOnResize);
       },
     };
   };
@@ -357,12 +352,12 @@
     }, 470);
   };
 
-  timer = setTimeout(finish, 1833);
+  timer = setTimeout(finish, 2200);
   document.addEventListener("keydown", finish);
   splash.addEventListener("click", finish);
 
   // The launch screen is never allowed to become a permanent application
   // state.  This independent watchdog still releases the login page if a
   // browser timer is throttled while the WebKit window is being activated.
-  setTimeout(finish, 2600);
+  setTimeout(finish, 3120);
 })();
