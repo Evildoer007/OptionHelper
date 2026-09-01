@@ -59,7 +59,7 @@ from .path_sampler import (
     segment_samples,
     term_variables,
 )
-from .svg_renderer import render_svg as render_svg_text
+from .svg_renderer import normalize_render_options, render_svg as render_svg_text
 
 
 MODULE_ROOT = Path(__file__).resolve().parents[4]
@@ -1094,7 +1094,10 @@ def _json_safe(value: Any) -> Any:
     return value
 
 
-def render_payoff(payoff_input: PayoffInput) -> PayoffResult:
+def render_payoff(
+    payoff_input: PayoffInput,
+    render_options: Mapping[str, Any] | None = None,
+) -> PayoffResult:
     """ResolvedContract→参数化Payoff SVG/JSON的唯一正常计算入口。"""
     contract = _coerce_payoff_contract(payoff_input)
     try:
@@ -1130,9 +1133,18 @@ def render_payoff(payoff_input: PayoffInput) -> PayoffResult:
         "renderer_id": renderer_id,
     }
     result["semantic_result_hash"] = semantic_hash(result)
-    svg = render_svg_text({"name_zh": contract.name_zh, "paths": raw_paths})
+    try:
+        normalized_render_options = normalize_render_options(render_options)
+        svg = render_svg_text(
+            {"name_zh": contract.name_zh, "paths": raw_paths},
+            normalized_render_options or None,
+        )
+    except ValueError as error:
+        raise PayoffEngineError(str(error)) from error
     if not isinstance(svg, str) or "<svg" not in svg:
         raise PayoffEngineError("SVG渲染器未返回有效SVG文本")
+    if normalized_render_options:
+        result["render_options"] = normalized_render_options
     result["svg_content_hash"] = sha256(svg.encode("utf-8")).hexdigest()
     return PayoffResult(payload=result, svg=svg)
 
@@ -1141,6 +1153,7 @@ def preview_result(
     name_zh: str,
     term_overrides: Mapping[str, Any] | None = None,
     identity: Mapping[str, Any] | None = None,
+    render_options: Mapping[str, Any] | None = None,
 ) -> PayoffResult:
     """Return the single preview render result without exposing SVG in payload."""
     _, product, _ = _registry_with_default_figure(name_zh)
@@ -1160,7 +1173,7 @@ def preview_result(
             svg=svg,
         )
     contract = build_payoff_input(name_zh, term_overrides, identity)
-    payoff_result = render_payoff(PayoffInput(contract=contract))
+    payoff_result = render_payoff(PayoffInput(contract=contract), render_options)
     return PayoffResult(
         payload={**dict(payoff_result.payload), "runtime_status": "enabled"},
         svg=payoff_result.svg,
@@ -1196,6 +1209,7 @@ def _store_payoff_result(
         "contract_fingerprint": contract.contract_fingerprint,
         "default_visual_asset": default_asset,
         "renderer_id": result.payload["renderer_id"],
+        "render_options": result.payload.get("render_options"),
     })
     output = {
         "payoff_json": "artifacts/payoff.json",
@@ -1219,6 +1233,7 @@ def _store_payoff_result(
         "snapshot_kind": "core_controlled_resolved_contract",
         "payoff_input": {"contract": controlled_contract},
         "default_visual_asset": default_asset,
+        "render_options": result.payload.get("render_options"),
         "requested_output": "parameterized_payoff_svg",
         "host_scope": {
             "analysis_case_id": analysis_case_id,
@@ -1332,12 +1347,13 @@ def run_payoff(
     host_context: ModuleHostContext,
     result_store: ResultStorePort,
     tenant_id: str,
+    render_options: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """正式入口：Host上下文与Host Store共同决定不可变运行范围。"""
     if result_store is None:
         raise PayoffEngineError("正式Payoffer运行必须由Host注入ResultStorePort")
     contract = _host_contract(payoff_input, host_context)
-    result = render_payoff(payoff_input)
+    result = render_payoff(payoff_input, render_options)
     return _store_payoff_result(
         result,
         contract,
@@ -1357,11 +1373,12 @@ def run_runtime(
     identity: Mapping[str, Any] | None,
     task_id: str,
     run_id: str,
+    render_options: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """独立页面开发入口：只写入与正式结果隔离的本地预览Store。"""
     contract = build_payoff_input(name_zh, term_overrides, identity)
     payoff_input = PayoffInput(contract=contract)
-    result = render_payoff(payoff_input)
+    result = render_payoff(payoff_input, render_options)
     development_store = LocalResultStore(RESULT_ROOT / "payoffer-development")
     response = _store_payoff_result(
         result,
