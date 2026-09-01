@@ -201,6 +201,17 @@ class ModelGateway:
             if MULTI_AGENT_LEGACY_ROLE_ALIASES.get(role, role) in MULTI_AGENT_RECOMMENDATION_ROLES
         }
 
+    def multi_agent_role_instructions_for(
+        self, identity: SessionIdentity, preset_id: str,
+    ) -> Mapping[str, str]:
+        settings = self._load(identity)
+        configured = settings.multi_agent_preset_agent_instructions.get(str(preset_id), {})
+        return {
+            MULTI_AGENT_LEGACY_ROLE_ALIASES.get(role, role): str(content)
+            for role, content in configured.items()
+            if MULTI_AGENT_LEGACY_ROLE_ALIASES.get(role, role) in MULTI_AGENT_RECOMMENDATION_ROLES
+        }
+
     def multi_agent_recommendation_preset_for(self, identity: SessionIdentity) -> str:
         return self._load(identity).multi_agent_recommendation_preset_id
 
