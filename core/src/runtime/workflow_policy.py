@@ -1,0 +1,195 @@
+"""Shared, provider-neutral business routing for OptionHelper conversations."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+import re
+from typing import Literal, Mapping, Sequence
+
+
+AnalysisPath = Literal["consultation", "direct_module", "recommendation"]
+DeliveryKind = Literal["none", "card", "report", "quote"]
+DeliveryFormat = Literal["html", "pdf"]
+ExecutionSemantics = Literal["multi_agent", "single_model"]
+
+
+_DELIVERY_MARKERS = {
+    "card": ("研究简报", "简单报告", "简报", "card"),
+    "report": ("完整研究报告", "详细报告", "深度报告", "完整报告", "report"),
+    "quote": ("参考报价", "报价表", "quote"),
+}
+_RECOMMENDATION_MARKERS = (
+    "推荐",
+    "适合的期权",
+    "哪种期权",
+    "什么期权",
+    "选择结构",
+    "筛选结构",
+    "适合什么结构",
+    "什么结构适合",
+)
+_MODULE_MARKERS = (
+    "收益图", "收益情景", "损益", "估值", "定价", "greek", "delta", "gamma", "vega", "theta",
+    "rho", "回测", "历史胜率", "取数", "行情", "波动率", "重新计算", "重新估值", "重新回测",
+)
+_TERM_CHANGE_ACTIONS = ("修改", "调整", "改成", "改为", "重新定价", "重新回测", "重算")
+_TERM_FIELDS = (
+    "行权价",
+    "执行价",
+    "执行水平",
+    "期权费",
+    "票息",
+    "障碍",
+    "敲入水平",
+    "敲出水平",
+    "气囊水平",
+    "期限",
+    "参与率",
+    "观察频率",
+    "观察方式",
+    "行权方式",
+    "结算方式",
+)
+_SPECIFIED_STRUCTURE_MARKERS = (
+    "看涨期权", "看跌期权", "看涨价差", "看跌价差", "跨式", "宽跨式", "蝶式", "鹰式", "风险逆转",
+    "障碍期权", "敲入", "敲出", "二元期权", "触碰期权", "雪球", "安全气囊", "累购", "累沽", "fcn",
+    "dcn", "凤凰", "鲨鱼鳍", "方差互换", "多标的",
+)
+
+
+@dataclass(frozen=True)
+class WorkflowDecision:
+    analysis_path: AnalysisPath
+    delivery_kind: DeliveryKind = "none"
+    delivery_format: DeliveryFormat = "html"
+    preset_id: str = "sequential-deliberation"
+    execution_semantics: ExecutionSemantics = "multi_agent"
+    reason_code: str = "consultation"
+
+    def __post_init__(self) -> None:
+        if not str(self.preset_id).strip():
+            raise ValueError("WorkflowDecision.preset_id不能为空")
+
+
+def decide_workflow(
+    message: object,
+    *,
+    facts: Mapping[str, object] | None = None,
+    messages: Sequence[Mapping[str, object]] | None = None,
+    preset_id: str = "sequential-deliberation",
+    execution_semantics: ExecutionSemantics = "multi_agent",
+) -> WorkflowDecision:
+    """Choose the business path without deciding Agent lifecycle or Provider."""
+
+    text = str(message or "").strip()
+    lowered = text.casefold()
+    controlled_facts = facts or {}
+    delivery_kind = _delivery_kind(lowered)
+    delivery_format: DeliveryFormat = "pdf" if "pdf" in lowered else "html"
+    has_contract = isinstance(controlled_facts.get("resolved_contract"), Mapping)
+    module_run_facts = controlled_facts.get("module_run_facts")
+    has_verified_results = isinstance(module_run_facts, Sequence) and not isinstance(
+        module_run_facts, (str, bytes)
+    ) and bool(module_run_facts)
+    pending_candidate = controlled_facts.get("recommendation_candidate")
+    has_pending_candidate = isinstance(pending_candidate, Mapping)
+    recommendation_requested = any(marker in lowered for marker in _RECOMMENDATION_MARKERS)
+    module_requested = any(marker in lowered for marker in _MODULE_MARKERS)
+    changing_terms = has_term_change_intent(lowered)
+    specified_structure = _has_specified_structure(lowered) and (
+        module_requested
+        or delivery_kind != "none"
+        or changing_terms
+        or recommendation_requested
+        or any(marker in lowered for marker in ("这个", "这只", "该结构", "上述结构", "已有结构", "当前结构"))
+    )
+
+    if has_pending_candidate and _continues_recommendation(text, messages or ()):
+        return WorkflowDecision(
+            "recommendation", delivery_kind, delivery_format, preset_id,
+            execution_semantics, "recommendation_continuation",
+        )
+    if has_contract:
+        reason = "existing_contract_term_change" if changing_terms else "existing_contract"
+        return WorkflowDecision(
+            "direct_module", delivery_kind, delivery_format, preset_id,
+            execution_semantics, reason,
+        )
+    if has_verified_results and delivery_kind != "none":
+        return WorkflowDecision(
+            "direct_module", delivery_kind, delivery_format, preset_id,
+            execution_semantics, "verified_results_delivery",
+        )
+    if specified_structure:
+        return WorkflowDecision(
+            "direct_module", delivery_kind, delivery_format, preset_id,
+            execution_semantics, "specified_structure",
+        )
+    if recommendation_requested or delivery_kind == "quote":
+        return WorkflowDecision(
+            "recommendation", delivery_kind, delivery_format, preset_id,
+            execution_semantics, "structure_selection_required",
+        )
+    if module_requested or delivery_kind != "none" or changing_terms:
+        return WorkflowDecision(
+            "direct_module", delivery_kind, delivery_format, preset_id,
+            execution_semantics, "direct_capability_request",
+        )
+    return WorkflowDecision(
+        "consultation", delivery_kind, delivery_format, preset_id,
+        execution_semantics, "consultation",
+    )
+
+
+def _delivery_kind(text: str) -> DeliveryKind:
+    for kind in ("quote", "report", "card"):
+        if any(marker in text for marker in _DELIVERY_MARKERS[kind]):
+            return kind  # type: ignore[return-value]
+    return "none"
+
+
+def _has_specified_structure(text: str) -> bool:
+    if any(marker in text for marker in _SPECIFIED_STRUCTURE_MARKERS):
+        return True
+    return bool(re.search(r"(?:产品|结构)\s*[0-9]+(?:\.[0-9]+)+", text, re.IGNORECASE))
+
+
+def _continues_recommendation(
+    text: str, messages: Sequence[Mapping[str, object]],
+) -> bool:
+    lowered = text.casefold()
+    # A rejection still belongs to the pending recommendation state machine;
+    # it must not fall through to an unrelated direct module or free chat.
+    if re.search(r"(?:不|别|无需|不用|不要|禁止)[^，。！？,.!?]*(?:确认|同意|执行|批准)", lowered) or any(
+        marker in lowered for marker in ("不同意", "取消", "先不要")
+    ):
+        return True
+    if has_term_change_intent(lowered) or re.search(
+        r"(?:选择|选|候选|第)[^，。！？,.!?]{0,12}(?:[0-9一二三四五六七八九十]|个|两个|全部|都)",
+        lowered,
+    ):
+        return True
+    if any(marker in lowered for marker in (
+        "市场观点", "看涨", "看跌", "震荡", "最大亏损", "风险承受", "本金波动",
+        "标的", "期限", "路径数", "多选", "前两个", "都选",
+    )):
+        return True
+    if any(marker in lowered for marker in (
+        "确认", "同意", "按此", "按这个", "继续", "好的", "研究简报", "完整研究报告", "参考报价",
+    )):
+        return True
+    if not messages:
+        return False
+    latest = messages[-1]
+    return str(latest.get("status", "")).casefold() in {"pending_approval", "needs_input"}
+
+
+def has_term_change_intent(message: object) -> bool:
+    text = str(message or "").strip().casefold()
+    return (
+        any(marker in text for marker in _TERM_CHANGE_ACTIONS)
+        and any(marker in text for marker in _TERM_FIELDS)
+    )
+
+
+__all__ = ("WorkflowDecision", "decide_workflow", "has_term_change_intent")
