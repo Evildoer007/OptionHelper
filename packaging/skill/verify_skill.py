@@ -18,7 +18,7 @@ import sys
 import tempfile
 import textwrap
 from threading import Thread
-from typing import Callable, Mapping
+from typing import Mapping
 import unicodedata
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
@@ -37,6 +37,12 @@ from release_contract import (
     RELEASE_VERSION,
     public_version_errors,
     require_published_at,
+)
+from pricer_evidence import (
+    PACKAGE_MANIFEST_RELATIVE_PATH,
+    PricerEvidenceManifestError,
+    pricer_evidence_is_present,
+    validate_pricer_evidence_manifest,
 )
 
 MODULES = ("datafetcher", "recommender", "payoffer", "pricer", "backtester", "reporter", "designer")
@@ -491,6 +497,21 @@ def _legacy_product_name_errors(root: Path) -> list[str]:
     return errors
 
 
+def _pricer_evidence_errors(root: Path) -> list[str]:
+    """Apply the shared Pricer evidence gate to a packaged Capability."""
+
+    if not pricer_evidence_is_present(root, packaged=True):
+        return []
+    try:
+        validate_pricer_evidence_manifest(
+            root / PACKAGE_MANIFEST_RELATIVE_PATH,
+            release_root=root,
+        )
+    except PricerEvidenceManifestError as error:
+        return [f"Pricer公平参数证据校验失败：{error}"]
+    return []
+
+
 def _manifest_errors(root: Path, entries: list[dict[str, object]]) -> list[str]:
     path = root / "capability-manifest.json"
     if not path.is_file():
@@ -713,6 +734,7 @@ def verify_skill(root: Path) -> list[str]:
     errors.extend(_code_errors(root))
     errors.extend(_capability_interface_errors(root))
     errors.extend(_legacy_product_name_errors(root))
+    errors.extend(_pricer_evidence_errors(root))
     errors.extend(_link_errors(root))
     errors.extend(_store_boundary_errors(root))
     errors.extend(_manifest_errors(root, entries))
@@ -825,7 +847,10 @@ def _formal_compute_protocol_errors(root: Path, python: str, environment: Mappin
         ]
         handler_parameters = {
             "payoffer": ["request", "host_context", "result_store", "tenant_id"],
-            "pricer": ["request", "host_context", "result_store", "tenant_id", "data_store"],
+            "pricer": [
+                "request", "host_context", "result_store", "tenant_id", "data_store",
+                "cancelled", "progress",
+            ],
             "backtester": ["request", "host_context", "result_store", "tenant_id", "data_store"],
         }
         for module_name, expected_handler in handler_parameters.items():
@@ -1078,9 +1103,8 @@ def _formal_compute_protocol_errors(root: Path, python: str, environment: Mappin
 def probe_runtime(
     root: Path,
     python: str = sys.executable,
-    page_probe: Callable[[Path], list[str]] | None = None,
 ) -> list[str]:
-    """探测可运行性；正式调用默认必须对五页面执行真实HTTP探测。"""
+    """验证Skill运行闭环：readiness、Tool入口、模块导入、正式协议与外部Store门禁。"""
     root = root.expanduser().resolve()
     environment = os.environ.copy()
     environment["PYTHONDONTWRITEBYTECODE"] = "1"
