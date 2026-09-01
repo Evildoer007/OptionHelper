@@ -24,6 +24,7 @@ _POLICIES = {
     "recommend": "conversation.tool.run",
     "recommend_fixed": "conversation.tool.run",
     "run": "module.run",
+    "eligibility": "module.catalog",
     "render": "module.run",
 }
 
@@ -33,6 +34,8 @@ def tool_catalog() -> dict[str, dict[str, object]]:
     for module in MODULES:
         operations, has_page = _OPERATIONS[module]
         declared_actions = ("catalog", "status", *operations)
+        if module == "pricer":
+            declared_actions += ("eligibility",)
         if module == "datafetcher":
             declared_actions += ("list_assets",)
         if module == "payoffer":
