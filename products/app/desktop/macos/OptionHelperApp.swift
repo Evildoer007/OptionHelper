@@ -52,7 +52,7 @@ private final class OptionHelperReportDownloadDelegate: NSObject, URLSessionTask
 }
 
 @main
-final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
+final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler, WKDownloadDelegate {
     private enum PresentationDecision {
         case retry
         case ready
@@ -147,7 +147,7 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
             .appendingPathComponent("OptionHelperBackend", isDirectory: true)
             .appendingPathComponent("OptionHelperBackend", isDirectory: false)
         guard FileManager.default.isExecutableFile(atPath: executable.path) else {
-            showFailure("找不到内置App Host")
+            showFailure("找不到内置应用服务")
             return
         }
         let environment = ProcessInfo.processInfo.environment
@@ -193,7 +193,7 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         process.terminationHandler = { [weak self] terminated in
             DispatchQueue.main.async {
                 if !(self?.loadedURL ?? false) && terminated.terminationStatus != 0 {
-                    self?.showFailure("App Host未能启动")
+                    self?.showFailure("应用服务未能启动")
                 }
             }
         }
@@ -202,7 +202,7 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
             backend = process
             startupPipe = pipe
         } catch {
-            showFailure("无法启动内置App Host")
+            showFailure("无法启动内置应用服务")
         }
     }
 
@@ -211,7 +211,7 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         for line in output.split(whereSeparator: \.isNewline) where line.hasPrefix("OPTIONHELPER_URL=") {
             let address = String(line.dropFirst("OPTIONHELPER_URL=".count))
             guard let url = URL(string: address), url.host == "127.0.0.1" else {
-                showFailure("App Host返回了无效地址")
+                showFailure("应用服务返回了无效地址")
                 return
             }
             loadedURL = true
@@ -222,7 +222,7 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
 
     private func showWebView(url: URL) {
         guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
-            showFailure("App Host返回了无效启动地址")
+            showFailure("应用服务返回了无效启动地址")
             return
         }
         var queryItems = components.queryItems ?? []
@@ -233,7 +233,7 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         queryItems.append(URLQueryItem(name: "app_startup", value: UUID().uuidString))
         components.queryItems = queryItems
         guard let startupURL = components.url else {
-            showFailure("App Host返回了无效启动地址")
+            showFailure("应用服务返回了无效启动地址")
             return
         }
         var originComponents = URLComponents()
@@ -619,6 +619,12 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
                 }
                 return
             }
+            // The native recovery overlay may have been shown by the loading
+            // watchdog.  It sits above WKWebView, so keeping it visible while
+            // requesting a snapshot can turn a healthy page into a permanent
+            // false failure.  Reveal the verified DOM before the snapshot;
+            // the terminal failure path restores the overlay if needed.
+            self.navigationRecoveryView?.isHidden = true
             let configuration = WKSnapshotConfiguration()
             configuration.rect = webView.bounds
             configuration.snapshotWidth = 480
@@ -867,12 +873,12 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
         if webView === settingsWebView, !isCancelledNavigationError(error) {
             cancelSettingsNavigationWatchdog()
-            showSettingsFailure("设置页面连接未能建立。请确认App Host仍在运行后重试。")
+            showSettingsFailure("设置页面连接未能建立。请确认应用服务仍在运行后重试。")
             return
         }
         guard webView === self.webView, !isCancelledNavigationError(error) else { return }
         cancelNavigationWatchdog()
-        showNavigationFailure("页面连接未能建立。请确认App Host仍在运行后重试。")
+        showNavigationFailure("页面连接未能建立。请确认应用服务仍在运行后重试。")
     }
 
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
@@ -883,7 +889,7 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         }
         guard webView === self.webView else { return }
         cancelNavigationWatchdog()
-        showNavigationFailure("页面进程已结束。任务和后台计算仍保存在App Host中。")
+        showNavigationFailure("页面进程已结束。任务和后台计算仍由应用服务保存。")
     }
 
     private func isAllowedReportArtifactURL(_ url: URL?) -> Bool {
@@ -908,6 +914,26 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = "报告下载未完成"
+        alert.informativeText = detail
+        if let window { alert.beginSheetModal(for: window) }
+        else { alert.runModal() }
+    }
+
+    private func dataAssetDownloadFilename(_ suggestedFilename: String) -> String? {
+        let candidate = suggestedFilename.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lower = candidate.lowercased()
+        let forbidden = CharacterSet.controlCharacters.union(CharacterSet(charactersIn: "/\\:"))
+        guard !candidate.isEmpty,
+              candidate.count <= 160,
+              candidate.rangeOfCharacter(from: forbidden) == nil,
+              lower.hasSuffix(".csv") || lower.hasSuffix(".json") else { return nil }
+        return candidate
+    }
+
+    private func showDataAssetDownloadFailure(_ detail: String) {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "数据下载未完成"
         alert.informativeText = detail
         if let window { alert.beginSheetModal(for: window) }
         else { alert.runModal() }
@@ -1103,6 +1129,12 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
     ) {
         let url = navigationAction.request.url
+        if webView === self.webView,
+           navigationAction.shouldPerformDownload,
+           url?.scheme?.lowercased() == "blob" {
+            decisionHandler(.download)
+            return
+        }
         if webView === self.webView, isSafeAppURL(url), url?.path == "/settings" {
             showSettingsCenter(navigationAction.request)
             decisionHandler(.cancel)
@@ -1124,6 +1156,40 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
             return
         }
         decisionHandler(url?.scheme == "about" || isAllowedReportArtifactURL(url) ? .allow : .cancel)
+    }
+
+    func webView(
+        _ webView: WKWebView,
+        navigationAction: WKNavigationAction,
+        didBecome download: WKDownload
+    ) {
+        guard webView === self.webView else { return }
+        download.delegate = self
+    }
+
+    func download(
+        _ download: WKDownload,
+        decideDestinationUsing response: URLResponse,
+        suggestedFilename: String,
+        completionHandler: @escaping (URL?) -> Void
+    ) {
+        guard let filename = dataAssetDownloadFilename(suggestedFilename) else {
+            completionHandler(nil)
+            showDataAssetDownloadFailure("下载文件名或类型不受支持。")
+            return
+        }
+        let panel = NSSavePanel()
+        panel.canCreateDirectories = true
+        panel.nameFieldStringValue = filename
+        let finish: (NSApplication.ModalResponse) -> Void = { response in
+            completionHandler(response == .OK ? panel.url : nil)
+        }
+        if let window { panel.beginSheetModal(for: window, completionHandler: finish) }
+        else { panel.begin(completionHandler: finish) }
+    }
+
+    func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) {
+        showDataAssetDownloadFailure(error.localizedDescription)
     }
 
     func windowDidResize(_ notification: Notification) {
@@ -1199,14 +1265,16 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
               let theme = value["theme"] as? String, let preference = value["preference"] as? String,
               ["light", "dark", "auto"].contains(preference), ["light", "dark"].contains(theme) else { return }
         themePreference = preference
+        let syncThemeScript = "window.OptionHelperTheme?.setThemePreference?.('\(preference)', {persist:false,notifyNative:false});"
+        DispatchQueue.main.async { [weak self] in
+            self?.webView?.evaluateJavaScript(syncThemeScript, completionHandler: nil)
+            self?.settingsWebView?.evaluateJavaScript(syncThemeScript, completionHandler: nil)
+        }
         if preference == "auto" {
             window?.appearance = nil
             settingsWindow?.appearance = nil
             let appearance = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua])
             applyDockIcon(theme: appearance == .darkAqua ? "dark" : "light")
-            DispatchQueue.main.async { [weak self] in
-                self?.webView?.evaluateJavaScript("window.OptionHelperTheme?.refreshSystemTheme?.();", completionHandler: nil)
-            }
         } else {
             window?.appearance = NSAppearance(named: theme == "dark" ? .darkAqua : .aqua)
             settingsWindow?.appearance = window?.appearance
