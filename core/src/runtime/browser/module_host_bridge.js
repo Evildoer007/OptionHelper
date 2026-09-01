@@ -936,7 +936,9 @@
     document.body.append(target);
     target.click();
     target.remove();
-    URL.revokeObjectURL(objectUrl);
+    // WKWebView promotes the synthetic anchor to a native download after the
+    // click returns.  Keep the Blob alive until that handoff has completed.
+    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60000);
   }
 
   // Install the routed fetch before product page scripts start their initial
