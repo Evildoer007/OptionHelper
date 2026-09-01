@@ -236,6 +236,9 @@ class ToolGateway:
                         friendly_payload = _controlled_desk_compute_payload(
                             tool_name, friendly_payload, agent_proxy=agent_proxy,
                         )
+                        friendly_payload, render_options = _extract_payoffer_render_options(
+                            tool_name, friendly_payload, agent_proxy=agent_proxy,
+                        )
                         new_contract_variant = _new_contract_variant_requested(friendly_payload)
                         if candidate_variant is not None and new_contract_variant:
                             raise ValidationError("候选预选不得切换活动合同")
@@ -254,6 +257,16 @@ class ToolGateway:
                             raise ValidationError("当前任务尚未建立合同，不能切换方案版本")
                         active_contract = candidate_contract if candidate_variant is not None else None if new_contract_variant else existing
                         friendly_payload = _reuse_task_contract_identity(friendly_payload, active_contract)
+                        if new_contract_variant and _is_fair_parameter_payload(friendly_payload):
+                            raise ValidationError(
+                                "公平参数反解必须使用当前已激活合同，不能同时创建合同新版本"
+                            )
+                        _run_fair_parameter_preflight(
+                            tool_entry,
+                            tool_name,
+                            friendly_payload,
+                            active_contract=active_contract,
+                        )
                         data_refs = self._resolve_compute_data_refs(
                             tool_name,
                             friendly_payload,
@@ -322,7 +335,11 @@ class ToolGateway:
                         )
                         if not isinstance(prepared, Mapping) or not isinstance(prepared.get("request"), Mapping):
                             raise ValidationError("Capability返回的正式计算输入无效")
+                        if new_contract_variant and _compiled_contract_reuses_active(prepared, existing):
+                            new_contract_variant = False
                         effective_payload = dict(prepared["request"])
+                        if render_options is not None:
+                            effective_payload["render_options"] = render_options
                         if candidate_variant is not None:
                             binding = self._contracts.put_candidate_variant(
                                 caller_context,
@@ -557,6 +574,9 @@ class ToolGateway:
                     friendly_payload = _controlled_desk_compute_payload(
                         tool_name, friendly_payload, agent_proxy=agent_proxy,
                     )
+                    friendly_payload, render_options = _extract_payoffer_render_options(
+                        tool_name, friendly_payload, agent_proxy=agent_proxy,
+                    )
                     new_contract_variant = _new_contract_variant_requested(friendly_payload)
                     if candidate_variant is not None and new_contract_variant:
                         raise ValidationError("候选预选不得切换活动合同")
@@ -574,6 +594,16 @@ class ToolGateway:
                         raise ValidationError("当前任务尚未建立合同，不能切换方案版本")
                     active_contract = candidate_contract if candidate_variant is not None else None if new_contract_variant else existing
                     friendly_payload = _reuse_task_contract_identity(friendly_payload, active_contract)
+                    if new_contract_variant and _is_fair_parameter_payload(friendly_payload):
+                        raise ValidationError(
+                            "公平参数反解必须使用当前已激活合同，不能同时创建合同新版本"
+                        )
+                    _run_fair_parameter_preflight(
+                        tool_entry,
+                        tool_name,
+                        friendly_payload,
+                        active_contract=active_contract,
+                    )
                     data_refs = self._resolve_compute_data_refs(
                         tool_name,
                         friendly_payload,
@@ -642,7 +672,11 @@ class ToolGateway:
                     )
                     if not isinstance(prepared_contract, Mapping) or not isinstance(prepared_contract.get("request"), Mapping):
                         raise ValidationError("Capability返回的正式计算输入无效")
+                    if new_contract_variant and _compiled_contract_reuses_active(prepared_contract, existing):
+                        new_contract_variant = False
                     effective_payload = dict(prepared_contract["request"])
+                    if render_options is not None:
+                        effective_payload["render_options"] = render_options
                     if candidate_variant is not None:
                         binding = self._contracts.put_candidate_variant(
                             caller_context,
@@ -1447,6 +1481,9 @@ class ToolGateway:
         friendly = _controlled_desk_compute_payload(
             "payoffer", _business_payload(payload), agent_proxy=False,
         )
+        friendly, render_options = _extract_payoffer_render_options(
+            "payoffer", friendly, agent_proxy=False,
+        )
         if friendly.pop("development_preview", False) is not False:
             raise ValidationError("Hosted Payoffer预览不接受development_preview")
         friendly.pop("action", None)
@@ -1537,11 +1574,14 @@ class ToolGateway:
         product_id = identity_snapshot.get("product_id") if isinstance(identity_snapshot, Mapping) else None
         if not isinstance(product_id, str) or not product_id:
             raise ValidationError("Hosted预览合同缺少产品标识")
-        return {
+        effective_payload = {
             "action": "preview",
             "product_id": product_id,
             "resolved_contract": dict(contract),
-        }, bound_context
+        }
+        if render_options is not None:
+            effective_payload["render_options"] = render_options
+        return effective_payload, bound_context
 
     def _bind_contract_context(
         self,
@@ -2018,6 +2058,34 @@ def _controlled_desk_compute_payload(
     return value
 
 
+def _extract_payoffer_render_options(
+    tool_name: str,
+    payload: Mapping[str, Any],
+    *,
+    agent_proxy: bool,
+) -> tuple[dict[str, Any], dict[str, int] | None]:
+    """将Desk图片尺寸与合同编译输入分离，并在Worker请求中重新绑定。"""
+
+    value = dict(payload)
+    raw = value.pop("render_options", None)
+    if raw is None:
+        return value, None
+    if tool_name != "payoffer" or agent_proxy:
+        raise ValidationError("图片尺寸只允许由OptDesk收益结构页面提交")
+    if not isinstance(raw, Mapping) or set(raw) != {"width", "height"}:
+        raise ValidationError("render_options必须且只能包含width与height")
+    normalized: dict[str, int] = {}
+    for key, minimum, maximum, label in (
+        ("width", 240, 6000, "图片宽度"),
+        ("height", 180, 6000, "图片高度"),
+    ):
+        item = raw.get(key)
+        if isinstance(item, bool) or not isinstance(item, int) or not minimum <= item <= maximum:
+            raise ValidationError(f"{label}必须是{minimum}至{maximum}之间的整数像素值")
+        normalized[key] = item
+    return value, normalized
+
+
 def _canonicalize_app_dates(payload: dict[str, Any]) -> dict[str, Any]:
     """Translate App calendar-control values at the presentation boundary."""
 
@@ -2098,6 +2166,57 @@ def _new_contract_variant_requested(payload: dict[str, Any]) -> bool:
     if not isinstance(requested, bool):
         raise ValidationError("new_contract_variant必须为布尔值")
     return requested
+
+
+def _compiled_contract_reuses_active(
+    prepared: Mapping[str, Any], existing_contract: Mapping[str, Any] | None,
+) -> bool:
+    """Treat a normalized no-op edit as an ordinary repeat calculation.
+
+    The browser can only compare visible values.  Core owns the canonical
+    ResolvedContract fingerprint, so the Host makes the final decision after
+    compilation and before ContractStore versioning.  ContractStore remains
+    strict for genuinely explicit same-fingerprint variant operations.
+    """
+
+    if not isinstance(existing_contract, Mapping):
+        return False
+    prepared_fingerprint = prepared.get("contract_fingerprint")
+    active_fingerprint = existing_contract.get("contract_fingerprint")
+    return (
+        isinstance(prepared_fingerprint, str)
+        and len(prepared_fingerprint) == 64
+        and prepared_fingerprint == active_fingerprint
+    )
+
+
+def _is_fair_parameter_payload(payload: Mapping[str, Any]) -> bool:
+    objective = payload.get("pricing_objective")
+    return isinstance(objective, Mapping) and objective.get("mode") == "fair_parameter"
+
+
+def _run_fair_parameter_preflight(
+    tool_entry: Any,
+    tool_name: str,
+    payload: Mapping[str, Any],
+    *,
+    active_contract: Mapping[str, Any] | None,
+) -> None:
+    """Run the verified Core preflight before any App data resolution."""
+    if tool_name != "pricer" or payload.get("pricing_objective") is None:
+        return
+    preflight = getattr(tool_entry, "preflight_fair_parameter_request", None)
+    if not callable(preflight):
+        raise ValidationError("Capability缺少公平参数运行前预检")
+    resolved_contract = (
+        active_contract.get("resolved_contract")
+        if isinstance(active_contract, Mapping)
+        else None
+    )
+    try:
+        preflight(tool_name, payload, resolved_contract=resolved_contract)
+    except (ContractResolutionError, TypeError, ValueError) as error:
+        raise ValidationError(str(error)) from error
 
 
 def _candidate_variant_request(value: Mapping[str, Any]) -> dict[str, Any]:
@@ -3168,7 +3287,7 @@ def _require_conversation_data_request(action: str, payload: Mapping[str, Any]) 
 def _require_conversation_compute_request(tool_name: str, payload: Mapping[str, Any]) -> None:
     allowed = {"action", "task_id", "product_id", "identity", "term_overrides"}
     if tool_name == "pricer":
-        allowed.update({"pricing_config", "market_data_refs", "trading_calendar_ref"})
+        allowed.update({"pricing_config", "market_data_refs", "trading_calendar_ref", "pricing_objective"})
     elif tool_name == "backtester":
         allowed.update({"backtest_config", "historical_data"})
     _require_scope_fields(payload, allowed)
