@@ -35,7 +35,6 @@
           </aside>
           <section class="connection-editor">
             <header class="settings-content-header">
-              <span class="setup-security">凭据保存在当前设备的OptionHelper数据目录</span>
               <a class="settings-close" href="/optchat" aria-label="关闭设置"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 3l10 10M13 3L3 13"/></svg></a>
             </header>
             <div class="settings-options">
@@ -70,9 +69,9 @@
             <section id="runtime" class="setting-section" hidden>
               <div class="setting-section__head"><div><h2>运行状态</h2><p>区分已声明配置、实时探测和正式能力验证。</p></div><button class="button-quiet" type="button" id="refresh-runtime">刷新状态</button></div>
               <dl class="runtime-status-list" aria-live="polite">
-                <div><dt>App Host</dt><dd><strong data-runtime-host>尚未探测</strong><span data-runtime-host-detail>等待读取App Host状态</span></dd></div>
+                <div><dt>应用服务</dt><dd><strong data-runtime-host>尚未探测</strong><span data-runtime-host-detail>等待读取应用服务状态</span></dd></div>
                 <div><dt>Capability</dt><dd><strong data-runtime-capability>尚未探测</strong><span data-runtime-capability-detail>等待校验模块资源</span></dd></div>
-                <div><dt>Python环境</dt><dd><strong>App内置运行时</strong><span>随App Host运行；公共接口未提供独立依赖明细，不标记为单独已验证。</span></dd></div>
+                <div><dt>Python环境</dt><dd><strong>App内置运行时</strong><span>由应用服务统一管理；公共接口不展示独立依赖明细。</span></dd></div>
                 <div><dt>默认模型</dt><dd><strong data-runtime-model>未验证</strong><span data-runtime-model-detail>保存Provider只代表已声明，不代表工具调用能力可用。</span><button class="button-quiet runtime-status-action" type="button" id="verify-model-capability">验证完整模型能力</button></dd></div>
                 <div><dt>iFind数据</dt><dd><strong data-runtime-data>未配置</strong><span data-runtime-data-detail>保存Refresh Token后仍需在数据接口页执行连接测试。</span></dd></div>
               </dl>
@@ -83,7 +82,7 @@
               <div id="model-provider-root" class="model-provider-root" aria-live="polite"></div>
             </section>
             <section id="multi-agent" class="setting-section" hidden>
-              <div class="setting-section__head"><div><h2>多智能体预设</h2><p>仅在进入Recommender时生效。普通对话继续使用主Agent。</p></div></div>
+              <div class="setting-section__head"><div><h2>多智能体预设</h2><p>为每个Agent设置模型和AGENT.md。配置仅在Recommender新任务中生效。</p></div></div>
               <div id="multi-agent-preset-root" class="multi-agent-preset-root" aria-live="polite"></div>
               <div id="review-policy-root" class="review-policy-root" aria-live="polite"></div>
             </section>
