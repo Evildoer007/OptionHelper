@@ -1,5 +1,5 @@
 import { clearMessage, enhanceSelects, message, request, safeJson } from "/app/frontend/shared/app.js";
-import { currentThemePreference, installThemeControls, setThemePreference } from "/app/frontend/shared/theme.js";
+import { applyServerThemePreference, currentThemePreference, installThemeControls } from "/app/frontend/shared/theme.js";
 import { setScale } from "/app/frontend/shared/ui-scale.js";
 
 const send = (path, payload) => request(path, { method: "POST", body: safeJson(payload) });
@@ -38,6 +38,7 @@ let configurationGeneration = 0;
 let providerState = { providers: [], builtins: [], default_model_selection: null, openProviderId: null, addMode: false };
 let multiAgentState = {
   presets: [], selected_preset_id: "sequential-deliberation", role_models: {},
+  agent_files: {}, default_agent_files: {},
   review_policies: [], selected_review_policy_id: "standard-review", review_policy_role_models: {}, available_models: [],
   runtime_status: null, runtime_mode: "", runtime_version: "", runtime_reason: "", runtime_available: false,
 };
@@ -167,9 +168,7 @@ function applySettings(settings) {
   storageForm.elements.export_location_ref.value = settings.storage_export?.export_location_ref || "";
   storageForm.elements.allow_user_selected_directory.value = String(settings.storage_export?.allow_user_selected_directory !== false);
   const savedTheme = settings.preferences?.theme;
-  if (["light", "dark", "auto"].includes(savedTheme) && savedTheme !== currentThemePreference()) {
-    setThemePreference(savedTheme);
-  }
+  if (["light", "dark", "auto"].includes(savedTheme)) applyServerThemePreference(savedTheme);
   themePreference.value = currentThemePreference();
   if (uiScale) uiScale.value = String(window.OptionHelperUIScale?.current?.() || 1);
   enhanceSelects(document);
@@ -328,7 +327,7 @@ async function refreshRuntimeStatus() {
   try {
     const [health, capability] = await Promise.all([request("/api/health"), request("/api/capability/status")]);
     runtimeHost.textContent = health.status === "ok" ? "可用" : "异常";
-    runtimeHostDetail.textContent = health.mode === "local" ? "App Host响应正常。" : `运行模式：${health.mode || "未知"}。`;
+    runtimeHostDetail.textContent = health.mode === "local" ? "应用服务响应正常。" : `运行模式：${health.mode || "未知"}。`;
     const pages = Array.isArray(capability.capability?.pages) ? capability.capability.pages : [];
     runtimeCapability.textContent = capability.status === "verified" ? "已验证" : "未验证";
     runtimeCapabilityDetail.textContent = capability.status === "verified"
@@ -360,7 +359,7 @@ const rolePresentation = {
   },
   "product-trader-loop": {
     Structurer: { name: "Structurer", description: "提出候选、条款调整和验证计划" },
-    Trader: { name: "Trader", description: "基于Host事实接受或退回候选" },
+    Trader: { name: "Trader", description: "基于已验证事实接受或退回候选" },
     Reviewer: { name: "Reviewer", description: "复核最终候选版本与事实引用" },
   },
   "constraint-ranking": {
@@ -403,7 +402,7 @@ function presetDiagram(preset) {
   if (preset.preset_id === "sequential-deliberation") {
     body = `<g class="preset-diagram__links"><path d="M148 80H204" marker-end="url(#${arrow})"/><path d="M356 80H412" marker-end="url(#${arrow})"/></g>${node(12, 56, 136, "Interpreter", true)}${node(220, 56, 136, "Selector")}${node(428, 56, 120, "Reviewer")}`;
   } else if (preset.preset_id === "product-trader-loop") {
-    body = `<g class="preset-diagram__links"><path d="M132 44H176" marker-end="url(#${arrow})"/><path d="M384 44H428" marker-end="url(#${arrow})"/><path d="M488 68V100" marker-end="url(#${arrow})"/><path d="M428 84H84Q72 84 72 72V68" fill="none" stroke-dasharray="5 4" marker-end="url(#${arrow})"/></g>${node(12, 20, 120, "Structurer", true)}${node(176, 20, 208, "Host Modules")}${node(428, 20, 120, "Trader")}${node(428, 100, 120, "Reviewer")}`;
+    body = `<g class="preset-diagram__links"><path d="M132 44H176" marker-end="url(#${arrow})"/><path d="M384 44H428" marker-end="url(#${arrow})"/><path d="M488 68V100" marker-end="url(#${arrow})"/><path d="M428 84H84Q72 84 72 72V68" fill="none" stroke-dasharray="5 4" marker-end="url(#${arrow})"/></g>${node(12, 20, 120, "Structurer", true)}${node(176, 20, 208, "计算模块")}${node(428, 20, 120, "Trader")}${node(428, 100, 120, "Reviewer")}`;
   } else if (preset.preset_id === "independent-council") {
     body = `<g class="preset-diagram__links"><path d="M124 80H152"/><path d="M152 80V44H176" marker-end="url(#${arrow})"/><path d="M152 80V124H176" marker-end="url(#${arrow})"/><path d="M288 44H348V80"/><path d="M288 124H348V80"/><path d="M348 80H428" marker-end="url(#${arrow})"/></g>${node(12, 56, 112, "Framer", true)}${node(176, 20, 112, "Matcher")}${node(176, 100, 112, "Hedger")}${node(428, 56, 116, "Moderator", true)}`;
   } else if (preset.preset_id === "constraint-ranking") {
@@ -472,14 +471,19 @@ function roleDisplay(presetId, role) {
   return rolePresentation[presetId]?.[role] || { name: role, description: "该Agent的模型配置" };
 }
 
-function roleRows(roles, configuredRoles, displayFor, fieldName, disabled) {
+function roleRows(roles, configuredRoles, agentFiles, defaultAgentFiles, displayFor, fieldName, disabled) {
   return roles.map((role) => {
     const selectedValue = roleModelValue(configuredRoles[role]);
     const display = displayFor(role);
-    if (!multiAgentState.available_models.length) {
-      return `<div class="multi-agent-role-row is-empty"><span><strong>${escapeHtml(display.name)}</strong><small>${escapeHtml(display.description)}</small></span><p>请先在“模型配置”中启用至少一个模型。</p></div>`;
-    }
-    return `<label class="multi-agent-role-row"><span><strong>${escapeHtml(display.name)}</strong><small>${escapeHtml(display.description)}</small></span><select name="${escapeHtml(fieldName)}-${escapeHtml(role)}" data-role="${escapeHtml(role)}" data-choice ${canEditModel && !disabled ? "" : "disabled"}>${roleModelOptions(selectedValue)}</select></label>`;
+    const content = agentFiles[role] || defaultAgentFiles[role] || `# ${role}`;
+    const editorId = `agent-file-${role.toLowerCase()}`;
+    const modelControl = multiAgentState.available_models.length
+      ? `<select name="${escapeHtml(fieldName)}-${escapeHtml(role)}" data-role="${escapeHtml(role)}" data-choice ${canEditModel && !disabled ? "" : "disabled"}>${roleModelOptions(selectedValue)}</select>`
+      : `<p class="multi-agent-role-model-empty">尚未配置模型，运行时将使用本轮会话模型。</p>`;
+    return `<section class="multi-agent-agent-card">
+      <div class="multi-agent-role-row"><span class="multi-agent-role-identity"><strong>${escapeHtml(display.name)}</strong><small>${escapeHtml(display.description)}</small></span><div class="multi-agent-role-model"><span>运行模型</span>${modelControl}</div></div>
+      <div class="multi-agent-agent-file"><span><label for="${escapeHtml(editorId)}"><strong>AGENT.md</strong><small>角色指令</small></label><button type="button" class="button-quiet" data-reset-agent-role="${escapeHtml(role)}" ${canEditModel && !disabled ? "" : "disabled"}>恢复默认</button></span><textarea id="${escapeHtml(editorId)}" name="agent-${escapeHtml(role)}" data-agent-role="${escapeHtml(role)}" rows="8" maxlength="16000" spellcheck="false" ${canEditModel && !disabled ? "" : "disabled"}>${escapeHtml(content)}</textarea><small>只定义职责和判断重点。工具权限、数据边界和金融事实规则由App强制执行。</small></div>
+    </section>`;
   }).join("");
 }
 
@@ -521,6 +525,8 @@ function normalizeMultiAgentState(payload) {
     presets: Array.isArray(response.presets) ? response.presets : [],
     selected_preset_id: textValue(response.selected_preset_id) || "sequential-deliberation",
     role_models: isRecord(response.role_models) ? response.role_models : {},
+    agent_files: isRecord(response.agent_files) ? response.agent_files : {},
+    default_agent_files: isRecord(response.default_agent_files) ? response.default_agent_files : {},
     review_policies: Array.isArray(response.review_policies) ? response.review_policies : [],
     selected_review_policy_id: textValue(response.selected_review_policy_id) || "standard-review",
     review_policy_role_models: isRecord(response.review_policy_role_models) ? response.review_policy_role_models : {},
@@ -540,9 +546,9 @@ function renderMultiAgentPresets() {
     const presentation = presetPresentation[preset.preset_id] || { summary: "推荐预设" };
     const selectedClass = preset.preset_id === multiAgentState.selected_preset_id ? "is-selected" : "";
     const modeAvailable = modeIsAvailable(preset, runtime);
-    return `<article class="multi-agent-preset-card ${modeAvailable ? "" : "is-disabled"} ${selectedClass}" aria-disabled="${modeAvailable ? "false" : "true"}">
+    return `<article class="multi-agent-preset-card ${preset.enabled ? "" : "is-disabled"} ${selectedClass}" aria-disabled="${preset.enabled ? "false" : "true"}" data-runtime-available="${modeAvailable ? "true" : "false"}">
       <label class="multi-agent-preset-card__head">
-        <input type="radio" name="multi-agent-preset" value="${escapeHtml(preset.preset_id)}" aria-label="选择${escapeHtml(preset.display_name)}：${escapeHtml(presentation.summary)}" ${preset.preset_id === multiAgentState.selected_preset_id ? "checked" : ""} ${modeAvailable && canEditModel ? "" : "disabled"}>
+        <input type="radio" name="multi-agent-preset" value="${escapeHtml(preset.preset_id)}" aria-label="选择${escapeHtml(preset.display_name)}：${escapeHtml(presentation.summary)}" ${preset.preset_id === multiAgentState.selected_preset_id ? "checked" : ""} ${preset.enabled && canEditModel ? "" : "disabled"}>
         <span class="multi-agent-preset-copy"><strong>${escapeHtml(preset.display_name)}</strong><small>${escapeHtml(presentation.summary)}</small></span>
       </label>
       ${presetDiagram(preset)}
@@ -553,15 +559,17 @@ function renderMultiAgentPresets() {
     return;
   }
   const configuredRoles = multiAgentState.role_models[selected.preset_id] || {};
+  const agentFiles = multiAgentState.agent_files[selected.preset_id] || {};
+  const defaultAgentFiles = multiAgentState.default_agent_files[selected.preset_id] || {};
   const presetRoleRows = roleRows(
-    selected.roles, configuredRoles, (role) => roleDisplay(selected.preset_id, role), "role", !modeIsAvailable(selected, runtime),
+    selected.roles, configuredRoles, agentFiles, defaultAgentFiles,
+    (role) => roleDisplay(selected.preset_id, role), "role", !selected.enabled,
   );
-  const hasModels = multiAgentState.available_models.length > 0;
   multiAgentRoot.innerHTML = `<div class="multi-agent-preset-list" role="radiogroup" aria-label="Recommender多智能体预设">${presetRows}</div>
     <form class="multi-agent-role-form" data-multi-agent-role-form novalidate>
-      <div class="multi-agent-role-head"><div><strong>${escapeHtml(selected.display_name)}的Agent模型</strong><small>${modeIsAvailable(selected, runtime) ? "仅配置本预设当前实际运行的Agent。未指定时继承本轮会话模型；本轮显式模型会优先覆盖角色槽。" : "当前Runtime不可用，暂不能配置或运行此Mode。"}</small></div></div>
+      <div class="multi-agent-role-head"><div><span>当前预设</span><strong>${escapeHtml(selected.display_name)}的Agent配置</strong><small>${modeIsAvailable(selected, runtime) ? "模型与AGENT.md会在新任务启动时冻结；当前运行中的任务不受后续修改影响。" : "当前Runtime不可用；配置仍可保存，并在Runtime恢复后的新任务中生效。"}</small></div></div>
       <div class="multi-agent-role-list">${presetRoleRows}</div>
-      <div class="multi-agent-role-actions"><p class="form-result" data-form-result="multi-agent" role="status" aria-live="polite"></p>${hasModels ? `<button class="model-primary-button" type="submit" ${canEditModel && modeIsAvailable(selected, runtime) ? "" : "disabled"}>保存Agent模型</button>` : `<a class="model-secondary-button" href="#model">前往配置模型</a>`}</div>
+      <div class="multi-agent-role-actions"><p class="form-result" data-form-result="multi-agent" role="status" aria-live="polite"></p><div>${multiAgentState.available_models.length ? "" : `<a class="model-secondary-button" href="#model">配置模型</a>`}<button class="model-primary-button" type="submit" ${canEditModel && selected.enabled ? "" : "disabled"}>保存Agent配置</button></div></div>
     </form>`;
   renderReviewPolicies();
   enhanceSelects(multiAgentRoot);
@@ -603,6 +611,15 @@ multiAgentRoot.addEventListener("change", async (event) => {
 });
 
 multiAgentRoot.addEventListener("click", (event) => {
+  const reset = event.target.closest("[data-reset-agent-role]");
+  if (reset) {
+    const role = reset.dataset.resetAgentRole;
+    const content = multiAgentState.default_agent_files[multiAgentState.selected_preset_id]?.[role];
+    const textarea = Array.from(multiAgentRoot.querySelectorAll("textarea[data-agent-role]"))
+      .find((item) => item.dataset.agentRole === role);
+    if (textarea && typeof content === "string") textarea.value = content;
+    return;
+  }
   const diagram = event.target.closest("[data-preset-diagram]");
   if (!diagram) return;
   openPresetDiagram(diagram);
@@ -638,15 +655,20 @@ multiAgentRoot.addEventListener("submit", async (event) => {
     const [providerId, modelId] = select.value.split("\u001f");
     roleModels[select.dataset.role] = { provider_id: providerId, model_id: modelId };
   });
+  const agentFiles = {};
+  form.querySelectorAll("textarea[data-agent-role]").forEach((textarea) => {
+    agentFiles[textarea.dataset.agentRole] = textarea.value;
+  });
   const button = form.querySelector('button[type="submit"]');
   button.disabled = true;
   try {
-    await send("/api/settings/multi-agent-role-models", {
+    await send("/api/settings/multi-agent-role-config", {
       preset_id: multiAgentState.selected_preset_id,
       role_models: roleModels,
+      agent_files: agentFiles,
     });
     await refreshMultiAgentPresets();
-    message(resultFor("multi-agent"), "Agent模型已保存。", false);
+    message(resultFor("multi-agent"), "Agent配置已保存，将从新任务开始生效。", false);
   } catch (error) { message(resultFor("multi-agent"), error.message, true); }
   finally { button.disabled = false; }
 });
