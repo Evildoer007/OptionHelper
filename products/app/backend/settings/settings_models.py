@@ -114,6 +114,7 @@ class SettingsSnapshot:
     default_model_selection: ModelSelection | None = None
     multi_agent_recommendation_preset_id: str = "sequential-deliberation"
     multi_agent_preset_role_models: dict[str, dict[str, ModelSelection]] = field(default_factory=dict)
+    multi_agent_preset_agent_instructions: dict[str, dict[str, str]] = field(default_factory=dict)
     multi_agent_review_policy_id: str = MULTI_AGENT_DEFAULT_REVIEW_POLICY_ID
     multi_agent_review_policy_role_models: dict[str, dict[str, ModelSelection]] = field(default_factory=dict)
 
@@ -177,6 +178,14 @@ def serialize_settings(snapshot: SettingsSnapshot) -> dict[str, Any]:
                 if MULTI_AGENT_LEGACY_ROLE_ALIASES.get(role, role) in MULTI_AGENT_RECOMMENDATION_ROLES
             }
             for preset_id, role_models in snapshot.multi_agent_preset_role_models.items()
+        },
+        "multi_agent_preset_agent_instructions": {
+            preset_id: {
+                MULTI_AGENT_LEGACY_ROLE_ALIASES.get(role, role): content
+                for role, content in role_instructions.items()
+                if MULTI_AGENT_LEGACY_ROLE_ALIASES.get(role, role) in MULTI_AGENT_RECOMMENDATION_ROLES
+            }
+            for preset_id, role_instructions in snapshot.multi_agent_preset_agent_instructions.items()
         },
         "multi_agent_review_policy_id": snapshot.multi_agent_review_policy_id,
         "multi_agent_review_policy_role_models": {
@@ -322,6 +331,21 @@ def deserialize_settings(value: dict[str, Any]) -> SettingsSnapshot:
                 provider_id=str(raw_role_selection.get("provider_id", "")),
                 model_id=str(raw_role_selection.get("model_id", "")),
             )
+    raw_agent_instructions = value.get("multi_agent_preset_agent_instructions", {})
+    if not isinstance(raw_agent_instructions, dict):
+        raise ValueError("multi_agent_preset_agent_instructions must be an object")
+    agent_instructions: dict[str, dict[str, str]] = {}
+    for preset_id, raw_roles in raw_agent_instructions.items():
+        if not isinstance(raw_roles, dict):
+            raise ValueError("multi-agent preset agent instructions must be an object")
+        agent_instructions[str(preset_id)] = {}
+        for role_name, raw_content in raw_roles.items():
+            role = MULTI_AGENT_LEGACY_ROLE_ALIASES.get(str(role_name), str(role_name))
+            if role not in MULTI_AGENT_RECOMMENDATION_ROLES:
+                continue
+            if not isinstance(raw_content, str):
+                raise ValueError("multi-agent agent instruction must be a string")
+            agent_instructions[str(preset_id)][role] = raw_content
     raw_review_role_models = value.get("multi_agent_review_policy_role_models", {})
     if not isinstance(raw_review_role_models, dict):
         raise ValueError("multi_agent_review_policy_role_models must be an object")
@@ -375,6 +399,7 @@ def deserialize_settings(value: dict[str, Any]) -> SettingsSnapshot:
         default_model_selection=selection,
         multi_agent_recommendation_preset_id=preset_id,
         multi_agent_preset_role_models=role_models,
+        multi_agent_preset_agent_instructions=agent_instructions,
         multi_agent_review_policy_id=review_policy_id,
         multi_agent_review_policy_role_models=review_role_models,
     )
