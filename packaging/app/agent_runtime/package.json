@@ -1,0 +1,9 @@
+{
+  "name": "optionhelper-agent-runtime-build-tools",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Pinned build-only tools for the OptionHelper native Agent Runtime.",
+  "dependencies": {
+    "postject": "1.0.0-alpha.6"
+  }
+}
