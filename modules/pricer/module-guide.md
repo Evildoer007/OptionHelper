@@ -11,8 +11,10 @@ Pricer必须以`src/engines/pricing_core/`内部数值基座为唯一引擎，�
 ## 输入与输出
 
 ```text
-PricingInput = {ResolvedContract, PricingConfig, market_data_refs, trading_calendar_ref?}
+PricingInput = {ResolvedContract, PricingConfig, market_data_refs, trading_calendar_ref?, pricing_objective?}
 ```
+
+`pricing_objective`只接受用户显式选择的`{"mode":"valuation"}`或受控目标`{"mode":"fair_parameter","target_id":"..."}`。省略时保持普通PV估值及既有结果口径；不得从普通条款、自然语言或调用方自报目标推断反解目标。公平参数结果单独返回`solution`、`base_parameter`、`residual`和`solution_uncertainty`；只有`quote_eligible=true`且`formal_quote_status`不是`research_only`时才显示正式报价资格，否则必须显示研究估计及受控原因，不得把公平参数结果当作普通PV或Quote。
 
 `pricing_methods`来自OptionReg，实际运行能力来自Pricer，两者不相交则返回`unsupported`。存续期路径结构必须先由可见不复权价格形成`ObservedContractState`；历史不足时不得假设未发生事件。该状态应由Core正式协议独立冻结，Pricer不得把它伪装为定价参数。
 
