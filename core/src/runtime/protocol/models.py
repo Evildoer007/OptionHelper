@@ -12,7 +12,7 @@ from math import isfinite
 import re
 from typing import TYPE_CHECKING, Any, Mapping
 
-from runtime.contracts.contract_types import deep_freeze, semantic_hash
+from runtime.contracts.contract_types import deep_freeze, deep_thaw, semantic_hash
 
 if TYPE_CHECKING:
     from runtime.contracts.contract_api import ResolvedContract
@@ -314,10 +314,117 @@ class PricingInput:
     market_data_refs: tuple[DataAssetRef, ...] = ()
     trading_calendar_ref: DataAssetRef | None = None
     observed_contract_state: ObservedContractState | None = None
+    pricing_objective: "PricingObjective | None" = None
 
     def __post_init__(self) -> None:
+        # Keep this protocol object strict at the Core boundary.  Mapping
+        # projections are accepted only by the request adapter, which first
+        # reconstructs and verifies a complete ResolvedContract.
+        from runtime.contracts.contract_api import ResolvedContract
+
+        if not isinstance(self.contract, ResolvedContract):
+            raise TypeError("PricingInput.contract必须为完整ResolvedContract")
+        if not isinstance(self.pricing_config, Mapping):
+            raise TypeError("PricingInput.pricing_config必须为对象")
+        if not isinstance(self.market_data_refs, tuple) or not all(
+            isinstance(item, DataAssetRef) for item in self.market_data_refs
+        ):
+            raise TypeError("PricingInput.market_data_refs必须为DataAssetRef元组")
+        if self.trading_calendar_ref is not None and not isinstance(self.trading_calendar_ref, DataAssetRef):
+            raise TypeError("PricingInput.trading_calendar_ref必须为DataAssetRef或null")
         if self.observed_contract_state is not None and not isinstance(self.observed_contract_state, ObservedContractState):
             raise TypeError("PricingInput.observed_contract_state必须为Host冻结ObservedContractState")
+        object.__setattr__(self, "pricing_config", deep_freeze(self.pricing_config))
+        objective = self.pricing_objective
+        if objective is not None and not isinstance(objective, PricingObjective):
+            objective = PricingObjective.from_value(objective)
+            object.__setattr__(self, "pricing_objective", objective)
+
+    def to_protocol_dict(self) -> dict[str, Any]:
+        """Serialize the formal input without inventing optional fields.
+
+        In particular, the ordinary valuation default leaves
+        ``pricing_objective`` absent.  This keeps the legacy request payload
+        and its semantic hash stable while an explicit valuation objective is
+        still retained as an audit-visible field.
+        """
+
+        def asset_payload(value: DataAssetRef) -> dict[str, Any]:
+            return deep_thaw({
+                "data_asset_id": value.data_asset_id,
+                "storage_ref": value.storage_ref,
+                "media_type": value.media_type,
+                "schema_id": value.schema_id,
+                "asset_ids": value.asset_ids,
+                "normalized_fields": value.normalized_fields,
+                "coverage": value.coverage,
+                "row_count": value.row_count,
+                "price_convention": value.price_convention,
+                "content_hash": value.content_hash,
+                "lineage": value.lineage,
+                "tenant_id": value.tenant_id,
+                "created_by": value.created_by,
+                "access_scope": value.access_scope,
+                "partition_spec": value.partition_spec,
+            })
+
+        result: dict[str, Any] = {
+            "contract": self.contract.to_protocol_dict(),
+            "pricing_config": deep_thaw(self.pricing_config),
+            "market_data_refs": [asset_payload(item) for item in self.market_data_refs],
+        }
+        if self.trading_calendar_ref is not None:
+            result["trading_calendar_ref"] = asset_payload(self.trading_calendar_ref)
+        if self.observed_contract_state is not None:
+            result["observed_contract_state"] = self.observed_contract_state.to_protocol_dict()
+        if self.pricing_objective is not None:
+            result["pricing_objective"] = self.pricing_objective.to_protocol_dict()
+        return result
+
+
+@dataclass(frozen=True)
+class PricingObjective:
+    """The only business-level switch between valuation and fair solving.
+
+    ``None`` on :class:`PricingInput` deliberately means the legacy ordinary
+    valuation flow.  The object is intentionally tiny: all target semantics,
+    domains and transformations stay in the Pricer capability directory.
+    """
+
+    mode: str
+    target_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.mode, str) or self.mode not in {"valuation", "fair_parameter"}:
+            raise ValueError("pricing_objective.mode只能为valuation或fair_parameter")
+        if self.mode == "valuation" and self.target_id is not None:
+            raise ValueError("pricing_objective.mode=valuation不得提交target_id")
+        if self.mode == "fair_parameter":
+            if not isinstance(self.target_id, str) or not self.target_id.strip():
+                raise ValueError("pricing_objective.mode=fair_parameter必须提交target_id")
+            _identifier(self.target_id, "pricing_objective.target_id")
+
+    @classmethod
+    def from_value(cls, value: Mapping[str, Any] | "PricingObjective") -> "PricingObjective":
+        if isinstance(value, cls):
+            return value
+        if not isinstance(value, Mapping):
+            raise TypeError("pricing_objective必须为对象")
+        unknown = set(value) - {"mode", "target_id"}
+        if unknown:
+            raise ValueError(
+                "pricing_objective含未知字段："
+                + ",".join(sorted(str(item) for item in unknown))
+            )
+        if "mode" not in value:
+            raise ValueError("pricing_objective缺少mode")
+        return cls(mode=value["mode"], target_id=value.get("target_id"))
+
+    def to_protocol_dict(self) -> dict[str, Any]:
+        result: dict[str, Any] = {"mode": self.mode}
+        if self.target_id is not None:
+            result["target_id"] = self.target_id
+        return result
 
 
 @dataclass(frozen=True)
@@ -463,6 +570,6 @@ def require_run_transition(current: str, target: str) -> tuple[str, str]:
 __all__ = (
     "ArtifactRef", "BacktestInput", "CallerContext", "DataAssetRef", "DataFetchRunRef",
     "ModuleRun", "ModuleRunRef", "ObservedContractEvent", "ObservedContractState",
-    "PricingInput", "RealizedCashflow", "ReportRunRef", "SecretRef",
+    "PricingInput", "PricingObjective", "RealizedCashflow", "ReportRunRef", "SecretRef",
     "require_module_name", "require_run_status", "require_run_transition",
 )
