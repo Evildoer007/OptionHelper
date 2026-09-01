@@ -43,6 +43,35 @@ _QUOTE_TERM_UNITS = {
     "date", "count", "text",
 }
 _PAYOFF_FACT_SCHEMA = "optionhelper.reporter-payoff-facts"
+_FAIR_RESULT_SCHEMA = "optionhelper.pricer-fair-parameter-result"
+_FAIR_PRIVATE_FILES = (
+    "private/evaluated_resolved_contract.json",
+    "private/final_parameter_snapshot.json",
+    "private/audit_fair_parameter.json",
+)
+_FAIR_IDENTITY_FIELDS = (
+    "fair_run_id",
+    "base_contract_fingerprint",
+    "evaluated_contract_fingerprint",
+    "target_spec_hash",
+    "capability_directory_hash",
+    "model_id",
+    "model_version",
+)
+_FAIR_PUBLIC_UNCERTAINTY_FIELDS = frozenset({
+    "status", "precision_status", "quote_eligible", "quote_delivery_status",
+    "formal_quote_status", "formal_quote_reason", "absolute_error_upper_bound",
+    "lower", "upper", "confidence_level", "reason", "quote_reason",
+    "parameter_error_gate", "independent_batch_count", "path_count",
+    "random_paths_generated", "slope_stability_status", "primary_batch_included",
+})
+_FAIR_PUBLIC_INTERVAL_FIELDS = frozenset({"certified_interval"})
+_FAIR_PUBLIC_VALUATION_FIELDS = frozenset({
+    "status", "method", "value_basis", "pv_percent", "variance_percent",
+    "standard_error_percent", "valuation_date", "precision_status", "greeks",
+    "risk_curves", "risk_surfaces", "risk_scenarios", "scenario_pv",
+    "limitations", "messages", "warnings",
+})
 _SUPPLEMENTAL_ID = re.compile(r"[a-z][a-z0-9-]{0,63}\Z")
 _SUPPLEMENTAL_NODE_TYPES = {"paragraph", "metrics", "table", "formula", "chart"}
 _SUPPLEMENTAL_FORBIDDEN_KEYS = {"html", "script", "javascript", "css", "style", "color", "font", "src", "href"}
@@ -470,6 +499,221 @@ def _artifact_manifest(
     return raw, actual_manifest_hash
 
 
+def _finite_fair_number(value: Any, field: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)):
+        raise ReporterError(f"{field}必须为有限数")
+    return float(value)
+
+
+def _public_fair_uncertainty(value: Any) -> dict[str, Any]:
+    """Project numerical uncertainty without carrying run or proof metadata."""
+
+    source = as_mapping(value, "fair_parameter.solution_uncertainty")
+    result: dict[str, Any] = {}
+    for key in _FAIR_PUBLIC_UNCERTAINTY_FIELDS:
+        if key not in source or source[key] is None:
+            continue
+        item = source[key]
+        if key in {"absolute_error_upper_bound", "lower", "upper", "confidence_level"}:
+            result[key] = _finite_fair_number(item, f"fair_parameter.solution_uncertainty.{key}")
+        elif key in {"quote_eligible", "primary_batch_included"}:
+            if not isinstance(item, bool):
+                raise ReporterError(f"fair_parameter.solution_uncertainty.{key}必须为布尔值")
+            result[key] = item
+        elif key in {"independent_batch_count", "path_count", "random_paths_generated"}:
+            if isinstance(item, bool) or not isinstance(item, int) or item < 0:
+                raise ReporterError(f"fair_parameter.solution_uncertainty.{key}必须为非负整数")
+            result[key] = item
+        else:
+            result[key] = require_text(item, f"fair_parameter.solution_uncertainty.{key}")
+    interval = source.get("certified_interval")
+    if interval is not None:
+        interval_value = as_mapping(interval, "fair_parameter.solution_uncertainty.certified_interval")
+        lower = _finite_fair_number(interval_value.get("lower"), "fair_parameter.solution_uncertainty.certified_interval.lower")
+        upper = _finite_fair_number(interval_value.get("upper"), "fair_parameter.solution_uncertainty.certified_interval.upper")
+        if lower > upper:
+            raise ReporterError("fair_parameter.solution_uncertainty.certified_interval顺序无效")
+        result["certified_interval"] = {"lower": lower, "upper": upper}
+    return result
+
+
+def _public_fair_valuation(value: Any, *, value_basis: str) -> dict[str, Any]:
+    """Keep the final valuation's public value/risk facts, never its identity."""
+
+    source = as_mapping(value, "fair_parameter.final_valuation")
+    if source.get("value_basis") != value_basis:
+        raise ReporterError("公平参数final_valuation.value_basis与目标口径不一致")
+    if any(key in source for key in ("reference_quote_fact", "reporter_quote_fact")):
+        raise ReporterError("公平参数final_valuation不得包含普通报价事实")
+    value_field = value_basis
+    _finite_fair_number(source.get(value_field), f"fair_parameter.final_valuation.{value_field}")
+    result: dict[str, Any] = {"value_basis": value_basis, value_field: float(source[value_field])}
+    scalar_fields = (
+        "status", "method", "standard_error_percent", "valuation_date", "precision_status",
+    )
+    for key in scalar_fields:
+        if key not in source or source[key] is None:
+            continue
+        item = source[key]
+        if key == "standard_error_percent":
+            result[key] = _finite_fair_number(item, f"fair_parameter.final_valuation.{key}")
+        else:
+            result[key] = require_text(item, f"fair_parameter.final_valuation.{key}")
+    for key in ("greeks", "risk_curves", "risk_surfaces", "risk_scenarios", "scenario_pv", "limitations", "messages", "warnings"):
+        if key in source and source[key] is not None:
+            if key == "greeks":
+                result[key] = deepcopy(as_mapping(source[key], f"fair_parameter.final_valuation.{key}"))
+            elif key in {"risk_curves", "risk_surfaces", "risk_scenarios", "scenario_pv", "limitations", "messages", "warnings"}:
+                result[key] = deepcopy(as_list(source[key], f"fair_parameter.final_valuation.{key}", allow_empty=True))
+    return result
+
+
+def _public_fair_artifact_manifest(manifest: Mapping[str, Any]) -> dict[str, Any]:
+    """Keep the evidence manifest internal while preventing private/fair raw JSON copy."""
+
+    result = deepcopy(dict(manifest))
+    artifacts = result.get("artifacts")
+    if isinstance(artifacts, list):
+        result["artifacts"] = [
+            deepcopy(dict(item))
+            for item in artifacts
+            if isinstance(item, Mapping)
+            and str(item.get("storage_ref", "")) != "result.json"
+            and str(item.get("storage_ref", "")) != "artifacts/fair_parameter_result.json"
+            and not str(item.get("storage_ref", "")).startswith("private/")
+        ]
+    return result
+
+
+def _fair_parameter_evidence(
+    bundle: Mapping[str, bytes],
+    artifact_manifest: Mapping[str, Any],
+    result: Mapping[str, Any],
+    contract: Mapping[str, Any],
+    *,
+    ref_run_id: str,
+    manifest: Mapping[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Verify Pricer's sealed fair result and return only its reader projection."""
+
+    file_hashes = artifact_manifest.get("file_hashes")
+    if not isinstance(file_hashes, Mapping) or "artifacts/fair_parameter_result.json" not in file_hashes:
+        raise ReporterError("公平参数运行缺少受控artifacts/fair_parameter_result.json")
+    for name in _FAIR_PRIVATE_FILES:
+        if name not in file_hashes:
+            raise ReporterError(f"公平参数运行缺少受控{name}")
+    artifact = _bundle_json(bundle, "artifacts/fair_parameter_result.json", "artifacts/fair_parameter_result.json")
+    artifact_pricing = artifact.get("pricing")
+    fair_result = artifact.get("fair_parameter") if isinstance(artifact.get("fair_parameter"), Mapping) else artifact
+    result_fair = result.get("fair_parameter")
+    result_pricing = result.get("pricing")
+    if not isinstance(fair_result, Mapping) or not isinstance(result_fair, Mapping) or not isinstance(result_pricing, Mapping):
+        raise ReporterError("公平参数运行缺少正式fair_parameter结果")
+    if artifact_pricing is not None and artifact_pricing != fair_result:
+        raise ReporterError("fair_parameter_result.json内pricing与fair_parameter不一致")
+    if dict(result_fair) != dict(fair_result) or dict(result_pricing) != dict(fair_result):
+        raise ReporterError("result.json与fair_parameter_result.json事实不一致")
+    if fair_result.get("schema") != _FAIR_RESULT_SCHEMA or fair_result.get("result_kind") != "fair_parameter_solution":
+        raise ReporterError("公平参数结果schema或result_kind无效")
+    if fair_result.get("status") != "solved":
+        raise ReporterError("公平参数结果不是已完成求解")
+    if fair_result.get("quote_eligible") is not False:
+        raise ReporterError("公平参数结果不得直接具备正式报价资格")
+    for key in ("precision_status", "formal_quote_status"):
+        if fair_result.get(key) != "research_only":
+            raise ReporterError(f"公平参数结果{key}必须标记research_only")
+    # Older formal Pricer fair-result bundles carry the delivery state in the
+    # solver uncertainty record rather than repeating it at the result root.
+    # A missing root field is therefore only acceptable when the signed formal
+    # status already says research_only; never infer eligibility from it.
+    quote_delivery_status = fair_result.get("quote_delivery_status")
+    if quote_delivery_status not in (None, "research_only"):
+        raise ReporterError("公平参数结果quote_delivery_status必须标记research_only")
+    require_text(fair_result.get("formal_quote_reason"), "fair_parameter.formal_quote_reason")
+    target_id = require_identifier(fair_result.get("target_id"), "fair_parameter.target_id")
+    quote_basis = require_text(fair_result.get("quote_basis"), "fair_parameter.quote_basis")
+    value_basis = require_text(fair_result.get("value_basis"), "fair_parameter.value_basis")
+    if value_basis not in {"pv_percent", "variance_percent"}:
+        raise ReporterError("fair_parameter.value_basis不是当前公开价值口径")
+    for key in ("target_value", "solution", "base_parameter", "residual"):
+        _finite_fair_number(fair_result.get(key), f"fair_parameter.{key}")
+
+    identity = as_mapping(fair_result.get("identity"), "fair_parameter.identity")
+    for key in _FAIR_IDENTITY_FIELDS:
+        require_text(identity.get(key), f"fair_parameter.identity.{key}")
+    if identity["fair_run_id"] != ref_run_id or identity["fair_run_id"] != manifest.get("run_id"):
+        raise ReporterError("fair_parameter.identity.fair_run_id与ModuleRunRef不一致")
+    if identity["base_contract_fingerprint"] != contract["contract_fingerprint"]:
+        raise ReporterError("fair_parameter.identity.base_contract_fingerprint与基础合同不一致")
+    evaluated_fingerprint = require_text(
+        fair_result.get("evaluated_contract_fingerprint"),
+        "fair_parameter.evaluated_contract_fingerprint",
+    )
+    if identity["evaluated_contract_fingerprint"] != evaluated_fingerprint:
+        raise ReporterError("公平参数evaluated_contract_fingerprint身份不一致")
+
+    evaluated_raw = _bundle_json(bundle, _FAIR_PRIVATE_FILES[0], _FAIR_PRIVATE_FILES[0])
+    evaluated = _contract_fields(evaluated_raw, _FAIR_PRIVATE_FILES[0])
+    if evaluated["contract_fingerprint"] != evaluated_fingerprint:
+        raise ReporterError("公平参数私有候选合同指纹不一致")
+    for key in (
+        "product_id", "product_name", "product_version", "product_snapshot_hash",
+        "registry_snapshot_hash", "underlyings", "currency", "price_convention",
+    ):
+        if evaluated.get(key) != contract.get(key):
+            raise ReporterError(f"公平参数私有候选合同与基础合同不一致：{key}")
+
+    snapshot = _bundle_json(bundle, _FAIR_PRIVATE_FILES[1], _FAIR_PRIVATE_FILES[1])
+    if snapshot.get("schema") != "optionhelper.fair-parameter-snapshot":
+        raise ReporterError("公平参数最终参数快照schema无效")
+    if snapshot.get("target_id") != target_id:
+        raise ReporterError("公平参数最终参数快照target_id不一致")
+    if snapshot.get("base_contract_fingerprint") != contract["contract_fingerprint"]:
+        raise ReporterError("公平参数最终参数快照基础合同指纹不一致")
+    if snapshot.get("evaluated_contract_fingerprint") != evaluated_fingerprint:
+        raise ReporterError("公平参数最终参数快照候选合同指纹不一致")
+    if snapshot.get("target_spec_hash") != identity["target_spec_hash"]:
+        raise ReporterError("公平参数最终参数快照target_spec_hash不一致")
+    snapshot_hash = require_text(fair_result.get("final_parameter_snapshot_hash"), "fair_parameter.final_parameter_snapshot_hash")
+    if not _SHA256.fullmatch(snapshot_hash) or stable_hash(snapshot) != snapshot_hash:
+        raise ReporterError("公平参数final_parameter_snapshot_hash校验失败")
+
+    audit = _bundle_json(bundle, _FAIR_PRIVATE_FILES[2], _FAIR_PRIVATE_FILES[2])
+    if audit.get("schema") != "optionhelper.private-fair-parameter-audit":
+        raise ReporterError("公平参数私有审计schema无效")
+    for key in _FAIR_IDENTITY_FIELDS:
+        if audit.get(key) != identity.get(key):
+            raise ReporterError(f"公平参数私有审计身份字段{key}不一致")
+    if not isinstance(audit.get("evaluations"), list):
+        raise ReporterError("公平参数私有审计缺少实际估值诊断")
+    if audit.get("final_parameter_snapshot_hash") != snapshot_hash:
+        raise ReporterError("公平参数私有审计与最终参数快照哈希不一致")
+
+    final_valuation = as_mapping(fair_result.get("final_valuation"), "fair_parameter.final_valuation")
+    valuation_hash = require_text(fair_result.get("final_valuation_hash"), "fair_parameter.final_valuation_hash")
+    if not _SHA256.fullmatch(valuation_hash) or stable_hash(final_valuation) != valuation_hash:
+        raise ReporterError("公平参数final_valuation_hash校验失败")
+    if audit.get("final_valuation_hash") != valuation_hash:
+        raise ReporterError("公平参数私有审计与最终估值哈希不一致")
+    if final_valuation.get("contract_fingerprint") not in (None, evaluated_fingerprint):
+        raise ReporterError("公平参数final_valuation与候选合同指纹不一致")
+    public_final_valuation = _public_fair_valuation(final_valuation, value_basis=value_basis)
+    public_fair = {
+        key: deepcopy(fair_result[key])
+        for key in (
+            "schema", "result_kind", "status", "target_id", "method", "quote_basis",
+            "quote_value_basis", "value_basis", "target_value", "solution", "base_parameter",
+            "residual", "path_count", "quote_eligible", "precision_status",
+            "formal_quote_status", "formal_quote_reason",
+        )
+        if key in fair_result
+    }
+    public_fair["quote_delivery_status"] = quote_delivery_status or "research_only"
+    public_fair["solution_uncertainty"] = _public_fair_uncertainty(fair_result.get("solution_uncertainty"))
+    public_fair["final_valuation"] = public_final_valuation
+    return public_fair, _public_fair_artifact_manifest(artifact_manifest)
+
+
 def _load_module_run(
     request: ReportRequest,
     result_store: ResultStorePort,
@@ -568,6 +812,26 @@ def _load_module_run(
         bundle, manifest, ref.expected_semantic_result_hash, ref.expected_artifact_manifest_hash, run_module,
     )
     public_result = deepcopy(result)
+    public_artifact_manifest = artifact_manifest
+    if display_module == "pricing":
+        file_hashes = artifact_manifest.get("file_hashes")
+        has_fair_result = (
+            isinstance(result.get("fair_parameter"), Mapping)
+            or (isinstance(file_hashes, Mapping) and "artifacts/fair_parameter_result.json" in file_hashes)
+        )
+        if has_fair_result:
+            fair_result, public_artifact_manifest = _fair_parameter_evidence(
+                bundle,
+                artifact_manifest,
+                result,
+                contract,
+                ref_run_id=ref.run_id,
+                manifest=manifest,
+            )
+            # Only the redacted, verified projection crosses into ReportUnit;
+            # the complete ModuleRun bytes remain available to the controlled
+            # artifact copier solely for hash verification.
+            public_result = {"pricing": deepcopy(fair_result), "fair_parameter": deepcopy(fair_result)}
     if display_module == "payoff":
         facts = _payoff_facts(bundle, artifact_manifest, result)
         public_result.pop("path_panels", None)
@@ -585,7 +849,7 @@ def _load_module_run(
         },
         "contract": contract,
         "result": public_result,
-        "artifact_manifest": artifact_manifest,
+        "artifact_manifest": public_artifact_manifest,
         "limitations": limitations_raw if isinstance(limitations_raw, list) else [],
         "_bundle": dict(bundle),
     }
