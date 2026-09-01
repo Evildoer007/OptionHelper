@@ -1,0 +1,20 @@
+{
+  "name": "@optionhelper/agent-runtime",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "build": "esbuild src/entrypoint/runtime.ts --bundle --platform=node --target=node22.19 --format=cjs --outfile=dist/runtime.cjs",
+    "test": "tsx --test test/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "24.13.3",
+    "esbuild": "0.25.12",
+    "tsx": "4.23.12",
+    "typescript": "6.0.3"
+  }
+}
