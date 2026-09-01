@@ -40,12 +40,14 @@ from runtime.adapters.local_host import (
     LocalProjectLayout,
 )
 from runtime.adapters.local_store import LocalResultStore
-from runtime.contracts.contract_api import ResolvedContract
+from runtime.contracts.contract_api import ContractResolutionError, ResolvedContract
 from runtime.contracts.input_adapter import (
+    bind_candidate_target_spec,
     compile_compute_data_requirements as _compile_compute_data_requirements,
+    preflight_fair_parameter_request as _preflight_fair_parameter_request,
     prepare_compute_request as _prepare_compute_request,
 )
-from runtime.protocol.models import CallerContext, DataAssetRef, ModuleRunRef
+from runtime.protocol.models import CallerContext, DataAssetRef, ModuleRunRef, PricingObjective
 from runtime.protocol.module_host import ModuleHostContext
 from runtime.protocol.tool_catalog import MODULES, tool_catalog
 from runtime.protocol.version import DEVELOPMENT_RELEASE_ID, require_release_id
@@ -136,7 +138,7 @@ _REPORT_REQUEST_FIELDS = frozenset({
 })
 _MODULE_REQUEST_FIELDS = frozenset({
     "module", "product_id", "identity", "term_overrides", "pricing_config",
-    "backtest_config", "data_window", "horizon",
+    "backtest_config", "data_window", "horizon", "pricing_objective",
 })
 _AGENT_SELECTION_FIELDS = frozenset({
     "product_id", "underlyings", "reason", "suitable_for", "not_suitable_for", "main_risks",
@@ -259,6 +261,61 @@ def prepare_compute_request(
         data_store=data_store,
         product_snapshot_provider=product_snapshot_provider,
     )
+
+
+def preflight_fair_parameter_request(
+    module: str,
+    request: Mapping[str, Any],
+    *,
+    resolved_contract: Mapping[str, Any] | ResolvedContract | None = None,
+) -> dict[str, Any] | None:
+    """Run Core's no-data fair-parameter preflight at the verified boundary.
+
+    The browser/Skill can submit only ``target_id``.  The target binding below
+    is built from the verified Pricer capability directory, then Core validates
+    the registered initial-pricing-time rule.  This helper intentionally does
+    not resolve a contract or open a data port and is a no-op for ordinary
+    valuation requests.
+    """
+    if module != "pricer" or not isinstance(request, Mapping):
+        return None
+    objective_value = request.get("pricing_objective")
+    if objective_value is None:
+        return None
+    try:
+        objective = PricingObjective.from_value(objective_value)
+    except (TypeError, ValueError) as error:
+        raise ToolDispatchError(f"pricing_objective无效：{error}") from error
+    if objective.mode != "fair_parameter":
+        return None
+    product_id = request.get("product_id")
+    if resolved_contract is not None:
+        if isinstance(resolved_contract, ResolvedContract):
+            product_id = resolved_contract.product_id
+        elif isinstance(resolved_contract, Mapping):
+            identity = resolved_contract.get("identity", {})
+            if isinstance(identity, Mapping):
+                product_id = identity.get("product_id", product_id)
+    if not isinstance(product_id, str) or not product_id.strip():
+        raise ToolDispatchError("公平参数预检缺少product_id")
+    try:
+        fair_directory = importlib.import_module("modules.pricer.fair_parameter")
+        directory_factory = getattr(fair_directory, "private_capability_package", None)
+        if not callable(directory_factory):
+            raise ContractResolutionError("Pricer能力目录未提供正式私有目录装配入口")
+        directory = directory_factory()
+        target_binding = bind_candidate_target_spec(
+            directory,
+            product_id.strip(),
+            str(objective.target_id),
+        )
+        return _preflight_fair_parameter_request(
+            request,
+            target_spec=target_binding,
+            resolved_contract=resolved_contract,
+        )
+    except (ContractResolutionError, TypeError, ValueError) as error:
+        raise ToolDispatchError(f"公平参数运行前预检失败：{error}") from error
 
 
 def compile_compute_data_requirements(
@@ -1108,6 +1165,8 @@ def run_module_request(
     module = str(body.get("module") or "").strip().lower()
     if module not in {"payoffer", "pricer", "backtester"}:
         raise ProjectRequestError("request", "单模块运行仅支持Payoffer、Pricer或Backtester；报告必须使用项目报告入口。")
+    if module != "pricer" and "pricing_objective" in body:
+        raise ProjectRequestError("request", "pricing_objective只适用于Pricer公平参数反解。")
     product_id = str(body.get("product_id") or "").strip()
     identity = _mapping_field(body, "identity")
     underlyings_value = identity.get("underlyings")
@@ -1138,7 +1197,36 @@ def run_module_request(
     valuation_date = None
     market_as_of_date = None
     requested_pricing = _mapping_field(body, "pricing_config") if module == "pricer" else {}
+    if module == "pricer" and "pricing_objective" in body and body.get("pricing_objective") is None:
+        raise ProjectRequestError(
+            "request",
+            "pricing_objective不能为null；省略字段表示普通估值。",
+        )
+    pricing_objective = body.get("pricing_objective") if module == "pricer" else None
     data_window = _mapping_field(body, "data_window")
+    if module == "pricer":
+        # This request is deliberately assembled before any iFind/calendar
+        # access.  Core owns target semantics and initial-pricing-time rules;
+        # Skill input may select only the catalog target_id.
+        valuation_date = str(
+            requested_pricing.get("valuation_date")
+            or data_window.get("end_date")
+            or identity.get("contract_start_date")
+            or date.today().isoformat()
+        )
+        preflight_request: dict[str, Any] = {
+            "action": "run",
+            "product_id": product_id,
+            "identity": identity,
+            "term_overrides": term_overrides,
+            "pricing_config": {"valuation_date": valuation_date, **requested_pricing},
+        }
+        if "pricing_objective" in body:
+            preflight_request["pricing_objective"] = pricing_objective
+        try:
+            preflight_fair_parameter_request("pricer", preflight_request)
+        except ToolDispatchError as error:
+            raise ProjectRequestError("request", str(error)) from error
     requires_market_history = module in {"pricer", "backtester"}
     requires_calendar = module == "backtester" or _request_requires_trading_calendar(
         product_id, identity=identity, term_overrides=term_overrides,
@@ -1156,12 +1244,13 @@ def run_module_request(
                 ifind_probe(token)
             except Exception as error:
                 raise ProjectRequestError("ifind", "iFind凭据验证失败，请检查Refresh Token或网络后重试。") from error
-        valuation_date = str(
-            requested_pricing.get("valuation_date")
-            or data_window.get("end_date")
-            or identity.get("contract_start_date")
-            or date.today().isoformat()
-        )
+        if valuation_date is None:
+            valuation_date = str(
+                requested_pricing.get("valuation_date")
+                or data_window.get("end_date")
+                or identity.get("contract_start_date")
+                or date.today().isoformat()
+            )
         history_start = _data_window_dates(data_window)[0] if requires_market_history else None
         if requires_calendar:
             effective_horizon = _compile_compute_data_requirements(
@@ -1214,6 +1303,10 @@ def run_module_request(
             "action": "run", "product_id": product_id, "identity": identity, "term_overrides": term_overrides,
             "pricing_config": {"valuation_date": valuation_date, **requested_pricing},
         }
+        if "pricing_objective" in body:
+            # Preserve explicit valuation/fair_parameter mode, while keeping
+            # legacy Skill requests byte-for-byte free of a new field.
+            friendly["pricing_objective"] = pricing_objective
     else:
         friendly = {
             "action": "run", "product_id": product_id, "identity": identity, "term_overrides": term_overrides,
