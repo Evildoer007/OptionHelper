@@ -80,7 +80,7 @@ willPerformHTTPRedirection:(NSHTTPURLResponse *)response
 
 @end
 
-@interface OptionHelperAppDelegate : NSObject <NSApplicationDelegate, NSWindowDelegate, WKScriptMessageHandler, WKNavigationDelegate, WKUIDelegate>
+@interface OptionHelperAppDelegate : NSObject <NSApplicationDelegate, NSWindowDelegate, WKScriptMessageHandler, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate>
 @property(nonatomic, strong) NSTask *backend;
 @property(nonatomic, strong) NSPipe *startupPipe;
 @property(nonatomic, strong) NSWindow *window;
@@ -169,7 +169,7 @@ willPerformHTTPRedirection:(NSHTTPURLResponse *)response
                                       URLByAppendingPathComponent:@"OptionHelperBackend" isDirectory:YES]
                                       URLByAppendingPathComponent:@"OptionHelperBackend" isDirectory:NO] path];
     if (![[NSFileManager defaultManager] isExecutableFileAtPath:backendPath]) {
-        [self showFailure:@"找不到内置App Host"];
+        [self showFailure:@"找不到内置应用服务"];
         return;
     }
     NSString *requestedDataDirectory = [[[NSProcessInfo processInfo] environment] objectForKey:@"OPTIONHELPER_APP_DATA_DIR"];
@@ -218,13 +218,13 @@ willPerformHTTPRedirection:(NSHTTPURLResponse *)response
     self.backend.terminationHandler = ^(NSTask *task) {
         dispatch_async(dispatch_get_main_queue(), ^{
             if (!weakSelf.loadedURL && task.terminationStatus != 0) {
-                [weakSelf showFailure:@"App Host未能启动"];
+                [weakSelf showFailure:@"应用服务未能启动"];
             }
         });
     };
     NSError *launchError = nil;
     if (![self.backend launchAndReturnError:&launchError]) {
-        [self showFailure:@"无法启动内置App Host"];
+        [self showFailure:@"无法启动内置应用服务"];
     }
 }
 
@@ -258,7 +258,7 @@ willPerformHTTPRedirection:(NSHTTPURLResponse *)response
     NSString *address = [self.startupOutput substringWithRange:NSMakeRange(start, newline.location - start)];
     NSURL *url = [NSURL URLWithString:address];
     if (url == nil || ![url.host isEqualToString:@"127.0.0.1"]) {
-        [self showFailure:@"App Host返回了无效地址"];
+        [self showFailure:@"应用服务返回了无效地址"];
         return;
     }
     self.loadedURL = YES;
@@ -268,7 +268,7 @@ willPerformHTTPRedirection:(NSHTTPURLResponse *)response
 - (void)showWebView:(NSURL *)url {
     NSURLComponents *components = [NSURLComponents componentsWithURL:url resolvingAgainstBaseURL:NO];
     if (components == nil) {
-        [self showFailure:@"App Host返回了无效启动地址"];
+        [self showFailure:@"应用服务返回了无效启动地址"];
         return;
     }
     NSMutableArray<NSURLQueryItem *> *queryItems = [NSMutableArray array];
@@ -283,7 +283,7 @@ willPerformHTTPRedirection:(NSHTTPURLResponse *)response
     components.queryItems = queryItems;
     NSURL *startupURL = components.URL;
     if (startupURL == nil) {
-        [self showFailure:@"App Host返回了无效启动地址"];
+        [self showFailure:@"应用服务返回了无效启动地址"];
         return;
     }
     NSURLComponents *originComponents = [[NSURLComponents alloc] init];
@@ -630,6 +630,11 @@ willPerformHTTPRedirection:(NSHTTPURLResponse *)response
             }
             return;
         }
+        // A watchdog recovery overlay is above WKWebView.  Remove it after
+        // the DOM health gate passes so the snapshot does not fail simply
+        // because the healthy page is still occluded.  The final failure path
+        // restores the native recovery surface when a snapshot truly fails.
+        self.navigationRecoveryView.hidden = YES;
         WKSnapshotConfiguration *snapshotConfiguration = [[WKSnapshotConfiguration alloc] init];
         snapshotConfiguration.rect = mainView.bounds;
         snapshotConfiguration.snapshotWidth = @480;
@@ -861,12 +866,12 @@ willPerformHTTPRedirection:(NSHTTPURLResponse *)response
 - (void)webView:(WKWebView *)webView didFailProvisionalNavigation:(WKNavigation *)navigation withError:(NSError *)error {
     if (webView == self.settingsWebView && ![self isCancelledNavigationError:error]) {
         [self cancelSettingsNavigationWatchdog];
-        [self showSettingsFailure:@"设置页面连接未能建立。请确认App Host仍在运行后重试。"];
+        [self showSettingsFailure:@"设置页面连接未能建立。请确认应用服务仍在运行后重试。"];
         return;
     }
     if (webView != self.webView || [self isCancelledNavigationError:error]) return;
     [self cancelNavigationWatchdog];
-    [self showNavigationFailure:@"页面连接未能建立。请确认App Host仍在运行后重试。"];
+    [self showNavigationFailure:@"页面连接未能建立。请确认应用服务仍在运行后重试。"];
 }
 
 - (void)webViewWebContentProcessDidTerminate:(WKWebView *)webView {
@@ -877,7 +882,7 @@ willPerformHTTPRedirection:(NSHTTPURLResponse *)response
     }
     if (webView != self.webView) return;
     [self cancelNavigationWatchdog];
-    [self showNavigationFailure:@"页面进程已结束。任务和后台计算仍保存在App Host中。"];
+    [self showNavigationFailure:@"页面进程已结束。任务和后台计算仍由应用服务保存。"];
 }
 
 - (BOOL)isAllowedReportArtifactURL:(NSURL *)url {
@@ -906,6 +911,26 @@ willPerformHTTPRedirection:(NSHTTPURLResponse *)response
     alert.alertStyle = NSAlertStyleWarning;
     alert.messageText = @"报告下载未完成";
     alert.informativeText = detail.length > 0 ? detail : @"未收到报告文件。";
+    if (self.window != nil) [alert beginSheetModalForWindow:self.window completionHandler:nil];
+    else [alert runModal];
+}
+
+- (NSString *)dataAssetDownloadFilename:(NSString *)suggestedFilename {
+    NSString *candidate = [suggestedFilename stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    NSString *lower = candidate.lowercaseString;
+    NSMutableCharacterSet *forbidden = [NSCharacterSet.controlCharacterSet mutableCopy];
+    [forbidden addCharactersInString:@"/\\:"];
+    if (candidate.length == 0 || candidate.length > 160
+        || [candidate rangeOfCharacterFromSet:forbidden].location != NSNotFound
+        || (![lower hasSuffix:@".csv"] && ![lower hasSuffix:@".json"])) return nil;
+    return candidate;
+}
+
+- (void)showDataAssetDownloadFailure:(NSString *)detail {
+    NSAlert *alert = [[NSAlert alloc] init];
+    alert.alertStyle = NSAlertStyleWarning;
+    alert.messageText = @"数据下载未完成";
+    alert.informativeText = detail.length > 0 ? detail : @"未收到数据文件。";
     if (self.window != nil) [alert beginSheetModalForWindow:self.window completionHandler:nil];
     else [alert runModal];
 }
@@ -1105,6 +1130,11 @@ completionHandler:(void (^)(NSArray<NSURL *> * _Nullable URLs))completionHandler
  decidePolicyForNavigationAction:(WKNavigationAction *)navigationAction
  decisionHandler:(void (^)(WKNavigationActionPolicy))decisionHandler {
     NSURL *url = navigationAction.request.URL;
+    if (webView == self.webView && navigationAction.shouldPerformDownload
+        && [url.scheme.lowercaseString isEqualToString:@"blob"]) {
+        decisionHandler(WKNavigationActionPolicyDownload);
+        return;
+    }
     if (webView == self.webView && [self isSafeAppURL:url] && [url.path isEqualToString:@"/settings"]) {
         [self showSettingsCenter:navigationAction.request];
         decisionHandler(WKNavigationActionPolicyCancel);
@@ -1128,6 +1158,39 @@ completionHandler:(void (^)(NSArray<NSURL *> * _Nullable URLs))completionHandler
     decisionHandler(([url.scheme isEqualToString:@"about"] || [self isAllowedReportArtifactURL:url])
         ? WKNavigationActionPolicyAllow
         : WKNavigationActionPolicyCancel);
+}
+
+- (void)webView:(WKWebView *)webView
+navigationAction:(WKNavigationAction *)navigationAction
+didBecomeDownload:(WKDownload *)download {
+    if (webView != self.webView) return;
+    download.delegate = self;
+}
+
+- (void)download:(WKDownload *)download
+decideDestinationUsingResponse:(NSURLResponse *)response
+suggestedFilename:(NSString *)suggestedFilename
+completionHandler:(void (^)(NSURL * _Nullable destination))completionHandler {
+    NSString *filename = [self dataAssetDownloadFilename:suggestedFilename];
+    if (filename == nil) {
+        completionHandler(nil);
+        [self showDataAssetDownloadFailure:@"下载文件名或类型不受支持。"];
+        return;
+    }
+    NSSavePanel *panel = [NSSavePanel savePanel];
+    panel.canCreateDirectories = YES;
+    panel.nameFieldStringValue = filename;
+    void (^finish)(NSModalResponse) = ^(NSModalResponse result) {
+        completionHandler(result == NSModalResponseOK ? panel.URL : nil);
+    };
+    if (self.window != nil) [panel beginSheetModalForWindow:self.window completionHandler:finish];
+    else [panel beginWithCompletionHandler:finish];
+}
+
+- (void)download:(WKDownload *)download
+didFailWithError:(NSError *)error
+      resumeData:(NSData *)resumeData {
+    [self showDataAssetDownloadFailure:error.localizedDescription];
 }
 
 - (void)windowDidResize:(NSNotification *)notification {
@@ -1212,14 +1275,16 @@ completionHandler:(void (^)(NSArray<NSURL *> * _Nullable URLs))completionHandler
     NSString *preference = value[@"preference"];
     if (![@[@"light", @"dark", @"auto"] containsObject:preference] || ![@[@"light", @"dark"] containsObject:theme]) return;
     self.themePreference = preference;
+    NSString *syncThemeScript = [NSString stringWithFormat:@"window.OptionHelperTheme?.setThemePreference?.('%@', {persist:false,notifyNative:false});", preference];
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self.webView evaluateJavaScript:syncThemeScript completionHandler:nil];
+        [self.settingsWebView evaluateJavaScript:syncThemeScript completionHandler:nil];
+    });
     if ([preference isEqualToString:@"auto"]) {
         self.window.appearance = nil;
         self.settingsWindow.appearance = nil;
         NSAppearanceName appearance = [NSApp.effectiveAppearance bestMatchFromAppearancesWithNames:@[NSAppearanceNameDarkAqua, NSAppearanceNameAqua]];
         [self applyDockIcon:[appearance isEqualToString:NSAppearanceNameDarkAqua] ? @"dark" : @"light"];
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [self.webView evaluateJavaScript:@"window.OptionHelperTheme?.refreshSystemTheme?.();" completionHandler:nil];
-        });
     } else {
         self.window.appearance = [NSAppearance appearanceNamed:[theme isEqualToString:@"dark"] ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
         self.settingsWindow.appearance = self.window.appearance;
