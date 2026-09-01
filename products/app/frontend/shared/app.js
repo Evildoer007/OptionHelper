@@ -281,8 +281,8 @@ export async function initializeWorkspace(mode, { onModeChange } = {}) {
   ]);
   const savedTheme = settingsResponse?.settings?.preferences?.theme;
   if (["light", "dark", "auto"].includes(savedTheme)) {
-    const { currentThemePreference, setThemePreference } = await import("./theme.js");
-    if (savedTheme !== currentThemePreference()) setThemePreference(savedTheme);
+    const { applyServerThemePreference } = await import("./theme.js");
+    applyServerThemePreference(savedTheme);
   }
   const hasDesk = session.capabilities.includes("optdesk");
   if (mode === "desk" && !hasDesk) {
