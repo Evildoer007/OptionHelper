@@ -272,8 +272,6 @@ class ToolDispatcher:
             if not isinstance(data_asset_ref, dict):
                 raise ValidationError("successful DataFetcher response requires data_asset_ref")
             self._data_assets.register(identity, data_asset_ref)
-            if isinstance(task_id, str) and task_id:
-                self._tasks.append_data_asset_ref(identity, task_id, data_asset_ref)
             # DataFetcher produces DataAssetRef, never a calculation ModuleRun.
             self._dispatch_checkpoints.succeeded(checkpoint)
             return {**result, "job": execution.__dict__}
@@ -376,41 +374,11 @@ class ToolDispatcher:
 
 
 def _require_task_data_scope(tasks: TaskService, identity: SessionIdentity, tool_name: str, payload: Mapping[str, Any]) -> None:
-    """Bind conversation calculations to DataAssetRefs already attached to this task."""
+    """Require an owned task without treating it as a data-asset authority."""
     task_id = payload.get("task_id")
     if not isinstance(task_id, str) or not task_id:
         raise ValidationError("conversation tool requires task_id")
-    task = tasks.get(identity, task_id)
-    if tool_name not in {"pricer", "backtester"}:
-        return
-    permitted = {
-        str(item.get("data_asset_id")): str(item.get("content_hash"))
-        for item in task.get("data_asset_refs", []) if isinstance(item, Mapping)
-        if isinstance(item.get("data_asset_id"), str) and isinstance(item.get("content_hash"), str)
-    }
-    if not permitted:
-        raise ValidationError("当前任务尚无可用于计算的受控DataAssetRef")
-    candidate = payload.get("market_data_refs") if tool_name == "pricer" else payload.get("historical_data")
-    if tool_name == "pricer":
-        if not isinstance(candidate, list) or len(candidate) != 1:
-            raise ValidationError("OptChat Pricer必须指定当前任务的唯一DataAssetRef")
-        candidate = candidate[0]
-    asset_id, content_hash = _task_data_asset_ref(candidate)
-    if asset_id not in permitted or content_hash not in {None, permitted[asset_id]}:
-        raise AuthorizationError("conversation.tool.run", "DataAssetRef不属于当前任务")
-    if tool_name == "pricer" and payload.get("trading_calendar_ref") is not None:
-        calendar_id, calendar_hash = _task_data_asset_ref(payload["trading_calendar_ref"])
-        if calendar_id not in permitted or calendar_hash not in {None, permitted[calendar_id]}:
-            raise AuthorizationError("conversation.tool.run", "交易日历DataAssetRef不属于当前任务")
-
-
-def _task_data_asset_ref(value: object) -> tuple[str, str | None]:
-    if isinstance(value, str):
-        return value, None
-    if isinstance(value, Mapping) and set(value).issubset({"data_asset_id", "content_hash"}) and isinstance(value.get("data_asset_id"), str):
-        raw_hash = value.get("content_hash")
-        return str(value["data_asset_id"]), str(raw_hash) if isinstance(raw_hash, str) else None
-    raise ValidationError("OptChat计算只能引用当前任务的DataAssetRef")
+    tasks.get(identity, task_id)
 
 
 def _structured_failure_fields(result: Mapping[str, Any]) -> dict[str, Any] | None:
