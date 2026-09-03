@@ -26,6 +26,7 @@ from runtime.contracts.contract_api import (
     resolve_contract,
     verify_product_snapshot_binding,
 )
+from runtime.contracts.term_presentation import build_term_fields
 from runtime.knowledger import load_registry
 from runtime.protocol.models import BacktestInput as ProtocolBacktestInput, DataAssetRef, ModuleRunRef
 from runtime.protocol.module_host import ModuleHostContext, require_host_bound_run_contract
@@ -115,15 +116,7 @@ class BacktesterRuntime:
         products: list[dict[str, Any]] = []
         for product_id, product in registry["products"].items():
             terms = product["terms"]
-            fields = [{
-                "key": key,
-                "label": catalog[key]["name_zh"],
-                "symbol": catalog[key]["symbol"],
-                "value_type": catalog[key]["value_type"],
-                "unit": catalog[key]["unit"],
-                "domain": catalog[key]["domain"],
-                "default_value": value,
-            } for key, value in terms.items() if key not in _NON_EDITABLE_CONTRACT_TERMS]
+            field_groups = build_term_fields(terms, catalog)
             expected_underlying_count = len(terms["S0Vec"]) if "S0Vec" in terms else 1
             products.append({
                 "product_id": product_id,
@@ -133,7 +126,7 @@ class BacktesterRuntime:
                 "expected_underlying_count": expected_underlying_count,
                 "path_count": len(product["paths"]),
                 "path_summaries": _path_summaries(product),
-                "payoff_fields": fields,
+                **field_groups,
                 "pricing_methods": terms["pricing_methods"],
             })
         return {
@@ -557,13 +550,10 @@ def _validate_formal_data_ref(reference: DataAssetRef, *, tenant_id: str) -> Non
 
 
 def _require_contract_calendar(contract: ResolvedContract, history: HistoricalData) -> None:
-    """一笔正式回测只能使用与冻结合同完全相同的已验证交易日历。"""
+    """保留冻结观察日，并允许同交易所的扩展历史日历证据。"""
     identity = contract.identity
-    if (
-        identity.get("calendar_id") != history.calendar_id
-        or identity.get("calendar_revision") != history.calendar_revision
-    ):
-        raise BacktesterWebInputError("ResolvedContract交易日历与DataAssetRef.calendar_id/calendar_revision不一致")
+    if identity.get("calendar_id") != history.calendar_id:
+        raise BacktesterWebInputError("合同所属交易所与历史行情交易日历不一致")
 
 
 def _safe_formal_error_message(error: Exception) -> str:
@@ -740,7 +730,7 @@ def _json_text(value: Any) -> str:
 def _trade_ledger_csv(trades: Any) -> str:
     output = StringIO(newline="")
     columns = (
-        "trade_id", "entry_date", "exit_date", "path_id", "case_id", "gross_contract_return",
+        "trade_id", "entry_date", "exit_date", "path_id", "case_id", "contract_settlement_return",
         "trade_json",
     )
     writer = csv.DictWriter(output, fieldnames=columns, lineterminator="\n")
