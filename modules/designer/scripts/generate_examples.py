@@ -60,9 +60,9 @@ def _comparison_payload(output_type: str) -> dict:
                 "status": "ready", "window": "2022-08-24至2026-08-24",
                 "metrics": [
                     {"label": "样本数", "value": 48},
-                    {"label": "胜率", "value": 0.60 + index / 100, "value_format": "percent"},
-                    {"label": "平均收益", "value": 0.03 + index / 1000, "value_format": "percent"},
-                    {"label": "最大亏损", "value": -0.05 + index / 1000, "value_format": "percent"},
+                    {"label": "历史正收益样本占比", "value": 0.60 + index / 100, "value_format": "percent"},
+                    {"label": "平均合同结算收益率", "value": 0.03 + index / 1000, "value_format": "percent"},
+                    {"label": "最大历史损失", "value": -0.05 + index / 1000, "value_format": "percent"},
                 ],
             },
             "risk": {"items": ["极端行情下可能损失期权费。", "实际成交价格可能偏离估值结果。"]},
