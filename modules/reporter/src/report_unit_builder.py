@@ -53,7 +53,8 @@ _TERM_SYMBOLS = {
 }
 _TERM_VALUE_TEXT = {
     "analytical": "Analytical", "monte_carlo": "Monte Carlo", "cash": "现金结算",
-    "european": "欧式", "american": "美式", "close": "收盘价", "monthly": "每月",
+    "european": "仅到期日可行权", "american": "存续期内可行权",
+    "bermudan": "约定观察日可行权", "close": "收盘价", "monthly": "每月",
     "daily": "每日", "weekly": "每周",
     "cny_per_spot": "人民币/标的价格点",
     "cny_per_spot_squared": "人民币/标的价格点²",
@@ -70,7 +71,7 @@ _MODULE_ONLY_TERMS = {
     "pricing_input": {"pricing_methods"},
     "backtest_input": set(),
 }
-_PUBLIC_EXCLUDED_TERM_SYMBOLS = {"N", "notional", "Pi_0", "P_net"}
+_PUBLIC_EXCLUDED_TERM_SYMBOLS = {"N", "notional"}
 
 
 _NUMBER_TEXT = re.compile(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$")
@@ -290,6 +291,10 @@ def _highlight_row(symbol: str, value: Any, contract: Mapping[str, Any], catalog
     unit = _text(definition.get("unit"))
     if symbol == "T":
         label, note = "期限", "年"
+    elif symbol == "exercise_style":
+        label, note = "到期行权方式", "仅适用于持有人行权结构"
+    elif unit == "premium_percent_s0_100":
+        return {"label": label, "value": f"{_decimal_text(value)}%", "note": "S₀=100"}
     elif symbol == "c":
         return {"label": "年化票息", "value": _percent_text(value), "note": "年化，ACT/365"}
     elif unit in {"rate", "volatility"}:
@@ -327,11 +332,19 @@ def _contract_highlights(contract: Mapping[str, Any] | None) -> list[dict[str, s
         if symbol in terms and symbol not in _PUBLIC_EXCLUDED_TERM_SYMBOLS
     ]
     schedules = []
-    for symbol, prefix in (("O_KO", "敲出"), ("O_KI", "敲入")):
+    for symbol, prefix in (
+        ("O_KO", "敲出"), ("O_KI", "敲入"), ("Oc", "派息"),
+        ("Otouch", "触碰"), ("Orange", "区间"), ("Ovar", "方差"),
+        ("Ohedge", "避险"), ("Oreset", "重置"),
+    ):
         if symbol in terms:
             schedule = _SCHEDULE_TEXT.get(str(terms[symbol]), _text(terms[symbol]))
             schedules.append(f"{prefix}：{schedule}")
     if schedules:
+        rows = [row for symbol, row in zip(
+            [symbol for symbol in priority if symbol in terms and symbol not in _PUBLIC_EXCLUDED_TERM_SYMBOLS],
+            rows,
+        ) if symbol != "exercise_style"]
         observation = {"label": "观察频率", "value": "；".join(schedules), "note": "仅交易日"}
         return [*rows[:5], observation]
     return rows[:6]
@@ -339,12 +352,14 @@ def _contract_highlights(contract: Mapping[str, Any] | None) -> list[dict[str, s
 
 _BACKTEST_LABELS = {
     "sample_count": "样本数", "valid_return_sample_count": "有效收益样本数",
-    "positive_return_count": "正收益样本数", "skipped_count": "跳过样本数", "win_rate": "胜率",
-    "average_gross_return": "平均收益",
-    "median_gross_return": "中位收益",
-    "minimum_gross_return": "最差收益",
-    "maximum_gross_return": "最佳收益",
-    "max_loss_gross_return": "最大亏损",
+    "positive_return_count": "正收益样本数", "zero_return_count": "持平样本数",
+    "negative_return_count": "负收益样本数", "skipped_count": "跳过样本数",
+    "positive_return_rate": "历史正收益样本占比",
+    "average_contract_settlement_return": "平均合同结算收益率",
+    "median_contract_settlement_return": "中位合同结算收益率",
+    "minimum_contract_settlement_return": "最低合同结算收益率",
+    "maximum_contract_settlement_return": "最高合同结算收益率",
+    "max_loss_contract_settlement_return": "最大历史损失",
     "trigger_count": "触发次数",
     "trigger_rate": "触发比例", "average_days": "平均触发天数", "median_days": "中位触发天数",
     "true_count": "为真次数", "false_count": "为假次数", "true_rate": "为真比例",
@@ -1172,15 +1187,25 @@ def _economic_convention_status(backtest: Mapping[str, Any]) -> str:
     convention = backtest.get("economic_convention")
     if not isinstance(convention, Mapping):
         return "invalid"
-    if (
+    canonical = (
+        convention.get("basis") == "declared_contract_cashflows_over_contract_scale"
+        and convention.get("display_unit") == "percentage"
+        and convention.get("value_encoding") == "decimal_ratio"
+        and convention.get("positive_return_rate_numerator") == "positive_contract_settlement_return_count"
+        and convention.get("positive_return_rate_denominator") == "valid_return_sample_count"
+    )
+    legacy = (
         convention.get("gross_return_basis") == "contract_cashflow_before_external_costs"
         and convention.get("gross_return_display_unit") == "percentage"
         and convention.get("gross_return_value_encoding") == "decimal_ratio"
+        and convention.get("win_rate_numerator") == "positive_gross_contract_return_count"
+        and convention.get("win_rate_denominator") == "valid_return_sample_count"
+    )
+    if (
+        (canonical or legacy)
         and convention.get("external_costs_modelled") is False
         and convention.get("client_net_pnl_status") == "not_modelled"
         and convention.get("client_net_return_status") == "not_modelled"
-        and convention.get("win_rate_numerator") == "positive_gross_contract_return_count"
-        and convention.get("win_rate_denominator") == "valid_return_sample_count"
     ):
         return "formal"
     return "invalid"
@@ -1195,7 +1220,8 @@ _FORMAL_LEDGER_ALLOWED_FIELDS = frozenset({
     "trade_id", "entry_date", "exit_date", "actual_calendar_days", "actual_time_years",
     "historical_resolved_contract", "entry_market_spots", "entry_normalized_spots",
     "settlement_market_spots", "underlying_performances", "path_id", "case_id",
-    "settlement_type", "events", "gross_contract_return", "gross_return_convention",
+    "settlement_type", "events", "contract_settlement_return", "contract_settlement_return_convention",
+    "gross_contract_return", "gross_return_convention",
     "client_net_return", "client_net_pnl", "terminal_performance", "entry_features",
     "data_flags", "limitations",
 })
@@ -1233,11 +1259,21 @@ def _formal_trade_ledger(backtest: Mapping[str, Any], *, valid_return_sample_cou
             return False
         if set(row) - _FORMAL_LEDGER_ALLOWED_FIELDS or _has_forbidden_ledger_field(row):
             return False
-        convention = row.get("gross_return_convention")
+        canonical_return = _safe_number(row.get("contract_settlement_return"))
+        legacy_return = _safe_number(row.get("gross_contract_return"))
+        convention = row.get("contract_settlement_return_convention")
+        legacy_convention = row.get("gross_return_convention")
         if (
-            _safe_number(row.get("gross_contract_return")) is None
-            or not isinstance(convention, Mapping)
-            or any(convention.get(key) != expected for key, expected in _FORMAL_LEDGER_RETURN_CONVENTION.items())
+            canonical_return is None and legacy_return is None
+            or canonical_return is not None and legacy_return is not None and not math.isclose(canonical_return, legacy_return, rel_tol=0.0, abs_tol=1e-12)
+            or not (
+                isinstance(convention, Mapping)
+                and convention.get("basis") == "declared_contract_cashflows_over_contract_scale"
+                and convention.get("display_unit") == "percentage"
+                and convention.get("value_encoding") == "decimal_ratio"
+                or isinstance(legacy_convention, Mapping)
+                and all(legacy_convention.get(key) == expected for key, expected in _FORMAL_LEDGER_RETURN_CONVENTION.items())
+            )
         ):
             return False
         for key in ("client_net_return", "client_net_pnl"):
@@ -1252,12 +1288,21 @@ def _formal_trade_ledger(backtest: Mapping[str, Any], *, valid_return_sample_cou
 
 
 _RETURN_PAIR_KEYS = (
-    "average_gross_return",
-    "median_gross_return",
-    "minimum_gross_return",
-    "maximum_gross_return",
-    "max_loss_gross_return",
+    "average_contract_settlement_return",
+    "median_contract_settlement_return",
+    "minimum_contract_settlement_return",
+    "maximum_contract_settlement_return",
+    "max_loss_contract_settlement_return",
 )
+
+_LEGACY_RETURN_ALIASES = {
+    "positive_return_rate": "win_rate",
+    "average_contract_settlement_return": "average_gross_return",
+    "median_contract_settlement_return": "median_gross_return",
+    "minimum_contract_settlement_return": "minimum_gross_return",
+    "maximum_contract_settlement_return": "maximum_gross_return",
+    "max_loss_contract_settlement_return": "max_loss_gross_return",
+}
 
 
 def _valid_return_pairs(common: Mapping[str, Any]) -> bool:
@@ -1308,23 +1353,38 @@ def _safe_optional(
 def _verified_backtest_common(common: Mapping[str, Any]) -> dict[str, Any] | None:
     """Validate the public summary without recalculating any backtest fact."""
 
-    sample_count = _safe_count(common.get("sample_count"))
-    valid_count = _safe_count(common.get("valid_return_sample_count"))
-    positive_count = _safe_count(common.get("positive_return_count"))
-    win_rate = _safe_ratio(common.get("win_rate"))
+    normalized = deepcopy(dict(common))
+    for canonical, legacy in _LEGACY_RETURN_ALIASES.items():
+        canonical_value = normalized.get(canonical)
+        legacy_value = normalized.get(legacy)
+        if canonical_value is not None and legacy_value is not None:
+            left = _safe_number(canonical_value)
+            right = _safe_number(legacy_value)
+            if left is None or right is None or not math.isclose(left, right, rel_tol=0.0, abs_tol=1e-12):
+                return None
+        if canonical_value is None and legacy_value is not None:
+            normalized[canonical] = legacy_value
+    sample_count = _safe_count(normalized.get("sample_count"))
+    valid_count = _safe_count(normalized.get("valid_return_sample_count"))
+    positive_count = _safe_count(normalized.get("positive_return_count"))
+    positive_rate = _safe_ratio(normalized.get("positive_return_rate"))
+    zero_count = _safe_count(normalized.get("zero_return_count")) if "zero_return_count" in normalized else None
+    negative_count = _safe_count(normalized.get("negative_return_count")) if "negative_return_count" in normalized else None
     if (
-        sample_count is None or valid_count is None or positive_count is None or win_rate is None
+        sample_count is None or valid_count is None or positive_count is None or positive_rate is None
         or valid_count == 0 or positive_count > valid_count or valid_count > sample_count
-        or not math.isclose(win_rate, positive_count / valid_count, rel_tol=0.0, abs_tol=1e-12)
-        or not _valid_return_pairs(common)
+        or not math.isclose(positive_rate, positive_count / valid_count, rel_tol=0.0, abs_tol=1e-12)
+        or (zero_count is None) != (negative_count is None)
+        or zero_count is not None and positive_count + zero_count + negative_count != valid_count
+        or not _valid_return_pairs(normalized)
     ):
         return None
     return {
-        **deepcopy(dict(common)),
+        **normalized,
         "sample_count": sample_count,
         "valid_return_sample_count": valid_count,
         "positive_return_count": positive_count,
-        "win_rate": win_rate,
+        "positive_return_rate": positive_rate,
     }
 
 
@@ -1341,13 +1401,13 @@ def _backtest_metric_note(
     *,
     valid_sample_count: int | None = None,
 ) -> str:
-    if key in {"sample_count", "valid_return_sample_count", "positive_return_count", "skipped_count"}:
+    if key in {"sample_count", "valid_return_sample_count", "positive_return_count", "zero_return_count", "negative_return_count", "skipped_count"}:
         return "个有效入场样本"
-    if key == "win_rate":
+    if key == "positive_return_rate":
         denominator = f"分母为{valid_sample_count}个有效收益样本" if valid_sample_count is not None else "分母为回测结果所列有效收益样本"
-        return f"正合约毛收益样本占比，{denominator}；客户净收益未建模，不代表未来获利概率"
-    if key.endswith("_gross_return"):
-        return "合约毛收益率；客户净收益未建模"
+        return f"合同结算收益率严格大于零的历史样本占比，{denominator}；不代表未来获利概率"
+    if key.endswith("_contract_settlement_return") or "contract_settlement_return" in key:
+        return "已包含OptionReg声明的合同现金流；未包含外部资金与交易成本"
     if key.endswith("_rate"):
         return "占有效入场样本"
     if key.endswith("_days"):
@@ -1384,9 +1444,10 @@ def _backtest_content(module: Mapping[str, Any], contract: Mapping[str, Any] | N
     value["entry_rule"] = _text(config.get("entry_rule"))
     valid_sample_count = common["valid_return_sample_count"]
     public_keys = (
-        "sample_count", "valid_return_sample_count", "positive_return_count", "win_rate",
-        "average_gross_return", "median_gross_return", "minimum_gross_return",
-        "maximum_gross_return", "max_loss_gross_return",
+        "sample_count", "valid_return_sample_count", "positive_return_count", "zero_return_count",
+        "negative_return_count", "positive_return_rate", "average_contract_settlement_return",
+        "median_contract_settlement_return", "minimum_contract_settlement_return",
+        "maximum_contract_settlement_return", "max_loss_contract_settlement_return",
     )
     value["metrics"] = [
         _metric(
@@ -1505,14 +1566,16 @@ def _backtest_content(module: Mapping[str, Any], contract: Mapping[str, Any] | N
         if not valid_count or not valid_rate:
             continue
         row = {"label": _text(item.get("label")), "count": count, "rate": rate, "rate_format": "percent"}
-        average_return = _public_return_percent(item, "average_gross_return")
+        average_return = _public_return_percent(item, "average_contract_settlement_return")
+        if average_return is None:
+            average_return = _public_return_percent(item, "average_gross_return")
         if average_return is not None:
-            row.update({"average_gross_return": average_return, "average_gross_return_format": "percent"})
+            row.update({"average_contract_settlement_return": average_return, "average_contract_settlement_return_format": "percent"})
         outcome_rows.append(row)
     if outcome_rows:
         outcome_columns = [("label", "路径结果"), ("count", "样本数"), ("rate", "占比")]
-        if any("average_gross_return" in row for row in outcome_rows):
-            outcome_columns.append(("average_gross_return", "平均合约毛收益"))
+        if any("average_contract_settlement_return" in row for row in outcome_rows):
+            outcome_columns.append(("average_contract_settlement_return", "平均合同结算收益率"))
         detail_tables.append({
             "title": "路径结果统计",
             "columns": outcome_columns,
@@ -1524,19 +1587,22 @@ def _backtest_content(module: Mapping[str, Any], contract: Mapping[str, Any] | N
         item = raw if isinstance(raw, Mapping) else {}
         valid_year, year = _safe_optional(item, "year", _safe_count)
         valid_samples, sample_count = _safe_optional(item, "sample_count", _safe_count)
-        valid_win_rate, win_rate = _safe_optional(item, "win_rate", _safe_ratio)
-        if item.get("year") is not None and valid_year and valid_samples and valid_win_rate:
+        rate_key = "positive_return_rate" if "positive_return_rate" in item else "win_rate"
+        valid_positive_rate, positive_rate = _safe_optional(item, rate_key, _safe_ratio)
+        if item.get("year") is not None and valid_year and valid_samples and valid_positive_rate:
             row = {
-                "year": year, "sample_count": sample_count, "win_rate": win_rate, "win_rate_format": "percent",
+                "year": year, "sample_count": sample_count, "positive_return_rate": positive_rate, "positive_return_rate_format": "percent",
             }
-            average_return = _public_return_percent(item, "average_gross_return")
+            average_return = _public_return_percent(item, "average_contract_settlement_return")
+            if average_return is None:
+                average_return = _public_return_percent(item, "average_gross_return")
             if average_return is not None:
-                row.update({"average_gross_return": average_return, "average_gross_return_format": "percent"})
+                row.update({"average_contract_settlement_return": average_return, "average_contract_settlement_return_format": "percent"})
             annual_rows.append(row)
     if annual_rows:
-        annual_columns = [("year", "年份"), ("sample_count", "样本数"), ("win_rate", "胜率")]
-        if any("average_gross_return" in row for row in annual_rows):
-            annual_columns.append(("average_gross_return", "平均合约毛收益"))
+        annual_columns = [("year", "年份"), ("sample_count", "样本数"), ("positive_return_rate", "历史正收益样本占比")]
+        if any("average_contract_settlement_return" in row for row in annual_rows):
+            annual_columns.append(("average_contract_settlement_return", "平均合同结算收益率"))
         detail_tables.append({
             "title": "年度统计",
             "columns": annual_columns,
@@ -1553,7 +1619,11 @@ def _backtest_content(module: Mapping[str, Any], contract: Mapping[str, Any] | N
     value["event_statistics"] = []
     value["card_metrics"] = specialized_rows[:4]
     value["limitations"] = [
-        "合约毛收益率按合同条款计算；客户净收益未建模，未扣除交易费、资金成本、税费、对冲及滑点。",
+        "合同结算收益率已包含OptionReg声明的合同现金流；客户净收益率未建模的仅为资金成本、交易费、税费、对冲和滑点。",
+        *(
+            ["本次历史样本未出现负收益，不代表未来获利概率。"]
+            if common.get("negative_return_count") == 0 else []
+        ),
         *[item for item in coverage_limitations if isinstance(item, str)],
     ]
     value["charts"] = _safe_backtest_charts(backtest)
