@@ -81,6 +81,11 @@ class TradeResult:
     def trade_contract_fingerprint(self) -> str:
         return self.historical_contract.trade_contract_fingerprint
 
+    @property
+    def contract_settlement_return(self) -> float:
+        """正式公共名称；旧字段在v1保持数值完全一致。"""
+        return self.gross_contract_return
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "trade_id": self.trade_id,
@@ -97,7 +102,14 @@ class TradeResult:
             "case_id": self.case_id,
             "settlement_type": self.settlement_type,
             "events": deep_thaw(self.events),
-            "gross_contract_return": self.gross_contract_return,
+            "contract_settlement_return": self.contract_settlement_return,
+            "gross_contract_return": self.contract_settlement_return,
+            "contract_settlement_return_convention": {
+                "basis": "declared_contract_cashflows_over_contract_scale",
+                "display_unit": "percentage",
+                "value_encoding": "decimal_ratio",
+                "normalization": dict(self.return_normalization),
+            },
             "gross_return_convention": {
                 "basis": "contract_cashflow_before_external_costs",
                 "display_unit": "percentage",
@@ -107,12 +119,12 @@ class TradeResult:
             "client_net_return": {
                 "status": "not_modelled",
                 "value": None,
-                "reasons": ["option_premium", "funding", "fees", "taxes", "hedging", "slippage_not_modelled"],
+                "reasons": ["funding_cost", "transaction_cost", "tax", "hedging_cost", "slippage"],
             },
             "client_net_pnl": {
                 "status": "not_modelled",
                 "value": None,
-                "reasons": ["option_premium", "funding", "fees", "taxes", "hedging", "slippage_not_modelled"],
+                "reasons": ["funding_cost", "transaction_cost", "tax", "hedging_cost", "slippage"],
             },
             "terminal_performance": self.terminal_performance,
             "entry_features": deep_thaw(self.entry_features),
@@ -319,4 +331,4 @@ def _gross_contract_return(contract: ResolvedContract, pnl: float) -> tuple[floa
 
 
 def _date_text(value: Any) -> str:
-    return pd.Timestamp(value).strftime("%Y-%m-%d")
+    return str(value)[:10]
