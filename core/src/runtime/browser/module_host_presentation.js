@@ -36,7 +36,7 @@
 
   const termValueLabels = new Map([
     ["true", "是"], ["false", "否"],
-    ["European", "欧式"], ["American", "美式"], ["Bermudan", "百慕大式"],
+    ["European", "仅到期日可行权"], ["American", "存续期内可行权"], ["Bermudan", "约定观察日可行权"],
     ["cash", "现金结算"], ["physical", "实物交割"],
     ["close", "收盘价"], ["open", "开盘价"], ["high", "最高价"], ["low", "最低价"],
     ["daily", "每个交易日"], ["monthly_last", "每月最后一个交易日"],
