@@ -553,7 +553,7 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
     }
 
     private var visibleRootHealthScript: String {
-        "(()=>{const path=location.pathname;const selector=path==='/settings'?'.setup-card':(['/optchat','/optdesk'].includes(path)?'[data-workspace-shell]':(path==='/'?'body.login-page':'main'));const root=document.querySelector(selector);if(!root)return {ready:false,selector,reason:'missing'};const style=getComputedStyle(root);const rect=root.getBoundingClientRect();const visible=style.display!=='none'&&style.visibility!=='hidden'&&style.visibility!=='collapse'&&Number(style.opacity)>0.01&&root.getClientRects().length>0&&rect.width>80&&rect.height>80&&rect.bottom>0&&rect.right>0&&rect.top<innerHeight&&rect.left<innerWidth;return {ready:['interactive','complete'].includes(document.readyState),textLength:((root.innerText||root.textContent)||'').trim().length,width:rect.width,height:rect.height,visible,selector};})()"
+        "(()=>{const path=location.pathname;const selector=path==='/settings'?'.setup-card':(['/optchat','/optdesk'].includes(path)?'[data-workspace-shell]':(path==='/'?'body.login-page':'main'));const root=document.querySelector(selector);if(!root)return {ready:false,selector,reason:'missing'};const style=getComputedStyle(root);const rect=root.getBoundingClientRect();const geometry=root.getClientRects().length>0&&rect.width>80&&rect.height>80&&rect.bottom>0&&rect.right>0&&rect.top<innerHeight&&rect.left<innerWidth;const painted=style.display!=='none'&&style.visibility!=='hidden'&&style.visibility!=='collapse'&&Number(style.opacity)>0.01;const staged=root.dataset.initializing==='true'&&geometry;const visible=geometry&&(painted||staged);return {ready:['interactive','complete'].includes(document.readyState),textLength:((root.innerText||root.textContent)||'').trim().length,width:rect.width,height:rect.height,visible,staged,selector};})()"
     }
 
     private func presentationDecision(
@@ -563,7 +563,12 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         withinDeadline: Bool
     ) -> PresentationDecision {
         if contentHealthy && snapshotReady { return .ready }
-        return withinDeadline && attempt + 1 < presentationMaxAttempts ? .retry : .failed
+        if withinDeadline && attempt + 1 < presentationMaxAttempts { return .retry }
+        // WKWebView may reject snapshots for a healthy page when the signed
+        // App runs from a read-only DMG. The DOM gate already requires a
+        // visible, non-empty workspace with real geometry, so do not leave a
+        // usable Desk covered by the recovery overlay at the terminal retry.
+        return contentHealthy ? .ready : .failed
     }
 
     private func scheduleMainPresentationRetry(generation: Int, attempt: Int, deadline: TimeInterval) {
