@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field
 from math import isfinite
 from typing import Any, Mapping
@@ -112,8 +113,14 @@ class PricingConfig:
         ):
             raise PricingConfigError("random_seed必须为0至4294967295之间的整数")
         if self.correlation is not None:
-            if not isinstance(self.correlation, list) or not self.correlation or any(
-                not isinstance(row, list) for row in self.correlation
+            if (
+                not isinstance(self.correlation, Sequence)
+                or isinstance(self.correlation, (str, bytes, bytearray))
+                or not self.correlation
+                or any(
+                    not isinstance(row, Sequence) or isinstance(row, (str, bytes, bytearray))
+                    for row in self.correlation
+                )
             ):
                 raise PricingConfigError("correlation必须为非空数值方阵或None")
             size = len(self.correlation)
@@ -123,6 +130,11 @@ class PricingConfig:
                 for value in row:
                     if isinstance(value, bool) or not isinstance(value, (int, float)) or not isfinite(float(value)):
                         raise PricingConfigError("correlation必须仅含有限数值")
+            object.__setattr__(
+                self,
+                "correlation",
+                [[float(value) for value in row] for row in self.correlation],
+            )
         if self.time_to_maturity is not None and (
             isinstance(self.time_to_maturity, bool)
             or not isinstance(self.time_to_maturity, (int, float))
