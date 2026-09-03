@@ -29,6 +29,11 @@ METRIC_SOURCES: Mapping[str, str] = {
     "vega": "pricer",
     "theta": "pricer",
     "rho": "pricer",
+    "positive_return_rate": "backtester",
+    "average_contract_settlement_return": "backtester",
+    "max_loss_contract_settlement_return": "backtester",
+    # v1历史结果与既有RankingSpec只允许在读取时使用以下兼容别名；
+    # Specifier公开目录仅发布上方合同结算收益率口径。
     "win_rate": "backtester",
     "average_gross_return": "backtester",
     "max_loss_gross_return": "backtester",
