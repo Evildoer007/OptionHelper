@@ -32,6 +32,7 @@ from runtime.contracts.input_adapter import (
     verified_trading_calendar,
 )
 from runtime.contracts.contract_types import semantic_hash
+from runtime.contracts.term_presentation import build_term_fields
 from runtime.knowledger import load_registry
 from runtime.protocol.models import (
     DataAssetRef,
@@ -144,7 +145,7 @@ def _quote_price_convention(contract: ResolvedContract) -> str:
 def _quote_public_unit(catalog_unit: str, price_convention: str) -> str:
     if catalog_unit == "price":
         return "price_normalized_percent" if price_convention == "normalized_100" else "market_price"
-    if catalog_unit in {"normalized_point", "rate", "volatility"}:
+    if catalog_unit in {"normalized_point", "premium_percent_s0_100", "rate", "volatility"}:
         return "percent"
     if catalog_unit == "year":
         return "year"
@@ -170,7 +171,7 @@ def _quote_display_value(value: Any, catalog_unit: str, price_convention: str) -
     if catalog_unit == "price" and isinstance(value, (int, float)):
         suffix = "%" if price_convention == "normalized_100" else ""
         return f"{float(value):g}{suffix}"
-    if catalog_unit == "normalized_point" and isinstance(value, (int, float)):
+    if catalog_unit in {"normalized_point", "premium_percent_s0_100"} and isinstance(value, (int, float)):
         return f"{float(value):g}%"
     if catalog_unit in {"rate", "volatility"} and isinstance(value, (int, float)):
         return f"{float(value) * 100:g}%"
@@ -301,26 +302,7 @@ class PricerRuntime:
             terms = product["terms"]
             capability = capability_for(product_id)
             mapping = product_mapping(product_id)
-            fields = []
-            for key, value in terms.items():
-                if key in _NON_EDITABLE_CONTRACT_TERMS:
-                    continue
-                # OptionReg may carry formula metadata used by the shared
-                # evaluator. Internal normalized coordinates and settlement
-                # bases stay in ResolvedContract; only public term_catalog
-                # fields are projected as user-editable page inputs.
-                metadata = catalog.get(key)
-                if not isinstance(metadata, Mapping):
-                    continue
-                fields.append({
-                    "key": key,
-                    "label": metadata["name_zh"],
-                    "symbol": metadata["symbol"],
-                    "value_type": metadata["value_type"],
-                    "unit": metadata["unit"],
-                    "domain": metadata["domain"],
-                    "default_value": value,
-                })
+            field_groups = build_term_fields(terms, catalog)
             fair_product = fair_by_product.get(product_id, {})
             products.append({
                 "product_id": product_id,
@@ -329,7 +311,7 @@ class PricerRuntime:
                 "underlying_scope": "multi_underlying" if "S0Vec" in terms else "single_underlying",
                 "path_count": len(product["paths"]),
                 "path_summaries": _path_summaries(product),
-                "payoff_fields": fields,
+                **field_groups,
                 "pricing_methods": terms["pricing_methods"],
                 "pricer_status": "supported" if mapping.status == "supported" else "unsupported",
                 "pricer_availability": mapping.status,
