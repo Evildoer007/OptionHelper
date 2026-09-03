@@ -7,6 +7,7 @@ Payoffer不维护第二套产品公式。它只将OptionReg解析为ResolvedCont
 
 from __future__ import annotations
 
+import ast
 from copy import deepcopy
 from dataclasses import asdict, dataclass
 from datetime import date, timedelta
@@ -32,6 +33,7 @@ from runtime.contracts.contract_api import (
     verify_product_snapshot_binding,
 )
 from runtime.contracts.contract_types import deep_thaw, semantic_hash
+from runtime.contracts.term_presentation import build_term_fields
 from runtime.knowledger import load_registry as load_optionreg
 from runtime.ports.result_store import ResultStorePort
 from runtime.protocol.module_host import ModuleHostContext
@@ -93,6 +95,61 @@ _LOCAL_DEVELOPMENT_PREVIEW_SESSIONS = 800
 
 class PayoffEngineError(ValueError):
     """Payoffer输入或收益图生成请求无效。"""
+
+
+def _formula_names(expression: str, *, payoff_amount_only: bool = False) -> set[str]:
+    """提取受控公式依赖；收益图不把``cash``的支付时间当作纵轴条款。"""
+
+    try:
+        root = ast.parse(str(expression), mode="eval")
+    except SyntaxError:
+        return set()
+    if not payoff_amount_only:
+        return {node.id for node in ast.walk(root) if isinstance(node, ast.Name)}
+    names: set[str] = set()
+    for node in ast.walk(root):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Name) or node.func.id != "cash":
+            continue
+        if len(node.args) >= 2:
+            names.update(child.id for child in ast.walk(node.args[1]) if isinstance(child, ast.Name))
+    return names
+
+
+def _payoff_relevant_symbols(product: Mapping[str, Any]) -> frozenset[str]:
+    """返回真正改变收益分段、金额或候选观察路径的合同符号。"""
+
+    terms = product.get("terms", {})
+    referenced: set[str] = set()
+    monitor_names: set[str] = set()
+    for path in product.get("paths", ()):
+        referenced.update(_formula_names(str(path.get("condition", ""))))
+        for case in path.get("cases", ()):
+            referenced.update(_formula_names(str(case.get("domain", ""))))
+            referenced.update(_formula_names(str(case.get("pnl", "")), payoff_amount_only=True))
+    monitor = terms.get("monitor", {})
+    if isinstance(monitor, Mapping):
+        pending = {name for name in monitor if name in referenced}
+        while pending:
+            name = pending.pop()
+            if name in monitor_names:
+                continue
+            monitor_names.add(name)
+            dependencies = _formula_names(str(monitor[name]))
+            referenced.update(dependencies)
+            pending.update(dependency for dependency in dependencies if dependency in monitor)
+    derived = terms.get("derived_terms", {})
+    if isinstance(derived, Mapping):
+        pending = {name for name in derived if name in referenced}
+        visited: set[str] = set()
+        while pending:
+            name = pending.pop()
+            if name in visited:
+                continue
+            visited.add(name)
+            dependencies = _formula_names(str(derived[name]))
+            referenced.update(dependencies)
+            pending.update(dependency for dependency in dependencies if dependency in derived)
+    return frozenset(referenced)
 
 
 CandidateEvaluation = tuple[int, int, float, dict[str, Any]]
@@ -178,7 +235,7 @@ def _registry_with_default_figure(name_zh: str) -> tuple[str, dict[str, Any], di
 
 
 def payoff_term_fields(product: Mapping[str, Any], registry: Mapping[str, Any] | None = None) -> list[dict[str, Any]]:
-    """输出可由Core ``resolve_contract`` 接受的人工覆盖字段目录。"""
+    """输出可由Core接受且确实改变收益图的人工覆盖字段目录。"""
     source = registry or load_registry()
     catalog = source["term_catalog"]
     terms = product["terms"]
@@ -189,15 +246,26 @@ def payoff_term_fields(product: Mapping[str, Any], registry: Mapping[str, Any] |
         allowed_keys = overridable_term_keys(product_id, source) - _PAGE_HIDDEN_TERM_KEYS
     except ContractResolutionError as error:
         raise PayoffEngineError(str(error)) from error
+    presentation = {
+        field["key"]: field
+        for field in build_term_fields(terms, catalog)["contract_fields"]
+    }
+    relevant_symbols = _payoff_relevant_symbols(product)
     fields: list[dict[str, Any]] = []
     for key, value in terms.items():
         if key not in allowed_keys:
             continue
         definition = catalog[key]
+        display = presentation[key]
+        if display["editability"] != "editable":
+            continue
+        if str(display["symbol"]) not in relevant_symbols:
+            continue
         fields.append(
             {
+                **display,
                 "key": key,
-                "chinese_name": definition["name_zh"],
+                "chinese_name": display["label"],
                 "english_name": definition.get("name_en", definition["name_zh"]),
                 "math_symbol": definition["symbol"],
                 "source_policy": "OptionReg默认条款，可由本次PayoffInput覆盖",
@@ -206,6 +274,17 @@ def payoff_term_fields(product: Mapping[str, Any], registry: Mapping[str, Any] |
             }
         )
     return fields
+
+
+def payoff_fixed_term_fields(
+    product: Mapping[str, Any],
+    registry: Mapping[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """返回页面可审计但不可独立修改的合同字段。"""
+
+    source = registry or load_registry()
+    fields = build_term_fields(product["terms"], source["term_catalog"])["fixed_fields"]
+    return [field for field in fields if field["key"] not in _PAGE_HIDDEN_TERM_KEYS]
 
 
 def _default_identity(product: Mapping[str, Any]) -> dict[str, Any]:
@@ -961,7 +1040,7 @@ def render_paths(contract: ResolvedContract, visual_template: Mapping[str, Any])
             chart_kind = view["chart_kind"]
             status_note = "固定非终值历史，仅终值变化" if terminal_slice else "按横轴路径统计量构造确定性候选路径"
             if payoff_basis == "gross_before_premium":
-                status_note += "；收益图为扣费前毛收益"
+                status_note += "；图中不含期初期权费"
             rendered.append(
                 RenderedPath(
                     path_id=path_id, title=title, condition_tex=path["condition"],
