@@ -3559,8 +3559,9 @@ html.workspace-overlay-open body { overflow: hidden; }
   .workspace-shell.workspace-shell--desk[data-mode="desk"] .assistant-region {
     position: fixed;
     z-index: 30;
-    right: max(28px, env(safe-area-inset-right, 0px));
-    bottom: max(28px, env(safe-area-inset-bottom, 0px));
+    top: auto;
+    right: max(18px, env(safe-area-inset-right, 0px));
+    bottom: max(18px, env(safe-area-inset-bottom, 0px));
     display: block;
     grid-row: auto;
     width: 0;
@@ -3574,16 +3575,17 @@ html.workspace-overlay-open body { overflow: hidden; }
   }
 
   .workspace-shell.workspace-shell--desk[data-mode="desk"][data-report-open="true"] .assistant-region {
-    right: calc(var(--report-width) + max(28px, env(safe-area-inset-right, 0px)));
+    right: calc(var(--report-width) + max(18px, env(safe-area-inset-right, 0px)));
   }
 
   .workspace-shell.workspace-shell--desk[data-mode="desk"] .assistant-toggle {
     position: absolute;
     right: 0;
+    top: auto;
     bottom: 0;
     display: grid;
-    width: 44px;
-    height: 44px;
+    width: 36px;
+    height: 36px;
     place-items: center;
     padding: 0;
     border: 1px solid rgba(158, 16, 39, .18);
@@ -3611,11 +3613,12 @@ html.workspace-overlay-open body { overflow: hidden; }
   .workspace-shell.workspace-shell--desk[data-mode="desk"] .assistant-panel {
     position: absolute;
     right: 0;
-    bottom: 0;
+    top: auto;
+    bottom: 48px;
     display: grid;
     grid-template-rows: auto minmax(0, 1fr) auto;
     width: min(432px, calc(100vw - 64px));
-    height: min(570px, calc(100dvh - 112px));
+    height: min(570px, calc(100dvh - 84px));
     overflow: hidden;
     border: 1px solid var(--line-strong);
     border-radius: 16px;
@@ -3623,7 +3626,7 @@ html.workspace-overlay-open body { overflow: hidden; }
     box-shadow: 0 24px 54px rgba(47, 43, 39, .19), 0 2px 8px rgba(47, 43, 39, .08);
     opacity: 0;
     pointer-events: none;
-    transform: translateY(12px) scale(.98);
+    transform: translateY(8px) scale(.98);
     transform-origin: right bottom;
     transition: opacity .22s ease, transform .36s cubic-bezier(.16, 1, .3, 1);
   }
@@ -3637,7 +3640,7 @@ html.workspace-overlay-open body { overflow: hidden; }
   .workspace-shell.workspace-shell--desk[data-mode="desk"] .assistant-region.is-open .assistant-toggle {
     opacity: 0;
     pointer-events: none;
-    transform: translateY(8px) scale(.92);
+    transform: translateY(6px) scale(.92);
   }
 
   .workspace-shell.workspace-shell--desk[data-mode="desk"] .assistant-panel__head {
