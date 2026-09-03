@@ -1,4 +1,11 @@
-"""Immutable App task binding for Core-resolved contracts."""
+"""Task-local, append-only contract schemes for Core-resolved contracts.
+
+A task is a research container, not a contract lock.  The store therefore
+keeps every immutable contract version and separate per-module view
+preferences.  The small latest-record projection is retained only so older
+result and recommendation readers can be migrated without losing evidence;
+normal module execution never treats it as an active contract.
+"""
 
 from __future__ import annotations
 
@@ -29,31 +36,155 @@ class ContractStore:
         *,
         catalog_version: str,
     ) -> dict[str, Any]:
-        task = self._state.read("tasks").get(task_id)
-        if not isinstance(task, dict) or task.get("tenant_id") != identity.tenant_id or task.get("created_by") != identity.principal_id:
-            raise AuthorizationError("contract.bind", "task is not owned by current caller")
-        key = f"{identity.tenant_id}:{task_id}"
+        return self.save_version(
+            identity,
+            task_id,
+            prepared,
+            catalog_version=catalog_version,
+        )
+
+    def save_version(
+        self,
+        identity: SessionIdentity,
+        task_id: str,
+        prepared: Mapping[str, Any],
+        *,
+        catalog_version: str,
+        module: str | None = None,
+        parent_contract_fingerprint: str | None = None,
+    ) -> dict[str, Any]:
+        """Append one immutable version and optionally update a module view.
+
+        The operation intentionally has no compare-and-swap against a task-wide
+        pointer.  Two editors may derive sibling versions from the same parent;
+        neither replaces the other.
+        """
+
+        self._require_task_owner(identity, task_id, action="contract.version.write")
+        if module is not None and module not in _MODULE_SELECTION_NAMES:
+            raise ValidationError("合同版本模块选择无效")
+        if parent_contract_fingerprint is not None:
+            _require_contract_fingerprint(parent_contract_fingerprint, "基础合同版本指纹无效")
         record = self._record(identity, task_id, prepared, catalog_version=catalog_version)
+        key = f"{identity.tenant_id}:{task_id}"
+        fingerprint = str(record["contract_fingerprint"])
 
         def update(value: dict[str, Any]) -> dict[str, Any]:
             existing = value.get(key)
-            if existing is not None:
-                if _is_candidate_container(existing):
-                    value[key] = {
-                        **record,
-                        "candidate_contract_variants": _candidate_variants(existing),
-                    }
-                    return value
-                if not isinstance(existing, dict) or any(existing.get(field) != record[field] for field in (
-                    "tenant_id", "task_id", "created_by", "catalog_version", "contract_fingerprint",
-                    "product_version", "registry_snapshot_hash", "product_snapshot_hash", "product_paths_hash",
-                )):
-                    raise ValidationError("当前任务已绑定另一份ResolvedContract；请新建任务")
-                return value
-            value[key] = record
+            if existing is not None and not isinstance(existing, Mapping):
+                raise ValidationError("当前任务合同版本索引无效")
+            versions = _contract_versions(existing)
+            if parent_contract_fingerprint is not None and parent_contract_fingerprint not in versions:
+                raise ValidationError("基础合同版本不存在或不属于当前任务")
+            stored = versions.get(fingerprint)
+            if stored is not None:
+                _require_same_contract_version(stored, record)
+                version = dict(stored)
+            else:
+                parent = versions.get(parent_contract_fingerprint) if parent_contract_fingerprint else None
+                scheme_id = (
+                    str(parent.get("scheme_id"))
+                    if isinstance(parent, Mapping) and isinstance(parent.get("scheme_id"), str)
+                    else f"scheme-{fingerprint[:24]}"
+                )
+                version = {
+                    **record,
+                    "scheme_id": scheme_id,
+                    "version_id": f"version-{fingerprint[:24]}",
+                    "parent_contract_fingerprint": parent_contract_fingerprint,
+                }
+                versions[fingerprint] = version
+            selections = _module_selections(existing)
+            if module is not None:
+                selections[module] = fingerprint
+            history = _legacy_contract_history(existing)
+            if isinstance(existing, Mapping) and _is_active_contract(existing):
+                old_fingerprint = str(existing.get("contract_fingerprint", ""))
+                if old_fingerprint and old_fingerprint != fingerprint and not any(
+                    item.get("contract_fingerprint") == old_fingerprint for item in history
+                ):
+                    history.append(_active_snapshot(existing))
+            candidates = _candidate_variants(existing) if isinstance(existing, Mapping) else {}
+            value[key] = {
+                **version,
+                "record_kind": _CONTRACT_INDEX_KIND,
+                "latest_contract_fingerprint": fingerprint,
+                "contract_versions": versions,
+                "module_selections": selections,
+                "contract_history": history,
+                "candidate_contract_variants": candidates,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+            value[key].pop("active_variant_id", None)
             return value
 
-        return self._state.update("contracts", update)[key]
+        stored_index = self._state.update("contracts", update)[key]
+        return dict(_contract_versions(stored_index)[fingerprint])
+
+    def list_versions(
+        self,
+        identity: SessionIdentity,
+        task_id: str,
+        *,
+        catalog_version: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return every saved version without choosing one for the task."""
+
+        record = self._get_task_contract(identity, task_id)
+        if record is None:
+            return []
+        versions = [dict(item) for item in _contract_versions(record).values()]
+        if catalog_version is not None:
+            versions = [item for item in versions if item.get("catalog_version") == catalog_version]
+        return sorted(versions, key=lambda item: (str(item.get("created_at", "")), str(item.get("contract_fingerprint", ""))))
+
+    def get_module_selection(
+        self,
+        identity: SessionIdentity,
+        task_id: str,
+        module: str,
+        *,
+        catalog_version: str | None = None,
+    ) -> dict[str, Any] | None:
+        if module not in _MODULE_SELECTION_NAMES:
+            raise ValidationError("合同版本模块选择无效")
+        record = self._get_task_contract(identity, task_id)
+        if record is None:
+            return None
+        fingerprint = _module_selections(record).get(module)
+        selected = _contract_versions(record).get(fingerprint) if fingerprint else None
+        if selected is None or (catalog_version is not None and selected.get("catalog_version") != catalog_version):
+            return None
+        return dict(selected)
+
+    def select_module_version(
+        self,
+        identity: SessionIdentity,
+        task_id: str,
+        module: str,
+        contract_fingerprint: str,
+    ) -> dict[str, Any]:
+        """Persist a UI preference; it has no authorization semantics."""
+
+        self._require_task_owner(identity, task_id, action="contract.selection.write")
+        if module not in _MODULE_SELECTION_NAMES:
+            raise ValidationError("合同版本模块选择无效")
+        _require_contract_fingerprint(contract_fingerprint, "合同版本指纹无效")
+        key = f"{identity.tenant_id}:{task_id}"
+
+        def update(value: dict[str, Any]) -> dict[str, Any]:
+            record = value.get(key)
+            if not isinstance(record, Mapping):
+                raise ValidationError("当前任务没有合同版本")
+            if contract_fingerprint not in _contract_versions(record):
+                raise ValidationError("合同版本不存在或不属于当前任务")
+            selections = _module_selections(record)
+            selections[module] = contract_fingerprint
+            value[key] = {**record, "module_selections": selections, "updated_at": datetime.now(timezone.utc).isoformat()}
+            return value
+
+        stored = self._state.update("contracts", update)[key]
+        return dict(_contract_versions(stored)[contract_fingerprint])
 
     def preview_initial(
         self,
@@ -66,9 +197,6 @@ class ContractStore:
         """Validate a first preview without creating an active task contract."""
 
         self._require_task_owner(identity, task_id, action="contract.preview")
-        existing = self._state.read("contracts").get(f"{identity.tenant_id}:{task_id}")
-        if existing is not None and not _is_candidate_container(existing):
-            raise ValidationError("当前任务已有活动ResolvedContract")
         return self._record(identity, task_id, prepared, catalog_version=catalog_version)
 
     def activate_new_variant(
@@ -80,43 +208,22 @@ class ContractStore:
         catalog_version: str,
         expected_contract_fingerprint: str,
     ) -> dict[str, Any]:
-        """Activate a newly compiled scheme while retaining the prior contract.
+        """Compatibility alias for appending a child contract version."""
 
-        A research task may contain several product schemes.  Each completed
-        module run already carries its own ResolvedContract fingerprint, so
-        switching the *active* scheme must archive the former binding instead
-        of overwriting it.  The compare-and-swap fingerprint prevents a stale
-        module page from replacing a scheme selected in another window.
-        """
-
-        replacement = self.preview_new_variant(
+        self.preview_new_variant(
             identity,
             task_id,
             prepared,
             catalog_version=catalog_version,
             expected_contract_fingerprint=expected_contract_fingerprint,
         )
-        key = f"{identity.tenant_id}:{task_id}"
-
-        def update(value: dict[str, Any]) -> dict[str, Any]:
-            existing = value.get(key)
-            if not isinstance(existing, dict):
-                raise ValidationError("当前任务没有可切换的ResolvedContract")
-            if existing.get("contract_fingerprint") != expected_contract_fingerprint:
-                raise ValidationError("当前任务的ResolvedContract已变化；请刷新后重试")
-            history = existing.get("contract_history", [])
-            if not isinstance(history, list) or not all(isinstance(item, Mapping) for item in history):
-                raise ValidationError("当前任务的ResolvedContract历史无效")
-            value[key] = {
-                **replacement,
-                "active_variant_id": _variant_id(replacement),
-                "contract_history": [*history, _active_snapshot(existing)],
-                "candidate_contract_variants": _candidate_variants(existing),
-                "variant_activated_at": datetime.now(timezone.utc).isoformat(),
-            }
-            return value
-
-        return self._state.update("contracts", update)[key]
+        return self.save_version(
+            identity,
+            task_id,
+            prepared,
+            catalog_version=catalog_version,
+            parent_contract_fingerprint=expected_contract_fingerprint,
+        )
 
     def preview_new_variant(
         self,
@@ -137,20 +244,20 @@ class ContractStore:
         """
 
         self._require_task_owner(identity, task_id, action="contract.variant")
-        if not isinstance(expected_contract_fingerprint, str) or len(expected_contract_fingerprint) != 64:
-            raise ValidationError("当前ResolvedContract指纹无效")
+        _require_contract_fingerprint(expected_contract_fingerprint, "基础合同版本指纹无效")
         existing = self._state.read("contracts").get(f"{identity.tenant_id}:{task_id}")
-        if not isinstance(existing, Mapping):
-            raise ValidationError("当前任务没有可切换的ResolvedContract")
-        if existing.get("contract_fingerprint") != expected_contract_fingerprint:
-            raise ValidationError("当前任务的ResolvedContract已变化；请刷新后重试")
-        history = existing.get("contract_history", [])
-        if not isinstance(history, list) or not all(isinstance(item, Mapping) for item in history):
-            raise ValidationError("当前任务的ResolvedContract历史无效")
+        if not isinstance(existing, Mapping) or expected_contract_fingerprint not in _contract_versions(existing):
+            raise ValidationError("基础合同版本不存在或不属于当前任务")
         replacement = self._record(identity, task_id, prepared, catalog_version=catalog_version)
         if replacement["contract_fingerprint"] == expected_contract_fingerprint:
             raise ValidationError("新方案必须使用不同的ResolvedContract")
-        return replacement
+        parent = _contract_versions(existing)[expected_contract_fingerprint]
+        return {
+            **replacement,
+            "scheme_id": str(parent.get("scheme_id") or f"scheme-{expected_contract_fingerprint[:24]}"),
+            "version_id": f"version-{replacement['contract_fingerprint'][:24]}",
+            "parent_contract_fingerprint": expected_contract_fingerprint,
+        }
 
     def refresh_calendar_evidence(
         self,
@@ -183,17 +290,26 @@ class ContractStore:
             existing = value.get(key)
             if not isinstance(existing, dict):
                 raise ValidationError("当前任务没有可升级的ResolvedContract")
-            if existing.get("contract_fingerprint") != expected_contract_fingerprint:
-                raise ValidationError("当前任务的ResolvedContract已变化；请刷新后重试")
-            _require_calendar_evidence_only_change(existing, replacement)
-            history = existing.get("contract_history", [])
-            if not isinstance(history, list) or not all(isinstance(item, Mapping) for item in history):
-                raise ValidationError("当前任务的ResolvedContract历史无效")
-            value[key] = {
+            versions = _contract_versions(existing)
+            source = versions.get(expected_contract_fingerprint)
+            if not isinstance(source, Mapping):
+                raise ValidationError("基础合同版本不存在或不属于当前任务")
+            _require_calendar_evidence_only_change(source, replacement)
+            fingerprint = str(replacement["contract_fingerprint"])
+            refreshed_version = {
                 **replacement,
-                "created_at": existing.get("created_at", replacement["created_at"]),
-                "active_variant_id": existing.get("active_variant_id", _variant_id(replacement)),
-                "contract_history": [*history, _active_snapshot(existing)],
+                "scheme_id": str(source.get("scheme_id") or f"scheme-{expected_contract_fingerprint[:24]}"),
+                "version_id": f"version-{fingerprint[:24]}",
+                "parent_contract_fingerprint": expected_contract_fingerprint,
+            }
+            versions[fingerprint] = refreshed_version
+            value[key] = {
+                **refreshed_version,
+                "record_kind": _CONTRACT_INDEX_KIND,
+                "latest_contract_fingerprint": fingerprint,
+                "contract_versions": versions,
+                "module_selections": _module_selections(existing),
+                "contract_history": _legacy_contract_history(existing),
                 "candidate_contract_variants": _candidate_variants(existing),
                 "calendar_evidence_refresh": {
                     "from_contract_fingerprint": expected_contract_fingerprint,
@@ -210,6 +326,7 @@ class ContractStore:
                     "migrated_at": datetime.now(timezone.utc).isoformat(),
                 },
             }
+            value[key].pop("active_variant_id", None)
             return value
 
         return self._state.update("contracts", update)[key]
@@ -433,22 +550,29 @@ class ContractStore:
                 if prepared_operation is not None and prepared_operation != approval_operation_id:
                     raise ValidationError("当前候选合同正由另一确认操作提交")
                 return value
-            if expected_active_contract_fingerprint is None:
-                if has_active_contract:
-                    raise ValidationError("当前任务的ResolvedContract已变化；请刷新后重试")
-            elif not has_active_contract or existing.get("contract_fingerprint") != expected_active_contract_fingerprint:
-                raise ValidationError("当前任务的ResolvedContract已变化；请刷新后重试")
-            history = existing.get("contract_history", [])
-            if not isinstance(history, list) or not all(isinstance(item, Mapping) for item in history):
-                raise ValidationError("当前任务的ResolvedContract历史无效")
             variants = _candidate_variants(existing)
-            next_history = [*history, _active_snapshot(existing)] if has_active_contract else list(history)
+            versions = _contract_versions(existing)
+            if expected_active_contract_fingerprint is not None and expected_active_contract_fingerprint not in versions:
+                raise ValidationError("候选合同的基础版本不存在或不属于当前任务")
+            candidate_record = _contract_record_from_candidate(candidate)
+            fingerprint = str(candidate_record["contract_fingerprint"])
+            parent = versions.get(expected_active_contract_fingerprint or "")
+            version = {
+                **candidate_record,
+                "scheme_id": str(parent.get("scheme_id")) if isinstance(parent, Mapping) else f"scheme-{fingerprint[:24]}",
+                "version_id": f"version-{fingerprint[:24]}",
+                "parent_contract_fingerprint": expected_active_contract_fingerprint,
+            }
+            versions[fingerprint] = version
             value[key] = {
-                **_contract_record_from_candidate(candidate),
-                "active_variant_id": _variant_id(candidate),
+                **version,
+                "record_kind": _CONTRACT_INDEX_KIND,
+                "latest_contract_fingerprint": fingerprint,
+                "contract_versions": versions,
+                "module_selections": _module_selections(existing),
                 "active_candidate_key": candidate_key,
                 "active_candidate_version_id": candidate_version_id,
-                "contract_history": next_history,
+                "contract_history": _legacy_contract_history(existing),
                 "candidate_contract_variants": variants,
                 "variant_activated_at": datetime.now(timezone.utc).isoformat(),
                 **(
@@ -459,6 +583,7 @@ class ContractStore:
                     if approval_operation_id is not None else {}
                 ),
             }
+            value[key].pop("active_variant_id", None)
             return value
 
         return self._state.update("contracts", update)[key]
@@ -532,6 +657,11 @@ class ContractStore:
         }
 
     def get(self, identity: SessionIdentity, task_id: str) -> dict[str, Any] | None:
+        """Compatibility projection of the newest stored version.
+
+        New code must use ``list_versions`` or ``get_module_selection``.  This
+        method does not confer active-contract semantics.
+        """
         value = self._get_task_contract(identity, task_id)
         return None if value is None or _is_candidate_container(value) or _activation_is_prepared(value) else value
 
@@ -559,12 +689,16 @@ class ContractStore:
         """
 
         value = self.get(identity, task_id)
-        if value is None or value.get("catalog_version") != catalog_version:
+        if value is None:
             return None
-        contract_ref = value.get("contract_ref")
+        fingerprint = value.get("latest_contract_fingerprint", value.get("contract_fingerprint"))
+        selected = _contract_versions(value).get(str(fingerprint))
+        if selected is None or selected.get("catalog_version") != catalog_version:
+            return None
+        contract_ref = selected.get("contract_ref")
         if not isinstance(contract_ref, Mapping) or contract_ref.get("schema_id") != RESOLVED_CONTRACT_SCHEMA_ID:
             return None
-        return value
+        return dict(selected)
 
     def resolve_ref(
         self,
@@ -578,12 +712,21 @@ class ContractStore:
 
         if not isinstance(reference, HostObjectRef):
             raise ValidationError("Host contract_ref无效")
-        value = self.get_current(identity, task_id, catalog_version=catalog_version)
+        index = self._get_task_contract(identity, task_id)
+        if index is None:
+            raise ValidationError("合同版本引用不存在")
+        value = next(
+            (
+                item for item in _contract_versions(index).values()
+                if item.get("catalog_version") == catalog_version
+                and isinstance(item.get("contract_ref"), Mapping)
+                and dict(item["contract_ref"]) == reference.to_payload()
+            ),
+            None,
+        )
         if value is None:
-            raise ValidationError("Host contract_ref没有当前任务的有效合同")
+            raise ValidationError("合同版本引用不存在或不属于当前任务")
         stored_ref = value.get("contract_ref")
-        if not isinstance(stored_ref, Mapping) or dict(stored_ref) != reference.to_payload():
-            raise ValidationError("Host contract_ref与当前任务合同不一致")
         snapshot = value.get("resolved_contract")
         try:
             contract = ResolvedContract.from_controlled_snapshot(snapshot)
@@ -608,6 +751,8 @@ class ContractStore:
 
 _CALENDAR_FACTS = frozenset({"calendar_id", "calendar_revision"})
 _CANDIDATE_CONTAINER_KIND = "candidate-contract-container"
+_CONTRACT_INDEX_KIND = "contract-version-index-v2"
+_MODULE_SELECTION_NAMES = frozenset({"payoffer", "pricer", "backtester"})
 _CANDIDATE_RECORD_FIELDS = (
     "tenant_id", "task_id", "created_by", "catalog_version", "contract_fingerprint",
     "contract_ref", "resolved_contract", "product_version", "registry_snapshot_hash",
@@ -625,6 +770,115 @@ def _candidate_container(identity: SessionIdentity, task_id: str) -> dict[str, A
         "candidate_contract_variants": {},
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
+
+
+def _legacy_contract_history(record: Mapping[str, Any] | None) -> list[dict[str, Any]]:
+    if not isinstance(record, Mapping):
+        return []
+    raw = record.get("contract_history", [])
+    if not isinstance(raw, list) or not all(isinstance(item, Mapping) for item in raw):
+        raise ValidationError("当前任务的合同版本历史无效")
+    return [dict(item) for item in raw]
+
+
+def _module_selections(record: Mapping[str, Any] | None) -> dict[str, str]:
+    if not isinstance(record, Mapping):
+        return {}
+    raw = record.get("module_selections", {})
+    if not isinstance(raw, Mapping):
+        raise ValidationError("合同版本模块选择索引无效")
+    result: dict[str, str] = {}
+    for module, fingerprint in raw.items():
+        if module not in _MODULE_SELECTION_NAMES or not isinstance(fingerprint, str) or len(fingerprint) != 64:
+            raise ValidationError("合同版本模块选择索引无效")
+        result[str(module)] = fingerprint
+    return result
+
+
+def _version_from_legacy(record: Mapping[str, Any]) -> dict[str, Any] | None:
+    if not _is_active_contract(record):
+        return None
+    fingerprint = str(record["contract_fingerprint"])
+    return {
+        **{
+            key: value for key, value in record.items()
+            if key not in {
+                "contract_versions", "module_selections", "contract_history",
+                "candidate_contract_variants", "latest_contract_fingerprint",
+                "record_kind", "updated_at", "active_variant_id",
+            }
+        },
+        "scheme_id": str(record.get("scheme_id") or f"scheme-{fingerprint[:24]}"),
+        "version_id": str(record.get("version_id") or f"version-{fingerprint[:24]}"),
+        "parent_contract_fingerprint": record.get("parent_contract_fingerprint"),
+    }
+
+
+def _contract_versions(record: Mapping[str, Any] | None) -> dict[str, dict[str, Any]]:
+    """Read the v2 index and losslessly project legacy active/history records."""
+
+    if not isinstance(record, Mapping):
+        return {}
+    raw = record.get("contract_versions", {})
+    if not isinstance(raw, Mapping):
+        raise ValidationError("当前任务合同版本索引无效")
+    versions: dict[str, dict[str, Any]] = {}
+    for fingerprint, item in raw.items():
+        if not isinstance(fingerprint, str) or len(fingerprint) != 64 or not isinstance(item, Mapping):
+            raise ValidationError("当前任务合同版本索引无效")
+        if item.get("contract_fingerprint") != fingerprint:
+            raise ValidationError("合同版本索引与合同指纹不一致")
+        versions[fingerprint] = dict(item)
+    latest_by_product: dict[str, str] = {}
+    for fingerprint, item in sorted(
+        versions.items(), key=lambda pair: (str(pair[1].get("created_at", "")), pair[0]),
+    ):
+        product_id = _version_product_id(item)
+        if product_id:
+            latest_by_product[product_id] = fingerprint
+    legacy_records = [*_legacy_contract_history(record)]
+    if _is_active_contract(record):
+        # Keep the raw legacy shape here.  `_version_from_legacy` supplies a
+        # default scheme id, so appending an already projected current record
+        # would hide that it still needs to be linked after same-product
+        # history during migration.
+        legacy_records.append(dict(record))
+    for item in legacy_records:
+        projected = _version_from_legacy(item)
+        if projected is None:
+            continue
+        fingerprint = str(projected["contract_fingerprint"])
+        product_id = _version_product_id(projected)
+        if product_id and fingerprint not in versions and "scheme_id" not in item:
+            parent_fingerprint = latest_by_product.get(product_id)
+            parent = versions.get(parent_fingerprint) if parent_fingerprint else None
+            projected["scheme_id"] = (
+                str(parent.get("scheme_id"))
+                if isinstance(parent, Mapping)
+                else f"scheme-{fingerprint[:24]}"
+            )
+            projected["parent_contract_fingerprint"] = parent_fingerprint
+        versions.setdefault(fingerprint, projected)
+        if product_id:
+            latest_by_product[product_id] = fingerprint
+    return versions
+
+
+def _version_product_id(version: Mapping[str, Any]) -> str:
+    contract = version.get("resolved_contract")
+    identity = contract.get("identity") if isinstance(contract, Mapping) else None
+    product_id = identity.get("product_id") if isinstance(identity, Mapping) else None
+    return str(product_id) if isinstance(product_id, str) else ""
+
+
+def _require_same_contract_version(existing: Mapping[str, Any], incoming: Mapping[str, Any]) -> None:
+    immutable = (
+        "tenant_id", "task_id", "created_by", "catalog_version", "contract_fingerprint",
+        "contract_ref", "resolved_contract", "product_version", "registry_snapshot_hash",
+        "product_snapshot_hash", "product_paths_hash",
+    )
+    if any(existing.get(field) != incoming.get(field) for field in immutable):
+        raise ValidationError("相同合同指纹对应的合同版本内容不一致")
 
 
 def _is_candidate_container(record: object) -> bool:
@@ -722,7 +976,7 @@ def _require_calendar_evidence_only_change(existing: Mapping[str, Any], replacem
         "registry_snapshot_hash", "product_snapshot_hash", "product_paths_hash",
     )
     if any(existing.get(field) != replacement.get(field) for field in shared_fields):
-        raise ValidationError("旧ResolvedContract与新目录快照不一致；请新建研究任务")
+        raise ValidationError("基础合同版本与当前目录快照不一致；请按当前目录重新编译合同版本")
     source = existing.get("resolved_contract")
     target = replacement.get("resolved_contract")
     if not isinstance(source, Mapping) or not isinstance(target, Mapping):
