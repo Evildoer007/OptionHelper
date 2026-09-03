@@ -235,7 +235,7 @@ class ConversationService:
 
 def _cancelled_response() -> dict[str, Any]:
     return {
-        "status": "cancelled", "text": "本次任务已取消；请新建任务后继续。", "observations": [], "rounds": 0,
+        "status": "cancelled", "text": "本次运行已取消；可在当前任务中调整后重新运行。", "observations": [], "rounds": 0,
         "state": {"code": "cancelled", "terminal": True, "retryable": False},
     }
 
