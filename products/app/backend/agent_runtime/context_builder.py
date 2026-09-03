@@ -86,12 +86,15 @@ class ContextBuilder:
 
     def build(self, identity: SessionIdentity, task_id: str, latest_message: str) -> dict[str, Any]:
         task = self._tasks.get(identity, task_id)
-        contract = self._contracts.get(identity, task_id)
         recommendation = self._tasks.pending_recommendation(identity, task_id)
         facts = {
-            "resolved_contract": _contract_fact(contract),
+            "contract_versions": [
+                _contract_fact(item)
+                for item in self._contracts.list_versions(
+                    identity, task_id, catalog_version=self._catalog_version,
+                )[-12:]
+            ],
             "recommendation_candidate": _recommendation_candidate_fact(recommendation),
-            "data_asset_refs": _refs(task.get("data_asset_refs")),
             "module_run_refs": _refs(task.get("run_refs")),
             "module_run_facts": self._module_run_facts(identity, task.get("run_refs")),
         }
