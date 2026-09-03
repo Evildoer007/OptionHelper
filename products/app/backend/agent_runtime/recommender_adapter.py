@@ -1541,7 +1541,9 @@ class AppConversationToolExecutor:
                 identity,
                 task_id,
                 arguments,
-                expected_binding=self._report_binding(identity, task_id),
+                # Reporter chooses from immutable ModuleRun evidence.  A task
+                # has no current contract that may override the selected run.
+                expected_binding=None,
             )
             if prepared.get("status") == "needs_input":
                 return prepared
@@ -2078,25 +2080,6 @@ class AppConversationToolExecutor:
         if result.get("status") == "completed":
             self._tasks.complete_pending_recommendation(identity, task_id)
         return result
-
-    def _report_binding(self, identity: SessionIdentity, task_id: str) -> dict[str, str] | None:
-        """Derive Reporter matching fields from the task's immutable contract binding."""
-
-        if self._contracts is None:
-            return None
-        binding = self._contracts.get(identity, task_id)
-        if not isinstance(binding, Mapping):
-            return None
-        fingerprint = binding.get("contract_fingerprint")
-        catalog_version = binding.get("catalog_version")
-        if not isinstance(fingerprint, str) or len(fingerprint) != 64 or not isinstance(catalog_version, str) or not catalog_version:
-            return None
-        return {
-            "analysis_case_id": f"case-{fingerprint[:24]}",
-            "candidate_id": f"candidate-{fingerprint[:24]}",
-            "catalog_version": catalog_version,
-            "contract_fingerprint": fingerprint,
-        }
 
     def run_recommendation_delivery(
         self,
@@ -3791,7 +3774,7 @@ def _display_terms(
         "O_KO": "敲出观察日程",
         "O_KI": "敲入观察日程",
         "Oc": "票息观察日程",
-        "exercise_style": "行权方式",
+        "exercise_style": "到期行权方式",
         "settlement": "结算方式",
     }
     preferred = (
