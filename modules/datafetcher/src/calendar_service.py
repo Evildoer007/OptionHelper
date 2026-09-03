@@ -30,6 +30,7 @@ from .providers.base import (
     ProviderUnauthorized,
     ProviderUnavailable,
 )
+from .volatile_store import read_volatile_asset, store_volatile_asset
 
 
 CALENDAR_SCHEMA = "trading-calendar"
@@ -93,6 +94,8 @@ def validate_calendar_request(value: CalendarRequest | Mapping[str, Any], config
         raise CalendarValidationError("交易日历请求区间超过Host允许上限")
     if request.quota_limit is not None and request.quota_limit < 0:
         raise CalendarValidationError("交易日历quota_limit不能为负数")
+    if request.persistence_mode not in {"volatile", "library"}:
+        raise CalendarValidationError("交易日历persistence_mode必须为volatile或library")
     try:
         for asset_id in request.asset_ids:
             china_market_convention(asset_id)
@@ -168,8 +171,9 @@ def calendar_evidence_for_history(
         raise CalendarValidationError("trading_calendar_ref缺少已验证中国交易所日历身份")
     if dict(ref.price_convention).get("contains_market_prices") is not False:
         raise CalendarValidationError("trading_calendar_ref不得包含市场价格")
+    volatile = read_volatile_asset(ref.data_asset_id, caller)
     try:
-        encoded = LocalDataStore(Path(config.data_root)).read_bytes(ref, tenant_id=caller.tenant_id)
+        encoded = volatile[1] if volatile is not None else LocalDataStore(Path(config.data_root)).read_bytes(ref, tenant_id=caller.tenant_id)
     except (FileNotFoundError, PermissionError, StoreError) as error:
         raise CalendarValidationError("trading_calendar_ref无法通过DataStore完整性校验") from error
     if hashlib.sha256(encoded).hexdigest() != ref.content_hash:
@@ -455,6 +459,34 @@ def _store_reference(
     store = LocalDataStore(Path(config.data_root))
     owner = hashlib.sha256(caller.principal_id.encode("utf-8")).hexdigest()[:12]
     data_asset_id = f"calendar-{content_hash}-ifind-o-{owner}"
+    lineage = {
+        "provider": "ifind_http",
+        "endpoint": "get_trade_dates",
+        "request_hash": hashlib.sha256(json.dumps(request.public_dict(), sort_keys=True).encode("utf-8")).hexdigest(),
+        "fetched_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+        "persistence_mode": request.persistence_mode,
+    }
+    if request.persistence_mode == "volatile":
+        return store_volatile_asset(
+            caller=caller,
+            data_asset_id=data_asset_id,
+            payload=encoded,
+            media_type="application/json",
+            schema_id=CALENDAR_SCHEMA,
+            asset_ids=request.asset_ids,
+            normalized_fields=("session",),
+            coverage=coverage,
+            row_count=len(sessions),
+            partition_spec={"date_field": "session", "frequency": "1d", "exchange_intersection": True},
+            price_convention={
+                "timezone": "Asia/Shanghai",
+                "date_type": "trade",
+                "period": "D",
+                "exchanges": list(payload["exchanges"]),
+                "contains_market_prices": False,
+            },
+            lineage=lineage,
+        )
     try:
         return store.put_bytes(
             tenant_id=caller.tenant_id,
@@ -474,12 +506,7 @@ def _store_reference(
                 "exchanges": list(payload["exchanges"]),
                 "contains_market_prices": False,
             },
-            lineage={
-                "provider": "ifind_http",
-                "endpoint": "get_trade_dates",
-                "request_hash": hashlib.sha256(json.dumps(request.public_dict(), sort_keys=True).encode("utf-8")).hexdigest(),
-                "fetched_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
-            },
+            lineage=lineage,
             created_by=caller.principal_id,
             access_scope=("read",),
         )
@@ -556,7 +583,8 @@ def fetch_calendar_asset(
                     raise CalendarValidationError("iFind交易日历未覆盖请求的全部交易所")
                 payload, encoded, content_hash = _canonical_payload(request, validated)
                 ref = _store_reference(request, caller, config, payload, encoded, content_hash)
-                cache.save(request, caller, encoded, ref)
+                if request.persistence_mode == "library":
+                    cache.save(request, caller, encoded, ref)
                 calls.append({"provider": "ifind_http", "endpoint": "get_trade_dates", "outcome": "succeeded", "quota_units": estimated_units})
                 decision = "provider_fetched"
             except (ProviderError, CalendarValidationError) as error:
