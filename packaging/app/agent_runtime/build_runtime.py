@@ -3,8 +3,9 @@
 The runtime source is JavaScript, but the App must ship a native executable
 per target platform. This module builds a Node Single Executable Application
 candidate only when the host, local tools, and source closure are all present.
-It never downloads dependencies, overwrites an existing artifact, or marks a
-platform as supported.
+Locked npm dependencies are restored into the disposable build directory after
+source freezing; the repository source tree is never used as a dependency
+cache. The module never overwrites an artifact or marks a platform as supported.
 """
 
 from __future__ import annotations
@@ -695,22 +696,15 @@ def _resolve_tool(explicit: Path | None, name: str) -> Path:
     return path.resolve()
 
 
-def _local_postject() -> Path | None:
-    executable = "postject.cmd" if os.name == "nt" else "postject"
-    candidate = BUILD_TOOLS_ROOT / "node_modules" / ".bin" / executable
-    return candidate if candidate.is_file() else None
-
-
 def _validate_source(source: Path) -> None:
     required = (
         source / "package.json",
         source / "package-lock.json",
         source / "tsconfig.json",
         source / "src" / "entrypoint" / "runtime.ts",
-        source / "node_modules" / "esbuild" / "bin" / "esbuild",
     )
     if not source.is_dir() or any(not path.is_file() for path in required):
-        raise RuntimeBuildError("Agent运行时缺少锁定源码或本机构建依赖；请先在Runtime目录执行npm ci")
+        raise RuntimeBuildError("Agent运行时缺少锁定源码、配置或package-lock.json")
     package_file = source / "package.json"
     try:
         package = json.loads(package_file.read_text(encoding="utf-8"))
@@ -728,6 +722,7 @@ def _validate_source(source: Path) -> None:
             raise RuntimeBuildError("Agent运行时构建依赖必须使用精确锁定版本")
     if package.get("dependencies") or package.get("optionalDependencies") or package.get("peerDependencies"):
         raise RuntimeBuildError("Agent运行时成品闭包不得包含外部运行依赖")
+    _source_content_hashes(source)
     for path in (source / "src").rglob("*"):
         if path.is_file() and path.suffix in {".js", ".cjs", ".mjs", ".ts"}:
             content = path.read_text(encoding="utf-8")
@@ -741,6 +736,96 @@ def _validate_source(source: Path) -> None:
                     or specifier.startswith("../")
                 ):
                     raise RuntimeBuildError(f"Agent运行时依赖外部Node模块：{specifier}")
+
+
+def _validate_build_tools(source: Path) -> None:
+    package_file = source / "package.json"
+    lock_file = source / "package-lock.json"
+    if any(not path.is_file() or path.is_symlink() for path in (package_file, lock_file)):
+        raise RuntimeBuildError("Agent Runtime打包工具缺少package.json或package-lock.json")
+    try:
+        package = json.loads(package_file.read_text(encoding="utf-8"))
+        lock = json.loads(lock_file.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise RuntimeBuildError("Agent Runtime打包工具锁文件不可解析") from error
+    declared = package.get("dependencies")
+    locked = (
+        lock.get("packages", {}).get("", {}).get("dependencies")
+        if isinstance(lock.get("packages"), dict)
+        else None
+    )
+    if (
+        package.get("name") != "optionhelper-agent-runtime-build-tools"
+        or lock.get("lockfileVersion") != 3
+        or not isinstance(declared, dict)
+        or declared != locked
+        or "postject" not in declared
+    ):
+        raise RuntimeBuildError("Agent Runtime打包工具package.json与package-lock.json不一致")
+    if any(
+        not isinstance(version, str) or re.search(r"[~^*><=| ]", version)
+        for version in declared.values()
+    ):
+        raise RuntimeBuildError("Agent Runtime打包工具依赖必须使用精确锁定版本")
+
+
+def _copy_locked_runtime_source(source: Path, destination: Path) -> None:
+    """Copy only provenance-bound runtime inputs, never local dependencies."""
+
+    hashes = _source_content_hashes(source)
+    destination.mkdir(parents=True, exist_ok=False)
+    for relative in hashes:
+        origin = source / relative
+        target = destination / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(origin, target)
+
+
+def _copy_locked_build_tools(source: Path, destination: Path) -> None:
+    _validate_build_tools(source)
+    destination.mkdir(parents=True, exist_ok=False)
+    for name in ("package.json", "package-lock.json"):
+        shutil.copy2(source / name, destination / name)
+
+
+def _npm_ci_command(npm: Path, root: Path) -> list[str]:
+    command = [str(npm), "ci", "--prefix", str(root), "--ignore-scripts"]
+    if os.name == "nt" and npm.suffix.casefold() in {".cmd", ".bat"}:
+        return [os.environ.get("COMSPEC", "cmd.exe"), "/d", "/s", "/c", *command]
+    return command
+
+
+def _restore_locked_project(npm: Path, root: Path, *, label: str) -> None:
+    try:
+        _run(_npm_ci_command(npm, root), cwd=root)
+    except RuntimeBuildError as error:
+        raise RuntimeBuildError(f"{label}在冻结临时目录执行npm ci失败：{error}") from error
+
+
+def _prepare_locked_build_workspace(
+    source: Path,
+    destination: Path,
+    *,
+    npm: Path,
+    build_tools_source: Path = BUILD_TOOLS_ROOT,
+) -> tuple[Path, Path]:
+    """Restore both lockfiles inside one disposable, writable build tree."""
+
+    runtime_source = destination / "runtime-source"
+    build_tools = destination / "build-tools"
+    _copy_locked_runtime_source(source, runtime_source)
+    _copy_locked_build_tools(build_tools_source, build_tools)
+    _restore_locked_project(npm, runtime_source, label="Agent Runtime源码依赖")
+    _restore_locked_project(npm, build_tools, label="Agent Runtime打包工具依赖")
+
+    esbuild = runtime_source / "node_modules" / "esbuild" / "bin" / "esbuild"
+    postject_name = "postject.cmd" if os.name == "nt" else "postject"
+    postject = build_tools / "node_modules" / ".bin" / postject_name
+    if not esbuild.is_file():
+        raise RuntimeBuildError("Agent Runtime临时构建目录npm ci后仍缺少锁定esbuild")
+    if not postject.is_file():
+        raise RuntimeBuildError("Agent Runtime临时构建目录npm ci后仍缺少锁定postject")
+    return runtime_source, postject
 
 
 def _sha256(path: Path) -> str:
@@ -782,6 +867,8 @@ def _create_sea_entry(source: Path, destination: Path, *, node: Path | None = No
 
     node_path = node or _resolve_tool(None, "node")
     esbuild = source / "node_modules" / "esbuild" / "bin" / "esbuild"
+    if not esbuild.is_file():
+        raise RuntimeBuildError("Agent Runtime临时构建目录缺少锁定esbuild")
     _run([
         str(node_path), str(esbuild), str(source / "src" / "entrypoint" / "runtime.ts"),
         "--bundle", "--platform=node", "--target=node22.19", "--format=cjs",
@@ -794,7 +881,7 @@ def _create_sea_entry(source: Path, destination: Path, *, node: Path | None = No
 
 def _run(command: list[str], *, cwd: Path | None = None) -> None:
     try:
-        completed = subprocess.run(
+        subprocess.run(
             command,
             cwd=cwd,
             check=True,
@@ -820,7 +907,7 @@ def preflight_runtime(
     host_system: str | None = None,
     host_machine: str | None = None,
     node_path: Path | None = None,
-    postject_path: Path | None = None,
+    npm_path: Path | None = None,
     codesign_path: Path | None = None,
 ) -> tuple[RuntimeBuildPlan, Path, Path, Path | None]:
     plan = make_build_plan(value, source_root=source_root, output_root=output_root)
@@ -834,13 +921,14 @@ def preflight_runtime(
     node = _resolve_tool(node_path, "node")
     if _node_version(node) < MIN_NODE_VERSION:
         raise RuntimeBuildError(f"Node版本低于{MIN_NODE_VERSION}，已停止打包")
-    postject = _resolve_tool(postject_path or _local_postject(), "postject")
+    npm = _resolve_tool(npm_path, "npm")
+    _validate_build_tools(BUILD_TOOLS_ROOT)
     codesign = None
     if plan.target.system == "darwin":
         codesign = _resolve_tool(codesign_path, "codesign")
     if plan.artifact.exists():
         raise RuntimeBuildError(f"目标产物已存在，不覆盖：{plan.artifact}")
-    return plan, node, postject, codesign
+    return plan, node, npm, codesign
 
 
 def build_runtime(
@@ -851,23 +939,33 @@ def build_runtime(
     host_system: str | None = None,
     host_machine: str | None = None,
     node_path: Path | None = None,
+    npm_path: Path | None = None,
     postject_path: Path | None = None,
     codesign_path: Path | None = None,
 ) -> RuntimeBuildResult:
-    plan, node, postject, codesign = preflight_runtime(
+    plan, node, npm, codesign = preflight_runtime(
         value,
         source_root=source_root,
         output_root=output_root,
         host_system=host_system,
         host_machine=host_machine,
         node_path=node_path,
-        postject_path=postject_path,
+        npm_path=npm_path,
         codesign_path=codesign_path,
     )
     plan.output_root.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="optionhelper-agent-runtime-", dir=plan.output_root) as staging_name:
         staging = Path(staging_name)
-        entry = _create_sea_entry(plan.source_root, staging / "entry.cjs", node=node)
+        runtime_source, locked_postject = _prepare_locked_build_workspace(
+            plan.source_root,
+            staging / "locked-build",
+            npm=npm,
+        )
+        # Kept only for compatibility with callers that still pass the former
+        # source-tree path. Native injection always uses the disposable copy.
+        del postject_path
+        postject = _resolve_tool(locked_postject, "postject")
+        entry = _create_sea_entry(runtime_source, staging / "entry.cjs", node=node)
         blob = staging / "sea-prep.blob"
         config = staging / "sea-config.json"
         config.write_text(
