@@ -58,7 +58,6 @@ def _snapshot_build_logic(snapshot_root: Path) -> Iterator[SimpleNamespace]:
         from verify_skill import verify_zip as frozen_verify_zip
         from build_runtime import build_runtime as frozen_build_runtime
         from release_contract import require_release_version as frozen_require_release_version
-        from pricer_evidence import validate_pricer_evidence_manifest as frozen_validate_pricer_evidence_manifest
 
         yield SimpleNamespace(
             build_skill=frozen_build_skill,
@@ -73,7 +72,6 @@ def _snapshot_build_logic(snapshot_root: Path) -> Iterator[SimpleNamespace]:
             verify_zip=frozen_verify_zip,
             build_runtime=frozen_build_runtime,
             require_release_version=frozen_require_release_version,
-            validate_pricer_evidence_manifest=frozen_validate_pricer_evidence_manifest,
         )
 
 
@@ -192,17 +190,6 @@ def build_current(version: str, platform: str) -> dict[str, Path]:
             logic.require_release_version(version)
         except ValueError as error:
             raise CurrentBuildError(str(error)) from error
-        validate_evidence = getattr(logic, "validate_pricer_evidence_manifest", None)
-        evidence_manifest = snapshot.root / "modules" / "pricer" / "src" / "fair_parameter_evidence_manifest.json"
-        evidence_implementation = snapshot.root / "modules" / "pricer" / "src" / "fair_parameter.py"
-        if callable(validate_evidence) and (evidence_manifest.exists() or evidence_implementation.exists()):
-            try:
-                # Read the manifest from the immutable snapshot before any
-                # build output is staged.  build_skill repeats this gate after
-                # copying so release bytes are checked as well.
-                validate_evidence(snapshot.root, development_root=snapshot.root)
-            except ValueError as error:
-                raise CurrentBuildError(f"Pricer公平参数证据manifest校验失败：{error}") from error
         temporary = Path(temporary_name)
         stage = temporary / "dist"
         stage.mkdir()
