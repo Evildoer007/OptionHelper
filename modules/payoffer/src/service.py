@@ -34,6 +34,7 @@ from .impl.engine import (
     PayoffEngineError,
     load_registry,
     payoff_term_fields,
+    payoff_fixed_term_fields,
     preview_result,
     render_payoff as render_payoff,
     run_payoff,
@@ -72,7 +73,7 @@ _HOSTED_EDIT_REQUEST_FIELDS = (
     "product_id",
     "underlyings",
     "term_overrides",
-    "new_contract_variant",
+    "base_contract_ref",
 )
 
 
@@ -260,7 +261,7 @@ def catalog_payload() -> dict[str, object]:
                 raise PayoffEngineError(
                     f"{product_id}的观察价为未支持值{product['terms']['observation_price']}；当前Payoffer仅支持close"
                 )
-            observation_price_options.append({"value": "close", "label": "close"})
+            observation_price_options.append({"value": "close", "label": "收盘价"})
         development_identity = _development_preview_identity(product)
         products.append(
             {
@@ -274,6 +275,7 @@ def catalog_payload() -> dict[str, object]:
                 "path_count": len(product["paths"]),
                 "path_summaries": _path_summaries(product),
                 "payoff_fields": fields,
+                "fixed_fields": payoff_fixed_term_fields(product, registry),
                 # Empty Desk tasks do not yet have a Host task_contract from
                 # which the page can obtain its edit schema.  Publish the
                 # same Core-derived payoff fields with the only formal
@@ -322,7 +324,7 @@ def _preview_request(
     """开发预览只接受当前页面的product_id、term_overrides与identity输入。"""
     allowed = {
         "product_id", "term_overrides", "identity", "task_id", "run_id",
-        "new_contract_variant", "development_preview", "render_options",
+        "base_contract_ref", "development_preview", "render_options",
     }
     unknown = set(body) - allowed
     if unknown:
