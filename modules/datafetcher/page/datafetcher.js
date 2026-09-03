@@ -111,13 +111,10 @@ function buildFetchRequest(values) {
   const fields = [...new Set(['close', 'adj_close', ...requestedFields.flatMap(field => (
     ['open', 'high', 'low', 'close'].includes(field) ? [field, `adj_${field}`] : [field]
   ))])];
-  const sourceMode = String(values.sourceMode || values.providerPriority || 'ifind_http').trim().toLowerCase();
   if (!assetIds.length) throw new Error('请至少填写一个资产标识。');
   const invalidAsset = assetIds.find(item => !/^\d{6}\.(?:SH|SZ)$/.test(item));
   if (invalidAsset) throw new Error(`资产标识“${invalidAsset}”格式不正确，请使用000300.SH或399001.SZ。`);
-  if (!['ifind_http', 'local'].includes(sourceMode)) throw new Error('请选择实时数据或本地数据。');
-  const cachePolicy = sourceMode === 'local' ? 'force_refresh' : values.cachePolicy;
-  const request = {asset_ids: assetIds, start_date: start.iso, end_date: end.iso, fields, provider: sourceMode, frequency: values.frequency || '1d', adjustment: values.adjustment, cache_policy: cachePolicy, offline: sourceMode === 'local' || cachePolicy === 'reuse'};
+  const request = {asset_ids: assetIds, start_date: start.iso, end_date: end.iso, fields, provider: 'ifind_http', source_priority: ['ifind_http'], frequency: values.frequency || '1d', adjustment: values.adjustment, cache_policy: 'extend_only', offline: false, persistence_mode: values.saveDownloadedData ? 'library' : 'volatile'};
   return request;
 }
 
@@ -142,7 +139,7 @@ function resultViewModel(data) {
       ['覆盖区间', [coverage.start_date, coverage.end_date].filter(Boolean).join('至') || '未提供'],
       ['记录数', ref.row_count ?? '未提供'],
       ['行情字段', Array.isArray(ref.normalized_fields) && ref.normalized_fields.length ? ref.normalized_fields.join('、') : '未提供'],
-      ['保存状态', ref.data_asset_id || ref.content_hash ? '已保存到当前任务' : '待保存'],
+      ['保存状态', ref.lineage?.persistence_mode === 'volatile' ? '本次使用，未保存' : '已保存到数据资产'],
     ],
     coverage: [
       ['标的', (ref.asset_ids || []).join('、') || '未提供'],
@@ -210,7 +207,7 @@ function resultSummary(data) {
     {label: '保存状态', value: '未保存'},
   ];
   const ref = data.data_asset_ref || {};
-  return [{label: '获取方式', value: cacheDecisionLabel(data.cache_decision, ref.coverage?.end_date)}, {label: '记录数', value: ref.row_count ?? '暂无'}, {label: '保存状态', value: ref.data_asset_id || ref.content_hash ? '已保存到当前任务' : '待保存'}];
+  return [{label: '获取方式', value: cacheDecisionLabel(data.cache_decision, ref.coverage?.end_date)}, {label: '记录数', value: ref.row_count ?? '暂无'}, {label: '保存状态', value: ref.lineage?.persistence_mode === 'volatile' ? '本次使用，未保存' : '已保存到数据资产'}];
 }
 
 function credentialStatusText(data) {
@@ -292,7 +289,7 @@ function initializePage() {
       entry.append(select, download); list.append(entry);
     });
   }
-  function addAsset(item) { const ref = item?.data_asset_ref || item; const key = ref?.data_asset_id || ref?.content_hash; if (key) assetStore.set(key, item); renderAssets(); }
+  function addAsset(item) { const ref = item?.data_asset_ref || item; if (ref?.lineage?.persistence_mode === 'volatile') return; const key = ref?.data_asset_id || ref?.content_hash; if (key) assetStore.set(key, item); renderAssets(); }
   function appendSummarySection(parent, title, rows, description = '') { const section = document.createElement('section'); section.className = 'result-section'; section.innerHTML = '<h3></h3><p hidden></p><div class="summary-list"></div>'; section.querySelector('h3').textContent = title; if (description) { const copy = section.querySelector('p'); copy.textContent = description; copy.hidden = false; } rows.forEach(([label, value]) => { const item = document.createElement('div'); item.className = 'summary-item'; item.innerHTML = '<span></span><strong></strong>'; item.querySelector('span').textContent = label; item.querySelector('strong').textContent = String(value); section.querySelector('.summary-list').append(item); }); parent.append(section); }
   function appendAuditDetails(parent, value) { const details = document.createElement('details'); details.className = 'audit-details'; details.innerHTML = '<summary>技术详情</summary><pre class="json-block"></pre>'; details.querySelector('pre').textContent = JSON.stringify(value ?? null, null, 2); parent.append(details); }
   function appendMarketChart(parent, rawSeries) {
@@ -399,10 +396,9 @@ function initializePage() {
     const input = $(id);
     OptionHelperDateInput.bind(input, id === 'start-date' ? '开始日期' : '结束日期');
   }
-  const selected = name => document.querySelector(`input[name="${name}"]:checked`)?.value;
   const fieldControls = [...document.querySelectorAll('.extra-field')];
-  const formValues = () => ({assetIds: $('asset-ids').value, startDate: $('start-date').value, endDate: $('end-date').value, fields: fieldControls.filter(node => node.checked).map(node => node.value).join(','), frequency: $('frequency').value, adjustment: $('adjustment').value, sourceMode: selected('source-mode'), cachePolicy: selected('cache-policy')});
-  function syncSourceVisibility() { const values = formValues(); const local = values.sourceMode === 'local'; $('local-source-note').hidden = !local; $('ifind-status-card').hidden = local; const cacheControls = [...document.querySelectorAll('input[name="cache-policy"]')]; if (local) cacheControls.find(node => node.value === 'force_refresh').checked = true; cacheControls.forEach(node => { node.disabled = local && node.value !== 'force_refresh'; }); const selectedFields = fieldControls.filter(node => node.checked).length; $('field-summary').textContent = selectedFields === fieldControls.length ? '全部字段' : `${selectedFields}项字段`; }
+  const formValues = () => ({assetIds: $('asset-ids').value, startDate: $('start-date').value, endDate: $('end-date').value, fields: fieldControls.filter(node => node.checked).map(node => node.value).join(','), frequency: $('frequency').value, adjustment: $('adjustment').value, saveDownloadedData: $('save-downloaded-data').checked});
+  function syncSourceVisibility() { const selectedFields = fieldControls.filter(node => node.checked).length; $('field-summary').textContent = selectedFields === fieldControls.length ? '全部字段' : `${selectedFields}项字段`; }
   $('request-form').addEventListener('input', syncSourceVisibility);
   $('request-form').addEventListener('change', syncSourceVisibility);
   syncSourceVisibility();
