@@ -771,7 +771,7 @@ class RecommenderService:
             "confirmed_constraints": dict(case.confirmed_constraints),
             "allowed_metrics": [
                 "premium", "pv_percent", "delta", "gamma", "vega", "theta", "rho",
-                "win_rate", "average_gross_return", "max_loss_gross_return",
+                "positive_return_rate", "average_contract_settlement_return", "max_loss_contract_settlement_return",
             ],
             "rule": "只转换用户明确表达的硬约束和排序顺序，不得补写阈值。",
         })
