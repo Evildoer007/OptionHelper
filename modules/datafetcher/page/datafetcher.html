@@ -63,20 +63,12 @@
           </section>
           <section class="inspector-group">
             <h3>数据来源</h3>
-            <div class="source-options" role="radiogroup" aria-label="选择数据来源">
-              <label class="source-option"><input name="source-mode" type="radio" value="ifind_http" checked><span><strong>iFind远程行情</strong><small>远程获取并留存任务数据资产</small></span></label>
-              <label class="source-option"><input name="source-mode" type="radio" value="local"><span><strong>本地CSV</strong><small>读取已导入的数据文件</small></span></label>
-            </div>
+            <p class="retention-note">系统先查找满足标的、字段、日期和交易日历要求的本地数据；覆盖不足时自动通过iFind补齐。</p>
             <section class="secret-card" id="ifind-status-card"><strong>连接状态</strong><span id="secret-status">正在检查连接配置。</span></section>
-            <p class="retention-note" id="local-source-note" hidden>读取已导入并受控保存的CSV；页面不接收文件路径，也不会调用远程数据服务。</p>
           </section>
           <section class="inspector-group">
-            <h3>获取策略</h3>
-            <div class="strategy-options" role="radiogroup" aria-label="选择获取策略">
-              <label class="strategy-option"><input name="cache-policy" type="radio" value="force_refresh" checked><span><strong>重新读取来源</strong><small>跳过缓存，读取所选数据来源</small></span></label>
-              <label class="strategy-option"><input name="cache-policy" type="radio" value="extend_only"><span><strong>复用并补齐</strong><small>复用远程缓存并补拉缺失区间</small></span></label>
-              <label class="strategy-option"><input name="cache-policy" type="radio" value="reuse"><span><strong>仅复用远程缓存</strong><small>保持iFind来源，不发起远程请求</small></span></label>
-            </div>
+            <h3>数据保存</h3>
+            <label class="strategy-option"><input id="save-downloaded-data" type="checkbox"><span><strong>保存下载数据</strong><small>默认关闭。关闭时数据仅用于当前进程，不写入CSV、缓存、清单或数据资产列表；应用重启后需重新获取。</small></span></label>
           </section>
         </form>
       </aside>
