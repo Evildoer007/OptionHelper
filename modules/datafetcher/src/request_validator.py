@@ -22,6 +22,7 @@ _FIELD_ALIASES = {"adjusted_close": "adj_close", "adjusted_open": "adj_open", "a
 _VALID_FREQUENCIES = {"1d", "daily", "d"}
 _VALID_ADJUSTMENTS = {"auto", "none", "forward"}
 _VALID_CACHE_POLICIES = {"reuse", "extend_only", "force_refresh"}
+_VALID_PERSISTENCE_MODES = {"volatile", "library"}
 
 
 def _parse_date(value: str, name: str) -> str:
@@ -187,6 +188,9 @@ def validate_request(value: DataRequest, config: DataFetcherConfig, caller: Call
         raise RequestValidationError("cache_policy必须为reuse、extend_only或force_refresh")
     if cache_policy == "force_refresh" and "data:force_refresh" not in caller.capabilities:
         raise RequestValidationError("当前CallerContext无force_refresh权限")
+    persistence_mode = value.persistence_mode.strip().lower()
+    if persistence_mode not in _VALID_PERSISTENCE_MODES:
+        raise RequestValidationError("persistence_mode必须为volatile或library")
 
     priority = tuple(dict.fromkeys(item.strip().lower() for item in value.source_priority if item and item.strip()))
     if not priority:
@@ -218,6 +222,7 @@ def validate_request(value: DataRequest, config: DataFetcherConfig, caller: Call
         adjustment=adjustment,
         source_priority=priority,
         cache_policy=cache_policy,
+        persistence_mode=persistence_mode,
         offline=value.offline,
         local_csv=value.local_csv,
         local_source_fingerprint=local_source_fingerprint,
@@ -239,6 +244,7 @@ def canonical_request_payload(value: DataRequest) -> dict[str, Any]:
         "adjustment": value.adjustment,
         "source_priority": list(value.source_priority),
         "cache_policy": value.cache_policy,
+        "persistence_mode": value.persistence_mode,
         "offline": value.offline,
         "local_source_fingerprint": _request_local_source_fingerprint(value),
         "calendar_evidence_identity": value.calendar_evidence_identity,
