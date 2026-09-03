@@ -41,15 +41,6 @@ _ALLOWED_IDENTITY_KEYS = frozenset({"product_id", "name_zh", "entry_status"})
 _ALLOWED_PATH_KEYS = frozenset({"condition", "cases"})
 _ALLOWED_CASE_KEYS = frozenset({"domain", "pnl"})
 _OBSERVATION_TERM_KEYS = frozenset({"O_KO", "O_KI", "Oc", "Otouch", "Orange", "Ovar", "Ohedge", "Oreset"})
-_DEFAULT_STRIKE_NORMALIZATION_KEYS = {
-    "2.1": frozenset({"K1", "K2"}),
-    "2.2": frozenset({"K1", "K2"}),
-    "2.3": frozenset({"K1", "K2"}),
-    "2.4": frozenset({"K1", "K2"}),
-    "3.2": frozenset({"Kp", "Kc"}),
-    "3.3": frozenset({"K1", "K2", "K3"}),
-    "3.4": frozenset({"K1", "K2", "K3", "K4"}),
-}
 _FORMULA_FUNCTIONS = frozenset({
     "min", "max", "first_time", "first_time_after", "first_time_before", "first_time_levels", "first_time_below_levels", "schedule_levels", "step_levels",
     "first_time_below_schedule", "first_observation_on_or_after", "terminal_event_time", "reset_knockout_time", "effective_hedge_time",
@@ -81,55 +72,6 @@ _MAX_ABS_FORMULA_VALUE = 1e100
 def _shared_term_catalog() -> Mapping[str, Any]:
     """复用Loader已验证的只读目录，避免每个绘图采样点复制完整Registry。"""
     return _load_term_catalog(DEFAULT_REGISTRY_PATH)
-
-
-def _quoteable_price_term_keys(terms: Mapping[str, Any], catalog: Mapping[str, Any]) -> frozenset[str]:
-    """TermCatalog的price类别是唯一可归一化或判定覆盖的依据。"""
-    return frozenset(
-        key
-        for key, value in terms.items()
-        if catalog.get(key, {}).get("unit") == "price"
-        and catalog.get(key, {}).get("value_type") in {"number", "number_list"}
-        and isinstance(value, (int, float, np.number, Sequence))
-        and not isinstance(value, (str, bytes, bool))
-    )
-
-
-def _default_strike_normalization(
-    product_id: str,
-    terms: Mapping[str, Any],
-    overrides: Mapping[str, Any],
-    catalog: Mapping[str, Any],
-) -> tuple[dict[str, Any], bool]:
-    """将线性多执行价产品的默认price坐标按比例归一化。
-
-    最低执行价定义为S_raw=100%。因此所有TermCatalog声明为price的
-    数值必须共同乘以100/min_strike，才能保持同一真实raw路径上的
-    相对价格、分段边界与价差经济语义。
-    """
-    strike_keys = _DEFAULT_STRIKE_NORMALIZATION_KEYS.get(product_id)
-    if strike_keys is None:
-        return dict(terms), False
-    if not strike_keys.issubset(terms):
-        raise ContractResolutionError(f"{product_id}多执行价归一化缺少已登记执行价条款")
-    price_keys = _quoteable_price_term_keys(terms, catalog)
-    if set(overrides) & price_keys:
-        return dict(terms), False
-    strikes = [terms[key] for key in strike_keys]
-    if any(isinstance(value, bool) or not isinstance(value, (int, float, np.number)) or not np.isfinite(float(value)) or float(value) <= 0 for value in strikes):
-        raise ContractResolutionError(f"{product_id}多执行价归一化要求执行价为正有限数值")
-    normalization_factor = _NORMALIZED_PRICE_BASE / min(float(value) for value in strikes)
-    normalized: dict[str, Any] = {}
-    for key, value in terms.items():
-        if key not in price_keys:
-            normalized[key] = value
-        elif isinstance(value, (int, float, np.number)) and not isinstance(value, bool):
-            normalized[key] = float(value) * normalization_factor
-        elif isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
-            normalized[key] = [float(item) * normalization_factor for item in value]
-        else:
-            raise ContractResolutionError(f"{product_id}可报价price条款{key}无法按同一比例归一化")
-    return normalized, True
 
 
 def _schedule_snapshot(
@@ -1331,6 +1273,66 @@ def _verify_snapshot_hashes(
     return contract
 
 
+def _apply_constraint_bound_terms(
+    terms: dict[str, Any],
+    constraints: Any,
+    catalog: Mapping[str, Any],
+    *,
+    explicit_overrides: frozenset[str],
+) -> dict[str, str]:
+    """联动单一``字段 == 表达式``约束中的非独立左值。
+
+    OptionReg早期用constraints表达了一部分派生条款。Desk页面现在把这些字段标成
+    只读；当用户修改右侧独立条款时，合同编译器必须同步左值，否则一个合理修改
+    会被旧默认值反向阻断。重复定义同一左值的联立约束不在这里猜解，仍由后续
+    严格校验拒绝不一致的组合。
+    """
+
+    if not isinstance(constraints, (list, tuple)):
+        return {}
+    symbol_to_key = {
+        str(metadata.get("symbol") or key): str(key)
+        for key in terms
+        for metadata in (catalog.get(key),)
+        if isinstance(metadata, Mapping)
+    }
+    assignments: dict[str, list[str]] = {}
+    for raw in constraints:
+        try:
+            root = ast.parse(str(raw), mode="eval").body
+        except SyntaxError:
+            continue
+        if (
+            not isinstance(root, ast.Compare)
+            or len(root.ops) != 1
+            or not isinstance(root.ops[0], ast.Eq)
+            or len(root.comparators) != 1
+            or not isinstance(root.left, ast.Name)
+        ):
+            continue
+        key = symbol_to_key.get(root.left.id)
+        if key is not None and key in terms:
+            assignments.setdefault(key, []).append(ast.unparse(root.comparators[0]))
+
+    sources: dict[str, str] = {}
+    for _ in range(max(1, len(assignments))):
+        changed = False
+        variables = bind_term_symbols(terms, catalog)
+        for key, expressions in assignments.items():
+            if len(expressions) != 1 or key in explicit_overrides:
+                continue
+            value = evaluate_formula(expressions[0], variables)
+            _validate_terms({key: value}, catalog)
+            if semantic_hash(terms[key]) != semantic_hash(value):
+                terms[key] = value
+                changed = True
+                sources[key] = "derived"
+            variables[str(catalog[key].get("symbol") or key)] = value
+        if not changed:
+            break
+    return sources
+
+
 def _resolve_contract(
     product_id: str,
     *,
@@ -1392,15 +1394,10 @@ def _resolve_contract(
     if unknown:
         raise ContractResolutionError(f"本次条款覆盖含未登记字段：{','.join(sorted(unknown))}")
     price_convention = str(supplied_identity.get("price_convention") or "normalized_100")
-    unnormalized_terms = {**defaults, **overrides}
-    # 市场绝对价格合同已由Host冻结真实S_raw，不能为展示坐标改写其经济条款。
-    # 仅线性多执行价的默认normalized_100坐标按100/min_strike比例归一化；
-    # 期权费与其他非price条款保持原值。
-    final_terms, default_strike_normalized = (
-        _default_strike_normalization(str(product_id), unnormalized_terms, overrides, source_registry["term_catalog"])
-        if price_convention == "normalized_100"
-        else (dict(unnormalized_terms), False)
-    )
+    # normalized_100合同的公开坐标始终以S0=100为基准。执行价、障碍等
+    # price条款直接使用OptionReg登记值或用户覆盖值，不再以最低执行价
+    # 作为第二套展示基准。absolute_market合同同样保留Host冻结的真实条款。
+    final_terms = {**defaults, **overrides}
     _validate_terms(final_terms, source_registry["term_catalog"])
     if "S0Vec" in final_terms:
         required_assets = len(final_terms["S0Vec"])
@@ -1417,7 +1414,7 @@ def _resolve_contract(
         # absolute-market contract still requires a Host-supplied quote.
         references = _normalized_reference_prices(final_terms, underlyings)
     if price_convention == "normalized_100":
-        _validate_normalized_price_base(final_terms, allow_scaled_coordinate=default_strike_normalized)
+        _validate_normalized_price_base(final_terms)
     elif price_convention == "absolute_market":
         if references is None:
             raise ContractResolutionError("absolute_market价格口径必须提供reference_prices")
@@ -1428,6 +1425,12 @@ def _resolve_contract(
             raise ContractResolutionError("absolute_market价格口径下S0必须等于reference_prices")
     else:
         raise ContractResolutionError("price_convention仅支持normalized_100或absolute_market")
+    constraint_sources = _apply_constraint_bound_terms(
+        final_terms,
+        source_terms.get("constraints", ()),
+        source_registry["term_catalog"],
+        explicit_overrides=frozenset(overrides),
+    )
     variables = bind_term_symbols(final_terms, source_registry["term_catalog"])
     derived_sources: dict[str, str] = {}
     for key, expression in source_terms.get("derived_terms", {}).items():
@@ -1455,6 +1458,7 @@ def _resolve_contract(
     if "derived_terms" in source_terms:
         final_terms["derived_terms"] = deepcopy(source_terms["derived_terms"])
     term_sources = {key: "override" if key in overrides else "default" for key in defaults}
+    term_sources.update(constraint_sources)
     term_sources.update(derived_sources)
     for key in final_terms:
         term_sources.setdefault(key, "default")
@@ -2147,10 +2151,8 @@ def _check_number(value: Any, key: str, domain: Mapping[str, Any]) -> None:
     if "exclusive_min" in domain and number <= float(domain["exclusive_min"]): raise ContractResolutionError(f"条款{key}必须大于{domain['exclusive_min']}")
 
 
-def _validate_normalized_price_base(terms: Mapping[str, Any], *, allow_scaled_coordinate: bool = False) -> None:
+def _validate_normalized_price_base(terms: Mapping[str, Any]) -> None:
     """价格水平统一以100为内部基准，真实参考价仅由identity提供。"""
-    if allow_scaled_coordinate:
-        return
     if "S0" in terms and not np.isclose(float(terms["S0"]), _NORMALIZED_PRICE_BASE, rtol=0.0, atol=1e-12):
         raise ContractResolutionError("S0是固定的内部标准化基准100，不可覆盖为其他数值；请在reference_prices传入真实合同参考价")
     if "S0Vec" in terms:
