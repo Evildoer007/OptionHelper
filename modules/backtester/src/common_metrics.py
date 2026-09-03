@@ -29,17 +29,10 @@ def summarize_common_metrics(
 ) -> dict[str, Any]:
     """由唯一逐笔账本派生所有非产品专属统计。"""
     returns = np.asarray([trade.gross_contract_return for trade in trades], dtype=float)
-    positive_count = int(np.sum(returns > 0.0))
     common = {
         "sample_count": len(trades),
         "valid_return_sample_count": len(trades),
-        "positive_return_count": positive_count,
-        "win_rate": positive_count / len(trades) if trades else None,
-        "average_gross_return": float(returns.mean()) if len(returns) else None,
-        "median_gross_return": float(np.median(returns)) if len(returns) else None,
-        "minimum_gross_return": float(returns.min()) if len(returns) else None,
-        "maximum_gross_return": float(returns.max()) if len(returns) else None,
-        "max_loss_gross_return": max(0.0, -float(returns.min())) if len(returns) else None,
+        **settlement_return_summary(returns),
         "return_distribution": distribution(returns),
     }
     tenor_years = float(contract.terms.get("T", 0.0))
@@ -60,7 +53,7 @@ def entry_hv_group_summary(
     trades: Sequence[Any],
     bins: Sequence[float] | None,
 ) -> dict[str, Any]:
-    """按入场时已冻结的HistVol特征汇总合同毛收益率。
+    """按入场时已冻结的HistVol特征汇总合同结算收益率。
 
     分组只消费``entry_hv_feature``的无前视结果，不在指标层重新计算波动率。
     """
@@ -100,20 +93,13 @@ def entry_hv_group_summary(
     groups = []
     for bucket, values in enumerate(grouped_returns):
         returns = np.asarray(values, dtype=float)
-        positive_count = int(np.sum(returns > 0.0))
         groups.append({
             "bucket": bucket,
             "lower_bound": normalized_bins[bucket - 1] if bucket else None,
             "upper_bound": normalized_bins[bucket] if bucket < len(normalized_bins) else None,
             "sample_count": len(values),
             "valid_return_sample_count": len(values),
-            "positive_return_count": positive_count,
-            "win_rate": positive_count / len(values) if values else None,
-            "average_gross_return": float(returns.mean()) if len(returns) else None,
-            "median_gross_return": float(np.median(returns)) if len(returns) else None,
-            "minimum_gross_return": float(returns.min()) if len(returns) else None,
-            "maximum_gross_return": float(returns.max()) if len(returns) else None,
-            "max_loss_gross_return": max(0.0, -float(returns.min())) if len(returns) else None,
+            **settlement_return_summary(returns),
         })
     grouped_count = sum(len(values) for values in grouped_returns)
     ungrouped_count = sum(ungrouped_reasons.values())
@@ -136,6 +122,38 @@ def number_summary(values: np.ndarray | Sequence[float]) -> dict[str, float | No
         "median": float(np.median(values)) if len(values) else None,
         "minimum": float(values.min()) if len(values) else None,
         "maximum": float(values.max()) if len(values) else None,
+    }
+
+
+def settlement_return_summary(values: np.ndarray | Sequence[float]) -> dict[str, Any]:
+    """生成正式公共字段和数值完全一致的v1旧别名。"""
+    returns = np.asarray(values, dtype=float)
+    positive_count = int(np.sum(returns > 0.0))
+    zero_count = int(np.sum(returns == 0.0))
+    negative_count = int(np.sum(returns < 0.0))
+    positive_rate = positive_count / len(returns) if len(returns) else None
+    average = float(returns.mean()) if len(returns) else None
+    median = float(np.median(returns)) if len(returns) else None
+    minimum = float(returns.min()) if len(returns) else None
+    maximum = float(returns.max()) if len(returns) else None
+    max_loss = max(0.0, -minimum) if minimum is not None else None
+    return {
+        "positive_return_count": positive_count,
+        "zero_return_count": zero_count,
+        "negative_return_count": negative_count,
+        "positive_return_rate": positive_rate,
+        "average_contract_settlement_return": average,
+        "median_contract_settlement_return": median,
+        "minimum_contract_settlement_return": minimum,
+        "maximum_contract_settlement_return": maximum,
+        "max_loss_contract_settlement_return": max_loss,
+        "historical_loss_sample_covered": negative_count > 0,
+        "win_rate": positive_rate,
+        "average_gross_return": average,
+        "median_gross_return": median,
+        "minimum_gross_return": minimum,
+        "maximum_gross_return": maximum,
+        "max_loss_gross_return": max_loss,
     }
 
 
@@ -247,6 +265,7 @@ def outcome_summary(trades: Sequence[Any], contract: Any) -> list[dict[str, Any]
             "domain": definition["domain"],
             "count": len(selected),
             "rate": len(selected) / total if total else None,
+            "average_contract_settlement_return": float(returns.mean()) if len(returns) else None,
             "average_gross_return": float(returns.mean()) if len(returns) else None,
         })
     return rows
@@ -282,14 +301,11 @@ def annual_summary(trades: Sequence[Any], contract: Any) -> list[dict[str, Any]]
     rows: list[dict[str, Any]] = []
     for year, items in sorted(grouped.items()):
         returns = np.asarray([trade.gross_contract_return for trade in items], dtype=float)
-        positive_count = int(np.sum(returns > 0.0))
         rows.append({
             "year": year,
             "sample_count": len(items),
             "valid_return_sample_count": len(items),
-            "positive_return_count": positive_count,
-            "win_rate": positive_count / len(items) if items else None,
-            "average_gross_return": float(returns.mean()) if len(returns) else None,
+            **settlement_return_summary(returns),
             "outcome_summary": outcome_summary(items, contract),
             "three_outcome_summary": three_outcome_summary(items),
             "event_rates": {name: value["trigger_rate"] for name, value in event_summary(items, 0.0).items()},
