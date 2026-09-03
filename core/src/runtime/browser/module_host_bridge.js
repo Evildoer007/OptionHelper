@@ -9,7 +9,7 @@
     datafetcher: {"/api/status": "status", "/api/assets": "list_assets", "/api/fetch": "fetch"},
     payoffer: {"/api/catalog": "catalog", "/api/default": "default", "/api/preview": "preview", "/api/run": "run"},
     pricer: {"/api/catalog": "catalog", "/api/run": "run"},
-    backtester: {"/api/catalog": "catalog", "/api/run": "run"},
+    backtester: {"/api/catalog": "catalog", "/api/preview": "preview", "/api/run": "run"},
     reporter: {"/api/status": "status", "/api/report-sources": "list_report_sources", "/api/run": "run"},
   };
   const queryActions = new Set(["catalog", "list_assets", "list_report_sources", "status"]);
@@ -69,7 +69,7 @@
   const panelLayoutKey = "optionhelper.desk-panel-widths";
   const panelLayoutBounds = Object.freeze({
     left: {minimum: 200, maximum: 420, fallback: 250},
-    right: {minimum: 200, maximum: 520, fallback: 250},
+    right: {minimum: 300, maximum: 520, fallback: 340},
     compactLeft: 160,
     compactRight: 200,
     center: 360,
@@ -510,11 +510,11 @@
     return null;
   }
   function normalizeHostedRequest(body, action) {
-    if (moduleName !== "payoffer" && action === "run" && hostScope.contract_fingerprint && body.new_contract_variant !== true) {
-      delete body.product_id;
-      delete body.identity;
-      delete body.term_overrides;
-    }
+    // A signed Host context authenticates the task and candidate scope only.
+    // Product, asset and contract inputs remain business inputs on every run;
+    // the bridge must never erase them because an earlier run used a contract.
+    if (action !== "run") return;
+    delete body.new_contract_variant;
   }
   function requestedMethod(input, init) {
     return String(init.method || (typeof Request !== "undefined" && input instanceof Request ? input.method : "GET")).toUpperCase();
@@ -653,7 +653,6 @@
       response.ok
       && action === "run"
       && (moduleName === "payoffer" || moduleName === "pricer" || moduleName === "backtester")
-      && body.new_contract_variant === true
       && (result.resolved_contract?.identity?.product_id || result.module_run_ref?.run_id)
     ) {
       // Do not let the next run inherit the previous product's scope while
@@ -781,7 +780,7 @@
     if (
       action === "run"
       && (moduleName === "payoffer" || moduleName === "pricer" || moduleName === "backtester")
-      && (body.new_contract_variant === true || hostContractChanged)
+      && hostContractChanged
       && (result.resolved_contract?.identity?.product_id || result.module_run_ref?.run_id)
     ) {
       resetHostContext();
