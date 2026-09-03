@@ -19,8 +19,16 @@ static OptionHelperPresentationDecision OptionHelperPresentationDecisionForAttem
     BOOL withinDeadline
 ) {
     if (contentHealthy && snapshotReady) return OptionHelperPresentationDecisionReady;
-    return withinDeadline && attempt + 1 < presentationMaxAttempts
-        ? OptionHelperPresentationDecisionRetry
+    if (withinDeadline && attempt + 1 < presentationMaxAttempts) {
+        return OptionHelperPresentationDecisionRetry;
+    }
+    // WKWebView can refuse snapshots for an otherwise healthy, visible page
+    // when the signed App runs from a read-only DMG.  The DOM gate above
+    // already requires a visible, non-empty workspace with real geometry, so
+    // a terminal snapshot failure must not cover the usable Desk with a
+    // recovery overlay.
+    return contentHealthy
+        ? OptionHelperPresentationDecisionReady
         : OptionHelperPresentationDecisionFailed;
 }
 
@@ -579,7 +587,7 @@ willPerformHTTPRedirection:(NSHTTPURLResponse *)response
 }
 
 - (NSString *)visibleRootHealthScript {
-    return @"(()=>{const path=location.pathname;const selector=path==='/settings'?'.setup-card':(['/optchat','/optdesk'].includes(path)?'[data-workspace-shell]':(path==='/'?'body.login-page':'main'));const root=document.querySelector(selector);if(!root)return {ready:false,selector,reason:'missing'};const style=getComputedStyle(root);const rect=root.getBoundingClientRect();const visible=style.display!=='none'&&style.visibility!=='hidden'&&style.visibility!=='collapse'&&Number(style.opacity)>0.01&&root.getClientRects().length>0&&rect.width>80&&rect.height>80&&rect.bottom>0&&rect.right>0&&rect.top<innerHeight&&rect.left<innerWidth;return {ready:['interactive','complete'].includes(document.readyState),textLength:((root.innerText||root.textContent)||'').trim().length,width:rect.width,height:rect.height,visible,selector};})()";
+    return @"(()=>{const path=location.pathname;const selector=path==='/settings'?'.setup-card':(['/optchat','/optdesk'].includes(path)?'[data-workspace-shell]':(path==='/'?'body.login-page':'main'));const root=document.querySelector(selector);if(!root)return {ready:false,selector,reason:'missing'};const style=getComputedStyle(root);const rect=root.getBoundingClientRect();const geometry=root.getClientRects().length>0&&rect.width>80&&rect.height>80&&rect.bottom>0&&rect.right>0&&rect.top<innerHeight&&rect.left<innerWidth;const painted=style.display!=='none'&&style.visibility!=='hidden'&&style.visibility!=='collapse'&&Number(style.opacity)>0.01;const staged=root.dataset.initializing==='true'&&geometry;const visible=geometry&&(painted||staged);return {ready:['interactive','complete'].includes(document.readyState),textLength:((root.innerText||root.textContent)||'').trim().length,width:rect.width,height:rect.height,visible,staged,selector};})()";
 }
 
 - (void)scheduleMainPresentationRetryForGeneration:(NSUInteger)generation
@@ -1471,13 +1479,15 @@ int main(int argc, const char * argv[]) {
         puts("native-login-root-health=ok");
         OptionHelperPresentationDecision firstCheck = OptionHelperPresentationDecisionForAttempt(NO, NO, 0, YES);
         OptionHelperPresentationDecision laterCheck = OptionHelperPresentationDecisionForAttempt(YES, YES, 1, YES);
+        OptionHelperPresentationDecision healthySnapshotFallback = OptionHelperPresentationDecisionForAttempt(YES, NO, presentationMaxAttempts - 1, YES);
         OptionHelperPresentationDecision exhausted = OptionHelperPresentationDecisionForAttempt(NO, NO, presentationMaxAttempts - 1, YES);
         OptionHelperPresentationDecision timedOut = OptionHelperPresentationDecisionForAttempt(NO, NO, 0, NO);
         if (firstCheck != OptionHelperPresentationDecisionRetry
             || laterCheck != OptionHelperPresentationDecisionReady
+            || healthySnapshotFallback != OptionHelperPresentationDecisionReady
             || exhausted != OptionHelperPresentationDecisionFailed
             || timedOut != OptionHelperPresentationDecisionFailed) return 7;
-        puts("native-presentation-retry=ok");
+        puts("native-presentation-retry-and-fallback=ok");
         NSURL *settingsURL = [NSURL URLWithString:@"http://127.0.0.1:61000/settings?return_to=%2Foptdesk"];
         [delegate showSettingsCenter:[NSURLRequest requestWithURL:settingsURL]];
         if (delegate.settingsWindow == nil || delegate.settingsWebView == nil) return 8;
