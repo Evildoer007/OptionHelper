@@ -1,25 +1,31 @@
 .optionhelper-date-control {
   position: relative;
   display: block;
+  box-sizing: border-box;
   width: 100%;
   min-width: 0;
+  overflow: visible;
 }
 
 .optionhelper-date-control > input[data-optionhelper-date-text] {
+  box-sizing: border-box;
   width: 100%;
-  padding-right: 38px;
+  padding-right: 48px !important;
+  font-variant-numeric: tabular-nums;
 }
 
 .optionhelper-date-picker {
   position: absolute;
   top: 50%;
   right: 1px;
-  width: 36px;
+  width: 40px;
   height: calc(100% - 2px);
   min-height: 30px;
   transform: translateY(-50%);
   border-radius: 0 9px 9px 0;
   color: currentColor;
+  border-left: 1px solid var(--color-rule, rgba(37, 37, 37, .16));
+  background: inherit;
 }
 
 .optionhelper-date-picker::before {
