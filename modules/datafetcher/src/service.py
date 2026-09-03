@@ -13,6 +13,7 @@ import hashlib
 import json
 import math
 import os
+import base64
 from pathlib import Path
 import re
 import tempfile
@@ -59,6 +60,7 @@ from .request_validator import (
     request_fingerprint,
     validate_request,
 )
+from .volatile_store import read_volatile_asset, store_volatile_asset
 
 
 MODULE_ROOT = Path(__file__).resolve().parents[3]
@@ -419,14 +421,31 @@ def _asset_reference(
         "local_source_fingerprint": request.local_source_fingerprint if provider == "local" else None,
         "normalizer_version": "market-history",
         "fetched_at": _now(),
+        "persistence_mode": request.persistence_mode,
     }
     if calendar_evidence is not None and calendar_evidence.calendar_ref:
         lineage["trading_calendar_ref"] = dict(calendar_evidence.calendar_ref)
+    payload = daily_csv_bytes(frame)
+    if request.persistence_mode == "volatile":
+        return store_volatile_asset(
+            caller=caller,
+            data_asset_id=data_asset_id,
+            payload=payload,
+            media_type="text/csv",
+            schema_id="market-history",
+            asset_ids=tuple(request.asset_ids),
+            normalized_fields=("date", "asset_id", *request.fields),
+            coverage=coverage,
+            row_count=int(len(frame)),
+            partition_spec={"date_column": "date", "frequency": request.frequency, "asset_partitioned": True},
+            price_convention=price_convention,
+            lineage=lineage,
+        )
     try:
         return store.put_bytes(
             tenant_id=caller.tenant_id,
             data_asset_id=data_asset_id,
-            payload=daily_csv_bytes(frame),
+            payload=payload,
             media_type="text/csv",
             schema_id="market-history",
             asset_ids=tuple(request.asset_ids),
@@ -771,18 +790,19 @@ def _resolve_data(
                 caller,
                 calendar_evidence,
             )
-            cache.save(
-                cache_identity(request, full_match.provider, tenant_id=caller.tenant_id),
-                full_match.frame,
-                {
-                    "content_hash": daily_content_hash(full_match.frame),
-                    "provider": full_match.provider,
-                    "data_asset_ref": deep_thaw(asdict(rebound_ref)),
-                    "updated_at": _now(),
-                    "tenant_id": caller.tenant_id,
-                },
-                data_asset_ref_key=data_asset_ref_key,
-            )
+            if request.persistence_mode == "library":
+                cache.save(
+                    cache_identity(request, full_match.provider, tenant_id=caller.tenant_id),
+                    full_match.frame,
+                    {
+                        "content_hash": daily_content_hash(full_match.frame),
+                        "provider": full_match.provider,
+                        "data_asset_ref": deep_thaw(asdict(rebound_ref)),
+                        "updated_at": _now(),
+                        "tenant_id": caller.tenant_id,
+                    },
+                    data_asset_ref_key=data_asset_ref_key,
+                )
             return rebound_ref, quality, rebound_decision, request_frame
         else:
             invalid_match = None
@@ -841,18 +861,19 @@ def _resolve_data(
             caller,
             calendar_evidence,
         )
-        cache.save(
-            cache_identity(request, selected_provider or "local", tenant_id=caller.tenant_id),
-            cache_frame,
-            {
-                "content_hash": daily_content_hash(cache_frame),
-                "provider": selected_provider,
-                "data_asset_ref": deep_thaw(asdict(asset_ref)),
-                "updated_at": _now(),
-                "tenant_id": caller.tenant_id,
-            },
-            data_asset_ref_key=data_asset_ref_key,
-        )
+        if request.persistence_mode == "library":
+            cache.save(
+                cache_identity(request, selected_provider or "local", tenant_id=caller.tenant_id),
+                cache_frame,
+                {
+                    "content_hash": daily_content_hash(cache_frame),
+                    "provider": selected_provider,
+                    "data_asset_ref": deep_thaw(asdict(asset_ref)),
+                    "updated_at": _now(),
+                    "tenant_id": caller.tenant_id,
+                },
+                data_asset_ref_key=data_asset_ref_key,
+            )
         return asset_ref, quality, cache_decision, frame
 
 
@@ -900,7 +921,8 @@ def _failure_result(
         error=public_error,
         tenant_id=caller.tenant_id,
     )
-    run = _persist_run(config, request, run, None)
+    if request.persistence_mode == "library":
+        run = _persist_run(config, request, run, None)
     return DataFetchResult(ok=False, run=run)
 
 
@@ -970,7 +992,8 @@ def fetch_data(
             data_asset_ref=asset_ref,
             tenant_id=caller.tenant_id,
         )
-        run = _persist_run(effective_config, validated, run, quality)
+        if validated.persistence_mode == "library":
+            run = _persist_run(effective_config, validated, run, quality)
         preview = tuple(
             {column: (None if pd.isna(value) else value) for column, value in row.items()}
             for row in frame.head(12).to_dict(orient="records")
@@ -1034,7 +1057,8 @@ def fetch_calendar_data(
             data_asset_ref=ref,
             tenant_id=effective_caller.tenant_id,
         )
-        run = _persist_run(effective_config, raw_request, run, quality)
+        if raw_request.persistence_mode == "library":
+            run = _persist_run(effective_config, raw_request, run, quality)
         preview = tuple({"session": value} for value in tuple(ref.coverage.get("sessions", ()))[:12])
         return DataFetchResult(ok=True, run=run, quality_report=quality, data_preview=preview)
     except Exception as error:
@@ -1132,6 +1156,9 @@ def read_data_asset(data_asset_id: str, *, caller: CallerContext | None = None) 
         raise DataFetcherError("DataAsset标识非法")
     effective_caller = caller or CallerContext("local", "local-user", "local", ("data:read",), "local", "local")
     _assert_data_read(effective_caller)
+    volatile = read_volatile_asset(data_asset_id, effective_caller)
+    if volatile is not None:
+        return volatile
     config, cache = _runtime_cache()
     item = cache.find_asset(tenant_id=effective_caller.tenant_id, data_asset_id=data_asset_id)
     if item is not None:
@@ -1371,6 +1398,14 @@ def call_tool_from_app(
                 "detail": "iFind凭据验证通过，可用于数据请求。",
             },
         }
-    if action == "fetch_calendar":
-        return fetch_calendar_data(source, caller_context, config=config, task_id=str(task_id)).to_dict()
-    return fetch_data(source, caller_context, config=config, task_id=str(task_id)).to_dict()
+    result = (
+        fetch_calendar_data(source, caller_context, config=config, task_id=str(task_id))
+        if action == "fetch_calendar"
+        else fetch_data(source, caller_context, config=config, task_id=str(task_id))
+    ).to_dict()
+    reference = result.get("data_asset_ref")
+    if result.get("ok") is True and isinstance(reference, Mapping) and dict(reference.get("lineage", {})).get("persistence_mode") == "volatile":
+        volatile = read_volatile_asset(str(reference.get("data_asset_id", "")), caller_context)
+        if volatile is not None:
+            result["_volatile_payload_b64"] = base64.b64encode(volatile[1]).decode("ascii")
+    return result
