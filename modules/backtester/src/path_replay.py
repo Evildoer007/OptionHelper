@@ -107,13 +107,29 @@ def controlled_schedule_source(
     entry_spots: Mapping[str, float],
 ) -> ResolvedContract:
     """按受控日历冻结观察日，并确认每个必要观察日都有完整价格。"""
+    schedule_source, _ = controlled_trade_contract(
+        contract,
+        historical_data,
+        observed_dates,
+        entry_spots,
+    )
+    return schedule_source
+
+
+def controlled_trade_contract(
+    contract: ResolvedContract,
+    historical_data: HistoricalData,
+    observed_dates: pd.DatetimeIndex,
+    entry_spots: Mapping[str, float],
+) -> tuple[ResolvedContract, Any]:
+    """一次生成逐笔合同和审计快照，避免同一路径重复解析合同日程。"""
     from .trade_ledger import freeze_trade_contract
 
     controlled_dates = historical_data.trading_sessions[
         (historical_data.trading_sessions >= observed_dates[0])
         & (historical_data.trading_sessions <= observed_dates[-1])
     ]
-    schedule_source, _ = freeze_trade_contract(
+    schedule_source, historical_contract = freeze_trade_contract(
         contract,
         entry_date=_date_text(observed_dates[0]),
         trading_dates=controlled_dates,
@@ -130,7 +146,7 @@ def controlled_schedule_source(
             "contract_observation_sessions_missing:"
             + ",".join(_date_text(value) for value in missing)
         )
-    return schedule_source
+    return schedule_source, historical_contract
 
 
 def aligned_history(historical_data: HistoricalData, underlyings: Sequence[str], contract: ResolvedContract) -> AlignedHistory:
@@ -411,7 +427,13 @@ def replay_path(
     """
     times = np.asarray((dates - dates[0]).days, dtype=float) / 365.0
     times = _complete_count_tenor_times(contract, times, len(dates))
-    for end in range(1, len(dates) - 1):
+    full_path = _price_path(contract, values, times, dates, price_fields)
+    try:
+        full_monitors = compute_monitor_values(contract, full_path)
+    except ValueError as error:
+        raise BacktestInputError(str(error)) from error
+    candidate_end_positions = _termination_candidate_positions(full_monitors, times)
+    for end in candidate_end_positions:
         candidate_dates = dates[: end + 1]
         candidate_times = times[: end + 1]
         candidate_fields = {name: field[: end + 1] for name, field in price_fields.items()}
@@ -447,10 +469,29 @@ def replay_path(
             continue
         return ReplayedPath(candidate_dates, values[: end + 1], candidate_times, candidate_fields, outcome)
     try:
-        outcome = evaluate_contract(contract, _price_path(contract, values, times, dates, price_fields))
+        outcome = evaluate_contract(contract, full_path)
     except ValueError as error:
         raise BacktestInputError(str(error)) from error
     return ReplayedPath(dates, values, times, dict(price_fields), outcome)
+
+
+def _termination_candidate_positions(monitors: Mapping[str, Any], times: np.ndarray) -> tuple[int, ...]:
+    """从完整路径提取有限个提前终止候选点，再用真实前缀逐一复核。
+
+    终止事实仍由候选时点以前的价格前缀重新计算；完整路径只用于把原先
+    对每个交易日重复求值的扫描缩减为有限个事件候选，不参与前缀结算。
+    """
+    if len(times) < 3:
+        return ()
+    candidates: set[int] = set()
+    for name in _TERMINATION_EVENTS:
+        value = monitors.get(name)
+        if not isinstance(value, (int, float, np.number)) or not np.isfinite(float(value)):
+            continue
+        position = int(np.searchsorted(times, float(value) - 1e-12, side="left"))
+        if 0 < position < len(times) - 1:
+            candidates.add(position)
+    return tuple(sorted(candidates))
 
 
 def _evaluate_terminated_prefix(
@@ -597,4 +638,4 @@ def _monitor_values_through(monitors: Mapping[str, Any], through_time: float) ->
 
 
 def _date_text(value: Any) -> str:
-    return pd.Timestamp(value).strftime("%Y-%m-%d")
+    return str(value)[:10]
