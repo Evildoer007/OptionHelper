@@ -46,7 +46,13 @@ _TARGET_STATUSES = frozenset({"supported", "unsupported", "solve_semantics_block
 _PRODUCT_STATUSES = frozenset({"supported", "valuation_only", "solve_semantics_blocked"})
 _QUOTE_BASES = frozenset({"incremental_net_value", "contract_target_value"})
 _QUOTE_VALUE_BASES = frozenset({"pv_percent", "variance_percent"})
-_PUBLIC_RATIO_UNITS = frozenset({"normalized_point", "rate", "volatility", "price"})
+_PUBLIC_RATIO_UNITS = frozenset({
+    "normalized_point",
+    "premium_percent_s0_100",
+    "rate",
+    "volatility",
+    "price",
+})
 _NON_CONTINUOUS_UNITS = frozenset({
     "count", "day", "enum", "flag", "observation_count", "schedule",
     "schedule_selector", "unit", "year",
@@ -54,6 +60,9 @@ _NON_CONTINUOUS_UNITS = frozenset({
 _CATALOG_UNITS = _PUBLIC_RATIO_UNITS | _NON_CONTINUOUS_UNITS
 _UNIT_PUBLIC_TRANSFORMS = {
     "normalized_point": "points_100_to_decimal_ratio",
+    # OptionReg records 5% as 5.  The public fair-term protocol exposes the
+    # economically meaningful decimal ratio 0.05 and never calls it points.
+    "premium_percent_s0_100": "points_100_to_decimal_ratio",
     "rate": "identity_ratio",
     "volatility": "identity_ratio",
     "price": "relative_to_frozen_reference_price_basis",
