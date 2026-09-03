@@ -1064,6 +1064,48 @@ def _persist_calendar_bound_history_asset(
         raise ProjectRequestError("datafetcher", "Host无法提交经验证交易日历绑定的历史行情。") from error
 
 
+class _ProcessAwareDataStore:
+    """Read persistent and process-local DataFetcher assets through one port."""
+
+    def __init__(self, local_store: Any, caller: Any) -> None:
+        self._local_store = local_store
+        self._caller = caller
+
+    def read_bytes(self, ref: DataAssetRef, *, tenant_id: str) -> bytes:
+        if tenant_id != ref.tenant_id or tenant_id != self._caller.tenant_id:
+            raise PermissionError("DataAssetRef跨租户访问被拒绝")
+        from modules.datafetcher.volatile_store import read_volatile_asset
+
+        volatile = read_volatile_asset(ref.data_asset_id, self._caller)
+        if volatile is not None:
+            stored_ref, payload = volatile
+            if stored_ref != ref:
+                raise PermissionError("进程内DataAssetRef元数据不一致")
+            return payload
+        return self._local_store.read_bytes(ref, tenant_id=tenant_id)
+
+    def put_bytes(self, *args: Any, **kwargs: Any) -> DataAssetRef:
+        lineage = kwargs.get("lineage")
+        if isinstance(lineage, Mapping) and lineage.get("persistence_mode") == "volatile":
+            from modules.datafetcher.volatile_store import store_volatile_asset
+
+            return store_volatile_asset(
+                caller=self._caller,
+                data_asset_id=str(kwargs["data_asset_id"]),
+                payload=bytes(kwargs["payload"]),
+                media_type=str(kwargs["media_type"]),
+                schema_id=str(kwargs["schema_id"]),
+                asset_ids=tuple(str(item) for item in kwargs["asset_ids"]),
+                normalized_fields=tuple(str(item) for item in kwargs["normalized_fields"]),
+                coverage=dict(kwargs["coverage"]),
+                row_count=int(kwargs["row_count"]),
+                partition_spec=dict(kwargs["partition_spec"]),
+                price_convention=dict(kwargs["price_convention"]),
+                lineage=dict(lineage),
+            )
+        return self._local_store.put_bytes(*args, **kwargs)
+
+
 def _latest_available_data_date(data_ref: Any, *, requested_date: date) -> str:
     """Resolve the last date actually present instead of the requested range end.
 
@@ -1272,7 +1314,11 @@ def run_module_request(
                 progress=progress,
                 history_start_date=None if history_start is None else history_start.isoformat(),
             )
-        data_store = importlib.import_module("runtime.adapters.local_store").LocalDataStore(layout.data_root)
+        local_data_store = importlib.import_module("runtime.adapters.local_store").LocalDataStore(layout.data_root)
+        data_store = _ProcessAwareDataStore(
+            local_data_store,
+            authority.caller(request_id=f"store-{task_hash}"),
+        )
         if requires_market_history:
             data_ref, market_as_of_date = _fetch_local_data_asset(
                 layout=layout, authority=authority, task_id=task_id, underlyings=underlyings,
@@ -1342,7 +1388,27 @@ def run_module_request(
         data_store=data_store if module in {"pricer", "backtester"} else None,
     )
     if result.get("ok") is not True:
-        raise ProjectRequestError(module, str(result.get("message") or f"{module}未能完成。"))
+        nested_error = result.get("error")
+        nested_message = (
+            nested_error.get("message")
+            if isinstance(nested_error, Mapping)
+            else nested_error if isinstance(nested_error, str) else None
+        )
+        failure_code = (
+            nested_error.get("failure_code")
+            if isinstance(nested_error, Mapping)
+            else result.get("failure_code")
+        )
+        stage = nested_error.get("stage") if isinstance(nested_error, Mapping) else result.get("stage")
+        message = str(result.get("message") or nested_message or f"{module}未能完成。")
+        evidence = ", ".join(
+            item for item in (
+                f"阶段={stage}" if stage else "",
+                f"原因={failure_code}" if failure_code else "",
+            )
+            if item
+        )
+        raise ProjectRequestError(module, f"{message}{f'（{evidence}）' if evidence else ''}")
     _progress(progress, module, f"{module_label}计算已完成", "completed")
     return {
         "ok": True,
@@ -1448,7 +1514,11 @@ def _run_quote_delivery(
     analysis_case_id = case.analysis_case_id
     variants = _quote_variant_plan(body, candidates=candidates, paths=paths, task_hash=task_hash)
     default_horizon = _horizon_years(case.confirmed_constraints.get("horizon"))
-    data_store = importlib.import_module("runtime.adapters.local_store").LocalDataStore(layout.data_root)
+    local_data_store = importlib.import_module("runtime.adapters.local_store").LocalDataStore(layout.data_root)
+    data_store = _ProcessAwareDataStore(
+        local_data_store,
+        authority.caller(request_id=f"store-{task_hash}"),
+    )
     history_cache: dict[tuple[str, ...], tuple[DataAssetRef, str]] = {}
     calendar_cache: dict[tuple[tuple[str, ...], str, float], DataAssetRef] = {}
     bound_history_cache: dict[tuple[str, str], DataAssetRef] = {}
@@ -1739,7 +1809,11 @@ def _run_project_candidate(
         )
         caches["history"][underlyings] = history
     data_ref, market_as_of_date = history
-    data_store = importlib.import_module("runtime.adapters.local_store").LocalDataStore(layout.data_root)
+    local_data_store = importlib.import_module("runtime.adapters.local_store").LocalDataStore(layout.data_root)
+    data_store = _ProcessAwareDataStore(
+        local_data_store,
+        authority.caller(request_id=f"store-{request_suffix}"),
+    )
     binding_key = (data_ref.storage_ref, calendar_ref.storage_ref)
     bound_ref = caches["bound_history"].get(binding_key)
     if bound_ref is None:
