@@ -62,7 +62,7 @@ _BINDING_SEALS: dict[int, tuple[weakref.ReferenceType[object], object, str, str]
 # Core stores only this digest, never the directory business payload.  When the
 # audited directory changes, the release process must update this anchor and
 # its fixed test expectation explicitly.
-_PRIVATE_CAPABILITY_DIRECTORY_EXPECTED_HASH = "eb04b84d9e14eec45d01796b30d9984ae5005e956427ce881c191f201b6e3bd2"
+_PRIVATE_CAPABILITY_DIRECTORY_EXPECTED_HASH = "86608ea60c9f58a44a6749d2f9e516c008b09c7cef579fb5648cff3f6eafc2a0"
 
 _SUPPORTED_TARGET_STATUSES = frozenset({"supported"})
 _NON_SUPPORTED_TARGET_STATUSES = frozenset({"unsupported", "solve_semantics_blocked"})
@@ -1839,11 +1839,8 @@ def _verify_calendar_matches_contract(
         raise ContractResolutionError("Host验证交易日历必须使用Core VerifiedTradingCalendarBinding")
     _require_binding_seal(calendar, "verified_trading_calendar")
     identity = contract.identity
-    if (
-        identity.get("calendar_id") != calendar.calendar_id
-        or identity.get("calendar_revision") != calendar.calendar_revision
-    ):
-        raise ContractResolutionError("Host验证交易日历与已冻结ResolvedContract不一致")
+    if identity.get("calendar_id") != calendar.calendar_id:
+        raise ContractResolutionError("Host验证交易日历与合同所属交易所不一致")
     sessions = set(calendar.sessions)
     for schedule in contract.resolved_schedules.values():
         if any(day not in sessions for day in schedule["dates"]):
@@ -1857,7 +1854,7 @@ def _verify_friendly_request(
     overrides: Mapping[str, Any],
 ) -> None:
     if contract.product_id != product_id:
-        raise ContractResolutionError("当前任务已绑定另一产品的ResolvedContract")
+        raise ContractResolutionError("所选基础合同版本与当前产品不一致")
     for key, value in overrides.items():
         if key not in contract.terms or semantic_hash(contract.terms[key]) != semantic_hash(value):
             raise ContractResolutionError(f"本次条款{key}与任务已冻结ResolvedContract冲突")
