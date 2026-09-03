@@ -70,7 +70,11 @@ _FORBIDDEN_MODULE_FIELD_FRAGMENTS = (
 _PUBLIC_VALUE_KEYS = {
     "label", "value", "note", "unit", "value_format", "title", "rule", "formula", "formula_mathml",
     "id", "method", "valuation_date", "name", "type", "data", "x", "y", "series", "columns", "rows",
-    "event", "monitor", "sample_count", "valid_return_sample_count", "positive_return_count", "win_rate",
+    "event", "monitor", "sample_count", "valid_return_sample_count", "positive_return_count",
+    "zero_return_count", "negative_return_count", "positive_return_rate",
+    "average_contract_settlement_return", "median_contract_settlement_return",
+    "minimum_contract_settlement_return", "maximum_contract_settlement_return",
+    "max_loss_contract_settlement_return", "win_rate",
     "average_gross_return", "median_gross_return", "minimum_gross_return", "maximum_gross_return",
     "max_loss_gross_return", "trigger_count", "trigger_rate", "average_days", "median_days", "count",
     "rate", "year", "average", "median", "minimum", "maximum", "true_rate", "condition", "payoff",
@@ -97,9 +101,9 @@ _PUBLIC_LIMITATION_TEXT = {
 _PUBLIC_CANDIDATE_INDEX = ("", "一", "二", "三", "四", "五", "六", "七", "八", "九", "十")
 _QUOTE_EXCLUDED_TERMS = {"Delta", "Gamma", "Vega", "Theta", "Rho"}
 _QUOTE_PREMIUM_TERMS = {
-    "Pi_0": "期权费",
-    "P_net": "净期权费",
-    "p": "期权费率",
+    "P": "期权费",
+    "P_net": "期权费",
+    "p": "期权费",
 }
 _QUOTE_TERM_PRIORITY = {
     "期限": 10,
@@ -108,8 +112,6 @@ _QUOTE_TERM_PRIORITY = {
     "执行价2": 22,
     "执行价3": 23,
     "期权费": 30,
-    "净期权费": 31,
-    "期权费率": 32,
     "敲入水平": 40,
     "敲出水平": 41,
     "障碍水平": 42,
@@ -398,8 +400,8 @@ def _structured_conclusion(payload: Mapping[str, Any]) -> dict[str, Any]:
     backtest_summary = [
         backtest_rows[label]
         for label in (
-            "样本数", "胜率", "历史正收益样本占比",
-            "平均收益", "最大亏损",
+            "样本数", "历史正收益样本占比", "正收益样本数", "持平样本数", "负收益样本数",
+            "平均合同结算收益率", "最大历史损失",
         )
         if label in backtest_rows and backtest_rows[label].get("value") is not None
     ]
@@ -449,6 +451,9 @@ def _quote_from_units(units: list[Mapping[str, Any]], request: ReportRequest) ->
             label, term_value = _public_text(raw_term.get("label")), _public_text(raw_term.get("value"))
             if not label or not term_value:
                 raise ReporterError("Quote报价事实条款缺少名称或数值")
+            premium_label = _QUOTE_PREMIUM_TERMS.get(_public_text(raw_term.get("symbol")))
+            if premium_label is not None:
+                label = premium_label
             terms.append((label, term_value))
         quote_dates.add(quote_date)
         recommendation = _public_recommendation(content.get("recommendation"))
