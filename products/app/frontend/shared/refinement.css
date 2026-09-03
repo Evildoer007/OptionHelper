@@ -842,8 +842,15 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
 
 @media (min-width: 701px) {
   .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="desk"] .work-area {
-    --assistant-height: 0px;
+    /* Reserve a real bottom dock for the fixed assistant affordance. The
+       36px control sits 18px above the viewport edge, so 58px keeps module
+       forms and report controls outside its hit area at every scroll offset. */
+    --assistant-height: 58px;
     grid-template-rows: 62px minmax(0, 1fr) var(--assistant-height);
+  }
+
+  .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .work-area {
+    --assistant-height: 0px;
   }
 }
 
@@ -1357,7 +1364,7 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
   background: transparent;
   font-size: 11px;
   font-weight: 600;
-  cursor: pointer;
+  cursor: default;
 }
 
 .composer-attach-control:hover { color: var(--accent); }
@@ -1534,7 +1541,7 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
   gap: 7px;
   min-width: 0;
   padding: 2px 0;
-  cursor: pointer;
+  cursor: default;
   list-style: none;
   color: inherit;
   font-size: 12.5px;
