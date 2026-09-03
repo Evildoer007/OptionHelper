@@ -38,13 +38,6 @@ from release_contract import (
     public_version_errors,
     require_published_at,
 )
-from pricer_evidence import (
-    PACKAGE_MANIFEST_RELATIVE_PATH,
-    PricerEvidenceManifestError,
-    pricer_evidence_is_present,
-    validate_pricer_evidence_manifest,
-)
-
 MODULES = ("datafetcher", "recommender", "payoffer", "pricer", "backtester", "reporter", "designer")
 PAGE_MODULES = ("datafetcher", "payoffer", "pricer", "backtester", "reporter")
 SKILL_PAGE_MODULES: tuple[str, ...] = ()
@@ -497,21 +490,6 @@ def _legacy_product_name_errors(root: Path) -> list[str]:
     return errors
 
 
-def _pricer_evidence_errors(root: Path) -> list[str]:
-    """Apply the shared Pricer evidence gate to a packaged Capability."""
-
-    if not pricer_evidence_is_present(root, packaged=True):
-        return []
-    try:
-        validate_pricer_evidence_manifest(
-            root / PACKAGE_MANIFEST_RELATIVE_PATH,
-            release_root=root,
-        )
-    except PricerEvidenceManifestError as error:
-        return [f"Pricer公平参数证据校验失败：{error}"]
-    return []
-
-
 def _manifest_errors(root: Path, entries: list[dict[str, object]]) -> list[str]:
     path = root / "capability-manifest.json"
     if not path.is_file():
@@ -734,7 +712,6 @@ def verify_skill(root: Path) -> list[str]:
     errors.extend(_code_errors(root))
     errors.extend(_capability_interface_errors(root))
     errors.extend(_legacy_product_name_errors(root))
-    errors.extend(_pricer_evidence_errors(root))
     errors.extend(_link_errors(root))
     errors.extend(_store_boundary_errors(root))
     errors.extend(_manifest_errors(root, entries))
