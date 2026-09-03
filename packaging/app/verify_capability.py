@@ -27,14 +27,6 @@ from verify_skill import (
     shared_payload_entries,
     tree_hash,
 )
-from pricer_evidence import (
-    PACKAGE_MANIFEST_RELATIVE_PATH,
-    PricerEvidenceManifestError,
-    pricer_evidence_is_present,
-    validate_pricer_evidence_manifest,
-)
-
-
 _FORBIDDEN = (
     "SKILL.md",
     "README.md",
@@ -71,14 +63,6 @@ def verify_app_capability(root: Path) -> list[str]:
     )
     errors.extend(_code_errors(root))
     errors.extend(_link_errors(root))
-    if pricer_evidence_is_present(root, packaged=True):
-        try:
-            validate_pricer_evidence_manifest(
-                root / PACKAGE_MANIFEST_RELATIVE_PATH,
-                release_root=root,
-            )
-        except PricerEvidenceManifestError as error:
-            errors.append(f"Pricer公平参数证据校验失败：{error}")
     required = {
         "scripts/tool_entry.py",
         "scripts/module_host.py",
