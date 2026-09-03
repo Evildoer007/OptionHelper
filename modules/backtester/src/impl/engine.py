@@ -14,6 +14,7 @@ from runtime.contracts.contract_types import deep_thaw, semantic_hash
 
 from ..branch_coverage import branch_coverage
 from ..common_metrics import summarize_common_metrics
+from ..economic_conventions import economic_convention
 from ..entry_generator import BacktestInputError, BacktestUnsupportedError, BacktestWindowError, ZeroValidSamplesError, entry_positions
 from ..historical_data import HistoricalData
 from ..metric_profile_map import MetricProfileSpec
@@ -23,7 +24,7 @@ from ..path_replay import (
     assert_daily_observation_sessions,
     assert_supported_schedule,
     contract_stop_position,
-    controlled_schedule_source,
+    controlled_trade_contract,
     entry_hv_feature,
     replay_path,
     _resolve_effective_backtest_window,
@@ -31,19 +32,6 @@ from ..path_replay import (
 )
 from ..trade_ledger import HistoricalResolvedContract, TradeResult, build_trade_result, freeze_trade_contract
 from .config import BacktestConfig
-
-
-_ECONOMIC_CONVENTION = {
-    "gross_return_basis": "contract_cashflow_before_external_costs",
-    "gross_return_display_unit": "percentage",
-    "gross_return_value_encoding": "decimal_ratio",
-    "external_costs_modelled": False,
-    "client_net_pnl_status": "not_modelled",
-    "client_net_return_status": "not_modelled",
-    "client_net_return_reason": "未建模期权费、资金成本、交易费、税费、对冲及滑点；不得将合同毛收益表述为客户净收益。",
-    "win_rate_numerator": "positive_gross_contract_return_count",
-    "win_rate_denominator": "valid_return_sample_count",
-}
 
 
 @dataclass(frozen=True)
@@ -124,7 +112,11 @@ class BacktestResult:
             "effective_entry_window": dict(self.effective_entry_window),
         }
         common_keys = (
-            "sample_count", "skipped_count", "valid_return_sample_count", "positive_return_count", "win_rate",
+            "sample_count", "skipped_count", "valid_return_sample_count", "positive_return_count",
+            "zero_return_count", "negative_return_count", "positive_return_rate",
+            "average_contract_settlement_return", "median_contract_settlement_return",
+            "minimum_contract_settlement_return", "maximum_contract_settlement_return",
+            "max_loss_contract_settlement_return", "historical_loss_sample_covered", "win_rate",
             "average_gross_return", "median_gross_return", "minimum_gross_return", "maximum_gross_return",
             "max_loss_gross_return",
             "return_distribution",
@@ -141,7 +133,7 @@ class BacktestResult:
             "skipped_count": summary["skipped_count"],
             "skipped_entries": [dict(item) for item in self.skipped_entries],
             "common_metrics": common_metrics,
-            "economic_convention": dict(_ECONOMIC_CONVENTION),
+            "economic_convention": economic_convention(self.product_id),
             "underlying_performance": summary["underlying_performance"],
             "metric_profile": summary["metric_profile"],
             "metric_profile_hash": self.metric_profile_hash,
@@ -259,22 +251,21 @@ def backtest(backtest_input: Any) -> BacktestResult:
                     entry_date=history.close.index[start],
                     terminal_date=history.close.index[stop],
                 )
-            schedule_source = controlled_schedule_source(contract, historical_data, dates, entry_spots)
-            evaluation_contract, _ = freeze_trade_contract(
-                contract,
-                entry_date=entry_date,
-                trading_dates=dates,
-                entry_spots=entry_spots,
-                frozen_schedule_source=schedule_source,
+            evaluation_contract, evaluation_historical_contract = controlled_trade_contract(
+                contract, historical_data, dates, entry_spots,
             )
             replay = replay_path(evaluation_contract, dates=dates, values=values, price_fields=fields)
-            final_contract, historical_contract = freeze_trade_contract(
-                contract,
-                entry_date=entry_date,
-                trading_dates=replay.dates,
-                entry_spots=entry_spots,
-                frozen_schedule_source=evaluation_contract,
-            )
+            if len(replay.dates) == len(dates):
+                final_contract = evaluation_contract
+                historical_contract = evaluation_historical_contract
+            else:
+                final_contract, historical_contract = freeze_trade_contract(
+                    contract,
+                    entry_date=entry_date,
+                    trading_dates=replay.dates,
+                    entry_spots=entry_spots,
+                    frozen_schedule_source=evaluation_contract,
+                )
             if not replay.outcome.cashflows:
                 _skip_or_reject(skipped, config, entry_date, "shared_interpreter_returned_no_cashflows")
                 continue
