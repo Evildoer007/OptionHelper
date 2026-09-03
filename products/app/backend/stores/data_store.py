@@ -19,6 +19,10 @@ from . import _LocalDocumentStore
 class DataStore:
     def __init__(self, state: _LocalDocumentStore) -> None:
         self._state = state
+        self._volatile: dict[str, dict[str, Any]] = {}
+
+    def _records(self) -> dict[str, Any]:
+        return {**self._state.read("data_assets"), **self._volatile}
 
     def register(self, identity: SessionIdentity, asset: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(asset, dict):
@@ -70,8 +74,15 @@ class DataStore:
             json.dumps(record, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
         ).hexdigest()
 
+        key = _asset_key(identity.tenant_id, asset_id)
+        if lineage.get("persistence_mode") == "volatile":
+            existing = self._volatile.get(key)
+            if existing is not None and not all(existing.get(name) == record.get(name) for name in _PROTOCOL_FIELDS):
+                raise ValidationError("DataAsset references are immutable; create a new data_asset_id")
+            self._volatile[key] = record
+            return self.get(identity, asset_id)
+
         def update(value: dict[str, Any]) -> dict[str, Any]:
-            key = _asset_key(identity.tenant_id, asset_id)
             if key in value:
                 existing = value[key]
                 if isinstance(existing, dict) and all(existing.get(name) == record.get(name) for name in _PROTOCOL_FIELDS):
@@ -107,7 +118,7 @@ class DataStore:
                 )
         else:
             candidates = [
-                item for item in self._state.read("data_assets").values()
+                item for item in self._records().values()
                 if isinstance(item, dict)
                 and item.get("tenant_id") == identity.tenant_id
                 and item.get("created_by") == identity.principal_id
@@ -120,14 +131,14 @@ class DataStore:
                     return None
                 labels = "、".join(str(item) for item in asset_ids)
                 if schema_id == "trading-calendar":
-                    message = f"当前任务尚无可用于{labels}的交易日历；App将尝试通过iFind自动准备，失败时请检查数据接口配置。"
+                    message = f"本地资料库没有覆盖{labels}所需区间的交易日历，系统将尝试通过iFind自动补齐。"
                 else:
-                    message = f"当前任务尚无可用于{labels}的行情数据；请先在数据获取中获取{labels}日频行情，再运行定价。"
+                    message = f"本地资料库没有覆盖{labels}所需区间的行情，系统将尝试通过iFind自动补齐。"
                 raise UserActionError(
                     "market_data_required",
                     message,
                     stage="data",
-                    next_step="请在数据获取中准备覆盖当前标的和所需区间的日频行情后重试。",
+                    next_step="如自动获取失败，请检查iFind连接、标的代码和日期范围。",
                 )
             record = max(candidates, key=lambda item: (str(item.get("registered_at", "")), str(item.get("data_asset_id", ""))))
         if record.get("created_by") != identity.principal_id:
@@ -156,7 +167,7 @@ class DataStore:
         except ValueError as error:
             raise ValidationError("历史行情覆盖区间无效") from error
         candidates: list[dict[str, Any]] = []
-        for item in self._state.read("data_assets").values():
+        for item in self._records().values():
             if not isinstance(item, dict):
                 continue
             coverage = item.get("coverage")
@@ -182,6 +193,82 @@ class DataStore:
         if not candidates:
             return None
         record = max(candidates, key=lambda item: (str(item.get("registered_at", "")), str(item.get("data_asset_id", ""))))
+        return {key: record[key] for key in _PROTOCOL_FIELDS}
+
+    def resolve_market_history_covering(
+        self,
+        identity: SessionIdentity,
+        *,
+        asset_ids: tuple[str, ...],
+        start_date: str,
+        end_date: str,
+        fields: tuple[str, ...],
+        frequency: str,
+        adjustment: str,
+        allow_available_end: bool = False,
+        require_verified_calendar: bool = False,
+    ) -> dict[str, Any] | None:
+        """Choose local history by fitness, never by registration recency alone.
+
+        An automatic backtest may use the latest observed local session when
+        today's civil date has not arrived in the data source yet.  The
+        Backtester then derives the latest *complete* entry from those actual
+        sessions. Explicit user windows still require exact interval coverage.
+        """
+
+        try:
+            required_start = date.fromisoformat(start_date)
+            required_end = date.fromisoformat(end_date)
+        except ValueError as error:
+            raise ValidationError("历史行情覆盖区间无效") from error
+        candidates: list[tuple[bool, date, date, dict[str, Any]]] = []
+        for item in self._records().values():
+            if not isinstance(item, dict) or not _market_history_metadata_consistent(item):
+                continue
+            if (
+                item.get("tenant_id") != identity.tenant_id
+                or item.get("created_by") != identity.principal_id
+                or item.get("schema_id") != "market-history"
+                or set(item.get("asset_ids", [])) != set(asset_ids)
+                or not set(fields).issubset(set(item.get("normalized_fields", [])))
+            ):
+                continue
+            convention = item.get("price_convention")
+            coverage = item.get("coverage")
+            if not isinstance(convention, dict) or not isinstance(coverage, dict):
+                continue
+            if convention.get("frequency") != frequency or convention.get("requested_adjustment") != adjustment:
+                continue
+            if require_verified_calendar and not _history_has_verified_calendar(coverage):
+                continue
+            try:
+                available_start = date.fromisoformat(str(coverage.get("start_date")))
+                available_end = date.fromisoformat(str(coverage.get("end_date")))
+                acquired_from = date.fromisoformat(str(coverage.get("requested_start_date", available_start)))
+                acquired_through = date.fromisoformat(str(coverage.get("requested_end_date", available_end)))
+            except ValueError:
+                continue
+            exact = acquired_from <= required_start and acquired_through >= required_end
+            latest_available = (
+                allow_available_end
+                and acquired_from <= required_start
+                and available_end >= required_start
+                and available_end <= required_end
+            )
+            if exact or latest_available:
+                candidates.append((exact, available_end, available_start, item))
+        if not candidates:
+            return None
+        _, _, _, record = max(
+            candidates,
+            key=lambda candidate: (
+                candidate[0],
+                candidate[1],
+                candidate[2],
+                str(candidate[3].get("registered_at", "")),
+                str(candidate[3].get("data_asset_id", "")),
+            ),
+        )
         return {key: record[key] for key in _PROTOCOL_FIELDS}
 
     def resolve_frozen_trading_calendar(
@@ -218,7 +305,7 @@ class DataStore:
             candidates = [record]
         else:
             candidates = [
-                item for item in self._state.read("data_assets").values()
+                item for item in self._records().values()
                 if isinstance(item, dict)
                 and item.get("tenant_id") == identity.tenant_id
                 and item.get("created_by") == identity.principal_id
@@ -273,7 +360,7 @@ class DataStore:
         """
 
         candidates: list[dict[str, Any]] = []
-        for item in self._state.read("data_assets").values():
+        for item in self._records().values():
             if not isinstance(item, dict):
                 continue
             if (
@@ -304,7 +391,7 @@ class DataStore:
         return {key: record[key] for key in _PROTOCOL_FIELDS}
 
     def get(self, identity: SessionIdentity, data_asset_id: str) -> dict[str, Any]:
-        record = self._state.read("data_assets").get(_asset_key(identity.tenant_id, data_asset_id))
+        record = self._records().get(_asset_key(identity.tenant_id, data_asset_id))
         if not isinstance(record, dict):
             raise KeyError(data_asset_id)
         if record.get("tenant_id") != identity.tenant_id:
@@ -372,6 +459,28 @@ def _market_history_metadata_consistent(record: dict[str, Any]) -> bool:
     declared_start = coverage.get("start_date", coverage.get("start"))
     declared_end = coverage.get("end_date", coverage.get("end"))
     return declared_start == str(sessions[0]) and declared_end == str(sessions[-1])
+
+
+def _history_has_verified_calendar(coverage: dict[str, Any]) -> bool:
+    calendar_id = coverage.get("calendar_id")
+    calendar_revision = coverage.get("calendar_revision")
+    sessions = coverage.get("sessions")
+    calendar_coverage_end = coverage.get("calendar_coverage_end")
+    if (
+        not isinstance(calendar_id, str)
+        or not calendar_id.startswith("CN-")
+        or not isinstance(calendar_revision, str)
+        or not calendar_revision.strip()
+        or calendar_revision.casefold() in {"unverified", "unknown", "derived", "frame-sessions"}
+        or not isinstance(sessions, list)
+        or not sessions
+        or not isinstance(calendar_coverage_end, str)
+    ):
+        return False
+    try:
+        return date.fromisoformat(calendar_coverage_end) <= date.fromisoformat(str(sessions[-1]))
+    except ValueError:
+        return False
 
 
 def _requested_asset_id(value: object) -> str | None:
