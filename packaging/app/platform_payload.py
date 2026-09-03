@@ -60,8 +60,36 @@ MACOS_PAYLOAD_ROOTS = (
     "Contents/Resources/OptionHelper.icns",
     f"Contents/Resources/{VERIFICATION_FIXTURE_RESOURCE}",
 )
+
+# The App Host is a separate delivery boundary from the shared Capability.
+# Keep its source closure explicit so a newly imported package cannot be
+# present only in one developer's untracked worktree.  The audit package is
+# intentionally listed as its own build input because app_server imports it at
+# runtime and both native platforms freeze the same Python Host.
+APP_BACKEND_SOURCE_INPUTS = (
+    "products/app/backend/__init__.py",
+    "products/app/backend/agent_runtime",
+    "products/app/backend/app_server.py",
+    "products/app/backend/attachments",
+    "products/app/backend/audit",
+    "products/app/backend/authorization",
+    "products/app/backend/capability_service.py",
+    "products/app/backend/datafetcher_adapter.py",
+    "products/app/backend/errors.py",
+    "products/app/backend/identity",
+    "products/app/backend/model_gateway",
+    "products/app/backend/page_registry.py",
+    "products/app/backend/product_rule_revision.py",
+    "products/app/backend/reporter_adapter.py",
+    "products/app/backend/secrets",
+    "products/app/backend/settings",
+    "products/app/backend/stores",
+    "products/app/backend/task_runtime",
+    "products/app/backend/tool_gateway.py",
+    "products/app/backend/verification_fixture.py",
+)
 MACOS_BUILD_INPUTS = (
-    "products/app/backend",
+    *APP_BACKEND_SOURCE_INPUTS,
     "products/app/config/app-defaults.yaml",
     "products/app/config/logging.yaml",
     VERIFICATION_FIXTURE_SOURCE,
@@ -91,7 +119,7 @@ WINDOWS_PAYLOAD_ROOTS = (
     f"Resources/{VERIFICATION_FIXTURE_RESOURCE}",
 )
 WINDOWS_BUILD_INPUTS = (
-    "products/app/backend",
+    *APP_BACKEND_SOURCE_INPUTS,
     "products/app/config/app-defaults.yaml",
     "products/app/config/logging.yaml",
     VERIFICATION_FIXTURE_SOURCE,
