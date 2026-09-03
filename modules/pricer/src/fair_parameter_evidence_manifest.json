@@ -5,8 +5,8 @@
     "optionreg.registry": {
       "development_source_path": "references/optionreg.py",
       "release_source_path": "scripts/knowledger/optionreg.py",
-      "source_sha256": "4977d3886fa90647de84a9b4dc6dc77acba3e732b2f01a1c44b0f4d8f2725016",
-      "release_source_sha256": "4977d3886fa90647de84a9b4dc6dc77acba3e732b2f01a1c44b0f4d8f2725016"
+      "source_sha256": "addb3e775b771e0b0693dce5408e6fd691cf39630f200e35c0a4a02623aa18da",
+      "release_source_sha256": "addb3e775b771e0b0693dce5408e6fd691cf39630f200e35c0a4a02623aa18da"
     },
     "pricer.model_router.capabilities": {
       "development_source_path": "modules/pricer/src/model_router.py",
@@ -17,7 +17,7 @@
     "pricer.product_acceptance_matrix": {
       "development_source_path": "modules/pricer/tests/fixtures/product_acceptance_matrix.json",
       "release_source_path": null,
-      "source_sha256": "5c76ca3e783ae0f1c8b67015bdb7616b3adc6c9697aaf0199b36813f99c06b26",
+      "source_sha256": "e9ddbff0912f53f4cb6fd29d9e60b45e687191afb5ce3da64b95cf71a47cdb6c",
       "release_source_sha256": null
     },
     "pricer.fair_parameter.cashflow_evidence": {
@@ -27,5 +27,5 @@
       "release_source_sha256": null
     }
   },
-  "manifest_hash": "a9fd2f21f51205b05dffcc9263dd3ce6cd3e17b32346f630372a5bcb154c0bbe"
+  "manifest_hash": "e92358d1b2a106e4f68ff0b67a7727551455c0913bf396daa791645c81ae244f"
 }
