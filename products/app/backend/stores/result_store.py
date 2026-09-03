@@ -800,12 +800,12 @@ _PRICING_FACTS = (
 )
 _GREEK_NAMES = {"delta": "Delta", "gamma": "Gamma", "vega": "Vega", "theta": "Theta", "rho": "Rho"}
 _BACKTEST_FACTS = (
-    ("average_gross_return", "平均毛收益率", "percent"),
-    ("median_gross_return", "中位毛收益率", "percent"),
-    ("minimum_gross_return", "最小毛收益率", "percent"),
-    ("maximum_gross_return", "最大毛收益率", "percent"),
-    ("max_loss_gross_return", "最大损失毛收益率", "percent"),
-    ("win_rate", "胜率", "percent"),
+    ("average_contract_settlement_return", "average_gross_return", "平均合同结算收益率", "percent"),
+    ("median_contract_settlement_return", "median_gross_return", "中位合同结算收益率", "percent"),
+    ("minimum_contract_settlement_return", "minimum_gross_return", "最低合同结算收益率", "percent"),
+    ("maximum_contract_settlement_return", "maximum_gross_return", "最高合同结算收益率", "percent"),
+    ("max_loss_contract_settlement_return", "max_loss_gross_return", "最大历史损失", "percent"),
+    ("positive_return_rate", "win_rate", "历史正收益样本占比", "percent"),
 )
 
 
@@ -830,8 +830,8 @@ def _result_facts(module: str, result: dict[str, Any], result_hash: str) -> list
     elif module == "backtester":
         source = result.get("backtest") if isinstance(result.get("backtest"), dict) else result
         metrics = source.get("common_metrics") if isinstance(source.get("common_metrics"), dict) else source
-        for key, label, unit in _BACKTEST_FACTS:
-            value = _number(metrics.get(key)) if isinstance(metrics, dict) else None
+        for key, legacy_key, label, unit in _BACKTEST_FACTS:
+            value = _number(metrics.get(key, metrics.get(legacy_key))) if isinstance(metrics, dict) else None
             if value is not None:
                 selected.append((key, label, value, unit))
     else:
