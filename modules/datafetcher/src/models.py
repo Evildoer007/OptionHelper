@@ -33,7 +33,8 @@ class DataRequest:
     frequency: str = "1d"
     adjustment: str = "auto"
     source_priority: tuple[str, ...] = ("ifind_http",)
-    cache_policy: str = "force_refresh"
+    cache_policy: str = "extend_only"
+    persistence_mode: str = "volatile"
     offline: bool = False
     local_csv: str | None = None
     local_source_fingerprint: str | None = None
@@ -54,7 +55,7 @@ class DataRequest:
         allowed = {
             "asset_id", "asset_ids", "start_date", "end_date", "fields", "provider",
             "frequency", "adjustment", "source_priority", "cache_policy", "offline",
-            "local_csv", "quota_limit",
+            "local_csv", "quota_limit", "persistence_mode",
         }
         unknown = set(payload) - allowed
         if unknown:
@@ -107,7 +108,8 @@ class DataRequest:
             frequency=str(payload.get("frequency", "1d")),
             adjustment=str(payload.get("adjustment", "auto")),
             source_priority=source_priority,
-            cache_policy=str(payload.get("cache_policy", "force_refresh")),
+            cache_policy=str(payload.get("cache_policy", "extend_only")),
+            persistence_mode=str(payload.get("persistence_mode", "volatile")),
             offline=offline,
             local_csv=str(payload["local_csv"]) if payload.get("local_csv") else None,
             quota_limit=quota_limit,
@@ -136,11 +138,12 @@ class CalendarRequest:
     start_date: str
     end_date: str
     quota_limit: int | None = None
+    persistence_mode: str = "volatile"
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> "CalendarRequest":
         payload = dict(value)
-        allowed = {"asset_id", "asset_ids", "start_date", "end_date", "fields", "adjustment", "quota_limit"}
+        allowed = {"asset_id", "asset_ids", "start_date", "end_date", "fields", "adjustment", "quota_limit", "persistence_mode"}
         unknown = set(payload) - allowed
         if unknown:
             raise ValueError("交易日历请求含未知字段：" + "、".join(sorted(unknown)))
@@ -163,6 +166,7 @@ class CalendarRequest:
             start_date=str(payload.get("start_date", "")).strip(),
             end_date=str(payload.get("end_date", "")).strip(),
             quota_limit=quota_limit,
+            persistence_mode=str(payload.get("persistence_mode", "volatile")).strip(),
         )
 
     def public_dict(self, *, include_local_source: bool = False) -> dict[str, Any]:
@@ -172,6 +176,7 @@ class CalendarRequest:
             "start_date": self.start_date,
             "end_date": self.end_date,
             "quota_limit": self.quota_limit,
+            "persistence_mode": self.persistence_mode,
         }
 
 
