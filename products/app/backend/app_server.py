@@ -1779,34 +1779,16 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
             analysis_case_id = query.get("analysis_case_id", [None])[0]
             if task_id is not None:
                 self.app.tasks.get(identity, task_id)
-            binding = self.app.contracts.get_current(
-                identity,
-                task_id,
-                catalog_version=str(self.app.registry.manifest["catalog_version"]),
-            ) if task_id is not None else None
-            if task_id is not None and binding is None and module_name in {"pricer", "backtester"}:
-                stale = self.app.contracts.get(identity, task_id)
-                if stale is not None:
-                    raise UserActionError(
-                        "stale_task_contract",
-                        "当前任务的合同来自旧产品目录。请新建研究任务后继续估值或历史回测。",
-                    )
-            if binding is not None:
-                fingerprint = str(binding["contract_fingerprint"])
-                analysis_case_id = f"case-{fingerprint[:24]}"
             self._json(HTTPStatus.OK, {
                 "context": self.app.registry.host_context(
                     identity,
                     module_name,
                     analysis_case_id,
                     task_id=task_id,
-                    candidate_id=f"candidate-{fingerprint[:24]}" if binding is not None else None,
-                    catalog_version=str(binding["catalog_version"]) if binding is not None else None,
-                    contract_fingerprint=fingerprint if binding is not None else None,
-                    contract_ref=(
-                        HostObjectRef.from_payload(binding["contract_ref"], "contract_ref")
-                        if binding is not None else None
-                    ),
+                    candidate_id=None,
+                    catalog_version=None,
+                    contract_fingerprint=None,
+                    contract_ref=None,
                 ),
             })
             return
