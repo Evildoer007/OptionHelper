@@ -76,7 +76,7 @@ Designer只消费`optionhelper.designer-payload`，且顶层`schema`字段必须
 
 `charts`支持`line`、`bar`和`heatmap`。热力图用于二维Spot×剩余期限的Greek曲面，字段为`x`、`y`、`data`、`x_axis_name`、`y_axis_name`、`z_axis_name`和`source_note`，其中每项`data`为`[x索引,y索引,已冻结数值]`。所有图表都有读屏摘要与完整展开的数据表；Tooltip、坐标轴和数据表使用同一展示格式，不允许输入颜色覆盖Designer主题。
 
-`backtest`使用`window`、`entry_rule`、`metrics`、`card_metrics`、`event_statistics`、`detail_tables`、`limitations`和`charts`。`metrics`可包含样本数、胜率、平均收益、最大亏损；`card_metrics`由Reporter按产品`metric_profile`显式投影产品专属统计。完整Report展示已交接的`event_statistics`；Card和多结构研究简报保持摘要定位，只提取四项核心指标和四项产品专属指标，不要求展示`event_statistics`。`detail_tables`可承载公共回测、路径事件、监控、路径结果、年度、标的表现及产品专属统计。标准图表顺序为收益率分布、路径结果分布、年度表现、事件触发率；没有冻结图表事实时直接省略该图，只有Reporter明确交接了公开原因时才展示该原因，不得伪造净值图或缺失说明。所有统计必须来自逐笔回测结果聚合，且收益率分母须在`parameters.backtest_input`中披露。
+`backtest`使用`window`、`entry_rule`、`metrics`、`card_metrics`、`event_statistics`、`detail_tables`、`limitations`和`charts`。`metrics`可包含样本数、历史正收益样本占比、平均合同结算收益率、最大历史损失及正零负样本数；`card_metrics`由Reporter按产品`metric_profile`显式投影产品专属统计。完整Report展示已交接的`event_statistics`；Card和多结构研究简报保持摘要定位，只提取核心指标和四项产品专属指标，不要求展示`event_statistics`。`detail_tables`可承载公共回测、路径事件、监控、路径结果、年度、标的表现及产品专属统计。标准图表顺序为收益率分布、路径结果分布、年度表现、事件触发率；没有冻结图表事实时直接省略该图，只有Reporter明确交接了公开原因时才展示该原因，不得伪造净值图或缺失说明。所有统计必须来自逐笔回测结果聚合，且收益率分母须在`parameters.backtest_input`中披露。
 
 ## 4. 参数与风险
 
