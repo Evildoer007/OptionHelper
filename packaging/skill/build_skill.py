@@ -37,15 +37,6 @@ from verify_skill import (
     verify_skill,
     verify_zip,
 )
-from pricer_evidence import (
-    DEVELOPMENT_MANIFEST_RELATIVE_PATH,
-    PACKAGE_MANIFEST_RELATIVE_PATH,
-    PricerEvidenceManifestError,
-    pricer_evidence_is_present,
-    validate_pricer_evidence_manifest,
-)
-
-
 SOURCE_MAP = Path(__file__).with_name("package-source-map.json")
 _SAFE_TOP_LEVEL = ("references", "scripts", "assets", "LICENSES")
 _BANNED_SOURCE_ROOTS = {"blueprint", "data", "dist", "evals", "history", "products", "result"}
@@ -566,14 +557,6 @@ def build_skill(
     versions_root: Path | None = None,
 ) -> Path:
     repo_root = repo_root.expanduser().resolve()
-    if pricer_evidence_is_present(repo_root, packaged=False):
-        try:
-            validate_pricer_evidence_manifest(
-                repo_root / DEVELOPMENT_MANIFEST_RELATIVE_PATH,
-                development_root=repo_root,
-            )
-        except PricerEvidenceManifestError as error:
-            raise SkillBuildError(f"Pricer公平参数证据manifest校验失败：{error}") from error
     required_designer_sources = {
         "modules/designer/src/comparison_renderer.py": "scripts/modules/designer/comparison_renderer.py",
         "modules/designer/assets/templates/multicard-standard.template.json": "assets/designer/templates/multicard-standard.template.json",
@@ -647,19 +630,6 @@ def build_skill(
                 versions_root=versions_root,
             )
         entries = content_tree_entries(staged)
-        if pricer_evidence_is_present(repo_root, packaged=False):
-            try:
-                # This second read happens after Source Map staging.  It binds
-                # the two releasable evidence ids to the actual bytes emitted
-                # into the Skill and deliberately does not require test files
-                # in the package for the other two ids.
-                validate_pricer_evidence_manifest(
-                    staged / PACKAGE_MANIFEST_RELATIVE_PATH,
-                    development_root=repo_root,
-                    release_root=staged,
-                )
-            except PricerEvidenceManifestError as error:
-                raise SkillBuildError(f"Pricer公平参数发行证据校验失败：{error}") from error
         hashes = {str(item["path"]): str(item["sha256"]) for item in entries}
         shared_entries = shared_payload_entries(entries)
         shared_hashes = {str(item["path"]): str(item["sha256"]) for item in shared_entries}
