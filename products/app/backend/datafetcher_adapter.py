@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 from hashlib import sha256
 from pathlib import Path
 import sys
@@ -80,6 +81,7 @@ class DataFetcherAdapter:
         self._verification_for = verification_for
         self._revoke_verification = revoke_verification
         self._mark_temporarily_unavailable = mark_temporarily_unavailable
+        self._volatile_assets: dict[tuple[str, str, str], tuple[dict[str, Any], bytes]] = {}
 
     def dispatch(
         self,
@@ -158,6 +160,19 @@ class DataFetcherAdapter:
             )
         if not isinstance(result, dict):
             raise ValidationError("DataFetcher App port must return an object")
+        volatile_payload = result.pop("_volatile_payload_b64", None)
+        reference = result.get("data_asset_ref")
+        if volatile_payload is not None:
+            if not isinstance(volatile_payload, str) or not isinstance(reference, dict):
+                raise ValidationError("DataFetcher返回的内存数据协议无效")
+            try:
+                content = base64.b64decode(volatile_payload, validate=True)
+            except (ValueError, TypeError) as error:
+                raise ValidationError("DataFetcher返回的内存数据无法解码") from error
+            if sha256(content).hexdigest() != reference.get("content_hash"):
+                raise ValidationError("DataFetcher内存数据与内容哈希不一致")
+            key = (principal.tenant_id, principal.principal_id, str(reference.get("data_asset_id", "")))
+            self._volatile_assets[key] = (dict(reference), content)
         failure_code = _failure_code(result)
         if requires_ifind and interface.secret_ref is not None:
             if (
@@ -207,6 +222,10 @@ class DataFetcherAdapter:
     ) -> tuple[dict[str, Any], bytes]:
         if not isinstance(data_asset_id, str) or not data_asset_id:
             raise ValidationError("DataAsset id is required")
+        volatile = self._volatile_assets.get((principal.tenant_id, principal.principal_id, data_asset_id))
+        if volatile is not None:
+            reference, content = volatile
+            return dict(reference), bytes(content)
         if not callable(self._app_datafetcher_read):
             raise UnavailableCapabilityError(
                 "datafetcher.download_port",
@@ -227,15 +246,23 @@ class DataFetcherAdapter:
         self,
         principal: SessionIdentity,
         *,
-        task_id: str,
         data_refs: tuple[Mapping[str, Any], ...],
     ) -> DataStoreReadPort:
-        """Bind a tenant-scoped, read-only DataStore port for pricing modules."""
+        """Bind an owner-scoped port to the exact refs selected for one run."""
         if self._data_store is None:
             raise UnavailableCapabilityError(
                 "pricing.data_store", "App Host has no configured DataStorePort",
             )
-        return _BoundDataStore(principal, task_id, data_refs, self._data_store)
+        return _BoundDataStore(principal, data_refs, self._data_store, self._read_volatile_bytes)
+
+    def _read_volatile_bytes(self, principal: SessionIdentity, ref: DataAssetRef) -> bytes | None:
+        value = self._volatile_assets.get((principal.tenant_id, principal.principal_id, ref.data_asset_id))
+        if value is None:
+            return None
+        reference, content = value
+        if reference.get("content_hash") != ref.content_hash:
+            raise ValidationError("DataFetcher内存数据引用与内容哈希不一致")
+        return bytes(content)
 
 
 def _project_datafetcher_failure(result: Mapping[str, Any]) -> dict[str, Any]:
@@ -290,22 +317,20 @@ class _BoundDataStore:
     def __init__(
         self,
         principal: SessionIdentity,
-        task_id: str,
         data_refs: tuple[Mapping[str, Any], ...],
         data_store: DataStoreReadPort,
+        volatile_reader: Callable[[SessionIdentity, DataAssetRef], bytes | None],
     ) -> None:
         self._principal = principal
-        if not isinstance(task_id, str) or not task_id:
-            raise ValidationError("计算DataStore必须绑定当前任务")
-        self._task_id = task_id
         self._allowed_refs = {
             (str(ref.get("data_asset_id")), str(ref.get("content_hash")))
             for ref in data_refs
             if isinstance(ref, Mapping)
         }
         if not self._allowed_refs:
-            raise ValidationError("计算DataStore必须绑定当前任务已验证DataAssetRef")
+            raise ValidationError("计算DataStore必须绑定本次运行已验证的DataAssetRef")
         self._data_store = data_store
+        self._volatile_reader = volatile_reader
 
     def read_bytes(self, ref: DataAssetRef, *, tenant_id: str) -> bytes:
         if not isinstance(ref, DataAssetRef):
@@ -315,10 +340,12 @@ class _BoundDataStore:
         if ref.created_by != self._principal.principal_id:
             raise PermissionError("DataAssetRef owner does not match the App caller")
         if (ref.data_asset_id, ref.content_hash) not in self._allowed_refs:
-            raise PermissionError("DataAssetRef is not attached to the current App task")
+            raise PermissionError("DataAssetRef is not selected for this run")
         if "read" not in ref.access_scope:
             raise PermissionError("DataAssetRef does not grant read access")
-        content = self._data_store.read_bytes(ref, tenant_id=tenant_id)
+        content = self._volatile_reader(self._principal, ref)
+        if content is None:
+            content = self._data_store.read_bytes(ref, tenant_id=tenant_id)
         actual_hash = sha256(content).hexdigest()
         if actual_hash != ref.content_hash:
             raise ValidationError("DataAssetRef.content_hash does not match the actual bytes")
