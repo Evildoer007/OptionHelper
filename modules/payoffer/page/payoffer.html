@@ -12,11 +12,17 @@
     <style>
       .runtime-parameter-grid { grid-template-columns: 1fr; }
       .runtime-parameter-grid .parameter-field,
-      .runtime-parameter-grid .parameter-field.full { grid-template-columns: minmax(0, .9fr) minmax(112px, 1.1fr); }
+      .runtime-parameter-grid .parameter-field.full { grid-template-columns: minmax(0, 1fr); }
       .runtime-parameter-grid .parameter-field select { width:100%; height:29px; padding:0 5px; border:1px solid var(--rule); background:var(--color-surface); color:var(--ink); font:11px var(--font); }
       .runtime-parameter-grid .parameter-field textarea { width:100%; min-height:58px; padding:6px; border:1px solid var(--rule); background:var(--color-surface); color:var(--ink); font:10px/1.45 var(--mono); resize:vertical; }
       .runtime-parameter-grid .parameter-field small { grid-column: 1 / -1; color:var(--muted); font:9px/1.4 var(--mono); overflow-wrap:anywhere; }
       .runtime-parameter-grid .parameter-field span { min-width:0; overflow-wrap:anywhere; }
+      .runtime-parameter-grid .term-control-row { display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:center; gap:7px; }
+      .runtime-parameter-grid .term-control-row > :is(input,select,textarea) { min-width:0; }
+      .runtime-parameter-grid .term-control-row > textarea { grid-column:1 / -1; }
+      .runtime-parameter-grid .parameter-unit { color:var(--muted); font:10px/1.35 var(--font); font-style:normal; white-space:nowrap; }
+      .runtime-parameter-grid .term-tenor { display:grid; grid-template-columns:minmax(0,1fr) 76px; gap:7px; }
+      .runtime-parameter-grid .term-tenor > :is(input,select) { min-width:0; }
       .runtime-parameter-grid input[type="number"] { appearance:textfield; -moz-appearance:textfield; }
       .runtime-parameter-grid input[type="number"]::-webkit-inner-spin-button,
       .runtime-parameter-grid input[type="number"]::-webkit-outer-spin-button { margin:0; -webkit-appearance:none; }
@@ -71,11 +77,14 @@
           <h1>产品结构</h1>
           <label class="field-label" for="productSelect">产品</label>
           <select id="productSelect" class="product-select"><option value="">请选择产品</option></select>
+          <label class="field-label" for="contractVersion">合同版本</label>
+          <select id="contractVersion" class="product-select" disabled><option value="">新方案，使用默认条款</option></select>
+          <small class="scope-notice" id="contractVersionHint">选择产品后可使用已保存版本，或建立新方案。</small>
           <div class="binding-card" id="bindingCard"><span>尚未选择产品</span></div>
           <div class="research-object-field" id="contractUnderlyingsField" hidden>
             <label class="field-label" for="contractUnderlyings">研究标的</label>
             <input id="contractUnderlyings" class="control" autocomplete="off" spellcheck="false" autocorrect="off" autocapitalize="off" placeholder="例如000905.SH">
-            <small>仅在首次建立任务合同时使用；多个标的以英文逗号分隔。</small>
+            <small>可随时修改；多个标的以英文逗号分隔。</small>
           </div>
           <div class="scenario-heading"><span>产品路径</span><small id="scenarioCount">0</small></div>
           <ol class="scenario-list" id="scenarioList"></ol>
@@ -102,7 +111,7 @@
         <div class="panel-resizer panel-resizer-right" id="inspectorResizer" role="separator" aria-label="调整条款参数面板宽度" aria-orientation="vertical" tabindex="0"></div>
 
         <aside class="inspector-panel" id="inspectorPanel">
-          <h2 id="inspectorTitle">参数设置</h2>
+          <h2 id="inspectorTitle">收益结构设置</h2>
           <section class="inspector-group module-parameter-section" id="runtimeIdentityGroup" hidden aria-hidden="true">
             <div class="parameter-grid contract-identity-grid" id="identityFields">
               <label class="parameter-field" id="contractIdField"><span>合同标识</span><input id="contractId" autocomplete="off" placeholder="留空自动生成"></label>
@@ -111,29 +120,25 @@
             </div>
           </section>
           <section class="inspector-group module-parameter-section">
-            <div class="group-title" id="termsGroupTitle">结构条款</div>
+            <div class="group-title" id="termsGroupTitle">合同条款</div>
             <div class="parameter-grid runtime-parameter-grid" id="parameterFields"></div>
             <div class="runtime-actions" hidden><button class="button button-quiet small" id="applyParametersButton" hidden>解析并更新收益图</button><button class="button button-quiet small" id="restoreDefaultsButton" hidden>恢复默认值</button></div>
           </section>
-          <section class="inspector-group module-parameter-section" id="canvasSizeGroup" hidden>
-            <div class="group-title">图片尺寸</div>
-            <div class="parameter-grid canvas-size-grid">
-              <label class="parameter-field"><span>图片宽度</span><input id="canvasWidth" type="number" min="240" max="6000" step="1" inputmode="numeric" value="1200"><em>px</em></label>
-              <label class="parameter-field"><span>图片高度</span><input id="canvasHeight" type="number" min="180" max="6000" step="1" inputmode="numeric" placeholder="载入后显示"><em>px</em></label>
-            </div>
-            <p class="canvas-size-note">控制预览和保存SVG的像素尺寸，不改变合同条款和收益计算。</p>
-          </section>
-          <details class="module-advanced" id="runtimeImportGroup">
-            <summary>高级设置</summary>
+          <details class="module-advanced" id="canvasSizeGroup" hidden>
+            <summary>图形导出</summary>
             <div class="module-advanced-panel">
-              <button id="runtimeModeButton" type="button" hidden aria-hidden="true" tabindex="-1"></button>
-              <div class="group-title">导入合同或条款</div>
-              <p class="hint">可粘贴条款覆盖或既有结果；导入后只回填可编辑字段。</p>
-              <textarea id="parameterJson" class="runtime-import" placeholder='例如：{"term_overrides":{"K":100}}'></textarea>
-              <div class="runtime-actions"><button class="button button-quiet small" id="importParametersButton">导入并回填</button></div>
-              <div class="group-title advanced-path-title">路径说明</div>
+              <div class="parameter-grid canvas-size-grid">
+                <label class="parameter-field"><span>图片宽度</span><input id="canvasWidth" type="number" min="240" max="6000" step="1" inputmode="numeric" value="1200"><em>px</em></label>
+                <label class="parameter-field"><span>图片高度</span><input id="canvasHeight" type="number" min="180" max="6000" step="1" inputmode="numeric" placeholder="载入后显示"><em>px</em></label>
+              </div>
+            </div>
+          </details>
+          <div id="fixedRulesGroup" hidden><div id="fixedFields"></div></div>
+          <details class="module-advanced" id="runtimeImportGroup">
+            <summary>路径说明</summary>
+            <div class="module-advanced-panel">
               <div class="source-detail" id="sourceDetail">选择产品后显示路径来源与条款字段。</div>
-              <div class="source-detail" id="selectedPathDetail">选择路径后显示判断条件与损益表达。</div>
+              <div class="source-detail" id="selectedPathDetail">选择路径后显示判断条件与收益条件。</div>
             </div>
           </details>
           <details class="module-advanced" id="maintenancePanel" hidden>
@@ -157,7 +162,7 @@
     <script>
       const $ = id => document.getElementById(id);
       const state = {
-        products: [], product: null, taskContract: null, preview: null, defaultExample: null, previewPayload: null, previewSignature: null,
+        products: [], product: null, contractVersions: [], taskContract: null, preview: null, defaultExample: null, previewPayload: null, previewSignature: null,
         selectedPathIndex: 0, zoom: 1, zoomMode: 'fit', canvasRequestId: 0, inputsDirty: false, saving: false,
         maintenanceEnabled: false, maintenancePlan: null, maintenanceRequestId: 0, hostContractRequestId: 0
       };
@@ -168,7 +173,7 @@
       const apiBase = location.protocol === 'file:' ? 'http://127.0.0.1:4181' : '';
       const apiUrl = path => apiBase + path;
       const selectValues = {
-        exercise_style: [['European', '欧式'], ['American', '美式']],
+        exercise_style: [['European', '仅到期日可行权'], ['American', '存续期内可行权'], ['Bermudan', '约定观察日可行权']],
         settlement: [['cash', '现金结算']]
       };
       const escapeHtml = value => String(value ?? '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;');
@@ -208,21 +213,41 @@
         $('stateDot').className = 'state-dot ' + dot;
       }
 
-      function hasHostTaskContract() {
-        return Boolean(state.taskContract && /^[0-9a-f]{64}$/.test(String(state.taskContract.contract_fingerprint || '')));
+      function hasSelectedContractVersion() {
+        return Boolean(
+          state.taskContract
+          && state.taskContract.product_id === state.product?.product_id
+          && /^[0-9a-f]{64}$/.test(String(state.taskContract.contract_fingerprint || ''))
+        );
+      }
+
+      const flattenContractVersions = schemes => (Array.isArray(schemes) ? schemes : []).flatMap(scheme => Array.isArray(scheme?.versions) ? scheme.versions : []);
+      function versionLabel(version, index) {
+        const date = String(version?.created_at || '').slice(0, 10);
+        return '版本' + (index + 1) + (date ? '，' + date : '');
+      }
+      function syncContractVersionOptions(preferredFingerprint = '') {
+        const productId = state.product?.product_id || '';
+        const versions = state.contractVersions.filter(item => item.product_id === productId).sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')));
+        const select = $('contractVersion');
+        select.replaceChildren(new Option('新方案，使用默认条款', ''), ...versions.map((item, index) => new Option(versionLabel(item, index), item.contract_fingerprint)));
+        select.disabled = !productId;
+        select.value = versions.some(item => item.contract_fingerprint === preferredFingerprint) ? preferredFingerprint : '';
+        state.taskContract = versions.find(item => item.contract_fingerprint === select.value) || null;
+        $('contractVersionHint').textContent = versions.length ? '当前产品已保存' + versions.length + '个版本；切换不会影响其他模块。' : '当前产品尚无已保存版本，可直接配置并预览。';
       }
 
       function canRuntimePreview() {
         if (state.product?.runtime_status !== 'enabled') return false;
-        // 选中可运行产品后就让用户看到正式入口；是否已有冻结合同由Host在
-        // 预览时严格校验。页面不能用一份本地身份替代Host首建合同。
+        // 选中可运行产品后即可预览。已保存版本只是可选基础版本，
+        // 不构成任务级合同锁，也不限制切换产品或标的。
         if (hostedInDesk) return true;
         return localDevelopmentPreview;
       }
 
       function runtimeAvailabilityMessage() {
-        if (hostedInDesk && !hasHostTaskContract()) return '当前任务尚未建立受控合同。请选择研究标的和本次条款后点击预览，由OptionHelper建立合同；默认图仍保持只读。';
-        if (hostedInDesk) return '当前条款将基于任务已绑定的受控合同运行。';
+        if (hostedInDesk && !hasSelectedContractVersion()) return '请选择研究标的和本次条款后预览；保存时会建立新的合同方案。';
+        if (hostedInDesk) return '当前条款基于所选合同版本；修改后保存为新版本。';
         if (localDevelopmentPreview) return '本机开发预览使用明确标记的标准化示例，不可用于正式交付。';
         return '独立页面默认只读。仅以?mode=local-development-preview显式启动时可使用标准化开发示例。';
       }
@@ -231,12 +256,12 @@
         const editable = canRuntimePreview();
         $('appShell').classList.toggle('editing', editable);
         $('appShell').classList.toggle('readonly', !editable);
-        // 研究标的是首建合同信息，不属于右侧结构条款；合同建立后由任务上下文接管并隐藏。
+        // 研究标的保持可见、可改；选择历史版本只负责恢复界面值。
         const hostedUnderlyings = hostedInDesk && hostAllowsRequestField('underlyings');
         const showIdentity = localDevelopmentPreview;
         $('runtimeIdentityGroup').hidden = !showIdentity;
         $('runtimeIdentityGroup').setAttribute('aria-hidden', String(!showIdentity));
-        $('contractUnderlyingsField').hidden = hostedInDesk ? (!hostedUnderlyings || hasHostTaskContract()) : !localDevelopmentPreview;
+        $('contractUnderlyingsField').hidden = hostedInDesk ? !hostedUnderlyings : !localDevelopmentPreview;
         ['contractIdField', 'contractStartDateField', 'contractReferencePricesField'].forEach(id => {
           $(id).hidden = hostedInDesk;
         });
@@ -246,7 +271,7 @@
         $('canvasHeight').disabled = !hostedInDesk || !state.product;
         $('maintenancePanel').hidden = !(localDevelopmentPreview && state.maintenanceEnabled && !hostedInDesk);
         $('scopeNotice').textContent = hostedInDesk
-          ? (hasHostTaskContract() ? '预览：使用当前任务的合同身份与交易日历' : '首次预览：选择研究标的和条款后建立合同')
+          ? (hasSelectedContractVersion() ? '预览：使用所选合同版本；修改不会覆盖原版本' : '新方案：选择研究标的和条款后预览')
           : (localDevelopmentPreview ? '本机开发预览：标准化示例不可正式交付' : '默认只读图：独立开发预览需显式启用');
         renderParameters({ preserve });
       }
@@ -255,8 +280,18 @@
         return field.default_value;
       }
 
-      function displayValue(value) {
+      function displayValue(value, field = null) {
+        if (field?.value_encoding === 'percentage_input_decimal_internal' && Number.isFinite(Number(value))) return String(Number(value) * 100);
         return value !== null && typeof value === 'object' ? JSON.stringify(value) : String(value ?? '');
+      }
+
+      function fieldForKey(key) {
+        return (state.product?.payoff_fields || []).find(field => field.key === key) || null;
+      }
+
+      function displayUnit(field) {
+        if (field?.key === 'T') return '年';
+        return String(field?.display_unit || '');
       }
 
       function inputKind(field) {
@@ -267,7 +302,9 @@
       }
 
       function selectControl(field, value, attributes) {
-        const options = field.key === 'observation_price'
+        const options = Array.isArray(field.domain?.enum)
+          ? field.domain.enum.map(option => [String(option), window.OptionHelperModulePresentation?.termValueLabel?.(option) || String(option)])
+          : field.key === 'observation_price'
           ? (state.product?.observation_price_options || []).map(option => [option.value, option.label])
           : selectValues[field.key];
         if (!options) return '';
@@ -275,14 +312,20 @@
       }
 
       function termControl(field) {
-        const value = displayValue(defaultValue(field));
+        const value = displayValue(defaultValue(field), field);
         const kind = inputKind(field);
-        const attributes = ' class="term-input" data-key="' + escapeHtml(field.key) + '" data-kind="' + kind + '" data-default="' + escapeHtml(JSON.stringify(defaultValue(field))) + '"';
+        const attributes = ' class="term-input" data-key="' + escapeHtml(field.key) + '" data-kind="' + kind + '" data-encoding="' + escapeHtml(field.value_encoding || 'native') + '" data-default="' + escapeHtml(JSON.stringify(defaultValue(field))) + '"';
+        if (field.key === 'T') {
+          return '<span class="term-tenor"><input' + attributes + ' type="number" min="0" step="any" value="' + escapeHtml(value) + '"><select class="term-tenor-unit" aria-label="合同期限单位"><option value="year">年</option><option value="month">月</option><option value="day">自然日</option></select></span>';
+        }
         const selector = selectControl(field, value, attributes);
-        if (selector) return selector;
-        if (kind === 'json') return '<textarea' + attributes + '>' + escapeHtml(value) + '</textarea>';
-        if (kind === 'boolean') return '<select' + attributes + '><option value="true"' + (value === 'true' ? ' selected' : '') + '>是</option><option value="false"' + (value === 'false' ? ' selected' : '') + '>否</option></select>';
-        return '<input' + attributes + ' type="' + (kind === 'number' ? 'number' : 'text') + '"' + (kind === 'number' ? ' step="any"' : '') + ' value="' + escapeHtml(value) + '">';
+        const control = selector || (kind === 'json'
+          ? '<textarea' + attributes + '>' + escapeHtml(value) + '</textarea>'
+          : kind === 'boolean'
+            ? '<select' + attributes + '><option value="true"' + (value === 'true' ? ' selected' : '') + '>是</option><option value="false"' + (value === 'false' ? ' selected' : '') + '>否</option></select>'
+            : '<input' + attributes + ' type="' + (kind === 'number' ? 'number' : 'text') + '"' + (kind === 'number' ? ' step="any"' : '') + ' value="' + escapeHtml(value) + '">');
+        const unit = displayUnit(field);
+        return '<span class="term-control-row">' + control + (unit ? '<em class="parameter-unit">' + escapeHtml(unit) + '</em>' : '') + '</span>';
       }
 
       function termField(field) {
@@ -291,7 +334,10 @@
           ? ' <span class="field-symbol">' + mathHtml(field.math_symbol) + '</span>'
           : '';
         const label = escapeHtml(field.chinese_name) + symbol;
-        return '<label class="parameter-field ' + (full ? 'full' : '') + '"><span title="' + escapeHtml(field.english_name) + '">' + label + '</span>' + termControl(field) + '</label>';
+        const tenorNote = field.key === 'T'
+          ? '<small>最终按ACT/365年数提交。' + ((state.product?.payoff_fields || []).some(item => item.key === 'n_obs') ? '观察日数独立控制回放终点。' : '') + '</small>'
+          : '';
+        return '<label class="parameter-field ' + (full ? 'full' : '') + '"><span title="' + escapeHtml(field.english_name) + '">' + label + '</span>' + termControl(field) + tenorNote + '</label>';
       }
 
       function renderIdentity({ preserve = false } = {}) {
@@ -300,7 +346,7 @@
           $('bindingCard').innerHTML = '<span>尚未选择产品</span>';
           $('scenarioCount').textContent = '--';
           $('scenarioList').innerHTML = '<li class="preview">选择产品后显示</li>';
-          $('inspectorTitle').textContent = '参数设置';
+          $('inspectorTitle').textContent = '收益结构设置';
           $('sourceDetail').textContent = '选择产品后显示路径来源与条款字段。';
           return;
         }
@@ -321,6 +367,7 @@
       }
 
       function renderParameters({ preserve = false } = {}) {
+        renderFixedFields();
         if (!state.product) {
           renderIdentity();
           renderSelectedPath();
@@ -351,7 +398,11 @@
         if (item.dataset.kind === 'number') {
           const value = Number(raw);
           if (!Number.isFinite(value)) throw new Error(item.dataset.key + '必须是有限数');
-          return value;
+          if (item.dataset.key === 'T') {
+            const unit = item.closest('.term-tenor')?.querySelector('.term-tenor-unit')?.value || 'year';
+            return unit === 'month' ? value / 12 : unit === 'day' ? value / 365 : value;
+          }
+          return item.dataset.encoding === 'percentage_input_decimal_internal' ? value / 100 : value;
         }
         if (item.dataset.kind === 'boolean') return raw === 'true';
         if (item.dataset.kind === 'json') {
@@ -359,6 +410,18 @@
           catch (error) { throw new Error(item.dataset.key + '必须是JSON：' + error.message); }
         }
         return raw;
+      }
+
+      function renderFixedFields() {
+        const fields = Array.isArray(state.product?.fixed_fields) ? state.product.fixed_fields : [];
+        $('fixedRulesGroup').hidden = true;
+        $('fixedFields').innerHTML = fields.map(field => {
+          const raw = displayValue(field.default_value, field);
+          const value = field.key === 'settlement' && raw === 'cash' ? '现金结算' : raw;
+          const unit = displayUnit(field);
+          const rendered = [value, unit].filter(Boolean).join(' ');
+          return '<div class="fixed-field"><strong>' + escapeHtml(field.label || field.key) + '：' + escapeHtml(rendered || '未提供') + '</strong><span>' + escapeHtml(field.editability_reason || '该字段由正式合同规则控制。') + '</span></div>';
+        }).join('');
       }
 
       function parseFieldDefault(item) {
@@ -376,14 +439,9 @@
         return value;
       }
 
-      function isActiveTaskContract() {
-        return Boolean(state.taskContract && state.taskContract.product_id === state.product?.product_id);
-      }
-
       function hostEditSchema() {
         if (!hostedInDesk) return null;
-        // request_fields由当前任务Host统一签发，换产品时仍必须保留正式
-        // Operation入口；仅可编辑条款集合才随当前产品切换。
+        // request_fields来自产品能力目录；合同版本只提供可复用的输入基线。
         if (state.taskContract?.edit_schema) return state.taskContract.edit_schema;
         return state.product?.edit_schema || null;
       }
@@ -399,21 +457,19 @@
         const keys = schema?.overridable_term_keys;
         if (!hostAllowsRequestField('term_overrides')) return [];
         const fields = state.product?.payoff_fields || [];
-        // 活动合同的条款由Host投影与产品字段取交集；切换产品后，Catalog
-        // 已按Core规则过滤payoff_fields，不能再用旧产品的条款白名单清空它。
-        if (!isActiveTaskContract() || !Array.isArray(keys)) return fields;
+        if (!hasSelectedContractVersion() || !Array.isArray(keys)) return fields;
         const allowed = new Set(keys);
         return fields.filter(field => allowed.has(field.key));
       }
 
-      function hydrateActiveTaskContract() {
-        if (!isActiveTaskContract()) return;
+      function hydrateSelectedContractVersion() {
+        if (!hasSelectedContractVersion()) return;
         const identity = state.taskContract.identity || {};
         if (Array.isArray(identity.underlyings)) $('contractUnderlyings').value = identity.underlyings.join(',');
         if (hostedInDesk) {
           termInputs().forEach(item => {
             if (Object.hasOwn(state.taskContract.terms || {}, item.dataset.key)) {
-              item.value = displayValue(state.taskContract.terms[item.dataset.key]);
+              item.value = displayValue(state.taskContract.terms[item.dataset.key], fieldForKey(item.dataset.key));
             }
           });
           return;
@@ -425,63 +481,9 @@
           : '';
         termInputs().forEach(item => {
           if (Object.hasOwn(state.taskContract.terms || {}, item.dataset.key)) {
-            item.value = displayValue(state.taskContract.terms[item.dataset.key]);
+            item.value = displayValue(state.taskContract.terms[item.dataset.key], fieldForKey(item.dataset.key));
           }
         });
-      }
-
-      function applyHostTaskContract(contract) {
-        const previousFingerprint = state.taskContract?.contract_fingerprint || null;
-        const preserve = state.inputsDirty || Boolean(state.preview);
-        state.taskContract = contract;
-        updateRuntimeChrome({ preserve });
-        if (!preserve) hydrateActiveTaskContract();
-        if (state.preview && previousFingerprint !== contract.contract_fingerprint) {
-          state.inputsDirty = true;
-          setCanvasState('合同已更新，当前图待重新预览', 'dirty');
-        }
-      }
-
-      async function synchronizeHostTaskContract(event) {
-        if (!hostedInDesk) return;
-        const fingerprint = String(event?.detail?.context?.contract_fingerprint || '');
-        if (!/^[0-9a-f]{64}$/.test(fingerprint) || fingerprint === state.taskContract?.contract_fingerprint) return;
-        const requestId = ++state.hostContractRequestId;
-        let response;
-        try { response = await fetch(apiUrl('/api/catalog')); }
-        catch (error) {
-          if (requestId !== state.hostContractRequestId) return;
-          throw error;
-        }
-        let data;
-        try { data = await response.json(); }
-        catch (error) {
-          if (requestId !== state.hostContractRequestId) return;
-          throw new Error('App合同目录未返回有效JSON');
-        }
-        if (requestId !== state.hostContractRequestId) return;
-        if (!response.ok || !data.ok) throw new Error(data.message || 'App合同目录读取失败');
-        const contract = data.task_contract;
-        if (!contract || contract.contract_fingerprint !== fingerprint) {
-          throw new Error('当前页面与任务合同不一致，请重新打开收益结构模块。');
-        }
-        applyHostTaskContract(contract);
-        if (state.product?.product_id === contract.product_id && canRuntimePreview()) {
-          showNotice('已同步当前任务的受控合同，可按现有条款生成预览。');
-        }
-      }
-
-      function requiresContractVariant(previewContract) {
-        const active = state.taskContract;
-        if (!active) return false;
-        if (previewContract?.identity?.product_id !== state.product.product_id) {
-          throw new Error('当前结果与输入条款不一致，请重新运行。');
-        }
-        const sourceFingerprint = String(previewContract?.source_contract_fingerprint || '');
-        if (!/^[0-9a-f]{64}$/.test(sourceFingerprint)) {
-          throw new Error('当前结果缺少可验证的合同来源，请重新预览。');
-        }
-        return sourceFingerprint !== active.contract_fingerprint;
       }
 
       function collectTermOverrides() {
@@ -489,7 +491,7 @@
         for (const item of termInputs()) {
           const value = parseTermValue(item);
           if (value === undefined) continue;
-          const frozen = hostedInDesk && isActiveTaskContract() && Object.hasOwn(state.taskContract?.terms || {}, item.dataset.key)
+          const frozen = hostedInDesk && hasSelectedContractVersion() && Object.hasOwn(state.taskContract?.terms || {}, item.dataset.key)
             ? state.taskContract.terms[item.dataset.key]
             : parseFieldDefault(item);
           if (!isSameValue(value, frozen)) overrides[item.dataset.key] = value;
@@ -538,6 +540,7 @@
         if (hostedInDesk) {
           payload.underlyings = collectUnderlyings();
           payload.render_options = collectRenderOptions();
+          if (state.taskContract?.base_contract_ref) payload.base_contract_ref = state.taskContract.base_contract_ref;
         }
         else payload.identity = collectIdentity();
         if (localDevelopmentPreview) payload.development_preview = true;
@@ -609,14 +612,14 @@
       function renderSelectedPath() {
         const path = state.preview?.path_panels?.[state.selectedPathIndex];
         if (!path) {
-          $('inspectorTitle').textContent = '参数设置';
+          $('inspectorTitle').textContent = '收益结构设置';
           $('sourceDetail').textContent = state.preview?.runtime_status === 'blocked'
             ? '当前产品只支持查看默认方案。'
             : state.product ? runtimeAvailabilityMessage() : '选择产品后显示路径与条款。';
           $('selectedPathDetail').textContent = state.preview?.runtime_status === 'blocked' ? '该产品的路径语义待合同确认，不能从资料图反推新参数结果。' : '选择路径后显示判断条件与损益表达。';
           return;
         }
-        $('inspectorTitle').textContent = '参数设置';
+        $('inspectorTitle').textContent = '收益结构设置';
         $('sourceDetail').innerHTML = '当前路径条件：' + mathHtml(path.condition_tex || '—');
         $('selectedPathDetail').innerHTML = '<span class="formula">收益口径：百分比</span><span class="formula">分段数：' + (path.segments?.length || 0) + '</span>';
       }
@@ -874,7 +877,7 @@
         catch (error) { current = false; }
         setCanvasState(enabled ? (current ? '收益图已更新' : '条款待预览') : '正式资料图已载入', current || !enabled ? 'ready' : 'dirty');
         showNotice(enabled
-          ? '已按当前受控合同计算' + state.preview.path_panels.length + '条收益路径。'
+          ? '已按当前输入计算' + state.preview.path_panels.length + '条收益路径。'
           : '已载入既有正式默认图。该产品尚未完整录入，不能生成参数图。');
       }
 
@@ -970,12 +973,8 @@
           if (!displayContract || displayContract.projection_status !== 'display_only') {
             throw new Error('当前参数尚未形成可保存的合同投影，请检查后重试。');
           }
-          const newContractVariant = requiresContractVariant(displayContract);
-          await request('/api/run', {
-            ...state.previewPayload,
-            new_contract_variant: newContractVariant
-          });
-          if (newContractVariant && hostedInDesk) await refreshActiveTaskContract();
+          await request('/api/run', state.previewPayload);
+          if (hostedInDesk) await refreshActiveTaskContract();
           showNotice(runtimeSuccessNotice());
           setCanvasState('结果已保存', 'ready');
         } catch (error) {
@@ -993,43 +992,11 @@
       async function refreshActiveTaskContract() {
         const response = await fetch(apiUrl('/api/catalog'));
         const data = await response.json();
-        if (!response.ok || !data.ok || !data.task_contract) throw new Error('合同版本已建立，但页面未能重新读取活动合同。请重新打开收益结构模块。');
-        state.taskContract = data.task_contract;
-      }
-
-      function fillIdentity(identity) {
-        if (hostedInDesk) return 0;
-        if (!identity || typeof identity !== 'object') return 0;
-        if (Array.isArray(identity.underlyings)) $('contractUnderlyings').value = identity.underlyings.join(',');
-        if (identity.contract_id !== undefined) $('contractId').value = identity.contract_id || '';
-        if (identity.contract_start_date) setDateInput($('contractStartDate'), String(identity.contract_start_date).slice(0, 10), '合同起始日');
-        if (identity.reference_prices && typeof identity.reference_prices === 'object') $('contractReferencePrices').value = JSON.stringify(identity.reference_prices);
-        return 1;
-      }
-
-      function importParameters() {
-        try {
-          const source = JSON.parse($('parameterJson').value || '{}');
-          if (!source || Array.isArray(source) || typeof source !== 'object') throw new Error('必须是JSON对象');
-          if (Object.hasOwn(source, 'resolved_contract')) throw new Error('旧resolved_contract不是可导入的正式合同；请导入受控input_snapshot中的payoff_input.contract，或使用display_contract仅回填展示条款。');
-          const controlledContract = source.payoff_input?.contract || null;
-          const displayContract = source.display_contract || null;
-          const terms = source.term_overrides || controlledContract?.terms || displayContract?.terms || null;
-          if (!terms || Array.isArray(terms) || typeof terms !== 'object') throw new Error('未找到term_overrides或ResolvedContract.terms');
-          let count = 0;
-          termInputs().forEach(item => {
-            if (Object.hasOwn(terms, item.dataset.key) && terms[item.dataset.key] !== null) {
-              item.value = displayValue(terms[item.dataset.key]);
-              count += 1;
-            }
-          });
-          const identityCount = hostedInDesk ? 0 : fillIdentity(source.identity || controlledContract?.identity || displayContract?.identity);
-          if (!count && !identityCount) throw new Error('导入内容不包含当前产品可编辑的条款或合同身份');
-          markInputDirty();
-          showNotice('已回填' + count + '个条款字段' + (identityCount ? '及合同身份' : '') + '。请预览后再生成结果。');
-        } catch (error) {
-          showNotice('导入失败：' + error.message, 'error');
-        }
+        if (!response.ok || !data.ok) throw new Error('合同版本已保存，但页面未能重新读取版本列表。请重新打开收益结构模块。');
+        state.contractVersions = flattenContractVersions(data.contract_schemes);
+        const selected = data.module_selection?.product_id === state.product?.product_id ? data.module_selection : null;
+        syncContractVersionOptions(selected?.contract_fingerprint || '');
+        if (selected) state.taskContract = selected;
       }
 
       function restoreDefaults() {
@@ -1103,7 +1070,9 @@
       async function selectProduct() {
         state.canvasRequestId += 1;
         clearMaintenancePlan();
+        const previousSelection = state.taskContract;
         state.product = state.products.find(product => product.product_id === $('productSelect').value) || null;
+        syncContractVersionOptions(previousSelection?.product_id === state.product?.product_id ? previousSelection.contract_fingerprint : '');
         state.preview = null;
         state.defaultExample = null;
         state.previewPayload = null;
@@ -1117,10 +1086,9 @@
         }
         state.zoomMode = 'fit';
         renderIdentity();
-        // 页面字段只在这里统一渲染一次；活动合同条款随后覆盖同一批字段，
-        // 不再由第二次渲染把Host冻结值重置为产品默认值。
+        // 页面字段只在这里统一渲染一次；所选版本随后覆盖同一批字段。
         updateRuntimeChrome();
-        hydrateActiveTaskContract();
+        hydrateSelectedContractVersion();
         renderLibrary();
         renderSelectedPath();
         try {
@@ -1149,21 +1117,34 @@
         }
         if (contractRequestId !== state.hostContractRequestId && (!response.ok || !data.ok)) return;
         if (!response.ok || !data.ok) throw new Error(data.message || '产品目录读取失败');
-        if (contractRequestId === state.hostContractRequestId) state.taskContract = data.task_contract || null;
+        if (contractRequestId === state.hostContractRequestId) {
+          state.contractVersions = flattenContractVersions(data.contract_schemes);
+          state.taskContract = data.module_selection || null;
+        }
         state.products = data.products;
         $('productSelect').replaceChildren(new Option('请选择产品',''), ...data.products.map(product => new Option(product.product_id + ' ' + product.canonical_name, product.product_id)));
-        $('productSelect').value = '';
+        $('productSelect').value = state.taskContract?.product_id || '';
+        syncContractVersionOptions(state.taskContract?.contract_fingerprint || '');
         await selectProduct();
       }
 
       $('productSelect').addEventListener('change', () => selectProduct().catch(error => showNotice(error.message, 'error')));
+      $('contractVersion').addEventListener('change', () => {
+        state.taskContract = state.contractVersions.find(item => item.contract_fingerprint === $('contractVersion').value && item.product_id === state.product?.product_id) || null;
+        state.preview = null;
+        state.previewSignature = null;
+        state.inputsDirty = false;
+        renderIdentity();
+        renderParameters();
+        hydrateSelectedContractVersion();
+        markInputDirty();
+      });
       $('applyParametersButton').addEventListener('click', () => preview().catch(() => {}));
       $('restoreDefaultsButton').addEventListener('click', restoreDefaults);
       $('canvasPreviewButton').addEventListener('click', () => preview().catch(() => {}));
       $('canvasDefaultButton').addEventListener('click', () => loadDefaultExample().catch(error => showNotice(error.message, 'error')));
       $('canvasSaveButton').addEventListener('click', () => saveRuntime().catch(() => {}));
       $('recheckButton').addEventListener('click', () => loadCatalog().then(() => showNotice('产品目录已重新读取。')).catch(error => showNotice(error.message, 'error')));
-      $('importParametersButton').addEventListener('click', importParameters);
       $('maintenancePlanButton').addEventListener('click', () => planDefaultMaintenance().catch(error => showNotice(error.message, 'error')));
       $('maintenancePublishButton').addEventListener('click', () => publishDefaultMaintenance().catch(error => showNotice(error.message, 'error')));
       $('maintenanceReason').addEventListener('input', clearMaintenancePlan);
@@ -1188,9 +1169,6 @@
       $('contractUnderlyings').addEventListener('change', syncReferenceSpots);
       $('parameterFields').addEventListener('input', markInputDirty);
       $('parameterFields').addEventListener('change', markInputDirty);
-      window.addEventListener('optionhelper.module-host-context', event => {
-        synchronizeHostTaskContract(event).catch(error => showNotice(error.message, 'error'));
-      });
       bindResizer($('libraryResizer'), '--library-width', 220, 420);
       bindResizer($('inspectorResizer'), '--inspector-width', 300, 520);
       new ResizeObserver(() => { if (state.zoomMode === 'fit' && $('canvasViewport').querySelector('.canvas-stage')) fitZoom(); }).observe($('canvasViewport'));
