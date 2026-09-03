@@ -1,12 +1,10 @@
 #!/usr/bin/env python3
-"""Restore both locked Node build roots with bounded npm processes."""
+"""Preflight both locked Node projects without mutating the source tree."""
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 import shutil
-import subprocess
 import sys
 
 
@@ -15,48 +13,28 @@ DEPENDENCY_ROOTS = (
     ROOT / "packaging" / "app" / "agent_runtime",
     ROOT / "products" / "app" / "runtime" / "optionhelper_agent_runtime",
 )
-NPM_TIMEOUT_SECONDS = 600
 
 
 class DependencyRestoreError(RuntimeError):
     pass
 
 
-def npm_ci_command(executable: str, root: Path, *, windows: bool | None = None) -> list[str]:
-    command = [executable, "ci", "--prefix", str(root), "--ignore-scripts"]
-    use_cmd = os.name == "nt" if windows is None else windows
-    if use_cmd and Path(executable).suffix.casefold() in {".cmd", ".bat"}:
-        return [os.environ.get("COMSPEC", "cmd.exe"), "/d", "/s", "/c", *command]
-    return command
-
-
 def restore_locked_dependencies(*, npm: str | None = None) -> None:
+    """Compatibility entrypoint used by one-click scripts.
+
+    The actual ``npm ci`` calls now run only after source freezing, inside the
+    disposable workspace owned by ``build_runtime.py``. This preflight checks
+    that npm and both lockfile pairs are available without creating
+    ``node_modules`` in either production source directory.
+    """
+
     executable = npm or shutil.which("npm")
     if not executable:
         raise DependencyRestoreError("缺少Node.js/npm，无法恢复Agent Runtime锁定依赖")
     for root in DEPENDENCY_ROOTS:
         if not (root / "package.json").is_file() or not (root / "package-lock.json").is_file():
             raise DependencyRestoreError(f"缺少Agent Runtime锁文件：{root}")
-        print(f"正在恢复锁定Node依赖：{root.relative_to(ROOT)}", flush=True)
-        command = npm_ci_command(executable, root)
-        try:
-            completed = subprocess.run(
-                command,
-                cwd=ROOT,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                timeout=NPM_TIMEOUT_SECONDS,
-            )
-        except subprocess.TimeoutExpired as error:
-            raise DependencyRestoreError(f"npm ci超时：{root.relative_to(ROOT)}") from error
-        if completed.returncode:
-            raise DependencyRestoreError(
-                f"npm ci失败：{root.relative_to(ROOT)}\n{completed.stdout}"
-            )
-        print(completed.stdout.rstrip(), flush=True)
+    print("锁文件预检通过；npm ci将在冻结后的临时构建目录执行。", flush=True)
 
 
 def main() -> None:
