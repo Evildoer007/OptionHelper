@@ -53,8 +53,9 @@ TERM_CATALOG = {
     "Kd": _term("第一执行价", "First Strike", "K_1", "number", "price", {"exclusive_min": 0}),
     "Ku": _term("第二执行价", "Second Strike", "K_2", "number", "price", {"exclusive_min": 0}),
     "Ksig": _term("执行波动率", "Variance Strike Volatility", "K", "number", "volatility", {"exclusive_min": 0}),
-    "Pi_0": _term("期初期权费点数", "Initial Premium Points", "P", "number", "normalized_point", {"min": 0}),
-    "P_net": _term("组合期权费净点数", "Net Option Premium Points", "P_net", "number", "normalized_point", {"min": 0}),
+    # Pi_0与P_net保留S0=100下的百分数数值，例如5表示5%，不能像p一样再除以100。
+    "Pi_0": _term("期初期权费", "Initial Premium", "P", "number", "premium_percent_s0_100", {"min": 0}),
+    "P_net": _term("组合净期权费", "Net Option Premium", "P_net", "number", "premium_percent_s0_100", {"min": 0}),
     "p": _term("期权费率", "Option Premium Rate", "p", "number", "rate", {"min": 0}),
     "A": _term("固定支付点数", "Fixed Payout Points", "A", "number", "normalized_point", {"min": 0}),
     "n_C": _term("看涨期权数量", "Call Quantity", "n_C", "number", "unit", {"exclusive_min": 0}),
