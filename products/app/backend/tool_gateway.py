@@ -172,6 +172,14 @@ class ToolGateway:
                 request_id=request_id,
                 trading_calendar_ref=calendar_ref,
             )
+        if tool_name == "backtester" and str(payload.get("action", "")).strip().lower() == "preview":
+            return self._dispatch_backtest_preview(
+                payload,
+                caller_context,
+                verified_context,
+                request_id=request_id,
+                agent_proxy=agent_proxy,
+            )
         if compute_run and self._compute_supervisor is not None:
             return self._dispatch_isolated_compute(
                 tool_name,
@@ -239,10 +247,10 @@ class ToolGateway:
                         friendly_payload, render_options = _extract_payoffer_render_options(
                             tool_name, friendly_payload, agent_proxy=agent_proxy,
                         )
-                        new_contract_variant = _new_contract_variant_requested(friendly_payload)
-                        if candidate_variant is not None and new_contract_variant:
-                            raise ValidationError("候选预选不得切换活动合同")
-                        existing = self._current_task_contract(caller_context, str(verified_context.task_id))
+                        _discard_retired_contract_variant_flag(friendly_payload)
+                        friendly_payload, existing = self._resolve_base_contract_payload(
+                            friendly_payload, caller_context, str(verified_context.task_id),
+                        )
                         candidate_contract = (
                             self._contracts.get_candidate_variant(
                                 caller_context,
@@ -253,14 +261,15 @@ class ToolGateway:
                             if candidate_variant is not None
                             else None
                         )
-                        if new_contract_variant and existing is None:
-                            raise ValidationError("当前任务尚未建立合同，不能切换方案版本")
-                        active_contract = candidate_contract if candidate_variant is not None else None if new_contract_variant else existing
-                        friendly_payload = _reuse_task_contract_identity(friendly_payload, active_contract)
-                        if new_contract_variant and _is_fair_parameter_payload(friendly_payload):
-                            raise ValidationError(
-                                "公平参数反解必须使用当前已激活合同，不能同时创建合同新版本"
-                            )
+                        active_contract = (
+                            candidate_contract
+                            if candidate_variant is not None
+                            else existing if _request_reuses_base_contract(friendly_payload, existing) else None
+                        )
+                        friendly_payload = _initialize_payoffer_contract_dates(
+                            tool_name, friendly_payload, active_contract,
+                        )
+                        friendly_payload = _reuse_base_contract_identity(friendly_payload, active_contract)
                         _run_fair_parameter_preflight(
                             tool_entry,
                             tool_name,
@@ -274,23 +283,8 @@ class ToolGateway:
                             active_contract,
                             request_id=request_id,
                             task_id=str(verified_context.task_id),
-                            frozen_calendar_contract=existing if new_contract_variant else None,
+                            frozen_calendar_contract=existing,
                         )
-                        if self._tasks is None or not callable(getattr(self._tasks, "get", None)):
-                            raise ValidationError("App TaskService未配置，无法绑定正式计算DataAssetRef")
-                        task = self._tasks.get(caller_context, str(verified_context.task_id))
-                        task_refs = task.get("data_asset_refs") if isinstance(task, Mapping) else None
-                        if not isinstance(task_refs, list):
-                            raise ValidationError("当前任务缺少受控DataAssetRef索引")
-                        attached = {
-                            (str(item.get("data_asset_id")), str(item.get("content_hash")))
-                            for item in task_refs if isinstance(item, Mapping)
-                        }
-                        if any(
-                            (str(ref.get("data_asset_id")), str(ref.get("content_hash"))) not in attached
-                            for ref in data_refs
-                        ):
-                            raise ValidationError("正式计算DataAssetRef必须已绑定当前App任务")
                         # The shared input compiler must verify every attached
                         # DataAssetRef before it freezes a contract. Payoffer
                         # never receives this port, but an observation product
@@ -304,7 +298,6 @@ class ToolGateway:
                                 )
                             compiler_data_store = self._datafetcher.bind_data_store(
                                 caller_context,
-                                task_id=str(verified_context.task_id),
                                 data_refs=tuple(data_refs),
                             )
                             bound_data_store = compiler_data_store
@@ -335,8 +328,6 @@ class ToolGateway:
                         )
                         if not isinstance(prepared, Mapping) or not isinstance(prepared.get("request"), Mapping):
                             raise ValidationError("Capability返回的正式计算输入无效")
-                        if new_contract_variant and _compiled_contract_reuses_active(prepared, existing):
-                            new_contract_variant = False
                         effective_payload = dict(prepared["request"])
                         if render_options is not None:
                             effective_payload["render_options"] = render_options
@@ -351,34 +342,8 @@ class ToolGateway:
                                 parent_version_id=candidate_variant.get("parent_version_id"),
                                 revision=int(candidate_variant["revision"]),
                             )
-                        elif new_contract_variant:
-                            binding = self._contracts.preview_new_variant(
-                                caller_context,
-                                str(verified_context.task_id),
-                                prepared,
-                                catalog_version=str(self._registry.manifest["catalog_version"]),
-                                expected_contract_fingerprint=str(existing["contract_fingerprint"]),
-                            )
-                        elif calendar_evidence_refresh:
-                            refresh_calendar = getattr(self._contracts, "refresh_calendar_evidence", None)
-                            if not callable(refresh_calendar):
-                                refresh_calendar = self._contracts.upgrade_legacy_calendar_evidence
-                            binding = refresh_calendar(
-                                caller_context,
-                                str(verified_context.task_id),
-                                prepared,
-                                catalog_version=str(self._registry.manifest["catalog_version"]),
-                                expected_contract_fingerprint=str(existing["contract_fingerprint"]),
-                            )
-                        elif existing is None:
-                            binding = self._contracts.preview_initial(
-                                caller_context,
-                                str(verified_context.task_id),
-                                prepared,
-                                catalog_version=str(self._registry.manifest["catalog_version"]),
-                            )
                         else:
-                            binding = self._contracts.bind(
+                            binding = self._contracts.preview_initial(
                                 caller_context,
                                 str(verified_context.task_id),
                                 prepared,
@@ -395,17 +360,11 @@ class ToolGateway:
                     if compute_run:
                         if self._results is None or effective_context.task_id is None:
                             raise ValidationError("计算模块必须绑定App任务与ResultStore")
-                        first_contract = (
-                            existing is None
-                            and candidate_variant is None
-                            and not new_contract_variant
-                            and not calendar_evidence_refresh
-                        )
                         bound_store = self._results.bind_module_store(
                             caller_context,
                             effective_context.task_id,
                             tool_name,
-                            defer_publication=(new_contract_variant and candidate_variant is None) or first_contract,
+                            defer_publication=candidate_variant is None,
                         )
                         if candidate_variant is not None:
                             bound_store = _CandidateVariantResultStore(bound_store, candidate_variant)
@@ -445,10 +404,16 @@ class ToolGateway:
                         and verified_context.task_id
                         and self._contracts is not None
                     ):
-                        binding = self._current_task_contract(caller_context, str(verified_context.task_id))
-                        task_contract = _catalog_task_contract(binding)
-                        if task_contract is not None:
-                            result = {**dict(result), "task_contract": task_contract}
+                        result = {
+                            **dict(result),
+                            **_catalog_contract_schemes(
+                                self._contracts,
+                                caller_context,
+                                str(verified_context.task_id),
+                                tool_name,
+                                catalog_version=str(self._registry.manifest["catalog_version"]),
+                            ),
+                        }
                     if compute_run:
                         if not isinstance(result, Mapping):
                             raise ValidationError("Capability计算结果必须为对象")
@@ -459,35 +424,21 @@ class ToolGateway:
                         )
                         if tool_name == "backtester" and backtest_window is not None:
                             result["backtest_window"] = backtest_window
-                        if first_contract:
-                            if result.get("ok") is True and result.get("status") in {"succeeded", "partial"}:
-                                activated = self._contracts.bind(
-                                    caller_context,
-                                    str(verified_context.task_id),
-                                    prepared,
-                                    catalog_version=str(self._registry.manifest["catalog_version"]),
-                                )
-                                if activated.get("contract_fingerprint") != effective_context.contract_fingerprint:
-                                    raise ValidationError("计算结果与首次激活的ResolvedContract不一致")
-                            if isinstance(result.get("module_run_ref"), Mapping):
-                                self._results.publish_module_run(
-                                    caller_context, result["module_run_ref"],
-                                )
-                        if (
-                            new_contract_variant
-                            and candidate_variant is None
-                            and result.get("ok") is True
-                            and result.get("status") in {"succeeded", "partial"}
-                        ):
-                            activated = self._contracts.activate_new_variant(
+                        if candidate_variant is None and result.get("ok") is True and result.get("status") in {"succeeded", "partial"}:
+                            saved = self._contracts.save_version(
                                 caller_context,
                                 str(verified_context.task_id),
                                 prepared,
                                 catalog_version=str(self._registry.manifest["catalog_version"]),
-                                expected_contract_fingerprint=str(existing["contract_fingerprint"]),
+                                module=tool_name,
+                                parent_contract_fingerprint=(
+                                    str(existing["contract_fingerprint"])
+                                    if isinstance(existing, Mapping) and existing.get("contract_fingerprint") != prepared.get("contract_fingerprint")
+                                    else None
+                                ),
                             )
-                            if activated.get("contract_fingerprint") != effective_context.contract_fingerprint:
-                                raise ValidationError("计算结果与新激活方案的ResolvedContract不一致")
+                            if saved.get("contract_fingerprint") != effective_context.contract_fingerprint:
+                                raise ValidationError("计算结果与保存的合同版本不一致")
                             self._results.publish_module_run(
                                 caller_context, result.get("module_run_ref", {}),
                             )
@@ -523,6 +474,128 @@ class ToolGateway:
                 raise ValidationError(str(error)) from error
         return result
 
+    def _dispatch_backtest_preview(
+        self,
+        payload: Mapping[str, Any],
+        caller_context: SessionIdentity,
+        verified_context: Any,
+        *,
+        request_id: str,
+        agent_proxy: bool,
+    ) -> dict[str, Any]:
+        """只读预检：复用正式编译、历史数据、日历和完整期限窗口规划。"""
+        if verified_context is None or not verified_context.task_id:
+            raise ValidationError("Backtester日期预检必须绑定App任务")
+        scripts_root = str(self._registry.capability_root / "scripts")
+        task_id = str(verified_context.task_id)
+        with capability_import_scope(scripts_root, runtime_root=self._capability_runtime_root):
+            self._registry.assert_execution_integrity()
+            content_hashes = self._registry.manifest.get("content_hashes")
+            if not isinstance(content_hashes, Mapping):
+                raise UnavailableCapabilityError("ToolGateway", "Capability content hashes are unavailable")
+            with verified_capability_modules(scripts_root, content_hashes):
+                tool_entry = self._load_tool_entry(scripts_root, content_hashes)
+                load_verified_capability_service("backtester", scripts_root)
+                friendly_payload = _business_payload(payload)
+                friendly_payload["action"] = "run"
+                friendly_payload = _controlled_desk_compute_payload(
+                    "backtester", friendly_payload, agent_proxy=agent_proxy,
+                )
+                friendly_payload, existing = self._resolve_base_contract_payload(
+                    friendly_payload, caller_context, task_id,
+                )
+                _discard_retired_contract_variant_flag(friendly_payload)
+                active_contract = existing if _request_reuses_base_contract(friendly_payload, existing) else None
+                friendly_payload = _reuse_base_contract_identity(friendly_payload, active_contract)
+                data_refs = self._resolve_compute_data_refs(
+                    "backtester",
+                    friendly_payload,
+                    caller_context,
+                    active_contract,
+                    request_id=request_id,
+                    task_id=task_id,
+                    frozen_calendar_contract=existing,
+                )
+                compiler_data_store = (
+                    self._datafetcher.bind_data_store(
+                        caller_context,
+                        data_refs=tuple(data_refs),
+                    )
+                    if data_refs and self._datafetcher is not None
+                    else None
+                )
+                friendly_payload = _bind_new_contract_to_history(
+                    "backtester",
+                    friendly_payload,
+                    data_refs=tuple(data_refs),
+                    existing_contract=active_contract,
+                )
+                calendar_refresh = _needs_backtest_calendar_evidence_refresh(
+                    "backtester", active_contract, data_refs=tuple(data_refs),
+                )
+                if calendar_refresh:
+                    friendly_payload = _calendar_evidence_refresh_payload(
+                        friendly_payload, active_contract, data_refs=tuple(data_refs),
+                    )
+                semantic_input_hash = hashlib.sha256(
+                    repr(_stable_semantic_value(friendly_payload)).encode("utf-8")
+                ).hexdigest()
+                requested_config = friendly_payload.get("backtest_config")
+                requested_config = dict(requested_config) if isinstance(requested_config, Mapping) else {}
+                requested_window = {
+                    "start_date": requested_config.get("start_date"),
+                    "end_date": requested_config.get("end_date"),
+                    "entry_dates": list(requested_config.get("entry_dates") or ()),
+                }
+                try:
+                    prepared, _, window = _prepare_compute_with_backtest_window(
+                        tool_entry,
+                        "backtester",
+                        friendly_payload,
+                        data_refs=tuple(data_refs),
+                        resolved_contract=(
+                            None if calendar_refresh
+                            else active_contract.get("resolved_contract") if active_contract else None
+                        ),
+                        data_store=compiler_data_store,
+                    )
+                except UserActionError as error:
+                    details = dict(error.details) if isinstance(error.details, Mapping) else {}
+                    suggested = details.get("suggested_end_date") or details.get("latest_complete_entry_session")
+                    return {
+                        "ok": True,
+                        "module": "backtester",
+                        "action": "preview",
+                        "status": "invalid",
+                        "request_entry_window": requested_window,
+                        "market_as_of_session": details.get("market_as_of_session"),
+                        "latest_complete_entry_session": details.get("latest_complete_entry_session"),
+                        "suggested_end_date": suggested,
+                        "effective_entry_window": None,
+                        "tenor_basis": _backtest_tenor_basis(friendly_payload, active_contract),
+                        "data_coverage_status": "insufficient_or_invalid_window",
+                        "input_semantic_hash": semantic_input_hash,
+                        "failure_code": error.code,
+                        "message": str(error),
+                        "next_step": error.next_step,
+                    }
+                contract = prepared.get("request", {}).get("contract") if isinstance(prepared, Mapping) else None
+                return {
+                    "ok": True,
+                    "module": "backtester",
+                    "action": "preview",
+                    "status": "ready",
+                    "request_entry_window": requested_window,
+                    "market_as_of_session": window.get("market_as_of_session") if window else None,
+                    "latest_complete_entry_session": window.get("latest_complete_entry_session") if window else None,
+                    "suggested_end_date": window.get("end_date") if window else None,
+                    "effective_entry_window": window,
+                    "tenor_basis": _backtest_tenor_basis(friendly_payload, active_contract, contract=contract),
+                    "data_coverage_status": "complete",
+                    "input_semantic_hash": semantic_input_hash,
+                    "contract_fingerprint": contract.get("contract_fingerprint") if isinstance(contract, Mapping) else None,
+                }
+
     def _dispatch_isolated_compute(
         self,
         tool_name: str,
@@ -552,7 +625,6 @@ class ToolGateway:
         task_id = str(verified_context.task_id)
         existing: Mapping[str, Any] | None = None
         prepared_contract: Mapping[str, Any] | None = None
-        new_contract_variant = False
         effective_context = verified_context
         bound_data_store = None
         backtest_window = None
@@ -577,10 +649,10 @@ class ToolGateway:
                     friendly_payload, render_options = _extract_payoffer_render_options(
                         tool_name, friendly_payload, agent_proxy=agent_proxy,
                     )
-                    new_contract_variant = _new_contract_variant_requested(friendly_payload)
-                    if candidate_variant is not None and new_contract_variant:
-                        raise ValidationError("候选预选不得切换活动合同")
-                    existing = self._current_task_contract(caller_context, task_id)
+                    _discard_retired_contract_variant_flag(friendly_payload)
+                    friendly_payload, existing = self._resolve_base_contract_payload(
+                        friendly_payload, caller_context, task_id,
+                    )
                     candidate_contract = (
                         self._contracts.get_candidate_variant(
                             caller_context,
@@ -590,14 +662,15 @@ class ToolGateway:
                         )
                         if candidate_variant is not None else None
                     )
-                    if new_contract_variant and existing is None:
-                        raise ValidationError("当前任务尚未建立合同，不能切换方案版本")
-                    active_contract = candidate_contract if candidate_variant is not None else None if new_contract_variant else existing
-                    friendly_payload = _reuse_task_contract_identity(friendly_payload, active_contract)
-                    if new_contract_variant and _is_fair_parameter_payload(friendly_payload):
-                        raise ValidationError(
-                            "公平参数反解必须使用当前已激活合同，不能同时创建合同新版本"
-                        )
+                    active_contract = (
+                        candidate_contract
+                        if candidate_variant is not None
+                        else existing if _request_reuses_base_contract(friendly_payload, existing) else None
+                    )
+                    friendly_payload = _initialize_payoffer_contract_dates(
+                        tool_name, friendly_payload, active_contract,
+                    )
+                    friendly_payload = _reuse_base_contract_identity(friendly_payload, active_contract)
                     _run_fair_parameter_preflight(
                         tool_entry,
                         tool_name,
@@ -611,23 +684,8 @@ class ToolGateway:
                         active_contract,
                         request_id=request_id,
                         task_id=task_id,
-                        frozen_calendar_contract=existing if new_contract_variant else None,
+                        frozen_calendar_contract=existing,
                     )
-                    if self._tasks is None or not callable(getattr(self._tasks, "get", None)):
-                        raise ValidationError("App TaskService未配置，无法绑定正式计算DataAssetRef")
-                    task = self._tasks.get(caller_context, task_id)
-                    task_refs = task.get("data_asset_refs") if isinstance(task, Mapping) else None
-                    if not isinstance(task_refs, list):
-                        raise ValidationError("当前任务缺少受控DataAssetRef索引")
-                    attached = {
-                        (str(item.get("data_asset_id")), str(item.get("content_hash")))
-                        for item in task_refs if isinstance(item, Mapping)
-                    }
-                    if any(
-                        (str(ref.get("data_asset_id")), str(ref.get("content_hash"))) not in attached
-                        for ref in data_refs
-                    ):
-                        raise ValidationError("正式计算DataAssetRef必须已绑定当前App任务")
                     if data_refs and self._datafetcher is None:
                         raise UnavailableCapabilityError(
                             f"{tool_name}.data_store", "App DataFetcherAdapter is not configured",
@@ -635,7 +693,6 @@ class ToolGateway:
                     compiler_data_store = (
                         self._datafetcher.bind_data_store(
                             caller_context,
-                            task_id=task_id,
                             data_refs=tuple(data_refs),
                         )
                         if data_refs
@@ -672,8 +729,6 @@ class ToolGateway:
                     )
                     if not isinstance(prepared_contract, Mapping) or not isinstance(prepared_contract.get("request"), Mapping):
                         raise ValidationError("Capability返回的正式计算输入无效")
-                    if new_contract_variant and _compiled_contract_reuses_active(prepared_contract, existing):
-                        new_contract_variant = False
                     effective_payload = dict(prepared_contract["request"])
                     if render_options is not None:
                         effective_payload["render_options"] = render_options
@@ -688,34 +743,8 @@ class ToolGateway:
                             parent_version_id=candidate_variant.get("parent_version_id"),
                             revision=int(candidate_variant["revision"]),
                         )
-                    elif new_contract_variant:
-                        binding = self._contracts.preview_new_variant(
-                            caller_context,
-                            task_id,
-                            prepared_contract,
-                            catalog_version=str(self._registry.manifest["catalog_version"]),
-                            expected_contract_fingerprint=str(existing["contract_fingerprint"]),
-                        )
-                    elif calendar_evidence_refresh:
-                        refresh_calendar = getattr(self._contracts, "refresh_calendar_evidence", None)
-                        if not callable(refresh_calendar):
-                            refresh_calendar = self._contracts.upgrade_legacy_calendar_evidence
-                        binding = refresh_calendar(
-                            caller_context,
-                            task_id,
-                            prepared_contract,
-                            catalog_version=str(self._registry.manifest["catalog_version"]),
-                            expected_contract_fingerprint=str(existing["contract_fingerprint"]),
-                        )
-                    elif existing is None:
-                        binding = self._contracts.preview_initial(
-                            caller_context,
-                            task_id,
-                            prepared_contract,
-                            catalog_version=str(self._registry.manifest["catalog_version"]),
-                        )
                     else:
-                        binding = self._contracts.bind(
+                        binding = self._contracts.preview_initial(
                             caller_context,
                             task_id,
                             prepared_contract,
@@ -782,17 +811,11 @@ class ToolGateway:
             files = decode_draft_files(draft.get("files"))
             if self._results is None:
                 raise ValidationError("计算模块必须绑定App ResultStore")
-            first_contract = (
-                existing is None
-                and candidate_variant is None
-                and not new_contract_variant
-                and not calendar_evidence_refresh
-            )
             bound_store: Any = self._results.bind_module_store(
                 caller_context,
                 task_id,
                 tool_name,
-                defer_publication=(new_contract_variant and candidate_variant is None) or first_contract,
+                defer_publication=candidate_variant is None,
             )
             if candidate_variant is not None:
                 bound_store = _CandidateVariantResultStore(bound_store, candidate_variant)
@@ -811,32 +834,21 @@ class ToolGateway:
             result = _bind_compute_result(result, effective_context, candidate_variant=candidate_variant)
             if tool_name == "backtester" and backtest_window is not None:
                 result["backtest_window"] = backtest_window
-            if first_contract:
-                if result.get("ok") is True and result.get("status") in {"succeeded", "partial"}:
-                    activated = self._contracts.bind(
-                        caller_context,
-                        task_id,
-                        prepared_contract,
-                        catalog_version=str(self._registry.manifest["catalog_version"]),
-                    )
-                    if activated.get("contract_fingerprint") != effective_context.contract_fingerprint:
-                        raise ValidationError("计算结果与首次激活的ResolvedContract不一致")
-                self._results.publish_module_run(caller_context, reference)
-            if (
-                new_contract_variant
-                and candidate_variant is None
-                and result.get("ok") is True
-                and result.get("status") in {"succeeded", "partial"}
-            ):
-                activated = self._contracts.activate_new_variant(
+            if candidate_variant is None and result.get("ok") is True and result.get("status") in {"succeeded", "partial"}:
+                saved = self._contracts.save_version(
                     caller_context,
                     task_id,
                     prepared_contract,
                     catalog_version=str(self._registry.manifest["catalog_version"]),
-                    expected_contract_fingerprint=str(existing["contract_fingerprint"]),
+                    module=tool_name,
+                    parent_contract_fingerprint=(
+                        str(existing["contract_fingerprint"])
+                        if isinstance(existing, Mapping) and existing.get("contract_fingerprint") != prepared_contract.get("contract_fingerprint")
+                        else None
+                    ),
                 )
-                if activated.get("contract_fingerprint") != effective_context.contract_fingerprint:
-                    raise ValidationError("计算结果与新激活方案的ResolvedContract不一致")
+                if saved.get("contract_fingerprint") != effective_context.contract_fingerprint:
+                    raise ValidationError("计算结果与保存的合同版本不一致")
                 self._results.publish_module_run(caller_context, reference)
             if str(result.get("status", "")).lower() in {"succeeded", "partial"}:
                 require_host_bound_run_contract(result, effective_context)
@@ -873,7 +885,9 @@ class ToolGateway:
         # A plain Payoffer projection has neither a market-data nor an
         # underlying precondition.  Observation products remain different:
         # their first frozen contract must bind the schedule calendar below.
-        if module == "payoffer" and preview_only:
+        if module == "payoffer":
+            if frozen is None and frozen_calendar_contract is None and not payload.get("product_id"):
+                return []
             if not compile_compute_data_requirements(
                 "payoffer", payload, None if frozen_calendar_contract is not None else frozen,
             ).future_calendar_required:
@@ -913,6 +927,7 @@ class ToolGateway:
         else:
             requested = payload.get("historical_data")
         history_request = _history_fetch_request(module, payload, frozen, assets)
+        automatic_backtest_window = module == "backtester" and _uses_automatic_backtest_window(payload)
         history_calendar_ref: Mapping[str, Any] | None = None
         history_ref = None
         frozen_calendar = _frozen_calendar_identity(frozen)
@@ -931,6 +946,19 @@ class ToolGateway:
                 start_date=str(history_request["start_date"]),
                 end_date=str(history_request["end_date"]),
             )
+        covering_history_resolver = getattr(self._data_assets, "resolve_market_history_covering", None)
+        if history_ref is None and _empty_data_reference(requested) and callable(covering_history_resolver):
+            history_ref = covering_history_resolver(
+                identity,
+                asset_ids=assets,
+                start_date=str(history_request["start_date"]),
+                end_date=str(history_request["end_date"]),
+                fields=tuple(str(item) for item in history_request["fields"]),
+                frequency=str(history_request["frequency"]),
+                adjustment=str(history_request["adjustment"]),
+                allow_available_end=automatic_backtest_window,
+                require_verified_calendar=(module == "backtester"),
+            )
         if history_ref is None:
             try:
                 history_ref = self._data_assets.resolve_for_compute(
@@ -940,33 +968,26 @@ class ToolGateway:
                     schema_id="market-history",
                 )
             except UserActionError:
-                if not task_id or not _empty_data_reference(requested):
+                if not task_id:
                     raise
                 history_ref = None
 
-        if history_ref is not None and not _history_ref_covers_request(history_ref, history_request):
-            if not _empty_data_reference(requested):
-                raise UserActionError(
-                    "market_history_coverage_insufficient",
-                    "所选历史行情未覆盖本次定价或回测所需区间。请在数据获取中重新获取完整区间后重试。",
-                    stage="data",
-                    next_step="请重新获取覆盖当前标的和完整期限的日频行情，或取消锁定的历史数据后重试。",
-                )
-            # A previously attached short history must not shadow a newer
-            # complete-tenor request.  Fetch and bind a compatible asset
-            # below instead of letting the capability fail generically.
+        if (
+            history_ref is not None
+            and not _history_ref_covers_request(history_ref, history_request)
+            and not (
+                automatic_backtest_window
+                and _history_ref_supports_automatic_backtest_cutoff(history_ref, history_request)
+            )
+        ):
+            # A local selection is a reuse preference, not a reason to block
+            # the calculator.  When its validated interval is too short, the
+            # Host transparently fetches and binds a complete replacement.
             history_ref = None
 
         if module == "backtester" and (
             history_ref is None or not _has_verified_backtest_calendar(history_ref)
         ):
-            if history_ref is not None and not _empty_data_reference(requested):
-                raise UserActionError(
-                    "backtest_calendar_evidence_required",
-                    "所选历史行情未附已验证交易日历。请在数据获取中重新获取覆盖本次回测区间的行情后重试。",
-                    stage="data",
-                    next_step="请重新获取附带已验证交易日历的历史行情，或取消锁定的历史数据后重试。",
-                )
             if not task_id:
                 raise ValidationError("自动历史回测必须绑定当前App任务")
             calendar_ref = self._fetch_and_bind_backtest_calendar(
@@ -998,24 +1019,17 @@ class ToolGateway:
         if module == "backtester" and frozen_calendar is not None:
             history_calendar = _history_calendar_identity(history_ref)
             if history_calendar != frozen_calendar:
-                if not _empty_data_reference(requested):
-                    raise UserActionError(
-                        "backtest_calendar_mismatch",
-                        "所选历史行情使用的交易日历与当前合同不一致，不能替换当前任务的冻结日历。",
-                        stage="data",
-                        next_step="请取消锁定的历史数据后重试，或选择与当前合同交易日历一致的历史行情。",
-                    )
-                schedules = frozen.get("resolved_schedules") if isinstance(frozen, Mapping) else None
-                source_identity = frozen.get("identity", {}) if isinstance(frozen, Mapping) else {}
-                source_unverified = _has_unverified_contract_calendar(source_identity) if isinstance(source_identity, Mapping) else True
                 same_calendar = history_calendar is not None and history_calendar["calendar_id"] == frozen_calendar["calendar_id"]
-                if (isinstance(schedules, Mapping) and schedules) or (not source_unverified and not same_calendar):
+                if not same_calendar:
                     raise UserActionError(
-                        "frozen_contract_calendar_incompatible",
-                        "当前合同冻结的观察日历无法支持本次扩展后的历史区间，系统不会静默移动观察日。",
+                        "backtest_calendar_market_mismatch",
+                        "本次历史行情属于不同的交易所日历，无法与当前合同共同回测。",
                         stage="data",
-                        next_step="请使用与冻结合同一致的历史数据，或建立新的产品方案后重新运行回测。",
+                        next_step="请使用与当前合同相同交易所的标的和历史行情后重试。",
                     )
+                # Same calendar family with a wider evidence revision is safe:
+                # keep the contract's frozen observation schedule, while the
+                # newer snapshot only supplies historical entry sessions.
         refs = [history_ref]
         if module == "backtester":
             # ``resolve_for_compute`` deliberately accepts only an opaque
@@ -1128,7 +1142,7 @@ class ToolGateway:
                     optional=False,
                 )
         except UserActionError:
-            if (has_requested_calendar and not requested_calendar_is_internal) or frozen_calendar is not None or not required:
+            if (has_requested_calendar and not requested_calendar_is_internal) or not required:
                 raise
             calendar_ref = None
 
@@ -1136,7 +1150,7 @@ class ToolGateway:
             calendar_ref is not None
             and frozen_calendar is not None
             and not requested_calendar_is_internal
-            and not _calendar_ref_matches_identity(calendar_ref, frozen_calendar)
+            and not _calendar_ref_matches_family(calendar_ref, frozen_calendar)
         ):
             raise UserActionError(
                 "frozen_contract_calendar_missing",
@@ -1144,20 +1158,30 @@ class ToolGateway:
                 stage="data",
                 next_step="请在当前产品中建立新的方案版本后重试。",
             )
-        if calendar_ref is not None and not _calendar_ref_covers_request(calendar_ref, calendar_request):
+        automatic_backtest_window = (
+            "backtest_config" in payload and _uses_automatic_backtest_window(payload)
+        )
+        calendar_covers_request = (
+            calendar_ref is not None and _calendar_ref_covers_request(calendar_ref, calendar_request)
+        )
+        calendar_supports_market_cutoff = (
+            calendar_ref is not None
+            and automatic_backtest_window
+            and _calendar_ref_supports_automatic_backtest_cutoff(
+                calendar_ref,
+                calendar_request,
+                market_history_ref,
+            )
+        )
+        if calendar_ref is not None and not (
+            calendar_covers_request or calendar_supports_market_cutoff
+        ):
             if has_requested_calendar:
                 raise UserActionError(
                     "trading_calendar_coverage_insufficient",
                     "所选交易日历未完整覆盖本次合约期限。请重新获取覆盖完整期限的交易日历后重试。",
                     stage="data",
                     next_step="请重新获取覆盖完整期限的交易日历后重试。",
-                )
-            if frozen_calendar is not None and not requested_calendar_is_internal:
-                raise UserActionError(
-                    "frozen_contract_calendar_coverage_insufficient",
-                    "当前方案冻结的交易日历未完整覆盖合约期限。",
-                    stage="data",
-                    next_step="请在当前产品中建立新的方案版本后重试。",
                 )
             calendar_ref = None
 
@@ -1195,9 +1219,6 @@ class ToolGateway:
                     default_next_step="请检查数据接口配置，或在数据获取中补取交易日历后重试。",
                 )
             self._data_assets.register(identity, calendar_asset)
-            if self._tasks is None or not callable(getattr(self._tasks, "append_data_asset_ref", None)) or not task_id:
-                raise ValidationError("自动交易日历必须绑定当前App任务")
-            self._tasks.append_data_asset_ref(identity, task_id, calendar_asset)
             calendar_ref = self._data_assets.resolve_for_compute(
                 identity,
                 calendar_asset["data_asset_id"],
@@ -1221,13 +1242,13 @@ class ToolGateway:
             if (
                 frozen_calendar is not None
                 and not requested_calendar_is_internal
-                and not _calendar_ref_matches_identity(calendar_ref, frozen_calendar)
+                and not _calendar_ref_matches_family(calendar_ref, frozen_calendar)
             ):
                 raise UserActionError(
-                    "frozen_contract_calendar_missing",
-                    "当前方案冻结的交易日历无法从数据源恢复，不能用另一版本替代。",
+                    "trading_calendar_market_mismatch",
+                    "自动取得的交易日历属于不同交易所，不能用于当前合同。",
                     stage="data",
-                    next_step="请在当前产品中建立新的方案版本后重试。",
+                    next_step="请检查标的交易所或选择同一交易所的行情后重试。",
                 )
         if calendar_ref is None:
             raise ValidationError("交易日历未能登记为正式DataAssetRef")
@@ -1401,46 +1422,48 @@ class ToolGateway:
         return calendar_ref
 
     def _attach_data_ref(self, identity: SessionIdentity, task_id: str, reference: Mapping[str, Any]) -> None:
-        if not task_id:
-            return
-        get_task = getattr(self._tasks, "get", None)
-        append = getattr(self._tasks, "append_data_asset_ref", None)
-        if not callable(get_task) or not callable(append):
-            return
-        task = get_task(identity, task_id)
-        refs = task.get("data_asset_refs") if isinstance(task, Mapping) else None
-        signature = (str(reference.get("data_asset_id")), str(reference.get("content_hash")))
-        if isinstance(refs, list) and any(
-            isinstance(item, Mapping)
-            and (str(item.get("data_asset_id")), str(item.get("content_hash"))) == signature
-            for item in refs
-        ):
-            return
-        if not isinstance(refs, list):
-            raise ValidationError("自动行情必须绑定当前App任务")
-        append(identity, task_id, dict(reference))
+        """Compatibility no-op: DataAsset is global to the authenticated owner."""
+
+        return None
 
     def _current_task_contract(self, identity: SessionIdentity, task_id: str) -> dict[str, Any] | None:
-        """Return only a binding made under this Capability catalog.
+        """Retired task-wide selection; callers must provide a base version."""
 
-        ModuleHost context issuance and execution must make the same decision:
-        a binding from an earlier catalog cannot be ignored for context creation
-        and then rediscovered by ``ContractStore.bind`` during execution.
-        """
-
-        if self._contracts is None:
-            return None
-        catalog_version = str(self._registry.manifest["catalog_version"])
-        current = self._contracts.get_current(identity, task_id, catalog_version=catalog_version)
-        if current is not None:
-            return current
-        stale = self._contracts.get(identity, task_id)
-        if stale is not None:
-            raise UserActionError(
-                "stale_task_contract",
-                "当前任务的合同来自旧产品目录。请新建研究任务后继续估值或历史回测。",
-            )
         return None
+
+    def _resolve_base_contract_payload(
+        self,
+        payload: Mapping[str, Any],
+        identity: SessionIdentity,
+        task_id: str,
+    ) -> tuple[dict[str, Any], dict[str, Any] | None]:
+        """Resolve an explicit version reference without creating a task lock."""
+
+        value = dict(payload)
+        raw_reference = value.pop("base_contract_ref", None)
+        if raw_reference is None or raw_reference == "":
+            return value, None
+        if self._contracts is None or not isinstance(raw_reference, Mapping):
+            raise ValidationError("基础合同版本引用无效")
+        try:
+            reference = HostObjectRef.from_payload(raw_reference, "base_contract_ref")
+        except (TypeError, ValueError) as error:
+            raise ValidationError("基础合同版本引用无效") from error
+        binding = self._contracts.resolve_ref(
+            identity,
+            task_id,
+            reference,
+            catalog_version=str(self._registry.manifest["catalog_version"]),
+        )
+        contract = binding.get("resolved_contract")
+        contract_identity = contract.get("identity") if isinstance(contract, Mapping) else None
+        supplied_product = value.get("product_id")
+        stored_product = contract_identity.get("product_id") if isinstance(contract_identity, Mapping) else None
+        if supplied_product not in {None, ""} and supplied_product != stored_product:
+            # Product switching starts a new scheme.  A stale UI preference is
+            # ignored rather than becoming a business error.
+            return value, None
+        return value, binding
 
     def _prepare_hosted_payoffer_preview(
         self,
@@ -1460,52 +1483,21 @@ class ToolGateway:
         if not callable(getattr(tool_entry, "prepare_compute_request", None)):
             raise ValidationError("Capability缺少正式计算输入编译器")
         catalog_version = str(self._registry.manifest["catalog_version"])
-        existing = self._current_task_contract(identity, str(context.task_id))
-        if existing is None:
-            if context.contract_ref is not None or context.contract_fingerprint is not None:
-                raise ValidationError("Hosted Payoffer上下文包含未绑定的合同引用")
-        else:
-            if context.contract_ref is None:
-                raise ValidationError("Hosted Payoffer上下文缺少当前合同引用")
-            referenced = self._contracts.resolve_ref(
-                identity,
-                str(context.task_id),
-                context.contract_ref,
-                catalog_version=catalog_version,
-            )
-            if (
-                referenced["contract_fingerprint"] != existing["contract_fingerprint"]
-                or context.contract_fingerprint != existing["contract_fingerprint"]
-            ):
-                raise ValidationError("Hosted Payoffer上下文与合同引用不一致")
-        friendly = _controlled_desk_compute_payload(
-            "payoffer", _business_payload(payload), agent_proxy=False,
+        friendly_source, existing = self._resolve_base_contract_payload(
+            _business_payload(payload), identity, str(context.task_id),
         )
+        friendly = _controlled_desk_compute_payload(
+            "payoffer", friendly_source, agent_proxy=False,
+        )
+        friendly = _initialize_payoffer_contract_dates("payoffer", friendly, existing)
         friendly, render_options = _extract_payoffer_render_options(
             "payoffer", friendly, agent_proxy=False,
         )
         if friendly.pop("development_preview", False) is not False:
             raise ValidationError("Hosted Payoffer预览不接受development_preview")
         friendly.pop("action", None)
-        if "new_contract_variant" in friendly:
-            raise ValidationError("Hosted Payoffer预览不接受运行期合同切换标记")
+        _discard_retired_contract_variant_flag(friendly)
         friendly["action"] = "run"
-        if existing is not None:
-            contract = existing.get("resolved_contract")
-            contract_identity = contract.get("identity") if isinstance(contract, Mapping) else None
-            existing_product_id = contract_identity.get("product_id") if isinstance(contract_identity, Mapping) else None
-            if friendly.get("product_id") != existing_product_id:
-                raise UserActionError(
-                    "task_contract_conflict",
-                    "当前任务已绑定另一产品。请新建任务选择其他产品，或继续编辑当前产品条款。",
-                )
-            if not isinstance(contract_identity, Mapping):
-                raise ValidationError("当前任务合同缺少受控identity")
-            friendly["identity"] = {
-                key: contract_identity[key]
-                for key in _RESOLVABLE_CONTRACT_IDENTITY_FIELDS
-                if key in contract_identity
-            }
         data_refs = self._resolve_compute_data_refs(
             "payoffer",
             friendly,
@@ -1517,24 +1509,10 @@ class ToolGateway:
         )
         compiler_data_store = None
         if data_refs:
-            if self._tasks is None or not callable(getattr(self._tasks, "get", None)):
-                raise ValidationError("App TaskService未配置，无法绑定Hosted预览数据")
-            task = self._tasks.get(identity, str(context.task_id))
-            attached = {
-                (str(item.get("data_asset_id")), str(item.get("content_hash")))
-                for item in task.get("data_asset_refs", [])
-                if isinstance(item, Mapping)
-            } if isinstance(task, Mapping) else set()
-            if any(
-                (str(ref.get("data_asset_id")), str(ref.get("content_hash"))) not in attached
-                for ref in data_refs
-            ):
-                raise ValidationError("Hosted预览DataAssetRef必须已绑定当前App任务")
             if self._datafetcher is None:
                 raise UnavailableCapabilityError("payoffer.data_store", "App DataFetcherAdapter is not configured")
             compiler_data_store = self._datafetcher.bind_data_store(
                 identity,
-                task_id=str(context.task_id),
                 data_refs=tuple(data_refs),
             )
         prepared = tool_entry.prepare_compute_request(
@@ -2058,6 +2036,32 @@ def _controlled_desk_compute_payload(
     return value
 
 
+def _initialize_payoffer_contract_dates(
+    tool_name: str,
+    payload: Mapping[str, Any],
+    base_contract: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Give a new payoff scheme a deterministic civil term without market inputs.
+
+    Payoffer visualizes contractual payoff structure.  It therefore must not
+    fetch valuation history merely to manufacture a contract start date.  A
+    newly compiled scheme starts on the Host's current Shanghai civil date;
+    Core then derives the civil end date from the selected tenor.  An explicit
+    base version keeps its already frozen dates unchanged.
+    """
+
+    value = dict(payload)
+    if tool_name != "payoffer" or isinstance(base_contract, Mapping):
+        return value
+    raw_identity = value.get("identity", {})
+    if not isinstance(raw_identity, Mapping):
+        raise ValidationError("Payoffer候选合同identity必须为对象")
+    identity = dict(raw_identity)
+    identity.setdefault("contract_start_date", _shanghai_now().date().isoformat())
+    value["identity"] = identity
+    return value
+
+
 def _extract_payoffer_render_options(
     tool_name: str,
     payload: Mapping[str, Any],
@@ -2154,18 +2158,10 @@ def _controlled_datafetcher_request(payload: Mapping[str, Any], context: Any) ->
     return value
 
 
-def _new_contract_variant_requested(payload: dict[str, Any]) -> bool:
-    """Consume the explicit browser intent before Core input compilation.
+def _discard_retired_contract_variant_flag(payload: dict[str, Any]) -> None:
+    """Ignore the retired browser hint during the compatibility window."""
 
-    This flag does not relax the normal compiler or Host-context checks.  It
-    merely tells the App ContractStore to retain the active binding as a prior
-    scheme and atomically activate the freshly compiled contract instead.
-    """
-
-    requested = payload.pop("new_contract_variant", False)
-    if not isinstance(requested, bool):
-        raise ValidationError("new_contract_variant必须为布尔值")
-    return requested
+    payload.pop("new_contract_variant", None)
 
 
 def _compiled_contract_reuses_active(
@@ -2188,6 +2184,44 @@ def _compiled_contract_reuses_active(
         and len(prepared_fingerprint) == 64
         and prepared_fingerprint == active_fingerprint
     )
+
+
+def _request_reuses_base_contract(
+    payload: Mapping[str, Any], base_contract: Mapping[str, Any] | None,
+) -> bool:
+    """Return whether an explicit base can be reused without hiding edits."""
+
+    if not isinstance(base_contract, Mapping):
+        return False
+    contract = base_contract.get("resolved_contract")
+    identity = contract.get("identity") if isinstance(contract, Mapping) else None
+    terms = contract.get("terms") if isinstance(contract, Mapping) else None
+    if not isinstance(identity, Mapping) or not isinstance(terms, Mapping):
+        return False
+    if payload.get("product_id") not in {None, "", identity.get("product_id")}:
+        return False
+    supplied_identity = payload.get("identity", {})
+    if not isinstance(supplied_identity, Mapping):
+        return False
+    for field in (
+        "contract_id", "underlyings", "currency", "contract_start_date",
+        "contract_end_date", "reference_prices", "price_convention",
+    ):
+        if field not in supplied_identity or supplied_identity[field] is None or supplied_identity[field] == "":
+            continue
+        left = list(supplied_identity[field]) if field == "underlyings" else supplied_identity[field]
+        right = list(identity.get(field, ())) if field == "underlyings" else identity.get(field)
+        if _stable_semantic_value(left) != _stable_semantic_value(right):
+            return False
+    overrides = payload.get("term_overrides", {})
+    if not isinstance(overrides, Mapping):
+        return False
+    if any(
+        key not in terms or _stable_semantic_value(value) != _stable_semantic_value(terms[key])
+        for key, value in overrides.items()
+    ):
+        return False
+    return True
 
 
 def _is_fair_parameter_payload(payload: Mapping[str, Any]) -> bool:
@@ -2241,15 +2275,15 @@ def _candidate_variant_request(value: Mapping[str, Any]) -> dict[str, Any]:
     return result
 
 
-def _reuse_task_contract_identity(
+def _reuse_base_contract_identity(
     payload: Mapping[str, Any], existing_contract: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
-    """Keep page convenience defaults from redefining a task-frozen contract.
+    """Keep page convenience defaults from redefining an explicit base version.
 
     Product and underlyings remain explicit and are still checked by the shared
     contract compiler.  Contract dates, reference closes and price convention
     are Host-derived on a first run and must not be reintroduced by Pricer or
-    Backtester page defaults on subsequent runs.
+    Backtester page defaults when the user explicitly edits from that version.
     """
 
     if not isinstance(existing_contract, Mapping):
@@ -2293,19 +2327,6 @@ def _needs_backtest_calendar_evidence_refresh(
     frozen_calendar = _frozen_calendar_identity(contract)
     if history_calendar is None or history_calendar == frozen_calendar:
         return False
-    schedules = contract.get("resolved_schedules") if isinstance(contract, Mapping) else None
-    if not isinstance(schedules, Mapping):
-        raise UserActionError(
-            "calendar_evidence_refresh_unsafe",
-            "当前任务的交易日历记录不完整，无法安全刷新；请建立新的产品方案后重新运行回测。",
-        )
-    if schedules:
-        raise UserActionError(
-            "frozen_contract_calendar_incompatible",
-            "当前任务包含已冻结观察日，不能自动替换交易日历。",
-            stage="data",
-            next_step="请使用与冻结合同一致的历史数据，或建立新的产品方案后重新运行回测。",
-        )
     if (
         frozen_calendar is not None
         and not _has_unverified_contract_calendar(identity)
@@ -2317,7 +2338,12 @@ def _needs_backtest_calendar_evidence_refresh(
             stage="data",
             next_step="请选择与当前合同交易所一致的历史行情后重试。",
         )
-    return True
+    # A same-family revision is historical evidence only. It must not mutate
+    # the contract identity or its already frozen observation schedule.
+    if frozen_calendar is not None and frozen_calendar["calendar_id"] == history_calendar["calendar_id"]:
+        return False
+    schedules = contract.get("resolved_schedules") if isinstance(contract, Mapping) else None
+    return not isinstance(schedules, Mapping) or not schedules
 
 
 def _calendar_evidence_refresh_payload(
@@ -2340,7 +2366,7 @@ def _calendar_evidence_refresh_payload(
         raise ContractResolutionError("旧任务ResolvedContract缺少产品标识")
     supplied_product_id = payload.get("product_id")
     if supplied_product_id is not None and supplied_product_id != "" and supplied_product_id != source_product_id:
-        raise ContractResolutionError("当前任务已绑定另一产品的ResolvedContract")
+        raise ContractResolutionError("所选基础合同版本与当前产品不一致")
     supplied_identity = payload.get("identity", {})
     if not isinstance(supplied_identity, Mapping):
         raise ContractResolutionError("identity必须为对象")
@@ -2360,7 +2386,7 @@ def _calendar_evidence_refresh_payload(
     if unsupported_sources:
         raise UserActionError(
             "legacy_calendar_contract",
-            "当前任务包含无法安全重建的历史条款来源；请新建研究任务后重新运行回测。",
+            "所选基础版本包含当前编译器无法安全重建的历史条款来源，请改用当前产品默认条款建立新版本。",
         )
     history = next((ref for ref in data_refs if ref.get("schema_id") == "market-history"), None)
     coverage = history.get("coverage") if isinstance(history, Mapping) else None
@@ -2447,9 +2473,70 @@ def _catalog_task_contract(binding: Mapping[str, Any] | None) -> dict[str, Any] 
         "terms": {key: terms[key] for key in sorted(editable_keys) if key in terms},
         "contract_fingerprint": str(binding.get("contract_fingerprint") or ""),
         "edit_schema": {
-            "request_fields": ["product_id", "underlyings", "term_overrides", "new_contract_variant"],
+            "request_fields": ["product_id", "underlyings", "term_overrides", "base_contract_ref"],
             "overridable_term_keys": sorted(editable_keys),
         },
+    }
+
+
+def _catalog_contract_version(binding: Mapping[str, Any]) -> dict[str, Any] | None:
+    contract = binding.get("resolved_contract")
+    identity = contract.get("identity") if isinstance(contract, Mapping) else None
+    terms = contract.get("terms") if isinstance(contract, Mapping) else None
+    product_id = identity.get("product_id") if isinstance(identity, Mapping) else None
+    contract_ref = binding.get("contract_ref")
+    if (
+        not isinstance(product_id, str)
+        or not isinstance(identity, Mapping)
+        or not isinstance(terms, Mapping)
+        or not isinstance(contract_ref, Mapping)
+    ):
+        return None
+    editable_keys = overridable_term_keys(product_id)
+    public_identity_fields = (
+        "contract_id", "product_id", "name_zh", "underlyings", "currency",
+        "contract_start_date", "contract_end_date", "reference_prices", "price_convention",
+    )
+    return {
+        "scheme_id": str(binding.get("scheme_id") or f"scheme-{str(binding.get('contract_fingerprint', ''))[:24]}"),
+        "version_id": str(binding.get("version_id") or f"version-{str(binding.get('contract_fingerprint', ''))[:24]}"),
+        "parent_contract_fingerprint": binding.get("parent_contract_fingerprint"),
+        "product_id": product_id,
+        "identity": {key: identity[key] for key in public_identity_fields if key in identity},
+        "terms": {key: terms[key] for key in sorted(editable_keys) if key in terms},
+        "contract_fingerprint": str(binding.get("contract_fingerprint") or ""),
+        "base_contract_ref": dict(contract_ref),
+        "created_at": binding.get("created_at"),
+    }
+
+
+def _catalog_contract_schemes(
+    contracts: Any,
+    identity: SessionIdentity,
+    task_id: str,
+    module: str,
+    *,
+    catalog_version: str,
+) -> dict[str, Any]:
+    versions = [
+        projected
+        for item in contracts.list_versions(identity, task_id, catalog_version=catalog_version)
+        if (projected := _catalog_contract_version(item)) is not None
+    ]
+    grouped: dict[str, dict[str, Any]] = {}
+    for version in versions:
+        scheme_id = str(version["scheme_id"])
+        scheme = grouped.setdefault(
+            scheme_id,
+            {"scheme_id": scheme_id, "product_id": version["product_id"], "versions": []},
+        )
+        scheme["versions"].append(version)
+    selected = contracts.get_module_selection(
+        identity, task_id, module, catalog_version=catalog_version,
+    )
+    return {
+        "contract_schemes": list(grouped.values()),
+        "module_selection": _catalog_contract_version(selected) if isinstance(selected, Mapping) else None,
     }
 
 
@@ -2457,10 +2544,10 @@ def _public_contract_resolution_error(error: ContractResolutionError) -> UserAct
     """Translate task-binding conflicts without exposing compiler internals."""
 
     message = str(error)
-    if "已冻结ResolvedContract" in message or "当前任务已绑定另一产品" in message:
+    if "已冻结ResolvedContract" in message or "基础合同版本与当前产品不一致" in message:
         return UserActionError(
-            "task_contract_conflict",
-            "当前任务已绑定另一版合同。请以新合同版本重新运行受影响模块；旧版结果会保留，可继续用于单结构、参考报价或多结构对比交付。",
+            "base_contract_mismatch",
+            "所选合同版本不适用于当前产品。系统已保留原版本，请重新选择版本或使用默认条款建立新方案。",
         )
     return ValidationError(message)
 
@@ -2674,9 +2761,15 @@ def _plan_backtest_window(
 
     value = dict(payload)
     value["backtest_config"] = config
-    if new_contract and mode == "automatic":
+    if new_contract:
         identity = value.get("identity")
         identity = dict(identity) if isinstance(identity, Mapping) else {}
+        # Historical acquisition deliberately starts before the requested
+        # entry window so the compiler can freeze a prior close.  That
+        # lookback date is not a contract entry date.  Once the Backtester has
+        # planned the verified full-tenor window, every new contract variant
+        # must bind to its first effective entry for both automatic and
+        # user-confirmed explicit windows.
         identity["contract_start_date"] = start_text
         value["identity"] = identity
     calendar_coverage = calendar_ref.get("coverage")
@@ -2698,6 +2791,47 @@ def _plan_backtest_window(
     if any(not value for value in window["calendar_ref"].values()):
         raise ValidationError("Backtester公开窗口缺少可验证交易日历引用")
     return value, window
+
+
+def _stable_semantic_value(value: Any) -> Any:
+    """把预检输入规范化为与键顺序无关的可哈希值。"""
+    if isinstance(value, Mapping):
+        return tuple(
+            (str(key), _stable_semantic_value(item))
+            for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
+        )
+    if isinstance(value, (list, tuple)):
+        return tuple(_stable_semantic_value(item) for item in value)
+    return value
+
+
+def _backtest_tenor_basis(
+    payload: Mapping[str, Any],
+    existing_contract: Mapping[str, Any] | None,
+    *,
+    contract: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """公开T与n_obs的独立角色，不把观察日数改写成合同年限。"""
+    terms: dict[str, Any] = {}
+    existing_resolved = existing_contract.get("resolved_contract") if isinstance(existing_contract, Mapping) else None
+    source = contract if isinstance(contract, Mapping) else existing_resolved
+    if isinstance(source, Mapping) and isinstance(source.get("terms"), Mapping):
+        terms.update(source["terms"])
+    overrides = payload.get("term_overrides")
+    if isinstance(overrides, Mapping):
+        terms.update(overrides)
+    return {
+        "contract_tenor": {
+            "key": "T",
+            "basis": "ACT/365",
+            "years": terms.get("T"),
+        },
+        "observation_endpoint": {
+            "key": "n_obs" if "n_obs" in terms else None,
+            "basis": "observation_session_count" if "n_obs" in terms else "civil_maturity",
+            "count": terms.get("n_obs"),
+        },
+    }
 
 
 def _scope_text(context: Any, field: str) -> str | None:
@@ -2924,9 +3058,22 @@ def _history_fetch_request(
         "provider": "ifind_http",
         "frequency": "1d",
         "adjustment": "auto",
-        "cache_policy": "force_refresh",
+        "cache_policy": "extend_only",
         "offline": False,
+        "persistence_mode": "volatile",
     }
+
+
+def _uses_automatic_backtest_window(payload: Mapping[str, Any]) -> bool:
+    config = payload.get("backtest_config")
+    config = config if isinstance(config, Mapping) else {}
+    entries = config.get("entry_dates")
+    has_entries = isinstance(entries, (list, tuple)) and any(str(item).strip() for item in entries)
+    return (
+        config.get("start_date") in {None, ""}
+        and config.get("end_date") in {None, ""}
+        and not has_entries
+    )
 
 
 def _backtest_calendar_fetch_request(history_request: Mapping[str, Any]) -> dict[str, Any]:
@@ -3118,6 +3265,15 @@ def _calendar_ref_matches_identity(reference: Mapping[str, Any], expected: Mappi
     return calendar_id == expected["calendar_id"] and calendar_revision == expected["calendar_revision"]
 
 
+def _calendar_ref_matches_family(reference: Mapping[str, Any], expected: Mapping[str, str]) -> bool:
+    """Allow a wider evidence revision from the same exchange calendar."""
+
+    coverage = reference.get("coverage")
+    if not isinstance(coverage, Mapping) or coverage.get("calendar_id") is None:
+        return True
+    return coverage.get("calendar_id") == expected["calendar_id"]
+
+
 def _calendar_ref_covers_request(reference: Mapping[str, Any], request: Mapping[str, Any]) -> bool:
     coverage = reference.get("coverage")
     if not isinstance(coverage, Mapping):
@@ -3136,6 +3292,49 @@ def _calendar_ref_covers_request(reference: Mapping[str, Any], request: Mapping[
     except (KeyError, TypeError, ValueError):
         return False
     return available_start <= required_start and available_end >= required_end
+
+
+def _calendar_ref_supports_automatic_backtest_cutoff(
+    reference: Mapping[str, Any],
+    request: Mapping[str, Any],
+    market_history_reference: Mapping[str, Any] | None,
+) -> bool:
+    """Accept the latest proved market cutoff for an automatic backtest window.
+
+    A blank entry window means "use the latest complete historical sample",
+    not "pretend today is already a trading session".  The calendar may end
+    before the request's civil-date ceiling when it still covers the whole
+    requested lookback and every session in the selected history asset.
+    Explicit user dates continue to use the exact interval check above.
+    """
+
+    calendar_coverage = reference.get("coverage")
+    history_coverage = (
+        market_history_reference.get("coverage")
+        if isinstance(market_history_reference, Mapping)
+        else None
+    )
+    if not isinstance(calendar_coverage, Mapping) or not isinstance(history_coverage, Mapping):
+        return False
+    try:
+        available_start = date.fromisoformat(
+            str(calendar_coverage.get("start_date", calendar_coverage.get("start")))
+        )
+        available_end = date.fromisoformat(
+            str(calendar_coverage.get("end_date", calendar_coverage.get("end")))
+        )
+        required_start = date.fromisoformat(str(request["start_date"]))
+        required_end = date.fromisoformat(str(request["end_date"]))
+        history_start = date.fromisoformat(str(history_coverage["start_date"]))
+        history_end = date.fromisoformat(str(history_coverage["end_date"]))
+    except (KeyError, TypeError, ValueError):
+        return False
+    return (
+        available_start <= required_start
+        and available_start <= history_start
+        and available_end >= history_end
+        and history_end <= required_end
+    )
 
 
 def _calendar_ref_closes_market_history(
@@ -3177,13 +3376,38 @@ def _calendar_ref_closes_market_history(
 
 
 def _history_ref_covers_request(reference: Mapping[str, Any], request: Mapping[str, Any]) -> bool:
-    """Verify that a selected market-history asset covers the Host request."""
+    """Check whether validated history can satisfy the requested civil interval.
+
+    DataFetcher records the civil interval it validated separately from the
+    first and last market sessions actually returned.  Weekend and holiday
+    boundaries therefore remain reusable without pretending that those civil
+    dates are market observations.
+    """
 
     coverage = reference.get("coverage")
     if not isinstance(coverage, Mapping):
         return False
+    normalized_fields = reference.get("normalized_fields")
+    required_fields = request.get("fields")
+    if (
+        not isinstance(normalized_fields, (list, tuple))
+        or not isinstance(required_fields, (list, tuple))
+        or not set(map(str, required_fields)).issubset(set(map(str, normalized_fields)))
+    ):
+        return False
+    convention = reference.get("price_convention")
+    if not isinstance(convention, Mapping):
+        return False
+    requested_frequency = request.get("frequency")
+    requested_adjustment = request.get("adjustment")
+    if requested_frequency not in {None, ""} and convention.get("frequency") != requested_frequency:
+        return False
+    if requested_adjustment not in {None, ""} and convention.get("requested_adjustment") != requested_adjustment:
+        return False
     start = coverage.get("start_date")
     end = coverage.get("end_date")
+    requested_start = coverage.get("requested_start_date")
+    requested_end = coverage.get("requested_end_date")
     try:
         available_start = date.fromisoformat(str(start))
         available_end = date.fromisoformat(str(end))
@@ -3191,7 +3415,32 @@ def _history_ref_covers_request(reference: Mapping[str, Any], request: Mapping[s
         required_end = date.fromisoformat(str(request["end_date"]))
     except (KeyError, TypeError, ValueError):
         return False
-    return available_start <= required_start and available_end >= required_end
+    try:
+        acquired_from = date.fromisoformat(str(requested_start))
+        acquired_through = date.fromisoformat(str(requested_end))
+    except (TypeError, ValueError):
+        acquired_from = available_start
+        acquired_through = available_end
+    return acquired_from <= required_start and acquired_through >= required_end
+
+
+def _history_ref_supports_automatic_backtest_cutoff(
+    reference: Mapping[str, Any],
+    request: Mapping[str, Any],
+) -> bool:
+    """Accept a verified local market cutoff only for an entirely automatic window."""
+
+    coverage = reference.get("coverage")
+    if not isinstance(coverage, Mapping) or not _has_verified_backtest_calendar(reference):
+        return False
+    try:
+        available_start = date.fromisoformat(str(coverage["start_date"]))
+        available_end = date.fromisoformat(str(coverage["end_date"]))
+        required_start = date.fromisoformat(str(request["start_date"]))
+        required_end = date.fromisoformat(str(request["end_date"]))
+    except (KeyError, TypeError, ValueError):
+        return False
+    return available_start <= required_start <= available_end <= required_end
 
 
 def _calendar_reference_bound_to_history(history_ref: Mapping[str, Any]) -> dict[str, str] | None:
