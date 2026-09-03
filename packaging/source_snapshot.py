@@ -20,7 +20,7 @@ APP_PACKAGING = Path(__file__).resolve().parent / "app"
 if str(APP_PACKAGING) not in sys.path:
     sys.path.insert(0, str(APP_PACKAGING))
 
-from platform_payload import (
+from platform_payload import (  # noqa: E402
     MACOS_BUILD_INPUTS,
     MACOS_SOURCE_MAPPINGS,
     SOURCE_EXCLUDES,
@@ -30,12 +30,22 @@ from platform_payload import (
 
 
 ALWAYS_EXCLUDED_PARTS = frozenset({
+    ".cache",
     ".DS_Store",
+    ".git",
+    ".hypothesis",
+    ".ipynb_checkpoints",
     ".mypy_cache",
+    ".nox",
     ".optionhelper",
+    ".optionhelper-agent-sessions",
     ".pytest_cache",
     ".ruff_cache",
+    ".tox",
     "__pycache__",
+    "build",
+    "dist",
+    "node_modules",
 })
 FINDER_COPY_PATTERN = re.compile(r"^.+ \d+(?:\.[^.]*)*$")
 
@@ -65,7 +75,7 @@ def _file_hash(path: Path) -> str:
 
 def _excluded(relative: Path, patterns: tuple[str, ...]) -> bool:
     if (
-        relative.suffix == ".pyc"
+        relative.suffix in {".pyc", ".pyo"}
         or any(part in ALWAYS_EXCLUDED_PARTS for part in relative.parts)
         or any(FINDER_COPY_PATTERN.fullmatch(part) for part in relative.parts)
     ):
@@ -77,6 +87,8 @@ def _excluded(relative: Path, patterns: tuple[str, ...]) -> bool:
 def _selected_files(repository_root: Path, selectors: Iterable[SnapshotSelector]) -> dict[str, Path]:
     values: dict[str, Path] = {}
     for selector in selectors:
+        if _excluded(Path(selector.path), selector.excludes):
+            continue
         source = repository_root / selector.path
         if not source.exists():
             raise SourceSnapshotError(f"源码快照输入不存在：{selector.path}")
@@ -154,20 +166,6 @@ def default_snapshot_selectors(repository_root: Path) -> tuple[SnapshotSelector,
     for source, _target in (*MACOS_SOURCE_MAPPINGS, *WINDOWS_SOURCE_MAPPINGS):
         selectors.append(SnapshotSelector(source, tuple(SOURCE_EXCLUDES.get(source, ()))))
     selectors.extend(SnapshotSelector(path) for path in (*MACOS_BUILD_INPUTS, *WINDOWS_BUILD_INPUTS))
-    # The fair-parameter evidence manifest references two development-only
-    # test sources.  Freeze those exact files for build-time verification, but
-    # keep them outside every Skill/App Source Map so they can never be staged
-    # into a delivery payload.
-    pricer_manifest = repository_root / "modules/pricer/src/fair_parameter_evidence_manifest.json"
-    pricer_implementation = repository_root / "modules/pricer/src/fair_parameter.py"
-    if pricer_manifest.exists() or pricer_implementation.exists():
-        selectors.extend(
-            SnapshotSelector(path)
-            for path in (
-                "modules/pricer/tests/fixtures/product_acceptance_matrix.json",
-                "modules/pricer/tests/test_fair_parameter_cashflow_evidence.py",
-            )
-        )
     selectors.extend((
         SnapshotSelector(
             "packaging",
