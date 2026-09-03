@@ -61,7 +61,6 @@ class TaskService:
             "conversation_session_id": str(conversation_session_id),
             "message_count": 0,
             "run_refs": [],
-            "data_asset_refs": [],
             # A bounded, private idempotency journal.  It records only a
             # completed OptChat response projection, never provider payloads
             # or hidden model reasoning.
@@ -226,7 +225,7 @@ class TaskService:
             if key not in {
                 "conversation_requests", "recommendation_state", "agent_events",
                 "conversation_session_id", "legacy_messages_migrated_at", "deletion",
-                "pending_attachment_uploads",
+                "pending_attachment_uploads", "data_asset_refs",
             }
         }
         deletion = value.get("deletion")
@@ -579,31 +578,15 @@ class TaskService:
         self._state.update("tasks", update)
 
     def append_data_asset_ref(self, identity: SessionIdentity, task_id: str, reference: dict[str, Any]) -> None:
-        """Attach one opaque DataAssetRef to its owning task context.
+        """Retired compatibility entrypoint.
 
-        The task index retains no physical storage path and no provider lineage;
-        it only lets a later OptChat turn refer to the same controlled asset.
+        DataAsset belongs to the caller's global data library.  Older callers
+        may still invoke this method during migration, but it deliberately
+        performs no task mutation.
         """
-        allowed = {"data_asset_id", "content_hash", "asset_ids", "schema_id", "coverage"}
-        if not isinstance(reference, dict) or not isinstance(reference.get("data_asset_id"), str) or not isinstance(reference.get("content_hash"), str):
-            raise ValidationError("DataAssetRef is invalid for this task")
-        safe = {key: reference[key] for key in allowed if key in reference}
-
-        def update(value: dict[str, Any]) -> dict[str, Any]:
-            task = value.get(task_id)
-            if not isinstance(task, dict):
-                raise KeyError(task_id)
-            if task.get("tenant_id") != identity.tenant_id or task.get("created_by") != identity.principal_id:
-                raise AuthorizationError("task.write", "task is not owned by current caller")
-            refs = task.setdefault("data_asset_refs", [])
-            if not isinstance(refs, list):
-                raise ValidationError("Task data references are invalid")
-            if safe not in refs:
-                refs.append(safe)
-            task["updated_at"] = datetime.now(timezone.utc).isoformat()
-            return value
-
-        self._state.update("tasks", update)
+        self._get_raw(identity, task_id)
+        if not isinstance(reference, dict) or not isinstance(reference.get("data_asset_id"), str):
+            raise ValidationError("DataAssetRef is invalid")
 
     def append_agent_event(self, identity: SessionIdentity, task_id: str, event: dict[str, Any]) -> None:
         """Compatibility entrypoint that appends to the child session log."""
