@@ -1860,7 +1860,7 @@ export async function startWorkspace(initialMode) {
     heading.textContent = "选择研究模块";
     const copy = document.createElement("p");
     copy.className = "conversation-start__copy";
-    copy.textContent = "各模块页面保持独立运行能力，并在OptDesk中承载同一任务上下文。";
+    copy.textContent = "各研究模块独立执行，并通过OptDesk共享当前任务的合同方案、数据引用与运行记录。";
     content.append(heading, copy);
     start.append(content);
     return start;
@@ -2345,7 +2345,7 @@ export async function startWorkspace(initialMode) {
       if (currentTask?.task_id !== taskId || moduleFrames.get(moduleName) !== frame) return;
       const staleTask = error.status === 409 && error.body?.error === "stale_task_contract";
       const detail = staleTask
-        ? (error.body.message || "当前任务的合同来自旧产品目录。请新建研究任务后继续。")
+        ? (error.body.message || "当前合同版本与最新产品目录不兼容。请切换为新方案并重新确认条款。")
         : `${modules.get(moduleName)}上下文不可用。`;
       showModuleLoadFailure(moduleName, taskId, detail);
       showWorkspaceStatus(detail, true, 7000);
@@ -2653,7 +2653,7 @@ export async function startWorkspace(initialMode) {
       });
       const recovery = error.body?.error?.next_step || error.body?.next_step;
       const failureMessage = error.status === 409 && error.body?.error === "stale_task_contract"
-        ? (error.body.message || "当前任务的合同来自旧产品目录。请新建研究任务后继续。")
+        ? (error.body.message || "当前合同版本与最新产品目录不兼容。请切换为新方案并重新确认条款。")
         : error.status === 503
         ? `${recovery || "模型暂不可用，请在设置中心检查模型服务。"}任务内容已保留。`
         : error.message;
