@@ -464,7 +464,7 @@ function installLayoutControls(shell) {
   const compactReportMedia = window.matchMedia("(max-width: 1220px)");
   const mobileTaskMedia = window.matchMedia("(max-width: 700px)");
   const limits = {
-    rail: { variable: "--rail-width", minimum: 197, maximum: 440, fallback: 414 },
+    rail: { variable: "--rail-width", minimum: 197, maximum: 440, fallback: 236 },
     report: { variable: "--report-width", minimum: 280, maximum: 480, fallback: 332 },
   };
   const readStored = (key, fallback) => {
