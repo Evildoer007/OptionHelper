@@ -8,7 +8,6 @@
     <link rel="stylesheet" href="./ui/style.css">
     <link rel="stylesheet" href="./ui/controls.css">
     <link rel="stylesheet" href="../module-host-presentation.css">
-    <link rel="stylesheet" href="../date-input-control.css">
     <style>
       .runtime-parameter-grid { grid-template-columns: 1fr; }
       .runtime-parameter-grid .parameter-field,
@@ -26,18 +25,11 @@
       .runtime-parameter-grid input[type="number"] { appearance:textfield; -moz-appearance:textfield; }
       .runtime-parameter-grid input[type="number"]::-webkit-inner-spin-button,
       .runtime-parameter-grid input[type="number"]::-webkit-outer-spin-button { margin:0; -webkit-appearance:none; }
-      .contract-identity-grid { grid-template-columns:1fr; }
-      .contract-identity-grid .parameter-field,
-      .contract-identity-grid .parameter-field.full { grid-column:auto; grid-template-columns:minmax(0,.9fr) minmax(112px,1.1fr); }
-      .contract-identity-grid .parameter-field input,.contract-identity-grid .parameter-field textarea { width:100%; min-width:0; height:29px; padding:0 5px; border:1px solid var(--rule); background:var(--color-surface); color:var(--ink); font:11px var(--mono); }
-      .contract-identity-grid .parameter-field textarea { height:auto; min-height:58px; padding:6px; resize:vertical; line-height:1.45; }
-      .contract-identity-grid .parameter-field .date-input { font-family:var(--mono); }
-      .contract-identity-grid .parameter-field input:disabled,.contract-identity-grid .parameter-field textarea:disabled,.runtime-parameter-grid .term-input:disabled,.runtime-parameter-grid .term-input[aria-disabled="true"] { background:var(--wash); color:var(--muted); }
+      .runtime-parameter-grid .term-input:disabled,.runtime-parameter-grid .term-input[aria-disabled="true"] { background:var(--wash); color:var(--muted); }
       .runtime-parameter-grid .term-input:disabled { cursor:not-allowed; }
       .runtime-parameter-grid .term-input[aria-disabled="true"] { cursor: default; }
       .runtime-actions { display:grid; gap:7px; margin-top:10px; }
       .runtime-actions .button { width:100%; }
-      .runtime-import { width:100%; min-height:96px; margin-top:8px; padding:8px; border:1px solid var(--rule); background:var(--color-surface); color:var(--ink); font:10px/1.5 var(--mono); resize:vertical; }
       .scenario-list li { cursor: default; }
       .scenario-kind { display:block; margin-top:3px; color:var(--muted); font:10px var(--mono); }
       .canvas-viewport .canvas-stage > svg { display:block; width:100%; height:100%; }
@@ -56,9 +48,6 @@
       .readonly .canvas-viewport > img { border: 1px solid var(--color-rule); box-shadow: none; }
       .readonly .runtime-parameter-grid .parameter-field select,
       .readonly .runtime-parameter-grid .parameter-field textarea,
-      .readonly .contract-identity-grid .parameter-field input,
-      .readonly .contract-identity-grid .parameter-field textarea,
-      .readonly .runtime-import { border-color: var(--color-paper-border); border-radius: 7px; font-family: var(--font); }
       .readonly .runtime-actions .button { border-radius: 8px; }
       .readonly .lock-card { border-top: 1px solid var(--color-rule); }
     </style>
@@ -77,15 +66,7 @@
           <h1>产品结构</h1>
           <label class="field-label" for="productSelect">产品</label>
           <select id="productSelect" class="product-select"><option value="">请选择产品</option></select>
-          <label class="field-label" for="contractVersion">合同版本</label>
-          <select id="contractVersion" class="product-select" disabled><option value="">新方案，使用默认条款</option></select>
-          <small class="scope-notice" id="contractVersionHint">选择产品后可使用已保存版本，或建立新方案。</small>
           <div class="binding-card" id="bindingCard"><span>尚未选择产品</span></div>
-          <div class="research-object-field" id="contractUnderlyingsField" hidden>
-            <label class="field-label" for="contractUnderlyings">研究标的</label>
-            <input id="contractUnderlyings" class="control" autocomplete="off" spellcheck="false" autocorrect="off" autocapitalize="off" placeholder="例如000905.SH">
-            <small>可随时修改；多个标的以英文逗号分隔。</small>
-          </div>
           <div class="scenario-heading"><span>产品路径</span><small id="scenarioCount">0</small></div>
           <ol class="scenario-list" id="scenarioList"></ol>
         </aside>
@@ -112,16 +93,10 @@
 
         <aside class="inspector-panel" id="inspectorPanel">
           <h2 id="inspectorTitle">收益结构设置</h2>
-          <section class="inspector-group module-parameter-section" id="runtimeIdentityGroup" hidden aria-hidden="true">
-            <div class="parameter-grid contract-identity-grid" id="identityFields">
-              <label class="parameter-field" id="contractIdField"><span>合同标识</span><input id="contractId" autocomplete="off" placeholder="留空自动生成"></label>
-              <label class="parameter-field" id="contractStartDateField"><span>合同起始日</span><input id="contractStartDate" class="date-input" type="text" inputmode="numeric" autocomplete="off" placeholder="yyyy/mm/dd" aria-describedby="contractStartDateHint"><small id="contractStartDateHint">统一显示yyyy/mm/dd；提交时转换为ISO日期</small></label>
-              <label class="parameter-field full" id="contractReferencePricesField"><span>标的价格参考</span><textarea id="contractReferencePrices" spellcheck="false" aria-label="标的价格参考JSON"></textarea><small>按标的填写参考价格，用于生成本次相对收益率。</small></label>
-            </div>
-          </section>
           <section class="inspector-group module-parameter-section">
             <div class="group-title" id="termsGroupTitle">合同条款</div>
             <div class="parameter-grid runtime-parameter-grid" id="parameterFields"></div>
+            <div class="semantic-rules" id="semanticRules" aria-label="固定观察规则" hidden></div>
             <div class="runtime-actions" hidden><button class="button button-quiet small" id="applyParametersButton" hidden>解析并更新收益图</button><button class="button button-quiet small" id="restoreDefaultsButton" hidden>恢复默认值</button></div>
           </section>
           <details class="module-advanced" id="canvasSizeGroup" hidden>
@@ -133,8 +108,7 @@
               </div>
             </div>
           </details>
-          <div id="fixedRulesGroup" hidden><div id="fixedFields"></div></div>
-          <details class="module-advanced" id="runtimeImportGroup">
+          <details class="module-advanced" id="pathExplanationGroup">
             <summary>路径说明</summary>
             <div class="module-advanced-panel">
               <div class="source-detail" id="sourceDetail">选择产品后显示路径来源与条款字段。</div>
@@ -158,13 +132,12 @@
 
     <script src="../module-host-presentation.js"></script>
     <script src="../module-host-bridge.js"></script>
-    <script src="../date-input-control.js"></script>
     <script>
       const $ = id => document.getElementById(id);
       const state = {
-        products: [], product: null, contractVersions: [], taskContract: null, preview: null, defaultExample: null, previewPayload: null, previewSignature: null,
+        products: [], product: null, preview: null, defaultExample: null, previewPayload: null, previewSignature: null,
         selectedPathIndex: 0, zoom: 1, zoomMode: 'fit', canvasRequestId: 0, inputsDirty: false, saving: false,
-        maintenanceEnabled: false, maintenancePlan: null, maintenanceRequestId: 0, hostContractRequestId: 0
+        maintenanceEnabled: false, maintenancePlan: null, maintenanceRequestId: 0, catalogRequestId: 0
       };
       let canvasPan = null;
       const query = new URLSearchParams(location.search);
@@ -193,7 +166,9 @@
         return document.importNode(svg, true);
       };
       const termInputs = () => [...document.querySelectorAll('.term-input')];
-      const { toIso: parseDateInput, toDisplay: formatDateInput, bind: bindDateInput, read: readDateInput, set: setDateInput } = window.OptionHelperDateInput;
+      const productSelectionKey = `optionhelper:payoffer:product:${query.get('bridge_nonce') || 'standalone'}`;
+      const savedProductId = () => { try { return sessionStorage.getItem(productSelectionKey) || ''; } catch (_error) { return ''; } };
+      const rememberProductId = value => { try { if (value) sessionStorage.setItem(productSelectionKey, value); else sessionStorage.removeItem(productSelectionKey); } catch (_error) { /* Session storage may be unavailable in hardened webviews. */ } };
       const runtimeSuccessNotice = () => hostedInDesk
         ? '正式运行结果已写入受控Store，可供Reporter生成研究简报、完整研究报告、参考报价或多结构对比交付。'
         : '开发预览结果已写入隔离存储。正式交付须通过OptionHelper生成。';
@@ -213,41 +188,14 @@
         $('stateDot').className = 'state-dot ' + dot;
       }
 
-      function hasSelectedContractVersion() {
-        return Boolean(
-          state.taskContract
-          && state.taskContract.product_id === state.product?.product_id
-          && /^[0-9a-f]{64}$/.test(String(state.taskContract.contract_fingerprint || ''))
-        );
-      }
-
-      const flattenContractVersions = schemes => (Array.isArray(schemes) ? schemes : []).flatMap(scheme => Array.isArray(scheme?.versions) ? scheme.versions : []);
-      function versionLabel(version, index) {
-        const date = String(version?.created_at || '').slice(0, 10);
-        return '版本' + (index + 1) + (date ? '，' + date : '');
-      }
-      function syncContractVersionOptions(preferredFingerprint = '') {
-        const productId = state.product?.product_id || '';
-        const versions = state.contractVersions.filter(item => item.product_id === productId).sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')));
-        const select = $('contractVersion');
-        select.replaceChildren(new Option('新方案，使用默认条款', ''), ...versions.map((item, index) => new Option(versionLabel(item, index), item.contract_fingerprint)));
-        select.disabled = !productId;
-        select.value = versions.some(item => item.contract_fingerprint === preferredFingerprint) ? preferredFingerprint : '';
-        state.taskContract = versions.find(item => item.contract_fingerprint === select.value) || null;
-        $('contractVersionHint').textContent = versions.length ? '当前产品已保存' + versions.length + '个版本；切换不会影响其他模块。' : '当前产品尚无已保存版本，可直接配置并预览。';
-      }
-
       function canRuntimePreview() {
         if (state.product?.runtime_status !== 'enabled') return false;
-        // 选中可运行产品后即可预览。已保存版本只是可选基础版本，
-        // 不构成任务级合同锁，也不限制切换产品或标的。
         if (hostedInDesk) return true;
         return localDevelopmentPreview;
       }
 
       function runtimeAvailabilityMessage() {
-        if (hostedInDesk && !hasSelectedContractVersion()) return '请选择研究标的和本次条款后预览；保存时会建立新的合同方案。';
-        if (hostedInDesk) return '当前条款基于所选合同版本；修改后保存为新版本。';
+        if (hostedInDesk) return '当前收益结构按最新产品目录默认条款建立；仅提交对收益结构有影响的本次修改。';
         if (localDevelopmentPreview) return '本机开发预览使用明确标记的标准化示例，不可用于正式交付。';
         return '独立页面默认只读。仅以?mode=local-development-preview显式启动时可使用标准化开发示例。';
       }
@@ -256,22 +204,13 @@
         const editable = canRuntimePreview();
         $('appShell').classList.toggle('editing', editable);
         $('appShell').classList.toggle('readonly', !editable);
-        // 研究标的保持可见、可改；选择历史版本只负责恢复界面值。
-        const hostedUnderlyings = hostedInDesk && hostAllowsRequestField('underlyings');
-        const showIdentity = localDevelopmentPreview;
-        $('runtimeIdentityGroup').hidden = !showIdentity;
-        $('runtimeIdentityGroup').setAttribute('aria-hidden', String(!showIdentity));
-        $('contractUnderlyingsField').hidden = hostedInDesk ? !hostedUnderlyings : !localDevelopmentPreview;
-        ['contractIdField', 'contractStartDateField', 'contractReferencePricesField'].forEach(id => {
-          $(id).hidden = hostedInDesk;
-        });
-        $('runtimeImportGroup').hidden = !editable;
+        $('pathExplanationGroup').hidden = !editable;
         $('canvasSizeGroup').hidden = !hostedInDesk;
         $('canvasWidth').disabled = !hostedInDesk || !state.product;
         $('canvasHeight').disabled = !hostedInDesk || !state.product;
         $('maintenancePanel').hidden = !(localDevelopmentPreview && state.maintenanceEnabled && !hostedInDesk);
         $('scopeNotice').textContent = hostedInDesk
-          ? (hasSelectedContractVersion() ? '预览：使用所选合同版本；修改不会覆盖原版本' : '新方案：选择研究标的和条款后预览')
+          ? '收益结构预览：采用最新产品目录默认条款'
           : (localDevelopmentPreview ? '本机开发预览：标准化示例不可正式交付' : '默认只读图：独立开发预览需显式启用');
         renderParameters({ preserve });
       }
@@ -340,47 +279,23 @@
         return '<label class="parameter-field ' + (full ? 'full' : '') + '"><span title="' + escapeHtml(field.english_name) + '">' + label + '</span>' + termControl(field) + tenorNote + '</label>';
       }
 
-      function renderIdentity({ preserve = false } = {}) {
+      function renderParameters({ preserve = false } = {}) {
         if (!state.product) {
+          renderSemanticRules();
           ['canvasDefaultButton', 'canvasPreviewButton', 'canvasSaveButton', 'applyParametersButton', 'restoreDefaultsButton'].forEach(id => { $(id).disabled = true; });
           $('bindingCard').innerHTML = '<span>尚未选择产品</span>';
           $('scenarioCount').textContent = '--';
           $('scenarioList').innerHTML = '<li class="preview">选择产品后显示</li>';
           $('inspectorTitle').textContent = '收益结构设置';
           $('sourceDetail').textContent = '选择产品后显示路径来源与条款字段。';
-          return;
-        }
-        const editable = canRuntimePreview();
-        $('canvasDefaultButton').disabled = false;
-        $('canvasPreviewButton').disabled = !editable;
-        $('canvasSaveButton').disabled = !editable;
-        const before = preserve ? {
-          contract_id: $('contractId').value,
-          underlyings: $('contractUnderlyings').value,
-          contract_start_date: $('contractStartDate').value,
-          reference_prices: $('contractReferencePrices').value
-        } : (hostedInDesk ? (state.taskContract?.identity || {}) : (localDevelopmentPreview ? state.product.development_preview_identity || {} : {}));
-        $('contractId').value = before.contract_id || '';
-        $('contractUnderlyings').value = Array.isArray(before.underlyings) ? before.underlyings.join(',') : before.underlyings || '';
-        setDateInput($('contractStartDate'), before.contract_start_date, '合同起始日');
-        $('contractReferencePrices').value = typeof before.reference_prices === 'string' ? before.reference_prices : JSON.stringify(before.reference_prices || {});
-      }
-
-      function renderParameters({ preserve = false } = {}) {
-        renderFixedFields();
-        if (!state.product) {
-          renderIdentity();
           renderSelectedPath();
           return;
         }
         const before = preserve ? Object.fromEntries(termInputs().map(item => [item.dataset.key, item.value])) : {};
         $('parameterFields').innerHTML = editablePayoffFields().map(termField).join('') || '<p class="parameter-empty">当前App合同未授权可编辑条款。</p>';
+        renderSemanticRules();
         termInputs().forEach(item => { if (Object.hasOwn(before, item.dataset.key)) item.value = before[item.dataset.key]; });
         const enabled = canRuntimePreview();
-        $('contractUnderlyings').disabled = !enabled || (hostedInDesk && !hostAllowsRequestField('underlyings'));
-        ['contractId', 'contractStartDate', 'contractReferencePrices'].forEach(id => {
-          $(id).disabled = !enabled || hostedInDesk;
-        });
         termInputs().forEach(input => {
           input.disabled = !enabled;
           input.removeAttribute('aria-disabled');
@@ -412,18 +327,6 @@
         return raw;
       }
 
-      function renderFixedFields() {
-        const fields = Array.isArray(state.product?.fixed_fields) ? state.product.fixed_fields : [];
-        $('fixedRulesGroup').hidden = true;
-        $('fixedFields').innerHTML = fields.map(field => {
-          const raw = displayValue(field.default_value, field);
-          const value = field.key === 'settlement' && raw === 'cash' ? '现金结算' : raw;
-          const unit = displayUnit(field);
-          const rendered = [value, unit].filter(Boolean).join(' ');
-          return '<div class="fixed-field"><strong>' + escapeHtml(field.label || field.key) + '：' + escapeHtml(rendered || '未提供') + '</strong><span>' + escapeHtml(field.editability_reason || '该字段由正式合同规则控制。') + '</span></div>';
-        }).join('');
-      }
-
       function parseFieldDefault(item) {
         try { return JSON.parse(item.dataset.default); }
         catch (error) { throw new Error(item.dataset.key + '的OptionReg默认值无法读取'); }
@@ -441,8 +344,6 @@
 
       function hostEditSchema() {
         if (!hostedInDesk) return null;
-        // request_fields来自产品能力目录；合同版本只提供可复用的输入基线。
-        if (state.taskContract?.edit_schema) return state.taskContract.edit_schema;
         return state.product?.edit_schema || null;
       }
 
@@ -457,33 +358,21 @@
         const keys = schema?.overridable_term_keys;
         if (!hostAllowsRequestField('term_overrides')) return [];
         const fields = state.product?.payoff_fields || [];
-        if (!hasSelectedContractVersion() || !Array.isArray(keys)) return fields;
+        if (!Array.isArray(keys)) return fields;
         const allowed = new Set(keys);
         return fields.filter(field => allowed.has(field.key));
       }
 
-      function hydrateSelectedContractVersion() {
-        if (!hasSelectedContractVersion()) return;
-        const identity = state.taskContract.identity || {};
-        if (Array.isArray(identity.underlyings)) $('contractUnderlyings').value = identity.underlyings.join(',');
-        if (hostedInDesk) {
-          termInputs().forEach(item => {
-            if (Object.hasOwn(state.taskContract.terms || {}, item.dataset.key)) {
-              item.value = displayValue(state.taskContract.terms[item.dataset.key], fieldForKey(item.dataset.key));
-            }
-          });
-          return;
-        }
-        $('contractId').value = identity.contract_id || '';
-        setDateInput($('contractStartDate'), identity.contract_start_date || '', '合同起始日');
-        $('contractReferencePrices').value = identity.reference_prices && typeof identity.reference_prices === 'object'
-          ? JSON.stringify(identity.reference_prices)
-          : '';
-        termInputs().forEach(item => {
-          if (Object.hasOwn(state.taskContract.terms || {}, item.dataset.key)) {
-            item.value = displayValue(state.taskContract.terms[item.dataset.key], fieldForKey(item.dataset.key));
-          }
-        });
+      const fixedObservationRuleKeys = new Set(['O_KO', 'O_KI', 'Oc', 'Otouch', 'Orange', 'Ovar', 'Ohedge', 'Oreset']);
+
+      function renderSemanticRules() {
+        const rules = (state.product?.fixed_fields || []).filter(field => fixedObservationRuleKeys.has(field.key));
+        const container = $('semanticRules');
+        container.hidden = rules.length === 0;
+        container.innerHTML = rules.map(field => {
+          const value = window.OptionHelperModulePresentation?.termValueLabel?.(field.default_value) || String(field.default_value ?? '');
+          return '<div class="semantic-rule"><span>' + escapeHtml(field.label) + '</span><strong>' + escapeHtml(value) + '</strong></div>';
+        }).join('');
       }
 
       function collectTermOverrides() {
@@ -491,59 +380,16 @@
         for (const item of termInputs()) {
           const value = parseTermValue(item);
           if (value === undefined) continue;
-          const frozen = hostedInDesk && hasSelectedContractVersion() && Object.hasOwn(state.taskContract?.terms || {}, item.dataset.key)
-            ? state.taskContract.terms[item.dataset.key]
-            : parseFieldDefault(item);
-          if (!isSameValue(value, frozen)) overrides[item.dataset.key] = value;
+          const catalogDefault = parseFieldDefault(item);
+          if (!isSameValue(value, catalogDefault)) overrides[item.dataset.key] = value;
         }
         return overrides;
-      }
-
-      function parseUnderlyings(value) {
-        const underlyings = String(value).split(',').map(item => item.trim()).filter(Boolean);
-        if (!underlyings.length) throw new Error('请至少填写一个标的代码');
-        if (new Set(underlyings).size !== underlyings.length) throw new Error('标的代码不能重复');
-        return underlyings;
-      }
-
-      function collectUnderlyings() {
-        return parseUnderlyings($('contractUnderlyings').value);
-      }
-
-      function collectIdentity() {
-        const underlyings = collectUnderlyings();
-        const rawSpots = $('contractReferencePrices').value.trim();
-        const identity = { underlyings };
-        if ($('contractId').value.trim()) identity.contract_id = $('contractId').value.trim();
-        identity.contract_start_date = readDateInput($('contractStartDate'), '合同起始日');
-        if (!identity.contract_start_date) delete identity.contract_start_date;
-        if (rawSpots) {
-          let spots;
-          try { spots = JSON.parse(rawSpots); }
-          catch (error) { throw new Error('合同参考价必须是JSON对象：' + error.message); }
-          if (!spots || Array.isArray(spots) || typeof spots !== 'object') throw new Error('合同参考价必须是以标的代码为键的JSON对象');
-          const spotKeys = Object.keys(spots).sort();
-          const assetKeys = [...underlyings].sort();
-          if (!isSameValue(spotKeys, assetKeys)) throw new Error('合同参考价的键必须逐一覆盖标的代码');
-          for (const key of spotKeys) {
-            if (!Number.isFinite(Number(spots[key])) || Number(spots[key]) <= 0) throw new Error('合同参考价.' + key + '必须为正数');
-            spots[key] = Number(spots[key]);
-          }
-          identity.reference_prices = spots;
-        }
-        return identity;
       }
 
       function buildRequestPayload() {
         if (!state.product) throw new Error('请选择产品');
         const payload = { product_id: state.product.product_id, term_overrides: collectTermOverrides() };
-        if (hostedInDesk) {
-          payload.underlyings = collectUnderlyings();
-          payload.render_options = collectRenderOptions();
-          if (state.taskContract?.base_contract_ref) payload.base_contract_ref = state.taskContract.base_contract_ref;
-        }
-        else payload.identity = collectIdentity();
-        if (localDevelopmentPreview) payload.development_preview = true;
+        if (hostedInDesk) payload.render_options = collectRenderOptions();
         return payload;
       }
 
@@ -560,26 +406,6 @@
         } catch (error) {
           setCanvasState('输入待修正');
         }
-      }
-
-      function syncReferenceSpots() {
-        if (!localDevelopmentPreview || hostedInDesk) return;
-        let underlyings;
-        try { underlyings = parseUnderlyings($('contractUnderlyings').value); }
-        catch (error) { return markInputDirty(); }
-        let existing = {};
-        try {
-          const parsed = JSON.parse($('contractReferencePrices').value || '{}');
-          if (parsed && !Array.isArray(parsed) && typeof parsed === 'object') existing = parsed;
-        } catch (error) {
-          existing = {};
-        }
-        const previousValues = Object.values(existing);
-        const fixture = state.product?.development_preview_identity?.reference_prices || {};
-        const fixtureValues = Object.values(fixture);
-        const spots = Object.fromEntries(underlyings.map((asset, index) => [asset, Number(existing[asset] ?? previousValues[index] ?? fixtureValues[index]) ]));
-        $('contractReferencePrices').value = JSON.stringify(spots);
-        markInputDirty();
       }
 
       function renderLibrary() {
@@ -974,7 +800,6 @@
             throw new Error('当前参数尚未形成可保存的合同投影，请检查后重试。');
           }
           await request('/api/run', state.previewPayload);
-          if (hostedInDesk) await refreshActiveTaskContract();
           showNotice(runtimeSuccessNotice());
           setCanvasState('结果已保存', 'ready');
         } catch (error) {
@@ -989,19 +814,8 @@
         }
       }
 
-      async function refreshActiveTaskContract() {
-        const response = await fetch(apiUrl('/api/catalog'));
-        const data = await response.json();
-        if (!response.ok || !data.ok) throw new Error('合同版本已保存，但页面未能重新读取版本列表。请重新打开收益结构模块。');
-        state.contractVersions = flattenContractVersions(data.contract_schemes);
-        const selected = data.module_selection?.product_id === state.product?.product_id ? data.module_selection : null;
-        syncContractVersionOptions(selected?.contract_fingerprint || '');
-        if (selected) state.taskContract = selected;
-      }
-
       function restoreDefaults() {
         if (!state.product || !canRuntimePreview()) return;
-        renderIdentity();
         renderParameters();
         markInputDirty();
         showNotice('已恢复默认合同与条款；预览后更新收益图。');
@@ -1070,9 +884,8 @@
       async function selectProduct() {
         state.canvasRequestId += 1;
         clearMaintenancePlan();
-        const previousSelection = state.taskContract;
         state.product = state.products.find(product => product.product_id === $('productSelect').value) || null;
-        syncContractVersionOptions(previousSelection?.product_id === state.product?.product_id ? previousSelection.contract_fingerprint : '');
+        rememberProductId(state.product?.product_id || '');
         state.preview = null;
         state.defaultExample = null;
         state.previewPayload = null;
@@ -1085,10 +898,7 @@
           return;
         }
         state.zoomMode = 'fit';
-        renderIdentity();
-        // 页面字段只在这里统一渲染一次；所选版本随后覆盖同一批字段。
         updateRuntimeChrome();
-        hydrateSelectedContractVersion();
         renderLibrary();
         renderSelectedPath();
         try {
@@ -1100,45 +910,31 @@
       }
 
       async function loadCatalog() {
-        const contractRequestId = ++state.hostContractRequestId;
+        const contractRequestId = ++state.catalogRequestId;
         const serviceStatus = await loadServiceStatus();
         state.maintenanceEnabled = Boolean(serviceStatus.default_maintenance_enabled);
         let response;
         try { response = await fetch(apiUrl('/api/catalog')); }
         catch (error) {
-          if (contractRequestId !== state.hostContractRequestId) return;
+          if (contractRequestId !== state.catalogRequestId) return;
           throw error;
         }
         let data;
         try { data = await response.json(); }
         catch (error) {
-          if (contractRequestId !== state.hostContractRequestId) return;
+          if (contractRequestId !== state.catalogRequestId) return;
           throw new Error('产品目录未返回有效JSON');
         }
-        if (contractRequestId !== state.hostContractRequestId && (!response.ok || !data.ok)) return;
+        if (contractRequestId !== state.catalogRequestId && (!response.ok || !data.ok)) return;
         if (!response.ok || !data.ok) throw new Error(data.message || '产品目录读取失败');
-        if (contractRequestId === state.hostContractRequestId) {
-          state.contractVersions = flattenContractVersions(data.contract_schemes);
-          state.taskContract = data.module_selection || null;
-        }
         state.products = data.products;
         $('productSelect').replaceChildren(new Option('请选择产品',''), ...data.products.map(product => new Option(product.product_id + ' ' + product.canonical_name, product.product_id)));
-        $('productSelect').value = state.taskContract?.product_id || '';
-        syncContractVersionOptions(state.taskContract?.contract_fingerprint || '');
+        const remembered = savedProductId();
+        $('productSelect').value = data.products.some(product => product.product_id === remembered) ? remembered : '';
         await selectProduct();
       }
 
       $('productSelect').addEventListener('change', () => selectProduct().catch(error => showNotice(error.message, 'error')));
-      $('contractVersion').addEventListener('change', () => {
-        state.taskContract = state.contractVersions.find(item => item.contract_fingerprint === $('contractVersion').value && item.product_id === state.product?.product_id) || null;
-        state.preview = null;
-        state.previewSignature = null;
-        state.inputsDirty = false;
-        renderIdentity();
-        renderParameters();
-        hydrateSelectedContractVersion();
-        markInputDirty();
-      });
       $('applyParametersButton').addEventListener('click', () => preview().catch(() => {}));
       $('restoreDefaultsButton').addEventListener('click', restoreDefaults);
       $('canvasPreviewButton').addEventListener('click', () => preview().catch(() => {}));
@@ -1163,10 +959,6 @@
       $('canvasViewport').addEventListener('pointercancel', finishCanvasPan);
       $('canvasViewport').addEventListener('lostpointercapture', finishCanvasPan);
       window.addEventListener('blur', finishCanvasPan);
-      bindDateInput($('contractStartDate'), '合同起始日');
-      ['contractId', 'contractStartDate', 'contractReferencePrices'].forEach(id => $(id).addEventListener('input', markInputDirty));
-      $('contractUnderlyings').addEventListener('input', syncReferenceSpots);
-      $('contractUnderlyings').addEventListener('change', syncReferenceSpots);
       $('parameterFields').addEventListener('input', markInputDirty);
       $('parameterFields').addEventListener('change', markInputDirty);
       bindResizer($('libraryResizer'), '--library-width', 220, 420);
