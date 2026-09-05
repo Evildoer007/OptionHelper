@@ -115,9 +115,10 @@ class AnalyticalBoundEvidence:
     solve_run_id: str
     model_id: str
     model_version: str
-    base_contract_fingerprint: str
-    target_spec_hash: str
-    capability_directory_hash: str
+    product_id: str
+    rule_revision: int
+    target_id: str
+    solve_input: Mapping[str, Any]
     valuation_error_upper_bound: float
     residual_upper_bound: float
     slope_absolute_lower_bound: float
@@ -144,11 +145,18 @@ class AnalyticalBoundEvidence:
             "solve_run_id",
             "model_id",
             "model_version",
-            "base_contract_fingerprint",
-            "target_spec_hash",
-            "capability_directory_hash",
+            "product_id",
+            "target_id",
         ):
             _text_identity(getattr(self, label), f"Analytical证据{label}")
+        if (
+            isinstance(self.rule_revision, bool)
+            or not isinstance(self.rule_revision, int)
+            or self.rule_revision <= 0
+        ):
+            raise FairParameterSolveError("ineligible", "Analytical证据rule_revision必须为正整数")
+        if not isinstance(self.solve_input, Mapping):
+            raise FairParameterSolveError("ineligible", "Analytical证据solve_input必须为完整对象")
         for name in self._BOUND_NAMES:
             value = getattr(self, name)
             try:
@@ -193,9 +201,10 @@ class AnalyticalBoundEvidence:
             "solve_run_id": self.solve_run_id,
             "model_id": self.model_id,
             "model_version": self.model_version,
-            "base_contract_fingerprint": self.base_contract_fingerprint,
-            "target_spec_hash": self.target_spec_hash,
-            "capability_directory_hash": self.capability_directory_hash,
+            "product_id": self.product_id,
+            "rule_revision": self.rule_revision,
+            "target_id": self.target_id,
+            "solve_input": dict(self.solve_input),
             "valuation_error_upper_bound": self.valuation_error_upper_bound,
             "residual_upper_bound": self.residual_upper_bound,
             "slope_absolute_lower_bound": self.slope_absolute_lower_bound,
@@ -213,11 +222,12 @@ class MonteCarloBatchEvidence:
     batch_id: str
     derived_seed: int | str
     random_matrix_fingerprint: str
-    base_contract_fingerprint: str
-    target_spec_hash: str
+    product_id: str
+    rule_revision: int
+    target_id: str
+    solve_input: Mapping[str, Any]
     model_id: str
     model_version: str
-    capability_directory_hash: str
     path_count: int
     solve_result: FairSolveResult
     _seal_digest: str = field(init=False, repr=False, compare=False)
@@ -232,13 +242,20 @@ class MonteCarloBatchEvidence:
             "solve_run_id",
             "batch_id",
             "random_matrix_fingerprint",
-            "base_contract_fingerprint",
-            "target_spec_hash",
+            "product_id",
+            "target_id",
             "model_id",
             "model_version",
-            "capability_directory_hash",
         ):
             _text_identity(getattr(self, label), f"MC批次{label}")
+        if (
+            isinstance(self.rule_revision, bool)
+            or not isinstance(self.rule_revision, int)
+            or self.rule_revision <= 0
+        ):
+            raise FairParameterSolveError("ineligible", "MC批次rule_revision必须为正整数")
+        if not isinstance(self.solve_input, Mapping):
+            raise FairParameterSolveError("ineligible", "MC批次solve_input必须为完整对象")
         if isinstance(self.derived_seed, bool) or not isinstance(self.derived_seed, (int, str)):
             raise FairParameterSolveError("ineligible", "MC批次derived_seed必须可复现且非布尔值")
         if isinstance(self.derived_seed, str) and not self.derived_seed.strip():
@@ -275,11 +292,12 @@ class MonteCarloBatchEvidence:
             "batch_id": self.batch_id,
             "derived_seed": self.derived_seed,
             "random_matrix_fingerprint": self.random_matrix_fingerprint,
-            "base_contract_fingerprint": self.base_contract_fingerprint,
-            "target_spec_hash": self.target_spec_hash,
+            "product_id": self.product_id,
+            "rule_revision": self.rule_revision,
+            "target_id": self.target_id,
+            "solve_input": dict(self.solve_input),
             "model_id": self.model_id,
             "model_version": self.model_version,
-            "capability_directory_hash": self.capability_directory_hash,
             "path_count": self.path_count,
             "solve_result": self.solve_result.to_private_dict(),
         }
@@ -1141,11 +1159,12 @@ def deterministic_uncertainty(
     bound_evidence: AnalyticalBoundEvidence | Mapping[str, Any] | None = None,
     current_identity: Mapping[str, Any] | None = None,
     fair_run_id: str | None = None,
-    base_contract_fingerprint: str | None = None,
-    target_spec_hash: str | None = None,
+    product_id: str | None = None,
+    rule_revision: int | None = None,
+    target_id: str | None = None,
+    solve_input: Mapping[str, Any] | None = None,
     model_id: str | None = None,
     model_version: str | None = None,
-    capability_directory_hash: str | None = None,
     certified_interval: Mapping[str, Any] | Sequence[float] | None = None,
     solve_run_id: str | None = None,
     # These legacy keyword names remain accepted for a controlled mismatch
@@ -1217,48 +1236,55 @@ def deterministic_uncertainty(
     explicit_identity = {
         "fair_run_id": fair_run_id,
         "solve_run_id": solve_run_id,
-        "base_contract_fingerprint": base_contract_fingerprint,
-        "target_spec_hash": target_spec_hash,
+        "product_id": product_id,
+        "rule_revision": rule_revision,
+        "target_id": target_id,
+        "solve_input": None if solve_input is None else dict(solve_input),
         "model_id": model_id,
         "model_version": model_version,
-        "capability_directory_hash": capability_directory_hash,
     }
     for name, explicit in explicit_identity.items():
         if explicit is not None:
             current = identity.get(name)
-            if not isinstance(current, str) or not current.strip():
+            if current is None:
                 return insufficient(f"当前Analytical运行身份缺少{name}", evidence)
-            if current.strip() != str(explicit).strip():
+            if current != explicit:
                 return insufficient(f"显式Analytical运行身份{name}与当前身份不一致", evidence)
 
-    def current_value(name: str, explicit: Any) -> Any:
-        del explicit
-        return identity.get(name)
-
     expected_values = {
-        "fair_run_id": current_value("fair_run_id", fair_run_id),
-        "solve_run_id": current_value("solve_run_id", solve_run_id),
-        "base_contract_fingerprint": current_value("base_contract_fingerprint", base_contract_fingerprint),
-        "target_spec_hash": current_value("target_spec_hash", target_spec_hash),
-        "model_id": current_value("model_id", model_id),
-        "model_version": current_value("model_version", model_version),
-        "capability_directory_hash": current_value("capability_directory_hash", capability_directory_hash),
+        "fair_run_id": identity.get("fair_run_id"),
+        "solve_run_id": identity.get("solve_run_id"),
+        "product_id": identity.get("product_id"),
+        "rule_revision": identity.get("rule_revision"),
+        "target_id": identity.get("target_id"),
+        "solve_input": identity.get("solve_input"),
+        "model_id": identity.get("model_id"),
+        "model_version": identity.get("model_version"),
     }
-    for name, expected in expected_values.items():
-        # The fair operation parent and the four execution identities are
-        # mandatory for an estimated deterministic bound.  solve_run_id is
-        # optional because the Analytical proof itself is the solve boundary.
-        if name != "solve_run_id" and (not isinstance(expected, str) or not expected.strip()):
+    for name in ("fair_run_id", "product_id", "target_id", "model_id", "model_version"):
+        expected = expected_values[name]
+        if not isinstance(expected, str) or not expected.strip():
             return insufficient(f"当前Analytical运行身份缺少{name}", evidence)
-        if expected is not None and (not isinstance(expected, str) or not expected.strip()):
-            return insufficient(f"当前Analytical运行身份缺少{name}", evidence)
+    if (
+        isinstance(expected_values["rule_revision"], bool)
+        or not isinstance(expected_values["rule_revision"], int)
+        or expected_values["rule_revision"] <= 0
+    ):
+        return insufficient("当前Analytical运行身份缺少有效rule_revision", evidence)
+    if not isinstance(expected_values["solve_input"], Mapping):
+        return insufficient("当前Analytical运行身份缺少完整solve_input", evidence)
+    if expected_values["solve_run_id"] is not None and (
+        not isinstance(expected_values["solve_run_id"], str)
+        or not expected_values["solve_run_id"].strip()
+    ):
+        return insufficient("当前Analytical运行身份缺少solve_run_id", evidence)
     for name, expected in expected_values.items():
-        if expected is not None and getattr(evidence, name) != str(expected).strip():
+        if expected is not None and getattr(evidence, name) != expected:
             return insufficient(f"Analytical证据{name}与当前运行身份不一致", evidence)
 
-    target_hash = _field(target, "target_spec_hash", None)
-    if isinstance(target_hash, str) and target_hash.strip() and target_hash.strip() != expected_values["target_spec_hash"].strip():
-        return insufficient("当前目标target_spec_hash与运行身份不一致", evidence)
+    declared_target_id = _field(target, "target_id", None)
+    if declared_target_id != expected_values["target_id"]:
+        return insufficient("当前目标target_id与运行身份不一致", evidence)
     try:
         current_interval = _interval_pair(
             certified_interval if certified_interval is not None else identity.get("certified_interval"),
@@ -1385,14 +1411,15 @@ def monte_carlo_uncertainty(
     *,
     path_count: int,
     include_result_batch: bool = False,
-    target_spec_hash: str | None = None,
     current_identity: Mapping[str, Any] | None = None,
     fair_run_id: str | None = None,
     solve_run_id: str | None = None,
-    base_contract_fingerprint: str | None = None,
+    product_id: str | None = None,
+    rule_revision: int | None = None,
+    target_id: str | None = None,
+    solve_input: Mapping[str, Any] | None = None,
     model_id: str | None = None,
     model_version: str | None = None,
-    capability_directory_hash: str | None = None,
     path_group_count: int | None = None,
     parameter_reference_price_basis: float | None = None,
     parameter_public_encoder: Callable[[float], float] | None = None,
@@ -1401,8 +1428,8 @@ def monte_carlo_uncertainty(
 
     A list of solve results alone carries no evidence that the batches were
     independently generated.  Every item must therefore bind its identity,
-    derived seed, random-matrix fingerprint, target specification and path
-    count to exactly one scalar solve.
+    derived seed, random-matrix fingerprint, product rule, complete solve input
+    and path count to exactly one scalar solve.
     """
     precision = _field(target, "precision_rule", {})
     precision = dict(precision) if isinstance(precision, Mapping) else {}
@@ -1437,33 +1464,53 @@ def monte_carlo_uncertainty(
     if not isinstance(batch_results, Sequence) or isinstance(batch_results, (str, bytes)):
         raise FairParameterSolveError("ineligible", "MC批次必须为严格MonteCarloBatchEvidence序列")
     batches: list[MonteCarloBatchEvidence] = []
-    declared_hash = _field(target, "target_spec_hash", None)
-    if target_spec_hash is not None and declared_hash is not None and str(target_spec_hash) != str(declared_hash):
-        raise FairParameterSolveError("ineligible", "MC请求target_spec_hash与当前目标不一致")
-    expected_hash = declared_hash or target_spec_hash
-    if not isinstance(expected_hash, str) or not expected_hash.strip():
-        raise FairParameterSolveError("ineligible", "MC批次缺少当前target_spec_hash绑定")
     if current_identity is not None and not isinstance(current_identity, Mapping):
         raise FairParameterSolveError("ineligible", "当前MC运行身份必须为结构化映射")
     identity = dict(current_identity or {})
 
-    def current_context_value(name: str, explicit: Any) -> Any:
+    def current_text_value(name: str, explicit: Any) -> str | None:
+        if explicit is not None and identity.get(name) is not None and identity.get(name) != explicit:
+            raise FairParameterSolveError("ineligible", f"显式MC运行身份{name}与当前身份不一致")
         value = explicit if explicit is not None else identity.get(name)
         if value is None:
             return None
         return _text_identity(value, f"当前MC运行身份{name}")
 
-    expected_fair_run_id = current_context_value("fair_run_id", fair_run_id)
+    expected_fair_run_id = current_text_value("fair_run_id", fair_run_id)
     if expected_fair_run_id is None:
         raise FairParameterSolveError("ineligible", "MC当前运行缺少fair_run_id")
-    expected_run_id = current_context_value("solve_run_id", solve_run_id)
-    expected_base = current_context_value("base_contract_fingerprint", base_contract_fingerprint)
-    expected_model = current_context_value("model_id", model_id)
-    expected_version = current_context_value("model_version", model_version)
-    expected_capability = current_context_value("capability_directory_hash", capability_directory_hash)
-    current_target_hash = current_context_value("target_spec_hash", target_spec_hash)
-    if current_target_hash is not None and current_target_hash != expected_hash:
-        raise FairParameterSolveError("ineligible", "MC当前运行target_spec_hash与当前目标不一致")
+    expected_run_id = current_text_value("solve_run_id", solve_run_id)
+    expected_product_id = current_text_value("product_id", product_id)
+    expected_target_id = current_text_value("target_id", target_id)
+    expected_model = current_text_value("model_id", model_id)
+    expected_version = current_text_value("model_version", model_version)
+    if expected_product_id is None or expected_target_id is None:
+        raise FairParameterSolveError("ineligible", "MC当前运行缺少product_id或target_id")
+    expected_rule_revision = rule_revision if rule_revision is not None else identity.get("rule_revision")
+    if (
+        rule_revision is not None
+        and identity.get("rule_revision") is not None
+        and identity.get("rule_revision") != rule_revision
+    ):
+        raise FairParameterSolveError("ineligible", "显式MC运行身份rule_revision与当前身份不一致")
+    if (
+        isinstance(expected_rule_revision, bool)
+        or not isinstance(expected_rule_revision, int)
+        or expected_rule_revision <= 0
+    ):
+        raise FairParameterSolveError("ineligible", "MC当前运行缺少有效rule_revision")
+    expected_solve_input = dict(solve_input) if solve_input is not None else identity.get("solve_input")
+    if (
+        solve_input is not None
+        and identity.get("solve_input") is not None
+        and identity.get("solve_input") != dict(solve_input)
+    ):
+        raise FairParameterSolveError("ineligible", "显式MC运行身份solve_input与当前身份不一致")
+    if not isinstance(expected_solve_input, Mapping):
+        raise FairParameterSolveError("ineligible", "MC当前运行缺少完整solve_input")
+    declared_target_id = _field(target, "target_id", None)
+    if declared_target_id != expected_target_id:
+        raise FairParameterSolveError("ineligible", "MC当前目标target_id与运行身份不一致")
 
     def unavailable_evidence(reason: str) -> dict[str, Any]:
         """Return a restricted result when the formal Service is unavailable."""
@@ -1508,7 +1555,7 @@ def monte_carlo_uncertainty(
     seen_seeds: set[str] = set()
     seen_fingerprints: set[str] = set()
     seen_result_objects: set[int] = set()
-    batch_context: tuple[str, str, str, str, str, str] | None = None
+    batch_context: tuple[Any, ...] | None = None
     for raw_batch in batch_results:
         try:
             batch = MonteCarloBatchEvidence.from_mapping(raw_batch)
@@ -1527,30 +1574,32 @@ def monte_carlo_uncertainty(
             raise FairParameterSolveError("ineligible", "MC批次derived_seed重复")
         if batch.random_matrix_fingerprint in seen_fingerprints:
             raise FairParameterSolveError("ineligible", "MC批次random_matrix_fingerprint重复")
-        if batch.target_spec_hash != expected_hash:
-            raise FairParameterSolveError("ineligible", "MC批次target_spec_hash不一致")
+        if (
+            batch.product_id != expected_product_id
+            or batch.rule_revision != expected_rule_revision
+            or batch.target_id != expected_target_id
+            or dict(batch.solve_input) != dict(expected_solve_input)
+        ):
+            raise FairParameterSolveError("ineligible", "MC批次产品规则或求解输入与当前运行不一致")
         if batch.path_count != path_count:
             raise FairParameterSolveError("ineligible", "MC批次path_count与请求不一致")
         context = (
             batch.fair_run_id,
-            batch.base_contract_fingerprint,
-            batch.target_spec_hash,
+            batch.product_id,
+            batch.rule_revision,
+            batch.target_id,
+            dict(batch.solve_input),
             batch.model_id,
             batch.model_version,
-            batch.capability_directory_hash,
         )
         if batch_context is None:
             batch_context = context
         elif context != batch_context:
             raise FairParameterSolveError("ineligible", "MC批次运行或模型身份不一致")
-        if expected_base is not None and batch.base_contract_fingerprint != expected_base:
-            raise FairParameterSolveError("ineligible", "MC批次base_contract_fingerprint与当前运行不一致")
         if expected_model is not None and batch.model_id != expected_model:
             raise FairParameterSolveError("ineligible", "MC批次model_id与当前运行不一致")
         if expected_version is not None and batch.model_version != expected_version:
             raise FairParameterSolveError("ineligible", "MC批次model_version与当前运行不一致")
-        if expected_capability is not None and batch.capability_directory_hash != expected_capability:
-            raise FairParameterSolveError("ineligible", "MC批次capability_directory_hash与当前运行不一致")
         result_object_id = id(batch.solve_result)
         if result_object_id in seen_result_objects:
             raise FairParameterSolveError("ineligible", "MC批次求解结果对象重复")
