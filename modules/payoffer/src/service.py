@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import math
 import os
 from hmac import compare_digest
 from hashlib import sha256
@@ -22,13 +21,14 @@ from uuid import uuid4
 from runtime.bootstrap import bootstrap_runtime
 from runtime.contracts.contract_api import (
     ContractResolutionError,
-    RESOLVED_CONTRACT_SCHEMA_ID,
+    PayoffInput,
     ResolvedContract,
+    verify_current_product_rule,
 )
 from runtime.ports.result_store import ResultStorePort
 from runtime.protocol.module_host import ModuleHostContext
 
-from .asset_resolver import DefaultAssetError, figure_asset_paths, verify_contract_snapshot_binding
+from .asset_resolver import figure_asset_paths
 from .config import DEFAULT_MAINTENANCE_ENV, DEFAULT_PORT, HOST, PORT_ENV
 from .impl.engine import (
     PayoffEngineError,
@@ -36,12 +36,10 @@ from .impl.engine import (
     payoff_term_fields,
     payoff_fixed_term_fields,
     preview_result,
-    render_payoff as render_payoff,
-    run_payoff,
+    run_resolved_payoff,
     run_runtime,
 )
 from .impl.svg_renderer import normalize_render_options
-from .models import PayoffInput, PayoffResult
 
 
 MODULE_ROOT = Path(__file__).resolve().parents[3]
@@ -69,11 +67,10 @@ _FILE_PREVIEW_API_PATHS = frozenset({
     "/api/preview",
     "/api/run",
 })
-_HOSTED_EDIT_REQUEST_FIELDS = (
+_STRUCTURAL_REQUEST_FIELDS = (
     "product_id",
-    "underlyings",
     "term_overrides",
-    "base_contract_ref",
+    "render_options",
 )
 
 
@@ -105,8 +102,6 @@ def default_example_payload(product_id: object) -> dict[str, Any]:
     paths = figure_asset_paths(name_zh)
     try:
         svg = paths["svg"].read_text(encoding="utf-8")
-        svg_hash = sha256(paths["svg"].read_bytes()).hexdigest()
-        json_hash = sha256(paths["json"].read_bytes()).hexdigest()
     except OSError as error:
         raise PayoffEngineError(f"缺少{name_zh}的固定默认资产") from error
     return {
@@ -115,10 +110,10 @@ def default_example_payload(product_id: object) -> dict[str, Any]:
         "view_mode": "default_example",
         "read_only": True,
         "product_id": identifier,
+        "rule_revision": int(product["identity"]["rule_revision"]),
         "name_zh": name_zh,
         "svg": svg,
         "path_summaries": _path_summaries(product),
-        "default_asset": {"json_hash": json_hash, "svg_hash": svg_hash},
     }
 
 
@@ -262,33 +257,29 @@ def catalog_payload() -> dict[str, object]:
                     f"{product_id}的观察价为未支持值{product['terms']['observation_price']}；当前Payoffer仅支持close"
                 )
             observation_price_options.append({"value": "close", "label": "收盘价"})
-        development_identity = _development_preview_identity(product)
+        structural_roles = [
+            f"S{index + 1}"
+            for index in range(len(product["terms"].get("S0Vec", ())) or 1)
+        ]
         products.append(
             {
                 "product_id": product_id,
+                "rule_revision": int(product["identity"]["rule_revision"]),
                 "canonical_name": product["identity"]["name_zh"],
                 "name_zh": product["identity"]["name_zh"],
-                "underlying_scope": "multi_underlying" if "S0Vec" in product["terms"] else "single_underlying",
-                "underlying_count": len(product["terms"].get("S0Vec", ())) or 1,
+                "structural_roles": structural_roles,
                 "runtime_status": "enabled" if product["identity"]["entry_status"] else "blocked",
                 "formula_mode": "shared_cashflow_interpreter",
                 "path_count": len(product["paths"]),
                 "path_summaries": _path_summaries(product),
                 "payoff_fields": fields,
                 "fixed_fields": payoff_fixed_term_fields(product, registry),
-                # Empty Desk tasks do not yet have a Host task_contract from
-                # which the page can obtain its edit schema.  Publish the
-                # same Core-derived payoff fields with the only formal
-                # Operation request shape, so the page can collect a first
-                # contract request without exposing identity or rule terms.
+                # 预览与保存共用同一份结构请求，不依赖任务合同或市场身份。
                 "edit_schema": {
-                    "request_fields": list(_HOSTED_EDIT_REQUEST_FIELDS),
+                    "request_fields": list(_STRUCTURAL_REQUEST_FIELDS),
                     "overridable_term_keys": [field["key"] for field in fields],
                 },
                 "observation_price_options": observation_price_options,
-                # This identity is a labelled local-development fixture.  It
-                # is intentionally absent from Host/Desk runtime requests.
-                "development_preview_identity": development_identity,
             }
         )
     return {
@@ -301,11 +292,10 @@ def catalog_payload() -> dict[str, object]:
 def _preview_response(
     name_zh: str,
     term_overrides: Mapping[str, Any] | None,
-    identity: Mapping[str, Any] | None,
     render_options: Mapping[str, Any] | None = None,
 ) -> tuple[dict[str, Any], str]:
     """消费引擎同一次计算产出的payload与SVG，服务层绝不重复渲染。"""
-    return _rendered_preview_response(preview_result(name_zh, term_overrides, identity, render_options))
+    return _rendered_preview_response(preview_result(name_zh, term_overrides, render_options))
 
 
 def _rendered_preview_response(result: Any) -> tuple[dict[str, Any], str]:
@@ -318,19 +308,20 @@ def _rendered_preview_response(result: Any) -> tuple[dict[str, Any], str]:
     return payload, result.svg
 
 
-def _preview_request(
+def _structural_request(
     body: Mapping[str, Any],
-) -> tuple[str, str, Mapping[str, Any], Mapping[str, Any] | None, Mapping[str, Any] | None, bool]:
-    """开发预览只接受当前页面的product_id、term_overrides与identity输入。"""
-    allowed = {
-        "product_id", "term_overrides", "identity", "task_id", "run_id",
-        "base_contract_ref", "development_preview", "render_options",
-    }
-    unknown = set(body) - allowed
+) -> tuple[str, str, Mapping[str, Any], Mapping[str, Any] | None]:
+    """解析预览与保存共用的唯一结构请求。"""
+
+    unknown = set(body) - set(_STRUCTURAL_REQUEST_FIELDS)
     if unknown:
-        raise PayoffEngineError(f"开发预览请求含未登记字段：{'、'.join(sorted(unknown))}；请使用product_id")
+        raise PayoffEngineError(
+            f"Payoffer只接受product_id、term_overrides与render_options；"
+            f"检测到未登记字段：{'、'.join(sorted(unknown))}"
+        )
     product_id = str(body.get("product_id", "")).strip()
-    product = load_registry().get("products", {}).get(product_id)
+    registry = load_registry()
+    product = registry.get("products", {}).get(product_id)
     if not isinstance(product, dict):
         raise PayoffEngineError("必须提供有效的product_id")
     identity = product.get("identity", {})
@@ -340,13 +331,16 @@ def _preview_request(
     term_overrides = body.get("term_overrides")
     if term_overrides is not None and not isinstance(term_overrides, Mapping):
         raise PayoffEngineError("term_overrides必须是对象")
-    supplied_identity = body.get("identity")
-    if supplied_identity is not None and not isinstance(supplied_identity, Mapping):
-        raise PayoffEngineError("identity必须是对象")
-    development_preview = body.get("development_preview", False)
-    if not isinstance(development_preview, bool):
-        raise PayoffEngineError("development_preview必须是布尔值")
-    return product_id, name_zh, product, term_overrides, supplied_identity, development_preview
+    if term_overrides is not None:
+        if not all(isinstance(key, str) and key for key in term_overrides):
+            raise PayoffEngineError("term_overrides字段名必须为非空字符串")
+        allowed_overrides = {field["key"] for field in payoff_term_fields(product, registry)}
+        unsupported = set(term_overrides) - allowed_overrides
+        if unsupported:
+            raise PayoffEngineError(
+                f"term_overrides只能包含实际影响收益的可编辑条款：{'、'.join(sorted(unsupported))}"
+            )
+    return product_id, name_zh, product, term_overrides
 
 
 def _render_options(body: Mapping[str, Any]) -> dict[str, int] | None:
@@ -358,106 +352,25 @@ def _render_options(body: Mapping[str, Any]) -> dict[str, int] | None:
         raise PayoffEngineError(str(error)) from error
 
 
-def _require_host_market_identity(
-    identity: Mapping[str, Any] | None,
-    *,
-    product_id: str,
-) -> None:
-    """Desk预览只能消费Host绑定的真实标的与参考价。"""
-    if not isinstance(identity, Mapping):
-        raise PayoffEngineError("Desk Runtime预览必须由App Host提供真实标的与参考价")
-    underlyings = identity.get("underlyings")
-    references = identity.get("reference_prices")
-    if not isinstance(underlyings, (list, tuple)) or not underlyings or not isinstance(references, Mapping):
-        raise PayoffEngineError("Desk Runtime预览必须提供逐标的真实价格参考")
-    assets = [str(value).strip() for value in underlyings]
-    placeholder_prefixes = ("UNDERLYING", "DEFAULT.UNDERLYING", "LOCAL_DEVELOPMENT_ASSET")
-    if any(
-        not value or any(value == prefix or value.startswith(f"{prefix}_") for prefix in placeholder_prefixes)
-        for value in assets
-    ):
-        raise PayoffEngineError("Desk Runtime预览拒绝开发占位标的身份")
-    if set(references) != set(assets):
-        raise PayoffEngineError("Desk Runtime预览的价格参考必须逐一覆盖真实标的")
+def _formal_payoff_input(value: Any) -> PayoffInput:
+    """Restore the exact Core-compiled contract used by a formal run."""
+
+    if isinstance(value, PayoffInput):
+        payoff_input = value
+    elif isinstance(value, Mapping) and isinstance(value.get("contract"), Mapping):
+        try:
+            payoff_input = PayoffInput(
+                contract=ResolvedContract.from_controlled_snapshot(value["contract"]),
+            )
+        except ContractResolutionError as error:
+            raise PayoffEngineError(str(error)) from error
+    else:
+        raise PayoffEngineError("正式Payoffer输入缺少Core编译的ResolvedContract")
     try:
-        prices = [float(references[asset]) for asset in assets]
-    except (TypeError, ValueError) as error:
-        raise PayoffEngineError("Desk Runtime预览的价格参考必须为正数") from error
-    if any(not math.isfinite(price) or price <= 0 for price in prices):
-        raise PayoffEngineError("Desk Runtime预览的价格参考必须为正数")
-    if str(identity.get("product_id", "")).strip() != product_id:
-        raise PayoffEngineError("Desk Runtime预览的产品必须与Host绑定合同一致")
-
-
-def _hosted_preview_input(body: Mapping[str, Any], host_context: ModuleHostContext) -> PayoffInput:
-    """恢复Host受控合同并核验不可由页面替换的合同绑定。"""
-    if set(body) not in ({"product_id", "resolved_contract"}, {"product_id", "resolved_contract", "render_options"}):
-        raise PayoffEngineError("Desk Runtime预览只接受product_id、Host注入的resolved_contract与图片尺寸")
-    if host_context.module != "payoffer" or "module.catalog" not in host_context.request_policy:
-        raise PayoffEngineError("Desk Runtime预览必须由Host授权payoffer module.catalog")
-    required = {
-        "candidate_id": host_context.candidate_id,
-        "catalog_version": host_context.catalog_version,
-        "contract_fingerprint": host_context.contract_fingerprint,
-    }
-    missing = [name for name, value in required.items() if not value]
-    if missing:
-        raise PayoffEngineError(f"Desk Runtime预览的Host上下文缺少：{','.join(missing)}")
-    contract_ref = host_context.contract_ref
-    if contract_ref is None or contract_ref.schema_id != RESOLVED_CONTRACT_SCHEMA_ID:
-        raise PayoffEngineError("Desk Runtime预览缺少当前ResolvedContract引用")
-    payoff_input = _formal_payoff_input({"contract": body["resolved_contract"]})
-    contract = payoff_input.contract
-    product_id = str(body["product_id"]).strip()
-    if not product_id or contract.product_id != product_id:
-        raise PayoffEngineError("Desk Runtime预览的产品与Host受控合同不一致")
-    if (
-        host_context.contract_fingerprint != contract.contract_fingerprint
-        or contract_ref.content_hash != contract.contract_fingerprint
-    ):
-        raise PayoffEngineError("Desk Runtime预览的Host合同引用与ResolvedContract不一致")
+        verify_current_product_rule(payoff_input.contract, load_registry())
+    except ContractResolutionError as error:
+        raise PayoffEngineError(str(error)) from error
     return payoff_input
-
-
-def _require_development_preview(development_preview: bool, action: str) -> None:
-    if not development_preview:
-        raise PayoffEngineError(f"独立Payoffer{action}必须显式声明development_preview=true")
-
-
-def _development_preview_identity(product: Mapping[str, Any]) -> dict[str, Any]:
-    assets = (
-        [f"LOCAL_DEVELOPMENT_ASSET_{index + 1}" for index, _ in enumerate(product["terms"]["S0Vec"])]
-        if "S0Vec" in product["terms"]
-        else ["LOCAL_DEVELOPMENT_ASSET"]
-    )
-    prices = (
-        [float(value) for value in product["terms"]["S0Vec"]]
-        if "S0Vec" in product["terms"]
-        else [float(product["terms"].get("S0", 100.0))]
-    )
-    return {"underlyings": assets, "reference_prices": dict(zip(assets, prices))}
-
-
-def _require_local_development_identity(
-    identity: Mapping[str, Any] | None,
-    product: Mapping[str, Any],
-) -> None:
-    if not isinstance(identity, Mapping):
-        raise PayoffEngineError("独立开发预览必须提供Catalog下发的LOCAL_DEVELOPMENT_ASSET身份")
-    underlyings = identity.get("underlyings")
-    references = identity.get("reference_prices")
-    if not isinstance(underlyings, (list, tuple)) or not underlyings or not isinstance(references, Mapping):
-        raise PayoffEngineError("独立开发预览必须提供LOCAL_DEVELOPMENT_ASSET及逐标的参考价")
-    assets = [str(value).strip() for value in underlyings]
-    try:
-        prices = [float(references[asset]) for asset in assets]
-    except (KeyError, TypeError, ValueError) as error:
-        raise PayoffEngineError("独立开发预览的参考价必须为正数") from error
-    if any(not math.isfinite(price) or price <= 0 for price in prices):
-        raise PayoffEngineError("独立开发预览的参考价必须为正数")
-    expected = _development_preview_identity(product)
-    if assets != expected["underlyings"] or dict(references) != expected["reference_prices"]:
-        raise PayoffEngineError("独立开发预览身份必须与当前产品Catalog下发值完全一致")
 
 
 def page_asset_path(request_path: str) -> Path | None:
@@ -475,7 +388,7 @@ def call_tool(
     result_store: ResultStorePort | None = None,
     tenant_id: str | None = None,
 ) -> Mapping[str, Any]:
-    """正式run由Host注入上下文与Store；页面payload不能提供Host事实。"""
+    """预览编译临时候选；仅run通过Host Store保存本次运行记录。"""
     body = dict(request)
     action = str(body.pop("action", "catalog")).strip().lower()
     if action == "catalog":
@@ -483,28 +396,25 @@ def call_tool(
     if action == "default":
         return default_example_payload(body.get("product_id"))
     if action == "preview":
-        if isinstance(host_context, ModuleHostContext):
-            payoff_input = _hosted_preview_input(body, host_context)
-            rendered = render_payoff(payoff_input, _render_options(body))
-            payload, svg = _rendered_preview_response(PayoffResult(
-                payload={**dict(rendered.payload), "runtime_status": "enabled"},
-                svg=rendered.svg,
-            ))
-        else:
-            product_id, name_zh, product, term_overrides, identity, development_preview = _preview_request(body)
-            _require_development_preview(development_preview, "预览")
-            _require_local_development_identity(identity, product)
-            payload, svg = _preview_response(name_zh, term_overrides, identity, _render_options(body))
-        return {"ok": True, "module": "payoffer", "preview": payload, "svg": svg}
+        _, name_zh, _, term_overrides = _structural_request(body)
+        payload, svg = _preview_response(name_zh, term_overrides, _render_options(body))
+        return {
+            "ok": True,
+            "module": "payoffer",
+            "preview_id": payload["preview_id"],
+            "preview": payload,
+            "svg": svg,
+        }
     if action == "run":
         if not isinstance(host_context, ModuleHostContext) or result_store is None or not tenant_id:
             raise PayoffEngineError("正式Payoffer调用必须由Host注入ModuleHostContext、ResultStorePort与tenant_id")
+        unknown = set(body) - {"payoff_input", "render_options"}
+        if unknown:
+            raise PayoffEngineError(f"正式Payoffer运行含未登记字段：{'、'.join(sorted(unknown))}")
         payoff_input = _formal_payoff_input(body.get("payoff_input"))
-        requested_run_id = body.get("run_id")
-        run_id = requested_run_id.strip() if isinstance(requested_run_id, str) and requested_run_id.strip() else f"run-{uuid4().hex[:12]}"
-        return run_payoff(
+        return run_resolved_payoff(
             payoff_input,
-            run_id=run_id,
+            module_run_id=f"module-run-{uuid4().hex[:12]}",
             host_context=host_context,
             result_store=result_store,
             tenant_id=tenant_id,
@@ -516,33 +426,6 @@ def call_tool(
         "status": "unsupported",
         "message": f"Payoffer不支持action={action}；仅支持catalog、default、preview、run。",
     }
-
-
-def _formal_payoff_input(value: Any) -> PayoffInput:
-    if isinstance(value, PayoffInput):
-        contract = value.contract
-    elif isinstance(value, Mapping) and set(value) == {"contract"}:
-        contract_value = value["contract"]
-        if isinstance(contract_value, ResolvedContract):
-            contract = contract_value
-        elif isinstance(contract_value, Mapping):
-            try:
-                contract = ResolvedContract.from_controlled_snapshot(contract_value)
-            except (TypeError, ValueError, ContractResolutionError) as error:
-                raise PayoffEngineError(f"PayoffInput.contract必须是Core受控ResolvedContract快照：{error}") from error
-        else:
-            raise PayoffEngineError("PayoffInput.contract必须为ResolvedContract或完整协议对象")
-    else:
-        raise PayoffEngineError("正式Payoffer只接受PayoffInput={contract}")
-    try:
-        verify_contract_snapshot_binding(contract)
-    except DefaultAssetError as error:
-        raise PayoffEngineError(f"PayoffInput.contract产品快照无效：{error}") from error
-    try:
-        _require_host_market_identity(contract.identity, product_id=contract.product_id)
-    except PayoffEngineError as error:
-        raise PayoffEngineError(f"正式Payoffer合同身份无效：{error}") from error
-    return PayoffInput(contract=contract)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -702,11 +585,12 @@ class Handler(BaseHTTPRequestHandler):
                 return
             body = self._request_json()
             if parsed.path == "/api/preview":
-                _, name_zh, product, term_overrides, identity, development_preview = _preview_request(body)
-                _require_development_preview(development_preview, "预览")
-                _require_local_development_identity(identity, product)
-                payload, svg = _preview_response(name_zh, term_overrides, identity, _render_options(body))
-                self._json(HTTPStatus.OK, {"ok": True, "preview": payload, "svg": svg})
+                _, name_zh, _, term_overrides = _structural_request(body)
+                payload, svg = _preview_response(name_zh, term_overrides, _render_options(body))
+                self._json(
+                    HTTPStatus.OK,
+                    {"ok": True, "preview_id": payload["preview_id"], "preview": payload, "svg": svg},
+                )
                 return
             if parsed.path == "/api/default":
                 self._json(HTTPStatus.OK, default_example_payload(body.get("product_id")))
@@ -721,15 +605,12 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(HTTPStatus.OK, publish_default_example(body))
                 return
             if parsed.path == "/api/run":
-                _, name_zh, product, term_overrides, identity, development_preview = _preview_request(body)
-                _require_development_preview(development_preview, "运行")
-                _require_local_development_identity(identity, product)
+                _, name_zh, _, term_overrides = _structural_request(body)
                 result = run_runtime(
                     name_zh,
                     term_overrides,
-                    identity,
-                    str(body.get("task_id", "")),
-                    str(body.get("run_id", "")),
+                    "local-payoffer-save",
+                    f"module-run-{uuid4().hex[:12]}",
                     _render_options(body),
                 )
                 self._json(HTTPStatus.OK, result)
