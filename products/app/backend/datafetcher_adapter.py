@@ -115,20 +115,9 @@ class DataFetcherAdapter:
                 failure_code="data_interface_configuration",
                 stage="data",
             )
-        if (
-            requires_ifind
-            and action != "test_connection"
-            and (
-                self._verification_for is None
-                or not self._verification_for(principal, interface.secret_ref)
-            )
-        ):
-            raise UnavailableCapabilityError(
-                "datafetcher.verification",
-                "请先在设置中心验证当前iFind数据连接。",
-                failure_code="data_interface_unverified",
-                stage="data",
-            )
+        # A configured SecretRef is injected lazily.  The Capability resolves it
+        # only after its process-local market/calendar cache confirms a remote
+        # gap, so a complete local hit never performs credential I/O.
         if not callable(self._app_datafetcher_call):
             raise UnavailableCapabilityError(
                 "datafetcher.app_secret_port",
