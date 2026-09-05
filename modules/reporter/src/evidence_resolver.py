@@ -15,6 +15,7 @@ from pathlib import Path, PurePosixPath
 import re
 from typing import Any, Mapping
 
+from runtime.knowledger.registry_loader import load_registry
 from runtime.ports.result_store import ResultStorePort
 
 from .models import (
@@ -27,7 +28,6 @@ from .models import (
     module_run_ref,
     require_identifier,
     require_text,
-    stable_hash,
 )
 
 
@@ -44,20 +44,8 @@ _QUOTE_TERM_UNITS = {
 }
 _PAYOFF_FACT_SCHEMA = "optionhelper.reporter-payoff-facts"
 _FAIR_RESULT_SCHEMA = "optionhelper.pricer-fair-parameter-result"
-_FAIR_PRIVATE_FILES = (
-    "private/evaluated_resolved_contract.json",
-    "private/final_parameter_snapshot.json",
-    "private/audit_fair_parameter.json",
-)
-_FAIR_IDENTITY_FIELDS = (
-    "fair_run_id",
-    "base_contract_fingerprint",
-    "evaluated_contract_fingerprint",
-    "target_spec_hash",
-    "capability_directory_hash",
-    "model_id",
-    "model_version",
-)
+_FAIR_RESULT_ARTIFACT = "artifacts/fair_parameter_result.json"
+_FAIR_EVALUATED_CONTRACT = "private/evaluated_resolved_contract.json"
 _FAIR_PUBLIC_UNCERTAINTY_FIELDS = frozenset({
     "status", "precision_status", "quote_eligible", "quote_delivery_status",
     "formal_quote_status", "formal_quote_reason", "absolute_error_upper_bound",
@@ -151,7 +139,7 @@ def _terminal_error(bundle: Mapping[str, bytes], manifest: Mapping[str, Any]) ->
         return None
 
 
-def _required_candidate(raw: Mapping[str, Any], *, request: ReportRequest) -> dict[str, Any]:
+def _required_candidate(raw: Mapping[str, Any]) -> dict[str, Any]:
     """读取一条完整、可验证的正式推荐候选。"""
 
     value = dict(raw)
@@ -159,14 +147,11 @@ def _required_candidate(raw: Mapping[str, Any], *, request: ReportRequest) -> di
         candidate_id = require_identifier(value.get("candidate_id"), "RecommendationCandidate.candidate_id")
         product_id = require_text(value.get("product_id"), "RecommendationCandidate.product_id")
         product_name = require_text(value.get("product_name"), "RecommendationCandidate.product_name")
-        product_version = require_text(value.get("product_version"), "RecommendationCandidate.product_version")
-        contract_fingerprint = require_text(value.get("contract_fingerprint"), "RecommendationCandidate.contract_fingerprint")
-        product_version_content_hash = require_text(
-            value.get("product_version_content_hash"),
-            "RecommendationCandidate.product_version_content_hash",
-        )
-        if not _SHA256.fullmatch(product_version_content_hash):
-            raise ReporterError("RecommendationCandidate.product_version_content_hash必须是64位SHA-256")
+        rule_revision = value.get("rule_revision")
+        if not isinstance(rule_revision, int) or isinstance(rule_revision, bool) or rule_revision <= 0:
+            raise ReporterError("RecommendationCandidate.rule_revision必须为正整数")
+        if rule_revision != _current_product_rule_revision(product_id):
+            raise ReporterError(f"产品{product_id}的rule_revision已失效，整份报告不可展示")
         analysis_basis_id = require_text(value.get("analysis_basis_id"), "RecommendationCandidate.analysis_basis_id")
         underlyings = [require_text(item, "RecommendationCandidate.underlyings[]") for item in as_list(value.get("underlyings"), "RecommendationCandidate.underlyings")]
         currency = require_text(value.get("currency"), "RecommendationCandidate.currency")
@@ -181,9 +166,7 @@ def _required_candidate(raw: Mapping[str, Any], *, request: ReportRequest) -> di
             "candidate_id": candidate_id,
             "product_id": product_id,
             "product_name": product_name,
-            "product_version": product_version,
-            "product_version_content_hash": product_version_content_hash,
-            "contract_fingerprint": contract_fingerprint,
+            "rule_revision": rule_revision,
             "analysis_basis_id": analysis_basis_id,
             "underlyings": underlyings,
             "currency": currency,
@@ -197,28 +180,12 @@ def _required_candidate(raw: Mapping[str, Any], *, request: ReportRequest) -> di
             "key_terms": list(value.get("key_terms", [])) if isinstance(value.get("key_terms", []), list) else [],
             "evidence_refs": list(value.get("evidence_refs", [])) if isinstance(value.get("evidence_refs", []), list) else [],
         }
-        if value.get("candidate_version_id") is not None:
-            candidate["candidate_version_id"] = require_identifier(
-                value.get("candidate_version_id"), "RecommendationCandidate.candidate_version_id",
-            )
         if value.get("source_candidate_id") is not None:
             candidate["source_candidate_id"] = require_identifier(
                 value.get("source_candidate_id"), "RecommendationCandidate.source_candidate_id",
             )
         if value.get("supplemental_sections") is not None:
             candidate["supplemental_sections"] = validate_supplemental_sections(value.get("supplemental_sections"))
-        version_ref = as_mapping(request.source_refs["product_version_refs"].get(candidate_id), f"product_version_refs.{candidate_id}")
-        if require_text(version_ref.get("product_id"), f"product_version_refs.{candidate_id}.product_id") != product_id:
-            raise ReporterError(f"候选{candidate_id}的product_id与product_version_refs不一致")
-        if require_text(version_ref.get("product_version"), f"product_version_refs.{candidate_id}.product_version") != product_version:
-            raise ReporterError(f"候选{candidate_id}的product_version与product_version_refs不一致")
-        version_content_hash = require_text(
-            version_ref.get("content_hash"), f"product_version_refs.{candidate_id}.content_hash",
-        )
-        if not _SHA256.fullmatch(version_content_hash):
-            raise ReporterError(f"product_version_refs.{candidate_id}.content_hash必须是64位小写SHA-256")
-        if product_version_content_hash != version_content_hash:
-            raise ReporterError(f"候选{candidate_id}的product_version_content_hash与product_version_refs不一致")
         return candidate
     except (ReporterError, TypeError, ValueError) as error:
         raise ReporterError(f"RecommendationCandidate不满足正式协议：{error}") from error
@@ -339,19 +306,13 @@ def validate_supplemental_sections(value: Any) -> list[dict[str, Any]]:
 
 
 def _recommendation_set(request: ReportRequest) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
-    catalog_ref = as_mapping(request.source_refs.get("catalog_version_ref"), "source_refs.catalog_version_ref")
-    catalog_version = require_text(catalog_ref.get("catalog_version"), "catalog_version_ref.catalog_version")
-    catalog_content_hash = require_text(catalog_ref.get("content_hash"), "catalog_version_ref.content_hash")
     evidence_refs = as_mapping(request.source_refs.get("evidence_refs"), "source_refs.evidence_refs")
     envelope = as_mapping(evidence_refs.get("recommendation_set"), "source_refs.evidence_refs.recommendation_set")
-    allowed = {"source_id", "run_id", "payload", "expected_semantic_result_hash"}
+    allowed = {"source_id", "run_id", "payload"}
     unknown = set(envelope).difference(allowed)
     if unknown:
         raise ReporterError(f"recommendation_set引用含未知字段：{','.join(sorted(unknown))}")
     payload = as_mapping(envelope.get("payload"), "recommendation_set.payload")
-    expected_hash = require_text(envelope.get("expected_semantic_result_hash"), "recommendation_set.expected_semantic_result_hash")
-    if stable_hash(payload) != expected_hash:
-        raise ReporterError("RecommendationSet语义哈希不一致")
     if payload.get("schema") != RECOMMENDATION_SCHEMA:
         raise ReporterError(f"RecommendationSet.schema必须为{RECOMMENDATION_SCHEMA}")
     if require_identifier(payload.get("tenant_id"), "RecommendationSet.tenant_id") != request.tenant_id:
@@ -360,16 +321,12 @@ def _recommendation_set(request: ReportRequest) -> tuple[dict[str, dict[str, Any
         raise ReporterError("RecommendationSet.task_id与ReportRequest不一致")
     if require_identifier(payload.get("analysis_case_id"), "RecommendationSet.analysis_case_id") != request.analysis_case_id:
         raise ReporterError("RecommendationSet.analysis_case_id与ReportRequest不一致")
-    if require_text(payload.get("catalog_version"), "RecommendationSet.catalog_version") != catalog_version:
-        raise ReporterError("RecommendationSet.catalog_version与catalog_version_ref不一致")
-    if require_text(payload.get("catalog_content_hash"), "RecommendationSet.catalog_content_hash") != catalog_content_hash:
-        raise ReporterError("RecommendationSet.catalog_content_hash与catalog_version_ref不一致")
     run_id = require_identifier(payload.get("run_id"), "RecommendationSet.run_id")
     if envelope.get("run_id") and require_identifier(envelope.get("run_id"), "recommendation_set.run_id") != run_id:
         raise ReporterError("RecommendationSet引用run_id与payload不一致")
     candidates: dict[str, dict[str, Any]] = {}
     for raw in as_list(payload.get("candidates"), "RecommendationSet.candidates"):
-        candidate = _required_candidate(as_mapping(raw, "RecommendationSet.candidates[]"), request=request)
+        candidate = _required_candidate(as_mapping(raw, "RecommendationSet.candidates[]"))
         candidate_id = candidate["candidate_id"]
         if candidate_id in candidates:
             raise ReporterError(f"RecommendationSet.candidates含重复candidate_id：{candidate_id}")
@@ -382,7 +339,6 @@ def _recommendation_set(request: ReportRequest) -> tuple[dict[str, dict[str, Any
         "status": "ready",
         "source": require_text(envelope.get("source_id"), "recommendation_set.source_id"),
         "run_id": run_id,
-        "semantic_result_hash": expected_hash,
     }
 
 
@@ -394,24 +350,24 @@ def _contract_fields(raw: Mapping[str, Any], field: str) -> dict[str, Any]:
         "product_name": require_text(identity.get("name_zh"), f"{field}.identity.name_zh"),
         "underlyings": [require_text(item, f"{field}.identity.underlyings[]") for item in as_list(identity.get("underlyings"), f"{field}.identity.underlyings")],
         "currency": require_text(identity.get("currency"), f"{field}.identity.currency"),
-        "product_version": require_text(contract.get("product_version"), f"{field}.product_version"),
-        "contract_fingerprint": require_text(contract.get("contract_fingerprint"), f"{field}.contract_fingerprint"),
         "resolved_schedules": contract.get("resolved_schedules"),
-        "registry_snapshot_hash": require_text(contract.get("registry_snapshot_hash"), f"{field}.registry_snapshot_hash"),
-        "product_snapshot_hash": require_text(contract.get("product_snapshot_hash"), f"{field}.product_snapshot_hash"),
     }
+    identity_rule_revision = identity.get("rule_revision")
+    if (
+        not isinstance(identity_rule_revision, int)
+        or isinstance(identity_rule_revision, bool)
+        or identity_rule_revision <= 0
+    ):
+        raise ReporterError(f"{field}.rule_revision必须为正整数")
+    if "rule_revision" in contract and contract.get("rule_revision") != identity_rule_revision:
+        raise ReporterError(f"{field}.rule_revision与identity.rule_revision不一致")
+    required["rule_revision"] = identity_rule_revision
     if required["resolved_schedules"] is None:
         raise ReporterError(f"{field}.resolved_schedules不能为空；必须为ResolvedContract.to_protocol_dict()快照")
-    if not _SHA256.fullmatch(required["registry_snapshot_hash"]) or not _SHA256.fullmatch(required["product_snapshot_hash"]):
-        raise ReporterError(f"{field}缺少正式Registry/ProductVersion快照哈希")
     terms = as_mapping(contract.get("terms"), f"{field}.terms")
     term_sources = as_mapping(contract.get("term_sources"), f"{field}.term_sources")
     paths = as_list(contract.get("paths"), f"{field}.paths", allow_empty=True)
-    analysis_basis_id = contract.get("analysis_basis_id", identity.get("analysis_basis_id"))
-    if analysis_basis_id is None:
-        analysis_basis_id = f"basis-{required['contract_fingerprint'][:20]}"
     price_convention = contract.get("price_convention", identity.get("price_convention"))
-    required["analysis_basis_id"] = require_text(analysis_basis_id, f"{field}.analysis_basis_id")
     if isinstance(price_convention, str):
         if price_convention not in {"normalized_100", "absolute_market"}:
             raise ReporterError(f"{field}.price_convention字符串口径不受支持")
@@ -427,7 +383,31 @@ def _contract_fields(raw: Mapping[str, Any], field: str) -> dict[str, Any]:
     required["terms"] = terms
     required["term_sources"] = term_sources
     required["paths"] = paths
+    required["path_case_applicability"] = deepcopy(contract.get("path_case_applicability", []))
     return required
+
+
+def _current_product_rule_revision(product_id: str) -> int:
+    """Read only the current ProductDefinition authority, never a task contract."""
+
+    try:
+        product = load_registry()["products"][product_id]
+        identity = product["identity"]
+        revision = identity["rule_revision"]
+    except (KeyError, TypeError, ValueError) as error:
+        raise ReporterError(f"产品{product_id}的当前ProductDefinition不可用") from error
+    if isinstance(revision, bool) or not isinstance(revision, int) or revision <= 0:
+        raise ReporterError(f"产品{product_id}的当前ProductDefinition.rule_revision无效")
+    return revision
+
+
+def _assert_current_product_rule(contract: Mapping[str, Any]) -> None:
+    product_id = require_text(contract.get("product_id"), "产品依赖.product_id")
+    revision = contract.get("rule_revision")
+    if isinstance(revision, bool) or not isinstance(revision, int) or revision <= 0:
+        raise ReporterError("产品依赖.rule_revision必须为正整数")
+    if revision != _current_product_rule_revision(product_id):
+        raise ReporterError(f"产品{product_id}的rule_revision已失效，整份报告不可展示")
 
 
 def _artifact_manifest(
@@ -438,7 +418,7 @@ def _artifact_manifest(
     module: str,
 ) -> tuple[dict[str, Any], str]:
     # Core LocalResultStore的正式布局固定为artifacts/artifact_manifest.json，并由
-    # commit_marker.json把语义哈希和清单文件哈希绑定。上游模块可回填同一相对路径，
+    # commit_marker.json把结果文件哈希和清单文件哈希绑定。上游模块可回填同一相对路径，
     # 但Reporter不要求不存在的manifest.artifact_manifest_hash字段。
     relative = _safe_relative(manifest.get("artifact_manifest", "artifacts/artifact_manifest.json"), "manifest.artifact_manifest")
     payload = _bundle_bytes(bundle, relative.as_posix(), "manifest.artifact_manifest")
@@ -454,14 +434,14 @@ def _artifact_manifest(
         raise ReporterError("artifact_manifest与ModuleRunRef外部锚点不一致")
     if marker.get("committed") is not True or marker.get("artifact_manifest_hash") != actual_manifest_hash:
         raise ReporterError("commit_marker未绑定当前artifact_manifest")
-    if marker.get("semantic_result_hash") != ref_hash:
-        raise ReporterError("commit_marker.semantic_result_hash与ModuleRunRef不一致")
+    if marker.get("result_file_hash") != ref_hash:
+        raise ReporterError("commit_marker.result_file_hash与ModuleRunRef不一致")
     if manifest.get("artifact_manifest_hash") and manifest.get("artifact_manifest_hash") != actual_manifest_hash:
         raise ReporterError("manifest.artifact_manifest_hash与文件不一致")
     if raw.get("module") != module:
         raise ReporterError("artifact_manifest.module与ModuleRun不一致")
-    if raw.get("semantic_result_hash") != ref_hash:
-        raise ReporterError("artifact_manifest.semantic_result_hash与ModuleRunRef不一致")
+    if raw.get("result_file_hash") != ref_hash:
+        raise ReporterError("artifact_manifest.result_file_hash与ModuleRunRef不一致")
     file_hashes = raw.get("file_hashes")
     if not isinstance(file_hashes, Mapping) or not file_hashes:
         raise ReporterError("artifact_manifest必须列出受控file_hashes，至少覆盖result.json")
@@ -508,6 +488,8 @@ def _finite_fair_number(value: Any, field: str) -> float:
 def _public_fair_uncertainty(value: Any) -> dict[str, Any]:
     """Project numerical uncertainty without carrying run or proof metadata."""
 
+    if value is None:
+        return {}
     source = as_mapping(value, "fair_parameter.solution_uncertainty")
     result: dict[str, Any] = {}
     for key in _FAIR_PUBLIC_UNCERTAINTY_FIELDS:
@@ -569,20 +551,19 @@ def _public_fair_valuation(value: Any, *, value_basis: str) -> dict[str, Any]:
 
 
 def _public_fair_artifact_manifest(manifest: Mapping[str, Any]) -> dict[str, Any]:
-    """Keep the evidence manifest internal while preventing private/fair raw JSON copy."""
+    """Expose only copyable public artifacts, never integrity bookkeeping."""
 
-    result = deepcopy(dict(manifest))
-    artifacts = result.get("artifacts")
-    if isinstance(artifacts, list):
-        result["artifacts"] = [
+    artifacts = manifest.get("artifacts")
+    return {
+        "artifacts": [
             deepcopy(dict(item))
-            for item in artifacts
+            for item in (artifacts if isinstance(artifacts, list) else [])
             if isinstance(item, Mapping)
             and str(item.get("storage_ref", "")) != "result.json"
-            and str(item.get("storage_ref", "")) != "artifacts/fair_parameter_result.json"
+            and str(item.get("storage_ref", "")) != _FAIR_RESULT_ARTIFACT
             and not str(item.get("storage_ref", "")).startswith("private/")
         ]
-    return result
+    }
 
 
 def _fair_parameter_evidence(
@@ -594,15 +575,14 @@ def _fair_parameter_evidence(
     ref_run_id: str,
     manifest: Mapping[str, Any],
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Verify Pricer's sealed fair result and return only its reader projection."""
+    """Validate one explicit fair ModuleRun without inventing business hashes."""
 
     file_hashes = artifact_manifest.get("file_hashes")
-    if not isinstance(file_hashes, Mapping) or "artifacts/fair_parameter_result.json" not in file_hashes:
-        raise ReporterError("公平参数运行缺少受控artifacts/fair_parameter_result.json")
-    for name in _FAIR_PRIVATE_FILES:
-        if name not in file_hashes:
-            raise ReporterError(f"公平参数运行缺少受控{name}")
-    artifact = _bundle_json(bundle, "artifacts/fair_parameter_result.json", "artifacts/fair_parameter_result.json")
+    if not isinstance(file_hashes, Mapping) or _FAIR_RESULT_ARTIFACT not in file_hashes:
+        raise ReporterError(f"公平参数运行缺少受控{_FAIR_RESULT_ARTIFACT}")
+    if _FAIR_EVALUATED_CONTRACT not in file_hashes:
+        raise ReporterError("公平参数运行缺少最终候选ResolvedContract快照")
+    artifact = _bundle_json(bundle, _FAIR_RESULT_ARTIFACT, _FAIR_RESULT_ARTIFACT)
     artifact_pricing = artifact.get("pricing")
     fair_result = artifact.get("fair_parameter") if isinstance(artifact.get("fair_parameter"), Mapping) else artifact
     result_fair = result.get("fair_parameter")
@@ -637,80 +617,75 @@ def _fair_parameter_evidence(
         raise ReporterError("fair_parameter.value_basis不是当前公开价值口径")
     for key in ("target_value", "solution", "base_parameter", "residual"):
         _finite_fair_number(fair_result.get(key), f"fair_parameter.{key}")
+    if manifest.get("run_id") != ref_run_id:
+        raise ReporterError("公平参数manifest.run_id与ModuleRunRef不一致")
+    if fair_result.get("product_id") not in (None, contract.get("product_id")):
+        raise ReporterError("公平参数product_id与ResolvedContract不一致")
+    if fair_result.get("rule_revision") not in (None, contract.get("rule_revision")):
+        raise ReporterError("公平参数rule_revision与ResolvedContract不一致")
 
-    identity = as_mapping(fair_result.get("identity"), "fair_parameter.identity")
-    for key in _FAIR_IDENTITY_FIELDS:
-        require_text(identity.get(key), f"fair_parameter.identity.{key}")
-    if identity["fair_run_id"] != ref_run_id or identity["fair_run_id"] != manifest.get("run_id"):
-        raise ReporterError("fair_parameter.identity.fair_run_id与ModuleRunRef不一致")
-    if identity["base_contract_fingerprint"] != contract["contract_fingerprint"]:
-        raise ReporterError("fair_parameter.identity.base_contract_fingerprint与基础合同不一致")
-    evaluated_fingerprint = require_text(
-        fair_result.get("evaluated_contract_fingerprint"),
-        "fair_parameter.evaluated_contract_fingerprint",
+    input_name = _safe_relative(
+        manifest.get("input_snapshot", "input_snapshot.json"),
+        "manifest.input_snapshot",
+    ).as_posix()
+    input_snapshot = _bundle_json(bundle, input_name, "input_snapshot.json")
+    input_contract = _contract_fields(
+        as_mapping(input_snapshot.get("contract"), "input_snapshot.contract"),
+        "input_snapshot.contract",
     )
-    if identity["evaluated_contract_fingerprint"] != evaluated_fingerprint:
-        raise ReporterError("公平参数evaluated_contract_fingerprint身份不一致")
+    if input_contract != contract:
+        raise ReporterError("公平参数输入合同与ResolvedContract快照不一致")
+    objective = as_mapping(input_snapshot.get("pricing_objective"), "input_snapshot.pricing_objective")
+    if objective.get("mode") != "fair_parameter" or objective.get("target_id") != target_id:
+        raise ReporterError("公平参数输入目标与结果target_id不一致")
 
-    evaluated_raw = _bundle_json(bundle, _FAIR_PRIVATE_FILES[0], _FAIR_PRIVATE_FILES[0])
-    evaluated = _contract_fields(evaluated_raw, _FAIR_PRIVATE_FILES[0])
-    if evaluated["contract_fingerprint"] != evaluated_fingerprint:
-        raise ReporterError("公平参数私有候选合同指纹不一致")
+    evaluated_raw = _bundle_json(bundle, _FAIR_EVALUATED_CONTRACT, _FAIR_EVALUATED_CONTRACT)
+    evaluated = _contract_fields(evaluated_raw, _FAIR_EVALUATED_CONTRACT)
     for key in (
-        "product_id", "product_name", "product_version", "product_snapshot_hash",
-        "registry_snapshot_hash", "underlyings", "currency", "price_convention",
+        "product_id", "product_name", "underlyings", "currency",
+        "price_convention", "rule_revision",
     ):
         if evaluated.get(key) != contract.get(key):
             raise ReporterError(f"公平参数私有候选合同与基础合同不一致：{key}")
 
-    snapshot = _bundle_json(bundle, _FAIR_PRIVATE_FILES[1], _FAIR_PRIVATE_FILES[1])
-    if snapshot.get("schema") != "optionhelper.fair-parameter-snapshot":
-        raise ReporterError("公平参数最终参数快照schema无效")
-    if snapshot.get("target_id") != target_id:
-        raise ReporterError("公平参数最终参数快照target_id不一致")
-    if snapshot.get("base_contract_fingerprint") != contract["contract_fingerprint"]:
-        raise ReporterError("公平参数最终参数快照基础合同指纹不一致")
-    if snapshot.get("evaluated_contract_fingerprint") != evaluated_fingerprint:
-        raise ReporterError("公平参数最终参数快照候选合同指纹不一致")
-    if snapshot.get("target_spec_hash") != identity["target_spec_hash"]:
-        raise ReporterError("公平参数最终参数快照target_spec_hash不一致")
-    snapshot_hash = require_text(fair_result.get("final_parameter_snapshot_hash"), "fair_parameter.final_parameter_snapshot_hash")
-    if not _SHA256.fullmatch(snapshot_hash) or stable_hash(snapshot) != snapshot_hash:
-        raise ReporterError("公平参数final_parameter_snapshot_hash校验失败")
+    evaluated_target = _finite_fair_number(
+        evaluated["terms"].get(target_id),
+        f"{_FAIR_EVALUATED_CONTRACT}.terms.{target_id}",
+    )
+    if not math.isclose(evaluated_target, float(fair_result["solution"]), rel_tol=0.0, abs_tol=1e-12):
+        raise ReporterError("公平参数私有候选合同与反解值不一致")
+    if set(evaluated["terms"]) != set(contract["terms"]):
+        raise ReporterError("公平参数最终候选ResolvedContract条款集合发生变化")
+    for key, value in contract["terms"].items():
+        if key != target_id and evaluated["terms"].get(key) != value:
+            raise ReporterError(f"公平参数最终候选ResolvedContract修改了非目标条款：{key}")
 
-    audit = _bundle_json(bundle, _FAIR_PRIVATE_FILES[2], _FAIR_PRIVATE_FILES[2])
-    if audit.get("schema") != "optionhelper.private-fair-parameter-audit":
-        raise ReporterError("公平参数私有审计schema无效")
-    for key in _FAIR_IDENTITY_FIELDS:
-        if audit.get(key) != identity.get(key):
-            raise ReporterError(f"公平参数私有审计身份字段{key}不一致")
-    if not isinstance(audit.get("evaluations"), list):
-        raise ReporterError("公平参数私有审计缺少实际估值诊断")
-    if audit.get("final_parameter_snapshot_hash") != snapshot_hash:
-        raise ReporterError("公平参数私有审计与最终参数快照哈希不一致")
-
-    final_valuation = as_mapping(fair_result.get("final_valuation"), "fair_parameter.final_valuation")
-    valuation_hash = require_text(fair_result.get("final_valuation_hash"), "fair_parameter.final_valuation_hash")
-    if not _SHA256.fullmatch(valuation_hash) or stable_hash(final_valuation) != valuation_hash:
-        raise ReporterError("公平参数final_valuation_hash校验失败")
-    if audit.get("final_valuation_hash") != valuation_hash:
-        raise ReporterError("公平参数私有审计与最终估值哈希不一致")
-    if final_valuation.get("contract_fingerprint") not in (None, evaluated_fingerprint):
-        raise ReporterError("公平参数final_valuation与候选合同指纹不一致")
-    public_final_valuation = _public_fair_valuation(final_valuation, value_basis=value_basis)
     public_fair = {
         key: deepcopy(fair_result[key])
         for key in (
             "schema", "result_kind", "status", "target_id", "method", "quote_basis",
             "quote_value_basis", "value_basis", "target_value", "solution", "base_parameter",
-            "residual", "path_count", "quote_eligible", "precision_status",
+            "residual", "target_label", "target_unit", "convergence_status",
+            "path_count", "quote_eligible", "precision_status",
             "formal_quote_status", "formal_quote_reason",
         )
         if key in fair_result
     }
+    public_fair["product_id"] = contract["product_id"]
+    public_fair["rule_revision"] = contract["rule_revision"]
+    public_fair["convergence_status"] = (
+        require_text(fair_result.get("convergence_status"), "fair_parameter.convergence_status")
+        if fair_result.get("convergence_status") is not None
+        else str(fair_result["status"])
+    )
     public_fair["quote_delivery_status"] = quote_delivery_status or "research_only"
-    public_fair["solution_uncertainty"] = _public_fair_uncertainty(fair_result.get("solution_uncertainty"))
-    public_fair["final_valuation"] = public_final_valuation
+    public_uncertainty = _public_fair_uncertainty(fair_result.get("solution_uncertainty"))
+    if public_uncertainty:
+        public_fair["solution_uncertainty"] = public_uncertainty
+    if fair_result.get("final_valuation") is not None:
+        public_fair["final_valuation"] = _public_fair_valuation(
+            fair_result["final_valuation"], value_basis=value_basis,
+        )
     return public_fair, _public_fair_artifact_manifest(artifact_manifest)
 
 
@@ -740,7 +715,7 @@ def _load_module_run(
         "run_id": ref.run_id,
         "analysis_case_id": request.analysis_case_id,
         "candidate_id": candidate.get("source_candidate_id", candidate["candidate_id"]),
-        "semantic_result_hash": ref.expected_semantic_result_hash,
+        "result_file_hash": ref.expected_result_file_hash,
     }
     for key, expected in checks.items():
         if manifest.get(key) != expected:
@@ -752,17 +727,16 @@ def _load_module_run(
             "status": lifecycle,
             "note": _status_note(lifecycle, error, manifest.get("reason")),
             "ref": ref,
-            "run": {key: manifest.get(key) for key in ("module", "task_id", "run_id", "analysis_case_id", "candidate_id", "semantic_result_hash")},
+            "run": {key: manifest.get(key) for key in ("module", "task_id", "run_id", "analysis_case_id", "candidate_id")},
         }
     if lifecycle not in READY_STATUSES:
         return {
             "status": "failed",
             "note": f"上游模块尚未完成，当前状态为{lifecycle or 'unknown'}。",
             "ref": ref,
-            "run": {key: manifest.get(key) for key in ("module", "task_id", "run_id", "analysis_case_id", "candidate_id", "semantic_result_hash")},
+            "run": {key: manifest.get(key) for key in ("module", "task_id", "run_id", "analysis_case_id", "candidate_id")},
         }
     try:
-        execution_fingerprint = require_text(manifest.get("execution_fingerprint"), "manifest.execution_fingerprint")
         contract = _contract_fields(
             _bundle_json(bundle, manifest.get("resolved_contract", "resolved_contract.json"), "resolved_contract.json"),
             "resolved_contract",
@@ -770,46 +744,20 @@ def _load_module_run(
     except ReporterError as error:
         raise ReporterError(f"{display_module}运行不满足正式协议：{error}") from error
     # 以下均为已声明对象之间的冲突或受控文件篡改，必须拒绝生成，不能降级混用。
-    if require_text(manifest.get("contract_fingerprint"), "manifest.contract_fingerprint") != str(candidate.get("contract_fingerprint")):
-        raise ReporterError("manifest.contract_fingerprint与候选合同快照不一致")
-    candidate_version_id = candidate.get("candidate_version_id")
-    manifest_candidate_version_id = manifest.get("candidate_version_id")
-    if candidate_version_id is not None or manifest_candidate_version_id is not None:
-        if (
-            require_identifier(candidate_version_id, "RecommendationCandidate.candidate_version_id")
-            != require_identifier(manifest_candidate_version_id, "manifest.candidate_version_id")
-        ):
-            raise ReporterError("manifest.candidate_version_id与RecommendationCandidate不一致")
     result = _bundle_json(bundle, manifest.get("result", "result.json"), "result.json")
-    if result.get("semantic_result_hash") and result.get("semantic_result_hash") != ref.expected_semantic_result_hash:
-        raise ReporterError("result.semantic_result_hash与ModuleRunRef不一致")
-    if stable_hash(result) != ref.expected_semantic_result_hash:
-        raise ReporterError("result.json语义哈希与ModuleRunRef不一致")
-    if result.get("execution_fingerprint") and result.get("execution_fingerprint") != execution_fingerprint:
-        raise ReporterError("result.execution_fingerprint与manifest不一致")
-    if contract["contract_fingerprint"] != manifest["contract_fingerprint"]:
-        raise ReporterError("resolved_contract.contract_fingerprint与manifest不一致")
     if contract["product_id"] != candidate["product_id"] or contract["product_name"] != candidate["product_name"]:
         raise ReporterError("ResolvedContract产品编号或中文名称与RecommendationCandidate不一致")
-    if contract["product_version"] != candidate["product_version"]:
-        raise ReporterError("ResolvedContract.product_version与RecommendationCandidate不一致")
-    if contract["product_snapshot_hash"] != candidate["product_version_content_hash"]:
-        raise ReporterError("ResolvedContract.product_snapshot_hash与RecommendationCandidate不一致")
-    if contract["registry_snapshot_hash"] != require_text(
-        as_mapping(request.source_refs.get("catalog_version_ref"), "source_refs.catalog_version_ref").get("content_hash"),
-        "catalog_version_ref.content_hash",
-    ):
-        raise ReporterError("ResolvedContract.registry_snapshot_hash与Catalog证据不一致")
-    if contract["analysis_basis_id"] != candidate["analysis_basis_id"]:
-        raise ReporterError("ResolvedContract.analysis_basis_id与RecommendationCandidate不一致")
+    if contract["rule_revision"] != candidate["rule_revision"]:
+        raise ReporterError("ResolvedContract.rule_revision与RecommendationCandidate不一致")
+    _assert_current_product_rule(contract)
     if contract["underlyings"] != candidate["underlyings"]:
         raise ReporterError("ResolvedContract.underlyings顺序与RecommendationCandidate不一致")
     if contract["currency"] != candidate["currency"]:
         raise ReporterError("ResolvedContract.currency与RecommendationCandidate不一致")
     if contract["price_convention"] != candidate["price_convention"]:
         raise ReporterError("ResolvedContract.price_convention与RecommendationCandidate不一致")
-    artifact_manifest, artifact_manifest_hash = _artifact_manifest(
-        bundle, manifest, ref.expected_semantic_result_hash, ref.expected_artifact_manifest_hash, run_module,
+    artifact_manifest, _artifact_manifest_hash = _artifact_manifest(
+        bundle, manifest, ref.expected_result_file_hash, ref.expected_artifact_manifest_hash, run_module,
     )
     public_result = deepcopy(result)
     public_artifact_manifest = artifact_manifest
@@ -844,8 +792,9 @@ def _load_module_run(
         "note": "已按显式ModuleRunRef、合同快照和产物清单完成验证。",
         "ref": ref,
         "run": {
-            **{key: manifest.get(key) for key in ("module", "task_id", "run_id", "analysis_case_id", "candidate_id", "semantic_result_hash", "contract_fingerprint", "product_version", "execution_fingerprint")},
-            "artifact_manifest_hash": artifact_manifest_hash,
+            **{key: manifest.get(key) for key in ("module", "task_id", "run_id", "analysis_case_id", "candidate_id")},
+            "product_id": contract["product_id"],
+            "rule_revision": contract["rule_revision"],
         },
         "contract": contract,
         "result": public_result,
@@ -867,10 +816,8 @@ def _payoff_facts(
     if isinstance(file_hashes, Mapping) and "artifacts/payoff.json" in file_hashes:
         artifact = _bundle_json(bundle, "artifacts/payoff.json", "artifacts/payoff.json")
         raw = artifact.get("reporter_payoff_facts")
-        declared_hash = artifact.get("reporter_payoff_facts_hash")
     else:
         raw = result.get("reporter_payoff_facts")
-        declared_hash = result.get("reporter_payoff_facts_hash")
     facts = as_mapping(raw, "reporter_payoff_facts")
     if (
         facts.get("schema") != _PAYOFF_FACT_SCHEMA
@@ -882,8 +829,6 @@ def _payoff_facts(
         or not facts["paths"]
     ):
         raise ReporterError("Payoffer reporter_payoff_facts不满足正式公开协议")
-    if not isinstance(declared_hash, str) or declared_hash != stable_hash(facts):
-        raise ReporterError("Payoffer reporter_payoff_facts_hash与冻结事实不一致")
     return deepcopy(facts)
 
 
@@ -957,9 +902,17 @@ def _validate_candidate_contracts(candidate_id: str, modules: Mapping[str, Mappi
     if not ready:
         return None
     baseline = dict(ready[0]["contract"])
-    fields = ("product_id", "product_name", "product_version", "product_snapshot_hash", "registry_snapshot_hash", "contract_fingerprint", "analysis_basis_id", "underlyings", "currency", "price_convention")
-    for evidence in ready[1:]:
+    fields = (
+        "product_id", "product_name", "underlyings", "currency",
+        "price_convention", "rule_revision", "terms", "term_sources",
+        "paths", "resolved_schedules", "path_case_applicability",
+    )
+    for evidence in ready:
         candidate = evidence["contract"]
+        rule_revision = candidate.get("rule_revision")
+        if not isinstance(rule_revision, int) or isinstance(rule_revision, bool) or rule_revision <= 0:
+            raise ReporterError(f"候选{candidate_id}的产品依赖缺少正整数rule_revision")
+        _assert_current_product_rule(candidate)
         for field in fields:
             if candidate.get(field) != baseline.get(field):
                 raise ReporterError(f"候选{candidate_id}的已完成ModuleRun合同不一致：{field}")
@@ -973,15 +926,13 @@ def _resolve_quote_evidence(
     """Resolve each explicitly selected Quote row without assuming the candidate default terms.
 
     Quote may select several saved parameter variants for the same recommendation
-    candidate.  Product identity, task, tenant, underlying and registry checks stay
-    identical to a normal Report; only the candidate's default contract fingerprint
-    is deliberately not used as a selection gate.
+    candidate. Product identity, rule revision, task, tenant and underlying checks
+    stay identical to a normal Report; every row still names one explicit ModuleRun.
     """
 
     result: list[dict[str, Any]] = []
     source_definitions = as_mapping(request.source_refs.get("quote_sources"), "source_refs.quote_sources")
     source_requests: dict[str, ReportRequest] = {}
-    seen_contracts: set[str] = set()
     for index, item in enumerate(request.quote_items, start=1):
         source_id = require_identifier(item.get("source_id"), f"quote_items[{index}].source_id")
         raw_source = as_mapping(source_definitions.get(source_id), f"source_refs.quote_sources.{source_id}")
@@ -1017,12 +968,7 @@ def _resolve_quote_evidence(
             raise ReporterError(f"quote_items[{index}]必须选择已完成且可验证的运行结果")
         contract = dict(evidence["contract"])
         quote_fact = _quote_fact(evidence["result"], contract)
-        signature = require_text(contract.get("contract_fingerprint"), "ResolvedContract.contract_fingerprint")
-        if signature in seen_contracts:
-            raise ReporterError("Quote不得为同一合同选择多个Pricing运行")
-        seen_contracts.add(signature)
         variant = deepcopy(dict(candidate))
-        variant["contract_fingerprint"] = signature
         modules = {
             name: evidence if name == module else {"status": "not_requested", "note": _status_note("not_requested")}
             for name in MODULE_TO_RUN
