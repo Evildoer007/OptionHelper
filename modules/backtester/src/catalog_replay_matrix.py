@@ -23,11 +23,11 @@ from .models import BacktestInput
 
 
 MATRIX_COLUMNS = (
-    "product_id", "product_name", "contract_fingerprint", "strike_terms", "data_asset_ref", "entry_rule", "complete_tenor",
+    "product_id", "product_name", "rule_revision", "strike_terms", "data_asset_ref", "entry_rule", "complete_tenor",
     "smoke", "formal_evidence", "metric_profile", "specialized_metrics", "metric_coverage",
     "sample_count", "skipped_count", "skipped_entries", "skipped_reason_counts", "observed_events",
-    "observed_path_cases", "ledger", "ledger_hash", "branch_coverage", "gross_contract_return",
-    "win_rate", "client_net_return", "client_net_pnl",
+    "observed_path_cases", "ledger", "branch_coverage", "contract_settlement_return",
+    "positive_return_rate",
 )
 
 # OptionReg的执行价TermCatalog键。障碍、缓冲、初始价虽也以price表示，均不属于执行价。
@@ -47,7 +47,13 @@ def replay_catalog_matrix(historical_data: HistoricalData, config: BacktestConfi
     for product_id, product in registry["products"].items():
         product_name = str(product["identity"]["name_zh"])
         underlyings = _underlyings_for_product(product)
-        base = _base_row(product_id, product_name, historical_data, config)
+        base = _base_row(
+            product_id,
+            product_name,
+            int(product["identity"]["rule_revision"]),
+            historical_data,
+            config,
+        )
         try:
             contract = resolve_contract(
                 product_id,
@@ -129,10 +135,10 @@ def formal_catalog_evidence_matrix(
             rows.append({
                 "product_id": product_id,
                 "product_name": str(product["identity"]["name_zh"]),
+                "rule_revision": int(product["identity"]["rule_revision"]),
                 "formal_evidence_status": "blocked",
                 "run_status": "not_started",
                 "error": {"type": type(error).__name__, "message": str(error)},
-                "contract_fingerprint": None,
                 "data_asset_id": data_ref.data_asset_id,
                 "data_content_hash": data_ref.content_hash,
                 "host_context_bound": False,
@@ -170,7 +176,8 @@ def _formal_evidence_row(
         output.get("task_id") == host_context.task_id,
         output.get("analysis_case_id") == host_context.analysis_case_id,
         output.get("candidate_id") == host_context.candidate_id,
-        output.get("contract_fingerprint") == contract.contract_fingerprint,
+        output.get("product_id") == contract.product_id == host_context.product_id,
+        output.get("rule_revision") == contract.identity["rule_revision"] == host_context.rule_revision,
     ))
     output_refs = output.get("data_refs")
     output_ref = output_refs[0] if isinstance(output_refs, list) and len(output_refs) == 1 else {}
@@ -195,10 +202,10 @@ def _formal_evidence_row(
     return {
         "product_id": product_id,
         "product_name": product_name,
+        "rule_revision": int(contract.identity["rule_revision"]),
         "formal_evidence_status": "verified" if evidence_verified else "invalid",
         "run_status": run_status,
         "error": output.get("error"),
-        "contract_fingerprint": contract.contract_fingerprint,
         "data_asset_id": data_ref.data_asset_id,
         "data_content_hash": data_ref.content_hash,
         "host_context_bound": host_bound,
@@ -235,13 +242,14 @@ def write_catalog_replay_matrix(rows: Sequence[Mapping[str, Any]], directory: Pa
 def _base_row(
     product_id: str,
     product_name: str,
+    rule_revision: int,
     historical_data: HistoricalData,
     config: BacktestConfig,
 ) -> dict[str, Any]:
     return {
         "product_id": product_id,
         "product_name": product_name,
-        "contract_fingerprint": None,
+        "rule_revision": rule_revision,
         "strike_terms": {},
         "data_asset_ref": deepcopy(historical_data.data_asset_ref),
         "entry_rule": config.entry_rule,
@@ -258,25 +266,22 @@ def _base_row(
         "observed_events": {},
         "observed_path_cases": [],
         "ledger": [],
-        "ledger_hash": None,
         "branch_coverage": {"status": "blocked"},
-        "gross_contract_return": {
-            "basis": "contract_cashflow_before_external_costs",
+        "contract_settlement_return": {
+            "basis": "declared_contract_cashflows_over_contract_scale",
             "display_unit": "percentage",
             "value_encoding": "decimal_ratio",
             "external_costs_modelled": False,
             "total": None,
             "average": None,
         },
-        "win_rate": {
-            "numerator": "positive_gross_contract_return_count",
+        "positive_return_rate": {
+            "numerator": "positive_return_count",
             "numerator_count": 0,
             "denominator": "valid_return_sample_count",
             "denominator_count": 0,
             "rate": None,
         },
-        "client_net_return": {"status": "not_modelled", "value": None},
-        "client_net_pnl": {"status": "not_modelled", "value": None},
     }
 
 
@@ -297,7 +302,6 @@ def _completed_row(
             "reason": None,
             "sample_status": "partial" if coverage["status"] != "complete" or skipped else "complete",
         },
-        "contract_fingerprint": payload["contract_fingerprint"],
         "metric_profile": deepcopy(payload["metric_profile"]),
         "specialized_metrics": specialized,
         "metric_coverage": deepcopy(specialized["metric_coverage"]),
@@ -310,25 +314,22 @@ def _completed_row(
         "observed_events": deepcopy(payload["event_summary"]),
         "observed_path_cases": deepcopy(coverage["observed_pairs"]),
         "ledger": ledger,
-        "ledger_hash": payload["ledger_hash"],
         "branch_coverage": coverage,
-        "gross_contract_return": {
-            "basis": payload["economic_convention"]["gross_return_basis"],
-            "display_unit": payload["economic_convention"]["gross_return_display_unit"],
-            "value_encoding": payload["economic_convention"]["gross_return_value_encoding"],
+        "contract_settlement_return": {
+            "basis": payload["economic_convention"]["basis"],
+            "display_unit": payload["economic_convention"]["display_unit"],
+            "value_encoding": payload["economic_convention"]["value_encoding"],
             "external_costs_modelled": payload["economic_convention"]["external_costs_modelled"],
-            "total": float(sum(float(trade["gross_contract_return"]) for trade in ledger)),
-            "average": common["average_gross_return"],
+            "total": float(sum(float(trade["contract_settlement_return"]) for trade in ledger)),
+            "average": common["average_contract_settlement_return"],
         },
-        "win_rate": {
-            "numerator": "positive_gross_contract_return_count",
+        "positive_return_rate": {
+            "numerator": "positive_return_count",
             "numerator_count": common["positive_return_count"],
             "denominator": "valid_return_sample_count",
             "denominator_count": common["valid_return_sample_count"],
-            "rate": common["win_rate"],
+            "rate": common["positive_return_rate"],
         },
-        "client_net_return": {"status": "not_modelled", "value": None},
-        "client_net_pnl": {"status": "not_modelled", "value": None},
     }
 
 
