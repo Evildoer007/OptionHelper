@@ -169,7 +169,7 @@ class RuntimeInvariantValidator:
         if reference is not None:
             required = {
                 "module", "tenant_id", "task_id", "run_id",
-                "expected_semantic_result_hash", "expected_artifact_manifest_hash",
+                "expected_result_file_hash", "expected_artifact_manifest_hash",
             }
             if not isinstance(reference, Mapping) or set(reference) != required:
                 raise ValidationError("Persisted job ModuleRunRef is invalid")
