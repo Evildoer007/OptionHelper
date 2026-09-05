@@ -120,6 +120,13 @@
       .audit-details pre { max-height: 360px; margin: 0 0 13px; padding: 12px; overflow: auto; background: var(--color-ink); color: var(--color-ground); font: 10px/1.55 var(--mono); white-space: pre-wrap; }
 
       .inspector-panel form { display: grid; gap: 0; }
+      .inspector-panel[data-run-layout="true"] { padding: 0; overflow: hidden; }
+      .inspector-panel[data-run-layout="true"] .inspector-form { height: 100%; min-height: 0; grid-template-rows: minmax(0, 1fr) auto; }
+      .inspector-scroll { min-height: 0; overflow: auto; overflow-x: hidden; padding: 20px 18px 0; }
+      .inspector-run-region { display: grid; gap: 8px; padding: 12px 18px 14px; border-top: 1px solid var(--rule); background: var(--surface); }
+      .inspector-run-actions { display: flex; justify-content: flex-end; gap: 8px; }
+      .inspector-run-actions .button { min-height: 34px; }
+      .inspector-run-actions .button-primary { flex: 1 1 auto; }
       .inspector-panel h2 { margin-top: 0; }
       .inspector-panel .inspector-group { padding: 14px 0; }
       .module-parameter-section { border-bottom: 1px solid var(--rule); }
@@ -214,8 +221,6 @@
         <aside class="library-panel">
           <h1>估值对象</h1>
           <label class="field-label" for="productId">产品</label><select id="productId" class="product-select"><option value="">请选择产品</option></select>
-          <label class="field-label" for="contractVersion">合同版本</label><select id="contractVersion" class="product-select" disabled><option value="">新方案，使用默认条款</option></select>
-          <small class="module-note" id="contractVersionHint">选择产品后可使用已保存版本，或建立新方案。</small>
           <div class="binding-card" id="bindingCard"><span>尚未选择产品</span></div>
           <div class="scenario-heading"><span>产品路径</span><small id="pathCount">--</small></div>
           <ol class="scenario-list" id="pathList"><li class="preview">选择产品后显示</li></ol>
@@ -223,7 +228,7 @@
         <div class="panel-resizer panel-resizer-left" id="libraryResizer" role="separator" aria-label="调整产品面板宽度" aria-orientation="vertical" tabindex="0"></div>
 
         <section class="canvas-panel">
-          <div class="canvas-toolbar"><div class="canvas-operation"><div class="canvas-state"><span class="state-dot" id="stateDot"></span><span id="canvasState">等待估值</span></div><div class="operation-progress" id="operationProgress" hidden><div class="operation-progress__track is-indeterminate" id="operationProgressTrack" role="progressbar" aria-label="定价运行进度"><span class="operation-progress__bar"></span></div><span class="operation-progress__stage" id="operationStage" aria-live="polite"></span></div></div><div class="canvas-toolbar-actions"><button class="button button-danger run-stop" id="stopRun" type="button" hidden>停止运行</button><button class="button button-primary" id="run" type="submit" form="form" disabled>运行定价</button></div></div>
+          <div class="canvas-toolbar"><div class="canvas-operation"><div class="canvas-state"><span class="state-dot" id="stateDot"></span><span id="canvasState">等待估值</span></div><div class="operation-progress" id="operationProgress" hidden><div class="operation-progress__track is-indeterminate" id="operationProgressTrack" role="progressbar" aria-label="定价运行进度"><span class="operation-progress__bar"></span></div><span class="operation-progress__stage" id="operationStage" aria-live="polite"></span></div></div></div>
           <div class="notice-area" id="noticeArea" aria-live="polite"></div>
           <div class="canvas-viewport">
             <article class="valuation-sheet" aria-label="估值结果">
@@ -240,8 +245,9 @@
         </section>
         <div class="panel-resizer panel-resizer-right" id="inspectorResizer" role="separator" aria-label="调整输入面板宽度" aria-orientation="vertical" tabindex="0"></div>
 
-        <aside class="inspector-panel">
-          <form id="form" aria-label="定价输入">
+        <aside class="inspector-panel" data-run-layout="true">
+          <form id="form" class="inspector-form" aria-label="定价输入">
+            <div class="inspector-scroll">
             <h2 id="inspectorTitle">定价设置</h2>
             <section class="inspector-group module-parameter-section">
               <div class="group-title">本次任务</div>
@@ -250,7 +256,7 @@
             </section>
             <section class="inspector-group module-parameter-section">
               <div class="group-title">合同条款</div>
-              <p class="drag-hint" id="fieldHint">正在读取已登记条款字段。</p><div class="term-fields" id="termFields" aria-live="polite"></div>
+              <p class="drag-hint" id="fieldHint">正在读取已登记条款字段。</p><div class="term-fields" id="termFields" aria-live="polite"></div><div class="semantic-rules" id="semanticRules" aria-label="固定观察规则" hidden></div>
             </section>
             <section class="inspector-group module-parameter-section">
               <div class="group-title">市场与日期</div>
@@ -268,8 +274,11 @@
               <label class="control-field" id="randomSeedGroup" hidden><span>随机种子</span><input id="randomSeed" type="number" step="1" value="20240101" disabled><small>仅用于Monte Carlo复现。</small></label>
               <label class="control-field"><span>风险曲线网格点数</span><input id="riskGridPoints" type="number" min="5" step="2" value="41"></label>
             </section>
-            <div id="fixedFields" hidden></div>
-            <p class="message" id="message" role="status" aria-live="polite" hidden></p>
+            </div>
+            <footer class="inspector-run-region run-zone">
+              <div class="inspector-run-actions"><button class="button button-danger run-stop" id="stopRun" type="button" hidden>停止运行</button><button class="button button-primary" id="run" type="submit" disabled>运行定价</button></div>
+              <p class="message" id="message" role="status" aria-live="polite" hidden></p>
+            </footer>
           </form>
         </aside>
       </main>
@@ -280,7 +289,7 @@
       const OptionHelperDate = window.OptionHelperDateInput;
       const designerColor = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
       const greekNames = ['delta','gamma','vega','theta','rho'];
-      const pricingState = { products: [], contractVersions: [], taskContract: null, requestRevision: 0, operationActive: false, operationId: null, operationController: null, cancellationRequested: false, connectionRecovering: false, hasResult: false };
+      const pricingState = { products: [], requestRevision: 0, operationActive: false, operationId: null, operationController: null, cancellationRequested: false, connectionRecovering: false, hasResult: false };
       const localTodayIso = () => { const now = new Date(); return `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`; };
       const numberTypes = new Set(['number','integer']);
       const escapeHtml = value => String(value ?? '').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#39;');
@@ -288,33 +297,25 @@
       const fmt = (value,digits=6) => value === null || value === undefined ? '不适用' : typeof value === 'number' ? value.toLocaleString('zh-CN',{maximumFractionDigits:digits}) : typeof value === 'object' && value.status === 'not_applicable' ? `不适用${value.reason?`：${value.reason}`:''}` : typeof value === 'object' && 'value' in value ? fmt(value.value,digits) : String(value);
       const percent = value => value === null || value === undefined ? '不适用' : `${(Number(value)*100).toLocaleString('zh-CN',{maximumFractionDigits:2})}%`;
       const publicUnit = unit => ({pv_percent_per_spot:'%/标的点',pv_percent_per_spot_squared:'%/标的点²',pv_percent_per_calendar_day:'%/日',pv_percent_per_1pct_volatility:'%/波动率1%',pv_percent_per_1pct_rate:'%/利率1%',variance_percent_per_spot:'%/标的点',variance_percent_per_spot_squared:'%/标的点²',variance_percent_per_calendar_day:'%/日',variance_percent_per_1pct_volatility:'%/波动率1%',variance_percent_per_1pct_rate:'%/利率1%'}[unit]||String(unit||'百分比'));
-      const publicValueBasis = value => ({pv_percent:'占S₀的百分比',pv_points_100:'占S₀的百分比',variance_percent:'年化方差百分比'}[String(value||'').toLowerCase()]||'百分比');
+      const publicValueBasis = value => ({pv_percent:'占S₀的百分比',variance_percent:'年化方差百分比'}[String(value||'').toLowerCase()]||'百分比');
       const axisUnit = unit => ({raw_spot:'标的价格',normalized_spot_percent:'相对S₀（%）',calendar_days:'日',decimal:'波动率',decimal_rate:'利率'}[unit]||publicUnit(unit));
       const sensitivity = value => window.PricerGreeksWorkbench.formatSensitivity(value,axisUnit);
       const greeksWorkbench = window.PricerGreeksWorkbench.create({document,plotly:window.OptionHelperPlotlyCharts,getElement:$,color:designerColor,formatNumber:fmt,formatUnit:axisUnit,escapeHtml});
       const selectedProduct = () => pricingState.products.find(row => row.product_id === $('productId').value) || null;
       const fields = () => [...document.querySelectorAll('.term-input')];
-      const hasSelectedContractVersion = () => Boolean(pricingState.taskContract && pricingState.taskContract.product_id === $('productId').value);
+      const productSelectionKey = `optionhelper:pricer:product:${new URLSearchParams(location.search).get('bridge_nonce') || 'standalone'}`;
+      const savedProductId = () => { try { return sessionStorage.getItem(productSelectionKey) || ''; } catch (_error) { return ''; } };
+      const rememberProductId = value => { try { if (value) sessionStorage.setItem(productSelectionKey, value); else sessionStorage.removeItem(productSelectionKey); } catch (_error) { /* Session storage may be unavailable in hardened webviews. */ } };
       const stableValue = value => {
         if (Array.isArray(value)) return value.map(stableValue);
         if (value && typeof value === 'object') return Object.fromEntries(Object.keys(value).sort().map(key => [key,stableValue(value[key])]));
         return value;
       };
       const sameValue = (left,right) => JSON.stringify(stableValue(left)) === JSON.stringify(stableValue(right));
-      const flattenContractVersions = schemes => (Array.isArray(schemes)?schemes:[]).flatMap(scheme=>Array.isArray(scheme?.versions)?scheme.versions:[]);
-      function versionLabel(version,index){const date=String(version?.created_at||'').slice(0,10);return `版本${index+1}${date?`，${date}`:''}`;}
-      function syncContractVersionOptions(preferredFingerprint=''){
-        const productId=$('productId').value;const versions=pricingState.contractVersions.filter(item=>item.product_id===productId).sort((a,b)=>String(b.created_at||'').localeCompare(String(a.created_at||'')));
-        const select=$('contractVersion');select.replaceChildren(new Option('新方案，使用默认条款',''),...versions.map((item,index)=>new Option(versionLabel(item,index),item.contract_fingerprint)));
-        select.disabled=!productId;select.value=versions.some(item=>item.contract_fingerprint===preferredFingerprint)?preferredFingerprint:'';
-        pricingState.taskContract=versions.find(item=>item.contract_fingerprint===select.value)||null;
-        $('contractVersionHint').textContent=versions.length?`当前产品已保存${versions.length}个版本；切换不会影响其他模块。`:'当前产品尚无已保存版本，可直接配置并运行。';
-      }
-      function chooseContractVersion(){const selected=pricingState.contractVersions.find(item=>item.contract_fingerprint===$('contractVersion').value&&item.product_id===$('productId').value)||null;pricingState.taskContract=selected;if(selected)applyContractVersion(selected,{selectProduct:false,hydrateInputs:true});else{setNewIssueDefaults();resetForFormalPricing();renderTerms();}$('fieldHint').textContent=selected?'修改后运行将保存为新版本，原版本保持不变。':'正在配置一个新的合同方案。';}
       function setContractInputsLocked() { $('productId').disabled=false; $('underlyings').readOnly=false; $('contractStartDate').readOnly=false; $('referenceSpot').readOnly=true; $('referenceSpots').readOnly=true; }
       function setState(text,kind='') { $('canvasState').textContent=text; $('stateDot').className=`state-dot ${kind}`; }
       function setOperationInputsLocked(locked){
-        const controls=[$('productId'),...document.querySelectorAll('#form input,#form select,#form textarea,#form button')].filter(control=>control&&control.id!=='run');
+        const controls=[$('productId'),...document.querySelectorAll('#form input,#form select,#form textarea,#form button')].filter(control=>control&&!['run','stopRun'].includes(control.id));
         controls.forEach(control=>{
           if(locked){if(!Object.prototype.hasOwnProperty.call(control.dataset,'operationDisabled'))control.dataset.operationDisabled=control.disabled?'true':'false';control.disabled=true;return;}
           if(Object.prototype.hasOwnProperty.call(control.dataset,'operationDisabled')){control.disabled=control.dataset.operationDisabled==='true';delete control.dataset.operationDisabled;}
@@ -344,16 +345,21 @@
       function inputValue(value,field={}) { if(field.value_encoding==='percentage_input_decimal_internal'&&Number.isFinite(Number(value)))return String(Number(value)*100);return Array.isArray(value) || (value && typeof value==='object') ? JSON.stringify(value) : String(value ?? ''); }
       const termValueLabels={true:'是',false:'否',European:'仅到期日可行权',American:'存续期内可行权',Bermudan:'约定观察日可行权',cash:'现金结算',physical:'实物交割',close:'收盘价',open:'开盘价',high:'最高价',low:'最低价'};
       function termValueLabel(value){return window.OptionHelperModulePresentation?.termValueLabel?.(value)||termValueLabels[String(value)]||String(value);}
+      const fixedObservationRuleKeys=new Set(['O_KO','O_KI','Oc','Otouch','Orange','Ovar','Ohedge','Oreset']);
+      function renderSemanticRules(row){const rules=(row?.fixed_fields||[]).filter(field=>fixedObservationRuleKeys.has(field.key));const container=$('semanticRules');container.hidden=!rules.length;container.innerHTML=rules.map(field=>`<div class="semantic-rule"><span>${escapeHtml(field.label)}</span><strong>${escapeHtml(termValueLabel(field.default_value))}</strong></div>`).join('');}
       function visibleFieldSymbol(field){const shared=window.OptionHelperModulePresentation?.fieldSymbol?.(field);if(shared!==undefined)return shared;const symbol=String(field?.symbol||'').trim();const normalize=value=>String(value||'').trim().replace(/[\s-]+/g,'_').replace(/_+/g,'_').toLowerCase();return symbol&&normalize(symbol)!==normalize(field?.key)?symbol:'';}
       function visibleFieldLabel(field){return String(field?.label||'产品条款');}
       function fieldUnit(field){return String(field?.display_unit||'').trim();}
       function buildInput(row,field) { const symbol=visibleFieldSymbol(field); const name=escapeHtml(visibleFieldLabel(field))+(symbol?` <span class="field-symbol">${mathHtml(symbol)}</span>`:''); const value=inputValue(preferredValue(row,field),field); const key=escapeHtml(field.key); const type=escapeHtml(field.value_type); const encoding=escapeHtml(field.value_encoding||'native'); const unit=fieldUnit(field); const long=field.key.length>13 || Array.isArray(field.default_value) || (field.default_value && typeof field.default_value==='object'); const domain=field.domain||{}; const detail=[field.key,field.unit].filter(Boolean).join('，'); let control; if(field.value_type==='boolean') control=`<select class="term-input" data-key="${key}" data-type="boolean"><option value="true" ${field.default_value===true?'selected':''}>是</option><option value="false" ${field.default_value===false?'selected':''}>否</option></select>`; else if(Array.isArray(domain.enum)) control=`<select class="term-input" data-key="${key}" data-type="${type}">${domain.enum.map(item=>`<option value="${escapeHtml(item)}" ${String(item)===String(field.default_value)?'selected':''}>${escapeHtml(termValueLabel(item))}</option>`).join('')}</select>`; else if(field.key==='T') control=`<div class="term-tenor"><input class="term-input" data-key="T" data-type="number" data-encoding="${encoding}" type="number" min="0" step="any" value="${escapeHtml(value)}"><select class="term-tenor-unit" aria-label="合同期限单位"><option value="year">年</option><option value="month">月</option><option value="day">自然日</option></select></div>`; else { const numeric=numberTypes.has(field.value_type); const raw=`<input class="term-input" data-key="${key}" data-type="${type}" data-encoding="${encoding}" type="${numeric?'number':'text'}" ${numeric?'step="any"':''} value="${escapeHtml(value)}">`;control=`<div class="term-control">${raw}${unit?`<span class="term-unit">${escapeHtml(unit)}</span>`:''}</div>`; } const dependency=field.dependency_group?`<small>约束：${escapeHtml(field.dependency_group)}</small>`:'';const tenor=field.key==='T'&&(row.payoff_fields||[]).some(item=>item.key==='n_obs')?'<small>最终按ACT/365提交；观察日数独立控制回放终点。</small>':'';return `<label class="field ${long?'long':''}"><span title="${escapeHtml(detail)}">${name}</span>${control}${dependency}${tenor}</label>`; }
-      function renderFixedFields(row){const fields=row?.fixed_fields||[];$('fixedFields').innerHTML=fields.map(field=>`<div class="fixed-field"><strong>${escapeHtml(field.label||field.key)}${fieldUnit(field)?`，${escapeHtml(fieldUnit(field))}`:''}</strong><span>${escapeHtml(inputValue(field.default_value,field))}</span><span>${escapeHtml(field.editability_reason||'只读字段')}</span></div>`).join('')||'<p class="hint">该产品没有额外固定字段。</p>';}
       function renderProductPaths(row) { const paths=row?.path_summaries||[]; $('pathCount').textContent=row?String(row.path_count??paths.length):'--'; $('pathList').innerHTML=!row?'<li class="preview">选择产品后显示</li>':paths.map(path=>`<li><span class="scenario-title">${escapeHtml(path.title)}</span><span class="scenario-condition">${mathHtml(path.condition)}</span></li>`).join('')||'<li class="preview">该产品未登记收益路径</li>'; }
       const pricingMethodLabels={analytical:'Analytical',monte_carlo:'Monte Carlo'};
       function effectivePricingMethod(){return $('modelMethod').value;}
       function availablePricingMethods(row=selectedProduct()){const base=Array.isArray(row?.pricer_methods)?row.pricer_methods:[];if($('pricingObjectiveMode').value!=='fair_parameter')return base;const target=fairParameterTargets(row).find(item=>String(item.target_id||'')===$('fairTarget').value);const limited=Array.isArray(target?.allowed_methods)&&target.allowed_methods.length?target.allowed_methods:base;return base.filter(method=>limited.includes(method));}
       function syncMethodDependentControls(row=selectedProduct()){
+        const methods=availablePricingMethods(row);
+        const method=$('modelMethod');
+        for(const option of method.options||[])option.disabled=!methods.includes(option.value);
+        if(row&&!methods.includes(method.value))method.value=methods.includes('analytical')?'analytical':methods[0]||'';
         const effective=effectivePricingMethod(row);
         const usesMonteCarlo=effective==='monte_carlo';
         const pathGroup=$('mcPathCountGroup');
@@ -366,9 +372,8 @@
         seedGroup.hidden=!usesMonteCarlo;
         seedInput.disabled=!usesMonteCarlo;
         if(!row){$('modelMethodHint').textContent='选择产品后按已验证模型运行。';return;}
-        const methods=availablePricingMethods(row);
         if(!methods.includes('analytical')){
-          $('modelMethodHint').textContent='当前产品不支持Analytical，定价方法已限制为Monte Carlo。';
+          $('modelMethodHint').textContent=$('pricingObjectiveMode').value==='fair_parameter'?'当前反解目标使用Monte Carlo。':'当前产品使用Monte Carlo。';
           return;
         }
         const label=pricingMethodLabels[effective]||'不可用';
@@ -385,8 +390,8 @@
         const multi=row?.underlying_scope==='multi_underlying';
         $('referenceSpotGroup').hidden=multi;
         $('referenceSpotsGroup').hidden=!multi;
-        syncMethodDependentControls(row);
         syncFairParameterControls(row);
+        syncMethodDependentControls(row);
       }
       function fairParameterTargets(row=selectedProduct()){return (Array.isArray(row?.fair_parameter_targets)?row.fair_parameter_targets:[]).filter(target=>target?.support_status==='supported');}
       function syncTargetField(){const targetId=$('pricingObjectiveMode').value==='fair_parameter'?$('fairTarget').value:'';fields().forEach(input=>{input.disabled=Boolean(targetId&&input.dataset.key===targetId);input.closest?.('.field')?.classList.toggle('derived-target',input.disabled);});}
@@ -404,9 +409,9 @@
         $('pricingObjectiveHint').textContent=fair?'目标条款由反解求得，其他合同条款仍可修改。':'默认执行估值；不会提交反解目标。';
         $('fairTargetHint').textContent=targets.length?'仅列出当前产品已验证支持的合同条款目标。':String(row?.pricer_reason||'当前产品仅支持估值，没有已验证的公平合同条款反解目标。');syncTargetField();
       }
-      function renderTerms({preserve=false}={}) { const row=selectedProduct(); renderProductPaths(row);renderFixedFields(row); if(!row){syncPricingControls(null);$('termFields').innerHTML='<p class="hint">请选择产品后读取条款字段。</p>';$('bindingCard').innerHTML='<span>尚未选择产品</span>';$('inspectorTitle').textContent='定价设置';$('run').disabled=true;return;} $('run').disabled=false; const before=preserve?Object.fromEntries(fields().map(el=>[el.dataset.key,el.value])):{}; $('termFields').innerHTML=(row.payoff_fields||[]).map(field=>buildInput(row,field)).join('')||'<p class="hint">该产品尚无可编辑条款字段。</p>'; fields().forEach(el=>{if(Object.prototype.hasOwnProperty.call(before,el.dataset.key))el.value=before[el.dataset.key];}); const frozen=hasSelectedContractVersion()?pricingState.taskContract:null; if(frozen){fields().forEach(el=>{if(Object.prototype.hasOwnProperty.call(frozen.terms||{},el.dataset.key)){const metadata=(row.payoff_fields||[]).find(field=>field.key===el.dataset.key)||{};el.value=inputValue(frozen.terms[el.dataset.key],metadata);}});} syncPricingControls(row); const multi=row.underlying_scope==='multi_underlying'; $('underlyingHint').textContent=multi?'多标的以英文逗号分隔':'单标的'; $('underlyings').placeholder=multi?'例如000905.SH,000300.SH':'例如000905.SH'; $('fieldHint').textContent=frozen?'修改后重新运行会建立新合同版本，历史合同和结果保留。':'所有独立且受支持的合同条款均可修改。'; const pathCount=Number(row.path_count ?? row.path_summaries?.length ?? 0); $('bindingCard').innerHTML=`<strong>${escapeHtml(row.product_id)} ${escapeHtml(row.canonical_name)}</strong><span>${multi?'多标的结构':'单标的结构'}；${pathCount}条产品路径。</span>`; $('inspectorTitle').textContent='定价设置'; }
+      function renderTerms({preserve=false}={}) { const row=selectedProduct(); renderProductPaths(row); if(!row){syncPricingControls(null);$('termFields').innerHTML='<p class="hint">请选择产品后读取条款字段。</p>';renderSemanticRules(null);$('bindingCard').innerHTML='<span>尚未选择产品</span>';$('inspectorTitle').textContent='定价设置';$('run').disabled=true;return;} $('run').disabled=false; const before=preserve?Object.fromEntries(fields().map(el=>[el.dataset.key,el.value])):{}; $('termFields').innerHTML=(row.payoff_fields||[]).map(field=>buildInput(row,field)).join('')||'<p class="hint">该产品尚无可编辑条款字段。</p>';renderSemanticRules(row); fields().forEach(el=>{if(Object.prototype.hasOwnProperty.call(before,el.dataset.key))el.value=before[el.dataset.key];}); syncPricingControls(row); const multi=row.underlying_scope==='multi_underlying'; $('underlyingHint').textContent=multi?'多标的以英文逗号分隔':'单标的'; $('underlyings').placeholder=multi?'例如000905.SH,000300.SH':'例如000905.SH'; $('fieldHint').textContent='输入项来自当前产品目录默认值；每次运行均形成独立结果。'; const pathCount=Number(row.path_count ?? row.path_summaries?.length ?? 0); $('bindingCard').innerHTML=`<strong>${escapeHtml(row.product_id)} ${escapeHtml(row.canonical_name)}</strong><span>${multi?'多标的结构':'单标的结构'}；${pathCount}条产品路径。</span>`; $('inspectorTitle').textContent='定价设置'; }
       function readTermValues(){const row=selectedProduct();const values=Object.fromEntries((row?.payoff_fields||[]).map(field=>[field.key,preferredValue(row,field)]));fields().forEach(el=>{const raw=el.value.trim();if(!raw)return;let value;if(numberTypes.has(el.dataset.type)){value=Number(raw);if(!Number.isFinite(value))throw new Error(`${el.dataset.key}必须为数值`);if(el.dataset.key==='T'){const unit=el.closest?.('.term-tenor')?.querySelector?.('.term-tenor-unit')?.value||'year';value=unit==='month'?value/12:unit==='day'?value/365:value;}else if(el.dataset.encoding==='percentage_input_decimal_internal')value/=100;}else if(el.dataset.type==='boolean')value=raw==='true';else if(raw.startsWith('[')||raw.startsWith('{')){try{value=JSON.parse(raw);}catch(error){throw new Error(`${el.dataset.key}不是有效JSON`);}}else value=raw;values[el.dataset.key]=value;});return values;}
-      function collectParameters(values=readTermValues(),{catalogDefaults=false}={}){const row=selectedProduct();const active=!catalogDefaults&&hasSelectedContractVersion()?pricingState.taskContract:null;const defaults=new Map((row?.payoff_fields||[]).map(field=>[field.key,active&&Object.prototype.hasOwnProperty.call(active.terms||{},field.key)?active.terms[field.key]:field.default_value]));return Object.fromEntries(Object.entries(values).filter(([key,value])=>!sameValue(value,defaults.get(key))));}
+      function collectParameters(values=readTermValues()){const row=selectedProduct();const defaults=new Map((row?.payoff_fields||[]).map(field=>[field.key,field.default_value]));return Object.fromEntries(Object.entries(values).filter(([key,value])=>!sameValue(value,defaults.get(key))));}
       function parseObject(id,label){try{const value=JSON.parse($(id).value||'{}');if(!value||Array.isArray(value)||typeof value!=='object')throw new Error('必须为JSON对象');return value;}catch(error){throw new Error(`${label}格式错误：${error.message}`);}}
       function collectPricingConfig(parameters,assets){const config={};const methods=availablePricingMethods();const visibleMethod=$('modelMethod').value;if(!methods.includes(visibleMethod)){const alternative=methods.includes('analytical')?'Analytical':'Monte Carlo';throw new Error(`当前产品或反解目标不支持${pricingMethodLabels[visibleMethod]||visibleMethod}，请选择${alternative}。`);}config.model_method=visibleMethod;if(visibleMethod==='monte_carlo'){const raw=$('mcPathCount').value.trim();const pathCount=Number(raw);if(!raw||!Number.isInteger(pathCount)||pathCount<=0)throw new Error('Monte Carlo路径数必须为正整数。');const seed=Number($('randomSeed').value||20240101);if(!Number.isInteger(seed))throw new Error('随机种子必须为整数。');config.path_count=pathCount;config.random_seed=seed;}const gridPoints=Number($('riskGridPoints').value||41);if(!Number.isInteger(gridPoints)||gridPoints<5)throw new Error('风险曲线网格点数必须为不小于5的整数。');config.risk_grid={mode:'contract_aware',spot_curve_points:gridPoints};config.valuation_date=OptionHelperDate.read($('valuationDate'),'估值日');config.risk_free_rate=Number($('rate').value)/100;const dividend=Number($('dividend').value)/100;config.dividend_yield=assets.length>1?Object.fromEntries(assets.map(asset=>[asset,dividend])):dividend;if(!OptionHelperDate.read($('contractStartDate'),'合同起始日'))config.time_to_maturity=Number(parameters.T);config.hv_window=Number($('hv').value);return config;}
       function collectPricingObjective(){
@@ -422,9 +427,7 @@
       $('fairTarget').addEventListener('change',()=>{if(pricingState.operationActive)return;pricingState.requestRevision+=1;syncTargetField();syncMethodDependentControls();if(pricingState.hasResult){showNotice('结果待更新','反解目标已修改，请重新运行。','warning');setState('结果待更新','edit');}});
       function monteCarloEstimate(config){if(effectivePricingMethod()!=='monte_carlo')return '';const paths=Number(config.path_count);if(!Number.isInteger(paths)||paths<=0)return 'Monte Carlo路径数必须为正整数。';const scale=paths<=100?'通常数秒内完成':paths<=10000?'通常数十秒内完成':'耗时取决于本机性能、产品路径步数和Greeks重估次数。';return `Monte Carlo将按${paths.toLocaleString('zh-CN')}条路径运行，${scale}`;}
       function contractIdentity(assets){const automaticStart=$('contractStartDate').dataset.newIssueDefault==='true';const identity={underlyings:assets};if(!automaticStart)identity.contract_start_date=OptionHelperDate.read($('contractStartDate'),'合同起始日');if(assets.length===1){const spot=Number($('referenceSpot').value);if(Number.isFinite(spot)&&spot>0)identity.reference_prices={[assets[0]]:spot};return identity;}const raw=$('referenceSpots').value.trim();if(!raw)return identity;const references=parseObject('referenceSpots','多标的合同起始参考价');if(Object.keys(references).length!==assets.length||assets.some(asset=>!Number.isFinite(Number(references[asset]))||Number(references[asset])<=0))throw new Error('多标的合同起始参考价必须逐一覆盖标的代码且全部为正数。');identity.reference_prices=Object.fromEntries(assets.map(asset=>[asset,Number(references[asset])]));return identity;}
-      function applyContractVersion(contract,{selectProduct=true,hydrateInputs=selectProduct}={}){if(!contract)return;pricingState.taskContract=contract;const identity=contract.identity||{};if(selectProduct)$('productId').value=contract.product_id;$('productId').title='可复用已保存版本，也可随时切换产品并从默认条款建立新方案。';if(hydrateInputs){if(Array.isArray(identity.underlyings))$('underlyings').value=identity.underlyings.join(',');if(identity.contract_start_date){OptionHelperDate.set($('contractStartDate'),identity.contract_start_date);$('contractStartDate').dataset.newIssueDefault='';}const references=identity.reference_prices;if(references&&typeof references==='object'){const assets=identity.underlyings||[];if(assets.length===1&&Number.isFinite(Number(references[assets[0]])))$('referenceSpot').value=String(references[assets[0]]);else if(assets.length>1)$('referenceSpots').value=JSON.stringify(references);}$('referenceSpot').dataset.localSample='';}setContractInputsLocked();renderTerms();}
-      async function catalog(){const response=await fetch('/api/catalog');const data=await response.json();if(!response.ok||!data.ok)throw moduleError(data,'产品目录读取失败');if(!Array.isArray(data.products)||!data.products.length)throw new Error('产品目录为空，请重新打开当前模块。');pricingState.products=data.products;pricingState.contractVersions=flattenContractVersions(data.contract_schemes);const select=$('productId');select.replaceChildren(new Option('请选择产品',''),...data.products.map(row=>new Option(`${row.product_id} ${row.canonical_name}${row.pricer_status==='supported'?'':'，当前仅展示能力说明'}`,row.product_id)));const preferred=data.module_selection||null;select.value=preferred?.product_id||'';syncContractVersionOptions(preferred?.contract_fingerprint||'');if(preferred)applyContractVersion(preferred,{selectProduct:false,hydrateInputs:true});else resetForFormalPricing();}
-      async function refreshContractVersions(productId){const response=await fetch('/api/catalog');const data=await response.json();if(!response.ok||!data.ok)return;pricingState.contractVersions=flattenContractVersions(data.contract_schemes);const preferred=data.module_selection?.product_id===productId?data.module_selection:null;syncContractVersionOptions(preferred?.contract_fingerprint||'');if(preferred)pricingState.taskContract=preferred;}
+      async function catalog(){const response=await fetch('/api/catalog');const data=await response.json();if(!response.ok||!data.ok)throw moduleError(data,'产品目录读取失败');if(!Array.isArray(data.products)||!data.products.length)throw new Error('产品目录为空，请重新打开当前模块。');pricingState.products=data.products;const select=$('productId');select.replaceChildren(new Option('请选择产品',''),...data.products.map(row=>new Option(`${row.product_id} ${row.canonical_name}${row.pricer_status==='supported'?'':'，当前仅展示能力说明'}`,row.product_id)));const remembered=savedProductId();select.value=data.products.some(row=>row.product_id===remembered)?remembered:'';resetForFormalPricing();}
       function disposeCharts(){greeksWorkbench.dispose();}
       function renderRiskPanels(pricing){
         disposeCharts();
@@ -486,12 +489,12 @@
           clearDateErrors();const assets=underlyingList();if(!assets.length)throw new Error('请至少填写一个标的代码。');validateDateRelationship();
           const identity=contractIdentity(assets);const termValues=readTermValues();const termOverrides=collectParameters(termValues);const pricingConfig=collectPricingConfig(termValues,assets);const pricingObjective=collectPricingObjective();
           message.textContent=monteCarloEstimate(pricingConfig)||'正在提交定价任务…';setOperationProgress('提交任务');
-          const body={product_id:requestedProduct,identity,term_overrides:termOverrides,pricing_config:pricingConfig,auto_contract_start_date:$('contractStartDate').dataset.newIssueDefault==='true'};if(pricingState.taskContract?.base_contract_ref)body.base_contract_ref=pricingState.taskContract.base_contract_ref;
+          const body={product_id:requestedProduct,identity,term_overrides:termOverrides,pricing_config:pricingConfig,auto_contract_start_date:$('contractStartDate').dataset.newIssueDefault==='true'};
           if(pricingObjective)body.pricing_objective=pricingObjective;
           const response=await fetch('/api/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),signal:controller.signal});
           setOperationProgress('读取结果');const data=await response.json();if(!response.ok||!data.ok)throw moduleError(data,'定价运行失败');const fair=fairResultFrom(data);if(!fair&&data.pricing?.status!=='priced')throw moduleError(data.pricing||data,'当前结构没有生成可用估值结果。');if(fair&&fair.status!=='solved')throw moduleError(fair,'公平合同条款反解未完成。');
           if(revision!==pricingState.requestRevision||$('productId').value!==requestedProduct)return;
-          fillResolvedReference(data);const resolved=data.resolved_contract||{};render(data);await refreshContractVersions(requestedProduct);message.className='message ok';message.textContent='定价已完成；本次合同版本已保存，历史版本保持不变。';setOperationProgress('完成',{progress:100,terminal:true});
+          fillResolvedReference(data);render(data);message.className='message ok';message.textContent='定价已完成；本次输入与结果已独立保存。';setOperationProgress('完成',{progress:100,terminal:true});
         }catch(error){
           if(revision!==pricingState.requestRevision)return;
           if(operationWasCancelled(error)||(error?.name==='AbortError'&&pricingState.cancellationRequested)){
@@ -505,6 +508,19 @@
       function bindResizer(resizer,variable,minimum,maximum){let startX=0,startValue=0;const workbench=$('workbench');const clamp=value=>Math.max(minimum,Math.min(maximum,value));const current=()=>parseInt(getComputedStyle(workbench).getPropertyValue(variable),10)||minimum;const setWidth=value=>{const next=clamp(value);workbench.style.setProperty(variable,`${next}px`);resizer.setAttribute('aria-valuenow',String(next));};const finish=()=>{resizer.classList.remove('active');document.removeEventListener('pointermove',move);document.removeEventListener('pointerup',finish);};const move=event=>setWidth(startValue+(variable==='--library-width'?event.clientX-startX:startX-event.clientX));resizer.setAttribute('aria-valuemin',String(minimum));resizer.setAttribute('aria-valuemax',String(maximum));resizer.setAttribute('aria-valuenow',String(current()));resizer.addEventListener('pointerdown',event=>{startX=event.clientX;startValue=current();resizer.classList.add('active');document.addEventListener('pointermove',move);document.addEventListener('pointerup',finish);});resizer.addEventListener('keydown',event=>{const step=event.shiftKey?24:8;const direction=variable==='--library-width'?1:-1;if(event.key==='Home'){event.preventDefault();setWidth(minimum);return;}if(event.key==='End'){event.preventDefault();setWidth(maximum);return;}if(event.key==='ArrowLeft'||event.key==='ArrowRight'){event.preventDefault();setWidth(current()+(event.key==='ArrowRight'?step:-step)*direction);}});}
       function setNewIssueDefaults(){const today=localTodayIso();OptionHelperDate.set($('valuationDate'),today);OptionHelperDate.set($('contractStartDate'),today);$('contractStartDate').dataset.newIssueDefault='true';}
       function invalidateLocalReference(){const field=$('referenceSpot');field.value='';field.dataset.localSample='';$('referenceSpots').value='';}
+      function markPricingInputChanged(event){
+        if(pricingState.operationActive||!event.target?.matches('input,select,textarea'))return;
+        pricingState.requestRevision+=1;
+        if(!pricingState.hasResult)return;
+        const completedCopy=$('resultCopy').dataset.completedCopy||$('resultCopy').textContent;
+        $('resultCopy').textContent=`上一次完成结果：${completedCopy}`;
+        $('message').className='message';
+        $('message').textContent='输入已修改，请重新运行以更新结果。';
+        showNotice('结果待更新','下方保留上一次完成结果，尚未反映当前输入。','warning');
+        setState('结果待更新','edit');
+      }
+      $('form').addEventListener('input',markPricingInputChanged);
+      $('form').addEventListener('change',markPricingInputChanged);
       OptionHelperDate.bind($('valuationDate'),'估值日');OptionHelperDate.bind($('contractStartDate'),'合同起始日');
       function validateDateInputs(){OptionHelperDate.read($('valuationDate'),'估值日');OptionHelperDate.read($('contractStartDate'),'合同起始日');}
       function syncNewIssueStartFromValuationDate(){
@@ -514,9 +530,9 @@
       }
       window.addEventListener('optionhelper.module-operation-connection',event=>{if(!pricingState.operationActive||event.detail?.module&&event.detail.module!=='pricer')return;const detail=event.detail||{};if(detail.operation_id){if(pricingState.operationId&&detail.operation_id!==pricingState.operationId)return;pricingState.operationId=detail.operation_id;}const connectionState=detail.state;if(pricingState.cancellationRequested||connectionState==='cancelling'||connectionState==='cancel-pending'){pricingState.cancellationRequested=true;syncOperationControls();setOperationProgress('正在停止');setState('正在停止','edit');return;}if(connectionState==='compute-recovering'||connectionState==='recovering'){pricingState.connectionRecovering=true;setOperationProgress('恢复连接',{progress:detail.progress});setState('正在恢复连接','edit');$('message').className='message';$('message').textContent=detail.message||'计算仍在后台运行，正在恢复连接…';return;}if(connectionState==='connected'){pricingState.connectionRecovering=false;setOperationProgress('读取结果',{progress:detail.progress});setState('正在读取结果','edit');$('message').className='message';$('message').textContent='连接已恢复，正在读取定价结果…';return;}if(['submitted','queued','running','compute-running'].includes(connectionState)){setOperationProgress('后台计算',{progress:detail.progress});setState('正在定价','edit');if(detail.message)$('message').textContent=detail.message;}});
       window.addEventListener('optionhelper.module-operation-cancel',event=>{if(event.detail?.module&&event.detail.module!=='pricer')return;const operationId=String(event.detail?.operation_id||'');if(!operationId||!pricingState.operationId||operationId!==pricingState.operationId)return;requestOperationStop(operationId);});
-      function resetForFormalPricing(){setContractInputsLocked();renderTerms();if(!hasSelectedContractVersion()){$('underlyings').value='';$('referenceSpot').value='';$('referenceSpots').value='';$('referenceSpot').dataset.localSample='';setNewIssueDefaults();}showNotice('方案已更新','可自由修改产品、标的和合同参数；运行成功后保存实际使用的不可变版本。');}
+      function resetForFormalPricing(){setContractInputsLocked();$('underlyings').value='';$('referenceSpot').value='';$('referenceSpots').value='';$('referenceSpot').dataset.localSample='';setNewIssueDefaults();renderTerms();showNotice('输入已重置','当前产品使用最新目录默认条款；可填写标的和本次参数后运行。');}
       $('form').addEventListener('submit',event=>{try{validateDateInputs();}catch(error){event.preventDefault();event.stopImmediatePropagation();$('message').className='message error';$('message').textContent=error.message;showNotice('定价失败',error.message,'error');setState('定价失败');}},true);
-      $('form').addEventListener('submit',run);$('stopRun').addEventListener('click',()=>requestOperationStop());$('productId').addEventListener('change',()=>{if(pricingState.operationActive)return;pricingState.requestRevision+=1;pricingState.taskContract=null;syncContractVersionOptions();resetResultForSelection();setNewIssueDefaults();resetForFormalPricing();renderTerms();});$('contractVersion').addEventListener('change',()=>{if(pricingState.operationActive)return;pricingState.requestRevision+=1;chooseContractVersion();resetResultForSelection('合同版本已切换，请检查参数后运行定价。');});$('modelMethod').addEventListener('change',()=>{if(pricingState.operationActive)return;pricingState.requestRevision+=1;syncMethodDependentControls();if(pricingState.hasResult){showNotice('结果待更新','定价方法已修改，当前结果仍为上一次运行；请重新运行定价。','warning');setState('结果待更新','edit');}});$('underlyings').addEventListener('input',()=>{if(pricingState.operationActive)return;invalidateLocalReference();const field=fields().find(el=>el.dataset.key==='U');if(field)field.value=$('underlyings').value.trim();});$('valuationDate').addEventListener('input',()=>{if(!pricingState.operationActive)invalidateLocalReference();});$('valuationDate').addEventListener('change',syncNewIssueStartFromValuationDate);$('contractStartDate').addEventListener('input',()=>{if(pricingState.operationActive)return;invalidateLocalReference();$('contractStartDate').dataset.newIssueDefault='';});$('referenceSpot').addEventListener('input',()=>{if(!pricingState.operationActive)$('referenceSpot').dataset.localSample='';});window.addEventListener('resize',()=>greeksWorkbench.resize());bindResizer($('libraryResizer'),'--library-width',220,420);bindResizer($('inspectorResizer'),'--inspector-width',300,520);setNewIssueDefaults();const hostedByApp=new URLSearchParams(location.search).get('host')==='optdesk'&&window.parent!==window;if(!hostedByApp){$('run').disabled=true;showNotice('无法运行','估值定价必须从OptionHelper App任务中打开，以使用受控合同、行情和交易日历。','error');setState('请从App打开');}else{catalog().then(()=>{renderTerms();clearNotice();}).catch(error=>{$('message').className='message error';$('message').textContent=error.message;showNotice('目录加载失败',error.message,'error');setState('产品目录加载失败','error');});}
+      $('form').addEventListener('submit',run);$('stopRun').addEventListener('click',()=>requestOperationStop());$('productId').addEventListener('change',()=>{if(pricingState.operationActive)return;pricingState.requestRevision+=1;rememberProductId($('productId').value);resetResultForSelection();resetForFormalPricing();});$('modelMethod').addEventListener('change',()=>{if(pricingState.operationActive)return;pricingState.requestRevision+=1;syncMethodDependentControls();if(pricingState.hasResult){showNotice('结果待更新','定价方法已修改，当前结果仍为上一次运行；请重新运行定价。','warning');setState('结果待更新','edit');}});$('underlyings').addEventListener('input',()=>{if(pricingState.operationActive)return;invalidateLocalReference();const field=fields().find(el=>el.dataset.key==='U');if(field)field.value=$('underlyings').value.trim();});$('valuationDate').addEventListener('input',()=>{if(!pricingState.operationActive)invalidateLocalReference();});$('valuationDate').addEventListener('change',syncNewIssueStartFromValuationDate);$('contractStartDate').addEventListener('input',()=>{if(pricingState.operationActive)return;invalidateLocalReference();$('contractStartDate').dataset.newIssueDefault='';});$('referenceSpot').addEventListener('input',()=>{if(!pricingState.operationActive)$('referenceSpot').dataset.localSample='';});window.addEventListener('resize',()=>greeksWorkbench.resize());bindResizer($('libraryResizer'),'--library-width',220,420);bindResizer($('inspectorResizer'),'--inspector-width',300,520);setNewIssueDefaults();const hostedByApp=new URLSearchParams(location.search).get('host')==='optdesk'&&window.parent!==window;if(!hostedByApp){$('run').disabled=true;showNotice('无法运行','估值定价必须从OptionHelper App任务中打开，以使用受控合同、行情和交易日历。','error');setState('请从App打开');}else{catalog().then(()=>clearNotice()).catch(error=>{$('message').className='message error';$('message').textContent=error.message;showNotice('目录加载失败',error.message,'error');setState('产品目录加载失败','error');});}
     </script>
   </body>
 </html>
