@@ -22,7 +22,7 @@
           <input id="taskFilter" autocomplete="off" placeholder="任务名称或标识，可留空">
           <label for="sourceSelect">研究与合同来源</label>
           <select id="sourceSelect" disabled><option>等待受控结果目录</option></select>
-          <div class="source-detail" id="sourceDetail">选择来源后显示候选、产品版本与资料状态。</div>
+          <div class="source-detail" id="sourceDetail">选择来源后显示产品、规则修订与实际运行记录。</div>
         </aside>
         <div class="panel-resizer" id="sourceResizer" role="separator" aria-label="调整报告来源面板宽度" aria-orientation="vertical" tabindex="0"></div>
 
@@ -43,7 +43,7 @@
           <h2>内容与格式</h2>
           <div class="setting-group" id="deliveryModeGroup"><label>交付方式</label><select id="deliveryMode"><option value="single">单结构</option><option value="batch">批量独立报告</option><option value="combined">组合索引与独立报告</option><option value="comparison">横向对比</option></select></div>
           <fieldset class="setting-group"><legend>内容等级</legend><label class="choice"><input type="radio" name="outputType" value="card"><span>研究简报</span></label><label class="choice"><input type="radio" name="outputType" value="quote"><span>参考报价</span></label><label class="choice"><input type="radio" name="outputType" value="report" checked><span>完整研究报告</span></label></fieldset>
-          <div class="setting-group" id="referenceQuotePanel" hidden><label>报价结构清单</label><p class="rule">每个合同版本只选择一项正式估值结果。参数不同的合同版本分别列示，同一挂钩标的自动汇总为一张表。</p></div>
+          <div class="setting-group" id="referenceQuotePanel" hidden><label>报价结构清单</label><p class="rule">每个产品只选择一项已保存估值运行；同一挂钩标的自动汇总为一张表。</p></div>
           <fieldset class="setting-group"><legend>输出格式</legend><label class="choice"><input type="radio" name="format" value="html" checked><span>HTML</span></label><label class="choice"><input type="radio" name="format" value="pdf"><span>PDF</span></label></fieldset>
           <fieldset class="setting-group" id="moduleGroup"><legend>纳入内容</legend><label class="choice"><input type="checkbox" data-module="recommender" checked><span>产品建议</span></label><label class="choice"><input type="checkbox" data-module="payoff" checked><span>收益结构</span></label><label class="choice"><input type="checkbox" data-module="pricing" checked><span>估值定价</span></label><label class="choice"><input type="checkbox" data-module="backtest" checked><span>历史回测</span></label></fieldset>
           <div class="setting-group"><label for="audience">受众</label><select id="audience"><option value="professional">专业用户</option></select></div>
