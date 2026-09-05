@@ -4,7 +4,7 @@
   "title": "ModuleRun",
   "type": "object",
   "additionalProperties": false,
-  "required": ["module", "tenant_id", "analysis_case_id", "task_id", "run_id", "candidate_id", "catalog_version", "status", "contract_fingerprint", "execution_fingerprint", "input_snapshot", "data_refs", "limitations", "artifact_manifest", "created_by", "access_scope"],
+  "required": ["module", "tenant_id", "analysis_case_id", "task_id", "run_id", "candidate_id", "status", "resolved_contract_snapshot", "input_snapshot", "data_refs", "limitations", "artifact_manifest", "created_by", "access_scope"],
   "properties": {
     "module": {"enum": ["payoffer", "pricer", "backtester"]},
     "tenant_id": {"type": "string", "minLength": 1},
@@ -12,10 +12,8 @@
     "task_id": {"type": "string", "minLength": 1},
     "run_id": {"type": "string", "minLength": 1},
     "candidate_id": {"type": ["string", "null"]},
-    "catalog_version": {"type": ["string", "null"]},
     "status": {"enum": ["created", "validating", "queued", "running", "succeeded", "partial", "failed", "unsupported", "cancelled", "timed_out"]},
-    "contract_fingerprint": {"type": ["string", "null"]},
-    "execution_fingerprint": {"type": "string", "minLength": 1},
+    "resolved_contract_snapshot": {"type": ["object", "null"]},
     "input_snapshot": {"type": "object"},
     "data_refs": {"type": "array"},
     "result": {"type": ["object", "null"]},
@@ -32,8 +30,7 @@
     "then": {
       "properties": {
         "candidate_id": {"type": "string", "minLength": 1},
-        "catalog_version": {"type": "string", "minLength": 1},
-        "contract_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        "resolved_contract_snapshot": {"type": "object"}
       }
     }
   }]
