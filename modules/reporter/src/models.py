@@ -96,7 +96,7 @@ def reject_physical_paths(value: Any, field: str = "ReportRequest") -> None:
 
 
 def stable_hash(value: Any) -> str:
-    """Reporter事实对象的语义哈希，不用于重算合同指纹。"""
+    """Reporter冻结事实的完整性哈希，不用于定义产品依赖。"""
 
     return semantic_hash(value)
 
@@ -128,15 +128,15 @@ def module_run_ref(value: Any, field: str, *, tenant_id: str, task_id: str) -> M
         raise ReporterError(f"{field}不接受物理路径字段：{','.join(sorted(forbidden))}")
     allowed = {
         "module", "tenant_id", "task_id", "run_id",
-        "expected_semantic_result_hash", "expected_artifact_manifest_hash",
+        "expected_result_file_hash", "expected_artifact_manifest_hash",
     }
     unknown = set(raw).difference(allowed)
     if unknown:
         raise ReporterError(f"{field}含未知字段：{','.join(sorted(unknown))}")
-    semantic_hash = require_text(raw.get("expected_semantic_result_hash"), f"{field}.expected_semantic_result_hash")
+    result_file_hash = require_text(raw.get("expected_result_file_hash"), f"{field}.expected_result_file_hash")
     manifest_hash = require_text(raw.get("expected_artifact_manifest_hash"), f"{field}.expected_artifact_manifest_hash")
-    if not re.fullmatch(r"[0-9a-f]{64}", semantic_hash):
-        raise ReporterError(f"{field}.expected_semantic_result_hash必须为64位小写SHA-256")
+    if not re.fullmatch(r"[0-9a-f]{64}", result_file_hash):
+        raise ReporterError(f"{field}.expected_result_file_hash必须为64位小写SHA-256")
     if not re.fullmatch(r"[0-9a-f]{64}", manifest_hash):
         raise ReporterError(f"{field}.expected_artifact_manifest_hash必须为64位小写SHA-256")
     ref = ModuleRunRef(
@@ -144,7 +144,7 @@ def module_run_ref(value: Any, field: str, *, tenant_id: str, task_id: str) -> M
         tenant_id=require_identifier(raw.get("tenant_id"), f"{field}.tenant_id"),
         task_id=require_identifier(raw.get("task_id"), f"{field}.task_id"),
         run_id=require_identifier(raw.get("run_id"), f"{field}.run_id"),
-        expected_semantic_result_hash=semantic_hash,
+        expected_result_file_hash=result_file_hash,
         expected_artifact_manifest_hash=manifest_hash,
     )
     if ref.tenant_id != tenant_id or ref.task_id != task_id:
@@ -166,15 +166,15 @@ def quote_module_run_ref(value: Any, field: str, *, tenant_id: str) -> ModuleRun
         raise ReporterError(f"{field}不接受物理路径字段：{','.join(sorted(forbidden))}")
     allowed = {
         "module", "tenant_id", "task_id", "run_id",
-        "expected_semantic_result_hash", "expected_artifact_manifest_hash",
+        "expected_result_file_hash", "expected_artifact_manifest_hash",
     }
     unknown = set(raw).difference(allowed)
     if unknown:
         raise ReporterError(f"{field}含未知字段：{','.join(sorted(unknown))}")
-    semantic_result_hash = require_text(raw.get("expected_semantic_result_hash"), f"{field}.expected_semantic_result_hash")
+    result_file_hash = require_text(raw.get("expected_result_file_hash"), f"{field}.expected_result_file_hash")
     artifact_manifest_hash = require_text(raw.get("expected_artifact_manifest_hash"), f"{field}.expected_artifact_manifest_hash")
-    if not re.fullmatch(r"[0-9a-f]{64}", semantic_result_hash):
-        raise ReporterError(f"{field}.expected_semantic_result_hash必须为64位小写SHA-256")
+    if not re.fullmatch(r"[0-9a-f]{64}", result_file_hash):
+        raise ReporterError(f"{field}.expected_result_file_hash必须为64位小写SHA-256")
     if not re.fullmatch(r"[0-9a-f]{64}", artifact_manifest_hash):
         raise ReporterError(f"{field}.expected_artifact_manifest_hash必须为64位小写SHA-256")
     ref = ModuleRunRef(
@@ -182,7 +182,7 @@ def quote_module_run_ref(value: Any, field: str, *, tenant_id: str) -> ModuleRun
         tenant_id=require_identifier(raw.get("tenant_id"), f"{field}.tenant_id"),
         task_id=require_identifier(raw.get("task_id"), f"{field}.task_id"),
         run_id=require_identifier(raw.get("run_id"), f"{field}.run_id"),
-        expected_semantic_result_hash=semantic_result_hash,
+        expected_result_file_hash=result_file_hash,
         expected_artifact_manifest_hash=artifact_manifest_hash,
     )
     if ref.tenant_id != tenant_id:
@@ -318,12 +318,17 @@ class ReportRequest:
             self.selected_modules
         if self.format not in {"html", "pdf"}:
             raise ReporterError("format仅支持html、pdf")
-        required_source_keys = {"product_version_refs", "catalog_version_ref", "evidence_refs", "module_run_refs"}
+        required_source_keys = {"evidence_refs", "module_run_refs"}
         missing = required_source_keys.difference(self.source_refs)
         if missing:
             raise ReporterError(f"source_refs缺少：{','.join(sorted(missing))}")
-        if not isinstance(self.source_refs.get("product_version_refs"), Mapping):
-            raise ReporterError("source_refs.product_version_refs必须为对象")
+        allowed_source_keys = required_source_keys | ({"quote_sources"} if self.output_type == "quote" else set())
+        unknown_source_keys = set(self.source_refs).difference(allowed_source_keys)
+        if unknown_source_keys:
+            raise ReporterError(
+                "source_refs不接受当前、最新或任务合同捷径；计算事实必须使用显式ModuleRunRef："
+                + ",".join(sorted(unknown_source_keys))
+            )
         if not isinstance(self.source_refs.get("evidence_refs"), Mapping):
             raise ReporterError("source_refs.evidence_refs必须为对象")
         if not isinstance(self.source_refs.get("module_run_refs"), Mapping):
