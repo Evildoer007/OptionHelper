@@ -377,7 +377,7 @@ const presetPresentation = {
   },
   "product-trader-loop": {
     summary: "产品交易闭环",
-    description: "Structurer与Trader基于同一CandidateVersion迭代，变更版本后才重新评估。",
+    description: "Structurer与Trader基于同一候选方案迭代，条款变化后重新评估。",
   },
   "independent-council": {
     summary: "异构评审",
