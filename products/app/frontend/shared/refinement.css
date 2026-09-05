@@ -7,7 +7,6 @@
 html { font-size: 14px; }
 
 .workspace-shell.workspace-shell--desk[data-workspace-shell] {
-  --rail-width: 360px;
   --report-width: 320px;
 }
 
@@ -1178,11 +1177,6 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
   border-color: transparent;
 }
 
-.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-rail-collapsed="false"],
-.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell]:not([data-rail-collapsed]) {
-  --rail-width: 280px;
-}
-
 .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-rail-collapsed="false"] .workspace-brand .workspace-brand__full,
 .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell]:not([data-rail-collapsed]) .workspace-brand .workspace-brand__full {
   width: 250px;
@@ -1736,7 +1730,6 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
 /* Keep the OptionHelper palette while using a denser, calmer desktop rhythm:
    the conversation and floating composer carry hierarchy, not a large logo. */
 .workspace-shell.workspace-shell--desk[data-workspace-shell] {
-  --rail-width: 248px;
   --conversation-column-max: 1040px;
   --conversation-column-reserve: 56px;
   --oh-panel-open-duration: 320ms;
@@ -2401,6 +2394,7 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
   .workspace-shell.workspace-shell--desk[data-workspace-shell] .task-rail,
   .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-footer,
   .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-collapse-toggle,
+  .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-collapse-arrow,
   .composer-send-echo,
   .workspace-shell.workspace-shell--desk[data-workspace-shell] .desk-module-tabs__indicator {
     animation: none !important;
@@ -2411,7 +2405,6 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
 /* Unified workspace surface. Chat and Desk share one quiet navigation rail;
    the OptionHelper red is reserved for active state and primary action. */
 .workspace-shell.workspace-shell--desk[data-workspace-shell] {
-  --rail-width: 236px;
   --conversation-column-max: 820px;
   --conversation-column-reserve: 44px;
   background: #fff;
@@ -2579,6 +2572,16 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
   overflow: visible;
 }
 
+.workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-collapse-arrow {
+  transform-box: fill-box;
+  transform-origin: center;
+  transition: transform .24s cubic-bezier(.2, .8, .2, 1);
+}
+
+.workspace-shell.workspace-shell--desk[data-workspace-shell][data-rail-collapsed="true"] .rail-collapse-arrow {
+  transform: rotate(180deg);
+}
+
 .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-toggle-bar {
   fill: none;
   stroke: currentColor;
@@ -2723,7 +2726,6 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
 }
 
 @media (min-width: 701px) {
-  .workspace-shell.workspace-shell--desk[data-workspace-shell][data-rail-collapsed="true"] { --rail-effective-width: 56px; }
   .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-rail-collapsed="true"] .workspace-rail--unbranded { padding-inline: 6px; }
   .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-rail-collapsed="true"] .workspace-rail--unbranded .rail-new-task {
     margin-top: 8px !important;
