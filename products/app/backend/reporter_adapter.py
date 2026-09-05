@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import sys
 import tempfile
@@ -18,7 +17,6 @@ from modules.designer.service import call_tool as designer_call_tool
 from modules.reporter.artifact_validator import validate_report_run_directory
 from modules.reporter.export_service import rerender_frozen_delivery
 from modules.reporter.models import ReporterError
-from modules.reporter.selection_facts import build_host_selection_source_refs
 from modules.reporter.service import build_selected_request, call_tool as reporter_call_tool
 from runtime.protocol.models import ModuleRunRef
 
@@ -48,7 +46,7 @@ class _ScopedResultPorts:
             raise PermissionError("ModuleRunRef跨租户访问被拒绝")
         return {
             "module": ref.module, "tenant_id": ref.tenant_id, "task_id": ref.task_id, "run_id": ref.run_id,
-            "expected_semantic_result_hash": ref.expected_semantic_result_hash,
+            "expected_result_file_hash": ref.expected_result_file_hash,
             "expected_artifact_manifest_hash": ref.expected_artifact_manifest_hash,
         }
 
@@ -91,7 +89,7 @@ class _ScopedResultPorts:
             raw_options = raw_candidate.get("module_run_options")
             if not isinstance(raw_options, Mapping):
                 continue
-            versions: dict[tuple[str, str, str], dict[str, Any]] = {}
+            snapshot_groups: list[dict[str, Any]] = []
             for module, source_options in raw_options.items():
                 if module not in {"payoff", "pricing", "backtest"} or not isinstance(source_options, list):
                     continue
@@ -105,21 +103,11 @@ class _ScopedResultPorts:
                             continue
                         ref = ModuleRunRef(
                             module=run_module, tenant_id=str(raw_ref["tenant_id"]), task_id=str(raw_ref["task_id"]), run_id=str(raw_ref["run_id"]),
-                            expected_semantic_result_hash=str(raw_ref["expected_semantic_result_hash"]),
+                            expected_result_file_hash=str(raw_ref["expected_result_file_hash"]),
                             expected_artifact_manifest_hash=str(raw_ref["expected_artifact_manifest_hash"]),
                         )
-                        self._results.verify_owned_module_run(self._principal, {
-                            "module": ref.module, "tenant_id": ref.tenant_id, "task_id": ref.task_id,
-                            "run_id": ref.run_id,
-                            "expected_semantic_result_hash": ref.expected_semantic_result_hash,
-                            "expected_artifact_manifest_hash": ref.expected_artifact_manifest_hash,
-                        })
-                        reference = {
-                            "module": ref.module, "tenant_id": ref.tenant_id, "task_id": ref.task_id,
-                            "run_id": ref.run_id,
-                            "expected_semantic_result_hash": ref.expected_semantic_result_hash,
-                            "expected_artifact_manifest_hash": ref.expected_artifact_manifest_hash,
-                        }
+                        reference = self._reference(ref, tenant_id=ref.tenant_id)
+                        self._results.verify_owned_module_run(self._principal, reference)
                         manifest = json.loads(self._results.read_owned_module_run_file(
                             self._principal, reference, "manifest.json",
                         ))
@@ -128,54 +116,81 @@ class _ScopedResultPorts:
                         ))
                         if not isinstance(manifest, Mapping) or not isinstance(contract, Mapping):
                             continue
-                        fingerprint = str(contract.get("contract_fingerprint") or "")
+                        identity = contract.get("identity")
+                        if not isinstance(identity, Mapping):
+                            continue
+                        product_id = identity.get("product_id")
+                        rule_revision = identity.get("rule_revision")
                         source_candidate_id = str(manifest.get("candidate_id") or "")
-                        candidate_version_id = str(manifest.get("candidate_version_id") or "")
                         catalog_candidate_id = str(
                             raw_candidate.get("source_candidate_id") or raw_candidate.get("candidate_id") or ""
                         )
                         if (
-                            len(fingerprint) != 64
-                            or manifest.get("contract_fingerprint") != fingerprint
+                            not isinstance(product_id, str)
+                            or not product_id
+                            or isinstance(rule_revision, bool)
+                            or not isinstance(rule_revision, int)
+                            or rule_revision <= 0
+                            or manifest.get("product_id") != product_id
+                            or manifest.get("rule_revision") != rule_revision
                             or not source_candidate_id
                             or source_candidate_id != catalog_candidate_id
-                            or contract.get("registry_snapshot_hash") != source.get("catalog_content_hash")
+                            or raw_candidate.get("product_id", product_id) != product_id
+                            or raw_candidate.get("rule_revision", rule_revision) != rule_revision
                         ):
                             continue
                     except (KeyError, TypeError, ValueError, PermissionError, ValidationError, OSError, UnicodeDecodeError, json.JSONDecodeError):
                         continue
-                    key = (candidate_version_id, fingerprint, source_candidate_id)
-                    version = versions.setdefault(key, {"contract": dict(contract), "options": {}})
-                    version["options"].setdefault(module, []).append({
-                        "module": ref.module, "tenant_id": ref.tenant_id, "task_id": ref.task_id, "run_id": ref.run_id,
-                        "expected_semantic_result_hash": ref.expected_semantic_result_hash,
-                        "expected_artifact_manifest_hash": ref.expected_artifact_manifest_hash, "status": "succeeded",
+                    group = next(
+                        (
+                            item
+                            for item in snapshot_groups
+                            if item["source_candidate_id"] == source_candidate_id
+                            and item["contract"] == dict(contract)
+                        ),
+                        None,
+                    )
+                    if group is None:
+                        group = {
+                            "source_candidate_id": source_candidate_id,
+                            "contract": dict(contract),
+                            "options": {},
+                        }
+                        snapshot_groups.append(group)
+                    group["options"].setdefault(module, []).append({
+                        **reference,
+                        "status": "succeeded",
                     })
 
-            if not versions:
+            if not snapshot_groups:
                 continue
-            distinct_contracts = {key[1] for key in versions}
-            for (candidate_version_id, fingerprint, source_candidate_id), version in sorted(versions.items()):
-                # Multiple contract snapshots are selectable only when the
-                # upstream run froze an explicit candidate version.  An
-                # unversioned variant is omitted instead of becoming a UI
-                # option that the formal contract gate must later reject.
-                if len(distinct_contracts) > 1 and not candidate_version_id:
-                    continue
-                contract = version["contract"]
+            snapshot_groups.sort(
+                key=lambda item: min(
+                    str(ref["run_id"])
+                    for rows in item["options"].values()
+                    for ref in rows
+                )
+            )
+            for group_index, group in enumerate(snapshot_groups, start=1):
+                source_candidate_id = group["source_candidate_id"]
+                contract = group["contract"]
                 identity = contract.get("identity") if isinstance(contract.get("identity"), Mapping) else {}
-                price_convention = contract.get("price_convention", identity.get("price_convention"))
+                price_convention = identity.get("price_convention")
                 if isinstance(price_convention, str):
                     price_convention = {"spot": "close", "contract_basis": price_convention}
                 if not isinstance(price_convention, Mapping):
                     continue
                 variant_id = str(raw_candidate.get("candidate_id") or source_candidate_id)
-                if len(versions) > 1:
-                    suffix = hashlib.sha256(f"{candidate_version_id}:{fingerprint}".encode("utf-8")).hexdigest()[:16]
-                    variant_id = f"{variant_id[:100]}-{suffix}"
+                if len(snapshot_groups) > 1:
+                    first_run_id = min(
+                        str(ref["run_id"])
+                        for rows in group["options"].values()
+                        for ref in rows
+                    )
+                    variant_id = f"{variant_id[:96]}-run-{first_run_id[:24]}-{group_index}"
                 verified_options = {
-                    module: sorted(rows, key=lambda item: (item["run_id"], item["expected_semantic_result_hash"]))
-                    for module, rows in version["options"].items()
+                    module: sorted(rows, key=lambda item: (item["run_id"], item["expected_result_file_hash"]))
+                    for module, rows in group["options"].items()
                 }
                 single_refs = {
                     module: rows[0]
@@ -188,29 +203,30 @@ class _ScopedResultPorts:
                     "source_candidate_id": source_candidate_id,
                     "product_id": identity.get("product_id"),
                     "product_name": identity.get("name_zh"),
-                    "product_version": contract.get("product_version"),
-                    "product_version_content_hash": contract.get("product_snapshot_hash"),
-                    "contract_fingerprint": fingerprint,
-                    "analysis_basis_id": contract.get(
-                        "analysis_basis_id", identity.get("analysis_basis_id", f"basis-{fingerprint[:20]}"),
-                    ),
+                    "rule_revision": identity.get("rule_revision"),
+                    "analysis_basis_id": f"basis-{min(ref['run_id'] for rows in verified_options.values() for ref in rows)}",
                     "underlyings": list(identity.get("underlyings", [])),
                     "currency": identity.get("currency"),
                     "price_convention": dict(price_convention),
+                    "resolved_contract_snapshot": contract,
                     "module_run_options": verified_options,
                     "module_run_refs": single_refs,
                 }
-                if candidate_version_id:
-                    candidate["candidate_version_id"] = candidate_version_id
                 candidates.append(candidate)
         if not candidates:
             return None
-        verified = {key: value for key, value in source.items() if key != "candidates"}
+        verified = {
+            key: source[key]
+            for key in ("source_id", "label", "tenant_id", "task_id", "analysis_case_id")
+            if key in source
+        }
         verified["candidates"] = candidates
-        try:
-            verified["source_refs"] = build_host_selection_source_refs(verified, self._principal.tenant_id)
-        except ReporterError:
-            return None
+        verified["source_refs"] = {
+            "module_run_refs": {
+                candidate["candidate_id"]: candidate["module_run_options"]
+                for candidate in candidates
+            },
+        }
         return verified
 
 
