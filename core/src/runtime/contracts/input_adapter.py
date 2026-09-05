@@ -33,18 +33,18 @@ from .contract_engine import (
     load_registry,
     overridable_term_keys,
     resolve_contract,
-    verify_product_snapshot_binding,
+    resolve_structural_payoff_contract,
+    verify_current_product_rule,
 )
 from .contract_types import canonical_json, deep_freeze, deep_thaw, semantic_hash
 from runtime.protocol.models import DataAssetRef, ObservedContractState, PricingObjective
 from runtime.ports.data_store import DataStoreReadPort
-from runtime.ports.product_snapshot import ProductSnapshotProvider, require_product_snapshot_provider
 
 
 _CALCULATORS = frozenset({"payoffer", "pricer", "backtester"})
 _SHA256_HEX = re.compile(r"[0-9a-f]{64}\Z")
 _COMMON_FIELDS = frozenset({
-    "action", "product_id", "identity", "term_overrides", "run_id",
+    "action", "product_id", "identity", "term_overrides",
     # This is a first-run page intent, not a contract identity field.  The
     # Host consumes it while compiling the data-backed contract and never
     # forwards it to a formal calculator input.
@@ -948,11 +948,10 @@ def compile_compute_data_requirements(
         observation_count = int(numeric_observation_count)
     has_observations = bool(_OBSERVATION_TERM_KEYS.intersection(terms)) or bool(terms.get("monitor"))
     return ComputeDataRequirements(
-        history_required=True,
-        # Numerical method selection does not alter the legal contract. Any
-        # observed contract still needs authenticated sessions so Core can
-        # freeze its schedule before Payoffer or Pricer executes.
-        future_calendar_required=module in {"payoffer", "pricer"} and has_observations,
+        history_required=module != "payoffer",
+        # Payoffer freezes only a normalized structural schedule. It never
+        # turns that internal grid into market or exchange-calendar evidence.
+        future_calendar_required=module == "pricer" and has_observations,
         historical_fields=tuple(fields),
         observation_price=observation_price,
         tenor_years=tenor,
@@ -965,9 +964,7 @@ def prepare_compute_request(
     request: Mapping[str, Any],
     *,
     data_refs: Sequence[Mapping[str, Any]] = (),
-    resolved_contract: Mapping[str, Any] | None = None,
     data_store: DataStoreReadPort | None = None,
-    product_snapshot_provider: ProductSnapshotProvider | None = None,
 ) -> dict[str, Any]:
     """Return one formal business request and its immutable contract facts."""
     if module not in _CALCULATORS or not isinstance(request, Mapping):
@@ -976,7 +973,11 @@ def prepare_compute_request(
     action = str(values.get("action", "run")).strip().lower()
     if action != "run":
         raise ContractResolutionError("正式计算输入编译器只处理run")
-    allowed = set(_COMMON_FIELDS)
+    allowed = (
+        {"action", "product_id", "term_overrides"}
+        if module == "payoffer"
+        else set(_COMMON_FIELDS)
+    )
     if module == "pricer":
         allowed.update({"pricing_config", "observed_contract_state", "pricing_objective"})
     elif module == "backtester":
@@ -990,12 +991,30 @@ def prepare_compute_request(
         raise ContractResolutionError("计算请求含未知字段：" + ",".join(sorted(unknown)))
 
     product_id = values.get("product_id")
-    if resolved_contract is None and (not isinstance(product_id, str) or not product_id.strip()):
+    if not isinstance(product_id, str) or not product_id.strip():
         raise ContractResolutionError("product_id不能为空")
-    identity = values.get("identity", {})
     overrides = values.get("term_overrides", {})
-    if not isinstance(identity, Mapping) or not isinstance(overrides, Mapping):
-        raise ContractResolutionError("identity与term_overrides必须为对象")
+    if not isinstance(overrides, Mapping):
+        raise ContractResolutionError("term_overrides必须为对象")
+
+    if module == "payoffer":
+        if data_refs:
+            raise ContractResolutionError("Payoffer结构计算不接受行情或交易日历引用")
+        contract = resolve_structural_payoff_contract(
+            product_id.strip(),
+            term_overrides=dict(overrides),
+        )
+        contract_payload = contract.to_protocol_dict()
+        return {
+            "request": {"action": "run", "payoff_input": {"contract": contract_payload}},
+            "resolved_contract": contract_payload,
+            "product_id": contract.product_id,
+            "rule_revision": int(contract.identity["rule_revision"]),
+        }
+
+    identity = values.get("identity", {})
+    if not isinstance(identity, Mapping):
+        raise ContractResolutionError("identity必须为对象")
 
     refs = tuple(_canonical_data_ref(item) for item in data_refs)
     history_refs = tuple(item for item in refs if item.get("schema_id") == "market-history")
@@ -1006,14 +1025,13 @@ def prepare_compute_request(
     )
     if unsupported_refs:
         raise ContractResolutionError("计算请求包含不支持的DataAssetRef.schema_id")
-    if resolved_contract is None and (module in {"pricer", "backtester"} or history_refs):
+    if module in {"pricer", "backtester"} or history_refs:
         values = _bind_data_backed_contract_identity(module, values, history_refs, data_store)
         identity = values.get("identity", {})
         overrides = values.get("term_overrides", {})
-    if resolved_contract is None:
-        values = _freeze_first_contract_end_date(module, values)
-        identity = values.get("identity", {})
-        overrides = values.get("term_overrides", {})
+    values = _freeze_first_contract_end_date(module, values)
+    identity = values.get("identity", {})
+    overrides = values.get("term_overrides", {})
     if len(calendar_refs) > 1:
         # One formal contract has exactly one authenticated observation
         # calendar.  Accepting the first of several supplied assets would make
@@ -1029,40 +1047,14 @@ def prepare_compute_request(
                 raise ContractResolutionError(f"identity.{key}与Host验证交易日历不一致")
             resolver_identity[key] = getattr(calendar_binding, key)
 
-    if resolved_contract is None:
-        contract = resolve_contract(
-            product_id.strip(),
-            identity=resolver_identity,
-            term_overrides=dict(overrides),
-            trading_dates=(calendar_binding.sessions if calendar_binding is not None else None),
-        )
-    else:
-        try:
-            contract = ResolvedContract(**dict(resolved_contract))
-            if contract.product_version.startswith("development:"):
-                registry = load_registry()
-                attested_product_version = None
-            else:
-                provider = require_product_snapshot_provider(product_snapshot_provider)
-                registry = provider.load_registry_snapshot(
-                    product_version=contract.product_version,
-                    product_id=contract.product_id,
-                    registry_snapshot_hash=contract.registry_snapshot_hash,
-                )
-                attested_product_version = contract.product_version
-            verify_product_snapshot_binding(
-                contract, registry, attested_product_version=attested_product_version,
-            )
-        except (TypeError, ValueError, ContractResolutionError) as error:
-            raise ContractResolutionError(f"Host冻结ResolvedContract无效：{error}") from error
-        requested_product = product_id.strip() if isinstance(product_id, str) else contract.product_id
-        _verify_friendly_request(contract, requested_product, resolver_identity, overrides)
-        if calendar_binding is not None:
-            _verify_calendar_matches_contract(contract, calendar_binding)
+    contract = resolve_contract(
+        product_id.strip(),
+        identity=resolver_identity,
+        term_overrides=dict(overrides),
+        trading_dates=(calendar_binding.sessions if calendar_binding is not None else None),
+    )
     contract_payload = contract.to_protocol_dict()
-    if module == "payoffer":
-        formal: dict[str, Any] = {"action": "run", "payoff_input": {"contract": contract_payload}}
-    elif module == "pricer":
+    if module == "pricer":
         config = values.get("pricing_config")
         if not isinstance(config, Mapping):
             raise ContractResolutionError("pricing_config必须为对象")
@@ -1121,17 +1113,11 @@ def prepare_compute_request(
             "backtest_config": deepcopy(dict(config)),
             "historical_data": historical_data,
         }
-    run_id = values.get("run_id")
-    if isinstance(run_id, str) and run_id.strip():
-        formal["run_id"] = run_id.strip()
     return {
         "request": formal,
         "resolved_contract": contract_payload,
-        "contract_fingerprint": contract.contract_fingerprint,
-        "product_version": contract.product_version,
-        "registry_snapshot_hash": contract.registry_snapshot_hash,
-        "product_snapshot_hash": contract.product_snapshot_hash,
-        "product_paths_hash": contract.product_paths_hash,
+        "product_id": contract.product_id,
+        "rule_revision": int(contract.identity["rule_revision"]),
     }
 
 
@@ -1161,16 +1147,9 @@ def recompile_candidate_contract(
         raise ContractResolutionError("候选合同必须提供非空term_overrides")
     if not isinstance(registry, Mapping):
         raise ContractResolutionError("候选合同重编译必须使用Host已验证的Registry快照，禁止回退当前Catalog")
-    # The caller owns the ProductSnapshotProvider boundary.  This helper never
-    # falls back to the mutable/current registry, especially for an archived
-    # ProductVersion.  ``registry`` is expected to be the exact snapshot that
-    # was attested before entering the Pricer run.
-    attested_version = None if base_contract.product_version.startswith("development:") else base_contract.product_version
-    verify_product_snapshot_binding(
-        base_contract,
-        registry,
-        attested_product_version=attested_version,
-    )
+    # Candidate solving uses the same current OptionReg definition that issued
+    # the base run input; historical product definitions are not selectable.
+    verify_current_product_rule(base_contract, registry)
     if type(target_spec) is not CandidateTargetSpecBinding:
         raise ContractResolutionError("候选合同必须绑定Core CandidateTargetSpecBinding")
     _require_binding_seal(target_spec, "candidate_target_spec")
