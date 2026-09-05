@@ -80,6 +80,8 @@ html:not([data-optionhelper-app-hosted="true"])::-webkit-scrollbar-thumb:hover, 
 .quote-item button:hover,.quote-add:hover{border-color:var(--red);background:var(--color-brand-red-soft)}
 .quote-run{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:7px 0;border-top:1px solid var(--line);font-size:12px}
 .quote-run:first-child{margin-top:10px}.quote-run span{color:var(--muted);font-size:11px}
+.run-row span,.quote-run span{overflow-wrap:anywhere;font-family:var(--mono);font-variant-numeric:tabular-nums}
+.run-choice{font-family:var(--mono);font-variant-numeric:tabular-nums}
 
 /* Reporter uses the same OptDesk role scale; delivered report typography lives
    inside the preview iframe and is intentionally unaffected by these rules. */
