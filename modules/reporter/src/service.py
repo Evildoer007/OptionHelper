@@ -38,7 +38,7 @@ PORT = int(os.environ.get("OPTIONHELPER_REPORTER_PORT", "4282"))
 _FORBIDDEN = {"request_path", "result_dir", "output_root", "report_level", "delivery_mode", "module_runs"}
 _RUN_REF_FIELDS = (
     "module", "tenant_id", "task_id", "run_id",
-    "expected_semantic_result_hash", "expected_artifact_manifest_hash",
+    "expected_result_file_hash", "expected_artifact_manifest_hash",
 )
 
 
@@ -83,12 +83,11 @@ def _selection_catalog(selection_port: ResultSelectionPort | None, *, tenant_id:
                     return None
                 return {key: ref.get(key) for key in (
                     "module", "tenant_id", "task_id", "run_id",
-                    "expected_semantic_result_hash", "expected_artifact_manifest_hash", "status",
+                    "expected_result_file_hash", "expected_artifact_manifest_hash", "status",
                 )}
             candidates.append({
                 **{key: candidate.get(key) for key in (
-                    "candidate_id", "source_candidate_id", "candidate_version_id",
-                    "product_id", "product_name", "product_version", "contract_fingerprint",
+                    "candidate_id", "source_candidate_id", "product_id", "rule_revision", "product_name",
                     "analysis_basis_id", "underlyings", "currency", "price_convention",
                 ) if candidate.get(key) is not None},
                 "module_run_refs": {
@@ -102,7 +101,7 @@ def _selection_catalog(selection_port: ResultSelectionPort | None, *, tenant_id:
                 },
             })
         sources.append({
-            **{key: raw.get(key) for key in ("source_id", "label", "tenant_id", "task_id", "analysis_case_id", "catalog_version")},
+            **{key: raw.get(key) for key in ("source_id", "label", "tenant_id", "task_id", "analysis_case_id")},
             "candidates": candidates,
         })
     return {"ok": True, "tenant_id": tenant_id, "sources": sources}
