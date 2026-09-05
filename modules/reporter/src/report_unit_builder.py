@@ -1,7 +1,7 @@
 """将已验证证据冻结为ContractReportUnit。
 
-本文件只组织上游已经给出的事实，不估值、不回测、不计算Payoff，也不重算合同
-指纹。对组合交付，仍然是一合同一ContractReportUnit，外层只保存单位顺序。
+本文件只组织上游已经给出的事实，不估值、不回测、不计算Payoff，也不重新定义
+产品依赖。对组合交付，仍然是一合同一ContractReportUnit，外层只保存单位顺序。
 """
 
 from __future__ import annotations
@@ -65,6 +65,7 @@ _TERM_VALUE_TEXT = {
     "cny_per_calendar_day": "人民币/日",
     "cny_per_1pct_rate": "人民币/利率变化1个百分点",
     "cny": "人民币", "rmb": "人民币", "points": "点", "point": "点",
+    "percentage": "百分比",
 }
 _MODULE_ONLY_TERMS = {
     "payoff_input": {"monitor"},
@@ -359,7 +360,7 @@ _BACKTEST_LABELS = {
     "median_contract_settlement_return": "中位合同结算收益率",
     "minimum_contract_settlement_return": "最低合同结算收益率",
     "maximum_contract_settlement_return": "最高合同结算收益率",
-    "max_loss_contract_settlement_return": "最大历史损失",
+    "historical_loss_sample_covered": "历史损失样本覆盖",
     "trigger_count": "触发次数",
     "trigger_rate": "触发比例", "average_days": "平均触发天数", "median_days": "中位触发天数",
     "true_count": "为真次数", "false_count": "为假次数", "true_rate": "为真比例",
@@ -388,18 +389,18 @@ _MONITOR_LABELS = {
 
 
 _SPECIALIZED_PROFILE_ROOTS = {
-    "terminal_payoff": {"terminal_performance", "terminal_performance_sign", "terminal_segments", "selected_path_case_gross_return"},
+    "terminal_payoff": {"terminal_performance", "terminal_performance_sign", "terminal_segments"},
     "single_knock_out": {"events", "trigger_vs_untriggered"},
     "single_knock_in": {"events", "knock_in_outcomes"},
     "touch_binary": {"events", "touch_vs_untouched"},
-    "airbag": {"events", "buffer_outcomes", "knock_in_outcomes", "selected_path_case_gross_return"},
-    "accumulator": {"events", "accumulated_quantity", "gross_return_per_accumulated_unit", "knock_out_vs_full_term", "contract_purchase_price", "quantity_multiplier"},
+    "airbag": {"events", "buffer_outcomes", "knock_in_outcomes"},
+    "accumulator": {"events", "accumulated_quantity", "knock_out_vs_full_term", "contract_purchase_price", "quantity_multiplier"},
     "dual_knock_autocall": {"events", "three_outcome_summary", "conditional_summary"},
     "coupon_autocall": {"events", "coupon_observations", "coupon_payment"},
     "single_knock_out_autocall": {"events", "trigger_vs_untriggered"},
-    "shark_fin": {"events", "trigger_vs_untriggered", "terminal_performance", "selected_path_case_gross_return"},
-    "variance_swap": {"realized_volatility", "realized_variance", "realized_volatility_vs_strike", "volatility_buckets", "variance_gross_return"},
-    "range_accrual": {"range_observations", "in_range_observation_ratio", "range_accrual_gross_return"},
+    "shark_fin": {"events", "trigger_vs_untriggered", "terminal_performance"},
+    "variance_swap": {"realized_volatility", "realized_variance", "realized_volatility_vs_strike", "volatility_buckets"},
+    "range_accrual": {"range_observations", "in_range_observation_ratio"},
 }
 _SPECIALIZED_LEAVES = {
     "average", "median", "minimum", "maximum",
@@ -443,6 +444,13 @@ def _specialized_label(path: tuple[str, ...]) -> str:
 
 
 def _specialized_value_format(path: tuple[str, ...]) -> str:
+    # Leaf semantics take precedence over the enclosing metric family: a
+    # count inside terminal_performance_sign is still a count, not a return.
+    leaf = path[-1] if path else ""
+    if leaf == "count" or leaf.endswith("_count"):
+        return "number"
+    if leaf == "rate" or leaf.endswith("_rate"):
+        return "percent"
     joined = ".".join(path)
     if any(token in joined for token in ("_rate", "gross_return", "terminal_performance", "variance", "ratio")):
         return "percent"
@@ -964,7 +972,24 @@ def _payoff_content(module: Mapping[str, Any]) -> dict[str, Any]:
     return value
 
 
-def _pricing_content(module: Mapping[str, Any]) -> dict[str, Any]:
+def _contract_product_id(contract: Mapping[str, Any] | None) -> str:
+    if not isinstance(contract, Mapping):
+        return ""
+    identity = contract.get("identity") if isinstance(contract.get("identity"), Mapping) else {}
+    return _text(identity.get("product_id") or contract.get("product_id"))
+
+
+def _contract_initial_premium_percent(contract: Mapping[str, Any] | None) -> str:
+    if not isinstance(contract, Mapping):
+        return ""
+    terms = contract.get("terms") if isinstance(contract.get("terms"), Mapping) else {}
+    premium = _safe_number(terms.get("p", terms.get("Pi_0")))
+    if premium is None:
+        return ""
+    return _decimal_text(premium * 100 if abs(premium) <= 1 else premium) + "%"
+
+
+def _pricing_content(module: Mapping[str, Any], contract: Mapping[str, Any] | None = None) -> dict[str, Any]:
     status = str(module.get("status", "not_run"))
     value: dict[str, Any] = {"status": status, "note": _text(module.get("note"))}
     if status != "ready":
@@ -1003,6 +1028,18 @@ def _pricing_content(module: Mapping[str, Any]) -> dict[str, Any]:
     # 点数仅用于内部一致性校验；公开交付只显示标准化百分比。
     value["greeks"] = _public_greek_rows(pricing.get("greeks", {}))
     value["assumptions"] = []
+    if _contract_product_id(contract) == "9.3":
+        premium = _contract_initial_premium_percent(contract) or "20%"
+        observed = pricing.get("observed_contract_state") if isinstance(pricing.get("observed_contract_state"), Mapping) else {}
+        lifecycle = _text(observed.get("lifecycle_status")).lower()
+        if lifecycle == "active":
+            value["assumptions"].append(
+                f"期初{premium}期权费已实现；存续期估值仅反映剩余合同价值，不重复扣除期权费。"
+            )
+        else:
+            value["assumptions"].append(
+                f"期初{premium}期权费计入合同起始时点价值；进入存续期后不得重复扣除期权费。"
+            )
     value["charts"] = public_chart_specs(_safe_pricing_charts(pricing, result))
     value["scenario_rows"] = _public_pricing_scenarios(pricing, result)
     value["artifacts"] = _artifact_rows(module)
@@ -1027,6 +1064,30 @@ _FAIR_QUOTE_BASIS_LABELS = {
     "direct_value": "直接价值",
     "target_value": "目标价值",
 }
+_FAIR_FORBIDDEN_TARGET_TOKENS = (
+    "implied_volatility", "implied-volatility", "implied volatility",
+    "volatility_surface", "volatility-surface", "volatility surface",
+    "隐含波动率", "波动率曲面",
+)
+
+
+def _fair_target_metadata(pricing: Mapping[str, Any], target_id: str) -> tuple[str, str]:
+    del pricing
+    definition = load_term_catalog().get(target_id)
+    if not isinstance(definition, Mapping):
+        raise ReporterError("公平条款反解目标不在当前term_catalog")
+    label = (_text(definition.get("name_zh")) or target_id).replace("点数", "百分比")
+    catalog_unit = _text(definition.get("unit"))
+    unit = {
+        "normalized_point": "percentage",
+        "rate": "percentage",
+        "volatility": "percentage",
+        "premium_percent_s0_100": "percentage",
+        "price": "percentage",
+        "year": "year",
+        "count": "count",
+    }.get(catalog_unit, catalog_unit or "number")
+    return label, unit
 _FAIR_PUBLIC_UNCERTAINTY_FIELDS = frozenset({
     "status", "precision_status", "quote_eligible", "quote_delivery_status",
     "formal_quote_status", "formal_quote_reason", "absolute_error_upper_bound",
@@ -1091,17 +1152,20 @@ def _fair_parameter_content(module: Mapping[str, Any], pricing: Mapping[str, Any
     for key in ("formal_quote_status", "quote_delivery_status"):
         if pricing.get(key) not in (None, "research_only"):
             raise ReporterError(f"公平参数结果{key}必须标记research_only")
-    final = pricing.get("final_valuation") if isinstance(pricing.get("final_valuation"), Mapping) else None
-    if final is None or final.get("value_basis") != value_basis:
-        raise ReporterError("公平参数结果缺少与目标一致的final_valuation")
-    final_value = _safe_number(final.get(value_basis))
-    if final_value is None:
-        raise ReporterError("公平参数final_valuation缺少受控价值")
-    if not _public_greeks_are_verified(final.get("greeks")):
-        raise ReporterError("公平参数final_valuation的Greeks未通过公开校验")
-    uncertainty = pricing.get("solution_uncertainty")
-    if not isinstance(uncertainty, Mapping):
-        raise ReporterError("公平参数结果缺少solution_uncertainty")
+    final = pricing.get("final_valuation") if isinstance(pricing.get("final_valuation"), Mapping) else {}
+    final_value: float | None = None
+    if final:
+        if final.get("value_basis") != value_basis:
+            raise ReporterError("公平参数final_valuation与目标价值口径不一致")
+        final_value = _safe_number(final.get(value_basis))
+        if final_value is None:
+            raise ReporterError("公平参数final_valuation缺少受控价值")
+        if not _public_greeks_are_verified(final.get("greeks")):
+            raise ReporterError("公平参数final_valuation的Greeks未通过公开校验")
+    uncertainty_value = pricing.get("solution_uncertainty")
+    if uncertainty_value is not None and not isinstance(uncertainty_value, Mapping):
+        raise ReporterError("公平参数solution_uncertainty必须为对象")
+    uncertainty = uncertainty_value if isinstance(uncertainty_value, Mapping) else {}
     if any(str(key) in {"identity", "bound_evidence", "bound_sources", "bound_source_details", "evaluations"} for key in uncertainty):
         raise ReporterError("公平参数solution_uncertainty包含内部证明字段")
 
@@ -1109,6 +1173,15 @@ def _fair_parameter_content(module: Mapping[str, Any], pricing: Mapping[str, Any
     quote_basis_label = _FAIR_QUOTE_BASIS_LABELS.get(quote_basis, quote_basis or "目标口径")
     value_basis_label = _FAIR_VALUE_BASIS_LABELS[value_basis]
     target_id = _text(pricing.get("target_id")) or "目标参数"
+    normalized_target = " ".join((
+        target_id, _text(pricing.get("target_label")), _text(pricing.get("target_unit")),
+    )).casefold()
+    if (
+        target_id.casefold() in {"iv", "sigma"}
+        or any(token in normalized_target for token in _FAIR_FORBIDDEN_TARGET_TOKENS)
+    ):
+        raise ReporterError("公平条款反解不接受隐含波动率或波动率曲面反解")
+    target_label, target_unit = _fair_target_metadata(pricing, target_id)
     target_value = _safe_number(pricing.get("target_value"))
     solution = _safe_number(pricing.get("solution"))
     base_parameter = _safe_number(pricing.get("base_parameter"))
@@ -1116,15 +1189,54 @@ def _fair_parameter_content(module: Mapping[str, Any], pricing: Mapping[str, Any
     if any(item is None for item in (target_value, solution, base_parameter, residual)):
         raise ReporterError("公平参数结果缺少有限目标、参数解或残差")
 
-    public_final = _fair_public_final_valuation(final, value_basis=value_basis)
+    public_final = _fair_public_final_valuation(final, value_basis=value_basis) if final else {}
     public_uncertainty = _fair_public_uncertainty(uncertainty)
-    precision_status = _text(public_uncertainty.get("precision_status")) or "research_only"
+    precision_status = (
+        _text(pricing.get("precision_status"))
+        or _text(public_uncertainty.get("precision_status"))
+        or "research_only"
+    )
+    convergence_status = _text(pricing.get("convergence_status") or pricing.get("status")) or "未声明"
+    target_value_format = "percent" if target_unit == "percentage" else "number"
+    metrics = [
+        _metric("求解条款", f"{target_label}（{target_id}）", "当前反解的唯一合同条款", value_format="text"),
+        _metric("反解值", solution, "公平条款研究估计", value_format=target_value_format),
+        _metric("单位", _text(target_unit), "反解值与原值共用该单位", value_format="text"),
+        _metric("原值", base_parameter, "基础合同中的条款值", value_format=target_value_format),
+        _metric("目标价值", target_value, f"目标口径：{quote_basis_label}", value_format="percent" if value_basis.endswith("_percent") else "number"),
+        _metric("求解残差", residual, f"目标口径：{quote_basis_label}", value_format="percent" if value_basis.endswith("_percent") else "number"),
+        _metric("收敛状态", convergence_status, "求解器冻结状态", value_format="text"),
+    ]
+    if final_value is not None:
+        metrics.append(_metric(
+            f"最终估值（{value_basis_label}）",
+            final_value,
+            "最终候选合同的实际价值口径",
+            value_format="percent" if value_basis.endswith("_percent") else "number",
+        ))
+    metrics.extend([
+        _metric("研究用途", "仅限研究估计", "不得解释为可执行报价", value_format="text"),
+        _metric("报价资格", "不具备", _text(pricing.get("formal_quote_reason")) or "尚未取得正式报价资格", value_format="text"),
+    ])
+    source_limitations = [
+        item.strip()
+        for item in module.get("limitations", [])
+        if isinstance(item, str) and item.strip()
+    ] if isinstance(module.get("limitations"), list) else []
+    limitations = list(dict.fromkeys([
+        *source_limitations,
+        _text(pricing.get("formal_quote_reason")) or "公平参数结果尚未取得正式报价资格。",
+        "本结果为研究估计，不得使用普通报价事实生成Quote。",
+    ]))
     value: dict[str, Any] = {
         "status": "ready",
         "kind": "fair_parameter",
-        "note": "公平参数反解已完成，仅限研究：" + (_text(pricing.get("formal_quote_reason")) or "尚未取得正式报价资格。"),
+        "note": "公平条款反解已完成，仅限研究；报价资格与限制见结果末项。",
         "method": _text(pricing.get("method")),
         "target_id": target_id,
+        "target_label": target_label,
+        "target_unit": target_unit,
+        "convergence_status": convergence_status,
         "target_value": target_value,
         "solution": solution,
         "base_parameter": base_parameter,
@@ -1137,27 +1249,18 @@ def _fair_parameter_content(module: Mapping[str, Any], pricing: Mapping[str, Any
         "formal_quote_reason": _text(pricing.get("formal_quote_reason")),
         "precision_status": precision_status,
         "quote_eligible": False,
-        "solution_uncertainty": public_uncertainty,
-        "final_valuation": public_final,
-        "metrics": [
-            _metric(f"目标值（{quote_basis_label}）", target_value, f"公平参数目标：{target_id}", value_format="percent" if value_basis.endswith("_percent") else "number"),
-            _metric(f"参数解（{target_id}）", solution, "公平参数研究估计", value_format="number"),
-            _metric(f"基础参数（{target_id}）", base_parameter, "基础合同参数", value_format="number"),
-            _metric("求解残差", residual, f"目标口径：{quote_basis_label}", value_format="percent" if value_basis.endswith("_percent") else "number"),
-            _metric(f"最终估值（{value_basis_label}）", final_value, "最终候选合同的实际价值口径", value_format="percent" if value_basis.endswith("_percent") else "number"),
-        ],
-        "greeks": deepcopy(public_final["greeks"]),
+        **({"solution_uncertainty": public_uncertainty} if public_uncertainty else {}),
+        **({"final_valuation": public_final} if public_final else {}),
+        "metrics": metrics,
+        "greeks": deepcopy(public_final.get("greeks", [])),
         "assumptions": [
             f"目标口径：{quote_basis_label}；价值口径：{value_basis_label}。",
             "最终估值的资格不等同于公平参数结果的正式报价资格。",
         ],
-        "charts": public_chart_specs(_safe_pricing_charts(final, final)),
-        "scenario_rows": _public_pricing_scenarios(final, final) if value_basis == "pv_percent" else [],
+        "charts": public_chart_specs(_safe_pricing_charts(final, final)) if final else [],
+        "scenario_rows": _public_pricing_scenarios(final, final) if final and value_basis == "pv_percent" else [],
         "artifacts": _artifact_rows(module),
-        "limitations": [
-            _text(pricing.get("formal_quote_reason")) or "公平参数结果尚未取得正式报价资格。",
-            "本结果为研究估计，不得使用普通报价事实或最终估值资格生成Quote。",
-        ],
+        "limitations": limitations,
     }
     absolute_error = _safe_number(uncertainty.get("absolute_error_upper_bound"))
     if absolute_error is not None:
@@ -1170,7 +1273,7 @@ def _fair_parameter_content(module: Mapping[str, Any], pricing: Mapping[str, Any
             "仅作研究范围展示",
             value_format="text",
         ))
-    standard_error = _safe_number(final.get("standard_error_percent"))
+    standard_error = _safe_number(final.get("standard_error_percent")) if final else None
     if standard_error is not None:
         value["metrics"].append(_metric(
             f"最终估值标准误（{value_basis_label}）",
@@ -1191,28 +1294,30 @@ def _economic_convention_status(backtest: Mapping[str, Any]) -> str:
         convention.get("basis") == "declared_contract_cashflows_over_contract_scale"
         and convention.get("display_unit") == "percentage"
         and convention.get("value_encoding") == "decimal_ratio"
-        and convention.get("positive_return_rate_numerator") == "positive_contract_settlement_return_count"
+        and convention.get("positive_return_rate_numerator") == "positive_return_count"
         and convention.get("positive_return_rate_denominator") == "valid_return_sample_count"
     )
-    legacy = (
-        convention.get("gross_return_basis") == "contract_cashflow_before_external_costs"
-        and convention.get("gross_return_display_unit") == "percentage"
-        and convention.get("gross_return_value_encoding") == "decimal_ratio"
-        and convention.get("win_rate_numerator") == "positive_gross_contract_return_count"
-        and convention.get("win_rate_denominator") == "valid_return_sample_count"
-    )
+    premium_status = convention.get("contractual_premium_status")
+    premium_explanation = convention.get("contractual_premium_explanation")
+    excluded_costs = convention.get("excluded_external_costs")
     if (
-        (canonical or legacy)
+        canonical
         and convention.get("external_costs_modelled") is False
-        and convention.get("client_net_pnl_status") == "not_modelled"
-        and convention.get("client_net_return_status") == "not_modelled"
+        and premium_status in {
+            "included_in_contract_cashflows", "fixed_zero",
+            "blocked_unrepresented", "no_separate_premium_cashflow",
+        }
+        and isinstance(premium_explanation, str) and premium_explanation.strip()
+        and excluded_costs == [
+            "funding_cost", "transaction_cost", "tax", "hedging_cost", "slippage",
+        ]
     ):
         return "formal"
     return "invalid"
 
 
 _FORMAL_LEDGER_RETURN_CONVENTION = {
-    "basis": "contract_cashflow_before_external_costs",
+    "basis": "declared_contract_cashflows_over_contract_scale",
     "display_unit": "percentage",
     "value_encoding": "decimal_ratio",
 }
@@ -1221,8 +1326,7 @@ _FORMAL_LEDGER_ALLOWED_FIELDS = frozenset({
     "historical_resolved_contract", "entry_market_spots", "entry_normalized_spots",
     "settlement_market_spots", "underlying_performances", "path_id", "case_id",
     "settlement_type", "events", "contract_settlement_return", "contract_settlement_return_convention",
-    "gross_contract_return", "gross_return_convention",
-    "client_net_return", "client_net_pnl", "terminal_performance", "entry_features",
+    "terminal_performance", "entry_features",
     "data_flags", "limitations",
 })
 
@@ -1260,30 +1364,17 @@ def _formal_trade_ledger(backtest: Mapping[str, Any], *, valid_return_sample_cou
         if set(row) - _FORMAL_LEDGER_ALLOWED_FIELDS or _has_forbidden_ledger_field(row):
             return False
         canonical_return = _safe_number(row.get("contract_settlement_return"))
-        legacy_return = _safe_number(row.get("gross_contract_return"))
         convention = row.get("contract_settlement_return_convention")
-        legacy_convention = row.get("gross_return_convention")
+        normalization = convention.get("normalization") if isinstance(convention, Mapping) else None
         if (
-            canonical_return is None and legacy_return is None
-            or canonical_return is not None and legacy_return is not None and not math.isclose(canonical_return, legacy_return, rel_tol=0.0, abs_tol=1e-12)
-            or not (
-                isinstance(convention, Mapping)
-                and convention.get("basis") == "declared_contract_cashflows_over_contract_scale"
-                and convention.get("display_unit") == "percentage"
-                and convention.get("value_encoding") == "decimal_ratio"
-                or isinstance(legacy_convention, Mapping)
-                and all(legacy_convention.get(key) == expected for key, expected in _FORMAL_LEDGER_RETURN_CONVENTION.items())
-            )
+            canonical_return is None
+            or not isinstance(convention, Mapping)
+            or not all(convention.get(key) == expected for key, expected in _FORMAL_LEDGER_RETURN_CONVENTION.items())
+            or not isinstance(normalization, Mapping)
+            or set(normalization) != {"source", "contract_base"}
+            or not all(isinstance(item, str) and item.strip() for item in normalization.values())
         ):
             return False
-        for key in ("client_net_return", "client_net_pnl"):
-            client_value = row.get(key)
-            if (
-                not isinstance(client_value, Mapping)
-                or client_value.get("status") != "not_modelled"
-                or client_value.get("value") is not None
-            ):
-                return False
     return True
 
 
@@ -1292,18 +1383,7 @@ _RETURN_PAIR_KEYS = (
     "median_contract_settlement_return",
     "minimum_contract_settlement_return",
     "maximum_contract_settlement_return",
-    "max_loss_contract_settlement_return",
 )
-
-_LEGACY_RETURN_ALIASES = {
-    "positive_return_rate": "win_rate",
-    "average_contract_settlement_return": "average_gross_return",
-    "median_contract_settlement_return": "median_gross_return",
-    "minimum_contract_settlement_return": "minimum_gross_return",
-    "maximum_contract_settlement_return": "maximum_gross_return",
-    "max_loss_contract_settlement_return": "max_loss_gross_return",
-}
-
 
 def _valid_return_pairs(common: Mapping[str, Any]) -> bool:
     """Validate Backtester public return ratios without retired point fields."""
@@ -1354,28 +1434,21 @@ def _verified_backtest_common(common: Mapping[str, Any]) -> dict[str, Any] | Non
     """Validate the public summary without recalculating any backtest fact."""
 
     normalized = deepcopy(dict(common))
-    for canonical, legacy in _LEGACY_RETURN_ALIASES.items():
-        canonical_value = normalized.get(canonical)
-        legacy_value = normalized.get(legacy)
-        if canonical_value is not None and legacy_value is not None:
-            left = _safe_number(canonical_value)
-            right = _safe_number(legacy_value)
-            if left is None or right is None or not math.isclose(left, right, rel_tol=0.0, abs_tol=1e-12):
-                return None
-        if canonical_value is None and legacy_value is not None:
-            normalized[canonical] = legacy_value
     sample_count = _safe_count(normalized.get("sample_count"))
     valid_count = _safe_count(normalized.get("valid_return_sample_count"))
     positive_count = _safe_count(normalized.get("positive_return_count"))
     positive_rate = _safe_ratio(normalized.get("positive_return_rate"))
-    zero_count = _safe_count(normalized.get("zero_return_count")) if "zero_return_count" in normalized else None
-    negative_count = _safe_count(normalized.get("negative_return_count")) if "negative_return_count" in normalized else None
+    zero_count = _safe_count(normalized.get("zero_return_count"))
+    negative_count = _safe_count(normalized.get("negative_return_count"))
+    historical_loss_sample_covered = normalized.get("historical_loss_sample_covered")
     if (
         sample_count is None or valid_count is None or positive_count is None or positive_rate is None
         or valid_count == 0 or positive_count > valid_count or valid_count > sample_count
         or not math.isclose(positive_rate, positive_count / valid_count, rel_tol=0.0, abs_tol=1e-12)
-        or (zero_count is None) != (negative_count is None)
-        or zero_count is not None and positive_count + zero_count + negative_count != valid_count
+        or zero_count is None or negative_count is None
+        or positive_count + zero_count + negative_count != valid_count
+        or not isinstance(historical_loss_sample_covered, bool)
+        or negative_count == 0 and historical_loss_sample_covered
         or not _valid_return_pairs(normalized)
     ):
         return None
@@ -1385,6 +1458,7 @@ def _verified_backtest_common(common: Mapping[str, Any]) -> dict[str, Any] | Non
         "valid_return_sample_count": valid_count,
         "positive_return_count": positive_count,
         "positive_return_rate": positive_rate,
+        "historical_loss_sample_covered": historical_loss_sample_covered,
     }
 
 
@@ -1406,6 +1480,8 @@ def _backtest_metric_note(
     if key == "positive_return_rate":
         denominator = f"分母为{valid_sample_count}个有效收益样本" if valid_sample_count is not None else "分母为回测结果所列有效收益样本"
         return f"合同结算收益率严格大于零的历史样本占比，{denominator}；不代表未来获利概率"
+    if key == "historical_loss_sample_covered":
+        return "是否存在合同结算收益率小于零的历史样本"
     if key.endswith("_contract_settlement_return") or "contract_settlement_return" in key:
         return "已包含OptionReg声明的合同现金流；未包含外部资金与交易成本"
     if key.endswith("_rate"):
@@ -1416,7 +1492,6 @@ def _backtest_metric_note(
 
 
 def _backtest_content(module: Mapping[str, Any], contract: Mapping[str, Any] | None = None) -> dict[str, Any]:
-    del contract
     status = str(module.get("status", "not_run"))
     value: dict[str, Any] = {"status": status, "note": _text(module.get("note"))}
     if status != "ready":
@@ -1447,16 +1522,17 @@ def _backtest_content(module: Mapping[str, Any], contract: Mapping[str, Any] | N
         "sample_count", "valid_return_sample_count", "positive_return_count", "zero_return_count",
         "negative_return_count", "positive_return_rate", "average_contract_settlement_return",
         "median_contract_settlement_return", "minimum_contract_settlement_return",
-        "maximum_contract_settlement_return", "max_loss_contract_settlement_return",
+        "maximum_contract_settlement_return", "historical_loss_sample_covered",
     )
     value["metrics"] = [
         _metric(
-            _BACKTEST_LABELS[key], common[key],
+            _BACKTEST_LABELS[key], _text(common[key]) if key == "historical_loss_sample_covered" else common[key],
             _backtest_metric_note(key, valid_sample_count=valid_sample_count),
-            value_format=_public_value_format(key),
+            value_format="text" if key == "historical_loss_sample_covered" else _public_value_format(key),
         )
         for key in public_keys if common.get(key) is not None
     ]
+    value["historical_loss_sample_covered"] = common["historical_loss_sample_covered"]
 
     detail_tables: list[dict[str, Any]] = []
     if value["metrics"]:
@@ -1467,12 +1543,21 @@ def _backtest_content(module: Mapping[str, Any], contract: Mapping[str, Any] | N
     declared = _safe_count(branch.get("declared_pair_count"))
     observed = _safe_count(branch.get("observed_pair_count"))
     uncovered = _safe_count(branch.get("uncovered_pair_count"))
+    declared_loss = _safe_count(branch.get("declared_loss_pair_count"))
+    observed_loss = _safe_count(branch.get("observed_loss_pair_count"))
+    uncovered_loss = _safe_count(branch.get("uncovered_loss_pair_count"))
     coverage_status = _text(branch.get("status")).lower()
     counts_are_valid = (
         all(item is not None for item in (declared, observed, uncovered))
         and observed + uncovered == declared
         and ((coverage_status == "complete" and uncovered == 0) or (coverage_status == "partial" and uncovered > 0))
     )
+    loss_counts_are_valid = (
+        all(item is not None for item in (declared_loss, observed_loss, uncovered_loss))
+        and observed_loss + uncovered_loss == declared_loss
+        and observed_loss <= observed
+        and declared_loss <= declared
+    ) if counts_are_valid else False
     if counts_are_valid:
         detail_tables.append({
             "title": "分支覆盖",
@@ -1482,7 +1567,7 @@ def _backtest_content(module: Mapping[str, Any], contract: Mapping[str, Any] | N
                     "label": "已观察分支",
                     "value": observed,
                     "value_format": "number",
-                    "note": f"共{declared}个合同声明分支；仅统计回测样本实际落入的分支",
+                    "note": f"合同声明分支覆盖{observed}/{declared}；仅统计回测样本实际落入的分支",
                 },
                 {
                     "label": "未观察分支",
@@ -1490,6 +1575,17 @@ def _backtest_content(module: Mapping[str, Any], contract: Mapping[str, Any] | N
                     "value_format": "number",
                     "note": "不代表未观察分支已实际发生，也不代表其经济结果已验证",
                 },
+                *([{
+                    "label": "已观察损失分支",
+                    "value": observed_loss,
+                    "value_format": "number",
+                    "note": f"损失分支覆盖{observed_loss}/{declared_loss}",
+                }, {
+                    "label": "未观察损失分支",
+                    "value": uncovered_loss,
+                    "value_format": "number",
+                    "note": "仅陈述历史样本覆盖，不代表未来损失概率",
+                }] if loss_counts_are_valid else []),
             ],
         })
         if isinstance(branch.get("limitations"), list) and branch["limitations"]:
@@ -1567,8 +1663,6 @@ def _backtest_content(module: Mapping[str, Any], contract: Mapping[str, Any] | N
             continue
         row = {"label": _text(item.get("label")), "count": count, "rate": rate, "rate_format": "percent"}
         average_return = _public_return_percent(item, "average_contract_settlement_return")
-        if average_return is None:
-            average_return = _public_return_percent(item, "average_gross_return")
         if average_return is not None:
             row.update({"average_contract_settlement_return": average_return, "average_contract_settlement_return_format": "percent"})
         outcome_rows.append(row)
@@ -1587,15 +1681,12 @@ def _backtest_content(module: Mapping[str, Any], contract: Mapping[str, Any] | N
         item = raw if isinstance(raw, Mapping) else {}
         valid_year, year = _safe_optional(item, "year", _safe_count)
         valid_samples, sample_count = _safe_optional(item, "sample_count", _safe_count)
-        rate_key = "positive_return_rate" if "positive_return_rate" in item else "win_rate"
-        valid_positive_rate, positive_rate = _safe_optional(item, rate_key, _safe_ratio)
+        valid_positive_rate, positive_rate = _safe_optional(item, "positive_return_rate", _safe_ratio)
         if item.get("year") is not None and valid_year and valid_samples and valid_positive_rate:
             row = {
                 "year": year, "sample_count": sample_count, "positive_return_rate": positive_rate, "positive_return_rate_format": "percent",
             }
             average_return = _public_return_percent(item, "average_contract_settlement_return")
-            if average_return is None:
-                average_return = _public_return_percent(item, "average_gross_return")
             if average_return is not None:
                 row.update({"average_contract_settlement_return": average_return, "average_contract_settlement_return_format": "percent"})
             annual_rows.append(row)
@@ -1618,11 +1709,29 @@ def _backtest_content(module: Mapping[str, Any], contract: Mapping[str, Any] | N
     value["detail_tables"] = detail_tables
     value["event_statistics"] = []
     value["card_metrics"] = specialized_rows[:4]
+    product_id = _contract_product_id(contract)
+    premium_note = ""
+    if product_id == "9.3":
+        premium_note = "期初20%期权费已纳入合同结算收益率；存续期估值不得重复扣除期权费。"
+    positive_fraction_note = ""
+    if common["positive_return_count"] == valid_sample_count:
+        coverage = f"；合同声明分支覆盖{observed}/{declared}" if counts_are_valid else ""
+        loss_pair_coverage = f"；损失分支覆盖{observed_loss}/{declared_loss}" if loss_counts_are_valid else ""
+        loss_coverage = (
+            "历史样本未出现损失分支负结算收益"
+            if not common["historical_loss_sample_covered"]
+            else "历史样本已出现损失分支负结算收益"
+        )
+        positive_fraction_note = (
+            f"正收益样本{common['positive_return_count']}/{valid_sample_count}{coverage}{loss_pair_coverage}；"
+            f"{loss_coverage}；不代表未来获利概率。"
+        )
     value["limitations"] = [
         "合同结算收益率已包含OptionReg声明的合同现金流；客户净收益率未建模的仅为资金成本、交易费、税费、对冲和滑点。",
+        *([premium_note] if premium_note else []),
         *(
-            ["本次历史样本未出现负收益，不代表未来获利概率。"]
-            if common.get("negative_return_count") == 0 else []
+            [positive_fraction_note]
+            if positive_fraction_note else []
         ),
         *[item for item in coverage_limitations if isinstance(item, str)],
     ]
@@ -1686,6 +1795,10 @@ def normalize_parameter_groups(value: Any) -> dict[str, list[dict[str, Any]]]:
 
 def _module_summary(name: str, module: Mapping[str, Any]) -> dict[str, Any]:
     record = module.get("run") if isinstance(module.get("run"), Mapping) else {}
+    public_run_fields = {
+        "module", "task_id", "run_id", "analysis_case_id", "candidate_id",
+        "product_id", "rule_revision",
+    }
     result = {
         "module": name,
         "status": str(module.get("status", "not_run")),
@@ -1695,10 +1808,12 @@ def _module_summary(name: str, module: Mapping[str, Any]) -> dict[str, Any]:
             "tenant_id": getattr(module.get("ref"), "tenant_id", None),
             "task_id": getattr(module.get("ref"), "task_id", None),
             "run_id": getattr(module.get("ref"), "run_id", None),
-            "expected_semantic_result_hash": getattr(module.get("ref"), "expected_semantic_result_hash", None),
-            "expected_artifact_manifest_hash": getattr(module.get("ref"), "expected_artifact_manifest_hash", None),
         } if module.get("ref") is not None else None,
-        "run": dict(record),
+        "run": {
+            key: deepcopy(value)
+            for key, value in record.items()
+            if key in public_run_fields
+        },
         "artifacts": _artifact_rows(module),
         "limitations": list(module.get("limitations", [])) if isinstance(module.get("limitations"), list) else [],
     }
@@ -1711,7 +1826,7 @@ def _contract_report_unit(request: ReportRequest, candidate_evidence: Mapping[st
     contract = deepcopy(candidate_evidence.get("contract")) if isinstance(candidate_evidence.get("contract"), Mapping) else None
     module_content = {
         "payoff": _payoff_content(modules["payoff"]),
-        "pricing": _pricing_content(modules["pricing"]),
+        "pricing": _pricing_content(modules["pricing"], contract),
         "backtest": _backtest_content(modules["backtest"], contract),
     }
     parameter_groups = _parameter_groups(contract)
@@ -1721,9 +1836,11 @@ def _contract_report_unit(request: ReportRequest, candidate_evidence: Mapping[st
             for row in parameter_groups["common_input"][:7]
         ]
     source_refs = {
-        "catalog_version_ref": deepcopy(dict(request.source_refs.get("catalog_version_ref", {}))),
-        "product_version_ref": deepcopy(dict((request.source_refs.get("product_version_refs", {}) or {}).get(candidate["candidate_id"], {}))),
-        "recommendation_source": {key: value for key, value in recommender.items() if key in {"source", "run_id", "semantic_result_hash", "status"}},
+        "recommendation_source": {
+            key: value
+            for key, value in recommender.items()
+            if key in {"source", "run_id", "status"}
+        },
     }
     selected_compute = [name for name in MODULE_TO_RUN if name in request.selected_modules]
     complete_statuses = [str(module_content[name].get("status")) for name in selected_compute]
@@ -1738,7 +1855,17 @@ def _contract_report_unit(request: ReportRequest, candidate_evidence: Mapping[st
         "tenant_id": request.tenant_id,
         "task_id": request.task_id,
         "analysis_case_id": request.analysis_case_id,
-        "subject": {"candidate_id": candidate["candidate_id"], "product_id": candidate.get("product_id"), "product_name": candidate.get("product_name"), "underlyings": candidate.get("underlyings", [])},
+        "subject": {
+            "candidate_id": candidate["candidate_id"],
+            "product_id": candidate.get("product_id"),
+            "rule_revision": candidate.get("rule_revision"),
+            "product_name": candidate.get("product_name"),
+            "underlyings": candidate.get("underlyings", []),
+        },
+        "product_dependency": {
+            "product_id": candidate.get("product_id"),
+            "rule_revision": candidate.get("rule_revision"),
+        },
         "candidate": candidate,
         "contract": contract,
         "evidence_status": evidence_status,
