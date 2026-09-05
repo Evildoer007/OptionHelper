@@ -12,7 +12,7 @@ from math import isfinite
 import re
 from typing import TYPE_CHECKING, Any, Mapping
 
-from runtime.contracts.contract_types import deep_freeze, deep_thaw, semantic_hash
+from runtime.contracts.contract_types import deep_freeze, deep_thaw
 
 if TYPE_CHECKING:
     from runtime.contracts.contract_api import ResolvedContract
@@ -147,7 +147,7 @@ class ModuleRunRef:
     tenant_id: str
     task_id: str
     run_id: str
-    expected_semantic_result_hash: str
+    expected_result_file_hash: str
     expected_artifact_manifest_hash: str
 
     def __post_init__(self) -> None:
@@ -156,21 +156,21 @@ class ModuleRunRef:
         _identifier(self.tenant_id, "ModuleRunRef.tenant_id")
         _identifier(self.task_id, "ModuleRunRef.task_id")
         _identifier(self.run_id, "ModuleRunRef.run_id")
-        for name in ("expected_semantic_result_hash", "expected_artifact_manifest_hash"):
-            _hash(getattr(self, name), f"ModuleRunRef.{name}")
+        _hash(self.expected_result_file_hash, "ModuleRunRef.expected_result_file_hash")
+        _hash(self.expected_artifact_manifest_hash, "ModuleRunRef.expected_artifact_manifest_hash")
 
 
 @dataclass(frozen=True)
 class ReportRunRef:
     tenant_id: str
     report_run_id: str
-    expected_semantic_fact_hash: str
+    expected_report_file_hash: str
     expected_artifact_manifest_hash: str
 
     def __post_init__(self) -> None:
         _identifier(self.tenant_id, "ReportRunRef.tenant_id")
         _identifier(self.report_run_id, "ReportRunRef.report_run_id")
-        _hash(self.expected_semantic_fact_hash, "ReportRunRef.expected_semantic_fact_hash")
+        _hash(self.expected_report_file_hash, "ReportRunRef.expected_report_file_hash")
         _hash(self.expected_artifact_manifest_hash, "ReportRunRef.expected_artifact_manifest_hash")
 
 
@@ -246,7 +246,6 @@ class ObservedContractState:
     occurred_events: tuple[ObservedContractEvent, ...] = ()
     realized_cashflows: tuple[RealizedCashflow, ...] = ()
     source_refs: tuple[str, ...] = ()
-    state_hash: str = ""
 
     def __post_init__(self) -> None:
         if self.valuation_date is not None:
@@ -267,16 +266,11 @@ class ObservedContractState:
                 raise ValueError("ObservedContractState事件日期不得晚于估值日")
             if any(date.fromisoformat(item.payment_date) > cutoff for item in self.realized_cashflows):
                 raise ValueError("ObservedContractState已实现现金流日期不得晚于估值日")
-        content_hash = semantic_hash(self._content_payload())
-        if self.state_hash and self.state_hash != content_hash:
-            raise ValueError("ObservedContractState.state_hash与状态内容不一致")
-        object.__setattr__(self, "state_hash", content_hash)
-
     @classmethod
     def from_host_payload(cls, value: Mapping[str, Any]) -> "ObservedContractState":
         if not isinstance(value, Mapping):
             raise TypeError("observed_contract_state必须为Host对象")
-        allowed = {"valuation_date", "lifecycle_status", "occurred_events", "realized_cashflows", "source_refs", "state_hash"}
+        allowed = {"valuation_date", "lifecycle_status", "occurred_events", "realized_cashflows", "source_refs"}
         unknown = set(value) - allowed
         if unknown:
             raise ValueError("observed_contract_state含未知字段：" + ",".join(sorted(str(item) for item in unknown)))
@@ -291,7 +285,6 @@ class ObservedContractState:
             occurred_events=events,
             realized_cashflows=cashflows,
             source_refs=tuple(source_refs),
-            state_hash=value.get("state_hash", ""),
         )
 
     def _content_payload(self) -> dict[str, Any]:
@@ -304,7 +297,7 @@ class ObservedContractState:
         }
 
     def to_protocol_dict(self) -> dict[str, Any]:
-        return {**self._content_payload(), "state_hash": self.state_hash}
+        return self._content_payload()
 
 
 @dataclass(frozen=True)
@@ -449,12 +442,10 @@ class ModuleRun:
     task_id: str
     run_id: str
     status: str
-    contract_fingerprint: str | None
-    catalog_version: str | None
-    execution_fingerprint: str
     input_snapshot: Mapping[str, Any]
     data_refs: tuple[DataAssetRef, ...]
     result: Mapping[str, Any] | None
+    resolved_contract_snapshot: Mapping[str, Any] | None = None
     limitations: tuple[str, ...] = ()
     artifacts: tuple[ArtifactRef, ...] = ()
     error: Mapping[str, Any] | None = None
@@ -474,12 +465,12 @@ class ModuleRun:
         if self.status in {"succeeded", "partial"}:
             if not self.candidate_id:
                 raise ValueError("成功或部分成功的ModuleRun.candidate_id不能为空")
-            if not self.catalog_version:
-                raise ValueError("成功或部分成功的ModuleRun.catalog_version不能为空")
-            if not isinstance(self.contract_fingerprint, str) or len(self.contract_fingerprint) != 64 or any(
-                char not in "0123456789abcdef" for char in self.contract_fingerprint
-            ):
-                raise ValueError("成功或部分成功的ModuleRun.contract_fingerprint必须为64位小写SHA-256")
+            if not isinstance(self.resolved_contract_snapshot, Mapping):
+                raise ValueError("成功或部分成功的ModuleRun必须保存完整ResolvedContract快照")
+            identity = self.resolved_contract_snapshot.get("identity")
+            revision = identity.get("rule_revision") if isinstance(identity, Mapping) else None
+            if isinstance(revision, bool) or not isinstance(revision, int) or revision <= 0:
+                raise ValueError("ModuleRun的ResolvedContract快照必须包含正整数rule_revision")
 
 
 def require_module_name(value: str) -> str:
