@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import dataclass
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -18,7 +19,7 @@ if os.name == "nt":
 else:
     import fcntl
 
-from .data_normalizer import DataNormalizationError, daily_content_hash
+from .data_normalizer import DataNormalizationError, daily_content_hash, merge_daily_history
 from .models import DataRequest
 from .quality_validator import observed_edge_intervals
 from .request_validator import cache_identity
@@ -26,6 +27,8 @@ from .request_validator import cache_identity
 
 _LOCKS: dict[str, threading.RLock] = {}
 _LOCKS_GUARD = threading.Lock()
+_VOLATILE_ENTRIES: dict[tuple[str, str], dict[str, Any]] = {}
+_VOLATILE_ENTRIES_LOCK = threading.RLock()
 
 
 class CacheIndexError(RuntimeError):
@@ -38,29 +41,43 @@ def _lock_for(root: Path) -> threading.RLock:
         return _LOCKS.setdefault(key, threading.RLock())
 
 
+def _temporary_lock_path(namespace: str, identity: str) -> Path:
+    """Return a deterministic lock path outside every configured data root."""
+
+    digest = hashlib.sha256(f"{namespace}:{identity}".encode("utf-8")).hexdigest()
+    return Path(tempfile.gettempdir()) / "optionhelper-datafetcher-locks" / f"{digest}.lock"
+
+
 @contextmanager
 def _process_lock(path: Path):
-    """用标准库文件锁覆盖同机多Host进程，不引入第二套缓存服务。"""
+    """用系统临时文件锁覆盖同机多Host进程，并在完成后清理。"""
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a+b") as handle:
-        if os.name == "nt":
-            handle.seek(0, 2)
-            if handle.tell() == 0:
-                handle.write(b"\0")
-                handle.flush()
-            handle.seek(0)
-            msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
-        else:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
+    try:
+        with path.open("a+b") as handle:
             if os.name == "nt":
+                handle.seek(0, 2)
+                if handle.tell() == 0:
+                    handle.write(b"\0")
+                    handle.flush()
                 handle.seek(0)
-                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
             else:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                if os.name == "nt":
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    finally:
+        try:
+            path.unlink(missing_ok=True)
+            path.parent.rmdir()
+        except OSError:
+            pass
 
 
 def _atomic_write_json(path: Path, value: Mapping[str, Any]) -> None:
@@ -101,7 +118,7 @@ class LocalCache:
     @contextmanager
     def _index_guard(self):
         with self._lock:
-            with _process_lock(self.root / ".index.lock"):
+            with _process_lock(_temporary_lock_path("history-index", str(self.root.resolve()))):
                 yield
 
     def _index(self) -> dict[str, Any]:
@@ -151,10 +168,70 @@ class LocalCache:
     def fetch_lock(self, identity: str):
         """按缓存身份串行同机请求，覆盖查找、Provider与写缓存整个周期。"""
 
-        lock = _lock_for(self.root / ".request-locks" / identity)
+        lock_key = f"{self.root.resolve()}:{identity}"
+        process_path = _temporary_lock_path("history-request", lock_key)
+        lock = _lock_for(process_path)
         with lock:
-            with _process_lock(self.root / ".request-locks" / f"{identity}.lock"):
+            with _process_lock(process_path):
                 yield
+
+    @staticmethod
+    def _missing(
+        frame: pd.DataFrame,
+        request: DataRequest,
+        *,
+        expected_trading_dates: Mapping[str, Sequence[str]] | None,
+        latest_completed_date: str | None,
+    ) -> dict[str, tuple[tuple[str, str], ...]]:
+        missing: dict[str, tuple[tuple[str, str], ...]] = {}
+        for asset_id in request.asset_ids:
+            if expected_trading_dates is None:
+                intervals = observed_edge_intervals(
+                    frame,
+                    asset_id,
+                    request.start_date,
+                    request.end_date,
+                    latest_completed_date=latest_completed_date,
+                )
+            else:
+                sessions = tuple(str(item) for item in expected_trading_dates.get(asset_id, ()))
+                observed = set(
+                    frame.loc[frame["asset_id"].astype(str).str.upper() == asset_id, "date"].astype(str)
+                )
+                intervals = missing_intervals(sessions, observed)
+            if intervals:
+                missing[asset_id] = intervals
+        return missing
+
+    def _disk_record(self, identity: str) -> tuple[pd.DataFrame, dict[str, Any]] | None:
+        if not self.index_path.exists():
+            return None
+        with self._index_guard():
+            record = self._index()["entries"].get(identity)
+            if not isinstance(record, dict):
+                return None
+            relative_path = record.get("data_path")
+            if not isinstance(relative_path, str):
+                return None
+            path = (self.root / relative_path).resolve()
+            if self.root.resolve() not in path.parents or not path.is_file():
+                return None
+            try:
+                frame = pd.read_csv(path, dtype={"date": str, "asset_id": str})
+                actual_hash = daily_content_hash(frame)
+            except (DataNormalizationError, KeyError, OSError, pd.errors.ParserError):
+                return None
+            if actual_hash != record.get("content_hash"):
+                return None
+            return frame, dict(record)
+
+    def _volatile_record(self, identity: str) -> tuple[pd.DataFrame, dict[str, Any]] | None:
+        key = (str(self.root.resolve()), identity)
+        with _VOLATILE_ENTRIES_LOCK:
+            record = _VOLATILE_ENTRIES.get(key)
+            if not isinstance(record, Mapping) or not isinstance(record.get("frame"), pd.DataFrame):
+                return None
+            return record["frame"].copy(deep=True), dict(record["metadata"])
 
     def lookup(
         self,
@@ -162,65 +239,69 @@ class LocalCache:
         provider: str,
         *,
         tenant_id: str = "local",
+        principal_id: str = "local-user",
         expected_trading_dates: Mapping[str, Sequence[str]] | None = None,
         latest_completed_date: str | None = None,
         data_asset_ref_key: str | None = None,
     ) -> CacheMatch:
-        identity = cache_identity(request, provider, tenant_id=tenant_id)
-        with self._index_guard():
-            record = self._index()["entries"].get(identity)
-            if not isinstance(record, dict):
-                return self._miss(provider, identity, request)
-            relative_path = record.get("data_path")
-            if not isinstance(relative_path, str):
-                return self._miss(provider, identity, request)
-            path = (self.root / relative_path).resolve()
-            if self.root.resolve() not in path.parents or not path.is_file():
-                return self._miss(provider, identity, request)
-            try:
-                frame = pd.read_csv(path, dtype={"date": str, "asset_id": str})
-                actual_hash = daily_content_hash(frame)
-                expected_hash = record.get("content_hash")
-                reference = record.get("data_asset_ref")
-                references = record.get("data_asset_refs")
-                if data_asset_ref_key is not None and isinstance(references, Mapping):
-                    candidate = references.get(data_asset_ref_key)
-                    reference = candidate if isinstance(candidate, Mapping) else None
-            except (DataNormalizationError, KeyError, OSError, pd.errors.ParserError):
-                return self._miss(provider, identity, request)
-            if (
-                not isinstance(expected_hash, str)
-                or actual_hash != expected_hash
-                or (reference is not None and not isinstance(reference, Mapping))
-            ):
-                return self._miss(provider, identity, request)
-            missing: dict[str, tuple[tuple[str, str], ...]] = {}
-            for asset_id in request.asset_ids:
-                if expected_trading_dates is None:
-                    intervals = observed_edge_intervals(
-                        frame,
-                        asset_id,
-                        request.start_date,
-                        request.end_date,
-                        latest_completed_date=latest_completed_date,
-                    )
-                else:
-                    sessions = tuple(str(item) for item in expected_trading_dates.get(asset_id, ()))
-                    observed = set(frame.loc[frame["asset_id"].astype(str).str.upper() == asset_id, "date"].astype(str))
-                    missing_indexes = [index for index, session in enumerate(sessions) if session not in observed]
-                    groups: list[tuple[str, str]] = []
-                    for index in missing_indexes:
-                        if not groups or index == 0 or sessions[index - 1] != groups[-1][1]:
-                            groups.append((sessions[index], sessions[index]))
-                        else:
-                            groups[-1] = (groups[-1][0], sessions[index])
-                    intervals = tuple(groups)
-                if intervals:
-                    missing[asset_id] = intervals
-            complete = not missing
-            metadata = dict(record)
-            metadata["data_asset_ref"] = dict(reference) if isinstance(reference, Mapping) else None
-            return CacheMatch(provider, identity, frame, metadata, complete, missing)
+        identity = cache_identity(
+            request,
+            provider,
+            tenant_id=tenant_id,
+            principal_id=principal_id,
+        )
+        records = [item for item in (self._disk_record(identity), self._volatile_record(identity)) if item]
+        if not records:
+            return self._miss(provider, identity, request)
+        try:
+            frame = merge_daily_history(*(item[0] for item in records))
+        except DataNormalizationError as error:
+            raise CacheIndexError("进程内与资料库行情覆盖冲突，拒绝静默远程覆盖") from error
+        references: dict[str, Any] = {}
+        metadata: dict[str, Any] = {}
+        for _frame, record in records:
+            metadata.update(record)
+            raw_references = record.get("data_asset_refs")
+            if isinstance(raw_references, Mapping):
+                references.update(raw_references)
+            reference = record.get("data_asset_ref")
+            if isinstance(reference, Mapping) and isinstance(reference.get("created_by"), str):
+                references.setdefault(str(reference["created_by"]), dict(reference))
+        selected = references.get(data_asset_ref_key) if data_asset_ref_key is not None else metadata.get("data_asset_ref")
+        metadata["data_asset_refs"] = references
+        metadata["data_asset_ref"] = dict(selected) if isinstance(selected, Mapping) else None
+        missing = self._missing(
+            frame,
+            request,
+            expected_trading_dates=expected_trading_dates,
+            latest_completed_date=latest_completed_date,
+        )
+        return CacheMatch(provider, identity, frame, metadata, not missing, missing)
+
+    def save_volatile(
+        self,
+        identity: str,
+        frame: pd.DataFrame,
+        metadata: Mapping[str, Any],
+        *,
+        data_asset_ref_key: str | None = None,
+    ) -> None:
+        """Keep local-first coverage in memory without touching configured roots."""
+
+        key = (str(self.root.resolve()), identity)
+        with _VOLATILE_ENTRIES_LOCK:
+            existing = _VOLATILE_ENTRIES.get(key, {})
+            existing_metadata = existing.get("metadata", {}) if isinstance(existing, Mapping) else {}
+            references: dict[str, Any] = {}
+            if isinstance(existing_metadata, Mapping) and isinstance(existing_metadata.get("data_asset_refs"), Mapping):
+                references.update(existing_metadata["data_asset_refs"])
+            reference = metadata.get("data_asset_ref")
+            if isinstance(reference, Mapping) and isinstance(reference.get("created_by"), str):
+                references[data_asset_ref_key or str(reference["created_by"])] = dict(reference)
+            _VOLATILE_ENTRIES[key] = {
+                "frame": frame.copy(deep=True),
+                "metadata": {**dict(metadata), "data_asset_refs": references},
+            }
 
     def save(
         self,
@@ -251,7 +332,13 @@ class LocalCache:
             }
             _atomic_write_json(self.index_path, index)
 
-    def list_assets(self, *, tenant_id: str, limit: int = 100) -> list[Mapping[str, Any]]:
+    def list_assets(
+        self,
+        *,
+        tenant_id: str,
+        principal_id: str | None = None,
+        limit: int = 100,
+    ) -> list[Mapping[str, Any]]:
         """列出本缓存索引登记的受控资产，不扫描数据目录。"""
 
         safe_limit = max(1, min(int(limit), 100))
@@ -259,7 +346,11 @@ class LocalCache:
             records = list(self._index()["entries"].values())
         assets: dict[str, Mapping[str, Any]] = {}
         for record in records:
-            if not isinstance(record, Mapping) or record.get("tenant_id") != tenant_id:
+            if (
+                not isinstance(record, Mapping)
+                or record.get("tenant_id") != tenant_id
+                or (principal_id is not None and record.get("principal_id") not in {None, principal_id})
+            ):
                 continue
             raw_references = record.get("data_asset_refs")
             references = raw_references.values() if isinstance(raw_references, Mapping) else (record.get("data_asset_ref"),)
@@ -276,13 +367,22 @@ class LocalCache:
                 }
         return sorted(assets.values(), key=lambda item: str(item.get("updated_at", "")), reverse=True)[:safe_limit]
 
-    def find_asset(self, *, tenant_id: str, data_asset_id: str) -> Mapping[str, Any] | None:
+    def find_asset(
+        self,
+        *,
+        tenant_id: str,
+        data_asset_id: str,
+        principal_id: str | None = None,
+    ) -> Mapping[str, Any] | None:
         """由受控索引精确定位一项资产，不受页面列表展示上限影响。"""
 
         with self._index_guard():
             records = list(self._index()["entries"].values())
         for record in records:
-            if not isinstance(record, Mapping) or record.get("tenant_id") != tenant_id:
+            if (
+                not isinstance(record, Mapping)
+                or record.get("tenant_id") != tenant_id
+            ):
                 continue
             raw_references = record.get("data_asset_refs")
             references = raw_references.values() if isinstance(raw_references, Mapping) else (record.get("data_asset_ref"),)
@@ -290,3 +390,25 @@ class LocalCache:
                 if isinstance(reference, Mapping) and reference.get("data_asset_id") == data_asset_id:
                     return {"data_asset_ref": dict(reference), "provider": record.get("provider"), "updated_at": record.get("updated_at")}
         return None
+
+
+def missing_intervals(
+    expected_dates: Sequence[str],
+    observed_dates: Sequence[str] | set[str],
+) -> tuple[tuple[str, str], ...]:
+    """Group exact missing dates using the ordering of the authoritative sequence."""
+
+    observed = {str(item) for item in observed_dates}
+    groups: list[tuple[str, str]] = []
+    previous_missing_index: int | None = None
+    for index, raw_date in enumerate(expected_dates):
+        current = str(raw_date)
+        if current in observed:
+            previous_missing_index = None
+            continue
+        if previous_missing_index is not None and index == previous_missing_index + 1:
+            groups[-1] = (groups[-1][0], current)
+        else:
+            groups.append((current, current))
+        previous_missing_index = index
+    return tuple(groups)
