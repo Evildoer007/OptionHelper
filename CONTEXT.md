@@ -2,7 +2,7 @@
 
 ## 1. 系统边界
 
-OptionHelper由一个通用`option-helper`Skill和一个可独立交付的OptionHelper App组成。两者从同一权威源码独立组装，只共享受哈希绑定的计算载荷，不形成两套产品库、合同解释器或金融计算实现，也不复制彼此的完整目录树。
+OptionHelper由一个通用`option-helper`Skill和一个可独立交付的OptionHelper App组成。两者从同一权威源码独立组装，共享同一计算载荷和当前产品规则，不形成两套产品库、合同解释器或金融计算实现，也不复制彼此的完整目录树。
 
 - 共享计算载荷：App与Skill共用的期权知识、合同、数据、计算、结果和交付实现。
 - Skill：供外部Harness读取的业务工作流、规则、工具说明和共享计算载荷。Skill不拥有Agent生命周期，也不携带五模块页面、App前后端或原生壳。
@@ -21,30 +21,40 @@ App与Skill必须遵循同一Shared Workflow Policy和Capability事实边界。A
 - OptionList：人工目录，保存产品编号、中文名称、分类和资料状态。
 - OptionLib：人类和模型阅读的条款、唯一数学符号、路径、分段函数、默认示例与风险说明主源。
 - OptionReg：机器产品源，只保存字段定义、默认条款、监测、路径和现金流表达。
-- `ResolvedContract`：由OptionReg、ContractContext和合法条款覆盖解析出的不可变合同。
+**ProductDefinition（产品定义）**：OptionReg中一个产品当前有效的机器规则。系统只提供当前定义，不提供旧定义供用户选择。
 
-**研究任务**：承载一次研究对话、运行记录和报告索引的工作容器。研究任务不拥有唯一产品、标的、合同或数据资产。
+**RuleRevision（规则修订）**：产品规则的正整数修订号。只有产品经济含义或可执行规则变化时才递增，用于识别该产品旧规则产生的内容。
+_Avoid_: 产品版本、产品快照哈希、目录指纹
+
+**ResearchTask（研究任务）**：承载一次研究对话、运行记录和报告索引的工作容器。研究任务不拥有唯一产品、标的、合同或数据资产。
 _Avoid_: 合同任务、产品任务、活动合同
 
-**合同方案**：研究任务中可反复查看和演进的一组合同版本。一个研究任务可包含任意数量、任意产品的合同方案，不存在任务级唯一方案。
-_Avoid_: 活动方案、任务绑定合同
+**ModulePreference（模块偏好）**：模块最近选择的产品编号，只用于再次打开页面时恢复产品下拉框。它不是合同身份、运行输入或访问约束。
+_Avoid_: 模块选择、活动合同、最近合同
 
-**合同版本**：一次完整Core编译形成的不可变ResolvedContract及其来源关系。修改任何合同身份或条款都会产生新版本，既有版本和历史结果不被覆盖。
-_Avoid_: 覆盖合同、切换活动合同
+**CurrentModuleInput（当前模块输入）**：用户此刻在一个模块页面中选择的产品、标的、日期、合同条款和模块配置。它只属于当前页面和下一次运行，离开页面后可以丢弃。
+_Avoid_: 当前合同、活动版本、任务合同
 
-**模块选择**：Payoffer、Pricer或Backtester最近查看的合同版本，仅用于恢复该模块界面。模块选择不授予权限、不改变合同身份，也不约束其他模块。
-_Avoid_: 活动合同、任务合同
+**ResolvedContractSnapshot（合同快照）**：Core按当前ProductDefinition和当前模块输入编译出的完整不可变合同。快照只属于一次预览或运行，不进入可重新选择的合同版本列表。
+_Avoid_: 合同版本、合同方案、基础合同
 
-**运行证据**：ModuleRun固定引用的合同版本、数据资产和计算输入。后续产品、条款、日期或模块选择变化不得改变既有运行证据。
+**ModuleRun（模块运行）**：一次成功模块运行的不可变事实，完整保存实际使用的合同快照、数据引用、模块配置和结果。后续页面修改不得改变既有模块运行。
+_Avoid_: 当前结果、活动运行
+
+**ReportRun（报告运行）**：一次正式报告生成的不可变事实，只引用明确的模块运行。报告不读取页面当前输入、所谓当前合同或最新运行。
+_Avoid_: 当前报告、任务合同报告
+
+**ProductDependentContent（产品依赖内容）**：由某个产品规则生成的候选、模块运行、报告或助手消息。它必须记录产品编号和规则修订，以便规则更新时只失效相关内容。
 
 OptionReg顶层只允许`term_catalog`和`products`。每个产品只允许`identity`、`terms`和`paths`。`pnl`只用`cash(t,amount)`表达持有方现金流。
 
 ## 3. 输入与运行边界
 
 ```text
-PayoffInput    = {ResolvedContract}
-PricingInput   = {ResolvedContract, PricingConfig, market_data_refs}
-BacktestInput  = {ResolvedContract, BacktestConfig, DataAssetRef}
+CurrentModuleInput -> ResolvedContractSnapshot
+PayoffInput    = {ResolvedContractSnapshot}
+PricingInput   = {ResolvedContractSnapshot, PricingConfig, market_data_refs}
+BacktestInput  = {ResolvedContractSnapshot, BacktestConfig, DataAssetRef}
 ```
 
 `PricingConfig`仅保存市场、模型和数值控制。`BacktestConfig`仅保存历史样本、回放和统计控制。观察日程、障碍、票息、结算、同日顺序与现金流都属于合同，不得放入模块Config。
@@ -67,17 +77,15 @@ DataAsset属于同一用户与租户内的全局数据资料库，不属于研�
 
 **业务拒绝**：合同、行情、交易日历、权限或参数不满足运行条件时，在结果提交前形成的明确终态。业务拒绝必须说明可操作原因，不属于Worker故障。
 
-**冻结执行快照**：主进程完成合同、数据、日历、Capability版本和权限校验后形成的不可变计算输入。运行期间任务切换合同不会改变该快照。
+**冻结执行快照**：主进程完成合同、数据、日历、规则修订和权限校验后形成的不可变计算输入。运行期间页面输入变化不会改变该快照。
 
-**ModuleRunDraft**：计算Worker输出的带文件哈希清单的暂存结果。只有主进程复核执行范围、Capability哈希、合同指纹和文件哈希后才能提交为ModuleRun。
+**ModuleRunDraft**：计算Worker输出、尚未成为正式模块运行的暂存结果。只有主进程复核执行范围、产品规则修订和结果完整性后才能提交。
 
 **公平参数反解**：面向新发行初始合同，在其他条款和发行时点市场状态固定时，按产品登记报价方程求一个商业条款。存续合同的隐含参数校准或归因不是公平参数反解，不能复用其业务动作、结果类型或报价资格。
 
 **报价估值视角**：报价方程中合同价值、目标值和残差共同采用的收付立场。当前OptionReg正式现金流使用合约持有人视角，收到为正、支付为负；不得与发行人视角隐式混用。
 
 **初始报价时点**：新发行反解中估值日、合同起始日、期初对价和首个经济观察之间经过目标规则验证的时间关系。初始存续状态不自动证明期初现金流可以按估值日现金流处理。
-
-**最终候选合同指纹**：公平参数反解完成后，对Core正式重编译但未激活的完整候选ResolvedContract计算的指纹。它证明最终估值实际使用的合同，与用于授权和固定输入来源的基础合同指纹职责不同。
 
 **公平参数发行可用性**：公平参数目标只有在业务语义、产品级数值证据、正式运行链、结果契约、App入口和Skill显式入口均通过后，才能在App与Skill不分叉的共享发行目录中标记为`supported`。开发中的语义验证结果不得提前成为用户可用能力。
 
@@ -112,7 +120,7 @@ Agent必须复用对话中已确认的事实。多个关键缺口一次合并确
 
 DataAsset、DataFetchRun、ModuleRun和ReportRun为不可变事实。用户指定目录只保存导出副本，不取代canonical结果。固定默认Payoffer资产与本次运行产物严格分离。
 
-产品版本使用`product_version`与`catalog_version`；能力包使用`capability_version`；App使用`app_version`。不使用额外release ID。
+产品规则只使用`product_id`与正整数`rule_revision`。页面不提供旧产品定义、合同版本或运行快照选择器。App使用`app_version`；安全签名和底层文件完整性校验不进入业务协议或用户界面。
 
 ## 6. 开发约束
 
