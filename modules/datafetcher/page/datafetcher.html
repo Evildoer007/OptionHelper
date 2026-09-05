@@ -43,7 +43,7 @@
           <section class="inspector-group">
             <h3>请求范围</h3>
             <label class="control-field" for="asset-ids"><span>资产标识</span><textarea id="asset-ids" autocomplete="off" spellcheck="false" autocorrect="off" autocapitalize="off" required aria-describedby="asset-ids-error" placeholder="例如000300.SH"></textarea><small class="field-error" id="asset-ids-error" role="alert"></small></label>
-            <div class="control-grid"><label class="control-field" for="start-date"><span>开始日期</span><input class="date-input" id="start-date" type="text" inputmode="numeric" autocomplete="off" placeholder="yyyy/mm/dd" required></label><label class="control-field" for="end-date"><span>结束日期</span><input class="date-input" id="end-date" type="text" inputmode="numeric" autocomplete="off" placeholder="yyyy/mm/dd" required></label></div>
+            <div class="control-grid"><label class="control-field" for="start-date"><span>开始日期</span><input class="date-input" id="start-date" type="text" inputmode="numeric" autocomplete="off" placeholder="yyyy/mm/dd" required aria-describedby="start-date-hint start-date-error"><small id="start-date-hint">按自然日填写，提交时转换为ISO日期。</small><small class="field-error" id="start-date-error" role="alert"></small></label><label class="control-field" for="end-date"><span>结束日期</span><input class="date-input" id="end-date" type="text" inputmode="numeric" autocomplete="off" placeholder="yyyy/mm/dd" required aria-describedby="end-date-hint end-date-error"><small id="end-date-hint">不得早于开始日期。</small><small class="field-error" id="end-date-error" role="alert"></small></label></div>
           </section>
           <section class="inspector-group">
             <h3>数据口径</h3>
