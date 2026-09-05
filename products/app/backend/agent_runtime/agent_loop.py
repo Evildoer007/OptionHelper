@@ -32,7 +32,7 @@ _INTERNAL_TEXT = re.compile(
     r"(?i)(reporter\.run|runref|source_id|module_run_ref|report_run_ref|data_asset_ref|"
     r"contract_ref|candidate_id|task_id|artifact_manifest|manifest\.json|文件路径|"
     r"resolved_?contract|caller_?context|host_?context|module_?host_?context|tool_?gateway|"
-    r"catalog_version|contract_fingerprint|analysis_case_id|principal_id|request_id|tenant_id|"
+    r"catalog_version|analysis_case_id|principal_id|request_id|tenant_id|"
     r"capability_manifest|\brecommender\b|\bhost\b)"
 )
 _REPORT_MODULE_LABELS = {
