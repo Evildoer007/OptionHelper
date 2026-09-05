@@ -21,14 +21,14 @@ class MetricProfileSpec:
 REQUIRED_PROFILE_OUTPUT_KEYS: dict[str, tuple[str, ...]] = {
     "terminal_payoff": (
         "terminal_performance", "terminal_performance_sign", "terminal_segments",
-        "selected_path_case_gross_return",
+        "selected_path_case_contract_settlement_return",
     ),
     "single_knock_out": ("events", "trigger_vs_untriggered"),
     "single_knock_in": ("events", "knock_in_outcomes"),
     "touch_binary": ("events", "touch_vs_untouched"),
-    "airbag": ("events", "buffer_outcomes", "knock_in_outcomes", "selected_path_case_gross_return"),
+    "airbag": ("events", "buffer_outcomes", "knock_in_outcomes", "selected_path_case_contract_settlement_return"),
     "accumulator": (
-        "events", "accumulated_quantity", "gross_return_per_accumulated_unit",
+        "events", "accumulated_quantity", "contract_settlement_return_per_accumulated_unit",
         "knock_out_vs_full_term", "contract_purchase_price", "quantity_multiplier",
     ),
     "dual_knock_autocall": ("events", "three_outcome_summary", "conditional_summary"),
@@ -36,13 +36,13 @@ REQUIRED_PROFILE_OUTPUT_KEYS: dict[str, tuple[str, ...]] = {
     "single_knock_out_autocall": ("events", "trigger_vs_untriggered"),
     "shark_fin": (
         "events", "trigger_vs_untriggered", "terminal_performance",
-        "selected_path_case_gross_return",
+        "selected_path_case_contract_settlement_return",
     ),
     "variance_swap": (
         "realized_volatility", "realized_variance", "realized_volatility_vs_strike",
-        "volatility_buckets", "variance_gross_return",
+        "volatility_buckets", "variance_contract_settlement_return",
     ),
-    "range_accrual": ("range_observations", "in_range_observation_ratio", "range_accrual_gross_return"),
+    "range_accrual": ("range_observations", "in_range_observation_ratio", "range_accrual_contract_settlement_return"),
 }
 
 
