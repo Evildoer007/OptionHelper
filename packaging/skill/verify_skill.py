@@ -417,7 +417,7 @@ def _capability_interface_errors(root: Path) -> list[str]:
             ]
             required_fields = {
                 "module", "tenant_id", "task_id", "run_id",
-                "expected_semantic_result_hash", "expected_artifact_manifest_hash",
+                "expected_result_file_hash", "expected_artifact_manifest_hash",
             }
             if len(module_refs) != 1 or set(module_refs[0].get("required", ())) != required_fields:
                 errors.append("RunRef Schema未锁定ModuleRunRef六字段")
@@ -441,7 +441,7 @@ def _capability_interface_errors(root: Path) -> list[str]:
     for relative in (
         "scripts/modules/reporter/evidence_resolver.py",
         "scripts/modules/reporter/models.py",
-        "scripts/modules/reporter/report_unit_builder.py",
+        "scripts/modules/reporter/service.py",
     ):
         path = root / relative
         if path.is_file() and "expected_artifact_manifest_hash" not in path.read_text(encoding="utf-8", errors="ignore"):
@@ -820,7 +820,7 @@ def _formal_compute_protocol_errors(root: Path, python: str, environment: Mappin
         parameters = inspect.signature(call_tool).parameters
         assert all(parameters[name].kind is inspect.Parameter.KEYWORD_ONLY for name in expected[2:])
         assert list(inspect.signature(prepare_compute_request).parameters) == [
-            "module", "request", "data_refs", "resolved_contract", "data_store", "product_snapshot_provider",
+            "module", "request", "data_refs", "data_store",
         ]
         handler_parameters = {
             "payoffer": ["request", "host_context", "result_store", "tenant_id"],
@@ -861,7 +861,7 @@ def _formal_compute_protocol_errors(root: Path, python: str, environment: Mappin
             "tenant_id": committed_ref.tenant_id,
             "task_id": committed_ref.task_id,
             "run_id": committed_ref.run_id,
-            "expected_semantic_result_hash": committed_ref.expected_semantic_result_hash,
+            "expected_result_file_hash": committed_ref.expected_result_file_hash,
         }
         try:
             ModuleRunRef(**legacy_ref)
@@ -885,8 +885,9 @@ def _formal_compute_protocol_errors(root: Path, python: str, environment: Mappin
             analysis_case_id="release-probe-case",
             task_id="release-probe-task",
             candidate_id="release-probe-candidate",
-            catalog_version="v1.0.0",
-            contract_fingerprint="a" * 64,
+            catalog_version=None,
+            product_id="1.1",
+            rule_revision=1,
             module="pricer",
             page_hash="b" * 64,
             capability_version="v1.0.0",
@@ -1041,7 +1042,10 @@ def _formal_compute_protocol_errors(root: Path, python: str, environment: Mappin
             "term_overrides": {"K": 5100.0},
         }
         prepared = {
-            "payoffer": prepare_compute_request("payoffer", common),
+            "payoffer": prepare_compute_request(
+                "payoffer",
+                {"product_id": "1.1", "term_overrides": {"K": 105.0}},
+            ),
             "pricer": prepare_compute_request(
                 "pricer",
                 {**common, "pricing_config": {"valuation_date": "2024-01-05", "model_method": "analytical"}},
@@ -1055,7 +1059,10 @@ def _formal_compute_protocol_errors(root: Path, python: str, environment: Mappin
                 data_store=probe_data_store,
             ),
         }
-        assert len({value["contract_fingerprint"] for value in prepared.values()}) == 1
+        assert all(value["product_id"] == "1.1" and value["rule_revision"] == 1 for value in prepared.values())
+        assert prepared["pricer"]["resolved_contract"] == prepared["backtester"]["resolved_contract"]
+        assert prepared["payoffer"]["resolved_contract"]["identity"]["underlyings"] == ["S1"]
+        assert prepared["payoffer"]["resolved_contract"]["identity"]["price_convention"] == "normalized_100"
         assert set(prepared["payoffer"]["request"]) == {"action", "payoff_input"}
         assert set(prepared["pricer"]["request"]) == {"action", "contract", "pricing_config", "market_data_refs"}
         assert set(prepared["backtester"]["request"]) == {"action", "contract", "backtest_config", "historical_data"}
