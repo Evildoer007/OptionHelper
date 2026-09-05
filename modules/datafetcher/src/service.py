@@ -60,7 +60,7 @@ from .request_validator import (
     request_fingerprint,
     validate_request,
 )
-from .volatile_store import read_volatile_asset, store_volatile_asset
+from .volatile_store import list_volatile_assets, read_volatile_asset, store_volatile_asset
 
 
 MODULE_ROOT = Path(__file__).resolve().parents[3]
@@ -409,10 +409,10 @@ def _asset_reference(
         "coverage": coverage,
         "normalized_fields": ("date", "asset_id", *request.fields),
         "price_convention": price_convention,
+        "tenant_id": caller.tenant_id,
         "owner": _owner_partition(caller.principal_id),
     }, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")).hexdigest()
     data_asset_id = f"data-{identity}-{provider}-o-{_owner_partition(caller.principal_id)}"
-    store = LocalDataStore(Path(config.data_root or RUNTIME_PATHS.data_root))
     lineage: dict[str, Any] = {
         "provider": provider,
         "request_hash": request_hash,
@@ -441,6 +441,7 @@ def _asset_reference(
             price_convention=price_convention,
             lineage=lineage,
         )
+    store = LocalDataStore(Path(config.data_root or RUNTIME_PATHS.data_root))
     try:
         return store.put_bytes(
             tenant_id=caller.tenant_id,
@@ -714,7 +715,15 @@ def _resolve_data(
 ) -> tuple[DataAssetRef, Mapping[str, Any], str, pd.DataFrame]:
     """在同一缓存身份锁内完成查找、补齐和写入，避免并发重复取数。"""
 
-    identities = sorted({cache_identity(request, provider, tenant_id=caller.tenant_id) for provider in request.source_priority})
+    identities = sorted({
+        cache_identity(
+            request,
+            provider,
+            tenant_id=caller.tenant_id,
+            principal_id=caller.principal_id,
+        )
+        for provider in request.source_priority
+    })
     with ExitStack() as locks:
         for identity in identities:
             locks.enter_context(cache.fetch_lock(identity))
@@ -732,6 +741,7 @@ def _resolve_data(
                 request,
                 name,
                 tenant_id=caller.tenant_id,
+                principal_id=caller.principal_id,
                 expected_trading_dates=expected_trading_dates,
                 latest_completed_date=latest_completed_date,
                 data_asset_ref_key=data_asset_ref_key,
@@ -745,7 +755,15 @@ def _resolve_data(
             asset_ref: DataAssetRef | None = _asset_ref(reference) if isinstance(reference, Mapping) else None
             if asset_ref is not None:
                 try:
-                    LocalDataStore(Path(config.data_root or RUNTIME_PATHS.data_root)).resolve(asset_ref, tenant_id=caller.tenant_id)
+                    if asset_ref.storage_ref.startswith("volatile:"):
+                        volatile = read_volatile_asset(asset_ref.data_asset_id, caller)
+                        if volatile is None or volatile[0].content_hash != asset_ref.content_hash:
+                            raise FileNotFoundError("volatile asset is unavailable")
+                    else:
+                        LocalDataStore(Path(config.data_root or RUNTIME_PATHS.data_root)).resolve(
+                            asset_ref,
+                            tenant_id=caller.tenant_id,
+                        )
                 except (FileNotFoundError, PermissionError, StoreError):
                     asset_ref = None
                     invalid_match = full_match
@@ -792,7 +810,12 @@ def _resolve_data(
             )
             if request.persistence_mode == "library":
                 cache.save(
-                    cache_identity(request, full_match.provider, tenant_id=caller.tenant_id),
+                    cache_identity(
+                        request,
+                        full_match.provider,
+                        tenant_id=caller.tenant_id,
+                        principal_id=caller.principal_id,
+                    ),
                     full_match.frame,
                     {
                         "content_hash": daily_content_hash(full_match.frame),
@@ -800,6 +823,26 @@ def _resolve_data(
                         "data_asset_ref": deep_thaw(asdict(rebound_ref)),
                         "updated_at": _now(),
                         "tenant_id": caller.tenant_id,
+                        "principal_id": caller.principal_id,
+                    },
+                    data_asset_ref_key=data_asset_ref_key,
+                )
+            else:
+                cache.save_volatile(
+                    cache_identity(
+                        request,
+                        full_match.provider,
+                        tenant_id=caller.tenant_id,
+                        principal_id=caller.principal_id,
+                    ),
+                    full_match.frame,
+                    {
+                        "content_hash": daily_content_hash(full_match.frame),
+                        "provider": full_match.provider,
+                        "data_asset_ref": deep_thaw(asdict(rebound_ref)),
+                        "updated_at": _now(),
+                        "tenant_id": caller.tenant_id,
+                        "principal_id": caller.principal_id,
                     },
                     data_asset_ref_key=data_asset_ref_key,
                 )
@@ -863,7 +906,12 @@ def _resolve_data(
         )
         if request.persistence_mode == "library":
             cache.save(
-                cache_identity(request, selected_provider or "local", tenant_id=caller.tenant_id),
+                cache_identity(
+                    request,
+                    selected_provider or "local",
+                    tenant_id=caller.tenant_id,
+                    principal_id=caller.principal_id,
+                ),
                 cache_frame,
                 {
                     "content_hash": daily_content_hash(cache_frame),
@@ -871,6 +919,26 @@ def _resolve_data(
                     "data_asset_ref": deep_thaw(asdict(asset_ref)),
                     "updated_at": _now(),
                     "tenant_id": caller.tenant_id,
+                    "principal_id": caller.principal_id,
+                },
+                data_asset_ref_key=data_asset_ref_key,
+            )
+        else:
+            cache.save_volatile(
+                cache_identity(
+                    request,
+                    selected_provider or "local",
+                    tenant_id=caller.tenant_id,
+                    principal_id=caller.principal_id,
+                ),
+                cache_frame,
+                {
+                    "content_hash": daily_content_hash(cache_frame),
+                    "provider": selected_provider,
+                    "data_asset_ref": deep_thaw(asdict(asset_ref)),
+                    "updated_at": _now(),
+                    "tenant_id": caller.tenant_id,
+                    "principal_id": caller.principal_id,
                 },
                 data_asset_ref_key=data_asset_ref_key,
             )
@@ -1128,25 +1196,54 @@ def list_data_assets(*, caller: CallerContext | None = None, limit: int = 100) -
     effective_caller = caller or CallerContext("local", "local-user", "local", ("data:read",), "local", "local")
     _assert_data_read(effective_caller)
     config, cache = _runtime_cache()
-    store = LocalDataStore(Path(config.data_root))
-    history = cache.list_assets(tenant_id=effective_caller.tenant_id, limit=limit)
-    calendars = CalendarCache(Path(config.cache_root)).list_assets(
-        tenant_id=effective_caller.tenant_id, limit=limit,
+    history = cache.list_assets(
+        tenant_id=effective_caller.tenant_id,
+        principal_id=effective_caller.principal_id,
+        limit=limit,
     )
-    combined = []
-    for item in history + calendars:
+    calendars = CalendarCache(Path(config.cache_root)).list_assets(
+        tenant_id=effective_caller.tenant_id,
+        principal_id=effective_caller.principal_id,
+        limit=limit,
+    )
+    volatile = [
+        {
+            "data_asset_ref": deep_thaw(asdict(reference)),
+            "provider": reference.lineage.get("provider"),
+            "updated_at": reference.lineage.get("fetched_at"),
+        }
+        for reference in list_volatile_assets(effective_caller, limit=limit)
+    ]
+    combined: list[Mapping[str, Any]] = []
+    store: LocalDataStore | None = None
+    for item in history + calendars + volatile:
         reference = item.get("data_asset_ref") if isinstance(item, Mapping) else None
         if not isinstance(reference, Mapping):
             continue
         try:
             ref = _asset_ref(reference)
             _assert_asset_readable(ref, effective_caller)
-            store.resolve(ref, tenant_id=effective_caller.tenant_id)
+            if ref.storage_ref.startswith("volatile:"):
+                in_memory = read_volatile_asset(ref.data_asset_id, effective_caller)
+                if in_memory is None or in_memory[0].content_hash != ref.content_hash:
+                    continue
+            else:
+                store = store or LocalDataStore(Path(config.data_root))
+                store.resolve(ref, tenant_id=effective_caller.tenant_id)
         except (FileNotFoundError, StoreError, KeyError, TypeError, ValueError, PermissionError):
             continue
         combined.append(item)
     safe_limit = max(1, min(int(limit), 100))
-    return sorted(combined, key=lambda item: str(item.get("updated_at", "")), reverse=True)[:safe_limit]
+    deduplicated = {
+        str(item["data_asset_ref"]["data_asset_id"]): item
+        for item in combined
+        if isinstance(item.get("data_asset_ref"), Mapping)
+    }
+    return sorted(
+        deduplicated.values(),
+        key=lambda item: str(item.get("updated_at", "")),
+        reverse=True,
+    )[:safe_limit]
 
 
 def read_data_asset(data_asset_id: str, *, caller: CallerContext | None = None) -> tuple[DataAssetRef, bytes]:
@@ -1160,7 +1257,11 @@ def read_data_asset(data_asset_id: str, *, caller: CallerContext | None = None) 
     if volatile is not None:
         return volatile
     config, cache = _runtime_cache()
-    item = cache.find_asset(tenant_id=effective_caller.tenant_id, data_asset_id=data_asset_id)
+    item = cache.find_asset(
+        tenant_id=effective_caller.tenant_id,
+        principal_id=effective_caller.principal_id,
+        data_asset_id=data_asset_id,
+    )
     if item is not None:
         ref = _asset_ref(item["data_asset_ref"])
         _assert_asset_readable(ref, effective_caller)
@@ -1170,6 +1271,7 @@ def read_data_asset(data_asset_id: str, *, caller: CallerContext | None = None) 
             raise FileNotFoundError("DataAsset不存在或完整性校验失败") from error
     calendar_item = CalendarCache(Path(config.cache_root)).find_asset(
         tenant_id=effective_caller.tenant_id,
+        principal_id=effective_caller.principal_id,
         data_asset_id=data_asset_id,
     )
     if calendar_item is not None:
@@ -1180,6 +1282,24 @@ def read_data_asset(data_asset_id: str, *, caller: CallerContext | None = None) 
         except (FileNotFoundError, StoreError) as error:
             raise FileNotFoundError("DataAsset不存在或完整性校验失败") from error
     raise FileNotFoundError("DataAsset不存在或无访问权限")
+
+
+def _business_request_source(payload: dict[str, Any]) -> Mapping[str, Any]:
+    """提取唯一业务请求，并拒绝信封层夹带模块外身份。"""
+
+    wrappers = tuple(field for field in ("request", "data_request") if field in payload)
+    if len(wrappers) > 1:
+        raise RequestValidationError("DataFetcher请求只能使用一个DataRequest入口")
+    if not wrappers:
+        return payload
+    source = payload.pop(wrappers[0])
+    if payload:
+        raise RequestValidationError(
+            "DataFetcher调用信封含未知字段：" + "、".join(sorted(payload))
+        )
+    if not isinstance(source, Mapping):
+        raise RequestValidationError("DataRequest必须为对象")
+    return source
 
 
 def call_tool(request: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -1196,14 +1316,15 @@ def call_tool(request: Mapping[str, Any]) -> Mapping[str, Any]:
     if action not in {"fetch", "fetch_calendar"}:
         return {"ok": False, "module": "datafetcher", "status": "failed", "error": {"code": "unsupported_action", "message": "DataFetcher不支持该action"}}
     task_id = payload.pop("task_id", "local")
-    # The App Host binds these fields in every Desk request after a contract
-    # has been selected.  ToolGateway has already verified them against the
-    # signed ModuleHostContext; they are not DataRequest inputs.
-    for field in ("analysis_case_id", "candidate_id", "catalog_version", "contract_fingerprint"):
-        payload.pop(field, None)
-    source = payload.pop("request", payload.pop("data_request", payload))
-    if not isinstance(source, Mapping):
-        return {"ok": False, "module": "datafetcher", "status": "failed", "error": {"code": "validation_error", "message": "DataRequest必须为对象"}}
+    try:
+        source = _business_request_source(payload)
+    except RequestValidationError as error:
+        return {
+            "ok": False,
+            "module": "datafetcher",
+            "status": "failed",
+            "error": {"code": "validation_error", "message": str(error)},
+        }
     if action == "fetch_calendar":
         return fetch_calendar_data(source, task_id=str(task_id)).to_dict()
     return fetch_data(source, task_id=str(task_id)).to_dict()
@@ -1316,14 +1437,12 @@ def call_tool_from_app(
     if action not in {"fetch", "fetch_calendar", "test_connection"}:
         return {"ok": False, "module": "datafetcher", "status": "failed", "error": {"code": "unsupported_action", "message": "DataFetcher不支持该action"}}
     task_id = payload.pop("task_id", "local")
-    # These fields are authenticated App Host scope, not DataRequest fields.
-    # They arrive with every Desk module request so the host can bind the run
-    # to the current task/contract, but DataFetcher only accepts data inputs.
-    for field in ("analysis_case_id", "candidate_id", "catalog_version", "contract_fingerprint"):
-        payload.pop(field, None)
-    source = payload.pop("request", payload.pop("data_request", payload))
-    if action != "test_connection" and not isinstance(source, Mapping):
-        raise RequestValidationError("DataRequest必须为对象")
+    if action == "test_connection":
+        if payload:
+            raise RequestValidationError("DataFetcher连接测试不接受数据请求字段")
+        source: Mapping[str, Any] = {}
+    else:
+        source = _business_request_source(payload)
     requires_secret = action in {"fetch_calendar", "test_connection"} or (
         action == "fetch" and _app_fetch_requires_secret(source)
     )
