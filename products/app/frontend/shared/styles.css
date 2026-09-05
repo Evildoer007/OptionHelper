@@ -2904,7 +2904,7 @@ html.workspace-overlay-open body { overflow: hidden; }
 
 /* Persistent workspace: mode changes are layout states of one DOM tree, not a page handoff. */
 .workspace-shell.workspace-shell--desk[data-workspace-shell] {
-  --rail-width: 360px;
+  --rail-width: 236px;
   --rail-splitter-width: 8px;
   --report-width: 332px;
   --context-width: 0px;
@@ -2918,7 +2918,7 @@ html.workspace-overlay-open body { overflow: hidden; }
   transition: background-color .42s ease;
 }
 
-.workspace-shell.workspace-shell--desk[data-workspace-shell][data-rail-collapsed="true"] { --rail-effective-width: 72px; }
+.workspace-shell.workspace-shell--desk[data-workspace-shell][data-rail-collapsed="true"] { --rail-effective-width: 56px; }
 
 .workspace-shell.workspace-shell--desk[data-workspace-shell][data-layout-ready="true"] {
   transition: grid-template-columns .52s cubic-bezier(.16, 1, .3, 1), background-color .42s ease;
