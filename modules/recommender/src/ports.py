@@ -214,9 +214,8 @@ class CandidateEvaluationPort(ToolPort, Protocol):
         confirmed_constraints: Mapping[str, Any],
         modules: Sequence[str],
         term_overrides: Mapping[str, Any],
-        candidate_version_id: str,
+        candidate_id: str,
         round_no: int,
-        input_fingerprints: Mapping[str, str] | None = None,
     ) -> Mapping[str, Any]: ...
 
 
