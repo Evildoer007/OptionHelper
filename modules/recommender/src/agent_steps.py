@@ -22,7 +22,7 @@ ROLE_RULES = {
     "Trader": "按当前候选计划调用获授权的业务工具，只依据工具返回的FactRef接受候选或要求受控条款调整；不得新增产品、改写模块结果或生成金融数值。",
     "Specifier": "只把用户原文中的硬约束和排序要求转换为受控RankingSpec；不得生成候选、计算指标或补写用户未表达的阈值。",
     "Generator": "只能从输入evidence提出候选产品；每个候选必须引用evidence_id，不得生成金融指标或改变RankingSpec。",
-    "Reviewer": "Mode1只复核Selector已有候选；其他Mode只对已形成的版本谱系或确定性排序作最终批准或整体拒绝；不得新增候选、重排、改写合同或模块事实。",
+    "Reviewer": "Mode1只复核Selector已有候选；其他Mode只对当前候选或确定性排序作最终批准或整体拒绝；不得新增候选、重排、改写当前输入或模块事实。",
     "Executor": "只能为已批准候选规划允许的Tool调用；不得生成计算数值。",
     "Freeform": "按当前路由选择最少必要工具；不得把未执行工具写成成功。",
 }
@@ -234,10 +234,10 @@ def _required_output(role: str, payload: Mapping[str, Any] | None = None) -> Map
             "next_question": "string|null",
             "research_queries": "string[]",
         }
-    if role in {"Matcher", "Hedger"} and isinstance(payload, Mapping) and "candidate_versions" in payload:
+    if role in {"Matcher", "Hedger"} and isinstance(payload, Mapping) and "candidates" in payload:
         return {
             "branch_results": [{
-                "candidate_version_id": "string", "recommendation": "string",
+                "candidate_id": "string", "recommendation": "string",
                 "risk_conclusion": "string", "used_fact_refs": "string[]",
             }]
         }
@@ -266,7 +266,7 @@ def _required_output(role: str, payload: Mapping[str, Any] | None = None) -> Map
     if role == "Trader":
         return {
             "evaluations": [{
-                "product_id": "string", "candidate_version_id": "string",
+                "product_id": "string", "candidate_id": "string",
                 "decision": "accept|rework", "reason": "string",
                 "used_fact_refs": "string[]", "term_adjustments": "object",
             }]
@@ -276,7 +276,7 @@ def _required_output(role: str, payload: Mapping[str, Any] | None = None) -> Map
             "research_queries": "string[]",
             "ranking_spec": {
                 "ranking_spec_id": "string", "hard_constraints": "object", "sort_keys": "object[]",
-                "tie_break_policy": "candidate_key",
+                "tie_break_policy": "candidate_id",
             },
         }
     if role == "Generator":
@@ -291,7 +291,7 @@ def _required_output(role: str, payload: Mapping[str, Any] | None = None) -> Map
     if role == "Reviewer":
         return {"decision": "approve|reject", "reason": "string"}
     if role == "Moderator" and isinstance(payload, Mapping) and "branch_candidates" in payload:
-        return {"selected_candidate_version_ids": "string[]", "conflicts": "string[]"}
+        return {"selected_candidate_ids": "string[]", "conflicts": "string[]"}
     if role == "Moderator":
         return {
             "proposals": [{
@@ -332,10 +332,10 @@ def _validate_role_result(role: str, value: object) -> None:
                 raise ValueError(f"{role}.branch_results必须为对象数组")
             _closed_fields(
                 row,
-                {"candidate_version_id", "recommendation", "risk_conclusion", "used_fact_refs"},
+                {"candidate_id", "recommendation", "risk_conclusion", "used_fact_refs"},
                 f"{role}.branch_result",
             )
-            _nonempty_text(row.get("candidate_version_id"), f"{role}.candidate_version_id")
+            _nonempty_text(row.get("candidate_id"), f"{role}.candidate_id")
             _nonempty_text(row.get("recommendation"), f"{role}.recommendation")
             _nonempty_text(row.get("risk_conclusion"), f"{role}.risk_conclusion")
             _strings_value(row.get("used_fact_refs"), f"{role}.used_fact_refs")
@@ -390,11 +390,11 @@ def _validate_role_result(role: str, value: object) -> None:
                 raise ValueError("Trader.evaluations必须为对象数组")
             _closed_fields(
                 row,
-                {"product_id", "candidate_version_id", "decision", "reason", "used_fact_refs", "term_adjustments"},
+                {"product_id", "candidate_id", "decision", "reason", "used_fact_refs", "term_adjustments"},
                 "Trader.evaluation",
             )
             _nonempty_text(row.get("product_id"), "Trader.evaluation.product_id")
-            _nonempty_text(row.get("candidate_version_id"), "Trader.evaluation.candidate_version_id")
+            _nonempty_text(row.get("candidate_id"), "Trader.evaluation.candidate_id")
             if row.get("decision") not in {"accept", "rework"}:
                 raise ValueError("Trader.evaluation.decision无效")
             _nonempty_text(row.get("reason"), "Trader.evaluation.reason")
@@ -445,9 +445,9 @@ def _validate_role_result(role: str, value: object) -> None:
         if value.get("decision") == "reject" and not str(value.get("reason", "")).strip():
             raise ValueError("Reviewer拒绝时必须说明reason")
         return
-    if role == "Moderator" and "selected_candidate_version_ids" in value:
-        _closed_fields(value, {"selected_candidate_version_ids", "conflicts"}, role)
-        _nonempty_strings(value.get("selected_candidate_version_ids"), "Moderator.selected_candidate_version_ids")
+    if role == "Moderator" and "selected_candidate_ids" in value:
+        _closed_fields(value, {"selected_candidate_ids", "conflicts"}, role)
+        _nonempty_strings(value.get("selected_candidate_ids"), "Moderator.selected_candidate_ids")
         _strings_value(value.get("conflicts"), "Moderator.conflicts")
         return
     if role == "Moderator":
