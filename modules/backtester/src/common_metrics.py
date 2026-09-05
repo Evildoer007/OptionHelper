@@ -7,6 +7,8 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 import pandas as pd
 
+from .branch_coverage import historical_loss_sample_covered
+
 
 _EVENT_LABELS = {
     "tau_out": "敲出", "tau_out_1": "第一敲出", "tau_out_2": "第二敲出", "tau_in": "敲入",
@@ -28,11 +30,14 @@ def summarize_common_metrics(
     entry_hv_bins: Sequence[float] | None = None,
 ) -> dict[str, Any]:
     """由唯一逐笔账本派生所有非产品专属统计。"""
-    returns = np.asarray([trade.gross_contract_return for trade in trades], dtype=float)
+    returns = np.asarray([float(trade.contract_settlement_return) for trade in trades], dtype=float)
     common = {
         "sample_count": len(trades),
         "valid_return_sample_count": len(trades),
-        **settlement_return_summary(returns),
+        **settlement_return_summary(
+            returns,
+            loss_sample_covered=historical_loss_sample_covered(contract, trades),
+        ),
         "return_distribution": distribution(returns),
     }
     tenor_years = float(contract.terms.get("T", 0.0))
@@ -45,13 +50,15 @@ def summarize_common_metrics(
         "three_outcome_summary": three_outcome_summary(trades),
         "conditional_summary": conditional_summary(trades),
         "annual_summary": annual_summary(trades, contract) if include_annual else [],
-        "entry_hv_group_summary": entry_hv_group_summary(trades, entry_hv_bins),
+        "entry_hv_group_summary": entry_hv_group_summary(trades, entry_hv_bins, contract=contract),
     }
 
 
 def entry_hv_group_summary(
     trades: Sequence[Any],
     bins: Sequence[float] | None,
+    *,
+    contract: Any | None = None,
 ) -> dict[str, Any]:
     """按入场时已冻结的HistVol特征汇总合同结算收益率。
 
@@ -71,7 +78,7 @@ def entry_hv_group_summary(
     if not normalized_bins:
         return empty
 
-    grouped_returns: list[list[float]] = [[] for _ in range(len(normalized_bins) + 1)]
+    grouped_trades: list[list[Any]] = [[] for _ in range(len(normalized_bins) + 1)]
     ungrouped_reasons: dict[str, int] = {}
     for trade in trades:
         feature = getattr(trade, "entry_features", {})
@@ -84,24 +91,27 @@ def entry_hv_group_summary(
             and len(feature_bins) == len(normalized_bins)
             and all(np.isclose(float(actual), expected) for actual, expected in zip(feature_bins, normalized_bins))
         )
-        if isinstance(bucket, int) and not isinstance(bucket, bool) and 0 <= bucket < len(grouped_returns) and valid_bins:
-            grouped_returns[bucket].append(float(trade.gross_contract_return))
+        if isinstance(bucket, int) and not isinstance(bucket, bool) and 0 <= bucket < len(grouped_trades) and valid_bins:
+            grouped_trades[bucket].append(trade)
             continue
         reason = str(feature.get("reason") or "invalid_entry_hv_grouping") if isinstance(feature, Mapping) else "invalid_entry_hv_grouping"
         ungrouped_reasons[reason] = ungrouped_reasons.get(reason, 0) + 1
 
     groups = []
-    for bucket, values in enumerate(grouped_returns):
-        returns = np.asarray(values, dtype=float)
+    for bucket, items in enumerate(grouped_trades):
+        returns = np.asarray([float(trade.contract_settlement_return) for trade in items], dtype=float)
         groups.append({
             "bucket": bucket,
             "lower_bound": normalized_bins[bucket - 1] if bucket else None,
             "upper_bound": normalized_bins[bucket] if bucket < len(normalized_bins) else None,
-            "sample_count": len(values),
-            "valid_return_sample_count": len(values),
-            **settlement_return_summary(returns),
+            "sample_count": len(items),
+            "valid_return_sample_count": len(items),
+            **settlement_return_summary(
+                returns,
+                loss_sample_covered=historical_loss_sample_covered(contract, items) if contract is not None else False,
+            ),
         })
-    grouped_count = sum(len(values) for values in grouped_returns)
+    grouped_count = sum(len(items) for items in grouped_trades)
     ungrouped_count = sum(ungrouped_reasons.values())
     status = "available" if grouped_count and not ungrouped_count else "partial" if grouped_count else "not_available"
     return {
@@ -125,8 +135,12 @@ def number_summary(values: np.ndarray | Sequence[float]) -> dict[str, float | No
     }
 
 
-def settlement_return_summary(values: np.ndarray | Sequence[float]) -> dict[str, Any]:
-    """生成正式公共字段和数值完全一致的v1旧别名。"""
+def settlement_return_summary(
+    values: np.ndarray | Sequence[float],
+    *,
+    loss_sample_covered: bool,
+) -> dict[str, Any]:
+    """生成唯一公共合同结算收益率字段。"""
     returns = np.asarray(values, dtype=float)
     positive_count = int(np.sum(returns > 0.0))
     zero_count = int(np.sum(returns == 0.0))
@@ -136,7 +150,6 @@ def settlement_return_summary(values: np.ndarray | Sequence[float]) -> dict[str,
     median = float(np.median(returns)) if len(returns) else None
     minimum = float(returns.min()) if len(returns) else None
     maximum = float(returns.max()) if len(returns) else None
-    max_loss = max(0.0, -minimum) if minimum is not None else None
     return {
         "positive_return_count": positive_count,
         "zero_return_count": zero_count,
@@ -146,14 +159,7 @@ def settlement_return_summary(values: np.ndarray | Sequence[float]) -> dict[str,
         "median_contract_settlement_return": median,
         "minimum_contract_settlement_return": minimum,
         "maximum_contract_settlement_return": maximum,
-        "max_loss_contract_settlement_return": max_loss,
-        "historical_loss_sample_covered": negative_count > 0,
-        "win_rate": positive_rate,
-        "average_gross_return": average,
-        "median_gross_return": median,
-        "minimum_gross_return": minimum,
-        "maximum_gross_return": maximum,
-        "max_loss_gross_return": max_loss,
+        "historical_loss_sample_covered": bool(loss_sample_covered),
     }
 
 
@@ -257,7 +263,7 @@ def outcome_summary(trades: Sequence[Any], contract: Any) -> list[dict[str, Any]
     rows: list[dict[str, Any]] = []
     for (path_index, case_index), definition in definitions.items():
         selected = [trade for trade in trades if trade.path_id == path_index and trade.case_id == case_index]
-        returns = np.asarray([trade.gross_contract_return for trade in selected], dtype=float)
+        returns = np.asarray([float(trade.contract_settlement_return) for trade in selected], dtype=float)
         rows.append({
             "code": f"path_{path_index + 1}_case_{case_index + 1}",
             "label": f"路径{path_index + 1}·情形{case_index + 1}",
@@ -266,7 +272,6 @@ def outcome_summary(trades: Sequence[Any], contract: Any) -> list[dict[str, Any]
             "count": len(selected),
             "rate": len(selected) / total if total else None,
             "average_contract_settlement_return": float(returns.mean()) if len(returns) else None,
-            "average_gross_return": float(returns.mean()) if len(returns) else None,
         })
     return rows
 
@@ -300,12 +305,15 @@ def annual_summary(trades: Sequence[Any], contract: Any) -> list[dict[str, Any]]
         grouped.setdefault(pd.Timestamp(trade.entry_date).year, []).append(trade)
     rows: list[dict[str, Any]] = []
     for year, items in sorted(grouped.items()):
-        returns = np.asarray([trade.gross_contract_return for trade in items], dtype=float)
+        returns = np.asarray([float(trade.contract_settlement_return) for trade in items], dtype=float)
         rows.append({
             "year": year,
             "sample_count": len(items),
             "valid_return_sample_count": len(items),
-            **settlement_return_summary(returns),
+            **settlement_return_summary(
+                returns,
+                loss_sample_covered=historical_loss_sample_covered(contract, items),
+            ),
             "outcome_summary": outcome_summary(items, contract),
             "three_outcome_summary": three_outcome_summary(items),
             "event_rates": {name: value["trigger_rate"] for name, value in event_summary(items, 0.0).items()},
