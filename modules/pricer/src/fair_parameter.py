@@ -17,9 +17,7 @@ from __future__ import annotations
 from copy import deepcopy
 from dataclasses import dataclass
 from functools import lru_cache
-import json
 import math
-from pathlib import Path
 from typing import Any, Mapping
 
 
@@ -29,11 +27,6 @@ if __name__ != "modules.pricer.fair_parameter":
     )
 
 from runtime.contracts.contract_api import load_registry
-from runtime.contracts.contract_types import canonical_json, deep_freeze, semantic_hash
-from runtime.contracts.input_adapter import (
-    PrivateCapabilityDirectoryBinding,
-    bind_private_capability_directory,
-)
 
 from .model_router import capability_for as valuation_capability_for
 
@@ -70,8 +63,8 @@ _UNIT_PUBLIC_TRANSFORMS = {
 
 # Numerical controls are algorithm policy, not financial evidence.  They are
 # deliberately versioned and expanded into every TargetCapability below so a
-# solver run is reproducible and target_spec_hash changes whenever a control
-# changes.  The analytical section intentionally contains no invented value or
+# solver run can compare the complete rule directly.  The analytical section
+# intentionally contains no invented value or
 # slope bound: those require model-specific proof and remain insufficient for
 # quote qualification until supplied by a trusted runtime proof.
 _SOLVER_RULE_VERSION = "optionhelper.pricer-fair-solver.v1"
@@ -153,15 +146,16 @@ _SOLVER_MC_PRECISION = {
     "quote_gate": "false_when_insufficient_or_unstable",
 }
 
-# Evidence is identified by a stable logical id. The manifest travels with
-# ``modules/pricer/src`` into both Skill and App payloads; its source paths are
-# development/packaging verification metadata, not runtime dependencies.
-_EVIDENCE_MANIFEST_PATH = Path(__file__).with_name("fair_parameter_evidence_manifest.json")
-_EVIDENCE_MANIFEST_SCHEMA_ID = "optionhelper.pricer-fair-parameter-evidence"
 _OPTIONREG_EVIDENCE = "optionreg.registry"
 _VALUATION_ROUTE_EVIDENCE = "pricer.model_router.capabilities"
 _VALUATION_TEST_EVIDENCE = "pricer.product_acceptance_matrix"
 _CASHFLOW_EVIDENCE = "pricer.fair_parameter.cashflow_evidence"
+_EVIDENCE_IDS = frozenset({
+    _OPTIONREG_EVIDENCE,
+    _VALUATION_ROUTE_EVIDENCE,
+    _VALUATION_TEST_EVIDENCE,
+    _CASHFLOW_EVIDENCE,
+})
 
 # These are internal execution rules.  They are intentionally absent from
 # ``to_public_dict``: callers may learn whether a target is eligible, but the
@@ -197,70 +191,6 @@ _INITIAL_PRICING_TIME_RULE = {
 }
 
 
-def _is_sha256(value: object) -> bool:
-    return (
-        isinstance(value, str)
-        and len(value) == 64
-        and value == value.lower()
-        and len(set(value)) > 1
-        and all(character in "0123456789abcdef" for character in value)
-    )
-
-
-@lru_cache(maxsize=1)
-def _load_evidence_manifest() -> Mapping[str, Any]:
-    """Load and authenticate the frozen logical-evidence manifest.
-
-    Runtime only needs the packaged manifest and its digest. Physical source
-    paths belong to development/packaging tests because the corresponding
-    tests and references are intentionally absent from a Skill payload.
-    """
-
-    try:
-        raw = json.loads(_EVIDENCE_MANIFEST_PATH.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise ValueError("Pricer证据manifest不可读取") from error
-    if not isinstance(raw, Mapping):
-        raise ValueError("Pricer证据manifest必须为对象")
-    manifest_hash = raw.get("manifest_hash")
-    if not _is_sha256(manifest_hash):
-        raise ValueError("Pricer证据manifest_hash格式无效")
-    unsigned = {key: value for key, value in raw.items() if key != "manifest_hash"}
-    if semantic_hash(unsigned) != manifest_hash:
-        raise ValueError("Pricer证据manifest_hash校验失败")
-    if raw.get("schema_id") != _EVIDENCE_MANIFEST_SCHEMA_ID:
-        raise ValueError("Pricer证据manifest schema_id无效")
-    if raw.get("manifest_version") != "1":
-        raise ValueError("Pricer证据manifest版本无效")
-    entries = raw.get("entries")
-    if not isinstance(entries, Mapping) or set(entries) != {
-        _OPTIONREG_EVIDENCE,
-        _VALUATION_ROUTE_EVIDENCE,
-        _VALUATION_TEST_EVIDENCE,
-        _CASHFLOW_EVIDENCE,
-    }:
-        raise ValueError("Pricer证据manifest必须完整覆盖四类逻辑证据")
-    for evidence_id, entry in entries.items():
-        if not isinstance(evidence_id, str) or not evidence_id.strip() or not isinstance(entry, Mapping):
-            raise ValueError("Pricer证据manifest包含无效逻辑证据项")
-        development_path = entry.get("development_source_path")
-        release_path = entry.get("release_source_path")
-        if not isinstance(development_path, str) or not development_path.strip():
-            raise ValueError(f"Pricer证据{evidence_id}缺少development_source_path")
-        if release_path is not None and (not isinstance(release_path, str) or not release_path.strip()):
-            raise ValueError(f"Pricer证据{evidence_id}的release_source_path无效")
-        if not _is_sha256(entry.get("source_sha256")):
-            raise ValueError(f"Pricer证据{evidence_id}的source_sha256格式无效")
-        release_hash = entry.get("release_source_sha256")
-        if release_path is None:
-            if release_hash is not None:
-                raise ValueError(f"Pricer证据{evidence_id}无发行路径却登记release hash")
-        elif not _is_sha256(release_hash):
-            raise ValueError(f"Pricer证据{evidence_id}的release_source_sha256格式无效")
-        elif release_hash != entry.get("source_sha256"):
-            raise ValueError(f"Pricer证据{evidence_id}开发与发行hash必须一致")
-    return deep_freeze(raw)
-
 _NEW_ISSUANCE_STATE = {
     "new_issuance": "allowed",
     "surviving": "not_allowed",
@@ -282,7 +212,7 @@ _NO_TIME_DIMENSION_CHANGE = {
     "observation_schedule": "unchanged",
     "payment_times": "unchanged",
     "data_coverage": "unchanged",
-    "source": "PricerCapabilityDirectory",
+    "source": "PricerTargetRule",
 }
 
 
@@ -720,7 +650,14 @@ _AUDIT_PRODUCTS: tuple[_AuditProduct, ...] = (
     _product("8.29", "supported", _unsupported_term("g", reason="约束固定g == 0.2，属于产品身份参数"), _unsupported_term("K", reason="约束固定K == S_0，属于产品身份参数"), _unsupported_term("H_KO", reason="约束固定H_out == 1.03 * S_0，属于产品身份参数"), _supported_contract_target("8.29", "r_out", "r_out", exposure_rule="合法敲出路径存在r_out暴露，运行时按路径聚合确认非零", negative_branch="未敲出分支含r_T和负限损项"), _blocked_term("alpha", reason="alpha乘以r_T，路径系数可正可负，尚未证明严格单调"), _supported_monotone_target("8.29", "Lmax", "ell", monotonicity_rule="在0<=ell<=1合法域内，限损分支随ell严格递减且阈值由Core重算", negative_branch="未敲出低位分支为-N*ell", coefficient_sign="negative", uniqueness="固定路径与市场状态后，存在低位限损暴露时PV对ell严格递减，解唯一")),
     _product("9.1", "supported", _unsupported_term("K"), _supported_premium("p", cashflow_symbol="p")),
     _product("9.2", "supported", _unsupported_term("g"), _unsupported_term("p", reason="产品约束固定p == 0，属于产品身份参数"), _supported_monotone_target("9.2", "K1", "K_1", monotonicity_rule="在0<K_1<K_2合法域内，低于K1的固定损失随K1严格上移", negative_branch="低于K1分支为-N*(S_0-K_1)/S_0", coefficient_sign="positive", uniqueness="固定路径与市场状态后，存在非零低位损失概率时PV对K1严格递增，解唯一", allowed_methods=("analytical", "monte_carlo")), _unsupported_term("K2", reason="约束固定K_2 == S_0，属于产品身份参数"), _blocked_term("alpha", reason="alpha仅参与未来r_T收益，缺少不受市场状态影响的严格单调证据")),
-    _product("9.3", "solve_semantics_blocked", _blocked_constraint("K1", ("K1", "p"), "p == (S_0 - K_1) / S_0"), _blocked_constraint("K2", ("K2",), "K_2 == S_0"), _unsupported_term("alpha"), _blocked_constraint("p", ("K1", "p"), "p == (S_0 - K_1) / S_0")),
+    _product(
+        "9.3",
+        "supported",
+        _blocked_constraint("K1", ("K1", "p"), "p == (S_0 - K_1) / S_0"),
+        _blocked_constraint("K2", ("K2",), "K_2 == S_0"),
+        _unsupported_term("alpha"),
+        _supported_premium("p", cashflow_symbol="p"),
+    ),
     _product("9.4", "solve_semantics_blocked", _blocked_term("Ksig", quote_value_basis="variance_percent", reason="方差互换必须保留variance_percent；已实现方差状态、结算目标和唯一报价证据尚未登记")),
     _product("9.5", "supported", _unsupported_term("K"), _unsupported_term("H_KO"), _unsupported_term("eta"), _supported_premium("p", cashflow_symbol="p")),
     _product("9.6", "supported", _unsupported_term("K"), _unsupported_term("H_KO"), _unsupported_term("eta"), _supported_premium("p", cashflow_symbol="p")),
@@ -766,15 +703,13 @@ class TargetCapability:
     evidence_status: str
     evidence: tuple[str, ...] = ()
     evidence_ids: tuple[str, ...] = ()
-    evidence_source_hashes: tuple[str, ...] = ()
-    evidence_manifest_hash: str = ""
 
     @property
     def status(self) -> str:
         return self.support_status
 
-    def _target_spec_payload(self) -> dict[str, Any]:
-        """Return the complete internal target contract used for hashing."""
+    def to_solver_spec(self) -> dict[str, Any]:
+        """Return the complete target rule consumed by the current solve."""
         return {
             "schema_id": CAPABILITY_SCHEMA_ID,
             "target_id": self.target_id,
@@ -809,14 +744,7 @@ class TargetCapability:
             "evidence_status": self.evidence_status,
             "evidence": self.evidence,
             "evidence_ids": self.evidence_ids or self.evidence,
-            "evidence_source_hashes": self.evidence_source_hashes,
-            "evidence_manifest_hash": self.evidence_manifest_hash,
         }
-
-    @property
-    def target_spec_hash(self) -> str:
-        """Stable identity of the complete private solving specification."""
-        return semantic_hash(self._target_spec_payload())
 
     def to_public_dict(self) -> dict[str, Any]:
         return {
@@ -837,6 +765,7 @@ class TargetCapability:
 @dataclass(frozen=True)
 class ProductCapabilityRecord:
     product_id: str
+    rule_revision: int
     canonical_name: str
     valuation_methods: tuple[str, ...]
     solve_status: str
@@ -854,6 +783,7 @@ class ProductCapabilityRecord:
     def to_public_dict(self) -> dict[str, Any]:
         return {
             "product_id": self.product_id,
+            "rule_revision": self.rule_revision,
             "canonical_name": self.canonical_name,
             "valuation_methods": list(self.valuation_methods),
             "fair_parameter_status": self.solve_status,
@@ -878,7 +808,7 @@ def _solver_search_rule(
     rule.update({
         "target_id": audit.target_id,
         "solver_class": audit.solver_class,
-        "source": "PricerCapabilityDirectory",
+        "source": "PricerTargetRule",
         "domain_envelope": deepcopy(dict(domain_envelope)),
         "initial_interval_source": "target_domain_intersection_with_resolved_contract_constraints",
         "expansion_cap_source": "registered_solver_rule.expansion.max_expansions",
@@ -993,13 +923,7 @@ def _target_from_audit(
     catalog: Mapping[str, Any],
     methods: tuple[str, ...],
 ) -> TargetCapability:
-    evidence_manifest = _load_evidence_manifest()
-    evidence_entries = evidence_manifest["entries"]
     evidence_ids = tuple(audit.evidence)
-    evidence_source_hashes = tuple(
-        str(evidence_entries[evidence_id]["source_sha256"])
-        for evidence_id in evidence_ids
-    )
     metadata = catalog.get(audit.target_id)
     if not isinstance(metadata, Mapping):
         raise ValueError(f"反解能力目录目标{audit.target_id}不在term_catalog")
@@ -1082,7 +1006,7 @@ def _target_from_audit(
             "public_transform": public_transform,
             "public_conversion": public_transform,
             "reference_price_basis_rule": (
-                "freeze_base_contract_reference_price_basis"
+                "freeze_reference_price_basis"
                 if catalog_unit == "price"
                 else "not_applicable"
             ),
@@ -1120,8 +1044,6 @@ def _target_from_audit(
         ),
         evidence=evidence_ids,
         evidence_ids=evidence_ids,
-        evidence_source_hashes=evidence_source_hashes,
-        evidence_manifest_hash=str(evidence_manifest["manifest_hash"]),
     )
 
 
@@ -1131,25 +1053,13 @@ def _validate_audit_table(registry: Mapping[str, Any]) -> None:
     if len(audit_ids) != len(set(audit_ids)) or set(audit_ids) != product_ids:
         raise ValueError("Pricer反解能力矩阵必须逐一覆盖当前OptionReg的65个产品且不得重复")
     term_catalog = registry.get("term_catalog", {})
-    evidence_manifest = _load_evidence_manifest()
-    evidence_entries = evidence_manifest["entries"]
 
     def validate_evidence_ids(evidence_ids: tuple[str, ...], context: str) -> None:
         if not evidence_ids:
             raise ValueError(f"{context}缺少逻辑证据id")
         for evidence_id in evidence_ids:
-            if not isinstance(evidence_id, str) or evidence_id not in evidence_entries:
+            if not isinstance(evidence_id, str) or evidence_id not in _EVIDENCE_IDS:
                 raise ValueError(f"{context}引用未知逻辑证据id：{evidence_id}")
-            entry = evidence_entries[evidence_id]
-            if not _is_sha256(entry.get("source_sha256")):
-                raise ValueError(f"{context}引用的逻辑证据source hash无效：{evidence_id}")
-            release_path = entry.get("release_source_path")
-            release_hash = entry.get("release_source_sha256")
-            if release_path is None:
-                if release_hash is not None:
-                    raise ValueError(f"{context}引用的逻辑证据发行hash无效：{evidence_id}")
-            elif not _is_sha256(release_hash):
-                raise ValueError(f"{context}引用的逻辑证据发行hash无效：{evidence_id}")
 
     for item in _AUDIT_PRODUCTS:
         product = registry["products"][item.product_id]
@@ -1223,6 +1133,7 @@ def capability_matrix() -> tuple[ProductCapabilityRecord, ...]:
         targets = tuple(_target_from_audit(target, product=product, catalog=term_catalog, methods=methods) for target in audit.targets)
         products.append(ProductCapabilityRecord(
             product_id=audit.product_id,
+            rule_revision=int(product["identity"]["rule_revision"]),
             canonical_name=str(product.get("identity", {}).get("name_zh", audit.product_id)),
             valuation_methods=methods,
             solve_status=audit.solve_status,
@@ -1247,45 +1158,11 @@ def capability_for_target(product_id: str, target_id: str) -> TargetCapability |
 
 def public_capability_package() -> dict[str, Any]:
     products = [item.to_public_dict() for item in capability_matrix()]
-    payload = {"schema_id": CAPABILITY_SCHEMA_ID, "capability_version": CAPABILITY_VERSION, "products": products}
-    return {**payload, "capability_hash": semantic_hash(payload)}
-
-
-def _build_private_capability_payload() -> dict[str, Any]:
-    """Build the complete private directory once during module initialization."""
-    products = [
-        {
-            "product_id": record.product_id,
-            "canonical_name": record.canonical_name,
-            "valuation_methods": record.valuation_methods,
-            "solve_status": record.solve_status,
-            "audit_evidence": record.audit_evidence,
-            "targets": [
-                {
-                    "target_id": target.target_id,
-                    "target_spec_payload": deepcopy(target._target_spec_payload()),
-                }
-                for target in record.targets
-            ],
-        }
-        for record in capability_matrix()
-    ]
-    payload = {
+    return {
         "schema_id": CAPABILITY_SCHEMA_ID,
         "capability_version": CAPABILITY_VERSION,
-        "evidence_manifest_hash": _load_evidence_manifest()["manifest_hash"],
         "products": products,
     }
-    return payload
-
-
-@lru_cache(maxsize=1)
-def private_capability_package() -> PrivateCapabilityDirectoryBinding:
-    """Return the one directory binding from the explicit Pricer composition root."""
-
-    payload = _build_private_capability_payload()
-    directory_bytes = canonical_json(payload).encode("utf-8")
-    return bind_private_capability_directory(directory_bytes)
 
 
 def eligibility_for_target(product: Any, target_id: str, method: str) -> dict[str, Any]:
@@ -1300,7 +1177,6 @@ def eligibility_for_target(product: Any, target_id: str, method: str) -> dict[st
             "reason": "目标未登记",
             "target_id": str(target_id),
             "method": requested_method,
-            "target_spec_hash": None,
         }
     if target.support_status != "supported":
         return {
@@ -1309,7 +1185,6 @@ def eligibility_for_target(product: Any, target_id: str, method: str) -> dict[st
             "reason": target.unsupported_reason or "目标未获得反解支持",
             "target_id": target.target_id,
             "method": requested_method,
-            "target_spec_hash": target.target_spec_hash,
         }
     if requested_method not in target.allowed_methods:
         return {
@@ -1318,7 +1193,6 @@ def eligibility_for_target(product: Any, target_id: str, method: str) -> dict[st
             "reason": "目标不支持该公开定价方法",
             "target_id": target.target_id,
             "method": requested_method,
-            "target_spec_hash": target.target_spec_hash,
         }
     terms = getattr(product, "terms", {})
     if not isinstance(terms, Mapping) or any(key not in terms for key in target.fixed_dependencies):
@@ -1328,7 +1202,6 @@ def eligibility_for_target(product: Any, target_id: str, method: str) -> dict[st
             "reason": "基础合同缺少目标固定依赖",
             "target_id": target.target_id,
             "method": requested_method,
-            "target_spec_hash": target.target_spec_hash,
         }
     return {
         "eligible": True,
@@ -1336,7 +1209,6 @@ def eligibility_for_target(product: Any, target_id: str, method: str) -> dict[st
         "reason": None,
         "target_id": target.target_id,
         "method": requested_method,
-        "target_spec_hash": target.target_spec_hash,
     }
 
 
@@ -1351,5 +1223,4 @@ __all__ = (
     "build_capability_matrix", "capability_for_target", "capability_matrix", "eligibility_for_target",
     "fair_parameter_capability_for", "product_capability",
     "public_capability_package", "target_capability", "to_public_decimal_ratio",
-    "private_capability_package",
 )
