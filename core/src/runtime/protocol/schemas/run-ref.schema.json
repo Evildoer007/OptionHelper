@@ -18,24 +18,24 @@
     {
       "type": "object",
       "additionalProperties": false,
-      "required": ["module", "tenant_id", "task_id", "run_id", "expected_semantic_result_hash", "expected_artifact_manifest_hash"],
+      "required": ["module", "tenant_id", "task_id", "run_id", "expected_result_file_hash", "expected_artifact_manifest_hash"],
       "properties": {
         "module": {"enum": ["payoffer", "pricer", "backtester"]},
         "tenant_id": {"type": "string", "minLength": 1},
         "task_id": {"type": "string", "minLength": 1},
         "run_id": {"type": "string", "minLength": 1},
-        "expected_semantic_result_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "expected_result_file_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
         "expected_artifact_manifest_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
       }
     },
     {
       "type": "object",
       "additionalProperties": false,
-      "required": ["tenant_id", "report_run_id", "expected_semantic_fact_hash", "expected_artifact_manifest_hash"],
+      "required": ["tenant_id", "report_run_id", "expected_report_file_hash", "expected_artifact_manifest_hash"],
       "properties": {
         "tenant_id": {"type": "string", "minLength": 1},
         "report_run_id": {"type": "string", "minLength": 1},
-        "expected_semantic_fact_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "expected_report_file_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
         "expected_artifact_manifest_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
       }
     }
