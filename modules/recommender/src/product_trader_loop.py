@@ -1,25 +1,22 @@
-"""Mode2产品交易闭环的纯领域控制面。
+"""Mode2产品交易闭环的当前候选控制面。
 
-这里不解析合同、不调用模块，也不采信模型生成的金融数值。模型只能提出
-受控条款调整和模块计划；计算事实只能由Host以``EvaluationRecord``带回。
+模型只提出受控条款调整和模块计划。候选始终由``candidate_id``标识，
+调整会更新同一候选的当前输入，不产生历史拓扑。计算事实只能由Host回填。
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-import hashlib
-import json
 import math
 import re
 from typing import Any, Mapping, Sequence
 
 from .candidate_builder import create_term_variant
-from .models import CandidateVersion, EvaluationRecord, RecommendationCandidate, RecommendationValidationError
+from .models import EvaluationRecord, RecommendationCandidate, RecommendationValidationError
 
 
 MAX_ROUNDS = 2
 ALLOWED_MODULES = frozenset({"payoffer", "pricer", "backtester"})
-# 与现有交互层一致：最终仍须由Host按具体产品OptionReg条款再次收窄。
 DEFAULT_TERM_KEYS = frozenset({
     "T", "K", "K1", "K2", "K3", "K4", "Pi_0", "P_net", "c", "c_max", "alpha",
     "H_KO", "H_KI", "B", "O_KO", "O_KI", "Oc", "settlement", "exercise_style",
@@ -29,14 +26,6 @@ _IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]*\Z")
 
 def _error(message: str) -> RecommendationValidationError:
     return RecommendationValidationError(f"ProductTraderLoop：{message}")
-
-
-def _canonical(value: Any) -> str:
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-
-
-def _fingerprint(value: Mapping[str, Any]) -> str:
-    return hashlib.sha256(_canonical(value).encode("utf-8")).hexdigest()
 
 
 def _identifier(value: Any, field_name: str) -> str:
@@ -93,32 +82,32 @@ def _controlled_term_overrides(
     return {key: result[key] for key in sorted(result)}
 
 
-def _display_terms(value: Any) -> tuple[Mapping[str, str], ...]:
-    rows = _sequence(value, "Host.display_terms")
+def _key_terms(value: Any, field_name: str) -> tuple[Mapping[str, str], ...]:
+    rows = _sequence(value, field_name)
     result: list[Mapping[str, str]] = []
     for index, item in enumerate(rows):
-        row = _mapping(item, f"Host.display_terms[{index}]")
-        _exact_fields(row, fields={"label", "value", "source"}, field_name=f"Host.display_terms[{index}]")
+        row = _mapping(item, f"{field_name}[{index}]")
+        _exact_fields(row, fields={"label", "value", "source"}, field_name=f"{field_name}[{index}]")
         label = str(row["label"]).strip()
         text = str(row["value"]).strip()
         source = str(row["source"]).strip()
         if not label or not text or source not in {"用户输入", "拟采用参数"}:
-            raise _error("Host.display_terms必须使用受控客户条款摘要")
+            raise _error(f"{field_name}必须使用受控客户条款摘要")
         result.append({"label": label, "value": text, "source": source})
     return tuple(result)
 
 
 @dataclass(frozen=True)
 class StructurerProposal:
-    """Structurer对一个既有候选的受控计划，不含任何计算结果。"""
+    """Structurer对一个当前候选的受控计划。"""
 
-    candidate_key: str
+    candidate_id: str
     evaluation_plan: tuple[str, ...]
     term_overrides: Mapping[str, str | int | float]
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "candidate_key": self.candidate_key,
+            "candidate_id": self.candidate_id,
             "evaluation_plan": list(self.evaluation_plan),
             "term_overrides": dict(self.term_overrides),
         }
@@ -126,15 +115,15 @@ class StructurerProposal:
 
 @dataclass(frozen=True)
 class TraderDecision:
-    """Trader仅可接受候选或要求已有候选重构。"""
+    """Trader仅可接受候选或更新同一候选的当前输入。"""
 
-    candidate_key: str
+    candidate_id: str
     action: str
     term_adjustments: Mapping[str, str | int | float]
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "candidate_key": self.candidate_key,
+            "candidate_id": self.candidate_id,
             "action": self.action,
             "term_adjustments": dict(self.term_adjustments),
         }
@@ -142,8 +131,6 @@ class TraderDecision:
 
 @dataclass(frozen=True)
 class LoopCandidate:
-    """候选的当前版本及其已批准调整；不存在模型生成的估值字段。"""
-
     candidate: RecommendationCandidate
     term_overrides: Mapping[str, str | int | float]
     status: str = "open"
@@ -151,10 +138,7 @@ class LoopCandidate:
     def __post_init__(self) -> None:
         if self.status not in {"open", "accepted"}:
             raise _error("LoopCandidate.status无效")
-        if self.candidate.candidate_version is None or not self.candidate.candidate_key:
-            raise _error("Mode2候选必须携带CandidateVersion与candidate_key")
-        if self.candidate.candidate_version.candidate_key != self.candidate.candidate_key:
-            raise _error("LoopCandidate候选身份与版本冲突")
+        _identifier(self.candidate.candidate_id, "LoopCandidate.candidate_id")
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -166,64 +150,48 @@ class LoopCandidate:
 
 @dataclass(frozen=True)
 class EvaluationRequest:
-    """Host计算请求的不可歧义绑定，Host须以同版本EvaluationRecord回填。"""
+    """Host按当前产品规则编译并运行一个候选模块所需的输入。"""
 
     candidate_id: str
-    candidate_key: str
-    version_id: str
     module: str
     round_no: int
-    input_fingerprint: str
     product_id: str
+    rule_revision: int
     underlyings: tuple[str, ...]
-    term_overrides: Mapping[str, str | int | float]
+    current_inputs: Mapping[str, Any]
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "candidate_id": self.candidate_id,
-            "candidate_key": self.candidate_key,
-            "version_id": self.version_id,
             "module": self.module,
             "round_no": self.round_no,
-            "input_fingerprint": self.input_fingerprint,
             "product_id": self.product_id,
+            "rule_revision": self.rule_revision,
             "underlyings": list(self.underlyings),
-            "term_overrides": dict(self.term_overrides),
+            "current_inputs": dict(self.current_inputs),
         }
 
 
 @dataclass(frozen=True)
 class EvaluationPlan:
-    """一个候选版本在某轮需要由Host完成的模块调用。"""
-
     candidate: LoopCandidate
     modules: tuple[str, ...]
     round_no: int
 
     def requests(self) -> tuple[EvaluationRequest, ...]:
-        version = self.candidate.candidate.candidate_version
-        assert version is not None  # 由LoopCandidate.__post_init__保证
-        requests = []
-        for module in self.modules:
-            binding = {
-                "candidate_key": version.candidate_key,
-                "version_id": version.version_id,
-                "module": module,
-                "round_no": self.round_no,
-                "term_overrides": dict(self.candidate.term_overrides),
-            }
-            requests.append(EvaluationRequest(
-                candidate_id=self.candidate.candidate.candidate_id,
-                candidate_key=version.candidate_key,
-                version_id=version.version_id,
+        current = self.candidate.candidate
+        return tuple(
+            EvaluationRequest(
+                candidate_id=current.candidate_id,
                 module=module,
                 round_no=self.round_no,
-                input_fingerprint=_fingerprint(binding),
-                product_id=version.product_id,
-                underlyings=version.underlyings,
-                term_overrides=dict(self.candidate.term_overrides),
-            ))
-        return tuple(requests)
+                product_id=current.product_id,
+                rule_revision=current.rule_revision,
+                underlyings=current.underlyings,
+                current_inputs=dict(current.current_inputs),
+            )
+            for module in self.modules
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -236,17 +204,15 @@ class EvaluationPlan:
 
 @dataclass(frozen=True)
 class ProductTraderRound:
-    """已经由Structurer计划、可由Host执行的单轮候选评估。"""
-
     round_no: int
     plans: tuple[EvaluationPlan, ...]
 
     def __post_init__(self) -> None:
         if not 1 <= self.round_no <= MAX_ROUNDS:
-            raise _error("ProductTraderRound.round_no超出上限")
-        keys = [plan.candidate.candidate.candidate_key for plan in self.plans]
-        if not keys or len(keys) != len(set(keys)):
-            raise _error("ProductTraderRound候选必须非空且不重复")
+            raise _error("round_no超出范围")
+        identities = [item.candidate.candidate.candidate_id for item in self.plans]
+        if len(identities) != len(set(identities)):
+            raise _error("同轮计划不得重复候选")
 
     def to_dict(self) -> dict[str, Any]:
         return {"round_no": self.round_no, "plans": [item.to_dict() for item in self.plans]}
@@ -254,306 +220,249 @@ class ProductTraderRound:
 
 @dataclass(frozen=True)
 class LoopTransition:
-    """Trader复核后的状态。rework只会产生下一轮的全新CandidateVersion。"""
-
     next_loop: "ProductTraderLoop | None"
     accepted_candidates: tuple[RecommendationCandidate, ...]
-    reworked_candidate_keys: tuple[str, ...]
+    reworked_candidate_ids: tuple[str, ...]
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "next_loop": self.next_loop.to_dict() if self.next_loop else None,
             "accepted_candidates": [item.to_dict() for item in self.accepted_candidates],
-            "reworked_candidate_keys": list(self.reworked_candidate_keys),
+            "reworked_candidate_ids": list(self.reworked_candidate_ids),
         }
 
 
 @dataclass(frozen=True)
 class ProductTraderLoop:
-    """至多两轮的产品团队—交易团队闭环状态机。"""
-
     candidates: tuple[LoopCandidate, ...]
-    completed_rounds: int = 0
+    round_no: int = 1
     allowed_term_keys: frozenset[str] = DEFAULT_TERM_KEYS
 
     def __post_init__(self) -> None:
-        if not 0 <= self.completed_rounds <= MAX_ROUNDS:
-            raise _error("completed_rounds超出上限")
         if not self.candidates:
             raise _error("至少需要一个候选")
-        keys = [item.candidate.candidate_key for item in self.candidates]
-        versions = [item.candidate.candidate_version_id for item in self.candidates]
-        if len(keys) != len(set(keys)) or len(versions) != len(set(versions)):
-            raise _error("候选身份或当前版本不得重复")
-        if not self.allowed_term_keys:
-            raise _error("allowed_term_keys不能为空")
+        if not 1 <= self.round_no <= MAX_ROUNDS:
+            raise _error("round_no超出范围")
+        identities = [item.candidate.candidate_id for item in self.candidates]
+        if len(identities) != len(set(identities)):
+            raise _error("candidate_id必须唯一")
 
     @classmethod
     def start(
         cls,
         candidates: Sequence[RecommendationCandidate],
         *,
-        allowed_term_keys: Sequence[str] = tuple(DEFAULT_TERM_KEYS),
+        allowed_term_keys: frozenset[str] = DEFAULT_TERM_KEYS,
     ) -> "ProductTraderLoop":
-        if isinstance(candidates, (str, bytes)) or not isinstance(candidates, Sequence):
-            raise _error("candidates必须为数组")
-        keys = frozenset(str(item).strip() for item in allowed_term_keys if str(item).strip())
-        if not keys:
-            raise _error("allowed_term_keys不能为空")
-        return cls(
-            candidates=tuple(LoopCandidate(candidate=item, term_overrides={}) for item in candidates),
-            allowed_term_keys=keys,
+        rows = tuple(
+            LoopCandidate(
+                candidate=item,
+                term_overrides=dict(item.current_inputs.get("term_overrides", {}))
+                if isinstance(item.current_inputs.get("term_overrides", {}), Mapping) else {},
+            )
+            for item in candidates
         )
+        return cls(candidates=rows, allowed_term_keys=allowed_term_keys)
 
     def to_dict(self) -> dict[str, Any]:
         return {
+            "round_no": self.round_no,
             "candidates": [item.to_dict() for item in self.candidates],
-            "completed_rounds": self.completed_rounds,
             "allowed_term_keys": sorted(self.allowed_term_keys),
         }
 
     def parse_structurer_output(self, value: Any) -> tuple[StructurerProposal, ...]:
-        """严格接受既有候选的模块计划与全量受控条款覆盖。"""
-
         payload = _mapping(value, "Structurer输出")
         _exact_fields(payload, fields={"proposals"}, field_name="Structurer输出")
         rows = _sequence(payload["proposals"], "Structurer.proposals")
-        if not rows or len(rows) > 10:
-            raise _error("Structurer.proposals数量必须位于1至10")
-        available = {item.candidate.candidate_key for item in self.candidates if item.status == "open"}
-        result: list[StructurerProposal] = []
+        available = {item.candidate.candidate_id for item in self.candidates if item.status == "open"}
         seen: set[str] = set()
-        for index, raw in enumerate(rows):
-            row = _mapping(raw, f"Structurer.proposals[{index}]")
+        result: list[StructurerProposal] = []
+        for index, item in enumerate(rows):
+            row = _mapping(item, f"Structurer.proposals[{index}]")
             _exact_fields(
                 row,
-                fields={"candidate_key", "evaluation_plan", "term_overrides"},
+                fields={"candidate_id", "evaluation_plan", "term_overrides"},
                 field_name=f"Structurer.proposals[{index}]",
             )
-            candidate_key = _identifier(row["candidate_key"], f"Structurer.proposals[{index}].candidate_key")
-            if candidate_key not in available:
-                raise _error(f"Structurer引用不存在或已接受候选：{candidate_key}")
-            if candidate_key in seen:
-                raise _error(f"Structurer重复候选：{candidate_key}")
-            seen.add(candidate_key)
-            modules = tuple(str(item).strip().lower() for item in _sequence(
+            candidate_id = _identifier(row["candidate_id"], f"Structurer.proposals[{index}].candidate_id")
+            if candidate_id not in available:
+                raise _error(f"Structurer引用不存在或已接受候选：{candidate_id}")
+            if candidate_id in seen:
+                raise _error(f"Structurer重复候选：{candidate_id}")
+            seen.add(candidate_id)
+            modules = tuple(str(module).strip().lower() for module in _sequence(
                 row["evaluation_plan"], f"Structurer.proposals[{index}].evaluation_plan"
             ))
-            if not modules or any(item not in ALLOWED_MODULES for item in modules):
-                raise _error("Structurer.evaluation_plan只允许payoffer、pricer、backtester")
-            if len(set(modules)) != len(modules):
-                raise _error("Structurer.evaluation_plan不得重复模块")
+            if not modules or len(modules) != len(set(modules)) or any(module not in ALLOWED_MODULES for module in modules):
+                raise _error("Structurer.evaluation_plan只允许payoffer、pricer、backtester且不得重复")
             overrides = _controlled_term_overrides(
                 row["term_overrides"], allowed_term_keys=self.allowed_term_keys,
                 field_name=f"Structurer.proposals[{index}].term_overrides",
             )
-            result.append(StructurerProposal(candidate_key, modules, overrides))
+            result.append(StructurerProposal(candidate_id, modules, overrides))
+        if seen != available:
+            raise _error("Structurer必须覆盖全部open候选")
         return tuple(result)
 
     def plan_round(self, structurer_output: Any) -> ProductTraderRound:
-        if self.completed_rounds >= MAX_ROUNDS:
-            raise _error("已达到两轮上限，禁止继续重构")
         proposals = self.parse_structurer_output(structurer_output)
-        states = {item.candidate.candidate_key: item for item in self.candidates}
+        states = {item.candidate.candidate_id: item for item in self.candidates}
         plans: list[EvaluationPlan] = []
-        round_no = self.completed_rounds + 1
         for proposal in proposals:
-            state = states[proposal.candidate_key]
-            if dict(proposal.term_overrides) != dict(state.term_overrides):
-                state = LoopCandidate(
-                    candidate=_new_version(
-                        state,
-                        overrides=proposal.term_overrides,
-                        generation_reason="structurer_term_overrides",
-                    ),
-                    term_overrides=dict(proposal.term_overrides),
-                    status="open",
-                )
-            plans.append(EvaluationPlan(candidate=state, modules=proposal.evaluation_plan, round_no=round_no))
-        return ProductTraderRound(round_no=round_no, plans=tuple(plans))
+            state = states[proposal.candidate_id]
+            merged = dict(state.term_overrides)
+            merged.update(proposal.term_overrides)
+            current = create_term_variant(
+                state.candidate,
+                term_overrides=merged,
+                generation_reason=f"mode2_round_{self.round_no}",
+            )
+            plans.append(EvaluationPlan(
+                candidate=LoopCandidate(current, merged, state.status),
+                modules=proposal.evaluation_plan,
+                round_no=self.round_no,
+            ))
+        return ProductTraderRound(round_no=self.round_no, plans=tuple(plans))
 
-    def parse_trader_output(self, value: Any, *, round_plan: ProductTraderRound) -> tuple[TraderDecision, ...]:
+    def parse_trader_output(
+        self,
+        value: Any,
+        *,
+        round_plan: ProductTraderRound,
+    ) -> tuple[TraderDecision, ...]:
         payload = _mapping(value, "Trader输出")
         _exact_fields(payload, fields={"decisions"}, field_name="Trader输出")
         rows = _sequence(payload["decisions"], "Trader.decisions")
-        expected = {item.candidate.candidate.candidate_key for item in round_plan.plans}
-        if len(rows) != len(expected):
-            raise _error("Trader必须对本轮每个候选恰好给出一个决定")
-        result: list[TraderDecision] = []
+        expected = {item.candidate.candidate.candidate_id for item in round_plan.plans}
         seen: set[str] = set()
-        for index, raw in enumerate(rows):
-            row = _mapping(raw, f"Trader.decisions[{index}]")
+        result: list[TraderDecision] = []
+        for index, item in enumerate(rows):
+            row = _mapping(item, f"Trader.decisions[{index}]")
             _exact_fields(
                 row,
-                fields={"candidate_key", "action", "term_adjustments"},
+                fields={"candidate_id", "action", "term_adjustments"},
                 field_name=f"Trader.decisions[{index}]",
             )
-            key = _identifier(row["candidate_key"], f"Trader.decisions[{index}].candidate_key")
-            if key not in expected:
-                raise _error(f"Trader不得新增或引用未知候选：{key}")
-            if key in seen:
-                raise _error(f"Trader重复决定候选：{key}")
-            seen.add(key)
+            candidate_id = _identifier(row["candidate_id"], f"Trader.decisions[{index}].candidate_id")
+            if candidate_id not in expected:
+                raise _error("Trader不得新增或引用未知候选")
+            if candidate_id in seen:
+                raise _error("Trader不得重复决定候选")
+            seen.add(candidate_id)
             action = str(row["action"]).strip().lower()
             if action not in {"accept", "rework"}:
-                raise _error("Trader.action只允许accept或rework")
+                raise _error("Trader.action必须为accept或rework")
             adjustments = _controlled_term_overrides(
                 row["term_adjustments"], allowed_term_keys=self.allowed_term_keys,
                 field_name=f"Trader.decisions[{index}].term_adjustments",
             )
             if action == "accept" and adjustments:
-                raise _error("Trader.accept不得附带term_adjustments")
+                raise _error("accept不得附带term_adjustments")
             if action == "rework" and not adjustments:
-                raise _error("Trader.rework必须附带term_adjustments")
-            result.append(TraderDecision(key, action, adjustments))
+                raise _error("rework必须附带term_adjustments")
+            result.append(TraderDecision(candidate_id, action, adjustments))
         if seen != expected:
-            raise _error("Trader决定集合与本轮候选不一致")
+            raise _error("Trader必须逐一决定本轮全部候选")
         return tuple(result)
 
     def apply_trader_output(self, round_plan: ProductTraderRound, trader_output: Any) -> LoopTransition:
-        if round_plan.round_no != self.completed_rounds + 1:
-            raise _error("Trader复核轮次与当前Loop状态不一致")
-        if round_plan.round_no > MAX_ROUNDS:
-            raise _error("已达到两轮上限")
+        if round_plan.round_no != self.round_no:
+            raise _error("Trader决定不属于当前轮")
         decisions = self.parse_trader_output(trader_output, round_plan=round_plan)
-        planned = {item.candidate.candidate.candidate_key: item.candidate for item in round_plan.plans}
-        states = {item.candidate.candidate_key: item for item in self.candidates}
+        planned = {item.candidate.candidate.candidate_id: item.candidate for item in round_plan.plans}
+        states = {item.candidate.candidate_id: item for item in self.candidates}
         reworked: list[str] = []
         for decision in decisions:
-            current = planned[decision.candidate_key]
+            current = planned[decision.candidate_id]
             if decision.action == "accept":
-                states[decision.candidate_key] = LoopCandidate(
-                    candidate=current.candidate,
-                    term_overrides=dict(current.term_overrides),
-                    status="accepted",
+                states[decision.candidate_id] = LoopCandidate(
+                    replace(current.candidate, candidate_status="pending_confirmation"),
+                    current.term_overrides,
+                    "accepted",
                 )
                 continue
-            if round_plan.round_no >= MAX_ROUNDS:
+            if self.round_no >= MAX_ROUNDS:
                 raise _error("第二轮不得再rework")
-            merged = {**dict(current.term_overrides), **dict(decision.term_adjustments)}
-            if merged == dict(current.term_overrides):
-                raise _error("Trader.rework必须实际改变受控条款")
-            states[decision.candidate_key] = LoopCandidate(
-                candidate=_new_version(
-                    current,
-                    overrides=merged,
-                    generation_reason="trader_term_adjustments",
-                ),
+            merged = dict(current.term_overrides)
+            merged.update(decision.term_adjustments)
+            updated = create_term_variant(
+                current.candidate,
                 term_overrides=merged,
-                status="open",
+                generation_reason=f"mode2_rework_round_{self.round_no}",
             )
-            reworked.append(decision.candidate_key)
-        next_states = tuple(states[item.candidate.candidate_key] for item in self.candidates)
+            states[decision.candidate_id] = LoopCandidate(updated, merged, "open")
+            reworked.append(decision.candidate_id)
+        next_states = tuple(states[item.candidate.candidate_id] for item in self.candidates)
         accepted = tuple(item.candidate for item in next_states if item.status == "accepted")
         if not reworked:
-            return LoopTransition(next_loop=None, accepted_candidates=accepted, reworked_candidate_keys=())
+            return LoopTransition(None, accepted, ())
         return LoopTransition(
-            next_loop=ProductTraderLoop(
-                candidates=next_states,
-                completed_rounds=round_plan.round_no,
-                allowed_term_keys=self.allowed_term_keys,
-            ),
-            accepted_candidates=accepted,
-            reworked_candidate_keys=tuple(reworked),
+            ProductTraderLoop(next_states, self.round_no + 1, self.allowed_term_keys),
+            accepted,
+            tuple(reworked),
         )
 
 
 def attach_host_evaluations(
     round_plan: ProductTraderRound,
-    host_results: Any,
+    host_results: Mapping[str, Mapping[str, Any]],
 ) -> ProductTraderRound:
-    """把Host已绑定的计算事实附到候选，拒绝模型或错版本回填。"""
+    """把Host返回的当前候选运行引用附着到本轮计划。"""
 
-    payload = _mapping(host_results, "Host计算结果")
-    expected = {item.candidate.candidate.candidate_key for item in round_plan.plans}
-    if set(payload) != expected:
-        unknown = sorted(set(payload) - expected)
-        missing = sorted(expected - set(payload))
-        detail = []
-        if unknown:
-            detail.append(f"未知候选：{','.join(unknown)}")
-        if missing:
-            detail.append(f"缺少候选：{','.join(missing)}")
-        raise _error(f"Host计算结果集合不匹配（{'；'.join(detail)}）")
+    if not isinstance(host_results, Mapping):
+        raise _error("Host计算结果必须为对象")
+    expected = {item.candidate.candidate.candidate_id for item in round_plan.plans}
+    if set(host_results) != expected:
+        raise _error("Host计算结果必须覆盖本轮全部candidate_id")
     attached: list[EvaluationPlan] = []
     for plan in round_plan.plans:
-        key = plan.candidate.candidate.candidate_key
-        result = _mapping(payload[key], f"Host计算结果.{key}")
-        _exact_fields(
-            result,
-            fields={"evaluation_records", "module_run_refs", "module_statuses", "display_terms", "contract_fingerprint"},
-            field_name=f"Host计算结果.{key}",
+        candidate_id = plan.candidate.candidate.candidate_id
+        result = _mapping(host_results[candidate_id], f"Host计算结果.{candidate_id}")
+        allowed = {"evaluation_records", "module_run_refs", "module_statuses", "key_terms", "display_terms", "verified_metrics"}
+        unknown = sorted(set(result) - allowed)
+        if unknown:
+            raise _error(f"Host计算结果.{candidate_id}含未知字段：{','.join(unknown)}")
+        required = {"evaluation_records", "module_run_refs", "module_statuses"}
+        missing = sorted(required - set(result))
+        if missing:
+            raise _error(f"Host计算结果.{candidate_id}缺少字段：{','.join(missing)}")
+        raw_records = _sequence(result["evaluation_records"], f"Host计算结果.{candidate_id}.evaluation_records")
+        records = tuple(
+            EvaluationRecord.from_mapping(item) if isinstance(item, Mapping) else item
+            for item in raw_records
         )
-        raw_records = _sequence(result["evaluation_records"], f"Host计算结果.{key}.evaluation_records")
-        records: list[EvaluationRecord] = []
-        for raw in raw_records:
-            try:
-                record = EvaluationRecord.from_mapping(raw) if isinstance(raw, Mapping) else raw
-            except (TypeError, ValueError) as error:
-                raise _error(f"Host计算结果.{key}.evaluation_records无效") from error
-            if not isinstance(record, EvaluationRecord):
-                raise _error(f"Host计算结果.{key}.evaluation_records必须使用EvaluationRecord")
-            records.append(record)
-        if not records or len({item.evaluation_id for item in records}) != len(records):
-            raise _error(f"Host计算结果.{key}.evaluation_records必须非空且evaluation_id不重复")
-        version = plan.candidate.candidate.candidate_version
-        assert version is not None
-        if any(item.version_id != version.version_id for item in records):
-            raise _error(f"Host计算结果.{key}存在非当前CandidateVersion的EvaluationRecord")
-        if any(item.round_no != plan.round_no for item in records):
-            raise _error(f"Host计算结果.{key}的EvaluationRecord轮次不一致")
-        if any(item.module not in plan.modules for item in records):
-            raise _error(f"Host计算结果.{key}包含未计划模块")
-        if set(item.module for item in records) != set(plan.modules):
-            raise _error(f"Host计算结果.{key}未覆盖evaluation_plan全部模块")
-        request_fingerprints = {item.module: item.input_fingerprint for item in plan.requests()}
-        if any(item.input_fingerprint != request_fingerprints[item.module] for item in records):
-            raise _error(f"Host计算结果.{key}的EvaluationRecord输入指纹不一致")
-        raw_refs = _sequence(result["module_run_refs"], f"Host计算结果.{key}.module_run_refs")
-        expected_refs = tuple(item.module_run_ref for item in records if item.module_run_ref is not None)
-        if tuple(raw_refs) != expected_refs and tuple(
-            dict(item) if isinstance(item, Mapping) else getattr(item, "__dict__", item) for item in raw_refs
-        ) != tuple(dict(item.__dict__) for item in expected_refs):
-            raise _error(f"Host计算结果.{key}.module_run_refs与EvaluationRecord冲突")
-        statuses = _mapping(result["module_statuses"], f"Host计算结果.{key}.module_statuses")
-        final_statuses = {item.module: item.status for item in records}
-        if statuses != final_statuses:
-            raise _error(f"Host计算结果.{key}.module_statuses与EvaluationRecord冲突")
-        terms = _display_terms(result["display_terms"])
-        contract_fingerprint = str(result["contract_fingerprint"]).strip()
-        if not re.fullmatch(r"[0-9a-f]{64}", contract_fingerprint):
-            raise _error(f"Host计算结果.{key}.contract_fingerprint无效")
-        candidate = replace(
+        if any(not isinstance(item, EvaluationRecord) for item in records):
+            raise _error(f"Host计算结果.{candidate_id}.evaluation_records无效")
+        if any(item.candidate_id != candidate_id or item.round_no != round_plan.round_no for item in records):
+            raise _error(f"Host计算结果.{candidate_id}存在非当前候选或轮次的EvaluationRecord")
+        record_modules = [item.module for item in records]
+        if len(record_modules) != len(set(record_modules)) or set(record_modules) != set(plan.modules):
+            raise _error(f"Host计算结果.{candidate_id}未严格覆盖计划模块")
+        raw_runs = _sequence(result["module_run_refs"], f"Host计算结果.{candidate_id}.module_run_refs")
+        runs = tuple(item.module_run_ref for item in records if item.module_run_ref is not None)
+        serialized_runs = tuple(item.__dict__ if hasattr(item, "__dict__") else item for item in runs)
+        if tuple(raw_runs) != serialized_runs:
+            raise _error(f"Host计算结果.{candidate_id}.module_run_refs与EvaluationRecord不一致")
+        statuses = _mapping(result["module_statuses"], f"Host计算结果.{candidate_id}.module_statuses")
+        expected_statuses = {item.module: item.status for item in records}
+        if {str(key): str(value) for key, value in statuses.items()} != expected_statuses:
+            raise _error(f"Host计算结果.{candidate_id}.module_statuses与EvaluationRecord不一致")
+        raw_terms = result.get("key_terms", result.get("display_terms", ()))
+        terms = _key_terms(raw_terms, f"Host计算结果.{candidate_id}.key_terms")
+        states = set(expected_statuses.values())
+        candidate_status = (
+            "approved" if states <= {"succeeded"} else
+            "unsupported" if states <= {"succeeded", "unsupported"} and "unsupported" in states else
+            "pending_data"
+        )
+        updated = replace(
             plan.candidate.candidate,
             key_terms=terms,
-            module_run_refs=expected_refs,
-            module_statuses=final_statuses,
-            evaluation_records=tuple(records),
-            contract_fingerprint=contract_fingerprint,
-            term_overrides=dict(plan.candidate.term_overrides),
+            candidate_status=candidate_status,
+            module_run_refs=runs,
+            module_statuses=expected_statuses,
+            evaluation_records=records,
         )
-        attached.append(EvaluationPlan(
-            candidate=LoopCandidate(candidate=candidate, term_overrides=dict(plan.candidate.term_overrides), status="open"),
-            modules=plan.modules,
-            round_no=plan.round_no,
-        ))
+        attached.append(replace(plan, candidate=replace(plan.candidate, candidate=updated)))
     return ProductTraderRound(round_no=round_plan.round_no, plans=tuple(attached))
-
-
-def _new_version(
-    state: LoopCandidate,
-    *,
-    overrides: Mapping[str, str | int | float],
-    generation_reason: str,
-) -> RecommendationCandidate:
-    normalized = {key: overrides[key] for key in sorted(overrides)}
-    variant_constraints_fingerprint = _fingerprint({
-        "previous_constraints_fingerprint": state.candidate.constraints_fingerprint,
-        "term_overrides": normalized,
-    })
-    return create_term_variant(
-        state.candidate,
-        term_overrides=normalized,
-        constraints_fingerprint=variant_constraints_fingerprint,
-        generation_reason=generation_reason,
-    )
