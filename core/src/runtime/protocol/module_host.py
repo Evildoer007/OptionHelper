@@ -20,7 +20,6 @@ from .models import ModuleRunRef
 from .version import (
     MODULE_HOST_PROTOCOL_ID,
     PRICING_CONFIG_SCHEMA_ID,
-    RESOLVED_CONTRACT_SCHEMA_ID,
     require_release_id,
 )
 
@@ -131,8 +130,8 @@ def capability_token_payload(
     analysis_case_id: str | None = None,
     candidate_id: str | None = None,
     catalog_version: str | None = None,
-    contract_fingerprint: str | None = None,
-    contract_ref: HostObjectRef | None = None,
+    product_id: str | None = None,
+    rule_revision: int | None = None,
     config_ref: HostObjectRef | None = None,
     result_refs: tuple[ModuleRunRef, ...] = (),
 ) -> bytes:
@@ -159,9 +158,8 @@ def capability_token_payload(
     catalog_version = _optional_scope_id(catalog_version, "catalog_version")
     if catalog_version is not None:
         require_release_id(catalog_version, "catalog_version")
-    contract_fingerprint = _optional_scope_hash(contract_fingerprint, "contract_fingerprint")
-    if contract_ref is not None and not isinstance(contract_ref, HostObjectRef):
-        raise ModuleHostContextError("contract_ref必须为HostObjectRef")
+    product_id = _optional_scope_id(product_id, "product_id")
+    rule_revision = _optional_rule_revision(rule_revision)
     if config_ref is not None and not isinstance(config_ref, HostObjectRef):
         raise ModuleHostContextError("config_ref必须为HostObjectRef")
     if not isinstance(result_refs, tuple) or not all(isinstance(item, ModuleRunRef) for item in result_refs):
@@ -176,8 +174,8 @@ def capability_token_payload(
         "catalog_version": catalog_version,
         "config_ref": config_ref.to_payload() if config_ref is not None else None,
         "context_id": context_id,
-        "contract_fingerprint": contract_fingerprint,
-        "contract_ref": contract_ref.to_payload() if contract_ref is not None else None,
+        "product_id": product_id,
+        "rule_revision": rule_revision,
         "expires_at": expires_at,
         "host_kind": host_kind,
         "module": module,
@@ -212,8 +210,8 @@ def issue_capability_token(
     analysis_case_id: str | None = None,
     candidate_id: str | None = None,
     catalog_version: str | None = None,
-    contract_fingerprint: str | None = None,
-    contract_ref: HostObjectRef | None = None,
+    product_id: str | None = None,
+    rule_revision: int | None = None,
     config_ref: HostObjectRef | None = None,
     result_refs: tuple[ModuleRunRef, ...] = (),
 ) -> str:
@@ -238,8 +236,8 @@ def issue_capability_token(
         analysis_case_id=analysis_case_id,
         candidate_id=candidate_id,
         catalog_version=catalog_version,
-        contract_fingerprint=contract_fingerprint,
-        contract_ref=contract_ref,
+        product_id=product_id,
+        rule_revision=rule_revision,
         config_ref=config_ref,
         result_refs=result_refs,
     )
@@ -266,8 +264,8 @@ def verify_capability_token(
     analysis_case_id: str | None = None,
     candidate_id: str | None = None,
     catalog_version: str | None = None,
-    contract_fingerprint: str | None = None,
-    contract_ref: HostObjectRef | None = None,
+    product_id: str | None = None,
+    rule_revision: int | None = None,
     config_ref: HostObjectRef | None = None,
     result_refs: tuple[ModuleRunRef, ...] = (),
     now: int | None = None,
@@ -296,8 +294,8 @@ def verify_capability_token(
             analysis_case_id=analysis_case_id,
             candidate_id=candidate_id,
             catalog_version=catalog_version,
-            contract_fingerprint=contract_fingerprint,
-            contract_ref=contract_ref,
+            product_id=product_id,
+            rule_revision=rule_revision,
             config_ref=config_ref,
             result_refs=result_refs,
         ),
@@ -318,7 +316,8 @@ class ModuleHostContext:
     task_id: str | None
     candidate_id: str | None
     catalog_version: str | None
-    contract_fingerprint: str | None
+    product_id: str | None
+    rule_revision: int | None
     module: str
     page_hash: str
     capability_version: str
@@ -326,7 +325,6 @@ class ModuleHostContext:
     context_id: str
     host_kind: str
     request_policy: tuple[str, ...]
-    contract_ref: HostObjectRef | None = None
     config_ref: HostObjectRef | None = None
     result_refs: tuple[ModuleRunRef, ...] = ()
 
@@ -341,7 +339,8 @@ class ModuleHostContext:
         catalog_version = _optional_scope_id(self.catalog_version, "catalog_version")
         if catalog_version is not None:
             require_release_id(catalog_version, "catalog_version")
-        _optional_scope_hash(self.contract_fingerprint, "contract_fingerprint")
+        _optional_scope_id(self.product_id, "product_id")
+        _optional_rule_revision(self.rule_revision)
         _require_page_module(self.module)
         _required_hash(self.page_hash, "page_hash")
         require_release_id(self.capability_version, "capability_version")
@@ -352,10 +351,6 @@ class ModuleHostContext:
             raise ModuleHostContextError("host_kind必须为app或local-development")
         if not isinstance(self.request_policy, tuple) or not self.request_policy or not all(isinstance(item, str) and item for item in self.request_policy):
             raise ModuleHostContextError("request_policy必须为非空字符串元组")
-        if self.contract_ref is not None and not isinstance(self.contract_ref, HostObjectRef):
-            raise ModuleHostContextError("contract_ref必须为HostObjectRef")
-        if self.contract_ref is not None and self.contract_ref.schema_id != RESOLVED_CONTRACT_SCHEMA_ID:
-            raise ModuleHostContextError(f"contract_ref.schema_id必须为{RESOLVED_CONTRACT_SCHEMA_ID}")
         if self.config_ref is not None and not isinstance(self.config_ref, HostObjectRef):
             raise ModuleHostContextError("config_ref必须为HostObjectRef")
         if self.config_ref is not None and self.config_ref.schema_id != PRICING_CONFIG_SCHEMA_ID:
@@ -371,7 +366,8 @@ class ModuleHostContext:
             "task_id": self.task_id,
             "candidate_id": self.candidate_id,
             "catalog_version": self.catalog_version,
-            "contract_fingerprint": self.contract_fingerprint,
+            "product_id": self.product_id,
+            "rule_revision": self.rule_revision,
             "module": self.module,
             "page_hash": self.page_hash,
             "capability_version": self.capability_version,
@@ -380,8 +376,6 @@ class ModuleHostContext:
             "host_kind": self.host_kind,
             "request_policy": list(self.request_policy),
         }
-        if self.contract_ref is not None:
-            payload["contract_ref"] = self.contract_ref.to_payload()
         if self.config_ref is not None:
             payload["config_ref"] = self.config_ref.to_payload()
         if self.result_refs:
@@ -391,7 +385,7 @@ class ModuleHostContext:
                     "tenant_id": ref.tenant_id,
                     "task_id": ref.task_id,
                     "run_id": ref.run_id,
-                    "expected_semantic_result_hash": ref.expected_semantic_result_hash,
+                    "expected_result_file_hash": ref.expected_result_file_hash,
                     "expected_artifact_manifest_hash": ref.expected_artifact_manifest_hash,
                 }
                 for ref in self.result_refs
@@ -403,10 +397,10 @@ class ModuleHostContext:
         if not isinstance(value, Mapping):
             raise ModuleHostContextError("ModuleHostContext必须为对象")
         required = {
-            "session_ref", "capability_token", "analysis_case_id", "task_id", "candidate_id", "catalog_version", "contract_fingerprint", "module", "page_hash",
+            "session_ref", "capability_token", "analysis_case_id", "task_id", "candidate_id", "catalog_version", "product_id", "rule_revision", "module", "page_hash",
             "capability_version", "protocol_id", "context_id", "host_kind", "request_policy",
         }
-        optional = {"contract_ref", "config_ref", "result_refs"}
+        optional = {"config_ref", "result_refs"}
         unknown = set(value).difference(required | optional)
         missing = required.difference(value)
         if unknown or missing:
@@ -429,7 +423,8 @@ class ModuleHostContext:
             task_id=_optional_scope_id(value.get("task_id"), "task_id"),
             candidate_id=_optional_scope_id(value.get("candidate_id"), "candidate_id"),
             catalog_version=_optional_scope_id(value.get("catalog_version"), "catalog_version"),
-            contract_fingerprint=_optional_scope_hash(value.get("contract_fingerprint"), "contract_fingerprint"),
+            product_id=_optional_scope_id(value.get("product_id"), "product_id"),
+            rule_revision=_optional_rule_revision(value.get("rule_revision")),
             module=_required_text(value.get("module"), "module"),
             page_hash=_required_hash(value.get("page_hash"), "page_hash"),
             capability_version=_required_text(value.get("capability_version"), "capability_version"),
@@ -437,7 +432,6 @@ class ModuleHostContext:
             context_id=_required_text(value.get("context_id"), "context_id"),
             host_kind=_required_text(value.get("host_kind"), "host_kind"),
             request_policy=tuple(_required_text(item, "request_policy[]") for item in raw_policy),
-            contract_ref=HostObjectRef.from_payload(value["contract_ref"], "contract_ref") if "contract_ref" in value else None,
             config_ref=HostObjectRef.from_payload(value["config_ref"], "config_ref") if "config_ref" in value else None,
             result_refs=tuple(_module_run_ref(item, f"result_refs[{index}]") for index, item in enumerate(raw_refs)),
         )
@@ -483,8 +477,8 @@ def verify_module_host_context(
         analysis_case_id=context.analysis_case_id,
         candidate_id=context.candidate_id,
         catalog_version=context.catalog_version,
-        contract_fingerprint=context.contract_fingerprint,
-        contract_ref=context.contract_ref,
+        product_id=context.product_id,
+        rule_revision=context.rule_revision,
         config_ref=context.config_ref,
         result_refs=context.result_refs,
         now=now,
@@ -493,19 +487,19 @@ def verify_module_host_context(
 
 
 def require_host_bound_run_contract(result: Mapping[str, Any], context: ModuleHostContext) -> Mapping[str, Any]:
-    """Verify the immutable candidate facts a calculator returns to Recommender.
+    """Verify the explicit product revision facts returned by a calculator.
 
     The values stay in the module response unchanged.  They must already be
     present in the Host-signed context, so a page cannot substitute another
-    candidate or contract after the Host has selected one.
+    candidate or product rule after the Host has selected one.
     """
     if not isinstance(result, Mapping):
         raise ModuleHostContextError("ModuleRun结果必须为对象")
-    for field in ("candidate_id", "catalog_version", "contract_fingerprint"):
+    for field in ("candidate_id", "catalog_version", "product_id", "rule_revision"):
         expected = getattr(context, field)
         value = result.get(field)
-        if field == "contract_fingerprint":
-            value = _optional_scope_hash(value, field)
+        if field == "rule_revision":
+            value = _optional_rule_revision(value)
         else:
             value = _optional_scope_id(value, field)
         if value is None:
@@ -520,7 +514,7 @@ def require_host_bound_run_contract(result: Mapping[str, Any], context: ModuleHo
 def _module_run_ref(value: Any, field: str) -> ModuleRunRef:
     if not isinstance(value, Mapping):
         raise ModuleHostContextError(f"{field}必须为对象")
-    expected = {"module", "tenant_id", "task_id", "run_id", "expected_semantic_result_hash", "expected_artifact_manifest_hash"}
+    expected = {"module", "tenant_id", "task_id", "run_id", "expected_result_file_hash", "expected_artifact_manifest_hash"}
     if set(value) != expected:
         raise ModuleHostContextError(f"{field}字段必须为{','.join(sorted(expected))}")
     return ModuleRunRef(
@@ -528,7 +522,7 @@ def _module_run_ref(value: Any, field: str) -> ModuleRunRef:
         tenant_id=_required_text(value.get("tenant_id"), f"{field}.tenant_id"),
         task_id=_required_text(value.get("task_id"), f"{field}.task_id"),
         run_id=_required_text(value.get("run_id"), f"{field}.run_id"),
-        expected_semantic_result_hash=_required_hash(value.get("expected_semantic_result_hash"), f"{field}.expected_semantic_result_hash"),
+        expected_result_file_hash=_required_hash(value.get("expected_result_file_hash"), f"{field}.expected_result_file_hash"),
         expected_artifact_manifest_hash=_required_hash(value.get("expected_artifact_manifest_hash"), f"{field}.expected_artifact_manifest_hash"),
     )
 
@@ -539,7 +533,7 @@ def _module_run_ref_payload(ref: ModuleRunRef) -> dict[str, str]:
         "tenant_id": ref.tenant_id,
         "task_id": ref.task_id,
         "run_id": ref.run_id,
-        "expected_semantic_result_hash": ref.expected_semantic_result_hash,
+        "expected_result_file_hash": ref.expected_result_file_hash,
         "expected_artifact_manifest_hash": ref.expected_artifact_manifest_hash,
     }
 
@@ -562,10 +556,12 @@ def _optional_scope_id(value: Any, field: str) -> str | None:
     return _required_text(value, field)
 
 
-def _optional_scope_hash(value: Any, field: str) -> str | None:
+def _optional_rule_revision(value: Any) -> int | None:
     if value is None:
         return None
-    return _required_hash(value, field)
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+        raise ModuleHostContextError("rule_revision必须为正整数")
+    return value
 
 
 __all__ = (
