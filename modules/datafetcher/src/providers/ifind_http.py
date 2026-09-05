@@ -228,7 +228,7 @@ def calendar_response(
 
 
 def calendar_dates(payload: Mapping[str, Any], *, exchange: str) -> tuple[str, ...]:
-    """解析DateQuery返回的日期列，并拒绝交易所回显错配。"""
+    """解析DateQuery日期列；显式空列表示已验证无交易日。"""
 
     expected_code = CALENDAR_MARKET_CODES.get(exchange)
     input_params = payload.get("inputParams", payload.get("inputparams"))
@@ -237,26 +237,43 @@ def calendar_dates(payload: Mapping[str, Any], *, exchange: str) -> tuple[str, .
         if echoed is not None and str(echoed) not in {str(expected_code), exchange}:
             raise IFindDownloadError("iFind交易日历返回的交易所与请求不一致")
     values: list[Any] = []
+    has_date_column = False
     tables = payload.get("tables")
     table_items = [tables] if isinstance(tables, Mapping) else tables
     if isinstance(table_items, list):
         for item in table_items:
             if not isinstance(item, Mapping):
                 continue
-            item_values = _as_list(item.get("time"))
+            direct_time = item.get("time")
+            if "time" in item:
+                if not isinstance(direct_time, (list, tuple)):
+                    raise IFindDownloadError("iFind交易日历日期字段结构无效")
+                has_date_column = True
+            item_values = _as_list(direct_time)
             table = item.get("table", item.get("data"))
             if not item_values and isinstance(table, Mapping):
                 for key in ("sequencedate", "sequenceDate", "date", "time"):
-                    item_values = _as_list(table.get(key))
-                    if item_values:
-                        break
+                    if key not in table:
+                        continue
+                    raw_values = table.get(key)
+                    if not isinstance(raw_values, (list, tuple)):
+                        raise IFindDownloadError("iFind交易日历日期字段结构无效")
+                    has_date_column = True
+                    item_values = _as_list(raw_values)
+                    break
             elif not item_values and isinstance(table, (list, tuple)):
                 item_values = list(table)
             values.extend(item_values)
     data = payload.get("data")
     if isinstance(data, Mapping):
         for key in ("sequencedate", "sequenceDate", "date", "time"):
-            values.extend(_as_list(data.get(key)))
+            if key not in data:
+                continue
+            raw_values = data.get(key)
+            if not isinstance(raw_values, (list, tuple)):
+                raise IFindDownloadError("iFind交易日历日期字段结构无效")
+            has_date_column = True
+            values.extend(_as_list(raw_values))
     elif isinstance(data, (list, tuple)):
         values.extend(data)
     normalized: list[str] = []
@@ -264,11 +281,12 @@ def calendar_dates(payload: Mapping[str, Any], *, exchange: str) -> tuple[str, .
         if isinstance(value, Mapping):
             value = value.get("sequencedate", value.get("date", value.get("time")))
         if value is None:
-            continue
+            raise IFindDownloadError("iFind交易日历日期字段结构无效")
         text = str(value).strip()[:10]
-        if text:
-            normalized.append(text)
-    if not normalized:
+        if not text:
+            raise IFindDownloadError("iFind交易日历日期字段结构无效")
+        normalized.append(text)
+    if not normalized and not has_date_column:
         raise IFindDownloadError("iFind交易日历未返回有效交易日")
     return tuple(normalized)
 
