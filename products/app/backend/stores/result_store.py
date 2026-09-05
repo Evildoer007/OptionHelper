@@ -18,7 +18,7 @@ if str(_CORE_SRC) not in sys.path:
     sys.path.insert(0, str(_CORE_SRC))
 
 from runtime.adapters.local_store import LocalResultStore, StoreError
-from runtime.contracts.contract_types import semantic_hash
+from runtime.contracts.contract_api import ContractResolutionError, ResolvedContract
 from runtime.protocol.models import ModuleRunRef
 from modules.reporter.selection_facts import build_host_selection_source_refs
 
@@ -58,6 +58,7 @@ class ResultStore:
         task_id: str,
         module: str,
         *,
+        resolved_contract_snapshot: Mapping[str, Any],
         defer_publication: bool = False,
     ) -> "_BoundModuleResultStore":
         """Return a Core ResultStorePort scoped to one authenticated module run."""
@@ -66,7 +67,14 @@ class ResultStore:
             raise ValidationError("ModuleRun module is invalid")
         if not isinstance(defer_publication, bool):
             raise ValidationError("ModuleRun publication mode is invalid")
-        return _BoundModuleResultStore(self, identity, task_id, module, defer_publication)
+        return _BoundModuleResultStore(
+            self,
+            identity,
+            task_id,
+            module,
+            resolved_contract_snapshot,
+            defer_publication,
+        )
 
     def _commit_files(
         self,
@@ -148,7 +156,7 @@ class ResultStore:
                 continue
             try:
                 current_fields = (
-                    "module", "tenant_id", "task_id", "run_id", "expected_semantic_result_hash",
+                    "module", "tenant_id", "task_id", "run_id", "expected_result_file_hash",
                     "expected_artifact_manifest_hash",
                 )
                 if record.get("reference_schema") != MODULE_RUN_REF_SCHEMA:
@@ -270,7 +278,7 @@ class ResultStore:
         self._resolve_module_run(identity, reference, records)
         return ModuleRunRef(
             module=str(reference["module"]), tenant_id=str(reference["tenant_id"]), task_id=str(reference["task_id"]), run_id=str(reference["run_id"]),
-            expected_semantic_result_hash=str(reference["expected_semantic_result_hash"]),
+            expected_result_file_hash=str(reference["expected_result_file_hash"]),
             expected_artifact_manifest_hash=str(reference["expected_artifact_manifest_hash"]),
         )
 
@@ -315,8 +323,8 @@ class ResultStore:
             raise AuthorizationError("result.read", "module result is not owned by current caller")
         if record.get("module") != reference.get("module"):
             raise ValidationError("ModuleRunRef module does not match stored result")
-        expected = reference.get("expected_semantic_result_hash")
-        if expected != record.get("expected_semantic_result_hash"):
+        expected = reference.get("expected_result_file_hash")
+        if expected != record.get("expected_result_file_hash"):
             raise ValidationError("ModuleRunRef semantic hash does not match stored result")
         if reference.get("expected_artifact_manifest_hash") != record.get("expected_artifact_manifest_hash"):
             raise ValidationError("ModuleRunRef artifact manifest hash does not match stored result")
@@ -327,31 +335,39 @@ class ResultStore:
         identity: SessionIdentity,
         reference: dict[str, str],
         *,
-        expected_binding: Mapping[str, str] | None = None,
+        expected_binding: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Project selected numerical facts from one still-verifiable ModuleRun.
 
         This is intentionally a presentation projection, not a second pricer
-        or backtester.  The Core commit marker and semantic hash are resolved
+        or backtester.  The Core commit marker and file integrity proof are resolved
         before the App reads the immutable indexed result.  Neither tenant,
         principal, paths, raw payloads nor arbitrary fields leave this method.
         """
         record = self.resolve_module_run(identity, reference)
         try:
-            result = json.loads(self.read_owned_module_run_file(identity, reference, "result.json"))
+            result_bytes = self.read_owned_module_run_file(identity, reference, "result.json")
+            result = json.loads(result_bytes)
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
             raise ValidationError("已验证ModuleRun缺少可读取结果") from error
-        if not isinstance(result, dict) or semantic_hash(result) != record.get("expected_semantic_result_hash"):
-            raise ValidationError("ModuleRun事实哈希不匹配")
+        if (
+            not isinstance(result, dict)
+            or hashlib.sha256(result_bytes).hexdigest() != record.get("expected_result_file_hash")
+        ):
+            raise ValidationError("ModuleRun结果文件哈希不匹配")
         expected = dict(expected_binding or {})
         allowed_expected = {
-            "analysis_case_id", "candidate_id", "catalog_version", "contract_fingerprint",
-            "candidate_key", "candidate_version_id",
+            "analysis_case_id", "candidate_id", "product_id", "rule_revision",
         }
         if set(expected).difference(allowed_expected):
             raise ValidationError("ModuleRun事实绑定包含未知字段")
         for field, value in expected.items():
-            if not isinstance(value, str) or not value:
+            valid = (
+                isinstance(value, int) and not isinstance(value, bool) and value > 0
+                if field == "rule_revision"
+                else isinstance(value, str) and bool(value)
+            )
+            if not valid:
                 raise ValidationError(f"ModuleRun预期绑定{field}无效")
             actual = record.get("analysis_case_id") if field == "analysis_case_id" else result.get(field)
             if actual != value:
@@ -359,16 +375,14 @@ class ResultStore:
         run_ref = {
             "module": str(record["module"]),
             "run_id": str(record["run_id"]),
-            "result_hash": str(record["expected_semantic_result_hash"]),
-            "contract_fingerprint": str(result.get("contract_fingerprint", "")),
+            "result_file_hash": str(record["expected_result_file_hash"]),
         }
         facts = [
             {
                 **fact,
                 "module": run_ref["module"],
-                "contract_fingerprint": run_ref["contract_fingerprint"],
             }
-            for fact in _result_facts(str(record["module"]), result, run_ref["result_hash"])
+            for fact in _result_facts(str(record["module"]), result, run_ref["result_file_hash"])
         ]
         return {"run_ref": run_ref, "facts": facts}
 
@@ -403,8 +417,7 @@ class ResultStore:
                 verified_contract, verified_result = verified_run
                 candidate = _report_candidate({**record, "result": verified_result}, verified_contract)
             except ValidationError:
-                # Reporter只能消费带有Core合同快照哈希的正式结果。旧索引
-                # 记录不能靠临时派生标签伪装成当前可交付来源。
+                # Reporter只能消费带有完整当前合同快照的正式结果。
                 continue
             if needle and needle not in json.dumps(candidate, ensure_ascii=False, sort_keys=True).lower():
                 continue
@@ -412,7 +425,6 @@ class ResultStore:
                 tenant_id,
                 str(record["task_id"]),
                 candidate["analysis_case_id"],
-                candidate["catalog_content_hash"],
             )
             source = grouped.setdefault(source_id, {
                 "source_id": source_id,
@@ -420,8 +432,6 @@ class ResultStore:
                 "tenant_id": tenant_id,
                 "task_id": record["task_id"],
                 "analysis_case_id": candidate["analysis_case_id"],
-                "catalog_version": candidate["catalog_version"],
-                "catalog_content_hash": candidate["catalog_content_hash"],
                 "candidates": {},
             })
             # A candidate can have more than one saved contract snapshot:
@@ -433,7 +443,7 @@ class ResultStore:
             display_module = _report_module(str(record["module"]))
             reference = {
                 "module": record["module"], "tenant_id": record["tenant_id"], "task_id": record["task_id"], "run_id": record["run_id"],
-                "expected_semantic_result_hash": record["expected_semantic_result_hash"],
+                "expected_result_file_hash": record["expected_result_file_hash"],
                 "expected_artifact_manifest_hash": record["expected_artifact_manifest_hash"],
             }
             options = row.setdefault("module_run_options", {}).setdefault(display_module, [])
@@ -452,7 +462,7 @@ class ResultStore:
                         options,
                         key=lambda ref: (
                             str(ref.get("run_id", "")),
-                            str(ref.get("expected_semantic_result_hash", "")),
+                            str(ref.get("expected_result_file_hash", "")),
                         ),
                     )
                     for module, options in options_by_module.items()
@@ -479,7 +489,7 @@ class ResultStore:
                 tenant_id=str(record["tenant_id"]),
                 task_id=str(record["task_id"]),
                 run_id=str(record["run_id"]),
-                expected_semantic_result_hash=str(record["expected_semantic_result_hash"]),
+                expected_result_file_hash=str(record["expected_result_file_hash"]),
                 expected_artifact_manifest_hash=str(record["expected_artifact_manifest_hash"]),
             )
             contract = json.loads(self._core.read_module_run_file(reference, "resolved_contract.json", tenant_id=tenant_id))
@@ -558,12 +568,12 @@ class ResultStore:
             raise ValidationError("ReportRun artifact names must be unique")
         manifest = [{key: item[key] for key in ("name", "content_type", "sha256", "size")} for item in normalized]
         artifact_manifest_hash = _sha256(manifest)
-        semantic_fact_hash = _sha256(report_request)
+        report_file_hash = _sha256(report_request)
         reference = {
             "tenant_id": identity.tenant_id,
             "task_id": task_id,
             "report_run_id": report_run_id,
-            "expected_semantic_fact_hash": semantic_fact_hash,
+            "expected_report_file_hash": report_file_hash,
             "expected_artifact_manifest_hash": artifact_manifest_hash,
         }
         record = {
@@ -603,7 +613,7 @@ class ResultStore:
         if not isinstance(record, dict):
             raise KeyError(str(report_run_id))
         self._authorize_report(identity, record)
-        if reference.get("expected_semantic_fact_hash") != record.get("expected_semantic_fact_hash"):
+        if reference.get("expected_report_file_hash") != record.get("expected_report_file_hash"):
             raise ValidationError("ReportRunRef semantic fact hash does not match stored report")
         if reference.get("expected_artifact_manifest_hash") != record.get("expected_artifact_manifest_hash"):
             raise ValidationError("ReportRunRef artifact manifest hash does not match stored report")
@@ -675,12 +685,14 @@ class _BoundModuleResultStore:
         identity: SessionIdentity,
         task_id: str,
         module: str,
+        resolved_contract_snapshot: Mapping[str, Any],
         defer_publication: bool,
     ) -> None:
         self._owner = owner
         self._identity = identity
         self._task_id = task_id
         self._module = module
+        self._resolved_contract_snapshot = _validated_run_snapshot(resolved_contract_snapshot)
         self._defer_publication = defer_publication
 
     def predict_module_run_ref(
@@ -693,13 +705,14 @@ class _BoundModuleResultStore:
         files: Mapping[str, Any],
     ) -> ModuleRunRef:
         self._require_write_scope(module, tenant_id, task_id)
+        committed_files = self._complete_run_files(files)
         try:
             return self._owner._core.predict_module_run_ref(
                 module=module,
                 tenant_id=tenant_id,
                 task_id=task_id,
                 run_id=run_id,
-                files=files,
+                files=committed_files,
             )
         except (StoreError, FileNotFoundError, PermissionError) as error:
             raise ValidationError(f"Core ModuleRun无法预提交：{error}") from error
@@ -708,20 +721,17 @@ class _BoundModuleResultStore:
         self, *, module: str, tenant_id: str, task_id: str, run_id: str, files: dict[str, Any],
     ) -> ModuleRunRef:
         self._require_write_scope(module, tenant_id, task_id)
-        committed_files = dict(files)
+        committed_files = self._complete_run_files(files)
         raw_result = committed_files.get("result.json")
         manifest = committed_files.get("manifest.json")
         lifecycle_status = manifest.get("status") if isinstance(manifest, dict) else None
         if isinstance(raw_result, dict) and lifecycle_status in {"succeeded", "partial"}:
-            # The Core ResultStore computes the only authoritative semantic
-            # hash from its committed result.json.  Module implementations
-            # may carry an old self-referential ``semantic_result_hash`` in
-            # both files; remove that metadata and bind manifest to the exact
-            # bytes being committed instead of accepting two hash schemes.
+            # Core computes the only authoritative file hash from the exact
+            # committed result.json bytes.
             committed_result = dict(raw_result)
-            committed_result.pop("semantic_result_hash", None)
+            committed_result.pop("result_file_hash", None)
             committed_manifest = dict(manifest)
-            committed_manifest["semantic_result_hash"] = semantic_hash(committed_result)
+            committed_manifest.pop("result_file_hash", None)
             committed_files["result.json"] = committed_result
             committed_files["manifest.json"] = committed_manifest
             # Core's immutable manifest, rather than a page response, is the
@@ -757,6 +767,33 @@ class _BoundModuleResultStore:
             defer_publication=self._defer_publication,
         )
         return ModuleRunRef(**reference)
+
+    def _complete_run_files(self, files: Mapping[str, Any]) -> dict[str, Any]:
+        """Attach the Host-compiled snapshot before Core predicts or commits."""
+
+        committed = _without_retired_business_fields(dict(files))
+        snapshot = dict(self._resolved_contract_snapshot)
+        identity = snapshot["identity"]
+        product_id = identity["product_id"]
+        rule_revision = identity["rule_revision"]
+        committed["resolved_contract.json"] = snapshot
+        raw_result = committed.get("result.json")
+        if isinstance(raw_result, Mapping):
+            committed["result.json"] = {
+                **dict(raw_result),
+                "resolved_contract": snapshot,
+                "product_id": product_id,
+                "rule_revision": rule_revision,
+            }
+        raw_manifest = committed.get("manifest.json")
+        if isinstance(raw_manifest, Mapping):
+            committed["manifest.json"] = {
+                **dict(raw_manifest),
+                "product_id": product_id,
+                "rule_revision": rule_revision,
+                "resolved_contract_snapshot": "resolved_contract.json",
+            }
+        return committed
 
     def verify_module_run(self, ref: ModuleRunRef, *, tenant_id: str) -> None:
         """Verify a scoped RunRef without exposing a directory to new callers."""
@@ -795,17 +832,35 @@ class _BoundModuleResultStore:
             raise AuthorizationError("result.write", "ModuleRun scope does not match authenticated App task")
 
 
+def _validated_run_snapshot(value: Mapping[str, Any]) -> dict[str, Any]:
+    try:
+        snapshot = ResolvedContract.from_controlled_snapshot(value).to_controlled_snapshot()
+    except (TypeError, ValueError, ContractResolutionError) as error:
+        raise ValidationError("ModuleRun缺少有效的当前输入ResolvedContract快照") from error
+    identity = snapshot.get("identity")
+    product_id = identity.get("product_id") if isinstance(identity, Mapping) else None
+    revision = identity.get("rule_revision") if isinstance(identity, Mapping) else None
+    if (
+        not isinstance(product_id, str)
+        or not product_id
+        or not isinstance(revision, int)
+        or isinstance(revision, bool)
+        or revision <= 0
+    ):
+        raise ValidationError("ModuleRun快照缺少product_id或正整数rule_revision")
+    return snapshot
+
+
 _PRICING_FACTS = (
     ("pv_percent", "PV(%)", "percent"),
 )
 _GREEK_NAMES = {"delta": "Delta", "gamma": "Gamma", "vega": "Vega", "theta": "Theta", "rho": "Rho"}
 _BACKTEST_FACTS = (
-    ("average_contract_settlement_return", "average_gross_return", "平均合同结算收益率", "percent"),
-    ("median_contract_settlement_return", "median_gross_return", "中位合同结算收益率", "percent"),
-    ("minimum_contract_settlement_return", "minimum_gross_return", "最低合同结算收益率", "percent"),
-    ("maximum_contract_settlement_return", "maximum_gross_return", "最高合同结算收益率", "percent"),
-    ("max_loss_contract_settlement_return", "max_loss_gross_return", "最大历史损失", "percent"),
-    ("positive_return_rate", "win_rate", "历史正收益样本占比", "percent"),
+    ("average_contract_settlement_return", "平均合同结算收益率", "percent"),
+    ("median_contract_settlement_return", "中位合同结算收益率", "percent"),
+    ("minimum_contract_settlement_return", "最低合同结算收益率", "percent"),
+    ("maximum_contract_settlement_return", "最高合同结算收益率", "percent"),
+    ("positive_return_rate", "历史正收益样本占比", "percent"),
 )
 
 
@@ -830,8 +885,8 @@ def _result_facts(module: str, result: dict[str, Any], result_hash: str) -> list
     elif module == "backtester":
         source = result.get("backtest") if isinstance(result.get("backtest"), dict) else result
         metrics = source.get("common_metrics") if isinstance(source.get("common_metrics"), dict) else source
-        for key, legacy_key, label, unit in _BACKTEST_FACTS:
-            value = _number(metrics.get(key, metrics.get(legacy_key))) if isinstance(metrics, dict) else None
+        for key, label, unit in _BACKTEST_FACTS:
+            value = _number(metrics.get(key)) if isinstance(metrics, dict) else None
             if value is not None:
                 selected.append((key, label, value, unit))
     else:
@@ -870,20 +925,47 @@ def _completed(value: object) -> bool:
     return isinstance(value, dict) and value.get("ok") is not False and value.get("status") == "succeeded"
 
 
+_RETIRED_RUN_FIELDS = frozenset({
+    "catalog" + "_version",
+    "product" + "_version",
+    "product" + "_version_content_hash",
+    "contract" + "_fingerprint",
+    "registry" + "_snapshot_hash",
+    "product" + "_snapshot_hash",
+    "product" + "_paths_hash",
+    "execution" + "_fingerprint",
+    "semantic" + "_result_hash",
+    "business" + "_hash",
+    "term_overrides" + "_fingerprint",
+    "constraints" + "_fingerprint",
+    "ranking_spec" + "_fingerprint",
+    "candidate" + "_version_id",
+    "candidate" + "_key",
+    "base_contract" + "_ref",
+})
+
+
+def _without_retired_business_fields(value: Any) -> Any:
+    """Project module output onto the current product-and-revision protocol."""
+
+    if isinstance(value, Mapping):
+        return {
+            str(key): _without_retired_business_fields(item)
+            for key, item in value.items()
+            if str(key) not in _RETIRED_RUN_FIELDS
+        }
+    if isinstance(value, list):
+        return [_without_retired_business_fields(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_without_retired_business_fields(item) for item in value)
+    return value
+
+
 def _store_id(value: object, prefix: str) -> str:
     text = str(value or "")
     if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", text) and text not in {".", ".."}:
         return text
     return f"{prefix}-{hashlib.sha256(text.encode('utf-8')).hexdigest()[:24]}"
-
-
-def _candidate_variant_store_id(value: object, field: str) -> str:
-    """Keep CandidateVersion identifiers stable under ContractStore's grammar."""
-
-    text = str(value or "")
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}", text):
-        raise ValidationError(f"ModuleRun{field}无效")
-    return text
 
 
 def _module_run_key(module: object, run_id: object) -> str:
@@ -896,7 +978,7 @@ def _module_run_ref_dict(ref: ModuleRunRef) -> dict[str, str]:
         "tenant_id": ref.tenant_id,
         "task_id": ref.task_id,
         "run_id": ref.run_id,
-        "expected_semantic_result_hash": ref.expected_semantic_result_hash,
+        "expected_result_file_hash": ref.expected_result_file_hash,
         "expected_artifact_manifest_hash": ref.expected_artifact_manifest_hash,
     }
 
@@ -926,44 +1008,26 @@ def _module_run_files(
     resolved_contract = dict(contract) if isinstance(contract, dict) else {}
     if status in {"succeeded", "partial"} and not resolved_contract:
         raise ValidationError("成功ModuleRun缺少resolved_contract")
+    contract_identity = resolved_contract.get("identity")
+    rule_revision = contract_identity.get("rule_revision") if isinstance(contract_identity, Mapping) else None
+    if status in {"succeeded", "partial"} and (
+        isinstance(rule_revision, bool) or not isinstance(rule_revision, int) or rule_revision <= 0
+    ):
+        raise ValidationError("成功ModuleRun的ResolvedContract缺少正整数rule_revision")
     raw_analysis_case_id = value.get("analysis_case_id")
     if status in {"succeeded", "partial"} and not isinstance(raw_analysis_case_id, str):
         raise ValidationError("成功ModuleRun缺少analysis_case_id")
     analysis_case_id = _store_id(raw_analysis_case_id, "case") if isinstance(raw_analysis_case_id, str) else ""
-    contract_fingerprint = str(resolved_contract.get("contract_fingerprint") or value.get("contract_fingerprint") or "")
     raw_candidate_id = value.get("candidate_id")
     if status in {"succeeded", "partial"} and not isinstance(raw_candidate_id, str):
         raise ValidationError("成功ModuleRun缺少candidate_id")
     candidate_id = _store_id(raw_candidate_id, "candidate") if isinstance(raw_candidate_id, str) else ""
     if candidate_id:
         value["candidate_id"] = candidate_id
-    candidate_key = value.get("candidate_key")
-    candidate_version_id = value.get("candidate_version_id")
-    if (candidate_key is None) != (candidate_version_id is None):
-        raise ValidationError("ModuleRun候选版本身份必须同时包含candidate_key和candidate_version_id")
-    if candidate_key is not None:
-        value["candidate_key"] = _candidate_variant_store_id(candidate_key, "candidate_key")
-        value["candidate_version_id"] = _candidate_variant_store_id(
-            candidate_version_id,
-            "candidate_version_id",
-        )
-    catalog_version = value.get("catalog_version")
-    if not isinstance(catalog_version, str) or not catalog_version.strip():
-        if status in {"succeeded", "partial"}:
-            raise ValidationError("成功ModuleRun缺少catalog_version")
-        catalog_version = ""
-    else:
-        catalog_version = catalog_version.strip()
-    value["catalog_version"] = catalog_version
-    execution_fingerprint = value.get("execution_fingerprint")
-    if status in {"succeeded", "partial"} and (
-        not isinstance(execution_fingerprint, str)
-        or re.fullmatch(r"[0-9a-f]{64}", execution_fingerprint) is None
-    ):
-        raise ValidationError("成功ModuleRun缺少有效execution_fingerprint")
-    if isinstance(execution_fingerprint, str) and execution_fingerprint:
-        value["execution_fingerprint"] = execution_fingerprint
-    semantic_result_hash = semantic_hash(value) if status in {"succeeded", "partial"} else ""
+    value = _without_retired_business_fields(value)
+    if status in {"succeeded", "partial"}:
+        value["product_id"] = contract_identity["product_id"]
+        value["rule_revision"] = rule_revision
     limitations = value.get("limitations")
     if not isinstance(limitations, list) or any(not isinstance(item, str) for item in limitations):
         limitations = []
@@ -975,20 +1039,15 @@ def _module_run_files(
         "run_id": safe_run_id,
         "analysis_case_id": analysis_case_id,
         "candidate_id": candidate_id,
-        "catalog_version": catalog_version,
         "status": status,
         "lifecycle_status": status,
-        "contract_fingerprint": contract_fingerprint,
-        "product_version": resolved_contract.get("product_version"),
-        "execution_fingerprint": execution_fingerprint,
+        "product_id": contract_identity.get("product_id") if isinstance(contract_identity, Mapping) else None,
+        "rule_revision": rule_revision,
         "input_snapshot": "input_snapshot.json",
-        "resolved_contract": "resolved_contract.json",
+        "resolved_contract_snapshot": "resolved_contract.json",
         "data_refs": "data_refs.json",
         "limitations": "limitations.json",
     }
-    if candidate_key is not None:
-        manifest["candidate_key"] = value["candidate_key"]
-        manifest["candidate_version_id"] = value["candidate_version_id"]
     files: dict[str, Any] = {
         "input_snapshot.json": {"module": module, "task_id": task_id, "analysis_case_id": analysis_case_id},
         "resolved_contract.json": resolved_contract,
@@ -996,7 +1055,6 @@ def _module_run_files(
         "limitations.json": json.dumps(limitations, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
     }
     if status in {"succeeded", "partial"}:
-        manifest["semantic_result_hash"] = semantic_result_hash
         manifest["result"] = "result.json"
         files["result.json"] = value
     else:
@@ -1097,11 +1155,11 @@ def _report_module(module: str) -> str:
     return {"payoffer": "payoff", "pricer": "pricing", "backtester": "backtest"}[module]
 
 
-def _source_id(tenant_id: str, task_id: str, analysis_case_id: str, catalog_content_hash: str) -> str:
-    digest = hashlib.sha256(
-        f"{tenant_id}:{task_id}:{analysis_case_id}:{catalog_content_hash}".encode("utf-8")
-    ).hexdigest()[:24]
-    return f"source_{digest}"
+def _source_id(tenant_id: str, task_id: str, analysis_case_id: str) -> str:
+    parts = (tenant_id, task_id, analysis_case_id)
+    if any(not re.fullmatch(r"[A-Za-z0-9_.-]+", item) for item in parts):
+        raise ValidationError("formal report source identity is invalid")
+    return "source_" + "__".join(parts)
 
 
 def _report_candidate(record: dict[str, Any], verified_contract: dict[str, Any]) -> dict[str, Any]:
@@ -1116,11 +1174,9 @@ def _report_candidate(record: dict[str, Any], verified_contract: dict[str, Any])
     if not product_id:
         raise ValidationError("formal report source is missing product_id")
     product_name = str(identity.get("name_zh") or product_id)
-    fingerprint = str(contract.get("contract_fingerprint") or "")
-    if not re.fullmatch(r"[0-9a-f]{64}", fingerprint):
-        raise ValidationError("formal report source is missing contract_fingerprint")
-    if result.get("contract_fingerprint") != fingerprint:
-        raise ValidationError("formal report source contract_fingerprint does not match current contract")
+    rule_revision = identity.get("rule_revision")
+    if isinstance(rule_revision, bool) or not isinstance(rule_revision, int) or rule_revision <= 0:
+        raise ValidationError("formal report source is missing rule_revision")
     analysis_case_id = str(record.get("analysis_case_id") or "").strip()
     if not analysis_case_id:
         raise ValidationError("formal report source is missing analysis_case_id")
@@ -1134,22 +1190,7 @@ def _report_candidate(record: dict[str, Any], verified_contract: dict[str, Any])
         price_projection = dict(price_convention)
     else:
         price_projection = {}
-    # Core does not currently publish a separate analysis-basis id.  Use the
-    # same immutable contract-derived basis used by Reporter verification,
-    # never task_id or a mutable page value.
-    analysis_basis_id = f"basis-{fingerprint[:20]}"
-    catalog_content_hash = str(contract.get("registry_snapshot_hash") or "").strip()
-    product_content_hash = str(contract.get("product_snapshot_hash") or "").strip()
-    if not re.fullmatch(r"[0-9a-f]{64}", catalog_content_hash):
-        raise ValidationError("formal report source is missing registry_snapshot_hash")
-    if not re.fullmatch(r"[0-9a-f]{64}", product_content_hash):
-        raise ValidationError("formal report source is missing product_snapshot_hash")
-    product_version = str(contract.get("product_version") or "").strip()
-    if not product_version:
-        raise ValidationError("formal report source is missing product_version")
-    catalog_version = str(result.get("catalog_version") or "").strip()
-    if not catalog_version:
-        raise ValidationError("formal report source is missing catalog_version")
+    analysis_basis_id = f"basis-{analysis_case_id}"
     underlyings = identity.get("underlyings")
     if not isinstance(underlyings, list) or not all(isinstance(value, str) and value for value in underlyings):
         raise ValidationError("formal report source is missing contract underlyings")
@@ -1160,11 +1201,7 @@ def _report_candidate(record: dict[str, Any], verified_contract: dict[str, Any])
         "candidate_id": candidate_id,
         "product_id": product_id,
         "product_name": product_name,
-        "product_version": product_version,
-        "product_version_content_hash": product_content_hash,
-        "catalog_version": catalog_version,
-        "catalog_content_hash": catalog_content_hash,
-        "contract_fingerprint": fingerprint,
+        "rule_revision": rule_revision,
         "analysis_basis_id": analysis_basis_id,
         "analysis_case_id": analysis_case_id,
         "underlyings": list(underlyings),
