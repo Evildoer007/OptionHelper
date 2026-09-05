@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from contextlib import contextmanager
-from dataclasses import asdict, dataclass
-from datetime import date, datetime, timezone
+from contextlib import ExitStack, contextmanager
+from dataclasses import asdict, dataclass, replace
+from datetime import date, datetime, timedelta, timezone
 import hashlib
 import json
 from pathlib import Path
@@ -16,7 +16,7 @@ from runtime.adapters.local_store import LocalDataStore, StoreError
 from runtime.contracts.contract_types import deep_thaw
 from runtime.protocol.models import CallerContext, DataAssetRef
 
-from .cache_resolver import _process_lock
+from .cache_resolver import _process_lock, _temporary_lock_path, missing_intervals
 from .config import DataFetcherConfig
 from .market_conventions import UnsupportedChinaAsset, china_market_convention
 from .models import CalendarRequest, DataRequest
@@ -36,6 +36,8 @@ from .volatile_store import read_volatile_asset, store_volatile_asset
 CALENDAR_SCHEMA = "trading-calendar"
 _INDEX_LOCKS: dict[str, threading.RLock] = {}
 _INDEX_LOCKS_GUARD = threading.Lock()
+_VOLATILE_CALENDARS: dict[tuple[str, str], dict[str, Any]] = {}
+_VOLATILE_CALENDARS_LOCK = threading.RLock()
 
 
 class CalendarValidationError(ValueError):
@@ -105,7 +107,12 @@ def validate_calendar_request(value: CalendarRequest | Mapping[str, Any], config
 
 
 def _validate_exchange_sessions(
-    values: tuple[str, ...], *, exchange: str, start_date: str, end_date: str,
+    values: tuple[str, ...],
+    *,
+    exchange: str,
+    start_date: str,
+    end_date: str,
+    allow_empty: bool = False,
 ) -> tuple[str, ...]:
     parsed: list[str] = []
     for value in values:
@@ -121,7 +128,7 @@ def _validate_exchange_sessions(
             raise CalendarValidationError(f"{exchange}交易日超出请求区间")
         parsed.append(canonical)
     result = tuple(parsed)
-    if not result:
+    if not result and not allow_empty:
         raise CalendarValidationError(f"{exchange}交易日历为空")
     if result != tuple(sorted(result)) or len(set(result)) != len(result):
         raise CalendarValidationError(f"{exchange}交易日必须严格递增且不重复")
@@ -247,7 +254,7 @@ def _canonical_payload(
 ) -> tuple[dict[str, Any], bytes, str]:
     exchanges = tuple(sorted(sessions_by_exchange))
     intersection = tuple(sorted(set.intersection(*(set(sessions_by_exchange[item]) for item in exchanges))))
-    if not intersection:
+    if not intersection and any(sessions_by_exchange[item] for item in exchanges):
         raise CalendarValidationError("多交易所交易日交集为空")
     asset_exchange = {
         asset_id: str(china_market_convention(asset_id)["exchange"])
@@ -268,15 +275,42 @@ def _canonical_payload(
     return payload, encoded, hashlib.sha256(encoded).hexdigest()
 
 
-def _calendar_identity(request: CalendarRequest, tenant_id: str) -> str:
+def _calendar_identity(request: CalendarRequest, tenant_id: str, principal_id: str) -> str:
     exchanges = sorted({str(china_market_convention(item)["exchange"]) for item in request.asset_ids})
     encoded = json.dumps({
         "tenant_id": tenant_id,
-        "asset_ids": sorted(request.asset_ids),
+        "principal_id": principal_id,
         "exchanges": exchanges,
         "schema_id": CALENDAR_SCHEMA,
     }, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _exchange_lock_identity(caller: CallerContext, exchange: str) -> str:
+    return hashlib.sha256(
+        f"{caller.tenant_id}:{caller.principal_id}:{CALENDAR_SCHEMA}:{exchange}".encode("utf-8")
+    ).hexdigest()
+
+
+def _date_sequence(start_date: str, end_date: str) -> tuple[str, ...]:
+    current = date.fromisoformat(start_date)
+    end = date.fromisoformat(end_date)
+    values: list[str] = []
+    while current <= end:
+        values.append(current.isoformat())
+        current += timedelta(days=1)
+    return tuple(values)
+
+
+@dataclass(frozen=True)
+class CalendarCoverage:
+    sessions_by_exchange: Mapping[str, tuple[str, ...]]
+    covered_dates_by_exchange: Mapping[str, frozenset[str]]
+    exact: tuple[DataAssetRef, bytes] | None = None
+
+    @property
+    def has_local_coverage(self) -> bool:
+        return any(self.covered_dates_by_exchange.values())
 
 
 def _atomic_json(path: Path, value: Mapping[str, Any]) -> None:
@@ -297,7 +331,7 @@ class CalendarCache:
     @contextmanager
     def _guard(self):
         with self._lock:
-            with _process_lock(self.root / ".calendar-index.lock"):
+            with _process_lock(_temporary_lock_path("calendar-index", str(self.root.resolve()))):
                 yield
 
     @contextmanager
@@ -306,11 +340,13 @@ class CalendarCache:
 
         with _INDEX_LOCKS_GUARD:
             lock = _INDEX_LOCKS.setdefault(
-                str((self.root / ".calendar-request-locks" / identity).resolve()),
+                f"{self.root.resolve()}:{identity}",
                 threading.RLock(),
             )
         with lock:
-            with _process_lock(self.root / ".calendar-request-locks" / f"{identity}.lock"):
+            with _process_lock(
+                _temporary_lock_path("calendar-request", f"{self.root.resolve()}:{identity}")
+            ):
                 yield
 
     def _read_index(self) -> dict[str, Any]:
@@ -325,7 +361,7 @@ class CalendarCache:
         return value
 
     def save(self, request: CalendarRequest, caller: CallerContext, payload: bytes, ref: DataAssetRef) -> None:
-        identity = _calendar_identity(request, caller.tenant_id)
+        identity = _calendar_identity(request, caller.tenant_id, caller.principal_id)
         relative = f"calendars/{ref.content_hash}.json"
         with self._guard():
             target = self.root / relative
@@ -339,18 +375,53 @@ class CalendarCache:
                 "payload_path": relative,
                 "data_asset_ref": deep_thaw(asdict(ref)),
                 "tenant_id": caller.tenant_id,
+                "principal_id": caller.principal_id,
+                "exchanges": sorted({str(china_market_convention(item)["exchange"]) for item in request.asset_ids}),
                 "provider": "ifind_http",
                 "updated_at": datetime.now(timezone.utc).isoformat(),
             }
             _atomic_json(self.index_path, index)
 
-    def list_assets(self, *, tenant_id: str, limit: int = 100) -> list[Mapping[str, Any]]:
+    def save_volatile(
+        self,
+        request: CalendarRequest,
+        caller: CallerContext,
+        payload: bytes,
+        ref: DataAssetRef,
+    ) -> None:
+        """Register calendar coverage in process memory only."""
+
+        identity = _calendar_identity(request, caller.tenant_id, caller.principal_id)
+        key = (str(self.root.resolve()), f"{identity}:{ref.content_hash}")
+        with _VOLATILE_CALENDARS_LOCK:
+            _VOLATILE_CALENDARS[key] = {
+                "calendar_identity": identity,
+                "payload": bytes(payload),
+                "data_asset_ref": deep_thaw(asdict(ref)),
+                "tenant_id": caller.tenant_id,
+                "principal_id": caller.principal_id,
+                "exchanges": sorted({str(china_market_convention(item)["exchange"]) for item in request.asset_ids}),
+                "provider": "ifind_http",
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+
+    def list_assets(
+        self,
+        *,
+        tenant_id: str,
+        principal_id: str | None = None,
+        limit: int = 100,
+    ) -> list[Mapping[str, Any]]:
         safe_limit = max(1, min(int(limit), 100))
         with self._guard():
             records = list(self._read_index()["entries"].values())
         assets: list[Mapping[str, Any]] = []
         for record in records:
-            if not isinstance(record, Mapping) or record.get("tenant_id") != tenant_id:
+            if (
+                not isinstance(record, Mapping)
+                or record.get("tenant_id") != tenant_id
+                or (principal_id is not None and record.get("principal_id") not in {None, principal_id})
+            ):
                 continue
             reference = record.get("data_asset_ref")
             if isinstance(reference, Mapping):
@@ -361,11 +432,20 @@ class CalendarCache:
                 })
         return sorted(assets, key=lambda item: str(item.get("updated_at", "")), reverse=True)[:safe_limit]
 
-    def find_asset(self, *, tenant_id: str, data_asset_id: str) -> Mapping[str, Any] | None:
+    def find_asset(
+        self,
+        *,
+        tenant_id: str,
+        data_asset_id: str,
+        principal_id: str | None = None,
+    ) -> Mapping[str, Any] | None:
         with self._guard():
             records = list(self._read_index()["entries"].values())
         for record in records:
-            if not isinstance(record, Mapping) or record.get("tenant_id") != tenant_id:
+            if (
+                not isinstance(record, Mapping)
+                or record.get("tenant_id") != tenant_id
+            ):
                 continue
             reference = record.get("data_asset_ref")
             if isinstance(reference, Mapping) and reference.get("data_asset_id") == data_asset_id:
@@ -376,58 +456,150 @@ class CalendarCache:
                 }
         return None
 
-    def lookup(self, request: CalendarRequest, caller: CallerContext, store: LocalDataStore) -> tuple[DataAssetRef, bytes] | None:
-        identity = _calendar_identity(request, caller.tenant_id)
-        with self._guard():
-            entries = self._read_index()["entries"]
-            records = [
-                record
-                for key, record in entries.items()
-                if isinstance(record, Mapping)
-                and record.get("tenant_id") == caller.tenant_id
-                and (record.get("calendar_identity") == identity or key == identity)
-            ]
-            records.sort(key=lambda item: str(item.get("updated_at", "")), reverse=True)
-            for record in records:
-                resolved = self._resolve_cached_record(record, request, caller, store)
-                if resolved is not None:
-                    return resolved
-            return None
+    def _records(self, caller: CallerContext) -> list[Mapping[str, Any]]:
+        records: list[Mapping[str, Any]] = []
+        if self.index_path.exists():
+            with self._guard():
+                records.extend(self._read_index()["entries"].values())
+        root_key = str(self.root.resolve())
+        with _VOLATILE_CALENDARS_LOCK:
+            records.extend(
+                dict(record)
+                for (record_root, _key), record in _VOLATILE_CALENDARS.items()
+                if record_root == root_key
+            )
+        return [
+            record
+            for record in records
+            if isinstance(record, Mapping)
+            and record.get("tenant_id") == caller.tenant_id
+            and record.get("principal_id") in {None, caller.principal_id}
+        ]
 
-    def _resolve_cached_record(
+    def _resolve_record(
         self,
         record: Mapping[str, Any],
-        request: CalendarRequest,
         caller: CallerContext,
-        store: LocalDataStore,
-    ) -> tuple[DataAssetRef, bytes] | None:
+        store: LocalDataStore | None,
+    ) -> tuple[DataAssetRef, bytes, Mapping[str, Any]] | None:
         reference = record.get("data_asset_ref")
         relative = record.get("payload_path")
-        if not isinstance(reference, Mapping) or not isinstance(relative, str):
-            return None
-        path = (self.root / relative).resolve()
-        if self.root.resolve() not in path.parents or not path.is_file():
+        inline = record.get("payload")
+        if not isinstance(reference, Mapping):
             return None
         try:
             ref = _ref_from_mapping(reference)
-            payload = path.read_bytes()
+            if isinstance(inline, bytes):
+                payload = bytes(inline)
+            elif isinstance(relative, str):
+                path = (self.root / relative).resolve()
+                if self.root.resolve() not in path.parents or not path.is_file():
+                    return None
+                payload = path.read_bytes()
+            else:
+                return None
             document = json.loads(payload)
         except (TypeError, ValueError, OSError, json.JSONDecodeError):
             return None
-        if ref.created_by != caller.principal_id or "read" not in ref.access_scope:
+        if (
+            ref.tenant_id != caller.tenant_id
+            or ref.created_by != caller.principal_id
+            or "read" not in ref.access_scope
+        ):
             return None
         if ref.schema_id != CALENDAR_SCHEMA or hashlib.sha256(payload).hexdigest() != ref.content_hash:
             return None
-        coverage = dict(ref.coverage)
-        if coverage.get("start_date") > request.start_date or coverage.get("end_date") < request.end_date:
+        if not isinstance(document, Mapping) or document.get("schema_id") != CALENDAR_SCHEMA:
             return None
-        if set(ref.asset_ids) != set(request.asset_ids) or not isinstance(document, Mapping):
-            return None
-        try:
-            store.resolve(ref, tenant_id=caller.tenant_id)
-        except (FileNotFoundError, PermissionError, StoreError):
-            return None
-        return ref, payload
+        if ref.storage_ref.startswith("volatile:"):
+            in_memory = read_volatile_asset(ref.data_asset_id, caller)
+            if in_memory is None or in_memory[0].content_hash != ref.content_hash:
+                return None
+        else:
+            if store is None:
+                return None
+            try:
+                store.resolve(ref, tenant_id=caller.tenant_id)
+            except (FileNotFoundError, PermissionError, StoreError):
+                return None
+        return ref, payload, document
+
+    def coverage(
+        self,
+        request: CalendarRequest,
+        caller: CallerContext,
+        store: LocalDataStore | None,
+    ) -> CalendarCoverage:
+        expected_exchanges = {
+            str(china_market_convention(asset_id)["exchange"])
+            for asset_id in request.asset_ids
+        }
+        sessions: dict[str, set[str]] = {exchange: set() for exchange in expected_exchanges}
+        covered: dict[str, set[str]] = {exchange: set() for exchange in expected_exchanges}
+        exact: tuple[DataAssetRef, bytes] | None = None
+        records = sorted(
+            self._records(caller),
+            key=lambda item: str(item.get("updated_at", "")),
+            reverse=True,
+        )
+        for record in records:
+            resolved = self._resolve_record(record, caller, store)
+            if resolved is None:
+                continue
+            ref, payload, document = resolved
+            try:
+                start_date = date.fromisoformat(str(document["requested_start_date"])).isoformat()
+                end_date = date.fromisoformat(str(document["requested_end_date"])).isoformat()
+                raw_by_exchange = document["sessions_by_exchange"]
+            except (KeyError, TypeError, ValueError):
+                continue
+            if not isinstance(raw_by_exchange, Mapping):
+                continue
+            for exchange in expected_exchanges.intersection(str(item) for item in raw_by_exchange):
+                raw_sessions = raw_by_exchange.get(exchange)
+                if not isinstance(raw_sessions, list):
+                    continue
+                try:
+                    validated = _validate_exchange_sessions(
+                        tuple(raw_sessions),
+                        exchange=exchange,
+                        start_date=start_date,
+                        end_date=end_date,
+                        allow_empty=True,
+                    )
+                except CalendarValidationError:
+                    continue
+                sessions[exchange].update(validated)
+                covered[exchange].update(_date_sequence(start_date, end_date))
+            coverage = dict(ref.coverage)
+            if (
+                exact is None
+                and set(ref.asset_ids) == set(request.asset_ids)
+                and coverage.get("start_date") <= request.start_date
+                and coverage.get("end_date") >= request.end_date
+                and ref.lineage.get("persistence_mode") == request.persistence_mode
+            ):
+                exact = (ref, payload)
+        return CalendarCoverage(
+            sessions_by_exchange={key: tuple(sorted(values)) for key, values in sessions.items()},
+            covered_dates_by_exchange={key: frozenset(values) for key, values in covered.items()},
+            exact=exact,
+        )
+
+    def lookup(
+        self,
+        request: CalendarRequest,
+        caller: CallerContext,
+        store: LocalDataStore | None,
+    ) -> tuple[DataAssetRef, bytes] | None:
+        local = self.coverage(request, caller, store)
+        requested_dates = set(_date_sequence(request.start_date, request.end_date))
+        if local.exact is not None and all(
+            requested_dates.issubset(local.covered_dates_by_exchange.get(exchange, frozenset()))
+            for exchange in local.covered_dates_by_exchange
+        ):
+            return local.exact
+        return None
 
 
 def _store_reference(
@@ -439,15 +611,14 @@ def _store_reference(
     content_hash: str,
 ) -> DataAssetRef:
     sessions = tuple(str(item) for item in payload["sessions"])
-    by_exchange = {
-        exchange: {
-            "start_date": values[0],
-            "end_date": values[-1],
+    by_exchange: dict[str, dict[str, Any]] = {}
+    for exchange, raw in dict(payload["sessions_by_exchange"]).items():
+        values = tuple(str(item) for item in raw)
+        by_exchange[exchange] = {
+            "start_date": values[0] if values else request.start_date,
+            "end_date": values[-1] if values else request.end_date,
             "row_count": len(values),
         }
-        for exchange, raw in dict(payload["sessions_by_exchange"]).items()
-        if (values := tuple(str(item) for item in raw))
-    }
     coverage = {
         "start_date": request.start_date,
         "end_date": request.end_date,
@@ -456,8 +627,9 @@ def _store_reference(
         "calendar_revision": content_hash[:16],
         "by_exchange": by_exchange,
     }
-    store = LocalDataStore(Path(config.data_root))
-    owner = hashlib.sha256(caller.principal_id.encode("utf-8")).hexdigest()[:12]
+    owner = hashlib.sha256(
+        f"{caller.tenant_id}\0{caller.principal_id}".encode("utf-8")
+    ).hexdigest()[:12]
     data_asset_id = f"calendar-{content_hash}-ifind-o-{owner}"
     lineage = {
         "provider": "ifind_http",
@@ -487,6 +659,7 @@ def _store_reference(
             },
             lineage=lineage,
         )
+    store = LocalDataStore(Path(config.data_root))
     try:
         return store.put_bytes(
             tenant_id=caller.tenant_id,
@@ -543,54 +716,119 @@ def fetch_calendar_asset(
     caller: CallerContext,
     config: DataFetcherConfig,
 ) -> tuple[CalendarRequest, DataAssetRef, Mapping[str, Any], str, tuple[Mapping[str, Any], ...]]:
-    """优先调用iFind；仅在Provider失败时复用完整覆盖的验证缓存。"""
+    """Combine user-scoped local coverage first and fetch only exact gaps."""
 
     if "data:read" not in caller.capabilities:
         raise CalendarValidationError("当前CallerContext无data:read权限")
     request = validate_calendar_request(request_value, config)
-    store = LocalDataStore(Path(config.data_root))
     cache = CalendarCache(Path(config.cache_root))
+    store = (
+        LocalDataStore(Path(config.data_root))
+        if request.persistence_mode == "library" or cache.index_path.exists()
+        else None
+    )
     calls: list[Mapping[str, Any]] = []
-    identity = _calendar_identity(request, caller.tenant_id)
-    # 默认仍优先向iFind刷新。仅当并发同请求刚刚填充缓存时，等待者复用该结果。
-    cached_before = cache.lookup(request, caller, store)
-    with cache.fetch_lock(identity):
-        cached_after = cache.lookup(request, caller, store)
-        if cached_before is None and cached_after is not None:
-            ref, payload = _cached_reference(cached_after)
+    asset_exchange = {
+        asset_id: str(china_market_convention(asset_id)["exchange"])
+        for asset_id in request.asset_ids
+    }
+    expected = tuple(sorted(set(asset_exchange.values())))
+    lock_identities = tuple(_exchange_lock_identity(caller, exchange) for exchange in expected)
+    requested_dates = _date_sequence(request.start_date, request.end_date)
+
+    with ExitStack() as locks:
+        for identity in lock_identities:
+            locks.enter_context(cache.fetch_lock(identity))
+
+        local = cache.coverage(request, caller, store)
+        missing_by_exchange = {
+            exchange: missing_intervals(
+                requested_dates,
+                local.covered_dates_by_exchange.get(exchange, frozenset()),
+            )
+            for exchange in expected
+        }
+        missing_by_exchange = {
+            exchange: intervals
+            for exchange, intervals in missing_by_exchange.items()
+            if intervals
+        }
+
+        if not missing_by_exchange and local.exact is not None:
+            ref, encoded = local.exact
+            ref, payload = _cached_reference((ref, encoded))
             decision = "verified_cache_reused"
         else:
-            expected = sorted({str(china_market_convention(item)["exchange"]) for item in request.asset_ids})
-            estimated_units = len(expected)
-            limit = request.quota_limit if request.quota_limit is not None else config.max_provider_units
-            try:
-                if estimated_units > limit:
-                    raise ProviderQuotaExceeded("交易日历请求超过DataFetcher额度保护上限")
-                raw_by_exchange = IFindHttpProvider().fetch_calendar(request, config)
-                if not isinstance(raw_by_exchange, Mapping):
-                    raise CalendarValidationError("iFind交易日历返回结构无效")
-                validated = {
-                    exchange: _validate_exchange_sessions(
-                        tuple(values) if isinstance(values, (tuple, list)) and not isinstance(values, (str, bytes)) else (),
-                        exchange=exchange, start_date=request.start_date, end_date=request.end_date,
-                    )
-                    for exchange, values in raw_by_exchange.items()
-                    if isinstance(exchange, str) and isinstance(values, (tuple, list)) and not isinstance(values, (str, bytes))
-                }
-                if len(validated) != len(raw_by_exchange):
-                    raise CalendarValidationError("iFind交易日历返回结构无效")
-                if sorted(validated) != expected:
-                    raise CalendarValidationError("iFind交易日历未覆盖请求的全部交易所")
-                payload, encoded, content_hash = _canonical_payload(request, validated)
-                ref = _store_reference(request, caller, config, payload, encoded, content_hash)
-                if request.persistence_mode == "library":
-                    cache.save(request, caller, encoded, ref)
-                calls.append({"provider": "ifind_http", "endpoint": "get_trade_dates", "outcome": "succeeded", "quota_units": estimated_units})
-                decision = "provider_fetched"
-            except (ProviderError, CalendarValidationError) as error:
-                calls.append({"provider": "ifind_http", "endpoint": "get_trade_dates", "outcome": error.code, "quota_units": 0})
-                cached = cache.lookup(request, caller, store)
-                if cached is None:
+            combined_sessions = {
+                exchange: set(local.sessions_by_exchange.get(exchange, ()))
+                for exchange in expected
+            }
+            grouped_gaps: dict[tuple[str, str], list[str]] = {}
+            for exchange, intervals in missing_by_exchange.items():
+                for start_date, end_date in intervals:
+                    grouped_gaps.setdefault((start_date, end_date), []).append(exchange)
+
+            quota_used = 0
+            for (start_date, end_date), exchanges in sorted(grouped_gaps.items()):
+                selected_assets = tuple(
+                    next(asset_id for asset_id, asset_market in asset_exchange.items() if asset_market == exchange)
+                    for exchange in sorted(exchanges)
+                )
+                gap_request = replace(
+                    request,
+                    asset_ids=selected_assets,
+                    start_date=start_date,
+                    end_date=end_date,
+                )
+                estimated_units = len(exchanges)
+                limit = request.quota_limit if request.quota_limit is not None else config.max_provider_units
+                try:
+                    if quota_used + estimated_units > limit:
+                        raise ProviderQuotaExceeded("交易日历请求超过DataFetcher额度保护上限")
+                    raw_by_exchange = IFindHttpProvider().fetch_calendar(gap_request, config)
+                    if not isinstance(raw_by_exchange, Mapping):
+                        raise CalendarValidationError("iFind交易日历返回结构无效")
+                    validated = {
+                        exchange: _validate_exchange_sessions(
+                            tuple(values)
+                            if isinstance(values, (tuple, list)) and not isinstance(values, (str, bytes))
+                            else (),
+                            exchange=exchange,
+                            start_date=start_date,
+                            end_date=end_date,
+                            allow_empty=True,
+                        )
+                        for exchange, values in raw_by_exchange.items()
+                        if isinstance(exchange, str)
+                        and isinstance(values, (tuple, list))
+                        and not isinstance(values, (str, bytes))
+                    }
+                    if len(validated) != len(raw_by_exchange):
+                        raise CalendarValidationError("iFind交易日历返回结构无效")
+                    if sorted(validated) != sorted(exchanges):
+                        raise CalendarValidationError("iFind交易日历未覆盖请求的全部交易所")
+                    for exchange, sessions in validated.items():
+                        combined_sessions[exchange].update(sessions)
+                    quota_used += estimated_units
+                    calls.append({
+                        "provider": "ifind_http",
+                        "endpoint": "get_trade_dates",
+                        "outcome": "succeeded",
+                        "quota_units": estimated_units,
+                        "start_date": start_date,
+                        "end_date": end_date,
+                        "exchanges": sorted(exchanges),
+                    })
+                except (ProviderError, CalendarValidationError) as error:
+                    calls.append({
+                        "provider": "ifind_http",
+                        "endpoint": "get_trade_dates",
+                        "outcome": error.code,
+                        "quota_units": 0,
+                        "start_date": start_date,
+                        "end_date": end_date,
+                        "exchanges": sorted(exchanges),
+                    })
                     if isinstance(error, (
                         CalendarValidationError,
                         ProviderFieldPermissionDenied,
@@ -600,10 +838,27 @@ def fetch_calendar_asset(
                         ProviderUnauthorized,
                     )):
                         raise _attach_provider_calls(error, calls)
-                    unavailable = ProviderUnavailable("交易日历暂不可用，且没有完整覆盖本次区间的已验证缓存")
+                    unavailable = ProviderUnavailable("交易日历暂不可用，且本地资产未完整覆盖请求区间")
                     raise _attach_provider_calls(unavailable, calls) from error
-                ref, payload = _cached_reference(cached)
-                decision = "verified_cache_fallback"
+
+            normalized_sessions = {
+                exchange: tuple(
+                    value
+                    for value in sorted(combined_sessions[exchange])
+                    if request.start_date <= value <= request.end_date
+                )
+                for exchange in expected
+            }
+            payload, encoded, content_hash = _canonical_payload(request, normalized_sessions)
+            ref = _store_reference(request, caller, config, payload, encoded, content_hash)
+            if request.persistence_mode == "library":
+                cache.save(request, caller, encoded, ref)
+            else:
+                cache.save_volatile(request, caller, encoded, ref)
+            if missing_by_exchange:
+                decision = "cache_extended" if local.has_local_coverage else "provider_fetched"
+            else:
+                decision = "cache_rebound"
     quality = {
         "schema_id": CALENDAR_SCHEMA,
         "status": "verified",
