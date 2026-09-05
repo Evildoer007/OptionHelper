@@ -6,8 +6,6 @@ Interpreter、Selector、Reviewer及后续受控执行流程负责。
 
 from __future__ import annotations
 
-import hashlib
-import json
 import re
 from collections.abc import Mapping, Sequence
 from typing import Any
@@ -197,14 +195,6 @@ def _negates_market_dimension(text: str, terms: Sequence[str]) -> bool:
 def missing_required_constraints(constraints: Mapping[str, Any]) -> tuple[str, ...]:
     normalized = normalize_confirmed_constraints(constraints)
     return tuple(field for field in _REQUIRED if field not in normalized)
-
-
-def constraints_fingerprint(constraints: Mapping[str, Any] | None) -> str:
-    """冻结会改变候选或合同解释的已确认客户条件。"""
-
-    normalized = normalize_confirmed_constraints(constraints)
-    body = json.dumps(normalized, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    return hashlib.sha256(body).hexdigest()
 
 
 def question_for_missing_constraint(field: str) -> str:
