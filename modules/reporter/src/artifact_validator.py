@@ -9,6 +9,8 @@ from copy import deepcopy
 from pathlib import Path, PurePosixPath
 from typing import Any, Mapping
 
+from runtime.knowledger.registry_loader import load_registry
+
 from .config import DEFAULT_REPORTER_CONFIG
 from .models import (
     SCHEMA_DESIGN_BRIEF,
@@ -328,6 +330,42 @@ def _validate_report_unit(unit: Mapping[str, Any]) -> None:
     expected = stable_hash({key: value for key, value in unit.items() if key != "semantic_fact_hash"})
     if unit.get("semantic_fact_hash") != expected:
         raise ReporterError("report-unit.json的semantic_fact_hash不对应冻结事实")
+    dependency = unit.get("product_dependency")
+    if not isinstance(dependency, Mapping) or set(dependency) != {"product_id", "rule_revision"}:
+        raise ReporterError("ReportUnit.product_dependency必须且只能包含product_id与rule_revision")
+    product_id = require_text(dependency.get("product_id"), "ReportUnit.product_dependency.product_id")
+    rule_revision = dependency.get("rule_revision")
+    if not isinstance(rule_revision, int) or isinstance(rule_revision, bool) or rule_revision <= 0:
+        raise ReporterError("ReportUnit.product_dependency.rule_revision必须为正整数")
+    subject = unit.get("subject")
+    if not isinstance(subject, Mapping):
+        raise ReporterError("ReportUnit.subject无效")
+    if subject.get("product_id") != product_id or subject.get("rule_revision") != rule_revision:
+        raise ReporterError("ReportUnit.subject与product_dependency不一致")
+    candidate = unit.get("candidate")
+    if not isinstance(candidate, Mapping):
+        raise ReporterError("ReportUnit.candidate无效")
+    if candidate.get("product_id") != product_id or candidate.get("rule_revision") != rule_revision:
+        raise ReporterError("ReportUnit.candidate与product_dependency不一致")
+    contract = unit.get("contract")
+    if contract is not None:
+        if not isinstance(contract, Mapping):
+            raise ReporterError("ReportUnit.contract无效")
+        identity = contract.get("identity") if isinstance(contract.get("identity"), Mapping) else {}
+        contract_product_id = contract.get("product_id", identity.get("product_id"))
+        contract_rule_revision = contract.get("rule_revision", identity.get("rule_revision"))
+        if contract_product_id != product_id or contract_rule_revision != rule_revision:
+            raise ReporterError("ReportUnit.contract与product_dependency不一致")
+    try:
+        current_product = load_registry()["products"][product_id]
+        current_identity = current_product["identity"]
+        current_revision = current_identity["rule_revision"]
+    except (KeyError, TypeError, ValueError) as error:
+        raise ReporterError(f"产品{product_id}的当前ProductDefinition不可用") from error
+    if not isinstance(current_revision, int) or isinstance(current_revision, bool) or current_revision <= 0:
+        raise ReporterError(f"产品{product_id}的当前ProductDefinition.rule_revision无效")
+    if rule_revision != current_revision:
+        raise ReporterError(f"产品{product_id}的rule_revision已失效，整份报告不可展示")
 
 
 def _validate_report_bundle(bundle: Mapping[str, Any]) -> None:
@@ -609,16 +647,6 @@ def validate_report_run_directory(
         if request.get("output_type") == "quote":
             if not request.get("quote_items"):
                 raise ReporterError("Quote缺少受控合同快照选择")
-            fingerprints = []
-            for item in report_units:
-                contract = item.get("contract") if isinstance(item.get("contract"), Mapping) else {}
-                candidate_id = str((item.get("subject") or {}).get("candidate_id", ""))
-                fingerprint = contract.get("contract_fingerprint")
-                if not isinstance(fingerprint, str) or not fingerprint:
-                    raise ReporterError("Quote合同快照缺少contract_fingerprint")
-                fingerprints.append((candidate_id, fingerprint))
-            if len(set(fingerprints)) != len(fingerprints):
-                raise ReporterError("Quote不得重复冻结同一合同快照")
         elif bundle_candidate_ids != candidate_ids:
             raise ReporterError("ReportBundle候选集合或顺序与受控selection不一致")
     if brief.get("report_unit_semantic_fact_hashes") != report_unit_hashes:
