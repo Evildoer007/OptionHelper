@@ -4,7 +4,7 @@
   "title": "ModuleHostContext",
   "type": "object",
   "additionalProperties": false,
-  "required": ["session_ref", "capability_token", "analysis_case_id", "task_id", "candidate_id", "catalog_version", "contract_fingerprint", "module", "page_hash", "capability_version", "protocol_id", "context_id", "host_kind", "request_policy"],
+  "required": ["session_ref", "capability_token", "analysis_case_id", "task_id", "candidate_id", "catalog_version", "product_id", "rule_revision", "module", "page_hash", "capability_version", "protocol_id", "context_id", "host_kind", "request_policy"],
   "properties": {
     "session_ref": {"type": "string", "minLength": 1},
     "capability_token": {"type": "string", "pattern": "^oh\\.[0-9]{1,12}\\.[0-9a-f]{64}$"},
@@ -12,7 +12,8 @@
     "task_id": {"type": ["string", "null"]},
     "candidate_id": {"type": ["string", "null"]},
     "catalog_version": {"type": ["string", "null"], "minLength": 1},
-    "contract_fingerprint": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+    "product_id": {"type": ["string", "null"], "minLength": 1},
+    "rule_revision": {"type": ["integer", "null"], "minimum": 1},
     "module": {"enum": ["datafetcher", "payoffer", "pricer", "backtester", "reporter"]},
     "page_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "capability_version": {"type": "string", "minLength": 1},
@@ -20,7 +21,6 @@
     "context_id": {"type": "string", "pattern": "^mhc_[A-Za-z0-9_-]{16,96}$"},
     "host_kind": {"enum": ["app", "local-development"]},
     "request_policy": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
-    "contract_ref": {"$ref": "#/$defs/contract_ref"},
     "config_ref": {"$ref": "#/$defs/config_ref"},
     "result_refs": {"type": "array", "items": {"$ref": "#/$defs/module_run_ref"}}
   },
@@ -35,12 +35,6 @@
         "content_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
       }
     },
-    "contract_ref": {
-      "allOf": [
-        {"$ref": "#/$defs/object_ref"},
-        {"properties": {"schema_id": {"const": "optionhelper.resolved-contract"}}}
-      ]
-    },
     "config_ref": {
       "allOf": [
         {"$ref": "#/$defs/object_ref"},
@@ -50,13 +44,13 @@
     "module_run_ref": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["module", "tenant_id", "task_id", "run_id", "expected_semantic_result_hash", "expected_artifact_manifest_hash"],
+      "required": ["module", "tenant_id", "task_id", "run_id", "expected_result_file_hash", "expected_artifact_manifest_hash"],
       "properties": {
         "module": {"enum": ["payoffer", "pricer", "backtester"]},
         "tenant_id": {"type": "string", "minLength": 1},
         "task_id": {"type": "string", "minLength": 1},
         "run_id": {"type": "string", "minLength": 1},
-        "expected_semantic_result_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "expected_result_file_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
         "expected_artifact_manifest_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
       }
     }
