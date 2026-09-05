@@ -75,7 +75,7 @@ class PreparedComputeExecution:
     runtime_root: str | None
     content_hashes: dict[str, str]
     capability_hash: str
-    execution_fingerprint: str
+    execution_token: str
 
     @classmethod
     def create(
@@ -95,16 +95,6 @@ class PreparedComputeExecution:
         if module not in COMPUTE_MODULES or not task_id or not tenant_id:
             raise ValidationError("隔离计算执行范围无效")
         capability_hash = _canonical_hash(dict(content_hashes))
-        frozen = {
-            "task_id": task_id,
-            "module": module,
-            "tenant_id": tenant_id,
-            "request": dict(request),
-            "caller_context": dict(caller_context),
-            "host_context": dict(host_context),
-            "data_snapshots": list(data_snapshots),
-            "capability_hash": capability_hash,
-        }
         return cls(
             execution_id=f"compute_{uuid4().hex}",
             task_id=task_id,
@@ -118,22 +108,12 @@ class PreparedComputeExecution:
             runtime_root=str(Path(runtime_root).resolve()) if runtime_root else None,
             content_hashes={str(key): str(value) for key, value in content_hashes.items()},
             capability_hash=capability_hash,
-            execution_fingerprint=_canonical_hash(frozen),
+            execution_token=f"exec_{uuid4().hex}",
         )
 
     def to_payload(self) -> dict[str, Any]:
-        current = {
-            "task_id": self.task_id,
-            "module": self.module,
-            "tenant_id": self.tenant_id,
-            "request": self.request,
-            "caller_context": self.caller_context,
-            "host_context": self.host_context,
-            "data_snapshots": list(self.data_snapshots),
-            "capability_hash": self.capability_hash,
-        }
-        if _canonical_hash(self.content_hashes) != self.capability_hash or _canonical_hash(current) != self.execution_fingerprint:
-            raise ValidationError("冻结计算执行在入队前发生变化")
+        if _canonical_hash(self.content_hashes) != self.capability_hash:
+            raise ValidationError("Capability文件清单在入队前发生变化")
         return {
             "execution_id": self.execution_id,
             "task_id": self.task_id,
@@ -147,7 +127,7 @@ class PreparedComputeExecution:
             "runtime_root": self.runtime_root,
             "content_hashes": self.content_hashes,
             "capability_hash": self.capability_hash,
-            "execution_fingerprint": self.execution_fingerprint,
+            "execution_token": self.execution_token,
         }
 
 
