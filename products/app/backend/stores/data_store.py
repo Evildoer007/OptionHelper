@@ -271,77 +271,6 @@ class DataStore:
         )
         return {key: record[key] for key in _PROTOCOL_FIELDS}
 
-    def resolve_frozen_trading_calendar(
-        self,
-        identity: SessionIdentity,
-        requested: object,
-        *,
-        asset_ids: tuple[str, ...],
-        calendar_id: str,
-        calendar_revision: str,
-    ) -> dict[str, Any]:
-        """Resolve the exact calendar revision frozen into a contract.
-
-        Market-history can safely prefer the newest compatible asset.  An
-        observed contract cannot: its schedules were resolved from one
-        calendar revision, so selecting a newer revision changes the contract
-        after it has been signed.  Keep this lookup separate from the generic
-        resolver to make that distinction explicit at the Host boundary.
-        """
-
-        requested_id = _requested_asset_id(requested)
-        if requested_id:
-            try:
-                record = self.get(identity, requested_id)
-            except KeyError as error:
-                raise UserActionError(
-                    "frozen_contract_calendar_missing",
-                    "当前方案冻结的交易日历已不可用，不能用另一版本替代。",
-                    stage="data",
-                    next_step="请在当前产品中建立新的方案版本后重试。",
-                ) from error
-            if isinstance(requested, dict) and requested.get("content_hash") not in {None, record.get("content_hash")}:
-                raise ValidationError("DataAssetRef.content_hash与App登记记录不一致")
-            candidates = [record]
-        else:
-            candidates = [
-                item for item in self._records().values()
-                if isinstance(item, dict)
-                and item.get("tenant_id") == identity.tenant_id
-                and item.get("created_by") == identity.principal_id
-                and item.get("schema_id") == "trading-calendar"
-                and set(asset_ids) == set(item.get("asset_ids", []))
-                and isinstance(item.get("coverage"), dict)
-                and item["coverage"].get("calendar_id") == calendar_id
-                and item["coverage"].get("calendar_revision") == calendar_revision
-            ]
-        if not candidates:
-            raise UserActionError(
-                "frozen_contract_calendar_missing",
-                "当前方案冻结的交易日历不在本机数据中，不能用另一版本替代。请切换产品建立新方案版本后重试。",
-                stage="data",
-                next_step="请恢复该交易日历，或切换产品建立新的方案版本后重试。",
-            )
-        record = max(candidates, key=lambda item: (str(item.get("registered_at", "")), str(item.get("data_asset_id", ""))))
-        if record.get("created_by") != identity.principal_id:
-            raise AuthorizationError("data.read", "data asset is not owned by current caller")
-        coverage = record.get("coverage")
-        if (
-            record.get("schema_id") != "trading-calendar"
-            or not isinstance(coverage, dict)
-            or coverage.get("calendar_id") != calendar_id
-            or coverage.get("calendar_revision") != calendar_revision
-        ):
-            raise UserActionError(
-                "frozen_contract_calendar_missing",
-                "当前方案冻结的交易日历已不可用，不能用另一版本替代。",
-                stage="data",
-                next_step="请恢复该交易日历，或在当前产品中建立新的方案版本后重试。",
-            )
-        if set(asset_ids) != set(record.get("asset_ids", [])):
-            raise ValidationError("DataAssetRef标的必须与ResolvedContract完全一致")
-        return {key: record[key] for key in _PROTOCOL_FIELDS}
-
     def resolve_trading_calendar_covering(
         self,
         identity: SessionIdentity,
@@ -352,11 +281,10 @@ class DataStore:
     ) -> dict[str, Any] | None:
         """Return a locally registered calendar that covers an exact interval.
 
-        Calendar assets are immutable snapshots.  Registration time therefore
+        Calendar assets are immutable snapshots. Registration time therefore
         is not a meaningful proxy for fitness: a newer short-range snapshot
-        must not hide an older snapshot that already covers the full contract
-        tenor.  This lookup is deliberately limited to new contracts; a
-        frozen contract keeps using ``resolve_frozen_trading_calendar``.
+        must not hide an older snapshot that already covers the requested
+        interval.
         """
 
         candidates: list[dict[str, Any]] = []
