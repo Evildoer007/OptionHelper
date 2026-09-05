@@ -444,9 +444,8 @@ def verify_backend_api_on_windows(app: Path, *, source_root: Path | None = None)
             )
             require(backtest.get("status") in {"succeeded", "partial"}, f"报告前置历史合同失败：{backtest}")
             payoffer_payload = {
-                "action": "run", "task_id": report_task, "product_id": "1.1",
-                "underlyings": ["000905.SH"],
-                "term_overrides": {"K": 100.0, "T": 1.0, "Pi_0": 0.0},
+                "product_id": "1.1",
+                "term_overrides": {"K": 100.0, "Pi_0": 0.0},
             }
             payoffer = run_operation(
                 connection, "payoffer", report_task, payoffer_payload,
