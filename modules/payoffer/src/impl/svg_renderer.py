@@ -340,7 +340,7 @@ def _card(path: Mapping[str, Any], index: int, layout: _CardLayout) -> str:
     reference_x = y_axis_x - 10 if reference_anchor == "end" else y_axis_x + 10
     title = escape(str(path.get("title", f"路径{index + 1}")))
     state_note = escape(str(path.get("status_note") or ""))
-    payoff_label = "收益率（扣费前）" if path.get("payoff_basis") == "gross_before_premium" else "净收益率"
+    payoff_label = "合同结算收益率"
     return f'''<g data-path-card="{index}">
   <defs><clipPath id="payoffer-card-clip-{index}"><rect x="{_number(card_x + 4)}" y="{_number(card_y + 4)}" width="{_number(card_width - 8)}" height="{_number(card_height - 8)}"/></clipPath></defs>
   <rect class="card" x="{_number(card_x)}" y="{_number(card_y)}" width="{_number(card_width)}" height="{_number(card_height)}"/><line class="card-accent" x1="{_number(card_x)}" y1="{_number(card_y + 2)}" x2="{_number(card_x + card_width)}" y2="{_number(card_y + 2)}"/>
