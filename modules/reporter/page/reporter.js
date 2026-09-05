@@ -6,7 +6,7 @@
   const esc = value => String(value ?? '').replace(/[&<>'"]/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[char]));
   const selectedValue = name => document.querySelector(`input[name="${name}"]:checked`)?.value;
   const selectedModules = () => [...document.querySelectorAll('[data-module]:checked')].map(node => node.dataset.module);
-  const runRefFields = ['module','tenant_id','task_id','run_id','expected_semantic_result_hash','expected_artifact_manifest_hash'];
+  const runRefFields = ['module','tenant_id','task_id','run_id','expected_result_file_hash','expected_artifact_manifest_hash'];
   const formalRunRef = value => Object.fromEntries(runRefFields.map(field => [field, value[field]]));
   const identifier = prefix => {
     const timestamp = new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 17);
@@ -51,7 +51,20 @@
 
   function notice(text, tone = '') { $('notice').textContent = text; $('notice').dataset.tone = tone; }
   function activeSource() { return state.catalog?.sources?.find(item => item.source_id === $('sourceSelect').value) || null; }
-  function moduleStatus(value) { return value?.status || (value?.expected_semantic_result_hash ? 'ready' : '缺失'); }
+  function moduleStatus(value) {
+    if (value?.status === 'succeeded' || value?.status === 'ready' || value?.expected_result_file_hash) return 'ready';
+    return value?.status === 'failed' ? 'failed' : '缺失';
+  }
+  function candidateIdentity(candidate) {
+    const underlyings = (candidate?.underlyings || []).join('、');
+    const revision = Number.isInteger(candidate?.rule_revision) && candidate.rule_revision > 0
+      ? candidate.rule_revision
+      : '待核验';
+    return [candidate?.product_id, underlyings, `rule_revision ${revision}`].filter(Boolean).join(' · ');
+  }
+  function moduleRunIdentity(run) {
+    return run?.run_id ? `ModuleRun ${run.run_id}` : moduleStatus(run);
+  }
   function clearSourceState() {
     state.catalog = null; state.source = null; state.selected.clear(); state.runRefs = {}; state.quoteItems = []; renderSources();
     state.delivery = null; $('previewPanel').hidden = true; $('reportPreview').removeAttribute('src'); $('downloadLink').removeAttribute('href'); $('convertPdfButton').hidden = true; $('childReports').innerHTML = '';
@@ -102,8 +115,8 @@
     panel.hidden = !isQuote;
     if (!isQuote) { panel.innerHTML = ''; return; }
     panel.innerHTML = state.quoteItems.length
-      ? `<div class="quote-items__head"><span>已选报价结构</span><span>${state.quoteItems.length}条</span></div><div class="quote-items__list">${state.quoteItems.map((item, index) => `<span class="quote-item">${esc(item.product_name)} · 合同版本${esc(item.candidate_version_id || item.product_version || '已冻结')} · 估值结果${item.version}<button type="button" data-remove-quote="${index}" data-quote-contract="${esc(quoteContractKey(item))}" aria-label="移除报价行">移除</button></span>`).join('')}</div>`
-      : '<div class="quote-items__head"><span>已选报价结构</span><span>从下方加入已保存的参数版本</span></div>';
+      ? `<div class="quote-items__head"><span>已选报价结构</span><span>${state.quoteItems.length}条</span></div><div class="quote-items__list">${state.quoteItems.map((item, index) => `<span class="quote-item">${esc(item.product_name)} · rule_revision ${esc(item.rule_revision ?? '待核验')} · ${esc(moduleRunIdentity(item.module_run_ref))}<button type="button" data-remove-quote="${index}" data-quote-contract="${esc(quoteContractKey(item))}" aria-label="移除报价行">移除</button></span>`).join('')}</div>`
+      : '<div class="quote-items__head"><span>已选报价结构</span><span>从下方加入已保存估值运行</span></div>';
     panel.querySelectorAll('[data-remove-quote]').forEach(button => button.addEventListener('click', () => {
       const item = state.quoteItems[Number(button.dataset.removeQuote)];
       state.quoteItems.splice(Number(button.dataset.removeQuote), 1);
@@ -117,10 +130,10 @@
         const item = {source_id:source.source_id, candidate_id:candidate.candidate_id, module, module_run_ref:run};
         const contractKey = quoteContractKey(item);
         const added = state.quoteItems.some(existing => quoteContractKey(existing) === contractKey);
-        return `<div class="quote-run"><div><strong>估值定价</strong><span>合同版本${esc(candidate.candidate_version_id || candidate.product_version || '已冻结')} · 估值结果${index + 1}</span></div><button class="quote-add" type="button" data-quote-source="${esc(source.source_id)}" data-quote-candidate="${esc(candidate.candidate_id)}" data-quote-module="${module}" data-quote-index="${index}" data-quote-contract="${esc(contractKey)}" ${added ? 'disabled' : ''}>${added ? '该合同已加入' : '加入报价表'}</button></div>`;
+        return `<div class="quote-run"><div><strong>估值定价</strong><span>${esc(moduleRunIdentity(run))}</span></div><button class="quote-add" type="button" data-quote-source="${esc(source.source_id)}" data-quote-candidate="${esc(candidate.candidate_id)}" data-quote-module="${module}" data-quote-index="${index}" data-quote-contract="${esc(contractKey)}" ${added ? 'disabled' : ''}>${added ? '该产品已加入' : '加入报价表'}</button></div>`;
       }).join('');
     }).join('');
-    return `<article class="candidate" data-candidate="${esc(candidate.candidate_id)}"><div class="candidate-head"><div class="candidate-title">${esc(candidate.product_name)}<div class="candidate-subtitle">${esc(candidate.product_id)} · ${esc((candidate.underlyings || []).join('、'))} · 版本${esc(candidate.product_version)}</div></div></div>${rows || '<p class="missing-note">暂无可用于报价的已保存运行结果。</p>'}</article>`;
+    return `<article class="candidate" data-candidate="${esc(candidate.candidate_id)}"><div class="candidate-head"><div class="candidate-title">${esc(candidate.product_name)}<div class="candidate-subtitle">${esc(candidateIdentity(candidate))}</div></div></div>${rows || '<p class="missing-note">暂无可用于报价的已保存运行结果。</p>'}</article>`;
   }
   function renderCandidates(focusTarget = null) {
     state.source = activeSource(); const source = state.source; const list = $('candidateList'); const isQuote = selectedValue('outputType') === 'quote';
@@ -136,7 +149,7 @@
         const run = candidate?.module_run_options?.[module]?.[index];
         if (!candidate || !run) return;
         const contractKey = quoteContractKey({source_id:itemSource.source_id, candidate_id:candidate.candidate_id});
-        state.quoteItems.push({source_id:itemSource.source_id, source_label:itemSource.label, candidate_id:candidate.candidate_id, module, module_run_ref:run, product_name:candidate.product_name, product_version:candidate.product_version, candidate_version_id:candidate.candidate_version_id, version:index + 1});
+        state.quoteItems.push({source_id:itemSource.source_id, source_label:itemSource.label, candidate_id:candidate.candidate_id, module, module_run_ref:run, product_name:candidate.product_name, rule_revision:candidate.rule_revision});
         renderCandidates({quoteContract:contractKey});
       }));
       renderQuoteItems(); updateControls(); restoreSelectionFocus(focusTarget); return;
@@ -150,11 +163,11 @@
         const selectedIndex = options.indexOf(state.runRefs[candidate.candidate_id]?.[module]);
         const selected = selectedIndex >= 0 ? selectedIndex : 0;
         const selector = options.length > 1
-          ? `<select class="run-choice" data-candidate="${esc(candidate.candidate_id)}" data-module="${esc(module)}">${options.map((item, index) => `<option value="${index}" ${index === selected ? 'selected' : ''}>参数版本${index + 1}</option>`).join('')}</select>`
-          : options.length === 1 ? `<span>参数版本1</span>` : `<span>${esc(status)}</span>`;
+          ? `<select class="run-choice" data-candidate="${esc(candidate.candidate_id)}" data-module="${esc(module)}">${options.map((item, index) => `<option value="${index}" ${index === selected ? 'selected' : ''}>${esc(moduleRunIdentity(item))}</option>`).join('')}</select>`
+          : options.length === 1 ? `<span>${esc(moduleRunIdentity(options[0]))}</span>` : `<span>${esc(status)}</span>`;
         return `<div class="run-row" data-status="${esc(status)}"><strong>${({payoff:'收益结构',pricing:'估值定价',backtest:'历史回测'})[module]}</strong>${selector}</div>`;
       }).join('');
-      return `<article class="candidate" data-candidate="${esc(candidate.candidate_id)}" data-selected="${checked}"><div class="candidate-head"><input type="checkbox" data-select-candidate="${esc(candidate.candidate_id)}" ${checked?'checked':''} aria-label="选择${esc(candidate.product_name)}"><div class="candidate-title">${esc(candidate.product_name)}<div class="candidate-subtitle">${esc(candidate.product_id)} · ${esc((candidate.underlyings || []).join('、'))} · 版本${esc(candidate.candidate_version_id || candidate.product_version)}</div></div></div><div class="run-grid">${runs}</div></article>`;
+      return `<article class="candidate" data-candidate="${esc(candidate.candidate_id)}" data-selected="${checked}"><div class="candidate-head"><input type="checkbox" data-select-candidate="${esc(candidate.candidate_id)}" ${checked?'checked':''} aria-label="选择${esc(candidate.product_name)}"><div class="candidate-title">${esc(candidate.product_name)}<div class="candidate-subtitle">${esc(candidateIdentity(candidate))}</div></div></div><div class="run-grid">${runs}</div></article>`;
     }).join('');
     list.querySelectorAll('.candidate').forEach(card => card.querySelector('input').addEventListener('change', event => { const id = card.dataset.candidate; event.target.checked ? state.selected.add(id) : state.selected.delete(id); renderCandidates({candidateId:id}); }));
     list.querySelectorAll('.run-choice').forEach(select => select.addEventListener('change', event => {
