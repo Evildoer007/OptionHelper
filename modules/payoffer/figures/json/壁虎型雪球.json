@@ -17,16 +17,6 @@
     "settlement": "cash",
     "observation_price": "close",
     "margin_call": true,
-    "hedge_schedule": [
-      [
-        8,
-        80.0
-      ],
-      [
-        16,
-        75.0
-      ]
-    ],
     "monitor": {
       "tau_out": "first_time(S_t[O_out] >= H_out)",
       "tau_in": "first_time(S_t[O_in] <= H_in)",
@@ -34,7 +24,8 @@
       "tau_hedge": "effective_hedge_time(tau_hedge_raw, tau_out, tau_in, hedge_ki_history_policy)"
     },
     "derived_terms": {
-      "G": "N * g"
+      "G": "N * g",
+      "hedge_schedule": "truncate_schedule([(8, 0.8 * S_0), (16, 0.75 * S_0)], period_count(T, 12))"
     },
     "pricing_methods": [
       "monte_carlo"
@@ -42,7 +33,6 @@
     "constraints": [
       "K == S_0",
       "H_in < H_out",
-      "T == 2",
       "O_hedge == 'monthly_last'",
       "schedule_between(H_hedge_j, H_in, H_out)"
     ]
@@ -88,5 +78,48 @@
         }
       ]
     }
-  ]
+  ],
+  "visual_template": {
+    "schema": "optionhelper.payoff-visual-template",
+    "layout": "standard_path_cards",
+    "path_views": [
+      {
+        "path_index": 1,
+        "case_indexes": [
+          1
+        ],
+        "axis": "S_T",
+        "chart_kind": "conditional_terminal_metric",
+        "title": "路径1"
+      },
+      {
+        "path_index": 2,
+        "case_indexes": [
+          1
+        ],
+        "axis": "S_T",
+        "chart_kind": "conditional_terminal_metric",
+        "title": "路径2"
+      },
+      {
+        "path_index": 3,
+        "case_indexes": [
+          1
+        ],
+        "axis": "S_T",
+        "chart_kind": "conditional_terminal_metric",
+        "title": "路径3"
+      },
+      {
+        "path_index": 4,
+        "case_indexes": [
+          1,
+          2
+        ],
+        "axis": "S_T",
+        "chart_kind": "conditional_terminal_metric",
+        "title": "路径4"
+      }
+    ]
+  }
 }
