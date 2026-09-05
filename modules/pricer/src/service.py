@@ -21,17 +21,15 @@ from runtime.bootstrap import bootstrap_runtime
 from runtime.adapters.local_store import LocalResultStore
 from runtime.contracts.contract_api import (
     ContractResolutionError,
-    RESOLVED_CONTRACT_SCHEMA_ID,
     ResolvedContract,
-    verify_product_snapshot_binding,
+    overridable_term_keys,
+    resolve_contract,
+    verify_current_product_rule,
 )
 from runtime.contracts.input_adapter import (
-    bind_candidate_target_spec,
-    recompile_candidate_contract,
     validate_initial_pricing_time_context,
     verified_trading_calendar,
 )
-from runtime.contracts.contract_types import semantic_hash
 from runtime.contracts.term_presentation import build_term_fields
 from runtime.knowledger import load_registry
 from runtime.protocol.models import (
@@ -40,7 +38,7 @@ from runtime.protocol.models import (
     PricingInput as ProtocolPricingInput,
     PricingObjective,
 )
-from runtime.protocol.module_host import ModuleHostContext, require_host_bound_run_contract
+from runtime.protocol.module_host import ModuleHostContext
 
 from .config import PricingConfig
 from .models import HistoricalData, PricingInput, TradingCalendarData, validate_market_data_asset
@@ -54,7 +52,7 @@ from .valuation_solver import price
 from .fair_parameter import (
     encode_public_value,
     eligibility_for_target,
-    private_capability_package,
+    product_capability,
     public_capability_package,
     target_capability,
 )
@@ -87,6 +85,41 @@ ICON_DIR = PROJECT_ROOT / "assets" / "icons"
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("OPTIONHELPER_PRICER_PORT", "4280"))
 _TEST_ONLY_PRICING_FIELDS = frozenset({"demo_mode", "demo_calendar"})
+_MONTE_CARLO_ONLY_PRICING_FIELDS = frozenset({"path_count", "random_seed"})
+_IDENTITY_INPUT_FIELDS = (
+    {
+        "key": "underlyings",
+        "label": "标的资产",
+        "value_type": "asset_list",
+        "unit": "asset_id",
+        "editability": "editable",
+        "editability_reason": None,
+    },
+    {
+        "key": "valuation_date",
+        "label": "估值日",
+        "value_type": "date",
+        "unit": "date",
+        "editability": "editable",
+        "editability_reason": None,
+    },
+    {
+        "key": "contract_start_date",
+        "label": "合同起始日",
+        "value_type": "date",
+        "unit": "date",
+        "editability": "editable",
+        "editability_reason": None,
+    },
+    {
+        "key": "reference_prices",
+        "label": "合同起始参考价",
+        "value_type": "asset_price_map",
+        "unit": "price",
+        "editability": "market_bound",
+        "editability_reason": "由受控历史行情按合同起始日冻结，不能作为独立定价参数修改。",
+    },
+)
 _NON_EDITABLE_CONTRACT_TERMS = frozenset({
     "monitor",
     "pricing_methods",
@@ -304,6 +337,21 @@ class PricerRuntime:
             mapping = product_mapping(product_id)
             field_groups = build_term_fields(terms, catalog)
             fair_product = fair_by_product.get(product_id, {})
+            methods = list(capability.methods) if capability else []
+            common_pricing_fields = [
+                name for name in PricingConfig.__dataclass_fields__
+                if name not in _TEST_ONLY_PRICING_FIELDS | _MONTE_CARLO_ONLY_PRICING_FIELDS
+            ]
+            pricing_fields_by_method = {
+                method: [
+                    *common_pricing_fields,
+                    *(
+                        sorted(_MONTE_CARLO_ONLY_PRICING_FIELDS)
+                        if method == "monte_carlo" else []
+                    ),
+                ]
+                for method in methods
+            }
             products.append({
                 "product_id": product_id,
                 "canonical_name": product["identity"]["name_zh"],
@@ -315,12 +363,17 @@ class PricerRuntime:
                 "pricing_methods": terms["pricing_methods"],
                 "pricer_status": "supported" if mapping.status == "supported" else "unsupported",
                 "pricer_availability": mapping.status,
-                "pricer_methods": list(capability.methods) if capability else [],
+                "pricer_methods": methods,
                 "pricer_structure": "discrete_path_monte_carlo" if mapping.structure == "OPTIONREG_PATH" else mapping.structure.casefold(),
                 "pricer_family": mapping.family,
                 "pricer_reason": mapping.reason,
                 "fair_parameter_status": fair_product.get("fair_parameter_status", "valuation_only"),
                 "fair_parameter_targets": fair_product.get("targets", []),
+                "current_input_fields": [
+                    *(dict(field) for field in _IDENTITY_INPUT_FIELDS),
+                    *(dict(field) for field in field_groups["contract_fields"]),
+                ],
+                "pricing_input_fields_by_method": pricing_fields_by_method,
             })
         return {
             "ok": True,
@@ -377,7 +430,6 @@ class PricerRuntime:
         if not isinstance(method, str) or not method.strip():
             raise PricerWebInputError("eligibility.method必须为analytical或monte_carlo")
         decision = eligibility_for_target(contract, target_id.strip(), method.strip())
-        package = public_capability_package()
         return {
             "ok": True,
             "module": "pricer",
@@ -388,8 +440,7 @@ class PricerRuntime:
             "product_id": contract.product_id,
             "target_id": decision["target_id"],
             "method": decision["method"],
-            "capability_version": package["capability_version"],
-            "capability_hash": package["capability_hash"],
+            "capability_version": public_capability_package()["capability_version"],
         }
 
     def run_formal(
@@ -470,7 +521,6 @@ class PricerRuntime:
         }
         limitations = list(pricing_result.limitations)
         status = "succeeded" if pricing_result.status == "priced" else "unsupported"
-        execution_fingerprint = semantic_hash(private_input_snapshot)
         input_snapshot = redact_public_money_compatibility(private_input_snapshot)
         resolved_contract = redact_public_money_compatibility(contract.to_protocol_dict())
         analysis_case_id = str(host_context.analysis_case_id)
@@ -498,8 +548,8 @@ class PricerRuntime:
             "access_scope": list(data_ref.access_scope),
             "candidate_id": candidate_id,
             "catalog_version": catalog_version,
-            "execution_fingerprint": execution_fingerprint,
-            "contract_fingerprint": contract.contract_fingerprint,
+            "product_id": contract.product_id,
+            "rule_revision": int(contract.identity["rule_revision"]),
             "resolved_contract": resolved_contract,
             "data_refs": data_refs,
             "input_snapshot": input_snapshot,
@@ -512,16 +562,13 @@ class PricerRuntime:
         # public component has been assembled, so a nested lineage field
         # cannot bypass the 100-point result contract.
         output = redact_public_money_compatibility(project_public_percent(output))
-        # ResultStore verifies the frozen economic contract by recomputing its
-        # fingerprint.  Keep that controlled snapshot separate from the public
-        # percent-only envelope; writing the redacted projection here would
-        # make a successful ModuleRun unverifiable.
+        # Keep the complete frozen contract separate from the public percent
+        # projection so the Store persists the exact snapshot consumed here.
         files = _module_run_files(
             output,
             controlled_contract=contract.to_protocol_dict(),
             private_pricing_audit=private_pricing_audit,
         )
-        require_host_bound_run_contract(output, host_context)
         reference = self.result_store.commit_module_run(
             module="pricer",
             tenant_id=effective_tenant,
@@ -560,7 +607,7 @@ class PricerRuntime:
 
         The fair path is intentionally separate from the ordinary valuation
         branch above.  It freezes the authenticated inputs once, recompiles
-        only the candidate contract through Core, and invokes a fresh
+        only the candidate contract from the current complete product rule, and invokes a fresh
         ``ProductPricingAdapter`` for each solver point.  No page-provided
         target rule or recursive formal request is accepted here.
         """
@@ -601,22 +648,25 @@ class PricerRuntime:
                 "unsupported",
             )
 
-        # The browser can only select an identifier.  The signed directory and
-        # Core binding own all rules used below.
-        try:
-            capability_directory = private_capability_package()
-            target_binding = bind_candidate_target_spec(
-                capability_directory,
-                contract.product_id,
-                target_id,
-            )
-        except ContractResolutionError as error:
-            raise PricerWebInputError(f"公平参数能力目录绑定失败：{error}") from error
+        # The browser selects identifiers only. Pricer validates them against
+        # the complete current product rule and consumes the full target rule
+        # directly; no digest stands in for either business object.
+        product_rule = product_capability(contract.product_id)
+        if product_rule is None:
+            raise _fair_parameter_input_error("产品未登记公平参数能力", "unsupported")
+        rule_revision = contract.identity.get("rule_revision")
         if (
-            target_binding.target_spec_hash != target.target_spec_hash
-            or target_binding.capability_hash != capability_directory.capability_hash
+            isinstance(rule_revision, bool)
+            or not isinstance(rule_revision, int)
+            or rule_revision != product_rule.rule_revision
         ):
-            raise PricerWebInputError("公平参数能力目录与Pricer目标规范不一致")
+            raise _fair_parameter_input_error(
+                "ResolvedContract.rule_revision与当前公平参数产品规则不一致",
+                "ineligible",
+            )
+        if target.target_id != target_id:
+            raise _fair_parameter_input_error("公平参数target_id与当前目标规则不一致", "ineligible")
+        target_spec = target.to_solver_spec()
 
         # This is deliberately before every DataAssetRef read.  A historical
         # observed state can never be silently turned into a new-issuance run.
@@ -645,7 +695,7 @@ class PricerRuntime:
         if effective_tenant != market_ref.tenant_id:
             raise PricerWebInputError("DataAssetRef.tenant_id与Host tenant不一致")
 
-        # Each asset is read exactly once.  The Core helper returns a sealed
+        # Each asset is read exactly once.  The calendar helper returns a sealed
         # calendar binding and exposes only its authenticated sessions, which
         # is enough for both Core recompilation and adapter validation.
         calendar_ref = protocol_input.trading_calendar_ref
@@ -748,7 +798,7 @@ class PricerRuntime:
                 "ineligible",
             )
         registry = load_registry()
-        controlled_key = target_binding.controlled_term_keys[0]
+        controlled_key = target.controlled_term_keys[0]
         if controlled_key not in contract.terms:
             raise _fair_parameter_input_error("基础合同缺少目标参数", "ineligible")
         try:
@@ -759,6 +809,7 @@ class PricerRuntime:
             raise _fair_parameter_input_error("基础目标参数必须为有限数", "ineligible")
 
         evaluations: dict[float, dict[str, Any]] = {}
+        evaluation_contracts: dict[float, dict[str, Any]] = {}
 
         def emit_progress(payload: Mapping[str, Any]) -> None:
             if progress is None:
@@ -774,14 +825,13 @@ class PricerRuntime:
                 return ScalarValuation(
                     value=float(cached["quote_value"]),
                     standard_error=cached.get("standard_error"),
-                    private={"contract_fingerprint": cached["contract_fingerprint"]},
                 )
             try:
-                candidate_contract = recompile_candidate_contract(
+                candidate_contract = _recompile_fair_candidate(
                     contract,
                     {controlled_key: candidate_value},
                     registry=registry,
-                    target_spec=target_binding,
+                    target=target,
                     calendar_binding=calendar_binding,
                 )
                 adapter = ProductPricingAdapter(
@@ -801,15 +851,13 @@ class PricerRuntime:
                     "quote_value": float(quote_value),
                     "standard_error": candidate_result.standard_error_percent,
                     "residual": float(quote_value) - float(target.quote_target_descriptor["target_value"]),
-                    "contract_fingerprint": candidate_contract.contract_fingerprint,
-                    "resolved_schedule_hash": semantic_hash(candidate_contract.resolved_schedules),
                     "implementation_id": candidate_result.implementation_id,
                 }
                 evaluations[candidate_value] = record
+                evaluation_contracts[candidate_value] = candidate_contract.to_protocol_dict()
                 return ScalarValuation(
                     value=record["quote_value"],
                     standard_error=record["standard_error"],
-                    private={"contract_fingerprint": record["contract_fingerprint"]},
                 )
             except (ContractResolutionError, ProductNotAvailable, TypeError, ValueError) as error:
                 raise FairParameterSolveError(
@@ -846,22 +894,22 @@ class PricerRuntime:
             final_evaluation = evaluations[float(solve_result.solution)]
 
         try:
-            evaluated_contract = recompile_candidate_contract(
+            evaluated_contract = _recompile_fair_candidate(
                 contract,
                 {controlled_key: float(solve_result.solution)},
                 registry=registry,
-                target_spec=target_binding,
+                target=target,
                 calendar_binding=calendar_binding,
             )
         except ContractResolutionError as error:
             raise _fair_parameter_solve_error(
                 FairParameterSolveError("data", f"最终公平参数合同重编译失败：{error}")
             ) from error
-        if evaluated_contract.contract_fingerprint != final_evaluation["contract_fingerprint"]:
+        if evaluated_contract.to_protocol_dict() != evaluation_contracts[float(solve_result.solution)]:
             raise PricerWebInputError("公平参数最终合同与候选估值不一致")
 
         # The solve callback intentionally prices only the scalar quote
-        # function. Revalue the final Core-recompiled contract once through
+        # function. Revalue the final directly recompiled contract once through
         # the existing ordinary price() entry with the same frozen inputs so
         # the public result has the exact ordinary PricingResult projection,
         # including precision, Greeks and risk output.
@@ -899,7 +947,7 @@ class PricerRuntime:
         final_parameter_snapshot = {
             "schema": "optionhelper.fair-parameter-snapshot",
             "target_id": target.target_id,
-            "controlled_term_keys": list(target_binding.controlled_term_keys),
+            "controlled_term_keys": list(target.controlled_term_keys),
             "internal_parameter_values": {
                 controlled_key: float(solve_result.solution),
             },
@@ -910,17 +958,23 @@ class PricerRuntime:
                 "internal": base_value,
                 "public": public_base_value,
             },
-            "base_contract_fingerprint": contract.contract_fingerprint,
-            "evaluated_contract_fingerprint": evaluated_contract.contract_fingerprint,
-            "target_spec_hash": target_binding.target_spec_hash,
         }
-        final_parameter_snapshot_hash = semantic_hash(final_parameter_snapshot)
-        final_valuation_hash = semantic_hash(final_valuation)
-        run_identity = {
+        solve_input = {
+            "base_contract": contract.to_protocol_dict(),
+            "pricing_config": frozen_config.to_dict(),
+            "target": target_spec,
+            "market_data_refs": [_data_ref_dict(data_ref)],
+            "trading_calendar_ref": (
+                None if calendar_ref is None else _data_ref_dict(calendar_ref)
+            ),
+            "observed_contract_state": local_state.to_dict(),
+        }
+        uncertainty_identity = {
             "fair_run_id": fair_run_id,
-            "base_contract_fingerprint": contract.contract_fingerprint,
-            "target_spec_hash": target_binding.target_spec_hash,
-            "capability_directory_hash": capability_directory.capability_hash,
+            "product_id": contract.product_id,
+            "rule_revision": int(rule_revision),
+            "target_id": target.target_id,
+            "solve_input": solve_input,
             "model_id": "pricer-product-adapter",
             "model_version": "1",
         }
@@ -929,13 +983,14 @@ class PricerRuntime:
                 solve_result,
                 target,
                 bound_evidence=None,
-                current_identity=run_identity,
+                current_identity=uncertainty_identity,
                 fair_run_id=fair_run_id,
-                base_contract_fingerprint=contract.contract_fingerprint,
-                target_spec_hash=target_binding.target_spec_hash,
+                product_id=contract.product_id,
+                rule_revision=int(rule_revision),
+                target_id=target.target_id,
+                solve_input=solve_input,
                 model_id="pricer-product-adapter",
                 model_version="1",
-                capability_directory_hash=capability_directory.capability_hash,
             )
         else:
             solution_uncertainty = monte_carlo_uncertainty(
@@ -943,23 +998,15 @@ class PricerRuntime:
                 (),
                 target,
                 path_count=int(frozen_config.path_count),
-                target_spec_hash=target_binding.target_spec_hash,
-                current_identity=run_identity,
+                current_identity=uncertainty_identity,
                 fair_run_id=fair_run_id,
-                base_contract_fingerprint=contract.contract_fingerprint,
+                product_id=contract.product_id,
+                rule_revision=int(rule_revision),
+                target_id=target.target_id,
+                solve_input=solve_input,
                 model_id="pricer-product-adapter",
                 model_version="1",
-                capability_directory_hash=capability_directory.capability_hash,
             )
-        # The uncertainty helpers deliberately return only the numerical
-        # precision contract. Keep the current run identity beside it so a
-        # future trusted evidence issuer cannot be substituted from another
-        # fair run or contract.
-        solution_uncertainty = {
-            **solution_uncertainty,
-            "identity": dict(run_identity),
-            "evaluated_contract_fingerprint": evaluated_contract.contract_fingerprint,
-        }
         fair_result = {
             "schema": "optionhelper.pricer-fair-parameter-result",
             "result_kind": "fair_parameter_solution",
@@ -981,16 +1028,9 @@ class PricerRuntime:
             "quote_eligible": False,
             "precision_status": "research_only",
             "solution_uncertainty": solution_uncertainty,
-            "final_parameter_snapshot_hash": final_parameter_snapshot_hash,
             "final_valuation": final_valuation,
-            "final_valuation_hash": final_valuation_hash,
-            "evaluated_contract_fingerprint": evaluated_contract.contract_fingerprint,
             "formal_quote_status": "research_only",
             "formal_quote_reason": "当前没有可信的产品级参数误差门槛",
-            "identity": {
-                **run_identity,
-                "evaluated_contract_fingerprint": evaluated_contract.contract_fingerprint,
-            },
         }
         output = {
             "ok": True,
@@ -1004,15 +1044,8 @@ class PricerRuntime:
             "access_scope": list(data_ref.access_scope),
             "candidate_id": str(host_context.candidate_id),
             "catalog_version": str(host_context.catalog_version),
-            "execution_fingerprint": semantic_hash({
-                "contract": contract.to_protocol_dict(),
-                "pricing_config": frozen_config.to_dict(),
-                "market_data_refs": [_data_ref_dict(data_ref)],
-                "trading_calendar_ref": None if calendar_ref is None else _data_ref_dict(calendar_ref),
-                "observed_contract_state": state,
-                "pricing_objective": objective.to_protocol_dict() if objective is not None else None,
-            }),
-            "contract_fingerprint": contract.contract_fingerprint,
+            "product_id": contract.product_id,
+            "rule_revision": int(rule_revision),
             "resolved_contract": redact_public_money_compatibility(contract.to_protocol_dict()),
             "data_refs": [
                 _data_ref_dict(data_ref),
@@ -1038,26 +1071,23 @@ class PricerRuntime:
         private_audit = {
             "schema": "optionhelper.private-fair-parameter-audit",
             "fair_run_id": fair_run_id,
-            "base_contract_fingerprint": contract.contract_fingerprint,
-            "evaluated_contract_fingerprint": evaluated_contract.contract_fingerprint,
-        "target_spec_hash": target_binding.target_spec_hash,
-        "capability_directory_hash": capability_directory.capability_hash,
-        "model_id": "pricer-product-adapter",
-        "model_version": "1",
-        "method": method,
-        "final_parameter_snapshot_hash": final_parameter_snapshot_hash,
-        "final_valuation_hash": final_valuation_hash,
-        "solver": solve_result.to_private_dict(),
-        "evaluations": list(evaluations.values()),
+            "model_id": "pricer-product-adapter",
+            "model_version": "1",
+            "method": method,
+            "product_id": contract.product_id,
+            "rule_revision": int(rule_revision),
+            "target_id": target.target_id,
+            "solve_input": solve_input,
+            "solver": solve_result.to_private_dict(),
+            "evaluations": list(evaluations.values()),
         }
         files = _fair_module_run_files(
             output,
-            controlled_contract=contract.to_controlled_snapshot(),
-            evaluated_contract=evaluated_contract.to_controlled_snapshot(),
+            controlled_contract=contract.to_protocol_dict(),
+            evaluated_contract=evaluated_contract.to_protocol_dict(),
             final_parameter_snapshot=final_parameter_snapshot,
             private_audit=private_audit,
         )
-        require_host_bound_run_contract(output, host_context)
         try:
             reference = self.result_store.commit_module_run(
                 module="pricer",
@@ -1087,7 +1117,7 @@ class PricerRuntime:
                 stored_evaluated,
                 stored_snapshot,
                 fair_result,
-                evaluated_contract.contract_fingerprint,
+                evaluated_contract.to_protocol_dict(),
                 final_parameter_snapshot,
             )
         except (OSError, TypeError, ValueError, ContractResolutionError) as error:
@@ -1211,7 +1241,6 @@ def _formal_pricing_input(
 ) -> tuple[ProtocolPricingInput, Any]:
     if isinstance(request, ProtocolPricingInput):
         _validate_formal_pricing_config(request.pricing_config)
-        verify_product_snapshot_binding(request.contract, load_registry())
         observed_state = request.observed_contract_state
         return request, (
             None if observed_state is None else observed_state.to_protocol_dict()
@@ -1235,9 +1264,9 @@ def _formal_pricing_input(
     else:
         raise PricerWebInputError("PricingInput.contract必须为ResolvedContract或完整协议对象")
     try:
-        verify_product_snapshot_binding(contract, load_registry())
+        verify_current_product_rule(contract, load_registry())
     except ContractResolutionError as error:
-        raise PricerWebInputError(f"PricingInput.contract产品快照无效：{error}") from error
+        raise PricerWebInputError(f"PricingInput.contract不是当前产品规则：{error}") from error
     config = values.get("pricing_config")
     refs = values.get("market_data_refs")
     if not isinstance(config, Mapping):
@@ -1284,23 +1313,29 @@ def _validate_formal_pricing_config(config: Mapping[str, Any]) -> None:
         raise PricerWebInputError(
             "正式PricingInput.pricing_config不接受测试字段：" + "、".join(sorted(forbidden))
         )
+    if config.get("model_method") == "analytical":
+        forbidden = _MONTE_CARLO_ONLY_PRICING_FIELDS.intersection(config)
+        if forbidden:
+            raise PricerWebInputError(
+                "Analytical定价不接受Monte Carlo字段："
+                + "、".join(sorted(forbidden))
+            )
 
 
 def _require_host_contract(contract: ResolvedContract, context: ModuleHostContext) -> None:
     execution_permissions = {"module.run", "conversation.tool.run"}
     if context.module != "pricer" or not execution_permissions.intersection(context.request_policy):
         raise PricerWebInputError("ModuleHostContext未授权Pricer正式运行")
-    missing = [name for name in ("task_id", "analysis_case_id", "candidate_id", "catalog_version", "contract_fingerprint") if not getattr(context, name)]
+    missing = [
+        name for name in ("task_id", "analysis_case_id", "candidate_id", "catalog_version")
+        if not getattr(context, name)
+    ]
     if missing:
         raise PricerWebInputError("ModuleHostContext缺少正式运行字段：" + ",".join(missing))
-    if context.contract_fingerprint != contract.contract_fingerprint:
-        raise PricerWebInputError("ModuleHostContext.contract_fingerprint与ResolvedContract不一致")
-    if context.contract_ref is None:
-        raise PricerWebInputError("Pricer正式运行缺少Core验证的ResolvedContract引用")
-    if context.contract_ref.schema_id != RESOLVED_CONTRACT_SCHEMA_ID:
-        raise PricerWebInputError("ModuleHostContext.contract_ref不是当前ResolvedContract引用")
-    if context.contract_ref.content_hash != contract.contract_fingerprint:
-        raise PricerWebInputError("ModuleHostContext.contract_ref与ResolvedContract不一致")
+    if context.product_id != contract.product_id:
+        raise PricerWebInputError("ModuleHostContext.product_id与ResolvedContract不一致")
+    if context.rule_revision != contract.identity.get("rule_revision"):
+        raise PricerWebInputError("ModuleHostContext.rule_revision与ResolvedContract不一致")
 
 
 def _require_host_eligibility_contract(contract: ResolvedContract, context: ModuleHostContext) -> None:
@@ -1309,12 +1344,10 @@ def _require_host_eligibility_contract(contract: ResolvedContract, context: Modu
         "module.catalog", "module.run", "conversation.tool.run",
     }.intersection(context.request_policy):
         raise PricerWebInputError("ModuleHostContext未授权Pricer eligibility")
-    if context.contract_fingerprint != contract.contract_fingerprint:
-        raise PricerWebInputError("ModuleHostContext.contract_fingerprint与ResolvedContract不一致")
-    if context.contract_ref is None or context.contract_ref.schema_id != RESOLVED_CONTRACT_SCHEMA_ID:
-        raise PricerWebInputError("eligibility缺少Core验证的ResolvedContract引用")
-    if context.contract_ref.content_hash != contract.contract_fingerprint:
-        raise PricerWebInputError("eligibility.contract_ref与ResolvedContract不一致")
+    if context.product_id != contract.product_id:
+        raise PricerWebInputError("ModuleHostContext.product_id与ResolvedContract不一致")
+    if context.rule_revision != contract.identity.get("rule_revision"):
+        raise PricerWebInputError("ModuleHostContext.rule_revision与ResolvedContract不一致")
 
 
 def _resolved_contract_value(value: Any) -> ResolvedContract:
@@ -1323,7 +1356,7 @@ def _resolved_contract_value(value: Any) -> ResolvedContract:
     if not isinstance(value, Mapping):
         raise PricerWebInputError("eligibility.contract必须为完整ResolvedContract")
     try:
-        return ResolvedContract.from_controlled_snapshot(value)
+        return ResolvedContract(**dict(value))
     except (TypeError, ValueError, ContractResolutionError) as error:
         raise PricerWebInputError(f"eligibility.contract无效：{error}") from error
 
@@ -1467,6 +1500,239 @@ def _fair_public_parameter_value(
         raise PricerWebInputError(f"公平参数公开参数编码失败：{error}") from error
 
 
+_FAIR_RECOMPILE_IDENTITY_FIELDS = frozenset({
+    "contract_id",
+    "underlyings",
+    "currency",
+    "contract_start_date",
+    "contract_end_date",
+    "reference_prices",
+    "price_convention",
+    "calendar_id",
+    "calendar_revision",
+})
+_FAIR_TIME_UNITS = frozenset({
+    "schedule",
+    "schedule_selector",
+    "observation_count",
+    "count",
+    "day",
+    "year",
+})
+
+
+def _recompile_fair_candidate(
+    base_contract: ResolvedContract,
+    term_overrides: Mapping[str, Any],
+    *,
+    registry: Mapping[str, Any],
+    target: Any,
+    calendar_binding: Any = None,
+) -> ResolvedContract:
+    """Rebuild one candidate from complete business objects without digests."""
+
+    if not isinstance(base_contract, ResolvedContract):
+        raise ContractResolutionError("公平参数候选重编译需要完整ResolvedContract")
+    if not isinstance(term_overrides, Mapping) or not term_overrides:
+        raise ContractResolutionError("公平参数候选必须提供非空term_overrides")
+    if not isinstance(registry, Mapping):
+        raise ContractResolutionError("公平参数候选必须使用当前Registry快照")
+    verify_current_product_rule(base_contract, registry)
+
+    product_id = base_contract.product_id
+    try:
+        product = registry["products"][product_id]
+        current_revision = product["identity"]["rule_revision"]
+    except (KeyError, TypeError) as error:
+        raise ContractResolutionError("公平参数候选对应的当前产品规则不存在") from error
+    if base_contract.identity.get("rule_revision") != current_revision:
+        raise ContractResolutionError("公平参数候选rule_revision与当前产品规则不一致")
+
+    target_spec = target.to_solver_spec()
+    if not isinstance(target_spec, Mapping):
+        raise ContractResolutionError("公平参数目标规则必须为完整对象")
+    target_id = target_spec.get("target_id")
+    controlled = target_spec.get("controlled_term_keys")
+    if not isinstance(target_id, str) or not target_id.strip():
+        raise ContractResolutionError("公平参数目标规则缺少target_id")
+    if isinstance(controlled, (str, bytes)) or not isinstance(controlled, (tuple, list)):
+        raise ContractResolutionError("公平参数目标规则controlled_term_keys无效")
+    controlled_keys = tuple(controlled)
+    if not controlled_keys or any(
+        not isinstance(key, str) or not key.strip() for key in controlled_keys
+    ):
+        raise ContractResolutionError("公平参数目标规则controlled_term_keys无效")
+    candidate_keys = set(term_overrides)
+    if any(not isinstance(key, str) or not key.strip() for key in candidate_keys):
+        raise ContractResolutionError("公平参数候选term_overrides字段名无效")
+    if candidate_keys != set(controlled_keys):
+        raise ContractResolutionError("公平参数候选必须精确覆盖目标controlled_term_keys")
+    if candidate_keys.intersection({"S0", "S0Vec"}):
+        raise ContractResolutionError("公平参数候选不得修改合同起始价格坐标")
+    if target_spec.get("schedule_impact_rule", {}).get("kind") != "no_time_dimension_change":
+        raise ContractResolutionError("公平参数目标不得改变合同时间维度")
+    invalid = candidate_keys - set(overridable_term_keys(product_id, registry))
+    if invalid:
+        raise ContractResolutionError(
+            "公平参数候选含不可覆盖条款：" + ",".join(sorted(invalid))
+        )
+    for key in controlled_keys:
+        if key not in base_contract.terms:
+            raise ContractResolutionError(f"公平参数目标字段{key}不属于基础合同")
+        _validate_fair_candidate_domain(term_overrides[key], target_spec.get("domain", {}), key)
+
+    if base_contract.resolved_schedules and calendar_binding is None:
+        raise ContractResolutionError("含观察日程的公平参数候选必须绑定交易日历")
+    if calendar_binding is not None:
+        if (
+            getattr(calendar_binding, "calendar_id", None)
+            != base_contract.identity.get("calendar_id")
+            or getattr(calendar_binding, "calendar_revision", None)
+            != base_contract.identity.get("calendar_revision")
+        ):
+            raise ContractResolutionError("公平参数候选交易日历与基础合同不一致")
+        sessions = tuple(getattr(calendar_binding, "sessions", ()))
+        session_set = set(sessions)
+        if any(
+            day not in session_set
+            for schedule in base_contract.resolved_schedules.values()
+            for day in schedule["dates"]
+        ):
+            raise ContractResolutionError("交易日历未覆盖基础合同冻结观察日")
+    else:
+        sessions = ()
+
+    base_snapshot = base_contract.to_protocol_dict()
+    identity = {
+        key: value
+        for key, value in base_snapshot["identity"].items()
+        if key in _FAIR_RECOMPILE_IDENTITY_FIELDS
+    }
+    candidate_values = {
+        key: base_snapshot["terms"][key]
+        for key, source in base_snapshot["term_sources"].items()
+        if source == "override"
+    }
+    candidate_values.update(dict(term_overrides))
+
+    if product_id == "9.3" and target_id == "p":
+        # 9.3的p是独立起始现金流。旧OptionReg约束只描述历史报价习惯，
+        # 不得把本次公平保费反解重新耦合到K1。
+        terms = dict(base_snapshot["terms"])
+        sources = dict(base_snapshot["term_sources"])
+        terms["p"] = float(term_overrides["p"])
+        sources["p"] = "override"
+        candidate_contract = replace(
+            base_contract,
+            terms=terms,
+            term_sources=sources,
+            path_case_applicability=None,
+        )
+    else:
+        candidate_contract = resolve_contract(
+            product_id,
+            identity=identity,
+            term_overrides=candidate_values,
+            registry=registry,
+            trading_dates=None if calendar_binding is None else sessions,
+        )
+
+    _assert_fair_candidate_identity(
+        base_contract,
+        candidate_contract,
+        registry=registry,
+    )
+    return candidate_contract
+
+
+def _validate_fair_candidate_domain(value: Any, domain: Any, key: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ContractResolutionError(f"公平参数候选{key}必须为有限数")
+    number = float(value)
+    if not pd.notna(number) or abs(number) == float("inf"):
+        raise ContractResolutionError(f"公平参数候选{key}必须为有限数")
+    if not isinstance(domain, Mapping):
+        raise ContractResolutionError(f"公平参数目标{key}缺少合法域")
+    for name, relation in (
+        ("min", lambda bound: number >= bound),
+        ("inclusive_min", lambda bound: number >= bound),
+        ("exclusive_min", lambda bound: number > bound),
+        ("max", lambda bound: number <= bound),
+        ("inclusive_max", lambda bound: number <= bound),
+        ("exclusive_max", lambda bound: number < bound),
+    ):
+        bound = domain.get(name)
+        if bound is not None and not relation(float(bound)):
+            raise ContractResolutionError(f"公平参数候选{key}超出合法域")
+
+
+def _assert_fair_candidate_identity(
+    base_contract: ResolvedContract,
+    candidate_contract: ResolvedContract,
+    *,
+    registry: Mapping[str, Any],
+) -> None:
+    """Compare complete identity and time facts instead of summary hashes."""
+
+    base = base_contract.to_protocol_dict()
+    candidate = candidate_contract.to_protocol_dict()
+    identity_keys = {
+        "product_id",
+        "rule_revision",
+        "underlyings",
+        "currency",
+        "contract_start_date",
+        "contract_end_date",
+        "reference_prices",
+        "price_convention",
+        "calendar_id",
+        "calendar_revision",
+    }
+    if (
+        {key: base["identity"].get(key) for key in identity_keys}
+        != {key: candidate["identity"].get(key) for key in identity_keys}
+    ):
+        raise ContractResolutionError("公平参数候选改变了基础合同身份")
+    for price_key in ("S0", "S0Vec"):
+        if base["terms"].get(price_key) != candidate["terms"].get(price_key):
+            raise ContractResolutionError("公平参数候选改变了合同起始价格坐标")
+    if base["paths"] != candidate["paths"]:
+        raise ContractResolutionError("公平参数候选改变了产品现金流路径定义")
+    if _fair_time_dimension(base_contract, registry) != _fair_time_dimension(
+        candidate_contract,
+        registry,
+    ):
+        raise ContractResolutionError("公平参数候选改变了合同时间维度")
+
+
+def _fair_time_dimension(
+    contract: ResolvedContract,
+    registry: Mapping[str, Any],
+) -> dict[str, Any]:
+    catalog = registry.get("term_catalog", {})
+    timed_terms: dict[str, Any] = {}
+    for key, value in contract.to_protocol_dict()["terms"].items():
+        metadata = catalog.get(key, {}) if isinstance(catalog, Mapping) else {}
+        unit = metadata.get("unit") if isinstance(metadata, Mapping) else None
+        key_text = str(key).lower()
+        if (
+            key == "T"
+            or unit in _FAIR_TIME_UNITS
+            or any(
+                token in key_text
+                for token in ("payment", "settlement", "schedule", "maturity", "date")
+            )
+        ):
+            timed_terms[str(key)] = value
+    snapshot = contract.to_protocol_dict()
+    return {
+        "contract_start_date": snapshot["identity"].get("contract_start_date"),
+        "contract_end_date": snapshot["identity"].get("contract_end_date"),
+        "timed_terms": timed_terms,
+        "resolved_schedules": snapshot["resolved_schedules"],
+    }
+
+
 def _fair_module_run_files(
     output: Mapping[str, Any],
     *,
@@ -1491,7 +1757,8 @@ def _fair_module_run_files(
         "access_scope": output["access_scope"],
         "candidate_id": output["candidate_id"],
         "catalog_version": output["catalog_version"],
-        "execution_fingerprint": output["execution_fingerprint"],
+        "product_id": output["product_id"],
+        "rule_revision": output["rule_revision"],
         "input_snapshot": "input_snapshot.json",
         "data_refs": "data_refs.json",
         "limitations": "limitations.json",
@@ -1504,7 +1771,6 @@ def _fair_module_run_files(
             },
         ],
         "artifact_manifest": "artifacts/artifact_manifest.json",
-        "contract_fingerprint": output["contract_fingerprint"],
         "error": None,
         "metadata": {
             "created_at": _now(),
@@ -1532,52 +1798,20 @@ def _verify_fair_bundle_identity(
     stored_evaluated: Mapping[str, Any],
     stored_snapshot: Mapping[str, Any],
     expected_fair: Mapping[str, Any],
-    evaluated_contract_fingerprint: str,
+    expected_evaluated_contract: Mapping[str, Any],
     expected_snapshot: Mapping[str, Any],
 ) -> None:
-    stored_identity = stored_fair.get("identity")
-    expected_identity = expected_fair.get("identity")
-    if not isinstance(stored_identity, Mapping) or not isinstance(expected_identity, Mapping):
-        raise ValueError("公平参数结果缺少身份绑定")
-    for key in (
-        "fair_run_id",
-        "base_contract_fingerprint",
-        "evaluated_contract_fingerprint",
-        "target_spec_hash",
-        "capability_directory_hash",
-        "model_id",
-        "model_version",
-    ):
-        if stored_identity.get(key) != expected_identity.get(key):
-            raise ValueError(f"公平参数结果身份字段{key}在Store提交后发生变化")
-    if stored_identity.get("evaluated_contract_fingerprint") != evaluated_contract_fingerprint:
-        raise ValueError("公平参数结果与私有候选合同指纹不一致")
-    if stored_evaluated.get("contract_fingerprint") != evaluated_contract_fingerprint:
-        raise ValueError("私有候选合同缺少匹配的contract_fingerprint")
-    for field in (
-        "evaluated_contract_fingerprint",
-        "final_parameter_snapshot_hash",
-        "final_valuation_hash",
-    ):
-        if not isinstance(stored_fair.get(field), str) or not stored_fair[field].strip():
-            raise ValueError(f"公平参数结果缺少{field}")
+    if dict(stored_fair) != dict(expected_fair):
+        raise ValueError("公平参数结果在Store提交后发生变化")
+    if dict(stored_evaluated) != dict(expected_evaluated_contract):
+        raise ValueError("公平参数候选合同在Store提交后发生变化")
     if not isinstance(stored_snapshot, Mapping):
         raise ValueError("公平参数私有快照必须为对象")
-    if semantic_hash(stored_snapshot) != stored_fair["final_parameter_snapshot_hash"]:
-        raise ValueError("公平参数final_parameter_snapshot_hash校验失败")
     final_valuation = stored_fair.get("final_valuation")
     if not isinstance(final_valuation, Mapping):
         raise ValueError("公平参数结果缺少final_valuation")
-    if semantic_hash(final_valuation) != stored_fair["final_valuation_hash"]:
-        raise ValueError("公平参数final_valuation_hash校验失败")
-    if stored_fair["evaluated_contract_fingerprint"] != evaluated_contract_fingerprint:
-        raise ValueError("公平参数evaluated_contract_fingerprint校验失败")
     if dict(stored_snapshot) != dict(expected_snapshot):
         raise ValueError("公平参数最终参数快照在Store提交后发生变化")
-    if stored_snapshot.get("evaluated_contract_fingerprint") != evaluated_contract_fingerprint:
-        raise ValueError("公平参数最终参数快照与候选合同指纹不一致")
-    if stored_fair.get("final_valuation") != expected_fair.get("final_valuation"):
-        raise ValueError("公平参数最终估值在Store提交后发生变化")
     if stored_fair.get("quote_eligible") is not False:
         raise ValueError("公平参数结果不得具备正式报价资格")
     if stored_fair.get("precision_status") != "research_only":
@@ -1604,7 +1838,8 @@ def _module_run_files(
         "access_scope": output["access_scope"],
         "candidate_id": output["candidate_id"],
         "catalog_version": output["catalog_version"],
-        "execution_fingerprint": output["execution_fingerprint"],
+        "product_id": output["product_id"],
+        "rule_revision": output["rule_revision"],
         "input_snapshot": "input_snapshot.json",
         "data_refs": "data_refs.json",
         "limitations": "limitations.json",
@@ -1614,7 +1849,6 @@ def _module_run_files(
             {"name": "pricing_result.csv", "media_type": "text/csv"},
         ],
         "artifact_manifest": "artifacts/artifact_manifest.json",
-        "contract_fingerprint": output["contract_fingerprint"],
         "error": None if status in {"succeeded", "partial"} else {
             "status": status,
             "limitations": output["limitations"],
@@ -1657,7 +1891,6 @@ def _pricing_csv(output: Mapping[str, Any]) -> str:
     writer = csv.DictWriter(stream, fieldnames=(
         "task_id", "run_id", "product_id", "status", "method", "value_basis",
         "pv_percent", "standard_error_percent", "quote_eligible", "precision_status",
-        "contract_fingerprint",
     ))
     writer.writeheader()
     writer.writerow({
@@ -1671,7 +1904,6 @@ def _pricing_csv(output: Mapping[str, Any]) -> str:
         "standard_error_percent": pricing.get("standard_error_percent"),
         "quote_eligible": pricing.get("quote_eligible"),
         "precision_status": pricing.get("precision_status"),
-        "contract_fingerprint": output["contract_fingerprint"],
     })
     return "\ufeff" + stream.getvalue()
 
