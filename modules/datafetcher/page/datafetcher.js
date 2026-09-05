@@ -114,7 +114,7 @@ function buildFetchRequest(values) {
   if (!assetIds.length) throw new Error('请至少填写一个资产标识。');
   const invalidAsset = assetIds.find(item => !/^\d{6}\.(?:SH|SZ)$/.test(item));
   if (invalidAsset) throw new Error(`资产标识“${invalidAsset}”格式不正确，请使用000300.SH或399001.SZ。`);
-  const request = {asset_ids: assetIds, start_date: start.iso, end_date: end.iso, fields, provider: 'ifind_http', source_priority: ['ifind_http'], frequency: values.frequency || '1d', adjustment: values.adjustment, cache_policy: 'extend_only', offline: false, persistence_mode: values.saveDownloadedData ? 'library' : 'volatile'};
+  const request = {asset_ids: assetIds, start_date: start.iso, end_date: end.iso, fields, source_priority: ['local', 'ifind_http'], frequency: values.frequency || '1d', adjustment: values.adjustment, cache_policy: 'extend_only', offline: false, persistence_mode: values.saveDownloadedData ? 'library' : 'volatile'};
   return request;
 }
 
@@ -257,11 +257,15 @@ function initializePage() {
   const clearFieldErrors = () => {
     for (const id of ['asset-ids', 'start-date', 'end-date']) $(id).removeAttribute('aria-invalid');
     $('asset-ids-error').textContent = '';
+    $('start-date-error').textContent = '';
+    $('end-date-error').textContent = '';
   };
   const showInputError = text => {
-    const targets = /资产标识/.test(text) ? ['asset-ids'] : /开始日期/.test(text) ? ['start-date'] : /结束日期|日期/.test(text) ? ['start-date', 'end-date'] : [];
+    const targets = /资产标识/.test(text) ? ['asset-ids'] : /开始日期不得晚于结束日期/.test(text) ? ['start-date', 'end-date'] : /开始日期/.test(text) ? ['start-date'] : /结束日期/.test(text) ? ['end-date'] : /日期/.test(text) ? ['start-date', 'end-date'] : [];
     targets.forEach(id => $(id).setAttribute('aria-invalid', 'true'));
     if (targets.includes('asset-ids')) $('asset-ids-error').textContent = text;
+    if (targets.includes('start-date')) $('start-date-error').textContent = text;
+    if (targets.includes('end-date')) $('end-date-error').textContent = text;
     $(targets[0])?.focus();
   };
   const setBusy = busy => { $('submit-request').disabled = busy; $('submit-request').textContent = busy ? '正在执行请求…' : '获取数据'; };
