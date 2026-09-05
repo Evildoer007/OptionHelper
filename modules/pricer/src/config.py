@@ -153,7 +153,11 @@ class PricingConfig:
             raise PricingConfigError("scenarios必须为列表")
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        payload = asdict(self)
+        if self.model_method == "analytical":
+            payload.pop("path_count", None)
+            payload.pop("random_seed", None)
+        return payload
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any] | None = None) -> "PricingConfig":
@@ -161,6 +165,13 @@ class PricingConfig:
         unknown = set(supplied) - set(cls.__dataclass_fields__)
         if unknown:
             raise PricingConfigError(f"PricingConfig含未知字段：{','.join(sorted(unknown))}")
+        if supplied.get("model_method") == "analytical":
+            monte_carlo_only = {"path_count", "random_seed"}.intersection(supplied)
+            if monte_carlo_only:
+                raise PricingConfigError(
+                    "Analytical定价不接受Monte Carlo字段："
+                    + "、".join(sorted(monte_carlo_only))
+                )
         return cls(**supplied)
 
 
