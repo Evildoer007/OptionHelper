@@ -222,7 +222,7 @@ def table_column_role(key: Any, label: Any = "") -> str:
     if key_text in _TABLE_NARRATIVE_HINTS or any(token in compact for token in ("观察", "结算", "规则", "来源", "说明", "口径")):
         return "narrative"
     if key_text in _TABLE_NUMERIC_HINTS or any(token in compact for token in (
-        "价格", "费", "票息", "比例", "数量", "期限", "执行价", "波动率", "现值", "收益", "亏损", "胜率",
+        "价格", "费", "票息", "比例", "数量", "期限", "执行价", "波动率", "现值", "收益", "亏损",
         "delta", "gamma", "vega", "theta", "rho",
     )):
         return "numeric"
