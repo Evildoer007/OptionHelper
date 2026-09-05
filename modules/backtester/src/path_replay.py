@@ -11,7 +11,6 @@ import pandas as pd
 from runtime.contracts.contract_api import (
     PricePath,
     ResolvedContract,
-    compute_monitor_values,
     evaluate_contract,
 )
 
@@ -55,9 +54,17 @@ class EffectiveBacktestWindow:
     requested_end: str | None
     market_as_of_session: str
     latest_complete_entry_session: str
+    status: str = "ready"
+    actual_start: str | None = None
+    actual_end: str | None = None
+    suggested_end_date: str | None = None
+    excluded_incomplete_entry_count: int = 0
+    exclusion_reason: str | None = None
+    excluded_entry_reasons: Mapping[str, int] | None = None
 
-    def to_dict(self) -> dict[str, str | None]:
+    def to_dict(self) -> dict[str, Any]:
         return {
+            "status": self.status,
             "mode": self.mode,
             "start_date": self.start_date,
             "end_date": self.end_date,
@@ -65,6 +72,12 @@ class EffectiveBacktestWindow:
             "requested_end": self.requested_end,
             "market_as_of_session": self.market_as_of_session,
             "latest_complete_entry_session": self.latest_complete_entry_session,
+            "actual_start": self.actual_start or self.start_date,
+            "actual_end": self.actual_end or self.end_date,
+            "suggested_end_date": self.suggested_end_date or self.latest_complete_entry_session,
+            "excluded_incomplete_entry_count": self.excluded_incomplete_entry_count,
+            "exclusion_reason": self.exclusion_reason,
+            "excluded_entry_reasons": dict(self.excluded_entry_reasons or {}),
         }
 
 
@@ -295,24 +308,32 @@ def _resolve_effective_backtest_window(
         [value for value in (requested_end, explicit_dates.max() if len(explicit_dates) else None) if value is not None],
         default=None,
     )
-    if requested_ceiling is not None and requested_ceiling > latest_complete:
-        details = {
-            "requested_end": _date_text(requested_ceiling),
-            "market_as_of_session": _date_text(market_as_of),
-            "latest_complete_entry_session": _date_text(latest_complete),
-            "suggested_end_date": _date_text(latest_complete),
-            "reason": "requested_end_after_latest_complete_entry_session",
-        }
-        raise BacktestWindowError(
-            "请求的入场截止日超过最新可完整回放的入场交易日",
-            code="entry_window_exceeds_complete_history",
-            details=details,
-        )
+    requested_exceeds_complete = requested_ceiling is not None and requested_ceiling > latest_complete
+    excluded_reasons: dict[str, int] = {}
+    if config.entry_rule == "monthly":
+        periods = verified_observed.to_period("M")
+        rule_candidates = pd.DatetimeIndex([
+            value for index, value in enumerate(verified_observed)
+            if index == 0 or periods[index] != periods[index - 1]
+        ])
+    elif config.entry_rule == "explicit":
+        rule_candidates = explicit_dates
+    else:
+        rule_candidates = verified_observed
 
     if config.entry_rule == "explicit":
         for entry_date in explicit_dates:
             _, reason = complete_stop(entry_date)
             if reason is None:
+                continue
+            if entry_date > latest_complete and reason in {
+                "controlled_calendar_not_closed_through_maturity",
+                "insufficient_observation_count_tenor",
+                "insufficient_tenor",
+                "insufficient_path",
+            }:
+                key = "requested_entry_after_latest_complete_entry_session"
+                excluded_reasons[key] = excluded_reasons.get(key, 0) + 1
                 continue
             raise BacktestWindowError(
                 f"指定入场日不能形成完整合同期限回放：{reason}",
@@ -328,24 +349,45 @@ def _resolve_effective_backtest_window(
 
     if config.entry_rule == "explicit":
         effective_start = requested_start or explicit_dates.min()
-        effective_end = requested_end or explicit_dates.max()
-        outside = explicit_dates[(explicit_dates < effective_start) | (explicit_dates > effective_end)]
+        requested_explicit_end = requested_end or explicit_dates.max()
+        outside = explicit_dates[
+            (explicit_dates < effective_start)
+            | (explicit_dates > requested_explicit_end)
+        ]
         if len(outside):
             raise BacktestWindowError(
                 "指定入场日超出显式入场窗口",
                 code="explicit_entry_outside_requested_window",
                 details={
                     "requested_start": _date_text(effective_start),
-                    "requested_end": _date_text(effective_end),
+                    "requested_end": _date_text(requested_explicit_end),
                     "outside_entry_dates": [_date_text(value) for value in outside],
                     "market_as_of_session": _date_text(market_as_of),
                     "latest_complete_entry_session": _date_text(latest_complete),
                     "reason": "explicit_entry_outside_requested_window",
                 },
             )
+        effective_end = min(requested_explicit_end, latest_complete)
+        complete_explicit = [
+            value for value in explicit_dates
+            if effective_start <= value <= effective_end and complete_stop(value)[0] is not None
+        ]
+        if not complete_explicit:
+            raise BacktestWindowError(
+                "请求窗口内没有可完成合同期限的指定入场日",
+                code="no_complete_entry_session",
+                details={
+                    "requested_start": _date_text(effective_start),
+                    "requested_end": _date_text(requested_explicit_end),
+                    "market_as_of_session": _date_text(market_as_of),
+                    "latest_complete_entry_session": _date_text(latest_complete),
+                    "reason": "no_complete_explicit_entry_in_requested_window",
+                },
+            )
+        actual_candidates = pd.DatetimeIndex(complete_explicit)
         mode = "explicit"
     else:
-        effective_end = requested_end or latest_complete
+        effective_end = min(requested_end, latest_complete) if requested_end is not None else latest_complete
         if requested_start is None:
             target = effective_end - pd.DateOffset(years=3)
             candidates = verified_observed[(verified_observed >= target) & (verified_observed <= effective_end)]
@@ -364,27 +406,91 @@ def _resolve_effective_backtest_window(
                 )
         else:
             effective_start = requested_start
+        bounded_candidates = rule_candidates[
+            (rule_candidates >= effective_start)
+            & (rule_candidates <= effective_end)
+        ]
+        first_complete = next(
+            (value for value in bounded_candidates if complete_stop(value)[0] is not None),
+            None,
+        )
+        last_complete = next(
+            (value for value in reversed(bounded_candidates) if complete_stop(value)[0] is not None),
+            None,
+        )
+        if first_complete is None or last_complete is None:
+            raise BacktestWindowError(
+                "请求窗口内没有可完成合同期限的入场交易日",
+                code="no_complete_entry_session",
+                details={
+                    "requested_start": _date_text(effective_start),
+                    "requested_end": _date_text(requested_ceiling or effective_end),
+                    "market_as_of_session": _date_text(market_as_of),
+                    "latest_complete_entry_session": _date_text(latest_complete),
+                    "reason": "no_complete_entry_candidate_in_requested_window",
+                },
+            )
+        actual_candidates = pd.DatetimeIndex([first_complete, last_complete])
         mode = "automatic" if requested_start is None and requested_end is None else "explicit_bounds"
     if effective_start > effective_end:
         raise BacktestWindowError(
-            "入场起始日不得晚于入场截止日",
-            code="invalid_entry_window_order",
+            "请求窗口内没有可完成合同期限的入场交易日",
+            code="no_complete_entry_session",
             details={
                 "requested_start": _date_text(effective_start),
-                "requested_end": _date_text(effective_end),
+                "requested_end": _date_text(requested_ceiling or effective_end),
                 "market_as_of_session": _date_text(market_as_of),
                 "latest_complete_entry_session": _date_text(latest_complete),
-                "reason": "start_after_end",
+                "reason": "requested_window_starts_after_latest_complete_entry_session",
             },
         )
+    if requested_exceeds_complete and config.entry_rule != "explicit":
+        excluded = rule_candidates[rule_candidates > latest_complete]
+        if requested_start is not None:
+            excluded = excluded[excluded >= requested_start]
+        if requested_end is not None:
+            excluded = excluded[excluded <= requested_end]
+        if len(excluded):
+            key = "requested_end_after_latest_complete_entry_session"
+            excluded_reasons[key] = excluded_reasons.get(key, 0) + len(excluded)
+    if requested_exceeds_complete and not excluded_reasons:
+        excluded_reasons["requested_end_after_latest_complete_entry_session"] = 0
+    excluded_count = sum(excluded_reasons.values())
+    if excluded_count and config.missing_data_policy == "reject":
+        raise BacktestWindowError(
+            "请求区间含未完成合同期限的不完整样本，已按所选统计设置停止。",
+            code="incomplete_entry_policy_rejected",
+            details={
+                "requested_start": config.start_date,
+                "requested_end": _date_text(requested_ceiling) if requested_ceiling is not None else None,
+                "market_as_of_session": _date_text(market_as_of),
+                "latest_complete_entry_session": _date_text(latest_complete),
+                "excluded_incomplete_entry_count": excluded_count,
+                "reason": "missing_data_policy_reject",
+            },
+        )
+    status = "ready_with_exclusions" if requested_exceeds_complete or excluded_count else "ready"
+    if len(excluded_reasons) == 1:
+        exclusion_reason = next(iter(excluded_reasons))
+    elif excluded_reasons:
+        exclusion_reason = "multiple_incomplete_entry_reasons"
+    else:
+        exclusion_reason = None
     return EffectiveBacktestWindow(
         mode=mode,
         start_date=_date_text(effective_start),
         end_date=_date_text(effective_end),
         requested_start=config.start_date,
-        requested_end=config.end_date,
+        requested_end=_date_text(requested_ceiling) if requested_ceiling is not None else None,
         market_as_of_session=_date_text(market_as_of),
         latest_complete_entry_session=_date_text(latest_complete),
+        status=status,
+        actual_start=_date_text(actual_candidates.min()),
+        actual_end=_date_text(actual_candidates.max()),
+        suggested_end_date=_date_text(latest_complete),
+        excluded_incomplete_entry_count=excluded_count,
+        exclusion_reason=exclusion_reason,
+        excluded_entry_reasons=excluded_reasons,
     )
 
 
@@ -429,37 +535,20 @@ def replay_path(
     times = _complete_count_tenor_times(contract, times, len(dates))
     full_path = _price_path(contract, values, times, dates, price_fields)
     try:
-        full_monitors = compute_monitor_values(contract, full_path)
+        full_outcome = evaluate_contract(contract, full_path)
     except ValueError as error:
         raise BacktestInputError(str(error)) from error
-    candidate_end_positions = _termination_candidate_positions(full_monitors, times)
+    candidate_end_positions = _termination_candidate_positions(full_outcome.monitor_values, times)
     for end in candidate_end_positions:
         candidate_dates = dates[: end + 1]
         candidate_times = times[: end + 1]
         candidate_fields = {name: field[: end + 1] for name, field in price_fields.items()}
-        try:
-            prefix_path = _path_with_controlled_terminal(
-                contract,
-                dates=candidate_dates,
-                values=values[: end + 1],
-                times=candidate_times,
-                price_fields=candidate_fields,
-                controlled_dates=dates,
-                controlled_times=times,
-            )
-            prefix_monitors = compute_monitor_values(contract, prefix_path)
-        except ValueError:
-            continue
-        if not _has_termination(prefix_monitors, through_time=float(candidate_times[-1])):
-            continue
-        prefix_monitors = _monitor_values_through(prefix_monitors, float(candidate_times[-1]))
         outcome = _evaluate_terminated_prefix(
             contract,
             dates=candidate_dates,
             values=values[: end + 1],
             times=candidate_times,
             price_fields=candidate_fields,
-            prefix_monitors=prefix_monitors,
             controlled_dates=dates,
             controlled_times=times,
         )
@@ -468,18 +557,14 @@ def replay_path(
             # 合同现金流仍在到期日，因此必须继续保留完整真实路径。
             continue
         return ReplayedPath(candidate_dates, values[: end + 1], candidate_times, candidate_fields, outcome)
-    try:
-        outcome = evaluate_contract(contract, full_path)
-    except ValueError as error:
-        raise BacktestInputError(str(error)) from error
-    return ReplayedPath(dates, values, times, dict(price_fields), outcome)
+    return ReplayedPath(dates, values, times, dict(price_fields), full_outcome)
 
 
 def _termination_candidate_positions(monitors: Mapping[str, Any], times: np.ndarray) -> tuple[int, ...]:
     """从完整路径提取有限个提前终止候选点，再用真实前缀逐一复核。
 
-    终止事实仍由候选时点以前的价格前缀重新计算；完整路径只用于把原先
-    对每个交易日重复求值的扫描缩减为有限个事件候选，不参与前缀结算。
+    终止事实仍由候选时点以前的价格前缀重新计算；完整路径结果仅提供
+    有限个事件候选，并只在没有提前终止时作为最终结算结果。
     """
     if len(times) < 3:
         return ()
@@ -501,11 +586,10 @@ def _evaluate_terminated_prefix(
     values: np.ndarray,
     times: np.ndarray,
     price_fields: Mapping[str, np.ndarray],
-    prefix_monitors: Mapping[str, Any],
     controlled_dates: pd.DatetimeIndex,
     controlled_times: np.ndarray,
 ) -> Any | None:
-    """以平坦合成终点解释已发生提前结算，不读取实际后缀行情。"""
+    """以一次平坦前缀解释确认提前结算，不重复计算同一组monitor。"""
     if "T" not in contract.terms:
         raise BacktestInputError("early_termination_without_contract_tenor")
     try:
@@ -523,9 +607,15 @@ def _evaluate_terminated_prefix(
         )
     except ValueError as error:
         raise BacktestInputError(str(error)) from error
+    through_time = float(times[-1])
+    if not _has_termination(outcome.monitor_values, through_time=through_time):
+        return None
     if any(float(flow.time) > float(times[-1]) + 1e-12 for flow in outcome.cashflows):
         return None
-    return replace(outcome, monitor_values=dict(prefix_monitors))
+    return replace(
+        outcome,
+        monitor_values=_monitor_values_through(outcome.monitor_values, through_time),
+    )
 
 
 def _path_with_controlled_terminal(
