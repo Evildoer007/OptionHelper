@@ -24,10 +24,11 @@ from .contract_engine import (
     overridable_term_keys,
     prepare_contract_evaluator,
     resolve_contract,
+    resolve_structural_payoff_contract,
     resolve_schedule,
     resolve_schedules,
     validate_registry,
-    verify_product_snapshot_binding,
+    verify_current_product_rule,
 )
 
 __all__ = (
@@ -53,8 +54,9 @@ __all__ = (
     "overridable_term_keys",
     "prepare_contract_evaluator",
     "resolve_contract",
+    "resolve_structural_payoff_contract",
     "resolve_schedule",
     "resolve_schedules",
     "validate_registry",
-    "verify_product_snapshot_binding",
+    "verify_current_product_rule",
 )
