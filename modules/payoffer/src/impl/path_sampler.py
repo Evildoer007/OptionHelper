@@ -537,12 +537,15 @@ def _has_host_frozen_calendar(contract: ResolvedContract) -> bool:
     return bool(
         calendar_id
         and revision
-        and not (calendar_id.startswith("payoffer-local-") and revision == "local-development")
+        and not (
+            calendar_id == "payoffer-structural-candidate"
+            and revision == "structural-candidate"
+        )
     )
 
 
 def _derived_contract_start(first_observation: pd.Timestamp, monthly_snapshots: Sequence[Mapping[str, Any]]) -> pd.Timestamp:
-    """开发预览缺少Host身份日期时，从冻结日程得到一个不与首期观察重合的起点。"""
+    """结构候选缺少Host日期时，从冻结日程得到不与首期观察重合的起点。"""
     if monthly_snapshots:
         return first_observation.to_period("M").start_time.normalize()
     return first_observation - pd.Timedelta(days=1)
