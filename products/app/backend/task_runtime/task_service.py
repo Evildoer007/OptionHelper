@@ -556,7 +556,7 @@ class TaskService:
     def append_run_ref(self, identity: SessionIdentity, task_id: str, reference: dict[str, str]) -> None:
         required = {
             "module", "tenant_id", "task_id", "run_id",
-            "expected_semantic_result_hash", "expected_artifact_manifest_hash",
+            "expected_result_file_hash", "expected_artifact_manifest_hash",
         }
         if set(reference) != required or reference["tenant_id"] != identity.tenant_id or reference["task_id"] != task_id:
             raise ValidationError("ModuleRunRef is invalid for this task")
@@ -653,13 +653,7 @@ class TaskService:
         )
 
     def save_pending_recommendation(self, identity: SessionIdentity, task_id: str, value: dict[str, Any]) -> None:
-        """Keep one ordered, private candidate-contract selection for confirmation.
-
-        The task index never stores a ResolvedContract, module result, Provider
-        response, or artifact path.  Those remain in their owning Stores.  This
-        compact state merely prevents a natural-language confirmation from
-        re-running candidate selection and review with a different result.
-        """
+        """Keep the ordered current candidate inputs awaiting confirmation."""
 
         state = _pending_recommendation(value)
 
@@ -667,8 +661,8 @@ class TaskService:
             task = _owned_task(tasks, identity, task_id, "conversation.write")
             if any(
                 row["tenant_id"] != identity.tenant_id or row["task_id"] != task_id
-                for contract in state["candidate_contracts"].values()
-                for row in contract["module_run_refs"]
+                for candidate in state["candidates"]
+                for row in candidate["module_run_refs"]
             ):
                 raise ValidationError("Recommendation continuation module_run_refs do not belong to this task")
             task["recommendation_state"] = state
@@ -685,22 +679,16 @@ class TaskService:
         if not isinstance(value, dict):
             return None
         state = _pending_recommendation(value, allow_approved=True)
-        return copy.deepcopy(state) if state["status"] in {"pending_approval", "approval_prepared", "approved"} else None
+        return copy.deepcopy(state) if state["status"] in {"pending_approval", "approved"} else None
 
-    def prepare_pending_recommendation_approval(
+    def approve_pending_recommendation(
         self,
         identity: SessionIdentity,
         task_id: str,
         *,
         approved_candidate_ids: list[str],
     ) -> dict[str, Any] | None:
-        """Persist the durable half of a cross-store candidate confirmation.
-
-        Candidate contracts live in ``ContractStore`` and cannot share this
-        document-store transaction.  The task first records the exact ordered
-        candidate ids and a resumable operation.  Callers may then bind every
-        immutable CandidateContract and finally commit the approval below.
-        """
+        """Approve current candidate inputs atomically without contract activation."""
 
         selected_ids = _approved_candidate_ids(approved_candidate_ids)
         selected: dict[str, Any] | None = None
@@ -713,109 +701,24 @@ class TaskService:
                 return tasks
             state = _pending_recommendation(raw, allow_approved=True)
             if state["status"] == "pending_approval":
-                if any(candidate_id not in state["candidate_contracts"] for candidate_id in selected_ids):
+                known_ids = {candidate["candidate_id"] for candidate in state["candidates"]}
+                if any(candidate_id not in known_ids for candidate_id in selected_ids):
                     raise ValidationError("Recommendation approval contains unknown candidate_id")
-                state["status"] = "approval_prepared"
-                state["approved_candidate_ids"] = selected_ids
-                for candidate_id in selected_ids:
-                    state["candidate_contracts"][candidate_id]["approval_status"] = "approval_prepared"
-                state["approval_operation_id"] = f"approval-{uuid4().hex}"
-                state["approval_prepared_at"] = _utc_now()
-                task["recommendation_state"] = state
-                task["updated_at"] = state["approval_prepared_at"]
-            elif state["approved_candidate_ids"] != selected_ids:
-                raise ValidationError("Recommendation approval candidate order does not match prepared operation")
-            if state["status"] in {"approval_prepared", "approved"}:
-                selected = copy.deepcopy(state)
-            return tasks
-
-        self._state.update("tasks", update)
-        return selected
-
-    def commit_prepared_recommendation_approval(
-        self, identity: SessionIdentity, task_id: str, operation_id: str,
-    ) -> dict[str, Any] | None:
-        """Commit an already prepared candidate approval idempotently."""
-
-        operation_id = _safe_identifier(operation_id, "approval_operation_id", maximum=96)
-        selected: dict[str, Any] | None = None
-
-        def update(tasks: dict[str, Any]) -> dict[str, Any]:
-            nonlocal selected
-            task = _owned_task(tasks, identity, task_id, "conversation.write")
-            raw = task.get("recommendation_state")
-            if not isinstance(raw, dict):
-                return tasks
-            state = _pending_recommendation(raw, allow_approved=True)
-            if state["status"] == "approval_prepared":
-                if state.get("approval_operation_id") != operation_id:
-                    raise ValidationError("Recommendation approval operation does not match")
+                if not selected_ids:
+                    raise ValidationError("Recommendation approval requires candidate_id")
                 state["status"] = "approved"
-                for candidate_id in state["approved_candidate_ids"]:
-                    state["candidate_contracts"][candidate_id]["approval_status"] = "approved"
+                state["approved_candidate_ids"] = selected_ids
                 state["approved_at"] = _utc_now()
                 task["recommendation_state"] = state
                 task["updated_at"] = state["approved_at"]
-            if state["status"] == "approved" and state.get("approval_operation_id") == operation_id:
+            elif state["approved_candidate_ids"] != selected_ids:
+                raise ValidationError("Recommendation approval candidate order does not match current selection")
+            if state["status"] == "approved":
                 selected = copy.deepcopy(state)
             return tasks
 
         self._state.update("tasks", update)
         return selected
-
-    def invalidate_prepared_recommendation_approval(
-        self, identity: SessionIdentity, task_id: str, operation_id: str,
-    ) -> None:
-        """Close a prepared operation only when its CAS basis is no longer valid."""
-
-        operation_id = _safe_identifier(operation_id, "approval_operation_id", maximum=96)
-
-        def update(tasks: dict[str, Any]) -> dict[str, Any]:
-            task = _owned_task(tasks, identity, task_id, "conversation.write")
-            raw = task.get("recommendation_state")
-            if not isinstance(raw, dict):
-                return tasks
-            state = _pending_recommendation(raw, allow_approved=True)
-            if state["status"] in {"approval_prepared", "approved"} and state.get("approval_operation_id") == operation_id:
-                state["status"] = "invalidated"
-                for candidate_id in state["approved_candidate_ids"]:
-                    state["candidate_contracts"][candidate_id]["approval_status"] = "invalidated"
-                state["invalidated_at"] = _utc_now()
-                task["recommendation_state"] = state
-                task["updated_at"] = state["invalidated_at"]
-            return tasks
-
-        self._state.update("tasks", update)
-
-    def reopen_prepared_recommendation_approval(
-        self, identity: SessionIdentity, task_id: str, operation_id: str,
-    ) -> dict[str, Any] | None:
-        """Return a prepared selection to clarification without approving it."""
-
-        operation_id = _safe_identifier(operation_id, "approval_operation_id", maximum=96)
-        reopened: dict[str, Any] | None = None
-
-        def update(tasks: dict[str, Any]) -> dict[str, Any]:
-            nonlocal reopened
-            task = _owned_task(tasks, identity, task_id, "conversation.write")
-            raw = task.get("recommendation_state")
-            if not isinstance(raw, dict):
-                return tasks
-            state = _pending_recommendation(raw, allow_approved=True)
-            if state["status"] == "approval_prepared" and state.get("approval_operation_id") == operation_id:
-                state["status"] = "pending_approval"
-                state["approved_candidate_ids"] = []
-                for contract in state["candidate_contracts"].values():
-                    contract["approval_status"] = "pending_approval"
-                state.pop("approval_operation_id", None)
-                state.pop("approval_prepared_at", None)
-                task["recommendation_state"] = state
-                task["updated_at"] = _utc_now()
-                reopened = copy.deepcopy(state)
-            return tasks
-
-        self._state.update("tasks", update)
-        return reopened
 
     def choose_pending_recommendation_delivery(
         self,
@@ -1626,133 +1529,83 @@ def _pending_recommendation(value: dict[str, Any], *, allow_approved: bool = Fal
     """Validate the only continuation payload the Task index is allowed to retain."""
 
     allowed = {
-        "status", "analysis_case_id", "catalog_version", "confirmed_constraints", "delivery",
-        "workflow_mode", "approved_at", "completed_at", "state_schema", "preset",
-        "ranking_spec_id", "ranking_spec", "ranking_spec_fingerprint", "approval_operation_id",
-        "approval_prepared_at", "invalidated_at", "candidate_ids", "candidate_contracts",
-        "approved_candidate_ids",
+        "status", "analysis_case_id", "confirmed_constraints", "delivery", "workflow_mode",
+        "approved_at", "completed_at", "state_schema", "preset_id", "ranking_spec",
+        "candidates", "approved_candidate_ids", "requested_outputs",
     }
     if set(value).difference(allowed):
         raise ValidationError("Recommendation continuation contains unsupported fields")
     status = str(value.get("status", "")).strip()
     permitted = {"pending_approval"}
     if allow_approved:
-        permitted.update({"approval_prepared", "approved", "completed", "invalidated"})
+        permitted.update({"approved", "completed"})
     if status not in permitted:
         raise ValidationError("Recommendation continuation status is invalid")
     state_schema = PENDING_RECOMMENDATION_SCHEMA_ID
     if value.get("state_schema") != state_schema:
         raise ValidationError("Recommendation continuation is not an ordered candidate approval")
-    text_fields = ("analysis_case_id", "catalog_version")
-    result: dict[str, Any] = {"status": status, "state_schema": state_schema}
-    for field in text_fields:
-        text = str(value.get(field, "")).strip()
-        if not text or len(text) > 160:
-            raise ValidationError(f"Recommendation continuation {field} is invalid")
-        result[field] = text
-    preset = value.get("preset")
-    if not isinstance(preset, dict) or set(preset) != {"preset_id", "preset_revision"}:
-        raise ValidationError("Recommendation continuation preset is invalid")
-    preset_id = _safe_identifier(preset.get("preset_id"), "preset_id", maximum=80)
-    preset_revision = str(preset.get("preset_revision", "")).strip()
-    if re.fullmatch(r"[0-9a-f]{64}", preset_revision) is None:
-        raise ValidationError("Recommendation continuation preset_revision is invalid")
-    result["preset"] = {"preset_id": preset_id, "preset_revision": preset_revision}
+    result: dict[str, Any] = {
+        "status": status,
+        "state_schema": state_schema,
+        "analysis_case_id": _safe_identifier(
+            value.get("analysis_case_id"), "analysis_case_id", maximum=160,
+        ),
+        "preset_id": _safe_identifier(value.get("preset_id"), "preset_id", maximum=80),
+    }
     workflow_mode = str(value.get("workflow_mode", "")).strip()
-    if workflow_mode not in {"single_agent", "multi_agent"}:
+    if workflow_mode not in {"single_agent", "multi_agent", "degraded_single_agent"}:
         raise ValidationError("Recommendation continuation workflow_mode is invalid")
     result["workflow_mode"] = workflow_mode
     constraints = value.get("confirmed_constraints")
     if not isinstance(constraints, dict) or set(constraints).difference({
-        "underlying", "horizon", "market_view", "max_loss", "principal_fluctuation", "output_type", "format",
+        "underlying", "horizon", "market_view", "max_loss", "principal_fluctuation",
+        "output_type", "format", "path_count",
     }):
         raise ValidationError("Recommendation continuation constraints are invalid")
     result["confirmed_constraints"] = copy.deepcopy(constraints)
     delivery = _recommendation_delivery(value.get("delivery"), required=False)
     result["delivery"] = delivery
-    candidate_ids = _candidate_ids(value.get("candidate_ids"))
-    raw_contracts = value.get("candidate_contracts")
-    if not isinstance(raw_contracts, dict) or set(raw_contracts) != set(candidate_ids):
-        raise ValidationError("Recommendation continuation candidate_contracts must match candidate_ids")
-    candidate_contracts: dict[str, dict[str, Any]] = {}
-    for candidate_id in candidate_ids:
-        candidate_contracts[candidate_id] = _pending_candidate_contract(
-            raw_contracts[candidate_id], expected_candidate_id=candidate_id,
-        )
+    raw_candidates = value.get("candidates")
+    if (
+        isinstance(raw_candidates, (str, bytes))
+        or not isinstance(raw_candidates, list)
+        or not raw_candidates
+        or len(raw_candidates) > 10
+    ):
+        raise ValidationError("Recommendation continuation candidates are invalid")
+    candidates = [_pending_candidate_snapshot(item) for item in raw_candidates]
+    candidate_ids = [item["candidate_id"] for item in candidates]
+    if len(candidate_ids) != len(set(candidate_ids)):
+        raise ValidationError("Recommendation continuation candidate_ids are duplicated")
     approved_candidate_ids = _approved_candidate_ids(value.get("approved_candidate_ids"))
-    if any(candidate_id not in candidate_contracts for candidate_id in approved_candidate_ids):
+    if any(candidate_id not in candidate_ids for candidate_id in approved_candidate_ids):
         raise ValidationError("Recommendation approval contains unknown candidate_id")
-    expected_approval_status = {
-        "pending_approval": "pending_approval",
-        "approval_prepared": "approval_prepared",
-        "approved": "approved",
-        "completed": "approved",
-        "invalidated": "invalidated",
-    }[status]
     if status == "pending_approval" and approved_candidate_ids:
         raise ValidationError("Pending recommendation cannot contain approved_candidate_ids")
     if status != "pending_approval" and not approved_candidate_ids:
         raise ValidationError("Recommendation approval requires approved_candidate_ids")
-    for candidate_id, contract in candidate_contracts.items():
-        expected = expected_approval_status if candidate_id in approved_candidate_ids else "pending_approval"
-        if contract["approval_status"] != expected:
-            raise ValidationError("Recommendation candidate approval_status conflicts with task state")
-    result["candidate_ids"] = candidate_ids
-    result["candidate_contracts"] = candidate_contracts
+    result["candidates"] = candidates
     result["approved_candidate_ids"] = approved_candidate_ids
-    ranking_spec_id = value.get("ranking_spec_id")
-    if ranking_spec_id is None:
-        result["ranking_spec_id"] = None
-        if value.get("ranking_spec_fingerprint") is not None:
-            raise ValidationError("Recommendation continuation ranking_spec_fingerprint conflicts")
-        result["ranking_spec_fingerprint"] = None
-        if value.get("ranking_spec") is not None:
-            raise ValidationError("Recommendation continuation ranking_spec conflicts")
-        result["ranking_spec"] = None
-    else:
-        result["ranking_spec_id"] = _safe_identifier(ranking_spec_id, "ranking_spec_id", maximum=160)
-        ranking_spec_fingerprint = str(value.get("ranking_spec_fingerprint", "")).strip()
-        if not _sha256(ranking_spec_fingerprint):
-            raise ValidationError("Recommendation continuation ranking_spec_fingerprint is invalid")
-        if not result["ranking_spec_id"].endswith(f".{ranking_spec_fingerprint}"):
-            raise ValidationError("Recommendation continuation ranking_spec_id is not content-bound")
-        result["ranking_spec_fingerprint"] = ranking_spec_fingerprint
-        ranking_spec = _pending_ranking_spec(value.get("ranking_spec"))
-        if (
-            ranking_spec["ranking_spec_id"] != result["ranking_spec_id"]
-            or ranking_spec["ranking_spec_fingerprint"] != ranking_spec_fingerprint
-        ):
-            raise ValidationError("Recommendation continuation ranking_spec conflicts")
-        result["ranking_spec"] = ranking_spec
-    if result["preset"]["preset_id"] == "constraint-ranking" and result["ranking_spec_id"] is None:
-        raise ValidationError("Constraint-ranking continuation requires a content-bound RankingSpec")
-    if status in {"approval_prepared", "approved"}:
-        operation_id = _safe_identifier(value.get("approval_operation_id"), "approval_operation_id", maximum=96)
-        result["approval_operation_id"] = operation_id
-        prepared_at = str(value.get("approval_prepared_at", "")).strip()
-        if not prepared_at or len(prepared_at) > 80:
-            raise ValidationError("Recommendation continuation approval_prepared_at is invalid")
-        result["approval_prepared_at"] = prepared_at
-    if status == "invalidated":
-        invalidated_at = str(value.get("invalidated_at", "")).strip()
-        if not invalidated_at or len(invalidated_at) > 80:
-            raise ValidationError("Recommendation continuation invalidated_at is invalid")
-        result["invalidated_at"] = invalidated_at
+    ranking_spec = value.get("ranking_spec")
+    result["ranking_spec"] = None if ranking_spec is None else _json_snapshot(
+        ranking_spec, "Recommendation continuation ranking_spec", maximum_bytes=64_000,
+    )
+    requested_outputs = value.get("requested_outputs", [])
+    if isinstance(requested_outputs, (str, bytes)) or not isinstance(requested_outputs, list):
+        raise ValidationError("Recommendation continuation requested_outputs are invalid")
+    outputs = [str(item).strip().lower() for item in requested_outputs]
+    if len(outputs) > 6 or len(outputs) != len(set(outputs)) or any(
+        item not in {"payoff", "pricing", "backtest", "card", "quote", "report"}
+        for item in outputs
+    ):
+        raise ValidationError("Recommendation continuation requested_outputs are invalid")
+    result["requested_outputs"] = outputs
     for field in ("approved_at", "completed_at"):
         if field in value:
             timestamp = str(value[field]).strip()
             if not timestamp or len(timestamp) > 80:
                 raise ValidationError("Recommendation continuation timestamp is invalid")
             result[field] = timestamp
-    return result
-
-
-def _candidate_ids(value: object) -> list[str]:
-    if isinstance(value, (str, bytes)) or not isinstance(value, list) or not value or len(value) > 128:
-        raise ValidationError("Recommendation continuation candidate_ids are invalid")
-    result = [_safe_identifier(item, "candidate_id", maximum=160) for item in value]
-    if len(set(result)) != len(result):
-        raise ValidationError("Recommendation continuation candidate_ids are duplicated")
     return result
 
 
@@ -1765,81 +1618,74 @@ def _approved_candidate_ids(value: object) -> list[str]:
     return result
 
 
-def _pending_candidate_contract(value: object, *, expected_candidate_id: str) -> dict[str, Any]:
+def _pending_candidate_snapshot(value: object) -> dict[str, Any]:
     fields = {
-        "candidate", "candidate_version", "contract_fingerprint", "term_overrides",
-        "term_overrides_fingerprint", "expected_active_contract_fingerprint", "module_run_refs",
-        "approval_status", "public_projection",
+        "candidate_id", "product_id", "rule_revision", "product_name", "underlyings",
+        "library_status", "current_inputs", "module_run_refs", "public_projection",
     }
     if not isinstance(value, dict) or set(value) != fields:
-        raise ValidationError("Recommendation continuation CandidateContract is invalid")
-    candidate = value.get("candidate")
-    if not isinstance(candidate, dict) or set(candidate) != {
-        "candidate_id", "product_id", "product_name", "underlyings", "library_status",
-    }:
-        raise ValidationError("Recommendation continuation candidate is invalid")
-    candidate_id = _safe_identifier(candidate.get("candidate_id"), "candidate_id", maximum=160)
-    product_id = _safe_identifier(candidate.get("product_id"), "product_id", maximum=80)
-    product_name = str(candidate.get("product_name", "")).strip()
-    underlyings = candidate.get("underlyings")
+        raise ValidationError("Recommendation continuation candidate snapshot is invalid")
+    candidate_id = _safe_identifier(value.get("candidate_id"), "candidate_id", maximum=160)
+    product_id = _safe_identifier(value.get("product_id"), "product_id", maximum=80)
+    revision = value.get("rule_revision")
+    product_name = str(value.get("product_name", "")).strip()
+    underlyings = value.get("underlyings")
     if (
-        candidate_id != expected_candidate_id
+        isinstance(revision, bool)
+        or not isinstance(revision, int)
+        or revision < 1
         or len(product_name) > 160
         or not isinstance(underlyings, list)
         or not underlyings
         or any(not isinstance(item, str) or not item.strip() or len(item) > 80 for item in underlyings)
-        or candidate.get("library_status") != "ready"
+        or value.get("library_status") != "ready"
     ):
         raise ValidationError("Recommendation continuation candidate is invalid")
-    version = value.get("candidate_version")
-    if not isinstance(version, dict) or set(version) != {
-        "candidate_key", "candidate_version_id", "parent_candidate_version_id", "revision",
-    }:
-        raise ValidationError("Recommendation continuation candidate_version is invalid")
-    candidate_key = _safe_identifier(version.get("candidate_key"), "candidate_key", maximum=160)
-    candidate_version_id = _safe_identifier(version.get("candidate_version_id"), "candidate_version_id", maximum=160)
-    parent_raw = version.get("parent_candidate_version_id")
-    parent = None if parent_raw is None else _safe_identifier(parent_raw, "parent_candidate_version_id", maximum=160)
-    revision = version.get("revision")
-    if isinstance(revision, bool) or not isinstance(revision, int) or revision < 1 or revision > 100:
-        raise ValidationError("Recommendation continuation candidate_version revision is invalid")
-    fingerprint = str(value.get("contract_fingerprint", "")).strip()
-    if not _sha256(fingerprint):
-        raise ValidationError("Recommendation continuation contract_fingerprint is invalid")
-    term_overrides_fingerprint = str(value.get("term_overrides_fingerprint", "")).strip()
-    term_overrides = _term_overrides(value.get("term_overrides"))
-    if not _sha256(term_overrides_fingerprint) or _term_overrides_fingerprint(term_overrides) != term_overrides_fingerprint:
-        raise ValidationError("Recommendation continuation term_overrides fingerprint conflicts")
-    expected_active = value.get("expected_active_contract_fingerprint")
-    if expected_active is not None:
-        expected_active = str(expected_active).strip()
-        if not _sha256(expected_active):
-            raise ValidationError("Recommendation continuation expected_active_contract_fingerprint is invalid")
-    approval_status = str(value.get("approval_status", "")).strip()
-    if approval_status not in {"pending_approval", "approval_prepared", "approved", "invalidated"}:
-        raise ValidationError("Recommendation continuation approval_status is invalid")
+    current_inputs = _json_snapshot(
+        value.get("current_inputs"), "Recommendation continuation current_inputs", maximum_bytes=128_000,
+    )
+    if not isinstance(current_inputs, dict) or _contains_retired_candidate_state(current_inputs):
+        raise ValidationError("Recommendation continuation current_inputs contain retired state")
     return {
-        "candidate": {
-            "candidate_id": candidate_id,
-            "product_id": product_id,
-            "product_name": product_name,
-            "underlyings": [item.strip() for item in underlyings],
-            "library_status": "ready",
-        },
-        "candidate_version": {
-            "candidate_key": candidate_key,
-            "candidate_version_id": candidate_version_id,
-            "parent_candidate_version_id": parent,
-            "revision": revision,
-        },
-        "contract_fingerprint": fingerprint,
-        "term_overrides": term_overrides,
-        "term_overrides_fingerprint": term_overrides_fingerprint,
-        "expected_active_contract_fingerprint": expected_active,
+        "candidate_id": candidate_id,
+        "product_id": product_id,
+        "rule_revision": revision,
+        "product_name": product_name,
+        "underlyings": [item.strip() for item in underlyings],
+        "library_status": "ready",
+        "current_inputs": current_inputs,
         "module_run_refs": _pending_module_run_refs(value.get("module_run_refs")),
-        "approval_status": approval_status,
         "public_projection": _pending_public_candidate_projection(value.get("public_projection")),
     }
+
+
+def _json_snapshot(value: object, field_name: str, *, maximum_bytes: int) -> Any:
+    try:
+        encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+        decoded = json.loads(encoded)
+    except (TypeError, ValueError) as error:
+        raise ValidationError(f"{field_name} is not valid JSON") from error
+    if len(encoded.encode("utf-8")) > maximum_bytes:
+        raise ValidationError(f"{field_name} exceeds size limit")
+    return decoded
+
+
+def _contains_retired_candidate_state(value: object) -> bool:
+    retired = {
+        "resolved_" + "contract", "candidate_" + "version", "catalog_" + "version",
+        "product_" + "version", "contract_" + "fingerprint", "term_overrides_" + "fingerprint",
+    }
+    if isinstance(value, Mapping):
+        return any(
+            str(key) in retired
+            or str(key).endswith("_fingerprint")
+            or str(key).endswith("_hash")
+            or _contains_retired_candidate_state(item)
+            for key, item in value.items()
+        )
+    if isinstance(value, list):
+        return any(_contains_retired_candidate_state(item) for item in value)
+    return False
 
 
 def _pending_public_candidate_projection(value: object) -> dict[str, Any]:
@@ -1881,64 +1727,6 @@ def _canonical_value(value: object) -> str:
 
 def _sha256(value: str) -> bool:
     return bool(re.fullmatch(r"[0-9a-f]{64}", value))
-
-
-def _pending_ranking_spec(value: object) -> dict[str, Any]:
-    """Validate the normalized deterministic RankingSpec persisted for recovery."""
-
-    if not isinstance(value, dict) or set(value) != {
-        "ranking_spec_id", "ranking_spec_fingerprint", "hard_constraints", "sort_keys", "tie_break_policy",
-    }:
-        raise ValidationError("Recommendation continuation ranking_spec is invalid")
-    ranking_spec_id = _safe_identifier(value.get("ranking_spec_id"), "ranking_spec_id", maximum=160)
-    fingerprint = str(value.get("ranking_spec_fingerprint", "")).strip()
-    constraints = value.get("hard_constraints")
-    sort_keys = value.get("sort_keys")
-    if (
-        not _sha256(fingerprint)
-        or not ranking_spec_id.endswith(f".{fingerprint}")
-        or not isinstance(constraints, dict)
-        or isinstance(sort_keys, (str, bytes))
-        or not isinstance(sort_keys, list)
-        or not sort_keys
-        or value.get("tie_break_policy") != "candidate_key"
-    ):
-        raise ValidationError("Recommendation continuation ranking_spec is invalid")
-    normalized_keys: list[dict[str, str]] = []
-    for item in sort_keys:
-        if not isinstance(item, dict) or set(item) != {"metric", "direction", "missing_policy"}:
-            raise ValidationError("Recommendation continuation ranking_spec is invalid")
-        metric = _safe_identifier(item.get("metric"), "ranking_metric", maximum=80)
-        direction = item.get("direction")
-        missing_policy = item.get("missing_policy")
-        if direction not in {"asc", "desc"} or missing_policy not in {"exclude", "first", "last"}:
-            raise ValidationError("Recommendation continuation ranking_spec is invalid")
-        normalized_keys.append({"metric": metric, "direction": direction, "missing_policy": missing_policy})
-    if len({item["metric"] for item in normalized_keys}) != len(normalized_keys):
-        raise ValidationError("Recommendation continuation ranking_spec is invalid")
-    try:
-        normalized_constraints = json.loads(json.dumps(constraints, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
-    except (TypeError, ValueError) as error:
-        raise ValidationError("Recommendation continuation ranking_spec is invalid") from error
-    canonical = json.dumps(
-        {
-            "hard_constraints": normalized_constraints,
-            "sort_keys": normalized_keys,
-            "tie_break_policy": "candidate_key",
-        },
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-    if hashlib.sha256(canonical.encode("utf-8")).hexdigest() != fingerprint:
-        raise ValidationError("Recommendation continuation ranking_spec fingerprint conflicts")
-    return {
-        "ranking_spec_id": ranking_spec_id,
-        "ranking_spec_fingerprint": fingerprint,
-        "hard_constraints": normalized_constraints,
-        "sort_keys": normalized_keys,
-        "tie_break_policy": "candidate_key",
-    }
 
 
 def _safe_identifier(value: object, field_name: str, *, maximum: int) -> str:
@@ -2074,16 +1862,12 @@ def _term_overrides(value: object) -> dict[str, str | int | float]:
     return dict(sorted(result.items()))
 
 
-def _term_overrides_fingerprint(value: dict[str, str | int | float]) -> str:
-    return hashlib.sha256(_canonical_value(value).encode("utf-8")).hexdigest()
-
-
 def _pending_module_run_refs(value: object) -> list[dict[str, str]]:
     if isinstance(value, (str, bytes)) or not isinstance(value, list) or len(value) > 16:
         raise ValidationError("Recommendation continuation module_run_refs are invalid")
     fields = {
         "module", "tenant_id", "task_id", "run_id",
-        "expected_semantic_result_hash", "expected_artifact_manifest_hash",
+        "expected_result_file_hash", "expected_artifact_manifest_hash",
     }
     result: list[dict[str, str]] = []
     seen: set[tuple[str, str, str, str]] = set()
@@ -2094,7 +1878,7 @@ def _pending_module_run_refs(value: object) -> list[dict[str, str]]:
         if (
             row["module"] not in {"payoffer", "pricer", "backtester"}
             or any(not row[field] or len(row[field]) > 160 for field in fields)
-            or not _sha256(row["expected_semantic_result_hash"])
+            or not _sha256(row["expected_result_file_hash"])
             or not _sha256(row["expected_artifact_manifest_hash"])
         ):
             raise ValidationError("Recommendation continuation module_run_refs are invalid")
