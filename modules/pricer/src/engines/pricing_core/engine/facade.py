@@ -21,6 +21,7 @@ import re
 import sys
 from threading import RLock
 from typing import Any, Mapping
+from uuid import uuid4
 
 import numpy as np
 
@@ -113,7 +114,6 @@ class RunResult:
 @dataclass(frozen=True)
 class PricingRun:
     run_id: str
-    request_fingerprint: str
     family: str
     structure: str
     method: str
@@ -145,7 +145,6 @@ class SolveRunResult:
 @dataclass(frozen=True)
 class SolveRun:
     run_id: str
-    request_fingerprint: str
     family: str
     structure: str
     method: str
@@ -223,24 +222,13 @@ def price_option(
             structure,
         )
 
-    request = {
-        "family": family,
-        "structure": structure,
-        "parameters": parameter_snapshot,
-        "method": method,
-        "route_id": selected_route_id,
-    }
-    request_fingerprint = hashlib.sha256(
-        _canonical_json(request).encode("utf-8")
-    ).hexdigest()
-    run_id = _new_run_id(request_fingerprint)
+    run_id = _new_run_id()
     json_output_path = None
     if output in {"TERMINAL_AND_JSON", "JSON"}:
         json_output_path = str(_result_root() / run_id / "pricing_run.json")
     result = _normalize_result(pricing_result, family, structure)
     run = PricingRun(
         run_id=run_id,
-        request_fingerprint=request_fingerprint,
         family=family,
         structure=structure,
         method=method,
@@ -349,18 +337,7 @@ def solve_option(
             instrument, market, state, config, random_metadata, structure
         )
 
-    request = {
-        "family": family,
-        "structure": structure,
-        "parameters": parameter_snapshot,
-        "method": method,
-        "route_id": route_id,
-        "target": target_snapshot,
-    }
-    request_fingerprint = hashlib.sha256(
-        _canonical_json(request).encode("utf-8")
-    ).hexdigest()
-    run_id = _new_run_id(request_fingerprint)
+    run_id = _new_run_id()
     json_output_path = None
     if output in {"TERMINAL_AND_JSON", "JSON"}:
         json_output_path = str(_solve_result_root() / run_id / "solve_run.json")
@@ -383,7 +360,6 @@ def solve_option(
     )
     run = SolveRun(
         run_id=run_id,
-        request_fingerprint=request_fingerprint,
         family=family,
         structure=structure,
         method=method,
@@ -450,9 +426,9 @@ def _validated_group(
     return dict(values)
 
 
-def _new_run_id(fingerprint: str) -> str:
+def _new_run_id() -> str:
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-    return f"{stamp}_{fingerprint[:12]}"
+    return f"{stamp}_{uuid4().hex[:12]}"
 
 
 def _parameter_snapshot(groups: Mapping[str, Any]) -> dict[str, Any]:
@@ -800,16 +776,6 @@ def _json_value(
     return repr(value)
 
 
-def _canonical_json(value: Any) -> str:
-    return json.dumps(
-        _json_value(value),
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        allow_nan=False,
-    )
-
-
 def _run_payload(run: PricingRun) -> dict[str, Any]:
     return _public_percent_payload(_json_value(run))
 
@@ -923,7 +889,6 @@ def _print_run(run: PricingRun) -> None:
     result = public["result"]
     _print_section("REQUEST", {
         "run_id": run.run_id,
-        "request_fingerprint": run.request_fingerprint,
         "family": run.family,
         "structure": run.structure,
         "method": run.method,
@@ -968,7 +933,6 @@ def _print_solve_run(run: SolveRun) -> None:
     public = _public_percent_payload(_json_value(run))
     _print_section("REQUEST", {
         "run_id": run.run_id,
-        "request_fingerprint": run.request_fingerprint,
         "family": run.family,
         "structure": run.structure,
         "method": run.method,
