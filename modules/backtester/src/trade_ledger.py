@@ -28,9 +28,6 @@ class HistoricalResolvedContract:
     reference_prices: Mapping[str, float]
     reference_price_provenance: Mapping[str, Any]
     resolved_schedules: Mapping[str, Any]
-    product_version: str
-    template_contract_fingerprint: str
-    trade_contract_fingerprint: str
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -41,9 +38,6 @@ class HistoricalResolvedContract:
             "reference_prices": dict(self.reference_prices),
             "reference_price_provenance": deep_thaw(self.reference_price_provenance),
             "resolved_schedules": deep_thaw(self.resolved_schedules),
-            "product_version": self.product_version,
-            "template_contract_fingerprint": self.template_contract_fingerprint,
-            "trade_contract_fingerprint": self.trade_contract_fingerprint,
         }
 
 
@@ -66,7 +60,7 @@ class TradeResult:
     events: Mapping[str, Any]
     cashflows: tuple[Mapping[str, Any], ...]
     pnl: float
-    gross_contract_return: float
+    contract_settlement_return: float
     return_normalization: Mapping[str, str]
     terminal_performance: float | None
     entry_features: Mapping[str, Any]
@@ -76,15 +70,6 @@ class TradeResult:
     @property
     def entry_date(self) -> str:
         return self.historical_contract.entry_date
-
-    @property
-    def trade_contract_fingerprint(self) -> str:
-        return self.historical_contract.trade_contract_fingerprint
-
-    @property
-    def contract_settlement_return(self) -> float:
-        """正式公共名称；旧字段在v1保持数值完全一致。"""
-        return self.gross_contract_return
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -103,28 +88,11 @@ class TradeResult:
             "settlement_type": self.settlement_type,
             "events": deep_thaw(self.events),
             "contract_settlement_return": self.contract_settlement_return,
-            "gross_contract_return": self.contract_settlement_return,
             "contract_settlement_return_convention": {
                 "basis": "declared_contract_cashflows_over_contract_scale",
                 "display_unit": "percentage",
                 "value_encoding": "decimal_ratio",
                 "normalization": dict(self.return_normalization),
-            },
-            "gross_return_convention": {
-                "basis": "contract_cashflow_before_external_costs",
-                "display_unit": "percentage",
-                "value_encoding": "decimal_ratio",
-                "normalization": dict(self.return_normalization),
-            },
-            "client_net_return": {
-                "status": "not_modelled",
-                "value": None,
-                "reasons": ["funding_cost", "transaction_cost", "tax", "hedging_cost", "slippage"],
-            },
-            "client_net_pnl": {
-                "status": "not_modelled",
-                "value": None,
-                "reasons": ["funding_cost", "transaction_cost", "tax", "hedging_cost", "slippage"],
             },
             "terminal_performance": self.terminal_performance,
             "entry_features": deep_thaw(self.entry_features),
@@ -167,7 +135,6 @@ def freeze_trade_contract(
         identity=identity,
         resolved_schedules=schedules,
         path_case_applicability=None,
-        contract_fingerprint="",
     )
     historical = HistoricalResolvedContract(
         trade_contract_id=str(identity["contract_id"]),
@@ -177,9 +144,6 @@ def freeze_trade_contract(
         reference_prices=dict(entry_spots),
         reference_price_provenance=_reference_price_provenance(entry_spots),
         resolved_schedules=schedules,
-        product_version=trade_contract.product_version,
-        template_contract_fingerprint=contract.contract_fingerprint,
-        trade_contract_fingerprint=trade_contract.contract_fingerprint,
     )
     return trade_contract, historical
 
@@ -202,7 +166,7 @@ def build_trade_result(
     settlement_spots = {asset: float(observed_values[-1, index]) for index, asset in enumerate(contract.underlyings)}
     performances = {asset: settlement_spots[asset] / entry_spots[asset] - 1.0 for asset in contract.underlyings}
     pnl = float(sum(float(item["amount"]) for item in cashflows))
-    gross_return, normalization = _gross_contract_return(contract, pnl)
+    settlement_return, normalization = _contract_settlement_return(contract, pnl)
     return TradeResult(
         trade_id=trade_id,
         historical_contract=historical_contract,
@@ -219,7 +183,7 @@ def build_trade_result(
         events=_event_dates(replay.outcome.monitor_values, replay.dates, replay.times),
         cashflows=cashflows,
         pnl=pnl,
-        gross_contract_return=gross_return,
+        contract_settlement_return=settlement_return,
         return_normalization=normalization,
         terminal_performance=min(performances.values()) if "S0Vec" in contract.terms else performances[contract.underlyings[0]],
         entry_features=entry_features,
@@ -308,7 +272,7 @@ def _event_dates(monitors: Mapping[str, Any], dates: pd.DatetimeIndex, times: np
     return result
 
 
-def _gross_contract_return(contract: ResolvedContract, pnl: float) -> tuple[float, dict[str, str]]:
+def _contract_settlement_return(contract: ResolvedContract, pnl: float) -> tuple[float, dict[str, str]]:
     """将解释器现金流映射为无货币单位的每100合同单位收益。
 
     ``N``、``Nvar``等仅是合同公式的规模变量，而非用户可选择的收益率分母。
