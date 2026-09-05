@@ -10,10 +10,10 @@ from __future__ import annotations
 import ast
 from copy import deepcopy
 from dataclasses import asdict, dataclass
-from datetime import date, timedelta
-from hashlib import sha256
+from datetime import date
 from pathlib import Path
 from typing import Any, Mapping
+from uuid import uuid4
 
 import numpy as np
 
@@ -23,16 +23,14 @@ from runtime.contracts.contract_api import (
     ContractResolutionError,
     FormulaError,
     PreparedContractEvaluator,
-    RESOLVED_CONTRACT_SCHEMA_ID,
     ResolvedContract,
     evaluate_contract_batch,
     get_product,
     overridable_term_keys,
     prepare_contract_evaluator,
-    resolve_contract,
-    verify_product_snapshot_binding,
+    resolve_structural_payoff_contract,
 )
-from runtime.contracts.contract_types import deep_thaw, semantic_hash
+from runtime.contracts.contract_types import deep_thaw
 from runtime.contracts.term_presentation import build_term_fields
 from runtime.knowledger import load_registry as load_optionreg
 from runtime.ports.result_store import ResultStorePort
@@ -41,11 +39,8 @@ from runtime.protocol.version import DEVELOPMENT_RELEASE_ID
 
 from ..asset_resolver import (
     DefaultAssetError,
-    DefaultVisualAsset,
     figure_asset_paths,
-    load_default_figure_payload,
-    payoff_template_paths_match,
-    payoff_template_terms_match,
+    load_current_visual_template,
     resolve_default_visual_asset,
 )
 from ..models import PayoffInput, PayoffResult
@@ -67,11 +62,8 @@ from .svg_renderer import normalize_render_options, render_svg as render_svg_tex
 MODULE_ROOT = Path(__file__).resolve().parents[4]
 RUNTIME_PATHS = bootstrap_runtime(MODULE_ROOT)
 RESULT_ROOT = RUNTIME_PATHS.result_root
-# 收益经济仍由Core以100为基准计算。该常量只留在模块内部，公开投影不得泄露
-# 其名义/点数含义；用户看到的同一数值一律是百分比。
-_INTERNAL_PERCENT_BASE = 100.0
 _PAYOFF_UNIT = "percent"
-_REPORTER_PAYOFF_BASES = frozenset({"net_after_premium", "gross_before_premium"})
+_REPORTER_PAYOFF_BASES = frozenset({"net_after_premium"})
 # ``S0``/``S0Vec`` are display-only coordinates, not user-overridable terms.
 _PAGE_HIDDEN_TERM_KEYS = frozenset({"S0", "S0Vec"})
 # Internal scale terms may remain in Core's controlled contract, but never in
@@ -83,16 +75,6 @@ _REPORTER_PAYOFF_FACTS_SCHEMA = "optionhelper.reporter-payoff-facts"
 # The exclusion is by the controlled mathematical symbol, never by a storage
 # key or by its numeric value.
 _REFERENCE_PRICE_SYMBOLS = frozenset({"S_0", "S_{i,0}"})
-# Core requires a calendar identity and a resolved schedule for observation
-# terms.  These values identify only the deterministic grid used by the
-# standalone Payoffer development preview; they are not a market or trading
-# calendar and are never used by the formal Host ResolvedContract path.
-_LOCAL_DEVELOPMENT_CALENDAR_ID = "payoffer-local-development-preview"
-_LOCAL_DEVELOPMENT_CALENDAR_VERSION = "local-development"
-_OBSERVATION_TERM_KEYS = frozenset({"O_KO", "O_KI", "Ohedge", "Oreset", "Orange", "Otouch", "Oc", "Ovar"})
-_LOCAL_DEVELOPMENT_PREVIEW_SESSIONS = 800
-
-
 class PayoffEngineError(ValueError):
     """Payoffer输入或收益图生成请求无效。"""
 
@@ -215,22 +197,10 @@ def _product_id_for_asset_name(name_zh: str, registry: Mapping[str, Any] | None 
 
 
 def _registry_with_default_figure(name_zh: str) -> tuple[str, dict[str, Any], dict[str, Any]]:
-    """核验默认资产与OptionReg同源，但绝不以JSON替换合同规则。"""
+    """确认只读视觉资产可解析，经济规则仅取自当前OptionReg。"""
     registry = load_registry()
     product_id = _product_id_for_asset_name(name_zh, registry)
-    default = load_default_figure_payload(name_zh)
-    expected = {
-        "name_zh": registry["products"][product_id]["identity"]["name_zh"],
-        "terms": registry["products"][product_id]["terms"],
-        "paths": registry["products"][product_id]["paths"],
-    }
-    if (
-        not payoff_template_terms_match(default["terms"], expected["terms"])
-        or not payoff_template_paths_match(default["paths"], expected["paths"])
-    ):
-        raise PayoffEngineError(f"{name_zh}的固定默认JSON与OptionReg不一致；请先完成资料库维护后再发布默认资产")
-    # 这份product仍是OptionReg的原始经济规则。默认JSON仅被读取和核验，普通
-    # 运行不能让其成为第二套terms/paths来源。
+    load_current_visual_template(name_zh, registry["products"][product_id]["paths"])
     return product_id, deepcopy(registry["products"][product_id]), registry
 
 
@@ -287,44 +257,13 @@ def payoff_fixed_term_fields(
     return [field for field in fields if field["key"] not in _PAGE_HIDDEN_TERM_KEYS]
 
 
-def _default_identity(product: Mapping[str, Any]) -> dict[str, Any]:
-    terms = product["terms"]
-    if "S0Vec" in terms:
-        assets = [f"UNDERLYING_{index + 1}" for index in range(len(terms["S0Vec"]))]
-        identity = {"underlyings": assets, "reference_prices": dict(zip(assets, terms["S0Vec"]))}
-    else:
-        identity = {"underlyings": ["UNDERLYING"], "reference_prices": {"UNDERLYING": float(terms.get("S0", 100.0))}}
-    if _has_observation_terms(terms):
-        identity.update({
-            "calendar_id": _LOCAL_DEVELOPMENT_CALENDAR_ID,
-            "calendar_revision": _LOCAL_DEVELOPMENT_CALENDAR_VERSION,
-        })
-    return identity
-
-
-def _has_observation_terms(terms: Mapping[str, Any]) -> bool:
-    return bool(_OBSERVATION_TERM_KEYS & set(terms))
-
-
-def _local_development_preview_dates() -> list[str]:
-    """Return a deterministic local preview grid, never a verified market calendar."""
-    current = date(2026, 1, 2)
-    dates: list[str] = []
-    while len(dates) < _LOCAL_DEVELOPMENT_PREVIEW_SESSIONS:
-        if current.weekday() < 5:
-            dates.append(current.isoformat())
-        current += timedelta(days=1)
-    return dates
-
-
 def build_payoff_input(
     name_zh: str,
     term_overrides: Mapping[str, Any] | None = None,
-    identity: Mapping[str, Any] | None = None,
     *,
     maintenance_registry: Mapping[str, Any] | None = None,
 ) -> ResolvedContract:
-    """独立页面预览或受控默认资产维护：解析OptionReg为ResolvedContract。"""
+    """由产品与结构条款编译一次性归一化候选合同。"""
     try:
         if maintenance_registry is None:
             product_id, product, registry = _registry_with_default_figure(name_zh)
@@ -335,14 +274,8 @@ def build_payoff_input(
             registry = deepcopy(dict(maintenance_registry))
             product_id = _product_id_for_asset_name(name_zh, registry)
             product = product_by_id(product_id, registry)
-        supplied_identity = dict(identity or {})
-        if "reference_prices" in supplied_identity and supplied_identity["reference_prices"] is None:
-            raise PayoffEngineError("Payoffer价格合同必须提供逐标的价格参考")
-        actual_identity = {**_default_identity(product), **supplied_identity}
-        preview_dates = _local_development_preview_dates() if _has_observation_terms(product["terms"]) else None
-        return resolve_contract(
-            str(product_id), identity=actual_identity, term_overrides=term_overrides,
-            registry=registry, trading_dates=preview_dates,
+        return resolve_structural_payoff_contract(
+            str(product_id), term_overrides=term_overrides, registry=registry,
         )
     except (ContractResolutionError, TypeError, ValueError) as error:
         raise PayoffEngineError(str(error)) from error
@@ -876,27 +809,40 @@ def _reporter_payoff_facts(path_panels: list[Mapping[str, Any]]) -> dict[str, An
 
 
 def _payoff_figure_basis(contract: ResolvedContract) -> tuple[str, float]:
-    """返回百分比收益图口径及仅用于图形的期初期权费还原值。"""
-    basis = str(contract.terms.get("payoff_figure_basis", "net_after_premium"))
-    if basis == "net_after_premium":
-        return basis, 0.0
-    if basis != "gross_before_premium":
-        raise PayoffEngineError(f"{contract.product_id}含未登记的收益图口径{basis}")
-    try:
-        offset = _INTERNAL_PERCENT_BASE * float(contract.terms["p"])
-    except (KeyError, TypeError, ValueError) as error:
-        raise PayoffEngineError(f"{contract.product_id}的扣费前收益图必须定义p") from error
-    if not np.isfinite(offset) or offset < 0.0:
-        raise PayoffEngineError(f"{contract.product_id}的扣费前收益图期权费无效")
-    return basis, offset
+    """Payoffer唯一展示口径：共享解释器给出的合同结算收益率。"""
+
+    return "net_after_premium", 0.0
 
 
-def _apply_figure_basis(segments: list[list[dict[str, Any]]], offset: float) -> None:
-    if offset == 0.0:
-        return
-    for segment in segments:
-        for point in segment:
-            point["y"] = float(point["y"]) + offset
+def _includes_initial_premium(contract: ResolvedContract) -> bool:
+    """判断合同现金流公式是否明确包含期初期权费支出。"""
+
+    term_catalog = load_registry()["term_catalog"]
+    premium_symbols = {
+        str(term_catalog[key]["symbol"])
+        for key in ("p", "Pi_0", "P_net")
+        if key in contract.terms and key in term_catalog
+    }
+    if not premium_symbols:
+        return False
+    for path in contract.paths:
+        for case in path.get("cases", ()):
+            try:
+                expression = ast.parse(str(case.get("pnl", "")), mode="eval")
+            except SyntaxError:
+                continue
+            for node in ast.walk(expression):
+                if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Name) or node.func.id != "cash":
+                    continue
+                if len(node.args) < 2:
+                    continue
+                time_arg, amount_arg = node.args[0], node.args[1]
+                if not isinstance(time_arg, ast.Constant) or time_arg.value != 0:
+                    continue
+                amount_names = {child.id for child in ast.walk(amount_arg) if isinstance(child, ast.Name)}
+                if premium_symbols & amount_names:
+                    return True
+    return False
 
 
 def _template_path_views(
@@ -957,6 +903,7 @@ def render_paths(contract: ResolvedContract, visual_template: Mapping[str, Any])
     if not active_path_case_refs:
         raise PayoffEngineError(f"{contract.product_id}的ResolvedContract没有可达收益分段")
     payoff_basis, premium_offset = _payoff_figure_basis(contract)
+    includes_initial_premium = _includes_initial_premium(contract)
     rendered: list[RenderedPath] = []
     for view in _template_path_views(visual_template, compiled):
         path_index = view["path_index"]
@@ -1012,11 +959,8 @@ def render_paths(contract: ResolvedContract, visual_template: Mapping[str, Any])
                     "condition_tex": path["cases"][case_index]["domain"],
                 })
                 selected_case_indexes.append(case_index + 1)
-            _apply_figure_basis(segments, premium_offset)
-            # ``gross_before_premium`` changes the plotted payoff after the
-            # shared interpreter result is sampled.  Project Reporter facts
-            # only after the identical display basis has been applied, so a
-            # verified report can never describe a different curve from SVG.
+            if premium_offset != 0.0:  # pragma: no cover - invariant guarded by _payoff_figure_basis
+                raise PayoffEngineError("Payoffer合同结算收益率不得叠加展示偏移")
             for case_index, domain, case_segments in reporter_fact_sources:
                 case_facts, endpoint_facts = _reporter_segment_facts(
                     case_index=case_index,
@@ -1039,8 +983,8 @@ def render_paths(contract: ResolvedContract, visual_template: Mapping[str, Any])
             terminal_slice = axis in {"S_T", "r_T", "W_T"}
             chart_kind = view["chart_kind"]
             status_note = "固定非终值历史，仅终值变化" if terminal_slice else "按横轴路径统计量构造确定性候选路径"
-            if payoff_basis == "gross_before_premium":
-                status_note += "；图中不含期初期权费"
+            if includes_initial_premium:
+                status_note += "；合同结算收益率已包含期初期权费"
             rendered.append(
                 RenderedPath(
                     path_id=path_id, title=title, condition_tex=path["condition"],
@@ -1079,12 +1023,12 @@ def _display_contract(contract: ResolvedContract) -> dict[str, Any]:
 
     公开PayoffResult不是ResolvedContract：不含完整paths、term_sources或任一
     可校验的产品/路径哈希。若消费者需重算，必须从ModuleRun的受控
-    ``input_snapshot.json``获取Core完整合同，而不能把本对象反序列化。
+    ``resolved_contract.json``获取Core完整合同，而不能把本对象反序列化。
     """
     identity = contract.identity
     display_identity = {
         key: _json_safe(deep_thaw(identity[key]))
-        for key in ("product_id", "name_zh", "entry_status", "contract_id", "underlyings")
+        for key in ("product_id", "name_zh", "entry_status", "rule_revision", "contract_id", "underlyings")
         if key in identity
     }
     hidden_terms = _PUBLIC_CONTRACT_HIDDEN_TERM_KEYS | {
@@ -1092,8 +1036,6 @@ def _display_contract(contract: ResolvedContract) -> dict[str, Any]:
     }
     return {
         "projection_status": "display_only",
-        # 明确这是不可用于复算的来源引用，不是本对象的contract_fingerprint。
-        "source_contract_fingerprint": contract.contract_fingerprint,
         "identity": display_identity,
         "terms": {
             str(key): _json_safe(deep_thaw(value))
@@ -1103,21 +1045,13 @@ def _display_contract(contract: ResolvedContract) -> dict[str, Any]:
     }
 
 
-def _template_term_bindings(asset: DefaultVisualAsset, contract: ResolvedContract) -> dict[str, Any]:
-    """把本次合同的可展示条款绑定到固定视觉模板，不读取模板经济公式。"""
-    template_terms = asset.template.get("terms", {})
-    if not isinstance(template_terms, Mapping):  # 已由AssetResolver校验，保留防御性检查。
-        raise PayoffEngineError(f"{contract.name_zh}的默认视觉模板缺少terms")
-    return {
-        str(key): _json_safe(deep_thaw(contract.terms[key]))
-        for key in template_terms
-        if key in contract.terms
-        and key not in _PUBLIC_CONTRACT_HIDDEN_TERM_KEYS
-        and key != "derived_terms"
-    }
+def _template_term_bindings(contract: ResolvedContract) -> dict[str, Any]:
+    """绑定当前合同的公开条款，绝不读取固定JSON中的历史经济字段。"""
+
+    return dict(_display_contract(contract)["terms"])
 
 
-def _runtime_figure_payload(result: PayoffResult) -> dict[str, Any]:
+def _runtime_figure_payload(result: PayoffResult, module_run_id: str) -> dict[str, Any]:
     """生成正式公开图形工件的受控百分比投影。
 
     路径采样、候选状态和视觉模板只服务于本次渲染，不能进入公开
@@ -1127,11 +1061,13 @@ def _runtime_figure_payload(result: PayoffResult) -> dict[str, Any]:
     payload = result.payload
     return {
         "module": payload["module"],
+        "module_run_id": module_run_id,
         "name_zh": payload["name_zh"],
         "product_id": payload["product_id"],
+        "rule_revision": payload["rule_revision"],
+        "structural_input": payload["structural_input"],
+        "cashflow_semantics": payload["cashflow_semantics"],
         "reporter_payoff_facts": payload["reporter_payoff_facts"],
-        "reporter_payoff_facts_hash": payload["reporter_payoff_facts_hash"],
-        "svg_content_hash": payload["svg_content_hash"],
     }
 
 
@@ -1142,15 +1078,6 @@ def _coerce_payoff_contract(payoff_input: Any) -> ResolvedContract:
     if payoff_input.contract.identity.get("price_convention") != "normalized_100":
         raise PayoffEngineError("Payoffer只接受内部S=100的normalized_100合同")
     return payoff_input.contract
-
-
-def _renderer_id() -> str:
-    """渲染器内容哈希进入运行指纹，避免同合同下静默改变图形事实。"""
-    renderer_path = Path(__file__).with_name("svg_renderer.py")
-    try:
-        return f"svg_renderer:{sha256(renderer_path.read_bytes()).hexdigest()[:16]}"
-    except OSError as error:  # pragma: no cover - 部署文件缺失时无法正常运行
-        raise PayoffEngineError("Payoffer SVG渲染器文件缺失") from error
 
 
 def _json_safe(value: Any) -> Any:
@@ -1173,6 +1100,23 @@ def _json_safe(value: Any) -> Any:
     return value
 
 
+def _structural_input_snapshot(
+    contract: ResolvedContract,
+    render_options: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """保留用户本次提交的三类结构输入，不派生业务哈希身份。"""
+
+    return {
+        "product_id": contract.product_id,
+        "term_overrides": {
+            str(key): _json_safe(deep_thaw(contract.terms[key]))
+            for key, source in contract.term_sources.items()
+            if source == "override"
+        },
+        "render_options": dict(render_options) if render_options else None,
+    }
+
+
 def render_payoff(
     payoff_input: PayoffInput,
     render_options: Mapping[str, Any] | None = None,
@@ -1188,32 +1132,34 @@ def render_payoff(
     path_panels = _json_safe(raw_paths)
     reporter_payoff_facts = _json_safe(_reporter_payoff_facts(path_panels))
     display_contract = _display_contract(contract)
-    renderer_id = _renderer_id()
+    try:
+        normalized_render_options = normalize_render_options(render_options)
+    except ValueError as error:
+        raise PayoffEngineError(str(error)) from error
     result: dict[str, Any] = {
         "module": "payoffer",
         "product_id": contract.product_id,
         "name_zh": contract.name_zh,
-        "product_version": contract.product_version,
+        "rule_revision": int(contract.identity["rule_revision"]),
+        "structural_input": _structural_input_snapshot(contract, normalized_render_options),
         "display_contract": display_contract,
         "default_visual_asset": asset.to_reference(),
         "visual_template": {
             "source": f"figures/json/{asset.name_zh}.json",
-            "term_bindings": _template_term_bindings(asset, contract),
+            "term_bindings": _template_term_bindings(contract),
         },
         "path_panels": path_panels,
         "reporter_payoff_facts": reporter_payoff_facts,
-        "reporter_payoff_facts_hash": semantic_hash(reporter_payoff_facts),
         "cashflow_semantics": {
             "source": "runtime.contracts.evaluate_contract",
             "discounting": "not_applied",
             "unit": _PAYOFF_UNIT,
             "display_unit": _PAYOFF_UNIT,
+            "basis": "contract_settlement_return",
+            "initial_premium": "included" if _includes_initial_premium(contract) else "not_applicable",
         },
-        "renderer_id": renderer_id,
     }
-    result["semantic_result_hash"] = semantic_hash(result)
     try:
-        normalized_render_options = normalize_render_options(render_options)
         svg = render_svg_text(
             {"name_zh": contract.name_zh, "paths": raw_paths},
             normalized_render_options or None,
@@ -1224,17 +1170,16 @@ def render_payoff(
         raise PayoffEngineError("SVG渲染器未返回有效SVG文本")
     if normalized_render_options:
         result["render_options"] = normalized_render_options
-    result["svg_content_hash"] = sha256(svg.encode("utf-8")).hexdigest()
     return PayoffResult(payload=result, svg=svg)
 
 
 def preview_result(
     name_zh: str,
     term_overrides: Mapping[str, Any] | None = None,
-    identity: Mapping[str, Any] | None = None,
     render_options: Mapping[str, Any] | None = None,
 ) -> PayoffResult:
     """Return the single preview render result without exposing SVG in payload."""
+    preview_id = f"preview-{uuid4().hex[:12]}"
     _, product, _ = _registry_with_default_figure(name_zh)
     if not product["identity"]["entry_status"]:
         try:
@@ -1244,6 +1189,9 @@ def preview_result(
         return PayoffResult(
             payload={
                 "module": "payoffer",
+                "preview_id": preview_id,
+                "product_id": product["identity"]["product_id"],
+                "rule_revision": int(product["identity"]["rule_revision"]),
                 "name_zh": product["identity"]["name_zh"],
                 "runtime_status": "blocked",
                 "message": "该产品条款或路径仍待合同确认，不能用Po、P、BT运行；仅可查看既有只读资料图。",
@@ -1251,10 +1199,10 @@ def preview_result(
             },
             svg=svg,
         )
-    contract = build_payoff_input(name_zh, term_overrides, identity)
+    contract = build_payoff_input(name_zh, term_overrides)
     payoff_result = render_payoff(PayoffInput(contract=contract), render_options)
     return PayoffResult(
-        payload={**dict(payoff_result.payload), "runtime_status": "enabled"},
+        payload={**dict(payoff_result.payload), "preview_id": preview_id, "runtime_status": "enabled"},
         svg=payoff_result.svg,
     )
 
@@ -1262,10 +1210,9 @@ def preview_result(
 def preview_payload(
     name_zh: str,
     term_overrides: Mapping[str, Any] | None = None,
-    identity: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Public read-only convenience projection of :func:`preview_result`."""
-    return dict(preview_result(name_zh, term_overrides, identity).payload)
+    return dict(preview_result(name_zh, term_overrides).payload)
 
 
 def _store_payoff_result(
@@ -1275,7 +1222,7 @@ def _store_payoff_result(
     store: ResultStorePort,
     tenant_id: str,
     task_id: str,
-    run_id: str,
+    module_run_id: str,
     analysis_case_id: str | None,
     candidate_id: str | None,
     catalog_version: str | None,
@@ -1284,12 +1231,7 @@ def _store_payoff_result(
     """唯一结果写入路径：提交到调用方显式提供的ResultStore。"""
     controlled_contract = _controlled_contract_snapshot(contract)
     default_asset = dict(result.payload["default_visual_asset"])
-    execution_fingerprint = semantic_hash({
-        "contract_fingerprint": contract.contract_fingerprint,
-        "default_visual_asset": default_asset,
-        "renderer_id": result.payload["renderer_id"],
-        "render_options": result.payload.get("render_options"),
-    })
+    structural_input = dict(result.payload["structural_input"])
     output = {
         "payoff_json": "artifacts/payoff.json",
         "payoff_svg": "artifacts/payoff.svg",
@@ -1298,27 +1240,26 @@ def _store_payoff_result(
         "manifest": "manifest.json",
     }
     payoff_payload = dict(result.payload)
-    payoff_semantic_hash = str(payoff_payload.pop("semantic_result_hash"))
     stored_result = {
         **payoff_payload,
-        "payoff_semantic_hash": payoff_semantic_hash,
+        "module_run_id": module_run_id,
         "analysis_case_id": analysis_case_id,
         "candidate_id": candidate_id,
         "catalog_version": catalog_version,
-        "contract_fingerprint": contract.contract_fingerprint,
         "output": output,
     }
     input_snapshot = {
-        "snapshot_kind": "core_controlled_resolved_contract",
-        "payoff_input": {"contract": controlled_contract},
+        "snapshot_kind": "payoffer_structural_input",
+        "module_run_id": module_run_id,
+        "product_id": contract.product_id,
+        "rule_revision": int(contract.identity["rule_revision"]),
+        "structural_input": structural_input,
         "default_visual_asset": default_asset,
-        "render_options": result.payload.get("render_options"),
         "requested_output": "parameterized_payoff_svg",
         "host_scope": {
             "analysis_case_id": analysis_case_id,
             "candidate_id": candidate_id,
             "catalog_version": catalog_version,
-            "contract_fingerprint": contract.contract_fingerprint,
         },
     }
     manifest = {
@@ -1326,14 +1267,13 @@ def _store_payoff_result(
         "tenant_id": tenant_id,
         "analysis_case_id": analysis_case_id,
         "task_id": task_id,
-        "run_id": run_id,
+        "run_id": module_run_id,
+        "module_run_id": module_run_id,
         "candidate_id": candidate_id,
         "catalog_version": catalog_version,
         "status": "succeeded",
-        "contract_fingerprint": contract.contract_fingerprint,
-        "product_version": contract.product_version,
-        "execution_fingerprint": execution_fingerprint,
-        "payoff_semantic_hash": payoff_semantic_hash,
+        "product_id": contract.product_id,
+        "rule_revision": int(contract.identity["rule_revision"]),
         "input_snapshot": "input_snapshot.json",
         "resolved_contract": "resolved_contract.json",
         "data_refs": "data_refs.json",
@@ -1350,13 +1290,13 @@ def _store_payoff_result(
         "resolved_contract.json": controlled_contract,
         "data_refs.json": "[]\n",
         "limitations.json": "[]\n",
-        output["payoff_json"]: _runtime_figure_payload(result),
+        output["payoff_json"]: _runtime_figure_payload(result, module_run_id),
         output["payoff_svg"]: result.svg,
         "result.json": stored_result,
     }
     try:
         reference = store.commit_module_run(
-            module="payoffer", tenant_id=tenant_id, task_id=task_id, run_id=run_id, files=files,
+            module="payoffer", tenant_id=tenant_id, task_id=task_id, run_id=module_run_id, files=files,
         )
         destination = store.resolve_module_run(reference, tenant_id=tenant_id) if expose_destination else None
     except (StoreError, FileExistsError, FileNotFoundError, PermissionError, ValueError) as error:
@@ -1365,97 +1305,70 @@ def _store_payoff_result(
         "ok": True,
         "module": "payoffer",
         "status": "succeeded",
-        "run_id": run_id,
+        "module_run_id": module_run_id,
+        "product_id": contract.product_id,
+        "rule_revision": int(contract.identity["rule_revision"]),
+        "structural_input": structural_input,
         "analysis_case_id": analysis_case_id,
         "candidate_id": candidate_id,
         "catalog_version": catalog_version,
-        "contract_fingerprint": contract.contract_fingerprint,
         "module_run_ref": {
             "module": reference.module,
             "tenant_id": reference.tenant_id,
             "task_id": reference.task_id,
             "run_id": reference.run_id,
-            "expected_semantic_result_hash": reference.expected_semantic_result_hash,
+            "expected_result_file_hash": reference.expected_result_file_hash,
             "expected_artifact_manifest_hash": reference.expected_artifact_manifest_hash,
         },
-        "payoff_semantic_hash": payoff_semantic_hash,
     }
     if destination is not None:
         response["destination"] = str(destination)
     return response
 
 
-def _host_contract(payoff_input: PayoffInput, host_context: ModuleHostContext) -> ResolvedContract:
-    """绑定Host身份与Core验证过的合同快照，拒绝偶然相同的指纹。"""
-    contract = _coerce_payoff_contract(payoff_input)
-    if not isinstance(host_context, ModuleHostContext) or host_context.module != "payoffer":
-        raise PayoffEngineError("正式Payoffer运行必须接收payoffer的ModuleHostContext")
-    if not {"module.run", "conversation.tool.run"}.intersection(host_context.request_policy):
-        raise PayoffEngineError("ModuleHostContext未授权module.run或conversation.tool.run")
-    required = {
-        "task_id": host_context.task_id,
-        "analysis_case_id": host_context.analysis_case_id,
-        "candidate_id": host_context.candidate_id,
-        "catalog_version": host_context.catalog_version,
-        "contract_fingerprint": host_context.contract_fingerprint,
-    }
-    missing = [name for name, value in required.items() if not value]
-    if missing:
-        raise PayoffEngineError(f"ModuleHostContext缺少正式运行字段：{','.join(missing)}")
-    if host_context.contract_fingerprint != contract.contract_fingerprint:
-        raise PayoffEngineError("ModuleHostContext.contract_fingerprint与ResolvedContract不一致")
-    contract_ref = host_context.contract_ref
-    if contract_ref is None:
-        raise PayoffEngineError("正式Payoffer运行缺少Core已验证contract_ref")
-    if contract_ref.schema_id != RESOLVED_CONTRACT_SCHEMA_ID:
-        raise PayoffEngineError("Core已验证contract_ref不是当前ResolvedContract引用")
-    if contract_ref.content_hash != contract.contract_fingerprint:
-        raise PayoffEngineError("Core已验证contract_ref与ResolvedContract fingerprint不一致")
-    if contract.product_version.startswith("development:"):
-        try:
-            verify_product_snapshot_binding(contract, load_registry())
-        except ContractResolutionError as error:
-            raise PayoffEngineError(f"ResolvedContract未通过Core产品快照绑定：{error}") from error
-    return contract
-
-
-def run_payoff(
+def run_resolved_payoff(
     payoff_input: PayoffInput,
     *,
-    run_id: str,
+    module_run_id: str,
     host_context: ModuleHostContext,
     result_store: ResultStorePort,
     tenant_id: str,
     render_options: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """正式入口：Host上下文与Host Store共同决定不可变运行范围。"""
+    """Render and save the exact ResolvedContract compiled for this run."""
+
     if result_store is None:
-        raise PayoffEngineError("正式Payoffer运行必须由Host注入ResultStorePort")
-    contract = _host_contract(payoff_input, host_context)
+        raise PayoffEngineError("保存Payoffer结果必须由Host注入ResultStorePort")
+    if not isinstance(host_context, ModuleHostContext) or host_context.module != "payoffer":
+        raise PayoffEngineError("保存Payoffer结果必须接收payoffer的ModuleHostContext")
+    if not {"module.run", "conversation.tool.run"}.intersection(host_context.request_policy):
+        raise PayoffEngineError("ModuleHostContext未授权module.run或conversation.tool.run")
+    if not host_context.task_id:
+        raise PayoffEngineError("保存Payoffer结果缺少Host任务存储范围")
+    contract = _coerce_payoff_contract(payoff_input)
     result = render_payoff(payoff_input, render_options)
     return _store_payoff_result(
         result,
         contract,
         store=result_store,
         tenant_id=tenant_id,
-        task_id=str(host_context.task_id),
-        run_id=run_id,
-        analysis_case_id=host_context.analysis_case_id,
-        candidate_id=host_context.candidate_id,
-        catalog_version=host_context.catalog_version,
+        task_id=host_context.task_id,
+        module_run_id=module_run_id,
+        analysis_case_id=host_context.analysis_case_id or host_context.task_id,
+        candidate_id=host_context.candidate_id or f"payoffer-structural-{contract.product_id}",
+        catalog_version=host_context.catalog_version or host_context.capability_version,
     )
 
 
 def run_runtime(
     name_zh: str,
     term_overrides: Mapping[str, Any] | None,
-    identity: Mapping[str, Any] | None,
     task_id: str,
-    run_id: str,
+    module_run_id: str,
     render_options: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """独立页面开发入口：只写入与正式结果隔离的本地预览Store。"""
-    contract = build_payoff_input(name_zh, term_overrides, identity)
+    """保存一次结构候选；预览本身不调用本入口也不产生运行记录。"""
+    contract = build_payoff_input(name_zh, term_overrides)
     payoff_input = PayoffInput(contract=contract)
     result = render_payoff(payoff_input, render_options)
     development_store = LocalResultStore(RESULT_ROOT / "payoffer-development")
@@ -1465,7 +1378,7 @@ def run_runtime(
         store=development_store,
         tenant_id="local-development",
         task_id=task_id,
-        run_id=run_id,
+        module_run_id=module_run_id,
         analysis_case_id=task_id,
         # Core Store requires every successful run to be candidate-scoped.
         # This fixed local scope is a development-preview namespace only; it
@@ -1477,6 +1390,6 @@ def run_runtime(
         catalog_version=DEVELOPMENT_RELEASE_ID,
         expose_destination=True,
     )
-    response["result_scope"] = "development_preview_only"
+    response["result_scope"] = "structural_candidate"
     response["formal_delivery_eligible"] = False
     return response
