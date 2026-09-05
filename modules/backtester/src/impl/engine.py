@@ -10,7 +10,7 @@ from dataclasses import dataclass, replace
 from typing import Any, Mapping
 
 from runtime.contracts.contract_api import ResolvedContract
-from runtime.contracts.contract_types import deep_thaw, semantic_hash
+from runtime.contracts.contract_types import deep_thaw
 
 from ..branch_coverage import branch_coverage
 from ..common_metrics import summarize_common_metrics
@@ -18,7 +18,7 @@ from ..economic_conventions import economic_convention
 from ..entry_generator import BacktestInputError, BacktestUnsupportedError, BacktestWindowError, ZeroValidSamplesError, entry_positions
 from ..historical_data import HistoricalData
 from ..metric_profile_map import MetricProfileSpec
-from ..metric_profiles import metric_profile_hash, profile_for_product, specialized_metrics
+from ..metric_profiles import profile_for_product, specialized_metrics
 from ..path_replay import (
     aligned_history,
     assert_daily_observation_sessions,
@@ -45,9 +45,6 @@ class BacktestResult:
     trades: tuple[TradeResult, ...]
     skipped_entries: tuple[Mapping[str, str], ...]
     limitations: tuple[str, ...]
-    execution_fingerprint: str
-    ledger_hash: str
-    metric_profile_hash: str
     effective_entry_window: Mapping[str, Any]
 
     @property
@@ -87,7 +84,6 @@ class BacktestResult:
             "metric_profile": {
                 "profile_id": self.metric_profile_spec.profile_id,
                 "display_name": self.metric_profile_spec.display_name,
-                "metric_profile_hash": self.metric_profile_hash,
             },
             "specialized_metrics": specialized,
         }
@@ -116,16 +112,20 @@ class BacktestResult:
             "zero_return_count", "negative_return_count", "positive_return_rate",
             "average_contract_settlement_return", "median_contract_settlement_return",
             "minimum_contract_settlement_return", "maximum_contract_settlement_return",
-            "max_loss_contract_settlement_return", "historical_loss_sample_covered", "win_rate",
-            "average_gross_return", "median_gross_return", "minimum_gross_return", "maximum_gross_return",
-            "max_loss_gross_return",
+            "historical_loss_sample_covered",
             "return_distribution",
         )
         common_metrics = {key: summary[key] for key in common_keys}
+        limitations = list(self.limitations)
+        if summary["negative_return_count"] == 0:
+            limitations.extend((
+                "historical_sample_has_no_negative_returns_not_future_profit_probability",
+                "历史样本未出现负结算收益，仅陈述历史事实，不代表未来获利概率。",
+            ))
         payload = {
             "product_id": self.product_id,
+            "rule_revision": int(self.contract.identity["rule_revision"]),
             "underlyings": list(self.underlyings),
-            "contract_fingerprint": self.contract.contract_fingerprint,
             "backtest_config": self.config.to_dict(),
             "effective_entry_window": dict(self.effective_entry_window),
             "sample_definition": sample_definition,
@@ -136,11 +136,9 @@ class BacktestResult:
             "economic_convention": economic_convention(self.product_id),
             "underlying_performance": summary["underlying_performance"],
             "metric_profile": summary["metric_profile"],
-            "metric_profile_hash": self.metric_profile_hash,
             "specialized_metrics": summary["specialized_metrics"],
             "trade_ledger": [trade.to_dict() for trade in self.trades],
-            "trade_ledger_ref": {"kind": "inline", "ledger_hash": self.ledger_hash, "trade_count": len(self.trades)},
-            "ledger_hash": self.ledger_hash,
+            "trade_ledger_ref": {"kind": "inline", "trade_count": len(self.trades)},
             "data_asset_ref": data_ref,
             "data_coverage": data_ref["coverage"],
             "event_summary": summary["event_summary"],
@@ -168,19 +166,8 @@ class BacktestResult:
                     "no_lookahead": True,
                 },
             },
-            "execution_fingerprint": self.execution_fingerprint,
-            "limitations": list(self.limitations),
+            "limitations": list(dict.fromkeys(limitations)),
         }
-        payload["semantic_result_hash"] = semantic_hash({
-            "contract_fingerprint": payload["contract_fingerprint"],
-            "ledger_hash": payload["ledger_hash"],
-            "common_metrics": payload["common_metrics"],
-            "economic_convention": payload["economic_convention"],
-            "metric_profile": payload["metric_profile"],
-            "specialized_metrics": payload["specialized_metrics"],
-            "entry_hv_group_summary": payload["entry_hv_group_summary"],
-            "data_asset_ref": payload["data_asset_ref"],
-        })
         return payload
 
     def audit_ledger(self) -> list[dict[str, Any]]:
@@ -284,19 +271,6 @@ def backtest(backtest_input: Any) -> BacktestResult:
             skipped.append({"entry_date": entry_date, "reason": str(error)})
     if not trades:
         raise ZeroValidSamplesError("zero_valid_samples：没有满足完整期限、观察日与数据要求的有效入场样本")
-    ledger_hash = semantic_hash([trade.to_audit_dict() for trade in trades])
-    profile_hash = metric_profile_hash(profile_spec)
-    execution_fingerprint = semantic_hash({
-        "contract_fingerprint": contract.contract_fingerprint,
-        "backtest_config": config.to_dict(),
-        "data_asset_id": historical_data.data_asset_ref["data_asset_id"],
-        "data_content_hash": historical_data.data_asset_ref["content_hash"],
-        "data_asset_ref_fingerprint": historical_data.data_asset_ref_fingerprint,
-        "metric_profile_id": profile_spec.profile_id,
-        "metric_profile_hash": profile_hash,
-        "contract_price_field": historical_data.contract_price_field,
-        "entry_hv_price_field": historical_data.hv_price_field,
-    })
     limitations = tuple(dict.fromkeys((
         *historical_data.limitations,
         "no_nav_curve_is_generated",
@@ -309,9 +283,6 @@ def backtest(backtest_input: Any) -> BacktestResult:
         trades=tuple(trades),
         skipped_entries=tuple(skipped),
         limitations=limitations,
-        execution_fingerprint=execution_fingerprint,
-        ledger_hash=ledger_hash,
-        metric_profile_hash=profile_hash,
         effective_entry_window=effective_window.to_dict(),
     )
 
