@@ -245,9 +245,7 @@ def prepare_compute_request(
     request: Mapping[str, Any],
     *,
     data_refs: tuple[Mapping[str, Any], ...] = (),
-    resolved_contract: Mapping[str, Any] | None = None,
     data_store: Any | None = None,
-    product_snapshot_provider: Any | None = None,
 ) -> dict[str, Any]:
     """Compile a calculator request through Core's sole contract resolver."""
     if module not in {"payoffer", "pricer", "backtester"}:
@@ -257,9 +255,7 @@ def prepare_compute_request(
         module,
         request,
         data_refs=data_refs,
-        resolved_contract=resolved_contract,
         data_store=data_store,
-        product_snapshot_provider=product_snapshot_provider,
     )
 
 
@@ -1218,8 +1214,15 @@ def run_module_request(
         underlyings = tuple(str(item).strip() for item in underlyings_value if str(item).strip())
     else:
         underlyings = ()
-    if not product_id or not underlyings:
-        raise ProjectRequestError("request", "单模块运行必须提供产品编号和标的代码。")
+    if not product_id:
+        raise ProjectRequestError("request", "单模块运行必须提供产品编号。")
+    if module == "payoffer":
+        if identity:
+            raise ProjectRequestError("request", "Payoffer只接受产品和影响收益结构的合同条款，不接受标的或合同身份。")
+        if body.get("horizon") is not None and body.get("horizon") != "":
+            raise ProjectRequestError("request", "Payoffer不接受独立期限描述；仅展示真正改变收益结构的条款。")
+    elif not underlyings:
+        raise ProjectRequestError("request", "Pricer和Backtester运行必须提供标的代码。")
 
     paths = bootstrap_runtime()
     layout = LocalProjectLayout.create(skill_root=paths.project_root, project_root=project_root or Path.cwd())
@@ -1270,8 +1273,11 @@ def run_module_request(
         except ToolDispatchError as error:
             raise ProjectRequestError("request", str(error)) from error
     requires_market_history = module in {"pricer", "backtester"}
-    requires_calendar = module == "backtester" or _request_requires_trading_calendar(
-        product_id, identity=identity, term_overrides=term_overrides,
+    requires_calendar = module == "backtester" or (
+        module == "pricer"
+        and _request_requires_trading_calendar(
+            product_id, identity=identity, term_overrides=term_overrides,
+        )
     )
     if requires_market_history or requires_calendar:
         token = _local_ifind_refresh_token(project_root)
@@ -1342,7 +1348,7 @@ def run_module_request(
 
     if module == "payoffer":
         friendly: dict[str, Any] = {
-            "action": "run", "product_id": product_id, "identity": identity, "term_overrides": term_overrides,
+            "action": "run", "product_id": product_id, "term_overrides": term_overrides,
         }
     elif module == "pricer":
         friendly = {
@@ -1374,17 +1380,17 @@ def run_module_request(
     context = authority.context(
         module, task_id=task_id, analysis_case_id=analysis_case_id,
         candidate_id=f"direct-{task_hash}", catalog_version=catalog_version,
-        contract_fingerprint=str(prepared["contract_fingerprint"]),
+        product_id=str(prepared["product_id"]),
+        rule_revision=int(prepared["rule_revision"]),
     )
-    module_label = {"payoff": "收益结构", "pricing": "估值", "backtest": "历史回测"}.get(module, "计算")
+    module_label = {"payoffer": "收益结构", "pricer": "估值", "backtester": "历史回测"}[module]
     _progress(progress, module, f"正在完成{module_label}计算")
     result = call_local_tool(
         module, dict(prepared["request"]), authority=authority,
         request_id=f"{module}-{task_hash}", host_context=context,
         result_store=LocalResultStore(layout.result_root),
-        # Core consumes the calendar bytes while compiling an observation
-        # contract.  Payoffer receives only that frozen contract, never a
-        # DataStore capability it cannot lawfully use.
+        # Payoffer is a structural calculation and never receives market or
+        # calendar data. Pricer and Backtester receive only their exact data.
         data_store=data_store if module in {"pricer", "backtester"} else None,
     )
     if result.get("ok") is not True:
@@ -1414,7 +1420,8 @@ def run_module_request(
         "ok": True,
         "status": str(result.get("status") or "completed"),
         "module": module,
-        "contract_fingerprint": prepared["contract_fingerprint"],
+        "product_id": str(prepared["product_id"]),
+        "rule_revision": int(prepared["rule_revision"]),
         "result": dict(result),
     }
 
@@ -1608,7 +1615,8 @@ def _run_quote_delivery(
             context = authority.context(
                 "pricer", task_id=task_id, analysis_case_id=analysis_case_id,
                 candidate_id=str(candidate["candidate_id"]), catalog_version=catalog_version,
-                contract_fingerprint=contract.contract_fingerprint,
+                product_id=contract.product_id,
+                rule_revision=int(contract.identity["rule_revision"]),
             )
             pricing = call_local_tool(
                 "pricer", dict(prepared["request"]), authority=authority,
@@ -1637,22 +1645,14 @@ def _run_quote_delivery(
             report_candidate = {
                 **candidate,
                 "product_name": str(identity["name_zh"]),
-                "product_version": contract.product_version,
-                "product_version_content_hash": contract.product_snapshot_hash,
-                "catalog_content_hash": contract.registry_snapshot_hash,
-                "contract_fingerprint": contract.contract_fingerprint,
-                "analysis_basis_id": f"basis-{contract.contract_fingerprint[:20]}",
+                "rule_revision": int(identity["rule_revision"]),
+                "analysis_basis_id": f"basis-{candidate['candidate_id']}",
                 "underlyings": list(contract.underlyings),
                 "currency": contract.currency,
                 "price_convention": {"spot": "close", "contract_basis": identity["price_convention"]},
                 "module_run_refs": {"pricing": dict(raw_ref)},
                 "module_run_options": {"pricing": [dict(raw_ref)]},
             }
-            # Local project runs freeze the ResolvedContract directly and do
-            # not use App ContractStore CandidateVersion identities.  Keeping
-            # a Recommender-only version id here would falsely claim that the
-            # Pricer manifest was bound to that App record.
-            report_candidate.pop("candidate_version_id", None)
             report_candidates.append(report_candidate)
             quote_items.append({
                 "candidate_id": report_candidate["candidate_id"],
@@ -1675,7 +1675,6 @@ def _run_quote_delivery(
         "task_id": task_id,
         "analysis_case_id": analysis_case_id,
         "catalog_version": catalog_version,
-        "catalog_content_hash": report_candidates[0]["catalog_content_hash"],
         "candidates": report_candidates,
     }
     selection = {
@@ -1731,7 +1730,12 @@ def _run_quote_delivery(
             "reason": primary.get("reason"),
             "main_risks": primary.get("main_risks", []),
             "quote_variants": [
-                {"product_id": item["product_id"], "product_name": item["product_name"], "contract_fingerprint": item["contract_fingerprint"]}
+                {
+                    "candidate_id": item["candidate_id"],
+                    "product_id": item["product_id"],
+                    "product_name": item["product_name"],
+                    "rule_revision": item["rule_revision"],
+                }
                 for item in report_candidates
             ],
         },
@@ -1848,7 +1852,8 @@ def _run_project_candidate(
         analysis_case_id=analysis_case_id,
         candidate_id=candidate_id,
         catalog_version=catalog_version,
-        contract_fingerprint=contract.contract_fingerprint,
+        product_id=contract.product_id,
+        rule_revision=int(contract.identity["rule_revision"]),
     )
     _progress(progress, "calculation", f"正在完成{candidate_label}的收益结构计算")
     payoff = call_local_tool(
@@ -1875,7 +1880,9 @@ def _run_project_candidate(
         {
             "action": "run",
             "product_id": product_id,
-            "identity": {"underlyings": list(underlyings), "contract_start_date": market_as_of_date},
+            # Backtester owns the entry window. Do not reuse Pricer's
+            # valuation-date contract start as a task-level binding.
+            "identity": {"underlyings": list(underlyings)},
             "term_overrides": term_overrides,
             "backtest_config": {
                 # Absence of user bounds means automatic complete-tenor
@@ -1886,7 +1893,6 @@ def _run_project_candidate(
             },
         },
         data_refs=(asdict(data_ref), asdict(calendar_ref)),
-        resolved_contract=contract_payload,
         data_store=data_store,
     )
     for module, public_name, module_request in (
@@ -1901,7 +1907,8 @@ def _run_project_candidate(
             analysis_case_id=analysis_case_id,
             candidate_id=candidate_id,
             catalog_version=catalog_version,
-            contract_fingerprint=contract.contract_fingerprint,
+            product_id=contract.product_id,
+            rule_revision=int(contract.identity["rule_revision"]),
             result_refs=(payoff_ref,),
         )
         try:
@@ -1930,25 +1937,18 @@ def _run_project_candidate(
         **dict(candidate),
         "candidate_id": candidate_id,
         "product_name": str(identity["name_zh"]),
-        "product_version": contract.product_version,
-        "product_version_content_hash": contract.product_snapshot_hash,
-        "contract_fingerprint": contract.contract_fingerprint,
-        "analysis_basis_id": f"basis-{contract.contract_fingerprint[:20]}",
+        "rule_revision": int(identity["rule_revision"]),
+        "analysis_basis_id": f"basis-{candidate_id}",
         "underlyings": list(contract.underlyings),
         "currency": contract.currency,
         "price_convention": {"spot": "close", "contract_basis": identity["price_convention"]},
         "module_run_refs": completed_refs,
         "module_run_options": {name: [reference] for name, reference in completed_refs.items()},
     }
-    # This standalone flow is contract-fingerprint bound, not App
-    # CandidateVersion bound.  Do not project an unpersisted version id into
-    # Reporter evidence.
-    report_candidate.pop("candidate_version_id", None)
     return {
         "candidate": report_candidate,
         "module_refs": completed_refs,
         "module_failures": module_failures,
-        "catalog_content_hash": contract.registry_snapshot_hash,
         "valuation_date": valuation_date,
         "frozen_horizon": _horizon_label(contract.terms.get("T")),
     }
@@ -2119,9 +2119,6 @@ def run_project_request(
         for item in executions
         for module, message in item["module_failures"].items()
     }
-    catalog_hashes = {str(item["catalog_content_hash"]) for item in executions}
-    if len(catalog_hashes) != 1:
-        raise ProjectRequestError("reporter", "对比候选不是由同一产品目录快照生成，不能混合交付。")
     report_candidate = report_candidates[0]
     completed_refs = all_module_refs[report_candidate["candidate_id"]]
     frozen_horizon = str(executions[0]["frozen_horizon"] or "")
@@ -2132,7 +2129,6 @@ def run_project_request(
         "task_id": task_id,
         "analysis_case_id": analysis_case_id,
         "catalog_version": catalog_version,
-        "catalog_content_hash": catalog_hashes.pop(),
         "candidates": report_candidates,
     }
     selected_modules = [
