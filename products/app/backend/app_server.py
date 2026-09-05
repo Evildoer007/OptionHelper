@@ -82,14 +82,12 @@ from .secrets.credential_migration import migrate_configured_credentials
 from .secrets.secret_ref import SecretRef
 from .secrets.secret_provider import SecretProvider
 from .stores.data_store import DataStore
-from .stores.contract_store import ContractStore
 from .stores import _LocalDocumentStore
 from .stores.result_store import ResultStore
 from .stores.session_store import LocalSessionStore
 from .stores.settings_store import LocalSettingsStore
 from .task_runtime.job_runner import JobRunner
 from .task_runtime.job_registry import AppJobWorker, JobRegistry
-from .task_runtime.idempotency_store import ToolIdempotencyStore
 from .task_runtime.operation_service import OperationCancelled, TaskOperationService
 from .task_runtime.compute_process import ComputeProcessSupervisor
 from .task_runtime.task_service import TaskService
@@ -265,7 +263,6 @@ class AppServer:
         self.tasks = TaskService(self._documents)
         self.attachments = AttachmentStore(self._documents._root / "attachments")
         self.data_assets = DataStore(self._documents)
-        self.contracts = ContractStore(self._documents)
         self.results = ResultStore(self._documents)
         self.registry = PageRegistry(capability_root)
         if not self.registry.integrity["release_ready"] and not allow_unverified_capability:
@@ -306,7 +303,6 @@ class AppServer:
             self.datafetcher,
             self.results,
             self.data_assets,
-            self.contracts,
             self.tasks,
             capability_runtime_root=self._capability_runtime_root,
             compute_supervisor=self.compute_supervisor,
@@ -345,7 +341,6 @@ class AppServer:
             ),
             bounded_request_control=True,
         )
-        self.tool_idempotency = ToolIdempotencyStore(self._documents._root / "tool-idempotency.sqlite3")
         self.job_registry = JobRegistry(self._documents._root / "calculation-jobs.sqlite3")
         self.dispatch_checkpoints = DurabilityCheckpointStore(self.tasks.session_event_log)
         def verified_job_proof(record):
@@ -376,14 +371,6 @@ class AppServer:
             return tuple(references)
 
         self.job_registry.validate_succeeded_proofs(verified_job_proofs)
-        def reconciled_job_state(job_id: str):
-            try:
-                record = self.job_registry.get(job_id)
-                return record.state, record.module_run_ref
-            except (KeyError, ValidationError):
-                return None
-
-        self.tool_idempotency.reconcile_claims(reconciled_job_state)
         self.dispatch_checkpoints.reconcile_succeeded(
             set(self.job_registry.succeeded_operation_ids())
         )
@@ -437,7 +424,7 @@ class AppServer:
         self.runtime_telemetry = RuntimeTelemetry(self.tasks.session_event_log, self.job_registry)
         self.tool_dispatcher = ToolDispatcher(
             self.gateway, JobRunner(self.job_registry, self.job_worker), self.tasks,
-            self.results, self.data_assets, self.tool_idempotency,
+            self.results, self.data_assets,
         )
         self.model_gateway = ModelGateway(self.settings_for, self.provider_registry, self.secret_provider)
         self.agent_run_concurrency_gate = AgentRunConcurrencyGate(6)
@@ -451,7 +438,6 @@ class AppServer:
             self.tool_dispatcher,
             self.registry,
             self.results,
-            self.contracts,
             self.tasks,
         )
         self.agent_runtime_mode = _resolve_agent_runtime_mode(agent_runtime_mode)
@@ -469,7 +455,6 @@ class AppServer:
         self.conversation_tools.bind_recommender(self.recommender)
         conversation_context = ContextBuilder(
             self.tasks,
-            self.contracts,
             self.policy,
             catalog_version=str(self.registry.manifest["catalog_version"]),
             result_store=self.results,
@@ -1469,8 +1454,9 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
                 "diagnostic_id": diagnostic_id,
                 **error.details,
             })
-        except (ValidationError, ValueError):
+        except (ValidationError, ValueError) as error:
             authentication_input = parsed.path in {"/api/auth/login", "/api/auth/initialize"}
+            validation_detail = _safe_public_validation_message(error)
             diagnostic_id = _diagnostic_id(
                 self.headers.get("X-OptionHelper-Request-Id") or request_id,
                 "authentication_input_invalid" if authentication_input else "input_invalid",
@@ -1488,7 +1474,7 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
                     if authentication_input else
                     "本次输入不完整或格式不正确。请检查日期、条款和定价参数后重试。"
                 ),
-                "detail": "认证输入不符合要求" if authentication_input else "请求不符合受控输入规则",
+                "detail": "认证输入不符合要求" if authentication_input else validation_detail,
                 "next_step": (
                     "请完整填写账号和密码。"
                     if authentication_input else
@@ -1787,8 +1773,8 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
                     task_id=task_id,
                     candidate_id=None,
                     catalog_version=None,
-                    contract_fingerprint=None,
-                    contract_ref=None,
+                    product_id=None,
+                    rule_revision=None,
                 ),
             })
             return
@@ -3084,6 +3070,15 @@ def _diagnostic_id(request_id: str, failure_code: str, stage: str) -> str:
 
     material = f"{request_id}|{stage}|{failure_code}".encode("utf-8")
     return f"diag-{hashlib.sha256(material).hexdigest()[:12]}"
+
+
+def _safe_public_validation_message(error: Exception) -> str:
+    """Keep reviewed field guidance while suppressing paths and stack detail."""
+
+    message = str(error).strip().replace("\r", " ").replace("\n", " ")[:240]
+    if not message or "/" in message or "\\" in message:
+        return "请求不符合受控输入规则"
+    return message
 
 
 def _unavailable_public_message(error: UnavailableCapabilityError) -> str:
