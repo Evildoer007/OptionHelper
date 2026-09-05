@@ -137,14 +137,20 @@ def _validate_success_contract(
         )
     except Exception as error:
         raise StoreError("成功ModuleRun必须包含严格受控ResolvedContract快照") from error
-    for field in ("candidate_id", "catalog_version", "contract_fingerprint"):
-        value = manifest.get(field)
-        if not isinstance(value, str) or not value:
-            raise StoreError(f"成功ModuleRun缺少manifest.json.{field}")
-        if value != result.get(field):
-            raise StoreError(f"result.json.{field}与manifest.json不一致")
-    if manifest["contract_fingerprint"] != contract.contract_fingerprint:
-        raise StoreError("manifest.json.contract_fingerprint与受控合同不一致")
+    candidate_id = manifest.get("candidate_id")
+    if not isinstance(candidate_id, str) or not candidate_id:
+        raise StoreError("成功ModuleRun缺少manifest.json.candidate_id")
+    if result.get("candidate_id") != candidate_id:
+        raise StoreError("result.json.candidate_id与manifest.json不一致")
+    product_id = contract.identity.get("product_id")
+    rule_revision = contract.identity.get("rule_revision")
+    if not isinstance(product_id, str) or not product_id:
+        raise StoreError("成功ModuleRun的ResolvedContract缺少product_id")
+    if isinstance(rule_revision, bool) or not isinstance(rule_revision, int) or rule_revision <= 0:
+        raise StoreError("成功ModuleRun的ResolvedContract缺少rule_revision")
+    for field, expected in (("product_id", product_id), ("rule_revision", rule_revision)):
+        if manifest.get(field) != expected or result.get(field) != expected:
+            raise StoreError(f"成功ModuleRun的{field}与ResolvedContract不一致")
 
 
 def _publish_directory(stage: Path, final: Path, label: str) -> None:
@@ -326,28 +332,26 @@ class LocalResultStore:
             raise StoreError(f"{status}必须且只能包含真实result.json")
         if status in {"failed", "unsupported", "cancelled", "timed_out"} and (not has_error or has_result):
             raise StoreError(f"{status}必须且只能包含error.json")
+        result_name = "result.json" if has_result else "error.json"
         raw_result = files.get("result.json")
         result_value = {} if raw_result is None else _json_mapping(raw_result, "result.json")
         if status in {"succeeded", "partial"}:
             _validate_success_contract(manifest_value, files["resolved_contract.json"], result_value)
-        if raw_result is None:
-            result_hash = semantic_hash({"status": status, "error": _json_mapping(files["error.json"], "error.json")})
-        else:
-            result_hash = semantic_hash(result_value)
-        declared_result_hash = manifest_value.get("semantic_result_hash")
+        result_hash = sha256(_encode_value(files[result_name])).hexdigest()
+        declared_result_hash = manifest_value.get("result_file_hash")
         if declared_result_hash is not None and declared_result_hash != result_hash:
-            raise StoreError("manifest.json.semantic_result_hash与最终stored_result不一致")
+            raise StoreError("manifest.json.result_file_hash与最终结果文件不一致")
         values = dict(files)
-        values["manifest.json"] = {**dict(manifest_value), "semantic_result_hash": result_hash}
+        values["manifest.json"] = {**dict(manifest_value), "result_file_hash": result_hash}
         encoded = {name: _encode_value(value) for name, value in values.items()}
         hashes = {name: sha256(payload).hexdigest() for name, payload in encoded.items()}
         artifact_manifest = _encode_value({
             "module": module, "tenant_id": tenant, "task_id": task, "run_id": run,
-            "semantic_result_hash": result_hash, "file_hashes": hashes,
+            "result_file": result_name, "result_file_hash": result_hash, "file_hashes": hashes,
         })
         reference = ModuleRunRef(
             module=module, tenant_id=tenant, task_id=task, run_id=run,
-            expected_semantic_result_hash=result_hash,
+            expected_result_file_hash=result_hash,
             expected_artifact_manifest_hash=sha256(artifact_manifest).hexdigest(),
         )
         return tenant, task, run, encoded, artifact_manifest, reference
@@ -370,7 +374,7 @@ class LocalResultStore:
             _write_value(stage / "artifacts" / "artifact_manifest.json", artifact_manifest)
             _write_value(stage / "commit_marker.json", {
                 "committed": True,
-                "semantic_result_hash": reference.expected_semantic_result_hash,
+                "result_file_hash": reference.expected_result_file_hash,
                 "artifact_manifest_hash": reference.expected_artifact_manifest_hash,
             })
             final.parent.mkdir(parents=True, exist_ok=True)
@@ -410,15 +414,15 @@ class LocalResultStore:
         if not isinstance(manifest, Mapping):
             raise StoreIntegrityError("ModuleRun产物清单无效")
         if not isinstance(marker, Mapping) or set(marker) != {
-            "committed", "semantic_result_hash", "artifact_manifest_hash",
+            "committed", "result_file_hash", "artifact_manifest_hash",
         }:
             raise StoreIntegrityError("ModuleRun提交标记无效")
-        if marker.get("committed") is not True or marker.get("semantic_result_hash") != manifest.get("semantic_result_hash"):
+        if marker.get("committed") is not True or marker.get("result_file_hash") != manifest.get("result_file_hash"):
             raise StoreIntegrityError("ModuleRun提交标记无效")
         if marker.get("artifact_manifest_hash") != artifact_manifest_hash:
             raise StoreIntegrityError("ModuleRun产物清单哈希不一致")
         if not isinstance(manifest, Mapping) or set(manifest) != {
-            "module", "tenant_id", "task_id", "run_id", "semantic_result_hash", "file_hashes",
+            "module", "tenant_id", "task_id", "run_id", "result_file", "result_file_hash", "file_hashes",
         }:
             raise StoreIntegrityError("ModuleRun产物清单无效")
         identity = {
@@ -429,8 +433,8 @@ class LocalResultStore:
         }
         if any(manifest.get(key) != value for key, value in identity.items()):
             raise StoreIntegrityError("ModuleRun产物清单与RunRef不一致")
-        if manifest.get("semantic_result_hash") != ref.expected_semantic_result_hash:
-            raise StoreIntegrityError("ModuleRun语义结果哈希不一致")
+        if manifest.get("result_file_hash") != ref.expected_result_file_hash:
+            raise StoreIntegrityError("ModuleRun结果文件哈希不一致")
         file_hashes = manifest.get("file_hashes")
         if not isinstance(file_hashes, Mapping):
             raise StoreIntegrityError("ModuleRun产物清单无效")
@@ -446,24 +450,12 @@ class LocalResultStore:
             path = _inside(run_dir, run_dir / _safe_relative(name))
             if not path.is_file() or path.is_symlink() or sha256(_read_regular_bytes(path, f"ModuleRun文件：{name}")).hexdigest() != expected:
                 raise StoreIntegrityError(f"ModuleRun文件哈希不一致：{name}")
-        try:
-            run_manifest = json.loads(_read_regular_bytes(run_dir / "manifest.json", "ModuleRun清单"))
-            status = str(run_manifest["status"])
-            semantic_payload = json.loads(
-                _read_regular_bytes(
-                    run_dir / ("result.json" if status in {"succeeded", "partial"} else "error.json"),
-                    "ModuleRun语义结果",
-                )
-            )
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError) as error:
-            raise StoreIntegrityError("ModuleRun语义结果文件无效") from error
-        if not isinstance(semantic_payload, Mapping) or status not in _FINAL_RUN_STATES:
-            raise StoreIntegrityError("ModuleRun语义结果文件无效")
-        recomputed_hash = semantic_hash(
-            semantic_payload if status in {"succeeded", "partial"} else {"status": status, "error": semantic_payload}
-        )
-        if recomputed_hash != ref.expected_semantic_result_hash:
-            raise StoreIntegrityError("ModuleRun语义结果哈希与正式结果不一致")
+        result_name = manifest.get("result_file")
+        if result_name not in {"result.json", "error.json"}:
+            raise StoreIntegrityError("ModuleRun结果文件引用无效")
+        result_bytes = _read_regular_bytes(run_dir / result_name, "ModuleRun结果文件")
+        if sha256(result_bytes).hexdigest() != ref.expected_result_file_hash:
+            raise StoreIntegrityError("ModuleRun结果文件哈希与正式结果不一致")
         return run_dir
 
     def verify_module_run(self, ref: ModuleRunRef, *, tenant_id: str) -> None:
