@@ -501,11 +501,6 @@ html[data-theme="dark"] {
   --rail-material-menu: color-mix(in srgb, var(--color-surface) 96%, transparent);
 }
 
-.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-rail-collapsed="false"],
-.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell]:not([data-rail-collapsed]) {
-  --rail-width: 414px;
-}
-
 .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .workspace-rail--unbranded {
   border-right-color: var(--rail-material-border) !important;
   background: var(--rail-material-fill) !important;
