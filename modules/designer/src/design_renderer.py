@@ -344,7 +344,12 @@ def _card_body(
         metrics_by_label = unique_metric_rows_by_label(metric_rows, "回测摘要")
         rows: list[dict[str, Any]] = []
         if status in {"ready", "partial"}:
-            for labels in (("样本数",), ("胜率", "历史正收益样本占比"), ("平均损益", "平均收益"), ("最差损益", "最大亏损")):
+            for labels in (
+                ("样本数",),
+                ("历史正收益样本占比",),
+                ("平均合同结算收益率",),
+                ("最低合同结算收益率",),
+            ):
                 row = next((metrics_by_label[label] for label in labels if metrics_by_label.get(label, {}).get("value") is not None), None)
                 if row:
                     rows.append({"metric": text(row.get("label")), "value": display_text(row.get("value"), row.get("value_format")), "unit": card_unit(display_basis(row))})
