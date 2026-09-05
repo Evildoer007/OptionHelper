@@ -21,15 +21,14 @@ from runtime.bootstrap import bootstrap_runtime
 from runtime.adapters.local_store import LocalResultStore
 from runtime.contracts.contract_api import (
     ContractResolutionError,
-    RESOLVED_CONTRACT_SCHEMA_ID,
     ResolvedContract,
     resolve_contract,
-    verify_product_snapshot_binding,
+    verify_current_product_rule,
 )
 from runtime.contracts.term_presentation import build_term_fields
 from runtime.knowledger import load_registry
 from runtime.protocol.models import BacktestInput as ProtocolBacktestInput, DataAssetRef, ModuleRunRef
-from runtime.protocol.module_host import ModuleHostContext, require_host_bound_run_contract
+from runtime.protocol.module_host import ModuleHostContext
 from runtime.protocol.version import DEVELOPMENT_RELEASE_ID
 import pandas as pd
 
@@ -45,6 +44,7 @@ from .entry_generator import BacktestInputError, BacktestWindowError, ZeroValidS
 from .impl.config import BacktestConfig
 from .impl.engine import backtest
 from .models import BacktestInput
+from .path_replay import plan_backtest_window
 
 
 MODULE_ROOT = Path(__file__).resolve().parents[3]
@@ -143,19 +143,10 @@ class BacktesterRuntime:
 
     def run(self, body: Mapping[str, Any]) -> dict[str, Any]:
         """受控本地开发入口；先取得历史日历，再解析同一份观察合同。"""
-        product_id = _text(body.get("product_id"), "product_id")
-        history = self._historical_data(body)
-        identity = _identity(body)
-        identity.setdefault("calendar_id", history.calendar_id)
-        identity.setdefault("calendar_revision", history.calendar_revision)
-        contract = resolve_contract(
-            product_id,
-            identity=identity,
-            term_overrides=_term_overrides(body),
-            registry=load_registry(),
-            trading_dates=history.trading_sessions,
+        product_id, history, identity, contract, config, preflight = self._prepare_local_input(
+            body,
+            status="revalidated",
         )
-        config = _backtest_config(body)
         result = backtest(BacktestInput(contract, config, history))
         task_id = _identifier(body.get("task_id"), "task")
         run_id = _identifier(body.get("run_id"), "run")
@@ -173,17 +164,18 @@ class BacktesterRuntime:
             "schema": "optionhelper.backtester.run",
             "module": self.module_name,
             "status": "succeeded",
+            "product_id": contract.product_id,
+            "rule_revision": int(contract.identity["rule_revision"]),
             "task_id": task_id,
             "run_id": run_id,
             "analysis_case_id": analysis_case_id,
             "candidate_id": candidate_id,
             "catalog_version": DEVELOPMENT_RELEASE_ID,
-            "contract_fingerprint": contract.contract_fingerprint,
             "created_at": created_at,
             "resolved_contract": contract.to_protocol_dict(),
             "data_refs": data_refs,
             "limitations": limitations,
-            "execution_fingerprint": backtest_payload["execution_fingerprint"],
+            "preflight": preflight,
             "backtest": backtest_payload,
         }
         input_snapshot = {
@@ -206,16 +198,70 @@ class BacktesterRuntime:
         )
         return {**output, "module_run_ref": module_run_ref}
 
+    def preview(self, body: Mapping[str, Any]) -> dict[str, Any]:
+        """只读预检当前输入；不创建Run、不写ResultStore。"""
+        product_id, history, _identity_value, contract, config, preflight = self._prepare_local_input(
+            body,
+            status="validated",
+        )
+        data_ref = validate_data_asset_ref(history.data_asset_ref)
+        return {
+            "ok": True,
+            "schema": "optionhelper.backtester.preview",
+            "module": self.module_name,
+            "status": preflight["effective_entry_window"]["status"],
+            "form_revision": preflight["form_revision"],
+            "preview_id": preflight["preview_id"],
+            "product_id": product_id,
+            "rule_revision": int(contract.identity["rule_revision"]),
+            "resolved_contract": contract.to_protocol_dict(),
+            "backtest_config": config.to_dict(),
+            "data_refs": [data_ref],
+            "limitations": list(history.limitations),
+            "preflight": preflight,
+        }
+
+    def _prepare_local_input(
+        self,
+        body: Mapping[str, Any],
+        *,
+        status: str,
+    ) -> tuple[str, HistoricalData, dict[str, Any], ResolvedContract, BacktestConfig, dict[str, Any]]:
+        """解析并预检调用时的当前值，禁止复用旧preview解析结果。"""
+        product_id = _text(body.get("product_id"), "product_id")
+        history = self._historical_data(body)
+        identity = _identity(body)
+        identity.setdefault("calendar_id", history.calendar_id)
+        identity.setdefault("calendar_revision", history.calendar_revision)
+        contract = resolve_contract(
+            product_id,
+            identity=identity,
+            term_overrides=_term_overrides(body),
+            registry=load_registry(),
+            trading_dates=history.trading_sessions,
+        )
+        config = _backtest_config(body)
+        preflight = _preflight(
+            contract,
+            config,
+            history,
+            status=status,
+            form_revision=_form_revision(body),
+            preview_id=str(uuid4()) if status == "validated" else None,
+        )
+        return product_id, history, identity, contract, config, preflight
+
     def run_formal(
         self,
         request: ProtocolBacktestInput | Mapping[str, Any],
         *,
         host_context: ModuleHostContext,
+        form_revision: int | None = None,
     ) -> dict[str, Any]:
         """正式Tool入口：消费Host冻结合同、回测配置和唯一DataAssetRef。"""
         protocol_input = _formal_backtest_input(request)
         contract = protocol_input.contract
-        _require_host_contract(contract, host_context)
+        _require_host_contract(contract, host_context, action="run")
         result_store = self._formal_result_store()
         task_id = str(host_context.task_id)
         run_id = f"run-{uuid4().hex[:12]}"
@@ -273,6 +319,13 @@ class BacktesterRuntime:
             )
         input_snapshot = _formal_input_snapshot(contract, config.to_dict(), data_ref_dict)
         try:
+            preflight = _preflight(
+                contract,
+                config,
+                history,
+                status="revalidated",
+                form_revision=form_revision,
+            )
             result = backtest(BacktestInput(contract, config, history))
         except (BacktestInputError, HistoricalDataError, ValueError) as error:
             if isinstance(error, BacktestWindowError):
@@ -294,20 +347,20 @@ class BacktesterRuntime:
             "schema": "optionhelper.backtester.run",
             "module": self.module_name,
             "status": "succeeded",
+            "product_id": contract.product_id,
+            "rule_revision": int(contract.identity["rule_revision"]),
             "task_id": task_id,
             "run_id": run_id,
             "analysis_case_id": host_context.analysis_case_id,
             "candidate_id": host_context.candidate_id,
             "catalog_version": host_context.catalog_version,
-            "contract_fingerprint": contract.contract_fingerprint,
             "created_at": created_at,
             "resolved_contract": contract.to_protocol_dict(),
             "data_refs": [data_ref_dict],
             "limitations": list(backtest_payload["limitations"]),
-            "execution_fingerprint": backtest_payload["execution_fingerprint"],
+            "preflight": preflight,
             "backtest": backtest_payload,
         }
-        require_host_bound_run_contract(output, host_context)
         module_run_ref = _write_run(
             result_store=result_store,
             tenant_id=self._tenant_id,
@@ -318,6 +371,78 @@ class BacktesterRuntime:
             private_audit_ledger=private_audit_ledger,
         )
         return {**output, "module_run_ref": module_run_ref}
+
+    def preview_formal(
+        self,
+        request: ProtocolBacktestInput | Mapping[str, Any],
+        *,
+        host_context: ModuleHostContext,
+        form_revision: int,
+    ) -> dict[str, Any]:
+        """正式只读预检：验证Host合同和DataStore资产，但不接触ResultStore。"""
+        protocol_input = _formal_backtest_input(request)
+        contract = protocol_input.contract
+        _require_host_contract(contract, host_context, action="preview")
+        data_ref = protocol_input.historical_data
+        try:
+            data_ref_dict = validate_data_asset_ref(asdict(data_ref))
+            _validate_formal_data_ref(data_ref, tenant_id=self._tenant_id)
+            store = self._formal_data_store()
+            try:
+                payload = store.read_bytes(data_ref, tenant_id=self._tenant_id)
+            except Exception as error:
+                raise BacktesterWebInputError("DataStore读取历史资产失败") from error
+            if not isinstance(payload, bytes):
+                raise BacktesterWebInputError("data_store.read_bytes必须返回bytes")
+            if sha256(payload).hexdigest() != data_ref.content_hash:
+                raise BacktesterWebInputError("DataStore返回原始字节与DataAssetRef.content_hash不一致")
+            history = HistoricalData.from_frame(pd.read_csv(BytesIO(payload)), data_asset_ref=asdict(data_ref))
+            if not history.calendar_source_declared:
+                raise BacktesterWebInputError("正式完整期限回测要求DataAssetRef显式声明交易日calendar_id、calendar_revision和sessions")
+            _require_contract_calendar(contract, history)
+            config = BacktestConfig.from_mapping(protocol_input.backtest_config)
+            if not config.complete_tenor:
+                raise BacktesterWebInputError("正式Backtester预检必须要求complete_tenor=true")
+            preview_id = str(uuid4())
+            preflight = _preflight(
+                contract,
+                config,
+                history,
+                status="validated",
+                form_revision=form_revision,
+                preview_id=preview_id,
+            )
+        except (BacktesterWebInputError, BacktestInputError, HistoricalDataError, OSError, PermissionError, TypeError, ValueError) as error:
+            return {
+                "ok": False,
+                "schema": "optionhelper.backtester.preview",
+                "module": self.module_name,
+                "status": "failed",
+                "product_id": contract.product_id,
+                "rule_revision": int(contract.identity["rule_revision"]),
+                "form_revision": form_revision,
+                "preview_id": None,
+                "error": {
+                    "error_code": error.code if isinstance(error, BacktestWindowError) else "preflight_failed",
+                    "message": _safe_formal_error_message(error),
+                    **({"details": dict(error.details)} if isinstance(error, BacktestWindowError) else {}),
+                },
+            }
+        return {
+            "ok": True,
+            "schema": "optionhelper.backtester.preview",
+            "module": self.module_name,
+            "status": preflight["effective_entry_window"]["status"],
+            "product_id": contract.product_id,
+            "rule_revision": int(contract.identity["rule_revision"]),
+            "form_revision": form_revision,
+            "preview_id": preview_id,
+            "resolved_contract": contract.to_protocol_dict(),
+            "backtest_config": config.to_dict(),
+            "data_refs": [data_ref_dict],
+            "limitations": list(history.limitations),
+            "preflight": preflight,
+        }
 
     def _formal_data_store(self) -> Any:
         store = self._data_store
@@ -371,12 +496,13 @@ class BacktesterRuntime:
             "schema": "optionhelper.backtester.run",
             "module": self.module_name,
             "status": "failed",
+            "product_id": contract.product_id,
+            "rule_revision": int(contract.identity["rule_revision"]),
             "task_id": task_id,
             "run_id": run_id,
             "analysis_case_id": analysis_case_id,
             "candidate_id": candidate_id,
             "catalog_version": catalog_version,
-            "contract_fingerprint": contract.contract_fingerprint,
             "created_at": created_at,
             "resolved_contract": contract.to_protocol_dict(),
             "data_refs": data_refs,
@@ -433,12 +559,13 @@ def call_tool(
     formal_fields = {"contract", "backtest_config", "historical_data"}
     formal_input: ProtocolBacktestInput | None = None
     if data_store is not None:
-        if action != "run" or set(body) != formal_fields:
-            raise BacktesterWebInputError("data_store仅允许Host为完整正式BacktestInput运行注入")
+        allowed_formal_fields = formal_fields | {"form_revision", "preview_id"}
+        if action not in {"run", "preview"} or not formal_fields.issubset(body) or set(body) - allowed_formal_fields:
+            raise BacktesterWebInputError("data_store仅允许Host为完整正式BacktestInput运行或预检注入")
         if not isinstance(host_context, ModuleHostContext):
-            raise BacktesterWebInputError("data_store正式运行必须由Host注入ModuleHostContext")
-        formal_input = _formal_backtest_input(body)
-        _require_host_contract(formal_input.contract, host_context)
+            raise BacktesterWebInputError("data_store正式运行或预检必须由Host注入ModuleHostContext")
+        formal_input = _formal_backtest_input({key: body[key] for key in formal_fields})
+        _require_host_contract(formal_input.contract, host_context, action=action)
     runtime = BacktesterRuntime(data_store=data_store, result_store=result_store, tenant_id=tenant_id or "local")
     if action == "catalog":
         if host_context is not None and "module.catalog" not in host_context.request_policy:
@@ -447,7 +574,11 @@ def call_tool(
     if action == "run":
         try:
             if formal_input is not None:
-                return runtime.run_formal(formal_input, host_context=host_context)
+                return runtime.run_formal(
+                    formal_input,
+                    host_context=host_context,
+                    form_revision=_form_revision(body),
+                )
             if formal_fields.issubset(body):
                 if host_context is None:
                     raise BacktesterWebInputError("正式Backtester调用必须由Host注入ModuleHostContext")
@@ -455,7 +586,40 @@ def call_tool(
             return runtime.run(body)
         except DataFetcherPortUnavailable as error:
             return _port_failure(error)
+    if action == "preview":
+        try:
+            if formal_input is not None:
+                return runtime.preview_formal(
+                    formal_input,
+                    host_context=host_context,
+                    form_revision=_form_revision(body),
+                )
+            return runtime.preview(body)
+        except DataFetcherPortUnavailable as error:
+            return _port_failure(error)
     return {"ok": False, "module": "backtester", "status": "unsupported", "message": f"不支持action={action}"}
+
+
+def _preflight(
+    contract: ResolvedContract,
+    config: BacktestConfig,
+    history: HistoricalData,
+    *,
+    status: str,
+    form_revision: int | None = None,
+    preview_id: str | None = None,
+) -> dict[str, Any]:
+    """按本次显式输入预检；preview_id只标识只读响应，不授权运行。"""
+    history.validate_integrity()
+    window = plan_backtest_window(contract, config, history).to_dict()
+    return {
+        "status": status,
+        "read_only": status == "validated",
+        "form_revision": form_revision,
+        "preview_id": preview_id,
+        "effective_entry_window": window,
+        "validated_at": _now(),
+    }
 
 
 def _normalized_request_key(key: object) -> str:
@@ -486,25 +650,32 @@ def _formal_backtest_input(value: ProtocolBacktestInput | Mapping[str, Any]) -> 
     if not isinstance(config, Mapping):
         raise BacktesterWebInputError("BacktestInput.backtest_config必须为对象")
     try:
-        verify_product_snapshot_binding(contract, load_registry())
+        verify_current_product_rule(contract, load_registry())
     except ContractResolutionError as error:
         raise BacktesterWebInputError(f"BacktestInput.contract产品快照无效：{error}") from error
     return ProtocolBacktestInput(contract=contract, backtest_config=dict(config), historical_data=data_ref)
 
 
-def _require_host_contract(contract: ResolvedContract, context: ModuleHostContext) -> None:
-    run_policies = {"module.run", "conversation.tool.run"}
-    if context.module != "backtester" or not run_policies.intersection(context.request_policy):
-        raise BacktesterWebInputError("ModuleHostContext未授权Backtester正式运行")
-    missing = [name for name in ("task_id", "analysis_case_id", "candidate_id", "catalog_version", "contract_fingerprint") if not getattr(context, name)]
+def _require_host_contract(
+    contract: ResolvedContract,
+    context: ModuleHostContext,
+    *,
+    action: str,
+) -> None:
+    policy = "module.preview" if action == "preview" else "module.run"
+    accepted_policies = {policy, "conversation.tool.run"}
+    if context.module != "backtester" or not accepted_policies.intersection(context.request_policy):
+        raise BacktesterWebInputError(f"ModuleHostContext未授权Backtester正式{action}")
+    required = ("product_id", "rule_revision")
+    if action == "run":
+        required = (*required, "task_id", "analysis_case_id", "candidate_id", "catalog_version")
+    missing = [name for name in required if getattr(context, name) is None]
     if missing:
-        raise BacktesterWebInputError("ModuleHostContext缺少正式运行字段：" + ",".join(missing))
-    if context.contract_fingerprint != contract.contract_fingerprint:
-        raise BacktesterWebInputError("ModuleHostContext.contract_fingerprint与ResolvedContract不一致")
-    if context.contract_ref is None or context.contract_ref.schema_id != RESOLVED_CONTRACT_SCHEMA_ID:
-        raise BacktesterWebInputError("Backtester正式运行缺少Core验证的ResolvedContract引用")
-    if context.contract_ref.content_hash != contract.contract_fingerprint:
-        raise BacktesterWebInputError("ModuleHostContext.contract_ref与ResolvedContract不一致")
+        raise BacktesterWebInputError(f"ModuleHostContext缺少正式{action}字段：" + ",".join(missing))
+    if context.product_id != contract.product_id:
+        raise BacktesterWebInputError("ModuleHostContext.product_id与当前ResolvedContract不一致")
+    if context.rule_revision != int(contract.identity["rule_revision"]):
+        raise BacktesterWebInputError("ModuleHostContext.rule_revision与当前ResolvedContract不一致")
 
 
 def _formal_input_snapshot(
@@ -606,6 +777,13 @@ def _backtest_config(body: Mapping[str, Any]) -> BacktestConfig:
     return BacktestConfig.from_mapping({key: value for key, value in supplied.items() if value is not None})
 
 
+def _form_revision(body: Mapping[str, Any]) -> int:
+    value = body.get("form_revision", 0)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise BacktesterWebInputError("form_revision必须为非负整数")
+    return value
+
+
 def _history_reference(body: Mapping[str, Any]) -> Any:
     return body.get("history_reference")
 
@@ -652,10 +830,10 @@ def _write_run(
             "analysis_case_id": output.get("analysis_case_id"),
             "candidate_id": output.get("candidate_id"),
             "catalog_version": output.get("catalog_version"),
+            "product_id": output.get("product_id"),
+            "rule_revision": output.get("rule_revision"),
             "status": "succeeded",
             "created_at": output["created_at"],
-            "contract_fingerprint": backtest_payload["contract_fingerprint"],
-            "execution_fingerprint": output["execution_fingerprint"],
             "artifacts": ["artifacts/backtest_result.json", "artifacts/trade_ledger.csv", "artifacts/branch_coverage.json"],
         },
         "input_snapshot.json": dict(input_snapshot),
@@ -700,9 +878,10 @@ def _write_failed_run(
             "analysis_case_id": output.get("analysis_case_id"),
             "candidate_id": output.get("candidate_id"),
             "catalog_version": output.get("catalog_version"),
+            "product_id": output.get("product_id"),
+            "rule_revision": output.get("rule_revision"),
             "status": "failed",
             "created_at": output["created_at"],
-            "contract_fingerprint": output["contract_fingerprint"],
             "artifacts": [],
         },
         "input_snapshot.json": dict(input_snapshot),
