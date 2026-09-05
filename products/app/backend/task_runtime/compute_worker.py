@@ -174,18 +174,9 @@ def _execute(execution: dict[str, Any], stage: dict[str, str]) -> dict[str, Any]
     content_hashes = execution.get("content_hashes")
     if not isinstance(content_hashes, Mapping) or _canonical_hash(dict(content_hashes)) != execution.get("capability_hash"):
         raise ValueError("capability hash list is invalid")
-    frozen = {
-        "task_id": task_id,
-        "module": module,
-        "tenant_id": tenant_id,
-        "request": execution.get("request"),
-        "caller_context": execution.get("caller_context"),
-        "host_context": execution.get("host_context"),
-        "data_snapshots": execution.get("data_snapshots"),
-        "capability_hash": execution.get("capability_hash"),
-    }
-    if _canonical_hash(frozen) != execution.get("execution_fingerprint"):
-        raise ValueError("prepared compute execution fingerprint mismatch")
+    execution_token = execution.get("execution_token")
+    if not isinstance(execution_token, str) or not execution_token.startswith("exec_"):
+        raise ValueError("prepared compute execution token is invalid")
     scripts_root = str(Path(str(execution.get("scripts_root", ""))).resolve())
     if scripts_root not in sys.path:
         sys.path.insert(0, scripts_root)
@@ -234,7 +225,7 @@ def _execute(execution: dict[str, Any], stage: dict[str, str]) -> dict[str, Any]
             "result": dict(result),
             "draft": draft_store.export(),
             "capability_hash": execution["capability_hash"],
-            "execution_fingerprint": execution["execution_fingerprint"],
+            "execution_token": execution_token,
         }
 
 
