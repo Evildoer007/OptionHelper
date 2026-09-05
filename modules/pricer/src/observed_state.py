@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import date
-import hashlib
-import json
 import re
 from typing import Any, Mapping
 
@@ -25,7 +23,6 @@ class ObservedContractState:
     occurred_events: tuple[Mapping[str, Any] | str, ...] = ()
     realized_cashflows: tuple[Mapping[str, Any], ...] = ()
     source_refs: tuple[str, ...] = ()
-    state_hash: str | None = None
 
     @classmethod
     def initial(cls, valuation_date: str | None) -> "ObservedContractState":
@@ -40,7 +37,7 @@ class ObservedContractState:
         elif isinstance(value, cls):
             state = value
         elif isinstance(value, Mapping):
-            allowed = {"valuation_date", "lifecycle_status", "occurred_events", "realized_cashflows", "source_refs", "state_hash"}
+            allowed = {"valuation_date", "lifecycle_status", "occurred_events", "realized_cashflows", "source_refs"}
             unknown = set(value) - allowed
             if unknown:
                 raise ObservedStateError("observed_contract_state含未支持字段：" + ",".join(sorted(unknown)))
@@ -50,17 +47,13 @@ class ObservedContractState:
                 occurred_events=tuple(value.get("occurred_events", ())),
                 realized_cashflows=tuple(value.get("realized_cashflows", ())),
                 source_refs=tuple(str(item) for item in value.get("source_refs", ())),
-                state_hash=value.get("state_hash"),
             )
         else:
             raise ObservedStateError("observed_contract_state必须为ObservedContractState或对象")
         if state.valuation_date not in {None, valuation_date}:
             raise ObservedStateError("observed_contract_state.valuation_date必须与PricingConfig一致")
         state._validate_facts(valuation_date)
-        canonical_hash = state._content_hash()
-        if state.state_hash is not None and state.state_hash != canonical_hash:
-            raise ObservedStateError("observed_contract_state.state_hash与状态内容不一致")
-        return replace(state, state_hash=canonical_hash)
+        return state
 
     def _validate_facts(self, valuation_date: str | None) -> None:
         allowed_status = {"initial", "active", "terminated", "matured"}
@@ -316,19 +309,7 @@ class ObservedContractState:
             "occurred_events": list(self.occurred_events),
             "realized_cashflows": list(self.realized_cashflows),
             "source_refs": list(self.source_refs),
-            "state_hash": self.state_hash,
         }
-
-    def _content_hash(self) -> str:
-        payload = {
-            "valuation_date": self.valuation_date,
-            "lifecycle_status": self.lifecycle_status,
-            "occurred_events": list(self.occurred_events),
-            "realized_cashflows": list(self.realized_cashflows),
-            "source_refs": list(self.source_refs),
-        }
-        encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
-        return hashlib.sha256(encoded).hexdigest()
 
 
 __all__ = ("ObservedContractState", "ObservedStateError")
