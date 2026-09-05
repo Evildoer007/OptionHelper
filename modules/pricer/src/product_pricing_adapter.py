@@ -10,11 +10,16 @@ from typing import Any
 from runtime.contracts.contract_api import ResolvedContract
 
 from .calendar_policy import requires_future_trading_calendar
+from .cashflow_lifecycle import (
+    apply_cashflow_lifecycle,
+    contractual_initial_cashflow,
+    paths_include_initial_cashflow,
+)
 from .config import PricingConfig
 from .engines.pricing_core.engine.derivatives.results import GreekValue, PricingResult
 from .engines.pricing_core.main import price_option
 from .engines.pricing_core.prepared_optionreg import PreparedOptionRegPricer
-from .greeks import add_time_zero_cashflow, real_spot_greeks, scale_result
+from .greeks import real_spot_greeks, scale_result
 from .model_router import capability_for, resolve_route
 from .observation_schedule import actual_n_obs, bind_accumulator_remaining_count
 from .observed_state import ObservedContractState
@@ -199,14 +204,22 @@ class ProductPricingAdapter:
         else:
             run = price_option(self.family, self.structure, parameters, engine_method, output="NONE")
             result = _from_run(run)
+        quantity = _analytical_quantity(self.contract)
         if self.method != "monte_carlo":
-            quantity = _analytical_quantity(self.contract)
             result = scale_result(result, quantity)
-            result = add_time_zero_cashflow(
-                result,
-                _initial_cashflow(self.contract, quantity),
-                _cashflow_basis(self.contract, self.reference_price)["cashflow_scale"],
-            )
+        result = apply_cashflow_lifecycle(
+            result,
+            contract=self.contract,
+            valuation_date=self.config.valuation_date,
+            observed_state=self.observed_state,
+            initial_cashflow=contractual_initial_cashflow(self.contract, quantity),
+            cashflow_scale=self._basis["cashflow_scale"],
+            numerical_value_includes_initial=(
+                self.method == "monte_carlo"
+                and paths_include_initial_cashflow(self.contract)
+            ),
+        )
+        if self.method != "monte_carlo":
             result = real_spot_greeks(result, self.reference_price)
         result = _apply_value_basis(result, self.contract.product_id)
         # ``reprice`` is an internal base/Greek/risk-grid primitive. It records
@@ -243,6 +256,7 @@ class ProductPricingAdapter:
                     as_of=_as_of(self.config.valuation_date),
                     completed_observations=self._completed_accumulator_observations(),
                 )
+                resolved_contract = _pricer_economic_contract(resolved_contract)
                 self._resolved_contract_by_maturity[maturity_key] = resolved_contract
             contract = {
                 "resolved_contract": resolved_contract,
@@ -381,7 +395,7 @@ def _from_run(run: Any) -> PricingResult:
         greeks={name.lower(): greek(value) for name, value in run.result.greeks.items()},
         extended_greeks={name.casefold().replace(" ", "_"): greek(value) for name, value in run.result.extended_risks.items()},
         method=run.result.method, implementation_id=run.result.implementation_id, warnings=run.result.warnings,
-        diagnostics={**run.result.diagnostics, "pricing_run_id": run.run_id, "route_id": run.route_id, "request_fingerprint": run.request_fingerprint},
+        diagnostics={**run.result.diagnostics, "pricing_run_id": run.run_id, "route_id": run.route_id},
         engine_raw=run.result.engine_raw,
         standard_error=None if run.result.diagnostics.get("standard_error_points_100") is None else float(run.result.diagnostics["standard_error_points_100"]),
         standard_error_points_100=(
@@ -719,6 +733,18 @@ def _analytical_portfolio_legs(
         lower = float(terms["K1"])
         upper = float(terms["K2"])
         alpha = float(terms["alpha"])
+        if product_id == "9.3":
+            return [
+                _vanilla_leg("long_call_k1", 1.0 / spot, "CALL", lower, maturity_years, basis),
+                _vanilla_leg(
+                    "short_call_k2",
+                    -(1.0 - alpha) / spot,
+                    "CALL",
+                    upper,
+                    maturity_years,
+                    basis,
+                ),
+            ]
         floor_return = (lower - spot) / spot
         return [
             _binary_leg("floor_cash", floor_return, "PUT", lower, "Cash-or-Nothing", 1.0, maturity_years, basis),
@@ -732,6 +758,8 @@ def _analytical_portfolio_legs(
 
 def _analytical_quantity(contract: ResolvedContract) -> float:
     terms = contract.terms
+    if contract.product_id == "9.3":
+        return float(terms["N"])
     if contract.product_id in {"1.1", "4.1", "4.2", "4.3", "4.4"}:
         return float(terms.get("n_C", 1.0))
     if contract.product_id in {"1.2", "4.5", "4.6", "4.7", "4.8"}:
@@ -741,15 +769,48 @@ def _analytical_quantity(contract: ResolvedContract) -> float:
     return 1.0
 
 
-def _initial_cashflow(contract: ResolvedContract, quantity: float) -> float:
-    """Contractual holder cashflow at time zero for closed-form structures."""
-    if contract.product_id in {"1.1", "1.2", "4.1", "4.2", "4.3", "4.4", "4.5", "4.6", "4.7", "4.8", "5.1", "5.2", "5.3", "5.4", "5.5", "5.6"}:
-        return -quantity * float(contract.terms.get("Pi_0", 0.0))
-    if contract.product_id in {"6.1", "6.2", "6.3", "9.1", "9.5", "9.6", "9.8"}:
-        return -float(contract.terms.get("N", 0.0)) * float(contract.terms.get("p", 0.0))
-    if contract.product_id in _EXACT_MAPPINGS:
-        return -float(contract.terms.get("P_net", 0.0))
+def _initial_cashflow(
+    contract: ResolvedContract,
+    quantity: float,
+    *,
+    valuation_date: str | None = None,
+) -> float:
+    """兼容测试入口：只返回当前估值日尚应计入价值的起始现金流。"""
+
+    cashflow = contractual_initial_cashflow(contract, quantity)
+    start_value = contract.identity.get("contract_start_date")
+    if valuation_date is None or start_value in {None, ""} or str(valuation_date) == str(start_value):
+        return cashflow
+    if date.fromisoformat(str(valuation_date)) < date.fromisoformat(str(start_value)):
+        raise ValueError("valuation_date不得早于contract_start_date")
     return 0.0
+
+
+def _pricer_economic_contract(contract: ResolvedContract) -> ResolvedContract:
+    """在Pricer边界把9.3冻结为不含期权费的未来期权组合。
+
+    OptionReg当前9.3路径把折价金额放在到期收益中。Pricer的合同现金流生命周期
+    要求期权费仅在起始日发生，因此MC仍使用Core共享解释器，但消费下列等价的
+    未来两看涨组合路径，不制造到期固定退款。
+    """
+
+    if contract.product_id != "9.3":
+        return contract
+    paths = ({
+        "condition": "True",
+        "cases": (
+            {"domain": "0 <= S_T <= K_1", "pnl": "cash(T, N * 0)"},
+            {
+                "domain": "K_1 < S_T <= K_2",
+                "pnl": "cash(T, N * (S_T - K_1) / S_0)",
+            },
+            {
+                "domain": "S_T > K_2",
+                "pnl": "cash(T, N * ((S_T - K_1) - (1 - alpha) * (S_T - K_2)) / S_0)",
+            },
+        ),
+    },)
+    return replace(contract, paths=paths, path_case_applicability=None)
 
 
 def _contract_with_maturity(
@@ -807,7 +868,6 @@ def _contract_with_maturity(
         terms=terms,
         resolved_schedules=scenario_schedules,
         path_case_applicability=None,
-        contract_fingerprint="",
     )
 
 
