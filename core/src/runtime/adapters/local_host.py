@@ -24,10 +24,8 @@ from runtime.protocol.models import CallerContext, ModuleRunRef
 from runtime.protocol.version import (
     DEVELOPMENT_RELEASE_ID,
     MODULE_HOST_PROTOCOL_ID,
-    RESOLVED_CONTRACT_SCHEMA_ID,
 )
 from runtime.protocol.module_host import (
-    HostObjectRef,
     ModuleHostContext,
     issue_capability_token,
     verify_module_host_context,
@@ -191,7 +189,8 @@ class LocalHostAuthority:
         analysis_case_id: str,
         candidate_id: str,
         catalog_version: str,
-        contract_fingerprint: str,
+        product_id: str,
+        rule_revision: int,
         result_refs: tuple[ModuleRunRef, ...] = (),
     ) -> ModuleHostContext:
         issued_at = int(time.time())
@@ -201,7 +200,8 @@ class LocalHostAuthority:
             "task_id": task_id,
             "candidate_id": candidate_id,
             "catalog_version": catalog_version,
-            "contract_fingerprint": contract_fingerprint,
+            "product_id": product_id,
+            "rule_revision": rule_revision,
             "module": module,
             "page_hash": "0" * 64,
             "capability_version": DEVELOPMENT_RELEASE_ID,
@@ -210,11 +210,6 @@ class LocalHostAuthority:
             "host_kind": "local-development",
             "request_policy": ("module.catalog", "module.run"),
             "result_refs": result_refs,
-            "contract_ref": HostObjectRef(
-                reference_id=f"contract-{contract_fingerprint[:24]}",
-                schema_id=RESOLVED_CONTRACT_SCHEMA_ID,
-                content_hash=contract_fingerprint,
-            ),
         }
         token = issue_capability_token(
             token_secret=self._secret,
