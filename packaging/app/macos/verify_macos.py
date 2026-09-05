@@ -121,15 +121,16 @@ def summarize_compute_result(
         reference.get("module") == module and reference.get("task_id") == task_id,
         f"{module}的ModuleRunRef未绑定当前任务",
     )
-    contract_fingerprint = result.get("contract_fingerprint")
+    product_id = result.get("product_id")
+    rule_revision = result.get("rule_revision")
     require(
-        isinstance(contract_fingerprint, str)
-        and len(contract_fingerprint) == 64,
-        f"{module}缺少有效合同指纹",
+        isinstance(product_id, str) and bool(product_id)
+        and isinstance(rule_revision, int) and not isinstance(rule_revision, bool) and rule_revision > 0,
+        f"{module}缺少当前产品编号或规则修订号",
     )
     if module == "payoffer":
-        require(isinstance(result.get("payoff_semantic_hash"), str) and result["payoff_semantic_hash"], "payoffer缺少收益结构语义结果哈希")
-        expected_result = "payoff_semantic_hash"
+        require(isinstance(result.get("structural_input"), dict), "payoffer缺少实际结构输入")
+        expected_result = "structural_input"
     else:
         expected_result = {"pricer": "pricing", "backtester": "backtest"}[module]
         readable = result.get(expected_result)
@@ -459,9 +460,9 @@ def verify(
             compute_requests = {
                 "payoffer": {
                     "product_id": base_input["product_id"],
-                    "underlyings": list(underlyings),
-                    "term_overrides": dict(base_input["term_overrides"]),
-                    "task_id": task_id,
+                    # Payoffer只接收实际改变合同结算收益图的结构条款。
+                    # 香草期权的期限不改变到期收益形状，不能沿用定价输入。
+                    "term_overrides": {"K": 100.0, "Pi_0": 0.0},
                 },
                 "backtester": {
                     **base_input,
@@ -513,10 +514,7 @@ def verify(
             context = context_body.get("context")
             require(status == 200 and isinstance(context, dict), "已绑定任务的payoffer预览缺少Module Host Context")
             require(context.get("task_id") == task_id, "已绑定payoffer预览上下文未绑定当前任务")
-            require(
-                context.get("contract_ref") is None and context.get("contract_fingerprint") is None,
-                "Module Host Context不应携带任务级活动合同",
-            )
+            require(context.get("product_id") is None and context.get("rule_revision") is None, "Module Host Context不应预先绑定产品")
             headers = {
                 "Cookie": admin,
                 "Origin": url,
@@ -527,34 +525,11 @@ def verify(
                 connection, "POST", "/api/tools/payoffer", {"action": "catalog"}, headers,
             )
             catalog = tool_body.get("result") if isinstance(tool_body, dict) else None
-            module_selection = catalog.get("module_selection") if isinstance(catalog, dict) else None
-            require(
-                status == 200 and isinstance(module_selection, dict)
-                and module_selection.get("product_id") == base_input["product_id"]
-                and isinstance(module_selection.get("identity"), dict)
-                and isinstance(module_selection.get("base_contract_ref"), dict),
-                f"payoffer目录未返回模块最近使用版本：{tool_body}",
-            )
-            contract_fingerprint = module_selection.get("contract_fingerprint")
-            contract_ref = module_selection["base_contract_ref"]
-            require(
-                isinstance(contract_fingerprint, str)
-                and len(contract_fingerprint) == 64
-                and contract_ref.get("content_hash") == contract_fingerprint,
-                "payoffer模块选择的合同引用与指纹不一致",
-            )
-            task_identity = module_selection["identity"]
-            task_underlyings = task_identity.get("underlyings")
-            require(
-                isinstance(task_underlyings, list)
-                and bool(task_underlyings)
-                and all(isinstance(item, str) and item.strip() for item in task_underlyings),
-                "已绑定payoffer预览的任务合同缺少有效标的",
-            )
+            products = catalog.get("products") if isinstance(catalog, dict) else None
+            require(status == 200 and isinstance(products, list) and len(products) == 65, f"payoffer目录不完整：{tool_body}")
 
             # Module Host contexts are single-use. Fetch a fresh task-only
-            # context after reading the module preference. The page explicitly
-            # selects the immutable base version it wants to preview.
+            # context and compile the page's current input directly.
             status, context_body, _ = request(
                 connection,
                 "GET",
@@ -565,17 +540,14 @@ def verify(
             require(
                 status == 200 and isinstance(context, dict)
                 and context.get("task_id") == task_id
-                and context.get("contract_fingerprint") is None
-                and context.get("contract_ref") is None,
+                and context.get("product_id") is None
+                and context.get("rule_revision") is None,
                 "payoffer预览未取得独立的任务上下文",
             )
             scoped_preview = {
                 "action": "preview",
-                "product_id": str(module_selection["product_id"]),
-                "underlyings": list(task_underlyings),
-                "term_overrides": dict(base_input["term_overrides"]),
-                "base_contract_ref": dict(contract_ref),
-                "task_id": task_id,
+                "product_id": str(base_input["product_id"]),
+                "term_overrides": {"K": 100.0, "Pi_0": 0.0},
             }
             headers = {
                 "Cookie": admin,
@@ -662,47 +634,6 @@ def verify(
                 path_pricer_result,
                 task_id=path_task_id,
             )
-            path_contract_fingerprint = path_pricer_result.get("contract_fingerprint")
-            require(
-                isinstance(path_contract_fingerprint, str)
-                and len(path_contract_fingerprint) == 64,
-                "6.2定价没有返回合同指纹",
-            )
-
-            # Read Pricer's module preference, then explicitly reuse its
-            # data-backed 6.2 version from Payoffer. The task itself has no
-            # activity pointer and does not force this choice.
-            status, context_body, _ = request(
-                connection,
-                "GET",
-                f"/api/module-host/pricer?task_id={path_task_id}",
-                headers={"Cookie": admin},
-            )
-            context = context_body.get("context")
-            require(
-                status == 200 and isinstance(context, dict)
-                and context.get("task_id") == path_task_id
-                and context.get("contract_ref") is None
-                and context.get("contract_fingerprint") is None,
-                "6.2 Pricer目录缺少任务上下文",
-            )
-            headers = {
-                "Cookie": admin,
-                "Origin": url,
-                "X-OptionHelper-Module-Context": json.dumps(context),
-                "X-OptionHelper-Request-Id": "artifact-pricer-6-2-catalog",
-            }
-            status, tool_body, _ = request(
-                connection, "POST", "/api/tools/pricer", {"action": "catalog"}, headers,
-            )
-            path_catalog = tool_body.get("result") if isinstance(tool_body, dict) else None
-            path_selection = path_catalog.get("module_selection") if isinstance(path_catalog, dict) else None
-            require(
-                status == 200 and isinstance(path_selection, dict)
-                and path_selection.get("contract_fingerprint") == path_contract_fingerprint
-                and isinstance(path_selection.get("base_contract_ref"), dict),
-                "6.2 Pricer目录未返回本次运行版本",
-            )
             status, context_body, _ = request(
                 connection,
                 "GET",
@@ -723,10 +654,7 @@ def verify(
                 path_task_id,
                 {
                     "product_id": "6.2",
-                    "underlyings": ["000905.SH"],
                     "term_overrides": {},
-                    "base_contract_ref": dict(path_selection["base_contract_ref"]),
-                    "task_id": path_task_id,
                 },
                 headers,
             )
@@ -735,10 +663,7 @@ def verify(
                 path_payoffer_result,
                 task_id=path_task_id,
             )
-            require(
-                path_payoffer_result.get("contract_fingerprint") == path_contract_fingerprint,
-                "6.2收益结构结果未复用定价任务合同",
-            )
+            require(path_payoffer_result.get("product_id") == "6.2", "6.2收益结构没有使用当前选择产品")
 
             status, _body, _ = request(connection, "GET", "/optdesk", headers={"Cookie": admin})
             require(status == 200, "本地管理员身份无法访问OptDesk")
