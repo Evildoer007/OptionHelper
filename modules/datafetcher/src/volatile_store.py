@@ -67,4 +67,18 @@ def read_volatile_asset(data_asset_id: str, caller: CallerContext) -> tuple[Data
     return replace(reference), bytes(content)
 
 
-__all__ = ("read_volatile_asset", "store_volatile_asset")
+def list_volatile_assets(caller: CallerContext, *, limit: int = 100) -> tuple[DataAssetRef, ...]:
+    """List process-local references for one tenant and principal."""
+
+    safe_limit = max(1, min(int(limit), 100))
+    with _LOCK:
+        references = [
+            replace(reference)
+            for (tenant_id, principal_id, _asset_id), (reference, _content) in _ASSETS.items()
+            if tenant_id == caller.tenant_id and principal_id == caller.principal_id
+        ]
+    references.sort(key=lambda ref: str(ref.lineage.get("fetched_at", "")), reverse=True)
+    return tuple(references[:safe_limit])
+
+
+__all__ = ("list_volatile_assets", "read_volatile_asset", "store_volatile_asset")
