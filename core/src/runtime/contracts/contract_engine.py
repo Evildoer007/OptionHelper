@@ -26,7 +26,7 @@ from runtime.knowledger.registry_loader import (
     load_registry as _load_registry,
     load_term_catalog as _load_term_catalog,
 )
-from .contract_types import deep_freeze, deep_thaw, semantic_hash
+from .contract_types import deep_freeze, deep_thaw
 
 
 DEFAULT_REGISTRY_PATH = get_default_registry_path()
@@ -37,7 +37,7 @@ _IMMUTABLE_TERM_KEYS = frozenset({"margin_call", "payoff_figure_basis", "N", "Nv
 # 不可覆盖不等于不可进入公式：N/Nvar虽是内部固定100基准，仍须由解释器绑定。
 _STATIC_TERM_KEYS = _RULE_TERM_KEYS | frozenset({"margin_call", "payoff_figure_basis"})
 _ALLOWED_PRODUCT_KEYS = frozenset({"identity", "terms", "paths"})
-_ALLOWED_IDENTITY_KEYS = frozenset({"product_id", "name_zh", "entry_status"})
+_ALLOWED_IDENTITY_KEYS = frozenset({"product_id", "name_zh", "entry_status", "rule_revision"})
 _ALLOWED_PATH_KEYS = frozenset({"condition", "cases"})
 _ALLOWED_CASE_KEYS = frozenset({"domain", "pnl"})
 _OBSERVATION_TERM_KEYS = frozenset({"O_KO", "O_KI", "Oc", "Otouch", "Orange", "Ovar", "Ohedge", "Oreset"})
@@ -46,6 +46,7 @@ _FORMULA_FUNCTIONS = frozenset({
     "first_time_below_schedule", "first_observation_on_or_after", "terminal_event_time", "reset_knockout_time", "effective_hedge_time",
     "first_value", "count", "count_until", "exact_observation_count", "observation_ordinal",
     "realized_variance", "accumulated_quantity", "schedule_between", "schedule_matches_ratios",
+    "period_count", "linear_schedule", "terminal_schedule", "truncate_schedule",
     "is_monthly_schedule", "require_maturity_observation", "cash",
 })
 _SETTLEMENT_VARIABLES = frozenset({"S_t", "S_T", "W_t", "W_T", "r_T", "u", "T_contract", "inf"})
@@ -66,6 +67,9 @@ _MAX_FORMULA_DEPTH = 64
 _MAX_POWER_EXPONENT = 32.0
 _MAX_FORMULA_ITEMS = 100_000
 _MAX_ABS_FORMULA_VALUE = 1e100
+_STRUCTURAL_PAYOFF_CALENDAR_ID = "payoffer-structural-candidate"
+_STRUCTURAL_PAYOFF_CALENDAR_REVISION = "structural-candidate"
+_STRUCTURAL_PAYOFF_SESSION_COUNT = 800
 
 
 @lru_cache(maxsize=1)
@@ -216,7 +220,7 @@ def _validate_resolved_schedule_snapshot(
         value = schedules[key]
         if not isinstance(value, Mapping) or set(value) != {"selector", "status", "dates"}:
             raise ContractResolutionError(f"ResolvedContract.resolved_schedules.{key}外形无效")
-        if value["status"] != "resolved" or semantic_hash(value["selector"]) != semantic_hash(terms[key]):
+        if value["status"] != "resolved" or deep_thaw(value["selector"]) != deep_thaw(terms[key]):
             raise ContractResolutionError(f"ResolvedContract.resolved_schedules.{key}必须为对应selector的resolved日程")
         dates = value["dates"]
         if not isinstance(dates, Sequence) or isinstance(dates, (str, bytes)) or not dates:
@@ -232,7 +236,7 @@ def _validate_resolved_schedule_snapshot(
 def _economic_identity(identity: Mapping[str, Any]) -> dict[str, Any]:
     """仅保留决定合同现金流语义的身份字段，排除展示与运行追踪字段。"""
     keys = (
-        "product_id", "underlyings", "currency", "contract_start_date", "contract_end_date",
+        "product_id", "rule_revision", "underlyings", "currency", "contract_start_date", "contract_end_date",
         "reference_prices", "price_convention", "calendar_id", "calendar_revision",
     )
     return {key: identity.get(key) for key in keys}
@@ -300,7 +304,7 @@ class _ReachabilityInterval:
 
 
 _ALL_REACHABILITY = (_ReachabilityInterval(),)
-_APPLICABILITY_KEYS = frozenset({"path_index", "case_index", "status", "reason_code", "evidence_hash"})
+_APPLICABILITY_KEYS = frozenset({"path_index", "case_index", "status", "reason_code"})
 _APPLICABILITY_REASONS = frozenset({
     "terminal_constraints_satisfiable",
     "terminal_constraints_contradict",
@@ -345,21 +349,11 @@ def _derive_path_case_applicability(
                     if "terminal_schedule_event_unavailable" in reasons
                     else "terminal_constraints_contradict"
                 )
-            evidence_hash = semantic_hash({
-                "contract_end_date": identity.get("contract_end_date"),
-                "monitor": terms.get("monitor", {}),
-                "resolved_schedules": resolved_schedules,
-                "path_condition": path["condition"],
-                "case_domain": case["domain"],
-                "status": status,
-                "reason_code": reason_code,
-            })
             result.append({
                 "path_index": path_offset + 1,
                 "case_index": case_offset + 1,
                 "status": status,
                 "reason_code": reason_code,
-                "evidence_hash": evidence_hash,
             })
     return tuple(result)
 
@@ -384,7 +378,6 @@ def _validate_path_case_applicability(
         case_index = raw.get("case_index")
         status = raw.get("status")
         reason_code = raw.get("reason_code")
-        evidence_hash = raw.get("evidence_hash")
         ref = (path_index, case_index)
         if (
             isinstance(path_index, bool) or not isinstance(path_index, int)
@@ -392,8 +385,6 @@ def _validate_path_case_applicability(
             or ref not in expected_refs or ref in seen
             or status not in {"active", "inactive"}
             or reason_code not in _APPLICABILITY_REASONS
-            or not isinstance(evidence_hash, str)
-            or re.fullmatch(r"[0-9a-f]{64}", evidence_hash) is None
         ):
             raise ContractResolutionError("path_case_applicability记录值无效")
         seen.add(ref)
@@ -726,19 +717,14 @@ def _complement_intervals(
 
 @dataclass(frozen=True)
 class ResolvedContract:
-    """三个子模块共同读取的本次已解析合同。"""
+    """三个计算模块共同读取的本次已解析合同完整快照。"""
 
     identity: Mapping[str, Any]
     terms: Mapping[str, Any]
     term_sources: Mapping[str, str]
     paths: tuple[Mapping[str, Any], ...]
-    product_version: str = ""
     resolved_schedules: Mapping[str, Any] | None = None
     path_case_applicability: tuple[Mapping[str, Any], ...] | None = None
-    contract_fingerprint: str = ""
-    registry_snapshot_hash: str = ""
-    product_snapshot_hash: str = ""
-    product_paths_hash: str = ""
 
     def __post_init__(self) -> None:
         terms = deep_freeze(self.terms)
@@ -755,21 +741,10 @@ class ResolvedContract:
         identity = deep_freeze(identity_value)
         sources = deep_freeze(self.term_sources)
         paths = tuple(deep_freeze(path) for path in self.paths)
-        product_version = self.product_version or str(identity.get("product_version") or "development")
-        if identity.get("product_version") not in {None, product_version}:
-            raise ContractResolutionError("ResolvedContract.product_version与identity不一致")
         if set(sources) != set(terms) or any(value not in {"default", "override", "derived"} for value in sources.values()):
             raise ContractResolutionError("term_sources必须逐一覆盖terms且来源值有效")
         if not paths:
             raise ContractResolutionError("ResolvedContract.paths不能为空")
-        binding_values = (self.registry_snapshot_hash, self.product_snapshot_hash, self.product_paths_hash)
-        if any(binding_values):
-            if not all(re.fullmatch(r"[0-9a-f]{64}", value) for value in binding_values):
-                raise ContractResolutionError("ResolvedContract产品快照绑定必须包含三个64位SHA-256")
-            if semantic_hash(paths) != self.product_paths_hash:
-                raise ContractResolutionError("ResolvedContract.paths与声明ProductVersion快照不一致")
-            if product_version.startswith("development:") and product_version != f"development:{self.product_snapshot_hash[:16]}":
-                raise ContractResolutionError("ResolvedContract.product_version与产品快照哈希不一致")
         schedules = deep_freeze(self.resolved_schedules or _schedule_snapshot(terms))
         _validate_resolved_schedule_snapshot(terms, schedules, identity)
         expected_applicability = _derive_path_case_applicability(identity, terms, paths, schedules)
@@ -777,26 +752,15 @@ class ResolvedContract:
             supplied_applicability = _validate_path_case_applicability(
                 self.path_case_applicability, paths,
             )
-            if semantic_hash(supplied_applicability) != semantic_hash(expected_applicability):
+            if deep_thaw(supplied_applicability) != deep_thaw(expected_applicability):
                 raise ContractResolutionError("ResolvedContract.path_case_applicability与冻结日历及monitor语义不一致")
         applicability = deep_freeze(expected_applicability)
-        fingerprint = semantic_hash({
-            "identity": _economic_identity(identity),
-            "terms": terms,
-            "paths": paths,
-            "resolved_schedules": schedules,
-            "path_case_applicability": applicability,
-        })
-        if self.contract_fingerprint and self.contract_fingerprint != fingerprint:
-            raise ContractResolutionError("ResolvedContract.contract_fingerprint校验失败")
         object.__setattr__(self, "identity", identity)
         object.__setattr__(self, "terms", terms)
         object.__setattr__(self, "term_sources", sources)
         object.__setattr__(self, "paths", paths)
-        object.__setattr__(self, "product_version", product_version)
         object.__setattr__(self, "resolved_schedules", schedules)
         object.__setattr__(self, "path_case_applicability", applicability)
-        object.__setattr__(self, "contract_fingerprint", fingerprint)
 
     @property
     def product_id(self) -> str:
@@ -825,39 +789,24 @@ class ResolvedContract:
         )
 
     def to_dict(self) -> dict[str, Any]:
-        """返回旧消费者使用的四字段外形。
-
-        新消费者应使用``to_protocol_dict``取得当前正式完整合同。保留此方法可让
-        尚未迁移的三个计算模块继续运行，而不复制或修改其消费者代码。
-        """
+        """返回本次运行冻结的完整合同快照。"""
         return {
             "identity": deep_thaw(self.identity),
             "terms": deep_thaw(self.terms),
             "term_sources": deep_thaw(self.term_sources),
             "paths": deep_thaw(self.paths),
+            "resolved_schedules": deep_thaw(self.resolved_schedules),
+            "path_case_applicability": deep_thaw(self.path_case_applicability),
         }
 
     def to_protocol_dict(self) -> dict[str, Any]:
-        if not all((self.registry_snapshot_hash, self.product_snapshot_hash, self.product_paths_hash)):
-            raise ContractResolutionError("ResolvedContract缺少Registry/ProductVersion快照绑定，不能进入正式协议")
-        result = self.to_dict()
-        result.update({
-            "product_version": self.product_version,
-            "resolved_schedules": deep_thaw(self.resolved_schedules),
-            "path_case_applicability": deep_thaw(self.path_case_applicability),
-            "contract_fingerprint": self.contract_fingerprint,
-            "registry_snapshot_hash": self.registry_snapshot_hash,
-            "product_snapshot_hash": self.product_snapshot_hash,
-            "product_paths_hash": self.product_paths_hash,
-        })
-        return result
+        return self.to_dict()
 
     def to_controlled_snapshot(self) -> dict[str, Any]:
         """返回仅供Core与受控ModuleRun输入使用的完整合同快照。
 
-        该快照可由``ResolvedContract(**snapshot)``严格复原并校验原始
-        fingerprint与产品快照绑定。它不是公开展示对象；页面和公开工件必须
-        使用各模块显式定义的display projection，不能裁剪后仍称作合同。
+        该快照可由``ResolvedContract(**snapshot)``严格复原。它不是公开展示
+        对象；页面和公开工件必须使用各模块显式定义的display projection。
         """
         return self.to_protocol_dict()
 
@@ -913,12 +862,10 @@ class PreparedContractEvaluator:
     """绑定合同与价格网格的只读解释器准备结果。"""
 
     contract: ResolvedContract
-    contract_fingerprint: str
     asset_ids: tuple[str, ...]
     valuation_date: str
     times: tuple[float, ...]
     dates: tuple[pd.Timestamp, ...] | None
-    grid_hash: str
     _base_variables: Mapping[str, Any] = field(repr=False, compare=False)
     _schedule_cache: Mapping[int, tuple[np.ndarray, np.ndarray]] = field(repr=False, compare=False)
 
@@ -927,8 +874,6 @@ class PreparedContractEvaluator:
 class BatchPayoffEvaluation:
     """保持输入路径顺序的逐路径合同解释结果。"""
 
-    contract_fingerprint: str
-    grid_hash: str
     evaluations: tuple[PayoffEvaluation, ...]
 
 
@@ -1196,23 +1141,21 @@ def overridable_term_keys(
     )
 
 
-def verify_product_snapshot_binding(
+def verify_current_product_rule(
     contract: ResolvedContract,
     registry: Mapping[str, Any],
-    *,
-    attested_product_version: str | None = None,
 ) -> ResolvedContract:
-    """证明合同事实来自所声明的同一Registry产品快照。"""
+    """Verify that a run snapshot was compiled from the current product rule."""
 
-    published = not contract.product_version.startswith("development:")
-    if published:
-        if attested_product_version != contract.product_version:
-            raise ContractResolutionError("历史ProductVersion必须同时提供签发版本证明与对应归档Registry快照")
-        if re.fullmatch(r"v[1-9]\d*\.\d+\.\d+", contract.product_version) is None:
-            raise ContractResolutionError("历史ProductVersion版本格式无效")
-    elif attested_product_version is not None:
-        raise ContractResolutionError("开发态development合同不得伪装正式ProductVersion证明")
-    contract = _verify_snapshot_hashes(contract, registry, enforce_development=not published)
+    if not isinstance(contract, ResolvedContract) or not isinstance(registry, Mapping):
+        raise ContractResolutionError("产品规则校验需要ResolvedContract与当前OptionReg")
+    try:
+        current_product = registry["products"][contract.product_id]
+        current_revision = current_product["identity"]["rule_revision"]
+    except (KeyError, TypeError) as error:
+        raise ContractResolutionError("ResolvedContract对应的当前产品规则不存在") from error
+    if contract.identity.get("rule_revision") != current_revision:
+        raise ContractResolutionError("ResolvedContract.rule_revision不是当前产品规则")
     identity_fields = {
         "contract_id", "underlyings", "currency", "contract_start_date", "contract_end_date",
         "reference_prices", "price_convention", "calendar_id", "calendar_revision",
@@ -1234,42 +1177,15 @@ def verify_product_snapshot_binding(
         ("identity", _economic_identity(contract.identity), _economic_identity(expected.identity)),
         ("terms", contract.terms, expected.terms),
         ("term_sources", contract.term_sources, expected.term_sources),
+        ("paths", contract.paths, expected.paths),
         (
             "path_case_applicability",
             contract.path_case_applicability,
             expected.path_case_applicability,
         ),
     ):
-        if semantic_hash(actual) != semantic_hash(declared):
-            raise ContractResolutionError(f"ResolvedContract.{label}不属于声明ProductVersion条款快照")
-    return contract
-
-
-def _verify_snapshot_hashes(
-    contract: ResolvedContract,
-    registry: Mapping[str, Any],
-    *,
-    enforce_development: bool = True,
-) -> ResolvedContract:
-    """校验Registry、产品和paths哈希；解析器内部使用以避免递归。"""
-
-    if not isinstance(contract, ResolvedContract) or not isinstance(registry, Mapping):
-        raise ContractResolutionError("产品快照绑定校验需要ResolvedContract与Registry")
-    if semantic_hash(registry) != contract.registry_snapshot_hash:
-        raise ContractResolutionError("ResolvedContract.Registry快照哈希不一致")
-    try:
-        product = registry["products"][contract.product_id]
-        declared_paths = product["paths"]
-    except (KeyError, TypeError) as error:
-        raise ContractResolutionError("ResolvedContract产品快照不存在") from error
-    product_hash = semantic_hash(product)
-    if product_hash != contract.product_snapshot_hash:
-        raise ContractResolutionError("ResolvedContract产品快照哈希不一致")
-    if semantic_hash(declared_paths) != contract.product_paths_hash or semantic_hash(contract.paths) != contract.product_paths_hash:
-        raise ContractResolutionError("ResolvedContract.paths不属于声明ProductVersion快照")
-    expected_version = f"development:{product_hash[:16]}"
-    if enforce_development and contract.product_version != expected_version:
-        raise ContractResolutionError("ResolvedContract.ProductVersion未由当前Registry快照证明")
+        if deep_thaw(actual) != deep_thaw(declared):
+            raise ContractResolutionError(f"ResolvedContract.{label}不属于当前产品规则")
     return contract
 
 
@@ -1323,7 +1239,7 @@ def _apply_constraint_bound_terms(
                 continue
             value = evaluate_formula(expressions[0], variables)
             _validate_terms({key: value}, catalog)
-            if semantic_hash(terms[key]) != semantic_hash(value):
+            if deep_thaw(terms[key]) != deep_thaw(value):
                 terms[key] = value
                 changed = True
                 sources[key] = "derived"
@@ -1462,14 +1378,11 @@ def _resolve_contract(
     term_sources.update(derived_sources)
     for key in final_terms:
         term_sources.setdefault(key, "default")
-    registry_snapshot_hash = semantic_hash(source_registry)
-    product_snapshot_hash = semantic_hash(product)
-    product_paths_hash = semantic_hash(product["paths"])
-    product_version = f"development:{product_snapshot_hash[:16]}"
     resolved_identity = {
         "product_id": str(product_id),
         "name_zh": product_identity["name_zh"],
         "entry_status": bool(product_identity["entry_status"]),
+        "rule_revision": int(product_identity["rule_revision"]),
         "contract_id": str(supplied_identity.get("contract_id") or f"{product_id}-contract"),
         "underlyings": list(underlyings),
         "currency": str(supplied_identity.get("currency") or "CNY"),
@@ -1479,14 +1392,12 @@ def _resolve_contract(
         "price_convention": price_convention,
         "calendar_id": supplied_identity.get("calendar_id"),
         "calendar_revision": supplied_identity.get("calendar_revision"),
-        "product_version": product_version,
     }
     contract = ResolvedContract(
         resolved_identity,
         final_terms,
         term_sources,
         tuple(deepcopy(product["paths"])),
-        product_version=product_version,
         resolved_schedules=(
             deep_thaw(frozen_resolved_schedules)
             if frozen_resolved_schedules is not None
@@ -1497,11 +1408,8 @@ def _resolve_contract(
                 contract_end_date=resolved_identity.get("contract_end_date"),
             )
         ),
-        registry_snapshot_hash=registry_snapshot_hash,
-        product_snapshot_hash=product_snapshot_hash,
-        product_paths_hash=product_paths_hash,
     )
-    return _verify_snapshot_hashes(contract, source_registry)
+    return contract
 
 
 def resolve_contract(
@@ -1520,6 +1428,61 @@ def resolve_contract(
         term_overrides=term_overrides,
         registry=registry,
         registry_path=registry_path,
+        trading_dates=trading_dates,
+    )
+
+
+def resolve_structural_payoff_contract(
+    product_id: str,
+    *,
+    term_overrides: Mapping[str, Any] | None = None,
+    registry: Mapping[str, Any] | None = None,
+) -> ResolvedContract:
+    """Compile a normalized payoff shape without market or task data.
+
+    Payoffer describes contract settlement returns on the shared S0=100
+    coordinate.  Security codes, quotes and exchange calendars therefore do
+    not belong to this input.  Observation selectors still need a deterministic
+    date grid so the common contract interpreter can freeze their relative
+    schedule; that internal grid is explicitly not market evidence.
+    """
+
+    source_registry = registry if registry is not None else load_registry()
+    product = get_product(str(product_id), source_registry)
+    terms = product.get("terms")
+    if not isinstance(terms, Mapping):
+        raise ContractResolutionError(f"产品{product_id}缺少有效terms")
+    if "S0Vec" in terms:
+        raw_references = terms["S0Vec"]
+        if not isinstance(raw_references, (list, tuple)) or len(raw_references) < 2:
+            raise ContractResolutionError(f"产品{product_id}.S0Vec必须定义至少两个标准化坐标")
+        underlyings = [f"S{index + 1}" for index in range(len(raw_references))]
+        reference_prices = dict(zip(underlyings, raw_references))
+    else:
+        underlyings = ["S1"]
+        reference_prices = {"S1": float(terms.get("S0", _NORMALIZED_PRICE_BASE))}
+    has_observations = bool(_OBSERVATION_TERM_KEYS.intersection(terms))
+    identity: dict[str, Any] = {
+        "underlyings": underlyings,
+        "reference_prices": reference_prices,
+        "price_convention": "normalized_100",
+    }
+    trading_dates: Sequence[str] | None = None
+    if has_observations:
+        identity.update({
+            "calendar_id": _STRUCTURAL_PAYOFF_CALENDAR_ID,
+            "calendar_revision": _STRUCTURAL_PAYOFF_CALENDAR_REVISION,
+        })
+        trading_dates = tuple(
+            pd.bdate_range("2026-01-02", periods=_STRUCTURAL_PAYOFF_SESSION_COUNT)
+            .strftime("%Y-%m-%d")
+            .tolist()
+        )
+    return _resolve_contract(
+        str(product_id),
+        identity=identity,
+        term_overrides=term_overrides,
+        registry=source_registry,
         trading_dates=trading_dates,
     )
 
@@ -1601,21 +1564,12 @@ def prepare_contract_evaluator(
 
     grid_times = tuple(float(item) for item in grid)
     valuation_iso = inferred_valuation_date.date().isoformat()
-    grid_hash = _prepared_grid_hash(
-        contract.contract_fingerprint,
-        assets,
-        valuation_iso,
-        grid_times,
-        normalized_dates,
-    )
     return PreparedContractEvaluator(
         contract=contract,
-        contract_fingerprint=contract.contract_fingerprint,
         asset_ids=assets,
         valuation_date=valuation_iso,
         times=grid_times,
         dates=normalized_dates,
-        grid_hash=grid_hash,
         _base_variables=MappingProxyType(base_variables),
         _schedule_cache=MappingProxyType(schedule_cache),
     )
@@ -1633,17 +1587,6 @@ def evaluate_contract_batch(
 
     if not isinstance(prepared, PreparedContractEvaluator):
         raise ContractResolutionError("批量解释必须使用prepare_contract_evaluator的准备结果")
-    if prepared.contract.contract_fingerprint != prepared.contract_fingerprint:
-        raise ContractResolutionError("准备结果与ResolvedContract指纹不一致")
-    expected_hash = _prepared_grid_hash(
-        prepared.contract_fingerprint,
-        prepared.asset_ids,
-        prepared.valuation_date,
-        prepared.times,
-        prepared.dates,
-    )
-    if prepared.grid_hash != expected_hash:
-        raise ContractResolutionError("准备结果的合同时间网格绑定已失效")
     paths = np.asarray(values, dtype=float)
     expected_shape = (len(prepared.times), len(prepared.asset_ids))
     if paths.ndim != 3 or paths.shape[0] < 1 or paths.shape[1:] != expected_shape:
@@ -1682,7 +1625,7 @@ def evaluate_contract_batch(
                 schedule_cache=prepared._schedule_cache,
             )
             evaluations.append(_evaluate_contract_variables(prepared.contract, path, variables))
-    return BatchPayoffEvaluation(prepared.contract_fingerprint, prepared.grid_hash, tuple(evaluations))
+    return BatchPayoffEvaluation(tuple(evaluations))
 
 
 def evaluate_contract(contract: ResolvedContract, price_path: PricePath) -> PayoffEvaluation:
@@ -1945,6 +1888,10 @@ class _FormulaEvaluator(ast.NodeVisitor):
             "accumulated_quantity": _accumulated_quantity,
             "schedule_between": _schedule_between,
             "schedule_matches_ratios": _schedule_matches_ratios,
+            "period_count": _period_count,
+            "linear_schedule": _linear_schedule,
+            "terminal_schedule": _terminal_schedule,
+            "truncate_schedule": _truncate_schedule,
             "is_monthly_schedule": _is_monthly_schedule,
             "require_maturity_observation": _require_maturity_observation,
             "cash": _cash,
@@ -1978,6 +1925,12 @@ def validate_product_spec(product_id: str, product: Mapping[str, Any], term_cata
         issues.append("products外层键与identity.product_id不一致")
     elif not isinstance(identity.get("entry_status"), bool):
         issues.append("identity.entry_status必须为Python布尔值")
+    elif (
+        isinstance(identity.get("rule_revision"), bool)
+        or not isinstance(identity.get("rule_revision"), int)
+        or identity["rule_revision"] <= 0
+    ):
+        issues.append("identity.rule_revision必须为正整数")
     elif not isinstance(identity.get("name_zh"), str) or not identity["name_zh"].strip():
         issues.append("identity.name_zh必须为非空字符串")
     if not isinstance(terms, Mapping) or not terms:
@@ -2174,22 +2127,6 @@ def _normalized_reference_prices(terms: Mapping[str, Any], underlyings: Sequence
             raise ContractResolutionError("多标的normalized_100合同必须使用S0Vec冻结逐标的参考价格")
         return {underlyings[0]: float(terms["S0"])}
     return None
-
-
-def _prepared_grid_hash(
-    contract_fingerprint: str,
-    asset_ids: Sequence[str],
-    valuation_date: str,
-    times: Sequence[float],
-    dates: Sequence[Any] | None,
-) -> str:
-    return semantic_hash({
-        "contract_fingerprint": contract_fingerprint,
-        "asset_ids": list(asset_ids),
-        "valuation_date": valuation_date,
-        "times": [float(item) for item in times],
-        "dates": None if dates is None else [pd.Timestamp(item).isoformat() for item in dates],
-    })
 
 
 def _contract_formula_variables(contract: ResolvedContract) -> dict[str, Any]:
@@ -2592,6 +2529,77 @@ def _schedule_matches_ratios(schedule: object, reference: object, ratios: object
     return True
 
 
+def _period_count(tenor: object, periods_per_year: object) -> int:
+    """Convert a tenor into a whole number of regular contractual periods."""
+
+    tenor_value = _positive_number(tenor, "period_count期限")
+    frequency_value = _positive_number(periods_per_year, "period_count年频率")
+    raw_count = tenor_value * frequency_value
+    rounded_count = int(round(raw_count))
+    if rounded_count < 1 or not np.isclose(raw_count, rounded_count, rtol=0.0, atol=1e-10):
+        raise FormulaError("合同期限必须对应完整观察期数")
+    return rounded_count
+
+
+def _linear_schedule(
+    count: object,
+    reference: object,
+    first_ratio: object,
+    ratio_step: object,
+) -> list[tuple[int, float]]:
+    """Build a complete 1-based schedule with a constant ratio step."""
+
+    period_total = _positive_integer(count, "linear_schedule期数")
+    reference_value = _finite_number(reference, "linear_schedule参考价格")
+    first_value = _finite_number(first_ratio, "linear_schedule首期比例")
+    step_value = _finite_number(ratio_step, "linear_schedule比例步长")
+    return [
+        (ordinal, reference_value * (first_value + (ordinal - 1) * step_value))
+        for ordinal in range(1, period_total + 1)
+    ]
+
+
+def _terminal_schedule(
+    count: object,
+    reference: object,
+    regular_ratio: object,
+    terminal_ratio: object,
+) -> list[tuple[int, float]]:
+    """Build a complete schedule whose final period uses a distinct ratio."""
+
+    period_total = _positive_integer(count, "terminal_schedule期数")
+    reference_value = _finite_number(reference, "terminal_schedule参考价格")
+    regular_value = _finite_number(regular_ratio, "terminal_schedule常规比例")
+    terminal_value = _finite_number(terminal_ratio, "terminal_schedule到期比例")
+    return [
+        (
+            ordinal,
+            reference_value * (terminal_value if ordinal == period_total else regular_value),
+        )
+        for ordinal in range(1, period_total + 1)
+    ]
+
+
+def _truncate_schedule(schedule: object, count: object) -> list[tuple[int, float]]:
+    """Keep sparse contractual events that occur within the selected tenor."""
+
+    period_total = _positive_integer(count, "truncate_schedule期数")
+    if not isinstance(schedule, Sequence) or isinstance(schedule, (str, bytes)):
+        raise FormulaError("truncate_schedule日程必须为(观察序号,水平)序列")
+    result: list[tuple[int, float]] = []
+    prior_ordinal = 0
+    for item in schedule:
+        if not isinstance(item, Sequence) or isinstance(item, (str, bytes)) or len(item) != 2:
+            raise FormulaError("truncate_schedule日程项必须是(观察序号,水平)")
+        ordinal, level = item
+        if not isinstance(ordinal, int) or isinstance(ordinal, bool) or ordinal <= prior_ordinal:
+            raise FormulaError("truncate_schedule观察序号必须严格递增")
+        prior_ordinal = ordinal
+        if ordinal <= period_total:
+            result.append((ordinal, _finite_number(level, "truncate_schedule障碍水平")))
+    return result
+
+
 def _step_levels(values: object, schedule: object, activation: object = "on") -> np.ndarray:
     """按合同时间分段展开障碍水平。
 
@@ -2868,6 +2876,12 @@ def _positive_number(value: object, label: str) -> float:
     number = _finite_number(value, label)
     if number <= 0: raise FormulaError(f"{label}必须为正数")
     return number
+
+
+def _positive_integer(value: object, label: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, (int, np.integer)) or int(value) <= 0:
+        raise FormulaError(f"{label}必须为正整数")
+    return int(value)
 
 
 def _nonnegative_number(value: object, label: str) -> float:
