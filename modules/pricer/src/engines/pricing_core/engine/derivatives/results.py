@@ -16,16 +16,12 @@ _PRIVATE_MONEY_COMPATIBILITY_FIELDS = frozenset({
     "pv_amount_value", "pv_amount_unit",
 })
 
-# Core retains this previous identity spelling while frozen contracts migrate.
-# Pricer never accepts it as input and must not re-publish it from a user-facing
-# result envelope.  The Store-only controlled contract snapshot is intentionally
-# kept outside this public projection.
 _PRIVATE_CONTRACT_SCALE_FIELDS = frozenset({"n", "nvar", "nvega"})
 
 _PUBLIC_CONTRACT_IDENTITY_FIELDS = frozenset({
     "product_id", "name_zh", "entry_status", "contract_id", "underlyings",
     "contract_start_date", "contract_end_date", "reference_prices",
-    "price_convention", "calendar_id", "calendar_revision", "product_version",
+    "price_convention", "calendar_id", "calendar_revision", "rule_revision",
 })
 
 # ``pv_points_100`` remains the numerical kernel's reconciliation basis.  It
@@ -277,7 +273,6 @@ class PricingResult:
     # dataclasses.replace补齐，避免形成第二个同名结果模型。
     status: str = "priced"
     product_id: str | None = None
-    contract_fingerprint: str | None = None
     # The public valuation is always a dimensionless price per contractual 100
     # base.  Variance swaps use the same 100 scale but label its squared-
     # volatility-point economics explicitly.
@@ -301,6 +296,7 @@ class PricingResult:
     precision_status: str = "quote_eligible"
     quote_eligible: bool = True
     path_count: int | None = None
+    cashflow_lifecycle: dict[str, Any] = field(default_factory=dict)
 
     @property
     def pv(self) -> float | None:
