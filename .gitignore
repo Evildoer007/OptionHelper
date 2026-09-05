@@ -28,3 +28,8 @@ products/app/.venv/
 products/app/build/
 products/app/packaging/macos/build/
 products/app/packaging/windows/build/
+
+# 本地Agent会话与Node依赖
+.optionhelper-agent-sessions/
+packaging/app/agent_runtime/node_modules/
+products/app/runtime/optionhelper_agent_runtime/node_modules/
