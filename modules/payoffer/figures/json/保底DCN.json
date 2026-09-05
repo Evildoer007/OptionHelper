@@ -20,7 +20,7 @@
     },
     "derived_terms": {
       "G": "N * g",
-      "ko_barrier_schedule": "[(1, S_0), (2, S_0), (3, S_0), (4, S_0), (5, S_0), (6, S_0), (7, S_0), (8, S_0), (9, S_0), (10, S_0), (11, S_0), (12, 0.8 * S_0)]"
+      "ko_barrier_schedule": "terminal_schedule(period_count(T, 12), S_0, 1, 0.8)"
     },
     "pricing_methods": [
       "monte_carlo"
@@ -29,11 +29,9 @@
       "g == 0.2",
       "F == 0.8",
       "H_c == F * S_0",
-      "T == 1",
-      "n_lock < 12",
+      "n_lock < period_count(T, 12)",
       "is_monthly_schedule(O_out)",
-      "is_monthly_schedule(O_c)",
-      "schedule_matches_ratios(H_out_j, S_0, [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0.8])"
+      "is_monthly_schedule(O_c)"
     ]
   },
   "paths": [
