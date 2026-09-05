@@ -18,8 +18,7 @@
     ],
     "constraints": [
       "K_1 < K_2",
-      "K_2 == S_0",
-      "p == (S_0 - K_1) / S_0"
+      "K_2 == S_0"
     ]
   },
   "paths": [
@@ -28,17 +27,34 @@
       "cases": [
         {
           "domain": "S_T > K_2",
-          "pnl": "cash(T, N * alpha * r_T)"
+          "pnl": "cash(0, -N * p) + cash(T, N / S_0 * ((S_T - K_1) - (1 - alpha) * (S_T - K_2)))"
         },
         {
           "domain": "K_1 < S_T <= K_2",
-          "pnl": "cash(T, N * r_T)"
+          "pnl": "cash(0, -N * p) + cash(T, N / S_0 * (S_T - K_1))"
         },
         {
           "domain": "0 <= S_T <= K_1",
-          "pnl": "cash(T, -N * (S_0 - K_1) / S_0)"
+          "pnl": "cash(0, -N * p) + cash(T, 0)"
         }
       ]
     }
-  ]
+  ],
+  "visual_template": {
+    "schema": "optionhelper.payoff-visual-template",
+    "layout": "standard_path_cards",
+    "path_views": [
+      {
+        "path_index": 1,
+        "case_indexes": [
+          1,
+          2,
+          3
+        ],
+        "axis": "S_T",
+        "chart_kind": "conditional_terminal_metric",
+        "title": "路径1"
+      }
+    ]
+  }
 }
