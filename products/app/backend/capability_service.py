@@ -76,6 +76,7 @@ def capability_import_scope(
     scripts_root: str | Path,
     *,
     runtime_root: str | Path | None = None,
+    retained_modules: dict[str, object] | None = None,
 ) -> Iterator[Path]:
     """Import one verified Capability without leaking ``modules.*`` globally.
 
@@ -92,9 +93,10 @@ def capability_import_scope(
         previous_path = list(sys.path)
         snapshot = _module_snapshot()
         previous_dont_write_bytecode = sys.dont_write_bytecode
-        _restore_modules({})
+        _restore_modules(retained_modules or {})
         sys.path[:] = [str(root), *(item for item in previous_path if item != str(root))]
         sys.dont_write_bytecode = True
+        completed = False
         try:
             with (
                 release_runtime_scope(runtime_root)
@@ -103,8 +105,12 @@ def capability_import_scope(
             ):
                 verify_loaded_runtime_sources(root)
                 yield root
+                completed = True
         finally:
             sys.dont_write_bytecode = previous_dont_write_bytecode
+            if retained_modules is not None and completed:
+                retained_modules.clear()
+                retained_modules.update(_module_snapshot())
             _restore_modules(snapshot)
             sys.path[:] = previous_path
 
@@ -139,6 +145,10 @@ class CapabilityServiceCaller:
     def __init__(self, registry: PageRegistry, *, runtime_root: str | Path | None = None) -> None:
         self._registry = registry
         self._runtime_root = Path(runtime_root).expanduser().resolve() if runtime_root is not None else None
+        # Capability modules stay private to this caller but remain alive across
+        # calls.  This preserves DataFetcher's process-local market/calendar
+        # cache without leaking ``modules.*`` into the App interpreter.
+        self._datafetcher_modules: dict[str, object] = {}
 
     def call_app_datafetcher(
         self,
@@ -159,7 +169,11 @@ class CapabilityServiceCaller:
             raise ValidationError("Capability service request must be an object")
         scripts_root = str(self._registry.capability_root / "scripts")
         self._registry.assert_execution_integrity()
-        with capability_import_scope(scripts_root, runtime_root=self._runtime_root):
+        with capability_import_scope(
+            scripts_root,
+            runtime_root=self._runtime_root,
+            retained_modules=self._datafetcher_modules,
+        ):
             try:
                 with _verified_module_imports(self._registry, scripts_root):
                     service = load_verified_capability_service("datafetcher", scripts_root)
@@ -195,7 +209,11 @@ class CapabilityServiceCaller:
             raise ValidationError("DataAsset id must be a string")
         scripts_root = str(self._registry.capability_root / "scripts")
         self._registry.assert_execution_integrity()
-        with capability_import_scope(scripts_root, runtime_root=self._runtime_root):
+        with capability_import_scope(
+            scripts_root,
+            runtime_root=self._runtime_root,
+            retained_modules=self._datafetcher_modules,
+        ):
             try:
                 with _verified_module_imports(self._registry, scripts_root):
                     service = load_verified_capability_service("datafetcher", scripts_root)
