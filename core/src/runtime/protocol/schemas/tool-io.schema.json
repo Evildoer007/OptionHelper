@@ -38,14 +38,13 @@
     "observed_contract_state": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["valuation_date", "lifecycle_status", "occurred_events", "realized_cashflows", "source_refs", "state_hash"],
+      "required": ["valuation_date", "lifecycle_status", "occurred_events", "realized_cashflows", "source_refs"],
       "properties": {
         "valuation_date": {"type": ["string", "null"], "format": "date"},
         "lifecycle_status": {"enum": ["initial", "active", "terminated", "matured"]},
         "occurred_events": {"type": "array", "items": {"$ref": "#/$defs/observed_contract_event"}},
         "realized_cashflows": {"type": "array", "items": {"$ref": "#/$defs/realized_cashflow"}},
-        "source_refs": {"type": "array", "items": {"type": "string", "minLength": 1}},
-        "state_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        "source_refs": {"type": "array", "items": {"type": "string", "minLength": 1}}
       }
     },
     "pricing_objective": {
