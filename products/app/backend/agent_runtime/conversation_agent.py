@@ -53,7 +53,7 @@ _WIRE_TO_TOOL = {
 _TOOL_TO_WIRE = {value: key for key, value in _WIRE_TO_TOOL.items()}
 _INTERNAL_REFERENCE = re.compile(
     r"(?i)(?:task_id|tenant_id|principal_id|session_id|agent_run_id|workflow_id|"
-    r"attachment_id|module_run_ref|data_asset_ref|contract_ref|candidate_version_id|resultstore)"
+    r"attachment_id|module_run_ref|data_asset_ref|contract_ref|resultstore)"
 )
 _FORBIDDEN_RESULT_KEYS = frozenset({
     "secret", "secrets", "password", "credential", "credentials", "api_key",
