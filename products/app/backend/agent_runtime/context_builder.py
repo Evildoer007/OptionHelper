@@ -13,7 +13,6 @@ from typing import Any
 from ..authorization.policy import AuthorizationPolicy
 from ..errors import AuthorizationError, ValidationError
 from ..identity.session_identity import SessionIdentity
-from ..stores.contract_store import ContractStore
 from ..stores.result_store import ResultStore
 from ..task_runtime.task_service import TaskService
 from .redaction import redact_text
@@ -68,7 +67,6 @@ class ContextBuilder:
     def __init__(
         self,
         task_service: TaskService,
-        contract_store: ContractStore,
         policy: AuthorizationPolicy,
         *,
         catalog_version: str,
@@ -78,7 +76,6 @@ class ContextBuilder:
         if max_messages < 1:
             raise ValueError("max_messages must be positive")
         self._tasks = task_service
-        self._contracts = contract_store
         self._policy = policy
         self._catalog_version = catalog_version
         self._max_messages = max_messages
@@ -88,12 +85,6 @@ class ContextBuilder:
         task = self._tasks.get(identity, task_id)
         recommendation = self._tasks.pending_recommendation(identity, task_id)
         facts = {
-            "contract_versions": [
-                _contract_fact(item)
-                for item in self._contracts.list_versions(
-                    identity, task_id, catalog_version=self._catalog_version,
-                )[-12:]
-            ],
             "recommendation_candidate": _recommendation_candidate_fact(recommendation),
             "module_run_refs": _refs(task.get("run_refs")),
             "module_run_facts": self._module_run_facts(identity, task.get("run_refs")),
@@ -205,23 +196,6 @@ def _surface_message_fact(value: Mapping[str, Any], identity: SessionIdentity) -
     return result
 
 
-def _contract_fact(value: Mapping[str, Any] | None) -> dict[str, Any] | None:
-    if not isinstance(value, Mapping):
-        return None
-    contract = value.get("resolved_contract")
-    if not isinstance(contract, Mapping):
-        return None
-    identity = contract.get("identity")
-    return {
-        "contract_ref": _safe_mapping(value.get("contract_ref")),
-        "contract_fingerprint": _safe_text(value.get("contract_fingerprint"), 80),
-        "catalog_version": _safe_text(value.get("catalog_version"), 80),
-        "identity": _safe_mapping(identity),
-        "terms": _safe_mapping(contract.get("terms")),
-        "path_count": len(contract.get("paths", [])) if isinstance(contract.get("paths"), list) else 0,
-    }
-
-
 def _recommendation_candidate_fact(value: Mapping[str, Any] | None) -> dict[str, Any] | None:
     """Expose only the control state needed by the parent Agent."""
 
@@ -254,6 +228,7 @@ def _recommendation_candidate_fact(value: Mapping[str, Any] | None) -> dict[str,
             "ordinal": index,
             "candidate_id": _safe_text(candidate_id, 160),
             "product_id": _safe_text(candidate.get("product_id"), 80),
+            "rule_revision": contract.get("rule_revision"),
             "product_name": _safe_text(candidate.get("product_name"), 160),
             "underlyings": [
                 _safe_text(item, 80)
