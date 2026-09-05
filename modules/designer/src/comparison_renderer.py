@@ -93,7 +93,12 @@ def _card_backtest_rows(module: Mapping[str, Any]) -> list[dict[str, Any]]:
             metric_rows.extend(as_list(table.get("rows")))
     metrics_by_label = unique_metric_rows_by_label(metric_rows, "回测摘要")
     rows: list[dict[str, Any]] = []
-    for labels in (("样本数",), ("胜率", "历史正收益样本占比"), ("平均损益", "平均收益"), ("最差损益", "最大亏损")):
+    for labels in (
+        ("样本数",),
+        ("历史正收益样本占比",),
+        ("平均合同结算收益率",),
+        ("最低合同结算收益率",),
+    ):
         row = next(
             (metrics_by_label[label] for label in labels if metrics_by_label.get(label, {}).get("value") is not None),
             None,
