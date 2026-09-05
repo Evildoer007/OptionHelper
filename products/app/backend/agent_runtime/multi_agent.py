@@ -196,7 +196,7 @@ _DEFAULT_AGENT_INSTRUCTIONS = {
 
 职责：提出候选结构、条款调整和验证计划。
 
-- 每次调整必须形成明确的CandidateVersion。
+- 每次调整必须形成明确、可复核的候选方案。
 - 标出需要Payoffer、Pricer或Backtester验证的事项。
 - 不把尚未运行的计算写成事实。""",
         "Trader": """# Trader
@@ -210,8 +210,8 @@ _DEFAULT_AGENT_INSTRUCTIONS = {
 
 职责：复核最终候选版本及其事实链。
 
-- 检查CandidateVersion、合同指纹和FactRef是否一致。
-- 拒绝跨版本拼接或未经验证的结论。
+- 检查候选当前输入、运行结果和FactRef是否一致。
+- 拒绝跨候选拼接或未经验证的结论。
 - 不新增金融事实。""",
     },
     "independent-council": {
