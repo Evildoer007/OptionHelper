@@ -53,19 +53,21 @@ _DISPLAY_MODULE_FIELDS = {
     "pricing": (
         "method", "valuation_date", "precision_status", "quote_eligible", "metrics", "greeks",
         "assumptions", "scenario_rows", "charts", "limitations", "kind", "target_id",
-        "target_value", "solution", "base_parameter", "residual", "quote_basis",
+        "target_label", "target_unit", "convergence_status", "target_value", "solution", "base_parameter", "residual", "quote_basis",
         "quote_value_basis", "value_basis", "solution_uncertainty", "formal_quote_status",
         "formal_quote_reason", "quote_delivery_status", "final_valuation",
     ),
-    "backtest": ("window", "as_of_date", "entry_rule", "metrics", "card_metrics", "detail_tables", "event_statistics", "charts"),
+    "backtest": (
+        "window", "as_of_date", "entry_rule", "metrics", "card_metrics", "detail_tables",
+        "event_statistics", "charts", "historical_loss_sample_covered",
+    ),
 }
 _FORBIDDEN_MODULE_FIELD_FRAGMENTS = (
     "amount", "pnl", "cashflow", "points_100", "point_value", "currency",
     "source_path", "storage_ref", "run_id", "runref", "manifest", "hash", "audit",
     "file_path", "directory", "result_dir", "path",
     "candidate_id", "product_id", "task_id", "tenant_id", "analysis_case_id",
-    "source_id", "execution_fingerprint", "contract_fingerprint", "catalog_version",
-    "product_version",
+    "source_id", "execution_fingerprint",
 )
 _PUBLIC_VALUE_KEYS = {
     "label", "value", "note", "unit", "value_format", "title", "rule", "formula", "formula_mathml",
@@ -74,13 +76,12 @@ _PUBLIC_VALUE_KEYS = {
     "zero_return_count", "negative_return_count", "positive_return_rate",
     "average_contract_settlement_return", "median_contract_settlement_return",
     "minimum_contract_settlement_return", "maximum_contract_settlement_return",
-    "max_loss_contract_settlement_return", "win_rate",
-    "average_gross_return", "median_gross_return", "minimum_gross_return", "maximum_gross_return",
-    "max_loss_gross_return", "trigger_count", "trigger_rate", "average_days", "median_days", "count",
+    "historical_loss_sample_covered", "trigger_count", "trigger_rate", "average_days", "median_days", "count",
     "rate", "year", "average", "median", "minimum", "maximum", "true_rate", "condition", "payoff",
     "source", "cn", "en", "symbol", "description", "accessibility_summary", "source_note",
     "x_axis_name", "y_axis_name", "z_axis_name", "as_of_date", "precision_status",
-    "quote_eligible", "limitations", "kind", "target_id", "target_value", "solution",
+    "quote_eligible", "limitations", "kind", "target_id", "target_label", "target_unit",
+    "convergence_status", "target_value", "solution",
     "base_parameter", "residual", "quote_basis", "quote_value_basis", "value_basis",
     "solution_uncertainty", "formal_quote_status", "formal_quote_reason", "quote_delivery_status",
     "final_valuation", "confidence_level", "absolute_error_upper_bound", "lower", "upper",
