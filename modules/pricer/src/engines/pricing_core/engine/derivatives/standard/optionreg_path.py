@@ -162,7 +162,6 @@ def _contract_with_maturity(
         contract,
         terms=terms,
         path_case_applicability=None,
-        contract_fingerprint="",
     )
 
 
@@ -573,7 +572,6 @@ def _contract_for_state(
         contract,
         terms={**terms, "monitor": monitor},
         path_case_applicability=None,
-        contract_fingerprint="",
     )
 
 
