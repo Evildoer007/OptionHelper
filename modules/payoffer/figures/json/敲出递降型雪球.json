@@ -15,7 +15,7 @@
     "margin_call": true,
     "derived_terms": {
       "G": "N * g",
-      "ko_barrier_schedule": "[(1, 1.03 * S_0), (2, 1.025 * S_0), (3, 1.02 * S_0), (4, 1.015 * S_0), (5, 1.01 * S_0), (6, 1.005 * S_0), (7, S_0), (8, 0.995 * S_0), (9, 0.99 * S_0), (10, 0.985 * S_0), (11, 0.98 * S_0), (12, 0.975 * S_0), (13, 0.97 * S_0), (14, 0.965 * S_0), (15, 0.96 * S_0), (16, 0.955 * S_0), (17, 0.95 * S_0), (18, 0.945 * S_0), (19, 0.94 * S_0), (20, 0.935 * S_0), (21, 0.93 * S_0), (22, 0.925 * S_0), (23, 0.92 * S_0), (24, 0.915 * S_0)]"
+      "ko_barrier_schedule": "linear_schedule(period_count(T, 12), S_0, 1.03, -0.005)"
     },
     "monitor": {
       "tau_out": "first_time_levels(S_t[O_out], schedule_levels(S_t[O_out], H_out_j))",
@@ -26,8 +26,7 @@
     ],
     "constraints": [
       "K == S_0",
-      "H_in < 0.915 * S_0",
-      "T == 2",
+      "schedule_between(H_out_j, H_in, 2 * S_0)",
       "O_out == 'monthly_last'"
     ]
   },
@@ -59,5 +58,38 @@
         }
       ]
     }
-  ]
+  ],
+  "visual_template": {
+    "schema": "optionhelper.payoff-visual-template",
+    "layout": "standard_path_cards",
+    "path_views": [
+      {
+        "path_index": 1,
+        "case_indexes": [
+          1
+        ],
+        "axis": "S_T",
+        "chart_kind": "conditional_terminal_metric",
+        "title": "路径1"
+      },
+      {
+        "path_index": 2,
+        "case_indexes": [
+          1
+        ],
+        "axis": "S_T",
+        "chart_kind": "conditional_terminal_metric",
+        "title": "路径2"
+      },
+      {
+        "path_index": 3,
+        "case_indexes": [
+          1
+        ],
+        "axis": "S_T",
+        "chart_kind": "conditional_terminal_metric",
+        "title": "路径3"
+      }
+    ]
+  }
 }
