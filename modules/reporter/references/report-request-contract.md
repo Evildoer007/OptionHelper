@@ -16,23 +16,21 @@ Reporter只接收显式引用，不接收物理结果目录，也不会搜索最
     "selected_modules": ["recommender", "payoff", "pricing", "backtest"]
   },
   "source_refs": {
-    "product_version_refs": {
-      "candidate_01": {"product_id": "7.1", "product_version": "<product-release>", "content_hash": "<sha256>"}
-    },
-    "catalog_version_ref": {"catalog_version": "<catalog-release>", "content_hash": "<sha256>"},
     "evidence_refs": {
       "recommendation_set": {
         "source_id": "recommender/run-001",
         "run_id": "run-001",
-        "expected_semantic_result_hash": "<sha256>",
-        "payload": {"schema": "optionhelper.recommendation-set"}
+        "payload": {
+          "schema": "optionhelper.recommendation-set",
+          "candidates": [{"candidate_id": "candidate_01", "product_id": "7.1", "rule_revision": 1}]
+        }
       }
     },
     "module_run_refs": {
       "candidate_01": {
-        "payoff": {"module": "payoffer", "tenant_id": "tenant_001", "task_id": "task_20260804", "run_id": "payoff-001", "expected_semantic_result_hash": "<sha256>", "expected_artifact_manifest_hash": "<sha256>"},
-        "pricing": {"module": "pricer", "tenant_id": "tenant_001", "task_id": "task_20260804", "run_id": "pricing-001", "expected_semantic_result_hash": "<sha256>", "expected_artifact_manifest_hash": "<sha256>"},
-        "backtest": {"module": "backtester", "tenant_id": "tenant_001", "task_id": "task_20260804", "run_id": "backtest-001", "expected_semantic_result_hash": "<sha256>", "expected_artifact_manifest_hash": "<sha256>"}
+        "payoff": {"module": "payoffer", "tenant_id": "tenant_001", "task_id": "task_20260804", "run_id": "payoff-001", "expected_result_file_hash": "<sha256>", "expected_artifact_manifest_hash": "<sha256>"},
+        "pricing": {"module": "pricer", "tenant_id": "tenant_001", "task_id": "task_20260804", "run_id": "pricing-001", "expected_result_file_hash": "<sha256>", "expected_artifact_manifest_hash": "<sha256>"},
+        "backtest": {"module": "backtester", "tenant_id": "tenant_001", "task_id": "task_20260804", "run_id": "backtest-001", "expected_result_file_hash": "<sha256>", "expected_artifact_manifest_hash": "<sha256>"}
       }
     }
   },
@@ -47,8 +45,8 @@ Reporter只接收显式引用，不接收物理结果目录，也不会搜索最
 
 ## 验证
 
-- 每个计算运行必须显式携带Core正式模块名，并匹配`tenant_id`、`task_id`、`analysis_case_id`、`candidate_id`、模块名和`ModuleRunRef`语义哈希。
-- Reporter读取`ResolvedContract.to_protocol_dict()`完整快照，逐项比对产品编号、中文名称、产品版本、合同指纹、分析基础、标的顺序、币种和价格口径。
+- 每个计算运行必须显式携带Core正式模块名，并匹配`tenant_id`、`task_id`、`analysis_case_id`、`candidate_id`、模块名和`ModuleRunRef`文件锚点。
+- Reporter读取`ResolvedContract.to_protocol_dict()`完整快照，逐项比对产品编号、当前规则修订、分析基础、标的顺序、币种和价格口径。
 - Core LocalResultStore的`artifacts/artifact_manifest.json`及`commit_marker.json`必须通过校验；清单列出的每个文件都校验存在性、非符号链接与SHA-256。
 - 未满足当前正式协议字段的结果、合同冲突、哈希冲突或清单冲突均会拒绝生成；不会把不完整记录作为部分可信事实展示。
 
