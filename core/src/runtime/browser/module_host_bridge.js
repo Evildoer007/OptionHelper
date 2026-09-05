@@ -303,7 +303,9 @@
     const wrappingLabel = choice.closest("label");
     if (wrappingLabel && !wrappingLabel.htmlFor) {
       wrappingLabel.addEventListener("click", (event) => {
-        if (event.target.closest("[data-oh-choice]") || event.target === select) return;
+        // Composite fields pair an editable amount with a unit choice. Only
+        // delegate label text; sibling inputs must retain native focus/editing.
+        if (event.target.closest('[data-oh-choice], input, select, textarea, button, a[href], [contenteditable="true"]')) return;
         event.preventDefault();
         trigger.focus();
       });
@@ -394,7 +396,8 @@
     const expiresAt = Number(token?.[1]);
     return value && value.module === moduleName && value.host_kind && value.context_id && value.capability_token
       && typeof value.page_hash === "string" && /^[0-9a-f]{64}$/.test(value.page_hash)
-      && ["task_id", "analysis_case_id", "candidate_id", "catalog_version", "contract_fingerprint"].every((field) => value[field] === null || typeof value[field] === "string")
+      && ["task_id", "analysis_case_id", "candidate_id", "catalog_version", "product_id"].every((field) => value[field] === null || typeof value[field] === "string")
+      && (value.rule_revision === null || (Number.isSafeInteger(value.rule_revision) && value.rule_revision > 0))
       && Number.isSafeInteger(expiresAt) && expiresAt * 1000 > Date.now();
   }
   function activeHostContext() {
@@ -502,19 +505,12 @@
     });
   }
   function applyHostScope(body) {
-    for (const field of ["task_id", "analysis_case_id", "candidate_id", "catalog_version", "contract_fingerprint"]) {
+    for (const field of ["task_id", "analysis_case_id", "candidate_id", "catalog_version"]) {
       const bound = hostScope[field];
       if (bound == null) delete body[field];
       else body[field] = bound;
     }
     return null;
-  }
-  function normalizeHostedRequest(body, action) {
-    // A signed Host context authenticates the task and candidate scope only.
-    // Product, asset and contract inputs remain business inputs on every run;
-    // the bridge must never erase them because an earlier run used a contract.
-    if (action !== "run") return;
-    delete body.new_contract_variant;
   }
   function requestedMethod(input, init) {
     return String(init.method || (typeof Request !== "undefined" && input instanceof Request ? input.method : "GET")).toUpperCase();
@@ -622,7 +618,6 @@
       action = "rerender";
     }
     body.action = action;
-    normalizeHostedRequest(body, action);
     if (action === "list_report_sources") {
       const requestedTask = url.searchParams.get("task_id");
       if (requestedTask != null) body.task_id = requestedTask;
@@ -655,16 +650,8 @@
       && (moduleName === "payoffer" || moduleName === "pricer" || moduleName === "backtester")
       && (result.resolved_contract?.identity?.product_id || result.module_run_ref?.run_id)
     ) {
-      // Do not let the next run inherit the previous product's scope while
-      // Desk activates the new contract version.
       resetHostContext();
-      window.parent.postMessage({
-        type: "optionhelper.module-contract-updated",
-        module: moduleName,
-        bridge_nonce: bridgeNonce,
-        run_id: result.module_run_ref?.run_id || null,
-      }, location.origin);
-      requestHostContext("contract-updated");
+      requestHostContext("run-completed");
     }
     return asResponse(response.status, result);
   }
@@ -772,25 +759,13 @@
     if (moduleName === "payoffer" && action === "run" && !result.destination && result.module_run_ref?.run_id) {
       result.destination = "结果已保存到当前研究任务。";
     }
-    const returnedContractFingerprint = result.contract_fingerprint || result.resolved_contract?.contract_fingerprint || null;
-    const hostContractChanged = Boolean(
-      returnedContractFingerprint
-      && returnedContractFingerprint !== (requestContext?.contract_fingerprint || null)
-    );
     if (
       action === "run"
       && (moduleName === "payoffer" || moduleName === "pricer" || moduleName === "backtester")
-      && hostContractChanged
-      && (result.resolved_contract?.identity?.product_id || result.module_run_ref?.run_id)
+      && result.module_run_ref?.run_id
     ) {
       resetHostContext();
-      window.parent.postMessage({
-        type: "optionhelper.module-contract-updated",
-        module: moduleName,
-        bridge_nonce: bridgeNonce,
-        run_id: result.module_run_ref?.run_id || null,
-      }, location.origin);
-      requestHostContext("contract-updated");
+      requestHostContext("run-completed");
     }
     return response || asResponse(200, result);
   }
@@ -982,7 +957,6 @@
       analysis_case_id: context.analysis_case_id,
       candidate_id: context.candidate_id,
       catalog_version: context.catalog_version,
-      contract_fingerprint: context.contract_fingerprint,
     });
     window.fetch = hostedFetch;
     acceptHostContext?.(context);
