@@ -126,8 +126,8 @@ class PageRegistry:
         task_id: str | None = None,
         candidate_id: str | None = None,
         catalog_version: str | None = None,
-        contract_fingerprint: str | None = None,
-        contract_ref: HostObjectRef | None = None,
+        product_id: str | None = None,
+        rule_revision: int | None = None,
     ) -> dict[str, Any]:
         return self._issue_context(
             identity,
@@ -136,8 +136,8 @@ class PageRegistry:
             task_id=task_id,
             candidate_id=candidate_id,
             catalog_version=catalog_version,
-            contract_fingerprint=contract_fingerprint,
-            contract_ref=contract_ref,
+            product_id=product_id,
+            rule_revision=rule_revision,
             require_bridge=True,
             request_policy=("module.catalog",) if task_id is None else ("module.catalog", "module.run", "result.select"),
         )
@@ -151,8 +151,8 @@ class PageRegistry:
         analysis_case_id: str | None = None,
         candidate_id: str | None = None,
         catalog_version: str | None = None,
-        contract_fingerprint: str | None = None,
-        contract_ref: HostObjectRef | None = None,
+        product_id: str | None = None,
+        rule_revision: int | None = None,
     ) -> dict[str, Any]:
         """Issue a server-only OptChat context without mounting a page.
 
@@ -168,8 +168,8 @@ class PageRegistry:
             task_id=task_id,
             candidate_id=candidate_id,
             catalog_version=catalog_version,
-            contract_fingerprint=contract_fingerprint,
-            contract_ref=contract_ref,
+            product_id=product_id,
+            rule_revision=rule_revision,
             require_bridge=False,
             request_policy=("conversation.tool.run",),
         )
@@ -183,10 +183,10 @@ class PageRegistry:
         task_id: str | None = None,
         candidate_id: str | None = None,
         catalog_version: str | None = None,
-        contract_fingerprint: str | None = None,
+        product_id: str | None = None,
+        rule_revision: int | None = None,
         require_bridge: bool,
         request_policy: tuple[str, ...],
-        contract_ref: HostObjectRef | None = None,
         config_ref: HostObjectRef | None = None,
         result_refs: tuple[ModuleRunRef, ...] = (),
     ) -> dict[str, Any]:
@@ -222,8 +222,8 @@ class PageRegistry:
                 analysis_case_id=analysis_case_id,
                 candidate_id=candidate_id,
                 catalog_version=catalog_version,
-                contract_fingerprint=contract_fingerprint,
-                contract_ref=contract_ref,
+                product_id=product_id,
+                rule_revision=rule_revision,
                 config_ref=config_ref,
                 result_refs=result_refs,
             ),
@@ -231,7 +231,8 @@ class PageRegistry:
             task_id=task_id,
             candidate_id=candidate_id,
             catalog_version=catalog_version,
-            contract_fingerprint=contract_fingerprint,
+            product_id=product_id,
+            rule_revision=rule_revision,
             module=module_name,
             page_hash=page.content_hash,
             capability_version=capability_version,
@@ -239,7 +240,6 @@ class PageRegistry:
             context_id=context_id,
             host_kind="app",
             request_policy=request_policy,
-            contract_ref=contract_ref,
             config_ref=config_ref,
             result_refs=result_refs,
         )
@@ -255,13 +255,14 @@ class PageRegistry:
                 "task_id": task_id,
                 "candidate_id": candidate_id,
                 "catalog_version": catalog_version,
-                "contract_fingerprint": contract_fingerprint,
+                "product_id": product_id,
+                "rule_revision": rule_revision,
                 "expires_at": expires_at,
                 "request_ids": set(),
             }
         return context.to_payload()
 
-    def bind_contract_context(
+    def bind_product_context(
         self,
         identity: SessionIdentity,
         context: ModuleHostContext,
@@ -269,8 +270,8 @@ class PageRegistry:
         analysis_case_id: str,
         candidate_id: str,
         catalog_version: str,
-        contract_fingerprint: str,
-        contract_ref: HostObjectRef,
+        product_id: str,
+        rule_revision: int,
     ) -> ModuleHostContext:
         """Issue one internal, fully signed derivative of a verified page context."""
 
@@ -303,10 +304,10 @@ class PageRegistry:
             task_id=context.task_id,
             candidate_id=candidate_id,
             catalog_version=catalog_version,
-            contract_fingerprint=contract_fingerprint,
+            product_id=product_id,
+            rule_revision=rule_revision,
             require_bridge=False,
             request_policy=context.request_policy,
-            contract_ref=contract_ref,
             config_ref=context.config_ref,
             result_refs=context.result_refs,
         )
@@ -360,7 +361,8 @@ class PageRegistry:
                     "task_id": context.task_id,
                     "candidate_id": context.candidate_id,
                     "catalog_version": context.catalog_version,
-                    "contract_fingerprint": context.contract_fingerprint,
+                    "product_id": context.product_id,
+                    "rule_revision": context.rule_revision,
                 }.items()):
                     raise ValidationError("Module Host context analysis case is invalid")
                 verify_module_host_context(
@@ -403,10 +405,10 @@ class PageRegistry:
             task_id=context.task_id,
             candidate_id=context.candidate_id,
             catalog_version=context.catalog_version,
-            contract_fingerprint=context.contract_fingerprint,
+            product_id=context.product_id,
+            rule_revision=context.rule_revision,
             require_bridge=False,
             request_policy=context.request_policy,
-            contract_ref=context.contract_ref,
             config_ref=context.config_ref,
             result_refs=context.result_refs,
         )
