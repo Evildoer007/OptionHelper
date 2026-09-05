@@ -2243,8 +2243,7 @@ export async function startWorkspace(initialMode) {
           if (frame.dataset.ready === "true") clearModuleLoading(moduleName, taskId);
           return context;
         } catch (error) {
-          const terminal = [401, 403, 404].includes(error.status)
-            || (error.status === 409 && error.body?.error === "stale_task_contract");
+          const terminal = [401, 403, 404, 409].includes(error.status);
           if (terminal) throw error;
           failures += 1;
           if (Date.now() - started >= 8_000) showModuleRecovering(moduleName, taskId);
@@ -2343,10 +2342,11 @@ export async function startWorkspace(initialMode) {
     showModuleLoading(moduleName);
     void refreshModuleContext(moduleName).catch((error) => {
       if (currentTask?.task_id !== taskId || moduleFrames.get(moduleName) !== frame) return;
-      const staleTask = error.status === 409 && error.body?.error === "stale_task_contract";
-      const detail = staleTask
-        ? (error.body.message || "当前合同版本与最新产品目录不兼容。请切换为新方案并重新确认条款。")
-        : `${modules.get(moduleName)}上下文不可用。`;
+      const invalidRuleRevision = error.status === 409
+        && error.body?.error === "product_rule_revision_invalid";
+      const detail = invalidRuleRevision
+        ? (error.body?.message || "当前产品规则修订已失效。请重新选择产品并确认本次输入。")
+        : (error.body?.message || `${modules.get(moduleName)}上下文不可用。`);
       showModuleLoadFailure(moduleName, taskId, detail);
       showWorkspaceStatus(detail, true, 7000);
     });
@@ -2652,11 +2652,13 @@ export async function startWorkspace(initialMode) {
         keepPending: retryableTransport,
       });
       const recovery = error.body?.error?.next_step || error.body?.next_step;
-      const failureMessage = error.status === 409 && error.body?.error === "stale_task_contract"
-        ? (error.body.message || "当前合同版本与最新产品目录不兼容。请切换为新方案并重新确认条款。")
+      const invalidRuleRevision = error.status === 409
+        && error.body?.error === "product_rule_revision_invalid";
+      const failureMessage = invalidRuleRevision
+        ? (error.body?.message || "当前产品规则修订已失效。请重新选择产品并确认本次输入。")
         : error.status === 503
         ? `${recovery || "模型暂不可用，请在设置中心检查模型服务。"}任务内容已保留。`
-        : error.message;
+        : (error.body?.message || error.message);
       if (currentTask?.task_id === submittedTaskId) {
         input.value = pendingConversationRequest?.content || submittedContent;
         syncComposerInputHeight();
