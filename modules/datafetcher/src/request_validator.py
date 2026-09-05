@@ -262,8 +262,9 @@ def cache_identity(
     provider: str,
     *,
     tenant_id: str = "local",
+    principal_id: str = "local-user",
 ) -> str:
-    """日期范围不进入缓存身份，使extend_only可安全补齐同口径资产。"""
+    """日期范围不进入缓存身份；租户和主体共同隔离全局本地资产。"""
 
     payload = {
         "schema_id": "market-history",
@@ -273,6 +274,7 @@ def cache_identity(
         "adjustment": value.adjustment,
         "provider": provider,
         "tenant_id": tenant_id,
+        "principal_id": principal_id,
         "local_source_fingerprint": _request_local_source_fingerprint(value) if provider == "local" else None,
     }
     source = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
