@@ -2,29 +2,19 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
-from contextlib import contextmanager
-from dataclasses import asdict, dataclass, field
-from threading import Lock
-from typing import Any, Iterator, Mapping
+from dataclasses import asdict
+from typing import Any, Callable, Mapping
+from uuid import uuid4
 
 from ..errors import AuthorizationError, UnavailableCapabilityError, UserActionError, ValidationError
 from ..identity.session_identity import SessionIdentity
 from ..stores.data_store import DataStore
 from ..stores.result_store import ResultStore
 from ..task_runtime.job_runner import JobRunner
-from ..task_runtime.idempotency_store import ToolIdempotencyStore
 from ..task_runtime.task_service import TaskService
 from ..tool_gateway import ToolGateway
 from .durability_checkpoint import DurabilityCheckpointStore, stable_operation_id
 from runtime.protocol.models import ModuleRunRef
-
-
-@dataclass
-class _LockEntry:
-    lock: Lock = field(default_factory=Lock)
-    users: int = 0
 
 
 class _CommittedRunPendingError(RuntimeError):
@@ -39,17 +29,13 @@ class ToolDispatcher:
         tasks: TaskService,
         results: ResultStore,
         data_assets: DataStore,
-        idempotency: ToolIdempotencyStore | None = None,
     ) -> None:
         self._gateway = gateway
         self._jobs = jobs
         self._tasks = tasks
         self._results = results
         self._data_assets = data_assets
-        self._idempotency = idempotency or ToolIdempotencyStore(tasks._state._root / "tool-idempotency.sqlite3")
         self._dispatch_checkpoints = DurabilityCheckpointStore(tasks.session_event_log)
-        self._idempotency_locks: dict[tuple[str, str, str, str], _LockEntry] = {}
-        self._idempotency_guard = Lock()
 
     def dispatch(
         self,
@@ -60,7 +46,6 @@ class ToolDispatcher:
         module_context: object | None = None,
         request_id: str = "",
         agent_proxy: bool = False,
-        candidate_variant: Mapping[str, Any] | None = None,
         cancellation_check: Callable[[], bool] | None = None,
     ) -> dict[str, Any]:
         action = str(payload.get("action", "")).strip().lower()
@@ -68,7 +53,7 @@ class ToolDispatcher:
         if action in {"catalog", "status", "list_assets", "list_report_sources"}:
             _, result = self._jobs.run(lambda: self._gateway.dispatch(
                 tool_name, payload, identity, module_context=module_context, request_id=request_id,
-                agent_proxy=agent_proxy, candidate_variant=candidate_variant,
+                agent_proxy=agent_proxy,
             ))
             return result
         if compute_read_action:
@@ -79,7 +64,7 @@ class ToolDispatcher:
             # explicitly to the run-class gate rather than relying on this.
             _, result = self._jobs.run(lambda: self._gateway.dispatch(
                 tool_name, payload, identity, module_context=module_context, request_id=request_id,
-                agent_proxy=agent_proxy, candidate_variant=candidate_variant,
+                agent_proxy=agent_proxy,
             ))
             if result.get("ok") is False:
                 raise ValidationError(str(result.get("message", f"Capability tool {tool_name} rejected the request")))
@@ -88,76 +73,23 @@ class ToolDispatcher:
         if not isinstance(task_id, str) or not task_id:
             raise ValidationError("task_id is required for a Capability module run")
         self._tasks.get(identity, task_id)
-        idempotency_key = None
-        input_hash = None
         if tool_name in {"payoffer", "pricer", "backtester"}:
             clean_payload = dict(payload)
-            supplied_key = clean_payload.pop("idempotency_key", None)
-            input_hash = _tool_input_hash(clean_payload)
+            clean_payload.pop("idempotency_key", None)
             payload = clean_payload
-            operation_id = stable_operation_id(
-                identity.tenant_id, task_id, tool_name, input_hash,
-                request_id or supplied_key or f"session:{identity.session_id}",
+            return self._dispatch_mutating(
+                tool_name, payload, identity, task_id,
+                module_context=module_context,
+                request_id=request_id,
+                agent_proxy=agent_proxy,
+                operation_id=f"run-{uuid4().hex}",
+                cancellation_check=cancellation_check,
             )
-            job_id = stable_operation_id(operation_id, "job")
-            if not supplied_key and not request_id:
-                return self._dispatch_mutating(
-                    tool_name, payload, identity, task_id,
-                    module_context=module_context,
-                    request_id=request_id,
-                    agent_proxy=agent_proxy,
-                    operation_id=operation_id,
-                    candidate_variant=candidate_variant,
-                    cancellation_check=cancellation_check,
-                )
-            idempotency_key = _idempotency_key(supplied_key or request_id)
-            with self._idempotency_lock(identity, task_id, tool_name, idempotency_key):
-                claim_state, replay = self._idempotency.claim(
-                    tenant_id=identity.tenant_id,
-                    task_id=task_id,
-                    module=tool_name,
-                    action="run",
-                    idempotency_key=idempotency_key,
-                    input_hash=input_hash,
-                    operation_id=operation_id,
-                    job_id=job_id,
-                )
-                if claim_state == "completed" and replay is not None:
-                    return self._replay(identity, replay)
-                if claim_state == "uncertain":
-                    raise ValidationError("此前运行可能已提交但缺少最终ModuleRunRef索引，禁止自动重算；需按恢复记录人工核验")
-                if claim_state == "busy":
-                    raise ValidationError("相同计算请求正在执行，完成后重试将返回原ModuleRunRef")
-                try:
-                    return self._dispatch_mutating(
-                        tool_name, payload, identity, task_id,
-                        module_context=module_context,
-                        request_id=request_id,
-                        agent_proxy=agent_proxy,
-                        idempotency_key=idempotency_key,
-                        input_hash=input_hash,
-                        operation_id=operation_id,
-                        candidate_variant=candidate_variant,
-                        cancellation_check=cancellation_check,
-                    )
-                except _CommittedRunPendingError as error:
-                    self._idempotency.mark_uncertain(
-                        tenant_id=identity.tenant_id, task_id=task_id, module=tool_name, action="run",
-                        idempotency_key=idempotency_key, input_hash=input_hash,
-                    )
-                    raise ValidationError(str(error)) from error
-                except Exception:
-                    self._idempotency.abandon(
-                        tenant_id=identity.tenant_id, task_id=task_id, module=tool_name, action="run",
-                        idempotency_key=idempotency_key, input_hash=input_hash,
-                    )
-                    raise
         return self._dispatch_mutating(
             tool_name, payload, identity, task_id,
             module_context=module_context,
             request_id=request_id,
             agent_proxy=agent_proxy,
-            candidate_variant=candidate_variant,
             cancellation_check=cancellation_check,
         )
 
@@ -171,10 +103,7 @@ class ToolDispatcher:
         module_context: object | None,
         request_id: str,
         agent_proxy: bool,
-        idempotency_key: str | None = None,
-        input_hash: str | None = None,
         operation_id: str | None = None,
-        candidate_variant: Mapping[str, Any] | None = None,
         cancellation_check: Callable[[], bool] | None = None,
     ) -> dict[str, Any]:
         gateway_payload = dict(payload)
@@ -182,11 +111,7 @@ class ToolDispatcher:
             # task_id is a Host routing fact, not part of the three business
             # input contracts consumed by the Capability.
             gateway_payload.pop("task_id", None)
-        resolved_operation_id = operation_id or stable_operation_id(
-            identity.tenant_id, task_id, tool_name,
-            input_hash or _tool_input_hash(gateway_payload),
-            request_id or idempotency_key or f"session:{identity.session_id}",
-        )
+        resolved_operation_id = operation_id or f"operation-{uuid4().hex}"
         checkpoint = self._dispatch_checkpoints.checkpoint(
             self._tasks.conversation_session_id(identity, task_id),
             operation_id=resolved_operation_id,
@@ -196,7 +121,7 @@ class ToolDispatcher:
         try:
             execution, result = self._jobs.run(lambda: self._gateway.dispatch(
                 tool_name, gateway_payload, identity, module_context=module_context, request_id=request_id,
-                agent_proxy=agent_proxy, candidate_variant=candidate_variant,
+                agent_proxy=agent_proxy,
                 cancellation_check=cancellation_check,
             ), task_id=task_id if tool_name in {"payoffer", "pricer", "backtester"} else None,
                 module=tool_name if tool_name in {"payoffer", "pricer", "backtester"} else None,
@@ -212,7 +137,6 @@ class ToolDispatcher:
         try:
             return self._finalize_mutating_result(
                 tool_name, result, identity, task_id, execution, checkpoint,
-                idempotency_key=idempotency_key, input_hash=input_hash,
             )
         except _CommittedRunPendingError:
             if tool_name in {"payoffer", "pricer", "backtester"}:
@@ -233,9 +157,6 @@ class ToolDispatcher:
         task_id: str,
         execution: Any,
         checkpoint: Any,
-        *,
-        idempotency_key: str | None,
-        input_hash: str | None,
     ) -> dict[str, Any]:
         if result.get("status") == "unavailable":
             failure = _structured_failure_fields(result)
@@ -307,48 +228,9 @@ class ToolDispatcher:
                 self._tasks.append_run_ref(identity, task_id, reference)
             except Exception as retry_error:
                 raise _CommittedRunPendingError("ModuleRun已提交，但任务索引写入失败；已禁止自动重算") from retry_error
-        if idempotency_key is not None and input_hash is not None:
-            try:
-                self._idempotency.complete(
-                    tenant_id=identity.tenant_id,
-                    task_id=task_id,
-                    module=tool_name,
-                    action="run",
-                    idempotency_key=idempotency_key,
-                    input_hash=input_hash,
-                    reference=reference,
-                )
-            except Exception as error:
-                raise _CommittedRunPendingError("ModuleRun已提交，但幂等索引完成写入失败；已禁止自动重算") from error
         self._jobs.succeed_job(execution.job_id, reference)
         self._dispatch_checkpoints.succeeded(checkpoint)
         return {**result, "module_run_ref": reference, "job": execution.__dict__}
-
-    @contextmanager
-    def _idempotency_lock(
-        self, identity: SessionIdentity, task_id: str, module: str, key: str,
-    ) -> Iterator[None]:
-        scope = (identity.tenant_id, task_id, module, key)
-        with self._idempotency_guard:
-            entry = self._idempotency_locks.setdefault(scope, _LockEntry())
-            entry.users += 1
-        entry.lock.acquire()
-        try:
-            yield
-        finally:
-            entry.lock.release()
-            with self._idempotency_guard:
-                entry.users -= 1
-                if entry.users == 0 and self._idempotency_locks.get(scope) is entry:
-                    self._idempotency_locks.pop(scope, None)
-
-    def _replay(self, identity: SessionIdentity, reference: dict[str, str]) -> dict[str, Any]:
-        self._results.resolve_owned_module_run(identity, reference)
-        record = self._results.resolve_module_run(identity, reference)
-        result = record.get("result")
-        if not isinstance(result, dict):
-            raise ValidationError("持久幂等索引指向无效ModuleRun")
-        return {**result, "module_run_ref": reference, "idempotent_replay": True}
 
     def dispatch_for_conversation(
         self,
@@ -358,7 +240,6 @@ class ToolDispatcher:
         *,
         module_context: object,
         request_id: str,
-        candidate_variant: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Run a server-originated OptChat tool under proxy, not Desk, authority."""
         _require_task_data_scope(self._tasks, identity, tool_name, payload)
@@ -369,7 +250,6 @@ class ToolDispatcher:
             module_context=module_context,
             request_id=request_id,
             agent_proxy=True,
-            candidate_variant=candidate_variant,
         )
 
 
@@ -444,18 +324,3 @@ def _pricer_failure_message(result: Mapping[str, Any]) -> str:
     if safe:
         return "；".join(dict.fromkeys(safe))
     return "定价请求未完成，请检查定价方法、Monte Carlo路径数、合同期限和市场参数后重试。"
-
-
-def _tool_input_hash(payload: Mapping[str, Any]) -> str:
-    try:
-        encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
-    except (TypeError, ValueError) as error:
-        raise ValidationError("Tool输入必须是可稳定哈希的JSON对象") from error
-    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
-
-
-def _idempotency_key(value: object) -> str:
-    key = str(value or "").strip()
-    if not key or len(key) > 128 or any(ord(char) < 32 or ord(char) == 127 for char in key):
-        raise ValidationError("idempotency_key必须是1至128字符的可打印字符串")
-    return key
