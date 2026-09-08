@@ -12,8 +12,8 @@ class AuthorizationPolicy:
     _ALLOW = {
         Role.SALES: frozenset({
             "optchat", "settings.read", "settings.preferences.write", "settings.model.local.write",
-            "settings.storage.write", "task.create",
-            "task.read", "conversation.write", "conversation.tool.run", "report.card.request", "report.quote.request",
+            "settings.storage.write", "settings.data.local.write", "task.create",
+            "task.read", "conversation.write", "conversation.tool.run", "report.card.request", "report.quote.request", "report.full.request",
         }),
         Role.ADMIN: frozenset({
             "optchat", "optdesk", "settings.read", "settings.preferences.write",
