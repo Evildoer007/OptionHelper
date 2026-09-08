@@ -5,7 +5,8 @@ from __future__ import annotations
 from threading import Lock
 from typing import Any, Protocol
 
-from ..errors import UnavailableCapabilityError
+from ..errors import UnavailableCapabilityError, ValidationError
+from ..report_delivery import delivery_request
 from ..identity.session_identity import SessionIdentity
 from ..model_gateway.gateway import ModelGateway
 from ..settings.settings_models import ModelSelection
@@ -28,10 +29,11 @@ class AgentLoopPort(Protocol):
 
 
 class ConversationService:
-    def __init__(self, task_service: TaskService, gateway: ModelGateway, *, agent_loop: AgentLoopPort | None = None) -> None:
+    def __init__(self, task_service: TaskService, gateway: ModelGateway, *, agent_loop: AgentLoopPort | None = None, report_delivery=None) -> None:
         self._task_service = task_service
         self._gateway = gateway
         self._agent_loop = agent_loop
+        self._report_delivery = report_delivery
         self._dispatch_checkpoints = DurabilityCheckpointStore(task_service.session_event_log)
         self._locks: dict[tuple[str, str, str], Lock] = {}
         self._locks_guard = Lock()
@@ -102,11 +104,25 @@ class ConversationService:
                     request_state = self._task_service.mark_conversation_execution_started(
                         identity, task_id, request_id, replay_key,
                     ) or request_state
-                    response = self._run_model(
-                        identity, task_id, message, selection,
-                        execution_ids=_execution_ids(request_state),
-                        attachments=attachments or [],
-                    )
+                    delivery = delivery_request(message) if self._report_delivery else None
+                    report_id = self._report_delivery.current_document(identity, task_id) if delivery and delivery['export_only'] else None
+                    previous_reports = {row['report_run_id'] for row in self._report_delivery.results.list_report_runs(identity, task_id)} if delivery else set()
+                    if report_id:
+                        response = {'status': 'completed'}
+                    else:
+                        response = self._run_model(
+                            identity, task_id, message, selection,
+                            execution_ids=_execution_ids(request_state),
+                            attachments=attachments or [],
+                        )
+                    if delivery:
+                        created = [row['report_run_id'] for row in self._report_delivery.results.list_report_runs(identity, task_id) if row['report_run_id'] not in previous_reports]
+                        try:
+                            response = self._report_delivery.complete(identity, task_id, message, response,
+                                request_id=request_id, report_id=report_id or (created[-1] if created else None))
+                        except ValidationError as error:
+                            response = {'status':'needs_input','text':str(error)}
+
                 settled = self._task_service.settle_conversation_model(
                     identity, task_id, request_id, replay_key, response,
                 )
