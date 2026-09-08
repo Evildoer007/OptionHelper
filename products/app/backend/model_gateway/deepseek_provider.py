@@ -318,17 +318,28 @@ def decide_openai_compatible(
         "请求交付时只向reporter.run提供kind、format、title或delivery_mode，由App选择受控来源；"
         "若当前缺少可用分析结果，应使用ask_user自然询问标的、产品结构、期限或所需分析，不得暴露内部术语、文件或实现细节。"
     )
-    raw = complete_openai_compatible(
-        settings,
-        secret_ref,
-        [
-            {"role": "system", "content": instruction},
-            {"role": "user", "content": json.dumps(dict(context), ensure_ascii=False, separators=(",", ":"), default=str)},
-        ],
-        resolve_secret=resolve_secret,
-        opener=opener,
-        request_control=request_control,
-    )
+    messages = [
+        {"role": "system", "content": instruction},
+        {"role": "user", "content": json.dumps(dict(context), ensure_ascii=False, separators=(",", ":"), default=str)},
+    ]
+    if recommender_step:
+        from .openai_compatible_stream import stream_openai_compatible
+
+        parts = []
+        for event in stream_openai_compatible(
+            settings, secret_ref, messages, resolve_secret=resolve_secret,
+            opener=opener, request_control=request_control,
+        ):
+            if request_control is not None:
+                request_control.refresh_deadline(90.0)
+            if event.get("type") == "text_delta":
+                parts.append(str(event.get("delta", "")))
+        raw = "".join(parts)
+    else:
+        raw = complete_openai_compatible(
+            settings, secret_ref, messages, resolve_secret=resolve_secret,
+            opener=opener, request_control=request_control,
+        )
     value = _json_object(raw)
     if recommender_step:
         if set(value) != {"action", "result"} or value.get("action") != "final" or not isinstance(value.get("result"), Mapping):
