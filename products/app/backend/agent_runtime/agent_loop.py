@@ -184,7 +184,7 @@ class AgentLoop:
             try:
                 context = self._context_builder.build(identity, task_id, message)
                 workflow_decision = _workflow_decision(self._gateway, identity, message, context)
-                if round_number == 1 and workflow_decision.analysis_path == "recommendation" and not (attachments and self._conversation_agent is not None):
+                if round_number == 1 and workflow_decision.analysis_path == "recommendation" and self._conversation_agent is None:
                     self._emit_visible_event(identity, task_id, request_id, "routing", "completed", "已识别为结构推荐需求，开始候选分析。")
                     arguments = {
                         "workflow": _fixed_recommendation_workflow(message),
@@ -689,6 +689,11 @@ def _user_question(status: str, text: str) -> dict[str, Any]:
                 "description": "用于集中展示结构条款和报价字段。",
                 "recommended": False,
             },
+        ]
+    if status == "needs_input" and not options and any(word in normalized for word in ("期限", "方向", "波动", "风险", "损失", "本金", "条款")):
+        options = [
+            {"label": "采用建议研究参数", "value": "请结合已有资料采用合理研究假设并注明，继续执行；实际行情仍须从已配置数据源获取。", "description": "允许采用明确披露的研究假设，继续完成分析。", "recommended": True},
+            {"label": "先说明参数影响", "value": "请简要说明这些缺失参数会怎样影响候选与结果，我再选择。", "description": "先了解取舍，再决定具体条件。", "recommended": False},
         ]
     return {
         "type": "question",
