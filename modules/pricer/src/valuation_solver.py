@@ -10,6 +10,7 @@ import pandas as pd
 
 from .config import PricingConfig
 from .market_resolver import market_snapshot_from_history
+from .observed_state_rebuilder import rebuild_observed_state_from_verified_history
 from .calendar_policy import requires_future_trading_calendar
 from .models import (
     HistoricalData,
@@ -148,11 +149,20 @@ def price(pricing_input: PricingInput) -> PricingResult:
             if remaining <= 0:
                 raise ValueError("合同在估值日已到期")
             config = replace(config, time_to_maturity=remaining)
+    observed_state = rebuild_observed_state_from_verified_history(
+        contract=pricing_input.contract,
+        valuation_date=config.valuation_date,
+        historical=historical,
+        market_ref=data_ref,
+        trading_calendar=trading_calendar,
+        calendar_ref=calendar_ref,
+        supplied_state=pricing_input.observed_contract_state,
+    )
     result = _price(
         pricing_input.contract,
         config,
         market_snapshot=snapshot,
-        observed_contract_state=pricing_input.observed_contract_state,
+        observed_contract_state=observed_state,
     )
     if snapshot:
         provenance = {
