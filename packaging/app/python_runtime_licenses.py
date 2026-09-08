@@ -11,7 +11,17 @@ import shutil
 from typing import Callable, Iterable
 
 
-REQUIRED_FROZEN_DISTRIBUTIONS = frozenset({"certifi", "numpy", "pandas", "scipy", "numba", "llvmlite"})
+REQUIRED_FROZEN_DISTRIBUTIONS = frozenset({
+    "beautifulsoup4",
+    "certifi",
+    "llvmlite",
+    "lxml",
+    "numba",
+    "numpy",
+    "pandas",
+    "scipy",
+    "soupsieve",
+})
 LICENSE_TOKENS = ("license", "licence", "copying", "notice", "copyright")
 FORBIDDEN_LICENSE_PATH_PARTS = frozenset({
     ".cache",
