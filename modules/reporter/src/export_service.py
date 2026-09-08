@@ -22,12 +22,9 @@ from .artifact_validator import (
     validate_written_artifact,
 )
 from .models import (
-    CARD_SECTION_ORDER,
-    REPORT_SECTION_ORDER,
     ReporterError,
     ReportRequest,
     SCHEMA_MANIFEST,
-    read_json,
     require_identifier,
     stable_hash,
     write_json,
