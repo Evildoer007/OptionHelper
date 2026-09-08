@@ -34,7 +34,7 @@ def build_development_capability(workspace: Path, catalog_version: str) -> Path:
     ``catalog_version`` is retained in the launcher interface so callers do not
     need a second development command, but an unsigned development run must not
     depend on or create ``versions/<version>``.  The final release pipeline is
-    the only workflow allowed to consume a signed CatalogVersion.
+    the only workflow allowed to consume a signed knowledge source manifest.
     """
 
     del catalog_version
