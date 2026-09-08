@@ -50,7 +50,7 @@ from .engines.pricing_core.engine.derivatives.results import (
 from .product_pricing_adapter import ProductNotAvailable, ProductPricingAdapter, product_mapping
 from .valuation_solver import price
 from .fair_parameter import (
-    encode_public_value,
+    encode_contract_parameter,
     eligibility_for_target,
     product_capability,
     public_capability_package,
@@ -512,12 +512,18 @@ class PricerRuntime:
         data_refs = [_data_ref_dict(data_ref)]
         if calendar_ref is not None:
             data_refs.append(_data_ref_dict(calendar_ref))
+        effective_observed_state = observed_state
+        if (
+            effective_observed_state is None
+            and pricing_result.observed_contract_state.get("lifecycle_status") != "initial"
+        ):
+            effective_observed_state = pricing_result.observed_contract_state
         private_input_snapshot = {
             "contract": contract.to_protocol_dict(),
             "pricing_config": config.to_dict(),
             "market_data_refs": [_data_ref_dict(data_ref)],
             "trading_calendar_ref": None if calendar_ref is None else _data_ref_dict(calendar_ref),
-            "observed_contract_state": observed_state,
+            "observed_contract_state": effective_observed_state,
         }
         limitations = list(pricing_result.limitations)
         status = "succeeded" if pricing_result.status == "priced" else "unsupported"
@@ -668,15 +674,23 @@ class PricerRuntime:
             raise _fair_parameter_input_error("公平参数target_id与当前目标规则不一致", "ineligible")
         target_spec = target.to_solver_spec()
 
-        # This is deliberately before every DataAssetRef read.  A historical
-        # observed state can never be silently turned into a new-issuance run.
+        # Reject historical state before every DataAssetRef read.  The requested
+        # calendar date may itself be a weekend or holiday, so the exact date
+        # equality is completed below against the authenticated effective market
+        # session rather than against this unadjusted request date.
         state = {} if observed_state_payload is None else dict(observed_state_payload)
         first_observation = _first_contract_observation_date(contract)
+        requested_valuation_date = str(config.valuation_date)
+        contract_start_date = contract.identity.get("contract_start_date")
         try:
+            requested_date = date.fromisoformat(requested_valuation_date)
+            start_date = date.fromisoformat(str(contract_start_date))
+            if requested_date < start_date:
+                raise ValueError("公平参数请求估值日不得早于冻结合同起始日")
             validate_initial_pricing_time_context(
                 target.initial_pricing_time_rule or {},
-                valuation_date=config.valuation_date,
-                contract_start_date=contract.identity.get("contract_start_date"),
+                valuation_date=str(contract_start_date),
+                contract_start_date=contract_start_date,
                 lifecycle_status=state.get("lifecycle_status", "initial"),
                 occurred_events=state.get("occurred_events", ()),
                 realized_cashflows=state.get("realized_cashflows", ()),
@@ -767,30 +781,45 @@ class PricerRuntime:
                 trading_calendar=calendar_snapshot,
                 hv_fields_by_asset=market_metadata["hv_fields_by_asset"],
             )
-            if str(market_snapshot.get("valuation_date")) != str(config.valuation_date):
-                raise ValueError("公平参数估值日必须由行情实际覆盖")
+            effective_valuation_date = str(market_snapshot.get("valuation_date"))
+            validate_initial_pricing_time_context(
+                target.initial_pricing_time_rule or {},
+                valuation_date=effective_valuation_date,
+                contract_start_date=contract_start_date,
+                lifecycle_status=state.get("lifecycle_status", "initial"),
+                occurred_events=state.get("occurred_events", ()),
+                realized_cashflows=state.get("realized_cashflows", ()),
+                first_economic_observation_date=first_observation,
+            )
+            market_snapshot = {
+                **market_snapshot,
+                "requested_valuation_date": requested_valuation_date,
+                "effective_valuation_session": effective_valuation_date,
+                "market_as_of_date": effective_valuation_date,
+            }
+        except ContractResolutionError as error:
+            raise _fair_parameter_input_error(
+                str(error), "initial_pricing_time_invalid",
+            ) from error
         except (TypeError, ValueError, PricerInputDefaultError) as error:
             raise _fair_parameter_input_error(str(error), "data") from error
 
         try:
             local_state = ObservedContractState.from_value(
                 state or None,
-                valuation_date=str(config.valuation_date),
+                valuation_date=effective_valuation_date,
             )
         except (ObservedStateError, TypeError, ValueError) as error:
             raise _fair_parameter_input_error(str(error), "initial_pricing_time_invalid") from error
 
-        # Fill only missing numerical inputs from the one frozen snapshot.
-        # Explicit caller values remain untouched.
+        # Match ordinary valuation: verified history owns HV, while manual
+        # model volatility remains explicit through volatility_override.
         frozen_config = replace(
             config,
             model_method=method,
+            valuation_date=effective_valuation_date,
             spot=config.spot if config.spot is not None else market_snapshot["spot"],
-            historical_volatility=(
-                config.historical_volatility
-                if config.historical_volatility is not None
-                else market_snapshot["historical_volatility"]
-            ),
+            historical_volatility=market_snapshot["historical_volatility"],
         )
         if method == "monte_carlo" and frozen_config.path_count is None:
             raise _fair_parameter_input_error(
@@ -1483,19 +1512,8 @@ def _fair_public_parameter_value(
     value: float,
     contract: ResolvedContract,
 ) -> float:
-    internal_basis = getattr(target, "internal_value_basis", {})
-    catalog_unit = internal_basis.get("catalog_unit") if isinstance(internal_basis, Mapping) else None
-    reference_price = None
-    if catalog_unit == "price":
-        references = contract.identity.get("reference_prices")
-        if isinstance(references, Mapping) and contract.underlyings:
-            reference_price = references.get(contract.underlyings[0])
     try:
-        return float(encode_public_value(
-            value,
-            catalog_unit=str(catalog_unit),
-            reference_price_basis=reference_price,
-        ))
+        return encode_contract_parameter(target, value, contract.to_protocol_dict())
     except (TypeError, ValueError) as error:
         raise PricerWebInputError(f"公平参数公开参数编码失败：{error}") from error
 
