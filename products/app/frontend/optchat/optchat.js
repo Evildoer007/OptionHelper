@@ -1,3 +1,4 @@
+import {ACTIVITY_VISUALS, activityForEvent} from '/app/frontend/shared/activity-motion.js';
 import { createBloubAvatar } from '/app/frontend/shared/bloub-avatar.js';
 import { bindComposerKeyboard, clearMessage, configureModelPicker, createReasoningDisclosure, initializeWorkspace, message, renderMessages, renderReports, renderTaskList, request, safeJson, setTaskLocation, settingsURLFor, taskIdFromLocation } from "/app/frontend/shared/app.js";
 import { MODEL_CONFIGURATION_CHANGED, setMessageActionIcon } from "/app/frontend/shared/app.js";
@@ -128,17 +129,8 @@ const formatAttachmentBytes = (value) => {
   return `${(bytes / (1024 * 1024)).toFixed(bytes < 10 * 1024 * 1024 ? 1 : 0)}MB`;
 };
 const randomAttachmentKey = () => globalThis.crypto?.randomUUID?.() || `attachment-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-const processOrbStates = Object.freeze({
-  request: "listening",
-  routing: "searching",
-  agent_run: "solving",
-  host_module: "connecting",
-  candidate_cycle: "weaving",
-  answer: "composing",
-  terminal: "shaping",
-});
 const runtimeEventStatuses = new Set([
-  "queued", "starting", "running", "waiting_tool", "waiting_parent", "started", "pending",
+  "queued", "starting", "running", "waiting_tool", "waiting_parent", "started", "pending", "needs_input", "pending_approval", "partial",
   "reselecting", "completed", "succeeded", "failed", "cancelled", "interrupted", "outcome_unknown", "timed_out", "timeout", "recovered", "stopped",
 ]);
 const runtimeTerminalStatuses = new Set(["completed", "succeeded", "failed", "cancelled", "interrupted", "outcome_unknown", "timed_out", "timeout", "stopped"]);
@@ -241,7 +233,9 @@ const runtimePayloadText = (row, payload, keys, limit = runtimeSummaryLimit) => 
 export function conversationPlaybackOutcome(response) {
   const status = String(response?.status || response?.state?.code || "").toLowerCase();
   if (["cancelled", "interrupted", "stopped"].includes(status)) return status;
-  if (["completed", "succeeded", "needs_input", "pending_approval", "partial"].includes(status)) return "completed";
+  if (["needs_input", "pending_approval"].includes(status)) return "needs_input";
+  if (status === "partial") return "partial";
+  if (["completed", "succeeded"].includes(status)) return "completed";
   return "failed";
 }
 
@@ -272,7 +266,10 @@ export function renderProcessUsage(target, usage) {
   target.setAttribute("role", "group");
   target.setAttribute("aria-label", "Token用量");
   const rows = [["输入", usage.inputTokens], ["输出", usage.outputTokens], ["总计", usage.totalTokens]];
-  target.replaceChildren(...rows.map(([label, value]) => {
+  const prefix = target.ownerDocument.createElement("span");
+  prefix.className = "process-token-prefix";
+  prefix.textContent = "Token:";
+  target.replaceChildren(prefix, ...rows.map(([label, value]) => {
     const item = target.ownerDocument.createElement("span");
     const name = target.ownerDocument.createElement("span");
     const amount = target.ownerDocument.createElement("b");
@@ -421,6 +418,13 @@ export async function startWorkspace(initialMode) {
   const assistantClose = document.querySelector("[data-assistant-close]");
   const form = document.querySelector("#workspace-form");
   const input = form.elements.content;
+  const questionPanel = document.createElement("section");
+  questionPanel.className = "composer-question";
+  questionPanel.hidden = true;
+  questionPanel.setAttribute("aria-label", "补充研究条件");
+  form.prepend(questionPanel);
+  const defaultInputPlaceholder = input.placeholder;
+  let composerQuestionId = "";
   const submit = form.querySelector("button[type=submit]");
   const modelPicker = document.querySelector("#workspace-model-picker");
   const status = document.querySelector("#workspace-status");
@@ -554,8 +558,13 @@ export async function startWorkspace(initialMode) {
   };
   const setComposerSending = (button, sending) => {
     if (sending) button.classList.remove("is-sent");
-    if (sending || !button.classList.contains("is-sent")) assistantAvatar.setState(sending ? "thinking" : "idle");
+    if (sending) assistantAvatar.setActivity("connecting");
     button.dataset.sending = String(sending);
+    if (sending) {
+      questionPanel.hidden = true;
+      input.placeholder = defaultInputPlaceholder;
+      composerQuestionId = "";
+    }
     if (!sending) button.dataset.cancelRequested = "false";
     button.disabled = button.dataset.cancelRequested === "true"
       || (!sending && (modelPicker.disabled || !modelPicker.value || (!input.value.trim() && draftAttachments.length === 0)));
@@ -589,10 +598,8 @@ export async function startWorkspace(initialMode) {
   const markComposerSent = (button) => {
     window.clearTimeout(composerSentTimer);
     button.classList.add("is-sent");
-    assistantAvatar.setState("wink");
     composerSentTimer = window.setTimeout(() => {
       button.classList.remove("is-sent");
-      if (button.dataset.sending !== "true") assistantAvatar.setState("idle");
     }, 900);
   };
   const dissolveComposerInput = (content) => {
@@ -657,21 +664,7 @@ export async function startWorkspace(initialMode) {
     recovered: "已恢复",
     stopped: "已停止",
   }[status] || "处理中");
-  const runtimeOrbState = (event) => {
-    if (runtimeTerminalStatuses.has(event.status)) {
-      return ["completed", "succeeded"].includes(event.status) ? "shaping" : "breathing";
-    }
-    if (["queued", "pending", "waiting_parent"].includes(event.status)) return "breathing";
-    if (processOrbStates[event.type]) return processOrbStates[event.type];
-    if (event.family === "workflow") return "searching";
-    if (event.family === "agent" || event.family === "turn" || event.family === "step") return "solving";
-    if (event.family === "tool") return "connecting";
-    if (event.family === "compaction") return "weaving";
-    if (event.family === "assistant") return "composing";
-    if (event.family === "reasoning") return "solving";
-    if (event.family === "recovery") return "breathing";
-    return "working";
-  };
+  const runtimeOrbState = event => ACTIVITY_VISUALS[activityForEvent(event)].orb;
   const setRuntimeLiveStatus = (text) => {
     if (runtimeLiveStatus) runtimeLiveStatus.textContent = clampRuntimeText(text, 140);
   };
@@ -977,7 +970,8 @@ export async function startWorkspace(initialMode) {
     const details = document.createElement("details");
     details.open = false;
     const summary = document.createElement("summary");
-    const orb = createThinkingOrb({ state: "connecting", size: 36 });
+    const orb = createThinkingOrb({ state: "connecting", size: 20 });
+    orb.element.setAttribute("aria-hidden", "true");
     const summaryLabel = document.createElement("span");
     summaryLabel.textContent = "正在连接";
     const detailIcon = document.createElement("span");
@@ -996,12 +990,12 @@ export async function startWorkspace(initialMode) {
     actions.className = "process-actions";
     const cancelButton = document.createElement("button");
     cancelButton.type = "button";
-    cancelButton.className = "button-secondary";
-    cancelButton.textContent = "取消本轮";
+    cancelButton.className = "process-cancel";
+    cancelButton.textContent = "停止";
     cancelButton.setAttribute("aria-label", "取消本轮处理");
     cancelButton.hidden = typeof onCancel !== "function";
     cancelButton.addEventListener("click", () => onCancel?.());
-    actions.append(cancelButton);
+    actions.append(state, cancelButton);
 
     const createSection = (label, className, child) => {
       const section = document.createElement("section");
@@ -1029,7 +1023,6 @@ export async function startWorkspace(initialMode) {
 
     details.append(
       summary,
-      state,
       actions,
       events,
       createSection("Agent", "process-agent-section", agentCards),
@@ -1113,11 +1106,15 @@ export async function startWorkspace(initialMode) {
   };
   const appendProcessTimeline = (playback, projection) => {
     if (!projection.showTimeline) return;
-    const item = document.createElement("li");
+    const phase = projection.type === "agent_run"
+      ? projection.timelineLabel.replace(/^(?:已完成|未完成|正在)/, "").replace(/[。.]$/, "") : "";
+    const existing = phase && [...playback.events.children].find(item => item.dataset.phase === phase);
+    const item = existing || document.createElement("li");
     item.dataset.status = projection.status;
     item.dataset.runtimeFamily = projection.family;
-    item.textContent = projection.timelineLabel;
-    playback.events.append(item);
+    if (phase) item.dataset.phase = phase;
+    item.textContent = phase ? `${phase}：${runtimeStatusLabel(projection.status)}` : projection.timelineLabel;
+    if (!existing) playback.events.append(item);
   };
   const appendRuntimeProjection = (playback, event) => {
     const projection = projectRuntimeEvent(event);
@@ -1220,14 +1217,12 @@ export async function startWorkspace(initialMode) {
     const orbState = runtimeOrbState(projection);
     playback.orb.setState(orbState);
     if (submit.dataset.sending === "true") {
-      assistantAvatar.setState(["connecting", "searching", "weaving"].includes(orbState) ? "orbit" : "thinking");
+      assistantAvatar.setActivity(activityForEvent(projection));
     }
-    const hasLiveReasoning = playback.liveAssistant && !playback.liveAssistant.article.hidden
-      && playback.liveAssistant.content.querySelector(".assistant-reasoning:not([hidden])");
-    playback.orb.element.hidden = Boolean(hasLiveReasoning);
-    playback.orb.setPaused(Boolean(hasLiveReasoning));
-    playback.summaryLabel.textContent = hasLiveReasoning ? "运行详情" : playback.orb.element.getAttribute("aria-label");
-    if (hasLiveReasoning) playback.panel.hidden = playback.panel.dataset.hasDetails !== "true";
+    playback.orb.element.hidden = false;
+    playback.orb.setPaused(false);
+    playback.summaryLabel.textContent = ACTIVITY_VISUALS[activityForEvent(projection)].label;
+    playback.panel.hidden = false;
     if ((projection.family === "workflow" || projection.family === "recovery" || ["failed", "cancelled", "interrupted", "stopped"].includes(projection.status)) && runtimeTerminalStatuses.has(projection.status)) {
       playback.outcome = projection.status;
     }
@@ -1252,10 +1247,13 @@ export async function startWorkspace(initialMode) {
       cancelled: "本轮处理已取消",
       interrupted: "本轮处理已中断",
       stopped: "本轮处理已停止",
+      needs_input: "等待补充信息",
+      partial: "本轮部分完成",
     }[outcome] || "本轮处理已结束";
     playback.state.textContent = terminalCopy;
     playback.panel.dataset.terminal = "true";
     playback.panel.dataset.outcome = outcome;
+    if (submit.dataset.sending === "true") assistantAvatar.setActivity(outcome === "partial" ? "needs_input" : ["interrupted", "stopped"].includes(outcome) ? "cancelled" : outcome);
     playback.cancelButton.hidden = true;
     playback.orb.setPaused(true);
     playback.orb.element.hidden = true;
@@ -1308,7 +1306,10 @@ export async function startWorkspace(initialMode) {
         playback.state.textContent = error.status === 404
           ? "正在等待本轮进度"
           : "进度连接暂时中断，正在恢复";
-        playback.orb.setState("breathing");
+        playback.orb.setState("connecting");
+        playback.orb.element.hidden = false;
+        playback.orb.setPaused(false);
+        assistantAvatar.setActivity(error.status === 404 ? "connecting" : "recovering");
         playback.summaryLabel.textContent = error.status === 404 ? "正在连接" : "正在恢复连接";
         setRuntimeLiveStatus(playback.state.textContent);
       }
@@ -1384,7 +1385,7 @@ export async function startWorkspace(initialMode) {
       }
       if (activeProcessPlayback?.taskId === taskId && activeProcessPlayback.requestId === requestId) {
         activeProcessPlayback.cancelButton.disabled = false;
-        activeProcessPlayback.cancelButton.textContent = "取消本轮";
+        activeProcessPlayback.cancelButton.textContent = "停止";
       }
       showWorkspaceStatus(error.message || "取消请求未完成，请稍后重试。", true);
     }
@@ -2012,6 +2013,7 @@ export async function startWorkspace(initialMode) {
   }
 
   function resetTaskSelection() {
+    renderComposerQuestion(null);
     currentTask = null;
     pendingConversationRequest = null;
     pendingReportRequest = null;
@@ -2240,8 +2242,71 @@ export async function startWorkspace(initialMode) {
     });
   }
 
+  function renderComposerQuestion(task) {
+    const messages = task?.messages || [];
+    let question = null;
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      if (messages[index].role === "user") break;
+      if (messages[index].role === "assistant") {
+        question = (messages[index].content_blocks || []).find(block => block.type === "question");
+        break;
+      }
+    }
+    const key = question ? `${task.task_id}:${question.question_id || question.prompt}` : "";
+    if (key && key === composerQuestionId) return;
+    composerQuestionId = key;
+    questionPanel.replaceChildren();
+    questionPanel.hidden = !question;
+    input.placeholder = question ? "填写自定义回答，或选择上方选项" : defaultInputPlaceholder;
+    input.oninput = null;
+    if (!question) return;
+    const prompt = document.createElement("p");
+    prompt.className = "composer-question__prompt";
+    prompt.textContent = question.prompt || question.text || "请补充研究条件";
+    const choices = document.createElement("div");
+    choices.className = "composer-question__choices";
+    choices.setAttribute("role", "radiogroup");
+    choices.setAttribute("aria-label", prompt.textContent);
+    const radios = [];
+    const select = (value, custom) => {
+      input.value = custom ? "" : value;
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      if (custom) input.focus();
+    };
+    for (const [index, option] of [...(question.options || []).slice(0, 3), null].entries()) {
+      const label = document.createElement("label");
+      label.className = "composer-question__option";
+      const radio = document.createElement("input");
+      radio.type = "radio";
+      radio.name = "clarification-choice";
+      radio.value = String(index);
+      const text = document.createElement("span");
+      const title = document.createElement("strong");
+      title.textContent = option ? `${option.label}${option.recommended ? "（推荐）" : ""}` : "自定义回答";
+      text.append(title);
+      if (option?.description) {
+        const detail = document.createElement("small");
+        detail.textContent = option.description;
+        text.append(detail);
+      }
+      radio.addEventListener("change", () => select(String(option?.value || option?.label || ""), !option));
+      radios.push(radio);
+      label.append(radio, text);
+      choices.append(label);
+    }
+    // Typing is always a custom answer; choosing a preset still uses the one Send control.
+    input.oninput = () => {
+      const selected = radios.findIndex(radio => radio.checked);
+      const option = (question.options || [])[selected];
+      if (!option || input.value !== String(option.value || option.label || "")) radios.at(-1).checked = true;
+    };
+    questionPanel.append(prompt, choices);
+  }
+
   function renderTaskConversation(task) {
+    renderComposerQuestion(task);
     renderMessages(stream, task?.messages || [], "可直接输入任务要求，或选择一个研究起点。", {
+      questionInComposer: true,
       onAttachmentOpen: (reference) => openStoredAttachment(reference, task.task_id),
       onQuestionAnswer: (answer) => {
         if (submit.dataset.sending === "true" || currentTask?.task_id !== task.task_id) return;
@@ -2682,12 +2747,15 @@ export async function startWorkspace(initialMode) {
     syncModuleTabIndicator(false);
     syncChatComposerClearance();
   }, { passive: true });
+  assistantToggle.addEventListener("pointerenter", () => assistantAvatar.interact());
+  assistantToggle.addEventListener("focus", () => assistantAvatar.interact());
   assistantToggle.addEventListener("click", () => setAssistantOpen(!assistantOpen, { focus: true }));
   assistantClose.addEventListener("click", () => { setAssistantOpen(false); assistantToggle.focus(); });
   stream.addEventListener("scroll", () => {
     if (!restoringScroll) saveTransient();
   }, { passive: true });
   input.addEventListener("input", () => {
+    if (submit.dataset.sending !== "true") assistantAvatar.setActivity(input.value.trim() ? "listening" : "idle");
     if (pendingConversationRequest?.status === "uncertain") {
       pendingConversationRequest = null;
     }
@@ -2991,6 +3059,7 @@ export async function startWorkspace(initialMode) {
   }));
 
   window.addEventListener("pagehide", () => {
+    assistantAvatar.destroy();
     composerResizeObserver.disconnect();
     window.cancelAnimationFrame(composerClearanceFrame);
     saveTransient();
