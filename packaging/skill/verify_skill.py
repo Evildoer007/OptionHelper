@@ -5,9 +5,7 @@ from __future__ import annotations
 
 import argparse
 import ast
-from functools import partial
 from hashlib import sha256
-from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 from pathlib import Path
@@ -17,18 +15,15 @@ import subprocess
 import sys
 import tempfile
 import textwrap
-from threading import Thread
 from typing import Mapping
 import unicodedata
-from urllib.error import HTTPError, URLError
-from urllib.parse import quote
-from urllib.request import urlopen
 import zipfile
 
 PACKAGING_ROOT = Path(__file__).resolve().parents[1]
 if str(PACKAGING_ROOT) not in sys.path:
     sys.path.insert(0, str(PACKAGING_ROOT))
 
+from knowledge_snapshot import registry_product_revisions, validate_published_snapshot_tree
 from release_contract import (
     CAPABILITY_MANIFEST_SCHEMA,
     DEVELOPMENT_ID,
@@ -302,7 +297,7 @@ def _structure_errors(root: Path) -> list[str]:
         "SKILL.md", "README.md", "capability-manifest.json", "references/context.md", "references/optionlist.md",
         "references/optionlib.md", "references/knowledger-manager.md", "scripts/tool_entry.py",
         "scripts/environment_check.py", "scripts/requirements.lock",
-        "scripts/knowledger/optionreg.py", "scripts/knowledger/catalog-version.json", "scripts/runtime",
+        "scripts/knowledger/optionreg.py", "scripts/knowledger/source-manifest.json", "scripts/runtime",
         "scripts/modules", "assets/icons", "assets/payoffer/figures/json", "assets/payoffer/figures/svg",
         "assets/designer/themes", "assets/designer/vendor", "LICENSES",
     ]
@@ -584,115 +579,75 @@ def _manifest_errors(root: Path, entries: list[dict[str, object]]) -> list[str]:
         catalog_version = _tool_catalog_protocol_id(tool_catalog)
         if catalog_version != PROTOCOL_ID:
             errors.append(f"Tool Catalog协议版本必须唯一为{PROTOCOL_ID}")
-    catalog_path = root / "scripts" / "knowledger" / "catalog-version.json"
+    errors.extend(_source_manifest_errors(root, manifest))
+    return errors
+
+
+def _source_manifest_errors(root: Path, manifest: Mapping[str, object]) -> list[str]:
+    """验证知识源身份、签发证据和包内Payoff绑定，版本仅标识发行产物。"""
+    errors: list[str] = []
+    catalog_path = root / "scripts" / "knowledger" / "source-manifest.json"
     try:
         catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
-        if catalog.get("catalog_version") != manifest.get("catalog_version"):
-            errors.append("CatalogVersion与Capability Manifest不一致")
+        if catalog.get("release_version") != manifest.get("catalog_version"):
+            errors.append("知识源清单与Capability发行版本不一致")
         if "release_id" in catalog:
-            errors.append("CatalogVersion不得包含release_id")
-        if technical:
+            errors.append("知识源清单不得包含release_id")
+        optionlist = (root / "references" / "optionlist.md").read_text(encoding="utf-8")
+        expected_ids = re.findall(r"^\|\s*\d+\s*\|.*?\|\s*(\d+\.\d+)\s*\|", optionlist, re.MULTILINE)
+        expected_revisions = registry_product_revisions(root / "scripts" / "knowledger" / "optionreg.py")
+        if len(expected_ids) != 65 or list(expected_revisions) != expected_ids:
+            errors.append("知识源清单与OptionList、OptionReg产品顺序不一致")
+        if manifest.get("release_status") == "technical_candidate":
             expected_fields = {
-                "manifest_type", "release_status", "formal_release", "execution_scope", "executable", "catalog_version",
-                "catalog_source", "product_count", "product_ids", "source_file_sha256",
+                "manifest_type", "release_status", "formal_release", "execution_scope", "executable", "release_version",
+                "catalog_source", "product_count", "product_ids", "product_revisions", "source_file_sha256",
             }
             if set(catalog) != expected_fields:
-                errors.append("working-tree Catalog字段不符合技术候选规范")
+                errors.append("working-tree知识源字段不符合技术候选规范")
             if (
-                catalog.get("manifest_type") != "CatalogTechnicalCandidate"
+                catalog.get("manifest_type") != "KnowledgeSourceCandidate"
                 or catalog.get("release_status") != "technical_candidate"
                 or catalog.get("formal_release") is not False
                 or catalog.get("execution_scope") != "development_only"
                 or catalog.get("executable") is not True
-                or catalog.get("catalog_version") != DEVELOPMENT_ID
+                or catalog.get("release_version") != DEVELOPMENT_ID
                 or catalog.get("catalog_source") != "working-tree"
                 or manifest.get("catalog_version") != DEVELOPMENT_ID
                 or manifest.get("catalog_source") != "working-tree"
                 or manifest.get("execution_scope") != "development_only"
             ):
-                errors.append("working-tree Catalog必须明确为仅开发环境可执行、不可签发技术候选")
-            optionlist = (root / "references" / "optionlist.md").read_text(encoding="utf-8")
-            expected_ids = re.findall(r"^\|\s*\d+\s*\|.*?\|\s*(\d+\.\d+)\s*\|", optionlist, re.MULTILINE)
+                errors.append("working-tree知识源必须明确为仅开发环境可执行、不可签发技术候选")
             if catalog.get("product_count") != 65 or catalog.get("product_ids") != expected_ids:
-                errors.append("working-tree Catalog未按OptionList顺序映射65个真实产品ID")
-            expected_hashes = {
-                "optionlist.md": _sha256(root / "references" / "optionlist.md"),
-                "optionlib.md": _sha256(root / "references" / "optionlib.md"),
-                "optionreg.py": _sha256(root / "scripts" / "knowledger" / "optionreg.py"),
-            }
-            if catalog.get("source_file_sha256") != expected_hashes:
-                errors.append("working-tree Catalog来源哈希不一致")
+                errors.append("working-tree知识源未按OptionList顺序映射65个真实产品ID")
+            revisions = catalog.get("product_revisions")
+            if revisions != expected_revisions or any(type(value) is not int for value in revisions.values()):
+                errors.append("working-tree知识源修订号与OptionReg身份不一致")
         elif manifest.get("release_status") in {"candidate_from_published_catalog", "published"}:
             if manifest.get("execution_scope") not in {"candidate_verification", "production"}:
-                errors.append("正式Catalog候选的execution_scope必须为candidate_verification")
-            if (
-                catalog.get("manifest_type") != "CatalogVersion"
-                or catalog.get("formal_release") is not True
-                or catalog.get("executable") is not True
-                or "candidate_status" in catalog
-            ):
-                errors.append("正式Catalog候选必须包含已正式签发且可执行的CatalogVersion")
-            if not isinstance(catalog.get("published_by"), str) or not catalog["published_by"].strip() or not isinstance(catalog.get("published_at"), str):
-                errors.append("CatalogVersion缺少published_by或published_at")
-            products = catalog.get("products")
-            if not isinstance(products, dict) or len(products) != 65:
-                errors.append("CatalogVersion必须包含65个产品版本映射")
-            else:
-                optionlist = (root / "references" / "optionlist.md").read_text(encoding="utf-8")
-                expected_ids = re.findall(r"^\|\s*\d+\s*\|.*?\|\s*(\d+\.\d+)\s*\|", optionlist, re.MULTILINE)
-                if len(expected_ids) != 65 or list(products) != expected_ids:
-                    errors.append("CatalogVersion未按OptionList顺序映射65个真实产品ID")
-            refs = catalog.get("product_manifest_refs")
-            manifest_hashes = catalog.get("product_manifest_sha256")
-            if not isinstance(refs, dict) or not isinstance(manifest_hashes, dict):
-                errors.append("CatalogVersion缺少ProductVersion引用或manifest哈希")
-            elif isinstance(products, dict):
-                snapshot_files = {
-                    "optionlist": "optionlist-fragment.md", "optionlib": "optionlib-fragment.md",
-                    "optionreg": "optionreg-product.py", "default_terms": "default-terms.json",
-                    "default_json": "default-payoff.json", "default_svg": "default-payoff.svg",
-                }
-                for product_id, product_version in products.items():
-                    expected_ref = f"knowledger/products/{product_id}/product-version.json"
-                    if refs.get(product_id) != expected_ref:
-                        errors.append(f"{product_id}的ProductVersion引用无效")
-                        continue
-                    product_dir = root / "scripts" / "knowledger" / "products" / product_id
-                    product_manifest_path = product_dir / "product-version.json"
-                    try:
-                        if _sha256(product_manifest_path) != manifest_hashes.get(product_id):
-                            errors.append(f"{product_id}的ProductVersion manifest哈希不一致")
-                        product_manifest = json.loads(product_manifest_path.read_text(encoding="utf-8"))
-                        if (
-                            product_manifest.get("manifest_type") != "ProductVersion"
-                            or product_manifest.get("publication_status") != "published"
-                            or product_manifest.get("formal_release") is not True
-                            or product_manifest.get("executable") is not True
-                            or product_manifest.get("product_id") != product_id
-                            or product_manifest.get("product_version") != product_version
-                            or product_manifest.get("snapshot_files") != snapshot_files
-                        ):
-                            errors.append(f"{product_id}的ProductVersion身份或六件套声明无效")
-                            continue
-                        hashes = product_manifest.get("snapshot_sha256")
-                        for key, filename in snapshot_files.items():
-                            snapshot_path = product_dir / filename
-                            if not isinstance(hashes, dict) or _sha256(snapshot_path) != hashes.get(key + "_sha256"):
-                                errors.append(f"{product_id}的{filename}缺失或哈希不一致")
-                        payoff = json.loads((product_dir / snapshot_files["default_json"]).read_text(encoding="utf-8"))
-                        name = payoff.get("name_zh")
-                        live_json = root / "assets" / "payoffer" / "figures" / "json" / f"{name}.json"
-                        live_svg = root / "assets" / "payoffer" / "figures" / "svg" / f"{name}.svg"
-                        if _sha256(live_json) != _sha256(product_dir / snapshot_files["default_json"]):
-                            errors.append(f"{product_id}的包内Payoff JSON未绑定签发快照")
-                        if _sha256(live_svg) != _sha256(product_dir / snapshot_files["default_svg"]):
-                            errors.append(f"{product_id}的包内Payoff SVG未绑定签发快照")
-                    except (OSError, json.JSONDecodeError) as error:
-                        errors.append(f"{product_id}的ProductVersion六件套无效：{error}")
+                errors.append("正式知识源候选的execution_scope无效")
+            validate_published_snapshot_tree(root / "scripts", catalog, RELEASE_VERSION)
+            if catalog["products"] != expected_revisions or list(catalog["products"]) != expected_ids:
+                errors.append("知识源清单修订号与包内OptionReg身份不一致")
+            for product_id, relative in catalog["product_manifest_refs"].items():
+                product_dir = (root / "scripts" / relative).parent
+                payoff = json.loads((product_dir / "default-payoff.json").read_text(encoding="utf-8"))
+                name = payoff.get("name_zh")
+                for extension in ("json", "svg"):
+                    live = root / "assets" / "payoffer" / "figures" / extension / f"{name}.{extension}"
+                    if _sha256(live) != _sha256(product_dir / f"default-payoff.{extension}"):
+                        errors.append(f"{product_id}的包内Payoff {extension.upper()}未绑定签发快照")
         else:
             errors.append("Capability Manifest的release_status无效")
-    except (OSError, json.JSONDecodeError) as error:
-        errors.append(f"CatalogVersion无效：{error}")
+        expected_hashes = {
+            "optionlist.md": _sha256(root / "references" / "optionlist.md"),
+            "optionlib.md": _sha256(root / "references" / "optionlib.md"),
+            "optionreg.py": _sha256(root / "scripts" / "knowledger" / "optionreg.py"),
+        }
+        if catalog.get("source_file_sha256") != expected_hashes:
+            errors.append("知识源清单来源哈希不一致")
+    except (OSError, ValueError, SyntaxError, TypeError, AttributeError) as error:
+        errors.append(f"知识源清单无效：{error}")
     return errors
 
 
@@ -716,81 +671,6 @@ def verify_skill(root: Path) -> list[str]:
     errors.extend(_store_boundary_errors(root))
     errors.extend(_manifest_errors(root, entries))
     return sorted(set(errors))
-
-
-def _page_catalog_errors(output: str) -> list[str]:
-    try:
-        catalog = json.loads(output)
-    except json.JSONDecodeError as error:
-        return [f"module_host --list未返回JSON：{error}"]
-    if not isinstance(catalog, dict) or tuple(catalog) != PAGE_MODULES:
-        return ["module_host --list必须精确列出五个操作页面"]
-    return [f"module_host页面不存在：{module}" for module in PAGE_MODULES if not isinstance(catalog[module], dict) or catalog[module].get("exists") is not True]
-
-
-class _SilentPageHandler(SimpleHTTPRequestHandler):
-    def log_message(self, _: str, *args: object) -> None:
-        return
-
-
-def _page_resources(root: Path, page: Path) -> list[Path]:
-    pending = [page]
-    resources: set[Path] = set()
-    while pending:
-        path = pending.pop()
-        if path in resources:
-            continue
-        resources.add(path)
-        if not path.is_file():
-            continue
-        if path.suffix.lower() not in {".html", ".css"}:
-            continue
-        text = path.read_text(encoding="utf-8", errors="ignore")
-        pattern = _HTML_LINK if path.suffix.lower() == ".html" else _CSS_LINK
-        for raw in pattern.findall(text):
-            target = raw.strip().strip("<>").split("#", 1)[0].split("?", 1)[0]
-            if not target or target.startswith(("#", "data:", "mailto:", "tel:", "javascript:", "http:", "https:", "//")):
-                continue
-            resolved = (root / target.lstrip("/")).resolve() if target.startswith("/") else (path.parent / target).resolve()
-            try:
-                resolved.relative_to(root)
-            except ValueError:
-                continue
-            if resolved.is_file():
-                pending.append(resolved)
-    return sorted(resources)
-
-
-def _page_http_errors(root: Path) -> list[str]:
-    handler = partial(_SilentPageHandler, directory=str(root))
-    try:
-        server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
-    except OSError as error:
-        return [f"无法启动发行态页面HTTP校验服务：{error}"]
-    thread = Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    errors: list[str] = []
-    try:
-        port = server.server_port
-        for module in PAGE_MODULES:
-            page = root / "assets" / "pages" / module / f"{module}.html"
-            for resource in _page_resources(root, page):
-                relative = quote(resource.relative_to(root).as_posix())
-                try:
-                    with urlopen(f"http://127.0.0.1:{port}/{relative}", timeout=5) as response:
-                        if response.status != 200:
-                            errors.append(f"页面资源HTTP状态异常：{resource.relative_to(root)}={response.status}")
-                        else:
-                            # 读取完整响应后再关闭连接，避免校验客户端提前断开导致
-                            # 临时HTTP服务输出BrokenPipeError并污染发行日志。
-                            response.read()
-                except (HTTPError, URLError, OSError) as error:
-                    errors.append(f"页面资源HTTP不可用：{resource.relative_to(root)}：{error}")
-    finally:
-        server.shutdown()
-        server.server_close()
-        thread.join()
-    return errors
 
 
 def _formal_compute_protocol_errors(root: Path, python: str, environment: Mapping[str, str], cwd: str) -> list[str]:
@@ -842,7 +722,7 @@ def _formal_compute_protocol_errors(root: Path, python: str, environment: Mappin
             run_id="release-probe-committed-run",
             files={
                 "manifest.json": {"status": "failed"},
-                "input_snapshot.json": {"probe": "v1.0.0"},
+                "input_snapshot.json": {"probe": RELEASE_VERSION},
                 "resolved_contract.json": {},
                 "data_refs.json": {"items": []},
                 "limitations.json": {"items": []},
@@ -890,7 +770,7 @@ def _formal_compute_protocol_errors(root: Path, python: str, environment: Mappin
             rule_revision=1,
             module="pricer",
             page_hash="b" * 64,
-            capability_version="v1.0.0",
+            capability_version=RELEASE_VERSION,
             protocol_id="optionhelper.module-host",
             context_id="mhc_release_probe_current_0001",
             host_kind="app",
@@ -1069,7 +949,7 @@ def _formal_compute_protocol_errors(root: Path, python: str, environment: Mappin
         """
     )
     completed = subprocess.run(
-        [python, "-c", probe],
+        [python, "-c", f"RELEASE_VERSION = {RELEASE_VERSION!r}\n" + probe],
         cwd=cwd,
         env=dict(environment),
         capture_output=True,
