@@ -24,7 +24,7 @@ for path in (
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
-from runtime.knowledger.versioning import validate_published_catalog
+from knowledge_snapshot import validate_published_catalog
 from build_macos import (
     EXTERNAL_COMMAND_TIMEOUT_SECONDS,
     MacOSBuildError,
@@ -35,7 +35,8 @@ from build_macos import (
     verify_platform_release_manifest,
 )
 from build_runtime import RuntimeBuildError, verify_staged_runtime
-from release_contract import PROTOCOL_ID, RELEASE_VERSION, require_published_at, require_release_version
+from release_contract import skill_archive_name
+from release_contract import APP_VERSION, PROTOCOL_ID, RELEASE_VERSION, require_published_at, require_release_version
 from verify_macos import verify as verify_macos_bundle
 from verify_skill import content_tree_entries, tree_hash, verify_skill, verify_zip
 from verify_capability import verify_app_capability
@@ -99,9 +100,9 @@ def _require(condition: bool, message: str) -> None:
 
 def installer_name(version: str, platform: str) -> str:
     if platform == "macos":
-        return f"OptionHelper-{version}-macOS-arm64.dmg"
+        return f"OptionHelper-{APP_VERSION}-macOS-arm64.dmg"
     if platform == "windows":
-        return f"OptionHelper-{version}-windows-x86_64.zip"
+        return f"OptionHelper-{APP_VERSION}-windows-x86_64.zip"
     raise ReleaseVerificationError(f"不支持的平台：{platform}")
 
 
@@ -183,9 +184,9 @@ def _extract_skill(archive: Path, destination: Path) -> Path:
 
 
 def _verify_skill_archive(version_root: Path) -> dict[str, object]:
-    archive = version_root / "option-helper.zip"
+    archive = version_root / skill_archive_name()
     external_manifest = version_root / "capability-manifest.json"
-    _require(archive.is_file(), "版本归档缺少option-helper.zip")
+    _require(archive.is_file(), f"版本归档缺少{skill_archive_name()}")
     _require(external_manifest.is_file(), "版本归档缺少capability-manifest.json")
     with tempfile.TemporaryDirectory(prefix="optionhelper-release-skill-") as temporary_name:
         skill_root = _extract_skill(archive, Path(temporary_name))
@@ -204,9 +205,9 @@ def _verify_skill_archive(version_root: Path) -> dict[str, object]:
 
 
 def _verify_catalog(version_root: Path, versions_root: Path) -> None:
-    catalog_path = version_root / "knowledger" / "catalog-version.json"
-    catalog = _read_json(catalog_path, "归档CatalogVersion")
-    _require(catalog.get("catalog_version") == RELEASE_VERSION, "归档CatalogVersion不是v1.0.0")
+    catalog_path = version_root / "knowledger" / "source-manifest.json"
+    catalog = _read_json(catalog_path, "归档知识源清单")
+    _require(catalog.get("release_version") == RELEASE_VERSION, f"归档知识源清单不是{RELEASE_VERSION}")
     try:
         validate_published_catalog(
             ROOT,
@@ -223,7 +224,7 @@ def _verify_platform_binding(
     capability: dict[str, object],
 ) -> None:
     expected = {
-        "app_version": RELEASE_VERSION,
+        "app_version": APP_VERSION,
         "capability_version": RELEASE_VERSION,
         "catalog_version": RELEASE_VERSION,
         "protocol_id": PROTOCOL_ID,
@@ -298,7 +299,7 @@ def _verify_macos_release(
     *,
     verify_installed_bundle: bool,
 ) -> None:
-    dmg = version_root / f"OptionHelper-{RELEASE_VERSION}-macOS-arm64.dmg"
+    dmg = version_root / f"OptionHelper-{APP_VERSION}-macOS-arm64.dmg"
     app_manifest_path = version_root / "app-manifest.json"
     platform_manifest_path = version_root / "platform-release-manifest.json"
     checksum_path = version_root / f"{dmg.name}.sha256"
@@ -339,7 +340,7 @@ def _verify_windows_release(
     *,
     verify_installed_bundle: bool = False,
 ) -> None:
-    installer = version_root / f"OptionHelper-{RELEASE_VERSION}-windows-x86_64.zip"
+    installer = version_root / f"OptionHelper-{APP_VERSION}-windows-x86_64.zip"
     app_manifest_path = version_root / "app-manifest-windows.json"
     platform_manifest_path = version_root / "platform-release-manifest-windows.json"
     checksum_path = version_root / f"{installer.name}.sha256"
@@ -347,7 +348,7 @@ def _verify_windows_release(
     _require(checksum_path.is_file(), "版本归档缺少Windows安装ZIP校验文件")
     app_manifest = _read_json(app_manifest_path, "Windows App Manifest")
     app_capability_path = version_root / "app-capability-manifest-windows.json"
-    app_capability = _read_json(app_capability_path, "Windows App Capability Manifest")
+    _read_json(app_capability_path, "Windows App Capability Manifest")
     platform_manifest = _read_json(platform_manifest_path, "Windows Platform Manifest")
     _verify_platform_binding(app_manifest, capability)
     _require(
@@ -368,7 +369,7 @@ def _verify_windows_release(
     )
     expected_manifest = {
         "schema": f"optionhelper.platform-release-manifest/{RELEASE_VERSION}",
-        "app_version": RELEASE_VERSION,
+        "app_version": APP_VERSION,
         "platform": "windows",
         "architecture": "x86_64",
         "installer": expected_installer,
@@ -503,7 +504,7 @@ def _verify_delivery_copy(version_root: Path, platform: str, delivery_root: Path
     if delivery_root is None:
         return
     installer = installer_name(RELEASE_VERSION, platform)
-    expected = {"option-helper.zip", installer}
+    expected = {skill_archive_name(), installer}
     _require(delivery_root.is_dir(), f"当前交付目录不存在：{delivery_root}")
     actual = {path.name for path in delivery_root.iterdir()}
     _require(actual == expected, "当前交付目录只能包含当次Skill ZIP和安装物")
@@ -595,7 +596,7 @@ def verify_release(
     _verify_delivery_copy(version_root, platform, delivery_root)
     return {
         "archive": version_root,
-        "skill_zip": version_root / "option-helper.zip",
+        "skill_zip": version_root / skill_archive_name(),
         "installer": version_root / installer_name(version, platform),
     }
 
