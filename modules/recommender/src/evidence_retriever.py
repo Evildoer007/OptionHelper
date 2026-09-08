@@ -1,4 +1,4 @@
-"""通过Knowledger正式端口锁定同一CatalogVersion的推荐证据。"""
+"""通过Knowledger正式端口锁定同一知识源发行标识的推荐证据。"""
 
 from __future__ import annotations
 
