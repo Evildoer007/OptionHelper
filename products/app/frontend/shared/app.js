@@ -1,3 +1,4 @@
+import { createThinkingOrb } from "/app/frontend/shared/thinking-orb.js";
 const secretKeys = new Set(["password", "token", "api_key", "secret", "secret_value", "private_key"]);
 const sessionEventKey = "optionhelper.session.event";
 
@@ -44,12 +45,6 @@ export function safeJson(value, { allowSecrets = new Set() } = {}) {
     return item;
   };
   return JSON.stringify(visit(value));
-}
-
-export function escapeText(value) {
-  const element = document.createElement("span");
-  element.textContent = String(value ?? "");
-  return element.innerHTML;
 }
 
 export function message(node, text, isError = false) {
@@ -103,26 +98,39 @@ function positionChoiceMenu(choice) {
   const menu = choice.querySelector(".choice-menu");
   if (!trigger || !menu || menu.hidden) return;
   const rect = trigger.getBoundingClientRect();
-  const viewportHeight = choice.ownerDocument.defaultView?.innerHeight || document.documentElement.clientHeight;
-  const desiredHeight = Math.min(menu.scrollHeight || 0, 280) + 14;
-  const roomBelow = viewportHeight - rect.bottom;
-  const roomAbove = rect.top;
+  const view = choice.ownerDocument.defaultView;
+  const viewportHeight = view?.innerHeight || document.documentElement.clientHeight;
+  let top = 0;
+  let bottom = viewportHeight;
+  for (let parent = choice.parentElement; parent; parent = parent.parentElement) {
+    if (!/(auto|scroll|hidden|clip)/.test(view.getComputedStyle(parent).overflowY)) continue;
+    const bounds = parent.getBoundingClientRect();
+    top = Math.max(top, bounds.top);
+    bottom = Math.min(bottom, bounds.bottom);
+  }
+  const desiredHeight = Math.min(menu.scrollHeight || 160, 280);
+  const roomBelow = Math.max(0, bottom - rect.bottom - 6);
+  const roomAbove = Math.max(0, rect.top - top - 6);
   choice.dataset.placement = roomBelow < desiredHeight && roomAbove > roomBelow ? "top" : "bottom";
+  menu.style.maxHeight = `${Math.min(280, viewportHeight * .42, choice.dataset.placement === "top" ? roomAbove : roomBelow)}px`;
 }
 
 function setChoiceOpen(choice, open, { focus = false } = {}) {
   const trigger = choice.querySelector(".choice-trigger");
   const menu = choice.querySelector(".choice-menu");
   if (!trigger || !menu || (trigger.disabled && open)) return;
+  if (open) choice.ownerDocument.querySelectorAll('[data-choice-root][data-open="true"]').forEach((other) => {
+    if (other !== choice) setChoiceOpen(other, false);
+  });
   choice.dataset.open = String(open);
   trigger.setAttribute("aria-expanded", String(open));
   menu.hidden = !open;
   if (open) positionChoiceMenu(choice);
   if (open && focus) {
     const selected = menu.querySelector('[role="option"][aria-selected="true"]:not([disabled])') || menu.querySelector('[role="option"]:not([disabled])');
-    selected?.focus();
+    selected?.focus({ preventScroll: true });
   } else if (!open && focus) {
-    trigger.focus();
+    trigger.focus({ preventScroll: true });
   }
 }
 
@@ -143,6 +151,7 @@ function syncChoice(select) {
   if (describedBy) trigger.setAttribute("aria-describedby", describedBy);
   else trigger.removeAttribute("aria-describedby");
   const doc = select.ownerDocument;
+  const focusedValue = menu.contains(doc.activeElement) ? doc.activeElement.dataset.value : null;
   menu.replaceChildren(...Array.from(select.options).map((option) => {
     const item = doc.createElement("button");
     item.type = "button";
@@ -150,23 +159,31 @@ function syncChoice(select) {
     item.setAttribute("role", "option");
     item.dataset.value = option.value;
     item.textContent = option.textContent;
-    item.disabled = option.disabled;
+    item.disabled = select.disabled || option.disabled || Boolean(option.closest("optgroup")?.disabled);
     item.setAttribute("aria-selected", String(option.selected));
     item.tabIndex = -1;
-    item.addEventListener("click", () => {
-      if (option.disabled) return;
-      select.value = option.value;
-      select.dispatchEvent(new Event("change", { bubbles: true }));
+    item.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (item.disabled || select.disabled) return;
+      const changed = select.value !== option.value;
       setChoiceOpen(choice, false);
-      trigger.focus();
+      select.value = option.value;
+      if (changed) select.dispatchEvent(new Event("change", { bubbles: true }));
+      if (trigger.isConnected && !select.disabled) trigger.focus({ preventScroll: true });
     });
     return item;
   }));
   if (trigger.disabled) setChoiceOpen(choice, false);
+  else if (focusedValue !== null && isChoiceOpen(choice)) {
+    const options = Array.from(menu.querySelectorAll('[role="option"]:not([disabled])'));
+    (options.find((item) => item.dataset.value === focusedValue) || options.find((item) => item.dataset.value === select.value) || trigger).focus({ preventScroll: true });
+    positionChoiceMenu(choice);
+  }
 }
 
 function moveChoice(select, direction) {
-  const enabled = Array.from(select.options).filter((option) => !option.disabled);
+  const enabled = Array.from(select.options).filter((option) => !option.disabled && !option.closest("optgroup")?.disabled);
   if (!enabled.length) return;
   const index = Math.max(0, enabled.findIndex((option) => option.value === select.value));
   const next = enabled[Math.max(0, Math.min(enabled.length - 1, index + direction))];
@@ -218,31 +235,40 @@ export function enhanceSelects(root = document) {
     const wrappingLabel = choice.closest("label");
     if (wrappingLabel && !wrappingLabel.htmlFor) {
       wrappingLabel.addEventListener("click", (event) => {
-        if (event.target.closest("[data-choice-root]") || event.target === select) return;
+        if (event.target.closest('[data-choice-root], input, select, textarea, button, a[href], [contenteditable="true"]')) return;
         event.preventDefault();
         trigger.focus();
       });
     }
     const close = (focusTrigger = false) => setChoiceOpen(choice, false, { focus: focusTrigger });
-    trigger.addEventListener("click", () => setChoiceOpen(choice, !isChoiceOpen(choice), { focus: isChoiceOpen(choice) === false }));
+    trigger.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      setChoiceOpen(choice, !isChoiceOpen(choice), { focus: isChoiceOpen(choice) === false });
+    });
     trigger.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && !isChoiceOpen(choice)) return;
+      if (["ArrowDown", "ArrowUp", "Home", "End", " ", "Enter", "Escape"].includes(event.key)) event.stopPropagation();
       if (event.key === "ArrowDown" || event.key === "ArrowUp") {
         event.preventDefault();
         if (isChoiceOpen(choice)) moveChoice(select, event.key === "ArrowDown" ? 1 : -1);
         else setChoiceOpen(choice, true, { focus: true });
       } else if (event.key === "Home" || event.key === "End") {
         event.preventDefault();
-        const options = Array.from(select.options).filter((option) => !option.disabled);
+        const options = Array.from(select.options).filter((option) => !option.disabled && !option.closest("optgroup")?.disabled);
         const option = options[event.key === "Home" ? 0 : options.length - 1];
-        if (option) { select.value = option.value; select.dispatchEvent(new Event("change", { bubbles: true })); }
+        if (option && option.value !== select.value) { select.value = option.value; select.dispatchEvent(new Event("change", { bubbles: true })); }
       } else if (event.key === "Escape") {
+        event.preventDefault();
         close();
       } else if (event.key === " " || event.key === "Enter") {
         event.preventDefault();
+        if (event.repeat) return;
         setChoiceOpen(choice, !isChoiceOpen(choice), { focus: !isChoiceOpen(choice) });
       }
     });
     menu.addEventListener("keydown", (event) => {
+      if (["ArrowDown", "ArrowUp", "Home", "End", " ", "Enter", "Escape"].includes(event.key)) event.stopPropagation();
       const options = Array.from(menu.querySelectorAll('[role="option"]:not([disabled])'));
       const at = options.indexOf(doc.activeElement);
       if (event.key === "ArrowDown" || event.key === "ArrowUp") {
@@ -254,9 +280,10 @@ export function enhanceSelects(root = document) {
       } else if (event.key === "Escape") {
         event.preventDefault(); close(true);
       } else if (event.key === "Tab") {
-        close();
+        close(true);
       } else if (event.key === "Enter" || event.key === " ") {
         event.preventDefault();
+        if (event.repeat) return;
         doc.activeElement?.click();
       }
     });
@@ -267,6 +294,11 @@ export function enhanceSelects(root = document) {
   if (doc.documentElement.dataset.choiceOutsideReady !== "true") {
     doc.documentElement.dataset.choiceOutsideReady = "true";
     doc.addEventListener("pointerdown", (event) => {
+      doc.querySelectorAll('[data-choice-root][data-open="true"]').forEach((choice) => {
+        if (!choice.contains(event.target)) setChoiceOpen(choice, false);
+      });
+    });
+    doc.addEventListener("focusin", (event) => {
       doc.querySelectorAll('[data-choice-root][data-open="true"]').forEach((choice) => {
         if (!choice.contains(event.target)) setChoiceOpen(choice, false);
       });
@@ -361,6 +393,12 @@ export async function initializeWorkspace(mode, { onModeChange } = {}) {
       event.preventDefault();
       setAccountMenuOpen(true, { focus: ["ArrowUp", "End"].includes(event.key) ? "last" : "first" });
     });
+    // Mouse and keyboard activation share click; close before item actions or navigation.
+    accountMenu.addEventListener("click", (event) => {
+      const item = event.target?.closest?.('[role="menuitem"]');
+      if (!item || !accountMenu.contains(item) || item.hasAttribute("disabled")) return;
+      setAccountMenuOpen(false);
+    }, { capture: true });
     accountMenu.addEventListener("keydown", (event) => {
       if (event.key === "ArrowDown" || event.key === "ArrowUp") {
         event.preventDefault();
@@ -400,12 +438,21 @@ export async function initializeWorkspace(mode, { onModeChange } = {}) {
   return session;
 }
 
+export const MODEL_CONFIGURATION_CHANGED = "optionhelper:model-configuration-changed";
+
+export function notifyModelConfigurationChanged() {
+  // Only an invalidation signal is shared; credentials stay on the server.
+  try { localStorage.setItem(MODEL_CONFIGURATION_CHANGED, String(Date.now())); } catch { /* Focus refresh also works without storage. */ }
+  window.dispatchEvent(new Event(MODEL_CONFIGURATION_CHANGED));
+}
+
 export async function configureModelPicker(picker) {
   if (!picker) return;
   const catalog = await request("/api/settings/model-providers");
   const enabled = (catalog.providers || []).flatMap((provider) => (provider.credential_configured ? provider.models
-    .filter((model) => model.enabled && model.verification_state === "verified" && model.current_revision_match === true)
+    .filter((model) => model.enabled)
     .map((model) => ({ provider, model })) : []));
+  const previousSelection = picker.dataset.userExplicitSelection === "true" ? picker.value : "";
   picker.replaceChildren();
   if (!enabled.length) {
     const option = document.createElement("option");
@@ -413,7 +460,7 @@ export async function configureModelPicker(picker) {
     option.textContent = "未配置模型";
     picker.append(option);
     picker.disabled = true;
-    picker.title = "请先在设置中心保存Provider和API Key，并测试要使用的模型。";
+    picker.title = "请在设置中心保存模型服务和API Key，并启用要使用的模型。";
   } else {
     const defaultSelection = catalog.default_model_selection || {};
     enabled.forEach(({ provider, model }) => {
@@ -430,6 +477,10 @@ export async function configureModelPicker(picker) {
     picker.removeAttribute("title");
   }
   picker.dataset.userExplicitSelection = "false";
+  if (previousSelection && Array.from(picker.options).some(option => option.value === previousSelection)) {
+    picker.value = previousSelection;
+    picker.dataset.userExplicitSelection = "true";
+  }
   if (picker.dataset.modelPickerReady !== "true") {
     picker.dataset.modelPickerReady = "true";
     picker.addEventListener("change", async () => {
@@ -450,7 +501,6 @@ export async function configureModelPicker(picker) {
 function installLayoutControls(shell) {
   if (shell.dataset.layoutControlsReady === "true") return;
   shell.dataset.layoutControlsReady = "true";
-  const railToggle = shell.querySelector("[data-rail-collapse-toggle]");
   const reportToggle = shell.querySelector("[data-report-toggle]");
   const reportClose = shell.querySelector("[data-report-close]");
   const reportScrim = shell.querySelector("[data-report-scrim]");
@@ -469,8 +519,9 @@ function installLayoutControls(shell) {
   };
   const readStored = (key, fallback) => {
     try {
-      const value = Number(localStorage.getItem(`optionhelper.workspace.${key}`));
-      return Number.isFinite(value) ? value : fallback;
+      const stored = localStorage.getItem(`optionhelper.workspace.${key}`);
+      const value = stored?.trim() ? Number(stored) : NaN;
+      return Number.isFinite(value) && value > 0 ? value : fallback;
     } catch { return fallback; }
   };
   const saveStored = (key, value) => {
@@ -505,7 +556,15 @@ function installLayoutControls(shell) {
   };
   const panelFocusables = (panel) => Array.from(panel?.querySelectorAll(
     'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
-  ) || []).filter((element) => !element.hidden && element.getAttribute("aria-hidden") !== "true");
+  ) || []).filter((element) => {
+    if (element.tabIndex < 0 || element.matches(":disabled")) return false;
+    for (let node = element; node && node !== panel.parentElement; node = node.parentElement) {
+      if (node.hidden || node.inert || node.getAttribute("aria-hidden") === "true") return false;
+      const style = getComputedStyle(node);
+      if (style.display === "none" || style.visibility === "hidden" || style.visibility === "collapse") return false;
+    }
+    return true;
+  });
   const trapPanelFocus = (event, panel) => {
     if (event.key !== "Tab") return;
     const focusables = panelFocusables(panel);
@@ -516,7 +575,10 @@ function installLayoutControls(shell) {
     }
     const first = focusables[0];
     const last = focusables[focusables.length - 1];
-    if (event.shiftKey && document.activeElement === first) {
+    if (!focusables.includes(document.activeElement)) {
+      event.preventDefault();
+      (event.shiftKey ? last : first).focus();
+    } else if (event.shiftKey && document.activeElement === first) {
       event.preventDefault();
       last.focus();
     } else if (!event.shiftKey && document.activeElement === last) {
@@ -623,9 +685,6 @@ function installLayoutControls(shell) {
       accountToggle?.setAttribute("aria-expanded", "false");
       accountRoot?.closest(".workspace-rail")?.setAttribute("data-account-menu-open", "false");
     }
-    railToggle?.setAttribute("aria-expanded", String(!collapsed));
-    railToggle?.setAttribute("aria-label", collapsed ? "展开任务栏" : "收起任务栏");
-    railToggle?.setAttribute("title", collapsed ? "展开任务栏" : "收起任务栏");
     if (railSplitter) {
       railSplitter.tabIndex = collapsed ? -1 : 0;
       railSplitter.setAttribute("aria-hidden", String(collapsed));
@@ -640,7 +699,7 @@ function installLayoutControls(shell) {
   applyWidth("report", readStored("report", limits.report.fallback));
   setReportOpen(false);
   setTaskHistoryOpen(false);
-  try { setRailCollapsed(localStorage.getItem("optionhelper.workspace.railCollapsed") === "true"); } catch { setRailCollapsed(false); }
+  try { setRailCollapsed(document.documentElement.dataset.nativeShell === "macos" && localStorage.getItem("optionhelper.workspace.railCollapsed") === "true"); } catch { setRailCollapsed(false); }
   requestAnimationFrame(() => requestAnimationFrame(() => { shell.dataset.layoutReady = "true"; }));
 
   const bindSplitter = (splitter, kind) => {
@@ -685,6 +744,7 @@ function installLayoutControls(shell) {
   taskHistoryClose?.addEventListener("click", () => setTaskHistoryOpen(false));
   taskHistoryScrim?.addEventListener("click", () => setTaskHistoryOpen(false));
   document.addEventListener("keydown", (event) => {
+    if (event.defaultPrevented) return;
     if (event.key === "Escape" && shell.dataset.taskHistoryOpen === "true") {
       event.preventDefault();
       setTaskHistoryOpen(false);
@@ -697,7 +757,7 @@ function installLayoutControls(shell) {
       trapPanelFocus(event, contextPanel);
     }
   });
-  railToggle?.addEventListener("click", () => setRailCollapsed(shell.dataset.railCollapsed !== "true", true));
+  window.addEventListener("optionhelper:toggle-task-rail", () => setRailCollapsed(shell.dataset.railCollapsed !== "true", true));
   bindSplitter(railSplitter, "rail");
   bindSplitter(contextSplitter, "report");
   compactReportMedia.addEventListener?.("change", syncResponsivePanels);
@@ -920,46 +980,43 @@ export function bindComposerKeyboard(form) {
 }
 
 export function reasoningSummary(text, running = false) {
-  const value = String(text ?? "");
-  if (!value) return "";
-  if (!running) return value.split("\n", 1)[0];
-  return value;
+  return running ? "正在思考" : "思考过程";
 }
+
+const reasoningControllers = new WeakMap();
 
 export function createReasoningDisclosure(text = "", { running = false } = {}) {
   const details = document.createElement("details");
   details.className = "assistant-reasoning";
-  details.dataset.running = String(running);
+  details.open = true;
   const summary = document.createElement("summary");
-  const icon = document.createElement("span");
-  icon.className = "assistant-reasoning__icon";
-  icon.setAttribute("aria-hidden", "true");
+  const orb = createThinkingOrb({ state: "solving", size: 28, paused: !running });
+  orb.element.setAttribute("aria-hidden", "true");
   const title = document.createElement("span");
   title.className = "assistant-reasoning__title";
-  title.textContent = "思考";
-  const separator = document.createElement("span");
-  separator.className = "assistant-reasoning__separator";
-  separator.setAttribute("aria-hidden", "true");
-  const preview = document.createElement("span");
-  preview.className = "assistant-reasoning__preview";
+  const chevron = document.createElement("span");
+  chevron.className = "assistant-reasoning__chevron";
+  chevron.setAttribute("aria-hidden", "true");
   const body = document.createElement("div");
   body.className = "assistant-reasoning__body";
-  summary.append(icon, title, separator, preview);
+  summary.append(orb.element, title, chevron);
   details.append(summary, body);
-
   const update = (nextText, nextRunning = false) => {
     const value = String(nextText ?? "");
-    const wasRunning = details.dataset.running === "true";
     details.dataset.running = String(nextRunning);
-    title.textContent = nextRunning ? "思考中" : "思考";
-    preview.textContent = reasoningSummary(value, nextRunning);
+    title.textContent = reasoningSummary(value, nextRunning);
     body.textContent = value;
-    details.hidden = !value;
-    if (nextRunning) details.open = true;
-    else if (wasRunning) details.open = false;
+    details.hidden = !value && !nextRunning;
+    // Stopping preserves the current visual and phase; only velocity settles.
+    if (nextRunning) orb.setState("solving");
+    orb.setPaused(!nextRunning);
+    // The user's disclosure choice survives every streamed delta and completion.
+    // Start expanded; updates never override the user's disclosure choice.
   };
   update(text, running);
-  return { element: details, preview, body, update };
+  const controller = { element: details, body, update, destroy: orb.destroy };
+  reasoningControllers.set(details, controller);
+  return controller;
 }
 
 function createAttachmentReference(reference, options = {}) {
@@ -1032,14 +1089,32 @@ export function reportPresentation(report = {}) {
   const legacyComparison = deliveryMode === "comparison"
     || artifacts.some((item) => /(^|\/)(candidate-|multicard(?:[-_.]|$)|multireport(?:[-_.]|$))/i.test(String(item?.name || "")));
   const comparison = typeof report.comparison === "boolean" ? report.comparison : legacyComparison;
-  const title = comparison && outputType === "card" ? "多结构研究简报"
+  const templateLabel = comparison && outputType === "card" ? "多结构研究简报"
     : comparison && outputType === "report" ? "多结构完整研究报告"
     : comparison && outputType === "quote" ? "多结构参考报价"
     : ({ card: "简单报告", quote: "参考报价", report: "详细报告" })[outputType] || "交付物";
   const preferred = artifacts.find((item) => item.name?.endsWith(".html"))
     || artifacts.find((item) => item.name?.endsWith(".pdf"))
     || artifacts[0];
+  const title = report.title || report.report_request?.metadata?.title || templateLabel;
   return { outputType, deliveryMode, comparison, title, artifacts, preferred };
+}
+
+export function setMessageActionIcon(control, label, path) {
+  control.setAttribute("aria-label", label);
+  control.title = label;
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("aria-hidden", "true");
+  svg.setAttribute("fill", "none");
+  svg.setAttribute("stroke", "currentColor");
+  svg.setAttribute("stroke-width", "1.6");
+  svg.setAttribute("stroke-linecap", "round");
+  svg.setAttribute("stroke-linejoin", "round");
+  const shape = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  shape.setAttribute("d", path);
+  svg.append(shape);
+  control.replaceChildren(svg);
 }
 
 function createMessageArtifactCard(reference) {
@@ -1050,24 +1125,35 @@ function createMessageArtifactCard(reference) {
   const title = document.createElement("strong");
   title.textContent = reference.name;
   const format = document.createElement("span");
-  format.textContent = reference.name.toLowerCase().endsWith(".pdf") ? "PDF" : "HTML";
+  format.textContent = reference.format === "docx" ? "Word" : reference.format?.toUpperCase() || (reference.name.toLowerCase().endsWith(".pdf") ? "PDF" : "HTML");
   heading.append(title, format);
-  const status = document.createElement("p");
-  status.textContent = "交付文件已生成";
   const actions = document.createElement("div");
   actions.className = "message-artifact__actions";
   const preview = document.createElement("a");
   preview.href = reference.path;
   preview.target = "_blank";
   preview.rel = "noopener";
-  preview.textContent = "预览";
+  setMessageActionIcon(preview, "预览报告", "M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Zm13 0a3 3 0 1 0-6 0 3 3 0 0 0 6 0Z");
   const download = document.createElement("a");
-  download.href = `${reference.path}?download=1`;
+  download.href = reference.downloadUrl || `${reference.path}?download=1`;
   download.target = "_blank";
   download.rel = "noopener";
-  download.textContent = "下载";
+  setMessageActionIcon(download, "下载报告", "M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5");
   actions.append(preview, download);
-  card.append(heading, status, actions);
+  if (reference.reportId) {
+    const edit = document.createElement("a");
+    edit.href = `/reports/${encodeURIComponent(reference.reportId)}/edit`;
+    edit.target = "_blank"; edit.rel = "noopener";
+    setMessageActionIcon(edit, "编辑报告", "m15 5 4 4M4 20l5-1L21 7a2.8 2.8 0 0 0-4-4L5 15l-1 5Z");
+    actions.append(edit);
+  }
+  const mark = document.createElement("span");
+  mark.className = "message-artifact__mark";
+  setMessageActionIcon(mark, "报告文件", "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Zm0 0v6h6M8 13h8M8 17h5");
+  mark.removeAttribute("aria-label");
+  mark.removeAttribute("title");
+  mark.setAttribute("aria-hidden", "true");
+  card.append(mark, heading, actions);
   return card;
 }
 
@@ -1075,6 +1161,10 @@ function createQuestionCard(block, options, active) {
   const card = document.createElement("form");
   card.className = "message-question";
   card.dataset.questionId = String(block.question_id || "");
+  const prompt = document.createElement("p");
+  prompt.className = "message-question__prompt";
+  prompt.textContent = String(block.prompt || block.text || "请补充以下信息。");
+  card.append(prompt);
   const optionRows = Array.isArray(block.options) ? block.options.slice(0, 3) : [];
   if (optionRows.length) {
     const choices = document.createElement("div");
@@ -1134,8 +1224,12 @@ function createConversationMessage(entry, options = {}) {
   const copy = document.createElement("button");
   copy.type = "button";
   copy.className = "message__action";
-  copy.textContent = "复制";
-  copy.setAttribute("aria-label", user ? "复制我的消息" : "复制回复");
+  const copyLabel = user ? "复制我的消息" : "复制回复";
+  const copyPath = "M9 9h12v12H9ZM5 15H3V3h12v2";
+  setMessageActionIcon(copy, copyLabel, copyPath);
+  const copyStatus = document.createElement("span");
+  copyStatus.className = "message__copy-status";
+  copyStatus.setAttribute("role", "status");
   let resetCopy = 0;
   copy.addEventListener("click", async () => {
     if (copy.dataset.busy === "true") return;
@@ -1151,21 +1245,33 @@ function createConversationMessage(entry, options = {}) {
       field.style.position = "fixed";
       field.style.opacity = "0";
       document.body.append(field);
-      field.select();
-      copied = document.execCommand("copy");
-      field.remove();
+      try {
+        field.select();
+        copied = document.execCommand("copy");
+      } catch {
+        copied = false;
+      } finally {
+        field.remove();
+        copy.focus({ preventScroll: true });
+      }
     }
     copy.dataset.busy = "false";
-    if (!copied) return;
+    if (!copied) {
+      copyStatus.textContent = "复制失败，请重试";
+      copy.title = "复制失败，请重试";
+      return;
+    }
     window.clearTimeout(resetCopy);
-    copy.textContent = "已复制";
+    setMessageActionIcon(copy, "已复制", "m5 12 4 4L19 6");
+    copyStatus.textContent = "已复制";
     copy.dataset.copied = "true";
     resetCopy = window.setTimeout(() => {
-      copy.textContent = "复制";
+      setMessageActionIcon(copy, copyLabel, copyPath);
+      copyStatus.textContent = "";
       copy.dataset.copied = "false";
     }, 1000);
   });
-  actions.append(copy);
+  actions.append(copy, copyStatus);
   const createdAt = Date.parse(String(entry?.created_at ?? ""));
   if (Number.isFinite(createdAt)) {
     const time = document.createElement("time");
@@ -1195,13 +1301,25 @@ function createConversationMessage(entry, options = {}) {
   content.className = "message__content";
   const rawBlocks = Array.isArray(entry?.content_blocks) ? entry.content_blocks : [];
   const blocks = rawBlocks.length > 0 ? rawBlocks : [{ type: "text", text: String(entry?.content ?? "") }];
+  let messageReasoning = null;
   for (const block of blocks) {
     if (!block || typeof block !== "object") continue;
     const type = String(block.type || "").replaceAll("_", "-");
     const text = String(block.text ?? "");
-    if (type === "reasoning" && text) {
-      content.append(createReasoningDisclosure(text).element);
+    if (type === "document" && /^[A-Za-z0-9._:-]+$/.test(block.report_run_id || "")) {
+      const prefix = `/api/reports/${encodeURIComponent(block.report_run_id)}/`;
+      if (String(block.preview_url || "").startsWith(prefix) && String(block.download_url || "").startsWith(prefix)) {
+        content.append(createMessageArtifactCard({name:block.title, path:block.preview_url, downloadUrl:block.download_url, format:block.format, reportId:block.report_run_id}));
+      }
+    } else if (type === "reasoning" && text) {
+      if (!messageReasoning) {
+        messageReasoning = createReasoningDisclosure(text);
+        content.append(messageReasoning.element);
+      } else {
+        messageReasoning.update(`${messageReasoning.body.textContent}\n\n${text}`);
+      }
     } else if (type === "text" && text) {
+      if (blocks.some(item => item?.type === "question" && String(item.prompt || "").trim() === text.trim())) continue;
       const body = document.createElement("p");
       body.className = "message__body";
       body.textContent = text;
@@ -1211,7 +1329,7 @@ function createConversationMessage(entry, options = {}) {
     }
   }
   const artifact = safeArtifactReference(messageText);
-  if (artifact) content.append(createMessageArtifactCard(artifact));
+  if (artifact && !blocks.some(block => block?.type === "document")) content.append(createMessageArtifactCard(artifact));
   article.append(content, actions);
   return article;
 }
@@ -1220,7 +1338,7 @@ export function renderMessages(target, messages, emptyText = "输入任务要求
   if (!target) return;
   target.closest(".chat-surface")?.classList.toggle("chat-surface--empty", !messages?.length);
   if (!messages?.length) {
-    target.innerHTML = `<section class="conversation-start"><div><div class="conversation-start__mark" aria-hidden="true"><img src="/capability/assets/icons/optionhelper-app-icon-tile-light.svg" alt=""></div><h2>开始一项结构化产品研究</h2><p class="conversation-start__copy">描述研究目标，或选择一个研究起点。</p><div class="conversation-starters"><button class="conversation-starter" type="button" data-starter-prompt="请根据我的标的、期限和风险偏好筛选合适的期权结构。"><strong>筛选候选结构</strong><span>根据标的、期限与风险约束缩小范围。</span></button><button class="conversation-starter" type="button" data-starter-prompt="请帮助我设计期权产品条款。"><strong>设计产品条款</strong><span>整理执行价、障碍与票息等条款。</span></button><button class="conversation-starter" type="button" data-starter-prompt="请列出本次估值需要的市场与模型输入。"><strong>准备估值输入</strong><span>梳理现价、波动率与利率假设。</span></button><button class="conversation-starter" type="button" data-starter-prompt="请建立本次期权结构的历史回测方案。"><strong>建立回测方案</strong><span>定义样本区间、入场与观察规则。</span></button></div><p class="conversation-start__note">${escapeText(emptyText)}</p></div></section>`;
+    target.innerHTML = `<section class="conversation-start"><div><div class="conversation-start__mark" aria-hidden="true"><img src="/capability/assets/icons/optionhelper-app-icon-tile-light.svg" alt=""></div><h2>开始一项结构化产品研究</h2><p class="conversation-start__copy">直接说想研究什么，不必记住产品编号或填完参数。</p><div class="conversation-starters"><button class="conversation-starter" type="button" data-starter-prompt="我想了解一种期权产品的收益与风险，请帮我从产品特点开始。"><strong>了解产品</strong><span>看懂收益、风险和适用条件。</span></button><button class="conversation-starter" type="button" data-starter-prompt="请根据我的标的、期限和风险偏好筛选合适的期权结构。"><strong>筛选结构</strong><span>从标的、期限和风险偏好出发。</span></button><button class="conversation-starter" type="button" data-starter-prompt="我想为已有产品定价或回测，请帮我确认需要的条款与数据。"><strong>定价与回测</strong><span>使用已有条款，补齐必要的数据。</span></button><button class="conversation-starter" type="button" data-starter-prompt="请把当前任务已有的研究结果整理成报告。"><strong>整理报告</strong><span>汇总已有分析，继续编辑或导出。</span></button></div><p class="empty">选择一个起点，或直接在下方输入；缺少的信息会在需要时向你确认。</p></div></section>`;
     return;
   }
   let activeQuestionIndex = -1;
@@ -1233,10 +1351,23 @@ export function renderMessages(target, messages, emptyText = "输入任务要求
       break;
     }
   }
-  target.replaceChildren(...messages.map((entry, index) => createConversationMessage(entry, {
+  const previousReasoning = [...target.querySelectorAll(".assistant-reasoning")];
+  const rendered = messages.map((entry, index) => createConversationMessage(entry, {
     ...options,
     questionActive: index === activeQuestionIndex,
-  })));
+  }));
+  for (const article of rendered) {
+    for (const next of article.querySelectorAll(".assistant-reasoning")) {
+      const text = reasoningControllers.get(next)?.body.textContent;
+      const index = previousReasoning.findIndex(node => reasoningControllers.get(node)?.body.textContent === text);
+      if (index < 0) continue;
+      const [previous] = previousReasoning.splice(index, 1);
+      reasoningControllers.get(next)?.destroy();
+      reasoningControllers.get(previous)?.update(text, false);
+      next.replaceWith(previous);
+    }
+  }
+  target.replaceChildren(...rendered);
   target.scrollTop = target.scrollHeight;
 }
 
@@ -1265,7 +1396,7 @@ export function renderReports(target, reports) {
     card.append(heading);
     if (preferred?.name) {
       const encodedArtifactName = String(preferred.name).split("/").map(encodeURIComponent).join("/");
-      const artifactPath = `/api/reports/${encodeURIComponent(report.report_run_id)}/artifacts/${encodedArtifactName}`;
+      const artifactPath = preferred.url || `/api/reports/${encodeURIComponent(report.report_run_id)}/artifacts/${encodedArtifactName}`;
       const actions = document.createElement("div");
       actions.className = "report-item__actions";
       const preview = document.createElement("a");
