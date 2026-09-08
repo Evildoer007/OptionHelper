@@ -28,7 +28,7 @@
               <a class="connection-item" href="#preferences"><svg class="settings-nav__icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 17h16M8 4v6M16 14v6"/><circle cx="8" cy="7" r="2"/><circle cx="16" cy="17" r="2"/></svg><strong>通用设置</strong></a>
               <a class="connection-item" href="#runtime"><svg class="settings-nav__icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16v11H4zM8 21h8M12 17v4M7 10h2M11 10h6M7 13h4"/></svg><strong>运行状态</strong></a>
               <a class="connection-item" href="#model"><svg class="settings-nav__icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5.5C5 4.1 8.1 3 12 3s7 1.1 7 2.5v5c0 1.4-3.1 2.5-7 2.5s-7-1.1-7-2.5zM5 5.5C5 6.9 8.1 8 12 8s7-1.1 7-2.5M5 10.5v5c0 1.4 3.1 2.5 7 2.5M16 16.5v4M14 18.5h4"/></svg><strong>模型配置</strong></a>
-              <a class="connection-item" href="#multi-agent"><svg class="settings-nav__icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="6" r="2.5"/><circle cx="6" cy="16" r="2.5"/><circle cx="18" cy="16" r="2.5"/><path d="M10.5 8l-3 5.5M13.5 8l3 5.5M8.5 16h7"/></svg><strong>多智能体预设</strong></a>
+              <a class="connection-item" href="#multi-agent"><svg class="settings-nav__icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="6" r="2.5"/><circle cx="6" cy="16" r="2.5"/><circle cx="18" cy="16" r="2.5"/><path d="M10.5 8l-3 5.5M13.5 8l3 5.5M8.5 16h7"/></svg><strong>智能体预设</strong></a>
               <a class="connection-item" href="#data" data-settings-data-link hidden><svg class="settings-nav__icon" viewBox="0 0 24 24" aria-hidden="true"><ellipse cx="12" cy="5.5" rx="7" ry="2.7"/><path d="M5 5.5v6.5c0 1.5 3.1 2.7 7 2.7s7-1.2 7-2.7V5.5M5 12v6.5c0 1.5 3.1 2.7 7 2.7s7-1.2 7-2.7V12"/></svg><strong>数据接口</strong></a>
               <a class="connection-item" href="#storage"><svg class="settings-nav__icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7.5h16v11H4zM7 4.5h10v3H7zM8 12h8M12 9v6"/></svg><strong>存储与导出</strong></a>
             </nav>
@@ -70,25 +70,25 @@
               <div class="setting-section__head"><div><h2>运行状态</h2><p>区分已声明配置、实时探测和正式能力验证。</p></div><button class="button-quiet" type="button" id="refresh-runtime">刷新状态</button></div>
               <dl class="runtime-status-list" aria-live="polite">
                 <div><dt>应用服务</dt><dd><strong data-runtime-host>尚未探测</strong><span data-runtime-host-detail>等待读取应用服务状态</span></dd></div>
-                <div><dt>Capability</dt><dd><strong data-runtime-capability>尚未探测</strong><span data-runtime-capability-detail>等待校验模块资源</span></dd></div>
+                <div><dt>分析模块</dt><dd><strong data-runtime-capability>尚未探测</strong><span data-runtime-capability-detail>等待校验模块资源</span></dd></div>
                 <div><dt>Python环境</dt><dd><strong>App内置运行时</strong><span>由应用服务统一管理；公共接口不展示独立依赖明细。</span></dd></div>
-                <div><dt>默认模型</dt><dd><strong data-runtime-model>未验证</strong><span data-runtime-model-detail>保存Provider只代表已声明，不代表工具调用能力可用。</span><button class="button-quiet runtime-status-action" type="button" id="verify-model-capability">验证完整模型能力</button></dd></div>
-                <div><dt>iFind数据</dt><dd><strong data-runtime-data>未配置</strong><span data-runtime-data-detail>保存Refresh Token后仍需在数据接口页执行连接测试。</span></dd></div>
+                <div><dt>默认模型</dt><dd><strong data-runtime-model>未验证</strong><span data-runtime-model-detail>保存Provider只代表已声明，不代表工具调用能力可用。</span><button class="button-quiet runtime-status-action" type="button" id="verify-model-capability">重新测试连接</button></dd></div>
+                <div><dt>iFind数据</dt><dd><strong data-runtime-data>未配置</strong><span data-runtime-data-detail>保存Refresh Token后自动测试连接。</span></dd></div>
               </dl>
               <p class="form-result" data-form-result="runtime" role="status" aria-live="polite"></p>
             </section>
             <section id="model" class="setting-section" hidden>
-              <div class="setting-section__head"><div><h2>模型配置</h2><p>填入各Provider的API密钥并保存后，仍需完成能力验证才能确认正式工具调用可用。</p></div><span class="connection-status" data-model-status>未配置</span></div>
+              <div class="setting-section__head"><div><h2>模型配置</h2><p>保存API密钥后自动测试连接与模型能力。</p></div><span class="connection-status" data-model-status>未配置</span></div>
               <div id="model-provider-root" class="model-provider-root" aria-live="polite"></div>
             </section>
             <section id="multi-agent" class="setting-section" hidden>
-              <div class="setting-section__head"><div><h2>多智能体预设</h2><p>为每个Agent设置模型和AGENT.md。配置仅在Recommender新任务中生效。</p></div></div>
+              <div class="setting-section__head"><div><h2>智能体预设</h2><p>默认单Agent；需要分工评审时可切换多Agent。修改对下一次推荐生效。</p></div></div>
               <div id="multi-agent-preset-root" class="multi-agent-preset-root" aria-live="polite"></div>
               <div id="review-policy-root" class="review-policy-root" aria-live="polite"></div>
             </section>
             <section id="data" class="setting-section" hidden>
               <div class="setting-section__head"><div><h2>数据接口</h2><p>连接iFind市场数据。</p></div><span class="connection-status" data-data-status>未配置</span></div>
-              <p>管理员可选配置。只需保存Refresh Token，App会在取数时自动获取有效的访问凭据。</p>
+              <p>保存自己的Refresh Token，OptChat会在取数时自动获取访问凭据。</p>
               <form id="data-form" class="setup-form" autocomplete="off" novalidate>
                 <input name="provider_name" type="hidden" value="ifind-http">
                 <div class="field field--wide" data-field-spec>
@@ -97,7 +97,7 @@
                   <small class="field-spec" id="ifind-refresh-spec"><span data-purpose>由App自动获取可用的访问凭据</span><span data-example hidden>iFind控制台复制的完整Refresh Token</span><span data-default hidden>未配置</span></small>
                   <small class="field-note" id="data-credential-state">保存后仅写入当前设备的OptionHelper数据目录。</small>
                 </div>
-                <div class="form-foot field--wide"><p class="form-result" data-form-result="data" role="status" aria-live="polite"></p><div><button class="button-quiet" type="button" id="test-data">测试已保存连接</button><button class="button-primary">保存iFind凭据</button></div></div>
+                <div class="form-foot field--wide"><p class="form-result" data-form-result="data" role="status" aria-live="polite"></p><div><button class="button-quiet" type="button" id="test-data">重新测试</button><button class="button-primary" type="submit">保存并测试</button></div></div>
               </form>
             </section>
             <section id="storage" class="setting-section" hidden>
