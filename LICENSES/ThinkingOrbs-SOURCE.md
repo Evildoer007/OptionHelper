@@ -11,4 +11,4 @@ The OH adapter in`thinking-orb.js`uses`MODE_FRAMES`, `resolvePreset`and`paintFra
 
 Animation states are derived from actual conversation events. No percentage or estimated progress is invented. Reduced motion renders a representative static frame; hidden and offscreen instances do no animation work.
 
-The adapter now separates semantic phase from visual geometry. During a sustained active phase, a phase-specific playlist blends between upstream presets every3.6seconds. Labels remain tied to actual events. Paused, reduced-motion and offscreen states never advance the playlist.
+Each semantic activity selects its corresponding upstream preset. Geometry changes only when a real activity changes; there is no timed playlist. The same clock continues through blended transitions. Collapsed live process summaries retain an inline animated orb until the request reaches a terminal state.
