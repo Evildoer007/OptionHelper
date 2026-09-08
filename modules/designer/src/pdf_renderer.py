@@ -41,13 +41,27 @@ class PdfRuntimeError(RuntimeError):
     """Raised when the pinned local PDF runtime is not usable."""
 
 
-BlockKind = Literal["heading", "paragraph", "item", "caption", "table", "metric_grid", "chart", "svg"]
+BlockKind = Literal["conclusion", "heading", "paragraph", "item", "caption", "table_caption", "table", "metric_grid", "chart", "svg", "image"]
 class PdfTableRows(list[list[str]]):
     """Table rows carrying the density already selected by HTML rendering."""
 
     def __init__(self, *, density: str = "normal") -> None:
         super().__init__()
         self.density = density if density in {"normal", "compact", "dense"} else "normal"
+        self.spans: list[tuple[tuple[int, int], tuple[int, int]]] = []
+        self.occupied: set[tuple[int, int]] = set()
+
+    def append_cell(self, row: list[str], value: str, colspan: int, rowspan: int) -> None:
+        row_index = len(self)
+        while (row_index, len(row)) in self.occupied:
+            row.append("")
+        column = len(row)
+        row.extend([value] + [""] * (colspan - 1))
+        if colspan > 1 or rowspan > 1:
+            self.spans.append(((column, row_index), (column + colspan - 1, row_index + rowspan - 1)))
+            for y in range(row_index, row_index + rowspan):
+                for x in range(column, column + colspan):
+                    self.occupied.add((y, x))
 
 
 PdfBlock = tuple[BlockKind, int, str | list[list[str]]]
@@ -170,9 +184,11 @@ class _PublicHtmlParser(HTMLParser):
         self.blocks: list[PdfBlock] = []
         self._ignored = 0
         self._active: list[tuple[str, list[str]]] = []
+        self._conclusion_parts: set[int] = set()
         self._table_rows: PdfTableRows | None = None
         self._table_row: list[str] | None = None
         self._cell: list[str] | None = None
+        self._cell_span = (1, 1)
         self._metric_grid: list[dict[str, str]] | None = None
         self._metric_item: dict[str, str] | None = None
         self._metric_field_name: str | None = None
@@ -205,6 +221,9 @@ class _PublicHtmlParser(HTMLParser):
                 if svg:
                     self.blocks.append(("svg", 0, svg))
                     return
+            if src.lower().startswith("data:image/"):
+                self.blocks.append(("image", 0, src))
+                return
             alt = _clean_text(attributes.get("alt") or "")
             if alt:
                 self.blocks.append(("caption", 0, f"图示：{alt}"))
@@ -233,6 +252,17 @@ class _PublicHtmlParser(HTMLParser):
             return
         if tag in {"th", "td"} and self._table_row is not None:
             self._cell = []
+            attributes = dict(attrs)
+            spans = []
+            for name in ("colspan", "rowspan"):
+                try:
+                    value = int(attributes.get(name) or 1)
+                except ValueError:
+                    value = 1
+                if value > 256:
+                    raise PdfRuntimeError("PDF表格合并范围超过允许大小。")
+                spans.append(max(1, value))
+            self._cell_span = tuple(spans)
             return
         class_name = dict(attrs).get("class") or ""
         if tag == "div" and "chart" in class_name.split():
@@ -272,7 +302,10 @@ class _PublicHtmlParser(HTMLParser):
             self._metric_item = {}
             return
         if tag in self._TEXT_TAGS:
-            self._active.append((tag, []))
+            parts: list[str] = []
+            self._active.append((tag, parts))
+            if {"conclusion-band__label", "conclusion-heading"} & set(class_name.split()):
+                self._conclusion_parts.add(id(parts))
 
     def handle_endtag(self, tag: str) -> None:
         tag = tag.lower()
@@ -307,7 +340,8 @@ class _PublicHtmlParser(HTMLParser):
             return
         if tag in {"th", "td"} and self._cell is not None:
             if self._table_row is not None:
-                self._table_row.append(_clean_text("".join(self._cell)))
+                assert self._table_rows is not None
+                self._table_rows.append_cell(self._table_row, _clean_text("".join(self._cell)), *self._cell_span)
             self._cell = None
             return
         if tag == "div" and self._metric_field_name is not None:
@@ -366,8 +400,11 @@ class _PublicHtmlParser(HTMLParser):
                 ]))
             return
         if tag == "tr" and self._table_row is not None:
-            if any(_clean_text(item) for item in self._table_row):
-                assert self._table_rows is not None
+            assert self._table_rows is not None
+            occupied = [column for row, column in self._table_rows.occupied if row == len(self._table_rows)]
+            if occupied:
+                self._table_row.extend([""] * max(0, max(occupied) + 1 - len(self._table_row)))
+            if self._table_row:
                 self._table_rows.append(list(self._table_row))
             self._table_row = None
             return
@@ -383,13 +420,23 @@ class _PublicHtmlParser(HTMLParser):
                 continue
             self._active.pop(index)
             value = _clean_text("".join(parts))
+            is_conclusion = id(parts) in self._conclusion_parts
+            self._conclusion_parts.discard(id(parts))
             if not value:
+                return
+            if is_conclusion:
+                self.blocks.append(("conclusion", 0, value))
                 return
             if tag.startswith("h") and len(tag) == 2 and tag[1].isdigit():
                 self.blocks.append(("heading", int(tag[1]), value))
             elif tag == "li":
                 self.blocks.append(("item", 0, value))
-            elif tag in {"caption", "figcaption"}:
+            elif tag == "caption":
+                # Older saved reports may have both an h3 and an identical
+                # table caption. Preserve one title before the table.
+                if not (self.blocks and self.blocks[-1][0] == "heading" and self.blocks[-1][2] == value):
+                    self.blocks.append(("table_caption", 0, value))
+            elif tag == "figcaption":
                 self.blocks.append(("caption", 0, value))
             else:
                 self.blocks.append(("paragraph", 0, value))
@@ -622,6 +669,13 @@ def _mixed_markup(value: str, *, latin_font: str, cjk_font: str) -> str:
 
     if not value:
         return ""
+    # HTML editors preserve literal Unicode subscripts in ordinary text.
+    # Render them with embedded ASCII glyphs and a real baseline shift.
+    value = re.sub(
+        "[₀₁₂₃₄₅₆₇₈₉₊₋₌₍₎]+",
+        lambda match: _SUB_OPEN + match.group().translate(str.maketrans("₀₁₂₃₄₅₆₇₈₉₊₋₌₍₎", "0123456789+-=()")) + _SUB_CLOSE,
+        value,
+    )
     value = _SCIENTIFIC_SUPERSCRIPT_RUN.sub(
         lambda match: _SUPER_OPEN + match.group(0).translate(_SCIENTIFIC_SUPERSCRIPT_ASCII) + _SUPER_CLOSE,
         value,
@@ -686,6 +740,35 @@ def _rich_paragraph(markup: str, style: object) -> object:
     return Paragraph(markup, style)
 
 
+def _table_column_panels(rows: list[list[str]], *, content_width: float) -> list[list[list[str]]]:
+    """Paginate wide factual tables horizontally, repeating their row labels.
+
+    Keep every data column and project merged cells into each panel instead of
+    shrinking dozens of numeric columns below a readable width.
+    """
+    count = max((len(row) for row in rows), default=0)
+    capacity = max(2, int(content_width // 64))
+    if count <= capacity:
+        return [rows]
+    normalized = [list(row) + [""] * (count - len(row)) for row in rows]
+    panels = []
+    for offset in range(1, count, capacity - 1):
+        columns = [0, *range(offset, min(count, offset + capacity - 1))]
+        panel = PdfTableRows(density=getattr(rows, "density", "normal"))
+        panel.extend([[row[column] for column in columns] for row in normalized])
+        for start, end in getattr(rows, "spans", []):
+            included = [index for index, column in enumerate(columns) if start[0] <= column <= end[0]]
+            if not included or start[1] >= len(panel):
+                continue
+            first, last = included[0], included[-1]
+            bottom = min(end[1], len(panel) - 1)
+            panel[start[1]][first] = normalized[start[1]][start[0]]
+            if first != last or bottom != start[1]:
+                panel.spans.append(((first, start[1]), (last, bottom)))
+        panels.append(panel)
+    return panels
+
+
 def _table_flowable(
     rows: list[list[str]],
     *,
@@ -723,7 +806,12 @@ def _table_flowable(
     remaining = max(0.0, content_width - min_width * column_count)
     weight_total = sum(weights) or 1.0
     col_widths = [min_width + remaining * weight / weight_total for weight in weights]
-    table = Table(data, colWidths=col_widths, repeatRows=1, hAlign="LEFT")
+    spans = [(start, (end[0], min(end[1], len(data) - 1))) for start, end in getattr(rows, "spans", [])]
+    # A span crossing the first row cannot be repeated independently on a new page.
+    repeat_rows = 0 if any(start[1] == 0 and end[1] > 0 for start, end in spans) else 1
+    table = Table(data, colWidths=col_widths, repeatRows=repeat_rows, hAlign="LEFT")
+    if spans:
+        table.setStyle(TableStyle([("SPAN", start, end) for start, end in spans]))
     table.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(TOKEN_COLORS["brand_red_soft"])),
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor(TOKEN_COLORS["table_head_ink"])),
@@ -751,7 +839,8 @@ def _metric_grid_flowable(
     from reportlab.lib import colors
     from reportlab.platypus import Table, TableStyle
 
-    columns = 3 if len(rows) >= 3 else max(1, len(rows))
+    # Four facts use two complete rows at the existing metric font size.
+    columns = 2 if len(rows) == 4 else 3 if len(rows) >= 3 else max(1, len(rows))
     cells: list[object] = []
     for label, value, note in rows:
         line = _mixed_markup(label, latin_font=latin_font, cjk_font=cjk_font)
@@ -883,7 +972,7 @@ def _svg_flowable(markup: str, *, content_width: float, latin_font: str, cjk_fon
         root = ElementTree.fromstring(markup)
     except ElementTree.ParseError as error:
         raise PdfRuntimeError("收益图SVG格式无效，无法生成等价PDF图形。") from error
-    view_box = (root.get("viewBox") or "").replace(",", " ").split()
+    view_box = (root.get("viewBox") or root.get("viewbox") or "").replace(",", " ").split()
     source_width = _svg_number(root.get("width"), 1200.0)
     source_height = _svg_number(root.get("height"), 566.0)
     if len(view_box) == 4:
@@ -1136,8 +1225,10 @@ def _chart_flowable(spec: Mapping[str, Any], *, content_width: float, latin_font
                     for index, item in enumerate(list(entry.get("data") or [])):
                         value = number(item)
                         if value is None:
+                            points.append(None)
                             continue
-                        x = left + plot_width * min(index, count) / count
+                        x = (left + plot_width * (index + .5) / max(1, len(x_values)) if chart_type == "bar"
+                             else left + plot_width * min(index, count) / count)
                         y = bottom + (value - low) / (high - low) * plot_height
                         points.append((x, y))
                     color = colors.HexColor(palette[series_index % len(palette)])
@@ -1145,18 +1236,27 @@ def _chart_flowable(spec: Mapping[str, Any], *, content_width: float, latin_font
                     canvas.setFillColor(color)
                     canvas.setLineWidth(1.6)
                     if chart_type == "bar":
-                        bar_width = max(2.0, plot_width / max(1, len(x_values)) / max(1, len(series)))
-                        for point_index, (x, y) in enumerate(points):
+                        bar_width = plot_width / max(1, len(x_values)) / max(1, len(series))
+                        for point in points:
+                            if point is None:
+                                continue
+                            x, y = point
                             baseline = bottom + (0 - low) / (high - low) * plot_height
                             center_offset = (series_index - (len(series) - 1) / 2) * bar_width
                             canvas.rect(x + center_offset - bar_width * .4, min(baseline, y), bar_width * .8, abs(y - baseline), fill=1, stroke=0)
                     else:
                         path = canvas.beginPath()
-                        for point_index, (x, y) in enumerate(points):
-                            (path.moveTo if point_index == 0 else path.lineTo)(x, y)
+                        start_segment = True
+                        for point in points:
+                            if point is None:
+                                start_segment = True
+                                continue
+                            (path.moveTo if start_segment else path.lineTo)(*point)
+                            start_segment = False
                         canvas.drawPath(path, stroke=1, fill=0)
-                        for x, y in points:
-                            canvas.circle(x, y, 1.8, stroke=0, fill=1)
+                        for point in points:
+                            if point is not None:
+                                canvas.circle(*point, 1.8, stroke=0, fill=1)
                 canvas.setFont(latin_font, 6.8)
                 canvas.setFillColor(colors.HexColor(TOKEN_COLORS["muted"]))
                 for tick in range(5):
@@ -1166,7 +1266,9 @@ def _chart_flowable(spec: Mapping[str, Any], *, content_width: float, latin_font
                 if x_values:
                     labels = [str(x_values[index]) for index in range(0, len(x_values), max(1, math.ceil(len(x_values) / 6)))]
                     for index, label in enumerate(labels):
-                        x = left + plot_width * index * max(1, math.ceil(len(x_values) / 6)) / count
+                        source_index = index * max(1, math.ceil(len(x_values) / 6))
+                        x = (left + plot_width * (source_index + .5) / len(x_values) if chart_type == "bar"
+                             else left + plot_width * source_index / count)
                         canvas.setFont(cjk_font if any(not char.isascii() for char in label) else latin_font, 6.8)
                         canvas.drawCentredString(x, bottom - 12, label[:12])
             title = str(spec.get("title") or "图表")
@@ -1176,6 +1278,36 @@ def _chart_flowable(spec: Mapping[str, Any], *, content_width: float, latin_font
             canvas.restoreState()
 
     return _Chart()
+
+
+def _raster_image_flowable(source: str, *, content_width: float, max_height: float) -> object:
+    """Decode inline pixels locally, preserving aspect ratio within one page."""
+    from io import BytesIO
+    from PIL import Image as PillowImage
+    from reportlab.platypus import Image
+
+    match = re.fullmatch(r"data:image/(png|jpeg|gif|webp);base64,([A-Za-z0-9+/=\s]+)", source, re.IGNORECASE)
+    if not match:
+        raise PdfRuntimeError("PDF图片必须是受支持的内嵌图片。")
+    try:
+        content = base64.b64decode(re.sub(r"\s+", "", match.group(2)), validate=True)
+        if len(content) > 6 * 1024 * 1024:
+            raise ValueError("image byte limit")
+        with PillowImage.open(BytesIO(content)) as picture:
+            if picture.width * picture.height > 36_000_000:
+                raise ValueError("image pixel limit")
+            if str(picture.format or "").casefold() != match.group(1).casefold():
+                raise ValueError("image type mismatch")
+            picture.load()
+            width, height = picture.size
+            normalized = BytesIO()
+            picture.convert("RGBA").save(normalized, format="PNG")
+    except Exception as error:
+        raise PdfRuntimeError("PDF图片内容损坏或尺寸超过允许范围。") from error
+    scale = min(1.0, content_width / width, max_height / height)
+    flowable = Image(BytesIO(normalized.getvalue()), width=width * scale, height=height * scale)
+    flowable.hAlign = "CENTER"
+    return flowable
 
 
 def render_pdf(html_content: str, *, chart_specs: Mapping[str, Mapping[str, Any]] | None = None) -> bytes:
@@ -1198,7 +1330,6 @@ def render_pdf(html_content: str, *, chart_specs: Mapping[str, Mapping[str, Any]
         CondPageBreak,
         Frame,
         HRFlowable,
-        KeepTogether,
         PageTemplate,
         Spacer,
         Table,
@@ -1223,6 +1354,8 @@ def render_pdf(html_content: str, *, chart_specs: Mapping[str, Mapping[str, Any]
     # ``[data-output-type=\"card\"]`` even in a detailed Report.  Only a real
     # document element may select the compact one-page PDF geometry.
     is_card = bool(re.search(r'<(?:body|main|article)\b[^>]*\bdata-output-type\s*=\s*["\']card["\']', html_content, re.IGNORECASE))
+    if re.search(r'<body\b[^>]*designer-multicard-page', html_content, re.I):
+        is_card = False
     title = next(
         (str(value) for kind, level, value in blocks if kind == "heading" and level == 1),
         "单个期权结构推荐报告",
@@ -1266,9 +1399,15 @@ def render_pdf(html_content: str, *, chart_specs: Mapping[str, Mapping[str, Any]
                                  textColor=colors.HexColor(TOKEN_COLORS["ink_soft"])),
     }
 
+    styles["conclusion"] = ParagraphStyle("conclusion", parent=styles["section"], textColor=colors.HexColor(TOKEN_COLORS["gold_ink"]), keepWithNext=True)
+    styles["table_caption"] = ParagraphStyle("table_caption", parent=styles["caption"], keepWithNext=True)
+
     def block_flowables(source_blocks: list[PdfBlock], *, available_width: float) -> list[object]:
         result: list[object] = []
         for kind, level, raw in source_blocks:
+            if kind == "conclusion":
+                result.append(_paragraph(str(raw), styles["conclusion"], latin_font=latin_font, cjk_font=cjk_font))
+                continue
             if kind == "heading":
                 if level == 1:
                     result.append(_paragraph(str(raw), styles["title"], latin_font=latin_font, cjk_font=cjk_font))
@@ -1278,9 +1417,9 @@ def render_pdf(html_content: str, *, chart_specs: Mapping[str, Mapping[str, Any]
                         result.append(CondPageBreak(72))
                     heading = _paragraph(str(raw), styles["section"], latin_font=latin_font, cjk_font=cjk_font)
                     rule = HRFlowable(width="100%", thickness=.45, color=colors.HexColor(TOKEN_COLORS["rule_strong"]), spaceAfter=5)
-                    result.append(KeepTogether([heading, rule]) if not compact else heading)
-                    if compact:
-                        result.append(rule)
+                    heading.keepWithNext = True
+                    rule.keepWithNext = True
+                    result.extend([heading, rule])
                 else:
                     result.append(_paragraph(str(raw), styles["subsection"], latin_font=latin_font, cjk_font=cjk_font))
                 continue
@@ -1292,8 +1431,14 @@ def render_pdf(html_content: str, *, chart_specs: Mapping[str, Mapping[str, Any]
             if kind == "table":
                 rows = raw if isinstance(raw, list) else []
                 if rows:
-                    result.append(_table_flowable(rows, content_width=available_width, styles=styles, latin_font=latin_font, cjk_font=cjk_font, compact=compact))
-                    result.append(Spacer(1, 5))
+                    for panel in _table_column_panels(rows, content_width=available_width):
+                        result.append(_table_flowable(panel, content_width=available_width, styles=styles, latin_font=latin_font, cjk_font=cjk_font, compact=compact))
+                        result.append(Spacer(1, 5))
+                continue
+            if kind == "image":
+                result.append(_raster_image_flowable(str(raw), content_width=available_width,
+                                                    max_height=report_page_height - top - bottom - 24))
+                result.append(Spacer(1, 5))
                 continue
             if kind == "svg":
                 result.append(_svg_flowable(str(raw), content_width=available_width, latin_font=latin_font, cjk_font=cjk_font))
@@ -1309,7 +1454,7 @@ def render_pdf(html_content: str, *, chart_specs: Mapping[str, Mapping[str, Any]
             if kind == "item":
                 result.append(_paragraph("• " + str(raw), styles["item"], latin_font=latin_font, cjk_font=cjk_font))
                 continue
-            style = styles["caption"] if kind == "caption" else styles["body"]
+            style = styles[kind] if kind in {"caption", "table_caption"} else styles["body"]
             result.append(_paragraph(str(raw), style, latin_font=latin_font, cjk_font=cjk_font))
         return result
 
