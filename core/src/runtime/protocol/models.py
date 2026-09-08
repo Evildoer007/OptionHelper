@@ -246,6 +246,7 @@ class ObservedContractState:
     occurred_events: tuple[ObservedContractEvent, ...] = ()
     realized_cashflows: tuple[RealizedCashflow, ...] = ()
     source_refs: tuple[str, ...] = ()
+    observation_history: Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
         if self.valuation_date is not None:
@@ -258,8 +259,12 @@ class ObservedContractState:
             raise TypeError("ObservedContractState.realized_cashflows必须为Host冻结RealizedCashflow元组")
         if not isinstance(self.source_refs, tuple) or any(not isinstance(item, str) or not item.strip() for item in self.source_refs):
             raise TypeError("ObservedContractState.source_refs必须为非空字符串元组")
-        if (self.occurred_events or self.realized_cashflows) and not self.source_refs:
+        if (self.occurred_events or self.realized_cashflows or self.observation_history) and not self.source_refs:
             raise ValueError("ObservedContractState含已发生事实时必须提供source_refs")
+        if self.observation_history is not None:
+            object.__setattr__(self, "observation_history", validate_observation_history(
+                self.observation_history, valuation_date=self.valuation_date,
+            ))
         if self.valuation_date is not None:
             cutoff = date.fromisoformat(self.valuation_date)
             if any(date.fromisoformat(item.event_date) > cutoff for item in self.occurred_events):
@@ -270,7 +275,7 @@ class ObservedContractState:
     def from_host_payload(cls, value: Mapping[str, Any]) -> "ObservedContractState":
         if not isinstance(value, Mapping):
             raise TypeError("observed_contract_state必须为Host对象")
-        allowed = {"valuation_date", "lifecycle_status", "occurred_events", "realized_cashflows", "source_refs"}
+        allowed = {"valuation_date", "lifecycle_status", "occurred_events", "realized_cashflows", "source_refs", "observation_history"}
         unknown = set(value) - allowed
         if unknown:
             raise ValueError("observed_contract_state含未知字段：" + ",".join(sorted(str(item) for item in unknown)))
@@ -285,6 +290,7 @@ class ObservedContractState:
             occurred_events=events,
             realized_cashflows=cashflows,
             source_refs=tuple(source_refs),
+            observation_history=value.get("observation_history"),
         )
 
     def _content_payload(self) -> dict[str, Any]:
@@ -294,10 +300,41 @@ class ObservedContractState:
             "occurred_events": [item.to_protocol_dict() for item in self.occurred_events],
             "realized_cashflows": [item.to_protocol_dict() for item in self.realized_cashflows],
             "source_refs": list(self.source_refs),
+            **({"observation_history": deep_thaw(self.observation_history)} if self.observation_history is not None else {}),
         }
 
     def to_protocol_dict(self) -> dict[str, Any]:
         return self._content_payload()
+
+
+def validate_observation_history(value: Mapping[str, Any], *, valuation_date: str | None) -> Mapping[str, Any]:
+    """冻结实际交易日价格；该对象不允许未来行情或未标明来源的累计假设。"""
+    fields = {"dates", "asset_ids", "close", "price_fields"}
+    if not isinstance(value, Mapping) or set(value) != fields:
+        raise ValueError("observation_history必须包含dates、asset_ids、close和price_fields")
+    dates, assets = value["dates"], value["asset_ids"]
+    if not isinstance(dates, (tuple, list)) or not dates:
+        raise ValueError("observation_history.dates必须为非空交易日序列")
+    for day in dates:
+        _require_iso_date(day, "observation_history.dates")
+    if tuple(dates) != tuple(sorted(set(dates))) or valuation_date is None or dates[-1] != valuation_date:
+        raise ValueError("observation_history日期必须严格递增并截止于实际估值会话")
+    if not isinstance(assets, (tuple, list)) or not assets or len(set(assets)) != len(assets):
+        raise ValueError("observation_history.asset_ids必须为不重复的标的序列")
+    for asset in assets:
+        _require_nonempty_text(asset, "observation_history.asset_ids")
+    price_fields = value["price_fields"]
+    if not isinstance(price_fields, Mapping) or set(price_fields) - {"open", "high", "low"}:
+        raise ValueError("observation_history.price_fields仅允许open、high和low")
+    for name, matrix in {"close": value["close"], **dict(price_fields)}.items():
+        if not isinstance(matrix, (tuple, list)) or len(matrix) != len(dates):
+            raise ValueError(f"observation_history.{name}必须逐日覆盖")
+        for row in matrix:
+            if not isinstance(row, (tuple, list)) or len(row) != len(assets):
+                raise ValueError(f"observation_history.{name}必须逐一覆盖标的")
+            if any(isinstance(x, bool) or not isinstance(x, (int, float)) or not isfinite(x) or x <= 0 for x in row):
+                raise ValueError(f"observation_history.{name}价格必须为有限正数")
+    return deep_freeze(value)
 
 
 @dataclass(frozen=True)
