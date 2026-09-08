@@ -8,7 +8,6 @@ Gateway boundaries without a localhost HTTP hop.
 from __future__ import annotations
 
 import hashlib
-import json
 import math
 import re
 import sys
@@ -16,7 +15,7 @@ from dataclasses import replace
 from runpy import run_path
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from threading import RLock, Timer
+from threading import RLock, Timer, Event, Thread
 from typing import Any, Callable
 from uuid import uuid4
 
@@ -36,13 +35,14 @@ from modules.recommender.ports import AgentPort, AgentRunReceipt, AgentStepResul
 from modules.recommender.service import RecommendationInputRequired, RecommenderService
 from modules.recommender.config import RecommenderConfig
 from modules.recommender.interaction import (
-    classify_term_change,
     merge_confirmed_constraints,
 )
 from runtime.protocol.models import ModuleRunRef
 
 from ..errors import AuthorizationError, UnavailableCapabilityError, UserActionError, ValidationError
 from ..identity.session_identity import SessionIdentity
+from runtime.workflow_policy import recommendation_execution_mode
+from ..model_gateway.request_control import ModelRequestControl
 from ..model_gateway.gateway import ModelGateway
 from ..settings.settings_models import ModelSelection
 from ..page_registry import PageRegistry
@@ -333,6 +333,67 @@ class RuntimeEventPersistenceSink:
             self._persist(event)
         except Exception:
             self.persistence_failures += 1
+
+
+class SingleAgentRecommendationPort:
+    """One conversation model performs sequential phases without child Agents."""
+
+    def __init__(self, gateway, identity, task_id, selection=None, *, is_cancelled=None):
+        self.gateway, self.identity, self.task_id = gateway, identity, task_id
+        self.selection = selection
+        self.is_cancelled = is_cancelled or (lambda *_: False)
+        self.session_id = f"single-recommendation-{uuid4().hex}"
+        self.history = []
+        self.closed = False
+
+    def capability(self):
+        value = (self.gateway.capability_for(self.identity) if self.selection is None
+                 else self.gateway.capability_for(self.identity, selection=self.selection))
+        return ModelCapability.from_mapping({**value, "multi_agent": False,
+                                            "max_parallel_agents": 1, "independent_child_sessions": False})
+
+    def run_step(self, role, payload):
+        if self.closed or self.is_cancelled(self.identity, self.task_id):
+            raise UnavailableCapabilityError("单Agent推荐", "本次推荐已取消。")
+        if len(self.history) >= 6:
+            raise ValidationError("单Agent推荐超过本次步骤预算")
+        request = _safe_model_payload(payload)
+        control = ModelRequestControl(90)
+        done = Event()
+        def watch_cancel():
+            while not done.wait(.1):
+                if self.is_cancelled(self.identity, self.task_id):
+                    control.cancel("用户取消推荐")
+                    return
+        watcher = Thread(target=watch_cancel, daemon=True)
+        watcher.start()
+        try:
+            response = self.gateway.decide_for(self.identity, self.task_id, {
+                "operation": "recommender_fixed_step",
+                "workflow": "optionhelper.recommender", "execution_mode": "single_agent",
+                "role": role, "input": request, "previous_steps": list(self.history),
+                "rule": "你是同一个推荐助手，依次完成需求理解、筛选和复核。只返回{action:'final',result:{...}}，遵守input中的required_output；不得编造产品或计算数值。",
+            }, selection=self.selection, request_control=control)
+            control.raise_if_cancelled()
+            if self.is_cancelled(self.identity, self.task_id):
+                raise UnavailableCapabilityError("单Agent推荐", "本次推荐已取消。")
+            if not isinstance(response, Mapping) or response.get("action") != "final" or not isinstance(response.get("result"), Mapping):
+                raise ValidationError("单Agent推荐未返回有效结构化结果")
+            result = dict(response["result"])
+            hidden_field = _hidden_model_field(result)
+            if hidden_field:
+                raise ValidationError(f"推荐结果不得包含推理或Secret字段：{hidden_field}")
+            self.history.append({"phase": role, "result": result})
+            return AgentStepResult(receipt=AgentRunReceipt(
+                agent_run_id=f"single-step-{uuid4().hex}", child_session_id=self.session_id,
+                role=role, input_hash=canonical_hash(request), output_hash=canonical_hash(result),
+            ), result=result)
+        finally:
+            done.set()
+            watcher.join(timeout=1)
+
+    def close(self):
+        self.closed = True
 
 
 class AppAgentPort(AgentPort):
@@ -658,6 +719,10 @@ class RecommenderAdapter:
         key = self._runtime_task_key(identity, task_id)
         with self._runtime_lock:
             existing = self._task_runtimes.get(key)
+            if existing is not None and getattr(existing.get("runtime"), "closed", False):
+                self._close_runtime_entry(existing, reason="runtime_closed")
+                self._task_runtimes.pop(key, None)
+                existing = None
             if existing is not None and existing.get("preset_id") == preset_id:
                 if int(existing.get("active_count", 0)) != 0:
                     raise ValidationError("同一Task已有Recommender运行，不能并发复用Child Session")
@@ -757,6 +822,10 @@ class RecommenderAdapter:
             current = self._task_runtimes.get(key)
             if current is not entry:
                 return
+            if getattr(current.get("runtime"), "closed", False):
+                self._task_runtimes.pop(key, None)
+                self._close_runtime_entry(current, reason="runtime_closed")
+                return
             current["active_count"] = max(0, int(current.get("active_count", 1)) - 1)
             if current["active_count"]:
                 return
@@ -841,8 +910,11 @@ class RecommenderAdapter:
         result = dict(self._run_fixed_internal(
             identity, task_id, prompt, arguments, selection=selection, execution_ids=execution_ids,
         ))
+        recommendation = result.get("recommendation_set")
+        candidates = recommendation.get("candidates") if isinstance(recommendation, Mapping) else None
+        status = str(recommendation.get("status", "")) if isinstance(recommendation, Mapping) else ""
         result["control"] = {
-            "resume_main_agent": True,
+            "resume_main_agent": bool(candidates) and status not in {"pending_question", "unavailable", "failed"},
             "candidate_owner": "recommender",
             "delivery_owner": "main_agent",
         }
@@ -910,12 +982,13 @@ class RecommenderAdapter:
             conversation_ref=f"task:{task_id}",
             confirmed_constraints=case_constraints,
         )
-        if self._agent_runtime_mode == "disabled":
+        mode = recommendation_execution_mode(prompt, getattr(self._gateway, "recommendation_execution_mode_for", lambda _: "single")(identity))
+        if mode == "multi" and self._agent_runtime_mode == "disabled":
             raise UnavailableCapabilityError(
                 "Recommender多智能体运行时",
                 "当前App未启用Agent Runtime，不能以Legacy单Agent替代所选多智能体预设。",
             )
-        preset_id = _saved_recommendation_preset(self._gateway, identity, arguments)
+        preset_id = _saved_recommendation_preset(self._gateway, identity, arguments) if mode == "multi" else "sequential-deliberation"
         preset = resolve_recommendation_preset(preset_id)
         lifecycle_projection = LifecycleProjection()
         request_id = str((execution_ids or {}).get("request_id") or "").strip() or None
@@ -926,7 +999,7 @@ class RecommenderAdapter:
             if request_id is not None
             else None
         )
-        legacy_agent_port = AppAgentPort(
+        legacy_agent_port = SingleAgentRecommendationPort(self._gateway, identity, task_id, selection, is_cancelled=self._tasks.is_cancelled) if mode == "single" else AppAgentPort(
             self._gateway,
             identity,
             task_id,
@@ -943,7 +1016,7 @@ class RecommenderAdapter:
         runtime_entry: Mapping[str, Any] | None = None
         runtime_agent_port: RuntimeBackedAgentPort | None = None
         legacy_closed = False
-        if self._agent_runtime_mode in {"shadow", "active"}:
+        if mode == "multi" and self._agent_runtime_mode in {"shadow", "active"}:
             try:
                 runtime_entry = self._get_or_create_task_runtime(
                     identity,
@@ -989,7 +1062,7 @@ class RecommenderAdapter:
                 visible_event_sink=visible_event_sink,
             ),
             config=RecommenderConfig(
-                agent_mode="multi",
+                agent_mode=mode,
                 multi_agent_preset=preset_id,
             ),
             review_policy_id=review_policy_id,
@@ -1013,6 +1086,18 @@ class RecommenderAdapter:
         if "freeform" in result:
             raise ValidationError("App内Recommender不得返回freeform")
         recommendation = result.get("recommendation_set")
+        if isinstance(recommendation, Mapping) and recommendation.get("status") == "unavailable":
+            # Keep the actual validation failure for diagnosis; public wording alone
+            # cannot distinguish an empty product search from a provider error.
+            session_id = self._tasks.conversation_session_id(identity, task_id)
+            self._tasks.session_event_log.append(
+                session_id, "recommendation.failed",
+                {"mode": mode, "limitations": list(recommendation.get("limitations") or ()),
+                 "rejected": list(recommendation.get("rejected") or ()),
+                 "failures": [event for event in recommendation.get("audit_trail", ())
+                              if isinstance(event, Mapping) and event.get("status") == "failed"]},
+                event_id=f"recommendation-failed:{uuid4().hex}", ignorable=True,
+            )
         continuation = _pending_recommendation_state(
             recommendation,
             identity=identity,
@@ -1086,11 +1171,17 @@ class AppConversationToolExecutor:
         )
 
     def call(self, identity: SessionIdentity, task_id: str, name: str, arguments: Mapping[str, Any]) -> Mapping[str, Any]:
+        if name == "reporter.create_document":
+            return self.report_delivery.create_document(identity, task_id, arguments)
         if name == "recommendation_delivery.run":
             return self._run_pending_recommendation_delivery(identity, task_id, arguments)
         module, action = _tool_name(name)
         if any(key in arguments for key in ("action", "task_id", "tenant_id", "principal_id", "session_id", "host_context", "capability_token")):
             raise ValidationError("OptChat工具参数不得覆盖App路由或身份字段")
+        if any(key in arguments for key in ("candidate", "module_inputs", "compile_policy")):
+            if module not in {"payoffer", "pricer", "backtester"} or action != "run":
+                raise ValidationError("推荐确认输入只允许调用计算模块run")
+            return self._execute_confirmed_module_request(identity, task_id, module, arguments)
         if module == "knowledger" and action == "search":
             return AppKnowledgePort(self._registry.capability_root, str(self._registry.manifest["catalog_version"])).search({
                 "catalog_version": str(self._registry.manifest["catalog_version"]),
@@ -1101,6 +1192,15 @@ class AppConversationToolExecutor:
                 raise ValidationError("RecommenderAdapter未绑定")
             return self._recommender.run_fixed(identity, task_id, str(arguments.get("prompt", "")), arguments)
         if module == "reporter" and action == "run":
+            from ..report_delivery import delivery_request
+            messages = self._tasks.get(identity, task_id).get("messages", []) if self._tasks else []
+            expected = delivery_request(messages[-1].get("content")) if messages and messages[-1].get("role") == "user" else None
+            if expected and not expected['export_only']:
+                arguments = {**arguments, "kind":expected['template'].removeprefix('multi'), "format":expected['format'], "delivery_mode":"comparison" if expected['template'].startswith('multi') else "single"}
+            export_format = str(arguments.get("format") or "html").lower()
+            if export_format not in {"html", "pdf", "docx"}:
+                raise ValidationError("报告格式应为HTML、PDF或Word")
+            arguments = {**arguments, "format": "html"}
             prepared = self._prepare_report(
                 identity,
                 task_id,
@@ -1109,18 +1209,70 @@ class AppConversationToolExecutor:
             if prepared.get("status") == "needs_input":
                 return prepared
             response = self._dispatch(identity, task_id, name, module, prepared)
-            return _with_report_delivery(response, prepared)
+            result = _with_report_delivery(response, prepared)
+            if export_format != "html":
+                report_id = prepared["selection"]["report_run_id"]
+                return self.report_delivery.export(identity, task_id, report_id, export_format)
+            return result
         else:
             payload = {**dict(arguments), "action": action, "task_id": task_id}
         return self._dispatch(identity, task_id, name, module, payload)
+
+    def _execute_confirmed_module_request(
+        self,
+        identity: SessionIdentity,
+        task_id: str,
+        module: str,
+        arguments: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        """Expand the Recommender port envelope through the shared Host compiler path."""
+
+        if set(arguments) != {"candidate", "module_inputs", "compile_policy"}:
+            raise ValidationError("推荐确认输入必须包含candidate、module_inputs和compile_policy")
+        if arguments["compile_policy"] != "latest_optionreg_at_confirmation":
+            raise ValidationError("推荐确认必须按最新OptionReg编译当前输入")
+        candidate = arguments["candidate"]
+        supplied = arguments["module_inputs"]
+        if not isinstance(candidate, Mapping) or not isinstance(supplied, Mapping):
+            raise ValidationError("推荐确认candidate和module_inputs必须为对象")
+        if set(candidate) != {"candidate_id", "product_id", "rule_revision", "underlyings", "current_inputs"}:
+            raise ValidationError("推荐确认candidate字段无效")
+        current_inputs = candidate["current_inputs"]
+        if not isinstance(current_inputs, Mapping) or "module_inputs" in current_inputs:
+            raise ValidationError("推荐确认current_inputs无效或重复提供module_inputs")
+        constraints = current_inputs.get("confirmed_constraints", {})
+        if not isinstance(constraints, Mapping):
+            raise ValidationError("推荐确认confirmed_constraints必须为对象")
+        pending = {
+            "approved_candidate_ids": [_identifier(candidate["candidate_id"], "candidate_id")],
+            "candidates": [{
+                **dict(candidate),
+                "current_inputs": {**dict(current_inputs), "module_inputs": {module: dict(supplied)}},
+            }],
+            "requested_outputs": [module],
+            "confirmed_constraints": dict(constraints),
+        }
+        execution = self.execute_confirmed_recommendation(identity, task_id, pending)
+        if execution.get("status") == "needs_input":
+            raise RecommendationInputRequired("path_count", str(execution.get("next_step", "请明确Monte Carlo路径数。")))
+        rows = execution.get("executions", ())
+        if not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], Mapping):
+            raise ValidationError("推荐确认执行未返回当前候选结果")
+        modules = rows[0].get("modules", {})
+        response = modules.get(module) if isinstance(modules, Mapping) else None
+        if not isinstance(response, Mapping):
+            raise ValidationError("推荐确认执行未返回请求模块结果")
+        return dict(response)
 
     def execute_confirmed_recommendation(
         self,
         identity: SessionIdentity,
         task_id: str,
         pending: Mapping[str, Any],
+        *,
+        completed_modules: Mapping[str, Sequence[str]] | None = None,
     ) -> dict[str, Any]:
-        """Compile and run approved current inputs against the latest OptionReg."""
+        """Preflight all candidates, then run only their missing modules."""
 
         approved_ids = _approved_candidate_ids(pending)
         candidates = pending.get("candidates")
@@ -1138,8 +1290,9 @@ class AppConversationToolExecutor:
         requested = {str(item).strip().lower() for item in pending.get("requested_outputs", ())}
         modules = _confirmed_execution_modules(requested)
         executions: list[dict[str, Any]] = []
+        prepared_candidates: list[dict[str, Any]] = []
         overall = "completed"
-        analysis_case_id = f"recommendation-{uuid4().hex[:24]}"
+        analysis_case_id = str(pending.get("analysis_case_id") or f"recommendation-{uuid4().hex[:24]}")
         for candidate_id in approved_ids:
             candidate = candidate_index.get(candidate_id)
             if not isinstance(candidate, Mapping):
@@ -1148,11 +1301,19 @@ class AppConversationToolExecutor:
             product = products.get(product_id)
             identity_row = product.get("identity") if isinstance(product, Mapping) else None
             current_revision = identity_row.get("rule_revision") if isinstance(identity_row, Mapping) else None
-            if current_revision != candidate.get("rule_revision"):
+            revision = candidate.get("rule_revision")
+            if isinstance(revision, bool) or not isinstance(revision, int) or revision < 1:
+                raise ValidationError("候选缺少rule_revision")
+            if current_revision != revision:
                 raise ValidationError("候选产品规则已更新，请重新推荐后确认")
-            underlyings = [
-                str(item).strip() for item in candidate.get("underlyings", ()) if str(item).strip()
-            ]
+            raw_underlyings = candidate.get("underlyings", ())
+            if isinstance(raw_underlyings, (str, bytes)) or not isinstance(raw_underlyings, Sequence):
+                raise ValidationError("候选underlyings必须为数组")
+            if any(not isinstance(item, str) or not item.strip() for item in raw_underlyings):
+                raise ValidationError("候选underlyings必须为非空标的代码")
+            underlyings = [item.strip() for item in raw_underlyings]
+            if len(underlyings) != len(set(underlyings)):
+                raise ValidationError("候选underlyings不得重复")
             current_inputs = candidate.get("current_inputs")
             if not underlyings or not isinstance(current_inputs, Mapping):
                 raise ValidationError("已确认候选缺少当前输入")
@@ -1160,39 +1321,79 @@ class AppConversationToolExecutor:
             module_inputs = current_inputs.get("module_inputs", {})
             if not isinstance(term_overrides, Mapping) or not isinstance(module_inputs, Mapping):
                 raise ValidationError("已确认候选当前输入无效")
-            module_results: dict[str, Any] = {}
-            for module in modules:
+            finished = set((completed_modules or {}).get(candidate_id, ()))
+            if finished.difference({"payoffer", "pricer", "backtester"}):
+                raise ValidationError("已完成模块标识无效")
+            candidate_modules = [module for module in modules if module not in finished]
+            pricing = None
+            if "pricer" in candidate_modules:
+                pricer_inputs = module_inputs.get("pricer", {})
+                if not isinstance(pricer_inputs, Mapping):
+                    raise ValidationError("pricer当前输入必须为对象")
+                pricing = pricer_inputs.get("pricing_config")
+                if not isinstance(pricing, Mapping):
+                    pricing = _pricing_config_for_resolved_contract(product, pending.get("confirmed_constraints", {}))
+                path_count = pricing.get("path_count") if isinstance(pricing, Mapping) else None
+                missing_mc_paths = isinstance(pricing, Mapping) and pricing.get("model_method") == "monte_carlo" and (
+                    isinstance(path_count, bool) or not isinstance(path_count, int) or path_count <= 0
+                )
+                if pricing is None or missing_mc_paths:
+                    return {
+                        "status": "needs_input", "analysis_status": "not_started",
+                        "delivery_status": "pending", "executions": executions,
+                        "next_step": "该候选需要Monte Carlo估值，请先明确路径数。",
+                    }
+            module_payloads: dict[str, dict[str, Any]] = {}
+            for module in candidate_modules:
                 supplied = module_inputs.get(module, {})
                 if not isinstance(supplied, Mapping):
                     raise ValidationError(f"{module}当前输入必须为对象")
+                reserved = {
+                    "action", "task_id", "tenant_id", "principal_id", "session_id", "host_context",
+                    "capability_token", "analysis_case_id", "candidate_id", "product_id", "rule_revision",
+                    "catalog_version", "resolved_contract", "term_overrides",
+                }
+                if reserved.intersection(supplied):
+                    raise ValidationError(f"{module}当前输入不得覆盖App路由或已确认候选条款")
                 payload: dict[str, Any] = {
+                    **dict(supplied),
                     "action": "run",
                     "task_id": task_id,
                     "product_id": product_id,
-                    "identity": {"underlyings": underlyings},
                     "term_overrides": dict(term_overrides),
-                    **dict(supplied),
                 }
+                if module == "payoffer":
+                    if "identity" in supplied:
+                        raise ValidationError("Payoffer只接受产品和收益结构条款，不接受identity")
+                else:
+                    supplied_identity = supplied.get("identity", {})
+                    if not isinstance(supplied_identity, Mapping):
+                        raise ValidationError(f"{module}当前identity必须为对象")
+                    if supplied_identity.get("underlyings", underlyings) != underlyings:
+                        raise ValidationError(f"{module}当前输入不得覆盖已确认underlyings")
+                    payload["identity"] = {**dict(supplied_identity), "underlyings": underlyings}
                 if module == "pricer":
-                    methods = product.get("terms", {}).get("pricing_methods", ()) if isinstance(product, Mapping) else ()
-                    pricing = payload.get("pricing_config")
-                    if not isinstance(pricing, Mapping):
-                        if "analytical" in methods:
-                            pricing = {"model_method": "analytical"}
-                        else:
-                            path_count = pending.get("confirmed_constraints", {}).get("path_count")
-                            if isinstance(path_count, bool) or not isinstance(path_count, int) or path_count <= 0:
-                                return {
-                                    "status": "needs_input",
-                                    "analysis_status": "not_started",
-                                    "delivery_status": "pending",
-                                    "next_step": "该候选需要Monte Carlo估值，请先明确路径数。",
-                                    "executions": executions,
-                                }
-                            pricing = {"model_method": "monte_carlo", "path_count": path_count}
                     payload["pricing_config"] = dict(pricing)
                 elif module == "backtester":
-                    payload.setdefault("backtest_config", {})
+                    constraints = current_inputs.get("confirmed_constraints", pending.get("confirmed_constraints", {}))
+                    window = constraints.get("backtest_range", {}) if isinstance(constraints, Mapping) else {}
+                    config = payload.get("backtest_config", {})
+                    if not isinstance(config, Mapping):
+                        raise ValidationError("backtest_config必须为对象")
+                    payload["backtest_config"] = {**dict(config), **dict(window)}
+                module_payloads[module] = payload
+            prepared_candidates.append({
+                "candidate_id": candidate_id, "product_id": product_id,
+                "rule_revision": current_revision, "module_payloads": module_payloads,
+            })
+
+        # Validate the entire selected batch before any calculation can commit a Run.
+        for prepared in prepared_candidates:
+            candidate_id = prepared["candidate_id"]
+            product_id = prepared["product_id"]
+            current_revision = prepared["rule_revision"]
+            module_results: dict[str, Any] = {}
+            for module, payload in prepared["module_payloads"].items():
                 try:
                     response = self._dispatch(
                         identity, task_id, f"{module}.run", module, payload,
@@ -1206,9 +1407,15 @@ class AppConversationToolExecutor:
                 except (AuthorizationError, UnavailableCapabilityError, UserActionError, ValidationError) as error:
                     overall = "partial"
                     module_results[module] = {"status": "failed", "message": str(error)}
+                    if isinstance(error, (UserActionError, UnavailableCapabilityError)):
+                        module_results[module].update({
+                            "failure_code": error.code if isinstance(error, UserActionError) else error.failure_code,
+                            "message": error.message or str(error),
+                            "stage": error.stage, "next_step": error.next_step,
+                        })
                 else:
                     module_results[module] = response
-                    if _normalized_module_status(response) not in {"succeeded", "partial"}:
+                    if _normalized_module_status(response) != "succeeded":
                         overall = "partial"
             executions.append({
                 "candidate_id": candidate_id,
@@ -1291,14 +1498,30 @@ class AppConversationToolExecutor:
             raw_ref = response.get("module_run_ref") if isinstance(response, Mapping) else None
             if isinstance(raw_ref, Mapping):
                 reference = {field: raw_ref.get(field) for field in _MODULE_RUN_REF_FIELDS}
+                try:
+                    validated_ref = ModuleRunRef(**reference)
+                except (TypeError, ValueError) as error:
+                    raise ValidationError("候选评估返回无效ModuleRunRef") from error
+                if (
+                    validated_ref.module != module or validated_ref.tenant_id != identity.tenant_id
+                    or validated_ref.task_id != task_id
+                ):
+                    raise ValidationError("候选评估ModuleRunRef不属于本次任务和模块")
                 run_refs.append(reference)
                 if self._results is not None:
-                    summary = self._results.verified_fact_summary(identity, reference)
-                    for fact in summary.get("facts", ()):
-                        if isinstance(fact, Mapping) and str(fact.get("metric", "")).strip():
+                    summary = self._results.verified_fact_summary(identity, reference, expected_binding={
+                        "candidate_id": candidate_id, "product_id": product_id, "rule_revision": rule_revision,
+                    })
+                    for collection, source in (("facts", module), ("contract_term_facts", "contract_terms")):
+                        for fact in summary.get(collection, ()):
+                            if not isinstance(fact, Mapping) or not str(fact.get("metric", "")).strip():
+                                continue
+                            if collection == "contract_term_facts" and fact.get("source") != "contract_terms":
+                                raise ValidationError("合同条款事实缺少contract_terms来源")
                             facts[str(fact["metric"])] = {
                                 "value": fact.get("value"), "unit": fact.get("unit"),
-                                "fact_ref": fact.get("fact_ref"), "source": module,
+                                "fact_ref": fact.get("fact_ref"), "source": source,
+                                **{key: fact[key] for key in ("value_encoding", "evidence") if key in fact},
                             }
         return {
             "status": execution.get("status", "partial"),
@@ -1317,42 +1540,68 @@ class AppConversationToolExecutor:
         task_id: str,
         arguments: Mapping[str, Any],
     ) -> Mapping[str, Any]:
-        """Render an approved current-candidate set from newly frozen ModuleRuns."""
-
-        if self._tasks is None:
-            raise ValidationError("推荐交付状态机未配置")
+        """Deliver the current recommendation without forcing unrelated calculations."""
         if set(arguments).difference({"kind", "format"}):
             raise ValidationError("推荐交付参数只允许kind或format")
-        kind = str(arguments.get("kind", "")).strip().lower()
-        output_format = str(arguments.get("format", "html")).strip().lower()
-        if kind not in {"card", "quote", "report"} or output_format not in {"html", "pdf"}:
-            return {
-                "status": "needs_input",
-                "message": "请选择研究简报、参考报价或研究报告；默认生成HTML，需要PDF时请明确指定。",
-            }
-        pending = self._tasks.pending_recommendation(identity, task_id)
-        if pending is None or pending.get("status") != "approved":
-            return {"status": "needs_input", "message": "请先确认推荐候选与合同条款。"}
-        requested = {"kind": kind, "format": output_format}
-        if pending.get("delivery") is None:
-            pending = self._tasks.choose_pending_recommendation_delivery(
-                identity,
-                task_id,
-                requested,
-            )
-        if pending is None or pending.get("delivery") != requested:
-            raise ValidationError("当前候选已选择其他交付类型")
-        result = self.run_recommendation_candidate_set_delivery(
-            identity,
-            task_id,
-            candidates=pending.get("candidates", ()),
-            approved_candidate_ids=_approved_candidate_ids(pending),
-            delivery=requested,
-            confirmed_constraints=_pending_constraints(pending),
-        )
-        if result.get("status") == "completed":
-            self._tasks.complete_pending_recommendation(identity, task_id)
-        return result
+        pending = self._tasks.pending_recommendation(identity, task_id) if self._tasks else None
+        candidates = list((pending or {}).get("candidates") or [])
+        if not candidates:
+            return {"status":"needs_input","message":"请先说明需要研究的结构。"}
+        kind = str(arguments.get("kind") or "report")
+        fmt = str(arguments.get("format") or "html")
+        if kind not in {"card", "report", "quote", "multicard", "multireport"} or fmt not in {"html", "pdf", "docx"}:
+            raise ValidationError("报告模板或文件格式无效")
+        from ..report_delivery import delivery_request, requested_analysis_modules
+        messages = self._tasks.get(identity, task_id).get("messages", [])
+        latest = next((str(row.get("content", "")) for row in reversed(messages) if row.get("role") == "user"), "")
+        expected = delivery_request(latest)
+        if expected:
+            kind, fmt = expected["template"], expected["format"]
+        modules = requested_analysis_modules(latest)
+        if modules:
+            ordered = sorted(candidates, key=lambda item: (not bool(item.get("is_primary")), item.get("rank", 1000000)))
+            selected = ordered if kind.startswith("multi") else ordered[:1]
+            selected_ids = [item["candidate_id"] for item in selected]
+            args = {"kind": kind.removeprefix("multi"), "format": "html", "candidate_ids": selected_ids,
+                    "delivery_mode": "comparison" if kind.startswith("multi") else "single"}
+            prepared = self._prepare_report(identity, task_id, args)
+            aliases = {"payoffer": "payoff", "pricer": "pricing", "backtester": "backtest"}
+            required = {aliases[module] for module in modules}
+            selection = prepared.get("selection", {})
+            refs = selection.get("module_run_refs", {})
+            ready = required.issubset(selection.get("selected_modules", [])) and all(
+                all(isinstance(refs.get(candidate_id, {}).get(module), Mapping) for module in required)
+                for candidate_id in selected_ids)
+            if not ready:
+                completed = {
+                    candidate_id: [module for module in modules if isinstance(refs.get(candidate_id, {}).get(aliases[module]), Mapping)]
+                    for candidate_id in selected_ids
+                }
+                execution_pending = {**pending, "candidates": selected, "approved_candidate_ids": selected_ids,
+                                     "requested_outputs": list(modules)}
+                if any(completed.values()) and self._results is not None:
+                    existing_source = self._results.get_owned_report_source(identity, selection["source_id"])
+                    execution_pending["analysis_case_id"] = existing_source["analysis_case_id"]
+                execution = self.execute_confirmed_recommendation(
+                    identity, task_id, execution_pending, completed_modules=completed,
+                )
+                if execution.get("status") != "completed":
+                    return {**execution, "text": execution.get("next_step") or "所需计算尚未完成。"}
+            result = self.call(identity, task_id, "reporter.run", args)
+            if result.get("document"):
+                return result
+            reference = result.get("report_run_ref", {})
+            report_id = reference.get("report_run_id") if isinstance(reference, Mapping) else None
+            if not report_id:
+                return {**result, "text": result.get("message") or "计算结果尚未形成可验证报告。"}
+            exported = self.report_delivery.export(identity, task_id, report_id, fmt)
+            if result.get("status") == "partial":
+                notice = "报告已保存，部分分析未完成，请查看报告中的缺项说明。"
+                exported.update(status="partial", text=notice)
+                exported["_assistant_blocks"] = [{"type": "text", "text": notice}, *exported.get("_assistant_blocks", [])]
+            return exported
+        content = "\n\n".join(str(item.get("reason") or item.get("rationale") or item.get("product_name") or item.get("product_id") or "当前推荐结构") for item in candidates)
+        return self.report_delivery.complete(identity, task_id, f"生成{kind} {fmt}", {"status":"completed","text":content})
 
     def run_recommendation_delivery(
         self,
@@ -1440,6 +1689,7 @@ class AppConversationToolExecutor:
                 "analysis_status": str(execution.get("analysis_status", "partial")),
                 "delivery_status": "not_requested",
                 "deliveries": [],
+                "executions": execution.get("executions", []),
                 "next_step": str(execution.get("next_step") or "部分候选计算未完成，请查看模块结果。"),
             }
         title = str(selected_candidates[0].get("product_name") or "期权结构研究")
@@ -1529,7 +1779,7 @@ class AppConversationToolExecutor:
 
         if self._results is None:
             return _report_needs_input()
-        default_kind = "report" if identity.role.value == "admin" else "card"
+        default_kind = "report"
         requested_kind = str(arguments.get("kind") or arguments.get("output_type") or default_kind).strip().lower()
         if requested_kind not in {"card", "quote", "report"}:
             raise ValidationError("交付类型只能是card、quote或report")
@@ -1553,7 +1803,10 @@ class AppConversationToolExecutor:
                 or len(set(requested_candidate_ids)) != len(requested_candidate_ids)
             ):
                 raise ValidationError("Reporter候选candidate_ids不能为空或重复")
-        catalog = self._results.list_owned_report_sources(identity, task_id=task_id)
+        from ..reporter_adapter import ReporterAdapter
+        catalog = ReporterAdapter(self._results, self._tasks).dispatch(
+            {"action": "list_report_sources", "task_id": task_id}, identity,
+        )
         sources = catalog.get("sources") if isinstance(catalog, Mapping) else None
         if not isinstance(sources, list) or not sources:
             return _report_needs_input()
@@ -1624,7 +1877,7 @@ class AppConversationToolExecutor:
                     "metadata": {"title": title},
                 },
             }
-        modules = list(_REPORT_MODULES) if requested_kind == "report" else available_modules
+        modules = available_modules
         if delivery_mode == "comparison" and requested_candidate_ids is None:
             if requested_kind not in {"card", "report"}:
                 raise ValidationError("横向对比只适用于研究简报或完整研究报告")
@@ -1657,6 +1910,8 @@ class AppConversationToolExecutor:
         title = str(arguments.get("title") or candidate.get("product_name") or "期权结构研究").strip()
         if delivery_mode == "comparison" and "title" not in arguments:
             title = "多结构研究简报" if requested_kind == "card" else "多结构完整报告"
+        if selected_candidates and all(item.get("recommendation_bound") for item in selected_candidates):
+            modules = ["recommender", *modules]
         selection = {
             "source_id": source["source_id"],
             "candidate_ids": [str(item["candidate_id"]) for item in selected_candidates],
@@ -1719,16 +1974,9 @@ def _with_report_delivery(response: Mapping[str, Any], prepared: Mapping[str, An
     if isinstance(output, Mapping) and isinstance(output.get("report"), str):
         receipt["artifact_name"] = output["report"]
     result["delivery"] = receipt
+    if missing_modules and str(result.get("status", "")).lower() in {"succeeded", "completed"}:
+        result["status"] = "partial"
     return result
-
-
-def _analysis_status(response: Mapping[str, Any]) -> str:
-    """保留正式计算的终态，不以交付层partial覆盖它。"""
-
-    status = str(response.get("status", "")).strip().lower()
-    aliases = {"succeeded": "completed", "complete": "completed", "timeout": "timed_out", "unavailable": "unsupported"}
-    normalized = aliases.get(status, status)
-    return normalized if normalized in {"completed", "partial", "failed", "unsupported", "cancelled", "timed_out"} else "failed"
 
 
 def _best_report_candidate(sources: list[object]) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -1977,12 +2225,6 @@ def _pending_recommendation_state(
         if not isinstance(raw_candidate, Mapping) or str(raw_candidate.get("library_status", "")) != "ready":
             continue
         missing_inputs = raw_candidate.get("missing_inputs", ())
-        if (
-            isinstance(missing_inputs, Sequence)
-            and not isinstance(missing_inputs, str)
-            and any(str(item).strip() for item in missing_inputs)
-        ):
-            continue
         underlyings = raw_candidate.get("underlyings")
         if isinstance(underlyings, str) or not isinstance(underlyings, Sequence):
             continue
@@ -2004,6 +2246,13 @@ def _pending_recommendation_state(
             or not isinstance(current_inputs, Mapping)
         ):
             continue
+        # A ready product can still need market data or calculation inputs.
+        # Keep it available for module preflight instead of erasing the recommendation.
+        current_inputs = dict(current_inputs)
+        if isinstance(missing_inputs, Sequence) and not isinstance(missing_inputs, (str, bytes)):
+            current_inputs["missing_inputs"] = list(dict.fromkeys(
+                str(item).strip() for item in missing_inputs if str(item).strip()
+            ))
         seen.add(candidate_id)
         candidates.append({
             "candidate_id": candidate_id,
@@ -2109,17 +2358,6 @@ def _persisted_constraints(constraints: Mapping[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in constraints.items() if key != "term_overrides"}
 
 
-def _pending_shared_constraints(pending: Mapping[str, Any] | None) -> dict[str, Any]:
-    """Recover the shared constraints from the authoritative pending state."""
-
-    if not isinstance(pending, Mapping):
-        return {}
-    stored = pending.get("confirmed_constraints")
-    if not isinstance(stored, Mapping):
-        return {}
-    return dict(stored)
-
-
 def _pending_constraints(pending: Mapping[str, Any]) -> dict[str, Any]:
     """Return shared selection constraints; per-candidate terms stay in their contracts."""
 
@@ -2127,25 +2365,6 @@ def _pending_constraints(pending: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(stored, Mapping):
         raise ValidationError("待确认候选缺少冻结条件")
     return dict(stored)
-
-
-def _public_failure_metadata(response: Mapping[str, Any]) -> dict[str, str] | None:
-    """Keep a direct dispatcher response in the App's existing public shape."""
-
-    nested = response.get("error")
-    source = nested if isinstance(nested, Mapping) else response
-    failure_code = source.get("failure_code", source.get("code"))
-    message = source.get("message", response.get("message", response.get("reason")))
-    stage = source.get("stage", response.get("stage"))
-    next_step = source.get("next_step", response.get("next_step"))
-    if not all(isinstance(value, str) and value for value in (failure_code, message, stage, next_step)):
-        return None
-    return {
-        "failure_code": failure_code,
-        "message": message,
-        "stage": stage,
-        "next_step": next_step,
-    }
 
 
 def _pricing_config_for_resolved_contract(
@@ -2257,38 +2476,6 @@ def _approved_candidate_ids(pending: Mapping[str, Any]) -> list[str]:
         return []
     result = [str(item).strip() for item in value if str(item).strip()]
     return result if len(result) == len(set(result)) else []
-
-
-def _term_overrides_from_constraints(
-    constraints: Mapping[str, Any], capability_root: Path, product_id: str,
-) -> dict[str, Any]:
-    """Map only typed customer terms that the selected OptionReg product owns."""
-
-    registry = _load_capability_registry(capability_root)
-    product = registry.get("products", {}).get(product_id)
-    product_terms = product.get("terms") if isinstance(product, Mapping) else None
-    if not isinstance(product_terms, Mapping):
-        return {}
-    result: dict[str, Any] = {}
-    supplied = constraints.get("term_overrides")
-    if isinstance(supplied, Mapping):
-        for raw_key, value in supplied.items():
-            key = str(raw_key)
-            if key not in product_terms or isinstance(value, (Mapping, list, tuple, bool)):
-                continue
-            if not isinstance(value, (str, int, float)):
-                continue
-            result[key] = value
-    horizon = str(constraints.get("horizon", "")).strip()
-    if "T" not in product_terms or not horizon:
-        return result
-    months = re.fullmatch(r"(\d+)个月", horizon)
-    years = re.fullmatch(r"(\d+)年", horizon)
-    if months:
-        result["T"] = int(months.group(1)) / 12
-    if years:
-        result["T"] = int(years.group(1))
-    return result
 
 
 def _display_terms(
@@ -2453,60 +2640,6 @@ def _approval_text(value: object) -> bool:
     return any(word in text for word in ("确认", "同意", "按此", "按这个", "继续执行", "继续生成", "继续分析", "可以执行", "好的", "好，"))
 
 
-def _host_term_change_status(value: object) -> str:
-    """Fail closed when the formal parser sees an unparsed term-edit intent."""
-
-    status = classify_term_change(value)
-    if status != "none":
-        return status
-    text = str(value or "").strip().casefold()
-    action = r"(?:改|调|调整|设|设置|变|替换|取消|删除|恢复|默认)"
-    subject = r"(?:期限|观察(?:方式|频率|日程)?|气囊(?:水平|障碍)?|条款|参数)"
-    clauses = (item for item in re.split(r"[，,。；;！？!?]", text) if item.strip())
-    return "unresolved" if any(
-        re.search(subject, clause) and re.search(action, clause)
-        for clause in clauses
-    ) else "none"
-
-
-def _unparsed_term_change(
-    task_id: str,
-    catalog_version: str,
-    pending: Mapping[str, Any] | None,
-) -> dict[str, Any]:
-    return {
-        "route": {"fixed_recommendation_workflow": True, "route": "recommendation"},
-        "recommendation_set": _continuation_recommendation_set(
-            task_id,
-            catalog_version,
-            pending,
-            status="pending_approval",
-            analysis_status="not_started",
-            delivery_status="pending",
-        ),
-        "next_step": "检测到条款修改意图，但未能解析出完整的新条款。请明确修改字段和数值后再确认。",
-    }
-
-
-def _rejected_term_change(
-    task_id: str,
-    catalog_version: str,
-    pending: Mapping[str, Any] | None,
-) -> dict[str, Any]:
-    return {
-        "route": {"fixed_recommendation_workflow": True, "route": "recommendation"},
-        "recommendation_set": _continuation_recommendation_set(
-            task_id,
-            catalog_version,
-            pending,
-            status="pending_approval",
-            analysis_status="not_started",
-            delivery_status="pending",
-        ),
-        "next_step": "已保留当前候选的原条款，未写入任何修改。请单独确认后再继续。",
-    }
-
-
 def _saved_recommendation_preset(
     gateway: object,
     identity: SessionIdentity,
@@ -2537,13 +2670,29 @@ def _safe_model_payload(value: Mapping[str, Any]) -> dict[str, Any]:
     return dict(value)
 
 
-def _contains_hidden_model_field(value: object) -> bool:
-    forbidden = ("reasoning", "chain_of_thought", "analysis", "secret", "token", "password", "api_key")
+def _hidden_model_field(value: object, prefix: str = "") -> str | None:
+    """Separate private model output from legitimate analysis requirement fields."""
+    private = {"analysis", "reasoning", "reasoning_content", "chain_of_thought", "thinking",
+               "secret", "token", "password", "api_key", "access_token", "refresh_token"}
     if isinstance(value, Mapping):
-        return any(any(token in str(key).lower() for token in forbidden) or _contains_hidden_model_field(item) for key, item in value.items())
-    if isinstance(value, list):
-        return any(_contains_hidden_model_field(item) for item in value)
-    return False
+        for key, item in value.items():
+            normalized = re.sub(r"(?<=[a-z])(?=[A-Z])", "_", str(key)).lower().replace("-", "_")
+            path = f"{prefix}.{key}" if prefix else str(key)
+            if normalized in private or normalized.endswith(("_password", "_api_key", "_secret", "_access_token", "_refresh_token")):
+                return path[:160]
+            nested = _hidden_model_field(item, path)
+            if nested:
+                return nested
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            nested = _hidden_model_field(item, f"{prefix}[{index}]")
+            if nested:
+                return nested
+    return None
+
+
+def _contains_hidden_model_field(value: object) -> bool:
+    return _hidden_model_field(value) is not None
 
 
 __all__ = ("AppAgentPort", "AppConversationToolExecutor", "AppKnowledgePort", "AppToolPort", "RecommenderAdapter")
