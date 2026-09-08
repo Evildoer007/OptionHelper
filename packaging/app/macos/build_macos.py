@@ -52,7 +52,8 @@ if str(MACOS_PACKAGING) not in sys.path:
 
 from verify_skill import content_tree_entries, tree_hash
 from verify_capability import verify_app_capability
-from release_contract import RELEASE_VERSION, require_release_version
+from release_contract import skill_archive_name
+from release_contract import APP_VERSION, RELEASE_VERSION, require_app_version, app_platform_versions
 from verify_macos import verify as verify_frozen_macos_app
 from platform_payload import (
     BACKEND_DESKTOP_COMMON_MODULES,
@@ -64,6 +65,7 @@ from platform_payload import (
     PlatformPayloadError,
     assert_outer_resource_layout,
     build_outer_payload_manifest,
+    stage_python_docx_templates,
     stage_verification_fixture_definition,
     verify_outer_payload_manifest,
 )
@@ -78,7 +80,6 @@ if str(AGENT_RUNTIME_PACKAGING) not in sys.path:
     sys.path.insert(0, str(AGENT_RUNTIME_PACKAGING))
 from build_runtime import (  # noqa: E402
     ALLOW_SOURCE_RUNTIME_FALLBACK_ENV,
-    DEFAULT_SOURCE_ROOT,
     LOCAL_VERIFIED,
     REQUIRE_NATIVE_RUNTIME_ENV,
     RuntimeBuildError,
@@ -146,13 +147,30 @@ PDF_RUNTIME_MODULES = (
     "PIL.Image",
     "pypdf",
     "docx",
+    "bs4",
+    "bs4.builder",
+    "bs4.builder._htmlparser",
+    "soupsieve",
+    "lxml",
+    "lxml.etree",
     "openpyxl",
 )
 PDF_RUNTIME_VERSION = "5.0.0"
 PILLOW_RUNTIME_VERSION = "12.3.0"
 PYPDF_RUNTIME_VERSION = "6.16.0"
 PYTHON_DOCX_RUNTIME_VERSION = "1.2.0"
+BEAUTIFULSOUP_RUNTIME_VERSION = "4.15.0"
+SOUPSIEVE_RUNTIME_VERSION = "2.9.1"
+LXML_RUNTIME_VERSION = "6.1.1"
 OPENPYXL_RUNTIME_VERSION = "3.1.5"
+DOCUMENT_RUNTIME_DISTRIBUTIONS = {
+    "pypdf": PYPDF_RUNTIME_VERSION,
+    "python-docx": PYTHON_DOCX_RUNTIME_VERSION,
+    "beautifulsoup4": BEAUTIFULSOUP_RUNTIME_VERSION,
+    "soupsieve": SOUPSIEVE_RUNTIME_VERSION,
+    "lxml": LXML_RUNTIME_VERSION,
+    "openpyxl": OPENPYXL_RUNTIME_VERSION,
+}
 """The minimal deterministic runtime used for Card and Report PDF delivery."""
 
 # The build host is a broad research environment.  These packages are neither
@@ -169,7 +187,7 @@ MAX_BACKEND_BYTES = 600 * 1024 * 1024
 MAX_APP_BUNDLE_BYTES = 750 * 1024 * 1024
 MAX_DMG_BYTES = 300 * 1024 * 1024
 EXTERNAL_COMMAND_TIMEOUT_SECONDS = 900
-MINIMUM_BUILD_PYTHON = (3, 11)
+MINIMUM_BUILD_PYTHON = (3, 12)
 PYINSTALLER_VERSION = "6.21.0"
 FINDER_COPY_PATTERN = re.compile(r"^(?P<base>.+) (?P<copy>\d+)(?P<suffix>(?:\.[^.]+)*)$")
 MACOS_SIGNING_IDENTITY_ENV = "OPTIONHELPER_MACOS_SIGNING_IDENTITY"
@@ -711,7 +729,7 @@ def verify_dmg_install_layout(
                 for target in detach_targets:
                     try:
                         run(["hdiutil", "detach", str(target)])
-                    except BaseException as error:
+                    except BaseException:
                         try:
                             run(["hdiutil", "detach", "-force", str(target)])
                         except BaseException as force_error:
@@ -790,8 +808,8 @@ def _rollback_committed_release_artifacts(
 def _validate_transaction_stage(release_root: Path) -> None:
     """Require the Catalog and Capability already staged by the release transaction."""
     required = (
-        release_root / "knowledger" / "catalog-version.json",
-        release_root / "option-helper.zip",
+        release_root / "knowledger" / "source-manifest.json",
+        release_root / skill_archive_name(),
         release_root / "capability-manifest.json",
     )
     if not release_root.is_dir() or any(not path.is_file() for path in required):
@@ -831,10 +849,10 @@ def app_manifest(
     agent_runtime: dict[str, Any] | None = None,
     outer_payload: dict[str, object] | None = None,
 ) -> dict[str, Any]:
-    formal = app_version == RELEASE_VERSION
+    formal = app_version == APP_VERSION
     return {
         "app_version": app_version,
-        "build_version": RELEASE_VERSION,
+        "build_version": APP_VERSION,
         "release_status": "formal_release" if formal else "local_candidate",
         "formal_release": formal,
         "bundle_id": "com.optionhelper.app",
@@ -891,7 +909,7 @@ def platform_release_manifest(
         "agent_runtime",
         {"status": "disabled", "support_status": "development_only"},
     )
-    formal = app_version == RELEASE_VERSION
+    formal = app_version == APP_VERSION
     signing = capability.get("signing")
     if not isinstance(signing, dict):
         if formal:
@@ -946,7 +964,7 @@ def verify_platform_release_manifest(path: Path, *, app_manifest_path: Path, dmg
     installer = value.get("installer")
     if not isinstance(installer, dict):
         raise MacOSBuildError("PlatformReleaseManifest缺少installer")
-    formal = app_manifest.get("app_version") == RELEASE_VERSION
+    formal = app_manifest.get("app_version") == APP_VERSION
     signing = app_manifest.get("signing")
     if not isinstance(signing, dict):
         if formal:
@@ -1000,7 +1018,7 @@ def write_json(path: Path, value: dict[str, Any]) -> None:
 
 def assert_build_python() -> None:
     if sys.version_info < MINIMUM_BUILD_PYTHON:
-        raise MacOSBuildError("App构建需要Python 3.11或更高版本")
+        raise MacOSBuildError("App构建需要Python 3.12或更高版本")
     try:
         actual = metadata.version("PyInstaller")
     except metadata.PackageNotFoundError as error:
@@ -1019,11 +1037,7 @@ def assert_build_python() -> None:
         raise MacOSBuildError(f"App构建缺少PDF图像组件Pillow {PILLOW_RUNTIME_VERSION}") from error
     if pillow_version != PILLOW_RUNTIME_VERSION:
         raise MacOSBuildError(f"Pillow必须固定为{PILLOW_RUNTIME_VERSION}，当前为{pillow_version}")
-    for package, expected in (
-        ("pypdf", PYPDF_RUNTIME_VERSION),
-        ("python-docx", PYTHON_DOCX_RUNTIME_VERSION),
-        ("openpyxl", OPENPYXL_RUNTIME_VERSION),
-    ):
+    for package, expected in DOCUMENT_RUNTIME_DISTRIBUTIONS.items():
         try:
             actual = metadata.version(package)
         except metadata.PackageNotFoundError as error:
@@ -1138,6 +1152,9 @@ def backend_build_command(workspace: Path, *, app_root: Path = APP_ROOT) -> list
     # Designer verifies the pinned runtime through importlib.metadata inside the
     # frozen process; preserve that distribution metadata alongside the PYZ.
     command.extend(("--copy-metadata", "reportlab"))
+    # python-docx loads its base DOCX, header, footer, styles, numbering, and
+    # settings templates from package data when a document is constructed.
+    command.extend(("--collect-data", "docx"))
     command.extend(("--collect-data", "certifi"))
     for module in EXCLUDED_BACKEND_MODULES:
         command.extend(("--exclude-module", module))
@@ -1217,6 +1234,10 @@ def build_backend(workspace: Path, resources: Path, *, app_root: Path = APP_ROOT
     executable = package / "OptionHelperBackend"
     if not executable.is_file():
         raise MacOSBuildError("PyInstaller未生成OptionHelperBackend")
+    try:
+        stage_python_docx_templates(package)
+    except PlatformPayloadError as error:
+        raise MacOSBuildError(str(error)) from error
     verify_backend_payload(package)
     copied = copy_backend_bundle(package, resources)
     return copied / "OptionHelperBackend"
@@ -1353,7 +1374,7 @@ def verify_installable_bundle_permissions(bundle: Path) -> None:
 
 
 def write_info_plist(bundle: Path, app_version: str, *, formal_release: bool = False) -> None:
-    public_version = app_version.removeprefix("v")
+    public_version, bundle_version = app_platform_versions(app_version)
     plist = {
         "CFBundleDevelopmentRegion": "zh_CN",
         "CFBundleExecutable": "OptionHelper",
@@ -1363,7 +1384,8 @@ def write_info_plist(bundle: Path, app_version: str, *, formal_release: bool = F
         "CFBundleName": "OptionHelper",
         "CFBundlePackageType": "APPL",
         "CFBundleShortVersionString": public_version,
-        "CFBundleVersion": public_version,
+        "CFBundleVersion": bundle_version,
+        "OptionHelperDisplayVersion": app_version,
         "LSMinimumSystemVersion": "13.0",
         "NSHighResolutionCapable": True,
         "OptionHelperReleaseStatus": "formal_release" if formal_release else "local_candidate",
@@ -1482,8 +1504,10 @@ def verify_bundle(
         verify_python_runtime_licenses(runtime_licenses, license_inventory)
     except (OSError, json.JSONDecodeError, PlatformPayloadError, PythonRuntimeLicenseError) as error:
         raise MacOSBuildError(str(error)) from error
-    expected_version = str(actual.get("build_version", "")).removeprefix("v")
-    if bundle_info.get("CFBundleShortVersionString") != expected_version:
+    expected_version, expected_bundle_version = app_platform_versions(str(actual.get("build_version", "")))
+    if (bundle_info.get("CFBundleShortVersionString") != expected_version
+            or bundle_info.get("CFBundleVersion") != expected_bundle_version
+            or bundle_info.get("OptionHelperDisplayVersion") != actual.get("build_version")):
         raise MacOSBuildError("Info.plist版本与App构建版本不一致")
     expected_status = "formal_release" if actual.get("formal_release") is True else "local_candidate"
     if bundle_info.get("OptionHelperReleaseStatus") != expected_status:
@@ -1526,7 +1550,7 @@ def build_macos(
     repo_root: Path = ROOT,
 ) -> dict[str, Path]:
     try:
-        require_release_version(app_version)
+        require_app_version(app_version)
     except ValueError as error:
         raise MacOSBuildError(str(error)) from error
     if platform.system() != "Darwin" or platform.machine() != "arm64":
@@ -1556,7 +1580,7 @@ def build_macos(
     if native_runtime_required:
         _assert_source_name_boundary(repo_root=repo_root)
     output_dmg = dist_root / f"OptionHelper-{app_version}-macOS-arm64.dmg"
-    release_root = versions_root / app_version
+    release_root = versions_root / (RELEASE_VERSION if formal_release else app_version)
     if output_dmg.exists():
         raise MacOSBuildError("App版本已存在；请提高app_version")
     if release_root.exists():
