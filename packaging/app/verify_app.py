@@ -4,6 +4,9 @@
 from __future__ import annotations
 
 import argparse
+import ast
+import posixpath
+import re
 from pathlib import Path
 import sys
 
@@ -19,8 +22,32 @@ from verify_capability import verify_app_capability
 APP_RUNTIME_SOURCE_DIRECTORIES = ("backend", "frontend", "desktop", "config", "runtime")
 
 
+def verify_frontend_imports(app_root: Path) -> list[str]:
+    """Check that every relative JS import is both shipped and served."""
+    server = app_root / "backend" / "app_server.py"
+    if not server.is_file():
+        return []
+    tree = ast.parse(server.read_text(encoding="utf-8"))
+    assets = next((ast.literal_eval(node.value.args[0]) for node in tree.body
+                   if isinstance(node, ast.Assign) and any(isinstance(target, ast.Name) and target.id == "FRONTEND_ASSETS" for target in node.targets)), set())
+    errors = []
+    frontend = app_root / "frontend"
+    for name in sorted(assets):
+        path = frontend / name
+        if not path.is_file():
+            errors.append(f"App静态资源缺失：{name}")
+            continue
+        if path.suffix != ".js":
+            continue
+        for dependency in re.findall(r"(?:from\s*|import\s*\(?)['\"](\.[^'\"]+)['\"]", path.read_text(encoding="utf-8")):
+            resolved = posixpath.normpath(posixpath.join(posixpath.dirname(name), dependency.split("?")[0]))
+            if resolved not in assets:
+                errors.append(f"App模块导入未开放：{name} -> {resolved}")
+    return errors
+
+
 def verify_app(app_root: Path, *, capability_root: Path | None) -> list[str]:
-    errors: list[str] = []
+    errors: list[str] = verify_frontend_imports(app_root)
     errors.extend(
         f"App缺少{item}/"
         for item in APP_RUNTIME_SOURCE_DIRECTORIES
