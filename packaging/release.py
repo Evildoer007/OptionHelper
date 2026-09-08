@@ -34,7 +34,8 @@ for path in (
         sys.path.insert(0, str(path))
 
 from environment_check import check_dependencies
-from release_contract import RELEASE_VERSION, require_published_at, require_release_version
+from release_contract import skill_archive_name
+from release_contract import APP_VERSION, RELEASE_VERSION, require_published_at, require_release_version
 from name_boundary import assert_name_boundary_clean
 from source_snapshot import (
     SourceSnapshotError,
@@ -91,8 +92,8 @@ class ReleaseError(RuntimeError):
 @contextmanager
 def _snapshot_release_logic(snapshot_root: Path) -> Iterator[SimpleNamespace]:
     with snapshot_module_environment(snapshot_root, ROOT):
-        from runtime.knowledger.versioning import build_candidate as frozen_build_candidate
-        from runtime.knowledger.versioning import validate_published_catalog as frozen_validate_catalog
+        from knowledge_snapshot import build_candidate as frozen_build_candidate
+        from knowledge_snapshot import validate_published_catalog as frozen_validate_catalog
         from build_macos import MacOSBuildError as frozen_macos_error
         from build_macos import build_macos as frozen_build_macos
         from build_windows import WindowsBuildError as frozen_windows_error
@@ -304,7 +305,7 @@ def assert_final_layout(
     if validate_zip is None:
         validate_zip = _verification_contract().verify_zip
     installer_name = resolve_installer_name(version, platform)
-    expected_dist = {"option-helper.zip", installer_name}
+    expected_dist = {skill_archive_name(), installer_name}
     actual_dist = {path.name for path in dist.iterdir()}
     if actual_dist != expected_dist:
         raise ReleaseError(
@@ -316,7 +317,7 @@ def assert_final_layout(
         )
     archive = versions_root / version
     required = {
-        "option-helper.zip",
+        skill_archive_name(),
         "capability-manifest.json",
         "knowledger",
         installer_name,
@@ -330,22 +331,13 @@ def assert_final_layout(
         raise ReleaseError("版本归档缺少文件：" + ", ".join(missing))
     if (dist / "OptionHelper.app").exists() or (archive / "OptionHelper.app").exists():
         raise ReleaseError("发行目录不得保留裸.app")
-    if validate_zip(archive / "option-helper.zip"):
+    if validate_zip(archive / skill_archive_name()):
         raise ReleaseError("正式Skill ZIP解压验收失败")
-    if (dist / "option-helper.zip").read_bytes() != (archive / "option-helper.zip").read_bytes():
+    if (dist / skill_archive_name()).read_bytes() != (archive / skill_archive_name()).read_bytes():
         raise ReleaseError("dist Skill ZIP不是本次签发归档的逐字节副本")
     if (dist / installer_name).read_bytes() != (archive / installer_name).read_bytes():
         raise ReleaseError("dist安装物不是本次签发归档的逐字节副本")
-    return {"skill_zip": dist / "option-helper.zip", "installer": dist / installer_name, "archive": archive}
-
-
-def _legacy_archives(versions_root: Path) -> list[Path]:
-    if not versions_root.exists():
-        return []
-    return sorted(
-        path for path in versions_root.iterdir()
-        if path.is_dir() and not path.name.startswith(".") and path.name != RELEASE_VERSION
-    )
+    return {"skill_zip": dist / skill_archive_name(), "installer": dist / installer_name, "archive": archive}
 
 
 def _commit_release(version_stage: Path, delivery_stage: Path, *, versions_root: Path) -> None:
@@ -385,8 +377,6 @@ def release(version: str, *, platform: str, published_at: str) -> dict[str, Path
     _assert_release_dependencies()
 
     versions_root = ROOT / "versions"
-    if _legacy_archives(versions_root):
-        raise ReleaseError("versions含旧版本归档；请先按授权迁移到可恢复目录后再签发唯一v1.0.0")
     existing_archive = versions_root / version
 
     with (
@@ -422,8 +412,8 @@ def release(version: str, *, platform: str, published_at: str) -> dict[str, Path
             except logic.ReleaseVerificationError as error:
                 raise ReleaseError(f"既有正式归档复验失败：{error}") from error
             shutil.copytree(existing_archive, transaction_root)
-            signed_zip = transaction_root / "option-helper.zip"
-            shutil.copy2(signed_zip, delivery_stage / "option-helper.zip")
+            signed_zip = transaction_root / skill_archive_name()
+            shutil.copy2(signed_zip, delivery_stage / skill_archive_name())
         else:
             knowledger_candidate = temporary / "knowledger-candidate"
             _progress("生成并验证Knowledger候选快照")
@@ -479,7 +469,7 @@ def release(version: str, *, platform: str, published_at: str) -> dict[str, Path
             )
             if logic.verify_zip(signed_zip):
                 raise ReleaseError("签发Skill ZIP未通过解压验收")
-            shutil.copy2(signed_zip, delivery_stage / "option-helper.zip")
+            shutil.copy2(signed_zip, delivery_stage / skill_archive_name())
 
         _progress(f"由本次签发Skill构建{platform}安装物")
         capability_root = extract_skill(signed_zip, temporary / "extracted")
@@ -507,7 +497,7 @@ def release(version: str, *, platform: str, published_at: str) -> dict[str, Path
         try:
             if platform == "macos":
                 logic.build_macos(
-                    version,
+                    APP_VERSION,
                     app_capability_root,
                     dist_root=delivery_stage,
                     versions_root=transaction_versions,
@@ -518,7 +508,7 @@ def release(version: str, *, platform: str, published_at: str) -> dict[str, Path
                 )
             else:
                 _build_windows_formal(
-                    version,
+                    APP_VERSION,
                     app_capability_root,
                     dist_root=delivery_stage,
                     versions_root=transaction_versions,
@@ -569,7 +559,7 @@ def release(version: str, *, platform: str, published_at: str) -> dict[str, Path
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="原子签发OptionHelper唯一v1.0.0发行物")
+    parser = argparse.ArgumentParser(description="原子签发OptionHelper当前版本发行物")
     parser.add_argument("--version", default=RELEASE_VERSION)
     parser.add_argument("--platform", choices=("macos", "windows"), default="macos")
     parser.add_argument(
