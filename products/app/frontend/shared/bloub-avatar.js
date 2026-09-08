@@ -1,6 +1,7 @@
 /* Vanilla SVG binding of jeremy-prt/bloub. Geometry, morphs, blink and gaze
    come from the unmodified MIT engine. See LICENSES/Bloub-SOURCE.md. */
 import {BotEngine, RAYON, DEMI_VIEWBOX, STATE_BY_ID, mixHex} from '/app/frontend/shared/bloub-engine.js';
+import {ACTIVITY_VISUALS, nextIdleGesture} from '/app/frontend/shared/activity-motion.js';
 const NS='http://www.w3.org/2000/svg';
 let nextId=0;
 const colorContext=document.createElement('canvas').getContext('2d');
@@ -51,12 +52,8 @@ export function createBloubAvatar(){
   const engine=new BotEngine(RAYON,'idle');
   const motion=matchMedia('(prefers-reduced-motion: reduce)');
   let state='idle',clock=0,last=0,raf=0,visible=true,active=true,destroyed=false;
-  const idleShapes=[
-    {id:'idle',seconds:4},{id:'egg',seconds:4},{id:'hexagon',seconds:4},
-    {id:'play',seconds:3},{id:'wide',seconds:3},{id:'swirl',seconds:3},
-    {id:'orbit',seconds:4},{id:'wink',seconds:2}
-  ];
-  let shapeIndex=0,nextShapeAt=idleShapes[0].seconds;
+  let activity='idle', visual='idle', recent=[], lastInteraction=0;
+  let nextGestureAt=8+Math.random()*15, releaseAt=Infinity;
   let bodyColor='#b20d30',paperColor='#fff';
   const theme=()=>{
     const style=getComputedStyle(svg);
@@ -79,26 +76,44 @@ export function createBloubAvatar(){
     set(notif,frame.notif?{...{cx:frame.notif.x,cy:frame.notif.y,r:frame.notif.r},fill:'#2496e8'}:{r:0});
   }
   function frame(now){raf=0;if(destroyed||!visible||!active||document.hidden)return;clock+=last?Math.min(50,now-last)/1000:0;last=now;
-    if(state==='idle'&&clock>=nextShapeAt){
-      shapeIndex=(shapeIndex+1)%idleShapes.length;
-      const shape=idleShapes[shapeIndex];
-      engine.setState(shape.id,clock);
-      svg.dataset.bloubState=shape.id;
-      nextShapeAt=clock+shape.seconds;
+    if(clock>=releaseAt){activity='idle';state='idle';svg.dataset.activity='idle';svg.setAttribute('data-status-label',ACTIVITY_VISUALS.idle.label);releaseAt=Infinity;setVisual('idle');nextGestureAt=clock+8+Math.random()*15;}
+    if(activity==='idle'&&clock>=nextGestureAt){
+      const gesture=nextIdleGesture({current:visual,recent,quietSeconds:clock-lastInteraction});
+      setVisual(gesture.name);recent=[...recent,gesture.name].slice(-4);nextGestureAt=clock+gesture.seconds;
     }
     draw();raf=requestAnimationFrame(frame);}
   function sync(){cancelAnimationFrame(raf);raf=0;last=0;theme();draw();if(!destroyed&&active&&visible&&!motion.matches&&!document.hidden)raf=requestAnimationFrame(frame);}
+  function setVisual(next){
+    if(next===visual)return;
+    visual=next;svg.dataset.bloubState=next;engine.setState(next,clock);
+  }
   function setState(next){
-    if(destroyed||!STATE_BY_ID.has(next)||next===state)return;
-    state=next;shapeIndex=0;nextShapeAt=clock+idleShapes[0].seconds;
-    svg.dataset.bloubState=next;engine.setState(next,clock);
+    if(destroyed||!STATE_BY_ID.has(next))return;
+    state=next;activity=next==='idle'?'idle':'manual';releaseAt=Infinity;
+    setVisual(next);nextGestureAt=clock+8+Math.random()*15;
     if(motion.matches)clock+=2;
     sync();
+  }
+  function setActivity(next){
+    const config=ACTIVITY_VISUALS[next];
+    if(destroyed||!config||next===activity)return;
+    activity=next;state=config.bloub;releaseAt=next==='completed'?clock+2.8:next==='cancelled'?clock+1.2:Infinity;
+    svg.dataset.activity=next;svg.setAttribute('data-status-label',config.label);
+    setVisual(state);nextGestureAt=clock+8+Math.random()*15;
+    if(motion.matches)clock+=2;
+    sync();
+  }
+  function interact(){
+    lastInteraction=clock;
+    if(activity!=='idle'||motion.matches)return;
+    setVisual(Math.random()<.3?'wink':'wide');nextGestureAt=clock+1.5+Math.random();sync();
   }
   // Follow the whole workbench, including its same-origin module frames.
   // The engine eases gaze changes; clamp the angle, not the pointer position.
   function lookAt(x,y){
     if(destroyed||motion.matches||!active||!visible||document.hidden)return;
+    lastInteraction=clock;
+    if(activity==='idle'&&visual==='sleep'){setVisual('idle');nextGestureAt=clock+8+Math.random()*15;}
     const bounds=svg.getBoundingClientRect();
     engine.setLook({
       yaw:-35*Math.tanh((x-bounds.left-bounds.width/2)/240),
@@ -140,6 +155,6 @@ export function createBloubAvatar(){
   const io=new IntersectionObserver(([entry])=>{visible=entry.isIntersecting;sync();});io.observe(svg);
   const observer=new MutationObserver(sync);observer.observe(document.documentElement,{attributes:true,attributeFilter:['data-theme']});
   motion.addEventListener('change',sync);document.addEventListener('visibilitychange',sync);
-  svg.dataset.bloubState=state;sync();
-  return {element:svg,setState,setActive(value){active=Boolean(value);sync();},destroy(){destroyed=true;cancelAnimationFrame(raf);io.disconnect();observer.disconnect();motion.removeEventListener('change',sync);document.removeEventListener('visibilitychange',sync);document.removeEventListener('pointermove',look);document.documentElement.removeEventListener('pointerleave',leave);document.removeEventListener('load',frameLoaded,true);window.removeEventListener('blur',leave);frameObserver.disconnect();frameListeners.forEach(remove=>remove());frameListeners.clear();}};
+  svg.dataset.bloubState=state;svg.dataset.activity=activity;sync();
+  return {element:svg,setState,setActivity,interact,setActive(value){active=Boolean(value);sync();},destroy(){destroyed=true;cancelAnimationFrame(raf);io.disconnect();observer.disconnect();motion.removeEventListener('change',sync);document.removeEventListener('visibilitychange',sync);document.removeEventListener('pointermove',look);document.documentElement.removeEventListener('pointerleave',leave);document.removeEventListener('load',frameLoaded,true);window.removeEventListener('blur',leave);frameObserver.disconnect();frameListeners.forEach(remove=>remove());frameListeners.clear();}};
 }
