@@ -6,7 +6,7 @@ from dataclasses import replace
 from typing import Any, Mapping, Sequence
 
 from .agent_steps import AgentStepRunner
-from .models import RecommendationCandidate, RecommendationValidationError, module_execution_from_tool_result
+from .models import EvaluationRecord, RecommendationCandidate, RecommendationValidationError, module_execution_from_tool_result
 from .ports import ToolPort
 
 
@@ -49,6 +49,8 @@ def execute(
     tool_port: ToolPort | None,
 ) -> tuple[RecommendationCandidate, ...]:
     candidate_index = {item.candidate_id: item for item in candidates}
+    if len(candidate_index) != len(candidates):
+        raise RecommendationValidationError("candidate_id不得重复")
     approved = set(approved_candidate_ids)
     unknown = sorted(approved - set(candidate_index))
     if unknown:
@@ -88,10 +90,9 @@ def execute(
     tool_requests = plan.get("tool_requests", ())
     if isinstance(tool_requests, (str, bytes)) or not isinstance(tool_requests, Sequence):
         raise RecommendationValidationError("Executor.tool_requests必须为数组")
-    runs: dict[str, list[Any]] = {item: [] for item in runnable}
-    statuses: dict[str, dict[str, str]] = {item: {} for item in runnable}
+    planned_calls: list[tuple[str, str, dict[str, Any], str]] = []
     seen: set[tuple[str, str]] = set()
-    for position, raw in enumerate(tool_requests, start=1):
+    for raw in tool_requests:
         if not isinstance(raw, Mapping):
             raise RecommendationValidationError("Executor.tool_request必须为对象")
         candidate_id = str(raw.get("candidate_id", "")).strip()
@@ -102,12 +103,33 @@ def execute(
         if call_key in seen:
             raise RecommendationValidationError(f"Executor重复调用{candidate_id}的{module}")
         seen.add(call_key)
-        body = _module_request(module, candidate_index[candidate_id])
+        candidate = candidate_index[candidate_id]
+        if not candidate.evidence_refs:
+            raise RecommendationValidationError("执行候选缺少受控产品证据")
+        body = _module_request(module, candidate)
+        planned_calls.append((candidate_id, module, body, candidate.evidence_refs[0].catalog_version))
+    expected = {(candidate_id, module) for candidate_id in runnable for module in requested_modules}
+    if expected - seen:
+        raise RecommendationValidationError("Executor漏调已请求模块")
+
+    runs: dict[str, list[Any]] = {}
+    statuses: dict[str, dict[str, str]] = {}
+    records: dict[str, list[EvaluationRecord]] = {}
+    for candidate_id in runnable:
+        candidate = candidate_index[candidate_id]
+        if any(reference.tenant_id != tenant_id or reference.task_id != task_id for reference in candidate.module_run_refs):
+            raise RecommendationValidationError("候选已有ModuleRunRef不属于当前任务")
+        runs[candidate_id] = [item for item in candidate.module_run_refs if item.module not in requested_modules]
+        statuses[candidate_id] = {module: status for module, status in candidate.module_statuses.items() if module not in requested_modules}
+        records[candidate_id] = [item for item in candidate.evaluation_records if item.module not in requested_modules]
+
+    for position, (candidate_id, module, body, catalog_version) in enumerate(planned_calls, start=1):
+        limitation = None
         try:
             result = tool_port.call(module, body)
             status, run_ref, limitation = module_execution_from_tool_result(
                 module, result, tenant_id=tenant_id, task_id=task_id,
-                candidate_id=candidate_id, catalog_version=candidate_index[candidate_id].evidence_refs[0].catalog_version,
+                candidate_id=candidate_id, catalog_version=catalog_version,
             )
             step_runner.audit.append(
                 f"tool.{module}", status, agent_role="Executor", input_value=body, output_value=result,
@@ -118,6 +140,7 @@ def execute(
             raise
         except Exception as error:
             status, run_ref = "failed", None
+            limitation = str(error)
             step_runner.audit.append(
                 f"tool.{module}", "failed", agent_role="Executor", input_value=body, output_value=None,
                 detail={"candidate_id": candidate_id, "recommendation_run_id": run_id,
@@ -126,9 +149,13 @@ def execute(
         statuses[candidate_id][module] = status
         if run_ref is not None:
             runs[candidate_id].append(run_ref)
-    expected = {(candidate_id, module) for candidate_id in runnable for module in requested_modules}
-    if expected - seen:
-        raise RecommendationValidationError("Executor漏调已请求模块")
+        records[candidate_id].append(EvaluationRecord(
+            evaluation_id=f"evaluation-{candidate_id}-{module}", candidate_id=candidate_id,
+            module=module, status=status, module_run_ref=run_ref,
+            limitation=None if run_ref is not None else limitation or f"{module}未产出可消费的运行结果",
+            idempotency_state="busy" if status in {"pending", "running"} else "completed",
+            source_mode="live" if run_ref is not None else "unavailable",
+        ))
     updated: list[RecommendationCandidate] = []
     for item in candidates:
         if item.candidate_id in blocked:
@@ -145,6 +172,6 @@ def execute(
         )
         updated.append(replace(
             item, candidate_status=candidate_status, module_run_refs=tuple(runs[item.candidate_id]),
-            module_statuses=statuses[item.candidate_id],
+            module_statuses=statuses[item.candidate_id], evaluation_records=tuple(records[item.candidate_id]),
         ))
     return tuple(updated)
