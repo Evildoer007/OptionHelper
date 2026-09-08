@@ -27,9 +27,13 @@ def contractual_initial_cashflow(contract: ResolvedContract, quantity: float = 1
     terms = contract.terms
     if contract.product_id in {
         "1.1", "1.2", "4.1", "4.2", "4.3", "4.4", "4.5", "4.6",
-        "4.7", "4.8", "5.1", "5.2", "5.3", "5.4", "5.5", "5.6",
+        "4.7", "4.8",
     }:
         return -float(quantity) * float(terms.get("Pi_0", 0.0))
+    if contract.product_id in {"5.1", "5.2", "5.3", "5.4", "5.5", "5.6"}:
+        # Digital contracts charge one premium. In asset-or-nothing
+        # structures, asset_unit scales delivery only, not cash(0, -P).
+        return -float(terms.get("Pi_0", 0.0))
     if contract.product_id in {
         "6.1", "6.2", "6.3", "9.1", "9.3", "9.5", "9.6", "9.7", "9.8",
     }:
@@ -39,10 +43,19 @@ def contractual_initial_cashflow(contract: ResolvedContract, quantity: float = 1
     if contract.product_id in {"2.1", "2.3", "3.1", "3.2", "3.3", "3.4"}:
         return -float(terms.get("P_net", 0.0))
     if contract.product_id == "8.16":
+        start_value = contract.identity.get("contract_start_date")
+        end_value = contract.identity.get("contract_end_date")
+        tenor = float(terms.get("T", 0.0))
+        if start_value not in {None, ""} and end_value not in {None, ""}:
+            # The shared cashflow interpreter uses civil ACT/365, including
+            # day rounding when a fractional-year term freezes an end date.
+            tenor = (
+                _date(end_value, "contract_end_date") - _date(start_value, "contract_start_date")
+            ).days / 365.0
         return (
             -float(terms.get("N", 0.0))
             * float(terms.get("p", 0.0))
-            * float(terms.get("T", 0.0))
+            * tenor
         )
     return 0.0
 
@@ -67,21 +80,24 @@ def apply_cashflow_lifecycle(
     initial_cashflow: float,
     cashflow_scale: float | None,
     numerical_value_includes_initial: bool,
+    numerical_initial_cashflow: float | None = None,
 ) -> Any:
     """返回只按本次估值日分类后的当前价值和现金流分解。
 
     ``remaining_value``始终不含合同起始现金流。估值日在起始日时，起始现金流
     计入当前价值；估值日晚于起始日时，它只进入``realized_cashflows``，不会
-    再次影响当前剩余价值。
+    再次影响当前剩余价值。时间情景先移除该数值视图内的期初金额，再按原始
+    合同的initial_cashflow分类，不能把临时T当作重新议价原始支付的依据。
     """
 
     start_value = contract.identity.get("contract_start_date")
     relation = _valuation_relation(valuation_date, start_value)
     future_result = result
-    if numerical_value_includes_initial and initial_cashflow != 0.0:
+    included_initial = initial_cashflow if numerical_initial_cashflow is None else numerical_initial_cashflow
+    if numerical_value_includes_initial and included_initial != 0.0:
         future_result = add_time_zero_cashflow(
             future_result,
-            -initial_cashflow,
+            -included_initial,
             cashflow_scale,
         )
 
