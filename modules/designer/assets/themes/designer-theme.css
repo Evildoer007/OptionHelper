@@ -81,7 +81,7 @@ a { color: inherit; }
   top: 26px;
   margin-top: 26px;
   padding: 8mm 0 8mm 4mm;
-  border-left: 1px solid var(--red);
+  border-left: 1px solid var(--rule);
   color: var(--muted);
 }
 
@@ -127,7 +127,7 @@ a { color: inherit; }
   gap: 6mm;
   align-items: end;
   padding: 4mm 0 4.5mm;
-  border-top: 1px solid var(--gold);
+  border-top: 1px solid var(--rule);
   border-bottom: 1px solid var(--rule-strong);
 }
 
@@ -350,13 +350,13 @@ a { color: inherit; }
   padding: 12px 15px 13px;
   border-top: 1px solid var(--color-gold-border);
   border-bottom: 1px solid var(--color-gold-border);
-  border-left: 1px solid var(--gold);
-  background: var(--paper);
+  border-left: 3px solid var(--gold);
+  background: #FBF7EE;
 }
 
 .conclusion-band__label {
   margin: 0 0 5px !important;
-  color: var(--red);
+  color: var(--color-gold-ink);
   font-size: var(--type-meta);
   font-weight: 780;
   letter-spacing: .08em;
@@ -1214,7 +1214,7 @@ body.report-profile-a4 .disclaimer { margin-top: 12px; padding-top: 10px; line-h
   margin-top: 7px;
   padding: 0 0 7px 9px;
   border-bottom: var(--border-hairline) solid var(--rule);
-  border-left: 2px solid var(--red);
+  border-left: 2px solid var(--gold);
 }
 
 .designer-card .card-conclusion h2,
@@ -1226,9 +1226,11 @@ body.report-profile-a4 .disclaimer { margin-top: 12px; padding-top: 10px; line-h
   line-height: 1.45;
 }
 
+.designer-card .conclusion-heading { color: var(--color-gold-ink); }
+
 .designer-card .conclusion-band__label {
   margin: 0 0 2px;
-  color: var(--red);
+  color: var(--color-gold-ink);
   font-size: var(--type-card-label);
   font-weight: 760;
   letter-spacing: .07em;
@@ -1622,3 +1624,16 @@ body.report-profile-a4 .disclaimer { margin-top: 12px; padding-top: 10px; line-h
   .designer-card .card-contract-summary { grid-template-columns: 1fr; gap: 8px; }
   .designer-card .card-contract-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
+
+/* Compact multi-product summaries share the document typography and print rules. */
+.comparison-product-cards{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:24px;margin-top:24px}
+.comparison-product-card{min-width:0;padding:20px;border:1px solid var(--rule);background:var(--paper)}
+.comparison-product-card>header{padding-bottom:14px;border-bottom:2px solid var(--red)}
+.comparison-product-card>header p{margin:0 0 6px;color:var(--blue);font-size:12px}
+.comparison-product-card h2{margin:0;font-size:19px;line-height:1.4}
+.comparison-product-card h3{margin:18px 0 8px;font-size:13px;color:var(--blue)}
+.comparison-product-card table{width:100%;table-layout:auto;font-size:11px}
+.comparison-product-card th,.comparison-product-card td{padding:7px 5px;overflow-wrap:anywhere}
+.comparison-product-card .plain-list,.comparison-product-card .risk-list{padding-left:18px;font-size:12px}
+@media(max-width:700px){.comparison-product-cards{grid-template-columns:1fr}}
+@media print{.comparison-product-cards{display:block}.comparison-product-card{margin-bottom:8mm;break-inside:avoid}.comparison-product-card>header{break-after:avoid}thead{display:table-header-group}tr{break-inside:avoid}}
