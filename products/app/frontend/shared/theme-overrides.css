@@ -30,7 +30,7 @@ html[data-theme="dark"] :is(.settings-nav a:hover, .connection-item:hover, .conv
   color: var(--color-ink);
 }
 
-html[data-theme="dark"] :is(.notice--error, .activation-result.error, .message.error) {
+html[data-theme="dark"] :is(.notice--error, .message.error) {
   border-color: var(--color-red-border-soft);
   background-color: var(--state-failed-surface);
   color: var(--state-failed-color);
@@ -71,7 +71,6 @@ html[data-theme="dark"] :is(.login-theme, .login-input, .login-check__box) {
 html[data-theme="dark"] .login-card { color: var(--color-ink); }
 
 html[data-theme="dark"] .workspace-shell--desk .workspace-rail,
-html[data-theme="dark"] .workspace-shell--desk .task-rail,
 html[data-theme="dark"] .workspace-shell--desk .rail-mode-area {
   background: var(--color-surface);
   color: var(--color-ink);
@@ -92,9 +91,6 @@ html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-sh
 html[data-theme="dark"] .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .workspace-rail,
 html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .workspace-rail,
 html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="desk"] .workspace-rail,
-html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .task-rail,
-html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .task-rail,
-html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="desk"] .task-rail,
 html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-mode-area {
   background: var(--color-paper) !important;
   border-color: var(--color-rule) !important;
@@ -104,7 +100,6 @@ html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-sh
 html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .workbench-head,
 html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .desk-module-tabs,
 html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .desk-command-dock,
-html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .desk-status-strip,
 html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .composer,
 html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .assistant-panel,
 html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .desk-panel {
@@ -117,13 +112,17 @@ html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-sh
   border-bottom-color: transparent !important;
 }
 
+/* One conversation canvas continues behind the transparent composer wrappers. */
+html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] :is(.work-area, .chat-surface) {
+  background: var(--color-surface) !important;
+}
+
 html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .desk-module-tabs button,
 html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .task-item,
 html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="desk"] .task-item,
 html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .task-item__title,
 html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-kicker,
 html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .workbench-head h1,
-html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .desk-status-strip,
 html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .parameter-summary--strip dd:nth-child(2) {
   color: var(--color-ink) !important;
 }
@@ -133,8 +132,7 @@ html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-sh
 html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .task-item__more,
 html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .parameter-summary--strip dt:first-child,
 html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .model-picker__label,
-html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .message__meta,
-html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .message__origin {
+html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .message__meta {
   color: var(--color-muted) !important;
 }
 
@@ -193,8 +191,7 @@ html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-sh
 html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .model-picker .choice-trigger,
 html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .choice-menu,
 html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .choice-option,
-html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .task-rename-input,
-html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .connection-link--rail {
+html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .task-rename-input {
   background: var(--color-paper) !important;
   border-color: var(--color-rule-strong) !important;
   color: var(--color-ink) !important;
@@ -339,9 +336,9 @@ html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-sh
 }
 
 html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-account-trigger__mark {
-  border-color: var(--color-rule) !important;
-  background: transparent !important;
-  color: var(--color-ink) !important;
+  border-color: transparent !important;
+  background: #50555C !important;
+  color: #FFFFFF !important;
 }
 
 html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-account-menu__identity strong,
@@ -376,8 +373,7 @@ html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-sh
 html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .workspace-rail,
 html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="desk"] .workbench-head,
 html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="desk"] .desk-module-tabs,
-html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="desk"] .desk-command-dock,
-html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="desk"] .desk-status-strip {
+html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="desk"] .desk-command-dock {
   border-color: var(--color-rule) !important;
 }
 
@@ -440,21 +436,20 @@ html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-sh
   color: var(--color-ink) !important;
 }
 
-html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] :is(
-  .conversation-start__copy,
-  .conversation-starter span,
-  .conversation-start__note,
-  .message__meta,
-  .message__origin,
-  .model-picker__label
-) {
+html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] :is(.conversation-start__copy,
+.conversation-starter span,
+.conversation-start__note,
+.message__meta,
+.model-picker__label ) {
   color: var(--color-muted) !important;
 }
 
-html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] :is(
-  .conversation-start__mark,
-  .message__mark
-) {
+html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .conversation-start__mark {
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .message__mark {
   background: color-mix(in srgb, var(--color-brand-red) 12%, var(--color-surface)) !important;
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-brand-red) 18%, transparent) !important;
 }
@@ -522,6 +517,25 @@ html[data-native-shell] body.workspace-body .workspace-shell.workspace-shell--de
 }
 
 .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .workspace-rail--unbranded :is(
+  .rail-kicker,
+  .task-item,
+  .task-item__title,
+  .rail-account-trigger,
+  .rail-account-trigger__copy strong
+) {
+  color: var(--color-ink) !important;
+}
+
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .workspace-rail--unbranded :is(
+  .task-item:hover,
+  .task-item[aria-current="true"],
+  .rail-account-trigger:hover,
+  .rail-account-trigger[aria-expanded="true"]
+) {
+  background: var(--rail-material-control-hover) !important;
+}
+
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .workspace-rail--unbranded :is(
   .workspace-brand,
   .rail-mode-area,
   .task-rail,
@@ -530,18 +544,6 @@ html[data-native-shell] body.workspace-body .workspace-shell.workspace-shell--de
   .rail-account-trigger
 ) {
   background: transparent !important;
-}
-
-.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .workspace-rail--unbranded :is(
-  .rail-kicker,
-  .task-item,
-  .task-item__title,
-  .rail-account-trigger,
-  .rail-account-trigger__copy strong,
-  .connection-link--rail,
-  .rail-collapse-toggle
-) {
-  color: var(--color-ink) !important;
 }
 
 .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .workspace-rail--unbranded :is(
@@ -575,16 +577,6 @@ html[data-native-shell] body.workspace-body .workspace-shell.workspace-shell--de
 
 .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .workspace-rail--unbranded .mode-switch button[aria-pressed="true"] {
   color: var(--color-ink) !important;
-}
-
-.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .workspace-rail--unbranded :is(
-  .task-item:hover,
-  .task-item[aria-current="true"],
-  .rail-account-trigger:hover,
-  .rail-account-trigger[aria-expanded="true"],
-  .connection-link--rail:hover
-) {
-  background: var(--rail-material-control-hover) !important;
 }
 
 .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .workspace-rail--unbranded .rail-new-task {
