@@ -128,6 +128,8 @@ def display_text(value: Any, value_format: Any = "number") -> str:
     if str(value_format or "number").casefold() == "percent":
         numeric *= 100
         suffix = "%"
+    elif str(value_format or "number").casefold() == "percent_points":
+        suffix = "%"
     else:
         suffix = ""
     return _number_text(numeric) + suffix
@@ -142,6 +144,24 @@ def display_basis(row: Mapping[str, Any]) -> str:
         if value and value not in parts:
             parts.append(value)
     return "；".join(parts)
+
+
+def backtest_summary_rows(module: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Keep counts and coverage alongside returns in every brief summary."""
+
+    metric_rows = list(as_list(module.get("metrics")))
+    for table in (as_dict(item) for item in as_list(module.get("detail_tables"))):
+        if text(table.get("title")) == "公共回测统计":
+            metric_rows.extend(as_list(table.get("rows")))
+    metrics_by_label = unique_metric_rows_by_label(metric_rows, "回测摘要")
+    labels = (
+        "样本数", "有效收益样本数", "历史正收益样本占比",
+        "正收益样本数", "持平样本数", "负收益样本数",
+        "平均合同结算收益率", "最低合同结算收益率", "历史损失样本覆盖",
+    )
+    rows = [metrics_by_label[label] for label in labels if label in metrics_by_label]
+    rows.extend(as_dict(item) for item in as_list(module.get("card_metrics"))[:4])
+    return [row for row in rows if text(row.get("label")) and row.get("value") is not None]
 
 
 def unique_metric_rows_by_label(rows: list[Any], context: str) -> dict[str, dict[str, Any]]:
@@ -189,10 +209,13 @@ def _cell_text(row: dict[str, Any], key: str) -> str:
         # ``2025``, never ``2,025``; a leading-zero code must likewise stay
         # intact.  Only display metrics receive grouped numeric formatting.
         return "" if value is None else str(value)
+    if key == "value" and isinstance(row.get("value_display"), str):
+        return row["value_display"]
     value_format = row.get(f"{key}_format")
     if value_format is None and key == "value":
         value_format = row.get("value_format")
-    return display_text(value, value_format or "number")
+    rendered = display_text(value, value_format or "number")
+    return rendered + text(row.get(f"{key}_suffix")) if rendered else ""
 
 
 _TABLE_IDENTIFIER_KEYS = frozenset({
@@ -460,8 +483,9 @@ def status_box(module: dict[str, Any]) -> str:
     )
 
 
-def metric_strip(rows: list[Any]) -> str:
+def metric_strip(rows: list[Any], *, distinct_notes: bool = False) -> str:
     items = []
+    seen_notes: set[str] = set()
     for row in rows:
         item = as_dict(row)
         label = text(item.get("label"))
@@ -469,7 +493,9 @@ def metric_strip(rows: list[Any]) -> str:
         if not label or not value:
             continue
         basis = display_basis(item)
-        note_html = f'<div class="metric__note">{esc(basis)}</div>' if basis else ""
+        note_html = f'<div class="metric__note">{esc(basis)}</div>' if basis and (not distinct_notes or basis not in seen_notes) else ""
+        if basis:
+            seen_notes.add(basis)
         items.append(
             '<div class="metric">'
             f'<div class="metric__value">{esc_rendered(value)}</div>'
@@ -510,7 +536,8 @@ def parameter_table(rows: list[Any], caption: str) -> str:
         '<div class="table-wrap table-wrap--parameters">'
         f'<table class="parameter-table table-density-{density}" data-table-density="{density}"><colgroup>'
         '<col class="parameter-table__cn table-col table-col--narrative"><col class="parameter-table__symbol table-col table-col--identifier">'
-        '<col class="parameter-table__value table-col table-col--narrative"><col class="parameter-table__source table-col table-col--narrative"></colgroup><caption>' + esc(caption) + "</caption>"
+        '<col class="parameter-table__value table-col table-col--narrative"><col class="parameter-table__source table-col table-col--narrative"></colgroup>'
+        + ("<caption>" + esc(caption) + "</caption>" if caption else "") +
         '<thead><tr><th scope="col">条款</th><th scope="col">符号</th>'
         '<th scope="col">取值</th><th scope="col">来源</th></tr></thead>'
         f"<tbody>{''.join(table_rows)}</tbody></table></div>"
@@ -892,44 +919,55 @@ def detail_tables(tables: list[Any]) -> str:
         table = as_dict(raw)
         title = text(table.get("title"))
         columns: list[tuple[str, str]] = []
+        column_formats: dict[str, str] = {}
         for item in as_list(table.get("columns")):
             if isinstance(item, (list, tuple)) and len(item) == 2:
                 columns.append((text(item[0]), text(item[1])))
             elif isinstance(item, dict) and text(item.get("key")) and text(item.get("label")):
                 columns.append((text(item["key"]), text(item["label"])))
-        rows = as_list(table.get("rows"))
+                value_format = text(item.get("value_format") or item.get("format"))
+                if value_format:
+                    column_formats[text(item["key"])] = value_format
+        rows = [
+            {**{f"{key}_format": value_format for key, value_format in column_formats.items()}, **as_dict(raw_row)}
+            for raw_row in as_list(table.get("rows"))
+        ]
         if not title or not columns or not rows:
             continue
-        blocks.append(f"<h3>{esc(title)}</h3>")
         blocks.append(faceted_table(rows, columns, title, "result-table result-table--detail"))
     return "".join(block for block in blocks if block)
 
 
-def render_recommendation(data: dict[str, Any]) -> str:
+def render_recommendation(data: dict[str, Any], *, section_title: str = "") -> str:
     module = as_dict(data.get("recommendation"))
     blocks = []
     headline = module_headline(module.get("headline"), "recommendation")
-    if headline:
+    structure_name = text(module.get("structure_name"))
+    if headline and headline != structure_name:
         blocks.append('<div class="recommendation-head">')
         blocks.append(f'<h3>{esc(headline)}</h3>')
         blocks.append("</div>")
-    structure_name = text(module.get("structure_name"))
     underlyings = text(module.get("underlyings"))
     if structure_name or underlyings:
         identities = []
         if structure_name:
-            identities.append(f'<div><dt>推荐结构</dt><dd>{esc(structure_name)}</dd></div>')
+            label = "研究结构" if module.get("has_recommendation") is False else "推荐结构"
+            if label == section_title:
+                blocks.append(f'<p class="structure-name">{esc(structure_name)}</p>')
+            else:
+                identities.append(f'<div><dt>{label}</dt><dd>{esc(structure_name)}</dd></div>')
         if underlyings:
             identities.append(f'<div><dt>挂钩标的</dt><dd>{esc(underlyings)}</dd></div>')
-        blocks.append(
-            '<dl class="identity-ledger">'
-            + "".join(identities)
-            + "</dl>"
-        )
+        if identities:
+            blocks.append(
+                '<dl class="identity-ledger">'
+                + "".join(identities)
+                + "</dl>"
+            )
     # This is the frozen recommendation rationale. Designer displays the
     # provided market-view reasoning without deriving or extending it.
     reason = text(module.get("reason"))
-    if reason:
+    if reason and reason not in {headline, structure_name}:
         blocks.append(f'<div class="recommendation-head"><p>{rich_text(reason)}</p></div>')
     suitable = item_list(as_list(module.get("suitable_for")))
     not_suitable = item_list(as_list(module.get("not_suitable_for")))
@@ -1010,7 +1048,7 @@ def render_payoff(data: dict[str, Any], input_dir: Path) -> str:
         return status_box(module)
     figures = []
     if text(module.get("report_svg_path")):
-        figures.append({"label": "收益结构", "path": module.get("report_svg_path")})
+        figures.append({"label": "", "path": module.get("report_svg_path")})
     figures.extend(as_dict(item) for item in as_list(module.get("report_svg_paths")))
     rendered_figures = []
     for figure in figures:
@@ -1106,7 +1144,7 @@ def render_backtest(data: dict[str, Any], charts: list[dict[str, Any]]) -> str:
         if entry_rule:
             ledger.append(f'<div><dt>入场规则</dt><dd>{esc(entry_rule)}</dd></div>')
         blocks.append('<dl class="identity-ledger">' + "".join(ledger) + "</dl>")
-    blocks.append(metric_strip(as_list(module.get("metrics"))))
+    blocks.append(metric_strip(as_list(module.get("metrics")), distinct_notes=True))
     backtest_parameters = as_list(as_dict(data.get("parameters")).get("backtest_input"))
     if backtest_parameters:
         blocks.append("<h3>回测参数</h3>")
@@ -1136,12 +1174,24 @@ def render_backtest(data: dict[str, Any], charts: list[dict[str, Any]]) -> str:
             "result-table result-table--events",
         )
     )
-    blocks.append(detail_tables(as_list(module.get("detail_tables"))))
-    blocks.append(item_list(as_list(module.get("limitations"))))
+    # KPI and specialized rows are also supplied in legacy detail tables.
+    # Remove only identical rows already shown above; differing facts survive.
+    visible_metrics = [*as_list(module.get("metrics")), *as_list(module.get("card_metrics"))]
+    tables = []
+    for raw_table in as_list(module.get("detail_tables")):
+        table = as_dict(raw_table)
+        rows = as_list(table.get("rows"))
+        if table.get("title") in {"公共回测统计", "产品专属统计"}:
+            rows = [row for row in rows if row not in visible_metrics]
+        if rows:
+            tables.append({**table, "rows": rows})
+    blocks.append(detail_tables(tables))
+    risk_notes = as_list(as_dict(data.get("risk")).get("limitations")) if "risk" in as_list(data.get("sections")) else []
+    blocks.append(item_list([note for note in as_list(module.get("limitations")) if note not in risk_notes]))
     return "".join(block for block in blocks if block)
 
 
-def render_parameters(data: dict[str, Any]) -> str:
+def render_parameters(data: dict[str, Any], *, section_title: str = "") -> str:
     module = as_dict(data.get("parameters"))
     seen: set[str] = set()
 
@@ -1156,7 +1206,7 @@ def render_parameters(data: dict[str, Any]) -> str:
         return rows
 
     rows = [*unique_rows("common_input"), *unique_rows("payoff_input")]
-    visible = parameter_table(rows, "合同参数")
+    visible = parameter_table(rows, "" if section_title == "合同参数" else "合同参数")
     return visible + detail_tables(as_list(module.get("detail_tables")))
 
 
@@ -1164,12 +1214,15 @@ def render_risk(data: dict[str, Any]) -> str:
     module = as_dict(data.get("risk"))
     items = item_list(as_list(module.get("items")), "risk-list")
     disclaimer = text(module.get("disclaimer"))
-    if not items and not disclaimer:
-        return ""
     suitable = item_list(as_list(module.get("suitable_for")))
     not_suitable = item_list(as_list(module.get("not_suitable_for")))
     suitability_block = (f"<h3>适用条件</h3>{suitable}" if suitable else "") + (f"<h3>不适用情形</h3>{not_suitable}" if not_suitable else "")
-    limitations = item_list(as_list(module.get("limitations")))
+    missing_analysis = [label for key, label in (("payoff", "收益结构"), ("pricing", "估值定价"), ("backtest", "历史回测"))
+                        if text(as_dict(data.get(key)).get("status")).lower() == "not_run"]
+    limitation_items = list(as_list(module.get("limitations")))
+    if missing_analysis:
+        limitation_items.append("本次未运行" + "、".join(missing_analysis) + "，相关结论尚未验证。")
+    limitations = item_list(limitation_items)
     limitation_block = f"<h3>数据与方法限制</h3>{limitations}" if limitations else ""
     disclaimer_block = f'<p class="disclaimer">{esc(disclaimer)}</p>' if disclaimer else ""
     return items + suitability_block + limitation_block + disclaimer_block
@@ -1182,22 +1235,33 @@ def render_conclusion(data: dict[str, Any]) -> str:
     structure = text(module.get("structure_name"))
     underlyings = text(module.get("underlyings"))
     blocks: list[str] = ['<div class="conclusion-band">']
+    recommended = module.get("has_recommendation") is not False
     if structure or underlyings:
-        blocks.append('<p class="conclusion-band__label">推荐结论</p>')
-        statement = f"推荐{structure}" if structure else ""
+        label = "推荐结论" if recommended else "研究结论"
+        blocks.append(f'<p class="conclusion-band__label">{label}</p>')
+        statement = (f"推荐{structure}" if recommended else f"本次研究结构为{structure}") if structure else ""
         if underlyings:
             statement += f"，挂钩{underlyings}"
         blocks.append(f"<p class=\"conclusion-band__statement\">{rich_text(statement + '。')}</p>")
     reasons = item_list(as_list(module.get("reasons")))
     if reasons:
-        blocks.append(f"<h3>推荐理由</h3>{reasons}")
+        blocks.append(f"<h3>{'推荐理由' if recommended else '研究范围'}</h3>{reasons}")
     valuation = [*as_list(module.get("valuation_summary")), *as_list(module.get("greeks_summary"))]
     if valuation:
         blocks.append("<h3>估值摘要</h3>" + metric_strip(valuation))
     backtest = as_list(module.get("backtest_summary"))
     if backtest:
-        blocks.append("<h3>回测摘要</h3>" + metric_strip(backtest))
-    risks = item_list(as_list(module.get("risk_summary")), "risk-list")
+        preferred = ("有效收益样本数", "历史正收益样本占比", "平均合同结算收益率", "最低合同结算收益率")
+        selected = [row for label in preferred for row in backtest if as_dict(row).get("label") == label]
+        shown = selected or backtest[:4]
+        # The complete metrics and their basis remain in the backtest chapter.
+        if "backtest" in as_list(data.get("sections")):
+            shown = [{key: value for key, value in as_dict(row).items() if key not in {"note", "basis"}} for row in shown]
+        blocks.append("<h3>回测摘要</h3>" + metric_strip(shown, distinct_notes=True))
+        risk_notes = as_list(as_dict(data.get("risk")).get("limitations")) if "risk" in as_list(data.get("sections")) else []
+        blocks.append(item_list([note for note in as_list(module.get("backtest_summary_notes")) if note not in risk_notes]))
+    risk_items = as_list(as_dict(data.get("risk")).get("items")) if "risk" in as_list(data.get("sections")) else []
+    risks = item_list([item for item in as_list(module.get("risk_summary")) if item not in risk_items], "risk-list")
     if risks:
         blocks.append(f"<h3>风险边界</h3>{risks}")
     blocks.append("</div>")
@@ -1261,6 +1325,7 @@ def render_html(
     section_definition: Sequence[tuple[str, str, str]] | None = None,
     appended_content: dict[str, Sequence[Mapping[str, Any]]] | None = None,
     template_shell: str = "report.html",
+    product_sections: Sequence[Mapping[str, Any]] = (),
 ) -> str:
     validate_payload(payload)
     config = config or load_designer_config()
@@ -1291,7 +1356,17 @@ def render_html(
     appended_content = appended_content or {}
     sections = []
     for section_key, section_title, key in section_definition:
-        body = renderers[key]()
+        if key in {"payoff", "pricing", "backtest"} and text(as_dict(payload.get(key)).get("status")).lower() in {"", "not_run", "pending", "unsupported"}:
+            if not appended_content.get(section_key):
+                continue
+        if key == "recommendation" and as_dict(payload.get("recommendation")).get("has_recommendation") is False:
+            section_title = "研究结构"
+        if key == "recommendation":
+            body = render_recommendation(payload, section_title=section_title)
+        elif key == "parameters":
+            body = render_parameters(payload, section_title=section_title)
+        else:
+            body = renderers[key]()
         appended = render_presentation_content(appended_content.get(section_key, ()))
         body += appended
         if not body:
@@ -1307,6 +1382,27 @@ def render_html(
             "status": section_status,
             "status_attr": f' data-status="{esc(section_status)}"' if section_status else "",
         })
+
+    if product_sections:
+        product_blocks = []
+        for index, candidate in enumerate(product_sections, 1):
+            facts = deepcopy(as_dict(candidate.get("facts")))
+            validate_payload(facts)
+            for module in ("pricing", "backtest"):
+                for chart in as_list(as_dict(facts.get(module)).get("charts")):
+                    if isinstance(chart, dict):
+                        chart["id"] = f"product-{index}-{chart.get('id', 'chart')}"
+            bodies = [("合同条款", render_parameters(facts, section_title="合同条款"))]
+            for module, label, renderer in (("payoff", "收益结构", lambda: render_payoff(facts, input_dir)),
+                                             ("pricing", "估值定价", lambda: render_pricing(facts, charts)),
+                                             ("backtest", "历史回测", lambda: render_backtest(facts, charts))):
+                if text(as_dict(facts.get(module)).get("status")).lower() in {"ready", "partial", "failed"}:
+                    bodies.append((label, renderer()))
+            body = "".join(f"<section><h3>{esc(label)}</h3>{value}</section>" for label, value in bodies if value)
+            product_blocks.append({"id": f"product-{index}", "title": text(candidate.get("title")) or f"产品{index}",
+                                   "body": body, "status_attr": ""})
+        risk_sections = [item for item in sections if item["id"] == "section-risk"]
+        sections = [item for item in sections if item["id"] != "section-risk"] + product_blocks + risk_sections
 
     content = "".join(
         f'<section id="{item["id"]}" class="report-section"{item["status_attr"]}>'
