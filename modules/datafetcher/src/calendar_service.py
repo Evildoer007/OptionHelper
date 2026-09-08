@@ -781,10 +781,14 @@ def fetch_calendar_asset(
                     end_date=end_date,
                 )
                 estimated_units = len(exchanges)
-                limit = request.quota_limit if request.quota_limit is not None else config.max_provider_units
+                limit = min(config.max_provider_units, request.quota_limit) if request.quota_limit is not None else config.max_provider_units
+                attempted = False
                 try:
+                    if config.offline:
+                        raise ProviderUnavailable("离线模式下交易日历覆盖不足，禁止远程补齐", reason_code="offline_miss")
                     if quota_used + estimated_units > limit:
                         raise ProviderQuotaExceeded("交易日历请求超过DataFetcher额度保护上限")
+                    attempted = True
                     raw_by_exchange = IFindHttpProvider().fetch_calendar(gap_request, config)
                     if not isinstance(raw_by_exchange, Mapping):
                         raise CalendarValidationError("iFind交易日历返回结构无效")
@@ -824,11 +828,13 @@ def fetch_calendar_asset(
                         "provider": "ifind_http",
                         "endpoint": "get_trade_dates",
                         "outcome": error.code,
-                        "quota_units": 0,
+                        "quota_units": estimated_units if attempted else 0,
                         "start_date": start_date,
                         "end_date": end_date,
                         "exchanges": sorted(exchanges),
                     })
+                    if config.offline:
+                        raise _attach_provider_calls(error, calls)
                     if isinstance(error, (
                         CalendarValidationError,
                         ProviderFieldPermissionDenied,
