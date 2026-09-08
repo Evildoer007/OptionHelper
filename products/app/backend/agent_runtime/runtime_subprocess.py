@@ -258,6 +258,10 @@ class RuntimeSubprocessTransport:
         normalized = str(method or "").strip().replace("/", ".")
         if not normalized:
             raise ValueError("RPC method不能为空")
+        # Awaiting a child response is business execution, not an RPC handshake.
+        # Model idle detection, cancellation and process exit remain authoritative.
+        if timeout is None and normalized in {"subagent.start", "subagent.followup"} and (params or {}).get("wait") is not False:
+            timeout = 0
         result = self._rpc(normalized, params or {}, request_id=request_id, timeout=timeout)
         if normalized == "agent.activate":
             run_id = str(_pick(result, "runId", "run_id", default="") or "").strip()
