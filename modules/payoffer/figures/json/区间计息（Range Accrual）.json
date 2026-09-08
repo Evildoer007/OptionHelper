@@ -13,7 +13,6 @@
     "settlement": "cash",
     "observation_price": "close",
     "margin_call": false,
-    "payoff_figure_basis": "gross_before_premium",
     "monitor": {
       "n_obs_actual": "exact_observation_count(S_t[O_range], n_obs)",
       "n_in": "count(S_t[O_range] >= L and S_t[O_range] <= U)"
@@ -44,5 +43,22 @@
         }
       ]
     }
-  ]
+  ],
+  "visual_template": {
+    "schema": "optionhelper.payoff-visual-template",
+    "layout": "standard_path_cards",
+    "path_views": [
+      {
+        "path_index": 1,
+        "case_indexes": [
+          1,
+          2,
+          3
+        ],
+        "axis": "n_in",
+        "chart_kind": "path_statistic_slice",
+        "title": "路径1"
+      }
+    ]
+  }
 }
