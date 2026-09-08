@@ -1,4 +1,4 @@
-param(
+﻿param(
     [Parameter(Mandatory = $true)]
     [string] $ListScript,
     [Parameter(Mandatory = $true)]
@@ -8,7 +8,7 @@ param(
 $ErrorActionPreference = "Stop"
 $paths = @(& $ListScript -PathsOnly)
 if ($paths.Count -eq 0) {
-    [Console]::Error.WriteLine("未找到可选择的Python解释器。请安装Python3.11或更高版本后重试。")
+    [Console]::Error.WriteLine("未找到可选择的Python解释器。请安装64位Python3.12或3.13后重试。")
     exit 1
 }
 
