@@ -9,6 +9,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from html import escape
+from math import ceil
 from typing import Any, Mapping, Sequence
 
 
@@ -22,6 +23,11 @@ OUTER_MARGIN = 16
 CARD_WIDTH = 578
 CARD_GAP = 12
 CARD_BASE_HEIGHT = 400
+CARD_HEADER_BASE = 76.0
+ANNOTATION_ROW_HEIGHT = 20.0
+CARD_FOOTER_HEIGHT = 46.0
+HEADER_HEIGHT_RATIO = 0.42
+FOOTER_HEIGHT_RATIO = 0.16
 PLOT_LEFT = 38
 PLOT_RIGHT = 540
 _TOKEN_PATTERN = re.compile(r"^([A-Za-z])_(?:\{(.+)\}|(.+))$")
@@ -291,8 +297,21 @@ def _layout_cards(
     row_count = max(1, (len(sketches) + columns - 1) // columns)
     requested_row_height = None
     if canvas_height is not None:
+        # 固定标题、费用说明和阈值注释不能靠裁切适应过小画布。
+        minimum_row_height = max([
+            CARD_FOOTER_HEIGHT / FOOTER_HEIGHT_RATIO,
+            *(
+                (CARD_HEADER_BASE + ANNOTATION_ROW_HEIGHT * (
+                    1 + max((annotation.row for annotation in annotations), default=-1)
+                )) / HEADER_HEIGHT_RATIO
+                for _, _, annotations, _ in sketches
+            ),
+        ])
+        minimum_height = ceil(92.0 + legend_reserve + CARD_GAP * (row_count - 1) + row_count * minimum_row_height)
+        if canvas_height < minimum_height:
+            raise ValueError(f"当前收益图的图片高度至少需要{minimum_height}像素，请增大图片高度")
         available = canvas_height - 92.0 - legend_reserve - CARD_GAP * (row_count - 1)
-        requested_row_height = max(72.0, available / row_count)
+        requested_row_height = available / row_count
     layouts: list[_CardLayout] = []
     y = 92.0
     for start in range(0, len(sketches), columns):
@@ -315,9 +334,9 @@ def _card(path: Mapping[str, Any], index: int, layout: _CardLayout) -> str:
     annotation_rows = 1 + max((annotation.row for annotation in layout.annotations), default=-1)
     plot_padding = min(PLOT_LEFT, max(18.0, card_width * 0.08))
     left, right = card_x + plot_padding, card_x + card_width - plot_padding
-    natural_header = 76.0 + annotation_rows * 20.0
-    header = min(natural_header, max(34.0, card_height * 0.42))
-    footer = min(46.0, max(14.0, card_height * 0.16))
+    natural_header = CARD_HEADER_BASE + annotation_rows * ANNOTATION_ROW_HEIGHT
+    header = min(natural_header, max(34.0, card_height * HEADER_HEIGHT_RATIO))
+    footer = min(CARD_FOOTER_HEIGHT, max(14.0, card_height * FOOTER_HEIGHT_RATIO))
     if card_height - header - footer < 24.0:
         header = max(28.0, card_height * 0.44)
         footer = max(10.0, card_height * 0.12)
