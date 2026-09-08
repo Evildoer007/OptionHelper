@@ -20,6 +20,7 @@ from urllib.parse import unquote_to_bytes
 from xml.etree import ElementTree
 
 from .design_tokens import TOKENS
+from .system_fonts import windows_font_candidates
 
 from bs4 import BeautifulSoup, NavigableString, Tag
 from docx import Document
@@ -497,8 +498,7 @@ def _font_candidates() -> tuple[Path, ...]:
         Path("/System/Library/Fonts/STHeiti Light.ttc"),
         Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"),
         Path("/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc"),
-        Path("C:/Windows/Fonts/msyh.ttc"),
-        Path("C:/Windows/Fonts/simsun.ttc"),
+        *windows_font_candidates("msyh.ttc", "simsun.ttc"),
     )
 
 
