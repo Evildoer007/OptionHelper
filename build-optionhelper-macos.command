@@ -3,7 +3,6 @@
 set -euo pipefail
 
 ROOT="${0:A:h}"
-VERSION="${OPTIONHELPER_VERSION:-v1.0.0}"
 
 setopt NULL_GLOB
 
@@ -122,8 +121,9 @@ check_dependencies() {
       print "[1/3] 运行条件检查通过。"
     fi
     return 0
+  else
+    check_exit_code=$?
   fi
-  check_exit_code=$?
   print -u2 "运行环境和锁定依赖检查未通过，构建已停止。"
   print -u2 "$output"
   print -u2 "处理方式：请使用同一Python环境安装或恢复锁定依赖："
@@ -148,7 +148,7 @@ prepare_agent_runtime_tools
 print "[2/3] 运行条件已就绪，准备构建Skill、App和DMG。"
 print "[3/3] 正在构建Skill、App和DMG。此过程可能需要数分钟，下面会持续显示阶段进度。"
 export OPTIONHELPER_REQUIRE_NATIVE_RUNTIME=1
-if "$PYTHON_BIN" packaging/build_current.py --version "$VERSION" --platform macos; then
+if "$PYTHON_BIN" packaging/build_current.py --platform macos; then
   exit 0
 else
   build_exit_code=$?
