@@ -93,7 +93,7 @@ def _now() -> str:
 
 
 def _quota_limit(request: DataRequest | CalendarRequest, config: DataFetcherConfig) -> int:
-    return request.quota_limit if request.quota_limit is not None else config.max_provider_units
+    return min(config.max_provider_units, request.quota_limit) if request.quota_limit is not None else config.max_provider_units
 
 
 def _providers() -> dict[str, Any]:
@@ -125,6 +125,8 @@ def _coverage(
     frame: pd.DataFrame,
     request: DataRequest,
     calendar_evidence: VerifiedCalendarEvidence | None,
+    *,
+    provider_confirmed_end_date: str | None = None,
 ) -> dict[str, Any]:
     by_asset = {
         asset_id: {
@@ -160,6 +162,8 @@ def _coverage(
         "calendar_revision": calendar_revision,
         "by_asset": by_asset,
     }
+    if provider_confirmed_end_date is not None:
+        coverage["provider_confirmed_end_date"] = provider_confirmed_end_date
     if calendar_evidence is not None and calendar_evidence.calendar_ref:
         coverage["calendar_ref"] = dict(calendar_evidence.calendar_ref)
     return coverage
@@ -367,10 +371,24 @@ def _asset_reference(
     provider_calls: list[Mapping[str, Any]],
     caller: CallerContext,
     calendar_evidence: VerifiedCalendarEvidence | None,
+    latest_completed_date: str,
 ) -> DataAssetRef:
     content_hash = daily_content_hash(frame)
     conventions = market_conventions(request.asset_ids, request.adjustment)
-    coverage = _coverage(frame, request, calendar_evidence)
+    provider_confirmed_end_date: str | None = None
+    if provider != "local" and cache_decision in {"cache_miss_fetched", "cache_extended"}:
+        provider_confirmed_end_date = min(request.end_date, latest_completed_date)
+        if calendar_evidence is not None:
+            provider_confirmed_end_date = min(
+                provider_confirmed_end_date,
+                str(frame["date"].max()),
+            )
+    coverage = _coverage(
+        frame,
+        request,
+        calendar_evidence,
+        provider_confirmed_end_date=provider_confirmed_end_date,
+    )
     adjustment = {
         asset_id: {
             field: (
@@ -573,6 +591,10 @@ def _fetch_provider(
     names: tuple[str, ...],
     calls: list[dict[str, Any]],
     quota_used: int,
+    *,
+    expected_trading_dates: Mapping[str, tuple[str, ...]] | None = None,
+    latest_observable_date: str | None = None,
+    latest_pending_session: str | None = None,
 ) -> tuple[str, pd.DataFrame, int]:
     catalog = _providers()
     limit = min(config.max_provider_units, request.quota_limit) if request.quota_limit is not None else config.max_provider_units
@@ -598,7 +620,24 @@ def _fetch_provider(
             normalized = normalize_daily_history(
                 frame,
                 request,
-                latest_observable_date=latest_observable_market_date(config),
+                latest_observable_date=latest_observable_date or latest_observable_market_date(config),
+                retain_source_history=name == "local",
+            )
+            if name == "local":
+                # 保留已读取文件的完整价格快照，资产输出和日历校验仍使用请求视图。
+                validate_daily_history(normalized, request.fields, latest_observable_date=latest_observable_date)
+            request_view = _request_view(normalized, request)
+            # Provider优先级只有在当前Provider按标的、价格字段及已验证交易日历
+            # 完整覆盖本次区间后才可终止。本地文件缺少中间交易日时应继续尝试
+            # 后续API，不能先记录成功再在Provider选择结束后失败。
+            validate_daily_history(
+                request_view,
+                request.fields,
+                start_date=request.start_date,
+                end_date=request.end_date,
+                expected_trading_dates=expected_trading_dates,
+                latest_observable_date=latest_observable_date,
+                latest_pending_session=latest_pending_session,
             )
             calls.append(_provider_call(name, "succeeded", units))
             return name, normalized, quota_used
@@ -619,7 +658,7 @@ def _fetch_provider(
     if protected_error is not None:
         raise protected_error
     if last_error is not None:
-        if isinstance(last_error, ProviderError):
+        if isinstance(last_error, (ProviderError, DataQualityError)):
             raise last_error
         raise ProviderUnavailable("没有可用Provider满足本次请求") from last_error
     raise ProviderUnavailable("没有可用Provider满足本次请求")
@@ -637,6 +676,24 @@ def _interval_requests(request: DataRequest, match: CacheMatch | None) -> tuple[
         for (start_date, end_date), asset_ids in groups.items()
     )
     return requests, match.frame, match.provider
+
+
+def _interval_expected_trading_dates(
+    expected_trading_dates: Mapping[str, tuple[str, ...]] | None,
+    request: DataRequest,
+) -> Mapping[str, tuple[str, ...]] | None:
+    """将整段日历证据裁剪到一个缺口请求，保持逐资产完整性校验。"""
+
+    if expected_trading_dates is None:
+        return None
+    return {
+        asset_id: tuple(
+            date
+            for date in expected_trading_dates.get(asset_id, ())
+            if request.start_date <= date <= request.end_date
+        )
+        for asset_id in request.asset_ids
+    }
 
 
 def _completed_calendar_sessions(
@@ -807,6 +864,7 @@ def _resolve_data(
                 calls,
                 caller,
                 calendar_evidence,
+                latest_completed_date,
             )
             if request.persistence_mode == "library":
                 cache.save(
@@ -820,6 +878,7 @@ def _resolve_data(
                     {
                         "content_hash": daily_content_hash(full_match.frame),
                         "provider": full_match.provider,
+                        "provider_confirmed_dates": full_match.metadata.get("provider_confirmed_dates", {}),
                         "data_asset_ref": deep_thaw(asdict(rebound_ref)),
                         "updated_at": _now(),
                         "tenant_id": caller.tenant_id,
@@ -839,6 +898,7 @@ def _resolve_data(
                     {
                         "content_hash": daily_content_hash(full_match.frame),
                         "provider": full_match.provider,
+                        "provider_confirmed_dates": full_match.metadata.get("provider_confirmed_dates", {}),
                         "data_asset_ref": deep_thaw(asdict(rebound_ref)),
                         "updated_at": _now(),
                         "tenant_id": caller.tenant_id,
@@ -860,6 +920,7 @@ def _resolve_data(
         selected_provider: str | None = cached_provider
         latest_session_pending_no_data = False
         for interval in interval_requests:
+            interval_expected_dates = _interval_expected_trading_dates(expected_trading_dates, interval)
             try:
                 provider, frame, quota_usage["used"] = _fetch_provider(
                     interval,
@@ -867,6 +928,14 @@ def _resolve_data(
                     _provider_order(interval, cached_provider),
                     calls,
                     quota_usage["used"],
+                    expected_trading_dates=interval_expected_dates,
+                    latest_observable_date=latest_observable_date,
+                    latest_pending_session=(
+                        latest_pending_session
+                        if latest_pending_session is not None
+                        and interval.start_date <= latest_pending_session <= interval.end_date
+                        else None
+                    ),
                 )
             except ProviderNoData:
                 if (
@@ -903,6 +972,7 @@ def _resolve_data(
             calls,
             caller,
             calendar_evidence,
+            latest_completed_date,
         )
         if request.persistence_mode == "library":
             cache.save(
@@ -916,12 +986,14 @@ def _resolve_data(
                 {
                     "content_hash": daily_content_hash(cache_frame),
                     "provider": selected_provider,
+                    "provider_confirmed_dates": (partial_match.metadata or {}).get("provider_confirmed_dates", {}) if partial_match else {},
                     "data_asset_ref": deep_thaw(asdict(asset_ref)),
                     "updated_at": _now(),
                     "tenant_id": caller.tenant_id,
                     "principal_id": caller.principal_id,
                 },
                 data_asset_ref_key=data_asset_ref_key,
+                reset_coverage=request.cache_policy == "force_refresh",
             )
         else:
             cache.save_volatile(
@@ -935,12 +1007,14 @@ def _resolve_data(
                 {
                     "content_hash": daily_content_hash(cache_frame),
                     "provider": selected_provider,
+                    "provider_confirmed_dates": (partial_match.metadata or {}).get("provider_confirmed_dates", {}) if partial_match else {},
                     "data_asset_ref": deep_thaw(asdict(asset_ref)),
                     "updated_at": _now(),
                     "tenant_id": caller.tenant_id,
                     "principal_id": caller.principal_id,
                 },
                 data_asset_ref_key=data_asset_ref_key,
+                reset_coverage=request.cache_policy == "force_refresh",
             )
         return asset_ref, quality, cache_decision, frame
 
