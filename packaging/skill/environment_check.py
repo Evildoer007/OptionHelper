@@ -188,10 +188,10 @@ def check_dependencies(
             actual = None
             status = "missing"
         findings.append({"name": name, "expected": expected, "actual": actual, "status": status})
-    python_ok = sys.version_info >= (3, 11)
+    python_ok = sys.version_info >= (3, 12)
     report: dict[str, object] = {
         "ok": python_ok and all(item["status"] == "ok" for item in findings),
-        "python": {"required": ">=3.11", "actual": sys.version.split()[0], "status": "ok" if python_ok else "unsupported"},
+        "python": {"required": ">=3.12", "actual": sys.version.split()[0], "status": "ok" if python_ok else "unsupported"},
         "requirements": findings,
         "data_provider": {"name": "iFind API", "credential": "IFIND_REFRESH_TOKEN"},
         "note": "Skill不会自动安装依赖或修改Python环境。",
@@ -366,7 +366,7 @@ def _readiness_guidance(
     if next_action == "install_dependencies":
         python = dependencies.get("python")
         if isinstance(python, Mapping) and python.get("status") == "unsupported":
-            return "当前Python不受支持。请先确认安装或恢复Python3.11或更高版本的环境，重新选择解释器后再检查。"
+            return "当前Python不受支持。请先确认安装或恢复Python3.12或更高版本的环境，重新选择解释器后再检查。"
         return (
             "锁定依赖未就绪。请先确认安装，再使用当前解释器执行："
             f'"{sys.executable}" -m pip install -r "{requirements_path}" '
