@@ -25,7 +25,7 @@ from .identity.session_identity import SessionIdentity
 from .page_registry import PAGE_MODULES, PageRegistry
 from .reporter_adapter import ReporterAdapter
 from .stores.result_store import ResultStore
-from .stores.data_store import DataStore
+from .stores.data_store import DataStore, market_history_bounds
 from .task_runtime.compute_process import (
     ComputeProcessSupervisor,
     PreparedComputeExecution,
@@ -391,7 +391,6 @@ class ToolGateway:
         if verified_context is None or not verified_context.task_id:
             raise ValidationError("Backtester日期预检必须绑定App任务")
         scripts_root = str(self._registry.capability_root / "scripts")
-        task_id = str(verified_context.task_id)
         with capability_import_scope(scripts_root, runtime_root=self._capability_runtime_root):
             self._registry.assert_execution_integrity()
             content_hashes = self._registry.manifest.get("content_hashes")
@@ -450,7 +449,9 @@ class ToolGateway:
                         "request_entry_window": requested_window,
                         "market_as_of_session": details.get("market_as_of_session"),
                         "latest_complete_entry_session": details.get("latest_complete_entry_session"),
+                        "suggested_start_date": details.get("suggested_start_date"),
                         "suggested_end_date": suggested,
+                        "reason": details.get("reason"),
                         "effective_entry_window": None,
                         "tenor_basis": _backtest_tenor_basis(friendly_payload, None),
                         "data_coverage_status": "insufficient_or_invalid_window",
@@ -710,8 +711,10 @@ class ToolGateway:
         else:
             requested = payload.get("historical_data")
         history_request = _history_fetch_request(module, payload, None, assets)
-        automatic_backtest_window = module == "backtester" and _uses_automatic_backtest_window(payload)
-        history_calendar_ref: Mapping[str, Any] | None = None
+        if module == "backtester":
+            return self._resolve_backtest_data_refs(
+                history_request, requested, identity, request_id=request_id,
+            )
         history_ref = None
         covering_history_resolver = getattr(self._data_assets, "resolve_market_history_covering", None)
         if history_ref is None and _empty_data_reference(requested) and callable(covering_history_resolver):
@@ -723,8 +726,8 @@ class ToolGateway:
                 fields=tuple(str(item) for item in history_request["fields"]),
                 frequency=str(history_request["frequency"]),
                 adjustment=str(history_request["adjustment"]),
-                allow_available_end=automatic_backtest_window,
-                require_verified_calendar=(module == "backtester"),
+                allow_available_end=False,
+                require_verified_calendar=False,
             )
         if history_ref is None:
             try:
@@ -740,60 +743,21 @@ class ToolGateway:
         if (
             history_ref is not None
             and not _history_ref_covers_request(history_ref, history_request)
-            and not (
-                automatic_backtest_window
-                and _history_ref_supports_automatic_backtest_cutoff(history_ref, history_request)
-            )
         ):
             # A local selection is a reuse preference, not a reason to block
             # the calculator.  When its validated interval is too short, the
             # Host transparently fetches and binds a complete replacement.
             history_ref = None
 
-        if module == "backtester" and (
-            history_ref is None or not _has_verified_backtest_calendar(history_ref)
-        ):
-            calendar_ref = self._fetch_and_bind_backtest_calendar(
+        if history_ref is None:
+            history_ref = self._complete_pricing_history(
                 history_request,
+                requested,
                 identity,
                 request_id=request_id,
             )
-            history_calendar_ref = calendar_ref
-            history_ref = self._fetch_and_bind_history(
-                history_request,
-                identity,
-                request_id=request_id,
-                trading_calendar_ref=calendar_ref,
-            )
-        else:
-            if history_ref is None:
-                history_ref = self._fetch_and_bind_history(
-                    history_request,
-                    identity,
-                    request_id=request_id,
-                )
         refs = [history_ref]
-        if module == "backtester":
-            # ``resolve_for_compute`` deliberately accepts only an opaque
-            # selector from the browser.  The calendar just fetched above is
-            # an internal full DataAsset record, so reduce it to that same
-            # safe selector before routing it back through the resolver.
-            bound_calendar = (
-                _data_asset_selector(history_calendar_ref)
-                if history_calendar_ref is not None
-                else _calendar_reference_bound_to_history(history_ref)
-            )
-            calendar_ref = self._resolve_or_fetch_trading_calendar(
-                payload,
-                assets,
-                identity,
-                request_id=request_id,
-                required=True,
-                requested_calendar=bound_calendar,
-                requested_calendar_is_internal=True,
-            )
-            refs.append(calendar_ref)
-        elif module == "pricer":
+        if module == "pricer":
             requested_calendar = payload.get("trading_calendar_ref")
             calendar_ref = self._resolve_or_fetch_trading_calendar(
                 payload,
@@ -807,6 +771,196 @@ class ToolGateway:
             if calendar_ref is not None:
                 refs.append(calendar_ref)
         return refs
+
+    def _complete_pricing_history(
+        self,
+        request: dict[str, Any],
+        requested_history: object,
+        identity: SessionIdentity,
+        *,
+        request_id: str,
+    ) -> dict[str, Any]:
+        """Prove civil boundaries before deciding which observed bars to fill."""
+
+        assets = tuple(request["asset_ids"])
+        as_of = _shanghai_now().date()
+        calendar_ref = None
+        try:
+            covering = getattr(self._data_assets, "resolve_trading_calendar_covering", None)
+            if callable(covering):
+                calendar_ref = covering(
+                    identity, asset_ids=assets,
+                    start_date=request["start_date"], end_date=request["end_date"],
+                )
+            else:
+                calendar_ref = self._data_assets.resolve_for_compute(
+                    identity, None, asset_ids=assets, schema_id="trading-calendar",
+                )
+        except UserActionError:
+            pass
+        sessions = _pricing_history_sessions(request, calendar_ref, as_of=as_of)
+        if not sessions:
+            calendar_ref = self._fetch_and_bind_history_calendar(request, identity, request_id=request_id)
+            sessions = _pricing_history_sessions(request, calendar_ref, as_of=as_of)
+        if not sessions:
+            raise UserActionError(
+                "trading_calendar_coverage_insufficient",
+                "交易日历未能证明请求行情区间的实际交易日，请检查数据接口后重试。",
+                stage="data",
+            )
+        observed_request = {**request, "start_date": sessions[0], "end_date": sessions[-1]}
+        history_ref = None
+        covering_history = getattr(self._data_assets, "resolve_market_history_covering", None)
+        if _empty_data_reference(requested_history) and callable(covering_history):
+            history_ref = covering_history(
+                identity, asset_ids=assets,
+                start_date=sessions[0], end_date=sessions[-1],
+                fields=tuple(request["fields"]), frequency=request["frequency"], adjustment=request["adjustment"],
+                allow_available_end=False, require_verified_calendar=False,
+            )
+        if history_ref is None:
+            try:
+                history_ref = self._data_assets.resolve_for_compute(
+                    identity, requested_history, asset_ids=assets, schema_id="market-history",
+                )
+            except UserActionError:
+                pass
+        if history_ref is not None and _history_ref_covers_request(
+            history_ref, observed_request, required_sessions=sessions,
+        ):
+            return history_ref
+
+        # extend_only and formal calendar evidence let DataFetcher retain all
+        # valid local bars while acquiring missing sessions from the provider.
+        history_ref = self._fetch_and_bind_history(
+            request, identity, request_id=request_id, trading_calendar_ref=calendar_ref,
+        )
+        if _history_ref_covers_request(history_ref, observed_request, required_sessions=sessions):
+            return history_ref
+        # A fresh DataFetcher result may legitimately await today's daily bar.
+        # Every earlier session is still mandatory; an old request timestamp
+        # cannot turn a historical gap into this current-day exception.
+        prior_sessions = tuple(day for day in sessions if day < as_of.isoformat())
+        if sessions[-1] == as_of.isoformat() and prior_sessions and _history_ref_covers_request(
+            history_ref, {**observed_request, "end_date": prior_sessions[-1]}, required_sessions=prior_sessions,
+        ):
+            return history_ref
+        raise UserActionError(
+            "pricing_history_coverage_insufficient",
+            "自动补取的行情仍缺少已完成交易日，无法按请求估值日定价。请检查数据接口后重试。",
+            stage="data",
+        )
+
+    def _resolve_backtest_data_refs(
+        self,
+        request: dict[str, Any],
+        requested_history: object,
+        identity: SessionIdentity,
+        *,
+        request_id: str,
+    ) -> list[dict[str, Any]]:
+        """Resolve an executable market horizon before choosing cached prices.
+
+        A civil maturity on a closed day needs a later verified session to
+        close Backtester's calendar. History commits only observed sessions,
+        so that witness session must also be acquired. Future maturities and
+        blank windows instead stop at a calendar-verified current boundary.
+        """
+
+        assets = tuple(request["asset_ids"])
+        as_of = _shanghai_now().date()
+        calendar_ref = None
+        try:
+            covering_calendar = getattr(self._data_assets, "resolve_trading_calendar_covering", None)
+            if callable(covering_calendar):
+                calendar_ref = covering_calendar(
+                    identity, asset_ids=assets,
+                    start_date=request["start_date"], end_date=request["end_date"],
+                )
+            else:
+                calendar_ref = self._data_assets.resolve_for_compute(
+                    identity, None, asset_ids=assets, schema_id="trading-calendar",
+                )
+        except UserActionError:
+            pass
+        history_request = _backtest_history_request_for_calendar(request, calendar_ref, as_of=as_of)
+        if history_request is None:
+            # Buffer only the calendar lookup. Prices end at the first actual
+            # closing session, not at an arbitrary number of buffer days.
+            calendar_end = min(date.fromisoformat(request["end_date"]) + timedelta(days=14), as_of)
+            calendar_ref = self._fetch_and_bind_backtest_calendar(
+                {**request, "end_date": calendar_end.isoformat()}, identity, request_id=request_id,
+            )
+            history_request = _backtest_history_request_for_calendar(request, calendar_ref, as_of=as_of)
+            if history_request is None and calendar_end < as_of:
+                # An unusually long closure is resolved from evidence too;
+                # fourteen days is a query bound, never a calendar assumption.
+                calendar_ref = self._fetch_and_bind_backtest_calendar(
+                    {**request, "end_date": as_of.isoformat()}, identity, request_id=request_id,
+                )
+                history_request = _backtest_history_request_for_calendar(request, calendar_ref, as_of=as_of)
+        if history_request is None:
+            raise UserActionError(
+                "trading_calendar_coverage_insufficient",
+                "交易日历未能证明本次回测到期边界或最新交易日，请检查数据接口后重试。",
+                stage="data",
+            )
+
+        history_ref = None
+        covering_history = getattr(self._data_assets, "resolve_market_history_covering", None)
+        if _empty_data_reference(requested_history) and callable(covering_history):
+            history_ref = covering_history(
+                identity, asset_ids=assets,
+                start_date=history_request["start_date"], end_date=history_request["end_date"],
+                fields=tuple(history_request["fields"]), frequency=history_request["frequency"],
+                adjustment=history_request["adjustment"],
+                allow_available_end=False, require_verified_calendar=True,
+            )
+        if history_ref is None:
+            try:
+                history_ref = self._data_assets.resolve_for_compute(
+                    identity, requested_history, asset_ids=assets, schema_id="market-history",
+                )
+            except UserActionError:
+                pass
+        if history_ref is not None and _history_ref_supports_automatic_backtest_cutoff(history_ref, history_request):
+            # Calendar freshness was established above. Reuse the original
+            # immutable binding rather than swapping its signed revision.
+            bound_calendar = _calendar_reference_bound_to_history(history_ref)
+            try:
+                original_calendar = self._data_assets.resolve_for_compute(
+                    identity, bound_calendar, asset_ids=assets, schema_id="trading-calendar",
+                ) if bound_calendar else calendar_ref
+            except UserActionError:
+                original_calendar = None
+            if original_calendar is not None and _calendar_ref_closes_market_history(original_calendar, history_ref):
+                coverage = original_calendar.get("coverage", {})
+                if all(history_ref["coverage"].get(key) == coverage.get(key) for key in ("calendar_id", "calendar_revision")):
+                    return [history_ref, original_calendar]
+
+        history_ref = self._fetch_and_bind_history(
+            history_request, identity, request_id=request_id, trading_calendar_ref=calendar_ref,
+        )
+        if not _history_ref_supports_automatic_backtest_cutoff(history_ref, history_request):
+            # A fresh current-day request may precede its final daily bar.
+            # Missing past sessions must never become a clipped entry window.
+            prior_sessions = [
+                session for session in calendar_ref["coverage"]["sessions"]
+                if session < as_of.isoformat()
+            ]
+            if not (
+                history_request["end_date"] == as_of.isoformat()
+                and prior_sessions
+                and _history_ref_supports_automatic_backtest_cutoff(
+                    history_ref, {**history_request, "end_date": max(prior_sessions)},
+                )
+            ):
+                raise UserActionError(
+                    "backtest_history_coverage_insufficient",
+                    "自动补取的行情仍缺少已发生的合同终点，请检查数据接口后重试。",
+                    stage="data",
+                )
+        return [history_ref, calendar_ref]
 
     def _resolve_or_fetch_trading_calendar(
         self,
@@ -831,9 +985,11 @@ class ToolGateway:
             underlyings,
             market_history_ref=market_history_ref,
         )
+        counted_calendar = compile_compute_data_requirements("pricer", payload).observation_count is not None
         try:
             if (
                 not has_requested_calendar
+                and not counted_calendar
                 and callable(getattr(self._data_assets, "resolve_trading_calendar_covering", None))
             ):
                 # Do not let a more recently registered short calendar hide a
@@ -858,15 +1014,21 @@ class ToolGateway:
                 raise
             calendar_ref = None
 
-        automatic_backtest_window = (
-            "backtest_config" in payload and _uses_automatic_backtest_window(payload)
-        )
+        backtest_window = "backtest_config" in payload
+        pricing_config = payload.get("pricing_config", {})
+        contract_identity = payload.get("identity", {})
+        history_window = {} if backtest_window else {
+            "valuation_date": str(pricing_config.get("valuation_date") or _shanghai_now().date().isoformat())
+            if isinstance(pricing_config, Mapping) else _shanghai_now().date().isoformat(),
+            "contract_start_date": (contract_identity.get("contract_start_date") or None)
+            if isinstance(contract_identity, Mapping) else None,
+        }
         calendar_covers_request = (
-            calendar_ref is not None and _calendar_ref_covers_request(calendar_ref, calendar_request)
+            calendar_ref is not None and _calendar_ref_covers_request(calendar_ref, calendar_request, payload=payload)
         )
         calendar_supports_market_cutoff = (
             calendar_ref is not None
-            and automatic_backtest_window
+            and backtest_window
             and _calendar_ref_supports_automatic_backtest_cutoff(
                 calendar_ref,
                 calendar_request,
@@ -876,7 +1038,7 @@ class ToolGateway:
         if calendar_ref is not None and not (
             calendar_covers_request or calendar_supports_market_cutoff
         ):
-            if has_requested_calendar:
+            if has_requested_calendar and not requested_calendar_is_internal:
                 raise UserActionError(
                     "trading_calendar_coverage_insufficient",
                     "所选交易日历未完整覆盖本次合约期限。请重新获取覆盖完整期限的交易日历后重试。",
@@ -885,17 +1047,19 @@ class ToolGateway:
                 )
             calendar_ref = None
 
-        if calendar_ref is not None and not _calendar_ref_closes_market_history(calendar_ref, market_history_ref):
+        if calendar_ref is not None and not _calendar_ref_closes_market_history(
+            calendar_ref, market_history_ref, **history_window,
+        ):
             if has_requested_calendar and not requested_calendar_is_internal:
                 raise UserActionError(
                     "trading_calendar_history_mismatch",
                     "所选交易日历与本次行情证据不一致，无法建立完整定价输入。",
                     stage="data",
-                    next_step="请选择与历史行情交易所一致且包含行情最后有效交易日的交易日历后重试。",
+                    next_step="请选择与历史行情交易所一致、覆盖合同历史观察区间和估值边界的交易日历后重试。",
                 )
-            # A cached future calendar that omits the observed market boundary
-            # cannot support this path valuation. Fetch a wider snapshot while
-            # preserving the history asset as independent provenance.
+            # A cached calendar must preserve every completed observation and
+            # the valuation boundary. Fetch a wider snapshot while preserving
+            # the history asset as independent provenance.
             calendar_ref = None
 
         if calendar_ref is None:
@@ -923,19 +1087,19 @@ class ToolGateway:
                 asset_ids=underlyings,
                 schema_id="trading-calendar",
             )
-            if not _calendar_ref_covers_request(calendar_ref, calendar_request):
+            if not _calendar_ref_covers_request(calendar_ref, calendar_request, payload=payload):
                 raise UserActionError(
                     "trading_calendar_coverage_insufficient",
                     "自动取得的交易日历未完整覆盖本次合约期限，请检查数据接口后重试。",
                     stage="data",
                     next_step="请检查数据接口并重新获取覆盖完整期限的交易日历后重试。",
                 )
-            if not _calendar_ref_closes_market_history(calendar_ref, market_history_ref):
+            if not _calendar_ref_closes_market_history(calendar_ref, market_history_ref, **history_window):
                 raise UserActionError(
                     "trading_calendar_history_mismatch",
-                    "自动取得的交易日历未包含行情最后有效交易日，无法建立完整定价输入。",
+                    "自动取得的交易日历未完整覆盖合同历史观察区间或估值边界，无法建立完整定价输入。",
                     stage="data",
-                    next_step="请重新获取与历史行情交易所一致、并覆盖行情最后有效交易日至合同到期日的交易日历。",
+                    next_step="请重新获取与历史行情交易所一致、覆盖合同历史观察区间与剩余期限的交易日历。",
                 )
         if calendar_ref is None:
             raise ValidationError("交易日历未能登记为正式DataAssetRef")
@@ -1066,11 +1230,22 @@ class ToolGateway:
         *,
         request_id: str,
     ) -> dict[str, Any]:
-        """Fetch verified sessions before creating automatic backtest history."""
+        """Bind the calendar used by the backtest history acquisition hook."""
+
+        return self._fetch_and_bind_history_calendar(history_request, identity, request_id=request_id)
+
+    def _fetch_and_bind_history_calendar(
+        self,
+        history_request: Mapping[str, Any],
+        identity: SessionIdentity,
+        *,
+        request_id: str,
+    ) -> dict[str, Any]:
+        """Fetch verified sessions before completing observed history."""
 
         if self._datafetcher is None:
             raise UnavailableCapabilityError(
-                "backtester.trading_calendar",
+                "history.trading_calendar",
                 "App DataFetcherAdapter is not configured",
                 failure_code="trading_calendar_unavailable",
                 stage="data",
@@ -1087,7 +1262,7 @@ class ToolGateway:
             _raise_datafetch_failure(
                 calendar_result,
                 default_code="trading_calendar_unavailable",
-                default_message="交易日历暂不可用，无法为完整期限历史回测准备已验证行情。请检查数据接口后重试。",
+                default_message="交易日历暂不可用，无法为本次计算准备已验证行情。请检查数据接口后重试。",
                 default_next_step="请检查数据接口配置，或在数据获取中补取交易日历后重试。",
             )
         self._data_assets.register(identity, calendar_asset)
@@ -1214,6 +1389,11 @@ class ToolGateway:
             source = self._results.select_report_source(identity, task_id, source_id)
         except (KeyError, AuthorizationError) as error:
             raise ValidationError("Reporter source不属于当前任务或已不再可用") from error
+        # Selection and rendering must use the same verified candidate variants.
+        verified_catalog = self._reporter.dispatch({"action": "list_report_sources", "task_id": task_id}, identity)
+        source = next((item for item in verified_catalog.get("sources", []) if item.get("source_id") == source_id), None)
+        if source is None:
+            raise ValidationError("Reporter source没有可验证的当前证据")
         if _scope_text(context, "analysis_case_id") and source.get("analysis_case_id") != context.analysis_case_id:
             raise ValidationError("Reporter source与Module Host analysis_case_id不一致")
         if _scope_text(context, "catalog_version") and source.get("catalog_version") != context.catalog_version:
@@ -1240,7 +1420,7 @@ class ToolGateway:
             not isinstance(selected_modules, list)
             or not selected_modules
             or len(set(selected_modules)) != len(selected_modules)
-            or any(module not in {"payoff", "pricing", "backtest"} for module in selected_modules)
+            or any(module not in {"recommender", "payoff", "pricing", "backtest"} for module in selected_modules)
         ):
             raise ValidationError("Reporter必须显式选择不重复的计算模块")
         raw_all_refs = selection.get("module_run_refs")
@@ -1263,14 +1443,17 @@ class ToolGateway:
                 raise ValidationError("Reporter candidate与Module Host product_id不一致")
             if context.rule_revision is not None and candidate.get("rule_revision") != context.rule_revision:
                 raise ValidationError("Reporter candidate与Module Host rule_revision不一致")
+            if "recommender" in selected_modules and not candidate.get("recommendation_bound"):
+                raise ValidationError("Reporter候选没有对应的已保存推荐依据")
+            compute_modules = [module for module in selected_modules if module != "recommender"]
             raw_refs = raw_all_refs.get(candidate_id)
-            if not isinstance(raw_refs, Mapping) or set(raw_refs) != set(selected_modules):
+            if not isinstance(raw_refs, Mapping) or set(raw_refs) != set(compute_modules):
                 raise ValidationError("Reporter每个候选和已选模块必须显式提供完整ModuleRunRef或null")
             source_options = candidate.get("module_run_options")
             if not isinstance(source_options, Mapping):
                 raise ValidationError("Reporter source缺少已验证ModuleRunRef选项")
             controlled_refs: dict[str, dict[str, str] | None] = {}
-            for display_module in selected_modules:
+            for display_module in compute_modules:
                 raw_ref = raw_refs[display_module]
                 if raw_ref is None:
                     controlled_refs[display_module] = None
@@ -1610,6 +1793,17 @@ def _controlled_desk_compute_payload(
     # caller-provided identifier must not leak into the calculator protocol or
     # make a repeated run collide with an earlier immutable result.
     value.pop("run_id", None)
+    if tool_name == "pricer":
+        config = value.get("pricing_config")
+        if isinstance(config, Mapping) and config.get("valuation_date") in {None, ""}:
+            # Match the Desk's initial valuation date before data acquisition
+            # and Core compilation, so both stages use the same date.
+            value["pricing_config"] = {**dict(config), "valuation_date": _shanghai_now().date().isoformat()}
+        contract_identity = value.get("identity", {})
+        if agent_proxy and isinstance(contract_identity, Mapping) and not contract_identity.get("contract_start_date"):
+            # A newly recommended contract starts at the verified latest close,
+            # including before today's close and on non-trading days.
+            value.setdefault("auto_contract_start_date", True)
     if tool_name != "payoffer":
         return value
     if "identity" in value:
@@ -1716,11 +1910,6 @@ def _controlled_datafetcher_request(payload: Mapping[str, Any], context: Any) ->
     if context is not None and context.task_id is not None:
         value["task_id"] = context.task_id
     return value
-
-
-def _is_fair_parameter_payload(payload: Mapping[str, Any]) -> bool:
-    objective = payload.get("pricing_objective")
-    return isinstance(objective, Mapping) and objective.get("mode") == "fair_parameter"
 
 
 def _run_fair_parameter_preflight(
@@ -1877,9 +2066,37 @@ def _plan_backtest_window(
             data_asset_ref=dict(raw_history),
         )
         raw_config = payload.get("backtest_config")
-        config = backtester.BacktestConfig.from_mapping(
-            dict(raw_config) if isinstance(raw_config, Mapping) else {},
-        )
+        config_value = dict(raw_config) if isinstance(raw_config, Mapping) else {}
+        try:
+            config = backtester.BacktestConfig.from_mapping(config_value)
+        except backtester.BacktestConfigError:
+            # A user may edit the start before updating the end. Diagnose
+            # reversed bounds against the same verified history; do not turn
+            # this input error into a misleading historical-data failure.
+            start = config_value.get("start_date")
+            end = config_value.get("end_date")
+            if not (isinstance(start, str) and isinstance(end, str) and start > end):
+                raise
+            if date.fromisoformat(start).isoformat() != start or date.fromisoformat(end).isoformat() != end:
+                raise
+            diagnostic_config = backtester.BacktestConfig.from_mapping({
+                **config_value, "start_date": None, "end_date": None,
+            })
+            available = backtester.plan_backtest_window(contract, diagnostic_config, history)
+            latest = available.latest_complete_entry_session
+            start_after_latest = start > latest
+            raise entry_module.BacktestWindowError(
+                "入场起始日晚于最新完整入场日，请调整请求区间。" if start_after_latest
+                else "入场起始日不得晚于入场截止日。",
+                code="no_complete_entry_session" if start_after_latest else "invalid_entry_window",
+                details={
+                    "requested_start": start, "requested_end": end,
+                    "market_as_of_session": available.market_as_of_session,
+                    "latest_complete_entry_session": latest,
+                    "reason": "requested_window_starts_after_latest_complete_entry_session"
+                    if start_after_latest else "requested_start_after_end",
+                },
+            )
         effective = backtester.plan_backtest_window(
             contract,
             config,
@@ -1892,17 +2109,31 @@ def _plan_backtest_window(
             if value is not None and isinstance(value, (str, int, float))
         }
         latest_complete = details.get("latest_complete_entry_session")
+        requested_start = details.get("requested_start")
+        market_as_of = details.get("market_as_of_session")
+        message = str(error)
         if latest_complete:
             details["suggested_end_date"] = latest_complete
+        if latest_complete and requested_start and requested_start > latest_complete:
+            details["suggested_start_date"] = latest_complete
+            next_step = (
+                f"请将入场起始日和截止日调整到{latest_complete}或更早，且起始日不晚于截止日；"
+                f"可采用{latest_complete}至{latest_complete}。"
+            )
+        elif latest_complete:
+            next_step = f"请将入场截止日改为{latest_complete}或更早的实际交易日，且不早于起始日。"
+        else:
+            next_step = "请获取更长的实际历史行情与对应交易日历后重试。"
+        if market_as_of:
+            message += f"实际行情截止日为{market_as_of}。"
+        # The existing invalid-preview surface renders message directly.
+        # Keep the actionable start/end advice there as well as in next_step.
+        message += next_step
         raise UserActionError(
             str(error.code),
-            str(error),
+            message,
             stage="data",
-            next_step=(
-                f"请将入场截止日改为{latest_complete}或更早的实际交易日。"
-                if latest_complete
-                else "请获取更长的实际历史行情与对应交易日历后重试。"
-            ),
+            next_step=next_step,
             details=details,
         ) from error
     except (OSError, PermissionError, TypeError, ValueError) as error:
@@ -2172,12 +2403,6 @@ def _history_fetch_request(
             # later on actual common price sessions and Backtester's own full-
             # tenor locator, never on this calendar-day estimate.
             entry_start = _years_before(latest - timedelta(days=tenor_days), 3)
-        # A contract can start on a weekend or exchange holiday, while a raw
-        # close only exists on a trading session.  Request a bounded lookback
-        # so the first-run contract compiler can freeze an actual prior close.
-        # This does not classify any day as a session and never changes an
-        # explicit date.
-        start = entry_start - timedelta(days=14)
         requested_ceiling: list[date] = list(explicit_entries)
         raw_end = config.get("end_date")
         if raw_end not in {None, ""}:
@@ -2195,6 +2420,17 @@ def _history_fetch_request(
             # days. Acquire through the latest available boundary and let
             # Backtester locate the nth session from the returned calendar.
             end = latest
+        # The preliminary contract must span its tenor before the planner
+        # can diagnose late entries. A short recent snapshot cannot provide
+        # that contract even when it covers the requested entry start.
+        # This bounds acquisition only; complete entries are still located
+        # from verified sessions, and explicit user dates remain unchanged.
+        planning_start = (
+            min(entry_start, end - timedelta(days=tenor_days))
+            if requirements.observation_count is None else entry_start
+        )
+        # Also cover a prior observed close for weekend/holiday starts.
+        start = planning_start - timedelta(days=14)
     else:
         raise ValidationError("只有正式计算模块可以自动准备行情")
     if start > end:
@@ -2214,16 +2450,76 @@ def _history_fetch_request(
     }
 
 
-def _uses_automatic_backtest_window(payload: Mapping[str, Any]) -> bool:
-    config = payload.get("backtest_config")
-    config = config if isinstance(config, Mapping) else {}
-    entries = config.get("entry_dates")
-    has_entries = isinstance(entries, (list, tuple)) and any(str(item).strip() for item in entries)
-    return (
-        config.get("start_date") in {None, ""}
-        and config.get("end_date") in {None, ""}
-        and not has_entries
-    )
+def _pricing_history_sessions(
+    request: Mapping[str, Any],
+    calendar_reference: Mapping[str, Any] | None,
+    *,
+    as_of: date,
+) -> tuple[str, ...]:
+    """Resolve actual historical sessions without weekday or cache inference."""
+
+    coverage = calendar_reference.get("coverage") if isinstance(calendar_reference, Mapping) else None
+    if not isinstance(coverage, Mapping):
+        return ()
+    if (
+        not str(coverage.get("calendar_id", "")).startswith("CN-")
+        or str(coverage.get("calendar_revision", "")).casefold()
+        in {"", "unverified", "unknown", "derived", "frame-sessions"}
+        or not isinstance(coverage.get("sessions"), (list, tuple))
+    ):
+        return ()
+    try:
+        start, end = date.fromisoformat(request["start_date"]), date.fromisoformat(request["end_date"])
+        if date.fromisoformat(coverage["start_date"]) > start or date.fromisoformat(coverage["end_date"]) < end:
+            return ()
+        sessions = sorted({date.fromisoformat(str(day)) for day in coverage["sessions"]})
+    except (KeyError, TypeError, ValueError):
+        return ()
+    return tuple(day.isoformat() for day in sessions if start <= day <= min(end, as_of))
+
+
+def _backtest_history_request_for_calendar(
+    request: Mapping[str, Any],
+    calendar_reference: Mapping[str, Any] | None,
+    *,
+    as_of: date,
+) -> dict[str, Any] | None:
+    """Translate the civil horizon using controlled, current-enough sessions."""
+
+    if not isinstance(calendar_reference, Mapping):
+        return None
+    coverage = calendar_reference.get("coverage")
+    if not isinstance(coverage, Mapping):
+        return None
+    if (
+        not str(coverage.get("calendar_id", "")).startswith("CN-")
+        or str(coverage.get("calendar_revision", "")).casefold()
+        in {"", "unverified", "unknown", "derived", "frame-sessions"}
+        or not isinstance(coverage.get("sessions"), (list, tuple))
+    ):
+        return None
+    try:
+        start = date.fromisoformat(str(request["start_date"]))
+        end = date.fromisoformat(str(request["end_date"]))
+        calendar_start = date.fromisoformat(str(coverage["start_date"]))
+        calendar_end = date.fromisoformat(str(coverage["end_date"]))
+        sessions = sorted({date.fromisoformat(str(value)) for value in coverage["sessions"]})
+    except (KeyError, TypeError, ValueError):
+        return None
+    if calendar_start > start or calendar_end < end:
+        return None
+    sessions = [session for session in sessions if start <= session <= min(as_of, calendar_end)]
+    if not sessions:
+        return None
+    following = next((session for session in sessions if session >= end), None)
+    if following is None and calendar_end < as_of:
+        # No later session in an old calendar is not proof of a market cutoff.
+        return None
+    return {
+        **request,
+        "start_date": sessions[0].isoformat(),
+        "end_date": (following or sessions[-1]).isoformat(),
+    }
 
 
 def _backtest_calendar_fetch_request(history_request: Mapping[str, Any]) -> dict[str, Any]:
@@ -2333,9 +2629,8 @@ def _calendar_fetch_request(
         return {
             "action": "fetch_calendar",
             "asset_ids": list(underlyings),
-            # The historical-data request already represents the exact range
-            # needed for a complete-tenor backtest.  Extending it here makes a
-            # calendar signed into that history fail its own coverage check.
+            # This is the nominal horizon. Backtest acquisition separately
+            # resolves its closing session before selecting or fetching bars.
             "start_date": str(history_request["start_date"]),
             "end_date": str(history_request["end_date"]),
         }
@@ -2345,10 +2640,12 @@ def _calendar_fetch_request(
         valuation = date.fromisoformat(str(raw_valuation or _shanghai_now().date().isoformat()))
     except ValueError as error:
         raise ValidationError("valuation_date必须为YYYY-MM-DD") from error
-    identity = resolved_contract.get("identity", {}) if isinstance(resolved_contract, Mapping) else {}
+    identity = resolved_contract.get("identity", {}) if isinstance(resolved_contract, Mapping) else payload.get("identity", {})
     requirements = compile_compute_data_requirements(
         "pricer", payload, resolved_contract if isinstance(resolved_contract, Mapping) else None,
     )
+    raw_start = identity.get("contract_start_date") if isinstance(identity, Mapping) else None
+    observation_start = _iso_date_or_default(raw_start, valuation, "contract_start_date")
     raw_end = identity.get("contract_end_date") if isinstance(identity, Mapping) else None
     if raw_end:
         try:
@@ -2356,8 +2653,14 @@ def _calendar_fetch_request(
         except ValueError as error:
             raise ValidationError("contract_end_date必须为YYYY-MM-DD") from error
     else:
-        maturity = valuation + timedelta(days=round(requirements.tenor_years * 365.0))
-    calendar_start = valuation
+        maturity = observation_start + timedelta(days=round(requirements.tenor_years * 365.0))
+    # Midlife monitors need the entire historical contract window, including
+    # daily KI/reset observations before today's simulation calendar.
+    calendar_start = min(valuation, observation_start)
+    if requirements.observation_count is not None:
+        # This is an acquisition bound only. Acceptance locates the nth
+        # selected session from returned evidence, never from this estimate.
+        maturity = max(maturity, observation_start + timedelta(days=requirements.calendar_lookahead_days))
     history_coverage = market_history_ref.get("coverage") if isinstance(market_history_ref, Mapping) else None
     history_sessions = history_coverage.get("sessions") if isinstance(history_coverage, Mapping) else None
     if isinstance(history_sessions, (list, tuple)) and history_sessions:
@@ -2378,8 +2681,25 @@ def _calendar_fetch_request(
     }
 
 
-def _calendar_ref_covers_request(reference: Mapping[str, Any], request: Mapping[str, Any]) -> bool:
+def _calendar_ref_covers_request(
+    reference: Mapping[str, Any], request: Mapping[str, Any], *, payload: Mapping[str, Any] | None = None,
+) -> bool:
     coverage = reference.get("coverage")
+    if payload is not None and "backtest_config" not in payload:
+        requirements = compile_compute_data_requirements("pricer", payload)
+        if requirements.observation_count is not None:
+            sessions = coverage.get("sessions") if isinstance(coverage, Mapping) else None
+            if not isinstance(sessions, (list, tuple)):
+                return False
+            identity = payload.get("identity", {})
+            start = identity.get("contract_start_date") if isinstance(identity, Mapping) else None
+            try:
+                endpoint = requirements.observation_end_date(sessions, str(start or request["start_date"]))
+            except (ValueError, TypeError):
+                return False
+            if endpoint is None:
+                return False
+            request = {**request, "end_date": endpoint}
     if not isinstance(coverage, Mapping):
         # Capability validation will reject an incomplete real reference. Keep
         # this Host selection helper compatible with narrow protocol doubles.
@@ -2403,54 +2723,43 @@ def _calendar_ref_supports_automatic_backtest_cutoff(
     request: Mapping[str, Any],
     market_history_reference: Mapping[str, Any] | None,
 ) -> bool:
-    """Accept the latest proved market cutoff for an automatic backtest window.
+    """Accept a shorter civil bound only with current calendar proof."""
 
-    A blank entry window means "use the latest complete historical sample",
-    not "pretend today is already a trading session".  The calendar may end
-    before the request's civil-date ceiling when it still covers the whole
-    requested lookback and every session in the selected history asset.
-    Explicit user dates continue to use the exact interval check above.
-    """
-
-    calendar_coverage = reference.get("coverage")
+    planned = _backtest_history_request_for_calendar(request, reference, as_of=_shanghai_now().date())
     history_coverage = (
         market_history_reference.get("coverage")
         if isinstance(market_history_reference, Mapping)
         else None
     )
-    if not isinstance(calendar_coverage, Mapping) or not isinstance(history_coverage, Mapping):
+    if planned is None or not isinstance(history_coverage, Mapping):
         return False
     try:
-        available_start = date.fromisoformat(
-            str(calendar_coverage.get("start_date", calendar_coverage.get("start")))
-        )
-        available_end = date.fromisoformat(
-            str(calendar_coverage.get("end_date", calendar_coverage.get("end")))
-        )
-        required_start = date.fromisoformat(str(request["start_date"]))
-        required_end = date.fromisoformat(str(request["end_date"]))
+        required_start = date.fromisoformat(str(planned["start_date"]))
+        required_end = date.fromisoformat(str(planned["end_date"]))
         history_start = date.fromisoformat(str(history_coverage["start_date"]))
         history_end = date.fromisoformat(str(history_coverage["end_date"]))
     except (KeyError, TypeError, ValueError):
         return False
     return (
-        available_start <= required_start
-        and available_start <= history_start
-        and available_end >= history_end
-        and history_end <= required_end
+        history_start <= required_start
+        and history_end >= required_end
+        and _calendar_ref_closes_market_history(reference, market_history_reference)
     )
 
 
 def _calendar_ref_closes_market_history(
     calendar_reference: Mapping[str, Any],
     market_history_reference: Mapping[str, Any] | None,
+    *,
+    valuation_date: str | None = None,
+    contract_start_date: str | None = None,
 ) -> bool:
-    """Verify the path calendar contains the actual market-as-of session.
+    """Verify the path calendar preserves the valuation boundary and history.
 
     Pricer deliberately keeps historical prices and its future observation
     calendar as separate immutable assets. Their revisions need not match, but
-    the future calendar must include the last observed market session so the
-    two pieces of evidence form one closed valuation input.
+    the calendar must include the last price observed by the valuation date
+    and every already-observed session during this contract's life.
     """
 
     if not isinstance(market_history_reference, Mapping):
@@ -2472,20 +2781,29 @@ def _calendar_ref_closes_market_history(
         # DataAssetRefs must prove the boundary with their actual sessions.
         return not calendar_is_formal
     try:
-        market_as_of = max(date.fromisoformat(str(value)) for value in history_sessions)
+        observed_sessions = {date.fromisoformat(str(value)) for value in history_sessions}
+        if valuation_date is not None:
+            valuation = date.fromisoformat(valuation_date)
+            observed_sessions = {value for value in observed_sessions if value <= valuation}
+        if not observed_sessions:
+            return False
+        required_sessions = {max(observed_sessions)}
+        if contract_start_date is not None:
+            start = date.fromisoformat(contract_start_date)
+            required_sessions.update(value for value in observed_sessions if value >= start)
         available_sessions = {date.fromisoformat(str(value)) for value in calendar_sessions}
-    except ValueError:
+    except (TypeError, ValueError):
         return False
-    return market_as_of in available_sessions
+    return required_sessions.issubset(available_sessions)
 
 
-def _history_ref_covers_request(reference: Mapping[str, Any], request: Mapping[str, Any]) -> bool:
-    """Check whether validated history can satisfy the requested civil interval.
+def _history_ref_covers_request(
+    reference: Mapping[str, Any], request: Mapping[str, Any], *, required_sessions: tuple[str, ...] = (),
+) -> bool:
+    """Check actual observed coverage, optionally against verified sessions.
 
-    DataFetcher records the civil interval it validated separately from the
-    first and last market sessions actually returned.  Weekend and holiday
-    boundaries therefore remain reusable without pretending that those civil
-    dates are market observations.
+    Request dates describe acquisition intent only. Civil boundaries must be
+    resolved from a calendar before accepting a shorter observed interval.
     """
 
     coverage = reference.get("coverage")
@@ -2508,43 +2826,51 @@ def _history_ref_covers_request(reference: Mapping[str, Any], request: Mapping[s
         return False
     if requested_adjustment not in {None, ""} and convention.get("requested_adjustment") != requested_adjustment:
         return False
-    start = coverage.get("start_date")
-    end = coverage.get("end_date")
-    requested_start = coverage.get("requested_start_date")
-    requested_end = coverage.get("requested_end_date")
+    bounds = market_history_bounds(reference)
+    if bounds is None:
+        return False
+    available_start, available_end = bounds
     try:
-        available_start = date.fromisoformat(str(start))
-        available_end = date.fromisoformat(str(end))
         required_start = date.fromisoformat(str(request["start_date"]))
         required_end = date.fromisoformat(str(request["end_date"]))
     except (KeyError, TypeError, ValueError):
         return False
-    try:
-        acquired_from = date.fromisoformat(str(requested_start))
-        acquired_through = date.fromisoformat(str(requested_end))
-    except (TypeError, ValueError):
-        acquired_from = available_start
-        acquired_through = available_end
-    return acquired_from <= required_start and acquired_through >= required_end
+    if required_sessions:
+        observed = coverage.get("sessions")
+        if not isinstance(observed, (list, tuple)) or not set(required_sessions).issubset(set(observed)):
+            return False
+    return available_start <= required_start and available_end >= required_end
 
 
 def _history_ref_supports_automatic_backtest_cutoff(
     reference: Mapping[str, Any],
     request: Mapping[str, Any],
 ) -> bool:
-    """Accept a verified local market cutoff only for an entirely automatic window."""
+    """Require actual bars through the calendar-resolved acquisition endpoint.
+
+    A cache tail is not a market cutoff. Callers first resolve the endpoint
+    against a calendar that closes maturity or proves the current last session.
+    """
 
     coverage = reference.get("coverage")
-    if not isinstance(coverage, Mapping) or not _has_verified_backtest_calendar(reference):
+    if (
+        not isinstance(coverage, Mapping)
+        or not _has_verified_backtest_calendar(reference)
+        or not _history_ref_covers_request(reference, request)
+    ):
         return False
     try:
-        available_start = date.fromisoformat(str(coverage["start_date"]))
         available_end = date.fromisoformat(str(coverage["end_date"]))
-        required_start = date.fromisoformat(str(request["start_date"]))
         required_end = date.fromisoformat(str(request["end_date"]))
+        by_asset = coverage.get("by_asset")
+        if isinstance(by_asset, Mapping):
+            available_end = min(
+                available_end,
+                *(date.fromisoformat(str(by_asset[asset]["end_date"])) for asset in request["asset_ids"]),
+            )
     except (KeyError, TypeError, ValueError):
         return False
-    return available_start <= required_start <= available_end <= required_end
+    return available_end >= required_end
 
 
 def _calendar_reference_bound_to_history(history_ref: Mapping[str, Any]) -> dict[str, str] | None:
@@ -2579,13 +2905,10 @@ def _data_asset_selector(reference: Mapping[str, Any]) -> dict[str, str] | None:
 
 
 def _require_conversation_tool_scope(identity: SessionIdentity, tool_name: str, payload: Mapping[str, Any]) -> None:
-    """Second, non-UI permission barrier for the OptChat proxy path.
+    """Authorize documented OptChat actions independently of Desk access.
 
-    This is deliberately narrower than ``module.run``.  The model can request
-    a documented action only; it cannot choose a path, arbitrary provider
-    routing, broader data range, data asset outside its task, or report type
-    outside the role policy.  Task-owned DataAssetRef validation happens in
-    :class:`ToolDispatcher` because it owns the task index.
+    Business input validation belongs to the same module used by Desk. Host
+    signing, owned references and path rejection remain mandatory below.
     """
     action = str(payload.get("action", "run")).strip().lower()
     allowed = {
@@ -2602,39 +2925,28 @@ def _require_conversation_tool_scope(identity: SessionIdentity, tool_name: str, 
         _require_conversation_report_request(identity, payload)
 
 
-_ASSET_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
-_DATA_FIELDS = frozenset({"open", "high", "low", "close", "adj_close", "volume", "amount"})
-
-
 def _require_conversation_data_request(action: str, payload: Mapping[str, Any]) -> None:
-    allowed = {"action", "task_id"} if action == "status" else {
-        "action", "task_id", "asset_id", "asset_ids", "start_date", "end_date", "fields", "provider", "frequency", "adjustment", "cache_policy", "offline",
-    }
-    _require_scope_fields(payload, allowed)
+    # Do not impose an OptChat-only offline, date-range or asset-count limit.
+    # The DataFetcher protocol validates values and provider availability.
     if action == "status":
+        _require_scope_fields(payload, {"action", "task_id"})
         return
-    assets = payload.get("asset_ids", payload.get("asset_id"))
-    if isinstance(assets, str):
-        assets = [assets]
-    if not isinstance(assets, list) or not 1 <= len(assets) <= 3 or any(not _ASSET_ID.fullmatch(str(item)) for item in assets):
-        raise AuthorizationError("conversation.tool.run", "data asset scope is invalid")
-    fields = payload.get("fields")
-    if action != "fetch_calendar":
-        if not isinstance(fields, list) or not fields or len(fields) > len(_DATA_FIELDS) or any(str(item) not in _DATA_FIELDS for item in fields):
-            raise AuthorizationError("conversation.tool.run", "data field scope is invalid")
-    try:
-        start = date.fromisoformat(str(payload.get("start_date", "")))
-        end = date.fromisoformat(str(payload.get("end_date", "")))
-    except ValueError as error:
-        raise AuthorizationError("conversation.tool.run", "data date scope is invalid") from error
-    if end < start or (end - start).days > 366 * 5:
-        raise AuthorizationError("conversation.tool.run", "data date scope exceeds conversation limit")
-    if payload.get("provider") not in {None, "", "ifind_http"}:
-        raise AuthorizationError("conversation.tool.run", "data provider is not allowed for conversation")
-    if payload.get("frequency", "1d") != "1d" or payload.get("cache_policy") != "reuse":
-        raise AuthorizationError("conversation.tool.run", "data request mode is not allowed for conversation")
-    if payload.get("offline") is not True:
-        raise AuthorizationError("conversation.tool.run", "conversation data requests must reuse verified cache semantics")
+    fields = {
+        "asset_id", "asset_ids", "start_date", "end_date", "fields", "provider",
+        "frequency", "adjustment", "source_priority", "cache_policy", "offline",
+        "quota_limit", "persistence_mode",
+    }
+    wrappers = {name for name in ("request", "data_request") if name in payload}
+    if wrappers:
+        if len(wrappers) != 1:
+            raise ValidationError("DataFetcher请求只能使用一个DataRequest入口")
+        _require_scope_fields(payload, {"action", "task_id"} | wrappers)
+        value = payload[next(iter(wrappers))]
+        if not isinstance(value, Mapping):
+            raise ValidationError("DataRequest必须为对象")
+        _require_scope_fields(value, fields)
+    else:
+        _require_scope_fields(payload, {"action", "task_id"} | fields)
 
 
 def _require_conversation_compute_request(tool_name: str, payload: Mapping[str, Any]) -> None:
