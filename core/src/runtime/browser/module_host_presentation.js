@@ -42,7 +42,6 @@
     ["daily", "每个交易日"], ["monthly_last", "每月最后一个交易日"],
     ["KO_over_KI", "同日先敲出后敲入"],
     ["include_hedge_date", "包含避险日"], ["exclude_hedge_date", "不包含避险日"],
-    ["gross_before_premium", "期权费前收益"], ["net_after_premium", "期权费后收益"],
   ]);
 
   const termValueLabel = (value) => {
@@ -51,6 +50,29 @@
     if (registered) return registered;
     const monthly = /^monthly_(\d+)(?:st|nd|rd|th)$/.exec(text);
     return monthly ? `每月第${Number(monthly[1])}个交易日` : text;
+  };
+
+  // Change only newly loaded defaults. Exact round trips avoid rounding T or
+  // deriving the independent observation count from a display unit.
+  const defaultTenorDisplay = (value) => {
+    const years = Number(value);
+    if (Number.isFinite(years) && years > 0 && !Number.isInteger(years)) {
+      for (const [unit, scale] of [["month", 12], ["day", 365]]) {
+        const count = Math.round(years * scale);
+        if (count > 0 && Number.isSafeInteger(count) && count / scale === years) {
+          return { value: String(count), unit };
+        }
+      }
+    }
+    return { value: String(value ?? ""), unit: "year" };
+  };
+
+  const initializeTenorInput = (input, years) => {
+    const unit = input?.closest(".term-tenor")?.querySelector(".term-tenor-unit");
+    if (!input || !unit) return;
+    const display = defaultTenorDisplay(years);
+    input.value = display.value;
+    unit.value = display.unit;
   };
 
   const readScript = (source, start) => {
@@ -99,6 +121,8 @@
 
   window.OptionHelperModulePresentation = Object.freeze({
     fieldSymbol,
+    defaultTenorDisplay,
+    initializeTenorInput,
     formatMath,
     normalizeMathText,
     termValueLabel,
