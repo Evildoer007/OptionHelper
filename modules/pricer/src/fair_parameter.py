@@ -17,7 +17,6 @@ from __future__ import annotations
 from copy import deepcopy
 from dataclasses import dataclass
 from functools import lru_cache
-import math
 from typing import Any, Mapping
 
 
@@ -27,6 +26,14 @@ if __name__ != "modules.pricer.fair_parameter":
     )
 
 from runtime.contracts.contract_api import load_registry
+from runtime.contracts.term_presentation import term_value_encoding
+from runtime.contracts.public_projection import (
+    UNIT_PUBLIC_TRANSFORMS,
+    catalog_unit_transform,
+    encode_public_value,
+    decode_public_value,
+    encode_contract_parameter as project_contract_parameter,
+)
 
 from .model_router import capability_for as valuation_capability_for
 
@@ -51,16 +58,6 @@ _NON_CONTINUOUS_UNITS = frozenset({
     "schedule_selector", "unit", "year",
 })
 _CATALOG_UNITS = _PUBLIC_RATIO_UNITS | _NON_CONTINUOUS_UNITS
-_UNIT_PUBLIC_TRANSFORMS = {
-    "normalized_point": "points_100_to_decimal_ratio",
-    # OptionReg records 5% as 5.  The public fair-term protocol exposes the
-    # economically meaningful decimal ratio 0.05 and never calls it points.
-    "premium_percent_s0_100": "points_100_to_decimal_ratio",
-    "rate": "identity_ratio",
-    "volatility": "identity_ratio",
-    "price": "relative_to_frozen_reference_price_basis",
-}
-
 # Numerical controls are algorithm policy, not financial evidence.  They are
 # deliberately versioned and expanded into every TargetCapability below so a
 # solver run can compare the complete rule directly.  The analytical section
@@ -216,56 +213,9 @@ _NO_TIME_DIMENSION_CHANGE = {
 }
 
 
-def _require_finite_value(value: float) -> float:
-    number = float(value)
-    if not math.isfinite(number):
-        raise ValueError("反解公开值必须为有限数")
-    return number
-
-
-def _catalog_unit_transform(catalog_unit: str) -> str:
-    unit = str(catalog_unit).strip()
-    if unit not in _UNIT_PUBLIC_TRANSFORMS:
-        raise ValueError(f"catalog unit {unit!r}没有连续百分比公开转换")
-    return _UNIT_PUBLIC_TRANSFORMS[unit]
-
-
-def encode_public_value(
-    value: float,
-    *,
-    catalog_unit: str,
-    reference_price_basis: float | None = None,
-) -> float:
-    """Encode a catalog value as the public decimal-ratio representation."""
-    number = _require_finite_value(value)
-    transform = _catalog_unit_transform(catalog_unit)
-    if transform == "points_100_to_decimal_ratio":
-        return number / 100.0
-    if transform == "identity_ratio":
-        return number
-    reference = _require_finite_value(reference_price_basis) if reference_price_basis is not None else None
-    if reference is None or reference <= 0.0:
-        raise ValueError("price公开转换必须绑定正的冻结reference_price_basis")
-    return number / reference
-
-
-def decode_public_value(
-    value: float,
-    *,
-    catalog_unit: str,
-    reference_price_basis: float | None = None,
-) -> float:
-    """Decode a public decimal-ratio value into the catalog's internal unit."""
-    number = _require_finite_value(value)
-    transform = _catalog_unit_transform(catalog_unit)
-    if transform == "points_100_to_decimal_ratio":
-        return number * 100.0
-    if transform == "identity_ratio":
-        return number
-    reference = _require_finite_value(reference_price_basis) if reference_price_basis is not None else None
-    if reference is None or reference <= 0.0:
-        raise ValueError("price公开转换必须绑定正的冻结reference_price_basis")
-    return number * reference
+def encode_contract_parameter(target: Any, value: float, contract: Mapping[str, Any]) -> float:
+    """Project an audited solver target through the shared contract encoding."""
+    return project_contract_parameter(target.internal_value_basis, value, contract)
 
 
 to_public_decimal_ratio = encode_public_value
@@ -428,13 +378,6 @@ def _blocked_term(
         cashflow_evidence=cashflow_evidence,
         evidence=(_OPTIONREG_EVIDENCE, _VALUATION_ROUTE_EVIDENCE),
         transform=transform,
-    )
-
-
-def _blocked_value(target_id: str) -> _AuditTarget:
-    return _blocked_term(
-        target_id,
-        reason="OptionReg现金流或本金偿付的公平报价基准尚未完成产品级核验",
     )
 
 
@@ -658,7 +601,7 @@ _AUDIT_PRODUCTS: tuple[_AuditProduct, ...] = (
         _unsupported_term("alpha"),
         _supported_premium("p", cashflow_symbol="p"),
     ),
-    _product("9.4", "solve_semantics_blocked", _blocked_term("Ksig", quote_value_basis="variance_percent", reason="方差互换必须保留variance_percent；已实现方差状态、结算目标和唯一报价证据尚未登记")),
+    _product("9.4", "solve_semantics_blocked", _blocked_term("Ksig", quote_value_basis="variance_percent", reason="方差互换必须保留variance_percent；公平反解的结算目标和唯一报价证据尚未登记")),
     _product("9.5", "supported", _unsupported_term("K"), _unsupported_term("H_KO"), _unsupported_term("eta"), _supported_premium("p", cashflow_symbol="p")),
     _product("9.6", "supported", _unsupported_term("K"), _unsupported_term("H_KO"), _unsupported_term("eta"), _supported_premium("p", cashflow_symbol="p")),
     _product("9.7", "supported", _unsupported_term("Ku"), _unsupported_term("Kd"), _unsupported_term("H_KO_2"), _unsupported_term("H_KO_1"), _unsupported_term("eta_u"), _unsupported_term("eta_d"), _unsupported_term("alpha_u"), _unsupported_term("alpha_d"), _supported_premium("p", cashflow_symbol="p", allowed_methods=("monte_carlo",))),
@@ -971,7 +914,12 @@ def _target_from_audit(
     monotonic_direction = _monotonic_direction(audit.cashflow_evidence)
     if audit.support_status == "supported" and monotonic_direction is None:
         raise ValueError(f"supported目标{audit.target_id}缺少现金流系数方向证据")
-    public_transform = _UNIT_PUBLIC_TRANSFORMS.get(catalog_unit, "not_applicable_non_continuous")
+    public_transform = UNIT_PUBLIC_TRANSFORMS.get(catalog_unit, "not_applicable_non_continuous")
+    internal_encoding = term_value_encoding(audit.target_id, catalog_unit)
+    if internal_encoding != "percentage_points_internal":
+        internal_encoding = None
+    if internal_encoding is not None:
+        public_transform = catalog_unit_transform(catalog_unit, internal_value_encoding=internal_encoding)
     descriptor = {
         "source": audit.quote_target_source,
         "quote_basis": audit.quote_basis,
@@ -1002,6 +950,7 @@ def _target_from_audit(
         internal_value_basis={
             "term_key": audit.target_id,
             "catalog_unit": catalog_unit,
+            **({"value_encoding": internal_encoding} if internal_encoding is not None else {}),
             "public_scale": "decimal_ratio",
             "public_transform": public_transform,
             "public_conversion": public_transform,
@@ -1219,7 +1168,7 @@ fair_parameter_capability_for = target_capability
 
 __all__ = (
     "CAPABILITY_SCHEMA_ID", "CAPABILITY_VERSION", "ProductCapabilityRecord", "TargetCapability",
-    "decode_public_value", "encode_public_value", "from_public_decimal_ratio",
+    "decode_public_value", "encode_public_value", "encode_contract_parameter", "from_public_decimal_ratio",
     "build_capability_matrix", "capability_for_target", "capability_matrix", "eligibility_for_target",
     "fair_parameter_capability_for", "product_capability",
     "public_capability_package", "target_capability", "to_public_decimal_ratio",
