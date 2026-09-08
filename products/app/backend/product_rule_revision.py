@@ -75,6 +75,8 @@ def reconcile_product_rule_revisions(
         return kept
 
     state.update("reports", update_reports)
+    remaining_reports = state.read("reports")
+    state.update("report_documents", lambda documents: {key: value for key, value in documents.items() if key in remaining_reports})
     state.update("product_rule_revisions", lambda _value: dict(revisions))
 
     live_attachment_ids = _attachment_ids(state.read("tasks"))
