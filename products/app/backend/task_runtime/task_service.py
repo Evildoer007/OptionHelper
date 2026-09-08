@@ -877,8 +877,6 @@ class TaskService:
             events = record.setdefault("visible_process_events", [])
             if not isinstance(events, list):
                 raise ValidationError("Conversation process events are invalid")
-            if len(events) >= 160:
-                raise ValidationError("Conversation process event limit exceeded")
             sources, next_seq = _visible_process_event_cursor_state(record, events)
             appended = {
                 "seq": next_seq,
@@ -1256,7 +1254,7 @@ _VISIBLE_PROCESS_EVENT_TYPES = frozenset({
     "request", "routing", "agent_run", "host_module", "candidate_cycle", "answer", "terminal",
 })
 _VISIBLE_PROCESS_EVENT_STATUSES = frozenset({
-    "started", "completed", "reselecting", "failed", "cancelled",
+    "started", "completed", "reselecting", "failed", "cancelled", "needs_input",
 })
 _VISIBLE_PROCESS_FORBIDDEN = re.compile(
     r"(?i)(reasoning|chain[_ -]?of[_ -]?thought|system[_ -]?prompt|prompt|secret|api[_ -]?key|"
