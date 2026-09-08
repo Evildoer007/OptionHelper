@@ -41,26 +41,6 @@ class LoginRequest:
         return cls(account=account.strip(), password=password, remember=remember)
 
 
-@dataclass(frozen=True)
-class InitialProvisionRequest:
-    """The only browser payload allowed to initialize a managed local App."""
-
-    account: str
-    password: str
-
-    @classmethod
-    def from_payload(cls, payload: dict[str, Any]) -> "InitialProvisionRequest":
-        if set(payload) != {"account", "password"}:
-            raise ValidationError("initialization accepts only account and password")
-        account = payload.get("account")
-        password = payload.get("password")
-        if not isinstance(account, str) or not isinstance(password, str):
-            raise ValidationError("initialization fields have invalid types")
-        if len(account) > 128 or len(password.encode("utf-8")) > 4096:
-            raise ValidationError("initialization fields exceed the supported length")
-        if not account.strip() or not password:
-            raise ValidationError("account and password are required for initialization")
-        return cls(account=account.strip(), password=password)
 
 
 @dataclass(frozen=True)
@@ -143,11 +123,7 @@ class LoginHandler:
                 "account.login",
                 "开发与自动化验收仅使用显式本地身份入口。",
             )
-        if not self._password_store.has_accounts():
-            raise UnavailableCapabilityError(
-                "account.login",
-                "账号服务尚未完成首次初始化。请由本机管理员先创建首个账号。",
-            )
+        self._password_store.ensure_default_accounts()
         if not request.account or not request.password:
             raise AuthorizationError("account.login", "managed credentials are required")
         account = self._password_store.authenticate(request.account, request.password)
@@ -169,6 +145,7 @@ class LoginHandler:
 
     def session_binding(self) -> dict[str, str]:
         if self.mode == "managed":
+            self._password_store.ensure_default_accounts()
             return {
                 "authentication_mode": "managed",
                 "issuer": _MANAGED_ISSUER,
@@ -198,26 +175,12 @@ class LoginHandler:
             )
         return identity
 
-    def provision_initial_administrator(
-        self,
-        request: InitialProvisionRequest,
-        *,
-        client_host: str,
-    ) -> "PasswordAccount":
-        """Initialize exactly one local managed administrator on loopback."""
 
-        if self.mode != "managed":
-            raise UnavailableCapabilityError(
-                "account.initialize",
-                "首次账号初始化仅适用于受管本机App。",
-            )
-        self.require_local_peer(client_host)
-        return self._password_store.provision_initial_administrator(request.account, request.password)
+    def prepare_accounts(self) -> None:
+        """Prepare local preset accounts without presenting an account wizard."""
 
-    def requires_initialization(self) -> bool:
-        """Whether this managed local App has no legitimate login account yet."""
-
-        return self.mode == "managed" and not self._password_store.has_accounts()
+        if self.mode == "managed":
+            self._password_store.ensure_default_accounts()
 
     def require_local_peer(self, client_host: str) -> None:
         try:
