@@ -146,6 +146,8 @@ class SettingsService:
             raise ValidationError("export_location_ref must be a controlled opaque reference")
         if settings.preferences.theme not in {"light", "dark", "auto"}:
             raise ValidationError("theme must be light, dark, or auto")
+        if settings.recommendation_execution_mode not in {"single", "multi"}:
+            raise ValidationError("推荐执行方式必须为single或multi")
         allowed_presets = MULTI_AGENT_ENABLED_RECOMMENDATION_PRESET_IDS
         if settings.multi_agent_recommendation_preset_id not in allowed_presets:
             raise ValidationError("MultiAgent默认预设无效")
