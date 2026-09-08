@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date, datetime, time, timedelta
 import hashlib
 import json
@@ -57,15 +58,35 @@ def controlled_local_csv_path(value: DataRequest, config: DataFetcherConfig) -> 
     return source
 
 
-def _local_source_fingerprint(value: DataRequest, config: DataFetcherConfig) -> str | None:
-    source = controlled_local_csv_path(value, config)
-    if source is None:
+def controlled_local_csv_sources(value: DataRequest, config: DataFetcherConfig) -> tuple[tuple[str, Path], ...]:
+    """显式和自动本地匹配共用解析边界，符号链接也必须留在受控目录。"""
+
+    explicit = controlled_local_csv_path(value, config)
+    if explicit is not None:
+        return ((value.asset_id, explicit),)
+    root = _local_csv_root(config)
+    sources: list[tuple[str, Path]] = []
+    for asset_id in value.asset_ids:
+        for filename in (f"{asset_id}_daily.csv", f"{asset_id}.csv"):
+            candidate = (root / "market" / filename).resolve()
+            if root not in candidate.parents:
+                raise RequestValidationError("本地CSV必须位于受控DataStore目录")
+            if candidate.is_file():
+                sources.append((asset_id, candidate))
+                break
+    return tuple(sources)
+
+
+def _local_source_fingerprint(value: DataRequest, config: DataFetcherConfig, *, local_enabled: bool) -> str | None:
+    if not value.local_csv and not local_enabled:
         return None
-    relative = source.relative_to(_local_csv_root(config)).as_posix()
-    digest = hashlib.sha256(relative.encode("utf-8") + b"\0")
-    with source.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1_048_576), b""):
-            digest.update(chunk)
+    digest = hashlib.sha256()
+    for asset_id, source in controlled_local_csv_sources(value, config):
+        relative = source.relative_to(_local_csv_root(config)).as_posix()
+        digest.update(asset_id.encode("utf-8") + b"\0" + relative.encode("utf-8") + b"\0")
+        with source.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1_048_576), b""):
+                digest.update(chunk)
     return digest.hexdigest()
 
 
@@ -210,7 +231,9 @@ def validate_request(value: DataRequest, config: DataFetcherConfig, caller: Call
     if value.quota_limit is not None and value.quota_limit < 0:
         raise RequestValidationError("quota_limit不能为负数")
 
-    local_source_fingerprint = _local_source_fingerprint(value, config)
+    local_source_fingerprint = _local_source_fingerprint(
+        replace(value, asset_ids=tuple(sorted(asset_ids))), config, local_enabled="local" in priority,
+    )
 
     return DataRequest(
         asset_ids=asset_ids,
