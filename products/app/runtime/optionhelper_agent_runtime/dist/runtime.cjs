@@ -14,6 +14,8 @@ var import_node_crypto = require("node:crypto");
 function blockText(block) {
   if (block.type === "tool-call") return `${block.name}
 ${block.arguments}`;
+  if (block.type === "image") return `[image:${block.attachmentId}]`;
+  if (block.type === "document-ref") return `[document:${block.attachmentId}:${block.name}]`;
   return block.text;
 }
 var TokenMeter = class {
@@ -58,7 +60,12 @@ var FINANCIAL_KEYS = /* @__PURE__ */ new Set([
 ]);
 function safeToolProjection(message2, maxChars) {
   if (message2.role !== "tool") return message2;
-  const raw = message2.content.map((block) => block.type === "tool-call" ? block.arguments : block.text).join("\n");
+  const raw = message2.content.map((block) => {
+    if (block.type === "tool-call") return block.arguments;
+    if (block.type === "image") return `[image:${block.attachmentId}]`;
+    if (block.type === "document-ref") return `[document:${block.attachmentId}]`;
+    return block.text;
+  }).join("\n");
   if (raw.length <= maxChars) return message2;
   let parsed;
   try {
@@ -198,6 +205,9 @@ var BlockAssembler = class {
           name: partial.toolCallName ?? "",
           arguments: partial.toolCallArguments
         };
+      case "image":
+      case "document-ref":
+        throw new Error("\u6A21\u578B\u8F93\u51FA\u6D41\u4E0D\u80FD\u521B\u5EFA\u9644\u4EF6\u5F15\u7528");
       default:
         return assertNever(partial.blockType);
     }
@@ -216,7 +226,7 @@ var BlockAssembler = class {
       const partial = this.mustGet(index);
       const type = partial.block?.type ?? partial.blockType;
       return type === "text" || type === "reasoning" ? this.assemble(partial, index) : void 0;
-    }).filter((block) => block !== void 0 && block.type !== "tool-call" && block.text.trim().length > 0);
+    }).filter((block) => block !== void 0 && (block.type === "text" || block.type === "reasoning") && block.text.trim().length > 0);
   }
   get usage() {
     return this.currentUsage;
@@ -463,6 +473,7 @@ var AgentRun = class {
     this.store = store;
     this.ports = ports;
     this.publisher = publisher;
+    this.routeIdValue = activation.routeId;
     this.session = session ?? AgentSession.create(store, {
       id: activation.sessionId,
       kind: activation.parentSessionId === void 0 ? "root" : "child",
@@ -480,6 +491,7 @@ var AgentRun = class {
       const storedBlocks = storedResult?.blocks;
       this.resultBlocks = Array.isArray(storedBlocks) ? storedBlocks : [];
       this.errorValue = stored.error === void 0 ? void 0 : String(stored.error);
+      this.routeIdValue = typeof stored.routeId === "string" ? stored.routeId : activation.routeId;
       if (stored.status === "running" || stored.status === "waiting_tool") {
         this.session.append("session/interrupted", { reason: "runtime_restarted", turn: this.turnValue, step: this.stepValue });
       }
@@ -497,6 +509,7 @@ var AgentRun = class {
   active;
   abortController;
   toolCount = 0;
+  routeIdValue;
   activate(history2 = []) {
     if (history2.length > 0 && this.session.events.length === 0) this.session.importHistory(history2);
     this.publisher.publish(this.session, "agent/activated", {
@@ -511,22 +524,32 @@ var AgentRun = class {
     this.persist();
     return this.snapshot();
   }
-  turn(prompt) {
+  turn(prompt, routeId2) {
+    if (routeId2 !== void 0 && routeId2 !== this.routeIdValue) {
+      if (this.active !== void 0) throw new Error("Agent\u6B63\u5728\u8FD0\u884C\uFF0C\u4E0D\u80FD\u5207\u6362\u5F53\u524DTurn\u6A21\u578B\u8DEF\u7531");
+      this.routeIdValue = routeId2;
+      this.publisher.publish(this.session, "model/route-bound", {
+        runId: this.activation.runId,
+        routeId: routeId2,
+        nextTurn: this.turnValue + 1
+      });
+      this.persist();
+    }
     if (this.active !== void 0) {
       if (this.activation.mode !== "continuable") throw new Error("one-shot Agent\u6B63\u5728\u8FD0\u884C");
-      this.inbox.append("next-turn", message("user", [{ type: "text", text: prompt }]));
+      this.inbox.append("next-turn", message("user", typeof prompt === "string" ? [{ type: "text", text: prompt }] : prompt));
       return this.active;
     }
-    const queued = message("user", [{ type: "text", text: prompt }]);
+    const queued = message("user", typeof prompt === "string" ? [{ type: "text", text: prompt }] : prompt);
     this.inbox.append("next-turn", queued);
     this.active = this.drainTurns().finally(() => {
       this.active = void 0;
     });
     return this.active;
   }
-  followup(prompt) {
+  followup(prompt, routeId2) {
     if (this.activation.mode !== "continuable") throw new Error("one-shot Child Agent\u4E0D\u63A5\u53D7\u540E\u7EED\u6D88\u606F");
-    return this.turn(prompt);
+    return this.turn(prompt, routeId2);
   }
   cancel(reason = "cancelled") {
     this.abortController?.abort(reason);
@@ -539,6 +562,7 @@ var AgentRun = class {
   snapshot() {
     return {
       runId: this.activation.runId,
+      workflowId: this.activation.workflowId,
       sessionId: this.activation.sessionId,
       ...this.activation.parentSessionId === void 0 ? {} : { parentSessionId: this.activation.parentSessionId },
       ...this.activation.parentRunId === void 0 ? {} : { parentRunId: this.activation.parentRunId },
@@ -550,7 +574,9 @@ var AgentRun = class {
       step: this.stepValue,
       result: { text: this.resultValue, blocks: this.resultBlocks, usage: this.usageValue, turn: this.turnValue },
       ...this.errorValue === void 0 ? {} : { error: this.errorValue },
-      usage: this.usageValue
+      usage: this.usageValue,
+      routeId: this.routeIdValue,
+      activation: { ...this.activation, routeId: this.routeIdValue }
     };
   }
   async drainTurns() {
@@ -575,29 +601,53 @@ var AgentRun = class {
     this.setStatus("running");
     this.publisher.publish(this.session, "turn/start", { runId: this.activation.runId, turn: this.turnValue }, { turn: this.turnValue });
     try {
-      for (let step = 1; step <= this.activation.budget.maxSteps; step += 1) {
+      for (let step = 1; this.activation.budget.maxSteps === 0 || step <= this.activation.budget.maxSteps; step += 1) {
         if (signal.aborted) throw abortError(signal.reason);
         this.stepValue = step;
         this.publisher.publish(this.session, "step/start", { runId: this.activation.runId, turn: this.turnValue, step }, { turn: this.turnValue, step });
-        this.store.checkpoint((0, import_node_crypto.randomUUID)(), this.session.id, "model", `model:${this.activation.runId}:${this.turnValue}:${step}`, "not_started", { turn: this.turnValue, step });
-        const maintained = await maintainContext(
-          this.session,
-          this.activation.contextPolicy,
-          this.ports.summarize,
-          signal
-        );
-        const requestId = (0, import_node_crypto.randomUUID)();
-        const assembler = await this.streamWithRetry({
-          requestId,
-          routeId: this.activation.routeId,
-          messages: maintained.messages,
-          tools: normalizeAllowedTools(this.activation.allowedTools),
-          sessionId: this.session.id,
-          agentRunId: this.activation.runId,
-          roleId: this.activation.roleId,
-          turn: this.turnValue,
-          step
-        }, signal);
+        const operationId = `model:${this.activation.runId}:${this.turnValue}:${step}`;
+        const checkpointPayload = { turn: this.turnValue, step, routeId: this.routeIdValue };
+        this.store.checkpoint((0, import_node_crypto.randomUUID)(), this.session.id, "model", operationId, "not_started", checkpointPayload);
+        let assembler;
+        try {
+          const maintained = await maintainContext(
+            this.session,
+            this.activation.contextPolicy,
+            this.ports.summarize,
+            signal
+          );
+          const requestId = (0, import_node_crypto.randomUUID)();
+          this.store.checkpoint((0, import_node_crypto.randomUUID)(), this.session.id, "model", operationId, "started", {
+            ...checkpointPayload,
+            requestId
+          });
+          assembler = await this.streamWithRetry({
+            requestId,
+            routeId: this.routeIdValue,
+            messages: maintained.messages,
+            tools: normalizeAllowedTools(this.activation.allowedTools),
+            sessionId: this.session.id,
+            agentRunId: this.activation.runId,
+            roleId: this.activation.roleId,
+            turn: this.turnValue,
+            step
+          }, signal);
+          this.store.checkpoint((0, import_node_crypto.randomUUID)(), this.session.id, "model", operationId, "completed", {
+            ...checkpointPayload,
+            finishReason: assembler.finish.kind,
+            usage: assembler.usage
+          });
+        } catch (error) {
+          this.store.checkpoint(
+            (0, import_node_crypto.randomUUID)(),
+            this.session.id,
+            "model",
+            operationId,
+            signal.aborted || error instanceof Error && error.name === "AbortError" ? "cancelled" : "failed",
+            { ...checkpointPayload, error: String(error) }
+          );
+          throw error;
+        }
         this.usageValue = new TokenMeter().merge(this.usageValue, assembler.usage);
         const blocks = assembler.blocks();
         const assistant = message("assistant", blocks);
@@ -618,7 +668,7 @@ var AgentRun = class {
           this.setStatus("completed");
           return;
         }
-        if (this.toolCount + calls.length > this.activation.budget.maxTools) throw new Error("Agent\u5DE5\u5177\u8C03\u7528\u6B21\u6570\u8D85\u8FC7\u9884\u7B97");
+        if (this.activation.budget.maxTools > 0 && this.toolCount + calls.length > this.activation.budget.maxTools) throw new Error("Agent\u5DE5\u5177\u8C03\u7528\u6B21\u6570\u8D85\u8FC7\u9884\u7B97");
         this.toolCount += calls.length;
         this.setStatus("waiting_tool");
         const results = await executeToolCalls(
@@ -760,7 +810,7 @@ var AgentRun = class {
 var import_node_fs = require("node:fs");
 var import_node_path = require("node:path");
 var import_node_sqlite = require("node:sqlite");
-var SCHEMA_VERSION = 1;
+var SCHEMA_VERSION = 2;
 function parseObject(value, label) {
   if (typeof value !== "string") throw new Error(`${label} is not stored as JSON text`);
   const parsed = JSON.parse(value);
@@ -799,6 +849,8 @@ var SqliteSessionStore = class {
       );
       CREATE TABLE IF NOT EXISTS agent_runs (
         run_id TEXT PRIMARY KEY,
+        workflow_id TEXT NOT NULL DEFAULT '',
+        role_id TEXT NOT NULL DEFAULT '',
         session_id TEXT NOT NULL,
         snapshot_json TEXT NOT NULL,
         updated_at TEXT NOT NULL,
@@ -815,13 +867,28 @@ var SqliteSessionStore = class {
         UNIQUE (session_id, operation_id),
         FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
       );
+      CREATE TABLE IF NOT EXISTS workflows (
+        workflow_id TEXT PRIMARY KEY,
+        root_session_id TEXT NOT NULL,
+        snapshot_json TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (root_session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
+      );
     `);
+    this.ensureColumn("agent_runs", "workflow_id", "TEXT NOT NULL DEFAULT ''");
+    this.ensureColumn("agent_runs", "role_id", "TEXT NOT NULL DEFAULT ''");
     const row = this.database.prepare("SELECT value FROM runtime_meta WHERE key='schema_version'").get();
     if (row === void 0) {
       this.database.prepare("INSERT INTO runtime_meta(key,value) VALUES('schema_version',?)").run(String(SCHEMA_VERSION));
+    } else if (Number(row.value) === 1) {
+      this.database.prepare("UPDATE runtime_meta SET value=? WHERE key='schema_version'").run(String(SCHEMA_VERSION));
     } else if (Number(row.value) !== SCHEMA_VERSION) {
       throw new Error(`unsupported Runtime schema version ${String(row.value)}`);
     }
+  }
+  ensureColumn(table, column, declaration) {
+    const columns = this.database.prepare(`PRAGMA table_info(${table})`).all();
+    if (!columns.some((item) => item.name === column)) this.database.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${declaration}`);
   }
   createSession(header) {
     const now = (/* @__PURE__ */ new Date()).toISOString();
@@ -866,14 +933,40 @@ var SqliteSessionStore = class {
   }
   saveRun(runId, sessionId, snapshot) {
     const now = (/* @__PURE__ */ new Date()).toISOString();
+    const value = snapshot;
+    const workflowId = String(value.workflowId ?? "");
+    const roleId = String(value.roleId ?? "");
     this.database.prepare(`
-      INSERT INTO agent_runs(run_id,session_id,snapshot_json,updated_at) VALUES(?,?,?,?)
-      ON CONFLICT(run_id) DO UPDATE SET snapshot_json=excluded.snapshot_json,updated_at=excluded.updated_at
-    `).run(runId, sessionId, JSON.stringify(snapshot), now);
+      INSERT INTO agent_runs(run_id,workflow_id,role_id,session_id,snapshot_json,updated_at) VALUES(?,?,?,?,?,?)
+      ON CONFLICT(run_id) DO UPDATE SET
+        workflow_id=excluded.workflow_id,role_id=excluded.role_id,
+        session_id=excluded.session_id,snapshot_json=excluded.snapshot_json,updated_at=excluded.updated_at
+    `).run(runId, workflowId, roleId, sessionId, JSON.stringify(snapshot), now);
   }
   loadRun(runId) {
     const row = this.database.prepare("SELECT snapshot_json FROM agent_runs WHERE run_id=?").get(runId);
     return row === void 0 ? void 0 : parseObject(row.snapshot_json, "agent run");
+  }
+  listRuns() {
+    const rows = this.database.prepare("SELECT snapshot_json FROM agent_runs ORDER BY updated_at").all();
+    return rows.map((row) => parseObject(row.snapshot_json, "agent run"));
+  }
+  saveWorkflow(workflowId, rootSessionId, snapshot) {
+    this.database.prepare(`
+      INSERT INTO workflows(workflow_id,root_session_id,snapshot_json,updated_at) VALUES(?,?,?,?)
+      ON CONFLICT(workflow_id) DO UPDATE SET
+        root_session_id=excluded.root_session_id,snapshot_json=excluded.snapshot_json,updated_at=excluded.updated_at
+    `).run(workflowId, rootSessionId, JSON.stringify(snapshot), (/* @__PURE__ */ new Date()).toISOString());
+  }
+  loadWorkflow(workflowId) {
+    const row = this.database.prepare("SELECT snapshot_json FROM workflows WHERE workflow_id=?").get(workflowId);
+    return row === void 0 ? void 0 : parseObject(row.snapshot_json, "workflow");
+  }
+  listWorkflows(rootSessionId) {
+    const rows = rootSessionId === void 0 ? this.database.prepare("SELECT snapshot_json FROM workflows ORDER BY updated_at").all() : this.database.prepare("SELECT snapshot_json FROM workflows WHERE root_session_id=? ORDER BY updated_at").all(rootSessionId);
+    return rows.map(
+      (row) => parseObject(row.snapshot_json, "workflow")
+    );
   }
   checkpoint(checkpointId, sessionId, operationKind, operationId, state, payload) {
     this.database.prepare(`
@@ -921,10 +1014,69 @@ function pick(value, ...names) {
   for (const name of names) if (value[name] !== void 0) return value[name];
   return void 0;
 }
+function userContent(params2) {
+  const raw = params2.content;
+  if (!Array.isArray(raw)) {
+    const text = String(params2.prompt ?? "");
+    if (text.trim() === "") throw new Error("Agent Turn\u7F3A\u5C11\u7528\u6237\u5185\u5BB9");
+    return [{ type: "text", text }];
+  }
+  const blocks = [];
+  for (const item of raw) {
+    const value = record(item);
+    const type = String(value.type ?? "").replaceAll("_", "-");
+    if (type === "text") {
+      const text = String(value.text ?? "");
+      if (text !== "") blocks.push({ type: "text", text });
+      continue;
+    }
+    if (type === "image") {
+      blocks.push({
+        type: "image",
+        attachmentId: identifier(pick(value, "attachmentId", "attachment_id"), "attachmentId"),
+        mediaType: String(pick(value, "mediaType", "media_type") ?? ""),
+        ...String(value.name ?? "").trim() === "" ? {} : { name: String(value.name).slice(0, 160) }
+      });
+      continue;
+    }
+    if (type === "document-ref") {
+      blocks.push({
+        type: "document-ref",
+        attachmentId: identifier(pick(value, "attachmentId", "attachment_id"), "attachmentId"),
+        mediaType: String(pick(value, "mediaType", "media_type") ?? ""),
+        name: String(value.name ?? "document").slice(0, 160),
+        ...String(pick(value, "extractionStatus", "extraction_status") ?? "").trim() === "" ? {} : { extractionStatus: String(pick(value, "extractionStatus", "extraction_status")) }
+      });
+      continue;
+    }
+    throw new Error(`\u4E0D\u652F\u6301\u7684\u7528\u6237\u5185\u5BB9\u5757\uFF1A${type}`);
+  }
+  if (blocks.length === 0) throw new Error("Agent Turn\u7F3A\u5C11\u7528\u6237\u5185\u5BB9");
+  return blocks;
+}
 function identifier(value, name, fallback) {
   const result = String(value ?? fallback ?? "").trim();
   if (!/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$/.test(result)) throw new Error(`${name}\u683C\u5F0F\u65E0\u6548`);
   return result;
+}
+function presetRevision(value) {
+  const revision = String(value ?? "").trim();
+  if (!/^[0-9a-f]{64}$/.test(revision)) throw new Error("presetRevision\u5FC5\u987B\u662F\u9884\u8BBE\u5185\u5BB9\u7684SHA-256\u6807\u8BC6");
+  return revision;
+}
+function workflowRecord(value, fallbackRootSessionId) {
+  const spec = record(value);
+  return {
+    ...spec,
+    workflowId: identifier(pick(spec, "workflowId", "workflow_id"), "workflowId"),
+    presetId: identifier(pick(spec, "presetId", "preset_id"), "presetId"),
+    presetRevision: presetRevision(pick(spec, "presetRevision", "preset_revision")),
+    rootSessionId: identifier(pick(spec, "rootSessionId", "root_session_id"), "rootSessionId", fallbackRootSessionId)
+  };
+}
+function executionLimit(value) {
+  const number = Number(value ?? 0);
+  return Number.isSafeInteger(number) && number >= 0 ? number : 0;
 }
 function positiveInteger(value, fallback, maximum) {
   const number = Number(value);
@@ -934,14 +1086,41 @@ function routeId(value) {
   const route = record(pick(value, "modelRouteRef", "model_route_ref"));
   return identifier(pick(route, "routeId", "route_id"), "routeId", "route-default");
 }
+function optionalRouteId(value) {
+  const route = record(pick(value, "modelRouteRef", "model_route_ref"));
+  const raw = pick(route, "routeId", "route_id");
+  return raw === void 0 || String(raw).trim() === "" ? void 0 : identifier(raw, "routeId");
+}
 function history(value) {
   if (!Array.isArray(value)) return [];
   return value.map((raw, index) => {
     const item = record(raw);
     const role = ["system", "user", "assistant", "tool"].includes(String(item.role)) ? String(item.role) : "user";
     const rawContent = item.content;
-    const text = typeof rawContent === "string" ? rawContent : JSON.stringify(rawContent ?? "");
-    return { id: String(item.id ?? `legacy-${index}`), role, content: [{ type: "text", text }] };
+    const content = Array.isArray(rawContent) ? rawContent.map((block) => record(block)).flatMap((block) => {
+      const type = String(block.type ?? "").replaceAll("_", "-");
+      if (type === "text" || type === "reasoning") return [{ type, text: String(block.text ?? "") }];
+      if (type === "image") return [{
+        type: "image",
+        attachmentId: String(pick(block, "attachmentId", "attachment_id") ?? ""),
+        mediaType: String(pick(block, "mediaType", "media_type") ?? ""),
+        name: String(block.name ?? "")
+      }];
+      if (type === "document-ref") return [{
+        type: "document-ref",
+        attachmentId: String(pick(block, "attachmentId", "attachment_id") ?? ""),
+        mediaType: String(pick(block, "mediaType", "media_type") ?? ""),
+        name: String(block.name ?? "document")
+      }];
+      if (type === "tool-call") return [{
+        type: "tool-call",
+        id: String(block.id ?? ""),
+        name: String(block.name ?? ""),
+        arguments: String(block.arguments ?? "{}")
+      }];
+      return [];
+    }) : [{ type: "text", text: String(rawContent ?? "") }];
+    return { id: String(item.id ?? `legacy-${index}`), role, content };
   });
 }
 function contextPolicy(value) {
@@ -970,6 +1149,10 @@ var OptionHelperAgentRuntime = class {
     if (!this.initialized) {
       this.store = new SqliteSessionStore((0, import_node_path2.join)(sessionRoot, "agent-sessions.sqlite3"));
       if (!this.store.hasSession(this.rootSessionId)) AgentSession.create(this.store, { id: this.rootSessionId, kind: "root", label: "OptionHelper" });
+      for (const workflow of this.store.listWorkflows(this.rootSessionId)) {
+        const normalized = workflowRecord(workflow, this.rootSessionId);
+        this.workflows.set(String(normalized.workflowId), normalized);
+      }
       this.initialized = true;
       this.emitRuntime("runtime/ready", this.rootSessionId, { runtimeId: "optionhelper-agent-runtime", protocolVersion: "2.0" });
     }
@@ -977,6 +1160,7 @@ var OptionHelperAgentRuntime = class {
   }
   capabilities() {
     return {
+      state: { detected: true, initialized: this.initialized, verified: this.initialized && this.store !== void 0 },
       mainAgent: true,
       persistentSessions: true,
       sqlitePersistence: true,
@@ -987,7 +1171,17 @@ var OptionHelperAgentRuntime = class {
       contextCompaction: true,
       oneShotSubagent: true,
       continuableSubagent: true,
-      hostOrchestration: true
+      coldResume: true,
+      workflowPersistence: true,
+      workflowScopedCancel: true,
+      turnModelRoute: true,
+      hostOrchestration: true,
+      continuableRolesByPreset: {
+        "sequential-deliberation": [],
+        "product-trader-loop": ["Structurer", "Trader"],
+        "independent-council": ["Matcher", "Hedger"],
+        "constraint-ranking": []
+      }
     };
   }
   activate(params2, child = false) {
@@ -1002,6 +1196,7 @@ var OptionHelperAgentRuntime = class {
     const budget = record(params2.budget);
     const activation = {
       runId,
+      workflowId: identifier(pick(params2, "workflowId", "workflow_id"), "workflowId", `workflow-${this.rootSessionId}`),
       sessionId,
       ...parentSessionId === void 0 ? {} : { parentSessionId },
       ...rawParentRunId === void 0 || rawParentRunId === null || String(rawParentRunId).trim() === "" ? {} : { parentRunId: identifier(rawParentRunId, "parentRunId") },
@@ -1012,8 +1207,8 @@ var OptionHelperAgentRuntime = class {
       allowedTools: Array.isArray(pick(toolPolicy, "allowedTools", "allowed_tools")) ? pick(toolPolicy, "allowedTools", "allowed_tools").map(String) : [],
       parallelTools: pick(toolPolicy, "parallelTools", "parallel_tools") === true,
       budget: {
-        maxSteps: positiveInteger(pick(budget, "maxSteps", "max_steps"), 8, 8),
-        maxTools: positiveInteger(pick(budget, "maxTools", "max_tools"), 12, 12)
+        maxSteps: executionLimit(pick(budget, "maxSteps", "max_steps")),
+        maxTools: executionLimit(pick(budget, "maxTools", "max_tools"))
       },
       contextPolicy: contextPolicy(params2)
     };
@@ -1032,7 +1227,7 @@ var OptionHelperAgentRuntime = class {
   }
   async turn(params2) {
     const run = this.getRun(identifier(pick(params2, "runId", "run_id"), "runId"));
-    const result = await run.turn(String(params2.prompt ?? ""));
+    const result = await run.turn(userContent(params2), optionalRouteId(params2));
     if (run.activation.parentSessionId !== void 0) this.publish(run.session, "subagent/end", {
       runId: run.activation.runId,
       childSessionId: run.activation.sessionId,
@@ -1043,7 +1238,7 @@ var OptionHelperAgentRuntime = class {
   }
   async startSubagent(params2) {
     const run = this.activate(params2, true);
-    const promise = run.turn(String(params2.prompt ?? ""));
+    const promise = run.turn(userContent(params2));
     if (params2.wait === true) return this.turnResult(run, await promise);
     void promise.then((result) => this.publish(run.session, "subagent/end", {
       runId: run.activation.runId,
@@ -1055,28 +1250,36 @@ var OptionHelperAgentRuntime = class {
   }
   async followup(params2) {
     const run = this.getRun(identifier(pick(params2, "runId", "run_id"), "runId"));
-    return this.turnResult(run, await run.followup(String(params2.prompt ?? "")));
+    return this.turnResult(run, await run.followup(userContent(params2), optionalRouteId(params2)));
   }
   startWorkflow(params2) {
-    const spec = record(params2.spec ?? params2);
-    const workflowId = identifier(pick(spec, "workflowId", "workflow_id"), "workflowId", `workflow-${(0, import_node_crypto2.randomUUID)()}`);
-    const frozen = structuredClone({ ...spec, workflowId, status: "queued", autoExecute: false, orchestrationOwner: "optionhelper_host" });
+    const rawSpec = record(params2.spec ?? params2);
+    const spec = workflowRecord(
+      { ...rawSpec, workflowId: pick(rawSpec, "workflowId", "workflow_id") ?? `workflow-${(0, import_node_crypto2.randomUUID)()}` },
+      this.rootSessionId
+    );
+    const workflowId = String(spec.workflowId);
+    const frozen = structuredClone({ ...spec, status: "queued", autoExecute: false, orchestrationOwner: "optionhelper_host" });
     this.workflows.set(workflowId, frozen);
+    this.requireStore().saveWorkflow(workflowId, this.rootSessionId, frozen);
     this.emitRuntime("workflow/start", this.rootSessionId, { workflowId, status: "queued" });
     return frozen;
   }
   workflowStatus(params2) {
     const workflowId = identifier(pick(params2, "workflowId", "workflow_id"), "workflowId");
-    const workflow = this.workflows.get(workflowId);
+    const workflow = this.workflows.get(workflowId) ?? this.requireStore().loadWorkflow(workflowId);
     if (workflow === void 0) throw new Error("Workflow\u4E0D\u5B58\u5728");
     return workflow;
   }
   cancelWorkflow(params2) {
     const workflowId = identifier(pick(params2, "workflowId", "workflow_id"), "workflowId");
-    for (const run of this.runs.values()) run.cancel(String(params2.reason ?? "workflow_cancelled"));
-    const workflow = this.workflows.get(workflowId) ?? { workflowId };
+    for (const run of this.runs.values()) {
+      if (run.activation.workflowId === workflowId) run.cancel(String(params2.reason ?? "workflow_cancelled"));
+    }
+    const workflow = this.workflows.get(workflowId) ?? this.requireStore().loadWorkflow(workflowId) ?? { workflowId };
     const cancelled = { ...workflow, status: "cancelled" };
     this.workflows.set(workflowId, cancelled);
+    this.requireStore().saveWorkflow(workflowId, String(workflow.rootSessionId ?? this.rootSessionId), cancelled);
     this.emitRuntime("workflow/end", this.rootSessionId, { workflowId, status: "cancelled" });
     return cancelled;
   }
@@ -1084,13 +1287,21 @@ var OptionHelperAgentRuntime = class {
     const sessionId = identifier(pick(params2, "sessionId", "session_id"), "sessionId");
     const loaded = this.requireStore().loadSession(sessionId);
     if (loaded === void 0) throw new Error("Session\u4E0D\u5B58\u5728");
+    const restoredRuns = this.restoreRuns(sessionId);
     const unresolved = this.requireStore().unresolvedCheckpoints(sessionId);
     const recovery = unresolved.map((item) => ({
       ...item,
       recovery: item.operationKind === "tool" && ["started", "outcome_unknown"].includes(String(item.state)) ? "TOOL_OUTCOME_UNKNOWN" : "TOOL_NOT_STARTED"
     }));
     this.emitRuntime("session/recovered", sessionId, { unresolved: recovery.length });
-    return { sessionId, nextSeq: loaded.events.length, recovery, events: loaded.events };
+    return {
+      sessionId,
+      nextSeq: loaded.events.length,
+      recovery,
+      events: loaded.events,
+      restoredRuns: restoredRuns.map((run) => run.snapshot()),
+      workflows: this.requireStore().listWorkflows(sessionId)
+    };
   }
   sessionHistory(params2) {
     const sessionId = identifier(pick(params2, "sessionId", "session_id"), "sessionId");
@@ -1112,7 +1323,11 @@ var OptionHelperAgentRuntime = class {
     })) };
   }
   getRun(runId) {
-    const run = this.runs.get(runId);
+    let run = this.runs.get(runId);
+    if (run === void 0) {
+      const stored = this.requireStore().loadRun(runId);
+      if (stored !== void 0) run = this.restoreRun(stored);
+    }
     if (run === void 0) throw new Error("AgentRun\u4E0D\u5B58\u5728\u6216\u5C1A\u672A\u5728\u672C\u8FDB\u7A0B\u6062\u590D");
     return run;
   }
@@ -1151,6 +1366,54 @@ var OptionHelperAgentRuntime = class {
   requireStore() {
     if (!this.initialized || this.store === void 0) throw new Error("Runtime\u5C1A\u672A\u521D\u59CB\u5316");
     return this.store;
+  }
+  restoreRuns(rootSessionId) {
+    const sessions = this.requireStore().listSessions();
+    const allowed = new Set(
+      sessions.filter((session) => session.id === rootSessionId || this.descendsFrom(session.id, rootSessionId, sessions)).map((session) => session.id)
+    );
+    const restored = [];
+    for (const snapshot of this.requireStore().listRuns()) {
+      if (!allowed.has(String(snapshot.sessionId ?? ""))) continue;
+      const runId = String(snapshot.runId ?? "");
+      const existing = this.runs.get(runId);
+      restored.push(existing ?? this.restoreRun(snapshot));
+    }
+    return restored;
+  }
+  restoreRun(snapshot) {
+    const raw = record(snapshot.activation);
+    const runId = identifier(pick(raw, "runId", "run_id") ?? snapshot.runId, "runId");
+    const existing = this.runs.get(runId);
+    if (existing !== void 0) return existing;
+    const sessionId = identifier(pick(raw, "sessionId", "session_id") ?? snapshot.sessionId, "sessionId");
+    const parentSession = pick(raw, "parentSessionId", "parent_session_id");
+    const parentRun = pick(raw, "parentRunId", "parent_run_id");
+    const budget = record(raw.budget);
+    const policy = record(pick(raw, "contextPolicy", "context_policy"));
+    const activation = {
+      runId,
+      workflowId: identifier(pick(raw, "workflowId", "workflow_id") ?? snapshot.workflowId, "workflowId"),
+      sessionId,
+      ...parentSession === void 0 ? {} : { parentSessionId: identifier(parentSession, "parentSessionId") },
+      ...parentRun === void 0 ? {} : { parentRunId: identifier(parentRun, "parentRunId") },
+      roleId: identifier(pick(raw, "roleId", "role_id") ?? snapshot.roleId, "roleId"),
+      label: String(raw.label ?? snapshot.label ?? "Agent").slice(0, 160),
+      mode: String(raw.mode ?? snapshot.mode) === "one-shot" ? "one-shot" : "continuable",
+      routeId: identifier(raw.routeId ?? snapshot.routeId, "routeId"),
+      allowedTools: Array.isArray(raw.allowedTools) ? raw.allowedTools.map(String) : [],
+      parallelTools: raw.parallelTools === true,
+      budget: {
+        maxSteps: executionLimit(budget.maxSteps),
+        maxTools: executionLimit(budget.maxTools)
+      },
+      contextPolicy: contextPolicy({ contextPolicy: policy })
+    };
+    const session = AgentSession.load(this.requireStore(), sessionId);
+    if (session === void 0) throw new Error("AgentRun\u5BF9\u5E94Session\u4E0D\u5B58\u5728");
+    const run = new AgentRun(activation, this.requireStore(), this.ports, this, session);
+    this.runs.set(runId, run);
+    return run;
   }
   descendsFrom(sessionId, root, sessions) {
     let current = sessions.find((session) => session.id === sessionId)?.parentId;
@@ -1196,13 +1459,36 @@ function usage(value) {
   };
 }
 function wireMessage(item) {
-  const content = item.content.map((block) => block.type === "tool-call" ? { type: "tool_call", id: block.id, name: block.name, arguments: block.arguments } : { type: block.type, text: block.text });
+  const content = item.content.map((block) => {
+    if (block.type === "tool-call") return { type: "tool_call", id: block.id, name: block.name, arguments: block.arguments };
+    if (block.type === "image") return {
+      type: "image",
+      attachment_id: block.attachmentId,
+      media_type: block.mediaType,
+      name: block.name ?? ""
+    };
+    if (block.type === "document-ref") return {
+      type: "document_ref",
+      attachment_id: block.attachmentId,
+      media_type: block.mediaType,
+      name: block.name,
+      extraction_status: block.extractionStatus ?? ""
+    };
+    return { type: block.type, text: block.text };
+  });
   return {
     id: item.id,
     role: item.role,
     content,
     ...item.toolCallId === void 0 ? {} : { tool_call_id: item.toolCallId }
   };
+}
+function modelMessages(messages) {
+  const invalidIds = /* @__PURE__ */ new Set();
+  for (const message2 of messages) for (const block of message2.content) {
+    if (block.type === "tool-call" && !block.name.trim()) invalidIds.add(block.id);
+  }
+  return messages.filter((message2) => !(message2.role === "tool" && invalidIds.has(message2.toolCallId ?? ""))).map((message2) => ({ ...message2, content: message2.content.filter((block) => block.type !== "tool-call" || !invalidIds.has(block.id)) })).filter((message2) => message2.content.length > 0).map(wireMessage);
 }
 function latestUserText(messages) {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
@@ -1220,6 +1506,7 @@ var HostRuntimePorts = class {
     let nextIndex = 0;
     let activeTextBlock;
     const toolBlocks = /* @__PURE__ */ new Map();
+    const toolIndexes = /* @__PURE__ */ new Map();
     const startTextBlock = (blockType) => {
       if (activeTextBlock?.blockType === blockType) return activeTextBlock;
       activeTextBlock = { index: nextIndex++, blockType, text: "", arguments: "" };
@@ -1249,6 +1536,7 @@ var HostRuntimePorts = class {
         };
       }
       toolBlocks.clear();
+      toolIndexes.clear();
     };
     const stream = this.peer.stream("host.model.stream", {
       requestId: request.requestId,
@@ -1260,7 +1548,7 @@ var HostRuntimePorts = class {
       prompt: latestUserText(request.messages),
       turn: request.turn,
       step: request.step,
-      messages: request.messages.map(wireMessage),
+      messages: modelMessages(request.messages),
       tools: request.tools
     }, signal);
     for await (const raw of stream) {
@@ -1278,13 +1566,23 @@ var HostRuntimePorts = class {
         yield { type, index: block.index, text };
       } else if (type === "tool-call-delta") {
         yield* closeTextBlock();
-        const id = String(item.id ?? item.tool_call_id ?? `call-${nextIndex}`);
-        let block = toolBlocks.get(id);
+        const suppliedId = String(item.id ?? item.tool_call_id ?? "");
+        const providerIndex = typeof item.index === "number" ? item.index : void 0;
+        let block = (suppliedId ? toolBlocks.get(suppliedId) : void 0) ?? (providerIndex === void 0 ? void 0 : toolIndexes.get(providerIndex));
         if (block === void 0) {
-          block = { index: nextIndex++, blockType: "tool-call", text: "", id, arguments: "" };
-          toolBlocks.set(id, block);
+          if (!suppliedId && providerIndex === void 0) throw new Error("Tool delta is missing both id and index");
+          const id2 = suppliedId || `call-${nextIndex}`;
+          block = { index: nextIndex++, blockType: "tool-call", text: "", id: id2, arguments: "" };
+          toolBlocks.set(id2, block);
           yield { type: "block-start", index: block.index, blockType: "tool-call" };
         }
+        if (providerIndex !== void 0) toolIndexes.set(providerIndex, block);
+        if (suppliedId && suppliedId !== block.id) {
+          toolBlocks.delete(block.id);
+          block.id = suppliedId;
+          toolBlocks.set(suppliedId, block);
+        }
+        const id = block.id;
         if (item.name !== void 0 || item.tool_name !== void 0) block.name = String(item.name ?? item.tool_name);
         const argumentsDelta = String(item.argumentsDelta ?? item.arguments_delta ?? item.arguments ?? item.delta ?? "");
         block.arguments += argumentsDelta;
@@ -1317,7 +1615,7 @@ var HostRuntimePorts = class {
       step: request.step
     }, signal));
     const status = String(raw.status ?? "completed");
-    const normalized = status === "succeeded" || status === "success" ? "completed" : status;
+    const normalized = ["complete", "succeeded", "success", "available", "pending_question", "needs_input", "pending_approval", "candidate_ready"].includes(status) ? "completed" : ["outcome_unknown", "interrupted"].includes(status) ? "unknown" : status;
     const factRefs = Array.isArray(raw.fact_refs) ? raw.fact_refs.map(String) : Array.isArray(raw.factRefs) ? raw.factRefs.map(String) : raw.fact_ref === void 0 ? [] : [String(raw.fact_ref)];
     return {
       status: ["completed", "failed", "cancelled", "unknown"].includes(normalized) ? normalized : "failed",
@@ -1329,7 +1627,12 @@ var HostRuntimePorts = class {
   async summarize(messages, maxChars, _signal) {
     const lines = ["\u4EE5\u4E0B\u662F\u6B64\u524D\u5BF9\u8BDD\u7684\u4E0A\u4E0B\u6587\u6458\u8981\uFF1B\u7CBE\u786E\u91D1\u878D\u6570\u503C\u5FC5\u987B\u901A\u8FC7FactRef\u91CD\u65B0\u8BFB\u53D6\uFF1A"];
     for (const item of messages) {
-      const raw = item.content.map((block) => block.type === "tool-call" ? `[\u5DE5\u5177\u8BF7\u6C42:${block.name}]` : block.text).join(" ").trim();
+      const raw = item.content.map((block) => {
+        if (block.type === "tool-call") return `[\u5DE5\u5177\u8BF7\u6C42:${block.name}]`;
+        if (block.type === "image") return `[\u56FE\u7247\u9644\u4EF6:${block.attachmentId}]`;
+        if (block.type === "document-ref") return `[\u6587\u6863\u9644\u4EF6:${block.attachmentId}:${block.name}]`;
+        return block.text;
+      }).join(" ").trim();
       const factRefs = [...raw.matchAll(/fact[_:.-][A-Za-z0-9_.:-]+/g)].map((match) => match[0]);
       const content = item.role === "tool" ? `[\u5DF2\u9A8C\u8BC1\u5DE5\u5177\u7ED3\u679C${factRefs.length > 0 ? `\uFF1BFactRef:${factRefs.join(",")}` : ""}]` : raw.replace(/(?<![A-Za-z_])[-+]?\d+(?:\.\d+)?%?/g, "[\u6570\u503C\u89C1\u4E8B\u5B9E\u5F15\u7528]");
       if (content) lines.push(`${item.role}: ${content}`);
@@ -1383,11 +1686,11 @@ var JsonRpcPeer = class {
         reject(new Error(String(signal.reason ?? "cancelled")));
         return;
       }
-      const timer = setTimeout(() => {
+      const timer = method === "host.tool.call" ? void 0 : setTimeout(() => {
         this.pending.delete(id);
         reject(new Error(`${method} Host\u8BF7\u6C42\u8D85\u65F6`));
       }, this.timeoutMs);
-      this.pending.set(id, { resolve, reject, timer });
+      this.pending.set(id, { resolve, reject, ...timer === void 0 ? {} : { timer } });
       signal?.addEventListener("abort", () => {
         const current = this.pending.get(id);
         if (current === void 0) return;
@@ -1404,12 +1707,15 @@ var JsonRpcPeer = class {
     const queue = new AsyncChunkQueue();
     const completion = new Promise((resolve, reject) => {
       if (signal?.aborted === true) {
-        reject(new Error(String(signal.reason ?? "cancelled")));
+        const error = new Error(String(signal.reason ?? "cancelled"));
+        queue.fail(error);
+        reject(error);
         return;
       }
       const timer = setTimeout(() => {
         this.pending.delete(id);
-        const error = new Error(`${method} Host\u6D41\u8D85\u65F6`);
+        this.notify("host.model.cancel", { requestId: id });
+        const error = new Error(`${method} Host\u6D41\u7A7A\u95F2\u8D85\u65F6`);
         queue.fail(error);
         reject(error);
       }, this.timeoutMs);
@@ -1438,7 +1744,10 @@ var JsonRpcPeer = class {
       const params2 = message2.params;
       const id2 = String(params2?.requestId ?? params2?.request_id ?? "");
       const current2 = this.pending.get(id2);
-      if (current2?.chunks !== void 0) current2.chunks.push(params2?.chunk);
+      if (current2?.chunks !== void 0) {
+        current2.timer?.refresh();
+        current2.chunks.push(params2?.chunk);
+      }
       return true;
     }
     if (message2.id === void 0 || typeof message2.method === "string") return false;
