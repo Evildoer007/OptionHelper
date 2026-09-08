@@ -104,7 +104,7 @@ FRONTEND_ASSETS = frozenset({
     "optchat/index.html", "optchat/optchat.js", "optchat/attachment-utils.js",
     "optdesk/index.html", "optdesk/optdesk.js",
     "settings/index.html", "settings/settings.js", "settings/model-providers.css", "settings/general-settings.css", "settings/settings-shell.css",
-    "shared/styles.css", "shared/refinement.css", "shared/theme-overrides.css", "shared/app.js", "shared/transition-scope.js", "shared/theme-bootstrap.js", "shared/theme.js", "shared/ui-scale.js", "shared/scrollbar-activity.js", "shared/vol-surface.js", "shared/thinking-orb.js", "shared/thinking-orbs-engine.js", "shared/bloub-engine.js", "shared/bloub-avatar.js",
+    "shared/styles.css", "shared/refinement.css", "shared/theme-overrides.css", "shared/app.js", "shared/transition-scope.js", "shared/theme-bootstrap.js", "shared/theme.js", "shared/ui-scale.js", "shared/scrollbar-activity.js", "shared/vol-surface.js", "shared/thinking-orb.js", "shared/thinking-orbs-engine.js", "shared/bloub-engine.js", "shared/bloub-avatar.js", "shared/activity-motion.js",
 })
 _CAPABILITY_CSP = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'self'; form-action 'self'"
 _AGENT_RUNTIME_MODES = frozenset({"disabled", "shadow", "active"})
