@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import hmac
 import json
 import os
 import re
@@ -52,7 +51,7 @@ from .capability_service import CapabilityServiceCaller
 from .datafetcher_adapter import DataFetcherAdapter
 from .errors import AuthorizationError, CapabilityIntegrityError, UnavailableCapabilityError, UserActionError, ValidationError
 from .identity.identity_provider import IdentityProvider, LocalAuthProvider
-from .identity.login_handler import AuthenticationMode, InitialProvisionRequest, LoginHandler, LoginOutcome, LoginRequest
+from .identity.login_handler import AuthenticationMode, LoginHandler, LoginOutcome, LoginRequest
 from .identity.password_store import PasswordCredentialStore
 from .identity.session_identity import SessionIdentity
 from .model_gateway.gateway import ModelGateway
@@ -76,7 +75,7 @@ from .settings.settings_models import (
     serialize_settings,
     serialize_settings_public,
 )
-from .settings.model_catalog import built_in_provider, built_in_provider_catalog
+from .settings.model_catalog import built_in_provider_catalog
 from .settings.settings_service import SettingsService
 from .secrets.credential_migration import migrate_configured_credentials
 from .secrets.secret_ref import SecretRef
@@ -93,10 +92,11 @@ from .task_runtime.compute_process import ComputeProcessSupervisor
 from .task_runtime.task_service import TaskService
 from .tool_gateway import ToolGateway
 from .reporter_adapter import ReporterAdapter
+from .report_editor import ReportEditor
+from .report_delivery import ReportDelivery
 from desktop.common.paths import AppPaths
 from runtime.adapters.local_store import LocalDataStore
 from runtime.protocol.models import ModuleRunRef
-from runtime.protocol.module_host import HostObjectRef
 
 
 FRONTEND_ASSETS = frozenset({
@@ -104,7 +104,7 @@ FRONTEND_ASSETS = frozenset({
     "optchat/index.html", "optchat/optchat.js", "optchat/attachment-utils.js",
     "optdesk/index.html", "optdesk/optdesk.js",
     "settings/index.html", "settings/settings.js", "settings/model-providers.css", "settings/general-settings.css", "settings/settings-shell.css",
-    "shared/styles.css", "shared/refinement.css", "shared/theme-overrides.css", "shared/app.js", "shared/transition-scope.js", "shared/theme-bootstrap.js", "shared/theme.js", "shared/ui-scale.js", "shared/scrollbar-activity.js", "shared/vol-surface.js", "shared/thinking-orb.js", "shared/thinking-orbs-engine.js",
+    "shared/styles.css", "shared/refinement.css", "shared/theme-overrides.css", "shared/app.js", "shared/transition-scope.js", "shared/theme-bootstrap.js", "shared/theme.js", "shared/ui-scale.js", "shared/scrollbar-activity.js", "shared/vol-surface.js", "shared/thinking-orb.js", "shared/thinking-orbs-engine.js", "shared/bloub-engine.js", "shared/bloub-avatar.js",
 })
 _CAPABILITY_CSP = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'self'; form-action 'self'"
 _AGENT_RUNTIME_MODES = frozenset({"disabled", "shadow", "active"})
@@ -226,7 +226,6 @@ class AppServer:
         *,
         allow_unverified_capability: bool = False,
         authentication_mode: AuthenticationMode = "local-development",
-        initialization_token: str | None = None,
         agent_runtime_mode: str | None = None,
     ) -> None:
         if host != "127.0.0.1":
@@ -255,8 +254,6 @@ class AppServer:
             mode=authentication_mode,
             password_store=PasswordCredentialStore(self._documents._root / "authentication" / "passwords.json"),
         )
-        self._initialization_token = _validated_initialization_token(initialization_token)
-        self._initialization_lock = threading.RLock()
         self.audit = LocalAuditService(self._documents)
         self._settings_store = LocalSettingsStore(self._documents)
         self.settings = SettingsService(self._settings_store)
@@ -267,6 +264,20 @@ class AppServer:
         self.registry = PageRegistry(capability_root)
         if not self.registry.integrity["release_ready"] and not allow_unverified_capability:
             raise CapabilityIntegrityError("Embedded Capability is not release-ready; App launch is blocked")
+        chart_presentation_bytes, chart_presentation_type = self.registry.read_asset(
+            "assets/pages/reporter/editor/chart-presentation.js"
+        )
+        if "javascript" not in chart_presentation_type:
+            raise CapabilityIntegrityError("Report chart presentation asset has an invalid media type")
+        try:
+            chart_presentation_source = chart_presentation_bytes.decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise CapabilityIntegrityError("Report chart presentation asset is not UTF-8") from error
+        self.report_editor = ReportEditor(
+            self.results,
+            self.tasks,
+            chart_presentation_source=chart_presentation_source,
+        )
         self.capability_services = CapabilityServiceCaller(
             self.registry,
             runtime_root=self._capability_runtime_root,
@@ -299,7 +310,7 @@ class AppServer:
         self.gateway = ToolGateway(
             self.registry,
             self.policy,
-            ReporterAdapter(self.results),
+            ReporterAdapter(self.results, self.tasks),
             self.datafetcher,
             self.results,
             self.data_assets,
@@ -471,9 +482,12 @@ class AppServer:
             session_root=self._documents._root / "agent-runtime-sessions",
             is_cancelled=self.tasks.is_cancelled,
         )
+        self.report_delivery = ReportDelivery(self.report_editor, self.results, self.tasks, self.conversation_tools)
+        self.conversation_tools.report_delivery = self.report_delivery
         self.conversations = ConversationService(
             self.tasks,
             self.model_gateway,
+            report_delivery=self.report_delivery,
             agent_loop=AgentLoop(
                 gateway=self.model_gateway,
                 context_builder=conversation_context,
@@ -604,31 +618,6 @@ class AppServer:
             decision="allow",
         ))
 
-    def provision_initial_administrator(
-        self,
-        request: InitialProvisionRequest,
-        *,
-        client_host: str,
-        initialization_token: str,
-    ) -> None:
-        """Persist one managed local admin verifier without logging its password."""
-
-        if self.login_handler.is_local_development:
-            self.login_handler.provision_initial_administrator(request, client_host=client_host)
-        with self._initialization_lock:
-            expected = self._initialization_token
-            if expected is None or not hmac.compare_digest(initialization_token, expected):
-                raise AuthorizationError("account.initialize", "initialization capability is invalid")
-            account = self.login_handler.provision_initial_administrator(request, client_host=client_host)
-            self._initialization_token = None
-        self.audit.record(AuditEvent(
-            action="identity.account.initialize",
-            principal_id=account.principal_id,
-            outcome="succeeded",
-            tenant_id=account.tenant_id,
-            decision="allow",
-            reference="managed-local-initial-administrator",
-        ))
 
     def settings_for(self, identity: SessionIdentity) -> SettingsSnapshot:
         principal = self._principal_settings(identity)
@@ -667,17 +656,28 @@ class AppServer:
             )
             local_model = active.model_service
             active_connection_id = active.connection_id
+        local_data = principal.data_interface
+        if local_data.secret_ref is not None:
+            reference = self.secret_reference(
+                identity.tenant_id, "ifind", owner_id=identity.principal_id,
+                revision=local_data.secret_ref.revision,
+            )
+            self.secret_provider.allow_reference(reference, "iFind数据凭据")
+            local_data = replace(local_data, secret_ref=self._configured_reference(
+                reference, local_data.secret_ref, "iFind数据凭据",
+            ))
         effective_model = local_model if local_model.provider_name != "unconfigured" else tenant.model_service
         return SettingsSnapshot(
             role=identity.role.value,
             model_service=effective_model,
-            data_interface=tenant.data_interface,
+            data_interface=local_data if local_data.provider_name != "unconfigured" else tenant.data_interface,
             storage_export=principal.storage_export,
             preferences=principal.preferences,
             model_connections=principal.model_connections,
             active_model_connection_id=active_connection_id,
             model_providers=principal.model_providers,
             default_model_selection=local_selection,
+            recommendation_execution_mode=principal.recommendation_execution_mode,
             multi_agent_recommendation_preset_id=principal.multi_agent_recommendation_preset_id,
             multi_agent_preset_role_models=principal.multi_agent_preset_role_models,
             multi_agent_preset_agent_instructions=principal.multi_agent_preset_agent_instructions,
@@ -791,6 +791,7 @@ class AppServer:
             endpoint=endpoint,
             secret_ref=expected_reference,
             verified=bool(probe.get("verified")),
+            connected=bool(probe.get("connection_available", probe.get("initialized", False))),
             capabilities=dict(probe.get("effective", {})) if isinstance(probe.get("effective"), Mapping) else {},
         )
         if not matched:
@@ -903,6 +904,7 @@ class AppServer:
                 active_model_connection_id=active.connection_id if active is not None else None,
                 model_providers=providers,
                 default_model_selection=selection,
+                recommendation_execution_mode=snapshot.recommendation_execution_mode,
                 multi_agent_recommendation_preset_id=snapshot.multi_agent_recommendation_preset_id,
                 multi_agent_preset_role_models=snapshot.multi_agent_preset_role_models,
                 multi_agent_preset_agent_instructions=snapshot.multi_agent_preset_agent_instructions,
@@ -916,6 +918,12 @@ class AppServer:
                 principal = replace(principal, preferences=snapshot.preferences)
             elif capability == "settings.storage.write":
                 principal = replace(principal, storage_export=snapshot.storage_export)
+            elif capability == "settings.data.local.write":
+                reference = self.secret_reference(
+                    identity.tenant_id, "ifind", owner_id=identity.principal_id,
+                    revision=snapshot.data_interface.secret_ref.revision,
+                ) if snapshot.data_interface.secret_ref else None
+                principal = replace(principal, data_interface=replace(snapshot.data_interface, secret_ref=reference))
             self.settings.save(identity.principal_id, replace(principal, role=identity.role.value))
         saved = self.settings_for(identity)
         self.audit.record(
@@ -953,6 +961,11 @@ class AppServer:
         suffix = "" if connection_id in {None, "primary"} and owner_id is None else f"/{connection_id or 'primary'}"
         return SecretRef(self._secret_reference_provider, f"optionhelper/{purpose}/{digest}{suffix}", revision)
 
+    def data_settings_capability(self, identity: SessionIdentity) -> str:
+        capability = "settings.data.write" if self.policy.allows(identity.role, "settings.data.write") else "settings.data.local.write"
+        self.policy.require(identity.role, capability)
+        return capability
+
     def data_connection_verified(self, identity: SessionIdentity, reference: SecretRef | None) -> bool:
         return self._settings_store.data_verification_available(
             tenant_id=identity.tenant_id,
@@ -986,7 +999,7 @@ class AppServer:
         if reference is None:
             return
         matched = self._settings_store.save_data_verification_for_current_reference(
-            settings_key=self._tenant_settings_key(identity.tenant_id),
+            settings_key=(identity.principal_id if reference.key == self.secret_reference(identity.tenant_id, "ifind", owner_id=identity.principal_id).key else self._tenant_settings_key(identity.tenant_id)),
             tenant_id=identity.tenant_id,
             principal_id=identity.principal_id,
             secret_ref=reference,
@@ -1455,7 +1468,7 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
                 **error.details,
             })
         except (ValidationError, ValueError) as error:
-            authentication_input = parsed.path in {"/api/auth/login", "/api/auth/initialize"}
+            authentication_input = parsed.path == "/api/auth/login"
             validation_detail = _safe_public_validation_message(error)
             diagnostic_id = _diagnostic_id(
                 self.headers.get("X-OptionHelper-Request-Id") or request_id,
@@ -1470,7 +1483,7 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
                 "failure_code": failure_code,
                 "stage": failure_stage,
                 "message": (
-                    "请检查账号和密码后重试；创建管理员时密码不得少于12个字符。"
+                    "请检查账号和密码后重试。"
                     if authentication_input else
                     "本次输入不完整或格式不正确。请检查日期、条款和定价参数后重试。"
                 ),
@@ -1503,12 +1516,6 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
         if path in {"/health", "/api/health"}:
             self._json(HTTPStatus.OK, {"status": "ok", "mode": "local", "capability": _capability_summary(self.app.registry)})
             return
-        if path == "/api/auth/initialization":
-            self.app.login_handler.require_local_peer(str(self.client_address[0]))
-            self._json(HTTPStatus.OK, {
-                "initialization_required": self.app.login_handler.requires_initialization(),
-            })
-            return
         if path == "/":
             self._serve_frontend_asset("login/index.html")
             return
@@ -1522,6 +1529,7 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
             self._serve_frontend_asset(path.removeprefix("/app/frontend/"))
             return
         if path == "/api/me":
+            self.app.login_handler.prepare_accounts()
             identity = self._identity()
             self._json(HTTPStatus.OK, {"identity": identity.public(), "capabilities": _capabilities_for(self.app.policy, identity.role)})
             return
@@ -1614,7 +1622,15 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
             attachment_id = unquote(encoded_attachment_id)
             if not task_id or not attachment_id or "/" in attachment_id:
                 raise KeyError(path)
-            reference = self.app.tasks.attachment_reference(identity, task_id, attachment_id)
+            # Drafts are already persisted before the composer renders them.
+            # Resolve only references registered to this owned task, never an
+            # arbitrary content hash from the attachment store.
+            reference = next((
+                item for item in self.app.tasks.pending_attachment_uploads(identity, task_id)
+                if item.get("attachment_id") == attachment_id
+            ), None)
+            if reference is None:
+                reference = self.app.tasks.attachment_reference(identity, task_id, attachment_id)
             content = self.app.attachments.read(reference)
             media_type = str(reference.get("media_type", "application/octet-stream"))
             disposition = "inline" if reference.get("kind") == "image" else "attachment"
@@ -1652,6 +1668,21 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
                 raise KeyError(path)
             self._json(HTTPStatus.OK, {"response": response})
             return
+        if path.startswith("/api/reports/") and "/document-artifacts/" in path:
+            from urllib.parse import quote
+            identity = self._identity()
+            report_id, name = path.removeprefix("/api/reports/").split("/document-artifacts/", 1)
+            content, content_type = self.app.results.read_report_document_artifact(identity, report_id, name)
+            document = self.app.results.get_report_document(identity, report_id)
+            title = re.sub(r'[\\/:*?"<>|]', "_", document["title"])
+            filename = quote(title + Path(name).suffix, safe="")
+            download = parse_qs(parsed.query).get("download", [""])[0] == "1"
+            self._bytes(HTTPStatus.OK, content, content_type, extra_headers={
+                "Content-Disposition": f"{'attachment' if download else 'inline'}; filename=report{Path(name).suffix}; filename*=UTF-8''{filename}",
+                "Content-Security-Policy": "sandbox allow-scripts; default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'none'; frame-ancestors 'self'",
+                "X-Frame-Options": "SAMEORIGIN",
+            })
+            return
         if path.startswith("/api/reports/") and "/artifacts/" in path:
             identity = self._identity()
             report_run_id, artifact_name = path.removeprefix("/api/reports/").split("/artifacts/", 1)
@@ -1662,6 +1693,14 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
                 "Content-Security-Policy": "sandbox allow-scripts; default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'none'; form-action 'none'; frame-ancestors 'self'",
                 "X-Frame-Options": "SAMEORIGIN",
             })
+            return
+        if path.startswith("/api/reports/") and path.endswith("/editor"):
+            identity = self._identity()
+            self.app.policy.require(identity.role, "task.read")
+            report_run_id = path.removeprefix("/api/reports/").removesuffix("/editor").rstrip("/")
+            if not report_run_id or "/" in report_run_id:
+                raise KeyError(path)
+            self._json(HTTPStatus.OK, self.app.report_editor.editor_payload(identity, report_run_id))
             return
         if path.startswith("/api/tasks/"):
             identity = self._identity()
@@ -1704,6 +1743,7 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
             }
             self._json(HTTPStatus.OK, {
                 **self.app.agent_runtime_status,
+                "execution_mode": settings.recommendation_execution_mode,
                 "selected_preset_id": settings.multi_agent_recommendation_preset_id,
                 "presets": [
                     {
@@ -1789,6 +1829,20 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
         if path.startswith("/app/assets/icons/"):
             self._serve_brand_asset(self._optional_identity(), path.removeprefix("/app/assets/icons/"))
             return
+        editor_match = re.fullmatch(r"/reports/([A-Za-z0-9._:-]+)/edit", path)
+        if editor_match:
+            identity = self._identity()
+            self.app.policy.require(identity.role, "conversation.write")
+            report_id = editor_match.group(1)
+            self.app.report_editor.editor_payload(identity, report_id)
+            content, _ = self.app.registry.read_asset("assets/pages/reporter/reporter.html")
+            html = content.decode("utf-8")
+            html = html.replace('<head>', '<head><base href="/capability/assets/pages/reporter/"><style>body > .app-shell{display:none}</style>')
+            html = re.sub(r'<script src="(?:\.\./module-host-(?:presentation|bridge)\.js|\./reporter\.js)"></script>', '', html)
+            bootstrap = "<script>const editor=window.OptionHelperReportEditor.createReportEditor({root:document});editor.open(" + json.dumps(report_id) + ");editor.close=()=>location.assign('/optchat');</script>"
+            html = html.replace('</body>', bootstrap + '</body>')
+            self._bytes(HTTPStatus.OK, html.encode('utf-8'), 'text/html; charset=utf-8', extra_headers={"Content-Security-Policy":_CAPABILITY_CSP})
+            return
         if path == "/optchat":
             identity = self._identity()
             self.app.policy.require(identity.role, "optchat")
@@ -1808,8 +1862,6 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
 
     def _post(self, parsed: Any, request_id: str) -> None:
         path = parsed.path
-        if path == "/api/auth/initialize":
-            self._require_same_origin_json()
         attachment_upload = path.startswith("/api/tasks/") and path.endswith("/attachments")
         preauthenticated_identity: SessionIdentity | None = None
         if attachment_upload:
@@ -1817,9 +1869,10 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
             self.app.policy.require(preauthenticated_identity.role, "conversation.write")
             upload_task_id = path.removeprefix("/api/tasks/").removesuffix("/attachments").rstrip("/")
             self.app.tasks.get(preauthenticated_identity, upload_task_id)
+        report_edit = path.startswith("/api/reports/") and path.endswith("/edits")
         body = self._body_json(
             allowed_plaintext_fields=_credential_fields_for(path),
-            max_bytes=280 * 1024 * 1024 if attachment_upload else 200_000,
+            max_bytes=280 * 1024 * 1024 if attachment_upload else 16 * 1024 * 1024 if report_edit or path == "/api/report-documents" else 200_000,
         )
         if path == "/api/auth/login":
             request = LoginRequest.from_payload(body)
@@ -1829,18 +1882,6 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
                 {"identity": outcome.identity.public(), "mode": outcome.mode},
                 cookie=outcome.identity.session_id,
                 persistent_cookie=outcome.remember,
-            )
-            return
-        if path == "/api/auth/initialize":
-            request = InitialProvisionRequest.from_payload(body)
-            self.app.provision_initial_administrator(
-                request,
-                client_host=str(self.client_address[0]),
-                initialization_token=self.headers.get("X-OptionHelper-Initialization-Token", ""),
-            )
-            self._json(
-                HTTPStatus.CREATED,
-                {"status": "initialized", "message": "管理员账号已创建。请使用该账号登录。"},
             )
             return
         if path == "/api/auth/logout":
@@ -1878,6 +1919,22 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
                 client_host=str(self.client_address[0]),
             )
             self._json(HTTPStatus.OK, {"identity": identity.public(), "mode": "local-development"}, cookie=identity.session_id)
+            return
+        if path == "/api/report-documents":
+            identity = self._identity()
+            self.app.policy.require(identity.role, "conversation.write")
+            self._json(HTTPStatus.CREATED, self.app.report_editor.import_document(identity, body))
+            return
+        if report_edit:
+            identity = self._identity()
+            self.app.policy.require(identity.role, "conversation.write")
+            source_report_run_id = path.removeprefix("/api/reports/").removesuffix("/edits").rstrip("/")
+            if not source_report_run_id or "/" in source_report_run_id:
+                raise KeyError(path)
+            self._json(
+                HTTPStatus.CREATED,
+                self.app.report_editor.save_edit(identity, source_report_run_id, body),
+            )
             return
         identity = preauthenticated_identity or self._identity()
         data_asset_id = _data_asset_download_id(path)
@@ -2277,6 +2334,15 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
             saved = self.app.save_settings(
                 identity, replace(current, default_model_selection=selection), "settings.model.local.write",
             )
+            self._json(HTTPStatus.OK, {"settings": self.app.public_settings(identity, saved)})
+            return
+        if path == "/api/settings/recommendation-execution":
+            self.app.policy.require(identity.role, "settings.model.local.write")
+            _only_fields(body, {"execution_mode"})
+            mode = str(body.get("execution_mode", ""))
+            if mode not in {"single", "multi"}:
+                raise ValidationError("推荐执行方式必须为single或multi")
+            saved = self.app.save_settings(identity, replace(self.app.settings_for(identity), recommendation_execution_mode=mode), "settings.model.local.write")
             self._json(HTTPStatus.OK, {"settings": self.app.public_settings(identity, saved)})
             return
         if path == "/api/settings/multi-agent-preset/default":
@@ -2690,12 +2756,13 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.OK, {"settings": self.app.public_settings(identity, snapshot), "credential_status": "stored"})
             return
         if path == "/api/settings/data/credential":
-            self.app.policy.require(identity.role, "settings.data.write")
+            capability = self.app.data_settings_capability(identity)
             _only_fields(body, {"provider_name", "refresh_token"})
             refresh_token = _credential_value(body, "refresh_token")
             reference = self.app.secret_reference(
                 identity.tenant_id,
                 "ifind",
+                owner_id=identity.principal_id if capability == "settings.data.local.write" else None,
                 revision=f"rev-{uuid4().hex}",
             )
             credential = {"refresh_token": refresh_token}
@@ -2707,7 +2774,7 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
                 credential_record,
                 "iFind数据凭据",
                 replace(current, data_interface=DataInterfaceSettings(str(body["provider_name"]).strip(), reference)),
-                "settings.data.write",
+                capability,
             )
             self.app.audit.record(AuditEvent(
                 action="settings.data.credential_store", principal_id=identity.principal_id,
@@ -2730,7 +2797,7 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
             elif path.endswith("/data"):
                 _only_fields(body, {"provider_name"})
                 snapshot = replace(current, data_interface=replace(_data_from(body), secret_ref=current.data_interface.secret_ref))
-                capability = "settings.data.write"
+                capability = self.app.data_settings_capability(identity)
             else:
                 snapshot = replace(current, storage_export=_storage_from(body))
                 capability = "settings.storage.write"
@@ -2792,11 +2859,13 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
             connection = {
                 "provider_name": str(model.get("provider_id", "model")),
                 "model_id": str(model.get("model_id", "")),
-                "status": "available" if verified else "unavailable",
+                "status": "available" if verified or probe.get("connection_available", probe.get("initialized", False)) else "unavailable",
                 "detail": (
-                    "模型服务流式、工具调用、工具续接、取消和超时能力均已验证。"
+                    "连接成功，模型与工具调用可用。"
                     if verified else
-                    "模型服务未通过完整能力验证，不可用于正式工具调用。"
+                    "连接成功，可用于对话；部分工具能力未确认。"
+                    if probe.get("connection_available", probe.get("initialized", False)) else
+                    "连接失败，请检查API地址、密钥、模型名称或网络后重试。"
                 ),
                 "capability_probe": probe,
             }
@@ -2808,7 +2877,7 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.OK, {"connection": connection})
             return
         if path.startswith("/api/settings/test/"):
-            self.app.policy.require(identity.role, "settings.data.write")
+            capability = self.app.data_settings_capability(identity)
             provider = path.removeprefix("/api/settings/test/")
             tested_ref = (
                 self.app.settings_for(identity).data_interface.secret_ref
@@ -2868,6 +2937,7 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
         page_prefix = "assets/pages/"
         shared_designer_assets = {
             "assets/designer/themes/designer-token-vars.css",
+            "assets/designer/vendor/echarts.min.js",
         }
         if not relative.startswith(page_prefix) and relative not in shared_designer_assets:
             raise AuthorizationError("module.page", "only registered module page assets are mountable")
@@ -2885,7 +2955,8 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
             len(parts) < 4 or parts[0:2] != ("assets", "pages") or parts[2] not in PAGE_MODULES
         ):
             raise ValidationError("Capability page asset path is invalid")
-        self.app.policy.require(identity.role, "module.page")
+        editor_asset = relative.startswith("assets/pages/reporter/editor/") or relative in shared_designer_assets | {"assets/pages/reporter/reporter.css", "assets/pages/module-host-presentation.css"}
+        self.app.policy.require(identity.role, "conversation.write" if editor_asset else "module.page")
         content, content_type = self.app.registry.read_asset(relative)
         self._bytes(HTTPStatus.OK, content, content_type, extra_headers={"Content-Security-Policy": _CAPABILITY_CSP})
 
@@ -2928,7 +2999,10 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
             path.read_bytes(),
             content_type,
             extra_headers={
-                "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; base-uri 'self'; object-src 'none'; frame-src 'self'; frame-ancestors 'self'; form-action 'self'",
+                # Local CSS icons use data images. Uploaded attachments use
+                # authenticated same-origin endpoints; blob images, remote
+                # resources and inline scripts remain disallowed.
+                "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'self'; object-src 'none'; frame-src 'self'; frame-ancestors 'self'; form-action 'self'",
             },
         )
 
@@ -2975,15 +3049,6 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
         _reject_plain_secrets(value, allowed_plaintext_fields=allowed_plaintext_fields)
         return value
 
-    def _require_same_origin_json(self) -> None:
-        content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().casefold()
-        if content_type != "application/json":
-            raise AuthorizationError("account.initialize", "initialization requires JSON")
-        if self.headers.get("Origin") != self.app.url:
-            raise AuthorizationError("account.initialize", "initialization origin is invalid")
-        expected_host = urlparse(self.app.url).netloc
-        if self.headers.get("Host") != expected_host:
-            raise AuthorizationError("account.initialize", "initialization host is invalid")
 
     def _json(
         self,
@@ -3123,7 +3188,6 @@ def _data_asset_download_id(path: str) -> str | None:
 def _credential_fields_for(path: str) -> frozenset[str]:
     return {
         "/api/auth/login": frozenset({"password"}),
-        "/api/auth/initialize": frozenset({"password"}),
         "/api/settings/model/credential": frozenset({"api_key"}),
         "/api/settings/local-model/credential": frozenset({"api_key"}),
         "/api/settings/model-provider/credential": frozenset({"api_key"}),
@@ -3133,12 +3197,6 @@ def _credential_fields_for(path: str) -> frozenset[str]:
     }.get(path, frozenset())
 
 
-def _validated_initialization_token(value: str | None) -> str | None:
-    if value is None:
-        return None
-    if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9_-]{32,128}", value):
-        raise ValidationError("Initialization capability is invalid")
-    return value
 
 
 def _only_fields(value: dict[str, Any], allowed: set[str]) -> None:
@@ -3444,7 +3502,7 @@ def _is_missing_credential(error: UnavailableCapabilityError) -> bool:
 
 
 def _capabilities_for(policy: AuthorizationPolicy, role: Role) -> list[str]:
-    candidates = ("optchat", "optdesk", "settings.read", "settings.preferences.write", "settings.model.write", "settings.model.local.write", "settings.storage.write", "settings.data.write", "task.create", "task.read", "conversation.tool.run", "module.page", "module.catalog", "module.run", "report.card.request", "report.quote.request", "report.full.request")
+    candidates = ("optchat", "optdesk", "settings.read", "settings.preferences.write", "settings.model.write", "settings.model.local.write", "settings.storage.write", "settings.data.write", "settings.data.local.write", "task.create", "task.read", "conversation.tool.run", "module.page", "module.catalog", "module.run", "report.card.request", "report.quote.request", "report.full.request")
     return [capability for capability in candidates if policy.allows(role, capability)]
 
 
