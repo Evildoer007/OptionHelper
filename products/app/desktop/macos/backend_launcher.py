@@ -134,6 +134,10 @@ def main() -> int:
 
         return compute_worker_main()
     if args.probe_compute_worker:
+        # Exercise schema dependencies in the frozen host, not only the worker.
+        from jsonschema import FormatChecker, validate
+
+        validate("https://example.org/研究", {"type": "string", "format": "iri"}, format_checker=FormatChecker())
         from backend.task_runtime.compute_process import probe_compute_worker
 
         print("OPTIONHELPER_COMPUTE_WORKER=" + json.dumps(probe_compute_worker(), ensure_ascii=False, sort_keys=True), flush=True)
