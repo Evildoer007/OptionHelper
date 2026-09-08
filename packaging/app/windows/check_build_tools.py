@@ -18,6 +18,10 @@ TIMEOUT_SECONDS = 60
 def check() -> None:
     if platform.system() != "Windows":
         raise RuntimeError("Windows候选必须在Windows机器构建")
+    if sys.version_info < (3, 12):
+        raise RuntimeError("锁定依赖要求Python3.12及以上，建议使用64位Python3.12或3.13")
+    if platform.machine().casefold() not in {"amd64", "x86_64"} or sys.maxsize <= 2**32:
+        raise RuntimeError("Windows构建要求x64系统与64位Python")
     if not ICON.is_file():
         raise RuntimeError(f"缺少受控Windows图标：{ICON}")
     if shutil.which("powershell") is None:
