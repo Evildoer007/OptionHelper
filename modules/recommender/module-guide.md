@@ -18,21 +18,21 @@
 2. `Selector`只使用Knowledger正式端口返回的同一`catalog_version`证据。
 3. `Reviewer`逐项审阅Selector候选，不得新增或漏审产品。
 4. 聚合器执行证据、客户适配、冲突、数量和排名门禁，形成严格`optionhelper.recommendation-set`。
-5. Host用受控合同解析器冻结候选合同。研究简报和完整研究报告只在缺少会改变合同含义的条件时，一次合并展示拟采用条款并确认；参考报价默认由当前对话直接确定多个结构、标的、期限和参数版本，用户明确指定的结构、期限、条款或已保存结果覆盖对应部分。
-6. 用户明确要求正式交付时，顶层工作流先复用或取得受控DataAssetRef。参考报价对每个合同版本调用必要的Pricer，再由Reporter合并为一份Quote并交给Designer；研究简报和完整研究报告按所需模块运行后交付。未提出交付时，到候选结论或候选合同为止，不调用Reporter或Designer。
+5. 领域层形成当前候选快照；确认投影仅包含候选、产品、规则修订、标的顺序及当前输入。研究简报和完整研究报告只在缺少会改变计算含义的条件时，一次合并展示拟采用条款并确认；参考报价默认由当前对话直接确定多个结构、标的、期限和参数组合，用户明确指定的结构、期限、条款或已保存结果覆盖对应部分。
+6. 用户明确要求正式交付时，Host按最新OptionReg编译当前输入，顶层工作流按模块需要复用或取得受控DataAssetRef。参考报价对每个选定输入调用必要的Pricer，再由Reporter合并为一份Quote并交给Designer；研究简报和完整研究报告只消费明确选择并核验的ModuleRun。未提出交付时，到候选结论为止，不调用Reporter或Designer。
 
 ## 推荐Mode
 
 - Mode1顺序研判：`Interpreter→Selector→Reviewer`。三个角色各自使用一次独立执行；只读取Knowledger，不调用金融计算模块。
-- Mode2产品交易循环：`Structurer⇄Trader→Reviewer`。Structurer提出候选版本和验证需求；Trader通过宿主受控工具按需重复调用Payoffer、Pricer或Backtester，并只引用对应CandidateVersion的已验证FactRef。最多重构2轮。
-- Mode3独立评议：Framer完成约束框定后，Matcher和Hedger在隔离上下文中并行完成候选研究与按需验证，Moderator只接收两条分支的结构化候选、风险结论和FactRef。任一必要分支失败则整体失败。
-- Mode4约束排序：`Specifier→Generator→Evaluator并行→确定性Ranker→Reviewer`。每个Evaluator只验证一个CandidateVersion；Ranker先执行硬约束过滤，再按用户顺序排序；Reviewer只能批准或拒绝。候选不足时最多返回Generator重构2轮。
+- Mode2产品交易循环：`Structurer⇄Trader→Reviewer`。Structurer提出当前候选和验证需求；Host调用Payoffer、Pricer或Backtester，Trader只依据该候选本轮的已验证Run和FactRef接受候选或提出受控调整。最多2轮，调整保留同一candidate_id并清除受影响的旧证据。
+- Mode3独立评议：Framer完成约束框定后，Matcher和Hedger在隔离上下文中并行读取受控知识证据并提出候选，Moderator合并两条分支的结构化候选与风险结论。当前领域流程不在分支中执行金融计算；任一必要分支失败则整体失败。
+- Mode4约束排序：`Specifier→Generator→Hosted评估→确定性Ranker→Reviewer`。Host逐一评估资料已就绪的当前候选；领域层校验其显式ModuleRun、模块状态和指标来源。Ranker先执行硬约束过滤，再按用户顺序排序；Reviewer只能批准或拒绝。保留合格候选并明确说明数量不足，不把失败模块的残留数值用于排序。
 
 App从设置中心读取Mode并要求真实多Agent，不根据对话中的Mode字样临时改写设置。Skill默认Mode1，只有用户明确指定时才切换Mode2至Mode4。
 
 Mode1不调用市场数据。只有后续确定需要新数据的Pricer或Backtester时，才先复用合格DataAssetRef；无法复用时先确认iFind，再按DataFetcher指南取得数据。缺少Python、依赖或Store时不启动运行模块，但可以完成不依赖计算的候选研究。
 
-资料状态不是`ready`的候选可以保留为研究结果，但不得进入金融评估，状态固定为`pending_terms`。同一CandidateVersion和同一输入指纹重复提交时必须幂等复用；Mode2、Mode3和Mode4可因新约束或新CandidateVersion重复调用获授权模块。用户覆盖期限、波动率、行权价等已允许参数时，Host调用`create_term_variant`生成同一`candidate_key`下的新CandidateVersion；该纯领域入口保留产品、标的与证据，清除旧合同和运行引用，不重新执行Research或Selector。随后由Host使用正式合同解析器生成新CandidateContract，并按模块正式输入依赖只重跑受影响模块；不得沿用与新合同不匹配的结果。
+资料状态不是`ready`的候选可以保留为研究结果，但不得进入金融评估，状态为`pending_terms`。候选身份仅为`candidate_id`，生成内容绑定`product_id`及正整数`rule_revision`。用户修改已允许参数时，`create_term_variant`更新同一候选的当前输入，清除旧运行引用和评估记录，不重新执行Research或Selector。随后由Host按最新OptionReg编译，并按模块正式输入依赖执行计算。部分模块重试时保留其他模块仍有效的Run，重试失败也必须移除该模块旧成功证据。任务本身不保存活动合同或产品绑定，可自由切换产品。
 
 Skill默认使用Mode1；用户明确指定时可使用Mode2产品交易循环、Mode3独立评议或Mode4约束排序。是否执行真实多Agent由外部Harness的结构化输出和子角色执行上下文隔离能力共同决定，不取决于特定Provider。能力成立时按所选Mode分角色执行；能力不足时由当前模型依次完成同一业务阶段并标记为`single_model`。用户明确要求必须多Agent时，能力不足必须返回不可用，不得降级，任何情况下都不得伪称多Agent。
 
@@ -46,7 +46,7 @@ Payoffer、Pricer、Backtester、Reporter和Designer继续按确定性模块执�
 - 只有缺口会改变候选范围或正式计算口径时才追问；一次合并问题，不重复同一问法。
 - 研究简报和完整研究报告在关键合同条件尚未确认时，才一次展示拟采用合同条款。固定顺序为：结构与标的、期限、行权价或执行水平、权利金或票息或参与率、障碍水平、观察频率、结算方式，以及百分比收益与损失口径。参考报价默认由当前对话直接确定组合；用户明确要求时可以逐候选、逐期限或逐条款确认和调整；不询问或展示名义本金和实际金额。
 - 面向用户的估值、回测和报告只展示百分比。`S0Raw`仅用于真实价格与标准化合同换算，不作为面向用户字段；内部现金流、点数、金额和名义本金不得投影到页面、正式Tool、CSV或报告。
-- 条款摘要必须区分用户输入和产品默认值；默认值称为拟采用参数，不称为市场报价。需要确认时只一次合并询问，并允许用户一次调整多个条款。用户说无需调整、按此继续或直接给出新值后，立即生成新的CandidateContract；直接给出新值本身就是确认，不再重复提问。参考报价不因组合中的多个版本重复打开确认步骤。
+- 条款摘要必须区分用户输入和产品默认值；默认值称为拟采用参数，不称为市场报价。需要确认时只一次合并询问，并允许用户一次调整多个条款。用户说无需调整、按此继续或直接给出新值后，提交当前候选输入交给Host编译；直接给出新值本身就是确认，不再重复提问。参考报价不因多个参数组合重复打开确认步骤。
 - 条款修改按最后一次明确表达处理。唯一公开分类入口`classify_term_change`返回`applied`、`cleared`、`rejected`、`unresolved`或`none`。明确数值形成覆盖；“取消”“删除覆盖”“恢复默认”只移除点名条款的用户覆盖；“不要改”“别调整”表示拒绝本次修改，不得反向写入数值。出现修改意图但未能解析出确定值、删除项或明确拒绝时，状态为`unresolved`，Host必须请求用户明确一次，不能把同一句中的“按此继续”当作合同确认。
 - 用户已经要求简报、报告、详细报告或两份都要时，交付选择已经完成。合同条款确认后直接进入对应交付，不再询问格式或目录；未指定时使用默认HTML，完整研究报告固定为连续A4。
 - 用户要求研究简报和完整研究报告两份时，上游分析只执行一次，两份交付复用同一组已验证结果。
@@ -63,7 +63,9 @@ Payoffer、Pricer、Backtester、Reporter和Designer继续按确定性模块执�
 
 ## 输出
 
-候选必含`candidate_id`、`product_id`、有序`underlyings`、`rank`、`reason`、`suitable_for`、`not_suitable_for`、`main_risks`和`library_status`。默认请求3个候选；用户以阿拉伯数字或中文数词明确要求数量时，在1至10个的受控范围内采用该数量。若仅有部分候选通过证据、约束和复核门禁，保留全部合格候选，并通过`requested_candidate_count`、`returned_candidate_count`和`limitations`说明数量不足。`rank`只表示展示顺序，Host必须以完整`candidate_id`选择候选：单结构分析提交一个ID及其CandidateContract，多结构比较按用户确认顺序提交多个ID，并为每个ID提供对应CandidateContract。审计仅保存输入输出哈希、步骤、角色、模式、状态、运行凭证和错误，不保存推理文本或模型凭据。
+候选必含`candidate_id`、`product_id`、正整数`rule_revision`、`current_inputs`、有序`underlyings`、`rank`、`reason`、`suitable_for`、`not_suitable_for`、`main_risks`和`library_status`。默认请求3个候选；用户以阿拉伯数字或中文数词明确要求数量时，在1至10个的受控范围内采用该数量。若仅有部分候选通过证据、约束和复核门禁，保留全部合格候选，并通过`requested_candidate_count`、`returned_candidate_count`和`limitations`说明数量不足。`rank`只表示展示顺序，Host必须以完整`candidate_id`选择候选：单结构分析提交一个候选的当前输入，多结构比较按用户确认顺序逐一提交。审计保存技术完整性校验、步骤、角色、状态、运行凭证和错误，不把内容摘要作为业务身份，也不保存推理文本或模型凭据。
+
+收益解释以Backtester的合同结算收益率及正、零、负样本事实为依据。期权费是否已计入由当前OptionReg和明确Run的现金流口径决定，不以定价结果替代合同期权费，也不在结算收益率上重复扣费。9.3的期初期权费率属于可编辑条款；推荐和报告须沿用该次Run所记录的条款及结算口径，不能借用其他候选的结论。
 
 ## 用户可见进度
 
