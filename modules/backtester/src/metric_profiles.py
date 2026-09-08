@@ -188,7 +188,7 @@ def _terminal_performance_sign(values: np.ndarray) -> dict[str, Any]:
     total = len(values)
     return {
         "positive_count": int(np.sum(values > 0)),
-        "flat_count": int(np.sum(np.isclose(values, 0.0))),
+        "flat_count": int(np.sum(values == 0.0)),
         "negative_count": int(np.sum(values < 0)),
         "positive_rate": float(np.mean(values > 0)) if total else None,
         "negative_rate": float(np.mean(values < 0)) if total else None,
@@ -202,7 +202,7 @@ def _coupon_payment(trades: Sequence[Any]) -> dict[str, Any]:
     unpaid: list[float] = []
     for trade in trades:
         count = trade.events.get("n_coupon")
-        schedule = trade.historical_contract.resolved_schedules.get("O_c", {})
+        schedule = trade.historical_contract.resolved_schedules.get("Oc", {})
         dates = schedule.get("dates", ()) if isinstance(schedule, Mapping) else ()
         if not isinstance(count, (int, float, np.number)) or not np.isfinite(float(count)) or not dates:
             continue
