@@ -1,375 +1,647 @@
-/*
- * Vendored from thinking-orbs 0.3.1 by Jakub Antalik.
- * Source: https://github.com/Jakubantalik/Libraries/tree/main/packages/thinking-orbs
- * MIT license: /LICENSES/ThinkingOrbs-LICENSE.txt
- * This file is the package's published dist/engine.es.js without logic changes.
+/* Vendored from thinking-orbs 0.3.1 by Jakub Antalik, MIT.
+ * Source: https://github.com/Jakubantalik/thinking-orbs
+ * Pinned commit: de85557ca220332586d070d8788c0e1d6e877a0d
+ * Unminified engine bundle, no geometry changes. See LICENSES/ThinkingOrbs-SOURCE.md.
  */
-function U(n, s, t) {
-  return n + (s - n) * t;
+// ../../../../private/tmp/oh-thinking-orbs-review-0907/src/engine/core.ts
+function lerp(a, b, f) {
+  return a + (b - a) * f;
 }
-function nt(n) {
-  return n - Math.floor(n);
+function frac(x) {
+  return x - Math.floor(x);
 }
-function G(n, s) {
-  const t = Math.floor(n), r = Math.floor(s);
-  let a = n - t, o = s - r;
-  a = a * a * (3 - 2 * a), o = o * o * (3 - 2 * o);
-  const c = E(t, r), M = E(t + 1, r), h = E(t, r + 1), m = E(t + 1, r + 1);
-  return c + (M - c) * a + (h - c) * o + (c - M - h + m) * a * o;
+function vnoise(x, y) {
+  const xi = Math.floor(x);
+  const yi = Math.floor(y);
+  let fx = x - xi;
+  let fy = y - yi;
+  fx = fx * fx * (3 - 2 * fx);
+  fy = fy * fy * (3 - 2 * fy);
+  const a = hashD(xi, yi);
+  const b = hashD(xi + 1, yi);
+  const c = hashD(xi, yi + 1);
+  const d = hashD(xi + 1, yi + 1);
+  return a + (b - a) * fx + (c - a) * fy + (a - b - c + d) * fx * fy;
 }
-function E(n, s) {
-  const t = Math.sin(n * 12.9898 + s * 78.233) * 43758.5453;
-  return t - Math.floor(t);
+function hashD(a, b) {
+  const h = Math.sin(a * 12.9898 + b * 78.233) * 43758.5453;
+  return h - Math.floor(h);
 }
-function J(n, s) {
-  const t = Math.PI * (3 - Math.sqrt(5)), r = 1 - 2 * (n + 0.5) / s, a = Math.sqrt(1 - r * r), o = n * t;
-  return [a * Math.cos(o), r, a * Math.sin(o)];
+function fibDir(i, n) {
+  const golden = Math.PI * (3 - Math.sqrt(5));
+  const y = 1 - 2 * (i + 0.5) / n;
+  const rad = Math.sqrt(1 - y * y);
+  const a = i * golden;
+  return [rad * Math.cos(a), y, rad * Math.sin(a)];
 }
-function et(n, s) {
-  return Math.atan2(Math.sin(n - s), Math.cos(n - s));
+function angleDelta(a, b) {
+  return Math.atan2(Math.sin(a - b), Math.cos(a - b));
 }
-function _(n, s, t, r, a) {
-  const o = Math.sin(s), c = Math.cos(s), M = Math.sin(n), h = Math.cos(n);
-  return (m, D, p) => {
-    const e = m * h + p * M, l = -m * M + p * h, R = D * c - l * o, w = D * o + l * c;
-    return [t + e * a, r - R * a, w];
+function makeProj(yaw, tilt, cx, cy, scale) {
+  const st = Math.sin(tilt);
+  const ct = Math.cos(tilt);
+  const sy = Math.sin(yaw);
+  const cyw = Math.cos(yaw);
+  return (x, y, z) => {
+    const x1 = x * cyw + z * sy;
+    const z1 = -x * sy + z * cyw;
+    const y1 = y * ct - z1 * st;
+    const z2 = y * st + z1 * ct;
+    return [cx + x1 * scale, cy - y1 * scale, z2];
   };
 }
-function rt(n, s, t, r = 0.3) {
-  for (const a of s) {
-    const o = a.a ?? 1, c = Math.min(1, Math.max(0, a.white)), M = Math.round((t ? 1 - c : c) * 255);
-    n.fillStyle = `rgba(${M},${M},${M},${o})`, n.beginPath(), n.arc(a.x, a.y, a.r, 0, Math.PI * 2), n.fill();
+function paint(ctx, dots, dark, rMin = 0.3) {
+  for (const d of dots) {
+    const alpha = d.a ?? 1;
+    const w = Math.min(1, Math.max(0, d.white));
+    const g = Math.round((dark ? 1 - w : w) * 255);
+    ctx.fillStyle = `rgba(${g},${g},${g},${alpha})`;
+    ctx.beginPath();
+    ctx.arc(d.x, d.y, d.r, 0, Math.PI * 2);
+    ctx.fill();
   }
 }
-function it(n, s, t) {
-  for (const r of s) {
-    const a = r.a ?? 1, o = Math.min(1, Math.max(0, r.white)), c = Math.round((t ? 1 - o : o) * 255);
-    n.strokeStyle = `rgba(${c},${c},${c},${a})`, n.lineWidth = r.w, n.beginPath(), n.moveTo(r.x1, r.y1), n.lineTo(r.x2, r.y2), n.stroke();
+function paintLines(ctx, lines, dark) {
+  for (const l of lines) {
+    const alpha = l.a ?? 1;
+    const w = Math.min(1, Math.max(0, l.white));
+    const g = Math.round((dark ? 1 - w : w) * 255);
+    ctx.strokeStyle = `rgba(${g},${g},${g},${alpha})`;
+    ctx.lineWidth = l.w;
+    ctx.beginPath();
+    ctx.moveTo(l.x1, l.y1);
+    ctx.lineTo(l.x2, l.y2);
+    ctx.stroke();
   }
 }
-function L(n, s, t = 0.3) {
-  const r = [];
-  for (const a of n)
-    (a.a ?? 1) < 0.02 || (a.r = Math.max(t, a.r), r.push(a));
-  return r.sort((a, o) => a.z - o.z), { dots: r, lines: s.filter((a) => (a.a ?? 1) >= 0.02) };
-}
-function ht(n, s, t) {
-  s.lines.length && it(n, s.lines, t), rt(n, s.dots, t);
-}
-function $(n, s) {
-  return (n / 300) ** s;
-}
-const Mt = (n, s, t) => {
-  const r = n / 2, a = n / 2, o = n / 2 * 0.76, c = _(s * 0.4, 0.3, r, a, 1), M = $(n, t.rsPow ?? 0.6), h = [], m = t.ghostN ?? 150;
-  for (let e = 0; e < m; e++) {
-    const l = J(e, m), [R, w, i] = c(l[0] * o, l[1] * o, l[2] * o), u = (i / o + 1) / 2;
-    h.push({ x: R, y: w, z: i, r: 0.8 * M, white: 0.78, a: 0.1 + 0.22 * u });
+function finalizeFrame(dots, lines, rMin = 0.3) {
+  const visible = [];
+  for (const d of dots) {
+    if ((d.a ?? 1) < 0.02) continue;
+    d.r = Math.max(rMin, d.r);
+    visible.push(d);
   }
-  const D = t.strandN ?? 52, p = t.turns ?? 3;
-  for (let e = 0; e < 3; e++) {
-    const l = e / 3 * 2 * Math.PI;
-    for (let R = 0; R < D; R++) {
-      const w = (nt(R / D + s * 0.045) * 2 - 1) * 0.96, i = Math.sqrt(Math.max(0, 1 - w * w)), u = Math.min(1, (1 - Math.abs(w)) / 0.1), y = w * Math.PI * p + l, b = 1 + 0.075 * Math.sin(w * Math.PI * p * 2 + l * 2 + s * 0.8), f = i * o * b, [P, x, g] = c(Math.cos(y) * f, w * o * b, Math.sin(y) * f), d = (g / o + 1) / 2;
-      h.push({
-        x: P,
-        y: x,
-        z: g,
-        r: ((t.rBase ?? 1.2) + (t.rDepth ?? 1.8) * d) * M,
-        white: 0.55 - 0.45 * d,
-        a: u * (0.45 + 0.55 * d)
+  visible.sort((a, b) => a.z - b.z);
+  return { dots: visible, lines: lines.filter((l) => (l.a ?? 1) >= 0.02) };
+}
+function paintFrame(ctx, frame, dark) {
+  if (frame.lines.length) paintLines(ctx, frame.lines, dark);
+  paint(ctx, frame.dots, dark);
+}
+function radiusScale(size, pow) {
+  return (size / 300) ** pow;
+}
+
+// ../../../../private/tmp/oh-thinking-orbs-review-0907/src/engine/braid.ts
+var frameBraid = (size, t, o) => {
+  const cx = size / 2;
+  const cy = size / 2;
+  const R = size / 2 * 0.76;
+  const pt = makeProj(t * 0.4, 0.3, cx, cy, 1);
+  const rs = radiusScale(size, o.rsPow ?? 0.6);
+  const dots = [];
+  const ghostN = o.ghostN ?? 150;
+  for (let i = 0; i < ghostN; i++) {
+    const d = fibDir(i, ghostN);
+    const [px, py, z] = pt(d[0] * R, d[1] * R, d[2] * R);
+    const depth = (z / R + 1) / 2;
+    dots.push({ x: px, y: py, z, r: 0.8 * rs, white: 0.78, a: 0.1 + 0.22 * depth });
+  }
+  const strandN = o.strandN ?? 52;
+  const turns = o.turns ?? 3;
+  for (let s = 0; s < 3; s++) {
+    const phase = s / 3 * 2 * Math.PI;
+    for (let i = 0; i < strandN; i++) {
+      const u = (frac(i / strandN + t * 0.045) * 2 - 1) * 0.96;
+      const surf = Math.sqrt(Math.max(0, 1 - u * u));
+      const endFade = Math.min(1, (1 - Math.abs(u)) / 0.1);
+      const a = u * Math.PI * turns + phase;
+      const weave = 1 + 0.075 * Math.sin(u * Math.PI * turns * 2 + phase * 2 + t * 0.8);
+      const rr = surf * R * weave;
+      const [px, py, zr] = pt(Math.cos(a) * rr, u * R * weave, Math.sin(a) * rr);
+      const depth = (zr / R + 1) / 2;
+      dots.push({
+        x: px,
+        y: py,
+        z: zr,
+        r: ((o.rBase ?? 1.2) + (o.rDepth ?? 1.8) * depth) * rs,
+        white: 0.55 - 0.45 * depth,
+        a: endFade * (0.45 + 0.55 * depth)
       });
     }
   }
-  return L(h, [], t.rMin);
+  return finalizeFrame(dots, [], o.rMin);
 };
-function lt(n, s, t, r) {
-  const a = 2 * s * t + r, o = n % a, c = new Array(s).fill(0);
-  let M = -1;
-  if (o < 2 * s * t) {
-    const h = Math.floor(o / t), m = (o - h * t) / t, p = 1 - (1 - Math.min(1, m / 0.7)) ** 3;
-    if (h < s) {
-      for (let e = 0; e < h; e++) c[e] = 1;
-      c[h] = p, M = h;
+
+// ../../../../private/tmp/oh-thinking-orbs-review-0907/src/engine/lattice.ts
+function solveCycle(time, count, slotDur, rest) {
+  const cyc = 2 * count * slotDur + rest;
+  const tc = time % cyc;
+  const amount = new Array(count).fill(0);
+  let active = -1;
+  if (tc < 2 * count * slotDur) {
+    const slot = Math.floor(tc / slotDur);
+    const p = (tc - slot * slotDur) / slotDur;
+    const cl = Math.min(1, p / 0.7);
+    const ep = 1 - (1 - cl) ** 3;
+    if (slot < count) {
+      for (let i = 0; i < slot; i++) amount[i] = 1;
+      amount[slot] = ep;
+      active = slot;
     } else {
-      const e = 2 * s - 1 - h;
-      for (let l = 0; l < e; l++) c[l] = 1;
-      c[e] = 1 - p, M = e;
+      const u = 2 * count - 1 - slot;
+      for (let i = 0; i < u; i++) amount[i] = 1;
+      amount[u] = 1 - ep;
+      active = u;
     }
   }
-  return { amount: c, active: M };
+  return { amount, active };
 }
-function pt(n, s, t) {
-  let [r, a, o] = n, c = !1;
-  for (let M = 0; M < s.length; M++) {
-    if (t.amount[M] <= 0) continue;
-    const h = s[M], m = h.axis === 0 ? r : h.axis === 1 ? a : o;
-    if (m < h.lo || m >= h.hi) continue;
-    M === t.active && (c = !0);
-    const D = h.ang * t.amount[M], p = Math.cos(D), e = Math.sin(D);
-    if (h.axis === 0) {
-      const l = a * p - o * e;
-      o = a * e + o * p, a = l;
-    } else if (h.axis === 1) {
-      const l = r * p + o * e;
-      o = -r * e + o * p, r = l;
+function applyMoves(pt3, moves, sc) {
+  let [x, y, z] = pt3;
+  let inActive = false;
+  for (let i = 0; i < moves.length; i++) {
+    if (sc.amount[i] <= 0) continue;
+    const mv = moves[i];
+    const coord = mv.axis === 0 ? x : mv.axis === 1 ? y : z;
+    if (coord < mv.lo || coord >= mv.hi) continue;
+    if (i === sc.active) inActive = true;
+    const a = mv.ang * sc.amount[i];
+    const ca = Math.cos(a);
+    const sa = Math.sin(a);
+    if (mv.axis === 0) {
+      const y2 = y * ca - z * sa;
+      z = y * sa + z * ca;
+      y = y2;
+    } else if (mv.axis === 1) {
+      const x2 = x * ca + z * sa;
+      z = -x * sa + z * ca;
+      x = x2;
     } else {
-      const l = r * p - a * e;
-      a = r * e + a * p, r = l;
+      const x2 = x * ca - y * sa;
+      y = x * sa + y * ca;
+      x = x2;
     }
   }
-  return [r, a, o, c];
+  return [x, y, z, inActive];
 }
-function ut(n) {
-  const s = [];
-  for (let t = 0; t < n; t++) {
-    const r = Math.min(2, Math.floor(E(t, 2.3) * 3)), a = -1 + 0.5 * Math.min(3, Math.floor(E(t, 5.9) * 4)), o = E(t, 7.7) < 0.5 ? 1 : -1;
-    s.push({ axis: r, lo: a, hi: a + 0.5, ang: o * Math.PI / 2 });
+function makeMoves(count) {
+  const moves = [];
+  for (let i = 0; i < count; i++) {
+    const axis = Math.min(2, Math.floor(hashD(i, 2.3) * 3));
+    const lo = -1 + 0.5 * Math.min(3, Math.floor(hashD(i, 5.9) * 4));
+    const dir = hashD(i, 7.7) < 0.5 ? 1 : -1;
+    moves.push({ axis, lo, hi: lo + 0.5, ang: dir * Math.PI / 2 });
   }
-  return s;
+  return moves;
 }
-const ft = (n, s, t) => {
-  const a = n / 2, o = n / 2, c = n / 2 * 0.82, M = 0.4 + 0.06 * Math.sin(s * 0.35), h = _(s * 0.5, M, a, o, c), m = s * (0.5 + (1.7 - 0.5) * (t.scanMul ?? 1)), D = $(n, t.rsPow ?? 0.6), p = t.dimBase ?? 1, e = [], l = t.latRings ?? 17, R = t.lonDensity ?? 44;
-  for (let w = 0; w <= l; w++) {
-    const i = -Math.PI / 2 + w / l * Math.PI, u = Math.cos(i), y = Math.sin(i), b = Math.max(1, Math.round(Math.abs(u) * R));
-    for (let f = 0; f < b; f++) {
-      const P = f / b * 2 * Math.PI, [x, g, d] = h(u * Math.cos(P), y, u * Math.sin(P)), v = (d + 1) / 2, k = et(P + s * 0.5, m), N = Math.exp(-(k * k) / 0.18) * Math.max(0, d);
-      e.push({
-        x,
-        y: g,
-        z: d,
-        r: ((t.rBase ?? 0.6) + (t.rDepth ?? 1.7) * v + (t.rBoost ?? 1) * N) * D,
-        white: (t.inkFar ?? 0.62) - (t.inkSpan ?? 0.54) * v,
+var frameGlobe = (size, t, o) => {
+  const spin = 0.5;
+  const cx = size / 2;
+  const cy = size / 2;
+  const radius = size / 2 * 0.82;
+  const tilt = 0.4 + 0.06 * Math.sin(t * 0.35);
+  const pt = makeProj(t * spin, tilt, cx, cy, radius);
+  const scan = t * (spin + (1.7 - spin) * (o.scanMul ?? 1));
+  const rs = radiusScale(size, o.rsPow ?? 0.6);
+  const dimBase = o.dimBase ?? 1;
+  const dots = [];
+  const latRings = o.latRings ?? 17;
+  const lonDensity = o.lonDensity ?? 44;
+  for (let li = 0; li <= latRings; li++) {
+    const lat = -Math.PI / 2 + li / latRings * Math.PI;
+    const cosLat = Math.cos(lat);
+    const sinLat = Math.sin(lat);
+    const lonCount = Math.max(1, Math.round(Math.abs(cosLat) * lonDensity));
+    for (let lj = 0; lj < lonCount; lj++) {
+      const lon = lj / lonCount * 2 * Math.PI;
+      const [px, py, z] = pt(cosLat * Math.cos(lon), sinLat, cosLat * Math.sin(lon));
+      const depth = (z + 1) / 2;
+      const d = angleDelta(lon + t * spin, scan);
+      const boost = Math.exp(-(d * d) / 0.18) * Math.max(0, z);
+      dots.push({
+        x: px,
+        y: py,
+        z,
+        r: ((o.rBase ?? 0.6) + (o.rDepth ?? 1.7) * depth + (o.rBoost ?? 1) * boost) * rs,
+        white: (o.inkFar ?? 0.62) - (o.inkSpan ?? 0.54) * depth,
         // dimBase < 1 fades un-scanned dots so the meridian reads clearly
-        a: p + (1 - p) * Math.min(1, N)
+        a: dimBase + (1 - dimBase) * Math.min(1, boost)
       });
     }
   }
-  return L(e, [], t.rMin);
-}, dt = (n, s, t) => {
-  const r = n / 2, a = n / 2, o = n / 2 * 0.82, c = _(s * 0.55, 0.35 + 0.1 * Math.sin(s * 0.9), r, a, o), M = $(n, t.rsPow ?? 0.6), h = t.moveCount ?? 14, m = ut(h), D = lt(s, h, 0.42, 1.2), p = [], e = t.latRings ?? 15, l = t.lonDensity ?? 40;
-  for (let R = 0; R <= e; R++) {
-    const w = -Math.PI / 2 + R / e * Math.PI, i = Math.cos(w), u = Math.sin(w), y = Math.max(1, Math.round(Math.abs(i) * l));
-    for (let b = 0; b < y; b++) {
-      const f = b / y * 2 * Math.PI, [P, x, g, d] = pt([i * Math.cos(f), u, i * Math.sin(f)], m, D), [v, k, N] = c(P, x, g), z = (N + 1) / 2;
-      p.push({
-        x: v,
-        y: k,
-        z: N,
-        r: ((t.rBase ?? 0.6) + (t.rDepth ?? 1.7) * z + (d ? t.rActive ?? 0.3 : 0)) * M,
-        white: (t.inkFar ?? 0.62) - (t.inkSpan ?? 0.54) * z - (d ? 0.14 : 0)
-      });
-    }
-  }
-  return L(p, [], t.rMin);
-}, bt = (n, s, t) => {
-  const r = n / 2, a = n / 2, o = n / 2 * 0.874, c = _(s * 0.18, 0.38, r, a, 1), M = $(n, t.rsPow ?? 0.6), h = [], m = t.rings ?? 15, D = t.lonDensity ?? 40;
-  for (let p = 0; p <= m; p++) {
-    const e = -Math.PI / 2 + p / m * Math.PI, l = Math.cos(e), R = Math.sin(e), w = 0.62 * Math.sin(s * 2.1 - p * 0.52) + 0.38 * Math.sin(s * 1.27 + p * 0.83), i = o * (0.88 + 0.105 * w), u = Math.max(1, Math.round(Math.abs(l) * D));
-    for (let y = 0; y < u; y++) {
-      const b = y / u * 2 * Math.PI, [f, P, x] = c(l * Math.cos(b) * i, R * i, l * Math.sin(b) * i), g = (x / o + 1) / 2, d = Math.max(0, w);
-      h.push({
-        x: f,
-        y: P,
-        z: x,
-        r: ((t.rBase ?? 0.6) + (t.rDepth ?? 1.7) * g) * (1 + 0.4 * d) * M,
-        white: 0.66 - 0.56 * g - 0.1 * d
-      });
-    }
-  }
-  return L(h, [], t.rMin);
+  return finalizeFrame(dots, [], o.rMin);
 };
-function xt(n) {
-  return n * n * (3 - 2 * n);
-}
-function st(n) {
-  const s = n.length, t = [];
-  let r = 0;
-  for (let a = 0; a < s; a++) {
-    const o = n[a], c = n[(a + 1) % s], M = Math.hypot(c[0] - o[0], c[1] - o[1]);
-    t.push(M), r += M;
+var frameRubik = (size, t, o) => {
+  const cx = size / 2;
+  const cy = size / 2;
+  const R = size / 2 * 0.82;
+  const pt = makeProj(t * 0.55, 0.35 + 0.1 * Math.sin(t * 0.9), cx, cy, R);
+  const rs = radiusScale(size, o.rsPow ?? 0.6);
+  const moveCount = o.moveCount ?? 14;
+  const moves = makeMoves(moveCount);
+  const sc = solveCycle(t, moveCount, 0.42, 1.2);
+  const dots = [];
+  const latRings = o.latRings ?? 15;
+  const lonDensity = o.lonDensity ?? 40;
+  for (let li = 0; li <= latRings; li++) {
+    const lat = -Math.PI / 2 + li / latRings * Math.PI;
+    const cosLat = Math.cos(lat);
+    const sinLat = Math.sin(lat);
+    const lonCount = Math.max(1, Math.round(Math.abs(cosLat) * lonDensity));
+    for (let lj = 0; lj < lonCount; lj++) {
+      const lon = lj / lonCount * 2 * Math.PI;
+      const [x, y, z, inActive] = applyMoves([cosLat * Math.cos(lon), sinLat, cosLat * Math.sin(lon)], moves, sc);
+      const [px, py, zr] = pt(x, y, z);
+      const depth = (zr + 1) / 2;
+      dots.push({
+        x: px,
+        y: py,
+        z: zr,
+        r: ((o.rBase ?? 0.6) + (o.rDepth ?? 1.7) * depth + (inActive ? o.rActive ?? 0.3 : 0)) * rs,
+        white: (o.inkFar ?? 0.62) - (o.inkSpan ?? 0.54) * depth - (inActive ? 0.14 : 0)
+      });
+    }
   }
-  return (a) => {
-    let o = a * r, c = 0;
-    for (; o > t[c] && c < s - 1; )
-      o -= t[c], c++;
-    const M = n[c], h = n[(c + 1) % s], m = t[c] ? Math.min(1, o / t[c]) : 0;
-    return [M[0] + (h[0] - M[0]) * m, M[1] + (h[1] - M[1]) * m];
+  return finalizeFrame(dots, [], o.rMin);
+};
+var frameWave = (size, t, o) => {
+  const cx = size / 2;
+  const cy = size / 2;
+  const R = size / 2 * 0.874;
+  const pt = makeProj(t * 0.18, 0.38, cx, cy, 1);
+  const rs = radiusScale(size, o.rsPow ?? 0.6);
+  const dots = [];
+  const rings = o.rings ?? 15;
+  const lonDensity = o.lonDensity ?? 40;
+  for (let ri = 0; ri <= rings; ri++) {
+    const lat = -Math.PI / 2 + ri / rings * Math.PI;
+    const cosLat = Math.cos(lat);
+    const sinLat = Math.sin(lat);
+    const w = 0.62 * Math.sin(t * 2.1 - ri * 0.52) + 0.38 * Math.sin(t * 1.27 + ri * 0.83);
+    const rr = R * (0.88 + 0.105 * w);
+    const lonCount = Math.max(1, Math.round(Math.abs(cosLat) * lonDensity));
+    for (let lj = 0; lj < lonCount; lj++) {
+      const lon = lj / lonCount * 2 * Math.PI;
+      const [px, py, z] = pt(cosLat * Math.cos(lon) * rr, sinLat * rr, cosLat * Math.sin(lon) * rr);
+      const depth = (z / R + 1) / 2;
+      const crest = Math.max(0, w);
+      dots.push({
+        x: px,
+        y: py,
+        z,
+        r: ((o.rBase ?? 0.6) + (o.rDepth ?? 1.7) * depth) * (1 + 0.4 * crest) * rs,
+        white: 0.66 - 0.56 * depth - 0.1 * crest
+      });
+    }
+  }
+  return finalizeFrame(dots, [], o.rMin);
+};
+
+// ../../../../private/tmp/oh-thinking-orbs-review-0907/src/engine/morph.ts
+function smoothE(x) {
+  return x * x * (3 - 2 * x);
+}
+function polyPath(verts) {
+  const V = verts.length;
+  const L = [];
+  let total = 0;
+  for (let i = 0; i < V; i++) {
+    const a = verts[i];
+    const b = verts[(i + 1) % V];
+    const l = Math.hypot(b[0] - a[0], b[1] - a[1]);
+    L.push(l);
+    total += l;
+  }
+  return (f) => {
+    let target = f * total;
+    let i = 0;
+    while (target > L[i] && i < V - 1) {
+      target -= L[i];
+      i++;
+    }
+    const a = verts[i];
+    const b = verts[(i + 1) % V];
+    const ff = L[i] ? Math.min(1, target / L[i]) : 0;
+    return [a[0] + (b[0] - a[0]) * ff, a[1] + (b[1] - a[1]) * ff];
   };
 }
-const yt = (n) => {
-  const s = -Math.PI / 2 + n * 2 * Math.PI;
-  return [Math.cos(s) * 0.24, Math.sin(s) * 0.24];
-}, gt = st([
+var CIRCLE = (f) => {
+  const a = -Math.PI / 2 + f * 2 * Math.PI;
+  return [Math.cos(a) * 0.24, Math.sin(a) * 0.24];
+};
+var TRIANGLE = polyPath([
   [0, -0.26],
   [0.24, 0.16],
   [-0.24, 0.16]
-]), mt = st([
+]);
+var SQUARE = polyPath([
   [0, -0.2],
   [0.2, -0.2],
   [0.2, 0.2],
   [-0.2, 0.2],
   [-0.2, -0.2]
-]), H = [yt, gt, mt];
-function wt(n) {
-  return Math.max(6, Math.round(34 * n));
+]);
+var CYCLE = [CIRCLE, TRIANGLE, SQUARE];
+function morphN(d) {
+  return Math.max(6, Math.round(34 * d));
 }
-const V = 1.4, ot = 0.9, Q = V + ot, Pt = (n, s, t) => {
-  const r = H.length, a = s % (Q * r), o = Math.floor(a / Q), c = a - o * Q, M = c > V ? xt((c - V) / ot) : 0, h = t.spread ?? 1, m = H[o], D = H[(o + 1) % r], p = 160, e = [];
-  for (let x = 0; x < p; x++) {
-    const g = x / p, d = m(g), v = D(g);
-    e.push([(d[0] + (v[0] - d[0]) * M) * h, (d[1] + (v[1] - d[1]) * M) * h]);
+var HOLD = 1.4;
+var MORPH = 0.9;
+var SEG = HOLD + MORPH;
+var frameMorph = (size, t, o) => {
+  const K = CYCLE.length;
+  const tc = t % (SEG * K);
+  const k = Math.floor(tc / SEG);
+  const local = tc - k * SEG;
+  const m = local > HOLD ? smoothE((local - HOLD) / MORPH) : 0;
+  const sprd = o.spread ?? 1;
+  const pA = CYCLE[k];
+  const pB = CYCLE[(k + 1) % K];
+  const M = 160;
+  const pts = [];
+  for (let i = 0; i < M; i++) {
+    const f = i / M;
+    const a = pA(f);
+    const b = pB(f);
+    pts.push([(a[0] + (b[0] - a[0]) * m) * sprd, (a[1] + (b[1] - a[1]) * m) * sprd]);
   }
-  const l = [];
-  let R = 0;
-  for (let x = 0; x < p; x++) {
-    const g = e[x], d = e[(x + 1) % p], v = Math.hypot(d[0] - g[0], d[1] - g[1]);
-    l.push(v), R += v;
+  const L = [];
+  let total = 0;
+  for (let i = 0; i < M; i++) {
+    const a = pts[i];
+    const b = pts[(i + 1) % M];
+    const l = Math.hypot(b[0] - a[0], b[1] - a[1]);
+    L.push(l);
+    total += l;
   }
-  const w = wt(t.iconD ?? 1), i = (t.rDot ?? 0.021) * 1.35 * h, u = 1 + 0.02 * Math.sin(c * 3.1), y = [], b = n / 2;
-  let f = 0, P = 0;
-  for (let x = 0; x < w; x++) {
-    const g = x / w * R;
-    for (; P + l[f] < g && f < p - 1; )
-      P += l[f], f++;
-    const d = e[f], v = e[(f + 1) % p], k = l[f] ? Math.min(1, (g - P) / l[f]) : 0, N = (d[0] + (v[0] - d[0]) * k) * u, z = (d[1] + (v[1] - d[1]) * k) * u;
-    y.push({
-      x: b + N * n,
-      y: b + z * n,
+  const n = morphN(o.iconD ?? 1);
+  const re = (o.rDot ?? 0.021) * 1.35 * sprd;
+  const pulse = 1 + 0.02 * Math.sin(local * 3.1);
+  const dots = [];
+  const c2 = size / 2;
+  let seg = 0;
+  let acc = 0;
+  for (let k2 = 0; k2 < n; k2++) {
+    const target = k2 / n * total;
+    while (acc + L[seg] < target && seg < M - 1) {
+      acc += L[seg];
+      seg++;
+    }
+    const a = pts[seg];
+    const b = pts[(seg + 1) % M];
+    const f = L[seg] ? Math.min(1, (target - acc) / L[seg]) : 0;
+    const x = (a[0] + (b[0] - a[0]) * f) * pulse;
+    const y = (a[1] + (b[1] - a[1]) * f) * pulse;
+    dots.push({
+      x: c2 + x * size,
+      y: c2 + y * size,
       z: 0,
-      r: Math.max(0.35, i * n),
+      r: Math.max(0.35, re * size),
       white: 0.1
     });
   }
-  return L(y, [], t.rMin);
-}, Rt = (n, s, t) => {
-  const r = n / 2, a = n / 2, o = n / 2 * 0.82, c = _(s * 0.12, 0.3, r, a, 1), M = $(n, t.rsPow ?? 0.6), h = [], m = t.orbitN ?? 12, D = t.ghostN ?? 40, p = t.particles ?? 3;
-  for (let e = 0; e < m; e++) {
-    const l = E(e, 1.7), R = E(e, 5.2), w = E(e, 8.9), i = o * (0.45 + 0.52 * l), u = l * 2 * Math.PI, y = Math.acos(2 * R - 1), b = Math.sin(y) * Math.cos(u), f = Math.cos(y), P = Math.sin(y) * Math.sin(u);
-    let x = -f, g = b;
-    const d = 0, v = Math.max(1e-6, Math.sqrt(x * x + g * g));
-    x /= v, g /= v;
-    const k = f * d - P * g, N = P * x - b * d, z = b * g - f * x, O = (0.25 + 0.55 * w) * (w > 0.5 ? 1 : -1);
-    for (let B = 0; B < D; B++) {
-      const I = B / D * 2 * Math.PI, [S, A, T] = c(
-        (x * Math.cos(I) + k * Math.sin(I)) * i,
-        (g * Math.cos(I) + N * Math.sin(I)) * i,
-        (d * Math.cos(I) + z * Math.sin(I)) * i
-      ), C = (T / i + 1) / 2;
-      h.push({
-        x: S,
-        y: A,
-        z: T,
-        r: (t.ghostR ?? 0.9) * M,
+  return finalizeFrame(dots, [], o.rMin);
+};
+
+// ../../../../private/tmp/oh-thinking-orbs-review-0907/src/engine/orbits.ts
+var frameOrbits = (size, t, o) => {
+  const cx = size / 2;
+  const cy = size / 2;
+  const R = size / 2 * 0.82;
+  const pt = makeProj(t * 0.12, 0.3, cx, cy, 1);
+  const rs = radiusScale(size, o.rsPow ?? 0.6);
+  const dots = [];
+  const orbitN = o.orbitN ?? 12;
+  const ghostN = o.ghostN ?? 40;
+  const particles = o.particles ?? 3;
+  for (let orb = 0; orb < orbitN; orb++) {
+    const h1 = hashD(orb, 1.7);
+    const h2 = hashD(orb, 5.2);
+    const h3 = hashD(orb, 8.9);
+    const ro = R * (0.45 + 0.52 * h1);
+    const th = h1 * 2 * Math.PI;
+    const phi = Math.acos(2 * h2 - 1);
+    const nx = Math.sin(phi) * Math.cos(th);
+    const ny = Math.cos(phi);
+    const nz = Math.sin(phi) * Math.sin(th);
+    let ux = -ny;
+    let uy = nx;
+    const uz = 0;
+    const ul = Math.max(1e-6, Math.sqrt(ux * ux + uy * uy));
+    ux /= ul;
+    uy /= ul;
+    const vx = ny * uz - nz * uy;
+    const vy = nz * ux - nx * uz;
+    const vz = nx * uy - ny * ux;
+    const speed = (0.25 + 0.55 * h3) * (h3 > 0.5 ? 1 : -1);
+    for (let k = 0; k < ghostN; k++) {
+      const a = k / ghostN * 2 * Math.PI;
+      const [px, py, z] = pt(
+        (ux * Math.cos(a) + vx * Math.sin(a)) * ro,
+        (uy * Math.cos(a) + vy * Math.sin(a)) * ro,
+        (uz * Math.cos(a) + vz * Math.sin(a)) * ro
+      );
+      const depth = (z / ro + 1) / 2;
+      dots.push({
+        x: px,
+        y: py,
+        z,
+        r: (o.ghostR ?? 0.9) * rs,
         white: 0.72,
-        a: (t.ghostA ?? 0.5) * (0.4 + 0.6 * C)
+        a: (o.ghostA ?? 0.5) * (0.4 + 0.6 * depth)
       });
     }
-    for (let B = 0; B < p; B++) {
-      const I = s * O + B / p * 2 * Math.PI + R * 6, [S, A, T] = c(
-        (x * Math.cos(I) + k * Math.sin(I)) * i,
-        (g * Math.cos(I) + N * Math.sin(I)) * i,
-        (d * Math.cos(I) + z * Math.sin(I)) * i
-      ), C = (T / i + 1) / 2;
-      h.push({
-        x: S,
-        y: A,
-        z: T,
-        r: ((t.partR ?? 1.2) + (t.partRDepth ?? 1.6) * C) * M,
-        white: 0.3 - 0.22 * C
-      });
-    }
-  }
-  return L(h, [], t.rMin);
-}, Z = (n, s, t) => {
-  const r = n / 2, a = n / 2, o = n / 2 * 0.78, c = t.spin ?? 1, M = 0.3, h = _(s * 0.1 * c, M, r, a, 1), m = $(n, t.rsPow ?? 0.6), D = [], p = t.ghostN ?? 150;
-  for (let z = 0; z < p; z++) {
-    const O = J(z, p), [B, I, S] = h(O[0] * o, O[1] * o, O[2] * o), A = (S / o + 1) / 2;
-    D.push({ x: B, y: I, z: S, r: 0.8 * m, white: 0.78, a: 0.1 + 0.22 * A });
-  }
-  const e = s * 0.24 * c, l = t.faceOn ? -M : 0.55 + 0.3 * Math.sin(s * 0.18) * c, R = Math.cos(e), w = 0, i = Math.sin(e), u = -i * Math.sin(l), y = Math.cos(l), b = R * Math.sin(l), f = w * b - i * y, P = i * u - R * b, x = R * y - w * u, g = 0.23 * (t.wobMul ?? 1), d = t.faceOn ? o / (1 + 0.85 * g) : o, v = t.lanes ?? 5, k = t.segs ?? 88, N = Math.max(1, Math.round(v * (t.bandMul ?? 1)));
-  for (let z = 0; z < N; z++) {
-    const O = (z - (N - 1) / 2) * 0.075, B = Math.abs(z - (N - 1) / 2) / Math.max(1, (N - 1) / 2);
-    for (let I = 0; I < k; I++) {
-      const S = I / k * 2 * Math.PI, A = (0.16 * Math.sin(S * 3 - s * 1.7 + z * 0.22) + 0.07 * Math.sin(S * 5 + s * 1.1)) * (t.wobMul ?? 1), T = t.faceOn ? 1 + A : 1, C = t.faceOn ? O : O + A, q = R * Math.cos(S) + u * Math.sin(S) + f * C, F = w * Math.cos(S) + y * Math.sin(S) + P * C, j = i * Math.cos(S) + b * Math.sin(S) + x * C, W = Math.sqrt(q * q + F * F + j * j), Y = d * T, [ct, at, X] = h(q / W * Y, F / W * Y, j / W * Y), K = (X / o + 1) / 2;
-      D.push({
-        x: ct,
-        y: at,
-        z: X,
-        r: ((t.rBase ?? 1.1) + (t.rDepth ?? 1.7) * K) * (1 - 0.25 * B) * m,
-        white: 0.52 - 0.44 * K + 0.18 * B,
-        a: 0.4 + 0.6 * K
+    for (let m = 0; m < particles; m++) {
+      const a = t * speed + m / particles * 2 * Math.PI + h2 * 6;
+      const [px, py, z] = pt(
+        (ux * Math.cos(a) + vx * Math.sin(a)) * ro,
+        (uy * Math.cos(a) + vy * Math.sin(a)) * ro,
+        (uz * Math.cos(a) + vz * Math.sin(a)) * ro
+      );
+      const depth = (z / ro + 1) / 2;
+      dots.push({
+        x: px,
+        y: py,
+        z,
+        r: ((o.partR ?? 1.2) + (o.partRDepth ?? 1.6) * depth) * rs,
+        white: 0.3 - 0.22 * depth
       });
     }
   }
-  return L(D, [], t.rMin);
-}, Dt = (n, s, t) => {
-  const r = n / 2, a = n / 2, o = n / 2 * 0.8 * (t.spread ?? 1), c = _(s * 0.12, 0.32, r, a, o), M = $(n, t.rsPow ?? 0.6), h = t.nodeN ?? 30, m = t.thr ?? 0.72, D = t.nodeR ?? 1.4, p = t.nodeRDepth ?? 1.8, e = [];
-  for (let i = 0; i < h; i++) {
-    const u = J(i, h), y = u[0] + 0.3 * (G(i * 0.31 + 9, s * 0.24) - 0.5) * 2, b = u[1] + 0.3 * (G(i * 0.53 + 27, s * 0.21) - 0.5) * 2, f = u[2] + 0.3 * (G(i * 0.77 + 55, s * 0.27) - 0.5) * 2, P = Math.sqrt(y * y + b * b + f * f);
-    e.push([y / P, b / P, f / P]);
+  return finalizeFrame(dots, [], o.rMin);
+};
+
+// ../../../../private/tmp/oh-thinking-orbs-review-0907/src/engine/ribbon.ts
+var frameRibbon = (size, t, o) => {
+  const cx = size / 2;
+  const cy = size / 2;
+  const R = size / 2 * 0.78;
+  const spin = o.spin ?? 1;
+  const camTilt = 0.3;
+  const pt = makeProj(t * 0.1 * spin, camTilt, cx, cy, 1);
+  const rs = radiusScale(size, o.rsPow ?? 0.6);
+  const dots = [];
+  const ghostN = o.ghostN ?? 150;
+  for (let i = 0; i < ghostN; i++) {
+    const d = fibDir(i, ghostN);
+    const [px, py, z] = pt(d[0] * R, d[1] * R, d[2] * R);
+    const depth = (z / R + 1) / 2;
+    dots.push({ x: px, y: py, z, r: 0.8 * rs, white: 0.78, a: 0.1 + 0.22 * depth });
   }
-  const l = [], R = [];
-  for (let i = 0; i < h; i++)
-    for (let u = i + 1; u < h; u++) {
-      const y = e[i][0] - e[u][0], b = e[i][1] - e[u][1], f = e[i][2] - e[u][2], P = Math.sqrt(y * y + b * b + f * f);
-      if (P >= m) continue;
-      const [x, g, d] = c(e[i][0], e[i][1], e[i][2]), [v, k, N] = c(e[u][0], e[u][1], e[u][2]), z = ((d + N) / 2 + 1) / 2;
-      l.push({
-        x1: x,
-        y1: g,
-        x2: v,
-        y2: k,
+  const ya = t * 0.24 * spin;
+  const ta = o.faceOn ? -camTilt : 0.55 + 0.3 * Math.sin(t * 0.18) * spin;
+  const ux = Math.cos(ya);
+  const uy = 0;
+  const uz = Math.sin(ya);
+  const vx = -uz * Math.sin(ta);
+  const vy = Math.cos(ta);
+  const vz = ux * Math.sin(ta);
+  const nx = uy * vz - uz * vy;
+  const ny = uz * vx - ux * vz;
+  const nz = ux * vy - uy * vx;
+  const wobAmp = 0.23 * (o.wobMul ?? 1);
+  const baseR = o.faceOn ? R / (1 + 0.85 * wobAmp) : R;
+  const baseLanes = o.lanes ?? 5;
+  const segs = o.segs ?? 88;
+  const lanes = Math.max(1, Math.round(baseLanes * (o.bandMul ?? 1)));
+  for (let w = 0; w < lanes; w++) {
+    const laneOff = (w - (lanes - 1) / 2) * 0.075;
+    const edge = Math.abs(w - (lanes - 1) / 2) / Math.max(1, (lanes - 1) / 2);
+    for (let k = 0; k < segs; k++) {
+      const a = k / segs * 2 * Math.PI;
+      const wob = (0.16 * Math.sin(a * 3 - t * 1.7 + w * 0.22) + 0.07 * Math.sin(a * 5 + t * 1.1)) * (o.wobMul ?? 1);
+      const radial = o.faceOn ? 1 + wob : 1;
+      const off = o.faceOn ? laneOff : laneOff + wob;
+      const x = ux * Math.cos(a) + vx * Math.sin(a) + nx * off;
+      const y = uy * Math.cos(a) + vy * Math.sin(a) + ny * off;
+      const z = uz * Math.cos(a) + vz * Math.sin(a) + nz * off;
+      const l = Math.sqrt(x * x + y * y + z * z);
+      const rr = baseR * radial;
+      const [px, py, zr] = pt(x / l * rr, y / l * rr, z / l * rr);
+      const depth = (zr / R + 1) / 2;
+      dots.push({
+        x: px,
+        y: py,
+        z: zr,
+        r: ((o.rBase ?? 1.1) + (o.rDepth ?? 1.7) * depth) * (1 - 0.25 * edge) * rs,
+        white: 0.52 - 0.44 * depth + 0.18 * edge,
+        a: 0.4 + 0.6 * depth
+      });
+    }
+  }
+  return finalizeFrame(dots, [], o.rMin);
+};
+
+// ../../../../private/tmp/oh-thinking-orbs-review-0907/src/engine/web.ts
+var frameWeb = (size, t, o) => {
+  const cx = size / 2;
+  const cy = size / 2;
+  const R = size / 2 * 0.8 * (o.spread ?? 1);
+  const pt = makeProj(t * 0.12, 0.32, cx, cy, R);
+  const rs = radiusScale(size, o.rsPow ?? 0.6);
+  const nodeN = o.nodeN ?? 30;
+  const thr = o.thr ?? 0.72;
+  const nodeR = o.nodeR ?? 1.4;
+  const nodeRDepth = o.nodeRDepth ?? 1.8;
+  const nodes = [];
+  for (let i = 0; i < nodeN; i++) {
+    const d = fibDir(i, nodeN);
+    const x = d[0] + 0.3 * (vnoise(i * 0.31 + 9, t * 0.24) - 0.5) * 2;
+    const y = d[1] + 0.3 * (vnoise(i * 0.53 + 27, t * 0.21) - 0.5) * 2;
+    const z = d[2] + 0.3 * (vnoise(i * 0.77 + 55, t * 0.27) - 0.5) * 2;
+    const l = Math.sqrt(x * x + y * y + z * z);
+    nodes.push([x / l, y / l, z / l]);
+  }
+  const lines = [];
+  const dots = [];
+  for (let i = 0; i < nodeN; i++) {
+    for (let j = i + 1; j < nodeN; j++) {
+      const dx = nodes[i][0] - nodes[j][0];
+      const dy = nodes[i][1] - nodes[j][1];
+      const dz = nodes[i][2] - nodes[j][2];
+      const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      if (dist >= thr) continue;
+      const [x1, y1, z1] = pt(nodes[i][0], nodes[i][1], nodes[i][2]);
+      const [x2, y2, z2] = pt(nodes[j][0], nodes[j][1], nodes[j][2]);
+      const depth = ((z1 + z2) / 2 + 1) / 2;
+      lines.push({
+        x1,
+        y1,
+        x2,
+        y2,
         white: 0.42,
-        a: (1 - P / m) * (0.3 + 0.55 * z),
-        w: Math.max(0.6, (t.lineW ?? 0.8) * M)
+        a: (1 - dist / thr) * (0.3 + 0.55 * depth),
+        w: Math.max(0.6, (o.lineW ?? 0.8) * rs)
       });
     }
-  for (let i = 0; i < h; i++) {
-    const [u, y, b] = c(e[i][0], e[i][1], e[i][2]), f = (b + 1) / 2, P = 1 + 0.25 * Math.sin(s * 1.4 + i * 2.7);
-    R.push({
-      x: u,
-      y,
-      z: b,
-      r: (D + p * f) * P * M,
-      white: 0.55 - 0.45 * f
+  }
+  for (let i = 0; i < nodeN; i++) {
+    const [px, py, z] = pt(nodes[i][0], nodes[i][1], nodes[i][2]);
+    const depth = (z + 1) / 2;
+    const pulse = 1 + 0.25 * Math.sin(t * 1.4 + i * 2.7);
+    dots.push({
+      x: px,
+      y: py,
+      z,
+      r: (nodeR + nodeRDepth * depth) * pulse * rs,
+      white: 0.55 - 0.45 * depth
     });
   }
-  const w = t.signals ?? 5;
-  for (let i = 0; i < w; i++) {
-    const u = Math.floor(s * 0.55 + i * 7.31), y = Math.floor(E(u, i * 3.1 + 1.7) * h), b = Math.floor(E(u, i * 5.7 + 4.2) * h);
-    if (y === b) continue;
-    const f = nt(s * 0.55 + i * 7.31), P = U(e[y][0], e[b][0], f), x = U(e[y][1], e[b][1], f), g = U(e[y][2], e[b][2], f), d = Math.max(1e-6, Math.sqrt(P * P + x * x + g * g)), [v, k, N] = c(P / d, x / d, g / d), z = (N + 1) / 2;
-    R.push({
-      x: v,
-      y: k,
-      z: N,
-      r: (D * 1.5 + p * z) * M,
+  const signals = o.signals ?? 5;
+  for (let s = 0; s < signals; s++) {
+    const seg = Math.floor(t * 0.55 + s * 7.31);
+    const a = Math.floor(hashD(seg, s * 3.1 + 1.7) * nodeN);
+    const b = Math.floor(hashD(seg, s * 5.7 + 4.2) * nodeN);
+    if (a === b) continue;
+    const f = frac(t * 0.55 + s * 7.31);
+    const x = lerp(nodes[a][0], nodes[b][0], f);
+    const y = lerp(nodes[a][1], nodes[b][1], f);
+    const z = lerp(nodes[a][2], nodes[b][2], f);
+    const l = Math.max(1e-6, Math.sqrt(x * x + y * y + z * z));
+    const [px, py, zr] = pt(x / l, y / l, z / l);
+    const depth = (zr + 1) / 2;
+    dots.push({
+      x: px,
+      y: py,
+      z: zr,
+      r: (nodeR * 1.5 + nodeRDepth * depth) * rs,
       white: 0.05,
-      a: 0.5 + 0.5 * z
+      a: 0.5 + 0.5 * depth
     });
   }
-  return L(R, l, t.rMin);
-}, vt = {
-  orbits: Rt,
-  globe: ft,
-  rubik: dt,
-  wave: bt,
-  web: Dt,
-  braid: Mt,
-  ribbon: Z,
+  return finalizeFrame(dots, lines, o.rMin);
+};
+
+// ../../../../private/tmp/oh-thinking-orbs-review-0907/src/engine/registry.ts
+var MODE_FRAMES = {
+  orbits: frameOrbits,
+  globe: frameGlobe,
+  rubik: frameRubik,
+  wave: frameWave,
+  web: frameWeb,
+  braid: frameBraid,
+  ribbon: frameRibbon,
   // ring shares ribbon's geometry — the `faceOn` profile flag switches it
-  ring: Z,
-  morph: Pt
-}, Ct = Object.fromEntries(
-  Object.entries(vt).map(([n, s]) => [
-    n,
-    (t, r, a, o, c) => ht(t, s(r, a, c), o)
+  ring: frameRibbon,
+  morph: frameMorph
+};
+var MODE_DRAWS = Object.fromEntries(
+  Object.entries(MODE_FRAMES).map(([key, frame]) => [
+    key,
+    ((ctx, size, t, dark, opts) => paintFrame(ctx, frame(size, t, opts), dark))
   ])
-), zt = [
+);
+
+// ../../../../private/tmp/oh-thinking-orbs-review-0907/src/engine/profiles.ts
+var COUNT_PAIRS = [
   ["latRings", "lonDensity"],
   ["rings", "lonDensity"],
   ["lanes", "segs"]
-], Nt = ["orbitN", "ghostN", "nodeN", "strandN", "signals"], It = ["iconD"], kt = [
+];
+var COUNT_KEYS = ["orbitN", "ghostN", "nodeN", "strandN", "signals"];
+var ICON_DENSITY_KEYS = ["iconD"];
+var RADIUS_KEYS = [
   "rBase",
   "rDepth",
   "rActive",
@@ -380,31 +652,40 @@ const V = 1.4, ot = 0.9, Q = V + ot, Pt = (n, s, t) => {
   "nodeR",
   "nodeRDepth"
 ];
-function St(n, s) {
-  const t = { ...n }, r = /* @__PURE__ */ new Set(), a = Math.sqrt(s);
-  for (const [o, c] of zt) {
-    const M = t[o], h = t[c];
-    M != null && h != null && !r.has(o) && !r.has(c) && (t[o] = Math.max(2, Math.round(M * a)), t[c] = Math.max(2, Math.round(h * a)), r.add(o), r.add(c));
+function scaleCounts(opts, scale) {
+  const out = { ...opts };
+  const done = /* @__PURE__ */ new Set();
+  const rt = Math.sqrt(scale);
+  for (const [a, b] of COUNT_PAIRS) {
+    const va = out[a];
+    const vb = out[b];
+    if (va != null && vb != null && !done.has(a) && !done.has(b)) {
+      out[a] = Math.max(2, Math.round(va * rt));
+      out[b] = Math.max(2, Math.round(vb * rt));
+      done.add(a);
+      done.add(b);
+    }
   }
-  for (const o of Nt) {
-    const c = t[o];
-    c != null && c !== 0 && !r.has(o) && (t[o] = Math.max(1, Math.round(c * s)));
+  for (const k of COUNT_KEYS) {
+    const v = out[k];
+    if (v != null && v !== 0 && !done.has(k)) out[k] = Math.max(1, Math.round(v * scale));
   }
-  for (const o of It) {
-    const c = t[o];
-    c != null && (t[o] = Math.max(0.02, c * s));
+  for (const k of ICON_DENSITY_KEYS) {
+    const v = out[k];
+    if (v != null) out[k] = Math.max(0.02, v * scale);
   }
-  return t;
+  return out;
 }
-function Bt(n, s) {
-  const t = { ...n };
-  for (const r of kt) {
-    const a = t[r];
-    a != null && (t[r] = a * s);
+function scaleRadii(opts, scale) {
+  const out = { ...opts };
+  for (const k of RADIUS_KEYS) {
+    const v = out[k];
+    if (v != null) out[k] = v * scale;
   }
-  return t.rSizeMul = (t.rSizeMul ?? 1) * s, t;
+  out.rSizeMul = (out.rSizeMul ?? 1) * scale;
+  return out;
 }
-const Et = {
+var BASE_PROFILES = {
   globe: {
     latRings: 17,
     lonDensity: 44,
@@ -492,7 +773,10 @@ const Et = {
     iconD: 1,
     rMin: 0.25
   }
-}, Ot = {
+};
+
+// ../../../../private/tmp/oh-thinking-orbs-review-0907/src/presets.ts
+var STATE_TO_MODE = {
   working: "orbits",
   searching: "globe",
   solving: "rubik",
@@ -502,7 +786,8 @@ const Et = {
   composing: "ribbon",
   breathing: "ring",
   shaping: "morph"
-}, At = {
+};
+var PRESETS = {
   orbits: {
     64: { speed: 1.885, count: 1, size: 1 },
     20: { speed: 3.9, count: 0.238, size: 2.4 }
@@ -539,25 +824,31 @@ const Et = {
     64: { speed: 2.405, count: 0.702, size: 0.395, extra: { spread: 1.45 } },
     20: { speed: 2.08, count: 0.53, size: 1.011, extra: { spread: 1.45 } }
   }
-}, tt = /* @__PURE__ */ new Map();
-function Lt(n, s) {
-  const t = `${n}-${s}`, r = tt.get(t);
-  if (r) return r;
-  const a = Ot[n], o = At[a][s];
-  let c = { ...Et[a] };
-  o.count !== 1 && (c = St(c, o.count)), o.size !== 1 && (c = Bt(c, o.size)), o.extra && (c = { ...c, ...o.extra });
-  const M = { mode: a, speed: o.speed, opts: c };
-  return tt.set(t, M), M;
+};
+var cache = /* @__PURE__ */ new Map();
+function resolvePreset(state, size) {
+  const key = `${state}-${size}`;
+  const hit = cache.get(key);
+  if (hit) return hit;
+  const mode = STATE_TO_MODE[state];
+  const preset = PRESETS[mode][size];
+  let opts = { ...BASE_PROFILES[mode] };
+  if (preset.count !== 1) opts = scaleCounts(opts, preset.count);
+  if (preset.size !== 1) opts = scaleRadii(opts, preset.size);
+  if (preset.extra) opts = { ...opts, ...preset.extra };
+  const resolved = { mode, speed: preset.speed, opts };
+  cache.set(key, resolved);
+  return resolved;
 }
 export {
-  Ct as MODE_DRAWS,
-  vt as MODE_FRAMES,
-  Ot as STATE_TO_MODE,
-  L as finalizeFrame,
-  _ as makeProj,
-  rt as paint,
-  ht as paintFrame,
-  it as paintLines,
-  $ as radiusScale,
-  Lt as resolvePreset
+  MODE_DRAWS,
+  MODE_FRAMES,
+  STATE_TO_MODE,
+  finalizeFrame,
+  makeProj,
+  paint,
+  paintFrame,
+  paintLines,
+  radiusScale,
+  resolvePreset
 };
