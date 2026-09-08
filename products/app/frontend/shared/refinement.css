@@ -51,17 +51,6 @@ html { font-size: 14px; }
   overflow: visible;
 }
 
-.workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-collapse-toggle {
-  top: 10px;
-  height: 54px;
-}
-
-/* The native macOS shell supplies this action in the title bar, aligned with
-   the traffic lights. Keep the in-page edge control for browser use only. */
-html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-collapse-toggle {
-  display: none;
-}
-
 /* In the macOS App, the native title-bar button remains the sole recovery
    control. A collapsed rail therefore releases all workspace width. */
 @media (min-width: 701px) {
@@ -277,6 +266,29 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
   opacity: .48;
 }
 
+.workspace-shell.workspace-shell--desk[data-workspace-shell] .send-control {
+  box-shadow: none;
+  transition: background-color .18s ease, color .18s ease, opacity .18s ease, transform .24s cubic-bezier(.16, 1, .3, 1);
+}
+
+.workspace-shell.workspace-shell--desk[data-workspace-shell] .send-control:hover {
+  transform: none;
+}
+
+.workspace-shell.workspace-shell--desk[data-workspace-shell] .send-control:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+.workspace-shell.workspace-shell--desk[data-workspace-shell] .send-control:active:not(:disabled) {
+  opacity: .9;
+  transform: scale(.92);
+}
+
+.composer:has(#workspace-status.notice--error:not([hidden])) form:not(.is-generating) {
+  border-color: var(--danger);
+}
+
 @media (min-width: 701px) {
   .workspace-shell.workspace-shell--desk[data-workspace-shell][data-rail-collapsed="true"] .rail-new-task {
     justify-content: center;
@@ -365,20 +377,6 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
   font-size: 12px;
 }
 
-.conversation__header {
-  padding: 18px 28px 14px;
-}
-
-.conversation__header h2,
-.conversation__header--shared h2 {
-  font-size: 18px;
-}
-
-.conversation__header p {
-  margin-top: 4px;
-  font-size: var(--oh-copy-small);
-}
-
 .conversation-start {
   width: min(820px, calc(100% - 48px));
   padding-top: 24px;
@@ -456,12 +454,6 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
   font-size: 12px;
 }
 
-.desk-status-strip {
-  min-height: 36px;
-  padding: 0 22px;
-  font-size: 11px;
-}
-
 .assistant-panel {
   width: min(380px, 36vw);
   height: min(520px, calc(100dvh - 132px));
@@ -510,36 +502,12 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
   border-radius: 16px;
   box-shadow: 0 18px 46px rgba(48, 35, 38, .07);
 }
-.setup-page .setup-intro {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 24px;
-  padding: 20px 26px 18px;
-  border-bottom: 1px solid #ece7e6;
-}
+
 .setup-page .setup-card h1 {
   font-size: 22px;
   letter-spacing: -.025em;
 }
-.setup-page .setup-intro > div > p {
-  max-width: 680px;
-  margin-top: 4px;
-  color: #746b6d;
-  font-size: 12px;
-  line-height: 1.55;
-}
-.setup-page .setup-security {
-  margin: 0;
-  padding: 6px 10px;
-  border: 1px solid #ead9b5;
-  border-radius: 999px;
-  background: #fffbf1;
-  color: #806631;
-  font-size: 10.5px;
-  font-weight: 650;
-  white-space: nowrap;
-}
+
 .setup-page .setup-layout {
   display: grid;
   grid-template-columns: 188px minmax(0, 1fr);
@@ -686,49 +654,6 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
   background: var(--color-paper);
 }
 
-.setup-page .settings-account {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  margin-top: auto;
-  padding: 14px 8px 2px;
-  border-top: 1px solid #ece7e6;
-}
-.setup-page .settings-account__avatar {
-  display: grid;
-  width: 30px;
-  height: 30px;
-  flex: none;
-  place-items: center;
-  border-radius: 50%;
-  background: #f4dfe3;
-  color: var(--red-deep);
-  font-size: 12px;
-  font-weight: 760;
-}
-.setup-page .settings-account__copy {
-  display: grid;
-  min-width: 0;
-  gap: 1px;
-}
-.setup-page .settings-account__copy strong {
-  overflow: hidden;
-  color: #332d2e;
-  font-size: 12px;
-  font-weight: 650;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.setup-page .settings-account__copy small {
-  color: #8a8082;
-  font-size: 10.5px;
-}
-
-.setup-page .settings-rows {
-  display: grid;
-  max-width: 680px;
-  border-top: 1px solid #ece7e6;
-}
 .setup-page .settings-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(180px, 260px);
@@ -811,12 +736,7 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
 @media (max-width: 700px) {
   .setup-page .setup { padding: 14px 12px 28px; }
   .setup-page .setup-card { min-height: auto; }
-  .setup-page .setup-intro {
-    grid-template-columns: 1fr;
-    gap: 10px;
-    padding: 18px 20px;
-  }
-  .setup-page .setup-security { justify-self: start; }
+
   .setup-page .setup-layout { grid-template-columns: 1fr; }
   .setup-page .configured-models {
     padding: 12px 14px;
@@ -827,7 +747,7 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 4px;
   }
-  .setup-page .settings-account { margin-top: 10px; }
+
   .setup-page .connection-editor { padding: 22px 20px 28px; }
   .setup-page .settings-row {
     grid-template-columns: 1fr;
@@ -835,9 +755,6 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
     gap: 10px;
   }
 }
-
-.activation-card { padding: 32px 34px; }
-.activation-card h1 { font-size: 25px; }
 
 @media (min-width: 701px) {
   .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="desk"] .work-area {
@@ -934,11 +851,6 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
     border: 0;
   }
 
-  .workspace-shell.workspace-shell--desk[data-workspace-shell] .connection-link--rail {
-    min-height: 32px;
-    padding: 0 9px;
-  }
-
   .conversation-start,
   .composer { width: calc(100% - 28px); }
   .conversation-starters { grid-template-columns: 1fr; }
@@ -1033,12 +945,6 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
   color: #fff;
 }
 
-.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .connection-link--rail {
-  border-color: transparent;
-  background: transparent;
-  color: rgba(255, 232, 236, .70);
-}
-
 /* The selectors above include the body class so they consistently outrank
    legacy desk-only declarations without introducing mode-specific geometry. */
 
@@ -1120,14 +1026,6 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
   background: rgba(255, 255, 255, .15);
 }
 
-.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .rail-collapse-toggle {
-  color: rgba(255, 239, 242, .68);
-}
-
-.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .rail-collapse-toggle:hover {
-  color: rgba(255, 255, 255, .92);
-}
-
 .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="desk"] .workspace-rail {
   border-right-color: #E0E0E0;
   background: #F7F7F7;
@@ -1156,13 +1054,6 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
   background: #fff;
   color: var(--red-deep);
 }
-.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="desk"] .connection-link--rail {
-  border-color: transparent;
-  background: transparent;
-  color: #747474;
-}
-.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="desk"] .rail-collapse-toggle { color: rgba(121, 132, 125, .58); }
-.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="desk"] .rail-collapse-toggle:hover { color: rgba(121, 132, 125, .9); }
 
 /* Mode-specific rail rules may recolor the workspace, never the expanded
    transparent horizontal logo container. */
@@ -1349,20 +1240,25 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
 
 .composer-attach-control {
   display: inline-flex;
-  flex: 0 0 auto;
+  flex: 0 0 34px;
   align-items: center;
-  gap: 4px;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  min-height: 34px;
   padding: 0;
   border: 0;
-  color: var(--muted);
-  background: transparent;
-  font-size: 11px;
-  font-weight: 600;
+  border-radius: 50%;
+  color: var(--ink);
+  background: color-mix(in srgb, var(--ink) 5%, var(--surface));
   cursor: default;
+  transition: background-color .18s ease, color .18s ease, opacity .18s ease, transform .24s cubic-bezier(.16, 1, .3, 1);
 }
 
-.composer-attach-control:hover { color: var(--accent); }
-.composer-attach-control:focus-visible { color: var(--accent); outline: 2px solid color-mix(in srgb, var(--accent) 35%, transparent); outline-offset: 3px; }
+.composer-attach-control > svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; }
+.composer-attach-control:hover:not(:disabled) { background: color-mix(in srgb, var(--ink) 10%, var(--surface)); }
+.composer-attach-control:disabled { opacity: .48; cursor: default; }
+.composer-attach-control:focus-visible { color: var(--accent); outline: 2px solid var(--accent); outline-offset: 3px; }
 .composer-attachment-input { position: absolute; width: 1px; height: 1px; overflow: hidden; opacity: 0; pointer-events: none; }
 .composer-drop-hint { overflow: hidden; color: var(--muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .composer[data-dragging="true"] form { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 13%, transparent); }
@@ -1395,7 +1291,6 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
 .message-attachment__label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .message-attachment--pending { opacity: .7; }
 
-.message-artifact,
 .message-question {
   width: min(100%, 620px);
   margin-top: 14px;
@@ -1405,38 +1300,63 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
   background: color-mix(in srgb, var(--surface) 95%, var(--accent) 5%);
 }
 
-.message-artifact__heading,
-.message-artifact__actions {
-  display: flex;
+.message-artifact {
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr) auto;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+  gap: 14px;
+  width: min(100%, 620px);
+  margin-top: 14px;
+  padding: 16px;
+  border: 1px solid var(--line-strong);
+  border-radius: 14px;
+  background: var(--surface);
 }
-
+.message-artifact__mark {
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+}
+.message-artifact__mark svg { width: 28px; height: 28px; }
+@media (max-width: 540px) {
+  .message-artifact { grid-template-columns: 28px minmax(0, 1fr); gap: 10px; }
+  .message-artifact__actions { grid-column: 2; justify-self: start; }
+}
+.message-artifact__heading {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+.message-artifact__heading strong {
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
 .message-artifact__heading span {
   color: var(--muted);
   font-size: 11px;
-  font-weight: 700;
+  font-weight: 500;
 }
-
-.message-artifact p {
-  margin: 6px 0 12px;
-  color: var(--muted);
-  font-size: 12px;
-}
-
-.message-artifact__actions { justify-content: flex-start; }
-
+.message-artifact__actions { display: flex; align-items: center; gap: 4px; }
 .message-artifact__actions a {
-  padding: 7px 12px;
-  border-radius: 999px;
-  color: var(--ink);
-  background: var(--surface);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border-radius: 8px;
+  color: var(--muted);
+  background: transparent;
   text-decoration: none;
-  font-size: 12px;
-  font-weight: 700;
+  transition: background-color 140ms ease, color 140ms ease;
 }
+.message-artifact__actions a:hover { color: var(--ink); background: var(--surface-alt, var(--line)); }
+.message-artifact__actions a:focus-visible { outline: 2px solid var(--red); outline-offset: 2px; }
+.message-artifact__actions svg { width: 18px; height: 18px; }
 
+.message-question__prompt { margin: 0 0 12px; color: var(--ink); line-height: 1.6; white-space: pre-wrap; }
 .message-question__choices { display: grid; gap: 8px; }
 
 .message-question__choice {
@@ -1528,76 +1448,38 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
 }
 
 .assistant-reasoning > summary {
-  display: grid;
-  grid-template-columns: 14px auto 14px minmax(0, 1fr);
-  min-height: 28px;
-  align-items: start;
+  display: flex;
+  width: fit-content;
+  min-height: 32px;
+  align-items: center;
   gap: 7px;
-  min-width: 0;
   padding: 2px 0;
-  cursor: default;
+  cursor: pointer;
   list-style: none;
-  color: inherit;
+  color: var(--muted);
   font-size: 12.5px;
   line-height: 1.5;
   user-select: none;
 }
-
 .assistant-reasoning > summary::-webkit-details-marker { display: none; }
-
-.assistant-reasoning__icon {
-  position: relative;
-  width: 14px;
-  height: 14px;
-  flex: 0 0 14px;
-  border: 1px solid color-mix(in srgb, var(--muted) 72%, transparent);
-  border-radius: 50%;
+.assistant-reasoning > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 4px; }
+.assistant-reasoning__title { font-weight: 500; }
+.assistant-reasoning__chevron {
+  width: 5px;
+  height: 5px;
+  margin-inline: 3px;
+  border-right: 1px solid currentColor;
+  border-bottom: 1px solid currentColor;
+  transform: rotate(-45deg);
+  transition: transform .2s cubic-bezier(.16, 1, .3, 1);
 }
-
-.assistant-reasoning__icon::before,
-.assistant-reasoning__icon::after {
-  position: absolute;
-  inset: 3px;
-  border: 1px solid color-mix(in srgb, var(--muted) 65%, transparent);
-  border-radius: 50%;
-  content: "";
-}
-
-.assistant-reasoning__icon::after {
-  inset: 5px;
-  background: currentColor;
-  border: 0;
-}
-
-.assistant-reasoning__title {
-  flex: 0 0 auto;
-  color: color-mix(in srgb, var(--text) 72%, var(--muted));
-  font-weight: 620;
-}
-
-.assistant-reasoning__separator {
-  width: 14px;
-  height: 1px;
-  flex: 0 0 14px;
-  background: color-mix(in srgb, var(--line) 88%, transparent);
-}
-
-.assistant-reasoning__preview {
-  min-width: 0;
-  max-width: 72ch;
-  overflow-wrap: anywhere;
-  white-space: pre-wrap;
-}
-
-.assistant-reasoning[data-running="true"] .assistant-reasoning__preview {
-  color: color-mix(in srgb, var(--muted) 72%, var(--red));
-}
-
-.assistant-reasoning[open] .assistant-reasoning__preview { display: none; }
+.assistant-reasoning[open] .assistant-reasoning__chevron { transform: rotate(45deg); }
 
 .assistant-reasoning__body {
   max-width: 72ch;
-  padding: 6px 0 5px 21px;
+  padding: 8px 0 10px 35px;
+  max-height: 260px;
+  overflow-y: auto;
   color: color-mix(in srgb, var(--text) 62%, var(--muted));
   font-size: 12.5px;
   line-height: 1.7;
@@ -1623,27 +1505,51 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
   overflow: auto;
 }
 
+.message--process { width: min(100%, 460px); }
 .message--process details {
-  border: 1px solid color-mix(in srgb, var(--line) 82%, var(--accent) 18%);
-  border-radius: 12px;
-  background: color-mix(in srgb, var(--surface) 94%, var(--accent) 6%);
-  padding: 10px 12px;
+  width: 100%;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  background: transparent;
+  padding: 0;
 }
-
 .message--process summary {
-  cursor: default;
-  color: var(--text);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
   font-size: 13px;
-  font-weight: 650;
+  font-weight: 500;
   line-height: 20px;
+  list-style: none;
+  cursor: pointer;
 }
+.message--process summary::-webkit-details-marker { display: none; }
+.message--process summary:focus-visible { outline: 2px solid var(--red); outline-offset: 4px; }
+.message--process[data-outcome="failed"] summary { color: var(--danger); }
+.message--process[data-has-details="true"] summary::after {
+  content: ""; width: 5px; height: 5px; margin-left: 4px;
+  border-right: 1px solid currentColor; border-bottom: 1px solid currentColor;
+  transform: rotate(-45deg); transition: transform .16s ease;
+}
+.message--process[data-has-details="true"] details[open] > summary::after { transform: rotate(45deg); }
+.process-detail-icon { display: inline-flex; }
+.process-detail-icon svg { width: 16px; height: 16px; }
+.process-detail-icon[hidden] { display: none; }
+.process-tool-section { margin-top: 10px; }
+.process-events:empty, .process-actions:has(button[hidden]) { display: none; }
+.process-token-usage { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--line); color: var(--muted); font-size: 11px; line-height: 1.5; }
+.process-token-values { display: flex; flex-wrap: wrap; gap: 8px 20px; cursor: help; font-variant-numeric: tabular-nums; }
+.process-token-values > span { display: inline-flex; align-items: baseline; gap: 6px; }
+.process-token-values b { color: var(--ink); font-size: inherit; font-weight: 500; }
+.thinking-orbs { display: block; flex-shrink: 0; }
 
-.message--process summary .thinking-orbs {
-  display: inline-block;
-  width: 20px;
-  height: 20px;
-  margin: 0 7px 0 2px;
-  vertical-align: -5px;
+.thinking-orbs[data-render-mode="static"] {
+  box-sizing: border-box;
+  border: 2px solid var(--muted);
+  border-top-color: var(--accent);
+  border-radius: 50%;
 }
 
 .process-state {
@@ -1666,25 +1572,20 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
 .process-events li[data-status="failed"],
 .process-events li[data-status="cancelled"] { color: var(--danger); }
 
-.message--process[data-terminal="true"] details { background: var(--surface); }
-.message--process[data-terminal="true"] .thinking-orbs { opacity: .68; }
-
-/* A successful send resolves to a drawn check for one short beat, then returns
-   to the normal arrow. It never persists as a separate application state. */
-.send-success { display: none; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
-.send-control.is-sent .send-arrow { display: none; }
-.send-control.is-sent .send-success {
-  display: block;
-  stroke-dasharray: 18;
-  stroke-dashoffset: 18;
-  animation: composer-success-check .42s cubic-bezier(.22, 1, .36, 1) both;
+.message--process[data-terminal="true"] .thinking-orbs,
+.message--process[data-terminal="true"] .process-state { display: none; }
+.process-failure {
+  margin: 0 0 8px;
+  color: var(--danger);
+  font-size: 13px;
+  line-height: 1.6;
 }
 
-@keyframes composer-success-check {
-  0% { opacity: 0; stroke-dashoffset: 18; transform: scale(.78) rotate(-18deg); }
-  64% { opacity: 1; stroke-dashoffset: 0; transform: scale(1.04) rotate(0); }
-  100% { opacity: 1; stroke-dashoffset: 0; transform: scale(1); }
-}
+/* All glyphs stay mounted. Interrupted transitions continue from their current
+   opacity and transform; no forced layout or display:none swap on sending. */
+.send-success { fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
+.send-control.is-sent:not(.is-generating) .send-arrow { opacity: 0; transform: translateY(-5px) scale(.7); }
+.send-control.is-sent:not(.is-generating) .send-success { opacity: 1; transform: scale(1); }
 
 /* Existing assistant-panel geometry is retained; the open state gets only the
    short panel-reveal cross-blur needed to avoid a hard pop. */
@@ -1701,6 +1602,12 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .composer-attach-control,
+  .workspace-shell.workspace-shell--desk[data-workspace-shell] .send-control,
+  .workspace-shell.workspace-shell--desk[data-workspace-shell] .send-control .stop-square {
+    transition: none !important;
+    animation: none !important;
+  }
   .workspace-shell.workspace-shell--desk[data-workspace-shell] .desk-module-tabs__indicator,
   .workspace-shell.workspace-shell--desk[data-workspace-shell] .composer form.is-generating,
   .workspace-shell.workspace-shell--desk[data-workspace-shell] .send-control.is-sent .send-success {
@@ -1708,7 +1615,7 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
     transition: none !important;
   }
 
-  .assistant-reasoning[data-running="true"] .assistant-reasoning__preview { color: var(--muted); }
+  .assistant-reasoning__chevron, .send-control, .send-control svg > * { transition: none !important; animation: none !important; }
 
   .workspace-shell.workspace-shell--desk[data-workspace-shell] .composer form.is-generating { background-image: none; }
 }
@@ -1944,34 +1851,8 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
   border-top: 1px solid rgba(255, 255, 255, .19);
 }
 
-.workspace-shell.workspace-shell--desk[data-workspace-shell] .connection-link--rail,
-.workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .connection-link--rail,
-.workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="desk"] .connection-link--rail {
-  width: 100%;
-  min-height: 34px;
-  padding: 0 8px;
-  border: 0;
-  background: transparent;
-  color: rgba(255, 232, 236, .76);
-  font-size: 12px;
-}
-
-.workspace-shell.workspace-shell--desk[data-workspace-shell] .connection-link--rail:hover {
-  background: rgba(255, 255, 255, .10);
-  color: #fff;
-}
-
 .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="desk"] .rail-footer {
   border-top-color: #E4E4E4;
-}
-
-.workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="desk"] .connection-link--rail {
-  color: #817974;
-}
-
-.workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="desk"] .connection-link--rail:hover {
-  background: #EBEBEB;
-  color: var(--red-deep);
 }
 
 /* Account actions stay tucked into the rail rather than becoming a second
@@ -2117,9 +1998,6 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
 
 .workspace-shell.workspace-shell--desk[data-workspace-shell] .work-area { grid-template-rows: 56px minmax(0, 1fr) var(--assistant-height); }
 .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .work-area { grid-template-rows: 56px minmax(0, 1fr); }
-.workspace-shell.workspace-shell--desk[data-workspace-shell] .conversation__header { padding: 14px 22px 10px; }
-.workspace-shell.workspace-shell--desk[data-workspace-shell] .conversation__header h2 { font-size: 16px; }
-.workspace-shell.workspace-shell--desk[data-workspace-shell] .conversation__header p { font-size: 12px; }
 
 .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .assistant-region { padding: 12px 20px 18px; }
 .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .composer,
@@ -2166,62 +2044,6 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
       transform var(--oh-panel-close-duration) var(--oh-panel-ease),
       filter var(--oh-panel-close-duration) var(--oh-panel-ease),
       visibility 0s linear var(--oh-panel-close-duration);
-  }
-}
-
-/* A compact edge control leaves the splitter easy to grab without looking like
-   a second tile. Its geometry is identical in Chat and Desk. */
-.workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-collapse-toggle {
-  top: 14px;
-  right: -15px;
-  width: 30px;
-  height: 34px;
-  border: 1px solid rgba(255, 239, 242, .32);
-  border-radius: 10px;
-  background: rgba(106, 8, 29, .30);
-  color: rgba(255, 244, 246, .88);
-  box-shadow: 0 3px 10px rgba(93, 8, 25, .12);
-  opacity: 1;
-  transition: background-color .18s ease, border-color .18s ease, color .18s ease, box-shadow .18s ease, transform .18s ease;
-}
-
-.workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-collapse-toggle:hover {
-  border-color: rgba(255, 255, 255, .52);
-  background: rgba(106, 8, 29, .52);
-  color: #fff;
-  box-shadow: 0 5px 13px rgba(93, 8, 25, .18);
-  transform: translateX(1px);
-}
-
-.workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-collapse-toggle:focus-visible {
-  outline: 3px solid rgba(200, 16, 46, .22);
-  outline-offset: 2px;
-}
-
-.workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-collapse-toggle svg {
-  width: 16px;
-  height: 16px;
-  stroke-width: 1.7;
-}
-
-.workspace-shell.workspace-shell--desk[data-mode="desk"] .rail-collapse-toggle {
-  border-color: #D9D9D9;
-  background: rgba(255, 255, 255, .92);
-  color: #757575;
-  box-shadow: 0 3px 10px rgba(59, 59, 59, .08);
-}
-
-.workspace-shell.workspace-shell--desk[data-mode="desk"] .rail-collapse-toggle:hover {
-  border-color: #C9C9C9;
-  background: #fff;
-  color: var(--red-deep);
-  box-shadow: 0 5px 13px rgba(59, 59, 59, .12);
-}
-
-@media (min-width: 701px) {
-  .workspace-shell.workspace-shell--desk[data-workspace-shell][data-rail-collapsed="true"] .rail-collapse-toggle {
-    top: 14px;
-    height: 34px;
   }
 }
 
@@ -2316,36 +2138,6 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
   background: #F8F8F8;
 }
 
-.workspace-shell.workspace-shell--desk[data-workspace-shell] .desk-status-strip {
-  min-height: 38px;
-  padding: 0 27px;
-  gap: 10px;
-  border-bottom: 1px solid var(--line);
-  background: var(--surface);
-  color: #777777;
-  font-size: 12px;
-}
-
-.workspace-shell.workspace-shell--desk[data-workspace-shell] .desk-status-strip__label {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  color: #525252;
-  font-weight: 650;
-}
-
-.workspace-shell.workspace-shell--desk[data-workspace-shell] .desk-status-strip__label::before {
-  width: 5px;
-  height: 5px;
-  border-radius: 999px;
-  background: var(--red);
-  content: "";
-}
-
-.workspace-shell.workspace-shell--desk[data-workspace-shell] .desk-status-strip__value {
-  color: #777777;
-}
-
 /* The report library is a compact utility, not a competing headline action. */
 .workspace-shell.workspace-shell--desk[data-workspace-shell] .report-drawer-toggle {
   display: inline-grid;
@@ -2389,19 +2181,6 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
   color: var(--ink);
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-mode-area,
-  .workspace-shell.workspace-shell--desk[data-workspace-shell] .task-rail,
-  .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-footer,
-  .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-collapse-toggle,
-  .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-collapse-arrow,
-  .composer-send-echo,
-  .workspace-shell.workspace-shell--desk[data-workspace-shell] .desk-module-tabs__indicator {
-    animation: none !important;
-    filter: none !important;
-    transition: none !important;
-  }
-}
 /* Unified workspace surface. Chat and Desk share one quiet navigation rail;
    the OptionHelper red is reserved for active state and primary action. */
 .workspace-shell.workspace-shell--desk[data-workspace-shell] {
@@ -2534,81 +2313,6 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
 .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-account-trigger__mark { border-color: #C6C6C6; }
 .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-account-trigger:hover,
 .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-account-trigger[aria-expanded="true"] { background: #ECECEC; color: var(--red-deep); }
-
-.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-collapse-toggle,
-.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .rail-collapse-toggle,
-.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="desk"] .rail-collapse-toggle {
-  top: 0;
-  right: -14px;
-  width: 28px;
-  height: 72px;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  color: #817a75;
-  box-shadow: none;
-  opacity: .26;
-  transform: none;
-}
-
-.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .workspace-rail:hover .rail-collapse-toggle,
-.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-rail-collapsed="true"] .rail-collapse-toggle,
-.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-collapse-toggle:focus-visible {
-  opacity: 1;
-  transform: none;
-}
-
-.workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-collapse-toggle:hover {
-  border-color: transparent;
-  background: transparent;
-  color: var(--red-deep);
-  box-shadow: none;
-  transform: none;
-}
-
-.workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-collapse-toggle svg {
-  width: 14px;
-  height: 14px;
-  overflow: visible;
-}
-
-.workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-collapse-arrow {
-  transform-box: fill-box;
-  transform-origin: center;
-  transition: transform .24s cubic-bezier(.2, .8, .2, 1);
-}
-
-.workspace-shell.workspace-shell--desk[data-workspace-shell][data-rail-collapsed="true"] .rail-collapse-arrow {
-  transform: rotate(180deg);
-}
-
-.workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-toggle-bar {
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 2.15;
-  stroke-linecap: round;
-  transform-box: fill-box;
-  transform-origin: center;
-  transition: transform .3s cubic-bezier(.2, .8, .2, 1);
-}
-
-.workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-collapse-toggle:hover .rail-toggle-bar--top,
-.workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-collapse-toggle:focus-visible .rail-toggle-bar--top {
-  transform: rotate(15deg) translateY(.7px);
-}
-
-.workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-collapse-toggle:hover .rail-toggle-bar--bottom,
-.workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-collapse-toggle:focus-visible .rail-toggle-bar--bottom {
-  transform: rotate(-15deg) translateY(-.7px);
-}
-
-.workspace-shell.workspace-shell--desk[data-workspace-shell][data-rail-collapsed="true"] .rail-toggle-bar--top {
-  transform: rotate(-15deg) translateY(.7px);
-}
-
-.workspace-shell.workspace-shell--desk[data-workspace-shell][data-rail-collapsed="true"] .rail-toggle-bar--bottom {
-  transform: rotate(15deg) translateY(-.7px);
-}
 
 .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .workbench-head,
 .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="desk"] .workbench-head {
@@ -2807,11 +2511,11 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
   right: 2px;
   z-index: 3;
   display: grid;
-  width: 36px;
-  height: 36px;
+  width: 28px;
+  height: 28px;
   padding: 0;
   border: 0;
-  border-radius: 9px;
+  border-radius: 50%;
   background: transparent;
   color: color-mix(in srgb, var(--ink) 72%, var(--muted));
   place-items: center;
@@ -2969,7 +2673,7 @@ body > .task-menu .task-menu__action--danger:focus-visible { background: var(--r
 .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .task-list__row .task-item {
   grid-template-columns: minmax(0, 1fr) max-content;
   column-gap: 10px;
-  padding-right: 31px;
+  padding-right: 38px;
 }
 
 .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .task-list__row .task-item small {
@@ -2986,7 +2690,8 @@ body > .task-menu .task-menu__action--danger:focus-visible { background: var(--r
    when data-mode changed. */
 @media (min-width: 701px) {
   .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="desk"] .work-area {
-    grid-template-rows: 54px minmax(0, 1fr) var(--assistant-height);
+    /* The floating assistant does not occupy a layout row. */
+    grid-template-rows: 54px minmax(0, 1fr);
   }
 
   .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="desk"] .workbench-head {
@@ -3212,7 +2917,6 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
 /* Codex-style rail icon family: one quiet outline weight for every utility
    action, with the vertical ellipsis retained as the single filled glyph. */
 .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-new-task__icon,
-.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-collapse-toggle svg,
 .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .task-item__chat svg,
 .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-account-menu__item > svg {
   fill: none;
@@ -3223,7 +2927,6 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
 }
 
 .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-new-task__icon,
-.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-collapse-toggle svg,
 .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-account-menu__item > svg {
   width: 18px;
   height: 18px;
@@ -3269,7 +2972,9 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
   width: 22px;
   height: 22px;
   flex-basis: 22px;
-  background: transparent;
+  border-radius: 50%;
+  background: #62666D;
+  color: #FFFFFF;
   font-size: 9px;
 }
 
@@ -3302,3 +3007,65 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
     min-height: 44px;
   }
 }
+
+/* Streaming visibility must win over component display declarations. */
+.message--process[hidden], .message--streaming[hidden],
+.assistant-reasoning[hidden], .thinking-orbs[hidden] { display: none !important; }
+
+.workspace-shell.workspace-shell--desk[data-mode="desk"] .assistant-panel__transcript .message-stream {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding: 18px;
+  align-items: stretch;
+}
+.workspace-shell.workspace-shell--desk[data-mode="desk"] .assistant-panel__transcript .message {
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 0;
+  min-height: auto;
+}
+.workspace-shell.workspace-shell--desk[data-mode="desk"] .assistant-panel__transcript .message--user .message__body {
+  padding: 8px 12px;
+  border-radius: 14px;
+  max-width: 90%;
+}
+.workspace-shell.workspace-shell--desk[data-mode="desk"] .assistant-panel > .desk-command-dock__body {
+  background: var(--surface);
+  border-top: 0;
+}
+.workspace-shell.workspace-shell--desk[data-mode="desk"] .assistant-panel .model-picker {
+  flex: 0 1 auto;
+  max-width: calc(100% - 44px);
+}
+.workspace-shell.workspace-shell--desk[data-mode="desk"] .assistant-panel .composer-actions__trailing {
+  justify-content: flex-end;
+}
+
+/* Tool lifecycle events update one compact, inspectable row per call. */
+.process-tool-cards { display: grid; gap: 2px; }
+.process-tool-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 28px;
+  align-items: center;
+  gap: 2px 16px;
+  padding: 2px 0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.process-tool-card [data-process-card-title] { font-weight: 400; }
+.process-tool-card [data-process-card-status] {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px; padding: 0; border: 0; border-radius: 6px;
+  color: var(--muted); background: transparent; opacity: 1;
+}
+.process-tool-card [data-process-card-status] svg { width: 16px; height: 16px; }
+.process-tool-card [data-state="complete"] { color: var(--success); }
+.process-tool-card [data-state="failed"] { color: var(--red); cursor: pointer; }
+.process-tool-card [data-state="failed"]:hover { background: var(--red-pale); }
+.process-tool-card [data-process-card-status]:focus-visible { outline: 2px solid var(--red); outline-offset: 2px; }
+.process-tool-card [data-state="running"] svg { animation: process-status-spin 1.2s linear infinite; }
+.process-tool-card [data-process-card-detail] { grid-column: 1 / -1; margin: 2px 0 6px; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
+.process-tool-card [hidden] { display: none; }
+@keyframes process-status-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .process-tool-card [data-state="running"] svg { animation: none; } }
