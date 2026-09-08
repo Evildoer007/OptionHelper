@@ -312,8 +312,10 @@ def render_multicard_html(
                 blocks.append(f'<section><h3>{esc(label)}</h3>{content}</section>')
         cards.append(f'<article class="comparison-product-card"><header><p>{esc(item["underlyings"])}</p><h2>{esc(item["title"])}</h2></header>' + "".join(blocks) + item["supplement"] + "</article>")
     body = '<section class="comparison-product-cards">' + "".join(cards) + "</section>"
-    for values in appended_content.values():
-        body += render_presentation_content(values)
+    for section_id, section_title, _block in section_definition:
+        content = render_presentation_content(appended_content.get(section_id, ()))
+        if content:
+            body += f'<section class="card-appended"><h2>{esc(section_title)}</h2>{content}</section>'
     return (
         template.replace("__TITLE__", esc(title))
         .replace("__REPORT_THEME__", config.read_report_theme())
