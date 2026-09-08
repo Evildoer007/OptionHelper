@@ -17,7 +17,7 @@ if str(ROOT / "core" / "src") not in sys.path:
 if str(ROOT / "packaging") not in sys.path:
     sys.path.insert(0, str(ROOT / "packaging"))
 
-from runtime.knowledger.versioning import SNAPSHOT_FILES, validate_published_catalog, verify_candidate
+from knowledge_snapshot import SNAPSHOT_FILES, validate_published_catalog, verify_candidate
 from release_contract import require_published_at, require_release_version
 
 
@@ -42,11 +42,11 @@ def sign_catalog(
     require_published_at(published_at)
     verify_candidate(root, candidate)
     snapshot = json.loads((candidate / "snapshot.json").read_text(encoding="utf-8"))
-    if snapshot.get("proposed_catalog_version") != version or snapshot.get("integrity_evidence", {}).get("default_asset_registry_drift"):
+    if snapshot.get("release_version") != version or snapshot.get("integrity_evidence", {}).get("default_asset_registry_drift"):
         raise ValueError("技术候选版本或默认资产冻结哈希未通过，拒绝签发")
     archive_root = versions_root.resolve() if versions_root else root / "versions"
     release_root = archive_root / version
-    catalog_target = release_root / "knowledger" / "catalog-version.json"
+    catalog_target = release_root / "knowledger" / "source-manifest.json"
     if release_root.exists():
         raise FileExistsError(f"正式版本{version}已存在，禁止覆盖")
     archive_root.mkdir(parents=True, exist_ok=True)
@@ -54,7 +54,7 @@ def sign_catalog(
         staged = Path(temporary) / version
         refs: dict[str, str] = {}
         hashes: dict[str, str] = {}
-        for product_id in snapshot["proposed_product_versions"]:
+        for product_id in snapshot["product_revisions"]:
             source = candidate / "products" / product_id
             target = staged / "knowledger" / "products" / product_id
             target.mkdir(parents=True)
@@ -62,23 +62,23 @@ def sign_catalog(
             for filename in SNAPSHOT_FILES.values():
                 shutil.copy2(source / filename, target / filename)
             manifest = {
-                "manifest_type": "ProductVersion", "publication_status": "published", "formal_release": True,
-                "executable": True, "product_id": product_id, "product_version": version,
+                "manifest_type": "ProductSourceManifest", "publication_status": "published", "formal_release": True,
+                "executable": True, "product_id": product_id, "rule_revision": snapshot["product_revisions"][product_id],
                 "published_by": PUBLISHER, "published_at": published_at, "snapshot_files": SNAPSHOT_FILES,
                 "snapshot_sha256": technical["snapshot_sha256"],
             }
-            path = target / "product-version.json"
+            path = target / "product-manifest.json"
             path.write_text(json.dumps(manifest, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8", newline="")
-            refs[product_id] = f"knowledger/products/{product_id}/product-version.json"
+            refs[product_id] = f"knowledger/products/{product_id}/product-manifest.json"
             hashes[product_id] = _digest(path)
         catalog = {
-            "manifest_type": "CatalogVersion", "publication_status": "published", "formal_release": True,
-            "executable": True, "catalog_version": version, "published_by": PUBLISHER, "published_at": published_at,
-            "products": snapshot["proposed_product_versions"], "ordered_product_version_map": snapshot["proposed_product_versions"],
+            "manifest_type": "KnowledgeSourceManifest", "publication_status": "published", "formal_release": True,
+            "executable": True, "release_version": version, "published_by": PUBLISHER, "published_at": published_at,
+            "products": snapshot["product_revisions"],
             "product_manifest_refs": refs, "product_manifest_sha256": hashes,
             "source_file_sha256": snapshot["source_file_sha256"],
         }
-        catalog_path = staged / "knowledger" / "catalog-version.json"
+        catalog_path = staged / "knowledger" / "source-manifest.json"
         catalog_path.parent.mkdir(parents=True, exist_ok=True)
         catalog_path.write_text(json.dumps(catalog, ensure_ascii=False) + "\n", encoding="utf-8", newline="")
         validate_published_catalog(root, version, versions_root=Path(temporary), require_source_match=True)
