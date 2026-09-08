@@ -83,6 +83,16 @@ html:not([data-optionhelper-app-hosted="true"])::-webkit-scrollbar-thumb:hover, 
 .run-row span,.quote-run span{overflow-wrap:anywhere;font-family:var(--mono);font-variant-numeric:tabular-nums}
 .run-choice{font-family:var(--mono);font-variant-numeric:tabular-nums}
 
+.candidate-head > .candidate-title,.run-row,.quote-run > div{min-width:0}
+.run-row span,.quote-run span,.run-choice{font-family:var(--font);font-variant-numeric:tabular-nums;line-height:1.5}
+.run-choice{margin-top:5px;max-width:100%;text-overflow:ellipsis}
+.quote-run span{display:block;margin-top:3px}
+.quote-source h3{font:600 12px/1.6 var(--font);overflow-wrap:anywhere}
+.run-audit{margin-top:12px;border-top:1px solid var(--line);padding-top:8px;font-size:11px;color:var(--muted)}
+.run-audit summary{cursor:pointer;width:fit-content;line-height:1.6}
+.run-audit summary:focus-visible{outline:2px solid var(--gold);outline-offset:2px}
+.run-audit pre{max-height:260px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font:11px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}
+
 /* Reporter uses the same OptDesk role scale; delivered report typography lives
    inside the preview iframe and is intentionally unaffected by these rules. */
 .source-panel h1,.settings-panel h2{font-size:18px;font-weight:700;line-height:1.28}
