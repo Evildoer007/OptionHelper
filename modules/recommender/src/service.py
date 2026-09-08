@@ -10,6 +10,7 @@ from .agent_steps import AuditRecorder, AgentStepRunner, MODE_ONE_ROLE_NAMES, ca
 from .candidate_builder import build_candidates
 from .config import RecommenderConfig
 from .constraint_ranking import (
+    METRIC_SOURCES,
     apply_reviewer_verdict,
     parse_reviewer_ranking_verdict,
     parse_specifier_ranking_spec,
@@ -18,6 +19,7 @@ from .constraint_ranking import (
     required_modules,
 )
 from .evidence_retriever import retrieve_evidence
+from .evaluation_evidence import read_evaluation_records
 from .executor import ALLOWED_MODULES, execute
 from .interaction import (
     delivery_preferences_from_text,
@@ -28,6 +30,7 @@ from .interaction import (
 )
 from .intent_router import route_intent
 from .models import (
+    EvaluationRecord,
     ModelCapability,
     RECOMMENDATION_SET_SCHEMA,
     RecommendationCase,
@@ -305,6 +308,21 @@ class RecommenderService:
             if preset == "constraint-ranking":
                 return self._run_constraint_ranking(case, route, run_id, mode, audit, runner)
             return self._run_fixed(case, route, run_id, mode, audit, runner)
+        except RecommendationInputRequired as error:
+            audit.append(
+                "workflow", "pending", agent_role=None,
+                input_value={"case": case.analysis_case_id},
+                output_value={"missing_information": [error.field], "next_question": error.question},
+            )
+            return RecommendationSet(
+                schema=RECOMMENDATION_SET_SCHEMA, task_id=case.task_id, run_id=run_id,
+                analysis_case_id=case.analysis_case_id, catalog_version=case.catalog_version,
+                route=route.route, workflow_mode=mode, status="pending_question",
+                primary_candidate_id=None, candidates=(), requested_outputs=case.requested_outputs,
+                missing_information=(error.field,), next_question=error.question,
+                requested_candidate_count=_requested_candidate_count(case), returned_candidate_count=0,
+                audit_trail=tuple(audit.events),
+            )
         except Exception as error:
             return self._unavailable_set(case, route, run_id, mode, audit, error)
 
@@ -438,8 +456,17 @@ class RecommenderService:
         )
         if not candidates:
             return self._candidate_set(case, route, run_id, mode, audit, (), rejected)
-        loop = ProductTraderLoop.start(candidates)
-        current_plan = loop.plan_round(_structurer_loop_plan(loop, structurer))
+        ready = tuple(item for item in candidates if item.library_status == "ready")
+        pending = {item.candidate_id: item for item in candidates if item.library_status != "ready"}
+        if not ready:
+            return self._candidate_set(case, route, run_id, mode, audit, candidates, rejected)
+        loop = ProductTraderLoop.start(ready)
+        ready_products = {item.product_id for item in ready}
+        current_plan = loop.plan_round(_structurer_loop_plan(loop, {
+            **dict(structurer), "evaluation_plan": [
+                item for item in structurer.get("evaluation_plan", ()) if item.get("product_id") in ready_products
+            ],
+        }))
         accepted: dict[str, RecommendationCandidate] = {}
         planned_modules = {
             item.candidate.candidate.candidate_id: item.modules for item in current_plan.plans
@@ -474,7 +501,10 @@ class RecommenderService:
                     for item in loop.candidates if item.status == "open"
                 ]
             })
-        selected = tuple(accepted[item.candidate_id] for item in candidates if item.candidate_id in accepted)
+        selected = tuple(
+            accepted.get(item.candidate_id, pending.get(item.candidate_id))
+            for item in candidates if item.candidate_id in accepted or item.candidate_id in pending
+        )
         reviewer = runner.run("Reviewer", {
             "candidates": [item.to_dict() for item in selected],
             "rule": "只能整体批准或拒绝当前候选，不得改写当前输入。",
@@ -528,7 +558,9 @@ class RecommenderService:
                     "modules": list(plan.modules),
                 },
             )
-        return attach_host_evaluations(round_plan, attachable), host_results
+        return attach_host_evaluations(
+            round_plan, attachable, tenant_id=case.tenant_id, task_id=case.task_id,
+        ), host_results
 
     def _run_constraint_ranking(
         self,
@@ -561,12 +593,21 @@ class RecommenderService:
         )
         if not candidates:
             return self._candidate_set(case, route, run_id, mode, audit, (), rejected)
+        pending = tuple(item for item in candidates if item.library_status != "ready")
+        candidates = tuple(item for item in candidates if item.library_status == "ready")
+        if not candidates:
+            return self._candidate_set(case, route, run_id, mode, audit, pending, rejected)
+        rejected = (*rejected, *({
+            "candidate_id": item.candidate_id, "product_id": item.product_id,
+            "reason": "资料尚未就绪，未参与金融排序", "source": "evidence_gate",
+        } for item in pending))
         evaluator = getattr(self.tool_port, "evaluate_candidate", None)
         if not callable(evaluator):
             raise RecommenderUnavailable("constraint-ranking需要Hosted候选评估端口")
         modules = required_modules(spec)
         metric_sources = required_metric_sources(spec)
         metrics_by_candidate: dict[str, Mapping[str, Any]] = {}
+        evaluated: list[RecommendationCandidate] = []
         for candidate in candidates:
             response = evaluator(
                 candidate=candidate.to_confirmation_dict(),
@@ -580,7 +621,16 @@ class RecommenderService:
                 raise RecommendationValidationError("Hosted候选评估结果必须为对象")
             row = dict(response)
             _validate_generated_identity(row, candidate)
-            metrics_by_candidate[candidate.candidate_id] = _ranking_metrics(row, metric_sources)
+            records = read_evaluation_records(
+                row, candidate_id=candidate.candidate_id, modules=modules, round_no=1,
+                tenant_id=case.tenant_id, task_id=case.task_id,
+            )
+            evaluated.append(replace(
+                candidate, evaluation_records=records,
+                module_run_refs=tuple(item.module_run_ref for item in records if item.module_run_ref is not None),
+                module_statuses={item.module: item.status for item in records},
+            ))
+            metrics_by_candidate[candidate.candidate_id] = _ranking_metrics(row, metric_sources, records)
             audit.append(
                 "candidate_evaluation", "complete", agent_role=None,
                 input_value=candidate.to_confirmation_dict(),
@@ -591,7 +641,7 @@ class RecommenderService:
                     "metric_sources": sorted(set(metric_sources.values())),
                 },
             )
-        ranking = rank_candidates(spec, candidates, metrics_by_candidate)
+        ranking = rank_candidates(spec, evaluated, metrics_by_candidate)
         reviewer = runner.run("Reviewer", {
             "ranking_spec": spec.to_dict(),
             "ranking_decisions": [item.to_dict() for item in ranking.decisions],
@@ -629,8 +679,13 @@ class RecommenderService:
             catalog_version=case.catalog_version,
             queries=queries[: self.config.max_research_queries],
         )
+        if not evidence:
+            fallback = _research_queries(case)[: self.config.max_research_queries]
+            if tuple(queries) != fallback:
+                evidence = retrieve_evidence(self.knowledge_port, catalog_version=case.catalog_version, queries=fallback)
+                queries = tuple(dict.fromkeys((*queries, *fallback)))
         audit.append(
-            "evidence", "complete", agent_role=None,
+            "evidence", "complete" if evidence else "empty", agent_role=None,
             input_value={"queries": queries},
             output_value={
                 "evidence_ids": [item.evidence_id for item in evidence],
@@ -652,7 +707,9 @@ class RecommenderService:
         ranking_spec: Mapping[str, Any] | None = None,
     ) -> RecommendationSet:
         current = tuple(
-            replace(item, rank=index, candidate_status="pending_confirmation")
+            replace(item, rank=index, candidate_status=(
+                "pending_confirmation" if item.library_status == "ready" else "pending_terms"
+            ))
             for index, item in enumerate(candidates, start=1)
         )
         audit.append(
@@ -668,6 +725,9 @@ class RecommenderService:
             limitations = ("当前证据和约束未形成可确认候选。",)
         elif len(current) < _requested_candidate_count(case):
             limitations = (f"仅有{len(current)}个候选通过当前证据与约束校验。",)
+        if any(item.library_status != "ready" for item in current):
+            limitations += ("部分候选资料尚未就绪，仅保留研究说明，未执行金融计算。",)
+        confirmable = any(item.library_status == "ready" for item in current)
         spec_id = str(ranking_spec.get("ranking_spec_id")) if ranking_spec is not None else None
         return RecommendationSet(
             schema=RECOMMENDATION_SET_SCHEMA,
@@ -677,7 +737,7 @@ class RecommenderService:
             catalog_version=case.catalog_version,
             route=route.route,
             workflow_mode=mode,
-            status="pending_approval" if current else "unavailable",
+            status="pending_approval" if confirmable else "partial" if current else "unavailable",
             primary_candidate_id=current[0].candidate_id if current else None,
             candidates=current,
             requested_outputs=case.requested_outputs,
@@ -688,7 +748,9 @@ class RecommenderService:
             returned_candidate_count=len(current),
             ranking_spec_id=spec_id,
             ranking_spec=ranking_spec,
-            delivery_status="pending" if case.requested_outputs and current else "not_requested",
+            delivery_status=(
+                "pending" if confirmable else "unavailable"
+            ) if case.requested_outputs else "not_requested",
         )
 
     def _unavailable_set(
@@ -920,6 +982,8 @@ def _trader_loop_decisions(
 
 
 def _validate_generated_identity(value: Mapping[str, Any], candidate: RecommendationCandidate) -> None:
+    if type(value.get("rule_revision")) is not int:
+        raise RecommendationValidationError("Hosted结果的rule_revision必须为正整数")
     expected = {
         "candidate_id": candidate.candidate_id,
         "product_id": candidate.product_id,
@@ -933,25 +997,39 @@ def _validate_generated_identity(value: Mapping[str, Any], candidate: Recommenda
 def _ranking_metrics(
     value: Mapping[str, Any],
     metric_sources: Mapping[str, str],
+    records: Sequence[EvaluationRecord],
 ) -> Mapping[str, Mapping[str, Any]]:
     raw = value.get("verified_metrics")
     if not isinstance(raw, Mapping):
         raise RecommendationValidationError("Hosted候选评估缺少verified_metrics")
-    sources = set(metric_sources.values())
-    if set(raw) <= sources and all(isinstance(item, Mapping) for item in raw.values()):
-        nested = {str(source): dict(metrics) for source, metrics in raw.items()}
-    else:
-        nested: dict[str, dict[str, Any]] = {}
-        for metric, source in metric_sources.items():
-            if metric in raw:
-                nested.setdefault(source, {})[metric] = raw[metric]
-    unknown = {
-        metric for source, metrics in nested.items() for metric in metrics
-        if metric_sources.get(metric) != source
-    }
-    if unknown:
-        raise RecommendationValidationError(f"Hosted候选评估含来源不一致指标：{','.join(sorted(unknown))}")
-    return nested
+    source_records = {item.module: item for item in records}
+    nested_shape = set(raw) <= set(METRIC_SOURCES.values())
+    result: dict[str, dict[str, Any]] = {}
+    for metric, source in metric_sources.items():
+        if nested_shape:
+            for supplied_source, metrics in raw.items():
+                if not isinstance(metrics, Mapping):
+                    raise RecommendationValidationError("Hosted候选评估指标来源必须为对象")
+                if metric in metrics and supplied_source != source:
+                    raise RecommendationValidationError(f"Hosted候选评估含来源不一致指标：{metric}")
+            entry = raw.get(source, {}).get(metric)
+        else:
+            fact_path = f"greeks.{metric}" if metric in {"delta", "gamma", "vega", "theta", "rho"} else metric
+            if fact_path != metric and metric in raw and fact_path in raw:
+                raise RecommendationValidationError(f"Hosted指标{metric}包含重复事实路径")
+            entry = raw.get(metric, raw.get(fact_path))
+            if isinstance(entry, Mapping):
+                if entry.get("source") != source or not isinstance(entry.get("fact_ref"), str) or not entry["fact_ref"].strip():
+                    raise RecommendationValidationError(f"Hosted指标{metric}缺少匹配来源和FactRef")
+                entry = entry.get("value")
+        if entry is None:
+            continue
+        if source != "contract_terms":
+            record = source_records.get(source)
+            if record is None or record.module_run_ref is None or record.status not in {"succeeded", "partial"}:
+                raise RecommendationValidationError(f"Hosted指标{metric}缺少可消费的{source} ModuleRunRef")
+        result.setdefault(source, {})[metric] = entry
+    return result
 
 
 def _strings(value: object) -> tuple[str, ...]:
