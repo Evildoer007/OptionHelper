@@ -7,6 +7,8 @@ does not require a new credential or completion code path.
 
 from __future__ import annotations
 
+from .step_instructions import recommender_step_instruction
+
 import json
 from collections.abc import Callable, Mapping
 from typing import Any
@@ -40,7 +42,7 @@ def complete_openai_compatible_with_metadata(
     token = resolve_secret(secret_ref)
     model_name = settings.model_name.strip()
     if not model_name:
-        raise ValidationError("模型名不能为空，请由管理员在设置中心明确配置。")
+        raise ValidationError("模型名不能为空，请在设置中心明确配置。")
     payload = json.dumps(
         {"model": model_name, "messages": messages, "stream": False},
         ensure_ascii=False,
@@ -53,7 +55,7 @@ def complete_openai_compatible_with_metadata(
         method="POST",
     )
     try:
-        timeout = request_control.remaining_seconds(45) if request_control is not None else 45
+        timeout = request_control.remaining_seconds() if request_control is not None else 45
         with open_verified_https(request, timeout=timeout, opener=opener) as response:
             # Read one byte beyond the ceiling so an upstream server cannot
             # make the local App allocate an unbounded non-streaming body.
@@ -288,7 +290,7 @@ def decide_openai_compatible(
     """
 
     recommender_step = context.get("operation") == "recommender_fixed_step"
-    instruction = _recommender_step_instruction() if recommender_step else (
+    instruction = recommender_step_instruction() if recommender_step else (
         "你是OptionHelper的受控任务路由器。只返回一个JSON对象，不要Markdown、解释或推理。"
         "必须严格使用以下三种之一："
         '{"action":"final","text":"回复文本","fact_refs":[]};'
@@ -343,16 +345,6 @@ def decide_openai_compatible(
             value = {"action": "ask_user", "question": alias}
     return value
 
-
-def _recommender_step_instruction() -> str:
-    return (
-        "你正在执行OptionHelper的recommender_fixed_step。只返回一个JSON对象，不要Markdown、解释或推理。"
-        "固定格式为{\"action\":\"final\",\"result\":{...}}，result必须且只能满足输入required_output声明的结构。"
-        "Interpreter和Framer只能提取用户已明确表达的事实，不能把已有confirmed_constraints列为缺失；"
-        "Selector、Structurer、Matcher、Hedger和Generator只能从输入evidence生成可追溯候选；"
-        "Trader和Evaluator只能通过已授权工具取得FactRef；Reviewer、Moderator和Ranker不得改写金融事实。"
-        "不得输出reasoning、analysis、secret、token、文件路径或内部运行引用。"
-    )
 
 
 def _json_object(raw: str) -> dict[str, Any]:
