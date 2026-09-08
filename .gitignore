@@ -6,8 +6,6 @@ __pycache__/
 *.pyo
 .pytest_cache/
 .ruff_cache/
-evals/model_config.json
-evals/model_results/
 apps/macos/OptionHelperApp/build/
 
 # 12.1运行与构建生成物
@@ -31,5 +29,27 @@ products/app/packaging/windows/build/
 
 # 本地Agent会话与Node依赖
 .optionhelper-agent-sessions/
-packaging/app/agent_runtime/node_modules/
-products/app/runtime/optionhelper_agent_runtime/node_modules/
+
+# 本地测试、评估和离线审计材料；运行所需backend/audit不在此列
+**/tests/
+**/test/
+/evals/
+/qa/
+/audits/
+**/run_tests.py
+coverage/
+.coverage
+htmlcov/
+playwright-report/
+test-results/
+
+# 所有Node依赖由锁文件恢复，不提交本机安装目录
+**/node_modules/
+
+# 本地演示生成物和历史维护留档，不属于构建输入
+/demo/result/
+/modules/payoffer/maintenance/history/
+
+# 本地构建历史保留在versions，不上传安装包与归档缓存
+/versions/app/
+/versions/skill/
