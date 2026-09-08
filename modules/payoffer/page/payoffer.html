@@ -38,6 +38,25 @@
       .canvas-size-note { margin:8px 0 0; color:var(--muted); font-size:10px; line-height:1.5; }
       .source-detail .formula { display:block; margin-top:5px; white-space:normal; overflow-wrap:anywhere; }
       .canvas-toolbar-primary { display:flex; min-width:0; align-items:center; gap:12px; }
+      .canvas-panel { grid-template-rows:minmax(50px, auto) auto minmax(0, 1fr); }
+      .canvas-panel > .notice-area { grid-row:2; }
+      .canvas-panel > .canvas-viewport { grid-row:3; }
+      .canvas-toolbar { flex-wrap:wrap; gap:8px; padding:10px 16px; }
+      .canvas-toolbar-actions { flex-wrap:wrap; }
+      .payoff-viewer { position:fixed; inset:0; width:calc(100vw - 24px); max-width:calc(100vw - 24px); height:calc(100vh - 24px); height:calc(100dvh - 24px); max-height:calc(100dvh - 24px); margin:auto; padding:0; overflow:hidden; border:1px solid var(--rule); border-radius:12px; background:var(--color-surface); color:var(--ink); }
+      .payoff-viewer[open] { display:grid; grid-template-rows:auto minmax(0, 1fr); }
+      .payoff-viewer::backdrop { background:rgba(37,37,37,.36); }
+      .payoff-viewer-toolbar { display:flex; flex-wrap:wrap; align-items:center; gap:8px; padding:12px 16px; border-bottom:1px solid var(--rule); }
+      .payoff-viewer-title { margin:0 auto 0 0; font-size:14px; font-weight:650; }
+      .payoff-viewer-actions { display:flex; flex-wrap:wrap; gap:8px; }
+      .payoff-viewer-actions .button { min-height:36px; }
+      .payoff-viewer-actions .button[aria-pressed="true"] { background:var(--color-blue-gray-soft); color:var(--ink); border-color:var(--color-blue-gray); }
+      .payoff-viewer-viewport { min-width:0; min-height:0; overflow:auto; overscroll-behavior:contain; padding:16px; background:var(--color-blue-gray-soft); }
+      .payoff-viewer-stage { margin:0 auto; }
+      .payoff-viewer-stage > svg { display:block; width:100%; height:100%; max-width:none; }
+      .payoff-viewer :focus-visible { outline:2px solid var(--color-blue-gray); outline-offset:2px; }
+      .payoff-viewer-viewport:focus-visible { outline-offset:-3px; }
+      @media (pointer:coarse) { .payoff-viewer-actions .button { min-height:44px; } }
       .scope-notice { min-width:0; color:var(--muted); font-size:11px; }
       [hidden] { display:none !important; }
     </style>
@@ -56,7 +75,7 @@
     <div class="app-shell editing" id="appShell">
       <header class="topbar">
         <div class="brand"><img class="brand-logo" src="../../icons/optionhelper-logo.svg" alt="OptionHelper"><span class="brand-separator" aria-hidden="true"></span><span class="module-title">收益结构</span></div>
-        <div class="scope-notice" id="scopeNotice">开发预览：本地结果不能直接用于正式交付</div>
+        <div class="scope-notice" id="scopeNotice">开发预览</div>
         <div class="topbar-status" id="modeBadge">正在连接运行服务</div>
         <div class="topbar-actions"><button class="button button-quiet" id="recheckButton">重新读取资料库</button></div>
       </header>
@@ -80,6 +99,7 @@
             <div class="canvas-toolbar-actions">
               <div class="zoom-control" aria-label="画布缩放" aria-hidden="true" hidden><button class="zoom-button" id="zoomOutButton" title="缩小">−</button><label class="zoom-input-wrap"><input id="zoomInput" type="number" min="10" max="200" step="1" inputmode="numeric" aria-label="画布缩放百分比" value="100"><em>%</em></label><button class="zoom-button" id="zoomInButton" title="放大">+</button><button class="zoom-fit" id="zoomFitButton" title="适应画布">适应</button></div>
               <button class="button button-quiet" id="canvasDefaultButton" disabled>查看默认图</button>
+              <button class="button button-quiet" id="canvasExpandButton" aria-haspopup="dialog" aria-controls="payoffViewerDialog" disabled>放大查看</button>
               <button class="button button-quiet" id="canvasPreviewButton" disabled>预览</button>
               <button class="button button-primary" id="canvasSaveButton" disabled>保存</button>
             </div>
@@ -92,9 +112,8 @@
         <div class="panel-resizer panel-resizer-right" id="inspectorResizer" role="separator" aria-label="调整条款参数面板宽度" aria-orientation="vertical" tabindex="0"></div>
 
         <aside class="inspector-panel" id="inspectorPanel">
-          <h2 id="inspectorTitle">收益结构设置</h2>
+          <h2 id="inspectorTitle">合同条款</h2>
           <section class="inspector-group module-parameter-section">
-            <div class="group-title" id="termsGroupTitle">合同条款</div>
             <div class="parameter-grid runtime-parameter-grid" id="parameterFields"></div>
             <div class="semantic-rules" id="semanticRules" aria-label="固定观察规则" hidden></div>
             <div class="runtime-actions" hidden><button class="button button-quiet small" id="applyParametersButton" hidden>解析并更新收益图</button><button class="button button-quiet small" id="restoreDefaultsButton" hidden>恢复默认值</button></div>
@@ -111,8 +130,8 @@
           <details class="module-advanced" id="pathExplanationGroup">
             <summary>路径说明</summary>
             <div class="module-advanced-panel">
-              <div class="source-detail" id="sourceDetail">选择产品后显示路径来源与条款字段。</div>
-              <div class="source-detail" id="selectedPathDetail">选择路径后显示判断条件与收益条件。</div>
+              <div class="source-detail" id="sourceDetail">选择路径查看条件与收益。</div>
+              <div class="source-detail" id="selectedPathDetail"></div>
             </div>
           </details>
           <details class="module-advanced" id="maintenancePanel" hidden>
@@ -130,14 +149,29 @@
       </main>
     </div>
 
+    <dialog class="payoff-viewer" id="payoffViewerDialog" aria-labelledby="payoffViewerTitle">
+      <div class="payoff-viewer-toolbar">
+        <h2 class="payoff-viewer-title" id="payoffViewerTitle">收益图</h2>
+        <div class="payoff-viewer-actions">
+          <button class="button button-quiet" id="payoffViewerFitButton" aria-pressed="true">适合窗口</button>
+          <button class="button button-quiet" id="payoffViewerActualButton" aria-pressed="false">原始尺寸</button>
+          <button class="button button-quiet" id="payoffViewerCloseButton" autofocus>关闭</button>
+        </div>
+      </div>
+      <div class="payoff-viewer-viewport" id="payoffViewerViewport" tabindex="0" aria-label="收益图，可滚动查看">
+        <div class="payoff-viewer-stage" id="payoffViewerStage"></div>
+      </div>
+    </dialog>
+
     <script src="../module-host-presentation.js"></script>
     <script src="../module-host-bridge.js"></script>
     <script>
       const $ = id => document.getElementById(id);
       const state = {
         products: [], product: null, preview: null, defaultExample: null, previewPayload: null, previewSignature: null,
-        selectedPathIndex: 0, zoom: 1, zoomMode: 'fit', canvasRequestId: 0, inputsDirty: false, saving: false,
-        maintenanceEnabled: false, maintenancePlan: null, maintenanceRequestId: 0, catalogRequestId: 0
+        selectedPathIndex: 0, zoom: 1, zoomMode: 'fit', canvasRequestId: 0, inputsDirty: false, saving: false, saveRequestId: 0,
+        maintenanceEnabled: false, maintenancePlan: null, maintenanceRequestId: 0, catalogRequestId: 0,
+        moduleVisible: document.documentElement?.dataset?.optionhelperModuleActive !== 'false', resetOnActivation: false, moduleResetLoading: false, hasSavedResult: false
       };
       let canvasPan = null;
       const query = new URLSearchParams(location.search);
@@ -170,10 +204,16 @@
       const savedProductId = () => { try { return sessionStorage.getItem(productSelectionKey) || ''; } catch (_error) { return ''; } };
       const rememberProductId = value => { try { if (value) sessionStorage.setItem(productSelectionKey, value); else sessionStorage.removeItem(productSelectionKey); } catch (_error) { /* Session storage may be unavailable in hardened webviews. */ } };
       const runtimeSuccessNotice = () => hostedInDesk
-        ? '正式运行结果已写入受控Store，可供Reporter生成研究简报、完整研究报告、参考报价或多结构对比交付。'
-        : '开发预览结果已写入隔离存储。正式交付须通过OptionHelper生成。';
+        ? '结果已保存，可继续生成报告或报价。'
+        : '预览已保存。';
 
       function showNotice(message, type = '') {
+        if (hostedInDesk && !type && (message === runtimeSuccessNotice()
+          || /^已按当前输入计算\d+条收益路径。$/.test(message)
+          || ['已载入正式默认图。', '已载入只读默认图。', '默认图维护已完成。', '已恢复默认参数。', '产品目录已重新读取。'].includes(message))) {
+          $('noticeArea').replaceChildren();
+          return;
+        }
         $('noticeArea').innerHTML = '<div class="notice ' + type + '"><strong>' + (type === 'error' ? '无法执行' : '收益结构') + '</strong><span>' + escapeHtml(message) + '</span></div>';
       }
 
@@ -194,10 +234,24 @@
         return localDevelopmentPreview;
       }
 
+      function setRuntimeInputsLocked(locked) {
+        const enabled = canRuntimePreview() && !locked;
+        $('productSelect').disabled = locked;
+        $('recheckButton').disabled = locked;
+        termInputs().forEach(input => { input.disabled = !enabled; });
+        $('applyParametersButton').disabled = !enabled;
+        $('restoreDefaultsButton').disabled = !enabled;
+        $('canvasPreviewButton').disabled = !enabled;
+        $('canvasSaveButton').disabled = !enabled || Boolean(state.previewFailed);
+        $('canvasDefaultButton').disabled = locked || !state.product;
+        $('canvasWidth').disabled = locked || !hostedInDesk || !state.product;
+        $('canvasHeight').disabled = locked || !hostedInDesk || !state.product;
+      }
+
       function runtimeAvailabilityMessage() {
-        if (hostedInDesk) return '当前收益结构按最新产品目录默认条款建立；仅提交对收益结构有影响的本次修改。';
-        if (localDevelopmentPreview) return '本机开发预览使用明确标记的标准化示例，不可用于正式交付。';
-        return '独立页面默认只读。仅以?mode=local-development-preview显式启动时可使用标准化开发示例。';
+        if (hostedInDesk) return '合同条款可编辑。';
+        if (localDevelopmentPreview) return '开发预览。';
+        return '默认图只读。';
       }
 
       function updateRuntimeChrome({ preserve = false } = {}) {
@@ -210,8 +264,8 @@
         $('canvasHeight').disabled = !hostedInDesk || !state.product;
         $('maintenancePanel').hidden = !(localDevelopmentPreview && state.maintenanceEnabled && !hostedInDesk);
         $('scopeNotice').textContent = hostedInDesk
-          ? '收益结构预览：采用最新产品目录默认条款'
-          : (localDevelopmentPreview ? '本机开发预览：标准化示例不可正式交付' : '默认只读图：独立开发预览需显式启用');
+          ? '正式运行'
+          : (localDevelopmentPreview ? '开发预览' : '只读');
         renderParameters({ preserve });
       }
 
@@ -220,7 +274,11 @@
       }
 
       function displayValue(value, field = null) {
-        if (field?.value_encoding === 'percentage_input_decimal_internal' && Number.isFinite(Number(value))) return String(Number(value) * 100);
+        if (field?.value_encoding === 'percentage_input_decimal_internal' && Number.isFinite(Number(value))) {
+          // 按十进制移位，避免二进制乘法尾差，也不截断合法小数精度。
+          const [coefficient, exponent = '0'] = String(Number(value)).split('e');
+          return String(Number(`${coefficient}e${Number(exponent) + 2}`));
+        }
         return value !== null && typeof value === 'object' ? JSON.stringify(value) : String(value ?? '');
       }
 
@@ -286,16 +344,27 @@
           $('bindingCard').innerHTML = '<span>尚未选择产品</span>';
           $('scenarioCount').textContent = '--';
           $('scenarioList').innerHTML = '<li class="preview">选择产品后显示</li>';
-          $('inspectorTitle').textContent = '收益结构设置';
-          $('sourceDetail').textContent = '选择产品后显示路径来源与条款字段。';
+          $('inspectorTitle').textContent = '合同条款';
+          $('sourceDetail').textContent = '选择路径查看条件与收益。';
+          $('selectedPathDetail').textContent = '';
           renderSelectedPath();
           return;
         }
-        const before = preserve ? Object.fromEntries(termInputs().map(item => [item.dataset.key, item.value])) : {};
+        const before = preserve ? Object.fromEntries(termInputs().map(item => [item.dataset.key, {
+          value: item.value, unit: item.closest('.term-tenor')?.querySelector('.term-tenor-unit')?.value
+        }])) : {};
         $('parameterFields').innerHTML = editablePayoffFields().map(termField).join('') || '<p class="parameter-empty">当前App合同未授权可编辑条款。</p>';
         renderSemanticRules();
-        termInputs().forEach(item => { if (Object.hasOwn(before, item.dataset.key)) item.value = before[item.dataset.key]; });
-        const enabled = canRuntimePreview();
+        const tenorField = editablePayoffFields().find(field => field.key === 'T');
+        if (tenorField) window.OptionHelperModulePresentation?.initializeTenorInput?.(termInputs().find(item => item.dataset.key === 'T'), defaultValue(tenorField));
+        termInputs().forEach(item => {
+          const prior = before[item.dataset.key];
+          if (!prior) return;
+          item.value = prior.value;
+          const unit = item.closest('.term-tenor')?.querySelector('.term-tenor-unit');
+          if (unit && prior.unit) unit.value = prior.unit;
+        });
+        const enabled = canRuntimePreview() && !state.saving && !state.moduleResetLoading;
         termInputs().forEach(input => {
           input.disabled = !enabled;
           input.removeAttribute('aria-disabled');
@@ -304,10 +373,11 @@
         $('restoreDefaultsButton').disabled = !enabled;
         $('canvasDefaultButton').disabled = false;
         $('canvasPreviewButton').disabled = !enabled;
-        $('canvasSaveButton').disabled = !enabled;
+        $('canvasSaveButton').disabled = !enabled || Boolean(state.previewFailed);
       }
 
       function parseTermValue(item) {
+        if (item.validity?.badInput) throw new Error(item.dataset.key + '必须是有效数值');
         const raw = item.value.trim();
         if (!raw) return undefined;
         if (item.dataset.kind === 'number') {
@@ -317,7 +387,12 @@
             const unit = item.closest('.term-tenor')?.querySelector('.term-tenor-unit')?.value || 'year';
             return unit === 'month' ? value / 12 : unit === 'day' ? value / 365 : value;
           }
-          return item.dataset.encoding === 'percentage_input_decimal_internal' ? value / 100 : value;
+          if (item.dataset.encoding === 'percentage_input_decimal_internal') {
+            // 与显示端采用同一十进制移位规则，默认值往返后不产生伪修改。
+            const [coefficient, exponent = '0'] = String(value).split('e');
+            return Number(`${coefficient}e${Number(exponent) - 2}`);
+          }
+          return value;
         }
         if (item.dataset.kind === 'boolean') return raw === 'true';
         if (item.dataset.kind === 'json') {
@@ -378,18 +453,78 @@
       function collectTermOverrides() {
         const overrides = {};
         for (const item of termInputs()) {
-          const value = parseTermValue(item);
-          if (value === undefined) continue;
-          const catalogDefault = parseFieldDefault(item);
-          if (!isSameValue(value, catalogDefault)) overrides[item.dataset.key] = value;
+          try {
+            const value = parseTermValue(item);
+            if (value === undefined) continue;
+            validateTermDomain(item, value);
+            const catalogDefault = parseFieldDefault(item);
+            if (!isSameValue(value, catalogDefault)) overrides[item.dataset.key] = value;
+          } catch (error) {
+            error.fieldKey = item.dataset.key;
+            throw error;
+          }
         }
         return overrides;
+      }
+
+      function validateTermDomain(item, value) {
+        // Bounds come from the current product catalog and apply after unit decoding.
+        // Cross-field and path constraints remain the Core compiler's responsibility.
+        if (typeof value !== 'number') return;
+        const field = fieldForKey(item.dataset.key);
+        const domain = field?.domain || {};
+        const limits = [
+          ['min', bound => value < bound, '不能小于'],
+          ['exclusive_min', bound => value <= bound, '必须大于'],
+          ['max', bound => value > bound, '不能大于'],
+          ['exclusive_max', bound => value >= bound, '必须小于'],
+        ];
+        for (const [key, outside, message] of limits) {
+          const bound = domain[key];
+          if (typeof bound !== 'number' || !Number.isFinite(bound) || !outside(bound)) continue;
+          let shown = displayValue(bound, field);
+          let unit = displayUnit(field);
+          if (item.dataset.key === 'T') {
+            const selected = item.closest('.term-tenor')?.querySelector('.term-tenor-unit')?.value || 'year';
+            shown = String(bound * (selected === 'month' ? 12 : selected === 'day' ? 365 : 1));
+            unit = selected === 'month' ? '月' : selected === 'day' ? '自然日' : '年';
+          }
+          throw new Error((field.chinese_name || field.label || item.dataset.key) + message + shown + unit);
+        }
+      }
+
+      function clearTermErrors() {
+        for (const input of termInputs()) {
+          const errorId = 'payoffer-term-error-' + input.dataset.key;
+          const describedBy = (input.getAttribute('aria-describedby') || '').split(/\s+/).filter(id => id && id !== errorId);
+          if (describedBy.length) input.setAttribute('aria-describedby', describedBy.join(' '));
+          else input.removeAttribute('aria-describedby');
+          input.removeAttribute('aria-invalid');
+          document.getElementById(errorId)?.remove();
+        }
+      }
+
+      function showTermError(error) {
+        const input = termInputs().find(item => item.dataset.key === error.fieldKey);
+        if (!input) return;
+        const note = document.createElement('small');
+        note.id = 'payoffer-term-error-' + input.dataset.key;
+        note.className = 'field-error';
+        note.setAttribute('role', 'alert');
+        note.textContent = error.message;
+        input.closest('.parameter-field').append(note);
+        input.setAttribute('aria-invalid', 'true');
+        input.setAttribute('aria-describedby', [input.getAttribute('aria-describedby'), note.id].filter(Boolean).join(' '));
+        input.focus();
       }
 
       function buildRequestPayload() {
         if (!state.product) throw new Error('请选择产品');
         const payload = { product_id: state.product.product_id, term_overrides: collectTermOverrides() };
-        if (hostedInDesk) payload.render_options = collectRenderOptions();
+        if (hostedInDesk) {
+          const renderOptions = collectRenderOptions();
+          if (renderOptions) payload.render_options = renderOptions;
+        }
         return payload;
       }
 
@@ -398,7 +533,11 @@
       }
 
       function markInputDirty() {
-        if (!state.product || state.product.runtime_status !== 'enabled') return;
+        if (state.saving || state.moduleResetLoading || !state.product || state.product.runtime_status !== 'enabled') return;
+        clearTermErrors();
+        $('noticeArea').replaceChildren();
+        state.previewFailed = false;
+        $('canvasSaveButton').disabled = !canRuntimePreview();
         state.inputsDirty = true;
         try {
           const current = state.previewSignature === currentSignature();
@@ -438,14 +577,14 @@
       function renderSelectedPath() {
         const path = state.preview?.path_panels?.[state.selectedPathIndex];
         if (!path) {
-          $('inspectorTitle').textContent = '收益结构设置';
+          $('inspectorTitle').textContent = '合同条款';
           $('sourceDetail').textContent = state.preview?.runtime_status === 'blocked'
-            ? '当前产品只支持查看默认方案。'
-            : state.product ? runtimeAvailabilityMessage() : '选择产品后显示路径与条款。';
-          $('selectedPathDetail').textContent = state.preview?.runtime_status === 'blocked' ? '该产品的路径语义待合同确认，不能从资料图反推新参数结果。' : '选择路径后显示判断条件与损益表达。';
+            ? '当前产品仅提供默认图。'
+            : state.product ? runtimeAvailabilityMessage() : '选择路径查看条件与收益。';
+          $('selectedPathDetail').textContent = '';
           return;
         }
-        $('inspectorTitle').textContent = '收益结构设置';
+        $('inspectorTitle').textContent = '合同条款';
         $('sourceDetail').innerHTML = '当前路径条件：' + mathHtml(path.condition_tex || '—');
         $('selectedPathDetail').innerHTML = '<span class="formula">收益口径：百分比</span><span class="formula">分段数：' + (path.segments?.length || 0) + '</span>';
       }
@@ -546,15 +685,19 @@
 
       function requestedCanvasDimensions() {
         const stage = $('canvasViewport').querySelector('.canvas-stage');
-        if (!stage) throw new Error('请先载入收益图，再设置图片尺寸');
-        const naturalWidth = Number(stage.dataset.naturalCanvasWidth) || 1200;
-        const naturalHeight = Number(stage.dataset.naturalCanvasHeight) || 800;
+        // Export controls work before the default image arrives. These fallbacks
+        // match the renderer's base canvas; an existing image supplies its own size.
+        const naturalWidth = Number(stage?.dataset.naturalCanvasWidth) || 1200;
+        const naturalHeight = Number(stage?.dataset.naturalCanvasHeight) || 566;
         const width = canvasDimension($('canvasWidth'), naturalWidth, '图片宽度');
         const height = canvasDimension($('canvasHeight'), naturalHeight, '图片高度');
         return { width, height };
       }
 
       function collectRenderOptions() {
+        // Natural layout belongs to the renderer, not a previously loaded SVG.
+        // Omitting untouched dimensions also keeps the request stable when that SVG arrives.
+        if ([$('canvasWidth'), $('canvasHeight')].every(input => input.dataset.custom !== 'true')) return undefined;
         return requestedCanvasDimensions();
       }
 
@@ -668,6 +811,101 @@
         return stage;
       }
 
+      const payoffViewer = { source: null, productId: null, returnFocus: null, mode: 'fit', width: 0, height: 0 };
+
+      function syncPayoffViewer() {
+        const stage = $('canvasViewport').querySelector('.canvas-stage');
+        $('canvasExpandButton').disabled = !state.product || !stage?.querySelector('svg');
+        if (payoffViewer.source && (payoffViewer.source !== stage || payoffViewer.productId !== state.product?.product_id)) closePayoffViewer();
+      }
+
+      function sizePayoffViewer(mode = payoffViewer.mode) {
+        if (!$('payoffViewerDialog').open || !payoffViewer.source) return;
+        payoffViewer.mode = mode;
+        const viewport = $('payoffViewerViewport');
+        const padding = getComputedStyle(viewport);
+        const width = Math.max(1, viewport.clientWidth - parseFloat(padding.paddingLeft) - parseFloat(padding.paddingRight));
+        const height = Math.max(1, viewport.clientHeight - parseFloat(padding.paddingTop) - parseFloat(padding.paddingBottom));
+        const scale = mode === 'actual' ? 1 : Math.min(1, width / payoffViewer.width, height / payoffViewer.height);
+        $('payoffViewerStage').style.width = String(payoffViewer.width * scale) + 'px';
+        $('payoffViewerStage').style.height = String(payoffViewer.height * scale) + 'px';
+        $('payoffViewerFitButton').setAttribute('aria-pressed', String(mode === 'fit'));
+        $('payoffViewerActualButton').setAttribute('aria-pressed', String(mode === 'actual'));
+        if (mode === 'fit') { viewport.scrollLeft = 0; viewport.scrollTop = 0; }
+      }
+
+      function openPayoffViewer() {
+        syncPayoffViewer();
+        const dialog = $('payoffViewerDialog');
+        if ($('canvasExpandButton').disabled || dialog.open) return;
+        const source = $('canvasViewport').querySelector('.canvas-stage');
+        payoffViewer.source = source;
+        payoffViewer.productId = state.product.product_id;
+        payoffViewer.returnFocus = $('canvasExpandButton');
+        payoffViewer.width = Number(source.dataset.canvasWidth);
+        payoffViewer.height = Number(source.dataset.canvasHeight);
+        // Clone the current sanitized SVG. Viewing never changes the canvas or export settings.
+        $('payoffViewerStage').replaceChildren(source.querySelector('svg').cloneNode(true));
+        $('payoffViewerViewport').scrollLeft = 0;
+        $('payoffViewerViewport').scrollTop = 0;
+        dialog.showModal();
+        sizePayoffViewer('fit');
+        $('payoffViewerCloseButton').focus();
+        requestAnimationFrame(() => { syncPayoffViewer(); sizePayoffViewer(); });
+      }
+
+      function closePayoffViewer(restoreFocus = true) {
+        const dialog = $('payoffViewerDialog');
+        if (!dialog.open) return;
+        const returnFocus = payoffViewer.returnFocus;
+        dialog.close();
+        payoffViewer.source = null;
+        payoffViewer.productId = null;
+        payoffViewer.returnFocus = null;
+        $('payoffViewerStage').replaceChildren();
+        if (restoreFocus) {
+          const target = returnFocus?.isConnected && !returnFocus.disabled ? returnFocus
+            : $('canvasExpandButton').disabled ? $('productSelect') : $('canvasExpandButton');
+          target.focus();
+        }
+      }
+
+      function setupPayoffViewer() {
+        for (const id of ['canvasExpandButton', 'payoffViewerDialog', 'payoffViewerFitButton', 'payoffViewerActualButton', 'payoffViewerCloseButton', 'payoffViewerViewport', 'payoffViewerStage']) {
+          if (!$(id)) throw new Error('Missing payoff viewer control: ' + id);
+        }
+        $('canvasExpandButton').addEventListener('click', openPayoffViewer);
+        $('payoffViewerFitButton').addEventListener('click', () => sizePayoffViewer('fit'));
+        $('payoffViewerActualButton').addEventListener('click', () => sizePayoffViewer('actual'));
+        $('payoffViewerCloseButton').addEventListener('click', () => closePayoffViewer());
+        $('payoffViewerDialog').addEventListener('cancel', event => { event.preventDefault(); closePayoffViewer(); });
+        $('payoffViewerDialog').addEventListener('keydown', event => {
+          if (event.key !== 'Tab') return;
+          // WebKit can skip buttons in its default Tab navigation; keep this dialog's complete order explicit.
+          const controls = [$('payoffViewerFitButton'), $('payoffViewerActualButton'), $('payoffViewerCloseButton'), $('payoffViewerViewport')];
+          const current = controls.indexOf(document.activeElement);
+          const next = current < 0 ? (event.shiftKey ? controls.length - 1 : 0)
+            : (current + (event.shiftKey ? -1 : 1) + controls.length) % controls.length;
+          event.preventDefault();
+          controls[next].focus();
+        });
+        // Every preview/default/placeholder replaces this node's children; never cache an old product image.
+        new MutationObserver(syncPayoffViewer).observe($('canvasViewport'), { childList: true });
+        observeCanvasSize($('payoffViewerViewport'), () => sizePayoffViewer());
+        document.addEventListener('optionhelper:modulevisibility', event => { if (event.detail?.active === false) closePayoffViewer(false); });
+        syncPayoffViewer();
+      }
+
+      function observeCanvasSize(viewport, update) {
+        let pending = false;
+        new ResizeObserver(() => {
+          if (pending) return;
+          pending = true;
+          // A layout write inside ResizeObserver can recursively resize its own viewport in WebKit.
+          requestAnimationFrame(() => { pending = false; update(); });
+        }).observe(viewport);
+      }
+
       function showPreviewPlaceholder(title, message) {
         resetCanvasPan();
         const empty = document.createElement('div');
@@ -682,14 +920,14 @@
       }
 
       function renderPreview(response, signature, payload) {
+        const stage = createCanvasStage(response.svg);
+        $('canvasViewport').replaceChildren(stage);
         state.preview = response.preview;
         state.defaultExample = null;
         state.previewSignature = signature;
         state.previewPayload = payload;
         state.inputsDirty = false;
         state.selectedPathIndex = 0;
-        const stage = createCanvasStage(response.svg);
-        $('canvasViewport').replaceChildren(stage);
         requestAnimationFrame(() => {
           if (state.zoomMode === 'fit') fitZoom();
           else setZoom(state.zoom);
@@ -704,7 +942,7 @@
         setCanvasState(enabled ? (current ? '收益图已更新' : '条款待预览') : '正式资料图已载入', current || !enabled ? 'ready' : 'dirty');
         showNotice(enabled
           ? '已按当前输入计算' + state.preview.path_panels.length + '条收益路径。'
-          : '已载入既有正式默认图。该产品尚未完整录入，不能生成参数图。');
+          : '已载入正式默认图。');
       }
 
       function renderDefaultExample(response) {
@@ -723,7 +961,7 @@
         renderLibrary();
         renderSelectedPath();
         setCanvasState('正式默认图', 'ready');
-        showNotice('已载入只读默认图。' + runtimeAvailabilityMessage());
+        showNotice('已载入只读默认图。');
       }
 
       async function loadDefaultExample() {
@@ -764,20 +1002,30 @@
       }
 
       async function preview() {
-        if (!canRuntimePreview()) throw new Error(runtimeAvailabilityMessage());
-        const payload = buildRequestPayload();
-        const signature = JSON.stringify(payload);
         const requestId = ++state.canvasRequestId;
-        const productId = state.product.product_id;
-        setCanvasState('正在解析合同', 'busy');
+        let failureState = '输入待修正';
         try {
+          clearTermErrors();
+          $('noticeArea').replaceChildren();
+          if (state.moduleResetLoading) throw new Error('正在恢复默认参数，请稍候。');
+          if (!canRuntimePreview()) throw new Error(runtimeAvailabilityMessage());
+          const payload = buildRequestPayload();
+          const signature = JSON.stringify(payload);
+          const productId = state.product.product_id;
+          failureState = '运行失败';
+          setCanvasState('正在解析合同', 'busy');
           const data = await request('/api/preview', payload);
           if (requestId !== state.canvasRequestId || state.product?.product_id !== productId) return;
           renderPreview(data, signature, payload);
+          state.previewFailed = false;
+          $('canvasSaveButton').disabled = state.saving || state.moduleResetLoading || !canRuntimePreview();
           return data;
         } catch (error) {
           if (requestId === state.canvasRequestId) {
-            setCanvasState('运行失败');
+            state.previewFailed = true;
+            $('canvasSaveButton').disabled = true;
+            setCanvasState(failureState);
+            showTermError(error);
             showNotice(error.message, 'error');
           }
           throw error;
@@ -785,37 +1033,48 @@
       }
 
       async function saveRuntime() {
-        if (state.saving) return;
+        if (state.saving || state.moduleResetLoading) return;
         if (!state.product) return showNotice('请先选择产品。', 'error');
         if (!canRuntimePreview()) return showNotice(runtimeAvailabilityMessage(), 'error');
+        const productId = state.product.product_id;
+        const saveRequestId = ++state.saveRequestId;
         state.saving = true;
-        $('canvasPreviewButton').disabled = true;
-        $('canvasSaveButton').disabled = true;
+        setRuntimeInputsLocked(true);
         setCanvasState('正在保存', 'busy');
         try {
           const current = currentSignature();
           if (!state.preview || state.previewSignature !== current) await preview();
+          if (saveRequestId !== state.saveRequestId || state.product?.product_id !== productId || currentSignature() !== current) return;
           const displayContract = state.preview?.display_contract;
           if (!displayContract || displayContract.projection_status !== 'display_only') {
-            throw new Error('当前参数尚未形成可保存的合同投影，请检查后重试。');
+            throw new Error('当前条款尚未完成预览，请检查后重试。');
           }
-          await request('/api/run', state.previewPayload);
+          const runPayload = state.previewPayload;
+          await request('/api/run', runPayload);
+          if (saveRequestId !== state.saveRequestId || state.product?.product_id !== productId || currentSignature() !== current || state.previewPayload !== runPayload) return;
           showNotice(runtimeSuccessNotice());
           setCanvasState('结果已保存', 'ready');
+          state.hasSavedResult = true;
         } catch (error) {
+          if (saveRequestId !== state.saveRequestId || state.product?.product_id !== productId) return;
+          state.previewFailed = true;
+          clearTermErrors();
+          showTermError(error);
           setCanvasState('保存失败');
           showNotice(error.message, 'error');
           throw error;
         } finally {
-          state.saving = false;
-          const enabled = canRuntimePreview();
-          $('canvasPreviewButton').disabled = !enabled;
-          $('canvasSaveButton').disabled = !enabled;
+          if (saveRequestId === state.saveRequestId) {
+            state.saving = false;
+            setRuntimeInputsLocked(false);
+            termInputs().find(input => input.getAttribute('aria-invalid') === 'true')?.focus();
+            if (typeof requestModuleInputReset === 'function') requestModuleInputReset();
+          }
         }
       }
 
       function restoreDefaults() {
-        if (!state.product || !canRuntimePreview()) return;
+        if (state.moduleResetLoading || !state.product || !canRuntimePreview()) return;
         renderParameters();
         markInputDirty();
         showNotice('已恢复默认合同与条款；预览后更新收益图。');
@@ -882,8 +1141,13 @@
       }
 
       async function selectProduct() {
+        if (state.saving) {
+          $('productSelect').value = state.product?.product_id || '';
+          return;
+        }
         state.canvasRequestId += 1;
         clearMaintenancePlan();
+        state.previewFailed = false;
         state.product = state.products.find(product => product.product_id === $('productSelect').value) || null;
         rememberProductId(state.product?.product_id || '');
         state.preview = null;
@@ -901,6 +1165,7 @@
         updateRuntimeChrome();
         renderLibrary();
         renderSelectedPath();
+        showPreviewPlaceholder('正在读取默认图', '正在读取默认图。');
         try {
           await loadDefaultExample();
         } catch (error) {
@@ -925,7 +1190,7 @@
           if (contractRequestId !== state.catalogRequestId) return;
           throw new Error('产品目录未返回有效JSON');
         }
-        if (contractRequestId !== state.catalogRequestId && (!response.ok || !data.ok)) return;
+        if (contractRequestId !== state.catalogRequestId) return;
         if (!response.ok || !data.ok) throw new Error(data.message || '产品目录读取失败');
         state.products = data.products;
         $('productSelect').replaceChildren(new Option('请选择产品',''), ...data.products.map(product => new Option(product.product_id + ' ' + product.canonical_name, product.product_id)));
@@ -934,6 +1199,31 @@
         await selectProduct();
       }
 
+      function moduleResetBusy() { return state.saving || state.moduleResetLoading; }
+      function requestModuleInputReset() { if (!state.resetOnActivation || !state.moduleVisible || moduleResetBusy()) return; state.resetOnActivation = false; void refreshModuleDefaultsAfterReopen(); }
+      async function refreshModuleDefaultsAfterReopen() {
+        state.moduleResetLoading = true;
+        state.canvasRequestId += 1;
+        state.preview = null;
+        state.previewPayload = null;
+        state.previewSignature = null;
+        state.inputsDirty = true;
+        setRuntimeInputsLocked(true);
+        try {
+          await loadCatalog();
+          setRuntimeInputsLocked(true);
+          showNotice('已恢复默认参数。');
+        } catch (error) {
+          showNotice(error.message || '重新读取最新产品默认值失败。', 'error');
+        } finally {
+          state.moduleResetLoading = false;
+          setRuntimeInputsLocked(false);
+          requestModuleInputReset();
+        }
+      }
+      function handleModuleVisibility(event) { state.moduleVisible = event.detail?.active !== false; if (state.moduleVisible && event.detail?.reopened) { state.resetOnActivation = true; requestModuleInputReset(); } }
+
+      function bindPageControls() {
       $('productSelect').addEventListener('change', () => selectProduct().catch(error => showNotice(error.message, 'error')));
       $('applyParametersButton').addEventListener('click', () => preview().catch(() => {}));
       $('restoreDefaultsButton').addEventListener('click', restoreDefaults);
@@ -961,24 +1251,43 @@
       window.addEventListener('blur', finishCanvasPan);
       $('parameterFields').addEventListener('input', markInputDirty);
       $('parameterFields').addEventListener('change', markInputDirty);
-      bindResizer($('libraryResizer'), '--library-width', 220, 420);
-      bindResizer($('inspectorResizer'), '--inspector-width', 300, 520);
-      new ResizeObserver(() => { if (state.zoomMode === 'fit' && $('canvasViewport').querySelector('.canvas-stage')) fitZoom(); }).observe($('canvasViewport'));
+      document.addEventListener('optionhelper:modulevisibility', handleModuleVisibility);
+      }
 
-      if (location.protocol === 'file:') setServiceStatus('正在连接本机服务');
-      updateRuntimeChrome();
-      loadCatalog()
-        .then(() => {
+      async function initializePayoffer() {
+        let stage = '页面控件初始化';
+        let viewerUnavailable = false;
+        try {
+          bindPageControls();
+          // The optional viewer must not prevent the product catalog or the core controls from loading.
+          try { setupPayoffViewer(); }
+          catch (error) {
+            viewerUnavailable = true;
+            if ($('canvasExpandButton')) $('canvasExpandButton').disabled = true;
+            console.error('Payoffer viewer initialization failed', error);
+          }
+          stage = '画布初始化';
+          bindResizer($('libraryResizer'), '--library-width', 220, 420);
+          bindResizer($('inspectorResizer'), '--inspector-width', 300, 520);
+          observeCanvasSize($('canvasViewport'), () => { if (state.zoomMode === 'fit' && $('canvasViewport').querySelector('.canvas-stage')) fitZoom(); });
+          stage = '产品目录读取';
+          setServiceStatus('正在读取产品目录');
+          updateRuntimeChrome();
+          await loadCatalog();
           setServiceStatus(hostedInDesk ? 'Desk运行服务已连接' : '本机服务已连接');
-          if (location.protocol === 'file:') showNotice('已连接本机服务。结果属于开发预览，正式交付须通过OptionHelper生成。');
-        })
-        .catch(error => {
-          setServiceStatus('未连接本机服务', true);
+          if (viewerUnavailable) showNotice('收益图放大查看暂不可用，请重新打开收益结构。', 'error');
+          else if (location.protocol === 'file:') showNotice('已连接本机服务。结果属于开发预览，正式交付须通过OptionHelper生成。');
+        } catch (error) {
+          setServiceStatus(stage + '失败', true);
+          console.error('Payoffer initialization failed: ' + stage, error);
           const message = location.protocol === 'file:'
             ? '请先双击同目录的payoffer.command启动服务，再点击“重新读取资料库”。'
             : error.message;
           showNotice(message, 'error');
-        });
+        }
+      }
+
+      void initializePayoffer();
     </script>
   </body>
 </html>
