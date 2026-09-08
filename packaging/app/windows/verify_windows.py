@@ -285,15 +285,7 @@ def verify_layout(app: Path, *, source_root: Path | None = None) -> dict[str, ob
             app / "OptionHelper.exe",
             resources / "backend" / "OptionHelperBackend" / "OptionHelperBackend.exe",
         ):
-            completed = subprocess.run(
-                ["powershell", "-NoProfile", "-NonInteractive", "-Command", script, str(executable), thumbprint],
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                timeout=60,
-            )
+            completed = _powershell(script, str(executable), thumbprint)
             require(completed.returncode == 0, f"Windows正式EXE Authenticode验证失败：{executable.name}")
     else:
         require(signing.get("method") == "unsigned", "Windows本地候选必须明确记录unsigned")
@@ -304,26 +296,29 @@ def verify_layout(app: Path, *, source_root: Path | None = None) -> dict[str, ob
     return manifest
 
 
+
+def _powershell(script: str, *arguments: str) -> subprocess.CompletedProcess:
+    """Run a temporary UTF-8 script with literal arguments on PowerShell 5.1."""
+    with tempfile.TemporaryDirectory(prefix="optionhelper-verify-") as directory:
+        path = Path(directory) / "verify.ps1"
+        path.write_text('$ErrorActionPreference = "Stop"\n' + script, encoding="utf-8-sig")
+        return subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+             "-File", str(path), *arguments],
+            text=True, encoding="utf-8", errors="replace",
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=60,
+        )
+
 def verify_credential_acl(root: Path) -> dict[str, object]:
     files = tuple(root.glob("*.secret"))
     require(root.is_dir() and len(files) >= 2, "Windows凭据目录或凭据文件缺失")
-    command = [
-        "powershell", "-NoProfile", "-Command",
+    script = (
         "$items=@($args[0])+(Get-ChildItem -LiteralPath $args[0] -Filter *.secret).FullName;"
         "$items|ForEach-Object{(Get-Acl -LiteralPath $_).Access|"
-        "Select-Object IdentityReference,FileSystemRights,AccessControlType}|ConvertTo-Json -Depth 4",
-        str(root),
-    ]
+        "Select-Object IdentityReference,FileSystemRights,AccessControlType}|ConvertTo-Json -Depth 4"
+    )
     try:
-        completed = subprocess.run(
-            command,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            timeout=60,
-        )
+        completed = _powershell(script, str(root))
     except subprocess.TimeoutExpired as error:
         raise WindowsVerificationError("Windows凭据ACL检查超时") from error
     require(completed.returncode == 0, f"Windows凭据ACL检查失败：{completed.stdout}")
