@@ -23,7 +23,6 @@ from ..agent_runtime.session_context import (
     RunId,
     SessionEventLog,
     SessionId,
-    SurfaceProjector,
     transcript_messages,
 )
 from ..agent_runtime.projection_cache import ProjectionCache
@@ -285,8 +284,20 @@ class TaskService:
                     continue
                 block_type = str(block.get("type", "")).replace("_", "-")
                 block_text = str(block.get("text", ""))
+                if block_type == "document":
+                    report_id = str(block.get("report_run_id", ""))
+                    if not report_id or any(c not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._:-" for c in report_id):
+                        continue
+                    safe_blocks.append({key: str(block.get(key, "")) for key in ("type", "report_run_id", "title", "format", "preview_url", "download_url")})
+                    continue
                 if block_type == "question":
-                    safe_blocks.append(_validated_question_block(block))
+                    question = _validated_question_block(block)
+                    # A repeated prompt is a new question in a new assistant message.
+                    # Keep the identity stable when the same message is replayed.
+                    question["question_id"] = hashlib.sha256(
+                        f"{message['message_id']}\x1f{question['question_id']}".encode("utf-8")
+                    ).hexdigest()[:24]
+                    safe_blocks.append(question)
                     continue
                 if block_type not in {"text", "reasoning"} or not block_text:
                     continue
@@ -1559,7 +1570,7 @@ def _pending_recommendation(value: dict[str, Any], *, allow_approved: bool = Fal
     constraints = value.get("confirmed_constraints")
     if not isinstance(constraints, dict) or set(constraints).difference({
         "underlying", "horizon", "market_view", "max_loss", "principal_fluctuation",
-        "output_type", "format", "path_count",
+        "output_type", "format", "path_count", "backtest_range",
     }):
         raise ValidationError("Recommendation continuation constraints are invalid")
     result["confirmed_constraints"] = copy.deepcopy(constraints)
