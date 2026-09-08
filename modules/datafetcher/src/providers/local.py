@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pandas as pd
 
 from ..config import DataFetcherConfig
 from ..models import DataRequest
-from ..request_validator import controlled_local_csv_path
+from ..request_validator import controlled_local_csv_sources
 from .base import ProviderUnavailable
 
 
@@ -21,20 +19,11 @@ class LocalCsvProvider:
         return 0
 
     def fetch(self, request: DataRequest, config: DataFetcherConfig) -> pd.DataFrame:
-        root = Path(config.local_csv_root or config.data_root or Path.cwd()).resolve()
-        if request.local_csv:
-            source = controlled_local_csv_path(request, config)
-            if source is None:
-                raise ProviderUnavailable("受控本地CSV不存在")
-            paths = [(request.asset_id, source)]
-        else:
-            paths = []
-            for asset_id in request.asset_ids:
-                candidates = (root / "market" / f"{asset_id}_daily.csv", root / "market" / f"{asset_id}.csv")
-                match = next((path for path in candidates if path.is_file()), None)
-                if match is None:
-                    raise ProviderUnavailable(f"本地DataStore未找到{asset_id}日线CSV")
-                paths.append((asset_id, match))
+        paths = controlled_local_csv_sources(request, config)
+        available = {asset_id for asset_id, _path in paths}
+        for asset_id in request.asset_ids:
+            if asset_id not in available:
+                raise ProviderUnavailable(f"本地DataStore未找到{asset_id}日线CSV")
         frames: list[pd.DataFrame] = []
         for asset_id, path in paths:
             try:
