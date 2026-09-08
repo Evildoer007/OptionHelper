@@ -10,3 +10,5 @@
 - `openpyxl-LICENSE.txt`：openpyxl 3.1.5。用于XLSX研究文档文本提取。
 - `LibreChat-LICENSE.txt`：LibreChat。用于App侧栏折叠、新建任务、账户菜单、任务行与发送控件的前端结构和图形。
 - `ThinkingOrbs-LICENSE.txt`：thinking-orbs 0.3.1。用于OptChat运行过程的Canvas状态动画与绘制引擎。
+
+- `Bloub-LICENSE.txt`：bloub，Desk助手的SVG形变、眨眼和视线引擎，来源见`Bloub-SOURCE.md`。
