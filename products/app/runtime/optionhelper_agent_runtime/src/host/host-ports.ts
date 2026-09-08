@@ -57,6 +57,20 @@ function wireMessage(item: AgentMessage): JsonValue {
   }
 }
 
+function modelMessages(messages: readonly AgentMessage[]): JsonValue[] {
+  // Older stream assembly could persist nameless synthetic calls. Keep the
+  // conversation, but exclude those invalid calls and their paired replies.
+  const invalidIds = new Set<string>()
+  for (const message of messages) for (const block of message.content) {
+    if (block.type === "tool-call" && !block.name.trim()) invalidIds.add(block.id)
+  }
+  return messages.filter(message => !(message.role === "tool" && invalidIds.has(message.toolCallId ?? "")))
+    .map(message => ({ ...message, content: message.content.filter(block =>
+      block.type !== "tool-call" || !invalidIds.has(block.id)) }))
+    .filter(message => message.content.length > 0)
+    .map(wireMessage)
+}
+
 function latestUserText(messages: readonly AgentMessage[]): string {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index]
@@ -81,6 +95,7 @@ export class HostRuntimePorts implements RuntimePorts {
     }
     let activeTextBlock: OpenBlock | undefined
     const toolBlocks = new Map<string, OpenBlock>()
+    const toolIndexes = new Map<number, OpenBlock>()
     const startTextBlock = (blockType: "text" | "reasoning"): OpenBlock => {
       if (activeTextBlock?.blockType === blockType) return activeTextBlock
       activeTextBlock = { index: nextIndex++, blockType, text: "", arguments: "" }
@@ -112,6 +127,7 @@ export class HostRuntimePorts implements RuntimePorts {
         }
       }
       toolBlocks.clear()
+      toolIndexes.clear()
     }
     const stream = this.peer.stream("host.model.stream", {
       requestId: request.requestId,
@@ -123,7 +139,7 @@ export class HostRuntimePorts implements RuntimePorts {
       prompt: latestUserText(request.messages),
       turn: request.turn,
       step: request.step,
-      messages: request.messages.map(wireMessage),
+      messages: modelMessages(request.messages),
       tools: request.tools as unknown as JsonValue,
     }, signal)
     for await (const raw of stream) {
@@ -142,13 +158,24 @@ export class HostRuntimePorts implements RuntimePorts {
       }
       else if (type === "tool-call-delta") {
         yield* closeTextBlock()
-        const id = String(item.id ?? item.tool_call_id ?? `call-${nextIndex}`)
-        let block = toolBlocks.get(id)
+        const suppliedId = String(item.id ?? item.tool_call_id ?? "")
+        const providerIndex = typeof item.index === "number" ? item.index : undefined
+        let block = (suppliedId ? toolBlocks.get(suppliedId) : undefined)
+          ?? (providerIndex === undefined ? undefined : toolIndexes.get(providerIndex))
         if (block === undefined) {
+          if (!suppliedId && providerIndex === undefined) throw new Error("Tool delta is missing both id and index")
+          const id = suppliedId || `call-${nextIndex}`
           block = { index: nextIndex++, blockType: "tool-call", text: "", id, arguments: "" }
           toolBlocks.set(id, block)
           yield { type: "block-start", index: block.index, blockType: "tool-call" }
         }
+        if (providerIndex !== undefined) toolIndexes.set(providerIndex, block)
+        if (suppliedId && suppliedId !== block.id) {
+          toolBlocks.delete(block.id!)
+          block.id = suppliedId
+          toolBlocks.set(suppliedId, block)
+        }
+        const id = block.id!
         if (item.name !== undefined || item.tool_name !== undefined) block.name = String(item.name ?? item.tool_name)
         const argumentsDelta = String(item.argumentsDelta ?? item.arguments_delta ?? item.arguments ?? item.delta ?? "")
         block.arguments += argumentsDelta
@@ -182,7 +209,7 @@ export class HostRuntimePorts implements RuntimePorts {
       step: request.step,
     }, signal))
     const status = String(raw.status ?? "completed")
-    const normalized = status === "succeeded" || status === "success" ? "completed" : status
+    const normalized = ["succeeded", "success", "available"].includes(status) ? "completed" : status
     const factRefs = Array.isArray(raw.fact_refs) ? raw.fact_refs.map(String)
       : Array.isArray(raw.factRefs) ? raw.factRefs.map(String)
         : raw.fact_ref === undefined ? [] : [String(raw.fact_ref)]
