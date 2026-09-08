@@ -112,6 +112,7 @@ class SettingsSnapshot:
     active_model_connection_id: str | None = None
     model_providers: tuple[ModelProviderProfile, ...] = ()
     default_model_selection: ModelSelection | None = None
+    recommendation_execution_mode: str = "single"
     multi_agent_recommendation_preset_id: str = "sequential-deliberation"
     multi_agent_preset_role_models: dict[str, dict[str, ModelSelection]] = field(default_factory=dict)
     multi_agent_preset_agent_instructions: dict[str, dict[str, str]] = field(default_factory=dict)
@@ -167,6 +168,7 @@ def serialize_settings(snapshot: SettingsSnapshot) -> dict[str, Any]:
             {"provider_id": snapshot.default_model_selection.provider_id, "model_id": snapshot.default_model_selection.model_id}
             if snapshot.default_model_selection else None
         ),
+        "recommendation_execution_mode": snapshot.recommendation_execution_mode,
         "multi_agent_recommendation_preset_id": snapshot.multi_agent_recommendation_preset_id,
         "multi_agent_preset_role_models": {
             preset_id: {
@@ -397,6 +399,7 @@ def deserialize_settings(value: dict[str, Any]) -> SettingsSnapshot:
         active_model_connection_id=active_connection,
         model_providers=tuple(providers),
         default_model_selection=selection,
+        recommendation_execution_mode=str(value.get("recommendation_execution_mode", "single")),
         multi_agent_recommendation_preset_id=preset_id,
         multi_agent_preset_role_models=role_models,
         multi_agent_preset_agent_instructions=agent_instructions,
