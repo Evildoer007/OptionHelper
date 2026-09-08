@@ -21,8 +21,9 @@ from .engines.pricing_core.main import price_option
 from .engines.pricing_core.prepared_optionreg import PreparedOptionRegPricer
 from .greeks import real_spot_greeks, scale_result
 from .model_router import capability_for, resolve_route
-from .observation_schedule import actual_n_obs, bind_accumulator_remaining_count
+from .observation_schedule import bind_accumulator_remaining_count
 from .observed_state import ObservedContractState
+from .observed_state_rebuilder import analytical_history_inputs
 
 
 class ProductNotAvailable(ValueError):
@@ -119,7 +120,7 @@ class ProductPricingAdapter:
         } and (observed_state.occurred_events or observed_state.knocked_in):
             raise ProductNotAvailable("存续路径事件已发生时请使用Monte Carlo，以冻结观察状态继续估值")
         start_value = contract.identity.get("contract_start_date")
-        if _valuation_after_contract_start(observed_state, start_value):
+        if _valuation_after_contract_start(observed_state, start_value) and observed_state.observation_history is None:
             if contract.product_id == "9.4":
                 raise ProductNotAvailable("存续方差互换缺少估值日前已实现方差，不能只估算剩余观察期")
             if contract.product_id == "9.8":
@@ -151,6 +152,7 @@ class ProductPricingAdapter:
             raise ProductNotAvailable("定价必须提供合同起始参考价reference_prices")
         self.reference_price = _number(references[self.asset], "reference_prices")
         self._basis = _cashflow_basis(self.contract, self.reference_price)
+        self._analytical_history = analytical_history_inputs(contract, observed_state.observation_history) if self.method == "analytical" else {}
         self._valuation_state = (
             self.observed_state.valuation_state(
                 contract_start_date=str(self.contract.identity.get("contract_start_date"))
@@ -205,6 +207,7 @@ class ProductPricingAdapter:
             run = price_option(self.family, self.structure, parameters, engine_method, output="NONE")
             result = _from_run(run)
         quantity = _analytical_quantity(self.contract)
+        numerical_contract = parameters["contract"].get("resolved_contract", self.contract)
         if self.method != "monte_carlo":
             result = scale_result(result, quantity)
         result = apply_cashflow_lifecycle(
@@ -216,7 +219,11 @@ class ProductPricingAdapter:
             cashflow_scale=self._basis["cashflow_scale"],
             numerical_value_includes_initial=(
                 self.method == "monte_carlo"
-                and paths_include_initial_cashflow(self.contract)
+                and paths_include_initial_cashflow(numerical_contract)
+            ),
+            numerical_initial_cashflow=(
+                contractual_initial_cashflow(numerical_contract, quantity)
+                if self.method == "monte_carlo" else None
             ),
         )
         if self.method != "monte_carlo":
@@ -255,8 +262,8 @@ class ProductPricingAdapter:
                     trading_calendar=self.trading_calendar,
                     as_of=_as_of(self.config.valuation_date),
                     completed_observations=self._completed_accumulator_observations(),
+                    replay_history=self.observed_state.observation_history is not None,
                 )
-                resolved_contract = _pricer_economic_contract(resolved_contract)
                 self._resolved_contract_by_maturity[maturity_key] = resolved_contract
             contract = {
                 "resolved_contract": resolved_contract,
@@ -305,24 +312,27 @@ class ProductPricingAdapter:
             }
         elif self.route.capability.adapter == "variance_swap":
             contract = {
+                **self._analytical_history,
                 "strike_volatility": float(self.contract.terms["Ksig"]),
                 "annualization_days": int(self.contract.terms["annualization_days"]),
                 "observation_times": _analytical_observation_times(
                     self.trading_calendar, _as_of(self.config.valuation_date), maturity_years,
                 ),
-                "maturity_years": float(maturity_years),
+                "maturity_years": _analytical_settlement_maturity(self.contract, self.trading_calendar, _as_of(self.config.valuation_date), maturity_years),
                 "basis": basis,
             }
         elif self.route.capability.adapter == "range_accrual":
             observation_times = _analytical_observation_times(
                 self.trading_calendar, _as_of(self.config.valuation_date), maturity_years,
+                contract=self.contract,
             )
             contract = {
+                **self._analytical_history,
                 "lower": float(self.contract.terms["Hlow"]),
                 "upper": float(self.contract.terms["Hup"]),
                 "maximum_coupon": float(self.contract.terms["c_max"]),
                 "observation_times": observation_times,
-                "maturity_years": float(maturity_years),
+                "maturity_years": _analytical_settlement_maturity(self.contract, self.trading_calendar, _as_of(self.config.valuation_date), maturity_years),
                 "basis": basis,
             }
         else:
@@ -786,33 +796,6 @@ def _initial_cashflow(
     return 0.0
 
 
-def _pricer_economic_contract(contract: ResolvedContract) -> ResolvedContract:
-    """在Pricer边界把9.3冻结为不含期权费的未来期权组合。
-
-    OptionReg当前9.3路径把折价金额放在到期收益中。Pricer的合同现金流生命周期
-    要求期权费仅在起始日发生，因此MC仍使用Core共享解释器，但消费下列等价的
-    未来两看涨组合路径，不制造到期固定退款。
-    """
-
-    if contract.product_id != "9.3":
-        return contract
-    paths = ({
-        "condition": "True",
-        "cases": (
-            {"domain": "0 <= S_T <= K_1", "pnl": "cash(T, N * 0)"},
-            {
-                "domain": "K_1 < S_T <= K_2",
-                "pnl": "cash(T, N * (S_T - K_1) / S_0)",
-            },
-            {
-                "domain": "S_T > K_2",
-                "pnl": "cash(T, N * ((S_T - K_1) - (1 - alpha) * (S_T - K_2)) / S_0)",
-            },
-        ),
-    },)
-    return replace(contract, paths=paths, path_case_applicability=None)
-
-
 def _contract_with_maturity(
     contract: ResolvedContract,
     maturity_years: float,
@@ -821,6 +804,7 @@ def _contract_with_maturity(
     trading_calendar: Mapping[str, Any] | None = None,
     as_of: date | None = None,
     completed_observations: int = 0,
+    replay_history: bool = False,
 ) -> ResolvedContract:
     """Create an immutable remaining-term view for controlled time revalue."""
     remaining_tenor = float(maturity_years if remaining_years is None else remaining_years)
@@ -832,28 +816,17 @@ def _contract_with_maturity(
         trading_calendar=trading_calendar,
     )
     terms = {**contract.terms, "T": scenario_maturity}
-    observations = contract.terms.get("n_obs")
-    if observations is not None:
-        if trading_calendar is None or as_of is None:
-            raise ValueError("n_obs路径合同重估必须提供注入交易日历与估值日")
-        session_values = trading_calendar.get("sessions")
-        if isinstance(session_values, (str, bytes)) or not isinstance(session_values, (tuple, list)):
-            raise ValueError("n_obs路径合同重估必须提供显式交易sessions")
-        remaining_observations = actual_n_obs(
-            contract,
-            sessions=session_values,
-            as_of=as_of,
-            remaining_years=remaining_tenor,
+    # n_obs is an independent contractual term. The frozen Core schedules
+    # own its dates; neither the headline nor a time-risk node may replace
+    # it with the number of calendar sessions falling inside T.
+    if contract.product_id == "7.1" and completed_observations and not replay_history:
+        monitor = dict(terms.get("monitor", {}))
+        monitor["Q_acc"] = bind_accumulator_remaining_count(
+            str(monitor["Q_acc"]), int(terms["n_obs"]) - int(completed_observations),
         )
-        terms["n_obs"] = remaining_observations + int(completed_observations)
-        if contract.product_id == "7.1" and completed_observations:
-            monitor = dict(terms.get("monitor", {}))
-            monitor["Q_acc"] = bind_accumulator_remaining_count(
-                str(monitor["Q_acc"]), remaining_observations,
-            )
-            terms["monitor"] = monitor
+        terms["monitor"] = monitor
     hedge_schedule = terms.get("hedge_schedule")
-    if trading_calendar is not None and as_of is not None and isinstance(hedge_schedule, (tuple, list)):
+    if not replay_history and trading_calendar is not None and as_of is not None and isinstance(hedge_schedule, (tuple, list)):
         session_values = trading_calendar.get("sessions")
         if isinstance(session_values, (tuple, list)):
             target = as_of.toordinal() + round(remaining_tenor * 365.0)
@@ -907,6 +880,12 @@ def _scenario_contract_window(
     if scenario_remaining_days <= 0:
         raise ValueError("风险期限节点必须晚于估值日")
     scenario_end = as_of + timedelta(days=scenario_remaining_days)
+    if contract.terms.get("n_obs") is not None:
+        # Count-based observation dates are frozen independently of T.
+        # A time-risk node changes the settlement clock, not which contract
+        # observations feed the payoff or its contractual denominator.
+        identity["contract_end_date"] = scenario_end.isoformat()
+        return identity, schedules, float(total_maturity_years)
     # The exchange's last observation can precede a civil maturity across a
     # weekend or holiday closure. Keep the legal end only for that exact,
     # injected terminal session; never infer an arbitrary calendar tolerance.
@@ -1030,13 +1009,36 @@ def _two_asset_correlation(value: Any) -> float:
     return correlation
 
 
+def _analytical_settlement_maturity(contract, trading_calendar, as_of: date, remaining_years: float) -> float:
+    """cash(T) uses the frozen civil end, not the registry's fractional tenor."""
+    identity, _, _ = _scenario_contract_window(
+        contract, as_of=as_of, remaining_years=remaining_years,
+        total_maturity_years=float(contract.terms["T"]), trading_calendar=trading_calendar,
+    )
+    end = identity.get("contract_end_date")
+    return (date.fromisoformat(str(end)) - as_of).days / 365.0 if end else float(remaining_years)
+
+
 def _analytical_observation_times(
     trading_calendar: Mapping[str, Any] | None,
     as_of: date,
     maturity_years: float,
+    *,
+    contract: ResolvedContract | None = None,
 ) -> tuple[float, ...]:
     if trading_calendar is None:
         raise ProductNotAvailable("观察型解析结构必须使用冻结交易日历")
+    if contract is not None:
+        _, schedules, _ = _scenario_contract_window(
+            contract, as_of=as_of, remaining_years=maturity_years,
+            total_maturity_years=float(contract.terms["T"]), trading_calendar=trading_calendar,
+        )
+        selected = tuple(
+            date.fromisoformat(str(value))
+            for value in schedules["Orange"]["dates"]
+            if date.fromisoformat(str(value)) >= as_of
+        )
+        return tuple((value - as_of).days / 365.0 for value in selected)
     target = as_of + timedelta(days=round(float(maturity_years) * 365.0))
     selected = tuple(
         date.fromisoformat(str(value))
