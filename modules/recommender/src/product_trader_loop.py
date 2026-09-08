@@ -12,7 +12,8 @@ import re
 from typing import Any, Mapping, Sequence
 
 from .candidate_builder import create_term_variant
-from .models import EvaluationRecord, RecommendationCandidate, RecommendationValidationError
+from .evaluation_evidence import read_evaluation_records
+from .models import RecommendationCandidate, RecommendationValidationError
 
 
 MAX_ROUNDS = 2
@@ -407,6 +408,9 @@ class ProductTraderLoop:
 def attach_host_evaluations(
     round_plan: ProductTraderRound,
     host_results: Mapping[str, Mapping[str, Any]],
+    *,
+    tenant_id: str | None = None,
+    task_id: str | None = None,
 ) -> ProductTraderRound:
     """把Host返回的当前候选运行引用附着到本轮计划。"""
 
@@ -419,35 +423,20 @@ def attach_host_evaluations(
     for plan in round_plan.plans:
         candidate_id = plan.candidate.candidate.candidate_id
         result = _mapping(host_results[candidate_id], f"Host计算结果.{candidate_id}")
-        allowed = {"evaluation_records", "module_run_refs", "module_statuses", "key_terms", "display_terms", "verified_metrics"}
+        allowed = {"evaluation_records", "module_run_refs", "module_statuses", "key_terms", "display_terms", "verified_metrics", "status", "round_no"}
         unknown = sorted(set(result) - allowed)
         if unknown:
             raise _error(f"Host计算结果.{candidate_id}含未知字段：{','.join(unknown)}")
-        required = {"evaluation_records", "module_run_refs", "module_statuses"}
+        required = {"module_run_refs", "module_statuses"}
         missing = sorted(required - set(result))
         if missing:
             raise _error(f"Host计算结果.{candidate_id}缺少字段：{','.join(missing)}")
-        raw_records = _sequence(result["evaluation_records"], f"Host计算结果.{candidate_id}.evaluation_records")
-        records = tuple(
-            EvaluationRecord.from_mapping(item) if isinstance(item, Mapping) else item
-            for item in raw_records
+        records = read_evaluation_records(
+            result, candidate_id=candidate_id, modules=plan.modules, round_no=round_plan.round_no,
+            tenant_id=tenant_id, task_id=task_id,
         )
-        if any(not isinstance(item, EvaluationRecord) for item in records):
-            raise _error(f"Host计算结果.{candidate_id}.evaluation_records无效")
-        if any(item.candidate_id != candidate_id or item.round_no != round_plan.round_no for item in records):
-            raise _error(f"Host计算结果.{candidate_id}存在非当前候选或轮次的EvaluationRecord")
-        record_modules = [item.module for item in records]
-        if len(record_modules) != len(set(record_modules)) or set(record_modules) != set(plan.modules):
-            raise _error(f"Host计算结果.{candidate_id}未严格覆盖计划模块")
-        raw_runs = _sequence(result["module_run_refs"], f"Host计算结果.{candidate_id}.module_run_refs")
         runs = tuple(item.module_run_ref for item in records if item.module_run_ref is not None)
-        serialized_runs = tuple(item.__dict__ if hasattr(item, "__dict__") else item for item in runs)
-        if tuple(raw_runs) != serialized_runs:
-            raise _error(f"Host计算结果.{candidate_id}.module_run_refs与EvaluationRecord不一致")
-        statuses = _mapping(result["module_statuses"], f"Host计算结果.{candidate_id}.module_statuses")
         expected_statuses = {item.module: item.status for item in records}
-        if {str(key): str(value) for key, value in statuses.items()} != expected_statuses:
-            raise _error(f"Host计算结果.{candidate_id}.module_statuses与EvaluationRecord不一致")
         raw_terms = result.get("key_terms", result.get("display_terms", ()))
         terms = _key_terms(raw_terms, f"Host计算结果.{candidate_id}.key_terms")
         states = set(expected_statuses.values())
