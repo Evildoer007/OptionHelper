@@ -8,6 +8,8 @@ import re
 from typing import Any, Mapping
 
 from runtime.contracts.contract_api import bind_term_symbols, resolve_schedule
+from runtime.contracts.contract_types import deep_thaw
+from runtime.protocol.models import validate_observation_history
 
 
 class ObservedStateError(ValueError):
@@ -23,6 +25,13 @@ class ObservedContractState:
     occurred_events: tuple[Mapping[str, Any] | str, ...] = ()
     realized_cashflows: tuple[Mapping[str, Any], ...] = ()
     source_refs: tuple[str, ...] = ()
+    observation_history: Mapping[str, Any] | None = None
+
+    def __post_init__(self) -> None:
+        if self.observation_history is not None:
+            object.__setattr__(self, "observation_history", validate_observation_history(
+                self.observation_history, valuation_date=self.valuation_date,
+            ))
 
     @classmethod
     def initial(cls, valuation_date: str | None) -> "ObservedContractState":
@@ -37,7 +46,7 @@ class ObservedContractState:
         elif isinstance(value, cls):
             state = value
         elif isinstance(value, Mapping):
-            allowed = {"valuation_date", "lifecycle_status", "occurred_events", "realized_cashflows", "source_refs"}
+            allowed = {"valuation_date", "lifecycle_status", "occurred_events", "realized_cashflows", "source_refs", "observation_history"}
             unknown = set(value) - allowed
             if unknown:
                 raise ObservedStateError("observed_contract_state含未支持字段：" + ",".join(sorted(unknown)))
@@ -47,6 +56,7 @@ class ObservedContractState:
                 occurred_events=tuple(value.get("occurred_events", ())),
                 realized_cashflows=tuple(value.get("realized_cashflows", ())),
                 source_refs=tuple(str(item) for item in value.get("source_refs", ())),
+                observation_history=value.get("observation_history"),
             )
         else:
             raise ObservedStateError("observed_contract_state必须为ObservedContractState或对象")
@@ -59,7 +69,7 @@ class ObservedContractState:
         allowed_status = {"initial", "active", "terminated", "matured"}
         if self.lifecycle_status not in allowed_status:
             raise ObservedStateError("observed_contract_state.lifecycle_status无效")
-        if (self.occurred_events or self.realized_cashflows) and not self.source_refs:
+        if (self.occurred_events or self.realized_cashflows or self.observation_history) and not self.source_refs:
             raise ObservedStateError("已发生事件或现金流必须提供source_refs")
         if any(not isinstance(item, str) or not item.strip() for item in self.source_refs):
             raise ObservedStateError("observed_contract_state.source_refs必须为非空引用")
@@ -168,6 +178,7 @@ class ObservedContractState:
             "accumulated_count": self.accumulated_count,
             "accumulated_quantity": self.accumulated_quantity,
             "observation_stage": stage,
+            **({"observation_history": self.observation_history} if self.observation_history is not None else {}),
         }
 
     def validate_european_vanilla(self) -> None:
@@ -192,6 +203,7 @@ class ObservedContractState:
         if (
             path_dependent
             and unsupported_midlife_aggregate
+            and self.observation_history is None
             and self.lifecycle_status == "active"
             and self.valuation_date is not None
             and contract_start_date is not None
@@ -221,6 +233,8 @@ class ObservedContractState:
         if self.lifecycle_status in {"terminated", "matured"}:
             raise ObservedStateError("已终止或到期合同不得重新模拟未来路径；历史结算现金流仅用于审计")
         supported = {"observation_checkpoint", "knock_in", "ki", "knock_out", "ko"}
+        if self.observation_history is not None:
+            supported.update({"reset", "accumulation_stopped"})
         unsupported = sorted({_event_type(event) for event in self.occurred_events} - supported)
         if unsupported:
             raise ObservedStateError("存续路径定价尚未实现历史事件：" + ",".join(unsupported))
@@ -309,6 +323,7 @@ class ObservedContractState:
             "occurred_events": list(self.occurred_events),
             "realized_cashflows": list(self.realized_cashflows),
             "source_refs": list(self.source_refs),
+            **({"observation_history": deep_thaw(self.observation_history)} if self.observation_history is not None else {}),
         }
 
 
