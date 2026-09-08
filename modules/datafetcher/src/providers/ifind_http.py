@@ -393,7 +393,7 @@ def download_history(
             ),
         )
         result = raw.merge(adjusted, on=["date", "asset_id"], how="inner", validate="one_to_one")
-        if len(result) != len(raw):
+        if len(result) != len(raw) or len(result) != len(adjusted):
             raise IFindDownloadError("不复权与前复权历史交易日未能一一对应")
     else:
         result = raw.copy()
