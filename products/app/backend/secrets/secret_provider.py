@@ -46,7 +46,7 @@ class SecretProvider:
 
     def require_reference(self, reference: SecretRef | None, purpose: str) -> SecretRef:
         if reference is None:
-            raise UnavailableCapabilityError(purpose, "请由管理员在设置中心保存对应服务的凭据后重试。")
+            raise UnavailableCapabilityError(purpose, "请在设置中心保存对应服务的凭据后重试。")
         if reference.provider not in self._SUPPORTED_REFERENCE_PROVIDERS:
             raise ValidationError(f"Unsupported SecretRef provider: {reference.provider}")
         if (purpose, reference.provider, reference.key) not in self._allowed:
