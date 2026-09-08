@@ -14,6 +14,7 @@ from typing import Any, Mapping
 from xml.etree import ElementTree
 
 from runtime.knowledger.registry_loader import load_term_catalog
+from runtime.contracts.term_presentation import INTERNAL_SCALE, build_term_fields
 
 from .models import (
     MODULE_TO_RUN,
@@ -29,28 +30,6 @@ from .artifact_validator import is_public_module_artifact
 DISCLAIMER = "风险提示：以上内容仅供结构说明和情景测算，不构成投资建议、收益承诺或正式报价。期权及结构化产品具有较高风险，可能发生部分或全部本金损失；实际结果以合同条款、市场报价和交易确认为准。"
 DEFAULT_RISK_ITEMS = ["结构收益取决于合同条款与市场路径，可能发生部分或全部本金损失。"]
 
-_LIMITATION_TEXT = {
-    "exchange_calendar_not_exposed_by_data_source_weekday_validation_only": "数据源未提供可核验的交易日历，本次仅按工作日校验样本日期。",
-    "no_nav_curve_is_generated": "本次回测按到期损益统计，未生成持有期净值曲线。",
-    "payment_calendar_not_exposed_by_shared_contract_core": "合同事实未提供独立付款日历，相关日期按当前合同约定处理。",
-    "coverage_does_not_claim_unobserved_scenarios_were_economically_exercised": "情景覆盖仅表示样本中观察到的路径，不代表未观察情景已实际发生。",
-    "in_memory_historical_data_without_persisted_data_asset": "历史数据仅绑定本次运行，未形成可复用的数据资产。",
-}
-_TERM_LABELS = {
-    "S0": "期初标的价格", "S0Vec": "期初标的价格", "K": "行权价", "T": "期限（年）",
-    "K1": "执行价1", "K2": "执行价2", "P_net": "净权利金",
-    "Pi_0": "期初权利金", "n_C": "合约数量", "notional": "名义本金", "coupon": "票息",
-    "coupon_rate": "票息率", "knock_in_barrier": "敲入水平", "knock_out_barrier": "敲出水平",
-    "barrier": "障碍水平", "exercise_style": "行权方式", "settlement": "结算方式",
-    "observation_price": "观察价格", "margin_call": "追加保证金", "monitor": "观察设置",
-    "pricing_methods": "适用估值方法", "constraints": "合同约束", "derived_terms": "派生条款",
-}
-_TERM_SYMBOLS = {
-    "S0": "S₀", "S0Vec": "S₀", "K": "K", "T": "T", "Pi_0": "Π₀", "n_C": "nᶜ",
-    "K1": "K_1", "K2": "K_2", "P_net": "P_net",
-    "notional": "N", "coupon": "C", "coupon_rate": "c", "knock_in_barrier": "Hₖᵢ",
-    "knock_out_barrier": "Hₖₒ", "barrier": "H",
-}
 _TERM_VALUE_TEXT = {
     "analytical": "Analytical", "monte_carlo": "Monte Carlo", "cash": "现金结算",
     "european": "仅到期日可行权", "american": "存续期内可行权",
@@ -72,7 +51,11 @@ _MODULE_ONLY_TERMS = {
     "pricing_input": {"pricing_methods"},
     "backtest_input": set(),
 }
-_PUBLIC_EXCLUDED_TERM_SYMBOLS = {"N", "notional"}
+# Compiler and rendering metadata are not contract clauses. Real derived
+# terms still use the shared presentation protocol and remain visible.
+_PUBLIC_EXCLUDED_TERM_SYMBOLS = {
+    "N", "notional", "monitor", "constraints", "derived_terms", "pricing_methods", "payoff_figure_basis",
+}
 
 
 _NUMBER_TEXT = re.compile(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$")
@@ -125,17 +108,6 @@ def _text(value: Any) -> str:
             return known
         return _decimal_text(value) if _NUMBER_TEXT.fullmatch(value.strip()) else value
     return str(value)
-
-
-def _public_limitation(value: Any) -> str:
-    text = str(value or "").strip()
-    if not text:
-        return ""
-    if text in _LIMITATION_TEXT:
-        return _LIMITATION_TEXT[text]
-    if re.fullmatch(r"[a-z0-9]+(?:_[a-z0-9]+){2,}", text):
-        return "上游分析存在未公开说明的技术限制，相关结论仅在已列示证据范围内适用。"
-    return text
 
 
 def _risk_items(candidate: Mapping[str, Any]) -> list[str]:
@@ -224,38 +196,6 @@ def _math_text(value: Any) -> str:
     return str(value or "")
 
 
-def _payoff_math_text(value: Any) -> str:
-    text = str(value or "").strip()
-    cursor = 0
-    while True:
-        start = text.find("cash(", cursor)
-        if start < 0:
-            break
-        depth = 0
-        comma = -1
-        end = -1
-        for index in range(start + 5, len(text)):
-            char = text[index]
-            if char == "(":
-                depth += 1
-            elif char == ")":
-                if depth == 0:
-                    end = index
-                    break
-                depth -= 1
-            elif char == "," and depth == 0 and comma < 0:
-                comma = index
-        if comma < 0 or end < 0:
-            break
-        timing = text[start + 5:comma].strip()
-        amount = text[comma + 1:end].strip().replace("*", "×")
-        label = "期初收益构成" if timing == "0" else "到期收益构成" if timing == "T" else f"{timing}时点收益构成"
-        replacement = f"{label}（{amount}）"
-        text = text[:start] + replacement + text[end + 1:]
-        cursor = start + len(replacement)
-    return _math_text(text.replace("*", "×"))
-
-
 def _percent_text(value: Any) -> str:
     numeric = _safe_number(value)
     if numeric is None:
@@ -286,20 +226,46 @@ _SCHEDULE_TEXT = {
 }
 
 
+def _tenor_display_parts(value: Any) -> tuple[str, str]:
+    """Choose exact whole units for the reader; the frozen value stays in years."""
+
+    numeric = _safe_number(value)
+    if numeric is not None and numeric > 0:
+        for scale, unit in ((1, "年"), (12, "个月"), (365, "天")):
+            count = numeric * scale
+            integer = round(count)
+            if integer > 0 and math.isclose(count, integer, rel_tol=0, abs_tol=1e-9):
+                return str(integer), unit
+    return _text(value), "年"
+
+
+def normalize_contract_highlights(value: Any, parameters: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Refresh a saved tenor label from its unrounded parameter fact."""
+
+    rows = [deepcopy(dict(row)) for row in value if isinstance(row, Mapping)] if isinstance(value, list) else []
+    tenor = next((row.get("value") for group in parameters.values() for row in group
+                  if isinstance(row, Mapping) and row.get("en") == "T"), None)
+    if _safe_number(tenor) is not None:
+        amount, unit = _tenor_display_parts(tenor)
+        for row in rows:
+            if row.get("label") == "期限":
+                row.update(value=amount, note=unit)
+    return rows
+
+
 def _highlight_row(symbol: str, value: Any, contract: Mapping[str, Any], catalog: Mapping[str, Any]) -> dict[str, str]:
-    definition = catalog.get(symbol) if isinstance(catalog.get(symbol), Mapping) else {}
-    label = _text(definition.get("name_zh")) or symbol
-    unit = _text(definition.get("unit"))
+    definition = build_term_fields({symbol: value}, catalog)["contract_fields"][0]
+    label = definition["label"]
+    unit = str(definition.get("unit") or "").strip()
     if symbol == "T":
-        label, note = "期限", "年"
+        amount, note = _tenor_display_parts(value)
+        return {"label": "期限", "value": amount, "note": note}
     elif symbol == "exercise_style":
         label, note = "到期行权方式", "仅适用于持有人行权结构"
     elif unit == "premium_percent_s0_100":
         return {"label": label, "value": f"{_decimal_text(value)}%", "note": "S₀=100"}
-    elif symbol == "c":
-        return {"label": "年化票息", "value": _percent_text(value), "note": "年化，ACT/365"}
-    elif unit in {"rate", "volatility"}:
-        return {"label": label, "value": _percent_text(value), "note": "比例" if unit == "rate" else "年化波动率"}
+    elif unit in {"rate", "volatility", "percentage"}:
+        return {"label": label, "value": _percent_text(value), "note": "年化波动率" if unit == "volatility" else "比例"}
     elif unit == "price":
         note = "标的价格水平"
     elif unit == "unit":
@@ -339,8 +305,9 @@ def _contract_highlights(contract: Mapping[str, Any] | None) -> list[dict[str, s
         ("Ohedge", "避险"), ("Oreset", "重置"),
     ):
         if symbol in terms:
-            schedule = _SCHEDULE_TEXT.get(str(terms[symbol]), _text(terms[symbol]))
-            schedules.append(f"{prefix}：{schedule}")
+            schedule = _term_display_value(terms[symbol])
+            if schedule:
+                schedules.append(f"{prefix}：{schedule}")
     if schedules:
         rows = [row for symbol, row in zip(
             [symbol for symbol in priority if symbol in terms and symbol not in _PUBLIC_EXCLUDED_TERM_SYMBOLS],
@@ -402,45 +369,34 @@ _SPECIALIZED_PROFILE_ROOTS = {
     "variance_swap": {"realized_volatility", "realized_variance", "realized_volatility_vs_strike", "volatility_buckets"},
     "range_accrual": {"range_observations", "in_range_observation_ratio"},
 }
-_SPECIALIZED_LEAVES = {
-    "average", "median", "minimum", "maximum",
-    "positive_count", "flat_count", "negative_count", "positive_rate", "negative_rate",
-    "sample_count", "trigger_count", "trigger_rate", "average_days", "median_days",
-    "true_count", "false_count", "true_rate", "count", "rate",
-    "paid_observation_count", "scheduled_observation_count", "unpaid_observation_count", "observation_hit_rate",
-    "knock_out_count", "full_term_count", "knock_out_rate", "triggered_count", "untriggered_count", "triggered_rate",
-    "below_strike_count", "at_or_above_strike_count", "below_strike_rate",
-    "non_negative_terminal_rate", "negative_terminal_rate",
-    "strike_volatility", "contract_purchase_price", "quantity_multiplier", "underlying_count", "observed_trade_count",
-}
-_SPECIALIZED_LABELS = {
-    "terminal_performance": "到期表现",
-    "terminal_performance_sign": "到期表现方向",
-    "positive_rate": "正表现占比",
-    "negative_rate": "负表现占比",
-    "non_negative_terminal_rate": "非负到期表现占比",
-    "negative_terminal_rate": "负到期表现占比",
-    "in_range_observation_ratio": "区间内观察比例",
-    "observation_hit_rate": "票息观察命中比例",
-    "triggered_rate": "触发比例",
-    "knock_out_rate": "敲出比例",
-    "below_strike_rate": "低于执行水平占比",
-    "contract_purchase_price": "合同买入价格",
-    "quantity_multiplier": "数量倍数",
-}
-
-
-def _specialized_label(path: tuple[str, ...]) -> str:
-    exact = {
-        ("terminal_performance_sign", "positive_rate"): "到期正表现占比",
-        ("terminal_performance_sign", "negative_rate"): "到期负表现占比",
-        ("in_range_observation_ratio", "average"): "区间内观察比例",
-        ("coupon_payment", "observation_hit_rate", "average"): "平均票息观察命中比例",
-    }
-    if path in exact:
-        return exact[path]
-    translated = [_SPECIALIZED_LABELS.get(part, _BACKTEST_LABELS.get(part, part.replace("_", " "))) for part in path]
-    return " / ".join(translated)
+# Exact paths, labels and units are the public contract. Nested distributions,
+# conditional diagnostics and future fields stay in the frozen run for audit.
+_SPECIALIZED_PUBLIC_METRICS = (
+    (("terminal_performance", "average"), "平均到期表现", "percent", "百分比；标的到期表现，不是合同结算收益率"),
+    (("terminal_performance_sign", "positive_count"), "到期正表现样本数", "number", "个样本"),
+    (("terminal_performance_sign", "flat_count"), "到期持平样本数", "number", "个样本"),
+    (("terminal_performance_sign", "negative_count"), "到期负表现样本数", "number", "个样本"),
+    (("terminal_performance_sign", "positive_rate"), "到期正表现占比", "percent", "百分比；占具有到期表现记录的样本"),
+    (("terminal_performance_sign", "negative_rate"), "到期负表现占比", "percent", "百分比；占具有到期表现记录的样本"),
+    (("buffer_outcomes", "non_negative_terminal_rate"), "非负到期表现占比", "percent", "百分比；占具有到期表现记录的样本"),
+    (("buffer_outcomes", "negative_terminal_rate"), "负到期表现占比", "percent", "百分比；占具有到期表现记录的样本"),
+    (("accumulated_quantity", "Q_acc", "average"), "平均累计数量", "number", "份"),
+    (("knock_out_vs_full_term", "knock_out_count"), "敲出样本数", "number", "个样本"),
+    (("knock_out_vs_full_term", "full_term_count"), "完整期限样本数", "number", "个样本"),
+    (("knock_out_vs_full_term", "knock_out_rate"), "敲出样本占比", "percent", "百分比；占有效入场样本"),
+    (("quantity_multiplier",), "数量倍数", "number", "倍"),
+    (("coupon_payment", "paid_observation_count", "average"), "平均派息观察期数", "number", "期"),
+    (("coupon_payment", "unpaid_observation_count", "average"), "平均未派息观察期数", "number", "期"),
+    (("coupon_payment", "observation_hit_rate", "average"), "平均票息观察命中比例", "percent", "百分比；已派息期数占计划观察期数的比例均值"),
+    (("realized_volatility", "sigma_realized", "average"), "平均实现波动率", "number", "百分点"),
+    (("realized_volatility_vs_strike", "strike_volatility"), "执行波动率", "number", "百分点"),
+    (("realized_volatility_vs_strike", "spread", "average"), "平均实现波动率与执行波动率之差", "number", "百分点"),
+    (("volatility_buckets", "below_strike_count"), "低于执行波动率样本数", "number", "个样本"),
+    (("volatility_buckets", "below_strike_rate"), "低于执行波动率样本占比", "percent", "百分比；占具有实现波动率记录的样本"),
+    (("range_observations", "n_in", "average"), "平均区间内观察次数", "number", "次"),
+    (("range_observations", "n_obs_actual", "average"), "平均实际观察次数", "number", "次"),
+    (("in_range_observation_ratio", "average"), "区间内观察比例", "percent", "百分比；区间内观察次数占实际观察次数的比例均值"),
+)
 
 
 def _specialized_value_format(path: tuple[str, ...]) -> str:
@@ -457,39 +413,8 @@ def _specialized_value_format(path: tuple[str, ...]) -> str:
     return "number"
 
 
-def _specialized_metric_note(path: tuple[str, ...]) -> str:
-    if (
-        any(root in path for root in ("realized_volatility", "realized_volatility_vs_strike"))
-        and "variance" not in ".".join(path)
-    ):
-        return "Backtester产品专属统计；波动率单位为百分点"
-    return "Backtester产品专属统计"
-
-
-def _flatten_specialized(value: Any, path: tuple[str, ...], rows: list[dict[str, Any]]) -> None:
-    if isinstance(value, Mapping):
-        for key, nested in value.items():
-            name = str(key)
-            if name in _SPECIALIZED_LEAVES or isinstance(nested, (Mapping, list)):
-                _flatten_specialized(nested, (*path, name), rows)
-        return
-    if isinstance(value, list):
-        for index, nested in enumerate(value, start=1):
-            _flatten_specialized(nested, (*path, f"第{index}项"), rows)
-        return
-    if not path or path[-1] not in _SPECIALIZED_LEAVES:
-        return
-    numeric = _safe_number(value)
-    if numeric is None:
-        return
-    rows.append(_metric(
-        _specialized_label(path), numeric, _specialized_metric_note(path),
-        value_format=_specialized_value_format(path),
-    ))
-
-
 def _specialized_metric_rows(backtest: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """Project every numeric leaf under the profile's explicit public whitelist."""
+    """Read only explicitly named business metrics, never flatten diagnostics."""
 
     specialized = backtest.get("specialized_metrics")
     if not isinstance(specialized, Mapping):
@@ -498,11 +423,31 @@ def _specialized_metric_rows(backtest: Mapping[str, Any]) -> list[dict[str, Any]
     allowed_roots = _SPECIALIZED_PROFILE_ROOTS.get(profile_id)
     if not allowed_roots:
         return []
+    specs = list(_SPECIALIZED_PUBLIC_METRICS)
+    event_specs = [
+        (("events", event, key), label + suffix, value_format, unit)
+        for event in ("tau_out", "tau_in", "tau_out_1", "tau_out_2", "tau_touch", "tau_reset", "tau_hedge")
+        for label in (_EVENT_LABELS[event],)
+        for key, suffix, value_format, unit in (
+            ("trigger_count", "样本数", "number", "个样本"),
+            ("trigger_rate", "样本占比", "percent", "百分比；占有效入场样本"),
+        )
+    ]
     rows: list[dict[str, Any]] = []
-    for root in sorted(allowed_roots):
-        if root in specialized:
-            _flatten_specialized(specialized[root], (root,), rows)
+    labels: set[str] = set()
+    for path, label, value_format, note in [*event_specs, *specs]:
+        if path[0] not in allowed_roots or label in labels:
+            continue
+        value: Any = specialized
+        for key in path:
+            value = value.get(key) if isinstance(value, Mapping) else None
+        if _safe_number(value) is None:
+            continue
+        rows.append(_metric(label, value, note, value_format=value_format))
+        labels.add(label)
     return rows
+
+
 def _public_value_format(key: str) -> str:
     return "percent" if key.endswith(("_rate", "_return", "_percent")) else "number"
 
@@ -983,10 +928,13 @@ def _contract_initial_premium_percent(contract: Mapping[str, Any] | None) -> str
     if not isinstance(contract, Mapping):
         return ""
     terms = contract.get("terms") if isinstance(contract.get("terms"), Mapping) else {}
-    premium = _safe_number(terms.get("p", terms.get("Pi_0")))
-    if premium is None:
-        return ""
-    return _decimal_text(premium * 100 if abs(premium) <= 1 else premium) + "%"
+    # p is a decimal ratio; Pi_0 is already percent-of-S0=100 points.
+    # Preserve the declared encoding even outside a product's admissible range.
+    for symbol, percent_scale in (("p", 100), ("Pi_0", 1)):
+        if symbol in terms:
+            premium = _safe_number(terms[symbol])
+            return "" if premium is None else _decimal_text(premium * percent_scale) + "%"
+    return ""
 
 
 def _pricing_content(module: Mapping[str, Any], contract: Mapping[str, Any] | None = None) -> dict[str, Any]:
@@ -1029,7 +977,7 @@ def _pricing_content(module: Mapping[str, Any], contract: Mapping[str, Any] | No
     value["greeks"] = _public_greek_rows(pricing.get("greeks", {}))
     value["assumptions"] = []
     if _contract_product_id(contract) == "9.3":
-        premium = _contract_initial_premium_percent(contract) or "20%"
+        premium = _contract_initial_premium_percent(contract)
         observed = pricing.get("observed_contract_state") if isinstance(pricing.get("observed_contract_state"), Mapping) else {}
         lifecycle = _text(observed.get("lifecycle_status")).lower()
         if lifecycle == "active":
@@ -1059,8 +1007,16 @@ _FAIR_VALUE_BASIS_LABELS = {
     "pv_percent": "标准化现值百分比",
     "variance_percent": "方差百分比",
 }
+_FAIR_CONVERGENCE_LABELS = {
+    "solved": "已收敛",
+    "converged": "已收敛",
+    "insufficient": "证据不足",
+    "not_converged": "未收敛",
+    "failed": "求解失败",
+}
 _FAIR_QUOTE_BASIS_LABELS = {
     "incremental_net_value": "增量净价值",
+    "contract_target_value": "合同目标价值",
     "direct_value": "直接价值",
     "target_value": "目标价值",
 }
@@ -1196,16 +1152,19 @@ def _fair_parameter_content(module: Mapping[str, Any], pricing: Mapping[str, Any
         or _text(public_uncertainty.get("precision_status"))
         or "research_only"
     )
-    convergence_status = _text(pricing.get("convergence_status") or pricing.get("status")) or "未声明"
+    raw_convergence = str(pricing.get("convergence_status") or pricing.get("status") or "")
+    convergence_status = _FAIR_CONVERGENCE_LABELS.get(raw_convergence)
+    if convergence_status is None:
+        convergence_status = raw_convergence if raw_convergence in _FAIR_CONVERGENCE_LABELS.values() else "未确认"
     target_value_format = "percent" if target_unit == "percentage" else "number"
     metrics = [
-        _metric("求解条款", f"{target_label}（{target_id}）", "当前反解的唯一合同条款", value_format="text"),
-        _metric("反解值", solution, "公平条款研究估计", value_format=target_value_format),
-        _metric("单位", _text(target_unit), "反解值与原值共用该单位", value_format="text"),
-        _metric("原值", base_parameter, "基础合同中的条款值", value_format=target_value_format),
+        _metric("求解条款", f"{target_label}（{target_id}）", value_format="text"),
+        _metric("反解值", solution, value_format=target_value_format),
+        _metric("单位", "%" if target_unit == "percentage" else _text(target_unit), value_format="text"),
+        _metric("原值", base_parameter, value_format=target_value_format),
         _metric("目标价值", target_value, f"目标口径：{quote_basis_label}", value_format="percent" if value_basis.endswith("_percent") else "number"),
         _metric("求解残差", residual, f"目标口径：{quote_basis_label}", value_format="percent" if value_basis.endswith("_percent") else "number"),
-        _metric("收敛状态", convergence_status, "求解器冻结状态", value_format="text"),
+        _metric("收敛状态", convergence_status, value_format="text"),
     ]
     if final_value is not None:
         metrics.append(_metric(
@@ -1448,7 +1407,7 @@ def _verified_backtest_common(common: Mapping[str, Any]) -> dict[str, Any] | Non
         or zero_count is None or negative_count is None
         or positive_count + zero_count + negative_count != valid_count
         or not isinstance(historical_loss_sample_covered, bool)
-        or negative_count == 0 and historical_loss_sample_covered
+        or historical_loss_sample_covered != (negative_count > 0)
         or not _valid_return_pairs(normalized)
     ):
         return None
@@ -1481,14 +1440,22 @@ def _backtest_metric_note(
         denominator = f"分母为{valid_sample_count}个有效收益样本" if valid_sample_count is not None else "分母为回测结果所列有效收益样本"
         return f"合同结算收益率严格大于零的历史样本占比，{denominator}；不代表未来获利概率"
     if key == "historical_loss_sample_covered":
-        return "是否存在合同结算收益率小于零的历史样本"
+        return "是否在本次历史样本中出现负合同结算收益"
     if key.endswith("_contract_settlement_return") or "contract_settlement_return" in key:
-        return "已包含OptionReg声明的合同现金流；未包含外部资金与交易成本"
+        return "百分比；按合同约定收支计算，未包含外部资金与交易成本"
     if key.endswith("_rate"):
         return "占有效入场样本"
     if key.endswith("_days"):
         return "自然日"
     return "口径未提供"
+
+
+_PREMIUM_STATUS_NOTES = {
+    "included_in_contract_cashflows": "期初期权费已纳入合同结算收益率，不应重复扣除。",
+    "fixed_zero": "本次合同的期权费固定为零。",
+    "no_separate_premium_cashflow": "本次合同未声明独立的期权费收支。",
+    "blocked_unrepresented": "本次冻结结果的期权费尚未完整表达，不能视为已扣除期权费的收益。",
+}
 
 
 def _backtest_content(module: Mapping[str, Any], contract: Mapping[str, Any] | None = None) -> dict[str, Any]:
@@ -1526,7 +1493,7 @@ def _backtest_content(module: Mapping[str, Any], contract: Mapping[str, Any] | N
     )
     value["metrics"] = [
         _metric(
-            _BACKTEST_LABELS[key], _text(common[key]) if key == "historical_loss_sample_covered" else common[key],
+            _BACKTEST_LABELS[key], ("已覆盖" if common[key] else "未覆盖") if key == "historical_loss_sample_covered" else common[key],
             _backtest_metric_note(key, valid_sample_count=valid_sample_count),
             value_format="text" if key == "historical_loss_sample_covered" else _public_value_format(key),
         )
@@ -1552,11 +1519,15 @@ def _backtest_content(module: Mapping[str, Any], contract: Mapping[str, Any] | N
         and observed + uncovered == declared
         and ((coverage_status == "complete" and uncovered == 0) or (coverage_status == "partial" and uncovered > 0))
     )
+    unclassified_loss = _safe_count(branch.get("unclassified_pair_count"))
     loss_counts_are_valid = (
-        all(item is not None for item in (declared_loss, observed_loss, uncovered_loss))
+        branch.get("loss_classification_status") == "complete"
+        and unclassified_loss == 0
+        and all(item is not None for item in (declared_loss, observed_loss, uncovered_loss))
         and observed_loss + uncovered_loss == declared_loss
         and observed_loss <= observed
         and declared_loss <= declared
+        and uncovered_loss <= uncovered
     ) if counts_are_valid else False
     if counts_are_valid:
         detail_tables.append({
@@ -1709,35 +1680,98 @@ def _backtest_content(module: Mapping[str, Any], contract: Mapping[str, Any] | N
     value["detail_tables"] = detail_tables
     value["event_statistics"] = []
     value["card_metrics"] = specialized_rows[:4]
-    product_id = _contract_product_id(contract)
-    premium_note = ""
-    if product_id == "9.3":
-        premium_note = "期初20%期权费已纳入合同结算收益率；存续期估值不得重复扣除期权费。"
-    positive_fraction_note = ""
-    if common["positive_return_count"] == valid_sample_count:
-        coverage = f"；合同声明分支覆盖{observed}/{declared}" if counts_are_valid else ""
-        loss_pair_coverage = f"；损失分支覆盖{observed_loss}/{declared_loss}" if loss_counts_are_valid else ""
-        loss_coverage = (
-            "历史样本未出现损失分支负结算收益"
-            if not common["historical_loss_sample_covered"]
-            else "历史样本已出现损失分支负结算收益"
+    # Economics come only from this verified frozen result. Neither the current
+    # page contract nor today's catalog may replace its premium status or rate.
+    convention = deepcopy(dict(backtest["economic_convention"]))
+    value["economic_convention"] = convention
+    coverage_note = (
+        f"合同声明分支覆盖{observed}/{declared}"
+        if counts_are_valid else "合同声明分支覆盖无法由本次冻结结果确认"
+    )
+    loss_branch_note = (
+        f"损失分支覆盖{observed_loss}/{declared_loss}"
+        if loss_counts_are_valid else (
+            f"损失分支尚有{unclassified_loss}个未判定"
+            if unclassified_loss is not None and unclassified_loss > 0
+            else "损失分支覆盖无法由本次冻结结果确认"
         )
-        positive_fraction_note = (
-            f"正收益样本{common['positive_return_count']}/{valid_sample_count}{coverage}{loss_pair_coverage}；"
-            f"{loss_coverage}；不代表未来获利概率。"
-        )
-    value["limitations"] = [
-        "合同结算收益率已包含OptionReg声明的合同现金流；客户净收益率未建模的仅为资金成本、交易费、税费、对冲和滑点。",
-        *([premium_note] if premium_note else []),
-        *(
-            [positive_fraction_note]
-            if positive_fraction_note else []
+    )
+    loss_sample_note = "已覆盖" if common["historical_loss_sample_covered"] else "未覆盖"
+    value["summary_notes"] = [
+        f"正收益样本{common['positive_return_count']}/{valid_sample_count}；有效收益样本共{valid_sample_count}个，"
+        f"正收益{common['positive_return_count']}个、持平{common['zero_return_count']}个、负收益{common['negative_return_count']}个。",
+        (
+            "本次历史样本未出现负收益，不代表未来获利概率"
+            if common["negative_return_count"] == 0
+            else "历史正收益样本占比仅描述本次有效收益样本，不代表未来获利概率。"
         ),
+        f"{coverage_note}；{loss_branch_note}；历史损失样本覆盖：{loss_sample_note}。",
+        _PREMIUM_STATUS_NOTES[convention["contractual_premium_status"]],
+        "合同结算收益率按合同约定收支计算；资金成本、交易费、税费、对冲和滑点未建模。",
+    ]
+    value["limitations"] = [
+        *value["summary_notes"],
         *[item for item in coverage_limitations if isinstance(item, str)],
     ]
     value["charts"] = _safe_backtest_charts(backtest)
     value["artifacts"] = _artifact_rows(module)
     return value
+
+
+def _term_display_value(value: Any) -> Any:
+    """Keep numerical facts; render observation selectors as trading dates."""
+
+    if _safe_number(value) is not None:
+        return deepcopy(value)
+    if isinstance(value, str):
+        if value in _SCHEDULE_TEXT:
+            return _SCHEDULE_TEXT[value]
+        monthly = re.fullmatch(r"monthly_(\d+)(?:st|nd|rd|th)", value)
+        if monthly:
+            return f"每月第{int(monthly[1])}个交易日"
+    return _text(value)
+
+
+def _present_parameter_rows(rows: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Use the same names, units and value encoding as all three module pages.
+
+    Metadata changes display only. In particular, a decimal ratio and a
+    premium already encoded as percent of S0=100 must never share scaling.
+    """
+
+    keyed = [(str(row.get("en") or row.get("symbol") or row.get("cn") or "").strip(), row) for row in rows]
+    terms = {key: row.get("value") for key, row in keyed if key}
+    catalog = load_term_catalog()
+    fields = {field["key"]: field for field in build_term_fields(terms, catalog)["contract_fields"]}
+    result = []
+    for key, raw in keyed:
+        field = fields.get(key, {})
+        if key in _PUBLIC_EXCLUDED_TERM_SYMBOLS or field.get("editability") == INTERNAL_SCALE:
+            continue
+        value = _term_display_value(raw.get("value"))
+        if value is None or value == "":
+            continue
+        row = deepcopy(dict(raw))
+        label = field.get("label", key)
+        if key not in catalog and label == key:
+            label = raw.get("cn") or key
+        row.update({"cn": label, "en": key,
+                    "symbol": field.get("symbol", raw.get("symbol") or ""), "value": value})
+        encoding = field.get("value_encoding")
+        if encoding == "percentage_input_decimal_internal":
+            row["value_format"] = "percent"
+        elif encoding in {"percent_of_s0_100", "percentage_points_internal"}:
+            row["value_format"] = "percent_points"
+        display_unit = field.get("display_unit")
+        if display_unit and display_unit != "%":
+            row["value_suffix"] = "年" if encoding == "year_month_calendar_day_to_act365" else display_unit
+        if encoding == "year_month_calendar_day_to_act365":
+            # Keep the source number and its year unit; only the visible text
+            # uses exact whole months/days, consistently with key terms.
+            amount, unit = _tenor_display_parts(value)
+            row["value_display"] = amount + unit
+        result.append(row)
+    return result
 
 
 def _parameter_rows(contract: Mapping[str, Any] | None, *, names: set[str] | None = None, exclude: set[str] | None = None) -> list[dict[str, Any]]:
@@ -1756,14 +1790,13 @@ def _parameter_rows(contract: Mapping[str, Any] | None, *, names: set[str] | Non
             continue
         source = str(term_sources.get(symbol, "user_selection")).lower()
         rows.append({
-            "cn": _TERM_LABELS.get(str(symbol), str(symbol)), "en": str(symbol), "symbol": _TERM_SYMBOLS.get(str(symbol), ""),
-            "value": deepcopy(value) if _safe_number(value) is not None else _text(value),
+            "en": str(symbol), "value": deepcopy(value),
             "source": source_map.get(source, source if source in {"template_default", "user_override", "user_selection", "market_fixing", "schedule_derived"} else "user_selection"),
         })
-    return rows
+    return _present_parameter_rows(rows)
 
 
-def _parameter_groups(contract: Mapping[str, Any] | None) -> dict[str, list[dict[str, str]]]:
+def _parameter_groups(contract: Mapping[str, Any] | None) -> dict[str, list[dict[str, Any]]]:
     module_only = set().union(*_MODULE_ONLY_TERMS.values())
     result = {"common_input": _parameter_rows(contract, exclude=module_only)}
     result.update({name: _parameter_rows(contract, names=terms) for name, terms in _MODULE_ONLY_TERMS.items()})
@@ -1777,19 +1810,8 @@ def normalize_parameter_groups(value: Any) -> dict[str, list[dict[str, Any]]]:
         return {}
     result: dict[str, list[dict[str, Any]]] = {}
     for group, raw_rows in value.items():
-        rows: list[dict[str, Any]] = []
-        for raw in raw_rows if isinstance(raw_rows, list) else []:
-            if not isinstance(raw, Mapping):
-                continue
-            row = deepcopy(dict(raw))
-            key = str(row.get("en") or row.get("symbol") or row.get("cn") or "").strip()
-            if key in _PUBLIC_EXCLUDED_TERM_SYMBOLS or str(row.get("cn") or "") == "名义本金":
-                continue
-            if key:
-                row["cn"] = _TERM_LABELS.get(key, str(row.get("cn") or key))
-                row["symbol"] = _TERM_SYMBOLS.get(key, str(row.get("symbol") or ""))
-            rows.append(row)
-        result[str(group)] = rows
+        rows = [row for row in raw_rows if isinstance(row, Mapping) and row.get("cn") != "名义本金"] if isinstance(raw_rows, list) else []
+        result[str(group)] = _present_parameter_rows(rows)
     return result
 
 
