@@ -1,6 +1,7 @@
 const OptionHelperDateInput = typeof module === 'object' && module.exports
   ? require('../../../core/src/runtime/browser/date_input_control.js')
   : globalThis.OptionHelperDateInput;
+const DATE_RANGE_ERROR = '开始日期不得晚于结束日期。';
 
 function parseAndFormatDate(value) {
   return OptionHelperDateInput.parseAndFormat(value);
@@ -51,9 +52,9 @@ function cacheDecisionLabel(value, coverageEnd = '') {
     cache_hit: '使用已保存数据',
     cache_revalidated: '复核已保存数据',
     cache_rebound: '复用原始数据并重新登记',
-    cache_miss_fetched: '实时获取并留存',
-    cache_extended: '补齐覆盖缺口并留存',
-    provider_fetched: '实时获取并留存',
+    cache_miss_fetched: '实时获取',
+    cache_extended: '补齐数据缺口',
+    provider_fetched: '实时获取',
     verified_cache_reused: '复用已验证日历',
     verified_cache_fallback: '数据服务失败，复用完整日历',
   }[value] || '已完成');
@@ -105,7 +106,7 @@ function buildFetchRequest(values) {
   const start = parseAndFormatDate(values.startDate);
   const end = parseAndFormatDate(values.endDate);
   if (!start || !end) throw new Error('日期必须为真实的yyyy/mm/dd或yyyy-mm-dd。');
-  if (start.iso > end.iso) throw new Error('开始日期不得晚于结束日期。');
+  if (start.iso > end.iso) throw new Error(DATE_RANGE_ERROR);
   const assetIds = splitList(values.assetIds).map(item => item.toUpperCase());
   const requestedFields = splitList(values.fields).map(item => item.toLowerCase());
   const fields = [...new Set(['close', 'adj_close', ...requestedFields.flatMap(field => (
@@ -254,11 +255,15 @@ function initializePage() {
   const $ = id => document.getElementById(id);
   const state = (text, kind = '') => { $('canvas-state').textContent = text; $('state-dot').className = `state-dot ${kind}`; };
   const message = (text, kind = '') => { const node = $('notice'); node.textContent = text; node.className = `notice ${kind}`; node.hidden = !text; };
+  let requestRevision = 0;
+  let operationActive = false;
+  let hasResult = false;
+  const clearFieldError = id => {
+    $(id).removeAttribute('aria-invalid');
+    $(`${id}-error`).textContent = '';
+  };
   const clearFieldErrors = () => {
-    for (const id of ['asset-ids', 'start-date', 'end-date']) $(id).removeAttribute('aria-invalid');
-    $('asset-ids-error').textContent = '';
-    $('start-date-error').textContent = '';
-    $('end-date-error').textContent = '';
+    for (const id of ['asset-ids', 'start-date', 'end-date']) clearFieldError(id);
   };
   const showInputError = text => {
     const targets = /资产标识/.test(text) ? ['asset-ids'] : /开始日期不得晚于结束日期/.test(text) ? ['start-date', 'end-date'] : /开始日期/.test(text) ? ['start-date'] : /结束日期/.test(text) ? ['end-date'] : /日期/.test(text) ? ['start-date', 'end-date'] : [];
@@ -268,7 +273,54 @@ function initializePage() {
     if (targets.includes('end-date')) $('end-date-error').textContent = text;
     $(targets[0])?.focus();
   };
-  const setBusy = busy => { $('submit-request').disabled = busy; $('submit-request').textContent = busy ? '正在执行请求…' : '获取数据'; };
+  const revalidateDateErrors = event => {
+    const changedId = event.target?.id;
+    if (!['start-date', 'end-date'].includes(changedId)) return;
+    const start = parseAndFormatDate($('start-date').value);
+    const end = parseAndFormatDate($('end-date').value);
+    const rangeErrorActive = [$('start-date-error'), $('end-date-error')]
+      .some(node => node.textContent === DATE_RANGE_ERROR);
+    if (rangeErrorActive) {
+      if (start && end && start.iso <= end.iso) {
+        clearFieldError('start-date');
+        clearFieldError('end-date');
+      } else if (!parseAndFormatDate($(changedId).value)) {
+        clearFieldError(changedId);
+      } else if (start && end) {
+        for (const id of ['start-date', 'end-date']) {
+          $(id).setAttribute('aria-invalid', 'true');
+          $(`${id}-error`).textContent = DATE_RANGE_ERROR;
+        }
+      }
+      return;
+    }
+    if (parseAndFormatDate($(changedId).value)) {
+      clearFieldError(changedId);
+    } else if ($(`${changedId}-error`).textContent) {
+      $(changedId).setAttribute('aria-invalid', 'true');
+    }
+  };
+  const revalidateAssetError = event => {
+    if (event.target?.id !== 'asset-ids' || !$('asset-ids-error').textContent) return;
+    const assetIds = splitList($('asset-ids').value).map(value => value.toUpperCase());
+    if (assetIds.length && assetIds.every(value => /^\d{6}\.(?:SH|SZ)$/.test(value))) {
+      clearFieldError('asset-ids');
+    }
+  };
+  function setBusy(busy) {
+    operationActive = busy;
+    const controls = [...$('request-form').querySelectorAll('input,select,textarea,button')];
+    controls.forEach(control => {
+      if (busy) {
+        if (!Object.hasOwn(control.dataset, 'operationDisabled')) control.dataset.operationDisabled = control.disabled ? 'true' : 'false';
+        control.disabled = true;
+      } else if (Object.hasOwn(control.dataset, 'operationDisabled')) {
+        control.disabled = control.dataset.operationDisabled === 'true';
+        delete control.dataset.operationDisabled;
+      }
+    });
+    $('submit-request').textContent = busy ? '正在执行请求…' : '获取数据';
+  }
   const requestJson = async (url, options) => parseServiceResponse(await fetch(url, options));
   const assetStore = new Map();
   let assetLoadError = false;
@@ -276,7 +328,7 @@ function initializePage() {
     const query = $('asset-search').value.trim().toLowerCase(); const entries = [...assetStore.values()].filter(item => JSON.stringify(item).toLowerCase().includes(query)); const list = $('asset-list'); list.replaceChildren();
     if (!entries.length) {
       const empty = document.createElement('p'); empty.className = 'empty-list';
-      empty.textContent = assetLoadError ? '资产索引加载失败，请刷新重试。' : query && assetStore.size ? '没有匹配的数据资产。' : '当前任务尚无数据资产。';
+      empty.textContent = assetLoadError ? '资产索引加载失败，请刷新重试。' : query && assetStore.size ? '没有匹配的数据资产。' : '暂无已保存数据。';
       list.append(empty); return;
     }
     entries.forEach(item => {
@@ -288,7 +340,7 @@ function initializePage() {
       select.querySelector('strong').textContent = (ref.asset_ids || item.asset_ids || []).join('、') || '已保存数据'; select.querySelector('.asset-range').textContent = `${ref.row_count ?? '—'}行${range ? `，${range}` : ''}`;
       const indexView = assetIndexViewModel(item); const meta = select.querySelector('.asset-meta');
       [indexView.assetType, indexView.source, indexView.quality].forEach(value => { const label = document.createElement('span'); label.textContent = value; meta.append(label); });
-      select.addEventListener('click', () => { const ids = ref.asset_ids || item.asset_ids; if (Array.isArray(ids) && ids.length) { $('asset-ids').value = ids.join('\n'); syncSourceVisibility(); } });
+      select.addEventListener('click', () => { if (operationActive) return; const ids = ref.asset_ids || item.asset_ids; if (Array.isArray(ids) && ids.length) { $('asset-ids').value = ids.join('\n'); syncSourceVisibility(); markRequestInputChanged(); } });
       const download = document.createElement('a'); download.className = 'asset-download'; download.href = `/api/assets/${encodeURIComponent(id)}/download`; download.textContent = ref.media_type === 'application/json' ? '下载JSON' : '下载CSV';
       entry.append(select, download); list.append(entry);
     });
@@ -358,7 +410,7 @@ function initializePage() {
     if (data.ok === false) {
       const failure = document.createElement('section'); failure.className = 'result-section failure-card';
       failure.innerHTML = '<h3>请求未完成</h3><p class="failure-reason"></p><p class="failure-next" hidden></p><small class="failure-code"></small>';
-      failure.querySelector('.failure-reason').textContent = data.error?.message || data.message || 'DataFetcher未返回可用数据。';
+      failure.querySelector('.failure-reason').textContent = data.error?.message || data.message || '数据服务未返回可用数据。';
       const nextStep = data.error?.next_step || data.next_step;
       if (nextStep) { const node = failure.querySelector('.failure-next'); node.textContent = nextStep; node.hidden = false; }
       failure.querySelector('.failure-code').textContent = data.error?.code ? `错误代码：${data.error.code}` : '';
@@ -403,14 +455,28 @@ function initializePage() {
   const fieldControls = [...document.querySelectorAll('.extra-field')];
   const formValues = () => ({assetIds: $('asset-ids').value, startDate: $('start-date').value, endDate: $('end-date').value, fields: fieldControls.filter(node => node.checked).map(node => node.value).join(','), frequency: $('frequency').value, adjustment: $('adjustment').value, saveDownloadedData: $('save-downloaded-data').checked});
   function syncSourceVisibility() { const selectedFields = fieldControls.filter(node => node.checked).length; $('field-summary').textContent = selectedFields === fieldControls.length ? '全部字段' : `${selectedFields}项字段`; }
+  function markRequestInputChanged() {
+    if (operationActive) return;
+    requestRevision += 1;
+    if (!hasResult) return;
+    state('结果待更新', 'running');
+    message('输入已修改；下方保留上一次完成结果，请重新获取数据。');
+  }
+  $('request-form').addEventListener('input', revalidateDateErrors);
+  $('request-form').addEventListener('change', revalidateDateErrors);
+  $('request-form').addEventListener('input', revalidateAssetError);
+  $('request-form').addEventListener('change', revalidateAssetError);
   $('request-form').addEventListener('input', syncSourceVisibility);
   $('request-form').addEventListener('change', syncSourceVisibility);
+  $('request-form').addEventListener('input', markRequestInputChanged);
+  $('request-form').addEventListener('change', markRequestInputChanged);
   syncSourceVisibility();
   $('asset-search').addEventListener('input', renderAssets); $('refresh-assets').addEventListener('click', () => { void refreshDataFetcherState(); });
   document.addEventListener('optionhelper:modulevisibility', event => { if (event.detail?.active === true) void refreshDataFetcherState(); });
-  $('request-form').addEventListener('submit', async event => { event.preventDefault(); clearFieldErrors(); let request; try { const values=formValues(); values.startDate=OptionHelperDateInput.read($('start-date'),'开始日期'); values.endDate=OptionHelperDateInput.read($('end-date'),'结束日期'); request = buildFetchRequest(values); $('asset-ids').value = request.asset_ids.join('\n'); OptionHelperDateInput.set($('start-date'),request.start_date,'开始日期'); OptionHelperDateInput.set($('end-date'),request.end_date,'结束日期'); syncSourceVisibility(); } catch (error) { state('请求配置错误', 'failed'); message(error.message, 'failed'); showInputError(error.message); return; }
-    state('正在检查数据与缓存', 'running'); message('正在获取数据并核验保存状态。'); setBusy(true); $('result-content').hidden = true; $('empty-canvas').hidden = false;
-    try { const data = await requestJson('/api/fetch', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(request)}); renderResult(data); addAsset(data); state('请求完成', 'complete'); message('数据获取完成。'); } catch (error) { if (error.payload) renderResult(error.payload); state('请求失败', 'failed'); message(error.message, 'failed'); } finally { setBusy(false); }
+  $('request-form').addEventListener('submit', async event => { event.preventDefault(); if (operationActive) return; clearFieldErrors(); const hadResult = hasResult; let request; try { const values=formValues(); values.startDate=OptionHelperDateInput.read($('start-date'),'开始日期'); values.endDate=OptionHelperDateInput.read($('end-date'),'结束日期'); request = buildFetchRequest(values); $('asset-ids').value = request.asset_ids.join('\n'); OptionHelperDateInput.set($('start-date'),request.start_date,'开始日期'); OptionHelperDateInput.set($('end-date'),request.end_date,'结束日期'); syncSourceVisibility(); } catch (error) { state('请求配置错误', 'failed'); message(`${error.message}${hadResult ? ' 下方保留上一次完成结果。' : ''}`, 'failed'); showInputError(error.message); return; }
+    const revision = ++requestRevision;
+    state('正在检查数据与缓存', 'running'); message(hadResult ? '正在获取数据；下方暂时展示上一次完成结果。' : '正在获取数据并核验保存状态。'); setBusy(true); if (!hadResult) { $('result-content').hidden = true; $('empty-canvas').hidden = false; }
+    try { const data = await requestJson('/api/fetch', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(request)}); if (revision !== requestRevision) return; renderResult(data); addAsset(data); hasResult = true; state('请求完成', 'complete'); message('数据获取完成。'); } catch (error) { if (revision !== requestRevision) return; if (error.payload && !hadResult) renderResult(error.payload); state('请求失败', 'failed'); message(`${error.message}${hadResult ? ' 下方保留上一次完成结果。' : ''}`, 'failed'); } finally { setBusy(false); }
   });
   function bindResizer(id, variable, minimum, maximum) { const resizer = $(id); const workbench = $('workbench'); const current = () => parseInt(getComputedStyle(workbench).getPropertyValue(variable), 10) || minimum; const set = value => { const next = Math.max(minimum, Math.min(maximum, value)); workbench.style.setProperty(variable, `${next}px`); resizer.setAttribute('aria-valuenow', String(next)); }; const direction = variable === '--library-width' ? 1 : -1; let startX = 0; let startValue = 0; const finish = () => { resizer.classList.remove('active'); document.removeEventListener('pointermove', move); document.removeEventListener('pointerup', finish); }; const move = event => set(startValue + direction * (event.clientX - startX)); resizer.setAttribute('aria-valuemin', minimum); resizer.setAttribute('aria-valuemax', maximum); set(current()); resizer.addEventListener('pointerdown', event => { startX = event.clientX; startValue = current(); resizer.classList.add('active'); document.addEventListener('pointermove', move); document.addEventListener('pointerup', finish); }); resizer.addEventListener('keydown', event => { if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return; event.preventDefault(); if (event.key === 'Home') return set(minimum); if (event.key === 'End') return set(maximum); set(current() + direction * (event.key === 'ArrowRight' ? 8 : -8)); }); }
   bindResizer('library-resizer', '--library-width', 220, 420); bindResizer('inspector-resizer', '--inspector-width', 300, 520); void refreshDataFetcherState();
