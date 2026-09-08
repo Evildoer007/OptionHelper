@@ -20,6 +20,9 @@ from urllib.parse import urlparse
 ROOT = Path(__file__).resolve().parents[3]
 AGENT_RUNTIME_PACKAGING = ROOT / "packaging" / "app" / "agent_runtime"
 import sys
+if str(ROOT / "packaging") not in sys.path:
+    sys.path.insert(0, str(ROOT / "packaging"))
+from release_contract import app_platform_versions
 if str(AGENT_RUNTIME_PACKAGING) not in sys.path:
     sys.path.insert(0, str(AGENT_RUNTIME_PACKAGING))
 from build_runtime import (  # noqa: E402
@@ -226,6 +229,17 @@ def verify_agent_runtime(resources: Path) -> dict[str, object]:
     return dict(verified)
 
 
+def verify_version_metadata(info: dict[str, object], manifest: dict[str, object]) -> None:
+    public_version = str(manifest.get("build_version", ""))
+    try:
+        numeric_version, bundle_version = app_platform_versions(public_version)
+    except ValueError as error:
+        raise AppVerificationError("App Manifest构建版本无效") from error
+    require(info.get("CFBundleShortVersionString") == numeric_version, "Info.plist数字版本与App构建版本不一致")
+    require(info.get("CFBundleVersion") == bundle_version, "Info.plist预发布构建版本不一致")
+    require(info.get("OptionHelperDisplayVersion") == public_version, "Info.plist公开版本与App构建版本不一致")
+
+
 def verify_delivery_metadata(
     bundle: Path,
     *,
@@ -242,9 +256,7 @@ def verify_delivery_metadata(
     except (OSError, ValueError, json.JSONDecodeError) as error:
         raise AppVerificationError("App版本或发布记录不可解析") from error
     require(isinstance(manifest, dict), "App Manifest必须是对象")
-    build_version = str(manifest.get("build_version", "")).removeprefix("v")
-    require(bool(build_version), "App Manifest缺少构建版本")
-    require(info.get("CFBundleShortVersionString") == build_version, "Info.plist版本与App构建版本不一致")
+    verify_version_metadata(info, manifest)
     formal = manifest.get("formal_release") is True
     expected_status = "formal_release" if formal else "local_candidate"
     require(manifest.get("release_status") == expected_status, "App Manifest发布状态无效")
