@@ -16,7 +16,7 @@ from threading import RLock
 from typing import Any, Mapping, NewType, Sequence
 from uuid import uuid4
 
-from ..errors import UnavailableCapabilityError, ValidationError
+from ..errors import ValidationError
 from ..identity.session_identity import SessionIdentity
 from ..model_gateway.gateway import ModelGateway
 from ..settings.settings_models import ModelSelection
