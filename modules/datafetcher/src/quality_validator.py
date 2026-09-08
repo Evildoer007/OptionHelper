@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any, Iterable, Mapping, Sequence
 
 import pandas as pd
@@ -65,6 +66,7 @@ def validate_daily_history(
     latest_observable_date: str | None = None,
     latest_pending_session: str | None = None,
 ) -> dict[str, Any]:
+    fields = tuple(fields)
     required = {"date", "asset_id", *fields}
     missing = required.difference(frame.columns)
     if missing:
@@ -79,6 +81,9 @@ def validate_daily_history(
         raise DataQualityError("历史行情含空日期、标的或请求字段")
     if frame.duplicated(["date", "asset_id"]).any():
         raise DataQualityError("历史行情含重复date+asset_id记录")
+    for field in fields:
+        if not pd.to_numeric(frame[field], errors="coerce").map(math.isfinite).all():
+            raise DataQualityError(f"历史行情字段必须为有限数值：{field}")
     price_fields = [field for field in fields if field != "volume"]
     if price_fields and (frame[price_fields] <= 0).any(axis=None):
         raise DataQualityError("价格字段必须为正数")
