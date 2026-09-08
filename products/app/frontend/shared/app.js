@@ -1,3 +1,4 @@
+import { createThinkingOrb } from "/app/frontend/shared/thinking-orb.js";
 const secretKeys = new Set(["password", "token", "api_key", "secret", "secret_value", "private_key"]);
 const sessionEventKey = "optionhelper.session.event";
 
@@ -989,6 +990,8 @@ export function createReasoningDisclosure(text = "", { running = false } = {}) {
   details.className = "assistant-reasoning";
   details.open = true;
   const summary = document.createElement("summary");
+  const orb = createThinkingOrb({ state: "solving", size: 28, paused: !running });
+  orb.element.setAttribute("aria-hidden", "true");
   const title = document.createElement("span");
   title.className = "assistant-reasoning__title";
   const chevron = document.createElement("span");
@@ -996,7 +999,7 @@ export function createReasoningDisclosure(text = "", { running = false } = {}) {
   chevron.setAttribute("aria-hidden", "true");
   const body = document.createElement("div");
   body.className = "assistant-reasoning__body";
-  summary.append(title, chevron);
+  summary.append(orb.element, title, chevron);
   details.append(summary, body);
   const update = (nextText, nextRunning = false) => {
     const value = String(nextText ?? "");
@@ -1009,11 +1012,12 @@ export function createReasoningDisclosure(text = "", { running = false } = {}) {
       requestAnimationFrame(() => { if (body.isConnected) body.scrollTop = body.scrollHeight; });
     }
     details.hidden = !value && !nextRunning;
+    orb.setPaused(!nextRunning);
     // The user's disclosure choice survives every streamed delta and completion.
     // Start expanded; updates never override the user's disclosure choice.
   };
   update(text, running);
-  const controller = { element: details, body, update, destroy() { reasoningControllers.delete(details); } };
+  const controller = { element: details, body, update, destroy() { orb.destroy(); reasoningControllers.delete(details); } };
   reasoningControllers.set(details, controller);
   return controller;
 }
