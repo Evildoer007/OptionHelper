@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 import tempfile
+from datetime import datetime
+from math import isfinite
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -17,12 +20,51 @@ from modules.designer.service import call_tool as designer_call_tool
 from modules.reporter.artifact_validator import validate_report_run_directory
 from modules.reporter.export_service import rerender_frozen_delivery
 from modules.reporter.models import ReporterError
+from modules.reporter.evidence_resolver import report_contracts_compatible
 from modules.reporter.service import build_selected_request, call_tool as reporter_call_tool
 from runtime.protocol.models import ModuleRunRef
 
 from .errors import AuthorizationError, UnavailableCapabilityError, ValidationError
 from .identity.session_identity import SessionIdentity
-from .stores.result_store import ResultStore
+from .stores.result_store import ResultStore, _report_evidence_key
+
+
+def _source_display_terms(contract: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Read the frozen contractual tenor without guessing missing terms."""
+    terms = contract.get("terms")
+    years = terms.get("T") if isinstance(terms, Mapping) else None
+    if isinstance(years, bool) or not isinstance(years, (int, float)) or not isfinite(years) or years <= 0:
+        return []
+    return [{"label": "期限", "value": years, "unit": "年"}]
+
+
+def _source_run_display(manifest: Mapping[str, Any], contract: Mapping[str, Any], *, saved_created_at: Any = None) -> dict[str, Any]:
+    """Use verified manifest time, then the saved index creation time; never the clock."""
+    display: dict[str, Any] = {"terms": _source_display_terms(contract)}
+    metadata = manifest.get("metadata")
+    metadata = metadata if isinstance(metadata, Mapping) else {}
+    for field in ("completed_at", "finished_at", "created_at", "started_at"):
+        for prefix, record in (("", manifest), ("metadata.", metadata)):
+            value = record.get(field)
+            if not isinstance(value, str):
+                continue
+            try:
+                parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            except ValueError:
+                continue
+            if parsed.tzinfo is None:
+                continue
+            display.update({"run_time": value, "time_field": prefix + field})
+            return display
+    if isinstance(saved_created_at, str):
+        try:
+            parsed = datetime.fromisoformat(saved_created_at.replace("Z", "+00:00"))
+        except ValueError:
+            pass
+        else:
+            if parsed.tzinfo is not None:
+                display.update(run_time=saved_created_at, time_field="saved_record.created_at")
+    return display
 
 
 class _DesignerPort:
@@ -35,8 +77,8 @@ class _DesignerPort:
 class _ScopedResultPorts:
     """Re-authorize and verify every Reporter source for one principal."""
 
-    def __init__(self, results: ResultStore, principal: SessionIdentity) -> None:
-        self._results, self._principal = results, principal
+    def __init__(self, results: ResultStore, principal: SessionIdentity, tasks=None) -> None:
+        self._results, self._principal, self._tasks = results, principal, tasks
 
     def close(self) -> None:
         return None
@@ -66,9 +108,25 @@ class _ScopedResultPorts:
     def list_report_sources(self, *, tenant_id: str, task_id: str | None = None, query: str | None = None) -> dict[str, Any]:
         if tenant_id != self._principal.tenant_id:
             raise PermissionError("报告来源跨租户访问被拒绝")
-        catalog = self._results.list_owned_report_sources(self._principal, task_id=task_id, query=query)
-        sources = [verified for source in catalog["sources"] if (verified := self._verified_source(source)) is not None]
-        return {"tenant_id": tenant_id, "sources": sources}
+        loader = getattr(self._results, "list_owned_report_sources_with_evidence", None)
+        if callable(loader):
+            catalog, evidence = loader(self._principal, task_id=task_id, query=query)
+        else:
+            catalog = self._results.list_owned_report_sources(self._principal, task_id=task_id, query=query)
+            evidence = None
+        diagnostics: dict[str, int] = {}
+        sources = [
+            verified
+            for source in catalog["sources"]
+            if (verified := self._verified_source(source, evidence=evidence, diagnostics=diagnostics)) is not None
+        ]
+        source_diagnostics = dict(catalog.get("source_diagnostics", {}))
+        failure_codes = dict(source_diagnostics.get("failure_codes", {}))
+        for code, count in diagnostics.items():
+            failure_codes[code] = failure_codes.get(code, 0) + count
+        source_diagnostics["failure_codes"] = failure_codes
+        source_diagnostics["excluded_run_count"] = sum(failure_codes.values())
+        return {"tenant_id": tenant_id, "sources": sources, "source_diagnostics": source_diagnostics}
 
     def get_report_source(self, *, tenant_id: str, source_id: str) -> dict[str, Any]:
         if tenant_id != self._principal.tenant_id:
@@ -79,27 +137,46 @@ class _ScopedResultPorts:
             raise KeyError(source_id)
         return verified
 
-    def _verified_source(self, source: Mapping[str, Any]) -> dict[str, Any] | None:
+    def _verified_source(
+        self,
+        source: Mapping[str, Any],
+        *,
+        evidence: Mapping[tuple[str, ...], Mapping[str, Any]] | None = None,
+        diagnostics: dict[str, int] | None = None,
+    ) -> dict[str, Any] | None:
         """Only expose refs that Core can currently resolve as committed runs."""
 
+        def reject_binding() -> None:
+            if diagnostics is not None:
+                diagnostics["report_binding_invalid"] = diagnostics.get("report_binding_invalid", 0) + 1
+
         candidates: list[dict[str, Any]] = []
+        pending = self._tasks.pending_recommendation(self._principal, str(source["task_id"])) if self._tasks else None
+        recommendation_index = {
+            item["candidate_id"]: {**item, "rank": rank} for rank, item in enumerate((pending or {}).get("candidates", []), 1)
+        }
         for raw_candidate in source.get("candidates", []):
             if not isinstance(raw_candidate, Mapping):
+                reject_binding()
                 continue
             raw_options = raw_candidate.get("module_run_options")
             if not isinstance(raw_options, Mapping):
+                reject_binding()
                 continue
             snapshot_groups: list[dict[str, Any]] = []
             for module, source_options in raw_options.items():
                 if module not in {"payoff", "pricing", "backtest"} or not isinstance(source_options, list):
+                    reject_binding()
                     continue
                 expected_run_module = {"payoff": "payoffer", "pricing": "pricer", "backtest": "backtester"}[module]
                 for raw_ref in source_options:
                     if not isinstance(raw_ref, Mapping):
+                        reject_binding()
                         continue
                     try:
                         run_module = str(raw_ref["module"])
                         if run_module != expected_run_module:
+                            reject_binding()
                             continue
                         ref = ModuleRunRef(
                             module=run_module, tenant_id=str(raw_ref["tenant_id"]), task_id=str(raw_ref["task_id"]), run_id=str(raw_ref["run_id"]),
@@ -107,17 +184,28 @@ class _ScopedResultPorts:
                             expected_artifact_manifest_hash=str(raw_ref["expected_artifact_manifest_hash"]),
                         )
                         reference = self._reference(ref, tenant_id=ref.tenant_id)
-                        self._results.verify_owned_module_run(self._principal, reference)
-                        manifest = json.loads(self._results.read_owned_module_run_file(
-                            self._principal, reference, "manifest.json",
-                        ))
-                        contract = json.loads(self._results.read_owned_module_run_file(
-                            self._principal, reference, "resolved_contract.json",
-                        ))
+                        saved_created_at = None
+                        if evidence is None:
+                            self._results.verify_owned_module_run(self._principal, reference)
+                            manifest = json.loads(self._results.read_owned_module_run_file(
+                                self._principal, reference, "manifest.json",
+                            ))
+                            contract = json.loads(self._results.read_owned_module_run_file(
+                                self._principal, reference, "resolved_contract.json",
+                            ))
+                        else:
+                            verified_files = evidence.get(_report_evidence_key(reference))
+                            if not isinstance(verified_files, Mapping):
+                                raise KeyError(ref.run_id)
+                            saved_created_at = verified_files.get("saved_created_at")
+                            manifest = verified_files.get("manifest")
+                            contract = verified_files.get("resolved_contract")
                         if not isinstance(manifest, Mapping) or not isinstance(contract, Mapping):
+                            reject_binding()
                             continue
                         identity = contract.get("identity")
                         if not isinstance(identity, Mapping):
+                            reject_binding()
                             continue
                         product_id = identity.get("product_id")
                         rule_revision = identity.get("rule_revision")
@@ -138,15 +226,23 @@ class _ScopedResultPorts:
                             or raw_candidate.get("product_id", product_id) != product_id
                             or raw_candidate.get("rule_revision", rule_revision) != rule_revision
                         ):
+                            reject_binding()
                             continue
                     except (KeyError, TypeError, ValueError, PermissionError, ValidationError, OSError, UnicodeDecodeError, json.JSONDecodeError):
+                        reject_binding()
                         continue
                     group = next(
                         (
                             item
                             for item in snapshot_groups
                             if item["source_candidate_id"] == source_candidate_id
-                            and item["contract"] == dict(contract)
+                            and (
+                                item["contract"] == dict(contract)
+                                or (module not in item["options"] and all(
+                                    report_contracts_compatible(existing, contract, existing_module, module)
+                                    for existing_module, existing in item["contracts"].items()
+                                ))
+                            )
                         ),
                         None,
                     )
@@ -155,12 +251,21 @@ class _ScopedResultPorts:
                             "source_candidate_id": source_candidate_id,
                             "contract": dict(contract),
                             "options": {},
+                            "contracts": {},
+                            "run_display": {},
                         }
                         snapshot_groups.append(group)
+                    group["contracts"][module] = dict(contract)
+                    # Prefer a dated market contract for the report subject.
+                    if module == "pricing" or (module == "backtest" and "pricing" not in group["options"]):
+                        group["contract"] = dict(contract)
                     group["options"].setdefault(module, []).append({
                         **reference,
                         "status": "succeeded",
                     })
+                    group["run_display"][ref.run_id] = _source_run_display(
+                        manifest, contract, saved_created_at=saved_created_at,
+                    )
 
             if not snapshot_groups:
                 continue
@@ -179,6 +284,7 @@ class _ScopedResultPorts:
                 if isinstance(price_convention, str):
                     price_convention = {"spot": "close", "contract_basis": price_convention}
                 if not isinstance(price_convention, Mapping):
+                    reject_binding()
                     continue
                 variant_id = str(raw_candidate.get("candidate_id") or source_candidate_id)
                 if len(snapshot_groups) > 1:
@@ -209,9 +315,27 @@ class _ScopedResultPorts:
                     "currency": identity.get("currency"),
                     "price_convention": dict(price_convention),
                     "resolved_contract_snapshot": contract,
+                    "display_terms": _source_display_terms(contract),
+                    "run_display": group["run_display"],
                     "module_run_options": verified_options,
                     "module_run_refs": single_refs,
                 }
+                recommended = recommendation_index.get(source_candidate_id)
+                if isinstance(recommended, Mapping) and (
+                    recommended.get("product_id") == candidate["product_id"]
+                    and recommended.get("rule_revision") == candidate["rule_revision"]
+                    and recommended.get("underlyings") == candidate["underlyings"]
+                ):
+                    inputs = recommended.get("current_inputs", {})
+                    overrides = inputs.get("term_overrides", {}) if isinstance(inputs, Mapping) else {}
+                    if isinstance(overrides, Mapping) and all(contract.get("terms", {}).get(key) == value for key, value in overrides.items()):
+                        candidate["recommendation_bound"] = True
+                        candidate["rank"] = recommended["rank"]
+                        candidate["is_primary"] = recommended["rank"] == 1
+                        projection = recommended.get("public_projection", {})
+                        for field in ("reason", "suitable_for", "not_suitable_for", "main_risks", "key_terms"):
+                            if field in projection:
+                                candidate[field] = projection[field]
                 candidates.append(candidate)
         if not candidates:
             return None
@@ -233,12 +357,12 @@ class _ScopedResultPorts:
 class ReporterAdapter:
     """The sole App entry for a Reporter page selection and ReportRun commit."""
 
-    def __init__(self, results: ResultStore) -> None:
-        self._results = results
+    def __init__(self, results: ResultStore, tasks=None) -> None:
+        self._results, self._tasks = results, tasks
         self._designer = _DesignerPort()
 
     def dispatch(self, request: dict[str, Any], principal: SessionIdentity) -> dict[str, Any]:
-        ports = _ScopedResultPorts(self._results, principal)
+        ports = _ScopedResultPorts(self._results, principal, self._tasks)
         try:
             return self._dispatch_with_ports(request, principal, ports)
         finally:
@@ -356,7 +480,7 @@ class ReporterAdapter:
         original_request = {key: value for key, value in source_request.items() if key != "reporter_audit"}
         with tempfile.TemporaryDirectory(prefix="report-rerender-", dir=self._staging_root()) as temporary:
             try:
-                outcome = rerender_frozen_delivery(
+                rerender_frozen_delivery(
                     output_root=Path(temporary) / "runs",
                     source_request=original_request,
                     report_unit=unit,
@@ -518,7 +642,24 @@ def _public_catalog(catalog: Mapping[str, Any]) -> dict[str, Any]:
             if isinstance(candidate, Mapping)
         ]
         sources.append(source)
-    return {"tenant_id": catalog["tenant_id"], "sources": sources}
+    diagnostics = catalog.get("source_diagnostics")
+    public = {"tenant_id": catalog["tenant_id"], "sources": sources}
+    if isinstance(diagnostics, Mapping):
+        failure_codes = diagnostics.get("failure_codes")
+        if isinstance(failure_codes, Mapping):
+            cleaned_codes = {
+                str(code): count
+                for code, count in failure_codes.items()
+                if isinstance(code, str)
+                and isinstance(count, int)
+                and not isinstance(count, bool)
+                and count > 0
+            }
+            public["source_diagnostics"] = {
+                "excluded_run_count": sum(cleaned_codes.values()),
+                "failure_codes": cleaned_codes,
+            }
+    return public
 
 
 def _artifact_url(report_run_id: str, artifact_name: str, *, download: bool = False) -> str:
