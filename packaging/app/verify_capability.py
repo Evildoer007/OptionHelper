@@ -23,6 +23,7 @@ from verify_skill import (
     _code_errors,
     _link_errors,
     _module_hashes,
+    _source_manifest_errors,
     content_tree_entries,
     shared_payload_entries,
     tree_hash,
@@ -63,11 +64,12 @@ def verify_app_capability(root: Path) -> list[str]:
     )
     errors.extend(_code_errors(root))
     errors.extend(_link_errors(root))
+    errors.extend(_source_manifest_errors(root, manifest))
     required = {
         "scripts/tool_entry.py",
         "scripts/module_host.py",
         "scripts/knowledger/optionreg.py",
-        "scripts/knowledger/catalog-version.json",
+        "scripts/knowledger/source-manifest.json",
         "scripts/runtime/protocol/tool_catalog.py",
         "references/optionlist.md",
         "references/optionlib.md",
@@ -159,7 +161,7 @@ def verify_app_capability(root: Path) -> list[str]:
         errors.append("App Capability共享载荷文件哈希不一致")
     if manifest.get("shared_payload_hash") != tree_hash(shared_entries):
         errors.append("App Capability共享载荷总哈希不一致")
-    if "scripts/knowledger/catalog-version.json" not in shared_hashes:
+    if "scripts/knowledger/source-manifest.json" not in shared_hashes:
         errors.append("App Capability共享载荷缺少Catalog哈希")
 
     source_map = Path(__file__).with_name("capability-source-map.json")
