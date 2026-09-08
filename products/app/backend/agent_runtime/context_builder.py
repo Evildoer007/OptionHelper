@@ -35,7 +35,7 @@ def conversation_tool_catalog(policy: AuthorizationPolicy, identity: SessionIden
         {"name": "recommender.run", "description": "运行一次固定结构推荐流程", "actions": ["run"]},
         {
             "name": "recommendation_delivery.run",
-            "description": "对已确认候选运行独立计算与交付状态机；arguments只填kind或format",
+            "description": "将当前推荐整理为报告；用户明确要求的计算先执行，已有结果复用，缺项不得改交草稿；arguments只填kind或format",
             "actions": ["run"],
         },
         {"name": "datafetcher.status", "description": "查询数据能力状态", "actions": ["status"]},
@@ -58,6 +58,7 @@ def conversation_tool_catalog(policy: AuthorizationPolicy, identity: SessionIden
     if policy.allows(identity.role, "report.full.request"):
         output_types.append("report")
     tools[-1] = {**tools[-1], "output_types": output_types}
+    tools.append({"name":"reporter.create_document", "description":"根据当前对话生成可编辑HTML、PDF或Word报告草稿，不要求先完成计算。", "actions":["create_document"]})
     return tools
 
 
@@ -144,17 +145,6 @@ class ResultStoreObservationBuilder:
         if not isinstance(reference, dict) or reference.get("task_id") != task_id:
             return {}
         return self._results.verified_fact_summary(identity, reference)
-
-
-def _message_fact(value: Mapping[str, Any], identity: SessionIdentity) -> dict[str, str]:
-    role = str(value.get("role", "user"))
-    if role not in {"user", "assistant", "system"}:
-        role = "user"
-    return {
-        "role": role,
-        "content": _safe_text(value.get("content", ""), 2_000, identity),
-        "status": _safe_text(value.get("status"), 80, identity),
-    }
 
 
 def _surface_message_fact(value: Mapping[str, Any], identity: SessionIdentity) -> dict[str, Any]:
