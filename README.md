@@ -132,7 +132,7 @@ $env:OPTIONHELPER_PYTHON = 'C:\Python312\python.exe'
 - macOS：打开DMG，将`OptionHelper.app`复制到应用程序目录后启动。
 - Windows：完整解压ZIP，运行其中的`OptionHelper.exe`，不要单独移动EXE或删除旁边的资源目录。首次运行前确认已安装WebView2 Runtime。
 
-成品App已封装Python和Agent运行时，无需安装Python、Node.js或.NET SDK。
+成品App已封装Python和Agent运行时，报告图表也使用内置运行时完成语法校验，无需安装Python、Node.js或.NET SDK。
 
 新数据目录首次启动时提供两个账号：
 
@@ -187,6 +187,12 @@ Skill安装在支持项目级Skill的Agent宿主中，不是独立App，也不�
 | `multireport` | 多结构完整研究报告 |
 
 支持HTML、PDF和Word；App提供报告预览、编辑和下载入口，Skill由宿主交付生成的文件。没有计算结果的内容属于研究草稿；定价、回测和报价结论必须有对应数据来源。
+
+推荐型研究简报和研究报告默认按推荐、合同确认、收益分析、定价、历史回测、报告交付继续执行；参考报价至少完成必要定价。单Agent与多Agent共用该流程，明确要求研究草稿时保留未计算状态。
+
+需要补充条件时，主聊天框显示问题、选项和自定义回答，仍通过同一个发送按钮提交。运行详情折叠后保留动态状态，用量分别显示Token输入、输出和总计。
+
+生成的HTML均可通过文件卡上的编辑图标打开，修改正文、标题和版式后保存或导出。编辑报告不会重算上游结果；修改合同条款后需要重新运行相关计算。
 
 ## 五、版本迭代与发布
 
