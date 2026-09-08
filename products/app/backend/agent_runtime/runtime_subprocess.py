@@ -371,7 +371,7 @@ class RuntimeSubprocessTransport:
             with self._pending_lock:
                 self._pending.pop(identifier, None)
             raise
-        wait_for = self.request_timeout if timeout is None else max(0.05, float(timeout))
+        wait_for = self.request_timeout if timeout is None else (None if timeout == 0 else max(0.05, float(timeout)))
         if not pending.event.wait(wait_for):
             with self._pending_lock:
                 self._pending.pop(identifier, None)
@@ -641,8 +641,8 @@ class RuntimeSubprocessTransport:
         if run_id:
             role_id = self._run_roles.get(run_id, str(params.get("roleId") or params.get("role_id") or "agent"))
             current = self._run_tool_counts.get(run_id, 0)
-            if current >= self._tool_limit(role_id):
-                raise RuntimeSubprocessError("Child Session工具调用次数超过12次上限")
+            if self._tool_limit(role_id) > 0 and current >= self._tool_limit(role_id):
+                raise RuntimeSubprocessError("工具调用次数达到显式配置的上限")
             self._run_tool_counts[run_id] = current + 1
         if self.tool_handler is not None:
             return _safe_value(self._invoke_callback(self.tool_handler, bound))
@@ -685,7 +685,7 @@ class RuntimeSubprocessTransport:
             if isinstance(budget, Mapping):
                 raw = _pick(budget, "maxTools", "max_tools", default=MAX_WORKFLOW_TOOLS)
                 if isinstance(raw, int) and not isinstance(raw, bool):
-                    return max(0, min(MAX_WORKFLOW_TOOLS, raw))
+                    return max(0, raw)
         return MAX_WORKFLOW_TOOLS
 
     def _allowed_tools(self, role_id: str) -> tuple[str, ...] | None:
@@ -860,6 +860,8 @@ class RuntimeSubprocessTransport:
             if event_type in {"tool.completed", "tool.failed", "tool.cancelled"}:
                 payload["status"] = str(data.get("status", event_type.rsplit(".", 1)[-1]))
                 payload["result"] = _safe_value(data.get("result"))
+                if isinstance(data.get("error"), str):
+                    payload["error"] = _safe_value(data["error"])
                 if data.get("errorCode") is not None:
                     payload["error_code"] = str(data["errorCode"])
             return payload
