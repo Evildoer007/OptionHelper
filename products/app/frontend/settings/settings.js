@@ -1,15 +1,22 @@
-import { clearMessage, enhanceSelects, message, request, safeJson } from "/app/frontend/shared/app.js";
+import { clearMessage, enhanceSelects, message, notifyModelConfigurationChanged, request, safeJson } from "/app/frontend/shared/app.js";
 import { applyServerThemePreference, currentThemePreference, installThemeControls } from "/app/frontend/shared/theme.js";
 import { setScale } from "/app/frontend/shared/ui-scale.js";
 
-const send = (path, payload) => request(path, { method: "POST", body: safeJson(payload) });
-const sendCredential = (path, payload) => request(path, { method: "POST", body: JSON.stringify(payload) });
+async function sendSettings(path, body) {
+  const response = await request(path, { method: "POST", body });
+  if (path.startsWith("/api/settings/model-provider") || path === "/api/settings/test/model") {
+    notifyModelConfigurationChanged();
+  }
+  return response;
+}
+const send = (path, payload) => sendSettings(path, safeJson(payload));
+const sendCredential = (path, payload) => sendSettings(path, JSON.stringify(payload));
 const resultFor = (name) => document.querySelector(`[data-form-result="${name}"]`);
 const session = await request("/api/me").catch(() => { location.assign("/"); return null; });
 if (!session) throw new Error("登录状态无效");
 
 const canEditModel = session.capabilities.includes("settings.model.local.write") || session.capabilities.includes("settings.model.write");
-const canManageData = session.capabilities.includes("settings.data.write");
+const canManageData = session.capabilities.includes("settings.data.write") || session.capabilities.includes("settings.data.local.write");
 const dataForm = document.querySelector("#data-form");
 const storageForm = document.querySelector("#storage-form");
 const preferenceForm = document.querySelector("#preferences-form");
@@ -220,10 +227,10 @@ function providerEditor(provider) {
       <label>Provider ID<input name="provider_id" value="${escapeHtml(provider.provider_id)}" autocomplete="off" ${providerIdLocked ? "readonly" : ""}><small>${providerIdLocked ? "保存后用于绑定当前设备上的凭据，不可修改。" : "首次保存前可自定义；保存后不可修改。"}</small></label>
       <div class="model-catalog-head"><div><strong>模型目录</strong><small>仅启用的模型会显示在对话选择器中。</small></div><div><button class="model-link-button" type="button" data-model-action="discover-models">获取模型</button><button class="model-link-button" type="button" data-model-action="add-model">添加模型</button></div></div>
       <div class="model-catalog" data-model-catalog>${rows}</div>
-      <button class="model-test-button" type="button" data-model-action="test-provider">测试连接</button>
+      <button class="model-test-button" type="button" data-model-action="test-provider">重新测试</button>
     </div></details>
     <p class="form-result" data-provider-result role="status" aria-live="polite"></p>
-    <div class="model-provider-actions"><button class="model-secondary-button" type="button" data-model-action="close-provider">取消</button><button class="model-primary-button" type="submit">保存</button></div>
+    <div class="model-provider-actions"><button class="model-secondary-button" type="button" data-model-action="close-provider">取消</button><button class="model-primary-button" type="submit" ${providerSaveInProgress ? "disabled" : ""}>${providerSaveInProgress ? "正在保存并测试…" : "保存并测试"}</button></div>
   </form>`;
 }
 
@@ -249,8 +256,9 @@ function renderProviders() {
   const verified = providers.some((provider) => provider.models.some(
     (model) => model.enabled && model.verification_state === "verified" && model.current_revision_match === true,
   ));
-  modelStatus.textContent = verified ? "已验证" : active ? "已声明" : "未配置";
-  modelStatus.classList.toggle("is-ready", verified);
+  const connected = verified || providers.some((provider) => provider.models.some((model) => model.enabled && model.verification_state === "connected" && model.current_revision_match === true));
+  modelStatus.textContent = connected ? "已连接" : active ? "已配置" : "未配置";
+  modelStatus.classList.toggle("is-ready", connected);
   renderModelProbe(active);
   if (!canEditModel) {
     modelRoot.innerHTML = `<div class="model-empty"><strong>模型服务由管理员维护</strong><p>当前账户没有模型配置权限。</p></div>`;
@@ -275,7 +283,8 @@ async function refreshProviders() {
       effective: selectedModel.verified_capabilities || {},
     };
   } else {
-    modelProbe = null;
+    modelProbe = selectedModel?.verification_state === "connected" && selectedModel.current_revision_match === true
+      ? { connected: true, verified: false, generation: configurationGeneration } : null;
   }
   renderProviders();
 }
@@ -304,9 +313,14 @@ function renderModelProbe(configured = providerState.providers.some((provider) =
     runtimeModelDetail.textContent = `${modelProbe.model?.provider_id || "默认Provider"}/${modelProbe.model?.model_id || "默认模型"}；有效能力：${effective.join("、") || "未返回"}。`;
     return;
   }
-  runtimeModel.textContent = configured ? "已声明，未验证" : "未配置";
+  if (modelProbe?.connected) {
+    runtimeModel.textContent = "已连接";
+    runtimeModelDetail.textContent = "可用于对话；部分工具能力未确认。";
+    return;
+  }
+  runtimeModel.textContent = configured ? "已配置" : "未配置";
   runtimeModelDetail.textContent = configured
-    ? "Provider、模型和凭据已保存；变更配置后必须重新验证流式、工具调用、续接、取消和超时能力。"
+    ? "保存配置时会自动验证连接与模型能力。"
     : "请先在模型配置中保存Provider、模型和凭据。";
 }
 
@@ -315,7 +329,7 @@ function renderDataProbe() {
   const statusLabel = dataProbe?.statusLabel || (dataProbe?.verified ? "已验证" : dataProbe?.failed ? "验证失败" : dataConfigured ? "已声明，未验证" : "未配置");
   runtimeData.textContent = statusLabel;
   runtimeDataDetail.textContent = dataProbe?.detail || (dataConfigured
-    ? "Refresh Token已保存；需要执行连接测试才能确认当前连接可用。"
+    ? "Refresh Token已保存；保存时会自动测试连接，也可重新测试。"
     : "尚未保存iFind Refresh Token。");
   dataStatus.textContent = statusLabel;
   dataStatus.classList.toggle("is-ready", Boolean(dataProbe?.verified));
@@ -523,6 +537,7 @@ function normalizeMultiAgentState(payload) {
   const state = {
     ...response,
     presets: Array.isArray(response.presets) ? response.presets : [],
+    execution_mode: response.execution_mode === "multi" ? "multi" : "single",
     selected_preset_id: textValue(response.selected_preset_id) || "sequential-deliberation",
     role_models: isRecord(response.role_models) ? response.role_models : {},
     agent_files: isRecord(response.agent_files) ? response.agent_files : {},
@@ -565,31 +580,32 @@ function renderMultiAgentPresets() {
     selected.roles, configuredRoles, agentFiles, defaultAgentFiles,
     (role) => roleDisplay(selected.preset_id, role), "role", !selected.enabled,
   );
-  multiAgentRoot.innerHTML = `<div class="multi-agent-preset-list" role="radiogroup" aria-label="Recommender多智能体预设">${presetRows}</div>
+  multiAgentRoot.innerHTML = `<div class="multi-agent-role-head"><div><label for="recommendation-execution-mode">智能体预设</label><select id="recommendation-execution-mode" data-recommendation-mode data-choice ${canEditModel ? "" : "disabled"}><option value="single" ${multiAgentState.execution_mode === "single" ? "selected" : ""}>单Agent</option><option value="multi" ${multiAgentState.execution_mode === "multi" ? "selected" : ""}>多Agent</option></select><p>单Agent使用本轮会话模型完成筛选和复核；多Agent按下方预设分工。聊天中指定的模式仅对本次推荐生效。</p></div></div><div class="multi-agent-configuration" ${multiAgentState.execution_mode === "single" ? "hidden" : ""}><div class="multi-agent-preset-list" role="radiogroup" aria-label="Recommender多智能体预设">${presetRows}</div>
     <form class="multi-agent-role-form" data-multi-agent-role-form novalidate>
-      <div class="multi-agent-role-head"><div><span>当前预设</span><strong>${escapeHtml(selected.display_name)}的Agent配置</strong><small>${modeIsAvailable(selected, runtime) ? "模型与AGENT.md会在新任务启动时冻结；当前运行中的任务不受后续修改影响。" : "当前Runtime不可用；配置仍可保存，并在Runtime恢复后的新任务中生效。"}</small></div></div>
+      <div class="multi-agent-role-head"><div><span>当前预设</span><strong>${escapeHtml(selected.display_name)}的Agent配置</strong><small>${modeIsAvailable(selected, runtime) ? "修改对下一次推荐生效。" : "当前Runtime不可用；配置仍可保存，并在Runtime恢复后的新任务中生效。"}</small></div></div>
       <div class="multi-agent-role-list">${presetRoleRows}</div>
       <div class="multi-agent-role-actions"><p class="form-result" data-form-result="multi-agent" role="status" aria-live="polite"></p><div>${multiAgentState.available_models.length ? "" : `<a class="model-secondary-button" href="#model">配置模型</a>`}<button class="model-primary-button" type="submit" ${canEditModel && selected.enabled ? "" : "disabled"}>保存Agent配置</button></div></div>
-    </form>`;
+    </form></div>`;
   renderReviewPolicies();
   enhanceSelects(multiAgentRoot);
 }
 
 function renderReviewPolicies() {
-  const selected = multiAgentState.review_policies.find((policy) => policy.policy_id === multiAgentState.selected_review_policy_id);
-  if (!selected) {
-    reviewPolicyRoot.innerHTML = `<div class="model-empty"><strong>未找到复核策略</strong><p>请刷新设置或检查App版本。</p></div>`;
+  const policies = multiAgentState.review_policies.filter((policy) => policy.enabled);
+  const visible = multiAgentState.execution_mode === "multi" && policies.length > 1;
+  reviewPolicyRoot.hidden = !visible;
+  if (!visible) {
+    reviewPolicyRoot.replaceChildren();
     return;
   }
-  const policyRows = multiAgentState.review_policies.map((policy) => {
-    const status = policy.enabled ? "可用" : "规划中";
-    const detail = policy.enabled ? `${escapeHtml(policy.version)} · ${status}` : escapeHtml(policy.disabled_reason || status);
-    return `<article class="review-policy-card ${policy.enabled ? "" : "is-disabled"} ${policy.policy_id === selected.policy_id ? "is-selected" : ""}">
-      <label class="review-policy-card__head"><input type="radio" name="review-policy" value="${escapeHtml(policy.policy_id)}" ${policy.policy_id === selected.policy_id ? "checked" : ""} ${policy.enabled && canEditModel ? "" : "disabled"}><span><strong>${escapeHtml(policy.display_name)}</strong><small>独立于推荐Mode的复核协议</small></span><em>${status}</em></label><p>${detail}</p>
+  const labels = { "standard-review": "标准复核", "adversarial-review": "交叉复核" };
+  const policyRows = policies.map((policy) => {
+    const selected = policy.policy_id === multiAgentState.selected_review_policy_id;
+    return `<article class="review-policy-card ${selected ? "is-selected" : ""}">
+      <label class="review-policy-card__head"><input type="radio" name="review-policy" value="${escapeHtml(policy.policy_id)}" ${selected ? "checked" : ""} ${canEditModel ? "" : "disabled"}><span><strong>${escapeHtml(labels[policy.policy_id] || policy.display_name)}</strong></span></label>
     </article>`;
   }).join("");
-  reviewPolicyRoot.innerHTML = `<div class="review-policy-head"><div><h3>复核策略</h3><p>标准复核已可用；严格复核将在协议发布后开放。</p></div></div><div class="review-policy-list" role="radiogroup" aria-label="复核策略">${policyRows}</div>
-    <div class="multi-agent-role-form"><div class="multi-agent-role-head"><div><strong>使用当前Mode的终审角色</strong><small>标准复核不增加独立AgentRun，也不新增模型槽。Mode1、Mode2和Mode4由Reviewer终审，Mode3由Moderator终审。</small></div></div></div>`;
+  reviewPolicyRoot.innerHTML = `<div class="review-policy-head"><h3>复核方式</h3></div><div class="review-policy-list" role="radiogroup" aria-label="复核方式">${policyRows}</div>`;
 }
 
 async function refreshMultiAgentPresets() {
@@ -598,6 +614,18 @@ async function refreshMultiAgentPresets() {
 }
 
 multiAgentRoot.addEventListener("change", async (event) => {
+  const mode = event.target.closest('[data-recommendation-mode]');
+  if (mode) {
+    mode.disabled = true;
+    try {
+      await send("/api/settings/recommendation-execution", { execution_mode: mode.value });
+      await refreshMultiAgentPresets();
+    } catch (error) {
+      await refreshMultiAgentPresets();
+      message(resultFor("multi-agent"), error.message, true);
+    }
+    return;
+  }
   const control = event.target.closest('input[name="multi-agent-preset"]');
   if (!control) return;
   try {
@@ -719,23 +747,70 @@ function catalogPayload(form) {
   };
 }
 
-function showProviderResult(form, text, error = false) { message(form.querySelector("[data-provider-result]"), text, error); }
+function showProviderResult(form, text, error = false) { if (form) message(form.querySelector("[data-provider-result]"), text, error); }
+
+const fieldErrors = new WeakMap();
+let fieldErrorSequence = 0;
+
+function clearFieldError(control) {
+  const state = fieldErrors.get(control);
+  if (!state) return;
+  state.error.remove();
+  control.removeAttribute("aria-invalid");
+  const descriptions = (control.getAttribute("aria-describedby") || "").split(/\s+/).filter(id => id && id !== state.error.id);
+  if (descriptions.length) control.setAttribute("aria-describedby", descriptions.join(" "));
+  else control.removeAttribute("aria-describedby");
+  control.removeEventListener("input", state.clear);
+  control.removeEventListener("change", state.clear);
+  fieldErrors.delete(control);
+}
+
+function showFieldError(control, text) {
+  clearFieldError(control);
+  const error = document.createElement("small");
+  error.id = `settings-field-error-${++fieldErrorSequence}`;
+  error.dataset.fieldError = "true";
+  error.setAttribute("role", "alert");
+  error.textContent = text;
+  const modelRow = control.closest("[data-model-row]");
+  if (modelRow) {
+    error.style.gridColumn = "1 / -1";
+    modelRow.append(error);
+  } else control.after(error);
+  control.setAttribute("aria-invalid", "true");
+  control.setAttribute("aria-describedby", [control.getAttribute("aria-describedby"), error.id].filter(Boolean).join(" "));
+  const clear = () => clearFieldError(control);
+  fieldErrors.set(control, {error, clear});
+  control.addEventListener("input", clear);
+  control.addEventListener("change", clear);
+  for (let details = control.closest("details"); details; details = details.parentElement?.closest("details")) details.open = true;
+  control.focus();
+  return false;
+}
+
+let providerSaveInProgress = false;
 
 async function saveProvider(form) {
+  if (providerSaveInProgress) return;
   const payload = catalogPayload(form);
   const originalProviderId = form.dataset.providerId;
   const apiKey = form.elements.api_key.value.trim();
   const current = providerState.providers.find((provider) => provider.provider_id === form.dataset.providerId);
-  if (!payload.provider_id || !payload.endpoint || !payload.models.some((model) => model.enabled)) {
-    showProviderResult(form, "请填写Provider ID、Base URL，并至少启用一个模型。", true);
-    return;
+  if (!payload.provider_id) return showFieldError(form.elements.provider_id, "请填写Provider ID。");
+  if (!payload.endpoint) return showFieldError(form.elements.endpoint, "请填写API地址。");
+  if (!payload.models.some((model) => model.enabled)) {
+    const enabledRow = Array.from(form.querySelectorAll("[data-model-row]")).find(row => row.querySelector('[name^="enabled-"]')?.checked);
+    const control = enabledRow?.querySelector('[name^="model_id-"]')
+      || form.querySelector('[name^="enabled-"]') || form.querySelector('[data-model-action="add-model"]');
+    return showFieldError(control, enabledRow ? "请填写已启用模型的ID。" : "请至少启用一个模型。");
   }
   if (!apiKey && !current?.credential_configured) {
-    showProviderResult(form, "请粘贴API Key后保存。", true);
-    return;
+    return showFieldError(form.elements.api_key, "请粘贴API密钥后保存。");
   }
   const button = form.querySelector('button[type="submit"]');
+  providerSaveInProgress = true;
   button.disabled = true;
+  button.textContent = "正在保存并测试…";
   try {
     const response = apiKey
       ? await sendCredential("/api/settings/model-provider/credential", { ...payload, original_provider_id: originalProviderId, api_key: apiKey })
@@ -743,15 +818,25 @@ async function saveProvider(form) {
     providerState.openProviderId = payload.provider_id;
     applySettings(response.settings);
     await refreshProviders();
-    await refreshMultiAgentPresets();
     invalidateConnectionProbes();
-  } catch (error) { showProviderResult(form, error.message, true); }
-  finally { button.disabled = false; }
+    const savedForm = modelRoot.querySelector(`[data-provider-form][data-provider-id="${CSS.escape(payload.provider_id)}"]`);
+    await testProvider(savedForm, payload);
+    await refreshMultiAgentPresets();
+  } catch (error) {
+    const activeForm = modelRoot.querySelector(`[data-provider-form][data-provider-id="${CSS.escape(payload.provider_id)}"]`);
+    showProviderResult(activeForm || form, error.message, true);
+  } finally {
+    providerSaveInProgress = false;
+    const activeForm = modelRoot.querySelector(`[data-provider-form][data-provider-id="${CSS.escape(payload.provider_id)}"]`);
+    const activeButton = activeForm?.querySelector('button[type="submit"]') || button;
+    activeButton.disabled = false;
+    activeButton.textContent = "保存并测试";
+  }
 }
 
-async function testProvider(form) {
-  const payload = catalogPayload(form);
-  const apiKey = form.elements.api_key.value.trim();
+async function testProvider(form, savedPayload = null) {
+  const payload = savedPayload || catalogPayload(form);
+  const apiKey = savedPayload ? "" : form.elements.api_key.value.trim();
   if (!payload.endpoint || !payload.default_model_id) {
     showProviderResult(form, "请先填写Base URL并选择一个启用模型。", true);
     return;
@@ -761,19 +846,27 @@ async function testProvider(form) {
     showProviderResult(form, "请先保存Provider和API Key，再测试当前模型。", true);
     return;
   }
-  const button = form.querySelector('[data-model-action="test-provider"]');
-  button.disabled = true;
+  const button = form?.querySelector('[data-model-action="test-provider"]');
+  if (button?.disabled) return;
+  if (button) button.disabled = true;
+  showProviderResult(form, "配置已保存，正在测试连接…");
+  const generation = configurationGeneration;
   try {
     const value = await send("/api/settings/test/model", {
       provider_id: payload.provider_id,
       model_id: payload.default_model_id,
     });
+    if (generation !== configurationGeneration) return;
+    const probe = value.connection?.capability_probe || {};
+    modelProbe = { ...probe, connected: value.connection?.status === "available", verified: value.connection?.status === "available" && probe.verified === true, generation };
     providerState.openProviderId = payload.provider_id;
     await refreshProviders();
     const refreshedForm = modelRoot.querySelector(`[data-provider-form][data-provider-id="${CSS.escape(payload.provider_id)}"]`);
-    showProviderResult(refreshedForm || form, value.connection?.detail || "模型能力验证已完成。", value.connection?.status !== "available");
-  } catch (error) { showProviderResult(form, error.message, true); }
-  finally { button.disabled = false; }
+    showProviderResult(refreshedForm || form, `配置已保存。${value.connection?.detail || "模型能力验证已完成。"}`, value.connection?.status !== "available");
+  } catch (error) {
+    if (generation === configurationGeneration) showProviderResult(form, `配置已保存，连接测试失败：${error.message}`, true);
+  }
+  finally { if (button) button.disabled = false; }
 }
 
 async function discoverModels(form) {
@@ -883,12 +976,11 @@ modelRoot.addEventListener("input", (event) => {
 
 function validateData() {
   if (dataForm.elements.refresh_token.value.trim() || dataConfigured) return true;
-  message(resultFor("data"), "请粘贴iFind Refresh Token后保存。", true);
-  return false;
+  return showFieldError(dataForm.elements.refresh_token, "请粘贴iFind Refresh Token后保存。");
 }
 
 function setSaving(form, saving) {
-  const button = form.querySelector('button[type="submit"]');
+  const button = form.querySelector('button[type="submit"], button:not([type])');
   if (!button) return;
   button.disabled = saving;
   if (saving) button.dataset.originalText = button.textContent;
@@ -916,36 +1008,50 @@ storageForm.addEventListener("submit", async (event) => {
   finally { setSaving(storageForm, false); }
 });
 
-if (canManageData) {
-  dataForm.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    if (!validateData()) return;
-    setSaving(dataForm, true);
-    try {
-      const refresh = dataForm.elements.refresh_token.value;
-      const response = refresh ? await sendCredential("/api/settings/data/credential", { provider_name: "ifind-http", refresh_token: refresh }) : await send("/api/settings/data", { provider_name: "ifind-http" });
-      dataProbe = null;
-      persistedDataVerification = null;
-      configurationGeneration += 1;
-      applySettings(response.settings);
-      message(resultFor("data"), "iFind凭据已保存。现在可以测试连接。");
-    } catch (error) { message(resultFor("data"), error.message, true); }
-    finally { setSaving(dataForm, false); }
-  });
-  document.querySelector("#test-data").addEventListener("click", async () => {
+let dataSaveInProgress = false;
+
+async function testDataConnection() {
     if (!dataConfigured) { message(resultFor("data"), "请先保存Refresh Token，再测试连接。", true); return; }
+    const generation = configurationGeneration;
+    message(resultFor("data"), "凭据已保存，正在测试连接…");
     try {
       const value = await send("/api/settings/test/ifind", {});
+      if (generation !== configurationGeneration) return;
       const failed = value.connection?.status !== "available";
       const verified = !failed;
       dataProbe = { verified, failed, detail: value.connection?.detail || "iFind连接测试未返回说明。", generation: configurationGeneration };
       renderDataProbe();
       message(resultFor("data"), dataProbe.detail, !verified);
     } catch (error) {
+      if (generation !== configurationGeneration) return;
       dataProbe = { verified: false, failed: true, detail: error.message, generation: configurationGeneration };
       renderDataProbe();
-      message(resultFor("data"), error.message, true);
+      message(resultFor("data"), `凭据已保存，连接测试失败：${error.message}`, true);
     }
+}
+
+if (canManageData) {
+  dataForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (dataSaveInProgress || !validateData()) return;
+    dataSaveInProgress = true;
+    setSaving(dataForm, true);
+    try {
+      const refresh = dataForm.elements.refresh_token.value.trim();
+      const response = refresh ? await sendCredential("/api/settings/data/credential", { provider_name: "ifind-http", refresh_token: refresh }) : await send("/api/settings/data", { provider_name: "ifind-http" });
+      dataProbe = null;
+      persistedDataVerification = null;
+      configurationGeneration += 1;
+      applySettings(response.settings);
+      await testDataConnection();
+    } catch (error) { message(resultFor("data"), error.message, true); }
+    finally { dataSaveInProgress = false; setSaving(dataForm, false); }
+  });
+  document.querySelector("#test-data").addEventListener("click", async () => {
+    if (dataSaveInProgress) return;
+    dataSaveInProgress = true;
+    try { await testDataConnection(); }
+    finally { dataSaveInProgress = false; }
   });
 }
 
@@ -958,9 +1064,9 @@ document.querySelector("#verify-model-capability")?.addEventListener("click", as
     const value = await send("/api/settings/test/model", {});
     const probe = value.connection?.capability_probe || {};
     if (generation !== configurationGeneration) return;
-    modelProbe = { ...probe, verified: value.connection?.status === "available" && probe.verified === true, generation };
+    modelProbe = { ...probe, connected: value.connection?.status === "available", verified: value.connection?.status === "available" && probe.verified === true, generation };
     renderProviders();
-    message(resultFor("runtime"), value.connection?.detail || (modelProbe.verified ? "模型能力已验证。" : "模型能力未通过完整验证。"), !modelProbe.verified);
+    message(resultFor("runtime"), value.connection?.detail || (modelProbe.connected ? "连接成功。" : "连接失败，请检查模型配置。"), !modelProbe.connected);
   } catch (error) {
     if (generation === configurationGeneration) {
       modelProbe = { verified: false, failed: true, generation };
