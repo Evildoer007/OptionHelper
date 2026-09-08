@@ -209,7 +209,10 @@ export class HostRuntimePorts implements RuntimePorts {
       step: request.step,
     }, signal))
     const status = String(raw.status ?? "completed")
-    const normalized = ["succeeded", "success", "available"].includes(status) ? "completed" : status
+    // Business states such as a returned clarification are successful tool
+    // responses; they do not mean the requested research is already complete.
+    const normalized = ["complete", "succeeded", "success", "available", "pending_question", "needs_input", "pending_approval", "candidate_ready"].includes(status)
+      ? "completed" : ["outcome_unknown", "interrupted"].includes(status) ? "unknown" : status
     const factRefs = Array.isArray(raw.fact_refs) ? raw.fact_refs.map(String)
       : Array.isArray(raw.factRefs) ? raw.factRefs.map(String)
         : raw.fact_ref === undefined ? [] : [String(raw.fact_ref)]
