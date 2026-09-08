@@ -368,13 +368,14 @@ class RecommendationCase:
     audience: str = "internal"
     conversation_ref: str | None = None
     confirmed_constraints: Mapping[str, Any] = field(default_factory=dict)
+    research_context: str = ""
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> "RecommendationCase":
         data = dict(value)
         allowed = {
             "analysis_case_id", "task_id", "tenant_id", "prompt", "catalog_version", "run_id",
-            "requested_outputs", "audience", "conversation_ref", "confirmed_constraints",
+            "requested_outputs", "audience", "conversation_ref", "confirmed_constraints", "research_context",
         }
         unknown = sorted(set(data) - allowed)
         if unknown:
@@ -390,6 +391,7 @@ class RecommendationCase:
             audience=_required_text(data.get("audience", "internal"), "audience"),
             conversation_ref=str(data.get("conversation_ref", "")).strip() or None,
             confirmed_constraints=_mapping(data.get("confirmed_constraints", {}), "confirmed_constraints"),
+            research_context=str(data.get("research_context", "")),
         )
 
     def to_dict(self) -> dict[str, Any]:
