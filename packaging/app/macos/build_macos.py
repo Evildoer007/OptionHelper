@@ -1156,6 +1156,9 @@ def backend_build_command(workspace: Path, *, app_root: Path = APP_ROOT) -> list
     # settings templates from package data when a document is constructed.
     command.extend(("--collect-data", "docx"))
     command.extend(("--collect-data", "certifi"))
+    # JSON Schema format validation imports this grammar lazily at first use.
+    command.extend(("--collect-data", "rfc3987_syntax"))
+    command.extend(("--collect-data", "lark"))
     for module in EXCLUDED_BACKEND_MODULES:
         command.extend(("--exclude-module", module))
     command.append(str(launcher))
