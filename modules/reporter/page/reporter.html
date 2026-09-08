@@ -3,36 +3,37 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>报告生成 | OptionHelper</title>
+    <title>研究报告 | OptionHelper</title>
     <link id="favicon" rel="icon" href="../../icons/optionhelper-app-icon-tile-light.svg" onerror="this.onerror=null;this.href='../../../assets/icons/optionhelper-app-icon-tile-light.svg'">
     <link rel="stylesheet" href="./reporter.css">
+    <link rel="stylesheet" href="./editor/report-editor.css">
     <link rel="stylesheet" href="../module-host-presentation.css">
   </head>
   <body>
     <div class="app-shell">
       <header class="topbar">
-        <div class="brand"><img src="../../icons/optionhelper-logo.svg" onerror="this.onerror=null;this.src='../../../assets/icons/optionhelper-logo.svg'" alt="OptionHelper"><span></span><strong>报告生成</strong></div>
-        <div class="service-state" id="serviceState">正在连接本机服务</div>
+        <div class="brand"><img src="../../icons/optionhelper-logo.svg" onerror="this.onerror=null;this.src='../../../assets/icons/optionhelper-logo.svg'" alt="OptionHelper"><span></span><strong>研究报告</strong></div>
+        <div class="service-state" id="serviceState">连接服务中</div>
       </header>
 
       <main class="workbench">
         <aside class="source-panel">
           <h1>报告来源</h1>
           <label for="taskFilter">任务筛选</label>
-          <input id="taskFilter" autocomplete="off" placeholder="任务名称或标识，可留空">
+          <input id="taskFilter" autocomplete="off" placeholder="任务名称或标识">
           <label for="sourceSelect">研究与合同来源</label>
-          <select id="sourceSelect" disabled><option>等待受控结果目录</option></select>
-          <div class="source-detail" id="sourceDetail">选择来源后显示产品、规则修订与实际运行记录。</div>
+          <select id="sourceSelect" disabled><option>正在读取报告来源</option></select>
+          <div class="source-detail" id="sourceDetail">选择来源后显示产品、标的、期限与真实运行时间。</div>
         </aside>
         <div class="panel-resizer" id="sourceResizer" role="separator" aria-label="调整报告来源面板宽度" aria-orientation="vertical" tabindex="0"></div>
 
         <section class="selection-panel">
           <div class="section-head">
             <div><h2>选择分析结果</h2></div>
-            <div class="top-actions"><button id="refreshButton" class="button button-quiet">刷新结果</button><button id="generateButton" class="button button-primary" disabled>生成并保存</button></div>
+            <div class="top-actions"><button id="importHtmlButton" class="button button-quiet">导入HTML</button><input id="importHtmlFile" type="file" accept=".html,.htm,text/html" hidden><button id="refreshButton" class="button button-quiet">刷新结果</button><button id="generateButton" class="button button-primary" disabled>生成草稿</button></div>
           </div>
-          <div class="selection-count" id="selectionCount">未选择候选</div>
-          <div class="notice" id="notice" role="status">正在读取当前租户可用的报告来源。</div>
+          <div class="selection-count" id="selectionCount">未选择分析来源</div>
+          <div class="notice" id="notice" role="status">正在读取报告来源。</div>
           <div class="quote-items" id="quoteItems" hidden aria-live="polite"></div>
           <div class="candidate-list" id="candidateList"></div>
         </section>
@@ -40,25 +41,145 @@
         <div class="panel-resizer" id="settingsResizer" role="separator" aria-label="调整交付设置面板宽度" aria-orientation="vertical" tabindex="0"></div>
 
         <aside class="settings-panel">
-          <h2>内容与格式</h2>
-          <div class="setting-group" id="deliveryModeGroup"><label>交付方式</label><select id="deliveryMode"><option value="single">单结构</option><option value="batch">批量独立报告</option><option value="combined">组合索引与独立报告</option><option value="comparison">横向对比</option></select></div>
-          <fieldset class="setting-group"><legend>内容等级</legend><label class="choice"><input type="radio" name="outputType" value="card"><span>研究简报</span></label><label class="choice"><input type="radio" name="outputType" value="quote"><span>参考报价</span></label><label class="choice"><input type="radio" name="outputType" value="report" checked><span>完整研究报告</span></label></fieldset>
-          <div class="setting-group" id="referenceQuotePanel" hidden><label>报价结构清单</label><p class="rule">每个产品只选择一项已保存估值运行；同一挂钩标的自动汇总为一张表。</p></div>
-          <fieldset class="setting-group"><legend>输出格式</legend><label class="choice"><input type="radio" name="format" value="html" checked><span>HTML</span></label><label class="choice"><input type="radio" name="format" value="pdf"><span>PDF</span></label></fieldset>
+          <h2>报告设置</h2>
+          <div class="setting-group"><label for="reportTemplate">报告模板</label><select id="reportTemplate"><option value="card">单产品简报</option><option value="report" selected>单产品研究报告</option><option value="quote">参考报价表</option><option value="multicard">多产品简报</option><option value="multireport">多产品研究报告</option></select></div>
+          <div class="setting-group" id="referenceQuotePanel" hidden><label>报价结构清单</label><details class="run-audit"><summary>汇总规则</summary><p class="rule">每个产品选择一个已保存估值；同一标的汇总为一张表。</p></details></div>
           <fieldset class="setting-group" id="moduleGroup"><legend>纳入内容</legend><label class="choice"><input type="checkbox" data-module="recommender" checked><span>产品建议</span></label><label class="choice"><input type="checkbox" data-module="payoff" checked><span>收益结构</span></label><label class="choice"><input type="checkbox" data-module="pricing" checked><span>估值定价</span></label><label class="choice"><input type="checkbox" data-module="backtest" checked><span>历史回测</span></label></fieldset>
-          <div class="setting-group"><label for="audience">受众</label><select id="audience"><option value="professional">专业用户</option></select></div>
-          <div class="setting-group"><label>报告规则</label><p class="rule" id="formatRule"></p></div>
         </aside>
       </main>
 
       <section class="preview-panel" id="previewPanel" hidden>
-        <div class="preview-head"><div><span class="panel-kicker">报告预览</span><h2 id="previewTitle">已生成报告</h2></div><div class="top-actions"><button id="convertPdfButton" class="button button-quiet" hidden>另存为PDF</button><a id="downloadLink" class="button button-quiet" href="#">下载文件</a></div></div>
+        <div class="preview-head"><div><span class="panel-kicker">报告预览</span><h2 id="previewTitle">已生成报告</h2></div><div class="top-actions"><button id="editReportButton" class="button button-quiet" hidden>编辑报告</button><a id="downloadLink" class="button button-quiet" href="#">下载文件</a></div></div>
         <div class="child-reports" id="childReports"></div>
         <iframe id="reportPreview" title="已生成报告预览"></iframe>
       </section>
     </div>
+
+    <section class="report-editor" id="reportEditor" aria-label="研究报告编辑器" hidden>
+      <header class="report-editor__toolbar">
+        <div class="editor-toolbar__identity">
+          <button class="editor-icon-button" id="editorExit" type="button" aria-label="退出报告编辑">返回</button>
+          <label class="editor-title-field" for="editorTitle"><span>报告标题</span><input id="editorTitle" autocomplete="off" maxlength="120"></label>
+          <p class="editor-save-state" id="editorStatus" role="status">正在读取报告</p>
+        </div>
+
+        <details class="editor-command-fold">
+          <summary>格式工具</summary>
+          <div class="editor-toolbar__commands" role="toolbar" aria-label="正文格式">
+            <button type="button" data-editor-command="undo" aria-label="撤销">撤销</button>
+            <button type="button" data-editor-command="redo" aria-label="重做">重做</button>
+            <span class="editor-toolbar__separator" aria-hidden="true"></span>
+            <select id="editorBlockFormat" aria-label="段落格式">
+              <option value="p">正文</option><option value="h1">一级标题</option><option value="h2">二级标题</option><option value="h3">三级标题</option><option value="blockquote">引用</option>
+            </select>
+            <button type="button" data-editor-command="bold" aria-label="加粗"><strong>粗体</strong></button>
+            <button type="button" data-editor-command="italic" aria-label="斜体"><em>斜体</em></button>
+            <label class="editor-compact-field">字号<input id="editorFontSize" type="number" min="10" max="72" step="1" value="14" aria-label="字号"></label>
+            <label class="editor-color-field">文字颜色<input id="editorTextColor" type="color" value="#20242a" aria-label="文字颜色"></label>
+            <select id="editorAlignment" aria-label="文字对齐"><option value="left">左对齐</option><option value="center">居中</option><option value="right">右对齐</option><option value="justify">两端对齐</option></select>
+            <button type="button" id="editorFindToggle" aria-expanded="false" aria-controls="editorFindBar">查找替换</button>
+            <button type="button" id="editorInsertFormula">插入公式</button>
+            <button type="button" id="editorAddSection">添加章节</button><button type="button" id="editorCombine">加入报告内容</button>
+            <button type="button" id="editorSourceToggle">HTML源码</button>
+          </div>
+        </details>
+
+        <div class="editor-toolbar__actions">
+          <button class="editor-mobile-toggle" id="editorOutlineToggle" type="button" aria-expanded="false">目录</button>
+          <button class="editor-mobile-toggle" id="editorInspectorToggle" type="button" aria-expanded="false">设置</button>
+          <button class="editor-action" id="editorSaveHtml" type="button">保存</button>
+          <details class="editor-export-menu"><summary>导出</summary><div>
+          <button class="editor-action editor-action--secondary" id="editorExportHtml" type="button">HTML</button>
+          <button class="editor-action editor-action--secondary" id="editorExportPdf" type="button">PDF</button>
+          <button class="editor-action editor-action--secondary" id="editorExportWord" type="button">Word</button>
+          <button class="editor-action editor-action--secondary" id="editorSaveCopy" type="button">另存副本</button>
+          </div></details>
+        </div>
+      </header>
+
+      <div class="report-editor__workspace">
+        <aside class="editor-outline" id="editorOutlinePanel" aria-label="报告目录">
+          <div class="editor-side-head"><strong>目录</strong><span id="editorOutlineCount">0节</span></div>
+          <nav id="editorOutline" aria-label="报告章节"></nav>
+          <div class="editor-section-actions" aria-label="章节操作"><button type="button" data-section-command="up">上移</button><button type="button" data-section-command="down">下移</button><button type="button" data-section-command="copy">复制</button><button type="button" data-section-command="delete">删除</button></div>
+        </aside>
+
+        <main class="editor-canvas">
+          <section id="editorCombinePanel" class="editor-source-panel" hidden><label for="editorCombineReport">选择报告</label><select id="editorCombineReport"></select><div id="editorCombineSections"></div><button id="editorCombineApply" type="button">加入所选章节</button><button id="editorCombineCancel" type="button">取消</button></section>
+          <section id="editorSourcePanel" class="editor-source-panel" hidden><label for="editorSourceText">HTML源码</label><textarea id="editorSourceText" spellcheck="false"></textarea><button id="editorSourceApply" type="button">应用修改</button><button id="editorSourceCancel" type="button">取消</button></section>
+          <div class="editor-find-bar" id="editorFindBar" hidden>
+            <label>查找<input id="editorFindText" autocomplete="off"></label>
+            <label>替换为<input id="editorReplaceText" autocomplete="off"></label>
+            <button id="editorFindNext" type="button">下一个</button>
+            <button id="editorReplaceOne" type="button">替换</button>
+            <button id="editorReplaceAll" type="button">全部替换</button>
+            <button id="editorFindClose" type="button" aria-label="关闭查找替换">关闭</button>
+          </div>
+          <div class="editor-paper" id="editorPaper" aria-busy="true">
+            <div class="editor-loading" id="editorLoading">正在读取报告正文</div>
+            <iframe id="editorFrame" title="可编辑报告正文" sandbox="allow-same-origin allow-scripts"></iframe>
+          </div>
+        </main>
+
+        <aside class="editor-inspector" id="editorInspectorPanel" aria-label="元素设置">
+          <div class="editor-side-head"><strong>元素设置</strong><span id="editorSelectionType">正文</span></div>
+          <p class="editor-inspector-empty" id="editorInspectorEmpty">选择正文、表格、图片、公式或图表后，可调整对应内容。</p>
+
+          <section class="editor-inspector-section" id="editorTextInspector" hidden>
+            <h3>文字</h3>
+            <label>段落类型<select id="inspectorBlockFormat"><option value="p">正文</option><option value="h1">一级标题</option><option value="h2">二级标题</option><option value="h3">三级标题</option><option value="blockquote">引用</option></select></label>
+            <label>字号<input id="inspectorFontSize" type="number" min="10" max="72" step="1"></label>
+            <label>颜色<input id="inspectorTextColor" type="color" value="#20242a"></label>
+            <label>对齐<select id="inspectorAlignment"><option value="left">左对齐</option><option value="center">居中</option><option value="right">右对齐</option><option value="justify">两端对齐</option></select></label>
+          </section>
+
+          <section class="editor-inspector-section" id="editorTableInspector" hidden>
+            <h3>表格</h3>
+            <div class="editor-button-grid"><button type="button" data-table-command="add-row">增加行</button><button type="button" data-table-command="delete-row">删除行</button><button type="button" data-table-command="add-column">增加列</button><button type="button" data-table-command="delete-column">删除列</button></div>
+          </section>
+
+          <section class="editor-inspector-section" id="editorImageInspector" hidden>
+            <h3>图片</h3>
+            <label>图片说明<input id="editorImageAlt" autocomplete="off"></label>
+            <button id="editorReplaceImage" type="button">选择本地图片</button>
+            <input id="editorImageFile" type="file" accept="image/*" hidden>
+          </section>
+
+          <section class="editor-inspector-section" id="editorFormulaInspector" hidden>
+            <h3>公式</h3>
+            <label>结构<select id="editorFormulaKind"><option value="text">普通表达式</option><option value="fraction">分式</option><option value="superscript">上标</option><option value="subscript">下标</option><option value="sqrt">平方根</option></select></label>
+            <label id="editorFormulaPrimaryLabel">主体<input id="editorFormulaPrimary" autocomplete="off"></label>
+            <label id="editorFormulaSecondaryLabel">第二项<input id="editorFormulaSecondary" autocomplete="off"></label>
+            <button id="editorApplyFormula" type="button">更新公式</button>
+          </section>
+
+          <section class="editor-inspector-section editor-chart-inspector" id="editorChartInspector" hidden>
+            <h3>图表</h3>
+            <label>标题<input id="editorChartTitle" autocomplete="off"></label>
+            <label>类型<select id="editorChartType"><option value="line">折线图</option><option value="bar">柱状图</option><option value="heatmap">热力图</option></select></label>
+            <label>横轴名称<input id="editorChartXAxis" autocomplete="off"></label>
+            <label>纵轴名称<input id="editorChartYAxis" autocomplete="off"></label>
+            <label id="editorChartZAxisLabel" hidden>数值名称<input id="editorChartZAxis" autocomplete="off"></label>
+            <div class="editor-chart-data-head"><strong>数据表</strong><div><button id="editorAddChartRow" type="button">增加数据</button><button id="editorRemoveChartRow" type="button">删除末行</button></div></div>
+            <div class="editor-chart-data" id="editorChartData"></div>
+            <div class="editor-chart-series-actions" id="editorChartSeriesActions"><button id="editorAddChartSeries" type="button">增加系列</button><button id="editorRemoveChartSeries" type="button">删除末系列</button></div>
+          </section>
+        </aside>
+      </div>
+    </section>
+
+    <dialog class="editor-exit-dialog" id="editorExitDialog" aria-labelledby="editorExitTitle">
+      <form method="dialog">
+        <h2 id="editorExitTitle">当前报告尚未保存</h2>
+        <p>修改仍保留在当前编辑页。你可以继续编辑、保存副本后退出，或放弃本次修改。</p>
+        <div class="editor-dialog-actions"><button value="keep">继续编辑</button><button id="editorDiscard" value="discard">放弃修改</button><button class="editor-action" id="editorSaveAndExit" value="save">保存副本并退出</button></div>
+      </form>
+    </dialog>
     <script src="../module-host-presentation.js"></script>
     <script src="../module-host-bridge.js"></script>
+    <script src="./editor/chart-presentation.js"></script>
+    <script src="../../designer/vendor/echarts.min.js"></script>
+    <script src="./editor/report-editor.js"></script>
     <script src="./reporter.js"></script>
   </body>
 </html>
