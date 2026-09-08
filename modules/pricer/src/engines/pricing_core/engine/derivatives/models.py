@@ -71,6 +71,7 @@ class ValuationState:
     accumulated_count: int = 0
     accumulated_quantity: float = 0.0
     observation_stage: int | None = None
+    observation_history: Any = None
 
     def __post_init__(self) -> None:
         require_plain_int("trading_day", self.trading_day, positive=True)
