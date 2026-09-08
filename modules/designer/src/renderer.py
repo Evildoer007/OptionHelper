@@ -13,6 +13,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import os
 import tempfile
 from typing import Any, Mapping, Sequence
 
@@ -1277,42 +1278,36 @@ def load_report_theme(config: DesignerConfig | None = None) -> str:
 def validate_generated_javascript(source: str) -> None:
     """Reject malformed offline chart bootstrap code before delivery."""
 
-    pairs = {")": "(", "]": "[", "}": "{"}
-    stack: list[str] = []
-    quote = ""
-    escaped = False
-    for character in source:
-        if quote:
-            if escaped:
-                escaped = False
-            elif character == "\\":
-                escaped = True
-            elif character == quote:
-                quote = ""
-            continue
-        if character in {'"', "'", "`"}:
-            quote = character
-        elif character in "([{":
-            stack.append(character)
-        elif character in pairs:
-            if not stack or stack.pop() != pairs[character]:
-                raise ValueError("生成的图表JavaScript括号不匹配，已阻止交付。")
-    if quote or stack:
-        raise ValueError("生成的图表JavaScript结构不完整，已阻止交付。")
+    # A JavaScript compiler handles regex literals, comments and template
+    # interpolation correctly; a character-stack parser cannot.
+    script = re.sub(r"^\s*<script>|</script>\s*$", "", source, flags=re.IGNORECASE)
+    runtime = os.environ.get("OPTIONHELPER_AGENT_RUNTIME_PATH", "")
+    if runtime and Path(runtime).is_file():
+        # The desktop app already ships a verified Node runtime. Finder/Explorer
+        # launches do not inherit a developer shell or require system Node.
+        request = {"jsonrpc": "2.0", "id": 1, "method": "runtime.validateJavascript", "params": {"source": script}}
+        checked = subprocess.run([runtime], input=json.dumps(request) + "\n", capture_output=True,
+                                 text=True, encoding="utf-8", check=False, timeout=30)
+        replies = [json.loads(line) for line in checked.stdout.splitlines() if line.strip().startswith("{")]
+        reply = next((item for item in replies if item.get("id") == 1), {})
+        if checked.returncode or reply.get("result", {}).get("valid") is not True:
+            detail = reply.get("error", {}).get("message") or "内置图表校验未返回结果"
+            raise ValueError(f"生成的图表JavaScript语法校验失败：{detail}")
+        return
     node = shutil.which("node")
     if node is None:
-        raise ValueError("当前环境缺少Node.js，无法完成图表JavaScript语法校验。")
-    script = re.sub(r"^\s*<script>|</script>\s*$", "", source, flags=re.IGNORECASE)
+        raise ValueError("当前环境缺少JavaScript校验运行时，请检查App内置运行时或安装Node.js。")
     with tempfile.NamedTemporaryFile("w", suffix=".js", encoding="utf-8", delete=False) as stream:
         stream.write(script)
         candidate = Path(stream.name)
     try:
-        checked = subprocess.run([node, "--check", str(candidate)], capture_output=True, text=True, check=False)
+        checked = subprocess.run([node, "--check", str(candidate)], capture_output=True, text=True, check=False, timeout=30)
     finally:
         candidate.unlink(missing_ok=True)
     if checked.returncode:
         detail = checked.stderr.strip().splitlines()[-1] if checked.stderr.strip() else "未知语法错误"
         raise ValueError(f"生成的图表JavaScript语法无效，已阻止交付：{detail}")
+
 
 
 def render_html(
@@ -1434,20 +1429,91 @@ def render_html(
 	const symbols=chartTheme.symbols;
 	function markChartUnavailable(id,message){const el=document.getElementById(id);if(!el)return;el.classList.add("chart--unavailable");el.textContent=message||"图表资源加载失败，请使用下方完整数据表。";}
 	function markChartsUnavailable(){chartSpecs.forEach(spec=>markChartUnavailable(spec.id));}
-	function publicNumber(value,valueFormat){let number=Number(value);if(!Number.isFinite(number))return String(value??"");if(valueFormat==="percent")number*=100;if(number!==0&&Math.round(number*100)===0){const [mantissa,exponent]=number.toExponential(2).split("e");const superscript={"-":"⁻","0":"⁰","1":"¹","2":"²","3":"³","4":"⁴","5":"⁵","6":"⁶","7":"⁷","8":"⁸","9":"⁹"};return `${mantissa.replace(/0+$/,'').replace(/\.$/,'')}×10${[...String(Number(exponent))].map(char=>superscript[char]||char).join("")}${valueFormat==="percent"?"%":""}`;}return new Intl.NumberFormat("zh-CN",{maximumFractionDigits:2}).format(number)+(valueFormat==="percent"?"%":"");}
-	function publicCategory(value,axisName){return /年|日期|时间|代码|标识/.test(String(axisName||""))?String(value??""):publicNumber(value,"number");}
-	function renderChart(spec){
-	  const el=document.getElementById(spec.id);if(!el)return;
-	  const isHeatmap=spec.type==="heatmap";const type=spec.type==="bar"?"bar":"line";
-	  const points=spec.x.length;const series=Array.isArray(spec.series)?spec.series:[];
-	  const hasLegend=!isHeatmap&&series.length>1;const chart=echarts.init(el,null,{renderer:"svg"});
-	  if(isHeatmap){
-	    chart.setOption({animation:false,color:palette,tooltip:{position:"top",formatter:item=>`${spec.x_axis_name||"横轴"}：${publicCategory(spec.x[item.data[0]],spec.x_axis_name)}<br>${spec.y_axis_name||"纵轴"}：${publicCategory(spec.y[item.data[1]],spec.y_axis_name)}<br>${spec.z_axis_name||"数值"}：${publicNumber(item.data[2],spec.value_format)}${spec.value_suffix||""}`},grid:{left:72,right:24,top:30,bottom:94},xAxis:{type:"category",name:spec.x_axis_name||"",nameLocation:"middle",nameGap:27,data:spec.x,axisLine:{lineStyle:{color:chartTheme.axis.line}},axisLabel:{color:chartTheme.axis.label,fontSize:chartTheme.textStyle.fontSize,formatter:value=>publicCategory(value,spec.x_axis_name)}},yAxis:{type:"category",name:spec.y_axis_name||"",nameLocation:"middle",nameGap:48,data:spec.y,axisLine:{lineStyle:{color:chartTheme.axis.line}},axisLabel:{color:chartTheme.axis.label,fontSize:chartTheme.textStyle.fontSize,formatter:value=>publicCategory(value,spec.y_axis_name)}},visualMap:{min:Math.min(...spec.data.map(item=>Number(item[2]))),max:Math.max(...spec.data.map(item=>Number(item[2]))),calculable:false,orient:"horizontal",left:"center",bottom:6,textStyle:{color:chartTheme.axis.label,fontSize:chartTheme.textStyle.fontSize},inRange:{color:[chartTheme.heatmap.low,palette[0],palette[1]]}},series:[{name:spec.z_axis_name||"数值",type:"heatmap",data:spec.data,label:{show:false},emphasis:{itemStyle:{shadowBlur:8}}}]});
-	    chartInstances.push(chart);return;
-	  }
-	  chart.setOption({animation:false,color:palette,tooltip:{trigger:"axis",valueFormatter:value=>`${publicNumber(value,spec.value_format)}${spec.value_suffix||""}`},legend:{show:hasLegend,top:2,textStyle:{color:chartTheme.textStyle.color,fontFamily:chartTheme.textStyle.fontFamily,fontSize:chartTheme.textStyle.fontSize}},grid:{left:58,right:18,top:hasLegend?48:28,bottom:78},xAxis:{type:"category",name:spec.x_axis_name||"",nameLocation:"middle",nameGap:24,data:spec.x,axisLine:{lineStyle:{color:chartTheme.axis.line}},axisLabel:{color:chartTheme.axis.label,fontSize:chartTheme.textStyle.fontSize,interval:0,rotate:points>14?42:0,formatter:value=>publicCategory(value,spec.x_axis_name)}},yAxis:{type:"value",name:spec.y_axis_name||"",nameTextStyle:{color:chartTheme.axis.label},axisLabel:{color:chartTheme.axis.label,fontSize:chartTheme.textStyle.fontSize,formatter:value=>publicNumber(value,spec.value_format)},splitLine:{lineStyle:{color:chartTheme.axis.split,type:"dashed"}}},series:series.map((item,seriesIndex)=>({name:item.name,type,smooth:false,symbol:type==="line"?symbols[seriesIndex%symbols.length]:"none",showSymbol:type==="line"&&points<=60,symbolSize:5,barMaxWidth:42,data:item.data,itemStyle:{color:palette[seriesIndex%palette.length]},lineStyle:{width:2,type:lineTypes[seriesIndex%lineTypes.length]}}))});
-	  chartInstances.push(chart);
-	}
+function publicNumber(value, valueFormat, digits = 2) {
+  if (value === null || value === undefined || value === '') return '—';
+  let number = Number(value);
+  if (!Number.isFinite(number)) return String(value);
+  if (valueFormat === 'percent') number *= 100;
+  const suffix = ['percent', 'percent_points'].includes(valueFormat) ? '%' : '';
+  if (number !== 0 && Math.round(Math.abs(number) * 10 ** digits) === 0) {
+    const [mantissa, exponent] = number.toExponential(2).split('e');
+    const superscript = {'-':'⁻','0':'⁰','1':'¹','2':'²','3':'³','4':'⁴','5':'⁵','6':'⁶','7':'⁷','8':'⁸','9':'⁹'};
+    return `${mantissa.replace(/0+$/, '').replace(/\.$/, '')}×10${[...String(Number(exponent))].map(char => superscript[char] || char).join('')}${suffix}`;
+  }
+  return new Intl.NumberFormat('zh-CN', {maximumFractionDigits: digits}).format(Object.is(number, -0) ? 0 : number) + suffix;
+}
+function publicCategory(value, axisName, digits = 2) {
+  return /年|日期|时间|代码|标识/.test(String(axisName || '')) ? String(value ?? '') : publicNumber(value, 'number', digits);
+}
+function axisPrecision(values, format) {
+  const numbers = [...new Set(values.filter(value => value !== null && value !== '' && Number.isFinite(Number(value))).map(Number))].sort((a,b) => a-b);
+  if (numbers.length < 2) return 2;
+  let step = Infinity;
+  for (let index = 1; index < numbers.length; index++) step = Math.min(step, numbers[index] - numbers[index-1]);
+  if (format === 'percent') step *= 100;
+  return Math.min(6, Math.max(2, Math.ceil(-Math.log10(step))));
+}
+function renderChart(spec) {
+  const el = document.getElementById(spec.id);
+  if (!el) return;
+  const isHeatmap = spec.type === 'heatmap';
+  const type = spec.type === 'bar' ? 'bar' : 'line';
+  const points = spec.x.length;
+  const series = Array.isArray(spec.series) ? spec.series : [];
+  const hasLegend = !isHeatmap && series.length > 1;
+  const chart = echarts.init(el, null, {renderer: 'svg'});
+  const labelStyle = {color: chartTheme.axis.label, fontSize: chartTheme.textStyle.fontSize, hideOverlap: true, margin: 12};
+  const categoryAxis = (values, name) => {
+    const digits = axisPrecision(values, 'number');
+    return ({
+    type: 'category', name: name || '', nameLocation: 'middle', nameGap: 38, data: values,
+    axisLine: {lineStyle: {color: chartTheme.axis.line}},
+    axisTick: {alignWithLabel: true, interval: 'auto'},
+    axisLabel: {...labelStyle, interval: 'auto', rotate: 0,
+      formatter: value => publicCategory(value, name, digits)}
+    });
+  };
+  if (isHeatmap) {
+    const values = spec.data.map(item => Number(item[2])).filter(Number.isFinite);
+    const escapeLabel = value => String(value).replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
+    chart.setOption({
+      animation: false, color: palette,
+      tooltip: {position: 'top', confine: true, formatter: item =>
+        `${escapeLabel(spec.x_axis_name || '横轴')}：${escapeLabel(publicCategory(spec.x[item.data[0]], spec.x_axis_name, 4))}<br>${escapeLabel(spec.y_axis_name || '纵轴')}：${escapeLabel(publicCategory(spec.y[item.data[1]], spec.y_axis_name, 4))}<br>${escapeLabel(spec.z_axis_name || '数值')}：${escapeLabel(publicNumber(item.data[2], spec.value_format, 4))}${escapeLabel(spec.value_suffix || '')}`},
+      grid: {left: 42, right: 24, top: 30, bottom: 105, containLabel: true},
+      xAxis: categoryAxis(spec.x, spec.x_axis_name),
+      yAxis: {...categoryAxis(spec.y, spec.y_axis_name), nameGap: 55},
+      visualMap: {min: Math.min(...values), max: Math.max(...values), calculable: false,
+        orient: 'horizontal', left: 'center', bottom: 4,
+        formatter: value => publicNumber(value, spec.value_format),
+        textStyle: {color: chartTheme.axis.label, fontSize: chartTheme.textStyle.fontSize},
+        inRange: {color: [chartTheme.heatmap.low, palette[0], palette[1]]}},
+      series: [{name: spec.z_axis_name || '数值', type: 'heatmap', data: spec.data,
+        label: {show: false}, emphasis: {itemStyle: {shadowBlur: 8}}}]
+    });
+  } else {
+    const yValues = series.flatMap(item => item.data).filter(value => value !== null && value !== '' && Number.isFinite(Number(value))).map(Number);
+    const span = (Math.max(...yValues) - Math.min(0, ...yValues)) / 4;
+    const yDigits = axisPrecision([0, span], spec.value_format);
+    chart.setOption({
+      animation: false, color: palette,
+      tooltip: {trigger: 'axis', confine: true, valueFormatter: value => `${publicNumber(value, spec.value_format, Math.max(4, yDigits))}${spec.value_suffix || ''}`},
+      legend: {show: hasLegend, type: 'scroll', top: 2, textStyle: chartTheme.textStyle},
+      grid: {left: 24, right: 28, top: hasLegend ? 60 : 35, bottom: 62, containLabel: true},
+      xAxis: categoryAxis(spec.x, spec.x_axis_name),
+      yAxis: {type: 'value', name: spec.y_axis_name || '', splitNumber: 4,
+        nameTextStyle: {color: chartTheme.axis.label},
+        axisLabel: {...labelStyle, formatter: value => publicNumber(value, spec.value_format, yDigits)},
+        splitLine: {lineStyle: {color: chartTheme.axis.split, type: 'dashed'}}},
+      series: series.map((item, index) => ({name: item.name, type, smooth: false,
+        symbol: type === 'line' ? symbols[index % symbols.length] : 'none',
+        showSymbol: type === 'line' && points <= 24, symbolSize: 5, barMaxWidth: 42,
+        data: item.data, itemStyle: {color: palette[index % palette.length]},
+        lineStyle: {width: 2, type: lineTypes[index % lineTypes.length]}}))
+    });
+  }
+  chartInstances.push(chart);
+}
 	function initialiseCharts(){if(!window.echarts){markChartsUnavailable();return;}chartSpecs.forEach(spec=>{try{renderChart(spec);}catch(error){markChartUnavailable(spec.id,"图表初始化失败，请使用下方完整数据表。");console.error("图表初始化失败",spec.id,error);}});}
 	window.addEventListener("DOMContentLoaded",initialiseCharts);let resizeTimer;window.addEventListener("resize",()=>{window.clearTimeout(resizeTimer);resizeTimer=window.setTimeout(()=>chartInstances.forEach(chart=>chart.resize()),150)});
 </script>"""
