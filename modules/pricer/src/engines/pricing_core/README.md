@@ -53,26 +53,13 @@ print(list_structures("OPTIONREG"))
 print(describe_structure("OPTIONREG", "OPTIONREG_PATH"))
 ```
 
-## 四、安装与测试
+## 四、Python环境与依赖
 
-使用已通过项目依赖检查的Python解释器。若系统默认解释器不匹配，可设置`OPTIONHELPER_PYTHON`为绝对路径：
+使用64位Python3.12或3.13，不要求特定环境名称，也不要求安装Conda。已有环境满足依赖要求时可以直接复用。
 
-```bash
-cd /Users/haoranxu/Desktop/OptionHelper/modules/pricer/src/engines/pricing_core
-"${OPTIONHELPER_PYTHON:-python3}" run_tests.py
-```
+构建App和Skill时，在仓库根目录按照根目录README安装`core/requirements.lock`和`packaging/build-requirements.lock`，再运行对应平台的构建入口。`OPTIONHELPER_PYTHON`用于指定本机Python解释器的绝对路径。
 
-也可直接运行：
-
-```bash
-NUMBA_NUM_THREADS=4 "${OPTIONHELPER_PYTHON:-python3}" -m unittest discover -s tests -p 'test_*.py' -v
-```
-
-依赖版本记录在`requirements.txt`。Windows应使用相同Python和依赖版本，再执行：
-
-```text
-python run_tests.py
-```
+本地测试集不随开发仓库分发，生成App和Skill不依赖测试目录或`run_tests.py`。
 
 ## 五、最小定价示例
 
