@@ -32,6 +32,7 @@ SEA_SENTINEL = "NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2"
 ARTIFACT_MANIFEST_SUFFIX = ".manifest.json"
 RUNTIME_RESOURCE_DIR = "agent-runtime"
 RUNTIME_RESOURCE_BASENAME = "optionhelper-agent-runtime"
+NODE_LICENSE_RESOURCE = "Nodejs-LICENSE.txt"
 RUNTIME_ARTIFACT_ENV = "OPTIONHELPER_AGENT_RUNTIME_ARTIFACT"
 RUNTIME_PATH_ENV = "OPTIONHELPER_AGENT_RUNTIME_PATH"
 RUNTIME_MODE_ENV = "OPTIONHELPER_AGENT_RUNTIME_MODE"
@@ -215,6 +216,8 @@ def _runtime_manifest(
         "protocol_version": str((probe or {}).get("protocol_version", "unknown")),
         "capabilities": dict((probe or {}).get("capabilities", {})),
     }
+    if probe is not None and "node_version" in probe:
+        manifest["node_version"] = probe["node_version"]
     if source_root is not None:
         source_hashes = _source_content_hashes(source_root)
         manifest.update({
@@ -377,10 +380,16 @@ def stage_runtime_candidate(
         source_root=source_root,
         require_source_provenance=require_source_provenance,
     )
+    node_version = manifest.get("node_version")
+    if require_source_provenance and node_version is None:
+        raise RuntimeBuildError("Agent Runtime缺少Node版本及对应许可证来源，请重新构建原生产物")
+    node_license = _node_license_source(node_version) if node_version is not None else None
     target_root.mkdir(parents=True, exist_ok=True)
     executable = target_root / runtime_resource_name(target)
     shutil.copy2(candidate, executable)
     executable.chmod(executable.stat().st_mode | stat.S_IXUSR)
+    if node_license is not None:
+        shutil.copy2(node_license, target_root / NODE_LICENSE_RESOURCE)
     resource_manifest = {
         **manifest,
         "resource_path": f"{RUNTIME_RESOURCE_DIR}/{executable.name}",
@@ -486,6 +495,15 @@ def verify_staged_runtime(
         raise RuntimeBuildError("App Manifest运行时清单哈希不匹配")
     if not _is_executable(resource_path, system=_target(value).system):
         raise RuntimeBuildError("App Resources运行时不可执行")
+    if "node_version" in manifest:
+        source_license = _node_license_source(manifest["node_version"])
+        packaged_license = resource_path.parent / NODE_LICENSE_RESOURCE
+        if (
+            packaged_license.is_symlink()
+            or not packaged_license.is_file()
+            or packaged_license.read_bytes() != source_license.read_bytes()
+        ):
+            raise RuntimeBuildError("App Resources的Node完整许可证缺失或与受控来源不一致")
     return {**dict(summary), "status": LOCAL_VERIFIED, "support_status": LOCAL_VERIFIED}
 
 
@@ -662,6 +680,19 @@ def probe_runtime_process(artifact: Path, *, timeout: float = 8.0) -> dict[str, 
     }
 
 
+def _node_license_source(version: object) -> Path:
+    """Select version-matched, vendored Node and bundled dependency notices."""
+
+    if not isinstance(version, str) or re.fullmatch(r"\d+\.\d+\.\d+", version) is None:
+        raise RuntimeBuildError("Node许可证来源缺少有效Node版本")
+    source = BUILD_TOOLS_ROOT / "licenses" / f"node-v{version}-LICENSE.txt"
+    if source.is_symlink() or not source.is_file():
+        raise RuntimeBuildError(f"当前Node v{version}未附带匹配许可证；请安装仓库支持的Node版本：" + ", ".join(path.name.removeprefix("node-v").removesuffix("-LICENSE.txt") for path in sorted((BUILD_TOOLS_ROOT / "licenses").glob("node-v*-LICENSE.txt"))))
+    if not source.read_bytes().startswith(b"Node.js is licensed for use as follows:"):
+        raise RuntimeBuildError(f"Node v{version}许可证来源内容无效")
+    return source
+
+
 def _node_version(node: Path) -> tuple[int, int, int]:
     try:
         result = subprocess.run(
@@ -669,6 +700,7 @@ def _node_version(node: Path) -> tuple[int, int, int]:
             check=True,
             text=True,
             encoding="utf-8",
+            errors="replace",
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             timeout=EXTERNAL_COMMAND_TIMEOUT_SECONDS,
@@ -789,10 +821,16 @@ def _copy_locked_build_tools(source: Path, destination: Path) -> None:
 
 
 def _npm_ci_command(npm: Path, root: Path) -> list[str]:
-    command = [str(npm), "ci", "--prefix", str(root), "--ignore-scripts"]
-    if os.name == "nt" and npm.suffix.casefold() in {".cmd", ".bat"}:
-        return [os.environ.get("COMSPEC", "cmd.exe"), "/d", "/s", "/c", *command]
-    return command
+    arguments = ["ci", "--prefix", str(root), "--ignore-scripts"]
+    if npm.suffix.casefold() in {".cmd", ".bat"}:
+        # npm's Windows wrapper delegates to this CLI. Calling Node directly
+        # preserves spaces, Unicode and shell metacharacters in checkout paths.
+        cli = npm.parent / "node_modules" / "npm" / "bin" / "npm-cli.js"
+        node = npm.parent / "node.exe"
+        if not cli.is_file() or not node.is_file():
+            raise RuntimeBuildError("npm安装不完整：缺少同目录node.exe或node_modules/npm/bin/npm-cli.js")
+        return [str(node), str(cli), *arguments]
+    return [str(npm), *arguments]
 
 
 def _restore_locked_project(npm: Path, root: Path, *, label: str) -> None:
@@ -819,8 +857,7 @@ def _prepare_locked_build_workspace(
     _restore_locked_project(npm, build_tools, label="Agent Runtime打包工具依赖")
 
     esbuild = runtime_source / "node_modules" / "esbuild" / "bin" / "esbuild"
-    postject_name = "postject.cmd" if os.name == "nt" else "postject"
-    postject = build_tools / "node_modules" / ".bin" / postject_name
+    postject = build_tools / "node_modules" / "postject" / "dist" / "cli.js"
     if not esbuild.is_file():
         raise RuntimeBuildError("Agent Runtime临时构建目录npm ci后仍缺少锁定esbuild")
     if not postject.is_file():
@@ -879,18 +916,20 @@ def _create_sea_entry(source: Path, destination: Path, *, node: Path | None = No
     return destination
 
 
-def _run(command: list[str], *, cwd: Path | None = None) -> None:
+def _run(command: list[str], *, cwd: Path | None = None) -> str:
     try:
-        subprocess.run(
+        completed = subprocess.run(
             command,
             cwd=cwd,
             check=True,
             text=True,
             encoding="utf-8",
+            errors="replace",
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             timeout=EXTERNAL_COMMAND_TIMEOUT_SECONDS,
         )
+        return completed.stdout
     except subprocess.TimeoutExpired as error:
         output = error.stdout or ""
         raise RuntimeBuildError(f"本地打包命令超时：{' '.join(command)}\n{output}") from error
@@ -919,8 +958,10 @@ def preflight_runtime(
         )
     _validate_source(plan.source_root)
     node = _resolve_tool(node_path, "node")
-    if _node_version(node) < MIN_NODE_VERSION:
+    node_version = _node_version(node)
+    if node_version < MIN_NODE_VERSION:
         raise RuntimeBuildError(f"Node版本低于{MIN_NODE_VERSION}，已停止打包")
+    _node_license_source(".".join(str(part) for part in node_version))
     npm = _resolve_tool(npm_path, "npm")
     _validate_build_tools(BUILD_TOOLS_ROOT)
     codesign = None
@@ -953,6 +994,7 @@ def build_runtime(
         npm_path=npm_path,
         codesign_path=codesign_path,
     )
+    node_version = ".".join(str(part) for part in _node_version(node))
     plan.output_root.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="optionhelper-agent-runtime-", dir=plan.output_root) as staging_name:
         staging = Path(staging_name)
@@ -964,7 +1006,7 @@ def build_runtime(
         # Kept only for compatibility with callers that still pass the former
         # source-tree path. Native injection always uses the disposable copy.
         del postject_path
-        postject = _resolve_tool(locked_postject, "postject")
+        postject = locked_postject.resolve()
         entry = _create_sea_entry(runtime_source, staging / "entry.cjs", node=node)
         blob = staging / "sea-prep.blob"
         config = staging / "sea-config.json"
@@ -985,25 +1027,31 @@ def build_runtime(
         candidate = staging / expected_artifact_name(plan.target)
         if plan.target.system == "darwin":
             # Homebrew may provide a universal Node binary. Injecting into the
-            # fat file finds one SEA sentinel per architecture, so first create
-            # the exact arm64 executable required by this target.
+            # fat file finds one SEA sentinel per architecture. A thin arm64
+            # distribution is already ready; lipo -thin rejects thin inputs.
             lipo = _resolve_tool(None, "lipo")
-            _run([str(lipo), str(node), "-thin", "arm64", "-output", str(candidate)])
+            architectures = _run([str(lipo), "-archs", str(node)]).split()
+            if "arm64" not in architectures:
+                raise RuntimeBuildError("Node二进制缺少目标arm64架构，已停止打包")
+            if len(architectures) == 1:
+                shutil.copy2(node, candidate)
+            else:
+                _run([str(lipo), str(node), "-thin", "arm64", "-output", str(candidate)])
         else:
             shutil.copy2(node, candidate)
-        postject_command = [str(postject), str(candidate), "NODE_SEA_BLOB", str(blob)]
+        postject_command = [
+            str(node), str(postject), str(candidate), "NODE_SEA_BLOB", str(blob),
+            "--sentinel-fuse", SEA_SENTINEL,
+        ]
         if plan.target.system == "darwin":
-            postject_command.extend((
-                "--sentinel-fuse", SEA_SENTINEL,
-                "--macho-segment-name", "NODE_SEA",
-            ))
+            postject_command.extend(("--macho-segment-name", "NODE_SEA"))
         _run(postject_command)
         if codesign is not None:
             _run([str(codesign), "--force", "--sign", "-", str(candidate)])
             _run([str(codesign), "--verify", "--strict", "--verbose=2", str(candidate)])
         candidate.chmod(candidate.stat().st_mode | stat.S_IXUSR)
         candidate.replace(plan.artifact)
-    probe = probe_runtime_process(plan.artifact)
+    probe = {**probe_runtime_process(plan.artifact), "node_version": node_version}
     manifest = write_runtime_manifest(
         plan.artifact,
         plan.target,
