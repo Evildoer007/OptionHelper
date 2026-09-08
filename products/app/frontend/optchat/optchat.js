@@ -1,4 +1,6 @@
+import { createBloubAvatar } from '/app/frontend/shared/bloub-avatar.js';
 import { bindComposerKeyboard, clearMessage, configureModelPicker, createReasoningDisclosure, initializeWorkspace, message, renderMessages, renderReports, renderTaskList, request, safeJson, setTaskLocation, settingsURLFor, taskIdFromLocation } from "/app/frontend/shared/app.js";
+import { MODEL_CONFIGURATION_CHANGED, setMessageActionIcon } from "/app/frontend/shared/app.js";
 import { attachmentMediaType, validateAttachments } from "/app/frontend/optchat/attachment-utils.js";
 import { createThinkingOrb } from "/app/frontend/shared/thinking-orb.js";
 import { createTransitionScope } from "/app/frontend/shared/transition-scope.js";
@@ -17,6 +19,40 @@ const operationOutcomeStates = new Map([
 ]);
 const activeOperationStates = new Set(["queued", "running", "recovering", "cancel_requested"]);
 const terminalOperationStates = new Set(["succeeded", "failed", "cancelled", "interrupted"]);
+
+export function decorateReportLibrary(target, reportRuns = [], onEdit = () => {}) {
+  if (!target) return;
+  const cards = [...target.querySelectorAll('.report-item')];
+  reportRuns.forEach((report, index) => {
+    const card = cards[index];
+    const reportRunId = typeof report?.report_run_id === 'string' ? report.report_run_id.trim() : '';
+    if (!card || !reportRunId) return;
+    const copyLabel = report.manual_edit === true ? '编辑副本' : report.source_report_run_id ? '派生副本' : '';
+    if (copyLabel) {
+      const marker = document.createElement('small');
+      marker.dataset.reportCopy = 'true';
+      marker.textContent = copyLabel;
+      card.querySelector('.report-item__heading')?.after(marker);
+    }
+    if (String(report.status || '') !== 'succeeded') return;
+    let actions = card.querySelector('.report-item__actions');
+    if (!actions) {
+      actions = document.createElement('div');
+      actions.className = 'report-item__actions';
+      card.append(actions);
+    }
+    const edit = document.createElement('a');
+    edit.href = '#';
+    edit.dataset.reportEdit = reportRunId;
+    edit.textContent = '编辑';
+    edit.setAttribute('aria-label', `编辑${card.querySelector('strong')?.textContent || '报告'}`);
+    edit.addEventListener('click', event => {
+      event.preventDefault();
+      onEdit(reportRunId);
+    });
+    actions.append(edit);
+  });
+}
 
 const prioritizedOperationRows = (operations = [], limit = 8) => [...operations]
   .sort((left, right) => Number(activeOperationStates.has(right.state)) - Number(activeOperationStates.has(left.state))
@@ -120,6 +156,12 @@ const runtimeToolLabels = Object.freeze({
   "backtester.run": "历史回测",
   "datafetcher": "数据获取",
   "datafetcher.run": "数据获取",
+  "knowledger.search": "查询产品资料",
+  "datafetcher.status": "检查数据服务",
+  "datafetcher.fetch": "获取行情",
+  "datafetcher.fetch_calendar": "获取交易日历",
+  "reporter.create_document": "生成报告",
+  "recommendation_delivery.run": "整理推荐报告",
   "reporter": "交付材料",
   "reporter.run": "交付材料",
 });
@@ -179,7 +221,8 @@ const runtimeFamily = (type) => {
 };
 const runtimeToolLabel = (value, summary = "") => {
   const key = String(value ?? "").trim().toLowerCase();
-  if (runtimeToolLabels[key]) return runtimeToolLabels[key];
+  const canonical = key.replace(/^(knowledger|datafetcher|payoffer|pricer|backtester|reporter|recommendation_delivery)_/, "$1.");
+  if (runtimeToolLabels[canonical]) return runtimeToolLabels[canonical];
   const source = String(summary || "");
   return Object.entries(runtimeToolLabels).find(([module]) => module.endsWith(".run") && source.includes(runtimeToolLabels[module]))?.[1] || "研究模块";
 };
@@ -195,10 +238,18 @@ const runtimePayloadText = (row, payload, keys, limit = runtimeSummaryLimit) => 
   }
   return "";
 };
+export function conversationPlaybackOutcome(response) {
+  const status = String(response?.status || response?.state?.code || "").toLowerCase();
+  if (["cancelled", "interrupted", "stopped"].includes(status)) return status;
+  if (["completed", "succeeded", "needs_input", "pending_approval", "partial"].includes(status)) return "completed";
+  return "failed";
+}
+
 const normalizeRuntimeUsage = (value) => {
   const usage = isRecord(value) ? value : {};
   const number = (...keys) => {
     for (const key of keys) {
+      if (usage[key] === null || usage[key] === undefined || usage[key] === "") continue;
       const candidate = Number(usage[key]);
       if (Number.isFinite(candidate) && candidate >= 0) return Math.floor(candidate);
     }
@@ -208,16 +259,36 @@ const normalizeRuntimeUsage = (value) => {
   const outputTokens = number("output_tokens", "outputTokens", "completion_tokens", "output");
   const reasoningTokens = number("reasoning_tokens", "reasoningTokens", "reasoning");
   const toolTokens = number("tool_tokens", "toolTokens", "tool");
-  const totalTokens = number("total_tokens", "totalTokens")
-    ?? ((inputTokens !== null || outputTokens !== null || reasoningTokens !== null || toolTokens !== null)
-      ? (inputTokens || 0) + (outputTokens || 0) + (reasoningTokens || 0) + (toolTokens || 0)
-      : number("total"));
+  // Reasoning/tool token counters may be subsets of completion tokens.
+  const totalTokens = number("total_tokens", "totalTokens", "total")
+    ?? (inputTokens !== null && outputTokens !== null ? inputTokens + outputTokens : null);
   const cachedTokens = number("cached_tokens", "cachedTokens", "cache_read_input_tokens");
   const calls = number("calls", "call_count");
   if (inputTokens === null && outputTokens === null && reasoningTokens === null && toolTokens === null && totalTokens === null && cachedTokens === null && calls === null) return null;
   return { inputTokens, outputTokens, reasoningTokens, toolTokens, totalTokens, cachedTokens, calls };
 };
+export function renderProcessUsage(target, usage) {
+  target.className = "process-token-values";
+  target.setAttribute("role", "group");
+  target.setAttribute("aria-label", "Token用量");
+  const rows = [["输入", usage.inputTokens], ["输出", usage.outputTokens], ["总计", usage.totalTokens]];
+  target.replaceChildren(...rows.map(([label, value]) => {
+    const item = target.ownerDocument.createElement("span");
+    const name = target.ownerDocument.createElement("span");
+    const amount = target.ownerDocument.createElement("b");
+    name.textContent = label;
+    amount.textContent = Number.isFinite(value) && value >= 0 ? value.toLocaleString("zh-CN") : "未提供";
+    item.append(name, amount);
+    return item;
+  }));
+}
+
 const defaultRuntimeSummary = (family, status, role, toolLabel) => {
+  const subject = family === "tool" ? (toolLabel || "研究模块") : "本轮处理";
+  if (["failed", "error", "unavailable"].includes(status)) return `${subject}未完成。`;
+  if (["cancelled", "canceled"].includes(status)) return `${subject}已停止。`;
+  if (["outcome_unknown", "interrupted"].includes(status)) return `${subject}中断，结果尚未确认。`;
+  if (["timed_out", "timeout"].includes(status)) return `${subject}超时。`;
   if (family === "agent") return `${role || "Agent"}${status === "completed" ? "已完成本轮处理。" : "正在处理本轮分工。"}`;
   if (family === "tool") return `${toolLabel || "研究模块"}${status === "completed" || status === "succeeded" ? "已返回结果。" : "正在运行。"}`;
   if (family === "compaction") return status === "completed" ? "上下文整理已完成。" : "正在整理上下文。";
@@ -255,12 +326,14 @@ export function normalizeRuntimeEvent(row) {
     family,
     scope: String(row.scope || payload.scope || "").trim().toLowerCase(),
     status,
-    summary: summary || defaultRuntimeSummary(family, status, role, toolLabel),
+    summary: family === "tool" ? defaultRuntimeSummary(family, status, role, toolLabel) : summary || defaultRuntimeSummary(family, status, role, toolLabel),
     createdAt: String(row.created_at || row.createdAt || row.timestamp || row.time || payload.created_at || payload.timestamp || "").trim(),
     role,
     agentKey: safeRuntimeKey(row.agent_run_id || row.agentId || payload.agent_run_id || payload.agentId || (type === "agent_run" ? "legacy-agent" : "")),
     toolKey: safeRuntimeKey(row.call_id || row.tool_call_id || payload.call_id || payload.tool_call_id || `${toolLabel}:${row.agent_run_id || payload.agent_run_id || "main"}`),
     toolLabel,
+    detail: family === "tool" && ["failed", "error", "unavailable", "timed_out", "interrupted"].includes(status)
+      ? runtimePayloadText(row, payload, ["display_message", "message", "summary", "reason"]) : "",
     delta,
     turn: Number.isInteger(row.turn) && row.turn >= 0 ? row.turn : null,
     step: Number.isInteger(row.step) && row.step >= 0 ? row.step : null,
@@ -285,7 +358,7 @@ export function projectRuntimeEvent(event) {
   return Object.freeze({
     ...event,
     timelineLabel: event.summary,
-    showTimeline: !isDelta && !["usage", "block"].includes(event.family) && (!isMainAgent || mainAgentDetail),
+    showTimeline: !isDelta && !["usage", "block", "tool"].includes(event.family) && (!isMainAgent || mainAgentDetail),
     showReasoning: event.family === "reasoning" && event.reasoningAvailable === true && Boolean(event.delta),
     assistantDelta: event.family === "assistant" && event.type === "assistant.text_delta" ? event.delta : "",
     reasoningDelta: event.family === "reasoning" ? event.delta : "",
@@ -343,6 +416,8 @@ export async function startWorkspace(initialMode) {
   const assistantPanel = assistant.querySelector(".assistant-panel");
   const assistantTranscript = document.querySelector("#assistant-transcript");
   const assistantToggle = document.querySelector("[data-assistant-toggle]");
+  const assistantAvatar = createBloubAvatar();
+  assistantToggle.replaceChildren(assistantAvatar.element);
   const assistantClose = document.querySelector("[data-assistant-close]");
   const form = document.querySelector("#workspace-form");
   const input = form.elements.content;
@@ -376,6 +451,7 @@ export async function startWorkspace(initialMode) {
   let restoringScroll = false;
   let modeSwitchRevision = 0;
   let taskSelectionRevision = 0;
+  let reportListRequestRevision = 0;
   let moduleMountRevision = 0;
   let moduleNavigationController = null;
   let activeModeTransition = null;
@@ -385,6 +461,7 @@ export async function startWorkspace(initialMode) {
   let operationHistoryLoadRevision = 0;
   let pendingConversationRequest = null;
   let pendingReportRequest = null;
+  let pendingReportEditor = null;
   let activeProcessPlayback = null;
   let activeConversation = null;
   const reconnectingOperations = new Set();
@@ -450,6 +527,7 @@ export async function startWorkspace(initialMode) {
     window.clearTimeout(workspaceStatusTimer);
     workspaceStatusTimer = 0;
     clearMessage(status);
+    delete status.dataset.reason;
   };
   const showWorkspaceStatus = (text, isError = false, duration = 0) => {
     clearWorkspaceStatus();
@@ -476,6 +554,7 @@ export async function startWorkspace(initialMode) {
   };
   const setComposerSending = (button, sending) => {
     if (sending) button.classList.remove("is-sent");
+    if (sending || !button.classList.contains("is-sent")) assistantAvatar.setState(sending ? "thinking" : "idle");
     button.dataset.sending = String(sending);
     if (!sending) button.dataset.cancelRequested = "false";
     button.disabled = button.dataset.cancelRequested === "true"
@@ -486,21 +565,35 @@ export async function startWorkspace(initialMode) {
     button.setAttribute("aria-label", sending
       ? (button.dataset.cancelRequested === "true" ? "正在取消本次处理" : "取消本次处理")
       : "发送");
+    syncComposerAvailability();
   };
   const syncComposerAvailability = () => {
+    if (!modelPicker.disabled && modelPicker.value && status.dataset.reason === "model-required") clearWorkspaceStatus();
     const sending = submit.dataset.sending === "true";
     submit.disabled = submit.dataset.cancelRequested === "true"
       || (!sending && (modelPicker.disabled || !modelPicker.value || (!input.value.trim() && draftAttachments.length === 0)));
     submit.setAttribute("aria-label", sending
       ? (submit.dataset.cancelRequested === "true" ? "正在取消本次处理" : "取消本次处理")
       : "发送");
+    submit.title = sending ? submit.getAttribute("aria-label")
+      : modelPicker.disabled || !modelPicker.value ? "请先配置可用模型"
+        : submit.disabled ? "输入需求或添加附件后发送" : "发送";
+    if (attachmentTrigger) {
+      attachmentTrigger.disabled = sending;
+      attachmentTrigger.setAttribute("aria-disabled", String(sending));
+      attachmentTrigger.title = sending ? "当前回复生成完成后可添加附件" : "添加图片或研究文档";
+    }
+    if (attachmentInput) attachmentInput.disabled = sending;
   };
+  let composerSentTimer = 0;
   const markComposerSent = (button) => {
-    if (matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-    button.classList.remove("is-sent");
-    void button.offsetWidth;
+    window.clearTimeout(composerSentTimer);
     button.classList.add("is-sent");
-    window.setTimeout(() => button.classList.remove("is-sent"), 460);
+    assistantAvatar.setState("wink");
+    composerSentTimer = window.setTimeout(() => {
+      button.classList.remove("is-sent");
+      if (button.dataset.sending !== "true") assistantAvatar.setState("idle");
+    }, 900);
   };
   const dissolveComposerInput = (content) => {
     if (!content || matchMedia("(prefers-reduced-motion: reduce)").matches) return;
@@ -562,6 +655,10 @@ export async function startWorkspace(initialMode) {
     stopped: "已停止",
   }[status] || "处理中");
   const runtimeOrbState = (event) => {
+    if (runtimeTerminalStatuses.has(event.status)) {
+      return ["completed", "succeeded"].includes(event.status) ? "shaping" : "breathing";
+    }
+    if (["queued", "pending", "waiting_parent"].includes(event.status)) return "breathing";
     if (processOrbStates[event.type]) return processOrbStates[event.type];
     if (event.family === "workflow") return "searching";
     if (event.family === "agent" || event.family === "turn" || event.family === "step") return "solving";
@@ -677,15 +774,19 @@ export async function startWorkspace(initialMode) {
       return false;
     }
     if (!currentTask) {
+      const selectionRevision = taskSelectionRevision;
       try {
-        await selectTask((await createTask()).task_id);
+        const task = await createTask();
+        if (currentTask || selectionRevision !== taskSelectionRevision) return false;
+        const selected = await selectTask(task.task_id);
+        if (!selected || currentTask?.task_id !== task.task_id) return false;
       } catch {
-        showWorkspaceStatus("附件需要绑定研究任务，但新建任务未完成。", true);
+        if (!currentTask) showWorkspaceStatus("附件需要绑定研究任务，但新建任务未完成。", true);
         return false;
       }
     }
     const targetTaskId = draftTaskId();
-    attachmentDraftRevision += 1;
+    const revision = ++attachmentDraftRevision;
     const prepared = [];
     for (const file of incoming) {
       if (draftAttachments.some((item) => item.name === file.name && item.size === file.size && item.lastModified === file.lastModified)) continue;
@@ -710,11 +811,29 @@ export async function startWorkspace(initialMode) {
       references = await uploadDraftAttachments(targetTaskId, prepared);
     } catch (uploadError) {
       prepared.forEach(revokeDraftPreview);
-      showWorkspaceStatus(uploadError.message || "附件保存未完成。", true);
+      if (targetTaskId !== draftTaskId()) return false;
+      if (revision === attachmentDraftRevision) showWorkspaceStatus(uploadError.message || "附件保存未完成。", true);
       await restoreAttachmentDrafts();
       return false;
     }
-    prepared.forEach((item, index) => { item.reference = references[index]; });
+    if (targetTaskId !== draftTaskId() || revision !== attachmentDraftRevision) {
+      prepared.forEach(revokeDraftPreview);
+      // Uploaded files remain bound to their original task. A newer draft
+      // revision must reconcile the server list instead of appending stale rows.
+      if (targetTaskId === draftTaskId()) await restoreAttachmentDrafts();
+      return true;
+    }
+    prepared.forEach((item, index) => {
+      item.reference = references[index];
+      // Drafts become visible only after upload. Use the same authenticated,
+      // task-scoped image endpoint as restored drafts instead of a blob URL
+      // that the workspace's image CSP deliberately does not permit.
+      revokeDraftPreview(item);
+      item.previewUrl = item.kind === "image"
+        ? attachmentUrl(targetTaskId, item.reference.attachment_id)
+        : "";
+      item.ownedPreviewUrl = false;
+    });
     draftAttachments.push(...prepared);
     attachmentDraftTaskId = targetTaskId;
     renderDraftAttachments();
@@ -811,7 +930,8 @@ export async function startWorkspace(initialMode) {
     let block = live.blocks.get(key);
     if (block) return block;
     if (blockType === "reasoning") {
-      const disclosure = createReasoningDisclosure("", { running: true });
+      const disclosure = live.reasoningDisclosure || createReasoningDisclosure("", { running: true });
+      live.reasoningDisclosure = disclosure;
       const notice = document.createElement("p");
       notice.className = "assistant-reasoning__notice";
       notice.hidden = true;
@@ -825,7 +945,7 @@ export async function startWorkspace(initialMode) {
       return null;
     }
     live.blocks.set(key, block);
-    live.content.append(block.element);
+    if (!block.element.parentElement) live.content.append(block.element);
     return block;
   };
   const updateLiveBlock = (live, projection, blockType, delta) => {
@@ -833,30 +953,36 @@ export async function startWorkspace(initialMode) {
     if (!block || !delta) return;
     const limit = blockType === "reasoning" ? runtimeReasoningTextLimit : runtimeAssistantTextLimit;
     block.text = appendRuntimeDelta(block.text, delta, limit);
-    if (blockType === "reasoning") block.disclosure.update(block.text, true);
+    if (blockType === "reasoning") block.disclosure.update(liveReasoningText(live), true);
     else block.element.textContent = block.text;
     live.article.hidden = false;
   };
+  const liveReasoningText = live => [...live.blocks.values()].filter(block => block.type === "reasoning").map(block => block.text).filter(Boolean).join("\n\n");
   const settleLiveReasoning = (live, projection = null) => {
     if (!live) return;
     for (const [key, block] of live.blocks) {
       if (block.type !== "reasoning") continue;
       if (projection && key !== runtimeBlockKey(projection, "reasoning")) continue;
-      block.disclosure.update(block.text, false);
+      block.disclosure.update(liveReasoningText(live), false);
     }
   };
   const appendProcessPanel = ({ onCancel = null } = {}) => {
     const panel = document.createElement("article");
     panel.className = "message message--assistant message--process";
     panel.dataset.runtimeProcess = "true";
-    panel.hidden = true;
+    panel.hidden = false;
     const details = document.createElement("details");
-    details.open = true;
+    details.open = false;
     const summary = document.createElement("summary");
-    const orb = createThinkingOrb({ state: "working", size: 20 });
+    const orb = createThinkingOrb({ state: "connecting", size: 36 });
     const summaryLabel = document.createElement("span");
-    summaryLabel.textContent = "运行过程";
-    summary.append(orb.element, summaryLabel);
+    summaryLabel.textContent = "正在连接";
+    const detailIcon = document.createElement("span");
+    detailIcon.className = "process-detail-icon";
+    detailIcon.hidden = true;
+    setMessageActionIcon(detailIcon, "运行详情", "M4 6h16M4 12h10M4 18h13");
+    detailIcon.setAttribute("aria-hidden", "true");
+    summary.append(orb.element, detailIcon, summaryLabel);
     const state = document.createElement("span");
     state.className = "process-state";
     state.textContent = "正在获取进度";
@@ -881,7 +1007,9 @@ export async function startWorkspace(initialMode) {
       const heading = document.createElement("p");
       heading.className = "process-section-label";
       heading.textContent = label;
-      section.append(heading, child);
+      section.setAttribute("aria-label", label);
+      if (!["process-tool-section", "process-token-usage"].includes(className)) section.append(heading);
+      section.append(child);
       return section;
     };
     const agentCards = document.createElement("div");
@@ -893,7 +1021,7 @@ export async function startWorkspace(initialMode) {
     const usageValue = document.createElement("span");
     usageValue.dataset.processUsageValue = "true";
     usageValue.textContent = "暂无数据";
-    const usageSection = createSection("Token usage", "process-token-usage", usageValue);
+    const usageSection = createSection("用量", "process-token-usage", usageValue);
     usageSection.dataset.processUsage = "true";
 
     details.append(
@@ -939,7 +1067,8 @@ export async function startWorkspace(initialMode) {
       card.dataset.processCard = kind;
       const heading = document.createElement("strong");
       heading.dataset.processCardTitle = "true";
-      const status = document.createElement("span");
+      const status = document.createElement(kind === "tool" ? "button" : "span");
+      if (kind === "tool") status.type = "button";
       status.dataset.processCardStatus = "true";
       const detail = document.createElement("p");
       detail.dataset.processCardDetail = "true";
@@ -947,6 +1076,10 @@ export async function startWorkspace(initialMode) {
       reasoningHost.className = "process-agent-reasoning";
       reasoningHost.hidden = true;
       reasoningHost.dataset.processAgentReasoning = "true";
+      if (kind === "tool") status.addEventListener("click", () => {
+        detail.hidden = !detail.hidden;
+        status.setAttribute("aria-expanded", String(!detail.hidden));
+      });
       card.append(heading, status, detail, reasoningHost);
       card.reasoningHost = reasoningHost;
       card.reasoningBlocks = new Map();
@@ -955,8 +1088,23 @@ export async function startWorkspace(initialMode) {
     }
     card.dataset.status = event.status;
     card.querySelector("[data-process-card-title]").textContent = title;
-    card.querySelector("[data-process-card-status]").textContent = runtimeStatusLabel(event.status);
-    card.querySelector("[data-process-card-detail]").textContent = event.summary;
+    const status = card.querySelector("[data-process-card-status]");
+    const label = runtimeStatusLabel(event.status);
+    if (kind === "tool") {
+      const failed = ["failed", "error", "unavailable", "timed_out", "interrupted"].includes(event.status);
+      const complete = ["completed", "succeeded"].includes(event.status);
+      const stopped = ["cancelled", "canceled", "stopped"].includes(event.status);
+      const path = complete ? "m5 12 4 4L19 6" : failed ? "M12 8v5m0 3v.1M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0Z" : stopped ? "M7 7h10v10H7Z" : "M12 3a9 9 0 1 1-9 9";
+      setMessageActionIcon(status, failed ? `${label}，查看原因` : label, path);
+      status.disabled = !failed;
+      status.dataset.state = complete ? "complete" : failed ? "failed" : stopped ? "stopped" : "running";
+      if (failed) status.setAttribute("aria-expanded", "false");
+      else status.removeAttribute("aria-expanded");
+    } else status.textContent = label;
+    const detail = card.querySelector("[data-process-card-detail]");
+    detail.textContent = event.detail || event.summary;
+    detail.hidden = kind === "tool";
+
     parent.parentElement.hidden = false;
   };
   const appendProcessTimeline = (playback, projection) => {
@@ -973,7 +1121,7 @@ export async function startWorkspace(initialMode) {
     if (projection.scope === "main_agent" && playback.runtimeScope !== "main_agent") {
       playback.runtimeScope = "main_agent";
       playback.summaryLabel.textContent = "正在回复";
-      playback.panel.hidden = true;
+      playback.panel.hidden = false;
       playback.events.replaceChildren();
       playback.agentCards.replaceChildren();
       playback.agentCardMap.clear();
@@ -984,7 +1132,7 @@ export async function startWorkspace(initialMode) {
       || projection.family === "compaction"
       || projection.family === "recovery"
       || (!legacyBoilerplate && playback.runtimeScope !== "main_agent" && ["workflow", "agent", "turn", "step"].includes(projection.family));
-    if (hasProcessDetail) playback.panel.hidden = false;
+    if (hasProcessDetail) { playback.panel.hidden = false; playback.panel.dataset.hasDetails = "true"; }
     if (!legacyBoilerplate) appendProcessTimeline(playback, projection);
     if (projection.family === "agent" && projection.role !== "MainAgent" && playback.runtimeScope !== "main_agent") {
       updateProcessCard(
@@ -1014,7 +1162,7 @@ export async function startWorkspace(initialMode) {
         const completedText = runtimeDeltaText(projection.completedBlock?.text, projection.blockType === "reasoning" ? runtimeReasoningTextLimit : runtimeAssistantTextLimit);
         if (block && completedText && !block.text) {
           block.text = completedText;
-          if (block.type === "reasoning") block.disclosure.update(block.text, false);
+          if (block.type === "reasoning") block.disclosure.update(liveReasoningText(playback.liveAssistant), false);
           else block.element.textContent = block.text;
           playback.liveAssistant.article.hidden = false;
         }
@@ -1022,6 +1170,7 @@ export async function startWorkspace(initialMode) {
       }
     }
     if (projection.assistantDelta && playback.runtimeScope === "main_agent") {
+      settleLiveReasoning(playback.liveAssistant);
       updateLiveBlock(playback.liveAssistant, projection, "text", projection.assistantDelta);
     }
     if (projection.showReasoning && projection.reasoningDelta) {
@@ -1059,10 +1208,22 @@ export async function startWorkspace(initialMode) {
       if (usage.totalTokens !== null) parts.push(`合计${formatRuntimeTokens(usage.totalTokens)}`);
       if (usage.cachedTokens !== null) parts.push(`缓存${formatRuntimeTokens(usage.cachedTokens)}`);
       if (usage.calls !== null) parts.push(`调用${formatRuntimeTokens(usage.calls)}`);
-      playback.usageValue.textContent = parts.join("，") || "暂无数据";
+      renderProcessUsage(playback.usageValue, usage);
+      playback.usageValue.title = parts.join("，");
+
       playback.usageSection.hidden = false;
     }
-    playback.orb.setState(runtimeOrbState(projection));
+    const orbState = runtimeOrbState(projection);
+    playback.orb.setState(orbState);
+    if (submit.dataset.sending === "true") {
+      assistantAvatar.setState(["connecting", "searching", "weaving"].includes(orbState) ? "orbit" : "thinking");
+    }
+    const hasLiveReasoning = playback.liveAssistant && !playback.liveAssistant.article.hidden
+      && playback.liveAssistant.content.querySelector(".assistant-reasoning:not([hidden])");
+    playback.orb.element.hidden = Boolean(hasLiveReasoning);
+    playback.orb.setPaused(Boolean(hasLiveReasoning));
+    playback.summaryLabel.textContent = hasLiveReasoning ? "运行详情" : playback.orb.element.getAttribute("aria-label");
+    if (hasLiveReasoning) playback.panel.hidden = playback.panel.dataset.hasDetails !== "true";
     if ((projection.family === "workflow" || projection.family === "recovery" || ["failed", "cancelled", "interrupted", "stopped"].includes(projection.status)) && runtimeTerminalStatuses.has(projection.status)) {
       playback.outcome = projection.status;
     }
@@ -1092,29 +1253,32 @@ export async function startWorkspace(initialMode) {
     playback.panel.dataset.terminal = "true";
     playback.panel.dataset.outcome = outcome;
     playback.cancelButton.hidden = true;
-    playback.orb.setState("shaping");
     playback.orb.setPaused(true);
+    playback.orb.element.hidden = true;
+    playback.state.hidden = true;
     settleLiveReasoning(playback.liveAssistant);
     for (const card of playback.agentCardMap.values()) {
       for (const block of card.reasoningBlocks || []) block[1].disclosure.update(block[1].text, false);
     }
     playback.details.open = false;
+    playback.summaryLabel.textContent = "运行详情";
+    playback.panel.querySelector(".process-detail-icon").hidden = false;
     if (playback.runtimeScope === "main_agent") {
-      playback.summaryLabel.textContent = "本轮答复";
-      if (!playback.panel.querySelector('[data-process-card="tool"]') && playback.events.childElementCount === 0) {
+      if (outcome === "completed" && !playback.panel.querySelector('[data-process-card="tool"]') && playback.events.childElementCount === 0) {
         playback.panel.hidden = true;
       }
     }
     setRuntimeLiveStatus(terminalCopy);
   };
   const appendProcessEvents = (playback, rows, terminal = false) => {
+    const followTail = stream.scrollHeight - stream.clientHeight - stream.scrollTop < 72;
     const drained = consumeRuntimeEventRows(playback, rows);
     playback.nextSeq = drained.nextSeq;
     playback.pendingRows = drained.pending;
     for (const event of drained.emitted) appendRuntimeProjection(playback, event);
     if (terminal && playback.pendingRows.size === 0) finishProcessPlayback(playback);
     else if (playback.nextSeq > 0 && !playback.panel.dataset.terminal) playback.state.textContent = "正在运行";
-    stream.scrollTop = stream.scrollHeight;
+    if (followTail) stream.scrollTop = stream.scrollHeight;
   };
   const startProcessPlayback = (taskId, requestId, { restore = false, onCancel = null } = {}) => {
     const playback = appendProcessPanel({ onCancel });
@@ -1126,6 +1290,7 @@ export async function startWorkspace(initialMode) {
       if (stopped) return;
       try {
         const payload = await request(processEventsPath(taskId, requestId, playback.nextSeq));
+        if (stopped) return;
         if (playback.failures > 0) {
           playback.state.textContent = "进度连接已恢复，正在同步";
           setRuntimeLiveStatus("进度连接已恢复，正在同步。");
@@ -1134,11 +1299,13 @@ export async function startWorkspace(initialMode) {
         appendProcessEvents(playback, payload.events, payload.terminal === true);
         if (payload.terminal === true && playback.pendingRows.size === 0) { stopped = true; return; }
       } catch (error) {
+        if (stopped) return;
         playback.failures += 1;
         playback.state.textContent = error.status === 404
           ? "正在等待本轮进度"
           : "进度连接暂时中断，正在恢复";
         playback.orb.setState("breathing");
+        playback.summaryLabel.textContent = error.status === 404 ? "正在连接" : "正在恢复连接";
         setRuntimeLiveStatus(playback.state.textContent);
       }
       if (!stopped) timer = window.setTimeout(poll, 350);
@@ -1148,10 +1315,19 @@ export async function startWorkspace(initialMode) {
       ...playback,
       taskId,
       requestId,
-      stop() {
+      stop({ outcome } = {}) {
+        if (outcome && (!playback.panel.dataset.terminal || playback.outcome !== outcome)) {
+          playback.outcome = outcome;
+          finishProcessPlayback(playback);
+        }
         stopped = true;
         window.clearTimeout(timer);
-        playback.orb.destroy();
+        // The scheduler releases detached canvases; mounted ones settle in place.
+        playback.orb.setPaused(true);
+        settleLiveReasoning(playback.liveAssistant);
+        for (const card of playback.agentCardMap.values()) {
+          for (const block of card.reasoningBlocks?.values() || []) block.disclosure.update(block.text, false);
+        }
       },
       restore,
     };
@@ -1613,6 +1789,7 @@ export async function startWorkspace(initialMode) {
     const visibleInDesk = currentMode === "desk" && assistantOpen;
     assistant.classList.toggle("is-open", visibleInDesk);
     assistantToggle.setAttribute("aria-expanded", String(visibleInDesk));
+    assistantAvatar.setActive(currentMode === "desk" && !visibleInDesk);
     assistantPanel.setAttribute("aria-hidden", String(currentMode === "desk" && !assistantOpen));
     assistantPanel.inert = currentMode === "desk" && !assistantOpen;
     if (focus && currentMode === "desk" && assistantOpen) input.focus();
@@ -1834,6 +2011,7 @@ export async function startWorkspace(initialMode) {
     currentTask = null;
     pendingConversationRequest = null;
     pendingReportRequest = null;
+    pendingReportEditor = null;
     clearReportFeedback();
     disposeModuleFrames();
     syncReportActions();
@@ -1860,7 +2038,7 @@ export async function startWorkspace(initialMode) {
     heading.textContent = "选择研究模块";
     const copy = document.createElement("p");
     copy.className = "conversation-start__copy";
-    copy.textContent = "各研究模块独立执行，并通过OptDesk共享当前任务的合同方案、数据引用与运行记录。";
+    copy.textContent = "各研究模块独立执行，运行记录与研究报告统一归入当前任务。";
     content.append(heading, copy);
     start.append(content);
     return start;
@@ -2071,7 +2249,23 @@ export async function startWorkspace(initialMode) {
     });
   }
 
+  async function refreshReportLibrary(taskId = currentTask?.task_id) {
+    if (!taskId || taskId !== currentTask?.task_id) return false;
+    const selectionRevision = taskSelectionRevision;
+    const requestRevision = ++reportListRequestRevision;
+    const { reports: reportRuns } = await request(`/api/tasks/${encodeURIComponent(taskId)}/reports`);
+    if (taskId !== currentTask?.task_id || selectionRevision !== taskSelectionRevision
+        || requestRevision !== reportListRequestRevision) return false;
+    renderReports(reports, reportRuns || []);
+    decorateReportLibrary(reports, reportRuns || [], reportRunId => {
+      void openStoredReportEditor(reportRunId);
+    });
+    return true;
+  }
+
   async function selectTask(taskId, updateLocation = true) {
+    const readingPosition = currentTask?.task_id === taskId && submit.dataset.sending === "true"
+      && stream.scrollHeight - stream.clientHeight - stream.scrollTop >= 72 ? stream.scrollTop : null;
     const selectionRevision = ++taskSelectionRevision;
     moduleMountRevision += 1;
     const isCurrentSelection = () => selectionRevision === taskSelectionRevision;
@@ -2087,6 +2281,7 @@ export async function startWorkspace(initialMode) {
     currentTask = task;
     pendingConversationRequest = null;
     pendingReportRequest = null;
+    pendingReportEditor = null;
     clearReportFeedback();
     syncReportActions();
     title.textContent = task.subject;
@@ -2094,15 +2289,18 @@ export async function startWorkspace(initialMode) {
     taskState.textContent = "当前任务会保留对话、模块运行记录和关联报告。";
     renderTaskConversation(task);
     restoreLatestProcess(task);
-    const { reports: reportRuns } = await request(`/api/tasks/${encodeURIComponent(taskId)}/reports`).catch(() => ({ reports: [] }));
+    if (readingPosition !== null) stream.scrollTop = readingPosition;
+    renderReports(reports, []);
+    await refreshReportLibrary(taskId).catch(() => {});
     if (!isCurrentSelection()) return null;
-    renderReports(reports, reportRuns);
     await loadCurrentTaskOperations(taskId).catch(() => renderTaskOperations([], taskId));
+    if (!isCurrentSelection()) return null;
     if (updateLocation) setTaskLocation(task.task_id, { module: currentMode === "desk" ? currentModule : "" });
     await loadTasks();
     if (!isCurrentSelection()) return null;
     restoreTransient();
     await restoreAttachmentDrafts();
+    if (!isCurrentSelection()) return null;
     if (currentMode === "desk") {
       await mountModule(currentModule, false);
     }
@@ -2168,6 +2366,8 @@ export async function startWorkspace(initialMode) {
       const active = name === moduleName;
       frame.classList.toggle("is-active", active);
       frame.setAttribute("aria-hidden", String(!active));
+      frame.inert = !active;
+      if (!active && document.activeElement === frame) frame.blur();
       frame.tabIndex = active ? 0 : -1;
       notifyModuleVisibility(frame, active);
     }
@@ -2178,6 +2378,7 @@ export async function startWorkspace(initialMode) {
     const frame = moduleFrames.get(moduleName);
     const context = moduleContexts.get(moduleName);
     const bridgeNonce = frame?.dataset.bridgeNonce;
+    if (frame?.dataset.ready === "true") notifyModuleVisibility(frame, currentMode === "desk" && currentModule === moduleName);
     if (frame?.dataset.ready === "true" && context && bridgeNonce) {
       frame.contentWindow?.postMessage({
         type: "optionhelper.module-host-context",
@@ -2283,6 +2484,8 @@ export async function startWorkspace(initialMode) {
     frame.dataset.bridgeNonce = bridgeNonce;
     frame.dataset.taskId = taskId;
     frame.setAttribute("aria-hidden", "true");
+    frame.inert = true;
+    frame.tabIndex = -1;
     frame.addEventListener("load", () => {
       if (moduleFrames.get(moduleName) !== frame || currentTask?.task_id !== taskId) return;
       window.clearTimeout(moduleFrameLoadTimers.get(moduleName));
@@ -2291,6 +2494,7 @@ export async function startWorkspace(initialMode) {
       delete frame.dataset.loadError;
       window.OptionHelperUIScale?.syncFrame?.(frame);
       deliverContext(moduleName);
+      deliverPendingReportEditor();
       if (moduleContexts.has(moduleName)) clearModuleLoading(moduleName, taskId);
     });
     frame.addEventListener("error", () => {
@@ -2353,6 +2557,26 @@ export async function startWorkspace(initialMode) {
     return frame;
   }
 
+  function deliverPendingReportEditor() {
+    const pending = pendingReportEditor;
+    const frame = moduleFrames.get('reporter');
+    if (!pending || pending.taskId !== currentTask?.task_id || frame?.dataset.ready !== 'true') return false;
+    frame.contentWindow?.postMessage({
+      type: 'optionhelper.report-editor-open',
+      module: 'reporter',
+      bridge_nonce: frame.dataset.bridgeNonce,
+      report_run_id: pending.reportRunId,
+    }, location.origin);
+    pendingReportEditor = null;
+    return true;
+  }
+
+  async function openStoredReportEditor(reportRunId) {
+    if (!currentTask?.task_id || typeof reportRunId !== 'string' || !reportRunId.trim()) return false;
+    window.open(`/reports/${encodeURIComponent(reportRunId.trim())}/edit`, '_blank', 'noopener');
+    return true;
+  }
+
   window.addEventListener("message", (event) => {
     const moduleName = event.data?.module;
     const frame = moduleFrames.get(moduleName);
@@ -2362,6 +2586,14 @@ export async function startWorkspace(initialMode) {
     // because WebKit changed the proxy object identity.
     if (event.origin !== location.origin || !frame) return;
     if (event.data?.bridge_nonce !== frame?.dataset.bridgeNonce) return;
+    if (event.data?.type === "optionhelper.report-saved") {
+      if (moduleName !== "reporter" || event.data.task_id !== currentTask?.task_id
+          || typeof event.data.report_run_id !== "string" || !event.data.report_run_id.trim()) return;
+      void refreshReportLibrary(event.data.task_id).catch(() => {
+        showWorkspaceStatus("报告已保存，报告库暂未刷新。重新打开报告库可重试。", true, 7000);
+      });
+      return;
+    }
     if (event.data?.type === "optionhelper.open-settings") {
       const section = event.data?.section === "data" ? "data" : "";
       location.assign(settingsURLFor(location, section));
@@ -2405,8 +2637,17 @@ export async function startWorkspace(initialMode) {
     if (event.data?.type !== "optionhelper.module-host-ready") return;
     frame.dataset.ready = "true";
     deliverContext(moduleName);
+    deliverPendingReportEditor();
   });
   onThemeChange(() => broadcastModuleTheme());
+
+  document.addEventListener("click", (event) => {
+    if (!event.target.closest?.("[data-report-toggle]")) return;
+    if (shell.dataset.reportOpen !== "true") return;
+    void refreshReportLibrary().catch(() => {
+      showWorkspaceStatus("报告库暂未刷新，请稍后重新打开。", true, 7000);
+    });
+  });
 
   tabs.addEventListener("click", (event) => {
     const button = event.target.closest("[data-module]");
@@ -2502,7 +2743,9 @@ export async function startWorkspace(initialMode) {
     input.focus();
   });
   window.addEventListener("keydown", (event) => {
+    if (event.defaultPrevented) return;
     if (event.key === "Escape" && currentMode === "desk" && assistantOpen) {
+      event.preventDefault();
       setAssistantOpen(false);
       assistantToggle.focus();
     }
@@ -2527,7 +2770,10 @@ export async function startWorkspace(initialMode) {
     const submittedContent = input.value.trim();
     const submittedDrafts = [...draftAttachments];
     if ((!submittedContent && submittedDrafts.length === 0) || !selectedModel()) {
-      if (!selectedModel()) showWorkspaceStatus("请先在设置中心添加并保存一个可用模型。", true);
+      if (!selectedModel()) {
+        showWorkspaceStatus("请先在设置中心添加并保存一个可用模型。", true);
+        status.dataset.reason = "model-required";
+      }
       return;
     }
     if (submittedDrafts.some((item) => item.kind === "image") && !selectedModelSupportsImages()) {
@@ -2536,6 +2782,7 @@ export async function startWorkspace(initialMode) {
     }
     let pendingMessage;
     let processPlayback;
+    let playbackOutcome = null;
     let submittedTaskId = "";
     let requestId = "";
     setComposerSending(submit, true);
@@ -2606,6 +2853,8 @@ export async function startWorkspace(initialMode) {
           await clearDraftAttachments(submittedTaskId);
         },
       );
+      playbackOutcome = conversationPlaybackOutcome(response);
+      processPlayback?.stop({ outcome: playbackOutcome });
       settleConversationRequest(submittedTaskId, requestId, { draft: "" });
       if (currentTask?.task_id === submittedTaskId) {
         modelPicker.dataset.userExplicitSelection = "false";
@@ -2628,6 +2877,8 @@ export async function startWorkspace(initialMode) {
         ? await lookupConversationResponse(submittedTaskId, requestId).catch(() => null)
         : null;
       if (recoveredResponse) {
+        playbackOutcome = conversationPlaybackOutcome(recoveredResponse);
+        processPlayback?.stop({ outcome: playbackOutcome });
         pendingMessage?.remove();
         await clearDraftAttachments(submittedTaskId);
         settleConversationRequest(submittedTaskId, requestId, { draft: "" });
@@ -2641,8 +2892,11 @@ export async function startWorkspace(initialMode) {
         }
         return;
       }
-      pendingMessage?.remove();
-      if (currentTask?.task_id === submittedTaskId) renderTaskConversation(currentTask);
+      if (processPlayback) pendingMessage?.classList.remove("message--pending");
+      else {
+        pendingMessage?.remove();
+        if (currentTask?.task_id === submittedTaskId) renderTaskConversation(currentTask);
+      }
       const retryableTransport = !error.operationTerminal && ![401, 403, 404].includes(error.status);
       if (pendingConversationRequest?.requestId === requestId) {
         pendingConversationRequest.status = retryableTransport ? "uncertain" : "failed";
@@ -2666,7 +2920,7 @@ export async function startWorkspace(initialMode) {
         showWorkspaceStatus(failureMessage, true);
       }
     } finally {
-      processPlayback?.stop();
+      processPlayback?.stop({ outcome: playbackOutcome || (submit.dataset.cancelRequested === "true" ? "cancelled" : "failed") });
       if (activeConversation?.taskId === submittedTaskId && activeConversation.requestId === requestId) {
         activeConversation = null;
       }
@@ -2784,6 +3038,31 @@ export async function startWorkspace(initialMode) {
   restoreTransient();
   await restoreAttachmentDrafts();
   syncComposerAvailability();
+  let modelRefresh = null;
+  let modelRefreshQueued = false;
+  const refreshModels = () => {
+    modelRefreshQueued = true;
+    if (modelRefresh) return modelRefresh;
+    modelRefresh = (async () => {
+      while (modelRefreshQueued) {
+        modelRefreshQueued = false;
+        try {
+          await configureModelPicker(modelPicker);
+          syncComposerAvailability();
+        } catch { /* Keep the current selection and retry on the next activation. */ }
+      }
+    })().finally(() => { modelRefresh = null; });
+    return modelRefresh;
+  };
+  window.addEventListener("focus", refreshModels);
+  window.addEventListener("pageshow", refreshModels);
+  window.addEventListener(MODEL_CONFIGURATION_CHANGED, refreshModels);
+  window.addEventListener("storage", event => {
+    if (event.key === MODEL_CONFIGURATION_CHANGED) refreshModels();
+  });
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") refreshModels();
+  });
   if (initialMode === "desk" && currentTask) await mountModule(currentModule, false);
   requestAnimationFrame(() => requestAnimationFrame(revealWorkspace));
 }
@@ -2804,6 +3083,23 @@ function applyConversationStatus(response, status, taskState) {
     unavailable: "相关服务暂不可用，任务内容已保留。",
   };
   taskState.textContent = taskCopy[state] || "任务状态已更新。";
+  const panels = status.ownerDocument.querySelectorAll('[data-runtime-process="true"][data-terminal="true"]');
+  const panel = panels[panels.length - 1];
+  if (panel && ["unavailable", "timed_out", "blocked"].includes(state)) {
+    let notice = panel.querySelector(".process-failure");
+    if (!notice) {
+      notice = status.ownerDocument.createElement("p");
+      notice.className = "process-failure";
+      notice.setAttribute("role", "status");
+      panel.prepend(notice);
+    }
+    notice.textContent = response?.error?.next_step || {
+      unavailable: "本轮未完成，已保留对话。可继续发送需求重试。",
+      timed_out: "本轮处理超时，已保留对话。可继续发送需求重试。",
+      blocked: "本轮未完成，请查看运行详情后调整需求。",
+    }[state];
+    return;
+  }
   if (state === "unavailable") {
     message(status, response?.error?.next_step || "相关服务暂不可用，请检查设置后重试。", true);
   } else if (state === "timed_out") {
