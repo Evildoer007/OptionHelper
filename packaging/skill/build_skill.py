@@ -58,8 +58,13 @@ if str(ROOT / "core" / "src") not in sys.path:
 if str(ROOT / "packaging") not in sys.path:
     sys.path.insert(0, str(ROOT / "packaging"))
 
-from runtime.knowledger.versioning import load_published_catalog_snapshots, validate_published_catalog
-from release_contract import CAPABILITY_MANIFEST_SCHEMA, DEVELOPMENT_ID, PROTOCOL_ID, RELEASE_VERSION, require_release_version
+from knowledge_snapshot import (
+    load_published_catalog_snapshots,
+    registry_product_revisions,
+    validate_published_catalog,
+)
+from release_contract import skill_archive_name
+from release_contract import CAPABILITY_MANIFEST_SCHEMA, DEVELOPMENT_ID, PROTOCOL_ID, RELEASE_VERSION, SKILL_VERSION, require_release_version
 
 
 class SkillBuildError(RuntimeError):
@@ -101,9 +106,9 @@ def _validate_source_map(config: object) -> dict[str, object]:
     if not isinstance(catalog, dict) or set(catalog) != {"source_root", "file_name", "target"}:
         raise SkillBuildError("Source Map.catalog无效")
     if _relative(catalog["source_root"], "catalog.source_root") != "versions":
-        raise SkillBuildError("CatalogVersion只能来自versions/{version}/knowledger")
-    if catalog["file_name"] != "knowledger/catalog-version.json" or _relative(catalog["target"], "catalog.target") != "scripts/knowledger/catalog-version.json":
-        raise SkillBuildError("CatalogVersion目标必须固定为scripts/knowledger/catalog-version.json")
+        raise SkillBuildError("知识源清单只能来自versions/{version}/knowledger")
+    if catalog["file_name"] != "knowledger/source-manifest.json" or _relative(catalog["target"], "catalog.target") != "scripts/knowledger/source-manifest.json":
+        raise SkillBuildError("知识源清单目标必须固定为scripts/knowledger/source-manifest.json")
     targets: list[str] = [str(catalog["target"])]
     for kind in ("files", "trees"):
         entries = config[kind]
@@ -297,30 +302,30 @@ def _resolve_catalog(
     archive_root = _catalog_archive_root(repo_root, config, versions_root)
     source = archive_root / catalog_version / str(catalog["file_name"])
     if source.is_symlink() or not source.is_file():
-        raise SkillBuildError(f"缺少已签发CatalogVersion：{source}")
+        raise SkillBuildError(f"缺少已签发知识源清单：{source}")
     try:
         payload = json.loads(source.read_text(encoding="utf-8"))
     except json.JSONDecodeError as error:
-        raise SkillBuildError(f"CatalogVersion不是有效JSON：{source}") from error
-    if payload.get("catalog_version") != catalog_version:
-        raise SkillBuildError("CatalogVersion文件名、内容与所选版本不一致")
+        raise SkillBuildError(f"知识源清单不是有效JSON：{source}") from error
+    if payload.get("release_version") != catalog_version:
+        raise SkillBuildError("知识源清单文件名、内容与所选版本不一致")
     if "release_id" in payload:
-        raise SkillBuildError("CatalogVersion不得包含release_id")
+        raise SkillBuildError("知识源清单不得包含release_id")
     if (
-        payload.get("manifest_type") != "CatalogVersion"
+        payload.get("manifest_type") != "KnowledgeSourceManifest"
         or payload.get("formal_release") is not True
         or payload.get("executable") is not True
         or "candidate_status" in payload
     ):
-        raise SkillBuildError("技术候选CatalogVersion不得用于Skill构建，必须先完成正式签发")
+        raise SkillBuildError("技术候选知识源清单不得用于Skill构建，必须先完成正式签发")
     if not isinstance(payload.get("published_by"), str) or not payload["published_by"].strip() or not isinstance(payload.get("published_at"), str):
-        raise SkillBuildError("正式CatalogVersion必须记录published_by与published_at")
+        raise SkillBuildError("正式知识源清单必须记录published_by与published_at")
     if not isinstance(payload.get("products"), dict) or len(payload["products"]) != 65:
-        raise SkillBuildError("CatalogVersion必须含65个产品版本映射")
+        raise SkillBuildError("知识源清单必须含65个产品修订映射")
     try:
         validate_published_catalog(repo_root, catalog_version, versions_root=archive_root)
     except ValueError as error:
-        raise SkillBuildError(f"CatalogVersion正式版本链校验失败：{error}") from error
+        raise SkillBuildError(f"知识源清单正式版本链校验失败：{error}") from error
     return source, payload
 
 
@@ -406,7 +411,7 @@ def _source_output_paths(
             manifest_path = version_root / str(relative)
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             package_dir = PurePosixPath("scripts") / PurePosixPath(str(relative)).parent
-            paths.add((package_dir / "product-version.json").as_posix())
+            paths.add((package_dir / "product-manifest.json").as_posix())
             paths.update((package_dir / filename).as_posix() for filename in manifest["snapshot_files"].values())
     return paths
 
@@ -421,16 +426,20 @@ def _working_tree_catalog(repo_root: Path) -> dict[str, object]:
     product_ids = re.findall(r"^\|\s*\d+\s*\|.*?\|\s*(\d+\.\d+)\s*\|", optionlist, re.MULTILINE)
     if len(product_ids) != 65 or len(set(product_ids)) != 65:
         raise SkillBuildError("working-tree Catalog必须从OptionList解析出65个唯一产品ID")
+    revisions = registry_product_revisions(repo_root / "references" / "optionreg.py")
+    if list(revisions) != product_ids:
+        raise SkillBuildError("working-tree知识源修订映射与OptionList顺序不一致")
     return {
-        "manifest_type": "CatalogTechnicalCandidate",
+        "manifest_type": "KnowledgeSourceCandidate",
         "release_status": "technical_candidate",
         "formal_release": False,
         "execution_scope": "development_only",
         "executable": True,
-        "catalog_version": DEVELOPMENT_ID,
+        "release_version": DEVELOPMENT_ID,
         "catalog_source": "working-tree",
         "product_count": 65,
         "product_ids": product_ids,
+        "product_revisions": revisions,
         "source_file_sha256": sources,
     }
 
@@ -442,18 +451,18 @@ def _copy_published_catalog_snapshots(
     *,
     versions_root: Path | None = None,
 ) -> None:
-    """把正式ProductVersion快照装入包，并以其Payoff资产覆盖活目录副本。"""
+    """把正式产品源快照装入包，并以其Payoff资产覆盖活目录副本。"""
     try:
         catalog, snapshots = load_published_catalog_snapshots(
             repo_root, catalog_version, versions_root=versions_root
         )
     except ValueError as error:
-        raise SkillBuildError(f"无法读取正式ProductVersion快照：{error}") from error
+        raise SkillBuildError(f"无法读取正式产品源快照：{error}") from error
     for product_id, snapshot in snapshots.items():
-        manifest_source = Path(snapshot["default_json_path"]).parent / "product-version.json"
+        manifest_source = Path(snapshot["default_json_path"]).parent / "product-manifest.json"
         package_dir = staged / "scripts" / "knowledger" / "products" / product_id
         package_dir.mkdir(parents=True, exist_ok=True)
-        _copy_file(manifest_source, package_dir / "product-version.json")
+        _copy_file(manifest_source, package_dir / "product-manifest.json")
         manifest = snapshot["manifest"]
         for filename in manifest["snapshot_files"].values():
             _copy_file(manifest_source.parent / filename, package_dir / filename)
@@ -649,6 +658,7 @@ def build_skill(
             "design_system_id": "optionhelper.design-system",
             "hash_spec_id": HASH_SPEC_ID,
             "package_kind": "skill",
+            "skill_version": SKILL_VERSION,
             "modules": list(MODULES),
             "page_modules": list(SKILL_PAGE_MODULES),
             "contract_core_hash": tree_hash(contract_entries),
@@ -684,7 +694,7 @@ def write_zip(skill_root: Path) -> Path:
     errors = verify_skill(skill_root)
     if errors:
         raise SkillBuildError("候选目录未通过打包验收：\n" + "\n".join(errors))
-    archive = skill_root.parent / "option-helper.zip"
+    archive = skill_root.parent / skill_archive_name()
     conflicts = _candidate_conflicts(skill_root.parent, skill_root.name)
     if conflicts:
         raise SkillBuildError(
@@ -715,7 +725,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="构建未签发的OptionHelper Skill候选包")
     parser.add_argument("--output", type=Path, default=ROOT / "dist" / "candidates" / "skill")
     catalog_mode = parser.add_mutually_exclusive_group(required=True)
-    catalog_mode.add_argument("--catalog-version", help=f"已签发CatalogVersion，仅允许{RELEASE_VERSION}")
+    catalog_mode.add_argument("--catalog-version", help=f"已签发知识源清单，仅允许{RELEASE_VERSION}")
     catalog_mode.add_argument("--candidate", action="store_true", help="从当前references构建仅开发环境可执行的技术候选")
     parser.add_argument("--replace", action="store_true")
     parser.add_argument("--zip", action="store_true")
