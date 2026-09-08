@@ -6,7 +6,7 @@ from dataclasses import asdict
 from typing import Any, Callable, Mapping
 from uuid import uuid4
 
-from ..errors import AuthorizationError, UnavailableCapabilityError, UserActionError, ValidationError
+from ..errors import UnavailableCapabilityError, UserActionError, ValidationError
 from ..identity.session_identity import SessionIdentity
 from ..stores.data_store import DataStore
 from ..stores.result_store import ResultStore
