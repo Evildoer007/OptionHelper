@@ -26,6 +26,7 @@ from ..agent_runtime.session_context import (
     transcript_messages,
 )
 from ..agent_runtime.projection_cache import ProjectionCache
+from ..agent_runtime.redaction import redact_text
 
 
 PENDING_RECOMMENDATION_SCHEMA_ID = "optionhelper.pending-recommendation"
@@ -1388,7 +1389,7 @@ def _browser_runtime_event(value: Mapping[str, Any]) -> dict[str, Any] | None:
     status = str(payload.get("status", "")).strip().lower()
     if status not in {
         "queued", "starting", "running", "waiting_tool", "waiting_parent",
-        "completed", "failed", "cancelled", "interrupted", "recovered",
+        "completed", "failed", "cancelled", "interrupted", "recovered", "outcome_unknown", "timed_out",
     }:
         suffix = event_type.rsplit(".", 1)[-1]
         status = {
@@ -1488,6 +1489,19 @@ def _browser_runtime_event(value: Mapping[str, Any]) -> dict[str, Any] | None:
         else "正在整理上下文。" if event_type.startswith("compaction.")
         else "研究流程正在运行。"
     )
+    if event_type.startswith("tool."):
+        outcome = {
+            "completed": "已完成。", "succeeded": "已完成。", "failed": "执行失败。",
+            "outcome_unknown": "已中断，结果待确认。", "interrupted": "已中断，结果待确认。",
+            "cancelled": "已停止。", "timed_out": "响应超时。",
+        }.get(status, "正在运行。")
+        summary = f"{tool or '研究模块'}{outcome}"
+        error = payload.get("error")
+        result = payload.get("result")
+        if isinstance(result, Mapping):
+            error = result.get("message", error)
+        if status in {"failed", "outcome_unknown", "interrupted", "timed_out"} and isinstance(error, str):
+            safe_payload["message"] = redact_text(error, limit=1_000)
     projected = {
         "type": event_type,
         "status": status,
