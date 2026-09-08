@@ -17,6 +17,8 @@ from typing import Any, Mapping
 
 from runtime.knowledger.registry_loader import load_registry
 from runtime.ports.result_store import ResultStorePort
+from runtime.contracts.public_projection import encode_contract_parameter, redact_public_money_compatibility
+from runtime.contracts.term_presentation import term_value_encoding
 
 from .models import (
     MODULE_TO_RUN,
@@ -611,7 +613,7 @@ def _fair_parameter_evidence(
         raise ReporterError("公平参数结果quote_delivery_status必须标记research_only")
     require_text(fair_result.get("formal_quote_reason"), "fair_parameter.formal_quote_reason")
     target_id = require_identifier(fair_result.get("target_id"), "fair_parameter.target_id")
-    quote_basis = require_text(fair_result.get("quote_basis"), "fair_parameter.quote_basis")
+    require_text(fair_result.get("quote_basis"), "fair_parameter.quote_basis")
     value_basis = require_text(fair_result.get("value_basis"), "fair_parameter.value_basis")
     if value_basis not in {"pv_percent", "variance_percent"}:
         raise ReporterError("fair_parameter.value_basis不是当前公开价值口径")
@@ -629,11 +631,15 @@ def _fair_parameter_evidence(
         "manifest.input_snapshot",
     ).as_posix()
     input_snapshot = _bundle_json(bundle, input_name, "input_snapshot.json")
-    input_contract = _contract_fields(
-        as_mapping(input_snapshot.get("contract"), "input_snapshot.contract"),
-        "input_snapshot.contract",
-    )
-    if input_contract != contract:
+    input_contract = as_mapping(input_snapshot.get("contract"), "input_snapshot.contract")
+    # The downloadable input is a percent-only projection. Compare it with
+    # that same projection of the verified contract, not the full private form.
+    expected_input_contract = redact_public_money_compatibility({
+        key: deepcopy(contract[key]) for key in (
+            "identity", "terms", "term_sources", "paths", "resolved_schedules", "path_case_applicability",
+        )
+    })
+    if dict(input_contract) != expected_input_contract:
         raise ReporterError("公平参数输入合同与ResolvedContract快照不一致")
     objective = as_mapping(input_snapshot.get("pricing_objective"), "input_snapshot.pricing_objective")
     if objective.get("mode") != "fair_parameter" or objective.get("target_id") != target_id:
@@ -652,8 +658,25 @@ def _fair_parameter_evidence(
         evaluated["terms"].get(target_id),
         f"{_FAIR_EVALUATED_CONTRACT}.terms.{target_id}",
     )
-    if not math.isclose(evaluated_target, float(fair_result["solution"]), rel_tol=0.0, abs_tol=1e-12):
-        raise ReporterError("公平参数私有候选合同与反解值不一致")
+    metadata = load_registry()["term_catalog"].get(target_id)
+    if not isinstance(metadata, Mapping):
+        raise ReporterError("公平参数结果缺少当前产品的目标定义")
+    unit = str(metadata.get("unit", ""))
+    encoding = term_value_encoding(target_id, unit)
+    basis = {
+        "catalog_unit": unit,
+        "value_encoding": encoding if encoding == "percentage_points_internal" else None,
+    }
+    for label, parameter, frozen in (
+        ("solution", evaluated_target, evaluated),
+        ("base_parameter", _finite_fair_number(contract["terms"].get(target_id), "基础合同目标条款"), contract),
+    ):
+        try:
+            expected_value = encode_contract_parameter(basis, parameter, frozen)
+        except (KeyError, TypeError, ValueError) as error:
+            raise ReporterError("公平参数目标条款缺少有效的公开编码依据") from error
+        if not math.isclose(expected_value, float(fair_result[label]), rel_tol=0.0, abs_tol=1e-12):
+            raise ReporterError(f"公平参数{label}与合同条款的公开编码不一致")
     if set(evaluated["terms"]) != set(contract["terms"]):
         raise ReporterError("公平参数最终候选ResolvedContract条款集合发生变化")
     for key, value in contract["terms"].items():
@@ -750,7 +773,10 @@ def _load_module_run(
     if contract["rule_revision"] != candidate["rule_revision"]:
         raise ReporterError("ResolvedContract.rule_revision与RecommendationCandidate不一致")
     _assert_current_product_rule(contract)
-    if contract["underlyings"] != candidate["underlyings"]:
+    if contract["underlyings"] != candidate["underlyings"] and not (
+        structural_payoff_contract(contract, display_module)
+        and len(contract["underlyings"]) == len(candidate["underlyings"])
+    ):
         raise ReporterError("ResolvedContract.underlyings顺序与RecommendationCandidate不一致")
     if contract["currency"] != candidate["currency"]:
         raise ReporterError("ResolvedContract.currency与RecommendationCandidate不一致")
@@ -897,25 +923,46 @@ def _quote_fact(result: Mapping[str, Any], contract: Mapping[str, Any]) -> dict[
     }
 
 
+def structural_payoff_contract(contract: Mapping[str, Any], module: str) -> bool:
+    """Recognize Core's normalized, market-independent Payoffer contract."""
+    identity = contract.get("identity", {})
+    assets = identity.get("underlyings", [])
+    return (
+        module in {"payoff", "payoffer"}
+        and identity.get("price_convention") == "normalized_100"
+        and not identity.get("contract_start_date") and not identity.get("contract_end_date")
+        and bool(assets) and assets == [f"S{index + 1}" for index in range(len(assets))]
+        and identity.get("reference_prices") == {asset: 100.0 for asset in assets}
+    )
+
+
+def report_contracts_compatible(left: Mapping[str, Any], right: Mapping[str, Any],
+                                left_module: str, right_module: str) -> bool:
+    """Match economic terms; dated evidence remains in each immutable ModuleRun."""
+    a, b = _contract_fields(left, "left_contract"), _contract_fields(right, "right_contract")
+    for field in ("product_id", "product_name", "rule_revision", "currency", "price_convention", "terms", "paths"):
+        if a[field] != b[field]:
+            return False
+    if a["underlyings"] != b["underlyings"]:
+        if len(a["underlyings"]) != len(b["underlyings"]) or not (
+            structural_payoff_contract(a, left_module) or structural_payoff_contract(b, right_module)
+        ):
+            return False
+    return True
+
+
 def _validate_candidate_contracts(candidate_id: str, modules: Mapping[str, Mapping[str, Any]]) -> dict[str, Any] | None:
-    ready = [value for value in modules.values() if value.get("status") == "ready"]
+    ready = [(name, modules[name]) for name in ("pricing", "backtest", "payoff")
+             if name in modules and modules[name].get("status") == "ready"]
     if not ready:
         return None
-    baseline = dict(ready[0]["contract"])
-    fields = (
-        "product_id", "product_name", "underlyings", "currency",
-        "price_convention", "rule_revision", "terms", "term_sources",
-        "paths", "resolved_schedules", "path_case_applicability",
-    )
-    for evidence in ready:
-        candidate = evidence["contract"]
-        rule_revision = candidate.get("rule_revision")
-        if not isinstance(rule_revision, int) or isinstance(rule_revision, bool) or rule_revision <= 0:
-            raise ReporterError(f"候选{candidate_id}的产品依赖缺少正整数rule_revision")
-        _assert_current_product_rule(candidate)
-        for field in fields:
-            if candidate.get(field) != baseline.get(field):
-                raise ReporterError(f"候选{candidate_id}的已完成ModuleRun合同不一致：{field}")
+    baseline_module, first = ready[0]
+    baseline = dict(first["contract"])
+    for module, evidence in ready:
+        contract = evidence["contract"]
+        _assert_current_product_rule(contract)
+        if not report_contracts_compatible(baseline, contract, baseline_module, module):
+            raise ReporterError(f"候选{candidate_id}的已完成ModuleRun合同不一致：产品、标的或经济条款")
     return baseline
 
 
