@@ -80,13 +80,37 @@ def require_isolated_fixture_directory(runtime_root: Path) -> None:
         raise RuntimeError("验收Fixture必须使用全新空目录")
 
 
+def document_runtime_status() -> dict[str, object]:
+    """Import and exercise the document runtime used by the frozen Capability."""
+
+    import bs4
+    import soupsieve
+    from lxml import etree
+
+    from modules.designer.pdf_renderer import runtime_status
+    from modules.designer.word_renderer import render_docx
+
+    status: dict[str, object] = dict(runtime_status())
+    if status.get("available") is not True:
+        raise RuntimeError(f"PDF运行组件不可用：{status.get('message', '未知原因')}")
+    word_document = render_docx("<main><p>OptionHelper Word runtime probe</p></main>")
+    if not word_document.startswith(b"PK"):
+        raise RuntimeError("Word运行组件未生成有效DOCX。")
+    status["word_runtime"] = {
+        "available": True,
+        "beautifulsoup4": bs4.__version__,
+        "soupsieve": soupsieve.__version__,
+        "lxml": ".".join(str(part) for part in etree.LXML_VERSION),
+    }
+    return status
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="OptionHelper macOS App Host")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=0)
     parser.add_argument("--data-dir", type=Path)
     parser.add_argument("--resource-dir", type=Path)
-    parser.add_argument("--initialization-token", help=argparse.SUPPRESS)
     parser.add_argument("--compute-worker", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--probe-compute-worker", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--probe-pdf-runtime", action="store_true")
@@ -115,11 +139,7 @@ def main() -> int:
         print("OPTIONHELPER_COMPUTE_WORKER=" + json.dumps(probe_compute_worker(), ensure_ascii=False, sort_keys=True), flush=True)
         return 0
     if args.probe_pdf_runtime:
-        from modules.designer.pdf_renderer import runtime_status
-
-        status = runtime_status()
-        if status.get("available") is not True:
-            raise RuntimeError(f"PDF运行组件不可用：{status.get('message', '未知原因')}")
+        status = document_runtime_status()
         print("OPTIONHELPER_PDF_RUNTIME=" + json.dumps(status, ensure_ascii=False, sort_keys=True), flush=True)
         return 0
     if args.data_dir is None:
@@ -127,8 +147,6 @@ def main() -> int:
     runtime_root = args.data_dir.expanduser().resolve()
     if args.verification_fixture:
         require_isolated_fixture_directory(runtime_root)
-    elif not args.initialization_token:
-        parser.error("正式App启动缺少初始化能力")
     runtime_root.mkdir(parents=True, exist_ok=True)
     os.environ["OPTIONHELPER_RUNTIME_ROOT"] = str(runtime_root)
     configure_agent_runtime(resources)
@@ -149,7 +167,6 @@ def main() -> int:
         frontend_root=resources / "frontend",
         brand_assets_root=resources / "assets" / "icons",
         authentication_mode="local-development" if args.verification_fixture else "managed",
-        initialization_token=None if args.verification_fixture else args.initialization_token,
         # Model and iFind credentials live under the OptionHelper user-data
         # directory.  The native vault remains available for one-release
         # migration.
