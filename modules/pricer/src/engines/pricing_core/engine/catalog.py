@@ -132,6 +132,7 @@ _STATE_FIELDS_BY_STRUCTURE = {
     "OPTIONREG_PATH": (
         "trading_day", "calendar_day", "knocked_in", "knocked_out",
         "accumulated_count", "accumulated_quantity", "observation_stage",
+        "observation_history",
     ),
 }
 _ANALYTIC_CONFIG_FIELDS = {
@@ -280,7 +281,7 @@ _STRUCTURES: dict[str, dict[str, Any]] = {
         "route_id": "STANDARD_VARIANCE_EXPECTATION",
         "contract": {
             "required": ("strike_volatility", "annualization_days", "observation_times", "maturity_years", "basis"),
-            "optional": (),
+            "optional": ("historical_squared_returns", "historical_return_count", "last_observation_spot"),
             "choices": {},
             "nested": {},
         },
@@ -292,7 +293,7 @@ _STRUCTURES: dict[str, dict[str, Any]] = {
         "route_id": "STANDARD_RANGE_ACCRUAL_ANALYTIC",
         "contract": {
             "required": ("lower", "upper", "maximum_coupon", "observation_times", "maturity_years", "basis"),
-            "optional": (),
+            "optional": ("historical_in_count", "historical_observation_count"),
             "choices": {},
             "nested": {},
         },
