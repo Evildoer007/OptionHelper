@@ -68,6 +68,8 @@ _FILE_MAPPINGS = {
     "LICENSES/LibreChat-LICENSE.txt": "LICENSES/LibreChat-LICENSE.txt",
     "LICENSES/Plotly.js-LICENSE.txt": "LICENSES/Plotly.js-LICENSE.txt",
     "LICENSES/ThinkingOrbs-LICENSE.txt": "LICENSES/ThinkingOrbs-LICENSE.txt",
+    "LICENSES/Bloub-LICENSE.txt": "LICENSES/Bloub-LICENSE.txt",
+    "LICENSES/Bloub-SOURCE.md": "LICENSES/Bloub-SOURCE.md",
 }
 
 
