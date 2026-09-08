@@ -3,7 +3,7 @@ import type { JsonValue } from "../core/types.js"
 interface PendingHostRequest {
   readonly resolve: (value: unknown) => void
   readonly reject: (error: Error) => void
-  readonly timer: NodeJS.Timeout
+  readonly timer?: NodeJS.Timeout
   readonly chunks?: AsyncChunkQueue
 }
 
@@ -59,11 +59,13 @@ export class JsonRpcPeer {
     const id = `host_${++this.nextId}`
     return new Promise((resolve, reject) => {
       if (signal?.aborted === true) { reject(new Error(String(signal.reason ?? "cancelled"))); return }
-      const timer = setTimeout(() => {
+      // Business tools own their cancellation and network timeouts. A pricing
+      // or backtest job must not be cut off by the model RPC idle window.
+      const timer = method === "host.tool.call" ? undefined : setTimeout(() => {
         this.pending.delete(id)
         reject(new Error(`${method} Host请求超时`))
       }, this.timeoutMs)
-      this.pending.set(id, { resolve, reject, timer })
+      this.pending.set(id, { resolve, reject, ...(timer === undefined ? {} : { timer }) })
       signal?.addEventListener("abort", () => {
         const current = this.pending.get(id)
         if (current === undefined) return
@@ -80,10 +82,16 @@ export class JsonRpcPeer {
     const id = `host_${++this.nextId}`
     const queue = new AsyncChunkQueue()
     const completion = new Promise<unknown>((resolve, reject) => {
-      if (signal?.aborted === true) { reject(new Error(String(signal.reason ?? "cancelled"))); return }
+      if (signal?.aborted === true) {
+        const error = new Error(String(signal.reason ?? "cancelled"))
+        queue.fail(error)
+        reject(error)
+        return
+      }
       const timer = setTimeout(() => {
         this.pending.delete(id)
-        const error = new Error(`${method} Host流超时`)
+        this.notify("host.model.cancel", { requestId: id })
+        const error = new Error(`${method} Host流空闲超时`)
         queue.fail(error)
         reject(error)
       }, this.timeoutMs)
@@ -113,7 +121,12 @@ export class JsonRpcPeer {
       const params = message.params as Record<string, unknown> | undefined
       const id = String(params?.requestId ?? params?.request_id ?? "")
       const current = this.pending.get(id)
-      if (current?.chunks !== undefined) current.chunks.push(params?.chunk)
+      if (current?.chunks !== undefined) {
+        // A live stream may run longer than one idle window. User cancellation remains
+        // available; only silence expires this watchdog.
+        current.timer?.refresh()
+        current.chunks.push(params?.chunk)
+      }
       return true
     }
     if (message.id === undefined || typeof message.method === "string") return false
