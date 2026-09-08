@@ -2,7 +2,7 @@
 
 ## 1. 管理范围
 
-Knowledger包含OptionList、OptionLib、OptionReg、默认Payoffer JSON与SVG及其ProductVersion、CatalogVersion。三者必须映射一致，不得由普通运行、页面、模型或计算模块写回。
+Knowledger包含OptionList、OptionLib、OptionReg、默认Payoffer JSON与SVG及其发布来源清单。产品身份使用`product_id`和正整数`rule_revision`，发布归档通过KnowledgeSourceManifest与ProductSourceManifest记录来源。三份资料库必须映射一致，不得由普通运行、页面、模型或计算模块写回。
 
 ## 2. 修改产品的顺序
 
@@ -10,7 +10,7 @@ Knowledger包含OptionList、OptionLib、OptionReg、默认Payoffer JSON与SVG�
 2. 在OptionLib核对条款、唯一符号、路径、分段函数、默认示例与风险。
 3. 将已确认规则写入OptionReg的`identity`、`terms`、`paths`。
 4. 校验默认JSON只保存对应的视觉与路径展示规格，默认SVG是其确定性渲染产物。
-5. 逐路径回归现金流、边界、端点、默认示例与图形；通过后签发ProductVersion并更新CatalogVersion。
+5. 逐路径回归现金流、边界、端点、默认示例与图形；产品规则变更须维护对应`rule_revision`，通过后由统一发布流程签发来源清单。
 
 ## 3. OptionReg规则
 
@@ -48,14 +48,18 @@ PYTHONPATH=core/src "${OPTIONHELPER_PYTHON:-python3}" -m tests.knowledger.audit 
 
 候选流程只计算差异与文件哈希，不自动写回三份资料库。weekly日程已迁移为正式支持的月度交易日日程。`derived_terms`是`terms`内唯一允许的派生声明：只能引用基础条款和已在前序声明的派生条款，解析期计算一次、不可由用户覆盖、不得与直接默认条款重名；它不形成第二份默认值或产品规则来源。
 
-## 8. 版本候选与正式版本
+## 8. 开发候选与正式发布
 
-技术候选固定写入`result/build-candidates/knowledger/<version>`，保存65个产品的三源片段、默认条款及冻结Payoff JSON与SVG。技术候选不可执行，不得写入`versions/knowledger`，也不得建立`current`。
+以下命令仅用于完整开发仓库，不能在安装后的Skill目录运行。开发构建先冻结当前工作树，再生成Skill、App及安装物并完成验证；成功后替换`dist/`中的当前候选，不读取或创建正式`versions/v1.0.0`归档。开发候选使用`development`身份，不得当作正式签发版本。
 
 ```bash
-PYTHONPATH=core/src "${OPTIONHELPER_PYTHON:-python3}" -m runtime.knowledger.versioning build-candidate --root . --output result/build-candidates/knowledger/v1.0.0 --proposed-version v1.0.0 --built-at 2026-08-07T12:00:00+08:00
-PYTHONPATH=core/src "${OPTIONHELPER_PYTHON:-python3}" -m runtime.knowledger.versioning verify-candidate-integrity --candidate result/build-candidates/knowledger/v1.0.0
-PYTHONPATH=core/src "${OPTIONHELPER_PYTHON:-python3}" -m runtime.knowledger.versioning verify-candidate-freshness --root . --candidate result/build-candidates/knowledger/v1.0.0
+PYTHONPATH=core/src "${OPTIONHELPER_PYTHON:-python3}" packaging/build_current.py --version v1.0.0 --platform macos
 ```
 
-正式ProductVersion与CatalogVersion必须独立签发为`published`且`executable`，保留六件套哈希、签发人和签发时间。Skill构建及显式版本运行只接受经正式Catalog验证的快照；开发态无`current`时继续读取当前OptionReg，但不得把技术候选降级当作正式版本。
+正式发布由统一事务生成65个产品的三源片段、默认条款及冻结Payoff JSON与SVG。中间知识源技术快照只供完整性校验，不是独立运行入口。准备建立不可覆盖的正式归档时执行：
+
+```bash
+PYTHONPATH=core/src "${OPTIONHELPER_PYTHON:-python3}" packaging/release.py --version v1.0.0 --platform macos
+```
+
+Windows宿主使用同一入口并将`--platform`设为`windows`。发布流程全部验证通过后，才提交`versions/v1.0.0`与`dist/`。正式来源清单记录产品编号、规则修订号、六件套哈希、签发人和签发时间；哈希用于构建完整性校验，不作为产品身份或运行选择条件。已归档内容不可覆盖，另一平台补充发行须复用归档中的签发Skill。普通运行不建立`current`，也不写回产品资料库。
