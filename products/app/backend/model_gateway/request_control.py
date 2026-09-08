@@ -80,9 +80,14 @@ class ModelRequestControl:
 
         return self._cancelled.wait(None if timeout is None else max(0.0, float(timeout)))
 
-    def remaining_seconds(self, maximum: float) -> float:
-        return max(0.05, min(maximum, self._deadline - monotonic()))
+    def remaining_seconds(self, maximum: float | None = None) -> float:
+        remaining = self._deadline - monotonic()
+        return max(0.05, remaining if maximum is None else min(maximum, remaining))
 
     def raise_if_cancelled(self) -> None:
+        if not self.cancelled and monotonic() >= self._deadline:
+            self.cancel("model_request_timeout")
         if self.cancelled:
+            if self.reason == "model_request_timeout":
+                raise TimeoutError("model request deadline exceeded")
             raise ModelRequestCancelled(self.reason or "model request cancelled")
