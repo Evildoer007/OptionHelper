@@ -193,3 +193,13 @@ def has_term_change_intent(message: object) -> bool:
 
 
 __all__ = ("WorkflowDecision", "decide_workflow", "has_term_change_intent")
+
+
+def recommendation_execution_mode(message: str, default: str = "single") -> str:
+    """Resolve an explicit per-request choice without mutating saved preferences."""
+    mode = default if default in {"single", "multi"} else "single"
+    pattern = r"(?P<negative>不要|不用|别用|禁止|不使用)?\s*(?P<mode>单\s*(?:agent|智能体)|single[ -]?agent|多\s*(?:agent|智能体)|multi[ -]?agent)"
+    for match in re.finditer(pattern, str(message), re.IGNORECASE):
+        selected = "single" if re.match(r"单|single", match.group("mode"), re.IGNORECASE) else "multi"
+        mode = ({"single": "multi", "multi": "single"}[selected] if match.group("negative") else selected)
+    return mode
