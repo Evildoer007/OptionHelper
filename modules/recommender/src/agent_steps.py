@@ -12,9 +12,9 @@ from .ports import AgentPort, AgentStepResult
 
 
 ROLE_RULES = {
-    "Interpreter": "只提取用户已确认事实、缺失信息和检索查询；不得推荐产品。",
+    "Interpreter": "只提取用户已确认事实、缺失信息和产品资料检索查询；查询应使用结构类型、收益特征或风险方向，不查询行情、期权链或波动率数据；不得推荐产品。",
     "Selector": "只能从输入evidence选择产品；每个候选必须引用evidence_id。",
-    "Framer": "只框定用户已确认事实、目标、约束和检索查询；不得推荐产品、不得生成金融指标。",
+    "Framer": "只框定用户已确认事实、目标、约束和产品资料检索查询；查询应使用结构类型、收益特征或风险方向，不查询行情或波动率数据；不得推荐产品、不得生成金融指标。",
     "Matcher": "只能从输入evidence提出匹配目标与约束的产品候选；每个候选必须引用evidence_id；不得生成金融指标。",
     "Hedger": "只能从输入evidence独立审视候选的适配边界和风险，并以产品候选形式提出意见；每个候选必须引用evidence_id；不得生成金融指标。",
     "Moderator": "只能合并Framer、Matcher、Hedger和输入evidence已有内容，输出可审计候选及复核；不得新增无证据产品、不得生成金融指标。",
@@ -142,39 +142,6 @@ class AgentStepRunner:
         port_role, request = self.build_request(role, payload)
         step = self.port.run_step(port_role, request)
         return self.accept(role, port_role, request, step)
-
-    def run_many(self, role: str, payloads: list[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
-        """Run independent fresh children when the App port provides them."""
-        if not payloads:
-            return []
-        batch = getattr(self.port, "run_steps", None)
-        if not callable(batch):
-            return [self.run(role, payload) for payload in payloads]
-        port_role = role if self.workflow_mode == "multi_agent" else f"SingleAgent.{role}"
-        requests = [
-            {
-                "workflow": "optionhelper.recommender",
-                "role_rule": ROLE_RULES[role],
-                "required_output": _required_output(role, payload),
-                "input": dict(payload),
-            }
-            for payload in payloads
-        ]
-        try:
-            results = batch(port_role, requests)
-            if not isinstance(results, list) or len(results) != len(requests):
-                raise ValueError("Agent批量步骤返回数量无效")
-            normalized: list[Mapping[str, Any]] = []
-            for request, step in zip(requests, results, strict=True):
-                result = self.receipt_ledger.validate(role, port_role, request, step)
-                self.audit.append(role.lower(), "complete", agent_role=port_role, input_value=request, output_value=result,
-                                  detail={"independent_agent_run": True})
-                normalized.append(result)
-            return normalized
-        except Exception as error:
-            self.audit.append(role.lower(), "failed", agent_role=port_role, input_value=requests, output_value=None,
-                              detail={"error_type": type(error).__name__, "message": str(error)})
-            raise
 
     def run_named(self, payloads: Mapping[str, Mapping[str, Any]]) -> Mapping[str, Mapping[str, Any]]:
         """Run distinct named roles as separate AgentRuns.
