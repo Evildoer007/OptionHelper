@@ -338,9 +338,10 @@ class RuntimeEventPersistenceSink:
 class SingleAgentRecommendationPort:
     """One conversation model performs sequential phases without child Agents."""
 
-    def __init__(self, gateway, identity, task_id, selection=None, *, is_cancelled=None):
+    def __init__(self, gateway, identity, task_id, selection=None, *, is_cancelled=None, progress=None):
         self.gateway, self.identity, self.task_id = gateway, identity, task_id
         self.selection = selection
+        self.progress = progress or (lambda *args: None)
         self.is_cancelled = is_cancelled or (lambda *_: False)
         self.session_id = f"single-recommendation-{uuid4().hex}"
         self.history = []
@@ -355,9 +356,9 @@ class SingleAgentRecommendationPort:
     def run_step(self, role, payload):
         if self.closed or self.is_cancelled(self.identity, self.task_id):
             raise UnavailableCapabilityError("单Agent推荐", "本次推荐已取消。")
-        if len(self.history) >= 6:
-            raise ValidationError("单Agent推荐超过本次步骤预算")
         request = _safe_model_payload(payload)
+        phase = {"Interpreter": "正在整理研究条件", "Selector": "正在筛选候选结构", "Reviewer": "正在复核候选与风险"}.get(role.rsplit(".", 1)[-1], "正在分析候选结构")
+        self.progress("agent_run", "started", phase)
         control = ModelRequestControl(90)
         done = Event()
         def watch_cancel():
@@ -384,10 +385,14 @@ class SingleAgentRecommendationPort:
             if hidden_field:
                 raise ValidationError(f"推荐结果不得包含推理或Secret字段：{hidden_field}")
             self.history.append({"phase": role, "result": result})
+            self.progress("agent_run", "completed", phase.replace("正在", "已完成", 1))
             return AgentStepResult(receipt=AgentRunReceipt(
                 agent_run_id=f"single-step-{uuid4().hex}", child_session_id=self.session_id,
                 role=role, input_hash=canonical_hash(request), output_hash=canonical_hash(result),
             ), result=result)
+        except Exception:
+            self.progress("agent_run", "failed", phase.replace("正在", "未完成", 1))
+            raise
         finally:
             done.set()
             watcher.join(timeout=1)
@@ -1003,7 +1008,7 @@ class RecommenderAdapter:
             if request_id is not None
             else None
         )
-        legacy_agent_port = SingleAgentRecommendationPort(self._gateway, identity, task_id, selection, is_cancelled=self._tasks.is_cancelled) if mode == "single" else AppAgentPort(
+        legacy_agent_port = SingleAgentRecommendationPort(self._gateway, identity, task_id, selection, is_cancelled=self._tasks.is_cancelled, progress=visible_event_sink) if mode == "single" else AppAgentPort(
             self._gateway,
             identity,
             task_id,
@@ -1116,7 +1121,7 @@ class RecommenderAdapter:
             return {
                 "route": dict(route),
                 "recommendation_set": dict(recommendation),
-                "next_step": "请确认要执行的候选。确认后，系统将按最新OptionReg重新编译当前输入并运行。",
+                "next_step": "候选已完成复核。用户已要求文件时，继续调用recommendation_delivery.run完成本轮交付；只有实际执行缺少必要输入时才追问。",
             }
         if _requires_exact_pending_state(recommendation):
             return _confirmation_unavailable(task_id, catalog_version)
@@ -1174,6 +1179,21 @@ class AppConversationToolExecutor:
             search_handler=search_handler,
         )
 
+    def recommend(self, identity, task_id, research_context, *, selection=None, execution_ids=None):
+        if self._recommender is None:
+            raise ValidationError("RecommenderAdapter未绑定")
+        messages = self._tasks.get(identity, task_id).get("messages", [])
+        user_request = "\n".join(
+            str(row.get("content", "")) for row in messages
+            if isinstance(row, Mapping) and row.get("role") == "user"
+        )
+        if not user_request.strip():
+            raise ValidationError("当前对话没有可用的用户推荐请求")
+        return self._recommender.run_fixed(
+            identity, task_id, user_request, {}, selection=selection,
+            execution_ids=execution_ids, research_context=research_context,
+        )
+
     def call(self, identity: SessionIdentity, task_id: str, name: str, arguments: Mapping[str, Any]) -> Mapping[str, Any]:
         if name == "reporter.create_document":
             return self.report_delivery.create_document(identity, task_id, arguments)
@@ -1194,22 +1214,12 @@ class AppConversationToolExecutor:
         if module == "recommender" and action == "run":
             if self._recommender is None:
                 raise ValidationError("RecommenderAdapter未绑定")
-            messages = self._tasks.get(identity, task_id).get("messages", [])
-            user_request = "\n".join(
-                str(row.get("content", "")) for row in messages
-                if isinstance(row, Mapping) and row.get("role") == "user"
-            )
-            if not user_request.strip():
-                raise ValidationError("当前对话没有可用的用户推荐请求")
-            return self._recommender.run_fixed(
-                identity, task_id, user_request, {},
-                research_context=str(arguments.get("prompt", "")),
-            )
+            return self.recommend(identity, task_id, str(arguments.get("prompt", "")))
         if module == "reporter" and action == "run":
             from ..report_delivery import delivery_request
             messages = self._tasks.get(identity, task_id).get("messages", []) if self._tasks else []
             expected = delivery_request(messages[-1].get("content")) if messages and messages[-1].get("role") == "user" else None
-            if expected and not expected['export_only']:
+            if expected and not expected['export_only'] and not expected['multiple']:
                 arguments = {**arguments, "kind":expected['template'].removeprefix('multi'), "format":expected['format'], "delivery_mode":"comparison" if expected['template'].startswith('multi') else "single"}
             export_format = str(arguments.get("format") or "html").lower()
             if export_format not in {"html", "pdf", "docx"}:
@@ -1565,16 +1575,16 @@ class AppConversationToolExecutor:
         fmt = str(arguments.get("format") or "html")
         if kind not in {"card", "report", "quote", "multicard", "multireport"} or fmt not in {"html", "pdf", "docx"}:
             raise ValidationError("报告模板或文件格式无效")
-        from ..report_delivery import delivery_request, requested_analysis_modules
+        from ..report_delivery import delivery_request, required_delivery_modules
         messages = self._tasks.get(identity, task_id).get("messages", [])
         latest = next((str(row.get("content", "")) for row in reversed(messages) if row.get("role") == "user"), "")
         expected = delivery_request(latest)
-        if expected:
+        if expected and not expected["multiple"]:
             kind, fmt = expected["template"], expected["format"]
-        modules = requested_analysis_modules(latest)
+        modules = required_delivery_modules(latest, kind, has_recommendation=True)
         if modules:
             ordered = sorted(candidates, key=lambda item: (not bool(item.get("is_primary")), item.get("rank", 1000000)))
-            selected = ordered if kind.startswith("multi") else ordered[:1]
+            selected = ordered if kind.startswith("multi") or kind == "quote" else ordered[:1]
             selected_ids = [item["candidate_id"] for item in selected]
             args = {"kind": kind.removeprefix("multi"), "format": "html", "candidate_ids": selected_ids,
                     "delivery_mode": "comparison" if kind.startswith("multi") else "single"}
@@ -1614,8 +1624,31 @@ class AppConversationToolExecutor:
                 exported.update(status="partial", text=notice)
                 exported["_assistant_blocks"] = [{"type": "text", "text": notice}, *exported.get("_assistant_blocks", [])]
             return exported
-        content = "\n\n".join(str(item.get("reason") or item.get("rationale") or item.get("product_name") or item.get("product_id") or "当前推荐结构") for item in candidates)
-        return self.report_delivery.complete(identity, task_id, f"生成{kind} {fmt}", {"status":"completed","text":content})
+        sections = []
+        for index, candidate in enumerate(candidates, 1):
+            public = candidate.get("public_projection") or {}
+            name = candidate.get("product_name") or candidate.get("product_id") or f"方案{index}"
+            paragraphs = [f"## {index}. {name}"]
+            underlyings = candidate.get("underlyings") or []
+            if underlyings:
+                paragraphs.append("挂钩标的：" + "、".join(underlyings))
+            reason = public.get("reason") or candidate.get("reason") or candidate.get("rationale")
+            if reason:
+                paragraphs.append(str(reason))
+            for label, key in (("适用条件", "suitable_for"), ("不适用情形", "not_suitable_for"), ("主要风险", "main_risks")):
+                values = public.get(key) or []
+                if values:
+                    paragraphs.append(f"### {label}\n" + "\n".join(f"- {value}" for value in values))
+            terms = public.get("key_terms") or []
+            if terms:
+                paragraphs.append("### 已明确条款\n" + "\n".join(f"- {item['label']}：{item['value']}" for item in terms))
+            missing = (candidate.get("current_inputs") or {}).get("missing_inputs") or []
+            if missing:
+                paragraphs.append("待确定条款：" + "、".join(missing) + "。")
+            sections.append("\n\n".join(paragraphs))
+        sections.append("## 研究范围\n本次完成结构筛选与风险复核，未执行的定价和回测不构成计算结论。")
+        return self.report_delivery.complete(identity, task_id, f"生成{kind} {fmt}",
+                                             {"status":"completed","text":"\n\n".join(sections)})
 
     def run_recommendation_delivery(
         self,
