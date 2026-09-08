@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import base64
@@ -18,7 +19,9 @@ if str(_CORE_SRC) not in sys.path:
     sys.path.insert(0, str(_CORE_SRC))
 
 from runtime.adapters.local_store import LocalResultStore, StoreError
-from runtime.contracts.contract_api import ContractResolutionError, ResolvedContract
+from runtime.contracts.contract_api import (
+    ContractResolutionError, ResolvedContract, bind_term_symbols, evaluate_formula, load_registry,
+)
 from runtime.protocol.models import ModuleRunRef
 from modules.reporter.selection_facts import build_host_selection_source_refs
 
@@ -384,7 +387,16 @@ class ResultStore:
             }
             for fact in _result_facts(str(record["module"]), result, run_ref["result_file_hash"])
         ]
-        return {"run_ref": run_ref, "facts": facts}
+        try:
+            snapshot = json.loads(self.read_owned_module_run_file(identity, reference, "resolved_contract.json"))
+            contract = ResolvedContract.from_controlled_snapshot(snapshot)
+        except (UnicodeDecodeError, ValueError, TypeError) as error:
+            raise ValidationError("ModuleRun缺少可验证合同条款快照") from error
+        return {
+            "run_ref": run_ref,
+            "facts": facts,
+            "contract_term_facts": _contract_premium_facts(contract, reference["expected_artifact_manifest_hash"]),
+        }
 
     def list_report_sources(self, *, tenant_id: str, task_id: str | None = None, query: str | None = None) -> dict[str, Any]:
         """Return a tenant-scoped projection of completed calculation runs.
@@ -397,14 +409,34 @@ class ResultStore:
             raise ValidationError("tenant_id is required")
         if task_id is not None and not task_id:
             raise ValidationError("task_id is invalid")
+        catalog, _ = self._list_report_sources_from_records(
+            self._state.read("results"), tenant_id=tenant_id, task_id=task_id, query=query,
+        )
+        return catalog
+
+    def _list_report_sources_from_records(
+        self,
+        records: Mapping[str, Any],
+        *,
+        tenant_id: str,
+        task_id: str | None,
+        query: str | None,
+        created_by: str | None = None,
+    ) -> tuple[dict[str, Any], dict[tuple[str, ...], dict[str, Any]]]:
+        """Build one request-scoped catalog and retain its verified evidence."""
+
         needle = (query or "").strip().lower()
         grouped: dict[str, dict[str, Any]] = {}
-        for record in self._state.read("results").values():
+        evidence: dict[tuple[str, ...], dict[str, Any]] = {}
+        diagnostics: dict[str, int] = {}
+        for record in records.values():
             if (
                 not isinstance(record, dict)
                 or record.get("tenant_id") != tenant_id
                 or record.get("anchor_state") != "anchored"
             ):
+                continue
+            if created_by is not None and record.get("created_by") != created_by:
                 continue
             if record.get("module") not in {"payoffer", "pricer", "backtester"} or not _completed(record.get("result")):
                 continue
@@ -412,12 +444,14 @@ class ResultStore:
                 continue
             verified_run = self._verified_report_record(record, tenant_id)
             if verified_run is None:
+                diagnostics["integrity_verification_failed"] = diagnostics.get("integrity_verification_failed", 0) + 1
                 continue
             try:
-                verified_contract, verified_result = verified_run
+                verified_manifest, verified_contract, verified_result = verified_run
                 candidate = _report_candidate({**record, "result": verified_result}, verified_contract)
             except ValidationError:
                 # Reporter只能消费带有完整当前合同快照的正式结果。
+                diagnostics["contract_projection_invalid"] = diagnostics.get("contract_projection_invalid", 0) + 1
                 continue
             if needle and needle not in json.dumps(candidate, ensure_ascii=False, sort_keys=True).lower():
                 continue
@@ -449,6 +483,11 @@ class ResultStore:
             options = row.setdefault("module_run_options", {}).setdefault(display_module, [])
             if not any(existing == reference for existing in options):
                 options.append(reference)
+            evidence[_report_evidence_key(reference)] = {
+                "manifest": verified_manifest,
+                "resolved_contract": verified_contract,
+                "saved_created_at": record.get("created_at"),
+            }
         sources: list[dict[str, Any]] = []
         for grouped_source in grouped.values():
             candidates = []
@@ -479,9 +518,20 @@ class ResultStore:
             source = {**grouped_source, "candidates": candidates}
             source["source_refs"] = build_host_selection_source_refs(source, tenant_id)
             sources.append(source)
-        return {"tenant_id": tenant_id, "sources": sources}
+        return ({
+            "tenant_id": tenant_id,
+            "sources": sources,
+            "source_diagnostics": {
+                "excluded_run_count": sum(diagnostics.values()),
+                "failure_codes": diagnostics,
+            },
+        }, evidence)
 
-    def _verified_report_record(self, record: dict[str, Any], tenant_id: str) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    def _verified_report_record(
+        self,
+        record: dict[str, Any],
+        tenant_id: str,
+    ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]] | None:
         """Only enumerate calculation runs whose Core commit remains intact."""
         try:
             reference = ModuleRunRef(
@@ -492,17 +542,47 @@ class ResultStore:
                 expected_result_file_hash=str(record["expected_result_file_hash"]),
                 expected_artifact_manifest_hash=str(record["expected_artifact_manifest_hash"]),
             )
-            contract = json.loads(self._core.read_module_run_file(reference, "resolved_contract.json", tenant_id=tenant_id))
-            result = json.loads(self._core.read_module_run_file(reference, "result.json", tenant_id=tenant_id))
-            return (contract, result) if isinstance(contract, dict) and isinstance(result, dict) else None
+            files = self._core.read_module_run_files(
+                reference,
+                ("manifest.json", "resolved_contract.json", "result.json"),
+                tenant_id=tenant_id,
+            )
+            manifest = json.loads(files["manifest.json"])
+            contract = json.loads(files["resolved_contract.json"])
+            result = json.loads(files["result.json"])
+            return (
+                (manifest, contract, result)
+                if isinstance(manifest, dict) and isinstance(contract, dict) and isinstance(result, dict)
+                else None
+            )
         except (KeyError, TypeError, ValueError, StoreError, FileNotFoundError, PermissionError, UnicodeDecodeError, json.JSONDecodeError):
             return None
 
     def list_owned_report_sources(self, identity: SessionIdentity, *, task_id: str | None = None, query: str | None = None) -> dict[str, Any]:
+        catalog, _ = self.list_owned_report_sources_with_evidence(identity, task_id=task_id, query=query)
+        return catalog
+
+    def list_owned_report_sources_with_evidence(
+        self,
+        identity: SessionIdentity,
+        *,
+        task_id: str | None = None,
+        query: str | None = None,
+    ) -> tuple[dict[str, Any], dict[tuple[str, ...], dict[str, Any]]]:
+        """Return owned sources and their request-local verified manifests."""
+
         if task_id is not None:
             self._require_task_owner(identity, task_id)
-        catalog = self.list_report_sources(tenant_id=identity.tenant_id, task_id=task_id, query=query)
+        records = self._state.read("results")
+        catalog, evidence = self._list_report_sources_from_records(
+            records,
+            tenant_id=identity.tenant_id,
+            task_id=task_id,
+            query=query,
+            created_by=identity.principal_id,
+        )
         owned = []
+        owned_evidence_keys: set[tuple[str, ...]] = set()
         for source in catalog["sources"]:
             refs = [
                 ref
@@ -510,9 +590,13 @@ class ResultStore:
                 for options in candidate.get("module_run_options", {}).values()
                 for ref in options
             ]
-            if refs and all(self._owned_run(identity, ref) for ref in refs):
+            if refs and all(self._owned_run(identity, ref, records=records) for ref in refs):
                 owned.append(source)
-        return {"tenant_id": identity.tenant_id, "sources": owned}
+                owned_evidence_keys.update(_report_evidence_key(ref) for ref in refs)
+        return (
+            {**catalog, "tenant_id": identity.tenant_id, "sources": owned},
+            {key: value for key, value in evidence.items() if key in owned_evidence_keys},
+        )
 
     def get_report_source(self, *, tenant_id: str, source_id: str) -> dict[str, Any]:
         if not isinstance(source_id, str) or not source_id.startswith("source_"):
@@ -586,6 +670,7 @@ class ResultStore:
             "artifact_manifest": manifest,
             "artifacts": normalized,
         }
+        _validate_report_record(record, report_run_id)
 
         def update(value: dict[str, Any]) -> dict[str, Any]:
             if report_run_id in value:
@@ -599,20 +684,65 @@ class ResultStore:
     def list_report_runs(self, identity: SessionIdentity, task_id: str) -> list[dict[str, Any]]:
         self._require_task_owner(identity, task_id)
         rows = []
-        for record in self._state.read("reports").values():
+        documents = self._state.read("report_documents")
+        for report_run_id, record in self._state.read("reports").items():
             if not isinstance(record, dict) or record.get("tenant_id") != identity.tenant_id or record.get("task_id") != task_id:
                 continue
             if record.get("created_by") != identity.principal_id or not _report_visible(identity, record):
                 continue
-            rows.append(_report_projection(record))
+            _validate_report_record(record, report_run_id)
+            row = _report_projection(record)
+            document = documents.get(report_run_id)
+            if isinstance(document, dict):
+                self._authorize_report(identity, record)
+                row.update(title=document["title"], updated_at=document["updated_at"], manual_edit=True)
+                row["artifacts"] = [{"name": item["name"], "content_type": item["content_type"],
+                    "display_name": document["title"] + PurePosixPath(item["name"]).suffix,
+                    "url": f"/api/reports/{report_run_id}/document-artifacts/{item['name']}"}
+                    for item in document["artifacts"] if not item["name"].startswith("assets/")]
+            rows.append(row)
         return sorted(rows, key=lambda item: item["created_at"], reverse=True)
 
+    def get_report_document(self, identity: SessionIdentity, report_run_id: str) -> dict[str, Any] | None:
+        """The original delivery authorizes its independently editable working document."""
+        self._owned_report_record(identity, report_run_id)
+        return self._state.read("report_documents").get(report_run_id)
+
+    def save_report_document(self, identity: SessionIdentity, report_run_id: str,
+                             document: dict[str, Any], artifacts: list[dict[str, Any]]) -> dict[str, Any]:
+        source = self._owned_report_record(identity, report_run_id)
+        encoded = [{"name": _report_artifact_name(item["name"]), "content_type": item["content_type"],
+                    "content": base64.b64encode(item["content"]).decode("ascii")} for item in artifacts]
+        saved = {}
+        def update(records):
+            previous = records.get(report_run_id, {})
+            unchanged = all(previous.get(key) == document.get(key) for key in ("title", "html", "chart_specs"))
+            # A changed draft invalidates older exports. Same-content exports share one document.
+            merged = {item["name"]: item for item in previous.get("artifacts", [])} if unchanged else {}
+            merged.update({item["name"]: item for item in encoded})
+            saved.update(document, task_id=source["task_id"], tenant_id=identity.tenant_id,
+                         created_by=identity.principal_id, artifacts=list(merged.values()),
+                         updated_at=datetime.now(timezone.utc).isoformat())
+            records[report_run_id] = saved
+        self._state.update("report_documents", update)
+        return saved
+
+    def read_report_document_artifact(self, identity: SessionIdentity, report_run_id: str,
+                                      artifact_name: str) -> tuple[bytes, str]:
+        document = self.get_report_document(identity, report_run_id)
+        artifact_name = _report_artifact_name(artifact_name)
+        for item in (document or {}).get("artifacts", []):
+            if item["name"] == artifact_name:
+                return base64.b64decode(item["content"], validate=True), item["content_type"]
+        raise KeyError(artifact_name)
+
     def resolve_report_run(self, identity: SessionIdentity, reference: dict[str, str]) -> dict[str, Any]:
+        if not isinstance(reference, dict):
+            raise ValidationError("ReportRunRef must be an object")
         report_run_id = reference.get("report_run_id")
-        record = self._state.read("reports").get(report_run_id)
-        if not isinstance(record, dict):
-            raise KeyError(str(report_run_id))
-        self._authorize_report(identity, record)
+        record = self.get_owned_report_run(identity, report_run_id)
+        if any(reference.get(field) != record.get(field) for field in ("tenant_id", "task_id")):
+            raise ValidationError("ReportRunRef scope does not match stored report")
         if reference.get("expected_report_file_hash") != record.get("expected_report_file_hash"):
             raise ValidationError("ReportRunRef semantic fact hash does not match stored report")
         if reference.get("expected_artifact_manifest_hash") != record.get("expected_artifact_manifest_hash"):
@@ -622,34 +752,30 @@ class ResultStore:
     def get_owned_report_run(self, identity: SessionIdentity, report_run_id: str) -> dict[str, Any]:
         """Read one immutable delivery for a fact-preserving re-render."""
 
+        record = self._owned_report_record(identity, report_run_id)
+        for artifact in record["artifacts"]:
+            _decode_report_artifact(artifact)
+        return record
+
+    def _owned_report_record(self, identity: SessionIdentity, report_run_id: str) -> dict[str, Any]:
         if not isinstance(report_run_id, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", report_run_id):
             raise ValidationError("report_run_id is invalid")
         record = self._state.read("reports").get(report_run_id)
         if not isinstance(record, dict):
             raise KeyError(report_run_id)
         self._authorize_report(identity, record)
+        if not isinstance(record.get("task_id"), str):
+            raise ValidationError("ReportRun task identity is invalid")
+        self._require_task_owner(identity, record["task_id"])
+        _validate_report_record(record, report_run_id)
         return record
 
     def read_report_artifact(self, identity: SessionIdentity, report_run_id: str, artifact_name: str) -> tuple[bytes, str]:
-        if not isinstance(report_run_id, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", report_run_id):
-            raise ValidationError("report_run_id is invalid")
-        record = self._state.read("reports").get(report_run_id)
-        if not isinstance(record, dict):
-            raise KeyError(report_run_id)
-        self._authorize_report(identity, record)
+        record = self._owned_report_record(identity, report_run_id)
         artifact_name = _report_artifact_name(artifact_name)
-        for artifact in record.get("artifacts", []):
-            if isinstance(artifact, dict) and artifact.get("name") == artifact_name:
-                encoded = artifact.get("content_base64")
-                if not isinstance(encoded, str):
-                    raise ValidationError("Report artifact is invalid")
-                try:
-                    content = base64.b64decode(encoded.encode("ascii"), validate=True)
-                except (UnicodeEncodeError, ValueError) as error:
-                    raise ValidationError("Report artifact is invalid") from error
-                if hashlib.sha256(content).hexdigest() != artifact.get("sha256"):
-                    raise ValidationError("Report artifact hash does not match manifest")
-                return content, str(artifact["content_type"])
+        for artifact in record["artifacts"]:
+            if artifact["name"] == artifact_name:
+                return _decode_report_artifact(artifact), artifact["content_type"]
         raise KeyError(artifact_name)
 
     def _require_task_owner(self, identity: SessionIdentity, task_id: str) -> None:
@@ -658,9 +784,16 @@ class ResultStore:
         if not isinstance(task, dict) or task.get("tenant_id") != identity.tenant_id or task.get("created_by") != identity.principal_id:
             raise AuthorizationError("result.read", "task is not owned by current caller")
 
-    def _owned_run(self, identity: SessionIdentity, reference: dict[str, Any]) -> bool:
+    def _owned_run(
+        self,
+        identity: SessionIdentity,
+        reference: dict[str, Any],
+        *,
+        records: Mapping[str, Any] | None = None,
+    ) -> bool:
         record = _stored_module_run(
-            self._state.read("results"), reference.get("module"), reference.get("run_id"),
+            records if records is not None else self._state.read("results"),
+            reference.get("module"), reference.get("run_id"),
         )
         return (
             isinstance(record, dict)
@@ -861,6 +994,9 @@ _BACKTEST_FACTS = (
     ("minimum_contract_settlement_return", "最低合同结算收益率", "percent"),
     ("maximum_contract_settlement_return", "最高合同结算收益率", "percent"),
     ("positive_return_rate", "历史正收益样本占比", "percent"),
+    ("positive_return_count", "正收益样本数", "count"),
+    ("zero_return_count", "零收益样本数", "count"),
+    ("negative_return_count", "负收益样本数", "count"),
 )
 
 
@@ -887,8 +1023,13 @@ def _result_facts(module: str, result: dict[str, Any], result_hash: str) -> list
         metrics = source.get("common_metrics") if isinstance(source.get("common_metrics"), dict) else source
         for key, label, unit in _BACKTEST_FACTS:
             value = _number(metrics.get(key)) if isinstance(metrics, dict) else None
+            if unit == "count" and (not isinstance(value, int) or value < 0):
+                continue
             if value is not None:
                 selected.append((key, label, value, unit))
+        minimum = _number(metrics.get("minimum_contract_settlement_return"))
+        if minimum is not None:
+            selected.append(("max_loss_contract_settlement_return", "历史样本最大亏损率", max(0.0, -minimum), "percent"))
     else:
         selected = []
     return [
@@ -898,9 +1039,98 @@ def _result_facts(module: str, result: dict[str, Any], result_hash: str) -> list
             "label": label,
             "value": value,
             **({"unit": unit} if unit else {}),
+            **({"value_encoding": "decimal_ratio"} if unit == "percent" else {}),
+            **({"derived_from": "minimum_contract_settlement_return", "derivation": "max(0,-minimum_contract_settlement_return)"}
+               if path == "max_loss_contract_settlement_return" else {}),
         }
         for path, label, value, unit in selected[:24]
     ]
+
+
+def _contract_premium_facts(contract: ResolvedContract, artifact_manifest_hash: str) -> list[dict[str, Any]]:
+    """Project a registered premium term only with uniform initial cashflow evidence."""
+    catalog = load_registry()["term_catalog"]
+    keys = [key for key in ("Pi_0", "P_net", "p") if key in contract.terms]
+    if len(keys) != 1:
+        return []
+    key = keys[0]
+    raw = _number(contract.terms[key])
+    metadata = catalog.get(key, {})
+    unit, symbol = metadata.get("unit"), metadata.get("symbol")
+    if raw is None or raw < 0 or unit not in {"premium_percent_s0_100", "rate"} or not isinstance(symbol, str):
+        return []
+    if unit == "premium_percent_s0_100" and contract.terms.get("S0") != 100.0:
+        return []
+    bindings = bind_term_symbols(contract.terms, catalog)
+    coefficients: list[float] = []
+    expressions: set[str] = set()
+    try:
+        for path in contract.paths:
+            for case in path["cases"]:
+                # A term that also chooses the economic branch or a future
+                # payment is not a uniform contractual initial premium.
+                if any(symbol in {node.id for node in ast.walk(ast.parse(text, mode="eval")) if isinstance(node, ast.Name)}
+                       for text in (path["condition"], case["domain"])):
+                    return []
+                calls = [node for node in ast.walk(ast.parse(case["pnl"], mode="eval"))
+                         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "cash"]
+                coefficient = 0.0
+                found = False
+                for call in calls:
+                    if len(call.args) != 2:
+                        return []
+                    amount = call.args[1]
+                    if symbol not in {node.id for node in ast.walk(amount) if isinstance(node, ast.Name)}:
+                        continue
+                    time = call.args[0]
+                    if not isinstance(time, ast.Constant) or isinstance(time.value, bool) or time.value != 0:
+                        return []
+                    expression = ast.unparse(amount)
+                    constant, slope = _premium_affine_terms(amount, symbol, bindings)
+                    if not math.isfinite(constant) or not math.isfinite(slope) or constant != 0.0 or slope >= 0.0:
+                        return []
+                    coefficient += slope
+                    expressions.add(expression)
+                    found = True
+                if not found:
+                    return []
+                coefficients.append(coefficient)
+    except (ValueError, TypeError, KeyError):
+        return []
+    if not coefficients or not all(math.isclose(value, coefficients[0], rel_tol=1e-12, abs_tol=1e-12) for value in coefficients):
+        return []
+    value = raw / 100.0 if unit == "premium_percent_s0_100" else raw
+    return [{
+        "fact_ref": _fact_ref(artifact_manifest_hash, f"resolved_contract.terms.{key}", value),
+        "metric": "premium", "label": "合同期权费率", "value": value,
+        "unit": "percent", "value_encoding": "decimal_ratio", "source": "contract_terms",
+        "evidence": {"term_key": key, "registered_unit": unit, "raw_value": raw,
+                     "basis": "registered_premium_term", "cashflow_time": 0,
+                     "cashflow_expressions": sorted(expressions)},
+    }]
+
+
+def _premium_affine_terms(node: ast.AST, symbol: str, bindings: Mapping[str, Any]) -> tuple[float, float]:
+    """Prove affine dependence structurally; numerical samples are not evidence."""
+    if isinstance(node, ast.Name) and node.id == symbol:
+        return 0.0, 1.0
+    if symbol not in {item.id for item in ast.walk(node) if isinstance(item, ast.Name)}:
+        return float(evaluate_formula(ast.unparse(node), bindings)), 0.0
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
+        constant, slope = _premium_affine_terms(node.operand, symbol, bindings)
+        sign = -1 if isinstance(node.op, ast.USub) else 1
+        return sign * constant, sign * slope
+    if isinstance(node, ast.BinOp):
+        left, right = (_premium_affine_terms(part, symbol, bindings) for part in (node.left, node.right))
+        if isinstance(node.op, ast.Add):
+            return left[0] + right[0], left[1] + right[1]
+        if isinstance(node.op, ast.Sub):
+            return left[0] - right[0], left[1] - right[1]
+        if isinstance(node.op, ast.Mult) and not (left[1] and right[1]):
+            return left[0] * right[0], left[0] * right[1] + left[1] * right[0]
+        if isinstance(node.op, ast.Div) and right[1] == 0.0 and right[0] != 0.0:
+            return left[0] / right[0], left[1] / right[0]
+    raise ValueError("Premium cashflow is not provably affine")
 
 
 def _number(value: object) -> int | float | None:
@@ -1073,6 +1303,47 @@ def _sha256(value: object) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _validate_report_record(record: Mapping[str, Any], report_run_id: str) -> None:
+    """Recheck existing report proofs before exposing facts or artifact metadata."""
+    if record.get("report_run_id") != report_run_id:
+        raise ValidationError("ReportRun identity does not match its stored key")
+    request, manifest, artifacts = (record.get(key) for key in ("report_request", "artifact_manifest", "artifacts"))
+    if not isinstance(request, dict) or _sha256(request) != record.get("expected_report_file_hash"):
+        raise ValidationError("ReportRun request content does not match its stored proof")
+    for field in ("report_run_id", "task_id", "tenant_id"):
+        if request.get(field) not in (None, "") and request[field] != record.get(field):
+            raise ValidationError("ReportRun request identity does not match its stored scope")
+    if not isinstance(manifest, list) or not manifest or _sha256(manifest) != record.get("expected_artifact_manifest_hash"):
+        raise ValidationError("ReportRun artifact manifest does not match its stored proof")
+    if not isinstance(artifacts, list) or not artifacts or len(artifacts) != len(manifest):
+        raise ValidationError("ReportRun artifacts do not match the manifest")
+    metadata = []
+    names = set()
+    for artifact in artifacts:
+        if not isinstance(artifact, dict):
+            raise ValidationError("ReportRun artifact is invalid")
+        name = _report_artifact_name(artifact.get("name"))
+        if name in names or name != artifact.get("name"):
+            raise ValidationError("ReportRun artifact names are invalid or duplicated")
+        names.add(name)
+        metadata.append({key: artifact.get(key) for key in ("name", "content_type", "sha256", "size")})
+    if metadata != manifest:
+        raise ValidationError("ReportRun artifact metadata does not match the manifest")
+
+
+def _decode_report_artifact(artifact: Mapping[str, Any]) -> bytes:
+    encoded = artifact.get("content_base64")
+    if not isinstance(encoded, str):
+        raise ValidationError("Report artifact is invalid")
+    try:
+        content = base64.b64decode(encoded.encode("ascii"), validate=True)
+    except (UnicodeEncodeError, ValueError) as error:
+        raise ValidationError("Report artifact is invalid") from error
+    if len(content) != artifact.get("size") or hashlib.sha256(content).hexdigest() != artifact.get("sha256"):
+        raise ValidationError("Report artifact content does not match the manifest")
+    return content
+
+
 def _artifact_record(value: object) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValidationError("Report artifact must be an object")
@@ -1082,6 +1353,8 @@ def _artifact_record(value: object) -> dict[str, Any]:
     name = _report_artifact_name(name)
     if content_type not in {
         "text/html; charset=utf-8", "application/pdf", "application/javascript", "text/javascript", "text/css",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "image/png", "image/jpeg", "image/gif", "image/webp", "image/svg+xml",
     }:
         raise ValidationError("Report artifact content_type is not allowed")
     if not isinstance(content, bytes) or not content:
@@ -1121,10 +1394,13 @@ def _report_projection(record: dict[str, Any]) -> dict[str, Any]:
         "report_run_id": record["report_run_id"],
         "status": record["status"],
         "created_at": record["created_at"],
+        "title": (request.get("metadata") or {}).get("title"),
         "output_type": request.get("output_type"),
         "delivery_mode": delivery_mode,
         "comparison": delivery_mode == "comparison",
         "format": request.get("format"),
+        "manual_edit": request.get("manual_edit") is True,
+        "source_report_run_id": request.get("source_report_run_id") if request.get("manual_edit") is True else None,
         "artifacts": [
             {
                 **{key: item.get(key) for key in ("name", "content_type", "size")},
@@ -1144,9 +1420,15 @@ def _artifact_display_name(request: Mapping[str, Any], artifact: Mapping[str, An
         isinstance(title, str)
         and 0 < len(title.strip()) <= 120
         and not any(ord(character) < 32 for character in title)
-        and content_type in {"text/html; charset=utf-8", "application/pdf"}
+        and content_type in {
+            "text/html; charset=utf-8", "application/pdf",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        }
     ):
-        suffix = ".pdf" if content_type == "application/pdf" else ".html"
+        suffix = {
+            "application/pdf": ".pdf",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+        }.get(content_type, ".html")
         return f"{title.strip()}{suffix}"
     return name
 
@@ -1160,6 +1442,13 @@ def _source_id(tenant_id: str, task_id: str, analysis_case_id: str) -> str:
     if any(not re.fullmatch(r"[A-Za-z0-9_.-]+", item) for item in parts):
         raise ValidationError("formal report source identity is invalid")
     return "source_" + "__".join(parts)
+
+
+def _report_evidence_key(reference: Mapping[str, Any]) -> tuple[str, ...]:
+    return tuple(str(reference.get(field) or "") for field in (
+        "module", "tenant_id", "task_id", "run_id",
+        "expected_result_file_hash", "expected_artifact_manifest_hash",
+    ))
 
 
 def _report_candidate(record: dict[str, Any], verified_contract: dict[str, Any]) -> dict[str, Any]:
