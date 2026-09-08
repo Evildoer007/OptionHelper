@@ -13,7 +13,7 @@
     <script src="../plotly-chart-system.js"></script>
     <script src="../date-input-control.js"></script>
     <style>
-      .backtest-app .canvas-panel { min-height:0; grid-template-rows:50px auto minmax(0,1fr); background:var(--paper); }
+      .backtest-app .canvas-panel { min-height:0; grid-template-rows:auto auto minmax(0,1fr); background:var(--paper); }
       .backtest-app .canvas-toolbar { background:var(--paper); }
       .backtest-app .canvas-viewport { display:block; min-height:0; overflow:auto; scrollbar-gutter:stable; padding:22px; }
       .analysis-sheet { width:min(1320px,100%); margin:0 auto; padding:22px; background:var(--color-paper); border:1px solid var(--rule); box-shadow:0 8px 22px rgba(37,37,37,.09); }
@@ -22,18 +22,19 @@
       .section-kicker { margin:0 0 5px; color:var(--color-blue-gray); font:10px var(--mono); letter-spacing:1.15px; }
       .summary-grid { display:grid; grid-template-columns:repeat(6,minmax(0,1fr)); margin-top:18px; border:1px solid var(--rule-soft); background:var(--color-surface); }.summary-item { min-height:96px; padding:17px 16px; background:var(--color-surface); border-right:1px solid var(--rule-soft); border-bottom:1px solid var(--rule-soft); }.summary-item:nth-child(6n) { border-right:0; }.summary-item:nth-last-child(-n+6) { border-bottom:0; }.summary-item span { display:block; color:var(--muted); font-size:10px; }.summary-item strong { display:block; margin-top:9px; font-size:16px; overflow-wrap:anywhere; }.summary-item.primary { color:var(--color-ink); background:var(--color-surface); }.summary-item.primary span { color:var(--muted); }
       .report-section { margin-top:28px; }.report-section + .report-section { padding-top:28px; border-top:1px solid var(--rule-soft); }.report-section h2 { margin:0; font-size:16px; }.report-section > p { margin:6px 0 16px; color:var(--muted); font-size:12px; line-height:1.6; }.profile-note { margin:16px 0 0; padding:10px 12px; border:1px solid var(--rule); border-radius:9px; background:var(--color-red-surface); color:var(--color-muted); font-size:11px; line-height:1.55; }.metric-strip { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:0; margin:18px 0 22px; border-top:1px solid var(--rule-soft); border-bottom:1px solid var(--rule-soft); }.metric-strip > div { min-height:72px; padding:13px 14px; border-left:1px solid var(--rule-soft); background:transparent; }.metric-strip > div:first-child { border-left:0; }.metric-strip span { display:block; color:var(--muted); font-size:12px; }.metric-strip strong { display:block; margin-top:7px; font-size:18px; font-variant-numeric:tabular-nums; }.chart-grid { display:grid; grid-template-columns:minmax(0,1.45fr) minmax(300px,.75fr); gap:18px; }.chart-grid[hidden],.chart-figure[hidden] { display:none; }.chart-figure { min-width:0; margin:0; padding:16px 16px 12px; background:var(--color-surface); border:1px solid var(--rule); }.chart-figure.wide { grid-column:1 / -1; }.chart-figure figcaption { display:flex; align-items:baseline; justify-content:space-between; gap:10px; padding-bottom:13px; font-size:15px; }.chart-figure figcaption span { color:var(--muted); font-size:12px; text-align:right; }.chart { height:300px; contain:paint; }.chart-short { height:270px; }.chart > .plot-container,.chart .svg-container,.chart .main-svg { width:100%!important; height:100%!important; }.chart-empty { display:grid; height:100%; place-items:center; color:var(--muted); background:var(--color-surface); font-size:13px; text-align:center; padding:18px; }
-      .ledger-area { display:grid; grid-template-columns:minmax(0,1.45fr) minmax(280px,.55fr); gap:18px; }.ledger,.trade-inspector { padding:0; background:var(--color-surface); border:1px solid var(--rule); }.ledger h2,.trade-inspector h2 { margin:0; font-size:15px; }.ledger > p { margin:5px 0 12px; color:var(--muted); font-size:12px; line-height:1.5; }.trade-inspector { min-height:280px; padding:16px; }.trade-inspector dl { display:grid; grid-template-columns:92px minmax(0,1fr); gap:10px 12px; margin:0; font-size:13px; line-height:1.55; }.trade-inspector dt { color:var(--muted); }.trade-inspector dd { margin:0; overflow-wrap:anywhere; text-align:right; font-variant-numeric:tabular-nums; }
+      .ledger-area { display:grid; grid-template-columns:minmax(0,1.45fr) minmax(280px,.55fr); gap:18px; }.ledger,.trade-inspector { padding:0; background:var(--color-surface); border:1px solid var(--rule); }.ledger h2,.trade-inspector h2 { margin:0; font-size:15px; }.ledger > p { margin:5px 0 12px; color:var(--muted); font-size:12px; line-height:1.5; }.ledger-pagination { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:10px 12px; border-top:1px solid var(--rule-soft); }.ledger-pagination[hidden] { display:none; }.ledger-pagination span { color:var(--muted); font:12px var(--mono); font-variant-numeric:tabular-nums; }.ledger-pagination div { display:flex; gap:7px; }.ledger-pagination .button { min-height:30px; padding:5px 10px; }.trade-inspector { min-height:280px; padding:16px; }.trade-inspector dl { display:grid; grid-template-columns:92px minmax(0,1fr); gap:10px 12px; margin:0; font-size:13px; line-height:1.55; }.trade-inspector dt { color:var(--muted); }.trade-inspector dd { margin:0; overflow-wrap:anywhere; text-align:right; font-variant-numeric:tabular-nums; }
       .table-wrap { overflow:auto; border:0; border-top:1px solid var(--rule); border-bottom:1px solid var(--rule); border-radius:0; }.ledger .table-wrap { max-height:440px; }.data-table { width:100%; border-collapse:separate; border-spacing:0; font-size:13px; font-variant-numeric:tabular-nums; }.data-table th { position:sticky; top:0; z-index:1; padding:11px 12px; color:var(--color-ink-soft); background:var(--paper); border-bottom:1px solid var(--rule); text-align:left; font-weight:700; white-space:nowrap; }.data-table td { padding:11px 12px; border:0; background:var(--paper); color:var(--color-ink-soft); white-space:nowrap; }.data-table tr[data-index] { cursor:default; }.data-table tr[data-index]:hover td { background:var(--color-blue-gray-soft); }.data-table tr.selected td { background:var(--color-blue-gray-soft); box-shadow:inset 3px 0 var(--color-blue-gray); }#monitorTable td:not(:first-child),#trades td:nth-child(n+3) { text-align:right; }.empty { color:var(--muted)!important; text-align:center!important; }
-      .inspector-panel form { display:grid; gap:0; }.inspector-panel[data-run-layout="true"] { padding:0; overflow:hidden; }.inspector-panel[data-run-layout="true"] .inspector-form { height:100%; min-height:0; grid-template-rows:minmax(0,1fr) auto; }.inspector-scroll { min-height:0; overflow:auto; overflow-x:hidden; padding:20px 18px 0; }.inspector-run-region { display:grid; gap:8px; padding:12px 18px 14px; border-top:1px solid var(--rule); background:var(--surface); }.inspector-run-actions { display:flex; justify-content:flex-end; gap:8px; }.inspector-run-actions .button { min-height:34px; }.inspector-run-actions .button-primary { flex:1 1 auto; }.inspector-panel h2 { margin-top:0; }.inspector-panel .inspector-group { padding:14px 0; }.control-field { display:grid; gap:5px; min-width:0; margin-top:9px; color:var(--color-muted); font-size:12px; font-weight:700; }.control-field input,.control-field select,.control-field textarea { width:100%; min-width:0; min-height:32px; padding:6px 8px; border:1px solid var(--rule); background:var(--color-surface); color:var(--ink); font:12px/1.45 var(--font); }.control-field input[type=number],.control-field input[type=date] { font-family:var(--mono); }.control-field textarea { min-height:68px; resize:vertical; font:12px/1.5 var(--mono); }.control-field small { color:var(--muted); font-size:11px; font-weight:400; line-height:1.55; }.control-field .field-error { color:var(--red-deep); font-weight:650; overflow-wrap:anywhere; }.control-field.boundary-error input,.control-field input[aria-invalid="true"] { border-color:var(--color-brand-red); box-shadow:0 0 0 2px color-mix(in srgb,var(--color-brand-red) 16%,transparent); }.date-recovery { display:grid; gap:5px; margin-top:6px; }.date-recovery .button { width:100%; min-height:32px; }.control-grid { display:grid; grid-template-columns:minmax(0,1fr); gap:8px; }.term-fields { display:grid; grid-template-columns:1fr; gap:8px; }.term-fields .field { display:grid; grid-template-columns:minmax(84px,1fr) minmax(105px,1.15fr); align-items:center; gap:5px; min-width:0; }.term-fields .field.long { grid-template-columns:1fr; }.term-fields .field span { color:var(--color-muted); font-size:12px; font-weight:700; overflow-wrap:anywhere; }.term-fields input,.term-fields select { width:100%; min-width:0; height:32px; padding:0 8px; border:1px solid var(--rule); background:var(--color-surface); color:var(--ink); font:12px/1.45 var(--mono); }.term-fields small { grid-column:1 / -1; color:var(--muted); font:11px/1.55 var(--font); overflow-wrap:anywhere; }.run-zone { display:grid; gap:8px; }.message { min-height:18px; margin:0; color:var(--muted); font-size:11px; line-height:1.5; overflow-wrap:anywhere; }.message.error { color:var(--red-deep); }.message.ok { color:var(--color-ink-soft); }.annual-summary-toggle { margin-top:9px; }.module-note { margin:0; padding:9px 10px; border:1px solid var(--rule); border-radius:9px; background:var(--color-red-surface); color:var(--muted); font-size:11px; line-height:1.55; }.canvas-operation { display:flex; align-items:center; gap:14px; min-width:0; }.operation-progress { display:grid; grid-template-columns:minmax(96px,180px) auto; align-items:center; gap:9px; min-width:0; }.operation-progress[hidden],.run-stop[hidden] { display:none!important; }.operation-progress__track { position:relative; width:clamp(96px,16vw,180px); height:3px; overflow:hidden; border-radius:999px; background:var(--rule-soft); }.operation-progress__bar { position:absolute; inset-block:0; left:0; width:100%; border-radius:inherit; background:var(--color-blue-gray); transform:scaleX(.38); transform-origin:left center; }.operation-progress__track.is-indeterminate .operation-progress__bar { background:linear-gradient(90deg,transparent,var(--color-blue-gray) 35%,var(--color-blue-gray) 65%,transparent); transform:scaleX(1); }.operation-progress__track.is-determinate .operation-progress__bar { background:var(--color-blue-gray); transform:scaleX(var(--operation-progress-scale,0)); transition:transform 180ms ease; }.operation-progress__stage { min-width:5em; color:var(--muted); font-size:11px; line-height:1.35; white-space:nowrap; }
-      .term-control { display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:center; gap:6px; }.term-unit { color:var(--muted); font-size:11px; white-space:nowrap; }.term-tenor { display:grid; grid-template-columns:minmax(0,1fr) 76px; gap:6px; }.fixed-fields { display:grid; gap:8px; }.fixed-field { padding:8px 0; border-bottom:1px solid var(--rule-soft); }.fixed-field:last-child { border-bottom:0; }.fixed-field strong,.fixed-field span { display:block; }.fixed-field span { margin-top:3px; color:var(--muted); font-size:11px; line-height:1.45; overflow-wrap:anywhere; }.window-preview { display:grid; gap:5px; margin-top:10px; padding:10px; border:1px solid var(--rule); border-radius:8px; background:var(--paper); font-size:11px; line-height:1.5; }.window-preview.ready { border-color:var(--color-blue-gray); }.window-preview.invalid { border-color:var(--color-brand-red); }.reset-group { position:sticky; bottom:0; z-index:2; background:var(--paper); border-top:1px solid var(--rule); }
+      .inspector-panel form { display:grid; gap:0; }.inspector-panel[data-run-layout="true"] { padding:0; overflow:hidden; }.inspector-panel[data-run-layout="true"] .inspector-form { height:100%; min-height:0; grid-template-rows:minmax(0,1fr); }.inspector-scroll { min-height:0; overflow:auto; overflow-x:hidden; padding:20px 18px 24px; }.inspector-panel h2 { margin-top:0; }.inspector-panel .inspector-group { padding:14px 0; }.control-field { display:grid; gap:5px; min-width:0; margin-top:9px; color:var(--color-muted); font-size:12px; font-weight:700; }.control-field input,.control-field select,.control-field textarea { width:100%; min-width:0; min-height:32px; padding:6px 8px; border:1px solid var(--rule); background:var(--color-surface); color:var(--ink); font:12px/1.45 var(--font); }.control-field input[type=number],.control-field input[type=date] { font-family:var(--mono); }.control-field textarea { min-height:68px; resize:vertical; font:12px/1.5 var(--mono); }.control-field small { color:var(--muted); font-size:11px; font-weight:400; line-height:1.55; }.control-field .field-error { color:var(--red-deep); font-weight:650; overflow-wrap:anywhere; }.control-field.boundary-error input,.control-field input[aria-invalid="true"] { border-color:var(--color-brand-red); box-shadow:0 0 0 2px color-mix(in srgb,var(--color-brand-red) 16%,transparent); }.date-recovery { display:grid; gap:5px; margin-top:6px; }.date-recovery .button { width:100%; min-height:32px; }.control-grid { display:grid; grid-template-columns:minmax(0,1fr); gap:8px; }.term-fields { display:grid; grid-template-columns:1fr; gap:8px; }.term-fields .field { display:grid; grid-template-columns:minmax(84px,1fr) minmax(105px,1.15fr); align-items:center; gap:5px; min-width:0; }.term-fields .field.long { grid-template-columns:1fr; }.term-fields .field span { color:var(--color-muted); font-size:12px; font-weight:700; overflow-wrap:anywhere; }.term-fields input,.term-fields select { width:100%; min-width:0; height:32px; padding:0 8px; border:1px solid var(--rule); background:var(--color-surface); color:var(--ink); font:12px/1.45 var(--mono); }.term-fields small { grid-column:1 / -1; color:var(--muted); font:11px/1.55 var(--font); overflow-wrap:anywhere; }.message { min-height:18px; margin:0; color:var(--muted); font-size:11px; line-height:1.5; overflow-wrap:anywhere; }.message.error { color:var(--red-deep); }.message.ok { color:var(--color-ink-soft); }.annual-summary-toggle { margin-top:9px; }.module-note { margin:0; padding:9px 10px; border:1px solid var(--rule); border-radius:9px; background:var(--color-red-surface); color:var(--muted); font-size:11px; line-height:1.55; }.canvas-operation { display:flex; align-items:center; gap:14px; min-width:0; }.operation-progress { display:grid; grid-template-columns:minmax(96px,180px) auto; align-items:center; gap:9px; min-width:0; }.operation-progress[hidden],.run-stop[hidden] { display:none!important; }.operation-progress__track { position:relative; width:clamp(96px,16vw,180px); height:3px; overflow:hidden; border-radius:999px; background:var(--rule-soft); }.operation-progress__bar { position:absolute; inset-block:0; left:0; width:100%; border-radius:inherit; background:var(--color-blue-gray); transform:scaleX(.38); transform-origin:left center; }.operation-progress__track.is-indeterminate .operation-progress__bar { background:linear-gradient(90deg,transparent,var(--color-blue-gray) 35%,var(--color-blue-gray) 65%,transparent); transform:scaleX(1); }.operation-progress__track.is-determinate .operation-progress__bar { background:var(--color-blue-gray); transform:scaleX(var(--operation-progress-scale,0)); transition:transform 180ms ease; }.operation-progress__stage { min-width:5em; color:var(--muted); font-size:11px; line-height:1.35; white-space:nowrap; }
+      .term-control { display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:center; gap:6px; }.term-unit { color:var(--muted); font-size:11px; white-space:nowrap; }.term-tenor { display:grid; grid-template-columns:minmax(0,1fr) minmax(96px,max-content); gap:6px; }.fixed-fields { display:grid; gap:8px; }.fixed-field { padding:8px 0; border-bottom:1px solid var(--rule-soft); }.fixed-field:last-child { border-bottom:0; }.fixed-field strong,.fixed-field span { display:block; }.fixed-field span { margin-top:3px; color:var(--muted); font-size:11px; line-height:1.45; overflow-wrap:anywhere; }.window-preview { display:grid; gap:5px; margin-top:10px; padding:10px; border:1px solid var(--rule); border-radius:8px; background:var(--paper); font-size:11px; line-height:1.5; }.window-preview.ready { border-color:var(--color-blue-gray); }.window-preview.invalid { border-color:var(--color-brand-red); }.reset-group { position:sticky; bottom:0; z-index:2; background:var(--paper); border-top:1px solid var(--rule); }
       .term-fields .field,.term-fields .field.long { grid-template-columns:minmax(0,1fr); align-items:start; gap:6px; }.term-fields small { grid-column:auto; }.term-fields input,.term-fields select { font-family:var(--font); }.term-fields input[type=number] { font-family:var(--mono); }
       .hv-bin-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:6px; }.hv-bin-grid label { display:grid; min-width:0; gap:4px; }.hv-bin-grid label > span { color:var(--muted); font-size:10px; font-weight:500; }.hv-bin-grid input[aria-invalid="true"] { border-color:var(--color-brand-red); }
       @media(prefers-reduced-motion:reduce) { .operation-progress__track.is-determinate .operation-progress__bar { transition:none; } }
       @media(max-width:1180px) { .summary-grid { grid-template-columns:repeat(3,minmax(0,1fr)); }.summary-item:nth-child(6n) { border-right:1px solid var(--rule-soft); }.summary-item:nth-child(3n) { border-right:0; }.summary-item:nth-last-child(-n+6) { border-bottom:1px solid var(--rule-soft); }.summary-item:nth-last-child(-n+3) { border-bottom:0; }.chart-grid,.ledger-area { grid-template-columns:1fr; }.chart-figure.wide { grid-column:auto; } }
       @media(max-width:560px) { .backtest-app .canvas-panel { grid-template-rows:auto auto minmax(0,1fr)!important; }.backtest-app .canvas-toolbar { align-items:flex-start; flex-wrap:wrap; gap:8px; height:auto!important; min-height:50px; padding-block:8px; }.canvas-operation { width:100%; align-items:flex-start; flex-direction:column; gap:6px; }.operation-progress { width:100%; grid-template-columns:minmax(0,1fr) auto; }.operation-progress__track { width:100%; }.canvas-toolbar-actions { width:100%; justify-content:flex-end; flex-wrap:wrap; } }
+
     </style>
     <style>
-      .backtest-app .canvas-panel { grid-template-rows: 50px auto minmax(0, 1fr); background: var(--paper); }
+      .backtest-app .canvas-panel { grid-template-rows: auto auto minmax(0, 1fr); background: var(--paper); }
       .backtest-app .canvas-toolbar { background: var(--paper); }
       .backtest-app .canvas-viewport { padding: 0 32px 56px; background: var(--paper); }
       .backtest-app .analysis-sheet { width: min(1320px, 100%); margin: 0 auto; padding: 32px 0 56px; border: 0; background: transparent; box-shadow: none; }
@@ -58,6 +59,13 @@
       .backtest-app .control-field textarea,
       .backtest-app .term-fields input,
       .backtest-app .term-fields select { border-color: var(--color-paper-border); border-radius: 7px; font-family: var(--font); }
+
+      .canvas-panel > .compute-toolbar { display:flex; flex-wrap:wrap; align-items:center; gap:8px 12px; height:auto!important; min-height:50px; padding-block:8px; }
+      .compute-toolbar .canvas-operation { flex:1 1 180px; width:auto; flex-wrap:wrap; gap:8px; }
+      .compute-toolbar .canvas-toolbar-actions { display:flex; flex:0 0 auto; width:auto; margin-left:auto; justify-content:flex-end; gap:8px; }
+      .compute-toolbar .canvas-toolbar-actions .button { min-height:32px; white-space:nowrap; }
+      .compute-toolbar > .message { flex:0 0 100%; min-height:0; margin:0; }
+      .compute-toolbar > .message:empty { display:none; }
     </style>
   </head>
   <body>
@@ -76,17 +84,17 @@
         </aside>
         <div class="panel-resizer" id="libraryResizer" role="separator" tabindex="0" aria-label="调整回测对象面板宽度" aria-orientation="vertical"></div>
         <section class="canvas-panel">
-          <div class="canvas-toolbar"><div class="canvas-operation"><div class="canvas-state"><span class="state-dot" id="stateDot"></span><span id="canvasState">等待运行</span></div><div class="operation-progress" id="operationProgress" hidden><div class="operation-progress__track is-indeterminate" id="operationProgressTrack" role="progressbar" aria-label="回测运行进度"><span class="operation-progress__bar"></span></div><span class="operation-progress__stage" id="operationStage" aria-live="polite"></span></div></div></div>
+          <div class="canvas-toolbar compute-toolbar"><div class="canvas-operation"><div class="canvas-state"><span class="state-dot" id="stateDot"></span><span id="canvasState">等待运行</span></div><div class="operation-progress" id="operationProgress" hidden><div class="operation-progress__track is-indeterminate" id="operationProgressTrack" role="progressbar" aria-label="回测运行进度"><span class="operation-progress__bar"></span></div><span class="operation-progress__stage" id="operationStage" aria-live="polite"></span></div></div><div class="canvas-toolbar-actions"><button class="button button-primary" id="run" type="submit" form="form" disabled>运行</button><button class="button run-stop" id="stopRun" type="button" disabled>停止运行</button></div><p class="message" id="message" role="status" aria-live="polite"></p></div>
           <div id="noticeArea"></div>
           <div class="canvas-viewport"><article class="analysis-sheet">
-            <header class="sheet-heading"><div><h1 id="resultTitle">尚无回测结果</h1><p id="resultCopy">请先选择产品并确认历史数据。</p></div></header>
+            <header class="sheet-heading"><div><h1 id="resultTitle">尚无回测结果</h1><p id="resultCopy">选择产品并确认数据窗口后运行。</p></div></header>
             <section class="summary-grid"><div class="summary-item primary"><span>有效收益样本</span><strong id="sampleCount">未运行</strong></div><div class="summary-item"><span>历史正收益样本占比</span><strong id="winRate">未运行</strong></div><div class="summary-item"><span>平均合同结算收益率</span><strong id="averageReturn">未运行</strong></div><div class="summary-item"><span>中位合同结算收益率</span><strong id="medianReturn">未运行</strong></div><div class="summary-item"><span>正收益样本数</span><strong id="positiveCount">未运行</strong></div><div class="summary-item"><span>持平样本数</span><strong id="zeroCount">未运行</strong></div><div class="summary-item"><span>负收益样本数</span><strong id="negativeCount">未运行</strong></div><div class="summary-item"><span>最低合同结算收益率</span><strong id="maxLoss">未运行</strong></div><strong id="reportProfile" hidden>未运行</strong></section>
-            <p class="profile-note" id="profileNote">合同结算收益率已包含OptionReg声明的合同现金流；客户净收益率未建模的仅为资金成本、交易费、税费、对冲和滑点。</p>
-            <section class="report-section"><h2>一、结算结果</h2><p>收益分布和结算路径均由本次逐笔合同结算收益率汇总，统一按百分比展示。</p><div class="chart-grid"><figure class="chart-figure"><figcaption><strong>合同结算收益率分布</strong><span id="returnCopy">百分比</span></figcaption><div id="returnChart" class="chart"><div class="chart-empty">运行后展示合同结算收益率分布</div></div></figure><figure class="chart-figure"><figcaption><strong id="outcomeTitle">结算路径分布</strong><span id="outcomeCopy">按合同路径与分段统计</span></figcaption><div id="outcomeChart" class="chart"><div class="chart-empty">运行后展示结算路径分布</div></div></figure></div><div class="metric-strip" id="structureMetrics"><div><span>结构专属指标</span><strong>未运行</strong></div></div><div class="chart-grid"><figure class="chart-figure"><figcaption><strong id="structureTitle">结构诊断</strong><span id="structureCopy">按产品结构选择指标</span></figcaption><div id="structureChart" class="chart chart-short"><div class="chart-empty">运行后按结构展示适用指标</div></div></figure><figure class="chart-figure"><figcaption><strong>分支覆盖</strong><span id="coverageCopy">已观察结果不代表全部情景</span></figcaption><div id="coverageChart" class="chart chart-short"><div class="chart-empty">运行后展示合同分支覆盖</div></div></figure></div></section>
+            <p class="profile-note" id="profileNote">合同结算收益率按合同约定收支计算，不含外部资金与交易成本。</p>
+            <section class="report-section"><h2>一、结算结果</h2><p>按逐笔合同结算收益率汇总，单位为%。</p><div class="chart-grid"><figure class="chart-figure"><figcaption><strong>合同结算收益率分布</strong><span id="returnCopy">百分比</span></figcaption><div id="returnChart" class="chart"><div class="chart-empty">运行后展示合同结算收益率分布</div></div></figure><figure class="chart-figure"><figcaption><strong id="outcomeTitle">结算路径分布</strong><span id="outcomeCopy">按合同路径与分段统计</span></figcaption><div id="outcomeChart" class="chart"><div class="chart-empty">运行后展示结算路径分布</div></div></figure></div><div class="metric-strip" id="structureMetrics"><div><span>结构专属指标</span><strong>未运行</strong></div></div><div class="chart-grid"><figure class="chart-figure"><figcaption><strong id="structureTitle">结构诊断</strong><span id="structureCopy">按产品结构选择指标</span></figcaption><div id="structureChart" class="chart chart-short"><div class="chart-empty">运行后按结构展示适用指标</div></div></figure><figure class="chart-figure"><figcaption><strong>分支覆盖</strong><span id="coverageCopy">已观察结果不代表全部情景</span></figcaption><div id="coverageChart" class="chart chart-short"><div class="chart-empty">运行后展示合同分支覆盖</div></div></figure></div></section>
             <section class="report-section" id="entryHvGroupSection" hidden><h2>入场前波动率分组</h2><p id="entryHvGroupCopy">按入场日前N个交易日的前复权收盘价计算年化波动率；多标的使用其中最高值分组。</p><div class="table-wrap"><table class="data-table"><thead><tr><th>入场前年化波动率区间</th><th>样本数</th><th>正收益样本</th><th>历史正收益样本占比</th><th>平均合同结算收益率</th><th>中位合同结算收益率</th><th>最低合同结算收益率</th><th>最高合同结算收益率</th></tr></thead><tbody id="entryHvGroupTable"></tbody></table></div></section>
-            <section class="report-section"><h2>二、路径事件与时间</h2><p>仅展示合同实际定义的监控事件。时间统计按每笔真实交易日路径与ACT/365日期计算。</p><div class="chart-grid"><figure class="chart-figure"><figcaption><strong>事件触发比例</strong><span>不含未定义事件</span></figcaption><div id="eventChart" class="chart"><div class="chart-empty">本结构如有路径事件，运行后展示</div></div></figure><figure class="chart-figure"><figcaption><strong id="timingTitle">事件时间分布</strong><span id="timingCopy">按实际发生月份统计</span></figcaption><div id="timingChart" class="chart"><div class="chart-empty">本结构如有时间事件，运行后展示</div></div></figure></div><div class="table-wrap" style="margin-top:16px"><table class="data-table"><thead><tr><th>路径数值指标</th><th>均值</th><th>中位数</th><th>最小值</th><th>最大值</th></tr></thead><tbody id="monitorTable"><tr><td colspan="5" class="empty">本结构没有数值型路径监控指标</td></tr></tbody></table></div></section>
+            <section class="report-section"><h2>二、路径事件与时间</h2><p>仅统计合同定义的事件，时间按交易日路径与ACT/365计算。</p><div class="chart-grid"><figure class="chart-figure"><figcaption><strong>事件触发比例</strong><span>不含未定义事件</span></figcaption><div id="eventChart" class="chart"><div class="chart-empty">本结构如有路径事件，运行后展示</div></div></figure><figure class="chart-figure"><figcaption><strong id="timingTitle">事件时间分布</strong><span id="timingCopy">按实际发生月份统计</span></figcaption><div id="timingChart" class="chart"><div class="chart-empty">本结构如有时间事件，运行后展示</div></div></figure></div><div class="table-wrap" style="margin-top:16px"><table class="data-table"><thead><tr><th>路径数值指标</th><th>均值</th><th>中位数</th><th>最小值</th><th>最大值</th></tr></thead><tbody id="monitorTable"><tr><td colspan="5" class="empty">本结构没有数值型路径监控指标</td></tr></tbody></table></div></section>
             <section class="report-section"><h2>三、年度分化</h2><p id="yearCopy">按入场年份统计样本数和平均合同结算收益率。</p><div class="chart-grid"><figure class="chart-figure wide"><figcaption><strong id="yearTitle">年度合同结算收益统计</strong><span>入场年份口径</span></figcaption><div id="yearChart" class="chart chart-short"><div class="chart-empty">运行后展示年度统计</div></div></figure></div></section>
-            <section class="report-section"><h2>四、逐笔结算与审计</h2><p id="ledgerCopy">点击交易行查看路径事件与合同结算收益率。</p><div class="ledger-area"><section class="ledger"><div class="table-wrap"><table class="data-table"><thead><tr><th>入场日</th><th>出场日</th><th>路径/分段</th><th>合同结算收益率</th></tr></thead><tbody id="trades"><tr><td colspan="4" class="empty">运行后展示逐笔样本</td></tr></tbody></table></div></section><aside class="trade-inspector"><h2>逐笔详情</h2><div id="tradeDetail" class="hint">选择一笔交易后，显示路径事件和公开收益口径。</div></aside></div><details class="audit-details"><summary>审计记录：合同、数据与运行口径</summary><div class="table-wrap"><table class="data-table"><thead><tr><th>审计字段</th><th>本次取值</th></tr></thead><tbody id="auditMeta"><tr><td colspan="2" class="empty">运行后展示合同和数据审计信息</td></tr></tbody></table></div></details></section>
+            <section class="report-section"><h2>四、逐笔结算与审计</h2><p id="ledgerCopy">点击交易行查看路径事件与合同结算收益率。</p><div class="ledger-area"><section class="ledger"><div class="table-wrap"><table class="data-table"><thead><tr><th>入场日</th><th>出场日</th><th>路径/分段</th><th>合同结算收益率</th></tr></thead><tbody id="trades"><tr><td colspan="4" class="empty">运行后展示逐笔样本</td></tr></tbody></table></div><nav class="ledger-pagination" id="tradePagination" aria-label="逐笔样本分页" hidden><span id="tradePageRange">0-0/0</span><div><button class="button" id="tradePrevPage" type="button" disabled>上一页</button><button class="button" id="tradeNextPage" type="button" disabled>下一页</button></div></nav></section><aside class="trade-inspector"><h2>逐笔详情</h2><div id="tradeDetail" class="hint">选择交易后显示路径事件和合同结算收益率。</div></aside></div><details class="audit-details"><summary>审计记录：合同、数据与运行口径</summary><div class="table-wrap"><table class="data-table"><thead><tr><th>审计字段</th><th>本次取值</th></tr></thead><tbody id="auditMeta"><tr><td colspan="2" class="empty">运行后展示合同和数据审计信息</td></tr></tbody></table></div></details></section>
           </article></div>
         </section>
         <div class="panel-resizer" id="inspectorResizer" role="separator" tabindex="0" aria-label="调整回测参数面板宽度" aria-orientation="vertical"></div>
@@ -96,7 +104,7 @@
             <p class="group-title">历史数据与可用窗口</p>
             <label class="control-field"><span>标的代码</span><input id="underlyings" autocomplete="off" spellcheck="false" autocorrect="off" autocapitalize="off" aria-describedby="underlyingHint" required><small id="underlyingHint">选择产品后填写标的代码</small></label>
             <div class="control-grid"><label class="control-field"><span>入场起始日</span><input id="startDate" type="text" inputmode="numeric" autocomplete="off" placeholder="yyyy/mm/dd" data-date-label="入场起始日" aria-describedby="startDateHint startDateFeedback"><small id="startDateHint">留空时由可用行情自动确定。</small><small class="field-error" id="startDateFeedback" role="alert"></small></label><div><label class="control-field" id="endDateField"><span>入场截止日</span><input id="endDate" type="text" inputmode="numeric" autocomplete="off" placeholder="yyyy/mm/dd" data-date-label="入场截止日" aria-describedby="endDateHint endDateFeedback"><small id="endDateHint">仅纳入能够完整回放合同期限的入场日。</small><small class="field-error" id="endDateFeedback" role="alert"></small></label><div class="date-recovery"><button class="button" id="useSuggestedEndDate" type="button" hidden>使用可用截止日</button></div></div></div>
-            <p class="hint">留空时按真实行情、受控交易日历和完整合同期限自动确定最近三年可用入场窗口；所有样本仅回放完整合同期限。</p>
+            <details class="module-advanced"><summary>窗口规则</summary><div class="module-advanced-panel"><p class="hint">日期留空时，根据行情、交易日历和合同期限确定最近三年可用窗口。</p></div></details>
             <div class="window-preview" id="windowPreview" aria-live="polite">修改合同、标的或日期后将重新检查完整期限可用窗口。</div>
           </section>
           <section class="inspector-group module-parameter-section"><p class="group-title">入场抽样规则</p>
@@ -111,7 +119,7 @@
               <div class="control-field"><span>分组边界，%</span><div class="hv-bin-grid" id="entryHvBins" aria-describedby="entryHvBinsHint"><label><span>边界1</span><input class="entry-hv-bin" id="entryHvBin1" type="number" min="0" step="any" inputmode="decimal" placeholder="20"></label><label><span>边界2</span><input class="entry-hv-bin" id="entryHvBin2" type="number" min="0" step="any" inputmode="decimal" placeholder="40"></label><label><span>边界3</span><input class="entry-hv-bin" id="entryHvBin3" type="number" min="0" step="any" inputmode="decimal" placeholder="可选"></label></div><small id="entryHvBinsHint">每个输入框填写一个递增百分比；多标的按入场前最高年化波动率分组。</small></div>
             </div></details>
           </section>
-          </div><footer class="inspector-run-region run-zone"><div class="inspector-run-actions"><button class="button button-danger run-stop" type="button" id="stopRun" hidden>停止运行</button><button class="button button-primary" type="submit" id="run" disabled>运行回测</button></div><p class="message" id="message" role="status" aria-live="polite"></p></footer>
+          </div>
         </form></aside>
       </main>
     </div>
@@ -122,7 +130,8 @@
       const designerColor = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
       const plotly = window.OptionHelperPlotlyCharts;
       const chartIds = ['returnChart','outcomeChart','structureChart','coverageChart','eventChart','timingChart','yearChart'];
-      const state = { products: [], trades: [], requestRevision: 0, operationActive: false, operationId: null, operationController: null, cancellationRequested: false, connectionRecovering: false, lastResult: null, moduleVisible: true, pendingChartRender: false, previewStatus: 'stale', previewRevision: 0, previewTimer: null, previewController: null };
+      const state = { products: [], trades: [], tradePage: 0, requestRevision: 0, operationActive: false, operationId: null, operationController: null, cancellationRequested: false, connectionRecovering: false, lastResult: null, moduleVisible: document.documentElement?.dataset?.optionhelperModuleActive !== 'false', pendingChartRender: false, previewStatus: 'stale', previewRevision: 0, previewTimer: null, previewController: null, resetOnActivation: false, moduleResetLoading: false };
+      const tradePageSize = 100;
       const appHostBound = /(?:^|[?&])host=optdesk(?:&|$)/.test(location.search||'') && Boolean(window.parent && window.parent!==window);
       const numberType = new Set(['number', 'integer']);
       const fmt = (value, digits=6) => value === null || value === undefined ? '不适用' : typeof value === 'number' ? value.toLocaleString('zh-CN',{maximumFractionDigits:digits}) : String(value);
@@ -145,19 +154,101 @@
       function setOperationInputsLocked(locked) { const controls=[$('productId'),$('refreshCatalog'),...document.querySelectorAll('#form input,#form select,#form textarea,#form button')].filter(control=>control&&!['run','stopRun'].includes(control.id)); controls.forEach(control=>{if(locked){if(!Object.prototype.hasOwnProperty.call(control.dataset,'operationDisabled'))control.dataset.operationDisabled=control.disabled?'true':'false';control.disabled=true;return;}if(Object.prototype.hasOwnProperty.call(control.dataset,'operationDisabled')){control.disabled=control.dataset.operationDisabled==='true';delete control.dataset.operationDisabled;}});if(!locked){setContractInputsLocked();syncEntryRuleControl();} }
       function trustedProgress(value) { if(typeof value!=='number'||!Number.isFinite(value))return null;return value>=0&&value<=100?value:null; }
       function setOperationProgress(label,{active=true,progress=null,terminal=false}={}) { const wrapper=$('operationProgress');const track=$('operationProgressTrack');const normalized=trustedProgress(progress);wrapper.hidden=!active||terminal;$('operationStage').textContent=terminal?'':label||'';track.setAttribute('aria-valuetext',label||'运行中');track.classList.toggle('is-terminal',terminal);if(normalized===null){track.classList.add('is-indeterminate');track.classList.remove('is-determinate');track.removeAttribute('aria-valuenow');track.removeAttribute('aria-valuemin');track.removeAttribute('aria-valuemax');track.style?.setProperty?.('--operation-progress-scale','');}else{track.classList.remove('is-indeterminate');track.classList.add('is-determinate');track.setAttribute('aria-valuemin','0');track.setAttribute('aria-valuemax','100');track.setAttribute('aria-valuenow',String(Math.round(normalized)));track.style?.setProperty?.('--operation-progress-scale',String(normalized/100));} }
-      function syncOperationControls() { const active=state.operationActive;const stopping=state.cancellationRequested;const stop=$('stopRun');stop.hidden=!active;stop.disabled=!active||stopping;stop.textContent=stopping?'正在停止':'停止运行';setOperationInputsLocked(active);updateRunAvailability(); }
+      function syncOperationControls() { const active=state.operationActive;const locked=active||state.moduleResetLoading;const stopping=state.cancellationRequested;const stop=$('stopRun');stop.hidden=false;stop.disabled=!active||stopping;stop.textContent=stopping?'正在停止':'停止运行';setOperationInputsLocked(locked);updateRunAvailability(); }
       function requestOperationStop(requestedId='') { if(!state.operationActive||state.cancellationRequested)return;if(requestedId&&state.operationId&&requestedId!==state.operationId)return;state.cancellationRequested=true;syncOperationControls();setOperationProgress('正在停止');setState('正在停止','edit');$('message').className='message';$('message').textContent='正在等待后台确认停止…';state.operationController?.abort(); }
       function operationWasCancelled(error) { return state.cancellationRequested&&['cancelled','operation_cancelled','canceled'].includes(String(error?.failureCode||error?.code||'')); }
       function validateUnderlyingCount({raise=false}={}) { const row=selected(); if(!row) return false; const expected=expectedUnderlyingCount(row); const actual=underlyingValues().length; const valid=actual===expected; $('underlyings').setAttribute('aria-invalid',valid?'false':'true'); if(!valid&&raise) throw new Error(expected===1?'该产品必须填写1个标的代码':`该产品必须填写${expected}个标的代码，并以英文逗号分隔`); return valid; }
-      function updateRunAvailability() { const enabled=Boolean(selected())&&appHostBound&&!state.operationActive&&state.previewStatus==='ready'&&validateUnderlyingCount()&&validateHvDependency(); $('run').disabled=!enabled; }
+      function updateRunAvailability() { const enabled=Boolean(selected())&&appHostBound&&!state.operationActive&&!state.moduleResetLoading&&state.previewStatus==='ready'&&validateUnderlyingCount()&&validateHvDependency(); $('run').disabled=!enabled; }
       function notice(title, body='', kind='') { $('noticeArea').innerHTML=`<div class="notice ${kind}"><strong>${escapeHtml(title)}</strong>${body?` <span>${escapeHtml(body)}</span>`:''}</div>`; }
       function clearNotice() { $('noticeArea').replaceChildren(); }
       function clearDateFeedback() { ['startDate','endDate'].forEach(id=>{const input=$(id);const feedback=$(`${id}Feedback`);input.removeAttribute('aria-invalid');feedback.textContent='';}); }
       function setDateFeedback(id,message) { const input=$(id);const feedback=$(`${id}Feedback`);input.setAttribute('aria-invalid','true');feedback.textContent=message; }
       function readBacktestDate(id,label) { try { return window.OptionHelperDateInput.read($(id),label); } catch(error) { setDateFeedback(id,error.message); throw error; } }
-      function clearSuggestedEndDate() { const button=$('useSuggestedEndDate'); button.hidden=true; button.dataset.value=''; button.removeAttribute('title'); $('endDateField').classList.remove('boundary-error'); }
-      function showSuggestedEndDate(value,message='当前截止日无法覆盖完整合同期限。') { let normalized; try { normalized=window.OptionHelperDateInput.toIso(value,'可用截止日'); } catch(error) { clearSuggestedEndDate(); return; } if(!normalized){clearSuggestedEndDate();return;} const button=$('useSuggestedEndDate'); button.dataset.value=normalized; button.title=`填入${window.OptionHelperDateInput.toDisplay(normalized)}，不会自动运行`; button.hidden=false; $('endDateField').classList.add('boundary-error'); setDateFeedback('endDate',message); }
-      function moduleError(data,fallback) { const failure=data&&typeof data==='object'?data:{}; const message=failure.message||fallback; const boundary=failure.requested_end?`请求截止日${failure.requested_end}；行情截止${failure.market_as_of_session||'未知'}；最新完整入场日${failure.latest_complete_entry_session||'无'}。`:''; const error=new Error([message,boundary,failure.next_step].filter(Boolean).join(' ')); error.failureCode=failure.failure_code||failure.error_code||(typeof failure.error==='string'?failure.error:''); error.stage=failure.stage||''; error.suggestedEndDate=failure.suggested_end_date||null; error.diagnosticId=failure.diagnostic_id||null; return error; }
+      function isDateBoundaryFailure(failure={}) {
+        const code=failure.failure_code||failure.error_code||(typeof failure.error==='string'?failure.error:'');
+        if(!code)return Boolean(failure.latest_complete_entry_session||failure.suggested_end_date);
+        return ['no_complete_entry_session','no_complete_entry_session_in_automatic_window','invalid_entry_window','entry_window_exceeds_complete_history','explicit_entry_incomplete','explicit_entry_outside_requested_window','incomplete_entry_policy_rejected'].includes(code);
+      }
+      function dateFailureSummary(failure,fallback='当前输入预检未通过。') {
+        let detail=failure.message||fallback;
+        if(failure.next_step&&!detail.includes(failure.next_step))detail+=failure.next_step;
+        if(!isDateBoundaryFailure(failure))return detail;
+        const facts=[['行情截止日',failure.market_as_of_session],['最新完整入场日',failure.latest_complete_entry_session]];
+        facts.forEach(([label,value])=>{if(value&&!detail.includes(value))detail+=`${label}${value}。`;});
+        const start=failure.suggested_start_date,end=failure.suggested_end_date;
+        if(start&&end&&!detail.includes(`${start}至${end}`))detail+=`建议入场区间为${start}至${end}。`;
+        else if(end&&!detail.includes(end))detail+=`建议截止日为${end}。`;
+        return detail;
+      }
+      function showDateFailure(failure={},message='') {
+        const dates=window.OptionHelperDateInput;
+        const iso=value=>{try{return dates.toIso(value);}catch{return null;}};
+        const start=iso($('startDate').value),end=iso($('endDate').value);
+        const dateBoundary=isDateBoundaryFailure(failure);
+        const limit=dateBoundary?(iso(failure.latest_complete_entry_session)||iso(failure.suggested_end_date)):null;
+        const feedback={};
+        ['startDate','endDate'].forEach(id=>{if($(id).value.trim()&&!iso($(id).value))feedback[id]='请输入有效日期，格式为yyyy/mm/dd。';});
+        if(start&&end&&start>end){
+          feedback.startDate=`起始日不得晚于截止日${dates.toDisplay(end)}。`;
+          feedback.endDate=`截止日不得早于起始日${dates.toDisplay(start)}。`;
+        }else if(limit){
+          if(start&&start>limit)feedback.startDate=`起始日不得晚于${dates.toDisplay(limit)}。`;
+          if(end&&end>limit)feedback.endDate=`截止日不得晚于${dates.toDisplay(limit)}。`;
+        }
+        clearDateFeedback();
+        Object.entries(feedback).forEach(([id,copy])=>setDateFeedback(id,copy));
+        if(dateBoundary&&failure.suggested_end_date)showSuggestedEndDate(failure.suggested_end_date,failure.suggested_start_date);
+        else clearSuggestedEndDate();
+      }
+      function clearSuggestedEndDate() {
+        const button=$('useSuggestedEndDate');
+        button.hidden=true;
+        button.dataset.value='';
+        button.dataset.startValue='';
+        delete button.dataset.previewRevision;
+        button.textContent='采用建议日期';
+        button.removeAttribute('title');
+        $('endDateField').classList.remove('boundary-error');
+      }
+      function showSuggestedEndDate(value,startValue=null) {
+        const dates=window.OptionHelperDateInput;
+        let end,start;
+        try {
+          end=dates.toIso(value,'建议截止日');
+          start=dates.toIso(startValue,'建议起始日');
+          const effectiveStart=start||dates.toIso($('startDate').value,'入场起始日');
+          if(!end||(effectiveStart&&effectiveStart>end)){clearSuggestedEndDate();return;}
+        } catch(error) { clearSuggestedEndDate();return; }
+        const button=$('useSuggestedEndDate');
+        button.dataset.value=end;
+        button.dataset.startValue=start||'';
+        button.dataset.previewRevision=String(state.previewRevision);
+        button.textContent=start?'采用建议起止日':'采用建议截止日';
+        const range=start?`${dates.toDisplay(start)}至${dates.toDisplay(end)}`:dates.toDisplay(end);
+        button.title=`填入${range}，仅重新预检，不会自动运行`;
+        button.hidden=false;
+        $('endDateField').classList.toggle('boundary-error',$('endDate').getAttribute('aria-invalid')==='true');
+      }
+      function applySuggestedDates() {
+        const button=$('useSuggestedEndDate');
+        if(button.hidden||state.operationActive)return;
+        if(button.dataset.previewRevision!==String(state.previewRevision)){clearSuggestedEndDate();return;}
+        const dates=window.OptionHelperDateInput;
+        let start,end;
+        try {
+          start=dates.toIso(button.dataset.startValue,'建议起始日');
+          end=dates.toIso(button.dataset.value,'建议截止日');
+          const effectiveStart=start||dates.toIso($('startDate').value,'入场起始日');
+          if(!end||(effectiveStart&&effectiveStart>end)){clearSuggestedEndDate();return;}
+        } catch(error) { clearSuggestedEndDate();return; }
+        if(start)dates.set($('startDate'),start,'入场起始日');
+        dates.set($('endDate'),end,'入场截止日');
+        clearSuggestedEndDate();
+        clearDateFeedback();
+        $('endDate').focus();
+        schedulePreview();
+      }
+      function moduleError(data,fallback) { const failure=data&&typeof data==='object'?data:{}; const message=failure.message||fallback; const boundary=failure.requested_end?`请求截止日${failure.requested_end}；行情截止${failure.market_as_of_session||'未知'}；最新完整入场日${failure.latest_complete_entry_session||'无'}。`:''; const error=new Error([message,boundary,failure.next_step].filter(Boolean).join(' ')); error.failureCode=failure.failure_code||failure.error_code||(typeof failure.error==='string'?failure.error:''); error.stage=failure.stage||''; error.suggestedEndDate=failure.suggested_end_date||null; error.suggestedStartDate=failure.suggested_start_date||null; error.diagnosticId=failure.diagnostic_id||null; error.dateFailure=failure; return error; }
       function escapeHtml(text) { return String(text).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;'); }
       const mathHtml = value => window.OptionHelperModulePresentation?.formatMath(value) || escapeHtml(value);
       const termValueLabels={true:'是',false:'否',European:'仅到期日可行权',American:'存续期内可行权',Bermudan:'约定观察日可行权',cash:'现金结算',physical:'实物交割',close:'收盘价',open:'开盘价',high:'最高价',low:'最低价'};
@@ -165,7 +256,14 @@
       const fixedObservationRuleKeys=new Set(['O_KO','O_KI','Oc','Otouch','Orange','Ovar','Ohedge','Oreset']);
       function renderSemanticRules(row){const rules=(row?.fixed_fields||[]).filter(field=>fixedObservationRuleKeys.has(field.key));const container=$('semanticRules');container.hidden=!rules.length;container.innerHTML=rules.map(field=>`<div class="semantic-rule"><span>${escapeHtml(field.label)}</span><strong>${escapeHtml(termValueLabel(field.default_value))}</strong></div>`).join('');}
       function visibleFieldSymbol(field){const shared=window.OptionHelperModulePresentation?.fieldSymbol?.(field);if(shared!==undefined)return shared;const symbol=String(field?.symbol||'').trim();const normalize=value=>String(value||'').trim().replace(/[\s-]+/g,'_').replace(/_+/g,'_').toLowerCase();return symbol&&normalize(symbol)!==normalize(field?.key)?symbol:'';}
-      function inputValue(value, field={}) { if(field.value_encoding==='percentage_input_decimal_internal'&&Number.isFinite(Number(value)))return String(Number(value)*100); return Array.isArray(value) || (value && typeof value === 'object') ? JSON.stringify(value) : String(value ?? ''); }
+      function inputValue(value, field={}) {
+        if (field.value_encoding === 'percentage_input_decimal_internal' && Number.isFinite(Number(value))) {
+          // 按十进制移位，避免二进制乘法尾差，也不截断合法小数精度。
+          const [coefficient, exponent = '0'] = String(Number(value)).split('e');
+          return String(Number(`${coefficient}e${Number(exponent) + 2}`));
+        }
+        return Array.isArray(value) || (value && typeof value === 'object') ? JSON.stringify(value) : String(value ?? '');
+      }
       function fieldUnit(field){return String(field.display_unit||'').trim();}
       function buildInput(field) { const domain=field.domain || {}; const enumValues=domain.enum; const symbol=visibleFieldSymbol(field); const unit=fieldUnit(field); const label=escapeHtml(field.label||'产品条款')+(symbol?` <span class="field-symbol">${mathHtml(symbol)}</span>`:''); const key=escapeHtml(field.key); const type=escapeHtml(field.value_type); const encoding=escapeHtml(field.value_encoding||'native'); const long=field.key.length>13 || Array.isArray(field.default_value) || (field.default_value && typeof field.default_value==='object'); let control;
         if (field.value_type==='boolean') control=`<select class="term-input" data-key="${key}" data-type="boolean"><option value="true" ${field.default_value===true?'selected':''}>是</option><option value="false" ${field.default_value===false?'selected':''}>否</option></select>`;
@@ -177,7 +275,7 @@
         return `<label class="field ${long?'long':''}"><span title="${escapeHtml(detail)}">${label}</span>${control}${dependency}${tenor}</label>`;
       }
       function renderProductPaths(row) { const paths=row?.path_summaries||[]; $('pathCount').textContent=row?String(row.path_count??paths.length):'--'; $('pathList').innerHTML=!row?'<li class="preview">选择产品后显示</li>':paths.map(path=>`<li><span class="scenario-title">${escapeHtml(path.title)}</span><span class="scenario-condition">${mathHtml(path.condition)}</span></li>`).join('')||'<li class="preview">该产品未登记收益路径</li>'; }
-      function renderProduct() { const row=selected(); renderProductPaths(row); if(!row){$('termFields').innerHTML='<p class="hint">请选择产品后读取条款字段。</p>';renderSemanticRules(null);$('bindingCard').innerHTML='<span>尚未选择产品</span>';$('underlyingHint').textContent='选择产品后填写标的代码';$('underlyings').placeholder='';$('inspectorTitle').textContent='回测设置';invalidatePreview();return;} const expected=expectedUnderlyingCount(row); const multi=expected>1; $('underlyingHint').textContent=multi?`必须填写${expected}个标的代码，以英文逗号分隔`:'必须填写1个标的代码'; $('underlyings').placeholder=multi?'例如000905.SH,000300.SH':'例如000905.SH'; $('termFields').innerHTML=(row.payoff_fields || []).map(buildInput).join('') || '<p class="hint">该产品暂无可调整条款。</p>';renderSemanticRules(row); const pathCount=Number(row.path_count ?? row.path_summaries?.length ?? 0); $('bindingCard').innerHTML=`<strong>${escapeHtml(row.product_id)} ${escapeHtml(row.canonical_name)}</strong><span>${multi?'双标的结构':'单标的结构'}；${pathCount}条产品路径。</span>`; $('inspectorTitle').textContent='回测设置'; schedulePreview(); }
+      function renderProduct() { const row=selected(); renderProductPaths(row); if(!row){$('termFields').innerHTML='<p class="hint">请选择产品后读取条款字段。</p>';renderSemanticRules(null);$('bindingCard').innerHTML='<span>尚未选择产品</span>';$('underlyingHint').textContent='选择产品后填写标的代码';$('underlyings').placeholder='';$('inspectorTitle').textContent='回测设置';invalidatePreview();return;} const expected=expectedUnderlyingCount(row); const multi=expected>1; $('underlyingHint').textContent=multi?`必须填写${expected}个标的代码，以英文逗号分隔`:'必须填写1个标的代码'; $('underlyings').placeholder=multi?'例如000905.SH,000300.SH':'例如000905.SH'; $('termFields').innerHTML=(row.payoff_fields || []).map(buildInput).join('') || '<p class="hint">该产品暂无可调整条款。</p>';renderSemanticRules(row); const tenorField=(row.payoff_fields||[]).find(field=>field.key==='T'); if(tenorField)window.OptionHelperModulePresentation?.initializeTenorInput?.(fields().find(field=>field.dataset.key==='T'),tenorField.default_value); const pathCount=Number(row.path_count ?? row.path_summaries?.length ?? 0); $('bindingCard').innerHTML=`<strong>${escapeHtml(row.product_id)} ${escapeHtml(row.canonical_name)}</strong><span>${multi?'双标的结构':'单标的结构'}；${pathCount}条产品路径。</span>`; $('inspectorTitle').textContent='回测设置'; schedulePreview(); }
       function readTermValues() { const row=selected(); const values=Object.fromEntries((row?.payoff_fields||[]).map(field=>[field.key,field.default_value])); for(const field of fields()){const raw=field.value.trim(); if(!raw) continue; const type=field.dataset.type; let value; if(numberType.has(type)){value=Number(raw); if(!Number.isFinite(value)) throw new Error(`${field.dataset.key}必须为数值`);if(field.dataset.key==='T'){const unit=field.closest?.('.term-tenor')?.querySelector?.('.term-tenor-unit')?.value||'year';value=unit==='month'?value/12:unit==='day'?value/365:value;}else if(field.dataset.encoding==='percentage_input_decimal_internal')value/=100;} else if(type==='boolean') value=raw==='true'; else if(raw.startsWith('[')||raw.startsWith('{')) { try { value=JSON.parse(raw); } catch(error) { throw new Error(`${field.dataset.key}不是有效JSON`); } } else value=raw; values[field.dataset.key]=value; } return values; }
       function parseTermOverrides(values=readTermValues()) { const row=selected(); const defaults=new Map((row?.payoff_fields||[]).map(field=>[field.key,field.default_value])); return Object.fromEntries(Object.entries(values).filter(([key,value])=>!sameValue(value,defaults.get(key)))); }
       function parseEntryDates() { return $('entryDates').value.split(/\s|,/).map(value=>value.trim()).filter(Boolean).map(value=>window.OptionHelperDateInput.toIso(value,'指定入场日')); }
@@ -188,9 +286,34 @@
       function contractIdentity() { validateUnderlyingCount({raise:true}); return {contract_id:$('contractId').value.trim() || undefined, underlyings:underlyingValues()}; }
       function config() { clearDateFeedback(); const startDate=readBacktestDate('startDate','入场起始日');const endDate=readBacktestDate('endDate','入场截止日');if(startDate&&endDate&&startDate>endDate){const message='入场起始日不得晚于入场截止日。';setDateFeedback('startDate',message);setDateFeedback('endDate',message);throw new Error(message);}const entryRule=$('entryRule').value; const entryDates=entryRule==='explicit'?parseEntryDates():[]; const hvWindow=$('entryHvWindow').value; const hvBins=hvBinValues(); if(entryRule==='explicit'&&!entryDates.length) throw new Error('选择指定日期后，请至少填写一个入场日'); validateHvDependency({raise:true}); if(hvBins.length&&(!hvBins.every(value=>Number.isFinite(value)&&value>0)||hvBins.some((value,index)=>index&&value<=hvBins[index-1]))) throw new Error('波动率分组边界必须为递增的正百分比'); return {start_date:startDate,end_date:endDate,entry_rule:entryRule,entry_dates:entryRule==='explicit'?entryDates:null,complete_tenor:true,missing_data_policy:$('missingPolicy').value,alignment_policy:'intersection',statistics_frequency:$('showAnnualSummary').checked?'year':'all',entry_hv_window:hvWindow?Number(hvWindow):null,entry_hv_bins:hvBins.length?hvBins:null}; }
       function requestPayload(){const identity=contractIdentity();const termValues=readTermValues();return {product_id:$('productId').value,identity,term_overrides:parseTermOverrides(termValues),backtest_config:config()};}
-      function invalidatePreview(message='输入已变化，正在重新检查完整期限窗口。'){state.previewRevision+=1;state.previewStatus='stale';state.previewController?.abort();state.previewController=null;clearTimeout(state.previewTimer);$('windowPreview').className='window-preview';$('windowPreview').textContent=message;clearSuggestedEndDate();clearDateFeedback();updateRunAvailability();}
-      function schedulePreview(){invalidatePreview();if(!appHostBound||!selected()||state.operationActive||!validateUnderlyingCount()||!validateHvDependency())return;const revision=state.previewRevision;state.previewTimer=setTimeout(()=>previewWindow(revision),240);}
+      function invalidatePreview(message=selected()?(underlyingValues().length?'输入已变化，正在重新检查完整期限窗口。':'请填写标的代码。'):'请选择产品。'){
+        state.previewRevision+=1;state.previewStatus='stale';state.previewInputKey=null;state.previewController?.abort();state.previewController=null;clearTimeout(state.previewTimer);
+        $('windowPreview').className='window-preview';$('windowPreview').textContent=message;
+        clearSuggestedEndDate();clearDateFeedback();
+        if(state.lastResult&&!state.operationActive){
+          setState('待重新运行','edit');
+          notice('待重新运行','输入已变化，下方保留上一次完成结果。');
+          $('message').className='message';$('message').textContent='当前输入待重新运行；下方保留上一次完成结果。';
+          const completedCopy=$('resultCopy').dataset.completedCopy||$('resultCopy').textContent.replace(/^上一次完成结果：/,'');
+          $('resultCopy').textContent=`上一次完成结果：${completedCopy}`;
+        }
+        updateRunAvailability();
+      }
+      function schedulePreview(){
+        let inputKey=null;
+        try{inputKey=JSON.stringify(requestPayload());}catch{ /* 正式预检负责定位无效字段。 */ }
+        // 同一次编辑会触发input及失焦change；相同输入不使已通过的预检失效。
+        if(inputKey!==null&&inputKey===state.previewInputKey&&['scheduled','checking','ready'].includes(state.previewStatus))return;
+        invalidatePreview();
+        if(state.moduleResetLoading||!appHostBound||!selected()||state.operationActive||!validateUnderlyingCount()||!validateHvDependency())return;
+        state.previewInputKey=inputKey;
+        state.previewStatus='scheduled';
+        const revision=state.previewRevision;
+        state.previewTimer=setTimeout(()=>previewWindow(revision),240);
+      }
       async function previewWindow(revision){
+        if(revision!==state.previewRevision||state.moduleResetLoading||!appHostBound||!selected()||state.operationActive)return;
+        if(!validateUnderlyingCount()){invalidatePreview(underlyingValues().length?`请填写${expectedUnderlyingCount()}个标的代码。`:'请填写标的代码。');return;}
         const controller=new AbortController();
         state.previewController=controller;state.previewStatus='checking';
         $('windowPreview').textContent='正在按正式合同、历史行情和交易日历检查完整期限窗口…';
@@ -215,18 +338,17 @@
             clearSuggestedEndDate();clearDateFeedback();
           }else{
             state.previewStatus='invalid';
-            const detail=`当前日期不可运行。${data.message||''}${data.latest_complete_entry_session?` 最新完整入场日${data.latest_complete_entry_session}。`:''}`;
+            const detail=dateFailureSummary(data);
             $('windowPreview').className='window-preview invalid';$('windowPreview').textContent=detail;
-            if(data.suggested_end_date)showSuggestedEndDate(data.suggested_end_date,detail);else setDateFeedback('endDate',detail);
+            showDateFailure(data,detail);
           }
           updateRunAvailability();
         }catch(error){
           if(error?.name==='AbortError'||revision!==state.previewRevision)return;
           state.previewStatus='invalid';
-          const detail=error.message||'日期预检失败。';
+          const detail=dateFailureSummary(error.dateFailure||{},error.message||'日期预检失败。');
           $('windowPreview').className='window-preview invalid';$('windowPreview').textContent=detail;
-          if(error.suggestedEndDate)showSuggestedEndDate(error.suggestedEndDate,detail);
-          else if(/起始|start/i.test(detail))setDateFeedback('startDate',detail);else setDateFeedback('endDate',detail);
+          showDateFailure(error.dateFailure||{},detail);
           updateRunAvailability();
         }finally{if(state.previewController===controller)state.previewController=null;}
       }
@@ -240,8 +362,9 @@
         return node;
       }
       function emptyChart(id, text) { plotly?.purge($(id)); $(id).innerHTML=`<div class="chart-empty">${escapeHtml(text)}</div>`; }
-      function resetCharts() { disposeCharts(); document.querySelectorAll('.chart-grid,.chart-figure').forEach(node=>node.hidden=false); chartIds.forEach(id=>emptyChart(id,'运行后展示本次回放结果')); $('returnCopy').textContent='百分比'; $('structureTitle').textContent='结构诊断'; $('structureCopy').textContent='按产品结构选择指标'; $('coverageCopy').textContent='已观察结果不代表全部情景'; }
-      function resetResultForSelection(message='已切换产品，请确认历史数据后运行回测。') { const row=selected(); state.trades=[]; state.lastResult=null; $('resultTitle').textContent=row?`${row.product_id} ${row.canonical_name}`:'尚无回测结果'; $('resultCopy').textContent=message; ['sampleCount','winRate','averageReturn','medianReturn','positiveCount','zeroCount','negativeCount','maxLoss','reportProfile'].forEach(id=>$(id).textContent='未运行'); $('profileNote').textContent='合同结算收益率已包含OptionReg声明的合同现金流；客户净收益率未建模的仅为资金成本、交易费、税费、对冲和滑点。'; $('ledgerCopy').textContent='点击交易行查看路径事件与合同结算收益率。'; $('trades').innerHTML='<tr><td colspan="4" class="empty">运行后展示逐笔样本</td></tr>'; $('tradeDetail').textContent='选择一笔交易后，显示路径事件和公开收益口径。'; $('monitorTable').innerHTML='<tr><td colspan="5" class="empty">本结构没有数值型路径监控指标</td></tr>'; $('auditMeta').innerHTML='<tr><td colspan="2" class="empty">运行后展示合同和数据审计信息</td></tr>'; $('structureMetrics').innerHTML='<div><span>结构专属指标</span><strong>未运行</strong></div>'; $('entryHvGroupSection').hidden=true; $('entryHvGroupTable').replaceChildren(); resetCharts(); setState('等待运行'); }
+      function resetChartNarrative() { $('returnCopy').textContent='百分比'; $('outcomeTitle').textContent='结算路径分布'; $('outcomeCopy').textContent='按合同路径与分段统计'; $('structureTitle').textContent='结构诊断'; $('structureCopy').textContent='按产品结构选择指标'; $('coverageCopy').textContent='已观察结果不代表全部情景'; $('timingTitle').textContent='事件时间分布'; $('timingCopy').textContent='按实际发生月份统计'; $('yearTitle').textContent='年度合同结算收益统计'; $('yearCopy').textContent='按入场年份统计样本数和平均合同结算收益率。'; }
+      function resetCharts() { disposeCharts(); document.querySelectorAll('.chart-grid,.chart-figure').forEach(node=>node.hidden=false); chartIds.forEach(id=>emptyChart(id,'运行后展示本次回放结果')); resetChartNarrative(); }
+      function resetResultForSelection(message='已切换产品，请确认历史数据后运行回测。') { const row=selected(); state.trades=[]; state.tradePage=0; state.lastResult=null; $('resultTitle').textContent=row?`${row.product_id} ${row.canonical_name}`:'尚无回测结果'; $('resultCopy').textContent=message; delete $('resultCopy').dataset.completedCopy; ['sampleCount','winRate','averageReturn','medianReturn','positiveCount','zeroCount','negativeCount','maxLoss','reportProfile'].forEach(id=>$(id).textContent='未运行'); $('profileNote').textContent='合同结算收益率按合同约定收支计算，不含外部资金与交易成本。'; $('ledgerCopy').textContent='点击交易行查看路径事件与合同结算收益率。'; $('trades').innerHTML='<tr><td colspan="4" class="empty">运行后展示逐笔样本</td></tr>'; $('tradePagination').hidden=true; $('tradePageRange').textContent='0-0/0'; $('tradePrevPage').disabled=true; $('tradeNextPage').disabled=true; $('tradeDetail').textContent='选择交易后显示路径事件和合同结算收益率。'; $('monitorTable').innerHTML='<tr><td colspan="5" class="empty">本结构没有数值型路径监控指标</td></tr>'; $('auditMeta').innerHTML='<tr><td colspan="2" class="empty">运行后展示合同和数据审计信息</td></tr>'; $('structureMetrics').innerHTML='<div><span>结构专属指标</span><strong>未运行</strong></div>'; $('entryHvGroupSection').hidden=true; $('entryHvGroupCopy').textContent='按入场日前N个交易日的前复权收盘价计算年化波动率；多标的使用其中最高值分组。'; $('entryHvGroupTable').replaceChildren(); resetCharts(); clearNotice(); setState('等待运行'); $('message').className='message'; $('message').textContent=''; }
       function setChartApplicable(id, applicable) { const figure=$(id).closest('figure'); if(figure)figure.hidden=!applicable; const grid=figure?.closest('.chart-grid'); if(grid)grid.hidden=[...grid.querySelectorAll('figure')].every(item=>item.hidden); }
       function chartLayout(horizontal=false) {
         return plotly.cartesianLayout({
@@ -270,7 +393,7 @@
       }
       function horizontalBarChart(id,key,labels,values,name,colors,percent=false,bounded=percent){const rows=labels.map((label,index)=>({label,value:Number(values[index]),color:Array.isArray(colors)?colors[index]:colors})).filter(row=>Number.isFinite(row.value)).sort((a,b)=>b.value-a.value);barChart(id,key,rows.map(row=>row.label),rows.map(row=>row.value),name,rows.map(row=>row.color),percent,false,bounded,true);}
       function outcomeRate(row) { return Number(row.rate ?? 0); }
-      function averagePercent(summary) { return Number(summary?.percent?.average); }
+      function averagePercent(summary) { const value=summary?.percent?.average; return value===null||value===undefined?NaN:Number(value); }
       function bucketBounds(label) { const values=(String(label).match(/-?\d+(?:\.\d+)?/g)||[]).map(Number); const scale=String(label).includes('%')?.01:1; return values.length?[Math.min(...values)*scale,Math.max(...values)*scale]:null; }
       function bucketForValue(labels,value) { const exact=labels.find(label=>{const bounds=bucketBounds(label);return bounds&&value>=bounds[0]&&value<=bounds[1];}); return exact||null; }
       function renderReturnDistribution(common) {
@@ -306,17 +429,19 @@
           {type:'bar',name:'有效样本',x:labels,y:samples,marker:{color:plotly.colors().secondary},customdata:winRates,hovertemplate:'%{x}<br>有效样本：%{y:,d}<br>历史正收益样本占比：%{customdata:.2%}<extra></extra>',xaxis:'x2',yaxis:'y2'}
         ];
         const layout=plotly.cartesianLayout({margin:{l:62,r:22,t:18,b:44},showlegend:false,hovermode:'x unified'});
-        layout.xaxis=plotly.axis({domain:[0,1],anchor:'y',showticklabels:false});layout.yaxis=plotly.axis({domain:[.38,1],tickformat:'.0%',title:{text:'平均合同结算收益率',font:plotly.font(12,500)}});
-        layout.xaxis2=plotly.axis({domain:[0,1],anchor:'y2'});layout.yaxis2=plotly.axis({domain:[0,.22],title:{text:'样本',font:plotly.font(12,500)}});
+        const yearAxis={type:'category',categoryorder:'array',categoryarray:[...new Set(labels)],domain:[0,1]};
+        layout.xaxis={...plotly.axis(),...yearAxis,anchor:'y',showticklabels:false};layout.yaxis=plotly.axis({domain:[.38,1],tickformat:'.0%',title:{text:'平均合同结算收益率',font:plotly.font(12,500)}});
+        layout.xaxis2={...plotly.axis(),...yearAxis,anchor:'y2',matches:'x'};layout.yaxis2=plotly.axis({domain:[0,.22],title:{text:'样本',font:plotly.font(12,500)}});
         renderPlot('yearChart',traces,layout);
       }
       function structureComparison(result) { const profile=result.metric_profile?.profile_id||''; const special=result.specialized_metrics||{}; const multi=special.multi_underlying_terminal; if(multi?.underlying_count>1) return {title:'多标的终值表现',copy:'逐笔最差、最佳与横截面离散度',labels:['最差标的','最佳标的','标的离散度'],values:[multi.worst_of_terminal_performance?.average,multi.best_of_terminal_performance?.average,multi.cross_underlying_dispersion?.average],percent:true}; const eventOutcomes=special.trigger_vs_untriggered; if(eventOutcomes) return {title:'触发与未触发收益',copy:'条件合同结算收益率',labels:['已触发','未触发'],values:[averagePercent(eventOutcomes.triggered_contract_settlement_return),averagePercent(eventOutcomes.untriggered_contract_settlement_return)],percent:true}; const knockIn=special.knock_in_outcomes; if(knockIn) return {title:'敲入与未敲入收益',copy:'条件合同结算收益率',labels:['已敲入','未敲入'],values:[averagePercent(knockIn.knock_in_contract_settlement_return),averagePercent(knockIn.not_knock_in_contract_settlement_return)],percent:true}; const accumulator=special.knock_out_vs_full_term; if(accumulator) return {title:'累购结算对比',copy:'提前敲出与完整期限收益率',labels:['提前敲出','完整期限'],values:[averagePercent(accumulator.knock_out_contract_settlement_return),averagePercent(accumulator.full_term_contract_settlement_return)],percent:true}; const coupon=special.coupon_payment; if(coupon) return {title:'票息观察结果',copy:'平均观察次数',labels:['已支付观察','未支付观察'],values:[coupon.paid_observation_count?.average,coupon.unpaid_observation_count?.average],percent:false}; const variance=special.realized_volatility_vs_strike; if(variance) return {title:'实现波动率与执行值',copy:'波动率数值',labels:['实现波动率','执行波动率'],values:[special.realized_volatility?.sigma_realized?.average,variance.strike_volatility],percent:false}; const range=special.in_range_observation_ratio; if(range?.average!==null&&range?.average!==undefined) return {title:'区间观察构成',copy:'区间内外观察比例',labels:['区间内','区间外'],values:[range.average,1-Number(range.average)],percent:true,bounded:true}; const terminal=special.terminal_performance; if(terminal) return {title:'标的到期表现',copy:'相对入场参考价',labels:['最低','平均','最高'],values:[terminal.minimum,terminal.average,terminal.maximum],percent:true}; if(profile==='dual_knock_autocall'||profile==='coupon_autocall') return {empty:'该结构的核心结局已在上方互斥路径图展示，不重复绘制。'}; return {empty:'本结构没有适合单独绘制的结构指标，保留数值结果。'}; }
-      function renderStructureChart(result) { const model=structureComparison(result); $('structureTitle').textContent=model.title||'结构诊断'; $('structureCopy').textContent=model.copy||'按产品结构选择指标'; if(model.empty){setChartApplicable('structureChart',false);return;} const pairs=model.labels.map((label,index)=>({label,value:Number(model.values[index])})).filter(row=>Number.isFinite(row.value)); if(!pairs.length){setChartApplicable('structureChart',false);return;} const colors=pairs.map((row,index)=>row.value<0?plotly.colors().risk:[plotly.colors().primary,plotly.colors().primaryMid,plotly.colors().secondary,plotly.colors().tertiary][index%4]); horizontalBarChart('structureChart','structure',pairs.map(row=>row.label),pairs.map(row=>row.value),model.title,colors,model.percent,Boolean(model.bounded)); }
+      function renderStructureChart(result) { const model=structureComparison(result); $('structureTitle').textContent=model.title||'结构诊断'; $('structureCopy').textContent=model.copy||'按产品结构选择指标'; if(model.empty){setChartApplicable('structureChart',false);return;} const pairs=model.labels.map((label,index)=>({label,value:model.values[index]===null||model.values[index]===undefined?NaN:Number(model.values[index])})).filter(row=>Number.isFinite(row.value)); if(!pairs.length){setChartApplicable('structureChart',false);return;} const colors=pairs.map((row,index)=>row.value<0?plotly.colors().risk:[plotly.colors().primary,plotly.colors().primaryMid,plotly.colors().secondary,plotly.colors().tertiary][index%4]); horizontalBarChart('structureChart','structure',pairs.map(row=>row.label),pairs.map(row=>row.value),model.title,colors,model.percent,Boolean(model.bounded)); }
       function renderCoverageChart(result) { const coverage=result.branch_coverage||{}; const declared=Number(coverage.declared_pair_count||0); const observed=Number(coverage.observed_pair_count||0); const uncovered=Number(coverage.uncovered_pair_count||0); if(!declared){setChartApplicable('coverageChart',false);$('coverageCopy').textContent='无声明分支';return;} $('coverageCopy').textContent=`已观察${observed}/${declared}个分支，未覆盖${uncovered}个`; const traces=[{type:'bar',orientation:'h',name:'已观察',x:[observed],y:['合同分支'],marker:{color:plotly.colors().primary},hovertemplate:'已观察：%{x:,d}<extra></extra>'},{type:'bar',orientation:'h',name:'未覆盖',x:[uncovered],y:['合同分支'],marker:{color:plotly.colors().secondary},hovertemplate:'未覆盖：%{x:,d}<extra></extra>'}]; const layout=chartLayout(true);layout.barmode='stack';layout.xaxis.range=[0,declared];layout.showlegend=true;layout.legend={orientation:'h',x:0,y:1.18,font:plotly.font(12)};layout.margin={l:24,r:18,t:44,b:34};renderPlot('coverageChart',traces,layout); }
       function renderCharts(result) {
         if(!state.moduleVisible){state.pendingChartRender=true;return;}
         state.pendingChartRender=false;
         disposeCharts();
+        resetChartNarrative();
         const common=result.common_metrics||{};
         const special=result.specialized_metrics||{};
         renderReturnDistribution(common);
@@ -356,7 +481,7 @@
       function renderEntryHvGroupSummary(result) { const summary=result.entry_hv_group_summary||{}; const section=$('entryHvGroupSection'); if(!summary.status||summary.status==='not_requested'){section.hidden=true;$('entryHvGroupTable').replaceChildren();return;} section.hidden=false; const reasons={adj_close_not_provided:'未提供前复权收盘价',insufficient_pre_entry_adj_close:'入场前样本不足',invalid_pre_entry_adj_close:'入场前复权收盘价无效',invalid_entry_hv_grouping:'分组特征不完整'}; const reasonText=Object.entries(summary.ungrouped_reasons||{}).map(([reason,count])=>`${reasons[reason]||reason}${count}笔`).join('；'); $('entryHvGroupCopy').textContent=`已分组${fmt(summary.grouped_sample_count)}笔，未分组${fmt(summary.ungrouped_sample_count)}笔${reasonText?`：${reasonText}`:''}。收益统一为合同结算收益率。`; $('entryHvGroupTable').innerHTML=(summary.groups||[]).map(group=>`<tr><td>${escapeHtml(hvBucketLabel(group))}</td><td>${fmt(group.valid_return_sample_count)}</td><td>${fmt(group.positive_return_count)}/${fmt(group.valid_return_sample_count)}</td><td>${pct(group.positive_return_rate)}</td><td>${pct(group.average_contract_settlement_return)}</td><td>${pct(group.median_contract_settlement_return)}</td><td>${pct(group.minimum_contract_settlement_return)}</td><td>${pct(group.maximum_contract_settlement_return)}</td></tr>`).join('')||'<tr><td colspan="8" class="empty">未形成可用历史波动分组</td></tr>'; }
       const auditCodeLabels={close:'收盘价',adj_close:'复权收盘价',open:'开盘价',high:'最高价',low:'最低价',unadjusted:'不复权',none:'不额外调整',backward:'后复权',forward:'前复权',daily:'每日',weekly:'每周',monthly:'每月',explicit:'指定日期',specified_dates:'指定日期'};
       function auditCodeLabel(value){return auditCodeLabels[String(value)]||String(value||'不适用');}
-      function renderAudit(data) { const result=data.backtest||{}; const contract=data.resolved_contract||{}; const profile=result.metric_profile||{}; const config=result.backtest_config||{}; const effective=result.effective_entry_window||{}; const asset=result.data_asset_ref||{}; const coverage=result.data_coverage||{}; const convention=asset.price_convention||{}; const hv=result.price_convention_evidence?.entry_hv||{}; const settlement=`${auditCodeLabel(convention.contract_close_field||'close')}，${auditCodeLabel(convention.contract_adjustment||'unadjusted')}`; const histVol=hv.field?`${auditCodeLabel(hv.field)}，${auditCodeLabel(hv.adjustment||'none')}，${hv.window||'--'}个交易日`:'未启用'; const effectiveStart=effective.start_date||config.start_date||'未限定'; const effectiveEnd=effective.end_date||config.end_date||'未限定'; const rows=[['报告类型',profile.display_name||'到期收益型'],['标的',((contract.identity||{}).underlyings||result.underlyings||[]).join('，')||'不适用'],['合同结算',settlement],['入场前波动率',histVol],['历史数据区间',`${coverage.date_start||'未限定'}至${coverage.date_end||'未限定'}`],['入场规则',auditCodeLabel(config.entry_rule)],['实际入场窗口',`${effectiveStart}至${effectiveEnd}`],['行情最新会话',effective.market_as_of_session||'未提供'],['最新完整入场日',effective.latest_complete_entry_session||'未提供'],['完整期限',config.complete_tenor?'仅完整期限':'允许不足期限']]; $('auditMeta').innerHTML=rows.map(([label,value])=>`<tr><td>${escapeHtml(label)}</td><td>${escapeHtml(value)}</td></tr>`).join(''); }
+      function renderAudit(data) { const result=data.backtest||{}; const contract=data.resolved_contract||{}; const profile=result.metric_profile||{}; const config=result.backtest_config||{}; const effective=result.effective_entry_window||{}; const asset=result.data_asset_ref||{}; const coverage=result.data_coverage||{}; const convention=asset.price_convention||{}; const hv=result.price_convention_evidence?.entry_hv||{}; const settlement=`${auditCodeLabel(convention.contract_close_field||'close')}，${auditCodeLabel(convention.contract_adjustment||'unadjusted')}`; const histVol=hv.field?`${auditCodeLabel(hv.field)}，${auditCodeLabel(hv.adjustment||'none')}，${hv.window||'--'}个交易日`:'未启用'; const effectiveStart=effective.actual_start||effective.start_date||config.start_date||'未限定'; const effectiveEnd=effective.actual_end||effective.end_date||config.end_date||'未限定'; const rows=[['报告类型',profile.display_name||'到期收益型'],['标的',((contract.identity||{}).underlyings||result.underlyings||[]).join('，')||'不适用'],['合同结算',settlement],['入场前波动率',histVol],['历史数据区间',`${coverage.date_start||'未限定'}至${coverage.date_end||'未限定'}`],['入场规则',auditCodeLabel(config.entry_rule)],['实际入场窗口',`${effectiveStart}至${effectiveEnd}`],['行情最新会话',effective.market_as_of_session||'未提供'],['最新完整入场日',effective.latest_complete_entry_session||'未提供'],['完整期限',config.complete_tenor?'仅完整期限':'允许不足期限']]; $('auditMeta').innerHTML=rows.map(([label,value])=>`<tr><td>${escapeHtml(label)}</td><td>${escapeHtml(value)}</td></tr>`).join(''); }
       function selectTrade(index) {
         const trade=state.trades[index];
         if(!trade)return;
@@ -378,23 +503,46 @@
             if(event.key==='Enter'||event.key===' '){event.preventDefault();selectTrade(index);return;}
             if(!['ArrowUp','ArrowDown'].includes(event.key))return;
             event.preventDefault();
-            const next=Math.max(0,Math.min(rows.length-1,index+(event.key==='ArrowDown'?1:-1)));
-            selectTrade(next);
+            const position=rows.indexOf(row);
+            const next=Math.max(0,Math.min(rows.length-1,position+(event.key==='ArrowDown'?1:-1)));
+            selectTrade(Number(rows[next].dataset.index));
             rows[next].focus();
           });
         });
+      }
+      function renderTradePage() { const total=state.trades.length; const pageCount=Math.max(1,Math.ceil(total/tradePageSize)); state.tradePage=Math.max(0,Math.min(state.tradePage,pageCount-1)); const start=state.tradePage*tradePageSize; const end=Math.min(start+tradePageSize,total); const visibleTrades=state.trades.slice(start,end); $('tradePagination').hidden=total<=tradePageSize; $('tradePageRange').textContent=total?`${start+1}-${end}/${total}`:'0-0/0'; $('tradePrevPage').disabled=state.tradePage===0; $('tradeNextPage').disabled=state.tradePage>=pageCount-1; $('ledgerCopy').textContent=total>tradePageSize?`共${fmt(total)}笔，当前展示第${fmt(start+1)}至${fmt(end)}笔；汇总指标仍基于全部有效样本。`:'点击交易行查看路径事件与合同结算收益率。'; $('trades').innerHTML=visibleTrades.map((trade,offset)=>{const index=start+offset;return`<tr data-index="${index}" tabindex="0" aria-selected="false"><td>${escapeHtml(trade.entry_date)}</td><td>${escapeHtml(trade.exit_date)}</td><td>${trade.path_id+1}/${trade.case_id+1}</td><td>${pct(trade.contract_settlement_return)}</td></tr>`;}).join('')||'<tr><td colspan="4" class="empty">无满足完整期限的样本</td></tr>'; bindTradeRows(); if(visibleTrades.length)selectTrade(start);else $('tradeDetail').textContent='无完整期限样本可供复盘。'; }
+      function changeTradePage(delta) { const pageCount=Math.max(1,Math.ceil(state.trades.length/tradePageSize)); const next=Math.max(0,Math.min(pageCount-1,state.tradePage+delta)); if(next===state.tradePage)return; state.tradePage=next; renderTradePage(); }
+      function resultSummaryText(result, convention) {
+        const common=result.common_metrics||{};
+        const parts=[`历史正收益样本${fmt(common.positive_return_count)}/${fmt(common.valid_return_sample_count)}，持平${fmt(common.zero_return_count)}，负收益${fmt(common.negative_return_count)}。`];
+        if(Number(common.valid_return_sample_count)>0&&common.negative_return_count===0)parts.push('本次历史样本未出现负收益，不代表未来获利概率。');
+        else if(common.historical_loss_sample_covered===true)parts.push('已出现实际负收益样本。');
+        const branch=result.branch_coverage||{};
+        const {declared_pair_count:declared,observed_pair_count:observed,uncovered_pair_count:uncovered}=branch;
+        if([declared,observed,uncovered].every(value=>Number.isInteger(value)&&value>=0)&&declared>0&&observed+uncovered===declared)parts.push(`结算分支覆盖${observed}/${declared}。`);
+        const unknown=branch.unclassified_pair_count;
+        if(Number.isInteger(unknown)&&unknown>0)parts.push(`损失分支尚有${unknown}个未判定。`);
+        else if(branch.loss_classification_status==='complete'&&unknown===0){
+          const {declared_loss_pair_count:total,observed_loss_pair_count:seen,uncovered_loss_pair_count:missing}=branch;
+          if([total,seen,missing].every(value=>Number.isInteger(value)&&value>=0)&&seen+missing===total)parts.push(total?`损失分支覆盖${seen}/${total}。`:'没有已确认的潜在损失分支。');
+        }else parts.push('损失分支分类尚未确认。');
+        const coverage=result.specialized_metrics?.metric_coverage||{};
+        if(coverage.status==='partial')parts.push(`缺少${(coverage.gaps||[]).length}项结构指标。`);
+        const premium={
+          included_in_contract_cashflows:'已计入合同期权费。',
+          fixed_zero:'合同期权费固定为零。',
+          no_separate_premium_cashflow:'无独立期权费现金流。',
+        }[convention?.contractual_premium_status]||'期权费口径未确认。';
+        parts.push(premium,'未计入资金成本、交易费、税费、对冲和滑点。');
+        return parts.join('');
       }
       function render(data) {
         const result=data.backtest||{};
         state.lastResult=result;
         const common=result.common_metrics||{};
         const profile=result.metric_profile||{};
-        const specialized=result.specialized_metrics||{};
-        const metricCoverage=specialized.metric_coverage||{};
-        const optionalCount=Object.keys(specialized.optional_diagnostics||{}).length;
-        const metricCoverageText=metricCoverage.status==='partial'?`核心结构指标部分覆盖，另有${(metricCoverage.gaps||[]).length}项必需事实缺失。`:optionalCount?`核心结构指标覆盖完整；另有${optionalCount}项高阶诊断因上游未提供事实而不可用。`:'核心结构指标覆盖完整。';
         state.trades=result.trade_ledger||[];
-        const visibleTrades=state.trades.slice(0,100);
+        state.tradePage=0;
         const contract=data.resolved_contract||{};
         $('resultTitle').textContent=`${contract.identity?.product_id || result.product_id || ''} ${contract.identity?.name_zh || selected()?.canonical_name || ''}`.trim();
         const excluded=Number(result.effective_entry_window?.excluded_incomplete_entry_count||0);
@@ -410,23 +558,19 @@
         $('negativeCount').textContent=fmt(common.negative_return_count??0);
         $('maxLoss').textContent=pct(common.minimum_contract_settlement_return);
         $('reportProfile').textContent=profile.display_name||'到期收益型';
-        const noLoss=Number(common.negative_return_count??0)===0;const premium=(result.economic_convention||data.economic_convention)?.contractual_premium_explanation||'';
-        $('profileNote').textContent=`历史正收益样本${fmt(common.positive_return_count)}/${fmt(common.valid_return_sample_count)}，持平${fmt(common.zero_return_count??0)}，负收益${fmt(common.negative_return_count??0)}。${noLoss?'本次历史样本未出现负收益，不代表未来获利概率。':'历史样本已覆盖负收益分支。'}${metricCoverageText}${premium}客户净收益率未建模的仅为资金成本、交易费、税费、对冲和滑点。`;
-        $('ledgerCopy').textContent=state.trades.length>visibleTrades.length?`共${fmt(state.trades.length)}笔，当前展示前${fmt(visibleTrades.length)}笔；汇总指标仍基于全部有效样本。`:'点击交易行查看路径事件与合同结算收益率。';
-        $('trades').innerHTML=visibleTrades.map((trade,index)=>`<tr data-index="${index}" tabindex="0" aria-selected="false"><td>${escapeHtml(trade.entry_date)}</td><td>${escapeHtml(trade.exit_date)}</td><td>${trade.path_id+1}/${trade.case_id+1}</td><td>${pct(trade.contract_settlement_return)}</td></tr>`).join('')||'<tr><td colspan="4" class="empty">无满足完整期限的样本</td></tr>';
-        bindTradeRows();
-        if(state.trades.length)selectTrade(0);else $('tradeDetail').textContent='无完整期限样本可供复盘。';
+        $('profileNote').textContent=resultSummaryText(result,result.economic_convention||data.economic_convention);
+        renderTradePage();
         renderStructureMetrics(result);
         renderMonitorTable(result);
         renderEntryHvGroupSummary(result);
         renderAudit(data);
         renderCharts(result);
         setState('回测完成','valid');
-        notice('回测完成','统计、图表和逐笔账本均来自本次历史路径。');
+        clearNotice();
       }
       async function run(event) {
         event?.preventDefault();
-        if(state.operationActive)return;
+        if(state.operationActive||state.moduleResetLoading)return;
         clearSuggestedEndDate();
         const revision=++state.requestRevision;
         const requestedProduct=$('productId').value;
@@ -437,6 +581,7 @@
         state.operationController=controller;
         state.cancellationRequested=false;
         state.connectionRecovering=false;
+        clearNotice();
         syncOperationControls();
         $('message').className='message';
         $('message').textContent='正在准备本次回测输入…';
@@ -459,7 +604,7 @@
           if(revision!==state.requestRevision||$('productId').value!==requestedProduct) return;
           render(data);
           $('message').className='message ok';
-          $('message').textContent='历史回测已完成；本次输入与结果已独立保存。';
+          $('message').textContent='';
           setOperationProgress('完成',{progress:100,terminal:true});
         } catch(error) {
           if(revision!==state.requestRevision) return;
@@ -472,10 +617,16 @@
             return;
           }
           const message=error.message||'历史回测运行失败';
+          const dateFailure=isDateBoundaryFailure(error.dateFailure||{});
+          if(dateFailure){
+            const detail=dateFailureSummary(error.dateFailure||{},message);
+            $('windowPreview').className='window-preview invalid';$('windowPreview').textContent=detail;
+            showDateFailure(error.dateFailure||{},detail);
+          }
+          const visibleMessage=dateFailure?'日期校验未通过，请按预检摘要调整日期。':message;
           $('message').className='message error';
-          $('message').textContent=`${message}${hadResult?' 下方保留上一次完成结果。':''}`;
-          notice('回测失败',`${message}${hadResult?' 下方保留上一次完成结果。':''}`,'error');
-          if(error.suggestedEndDate) showSuggestedEndDate(error.suggestedEndDate);
+          $('message').textContent=`${visibleMessage}${hadResult?' 下方保留上一次完成结果。':''}`;
+          notice('回测失败',`${visibleMessage}${hadResult?' 下方保留上一次完成结果。':''}`,'error');
           setState('运行失败','error');
           setOperationProgress('失败',{terminal:true});
         } finally {
@@ -486,6 +637,7 @@
           state.cancellationRequested=false;
           state.connectionRecovering=false;
           syncOperationControls();
+          if(typeof requestModuleInputReset==='function')requestModuleInputReset();
         }
       }
       function bindResizer(id, variable, minimum, maximum) { const resizer=$(id); let startX=0,startValue=0; const current=()=>parseInt(getComputedStyle($('workbench')).getPropertyValue(variable),10)||minimum; const setWidth=value=>{const next=Math.max(minimum,Math.min(maximum,value));$('workbench').style.setProperty(variable,`${next}px`);resizer.setAttribute('aria-valuenow',String(next));}; const finish=()=>{resizer.classList.remove('active');document.removeEventListener('pointermove',move);document.removeEventListener('pointerup',finish);}; const move=event=>setWidth(startValue+(variable==='--library-width'?event.clientX-startX:startX-event.clientX)); resizer.setAttribute('aria-valuemin',String(minimum));resizer.setAttribute('aria-valuemax',String(maximum));resizer.setAttribute('aria-valuenow',String(current()));resizer.addEventListener('pointerdown',event=>{startX=event.clientX;startValue=current();resizer.classList.add('active');document.addEventListener('pointermove',move);document.addEventListener('pointerup',finish);});resizer.addEventListener('keydown',event=>{if(!['ArrowLeft','ArrowRight'].includes(event.key))return;event.preventDefault();const direction=variable==='--library-width'?1:-1;setWidth(current()+(event.key==='ArrowRight'?12:-12)*direction);}); }
@@ -498,7 +650,11 @@
       $('form').addEventListener('change',()=>{if(!state.operationActive)schedulePreview();});
       syncEntryRuleControl();
       validateHvDependency();
-      document.addEventListener('optionhelper:modulevisibility',event=>{state.moduleVisible=event.detail?.active!==false;if(state.moduleVisible&&state.pendingChartRender&&state.lastResult)renderCharts(state.lastResult);else if(state.moduleVisible)chartIds.forEach(id=>plotly?.resize($(id)));}); document.querySelectorAll('[data-date-label]').forEach(input=>window.OptionHelperDateInput.bind(input,input.dataset.dateLabel)); $('form').addEventListener('submit',run); $('stopRun').addEventListener('click',()=>requestOperationStop()); $('useSuggestedEndDate').addEventListener('click',()=>{const value=$('useSuggestedEndDate').dataset.value;if(!value)return;window.OptionHelperDateInput.set($('endDate'),value,'入场截止日');clearSuggestedEndDate();clearDateFeedback();$('endDate').focus();schedulePreview();}); $('endDate').addEventListener('input',()=>{if(!state.operationActive){clearSuggestedEndDate();clearDateFeedback();}}); $('startDate').addEventListener('input',()=>{if(!state.operationActive)clearDateFeedback();}); $('refreshCatalog').addEventListener('click',()=>catalog().then(()=>notice('目录已更新','产品目录已重新读取。')).catch(error=>{notice('目录加载失败',error.message,'error');$('message').className='message error';$('message').textContent=error.message;})); $('underlyings').addEventListener('input',()=>{if(!state.operationActive)schedulePreview();}); $('productId').addEventListener('change',()=>{if(state.operationActive)return;state.requestRevision+=1;rememberProductId($('productId').value);setContractInputsLocked();resetBacktestInputs();resetResultForSelection();}); window.addEventListener('resize',()=>{if(state.moduleVisible)chartIds.forEach(id=>plotly?.resize($(id)));}); if(typeof MutationObserver==='function')new MutationObserver(()=>{if(state.lastResult)renderCharts(state.lastResult);}).observe(document.documentElement,{attributes:true,attributeFilter:['data-theme','class']}); bindResizer('libraryResizer','--library-width',220,420); bindResizer('inspectorResizer','--inspector-width',300,520); if(location.protocol==='file:'){ $('serviceStatus').textContent='独立预览：需要OptionHelper'; notice('无法运行','独立页面不执行回测。请在OptDesk中打开当前任务后运行。','error'); } catalog().then(()=>{if(location.protocol!=='file:')$('serviceStatus').textContent='产品目录已读取';if(location.protocol!=='file:')clearNotice();}).catch(error=>{if(location.protocol!=='file:'){$('serviceStatus').textContent=error.message;$('serviceStatus').style.color='var(--color-brand-red)';$('message').className='message error';$('message').textContent=error.message;notice('目录加载失败',error.message,'error');setState('产品目录加载失败','error');}});
+      function moduleResetBusy(){return state.operationActive||state.moduleResetLoading;}
+      function requestModuleInputReset(){if(!state.resetOnActivation||!state.moduleVisible||moduleResetBusy())return;state.resetOnActivation=false;void refreshModuleDefaultsAfterReopen();}
+      async function refreshModuleDefaultsAfterReopen(){state.moduleResetLoading=true;invalidatePreview('正在恢复默认参数。');syncOperationControls();try{await catalog();syncOperationControls();if(state.lastResult){const completedCopy=$('resultCopy').dataset.completedCopy||$('resultCopy').textContent.replace(/^上一次完成结果：/,'');$('resultCopy').textContent=`上一次完成结果：${completedCopy}`;notice('已恢复默认参数','下方为上次计算结果。');setState('结果待更新','edit');}else notice('已恢复默认参数');}catch(error){notice('默认值读取失败',error.message||'重新读取最新产品默认值失败。','error');}finally{state.moduleResetLoading=false;syncOperationControls();requestModuleInputReset();}}
+      function handleModuleVisibility(event){state.moduleVisible=event.detail?.active!==false;if(state.moduleVisible&&event.detail?.reopened){state.resetOnActivation=true;requestModuleInputReset();}if(state.moduleVisible&&state.pendingChartRender&&state.lastResult)renderCharts(state.lastResult);else if(state.moduleVisible)chartIds.forEach(id=>plotly?.resize($(id)));}
+      document.addEventListener('optionhelper:modulevisibility',handleModuleVisibility); document.querySelectorAll('[data-date-label]').forEach(input=>window.OptionHelperDateInput.bind(input,input.dataset.dateLabel)); $('form').addEventListener('submit',run); $('stopRun').addEventListener('click',()=>requestOperationStop()); $('tradePrevPage').addEventListener('click',()=>changeTradePage(-1)); $('tradeNextPage').addEventListener('click',()=>changeTradePage(1)); $('useSuggestedEndDate').addEventListener('click',applySuggestedDates); $('endDate').addEventListener('input',()=>{if(!state.operationActive){clearSuggestedEndDate();clearDateFeedback();}}); $('startDate').addEventListener('input',()=>{if(!state.operationActive){clearSuggestedEndDate();clearDateFeedback();}}); $('refreshCatalog').addEventListener('click',()=>catalog().then(()=>notice('目录已更新','产品目录已重新读取。')).catch(error=>{notice('目录加载失败',error.message,'error');$('message').className='message error';$('message').textContent=error.message;})); $('underlyings').addEventListener('input',()=>{if(!state.operationActive)schedulePreview();}); $('productId').addEventListener('change',()=>{if(state.operationActive)return;state.requestRevision+=1;rememberProductId($('productId').value);setContractInputsLocked();resetBacktestInputs();resetResultForSelection();}); window.addEventListener('resize',()=>{if(state.moduleVisible)chartIds.forEach(id=>plotly?.resize($(id)));}); if(typeof MutationObserver==='function')new MutationObserver(()=>{if(state.lastResult)renderCharts(state.lastResult);}).observe(document.documentElement,{attributes:true,attributeFilter:['data-theme','class']}); bindResizer('libraryResizer','--library-width',220,420); bindResizer('inspectorResizer','--inspector-width',300,520); if(location.protocol==='file:'){ $('serviceStatus').textContent='独立预览：需要OptionHelper'; notice('无法运行','独立页面不执行回测。请在OptDesk中打开当前任务后运行。','error'); } catalog().then(()=>{if(location.protocol!=='file:')$('serviceStatus').textContent='产品目录已读取';if(location.protocol!=='file:')clearNotice();}).catch(error=>{if(location.protocol!=='file:'){$('serviceStatus').textContent=error.message;$('serviceStatus').style.color='var(--color-brand-red)';$('message').className='message error';$('message').textContent=error.message;notice('目录加载失败',error.message,'error');setState('产品目录加载失败','error');}});
     </script>
   </body>
 </html>
