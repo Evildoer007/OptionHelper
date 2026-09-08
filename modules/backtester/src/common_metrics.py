@@ -216,8 +216,12 @@ def event_summary(trades: Sequence[Any], tenor_years: float) -> dict[str, dict[s
     summary: dict[str, dict[str, Any]] = {}
     for name in names:
         values = [trade.events[name] for trade in trades if name in trade.events]
-        happened = [value for value in values if event_happened(value)]
-        days = np.asarray([float(value["time"]) * 365.0 for value in happened], dtype=float)
+        happened = [trade for trade in trades if event_happened(trade.events.get(name))]
+        # 计数型合同的解释器时间轴可缩放到T，事件持有天数必须来自真实日期。
+        days = np.asarray([
+            (pd.Timestamp(trade.events[name]["date"]) - pd.Timestamp(trade.entry_date)).days
+            for trade in happened
+        ], dtype=float)
         summary[name] = {
             "name": name,
             "label": _EVENT_LABELS.get(name, name),
@@ -330,7 +334,8 @@ def distribution(values: np.ndarray) -> dict[str, int]:
 
 
 def monthly_distribution(days: np.ndarray, tenor_years: float, sample_count: int) -> list[dict[str, Any]]:
-    max_month = max(1, int(np.ceil(max(float(tenor_years), 0.0) * 12.0)))
+    actual_years = float(days.max()) / 365.0 if len(days) else 0.0
+    max_month = max(1, int(np.ceil(max(float(tenor_years), actual_years, 0.0) * 12.0)))
     counts = np.zeros(max_month, dtype=int)
     for value in days:
         month = max(1, int(np.ceil(float(value) / (365.0 / 12.0))))
