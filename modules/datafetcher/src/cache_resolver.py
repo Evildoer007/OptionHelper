@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import date, timedelta
 import hashlib
 import json
 import os
@@ -11,6 +12,7 @@ from pathlib import Path
 import tempfile
 import threading
 from typing import Any, Mapping, Sequence
+from uuid import uuid4
 
 import pandas as pd
 
@@ -29,10 +31,57 @@ _LOCKS: dict[str, threading.RLock] = {}
 _LOCKS_GUARD = threading.Lock()
 _VOLATILE_ENTRIES: dict[tuple[str, str], dict[str, Any]] = {}
 _VOLATILE_ENTRIES_LOCK = threading.RLock()
+_PROVIDER_COVERAGE_DECISIONS = {"cache_miss_fetched", "cache_extended"}
 
 
 class CacheIndexError(RuntimeError):
     code = "cache_corrupt"
+
+
+def _natural_dates(start_date: str, end_date: str) -> tuple[str, ...]:
+    current = date.fromisoformat(start_date)
+    end = date.fromisoformat(end_date)
+    values: list[str] = []
+    while current <= end:
+        values.append(current.isoformat())
+        current += timedelta(days=1)
+    return tuple(values)
+
+
+def _provider_confirmed_dates(
+    references: Sequence[Any],
+    provider: str,
+) -> Mapping[str, frozenset[str]]:
+    """从真实Provider调用形成的资产引用恢复已请求自然日覆盖。"""
+
+    confirmed: dict[str, set[str]] = {}
+    for reference in references:
+        if not isinstance(reference, Mapping):
+            continue
+        lineage = reference.get("lineage")
+        coverage = reference.get("coverage")
+        asset_ids = reference.get("asset_ids")
+        if (
+            not isinstance(lineage, Mapping)
+            or lineage.get("provider") != provider
+            or lineage.get("cache_decision") not in _PROVIDER_COVERAGE_DECISIONS
+            or not isinstance(coverage, Mapping)
+            or isinstance(asset_ids, (str, bytes))
+            or not isinstance(asset_ids, Sequence)
+        ):
+            continue
+        start_date = coverage.get("requested_start_date")
+        end_date = coverage.get("provider_confirmed_end_date", coverage.get("end_date"))
+        if not isinstance(start_date, str) or not isinstance(end_date, str):
+            continue
+        try:
+            dates = _natural_dates(start_date, end_date)
+        except ValueError:
+            continue
+        for asset_id in asset_ids:
+            if isinstance(asset_id, str) and asset_id:
+                confirmed.setdefault(asset_id.upper(), set()).update(dates)
+    return {asset_id: frozenset(dates) for asset_id, dates in confirmed.items()}
 
 
 def _lock_for(root: Path) -> threading.RLock:
@@ -50,11 +99,16 @@ def _temporary_lock_path(namespace: str, identity: str) -> Path:
 
 @contextmanager
 def _process_lock(path: Path):
-    """用系统临时文件锁覆盖同机多Host进程，并在完成后清理。"""
+    """等待者核验锁文件身份，避免旧inode与新路径同时进入临界区。"""
 
-    path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        with path.open("a+b") as handle:
+    while True:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            handle = path.open("a+b")
+        except FileNotFoundError:
+            # 另一个持锁者刚清理空锁目录，重新创建后再打开。
+            continue
+        with handle:
             if os.name == "nt":
                 handle.seek(0, 2)
                 if handle.tell() == 0:
@@ -65,19 +119,31 @@ def _process_lock(path: Path):
             else:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
             try:
-                yield
+                try:
+                    current = path.stat()
+                except FileNotFoundError:
+                    continue
+                opened = os.fstat(handle.fileno())
+                if (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino):
+                    continue
+                try:
+                    yield
+                finally:
+                    # POSIX在解锁前移除名字。旧等待者取得锁后必须重新验证inode。
+                    # Windows不能移除仍打开的锁文件，保留系统临时目录内的空锁。
+                    if os.name != "nt":
+                        path.unlink(missing_ok=True)
+                        try:
+                            path.parent.rmdir()
+                        except OSError:
+                            pass
+                return
             finally:
                 if os.name == "nt":
                     handle.seek(0)
                     msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
                 else:
                     fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-    finally:
-        try:
-            path.unlink(missing_ok=True)
-            path.parent.rmdir()
-        except OSError:
-            pass
 
 
 def _atomic_write_json(path: Path, value: Mapping[str, Any]) -> None:
@@ -121,7 +187,7 @@ class LocalCache:
             with _process_lock(_temporary_lock_path("history-index", str(self.root.resolve()))):
                 yield
 
-    def _index(self) -> dict[str, Any]:
+    def _index(self, *, migrate: bool = True) -> dict[str, Any]:
         if not self.index_path.exists():
             return {"schema": "optionhelper.data-cache-index", "entries": {}}
         try:
@@ -133,7 +199,8 @@ class LocalCache:
                 "schema": "optionhelper.data-cache-index",
                 "entries": value["entries"],
             }
-            _atomic_write_json(self.index_path, value)
+            if migrate:
+                _atomic_write_json(self.index_path, value)
         if (
             not isinstance(value, dict)
             or value.get("schema") != "optionhelper.data-cache-index"
@@ -182,10 +249,17 @@ class LocalCache:
         *,
         expected_trading_dates: Mapping[str, Sequence[str]] | None,
         latest_completed_date: str | None,
+        provider_confirmed_dates: Mapping[str, Sequence[str]] | None,
     ) -> dict[str, tuple[tuple[str, str], ...]]:
         missing: dict[str, tuple[tuple[str, str], ...]] = {}
         for asset_id in request.asset_ids:
-            if expected_trading_dates is None:
+            if expected_trading_dates is None and provider_confirmed_dates is not None:
+                completed_end = min(request.end_date, latest_completed_date or request.end_date)
+                intervals = missing_intervals(
+                    _natural_dates(request.start_date, completed_end),
+                    provider_confirmed_dates.get(asset_id, ()),
+                )
+            elif expected_trading_dates is None:
                 intervals = observed_edge_intervals(
                     frame,
                     asset_id,
@@ -207,7 +281,7 @@ class LocalCache:
         if not self.index_path.exists():
             return None
         with self._index_guard():
-            record = self._index()["entries"].get(identity)
+            record = self._index(migrate=False)["entries"].get(identity)
             if not isinstance(record, dict):
                 return None
             relative_path = record.get("data_path")
@@ -250,7 +324,14 @@ class LocalCache:
             tenant_id=tenant_id,
             principal_id=principal_id,
         )
-        records = [item for item in (self._disk_record(identity), self._volatile_record(identity)) if item]
+        disk = self._disk_record(identity)
+        volatile = self._volatile_record(identity)
+        if volatile is not None and "base_disk_revision" in volatile[1]:
+            disk_revision = self._record_revision(disk)
+            # volatile存放本次完整缓存快照；资料库在别的进程更新后，旧快照失效。
+            records = [volatile] if disk is None or volatile[1]["base_disk_revision"] == disk_revision else [disk]
+        else:
+            records = [item for item in (disk, volatile) if item]
         if not records:
             return self._miss(provider, identity, request)
         try:
@@ -270,13 +351,53 @@ class LocalCache:
         selected = references.get(data_asset_ref_key) if data_asset_ref_key is not None else metadata.get("data_asset_ref")
         metadata["data_asset_refs"] = references
         metadata["data_asset_ref"] = dict(selected) if isinstance(selected, Mapping) else None
+        confirmed_dates = None
+        if provider != "local":
+            confirmed_dates = self._confirmed_dates(metadata, references, provider)
+            metadata["provider_confirmed_dates"] = {key: sorted(value) for key, value in confirmed_dates.items()}
         missing = self._missing(
             frame,
             request,
             expected_trading_dates=expected_trading_dates,
             latest_completed_date=latest_completed_date,
+            provider_confirmed_dates=confirmed_dates,
         )
         return CacheMatch(provider, identity, frame, metadata, not missing, missing)
+
+    @staticmethod
+    def _record_revision(record: tuple[pd.DataFrame, Mapping[str, Any]] | None) -> str | None:
+        if record is None:
+            return None
+        return str(record[1].get("cache_revision", record[1].get("content_hash", "")))
+
+    @staticmethod
+    def _confirmed_dates(metadata: Mapping[str, Any], references: Mapping[str, Any], provider: str) -> dict[str, set[str]]:
+        confirmed = {key: set(value) for key, value in _provider_confirmed_dates(tuple(references.values()), provider).items()}
+        stored = metadata.get("provider_confirmed_dates", {})
+        if isinstance(stored, Mapping):
+            for asset_id, values in stored.items():
+                if isinstance(asset_id, str) and isinstance(values, (list, tuple)):
+                    confirmed.setdefault(asset_id, set()).update(value for value in values if isinstance(value, str))
+        return confirmed
+
+    @classmethod
+    def _saved_metadata(
+        cls,
+        metadata: Mapping[str, Any],
+        existing: Mapping[str, Any],
+        data_asset_ref_key: str | None,
+        reset_coverage: bool,
+    ) -> dict[str, Any]:
+        references = {} if reset_coverage else dict(existing.get("data_asset_refs", {}))
+        reference = metadata.get("data_asset_ref")
+        if isinstance(reference, Mapping) and isinstance(reference.get("created_by"), str):
+            references[data_asset_ref_key or str(reference["created_by"])] = dict(reference)
+        confirmed = cls._confirmed_dates(metadata, references, str(metadata.get("provider", "")))
+        return {
+            **dict(metadata), "data_asset_refs": references,
+            "provider_confirmed_dates": {key: sorted(value) for key, value in confirmed.items()},
+            "cache_revision": uuid4().hex,
+        }
 
     def save_volatile(
         self,
@@ -285,22 +406,23 @@ class LocalCache:
         metadata: Mapping[str, Any],
         *,
         data_asset_ref_key: str | None = None,
+        reset_coverage: bool = False,
     ) -> None:
         """Keep local-first coverage in memory without touching configured roots."""
 
         key = (str(self.root.resolve()), identity)
+        disk_revision = self._record_revision(self._disk_record(identity))
         with _VOLATILE_ENTRIES_LOCK:
             existing = _VOLATILE_ENTRIES.get(key, {})
             existing_metadata = existing.get("metadata", {}) if isinstance(existing, Mapping) else {}
-            references: dict[str, Any] = {}
-            if isinstance(existing_metadata, Mapping) and isinstance(existing_metadata.get("data_asset_refs"), Mapping):
-                references.update(existing_metadata["data_asset_refs"])
-            reference = metadata.get("data_asset_ref")
-            if isinstance(reference, Mapping) and isinstance(reference.get("created_by"), str):
-                references[data_asset_ref_key or str(reference["created_by"])] = dict(reference)
+            if existing_metadata.get("base_disk_revision") != disk_revision:
+                existing_metadata = {}
             _VOLATILE_ENTRIES[key] = {
                 "frame": frame.copy(deep=True),
-                "metadata": {**dict(metadata), "data_asset_refs": references},
+                "metadata": {
+                    **self._saved_metadata(metadata, existing_metadata, data_asset_ref_key, reset_coverage),
+                    "base_disk_revision": disk_revision,
+                },
             }
 
     def save(
@@ -310,6 +432,7 @@ class LocalCache:
         metadata: Mapping[str, Any],
         *,
         data_asset_ref_key: str | None = None,
+        reset_coverage: bool = False,
     ) -> None:
         content_hash = str(metadata["content_hash"])
         relative_path = f"assets/{content_hash}.csv"
@@ -318,19 +441,13 @@ class LocalCache:
             _atomic_write_json(self.root / "assets" / f"{content_hash}.json", dict(metadata))
             index = self._index()
             existing = index["entries"].get(identity)
-            references: dict[str, Any] = {}
-            if isinstance(existing, Mapping) and isinstance(existing.get("data_asset_refs"), Mapping):
-                references.update(existing["data_asset_refs"])
-            reference = metadata.get("data_asset_ref")
-            if isinstance(reference, Mapping) and isinstance(reference.get("created_by"), str):
-                reference_key = data_asset_ref_key or reference["created_by"]
-                references[reference_key] = dict(reference)
             index["entries"][identity] = {
                 "data_path": relative_path,
-                **dict(metadata),
-                "data_asset_refs": references,
+                **self._saved_metadata(metadata, existing or {}, data_asset_ref_key, reset_coverage),
             }
             _atomic_write_json(self.index_path, index)
+        with _VOLATILE_ENTRIES_LOCK:
+            _VOLATILE_ENTRIES.pop((str(self.root.resolve()), identity), None)
 
     def list_assets(
         self,
@@ -343,7 +460,7 @@ class LocalCache:
 
         safe_limit = max(1, min(int(limit), 100))
         with self._index_guard():
-            records = list(self._index()["entries"].values())
+            records = list(self._index(migrate=False)["entries"].values())
         assets: dict[str, Mapping[str, Any]] = {}
         for record in records:
             if (
@@ -377,7 +494,7 @@ class LocalCache:
         """由受控索引精确定位一项资产，不受页面列表展示上限影响。"""
 
         with self._index_guard():
-            records = list(self._index()["entries"].values())
+            records = list(self._index(migrate=False)["entries"].values())
         for record in records:
             if (
                 not isinstance(record, Mapping)
