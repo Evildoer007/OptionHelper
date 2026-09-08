@@ -25,6 +25,22 @@ from .settings.settings_models import SettingsSnapshot
 _RESERVED_CONTEXT_KEYS = {"app_context", "tenant_id", "principal_id", "secret_ref", "credential_ref"}
 _SECRET_KEYS = {"password", "token", "access_token", "refresh_token", "api_key", "secret", "secret_value", "private_key"}
 _FAILURE_PROJECTIONS = {
+    "credential_unavailable": (
+        "无法读取当前保存的iFind凭据。",
+        "请在数据接口中重新保存Refresh Token，保存后会自动验证。",
+    ),
+    "provider_unavailable": (
+        "iFind本次数据请求未完成。",
+        "请检查网络和数据接口连接状态后重试；这不代表需要为任务单独开通数据。",
+    ),
+    "validation_error": (
+        "取数请求的标的、日期或字段不符合要求。",
+        "请修正请求参数后重试，不要重复发送相同请求。",
+    ),
+    "calendar_validation_error": (
+        "交易日历请求或返回结果不符合要求。",
+        "请检查标的、日期范围及日历覆盖情况。",
+    ),
     "unauthorized": (
         "iFind凭据未通过验证。",
         "请在设置中心保存当前凭据并完成连接测试后重试。",
@@ -262,6 +278,9 @@ def _project_datafetcher_failure(result: Mapping[str, Any]) -> dict[str, Any]:
     nested = result.get("error")
     nested = nested if isinstance(nested, Mapping) else {}
     code = str(nested.get("code", result.get("status", ""))).strip()
+    reason_code = str(nested.get("reason_code", ""))
+    if reason_code == "credential_unavailable":
+        code = reason_code
     projection = _FAILURE_PROJECTIONS.get(code)
     if projection is None:
         return {
@@ -277,7 +296,7 @@ def _project_datafetcher_failure(result: Mapping[str, Any]) -> dict[str, Any]:
         "stage": "data",
         "message": message,
         "next_step": next_step,
-        "retryable": False,
+        "retryable": code == "provider_unavailable",
     }
     for field in ("reason_code", "provider_error_code", "http_status"):
         candidate = nested.get(field)
