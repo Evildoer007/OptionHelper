@@ -29,11 +29,13 @@ from .agent_loop import (
 from .redaction import has_hidden_reasoning, redact_text
 from .recommender_adapter import RuntimeEventPersistenceSink
 from .runtime_model_proxy import RuntimeModelProxy
-from .runtime_subprocess import RuntimeSubprocessTransport
+from .runtime_subprocess import RuntimeSubprocessTransport, RuntimeSubprocessTimeout
 
 
 _MAIN_ROLE = "MainAgent"
 _MAX_STEPS = 8
+_MODEL_STEP_SECONDS = 60.0
+_TURN_SECONDS = _MAX_STEPS * (_MODEL_STEP_SECONDS + 30.0)
 _MAX_TOOLS = 12
 _MAX_MODEL_IMAGE_BYTES = 32 * 1024 * 1024
 _IDLE_SECONDS = 15 * 60
@@ -49,6 +51,7 @@ _WIRE_TO_TOOL = {
     "backtester_run": "backtester.run",
     "recommendation_delivery_run": "recommendation_delivery.run",
     "reporter_run": "reporter.run",
+    "reporter_create_document": "reporter.create_document",
 }
 _TOOL_TO_WIRE = {value: key for key, value in _WIRE_TO_TOOL.items()}
 _INTERNAL_REFERENCE = re.compile(
@@ -145,7 +148,7 @@ class OptionConversationAgent:
             entry["route"] = route
             entry["transport"].route_refs[route.route_id] = route
             self._ensure_activated(entry, current_context, route)
-            raw = entry["transport"].request(
+            raw = self._request_turn(identity, task_id, entry,
                 "agent.turn",
                 {
                     "runId": entry["run_id"],
@@ -157,7 +160,7 @@ class OptionConversationAgent:
                     "budget": {"maxSteps": _MAX_STEPS, "maxTools": _MAX_TOOLS},
                 },
                 request_id=str((execution_ids or {}).get("model_step_id") or f"main-{_digest(message)}"),
-                timeout=70.0,
+                timeout=_TURN_SECONDS,
             )
             text = _result_text(raw)
             blocks = _result_blocks(raw)
@@ -170,6 +173,18 @@ class OptionConversationAgent:
             )
         self._schedule_idle_close(identity, task_id, entry)
         return response
+
+    def _request_turn(self, identity, task_id, entry, method, params, **kwargs):
+        try:
+            return _run_turn(entry["transport"], method, params, **kwargs)
+        except UnavailableCapabilityError:
+            # Timeout has closed the child. Never reuse its activated session.
+            key = (identity.tenant_id, identity.principal_id, str(task_id))
+            with self._lock:
+                if self._entries.get(key) is entry:
+                    self._entries.pop(key)
+            self._close_entry(entry)
+            raise
 
     def close_all(self) -> None:
         with self._lock:
@@ -300,7 +315,7 @@ class OptionConversationAgent:
             identity, task_id, messages, route, entry["model_proxy"],
         )
         tools = _tool_schemas(entry.get("context", {})) if supports_tools else []
-        control = ModelRequestControl(60.0)
+        control = ModelRequestControl(_MODEL_STEP_SECONDS)
         stopped = Event()
 
         def watch() -> None:
@@ -725,7 +740,7 @@ def _system_prompt(context: Mapping[str, Any]) -> str:
         "例如可回复：您好，有什么想聊的？这条规则优先于后面的专业职责说明。\n"
         "知识解释和比较直接回答；只有缺少信息确实阻塞用户要求的操作时才提问，并尽量一次问完。\n"
         "你专注于期权结构、条款、收益、估值、Greeks、风险与历史回放，不提供无关的通用编程或文件操作能力。\n"
-        "是否进入Recommender、如何确认候选及如何交付报告由OptionHelper Host决定。你不得自行调用或模拟Recommender。"
+        "结构推荐由OptionHelper Host组织，你不得自行调用或模拟Recommender。用户要求报告或HTML文件时，必须交付文件而非代码：用户明确要求定价、回测或模块结果时，先执行所需模块，已有计算直接复用并调用reporter_run；缺少必要输入则询问，计算失败如实说明，不能改交草稿。仅在用户未要求计算且没有计算结果时可调用reporter_create_document整理对话研究草稿。报告不要求额外候选审批，使用用户指定结构或本轮首选。模板与文件格式分别遵从用户要求，默认HTML。只有明确要求源码才展示代码。"
         "允许的业务工具仅用于当前已确定的结构、合同、知识检索和交付；按需调用，不得建立固定模块链。\n"
         "不得编造合同、市场数据或金融计算。引用当前Task的量化事实时，必须逐个在数字后紧接其FactRef，格式为[fact:fact_xxx]；Host会验证并移除标记。"
         "不要向用户解释FactRef、工具名、内部协议、存储结构或身份字段。\n"
@@ -775,6 +790,7 @@ def _tool_description(name: str) -> str:
         "backtester.run": "基于当前已确认合同执行历史回放。",
         "recommendation_delivery.run": "继续当前已确认推荐的计算或交付状态机。",
         "reporter.run": "使用当前Task中已验证结果生成Card、Quote或Report。",
+        "reporter.create_document": "把当前研究正文生成可编辑的真实报告文件，没有计算结果也可生成草稿。",
     }[name]
 
 
@@ -788,10 +804,12 @@ def _tool_properties(name: str) -> dict[str, Any]:
             "query": {"type": "string"},
             "queries": {"type": "array", "items": {"type": "string"}},
         }
+    if name == "reporter.create_document":
+        return {"title":{"type":"string"},"content":{"type":"string"},"template":{"type":"string","enum":["card","report","multicard","multireport"]},"format":{"type":"string","enum":["html","pdf","docx"]}}
     if name == "reporter.run":
         return {
             "kind": {"type": "string", "enum": ["card", "quote", "report"]},
-            "format": {"type": "string", "enum": ["html", "pdf"]},
+            "format": {"type": "string", "enum": ["html", "pdf", "docx"]},
             "title": {"type": "string"},
             "delivery_mode": {"type": "string", "enum": ["single", "comparison"]},
         }
@@ -799,11 +817,25 @@ def _tool_properties(name: str) -> dict[str, Any]:
 
 
 def _tool_required(name: str) -> list[str]:
+    if name == "reporter.create_document":
+        return ["title", "content"]
     if name == "attachment.search":
         return ["attachment_id", "query"]
     if name == "attachment.read":
         return ["attachment_id", "chunk"]
     return []
+
+
+def _run_turn(transport, method, params, *, request_id, timeout):
+    """A turn spans several model/tool steps; never abandon a live child."""
+    try:
+        return transport.request(method, params, request_id=request_id, timeout=timeout)
+    except RuntimeSubprocessTimeout as error:
+        transport.cancel("conversation_turn_timeout")
+        transport.close()
+        raise UnavailableCapabilityError(
+            "natural_conversation_turn", "本轮处理超时，后台运行已停止；对话和已生成文件已保留。",
+        ) from error
 
 
 def _safe_tool_result(
@@ -825,7 +857,7 @@ def _safe_tool_result(
         for key in ("chunk", "total_chunks", "text"):
             if key in raw:
                 result[key] = _safe_value(raw[key])
-    for key in ("preview_url", "delivery", "next_step", "coverage"):
+    for key in ("preview_url", "delivery", "document", "next_step", "coverage"):
         if key in raw:
             result[key] = _safe_value(raw[key])
     return result
