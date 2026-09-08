@@ -33,7 +33,7 @@ if str(ROOT / "packaging") not in sys.path:
 
 from verify_skill import content_tree_entries, tree_hash
 from verify_capability import verify_app_capability
-from release_contract import RELEASE_VERSION, require_release_version
+from release_contract import APP_VERSION, RELEASE_VERSION, require_app_version, app_platform_versions
 from platform_payload import (
     BACKEND_DESKTOP_COMMON_MODULES,
     WINDOWS_ALLOWED_RESOURCE_ENTRIES,
@@ -44,6 +44,7 @@ from platform_payload import (
     PlatformPayloadError,
     assert_outer_resource_layout,
     build_outer_payload_manifest,
+    stage_python_docx_templates,
     stage_verification_fixture_definition,
 )
 from python_runtime_licenses import (
@@ -57,8 +58,6 @@ if str(AGENT_RUNTIME_PACKAGING) not in sys.path:
     sys.path.insert(0, str(AGENT_RUNTIME_PACKAGING))
 from build_runtime import (  # noqa: E402
     ALLOW_SOURCE_RUNTIME_FALLBACK_ENV,
-    DEFAULT_SOURCE_ROOT,
-    LOCAL_VERIFIED,
     REQUIRE_NATIVE_RUNTIME_ENV,
     RuntimeBuildError,
     prepare_staged_runtime,
@@ -138,13 +137,30 @@ PDF_RUNTIME_MODULES = (
     "PIL.Image",
     "pypdf",
     "docx",
+    "bs4",
+    "bs4.builder",
+    "bs4.builder._htmlparser",
+    "soupsieve",
+    "lxml",
+    "lxml.etree",
     "openpyxl",
 )
 PDF_RUNTIME_VERSION = "5.0.0"
 PILLOW_RUNTIME_VERSION = "12.3.0"
 PYPDF_RUNTIME_VERSION = "6.16.0"
 PYTHON_DOCX_RUNTIME_VERSION = "1.2.0"
+BEAUTIFULSOUP_RUNTIME_VERSION = "4.15.0"
+SOUPSIEVE_RUNTIME_VERSION = "2.9.1"
+LXML_RUNTIME_VERSION = "6.1.1"
 OPENPYXL_RUNTIME_VERSION = "3.1.5"
+DOCUMENT_RUNTIME_DISTRIBUTIONS = {
+    "pypdf": PYPDF_RUNTIME_VERSION,
+    "python-docx": PYTHON_DOCX_RUNTIME_VERSION,
+    "beautifulsoup4": BEAUTIFULSOUP_RUNTIME_VERSION,
+    "soupsieve": SOUPSIEVE_RUNTIME_VERSION,
+    "lxml": LXML_RUNTIME_VERSION,
+    "openpyxl": OPENPYXL_RUNTIME_VERSION,
+}
 EXCLUDED_BACKEND_MODULES = (
     "IPython", "PySide6", "cv2", "datasets", "debugpy", "h5py",
     "jedi", "keras", "matplotlib", "pyarrow", "pytest", "sklearn", "tensorflow",
@@ -154,7 +170,7 @@ EXCLUDED_BACKEND_MODULES = (
 MAX_BACKEND_BYTES = 600 * 1024 * 1024
 MAX_WINDOWS_APP_BYTES = 750 * 1024 * 1024
 EXTERNAL_COMMAND_TIMEOUT_SECONDS = 900
-MINIMUM_BUILD_PYTHON = (3, 11)
+MINIMUM_BUILD_PYTHON = (3, 12)
 PYINSTALLER_VERSION = "6.21.0"
 
 
@@ -201,6 +217,17 @@ def _run(command: list[str], *, cwd: Path | None = None, env: dict[str, str] | N
         raise WindowsBuildError(f"命令失败：{' '.join(command)}\n{completed.stdout}")
 
 
+
+def _run_powershell(script: str, *arguments: str) -> None:
+    """Pass paths as literal script arguments, never as PowerShell source."""
+    with tempfile.TemporaryDirectory(prefix="optionhelper-powershell-") as directory:
+        path = Path(directory) / "verify.ps1"
+        path.write_text('$ErrorActionPreference = "Stop"\n' + script, encoding="utf-8-sig")
+        _run([
+            "powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+            "-File", str(path), *arguments,
+        ])
+
 def formal_signing_thumbprint() -> str:
     """Require an explicit real Authenticode certificate for formal builds."""
 
@@ -227,10 +254,7 @@ def sign_and_verify_executable(executable: Path, thumbprint: str) -> None:
         "if($signature.Status -ne 'Valid' -or $null -eq $signature.SignerCertificate){exit 2};"
         "if($signature.SignerCertificate.Thumbprint -ne $args[1]){exit 3}"
     )
-    _run([
-        "powershell", "-NoProfile", "-NonInteractive", "-Command",
-        script, str(executable), thumbprint,
-    ])
+    _run_powershell(script, str(executable), thumbprint)
 
 
 def _validate_application_icon(icon: Path = WINDOWS_APP_ICON) -> int:
@@ -296,6 +320,9 @@ def backend_build_command(
     for module in PDF_RUNTIME_MODULES:
         command.extend(("--hidden-import", module))
     command.extend(("--copy-metadata", "reportlab"))
+    # Keep python-docx's base document and header/footer/style XML templates in
+    # the frozen backend; these resources are opened lazily during rendering.
+    command.extend(("--collect-data", "docx"))
     command.extend(("--collect-data", "certifi"))
     for module in EXCLUDED_BACKEND_MODULES:
         command.extend(("--exclude-module", module))
@@ -315,6 +342,10 @@ def shell_build_command(
         "dotnet", "publish", str(app_root / "desktop" / "windows" / "OptionHelper.Windows.csproj"),
         "--configuration", "Release", "--runtime", "win-x64", "--self-contained", "true",
         f"-p:ApplicationIcon={icon}", "--output", str(output),
+        f"-p:Version={APP_VERSION.removeprefix('v').replace('.alpha', '-alpha')}",
+        f"-p:AssemblyVersion={app_platform_versions(APP_VERSION)[0]}.0",
+        f"-p:FileVersion={app_platform_versions(APP_VERSION)[0]}.0",
+        f"-p:InformationalVersion={APP_VERSION.removeprefix('v')}",
     ]
     if intermediate_root is not None:
         command.extend((
@@ -355,7 +386,7 @@ for ($y = 0; $y -lt $actual.Height; $y++) {
 }
 $actual.Dispose(); $expected.Dispose(); $source.Dispose(); $embedded.Dispose()
 """.strip()
-    _run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script, str(executable), str(icon)])
+    _run_powershell(script, str(executable), str(icon))
 
 
 def _verify_backend(package: Path) -> None:
@@ -422,8 +453,8 @@ def _manifest(
     outer_payload: dict[str, object] | None = None,
 ) -> dict[str, object]:
     layer_count = _validate_application_icon(icon)
-    if formal_release and app_version != RELEASE_VERSION:
-        raise WindowsBuildError("Windows正式App Manifest版本必须为v1.0.0")
+    if formal_release and app_version != APP_VERSION:
+        raise WindowsBuildError(f"Windows正式App Manifest版本必须为{APP_VERSION}")
     normalized_thumbprint = (signing_thumbprint or "").strip().upper()
     if formal_release and (
         len(normalized_thumbprint) != 40
@@ -432,7 +463,7 @@ def _manifest(
         raise WindowsBuildError("Windows正式App Manifest不得记录unsigned签名")
     return {
         "app_version": app_version,
-        "build_version": RELEASE_VERSION,
+        "build_version": APP_VERSION,
         "release_status": "formal_release" if formal_release else "local_candidate",
         "formal_release": formal_release,
         "bundle_id": "com.optionhelper.app",
@@ -489,7 +520,7 @@ def build_windows(
     repo_root: Path = ROOT,
 ) -> dict[str, Path]:
     try:
-        require_release_version(app_version)
+        require_app_version(app_version)
     except ValueError as error:
         raise WindowsBuildError(str(error)) from error
     repo_root = repo_root.expanduser().resolve()
@@ -523,7 +554,7 @@ def build_windows(
         source_icon=application_icon_source,
     )
 
-    release_root = versions_root.resolve() / app_version
+    release_root = versions_root.resolve() / (RELEASE_VERSION if formal_context else app_version)
     if release_root.exists() and not release_root.is_dir():
         raise WindowsBuildError("Windows构建记录路径不是目录")
     if not release_root.exists():
@@ -548,6 +579,10 @@ def build_windows(
         backend = temporary / "pyinstaller-dist" / "OptionHelperBackend"
         if not (backend / "OptionHelperBackend.exe").is_file():
             raise WindowsBuildError("PyInstaller未生成OptionHelperBackend.exe")
+        try:
+            stage_python_docx_templates(backend)
+        except PlatformPayloadError as error:
+            raise WindowsBuildError(str(error)) from error
         _verify_backend(backend)
         verify_executable_icon(backend / "OptionHelperBackend.exe", application_icon)
         if signing_thumbprint is not None:
@@ -748,7 +783,7 @@ def check_prerequisites(capability_root: Path) -> None:
     if platform.system() != "Windows":
         raise WindowsBuildError("Windows App只能在Windows构建机封装")
     if sys.version_info < MINIMUM_BUILD_PYTHON:
-        raise WindowsBuildError("App构建需要Python 3.11或更高版本")
+        raise WindowsBuildError("App构建需要Python 3.12或更高版本")
     try:
         pyinstaller_version = metadata.version("PyInstaller")
     except metadata.PackageNotFoundError as error:
@@ -767,11 +802,7 @@ def check_prerequisites(capability_root: Path) -> None:
         raise WindowsBuildError(f"Windows App构建缺少PDF图像组件Pillow {PILLOW_RUNTIME_VERSION}") from error
     if pillow_version != PILLOW_RUNTIME_VERSION:
         raise WindowsBuildError(f"Pillow必须固定为{PILLOW_RUNTIME_VERSION}，当前为{pillow_version}")
-    for package, expected in (
-        ("pypdf", PYPDF_RUNTIME_VERSION),
-        ("python-docx", PYTHON_DOCX_RUNTIME_VERSION),
-        ("openpyxl", OPENPYXL_RUNTIME_VERSION),
-    ):
+    for package, expected in DOCUMENT_RUNTIME_DISTRIBUTIONS.items():
         try:
             actual = metadata.version(package)
         except metadata.PackageNotFoundError as error:
