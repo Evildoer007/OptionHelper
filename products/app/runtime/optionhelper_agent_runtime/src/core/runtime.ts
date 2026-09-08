@@ -88,6 +88,11 @@ function workflowRecord(value: unknown, fallbackRootSessionId: string): Record<s
   }
 }
 
+function executionLimit(value: unknown): number {
+  const number = Number(value ?? 0)
+  return Number.isSafeInteger(number) && number >= 0 ? number : 0
+}
+
 function positiveInteger(value: unknown, fallback: number, maximum: number): number {
   const number = Number(value)
   return Number.isSafeInteger(number) && number > 0 ? Math.min(number, maximum) : fallback
@@ -212,8 +217,8 @@ export class OptionHelperAgentRuntime implements AgentEventPublisher {
       allowedTools: Array.isArray(pick(toolPolicy, "allowedTools", "allowed_tools")) ? (pick(toolPolicy, "allowedTools", "allowed_tools") as unknown[]).map(String) : [],
       parallelTools: pick(toolPolicy, "parallelTools", "parallel_tools") === true,
       budget: {
-        maxSteps: positiveInteger(pick(budget, "maxSteps", "max_steps"), 8, 8),
-        maxTools: positiveInteger(pick(budget, "maxTools", "max_tools"), 12, 12),
+        maxSteps: executionLimit(pick(budget, "maxSteps", "max_steps")),
+        maxTools: executionLimit(pick(budget, "maxTools", "max_tools")),
       },
       contextPolicy: contextPolicy(params),
     }
@@ -410,8 +415,8 @@ export class OptionHelperAgentRuntime implements AgentEventPublisher {
       allowedTools: Array.isArray(raw.allowedTools) ? raw.allowedTools.map(String) : [],
       parallelTools: raw.parallelTools === true,
       budget: {
-        maxSteps: positiveInteger(budget.maxSteps, 8, 8),
-        maxTools: positiveInteger(budget.maxTools, 12, 12),
+        maxSteps: executionLimit(budget.maxSteps),
+        maxTools: executionLimit(budget.maxTools),
       },
       contextPolicy: contextPolicy({ contextPolicy: policy }),
     }
