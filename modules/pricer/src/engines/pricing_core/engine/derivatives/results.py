@@ -9,20 +9,11 @@ from collections.abc import Mapping
 from typing import Any
 
 from .enums import PricingMethod
+from runtime.contracts.public_projection import (
+    contains_private_money_compatibility_text,
+    redact_public_money_compatibility,
+)
 
-
-_PRIVATE_MONEY_COMPATIBILITY_FIELDS = frozenset({
-    "notional", "cashflow_scale", "cashflow_scale_kind", "pv_amount", "currency", "engine_raw",
-    "pv_amount_value", "pv_amount_unit",
-})
-
-_PRIVATE_CONTRACT_SCALE_FIELDS = frozenset({"n", "nvar", "nvega"})
-
-_PUBLIC_CONTRACT_IDENTITY_FIELDS = frozenset({
-    "product_id", "name_zh", "entry_status", "contract_id", "underlyings",
-    "contract_start_date", "contract_end_date", "reference_prices",
-    "price_convention", "calendar_id", "calendar_revision", "rule_revision",
-})
 
 # ``pv_points_100`` remains the numerical kernel's reconciliation basis.  It
 # is not a public presentation unit: public Pricer envelopes must carry the
@@ -192,45 +183,6 @@ def project_public_percent(value: Any) -> Any:
     return value
 
 
-def _contains_private_money_compatibility_text(value: object) -> bool:
-    if not isinstance(value, str):
-        return False
-    text = value.casefold()
-    return any(field in text for field in _PRIVATE_MONEY_COMPATIBILITY_FIELDS) or "cny" in text
-
-
-def redact_public_money_compatibility(value: Any) -> Any:
-    """Remove private money-projection fields from a public Pricer envelope.
-
-    The calculation kernel may retain amount/currency fields for internal
-    reconciliation.  They must not leak back through nested diagnostics or
-    snapshots after the public result has adopted the 100-point contract
-    basis.
-    """
-    if isinstance(value, Mapping):
-        is_contract_identity = {
-            "product_id", "underlyings",
-        }.issubset({str(key) for key in value})
-        return {
-            str(key): redact_public_money_compatibility(item)
-            for key, item in value.items()
-            if str(key).casefold() not in (
-                _PRIVATE_MONEY_COMPATIBILITY_FIELDS | _PRIVATE_CONTRACT_SCALE_FIELDS
-            )
-            and (
-                not is_contract_identity
-                or str(key) in _PUBLIC_CONTRACT_IDENTITY_FIELDS
-            )
-        }
-    if isinstance(value, list):
-        return [redact_public_money_compatibility(item) for item in value]
-    if isinstance(value, tuple):
-        return [redact_public_money_compatibility(item) for item in value]
-    if _contains_private_money_compatibility_text(value):
-        return "private_metadata_redacted"
-    return value
-
-
 @dataclass(frozen=True)
 class GreekValue:
     """One risk sensitivity reported on the unified PV bases.
@@ -320,7 +272,7 @@ class PricingResult:
             if isinstance(values, list):
                 payload[name] = [
                     value for value in values
-                    if not _contains_private_money_compatibility_text(value)
+                    if not contains_private_money_compatibility_text(value)
                 ]
         return payload
 
