@@ -212,6 +212,9 @@ class ModelGateway:
             if MULTI_AGENT_LEGACY_ROLE_ALIASES.get(role, role) in MULTI_AGENT_RECOMMENDATION_ROLES
         }
 
+    def recommendation_execution_mode_for(self, identity: SessionIdentity) -> str:
+        return self._load(identity).recommendation_execution_mode
+
     def multi_agent_recommendation_preset_for(self, identity: SessionIdentity) -> str:
         return self._load(identity).multi_agent_recommendation_preset_id
 
@@ -301,6 +304,18 @@ class ModelGateway:
             selection=selection,
             timeout_seconds=timeout_seconds,
         )
+        connected = bool(observed.get("streaming"))
+        if not connected:
+            # Some chat endpoints reject tool schemas while accepting normal
+            # messages. Check connectivity independently of optional tools.
+            try:
+                answer = self.complete_for(
+                    identity, task_id, "Reply with OK.", selection=selection,
+                    request_control=ModelRequestControl(30.0),
+                )
+                connected = isinstance(answer, str) and bool(answer.strip())
+            except Exception:
+                connected = False
         binding = self.model_binding_for(identity, selection=selection)
         effective = {
             "streaming": bool(observed.get("streaming")),
@@ -318,7 +333,8 @@ class ModelGateway:
             "schema": SETTINGS_MODEL_CAPABILITY_PROBE_SCHEMA_ID,
             "status": "verified" if verified else "unverified",
             "detected": True,
-            "initialized": bool(observed.get("streaming")),
+            "initialized": connected,
+            "connection_available": connected,
             "verified": verified,
             "model": dict(binding),
             "declared": dict(declared),
@@ -351,7 +367,7 @@ class ModelGateway:
         if model.provider_name == "unconfigured":
             raise UnavailableCapabilityError(
                 "ModelGateway",
-                "请由管理员在设置中心配置模型服务后重试。",
+                "请在设置中心配置模型服务后重试。",
             )
         secret_ref = self._secrets.require_reference(model.secret_ref, "模型服务凭据")
         return model, secret_ref
