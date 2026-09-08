@@ -18,6 +18,7 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT / "packaging") not in sys.path:
     sys.path.insert(0, str(ROOT / "packaging"))
 
+from release_contract import skill_archive_name
 from release_contract import (
     CAPABILITY_MANIFEST_SCHEMA,
     PROTOCOL_ID,
@@ -66,7 +67,7 @@ def sign(
     release_root = release_root.resolve()
     require_published_at(published_at)
     require_release_version(release_root.name)
-    archive_target = release_root / "option-helper.zip"
+    archive_target = release_root / skill_archive_name()
     manifest_target = release_root / "capability-manifest.json"
     if archive_target.exists() or manifest_target.exists():
         raise FileExistsError(f"Capability版本已存在：{release_root}")
@@ -106,7 +107,7 @@ def sign(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="签发OptionHelper唯一v1.0.0 Capability")
+    parser = argparse.ArgumentParser(description="签发OptionHelper当前版本Capability")
     parser.add_argument("--candidate", type=Path, required=True)
     parser.add_argument("--release-root", type=Path, required=True)
     parser.add_argument("--published-at", required=True)
