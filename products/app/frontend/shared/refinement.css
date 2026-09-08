@@ -1295,9 +1295,9 @@ html { font-size: 14px; }
   width: min(100%, 620px);
   margin-top: 14px;
   padding: 14px;
-  border: 1px solid color-mix(in srgb, var(--line) 78%, var(--accent) 22%);
+  border: 1px solid var(--line);
   border-radius: 16px;
-  background: color-mix(in srgb, var(--surface) 95%, var(--accent) 5%);
+  background: var(--surface);
 }
 
 .message-artifact {
@@ -1400,8 +1400,9 @@ html { font-size: 14px; }
 
 .message-question__free textarea {
   flex: 1;
+  min-width: 0;
   min-height: 52px;
-  resize: vertical;
+  resize: none;
   padding: 10px 12px;
   border: 1px solid var(--line);
   border-radius: 12px;
@@ -3069,3 +3070,7 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
 .process-tool-card [hidden] { display: none; }
 @keyframes process-status-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .process-tool-card [data-state="running"] svg { animation: none; } }
+
+.message-question__answered { color: var(--muted); font-size: 12px; }
+.message-question[data-state="answered"] { padding-block: 12px; }
+[data-process-card-status][data-state="uncertain"] { color: var(--muted); }
