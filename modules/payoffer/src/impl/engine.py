@@ -266,14 +266,14 @@ def build_payoff_input(
     """由产品与结构条款编译一次性归一化候选合同。"""
     try:
         if maintenance_registry is None:
-            product_id, product, registry = _registry_with_default_figure(name_zh)
+            product_id, _, registry = _registry_with_default_figure(name_zh)
         else:
             # 仅默认资产维护可显式传入当期OptionReg：目标副本允许保留待修复的
             # 旧默认JSON，因此不能读取全局冻结资产或运行其同源门禁。页面预览
             # 未提供该参数时仍必须走上面的严格校验。
             registry = deepcopy(dict(maintenance_registry))
             product_id = _product_id_for_asset_name(name_zh, registry)
-            product = product_by_id(product_id, registry)
+            product_by_id(product_id, registry)
         return resolve_structural_payoff_contract(
             str(product_id), term_overrides=term_overrides, registry=registry,
         )
@@ -808,12 +808,6 @@ def _reporter_payoff_facts(path_panels: list[Mapping[str, Any]]) -> dict[str, An
     }
 
 
-def _payoff_figure_basis(contract: ResolvedContract) -> tuple[str, float]:
-    """Payoffer唯一展示口径：共享解释器给出的合同结算收益率。"""
-
-    return "net_after_premium", 0.0
-
-
 def _includes_initial_premium(contract: ResolvedContract) -> bool:
     """判断合同现金流公式是否明确包含期初期权费支出。"""
 
@@ -902,7 +896,6 @@ def render_paths(contract: ResolvedContract, visual_template: Mapping[str, Any])
     active_path_case_refs = set(contract.active_path_case_refs)
     if not active_path_case_refs:
         raise PayoffEngineError(f"{contract.product_id}的ResolvedContract没有可达收益分段")
-    payoff_basis, premium_offset = _payoff_figure_basis(contract)
     includes_initial_premium = _includes_initial_premium(contract)
     rendered: list[RenderedPath] = []
     for view in _template_path_views(visual_template, compiled):
@@ -959,8 +952,6 @@ def render_paths(contract: ResolvedContract, visual_template: Mapping[str, Any])
                     "condition_tex": path["cases"][case_index]["domain"],
                 })
                 selected_case_indexes.append(case_index + 1)
-            if premium_offset != 0.0:  # pragma: no cover - invariant guarded by _payoff_figure_basis
-                raise PayoffEngineError("Payoffer合同结算收益率不得叠加展示偏移")
             for case_index, domain, case_segments in reporter_fact_sources:
                 case_facts, endpoint_facts = _reporter_segment_facts(
                     case_index=case_index,
@@ -993,7 +984,7 @@ def render_paths(contract: ResolvedContract, visual_template: Mapping[str, Any])
                     segments=segments, jumps=jumps, turning_points=turning_points,
                     thresholds=_thresholds(contract, selected_domains, axis), payoff_levels=_payoff_levels(segments),
                     reporter_segments=reporter_segments, reporter_endpoints=reporter_endpoints,
-                    payoff_basis=payoff_basis, status_note=status_note,
+                    status_note=status_note,
                     candidate_state={"template": fixed_template.name, "history_rule": "nonterminal_fixed" if terminal_slice else "axis_constructed", "seed_monitor_values": state_seed, "case_indexes": selected_case_indexes},
                 )
             )
