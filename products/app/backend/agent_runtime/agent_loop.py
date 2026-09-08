@@ -15,11 +15,12 @@ from dataclasses import dataclass
 from time import monotonic
 from typing import Any, Protocol
 
-from runtime.workflow_policy import decide_workflow
+from runtime.workflow_policy import decide_workflow, recommendation_execution_mode
 
 from ..errors import AuthorizationError, UnavailableCapabilityError, ValidationError
 from ..identity.session_identity import SessionIdentity
 from ..settings.settings_models import ModelSelection
+from ..report_delivery import delivery_request
 from .redaction import has_hidden_reasoning, redact_text
 from .durability_checkpoint import DurabilityCheckpointStore, stable_operation_id
 from .session_context import SessionId
@@ -188,12 +189,12 @@ class AgentLoop:
                     arguments = {
                         "workflow": _fixed_recommendation_workflow(message),
                         "main_agent_controlled": True,
-                        "require_multi_agent": True,
+                        "require_multi_agent": workflow_decision.execution_semantics == "multi_agent",
                         "recommendation_preset": workflow_decision.preset_id,
                     }
                     self._emit_visible_event(
                         identity, task_id, request_id, "agent_run", "started",
-                        _preset_started_summary(str(arguments["recommendation_preset"])),
+                        ("正在使用多Agent预设分析候选。" if arguments["require_multi_agent"] else "正在使用单Agent分析候选。"),
                     )
                     if execution_ids is None:
                         raw = (
@@ -213,9 +214,36 @@ class AgentLoop:
                             )
                         )
                     observations.append(_observation("recommender.run", raw, identity))
-                    self._emit_visible_event(identity, task_id, request_id, "agent_run", "completed", "候选分析已完成。")
+                    recommendation = raw.get("recommendation_set", {})
+                    recommendation_status = str(recommendation.get("status", "")) if isinstance(recommendation, Mapping) else ""
+                    self._emit_visible_event(
+                        identity, task_id, request_id, "agent_run",
+                        "failed" if recommendation_status in {"failed", "unavailable"} else "completed",
+                        "等待补充推荐条件。" if recommendation_status == "pending_question" else
+                        "候选分析未完成。" if recommendation_status in {"failed", "unavailable"} else "候选分析已完成。",
+                    )
                     if not _recommender_returns_to_main_agent(raw):
                         return _recommendation_outcome(raw, observations, round_number)
+                    requested_document = delivery_request(message)
+                    if requested_document and _explicit_delivery_kinds(message) != ("card", "report"):
+                        # Recommendation and delivery are one requested task. The
+                        # Host already owns the confirmed candidate and validated
+                        # calculations; do not ask a second model to rediscover or
+                        # rerun them after a document has been committed.
+                        if self._is_cancelled(identity, task_id):
+                            return _result("cancelled", "本次任务已取消。", observations, round_number)
+                        delivery = dict(self._tool_executor.call(
+                            identity, task_id, "recommendation_delivery.run",
+                            {"kind": requested_document["template"], "format": requested_document["format"]},
+                        ))
+                        observations.append(_observation("recommendation_delivery.run", delivery, identity))
+                        return {
+                            **delivery,
+                            "state": _state(str(delivery.get("status", "unavailable"))),
+                            "text": delivery.get("text") or delivery.get("next_step") or delivery.get("message") or "所需计算尚未完成。",
+                            "observations": observations,
+                            "rounds": round_number,
+                        }
                     # Recommender persists the authoritative ordered candidate
                     # state.  The parent Agent must observe that committed state,
                     # never the context captured before recommendation ran.
@@ -350,7 +378,7 @@ class AgentLoop:
                     forwarded_arguments = {
                         **dict(decision.arguments),
                         "main_agent_controlled": True,
-                        "require_multi_agent": True,
+                        "require_multi_agent": workflow_decision.execution_semantics == "multi_agent",
                         "recommendation_preset": _selected_recommendation_preset(self._gateway, identity),
                     }
                     if execution_ids is None:
@@ -410,7 +438,7 @@ class AgentLoop:
                         requested_kind = str(
                             decision.arguments.get("kind")
                             or decision.arguments.get("output_type")
-                            or ("report" if identity.role.value == "admin" else "card")
+                            or "report"
                         ).strip().lower()
                         delivery_status, delivery_text = _delivery_completion(raw, requested_kind)
                         return _result(
@@ -553,11 +581,6 @@ class AgentLoop:
     ) -> None:
         if self._visible_event_sink is not None:
             self._visible_event_sink(identity, task_id, request_id, event_type, status, summary)
-
-
-def _preset_started_summary(preset_id: str) -> str:
-    del preset_id
-    return "正在分析需求并整理候选结构。"
 
 
 def _host_module_summary(tool_name: str) -> tuple[str, str] | None:
@@ -895,6 +918,13 @@ def _recommendation_outcome(
     status = str(recommendation.get("status", "")).lower() if isinstance(recommendation, Mapping) else ""
     follow_up = _recommendation_follow_up(raw)
     if follow_up is not None:
+        limitations = recommendation.get("limitations", []) if isinstance(recommendation, Mapping) else []
+        detail = " ".join(str(item) for item in limitations).lower() if isinstance(limitations, list) else ""
+        if status == "unavailable" and any(marker in detail for marker in ("模型", "model", "structured", "gateway")):
+            return _result(
+                "unavailable", follow_up, observations, round_number,
+                error_capability="model", error_next_step=follow_up,
+            )
         return _result("needs_input", follow_up, observations, round_number, action="ask_user")
     if status == "pending_approval" and _has_approvable_candidate(recommendation):
         return _result(
@@ -1076,44 +1106,13 @@ def _workflow_decision(
         facts=facts if isinstance(facts, Mapping) else {},
         messages=messages if isinstance(messages, list) else (),
         preset_id=_selected_recommendation_preset(gateway, identity),
-        execution_semantics="multi_agent",
+        execution_semantics="multi_agent" if recommendation_execution_mode(message, getattr(gateway, "recommendation_execution_mode_for", lambda _: "single")(identity)) == "multi" else "single_model",
     )
 
 
 def _fixed_recommendation_workflow(message: object) -> str:
-    """Use the detailed fixed route only when the customer explicitly requests it."""
-
-    text = str(message or "").lower()
-    return "professional_report" if any(
-        marker in text for marker in (
-            "完整研究报告", "详细报告", "深度报告", "完整报告", "生成html报告", "生成html简报", "html报告",
-            "简报", "card", "参考报价", "报价表", "quote",
-        )
-    ) else "recommendation"
-
-
-def _requires_multi_agent(message: object) -> bool:
-    text = str(message or "").casefold()
-    return any(marker in text for marker in ("必须多agent", "必须使用多agent", "require multi-agent"))
-
-
-def _confirmation_text(value: object) -> bool:
-    text = str(value or "").strip().lower()
-    if not text or any(word in text for word in ("不确认", "不同意", "取消", "不要执行", "先不要")):
-        return False
-    return any(word in text for word in ("确认", "同意", "按此", "按这个", "继续执行", "继续生成", "继续分析", "可以执行", "好的", "好，"))
-
-
-def _awaits_contract_confirmation(message: Mapping[str, Any]) -> bool:
-    """识别本Host刚展示过的候选合同确认提示。"""
-
-    content = str(message.get("content", ""))
-    return "确认按此候选和条款继续" in content and "需要调整" in content
-
-
-def _delivery_choice_text(value: object) -> bool:
-    text = str(value or "").strip().lower()
-    return any(word in text for word in ("研究简报", "简单报告", "简报", "完整研究报告", "详细报告", "深度报告", "完整报告", "报告"))
+    """Recommend first; the Host handles document delivery independently."""
+    return "recommendation"
 
 
 def _explicit_delivery_kinds(value: object) -> tuple[str, ...]:
