@@ -33,9 +33,9 @@ DEFAULT_REGISTRY_PATH = get_default_registry_path()
 _RULE_TERM_KEYS = frozenset({"monitor", "pricing_methods", "constraints", "derived_terms"})
 # 这些字段是产品定义的一部分，而不是本次交易可报价、可覆盖的经济参数。
 # 它们仍保留在ResolvedContract.terms中，供下游展示和审计读取。
-_IMMUTABLE_TERM_KEYS = frozenset({"margin_call", "payoff_figure_basis", "N", "Nvar", "Nvega", "G"})
+_IMMUTABLE_TERM_KEYS = frozenset({"margin_call", "N", "Nvar", "Nvega", "G"})
 # 不可覆盖不等于不可进入公式：N/Nvar虽是内部固定100基准，仍须由解释器绑定。
-_STATIC_TERM_KEYS = _RULE_TERM_KEYS | frozenset({"margin_call", "payoff_figure_basis"})
+_STATIC_TERM_KEYS = _RULE_TERM_KEYS | frozenset({"margin_call"})
 _ALLOWED_PRODUCT_KEYS = frozenset({"identity", "terms", "paths"})
 _ALLOWED_IDENTITY_KEYS = frozenset({"product_id", "name_zh", "entry_status", "rule_revision"})
 _ALLOWED_PATH_KEYS = frozenset({"condition", "cases"})
@@ -78,6 +78,27 @@ def _shared_term_catalog() -> Mapping[str, Any]:
     return _load_term_catalog(DEFAULT_REGISTRY_PATH)
 
 
+def counted_observation_key(terms: Mapping[str, Any]) -> str | None:
+    """Locate the registered observation selector governed by n_obs."""
+    if terms.get("n_obs") is None:
+        return None
+    symbols: set[str] = set()
+    for formula in terms.get("monitor", {}).values():
+        tree = _validated_formula_tree(formula)
+        if not any(isinstance(node, ast.Name) and node.id == "n_obs" for node in ast.walk(tree)):
+            continue
+        symbols.update(
+            node.slice.id for node in ast.walk(tree)
+            if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name)
+            and node.value.id == "S_t" and isinstance(node.slice, ast.Name)
+        )
+    catalog = _shared_term_catalog()
+    keys = [key for key in _OBSERVATION_TERM_KEYS & set(terms) if catalog[key]["symbol"] in symbols]
+    if len(keys) != 1:
+        raise ContractResolutionError("n_obs必须唯一绑定合同monitor中的观察日程")
+    return keys[0]
+
+
 def _schedule_snapshot(
     terms: Mapping[str, Any],
     trading_dates: Sequence[Any] | None = None,
@@ -104,6 +125,14 @@ def _schedule_snapshot(
         contract_end_date=contract_end_date,
     )
     times = np.arange(len(dates), dtype=float)
+    count_key = counted_observation_key(terms)
+    if count_key is not None:
+        count = int(terms["n_obs"])
+        positions = _schedule_positions(terms[count_key], times, dates)
+        if len(positions) < count:
+            raise ContractResolutionError(f"Host验证交易日历仅覆盖{len(positions)}次观察，不足合同n_obs={count}")
+        dates = dates[:positions[count - 1] + 1]
+        times = np.arange(len(dates), dtype=float)
     snapshot = {
         key: {
             "selector": deep_thaw(terms[key]),
@@ -178,6 +207,10 @@ def _contract_calendar_window(
     start = pd.to_datetime(contract_start_date, errors="coerce")
     if pd.isna(start):
         raise ContractResolutionError("identity.contract_start_date不是有效日期")
+    if terms.get("n_obs") is not None:
+        # Counted observation windows close on the nth selected real session.
+        # Civil cashflow maturity remains independently frozen from T.
+        return dates[dates >= start]
     if contract_end_date not in {None, ""}:
         end = pd.to_datetime(contract_end_date, errors="coerce")
         if pd.isna(end):
@@ -949,10 +982,14 @@ class ObservedValues:
         ordinals: Sequence[int] | None = None,
         *,
         includes_path_endpoint: bool = False,
+        covers_complete_schedule: bool = False,
+        frozen_schedule: bool = False,
     ) -> None:
         self.values = np.asarray(values, dtype=float)
         self.times = np.asarray(times, dtype=float)
         self.includes_path_endpoint = bool(includes_path_endpoint)
+        self.covers_complete_schedule = bool(covers_complete_schedule)
+        self.frozen_schedule = bool(frozen_schedule)
         if self.values.shape != self.times.shape:
             raise FormulaError("观察价格与时间网格长度不一致")
         self.ordinals = np.arange(1, len(self.values) + 1, dtype=int) if ordinals is None else np.asarray(ordinals, dtype=int)
@@ -1016,6 +1053,11 @@ class PriceSeries:
             self.times[positions],
             ordinals,
             includes_path_endpoint=bool(len(positions) and positions[-1] == len(self.values) - 1),
+            covers_complete_schedule=(
+                isinstance(schedule, _FrozenObservationSchedule)
+                and len(positions) == len(schedule.dates)
+            ),
+            frozen_schedule=isinstance(schedule, _FrozenObservationSchedule),
         )
 
 
@@ -1671,6 +1713,16 @@ def _validate_settlement_endpoint(
         return
     contractual_tenor = _contract_maturity_time(contract.identity, contract.terms)
     actual_tenor = float(price_path.times[-1])
+    count_key = counted_observation_key(contract.terms)
+    if count_key is not None and price_path.dates is not None:
+        observation_end = pd.Timestamp(contract.resolved_schedules[count_key]["dates"][-1])
+        actual_end = pd.Timestamp(price_path.dates[-1]).normalize()
+        if actual_end == observation_end:
+            return
+        if actual_end > observation_end:
+            raise ContractResolutionError("计数型合同价格路径终点不得晚于冻结观察终点")
+        # A prefix requires an actual termination event, even if T is short.
+        contractual_tenor = inf
     if actual_tenor > contractual_tenor + _MATURITY_TIME_TOLERANCE:
         raise ContractResolutionError(
             f"{contract.product_id}价格路径终点{actual_tenor}年晚于合同期限{contractual_tenor}年；"
@@ -1688,6 +1740,8 @@ def _validate_settlement_endpoint(
         if re.search(rf"\b{name}\s*==\s*inf", selected_condition):
             continue
         return
+    if count_key is not None:
+        raise ContractResolutionError("n_obs计数型合同的未终止路径必须覆盖完整冻结观察日程")
     raise ContractResolutionError(
         f"{contract.product_id}价格路径终点{actual_tenor}年早于合同期限{contractual_tenor}年；"
         "未终止路径须覆盖至合同到期日或其相邻交易日"
@@ -2674,11 +2728,6 @@ def _terminal_event_time(value: object, maturity: object) -> float:
     return float(terminal) if bool(vector.values[-1]) else inf
 
 
-def _at_contractual_maturity(value: object, maturity: object) -> bool:
-    """将节假日前最后交易日与结算端点采用同一合同容差。"""
-    return abs(float(value) - float(maturity)) <= _MATURITY_TIME_TOLERANCE
-
-
 def _reset_knockout_time(
     knockout_prices: object,
     reset_time: object,
@@ -2803,7 +2852,10 @@ def _accumulated_quantity(
     values = prices.values
     if len(values) > expected:
         raise FormulaError("accumulated_quantity观察价格数量超过n_obs")
-    if prices.times[-1] >= end - 1e-12 and len(values) != expected:
+    # The last frozen observation may precede a non-trading civil maturity.
+    # A history prefix remains valid while a complete schedule must match n_obs.
+    complete = prices.covers_complete_schedule or (not prices.frozen_schedule and prices.times[-1] >= end - 1e-12)
+    if complete and len(values) != expected:
         raise FormulaError("accumulated_quantity完整到期路径必须正好覆盖n_obs个观察日")
     knockout_events = _numeric_relation(values, h_out, "ge")
     if knockout_events is None:
