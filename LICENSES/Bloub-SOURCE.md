@@ -8,7 +8,8 @@ products/app/frontend/shared/bloub-engine.js. The local SVG binding,
 bloub-avatar.js, follows the original BloubBot.vue mask, layer and gradient
 rendering while integrating Desk lifecycle and accessibility preferences. The Desk binding
 mirrors the character, levels eye transforms and reverses gaze yaw so pointer
-tracking remains correct after mirroring. Idle states use a local rotating playlist.
+tracking remains correct after mirroring. Task states follow real runtime events. Idle gestures use weighted random dwell times,
+recent-gesture exclusion and quiet-time awareness; they never cycle through a playlist.
 The design's upstream x.ai inspiration implies no affiliation.
 
 To reproduce, checkout the commit and create an entry exporting BotEngine
