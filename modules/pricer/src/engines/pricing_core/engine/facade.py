@@ -1073,30 +1073,6 @@ def _build_basis(derivatives: Any, value: Any):
     )
 
 
-def _build_schedule(derivatives: Any, label: str, value: Any) -> tuple[Any, ...]:
-    if isinstance(value, (str, bytes)) or not isinstance(value, (list, tuple)):
-        raise ValueError(f"{label}必须为显式观察日列表")
-    points = []
-    for index, item in enumerate(value):
-        point_label = f"{label}[{index}]"
-        values = _require_mapping(point_label, item)
-        _reject_unknown(point_label, values, {"trading_day", "calendar_day", "barrier", "amount"})
-        missing = [field for field in ("trading_day", "calendar_day") if field not in values]
-        if missing:
-            raise ValueError(f"{point_label}缺少必填字段：{', '.join(missing)}")
-        points.append(
-            derivatives.SchedulePoint(
-                trading_day=values["trading_day"],
-                calendar_day=values["calendar_day"],
-                barrier=values.get("barrier"),
-                amount=values.get("amount"),
-            )
-        )
-    if not points:
-        raise ValueError(f"{label}不得为空")
-    return tuple(points)
-
-
 def _build_instrument(derivatives: Any, structure: str, contract: dict[str, Any]):
     basis = _build_basis(derivatives, contract.pop("basis"))
     if structure == "EUROPEAN_VANILLA":
@@ -1142,6 +1118,9 @@ def _build_instrument(derivatives: Any, structure: str, contract: dict[str, Any]
         return derivatives.VarianceSwapOption(
             basis=basis,
             strike_volatility=contract["strike_volatility"],
+            historical_squared_returns=contract.get("historical_squared_returns", 0.0),
+            historical_return_count=contract.get("historical_return_count", 0),
+            last_observation_spot=contract.get("last_observation_spot"),
             annualization_days=contract["annualization_days"],
             observation_times=tuple(contract["observation_times"]),
             maturity_years=contract["maturity_years"],
@@ -1152,6 +1131,8 @@ def _build_instrument(derivatives: Any, structure: str, contract: dict[str, Any]
             lower=contract["lower"],
             upper=contract["upper"],
             maximum_coupon=contract["maximum_coupon"],
+            historical_in_count=contract.get("historical_in_count", 0),
+            historical_observation_count=contract.get("historical_observation_count", 0),
             observation_times=tuple(contract["observation_times"]),
             maturity_years=contract["maturity_years"],
         )
