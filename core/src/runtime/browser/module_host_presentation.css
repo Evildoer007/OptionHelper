@@ -64,6 +64,25 @@ html[data-optionhelper-app-hosted="true"] {
   -moz-osx-font-smoothing: grayscale;
 }
 
+/* Hidden modules retain running operations and their evidence, but their
+ * decorative motion must not continue underneath the active module. */
+html[data-optionhelper-module-active="false"] *,
+html[data-optionhelper-module-active="false"] *::before,
+html[data-optionhelper-module-active="false"] *::after {
+  animation-play-state: paused !important;
+  transition: none !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html[data-optionhelper-app-hosted="true"] *,
+  html[data-optionhelper-app-hosted="true"] *::before,
+  html[data-optionhelper-app-hosted="true"] *::after {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
+}
+
 /* Desk iframe scrollbars use the exact App-shell contract on every scroll
  * container, including nested tables, JSON blocks and audit panes. */
 @supports not selector(::-webkit-scrollbar) {
@@ -348,9 +367,7 @@ html[data-optionhelper-app-hosted="true"] :is(.inspector-panel, .settings-panel)
   text-align: right;
 }
 
-/* Compute modules keep their long parameter form scrollable while the primary
- * action remains reachable at the bottom of the inspector.  The right inset
- * leaves room for OptDesk's collapsed assistant control. */
+/* Compute parameters scroll independently from the result toolbar. */
 html[data-optionhelper-app-hosted="true"] .inspector-panel[data-run-layout="true"] {
   display: block !important;
   padding: 0 !important;
@@ -361,32 +378,25 @@ html[data-optionhelper-app-hosted="true"] .inspector-panel[data-run-layout="true
   display: grid !important;
   height: 100%;
   min-height: 0;
-  grid-template-rows: minmax(0, 1fr) auto;
+  grid-template-rows: minmax(0, 1fr);
 }
 
 html[data-optionhelper-app-hosted="true"] .inspector-panel[data-run-layout="true"] .inspector-scroll {
   min-height: 0;
-  padding: 20px 18px 0;
+  padding: 20px 18px 24px;
   overflow: auto;
   overflow-x: hidden;
 }
 
-html[data-optionhelper-app-hosted="true"] .inspector-panel[data-run-layout="true"] .inspector-run-region {
-  display: grid;
-  gap: 8px;
-  padding: 12px 78px 14px 18px;
-  border-top: 1px solid var(--rule) !important;
-  background: var(--panel) !important;
-}
 
-html[data-optionhelper-app-hosted="true"] .inspector-panel[data-run-layout="true"] .inspector-run-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-}
 
-html[data-optionhelper-app-hosted="true"] .inspector-panel[data-run-layout="true"] .inspector-run-actions .button-primary {
-  flex: 1 1 auto;
+
+/* Long diagnostic disclosures scroll within the status area instead of
+ * consuming the result viewport or covering the independent input rail. */
+html[data-optionhelper-app-hosted="true"] .canvas-panel > .notice-area {
+  min-height: 0;
+  max-height: min(240px, 35vh);
+  overflow: auto;
 }
 
 html[data-optionhelper-app-hosted="true"] .panel-resizer {
@@ -1315,17 +1325,14 @@ html[data-optionhelper-app-hosted="true"] .settings-panel .choice > input[type="
 
   html[data-optionhelper-app-hosted="true"] .inspector-panel[data-run-layout="true"] .inspector-form {
     height: auto;
-    grid-template-rows: auto auto;
+    grid-template-rows: auto;
   }
 
   html[data-optionhelper-app-hosted="true"] .inspector-panel[data-run-layout="true"] .inspector-scroll {
-    padding: 20px 18px 0;
+    padding: 20px 18px 24px;
     overflow: visible;
   }
 
-  html[data-optionhelper-app-hosted="true"] .inspector-panel[data-run-layout="true"] .inspector-run-region {
-    padding: 12px 18px 18px;
-  }
 
   html[data-optionhelper-app-hosted="true"] .panel-resizer {
     display: none !important;
