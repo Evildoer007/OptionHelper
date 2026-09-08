@@ -149,7 +149,10 @@ def required_metric_sources(spec: RankingSpec) -> Mapping[str, str]:
 
 
 def required_modules(spec: RankingSpec) -> tuple[str, ...]:
-    return tuple(sorted({source for source in required_metric_sources(spec).values() if source != "contract_terms"}))
+    sources = set(required_metric_sources(spec).values())
+    modules = tuple(sorted(sources - {"contract_terms"}))
+    # 纯条款排序也需要正式Run的合同快照证据，期权费来源仍是contract_terms。
+    return modules or (("payoffer",) if "contract_terms" in sources else ())
 
 
 def _validate_candidates(candidates: Sequence[RecommendationCandidate]) -> tuple[RecommendationCandidate, ...]:
