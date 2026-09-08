@@ -1,4 +1,5 @@
 import { createInterface } from "node:readline"
+import { Script } from "node:vm"
 
 import { OptionHelperAgentRuntime } from "../core/runtime.js"
 import type { JsonValue } from "../core/types.js"
@@ -20,6 +21,12 @@ async function dispatch(method: string, raw: Record<string, unknown>): Promise<u
     case "runtime.initialize": return runtime.initialize(raw)
     case "runtime.capabilities": return { runtimeId: "optionhelper-agent-runtime", protocolVersion: "2.0", capabilities: runtime.capabilities() }
     case "runtime.shutdown": return runtime.shutdown()
+    case "runtime.validateJavascript": {
+      if (typeof raw.source !== "string") throw new Error("JavaScript source is required")
+      // Compile only. Report code must never execute in the application host.
+      new Script(raw.source, { filename: "report-chart.js" })
+      return { valid: true }
+    }
     case "agent.activate": return runtime.activate(raw).snapshot()
     case "agent.turn": return runtime.turn(raw)
     case "agent.status": return runtime.getRun(String(raw.runId ?? raw.run_id ?? "")).snapshot()
