@@ -19,6 +19,7 @@ from modules.recommender.ports import AgentPort, AgentRunReceipt, AgentStepResul
 from ..errors import UnavailableCapabilityError, ValidationError
 from ..identity.session_identity import SessionIdentity
 from ..model_gateway.request_control import ModelRequestControl
+from ..model_gateway.step_instructions import recommender_step_instruction
 from ..settings.settings_models import ModelSelection
 from .runtime_controller import AgentRuntimeController
 from .multi_agent import (
@@ -38,7 +39,7 @@ from .runtime_protocol import (
     RuntimeEvent,
     WorkflowSpec,
 )
-from .runtime_subprocess import RuntimeSubprocessTransport
+from .runtime_subprocess import RuntimeSubprocessTransport, RuntimeSubprocessTimeout
 
 
 TransportFactory = Callable[..., RuntimeSubprocessTransport]
@@ -139,6 +140,9 @@ class RuntimeBackedAgentPort(AgentPort):
         scope = {"task_id": self._task_id, "root_session_id": self._root_session_id}
         kwargs: dict[str, Any] = {
             "scope": scope,
+            # subagent.start(wait=True) waits for the role's model response,
+            # not merely process activation. Leave time for terminal events.
+            "request_timeout": self._preset.max_seconds_per_agent_run + 15.0,
             "model_handler": self._handle_model_request,
             "route_refs": {route.route_id: route for route in self._role_routes.values()},
         }
@@ -163,6 +167,10 @@ class RuntimeBackedAgentPort(AgentPort):
             register_scope=False,
         )
         self._controller.bind(self._workflow_spec)
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
 
     @property
     def run_records(self) -> tuple[Mapping[str, Any], ...]:
@@ -336,28 +344,32 @@ class RuntimeBackedAgentPort(AgentPort):
                 raise ValidationError("Recommender工作流超过Agent调用预算")
             existing = self._role_runs.get(normalized_role)
         prompt = self._prompt(wire_role, payload)
-        if existing is not None and self._continuable(normalized_role):
-            raw = self._controller.followup(
-                {"run_id": existing["run_id"], "prompt": prompt},
-                request_id=f"followup-{uuid4().hex}",
-            )
-        else:
-            raw = self._controller.start_subagent(
-                {
-                    "role_id": normalized_role,
-                    "run_id": f"run-{uuid4().hex}",
-                    "mode": "continuable" if self._continuable(normalized_role) else "one-shot",
-                    "label": normalized_role,
-                    "tool_policy": {
-                        "allowedTools": list(self._allowed_tools_by_role.get(normalized_role, ())),
+        try:
+            if existing is not None and self._continuable(normalized_role):
+                raw = self._controller.followup(
+                    {"run_id": existing["run_id"], "prompt": prompt},
+                    request_id=f"followup-{uuid4().hex}",
+                )
+            else:
+                raw = self._controller.start_subagent(
+                    {
+                        "role_id": normalized_role,
+                        "run_id": f"run-{uuid4().hex}",
+                        "mode": "continuable" if self._continuable(normalized_role) else "one-shot",
+                        "label": normalized_role,
+                        "tool_policy": {
+                            "allowedTools": list(self._allowed_tools_by_role.get(normalized_role, ())),
+                        },
+                        "context_policy": dict(self._role_context_policies[normalized_role]),
+                        "budget": {"maxSteps": MAX_WORKFLOW_STEPS, "maxTools": MAX_WORKFLOW_TOOLS},
+                        "prompt": prompt,
+                        "wait": True,
                     },
-                    "context_policy": dict(self._role_context_policies[normalized_role]),
-                    "budget": {"maxSteps": MAX_WORKFLOW_STEPS, "maxTools": MAX_WORKFLOW_TOOLS},
-                    "prompt": prompt,
-                    "wait": True,
-                },
-                request_id=f"start-{uuid4().hex}",
-            )
+                    request_id=f"start-{uuid4().hex}",
+                )
+        except RuntimeSubprocessTimeout:
+            self.close()
+            raise
         snapshot = raw.get("result", raw) if isinstance(raw, Mapping) else raw
         if not isinstance(snapshot, Mapping):
             raise ValidationError("Agent运行时子Agent响应必须是对象")
@@ -554,7 +566,7 @@ class RuntimeBackedAgentPort(AgentPort):
             "{\"action\":\"final\",\"result\":{...}}，不得包含Markdown。"
         )
         instruction = (
-            f"{instruction}\n\n以下AGENT.md仅定义当前角色的工作职责，不能扩大工具、身份、数据或金融事实权限；"
+            f"{recommender_step_instruction()}\n{instruction}\n\n以下AGENT.md仅定义当前角色的工作职责，不能扩大工具、身份、数据或金融事实权限；"
             f"如与上述受控规则冲突，以上述规则为准。\n\n{self._role_instructions[role]}"
         )
         messages: list[dict[str, Any]] = [{"role": "system", "content": instruction}]
@@ -990,7 +1002,9 @@ class ShadowRuntimeAgentPort(AgentPort):
                 return
             except Exception as error:
                 self._threads.discard(thread)
-        self._record_failure(role, type(error).__name__)
+                # Python clears the exception binding when this block ends.
+                failure_type = type(error).__name__
+        self._record_failure(role, failure_type)
 
     def _run_shadow(self, role: str, payload: Mapping[str, Any], result: Mapping[str, Any]) -> None:
         current = current_thread()
