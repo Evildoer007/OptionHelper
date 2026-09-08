@@ -238,6 +238,7 @@ class LocalSettingsStore(SettingsStore):
         endpoint: str,
         secret_ref: SecretRef,
         verified: bool,
+        connected: bool = False,
         capabilities: dict[str, Any] | None = None,
     ) -> bool:
         """Atomically bind one active probe to the exact model configuration."""
@@ -266,7 +267,7 @@ class LocalSettingsStore(SettingsStore):
             ):
                 return value
             matched = True
-            if not verified:
+            if not verified and not connected:
                 value.pop(verification_key, None)
                 return value
             if secret_ref.revision is None:
@@ -279,7 +280,7 @@ class LocalSettingsStore(SettingsStore):
                 "endpoint_hash": hashlib.sha256(endpoint.encode("utf-8")).hexdigest(),
                 "secret_ref_hash": _secret_ref_hash(secret_ref),
                 "secret_ref_revision": secret_ref.revision,
-                "status": "verified",
+                "status": "verified" if verified else "connected",
                 "verified_at": datetime.now(timezone.utc).isoformat(),
                 "capabilities": _safe_model_capabilities(capabilities),
             }
@@ -323,7 +324,7 @@ class LocalSettingsStore(SettingsStore):
         )
         verified = bool(revision_match and record.get("status") == "verified")
         return {
-            "verification_state": "verified" if verified else "configured_unverified",
+            "verification_state": "verified" if verified else "connected" if revision_match and record.get("status") == "connected" else "configured_unverified",
             "verified_at": record.get("verified_at") if verified else None,
             "current_revision_match": revision_match,
             "verified_capabilities": dict(record.get("capabilities", {})) if verified else {},
