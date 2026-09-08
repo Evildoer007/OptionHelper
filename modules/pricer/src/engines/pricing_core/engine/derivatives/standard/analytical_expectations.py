@@ -83,14 +83,20 @@ def _variance_price(instrument: VarianceSwapOption, market: MarketState) -> floa
     times = instrument.observation_times
     intervals = tuple(right - left for left, right in pairwise(times))
     drift = market.risk_free_rate - market.dividend_yield - 0.5 * market.volatility ** 2
-    expected_squared_returns = tuple(
+    expected_squared_returns = list(
         market.volatility ** 2 * interval + drift ** 2 * interval ** 2
         for interval in intervals
     )
+    if instrument.last_observation_spot is not None:
+        boundary_return = math.log(market.spot / instrument.last_observation_spot)
+        expected_squared_returns[0] = (
+            market.volatility ** 2 * intervals[0]
+            + (boundary_return + drift * intervals[0]) ** 2
+        )
     realized_variance_points = (
         instrument.annualization_days
-        * sum(expected_squared_returns)
-        / len(expected_squared_returns)
+        * (instrument.historical_squared_returns + sum(expected_squared_returns))
+        / (instrument.historical_return_count + len(expected_squared_returns))
         * 10_000.0
     )
     payoff = realized_variance_points - instrument.strike_volatility ** 2
@@ -100,6 +106,8 @@ def _variance_price(instrument: VarianceSwapOption, market: MarketState) -> floa
 def _range_accrual_price(instrument: RangeAccrualOption, market: MarketState) -> float:
     probabilities: list[float] = []
     for observation_time in instrument.observation_times:
+        if observation_time == 0.0 and instrument.historical_observation_count:
+            continue
         if observation_time == 0.0:
             probabilities.append(float(instrument.lower <= market.spot <= instrument.upper))
             continue
@@ -110,7 +118,9 @@ def _range_accrual_price(instrument: RangeAccrualOption, market: MarketState) ->
         lower = (math.log(instrument.lower) - mean) / deviation
         upper = (math.log(instrument.upper) - mean) / deviation
         probabilities.append(float(ndtr(upper) - ndtr(lower)))
-    coupon_points = 100.0 * instrument.maximum_coupon * sum(probabilities) / len(probabilities)
+    coupon_points = 100.0 * instrument.maximum_coupon * (
+        instrument.historical_in_count + sum(probabilities)
+    ) / (instrument.historical_observation_count + len(probabilities))
     return coupon_points * math.exp(-market.risk_free_rate * instrument.maturity_years)
 
 
@@ -120,6 +130,24 @@ def _rolled_times(values: tuple[float, ...], day_shift: int, *, minimum_count: i
     if len(rolled) < minimum_count:
         raise ThetaNotApplicableError("观察日程在Theta推进后不足以完成定价")
     return rolled
+
+
+def _roll_observation_instrument(instrument, days: int, *, minimum_count: int):
+    remaining = instrument.maturity_years - days / 365.0
+    has_history = (
+        getattr(instrument, "last_observation_spot", None) is not None
+        or getattr(instrument, "historical_observation_count", 0) > 0
+    )
+    if has_history:
+        # Same expiry sensitivity as the path engine: retain actual facts
+        # and shorten the future contract window. A valuation-date roll
+        # would require newly observed prices that are not available here.
+        times = tuple(value for value in instrument.observation_times if value <= remaining + 1e-12)
+        if len(times) < max(2, minimum_count):
+            raise ThetaNotApplicableError("历史状态下缩短期限后没有未来观察")
+    else:
+        times = _rolled_times(instrument.observation_times, days, minimum_count=minimum_count)
+    return replace(instrument, maturity_years=remaining, observation_times=times)
 
 
 def _price_with_standard_risk(
@@ -148,7 +176,11 @@ def _price_with_standard_risk(
             price_points_100=raw_price_to_points_100(raw_pricer(rolled_instrument, rolled_market), instrument.basis),
             calendar_day_shift=convention.theta_calendar_day_shift,
             trading_day_shift=convention.theta_trading_day_shift,
-            description="合同剩余期限与观察日程同步推进",
+            description=(
+                "保留已实现观察，缩短剩余合同期限"
+                if getattr(instrument, "last_observation_spot", None) is not None or getattr(instrument, "historical_observation_count", 0)
+                else "合同剩余期限与观察日程同步推进"
+            ),
         )
 
     greeks, extended, diagnostics = calculate_standard_greeks(
@@ -199,11 +231,7 @@ def price_variance_swap_standard(instrument: VarianceSwapOption, market: MarketS
         implementation_id="standard-expected-realized-variance",
         model="exact expected squared log returns on frozen sessions",
         raw_pricer=_variance_price,
-        theta_instrument=lambda value, days: replace(
-            value,
-            maturity_years=value.maturity_years - days / 365.0,
-            observation_times=_rolled_times(value.observation_times, days, minimum_count=2),
-        ),
+        theta_instrument=lambda value, days: _roll_observation_instrument(value, days, minimum_count=2),
     )
 
 
@@ -215,11 +243,7 @@ def price_range_accrual_standard(instrument: RangeAccrualOption, market: MarketS
         implementation_id="standard-range-accrual-marginal-expectation",
         model="sum of exact marginal lognormal in-range probabilities",
         raw_pricer=_range_accrual_price,
-        theta_instrument=lambda value, days: replace(
-            value,
-            maturity_years=value.maturity_years - days / 365.0,
-            observation_times=_rolled_times(value.observation_times, days, minimum_count=1),
-        ),
+        theta_instrument=lambda value, days: _roll_observation_instrument(value, days, minimum_count=1),
     )
 
 
