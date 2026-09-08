@@ -8,8 +8,6 @@ from __future__ import annotations
 
 import base64
 from copy import deepcopy
-from math import isfinite
-from numbers import Real
 from pathlib import Path
 import re
 from typing import Any, Mapping
@@ -27,7 +25,7 @@ from .models import (
     ReportRequest,
     stable_hash,
 )
-from .report_unit_builder import PUBLIC_NUMERIC_UNITS, normalize_parameter_groups, public_chart_specs
+from .report_unit_builder import PUBLIC_NUMERIC_UNITS, normalize_contract_highlights, normalize_parameter_groups, public_chart_specs
 
 
 DESIGNER_PAYLOAD_SCHEMA = SCHEMA_DESIGNER_PAYLOAD
@@ -59,7 +57,7 @@ _DISPLAY_MODULE_FIELDS = {
     ),
     "backtest": (
         "window", "as_of_date", "entry_rule", "metrics", "card_metrics", "detail_tables",
-        "event_statistics", "charts", "historical_loss_sample_covered",
+        "event_statistics", "charts", "historical_loss_sample_covered", "summary_notes", "limitations",
     ),
 }
 _FORBIDDEN_MODULE_FIELD_FRAGMENTS = (
@@ -70,7 +68,7 @@ _FORBIDDEN_MODULE_FIELD_FRAGMENTS = (
     "source_id", "execution_fingerprint",
 )
 _PUBLIC_VALUE_KEYS = {
-    "label", "value", "note", "unit", "value_format", "title", "rule", "formula", "formula_mathml",
+    "label", "value", "note", "unit", "value_format", "value_suffix", "key", "format", "title", "rule", "formula", "formula_mathml",
     "id", "method", "valuation_date", "name", "type", "data", "x", "y", "series", "columns", "rows",
     "event", "monitor", "sample_count", "valid_return_sample_count", "positive_return_count",
     "zero_return_count", "negative_return_count", "positive_return_rate",
@@ -126,6 +124,7 @@ _GENERIC_RECOMMENDATION_TEXT = frozenset({
     "与已确认市场判断和风险边界相符。",
     "可承受结构化产品风险。",
     "候选排序和适用边界来自冻结的推荐结果。",
+    "本报告围绕当前已选结构，依据已验证的模块结果整理。",
 })
 
 
@@ -179,13 +178,15 @@ def _public_recommendation(value: Any) -> dict[str, Any]:
     raw = value if isinstance(value, Mapping) else {}
     underlyings = _public_strings(raw.get("underlyings"))
     product_name = _public_text(raw.get("product_name"))
+    headline = _public_text(raw.get("headline") or product_name)
+    structure_name = _public_text(raw.get("structure_name") or product_name)
     reason = _public_text(raw.get("reason"))
-    if reason in _GENERIC_RECOMMENDATION_TEXT:
+    if reason in _GENERIC_RECOMMENDATION_TEXT or reason in {headline, structure_name, product_name}:
         reason = ""
     result = {
         "product_name": product_name,
-        "headline": _public_text(raw.get("headline") or product_name),
-        "structure_name": _public_text(raw.get("structure_name") or product_name),
+        "headline": headline if headline != structure_name else "",
+        "structure_name": structure_name,
         "underlyings": "、".join(underlyings),
         "reason": reason,
         "suitable_for": [item for item in _public_strings(raw.get("suitable_for")) if item not in _GENERIC_RECOMMENDATION_TEXT],
@@ -226,6 +227,8 @@ def _public_module_value(value: Any, *, field: str = "") -> Any:
     """Remove any non-reader economics from a selected module field."""
 
     if isinstance(value, str):
+        if field == "format" or field.endswith("_format"):
+            return value if value in {"number", "percent", "percent_points", "text"} else ""
         if field == "unit":
             unit = value.strip()
             return unit if unit in PUBLIC_NUMERIC_UNITS else ""
@@ -238,7 +241,7 @@ def _public_module_value(value: Any, *, field: str = "") -> Any:
         return {
             str(key): item
             for key, raw in value.items()
-            if str(key) in _PUBLIC_VALUE_KEYS
+            if (str(key) in _PUBLIC_VALUE_KEYS or (str(key).endswith("_format") and str(key)[:-7] in _PUBLIC_VALUE_KEYS))
             if not any(fragment in str(key).casefold() for fragment in _FORBIDDEN_MODULE_FIELD_FRAGMENTS)
             if (item := _public_module_value(raw, field=str(key))) not in (None, "", [], {})
         }
@@ -271,6 +274,8 @@ def _display_module(name: str, raw: Mapping[str, Any], *, artifact_paths: Mappin
     # public explanation remains eligible for Designer to show as a genuine
     # partial/failed state; Reporter never manufactures an "未运行" paragraph.
     note = _public_text(source.get("note"))
+    if note == "本次报告未提供该模块的显式运行引用。":
+        note = "本报告未选择该模块的运行结果。"
     if note:
         value["note"] = note
     elif terminal_note:
@@ -319,7 +324,8 @@ def _report_title(unit: Mapping[str, Any], request: ReportRequest) -> str:
         raise ReporterError("正式交付必须包含产品名称")
     if not underlyings:
         raise ReporterError("正式单产品交付必须包含标的")
-    suffix = "推荐卡片" if request.output_type == "card" else "推荐报告"
+    intent = "推荐" if "recommender" in request.selected_modules else "研究"
+    suffix = intent + ("卡片" if request.output_type == "card" else "报告")
     return f"{'、'.join(underlyings)}{product_name}{suffix}"
 
 
@@ -401,8 +407,8 @@ def _structured_conclusion(payload: Mapping[str, Any]) -> dict[str, Any]:
     backtest_summary = [
         backtest_rows[label]
         for label in (
-            "样本数", "历史正收益样本占比", "正收益样本数", "持平样本数", "负收益样本数",
-            "平均合同结算收益率", "最大历史损失",
+            "样本数", "有效收益样本数", "历史正收益样本占比", "正收益样本数", "持平样本数", "负收益样本数",
+            "平均合同结算收益率", "最低合同结算收益率", "历史损失样本覆盖",
         )
         if label in backtest_rows and backtest_rows[label].get("value") is not None
     ]
@@ -414,12 +420,14 @@ def _structured_conclusion(payload: Mapping[str, Any]) -> dict[str, Any]:
     if not risk_values and isinstance(recommendation.get("main_risks"), list):
         risk_values = [_public_text(item) for item in recommendation["main_risks"] if _public_text(item)]
     return {
+        "has_recommendation": recommendation.get("has_recommendation") is True,
         "structure_name": _public_text(recommendation.get("structure_name") or recommendation.get("product_name")),
         "underlyings": _public_text(recommendation.get("underlyings")),
         "reasons": list(dict.fromkeys(reasons))[:3],
         "valuation_summary": valuation_summary,
         "greeks_summary": greeks_summary,
-        "backtest_summary": backtest_summary[:4],
+        "backtest_summary": backtest_summary,
+        "backtest_summary_notes": _public_strings(backtest.get("summary_notes")) if backtest.get("status") == "ready" else [],
         "risk_summary": list(dict.fromkeys(risk_values))[:2],
     }
 
@@ -541,11 +549,22 @@ def build_designer_payload(
     }
     recommendation = _public_recommendation(content.get("recommendation"))
     candidate = unit.get("candidate") if isinstance(unit.get("candidate"), Mapping) else {}
-    if not _public_text(recommendation.get("reason")):
+    has_recommendation = "recommender" in request.selected_modules
+    recommendation["has_recommendation"] = has_recommendation
+    if not has_recommendation:
+        for field in ("reason", "suitable_for", "not_suitable_for"):
+            recommendation.pop(field, None)
+    elif not _public_text(recommendation.get("reason")):
         frozen_reason = _public_text(candidate.get("reason"))
-        if frozen_reason:
+        if frozen_reason and frozen_reason not in _GENERIC_RECOMMENDATION_TEXT and frozen_reason not in {
+            recommendation.get("headline"), recommendation.get("structure_name"), recommendation.get("product_name")
+        }:
             recommendation["reason"] = frozen_reason
     public_limitations = _public_unit_limitations(unit)
+    parameters = normalize_parameter_groups(content.get("parameters", {}))
+    if any(row.get("source") == "template_default" for rows in parameters.values() if isinstance(rows, list)
+           for row in rows if isinstance(row, Mapping)):
+        public_limitations = [*public_limitations, "未指定的合同条款采用产品模板默认值，属于研究假设，并非实际市场报价。"]
     payload = {
         "schema": DESIGNER_PAYLOAD_SCHEMA,
         "meta": meta,
@@ -553,13 +572,13 @@ def build_designer_payload(
         "recommendation": recommendation,
         "contract_highlights": [
             _public_module_value(item)
-            for item in content.get("contract_highlights", [])
-            if isinstance(item, Mapping) and _public_module_value(item)
-        ] if isinstance(content.get("contract_highlights"), list) else [],
+            for item in normalize_contract_highlights(content.get("contract_highlights"), parameters)
+            if _public_module_value(item)
+        ],
         "payoff": _display_module("payoff", content.get("payoff", {}) if isinstance(content.get("payoff"), Mapping) else {}, artifact_paths=artifact_paths),
         "pricing": _display_module("pricing", content.get("pricing", {}) if isinstance(content.get("pricing"), Mapping) else {}, artifact_paths=artifact_paths),
         "backtest": _display_module("backtest", content.get("backtest", {}) if isinstance(content.get("backtest"), Mapping) else {}, artifact_paths=artifact_paths),
-        "parameters": normalize_parameter_groups(content.get("parameters", {})),
+        "parameters": parameters,
         "risk": {
             "items": _public_strings((content.get("risk") or {}).get("items")) if isinstance(content.get("risk"), Mapping) else [],
             "disclaimer": _public_text((content.get("risk") or {}).get("disclaimer")) if isinstance(content.get("risk"), Mapping) else "",
@@ -710,17 +729,18 @@ def build_collection_payload(
             **({"supplemental_sections": supplemental_sections} if supplemental_sections else {}),
         }
     if request.delivery_mode == "comparison":
-        ordered = sorted(units, key=_frozen_candidate_rank)
+        has_recommendation = "recommender" in request.selected_modules
+        ordered = sorted(units, key=_frozen_candidate_rank) if has_recommendation else units
         candidates: list[dict[str, Any]] = []
         for index, unit in enumerate(ordered):
             candidate = unit.get("candidate") if isinstance(unit.get("candidate"), Mapping) else {}
             subject = unit.get("subject") if isinstance(unit.get("subject"), Mapping) else {}
-            rank = candidate.get("rank") if isinstance(candidate.get("rank"), int) else index + 1
+            rank = candidate.get("rank") if has_recommendation and isinstance(candidate.get("rank"), int) else index + 1
             underlyings = _public_strings(candidate.get("underlyings", subject.get("underlyings", [])))
             candidates.append({
                 "label": f"方案{chr(65 + index)}" if index < 26 else f"方案{index + 1}",
                 "rank": rank,
-                "is_primary": candidate.get("is_primary") is True,
+                "is_primary": has_recommendation and candidate.get("is_primary") is True,
                 "title": _public_text(candidate.get("product_name") or subject.get("product_name"), f"候选{index + 1}"),
                 "underlyings": "、".join(underlyings),
                 "facts": build_designer_payload(unit, request, artifact_paths=artifact_paths),
