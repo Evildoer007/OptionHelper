@@ -139,9 +139,9 @@ const processOrbStates = Object.freeze({
 });
 const runtimeEventStatuses = new Set([
   "queued", "starting", "running", "waiting_tool", "waiting_parent", "started", "pending",
-  "reselecting", "completed", "succeeded", "failed", "cancelled", "interrupted", "recovered", "stopped",
+  "reselecting", "completed", "succeeded", "failed", "cancelled", "interrupted", "outcome_unknown", "timed_out", "timeout", "recovered", "stopped",
 ]);
-const runtimeTerminalStatuses = new Set(["completed", "succeeded", "failed", "cancelled", "interrupted", "stopped"]);
+const runtimeTerminalStatuses = new Set(["completed", "succeeded", "failed", "cancelled", "interrupted", "outcome_unknown", "timed_out", "timeout", "stopped"]);
 const runtimeSensitiveText = /(?:system[ _-]?prompt|api[ _-]?key|access[ _-]?token|refresh[ _-]?token|bearer|secret|private[ _-]?key|tool[ _-]?arguments?|arguments?|run[ _-]?ref|module[ _-]?run[ _-]?ref|contract[ _-]?fingerprint|task[ _-]?id|request[ _-]?id|tenant[ _-]?id|principal[ _-]?id)/i;
 const runtimeEventDeltaLimit = 64_000;
 const runtimeAssistantTextLimit = 64_000;
@@ -648,7 +648,10 @@ export async function startWorkspace(initialMode) {
     reselecting: "重新筛选中",
     completed: "已完成",
     succeeded: "已完成",
-    failed: "未完成",
+    failed: "失败",
+    outcome_unknown: "结果待确认",
+    timed_out: "响应超时",
+    timeout: "响应超时",
     cancelled: "已取消",
     interrupted: "已中断",
     recovered: "已恢复",
@@ -1091,18 +1094,19 @@ export async function startWorkspace(initialMode) {
     const status = card.querySelector("[data-process-card-status]");
     const label = runtimeStatusLabel(event.status);
     if (kind === "tool") {
-      const failed = ["failed", "error", "unavailable", "timed_out", "interrupted"].includes(event.status);
+      const failed = ["failed", "error", "unavailable", "timed_out", "timeout"].includes(event.status);
+      const uncertain = ["outcome_unknown", "interrupted"].includes(event.status);
       const complete = ["completed", "succeeded"].includes(event.status);
       const stopped = ["cancelled", "canceled", "stopped"].includes(event.status);
-      const path = complete ? "m5 12 4 4L19 6" : failed ? "M12 8v5m0 3v.1M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0Z" : stopped ? "M7 7h10v10H7Z" : "M12 3a9 9 0 1 1-9 9";
-      setMessageActionIcon(status, failed ? `${label}，查看原因` : label, path);
-      status.disabled = !failed;
-      status.dataset.state = complete ? "complete" : failed ? "failed" : stopped ? "stopped" : "running";
+      const path = complete ? "m5 12 4 4L19 6" : failed ? "M12 8v5m0 3v.1M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0Z" : uncertain ? "M12 8v4l3 2M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0Z" : stopped ? "M7 7h10v10H7Z" : "M12 3a9 9 0 1 1-9 9";
+      setMessageActionIcon(status, failed || uncertain ? `${label}，查看原因` : label, path);
+      status.disabled = !(failed || uncertain);
+      status.dataset.state = complete ? "complete" : failed ? "failed" : uncertain ? "uncertain" : stopped ? "stopped" : "running";
       if (failed) status.setAttribute("aria-expanded", "false");
       else status.removeAttribute("aria-expanded");
     } else status.textContent = label;
     const detail = card.querySelector("[data-process-card-detail]");
-    detail.textContent = event.detail || event.summary;
+    detail.textContent = event.detail && !/(?:正在运行|正在处理)/.test(event.detail) ? event.detail : event.summary;
     detail.hidden = kind === "tool";
 
     parent.parentElement.hidden = false;
