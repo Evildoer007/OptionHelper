@@ -205,7 +205,7 @@ a { color: inherit; }
   top: 26px;
   margin-top: 26px;
   padding: 8mm 0 8mm 4mm;
-  border-left: 1px solid var(--red);
+  border-left: 1px solid var(--rule);
   color: var(--muted);
 }
 
@@ -251,7 +251,7 @@ a { color: inherit; }
   gap: 6mm;
   align-items: end;
   padding: 4mm 0 4.5mm;
-  border-top: 1px solid var(--gold);
+  border-top: 1px solid var(--rule);
   border-bottom: 1px solid var(--rule-strong);
 }
 
@@ -474,13 +474,13 @@ a { color: inherit; }
   padding: 12px 15px 13px;
   border-top: 1px solid var(--color-gold-border);
   border-bottom: 1px solid var(--color-gold-border);
-  border-left: 1px solid var(--gold);
-  background: var(--paper);
+  border-left: 3px solid var(--gold);
+  background: #FBF7EE;
 }
 
 .conclusion-band__label {
   margin: 0 0 5px !important;
-  color: var(--red);
+  color: var(--color-gold-ink);
   font-size: var(--type-meta);
   font-weight: 780;
   letter-spacing: .08em;
@@ -1338,7 +1338,7 @@ body.report-profile-a4 .disclaimer { margin-top: 12px; padding-top: 10px; line-h
   margin-top: 7px;
   padding: 0 0 7px 9px;
   border-bottom: var(--border-hairline) solid var(--rule);
-  border-left: 2px solid var(--red);
+  border-left: 2px solid var(--gold);
 }
 
 .designer-card .card-conclusion h2,
@@ -1350,9 +1350,11 @@ body.report-profile-a4 .disclaimer { margin-top: 12px; padding-top: 10px; line-h
   line-height: 1.45;
 }
 
+.designer-card .conclusion-heading { color: var(--color-gold-ink); }
+
 .designer-card .conclusion-band__label {
   margin: 0 0 2px;
-  color: var(--red);
+  color: var(--color-gold-ink);
   font-size: var(--type-card-label);
   font-weight: 760;
   letter-spacing: .07em;
@@ -1747,12 +1749,25 @@ body.report-profile-a4 .disclaimer { margin-top: 12px; padding-top: 10px; line-h
   .designer-card .card-contract-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
+/* Compact multi-product summaries share the document typography and print rules. */
+.comparison-product-cards{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:24px;margin-top:24px}
+.comparison-product-card{min-width:0;padding:20px;border:1px solid var(--rule);background:var(--paper)}
+.comparison-product-card>header{padding-bottom:14px;border-bottom:2px solid var(--red)}
+.comparison-product-card>header p{margin:0 0 6px;color:var(--blue);font-size:12px}
+.comparison-product-card h2{margin:0;font-size:19px;line-height:1.4}
+.comparison-product-card h3{margin:18px 0 8px;font-size:13px;color:var(--blue)}
+.comparison-product-card table{width:100%;table-layout:auto;font-size:11px}
+.comparison-product-card th,.comparison-product-card td{padding:7px 5px;overflow-wrap:anywhere}
+.comparison-product-card .plain-list,.comparison-product-card .risk-list{padding-left:18px;font-size:12px}
+@media(max-width:700px){.comparison-product-cards{grid-template-columns:1fr}}
+@media print{.comparison-product-cards{display:block}.comparison-product-card{margin-bottom:8mm;break-inside:avoid}.comparison-product-card>header{break-after:avoid}thead{display:table-header-group}tr{break-inside:avoid}}
+
 </style>
 </head>
 <body class="report-profile-a4">
 <a class="skip-link" href="#report-main">跳至正文</a>
 <div class="report-shell">
-<aside class="report-toc" aria-label="报告目录"><nav><a href="#section-conclusion"><span>1.</span>核心结论</a><a href="#section-recommendation"><span>2.</span>结构推荐</a><a href="#section-payoff"><span>3.</span>收益结构</a><a href="#section-pricing"><span>4.</span>估值定价</a><a href="#section-backtest"><span>5.</span>历史回测</a><a href="#section-risk"><span>6.</span>风险提示</a></nav></aside>
+<aside class="report-toc" aria-label="报告目录"><nav><a href="#section-conclusion"><span>1.</span>核心结论</a><a href="#section-recommendation"><span>2.</span>结构推荐</a><a href="#section-risk"><span>3.</span>风险提示</a></nav></aside>
 <main id="report-main" class="report-document" tabindex="-1">
   <header class="report-head">
     <div class="report-head__copy">
@@ -1761,7 +1776,7 @@ body.report-profile-a4 .disclaimer { margin-top: 12px; padding-top: 10px; line-h
     </div>
     <dl class="identity-ledger"><div><dt>报告日期</dt><dd>待填</dd></div></dl>
   </header>
-  <section id="section-conclusion" class="report-section"><h2><span class="section-title">核心结论</span></h2><div class="conclusion-band"><p class="conclusion-band__label">推荐结论</p><p class="conclusion-band__statement">推荐待确认，挂钩待确认。</p><h3>推荐理由</h3><ul class="plain-list"><li>在此填写经核验的核心推荐理由。</li></ul><h3>风险边界</h3><ul class="risk-list"><li>本文件仅为模板验证，不含任何可供交易或销售使用的结论。</li></ul></div></section><section id="section-recommendation" class="report-section"><h2><span class="section-title">结构推荐</span></h2><div class="recommendation-head"><h3>待确认结构</h3></div><dl class="identity-ledger"><div><dt>推荐结构</dt><dd>待确认</dd></div><div><dt>挂钩标的</dt><dd>待确认</dd></div></dl><div class="recommendation-head"><p>在此填写结构选择理由。</p></div><div class="alternative-grid"><article class="alternative"><h3>备选结构</h3><p>在此说明备选结构的适配条件，不以模板文字替代正式条款或计算结果。</p><div class="alternative__tags"><span>待确认</span></div></article></div></section><section id="section-payoff" class="report-section" data-status="pending"><h2><span class="section-title">收益结构</span></h2><div class="module-state" data-status="pending" role="status"><strong>待接入计算：</strong><span>尚未提供本次参数化收益图和已解析条款。</span></div></section><section id="section-pricing" class="report-section" data-status="not_run"><h2><span class="section-title">估值定价</span></h2><div class="module-state" data-status="not_run" role="status"><strong>本次未运行：</strong><span>本次任务尚未运行估值。</span></div></section><section id="section-backtest" class="report-section" data-status="not_run"><h2><span class="section-title">历史回测</span></h2><div class="module-state" data-status="not_run" role="status"><strong>本次未运行：</strong><span>本次任务尚未运行回测。</span></div></section><section id="section-risk" class="report-section"><h2><span class="section-title">风险提示</span></h2><ul class="risk-list"><li>本文件仅为模板验证，不含任何可供交易或销售使用的结论。</li></ul><p class="disclaimer">正式报告须按实际结构和适用监管要求补充风险提示、数据来源及免责声明。</p></section>
+  <section id="section-conclusion" class="report-section"><h2><span class="section-title">核心结论</span></h2><div class="conclusion-band"><p class="conclusion-band__label">推荐结论</p><p class="conclusion-band__statement">推荐待确认，挂钩待确认。</p><h3>推荐理由</h3><ul class="plain-list"><li>在此填写经核验的核心推荐理由。</li></ul></div></section><section id="section-recommendation" class="report-section"><h2><span class="section-title">结构推荐</span></h2><div class="recommendation-head"><h3>待确认结构</h3></div><dl class="identity-ledger"><div><dt>推荐结构</dt><dd>待确认</dd></div><div><dt>挂钩标的</dt><dd>待确认</dd></div></dl><div class="recommendation-head"><p>在此填写结构选择理由。</p></div><div class="alternative-grid"><article class="alternative"><h3>备选结构</h3><p>在此说明备选结构的适配条件，不以模板文字替代正式条款或计算结果。</p><div class="alternative__tags"><span>待确认</span></div></article></div></section><section id="section-risk" class="report-section"><h2><span class="section-title">风险提示</span></h2><ul class="risk-list"><li>本文件仅为模板验证，不含任何可供交易或销售使用的结论。</li></ul><p class="disclaimer">正式报告须按实际结构和适用监管要求补充风险提示、数据来源及免责声明。</p></section>
 </main>
 </div>
 
