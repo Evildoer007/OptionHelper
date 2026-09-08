@@ -646,7 +646,6 @@ class AgentRun:
         }
         if set(raw).difference(allowed):
             raise ValidationError("AgentRun包含未知字段")
-        route = raw.get("model_route_ref")
         return cls(
             run_id=_alias(raw, "run_id", "runId", default=""),
             workflow_id=_alias(raw, "workflow_id", "workflowId", default=""),
