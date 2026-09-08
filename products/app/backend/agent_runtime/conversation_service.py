@@ -105,8 +105,8 @@ class ConversationService:
                         identity, task_id, request_id, replay_key,
                     ) or request_state
                     delivery = delivery_request(message) if self._report_delivery else None
-                    report_id = self._report_delivery.current_document(identity, task_id) if delivery and delivery['export_only'] else None
-                    previous_reports = {row['report_run_id'] for row in self._report_delivery.results.list_report_runs(identity, task_id)} if delivery else set()
+                    report_id = self._report_delivery.current_document(identity, task_id) if delivery and delivery['export_only'] and not delivery['multiple'] else None
+                    previous_reports = {row['report_run_id'] for row in self._report_delivery.results.list_report_runs(identity, task_id)} if self._report_delivery else set()
                     if report_id:
                         response = {'status': 'completed'}
                     else:
@@ -115,13 +115,17 @@ class ConversationService:
                             execution_ids=_execution_ids(request_state),
                             attachments=attachments or [],
                         )
-                    if delivery:
+                    created = []
+                    if self._report_delivery:
                         created = [row['report_run_id'] for row in self._report_delivery.results.list_report_runs(identity, task_id) if row['report_run_id'] not in previous_reports]
+                    if delivery:
                         try:
                             response = self._report_delivery.complete(identity, task_id, message, response,
                                 request_id=request_id, report_id=report_id or (created[-1] if created else None))
                         except ValidationError as error:
                             response = {'status':'needs_input','text':str(error)}
+                    if self._report_delivery and created:
+                        response = self._report_delivery.attach_documents(identity, task_id, response, created)
 
                 settled = self._task_service.settle_conversation_model(
                     identity, task_id, request_id, replay_key, response,
