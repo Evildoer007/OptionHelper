@@ -303,7 +303,8 @@ def _resolve_effective_backtest_window(
 
     requested_start = pd.Timestamp(config.start_date) if config.start_date else None
     requested_end = pd.Timestamp(config.end_date) if config.end_date else None
-    explicit_dates = pd.DatetimeIndex(pd.to_datetime(list(config.entry_dates or ())))
+    # 与entry_positions按唯一交易日生成样本保持一致，原始请求仍由Config保留。
+    explicit_dates = pd.DatetimeIndex(pd.to_datetime(list(config.entry_dates or ()))).unique().sort_values()
     requested_ceiling = max(
         [value for value in (requested_end, explicit_dates.max() if len(explicit_dates) else None) if value is not None],
         default=None,
