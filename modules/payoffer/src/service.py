@@ -393,6 +393,12 @@ def call_tool(
     action = str(body.pop("action", "catalog")).strip().lower()
     if action == "catalog":
         return catalog_payload()
+    if action == "status":
+        return {
+            "ok": True,
+            "module": "payoffer",
+            "status": "ready",
+        }
     if action == "default":
         return default_example_payload(body.get("product_id"))
     if action == "preview":
