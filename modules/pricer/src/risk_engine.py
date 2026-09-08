@@ -374,11 +374,15 @@ def _time_grid(
     future = [value for value in sessions if (value - market_date).days >= 2]
     if not future:
         return (maturity_years,)
+    admissible_dates = set(future)
     observation_dates: list[date] = []
     for schedule in getattr(contract, "resolved_schedules", {}).values():
         for value in schedule.get("dates", ()):
             observed = date.fromisoformat(str(value))
-            if market_date < observed <= future[-1]:
+            # Anchors obey the same remaining-time/calendar domain as all
+            # other nodes. A next-day observation must not reintroduce a
+            # one-day node whose Theta roll ends on the valuation date.
+            if observed in admissible_dates:
                 observation_dates.append(observed)
     required_dates = {future[0], future[-1]}
     if observation_dates:
