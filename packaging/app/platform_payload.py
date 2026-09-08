@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from hashlib import sha256
 from fnmatch import fnmatch
+from importlib import metadata
 import json
 from pathlib import Path
 from pathlib import PurePosixPath
@@ -38,10 +39,6 @@ BACKEND_DESKTOP_COMMON_SOURCES = (
 VERIFICATION_FIXTURE_SOURCE = "products/app/config/verification-fixture.json"
 VERIFICATION_FIXTURE_RESOURCE = "config/verification-fixture.json"
 VERIFICATION_FIXTURE_SCHEMA = "optionhelper.verification-fixture-identity"
-MACOS_NATIVE_VERIFICATION_INPUTS = (
-    "products/app/tests/DeskComputeProbe.m",
-    "products/app/tests/desk_compute_probe.js",
-)
 
 MACOS_SOURCE_MAPPINGS = (
     ("products/app/frontend", "Contents/Resources/frontend"),
@@ -80,7 +77,9 @@ APP_BACKEND_SOURCE_INPUTS = (
     "products/app/backend/model_gateway",
     "products/app/backend/page_registry.py",
     "products/app/backend/product_rule_revision.py",
+    "products/app/backend/report_editor.py",
     "products/app/backend/reporter_adapter.py",
+    "products/app/backend/report_delivery.py",
     "products/app/backend/secrets",
     "products/app/backend/settings",
     "products/app/backend/stores",
@@ -93,7 +92,6 @@ MACOS_BUILD_INPUTS = (
     "products/app/config/app-defaults.yaml",
     "products/app/config/logging.yaml",
     VERIFICATION_FIXTURE_SOURCE,
-    *MACOS_NATIVE_VERIFICATION_INPUTS,
     *BACKEND_DESKTOP_COMMON_SOURCES,
     "products/app/desktop/macos",
     "core/requirements.lock",
@@ -143,6 +141,18 @@ WINDOWS_STRICT_DIRECTORY_PAYLOADS = (
 SOURCE_EXCLUDES = {
     "products/app/frontend": ("*.md",),
 }
+PYTHON_DOCX_TEMPLATE_TARGET = Path("_internal/docx/templates")
+PYTHON_DOCX_PARTS_ANCHOR_TARGET = Path("_internal/docx/parts/optionhelper-resource-path.anchor")
+PYTHON_DOCX_PARTS_ANCHOR_BYTES = b"OptionHelper python-docx relative resource path anchor.\n"
+PYTHON_DOCX_REQUIRED_TEMPLATES = frozenset({
+    "default.docx",
+    "default-header.xml",
+    "default-footer.xml",
+    "default-settings.xml",
+    "default-styles.xml",
+    "default-docx-template/word/numbering.xml",
+    "default-docx-template/word/styles.xml",
+})
 
 
 class PlatformPayloadError(RuntimeError):
@@ -280,6 +290,89 @@ def _strict_files(root: Path) -> dict[str, Path]:
     if not values:
         raise PlatformPayloadError(f"严格交付目录为空：{root}")
     return values
+
+
+def _python_docx_template_source() -> Path:
+    try:
+        distribution = metadata.distribution("python-docx")
+    except metadata.PackageNotFoundError as error:
+        raise PlatformPayloadError("构建环境缺少python-docx") from error
+    return Path(distribution.locate_file("docx/templates")).resolve()
+
+
+def _python_docx_template_files(root: Path) -> dict[str, Path]:
+    files = _strict_files(root)
+    missing = sorted(PYTHON_DOCX_REQUIRED_TEMPLATES.difference(files))
+    if missing:
+        raise PlatformPayloadError("python-docx模板源缺少：" + ", ".join(missing))
+    return files
+
+
+def verify_python_docx_templates(
+    backend_package: Path,
+    *,
+    source_root: Path | None = None,
+) -> Path:
+    """Bind python-docx's lazy file lookups to exact frozen runtime bytes."""
+
+    source = source_root.resolve() if source_root is not None else _python_docx_template_source()
+    expected = _python_docx_template_files(source)
+    target = backend_package / PYTHON_DOCX_TEMPLATE_TARGET
+    actual = _strict_files(target)
+    if set(actual) != set(expected):
+        missing = sorted(set(expected).difference(actual))
+        extra = sorted(set(actual).difference(expected))
+        details: list[str] = []
+        if missing:
+            details.append("缺少：" + ", ".join(missing))
+        if extra:
+            details.append("多出：" + ", ".join(extra))
+        raise PlatformPayloadError("python-docx冻结模板文件集合不一致；" + "；".join(details))
+    for relative, packaged in actual.items():
+        if packaged.stat().st_size != expected[relative].stat().st_size or _hash(packaged) != _hash(expected[relative]):
+            raise PlatformPayloadError(f"python-docx冻结模板与构建环境不一致：{relative}")
+    anchor = backend_package / PYTHON_DOCX_PARTS_ANCHOR_TARGET
+    if anchor.is_symlink() or not anchor.is_file() or anchor.read_bytes() != PYTHON_DOCX_PARTS_ANCHOR_BYTES:
+        raise PlatformPayloadError(f"python-docx冻结资源路径锚点无效：{anchor}")
+    for relative in ("default-comments.xml", "default-footer.xml", "default-header.xml", "default-settings.xml", "default-styles.xml"):
+        through_parts = anchor.parent / ".." / "templates" / relative
+        try:
+            runtime_bytes = through_parts.read_bytes()
+        except OSError as error:
+            raise PlatformPayloadError(f"python-docx冻结相对路径不可访问：parts/../templates/{relative}") from error
+        if runtime_bytes != expected[relative].read_bytes():
+            raise PlatformPayloadError(f"python-docx冻结相对路径内容不一致：parts/../templates/{relative}")
+    return target
+
+
+def stage_python_docx_templates(
+    backend_package: Path,
+    *,
+    source_root: Path | None = None,
+) -> Path:
+    """Materialize the complete template tree at python-docx's frozen lookup path."""
+
+    if backend_package.is_symlink() or not backend_package.is_dir():
+        raise PlatformPayloadError(f"冻结后端目录不存在或为符号链接：{backend_package}")
+    source = source_root.resolve() if source_root is not None else _python_docx_template_source()
+    _python_docx_template_files(source)
+    target = backend_package / PYTHON_DOCX_TEMPLATE_TARGET
+    if target.is_symlink():
+        raise PlatformPayloadError(f"python-docx冻结模板目录不得为符号链接：{target}")
+    if target.exists():
+        if not target.is_dir():
+            raise PlatformPayloadError(f"python-docx冻结模板路径不是目录：{target}")
+        shutil.rmtree(target)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(source, target, symlinks=False)
+    anchor = backend_package / PYTHON_DOCX_PARTS_ANCHOR_TARGET
+    if anchor.parent.is_symlink():
+        raise PlatformPayloadError(f"python-docx冻结parts目录不得为符号链接：{anchor.parent}")
+    anchor.parent.mkdir(parents=True, exist_ok=True)
+    if anchor.is_symlink() or (anchor.exists() and not anchor.is_file()):
+        raise PlatformPayloadError(f"python-docx冻结资源路径锚点无效：{anchor}")
+    anchor.write_bytes(PYTHON_DOCX_PARTS_ANCHOR_BYTES)
+    return verify_python_docx_templates(backend_package, source_root=source)
 
 
 def build_strict_directory_manifest(root: Path) -> dict[str, object]:
