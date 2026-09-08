@@ -93,6 +93,22 @@ def normalize_confirmed_constraints(value: Mapping[str, Any] | None) -> dict[str
     path_count = _normalize_path_count(source.get("path_count"))
     if path_count is not None:
         result["path_count"] = path_count
+    window = source.get("backtest_range")
+    if isinstance(window, Mapping):
+        dates = {key: str(window.get(key, "")).strip() for key in ("start_date", "end_date")}
+        if all(re.fullmatch(r"\d{4}-\d{2}-\d{2}", value) for value in dates.values()):
+            result["backtest_range"] = dates
+    return result
+
+
+def confirmed_term_overrides(constraints: Mapping[str, Any]) -> dict[str, Any]:
+    """Translate the confirmed investment horizon to the contract year fraction."""
+    normalized = normalize_confirmed_constraints(constraints)
+    result: dict[str, Any] = {}
+    horizon = re.fullmatch(r"(\d+)(年|个月)", normalized.get("horizon", ""))
+    if horizon:
+        result["T"] = int(horizon[1]) / (12 if horizon[2] == "个月" else 1)
+    result.update(normalized.get("term_overrides", {}))
     return result
 
 
@@ -265,6 +281,14 @@ def _extract_text(text: str) -> dict[str, Any]:
         result["format"] = "pdf"
     elif wants_html:
         result["format"] = "html"
+    if "docx" in lowered or "word" in lowered:
+        result["format"] = "docx"
+    window = re.search(
+        r"回测[^。；;\n]{0,20}?(\d{4}-\d{2}-\d{2})\s*(?:至|到|~|～|—|–|to)\s*(\d{4}-\d{2}-\d{2})",
+        text, re.IGNORECASE,
+    )
+    if window:
+        result["backtest_range"] = {"start_date": window[1], "end_date": window[2]}
     term_operations = _term_override_operations(text)
     if term_operations:
         result["_term_override_operations"] = term_operations
@@ -318,7 +342,7 @@ def _normalize_term_overrides(value: object) -> dict[str, str | float]:
         return {}
     allowed_numeric = {
         "K", "K1", "K2", "K3", "K4", "Pi_0", "P_net", "c", "c_max", "alpha",
-        "H_KO", "H_KI", "B",
+        "H_KO", "H_KI", "B", "T",
     }
     allowed_text = {"O_KO", "O_KI", "Oc", "settlement", "exercise_style"}
     result: dict[str, str | float] = {}
@@ -723,7 +747,7 @@ def _normalize_output(value: object) -> str | None:
 
 def _normalize_format(value: object) -> str | None:
     text = str(value or "").strip().lower()
-    return text if text in {"html", "pdf"} else None
+    return text if text in {"html", "pdf", "docx"} else None
 
 
 def _number(value: str) -> int | None:
