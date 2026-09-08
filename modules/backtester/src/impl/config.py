@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from datetime import date
+from math import isfinite
+from numbers import Real
 from typing import Any, Mapping
 
 
@@ -52,9 +54,22 @@ class BacktestConfig:
         if "complete_tenor" in supplied and not isinstance(supplied["complete_tenor"], bool):
             raise BacktestConfigError("complete_tenor必须为布尔值")
         if supplied.get("entry_hv_window") is not None:
-            supplied["entry_hv_window"] = int(supplied["entry_hv_window"])
+            raw_window = supplied["entry_hv_window"]
+            try:
+                window = float(raw_window)
+            except (TypeError, ValueError, OverflowError) as error:
+                raise BacktestConfigError("entry_hv_window必须为有效整数交易日窗口") from error
+            if isinstance(raw_window, bool) or not isfinite(window) or not window.is_integer():
+                raise BacktestConfigError("entry_hv_window必须为有效整数交易日窗口")
+            supplied["entry_hv_window"] = int(window)
         if supplied.get("entry_hv_bins") is not None:
-            supplied["entry_hv_bins"] = tuple(float(item) for item in supplied["entry_hv_bins"])
+            raw_bins = supplied["entry_hv_bins"]
+            if not isinstance(raw_bins, (list, tuple)) or any(isinstance(item, bool) for item in raw_bins):
+                raise BacktestConfigError("entry_hv_bins必须为有限数值数组")
+            try:
+                supplied["entry_hv_bins"] = tuple(float(item) for item in raw_bins)
+            except (TypeError, ValueError, OverflowError) as error:
+                raise BacktestConfigError("entry_hv_bins必须为有限数值数组") from error
         return cls(**supplied)
 
 
@@ -89,7 +104,11 @@ def _validate_config(config: BacktestConfig) -> None:
     if config.entry_hv_bins is not None:
         if not isinstance(config.entry_hv_bins, tuple):
             raise BacktestConfigError("entry_hv_bins必须为数值元组")
-        if not config.entry_hv_bins or any(value <= 0 for value in config.entry_hv_bins) or tuple(sorted(set(config.entry_hv_bins))) != config.entry_hv_bins:
+        if (
+            not config.entry_hv_bins
+            or any(isinstance(value, bool) or not isinstance(value, Real) or not isfinite(value) or value <= 0 for value in config.entry_hv_bins)
+            or tuple(sorted(set(config.entry_hv_bins))) != config.entry_hv_bins
+        ):
             raise BacktestConfigError("entry_hv_bins必须为严格递增的正数边界")
         if config.entry_hv_window is None:
             raise BacktestConfigError("entry_hv_bins必须与entry_hv_window同时提供")
