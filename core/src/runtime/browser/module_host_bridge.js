@@ -47,7 +47,17 @@
   let contextVersion = 0;
   let acceptHostContext = null;
   let hostContextReady = new Promise((resolve) => { acceptHostContext = resolve; });
+  let moduleVisibilityActive = false;
+  let moduleVisibilitySeenActive = false;
   const nativeFetch = window.fetch.bind(window);
+
+  function moduleVisibilityTransition(nextActive) {
+    const active = nextActive === true;
+    const reopened = active && moduleVisibilitySeenActive && !moduleVisibilityActive;
+    moduleVisibilityActive = active;
+    if (active) moduleVisibilitySeenActive = true;
+    return {active, reopened};
+  }
 
   function resetHostContext() {
     context = null;
@@ -210,6 +220,7 @@
     const trigger = choice.querySelector(".oh-choice__trigger");
     const value = choice.querySelector(".oh-choice__value");
     const menu = choice.querySelector(".oh-choice__menu");
+    const focusedValue = menu.contains(document.activeElement) ? document.activeElement.dataset.value : null;
     const selected = optionFor(select, select.value);
     value.textContent = selected?.textContent || "未选择";
     trigger.disabled = select.disabled || !select.options.length;
@@ -226,28 +237,58 @@
       item.dataset.value = option.value;
       item.setAttribute("role", "option");
       item.setAttribute("aria-selected", String(option.selected));
-      item.disabled = option.disabled;
+      item.disabled = select.disabled || option.disabled || Boolean(option.closest("optgroup")?.disabled);
       item.tabIndex = -1;
       item.textContent = option.textContent;
-      item.addEventListener("click", () => {
-        if (option.disabled) return;
-        select.value = option.value;
-        select.dispatchEvent(new Event("change", {bubbles: true}));
+      item.addEventListener("click", (event) => {
+        // Prevent a wrapping label from forwarding activation after a change
+        // handler has replaced the selected option or its entire input group.
+        event.preventDefault();
+        event.stopPropagation();
+        if (item.disabled || select.disabled) return;
+        const changed = select.value !== option.value;
         setChoiceOpen(choice, false);
-        trigger.focus();
+        select.value = option.value;
+        if (changed) select.dispatchEvent(new Event("change", {bubbles: true}));
+        if (trigger.isConnected && !select.disabled) trigger.focus({preventScroll: true});
       });
       return item;
     }));
     if (trigger.disabled) setChoiceOpen(choice, false);
+    else if (focusedValue !== null && choice.dataset.open === "true") {
+      const options = Array.from(menu.querySelectorAll('[role="option"]:not([disabled])'));
+      (options.find((item) => item.dataset.value === focusedValue) || options.find((item) => item.dataset.value === select.value) || trigger).focus({preventScroll: true});
+    }
+  }
+
+  function positionChoiceMenu(choice) {
+    const trigger = choice.querySelector(".oh-choice__trigger");
+    const menu = choice.querySelector(".oh-choice__menu");
+    const rect = trigger.getBoundingClientRect();
+    let top = 0;
+    let bottom = window.innerHeight;
+    for (let parent = choice.parentElement; parent; parent = parent.parentElement) {
+      if (!/(auto|scroll|hidden|clip)/.test(getComputedStyle(parent).overflowY)) continue;
+      const bounds = parent.getBoundingClientRect();
+      top = Math.max(top, bounds.top);
+      bottom = Math.min(bottom, bounds.bottom);
+    }
+    const below = Math.max(0, bottom - rect.bottom - 6);
+    const above = Math.max(0, rect.top - top - 6);
+    const upward = below < Math.min(menu.scrollHeight || 160, 160) && above > below;
+    choice.dataset.direction = upward ? "up" : "down";
+    menu.style.maxHeight = `${Math.min(280, window.innerHeight * .42, upward ? above : below)}px`;
   }
 
   function setChoiceOpen(choice, open, focus = false) {
     const trigger = choice.querySelector(".oh-choice__trigger");
     const menu = choice.querySelector(".oh-choice__menu");
     if (trigger.disabled && open) return;
+    if (open) document.querySelectorAll('[data-oh-choice][data-open="true"]').forEach((other) => { if (other !== choice) setChoiceOpen(other, false); });
     choice.dataset.open = String(open);
     trigger.setAttribute("aria-expanded", String(open));
     menu.hidden = !open;
+    if (open) positionChoiceMenu(choice);
     if (open && focus) (menu.querySelector('[role="option"][aria-selected="true"]:not([disabled])') || menu.querySelector('[role="option"]:not([disabled])'))?.focus();
   }
 
@@ -256,7 +297,7 @@
   }
 
   function moveChoice(select, direction) {
-    const choices = Array.from(select.options).filter((option) => !option.disabled);
+    const choices = Array.from(select.options).filter((option) => !option.disabled && !option.closest("optgroup")?.disabled);
     const current = Math.max(0, choices.findIndex((option) => option.value === select.value));
     const next = choices[Math.max(0, Math.min(choices.length - 1, current + direction))];
     if (!next || next.value === select.value) return;
@@ -312,21 +353,24 @@
     }
     trigger.addEventListener("click", () => setChoiceOpen(choice, choice.dataset.open !== "true", choice.dataset.open !== "true"));
     trigger.addEventListener("keydown", (event) => {
+      if (["ArrowDown", "ArrowUp", "Home", "End", " ", "Enter", "Escape"].includes(event.key)) event.stopPropagation();
       if (event.key === "ArrowDown" || event.key === "ArrowUp") {
         event.preventDefault();
         if (choice.dataset.open === "true") moveChoice(select, event.key === "ArrowDown" ? 1 : -1);
         else setChoiceOpen(choice, true, true);
       } else if (event.key === "Home" || event.key === "End") {
         event.preventDefault();
-        const options = Array.from(select.options).filter((option) => !option.disabled);
+        const options = Array.from(select.options).filter((option) => !option.disabled && !option.closest("optgroup")?.disabled);
         const next = options[event.key === "Home" ? 0 : options.length - 1];
-        if (next) { select.value = next.value; select.dispatchEvent(new Event("change", {bubbles: true})); }
+        if (next && next.value !== select.value) { select.value = next.value; select.dispatchEvent(new Event("change", {bubbles: true})); }
       } else if (event.key === " " || event.key === "Enter") {
         event.preventDefault();
+        if (event.repeat) return;
         setChoiceOpen(choice, choice.dataset.open !== "true", choice.dataset.open !== "true");
-      } else if (event.key === "Escape") setChoiceOpen(choice, false);
+      } else if (event.key === "Escape") { event.preventDefault(); setChoiceOpen(choice, false); }
     });
     menu.addEventListener("keydown", (event) => {
+      if (["ArrowDown", "ArrowUp", "Home", "End", " ", "Enter", "Escape"].includes(event.key)) event.stopPropagation();
       const options = Array.from(menu.querySelectorAll('[role="option"]:not([disabled])'));
       const index = options.indexOf(document.activeElement);
       if (event.key === "ArrowDown" || event.key === "ArrowUp") {
@@ -337,13 +381,18 @@
         options[event.key === "Home" ? 0 : options.length - 1]?.focus();
       } else if (event.key === "Enter" || event.key === " ") {
         event.preventDefault();
+        if (event.repeat) return;
         document.activeElement?.click();
       } else if (event.key === "Escape") {
         event.preventDefault();
         setChoiceOpen(choice, false);
         trigger.focus();
-      } else if (event.key === "Tab") setChoiceOpen(choice, false);
+      } else if (event.key === "Tab") {
+        setChoiceOpen(choice, false);
+        trigger.focus({preventScroll: true});
+      }
     });
+    select.addEventListener("input", () => updateChoice(select));
     select.addEventListener("change", () => updateChoice(select));
     new MutationObserver(() => updateChoice(select)).observe(select, {childList: true, subtree: true, attributes: true, attributeFilter: ["aria-describedby", "aria-invalid", "disabled", "selected", "label"]});
     updateChoice(select);
@@ -366,7 +415,8 @@
       .oh-choice__trigger:focus-visible { outline: 3px solid var(--color-blue-gray, #49647d); outline-offset: 2px; }
       .oh-choice__trigger:disabled { background: var(--color-ground, #f4f2f2); color: var(--color-muted-soft, #978e90); cursor: not-allowed; }
       .oh-choice__native[aria-invalid="true"] ~ .oh-choice__trigger { border-color: var(--color-brand-red, #c8102e); background: var(--color-ground, #f4f4f2); box-shadow: 0 0 0 3px var(--color-ground, #f4f4f2); }
-      .oh-choice__menu { position: absolute; z-index: 80; top: calc(100% + 6px); right: 0; left: 0; max-height: min(280px, 42vh); padding: 5px; overflow: auto; border: 1px solid var(--color-rule, #e2e0dc); border-radius: 9px; background: var(--color-surface, #fff); box-shadow: 0 14px 28px var(--color-surface-shadow, rgb(44 53 62 / .08)); }
+      .oh-choice__menu { position: absolute; z-index: 80; top: calc(100% + 6px); right: 0; left: 0; box-sizing: border-box; max-height: min(280px, 42vh); padding: 5px; overflow: auto; border: 1px solid var(--color-rule, #e2e0dc); border-radius: 9px; background: var(--color-surface, #fff); box-shadow: 0 14px 28px var(--color-surface-shadow, rgb(44 53 62 / .08)); }
+      .oh-choice[data-direction="up"] .oh-choice__menu { top: auto; bottom: calc(100% + 6px); }
       .oh-choice__option { display: flex; width: 100%; min-height: 32px; align-items: center; padding: 7px 9px; border: 0; border-radius: 6px; background: transparent; color: var(--color-ink, #252628); font: inherit; font-size: 12px; line-height: 1.35; text-align: left; }
       .oh-choice__option:hover, .oh-choice__option:focus-visible { outline: 0; background: var(--color-ground, #f4f4f2); color: var(--color-ink, #252628); }
       .oh-choice__option[aria-selected="true"] { background: var(--color-ground, #f4f4f2); color: var(--color-ink, #252628); font-weight: 700; }
@@ -386,6 +436,7 @@
       });
     })).observe(document.documentElement, {childList: true, subtree: true});
     document.addEventListener("pointerdown", (event) => document.querySelectorAll('[data-oh-choice][data-open="true"]').forEach((choice) => { if (!choice.contains(event.target)) setChoiceOpen(choice, false); }));
+    document.addEventListener("focusin", (event) => document.querySelectorAll('[data-oh-choice][data-open="true"]').forEach((choice) => { if (!choice.contains(event.target)) setChoiceOpen(choice, false); }));
   }
 
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", installChoiceControls, {once: true});
@@ -824,6 +875,7 @@
           }
           return asResponse(operation.state === "failed" ? 500 : 409, {
             ok: false, error: operation.state, message: operation.message || "后台运行未完成。", ...(operation.result || {}),
+            operation_state: operation.state,
           });
         }
         await wait(750, signal);
@@ -925,9 +977,16 @@
     if (event.origin !== location.origin) return;
     if (event.data?.type === "optionhelper.module-visibility") {
       if (hostedInDesk && (!bridgeNonce || event.data?.bridge_nonce !== bridgeNonce || event.source !== window.parent)) return;
-      if (event.data?.active !== true) closeChoiceControls();
+      const visibility = moduleVisibilityTransition(event.data?.active);
+      const active = visibility.active;
+      if (document.documentElement?.dataset) document.documentElement.dataset.optionhelperModuleActive = String(active);
+      if (document.body) document.body.inert = !active;
+      if (!active) {
+        closeChoiceControls();
+        document.activeElement?.blur?.();
+      }
       if (typeof CustomEvent === "function") {
-        document.dispatchEvent(new CustomEvent("optionhelper:modulevisibility", { detail: { active: event.data?.active === true } }));
+        document.dispatchEvent(new CustomEvent("optionhelper:modulevisibility", { detail: visibility }));
       }
       return;
     }
