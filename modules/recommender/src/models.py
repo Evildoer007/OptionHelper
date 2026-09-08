@@ -1,7 +1,7 @@
 """Recommender领域对象与严格校验。
 
-本模块只保存当前推荐快照、解释和运行引用。产品条款、市场数据、已编译合同
-及历史候选拓扑均由所属Host在确认后按最新OptionReg处理。
+本模块只保存当前推荐快照、解释和运行引用。Host在确认后按最新OptionReg
+编译当前输入，并负责市场数据和计算；领域层不建立历史候选拓扑。
 """
 
 from __future__ import annotations
@@ -463,12 +463,16 @@ def module_execution_from_tool_result(
     status = aliases.get(raw_status, raw_status) or ("succeeded" if data.get("ok") is True else "failed")
     if status not in RUN_STATUSES:
         raise RecommendationValidationError(f"{module}返回未知运行状态：{status}")
+    if status == "succeeded" and data.get("ok") is False:
+        raise RecommendationValidationError(f"{module}返回的成功状态与ok冲突")
     for name, expected in {"candidate_id": candidate_id, "catalog_version": catalog_version}.items():
         if data.get(name) is not None and data.get(name) != expected:
             raise RecommendationValidationError(f"{module}返回结果未绑定当前候选：{name}")
     limitation = str(data.get("message") or data.get("reason") or "").strip() or None
     if status not in {"succeeded", "partial"}:
         return status, None, limitation
+    if data.get("candidate_id") != candidate_id:
+        raise RecommendationValidationError(f"{module}成功结果未绑定当前candidate_id")
     raw_ref = data.get("module_run_ref")
     if not isinstance(raw_ref, Mapping):
         raise RecommendationValidationError(f"{module}成功结果缺少Core正式ModuleRunRef")
