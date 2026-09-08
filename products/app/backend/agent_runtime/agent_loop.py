@@ -184,7 +184,7 @@ class AgentLoop:
             try:
                 context = self._context_builder.build(identity, task_id, message)
                 workflow_decision = _workflow_decision(self._gateway, identity, message, context)
-                if round_number == 1 and workflow_decision.analysis_path == "recommendation":
+                if round_number == 1 and workflow_decision.analysis_path == "recommendation" and not (attachments and self._conversation_agent is not None):
                     self._emit_visible_event(identity, task_id, request_id, "routing", "completed", "已识别为结构推荐需求，开始候选分析。")
                     arguments = {
                         "workflow": _fixed_recommendation_workflow(message),
@@ -284,8 +284,13 @@ class AgentLoop:
                             observations,
                             round_number,
                         )
-                    except Exception:
-                        return _result("unavailable", "当前自然对话运行时未返回可用答复。", observations, round_number)
+                    except Exception as error:
+                        timed_out = "超时" in str(error) or "timeout" in str(error).lower() or "timed out" in str(error).lower()
+                        message = (
+                            "模型响应超时，本轮尚未完成。已保留对话，可继续发送需求重试。"
+                            if timed_out else "对话执行中断，本轮尚未完成。已保留对话，请查看运行详情后重试。"
+                        )
+                        return _result("unavailable", message, observations, round_number)
                 decision_context = _model_context(
                     context,
                     observations=observations,
@@ -1250,7 +1255,15 @@ def _has_financial_number(text: str) -> bool:
     labels = (
         "pv", "greek", "delta", "gamma", "vega", "theta", "rho", "估值", "定价", "回测", "收益率", "胜率", "回撤", "损益",
     )
-    return bool(_NUMBER.search(_FACT_MARKER.sub("", text))) and any(label in text.lower() for label in labels)
+    # Asset codes, dates and list numbering are context, not calculated facts.
+    value = _FACT_MARKER.sub("", text)
+    value = re.sub(r"(?<![A-Za-z0-9])\d{6}\s*\.?\s*(?:SH|SZ)(?![A-Za-z0-9])", "标的", value, flags=re.I)
+    value = re.sub(r"\b\d{4}[-/]\d{2}[-/]\d{2}\b", "日期", value)
+    value = re.sub(r"(?m)^\s*\d+[.、)]\s*", "", value)
+    return any(
+        _NUMBER.search(clause) and any(label in clause.lower() for label in labels)
+        for clause in re.split(r"[。！？；;\n]", value)
+    )
 
 
 def _number_matches_fact(rendered: str, value: object) -> bool:
