@@ -19,7 +19,7 @@ INTERNAL_SCALE = "internal_scale"
 _MARKET_BOUND_KEYS = frozenset({"S0", "S0Vec"})
 _DERIVED_KEYS = frozenset({"monitor", "constraints", "derived_terms"})
 _INTERNAL_SCALE_KEYS = frozenset({
-    "N", "Nvar", "Nvega", "G", "payoff_figure_basis", "payoff_normalizer",
+    "N", "Nvar", "Nvega", "G", "payoff_normalizer",
 })
 _FIXED_RULE_KEYS = frozenset({"pricing_methods", "settlement", "margin_call"})
 
@@ -83,7 +83,7 @@ def _field_spec(
         "editability": editability,
         "editability_reason": reason,
         "display_unit": _display_unit(key, unit),
-        "value_encoding": _value_encoding(key, unit),
+        "value_encoding": term_value_encoding(key, unit),
         "dependency_group": _dependency_group(str(metadata.get("symbol") or key), constraints),
         "tenor_role": _tenor_role(key, terms),
     }
@@ -222,9 +222,13 @@ def _presentation_domain(raw_domain: Any) -> dict[str, Any]:
     return domain
 
 
-def _value_encoding(key: str, unit: str) -> str:
+def term_value_encoding(key: str, unit: str) -> str:
     if key == "T":
         return "year_month_calendar_day_to_act365"
+    if key == "Ksig":
+        # The variance-swap cashflow squares volatility percentage points:
+        # Ksig=13 means 13%, unlike market volatility stored as 0.13.
+        return "percentage_points_internal"
     if unit in {"rate", "volatility", "percentage"}:
         return "percentage_input_decimal_internal"
     if unit == "premium_percent_s0_100":
