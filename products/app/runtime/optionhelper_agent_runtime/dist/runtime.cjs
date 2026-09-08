@@ -2,6 +2,7 @@
 
 // src/entrypoint/runtime.ts
 var import_node_readline = require("node:readline");
+var import_node_vm = require("node:vm");
 
 // src/core/runtime.ts
 var import_node_crypto2 = require("node:crypto");
@@ -1797,6 +1798,11 @@ async function dispatch(method, raw) {
       return { runtimeId: "optionhelper-agent-runtime", protocolVersion: "2.0", capabilities: runtime.capabilities() };
     case "runtime.shutdown":
       return runtime.shutdown();
+    case "runtime.validateJavascript": {
+      if (typeof raw.source !== "string") throw new Error("JavaScript source is required");
+      new import_node_vm.Script(raw.source, { filename: "report-chart.js" });
+      return { valid: true };
+    }
     case "agent.activate":
       return runtime.activate(raw).snapshot();
     case "agent.turn":
