@@ -56,7 +56,7 @@ class ToolConnection:
     agent_run_id: str
     role_id: str
     allowed_tools: tuple[str, ...]
-    max_tools: int = 12
+    max_tools: int = 0
     _access_token: str = field(repr=False, compare=False, default="")
 
     def __post_init__(self) -> None:
@@ -71,8 +71,8 @@ class ToolConnection:
         if any(item not in TOOL_NAMES for item in allowed) or len(set(allowed)) != len(allowed):
             raise ValidationError("ToolConnection.allowed_tools无效")
         object.__setattr__(self, "allowed_tools", allowed)
-        if isinstance(self.max_tools, bool) or not isinstance(self.max_tools, int) or not 0 <= self.max_tools <= 12:
-            raise ValidationError("ToolConnection.max_tools必须位于0至12")
+        if isinstance(self.max_tools, bool) or not isinstance(self.max_tools, int) or self.max_tools < 0:
+            raise ValidationError("ToolConnection.max_tools必须为非负整数，0表示不限")
 
     @property
     def access_token(self) -> str:
@@ -205,7 +205,7 @@ class RuntimeToolBridge:
         agent_run_id: str,
         role_id: str,
         allowed_tools: tuple[str, ...] | list[str] | None = None,
-        max_tools: int = 12,
+        max_tools: int = 0,
     ) -> ToolConnection:
         if not isinstance(identity, SessionIdentity):
             raise ValidationError("ToolConnection需要已认证SessionIdentity")
@@ -216,8 +216,8 @@ class RuntimeToolBridge:
         allowed = tuple(allowed_tools or TOOL_NAMES)
         if any(item not in TOOL_NAMES for item in allowed):
             raise ValidationError("allowed_tools包含未声明工具")
-        if isinstance(max_tools, bool) or not isinstance(max_tools, int) or not 0 <= max_tools <= 12:
-            raise ValidationError("max_tools必须位于0至12")
+        if isinstance(max_tools, bool) or not isinstance(max_tools, int) or max_tools < 0:
+            raise ValidationError("max_tools必须为非负整数，0表示不限")
         token = secrets.token_urlsafe(32)
         connection = ToolConnection(
             connection_id=f"tool-connection-{uuid4().hex}",
@@ -300,8 +300,8 @@ class RuntimeToolBridge:
                     previous_result.result,
                     idempotent_replay=True,
                 )
-            if state.tool_calls >= state.connection.max_tools:
-                raise ValidationError("当前Child Session工具调用次数超过12次上限")
+            if state.connection.max_tools > 0 and state.tool_calls >= state.connection.max_tools:
+                raise ValidationError("工具调用次数达到显式配置的上限")
             state.tool_calls += 1
         payload = {"task_id": state.connection.task_id, **request}
         result = self._dispatch(name, state, payload, normalized_request_id)
