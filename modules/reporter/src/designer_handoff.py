@@ -924,7 +924,8 @@ def render_with_designer(
     except Exception as error:
         raise ReporterError("报告呈现服务调用失败，请稍后重试") from error
     if not isinstance(response, Mapping) or response.get("ok") is not True:
-        raise ReporterError("报告呈现未完成，请检查呈现能力后重试")
+        detail = str(response.get("message") or response.get("error") or "无有效返回") if isinstance(response, Mapping) else "无有效返回"
+        raise ReporterError(f"报告呈现未完成：{detail}")
     artifact = response.get("artifact")
     if not isinstance(artifact, Mapping):
         raise ReporterError("报告呈现结果不完整，请重新生成")
