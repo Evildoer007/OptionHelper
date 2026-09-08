@@ -31,7 +31,7 @@
         <div class="notice" id="notice" hidden aria-live="polite"></div>
         <div class="canvas-viewport">
           <section class="result-sheet" id="result-sheet">
-            <div class="empty-canvas" id="empty-canvas"><strong>尚无数据结果</strong><span>请先填写右侧必填项。</span></div>
+            <div class="empty-canvas" id="empty-canvas"><strong>尚无数据结果</strong><span>填写右侧必填项后获取数据。</span></div>
             <div id="result-content" hidden></div>
           </section>
         </div>
@@ -43,7 +43,7 @@
           <section class="inspector-group">
             <h3>请求范围</h3>
             <label class="control-field" for="asset-ids"><span>资产标识</span><textarea id="asset-ids" autocomplete="off" spellcheck="false" autocorrect="off" autocapitalize="off" required aria-describedby="asset-ids-error" placeholder="例如000300.SH"></textarea><small class="field-error" id="asset-ids-error" role="alert"></small></label>
-            <div class="control-grid"><label class="control-field" for="start-date"><span>开始日期</span><input class="date-input" id="start-date" type="text" inputmode="numeric" autocomplete="off" placeholder="yyyy/mm/dd" required aria-describedby="start-date-hint start-date-error"><small id="start-date-hint">按自然日填写，提交时转换为ISO日期。</small><small class="field-error" id="start-date-error" role="alert"></small></label><label class="control-field" for="end-date"><span>结束日期</span><input class="date-input" id="end-date" type="text" inputmode="numeric" autocomplete="off" placeholder="yyyy/mm/dd" required aria-describedby="end-date-hint end-date-error"><small id="end-date-hint">不得早于开始日期。</small><small class="field-error" id="end-date-error" role="alert"></small></label></div>
+            <div class="control-grid"><label class="control-field" for="start-date"><span>开始日期</span><input class="date-input" id="start-date" type="text" inputmode="numeric" autocomplete="off" placeholder="yyyy/mm/dd" required aria-describedby="start-date-hint start-date-error"><small id="start-date-hint">按自然日填写。</small><small class="field-error" id="start-date-error" role="alert"></small></label><label class="control-field" for="end-date"><span>结束日期</span><input class="date-input" id="end-date" type="text" inputmode="numeric" autocomplete="off" placeholder="yyyy/mm/dd" required aria-describedby="end-date-hint end-date-error"><small id="end-date-hint">不得早于开始日期。</small><small class="field-error" id="end-date-error" role="alert"></small></label></div>
           </section>
           <section class="inspector-group">
             <h3>数据口径</h3>
@@ -63,12 +63,12 @@
           </section>
           <section class="inspector-group">
             <h3>数据来源</h3>
-            <p class="retention-note">系统先查找满足标的、字段、日期和交易日历要求的本地数据；覆盖不足时自动通过iFind补齐。</p>
-            <section class="secret-card" id="ifind-status-card"><strong>连接状态</strong><span id="secret-status">正在检查连接配置。</span></section>
+            <p class="retention-note">优先使用本地数据，覆盖不足时自动通过iFind补齐。</p>
+            <section class="secret-card" id="ifind-status-card"><strong>连接状态</strong><span id="secret-status">正在读取连接状态。</span></section>
           </section>
           <section class="inspector-group">
             <h3>数据保存</h3>
-            <label class="strategy-option"><input id="save-downloaded-data" type="checkbox"><span><strong>保存下载数据</strong><small>默认关闭。关闭时数据仅用于当前进程，不写入CSV、缓存、清单或数据资产列表；应用重启后需重新获取。</small></span></label>
+            <label class="strategy-option"><input id="save-downloaded-data" type="checkbox"><span><strong>保存下载数据</strong><small>默认关闭；关闭后仅供本次使用，应用重启后需重新获取。</small></span></label>
           </section>
         </form>
       </aside>
