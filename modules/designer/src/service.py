@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import base64
 import shutil
+import os
+from pathlib import Path
 from typing import Any, Mapping
 
 from .config import DesignerConfig, DesignerConfigurationError, load_designer_config
@@ -65,8 +67,8 @@ def capability(config: DesignerConfig | Mapping[str, Any] | None = None) -> dict
         "formats": ["html", "pdf"] if pdf_available else ["html"],
         "pdf_runtime": pdf_runtime,
         "chart_javascript_validation": {
-            "available": shutil.which("node") is not None,
-            "engine": "node --check",
+            "available": bool(os.environ.get("OPTIONHELPER_AGENT_RUNTIME_PATH") and Path(os.environ["OPTIONHELPER_AGENT_RUNTIME_PATH"]).is_file()) or shutil.which("node") is not None,
+            "engine": "bundled runtime" if os.environ.get("OPTIONHELPER_AGENT_RUNTIME_PATH") else "node --check",
             "message": "含ECharts图表的HTML会在交付前进行JavaScript语法校验。",
         },
     }
