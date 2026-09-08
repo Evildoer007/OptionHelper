@@ -180,6 +180,9 @@ class VarianceSwapOption(OptionInstrument):
     annualization_days: int
     observation_times: tuple[float, ...]
     maturity_years: float
+    historical_squared_returns: float = 0.0
+    historical_return_count: int = 0
+    last_observation_spot: float | None = None
 
     def __post_init__(self) -> None:
         _require_positive("strike_volatility", self.strike_volatility)
@@ -188,6 +191,10 @@ class VarianceSwapOption(OptionInstrument):
         if len(self.observation_times) < 2:
             raise ValueError("Variance Swap至少需要两个观察时点")
         _require_strict_times("observation_times", self.observation_times)
+        require_nonnegative_real("historical_squared_returns", self.historical_squared_returns)
+        require_plain_int("historical_return_count", self.historical_return_count, nonnegative=True)
+        if self.last_observation_spot is not None:
+            _require_positive("last_observation_spot", self.last_observation_spot)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -199,6 +206,8 @@ class RangeAccrualOption(OptionInstrument):
     maximum_coupon: float
     observation_times: tuple[float, ...]
     maturity_years: float
+    historical_in_count: int = 0
+    historical_observation_count: int = 0
 
     def __post_init__(self) -> None:
         _require_positive("lower", self.lower)
@@ -207,9 +216,13 @@ class RangeAccrualOption(OptionInstrument):
             raise ValueError("Range Accrual下界必须小于上界")
         require_nonnegative_real("maximum_coupon", self.maximum_coupon)
         _require_positive("maturity_years", self.maturity_years)
-        if not self.observation_times:
+        if not self.observation_times and not self.historical_observation_count:
             raise ValueError("Range Accrual观察时点不得为空")
         _require_nondecreasing_times("observation_times", self.observation_times)
+        require_plain_int("historical_in_count", self.historical_in_count, nonnegative=True)
+        require_plain_int("historical_observation_count", self.historical_observation_count, nonnegative=True)
+        if self.historical_in_count > self.historical_observation_count:
+            raise ValueError("历史区间内观察数不得超过历史观察数")
 
 
 @dataclass(frozen=True, kw_only=True)
