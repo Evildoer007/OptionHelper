@@ -63,13 +63,13 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
     private let presentationMaxAttempts = 28
     private let presentationReadyTimeout: TimeInterval = 4.05
     private let uiScaleSteps: [CGFloat] = [0.8, 0.9, 1.0, 1.1, 1.25, 1.4]
-    private let initializationToken = UUID().uuidString.replacingOccurrences(of: "-", with: "")
     private var backend: Process?
     private var startupPipe: Pipe?
     private var window: NSWindow?
     private var webView: WKWebView?
     private var reportPreviewWindow: NSWindow?
     private var reportPreviewWebView: WKWebView?
+    private var reportWindowIsEditor = false
     private var settingsWindow: NSWindow?
     private var settingsWebView: WKWebView?
     private var settingsRecoveryView: NSView?
@@ -176,7 +176,6 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         var arguments = [
             "--host", "127.0.0.1", "--port", "0", "--data-dir", support.path,
             "--resource-dir", resources.path,
-            "--initialization-token", initializationToken,
         ]
         if environment["OPTIONHELPER_VERIFICATION_FIXTURE"] == "1" {
             arguments.append("--verification-fixture")
@@ -249,7 +248,7 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         let titlebarHeight = javascriptNumber(36 / uiScale)
         let collapsedSafeArea = javascriptNumber(166 / uiScale)
         let startupScript = WKUserScript(
-            source: "document.documentElement.dataset.nativeShell='macos';document.documentElement.dataset.nativeMaterial='system';document.documentElement.dataset.uiScale='\(scaleValue)';document.documentElement.style.setProperty('--native-titlebar-height','\(titlebarHeight)px');document.documentElement.style.setProperty('--native-titlebar-collapsed-leading-safe-area','\(collapsedSafeArea)px');if(location.pathname==='/'){window.__optionhelperInitializationToken='\(initializationToken)';document.documentElement.classList.add('login-boot');}",
+            source: "document.documentElement.dataset.nativeShell='macos';document.documentElement.dataset.nativeMaterial='system';document.documentElement.dataset.uiScale='\(scaleValue)';document.documentElement.style.setProperty('--native-titlebar-height','\(titlebarHeight)px');document.documentElement.style.setProperty('--native-titlebar-collapsed-leading-safe-area','\(collapsedSafeArea)px');if(location.pathname==='/'){document.documentElement.classList.add('login-boot');}",
             injectionTime: .atDocumentStart,
             forMainFrameOnly: true
         )
@@ -424,7 +423,7 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
     }
 
     @objc private func toggleRail(_ sender: Any?) {
-        webView?.evaluateJavaScript("document.querySelector('[data-rail-collapse-toggle]')?.click()")
+        webView?.evaluateJavaScript("window.dispatchEvent(new Event('optionhelper:toggle-task-rail'))")
     }
 
     @objc private func toggleReport(_ sender: Any?) {
@@ -903,9 +902,16 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
               url.host == appOrigin.host,
               url.port == appOrigin.port,
               url.path.hasPrefix("/api/reports/"),
-              url.path.contains("/artifacts/") else { return false }
+              (url.path.contains("/artifacts/") || url.path.contains("/document-artifacts/")) else { return false }
         guard let queryItems = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems else { return true }
         return queryItems.allSatisfy { $0.name == "download" && $0.value == "1" }
+    }
+
+    private func isAllowedReportEditorURL(_ url: URL?) -> Bool {
+        guard let url, let appOrigin,
+              url.scheme == appOrigin.scheme, url.host == appOrigin.host,
+              url.port == appOrigin.port, url.query == nil || url.query == "" else { return false }
+        return url.path.range(of: "^/reports/[A-Za-z0-9][A-Za-z0-9_-]{0,127}/edit$", options: .regularExpression) != nil
     }
 
     private func isReportDownloadURL(_ url: URL?) -> Bool {
@@ -947,7 +953,7 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
     private func reportDownloadFilename(_ url: URL) -> String {
         let raw = url.lastPathComponent.removingPercentEncoding ?? url.lastPathComponent
         let lower = raw.lowercased()
-        let suffix = lower.hasSuffix(".pdf") ? ".pdf" : lower.hasSuffix(".html") ? ".html" : ""
+        let suffix = [".pdf", ".html", ".docx"].first(where: lower.hasSuffix) ?? ""
         if let fragment = url.fragment,
            let components = URLComponents(string: "https://optionhelper.invalid/?\(fragment)"),
            let publicName = components.queryItems?.first(where: { $0.name == "display_name" })?.value {
@@ -1013,7 +1019,8 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
                     defer { session.finishTasksAndInvalidate() }
                     let httpResponse = response as? HTTPURLResponse
                     let mimeType = response?.mimeType?.lowercased() ?? ""
-                    let allowedMIMETypes = Set(["text/html", "application/xhtml+xml", "application/pdf"])
+                    let allowedMIMETypes = Set(["text/html", "application/xhtml+xml", "application/pdf",
+                        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"])
                     let fileSize = temporaryURL.flatMap {
                         try? $0.resourceValues(forKeys: [.fileSizeKey]).fileSize
                     } ?? 0
@@ -1032,18 +1039,19 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
                         guard temporaryURL != nil, fileSize > 0 else { return "报告文件为空。" }
                         return nil
                     }()
-                    DispatchQueue.main.async {
-                        guard validationError == nil, let temporaryURL else {
-                            self.showReportDownloadFailure(validationError ?? "未收到报告文件。")
-                            return
-                        }
+                    var saveError = validationError
+                    if saveError == nil, let temporaryURL {
                         do {
-                            if FileManager.default.fileExists(atPath: destination.path) {
-                                try FileManager.default.removeItem(at: destination)
-                            }
-                            try FileManager.default.copyItem(at: temporaryURL, to: destination)
+                            // URLSession removes this file when its completion handler returns.
+                            let contents = try Data(contentsOf: temporaryURL, options: .mappedIfSafe)
+                            try contents.write(to: destination, options: .atomic)
                         } catch {
-                            self.showReportDownloadFailure(error.localizedDescription)
+                            saveError = error.localizedDescription
+                        }
+                    }
+                    if let saveError {
+                        DispatchQueue.main.async {
+                            self.showReportDownloadFailure(saveError)
                         }
                     }
                 }.resume()
@@ -1078,6 +1086,8 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
             reportPreviewWebView = preview
             reportPreviewWindow = previewWindow
         }
+        reportWindowIsEditor = isAllowedReportEditorURL(request.url)
+        previewWindow.title = reportWindowIsEditor ? "OptionHelper报告编辑" : "OptionHelper报告预览"
         preview.load(request)
         previewWindow.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
@@ -1090,6 +1100,11 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         windowFeatures: WKWindowFeatures
     ) -> WKWebView? {
         guard navigationAction.targetFrame == nil else { return nil }
+        if webView === self.webView, navigationAction.sourceFrame.isMainFrame,
+           isAllowedReportEditorURL(navigationAction.request.url) {
+            showReportPreview(navigationAction.request, configuration: configuration)
+            return nil
+        }
         guard isAllowedReportArtifactURL(navigationAction.request.url) else {
             NSSound.beep()
             return nil
@@ -1156,11 +1171,22 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
             }
             return
         }
+        if isAllowedReportArtifactURL(url), isReportDownloadURL(url) {
+            downloadReportArtifact(navigationAction.request)
+            decisionHandler(.cancel)
+            return
+        }
         guard webView === reportPreviewWebView else {
             decisionHandler(.allow)
             return
         }
-        decisionHandler(url?.scheme == "about" || isAllowedReportArtifactURL(url) ? .allow : .cancel)
+        if reportWindowIsEditor, isSafeAppURL(url), url?.path == "/optchat" {
+            reportPreviewWindow?.orderOut(nil)
+            decisionHandler(.cancel)
+            return
+        }
+        decisionHandler(url?.scheme == "about" || isAllowedReportArtifactURL(url)
+            || (reportWindowIsEditor && isAllowedReportEditorURL(url)) ? .allow : .cancel)
     }
 
     func webView(
