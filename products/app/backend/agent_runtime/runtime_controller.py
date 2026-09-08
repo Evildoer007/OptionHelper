@@ -463,9 +463,9 @@ class AgentRuntimeController:
             raise ValidationError("subagent.maxSteps必须是整数")
         if isinstance(requested_tools, bool) or not isinstance(requested_tools, int):
             raise ValidationError("subagent.maxTools必须是整数")
-        budget["maxSteps"] = min(requested_steps, MAX_WORKFLOW_STEPS, self._workflow.max_steps_per_run)
-        budget["maxTools"] = min(requested_tools, MAX_WORKFLOW_TOOLS, self._workflow.max_tools)
-        if budget["maxSteps"] < 1 or budget["maxTools"] < 0:
+        budget["maxSteps"] = requested_steps
+        budget["maxTools"] = requested_tools
+        if budget["maxSteps"] < 0 or budget["maxTools"] < 0:
             raise ValidationError("subagent预算超出运行时上限")
         tool_policy = params.get("tool_policy", params.get("toolPolicy"))
         if tool_policy is not None and not isinstance(tool_policy, Mapping):
