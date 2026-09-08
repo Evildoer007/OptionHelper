@@ -11,20 +11,7 @@ const LABELS = Object.freeze({
   listening: "正在接收", connecting: "正在连接", weaving: "正在整合",
   composing: "正在生成答复", breathing: "正在等待", shaping: "正在完成",
 });
-// Geometry may vary within a real phase. The semantic label never changes
-// merely because the presentation rotates to another upstream shape.
-const VISUAL_SEQUENCES = Object.freeze({
-  working: ['working','solving','weaving','shaping'],
-  searching: ['searching','connecting','working'],
-  solving: ['solving','working','shaping','weaving'],
-  listening: ['listening','breathing'],
-  connecting: ['connecting','listening','working'],
-  weaving: ['weaving','shaping','composing'],
-  composing: ['composing','listening','weaving'],
-  breathing: ['breathing'],
-  shaping: ['shaping'],
-});
-const VARIANT_INTERVAL = 3600;
+// One upstream geometry per semantic state; transitions preserve the shared clock.
 const instances = new Map();
 let frameRequest = 0;
 let lastFrame = 0;
@@ -99,8 +86,6 @@ export function createThinkingOrb({state = "working", size = 20, theme = "auto",
   const multiplier = Math.max(.1, Math.min(3, Number(speed) || 1));
   let currentState = normalizeState(state);
   let currentVisual = currentState;
-  let visualIndex = 0;
-  let visualElapsed = 0;
   let suspended = Boolean(paused);
   let visible = true;
   let disposed = false;
@@ -154,20 +139,10 @@ export function createThinkingOrb({state = "working", size = 20, theme = "auto",
       const reduced = reducedMotion();
       if (reduced) {
         currentVisual = currentState;
-        visualIndex = 0; visualElapsed = 0;
         canvas.dataset.thinkingVisual = currentState;
         weights = new Map([[currentState, 1]]);
         if (dirty) paint(true);
         canvas.dataset.playback = "reduced"; return false;
-      }
-      if (!suspended) {
-        visualElapsed += elapsed;
-        const sequence = VISUAL_SEQUENCES[currentState];
-        if (sequence.length > 1 && visualElapsed >= VARIANT_INTERVAL) {
-          visualElapsed %= VARIANT_INTERVAL;
-          visualIndex = (visualIndex + 1) % sequence.length;
-          selectVisual(sequence[visualIndex]);
-        }
       }
       const targetVelocity = suspended ? 0 : 1;
       velocity += (targetVelocity - velocity) * (1 - Math.exp(-elapsed / 100));
@@ -209,7 +184,6 @@ export function createThinkingOrb({state = "working", size = 20, theme = "auto",
       next = normalizeState(next);
       if (next === currentState) return;
       currentState = next;
-      visualIndex = 0; visualElapsed = 0;
       selectVisual(next);
       canvas.dataset.thinkingState = next;
       canvas.setAttribute("aria-label", LABELS[next]);
