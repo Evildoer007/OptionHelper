@@ -6,10 +6,12 @@ accepts an arbitrary filesystem path or any provider credential.
 
 from __future__ import annotations
 
+from copy import deepcopy
 import json
 from datetime import date, datetime, timezone
 from hashlib import sha256
-from typing import Any
+from threading import RLock
+from typing import Any, Mapping
 
 from ..errors import AuthorizationError, UserActionError, ValidationError
 from ..identity.session_identity import SessionIdentity
@@ -20,9 +22,12 @@ class DataStore:
     def __init__(self, state: _LocalDocumentStore) -> None:
         self._state = state
         self._volatile: dict[str, dict[str, Any]] = {}
+        self._volatile_lock = RLock()
 
     def _records(self) -> dict[str, Any]:
-        return {**self._state.read("data_assets"), **self._volatile}
+        with self._volatile_lock:
+            volatile = deepcopy(self._volatile)
+        return {**self._state.read("data_assets"), **volatile}
 
     def register(self, identity: SessionIdentity, asset: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(asset, dict):
@@ -76,10 +81,12 @@ class DataStore:
 
         key = _asset_key(identity.tenant_id, asset_id)
         if lineage.get("persistence_mode") == "volatile":
-            existing = self._volatile.get(key)
-            if existing is not None and not all(existing.get(name) == record.get(name) for name in _PROTOCOL_FIELDS):
-                raise ValidationError("DataAsset references are immutable; create a new data_asset_id")
-            self._volatile[key] = record
+            with self._volatile_lock:
+                existing = self._volatile.get(key)
+                if existing is not None and not all(existing.get(name) == record.get(name) for name in _PROTOCOL_FIELDS):
+                    raise ValidationError("DataAsset references are immutable; create a new data_asset_id")
+                if existing is None:
+                    self._volatile[key] = record
             return self.get(identity, asset_id)
 
         def update(value: dict[str, Any]) -> dict[str, Any]:
@@ -122,6 +129,7 @@ class DataStore:
                 if isinstance(item, dict)
                 and item.get("tenant_id") == identity.tenant_id
                 and item.get("created_by") == identity.principal_id
+                and "read" in item.get("access_scope", [])
                 and set(asset_ids) == set(item.get("asset_ids", []))
                 and (schema_id is None or item.get("schema_id") == schema_id)
                 and (schema_id != "market-history" or _market_history_metadata_consistent(item))
@@ -176,6 +184,7 @@ class DataStore:
             if (
                 item.get("tenant_id") != identity.tenant_id
                 or item.get("created_by") != identity.principal_id
+                or "read" not in item.get("access_scope", [])
                 or item.get("schema_id") != "market-history"
                 or set(asset_ids) != set(item.get("asset_ids", []))
                 or not _market_history_metadata_consistent(item)
@@ -210,10 +219,9 @@ class DataStore:
     ) -> dict[str, Any] | None:
         """Choose local history by fitness, never by registration recency alone.
 
-        An automatic backtest may use the latest observed local session when
-        today's civil date has not arrived in the data source yet.  The
-        Backtester then derives the latest *complete* entry from those actual
-        sessions. Explicit user windows still require exact interval coverage.
+        Only observed common-asset bounds prove coverage. The Host resolves
+        civil boundaries against a verified calendar before reusing a shorter
+        interval; a provider's previous request dates cannot establish it.
         """
 
         try:
@@ -228,6 +236,7 @@ class DataStore:
             if (
                 item.get("tenant_id") != identity.tenant_id
                 or item.get("created_by") != identity.principal_id
+                or "read" not in item.get("access_scope", [])
                 or item.get("schema_id") != "market-history"
                 or set(item.get("asset_ids", [])) != set(asset_ids)
                 or not set(fields).issubset(set(item.get("normalized_fields", [])))
@@ -241,17 +250,14 @@ class DataStore:
                 continue
             if require_verified_calendar and not _history_has_verified_calendar(coverage):
                 continue
-            try:
-                available_start = date.fromisoformat(str(coverage.get("start_date")))
-                available_end = date.fromisoformat(str(coverage.get("end_date")))
-                acquired_from = date.fromisoformat(str(coverage.get("requested_start_date", available_start)))
-                acquired_through = date.fromisoformat(str(coverage.get("requested_end_date", available_end)))
-            except ValueError:
+            bounds = market_history_bounds(item)
+            if bounds is None:
                 continue
-            exact = acquired_from <= required_start and acquired_through >= required_end
+            available_start, available_end = bounds
+            exact = available_start <= required_start and available_end >= required_end
             latest_available = (
                 allow_available_end
-                and acquired_from <= required_start
+                and available_start <= required_start
                 and available_end >= required_start
                 and available_end <= required_end
             )
@@ -294,6 +300,7 @@ class DataStore:
             if (
                 item.get("tenant_id") != identity.tenant_id
                 or item.get("created_by") != identity.principal_id
+                or "read" not in item.get("access_scope", [])
                 or item.get("schema_id") != "trading-calendar"
                 or set(item.get("asset_ids", [])) != set(asset_ids)
             ):
@@ -338,6 +345,26 @@ _PROTOCOL_FIELDS = (
     "coverage", "row_count", "price_convention", "content_hash", "lineage", "tenant_id",
     "created_by", "access_scope", "partition_spec",
 )
+
+
+def market_history_bounds(reference: Mapping[str, Any]) -> tuple[date, date] | None:
+    """Return actual common-asset bounds, independent of acquisition intent."""
+
+    coverage = reference.get("coverage")
+    if not isinstance(coverage, Mapping):
+        return None
+    try:
+        starts = [date.fromisoformat(str(coverage["start_date"]))]
+        ends = [date.fromisoformat(str(coverage["end_date"]))]
+        by_asset = coverage.get("by_asset")
+        if isinstance(by_asset, Mapping):
+            for asset_id in reference.get("asset_ids", ()):
+                starts.append(date.fromisoformat(str(by_asset[asset_id]["start_date"])))
+                ends.append(date.fromisoformat(str(by_asset[asset_id]["end_date"])))
+        first, last = max(starts), min(ends)
+    except (KeyError, TypeError, ValueError):
+        return None
+    return (first, last) if first <= last else None
 
 
 def _market_history_metadata_consistent(record: dict[str, Any]) -> bool:
