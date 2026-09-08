@@ -1,4 +1,3 @@
-import { createThinkingOrb } from "/app/frontend/shared/thinking-orb.js";
 const secretKeys = new Set(["password", "token", "api_key", "secret", "secret_value", "private_key"]);
 const sessionEventKey = "optionhelper.session.event";
 
@@ -990,8 +989,6 @@ export function createReasoningDisclosure(text = "", { running = false } = {}) {
   details.className = "assistant-reasoning";
   details.open = true;
   const summary = document.createElement("summary");
-  const orb = createThinkingOrb({ state: "solving", size: 28, paused: !running });
-  orb.element.setAttribute("aria-hidden", "true");
   const title = document.createElement("span");
   title.className = "assistant-reasoning__title";
   const chevron = document.createElement("span");
@@ -999,7 +996,7 @@ export function createReasoningDisclosure(text = "", { running = false } = {}) {
   chevron.setAttribute("aria-hidden", "true");
   const body = document.createElement("div");
   body.className = "assistant-reasoning__body";
-  summary.append(orb.element, title, chevron);
+  summary.append(title, chevron);
   details.append(summary, body);
   const update = (nextText, nextRunning = false) => {
     const value = String(nextText ?? "");
@@ -1012,14 +1009,11 @@ export function createReasoningDisclosure(text = "", { running = false } = {}) {
       requestAnimationFrame(() => { if (body.isConnected) body.scrollTop = body.scrollHeight; });
     }
     details.hidden = !value && !nextRunning;
-    // Stopping preserves the current visual and phase; only velocity settles.
-    if (nextRunning) orb.setState("solving");
-    orb.setPaused(!nextRunning);
     // The user's disclosure choice survives every streamed delta and completion.
     // Start expanded; updates never override the user's disclosure choice.
   };
   update(text, running);
-  const controller = { element: details, body, update, destroy: orb.destroy };
+  const controller = { element: details, body, update, destroy() { reasoningControllers.delete(details); } };
   reasoningControllers.set(details, controller);
   return controller;
 }
@@ -1061,6 +1055,7 @@ function safeArtifactReference(text) {
   return {
     path: `/api/reports/${encodeURIComponent(reportRunId)}/artifacts/${encodedName}`,
     name: artifactDisplayName(artifactName.split("/").at(-1) || "交付文件"),
+    reportId: reportRunId,
   };
 }
 
@@ -1163,7 +1158,7 @@ function createMessageArtifactCard(reference) {
 }
 
 function createQuestionCard(block, options, active) {
-  const card = document.createElement("form");
+  const card = document.createElement("section");
   card.className = "message-question";
   card.dataset.state = active ? "pending" : "answered";
   card.dataset.questionId = String(block.question_id || "");
@@ -1172,7 +1167,7 @@ function createQuestionCard(block, options, active) {
   prompt.textContent = String(block.prompt || block.text || "请补充以下信息。");
   card.append(prompt);
   const optionRows = Array.isArray(block.options) ? block.options.slice(0, 3) : [];
-  if (optionRows.length) {
+  if (optionRows.length && !(active && options.questionInComposer)) {
     const choices = document.createElement("div");
     choices.className = "message-question__choices";
     for (const row of optionRows) {
@@ -1197,26 +1192,6 @@ function createQuestionCard(block, options, active) {
     }
     card.append(choices);
   }
-  if (block.allow_free_text === true && active) {
-    const free = document.createElement("div");
-    free.className = "message-question__free";
-    const field = document.createElement("textarea");
-    field.rows = 2;
-    field.maxLength = 2_000;
-    field.disabled = !active;
-    field.placeholder = active ? "补充你的要求" : "该问题已处理";
-    const submit = document.createElement("button");
-    submit.type = "submit";
-    submit.textContent = active ? "发送" : "已回答";
-    submit.disabled = !active;
-    free.append(field, submit);
-    card.append(free);
-    card.addEventListener("submit", (event) => {
-      event.preventDefault();
-      const answer = field.value.trim();
-      if (active && answer) options.onQuestionAnswer?.(answer, block.question_id);
-    });
-  }
   if (!active) {
     const answered = document.createElement("span");
     answered.className = "message-question__answered";
@@ -1226,11 +1201,77 @@ function createQuestionCard(block, options, active) {
   return card;
 }
 
+function appendAssistantText(container, text) {
+  // Render a small, safe prose vocabulary. Model HTML never enters innerHTML.
+  const inline = (parent, value) => {
+    const tokens = String(value).split(/(\*\*[^*\n]+\*\*|`[^`\n]+`)/g);
+    for (const token of tokens) {
+      const tag = token.startsWith("**") && token.endsWith("**") ? "strong" : token.startsWith("`") && token.endsWith("`") ? "code" : "span";
+      const node = document.createElement(tag);
+      node.textContent = tag === "strong" ? token.slice(2, -2) : tag === "code" ? token.slice(1, -1) : token;
+      parent.append(node);
+    }
+  };
+  const lines = String(text).split("\n");
+  let paragraph = [], list = null;
+  const flush = () => {
+    if (!paragraph.length) return;
+    const p = document.createElement("p");
+    inline(p, paragraph.join("\n"));
+    container.append(p);
+    paragraph = [];
+  };
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index].trim();
+    if (line.startsWith("```")) {
+      flush(); list = null;
+      const code = document.createElement("code"), pre = document.createElement("pre"), values = [];
+      while (++index < lines.length && !lines[index].trim().startsWith("```")) values.push(lines[index]);
+      code.textContent = values.join("\n"); pre.append(code); container.append(pre);
+      continue;
+    }
+    if (line.includes("|") && /^\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(lines[index+1] || "")) {
+      flush(); list = null;
+      const wrap = document.createElement("div"), table = document.createElement("table");
+      wrap.className = "message-prose__table";
+      const cells = value => value.trim().replace(/^\||\|$/g, "").split("|");
+      const addRow = (value, tag) => {
+        const row = document.createElement("tr");
+        for (const cell of cells(value)) { const item = document.createElement(tag); inline(item, cell.trim()); row.append(item); }
+        table.append(row);
+      };
+      addRow(line, "th"); index += 1;
+      while (index+1 < lines.length && lines[index+1].includes("|")) addRow(lines[++index], "td");
+      wrap.append(table); container.append(wrap); continue;
+    }
+    const heading = /^(#{1,6})\s+(.+)$/.exec(line);
+    const bullet = /^(?:([-*+])|(\d+)[.)])\s+(.+)$/.exec(line);
+    if (heading) {
+      flush(); list = null;
+      const title = document.createElement(heading[1].length < 3 ? "h3" : "h4");
+      inline(title, heading[2]); container.append(title);
+    } else if (bullet) {
+      flush();
+      const tag = bullet[2] ? "ol" : "ul";
+      if (!list || list.tagName.toLowerCase() !== tag) { list = document.createElement(tag); container.append(list); }
+      const item = document.createElement("li"); inline(item, bullet[3]); list.append(item);
+    } else if (!line || /^[-*_]{3,}$/.test(line)) {
+      flush(); list = null;
+    } else {
+      list = null; paragraph.push(line.replace(/^>\s?/, ""));
+    }
+  }
+  flush();
+}
+
 function createConversationMessage(entry, options = {}) {
   const article = document.createElement("article");
   const user = entry?.role === "user";
   article.className = `message message--${user ? "user" : "assistant"}`;
-  const messageText = String(entry?.content ?? "");
+  const messageBlocks = Array.isArray(entry?.content_blocks) ? entry.content_blocks : [];
+  const hasDocument = messageBlocks.some(block => block?.type === "document");
+  const visibleText = messageBlocks.filter(block => block?.type === "text").map(block => String(block.text || "")).filter(Boolean).join("\n\n");
+  const messageText = hasDocument ? visibleText : String(entry?.content ?? "");
   const actions = document.createElement("div");
   actions.className = "message__actions";
   const copy = document.createElement("button");
@@ -1283,7 +1324,7 @@ function createConversationMessage(entry, options = {}) {
       copy.dataset.copied = "false";
     }, 1000);
   });
-  actions.append(copy, copyStatus);
+  if (messageText.trim()) actions.append(copy, copyStatus);
   const createdAt = Date.parse(String(entry?.created_at ?? ""));
   if (Number.isFinite(createdAt)) {
     const time = document.createElement("time");
@@ -1332,16 +1373,22 @@ function createConversationMessage(entry, options = {}) {
       }
     } else if (type === "text" && text) {
       if (blocks.some(item => item?.type === "question" && String(item.prompt || "").trim() === text.trim())) continue;
-      const body = document.createElement("p");
-      body.className = "message__body";
-      body.textContent = text;
+      const body = document.createElement("div");
+      body.className = "message__body message-prose";
+      appendAssistantText(body, text);
       content.append(body);
     } else if (type === "question") {
       content.append(createQuestionCard(block, options, options.questionActive === true));
     }
   }
-  const artifact = safeArtifactReference(messageText);
-  if (artifact && !blocks.some(block => block?.type === "document")) content.append(createMessageArtifactCard(artifact));
+  const linkedArtifacts = String(messageText).match(/\/api\/reports\/[^\s/?#]+\/artifacts\/[^\s?#)<>*]+/g) || [];
+  const shownReports = new Set(blocks.filter(block => block?.type === "document").map(block => block.report_run_id));
+  for (const link of linkedArtifacts) {
+    const artifact = safeArtifactReference(link);
+    if (!artifact || shownReports.has(artifact.reportId)) continue;
+    shownReports.add(artifact.reportId);
+    content.append(createMessageArtifactCard(artifact));
+  }
   article.append(content, actions);
   return article;
 }
