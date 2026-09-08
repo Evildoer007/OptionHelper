@@ -7,6 +7,7 @@ import math
 from typing import Any, Mapping, Sequence
 
 from .candidate_critic import critique_candidates
+from .interaction import confirmed_term_overrides
 from .models import EvidenceRef, RecommendationCandidate, RecommendationValidationError
 
 
@@ -218,7 +219,10 @@ def build_candidates(
                     for key, value in (confirmed_constraints or {}).items()
                     if not str(key).startswith("_")
                 },
-                "term_overrides": dict(row.get("term_overrides", {})) if isinstance(row.get("term_overrides"), Mapping) else {},
+                "term_overrides": {
+                    **(dict(row["term_overrides"]) if isinstance(row.get("term_overrides"), Mapping) else {}),
+                    **confirmed_term_overrides(confirmed_constraints or {}),
+                },
             },
         })
         row.pop("term_overrides", None)
