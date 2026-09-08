@@ -11,7 +11,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 
-_UNDERLYING = re.compile(r"(?<![A-Za-z0-9])(?P<code>\d{6}\.(?:SH|SZ))(?![A-Za-z0-9])", re.IGNORECASE)
+_UNDERLYING = re.compile(r"(?<![A-Za-z0-9])(?P<code>\d{6})\s*\.?\s*(?P<exchange>SH|SZ)(?![A-Za-z0-9])", re.IGNORECASE)
 _HORIZON = re.compile(r"(?P<number>\d+|[一二三四五六七八九十两]+)\s*(?P<unit>个?月|月|年|个?季度|季度|季)")
 _YEAR_AND_HALF = re.compile(r"(?P<number>\d+|[一二三四五六七八九十两]+)\s*年半")
 _LOSS = re.compile(r"(?:最大(?:可承受)?(?:亏损|损失|回撤)?|最大亏损?|亏损(?:不超过|上限为|控制在|改为)?|回撤(?:不超过|上限为|控制在|改为)?|最大(?:可承受)?(?:亏损|损失|回撤)?改为)\s*(?P<value>\d+(?:\.\d+)?)\s*[%％]")
@@ -68,7 +68,7 @@ def normalize_confirmed_constraints(value: Mapping[str, Any] | None) -> dict[str
     if isinstance(underlying, str):
         match = _UNDERLYING.search(underlying.upper())
         if match:
-            result["underlying"] = match.group("code").upper()
+            result["underlying"] = f"{match.group('code')}.{match.group('exchange').upper()}"
     horizon = _normalize_horizon(source.get("horizon") or source.get("tenor"))
     if horizon:
         result["horizon"] = horizon
@@ -254,7 +254,7 @@ def _extract_text(text: str) -> dict[str, Any]:
     result: dict[str, Any] = {}
     match = _UNDERLYING.search(text.upper())
     if match:
-        result["underlying"] = match.group("code").upper()
+        result["underlying"] = f"{match.group('code')}.{match.group('exchange').upper()}"
     horizon = _normalize_horizon(text)
     if horizon:
         result["horizon"] = horizon
