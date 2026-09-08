@@ -20,6 +20,7 @@ from typing import Any, Literal, Mapping
 from xml.etree import ElementTree
 
 from .design_tokens import TOKENS
+from .system_fonts import windows_font_candidates
 from .renderer import display_text
 
 
@@ -620,7 +621,7 @@ def _register_fonts() -> tuple[object, str, str]:
     latin_font = "Helvetica"
     latin_candidates = (
         Path("/System/Library/Fonts/Supplemental/Arial.ttf"),
-        Path("C:/Windows/Fonts/arial.ttf"),
+        *windows_font_candidates("arial.ttf"),
         Path("/usr/share/fonts/truetype/msttcorefonts/Arial.ttf"),
     )
     for path in latin_candidates:
@@ -638,8 +639,7 @@ def _register_fonts() -> tuple[object, str, str]:
         Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"),
         Path("/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc"),
         Path("/System/Library/Fonts/STHeiti Medium.ttc"),
-        Path("C:/Windows/Fonts/Deng.ttf"),
-        Path("C:/Windows/Fonts/simsun.ttc"),
+        *windows_font_candidates("Deng.ttf", "simsun.ttc"),
     )
     for path in cjk_candidates:
         if not path.is_file():
