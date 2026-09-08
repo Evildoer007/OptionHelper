@@ -340,8 +340,6 @@ class RuntimeBackedAgentPort(AgentPort):
         with self._lock:
             self._ensure_available()
             self._call_count += 1
-            if self._call_count > self._preset.effective_workflow_total_budget:
-                raise ValidationError("Recommender工作流超过Agent调用预算")
             existing = self._role_runs.get(normalized_role)
         prompt = self._prompt(wire_role, payload)
         try:
@@ -735,6 +733,7 @@ class RuntimeBackedAgentPort(AgentPort):
         saw_tool_call = False
         try:
             for chunk in self._role_model_stream(role, context, control, messages=messages, tools=tools):
+                control.refresh_deadline(self._preset.max_seconds_per_agent_run)
                 control.raise_if_cancelled()
                 kind = str(
                     getattr(chunk, "type", None)
