@@ -28,6 +28,7 @@ from .renderer import (
     SECTION_ORDER,
     as_dict,
     as_list,
+    backtest_summary_rows,
     canonical_greeks,
     display_basis,
     display_text,
@@ -40,7 +41,6 @@ from .renderer import (
     table_column_role,
     table_density,
     text,
-    unique_metric_rows_by_label,
     validate_payload,
 )
 
@@ -266,11 +266,13 @@ def _card_body(
         )
 
     def recommendation_block(title: str) -> str:
+        if recommendation.get("has_recommendation") is False:
+            title = "研究结构"
         headline = text(recommendation.get("headline") or recommendation.get("structure_name"))
         underlyings = text(recommendation.get("underlyings"))
         if not headline and not underlyings:
             return ""
-        parts = [f'<section class="card-conclusion"><h2>{esc(title)}</h2>']
+        parts = [f'<section class="card-conclusion"><h2 class="conclusion-heading">{esc(title)}</h2>']
         if headline:
             parts.append(f'<p class="card-structure">{esc(headline)}</p>')
         if underlyings:
@@ -290,7 +292,7 @@ def _card_body(
         terms: list[str] = []
         compact_units = {"年", "人民币", "份合同", "点", "次", "期"}
         for item in (as_dict(value) for value in as_list(payload.get("contract_highlights"))):
-            label, value, note = text(item.get("label")), text(item.get("value")), text(item.get("note"))
+            label, value, note = text(item.get("label")), display_text(item.get("value"), item.get("value_format")), text(item.get("note"))
             if not label or not value:
                 continue
             if note in compact_units:
@@ -303,11 +305,13 @@ def _card_body(
         return (
             '<section class="card-contract-summary" aria-labelledby="card-contract-summary-title">'
             f'<div class="card-contract-summary__heading"><h2 id="card-contract-summary-title">{esc(title)}</h2>'
-            '<p>估值摘要与回测摘要均基于同一份冻结合同事实。</p></div>'
+            '</div>'
             f'<dl class="card-contract-grid">{"".join(terms)}</dl></section>'
         )
 
     def pricing_block(title: str) -> str:
+        if text(pricing.get("status")).lower() not in {"ready", "partial", "failed"}:
+            return ""
         status = text(pricing.get("status") or "pending").lower()
         rows: list[dict[str, Any]] = []
         if status in {"ready", "partial"}:
@@ -336,24 +340,12 @@ def _card_body(
         return f'<div class="card-analysis"><h2>{esc(title)}</h2>{state}{table}' + (f'<p class="card-data-note">{esc(detail)}</p>' if detail else "") + "</div>"
 
     def backtest_block(title: str) -> str:
+        if text(backtest.get("status")).lower() not in {"ready", "partial", "failed"}:
+            return ""
         status = text(backtest.get("status") or "pending").lower()
-        metric_rows = list(as_list(backtest.get("metrics")))
-        for table in (as_dict(item) for item in as_list(backtest.get("detail_tables"))):
-            if text(table.get("title")) == "公共回测统计":
-                metric_rows.extend(as_list(table.get("rows")))
-        metrics_by_label = unique_metric_rows_by_label(metric_rows, "回测摘要")
         rows: list[dict[str, Any]] = []
         if status in {"ready", "partial"}:
-            for labels in (
-                ("样本数",),
-                ("历史正收益样本占比",),
-                ("平均合同结算收益率",),
-                ("最低合同结算收益率",),
-            ):
-                row = next((metrics_by_label[label] for label in labels if metrics_by_label.get(label, {}).get("value") is not None), None)
-                if row:
-                    rows.append({"metric": text(row.get("label")), "value": display_text(row.get("value"), row.get("value_format")), "unit": card_unit(display_basis(row))})
-            for row in (as_dict(item) for item in as_list(backtest.get("card_metrics"))[:4]):
+            for row in backtest_summary_rows(backtest):
                 value = display_text(row.get("value"), row.get("value_format"))
                 if text(row.get("label")) and value:
                     rows.append({"metric": text(row.get("label")), "value": value, "unit": card_unit(display_basis(row))})
@@ -366,14 +358,22 @@ def _card_body(
             f"入场规则：{text(backtest.get('entry_rule'))}" if text(backtest.get("entry_rule")) else "",
         ]
         detail = "；".join(item for item in details if item)
-        return f'<div class="card-analysis"><h2>{esc(title)}</h2>{state}{table}' + (f'<p class="card-data-note">{esc(detail)}</p>' if detail else "") + "</div>"
+        disclosures = "".join(
+            f'<p class="card-data-note">{esc(note)}</p>'
+            for note in as_list(backtest.get("summary_notes")) if text(note)
+        ) if status in {"ready", "partial"} else ""
+        return f'<div class="card-analysis"><h2>{esc(title)}</h2>{state}{table}' + (f'<p class="card-data-note">{esc(detail)}</p>' if detail else "") + disclosures + "</div>"
 
     def risk_block(title: str) -> str:
         values = [text(item) for item in as_list(risk.get("items")) if text(item)][:2]
-        if not values:
+        shown_notes = {text(item) for item in as_list(backtest.get("summary_notes"))}
+        limitations = list(dict.fromkeys(text(item) for item in as_list(risk.get("limitations"))
+                                       if text(item) and text(item) not in shown_notes))
+        if not values and not limitations:
             return ""
-        content = "；".join(value.rstrip("。") for value in values) + "。"
-        return f'<section class="card-risk"><h2>{esc(title)}</h2><p>{rich_text(content)}</p></section>'
+        content = "；".join(value.rstrip("。") for value in values) + "。" if values else ""
+        notes = "".join(f'<p class="card-data-note">{rich_text(note)}</p>' for note in limitations)
+        return f'<section class="card-risk"><h2>{esc(title)}</h2>' + (f'<p>{rich_text(content)}</p>' if content else "") + notes + '</section>'
 
     renderers = {
         "recommendation": recommendation_block,
@@ -429,7 +429,7 @@ def render_card_html(
     config = load_designer_config(config)
     template = config.read_template(template_shell)
     return (
-        template.replace("__TITLE__", html.escape(CARD_DELIVERY_TITLE))
+        template.replace("__TITLE__", html.escape("场外衍生品结构研究卡片" if as_dict(payload.get("recommendation")).get("has_recommendation") is False else CARD_DELIVERY_TITLE))
         .replace("__REPORT_THEME__", config.read_report_theme())
         .replace("__BRAND__", html.escape(PUBLIC_BRAND))
         .replace("__DESIGN_SYSTEM_ID__", html.escape(theme.design_system_id))
@@ -650,7 +650,7 @@ def render_quote_html(
     theme = build_design_system()
     template = config.read_template(template_shell)
     meta = as_dict(safe_payload.get("meta"))
-    title = text(meta.get("quote_title")) or QUOTE_DELIVERY_TITLE
+    title = text(meta.get("title")) or text(meta.get("quote_title")) or QUOTE_DELIVERY_TITLE
     quote = _reference_quote(safe_payload)
     blocks: list[str] = []
     for section_id, section_title, block in definition:
