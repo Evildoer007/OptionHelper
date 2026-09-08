@@ -833,7 +833,7 @@ def fetch_calendar_asset(
                         "end_date": end_date,
                         "exchanges": sorted(exchanges),
                     })
-                    if config.offline:
+                    if config.offline or getattr(error, "reason_code", None) == "credential_unavailable":
                         raise _attach_provider_calls(error, calls)
                     if isinstance(error, (
                         CalendarValidationError,
