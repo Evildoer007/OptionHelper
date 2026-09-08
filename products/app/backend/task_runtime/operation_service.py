@@ -165,6 +165,20 @@ class TaskOperationService:
                 "ON task_operations(tenant_id,owner_id,task_id,module,kind,request_id) "
                 "WHERE request_id IS NOT NULL"
             )
+            # Every accepted retry is a durable alias, including requests
+            # coalesced with an already-running operation under another ID.
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS task_operation_requests ("
+                "tenant_id TEXT NOT NULL,owner_id TEXT NOT NULL,task_id TEXT NOT NULL,"
+                "module TEXT NOT NULL,kind TEXT NOT NULL,request_id TEXT NOT NULL,"
+                "input_hash TEXT NOT NULL,operation_id TEXT NOT NULL,"
+                "PRIMARY KEY (tenant_id,owner_id,task_id,module,kind,request_id))"
+            )
+            connection.execute(
+                "INSERT OR IGNORE INTO task_operation_requests "
+                "SELECT tenant_id,owner_id,task_id,module,kind,request_id,input_hash,operation_id "
+                "FROM task_operations WHERE request_id IS NOT NULL AND input_hash IS NOT NULL"
+            )
             connection.execute(
                 "UPDATE task_operations SET state='interrupted',updated_at=?,message=? "
                 f"WHERE state IN ({_ACTIVE_SQL})",
@@ -192,12 +206,17 @@ class TaskOperationService:
         if (normalized_request_id is None) != (normalized_input_hash is None):
             raise ValidationError("Task operation request_id and input_hash must be supplied together")
         with self._connect() as connection:
+            # Admission and insertion form one claim even for operations
+            # without an HTTP request ID.
+            connection.execute("BEGIN IMMEDIATE")
             if normalized_request_id is not None:
-                connection.execute("BEGIN IMMEDIATE")
                 existing = connection.execute(
-                    "SELECT operation_id,tenant_id,owner_id,task_id,module,kind,state,created_at,updated_at,"
-                    "result_json,message,recovery_attempts,diagnostic_id,input_hash FROM task_operations "
-                    "WHERE tenant_id=? AND owner_id=? AND task_id=? AND module=? AND kind=? AND request_id=?",
+                    "SELECT op.operation_id,op.tenant_id,op.owner_id,op.task_id,op.module,op.kind,"
+                    "op.state,op.created_at,op.updated_at,op.result_json,op.message,op.recovery_attempts,"
+                    "op.diagnostic_id,req.input_hash FROM task_operation_requests AS req "
+                    "JOIN task_operations AS op ON op.operation_id=req.operation_id "
+                    "WHERE req.tenant_id=? AND req.owner_id=? AND req.task_id=? AND req.module=? "
+                    "AND req.kind=? AND req.request_id=?",
                     (identity.tenant_id, identity.principal_id, task_id, module, kind, normalized_request_id),
                 ).fetchone()
                 if existing is not None:
@@ -216,6 +235,11 @@ class TaskOperationService:
                     (identity.tenant_id, identity.principal_id, task_id, module, kind, normalized_input_hash),
                 ).fetchone()
                 if matching is not None:
+                    connection.execute(
+                        "INSERT INTO task_operation_requests VALUES(?,?,?,?,?,?,?,?)",
+                        (identity.tenant_id, identity.principal_id, task_id, module, kind,
+                         normalized_request_id, normalized_input_hash, matching[0]),
+                    )
                     connection.commit()
                     record = _row(matching)
                     self._require_owner(identity, record)
@@ -224,8 +248,7 @@ class TaskOperationService:
                 f"SELECT COUNT(*) FROM task_operations WHERE state IN ({_ACTIVE_SQL})"
             ).fetchone()[0])
             if active >= 32:
-                if normalized_request_id is not None:
-                    connection.rollback()
+                connection.rollback()
                 raise UnavailableCapabilityError("task_operation_queue", "后台运行队列已满，请稍后重试。")
             identifier = str(uuid4())
             now = _now()
@@ -239,7 +262,12 @@ class TaskOperationService:
                 ),
             )
             if normalized_request_id is not None:
-                connection.commit()
+                connection.execute(
+                    "INSERT INTO task_operation_requests VALUES(?,?,?,?,?,?,?,?)",
+                    (identity.tenant_id, identity.principal_id, task_id, module, kind,
+                     normalized_request_id, normalized_input_hash, identifier),
+                )
+            connection.commit()
         control = Event()
         with self._guard:
             self._controls[identifier] = control
@@ -363,6 +391,10 @@ class TaskOperationService:
             return self.get(identity, record.operation_id)
         if record.state == "queued" and future is not None and future.cancel():
             self._transition(record.operation_id, "cancelled", "已取消。")
+            # A cancelled Future never enters _run's finally block.
+            with self._guard:
+                self._controls.pop(record.operation_id, None)
+                self._futures.pop(record.operation_id, None)
         else:
             self._transition(record.operation_id, "cancel_requested", "正在停止运行。")
         return self.get(identity, record.operation_id)
@@ -402,7 +434,12 @@ class TaskOperationService:
     ) -> None:
         operation_control = _OperationControl(self, operation_id, control)
         try:
-            if control.is_set():
+            # Cancellation can reach the durable queue before submit has
+            # registered its in-memory Event and Future.
+            initial_state = self._state(operation_id)
+            if initial_state in TERMINAL_STATES:
+                return
+            if control.is_set() or initial_state == "cancel_requested":
                 self._transition(operation_id, "cancelled", "已取消。")
                 return
             self._transition(operation_id, "running", "正在运行。")
@@ -414,7 +451,7 @@ class TaskOperationService:
             state = self._state(operation_id)
             if state == "interrupted":
                 return
-            if control.is_set() and state == "cancel_requested" and result.get("cancelled") is True:
+            if control.is_set() and result.get("cancelled") is True:
                 self._transition(operation_id, "cancelled", "已取消。")
             elif result.get("ok") is False or result.get("status") in {
                 "failed",
