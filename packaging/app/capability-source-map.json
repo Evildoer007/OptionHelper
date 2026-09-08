@@ -24,7 +24,9 @@
     {"source": "assets/icons/optionhelper-app-icon-tile-dark.ico", "target": "assets/icons/optionhelper-app-icon-tile-dark.ico"},
     {"source": "LICENSES/LibreChat-LICENSE.txt", "target": "LICENSES/LibreChat-LICENSE.txt"},
     {"source": "LICENSES/Plotly.js-LICENSE.txt", "target": "LICENSES/Plotly.js-LICENSE.txt"},
-    {"source": "LICENSES/ThinkingOrbs-LICENSE.txt", "target": "LICENSES/ThinkingOrbs-LICENSE.txt"}
+    {"source": "LICENSES/ThinkingOrbs-LICENSE.txt", "target": "LICENSES/ThinkingOrbs-LICENSE.txt"},
+    {"source": "LICENSES/Bloub-LICENSE.txt", "target": "LICENSES/Bloub-LICENSE.txt"},
+    {"source": "LICENSES/Bloub-SOURCE.md", "target": "LICENSES/Bloub-SOURCE.md"}
   ],
   "trees": [
     {"source": "modules/datafetcher/page", "target": "assets/pages/datafetcher"},
