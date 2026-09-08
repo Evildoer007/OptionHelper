@@ -250,9 +250,9 @@ def resolve_default_visual_asset(contract: ResolvedContract) -> DefaultVisualAss
     except OSError as error:
         raise DefaultAssetError(f"缺少{name_zh}的固定默认视觉资产") from error
     try:
-        template_value = json.loads(json_bytes.decode("utf-8"))
+        json.loads(json_bytes.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise DefaultAssetError(f"{name_zh}的ProductVersion默认JSON格式无效") from error
+        raise DefaultAssetError(f"{name_zh}的产品规则默认视觉JSON格式无效") from error
     template = {"visual_template": load_current_visual_template(name_zh, product["paths"])}
 
     return DefaultVisualAsset(
