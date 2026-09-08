@@ -21,6 +21,12 @@ class ModelRequestControl:
         self._lock = Lock()
         self._cancel_listeners: list[Callable[[str], object]] = []
 
+    def refresh_deadline(self, timeout_seconds: float) -> None:
+        """Extend a live stream's idle window without undoing cancellation."""
+        with self._lock:
+            if not self._cancelled.is_set():
+                self._deadline = monotonic() + timeout_seconds
+
     @property
     def cancelled(self) -> bool:
         return self._cancelled.is_set()
