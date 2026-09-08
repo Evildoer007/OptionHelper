@@ -52,7 +52,7 @@ def stream_openai_compatible(
     endpoint = _completion_endpoint(settings.endpoint)
     model_name = settings.model_name.strip()
     if not model_name:
-        raise ValidationError("模型名不能为空，请由管理员在设置中心明确配置。")
+        raise ValidationError("模型名不能为空，请在设置中心明确配置。")
     try:
         token = resolve_secret(secret_ref)
     except ModelRequestCancelled:
@@ -90,7 +90,7 @@ def stream_openai_compatible(
     text_chars = 0
     reasoning_chars = 0
     try:
-        timeout = request_control.remaining_seconds(45) if request_control is not None else 45
+        timeout = request_control.remaining_seconds() if request_control is not None else 45
         with open_verified_https(request, timeout=timeout, opener=opener) as response:
             remove_cancel_listener: Callable[[], None] = lambda: None
             response_close = getattr(response, "close", None)
