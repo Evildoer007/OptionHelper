@@ -51,6 +51,7 @@ def normalize_daily_history(
     request: DataRequest,
     *,
     latest_observable_date: str | None = None,
+    retain_source_history: bool = False,
 ) -> pd.DataFrame:
     """将Provider原始列转为``date + asset_id + requested fields``。"""
 
@@ -74,6 +75,8 @@ def normalize_daily_history(
     except (TypeError, ValueError) as error:
         raise DataNormalizationError("历史行情可观测截止日必须为YYYY-MM-DD") from error
     provider_assets = result["asset_id"].isin(request.asset_ids)
+    if (provider_assets & result["date"].isna()).any():
+        raise DataNormalizationError("Provider返回无法解析的行情日期")
     future_rows = provider_assets & result["date"].notna() & result["date"].gt(canonical_cutoff)
     if future_rows.any():
         raise DataNormalizationError("Provider返回未来行情日期")
@@ -86,7 +89,10 @@ def normalize_daily_history(
         raise DataNormalizationError("Provider数据缺少请求字段：close")
     for asset_id, convention in market_conventions(request.asset_ids, request.adjustment).items():
         if convention["effective_adjustment"] == "none":
-            result.loc[result["asset_id"].eq(asset_id), "adj_close"] = result.loc[result["asset_id"].eq(asset_id), "close"]
+            mask = result["asset_id"].eq(asset_id)
+            for field in ("open", "high", "low", "close"):
+                if field in result.columns:
+                    result.loc[mask, f"adj_{field}"] = result.loc[mask, field]
     required = ["date", "asset_id", *request.fields]
     missing = [column for column in required if column not in result.columns]
     if missing:
@@ -95,13 +101,14 @@ def normalize_daily_history(
         result[column] = pd.to_numeric(result[column], errors="coerce")
     result = result.loc[:, required]
     result = result[result["asset_id"].isin(request.asset_ids)]
-    result = result[(result["date"] >= request.start_date) & (result["date"] <= request.end_date)]
-    if result.empty:
+    requested = result[result["date"].between(request.start_date, request.end_date)]
+    if requested.empty:
         raise DataNormalizationError("Provider返回数据不覆盖请求日期区间")
-    missing_assets = sorted(set(request.asset_ids).difference(result["asset_id"].unique()))
+    missing_assets = sorted(set(request.asset_ids).difference(requested["asset_id"].unique()))
     if missing_assets:
         raise DataNormalizationError(f"Provider返回未覆盖请求标的：{','.join(missing_assets)}")
-    return result.sort_values(["asset_id", "date"]).reset_index(drop=True)
+    selected = result if retain_source_history else requested
+    return selected.sort_values(["asset_id", "date"]).reset_index(drop=True)
 
 
 def merge_daily_history(*frames: pd.DataFrame) -> pd.DataFrame:
