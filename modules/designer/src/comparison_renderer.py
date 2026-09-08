@@ -7,6 +7,7 @@ selects a product, recalculates a metric, or merges contracts.
 
 from __future__ import annotations
 
+import re
 from copy import deepcopy
 import json
 from pathlib import Path
@@ -20,6 +21,7 @@ from .renderer import (
     SECTION_ORDER,
     as_dict,
     as_list,
+    backtest_summary_rows,
     canonical_greeks,
     display_basis,
     display_text,
@@ -33,7 +35,6 @@ from .renderer import (
     rich_text,
     simple_table,
     text,
-    unique_metric_rows_by_label,
     validate_payload,
 )
 from .presentation_patch import validated_supplemental_sections
@@ -85,28 +86,9 @@ def _card_pricing_rows(module: Mapping[str, Any]) -> list[dict[str, Any]]:
 
 
 def _card_backtest_rows(module: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """Select the same four core and four product statistics as a single Card."""
+    """Use the same complete evidence summary as a single Card."""
 
-    metric_rows = list(as_list(module.get("metrics")))
-    for table in (as_dict(item) for item in as_list(module.get("detail_tables"))):
-        if text(table.get("title")) == "公共回测统计":
-            metric_rows.extend(as_list(table.get("rows")))
-    metrics_by_label = unique_metric_rows_by_label(metric_rows, "回测摘要")
-    rows: list[dict[str, Any]] = []
-    for labels in (
-        ("样本数",),
-        ("历史正收益样本占比",),
-        ("平均合同结算收益率",),
-        ("最低合同结算收益率",),
-    ):
-        row = next(
-            (metrics_by_label[label] for label in labels if metrics_by_label.get(label, {}).get("value") is not None),
-            None,
-        )
-        if row:
-            rows.append(row)
-    rows.extend(as_dict(item) for item in as_list(module.get("card_metrics"))[:4])
-    return [row for row in rows if text(row.get("label")) and row.get("value") is not None]
+    return backtest_summary_rows(module)
 
 
 def _term_rows(facts: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -121,7 +103,7 @@ def _term_rows(facts: Mapping[str, Any]) -> list[dict[str, Any]]:
             row = as_dict(raw)
             label = text(row.get("cn"))
             if label and label not in seen and text(row.get("value")):
-                result.append({"label": label, "value": row.get("value"), "note": row.get("note")})
+                result.append({**row, "label": label})
                 seen.add(label)
     return result
 
@@ -274,7 +256,7 @@ def _card_candidate_sections(
     )
     if pricing_status in {"ready", "partial"}:
         pricing_body += _card_pricing_detail(facts, pricing)
-    if pricing_status != "ready":
+    if pricing_status in {"partial", "failed"}:
         pricing_body = f'<p class="comparison-state" data-status="{esc(pricing_status or "pending")}">{esc(_module_status(pricing))}</p>' + pricing_body
     if pricing_body:
         sections["pricing"] = pricing_body
@@ -286,7 +268,7 @@ def _card_candidate_sections(
     )
     if backtest_status in {"ready", "partial"}:
         backtest_body += _card_backtest_detail(facts, backtest)
-    if backtest_status != "ready":
+    if backtest_status in {"partial", "failed"}:
         backtest_body = f'<p class="comparison-state" data-status="{esc(backtest_status or "pending")}">{esc(_module_status(backtest))}</p>' + backtest_body
     if backtest_body:
         sections["backtest"] = backtest_body
@@ -307,101 +289,6 @@ def _card_candidate_sections(
     }
 
 
-def _candidate_header(prepared: Sequence[Mapping[str, Any]], title: str) -> str:
-    header = [f'<div class="comparison-matrix__corner"><h3>{esc(title)}</h3></div>']
-    for item in prepared:
-        preferred = "true" if item["preferred"] else "false"
-        primary = "<strong>首选方案</strong>" if item["preferred"] else ""
-        header.append(
-            f'<div class="comparison-matrix__candidate" data-preferred="{preferred}">'
-            f'<p class="comparison-matrix__eyebrow"><span>{esc(item["label"])}</span>{primary}</p>'
-            f'<h2>{esc(item["title"])}</h2>'
-            f'<p class="comparison-matrix__asset">{esc(item["underlyings"])}</p>'
-            "</div>"
-        )
-    return '<div class="comparison-matrix__header" data-section="recommendation">' + "".join(header) + "</div>"
-
-
-def _card_matrix(
-    payload: Mapping[str, Any],
-    candidates: Sequence[Mapping[str, Any]],
-    section_definition: Sequence[tuple[str, str, str]],
-    appended_content: Mapping[str, Sequence[Mapping[str, Any]]],
-) -> str:
-    columns = len(candidates)
-    prepared = [
-        _card_candidate_sections(payload, candidate, appended_content)
-        for candidate in candidates
-    ]
-    rows: list[str] = []
-    candidate_supplement_added = False
-
-    def add_candidate_supplements() -> None:
-        nonlocal candidate_supplement_added
-        if candidate_supplement_added or not any(item["supplement"] for item in prepared):
-            return
-        rows.append(
-            '<div class="comparison-matrix__row" data-section="candidate-supplement">'
-            '<div class="comparison-matrix__section-label"><h3>候选补充</h3></div>'
-            + "".join(
-                f'<div class="comparison-matrix__cell">{item["supplement"]}</div>'
-                for item in prepared
-            )
-            + "</div>"
-        )
-        candidate_supplement_added = True
-
-    for section_id, title, block in section_definition:
-        if block == "risk":
-            add_candidate_supplements()
-        if block == "recommendation":
-            rows.append(_candidate_header(prepared, title))
-            appended = render_presentation_content(appended_content.get(section_id, ()))
-            if appended:
-                rows.append(
-                    f'<div class="comparison-matrix__row comparison-matrix__row--supplement" data-section="{esc(section_id)}">'
-                    f'<div class="comparison-matrix__section-label"><h3>{esc(title)}</h3></div>'
-                    f'<div class="comparison-matrix__supplement">{appended}</div></div>'
-                )
-            continue
-        if block == "supplemental":
-            appended = render_presentation_content(appended_content.get(section_id, ()))
-            if appended:
-                rows.append(
-                    f'<div class="comparison-matrix__row comparison-matrix__row--supplement" data-section="{esc(section_id)}">'
-                    f'<div class="comparison-matrix__section-label"><h3>{esc(title)}</h3></div>'
-                    f'<div class="comparison-matrix__supplement">{appended}</div></div>'
-                )
-            continue
-        key = block
-        appended = render_presentation_content(appended_content.get(section_id, ()))
-        if not any(key in item["sections"] for item in prepared) and not appended:
-            continue
-        cells = [
-            f'<div class="comparison-matrix__cell">{item["sections"].get(key, "")}</div>'
-            for item in prepared
-        ]
-        rows.append(
-            f'<div class="comparison-matrix__row" data-section="{esc(section_id)}">'
-            f'<div class="comparison-matrix__section-label"><h3>{esc(title)}</h3></div>'
-            + "".join(cells)
-            + "</div>"
-        )
-        if appended:
-            rows.append(
-                f'<div class="comparison-matrix__row comparison-matrix__row--supplement" data-section="{esc(section_id)}-supplement">'
-                '<div class="comparison-matrix__section-label" aria-hidden="true"></div>'
-                f'<div class="comparison-matrix__supplement">{appended}</div></div>'
-            )
-    add_candidate_supplements()
-    return (
-        f'<section class="comparison-matrix" style="--comparison-columns:{columns}" '
-        f'aria-label="{"、".join(item["label"] for item in prepared)}对比">'
-        + "".join(rows)
-        + "</section>"
-    )
-
-
 def render_multicard_html(
     payload: Mapping[str, Any],
     *,
@@ -414,17 +301,19 @@ def render_multicard_html(
     meta = as_dict(payload.get("meta"))
     title = text(meta.get("title")) or MULTICARD_TITLE
     template = config.read_template(template_shell)
-    body = '<section class="comparison-candidate-grid" aria-label="候选结构对比">'
-    body += "".join(
-        _card_matrix(
-            payload,
-            candidates[start:start + 3],
-            section_definition,
-            appended_content if start == 0 else {},
-        )
-        for start in range(0, len(candidates), 3)
-    )
-    body += "</section>"
+    cards = []
+    for candidate in candidates:
+        item = _card_candidate_sections(payload, candidate, appended_content)
+        blocks = []
+        for section_id, label, key in section_definition:
+            content = item["sections"].get(key, "")
+            if key != "recommendation" and content:
+                content = re.sub(r'<caption\b[^>]*>.*?</caption>', '', content, flags=re.S)
+                blocks.append(f'<section><h3>{esc(label)}</h3>{content}</section>')
+        cards.append(f'<article class="comparison-product-card"><header><p>{esc(item["underlyings"])}</p><h2>{esc(item["title"])}</h2></header>' + "".join(blocks) + item["supplement"] + "</article>")
+    body = '<section class="comparison-product-cards">' + "".join(cards) + "</section>"
+    for values in appended_content.values():
+        body += render_presentation_content(values)
     return (
         template.replace("__TITLE__", esc(title))
         .replace("__REPORT_THEME__", config.read_report_theme())
@@ -475,7 +364,7 @@ def _comparison_table(candidates: Sequence[Mapping[str, Any]], rows_by_candidate
                 row["basis"] = basis or "—"
             for index, mapped in enumerate(values):
                 item = mapped.get((label, basis))
-                row[f"c{index}"] = display_text(item.get("value"), item.get("value_format")) if item else "—"
+                row[f"c{index}"] = display_text(item.get("value"), item.get("value_format")) + text(item.get("value_suffix")) if item else "—"
             table_rows.append(row)
         if table_rows:
             tables.append({"title": title, "columns": columns, "rows": table_rows})
@@ -628,10 +517,15 @@ def _aggregate_report(
 ) -> dict[str, Any]:
     candidates = _candidates(payload)
     meta = dict(as_dict(payload.get("meta")))
+    has_recommendation = any(
+        as_dict(as_dict(item.get("facts")).get("recommendation")).get("has_recommendation") is not False
+        for item in candidates
+    )
     preferred = next((item for item in candidates if item.get("is_primary")), None)
     underlyings = list(dict.fromkeys(text(item.get("underlyings")) for item in candidates if text(item.get("underlyings"))))
     risk_items: list[str] = []
     term_rows: list[list[Mapping[str, Any]]] = []
+    parameter_detail_tables: list[dict[str, Any]] = []
     pricing_rows: list[list[Mapping[str, Any]]] = []
     backtest_rows: list[list[Mapping[str, Any]]] = []
     payoff_rows: list[list[Mapping[str, Any]]] = []
@@ -642,6 +536,8 @@ def _aggregate_report(
     for candidate in candidates:
         facts = as_dict(candidate.get("facts"))
         term_rows.append(_term_rows(facts))
+        for group, title in (("common_input", "合同参数"), ("payoff_input", "收益结构参数")):
+            parameter_detail_tables.extend(_parameter_detail_table(candidate, facts, group, title))
         pricing = as_dict(facts.get("pricing"))
         pricing_status = text(pricing.get("status")).lower()
         pricing_rows.append([
@@ -696,12 +592,14 @@ def _aggregate_report(
         "meta": {**meta, "title": text(meta.get("title")) or MULTIREPORT_TITLE},
         "sections": list(SECTION_ORDER),
         "conclusion": {
+            "has_recommendation": has_recommendation,
             "structure_name": f'{len(candidates)}个候选结构对比',
             "underlyings": "、".join(underlyings),
-            "reasons": [f'按冻结排名列示{len(candidates)}个候选，合同、估值和回测事实分别绑定。'] + ([f'首选方案为{text(preferred.get("label"))}：{text(preferred.get("title"))}。'] if preferred else []),
+            "reasons": [f'{"按冻结排名" if has_recommendation else "按所选顺序"}列示{len(candidates)}个候选，合同、估值和回测事实分别绑定。'] + ([f'首选方案为{text(preferred.get("label"))}：{text(preferred.get("title"))}。'] if preferred else []),
             "risk_summary": risk_items[:2],
         },
         "recommendation": {
+            "has_recommendation": has_recommendation,
             "headline": "候选结构",
             "comparison_candidates": _comparison_candidate_recommendations(
                 payload,
@@ -709,7 +607,7 @@ def _aggregate_report(
                 displayed_supplements,
             ),
         },
-        "parameters": {"detail_tables": _comparison_table(candidates, term_rows, "合同参数对比")},
+        "parameters": {"detail_tables": [*_comparison_table(candidates, term_rows, "关键条款"), *parameter_detail_tables]},
         "payoff": {
             "status": payoff_status, "note": payoff_note, "comparison_view": True,
             "report_svg_paths": payoff_figures,
@@ -746,13 +644,20 @@ def render_multireport_html(
     section_definition: Sequence[tuple[str, str, str]],
     appended_content: Mapping[str, Sequence[Mapping[str, Any]]],
 ) -> str:
+    overview = _aggregate_report(payload, appended_content)
+    overview["parameters"]["detail_tables"] = _comparison_table(_candidates(payload),
+        [_term_rows(as_dict(item.get("facts"))) for item in _candidates(payload)], "关键条款")
+    for module in ("payoff", "pricing", "backtest"):
+        overview[module] = {"status": "not_run"}
+    overview_sections = [item for item in section_definition if item[2] != "recommendation"]
     return render_html(
-        _aggregate_report(payload, appended_content), input_dir, echarts_path,
+        overview, input_dir, echarts_path,
         design_system_id=build_design_system().design_system_id,
         config=config,
-        section_definition=section_definition,
+        section_definition=overview_sections,
         appended_content=appended_content,
         template_shell=template_shell,
+        product_sections=_candidates(payload),
     )
 
 
