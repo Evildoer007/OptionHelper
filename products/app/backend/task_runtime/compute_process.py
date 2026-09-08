@@ -23,7 +23,7 @@ import re
 import subprocess
 import sys
 import tempfile
-from threading import Condition, Event, Lock, Thread
+from threading import Condition, Lock, Thread
 import time
 from typing import Any, Callable, Mapping
 from uuid import uuid4
@@ -717,6 +717,12 @@ def _worker_environment(thread_limit: int, private_home: Path) -> dict[str, str]
         if path.is_dir() and str(path) not in python_paths:
             python_paths.append(str(path))
     environment["PYTHONPATH"] = os.pathsep.join(python_paths)
+    # Core resolves store roots while importing the worker, before any
+    # prepared execution can install its scoped stores. Bootstrap in this
+    # worker's disposable directory, never in the parent's persistent stores.
+    environment["OPTIONHELPER_RUNTIME_ROOT"] = str(private_home)
+    environment["OPTIONHELPER_DATA_ROOT"] = str(private_home / "data")
+    environment["OPTIONHELPER_RESULT_ROOT"] = str(private_home / "result")
     environment["HOME"] = str(private_home)
     environment["USERPROFILE"] = str(private_home)
     environment["TMPDIR"] = str(private_home)
