@@ -1,0 +1,6 @@
+# Keep hashed source/assets stable across clone platforms.
+* text=auto eol=lf
+*.bat text eol=crlf
+*.command text eol=lf
+*.sh text eol=lf
+*.ps1 text eol=crlf
