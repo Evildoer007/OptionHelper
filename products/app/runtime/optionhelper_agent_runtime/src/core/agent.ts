@@ -204,7 +204,7 @@ export class AgentRun {
     this.setStatus("running")
     this.publisher.publish(this.session, "turn/start", { runId: this.activation.runId, turn: this.turnValue }, { turn: this.turnValue })
     try {
-      for (let step = 1; step <= this.activation.budget.maxSteps; step += 1) {
+      for (let step = 1; (this.activation.budget.maxSteps === 0 || step <= this.activation.budget.maxSteps); step += 1) {
         if (signal.aborted) throw abortError(signal.reason)
         this.stepValue = step
         this.publisher.publish(this.session, "step/start", { runId: this.activation.runId, turn: this.turnValue, step }, { turn: this.turnValue, step })
@@ -265,7 +265,7 @@ export class AgentRun {
           this.setStatus("completed")
           return
         }
-        if (this.toolCount + calls.length > this.activation.budget.maxTools) throw new Error("Agent工具调用次数超过预算")
+        if (this.activation.budget.maxTools > 0 && this.toolCount + calls.length > this.activation.budget.maxTools) throw new Error("Agent工具调用次数超过预算")
         this.toolCount += calls.length
         this.setStatus("waiting_tool")
         const results = await executeToolCalls(
