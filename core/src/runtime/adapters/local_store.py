@@ -148,6 +148,10 @@ def _validate_success_contract(
         raise StoreError("成功ModuleRun的ResolvedContract缺少product_id")
     if isinstance(rule_revision, bool) or not isinstance(rule_revision, int) or rule_revision <= 0:
         raise StoreError("成功ModuleRun的ResolvedContract缺少rule_revision")
+    for filename, payload in (("manifest.json", manifest), ("result.json", result)):
+        revision = payload.get("rule_revision")
+        if isinstance(revision, bool) or not isinstance(revision, int):
+            raise StoreError(f"成功ModuleRun的{filename}.rule_revision必须为正整数")
     for field, expected in (("product_id", product_id), ("rule_revision", rule_revision)):
         if manifest.get(field) != expected or result.get(field) != expected:
             raise StoreError(f"成功ModuleRun的{field}与ResolvedContract不一致")
@@ -466,6 +470,17 @@ class LocalResultStore:
     def read_module_run_file(self, ref: ModuleRunRef, name: str, *, tenant_id: str) -> bytes:
         """Return one RunRef-bound artifact without exposing an unchecked read."""
 
+        return self.read_module_run_files(ref, (name,), tenant_id=tenant_id)[name]
+
+    def read_module_run_files(
+        self,
+        ref: ModuleRunRef,
+        names: tuple[str, ...],
+        *,
+        tenant_id: str,
+    ) -> dict[str, bytes]:
+        """Read selected files after one complete immutable-run verification."""
+
         run_dir = self.resolve_module_run(ref, tenant_id=tenant_id)
         artifact_manifest = _read_regular_bytes(run_dir / "artifacts" / "artifact_manifest.json", "ModuleRun产物清单")
         if sha256(artifact_manifest).hexdigest() != ref.expected_artifact_manifest_hash:
@@ -474,15 +489,25 @@ class LocalResultStore:
             file_hashes = json.loads(artifact_manifest)["file_hashes"]
         except (KeyError, TypeError, json.JSONDecodeError) as error:
             raise StoreIntegrityError("ModuleRun产物清单无效") from error
-        relative = _safe_relative(name)
-        key = relative.as_posix()
-        expected = file_hashes.get(key) if isinstance(file_hashes, Mapping) else None
-        if not isinstance(expected, str):
-            raise FileNotFoundError("ModuleRun未声明请求文件")
-        payload = _read_regular_bytes(_inside(run_dir, run_dir / relative), f"ModuleRun文件：{key}")
-        if sha256(payload).hexdigest() != expected:
-            raise StoreIntegrityError(f"ModuleRun文件哈希不一致：{key}")
-        return payload
+        if not isinstance(file_hashes, Mapping):
+            raise StoreIntegrityError("ModuleRun产物清单无效")
+        requested: dict[str, Path] = {}
+        for name in names:
+            relative = _safe_relative(name)
+            key = relative.as_posix()
+            if key in requested:
+                raise StoreError("ModuleRun请求文件重复")
+            expected = file_hashes.get(key)
+            if not isinstance(expected, str):
+                raise FileNotFoundError("ModuleRun未声明请求文件")
+            requested[key] = relative
+        payloads: dict[str, bytes] = {}
+        for key, relative in requested.items():
+            payload = _read_regular_bytes(_inside(run_dir, run_dir / relative), f"ModuleRun文件：{key}")
+            if sha256(payload).hexdigest() != file_hashes[key]:
+                raise StoreIntegrityError(f"ModuleRun文件哈希不一致：{key}")
+            payloads[key] = payload
+        return payloads
 
     def read_module_run_bundle(self, ref: ModuleRunRef, *, tenant_id: str) -> dict[str, bytes]:
         """Return the complete verified immutable run as bytes, never a path."""
@@ -495,7 +520,14 @@ class LocalResultStore:
             raise StoreIntegrityError("ModuleRun产物清单无效") from error
         if not isinstance(file_hashes, Mapping):
             raise StoreIntegrityError("ModuleRun产物清单无效")
-        bundle = {name: self.read_module_run_file(ref, str(name), tenant_id=tenant_id) for name in file_hashes}
+        bundle: dict[str, bytes] = {}
+        for name, expected in file_hashes.items():
+            relative = _safe_relative(str(name))
+            key = relative.as_posix()
+            payload = _read_regular_bytes(_inside(run_dir, run_dir / relative), f"ModuleRun文件：{key}")
+            if sha256(payload).hexdigest() != expected:
+                raise StoreIntegrityError(f"ModuleRun文件哈希不一致：{key}")
+            bundle[key] = payload
         bundle["artifacts/artifact_manifest.json"] = artifact
         bundle["commit_marker.json"] = _read_regular_bytes(run_dir / "commit_marker.json", "ModuleRun提交标记")
         return bundle
