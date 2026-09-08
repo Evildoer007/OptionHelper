@@ -18,6 +18,7 @@ from runtime.bootstrap import bootstrap_runtime
 from runtime.ports.module import ModulePort
 from runtime.ports.result_selection import ResultSelectionPort, require_result_selection_port
 from runtime.ports.result_store import ResultStorePort
+from runtime.protocol.module_host import ModuleHostContext
 
 from .artifact_validator import validate_hashed_artifact, validate_written_artifact
 from .config import DEFAULT_REPORTER_CONFIG, default_report_output_root
@@ -346,6 +347,7 @@ def run_report(
 def call_tool(
     request: Mapping[str, Any],
     *,
+    host_context: ModuleHostContext | None = None,
     result_store: ResultStorePort | None = None,
     designer_port: ModulePort | None = None,
     selection_port: ResultSelectionPort | None = None,
@@ -354,6 +356,11 @@ def call_tool(
 ) -> Mapping[str, Any]:
     """Module Host适配；Host必须通过关键字显式注入ResultStore。"""
 
+    if host_context is not None and (
+        not isinstance(host_context, ModuleHostContext)
+        or host_context.module != "reporter"
+    ):
+        raise ReporterError("Reporter Tool只接受模块一致的ModuleHostContext")
     body = dict(request)
     if selection_port is not None:
         selection_port = require_result_selection_port(selection_port)
