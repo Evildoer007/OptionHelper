@@ -95,6 +95,7 @@ willPerformHTTPRedirection:(NSHTTPURLResponse *)response
 @property(nonatomic, strong) WKWebView *webView;
 @property(nonatomic, strong) NSWindow *reportPreviewWindow;
 @property(nonatomic, strong) WKWebView *reportPreviewWebView;
+@property(nonatomic) BOOL reportWindowIsEditor;
 @property(nonatomic, strong) NSWindow *settingsWindow;
 @property(nonatomic, strong) WKWebView *settingsWebView;
 @property(nonatomic, strong) NSView *settingsRecoveryView;
@@ -119,7 +120,6 @@ willPerformHTTPRedirection:(NSHTTPURLResponse *)response
 @property(nonatomic, strong) NSURL *uiPreferencesURL;
 @property(nonatomic, strong) NSMenuItem *zoomInMenuItem;
 @property(nonatomic, strong) NSMenuItem *zoomOutMenuItem;
-@property(nonatomic, copy) NSString *initializationToken;
 @end
 
 @implementation OptionHelperAppDelegate
@@ -130,7 +130,6 @@ willPerformHTTPRedirection:(NSHTTPURLResponse *)response
     self.startupOutput = [NSMutableString string];
     self.themePreference = @"light";
     self.uiScale = 1.0;
-    self.initializationToken = [[[NSUUID UUID] UUIDString] stringByReplacingOccurrencesOfString:@"-" withString:@""];
     [NSApp addObserver:self
             forKeyPath:@"effectiveAppearance"
                options:NSKeyValueObservingOptionNew
@@ -207,8 +206,7 @@ willPerformHTTPRedirection:(NSHTTPURLResponse *)response
     self.backend.executableURL = [NSURL fileURLWithPath:backendPath];
     self.backend.currentDirectoryURL = [NSURL fileURLWithPath:[backendPath stringByDeletingLastPathComponent]];
     NSMutableArray<NSString *> *arguments = [@[@"--host", @"127.0.0.1", @"--port", @"0", @"--data-dir", support.path,
-                                               @"--resource-dir", resources.path,
-                                               @"--initialization-token", self.initializationToken] mutableCopy];
+                                               @"--resource-dir", resources.path] mutableCopy];
     NSString *verificationFixture = [[[NSProcessInfo processInfo] environment] objectForKey:@"OPTIONHELPER_VERIFICATION_FIXTURE"];
     if ([verificationFixture isEqualToString:@"1"]) {
         [arguments addObject:@"--verification-fixture"];
@@ -302,7 +300,7 @@ willPerformHTTPRedirection:(NSHTTPURLResponse *)response
     WKWebViewConfiguration *configuration = [[WKWebViewConfiguration alloc] init];
     // Show the splash before the login page's module graph is evaluated.  The
     // login module owns the timer and always removes this class again.
-    NSString *startupSource = [NSString stringWithFormat:@"document.documentElement.dataset.nativeShell='macos';document.documentElement.dataset.nativeMaterial='system';document.documentElement.dataset.uiScale='%.4f';document.documentElement.style.setProperty('--native-titlebar-height','%.4fpx');document.documentElement.style.setProperty('--native-titlebar-collapsed-leading-safe-area','%.4fpx');if(location.pathname==='/'){window.__optionhelperInitializationToken='%@';document.documentElement.classList.add('login-boot');}", self.uiScale, 36.0 / self.uiScale, 166.0 / self.uiScale, self.initializationToken];
+    NSString *startupSource = [NSString stringWithFormat:@"document.documentElement.dataset.nativeShell='macos';document.documentElement.dataset.nativeMaterial='system';document.documentElement.dataset.uiScale='%.4f';document.documentElement.style.setProperty('--native-titlebar-height','%.4fpx');document.documentElement.style.setProperty('--native-titlebar-collapsed-leading-safe-area','%.4fpx');if(location.pathname==='/'){document.documentElement.classList.add('login-boot');}", self.uiScale, 36.0 / self.uiScale, 166.0 / self.uiScale];
     WKUserScript *startupScript = [[WKUserScript alloc] initWithSource:startupSource
                                                          injectionTime:WKUserScriptInjectionTimeAtDocumentStart
                                                       forMainFrameOnly:YES];
@@ -460,7 +458,7 @@ willPerformHTTPRedirection:(NSHTTPURLResponse *)response
 }
 
 - (void)toggleRail:(id)sender {
-    [self.webView evaluateJavaScript:@"document.querySelector('[data-rail-collapse-toggle]')?.click()" completionHandler:nil];
+    [self.webView evaluateJavaScript:@"window.dispatchEvent(new Event('optionhelper:toggle-task-rail'))" completionHandler:nil];
 }
 
 - (void)toggleReport:(id)sender {
@@ -898,12 +896,21 @@ willPerformHTTPRedirection:(NSHTTPURLResponse *)response
     BOOL sameOrigin = [url.scheme isEqualToString:self.appOrigin.scheme]
         && [url.host isEqualToString:self.appOrigin.host]
         && ((url.port == nil && self.appOrigin.port == nil) || [url.port isEqualToNumber:self.appOrigin.port]);
-    if (!sameOrigin || ![url.path hasPrefix:@"/api/reports/"] || [url.path rangeOfString:@"/artifacts/"].location == NSNotFound) return NO;
+    if (!sameOrigin || ![url.path hasPrefix:@"/api/reports/"] || ([url.path rangeOfString:@"/artifacts/"].location == NSNotFound && [url.path rangeOfString:@"/document-artifacts/"].location == NSNotFound)) return NO;
     NSArray<NSURLQueryItem *> *queryItems = [NSURLComponents componentsWithURL:url resolvingAgainstBaseURL:NO].queryItems;
     for (NSURLQueryItem *item in queryItems ?: @[]) {
         if (![item.name isEqualToString:@"download"] || ![item.value isEqualToString:@"1"]) return NO;
     }
     return YES;
+}
+
+- (BOOL)isAllowedReportEditorURL:(NSURL *)url {
+    if (url == nil || self.appOrigin == nil) return NO;
+    if (![url.scheme isEqualToString:self.appOrigin.scheme] || ![url.host isEqualToString:self.appOrigin.host]
+        || !((url.port == nil && self.appOrigin.port == nil) || [url.port isEqualToNumber:self.appOrigin.port])
+        || url.query.length > 0) return NO;
+    NSRegularExpression *route = [NSRegularExpression regularExpressionWithPattern:@"^/reports/[A-Za-z0-9][A-Za-z0-9_-]{0,127}/edit$" options:0 error:nil];
+    return [route numberOfMatchesInString:url.path options:0 range:NSMakeRange(0, url.path.length)] == 1;
 }
 
 - (BOOL)isReportDownloadURL:(NSURL *)url {
@@ -946,7 +953,10 @@ willPerformHTTPRedirection:(NSHTTPURLResponse *)response
 - (NSString *)reportDownloadFilename:(NSURL *)url {
     NSString *raw = url.lastPathComponent.stringByRemovingPercentEncoding ?: url.lastPathComponent;
     NSString *lower = raw.lowercaseString;
-    NSString *suffix = [lower hasSuffix:@".pdf"] ? @".pdf" : ([lower hasSuffix:@".html"] ? @".html" : @"");
+    NSString *suffix = @"";
+    for (NSString *extension in @[@".pdf", @".html", @".docx"]) {
+        if ([lower hasSuffix:extension]) { suffix = extension; break; }
+    }
     if (url.fragment.length > 0) {
         NSURLComponents *fragmentComponents = [NSURLComponents componentsWithString:
             [@"https://optionhelper.invalid/?" stringByAppendingString:url.fragment]];
@@ -1035,7 +1045,8 @@ willPerformHTTPRedirection:(NSHTTPURLResponse *)response
                         : nil;
                     NSString *mimeType = response.MIMEType.lowercaseString ?: @"";
                     NSSet<NSString *> *allowedMIMETypes = [NSSet setWithArray:
-                        @[@"text/html", @"application/xhtml+xml", @"application/pdf"]];
+                        @[@"text/html", @"application/xhtml+xml", @"application/pdf",
+                          @"application/vnd.openxmlformats-officedocument.wordprocessingml.document"]];
                     NSNumber *fileSize = nil;
                     if (temporaryURL != nil) [temporaryURL getResourceValue:&fileSize forKey:NSURLFileSizeKey error:nil];
                     NSString *validationError = error.localizedDescription;
@@ -1050,19 +1061,21 @@ willPerformHTTPRedirection:(NSHTTPURLResponse *)response
                     } else if (validationError == nil && (temporaryURL == nil || fileSize.unsignedLongLongValue == 0)) {
                         validationError = @"报告文件为空。";
                     }
-                    dispatch_async(dispatch_get_main_queue(), ^{
-                        OptionHelperAppDelegate *current = weakSelf;
-                        if (current == nil) return;
-                        if (validationError != nil || temporaryURL == nil) {
-                            [current showReportDownloadFailure:validationError ?: @"未收到报告文件。"];
-                            return;
-                        }
-                        NSFileManager *manager = [NSFileManager defaultManager];
+                    NSString *saveError = validationError;
+                    if (saveError == nil && temporaryURL != nil) {
+                        // Consume the temporary file before URLSession removes it.
                         NSError *fileError = nil;
-                        if ([manager fileExistsAtPath:destination.path]) [manager removeItemAtURL:destination error:&fileError];
-                        if (fileError == nil) [manager copyItemAtURL:temporaryURL toURL:destination error:&fileError];
-                        if (fileError != nil) [current showReportDownloadFailure:fileError.localizedDescription];
-                    });
+                        NSData *contents = [NSData dataWithContentsOfURL:temporaryURL options:NSDataReadingMappedIfSafe error:&fileError];
+                        if (contents != nil) {
+                            [contents writeToURL:destination options:NSDataWritingAtomic error:&fileError];
+                        }
+                        saveError = fileError.localizedDescription;
+                    }
+                    if (saveError != nil) {
+                        dispatch_async(dispatch_get_main_queue(), ^{
+                            [weakSelf showReportDownloadFailure:saveError];
+                        });
+                    }
                 }];
             [task resume];
         }];
@@ -1087,6 +1100,8 @@ willPerformHTTPRedirection:(NSHTTPURLResponse *)response
         self.reportPreviewWindow.contentView = self.reportPreviewWebView;
         [self.reportPreviewWindow center];
     }
+    self.reportWindowIsEditor = [self isAllowedReportEditorURL:request.URL];
+    self.reportPreviewWindow.title = self.reportWindowIsEditor ? @"OptionHelper报告编辑" : @"OptionHelper报告预览";
     [self.reportPreviewWebView loadRequest:request];
     [self.reportPreviewWindow makeKeyAndOrderFront:nil];
     [NSApp activateIgnoringOtherApps:YES];
@@ -1097,6 +1112,11 @@ willPerformHTTPRedirection:(NSHTTPURLResponse *)response
     forNavigationAction:(WKNavigationAction *)navigationAction
          windowFeatures:(WKWindowFeatures *)windowFeatures {
     if (navigationAction.targetFrame != nil) return nil;
+    if (webView == self.webView && navigationAction.sourceFrame.isMainFrame
+        && [self isAllowedReportEditorURL:navigationAction.request.URL]) {
+        [self showReportPreview:navigationAction.request configuration:configuration];
+        return nil;
+    }
     if (![self isAllowedReportArtifactURL:navigationAction.request.URL]) {
         NSBeep();
         return nil;
@@ -1159,11 +1179,22 @@ completionHandler:(void (^)(NSArray<NSURL *> * _Nullable URLs))completionHandler
         }
         return;
     }
+    if ([self isAllowedReportArtifactURL:url] && [self isReportDownloadURL:url]) {
+        [self downloadReportArtifact:navigationAction.request];
+        decisionHandler(WKNavigationActionPolicyCancel);
+        return;
+    }
     if (webView != self.reportPreviewWebView) {
         decisionHandler(WKNavigationActionPolicyAllow);
         return;
     }
-    decisionHandler(([url.scheme isEqualToString:@"about"] || [self isAllowedReportArtifactURL:url])
+    if (self.reportWindowIsEditor && [self isSafeAppURL:url] && [url.path isEqualToString:@"/optchat"]) {
+        [self.reportPreviewWindow orderOut:nil];
+        decisionHandler(WKNavigationActionPolicyCancel);
+        return;
+    }
+    decisionHandler(([url.scheme isEqualToString:@"about"] || [self isAllowedReportArtifactURL:url]
+        || (self.reportWindowIsEditor && [self isAllowedReportEditorURL:url]))
         ? WKNavigationActionPolicyAllow
         : WKNavigationActionPolicyCancel);
 }
