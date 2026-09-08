@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Windows.Forms;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.WinForms;
@@ -37,10 +38,9 @@ internal static class Program
 
         var state = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "OptionHelper", "local-state");
         Directory.CreateDirectory(state);
-        var initializationToken = Guid.NewGuid().ToString("N");
         using var process = new Process
         {
-            StartInfo = new ProcessStartInfo(backend, $"--host 127.0.0.1 --port 0 --data-dir \"{state}\" --resource-dir \"{resources}\" --initialization-token {initializationToken}")
+            StartInfo = new ProcessStartInfo(backend, $"--host 127.0.0.1 --port 0 --data-dir \"{state}\" --resource-dir \"{resources}\"")
             {
                 WorkingDirectory = Path.GetDirectoryName(backend)!,
                 UseShellExecute = false,
@@ -57,7 +57,7 @@ internal static class Program
             started = true;
             backendErrorTask = process.StandardError.ReadToEndAsync();
             var url = await WaitForUrl(process, TimeSpan.FromSeconds(45));
-            Application.Run(new MainForm(url, state, initializationToken));
+            Application.Run(new MainForm(url, state));
         }
         catch (Exception error)
         {
@@ -118,7 +118,8 @@ internal sealed class MainForm : Form
     private static readonly double[] ScaleSteps = [0.8, 0.9, 1.0, 1.1, 1.25, 1.4];
     private readonly WebView2 browser = new() { Dock = DockStyle.Fill, DefaultBackgroundColor = Color.Transparent };
     private readonly string uiPreferencesPath;
-    private readonly string initializationToken;
+    private readonly Uri appOrigin;
+    private readonly HashSet<Form> reportWindows = [];
     private readonly SemaphoreSlim uiScaleScriptLock = new(1, 1);
     private double uiScale;
     private bool webViewReady;
@@ -127,15 +128,15 @@ internal sealed class MainForm : Form
     private string surfaceTheme = "light";
     private string? uiScaleScriptId;
 
-    internal MainForm(string url, string stateDirectory, string initializationToken)
+    internal MainForm(string url, string stateDirectory)
     {
+        appOrigin = new Uri(url);
         Text = "OptionHelper";
         Width = 1320;
         Height = 860;
         KeyPreview = true;
         BackColor = Color.FromArgb(247, 247, 247);
         uiPreferencesPath = Path.Combine(stateDirectory, "ui-preferences.json");
-        this.initializationToken = initializationToken;
         uiScale = UIScalePreferences.Load(uiPreferencesPath, ScaleSteps);
         Controls.Add(browser);
         Shown += async (_, _) =>
@@ -147,6 +148,7 @@ internal sealed class MainForm : Form
                 browser.ZoomFactor = uiScale;
                 await UpdateScaleBootstrapScript();
                 browser.CoreWebView2.WebMessageReceived += HandleWebMessage;
+                browser.CoreWebView2.NewWindowRequested += OpenReportWindow;
                 browser.CoreWebView2.NavigationCompleted += (_, _) => SyncScaleToPage();
                 webViewReady = true;
                 browser.CoreWebView2.Navigate(url);
@@ -162,6 +164,62 @@ internal sealed class MainForm : Form
                 Close();
             }
         };
+    }
+
+    private bool IsSameOrigin(Uri url) => url.Scheme == appOrigin.Scheme
+        && url.Host == appOrigin.Host && url.Port == appOrigin.Port && string.IsNullOrEmpty(url.UserInfo);
+
+    private bool IsReportEditor(Uri url) => IsSameOrigin(url) && string.IsNullOrEmpty(url.Query)
+        && Regex.IsMatch(url.AbsolutePath, @"^/reports/[A-Za-z0-9][A-Za-z0-9_-]{0,127}/edit$");
+
+    private bool IsReportArtifact(Uri url) => IsSameOrigin(url)
+        && Regex.IsMatch(url.AbsolutePath, @"^/api/reports/[A-Za-z0-9][A-Za-z0-9_-]{0,127}/(?:document-artifacts|artifacts)/[^/]+$")
+        && (string.IsNullOrEmpty(url.Query) || url.Query == "?download=1");
+
+    private async void OpenReportWindow(object? sender, CoreWebView2NewWindowRequestedEventArgs eventArgs)
+    {
+        eventArgs.Handled = true;
+        if (!Uri.TryCreate(eventArgs.Uri, UriKind.Absolute, out var url)) return;
+        var editor = ReferenceEquals(sender, browser.CoreWebView2) && IsReportEditor(url);
+        if (!editor && !IsReportArtifact(url)) return;
+        using var deferral = eventArgs.GetDeferral();
+        var child = new Form { Text = editor ? "OptionHelper报告编辑" : "OptionHelper报告预览", Width = 1000, Height = 800 };
+        var view = new WebView2 { Dock = DockStyle.Fill };
+        child.Controls.Add(view);
+        reportWindows.Add(child);
+        child.FormClosed += (_, _) => reportWindows.Remove(child);
+        try
+        {
+            child.Show(this);
+            // Share the authenticated profile without installing the main window's native bridge.
+            await view.EnsureCoreWebView2Async(browser.CoreWebView2.Environment);
+            if (child.IsDisposed) return;
+            view.ZoomFactor = uiScale;
+            view.CoreWebView2.Settings.IsWebMessageEnabled = false;
+            view.CoreWebView2.NewWindowRequested += OpenReportWindow;
+            view.CoreWebView2.NavigationStarting += (_, navigation) =>
+            {
+                if (!Uri.TryCreate(navigation.Uri, UriKind.Absolute, out var target))
+                {
+                    navigation.Cancel = true;
+                    return;
+                }
+                if (editor && IsSameOrigin(target) && target.AbsolutePath == "/optchat")
+                {
+                    navigation.Cancel = true;
+                    child.Close();
+                    return;
+                }
+                navigation.Cancel = target.Scheme != "about" && !IsReportArtifact(target)
+                    && !(editor && IsReportEditor(target));
+            };
+            eventArgs.NewWindow = view.CoreWebView2;
+        }
+        catch (Exception)
+        {
+            child.Close();
+            MessageBox.Show(this, "报告窗口未能打开，请重试。", "OptionHelper", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
     }
 
     protected override void OnHandleCreated(EventArgs eventArgs)
@@ -243,6 +301,11 @@ internal sealed class MainForm : Form
             using var document = JsonDocument.Parse(eventArgs.WebMessageAsJson);
             var root = document.RootElement;
             if (root.ValueKind != JsonValueKind.Object || !root.TryGetProperty("type", out var type)) return;
+            if (type.GetString() == "signed_out")
+            {
+                foreach (var reportWindow in reportWindows.ToArray()) reportWindow.Close();
+                return;
+            }
             if (type.GetString() == "set_theme"
                 && root.TryGetProperty("theme", out var theme)
                 && theme.GetString() is string requestedTheme
@@ -305,7 +368,7 @@ internal sealed class MainForm : Form
             var scale = JavascriptNumber(uiScale);
             var material = nativeBackdropEnabled ? "system" : "fallback";
             uiScaleScriptId = await browser.CoreWebView2.AddScriptToExecuteOnDocumentCreatedAsync(
-                $"document.documentElement.dataset.nativeShell='windows';document.documentElement.dataset.nativeMaterial='{material}';document.documentElement.dataset.uiScale='{scale}';if(location.pathname==='/')window.__optionhelperInitializationToken='{initializationToken}';"
+                $"document.documentElement.dataset.nativeShell='windows';document.documentElement.dataset.nativeMaterial='{material}';document.documentElement.dataset.uiScale='{scale}';"
             );
         }
         finally
