@@ -93,8 +93,8 @@ _FORBIDDEN_KEYS = frozenset(
 # These are Host-owned safety limits.  A runtime implementation may choose a
 # smaller value for a particular role, but it must not enlarge the published
 # boundary without a new protocol version.
-MAX_WORKFLOW_STEPS = 8
-MAX_WORKFLOW_TOOLS = 12
+MAX_WORKFLOW_STEPS = 0  # Zero means no application-imposed step limit.
+MAX_WORKFLOW_TOOLS = 0  # Zero means no application-imposed tool limit.
 MAX_WORKFLOW_EVALUATORS = 4
 MAX_WORKFLOW_REWORK_ROUNDS = 2
 
@@ -478,10 +478,10 @@ class WorkflowSpec:
         object.__setattr__(self, "workflow_total_budget", workflow_total_budget)
         if isinstance(self.deadline_seconds, bool) or not isinstance(self.deadline_seconds, (int, float)) or self.deadline_seconds <= 0:
             raise ValidationError("deadline_seconds必须是正数")
-        if isinstance(self.max_steps_per_run, bool) or not isinstance(self.max_steps_per_run, int) or not 1 <= self.max_steps_per_run <= MAX_WORKFLOW_STEPS:
-            raise ValidationError("max_steps_per_run必须位于1至8")
-        if isinstance(self.max_tools, bool) or not isinstance(self.max_tools, int) or not 0 <= self.max_tools <= MAX_WORKFLOW_TOOLS:
-            raise ValidationError("max_tools必须位于0至12")
+        if isinstance(self.max_steps_per_run, bool) or not isinstance(self.max_steps_per_run, int) or self.max_steps_per_run < 0:
+            raise ValidationError("max_steps_per_run必须为非负整数，0表示不限")
+        if isinstance(self.max_tools, bool) or not isinstance(self.max_tools, int) or self.max_tools < 0:
+            raise ValidationError("max_tools必须为非负整数，0表示不限")
         if isinstance(self.max_evaluators, bool) or not isinstance(self.max_evaluators, int) or not 1 <= self.max_evaluators <= MAX_WORKFLOW_EVALUATORS:
             raise ValidationError("max_evaluators必须位于1至4")
         object.__setattr__(self, "execution_graph", _json_container(self.execution_graph, "execution_graph"))
