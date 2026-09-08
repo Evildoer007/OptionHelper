@@ -19,7 +19,7 @@ class _LocalDocumentStore:
 
     _FILES = {
         "sessions", "tasks", "settings", "audit", "data_assets",
-        "results", "result_recovery", "reports", "product_rule_revisions",
+        "results", "result_recovery", "reports", "report_documents", "product_rule_revisions",
     }
 
     def __init__(self, root: Path) -> None:
@@ -47,7 +47,7 @@ class _LocalDocumentStore:
             _write_atomic_json(marker_path, {"migration": "task-model-current-input-v1", "status": "prepared"})
 
         for name in (
-            "sessions", "tasks", "results", "result_recovery", "reports",
+            "sessions", "tasks", "results", "result_recovery", "reports", "report_documents",
         ):
             _write_atomic_json(self._root / f"{name}.json", {})
 
@@ -99,7 +99,8 @@ class _LocalDocumentStore:
     def update(self, name: str, mutator: Callable[[dict[str, Any]], dict[str, Any] | None]) -> dict[str, Any]:
         with self._lock:
             value = self.read(name)
-            updated = mutator(value) or value
+            replacement = mutator(value)
+            updated = value if replacement is None else replacement
             if not isinstance(updated, dict):
                 raise ValidationError("Local App state mutator must return an object")
             encoded = json.dumps(updated, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
