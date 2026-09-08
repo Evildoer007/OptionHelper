@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict
 import base64
 import hashlib
 import json
@@ -17,9 +16,10 @@ from typing import Any, Mapping
 from uuid import uuid4
 
 from runtime.contracts.input_adapter import ContractResolutionError
+from runtime.contracts.contract_types import deep_thaw
 from runtime.errors import ErrorCode, error_info
 
-from .compute_process import MAX_FRAME_BYTES, PROTOCOL, _canonical_hash, _read_frame, _write_frame
+from .compute_process import PROTOCOL, _canonical_hash, _read_frame, _write_frame
 from ..errors import UserActionError
 
 
@@ -222,7 +222,7 @@ def _execute(execution: dict[str, Any], stage: dict[str, str]) -> dict[str, Any]
             raise ValueError("compute capability result must be an object")
         stage["value"] = "serializing_result"
         return {
-            "result": dict(result),
+            "result": deep_thaw(result),
             "draft": draft_store.export(),
             "capability_hash": execution["capability_hash"],
             "execution_token": execution_token,
@@ -236,6 +236,9 @@ def _encode_file(value: Any) -> dict[str, Any]:
     if isinstance(value, str):
         content = value.encode("utf-8")
         return {"kind": "text", "value": value, "sha256": hashlib.sha256(content).hexdigest()}
+    # Core snapshots stay immutable in-process. The transport owns conversion
+    # to plain JSON, including nested audit records in the ModuleRun draft.
+    value = deep_thaw(value)
     content = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
     return {"kind": "json", "value": value, "sha256": hashlib.sha256(content).hexdigest()}
 
