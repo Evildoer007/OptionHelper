@@ -906,9 +906,11 @@ class RecommenderAdapter:
     def run_fixed(
         self, identity: SessionIdentity, task_id: str, prompt: str, arguments: Mapping[str, Any], *,
         selection: ModelSelection | None = None, execution_ids: Mapping[str, str] | None = None,
+        research_context: str = "",
     ) -> Mapping[str, Any]:
         result = dict(self._run_fixed_internal(
             identity, task_id, prompt, arguments, selection=selection, execution_ids=execution_ids,
+            research_context=research_context,
         ))
         recommendation = result.get("recommendation_set")
         candidates = recommendation.get("candidates") if isinstance(recommendation, Mapping) else None
@@ -923,6 +925,7 @@ class RecommenderAdapter:
     def _run_fixed_internal(
         self, identity: SessionIdentity, task_id: str, prompt: str, arguments: Mapping[str, Any], *,
         selection: ModelSelection | None = None, execution_ids: Mapping[str, str] | None = None,
+        research_context: str = "",
     ) -> Mapping[str, Any]:
         task = self._tasks.get(identity, task_id)
         catalog_version = str(self._registry.manifest["catalog_version"])
@@ -981,6 +984,7 @@ class RecommenderAdapter:
             audience=identity.audience,
             conversation_ref=f"task:{task_id}",
             confirmed_constraints=case_constraints,
+            research_context=research_context,
         )
         mode = recommendation_execution_mode(prompt, getattr(self._gateway, "recommendation_execution_mode_for", lambda _: "single")(identity))
         if mode == "multi" and self._agent_runtime_mode == "disabled":
@@ -1190,7 +1194,17 @@ class AppConversationToolExecutor:
         if module == "recommender" and action == "run":
             if self._recommender is None:
                 raise ValidationError("RecommenderAdapter未绑定")
-            return self._recommender.run_fixed(identity, task_id, str(arguments.get("prompt", "")), arguments)
+            messages = self._tasks.get(identity, task_id).get("messages", [])
+            user_request = "\n".join(
+                str(row.get("content", "")) for row in messages
+                if isinstance(row, Mapping) and row.get("role") == "user"
+            )
+            if not user_request.strip():
+                raise ValidationError("当前对话没有可用的用户推荐请求")
+            return self._recommender.run_fixed(
+                identity, task_id, user_request, {},
+                research_context=str(arguments.get("prompt", "")),
+            )
         if module == "reporter" and action == "run":
             from ..report_delivery import delivery_request
             messages = self._tasks.get(identity, task_id).get("messages", []) if self._tasks else []
