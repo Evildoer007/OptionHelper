@@ -30,6 +30,16 @@ _CACHED_DRAW_LIMIT = 2_000_000
 _PREPARED_SESSION_LIMIT = 4
 
 
+def _observation_history_key(history: Any) -> Any:
+    if history is None:
+        return None
+    return (
+        tuple(history["dates"]), tuple(history["asset_ids"]),
+        tuple(tuple(row) for row in history["close"]),
+        tuple((name, tuple(tuple(row) for row in values)) for name, values in sorted(history["price_fields"].items())),
+    )
+
+
 def _remember_session(
     sessions: dict[tuple[Any, ...], "_PathPricingSession"],
     key: tuple[Any, ...],
@@ -73,6 +83,14 @@ def _session_dates(
     except ValueError as error:
         raise ValueError("OptionReg路径MC估值日必须位于注入trading_sessions") from error
     target = market.as_of + timedelta(days=round(remaining * 365.0))
+    if instrument.resolved_contract.terms.get("n_obs") is not None:
+        # The independent count schedule owns the path horizon. T remains
+        # the cashflow/settlement parameter and must not resample this grid.
+        target = max(
+            date.fromisoformat(str(day))
+            for schedule in instrument.resolved_contract.resolved_schedules.values()
+            for day in schedule["dates"]
+        )
     values = tuple(value for value in all_sessions[start:] if value <= target)
     if len(values) < 2 or (target - values[-1]).days > 14:
         raise ValueError("OptionReg路径MC注入交易sessions未覆盖完整剩余合同期限")
@@ -139,29 +157,12 @@ def _contract_with_maturity(
     as_of: date,
     remaining_years: float,
 ) -> Any:
-    """Keep count-based terms aligned with actual selected calendar dates."""
-    terms = {**contract.terms, "T": maturity_years}
-    if contract.terms.get("n_obs") is not None:
-        from modules.pricer.observation_schedule import actual_n_obs, bind_accumulator_remaining_count
+    """Use the adapter's immutable time view without rebinding n_obs."""
+    from modules.pricer.product_pricing_adapter import _contract_with_maturity as time_view
 
-        remaining_observations = actual_n_obs(
-            contract,
-            sessions=trading_sessions,
-            as_of=as_of,
-            remaining_years=remaining_years,
-        )
-        if contract.product_id == "7.1" and "Q_acc" in contract.terms.get("monitor", {}):
-            monitor = dict(terms.get("monitor", {}))
-            monitor["Q_acc"] = bind_accumulator_remaining_count(
-                str(monitor["Q_acc"]), remaining_observations,
-            )
-            terms["monitor"] = monitor
-        else:
-            terms["n_obs"] = remaining_observations
-    return replace(
-        contract,
-        terms=terms,
-        path_case_applicability=None,
+    return time_view(
+        contract, maturity_years, remaining_years=remaining_years,
+        trading_calendar={"sessions": trading_sessions}, as_of=as_of,
     )
 
 
@@ -188,6 +189,22 @@ class _PathPricingSession:
         self.dates, self.relative_times = _session_dates(instrument, market, valuation_state)
         self.elapsed = _elapsed_years(valuation_state)
         self.times = self.relative_times + self.elapsed
+        self.history = None if valuation_state is None else valuation_state.observation_history
+        self.evaluation_dates = self.dates
+        self.evaluation_times = self.times
+        if self.history is not None:
+            history_dates = tuple(date.fromisoformat(day) for day in self.history["dates"])
+            if history_dates[-1] != market.as_of or tuple(self.history["asset_ids"]) != self.contract.underlyings:
+                raise ValueError("历史观察路径必须覆盖同一标的并截止于当前估值日")
+            start_date = date.fromisoformat(str(self.contract.identity["contract_start_date"]))
+            expected_dates = tuple(
+                date.fromisoformat(str(day)) for day in instrument.trading_sessions
+                if start_date <= date.fromisoformat(str(day)) <= market.as_of
+            )
+            if history_dates != expected_dates:
+                raise ValueError("历史观察路径必须逐日覆盖冻结交易日历，不能跳过已完成观察")
+            self.evaluation_dates = history_dates + self.dates[1:]
+            self.evaluation_times = np.asarray([(day - start_date).days / 365 for day in self.evaluation_dates])
         self.steps = len(self.dates) - 1
         _, _, _, correlation = _asset_inputs(instrument, market)
         self.asset_count = len(self.contract.underlyings)
@@ -206,10 +223,10 @@ class _PathPricingSession:
         from runtime.contracts.contract_api import prepare_contract_evaluator
         self.prepared_evaluator = prepare_contract_evaluator(
             self.contract,
-            times=self.times,
-            dates=self.dates,
+            times=self.evaluation_times,
+            dates=self.evaluation_dates,
             asset_ids=self.contract.underlyings,
-            valuation_date=self.dates[0],
+            valuation_date=self.evaluation_dates[0],
         )
         draw_count = config.paths * self.steps * self.asset_count
         self.cached_draws = None
@@ -268,10 +285,20 @@ class _PathPricingSession:
             combined_paths = np.concatenate(path_blocks, axis=0)
             if not np.isfinite(combined_paths).all() or np.any(combined_paths <= 0.0):
                 raise ValueError("模拟价格路径必须为有限正数")
+            price_fields = None
+            if self.history is not None:
+                future_paths = combined_paths[:, 1:, :]
+                observed = np.asarray(self.history["close"], dtype=float)
+                combined_paths = np.concatenate((np.broadcast_to(observed, (len(combined_paths), *observed.shape)), future_paths), axis=1)
+                price_fields = {
+                    name: np.concatenate((np.broadcast_to(np.asarray(values), (len(combined_paths), *observed.shape)), future_paths), axis=1)
+                    for name, values in self.history["price_fields"].items()
+                }
             settlements = evaluate_contract_batch(
                 self.prepared_evaluator,
                 combined_paths,
                 batch_size=len(combined_paths),
+                price_fields=price_fields,
             ).evaluations
             for market_index, market in enumerate(markets):
                 block_start = market_index * count
@@ -281,6 +308,9 @@ class _PathPricingSession:
                             -market.risk_free_rate * max(0.0, flow.time - self.elapsed)
                         )
                         for flow in settlement.cashflows
+                        # CF0 is classified once by the lifecycle filter.
+                        # Other settled flows must not enter remaining PV.
+                        if self.history is None or flow.time == 0.0 or flow.time > self.elapsed + 1e-12
                     )
             start += count
         return discounted
@@ -372,6 +402,7 @@ def price_optionreg_path_monte_carlo(
             valuation_state.accumulated_count,
             valuation_state.accumulated_quantity,
             valuation_state.observation_stage,
+            _observation_history_key(valuation_state.observation_history),
         ),
     )
     session = None if prepared_sessions is None else prepared_sessions.get(session_key)
@@ -391,15 +422,29 @@ def price_optionreg_path_monte_carlo(
     def theta_roll(convention) -> ThetaRollValue:
         maturity = float(instrument.resolved_contract.terms["T"])
         rolled_maturity = maturity - convention.theta_calendar_day_shift / 365.0
-        if rolled_maturity <= 0.0:
+        rolled_remaining = rolled_maturity - _elapsed_years(valuation_state)
+        # T is measured from contract inception, not from this valuation.
+        # Check the civil-day horizon used by the time view; cancellation
+        # error after a long elapsed period must not create a zero-day roll.
+        if round(rolled_remaining * 365.0) <= 0:
             raise ThetaNotApplicableError("合同剩余期限不足以计算Theta")
-        rolled_contract = _contract_with_maturity(
-            instrument.resolved_contract,
-            rolled_maturity,
-            trading_sessions=instrument.trading_sessions,
-            as_of=market.as_of,
-            remaining_years=rolled_maturity - _elapsed_years(valuation_state),
-        )
+        if valuation_state is not None and valuation_state.observation_history is not None:
+            from modules.pricer.product_pricing_adapter import _contract_with_maturity as rebuild_time_view
+            rolled_contract = rebuild_time_view(
+                instrument.resolved_contract, rolled_maturity,
+                trading_calendar={"sessions": instrument.trading_sessions},
+                as_of=market.as_of,
+                remaining_years=rolled_remaining,
+                replay_history=True,
+            )
+        else:
+            rolled_contract = _contract_with_maturity(
+                instrument.resolved_contract,
+                rolled_maturity,
+                trading_sessions=instrument.trading_sessions,
+                as_of=market.as_of,
+                remaining_years=rolled_remaining,
+            )
         rolled_instrument = replace(instrument, resolved_contract=rolled_contract)
         if prepared_sessions is None:
             rolled_points, _ = _price_points(
@@ -417,6 +462,17 @@ def price_optionreg_path_monte_carlo(
                 )
                 _remember_session(prepared_sessions, rolled_session_key, rolled_session)
             rolled_points, _ = _session_price_points(rolled_session, market)
+        # A time-risk view must not reprice the original upfront payment.
+        # In particular, 8.16's annualized premium changes numerically when
+        # its temporary T changes; only future contingent cashflows roll.
+        from modules.pricer.cashflow_lifecycle import contractual_initial_cashflow
+
+        initial_difference = (
+            contractual_initial_cashflow(instrument.resolved_contract)
+            - contractual_initial_cashflow(rolled_contract)
+        )
+        scale = instrument.basis.cashflow_scale
+        rolled_points += initial_difference if scale is None else initial_difference / scale * 100.0
         return ThetaRollValue(
             price_points_100=rolled_points,
             calendar_day_shift=convention.theta_calendar_day_shift,
@@ -528,7 +584,7 @@ def _contract_for_state(
     trading_sessions: tuple[str, ...] | list[str] | None = None,
 ) -> Any:
     """将已发生KI事实注入剩余期monitor，不重放或伪造历史价格路径。"""
-    if valuation_state is None:
+    if valuation_state is None or valuation_state.observation_history is not None:
         return contract
     terms = dict(contract.terms)
     if trading_sessions:
