@@ -1,8 +1,7 @@
 """App-private password verifier storage for the managed local App.
 
-Only salted PBKDF2 verifiers and account claims are persisted.  The narrow
-first-account flow may create exactly one local administrator; subsequent
-account administration remains outside the browser-facing App API.
+Only salted PBKDF2 verifiers and account claims are persisted. The two local
+preset accounts are installed once without replacing existing identities.
 """
 
 from __future__ import annotations
@@ -72,9 +71,26 @@ class PasswordCredentialStore:
         self._path = path.expanduser().absolute()
         self._lock = RLock()
 
-    def has_accounts(self) -> bool:
+    def ensure_default_accounts(self) -> None:
+        """Install the requested local accounts once, atomically across hosts."""
+
         with self._lock, _exclusive_store_lock(self._path):
-            return bool(self._read().get("accounts"))
+            value = self._read()
+            if value.get("default_accounts_installed") is True:
+                return
+            accounts = value["accounts"]
+            for name, password, role in (
+                ("admin", "66666666", Role.ADMIN),
+                ("sales", "88888888", Role.SALES),
+            ):
+                existing = accounts.get(name, {})
+                accounts[name] = _account_record(
+                    name, _validated_password(password), role,
+                    existing.get("tenant_id", "managed-local"),
+                    existing.get("principal_id", f"managed-local:{name}"),
+                )
+            value["default_accounts_installed"] = True
+            self._write(value)
 
     def account_generation(self) -> str:
         """Return the verifier-bound generation used to invalidate old sessions."""
@@ -107,32 +123,6 @@ class PasswordCredentialStore:
             generation = self._generation_for(value)
         return PasswordAccount(canonical, principal, tenant, role, generation)
 
-    def provision_initial_administrator(self, account: str, password: str) -> PasswordAccount:
-        """Create the single first local administrator without accepting claims.
-
-        This method is deliberately separate from :meth:`provision`: it is the
-        only account-writing path exposed by the App Host and it refuses every
-        request once any account exists.  Role, tenant and principal claims are
-        fixed by the Host rather than supplied by a browser client.
-        """
-
-        canonical = _canonical_account(account)
-        secret = _validated_initial_administrator_password(password)
-        tenant = "managed-local"
-        principal = f"managed-local:{canonical}"
-        record = _account_record(canonical, secret, Role.ADMIN, tenant, principal)
-        with self._lock, _exclusive_store_lock(self._path):
-            value = self._read()
-            accounts = value.setdefault("accounts", {})
-            if accounts:
-                raise UserActionError(
-                    "account_already_initialized",
-                    "本机账号已初始化。如需新增或重置账号，请联系管理员。",
-                )
-            accounts[canonical] = record
-            self._write(value)
-            generation = self._generation_for(value)
-        return PasswordAccount(canonical, principal, tenant, Role.ADMIN, generation)
 
     def authenticate(self, account: str, password: str) -> PasswordAccount | None:
         canonical = _canonical_account(account)
@@ -276,7 +266,8 @@ def _sync_directory(directory: Path) -> None:
 def _is_current_store(value: object) -> bool:
     return (
         isinstance(value, dict)
-        and set(value) == {"schema", "accounts"}
+        and set(value) in ({"schema", "accounts"}, {"schema", "accounts", "default_accounts_installed"})
+        and ("default_accounts_installed" not in value or value["default_accounts_installed"] is True)
         and value.get("schema") == _STORE_SCHEMA
         and isinstance(value.get("accounts"), dict)
     )
@@ -360,13 +351,6 @@ def _validated_password(value: str) -> bytes:
     return encoded
 
 
-def _validated_initial_administrator_password(value: str) -> bytes:
-    """Apply the one additional guard needed by the unrecoverable first setup."""
-
-    encoded = _validated_password(value)
-    if len(value) < 12:
-        raise ValidationError("initial administrator password must contain at least 12 characters")
-    return encoded
 
 
 def _account_record(account: str, password: bytes, role: Role, tenant_id: str, principal_id: str) -> dict[str, object]:
