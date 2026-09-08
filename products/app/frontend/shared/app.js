@@ -1005,7 +1005,12 @@ export function createReasoningDisclosure(text = "", { running = false } = {}) {
     const value = String(nextText ?? "");
     details.dataset.running = String(nextRunning);
     title.textContent = reasoningSummary(value, nextRunning);
+    const followTail = body.scrollHeight - body.clientHeight - body.scrollTop < 48;
     body.textContent = value;
+    if (followTail) {
+      body.scrollTop = body.scrollHeight;
+      requestAnimationFrame(() => { if (body.isConnected) body.scrollTop = body.scrollHeight; });
+    }
     details.hidden = !value && !nextRunning;
     // Stopping preserves the current visual and phase; only velocity settles.
     if (nextRunning) orb.setState("solving");
@@ -1160,6 +1165,7 @@ function createMessageArtifactCard(reference) {
 function createQuestionCard(block, options, active) {
   const card = document.createElement("form");
   card.className = "message-question";
+  card.dataset.state = active ? "pending" : "answered";
   card.dataset.questionId = String(block.question_id || "");
   const prompt = document.createElement("p");
   prompt.className = "message-question__prompt";
@@ -1191,7 +1197,7 @@ function createQuestionCard(block, options, active) {
     }
     card.append(choices);
   }
-  if (block.allow_free_text === true) {
+  if (block.allow_free_text === true && active) {
     const free = document.createElement("div");
     free.className = "message-question__free";
     const field = document.createElement("textarea");
@@ -1210,6 +1216,12 @@ function createQuestionCard(block, options, active) {
       const answer = field.value.trim();
       if (active && answer) options.onQuestionAnswer?.(answer, block.question_id);
     });
+  }
+  if (!active) {
+    const answered = document.createElement("span");
+    answered.className = "message-question__answered";
+    answered.textContent = "已回答";
+    card.append(answered);
   }
   return card;
 }
