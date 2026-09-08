@@ -42,7 +42,6 @@ from runtime.adapters.local_host import (
 from runtime.adapters.local_store import LocalResultStore
 from runtime.contracts.contract_api import ContractResolutionError, ResolvedContract
 from runtime.contracts.input_adapter import (
-    bind_candidate_target_spec,
     compile_compute_data_requirements as _compile_compute_data_requirements,
     preflight_fair_parameter_request as _preflight_fair_parameter_request,
     prepare_compute_request as _prepare_compute_request,
@@ -296,18 +295,13 @@ def preflight_fair_parameter_request(
         raise ToolDispatchError("公平参数预检缺少product_id")
     try:
         fair_directory = importlib.import_module("modules.pricer.fair_parameter")
-        directory_factory = getattr(fair_directory, "private_capability_package", None)
-        if not callable(directory_factory):
-            raise ContractResolutionError("Pricer能力目录未提供正式私有目录装配入口")
-        directory = directory_factory()
-        target_binding = bind_candidate_target_spec(
-            directory,
-            product_id.strip(),
-            str(objective.target_id),
-        )
+        target = fair_directory.target_capability(product_id.strip(), str(objective.target_id))
+        if target is None:
+            raise ContractResolutionError("公平合同条款目标未登记")
         return _preflight_fair_parameter_request(
             request,
-            target_spec=target_binding,
+            target_spec=target.to_solver_spec(),
+            target_product_id=product_id.strip(),
             resolved_contract=resolved_contract,
         )
     except (ContractResolutionError, TypeError, ValueError) as error:
@@ -546,25 +540,34 @@ def _evidence(product_id: str, source: str, excerpt: str, identity: Mapping[str,
 
 
 def _catalog_version(paths: Any) -> str:
-    """Return the sole public catalog version for the installed protocol.
+    """Return the release identity attested by the installed knowledge source.
 
-    An optional catalog declaration may attest this value, but it cannot
-    introduce a second release vocabulary or revive an old storage layout.
+    The source manifest records the release artifact that supplied the
+    product_id and rule_revision snapshots. It does not select a separate
+    per-product business version.
     """
 
-    path = paths.knowledger_root / "catalog-version.json"
+    path = paths.knowledger_root / "source-manifest.json"
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-        value = None
-    declared = value.get("catalog_version") if isinstance(value, Mapping) else None
-    if declared is not None:
-        try:
-            require_release_id(declared, "catalog_version")
-        except ValueError as error:
-            raise ProjectRequestError("knowledger", "资料目录版本与当前正式协议不一致。") from error
-        return declared
-    return DEVELOPMENT_RELEASE_ID
+        payload = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return DEVELOPMENT_RELEASE_ID
+    except (OSError, UnicodeDecodeError) as error:
+        raise ProjectRequestError("knowledger", "资料来源清单无效。") from error
+    try:
+        value = json.loads(payload)
+    except json.JSONDecodeError as error:
+        raise ProjectRequestError("knowledger", "资料来源清单无效。") from error
+    if not isinstance(value, Mapping) or value.get("manifest_type") not in {
+        "KnowledgeSourceManifest",
+        "KnowledgeSourceCandidate",
+    }:
+        raise ProjectRequestError("knowledger", "资料来源清单身份无效。")
+    declared = value.get("release_version")
+    try:
+        return require_release_id(declared, "catalog_version")
+    except ValueError as error:
+        raise ProjectRequestError("knowledger", "资料目录版本与当前正式协议不一致。") from error
 
 
 def _local_ifind_refresh_token(project_root: str | Path | None = None) -> str:
