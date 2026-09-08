@@ -18,12 +18,21 @@ def _normalise_market_history(data: pd.DataFrame) -> pd.DataFrame:
     required = {"date", "asset_id", "close", "adj_close"}
     if not required.issubset(data.columns):
         raise MarketDataError("历史行情必须含date、asset_id、close、adj_close")
-    result = data.loc[:, ["date", "asset_id", "close", "adj_close"]].copy()
+    optional_observation_fields = [
+        field for field in ("open", "high", "low")
+        if field in data.columns
+    ]
+    result = data.loc[
+        :, ["date", "asset_id", *optional_observation_fields, "close", "adj_close"]
+    ].copy()
     result["date"] = pd.to_datetime(result["date"], errors="coerce")
     result["asset_id"] = result["asset_id"].astype(str).str.strip()
     result["close"] = pd.to_numeric(result["close"], errors="coerce")
     result["adj_close"] = pd.to_numeric(result["adj_close"], errors="coerce")
     invalid = result["date"].isna() | result["asset_id"].eq("") | result["close"].isna() | result["adj_close"].isna() | (result["close"] <= 0) | (result["adj_close"] <= 0)
+    for field in optional_observation_fields:
+        result[field] = pd.to_numeric(result[field], errors="coerce")
+        invalid |= result[field].isna() | (result[field] <= 0)
     if invalid.any() or result.duplicated(["date", "asset_id"]).any():
         raise MarketDataError("历史行情含无效或重复的date、asset_id、close、adj_close")
     return result.sort_values(["date", "asset_id"]).reset_index(drop=True)
