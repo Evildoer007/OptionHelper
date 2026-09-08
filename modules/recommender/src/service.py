@@ -24,8 +24,6 @@ from .executor import ALLOWED_MODULES, execute
 from .interaction import (
     delivery_preferences_from_text,
     merge_confirmed_constraints,
-    missing_required_constraints,
-    question_for_missing_constraints,
     requested_candidate_count_from_text,
 )
 from .intent_router import route_intent
@@ -226,34 +224,8 @@ class RecommenderService:
     def _run_recommendation(self, case: RecommendationCase, *, route: RouteDecision) -> RecommendationSet:
         run_id = case.run_id or f"recommend_{uuid4().hex[:12]}"
         case = _prepare_recommendation_case(case)
-        missing = missing_required_constraints(case.confirmed_constraints)
-        if missing:
-            audit = AuditRecorder("single_agent")
-            audit.append("route", "complete", agent_role=None, input_value={"prompt": case.prompt}, output_value=route.to_dict())
-            audit.append(
-                "clarification", "pending", agent_role=None,
-                input_value={"confirmed_constraints": dict(case.confirmed_constraints)},
-                output_value={"missing": missing},
-                detail={"rule": "全部关键缺口一次合并追问"},
-            )
-            return RecommendationSet(
-                schema=RECOMMENDATION_SET_SCHEMA,
-                task_id=case.task_id,
-                run_id=run_id,
-                analysis_case_id=case.analysis_case_id,
-                catalog_version=case.catalog_version,
-                route=route.route,
-                workflow_mode="single_agent",
-                status="pending_question",
-                primary_candidate_id=None,
-                candidates=(),
-                missing_information=missing,
-                next_question=question_for_missing_constraints(missing),
-                requested_outputs=case.requested_outputs,
-                requested_candidate_count=_requested_candidate_count(case),
-                returned_candidate_count=0,
-                audit_trail=tuple(audit.events),
-            )
+        # Let the selected agent assess genuine information gaps. A research
+        # recommendation does not require every executable contract parameter.
         try:
             model_capability = self.agent_port.capability()
             mode = self._workflow_mode(model_capability)
@@ -348,8 +320,9 @@ class RecommenderService:
     ) -> RecommendationSet:
         intent = runner.run("Interpreter", {
             "prompt": case.prompt,
+            "research_context": case.research_context,
             "confirmed_constraints": dict(case.confirmed_constraints),
-            "rule": "仅把用户原文或confirmed_constraints中的事实标为已确认；一次最多生成一个next_question。",
+            "rule": "仅把用户原文或confirmed_constraints中的事实标为已确认；research_context是待核实研究资料，不能作为用户确认。用户允许默认时，明确列出研究假设并继续推荐，不把缺少完整定价条款变成固定问卷；只有确实阻塞本次操作的缺口才追问，一次最多一个next_question。",
         })
         evidence = self._retrieve(case, intent.get("research_queries", ()), audit)
         research = runner.run("Selector", {
@@ -403,6 +376,7 @@ class RecommenderService:
     ) -> RecommendationSet:
         framing = runner.run("Framer", {
             "prompt": case.prompt,
+            "research_context": case.research_context,
             "confirmed_constraints": dict(case.confirmed_constraints),
         })
         evidence = self._retrieve(case, framing.get("research_queries", ()), audit)
@@ -573,6 +547,7 @@ class RecommenderService:
     ) -> RecommendationSet:
         specified = runner.run("Specifier", {
             "prompt": case.prompt,
+            "research_context": case.research_context,
             "confirmed_constraints": dict(case.confirmed_constraints),
         })
         spec = parse_specifier_ranking_spec(specified.get("ranking_spec", {}))
@@ -816,6 +791,7 @@ class RecommenderService:
         for _ in range(self.config.max_agent_rounds):
             result = runner.run("Freeform", {
                 "prompt": case.prompt,
+                "research_context": case.research_context,
                 "route": route.to_dict(),
                 "tool_results": tool_results,
                 "allowed_modules": sorted(allowed_modules),
