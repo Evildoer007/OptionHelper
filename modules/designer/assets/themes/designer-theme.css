@@ -299,6 +299,12 @@ a { color: inherit; }
   min-width: 0;
 }
 
+/* Draft sections use the full reading width, with the same heading rhythm. */
+.card-appended { margin-block: var(--space-md); }
+.card-appended h2 { margin: 0 0 var(--space-sm); color: var(--blue); font-size: var(--type-subsection); }
+.card-appended .presentation-paragraph { max-width: none; margin-block: 6px; }
+.card-appended .table-wrap { margin-block: var(--space-sm); }
+
 .card-custom,
 .quote-custom {
   padding-top: var(--space-sm);
