@@ -319,16 +319,23 @@ def verify_credential_acl(root: Path) -> dict[str, object]:
     script = (
         "$items=@($args[0])+(Get-ChildItem -LiteralPath $args[0] -Filter *.secret).FullName;"
         "$items|ForEach-Object{(Get-Acl -LiteralPath $_).Access|"
-        "Select-Object IdentityReference,FileSystemRights,AccessControlType}|ConvertTo-Json -Depth 4"
+        "Where-Object{$_.AccessControlType -eq 'Allow'}|ForEach-Object{"
+        "$_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value}}|ConvertTo-Json"
     )
     try:
         completed = _powershell(script, str(root))
     except subprocess.TimeoutExpired as error:
         raise WindowsVerificationError("Windows凭据ACL检查超时") from error
     require(completed.returncode == 0, f"Windows凭据ACL检查失败：{completed.stdout}")
-    lowered = completed.stdout.casefold()
-    forbidden = ("everyone", "authenticated users", "builtin\\users", "所有人", "经过身份验证的用户")
-    require(not any(name in lowered for name in forbidden), "Windows凭据ACL包含宽泛读取主体")
+    try:
+        identities = json.loads(completed.stdout)
+    except json.JSONDecodeError as error:
+        raise WindowsVerificationError("Windows凭据ACL返回无效JSON") from error
+    if isinstance(identities, str):
+        identities = [identities]
+    require(isinstance(identities, list) and bool(identities), "Windows凭据ACL缺少允许访问的主体")
+    forbidden = {"S-1-1-0", "S-1-5-11", "S-1-5-32-545"}
+    require(not forbidden.intersection(identities), "Windows凭据ACL包含宽泛读取主体")
     return {"files": len(files), "acl_checked": True}
 
 
@@ -482,7 +489,13 @@ def verify_backend_api_on_windows(app: Path, *, source_root: Path | None = None)
             if connection is not None:
                 connection.close()
             if process.poll() is None:
-                process.terminate()
+                # TerminateProcess alone leaves compute/runtime descendants
+                # holding temporary files open on Windows.
+                subprocess.run(
+                    ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    timeout=30, check=False,
+                )
             try:
                 process.wait(timeout=10)
             except subprocess.TimeoutExpired:
