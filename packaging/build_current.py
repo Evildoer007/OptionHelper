@@ -135,8 +135,16 @@ def _verify_platform_binding(skill_zip: Path, artifacts: dict[str, Path], platfo
 
 
 def _replace_delivery(staged: Path, target: Path) -> None:
-    """Atomically replace one generated delivery directory after validation."""
+    """Publish through a sibling directory, including when TEMP is another drive."""
     target.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=f".{target.name}-staging-", dir=target.parent) as directory:
+        candidate = Path(directory) / "delivery"
+        shutil.copytree(staged, candidate)
+        _publish_delivery(candidate, target)
+
+
+def _publish_delivery(staged: Path, target: Path) -> None:
+    """Atomically replace a delivery after copying it onto the target volume."""
     backup = target.parent / f".{target.name}-backup-{uuid.uuid4().hex}"
     if target.exists():
         target.rename(backup)
@@ -149,12 +157,10 @@ def _replace_delivery(staged: Path, target: Path) -> None:
     if backup.exists():
         try:
             shutil.rmtree(backup)
-        except BaseException:
-            if target.exists() and not staged.exists():
-                target.rename(staged)
-            if backup.exists() and not target.exists():
-                backup.rename(target)
-            raise
+        except OSError:
+            # rmtree may have removed only part of the backup. Never replace
+            # the verified new delivery with that partially deleted directory.
+            print(f"本次交付已发布，旧备份清理未完成：{backup}", flush=True)
 
 
 def _replace_dist(staged: Path) -> None:
