@@ -73,6 +73,7 @@ APP_BACKEND_SOURCE_INPUTS = (
     "products/app/backend/capability_service.py",
     "products/app/backend/datafetcher_adapter.py",
     "products/app/backend/errors.py",
+    "products/app/backend/file_permissions.py",
     "products/app/backend/identity",
     "products/app/backend/model_gateway",
     "products/app/backend/page_registry.py",
@@ -102,6 +103,8 @@ MACOS_ALLOWED_RESOURCE_ENTRIES = frozenset({
 })
 WINDOWS_SOURCE_MAPPINGS = (
     ("products/app/frontend", "Resources/frontend"),
+    ("assets/icons/optionhelper-app-icon-tile-light.svg", "Resources/assets/icons/optionhelper-app-icon-tile-light.svg"),
+    ("assets/icons/optionhelper-app-icon-tile-dark.svg", "Resources/assets/icons/optionhelper-app-icon-tile-dark.svg"),
     ("assets/icons/optionhelper-app-icon-tile-light.ico", "Resources/icons/OptionHelper.ico"),
     ("packaging/app/windows/verify_windows.py", "verify-windows.py"),
     ("packaging/app/platform_payload.py", "verification/platform_payload.py"),
@@ -110,6 +113,7 @@ WINDOWS_SOURCE_MAPPINGS = (
 )
 WINDOWS_PAYLOAD_ROOTS = (
     "Resources/frontend",
+    "Resources/assets",
     "Resources/icons",
     "Resources/LICENSES",
     "verify-windows.py",
@@ -127,6 +131,7 @@ WINDOWS_BUILD_INPUTS = (
     "core/requirements.lock",
 )
 WINDOWS_ALLOWED_RESOURCE_ENTRIES = frozenset({
+    "assets",
     "LICENSES", "agent-runtime", "app-manifest.json", "backend", "capability",
     "config", "frontend", "icons",
 })
