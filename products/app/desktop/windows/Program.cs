@@ -55,6 +55,8 @@ internal static class Program
         Task<string>? backendErrorTask = null;
         try
         {
+            process.StartInfo.Environment["PYTHONUTF8"] = "1";
+            process.StartInfo.Environment["PYTHONIOENCODING"] = "utf-8";
             process.Start();
             started = true;
             backendErrorTask = process.StandardError.ReadToEndAsync();
@@ -158,7 +160,10 @@ internal sealed class MainForm : Form
         {
             try
             {
-                await browser.EnsureCoreWebView2Async();
+                var webViewData = Path.Combine(stateDirectory, "webview2");
+                Directory.CreateDirectory(webViewData);
+                var environment = await CoreWebView2Environment.CreateAsync(userDataFolder: webViewData);
+                await browser.EnsureCoreWebView2Async(environment);
                 browser.CoreWebView2.Settings.IsZoomControlEnabled = false;
                 browser.ZoomFactor = uiScale;
                 await UpdateScaleBootstrapScript();
