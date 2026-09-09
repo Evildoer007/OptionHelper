@@ -46,7 +46,6 @@ from python_runtime_licenses import (  # noqa: E402
 
 
 REQUEST_TIMEOUT_SECONDS = 180
-PROCESS_TIMEOUT_SECONDS = 900
 PAGE_MODULES = ("datafetcher", "payoffer", "pricer", "backtester", "reporter")
 REQUIRED_CAPABILITY_LICENSES = (
     "ReportLab-LICENSE.txt",
@@ -197,6 +196,7 @@ def run_operation(
     )
     operation_id = str(operation["operation_id"])
     deadline = time.monotonic() + REQUEST_TIMEOUT_SECONDS
+    next_progress = time.monotonic() + 15
     while time.monotonic() < deadline:
         status, body, _ = request(
             connection,
@@ -213,6 +213,9 @@ def run_operation(
             return result
         if state in {"failed", "cancelled", "interrupted"}:
             raise WindowsVerificationError(f"{module} Windows Operation未完成：{operation}")
+        if time.monotonic() >= next_progress:
+            print(f"[acceptance] {module}仍在运行，操作{operation_id}，状态{state}", flush=True)
+            next_progress = time.monotonic() + 15
         time.sleep(0.05)
     raise WindowsVerificationError(f"{module} Windows Operation在受控时限内未完成")
 
@@ -374,6 +377,7 @@ def stop_acceptance_backend(process: subprocess.Popen[str]) -> None:
 
 def verify_backend_api_on_windows(app: Path, *, source_root: Path | None = None) -> dict[str, object]:
     require(platform.system() == "Windows", "Windows后端/API验收只能在Windows运行")
+    print("[acceptance] 正在校验包布局与全部资源哈希", flush=True)
     manifest = verify_layout(app, source_root=source_root)
     resources = app / "Resources"
     try:
@@ -412,6 +416,7 @@ def verify_backend_api_on_windows(app: Path, *, source_root: Path | None = None)
         )
         connection: http.client.HTTPConnection | None = None
         try:
+            print("[acceptance] 正在等待后端启动", flush=True)
             base_url = wait_for_url(process)
             parsed = urlparse(base_url)
             connection = http.client.HTTPConnection(parsed.hostname, parsed.port, timeout=REQUEST_TIMEOUT_SECONDS)
@@ -430,6 +435,7 @@ def verify_backend_api_on_windows(app: Path, *, source_root: Path | None = None)
             actions = {"datafetcher": "status", "payoffer": "catalog", "pricer": "catalog", "backtester": "catalog", "reporter": "status"}
             catalogs: dict[str, list[dict[str, object]]] = {}
             for sequence, module in enumerate(PAGE_MODULES, start=1):
+                print(f"[acceptance] 正在验证{module}页面接口", flush=True)
                 headers = hosted_headers(connection, base_url, module, cookie, sequence)
                 status, body, _ = request(connection, "POST", f"/api/tools/{module}", {"action": actions[module]}, headers)
                 require(status == 200 and isinstance(body.get("result"), dict), f"{module}页面Host调用失败")
@@ -443,6 +449,8 @@ def verify_backend_api_on_windows(app: Path, *, source_root: Path | None = None)
             pricing_runs = 0
             for sequence, product in enumerate(products, start=100):
                 product_id = str(product["product_id"])
+                started = time.monotonic()
+                print(f"[acceptance] 定价{pricing_runs + 1}/{len(products)}：{product_id}，开始", flush=True)
                 assets = ["000905.SH", "000300.SH"] if product.get("underlying_scope") == "multi_underlying" else ["000905.SH"]
                 task_id = create_task(connection, cookie, f"Windows MC10 {product_id}")
                 dividend: object = {asset: 0.0 for asset in assets} if len(assets) > 1 else 0.0
@@ -469,7 +477,9 @@ def verify_backend_api_on_windows(app: Path, *, source_root: Path | None = None)
                 pricing = result.get("pricing")
                 require(isinstance(pricing, dict) and pricing.get("path_count") == 10, f"产品{product_id}未按MC10运行")
                 pricing_runs += 1
+                print(f"[acceptance] 定价{pricing_runs}/{len(products)}：{product_id}通过，用时{time.monotonic() - started:.1f}秒", flush=True)
 
+            print("[acceptance] 正在验证历史回测、收益结构与报告生成", flush=True)
             report_task = create_task(connection, cookie, "Windows完整报告验收")
             backtest = run_operation(
                 connection,
@@ -504,6 +514,7 @@ def verify_backend_api_on_windows(app: Path, *, source_root: Path | None = None)
             require(status == 200 and isinstance(delivery, dict), f"Windows Reporter报告请求失败：{report}")
             require(delivery.get("status") in {"completed", "partial"}, "Windows Reporter报告生成失败")
 
+            print("[acceptance] 正在验证凭据保存和Windows访问权限", flush=True)
             for path, payload in (
                 ("/api/settings/model/credential", {"provider_name": "openai-compatible", "endpoint": "https://invalid.local/v1", "model_name": "acceptance", "api_key": "test-only"}),
                 ("/api/settings/data/credential", {"provider_name": "ifind-http", "refresh_token": "test-only"}),
@@ -523,6 +534,7 @@ def verify_backend_api_on_windows(app: Path, *, source_root: Path | None = None)
         finally:
             if connection is not None:
                 connection.close()
+            print("[acceptance] 正在关闭后端及子进程", flush=True)
             stop_acceptance_backend(process)
 
 
