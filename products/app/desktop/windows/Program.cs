@@ -12,7 +12,7 @@ namespace OptionHelper.Windows;
 internal static class Program
 {
     [STAThread]
-    private static async Task Main(string[] args)
+    private static void Main(string[] args)
     {
         if (args.Contains("--check-webview2", StringComparer.Ordinal))
         {
@@ -46,6 +46,8 @@ internal static class Program
                 UseShellExecute = false,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
+                StandardOutputEncoding = System.Text.Encoding.UTF8,
+                StandardErrorEncoding = System.Text.Encoding.UTF8,
                 CreateNoWindow = true,
             }
         };
@@ -56,7 +58,10 @@ internal static class Program
             process.Start();
             started = true;
             backendErrorTask = process.StandardError.ReadToEndAsync();
-            var url = await WaitForUrl(process, TimeSpan.FromSeconds(45));
+            // Before Application.Run there is no WinForms synchronization
+            // context. An awaited Main would resume on an MTA worker thread.
+            var url = WaitForUrl(process, TimeSpan.FromSeconds(45)).GetAwaiter().GetResult();
+            _ = DrainOutput(process.StandardOutput);
             Application.Run(new MainForm(url, state));
         }
         catch (Exception error)
@@ -69,7 +74,7 @@ internal static class Program
             var detail = error.Message;
             if (backendErrorTask is not null)
             {
-                var backendError = (await backendErrorTask).Trim();
+                var backendError = backendErrorTask.GetAwaiter().GetResult().Trim();
                 if (backendError.Length > 4000)
                     backendError = backendError[^4000..];
                 if (!string.IsNullOrWhiteSpace(backendError))
@@ -85,6 +90,16 @@ internal static class Program
                 process.WaitForExit(5000);
             }
         }
+    }
+
+    private static async Task DrainOutput(StreamReader output)
+    {
+        try
+        {
+            while (await output.ReadLineAsync().ConfigureAwait(false) is not null) { }
+        }
+        catch (IOException) { }
+        catch (ObjectDisposedException) { }
     }
 
     private static async Task<string> WaitForUrl(Process process, TimeSpan timeout)
