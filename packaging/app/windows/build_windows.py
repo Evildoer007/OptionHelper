@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the Windows OptionHelper portable App from one verified Capability."""
+"""Build the Windows OptionHelper installer from one verified Capability."""
 
 from __future__ import annotations
 
@@ -13,7 +13,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import zipfile
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -33,6 +32,7 @@ if str(ROOT / "packaging") not in sys.path:
 
 from verify_skill import content_tree_entries, tree_hash
 from verify_capability import verify_app_capability
+from windows.windows_installer import find_installer_compiler, installer_command, install_for_verification
 from release_contract import APP_VERSION, RELEASE_VERSION, require_app_version, app_platform_versions
 from platform_payload import (
     BACKEND_DESKTOP_COMMON_MODULES,
@@ -249,7 +249,7 @@ def probe_compute_worker(backend: Path, resources: Path, workspace: Path) -> Non
 
 
 def _run_acceptance(command: list[str], *, cwd: Path) -> None:
-    """Stream the full matrix; individual requests/operations own deadlines."""
+    """Stream installed backend/API checks; each operation owns its deadline."""
     try:
         process = subprocess.Popen(command, cwd=cwd)
     except OSError as error:
@@ -558,25 +558,14 @@ def verify_executable_icon(executable: Path, icon: Path = WINDOWS_APP_ICON) -> N
 
 
 def verify_installer_payload(installer: Path, app: Path) -> None:
-    """Verify every ZIP member against the accepted package, not only EXEs."""
-    expected = {
-        path.relative_to(app.parent).as_posix(): path
-        for path in app.rglob("*") if path.is_file()
-    }
-    try:
-        with zipfile.ZipFile(installer) as archive:
-            names = archive.namelist()
-            if len(names) != len(set(names)) or set(names) != set(expected):
-                raise WindowsBuildError("Windows ZIP文件集合与验收后的应用不一致")
-            for name, source in expected.items():
-                digest = sha256()
-                with archive.open(name) as member:
-                    for block in iter(lambda: member.read(1024 * 1024), b""):
-                        digest.update(block)
-                if digest.hexdigest() != _hash(source):
-                    raise WindowsBuildError(f"Windows ZIP文件内容与验收后的应用不一致：{name}")
-    except (OSError, zipfile.BadZipFile) as error:
-        raise WindowsBuildError(f"Windows ZIP读取或CRC校验失败：{error}") from error
+    """Verify every installed file against the source package, not only EXEs."""
+    expected = {path.relative_to(app).as_posix(): path for path in app.rglob("*") if path.is_file()}
+    actual = {path.relative_to(installer).as_posix(): path for path in installer.rglob("*") if path.is_file()}
+    if set(actual) != set(expected):
+        raise WindowsBuildError("Windows安装文件集合与源应用不一致")
+    for name, source in expected.items():
+        if _hash(actual[name]) != _hash(source):
+            raise WindowsBuildError(f"Windows安装文件内容与源应用不一致：{name}")
 
 
 def _verify_backend(package: Path) -> None:
@@ -751,7 +740,7 @@ def build_windows(
         if versions_root.resolve() == (ROOT / "versions").resolve():
             raise WindowsBuildError("Windows正式归档只能由受控发行事务创建")
         release_root.mkdir(parents=True, exist_ok=False)
-    installer_name = f"OptionHelper-{app_version}-windows-x86_64.zip"
+    installer_name = f"OptionHelper-{app_version}-windows-x86_64-Setup.exe"
     archive_installer = release_root / installer_name
     if archive_installer.exists() or (release_root / "app-manifest-windows.json").exists():
         raise WindowsBuildError(f"Windows App历史版本已存在；不得覆盖已签发的{RELEASE_VERSION}文件")
@@ -917,8 +906,20 @@ def build_windows(
         if app_size > MAX_WINDOWS_APP_BYTES:
             raise WindowsBuildError(f"Windows App体积{app_size / 1024 / 1024:.1f}MB超过750MB上限")
 
-        _progress("正在运行Windows后端/API与静态包验收")
-        _run_acceptance([sys.executable, "-u", str(acceptance_entry), str(app), "--source-root", str(repo_root)], cwd=temporary)
+        _progress("正在生成Windows安装向导")
+        staged_installer = temporary / installer_name
+        _run(installer_command(find_installer_compiler(), app_packaging / "windows" / "OptionHelper.iss",
+                               app, staged_installer, app_version, application_icon))
+        if not staged_installer.is_file():
+            raise WindowsBuildError("安装包编译器未生成Setup.exe")
+        if signing_thumbprint:
+            sign_and_verify_executable(staged_installer, signing_thumbprint)
+        _progress("正在安装到临时目录并验收实际安装结果")
+        installed_app = temporary / "installed"
+        install_for_verification(staged_installer, installed_app)
+        verify_installer_payload(installed_app, app)
+        _run_acceptance([sys.executable, "-u", str(installed_app / "verify-windows.py"), str(installed_app), "--source-root", str(repo_root)], cwd=temporary)
+        verify_installer_payload(installed_app, app)
         # Runtime acceptance must not mutate the payload that will be archived.
         from platform_payload import verify_outer_payload_manifest
         verify_outer_payload_manifest(
@@ -931,19 +932,13 @@ def build_windows(
 
         _progress("正在验证安装物")
         dist_root.mkdir(parents=True, exist_ok=True)
-        staged_zip = temporary / installer_name
-        with zipfile.ZipFile(staged_zip, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
-            for path in sorted(app.rglob("*")):
-                if path.is_file():
-                    archive.write(path, path.relative_to(temporary).as_posix())
-        verify_installer_payload(staged_zip, app)
         try:
             assert_agent_runtime_delivery_clean(resources)
         except AssertionError as error:
             raise WindowsBuildError(str(error)) from error
         output = dist_root / installer_name
-        shutil.copy2(staged_zip, output)
-        shutil.copy2(staged_zip, archive_installer)
+        shutil.copy2(staged_installer, output)
+        shutil.copy2(staged_installer, archive_installer)
         checksum = release_root / f"{installer_name}.sha256"
         checksum.write_text(f"{_hash(archive_installer)}  {installer_name}\n", encoding="utf-8", newline="")
         app_manifest = release_root / "app-manifest-windows.json"
@@ -1008,6 +1003,10 @@ def check_prerequisites(capability_root: Path) -> None:
         raise WindowsBuildError("缺少已验证Capability")
     if shutil.which("dotnet") is None:
         raise WindowsBuildError("缺少dotnet SDK 8，无法构建WebView2 Windows壳")
+    try:
+        find_installer_compiler()
+    except RuntimeError as error:
+        raise WindowsBuildError(str(error)) from error
     if shutil.which("powershell") is None:
         raise WindowsBuildError("缺少PowerShell，无法执行Windows签名和凭据权限验收")
     try:
