@@ -1282,7 +1282,7 @@ export async function startWorkspace(initialMode) {
     else if (playback.nextSeq > 0 && !playback.panel.dataset.terminal) playback.state.textContent = "正在运行";
     if (followTail) stream.scrollTop = stream.scrollHeight;
   };
-  const startProcessPlayback = (taskId, requestId, { restore = false, onCancel = null } = {}) => {
+  const startProcessPlayback = (taskId, requestId, { restore = false, onCancel = null, onTerminal = null } = {}) => {
     const playback = appendProcessPanel({ onCancel });
     playback.liveAssistant = restore ? null : createLiveAssistantMessage();
     if (playback.liveAssistant) stream.insertBefore(playback.liveAssistant.article, playback.panel);
@@ -1299,7 +1299,11 @@ export async function startWorkspace(initialMode) {
           playback.failures = 0;
         }
         appendProcessEvents(playback, payload.events, payload.terminal === true);
-        if (payload.terminal === true && playback.pendingRows.size === 0) { stopped = true; return; }
+        if (payload.terminal === true && playback.pendingRows.size === 0) {
+          await onTerminal?.();
+          stopped = true;
+          return;
+        }
       } catch (error) {
         if (stopped) return;
         playback.failures += 1;
@@ -1655,7 +1659,7 @@ export async function startWorkspace(initialMode) {
     } finally {
       if (activeConversation?.operationId === pending.operationId) activeConversation = null;
       reconnectingOperations.delete(key);
-      setComposerSending(submit, false);
+      if (currentTask?.task_id === pending.taskId && !pendingConversationRequest) setComposerSending(submit, false);
     }
   };
   const resumePendingReport = async (pending) => {
@@ -1736,6 +1740,14 @@ export async function startWorkspace(initialMode) {
     try { sessionStorage.setItem(transientKey(taskId), JSON.stringify(state)); } catch { /* Tab state is optional. */ }
     return state;
   };
+  const acceptConversationRequest = (taskId, requestId, operationId) => {
+    const pending = pendingConversationRequest?.taskId === taskId && pendingConversationRequest.requestId === requestId
+      ? pendingConversationRequest : readTransient(taskId).pendingConversation;
+    if (!pending || pending.requestId !== requestId) return;
+    const accepted = { ...pending, operationId, status: "accepted" };
+    updateTransient(taskId, { pendingConversation: accepted });
+    if (currentTask?.task_id === taskId) pendingConversationRequest = accepted;
+  };
   const settleConversationRequest = (taskId, requestId, { draft, keepPending = false } = {}) => {
     const state = readTransient(taskId);
     const pending = state.pendingConversation;
@@ -1812,12 +1824,30 @@ export async function startWorkspace(initialMode) {
       && typeof pending.content === "string"
       ? pending
       : null;
-    if (pendingConversationRequest) {
+    setComposerSending(submit, Boolean(pendingConversationRequest && !["uncertain", "failed"].includes(pendingConversationRequest.status)));
+    if (pendingConversationRequest && (activeProcessPlayback?.taskId !== pending.taskId
+        || activeProcessPlayback?.requestId !== pending.requestId)) {
       activeProcessPlayback?.stop();
+      activeProcessPlayback?.panel.remove();
+      const alreadyStored = (currentTask.messages || []).some(message => message.message_id === `request-${pending.requestId}-user`);
+      if (!alreadyStored) appendPendingMessage(pending.content, pending.attachments || []);
       activeProcessPlayback = startProcessPlayback(
         pendingConversationRequest.taskId,
         pendingConversationRequest.requestId,
-        { restore: true },
+        {
+          onCancel: () => cancelConversationRequest(pending.taskId, pending.requestId, pending.operationId),
+          // A navigation can happen before POST returns its operation id.
+          // Recover the durable response by request id without sending another turn.
+          onTerminal: pending.operationId ? null : async () => {
+            const response = await lookupConversationResponse(pending.taskId, pending.requestId);
+            if (!response) throw new Error("正在同步已完成的回答。");
+            settleConversationRequest(pending.taskId, pending.requestId, { draft: "" });
+            if (currentTask?.task_id === pending.taskId) {
+              applyConversationStatus(response, status, taskState);
+              await selectTask(pending.taskId, false);
+            }
+          },
+        },
       );
     }
     const pendingReport = state.pendingReport;
@@ -2357,7 +2387,9 @@ export async function startWorkspace(initialMode) {
     conversationTitle.textContent = task.subject;
     taskState.textContent = "当前任务会保留对话、模块运行记录和关联报告。";
     renderTaskConversation(task);
-    restoreLatestProcess(task);
+    // Restore task-owned requests before async reports/rail updates can save scroll state.
+    restoreTransient();
+    if (!pendingConversationRequest) restoreLatestProcess(task);
     if (readingPosition !== null) stream.scrollTop = readingPosition;
     renderReports(reports, []);
     await refreshReportLibrary(taskId).catch(() => {});
@@ -2367,7 +2399,6 @@ export async function startWorkspace(initialMode) {
     if (updateLocation) setTaskLocation(task.task_id, { module: currentMode === "desk" ? currentModule : "" });
     await loadTasks();
     if (!isCurrentSelection()) return null;
-    restoreTransient();
     await restoreAttachmentDrafts();
     if (!isCurrentSelection()) return null;
     if (currentMode === "desk") {
@@ -2830,9 +2861,10 @@ export async function startWorkspace(initialMode) {
     if (submit.dataset.sending !== "true") return;
     event.preventDefault();
     if (submit.dataset.cancelRequested === "true") return;
-    const taskId = activeConversation?.taskId || currentTask?.task_id;
-    const requestId = activeConversation?.requestId || pendingConversationRequest?.requestId;
-    const operationId = activeConversation?.operationId || pendingConversationRequest?.operationId;
+    const taskId = currentTask?.task_id;
+    const owned = activeConversation?.taskId === taskId ? activeConversation : pendingConversationRequest;
+    const requestId = owned?.requestId;
+    const operationId = owned?.operationId;
     void cancelConversationRequest(taskId, requestId, operationId);
   });
 
@@ -2857,6 +2889,7 @@ export async function startWorkspace(initialMode) {
     let playbackOutcome = null;
     let submittedTaskId = "";
     let requestId = "";
+    let acceptedOperationId = "";
     setComposerSending(submit, true);
     clearWorkspaceStatus();
     try {
@@ -2868,42 +2901,39 @@ export async function startWorkspace(initialMode) {
       submittedTaskId = currentTask.task_id;
       const resumeUncertain = pendingConversationRequest?.taskId === currentTask.task_id
         && pendingConversationRequest.status === "uncertain";
-      const effectiveContent = resumeUncertain ? pendingConversationRequest.content : submittedContent;
+      const previousRequest = resumeUncertain ? { ...pendingConversationRequest } : null;
+      const effectiveContent = previousRequest ? previousRequest.content : submittedContent;
+      const explicitModelSelection = previousRequest ? previousRequest.modelSelection : explicitSelectedModel();
       const attachmentReferences = resumeUncertain
-        ? (pendingConversationRequest.attachments || [])
+        ? (previousRequest.attachments || [])
         : await uploadDraftAttachments(submittedTaskId, submittedDrafts);
-      pendingMessage = appendPendingMessage(effectiveContent, attachmentReferences);
-      dissolveComposerInput(submittedContent);
-      input.value = "";
-      syncComposerInputHeight();
-      saveTransient();
-      requestId = resumeUncertain
-        ? pendingConversationRequest.requestId
-        : newWorkspaceRequestId();
-      const explicitModelSelection = resumeUncertain
-        ? pendingConversationRequest.modelSelection
-        : explicitSelectedModel();
-      pendingConversationRequest = {
-        taskId: currentTask.task_id,
+      requestId = previousRequest ? previousRequest.requestId : newWorkspaceRequestId();
+      const submittedRequest = {
+        taskId: submittedTaskId,
         requestId,
         content: effectiveContent,
         modelSelection: explicitModelSelection,
         attachments: attachmentReferences,
-        operationId: resumeUncertain ? pendingConversationRequest.operationId || "" : "",
+        operationId: previousRequest?.operationId || "",
         status: "submitting",
       };
-      saveTransient();
-      activeConversation = {
-        taskId: submittedTaskId,
-        requestId,
-        operationId: pendingConversationRequest.operationId,
-        cancelWhenAccepted: false,
-      };
-      activeProcessPlayback?.stop();
-      processPlayback = startProcessPlayback(submittedTaskId, requestId, {
-        onCancel: () => cancelConversationRequest(submittedTaskId, requestId, activeConversation?.operationId),
-      });
-      activeProcessPlayback = processPlayback;
+      updateTransient(submittedTaskId, { pendingConversation: submittedRequest, draft: "" });
+      if (currentTask?.task_id === submittedTaskId) {
+        pendingConversationRequest = submittedRequest;
+        pendingMessage = appendPendingMessage(effectiveContent, attachmentReferences);
+        dissolveComposerInput(submittedContent);
+        input.value = "";
+        syncComposerInputHeight();
+        saveTransient();
+        setComposerSending(submit, true);
+        activeConversation = { taskId: submittedTaskId, requestId,
+          operationId: submittedRequest.operationId, cancelWhenAccepted: false };
+        activeProcessPlayback?.stop();
+        processPlayback = startProcessPlayback(submittedTaskId, requestId, {
+          onCancel: () => cancelConversationRequest(submittedTaskId, requestId, activeConversation?.operationId),
+        });
+        activeProcessPlayback = processPlayback;
+      }
       const response = await submitConversation(
         submittedTaskId,
         effectiveContent,
@@ -2911,11 +2941,9 @@ export async function startWorkspace(initialMode) {
         explicitModelSelection,
         attachmentReferences,
         async (operationId) => {
-          if (pendingConversationRequest?.requestId === requestId) {
-            pendingConversationRequest.operationId = operationId;
-            pendingConversationRequest.status = "accepted";
-            saveTransient();
-          }
+          acceptedOperationId = operationId;
+          reconnectingOperations.add(`conversation:${operationId}`);
+          acceptConversationRequest(submittedTaskId, requestId, operationId);
           if (activeConversation?.requestId === requestId) {
             activeConversation.operationId = operationId;
             if (activeConversation.cancelWhenAccepted) {
@@ -2993,10 +3021,13 @@ export async function startWorkspace(initialMode) {
       }
     } finally {
       processPlayback?.stop({ outcome: playbackOutcome || (submit.dataset.cancelRequested === "true" ? "cancelled" : "failed") });
+      if (acceptedOperationId) reconnectingOperations.delete(`conversation:${acceptedOperationId}`);
       if (activeConversation?.taskId === submittedTaskId && activeConversation.requestId === requestId) {
         activeConversation = null;
       }
-      setComposerSending(submit, false);
+      if (!submittedTaskId || currentTask?.task_id === submittedTaskId) {
+        setComposerSending(submit, Boolean(pendingConversationRequest && !["uncertain", "failed"].includes(pendingConversationRequest.status)));
+      }
     }
   });
   bindComposerKeyboard(form);
