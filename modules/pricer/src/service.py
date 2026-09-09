@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import csv
 from dataclasses import asdict, replace
 import hashlib
-import io
 import json
 import os
 from datetime import date, datetime, timezone
@@ -1864,7 +1862,6 @@ def _module_run_files(
         "result": "result.json" if status in {"succeeded", "partial"} else None,
         "artifacts": [
             {"name": "pricing_result.json", "media_type": "application/json"},
-            {"name": "pricing_result.csv", "media_type": "text/csv"},
         ],
         "artifact_manifest": "artifacts/artifact_manifest.json",
         "error": None if status in {"succeeded", "partial"} else {
@@ -1877,7 +1874,7 @@ def _module_run_files(
         "manifest.json": manifest,
         "input_snapshot.json": output["input_snapshot"],
         # This file is consumed only by Core ResultStore integrity validation.
-        # All user-facing JSON/CSV artifacts below retain the percent-only
+        # All user-facing JSON artifacts below retain the percent-only
         # projection in ``output``.
         "resolved_contract.json": (
             dict(controlled_contract)
@@ -1886,7 +1883,6 @@ def _module_run_files(
         "data_refs.json": {"data_refs": output["data_refs"]},
         "limitations.json": {"limitations": output["limitations"]},
         "artifacts/pricing_result.json": dict(output),
-        "artifacts/pricing_result.csv": _pricing_csv(output),
     }
     if private_pricing_audit is not None:
         files["private/audit_pricing_result.json"] = dict(private_pricing_audit)
@@ -1899,31 +1895,6 @@ def _module_run_files(
             "pricing": output["pricing"],
         }
     return files
-
-
-def _pricing_csv(output: Mapping[str, Any]) -> str:
-    pricing = output.get("pricing", {})
-    if not isinstance(pricing, Mapping):
-        pricing = {}
-    stream = io.StringIO(newline="")
-    writer = csv.DictWriter(stream, fieldnames=(
-        "task_id", "run_id", "product_id", "status", "method", "value_basis",
-        "pv_percent", "standard_error_percent", "quote_eligible", "precision_status",
-    ))
-    writer.writeheader()
-    writer.writerow({
-        "task_id": output["task_id"],
-        "run_id": output["run_id"],
-        "product_id": pricing.get("product_id"),
-        "status": pricing.get("status"),
-        "method": pricing.get("method"),
-        "value_basis": pricing.get("value_basis"),
-        "pv_percent": pricing.get("pv_percent"),
-        "standard_error_percent": pricing.get("standard_error_percent"),
-        "quote_eligible": pricing.get("quote_eligible"),
-        "precision_status": pricing.get("precision_status"),
-    })
-    return "\ufeff" + stream.getvalue()
 
 
 def _json_object_bytes(payload: bytes, label: str) -> dict[str, Any]:
