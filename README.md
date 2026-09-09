@@ -28,7 +28,7 @@ App通过OptChat处理研究任务，通过OptDesk操作数据获取、收益结
 | Python | 64位，建议3.12或3.13；当前锁定依赖最低要求3.12 |
 | Node.js | 24.18.0，附带npm |
 | macOS工具 | Apple Silicon、Xcode Command Line Tools |
-| Windows工具 | Windows x64、.NET8 SDK、Windows PowerShell |
+| Windows工具 | Windows x64、.NET8 SDK、Windows PowerShell、Inno Setup 6.3及以上6.x版本 |
 | 网络 | 可访问Python包源、npm和NuGet |
 
 构建需要本机已安装的Node.js和npm，但不会把开发者的安装路径写死到产物中。Python运行依赖见[core/requirements.lock](core/requirements.lock)，打包依赖见[packaging/build-requirements.lock](packaging/build-requirements.lock)。不要自行替换锁定版本。
@@ -73,7 +73,7 @@ App通过OptChat处理研究任务，通过OptDesk操作数据获取、收益结
 1. **Python**：从[Python官网](https://www.python.org/downloads/)选择3.12或3.13的64位版本安装；已有兼容的Anaconda、Miniconda或虚拟环境可直接复用，无需另外安装。macOS使用原生arm64解释器，Windows使用x64解释器。不要使用系统自带的旧Python。
 2. **Node.js**：从[Node.js官方版本目录](https://nodejs.org/download/release/)选择24.18.0。macOS选择对应安装包，Windows选择x64 MSI；保留npm和PATH选项，安装后重新打开终端。不要直接用其他版本代替，仓库校验对应版本的许可证。
 3. **macOS构建工具**：在终端执行`xcode-select --install`，按提示安装[Xcode Command Line Tools](https://developer.apple.com/documentation/xcode/installing-the-command-line-tools/)。已安装完整Xcode并配置好命令行工具时可复用。
-4. **Windows构建工具**：安装[.NET8 SDK的Windows x64版本](https://dotnet.microsoft.com/en-us/download/dotnet/8.0)，不是仅安装.NET Runtime。保留系统自带的Windows PowerShell。运行App还需安装[Microsoft Edge WebView2 Runtime](https://developer.microsoft.com/en-us/microsoft-edge/webview2/)，选择Evergreen Runtime；已安装则无需重复安装。
+4. **Windows构建工具**：安装[.NET8 SDK的Windows x64版本](https://dotnet.microsoft.com/en-us/download/dotnet/8.0)，不是仅安装.NET Runtime。保留系统自带的Windows PowerShell，并安装[Inno Setup 6](https://jrsoftware.org/isdl.php)。安装包编译器不在默认目录时，用`OPTIONHELPER_ISCC`指定`ISCC.exe`。运行App还需安装[Microsoft Edge WebView2 Runtime](https://developer.microsoft.com/en-us/microsoft-edge/webview2/)，选择Evergreen Runtime；已安装则无需重复安装。
 5. **源码目录**：完整解压仓库ZIP后再运行脚本，不要在压缩包内双击。目录须可写，建议放在本地磁盘，避免云盘未下载文件或受保护的系统目录。Git仅在克隆和后续拉取更新时需要，下载ZIP不要求安装Git。
 
 两端均可用`node --version`和`npm --version`检查Node与npm。macOS用`xcrun --find swiftc`检查编译器；Windows用`dotnet --list-sdks`确认存在8.x SDK。以下依赖安装和构建命令都在**仓库根目录**执行。
@@ -118,7 +118,7 @@ $env:OPTIONHELPER_PYTHON = 'C:\Python312\python.exe'
 | 平台 | 输出目录 | 目标文件 |
 | --- | --- | --- |
 | macOS | `dist/` | `option-helper.zip`、`OptionHelper-macOS-arm64.dmg` |
-| Windows | `result/windows-candidate/` | `option-helper.zip`、`OptionHelper-windows-x86_64.zip` |
+| Windows | `result/windows-candidate/` | `option-helper.zip`、`OptionHelper-windows-x86_64-Setup.exe` |
 
 当前版本：Skill为`v0.2.0`，App为`v0.1.0.alpha`。安装包和ZIP带版本号，解压后的目录与应用名称保持不变。
 
@@ -129,7 +129,7 @@ $env:OPTIONHELPER_PYTHON = 'C:\Python312\python.exe'
 ### 4.1 安装App并登录
 
 - macOS：打开DMG，将`OptionHelper.app`复制到应用程序目录后启动。
-- Windows：完整解压ZIP，运行其中的`OptionHelper.exe`，不要单独移动EXE或删除旁边的资源目录。首次运行前确认已安装WebView2 Runtime。
+- Windows：双击`OptionHelper-版本号-windows-x86_64-Setup.exe`完成安装，之后从开始菜单或桌面快捷方式启动。默认安装到当前用户目录，无需管理员权限；可在Windows“已安装的应用”中卸载。升级和卸载保留本机研究结果与API配置。首次运行前确认已安装WebView2 Runtime。
 
 成品App已封装Python和Agent运行时，报告图表也使用内置运行时完成语法校验，无需安装Python、Node.js或.NET SDK。
 
