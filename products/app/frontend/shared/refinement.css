@@ -1115,21 +1115,6 @@ html { font-size: 14px; }
   opacity: 1;
 }
 
-/* A short-lived processing beam borrows the border-beam principle without
-   permanently adding glow or another visual layer to the application. */
-.workspace-shell.workspace-shell--desk[data-workspace-shell] .composer form.is-generating {
-  background-image: linear-gradient(90deg, transparent 37%, rgba(133, 94, 34, .65) 45%, var(--red) 50%, rgba(133, 94, 34, .65) 55%, transparent 63%);
-  background-repeat: no-repeat;
-  background-size: 220% 2px;
-  background-position: 120% 0;
-  animation: composer-border-beam 1.18s linear infinite;
-}
-
-@keyframes composer-border-beam {
-  from { background-position: 120% 0; }
-  to { background-position: -120% 0; }
-}
-
 .workspace-shell.workspace-shell--desk[data-workspace-shell] .message--process {
   max-width: min(680px, 92%);
   margin: 2px 0 4px;
@@ -1592,7 +1577,6 @@ html { font-size: 14px; }
     animation: none !important;
   }
   .workspace-shell.workspace-shell--desk[data-workspace-shell] .desk-module-tabs__indicator,
-  .workspace-shell.workspace-shell--desk[data-workspace-shell] .composer form.is-generating,
   .workspace-shell.workspace-shell--desk[data-workspace-shell] .send-control.is-sent .send-success {
     animation: none !important;
     transition: none !important;
@@ -1600,7 +1584,6 @@ html { font-size: 14px; }
 
   .assistant-reasoning__chevron, .send-control, .send-control svg > * { transition: none !important; animation: none !important; }
 
-  .workspace-shell.workspace-shell--desk[data-workspace-shell] .composer form.is-generating { background-image: none; }
 }
 
 @media (max-width: 680px) {
