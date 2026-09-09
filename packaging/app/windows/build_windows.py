@@ -232,8 +232,7 @@ def _run_acceptance(command: list[str], *, cwd: Path) -> None:
     except OSError as error:
         raise WindowsBuildError(f"无法启动Windows验收：{error}") from error
     try:
-        # 65 sequential pricing cases plus reports cannot share the build
-        # tool's 900-second budget. Keep the verifier's per-operation limits.
+        # The matrix owns per-operation deadlines independently of build tools.
         code = process.wait()
         if code:
             raise WindowsBuildError(f"Windows验收失败，退出码{code}；具体阶段见上方实时日志")
