@@ -121,6 +121,8 @@ WINDOWS_PAYLOAD_ROOTS = (
     f"Resources/{VERIFICATION_FIXTURE_RESOURCE}",
 )
 WINDOWS_BUILD_INPUTS = (
+    "packaging/app/windows/OptionHelper.iss",
+    "packaging/app/windows/windows_installer.py",
     *APP_BACKEND_SOURCE_INPUTS,
     "products/app/config/app-defaults.yaml",
     "products/app/config/logging.yaml",
