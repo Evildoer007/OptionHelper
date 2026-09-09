@@ -14,6 +14,23 @@ from typing import Any
 from ..errors import ValidationError
 
 
+def _windows_extended_path(value: str) -> str:
+    """Use Win32 extended paths without requiring a machine-wide registry edit."""
+    import ntpath
+
+    value = ntpath.normpath(value)
+    if value.startswith("\\\\?\\"):
+        return value
+    if value.startswith("\\\\.\\") or not ntpath.isabs(value):
+        raise ValueError("Storage requires an absolute filesystem path")
+    if value.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + value[2:]
+    drive, tail = ntpath.splitdrive(value)
+    if not drive or not tail.startswith("\\"):
+        raise ValueError("Storage requires an absolute drive path")
+    return "\\\\?\\" + value
+
+
 class _LocalDocumentStore:
     """App-private JSON persistence; domain stores remain the public API."""
 
@@ -24,6 +41,10 @@ class _LocalDocumentStore:
 
     def __init__(self, root: Path) -> None:
         self._root = root.expanduser().resolve()
+        if os.name == "nt":
+            # Reports add task/run/candidate directories under this root.
+            # Prefix it before any store creates or reads nested artifacts.
+            self._root = Path(_windows_extended_path(str(self._root)))
         self._root.mkdir(parents=True, exist_ok=True)
         self._lock = RLock()
         self._migrate_task_model_current_input_v1()
