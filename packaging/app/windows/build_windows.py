@@ -225,6 +225,29 @@ def _run(command: list[str], *, cwd: Path | None = None, env: dict[str, str] | N
 
 
 
+def probe_compute_worker(backend: Path, resources: Path, workspace: Path) -> None:
+    """Match the macOS probe's isolated Stores and persisted diagnostics."""
+    runtime_root = workspace / "compute-worker-probe-runtime"
+    data_root = runtime_root / "data"
+    result_root = runtime_root / "result"
+    data_root.mkdir(parents=True, exist_ok=False)
+    result_root.mkdir(parents=True, exist_ok=False)
+    diagnostic_root = runtime_root / "diagnostics"
+    environment = dict(os.environ)
+    environment.update({
+        "OPTIONHELPER_RUNTIME_ROOT": str(runtime_root),
+        "OPTIONHELPER_DATA_ROOT": str(data_root),
+        "OPTIONHELPER_RESULT_ROOT": str(result_root),
+        "OPTIONHELPER_COMPUTE_PROBE_DIAGNOSTICS": str(diagnostic_root),
+    })
+    try:
+        _run([str(backend), "--probe-compute-worker", "--resource-dir", str(resources)], env=environment)
+    except WindowsBuildError as error:
+        diagnostic = diagnostic_root / "compute.log"
+        detail = diagnostic.read_text(encoding="utf-8", errors="replace") if diagnostic.is_file() else ""
+        raise WindowsBuildError(f"{error}\nCompute Worker诊断：\n{detail or '未生成诊断记录'}") from error
+
+
 def _run_acceptance(command: list[str], *, cwd: Path) -> None:
     """Stream the full matrix; individual requests/operations own deadlines."""
     try:
@@ -833,10 +856,10 @@ def build_windows(
             str(resources / "backend" / "OptionHelperBackend" / "OptionHelperBackend.exe"),
             "--probe-pdf-runtime", "--resource-dir", str(resources),
         ])
-        _run([
-            str(resources / "backend" / "OptionHelperBackend" / "OptionHelperBackend.exe"),
-            "--probe-compute-worker", "--resource-dir", str(resources),
-        ])
+        probe_compute_worker(
+            resources / "backend" / "OptionHelperBackend" / "OptionHelperBackend.exe",
+            resources, temporary,
+        )
         staged_icon = copy_application_icon(resources, application_icon)
         acceptance_entry = app / "verify-windows.py"
         shutil.copy2(app_packaging / "windows" / "verify_windows.py", acceptance_entry)
