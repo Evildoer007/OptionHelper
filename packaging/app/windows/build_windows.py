@@ -215,7 +215,11 @@ def _run(command: list[str], *, cwd: Path | None = None, env: dict[str, str] | N
         )
     except subprocess.TimeoutExpired as error:
         output = error.stdout or ""
+        if isinstance(output, bytes):
+            output = output.decode("utf-8", errors="replace")
         raise WindowsBuildError(f"命令超时：{' '.join(command)}\n{output}") from error
+    except OSError as error:
+        raise WindowsBuildError(f"无法启动构建工具{command[0]}：{error}") from error
     if completed.returncode:
         raise WindowsBuildError(f"命令失败：{' '.join(command)}\n{completed.stdout}")
 
@@ -915,7 +919,7 @@ def check_prerequisites(capability_root: Path) -> None:
     if shutil.which("dotnet") is None:
         raise WindowsBuildError("缺少dotnet SDK 8，无法构建WebView2 Windows壳")
     if shutil.which("powershell") is None:
-        raise WindowsBuildError("缺少PowerShell，无法验证Windows EXE应用图标")
+        raise WindowsBuildError("缺少PowerShell，无法执行Windows签名和凭据权限验收")
     try:
         installed = subprocess.run(
             ["dotnet", "--list-sdks"],
