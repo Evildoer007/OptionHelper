@@ -172,7 +172,7 @@ def _verify_layout(stage: Path, version: str, platform: str, *, verify_zip_fn) -
     installer = (
         f"OptionHelper-{version}-macOS-arm64.dmg"
         if platform == "macos"
-        else f"OptionHelper-{version}-windows-x86_64.zip"
+        else f"OptionHelper-{version}-windows-x86_64-Setup.exe"
     )
     names = {path.name for path in stage.iterdir()}
     expected = {skill_archive_name(), installer}
@@ -193,7 +193,7 @@ def archive_deliveries(delivery_root: Path, versions_root: Path) -> list[Path]:
         if not artifact.is_file():
             continue
         skill = re.fullmatch(r"option-helper-(v[0-9][A-Za-z0-9._-]*)\.zip", artifact.name)
-        app = re.fullmatch(r"OptionHelper-(v[0-9][A-Za-z0-9._-]*)-(?:macOS-arm64\.dmg|windows-x86_64\.zip)", artifact.name)
+        app = re.fullmatch(r"OptionHelper-(v[0-9][A-Za-z0-9._-]*)-(?:macOS-arm64\.dmg|windows-x86_64(?:\.zip|-Setup\.exe))", artifact.name)
         match = skill or app
         if not match:
             continue
