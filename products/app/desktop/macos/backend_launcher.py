@@ -85,17 +85,34 @@ def document_runtime_status() -> dict[str, object]:
 
     import bs4
     import soupsieve
+    from io import BytesIO
+    from zipfile import ZipFile
     from lxml import etree
+    from PIL import Image
+    from pypdf import PdfReader
 
-    from modules.designer.pdf_renderer import runtime_status
+    from modules.designer.pdf_renderer import render_pdf, runtime_status
     from modules.designer.word_renderer import render_docx
 
     status: dict[str, object] = dict(runtime_status())
     if status.get("available") is not True:
         raise RuntimeError(f"PDF运行组件不可用：{status.get('message', '未知原因')}")
-    word_document = render_docx("<main><p>OptionHelper Word runtime probe</p></main>")
-    if not word_document.startswith(b"PK"):
-        raise RuntimeError("Word运行组件未生成有效DOCX。")
+    markup = '<main><h1>运行组件验证</h1><p>OptionHelper document probe</p><div class="chart" id="runtime-chart"></div></main>'
+    charts = {"runtime-chart": {
+        "type": "line", "title": "Runtime chart", "x": ["A", "B", "C"],
+        "series": [{"name": "Probe", "data": [1, 3, 2]}],
+    }}
+    word_document = render_docx(markup, chart_specs=charts)
+    with ZipFile(BytesIO(word_document)) as archive:
+        images = [name for name in archive.namelist() if name.startswith("word/media/")]
+        if not images or "word/document.xml" not in archive.namelist():
+            raise RuntimeError("Word运行组件未生成有效文档和图表。")
+        for name in images:
+            with Image.open(BytesIO(archive.read(name))) as image:
+                image.verify()
+    pdf_document = render_pdf(markup, chart_specs=charts)
+    if not PdfReader(BytesIO(pdf_document)).pages:
+        raise RuntimeError("PDF运行组件未生成有效页面。")
     status["word_runtime"] = {
         "available": True,
         "beautifulsoup4": bs4.__version__,
