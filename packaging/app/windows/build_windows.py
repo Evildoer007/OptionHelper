@@ -225,6 +225,35 @@ def _run(command: list[str], *, cwd: Path | None = None, env: dict[str, str] | N
 
 
 
+def _run_acceptance(command: list[str], *, cwd: Path) -> None:
+    """Stream the full matrix; individual requests/operations own deadlines."""
+    try:
+        process = subprocess.Popen(command, cwd=cwd)
+    except OSError as error:
+        raise WindowsBuildError(f"无法启动Windows验收：{error}") from error
+    try:
+        # 65 sequential pricing cases plus reports cannot share the build
+        # tool's 900-second budget. Keep the verifier's per-operation limits.
+        code = process.wait()
+        if code:
+            raise WindowsBuildError(f"Windows验收失败，退出码{code}；具体阶段见上方实时日志")
+    finally:
+        if process.poll() is None:
+            # Kill descendants before the root exits and its PID disappears.
+            try:
+                subprocess.run(
+                    ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    timeout=30, check=False,
+                )
+            except (OSError, subprocess.TimeoutExpired) as error:
+                print(f"Windows验收进程树清理未完成：{error}", flush=True)
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                process.wait(timeout=10)
+
+
 def _run_powershell(script: str, *arguments: str) -> None:
     """Pass paths as literal script arguments, never as PowerShell source."""
     with tempfile.TemporaryDirectory(prefix="optionhelper-powershell-") as directory:
@@ -828,7 +857,7 @@ def build_windows(
             raise WindowsBuildError(f"Windows App体积{app_size / 1024 / 1024:.1f}MB超过750MB上限")
 
         _progress("正在运行Windows后端/API与静态包验收")
-        _run([sys.executable, str(acceptance_entry), str(app), "--source-root", str(repo_root)], cwd=temporary)
+        _run_acceptance([sys.executable, "-u", str(acceptance_entry), str(app), "--source-root", str(repo_root)], cwd=temporary)
         # Runtime acceptance must not mutate the payload that will be archived.
         from platform_payload import verify_outer_payload_manifest
         verify_outer_payload_manifest(
