@@ -77,6 +77,8 @@ def install_compute_verification_fixture(app: "AppServer") -> None:
     desktop launcher invocation.
     """
 
+    # Only synthetic build acceptance may emit full local exception traces.
+    app.verification_diagnostics = True
     app.login_handler.bind_fixed_local_identity(FIXTURE_PRINCIPAL_LABEL)
     identity = app.login_handler.authenticate_local(
         Role.ADMIN,
