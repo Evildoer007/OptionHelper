@@ -331,11 +331,46 @@ def verified_capability_icon(
     return capability_icon
 
 
+def windows_xml_binaries() -> list[tuple[str, str]]:
+    """Resolve Expat from this interpreter, including a venv over Conda."""
+    if os.name != "nt":
+        return []
+    from importlib.util import find_spec
+    from PyInstaller.depend.bindepend import get_imports, binary_dependency_analysis
+
+    spec = find_spec("pyexpat")
+    if spec is None or not spec.origin or not Path(spec.origin).is_file():
+        raise WindowsBuildError("当前Python解释器缺少pyexpat扩展")
+    base = Path(sys.base_prefix)
+    search = [str(Path(spec.origin).parent), str(base / "Library" / "bin"), str(base),
+              str(Path(sys.prefix) / "Library" / "bin")]
+    binaries = []
+    for name, resolved in get_imports(spec.origin, search_paths=search):
+        if "expat" not in name.casefold():
+            continue
+        if not resolved:
+            raise WindowsBuildError(f"当前Python的pyexpat依赖无法解析：{name}；基础环境：{base}")
+        binaries.append((Path(resolved).name, str(resolved), "BINARY"))
+    if not binaries:
+        # Standard CPython can statically link Expat into pyexpat.pyd.
+        return []
+    closure = binary_dependency_analysis(binaries, search_paths=search)
+    return [(source, str(Path(destination).parent)) for destination, source, _kind in closure]
+
+
+def verify_xml_binaries(backend: Path, binaries: list[tuple[str, str]]) -> None:
+    for source, destination in binaries:
+        target = backend / "_internal" / destination / Path(source).name
+        if not target.is_file() or _hash(target) != _hash(Path(source)):
+            raise WindowsBuildError(f"冻结XML运行库与当前Python依赖不一致：{target.name}")
+
+
 def backend_build_command(
     workspace: Path,
     icon: Path = WINDOWS_APP_ICON,
     *,
     app_root: Path = APP_ROOT,
+    xml_binaries: list[tuple[str, str]] | None = None,
 ) -> list[str]:
     _validate_application_icon(icon)
     launcher = app_root / "desktop" / "macos" / "backend_launcher.py"
@@ -354,6 +389,8 @@ def backend_build_command(
         command.extend(("--hidden-import", module))
     for module in PDF_RUNTIME_MODULES:
         command.extend(("--hidden-import", module))
+    for source, destination in (windows_xml_binaries() if xml_binaries is None else xml_binaries):
+        command.extend(("--add-binary", f"{source}{os.pathsep}{destination}"))
     command.extend(("--copy-metadata", "reportlab"))
     # Keep python-docx's base document and header/footer/style XML templates in
     # the frozen backend; these resources are opened lazily during rendering.
@@ -701,8 +738,9 @@ def build_windows(
         environment = dict(os.environ)
         environment["PYINSTALLER_CONFIG_DIR"] = str(temporary / "pyinstaller-config")
         _progress("正在构建后端运行时")
+        xml_binaries = windows_xml_binaries()
         _run(
-            backend_build_command(temporary, application_icon, app_root=app_root),
+            backend_build_command(temporary, application_icon, app_root=app_root, xml_binaries=xml_binaries),
             cwd=repo_root,
             env=environment,
         )
@@ -714,6 +752,7 @@ def build_windows(
         except PlatformPayloadError as error:
             raise WindowsBuildError(str(error)) from error
         _verify_backend(backend)
+        verify_xml_binaries(backend, xml_binaries)
         verify_executable_icon(backend / "OptionHelperBackend.exe", application_icon)
         if signing_thumbprint is not None:
             sign_and_verify_executable(backend / "OptionHelperBackend.exe", signing_thumbprint)
