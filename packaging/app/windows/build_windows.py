@@ -368,28 +368,98 @@ def copy_application_icon(resources: Path, icon: Path = WINDOWS_APP_ICON) -> Pat
     return target
 
 
+def _verify_icon_resource_group(group: bytes, read_icon, source: bytes) -> None:
+    """Compare ICO layers with RT_GROUP_ICON/RT_ICON without image decoding.
+
+    PE group entries replace the ICO file offset with a resource ID. IDs and
+    entry order are not image identity; compare metadata and payloads instead.
+    """
+    from collections import Counter
+    import struct
+
+    count = int.from_bytes(source[4:6], "little")
+    if len(group) != 6 + 14 * count or group[:6] != source[:6]:
+        raise WindowsBuildError("EXE图标资源目录或层数与源ICO不一致")
+    expected = []
+    actual = []
+    for index in range(count):
+        entry = source[6 + index * 16:22 + index * 16]
+        size, offset = struct.unpack_from("<II", entry, 8)
+        expected.append((entry[:12], source[offset:offset + size]))
+        embedded = group[6 + index * 14:20 + index * 14]
+        resource_id = struct.unpack_from("<H", embedded, 12)[0]
+        payload = read_icon(resource_id)
+        if len(payload) != int.from_bytes(embedded[8:12], "little"):
+            raise WindowsBuildError(f"EXE图标资源{resource_id}长度不一致")
+        actual.append((embedded[:12], payload))
+    if Counter(actual) != Counter(expected):
+        raise WindowsBuildError("EXE图标资源内容与源ICO不一致")
+
+
 def verify_executable_icon(executable: Path, icon: Path = WINDOWS_APP_ICON) -> None:
-    """On the Windows build host, compare the executable icon with the controlled ICO."""
+    """Verify every embedded icon layer through Win32 resources, not GDI+."""
+    import ctypes
+    from ctypes import wintypes
+
     _validate_application_icon(icon)
     if not executable.is_file():
         raise WindowsBuildError(f"缺少待验图标的Windows EXE：{executable}")
-    script = """
-$ErrorActionPreference = 'Stop'
-Add-Type -AssemblyName System.Drawing
-$embedded = [System.Drawing.Icon]::ExtractAssociatedIcon($args[0])
-if ($null -eq $embedded) { throw 'EXE未包含应用图标' }
-$source = [System.Drawing.Icon]::new([string]$args[1], [int]$embedded.Width, [int]$embedded.Height)
-$actual = $embedded.ToBitmap()
-$expected = $source.ToBitmap()
-if ($actual.Width -ne $expected.Width -or $actual.Height -ne $expected.Height) { throw '图标尺寸不一致' }
-for ($y = 0; $y -lt $actual.Height; $y++) {
-  for ($x = 0; $x -lt $actual.Width; $x++) {
-    if ($actual.GetPixel($x, $y).ToArgb() -ne $expected.GetPixel($x, $y).ToArgb()) { throw '图标像素不一致' }
-  }
-}
-$actual.Dispose(); $expected.Dispose(); $source.Dispose(); $embedded.Dispose()
-""".strip()
-    _run_powershell(script, str(executable), str(icon))
+    if os.name != "nt":
+        raise WindowsBuildError("EXE图标资源校验必须在Windows构建主机执行")
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    pointer = ctypes.c_void_p
+    callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, pointer, pointer, pointer, ctypes.c_ssize_t)
+    signatures = {
+        "LoadLibraryExW": ([wintypes.LPCWSTR, pointer, wintypes.DWORD], pointer),
+        "EnumResourceNamesW": ([pointer, pointer, callback_type, ctypes.c_ssize_t], wintypes.BOOL),
+        "FindResourceW": ([pointer, pointer, pointer], pointer),
+        "SizeofResource": ([pointer, pointer], wintypes.DWORD),
+        "LoadResource": ([pointer, pointer], pointer),
+        "LockResource": ([pointer], pointer),
+        "FreeLibrary": ([pointer], wintypes.BOOL),
+    }
+    for name, (arguments, result) in signatures.items():
+        function = getattr(kernel, name)
+        function.argtypes = arguments
+        function.restype = result
+
+    def failure(stage):
+        return WindowsBuildError(f"读取EXE图标资源失败：{stage}；{ctypes.WinError(ctypes.get_last_error())}")
+
+    # LOAD_LIBRARY_AS_DATAFILE | LOAD_LIBRARY_AS_IMAGE_RESOURCE: never run EXE code.
+    module = kernel.LoadLibraryExW(str(executable.resolve()), None, 0x22)
+    if not module:
+        raise failure("LoadLibraryExW")
+    try:
+        names = []
+
+        @callback_type
+        def collect(_module, _kind, name, _parameter):
+            names.append(name if name <= 0xffff else ctypes.wstring_at(name))
+            return True
+
+        if not kernel.EnumResourceNamesW(module, 14, collect, 0):
+            raise failure("RT_GROUP_ICON")
+        if not names:
+            raise WindowsBuildError("EXE未包含应用图标")
+
+        def read_resource(kind, name):
+            key = ctypes.cast(ctypes.c_wchar_p(name), pointer) if isinstance(name, str) else name
+            resource = kernel.FindResourceW(module, key, kind)
+            if not resource:
+                raise failure(f"FindResourceW({kind}, {name})")
+            size = kernel.SizeofResource(module, resource)
+            loaded = kernel.LoadResource(module, resource)
+            address = kernel.LockResource(loaded) if loaded else None
+            if not size or not address:
+                raise failure(f"LoadResource({kind}, {name})")
+            return ctypes.string_at(address, size)
+
+        source = icon.read_bytes()
+        for name in names:
+            _verify_icon_resource_group(read_resource(14, name), lambda resource_id: read_resource(3, resource_id), source)
+    finally:
+        kernel.FreeLibrary(module)
 
 
 def _verify_backend(package: Path) -> None:
