@@ -110,16 +110,15 @@ $env:OPTIONHELPER_PYTHON = 'C:\Python312\python.exe'
 
 首次构建需要联网下载依赖。Python包由上述pip命令安装，Agent运行时的npm依赖由构建流程按锁文件恢复，Windows的NuGet依赖由.NET构建恢复，不需要在各子目录手动执行`npm install`。普通升级可复用原环境；锁文件变化时，先重新执行对应平台的pip安装命令，再构建。
 
-**当前尚未完成Windows实机完整构建、启动和导出验收。已有源码与依赖检查不能替代Windows发布验收。**
 
 ## 三、构建产物
 
 运行一次对应平台的构建入口，会同时生成Skill ZIP和本平台App安装物，无需分别打包。
 
-| 平台 | 输出目录 | 目标版本文件 |
+| 平台 | 输出目录 | 目标文件 |
 | --- | --- | --- |
-| macOS | `dist/` | `option-helper-v0.2.0.zip`、`OptionHelper-v0.1.0.alpha-macOS-arm64.dmg` |
-| Windows | `result/windows-candidate/` | `option-helper-v0.2.0.zip`、`OptionHelper-v0.1.0.alpha-windows-x86_64.zip` |
+| macOS | `dist/` | `option-helper.zip`、`OptionHelper-macOS-arm64.dmg` |
+| Windows | `result/windows-candidate/` | `option-helper.zip`、`OptionHelper-windows-x86_64.zip` |
 
 当前版本：Skill为`v0.2.0`，App为`v0.1.0.alpha`。安装包和ZIP带版本号，解压后的目录与应用名称保持不变。
 
