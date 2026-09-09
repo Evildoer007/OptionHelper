@@ -613,8 +613,21 @@ def verify_outer_payload_manifest(
         repository_root, tuple(build_inputs)
     ):
         raise PlatformPayloadError("App Host构建输入源码哈希不一致")
-    if manifest.get("content_hashes") != _payload_hashes(app_root, tuple(payload_roots)):
-        raise PlatformPayloadError("App外层交付资源哈希不一致")
+    actual_hashes = _payload_hashes(app_root, tuple(payload_roots))
+    expected_hashes = manifest.get("content_hashes")
+    if expected_hashes != actual_hashes:
+        if not isinstance(expected_hashes, dict):
+            raise PlatformPayloadError("App外层交付资源哈希清单无效")
+        differences = []
+        for label, paths in (
+            ("新增", sorted(actual_hashes.keys() - expected_hashes.keys())),
+            ("缺失", sorted(expected_hashes.keys() - actual_hashes.keys())),
+            ("内容变化", sorted(path for path in actual_hashes.keys() & expected_hashes.keys()
+                              if actual_hashes[path] != expected_hashes[path])),
+        ):
+            if paths:
+                differences.append(f"{label}{len(paths)}项：" + ", ".join(paths[:10]))
+        raise PlatformPayloadError("App外层交付资源哈希不一致；" + "；".join(differences))
     strict = manifest.get("strict_directory_manifests")
     directories = tuple(strict_directories)
     if not isinstance(strict, dict) or set(strict) != {label for label, _relative in directories}:
