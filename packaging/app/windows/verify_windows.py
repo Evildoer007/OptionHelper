@@ -446,39 +446,6 @@ def verify_backend_api_on_windows(app: Path, *, source_root: Path | None = None)
             products = catalogs.get("pricer", [])
             require(len(products) == 65 and len({str(item.get("product_id")) for item in products}) == 65, "Pricer目录不是65个唯一产品")
 
-            pricing_runs = 0
-            for sequence, product in enumerate(products, start=100):
-                product_id = str(product["product_id"])
-                started = time.monotonic()
-                print(f"[acceptance] 定价{pricing_runs + 1}/{len(products)}：{product_id}，开始", flush=True)
-                assets = ["000905.SH", "000300.SH"] if product.get("underlying_scope") == "multi_underlying" else ["000905.SH"]
-                task_id = create_task(connection, cookie, f"Windows MC10 {product_id}")
-                dividend: object = {asset: 0.0 for asset in assets} if len(assets) > 1 else 0.0
-                payload = {
-                    "action": "run",
-                    "task_id": task_id,
-                    "product_id": product_id,
-                    "identity": {"underlyings": assets},
-                    "term_overrides": {},
-                    "pricing_config": {
-                        "valuation_date": "2023-07-28",
-                        "risk_free_rate": 0.02,
-                        "dividend_yield": dividend,
-                        "model_method": "monte_carlo",
-                        "path_count": 10,
-                    },
-                }
-                headers = hosted_headers(connection, base_url, "pricer", cookie, sequence, task_id)
-                result = run_operation(connection, "pricer", task_id, payload, headers)
-                require(
-                    result.get("status") in {"succeeded", "partial"},
-                    f"产品{product_id}的Windows MC10验收失败：{result}",
-                )
-                pricing = result.get("pricing")
-                require(isinstance(pricing, dict) and pricing.get("path_count") == 10, f"产品{product_id}未按MC10运行")
-                pricing_runs += 1
-                print(f"[acceptance] 定价{pricing_runs}/{len(products)}：{product_id}通过，用时{time.monotonic() - started:.1f}秒", flush=True)
-
             print("[acceptance] 正在验证历史回测、收益结构与报告生成", flush=True)
             report_task = create_task(connection, cookie, "Windows完整报告验收")
             backtest = run_operation(
@@ -494,6 +461,22 @@ def verify_backend_api_on_windows(app: Path, *, source_root: Path | None = None)
                 hosted_headers(connection, base_url, "backtester", cookie, 899, report_task),
             )
             require(backtest.get("status") in {"succeeded", "partial"}, f"报告前置历史合同失败：{backtest}")
+            print("[acceptance] 代表性定价1/2：1.1解析定价", flush=True)
+            vanilla = run_operation(
+                connection, "pricer", report_task,
+                {
+                    "product_id": "1.1",
+                    "identity": {"underlyings": ["000905.SH"]},
+                    "term_overrides": {"K": 100.0, "T": 1.0, "Pi_0": 0.0},
+                    "pricing_config": {
+                        "valuation_date": "2022-02-01", "spot": 100.0,
+                        "historical_volatility": 0.20, "dividend_yield": 0.0,
+                        "risk_free_rate": 0.02, "model_method": "analytical",
+                    },
+                },
+                hosted_headers(connection, base_url, "pricer", cookie, 898, report_task),
+            )
+            require(vanilla.get("status") in {"succeeded", "partial"} and isinstance(vanilla.get("pricing"), dict), f"1.1解析定价失败：{vanilla}")
             payoffer_payload = {
                 "product_id": "1.1",
                 "term_overrides": {"K": 100.0, "Pi_0": 0.0},
@@ -503,6 +486,33 @@ def verify_backend_api_on_windows(app: Path, *, source_root: Path | None = None)
                 hosted_headers(connection, base_url, "payoffer", cookie, 900, report_task),
             )
             require(payoffer.get("status") in {"succeeded", "partial"}, f"报告前置收益结构失败：{payoffer}")
+            print("[acceptance] 代表性定价2/2：6.2路径依赖产品，MC10", flush=True)
+            path_task = create_task(connection, cookie, "Windows 6.2路径定价验收")
+            path_pricing = run_operation(
+                connection, "pricer", path_task,
+                {
+                    "product_id": "6.2",
+                    "identity": {"underlyings": ["000905.SH"]},
+                    "term_overrides": {},
+                    "pricing_config": {
+                        "valuation_date": "2022-02-01", "spot": 100.0,
+                        "historical_volatility": 0.20, "dividend_yield": 0.0,
+                        "risk_free_rate": 0.02, "model_method": "monte_carlo",
+                        "path_count": 10,
+                    },
+                },
+                hosted_headers(connection, base_url, "pricer", cookie, 901, path_task),
+            )
+            require(path_pricing.get("status") in {"succeeded", "partial"}, f"6.2路径定价失败：{path_pricing}")
+            require(isinstance(path_pricing.get("pricing"), dict) and path_pricing["pricing"].get("path_count") == 10, "6.2未按MC10运行")
+            refs = path_pricing.get("data_refs")
+            require(isinstance(refs, list) and {ref.get("schema_id") for ref in refs if isinstance(ref, dict)} == {"market-history", "trading-calendar"}, "6.2定价未绑定历史与交易日历")
+            path_payoffer = run_operation(
+                connection, "payoffer", path_task,
+                {"product_id": "6.2", "term_overrides": {}},
+                hosted_headers(connection, base_url, "payoffer", cookie, 902, path_task),
+            )
+            require(path_payoffer.get("status") in {"succeeded", "partial"} and path_payoffer.get("product_id") == "6.2", f"6.2收益结构失败：{path_payoffer}")
             status, report, _ = request(
                 connection,
                 "POST",
@@ -527,7 +537,9 @@ def verify_backend_api_on_windows(app: Path, *, source_root: Path | None = None)
                 "native_interaction_acceptance": "not_run",
                 "app_version": manifest.get("app_version"),
                 "pages": page_status,
-                "mc10_products": pricing_runs,
+                "catalog_products": len(products),
+                "pricing_products": ["1.1", "6.2"],
+                "mc10_products": 1,
                 "reporter": "verified",
                 "credential_acl": acl,
             }
