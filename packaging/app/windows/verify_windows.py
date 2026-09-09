@@ -103,9 +103,18 @@ def wait_for_url(process: subprocess.Popen[str], timeout: float = 60.0) -> str:
 
     def read_output() -> None:
         assert process.stdout is not None
-        for line in process.stdout:
-            output.put(line)
-        output.put(None)
+        startup_finished = False
+        try:
+            for line in process.stdout:
+                # Keep draining the pipe after readiness, but stop accumulating
+                # logs in a queue that no longer has a consumer during API tests.
+                if not startup_finished:
+                    output.put(line)
+                    startup_finished = line.startswith("OPTIONHELPER_URL=")
+        except (OSError, ValueError):
+            pass
+        finally:
+            output.put(None)
 
     Thread(target=read_output, daemon=True).start()
     deadline = time.monotonic() + timeout
