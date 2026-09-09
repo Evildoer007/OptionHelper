@@ -102,7 +102,7 @@ def installer_name(version: str, platform: str) -> str:
     if platform == "macos":
         return f"OptionHelper-{APP_VERSION}-macOS-arm64.dmg"
     if platform == "windows":
-        return f"OptionHelper-{APP_VERSION}-windows-x86_64.zip"
+        return f"OptionHelper-{APP_VERSION}-windows-x86_64-Setup.exe"
     raise ReleaseVerificationError(f"不支持的平台：{platform}")
 
 
@@ -340,12 +340,12 @@ def _verify_windows_release(
     *,
     verify_installed_bundle: bool = False,
 ) -> None:
-    installer = version_root / f"OptionHelper-{APP_VERSION}-windows-x86_64.zip"
+    installer = version_root / f"OptionHelper-{APP_VERSION}-windows-x86_64-Setup.exe"
     app_manifest_path = version_root / "app-manifest-windows.json"
     platform_manifest_path = version_root / "platform-release-manifest-windows.json"
     checksum_path = version_root / f"{installer.name}.sha256"
-    _require(installer.is_file(), "版本归档缺少Windows安装ZIP")
-    _require(checksum_path.is_file(), "版本归档缺少Windows安装ZIP校验文件")
+    _require(installer.is_file(), "版本归档缺少Windows安装包")
+    _require(checksum_path.is_file(), "版本归档缺少Windows安装包校验文件")
     app_manifest = _read_json(app_manifest_path, "Windows App Manifest")
     app_capability_path = version_root / "app-capability-manifest-windows.json"
     _read_json(app_capability_path, "Windows App Capability Manifest")
@@ -405,22 +405,23 @@ def _verify_windows_release(
         not mismatches,
         "Windows Platform Manifest字段无效：" + ", ".join(mismatches),
     )
-    _require(checksum_path.read_text(encoding="utf-8") == f"{file_hash(installer)}  {installer.name}\n", "Windows安装ZIP校验文件不匹配")
+    _require(checksum_path.read_text(encoding="utf-8") == f"{file_hash(installer)}  {installer.name}\n", "Windows安装包校验文件不匹配")
     with tempfile.TemporaryDirectory(prefix="optionhelper-release-windows-") as temporary_name:
-        with zipfile.ZipFile(installer) as package:
-            damaged = package.testzip()
-            _require(damaged is None, f"Windows安装ZIP CRC无效：{damaged}")
-            package.extractall(temporary_name)
+        from windows.windows_installer import install_for_verification
+        try:
+            install_for_verification(installer, Path(temporary_name) / "OptionHelper")
+        except (RuntimeError, OSError, subprocess.TimeoutExpired) as error:
+            raise ReleaseVerificationError(str(error)) from error
         embedded = Path(temporary_name) / "OptionHelper" / "Resources" / "capability" / "option-helper"
         app = Path(temporary_name) / "OptionHelper"
         resources = app / "Resources"
         for name in REQUIRED_CAPABILITY_LICENSES:
             packaged = resources / "LICENSES" / "capability" / name
-            _require(packaged.is_file(), f"Windows安装ZIP缺少必需第三方许可证：{name}")
+            _require(packaged.is_file(), f"Windows安装包缺少必需第三方许可证：{name}")
         third_party = resources / "LICENSES" / "THIRD_PARTY.md"
-        _require(third_party.is_file(), "Windows安装ZIP缺少THIRD_PARTY.md")
+        _require(third_party.is_file(), "Windows安装包缺少THIRD_PARTY.md")
         _require("`python-runtime/`" in third_party.read_text(encoding="utf-8"), "Windows THIRD_PARTY.md未索引冻结依赖许可证")
-        _require(not (resources / "runtime").exists(), "Windows安装ZIP重复携带Capability外层runtime源码树")
+        _require(not (resources / "runtime").exists(), "Windows安装包重复携带Capability外层runtime源码树")
         try:
             verify_outer_payload_manifest(
                 ROOT,
@@ -446,29 +447,29 @@ def _verify_windows_release(
         except (PlatformPayloadError, PythonRuntimeLicenseError) as error:
             raise ReleaseVerificationError(str(error)) from error
         verifier = app / "verify-windows.py"
-        _require(verifier.is_file(), "Windows安装ZIP缺少后端/API验收入口")
-        _require((app / "OptionHelper.exe").is_file(), "Windows安装ZIP缺少应用入口")
+        _require(verifier.is_file(), "Windows安装包缺少后端/API验收入口")
+        _require((app / "OptionHelper.exe").is_file(), "Windows安装包缺少应用入口")
         _require(
             (app / "Resources" / "backend" / "OptionHelperBackend" / "OptionHelperBackend.exe").is_file(),
-            "Windows安装ZIP缺少后端入口",
+            "Windows安装包缺少后端入口",
         )
         for module in ("datafetcher", "payoffer", "pricer", "backtester", "reporter"):
             _require(
                 (embedded / "assets" / "pages" / module / f"{module}.html").is_file(),
-                f"Windows安装ZIP缺少{module}页面",
+                f"Windows安装包缺少{module}页面",
             )
         errors = verify_app_capability(embedded)
-        _require(not errors, "Windows安装ZIP内置App Capability无效：" + "\n".join(errors))
+        _require(not errors, "Windows安装包内置App Capability无效：" + "\n".join(errors))
         _require(
             (embedded / "capability-manifest.json").read_bytes()
             == app_capability_path.read_bytes(),
-            "Windows安装ZIP内置Capability Manifest不一致",
+            "Windows安装包内置Capability Manifest不一致",
         )
         embedded_app_manifest = resources / "app-manifest.json"
-        _require(embedded_app_manifest.is_file(), "Windows安装ZIP缺少内置App Manifest")
+        _require(embedded_app_manifest.is_file(), "Windows安装包缺少内置App Manifest")
         _require(
             embedded_app_manifest.read_bytes() == app_manifest_path.read_bytes(),
-            "Windows安装ZIP内置App Manifest与归档不一致",
+            "Windows安装包内置App Manifest与归档不一致",
         )
         runtime = app_manifest.get("agent_runtime")
         _require(isinstance(runtime, dict), "Windows App Manifest缺少Agent Runtime记录")
