@@ -171,7 +171,11 @@ internal sealed class MainForm : Form
                 browser.CoreWebView2.NewWindowRequested += OpenReportWindow;
                 browser.CoreWebView2.NavigationCompleted += (_, _) => SyncScaleToPage();
                 webViewReady = true;
-                browser.CoreWebView2.Navigate(url);
+                var startupUrl = new UriBuilder(url);
+                var query = startupUrl.Query.TrimStart('?');
+                startupUrl.Query = (string.IsNullOrEmpty(query) ? "" : query + "&")
+                    + "app_startup=" + Guid.NewGuid().ToString("N");
+                browser.CoreWebView2.Navigate(startupUrl.Uri.AbsoluteUri);
             }
             catch (Exception error)
             {
@@ -388,7 +392,7 @@ internal sealed class MainForm : Form
             var scale = JavascriptNumber(uiScale);
             var material = nativeBackdropEnabled ? "system" : "fallback";
             uiScaleScriptId = await browser.CoreWebView2.AddScriptToExecuteOnDocumentCreatedAsync(
-                $"document.documentElement.dataset.nativeShell='windows';document.documentElement.dataset.nativeMaterial='{material}';document.documentElement.dataset.uiScale='{scale}';"
+                $"document.documentElement.dataset.nativeShell='windows';document.documentElement.dataset.nativeMaterial='{material}';document.documentElement.dataset.uiScale='{scale}';if(location.pathname==='/'&&new URL(location.href).searchParams.has('app_startup')){{document.documentElement.classList.add('login-boot');}}"
             );
         }
         finally
