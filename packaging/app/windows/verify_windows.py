@@ -19,6 +19,10 @@ from urllib.parse import urlencode, urlparse
 import sys
 
 
+# Verification imports helpers from the sealed package itself. Keep those
+# imports read-only so Python cannot add __pycache__ files after hashing.
+sys.dont_write_bytecode = True
+
 HELPERS = Path(__file__).resolve().parent / "verification"
 if not HELPERS.is_dir():
     HELPERS = Path(__file__).resolve().parents[1]
