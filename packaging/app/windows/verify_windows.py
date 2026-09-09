@@ -110,6 +110,10 @@ def wait_for_url(process: subprocess.Popen[str], timeout: float = 60.0) -> str:
                 if not startup_finished:
                     output.put(line)
                     startup_finished = line.startswith("OPTIONHELPER_URL=")
+                else:
+                    # The isolated fixture emits local error traces here;
+                    # preserve filenames instead of discarding post-start logs.
+                    print(line.rstrip(), flush=True)
         except (OSError, ValueError):
             pass
         finally:
