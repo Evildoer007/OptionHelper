@@ -233,6 +233,10 @@ def build_current(version: str, platform: str) -> dict[str, Path]:
         frozen_source_snapshot(ROOT, Path(temporary_name) / "source-snapshot") as snapshot,
         _snapshot_build_logic(snapshot.root) as logic,
     ):
+        source_fingerprint = sha256(json.dumps(
+            snapshot.source_records, sort_keys=True, separators=(",", ":"),
+        ).encode("utf-8")).hexdigest()
+        print(f"[source] platform={platform} app={version} snapshot={source_fingerprint}", flush=True)
         try:
             logic.require_release_version(version)
         except ValueError as error:
