@@ -339,6 +339,30 @@ def verify_credential_acl(root: Path) -> dict[str, object]:
     return {"files": len(files), "acl_checked": True}
 
 
+def stop_acceptance_backend(process: subprocess.Popen[str]) -> None:
+    """Release process handles even when Windows tree termination fails."""
+    try:
+        if process.poll() is None:
+            try:
+                subprocess.run(
+                    ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    timeout=30, check=False,
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+            if process.poll() is None:
+                process.terminate()
+        try:
+            process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=5)
+    finally:
+        if process.stdout is not None:
+            process.stdout.close()
+
+
 def verify_backend_api_on_windows(app: Path, *, source_root: Path | None = None) -> dict[str, object]:
     require(platform.system() == "Windows", "Windows后端/API验收只能在Windows运行")
     manifest = verify_layout(app, source_root=source_root)
@@ -360,6 +384,8 @@ def verify_backend_api_on_windows(app: Path, *, source_root: Path | None = None)
     with tempfile.TemporaryDirectory(prefix="optionhelper-windows-acceptance-") as temporary_name:
         temporary = Path(temporary_name)
         environment = dict(os.environ)
+        environment["PYTHONUTF8"] = "1"
+        environment["PYTHONIOENCODING"] = "utf-8"
         for name in ("OPTIONHELPER_RUNTIME_ROOT", "OPTIONHELPER_DATA_ROOT", "OPTIONHELPER_RESULT_ROOT"):
             environment.pop(name, None)
         process = subprocess.Popen(
@@ -488,19 +514,7 @@ def verify_backend_api_on_windows(app: Path, *, source_root: Path | None = None)
         finally:
             if connection is not None:
                 connection.close()
-            if process.poll() is None:
-                # TerminateProcess alone leaves compute/runtime descendants
-                # holding temporary files open on Windows.
-                subprocess.run(
-                    ["taskkill", "/PID", str(process.pid), "/T", "/F"],
-                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                    timeout=30, check=False,
-                )
-            try:
-                process.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait(timeout=5)
+            stop_acceptance_backend(process)
 
 
 def main() -> None:
