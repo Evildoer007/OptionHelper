@@ -1509,6 +1509,12 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
                 "diagnostic_id": diagnostic_id,
             })
         except Exception as error:  # pragma: no cover - safety boundary
+            if getattr(self.app, "verification_diagnostics", False):
+                import traceback
+
+                print(f"[acceptance-backend] 请求异常，request_id={request_id}", file=sys.stderr, flush=True)
+                traceback.print_exc(file=sys.stderr)
+                sys.stderr.flush()
             self._json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "internal_error", "detail": type(error).__name__})
 
     def _get(self, parsed: Any, request_id: str) -> None:
