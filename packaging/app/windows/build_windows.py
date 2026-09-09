@@ -694,6 +694,10 @@ def build_windows(
                 shutil.copy2(path, target)
         _copy_tree(backend, resources / "backend" / "OptionHelperBackend")
         _copy_tree(app_root / "frontend", resources / "frontend", extra_ignored=("*.md",))
+        brand_icons = resources / "assets" / "icons"
+        brand_icons.mkdir(parents=True)
+        for name in ("optionhelper-app-icon-tile-light.svg", "optionhelper-app-icon-tile-dark.svg"):
+            shutil.copy2(repo_root / "assets" / "icons" / name, brand_icons / name)
         try:
             stage_verification_fixture_definition(
                 repo_root,
@@ -799,6 +803,15 @@ def build_windows(
 
         _progress("正在运行Windows后端/API与静态包验收")
         _run([sys.executable, str(acceptance_entry), str(app), "--source-root", str(repo_root)], cwd=temporary)
+        # Runtime acceptance must not mutate the payload that will be archived.
+        from platform_payload import verify_outer_payload_manifest
+        verify_outer_payload_manifest(
+            repo_root, app, outer_payload,
+            source_mappings=WINDOWS_SOURCE_MAPPINGS,
+            payload_roots=WINDOWS_PAYLOAD_ROOTS,
+            build_inputs=WINDOWS_BUILD_INPUTS,
+            strict_directories=WINDOWS_STRICT_DIRECTORY_PAYLOADS,
+        )
 
         _progress("正在验证安装物")
         dist_root.mkdir(parents=True, exist_ok=True)
