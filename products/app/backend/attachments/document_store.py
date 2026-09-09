@@ -17,6 +17,7 @@ from typing import Any, Mapping, Sequence
 import zipfile
 
 from ..errors import ValidationError
+from ..file_permissions import protect_private_path
 
 
 _MEDIA_TYPES = {
@@ -304,7 +305,7 @@ class DocumentAttachmentStore:
         path.mkdir(parents=True, exist_ok=True)
         if path.is_symlink():
             raise ValidationError("文档附件目录不能是符号链接")
-        os.chmod(path, 0o700)
+        protect_private_path(path)
 
     @staticmethod
     def _reject_link(path: Path) -> None:
@@ -316,13 +317,13 @@ class DocumentAttachmentStore:
         descriptor, temporary_name = tempfile.mkstemp(prefix=".pending-", dir=path.parent)
         temporary = Path(temporary_name)
         try:
-            os.fchmod(descriptor, 0o600)
             with os.fdopen(descriptor, "wb") as handle:
+                protect_private_path(temporary)
                 handle.write(data)
                 handle.flush()
                 os.fsync(handle.fileno())
             os.replace(temporary, path)
-            os.chmod(path, 0o600)
+            protect_private_path(path)
         finally:
             if temporary.exists():
                 temporary.unlink()
