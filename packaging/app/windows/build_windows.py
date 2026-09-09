@@ -465,6 +465,28 @@ def verify_executable_icon(executable: Path, icon: Path = WINDOWS_APP_ICON) -> N
         kernel.FreeLibrary(module)
 
 
+def verify_installer_payload(installer: Path, app: Path) -> None:
+    """Verify every ZIP member against the accepted package, not only EXEs."""
+    expected = {
+        path.relative_to(app.parent).as_posix(): path
+        for path in app.rglob("*") if path.is_file()
+    }
+    try:
+        with zipfile.ZipFile(installer) as archive:
+            names = archive.namelist()
+            if len(names) != len(set(names)) or set(names) != set(expected):
+                raise WindowsBuildError("Windows ZIP文件集合与验收后的应用不一致")
+            for name, source in expected.items():
+                digest = sha256()
+                with archive.open(name) as member:
+                    for block in iter(lambda: member.read(1024 * 1024), b""):
+                        digest.update(block)
+                if digest.hexdigest() != _hash(source):
+                    raise WindowsBuildError(f"Windows ZIP文件内容与验收后的应用不一致：{name}")
+    except (OSError, zipfile.BadZipFile) as error:
+        raise WindowsBuildError(f"Windows ZIP读取或CRC校验失败：{error}") from error
+
+
 def _verify_backend(package: Path) -> None:
     size = sum(path.stat().st_size for path in package.rglob("*") if path.is_file())
     if size > MAX_BACKEND_BYTES:
@@ -820,17 +842,7 @@ def build_windows(
             for path in sorted(app.rglob("*")):
                 if path.is_file():
                     archive.write(path, path.relative_to(temporary).as_posix())
-        with zipfile.ZipFile(staged_zip) as archive:
-            damaged = archive.testzip()
-            if damaged is not None:
-                raise WindowsBuildError(f"Windows ZIP成员CRC无效：{damaged}")
-            expected_executables = {
-                "OptionHelper/OptionHelper.exe": app / "OptionHelper.exe",
-                "OptionHelper/Resources/backend/OptionHelperBackend/OptionHelperBackend.exe": resources / "backend" / "OptionHelperBackend" / "OptionHelperBackend.exe",
-            }
-            for member, source in expected_executables.items():
-                if archive.read(member) != source.read_bytes():
-                    raise WindowsBuildError(f"Windows ZIP内EXE与图标验收后的文件不一致：{member}")
+        verify_installer_payload(staged_zip, app)
         try:
             assert_agent_runtime_delivery_clean(resources)
         except AssertionError as error:
