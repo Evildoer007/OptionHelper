@@ -214,6 +214,22 @@
     return Array.from(select.options).find((option) => option.value === value) || select.selectedOptions[0] || select.options[0];
   }
 
+function renderChoiceLabel(node, option) {
+  node.replaceChildren();
+  const label = node.ownerDocument.createElement("span");
+  label.className = "choice-label";
+  label.textContent = option?.textContent || "未选择";
+  node.append(label);
+  if (option?.dataset.english) {
+    const english = node.ownerDocument.createElement("span");
+    english.className = "choice-english";
+    english.lang = "en";
+    english.textContent = option.dataset.english;
+    node.append(english);
+  }
+}
+
+
   function updateChoice(select) {
     const choice = select.closest("[data-oh-choice]");
     if (!choice) return;
@@ -222,7 +238,7 @@
     const menu = choice.querySelector(".oh-choice__menu");
     const focusedValue = menu.contains(document.activeElement) ? document.activeElement.dataset.value : null;
     const selected = optionFor(select, select.value);
-    value.textContent = selected?.textContent || "未选择";
+    renderChoiceLabel(value, selected);
     trigger.disabled = select.disabled || !select.options.length;
     trigger.setAttribute("aria-disabled", String(trigger.disabled));
     if (select.getAttribute("aria-invalid") === "true") trigger.setAttribute("aria-invalid", "true");
@@ -239,7 +255,7 @@
       item.setAttribute("aria-selected", String(option.selected));
       item.disabled = select.disabled || option.disabled || Boolean(option.closest("optgroup")?.disabled);
       item.tabIndex = -1;
-      item.textContent = option.textContent;
+      renderChoiceLabel(item, option);
       item.addEventListener("click", (event) => {
         // Prevent a wrapping label from forwarding activation after a change
         // handler has replaced the selected option or its entire input group.
