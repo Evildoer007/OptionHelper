@@ -30,19 +30,20 @@ from modules.recommender.models import (
     RecommendationCase,
     RecommendationSet,
 )
-from modules.recommender.agent_steps import canonical_hash
+from modules.recommender.agent_steps import canonical_hash, EVALUATION_MODULES
 from modules.recommender.ports import AgentPort, AgentRunReceipt, AgentStepResult, KnowledgePort, ToolPort
 from modules.recommender.service import RecommendationInputRequired, RecommenderService
 from modules.recommender.config import RecommenderConfig
 from modules.recommender.interaction import (
     merge_confirmed_constraints,
+    requested_candidate_count_from_text,
 )
 from runtime.protocol.models import ModuleRunRef
 
 from ..errors import AuthorizationError, UnavailableCapabilityError, UserActionError, ValidationError
 from ..identity.session_identity import SessionIdentity
-from runtime.workflow_policy import recommendation_execution_mode
-from ..model_gateway.request_control import ModelRequestControl
+from runtime.workflow_policy import recommendation_execution_mode, decide_workflow, is_consultation_request
+from ..model_gateway.request_control import ModelRequestControl, ModelRequestCancelled
 from ..model_gateway.gateway import ModelGateway
 from ..settings.settings_models import ModelSelection
 from ..page_registry import PageRegistry
@@ -346,6 +347,7 @@ class SingleAgentRecommendationPort:
         self.session_id = f"single-recommendation-{uuid4().hex}"
         self.history = []
         self.closed = False
+        self.cancelled_reason = None
 
     def capability(self):
         value = (self.gateway.capability_for(self.identity) if self.selection is None
@@ -390,6 +392,10 @@ class SingleAgentRecommendationPort:
                 agent_run_id=f"single-step-{uuid4().hex}", child_session_id=self.session_id,
                 role=role, input_hash=canonical_hash(request), output_hash=canonical_hash(result),
             ), result=result)
+        except ModelRequestCancelled as error:
+            self.cancelled_reason = str(error)
+            self.progress("agent_run", "cancelled", "本次推荐已取消")
+            raise
         except Exception:
             self.progress("agent_run", "failed", phase.replace("正在", "未完成", 1))
             raise
@@ -942,7 +948,9 @@ class RecommenderAdapter:
         try:
             pending = self._tasks.pending_recommendation(identity, task_id)
         except ValidationError:
-            return _confirmation_unavailable(task_id, catalog_version)
+            if not _starts_new_recommendation(prompt):
+                return _confirmation_unavailable(task_id, catalog_version)
+            pending = None
         approved_candidate_ids = _selected_candidate_ids(prompt, arguments, pending)
         if (
             isinstance(pending, Mapping)
@@ -974,7 +982,12 @@ class RecommenderAdapter:
                 "next_step": str(execution.get("next_step") or "已按最新产品规则编译并执行已确认候选。"),
             }
         requested_outputs = _requested_outputs(arguments, confirmed_constraints)
+        mode, inherited_count = _recommendation_turn_preferences(
+            history, getattr(self._gateway, "recommendation_execution_mode_for", lambda _: "single")(identity),
+        )
         requested_candidate_count = _requested_candidate_count_argument(arguments)
+        if requested_candidate_count is None:
+            requested_candidate_count = inherited_count
         case_constraints = dict(confirmed_constraints)
         if requested_candidate_count is not None:
             case_constraints["_requested_candidate_count"] = requested_candidate_count
@@ -991,7 +1004,6 @@ class RecommenderAdapter:
             confirmed_constraints=case_constraints,
             research_context=research_context,
         )
-        mode = recommendation_execution_mode(prompt, getattr(self._gateway, "recommendation_execution_mode_for", lambda _: "single")(identity))
         if mode == "multi" and self._agent_runtime_mode == "disabled":
             raise UnavailableCapabilityError(
                 "Recommender多智能体运行时",
@@ -1089,6 +1101,8 @@ class RecommenderAdapter:
                 legacy_agent_port.close()
             if runtime_entry is not None:
                 self._release_task_runtime(identity, task_id, runtime_entry)
+        if getattr(agent_port, "cancelled_reason", None) or self._tasks.is_cancelled(identity, task_id):
+            raise ModelRequestCancelled(getattr(agent_port, "cancelled_reason", None) or "用户取消推荐")
         route = result.get("route", {})
         if not isinstance(route, Mapping) or route.get("fixed_recommendation_workflow") is not True:
             raise ValidationError("App内Recommender只允许固定推荐Workflow，不允许freeform")
@@ -1183,10 +1197,12 @@ class AppConversationToolExecutor:
         if self._recommender is None:
             raise ValidationError("RecommenderAdapter未绑定")
         messages = self._tasks.get(identity, task_id).get("messages", [])
-        user_request = "\n".join(
-            str(row.get("content", "")) for row in messages
+        # Keep turn boundaries: joining old user turns loses the question
+        # answered by a bare "10" and can replay an obsolete path count.
+        user_request = next((
+            str(row.get("content", "")) for row in reversed(messages)
             if isinstance(row, Mapping) and row.get("role") == "user"
-        )
+        ), "")
         if not user_request.strip():
             raise ValidationError("当前对话没有可用的用户推荐请求")
         return self._recommender.run_fixed(
@@ -1354,9 +1370,14 @@ class AppConversationToolExecutor:
                 pricer_inputs = module_inputs.get("pricer", {})
                 if not isinstance(pricer_inputs, Mapping):
                     raise ValidationError("pricer当前输入必须为对象")
+                confirmed = merge_confirmed_constraints(current_inputs.get("confirmed_constraints", {}), ())
+                confirmed.update(merge_confirmed_constraints(pending.get("confirmed_constraints", {}), ()))
                 pricing = pricer_inputs.get("pricing_config")
                 if not isinstance(pricing, Mapping):
-                    pricing = _pricing_config_for_resolved_contract(product, pending.get("confirmed_constraints", {}))
+                    pricing = _pricing_config_for_resolved_contract(product, confirmed)
+                if isinstance(pricing, Mapping) and pricing.get("model_method") == "monte_carlo":
+                    if confirmed.get("path_count") is not None:
+                        pricing = {**pricing, "path_count": confirmed["path_count"]}
                 path_count = pricing.get("path_count") if isinstance(pricing, Mapping) else None
                 missing_mc_paths = isinstance(pricing, Mapping) and pricing.get("model_method") == "monte_carlo" and (
                     isinstance(path_count, bool) or not isinstance(path_count, int) or path_count <= 0
@@ -1473,9 +1494,11 @@ class AppConversationToolExecutor:
         rule_revision = candidate.get("rule_revision")
         if isinstance(rule_revision, bool) or not isinstance(rule_revision, int) or rule_revision < 1:
             raise ValidationError("候选缺少rule_revision")
-        requested_modules = tuple(str(item).strip().lower() for item in modules)
+        if not isinstance(modules, (list, tuple)) or any(not isinstance(item, str) for item in modules):
+            raise ValidationError("候选评估modules必须为模块名称数组")
+        requested_modules = tuple(modules)
         if not requested_modules or len(requested_modules) != len(set(requested_modules)) or any(
-            item not in {"payoffer", "pricer", "backtester"} for item in requested_modules
+            item not in EVALUATION_MODULES for item in requested_modules
         ):
             raise ValidationError("候选评估模块无效")
         if isinstance(round_no, bool) or not isinstance(round_no, int) or round_no < 1:
@@ -1793,6 +1816,14 @@ class AppConversationToolExecutor:
         # OptChat is server-side orchestration. It uses the same signed module
         # scope as Desk, but never grants the model direct module authority.
         binding = dict(binding or {})
+        if module in {"payoffer", "pricer", "backtester"} and payload.get("action") == "run" and not binding:
+            product_id = str(payload.get("product_id") or "").strip()
+            if product_id:
+                # The Host owns this identity. Direct calls for the same product
+                # share a candidate across modules; verified contract snapshots
+                # still keep different terms and historical runs separate.
+                digest = hashlib.sha256(f"{identity.tenant_id}:{task_id}:{product_id}".encode()).hexdigest()[:24]
+                binding = {"analysis_case_id": f"chat-{task_id}", "candidate_id": f"direct-{digest}", "product_id": product_id}
         context = self._registry.service_context(
             identity,
             module,
@@ -1833,7 +1864,7 @@ class AppConversationToolExecutor:
         requested_format = str(arguments.get("format") or "html").strip().lower()
         if requested_format not in {"html", "pdf"}:
             raise ValidationError("交付格式只能是html或pdf")
-        allowed = {"kind", "output_type", "format", "title", "delivery_mode", "candidate_ids"}
+        allowed = {"kind", "output_type", "format", "title", "delivery_mode", "candidate_ids", "product_ids"}
         if set(arguments).difference(allowed):
             raise ValidationError("OptChat报告请求只接受交付类型、格式、标题和对比模式")
         delivery_mode = str(arguments.get("delivery_mode") or "single").strip().lower()
@@ -1850,6 +1881,14 @@ class AppConversationToolExecutor:
                 or len(set(requested_candidate_ids)) != len(requested_candidate_ids)
             ):
                 raise ValidationError("Reporter候选candidate_ids不能为空或重复")
+        requested_product_ids = arguments.get("product_ids")
+        if requested_product_ids is not None:
+            if (not isinstance(requested_product_ids, list) or not requested_product_ids
+                    or any(not isinstance(item, str) or not item.strip() for item in requested_product_ids)
+                    or len(set(requested_product_ids)) != len(requested_product_ids)):
+                raise ValidationError("product_ids必须是非空且不重复的产品编号数组")
+            if requested_candidate_ids is not None:
+                raise ValidationError("product_ids与candidate_ids只能指定一种选择方式")
         from ..reporter_adapter import ReporterAdapter
         catalog = ReporterAdapter(self._results, self._tasks).dispatch(
             {"action": "list_report_sources", "task_id": task_id}, identity,
@@ -1857,6 +1896,21 @@ class AppConversationToolExecutor:
         sources = catalog.get("sources") if isinstance(catalog, Mapping) else None
         if not isinstance(sources, list) or not sources:
             return _report_needs_input()
+        sources = [_current_report_source(source, preserve_variants=requested_candidate_ids is not None)
+                   for source in sources if isinstance(source, Mapping)]
+        if requested_product_ids is not None:
+            matching_sources = []
+            for source in sources:
+                by_product: dict[str, list[dict[str, Any]]] = {}
+                for item in source["candidates"]:
+                    by_product.setdefault(str(item.get("product_id")), []).append(item)
+                # A product can have multiple recommended contracts. Require an
+                # explicit candidate selection instead of silently choosing one.
+                if all(len(by_product.get(product_id, [])) == 1 for product_id in requested_product_ids):
+                    matching_sources.append({**source, "candidates": [by_product[product_id][0] for product_id in requested_product_ids]})
+            sources = matching_sources
+            if not sources:
+                return _report_needs_input()
         selected_candidates: list[dict[str, Any]] = []
         if requested_candidate_ids is not None:
             source = None
@@ -1890,6 +1944,8 @@ class AppConversationToolExecutor:
         if not available_modules:
             return _report_needs_input()
         if requested_kind == "quote":
+            if requested_product_ids is not None:
+                selected_candidates = list(source["candidates"])
             quote_items: list[dict[str, Any]] = []
             for selected_candidate in selected_candidates:
                 selected_available = selected_candidate.get("module_run_refs")
@@ -1939,6 +1995,8 @@ class AppConversationToolExecutor:
                     "status": "needs_input",
                     "message": "当前任务只有一个可验证合同版本，至少需要两个候选才能生成多结构对比交付。",
                 }
+        modules = [name for name in _REPORT_MODULES if any(
+            isinstance(item.get("module_run_refs", {}).get(name), Mapping) for item in selected_candidates)]
         refs_by_candidate: dict[str, dict[str, dict[str, str] | None]] = {}
         for selected_candidate in selected_candidates:
             selected_id = str(selected_candidate.get("candidate_id", ""))
@@ -2026,6 +2084,36 @@ def _with_report_delivery(response: Mapping[str, Any], prepared: Mapping[str, An
     return result
 
 
+def _current_report_source(source: Mapping[str, Any], *, preserve_variants: bool = False) -> dict[str, Any]:
+    """Bind the latest dated verified run explicitly, never by storage order."""
+    candidates = []
+    for raw in source.get("candidates", []):
+        if not isinstance(raw, Mapping):
+            continue
+        item = dict(raw)
+        refs = dict(item.get("module_run_refs", {}))
+        display = item.get("run_display", {})
+        for module, options in item.get("module_run_options", {}).items():
+            if module in refs or not isinstance(options, list) or not options:
+                continue
+            dated = [(str(display.get(ref.get("run_id"), {}).get("run_time", "")), ref) for ref in options]
+            dated.sort(key=lambda row: row[0], reverse=True)
+            if dated[0][0] and (len(dated) == 1 or dated[0][0] != dated[1][0]):
+                refs[module] = dict(dated[0][1])
+        item["module_run_refs"] = refs
+        candidates.append(item)
+    if not preserve_variants:
+        latest = {}
+        for item in candidates:
+            key = str(item.get("source_candidate_id") or item.get("candidate_id"))
+            stamp = max((str(row.get("run_time", "")) for row in item.get("run_display", {}).values()), default="")
+            previous = latest.get(key)
+            if previous is None or stamp > previous[0]:
+                latest[key] = (stamp, item)
+        candidates = [row[1] for row in latest.values()]
+    return {**source, "candidates": candidates}
+
+
 def _best_report_candidate(sources: list[object]) -> tuple[dict[str, Any], dict[str, Any]]:
     """Select the latest verified run group without inventing a task contract."""
 
@@ -2039,6 +2127,7 @@ def _best_report_candidate(sources: list[object]) -> tuple[dict[str, Any], dict[
                 candidates.append(dict(raw_candidate))
         candidates.sort(key=lambda candidate: (
             int(candidate.get("rank", 10_000)),
+            str(candidate.get("product_id", "")),
             str(candidate.get("candidate_id", "")),
         ))
         if candidates:
@@ -2186,6 +2275,24 @@ def _text_tuple(value: object) -> tuple[str, ...]:
     if isinstance(value, str) or not isinstance(value, Sequence):
         raise ValidationError("requested_outputs必须为字符串数组")
     return tuple(str(item).strip() for item in value if str(item).strip())
+
+
+def _recommendation_turn_preferences(messages: Sequence[object], default_mode: str) -> tuple[str, int | None]:
+    """Keep request-local choices across answers, resetting on a fresh selection request."""
+    mode, count = default_mode, None
+    for row in messages:
+        if not isinstance(row, Mapping) or row.get("role") != "user":
+            continue
+        text = str(row.get("content", ""))
+        if is_consultation_request(text.casefold()):
+            continue
+        if decide_workflow(text).analysis_path == "recommendation":
+            mode, count = default_mode, None
+        mode = recommendation_execution_mode(text, mode)
+        requested = requested_candidate_count_from_text(text)
+        if requested is not None:
+            count = requested
+    return mode, count
 
 
 def _requested_outputs(arguments: Mapping[str, Any], constraints: Mapping[str, Any]) -> tuple[str, ...]:
@@ -2446,6 +2553,8 @@ def _selected_candidate_ids(
 ) -> list[str]:
     """Resolve an ordered user selection to authoritative candidate IDs."""
 
+    if _starts_new_recommendation(prompt):
+        return []
     if not isinstance(pending, Mapping):
         return []
     raw_candidates = pending.get("candidates")
@@ -2512,7 +2621,18 @@ def _selected_candidate_ids(
     return []
 
 
+def _starts_new_recommendation(prompt: object) -> bool:
+    text = str(prompt or "").strip().casefold()
+    if decide_workflow(text).reason_code != "structure_selection_required":
+        return False
+    # Selecting an existing ranked result remains a continuation. Screening a
+    # number of new structures is not an approval of a similarly numbered row.
+    return not bool(re.search(r"(?:确认|批准|就用|就选|第\s*[0-9一二三四五六七八九十]+(?:个|项|号)|候选\s*[0-9一二三四五六七八九十]+)", text))
+
+
 def _has_candidate_selection_intent(prompt: object) -> bool:
+    if _starts_new_recommendation(prompt):
+        return False
     text = str(prompt or "").strip().casefold()
     return bool(re.search(r"(?:选择|选|候选|第|全部|都选|前两个|多选)", text))
 
