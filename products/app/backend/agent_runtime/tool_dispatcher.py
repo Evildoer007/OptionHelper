@@ -250,6 +250,7 @@ class ToolDispatcher:
             module_context=module_context,
             request_id=request_id,
             agent_proxy=True,
+            cancellation_check=self._tasks.cancellation_check(identity, str(payload.get("task_id", ""))),
         )
 
 
