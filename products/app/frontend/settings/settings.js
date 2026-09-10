@@ -12,6 +12,26 @@ async function sendSettings(path, body) {
 const send = (path, payload) => sendSettings(path, safeJson(payload));
 const sendCredential = (path, payload) => sendSettings(path, JSON.stringify(payload));
 const resultFor = (name) => document.querySelector(`[data-form-result="${name}"]`);
+const settingsClose = document.querySelector(".settings-close");
+const requestedReturnTo = new URLSearchParams(location.search).get("return_to");
+const returnCandidate = requestedReturnTo ? new URL(requestedReturnTo, location.origin) : null;
+const returnToWorkspace = returnCandidate?.origin === location.origin
+  && ["/optchat", "/optdesk"].includes(returnCandidate.pathname)
+  ? `${returnCandidate.pathname}${returnCandidate.search}${returnCandidate.hash}`
+  : "/optchat";
+if (settingsClose) settingsClose.href = returnToWorkspace;
+if (window.parent !== window && new URLSearchParams(location.search).get("embedded") === "1") {
+  document.documentElement.dataset.settingsEmbedded = "true";
+  const closeEmbeddedSettings = () => window.parent.postMessage({ type: "optionhelper.settings-close" }, location.origin);
+  settingsClose?.addEventListener("click", event => { event.preventDefault(); closeEmbeddedSettings(); });
+  document.addEventListener("keydown", event => {
+    if (event.key !== "Escape" || document.querySelector("dialog[open], .choice[data-open='true']")) return;
+    event.preventDefault();
+    closeEmbeddedSettings();
+  });
+}
+
+
 const session = await request("/api/me").catch(() => { location.assign("/"); return null; });
 if (!session) throw new Error("登录状态无效");
 
@@ -44,7 +64,7 @@ let modelProbe = null;
 let configurationGeneration = 0;
 let providerState = { providers: [], builtins: [], default_model_selection: null, openProviderId: null, addMode: false };
 let multiAgentState = {
-  presets: [], selected_preset_id: "sequential-deliberation", role_models: {},
+  presets: [], selected_preset_id: "product-trader-loop", role_models: {},
   agent_files: {}, default_agent_files: {},
   review_policies: [], selected_review_policy_id: "standard-review", review_policy_role_models: {}, available_models: [],
   runtime_status: null, runtime_mode: "", runtime_version: "", runtime_reason: "", runtime_available: false,
@@ -56,14 +76,6 @@ if (canManageData) {
 const storagePath = document.querySelector("[data-default-storage-path]");
 if (storagePath && /Win/i.test(navigator.platform)) storagePath.textContent = "Windows：用户目录/AppData/Local/OptionHelper/local-state";
 
-const settingsClose = document.querySelector(".settings-close");
-const requestedReturnTo = new URLSearchParams(location.search).get("return_to");
-const returnCandidate = requestedReturnTo ? new URL(requestedReturnTo, location.origin) : null;
-const returnToWorkspace = returnCandidate?.origin === location.origin
-  && ["/optchat", "/optdesk"].includes(returnCandidate.pathname)
-  ? `${returnCandidate.pathname}${returnCandidate.search}${returnCandidate.hash}`
-  : "/optchat";
-if (settingsClose) settingsClose.href = returnToWorkspace;
 
 installThemeControls(themeControls);
 let preferenceSaveQueue = Promise.resolve();
@@ -360,11 +372,6 @@ async function refreshRuntimeStatus() {
 }
 
 const rolePresentation = {
-  "sequential-deliberation": {
-    Interpreter: { name: "Interpreter", description: "解析目标与约束" },
-    Selector: { name: "Selector", description: "生成并比较候选" },
-    Reviewer: { name: "Reviewer", description: "复核规则与证据" },
-  },
   "independent-council": {
     Framer: { name: "Framer", description: "明确需求边界和比较框架" },
     Matcher: { name: "Matcher", description: "独立匹配候选与约束" },
@@ -385,10 +392,6 @@ const rolePresentation = {
 };
 
 const presetPresentation = {
-  "sequential-deliberation": {
-    summary: "顺序筛选",
-    description: "Interpreter依次交给Selector和Reviewer，形成受控候选。",
-  },
   "product-trader-loop": {
     summary: "产品交易闭环",
     description: "Structurer与Trader基于同一候选方案迭代，条款变化后重新评估。",
@@ -413,9 +416,7 @@ function presetDiagram(preset) {
   const viewBox = preset.preset_id === "constraint-ranking" ? "0 0 560 220" : "0 0 560 160";
   const node = (x, y, width, label, accent = false) => `<g class="preset-diagram__node ${accent ? "is-accent" : ""}"><rect x="${x}" y="${y}" width="${width}" height="48" rx="8"/><text x="${x + width / 2}" y="${y + 29}" text-anchor="middle">${label}</text></g>`;
   let body = "";
-  if (preset.preset_id === "sequential-deliberation") {
-    body = `<g class="preset-diagram__links"><path d="M148 80H204" marker-end="url(#${arrow})"/><path d="M356 80H412" marker-end="url(#${arrow})"/></g>${node(12, 56, 136, "Interpreter", true)}${node(220, 56, 136, "Selector")}${node(428, 56, 120, "Reviewer")}`;
-  } else if (preset.preset_id === "product-trader-loop") {
+  if (preset.preset_id === "product-trader-loop") {
     body = `<g class="preset-diagram__links"><path d="M132 44H176" marker-end="url(#${arrow})"/><path d="M384 44H428" marker-end="url(#${arrow})"/><path d="M488 68V100" marker-end="url(#${arrow})"/><path d="M428 84H84Q72 84 72 72V68" fill="none" stroke-dasharray="5 4" marker-end="url(#${arrow})"/></g>${node(12, 20, 120, "Structurer", true)}${node(176, 20, 208, "计算模块")}${node(428, 20, 120, "Trader")}${node(428, 100, 120, "Reviewer")}`;
   } else if (preset.preset_id === "independent-council") {
     body = `<g class="preset-diagram__links"><path d="M124 80H152"/><path d="M152 80V44H176" marker-end="url(#${arrow})"/><path d="M152 80V124H176" marker-end="url(#${arrow})"/><path d="M288 44H348V80"/><path d="M288 124H348V80"/><path d="M348 80H428" marker-end="url(#${arrow})"/></g>${node(12, 56, 112, "Framer", true)}${node(176, 20, 112, "Matcher")}${node(176, 100, 112, "Hedger")}${node(428, 56, 116, "Moderator", true)}`;
@@ -538,7 +539,7 @@ function normalizeMultiAgentState(payload) {
     ...response,
     presets: Array.isArray(response.presets) ? response.presets : [],
     execution_mode: response.execution_mode === "multi" ? "multi" : "single",
-    selected_preset_id: textValue(response.selected_preset_id) || "sequential-deliberation",
+    selected_preset_id: textValue(response.selected_preset_id) || "product-trader-loop",
     role_models: isRecord(response.role_models) ? response.role_models : {},
     agent_files: isRecord(response.agent_files) ? response.agent_files : {},
     default_agent_files: isRecord(response.default_agent_files) ? response.default_agent_files : {},
@@ -580,7 +581,7 @@ function renderMultiAgentPresets() {
     selected.roles, configuredRoles, agentFiles, defaultAgentFiles,
     (role) => roleDisplay(selected.preset_id, role), "role", !selected.enabled,
   );
-  multiAgentRoot.innerHTML = `<div class="multi-agent-role-head"><div><label for="recommendation-execution-mode">智能体预设</label><select id="recommendation-execution-mode" data-recommendation-mode data-choice ${canEditModel ? "" : "disabled"}><option value="single" ${multiAgentState.execution_mode === "single" ? "selected" : ""}>单Agent</option><option value="multi" ${multiAgentState.execution_mode === "multi" ? "selected" : ""}>多Agent</option></select><p>单Agent使用本轮会话模型完成筛选和复核；多Agent按下方预设分工。聊天中指定的模式仅对本次推荐生效。</p></div></div><div class="multi-agent-configuration" ${multiAgentState.execution_mode === "single" ? "hidden" : ""}><div class="multi-agent-preset-list" role="radiogroup" aria-label="Recommender多智能体预设">${presetRows}</div>
+  multiAgentRoot.innerHTML = `<div class="multi-agent-role-head"><div><label for="recommendation-execution-mode">智能体预设</label><select id="recommendation-execution-mode" data-recommendation-mode data-choice ${canEditModel ? "" : "disabled"}><option data-english="Single Agent" value="single" ${multiAgentState.execution_mode === "single" ? "selected" : ""}>单智能体</option><option data-english="Multi-Agent" value="multi" ${multiAgentState.execution_mode === "multi" ? "selected" : ""}>多智能体</option></select><p>单Agent使用本轮会话模型完成筛选和复核；多Agent按下方预设分工。聊天中指定的模式仅对本次推荐生效。</p></div></div><div class="multi-agent-configuration" ${multiAgentState.execution_mode === "single" ? "hidden" : ""}><div class="multi-agent-preset-list" role="radiogroup" aria-label="Recommender多智能体预设">${presetRows}</div>
     <form class="multi-agent-role-form" data-multi-agent-role-form novalidate>
       <div class="multi-agent-role-head"><div><span>当前预设</span><strong>${escapeHtml(selected.display_name)}的Agent配置</strong><small>${modeIsAvailable(selected, runtime) ? "修改对下一次推荐生效。" : "当前Runtime不可用；配置仍可保存，并在Runtime恢复后的新任务中生效。"}</small></div></div>
       <div class="multi-agent-role-list">${presetRoleRows}</div>
@@ -1047,12 +1048,22 @@ if (canManageData) {
     } catch (error) { message(resultFor("data"), error.message, true); }
     finally { dataSaveInProgress = false; setSaving(dataForm, false); }
   });
-  document.querySelector("#test-data").addEventListener("click", async () => {
-    if (dataSaveInProgress) return;
-    dataSaveInProgress = true;
-    try { await testDataConnection(); }
-    finally { dataSaveInProgress = false; }
-  });
+  for (const button of document.querySelectorAll("#test-data, #verify-data-connection")) {
+    button.addEventListener("click", async () => {
+      if (dataSaveInProgress) return;
+      dataSaveInProgress = true;
+      const buttons = [...document.querySelectorAll("#test-data, #verify-data-connection")];
+      const labels = buttons.map(item => item.textContent);
+      buttons.forEach(item => { item.disabled = true; item.textContent = "正在测试…"; });
+      setSaving(dataForm, true);
+      try { await testDataConnection(); }
+      finally {
+        dataSaveInProgress = false;
+        setSaving(dataForm, false);
+        buttons.forEach((item, index) => { item.disabled = false; item.textContent = labels[index]; });
+      }
+    });
+  }
 }
 
 document.querySelector("#refresh-runtime")?.addEventListener("click", refreshRuntimeStatus);
@@ -1078,6 +1089,7 @@ document.querySelector("#verify-model-capability")?.addEventListener("click", as
   }
 });
 
+if (!canManageData) document.querySelector("#verify-data-connection")?.setAttribute("disabled", "");
 if (!canManageData) dataForm.querySelectorAll("input, select, button").forEach((control) => { control.disabled = true; });
 const settingsResponse = await request("/api/settings");
 applySettings(settingsResponse.settings);
