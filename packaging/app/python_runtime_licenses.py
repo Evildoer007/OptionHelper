@@ -21,6 +21,8 @@ REQUIRED_FROZEN_DISTRIBUTIONS = frozenset({
     "pandas",
     "scipy",
     "soupsieve",
+    "striprtf",
+    "xlrd",
 })
 LICENSE_TOKENS = ("license", "licence", "copying", "notice", "copyright")
 FORBIDDEN_LICENSE_PATH_PARTS = frozenset({
