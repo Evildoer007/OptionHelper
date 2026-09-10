@@ -30,7 +30,7 @@
         <section class="selection-panel">
           <div class="section-head">
             <div><h2>选择分析结果</h2></div>
-            <div class="top-actions"><button id="importHtmlButton" class="button button-quiet">导入HTML</button><input id="importHtmlFile" type="file" accept=".html,.htm,text/html" hidden><button id="refreshButton" class="button button-quiet">刷新结果</button><button id="generateButton" class="button button-primary" disabled>生成草稿</button></div>
+            <div class="top-actions"><button id="importHtmlButton" class="button button-quiet button-icon" aria-label="导入HTML" title="导入HTML"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16h16V8ZM14 2v6h6M12 11v7m-3-3 3 3 3-3"/></svg></button><input id="importHtmlFile" type="file" accept=".html,.htm,text/html" hidden><button id="refreshButton" class="button button-quiet button-icon" aria-label="刷新结果" title="刷新结果"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7a9 9 0 1 0 1 8M20 3v5h-5"/></svg></button><button id="generateButton" class="button button-primary" disabled>生成报告</button></div>
           </div>
           <div class="selection-count" id="selectionCount">未选择分析来源</div>
           <div class="notice" id="notice" role="status">正在读取报告来源。</div>
@@ -42,7 +42,7 @@
 
         <aside class="settings-panel">
           <h2>报告设置</h2>
-          <div class="setting-group"><label for="reportTemplate">报告模板</label><select id="reportTemplate"><option value="card">单产品简报</option><option value="report" selected>单产品研究报告</option><option value="quote">参考报价表</option><option value="multicard">多产品简报</option><option value="multireport">多产品研究报告</option></select></div>
+          <div class="setting-group"><label for="reportTemplate">报告模板</label><select id="reportTemplate"><option data-english="Card" value="card">单产品简报</option><option data-english="Report" value="report" selected>单产品研究报告</option><option data-english="Quote" value="quote">参考报价表</option><option data-english="MultiCard" value="multicard">多产品简报</option><option data-english="MultiReport" value="multireport">多产品研究报告</option></select></div>
           <div class="setting-group" id="referenceQuotePanel" hidden><label>报价结构清单</label><details class="run-audit"><summary>汇总规则</summary><p class="rule">每个产品选择一个已保存估值；同一标的汇总为一张表。</p></details></div>
           <fieldset class="setting-group" id="moduleGroup"><legend>纳入内容</legend><label class="choice"><input type="checkbox" data-module="recommender" checked><span>产品建议</span></label><label class="choice"><input type="checkbox" data-module="payoff" checked><span>收益结构</span></label><label class="choice"><input type="checkbox" data-module="pricing" checked><span>估值定价</span></label><label class="choice"><input type="checkbox" data-module="backtest" checked><span>历史回测</span></label></fieldset>
         </aside>
