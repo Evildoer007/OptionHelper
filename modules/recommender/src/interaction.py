@@ -7,6 +7,7 @@ Interpreter、Selector、Reviewer及后续受控执行流程负责。
 from __future__ import annotations
 
 import re
+from decimal import Decimal, InvalidOperation
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -15,11 +16,12 @@ _UNDERLYING = re.compile(r"(?<![A-Za-z0-9])(?P<code>\d{6})\s*\.?\s*(?P<exchange>
 _HORIZON = re.compile(r"(?P<number>\d+|[一二三四五六七八九十两]+)\s*(?P<unit>个?月|月|年|个?季度|季度|季)")
 _YEAR_AND_HALF = re.compile(r"(?P<number>\d+|[一二三四五六七八九十两]+)\s*年半")
 _LOSS = re.compile(r"(?:最大(?:可承受)?(?:亏损|损失|回撤)?|最大亏损?|亏损(?:不超过|上限为|控制在|改为)?|回撤(?:不超过|上限为|控制在|改为)?|最大(?:可承受)?(?:亏损|损失|回撤)?改为)\s*(?P<value>\d+(?:\.\d+)?)\s*[%％]")
+_PATH_NUMBER = r"(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?\s*(?:万|千|[kKwW])?"
 _PATH_COUNT = re.compile(
     r"(?:"
-    r"(?:mc|monte\s*carlo|蒙特卡洛)(?:模拟)?(?:路径(?:数)?|样本数)?\s*(?:为|是|=|：|:)?\s*(?P<mc>\d+)"
+    rf"(?:mc|monte\s*carlo|蒙特卡洛)(?:模拟)?(?:路径(?:数)?|样本数)?\s*(?:为|是|=|：|:)?\s*(?P<mc>{_PATH_NUMBER})(?![\d.,%％])"
     r"|"
-    r"(?P<plain>\d+)\s*(?:条|个)?(?:模拟)?路径(?:数)?"
+    rf"(?P<plain>{_PATH_NUMBER})\s*(?:条|个)?(?:模拟)?路径(?:数)?"
     r")",
     re.IGNORECASE,
 )
@@ -305,9 +307,16 @@ def _normalize_path_count(value: object) -> int | None:
         return None
     if isinstance(value, int):
         return value if value > 0 else None
-    if isinstance(value, str) and re.fullmatch(r"\d+", value.strip()):
-        parsed = int(value.strip())
-        return parsed if parsed > 0 else None
+    if isinstance(value, str) and re.fullmatch(_PATH_NUMBER, value.strip()):
+        token = value.strip().replace(",", "").replace(" ", "")
+        multiplier = {"万": 10000, "w": 10000, "千": 1000, "k": 1000}.get(token[-1:].lower(), 1)
+        if multiplier != 1:
+            token = token[:-1]
+        try:
+            parsed = Decimal(token) * multiplier
+            return int(parsed) if parsed > 0 and parsed == parsed.to_integral_value() else None
+        except InvalidOperation:
+            return None
     return None
 
 
@@ -324,9 +333,10 @@ def requested_candidate_count_from_text(value: object) -> int | None:
 
 
 def _path_count_from_text(text: str) -> int | None:
-    match = _PATH_COUNT.search(str(text or ""))
-    if match is None:
+    matches = list(_PATH_COUNT.finditer(str(text or "")))
+    if not matches:
         return None
+    match = matches[-1]
     return _normalize_path_count(match.group("mc") or match.group("plain"))
 
 
@@ -763,7 +773,7 @@ def _number(value: str) -> int | None:
 
 
 def _pending_field(text: str) -> str | None:
-    if "路径数" in text or "路径" in text and any(term in text.lower() for term in ("mc", "monte carlo", "蒙特卡洛")):
+    if "路径数" in text or any(word in text for word in ("路径", "多少条")) and any(term in text.lower() for term in ("mc", "monte carlo", "蒙特卡洛")):
         return "path_count"
     if "本金" in text or "净值" in text:
         return "principal_fluctuation"
