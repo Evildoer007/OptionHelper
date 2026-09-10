@@ -184,50 +184,58 @@ def _asset_coverage_matches_frame(asset_ref: DataAssetRef, frame: pd.DataFrame) 
     return set(asset_ref.asset_ids) == actual_assets
 
 
-def _chart_series(
-    frame: pd.DataFrame,
-    request: DataRequest,
-    *,
-    max_points: int = CHART_SERIES_MAX_POINTS,
-) -> tuple[Mapping[str, Any], ...]:
-    """为页面生成完整请求区间的轻量行情走势，不替代正式数据资产。"""
+VOLATILITY_WINDOWS = (5, 10, 20, 30, 60, 120, 252)
 
+
+def _price_history(frame: pd.DataFrame, request: DataRequest, asset_id: str) -> tuple[str, pd.DataFrame]:
+    """保留无效观测为空值，避免收益率跨过缺失价格。"""
+    asset = frame.loc[frame["asset_id"].astype(str).str.upper().eq(asset_id)].sort_values("date")
+    fields = ("close", "adj_close") if request.adjustment == "none" else ("adj_close", "close")
+    for field in fields:
+        if field not in asset:
+            continue
+        values = pd.to_numeric(asset[field], errors="coerce")
+        valid = values.map(lambda value: pd.notna(value) and math.isfinite(float(value)) and float(value) > 0)
+        if valid.any():
+            return field, pd.DataFrame({"date": asset["date"], "value": values.where(valid)})
+    return "", pd.DataFrame(columns=["date", "value"])
+
+
+def _sample_chart_points(history: pd.DataFrame, max_points: int) -> tuple[Mapping[str, Any], ...]:
+    if len(history) > max_points:
+        indices = sorted({round(index * (len(history) - 1) / (max_points - 1)) for index in range(max_points)})
+        history = history.iloc[indices]
+    return tuple({"date": str(row["date"]), "value": float(row["value"])} for row in history.to_dict(orient="records"))
+
+
+def _chart_series(frame: pd.DataFrame, request: DataRequest, *, max_points: int = CHART_SERIES_MAX_POINTS) -> tuple[Mapping[str, Any], ...]:
+    """完整请求区间的轻量行情走势，不替代正式数据资产。"""
     if frame.empty or max_points < 2:
         return ()
-    preferred_field = "close" if request.adjustment == "none" else "adj_close"
-    fallback_field = "adj_close" if preferred_field == "close" else "close"
-    series: list[Mapping[str, Any]] = []
+    series = []
     for asset_id in request.asset_ids:
-        asset_frame = frame.loc[frame["asset_id"].astype(str).str.upper().eq(asset_id)].copy()
-        selected_frame: pd.DataFrame | None = None
-        field = ""
-        for candidate in (preferred_field, fallback_field):
-            if candidate not in asset_frame.columns:
-                continue
-            values = pd.to_numeric(asset_frame[candidate], errors="coerce")
-            candidate_frame = asset_frame.assign(**{candidate: values})
-            candidate_frame = candidate_frame.loc[values.notna(), ["date", candidate]].sort_values("date")
-            candidate_frame = candidate_frame.loc[
-                candidate_frame[candidate].map(lambda value: math.isfinite(float(value)) and float(value) > 0)
-            ]
-            if not candidate_frame.empty:
-                field = candidate
-                selected_frame = candidate_frame
-                break
-        if selected_frame is None:
+        field, history = _price_history(frame, request, asset_id)
+        if field:
+            series.append({"asset_id": asset_id, "field": field, "points": _sample_chart_points(history.dropna(), max_points)})
+    return tuple(series)
+
+
+def _volatility_series(frame: pd.DataFrame, request: DataRequest, *, max_points: int = CHART_SERIES_MAX_POINTS) -> tuple[Mapping[str, Any], ...]:
+    """完整日线对数收益的滚动样本标准差，按252个交易日年化后抽样。"""
+    if frame.empty or max_points < 2 or request.frequency != "1d":
+        return ()
+    series = []
+    for asset_id in request.asset_ids:
+        field, history = _price_history(frame, request, asset_id)
+        if not field:
             continue
-        length = len(selected_frame)
-        if length > max_points:
-            indices = sorted({
-                round(index * (length - 1) / (max_points - 1))
-                for index in range(max_points)
-            })
-            selected_frame = selected_frame.iloc[indices]
-        points = tuple(
-            {"date": str(row["date"]), "value": float(row[field])}
-            for row in selected_frame.to_dict(orient="records")
-        )
-        series.append({"asset_id": asset_id, "field": field, "points": points})
+        ratios = history["value"] / history["value"].shift(1)
+        returns = ratios.map(lambda value: math.log(value) if pd.notna(value) and math.isfinite(value) and value > 0 else math.nan)
+        for window in VOLATILITY_WINDOWS:
+            volatility = returns.rolling(window, min_periods=window).std(ddof=1) * math.sqrt(252)
+            observations = pd.DataFrame({"date": history["date"], "value": volatility}).dropna()
+            series.append({"asset_id": asset_id, "field": field, "window": window, "annualization": 252,
+                           "observation_count": len(observations), "points": _sample_chart_points(observations, max_points)})
     return tuple(series)
 
 
@@ -1147,6 +1155,7 @@ def fetch_data(
             quality_report=quality,
             data_preview=preview,
             chart_series=chart_series,
+            volatility_series=_volatility_series(frame, validated),
         )
     except Exception as error:
         fallback = raw_request or DataRequest(asset_ids=(), start_date="", end_date="", fields=())
