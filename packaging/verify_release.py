@@ -102,7 +102,7 @@ def installer_name(version: str, platform: str) -> str:
     if platform == "macos":
         return f"OptionHelper-{APP_VERSION}-macOS-arm64.dmg"
     if platform == "windows":
-        return f"OptionHelper-{APP_VERSION}-windows-x86_64-Setup.exe"
+        return f"OptionHelper-{APP_VERSION}-Windows-x64.exe"
     raise ReleaseVerificationError(f"不支持的平台：{platform}")
 
 
@@ -340,7 +340,7 @@ def _verify_windows_release(
     *,
     verify_installed_bundle: bool = False,
 ) -> None:
-    installer = version_root / f"OptionHelper-{APP_VERSION}-windows-x86_64-Setup.exe"
+    installer = version_root / f"OptionHelper-{APP_VERSION}-Windows-x64.exe"
     app_manifest_path = version_root / "app-manifest-windows.json"
     platform_manifest_path = version_root / "platform-release-manifest-windows.json"
     checksum_path = version_root / f"{installer.name}.sha256"
