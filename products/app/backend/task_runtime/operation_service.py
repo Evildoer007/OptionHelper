@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from concurrent.futures import Future, ThreadPoolExecutor
+from collections import deque
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -135,6 +136,10 @@ class TaskOperationService:
             "compute": ThreadPoolExecutor(max_workers=maximum_compute_orchestrators, thread_name_prefix="optionhelper-compute-operation"),
             "conversation": ThreadPoolExecutor(max_workers=maximum_conversations, thread_name_prefix="optionhelper-conversation"),
         }
+        self._submission_lock = Lock()
+        self._conversation_queues = {}
+        self._conversation_keys = {}
+        self._closing = False
         self._controls: dict[str, Event] = {}
         self._futures: dict[str, Future[None]] = {}
         self._committing: set[str] = set()
@@ -185,7 +190,14 @@ class TaskOperationService:
                 (_now(), "OptionHelper已退出，未完成运行已中断。"),
             )
 
-    def submit(
+    def submit(self, identity: SessionIdentity, **kwargs) -> TaskOperation:
+        # Preserve admission order even when HTTP handlers arrive concurrently.
+        with self._submission_lock:
+            if self._closing:
+                raise UnavailableCapabilityError("task_operation_queue", "应用正在退出，未接受新的运行。")
+            return self._submit(identity, **kwargs)
+
+    def _submit(
         self,
         identity: SessionIdentity,
         *,
@@ -196,6 +208,7 @@ class TaskOperationService:
         request_id: str | None = None,
         input_hash: str | None = None,
         lane: str = "control",
+        interrupt_current: bool = False,
     ) -> TaskOperation:
         if not task_id or not module or not kind:
             raise ValidationError("Task operation identity is invalid")
@@ -234,7 +247,7 @@ class TaskOperationService:
                     f"AND state IN ({_ACTIVE_SQL}) ORDER BY updated_at DESC LIMIT 1",
                     (identity.tenant_id, identity.principal_id, task_id, module, kind, normalized_input_hash),
                 ).fetchone()
-                if matching is not None:
+                if matching is not None and lane != "conversation":
                     connection.execute(
                         "INSERT INTO task_operation_requests VALUES(?,?,?,?,?,?,?,?)",
                         (identity.tenant_id, identity.principal_id, task_id, module, kind,
@@ -269,9 +282,24 @@ class TaskOperationService:
                 )
             connection.commit()
         control = Event()
+        interrupted_id = None
         with self._guard:
             self._controls[identifier] = control
-            self._futures[identifier] = self._executors[lane].submit(self._run, identifier, operation, control)
+            if lane == "conversation":
+                key = (identity.tenant_id, identity.principal_id, task_id)
+                queue = self._conversation_queues.setdefault(key, deque())
+                self._conversation_keys[identifier] = key
+                if interrupt_current and queue:
+                    interrupted_id = queue[0][0]
+                    queue.insert(1, (identifier, operation, control))
+                else:
+                    queue.append((identifier, operation, control))
+                if len(queue) == 1:
+                    self._futures[identifier] = self._executors[lane].submit(self._run, identifier, operation, control)
+            else:
+                self._futures[identifier] = self._executors[lane].submit(self._run, identifier, operation, control)
+        if interrupted_id:
+            self.cancel(identity, interrupted_id)
         return self.get(identity, identifier)
 
     def get(self, identity: SessionIdentity, operation_id: str) -> TaskOperation:
@@ -363,6 +391,35 @@ class TaskOperationService:
             recovered += int(cursor.rowcount)
         return recovered
 
+    def prioritize_conversation(
+        self, identity: SessionIdentity, task_id: str, operation_id: str,
+    ) -> TaskOperation:
+        """Promote an existing queued turn without duplicating its request."""
+        record = self.get(identity, operation_id)
+        if record.task_id != task_id:
+            raise KeyError(operation_id)
+        if record.module != "optchat" or record.kind != "conversation":
+            raise ValidationError("只能优先执行当前任务的排队消息")
+        with self._guard:
+            record = self.get(identity, operation_id)
+            key = self._conversation_keys.get(operation_id)
+            queue = self._conversation_queues.get(key)
+            index = next((i for i, item in enumerate(queue or ()) if item[0] == operation_id), -1)
+            if index < 0 or record.state in TERMINAL_STATES:
+                raise ValidationError("这条消息已结束或不在队列中")
+            if index == 0:
+                return record
+            if record.state != "queued":
+                raise ValidationError("这条消息已经开始处理")
+            queued = queue[index]
+            del queue[index]
+            queue.insert(1, queued)
+            interrupted_id = queue[0][0]
+        # The current turn must acknowledge cancellation before the promoted
+        # turn runs, preserving task isolation and preventing overlapping writes.
+        self.cancel(identity, interrupted_id)
+        return self.get(identity, operation_id)
+
     def cancel(self, identity: SessionIdentity, operation_id: str) -> TaskOperation:
         record = self.get(identity, operation_id)
         return self._cancel_owned(identity, record)
@@ -389,12 +446,13 @@ class TaskOperationService:
                 control.set()
         if commit_started:
             return self.get(identity, record.operation_id)
-        if record.state == "queued" and future is not None and future.cancel():
+        if record.state == "queued" and (future is None or future.cancel()):
             self._transition(record.operation_id, "cancelled", "已取消。")
             # A cancelled Future never enters _run's finally block.
             with self._guard:
                 self._controls.pop(record.operation_id, None)
                 self._futures.pop(record.operation_id, None)
+                self._advance_conversation(record.operation_id)
         else:
             self._transition(record.operation_id, "cancel_requested", "正在停止运行。")
         return self.get(identity, record.operation_id)
@@ -422,6 +480,8 @@ class TaskOperationService:
         return int(cursor.rowcount)
 
     def shutdown(self) -> None:
+        with self._submission_lock:
+            self._closing = True
         self.interrupt_active("OptionHelper已退出，未完成运行已中断。")
         for executor in self._executors.values():
             executor.shutdown(wait=False, cancel_futures=True)
@@ -451,12 +511,15 @@ class TaskOperationService:
             state = self._state(operation_id)
             if state == "interrupted":
                 return
-            if control.is_set() and result.get("cancelled") is True:
-                self._transition(operation_id, "cancelled", "已取消。")
+            if result.get("cancelled") is True or result.get("status") == "cancelled":
+                self._transition(operation_id, "cancelled", "已取消。", result=result)
             elif result.get("ok") is False or result.get("status") in {
                 "failed",
                 "unsupported",
                 "timed_out",
+                "unavailable",
+                "blocked",
+                "recovery_required",
             }:
                 self._transition(
                     operation_id,
@@ -551,6 +614,23 @@ class TaskOperationService:
                 self._committing.discard(operation_id)
                 self._controls.pop(operation_id, None)
                 self._futures.pop(operation_id, None)
+                self._advance_conversation(operation_id)
+
+    def _advance_conversation(self, operation_id: str) -> None:
+        """Called under _guard; queued siblings never occupy executor workers."""
+        key = self._conversation_keys.pop(operation_id, None)
+        if key is None:
+            return
+        queue = self._conversation_queues.get(key)
+        if not queue:
+            return
+        was_head = queue[0][0] == operation_id
+        self._conversation_queues[key] = queue = deque(row for row in queue if row[0] != operation_id)
+        if not queue:
+            self._conversation_queues.pop(key, None)
+        elif was_head and not self._closing:
+            identifier, operation, control = queue[0]
+            self._futures[identifier] = self._executors["conversation"].submit(self._run, identifier, operation, control)
 
     def _state(self, operation_id: str) -> str:
         with self._connect() as connection:
