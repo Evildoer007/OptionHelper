@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from threading import Lock
-from typing import Any, Protocol
+from typing import Any, Protocol, Callable
 
 from ..errors import UnavailableCapabilityError, ValidationError
 from ..report_delivery import delivery_request
@@ -47,6 +47,7 @@ class ConversationService:
         request_id: str | None = None,
         selection: ModelSelection | None = None,
         attachments: list[dict[str, Any]] | None = None,
+        cancelled: Callable[[], bool] | None = None,
     ) -> dict[str, Any]:
         """Serialize one task and replay an identical HTTP retry.
 
@@ -55,7 +56,7 @@ class ConversationService:
         same-id retry return the original safe response after the lock is
         released, including after an App restart.
         """
-        with self._task_lock(identity, task_id):
+        with self._task_lock(identity, task_id), self._task_service.conversation_cancellation(identity, task_id, cancelled) as turn_cancelled:
             replay_key = _replay_key(message, selection, attachments)
             replay = self._task_service.get_conversation_response(identity, task_id, request_id, replay_key)
             if replay is not None:
@@ -63,7 +64,7 @@ class ConversationService:
             request_state = self._task_service.begin_conversation_request(
                 identity, task_id, request_id, replay_key,
             )
-            was_cancelled = self._task_service.is_cancelled(identity, task_id)
+            was_cancelled = turn_cancelled()
             recorded = self._task_service.append_message(
                 identity,
                 task_id,
@@ -118,12 +119,16 @@ class ConversationService:
                     created = []
                     if self._report_delivery:
                         created = [row['report_run_id'] for row in self._report_delivery.results.list_report_runs(identity, task_id) if row['report_run_id'] not in previous_reports]
-                    if delivery:
+                    if turn_cancelled():
+                        response = _cancelled_response()
+                    if delivery and not turn_cancelled():
                         try:
                             response = self._report_delivery.complete(identity, task_id, message, response,
                                 request_id=request_id, report_id=report_id or (created[-1] if created else None))
                         except ValidationError as error:
                             response = {'status':'needs_input','text':str(error)}
+                    if turn_cancelled():
+                        response = _cancelled_response()
                     if self._report_delivery and created:
                         response = self._report_delivery.attach_documents(identity, task_id, response, created)
 
@@ -160,11 +165,15 @@ class ConversationService:
                 identity, task_id, request_id, replay_key, completed,
             )
             terminal_status = "cancelled" if response.get("status") == "cancelled" else (
-                "failed" if response.get("status") in {"unavailable", "timed_out", "blocked"} else "completed"
+                "failed" if response.get("status") in {"failed", "unavailable", "timed_out", "blocked", "unsupported", "recovery_required"} else "completed"
             )
             terminal_summary = "本次处理已取消。" if terminal_status == "cancelled" else (
                 "本次处理未能完成，请按提示补充或重试。" if terminal_status == "failed" else "本轮处理已完成。"
             )
+            if response.get("status") in {"needs_input", "pending_approval"}:
+                terminal_summary = "等待你补充信息或确认后继续。"
+            elif response.get("status") == "partial":
+                terminal_summary = "已保留完成结果，剩余步骤待继续。"
             self._emit_process_event(identity, task_id, request_id, "terminal", terminal_status, terminal_summary)
             return completed
 
