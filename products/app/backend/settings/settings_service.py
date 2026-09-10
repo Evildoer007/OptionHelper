@@ -35,11 +35,10 @@ class SettingsService:
 
     @staticmethod
     def _normalize_multi_agent_roles(settings: SettingsSnapshot) -> SettingsSnapshot:
-        preset_id = (
-            "sequential-deliberation"
-            if settings.multi_agent_recommendation_preset_id == "adversarial-review"
-            else settings.multi_agent_recommendation_preset_id
-        )
+        retired_preset = settings.multi_agent_recommendation_preset_id in {
+            "sequential-deliberation", "adversarial-review",
+        }
+        preset_id = "product-trader-loop" if retired_preset else settings.multi_agent_recommendation_preset_id
         preset_role_models = {
             configured_preset_id: {
                 MULTI_AGENT_LEGACY_ROLE_ALIASES.get(role, role): selection
@@ -62,20 +61,12 @@ class SettingsService:
             if configured_preset_id in MULTI_AGENT_ENABLED_RECOMMENDATION_PRESET_IDS
             and isinstance(role_instructions, dict)
         }
-        if settings.multi_agent_recommendation_preset_id == "adversarial-review":
-            legacy_roles = settings.multi_agent_preset_role_models.get("adversarial-review", {})
-            if legacy_roles and "sequential-deliberation" not in preset_role_models:
-                preset_role_models["sequential-deliberation"] = {
-                    MULTI_AGENT_LEGACY_ROLE_ALIASES.get(role, role): selection
-                    for role, selection in legacy_roles.items()
-                    if MULTI_AGENT_LEGACY_ROLE_ALIASES.get(role, role)
-                    in MULTI_AGENT_RECOMMENDATION_PRESET_ROLES["sequential-deliberation"]
-                }
         return replace(
             settings,
             multi_agent_preset_role_models=preset_role_models,
             multi_agent_preset_agent_instructions=preset_agent_instructions,
             multi_agent_recommendation_preset_id=preset_id,
+            recommendation_execution_mode="single" if retired_preset else settings.recommendation_execution_mode,
             multi_agent_review_policy_id=(
                 MULTI_AGENT_DEFAULT_REVIEW_POLICY_ID
                 if settings.multi_agent_review_policy_id == "adversarial-review"
