@@ -79,6 +79,7 @@ def _freeze(value: Mapping[str, Any]) -> Mapping[str, Any]:
 
 _COLORS = {
     "brand_red": "#C8102E",
+    "brand_signature": "#8A2F3D",
     "on_brand": "#FFFFFF",
     "paper": "#FFFFFF",
     "ground": "#F4F4F4",
@@ -99,12 +100,12 @@ _COLORS = {
     "blue_gray_soft": "#F4F4F4",
     "chart_gray": "#6B6B6B",
     "heatmap_low": "#F4F4F4",
-    "risk_gold_soft": "#FCF7EA",
+    "risk_gold_soft": "#F7F3E9",
     "paper_border": "#E2E2E2",
     "red_border_soft": "#C9C9C9",
     "red_surface": "#F4F4F4",
     "red_tag_border": "#C9C9C9",
-    "gold_border": "#C9C9C9",
+    "gold_border": "#D8C9A7",
     "gold_ink": "#936719",
     "table_border": "#C9C9C9",
     "table_head_ink": "#252525",
@@ -115,6 +116,7 @@ _COLORS = {
 
 _DARK_COLORS = {
     "brand_red": "#C8102E",
+    "brand_signature": "#D47A87",
     "on_brand": "#FFFFFF",
     "paper": "#181818",
     "ground": "#111111",
@@ -254,10 +256,10 @@ TOKENS = DesignTokens(
     ),
     chart_palette=(
         _COLORS["brand_red"],
-        _COLORS["blue_gray"],
+        _COLORS["ink"],
         _COLORS["risk_gold"],
         _COLORS["muted"],
-        _COLORS["ink_soft"],
+        _COLORS["rule_strong"],
     ),
     chart_line_types=("solid", "dashed", "dotted"),
     chart_symbols=("circle", "rect", "triangle", "diamond"),
