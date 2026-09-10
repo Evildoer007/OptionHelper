@@ -5,6 +5,11 @@
  */
 (() => {
   const root = document.documentElement;
+  // The embedded settings card must have its final geometry before CSS paints.
+  if (location.pathname === "/settings" && window.parent !== window
+      && new URLSearchParams(location.search).get("embedded") === "1") {
+    root.dataset.settingsEmbedded = "true";
+  }
   const allowed = new Set(["light", "dark", "auto"]);
   let preference = "light";
   try {
