@@ -205,18 +205,18 @@ select:focus {
 }
 
 .choice[data-open="true"] .choice-trigger {
-  border-color: var(--red);
-  box-shadow: 0 0 0 3px rgba(200, 16, 46, .10);
-  color: var(--red-deep);
+  border-color: var(--muted);
+  box-shadow: none;
+  color: var(--ink);
 }
 
 .choice[data-open="true"] .choice-trigger__chevron {
-  color: var(--red-deep);
+  color: var(--muted);
   transform: rotate(225deg) translate(-1px, -1px);
 }
 
 .choice-trigger:focus-visible {
-  outline: 3px solid rgba(200, 16, 46, .25);
+  outline: 1px solid var(--muted);
   outline-offset: 2px;
 }
 
@@ -1002,9 +1002,9 @@ html[data-oh-scrollbar-overlay="enabled"] [data-oh-scrollbar-overlay-ready="true
   max-width: min(620px, 100%);
   padding: 10px 14px;
   border-radius: 15px 15px 5px;
-  background: #F1F1F1;
+  background: color-mix(in srgb, var(--ink) 7%, var(--surface));
   color: var(--ink);
-  box-shadow: inset 0 0 0 1px rgba(37, 40, 43, .09);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ink) 10%, transparent);
 }
 
 .message__actions {
@@ -1140,7 +1140,7 @@ html[data-oh-scrollbar-overlay="enabled"] [data-oh-scrollbar-overlay-ready="true
 .model-picker .choice-trigger {
   max-width: min(300px, 58vw);
   min-height: 32px;
-  padding: 0 31px 0 11px;
+  padding: 0 11px;
   border: 0;
   border-radius: 9px;
   background-color: #F5F5F5;
@@ -1149,6 +1149,8 @@ html[data-oh-scrollbar-overlay="enabled"] [data-oh-scrollbar-overlay-ready="true
   font-weight: 650;
   outline: 0;
 }
+
+.model-picker select { padding-right: 31px; }
 
 .model-picker select:enabled:hover,
 .model-picker select:focus,
@@ -1656,15 +1658,19 @@ html.workspace-overlay-open body { overflow: hidden; }
 
 .report-item__heading .report-meta { margin: 0; white-space: nowrap; }
 
-.report-item__actions { display: flex; gap: 12px; }
+.report-item__actions { display: flex; align-items: center; gap: 4px; }
 
 .report-item__actions a {
-  color: var(--red-deep);
-  font-size: 11px;
-  font-weight: 620;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px; border-radius: 7px;
+  color: var(--muted); text-decoration: none;
 }
-
-.report-item__actions a:hover { color: var(--red); }
+.report-item__actions a:hover { color: var(--ink); background: var(--surface-hover, color-mix(in srgb, var(--ink) 6%, transparent)); }
+.report-item__actions a:focus-visible { outline: 1px solid var(--muted); outline-offset: 2px; }
+.report-item__actions svg, .operation-item__cancel svg { width: 16px; height: 16px; flex: none; }
+.state-indicator { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; flex: 0 0 16px; color: var(--muted); }
+.state-indicator svg { display: block; width: 14px; height: 14px; }
+.state-indicator:is([data-state="failed"], [data-state="partial"]) { color: var(--red-deep); }
 
 .report-item small {
   display: block;
@@ -2393,7 +2399,7 @@ html.workspace-overlay-open body { overflow: hidden; }
 
 /* Persistent workspace: mode changes are layout states of one DOM tree, not a page handoff. */
 .workspace-shell.workspace-shell--desk[data-workspace-shell] {
-  --rail-width: 236px;
+  --rail-width: 260px;
   --rail-splitter-width: 8px;
   --report-width: 332px;
   --context-width: 0px;
@@ -3159,7 +3165,6 @@ html.workspace-overlay-open body { overflow: hidden; }
     flex: 0 0 auto;
     overflow: visible;
   }
-  .workspace-shell.workspace-shell--desk[data-mode="desk"] .assistant-panel .composer-drop-hint { display: none; }
   .workspace-shell.workspace-shell--desk[data-mode="desk"] .assistant-panel .composer-actions__trailing {
     min-width: 0;
     flex: 1 1 auto;
@@ -3807,42 +3812,6 @@ html.workspace-overlay-open body { overflow: hidden; }
   cursor: default;
   user-select: none;
 }
-
-.login-check input {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  opacity: 0;
-  pointer-events: none;
-}
-
-.login-check__box {
-  display: grid;
-  width: 16px;
-  height: 16px;
-  flex: none;
-  place-items: center;
-  border: 1px solid #CDCDCD;
-  border-radius: 4px;
-  background: #fff;
-  transition: background .15s, border-color .15s;
-}
-
-.login-check__box svg {
-  width: 10px;
-  height: 10px;
-  fill: none;
-  stroke: #fff;
-  stroke-width: 2.4;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  opacity: 0;
-  transition: opacity .12s;
-}
-
-.login-check input:checked + .login-check__box { border-color: var(--login-brand); background: var(--login-brand); }
-.login-check input:checked + .login-check__box svg { opacity: 1; }
-.login-check input:focus-visible + .login-check__box { box-shadow: 0 0 0 3px var(--login-ring); }
 
 .login-submit {
   position: relative;
