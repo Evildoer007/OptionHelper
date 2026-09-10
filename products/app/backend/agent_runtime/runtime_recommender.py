@@ -768,11 +768,12 @@ class RuntimeBackedAgentPort(AgentPort):
                     metadata = getattr(chunk, "metadata", {}) if not isinstance(chunk, Mapping) else chunk
                     if not isinstance(metadata, Mapping):
                         raise ValidationError("模型工具调用增量格式无效")
+                    # An omitted name continues the existing call. Sending null
+                    # would overwrite it with "undefined" in the Host assembler.
                     yield {
                         "type": "tool-call-delta",
-                        "id": metadata.get("id"),
-                        "index": metadata.get("index"),
-                        "name": metadata.get("name"),
+                        **{key: metadata[key] for key in ("id", "index", "name")
+                           if metadata.get(key) is not None},
                         "arguments": metadata.get("arguments", ""),
                     }
                 elif kind == "usage":
@@ -807,6 +808,7 @@ class RuntimeBackedAgentPort(AgentPort):
             }
         finally:
             stopped.set()
+            watcher.join(timeout=1)
 
     def _role_model_stream(
         self,
