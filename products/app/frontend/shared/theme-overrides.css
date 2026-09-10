@@ -109,7 +109,7 @@ html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-sh
 }
 
 html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .workbench-head {
-  border-bottom-color: transparent !important;
+  border-bottom: 1px solid var(--color-rule) !important;
 }
 
 /* One conversation canvas continues behind the transparent composer wrappers. */
@@ -217,8 +217,8 @@ html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-sh
 html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .composer form:focus-within,
 html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .model-picker select:focus,
 html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .model-picker .choice:focus-within .choice-trigger {
-  border-color: var(--color-brand-red) !important;
-  box-shadow: 0 0 0 2px var(--color-red-border-soft) !important;
+  border-color: var(--color-rule-strong) !important;
+  box-shadow: none !important;
 }
 
 html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .model-picker select:enabled:hover,
@@ -250,7 +250,7 @@ html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-sh
   color: var(--color-brand-red);
 }
 
-html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .report-drawer-toggle {
+html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-workspace-shell] :is(.report-drawer-toggle, [data-report-close]) {
   display: none !important;
 }
 
@@ -399,16 +399,15 @@ html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-sh
   box-shadow: none !important;
 }
 
-html[data-theme="light"] .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .assistant-region .composer form,
-html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .assistant-region .composer form {
-  overflow: hidden;
-  border-color: color-mix(in srgb, var(--color-ink) 14%, transparent) !important;
-  background: color-mix(in srgb, var(--color-surface) 68%, transparent) !important;
-  box-shadow:
-    0 4px 12px color-mix(in srgb, var(--color-ink) 6%, transparent),
-    inset 0 1px 0 color-mix(in srgb, var(--color-paper) 46%, transparent) !important;
-  -webkit-backdrop-filter: blur(12px) saturate(112%);
-  backdrop-filter: blur(12px) saturate(112%);
+html[data-theme="light"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .assistant-region .composer form,
+html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .assistant-region .composer form {
+  overflow: visible;
+  border-radius: 24px;
+  border: 1px solid var(--composer-edge) !important;
+  background: var(--composer-fill) !important;
+  box-shadow: var(--composer-shadow) !important;
+  -webkit-backdrop-filter: blur(24px) saturate(125%);
+  backdrop-filter: blur(24px) saturate(125%);
 }
 
 /* The model control belongs to the same neutral material as the composer.
@@ -426,9 +425,9 @@ html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-sh
   color: var(--color-ink) !important;
 }
 
-/* Chat content keeps the same hierarchy in Dark mode; these final rules
+/* Conversation content keeps the same hierarchy in Dark mode; these final rules
    replace the remaining light-only literals in the legacy chat skin. */
-html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] :is(
+html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] :is(
   .conversation-start h2,
   .conversation-starter strong,
   .message__body
@@ -436,7 +435,7 @@ html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-sh
   color: var(--color-ink) !important;
 }
 
-html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] :is(.conversation-start__copy,
+html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] :is(.conversation-start__copy,
 .conversation-starter span,
 .conversation-start__note,
 .message__meta,
@@ -444,32 +443,32 @@ html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-sh
   color: var(--color-muted) !important;
 }
 
-html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .conversation-start__mark {
+html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .conversation-start__mark {
   background: transparent !important;
   box-shadow: none !important;
 }
 
-html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .message__mark {
+html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .message__mark {
   background: color-mix(in srgb, var(--color-brand-red) 12%, var(--color-surface)) !important;
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-brand-red) 18%, transparent) !important;
 }
 
-html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .conversation-starter {
+html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .conversation-starter {
   border-color: var(--color-rule) !important;
   background: var(--color-surface) !important;
   color: var(--color-ink) !important;
 }
 
-html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .conversation-starter:hover,
-html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .conversation-starter:focus-visible {
+html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .conversation-starter:hover,
+html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .conversation-starter:focus-visible {
   border-color: var(--color-rule-strong) !important;
   background: var(--color-brand-red-soft) !important;
   color: var(--color-ink) !important;
   box-shadow: 0 8px 20px color-mix(in srgb, var(--color-ink) 12%, transparent) !important;
 }
 
-html[data-theme="light"] .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .message--user .message__body,
-html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .message--user .message__body {
+html[data-theme="light"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .message--user .message__body,
+html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .message--user .message__body {
   background: color-mix(in srgb, var(--color-ink) 7%, var(--color-surface)) !important;
   color: var(--color-ink) !important;
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-ink) 10%, transparent) !important;
@@ -602,4 +601,320 @@ html[data-native-shell] body.workspace-body .workspace-shell.workspace-shell--de
     -webkit-backdrop-filter: none;
     backdrop-filter: none;
   }
+}
+
+/* A single material vocabulary for the composer and its floating controls. */
+html[data-theme="light"] {
+  --composer-fill: #fff;
+  --composer-edge: rgb(37 37 37 / .09);
+  --composer-shadow: 0 2px 4px rgb(30 35 40 / .025), 0 8px 28px rgb(30 35 40 / .065);
+  --glass-fill: rgb(255 255 255 / .78);
+  --glass-edge: rgb(37 37 37 / .16);
+  --glass-shadow: inset 0 1px 0 rgb(255 255 255 / .95), 0 2px 5px rgb(34 40 50 / .06), 0 14px 36px rgb(34 40 50 / .10);
+}
+html[data-theme="dark"] {
+  --composer-fill: #252525;
+  --composer-edge: rgb(255 255 255 / .11);
+  --composer-shadow: 0 2px 4px rgb(0 0 0 / .09), 0 8px 24px rgb(0 0 0 / .16);
+  --glass-fill: rgb(40 40 40 / .84);
+  --glass-edge: rgb(255 255 255 / .12);
+  --glass-shadow: inset 0 1px 0 rgb(255 255 255 / .08), 0 2px 5px rgb(0 0 0 / .2), 0 14px 36px rgb(0 0 0 / .28);
+}
+html[data-theme] .optionhelper-choice .choice-menu,
+html[data-theme] .conversation-outline__preview {
+  background: var(--glass-fill) !important;
+  border-color: var(--glass-edge) !important;
+  box-shadow: var(--glass-shadow) !important;
+  -webkit-backdrop-filter: blur(24px) saturate(125%);
+  backdrop-filter: blur(24px) saturate(125%);
+}
+html[data-theme] .workspace-shell[data-workspace-shell] .composer form {
+  border-radius: 24px;
+  padding: 12px;
+}
+html[data-theme] .workspace-shell[data-workspace-shell] .composer textarea {
+  background: transparent !important;
+}
+html[data-theme] .workspace-shell[data-workspace-shell] .composer .composer-actions {
+  border: 0;
+  background: transparent;
+  padding-top: 8px;
+}
+html[data-theme] .workspace-shell[data-workspace-shell] .composer .choice-trigger {
+  border-radius: 16px;
+  font-weight: 500;
+}
+@media (prefers-reduced-transparency: reduce) {
+  html[data-theme] { --glass-fill: var(--color-surface); }
+}
+
+/* Shared material across workspace, settings, and contextual surfaces. */
+html[data-theme="light"] { --workspace-wash: #f3f4f6; --glass-soft: rgb(255 255 255 / .58); }
+html[data-theme="dark"] { --workspace-wash: #1d1d1d; --glass-soft: rgb(42 42 42 / .64); }
+html[data-theme] .setup-page { background: var(--workspace-wash); }
+html[data-theme] .setup-page .setup-card {
+  border: 1px solid var(--glass-edge);
+  border-radius: 24px;
+  background: var(--glass-fill);
+  box-shadow: var(--glass-shadow);
+}
+html[data-theme] .setup-page .settings-nav { background: var(--glass-soft); }
+html[data-theme] .workspace-shell[data-workspace-shell] :is(.task-context, .assistant-panel[aria-hidden="false"]) {
+  background: var(--glass-fill);
+  border-color: var(--glass-edge);
+  box-shadow: var(--glass-shadow);
+  -webkit-backdrop-filter: blur(24px) saturate(125%);
+  backdrop-filter: blur(24px) saturate(125%);
+}
+html[data-theme] :is(.process-collaboration, .message-question) {
+  border-color: var(--glass-edge);
+  background: var(--glass-soft);
+  box-shadow: inset 0 1px 0 var(--glass-edge), 0 3px 10px rgb(0 0 0 / .05);
+}
+html[data-theme] .message-question[data-state="answered"] {
+  border: 0; padding: 0; background: transparent; box-shadow: none;
+}
+.message-question[data-state="answered"] .message-question__prompt { margin-bottom: 6px; font-size: 13px; font-weight: 400; color: var(--muted); }
+.message-question__answer { margin: 0; font-size: 13px; font-weight: 400; line-height: 1.6; }
+
+html[data-theme] .workspace-shell[data-workspace-shell] .composer form.is-generating {
+  border-color: var(--composer-edge) !important;
+}
+html[data-theme] .workspace-shell[data-workspace-shell] .composer form {
+  transition: border-color 220ms ease, box-shadow 220ms ease;
+}
+html[data-theme] .optionhelper-choice[data-open="true"] .choice-menu {
+  animation: material-menu-in 180ms cubic-bezier(.16, 1, .3, 1);
+  transform-origin: top center;
+}
+html[data-theme] .optionhelper-choice[data-placement="top"] .choice-menu { transform-origin: bottom center; }
+@keyframes material-menu-in { from { opacity: .35; transform: translateY(3px) scale(.98); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) {
+  html[data-theme] .optionhelper-choice[data-open="true"] .choice-menu { animation: none; }
+  html[data-theme] .workspace-shell[data-workspace-shell] .composer form { transition: none; }
+}
+@media (prefers-reduced-transparency: reduce) {
+  html[data-theme] { --glass-soft: var(--color-surface); }
+}
+
+html[data-theme] .workspace-shell.workspace-shell--desk[data-workspace-shell] .composer textarea::placeholder {
+  color: color-mix(in srgb, var(--color-ink) 45%, transparent) !important;
+  opacity: 1;
+  font-weight: 400;
+}
+
+.composer-preset { flex-shrink: 0; }
+.workspace-shell[data-workspace-shell] .composer-preset .choice-trigger { width: 34px; min-width: 34px; height: 34px; min-height: 34px; padding: 7px; border: 0; background: transparent; }
+.composer-preset .choice-trigger__value, .composer-preset .choice-trigger__chevron { display: none !important; }
+.composer-preset .choice-trigger::before { content: ""; width: 20px; height: 20px; background: currentColor; -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.5'%3E%3Ccircle cx='12' cy='5' r='3'/%3E%3Ccircle cx='5' cy='18' r='3'/%3E%3Ccircle cx='19' cy='18' r='3'/%3E%3Cpath d='M12 8v4M5 15v-3h14v3'/%3E%3C/svg%3E") center / contain no-repeat; mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.5'%3E%3Ccircle cx='12' cy='5' r='3'/%3E%3Ccircle cx='5' cy='18' r='3'/%3E%3Ccircle cx='19' cy='18' r='3'/%3E%3Cpath d='M12 8v4M5 15v-3h14v3'/%3E%3C/svg%3E") center / contain no-repeat; }
+.composer-preset .choice-menu { width: min(270px, calc(100vw - 60px)); left: 0; right: auto; }
+
+html[data-theme] .workspace-shell[data-workspace-shell] .composer .composer-attach-control,
+html[data-theme] .workspace-shell[data-workspace-shell] .composer .composer-preset .choice-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  min-width: 34px;
+  height: 34px;
+  min-height: 34px;
+  padding: 7px;
+  border: 0;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--color-ink) 5%, transparent) !important;
+  color: var(--color-muted) !important;
+}
+html[data-theme] .workspace-shell[data-workspace-shell] .composer :is(.composer-attach-control, .composer-preset .choice-trigger):hover {
+  background: color-mix(in srgb, var(--color-ink) 10%, transparent) !important;
+}
+/* Keep adjacent composer icons identical; disabled behavior is conveyed by availability and help text. */
+html[data-theme] .workspace-shell[data-workspace-shell] .composer .composer-followup-control {
+  color: var(--color-muted) !important;
+}
+html[data-theme] .workspace-shell[data-workspace-shell] .composer .composer-attach-control:disabled,
+html[data-theme] .workspace-shell[data-workspace-shell] .composer .composer-preset .choice-trigger:disabled,
+html[data-theme] .workspace-shell[data-workspace-shell] .composer .composer-followup-control:disabled {
+  color: var(--color-muted) !important;
+  opacity: 1;
+}
+html[data-theme] .workspace-shell[data-workspace-shell] .composer .composer-attach-control::after { display: none; }
+html[data-theme] .workspace-shell[data-workspace-shell] .composer .composer-attach-control svg { width: 20px; height: 20px; stroke-width: 1.5; }
+
+/* Workspace navigation shares the composer's quiet material. */
+.mode-switch button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; }
+.mode-switch button svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+.task-item .task-item__date { opacity: 0; transition: opacity 140ms ease; }
+.task-list__row:hover .task-item__date, .task-list__row:focus-within .task-item__date { opacity: 1; }
+@media (hover: none) { .task-item .task-item__date { opacity: .65; } }
+.rail-section-label { display: flex; align-items: center; justify-content: space-between; }
+.rail-task-search { display: inline-grid; place-items: center; width: 28px; height: 28px; border: 0; border-radius: 7px; background: transparent; color: inherit; cursor: pointer; padding: 5px; }
+.rail-task-search svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; }
+.rail-task-search:hover { background: var(--glass-soft); }
+html[data-native-shell="macos"] .rail-task-search { display: none; }
+.task-search-dialog { width: min(540px, calc(100vw - 40px)); max-height: 70vh; padding: 20px; border: 1px solid var(--glass-edge); border-radius: 22px; background: var(--glass-fill); color: var(--ink); box-shadow: var(--glass-shadow); backdrop-filter: blur(24px); }
+.task-search-dialog::backdrop { background: rgb(0 0 0 / .28); backdrop-filter: blur(3px); }
+.task-search-dialog header { display: flex; gap: 12px; align-items: center; margin-bottom: 14px; }
+.task-search-dialog input { min-width: 0; flex: 1; border: 0; border-radius: 12px; padding: 12px; background: var(--glass-soft); color: inherit; font: inherit; }
+.task-search-dialog button { border: 0; background: transparent; color: inherit; font: inherit; cursor: pointer; border-radius: 10px; padding: 12px; }
+.task-search-dialog header button { font-size: 24px; padding: 4px 10px; }
+.task-search-dialog > div button { display: block; width: 100%; text-align: start; overflow-wrap: anywhere; }
+.task-search-dialog button:hover, .task-search-dialog button:focus-visible { background: var(--glass-soft); }
+@media (prefers-reduced-motion: reduce) { .task-item .task-item__date { transition: none; } }
+
+/* Elevation belongs to the rounded form, never its full-width wrappers. */
+html[data-theme] .workspace-shell[data-workspace-shell] .composer form {
+  border-color: var(--composer-edge) !important;
+  background: var(--composer-fill) !important;
+  box-shadow: var(--composer-shadow) !important;
+}
+html[data-theme] .workspace-shell[data-workspace-shell] .composer-attach-control::before { display: none; }
+.task-search-dialog[open] { animation: workspace-modal-enter 250ms cubic-bezier(.22, 1, .36, 1); }
+@keyframes workspace-modal-enter { from { opacity: 0; transform: scale(.96); } to { opacity: 1; transform: none; } }
+@keyframes workspace-menu-enter { from { opacity: 0; transform: translateY(4px) scale(.97); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .task-search-dialog[open] { animation: none; } }
+
+/* Shared motion vocabulary, adapted from the supplied Transitions.dev examples. */
+:root { --motion-open: 250ms; --motion-close: 150ms; --motion-content: 300ms; --motion-surface-ease: cubic-bezier(.22, 1, .36, 1); }
+html[data-theme] .optionhelper-choice[data-open="true"] .choice-menu { animation: none; }
+.task-search-dialog[open] { animation: none; }
+.workspace-body .workspace-shell[data-workspace-shell] .mode-switch--rail::before { transition: transform var(--motion-open) var(--motion-surface-ease), background-color var(--motion-open) ease; }
+.runtime-state-label, .assistant-reasoning__title { position: relative; display: inline-block; }
+.message--process:not([data-terminal="true"]) .runtime-state-label::after,
+.assistant-reasoning[data-running="true"] .assistant-reasoning__title::after {
+  content: attr(data-text); position: absolute; inset: 0; pointer-events: none; color: transparent;
+  background: linear-gradient(90deg, transparent 40%, var(--ink) 50%, transparent 60%) 100% 0 / 400% 100%;
+  -webkit-background-clip: text; background-clip: text; animation: workspace-status-shimmer 2200ms linear infinite;
+}
+@keyframes workspace-status-shimmer { to { background-position: 0 0; } }
+.assistant-reasoning__chevron { transition: transform var(--motion-open) var(--motion-surface-ease); }
+.assistant-reasoning[data-running="true"] .assistant-reasoning__body {
+  -webkit-mask-image: linear-gradient(transparent, #000 8px, #000 calc(100% - 8px), transparent);
+  mask-image: linear-gradient(transparent, #000 8px, #000 calc(100% - 8px), transparent);
+}
+.process-token-values { align-items: center; gap: 6px 14px; }
+.report-item { position: relative; isolation: isolate; }
+.report-item::after { content: ""; position: absolute; inset: 0; border-radius: inherit; z-index: -1; pointer-events: none; opacity: 0; background: radial-gradient(160px circle at var(--reflection-x, 50%) var(--reflection-y, 50%), rgb(255 255 255 / .10), transparent); transition: opacity var(--motion-content) ease; }
+.report-item:hover::after { opacity: 1; }
+.report-item__actions button svg, .message__actions button svg { transition: transform var(--motion-open) var(--motion-surface-ease); }
+.report-item__actions button:hover svg { transform: translateY(-1px); }
+.composer-attachment-area, .composer-followup-queue { transition: height var(--motion-content) var(--motion-surface-ease); }
+.composer-followup-row { border-radius: 12px; background: var(--glass-soft); margin-block: 4px; }
+.composer-question__option { transition: background-color var(--motion-close) ease, border-color var(--motion-close) ease; }
+@media (prefers-reduced-motion: reduce) {
+  .message--process .runtime-state-label::after, .assistant-reasoning__title::after { display: none; }
+  .workspace-body .workspace-shell[data-workspace-shell] .mode-switch--rail::before,
+  .assistant-reasoning__chevron, .report-item::after, .report-item__actions button svg,
+  .composer-attachment-area, .composer-followup-queue { transition: none; }
+}
+.send-control.is-sent .send-success { stroke-dasharray: var(--success-path-length, 20); animation: workspace-check-draw 350ms var(--motion-surface-ease) both; }
+@keyframes workspace-check-draw { from { stroke-dashoffset: var(--success-path-length, 20); } to { stroke-dashoffset: 0; } }
+@media (prefers-reduced-motion: reduce) { .send-control.is-sent .send-success { animation: none; stroke-dashoffset: 0; } }
+
+/* Unified selection controls: shared by App and embedded module pages. */
+html body label:has(> input:is([type="checkbox"], [type="radio"])) {
+  display: flex;
+  align-items: center;
+  column-gap: 8px !important;
+}
+
+html body input:is([type="checkbox"], [type="radio"]) {
+  -webkit-appearance: none !important;
+  appearance: none !important;
+  position: relative !important;
+  display: inline-grid !important;
+  place-items: center !important;
+  flex: 0 0 16px !important;
+  width: 16px !important;
+  height: 16px !important;
+  min-width: 16px !important;
+  min-height: 16px !important;
+  box-sizing: border-box !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  vertical-align: -2px;
+  border: 1px solid var(--color-rule-strong, #888) !important;
+  border-radius: 4px !important;
+  background: transparent !important;
+  color: #fff !important;
+  box-shadow: none !important;
+  transform: none !important;
+  cursor: pointer;
+  transition: background-color 150ms ease, border-color 150ms ease, opacity 150ms ease !important;
+}
+html body input:is([type="checkbox"], [type="radio"])::before { content: none !important; }
+html body input[type="radio"] { border-radius: 50% !important; }
+html body input:is([type="checkbox"], [type="radio"]):is(:checked, :indeterminate) {
+  border-color: var(--color-brand-red, #c8102e) !important;
+  background: var(--color-brand-red, #c8102e) !important;
+}
+html body input:is([type="checkbox"], [type="radio"])::after {
+  content: "" !important;
+  position: static !important;
+  display: block !important;
+  width: 10px !important;
+  height: 10px !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  transform: none !important;
+  background: #fff !important;
+  opacity: 0;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='m2 6 2.5 2.5L10 3' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='m2 6 2.5 2.5L10 3' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat;
+  transition: opacity 120ms ease;
+}
+html body input:is([type="checkbox"], [type="radio"]):checked::after { opacity: 1; }
+html body input[type="checkbox"]:indeterminate::after { opacity: 1; width: 8px !important; height: 2px !important; mask: none; -webkit-mask: none; }
+html body input[type="radio"]::after { width: 6px !important; height: 6px !important; border-radius: 50% !important; mask: none; -webkit-mask: none; }
+html body input:is([type="checkbox"], [type="radio"]):hover:not(:disabled) { border-color: var(--color-brand-red, #c8102e) !important; }
+html body input:is([type="checkbox"], [type="radio"]):focus-visible { outline: 2px solid color-mix(in srgb, var(--color-brand-red, #c8102e) 55%, transparent) !important; outline-offset: 3px !important; }
+html body input:is([type="checkbox"], [type="radio"]):disabled { opacity: .45 !important; cursor: not-allowed; }
+@media (prefers-reduced-motion: reduce) {
+  html body input:is([type="checkbox"], [type="radio"]), html body input:is([type="checkbox"], [type="radio"])::after { transition: none !important; }
+}
+html body :is(.choice-option, .oh-choice__option) { position: relative; padding-inline-end: 34px !important; }
+html body :is(.choice-option, .oh-choice__option)[aria-selected="true"]::after {
+  content: ""; position: absolute !important; right: 12px !important; top: 50% !important;
+  width: 12px !important; height: 12px !important; margin: 0 !important; border: 0 !important;
+  transform: translateY(-50%) !important; background: currentColor;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='m2 6 2.5 2.5L10 3' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='m2 6 2.5 2.5L10 3' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat;
+}
+/* End unified selection controls. */
+
+/* Compact controls keep their real layout space while revealing their label. */
+html[data-theme] .workspace-shell[data-workspace-shell] .composer .composer-attach-control {
+  appearance: none; -webkit-appearance: none; position: relative;
+  display: flex; flex: 0 0 auto; justify-content: flex-start; gap: 0;
+  box-sizing: border-box; height: 34px; min-height: 34px; max-height: 34px;
+  padding: 7px; overflow: hidden; border-radius: 17px;
+  transition: width 220ms cubic-bezier(.22, 1, .36, 1), background-color 150ms ease;
+}
+html[data-theme] .workspace-shell[data-workspace-shell] .composer .composer-attach-control svg { position: absolute; left: 7px; top: 7px; display: block; width: 20px; min-width: 20px; height: 20px; fill: none; stroke: currentColor; flex: none; }
+html[data-theme] .workspace-shell[data-workspace-shell] .composer .composer-attach-control .composer-attach-label {
+  display: block; position: static; margin-left: 27px; transform: none; flex: none; white-space: nowrap;
+  font-size: 12px; opacity: 0; transition: opacity 120ms ease;
+}
+html[data-theme] .workspace-shell[data-workspace-shell] .composer .composer-attach-control:is(:hover, :focus-visible):not(:disabled) { width: 104px; }
+html[data-theme] .workspace-shell[data-workspace-shell] .composer .composer-attach-control:is(:hover, :focus-visible):not(:disabled) .composer-attach-label { opacity: 1; }
+.composer-followup-control[hidden] { display: none !important; }
+.task-item__running-dot { width: 6px; height: 6px; background: var(--muted); box-shadow: none; }
+.task-item__running-dot[data-state="running"] { animation: task-activity-pulse 1600ms ease-in-out infinite; }
+@keyframes task-activity-pulse { 50% { opacity: .42; } }
+@media (prefers-reduced-motion: reduce) {
+  .task-item__running-dot { animation: none !important; }
+  .workspace-shell .composer-attach-control, .workspace-shell .composer-attach-label { transition: none !important; }
+}
+
+/* Settings uses the workspace top layer; its iframe does not replace the chat. */
+.workspace-settings-dialog {
+  box-sizing: border-box; width: min(900px, calc(100vw - 48px));
+  height: min(800px, calc(100vh - 64px)); max-width: none; max-height: none;
+  padding: 0; border: 1px solid var(--glass-edge); border-radius: 24px;
+  overflow: hidden; background: var(--color-surface); color: var(--color-ink);
+  box-shadow: 0 24px 64px rgb(0 0 0 / .18);
+}
+.workspace-settings-dialog::backdrop { background: rgb(0 0 0 / .16); backdrop-filter: blur(4px); }
+.workspace-settings-dialog iframe { display: block; width: 100%; height: 100%; border: 0; }
+@media (max-width: 700px) {
+  .workspace-settings-dialog { width: calc(100vw - 20px); height: calc(100dvh - 24px); border-radius: 18px; }
 }
