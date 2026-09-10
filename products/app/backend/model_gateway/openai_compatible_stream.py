@@ -153,9 +153,7 @@ def stream_openai_compatible(
         raise model_http_error(error.code) from error
     except (URLError, TimeoutError, OSError) as error:
         if request_control is not None and request_control.cancelled:
-            raise ModelRequestCancelled(
-                request_control.reason or "model request cancelled"
-            ) from error
+            request_control.raise_if_cancelled()
         raise model_network_error(timed_out=isinstance(error, TimeoutError)) from error
 
 
@@ -203,9 +201,19 @@ def _iter_sse_events(response: Any, *, request_control: ModelRequestControl | No
         if request_control is not None:
             request_control.raise_if_cancelled()
         try:
-            line = response.readline(MAX_SSE_LINE_BYTES + 1)
-        except TypeError:
-            line = response.readline()
+            try:
+                line = response.readline(MAX_SSE_LINE_BYTES + 1)
+            except TypeError:
+                if request_control is not None:
+                    request_control.raise_if_cancelled()
+                line = response.readline()
+        except Exception:
+            # close() from the cancellation watcher can clear HTTPResponse.fp
+            # during readline(), raising AttributeError/ValueError rather than
+            # OSError. Only an actual cancellation supersedes the read failure.
+            if request_control is not None and request_control.cancelled:
+                request_control.raise_if_cancelled()
+            raise
         if line in (b"", ""):
             if pending_line:
                 event = consume_line(bytes(pending_line))
