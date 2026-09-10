@@ -15,7 +15,7 @@ ExecutionSemantics = Literal["multi_agent", "single_model"]
 
 _DELIVERY_MARKERS = {
     "card": ("研究简报", "简单报告", "简报", "card"),
-    "report": ("完整研究报告", "详细报告", "深度报告", "完整报告", "report"),
+    "report": ("完整研究报告", "详细报告", "深度报告", "完整报告", "report", "html", "pdf", "报告"),
     "quote": ("参考报价", "报价表", "quote"),
 }
 _RECOMMENDATION_MARKERS = (
@@ -30,7 +30,7 @@ _RECOMMENDATION_MARKERS = (
 )
 _MODULE_MARKERS = (
     "收益图", "收益情景", "损益", "估值", "定价", "greek", "delta", "gamma", "vega", "theta",
-    "rho", "回测", "历史胜率", "取数", "行情", "波动率", "重新计算", "重新估值", "重新回测",
+    "rho", "回测", "历史胜率", "取数", "行情", "波动率", "重新计算", "重新估值", "重新回测", "历史数据", "交易日历", "获取数据", "下载数据",
 )
 _TERM_CHANGE_ACTIONS = ("修改", "调整", "改成", "改为", "重新定价", "重新回测", "重算")
 _TERM_FIELDS = (
@@ -84,7 +84,8 @@ def decide_workflow(
     text = str(message or "").strip()
     lowered = text.casefold()
     controlled_facts = facts or {}
-    delivery_kind = _delivery_kind(lowered)
+    action_text = _affirmative_actions(lowered)
+    delivery_kind = _delivery_kind(action_text)
     delivery_format: DeliveryFormat = "pdf" if "pdf" in lowered else "html"
     has_contract = isinstance(controlled_facts.get("resolved_contract"), Mapping)
     module_run_facts = controlled_facts.get("module_run_facts")
@@ -93,8 +94,10 @@ def decide_workflow(
     ) and bool(module_run_facts)
     pending_candidate = controlled_facts.get("recommendation_candidate")
     has_pending_candidate = isinstance(pending_candidate, Mapping)
-    recommendation_requested = any(marker in lowered for marker in _RECOMMENDATION_MARKERS)
-    module_requested = any(marker in lowered for marker in _MODULE_MARKERS)
+    recommendation_requested = any(marker in action_text for marker in _RECOMMENDATION_MARKERS) or bool(
+        re.search(r"(?:筛选|挑选|选出|选择)[^，。；;!?！？]{0,18}(?:期权|结构|产品)", action_text)
+    )
+    module_requested = any(marker in action_text for marker in _MODULE_MARKERS)
     changing_terms = has_term_change_intent(lowered)
     specified_structure = _has_specified_structure(lowered) and (
         module_requested
@@ -104,12 +107,30 @@ def decide_workflow(
         or any(marker in lowered for marker in ("这个", "这只", "该结构", "上述结构", "已有结构", "当前结构"))
     )
 
+    # Current instructions take priority over artifacts left by earlier turns.
+    if is_consultation_request(lowered):
+        return WorkflowDecision("consultation", preset_id=preset_id,
+                                execution_semantics=execution_semantics, reason_code="consultation")
+    if recommendation_requested:
+        return WorkflowDecision("recommendation", delivery_kind, delivery_format, preset_id,
+                                execution_semantics, "structure_selection_required")
+    if has_pending_candidate and re.search(r"(?:确认|就用|按)(?:这个|刚才|上述|第[0-9一二三四五六七八九十]+个)", lowered):
+        return WorkflowDecision("recommendation", delivery_kind, delivery_format, preset_id,
+                                execution_semantics, "recommendation_continuation")
+    if module_requested and not changing_terms and re.search(r"(?:只|仅|先|获取|下载|取数|拉取|计算|估值|定价|回测|画)", lowered):
+        return WorkflowDecision("direct_module", delivery_kind, delivery_format, preset_id,
+                                execution_semantics, "specified_structure" if specified_structure else "direct_capability_request")
+    if specified_structure and (module_requested or delivery_kind != "none") and not recommendation_requested:
+        return WorkflowDecision(
+            "direct_module", delivery_kind, delivery_format, preset_id,
+            execution_semantics, "specified_structure",
+        )
     if has_pending_candidate and _continues_recommendation(text, messages or ()):
         return WorkflowDecision(
             "recommendation", delivery_kind, delivery_format, preset_id,
             execution_semantics, "recommendation_continuation",
         )
-    if has_contract:
+    if has_contract and (module_requested or changing_terms or delivery_kind != "none"):
         reason = "existing_contract_term_change" if changing_terms else "existing_contract"
         return WorkflowDecision(
             "direct_module", delivery_kind, delivery_format, preset_id,
@@ -120,7 +141,7 @@ def decide_workflow(
             "direct_module", delivery_kind, delivery_format, preset_id,
             execution_semantics, "verified_results_delivery",
         )
-    if specified_structure:
+    if specified_structure and not recommendation_requested:
         return WorkflowDecision(
             "direct_module", delivery_kind, delivery_format, preset_id,
             execution_semantics, "specified_structure",
@@ -141,8 +162,25 @@ def decide_workflow(
     )
 
 
+def _affirmative_actions(text: str) -> str:
+    """Exclude negated action lists without swallowing the next affirmative action."""
+    action = r"(?:(?:生成|执行|进行|做)\s*)?(?:推荐|筛选|定价|估值|回测|报告|html|pdf|计算|文件)"
+    return re.sub(
+        rf"(?:不做|不要|不用|无需|不需要|先别|别)\s*(?:再|重新|走)?\s*{action}(?:\s*(?:和|或|与|、|及)\s*{action})*",
+        "", text,
+    )
+
+
+def is_consultation_request(text: str) -> bool:
+    if re.fullmatch(r"(?:你好|您好|谢谢|多谢|辛苦了|hello|hi)[，。！!\s]*", text):
+        return True
+    explanation = re.search(r"解释|说明一下|什么是|是什么意思|有什么区别|为什么|怎么理解|如何理解|原理", text)
+    action = re.search(r"生成|导出|出一份|重新计算|重新估值|重新定价|重新回测|重算|计算一下|回测一下|帮我.*(?:计算|估值|定价|回测)", text)
+    return bool(explanation and not action)
+
+
 def _delivery_kind(text: str) -> DeliveryKind:
-    for kind in ("quote", "report", "card"):
+    for kind in ("quote", "card", "report"):
         if any(marker in text for marker in _DELIVERY_MARKERS[kind]):
             return kind  # type: ignore[return-value]
     return "none"
@@ -180,8 +218,14 @@ def _continues_recommendation(
         return True
     if not messages:
         return False
-    latest = messages[-1]
-    return str(latest.get("status", "")).casefold() in {"pending_approval", "needs_input"}
+    latest = next((row for row in reversed(messages) if row.get("role") == "assistant"), {})
+    # Only a short answer can implicitly complete a pending question. Explicit
+    # new actions and explanations have already been routed above.
+    answer = re.fullmatch(
+        r"(?:[0-9][0-9.,%％/\-至到\s]*(?:万|千|[kKwW]|条|个?月|年|天|\.(?:SH|SZ))?|"
+        r"是|否|可以|接受|不接受|默认|都行|都可以|按默认|用默认)", text.strip(), re.IGNORECASE,
+    )
+    return bool(answer) and str(latest.get("status", "")).casefold() in {"pending_approval", "needs_input"}
 
 
 def has_term_change_intent(message: object) -> bool:
