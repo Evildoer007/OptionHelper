@@ -880,7 +880,7 @@ def _payoff_content(module: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(paths, list) or not paths:
         raise ReporterError("Payoffer reporter_payoff_facts.paths不能为空")
     scenarios: list[dict[str, str]] = []
-    endpoint = {"open": "开", "closed": "闭", "not_a_domain_boundary": "非边界"}
+    endpoint = {"open", "closed", "not_a_domain_boundary"}
     for path_index, raw in enumerate(paths, start=1):
         if not isinstance(raw, Mapping):
             raise ReporterError("reporter_payoff_facts.paths必须为对象数组")
@@ -902,15 +902,27 @@ def _payoff_content(module: Mapping[str, Any]) -> dict[str, Any]:
             lower_kind, upper_kind = str(domain.get("lower_endpoint")), str(domain.get("upper_endpoint"))
             if lower_kind not in endpoint or upper_kind not in endpoint:
                 raise ReporterError("reporter_payoff_facts端点类型无效")
-            condition = f"{axis_label}从{_decimal_text(lower)}至{_decimal_text(upper)}，左端{endpoint[lower_kind]}、右端{endpoint[upper_kind]}"
+            lower_text, upper_text = _decimal_text(lower), _decimal_text(upper)
+            if lower_kind == "not_a_domain_boundary" and upper_kind == "not_a_domain_boundary":
+                condition = f"{axis_label}覆盖全部有效区间"
+            elif upper_kind == "not_a_domain_boundary":
+                operator = "≥" if lower_kind == "closed" else ">"
+                condition = f"{axis_label}{operator}{lower_text}"
+            elif lower_kind == "not_a_domain_boundary":
+                operator = "≤" if upper_kind == "closed" else "<"
+                condition = f"{axis_label}{operator}{upper_text}"
+            else:
+                left_bracket = "[" if lower_kind == "closed" else "("
+                right_bracket = "]" if upper_kind == "closed" else ")"
+                condition = f"{axis_label}∈{left_bracket}{lower_text},{upper_text}{right_bracket}"
             payoff_text = (
-                f"{_decimal_text(minimum)}%"
+                f"收益率为{_decimal_text(minimum)}%"
                 if math.isclose(minimum, maximum, rel_tol=0.0, abs_tol=1e-12)
-                else f"{_decimal_text(minimum)}%至{_decimal_text(maximum)}%"
+                else f"收益率区间为{_decimal_text(minimum)}%至{_decimal_text(maximum)}%"
             )
             scenarios.append({
                 "title": f"{path_title}·情景{segment_index}",
-                "rule": f"条件：{condition}；收益率：{payoff_text}",
+                "rule": f"{condition}；{payoff_text}。",
             })
     value["scenarios"] = scenarios
     value["artifacts"] = _artifact_rows(module)
