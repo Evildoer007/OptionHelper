@@ -146,6 +146,28 @@
     const timeSummary = known.length > 1 ? `${known[0]}至${known.at(-1)}` : known[0] || '时间未记录';
     return [products, underlyings, modules, terms, timeSummary, known.length && times.includes('时间未记录') ? '部分时间未记录' : ''].filter(Boolean).join('，');
   }
+  function sourceLabel(source) {
+    const candidates = source.candidates || [];
+    const products = [...new Set(candidates.map(item => item.product_name).filter(Boolean))];
+    const names = products.slice(0,2).join('、') + (products.length > 2 ? `等${products.length}项` : '');
+    const assets = [...new Set(candidates.flatMap(item => item.underlyings || []))];
+    return [names || '已保存分析', assets.length === 1 ? assets[0] : assets.length ? `${assets.length}个标的` : ''].filter(Boolean).join(' / ');
+  }
+  function compactRunLabel(run, candidate) {
+    const time = runTime(candidate?.run_display?.[run?.run_id]?.run_time);
+    return time === '时间未记录' ? time : time.slice(5);
+  }
+  function syncAvailableModules(source) {
+    for (const input of document.querySelectorAll('#moduleGroup input[data-module]')) {
+      const module = input.dataset.module;
+      if (module === 'recommender') continue;
+      const available = (source.candidates || []).some(candidate => candidate.module_run_options?.[module]?.length || candidate.module_run_refs?.[module]);
+      if (!available) input.checked = false;
+      else if (input.disabled) input.checked = true;
+      input.disabled = !available;
+      input.closest('label').title = available ? '' : '当前来源尚无该模块的成功结果';
+    }
+  }
   function distinctLabels(labels) {
     return labels.map((label, index) => labels.filter(item => item === label).length > 1 ? `${label}，记录${index + 1}` : label);
   }
@@ -167,7 +189,7 @@
     $('moduleGroup').hidden = isQuote;
     const count = isQuote ? state.quoteItems.length : state.selected.size; const moduleCount = selectedModules().length;
     const comparison = selectedDelivery() === 'comparison';
-    $('selectionCount').textContent = isQuote ? (count ? `已加入${count}条报价行` : '未加入报价行') : (count ? `已选择${count}项分析来源` : '未选择分析来源');
+    $('selectionCount').textContent = isQuote ? (count ? `已加入${count}条报价行` : '未加入报价行') : (count ? `已选择${count}项分析来源` : '请选择要纳入报告的产品');
     const unavailableReason = state.activeReportRequestId
       ? '报告正在生成，请等待当前请求完成。'
       : state.loadingSources
@@ -213,10 +235,10 @@
     const previousId = previous?.source_id || select.value;
     const previousRefs = Object.fromEntries((previous?.candidates || []).map(candidate => [candidate.candidate_id,
       Object.fromEntries(Object.entries(candidate.module_run_options || {}).map(([module, options]) => [module, state.runRefs[candidate.candidate_id]?.[module] || options[0]]))]));
-    const labels = distinctLabels(sources.map(sourceSummary));
+    const labels = distinctLabels(sources.map(sourceLabel));
     const retained = sources.find(source => source.source_id === previousId);
     const missing = Boolean(previous && !retained);
-    select.innerHTML = sources.length ? `${missing ? '<option value="">原来源不可用，请重新选择</option>' : ''}${sources.map((source, index) => `<option value="${esc(source.source_id)}">${esc(labels[index])}</option>`).join('')}` : '<option value="">暂无可用报告来源</option>';
+    select.innerHTML = sources.length ? `${missing ? '<option value="">原来源不可用，请重新选择</option>' : ''}${sources.map((source, index) => `<option value="${esc(source.source_id)}" title="${esc(sourceSummary(source))}">${esc(labels[index])}</option>`).join('')}` : '<option value="">暂无可用报告来源</option>';
     select.value = retained?.source_id || (missing ? '' : sources[0]?.source_id || '');
     select.disabled = !sources.length;
     state.source = activeSource(); state.runRefs = {};
@@ -275,7 +297,8 @@
   function renderCandidates(focusTarget = null) {
     state.source = activeSource(); const source = state.source; const list = $('candidateList'); const isQuote = selectedValue('outputType') === 'quote';
     if (!source) { list.innerHTML = ''; $('sourceDetail').textContent = '当前任务尚无可用于生成报告的分析结果。'; renderQuoteItems(); updateControls(); return; }
-    $('sourceDetail').innerHTML = esc(sourceSummary(source));
+    $('sourceDetail').innerHTML = `<details><summary>来源详情</summary><p>${esc(sourceSummary(source))}</p></details>`;
+    syncAvailableModules(source);
     if (isQuote) {
       const sources = state.catalog?.sources || [];
       list.innerHTML = sources.map(item => `<section class="quote-source"><h3>${esc(sourceSummary(item))}</h3>${(item.candidates || []).map(candidate => quoteCandidate(candidate, item)).join('')}</section>`).join('');
@@ -300,10 +323,10 @@
         const status = moduleStatus(run);
         const selectedIndex = options.indexOf(state.runRefs[candidate.candidate_id]?.[module]);
         const selected = selectedIndex >= 0 ? selectedIndex : 0;
-        const labels = distinctLabels(options.map(item => moduleRunIdentity(item, candidate)));
+        const labels = distinctLabels(options.map(item => compactRunLabel(item, candidate)));
         const selector = options.length > 1
-          ? `<select class="run-choice" aria-label="选择${esc(moduleNames[module])}运行" data-candidate="${esc(candidate.candidate_id)}" data-module="${esc(module)}">${options.map((item, index) => `<option value="${index}" ${index === selected ? 'selected' : ''}>${esc(labels[index])}</option>`).join('')}</select>`
-          : options.length === 1 ? `<span>${esc(labels[0])}</span>` : `<span>${esc(status)}</span>`;
+          ? `<select class="run-choice" aria-label="选择${esc(moduleNames[module])}运行" data-candidate="${esc(candidate.candidate_id)}" data-module="${esc(module)}">${options.map((item, index) => `<option value="${index}" title="${esc(moduleRunIdentity(item, candidate))}" ${index === selected ? 'selected' : ''}>${esc(labels[index])}</option>`).join('')}</select>`
+          : options.length === 1 ? `<span title="${esc(moduleRunIdentity(options[0], candidate))}">${esc(labels[0])}</span>` : `<span>${status === '缺失' || status === 'missing' ? '未运行' : esc(status)}</span>`;
         return `<div class="run-row" data-status="${esc(status)}"><strong>${({payoff:'收益结构',pricing:'估值定价',backtest:'历史回测'})[module]}</strong>${selector}</div>`;
       }).join('');
       return `<article class="candidate" data-candidate="${esc(candidate.candidate_id)}" data-selected="${checked}"><div class="candidate-head"><input type="checkbox" data-select-candidate="${esc(candidate.candidate_id)}" ${checked?'checked':''} aria-label="选择${esc(candidate.product_name)}"><div class="candidate-title">${esc(candidate.product_name)}<div class="candidate-subtitle">${esc(candidateIdentity(candidate))}</div></div></div><div class="run-grid">${runs}</div>${candidateAudit(candidate, source)}</article>`;
