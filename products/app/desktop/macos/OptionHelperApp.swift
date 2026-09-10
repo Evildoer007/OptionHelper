@@ -85,6 +85,7 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
     private var navigationGeneration = 0
     private var titlebarDragView: OptionHelperTitlebarDragView?
     private var railToggle: NSButton?
+    private var taskSearch: NSButton?
     private var reportToggle: NSButton?
     private var loadedURL = false
     private var themePreference = "light"
@@ -346,6 +347,16 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         if titlebarDragView == nil { installTitlebarDragView(in: window) }
         if railToggle == nil { installRailToggle(in: window) }
         if reportToggle == nil { installReportToggle(in: window) }
+        if taskSearch == nil || taskSearch?.superview !== titlebar {
+            taskSearch?.removeFromSuperview()
+            let button = NSButton(image: NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: "搜索任务")!, target: self, action: #selector(searchTasks(_:)))
+            button.isBordered = false
+            button.contentTintColor = .secondaryLabelColor
+            button.toolTip = "搜索任务"
+            button.setAccessibilityLabel("搜索任务")
+            titlebar.addSubview(button)
+            taskSearch = button
+        }
         layoutTitlebarControls()
     }
 
@@ -361,7 +372,7 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         guard let closeButton = window.standardWindowButton(.closeButton), let titlebar = closeButton.superview else { return }
         let size = NSSize(width: 26, height: 24)
         let button = NSButton(frame: NSRect(
-            x: closeButton.frame.maxX + 94,
+            x: closeButton.frame.maxX + 60,
             y: closeButton.frame.midY - size.height / 2,
             width: size.width,
             height: size.height
@@ -401,7 +412,7 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
               let titlebar = closeButton.superview else { return }
         let size = NSSize(width: 26, height: 24)
         railToggle?.frame = NSRect(
-            x: closeButton.frame.maxX + 94,
+            x: closeButton.frame.maxX + 60,
             y: closeButton.frame.midY - size.height / 2,
             width: size.width,
             height: size.height
@@ -412,7 +423,8 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
             width: size.width,
             height: size.height
         )
-        let dragLeading = (railToggle?.frame.maxX ?? closeButton.frame.maxX + 120) + 8
+        taskSearch?.frame = NSRect(x: (railToggle?.frame.maxX ?? closeButton.frame.maxX + 100) + 8, y: closeButton.frame.midY - 12, width: 26, height: 24)
+        let dragLeading = (taskSearch?.frame.maxX ?? closeButton.frame.maxX + 134) + 8
         let dragTrailing = (reportToggle?.frame.minX ?? titlebar.bounds.maxX - 40) - 8
         titlebarDragView?.frame = NSRect(
             x: dragLeading,
@@ -426,6 +438,10 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         webView?.evaluateJavaScript("window.dispatchEvent(new Event('optionhelper:toggle-task-rail'))")
     }
 
+    @objc private func searchTasks(_ sender: Any?) {
+        webView?.evaluateJavaScript("window.dispatchEvent(new Event('optionhelper:search-tasks'))")
+    }
+
     @objc private func toggleReport(_ sender: Any?) {
         webView?.evaluateJavaScript("document.querySelector('[data-report-toggle]')?.click()")
     }
@@ -437,6 +453,7 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         let showsWorkspaceControls = route == "optchat" || route == "optdesk"
         let reportLabel = route == "optchat" ? "打开或收起任务与交付" : "打开或收起报告库"
         railToggle?.isHidden = !showsWorkspaceControls
+        taskSearch?.isHidden = !showsWorkspaceControls
         reportToggle?.isHidden = !showsWorkspaceControls
         reportToggle?.toolTip = reportLabel
         reportToggle?.setAccessibilityLabel(reportLabel)
@@ -734,51 +751,10 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
 
     private func showSettingsCenter(_ request: URLRequest) {
         guard let url = request.url, isSafeAppURL(url), url.path == "/settings", let webView else { return }
-        if settingsWindow == nil || settingsWebView == nil {
-            let configuration = WKWebViewConfiguration()
-            configuration.websiteDataStore = webView.configuration.websiteDataStore
-            configuration.userContentController.add(self, name: "optionhelperTheme")
-            configuration.userContentController.add(self, name: "optionhelperUIScale")
-            let settingsView = WKWebView(frame: .zero, configuration: configuration)
-            settingsView.translatesAutoresizingMaskIntoConstraints = false
-            settingsView.navigationDelegate = self
-            settingsView.uiDelegate = self
-            settingsView.pageZoom = uiScale
-            settingsView.underPageBackgroundColor = .windowBackgroundColor
-            settingsView.wantsLayer = true
-            settingsView.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
-            let contentView = NSView(frame: .zero)
-            contentView.wantsLayer = true
-            contentView.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
-            contentView.addSubview(settingsView)
-            NSLayoutConstraint.activate([
-                settingsView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
-                settingsView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
-                settingsView.topAnchor.constraint(equalTo: contentView.topAnchor),
-                settingsView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
-            ])
-            let settingsWindow = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 960, height: 760),
-                styleMask: [.titled, .closable, .miniaturizable, .resizable],
-                backing: .buffered,
-                defer: false
-            )
-            settingsWindow.title = "OptionHelper设置中心"
-            settingsWindow.backgroundColor = .windowBackgroundColor
-            settingsWindow.isOpaque = true
-            settingsWindow.delegate = self
-            settingsWindow.contentView = contentView
-            settingsWindow.center()
-            self.settingsWindow = settingsWindow
-            settingsWebView = settingsView
-            _ = ensureSettingsRecoveryView(contentView: contentView, relativeTo: settingsView)
-        }
-        settingsRecoveryDetail?.stringValue = "正在确认设置页面已完整呈现。"
-        settingsRecoveryView?.isHidden = false
-        settingsWindow?.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
-        beginSettingsNavigationWatchdog()
-        settingsWebView?.load(request)
+        guard let data = try? JSONSerialization.data(withJSONObject: [url.fragment ?? ""]),
+              let arguments = String(data: data, encoding: .utf8) else { return }
+        let script = "void import('/app/frontend/shared/app.js').then(module => module.openWorkspaceSettings(...\(arguments)));"
+        webView.evaluateJavaScript(script, completionHandler: nil)
     }
 
     @objc private func retrySettingsCenter(_ sender: Any?) {
@@ -1155,7 +1131,7 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
             decisionHandler(.download)
             return
         }
-        if webView === self.webView, isSafeAppURL(url), url?.path == "/settings" {
+        if webView === self.webView, navigationAction.targetFrame?.isMainFrame == true, isSafeAppURL(url), url?.path == "/settings" {
             showSettingsCenter(navigationAction.request)
             decisionHandler(.cancel)
             return
