@@ -11,6 +11,23 @@ from .models import AuditEvent
 from .ports import AgentPort, AgentStepResult
 
 
+# One source for the model-facing array schema and the Host allowlist.
+EVALUATION_MODULES = ("payoffer", "pricer", "backtester")
+STRUCTURER_PLAN_SCHEMA = {
+    "type": "array",
+    "items": {
+        "type": "object",
+        "required": ["product_id", "modules", "term_overrides"],
+        "additionalProperties": False,
+        "properties": {
+            "product_id": {"type": "string", "minLength": 1},
+            "modules": {"type": "array", "minItems": 1, "uniqueItems": True,
+                        "items": {"type": "string", "enum": list(EVALUATION_MODULES)}},
+            "term_overrides": {"type": "object"},
+        },
+    },
+}
+
 ROLE_RULES = {
     "Interpreter": "只提取用户已确认事实、缺失信息和产品资料检索查询；查询应使用结构类型、收益特征或风险方向，不查询行情、期权链或波动率数据；不得推荐产品。",
     "Selector": "只能从输入evidence选择产品；每个候选必须引用evidence_id。",
@@ -120,6 +137,20 @@ class AgentStepRunner:
             "required_output": _required_output(role, payload),
             "input": dict(payload),
         }
+        if role == "Structurer":
+            request["output_schema"] = {
+                "type": "object", "required": ["research_queries", "proposals", "evaluation_plan"],
+                "additionalProperties": False,
+                "properties": {
+                    "research_queries": {"type": "array", "items": {"type": "string"}},
+                    "proposals": {"type": "array", "items": {"type": "object"}},
+                    "evaluation_plan": STRUCTURER_PLAN_SCHEMA,
+                },
+            }
+        if role == "Structurer" and payload.get("comparison_only") is True:
+            # No financial plan is needed to compare product-library evidence.
+            request["required_output"]["evaluation_plan"] = []
+            request["output_schema"]["properties"]["evaluation_plan"] = {"type": "array", "maxItems": 0}
         return port_role, request
 
     def accept(
@@ -130,6 +161,7 @@ class AgentStepRunner:
         step: AgentStepResult,
     ) -> Mapping[str, Any]:
         try:
+            _validate_request_result(role, request, step.result)
             result = self.receipt_ledger.validate(role, port_role, request, step)
         except Exception as error:
             self.audit.append(role.lower(), "failed", agent_role=port_role, input_value=request, output_value=None,
@@ -141,6 +173,20 @@ class AgentStepRunner:
     def run(self, role: str, payload: Mapping[str, Any]) -> Mapping[str, Any]:
         port_role, request = self.build_request(role, payload)
         step = self.port.run_step(port_role, request)
+        if role == "Structurer":
+            try:
+                _validate_request_result(role, request, step.result)
+            except ValueError as error:
+                # Repair structure once, before accepting a receipt or executing
+                # a plan. Never coerce strings into modules or retry tool effects.
+                self.audit.append("structurer", "invalid_output", agent_role=port_role,
+                                  input_value=request, output_value=None,
+                                  detail={"message": str(error), "repair_attempt": 1})
+                request = {**request, "validation_feedback": {
+                    "error": str(error), "attempt": 1,
+                    "instruction": "按output_schema重新返回完整result；modules必须为JSON数组，不得新增工具或计算事实。",
+                }}
+                step = self.port.run_step(port_role, request)
         return self.accept(role, port_role, request, step)
 
     def run_named(self, payloads: Mapping[str, Mapping[str, Any]]) -> Mapping[str, Mapping[str, Any]]:
@@ -227,9 +273,11 @@ def _required_output(role: str, payload: Mapping[str, Any] | None = None) -> Map
                 "evidence_ref_ids": "string[]", "missing_inputs": "string[]",
             }],
             "evaluation_plan": [{
-                "product_id": "string", "modules": "payoffer|pricer|backtester[]", "term_overrides": "object",
+                "product_id": "string", "modules": ["payoffer"], "term_overrides": "object",
             }],
         }
+    if role == "Trader" and isinstance(payload, Mapping) and payload.get("comparison_only") is True:
+        return _required_output("Reviewer", {"proposals": []})
     if role == "Trader":
         return {
             "evaluations": [{
@@ -275,6 +323,13 @@ def _required_output(role: str, payload: Mapping[str, Any] | None = None) -> Map
     if role == "Executor":
         return {"tool_requests": [{"candidate_id": "string", "module": "string"}]}
     return {"response": "string", "tool_requests": [{"module": "string", "request": "object"}]}
+
+
+def _validate_request_result(role: str, request: Mapping[str, Any], value: object) -> None:
+    _validate_role_result(role, value)
+    domain_input = request.get("input", {})
+    if role == "Structurer" and domain_input.get("comparison_only") is True and value.get("evaluation_plan"):
+        raise ValueError("只比较模式的evaluation_plan必须为[]，不得安排定价、回测或收益计算")
 
 
 def _validate_role_result(role: str, value: object) -> None:
@@ -336,18 +391,23 @@ def _validate_role_result(role: str, value: object) -> None:
         _strings_field(value, "research_queries")
         _validate_role_result("Selector", {"proposals": value.get("proposals")})
         plans = _array_field(value, "evaluation_plan")
-        for plan in plans:
+        for index, plan in enumerate(plans):
             if not isinstance(plan, Mapping):
                 raise ValueError("Structurer.evaluation_plan必须为对象数组")
             _closed_fields(plan, {"product_id", "modules", "term_overrides"}, "Structurer.evaluation_plan")
             _nonempty_text(plan.get("product_id"), "Structurer.evaluation_plan.product_id")
-            modules = _array_field(plan, "modules")
-            if not modules or any(module not in {"payoffer", "pricer", "backtester"} for module in modules):
+            modules = plan.get("modules")
+            if not isinstance(modules, list):
+                raise ValueError(f'Structurer.evaluation_plan[{index}].modules必须为数组，例如["payoffer"]，不能为字符串或null')
+            if not modules or any(not isinstance(module, str) or module not in EVALUATION_MODULES for module in modules):
                 raise ValueError("Structurer.evaluation_plan.modules包含未授权模块")
             if len(modules) != len(set(modules)):
                 raise ValueError("Structurer.evaluation_plan.modules不得重复")
             if not isinstance(plan.get("term_overrides", {}), Mapping):
                 raise ValueError("Structurer.evaluation_plan.term_overrides必须为对象")
+        return
+    if role == "Trader" and "reviews" in value:
+        _validate_role_result("Reviewer", value)
         return
     if role == "Trader":
         _closed_fields(value, {"evaluations"}, role)
@@ -407,8 +467,6 @@ def _validate_role_result(role: str, value: object) -> None:
             raise ValueError("Reviewer.decision无效")
         if not isinstance(value.get("reason", ""), str):
             raise ValueError("Reviewer.reason必须为字符串")
-        if value.get("decision") == "approve" and str(value.get("reason", "")).strip():
-            raise ValueError("Reviewer批准时reason必须为空")
         if value.get("decision") == "reject" and not str(value.get("reason", "")).strip():
             raise ValueError("Reviewer拒绝时必须说明reason")
         return
