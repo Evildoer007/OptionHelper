@@ -7,11 +7,13 @@ business projections, never raw history or copied Capability financial results.
 from __future__ import annotations
 
 import copy
+from contextlib import contextmanager
+from threading import Event, Lock
 import hashlib
 import json
 import re
 from datetime import datetime, timezone
-from typing import Any, Mapping
+from typing import Any, Mapping, Callable
 from uuid import uuid4
 
 from ..attachments import AttachmentStore
@@ -35,6 +37,8 @@ PENDING_RECOMMENDATION_SCHEMA_ID = "optionhelper.pending-recommendation"
 class TaskService:
     def __init__(self, state: _LocalDocumentStore, event_log: SessionEventLog | None = None) -> None:
         self._state = state
+        self._conversation_controls: dict[tuple[str, str, str], tuple[Event, Callable[[], bool]]] = {}
+        self._conversation_controls_lock = Lock()
         self._event_log = event_log or SessionEventLog(state._root / "session-events.sqlite3")
         self._projection_cache = ProjectionCache(self._event_log)
         self._attachments = AttachmentStore(state._root / "attachments")
@@ -530,7 +534,35 @@ class TaskService:
                     return dict(reference)
         raise KeyError(attachment_id)
 
+    @contextmanager
+    def conversation_cancellation(self, identity: SessionIdentity, task_id: str, cancelled: Callable[[], bool] | None = None):
+        """Bind one running turn to its operation, including child threads."""
+        key = (identity.tenant_id, identity.principal_id, task_id)
+        stopped = Event()
+        check = lambda: stopped.is_set() or bool(cancelled and cancelled())
+        with self._conversation_controls_lock:
+            self._conversation_controls[key] = (stopped, check)
+        try:
+            yield check
+        finally:
+            with self._conversation_controls_lock:
+                self._conversation_controls.pop(key, None)
+
+    def cancellation_check(self, identity: SessionIdentity, task_id: str) -> Callable[[], bool]:
+        """Capture this turn's signal so a later turn cannot revive old work."""
+        with self._conversation_controls_lock:
+            active = self._conversation_controls.get((identity.tenant_id, identity.principal_id, task_id))
+        return active[1] if active else lambda: self.is_cancelled(identity, task_id)
+
     def is_cancelled(self, identity: SessionIdentity, task_id: str) -> bool:
+        key = (identity.tenant_id, identity.principal_id, task_id)
+        with self._conversation_controls_lock:
+            active = self._conversation_controls.get(key)
+        # Poll the active signal directly. Loading and migrating stored task
+        # history on every model-watcher tick adds disk contention and can delay
+        # cancellation; persisted status belongs to the inactive-task fallback.
+        if active is not None:
+            return bool(active[1]())
         return str(self.get(identity, task_id).get("status", "")) == "cancelled"
 
     def cancel(self, identity: SessionIdentity, task_id: str) -> dict[str, Any]:
@@ -555,6 +587,10 @@ class TaskService:
             return value
 
         cancelled = self._public_task(self._state.update("tasks", update)[task_id])
+        with self._conversation_controls_lock:
+            active = self._conversation_controls.get((identity.tenant_id, identity.principal_id, task_id))
+            if active:
+                active[0].set()
         if question_id is not None:
             self._event_log.append(
                 session_id,
