@@ -18,8 +18,9 @@ FORM: Read模式。详细报告只有一种连续A4版式。
   --rule: var(--color-rule);
   --rule-strong: var(--color-rule-strong);
   --red: var(--color-brand-red);
+  --brand-signature: var(--color-brand-signature);
   --on-brand: var(--color-on-brand);
-  --blue: var(--color-blue-gray);
+  --blue: var(--ink-soft);
   --gold: var(--color-risk-gold);
 }
 
@@ -143,7 +144,7 @@ a { color: inherit; }
 
 .report-head__brand {
   margin: 0 0 4px;
-  color: var(--blue);
+  color: var(--brand-signature);
   font-size: var(--type-table);
   font-weight: 760;
   letter-spacing: .045em;
@@ -173,16 +174,26 @@ a { color: inherit; }
 .metric-strip {
   display: grid;
   margin: 20px 0 0;
-  border-top: 1px solid var(--rule);
+}
+
+.identity-ledger {
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 20px;
+  padding: 0 0 11px;
   border-bottom: 1px solid var(--rule);
 }
 
-.identity-ledger { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.evidence-spine {
+  border: 1px solid var(--rule-strong);
+  background: var(--surface);
+}
 
 .report-head > .identity-ledger {
   grid-template-columns: minmax(0, 1fr);
-  align-self: stretch;
+  align-self: end;
   margin: 0;
+  padding: 0 0 1px 16px;
+  border: 0;
   border-left: 1px solid var(--rule-strong);
 }
 
@@ -193,8 +204,8 @@ a { color: inherit; }
 }
 
 .identity-ledger div {
-  padding: 8px 11px 9px;
-  border-right: 1px solid var(--rule);
+  padding: 0;
+  border: 0;
 }
 
 .identity-ledger div:last-child { border-right: 0; }
@@ -353,11 +364,10 @@ a { color: inherit; }
 
 .conclusion-band {
   margin: 0 0 15px;
-  padding: 12px 15px 13px;
+  padding: 14px 17px 15px;
   border-top: 1px solid var(--color-gold-border);
   border-bottom: 1px solid var(--color-gold-border);
-  border-left: 3px solid var(--gold);
-  background: #FBF7EE;
+  background: var(--color-risk-gold-soft);
 }
 
 .conclusion-band__label {
@@ -366,6 +376,11 @@ a { color: inherit; }
   font-size: var(--type-meta);
   font-weight: 780;
   letter-spacing: .08em;
+}
+
+.conclusion-band .metric {
+  border-top-color: var(--color-gold-border);
+  background: transparent;
 }
 
 .conclusion-band h3 {
@@ -385,30 +400,33 @@ a { color: inherit; }
 .recommendation-head { padding-bottom: 3px; }
 
 .metric-strip {
-  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-  margin: 12px 0;
-  border-left: 0;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 10px 22px;
+  margin: 14px 0;
+  border: 0;
+  background: transparent;
 }
 
 .metric {
-  padding: 10px 12px 11px;
-  border-right: 1px solid var(--rule-strong);
-  background: var(--surface);
+  padding: 9px 0 10px;
+  border: 0;
+  border-top: 1px solid var(--rule-strong);
+  background: transparent;
 }
 
 .metric:last-child { border-right: 0; }
 
 .metric__value {
-  color: var(--red);
+  color: var(--ink);
   font-size: var(--type-metric);
-  font-weight: 770;
+  font-weight: 740;
   letter-spacing: -.025em;
   line-height: 1.18;
 }
 
 .metric__label {
   margin-top: 4px;
-  color: var(--blue);
+  color: var(--ink-soft);
   font-size: var(--type-table);
   font-weight: 700;
   line-height: 1.5;
@@ -424,7 +442,7 @@ a { color: inherit; }
 .scenario-grid,
 .alternative-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
   gap: 10px;
   margin: 12px 0;
 }
@@ -436,13 +454,13 @@ a { color: inherit; }
 .scenario,
 .alternative {
   min-width: 0;
-  padding: 11px 12px 12px;
-  border-top: 2px solid var(--red);
-  border-right: 1px solid var(--rule-strong);
-  border-bottom: 1px solid var(--rule-strong);
-  border-left: 1px solid var(--rule-strong);
+  padding: 10px 0 11px;
+  border-top: 1px solid var(--rule-strong);
+  border-right: 0;
+  border-bottom: 0;
+  border-left: 0;
   border-radius: 0;
-  background: var(--surface);
+  background: transparent;
 }
 
 .scenario p,
@@ -476,7 +494,7 @@ a { color: inherit; }
 .chart-figure {
   margin: 14px 0;
   padding: 11px 0 12px;
-  border-top: 2px solid var(--red);
+  border-top: 1px solid var(--rule-strong);
   border-bottom: 1px solid var(--rule-strong);
   background: transparent;
 }
@@ -484,7 +502,7 @@ a { color: inherit; }
 .payoff-figure figcaption,
 .chart-figure figcaption {
   margin-bottom: 8px;
-  color: var(--blue);
+  color: var(--ink-soft);
   font-size: var(--type-caption);
   font-weight: 720;
   line-height: 1.5;
@@ -493,7 +511,8 @@ a { color: inherit; }
 
 .payoff-figure img {
   display: block;
-  width: min(100%, 158mm);
+  width: 100%;
+  max-width: none;
   height: auto;
   margin: auto;
   object-fit: contain;
@@ -517,10 +536,15 @@ a { color: inherit; }
 .chart-data { margin-top: 8px; }
 
 .chart-summary {
-  margin: 0 0 8px;
-  color: var(--muted);
-  font-size: var(--type-meta);
-  line-height: 1.55;
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 .source-note {
@@ -563,10 +587,10 @@ a { color: inherit; }
   border-top: 0;
   border-right: 0;
   border-bottom: 0;
-  border-left: 1px solid var(--gold);
+  border-left: 1px solid var(--red);
   border-radius: 0;
   background: var(--paper);
-  color: var(--color-gold-ink);
+  color: var(--ink-soft);
 }
 
 .module-state strong { font-size: var(--type-caption); }
@@ -657,7 +681,7 @@ table {
 
 caption {
   padding: 8px 0;
-  color: var(--blue);
+  color: var(--ink-soft);
   font-size: var(--type-caption);
   font-weight: 730;
   line-height: 1.5;
@@ -749,8 +773,8 @@ body.report-profile-a4 .report-head { padding-bottom: 4.5mm; }
 body.report-profile-a4 .report-head h1 { font-size: var(--type-report-title-a4); }
 body.report-profile-a4 .report-head__brand { margin-top: 10px; font-size: var(--type-table); }
 body.report-profile-a4 .identity-ledger { margin-top: 12px; }
-body.report-profile-a4 .report-head > .identity-ledger { max-width: 230px; }
-body.report-profile-a4 .identity-ledger div { padding: 9px 11px 10px; }
+body.report-profile-a4 .report-head > .identity-ledger { max-width: 230px; margin-top: 0; }
+body.report-profile-a4 .identity-ledger div { padding: 0; }
 body.report-profile-a4 .evidence-wrap { margin-top: 15px; padding-top: 10px; }
 body.report-profile-a4 .evidence-spine { margin-top: 0; }
 body.report-profile-a4 .evidence-step { padding: 8px 9px 9px; }
@@ -764,17 +788,17 @@ body.report-profile-a4 .alternative h3 { font-size: var(--type-table); }
 body.report-profile-a4 .report-section p { margin: 5px 0; }
 body.report-profile-a4 .conclusion-band {
   margin-bottom: 14px;
-  padding: 11px 14px 12px;
+  padding: 13px 16px 14px;
 }
 body.report-profile-a4 .conclusion-band__label { margin-bottom: 4px !important; }
 body.report-profile-a4 .metric-strip { margin: 10px 0; }
-body.report-profile-a4 .metric { padding: 9px 10px 10px; }
+body.report-profile-a4 .metric { padding: 9px 0 10px; }
 body.report-profile-a4 .metric__value { font-size: calc(var(--type-metric) - 1px); }
 body.report-profile-a4 .metric__label { margin-top: 4px; font-size: var(--type-meta); }
 body.report-profile-a4 .scenario-grid,
 body.report-profile-a4 .alternative-grid { gap: 8px; margin: 10px 0; }
 body.report-profile-a4 .scenario-grid,
-body.report-profile-a4 .alternative-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+body.report-profile-a4 .alternative-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); }
 body.report-profile-a4 .scenario,
 body.report-profile-a4 .alternative { padding: 9px 10px; border-radius: 0; }
 body.report-profile-a4 .scenario p,
@@ -836,11 +860,12 @@ body.report-profile-a4 .disclaimer { margin-top: 12px; padding-top: 10px; line-h
   .report-head > .identity-ledger {
     grid-template-columns: 1fr;
     max-width: none;
-    border-top: 1px solid var(--rule);
+    padding: 0 0 10px;
+    border-top: 0;
     border-left: 0;
   }
-  .identity-ledger div:nth-child(2) { border-right: 0; }
-  .identity-ledger div:nth-child(-n + 2) { border-bottom: 1px solid var(--rule); }
+  .identity-ledger div:nth-child(2),
+  .identity-ledger div:nth-child(-n + 2) { border: 0; }
   .evidence-spine { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .evidence-step:nth-child(2n) { border-right: 0; }
   .evidence-step:nth-child(-n + 4) { border-bottom: 1px solid var(--rule); }
@@ -848,8 +873,7 @@ body.report-profile-a4 .disclaimer { margin-top: 12px; padding-top: 10px; line-h
   .alternative-grid,
   body.report-profile-a4 .scenario-grid,
   body.report-profile-a4 .alternative-grid { grid-template-columns: 1fr; }
-  .metric { border-bottom: 1px solid var(--rule); }
-  .metric:last-child { border-bottom: 0; }
+  .metric { border-bottom: 0; }
   .chart,
   body.report-profile-a4 .chart { height: 250px; }
 }
@@ -908,7 +932,7 @@ body.report-profile-a4 .disclaimer { margin-top: 12px; padding-top: 10px; line-h
   .module-state,
   .chart-figure,
   .payoff-figure { break-inside: avoid; }
-  .payoff-figure img { width: 100%; max-width: 170mm; height: auto; }
+  .payoff-figure img { width: 100%; max-width: none; height: auto; }
   a { text-decoration: none; }
 }
 
@@ -949,7 +973,7 @@ body.report-profile-a4 .disclaimer { margin-top: 12px; padding-top: 10px; line-h
 
 .comparison-document-head__brand {
   margin: 0 0 4px;
-  color: var(--blue);
+  color: var(--brand-signature);
   font-size: var(--type-meta);
   font-weight: 720;
 }
@@ -1056,12 +1080,12 @@ body.report-profile-a4 .disclaimer { margin-top: 12px; padding-top: 10px; line-h
 .comparison-matrix__cell .plain-list, .comparison-matrix__cell .risk-list { margin: 0; padding-left: 18px; font-size: var(--type-meta); }
 .comparison-matrix__row[data-section="risk"] .comparison-matrix__section-label { color: var(--red); }
 .comparison-matrix__row[data-section="risk"] .comparison-matrix__cell { border-top: 1px solid var(--red); }
-.comparison-state { color: var(--gold); font-size: var(--type-meta); }
+.comparison-state { color: var(--brand-signature); font-size: var(--type-meta); }
 
 .comparison-report-shell { grid-template-columns: minmax(0, 34mm) minmax(0, 210mm); }
 .comparison-report .alternative-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .comparison-report .alternative { min-width: 0; overflow-wrap: break-word; word-break: normal; }
-.comparison-payoff-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.comparison-payoff-grid { display: grid; grid-template-columns: 1fr; gap: 18px; }
 .comparison-payoff-figure { min-width: 0; }
 .comparison-payoff-figure h3 { margin-top: 0; }
 .comparison-payoff-figure .payoff-figure { margin: 0; }
@@ -1071,7 +1095,7 @@ body.report-profile-a4 .disclaimer { margin-top: 12px; padding-top: 10px; line-h
   .comparison-card-document { width: 210mm; margin: 0; padding: 8mm; box-shadow: none; }
   .comparison-matrix__header { break-after: avoid; }
   .comparison-matrix__row { break-inside: avoid; }
-  .comparison-payoff-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .comparison-payoff-grid { grid-template-columns: 1fr; }
 }
 
 /* Shared module-page and App shell contract.  These selectors are intentionally
@@ -1109,7 +1133,7 @@ body.report-profile-a4 .disclaimer { margin-top: 12px; padding-top: 10px; line-h
 .module-header__eyebrow,
 .designer-card__brand {
   margin: 0 0 var(--space-sm);
-  color: var(--blue);
+  color: var(--brand-signature);
   font-size: var(--type-module-label);
   font-weight: 720;
   letter-spacing: .04em;
@@ -1203,7 +1227,7 @@ body.report-profile-a4 .disclaimer { margin-top: 12px; padding-top: 10px; line-h
 
 .designer-card__brand {
   margin: 0 0 3px;
-  color: var(--blue);
+  color: var(--brand-signature);
   font-size: var(--type-card-brand);
   font-weight: 760;
   letter-spacing: .055em;
@@ -1220,7 +1244,7 @@ body.report-profile-a4 .disclaimer { margin-top: 12px; padding-top: 10px; line-h
   margin-top: 7px;
   padding: 0 0 7px 9px;
   border-bottom: var(--border-hairline) solid var(--rule);
-  border-left: 2px solid var(--gold);
+  border-left: 2px solid var(--red);
 }
 
 .designer-card .card-conclusion h2,
@@ -1232,11 +1256,11 @@ body.report-profile-a4 .disclaimer { margin-top: 12px; padding-top: 10px; line-h
   line-height: 1.45;
 }
 
-.designer-card .conclusion-heading { color: var(--color-gold-ink); }
+.designer-card .conclusion-heading { color: var(--ink); }
 
 .designer-card .conclusion-band__label {
   margin: 0 0 2px;
-  color: var(--color-gold-ink);
+  color: var(--red);
   font-size: var(--type-card-label);
   font-weight: 760;
   letter-spacing: .07em;
@@ -1409,7 +1433,7 @@ body.report-profile-a4 .disclaimer { margin-top: 12px; padding-top: 10px; line-h
 
 .quote-head__brand {
   margin: 0 0 3px;
-  color: var(--blue);
+  color: var(--brand-signature);
   font-size: var(--type-card-brand);
   font-weight: 760;
   letter-spacing: .055em;
