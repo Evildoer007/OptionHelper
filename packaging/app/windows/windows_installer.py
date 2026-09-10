@@ -6,6 +6,7 @@ import re
 from pathlib import Path
 import shutil
 import subprocess
+import tempfile
 
 
 def find_installer_compiler() -> Path:
@@ -34,6 +35,28 @@ def installer_command(compiler: Path, script: Path, app: Path, output: Path, ver
             f"/DAppIcon={icon}", str(script)]
 
 
+def probe_installer_compiler(script: Path, icon: Path) -> None:
+    """Compile the real setup script against a tiny payload before the App build."""
+    compiler = find_installer_compiler()
+    with tempfile.TemporaryDirectory(prefix="optionhelper-setup-preflight-") as directory:
+        root = Path(directory)
+        source = root / "payload"
+        source.mkdir()
+        # Never executed: this checks the compiler, script, icon and version metadata.
+        (source / "OptionHelper.exe").write_bytes(b"OptionHelper installer compiler probe")
+        output = root / "compiler-probe.exe"
+        try:
+            result = subprocess.run(
+                installer_command(compiler, script, source, output, "v0.0.0", icon),
+                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60,
+            )
+        except (OSError, subprocess.TimeoutExpired) as error:
+            raise RuntimeError(f"安装包编译器预检失败：{error}") from error
+        if result.returncode or not output.is_file():
+            detail = (result.stdout + result.stderr)[-6000:]
+            raise RuntimeError(f"安装脚本未通过编译器预检；请使用Inno Setup 6.3或更新的6.x版本。\n{detail}")
+
+
 def install_for_verification(installer: Path, destination: Path) -> None:
     """Exercise the installer in a fresh directory without shortcuts or registration."""
     if os.name != "nt":
@@ -52,9 +75,14 @@ def install_for_verification(installer: Path, destination: Path) -> None:
     except BaseException:
         # The bootstrapper creates a second setup process. Stop both before
         # the caller removes its temporary installation directory.
-        subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30, check=False)
-        process.wait(timeout=30)
+        try:
+            subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30, check=False)
+            process.wait(timeout=30)
+        except (OSError, subprocess.TimeoutExpired) as cleanup_error:
+            # Preserve the original interruption while making cleanup failure visible.
+            import sys
+            print(f"安装验收进程树清理未完成，PID={process.pid}：{cleanup_error}", file=sys.stderr, flush=True)
         raise
     if returncode:
         detail = log.read_text(encoding="utf-8", errors="replace")[-6000:] if log.is_file() else "未生成安装日志"
