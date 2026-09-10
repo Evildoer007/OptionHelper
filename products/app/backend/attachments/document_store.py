@@ -27,7 +27,20 @@ _MEDIA_TYPES = {
     "text/csv": ".csv",
     "text/plain": ".txt",
     "text/markdown": ".md",
+    "application/rtf": ".rtf",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation": ".pptx",
+    "application/vnd.ms-excel": ".xls",
+    "text/tab-separated-values": ".tsv",
+    "text/html": ".html",
+    "application/json": ".json",
+    "application/xml": ".xml",
+    "application/yaml": ".yaml",
+    "application/vnd.oasis.opendocument.text": ".odt",
+    "application/vnd.oasis.opendocument.spreadsheet": ".ods",
+    "application/vnd.oasis.opendocument.presentation": ".odp",
 }
+_EXTENSION_ALIASES = {".markdown": ".md", ".htm": ".html", ".yml": ".yaml", ".log": ".txt", ".jsonl": ".json"}
+_MEDIA_ALIASES = {"text/rtf": "application/rtf", "application/x-rtf": "application/rtf", "text/xml": "application/xml", "text/yaml": "application/yaml", "application/x-yaml": "application/yaml", "text/x-markdown": "text/markdown"}
 _ATTACHMENT_ID = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
@@ -60,10 +73,12 @@ class DocumentAttachmentStore:
             if not isinstance(item, Mapping) or set(item).difference({"data", "media_type", "name"}):
                 raise ValidationError("文档附件字段无效")
             media_type = str(item.get("media_type", "")).strip().lower()
+            media_type = _MEDIA_ALIASES.get(media_type, media_type)
             if media_type not in _MEDIA_TYPES:
-                raise ValidationError("仅支持PDF、DOCX、XLSX、CSV、TXT和Markdown文档")
+                raise ValidationError("支持PDF、Word文档DOCX、Excel表格XLSX/XLS、PPTX、RTF、Markdown、文本、CSV/TSV、HTML、JSON、XML、YAML及OpenDocument文档")
             name = self._safe_name(item.get("name"))
-            if not name or Path(name).suffix.lower() != _MEDIA_TYPES[media_type]:
+            extension = Path(name).suffix.lower() if name else ""
+            if not name or _EXTENSION_ALIASES.get(extension, extension) != _MEDIA_TYPES[media_type]:
                 raise ValidationError("文档扩展名与声明格式不一致")
             encoded = item.get("data")
             if not isinstance(encoded, str) or not encoded:
@@ -140,15 +155,92 @@ class DocumentAttachmentStore:
         }
 
     def _extract(self, data: bytes, media_type: str) -> tuple[str, str]:
-        if media_type in {"text/plain", "text/markdown", "text/csv"}:
+        if media_type in {"text/plain", "text/markdown", "text/csv", "text/tab-separated-values", "application/json", "application/yaml"}:
             text = self._decode_text(data)
-            if media_type == "text/csv":
-                rows = csv.reader(io.StringIO(text))
+            if media_type in {"text/csv", "text/tab-separated-values"}:
+                rows = csv.reader(io.StringIO(text), delimiter="\t" if media_type == "text/tab-separated-values" else ",")
                 text = "\n".join(
                     "\t".join(cell.strip() for cell in row[: self.max_sheet_columns])
                     for row in islice(rows, self.max_sheet_rows)
                 )
             return text, "ready"
+        if media_type == "application/rtf":
+            from striprtf.striprtf import rtf_to_text
+            if not data.lstrip().startswith(b"{\\rtf"):
+                raise ValidationError("RTF文档内容与格式不一致")
+            try:
+                # RTF carries its own codepage and Unicode escapes; preserve bytes
+                # until the parser has interpreted them.
+                text = rtf_to_text(data.decode("latin-1"), errors="strict")
+                return (text, "ready") if text.strip() else ("", "no_text")
+            except (ValueError, UnicodeError, LookupError) as error:
+                raise ValidationError("RTF文档无法解析") from error
+        if media_type == "text/html":
+            from bs4 import BeautifulSoup
+            document = BeautifulSoup(self._decode_text(data), "html.parser")
+            for element in document(["script", "style", "template", "noscript"]):
+                element.decompose()
+            text = document.get_text("\n", strip=True)
+            return (text, "ready") if text else ("", "no_text")
+        if media_type == "application/xml":
+            root = self._read_xml(data)
+            return "\n".join(value.strip() for value in root.itertext() if value.strip()), "ready"
+        if media_type.endswith("presentationml.presentation") or media_type.startswith("application/vnd.oasis.opendocument."):
+            self._validate_office_archive(data)
+            try:
+                with zipfile.ZipFile(io.BytesIO(data)) as archive:
+                    if media_type.endswith("presentationml.presentation"):
+                        presentation = self._read_xml(archive.read("ppt/presentation.xml"))
+                        relations = self._read_xml(archive.read("ppt/_rels/presentation.xml.rels"))
+                        targets = {item.get("Id"): item.get("Target", "") for item in relations if item.get("TargetMode") != "External"}
+                        from posixpath import normpath
+                        names = []
+                        for slide in presentation.findall(".//{*}sldId"):
+                            target = targets.get(slide.get("{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id"), "")
+                            name = normpath(target.lstrip("/") if target.startswith("/") else "ppt/" + target)
+                            if not name.startswith("ppt/slides/") or not name.endswith(".xml"):
+                                raise ValidationError("PPTX幻灯片引用无效")
+                            names.append(name)
+                        parts = []
+                        for index, name in enumerate(names):
+                            root = self._read_xml(archive.read(name))
+                            paragraphs = ["".join(p.itertext()) for p in root.findall(".//{http://schemas.openxmlformats.org/drawingml/2006/main}p")]
+                            parts.append(f"幻灯片{index + 1}\n" + "\n".join(paragraphs))
+                            if sum(map(len, parts)) >= self.max_extracted_chars:
+                                break
+                    else:
+                        root = self._read_xml(archive.read("content.xml"))
+                        parts = ["".join(p.itertext()) for p in root.iter() if p.tag in {
+                            "{urn:oasis:names:tc:opendocument:xmlns:text:1.0}p",
+                            "{urn:oasis:names:tc:opendocument:xmlns:text:1.0}h"}]
+                    text = "\n".join(parts)
+                    return (text, "ready") if text.strip() else ("", "no_text")
+            except ValidationError:
+                raise
+            except (KeyError, ValueError, OSError) as error:
+                raise ValidationError("演示文稿或OpenDocument文档无法解析") from error
+        if media_type == "application/vnd.ms-excel":
+            import xlrd
+            try:
+                workbook = xlrd.open_workbook(file_contents=data, on_demand=True)
+                parts = []
+                length = 0
+                try:
+                    for sheet in workbook.sheets():
+                        parts.append(f"工作表：{sheet.name}")
+                        for index in range(min(sheet.nrows, self.max_sheet_rows)):
+                            row = "\t".join(str(value) for value in sheet.row_values(index, end_colx=min(sheet.ncols, self.max_sheet_columns)))
+                            parts.append(row)
+                            length += len(row)
+                            if length >= self.max_extracted_chars:
+                                break
+                        if length >= self.max_extracted_chars:
+                            break
+                finally:
+                    workbook.release_resources()
+                return "\n".join(parts), "ready"
+            except Exception as error:
+                raise ValidationError("XLS表格无法解析") from error
         if media_type == "application/pdf":
             from pypdf import PdfReader
             try:
@@ -223,6 +315,18 @@ class DocumentAttachmentStore:
                 raise ValidationError("XLSX文档无法解析") from error
         raise ValidationError("文档格式未注册")
 
+    @staticmethod
+    def _read_xml(data: bytes):
+        from lxml import etree
+        try:
+            parser = etree.XMLParser(resolve_entities=False, load_dtd=False, no_network=True)
+            root = etree.fromstring(data, parser=parser)
+            if root.getroottree().docinfo.doctype:
+                raise ValidationError("XML文档不支持DTD或外部实体")
+            return root
+        except etree.XMLSyntaxError as error:
+            raise ValidationError("XML文档无法解析") from error
+
     def _validate_office_archive(self, data: bytes) -> None:
         try:
             with zipfile.ZipFile(io.BytesIO(data)) as archive:
@@ -246,6 +350,11 @@ class DocumentAttachmentStore:
 
     @staticmethod
     def _decode_text(data: bytes) -> str:
+        if data.startswith((b"\xff\xfe", b"\xfe\xff")):
+            try:
+                return data.decode("utf-16")
+            except UnicodeError:
+                raise ValidationError("UTF-16文本编码无效") from None
         for encoding in ("utf-8-sig", "utf-8", "gb18030"):
             try:
                 return data.decode(encoding)
