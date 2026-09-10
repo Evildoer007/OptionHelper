@@ -197,7 +197,7 @@ html[data-theme="dark"] .pricing-app {
 
 .greek-chart { height: 410px; contain: paint; }
 .greek-surface-chart { position: relative; height: 540px; overflow: hidden; border-top: 1px solid var(--rule-soft); border-bottom: 1px solid var(--rule-soft); }
-.greek-chart.is-empty { height: 148px; }
+.greek-chart.is-empty { height: 180px; border: 0; border-radius: 14px; }
 .greek-chart .plot-container,
 .greek-chart .svg-container,
 .greek-chart .main-svg,
@@ -225,9 +225,10 @@ html[data-theme="dark"] .pricing-app {
   height: 100%;
   place-items: center;
   padding: 22px;
-  border: 1px solid var(--rule);
-  border-radius: 8px;
-  background: var(--surface);
+  box-sizing: border-box;
+  border: 1px dashed var(--color-paper-border);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--color-surface) 56%, transparent);
   color: var(--muted);
   font-size: 12px;
   line-height: 1.6;
@@ -237,7 +238,7 @@ html[data-theme="dark"] .pricing-app {
 @media (max-width: 1180px) {
   .greek-chart { height: 380px; }
   .greek-surface-chart { height: 480px; }
-  .greek-chart.is-empty { height: 132px; }
+  .greek-chart.is-empty { height: 180px; }
 }
 
 @container (max-width: 720px) {
