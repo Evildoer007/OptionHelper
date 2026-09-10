@@ -1022,8 +1022,6 @@ html[data-optionhelper-app-hosted="true"] :is(
   .module-note,
   .profile-note,
   .candidate,
-  .chart-figure,
-  .metric-strip > div,
   .ledger,
   .trade-inspector,
   .table-wrap,
@@ -1276,68 +1274,42 @@ html[data-optionhelper-app-hosted="true"] .settings-panel .choice > input[type="
 }
 
 @media (max-width: 920px) {
-  html[data-optionhelper-app-hosted="true"] body {
-    overflow: auto;
-  }
-
-  html[data-optionhelper-app-hosted="true"] .app-shell,
+  html[data-optionhelper-app-hosted="true"] body { overflow: hidden; }
+  html[data-optionhelper-app-hosted="true"] .app-shell { width:100%; min-width:0 !important; height:100vh !important; }
   html[data-optionhelper-app-hosted="true"] .workbench {
-    height: auto !important;
-    min-height: 100%;
-    overflow: visible;
+    display:grid !important; height:100vh !important; min-height:0; overflow:hidden;
+    grid-template-columns:minmax(0,1fr) minmax(240px,38%) !important;
+    grid-template-rows:auto minmax(0,1fr) !important;
   }
-
-  html[data-optionhelper-app-hosted="true"] .app-shell {
-    width: 100%;
-    min-width: 0 !important;
-  }
-
-  html[data-optionhelper-app-hosted="true"] .workbench {
-    display: grid !important;
-    grid-template-columns: minmax(190px, 30%) minmax(0, 1fr) !important;
-  }
-
   html[data-optionhelper-app-hosted="true"] .workbench > :nth-child(1) {
-    grid-column: 1 !important;
-    grid-row: 1 !important;
+    grid-column:1 / -1 !important; grid-row:1 !important;
+    max-height:170px; border-right:0 !important; border-bottom:1px solid var(--rule) !important;
   }
-
-  html[data-optionhelper-app-hosted="true"] .workbench > :nth-child(3) {
-    grid-column: 2 !important;
-    grid-row: 1 !important;
-  }
-
-  html[data-optionhelper-app-hosted="true"] .workbench > :nth-child(5) {
-    grid-column: 1 / -1 !important;
-    grid-row: 2 !important;
-  }
-
-  html[data-optionhelper-app-hosted="true"] :is(
-    .inspector,
-    .right-panel,
-    .inspector-panel,
-    .settings-panel
-  ) {
-    grid-column: 1 / -1;
-    border-top: 1px solid var(--rule) !important;
-    border-left: 0 !important;
-  }
-
-  html[data-optionhelper-app-hosted="true"] .inspector-panel[data-run-layout="true"] .inspector-form {
-    height: auto;
-    grid-template-rows: auto;
-  }
-
-  html[data-optionhelper-app-hosted="true"] .inspector-panel[data-run-layout="true"] .inspector-scroll {
-    padding: 20px 18px 24px;
-    overflow: visible;
-  }
-
-
-  html[data-optionhelper-app-hosted="true"] .panel-resizer {
-    display: none !important;
-  }
+  html[data-optionhelper-app-hosted="true"] .workbench > :nth-child(3) { grid-column:1 !important; grid-row:2 !important; min-height:0 !important; }
+  html[data-optionhelper-app-hosted="true"] .workbench > :nth-child(5) { grid-column:2 !important; grid-row:2 !important; min-height:0; overflow:auto; }
+  html[data-optionhelper-app-hosted="true"] .panel-resizer { display:none !important; }
 }
+
+@media (max-width: 620px) {
+  html[data-optionhelper-app-hosted="true"] body { overflow:auto; }
+  html[data-optionhelper-app-hosted="true"] .app-shell { height:auto !important; }
+  html[data-optionhelper-app-hosted="true"] .workbench {
+    height:auto !important; min-height:100vh; overflow:visible;
+    grid-template-columns:minmax(0,1fr) !important;
+    grid-template-rows:auto auto minmax(320px,auto) !important;
+  }
+  html[data-optionhelper-app-hosted="true"] .workbench > :nth-child(1) { max-height:150px; }
+  html[data-optionhelper-app-hosted="true"] .workbench > :nth-child(5) {
+    grid-column:1 !important; grid-row:2 !important; max-height:340px;
+    border-left:0 !important; border-bottom:1px solid var(--rule) !important;
+  }
+  html[data-optionhelper-app-hosted="true"] .workbench > :nth-child(3) {
+    grid-column:1 !important; grid-row:3 !important; min-height:320px !important;
+  }
+  html[data-optionhelper-app-hosted="true"] .inspector-panel[data-run-layout="true"] { height:340px; }
+  html[data-optionhelper-app-hosted="true"] .canvas-viewport { min-height:260px; }
+}
+
 
 /* Cross-module parity pass.  These rules close the remaining presentation
  * gaps between DataFetcher, Payoffer, Pricer, Backtester and Reporter while
@@ -1497,3 +1469,97 @@ html[data-optionhelper-app-hosted="true"] .metric-strip strong {
 html[data-optionhelper-app-hosted="true"][data-optionhelper-module] [hidden] {
   display: none !important;
 }
+
+/* Shared choice surfaces: quiet selection, bilingual labels, consistent depth. */
+html[data-optionhelper-app-hosted="true"] .optionhelper-choice .choice-trigger { border-radius: 12px; font-weight: 500; transition: background-color 160ms ease, box-shadow 160ms ease; }
+html[data-optionhelper-app-hosted="true"] .optionhelper-choice .choice-trigger__value { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 9px; white-space: normal; min-width: 0; }
+html[data-optionhelper-app-hosted="true"] .optionhelper-choice .choice-menu { padding: 6px; border: 0; border-radius: 14px; background: var(--surface, #fff); box-shadow: 0 2px 4px rgb(0 0 0 / .06), 0 12px 30px rgb(0 0 0 / .12), 0 0 0 1px rgb(128 128 128 / .14); }
+html[data-optionhelper-app-hosted="true"] .optionhelper-choice .choice-option { min-height: 38px; padding: 9px 11px; gap: 4px 9px; border-radius: 9px; flex-wrap: wrap; font-weight: 400; transition: background-color 140ms ease; }
+html[data-optionhelper-app-hosted="true"] .optionhelper-choice .choice-option[aria-selected="true"] { background: color-mix(in srgb, var(--ink, #222) 6%, transparent); color: var(--ink, #222); font-weight: 500; }
+html[data-optionhelper-app-hosted="true"] .optionhelper-choice .choice-option:hover { background: color-mix(in srgb, var(--ink, #222) 9%, transparent); color: var(--ink, #222); }
+html[data-optionhelper-app-hosted="true"] .optionhelper-choice .choice-option:focus-visible { outline: 0; background: color-mix(in srgb, var(--color-ink) 12%, var(--color-surface)); }
+html[data-optionhelper-app-hosted="true"] .optionhelper-choice .choice-english { color: var(--muted, #686868); font-size: .85em; font-weight: 400; }
+html[data-optionhelper-app-hosted="true"] .optionhelper-choice .choice-option::after { flex-shrink: 0; }
+@media (prefers-reduced-motion: reduce) { html[data-optionhelper-app-hosted="true"] .optionhelper-choice :is(.choice-trigger, .choice-option) { transition: none; } }
+/* Shared choice surfaces: quiet selection, bilingual labels, consistent depth. */
+html[data-optionhelper-app-hosted="true"] .oh-choice .oh-choice__trigger { border-radius: 12px; font-weight: 500; transition: background-color 160ms ease, box-shadow 160ms ease; }
+html[data-optionhelper-app-hosted="true"] .oh-choice .oh-choice__value { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 9px; white-space: normal; min-width: 0; }
+html[data-optionhelper-app-hosted="true"] .oh-choice .oh-choice__menu { padding: 6px; border: 0; border-radius: 14px; background: var(--surface, #fff); box-shadow: 0 2px 4px rgb(0 0 0 / .06), 0 12px 30px rgb(0 0 0 / .12), 0 0 0 1px rgb(128 128 128 / .14); }
+html[data-optionhelper-app-hosted="true"] .oh-choice .oh-choice__option { min-height: 38px; padding: 9px 11px; gap: 4px 9px; border-radius: 9px; flex-wrap: wrap; font-weight: 400; transition: background-color 140ms ease; }
+html[data-optionhelper-app-hosted="true"] .oh-choice .oh-choice__option[aria-selected="true"] { background: color-mix(in srgb, var(--ink, #222) 6%, transparent); color: var(--ink, #222); font-weight: 500; }
+html[data-optionhelper-app-hosted="true"] .oh-choice .oh-choice__option:hover { background: color-mix(in srgb, var(--ink, #222) 9%, transparent); color: var(--ink, #222); }
+html[data-optionhelper-app-hosted="true"] .oh-choice .oh-choice__option:focus-visible { outline: 0; background: color-mix(in srgb, var(--color-ink) 12%, var(--color-surface)); }
+html[data-optionhelper-app-hosted="true"] .oh-choice .choice-english { color: var(--muted, #686868); font-size: .85em; font-weight: 400; }
+html[data-optionhelper-app-hosted="true"] .oh-choice .oh-choice__option::after { flex-shrink: 0; }
+@media (prefers-reduced-motion: reduce) { html[data-optionhelper-app-hosted="true"] .oh-choice :is(.oh-choice__trigger, .oh-choice__option) { transition: none; } }
+
+/* Unified selection controls: shared by App and embedded module pages. */
+html body label:has(> input:is([type="checkbox"], [type="radio"])) {
+  display: flex;
+  align-items: center;
+  column-gap: 8px !important;
+}
+
+html body input:is([type="checkbox"], [type="radio"]) {
+  -webkit-appearance: none !important;
+  appearance: none !important;
+  position: relative !important;
+  display: inline-grid !important;
+  place-items: center !important;
+  flex: 0 0 16px !important;
+  width: 16px !important;
+  height: 16px !important;
+  min-width: 16px !important;
+  min-height: 16px !important;
+  box-sizing: border-box !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  vertical-align: -2px;
+  border: 1px solid var(--color-rule-strong, #888) !important;
+  border-radius: 4px !important;
+  background: transparent !important;
+  color: #fff !important;
+  box-shadow: none !important;
+  transform: none !important;
+  cursor: pointer;
+  transition: background-color 150ms ease, border-color 150ms ease, opacity 150ms ease !important;
+}
+html body input:is([type="checkbox"], [type="radio"])::before { content: none !important; }
+html body input[type="radio"] { border-radius: 50% !important; }
+html body input:is([type="checkbox"], [type="radio"]):is(:checked, :indeterminate) {
+  border-color: var(--color-brand-red, #c8102e) !important;
+  background: var(--color-brand-red, #c8102e) !important;
+}
+html body input:is([type="checkbox"], [type="radio"])::after {
+  content: "" !important;
+  position: static !important;
+  display: block !important;
+  width: 10px !important;
+  height: 10px !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  transform: none !important;
+  background: #fff !important;
+  opacity: 0;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='m2 6 2.5 2.5L10 3' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='m2 6 2.5 2.5L10 3' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat;
+  transition: opacity 120ms ease;
+}
+html body input:is([type="checkbox"], [type="radio"]):checked::after { opacity: 1; }
+html body input[type="checkbox"]:indeterminate::after { opacity: 1; width: 8px !important; height: 2px !important; mask: none; -webkit-mask: none; }
+html body input[type="radio"]::after { width: 6px !important; height: 6px !important; border-radius: 50% !important; mask: none; -webkit-mask: none; }
+html body input:is([type="checkbox"], [type="radio"]):hover:not(:disabled) { border-color: var(--color-brand-red, #c8102e) !important; }
+html body input:is([type="checkbox"], [type="radio"]):focus-visible { outline: 2px solid color-mix(in srgb, var(--color-brand-red, #c8102e) 55%, transparent) !important; outline-offset: 3px !important; }
+html body input:is([type="checkbox"], [type="radio"]):disabled { opacity: .45 !important; cursor: not-allowed; }
+@media (prefers-reduced-motion: reduce) {
+  html body input:is([type="checkbox"], [type="radio"]), html body input:is([type="checkbox"], [type="radio"])::after { transition: none !important; }
+}
+html body :is(.choice-option, .oh-choice__option) { position: relative; padding-inline-end: 34px !important; }
+html body :is(.choice-option, .oh-choice__option)[aria-selected="true"]::after {
+  content: ""; position: absolute !important; right: 12px !important; top: 50% !important;
+  width: 12px !important; height: 12px !important; margin: 0 !important; border: 0 !important;
+  transform: translateY(-50%) !important; background: currentColor;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='m2 6 2.5 2.5L10 3' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='m2 6 2.5 2.5L10 3' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat;
+}
+/* End unified selection controls. */
