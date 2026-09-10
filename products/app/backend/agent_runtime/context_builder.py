@@ -181,6 +181,8 @@ def _surface_message_fact(value: Mapping[str, Any], identity: SessionIdentity) -
             "name": _safe_text(value.get("name"), 160, identity),
             "is_error": bool(value.get("is_error", False)),
         })
+    if role == "assistant" and value.get("status") in {"needs_input", "pending_approval", "completed", "cancelled", "partial", "unavailable"}:
+        result["status"] = value["status"]
     if value.get("kind") == "context_summary":
         result["kind"] = "context_summary"
     return result
