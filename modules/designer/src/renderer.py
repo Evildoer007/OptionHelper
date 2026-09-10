@@ -73,7 +73,39 @@ _PUBLIC_VALUE_TEXT = {
     "monthly": "每月",
     "weekly": "每周",
     "daily": "每日",
+    "monthly_last": "每月最后一个交易日",
+    "configured_paths": "固定路径数",
 }
+
+_PUBLIC_TEXT_REPLACEMENTS = {
+    "configured_paths": "固定路径数",
+}
+_EXCLUDED_PUBLIC_PARAMETER_KEYS = frozenset({
+    "N", "notional", "G", "monitor", "constraints", "derived_terms",
+    "pricing_methods", "payoff_figure_basis",
+})
+_PUBLIC_PARAMETER_PRESENTATION = {
+    "H_KI": ("敲入障碍", "H_in"),
+    "H_KO": ("敲出障碍", "H_out"),
+    "Hc": ("派息障碍", "H_c"),
+    "Llock": ("锁定观察期数", "n_lock"),
+    "O_KI": ("敲入观察频率", "O_in"),
+    "O_KO": ("敲出观察频率", "O_out"),
+    "Oc": ("派息观察频率", "O_c"),
+    "c": ("年化票息", "c"),
+    "g": ("保证金比例", "g"),
+    "p": ("期权费率", "p"),
+    "eta": ("敲出固定补偿", "r_out"),
+}
+_RATE_PARAMETER_KEYS = frozenset({"c", "g", "p", "eta"})
+_GENERIC_CHART_SOURCE_NOTES = frozenset({
+    "本次估值结果，按标准化百分比敏感度表示。",
+    "本次冻结估值结果。",
+})
+
+
+def _mathematical_minus(value: str) -> str:
+    return value.replace("-", "−", 1) if value.startswith("-") else value
 
 
 def _number_text(value: int | float | str) -> str:
@@ -84,9 +116,10 @@ def _number_text(value: int | float | str) -> str:
         return "0"
     if round(numeric, 2) == 0:
         mantissa, exponent = f"{numeric:.2e}".split("e")
-        return f"{mantissa.rstrip('0').rstrip('.')}×10{str(int(exponent)).translate(_SUPERSCRIPT_DIGITS)}"
+        rendered_mantissa = _mathematical_minus(mantissa.rstrip("0").rstrip("."))
+        return f"{rendered_mantissa}×10{str(int(exponent)).translate(_SUPERSCRIPT_DIGITS)}"
     rendered = f"{numeric:,.2f}".rstrip("0").rstrip(".")
-    return "0" if rendered in {"-0", "-0.0"} else rendered
+    return "0" if rendered in {"-0", "-0.0"} else _mathematical_minus(rendered)
 
 
 def text(value: Any) -> str:
@@ -147,6 +180,21 @@ def display_basis(row: Mapping[str, Any]) -> str:
     return "；".join(parts)
 
 
+def public_specialized_rows(rows: list[Any]) -> list[dict[str, Any]]:
+    """Keep only reader-facing business metrics from stale report payloads."""
+
+    visible: list[dict[str, Any]] = []
+    for raw in rows:
+        row = as_dict(raw)
+        label = text(row.get("label"))
+        if not label or "/" in label or not re.search(r"[\u3400-\u9fff]", label):
+            continue
+        if re.search(r"第\d+项", label) or any(token in label.casefold() for token in ("monthly distribution", "selected path", "coupon observations")):
+            continue
+        visible.append(row)
+    return visible
+
+
 def backtest_summary_rows(module: Mapping[str, Any]) -> list[dict[str, Any]]:
     """Keep counts and coverage alongside returns in every brief summary."""
 
@@ -161,8 +209,24 @@ def backtest_summary_rows(module: Mapping[str, Any]) -> list[dict[str, Any]]:
         "平均合同结算收益率", "最低合同结算收益率", "历史损失样本覆盖",
     )
     rows = [metrics_by_label[label] for label in labels if label in metrics_by_label]
-    rows.extend(as_dict(item) for item in as_list(module.get("card_metrics"))[:4])
+    rows.extend(public_specialized_rows(as_list(module.get("card_metrics")))[:4])
     return [row for row in rows if text(row.get("label")) and row.get("value") is not None]
+
+
+def backtest_primary_rows(module: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Select the decision-useful full-report backtest summary."""
+
+    rows = [as_dict(item) for item in as_list(module.get("metrics"))]
+    metrics_by_label = unique_metric_rows_by_label(rows, "回测核心摘要")
+    labels = (
+        "样本数",
+        "历史正收益样本占比",
+        "平均合同结算收益率",
+        "中位合同结算收益率",
+        "最低合同结算收益率",
+        "最大历史损失",
+    )
+    return [metrics_by_label[label] for label in labels if label in metrics_by_label]
 
 
 def unique_metric_rows_by_label(rows: list[Any], context: str) -> dict[str, dict[str, Any]]:
@@ -358,6 +422,14 @@ def rich_text(value: Any) -> str:
     """Escape prose while replacing compact subscript notation with MathML."""
 
     source = text(value)
+    for internal, public in _PUBLIC_TEXT_REPLACEMENTS.items():
+        source = re.sub(rf"\b{re.escape(internal)}\b", public, source)
+    source = re.sub(r"(?<![A-Za-z0-9])-(?=\d)", "−", source)
+    source = re.sub(
+        r"(?<![\d.])([+−-]?\d+(?:\.\d+)?)%",
+        lambda match: "0%" if abs(float(match.group(1).replace("−", "-"))) < 0.005 else match.group(0),
+        source,
+    )
     if not source:
         return ""
     if _is_formula_expression(source):
@@ -392,6 +464,28 @@ def module_headline(value: Any, section: str) -> str:
 
 def parameter_key(row: dict[str, Any]) -> str:
     return text(row.get("symbol") or row.get("en") or row.get("cn")).strip()
+
+
+def public_parameter_rows(rows: list[Any]) -> list[dict[str, Any]]:
+    """Project contract rows to the public terms table."""
+
+    visible: list[dict[str, Any]] = []
+    for raw in rows:
+        row = as_dict(raw)
+        key = text(row.get("en") or row.get("symbol") or row.get("cn")).strip()
+        if not row or key in _EXCLUDED_PUBLIC_PARAMETER_KEYS:
+            continue
+        value = row.get("value")
+        if value is None or text(value).strip() == "":
+            continue
+        label, symbol = _PUBLIC_PARAMETER_PRESENTATION.get(
+            key,
+            (text(row.get("cn")), text(row.get("symbol"))),
+        )
+        if key in _RATE_PARAMETER_KEYS and isinstance(value, (int, float)) and not isinstance(value, bool):
+            value = f"{_number_text(float(value) * 100)}%"
+        visible.append({**row, "cn": label, "symbol": symbol, "value": text(value)})
+    return visible
 
 
 def validate_chart(raw_spec: Any, location: str) -> None:
@@ -484,7 +578,7 @@ def status_box(module: dict[str, Any]) -> str:
     )
 
 
-def metric_strip(rows: list[Any], *, distinct_notes: bool = False) -> str:
+def metric_strip(rows: list[Any], *, distinct_notes: bool = False, show_basis: bool = True) -> str:
     items = []
     seen_notes: set[str] = set()
     for row in rows:
@@ -493,7 +587,7 @@ def metric_strip(rows: list[Any], *, distinct_notes: bool = False) -> str:
         value = display_text(item.get("value"), item.get("value_format"))
         if not label or not value:
             continue
-        basis = display_basis(item)
+        basis = display_basis(item) if show_basis else ""
         note_html = f'<div class="metric__note">{esc(basis)}</div>' if basis and (not distinct_notes or basis not in seen_notes) else ""
         if basis:
             seen_notes.add(basis)
@@ -514,7 +608,8 @@ def item_list(items: list[Any], class_name: str = "plain-list") -> str:
 
 def parameter_table(rows: list[Any], caption: str) -> str:
     table_rows = []
-    for row in rows:
+    visible_rows = public_parameter_rows(rows)
+    for row in visible_rows:
         item = as_dict(row)
         if not item:
             continue
@@ -532,7 +627,7 @@ def parameter_table(rows: list[Any], caption: str) -> str:
     if not table_rows:
         return ""
     parameter_columns = [("cn", "条款"), ("symbol", "符号"), ("value", "取值"), ("source", "来源")]
-    density = table_density(parameter_columns, rows)
+    density = table_density(parameter_columns, visible_rows)
     return (
         '<div class="table-wrap table-wrap--parameters">'
         f'<table class="parameter-table table-density-{density}" data-table-density="{density}"><colgroup>'
@@ -685,6 +780,8 @@ def add_charts(charts: list[dict[str, Any]], section: str, specs: list[Any]) -> 
             ]
         charts.append(chart)
         source_note = text(spec.get("source_note"))
+        if source_note in _GENERIC_CHART_SOURCE_NOTES:
+            source_note = ""
         source_html = f'<p class="source-note">{esc(source_note)}</p>' if source_note else ""
         summary = text(spec.get("accessibility_summary")) or (
             f'{text(spec.get("title") or "图表")}，横轴为{text(spec.get("x_axis_name"))}，'
@@ -698,8 +795,6 @@ def add_charts(charts: list[dict[str, Any]], section: str, specs: list[Any]) -> 
             f'<div class="chart" id="{esc(clean_id)}" role="img" '
             f'aria-label="{esc(spec.get("title") or "图表")}" aria-describedby="{esc(summary_id)}"></div>'
             f'<p id="{esc(summary_id)}" class="chart-summary">{esc(summary)}</p>'
-            '<noscript><p class="chart-error">浏览器已禁用JavaScript，请使用下方数据表读取图表数据。</p></noscript>'
-            f'{chart_data_table(spec, x_values, series)}'
             f'{source_html}'
             "</figure>"
         )
@@ -791,7 +886,7 @@ def _presentation_chart(node: dict[str, Any]) -> str:
         '<figure class="chart-figure presentation-chart">'
         f'<figcaption>{esc(title)}</figcaption>'
         f'<img class="presentation-chart__image" src="data:image/svg+xml;base64,{encoded}" alt="{esc(title)}">'
-        f'{summary_html}{chart_data_table(spec, x_values, series)}</figure>'
+        f'{summary_html}</figure>'
     )
 
 
@@ -824,6 +919,26 @@ def render_presentation_content(nodes: Sequence[dict[str, Any] | Any]) -> str:
     return "".join(blocks)
 
 
+def _normalise_svg_numeric_signs(payload: bytes) -> bytes:
+    """Use a mathematical minus in SVG text without touching XML attributes."""
+
+    def replace_text_element(match: re.Match[bytes]) -> bytes:
+        body = re.sub(
+            rb"(^|>)([^<]*)",
+            lambda segment: segment.group(1)
+            + re.sub(rb"(?<![A-Za-z0-9])-(?=\d)", "−".encode("utf-8"), segment.group(2)),
+            match.group(2),
+        )
+        return match.group(1) + body + match.group(3)
+
+    return re.sub(
+        rb"(<text\b[^>]*>)(.*?)(</text\s*>)",
+        replace_text_element,
+        payload,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+
+
 def embedded_svg(svg_path: Any, input_dir: Path) -> str:
     """Embed only a Reporter-provided, report-only Payoffer figure."""
 
@@ -849,6 +964,7 @@ def embedded_svg(svg_path: Any, input_dir: Path) -> str:
         or re.search(rb"optionhelper", payload, re.IGNORECASE)
     ):
         return ""
+    payload = _normalise_svg_numeric_signs(payload)
     encoded = base64.b64encode(payload).decode("ascii")
     return f'<figure class="payoff-figure"><img src="data:image/svg+xml;base64,{encoded}" alt="本次参数化收益图"></figure>'
 
@@ -1095,24 +1211,24 @@ def render_pricing(data: dict[str, Any], charts: list[dict[str, Any]]) -> str:
         if valuation_date:
             ledger.append(f'<div><dt>估值日</dt><dd>{esc(valuation_date)}</dd></div>')
         blocks.append('<dl class="identity-ledger">' + "".join(ledger) + "</dl>")
-    blocks.append(metric_strip(as_list(module.get("metrics"))))
+    blocks.append(metric_strip(as_list(module.get("metrics")), show_basis=False))
     pricing_parameters = as_list(as_dict(data.get("parameters")).get("pricing_input"))
     if pricing_parameters:
-        blocks.append("<h3>估值参数</h3>")
-        blocks.append(parameter_table(pricing_parameters, "估值参数"))
+        pricing_parameter_table = parameter_table(pricing_parameters, "估值参数")
+        if pricing_parameter_table:
+            blocks.append("<h3>估值参数</h3>")
+            blocks.append(pricing_parameter_table)
     greek_rows = canonical_greeks(as_list(module.get("greeks")))
-    greek_rows = [{**row, "basis": display_basis(row)} for row in greek_rows]
     blocks.append(
         simple_table(
             greek_rows,
-            [("label", "Greek"), ("value", "数值"), ("basis", "单位或口径")],
+            [("label", "Greek"), ("value", "数值")],
             "Greeks",
             "result-table result-table--greeks",
         )
     )
     scenario_rows = as_list(module.get("scenario_rows"))
     if scenario_rows:
-        blocks.append("<h3>定价情景</h3>")
         blocks.append(
             simple_table(
                 scenario_rows,
@@ -1145,44 +1261,47 @@ def render_backtest(data: dict[str, Any], charts: list[dict[str, Any]]) -> str:
         if entry_rule:
             ledger.append(f'<div><dt>入场规则</dt><dd>{esc(entry_rule)}</dd></div>')
         blocks.append('<dl class="identity-ledger">' + "".join(ledger) + "</dl>")
-    blocks.append(metric_strip(as_list(module.get("metrics")), distinct_notes=True))
+    blocks.append(metric_strip(backtest_primary_rows(module), show_basis=False))
     backtest_parameters = as_list(as_dict(data.get("parameters")).get("backtest_input"))
     if backtest_parameters:
-        blocks.append("<h3>回测参数</h3>")
-        blocks.append(parameter_table(backtest_parameters, "回测参数"))
-    card_metrics = as_list(module.get("card_metrics"))
+        backtest_parameter_table = parameter_table(backtest_parameters, "回测参数")
+        if backtest_parameter_table:
+            blocks.append("<h3>回测参数</h3>")
+            blocks.append(backtest_parameter_table)
+    card_metrics = public_specialized_rows(as_list(module.get("card_metrics")))
     if card_metrics:
-        blocks.append("<h3>产品专属统计</h3>")
-        card_metrics = [{**as_dict(row), "basis": display_basis(as_dict(row))} for row in card_metrics]
+        blocks.append("<h3>结构统计</h3>")
         blocks.append(
             simple_table(
                 card_metrics,
-                [("label", "指标"), ("value", "统计值"), ("basis", "单位或口径")],
-                "产品专属统计",
+                [("label", "指标"), ("value", "统计值")],
+                "结构统计",
                 "result-table result-table--specialized",
             )
         )
     blocks.append(add_charts(charts, "backtest", as_list(module.get("charts"))))
-    event_statistics = [
-        {**as_dict(row), "basis": display_basis(as_dict(row))}
-        for row in as_list(module.get("event_statistics"))
-    ]
+    event_statistics = public_specialized_rows(as_list(module.get("event_statistics")))
     blocks.append(
         simple_table(
             event_statistics,
-            [("label", "路径事件"), ("value", "统计值"), ("basis", "单位或口径")],
+            [("label", "路径事件"), ("value", "统计值")],
             "路径事件统计",
             "result-table result-table--events",
         )
     )
     # KPI and specialized rows are also supplied in legacy detail tables.
     # Remove only identical rows already shown above; differing facts survive.
-    visible_metrics = [*as_list(module.get("metrics")), *as_list(module.get("card_metrics"))]
+    visible_metrics = [*as_list(module.get("metrics")), *card_metrics]
     tables = []
     for raw_table in as_list(module.get("detail_tables")):
         table = as_dict(raw_table)
+        if table.get("title") == "公共回测统计":
+            continue
         rows = as_list(table.get("rows"))
-        if table.get("title") in {"公共回测统计", "产品专属统计"}:
+        if table.get("title") == "产品专属统计":
+            rows = public_specialized_rows(rows)
+            table = {**table, "title": "结构统计"}
+        if table.get("title") == "结构统计":
             rows = [row for row in rows if row not in visible_metrics]
         if rows:
             tables.append({**table, "rows": rows})
@@ -1220,7 +1339,12 @@ def render_risk(data: dict[str, Any]) -> str:
     suitability_block = (f"<h3>适用条件</h3>{suitable}" if suitable else "") + (f"<h3>不适用情形</h3>{not_suitable}" if not_suitable else "")
     missing_analysis = [label for key, label in (("payoff", "收益结构"), ("pricing", "估值定价"), ("backtest", "历史回测"))
                         if text(as_dict(data.get(key)).get("status")).lower() == "not_run"]
-    limitation_items = list(as_list(module.get("limitations")))
+    limitation_items = [
+        item for item in as_list(module.get("limitations"))
+        if "configured_paths" not in text(item)
+        and "固定路径数精度状态" not in text(item)
+        and "分支覆盖存在额外限制" not in text(item)
+    ]
     if missing_analysis:
         limitation_items.append("本次未运行" + "、".join(missing_analysis) + "，相关结论尚未验证。")
     limitations = item_list(limitation_items)
@@ -1249,7 +1373,7 @@ def render_conclusion(data: dict[str, Any]) -> str:
         blocks.append(f"<h3>{'推荐理由' if recommended else '研究范围'}</h3>{reasons}")
     valuation = [*as_list(module.get("valuation_summary")), *as_list(module.get("greeks_summary"))]
     if valuation:
-        blocks.append("<h3>估值摘要</h3>" + metric_strip(valuation))
+        blocks.append("<h3>估值摘要</h3>" + metric_strip(valuation, show_basis=False))
     backtest = as_list(module.get("backtest_summary"))
     if backtest:
         preferred = ("有效收益样本数", "历史正收益样本占比", "平均合同结算收益率", "最低合同结算收益率")
@@ -1427,7 +1551,7 @@ def render_html(
 	const chartTheme=__CHART_THEME__;
 	const lineTypes=chartTheme.lineTypes;
 	const symbols=chartTheme.symbols;
-	function markChartUnavailable(id,message){const el=document.getElementById(id);if(!el)return;el.classList.add("chart--unavailable");el.textContent=message||"图表资源加载失败，请使用下方完整数据表。";}
+	function markChartUnavailable(id,message){const el=document.getElementById(id);if(!el)return;el.classList.add("chart--unavailable");el.textContent=message||"图表资源加载失败，请重新加载报告。";}
 	function markChartsUnavailable(){chartSpecs.forEach(spec=>markChartUnavailable(spec.id));}
 function publicNumber(value, valueFormat, digits = 2) {
   if (value === null || value === undefined || value === '') return '—';
@@ -1435,12 +1559,13 @@ function publicNumber(value, valueFormat, digits = 2) {
   if (!Number.isFinite(number)) return String(value);
   if (valueFormat === 'percent') number *= 100;
   const suffix = ['percent', 'percent_points'].includes(valueFormat) ? '%' : '';
+  const mathematicalSign = text => String(text).replace(/^-/, '−');
   if (number !== 0 && Math.round(Math.abs(number) * 10 ** digits) === 0) {
     const [mantissa, exponent] = number.toExponential(2).split('e');
     const superscript = {'-':'⁻','0':'⁰','1':'¹','2':'²','3':'³','4':'⁴','5':'⁵','6':'⁶','7':'⁷','8':'⁸','9':'⁹'};
-    return `${mantissa.replace(/0+$/, '').replace(/\.$/, '')}×10${[...String(Number(exponent))].map(char => superscript[char] || char).join('')}${suffix}`;
+    return `${mathematicalSign(mantissa.replace(/0+$/, '').replace(/\.$/, ''))}×10${[...String(Number(exponent))].map(char => superscript[char] || char).join('')}${suffix}`;
   }
-  return new Intl.NumberFormat('zh-CN', {maximumFractionDigits: digits}).format(Object.is(number, -0) ? 0 : number) + suffix;
+  return mathematicalSign(new Intl.NumberFormat('zh-CN', {maximumFractionDigits: digits}).format(Object.is(number, -0) ? 0 : number)) + suffix;
 }
 function publicCategory(value, axisName, digits = 2) {
   return /年|日期|时间|代码|标识/.test(String(axisName || '')) ? String(value ?? '') : publicNumber(value, 'number', digits);
@@ -1465,11 +1590,13 @@ function renderChart(spec) {
   const labelStyle = {color: chartTheme.axis.label, fontSize: chartTheme.textStyle.fontSize, hideOverlap: true, margin: 12};
   const categoryAxis = (values, name) => {
     const digits = axisPrecision(values, 'number');
+    const longestLabel = Math.max(0, ...values.map(value => String(value ?? '').length));
+    const labelRotation = values.length > 12 || longestLabel > 10 ? 32 : 0;
     return ({
     type: 'category', name: name || '', nameLocation: 'middle', nameGap: 38, data: values,
-    axisLine: {lineStyle: {color: chartTheme.axis.line}},
-    axisTick: {alignWithLabel: true, interval: 'auto'},
-    axisLabel: {...labelStyle, interval: 'auto', rotate: 0,
+    axisLine: {show: true, lineStyle: {color: chartTheme.axis.line, width: 1.2}},
+    axisTick: {show: true, alignWithLabel: true, interval: 'auto', lineStyle: {color: chartTheme.axis.line}},
+    axisLabel: {...labelStyle, interval: 'auto', rotate: labelRotation,
       formatter: value => publicCategory(value, name, digits)}
     });
   };
@@ -1499,12 +1626,14 @@ function renderChart(spec) {
       animation: false, color: palette,
       tooltip: {trigger: 'axis', confine: true, valueFormatter: value => `${publicNumber(value, spec.value_format, Math.max(4, yDigits))}${spec.value_suffix || ''}`},
       legend: {show: hasLegend, type: 'scroll', top: 2, textStyle: chartTheme.textStyle},
-      grid: {left: 24, right: 28, top: hasLegend ? 60 : 35, bottom: 62, containLabel: true},
+      grid: {left: 24, right: 28, top: hasLegend ? 60 : 35, bottom: 78, containLabel: true},
       xAxis: categoryAxis(spec.x, spec.x_axis_name),
       yAxis: {type: 'value', name: spec.y_axis_name || '', splitNumber: 4,
         nameTextStyle: {color: chartTheme.axis.label},
+        axisLine: {show: true, lineStyle: {color: chartTheme.axis.line, width: 1.2}},
+        axisTick: {show: true, lineStyle: {color: chartTheme.axis.line}},
         axisLabel: {...labelStyle, formatter: value => publicNumber(value, spec.value_format, yDigits)},
-        splitLine: {lineStyle: {color: chartTheme.axis.split, type: 'dashed'}}},
+        splitLine: {show: false}},
       series: series.map((item, index) => ({name: item.name, type, smooth: false,
         symbol: type === 'line' ? symbols[index % symbols.length] : 'none',
         showSymbol: type === 'line' && points <= 24, symbolSize: 5, barMaxWidth: 42,
@@ -1514,7 +1643,7 @@ function renderChart(spec) {
   }
   chartInstances.push(chart);
 }
-	function initialiseCharts(){if(!window.echarts){markChartsUnavailable();return;}chartSpecs.forEach(spec=>{try{renderChart(spec);}catch(error){markChartUnavailable(spec.id,"图表初始化失败，请使用下方完整数据表。");console.error("图表初始化失败",spec.id,error);}});}
+	function initialiseCharts(){if(!window.echarts){markChartsUnavailable();return;}chartSpecs.forEach(spec=>{try{renderChart(spec);}catch(error){markChartUnavailable(spec.id,"图表初始化失败，请重新加载报告。");console.error("图表初始化失败",spec.id,error);}});}
 	window.addEventListener("DOMContentLoaded",initialiseCharts);let resizeTimer;window.addEventListener("resize",()=>{window.clearTimeout(resizeTimer);resizeTimer=window.setTimeout(()=>chartInstances.forEach(chart=>chart.resize()),150)});
 </script>"""
     chart_script = (
