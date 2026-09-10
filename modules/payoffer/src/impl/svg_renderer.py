@@ -52,11 +52,11 @@ def normalize_render_options(value: Mapping[str, Any] | None) -> dict[str, int]:
 
 
 _THRESHOLD_META: dict[str, tuple[str, str, str]] = {
-    "K": ("执行价", "#1F5FA8", "9 4"), "K_1": ("执行价1", "#1F5FA8", "9 4"),
-    "K_2": ("执行价2", "#1F5FA8", "7 4"), "K_3": ("执行价3", "#1F5FA8", "5 4"),
-    "K_4": ("执行价4", "#1F5FA8", "3 4"), "K_p": ("看跌执行价", "#1F5FA8", "9 4"),
-    "K_c": ("看涨执行价", "#1F5FA8", "7 4"), "K_u": ("上执行价", "#1F5FA8", "5 4"),
-    "K_d": ("下执行价", "#1F5FA8", "3 4"), "K_buf": ("缓冲价", "#1F5FA8", "4 3"),
+    "K": ("执行价", "#4F4F4F", "9 4"), "K_1": ("执行价1", "#4F4F4F", "9 4"),
+    "K_2": ("执行价2", "#4F4F4F", "7 4"), "K_3": ("执行价3", "#4F4F4F", "5 4"),
+    "K_4": ("执行价4", "#4F4F4F", "3 4"), "K_p": ("看跌执行价", "#4F4F4F", "9 4"),
+    "K_c": ("看涨执行价", "#4F4F4F", "7 4"), "K_u": ("上执行价", "#4F4F4F", "5 4"),
+    "K_d": ("下执行价", "#4F4F4F", "3 4"), "K_buf": ("缓冲价", "#4F4F4F", "4 3"),
     "H": ("触发价", "#D89B27", "8 5"), "H_out": ("敲出价", "#D89B27", "12 5"),
     "H_out_1": ("常规敲出价", "#D89B27", "12 5"), "H_out_2": ("最后敲出价", "#D89B27", "8 3"),
     "H_in": ("敲入价", "#D89B27", "12 5"), "H_c": ("计息价", "#D89B27", "6 4"),
@@ -64,7 +64,7 @@ _THRESHOLD_META: dict[str, tuple[str, str, str]] = {
     "H_floor": ("保底价", "#D89B27", "7 3"), "H_reset": ("重设价", "#D89B27", "4 3"),
     "H_u": ("上障碍价", "#D89B27", "10 4"), "H_d": ("下障碍价", "#D89B27", "6 3"),
     "B": ("气囊敲入价", "#D89B27", "8 3"), "F": ("保底比例", "#D89B27", "7 3"),
-    "ell": ("限损比例", "#D89B27", "7 3"), "r_cap": ("收益上限", "#1F5FA8", "6 3"),
+    "ell": ("限损比例", "#D89B27", "7 3"), "r_cap": ("收益上限", "#4F4F4F", "6 3"),
 }
 
 
@@ -88,6 +88,11 @@ class _CardLayout:
 
 def _number(value: float) -> str:
     return f"{float(value):.4f}".rstrip("0").rstrip(".")
+
+
+def _display_number(value: float) -> str:
+    rendered = _number(value)
+    return rendered.replace("-", "−", 1) if rendered.startswith("-") else rendered
 
 
 def _coord_x(value: float, scale: Mapping[str, float], left: float, width: float) -> float:
@@ -126,10 +131,10 @@ def _threshold_meta(threshold: Mapping[str, Any] | str) -> tuple[str, str, str]:
 def _format_value(value: float, axis: Mapping[str, Any]) -> str:
     kind = str(axis.get("number_format", "level"))
     if kind == "rate":
-        return _number(value * 100.0)
+        return _display_number(value * 100.0)
     if kind == "count":
-        return _number(round(value))
-    return _number(value)
+        return _display_number(round(value))
+    return _display_number(value)
 
 
 def _axis_spec(path: Mapping[str, Any]) -> tuple[str, str, Mapping[str, Any]]:
@@ -183,23 +188,27 @@ def _jump_svg(jumps: Sequence[Mapping[str, Any]], scale: Mapping[str, float], le
 
 
 def _format_pnl(value: float) -> str:
-    sign = "+" if value > 0.0 else "-"
+    sign = "+" if value > 0.0 else "−" if value < 0.0 else ""
     amount = abs(float(value))
     return f"{sign}{_number(amount)}%"
 
 
 def _payoff_level_svg(path: Mapping[str, Any], scale: Mapping[str, float], *, left: float, right: float, top: float, bottom: float, axis_x: float) -> str:
-    """水平收益段的纵轴辅助线与金额标注，置于收益线之下。"""
+    """以纵轴短刻度标记关键收益水平，不绘制贯穿图面的网格线。"""
     parts: list[str] = []
     for level in path.get("payoff_levels", []):
         value = float(level["value"])
         y = _coord_y(value, scale, top, bottom - top)
         if y <= top + 9.0 or y >= bottom - 7.0:
             continue
-        label_x = max(left + 34.0, axis_x - 10.0)
+        label_x = axis_x - 9.0
+        anchor = "end"
+        if label_x < left + 31.0:
+            label_x = axis_x + 9.0
+            anchor = "start"
         parts.append(
-            f'<line class="payoff-guide" x1="{_number(left)}" y1="{_number(y)}" x2="{_number(right)}" y2="{_number(y)}"/>'
-            f'<text class="cn payoff-level-label" x="{_number(label_x)}" y="{_number(y - 7.0)}" text-anchor="end">{_format_pnl(value)}</text>'
+            f'<line class="payoff-level-tick" x1="{_number(axis_x - 4.5)}" y1="{_number(y)}" x2="{_number(axis_x + 4.5)}" y2="{_number(y)}"/>'
+            f'<text class="cn payoff-level-label" x="{_number(label_x)}" y="{_number(y - 7.0)}" text-anchor="{anchor}">{_format_pnl(value)}</text>'
         )
     return "".join(parts)
 
@@ -452,7 +461,7 @@ def render_svg(
     return f'''<svg xmlns="http://www.w3.org/2000/svg" width="{_number(canvas_width)}" height="{_number(height)}" viewBox="0 0 {_number(canvas_width)} {_number(height)}" role="img" aria-labelledby="title desc">
   <title id="title">{name}路径Payoff图</title><desc id="desc">由Python Payoffer根据本次ResolvedContract计算并由共享现金流解释器逐点核对的参数化路径Payoff图。</desc>
   <defs><linearGradient id="everbright-red-gold" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#C8102E"/><stop offset="1" stop-color="#D89B27"/></linearGradient><style>
-  .cn{{font-family:"PingFang SC","Microsoft YaHei","Noto Sans CJK SC",Arial,sans-serif}}.card{{fill:#fff;stroke:#CFCFCF;stroke-width:1.1}}.card-accent{{stroke:#C8102E;stroke-width:4.5}}.scenario-no{{font-size:17px;font-weight:700;fill:#252525}}.scenario-note{{font-size:10.5px;fill:#6F7780}}.axis-title{{font-size:12px;font-weight:600;fill:#252525}}.reference-label,.range-label{{font-size:12px;fill:#4F4F4F}}.axis{{stroke:#252525;stroke-width:1.3}}.axis-arrow{{fill:#252525}}.threshold{{stroke-width:1;opacity:.82}}.threshold-value{{font-size:11px;font-weight:700}}.payoff-guide{{stroke:#B9BEC7;stroke-width:1;stroke-dasharray:3 4}}.payoff-level-label{{font-size:11px;font-weight:600;fill:#6F7780}}.payoff-line{{fill:none;stroke:#C8102E;stroke-width:2.6;stroke-linecap:round;stroke-linejoin:round}}.payoff-jump{{stroke:#C8102E;stroke-width:1.4;stroke-dasharray:4 3;fill:none}}.curve-turn{{fill:#6B3FA0;stroke:#fff;stroke-width:1.2}}.curve-endpoint{{stroke:#C8102E;stroke-width:1.7}}.curve-endpoint.open{{fill:#fff}}.curve-endpoint.closed{{fill:#C8102E}}.global-legend{{font-size:12px;fill:#555}}.global-legend .token-sub{{font-size:9px}}
+  .cn{{font-family:"PingFang SC","Microsoft YaHei","Noto Sans CJK SC",Arial,sans-serif}}.card{{fill:#fff;stroke:#CFCFCF;stroke-width:1.1}}.card-accent{{stroke:#C8102E;stroke-width:4.5}}.scenario-no{{font-size:17px;font-weight:700;fill:#252525}}.scenario-note{{font-size:10.5px;fill:#6F7780}}.axis-title{{font-size:12px;font-weight:600;fill:#252525}}.reference-label,.range-label{{font-size:12px;fill:#252525}}.axis{{stroke:#111;stroke-width:1.35}}.axis-arrow{{fill:#111}}.threshold{{stroke-width:1;opacity:.72}}.threshold-value{{font-size:11px;font-weight:700}}.payoff-level-tick{{stroke:#111;stroke-width:1.2}}.payoff-level-label{{font-size:11px;font-weight:650;fill:#252525}}.payoff-line{{fill:none;stroke:#C8102E;stroke-width:2.8;stroke-linecap:round;stroke-linejoin:round}}.payoff-jump{{stroke:#C8102E;stroke-width:1.4;stroke-dasharray:4 3;fill:none}}.curve-turn{{fill:#C8102E;stroke:#fff;stroke-width:1.2}}.curve-endpoint{{stroke:#C8102E;stroke-width:1.7}}.curve-endpoint.open{{fill:#fff}}.curve-endpoint.closed{{fill:#C8102E}}.global-legend{{font-size:12px;fill:#404040}}.global-legend .token-sub{{font-size:9px}}
   </style></defs>
   <rect width="{_number(canvas_width)}" height="{_number(height)}" fill="#fff"/><rect x="{OUTER_MARGIN}" y="16" width="{_number(canvas_width - 2 * OUTER_MARGIN)}" height="56" fill="url(#everbright-red-gold)"/><rect x="{OUTER_MARGIN}" y="16" width="8" height="56" fill="#A80F28"/><text class="cn" x="38" y="52" fill="#fff" font-size="26" font-weight="700">{name}</text>
   {cards}
