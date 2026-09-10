@@ -23,13 +23,14 @@ from .renderer import (
     as_list,
     backtest_summary_rows,
     canonical_greeks,
-    display_basis,
     display_text,
     detail_tables,
     esc,
     esc_rendered,
     item_list,
     parameter_table,
+    public_parameter_rows,
+    public_specialized_rows,
     render_html,
     render_presentation_content,
     rich_text,
@@ -184,10 +185,12 @@ def _card_pricing_detail(facts: Mapping[str, Any], pricing: Mapping[str, Any]) -
         blocks.append(f'<p class="card-data-note">{esc("；".join(metadata))}</p>')
     parameters = as_list(as_dict(facts.get("parameters")).get("pricing_input"))
     if parameters:
-        blocks.append("<h4>估值参数</h4>" + parameter_table(parameters, "估值参数"))
+        pricing_parameter_table = parameter_table(parameters, "估值参数")
+        if pricing_parameter_table:
+            blocks.append("<h4>估值参数</h4>" + pricing_parameter_table)
     scenario_rows = as_list(pricing.get("scenario_rows"))
     if scenario_rows:
-        blocks.append("<h4>定价情景</h4>" + simple_table(
+        blocks.append(simple_table(
             scenario_rows,
             [("scenario", "情景"), ("spot", "标的价格"), ("time", "剩余期限"), ("pv", "现值")],
             "定价情景",
@@ -205,11 +208,26 @@ def _card_backtest_detail(facts: Mapping[str, Any], backtest: Mapping[str, Any])
         blocks.append(f'<p class="card-data-note">入场规则：{esc(backtest.get("entry_rule"))}</p>')
     parameters = as_list(as_dict(facts.get("parameters")).get("backtest_input"))
     if parameters:
-        blocks.append("<h4>回测参数</h4>" + parameter_table(parameters, "回测参数"))
-    tables = [
-        as_dict(item) for item in as_list(backtest.get("detail_tables"))
-        if text(as_dict(item).get("title")) != "公共回测统计"
-    ]
+        backtest_parameter_table = parameter_table(parameters, "回测参数")
+        if backtest_parameter_table:
+            blocks.append("<h4>回测参数</h4>" + backtest_parameter_table)
+    tables: list[dict[str, Any]] = []
+    for raw in as_list(backtest.get("detail_tables")):
+        table = as_dict(raw)
+        title = text(table.get("title"))
+        if title == "公共回测统计":
+            continue
+        if title == "产品专属统计":
+            rows = public_specialized_rows(as_list(table.get("rows")))
+            if not rows:
+                continue
+            table = {
+                **table,
+                "title": "结构统计",
+                "columns": [("label", "指标"), ("value", "统计值")],
+                "rows": rows,
+            }
+        tables.append(table)
     blocks.append(detail_tables(tables))
     limitations = item_list(as_list(backtest.get("limitations")))
     if limitations:
@@ -246,11 +264,10 @@ def _card_candidate_sections(
         sections["reason"] = f'<ul class="plain-list">{reason}</ul>'
     if terms:
         sections["contract_highlights"] = simple_table(
-            terms, [("label", "条款"), ("value", "取值")], f"{label}关键合同条款"
+            terms, [("label", "条款"), ("value", "取值"), ("note", "说明")], f"{label}关键合同条款"
         )
-    pricing_rows = [{**row, "basis": display_basis(row)} for row in pricing_rows]
     pricing_body = (
-        simple_table(pricing_rows, [("label", "指标"), ("value", "数值"), ("basis", "单位或口径")], f"{label}估值摘要")
+        simple_table(pricing_rows, [("label", "指标"), ("value", "数值")], f"{label}估值摘要")
         if pricing_rows
         else ""
     )
@@ -260,9 +277,8 @@ def _card_candidate_sections(
         pricing_body = f'<p class="comparison-state" data-status="{esc(pricing_status or "pending")}">{esc(_module_status(pricing))}</p>' + pricing_body
     if pricing_body:
         sections["pricing"] = pricing_body
-    backtest_rows = [{**row, "basis": display_basis(row)} for row in backtest_rows]
     backtest_body = (
-        simple_table(backtest_rows, [("label", "指标"), ("value", "数值"), ("basis", "单位或口径")], f"{label}回测摘要")
+        simple_table(backtest_rows, [("label", "指标"), ("value", "数值")], f"{label}回测摘要")
         if backtest_rows
         else ""
     )
@@ -330,42 +346,36 @@ def _comparison_table(candidates: Sequence[Mapping[str, Any]], rows_by_candidate
     for start in range(0, len(candidates), 3):
         group = candidates[start:start + 3]
         group_rows = rows_by_candidate[start:start + 3]
-        keys: list[tuple[str, str]] = []
-        values: list[dict[tuple[str, str], Mapping[str, Any]]] = []
+        keys: list[str] = []
+        values: list[dict[str, Mapping[str, Any]]] = []
         for candidate_index, rows in enumerate(group_rows):
-            mapped: dict[tuple[str, str], Mapping[str, Any]] = {}
+            mapped: dict[str, Mapping[str, Any]] = {}
             for raw in rows:
                 row = as_dict(raw)
                 label = text(row.get("label") or row.get("cn"))
-                key = (label, display_basis(row))
                 if not label:
                     continue
-                existing = mapped.get(key)
+                existing = mapped.get(label)
                 if existing is not None:
                     if (
                         existing.get("value") != row.get("value")
                         or text(existing.get("value_format")) != text(row.get("value_format"))
                     ):
                         candidate_label = text(group[candidate_index].get("label"))
-                        raise ValueError(f"{candidate_label}存在同名同口径但取值冲突的指标：{label}。")
+                        raise ValueError(f"{candidate_label}存在同名但取值冲突的指标：{label}。")
                     continue
-                mapped[key] = row
-                if key not in keys:
-                    keys.append(key)
+                mapped[label] = row
+                if label not in keys:
+                    keys.append(label)
             values.append(mapped)
         columns = [{"key": "metric", "label": "指标"}]
-        has_basis = any(basis for _label, basis in keys)
-        if has_basis:
-            columns.append({"key": "basis", "label": "单位或口径"})
         for index, candidate in enumerate(group):
             columns.append({"key": f"c{index}", "label": text(candidate.get("label"))})
         table_rows = []
-        for label, basis in keys:
+        for label in keys:
             row: dict[str, Any] = {"metric": label}
-            if has_basis:
-                row["basis"] = basis or "—"
             for index, mapped in enumerate(values):
-                item = mapped.get((label, basis))
+                item = mapped.get(label)
                 row[f"c{index}"] = display_text(item.get("value"), item.get("value_format")) + text(item.get("value_suffix")) if item else "—"
             table_rows.append(row)
         if table_rows:
@@ -419,7 +429,7 @@ def _parameter_detail_table(
     group: str,
     title: str,
 ) -> list[dict[str, Any]]:
-    rows = as_list(as_dict(facts.get("parameters")).get(group))
+    rows = public_parameter_rows(as_list(as_dict(facts.get("parameters")).get(group)))
     if not rows:
         return []
     visible_rows = [
@@ -446,6 +456,13 @@ def _attributed_detail_tables(
         table = deepcopy(as_dict(raw))
         if not text(table.get("title")) or not as_list(table.get("columns")) or not as_list(table.get("rows")):
             continue
+        if text(table.get("title")) == "产品专属统计":
+            rows = public_specialized_rows(as_list(table.get("rows")))
+            if not rows:
+                continue
+            table["title"] = "结构统计"
+            table["rows"] = rows
+            table["columns"] = [("label", "指标"), ("value", "统计值")]
         table["title"] = f'{label}：{text(table.get("title"))}'
         result.append(table)
     return result
@@ -542,11 +559,15 @@ def _aggregate_report(
             parameter_detail_tables.extend(_parameter_detail_table(candidate, facts, group, title))
         pricing = as_dict(facts.get("pricing"))
         pricing_status = text(pricing.get("status")).lower()
+        concise_pricing_rows = [
+            {key: value for key, value in row.items() if key not in {"unit", "note", "basis"}}
+            for row in _metric_rows(pricing, include_greeks=True)
+        ] if pricing_status in {"ready", "partial"} else []
         pricing_rows.append([
             {"label": "模块状态", "value": _module_status(pricing)},
             *([{"label": "估值方法", "value": pricing.get("method")}] if text(pricing.get("method")) else []),
             *([{"label": "估值日", "value": pricing.get("valuation_date")}] if text(pricing.get("valuation_date")) else []),
-            *(_metric_rows(pricing, include_greeks=True) if pricing_status in {"ready", "partial"} else []),
+            *concise_pricing_rows,
         ])
         if pricing_status in {"ready", "partial"}:
             pricing_detail_tables.extend(_candidate_pricing_tables(candidate, facts))
@@ -554,8 +575,8 @@ def _aggregate_report(
         backtest_status = text(backtest.get("status")).lower()
         rows = (
             _metric_rows(backtest)
-            + [as_dict(item) for item in as_list(backtest.get("card_metrics"))]
-            + [as_dict(item) for item in as_list(backtest.get("event_statistics"))]
+            + public_specialized_rows(as_list(backtest.get("card_metrics")))
+            + public_specialized_rows(as_list(backtest.get("event_statistics")))
             if backtest_status in {"ready", "partial"} else []
         )
         if backtest_status in {"ready", "partial"} and text(backtest.get("window")):
