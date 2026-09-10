@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
+import re
 import json
 import sys
 import tempfile
 from datetime import datetime
 from math import isfinite
-from pathlib import Path
-from typing import Any, Mapping
+from pathlib import Path, PurePosixPath
+from typing import Any, Callable, Mapping
 
 _ROOT = Path(__file__).resolve().parents[3]
 for _source in (_ROOT / "core" / "src", _ROOT / "modules" / "reporter" / "src", _ROOT / "modules" / "designer" / "src"):
@@ -27,6 +29,39 @@ from runtime.protocol.models import ModuleRunRef
 from .errors import AuthorizationError, UnavailableCapabilityError, ValidationError
 from .identity.session_identity import SessionIdentity
 from .stores.result_store import ResultStore, _report_evidence_key
+
+
+
+def standalone_report_html(content: bytes, artifact_name: str,
+                           read_asset: Callable[[str], tuple[bytes, str]]) -> bytes:
+    """Export one offline HTML without changing the frozen ReportRun artifact.
+
+    Only the report's own verified chart asset is resolved. Both desktop hosts
+    receive the same bytes, including for reports saved before this fix.
+    """
+    html = content.decode("utf-8")
+    script = re.compile(r'<script\b(?P<attrs>[^>]*)>\s*</script\s*>', re.IGNORECASE)
+    source = re.compile(r'\bsrc\s*=\s*([\'"])(.*?)\1', re.IGNORECASE)
+
+    def embed(match: re.Match[str]) -> str:
+        reference = source.search(match.group("attrs"))
+        if reference is None:
+            return match.group(0)
+        relative = PurePosixPath(reference.group(2))
+        if relative != PurePosixPath("assets/echarts.min.js"):
+            raise ValidationError("HTML包含未识别的外部脚本，无法生成离线文件")
+        name = str(PurePosixPath(artifact_name).parent / relative)
+        asset, media_type = read_asset(name)
+        if media_type.split(";", 1)[0] not in {"application/javascript", "text/javascript"} or not asset:
+            raise ValidationError("报告的离线图表资源无效")
+        encoded = base64.b64encode(asset).decode("ascii")
+        return ('<script data-optionhelper-runtime="echarts">'
+                '(()=>{const bytes=Uint8Array.from(atob("' + encoded + '"),c=>c.charCodeAt(0));'
+                'const runtime=document.createElement("script");'
+                'runtime.textContent=new TextDecoder().decode(bytes);document.head.appendChild(runtime);})();'
+                '</script>')
+
+    return script.sub(embed, html).encode("utf-8")
 
 
 def _source_display_terms(contract: Mapping[str, Any]) -> list[dict[str, Any]]:
