@@ -147,6 +147,8 @@ PDF_RUNTIME_MODULES = (
     "lxml",
     "lxml.etree",
     "openpyxl",
+    "striprtf.striprtf",
+    "xlrd",
 )
 PDF_RUNTIME_VERSION = "5.0.0"
 PILLOW_RUNTIME_VERSION = "12.3.0"
@@ -163,6 +165,8 @@ DOCUMENT_RUNTIME_DISTRIBUTIONS = {
     "soupsieve": SOUPSIEVE_RUNTIME_VERSION,
     "lxml": LXML_RUNTIME_VERSION,
     "openpyxl": OPENPYXL_RUNTIME_VERSION,
+    "striprtf": "0.0.30",
+    "xlrd": "2.0.2",
 }
 EXCLUDED_BACKEND_MODULES = (
     "IPython", "PySide6", "cv2", "datasets", "debugpy", "h5py",
@@ -740,7 +744,7 @@ def build_windows(
         if versions_root.resolve() == (ROOT / "versions").resolve():
             raise WindowsBuildError("Windows正式归档只能由受控发行事务创建")
         release_root.mkdir(parents=True, exist_ok=False)
-    installer_name = f"OptionHelper-{app_version}-windows-x86_64-Setup.exe"
+    installer_name = f"OptionHelper-{app_version}-Windows-x64.exe"
     archive_installer = release_root / installer_name
     if archive_installer.exists() or (release_root / "app-manifest-windows.json").exists():
         raise WindowsBuildError(f"Windows App历史版本已存在；不得覆盖已签发的{RELEASE_VERSION}文件")
@@ -916,7 +920,10 @@ def build_windows(
             sign_and_verify_executable(staged_installer, signing_thumbprint)
         _progress("正在安装到临时目录并验收实际安装结果")
         installed_app = temporary / "installed"
-        install_for_verification(staged_installer, installed_app)
+        try:
+            install_for_verification(staged_installer, installed_app)
+        except (RuntimeError, OSError, subprocess.TimeoutExpired) as error:
+            raise WindowsBuildError(f"Windows安装物验收未通过：{error}") from error
         verify_installer_payload(installed_app, app)
         _run_acceptance([sys.executable, "-u", str(installed_app / "verify-windows.py"), str(installed_app), "--source-root", str(repo_root)], cwd=temporary)
         verify_installer_payload(installed_app, app)
