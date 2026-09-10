@@ -1,7 +1,8 @@
+import { createConversationOutline } from "/app/frontend/shared/conversation-outline.js";
 import {ACTIVITY_VISUALS, activityForEvent} from '/app/frontend/shared/activity-motion.js';
 import { createBloubAvatar } from '/app/frontend/shared/bloub-avatar.js';
-import { bindComposerKeyboard, clearMessage, configureModelPicker, createReasoningDisclosure, initializeWorkspace, message, renderMessages, renderReports, renderTaskList, request, safeJson, setTaskLocation, settingsURLFor, taskIdFromLocation } from "/app/frontend/shared/app.js";
-import { MODEL_CONFIGURATION_CHANGED, setMessageActionIcon } from "/app/frontend/shared/app.js";
+import { bindComposerKeyboard, enhanceSelects, clearMessage, configureModelPicker, createReasoningDisclosure, initializeWorkspace, message, renderMessages, renderReports, renderTaskList, request, safeJson, setTaskLocation, settingsURLFor, openWorkspaceSettings, taskIdFromLocation } from "/app/frontend/shared/app.js";
+import { animateSurface, setMotionText, MODEL_CONFIGURATION_CHANGED, setMessageActionIcon, setStatusIcon, operationActivity } from "/app/frontend/shared/app.js";
 import { attachmentMediaType, validateAttachments } from "/app/frontend/optchat/attachment-utils.js";
 import { createThinkingOrb } from "/app/frontend/shared/thinking-orb.js";
 import { createTransitionScope } from "/app/frontend/shared/transition-scope.js";
@@ -45,8 +46,8 @@ export function decorateReportLibrary(target, reportRuns = [], onEdit = () => {}
     const edit = document.createElement('a');
     edit.href = '#';
     edit.dataset.reportEdit = reportRunId;
-    edit.textContent = '编辑';
-    edit.setAttribute('aria-label', `编辑${card.querySelector('strong')?.textContent || '报告'}`);
+    setMessageActionIcon(edit, `编辑${card.querySelector('strong')?.textContent || '报告'}`, 'm15 5 4 4M4 20l5-1L21 7a2.8 2.8 0 0 0-4-4L5 15l-1 5Z');
+    edit.title = '编辑报告';
     edit.addEventListener('click', event => {
       event.preventDefault();
       onEdit(reportRunId);
@@ -140,6 +141,7 @@ const runtimeAssistantTextLimit = 64_000;
 const runtimeReasoningTextLimit = 512_000;
 const runtimeSummaryLimit = 180;
 const runtimeToolLabels = Object.freeze({
+  "recommender.run": "筛选期权结构",
   "payoffer": "收益结构",
   "payoffer.run": "收益结构",
   "pricer": "估值定价",
@@ -213,7 +215,7 @@ const runtimeFamily = (type) => {
 };
 const runtimeToolLabel = (value, summary = "") => {
   const key = String(value ?? "").trim().toLowerCase();
-  const canonical = key.replace(/^(knowledger|datafetcher|payoffer|pricer|backtester|reporter|recommendation_delivery)_/, "$1.");
+  const canonical = key.replace(/^(knowledger|datafetcher|payoffer|pricer|backtester|reporter|recommender|recommendation_delivery)_/, "$1.");
   if (runtimeToolLabels[canonical]) return runtimeToolLabels[canonical];
   const source = String(summary || "");
   return Object.entries(runtimeToolLabels).find(([module]) => module.endsWith(".run") && source.includes(runtimeToolLabels[module]))?.[1] || "研究模块";
@@ -265,6 +267,8 @@ export function renderProcessUsage(target, usage) {
   target.className = "process-token-values";
   target.setAttribute("role", "group");
   target.setAttribute("aria-label", "Token用量");
+  const previousUsage = target._lastUsage || {};
+  target._lastUsage = { ...usage };
   const rows = [["输入", usage.inputTokens], ["输出", usage.outputTokens], ["总计", usage.totalTokens]];
   const prefix = target.ownerDocument.createElement("span");
   prefix.className = "process-token-prefix";
@@ -276,6 +280,8 @@ export function renderProcessUsage(target, usage) {
     name.textContent = label;
     amount.textContent = Number.isFinite(value) && value >= 0 ? value.toLocaleString("zh-CN") : "未提供";
     item.append(name, amount);
+    const key = { 输入: "inputTokens", 输出: "outputTokens", 总计: "totalTokens" }[label];
+    if (previousUsage[key] !== undefined && previousUsage[key] !== value) requestAnimationFrame(() => animateSurface(amount, "number"));
     return item;
   }));
 }
@@ -355,7 +361,9 @@ export function projectRuntimeEvent(event) {
   return Object.freeze({
     ...event,
     timelineLabel: event.summary,
-    showTimeline: !isDelta && !["usage", "block", "tool"].includes(event.family) && (!isMainAgent || mainAgentDetail),
+    showTimeline: !isDelta && !["usage", "block", "tool", "turn", "step"].includes(event.family)
+      && !(event.family === "agent" && event.type !== "agent_run")
+      && event.summary !== "研究流程正在运行。" && (!isMainAgent || mainAgentDetail),
     showReasoning: event.family === "reasoning" && event.reasoningAvailable === true && Boolean(event.delta),
     assistantDelta: event.family === "assistant" && event.type === "assistant.text_delta" ? event.delta : "",
     reasoningDelta: event.family === "reasoning" ? event.delta : "",
@@ -407,6 +415,7 @@ export async function startWorkspace(initialMode) {
   const stream = document.querySelector("#conversation-stream");
   const chatSurface = document.querySelector("#chat-surface");
   const chatScrollStage = document.querySelector("#chat-scroll-stage");
+  const conversationOutline = createConversationOutline({ stream, container: chatScrollStage });
   const runtimeLiveStatus = document.querySelector("#runtime-live-status");
   const conversationTitle = document.querySelector("#conversation-title");
   const assistant = document.querySelector(".assistant-region");
@@ -426,6 +435,29 @@ export async function startWorkspace(initialMode) {
   const defaultInputPlaceholder = input.placeholder;
   let composerQuestionId = "";
   const submit = form.querySelector("button[type=submit]");
+  const followupQueue = document.createElement("section");
+  followupQueue.className = "composer-followups";
+  followupQueue.setAttribute("aria-label", "追加消息队列");
+  followupQueue.hidden = true;
+  form.prepend(followupQueue);
+  const followupButtons = [];
+  for (const [mode, label, path] of [
+    ["queue", "排队发送：本轮结束后执行", "M3 5h14M3 10h8M3 15h4M21 16a6 6 0 1 1-12 0 6 6 0 0 1 12 0M15 12v4l2 1"],
+    ["steer", "立即调整：停止本轮后优先执行", "M5 20v-8a5 5 0 0 1 5-5h9M15 3l4 4-4 4"],
+  ]) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "composer-followup-control";
+    button.dataset.followupMode = mode;
+    button.setAttribute("aria-label", label);
+    button.title = label;
+    button.hidden = true;
+    button.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="${path}"/></svg>`;
+    submit.before(button);
+    followupButtons.push(button);
+  }
+  let followupSubmitting = false;
+  const watchingFollowups = new Set();
   const modelPicker = document.querySelector("#workspace-model-picker");
   const status = document.querySelector("#workspace-status");
   const title = document.querySelector("#task-title");
@@ -437,10 +469,15 @@ export async function startWorkspace(initialMode) {
   const attachmentDropTarget = document.querySelector("[data-attachment-drop-target]");
   const attachmentTrigger = document.querySelector("[data-attachment-trigger]");
   const attachmentInput = document.querySelector("[data-attachment-input]");
+  if (attachmentTrigger && !attachmentTrigger.querySelector(".composer-attach-label")) {
+    const label = document.createElement("span");
+    label.className = "composer-attach-label";
+    label.textContent = "添加文件";
+    attachmentTrigger.append(label);
+  }
   const attachmentArea = document.querySelector("#composer-attachments");
   const attachmentList = attachmentArea?.querySelector("[data-attachment-list]");
   const attachmentCount = attachmentArea?.querySelector("[data-attachment-count]");
-  const attachmentDropHint = document.querySelector("[data-attachment-drop-hint]");
   const lightbox = document.querySelector("#attachment-lightbox");
   const lightboxImage = lightbox?.querySelector("[data-attachment-lightbox-image]");
   const lightboxName = lightbox?.querySelector("[data-attachment-lightbox-name]");
@@ -579,6 +616,13 @@ export async function startWorkspace(initialMode) {
   const syncComposerAvailability = () => {
     if (!modelPicker.disabled && modelPicker.value && status.dataset.reason === "model-required") clearWorkspaceStatus();
     const sending = submit.dataset.sending === "true";
+    for (const button of followupButtons) {
+      button.hidden = !sending;
+      const promoteQueued = button.dataset.followupMode === "steer" && !input.value.trim()
+        && Boolean(followupQueue.querySelector("[data-prioritize-followup]:not(:disabled)"));
+      button.disabled = followupSubmitting || (!promoteQueued && (!input.value.trim() || !modelPicker.value));
+      button.title = promoteQueued ? "立即引导：优先执行第一条排队消息" : button.getAttribute("aria-label");
+    }
     submit.disabled = submit.dataset.cancelRequested === "true"
       || (!sending && (modelPicker.disabled || !modelPicker.value || (!input.value.trim() && draftAttachments.length === 0)));
     submit.setAttribute("aria-label", sending
@@ -597,6 +641,10 @@ export async function startWorkspace(initialMode) {
   let composerSentTimer = 0;
   const markComposerSent = (button) => {
     window.clearTimeout(composerSentTimer);
+    const check = button.querySelector(".send-success");
+    if (check?.getTotalLength) {
+      check.style.setProperty("--success-path-length", String(Math.ceil(check.getTotalLength())));
+    }
     button.classList.add("is-sent");
     composerSentTimer = window.setTimeout(() => {
       button.classList.remove("is-sent");
@@ -652,6 +700,10 @@ export async function startWorkspace(initialMode) {
     waiting_parent: "等待主Agent汇总",
     started: "已开始",
     pending: "等待处理",
+    needs_input: "等待补充条件",
+    pending_approval: "等待确认",
+    cancel_requested: "正在取消",
+    blocked: "等待处理条件",
     reselecting: "重新筛选中",
     completed: "已完成",
     succeeded: "已完成",
@@ -751,9 +803,6 @@ export async function startWorkspace(initialMode) {
     }));
     attachmentArea.hidden = draftAttachments.length === 0;
     if (attachmentCount) attachmentCount.textContent = String(draftAttachments.length);
-    if (attachmentDropHint) attachmentDropHint.textContent = draftAttachments.length
-      ? `已添加${draftAttachments.length}个附件`
-      : "可粘贴、拖放或选择文件";
   };
   const addDraftFiles = async (files) => {
     if (submit.dataset.sending === "true") {
@@ -941,7 +990,10 @@ export async function startWorkspace(initialMode) {
       return null;
     }
     live.blocks.set(key, block);
-    if (!block.element.parentElement) live.content.append(block.element);
+    if (!block.element.parentElement) {
+      live.content.append(block.element);
+      if (blockType === "text") animateSurface(block.element);
+    }
     return block;
   };
   const updateLiveBlock = (live, projection, blockType, delta) => {
@@ -970,10 +1022,11 @@ export async function startWorkspace(initialMode) {
     const details = document.createElement("details");
     details.open = false;
     const summary = document.createElement("summary");
-    const orb = createThinkingOrb({ state: "connecting", size: 20 });
+    const orb = createThinkingOrb({ state: "connecting", size: 28 });
     orb.element.setAttribute("aria-hidden", "true");
     const summaryLabel = document.createElement("span");
     summaryLabel.textContent = "正在连接";
+    summaryLabel.className = "runtime-state-label";
     const detailIcon = document.createElement("span");
     detailIcon.className = "process-detail-icon";
     detailIcon.hidden = true;
@@ -991,8 +1044,7 @@ export async function startWorkspace(initialMode) {
     const cancelButton = document.createElement("button");
     cancelButton.type = "button";
     cancelButton.className = "process-cancel";
-    cancelButton.textContent = "停止";
-    cancelButton.setAttribute("aria-label", "取消本轮处理");
+    setMessageActionIcon(cancelButton, "取消本轮处理", "M6 6h12v12H6Z");
     cancelButton.hidden = typeof onCancel !== "function";
     cancelButton.addEventListener("click", () => onCancel?.());
     actions.append(state, cancelButton);
@@ -1012,6 +1064,9 @@ export async function startWorkspace(initialMode) {
     const agentCards = document.createElement("div");
     agentCards.className = "process-agent-cards";
     agentCards.dataset.processAgents = "true";
+    const collaboration = document.createElement("section");
+    collaboration.className = "process-collaboration";
+    collaboration.hidden = true;
     const toolCards = document.createElement("div");
     toolCards.className = "process-tool-cards";
     toolCards.dataset.processTools = "true";
@@ -1025,11 +1080,24 @@ export async function startWorkspace(initialMode) {
       summary,
       actions,
       events,
-      createSection("Agent", "process-agent-section", agentCards),
+      collaboration,
+      createSection("分工", "process-agent-section", agentCards),
       createSection("工具调用", "process-tool-section", toolCards),
       usageSection,
     );
     panel.append(details);
+    details.addEventListener("toggle", () => {
+      if (!details.open) return;
+      requestAnimationFrame(() => {
+        const viewport = stream.getBoundingClientRect();
+        const bounds = panel.getBoundingClientRect();
+        const visibleBottom = Math.min(viewport.bottom, form.getBoundingClientRect().top) - 28;
+        if (bounds.bottom <= visibleBottom && bounds.top >= viewport.top + 16) return;
+        const targetTop = Math.max(viewport.top + 16, visibleBottom - bounds.height);
+        stream.scrollBy({ top: bounds.top - targetTop,
+          behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth" });
+      });
+    });
     stream.append(panel);
     stream.scrollTop = stream.scrollHeight;
     return {
@@ -1041,6 +1109,7 @@ export async function startWorkspace(initialMode) {
       orb,
       cancelButton,
       agentCards,
+      collaboration,
       toolCards,
       usageSection,
       usageValue,
@@ -1083,7 +1152,11 @@ export async function startWorkspace(initialMode) {
       map.set(cardKey, card);
     }
     card.dataset.status = event.status;
-    card.querySelector("[data-process-card-title]").textContent = title;
+    const heading = card.querySelector("[data-process-card-title]");
+    const roleLabels = { Interpreter: "需求理解", Selector: "结构筛选", Reviewer: "候选复核", Structurer: "结构设计", Trader: "交易评估", Specifier: "条件整理", Generator: "候选生成", Evaluator: "方案评估" };
+    if (!heading.textContent || !/^(?:agent|研究模块)$/i.test(title)) {
+      heading.textContent = kind === "agent" ? (roleLabels[title] || title) : title;
+    }
     const status = card.querySelector("[data-process-card-status]");
     const label = runtimeStatusLabel(event.status);
     if (kind === "tool") {
@@ -1091,18 +1164,90 @@ export async function startWorkspace(initialMode) {
       const uncertain = ["outcome_unknown", "interrupted"].includes(event.status);
       const complete = ["completed", "succeeded"].includes(event.status);
       const stopped = ["cancelled", "canceled", "stopped"].includes(event.status);
-      const path = complete ? "m5 12 4 4L19 6" : failed ? "M12 8v5m0 3v.1M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0Z" : uncertain ? "M12 8v4l3 2M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0Z" : stopped ? "M7 7h10v10H7Z" : "M12 3a9 9 0 1 1-9 9";
+      const activity = operationActivity(event.status);
+      const waiting = ["queued", "waiting", "cancelling"].includes(activity);
+      const path = waiting ? "M12 7v5l3 2M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0Z" : complete ? "m5 12 4 4L19 6" : failed ? "M12 8v5m0 3v.1M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0Z" : uncertain ? "M12 8v4l3 2M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0Z" : stopped ? "M7 7h10v10H7Z" : "M12 3a9 9 0 1 1-9 9";
       setMessageActionIcon(status, failed || uncertain ? `${label}，查看原因` : label, path);
       status.disabled = !(failed || uncertain);
-      status.dataset.state = complete ? "complete" : failed ? "failed" : uncertain ? "uncertain" : stopped ? "stopped" : "running";
+      status.dataset.state = activity;
       if (failed) status.setAttribute("aria-expanded", "false");
       else status.removeAttribute("aria-expanded");
-    } else status.textContent = label;
+    } else {
+      status.textContent = label;
+      if (["complete", "failed", "stopped", "waiting", "uncertain"].includes(operationActivity(event.status))) {
+        for (const block of card.reasoningBlocks.values()) block.disclosure.update(block.text, false);
+      }
+    }
     const detail = card.querySelector("[data-process-card-detail]");
     detail.textContent = event.detail && !/(?:正在运行|正在处理)/.test(event.detail) ? event.detail : event.summary;
-    detail.hidden = kind === "tool";
+    if (kind === "agent" && /正在处理本轮分工/.test(detail.textContent)) detail.textContent = "";
+    detail.hidden = kind === "tool" || !detail.textContent;
 
     parent.parentElement.hidden = false;
+  };
+  const renderCollaboration = (playback) => {
+    const host = playback.collaboration;
+    if (!host) return;
+    const cards = [...playback.agentCardMap.values()];
+    host.hidden = cards.length < 2;
+    if (host.hidden) return;
+    const states = cards.map(card => operationActivity(card.dataset.status));
+    const signature = JSON.stringify([playback.panel.dataset.terminal, playback.panel.dataset.outcome, cards.map(card => [card.dataset.status, card.querySelector("[data-process-card-title]").textContent])]);
+    if (host.dataset.snapshot === signature) return;
+    host.dataset.snapshot = signature;
+    const head = document.createElement("header");
+    const title = document.createElement("strong");
+    title.textContent = "协作进度";
+    const count = document.createElement("span");
+    const done = states.filter(state => state === "complete").length;
+    count.textContent = `${cards.length}个Agent，${done}项完成`;
+    head.append(title, count);
+    const graph = document.createElement("div");
+    graph.className = "process-collaboration__graph";
+    graph.style.minWidth = `${Math.max(300, cards.length * 80)}px`;
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("viewBox", "0 0 600 120");
+    svg.setAttribute("preserveAspectRatio", "none");
+    svg.setAttribute("aria-hidden", "true");
+    const root = document.createElement("div");
+    root.className = "process-collaboration__root";
+    root.textContent = "OH";
+    root.title = playback.panel.dataset.terminal === "true" ? "本轮处理已结束" : states.includes("running") ? "正在协作" : "等待汇总";
+    const nodes = document.createElement("div");
+    nodes.className = "process-collaboration__nodes";
+    nodes.style.setProperty("--agent-count", String(cards.length));
+    cards.forEach((card, index) => {
+      const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      const x = (index + .5) * 600 / cards.length;
+      path.setAttribute("d", `M300 24 C300 65 ${x} 58 ${x} 114`);
+      // These branches represent membership in this request, not sequential dependencies.
+      const unsettled = playback.panel.dataset.terminal === "true" && ["running", "queued", "waiting", "cancelling"].includes(states[index]);
+      path.dataset.state = unsettled ? (["cancelled", "stopped", "interrupted"].includes(playback.panel.dataset.outcome) ? "stopped" : "uncertain") : states[index];
+      const statusLabel = unsettled ? (path.dataset.state === "stopped" ? "已停止" : "完成状态待确认") : runtimeStatusLabel(card.dataset.status);
+      svg.append(path);
+      const node = document.createElement("button");
+      node.type = "button";
+      node.dataset.state = path.dataset.state;
+      const name = card.querySelector("[data-process-card-title]").textContent;
+      node.setAttribute("aria-label", `查看${name}：${statusLabel}`);
+      const mark = document.createElement("span");
+      mark.className = "process-collaboration__mark";
+      mark.textContent = states[index] === "complete" ? "✓" : states[index] === "failed" ? "!" : String(index + 1);
+      const label = document.createElement("span");
+      label.textContent = name;
+      const detail = document.createElement("small");
+      detail.textContent = statusLabel;
+      node.append(mark, label, detail);
+      node.addEventListener("click", () => {
+        card.scrollIntoView({ block: "nearest", behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth" });
+        const heading = card.querySelector("[data-process-card-title]");
+        heading.tabIndex = -1;
+        heading.focus({ preventScroll: true });
+      });
+      nodes.append(node);
+    });
+    graph.append(svg, root, nodes);
+    host.replaceChildren(head, graph);
   };
   const appendProcessTimeline = (playback, projection) => {
     if (!projection.showTimeline) return;
@@ -1121,12 +1266,9 @@ export async function startWorkspace(initialMode) {
     if (!projection) return;
     if (projection.scope === "main_agent" && playback.runtimeScope !== "main_agent") {
       playback.runtimeScope = "main_agent";
-      playback.summaryLabel.textContent = "正在回复";
+      setMotionText(playback.summaryLabel, "正在回复");
       playback.panel.hidden = false;
       playback.events.replaceChildren();
-      playback.agentCards.replaceChildren();
-      playback.agentCardMap.clear();
-      playback.agentCards.parentElement.hidden = true;
     }
     const legacyBoilerplate = ["request", "routing", "answer", "terminal"].includes(projection.type);
     const hasProcessDetail = projection.family === "tool"
@@ -1135,7 +1277,7 @@ export async function startWorkspace(initialMode) {
       || (!legacyBoilerplate && playback.runtimeScope !== "main_agent" && ["workflow", "agent", "turn", "step"].includes(projection.family));
     if (hasProcessDetail) { playback.panel.hidden = false; playback.panel.dataset.hasDetails = "true"; }
     if (!legacyBoilerplate) appendProcessTimeline(playback, projection);
-    if (projection.family === "agent" && projection.role !== "MainAgent" && playback.runtimeScope !== "main_agent") {
+    if (projection.family === "agent" && projection.role !== "MainAgent" && projection.scope !== "main_agent") {
       updateProcessCard(
         playback.agentCardMap,
         playback.agentCards,
@@ -1144,6 +1286,7 @@ export async function startWorkspace(initialMode) {
         projection,
         "agent",
       );
+      renderCollaboration(playback);
     }
     if (projection.family === "tool") {
       updateProcessCard(
@@ -1155,7 +1298,7 @@ export async function startWorkspace(initialMode) {
         "tool",
       );
     }
-    if (projection.family === "block" && playback.runtimeScope === "main_agent" && projection.blockType) {
+    if (projection.family === "block" && projection.scope === "main_agent" && projection.blockType) {
       if (projection.type === "assistant.block_started") {
         ensureLiveBlock(playback.liveAssistant, projection, projection.blockType);
       } else if (projection.type === "assistant.block_completed") {
@@ -1170,12 +1313,12 @@ export async function startWorkspace(initialMode) {
         if (projection.blockType === "reasoning") settleLiveReasoning(playback.liveAssistant, projection);
       }
     }
-    if (projection.assistantDelta && playback.runtimeScope === "main_agent") {
+    if (projection.assistantDelta && projection.scope === "main_agent") {
       settleLiveReasoning(playback.liveAssistant);
       updateLiveBlock(playback.liveAssistant, projection, "text", projection.assistantDelta);
     }
     if (projection.showReasoning && projection.reasoningDelta) {
-      if (playback.runtimeScope === "main_agent") {
+      if (projection.scope === "main_agent") {
         updateLiveBlock(playback.liveAssistant, projection, "reasoning", projection.reasoningDelta);
         const block = ensureLiveBlock(playback.liveAssistant, projection, "reasoning");
         if (block?.notice && projection.reasoningTruncationNotice) {
@@ -1221,19 +1364,19 @@ export async function startWorkspace(initialMode) {
     }
     playback.orb.element.hidden = false;
     playback.orb.setPaused(false);
-    playback.summaryLabel.textContent = ACTIVITY_VISUALS[activityForEvent(projection)].label;
+    setMotionText(playback.summaryLabel, ACTIVITY_VISUALS[activityForEvent(projection)].label);
     playback.panel.hidden = false;
-    if ((projection.family === "workflow" || projection.family === "recovery" || ["failed", "cancelled", "interrupted", "stopped"].includes(projection.status)) && runtimeTerminalStatuses.has(projection.status)) {
+    if ((projection.family === "workflow" || projection.family === "recovery") && runtimeTerminalStatuses.has(projection.status)) {
       playback.outcome = projection.status;
     }
     if (projection.family === "recovery" && projection.status === "recovered") {
       playback.state.textContent = "进度已恢复，正在继续读取";
       setRuntimeLiveStatus("本轮进度已恢复，正在继续读取。");
     } else if (projection.status === "failed") {
-      playback.state.textContent = "本轮处理未完成";
+      playback.state.textContent = `${projection.toolLabel || projection.role || "当前步骤"}未完成`;
       setRuntimeLiveStatus(projection.summary);
     } else if (projection.status === "cancelled" || projection.status === "interrupted") {
-      playback.state.textContent = "本轮处理已取消";
+      playback.state.textContent = `${projection.toolLabel || projection.role || "当前步骤"}已取消`;
       setRuntimeLiveStatus(projection.summary);
     } else if (projection.status === "running" || projection.status === "started") {
       playback.state.textContent = projection.summary;
@@ -1253,6 +1396,7 @@ export async function startWorkspace(initialMode) {
     playback.state.textContent = terminalCopy;
     playback.panel.dataset.terminal = "true";
     playback.panel.dataset.outcome = outcome;
+    renderCollaboration(playback);
     if (submit.dataset.sending === "true") assistantAvatar.setActivity(outcome === "partial" ? "needs_input" : ["interrupted", "stopped"].includes(outcome) ? "cancelled" : outcome);
     playback.cancelButton.hidden = true;
     playback.orb.setPaused(true);
@@ -1263,11 +1407,26 @@ export async function startWorkspace(initialMode) {
       for (const block of card.reasoningBlocks || []) block[1].disclosure.update(block[1].text, false);
     }
     playback.details.open = false;
-    playback.summaryLabel.textContent = "运行详情";
+    setMotionText(playback.summaryLabel, "运行详情");
     playback.panel.querySelector(".process-detail-icon").hidden = false;
     if (playback.runtimeScope === "main_agent") {
       if (outcome === "completed" && !playback.panel.querySelector('[data-process-card="tool"]') && playback.events.childElementCount === 0) {
-        playback.panel.hidden = true;
+        playback.panel.hidden = !playback.usage;
+        if (playback.usage) {
+          playback.panel.dataset.usageOnly = "true";
+          const usage = playback.usage;
+          const count = value => value === null ? "未提供" : formatRuntimeTokens(value);
+          playback.summaryLabel.textContent = `Token: 输入${count(usage.inputTokens)}　输出${count(usage.outputTokens)}　总计${count(usage.totalTokens)}`;
+          // A token-only turn has no run steps to expand. Keep one static summary.
+          playback.details.hidden = true;
+          let usageSummary = playback.panel.querySelector(".process-usage-summary");
+          if (!usageSummary) {
+            usageSummary = document.createElement("p");
+            usageSummary.className = "process-usage-summary";
+            playback.panel.append(usageSummary);
+          }
+          usageSummary.textContent = playback.summaryLabel.textContent;
+        }
       }
     }
     setRuntimeLiveStatus(terminalCopy);
@@ -1325,7 +1484,7 @@ export async function startWorkspace(initialMode) {
       taskId,
       requestId,
       stop({ outcome } = {}) {
-        if (outcome && (!playback.panel.dataset.terminal || playback.outcome !== outcome)) {
+        if (!stopped && outcome && (!playback.panel.dataset.terminal || playback.outcome !== outcome)) {
           playback.outcome = outcome;
           finishProcessPlayback(playback);
         }
@@ -1372,7 +1531,7 @@ export async function startWorkspace(initialMode) {
     if (activeProcessPlayback?.taskId === taskId && activeProcessPlayback.requestId === requestId) {
       activeProcessPlayback.state.textContent = "正在取消本轮处理";
       activeProcessPlayback.cancelButton.disabled = true;
-      activeProcessPlayback.cancelButton.textContent = "正在取消";
+      setMessageActionIcon(activeProcessPlayback.cancelButton, "正在取消本轮处理", "M6 6h12v12H6Z");
     }
     try {
       await request(`/api/tasks/${encodeURIComponent(taskId)}/operations/${encodeURIComponent(operationId)}/cancel`, {
@@ -1389,7 +1548,7 @@ export async function startWorkspace(initialMode) {
       }
       if (activeProcessPlayback?.taskId === taskId && activeProcessPlayback.requestId === requestId) {
         activeProcessPlayback.cancelButton.disabled = false;
-        activeProcessPlayback.cancelButton.textContent = "停止";
+        setMessageActionIcon(activeProcessPlayback.cancelButton, "取消本轮处理", "M6 6h12v12H6Z");
       }
       showWorkspaceStatus(error.message || "取消请求未完成，请稍后重试。", true);
     }
@@ -1443,9 +1602,9 @@ export async function startWorkspace(initialMode) {
   const explicitSelectedModel = () => (
     modelPicker?.dataset.userExplicitSelection === "true" ? selectedModel() : null
   );
-  const sendConversation = (taskId, content, requestId, modelSelection, attachments = []) => request(
+  const sendConversation = (taskId, content, requestId, modelSelection, attachments = [], followupMode = "queue") => request(
     `/api/tasks/${encodeURIComponent(taskId)}/messages`,
-    { method: "POST", body: safeJson({ content, attachments, model_selection: modelSelection, background: true }), headers: { "X-Request-Id": requestId } },
+    { method: "POST", body: safeJson({ content, attachments, model_selection: modelSelection, background: true, followup_mode: followupMode }), headers: { "X-Request-Id": requestId } },
   );
   const readOperationResult = async (taskId, operationId, onUpdate) => {
     let failures = 0;
@@ -1533,11 +1692,11 @@ export async function startWorkspace(initialMode) {
   const operationDetailText = (operation) => {
     const result = operation?.result && typeof operation.result === "object" ? operation.result : {};
     const resultStatus = String(result.status || "").trim().toLowerCase();
-    const primary = String(
-      (operation?.state === "succeeded" && resultStatus && resultStatus !== "completed" ? result.message : "")
-      || operation?.message
-      || (activeOperationStates.has(operation?.state) ? "正在处理当前请求。" : "本次运行已结束。"),
-    );
+    const resultMessage = typeof result.message === "string" ? result.message : "";
+    const operationMessage = typeof operation?.message === "string" ? operation.message : "";
+    const primary = (operation?.state === "succeeded" && resultStatus && resultStatus !== "completed" ? resultMessage : "")
+      || operationMessage
+      || (activeOperationStates.has(operation?.state) ? "正在处理当前请求。" : "本次运行已结束。");
     const recovery = Number(operation?.recovery_attempts) > 0
       ? `已恢复${Number(operation.recovery_attempts)}次。`
       : "";
@@ -1569,6 +1728,7 @@ export async function startWorkspace(initialMode) {
       state.textContent = operation.state === "succeeded" && operationOutcomeStates.has(resultStatus)
         ? operationOutcomeStates.get(resultStatus)
         : operationStates.get(operation.state) || "状态未知";
+      setStatusIcon(state, state.textContent, operation.state === "succeeded" && resultStatus ? resultStatus : operation.state);
       heading.append(name, state);
       const detail = document.createElement("p");
       detail.textContent = operationDetailText(operation);
@@ -1583,7 +1743,7 @@ export async function startWorkspace(initialMode) {
         const cancel = document.createElement("button");
         cancel.type = "button";
         cancel.className = "operation-item__cancel";
-        cancel.textContent = operation.state === "cancel_requested" ? "正在取消" : "取消";
+        setMessageActionIcon(cancel, operation.state === "cancel_requested" ? "正在取消" : "取消任务", "M6 6h12v12H6Z");
         cancel.disabled = operation.state === "cancel_requested";
         cancel.addEventListener("click", async () => {
           cancel.disabled = true;
@@ -1639,7 +1799,7 @@ export async function startWorkspace(initialMode) {
           setRuntimeLiveStatus(operation.message || operationStates.get(operation.state) || "正在恢复后台对话。");
         }
       });
-      settleConversationRequest(pending.taskId, pending.requestId, { draft: "" });
+      settleConversationRequest(pending.taskId, pending.requestId);
       if (currentTask?.task_id === pending.taskId) {
         applyConversationStatus(response, status, taskState);
         await selectTask(pending.taskId, false);
@@ -1647,7 +1807,7 @@ export async function startWorkspace(initialMode) {
     } catch (error) {
       const recovered = await lookupConversationResponse(pending.taskId, pending.requestId).catch(() => null);
       if (recovered) {
-        settleConversationRequest(pending.taskId, pending.requestId, { draft: "" });
+        settleConversationRequest(pending.taskId, pending.requestId);
         if (currentTask?.task_id === pending.taskId) {
           applyConversationStatus(recovered, status, taskState);
           await selectTask(pending.taskId, false).catch(() => {});
@@ -1809,7 +1969,16 @@ export async function startWorkspace(initialMode) {
     assistantAvatar.setActive(currentMode === "desk" && !visibleInDesk);
     assistantPanel.setAttribute("aria-hidden", String(currentMode === "desk" && !assistantOpen));
     assistantPanel.inert = currentMode === "desk" && !assistantOpen;
-    if (focus && currentMode === "desk" && assistantOpen) input.focus();
+    if (focus && visibleInDesk) {
+      input.focus({ preventScroll: true });
+      if (submit.dataset.sending === "true") {
+        const openingTaskId = currentTask?.task_id;
+        window.requestAnimationFrame(() => {
+          if (currentMode === "desk" && assistantOpen && currentTask?.task_id === openingTaskId
+              && submit.dataset.sending === "true") stream.scrollTop = stream.scrollHeight;
+        });
+      }
+    }
     if (persist) saveTransient();
   };
 
@@ -1817,7 +1986,8 @@ export async function startWorkspace(initialMode) {
     const state = readTransient();
     input.value = state.draft || "";
     syncComposerInputHeight();
-    const pending = state.pendingConversation;
+    const pending = state.pendingConversation || (state.queuedConversations || []).find(item => item.operationId);
+    if (pending && !state.pendingConversation) updateTransient(pending.taskId, { pendingConversation: pending });
     pendingConversationRequest = pending
       && pending.taskId === currentTask?.task_id
       && typeof pending.requestId === "string"
@@ -1841,7 +2011,7 @@ export async function startWorkspace(initialMode) {
           onTerminal: pending.operationId ? null : async () => {
             const response = await lookupConversationResponse(pending.taskId, pending.requestId);
             if (!response) throw new Error("正在同步已完成的回答。");
-            settleConversationRequest(pending.taskId, pending.requestId, { draft: "" });
+            settleConversationRequest(pending.taskId, pending.requestId);
             if (currentTask?.task_id === pending.taskId) {
               applyConversationStatus(response, status, taskState);
               await selectTask(pending.taskId, false);
@@ -1863,10 +2033,145 @@ export async function startWorkspace(initialMode) {
       stream.scrollTop = Number(currentMode === "desk" ? state.deskScrollTop : state.chatScrollTop) || 0;
     });
     resumeTransientOperations();
+    renderFollowups();
+    for (const item of state.queuedConversations || []) if (item.operationId) void watchFollowup(item);
   };
 
+  const updateFollowup = (item, remove = false) => {
+    const state = readTransient(item.taskId);
+    const rows = [...(state.queuedConversations || [])];
+    const index = rows.findIndex(row => row.requestId === item.requestId);
+    if (remove) { if (index >= 0) rows.splice(index, 1); }
+    else if (index >= 0) rows[index] = item;
+    else rows.push(item);
+    updateTransient(item.taskId, { queuedConversations: rows });
+    if (currentTask?.task_id === item.taskId) { renderFollowups(); syncComposerAvailability(); }
+  };
+  const prioritizeFollowup = async (item) => {
+    const response = await request(`/api/tasks/${encodeURIComponent(item.taskId)}/operations/${encodeURIComponent(item.operationId)}/prioritize`, {
+      method: "POST", body: "{}",
+    });
+    const latest = (readTransient(item.taskId).queuedConversations || []).find(row => row.requestId === item.requestId);
+    if (latest) updateFollowup({ ...latest, mode: "steer", state: response.operation.state });
+  };
+  const seenFollowupMotion = new Set();
+  const renderFollowups = () => {
+    const rows = readTransient().queuedConversations || [];
+    followupQueue.hidden = rows.length === 0;
+    followupQueue.replaceChildren(...rows.map(item => {
+      const row = document.createElement("div");
+      row.className = "composer-followup-row";
+      const text = document.createElement("span");
+      const label = item.state === "uncertain" ? "接收未确认" : operationStates.get(item.state) || "排队中";
+      const badge = document.createElement("span");
+      badge.className = "composer-followup-state";
+      badge.dataset.state = operationActivity(item.state);
+      badge.textContent = item.mode === "steer" && item.state === "queued" ? "优先执行" : label;
+      text.className = "composer-followup-content";
+      text.textContent = item.content;
+      text.title = item.content;
+      const button = document.createElement("button");
+      button.type = "button";
+      const actionLabel = item.operationId ? "取消" : "重试";
+      setMessageActionIcon(button, `${actionLabel}追加消息：${item.content}`,
+        item.operationId ? "M6 6l12 12M18 6L6 18" : "M3 11a9 9 0 1 1 3 7M3 4v7h7");
+      button.disabled = !item.operationId && item.state !== "uncertain";
+      button.addEventListener("click", async () => {
+        button.disabled = true;
+        try {
+          if (item.operationId) await cancelOperationRequest(item.taskId, item.operationId, { requestId: item.requestId });
+          else await acceptFollowup(item);
+        } catch (error) {
+          if (currentTask?.task_id === item.taskId) showWorkspaceStatus(error.message || `${actionLabel}未完成，请重试。`, true);
+        } finally { button.disabled = false; }
+      });
+      row.append(badge, text);
+      if (item.operationId && item.state === "queued" && item.mode !== "steer") {
+        const steer = document.createElement("button");
+        steer.type = "button";
+        steer.dataset.prioritizeFollowup = "true";
+        setMessageActionIcon(steer, `立即引导：${item.content}`, "M5 20v-8a5 5 0 0 1 5-5h9M15 3l4 4-4 4");
+        steer.addEventListener("click", async () => {
+          steer.disabled = true;
+          try { await prioritizeFollowup(item); }
+          catch (error) { showWorkspaceStatus(error.message || "未能优先执行，请重试。", true); }
+          finally { steer.disabled = false; syncComposerAvailability(); }
+        });
+        row.append(steer);
+      }
+      row.append(button);
+      const motionKey = `${item.taskId}:${item.requestId}`;
+      if (!seenFollowupMotion.has(motionKey)) {
+        seenFollowupMotion.add(motionKey);
+        requestAnimationFrame(() => { animateSurface(row); animateSurface(badge, "number"); });
+      }
+      return row;
+    }));
+  };
+  const watchFollowup = async (item) => {
+    if (watchingFollowups.has(item.operationId)) return;
+    watchingFollowups.add(item.operationId);
+    try {
+      await waitForOperation(item.taskId, item.operationId, operation => {
+        const latest = (readTransient(item.taskId).queuedConversations || []).find(row => row.requestId === item.requestId);
+        item = { ...(latest || item), state: operation.state };
+        updateFollowup(item);
+      });
+    } catch (error) {
+      if (currentTask?.task_id === item.taskId && item.state !== "cancelled") {
+        showWorkspaceStatus(error.message || "追加消息未完成，可在当前会话继续。", true);
+      }
+    } finally {
+      watchingFollowups.delete(item.operationId);
+      updateFollowup(item, true);
+      settleConversationRequest(item.taskId, item.requestId);
+      if (currentTask?.task_id === item.taskId) await selectTask(item.taskId, false).catch(() => {});
+    }
+  };
+  const acceptFollowup = async (item) => {
+    try {
+      const response = await sendConversation(item.taskId, item.content, item.requestId, item.modelSelection, [], item.mode);
+      const operationId = response.operation?.operation_id;
+      if (!operationId) throw new Error("尚未确认后台接收，请重试同一条消息。");
+      item = { ...item, operationId, state: response.operation.state };
+      updateFollowup(item);
+      if (currentTask?.task_id === item.taskId && input.value.trim() === item.content) {
+        input.value = "";
+        syncComposerInputHeight();
+        saveTransient();
+      }
+      void watchFollowup(item);
+    } catch (error) {
+      updateFollowup({ ...item, state: "uncertain" });
+      if (currentTask?.task_id === item.taskId) showWorkspaceStatus("追加消息接收未确认，点击队列中的重试可核对同一请求。", true);
+    }
+  };
+  const queueFollowup = async (mode = "queue") => {
+    if (followupSubmitting || !currentTask) return;
+    if (mode === "steer" && !input.value.trim()) {
+      const queued = (readTransient().queuedConversations || []).find(item => item.operationId && item.state === "queued" && item.mode !== "steer");
+      if (!queued) return;
+      followupSubmitting = true;
+      syncComposerAvailability();
+      try { await prioritizeFollowup(queued); }
+      catch (error) { showWorkspaceStatus(error.message || "未能优先执行，请重试。", true); }
+      finally { followupSubmitting = false; syncComposerAvailability(); }
+      return;
+    }
+    if (!input.value.trim() || !selectedModel()) return;
+    followupSubmitting = true;
+    syncComposerAvailability();
+    const unresolved = (readTransient().queuedConversations || []).find(item => item.state === "uncertain" && item.content === input.value.trim() && item.mode === mode);
+    const item = unresolved || { taskId: currentTask.task_id, requestId: newWorkspaceRequestId(), content: input.value.trim(),
+      modelSelection: selectedModel(), mode, state: "submitting" };
+    updateFollowup(item);
+    try { await acceptFollowup(item); }
+    finally { followupSubmitting = false; syncComposerAvailability(); }
+  };
+  for (const button of followupButtons) button.addEventListener("click", () => { void queueFollowup(button.dataset.followupMode); });
+
   const placeConversation = () => {
-    input.placeholder = currentMode === "desk" ? "输入研究任务" : "输入需求，按Enter发送，Shift加Enter换行";
+    input.placeholder = defaultInputPlaceholder;
     if (currentMode === "desk") {
       if (stream.parentElement !== assistantTranscript) assistantTranscript.append(stream);
     } else {
@@ -1979,6 +2284,7 @@ export async function startWorkspace(initialMode) {
       saveTransient();
       shell.dataset.switching = "false";
       shell.dataset.assistantSwitching = "false";
+      conversationOutline.refresh();
     };
     transition.frame(() => {
       if (!isCurrentTransition()) return;
@@ -2009,6 +2315,7 @@ export async function startWorkspace(initialMode) {
     return task;
   }
 
+  const taskListSnapshots = new WeakMap();
   async function loadTasks() {
     const { tasks } = await request("/api/tasks");
     const activeCount = tasks.reduce((total, task) => total + (task.active_operations?.length || 0), 0);
@@ -2026,7 +2333,13 @@ export async function startWorkspace(initialMode) {
         loadTasks().catch(() => {});
       }, 900);
     }
+    const listSnapshot = JSON.stringify([currentTask?.task_id, tasks.map(task => [
+      task.task_id, task.subject, task.updated_at || task.created_at, task.active_operations?.map(operation => operation.state),
+    ])]);
     taskLists.forEach((taskList) => {
+      // Polling an unchanged task must not replace focused buttons or close its menu.
+      if (taskListSnapshots.get(taskList) === listSnapshot) return;
+      taskListSnapshots.set(taskList, listSnapshot);
       renderTaskList(
         taskList,
         tasks,
@@ -2346,6 +2659,7 @@ export async function startWorkspace(initialMode) {
         if (input.value) form.requestSubmit();
       },
     });
+    conversationOutline.refresh();
   }
 
   async function refreshReportLibrary(taskId = currentTask?.task_id) {
@@ -2367,6 +2681,14 @@ export async function startWorkspace(initialMode) {
       && stream.scrollHeight - stream.clientHeight - stream.scrollTop >= 72 ? stream.scrollTop : null;
     const selectionRevision = ++taskSelectionRevision;
     moduleMountRevision += 1;
+    // A pending mode animation owns the previous task's scroll snapshot.
+    // Release it before loading another task so its frames cannot restore stale state.
+    activeModeTransition?.dispose();
+    activeModeTransition = null;
+    modeSwitchRevision += 1;
+    restoringScroll = false;
+    shell.dataset.switching = "false";
+    shell.dataset.assistantSwitching = "false";
     const isCurrentSelection = () => selectionRevision === taskSelectionRevision;
     if (currentTask) saveTransient();
     activeProcessPlayback?.stop();
@@ -2378,6 +2700,8 @@ export async function startWorkspace(initialMode) {
       if (currentMode === "desk") showModuleLoading(currentModule, { replace: true });
     }
     currentTask = task;
+    clearWorkspaceStatus();
+    setRuntimeLiveStatus("");
     pendingConversationRequest = null;
     pendingReportRequest = null;
     pendingReportEditor = null;
@@ -2696,7 +3020,7 @@ export async function startWorkspace(initialMode) {
     }
     if (event.data?.type === "optionhelper.open-settings") {
       const section = event.data?.section === "data" ? "data" : "";
-      location.assign(settingsURLFor(location, section));
+      openWorkspaceSettings(section);
       return;
     }
     if (event.data?.type === "optionhelper.desk-panel-layout-change") {
@@ -2870,7 +3194,7 @@ export async function startWorkspace(initialMode) {
 
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
-    if (submit.dataset.sending === "true") return;
+    if (submit.dataset.sending === "true") { await queueFollowup(); return; }
     const submittedContent = input.value.trim();
     const submittedDrafts = [...draftAttachments];
     if ((!submittedContent && submittedDrafts.length === 0) || !selectedModel()) {
@@ -2917,12 +3241,14 @@ export async function startWorkspace(initialMode) {
         operationId: previousRequest?.operationId || "",
         status: "submitting",
       };
-      updateTransient(submittedTaskId, { pendingConversation: submittedRequest, draft: "" });
+      updateTransient(submittedTaskId, { pendingConversation: submittedRequest });
       if (currentTask?.task_id === submittedTaskId) {
         pendingConversationRequest = submittedRequest;
         pendingMessage = appendPendingMessage(effectiveContent, attachmentReferences);
-        dissolveComposerInput(submittedContent);
-        input.value = "";
+        if (input.value.trim() === submittedContent) {
+          dissolveComposerInput(submittedContent);
+          input.value = "";
+        }
         syncComposerInputHeight();
         saveTransient();
         setComposerSending(submit, true);
@@ -2955,11 +3281,10 @@ export async function startWorkspace(initialMode) {
       );
       playbackOutcome = conversationPlaybackOutcome(response);
       processPlayback?.stop({ outcome: playbackOutcome });
-      settleConversationRequest(submittedTaskId, requestId, { draft: "" });
+      settleConversationRequest(submittedTaskId, requestId);
       if (currentTask?.task_id === submittedTaskId) {
         modelPicker.dataset.userExplicitSelection = "false";
         markComposerSent(submit);
-        input.value = "";
         syncComposerInputHeight();
         saveTransient();
         applyConversationStatus(response, status, taskState);
@@ -2981,10 +3306,9 @@ export async function startWorkspace(initialMode) {
         processPlayback?.stop({ outcome: playbackOutcome });
         pendingMessage?.remove();
         await clearDraftAttachments(submittedTaskId);
-        settleConversationRequest(submittedTaskId, requestId, { draft: "" });
+        settleConversationRequest(submittedTaskId, requestId);
         if (currentTask?.task_id === submittedTaskId) {
           modelPicker.dataset.userExplicitSelection = "false";
-          input.value = "";
           syncComposerInputHeight();
           saveTransient();
           applyConversationStatus(recoveredResponse, status, taskState);
@@ -3090,6 +3414,7 @@ export async function startWorkspace(initialMode) {
   }));
 
   window.addEventListener("pagehide", () => {
+    conversationOutline.destroy();
     assistantAvatar.destroy();
     composerResizeObserver.disconnect();
     window.cancelAnimationFrame(composerClearanceFrame);
@@ -3122,6 +3447,51 @@ export async function startWorkspace(initialMode) {
     button.dataset.permitted = String(session.capabilities.includes(capability));
   });
   syncReportActions();
+  const presetHost = document.createElement("div");
+  presetHost.className = "composer-preset";
+  const presetSelect = document.createElement("select");
+  presetSelect.dataset.choice = "true";
+  presetSelect.setAttribute("aria-label", "推荐预设");
+  presetHost.append(presetSelect);
+  form.querySelector(".composer-actions__leading").append(presetHost);
+  const canChoosePreset = session.capabilities.some(value => ["settings.model.local.write", "settings.model.write"].includes(value));
+  let presetSaving = false;
+  const refreshComposerPreset = async () => {
+    const data = await request("/api/settings/multi-agent-presets");
+    const single = document.createElement("option");
+    single.value = "single";
+    single.textContent = "单智能体";
+    const multi = document.createElement("optgroup");
+    multi.label = "多智能体";
+    (data.presets || []).filter(preset => preset.enabled).forEach(preset => {
+      const option = document.createElement("option");
+      option.value = preset.preset_id;
+      option.textContent = preset.display_name;
+      multi.append(option);
+    });
+    presetSelect.replaceChildren(single, ...(multi.children.length ? [multi] : []));
+    presetSelect.value = data.execution_mode === "multi" ? data.selected_preset_id : "single";
+    presetSelect.disabled = !canChoosePreset || presetSaving;
+    enhanceSelects(presetHost);
+    const trigger = presetHost.querySelector(".choice-trigger");
+    if (trigger) trigger.title = `推荐预设：${presetSelect.selectedOptions[0]?.textContent || "未配置"}`;
+  };
+  presetSelect.addEventListener("change", async () => {
+    if (presetSaving || !canChoosePreset) return;
+    const value = presetSelect.value;
+    presetSaving = true;
+    presetSelect.disabled = true;
+    enhanceSelects(presetHost);
+    try {
+      if (value !== "single") await request("/api/settings/multi-agent-preset/default", {method: "POST", body: safeJson({preset_id: value})});
+      await request("/api/settings/recommendation-execution", {method: "POST", body: safeJson({execution_mode: value === "single" ? "single" : "multi"})});
+    } catch (error) { showWorkspaceStatus(error.message, true); }
+    finally {
+      presetSaving = false;
+      await refreshComposerPreset().catch(error => showWorkspaceStatus(error.message, true));
+    }
+  });
+  await refreshComposerPreset().catch(() => { presetHost.hidden = true; });
   const [, tasks] = await Promise.all([
     configureModelPicker(modelPicker).catch(() => {}),
     loadTasks(),
