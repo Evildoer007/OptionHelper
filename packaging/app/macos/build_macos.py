@@ -157,6 +157,8 @@ PDF_RUNTIME_MODULES = (
     "lxml",
     "lxml.etree",
     "openpyxl",
+    "striprtf.striprtf",
+    "xlrd",
 )
 PDF_RUNTIME_VERSION = "5.0.0"
 PILLOW_RUNTIME_VERSION = "12.3.0"
@@ -173,6 +175,8 @@ DOCUMENT_RUNTIME_DISTRIBUTIONS = {
     "soupsieve": SOUPSIEVE_RUNTIME_VERSION,
     "lxml": LXML_RUNTIME_VERSION,
     "openpyxl": OPENPYXL_RUNTIME_VERSION,
+    "striprtf": "0.0.30",
+    "xlrd": "2.0.2",
 }
 """The minimal deterministic runtime used for Card and Report PDF delivery."""
 
