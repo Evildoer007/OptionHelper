@@ -19,7 +19,7 @@
     <main class="workbench" id="workbench">
       <aside class="library-panel">
         <div class="library-heading"><h1>数据资产</h1></div>
-        <div class="asset-filter"><label class="sr-only" for="asset-search">搜索数据</label><input id="asset-search" class="control" type="search" placeholder="搜索标的或日期"><button class="button button-quiet library-refresh" id="refresh-assets" type="button" aria-label="刷新数据资产和连接状态" title="刷新数据资产和连接状态"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M15.7 6.2A6.5 6.5 0 1 0 16.4 13"/><path d="M15.7 2.8v3.8h-3.8"/></svg><span class="sr-only">刷新</span></button></div>
+        <div class="asset-filter"><label class="sr-only" for="asset-search">搜索数据</label><input id="asset-search" class="control" type="search" placeholder="搜索标的或日期" title="搜索标的或日期"><button class="button button-quiet library-refresh" id="refresh-assets" type="button" aria-label="刷新数据资产和连接状态" title="刷新数据资产和连接状态"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M15.7 6.2A6.5 6.5 0 1 0 16.4 13"/><path d="M15.7 2.8v3.8h-3.8"/></svg><span class="sr-only">刷新</span></button></div>
         <div class="asset-list" id="asset-list" aria-live="polite"><p class="empty-list">当前任务尚无数据资产。</p></div>
       </aside>
       <div class="panel-resizer panel-resizer-left" id="library-resizer" role="separator" aria-label="调整数据资产面板宽度" aria-orientation="vertical" tabindex="0"></div>
@@ -31,7 +31,7 @@
         <div class="notice" id="notice" hidden aria-live="polite"></div>
         <div class="canvas-viewport">
           <section class="result-sheet" id="result-sheet">
-            <div class="empty-canvas" id="empty-canvas"><strong>尚无数据结果</strong><span>填写右侧必填项后获取数据。</span></div>
+            <div class="empty-canvas" id="empty-canvas"><strong>尚无数据结果</strong><span>填写请求参数后获取数据。</span></div>
             <div id="result-content" hidden></div>
           </section>
         </div>
