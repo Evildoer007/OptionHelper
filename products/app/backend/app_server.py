@@ -91,7 +91,7 @@ from .task_runtime.operation_service import OperationCancelled, TaskOperationSer
 from .task_runtime.compute_process import ComputeProcessSupervisor
 from .task_runtime.task_service import TaskService
 from .tool_gateway import ToolGateway
-from .reporter_adapter import ReporterAdapter
+from .reporter_adapter import ReporterAdapter, standalone_report_html
 from .report_editor import ReportEditor
 from .report_delivery import ReportDelivery
 from desktop.common.paths import AppPaths
@@ -105,11 +105,12 @@ FRONTEND_ASSETS = frozenset({
     "optdesk/index.html", "optdesk/optdesk.js",
     "settings/index.html", "settings/settings.js", "settings/model-providers.css", "settings/general-settings.css", "settings/settings-shell.css",
     "shared/styles.css", "shared/refinement.css", "shared/theme-overrides.css", "shared/app.js", "shared/transition-scope.js", "shared/theme-bootstrap.js", "shared/theme.js", "shared/ui-scale.js", "shared/scrollbar-activity.js", "shared/vol-surface.js", "shared/thinking-orb.js", "shared/thinking-orbs-engine.js", "shared/bloub-engine.js", "shared/bloub-avatar.js", "shared/activity-motion.js",
+    "shared/conversation-outline.js", "shared/conversation-outline.css",
 })
 _CAPABILITY_CSP = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'self'; form-action 'self'"
 _AGENT_RUNTIME_MODES = frozenset({"disabled", "shadow", "active"})
 _RECOMMENDATION_MODE_IDS = (
-    "sequential-deliberation", "product-trader-loop", "independent-council", "constraint-ranking",
+    "product-trader-loop", "independent-council", "constraint-ranking",
 )
 
 
@@ -1683,6 +1684,9 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
             title = re.sub(r'[\\/:*?"<>|]', "_", document["title"])
             filename = quote(title + Path(name).suffix, safe="")
             download = parse_qs(parsed.query).get("download", [""])[0] == "1"
+            if content_type.split(";", 1)[0] == "text/html":
+                content = standalone_report_html(content, name,
+                    lambda asset: self.app.results.read_report_document_artifact(identity, report_id, asset))
             self._bytes(HTTPStatus.OK, content, content_type, extra_headers={
                 "Content-Disposition": f"{'attachment' if download else 'inline'}; filename=report{Path(name).suffix}; filename*=UTF-8''{filename}",
                 "Content-Security-Policy": "sandbox allow-scripts; default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'none'; frame-ancestors 'self'",
@@ -1694,6 +1698,9 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
             report_run_id, artifact_name = path.removeprefix("/api/reports/").split("/artifacts/", 1)
             content, content_type = self.app.results.read_report_artifact(identity, report_run_id, artifact_name)
             download = parse_qs(parsed.query).get("download", [""])[0] == "1"
+            if content_type.split(";", 1)[0] == "text/html":
+                content = standalone_report_html(content, artifact_name,
+                    lambda asset: self.app.results.read_report_artifact(identity, report_run_id, asset))
             self._bytes(HTTPStatus.OK, content, content_type, extra_headers={
                 "Content-Disposition": f'{"attachment" if download else "inline"}; filename="{Path(artifact_name).name}"',
                 "Content-Security-Policy": "sandbox allow-scripts; default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'none'; form-action 'none'; frame-ancestors 'self'",
@@ -2088,6 +2095,17 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
             self.app.audit.record(AuditEvent(action="task.operation.submit", principal_id=identity.principal_id, tenant_id=identity.tenant_id, outcome="queued", decision="allow", reference=operation.operation_id, request_id=request_id))
             self._json(HTTPStatus.ACCEPTED, {"operation": operation.public()})
             return
+        if path.startswith("/api/tasks/") and path.endswith("/prioritize") and "/operations/" in path:
+            self.app.policy.require(identity.role, "conversation.write")
+            task_id, operation_id = path.removeprefix("/api/tasks/").removesuffix("/prioritize").split("/operations/", 1)
+            if not task_id or not operation_id or "/" in operation_id:
+                raise KeyError(path)
+            self.app.tasks.get(identity, task_id)
+            _only_fields(body, set())
+            operation = self.app.operations.prioritize_conversation(identity, task_id, operation_id)
+            self.app.audit.record(AuditEvent(action="task.operation.prioritize", principal_id=identity.principal_id, tenant_id=identity.tenant_id, outcome=operation.state, decision="allow", reference=operation_id, request_id=request_id))
+            self._json(HTTPStatus.OK, {"operation": operation.public()})
+            return
         if path.startswith("/api/tasks/") and path.endswith("/cancel") and "/operations/" in path:
             self.app.policy.require(identity.role, "conversation.write")
             task_id, operation_id = path.removeprefix("/api/tasks/").removesuffix("/cancel").split("/operations/", 1)
@@ -2149,7 +2167,10 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
         if path.startswith("/api/tasks/") and path.endswith("/messages"):
             self.app.policy.require(identity.role, "conversation.write")
             task_id = path.removeprefix("/api/tasks/").removesuffix("/messages").rstrip("/")
-            _only_fields(body, {"content", "attachments", "model_selection", "background"})
+            self.app.tasks.get(identity, task_id)
+            _only_fields(body, {"content", "attachments", "model_selection", "background", "followup_mode"})
+            if body.get("followup_mode", "queue") not in {"queue", "steer"}:
+                raise ValidationError("追加消息方式无效")
             attachments = body.get("attachments", [])
             if not isinstance(attachments, list):
                 raise ValidationError("消息附件必须是数组")
@@ -2171,7 +2192,10 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
                         request_id=conversation_request_id, selection=model_selection,
                         attachments=attachments, cancelled=cancelled,
                     ),
+                    request_id=conversation_request_id or None,
+                    input_hash=_json_hash({"content": content, "attachments": attachments, "model_selection": body.get("model_selection"), "followup_mode": body.get("followup_mode", "queue")}) if conversation_request_id else None,
                     lane="conversation",
+                    interrupt_current=body.get("followup_mode") == "steer",
                 )
                 self._json(HTTPStatus.ACCEPTED, {"operation": operation.public()})
                 return
@@ -2356,7 +2380,7 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
             _only_fields(body, {"preset_id"})
             preset_id = str(body.get("preset_id", "")).strip()
             preset = recommendation_presets().get(preset_id)
-            if preset is None or not preset.enabled:
+            if preset_id not in _RECOMMENDATION_MODE_IDS or preset is None or not preset.enabled:
                 raise ValidationError("MultiAgent预设未启用")
             current = self.app.settings_for(identity)
             saved = self.app.save_settings(
@@ -2371,7 +2395,7 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
             _only_fields(body, {"preset_id", "role_models"})
             preset_id = str(body.get("preset_id", "")).strip()
             preset = recommendation_presets().get(preset_id)
-            if preset is None or not preset.enabled:
+            if preset_id not in _RECOMMENDATION_MODE_IDS or preset is None or not preset.enabled:
                 raise ValidationError("MultiAgent预设未启用")
             raw_role_models = body.get("role_models")
             if not isinstance(raw_role_models, dict):
@@ -2410,7 +2434,7 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
             _only_fields(body, {"preset_id", "role_models", "agent_files"})
             preset_id = str(body.get("preset_id", "")).strip()
             preset = recommendation_presets().get(preset_id)
-            if preset is None or not preset.enabled:
+            if preset_id not in _RECOMMENDATION_MODE_IDS or preset is None or not preset.enabled:
                 raise ValidationError("MultiAgent预设未启用")
             allowed_roles = set(_catalog_roles(
                 preset, _RECOMMENDATION_MODE_ROLE_FALLBACKS.get(preset_id, ()),
@@ -3431,7 +3455,7 @@ def _dispatch_background_conversation(
     if cancelled():
         raise OperationCancelled()
     response = conversations.respond(
-        identity, task_id, content, request_id=request_id, selection=selection, attachments=attachments,
+        identity, task_id, content, request_id=request_id, selection=selection, attachments=attachments, cancelled=cancelled,
     )
     if response.get("status") == "cancelled":
         raise OperationCancelled()
