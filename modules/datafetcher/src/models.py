@@ -216,6 +216,7 @@ class DataFetchResult:
     quality_report: Mapping[str, Any] | None = None
     data_preview: tuple[Mapping[str, Any], ...] = ()
     chart_series: tuple[Mapping[str, Any], ...] = ()
+    volatility_series: tuple[Mapping[str, Any], ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         result = self.run.to_dict()
@@ -232,5 +233,9 @@ class DataFetchResult:
                 "points": [dict(point) for point in series.get("points", ())],
             }
             for series in self.chart_series
+        ]
+        result["volatility_series"] = [
+            {**dict(series), "points": [dict(point) for point in series.get("points", ())]}
+            for series in self.volatility_series
         ]
         return result
