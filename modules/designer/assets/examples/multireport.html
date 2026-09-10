@@ -6,9 +6,10 @@
 <meta name="color-scheme" content="light">
 <title>多结构完整研究报告</title>
 <script src="../vendor/echarts.min.js" defer></script>
-<style>/* designer-token-hash:66fa3e80b3916416ab291943c6aa7c0e771e72c9261027aad2f9e78ce0d93697 */
+<style>/* designer-token-hash:9e99135bf4faef877caf32fbb0001aa2a27cf15a150041f530bfcd2b7450c24a */
 :root {
   --color-brand-red: #C8102E;
+  --color-brand-signature: #8A2F3D;
   --color-on-brand: #FFFFFF;
   --color-paper: #FFFFFF;
   --color-ground: #F4F4F4;
@@ -26,12 +27,12 @@
   --color-blue-gray-soft: #F4F4F4;
   --color-chart-gray: #6B6B6B;
   --color-heatmap-low: #F4F4F4;
-  --color-risk-gold-soft: #FCF7EA;
+  --color-risk-gold-soft: #F7F3E9;
   --color-paper-border: #E2E2E2;
   --color-red-border-soft: #C9C9C9;
   --color-red-surface: #F4F4F4;
   --color-red-tag-border: #C9C9C9;
-  --color-gold-border: #C9C9C9;
+  --color-gold-border: #D8C9A7;
   --color-gold-ink: #936719;
   --color-table-border: #C9C9C9;
   --color-table-head-ink: #252525;
@@ -96,20 +97,20 @@
   --state-ready-color: #49647D;
   --state-ready-surface: #F4F4F4;
   --state-partial-color: #936719;
-  --state-partial-surface: #FCF7EA;
+  --state-partial-surface: #F7F3E9;
   --state-pending-color: #936719;
-  --state-pending-surface: #FCF7EA;
+  --state-pending-surface: #F7F3E9;
   --state-not-run-color: #936719;
-  --state-not-run-surface: #FCF7EA;
+  --state-not-run-surface: #F7F3E9;
   --state-unsupported-color: #936719;
-  --state-unsupported-surface: #FCF7EA;
+  --state-unsupported-surface: #F7F3E9;
   --state-failed-color: #C8102E;
   --state-failed-surface: #F4F4F4;
   --chart-color-1: #C8102E;
-  --chart-color-2: #49647D;
+  --chart-color-2: #252525;
   --chart-color-3: #936719;
   --chart-color-4: #6B6B6B;
-  --chart-color-5: #404040;
+  --chart-color-5: #C9C9C9;
   --breakpoint-narrow: 900px;
   --breakpoint-print: 720px;
 }
@@ -134,8 +135,9 @@ FORM: Read模式。详细报告只有一种连续A4版式。
   --rule: var(--color-rule);
   --rule-strong: var(--color-rule-strong);
   --red: var(--color-brand-red);
+  --brand-signature: var(--color-brand-signature);
   --on-brand: var(--color-on-brand);
-  --blue: var(--color-blue-gray);
+  --blue: var(--ink-soft);
   --gold: var(--color-risk-gold);
 }
 
@@ -259,7 +261,7 @@ a { color: inherit; }
 
 .report-head__brand {
   margin: 0 0 4px;
-  color: var(--blue);
+  color: var(--brand-signature);
   font-size: var(--type-table);
   font-weight: 760;
   letter-spacing: .045em;
@@ -289,16 +291,26 @@ a { color: inherit; }
 .metric-strip {
   display: grid;
   margin: 20px 0 0;
-  border-top: 1px solid var(--rule);
+}
+
+.identity-ledger {
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 20px;
+  padding: 0 0 11px;
   border-bottom: 1px solid var(--rule);
 }
 
-.identity-ledger { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.evidence-spine {
+  border: 1px solid var(--rule-strong);
+  background: var(--surface);
+}
 
 .report-head > .identity-ledger {
   grid-template-columns: minmax(0, 1fr);
-  align-self: stretch;
+  align-self: end;
   margin: 0;
+  padding: 0 0 1px 16px;
+  border: 0;
   border-left: 1px solid var(--rule-strong);
 }
 
@@ -309,8 +321,8 @@ a { color: inherit; }
 }
 
 .identity-ledger div {
-  padding: 8px 11px 9px;
-  border-right: 1px solid var(--rule);
+  padding: 0;
+  border: 0;
 }
 
 .identity-ledger div:last-child { border-right: 0; }
@@ -415,6 +427,12 @@ a { color: inherit; }
   min-width: 0;
 }
 
+/* Draft sections use the full reading width, with the same heading rhythm. */
+.card-appended { margin-block: var(--space-md); }
+.card-appended h2 { margin: 0 0 var(--space-sm); color: var(--blue); font-size: var(--type-subsection); }
+.card-appended .presentation-paragraph { max-width: none; margin-block: 6px; }
+.card-appended .table-wrap { margin-block: var(--space-sm); }
+
 .card-custom,
 .quote-custom {
   padding-top: var(--space-sm);
@@ -463,11 +481,10 @@ a { color: inherit; }
 
 .conclusion-band {
   margin: 0 0 15px;
-  padding: 12px 15px 13px;
+  padding: 14px 17px 15px;
   border-top: 1px solid var(--color-gold-border);
   border-bottom: 1px solid var(--color-gold-border);
-  border-left: 3px solid var(--gold);
-  background: #FBF7EE;
+  background: var(--color-risk-gold-soft);
 }
 
 .conclusion-band__label {
@@ -476,6 +493,11 @@ a { color: inherit; }
   font-size: var(--type-meta);
   font-weight: 780;
   letter-spacing: .08em;
+}
+
+.conclusion-band .metric {
+  border-top-color: var(--color-gold-border);
+  background: transparent;
 }
 
 .conclusion-band h3 {
@@ -495,30 +517,33 @@ a { color: inherit; }
 .recommendation-head { padding-bottom: 3px; }
 
 .metric-strip {
-  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-  margin: 12px 0;
-  border-left: 0;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 10px 22px;
+  margin: 14px 0;
+  border: 0;
+  background: transparent;
 }
 
 .metric {
-  padding: 10px 12px 11px;
-  border-right: 1px solid var(--rule-strong);
-  background: var(--surface);
+  padding: 9px 0 10px;
+  border: 0;
+  border-top: 1px solid var(--rule-strong);
+  background: transparent;
 }
 
 .metric:last-child { border-right: 0; }
 
 .metric__value {
-  color: var(--red);
+  color: var(--ink);
   font-size: var(--type-metric);
-  font-weight: 770;
+  font-weight: 740;
   letter-spacing: -.025em;
   line-height: 1.18;
 }
 
 .metric__label {
   margin-top: 4px;
-  color: var(--blue);
+  color: var(--ink-soft);
   font-size: var(--type-table);
   font-weight: 700;
   line-height: 1.5;
@@ -534,7 +559,7 @@ a { color: inherit; }
 .scenario-grid,
 .alternative-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
   gap: 10px;
   margin: 12px 0;
 }
@@ -546,13 +571,13 @@ a { color: inherit; }
 .scenario,
 .alternative {
   min-width: 0;
-  padding: 11px 12px 12px;
-  border-top: 2px solid var(--red);
-  border-right: 1px solid var(--rule-strong);
-  border-bottom: 1px solid var(--rule-strong);
-  border-left: 1px solid var(--rule-strong);
+  padding: 10px 0 11px;
+  border-top: 1px solid var(--rule-strong);
+  border-right: 0;
+  border-bottom: 0;
+  border-left: 0;
   border-radius: 0;
-  background: var(--surface);
+  background: transparent;
 }
 
 .scenario p,
@@ -586,7 +611,7 @@ a { color: inherit; }
 .chart-figure {
   margin: 14px 0;
   padding: 11px 0 12px;
-  border-top: 2px solid var(--red);
+  border-top: 1px solid var(--rule-strong);
   border-bottom: 1px solid var(--rule-strong);
   background: transparent;
 }
@@ -594,7 +619,7 @@ a { color: inherit; }
 .payoff-figure figcaption,
 .chart-figure figcaption {
   margin-bottom: 8px;
-  color: var(--blue);
+  color: var(--ink-soft);
   font-size: var(--type-caption);
   font-weight: 720;
   line-height: 1.5;
@@ -603,7 +628,8 @@ a { color: inherit; }
 
 .payoff-figure img {
   display: block;
-  width: min(100%, 158mm);
+  width: 100%;
+  max-width: none;
   height: auto;
   margin: auto;
   object-fit: contain;
@@ -627,10 +653,15 @@ a { color: inherit; }
 .chart-data { margin-top: 8px; }
 
 .chart-summary {
-  margin: 0 0 8px;
-  color: var(--muted);
-  font-size: var(--type-meta);
-  line-height: 1.55;
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 .source-note {
@@ -673,10 +704,10 @@ a { color: inherit; }
   border-top: 0;
   border-right: 0;
   border-bottom: 0;
-  border-left: 1px solid var(--gold);
+  border-left: 1px solid var(--red);
   border-radius: 0;
   background: var(--paper);
-  color: var(--color-gold-ink);
+  color: var(--ink-soft);
 }
 
 .module-state strong { font-size: var(--type-caption); }
@@ -767,7 +798,7 @@ table {
 
 caption {
   padding: 8px 0;
-  color: var(--blue);
+  color: var(--ink-soft);
   font-size: var(--type-caption);
   font-weight: 730;
   line-height: 1.5;
@@ -859,8 +890,8 @@ body.report-profile-a4 .report-head { padding-bottom: 4.5mm; }
 body.report-profile-a4 .report-head h1 { font-size: var(--type-report-title-a4); }
 body.report-profile-a4 .report-head__brand { margin-top: 10px; font-size: var(--type-table); }
 body.report-profile-a4 .identity-ledger { margin-top: 12px; }
-body.report-profile-a4 .report-head > .identity-ledger { max-width: 230px; }
-body.report-profile-a4 .identity-ledger div { padding: 9px 11px 10px; }
+body.report-profile-a4 .report-head > .identity-ledger { max-width: 230px; margin-top: 0; }
+body.report-profile-a4 .identity-ledger div { padding: 0; }
 body.report-profile-a4 .evidence-wrap { margin-top: 15px; padding-top: 10px; }
 body.report-profile-a4 .evidence-spine { margin-top: 0; }
 body.report-profile-a4 .evidence-step { padding: 8px 9px 9px; }
@@ -874,17 +905,17 @@ body.report-profile-a4 .alternative h3 { font-size: var(--type-table); }
 body.report-profile-a4 .report-section p { margin: 5px 0; }
 body.report-profile-a4 .conclusion-band {
   margin-bottom: 14px;
-  padding: 11px 14px 12px;
+  padding: 13px 16px 14px;
 }
 body.report-profile-a4 .conclusion-band__label { margin-bottom: 4px !important; }
 body.report-profile-a4 .metric-strip { margin: 10px 0; }
-body.report-profile-a4 .metric { padding: 9px 10px 10px; }
+body.report-profile-a4 .metric { padding: 9px 0 10px; }
 body.report-profile-a4 .metric__value { font-size: calc(var(--type-metric) - 1px); }
 body.report-profile-a4 .metric__label { margin-top: 4px; font-size: var(--type-meta); }
 body.report-profile-a4 .scenario-grid,
 body.report-profile-a4 .alternative-grid { gap: 8px; margin: 10px 0; }
 body.report-profile-a4 .scenario-grid,
-body.report-profile-a4 .alternative-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+body.report-profile-a4 .alternative-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); }
 body.report-profile-a4 .scenario,
 body.report-profile-a4 .alternative { padding: 9px 10px; border-radius: 0; }
 body.report-profile-a4 .scenario p,
@@ -946,11 +977,12 @@ body.report-profile-a4 .disclaimer { margin-top: 12px; padding-top: 10px; line-h
   .report-head > .identity-ledger {
     grid-template-columns: 1fr;
     max-width: none;
-    border-top: 1px solid var(--rule);
+    padding: 0 0 10px;
+    border-top: 0;
     border-left: 0;
   }
-  .identity-ledger div:nth-child(2) { border-right: 0; }
-  .identity-ledger div:nth-child(-n + 2) { border-bottom: 1px solid var(--rule); }
+  .identity-ledger div:nth-child(2),
+  .identity-ledger div:nth-child(-n + 2) { border: 0; }
   .evidence-spine { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .evidence-step:nth-child(2n) { border-right: 0; }
   .evidence-step:nth-child(-n + 4) { border-bottom: 1px solid var(--rule); }
@@ -958,8 +990,7 @@ body.report-profile-a4 .disclaimer { margin-top: 12px; padding-top: 10px; line-h
   .alternative-grid,
   body.report-profile-a4 .scenario-grid,
   body.report-profile-a4 .alternative-grid { grid-template-columns: 1fr; }
-  .metric { border-bottom: 1px solid var(--rule); }
-  .metric:last-child { border-bottom: 0; }
+  .metric { border-bottom: 0; }
   .chart,
   body.report-profile-a4 .chart { height: 250px; }
 }
@@ -1018,7 +1049,7 @@ body.report-profile-a4 .disclaimer { margin-top: 12px; padding-top: 10px; line-h
   .module-state,
   .chart-figure,
   .payoff-figure { break-inside: avoid; }
-  .payoff-figure img { width: 100%; max-width: 170mm; height: auto; }
+  .payoff-figure img { width: 100%; max-width: none; height: auto; }
   a { text-decoration: none; }
 }
 
@@ -1059,7 +1090,7 @@ body.report-profile-a4 .disclaimer { margin-top: 12px; padding-top: 10px; line-h
 
 .comparison-document-head__brand {
   margin: 0 0 4px;
-  color: var(--blue);
+  color: var(--brand-signature);
   font-size: var(--type-meta);
   font-weight: 720;
 }
@@ -1166,12 +1197,12 @@ body.report-profile-a4 .disclaimer { margin-top: 12px; padding-top: 10px; line-h
 .comparison-matrix__cell .plain-list, .comparison-matrix__cell .risk-list { margin: 0; padding-left: 18px; font-size: var(--type-meta); }
 .comparison-matrix__row[data-section="risk"] .comparison-matrix__section-label { color: var(--red); }
 .comparison-matrix__row[data-section="risk"] .comparison-matrix__cell { border-top: 1px solid var(--red); }
-.comparison-state { color: var(--gold); font-size: var(--type-meta); }
+.comparison-state { color: var(--brand-signature); font-size: var(--type-meta); }
 
 .comparison-report-shell { grid-template-columns: minmax(0, 34mm) minmax(0, 210mm); }
 .comparison-report .alternative-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .comparison-report .alternative { min-width: 0; overflow-wrap: break-word; word-break: normal; }
-.comparison-payoff-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.comparison-payoff-grid { display: grid; grid-template-columns: 1fr; gap: 18px; }
 .comparison-payoff-figure { min-width: 0; }
 .comparison-payoff-figure h3 { margin-top: 0; }
 .comparison-payoff-figure .payoff-figure { margin: 0; }
@@ -1181,7 +1212,7 @@ body.report-profile-a4 .disclaimer { margin-top: 12px; padding-top: 10px; line-h
   .comparison-card-document { width: 210mm; margin: 0; padding: 8mm; box-shadow: none; }
   .comparison-matrix__header { break-after: avoid; }
   .comparison-matrix__row { break-inside: avoid; }
-  .comparison-payoff-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .comparison-payoff-grid { grid-template-columns: 1fr; }
 }
 
 /* Shared module-page and App shell contract.  These selectors are intentionally
@@ -1219,7 +1250,7 @@ body.report-profile-a4 .disclaimer { margin-top: 12px; padding-top: 10px; line-h
 .module-header__eyebrow,
 .designer-card__brand {
   margin: 0 0 var(--space-sm);
-  color: var(--blue);
+  color: var(--brand-signature);
   font-size: var(--type-module-label);
   font-weight: 720;
   letter-spacing: .04em;
@@ -1313,7 +1344,7 @@ body.report-profile-a4 .disclaimer { margin-top: 12px; padding-top: 10px; line-h
 
 .designer-card__brand {
   margin: 0 0 3px;
-  color: var(--blue);
+  color: var(--brand-signature);
   font-size: var(--type-card-brand);
   font-weight: 760;
   letter-spacing: .055em;
@@ -1330,7 +1361,7 @@ body.report-profile-a4 .disclaimer { margin-top: 12px; padding-top: 10px; line-h
   margin-top: 7px;
   padding: 0 0 7px 9px;
   border-bottom: var(--border-hairline) solid var(--rule);
-  border-left: 2px solid var(--gold);
+  border-left: 2px solid var(--red);
 }
 
 .designer-card .card-conclusion h2,
@@ -1342,11 +1373,11 @@ body.report-profile-a4 .disclaimer { margin-top: 12px; padding-top: 10px; line-h
   line-height: 1.45;
 }
 
-.designer-card .conclusion-heading { color: var(--color-gold-ink); }
+.designer-card .conclusion-heading { color: var(--ink); }
 
 .designer-card .conclusion-band__label {
   margin: 0 0 2px;
-  color: var(--color-gold-ink);
+  color: var(--red);
   font-size: var(--type-card-label);
   font-weight: 760;
   letter-spacing: .07em;
@@ -1519,7 +1550,7 @@ body.report-profile-a4 .disclaimer { margin-top: 12px; padding-top: 10px; line-h
 
 .quote-head__brand {
   margin: 0 0 3px;
-  color: var(--blue);
+  color: var(--brand-signature);
   font-size: var(--type-card-brand);
   font-weight: 760;
   letter-spacing: .055em;
@@ -1764,33 +1795,109 @@ body.report-profile-a4 .disclaimer { margin-top: 12px; padding-top: 10px; line-h
     <div class="report-head__copy"><p class="report-head__brand">光大证券 金融创新业务总部</p><h1>多结构完整研究报告</h1></div>
     <dl class="identity-ledger"><div><dt>报告日期</dt><dd>2026-08-24</dd></div></dl>
   </header>
-  <section id="section-conclusion" class="report-section"><h2><span class="section-title">核心结论</span></h2><div class="conclusion-band"><p class="conclusion-band__label">推荐结论</p><p class="conclusion-band__statement">推荐2个候选结构对比，挂钩000300.SH。</p><h3>推荐理由</h3><ul class="plain-list"><li>按冻结排名列示2个候选，合同、估值和回测事实分别绑定。</li><li>首选方案为方案A：看涨价差。</li></ul></div></section><section id="section-parameters" class="report-section"><h2><span class="section-title">合同参数</span></h2><div class="table-panel" data-table-panel="single"><div class="table-wrap"><table class="result-table result-table--detail table-density-normal" data-table-density="normal"><colgroup><col class="table-col table-col--default" data-column-key="metric"><col class="table-col table-col--default" data-column-key="c0"><col class="table-col table-col--default" data-column-key="c1"></colgroup><caption>关键条款</caption><thead><tr><th scope="col">指标</th><th scope="col">方案A</th><th scope="col">方案B</th></tr></thead><tbody><tr><td class="table-cell table-cell--default" data-label="指标">期限</td><td class="table-cell table-cell--default" data-label="方案A">3个月</td><td class="table-cell table-cell--default" data-label="方案B">3个月</td></tr><tr><td class="table-cell table-cell--default" data-label="指标">执行价</td><td class="table-cell table-cell--default" data-label="方案A">3,900</td><td class="table-cell table-cell--default" data-label="方案B">3,950</td></tr><tr><td class="table-cell table-cell--default" data-label="指标">净期权费</td><td class="table-cell table-cell--default" data-label="方案A">1.9%</td><td class="table-cell table-cell--default" data-label="方案B">2%</td></tr></tbody></table></div></div></section><section id="product-1" class="report-section"><h2><span class="section-title">看涨价差</span></h2><section><h3>收益结构</h3><div class="scenario-grid"><div class="scenario"><h3>到期情景</h3><p>收益随<math class="math-inline" aria-label="数学表达式"><mrow><msub><mi>S</mi><mi>T</mi></msub></mrow></math>变化，并受合同执行价约束。</p></div></div></section><section><h3>估值定价</h3><div class="metric-strip"><div class="metric"><div class="metric__value">1.9%</div><div class="metric__label">现值</div></div></div><div class="table-wrap"><table class="result-table result-table--greeks table-density-normal" data-table-density="normal"><colgroup><col class="table-col table-col--default" data-column-key="label"><col class="table-col table-col--numeric" data-column-key="value"><col class="table-col table-col--narrative" data-column-key="basis"></colgroup><caption>Greeks</caption><thead><tr><th scope="col">Greek</th><th scope="col">数值</th><th scope="col">单位或口径</th></tr></thead><tbody><tr><td class="table-cell table-cell--default" data-label="Greek">Delta</td><td class="table-cell table-cell--numeric" data-label="数值">0.23</td><td class="table-cell table-cell--narrative" data-label="单位或口径"></td></tr><tr><td class="table-cell table-cell--default" data-label="Greek">Gamma</td><td class="table-cell table-cell--numeric" data-label="数值">4.6×10⁻³</td><td class="table-cell table-cell--narrative" data-label="单位或口径"></td></tr><tr><td class="table-cell table-cell--default" data-label="Greek">Vega</td><td class="table-cell table-cell--numeric" data-label="数值">0.09</td><td class="table-cell table-cell--narrative" data-label="单位或口径"></td></tr><tr><td class="table-cell table-cell--default" data-label="Greek">Theta</td><td class="table-cell table-cell--numeric" data-label="数值">-0.03</td><td class="table-cell table-cell--narrative" data-label="单位或口径"></td></tr><tr><td class="table-cell table-cell--default" data-label="Greek">Rho</td><td class="table-cell table-cell--numeric" data-label="数值">0.01</td><td class="table-cell table-cell--narrative" data-label="单位或口径"></td></tr></tbody></table></div><figure class="chart-figure"><figcaption>标的价格敏感度</figcaption><div class="chart" id="product-1-pricing-1" role="img" aria-label="标的价格敏感度" aria-describedby="product-1-pricing-1-summary"></div><p id="product-1-pricing-1-summary" class="chart-summary">标的价格敏感度，横轴为标的涨跌幅，纵轴为估值变动。</p><noscript><p class="chart-error">浏览器已禁用JavaScript，请使用下方数据表读取图表数据。</p></noscript><div class="chart-data" data-table-facets="1"><div class="table-wrap"><table class="chart-data-table table-density-normal" data-table-density="normal"><colgroup><col class="table-col table-col--identifier" data-column-key="axis"><col class="table-col table-col--numeric" data-column-key="series_0"></colgroup><caption>标的价格敏感度数据</caption><thead><tr><th scope="col">标的涨跌幅</th><th scope="col">现值变动</th></tr></thead><tbody><tr><td class="table-cell table-cell--identifier" data-label="标的涨跌幅">-10</td><td class="table-cell table-cell--numeric" data-label="现值变动">-2%</td></tr><tr><td class="table-cell table-cell--identifier" data-label="标的涨跌幅">0</td><td class="table-cell table-cell--numeric" data-label="现值变动">0%</td></tr><tr><td class="table-cell table-cell--identifier" data-label="标的涨跌幅">10</td><td class="table-cell table-cell--numeric" data-label="现值变动">2.1%</td></tr></tbody></table></div></div><p class="source-note">本次冻结估值结果。</p></figure></section><section><h3>历史回测</h3><dl class="identity-ledger"><div><dt>样本区间</dt><dd>2022-08-24至2026-08-24</dd></div></dl><div class="metric-strip"><div class="metric"><div class="metric__value">48</div><div class="metric__label">样本数</div></div><div class="metric"><div class="metric__value">61%</div><div class="metric__label">历史正收益样本占比</div></div><div class="metric"><div class="metric__value">3.1%</div><div class="metric__label">平均合同结算收益率</div></div><div class="metric"><div class="metric__value">-4.9%</div><div class="metric__label">最大历史损失</div></div></div></section></section><section id="product-2" class="report-section"><h2><span class="section-title">保护性看跌</span></h2><section><h3>收益结构</h3><div class="scenario-grid"><div class="scenario"><h3>到期情景</h3><p>收益随<math class="math-inline" aria-label="数学表达式"><mrow><msub><mi>S</mi><mi>T</mi></msub></mrow></math>变化，并受合同执行价约束。</p></div></div></section><section><h3>估值定价</h3><div class="metric-strip"><div class="metric"><div class="metric__value">2%</div><div class="metric__label">现值</div></div></div><div class="table-wrap"><table class="result-table result-table--greeks table-density-normal" data-table-density="normal"><colgroup><col class="table-col table-col--default" data-column-key="label"><col class="table-col table-col--numeric" data-column-key="value"><col class="table-col table-col--narrative" data-column-key="basis"></colgroup><caption>Greeks</caption><thead><tr><th scope="col">Greek</th><th scope="col">数值</th><th scope="col">单位或口径</th></tr></thead><tbody><tr><td class="table-cell table-cell--default" data-label="Greek">Delta</td><td class="table-cell table-cell--numeric" data-label="数值">0.24</td><td class="table-cell table-cell--narrative" data-label="单位或口径"></td></tr><tr><td class="table-cell table-cell--default" data-label="Greek">Gamma</td><td class="table-cell table-cell--numeric" data-label="数值">4.6×10⁻³</td><td class="table-cell table-cell--narrative" data-label="单位或口径"></td></tr><tr><td class="table-cell table-cell--default" data-label="Greek">Vega</td><td class="table-cell table-cell--numeric" data-label="数值">0.09</td><td class="table-cell table-cell--narrative" data-label="单位或口径"></td></tr><tr><td class="table-cell table-cell--default" data-label="Greek">Theta</td><td class="table-cell table-cell--numeric" data-label="数值">-0.03</td><td class="table-cell table-cell--narrative" data-label="单位或口径"></td></tr><tr><td class="table-cell table-cell--default" data-label="Greek">Rho</td><td class="table-cell table-cell--numeric" data-label="数值">0.01</td><td class="table-cell table-cell--narrative" data-label="单位或口径"></td></tr></tbody></table></div><figure class="chart-figure"><figcaption>标的价格敏感度</figcaption><div class="chart" id="product-2-pricing-2" role="img" aria-label="标的价格敏感度" aria-describedby="product-2-pricing-2-summary"></div><p id="product-2-pricing-2-summary" class="chart-summary">标的价格敏感度，横轴为标的涨跌幅，纵轴为估值变动。</p><noscript><p class="chart-error">浏览器已禁用JavaScript，请使用下方数据表读取图表数据。</p></noscript><div class="chart-data" data-table-facets="1"><div class="table-wrap"><table class="chart-data-table table-density-normal" data-table-density="normal"><colgroup><col class="table-col table-col--identifier" data-column-key="axis"><col class="table-col table-col--numeric" data-column-key="series_0"></colgroup><caption>标的价格敏感度数据</caption><thead><tr><th scope="col">标的涨跌幅</th><th scope="col">现值变动</th></tr></thead><tbody><tr><td class="table-cell table-cell--identifier" data-label="标的涨跌幅">-10</td><td class="table-cell table-cell--numeric" data-label="现值变动">-2%</td></tr><tr><td class="table-cell table-cell--identifier" data-label="标的涨跌幅">0</td><td class="table-cell table-cell--numeric" data-label="现值变动">0%</td></tr><tr><td class="table-cell table-cell--identifier" data-label="标的涨跌幅">10</td><td class="table-cell table-cell--numeric" data-label="现值变动">2.2%</td></tr></tbody></table></div></div><p class="source-note">本次冻结估值结果。</p></figure></section><section><h3>历史回测</h3><dl class="identity-ledger"><div><dt>样本区间</dt><dd>2022-08-24至2026-08-24</dd></div></dl><div class="metric-strip"><div class="metric"><div class="metric__value">48</div><div class="metric__label">样本数</div></div><div class="metric"><div class="metric__value">62%</div><div class="metric__label">历史正收益样本占比</div></div><div class="metric"><div class="metric__value">3.2%</div><div class="metric__label">平均合同结算收益率</div></div><div class="metric"><div class="metric__value">-4.8%</div><div class="metric__label">最大历史损失</div></div></div></section></section><section id="section-risk" class="report-section"><h2><span class="section-title">风险提示</span></h2><ul class="risk-list"><li>方案A：极端行情下可能损失期权费。</li><li>方案A：实际成交价格可能偏离估值结果。</li><li>方案B：极端行情下可能损失期权费。</li><li>方案B：实际成交价格可能偏离估值结果。</li></ul></section>
+  <section id="section-conclusion" class="report-section"><h2><span class="section-title">核心结论</span></h2><div class="conclusion-band"><p class="conclusion-band__label">推荐结论</p><p class="conclusion-band__statement">推荐2个候选结构对比，挂钩000300.SH。</p><h3>推荐理由</h3><ul class="plain-list"><li>按冻结排名列示2个候选，合同、估值和回测事实分别绑定。</li><li>首选方案为方案A：看涨价差。</li></ul></div></section><section id="section-parameters" class="report-section"><h2><span class="section-title">合同参数</span></h2><div class="table-panel" data-table-panel="single"><div class="table-wrap"><table class="result-table result-table--detail table-density-normal" data-table-density="normal"><colgroup><col class="table-col table-col--default" data-column-key="metric"><col class="table-col table-col--default" data-column-key="c0"><col class="table-col table-col--default" data-column-key="c1"></colgroup><caption>关键条款</caption><thead><tr><th scope="col">指标</th><th scope="col">方案A</th><th scope="col">方案B</th></tr></thead><tbody><tr><td class="table-cell table-cell--default" data-label="指标">期限</td><td class="table-cell table-cell--default" data-label="方案A">3个月</td><td class="table-cell table-cell--default" data-label="方案B">3个月</td></tr><tr><td class="table-cell table-cell--default" data-label="指标">执行价</td><td class="table-cell table-cell--default" data-label="方案A">3,900</td><td class="table-cell table-cell--default" data-label="方案B">3,950</td></tr><tr><td class="table-cell table-cell--default" data-label="指标">净期权费</td><td class="table-cell table-cell--default" data-label="方案A">1.9%</td><td class="table-cell table-cell--default" data-label="方案B">2%</td></tr></tbody></table></div></div></section><section id="product-1" class="report-section"><h2><span class="section-title">看涨价差</span></h2><section><h3>收益结构</h3><div class="scenario-grid"><div class="scenario"><h3>到期情景</h3><p>收益随<math class="math-inline" aria-label="数学表达式"><mrow><msub><mi>S</mi><mi>T</mi></msub></mrow></math>变化，并受合同执行价约束。</p></div></div></section><section><h3>估值定价</h3><div class="metric-strip"><div class="metric"><div class="metric__value">1.9%</div><div class="metric__label">现值</div></div></div><div class="table-wrap"><table class="result-table result-table--greeks table-density-normal" data-table-density="normal"><colgroup><col class="table-col table-col--default" data-column-key="label"><col class="table-col table-col--numeric" data-column-key="value"></colgroup><caption>Greeks</caption><thead><tr><th scope="col">Greek</th><th scope="col">数值</th></tr></thead><tbody><tr><td class="table-cell table-cell--default" data-label="Greek">Delta</td><td class="table-cell table-cell--numeric" data-label="数值">0.23</td></tr><tr><td class="table-cell table-cell--default" data-label="Greek">Gamma</td><td class="table-cell table-cell--numeric" data-label="数值">4.6×10⁻³</td></tr><tr><td class="table-cell table-cell--default" data-label="Greek">Vega</td><td class="table-cell table-cell--numeric" data-label="数值">0.09</td></tr><tr><td class="table-cell table-cell--default" data-label="Greek">Theta</td><td class="table-cell table-cell--numeric" data-label="数值">−0.03</td></tr><tr><td class="table-cell table-cell--default" data-label="Greek">Rho</td><td class="table-cell table-cell--numeric" data-label="数值">0.01</td></tr></tbody></table></div><figure class="chart-figure"><figcaption>标的价格敏感度</figcaption><div class="chart" id="product-1-pricing-1" role="img" aria-label="标的价格敏感度" aria-describedby="product-1-pricing-1-summary"></div><p id="product-1-pricing-1-summary" class="chart-summary">标的价格敏感度，横轴为标的涨跌幅，纵轴为估值变动。</p></figure></section><section><h3>历史回测</h3><dl class="identity-ledger"><div><dt>样本区间</dt><dd>2022-08-24至2026-08-24</dd></div></dl><div class="metric-strip"><div class="metric"><div class="metric__value">48</div><div class="metric__label">样本数</div></div><div class="metric"><div class="metric__value">61%</div><div class="metric__label">历史正收益样本占比</div></div><div class="metric"><div class="metric__value">3.1%</div><div class="metric__label">平均合同结算收益率</div></div><div class="metric"><div class="metric__value">−4.9%</div><div class="metric__label">最大历史损失</div></div></div></section></section><section id="product-2" class="report-section"><h2><span class="section-title">保护性看跌</span></h2><section><h3>收益结构</h3><div class="scenario-grid"><div class="scenario"><h3>到期情景</h3><p>收益随<math class="math-inline" aria-label="数学表达式"><mrow><msub><mi>S</mi><mi>T</mi></msub></mrow></math>变化，并受合同执行价约束。</p></div></div></section><section><h3>估值定价</h3><div class="metric-strip"><div class="metric"><div class="metric__value">2%</div><div class="metric__label">现值</div></div></div><div class="table-wrap"><table class="result-table result-table--greeks table-density-normal" data-table-density="normal"><colgroup><col class="table-col table-col--default" data-column-key="label"><col class="table-col table-col--numeric" data-column-key="value"></colgroup><caption>Greeks</caption><thead><tr><th scope="col">Greek</th><th scope="col">数值</th></tr></thead><tbody><tr><td class="table-cell table-cell--default" data-label="Greek">Delta</td><td class="table-cell table-cell--numeric" data-label="数值">0.24</td></tr><tr><td class="table-cell table-cell--default" data-label="Greek">Gamma</td><td class="table-cell table-cell--numeric" data-label="数值">4.6×10⁻³</td></tr><tr><td class="table-cell table-cell--default" data-label="Greek">Vega</td><td class="table-cell table-cell--numeric" data-label="数值">0.09</td></tr><tr><td class="table-cell table-cell--default" data-label="Greek">Theta</td><td class="table-cell table-cell--numeric" data-label="数值">−0.03</td></tr><tr><td class="table-cell table-cell--default" data-label="Greek">Rho</td><td class="table-cell table-cell--numeric" data-label="数值">0.01</td></tr></tbody></table></div><figure class="chart-figure"><figcaption>标的价格敏感度</figcaption><div class="chart" id="product-2-pricing-2" role="img" aria-label="标的价格敏感度" aria-describedby="product-2-pricing-2-summary"></div><p id="product-2-pricing-2-summary" class="chart-summary">标的价格敏感度，横轴为标的涨跌幅，纵轴为估值变动。</p></figure></section><section><h3>历史回测</h3><dl class="identity-ledger"><div><dt>样本区间</dt><dd>2022-08-24至2026-08-24</dd></div></dl><div class="metric-strip"><div class="metric"><div class="metric__value">48</div><div class="metric__label">样本数</div></div><div class="metric"><div class="metric__value">62%</div><div class="metric__label">历史正收益样本占比</div></div><div class="metric"><div class="metric__value">3.2%</div><div class="metric__label">平均合同结算收益率</div></div><div class="metric"><div class="metric__value">−4.8%</div><div class="metric__label">最大历史损失</div></div></div></section></section><section id="section-risk" class="report-section"><h2><span class="section-title">风险提示</span></h2><ul class="risk-list"><li>方案A：极端行情下可能损失期权费。</li><li>方案A：实际成交价格可能偏离估值结果。</li><li>方案B：极端行情下可能损失期权费。</li><li>方案B：实际成交价格可能偏离估值结果。</li></ul><h3>数据与方法限制</h3><ul class="plain-list"><li>本次未运行收益结构、估值定价、历史回测，相关结论尚未验证。</li></ul></section>
 </main>
 </div>
 <script>
 	const chartSpecs=[{"id": "product-1-pricing-1", "title": "标的价格敏感度", "type": "line", "x": [-10, 0, 10], "x_axis_name": "标的涨跌幅", "y_axis_name": "估值变动", "value_format": "percent", "value_suffix": "", "source_note": "本次冻结估值结果。", "accessibility_summary": "", "series": [{"name": "现值变动", "data": [-0.02, 0, 0.021]}]}, {"id": "product-2-pricing-2", "title": "标的价格敏感度", "type": "line", "x": [-10, 0, 10], "x_axis_name": "标的涨跌幅", "y_axis_name": "估值变动", "value_format": "percent", "value_suffix": "", "source_note": "本次冻结估值结果。", "accessibility_summary": "", "series": [{"name": "现值变动", "data": [-0.02, 0, 0.022]}]}];
 	const chartInstances=[];
-	const palette=["#C8102E", "#49647D", "#936719", "#6B6B6B", "#404040"];
-	const chartTheme={"color": ["#C8102E", "#49647D", "#936719", "#6B6B6B", "#404040"], "lineTypes": ["solid", "dashed", "dotted"], "symbols": ["circle", "rect", "triangle", "diamond"], "textStyle": {"fontFamily": "Arial, \"PingFang SC\", \"Noto Sans CJK SC\", sans-serif", "color": "#404040", "fontSize": 11}, "axis": {"line": "#C9C9C9", "label": "#6B6B6B", "split": "#E2E2E2"}, "tooltip": {"background": "#252525", "border": "#C9C9C9", "text": "#FFFFFF"}, "heatmap": {"low": "#F4F4F4"}};
+	const palette=["#C8102E", "#252525", "#936719", "#6B6B6B", "#C9C9C9"];
+	const chartTheme={"color": ["#C8102E", "#252525", "#936719", "#6B6B6B", "#C9C9C9"], "lineTypes": ["solid", "dashed", "dotted"], "symbols": ["circle", "rect", "triangle", "diamond"], "textStyle": {"fontFamily": "Arial, \"PingFang SC\", \"Noto Sans CJK SC\", sans-serif", "color": "#404040", "fontSize": 11}, "axis": {"line": "#252525", "label": "#404040", "split": "#E2E2E2"}, "tooltip": {"background": "#252525", "border": "#C9C9C9", "text": "#FFFFFF"}, "heatmap": {"low": "#F4F4F4"}};
 	const lineTypes=chartTheme.lineTypes;
 	const symbols=chartTheme.symbols;
-	function markChartUnavailable(id,message){const el=document.getElementById(id);if(!el)return;el.classList.add("chart--unavailable");el.textContent=message||"图表资源加载失败，请使用下方完整数据表。";}
+	function markChartUnavailable(id,message){const el=document.getElementById(id);if(!el)return;el.classList.add("chart--unavailable");el.textContent=message||"图表资源加载失败，请重新加载报告。";}
 	function markChartsUnavailable(){chartSpecs.forEach(spec=>markChartUnavailable(spec.id));}
-	function publicNumber(value,valueFormat){let number=Number(value);if(!Number.isFinite(number))return String(value??"");if(valueFormat==="percent")number*=100;if(number!==0&&Math.round(number*100)===0){const [mantissa,exponent]=number.toExponential(2).split("e");const superscript={"-":"⁻","0":"⁰","1":"¹","2":"²","3":"³","4":"⁴","5":"⁵","6":"⁶","7":"⁷","8":"⁸","9":"⁹"};return `${mantissa.replace(/0+$/,'').replace(/\.$/,'')}×10${[...String(Number(exponent))].map(char=>superscript[char]||char).join("")}${valueFormat==="percent"?"%":""}`;}return new Intl.NumberFormat("zh-CN",{maximumFractionDigits:2}).format(number)+(valueFormat==="percent"?"%":"");}
-	function publicCategory(value,axisName){return /年|日期|时间|代码|标识/.test(String(axisName||""))?String(value??""):publicNumber(value,"number");}
-	function renderChart(spec){
-	  const el=document.getElementById(spec.id);if(!el)return;
-	  const isHeatmap=spec.type==="heatmap";const type=spec.type==="bar"?"bar":"line";
-	  const points=spec.x.length;const series=Array.isArray(spec.series)?spec.series:[];
-	  const hasLegend=!isHeatmap&&series.length>1;const chart=echarts.init(el,null,{renderer:"svg"});
-	  if(isHeatmap){
-	    chart.setOption({animation:false,color:palette,tooltip:{position:"top",formatter:item=>`${spec.x_axis_name||"横轴"}：${publicCategory(spec.x[item.data[0]],spec.x_axis_name)}<br>${spec.y_axis_name||"纵轴"}：${publicCategory(spec.y[item.data[1]],spec.y_axis_name)}<br>${spec.z_axis_name||"数值"}：${publicNumber(item.data[2],spec.value_format)}${spec.value_suffix||""}`},grid:{left:72,right:24,top:30,bottom:94},xAxis:{type:"category",name:spec.x_axis_name||"",nameLocation:"middle",nameGap:27,data:spec.x,axisLine:{lineStyle:{color:chartTheme.axis.line}},axisLabel:{color:chartTheme.axis.label,fontSize:chartTheme.textStyle.fontSize,formatter:value=>publicCategory(value,spec.x_axis_name)}},yAxis:{type:"category",name:spec.y_axis_name||"",nameLocation:"middle",nameGap:48,data:spec.y,axisLine:{lineStyle:{color:chartTheme.axis.line}},axisLabel:{color:chartTheme.axis.label,fontSize:chartTheme.textStyle.fontSize,formatter:value=>publicCategory(value,spec.y_axis_name)}},visualMap:{min:Math.min(...spec.data.map(item=>Number(item[2]))),max:Math.max(...spec.data.map(item=>Number(item[2]))),calculable:false,orient:"horizontal",left:"center",bottom:6,textStyle:{color:chartTheme.axis.label,fontSize:chartTheme.textStyle.fontSize},inRange:{color:[chartTheme.heatmap.low,palette[0],palette[1]]}},series:[{name:spec.z_axis_name||"数值",type:"heatmap",data:spec.data,label:{show:false},emphasis:{itemStyle:{shadowBlur:8}}}]});
-	    chartInstances.push(chart);return;
-	  }
-	  chart.setOption({animation:false,color:palette,tooltip:{trigger:"axis",valueFormatter:value=>`${publicNumber(value,spec.value_format)}${spec.value_suffix||""}`},legend:{show:hasLegend,top:2,textStyle:{color:chartTheme.textStyle.color,fontFamily:chartTheme.textStyle.fontFamily,fontSize:chartTheme.textStyle.fontSize}},grid:{left:58,right:18,top:hasLegend?48:28,bottom:78},xAxis:{type:"category",name:spec.x_axis_name||"",nameLocation:"middle",nameGap:24,data:spec.x,axisLine:{lineStyle:{color:chartTheme.axis.line}},axisLabel:{color:chartTheme.axis.label,fontSize:chartTheme.textStyle.fontSize,interval:0,rotate:points>14?42:0,formatter:value=>publicCategory(value,spec.x_axis_name)}},yAxis:{type:"value",name:spec.y_axis_name||"",nameTextStyle:{color:chartTheme.axis.label},axisLabel:{color:chartTheme.axis.label,fontSize:chartTheme.textStyle.fontSize,formatter:value=>publicNumber(value,spec.value_format)},splitLine:{lineStyle:{color:chartTheme.axis.split,type:"dashed"}}},series:series.map((item,seriesIndex)=>({name:item.name,type,smooth:false,symbol:type==="line"?symbols[seriesIndex%symbols.length]:"none",showSymbol:type==="line"&&points<=60,symbolSize:5,barMaxWidth:42,data:item.data,itemStyle:{color:palette[seriesIndex%palette.length]},lineStyle:{width:2,type:lineTypes[seriesIndex%lineTypes.length]}}))});
-	  chartInstances.push(chart);
-	}
-	function initialiseCharts(){if(!window.echarts){markChartsUnavailable();return;}chartSpecs.forEach(spec=>{try{renderChart(spec);}catch(error){markChartUnavailable(spec.id,"图表初始化失败，请使用下方完整数据表。");console.error("图表初始化失败",spec.id,error);}});}
+function publicNumber(value, valueFormat, digits = 2) {
+  if (value === null || value === undefined || value === '') return '—';
+  let number = Number(value);
+  if (!Number.isFinite(number)) return String(value);
+  if (valueFormat === 'percent') number *= 100;
+  const suffix = ['percent', 'percent_points'].includes(valueFormat) ? '%' : '';
+  const mathematicalSign = text => String(text).replace(/^-/, '−');
+  if (number !== 0 && Math.round(Math.abs(number) * 10 ** digits) === 0) {
+    const [mantissa, exponent] = number.toExponential(2).split('e');
+    const superscript = {'-':'⁻','0':'⁰','1':'¹','2':'²','3':'³','4':'⁴','5':'⁵','6':'⁶','7':'⁷','8':'⁸','9':'⁹'};
+    return `${mathematicalSign(mantissa.replace(/0+$/, '').replace(/\.$/, ''))}×10${[...String(Number(exponent))].map(char => superscript[char] || char).join('')}${suffix}`;
+  }
+  return mathematicalSign(new Intl.NumberFormat('zh-CN', {maximumFractionDigits: digits}).format(Object.is(number, -0) ? 0 : number)) + suffix;
+}
+function publicCategory(value, axisName, digits = 2) {
+  return /年|日期|时间|代码|标识/.test(String(axisName || '')) ? String(value ?? '') : publicNumber(value, 'number', digits);
+}
+function axisPrecision(values, format) {
+  const numbers = [...new Set(values.filter(value => value !== null && value !== '' && Number.isFinite(Number(value))).map(Number))].sort((a,b) => a-b);
+  if (numbers.length < 2) return 2;
+  let step = Infinity;
+  for (let index = 1; index < numbers.length; index++) step = Math.min(step, numbers[index] - numbers[index-1]);
+  if (format === 'percent') step *= 100;
+  return Math.min(6, Math.max(2, Math.ceil(-Math.log10(step))));
+}
+function renderChart(spec) {
+  const el = document.getElementById(spec.id);
+  if (!el) return;
+  const isHeatmap = spec.type === 'heatmap';
+  const type = spec.type === 'bar' ? 'bar' : 'line';
+  const points = spec.x.length;
+  const series = Array.isArray(spec.series) ? spec.series : [];
+  const hasLegend = !isHeatmap && series.length > 1;
+  const chart = echarts.init(el, null, {renderer: 'svg'});
+  const labelStyle = {color: chartTheme.axis.label, fontSize: chartTheme.textStyle.fontSize, hideOverlap: true, margin: 12};
+  const categoryAxis = (values, name) => {
+    const digits = axisPrecision(values, 'number');
+    const longestLabel = Math.max(0, ...values.map(value => String(value ?? '').length));
+    const labelRotation = values.length > 12 || longestLabel > 10 ? 32 : 0;
+    return ({
+    type: 'category', name: name || '', nameLocation: 'middle', nameGap: 38, data: values,
+    axisLine: {show: true, lineStyle: {color: chartTheme.axis.line, width: 1.2}},
+    axisTick: {show: true, alignWithLabel: true, interval: 'auto', lineStyle: {color: chartTheme.axis.line}},
+    axisLabel: {...labelStyle, interval: 'auto', rotate: labelRotation,
+      formatter: value => publicCategory(value, name, digits)}
+    });
+  };
+  if (isHeatmap) {
+    const values = spec.data.map(item => Number(item[2])).filter(Number.isFinite);
+    const escapeLabel = value => String(value).replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
+    chart.setOption({
+      animation: false, color: palette,
+      tooltip: {position: 'top', confine: true, formatter: item =>
+        `${escapeLabel(spec.x_axis_name || '横轴')}：${escapeLabel(publicCategory(spec.x[item.data[0]], spec.x_axis_name, 4))}<br>${escapeLabel(spec.y_axis_name || '纵轴')}：${escapeLabel(publicCategory(spec.y[item.data[1]], spec.y_axis_name, 4))}<br>${escapeLabel(spec.z_axis_name || '数值')}：${escapeLabel(publicNumber(item.data[2], spec.value_format, 4))}${escapeLabel(spec.value_suffix || '')}`},
+      grid: {left: 42, right: 24, top: 30, bottom: 105, containLabel: true},
+      xAxis: categoryAxis(spec.x, spec.x_axis_name),
+      yAxis: {...categoryAxis(spec.y, spec.y_axis_name), nameGap: 55},
+      visualMap: {min: Math.min(...values), max: Math.max(...values), calculable: false,
+        orient: 'horizontal', left: 'center', bottom: 4,
+        formatter: value => publicNumber(value, spec.value_format),
+        textStyle: {color: chartTheme.axis.label, fontSize: chartTheme.textStyle.fontSize},
+        inRange: {color: [chartTheme.heatmap.low, palette[0], palette[1]]}},
+      series: [{name: spec.z_axis_name || '数值', type: 'heatmap', data: spec.data,
+        label: {show: false}, emphasis: {itemStyle: {shadowBlur: 8}}}]
+    });
+  } else {
+    const yValues = series.flatMap(item => item.data).filter(value => value !== null && value !== '' && Number.isFinite(Number(value))).map(Number);
+    const span = (Math.max(...yValues) - Math.min(0, ...yValues)) / 4;
+    const yDigits = axisPrecision([0, span], spec.value_format);
+    chart.setOption({
+      animation: false, color: palette,
+      tooltip: {trigger: 'axis', confine: true, valueFormatter: value => `${publicNumber(value, spec.value_format, Math.max(4, yDigits))}${spec.value_suffix || ''}`},
+      legend: {show: hasLegend, type: 'scroll', top: 2, textStyle: chartTheme.textStyle},
+      grid: {left: 24, right: 28, top: hasLegend ? 60 : 35, bottom: 78, containLabel: true},
+      xAxis: categoryAxis(spec.x, spec.x_axis_name),
+      yAxis: {type: 'value', name: spec.y_axis_name || '', splitNumber: 4,
+        nameTextStyle: {color: chartTheme.axis.label},
+        axisLine: {show: true, lineStyle: {color: chartTheme.axis.line, width: 1.2}},
+        axisTick: {show: true, lineStyle: {color: chartTheme.axis.line}},
+        axisLabel: {...labelStyle, formatter: value => publicNumber(value, spec.value_format, yDigits)},
+        splitLine: {show: false}},
+      series: series.map((item, index) => ({name: item.name, type, smooth: false,
+        symbol: type === 'line' ? symbols[index % symbols.length] : 'none',
+        showSymbol: type === 'line' && points <= 24, symbolSize: 5, barMaxWidth: 42,
+        data: item.data, itemStyle: {color: palette[index % palette.length]},
+        lineStyle: {width: 2, type: lineTypes[index % lineTypes.length]}}))
+    });
+  }
+  chartInstances.push(chart);
+}
+	function initialiseCharts(){if(!window.echarts){markChartsUnavailable();return;}chartSpecs.forEach(spec=>{try{renderChart(spec);}catch(error){markChartUnavailable(spec.id,"图表初始化失败，请重新加载报告。");console.error("图表初始化失败",spec.id,error);}});}
 	window.addEventListener("DOMContentLoaded",initialiseCharts);let resizeTimer;window.addEventListener("resize",()=>{window.clearTimeout(resizeTimer);resizeTimer=window.setTimeout(()=>chartInstances.forEach(chart=>chart.resize()),150)});
 </script>
 </body>
