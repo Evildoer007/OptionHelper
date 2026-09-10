@@ -1,7 +1,8 @@
 /* Generated from modules/designer/src/design_tokens.py. */
-/* designer-token-hash:66fa3e80b3916416ab291943c6aa7c0e771e72c9261027aad2f9e78ce0d93697 */
+/* designer-token-hash:9e99135bf4faef877caf32fbb0001aa2a27cf15a150041f530bfcd2b7450c24a */
 :root {
   --color-brand-red: #C8102E;
+  --color-brand-signature: #8A2F3D;
   --color-on-brand: #FFFFFF;
   --color-paper: #FFFFFF;
   --color-ground: #F4F4F4;
@@ -19,12 +20,12 @@
   --color-blue-gray-soft: #F4F4F4;
   --color-chart-gray: #6B6B6B;
   --color-heatmap-low: #F4F4F4;
-  --color-risk-gold-soft: #FCF7EA;
+  --color-risk-gold-soft: #F7F3E9;
   --color-paper-border: #E2E2E2;
   --color-red-border-soft: #C9C9C9;
   --color-red-surface: #F4F4F4;
   --color-red-tag-border: #C9C9C9;
-  --color-gold-border: #C9C9C9;
+  --color-gold-border: #D8C9A7;
   --color-gold-ink: #936719;
   --color-table-border: #C9C9C9;
   --color-table-head-ink: #252525;
@@ -89,26 +90,27 @@
   --state-ready-color: #49647D;
   --state-ready-surface: #F4F4F4;
   --state-partial-color: #936719;
-  --state-partial-surface: #FCF7EA;
+  --state-partial-surface: #F7F3E9;
   --state-pending-color: #936719;
-  --state-pending-surface: #FCF7EA;
+  --state-pending-surface: #F7F3E9;
   --state-not-run-color: #936719;
-  --state-not-run-surface: #FCF7EA;
+  --state-not-run-surface: #F7F3E9;
   --state-unsupported-color: #936719;
-  --state-unsupported-surface: #FCF7EA;
+  --state-unsupported-surface: #F7F3E9;
   --state-failed-color: #C8102E;
   --state-failed-surface: #F4F4F4;
   --chart-color-1: #C8102E;
-  --chart-color-2: #49647D;
+  --chart-color-2: #252525;
   --chart-color-3: #936719;
   --chart-color-4: #6B6B6B;
-  --chart-color-5: #404040;
+  --chart-color-5: #C9C9C9;
   --breakpoint-narrow: 900px;
   --breakpoint-print: 720px;
 }
 
 [data-theme="dark"] {
   --color-brand-red: #C8102E;
+  --color-brand-signature: #D47A87;
   --color-on-brand: #FFFFFF;
   --color-paper: #181818;
   --color-ground: #111111;
