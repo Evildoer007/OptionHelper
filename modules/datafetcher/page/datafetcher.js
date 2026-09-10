@@ -160,16 +160,16 @@ function resultViewModel(data) {
   };
 }
 
-function chartViewModel(rawSeries) {
+function chartViewModel(rawSeries, {normalize = true, allowZero = false} = {}) {
   const source = Array.isArray(rawSeries) ? rawSeries : [];
   const cleaned = source.map(series => {
     const points = (Array.isArray(series?.points) ? series.points : [])
       .map(point => ({date: String(point?.date || ''), rawValue: Number(point?.value)}))
-      .filter(point => point.date && Number.isFinite(point.rawValue) && point.rawValue > 0 && Number.isFinite(Date.parse(point.date.includes('T') ? point.date : `${point.date}T00:00:00Z`)))
+      .filter(point => point.date && Number.isFinite(point.rawValue) && (allowZero ? point.rawValue >= 0 : point.rawValue > 0) && Number.isFinite(Date.parse(point.date.includes('T') ? point.date : `${point.date}T00:00:00Z`)))
       .sort((left, right) => left.date.localeCompare(right.date));
     return {assetId: String(series?.asset_id || ''), field: String(series?.field || ''), points};
   }).filter(series => series.assetId && series.points.length);
-  const normalized = cleaned.length > 1;
+  const normalized = normalize && cleaned.length > 1;
   const series = cleaned.map(item => {
     const baseline = item.points[0]?.rawValue;
     if (normalized && !Number.isFinite(baseline)) return null;
@@ -191,6 +191,7 @@ function chartViewModel(rawSeries) {
     minValue -= padding;
     maxValue += padding;
   }
+  if (allowZero) minValue = Math.max(0, minValue);
   return {
     series,
     normalized,
@@ -348,16 +349,17 @@ function initializePage() {
   function addAsset(item) { const ref = item?.data_asset_ref || item; if (ref?.lineage?.persistence_mode === 'volatile') return; const key = ref?.data_asset_id || ref?.content_hash; if (key) assetStore.set(key, item); renderAssets(); }
   function appendSummarySection(parent, title, rows, description = '') { const section = document.createElement('section'); section.className = 'result-section'; section.innerHTML = '<h3></h3><p hidden></p><div class="summary-list"></div>'; section.querySelector('h3').textContent = title; if (description) { const copy = section.querySelector('p'); copy.textContent = description; copy.hidden = false; } rows.forEach(([label, value]) => { const item = document.createElement('div'); item.className = 'summary-item'; item.innerHTML = '<span></span><strong></strong>'; item.querySelector('span').textContent = label; item.querySelector('strong').textContent = String(value); section.querySelector('.summary-list').append(item); }); parent.append(section); }
   function appendAuditDetails(parent, value) { const details = document.createElement('details'); details.className = 'audit-details'; details.innerHTML = '<summary>技术详情</summary><pre class="json-block"></pre>'; details.querySelector('pre').textContent = JSON.stringify(value ?? null, null, 2); parent.append(details); }
-  function appendMarketChart(parent, rawSeries) {
-    const view = chartViewModel(rawSeries);
+  function appendMarketChart(parent, rawSeries, options = {}) {
+    const view = chartViewModel(rawSeries, {normalize: !options.volatility, allowZero: !!options.volatility});
     const section = document.createElement('section');
     section.className = 'market-chart';
     section.innerHTML = '<div class="market-chart__heading"><div><h3>行情走势</h3><p></p></div><div class="market-chart__legend" aria-label="图例"></div></div><div class="market-chart__stage"></div><div class="market-chart__tooltip" hidden></div>';
-    section.querySelector('.market-chart__heading p').textContent = view.normalized ? '多标的按首个有效观测归一，基准=1。' : '展示完整请求区间的收盘走势抽样。';
+    section.querySelector('h3').textContent = options.volatility ? '历史波动率' : '行情走势';
+    section.querySelector('.market-chart__heading p').textContent = options.subtitle || (view.normalized ? '多标的按首个有效观测归一，基准=1。' : '展示完整请求区间的收盘走势抽样。');
     const stage = section.querySelector('.market-chart__stage');
     if (!view.series.length) {
       stage.classList.add('market-chart__stage--empty');
-      stage.textContent = '暂无可绘制的价格数据';
+      stage.textContent = options.volatility ? '当前区间没有足够的连续日线，请缩短窗口或扩大日期范围。' : '暂无可绘制的价格数据';
       parent.append(section);
       return;
     }
@@ -367,9 +369,9 @@ function initializePage() {
     const dateSpan = Math.max(1, view.maxDate - view.minDate); const valueSpan = Math.max(Number.EPSILON, view.maxValue - view.minValue);
     const xFor = timestamp => left + ((timestamp - view.minDate) / dateSpan) * plotWidth;
     const yFor = value => top + (1 - ((value - view.minValue) / valueSpan)) * plotHeight;
-    const formatNumber = value => new Intl.NumberFormat('zh-CN', {maximumFractionDigits: view.normalized ? 4 : 4}).format(value);
+    const formatNumber = value => new Intl.NumberFormat('zh-CN', options.volatility ? {style: 'percent', maximumFractionDigits: 2} : {maximumFractionDigits: 2}).format(value);
     const svg = document.createElementNS(namespace, 'svg');
-    svg.setAttribute('viewBox', `0 0 ${width} ${height}`); svg.setAttribute('role', 'img'); svg.setAttribute('aria-label', view.normalized ? '多标的归一化行情走势图，基准为1' : `${view.series[0].assetId}行情走势图`);
+    svg.setAttribute('viewBox', `0 0 ${width} ${height}`); svg.setAttribute('role', 'img'); svg.setAttribute('aria-label', options.volatility ? '年化历史波动率走势图' : view.normalized ? '多标的归一化行情走势图，基准为1' : `${view.series[0].assetId}行情走势图`);
     const axes = document.createElementNS(namespace, 'g'); axes.setAttribute('class', 'market-chart__axes');
     const bottomAxis = document.createElementNS(namespace, 'line'); bottomAxis.setAttribute('class', 'market-chart__axis-line'); bottomAxis.setAttribute('x1', left); bottomAxis.setAttribute('x2', width - right); bottomAxis.setAttribute('y1', height - bottom); bottomAxis.setAttribute('y2', height - bottom); axes.append(bottomAxis);
     const leftAxis = document.createElementNS(namespace, 'line'); leftAxis.setAttribute('class', 'market-chart__axis-line'); leftAxis.setAttribute('x1', left); leftAxis.setAttribute('x2', left); leftAxis.setAttribute('y1', top); leftAxis.setAttribute('y2', height - bottom); axes.append(leftAxis);
@@ -389,21 +391,45 @@ function initializePage() {
       const path = document.createElementNS(namespace, 'path');
       path.setAttribute('class', 'market-chart__line'); path.style.setProperty('--series-color', `var(--data-series-${colorIndex})`);
       path.setAttribute('d', series.points.map((point, pointIndex) => `${pointIndex ? 'L' : 'M'}${xFor(point.timestamp).toFixed(2)},${yFor(point.value).toFixed(2)}`).join(' ')); svg.append(path);
-      const marker = document.createElementNS(namespace, 'circle'); marker.setAttribute('class', 'market-chart__marker'); marker.setAttribute('r', '4'); marker.style.setProperty('--series-color', `var(--data-series-${colorIndex})`); marker.hidden = true; svg.append(marker); hoverPoints.push({series, marker});
+      const marker = document.createElementNS(namespace, 'circle'); marker.setAttribute('class', 'market-chart__marker'); marker.setAttribute('r', '4'); marker.style.setProperty('--series-color', `var(--data-series-${colorIndex})`); marker.setAttribute('hidden', ''); svg.append(marker); hoverPoints.push({series, marker});
     });
-    const guide = document.createElementNS(namespace, 'line'); guide.setAttribute('class', 'market-chart__guide'); guide.setAttribute('y1', top); guide.setAttribute('y2', height - bottom); guide.hidden = true; svg.append(guide);
+    const guide = document.createElementNS(namespace, 'line'); guide.setAttribute('class', 'market-chart__guide'); guide.setAttribute('y1', top); guide.setAttribute('y2', height - bottom); guide.setAttribute('hidden', ''); svg.append(guide);
     const hitArea = document.createElementNS(namespace, 'rect'); hitArea.setAttribute('class', 'market-chart__hit'); hitArea.setAttribute('x', left); hitArea.setAttribute('y', top); hitArea.setAttribute('width', plotWidth); hitArea.setAttribute('height', plotHeight); svg.append(hitArea);
     const tooltip = section.querySelector('.market-chart__tooltip');
-    const hideHover = () => { guide.hidden = true; tooltip.hidden = true; hoverPoints.forEach(item => { item.marker.hidden = true; }); };
+    const hideHover = () => { guide.setAttribute('hidden', ''); tooltip.hidden = true; hoverPoints.forEach(item => { item.marker.setAttribute('hidden', ''); }); };
     hitArea.addEventListener('pointermove', event => {
-      const bounds = svg.getBoundingClientRect(); const pointerX = Math.max(left, Math.min(width - right, ((event.clientX - bounds.left) / bounds.width) * width)); const targetTime = view.minDate + ((pointerX - left) / plotWidth) * dateSpan;
-      guide.setAttribute('x1', pointerX); guide.setAttribute('x2', pointerX); guide.hidden = false;
-      const rows = hoverPoints.map(({series, marker}) => { const point = series.points.reduce((nearest, candidate) => Math.abs(candidate.timestamp - targetTime) < Math.abs(nearest.timestamp - targetTime) ? candidate : nearest); marker.setAttribute('cx', xFor(point.timestamp)); marker.setAttribute('cy', yFor(point.value)); marker.hidden = false; return `${series.assetId}  ${formatNumber(point.value)}`; });
+      const bounds = svg.getBoundingClientRect(); const pointer = svg.createSVGPoint(); pointer.x = event.clientX; pointer.y = event.clientY; const local = pointer.matrixTransform(svg.getScreenCTM().inverse()); const pointerX = Math.max(left, Math.min(width - right, local.x)); const targetTime = view.minDate + ((pointerX - left) / plotWidth) * dateSpan;
+      guide.setAttribute('x1', pointerX); guide.setAttribute('x2', pointerX); guide.removeAttribute('hidden');
+      const rows = hoverPoints.map(({series, marker}) => { const point = series.points.reduce((nearest, candidate) => Math.abs(candidate.timestamp - targetTime) < Math.abs(nearest.timestamp - targetTime) ? candidate : nearest); marker.setAttribute('cx', xFor(point.timestamp)); marker.setAttribute('cy', yFor(point.value)); marker.removeAttribute('hidden'); return `${series.assetId}  ${formatNumber(point.value)}`; });
       const nearestDate = hoverPoints[0].series.points.reduce((nearest, candidate) => Math.abs(candidate.timestamp - targetTime) < Math.abs(nearest.timestamp - targetTime) ? candidate : nearest).date;
       tooltip.textContent = `${nearestDate}　${rows.join('　')}`; tooltip.hidden = false; tooltip.style.left = `${Math.min(78, Math.max(12, (event.clientX - bounds.left) / bounds.width * 100))}%`;
     });
     hitArea.addEventListener('pointerleave', hideHover); hitArea.addEventListener('pointercancel', hideHover);
     stage.append(svg); parent.append(section);
+  }
+  function appendVolatilityChart(parent, rawSeries) {
+    const container = document.createElement('section');
+    container.className = 'volatility-workbench';
+    const controls = document.createElement('label');
+    controls.className = 'volatility-window';
+    controls.append('滚动窗口');
+    const select = document.createElement('select');
+    select.setAttribute('aria-label', '波动率滚动窗口');
+    [5, 10, 20, 30, 60, 120, 252].forEach(window => {
+      const option = document.createElement('option');
+      option.value = String(window); option.textContent = `${window}个交易日`;
+      select.append(option);
+    });
+    select.value = '20'; controls.append(select);
+    const plot = document.createElement('div');
+    const render = () => {
+      plot.replaceChildren();
+      appendMarketChart(plot, (rawSeries || []).filter(series => Number(series.window) === Number(select.value)), {
+        volatility: true, subtitle: '日对数收益率的滚动标准差，按252个交易日年化。',
+      });
+    };
+    select.addEventListener('change', render);
+    container.append(controls, plot); parent.append(container); render();
   }
   function renderResult(data) {
     const content = $('result-content'); content.replaceChildren();
@@ -421,6 +447,7 @@ function initializePage() {
     }
     const view = resultViewModel(data);
     appendMarketChart(content, data.chart_series);
+    appendVolatilityChart(content, data.volatility_series);
     appendSummarySection(content, '数据概览', view.overview);
     appendSummarySection(content, '数据质量', view.quality);
     const schema = document.createElement('section'); schema.className = 'result-section'; schema.innerHTML = '<h3>行情字段</h3><div class="tag-list"></div>'; (view.fields.length ? view.fields : ['未提供']).forEach(value => { const tag = document.createElement('span'); tag.className = 'tag'; tag.textContent = value; schema.querySelector('.tag-list').append(tag); }); content.append(schema);
