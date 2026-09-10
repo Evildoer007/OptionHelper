@@ -1,0 +1,100 @@
+/* Overlay host must surround the stream, not live inside its scrolling content. */
+.conversation-outline-host { position: relative; }
+.conversation-outline {
+  position: absolute;
+  inset-inline-start: 12px;
+  top: 12%;
+  height: 76%;
+  width: 28px;
+  z-index: 4;
+  color: var(--ink, #242424);
+  font: inherit;
+  pointer-events: none;
+}
+.conversation-outline[hidden], .conversation-outline__preview[hidden] { display: none; }
+/* The continuous ruler is decorative; message targets remain real buttons. */
+.conversation-outline__ticks {
+  position: relative;
+  height: 100%;
+  pointer-events: auto;
+}
+.conversation-outline__marks {
+  position: absolute; inset: 0; pointer-events: none;
+  -webkit-mask-image: linear-gradient(transparent, #000 8%, #000 92%, transparent);
+  mask-image: linear-gradient(transparent, #000 8%, #000 92%, transparent);
+}
+.conversation-outline__mark {
+  position: absolute; left: 0; top: var(--mark-top); width: 26px; height: 2px;
+  transform: scaleX(var(--mark-scale, .23077)); transform-origin: left;
+  background: var(--mark-color, color-mix(in srgb, var(--muted, #666) 35%, transparent));
+  transition: transform 180ms cubic-bezier(.22, 1, .36, 1), background-color 150ms ease;
+}
+.conversation-outline__tick {
+  position: absolute;
+  top: var(--tick-top, 0px);
+  width: 28px;
+  height: 10px;
+  min-height: 10px;
+  appearance: none;
+  -webkit-appearance: none;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: color-mix(in srgb, var(--muted, #666) 45%, transparent);
+  cursor: pointer;
+  display: grid;
+  align-items: start;
+  justify-items: start;
+}
+.conversation-outline__tick:focus-visible,
+.conversation-outline__preview button:focus-visible { outline: 2px solid var(--muted, #666); outline-offset: 1px; }
+.conversation-outline__preview {
+  position: absolute;
+  inset-inline-start: calc(100% + 10px);
+  width: min(360px, calc(100vw - 100px));
+  box-sizing: border-box;
+  padding: 14px 16px;
+  border: 1px solid var(--line, #dedede);
+  border-radius: 16px;
+  background: var(--surface, #fff);
+  pointer-events: auto;
+  overflow-wrap: anywhere;
+  line-height: 1.5;
+  font-size: 13px;
+  box-shadow: 0 4px 10px rgb(0 0 0 / .035), 0 12px 32px rgb(0 0 0 / .07);
+  animation: outline-preview-in 150ms ease-out;
+}
+.conversation-outline__count { display: none; color: var(--muted, #666); margin-bottom: 6px; font-size: 11px; }
+.conversation-outline__preview strong { display: block; font-size: 13px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.conversation-outline__preview p { margin: 8px 0 0; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; color: var(--muted, #666); }
+.conversation-outline__preview button {
+  padding: 6px 0;
+  min-height: 32px;
+  border: 0;
+  background: transparent;
+  color: var(--ink, #242424);
+  font: inherit;
+  display: none;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+@media (pointer: coarse) {
+  .conversation-outline { width: 44px; }
+  .conversation-outline__tick { width: 44px; min-height: 44px; flex-basis: 44px; }
+  .conversation-outline__preview button { min-height: 44px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .conversation-outline__mark { transition: none; }
+}
+@media (max-width: 700px) { .conversation-outline { display: none; } }
+
+.workspace-shell[data-mode="desk"] .conversation-outline { display: none; }
+
+.conversation-outline__preview:focus-within button { display: block; }
+@media (pointer: coarse) { .conversation-outline__preview button { display: block; } }
+@keyframes outline-preview-in { from { opacity: 0; transform: translateX(-3px) scale(.98); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .conversation-outline__preview { animation: none; } }
+
+.conversation-outline:focus-within .conversation-outline__preview button { display: block; }
