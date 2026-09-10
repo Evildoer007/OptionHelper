@@ -117,8 +117,8 @@ $env:OPTIONHELPER_PYTHON = 'C:\Python312\python.exe'
 
 | 平台 | 输出目录 | 目标文件 |
 | --- | --- | --- |
-| macOS | `dist/` | `option-helper.zip`、`OptionHelper-macOS-arm64.dmg` |
-| Windows | `result/windows-candidate/` | `option-helper.zip`、`OptionHelper-windows-x86_64-Setup.exe` |
+| macOS | `dist/` | `option-helper-v0.2.0.zip`、`OptionHelper-v0.1.0.alpha-macOS-arm64.dmg` |
+| Windows | `result/windows-candidate/` | `option-helper-v0.2.0.zip`、`OptionHelper-v0.1.0.alpha-Windows-x64.exe` |
 
 当前版本：Skill为`v0.2.0`，App为`v0.1.0.alpha`。安装包和ZIP带版本号，解压后的目录与应用名称保持不变。
 
@@ -129,7 +129,7 @@ $env:OPTIONHELPER_PYTHON = 'C:\Python312\python.exe'
 ### 4.1 安装App并登录
 
 - macOS：打开DMG，将`OptionHelper.app`复制到应用程序目录后启动。
-- Windows：双击`OptionHelper-版本号-windows-x86_64-Setup.exe`完成安装，之后从开始菜单或桌面快捷方式启动。默认安装到当前用户目录，无需管理员权限；可在Windows“已安装的应用”中卸载。升级和卸载保留本机研究结果与API配置。首次运行前确认已安装WebView2 Runtime。
+- Windows：双击`OptionHelper-版本号-Windows-x64.exe`完成安装，之后从开始菜单或桌面快捷方式启动。默认安装到当前用户目录，无需管理员权限；可在Windows“已安装的应用”中卸载。升级和卸载保留本机研究结果与API配置。首次运行前确认已安装WebView2 Runtime。
 
 成品App已封装Python和Agent运行时，报告图表也使用内置运行时完成语法校验，无需安装Python、Node.js或.NET SDK。
 
@@ -149,6 +149,8 @@ $env:OPTIONHELPER_PYTHON = 'C:\Python312\python.exe'
 3. 需要市场数据时，在“数据接口”填写自己的iFind Refresh Token，点击“保存并测试”。
 
 保存后自动测试连接，并区分对话连接状态与工具能力。接口须符合App支持的协议；测试失败会保留配置并显示原因，修正后再次保存即可。
+
+DeepSeek-V4.1-Flash使用模型ID`deepseek-flash`。在DeepSeek编辑页展开“自定义设置”，点击“获取模型”并启用该ID；目录未刷新时可手动添加，API地址和密钥继续使用原配置。根据[2026年9月10日官方更新](https://api-docs.deepseek.com/updates/)，旧ID`deepseek-v4-flash`暂时映射到V4.1 Flash。
 
 凭据保存在当前设备，不随源码和安装包分发。其他使用者需要填写自己的API，不会继承构建者的密钥。
 
@@ -187,11 +189,27 @@ Skill安装在支持项目级Skill的Agent宿主中，不是独立App，也不�
 
 支持HTML、PDF和Word；App提供报告预览、编辑和下载入口，Skill由宿主交付生成的文件。没有计算结果的内容属于研究草稿；定价、回测和报价结论必须有对应数据来源。
 
+报告库操作采用带悬浮提示的小图标；macOS使用原生标题栏收起报告面板，Windows和浏览器保留网页入口。窄窗口会调整模块参数区位置，避免参数被大块结果留白挤到页面底部。报告设置仅默认纳入已有成功结果的模块。
+
+App下载的HTML内嵌本次报告使用的离线图表引擎，可单独复制、改名或移动后打开，无需另带assets目录或联网。旧报告重新下载时也按这一规则交付；App内预览同样内嵌图表引擎，避免隔离预览窗口阻止相对资源加载；冻结的原始文件与资源仍保持原有哈希校验。Card和MultiCard以简报表格为主，Quote展示可核验的参考报价，Report和MultiReport按实际计算结果展示图表。未执行或失败的模块保留真实状态，不补造数据。
+
 推荐型研究简报和研究报告默认按推荐、合同确认、收益分析、定价、历史回测、报告交付继续执行；参考报价至少完成必要定价。单Agent与多Agent共用该流程，明确要求研究草稿时保留未计算状态。
 
-需要补充条件时，主聊天框显示问题、选项和自定义回答，仍通过同一个发送按钮提交。运行详情折叠后保留动态状态，用量分别显示Token输入、输出和总计。
+需要补充条件时，主聊天框显示问题、选项和自定义回答，仍通过同一个发送按钮提交。回答后收起历史选项。Provider提供的思考内容和正文在运行中逐步显示；运行详情保留工具状态，展开后自动移入可见区域。排队消息可直接改为优先执行，当前运行确认停止后才开始下一条，避免同一任务并发写入。
 
 生成的HTML均可通过文件卡上的编辑图标打开，修改正文、标题和版式后保存或导出。编辑报告不会重算上游结果；修改合同条款后需要重新运行相关计算。
+
+聊天框使用均匀细边框和柔和阴影，外层透明，浅色与深色主题分别控制阴影强度。
+
+附件可添加图片PNG/JPEG/WebP/GIF，以及PDF、DOCX、XLSX/XLS、PPTX、RTF、MD/Markdown、TXT/LOG、CSV/TSV、HTML/HTM、JSON/JSONL、XML、YAML/YML和ODT/ODS/ODP。正文在本地提取，供对话读取和检索；HTML不会执行脚本或加载外链。支持UTF-8、带BOM的UTF-16及GB18030文本。单个文件最多20MB，每条消息最多20个附件、总计200MB。扫描PDF若没有可提取文本会如实提示，未提供OCR；旧版DOC/PPT请先另存为DOCX/PPTX。
+
+### 4.5 macOS与Windows一致性
+
+两平台使用同一份前端、业务模块、报告模板和HTML下载接口。报告计算口径、图表数据、五种模板、设置中心、排队与取消流程必须一致；系统字体、窗口装饰和文件选择器遵循各自平台，不承诺逐像素相同。
+
+macOS使用WKWebView，Windows使用WebView2。构建分别校验资源闭包、运行时依赖、安装包图标和产物清单；Windows还检查中文及空格路径、长路径与安装后文件一致性。Windows产物为带版本名称的安装程序.exe，不能用开发目录中的OptionHelper.exe代替。
+
+浏览器与跨平台源码检查不能代替Windows实机验收。在Windows候选完成首次安装、启动、五种HTML生成与离线打开、设置切换、连续对话和升级验证前，应保持候选状态。具体记录见[界面与报告验收](docs/ui-report-acceptance.md)。
 
 ## 五、版本迭代与发布
 
