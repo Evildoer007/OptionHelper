@@ -32,6 +32,13 @@ static OptionHelperPresentationDecision OptionHelperPresentationDecisionForAttem
         : OptionHelperPresentationDecisionFailed;
 }
 
+// All native settings entries present the existing web card in the main workspace.
+static NSString *OptionHelperSettingsPresentationScript(NSURL *url) {
+    NSData *data = [NSJSONSerialization dataWithJSONObject:@[url.fragment ?: @""] options:0 error:nil];
+    NSString *arguments = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+    return [NSString stringWithFormat:@"void import('/app/frontend/shared/app.js').then(module => module.openWorkspaceSettings(...%@));", arguments];
+}
+
 @interface OptionHelperWindow : NSWindow
 @end
 
@@ -109,6 +116,7 @@ willPerformHTTPRedirection:(NSHTTPURLResponse *)response
 @property(nonatomic) NSUInteger navigationGeneration;
 @property(nonatomic, strong) OptionHelperTitlebarDragView *titlebarDragView;
 @property(nonatomic, strong) NSButton *railToggle;
+@property(nonatomic, strong) NSButton *taskSearch;
 @property(nonatomic, strong) NSButton *reportToggle;
 @property(nonatomic) BOOL loadedURL;
 @property(nonatomic, strong) NSMutableString *startupOutput;
@@ -394,6 +402,20 @@ willPerformHTTPRedirection:(NSHTTPURLResponse *)response
     if (self.titlebarDragView == nil) [self installTitlebarDragViewForWindow:window];
     if (self.railToggle == nil) [self installRailToggleForWindow:window];
     if (self.reportToggle == nil) [self installReportToggleForWindow:window];
+    if (self.taskSearch == nil || self.taskSearch.superview != titlebar) {
+        [self.taskSearch removeFromSuperview];
+        NSButton *button = [[NSButton alloc] initWithFrame:NSZeroRect];
+        button.image = [NSImage imageWithSystemSymbolName:@"magnifyingglass" accessibilityDescription:@"搜索任务"];
+        button.contentTintColor = NSColor.secondaryLabelColor;
+        button.bezelStyle = NSBezelStyleInline;
+        button.bordered = NO;
+        button.target = self;
+        button.action = @selector(searchTasks:);
+        button.toolTip = @"搜索任务";
+        [button setAccessibilityLabel:@"搜索任务"];
+        [titlebar addSubview:button];
+        self.taskSearch = button;
+    }
     [self layoutTitlebarControls];
 }
 
@@ -412,7 +434,7 @@ willPerformHTTPRedirection:(NSHTTPURLResponse *)response
     NSView *titlebar = closeButton.superview;
     if (closeButton == nil || titlebar == nil) return;
     NSSize size = NSMakeSize(26, 24);
-    NSRect frame = NSMakeRect(NSMaxX(closeButton.frame) + 94, NSMidY(closeButton.frame) - size.height / 2, size.width, size.height);
+    NSRect frame = NSMakeRect(NSMaxX(closeButton.frame) + 60, NSMidY(closeButton.frame) - size.height / 2, size.width, size.height);
     NSButton *button = [[NSButton alloc] initWithFrame:frame];
     button.image = [NSImage imageWithSystemSymbolName:@"sidebar.left" accessibilityDescription:@"收起或展开任务栏"];
     button.contentTintColor = NSColor.secondaryLabelColor;
@@ -450,15 +472,20 @@ willPerformHTTPRedirection:(NSHTTPURLResponse *)response
     NSView *titlebar = closeButton.superview;
     if (closeButton == nil || titlebar == nil) return;
     NSSize size = NSMakeSize(26, 24);
-    self.railToggle.frame = NSMakeRect(NSMaxX(closeButton.frame) + 94, NSMidY(closeButton.frame) - size.height / 2, size.width, size.height);
+    self.railToggle.frame = NSMakeRect(NSMaxX(closeButton.frame) + 60, NSMidY(closeButton.frame) - size.height / 2, size.width, size.height);
     self.reportToggle.frame = NSMakeRect(NSMaxX(titlebar.bounds) - size.width - 14, NSMidY(closeButton.frame) - size.height / 2, size.width, size.height);
-    CGFloat dragLeading = (self.railToggle != nil ? NSMaxX(self.railToggle.frame) : NSMaxX(closeButton.frame) + 120) + 8;
+    self.taskSearch.frame = NSMakeRect(NSMaxX(self.railToggle.frame) + 8, NSMidY(closeButton.frame) - size.height / 2, size.width, size.height);
+    CGFloat dragLeading = NSMaxX(self.taskSearch.frame) + 8;
     CGFloat dragTrailing = (self.reportToggle != nil ? NSMinX(self.reportToggle.frame) : NSMaxX(titlebar.bounds) - 40) - 8;
     self.titlebarDragView.frame = NSMakeRect(dragLeading, 0, MAX(0, dragTrailing - dragLeading), NSHeight(titlebar.bounds));
 }
 
 - (void)toggleRail:(id)sender {
     [self.webView evaluateJavaScript:@"window.dispatchEvent(new Event('optionhelper:toggle-task-rail'))" completionHandler:nil];
+}
+
+- (void)searchTasks:(id)sender {
+    [self.webView evaluateJavaScript:@"window.dispatchEvent(new Event('optionhelper:search-tasks'))" completionHandler:nil];
 }
 
 - (void)toggleReport:(id)sender {
@@ -470,6 +497,7 @@ willPerformHTTPRedirection:(NSHTTPURLResponse *)response
     BOOL showsWorkspaceControls = [route isEqualToString:@"optchat"] || [route isEqualToString:@"optdesk"];
     NSString *reportLabel = [route isEqualToString:@"optchat"] ? @"打开或收起任务与交付" : @"打开或收起报告库";
     self.railToggle.hidden = !showsWorkspaceControls;
+    self.taskSearch.hidden = !showsWorkspaceControls;
     self.reportToggle.hidden = !showsWorkspaceControls;
     self.reportToggle.toolTip = reportLabel;
     [self.reportToggle setAccessibilityLabel:reportLabel];
@@ -735,49 +763,7 @@ willPerformHTTPRedirection:(NSHTTPURLResponse *)response
 - (void)showSettingsCenter:(NSURLRequest *)request {
     NSURL *url = request.URL;
     if (![self isSafeAppURL:url] || ![url.path isEqualToString:@"/settings"] || self.webView == nil) return;
-    if (self.settingsWindow == nil || self.settingsWebView == nil) {
-        WKWebViewConfiguration *configuration = [[WKWebViewConfiguration alloc] init];
-        configuration.websiteDataStore = self.webView.configuration.websiteDataStore;
-        [configuration.userContentController addScriptMessageHandler:self name:@"optionhelperTheme"];
-        [configuration.userContentController addScriptMessageHandler:self name:@"optionhelperUIScale"];
-        WKWebView *settingsView = [[WKWebView alloc] initWithFrame:NSZeroRect configuration:configuration];
-        settingsView.translatesAutoresizingMaskIntoConstraints = NO;
-        settingsView.navigationDelegate = self;
-        settingsView.UIDelegate = self;
-        settingsView.pageZoom = self.uiScale;
-        settingsView.underPageBackgroundColor = NSColor.windowBackgroundColor;
-        settingsView.wantsLayer = YES;
-        settingsView.layer.backgroundColor = NSColor.windowBackgroundColor.CGColor;
-        NSView *contentView = [[NSView alloc] initWithFrame:NSZeroRect];
-        contentView.wantsLayer = YES;
-        contentView.layer.backgroundColor = NSColor.windowBackgroundColor.CGColor;
-        [contentView addSubview:settingsView];
-        [NSLayoutConstraint activateConstraints:@[
-            [settingsView.leadingAnchor constraintEqualToAnchor:contentView.leadingAnchor],
-            [settingsView.trailingAnchor constraintEqualToAnchor:contentView.trailingAnchor],
-            [settingsView.topAnchor constraintEqualToAnchor:contentView.topAnchor],
-            [settingsView.bottomAnchor constraintEqualToAnchor:contentView.bottomAnchor],
-        ]];
-        NSWindow *settingsWindow = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 960, 760)
-                                                               styleMask:(NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable)
-                                                                 backing:NSBackingStoreBuffered
-                                                                   defer:NO];
-        settingsWindow.title = @"OptionHelper设置中心";
-        settingsWindow.backgroundColor = NSColor.windowBackgroundColor;
-        settingsWindow.opaque = YES;
-        settingsWindow.delegate = self;
-        settingsWindow.contentView = contentView;
-        [settingsWindow center];
-        self.settingsWindow = settingsWindow;
-        self.settingsWebView = settingsView;
-        [self ensureSettingsRecoveryViewForContentView:contentView relativeTo:settingsView];
-    }
-    self.settingsRecoveryDetail.stringValue = @"正在确认设置页面已完整呈现。";
-    self.settingsRecoveryView.hidden = NO;
-    [self.settingsWindow makeKeyAndOrderFront:nil];
-    [NSApp activateIgnoringOtherApps:YES];
-    [self beginSettingsNavigationWatchdog];
-    [self.settingsWebView loadRequest:request];
+    [self.webView evaluateJavaScript:OptionHelperSettingsPresentationScript(url) completionHandler:nil];
 }
 
 - (void)retrySettingsCenter:(id)sender {
@@ -1163,7 +1149,7 @@ completionHandler:(void (^)(NSArray<NSURL *> * _Nullable URLs))completionHandler
         decisionHandler(WKNavigationActionPolicyDownload);
         return;
     }
-    if (webView == self.webView && [self isSafeAppURL:url] && [url.path isEqualToString:@"/settings"]) {
+    if (webView == self.webView && navigationAction.targetFrame.isMainFrame && [self isSafeAppURL:url] && [url.path isEqualToString:@"/settings"]) {
         [self showSettingsCenter:navigationAction.request];
         decisionHandler(WKNavigationActionPolicyCancel);
         return;
@@ -1521,13 +1507,10 @@ int main(int argc, const char * argv[]) {
         puts("native-presentation-retry-and-fallback=ok");
         NSURL *settingsURL = [NSURL URLWithString:@"http://127.0.0.1:61000/settings?return_to=%2Foptdesk"];
         [delegate showSettingsCenter:[NSURLRequest requestWithURL:settingsURL]];
-        if (delegate.settingsWindow == nil || delegate.settingsWebView == nil) return 8;
-        if (delegate.settingsWebView == delegate.webView || !delegate.settingsWindow.opaque) return 9;
-        if (delegate.settingsRecoveryView == nil || delegate.settingsRecoveryView.hidden) return 10;
-        if (![delegate.settingsRecoveryDetail.stringValue containsString:@"确认设置页面"]) return 11;
+        if (delegate.settingsWindow != nil || delegate.settingsWebView != nil) return 8;
+        NSString *settingsScript = OptionHelperSettingsPresentationScript([NSURL URLWithString:@"http://127.0.0.1:61000/settings#models"]);
+        if (![settingsScript containsString:@"module.openWorkspaceSettings"] || ![settingsScript containsString:@"models"]) return 9;
         puts("native-settings-isolation=ok");
-        [delegate hideSettingsFailure];
-        if (!delegate.settingsRecoveryView.hidden || delegate.settingsWindow.firstResponder != delegate.settingsWebView) return 12;
         puts("native-settings-success=ok");
     }
     return 0;
