@@ -195,31 +195,25 @@ def _assert_public_delivery_text(html_content: str) -> None:
 
 
 def _card_data_table(rows: list[Mapping[str, Any]]) -> str:
-    """Render complete Card facts in the shared red three-line table."""
+    """Render concise Card facts without methodological filler columns."""
 
     items: list[str] = []
     for row in rows:
         label = text(row.get("metric"))
         value = text(row.get("value"))
-        unit = text(row.get("unit"))
         if not label or not value:
             continue
-        unit_cell = (
-            f'<td class="table-cell table-cell--narrative{" table-cell--long" if len(unit) >= 24 else ""}">{esc(unit)}</td>'
-            if unit else "<td></td>"
-        )
         items.append(
             "<tr>"
             f'<td class="table-cell table-cell--narrative{" table-cell--long" if len(label) >= 24 else ""}">{esc(label)}</td>'
             f'<td class="table-cell table-cell--numeric">{rich_text(value)}</td>'
-            f'{unit_cell}'
             "</tr>"
         )
     if not items:
         return ""
     return (
         '<div class="table-wrap card-table-wrap"><table class="card-data-table" data-table-density="normal">'
-        '<thead><tr><th scope="col">指标</th><th scope="col">数值</th><th scope="col">单位或口径</th></tr></thead>'
+        '<thead><tr><th scope="col">指标</th><th scope="col">数值</th></tr></thead>'
         f'<tbody>{"".join(items)}</tbody></table></div>'
     )
 
@@ -241,10 +235,6 @@ def _card_body(
         ("backtest", "回测摘要"), ("risk", "主要风险"),
     ))
     appended_content = appended_content or {}
-
-    def card_unit(value: Any) -> str:
-        unit = text(value)
-        return {"CNY": "人民币", "RMB": "人民币"}.get(unit.upper(), unit)
 
     recommendation = as_dict(payload.get("recommendation"))
     pricing = as_dict(payload.get("pricing"))
@@ -318,7 +308,7 @@ def _card_body(
             for row in (as_dict(item) for item in as_list(pricing.get("metrics"))[:4]):
                 value = display_text(row.get("value"), row.get("value_format"))
                 if text(row.get("label")) and value:
-                    rows.append({"metric": text(row.get("label")), "value": value, "unit": card_unit(display_basis(row))})
+                    rows.append({"metric": text(row.get("label")), "value": value})
             greeks = {text(row.get("label")): row for row in canonical_greeks(as_list(pricing.get("greeks")))}
             for label in ("Delta", "Gamma", "Vega", "Theta", "Rho"):
                 row = greeks.get(label)
@@ -326,7 +316,7 @@ def _card_body(
                     continue
                 value = display_text(row.get("value"), row.get("value_format"))
                 if value:
-                    rows.append({"metric": label, "value": value, "unit": card_unit(display_basis(row))})
+                    rows.append({"metric": label, "value": value})
         table = _card_data_table(rows)
         state = module_state(pricing) if status == "partial" else ""
         if not table and not state:
@@ -348,7 +338,7 @@ def _card_body(
             for row in backtest_summary_rows(backtest):
                 value = display_text(row.get("value"), row.get("value_format"))
                 if text(row.get("label")) and value:
-                    rows.append({"metric": text(row.get("label")), "value": value, "unit": card_unit(display_basis(row))})
+                    rows.append({"metric": text(row.get("label")), "value": value})
         table = _card_data_table(rows)
         state = module_state(backtest) if status == "partial" else ""
         if not table and not state:
