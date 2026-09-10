@@ -52,6 +52,7 @@ export function message(node, text, isError = false) {
   node.hidden = false;
   node.textContent = text;
   node.classList.toggle("notice--error", isError);
+  animateSurface(node, isError ? "error" : "enter");
 }
 
 export function clearMessage(node) {
@@ -69,6 +70,42 @@ export function settingsURLFor(sourceLocation = location, section = "") {
   }
   if (section) settings.hash = section;
   return `${settings.pathname}${settings.search}${settings.hash}`;
+}
+
+
+let workspaceSettingsDialog = null;
+
+/** Keep the workspace mounted so drafts, running tasks and scroll positions survive settings. */
+export function openWorkspaceSettings(section = "", trigger = document.activeElement) {
+  if (workspaceSettingsDialog?.open) return;
+  const dialog = document.createElement("dialog");
+  dialog.className = "workspace-settings-dialog";
+  dialog.setAttribute("aria-label", "设置中心");
+  const frame = document.createElement("iframe");
+  frame.title = "设置中心";
+  const url = new URL(settingsURLFor(location, section), location.origin);
+  url.searchParams.set("embedded", "1");
+  frame.src = url.href;
+  dialog.append(frame);
+  document.body.append(dialog);
+  workspaceSettingsDialog = dialog;
+  const close = () => dialog.close();
+  const receive = event => {
+    if (event.origin !== location.origin || event.source !== frame.contentWindow) return;
+    if (event.data?.type === "optionhelper.settings-close") close();
+  };
+  window.addEventListener("message", receive);
+  dialog.addEventListener("click", event => { if (event.target === dialog) close(); });
+  dialog.addEventListener("close", () => {
+    window.removeEventListener("message", receive);
+    dialog.remove();
+    workspaceSettingsDialog = null;
+    const focusTarget = trigger?.isConnected && trigger.getClientRects().length
+      ? trigger : document.querySelector("[data-account-menu-toggle]");
+    focusTarget?.focus({ preventScroll: true });
+    window.dispatchEvent(new Event("focus"));
+  }, { once: true });
+  dialog.showModal();
 }
 
 function choiceLabel(select) {
@@ -108,11 +145,27 @@ function positionChoiceMenu(choice) {
     top = Math.max(top, bounds.top);
     bottom = Math.min(bottom, bounds.bottom);
   }
+  if (menu.hasAttribute("popover")) {
+    top = 0;
+    bottom = viewportHeight;
+  }
   const desiredHeight = Math.min(menu.scrollHeight || 160, 280);
   const roomBelow = Math.max(0, bottom - rect.bottom - 6);
   const roomAbove = Math.max(0, rect.top - top - 6);
   choice.dataset.placement = roomBelow < desiredHeight && roomAbove > roomBelow ? "top" : "bottom";
   menu.style.maxHeight = `${Math.min(280, viewportHeight * .42, choice.dataset.placement === "top" ? roomAbove : roomBelow)}px`;
+  if (menu.hasAttribute("popover")) {
+    const preferredWidth = choice.closest(".model-picker") ? rect.width : Math.max(rect.width, 270);
+    const width = Math.min(preferredWidth, view.innerWidth - 24);
+    menu.style.boxSizing = "border-box";
+    menu.style.position = "fixed";
+    menu.style.margin = "0";
+    menu.style.width = `${width}px`;
+    menu.style.left = `${Math.max(12, Math.min(rect.left, view.innerWidth - width - 12))}px`;
+    menu.style.right = "auto";
+    menu.style.top = choice.dataset.placement === "top" ? "auto" : `${rect.bottom + 7}px`;
+    menu.style.bottom = choice.dataset.placement === "top" ? `${viewportHeight - rect.top + 7}px` : "auto";
+  }
 }
 
 function setChoiceOpen(choice, open, { focus = false } = {}) {
@@ -124,13 +177,41 @@ function setChoiceOpen(choice, open, { focus = false } = {}) {
   });
   choice.dataset.open = String(open);
   trigger.setAttribute("aria-expanded", String(open));
-  menu.hidden = !open;
-  if (open) positionChoiceMenu(choice);
+  if (open) {
+    menu.hidden = false;
+    menu.inert = false;
+    if (menu.hasAttribute("popover") && !menu.matches(":popover-open")) menu.showPopover();
+    positionChoiceMenu(choice);
+    menu.style.transformOrigin = choice.dataset.placement === "top" ? "bottom center" : "top center";
+    animateSurface(menu);
+  } else {
+    menu.inert = true;
+    animateSurface(menu, "exit", () => {
+      if (choice.dataset.open === "true") return;
+      menu.hidden = true;
+      if (menu.hasAttribute("popover") && menu.matches(":popover-open")) menu.hidePopover();
+    });
+  }
   if (open && focus) {
     const selected = menu.querySelector('[role="option"][aria-selected="true"]:not([disabled])') || menu.querySelector('[role="option"]:not([disabled])');
     selected?.focus({ preventScroll: true });
   } else if (!open && focus) {
     trigger.focus({ preventScroll: true });
+  }
+}
+
+function renderChoiceLabel(node, option) {
+  node.replaceChildren();
+  const label = node.ownerDocument.createElement("span");
+  label.className = "choice-label";
+  label.textContent = option?.textContent || "未选择";
+  node.append(label);
+  if (option?.dataset.english) {
+    const english = node.ownerDocument.createElement("span");
+    english.className = "choice-english";
+    english.lang = "en";
+    english.textContent = option.dataset.english;
+    node.append(english);
   }
 }
 
@@ -142,7 +223,7 @@ function syncChoice(select) {
   const menu = choice.querySelector(".choice-menu");
   if (!trigger || !value || !menu) return;
   const selected = optionFor(select, select.value);
-  value.textContent = selected?.textContent || "未选择";
+  renderChoiceLabel(value, selected);
   trigger.disabled = select.disabled || !select.options.length;
   trigger.setAttribute("aria-disabled", String(trigger.disabled));
   if (select.getAttribute("aria-invalid") === "true") trigger.setAttribute("aria-invalid", "true");
@@ -152,13 +233,13 @@ function syncChoice(select) {
   else trigger.removeAttribute("aria-describedby");
   const doc = select.ownerDocument;
   const focusedValue = menu.contains(doc.activeElement) ? doc.activeElement.dataset.value : null;
-  menu.replaceChildren(...Array.from(select.options).map((option) => {
+  const renderOption = (option) => {
     const item = doc.createElement("button");
     item.type = "button";
     item.className = "choice-option";
     item.setAttribute("role", "option");
     item.dataset.value = option.value;
-    item.textContent = option.textContent;
+    renderChoiceLabel(item, option);
     item.disabled = select.disabled || option.disabled || Boolean(option.closest("optgroup")?.disabled);
     item.setAttribute("aria-selected", String(option.selected));
     item.tabIndex = -1;
@@ -173,6 +254,19 @@ function syncChoice(select) {
       if (trigger.isConnected && !select.disabled) trigger.focus({ preventScroll: true });
     });
     return item;
+  };
+  menu.replaceChildren(...Array.from(select.children).map((child) => {
+    if (child.tagName !== "OPTGROUP") return renderOption(child);
+    const group = doc.createElement("span");
+    group.className = "choice-group";
+    group.setAttribute("role", "group");
+    group.setAttribute("aria-label", child.label);
+    const heading = doc.createElement("span");
+    heading.className = "choice-group__label";
+    heading.setAttribute("aria-hidden", "true");
+    heading.textContent = child.label;
+    group.append(heading, ...Array.from(child.children).map(renderOption));
+    return group;
   }));
   if (trigger.disabled) setChoiceOpen(choice, false);
   else if (focusedValue !== null && isChoiceOpen(choice)) {
@@ -222,6 +316,7 @@ export function enhanceSelects(root = document) {
     const menu = doc.createElement("span");
     menu.id = menuId;
     menu.className = "choice-menu";
+    if (select.closest(".composer") && typeof menu.showPopover === "function") menu.setAttribute("popover", "manual");
     menu.setAttribute("role", "listbox");
     menu.setAttribute("aria-label", choiceLabel(select));
     menu.hidden = true;
@@ -342,6 +437,15 @@ export async function initializeWorkspace(mode, { onModeChange } = {}) {
   }
   document.querySelectorAll("button[data-mode]").forEach((button) => {
     const target = button.dataset.mode;
+    if (!button.querySelector("svg")) {
+      const icon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+      icon.setAttribute("viewBox", "0 0 24 24");
+      icon.setAttribute("aria-hidden", "true");
+      const path = document.createElementNS(icon.namespaceURI, "path");
+      path.setAttribute("d", target === "desk" ? "M8 7V4h8v3M3 7h18v13H3zM3 12h18M10 11v3h4v-3" : "M20 11a8 8 0 0 1-8 8H5l-3 3v-11a9 9 0 0 1 18 0Z");
+      icon.append(path);
+      button.prepend(icon);
+    }
     const allowed = target !== "desk" || hasDesk;
     button.setAttribute("aria-pressed", String(target === mode));
     button.addEventListener("click", async () => {
@@ -353,6 +457,17 @@ export async function initializeWorkspace(mode, { onModeChange } = {}) {
 
   const settingsLink = document.querySelector("[data-settings-link]");
   if (settingsLink) settingsLink.href = settingsURLFor(location);
+  if (shell.dataset.settingsOverlayReady !== "true") {
+    shell.dataset.settingsOverlayReady = "true";
+    document.addEventListener("click", event => {
+      const link = event.target.closest?.("a[href]");
+      if (!link || event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey) return;
+      const destination = new URL(link.href, location.origin);
+      if (destination.origin !== location.origin || destination.pathname !== "/settings") return;
+      event.preventDefault();
+      openWorkspaceSettings(destination.hash.slice(1), link);
+    });
+  }
 
   const accountMenuRoot = shell.querySelector("[data-account-menu-root]");
   const accountRail = accountMenuRoot?.closest(".workspace-rail");
@@ -467,6 +582,7 @@ export async function configureModelPicker(picker) {
       const option = document.createElement("option");
       option.value = JSON.stringify({ provider_id: provider.provider_id, model_id: model.model_id });
       option.textContent = `${provider.display_name} / ${model.display_name || model.model_id}`;
+      option.dataset.contextWindow = Number(model.context_window) > 0 ? String(model.context_window) : "";
       option.dataset.inputModalities = JSON.stringify(
         Array.isArray(model.input_modalities) ? model.input_modalities : ["text"],
       );
@@ -498,9 +614,60 @@ export async function configureModelPicker(picker) {
   enhanceSelects(picker.parentElement || document);
 }
 
+function installTaskSearch(shell) {
+  const dialog = document.createElement("dialog");
+  dialog.className = "task-search-dialog";
+  dialog.setAttribute("aria-label", "搜索任务");
+  const input = document.createElement("input");
+  input.type = "search";
+  input.placeholder = "搜索任务";
+  input.setAttribute("aria-label", "搜索任务");
+  const close = document.createElement("button");
+  close.type = "button";
+  close.textContent = "×";
+  close.setAttribute("aria-label", "关闭搜索");
+  const closeSearch = () => { dialog.inert = true; animateSurface(dialog, "exit", () => { dialog.close(); dialog.inert = false; }); };
+  close.onclick = closeSearch;
+  dialog.addEventListener("cancel", event => { event.preventDefault(); closeSearch(); });
+  const header = document.createElement("header");
+  header.append(input, close);
+  const list = document.createElement("div");
+  const render = () => {
+    list.replaceChildren();
+    const target = shell.querySelector("#rail-task-list");
+    const query = input.value.trim().toLocaleLowerCase();
+    for (const task of target?._searchTasks || []) {
+      const title = String(task.subject || "新建研究任务");
+      if (!title.toLocaleLowerCase().includes(query)) continue;
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = title;
+      button.onclick = () => { dialog.close(); target._searchSelect?.(String(task.task_id)); };
+      list.append(button);
+    }
+    if (!list.children.length) { const empty = document.createElement("p"); empty.textContent = query ? "未找到任务" : "尚无任务"; list.append(empty); }
+  };
+  input.oninput = render;
+  input.onkeydown = event => { if (event.key === "ArrowDown" || event.key === "Enter") { event.preventDefault(); list.querySelector("button")?.focus(); } };
+  dialog.append(header, list);
+  document.body.append(dialog);
+  const open = () => { render(); dialog.inert = false; if (!dialog.open) dialog.showModal(); animateSurface(dialog); input.focus(); };
+  window.addEventListener("optionhelper:search-tasks", open);
+  document.addEventListener("keydown", event => { if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") { event.preventDefault(); open(); } });
+  const search = document.createElement("button");
+  search.type = "button";
+  search.className = "rail-task-search";
+  search.setAttribute("aria-label", "搜索任务");
+  search.title = "搜索任务";
+  search.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></svg>';
+  search.onclick = open;
+  shell.querySelector(".task-rail .rail-section-label")?.append(search);
+}
+
 function installLayoutControls(shell) {
   if (shell.dataset.layoutControlsReady === "true") return;
   shell.dataset.layoutControlsReady = "true";
+  installTaskSearch(shell);
   const reportToggle = shell.querySelector("[data-report-toggle]");
   const reportClose = shell.querySelector("[data-report-close]");
   const reportScrim = shell.querySelector("[data-report-scrim]");
@@ -514,7 +681,7 @@ function installLayoutControls(shell) {
   const compactReportMedia = window.matchMedia("(max-width: 1220px)");
   const mobileTaskMedia = window.matchMedia("(max-width: 700px)");
   const limits = {
-    rail: { variable: "--rail-width", minimum: 197, maximum: 440, fallback: 236 },
+    rail: { variable: "--rail-width", minimum: 197, maximum: 440, fallback: 260 },
     report: { variable: "--report-width", minimum: 280, maximum: 480, fallback: 332 },
   };
   const readStored = (key, fallback) => {
@@ -766,8 +933,22 @@ function installLayoutControls(shell) {
   syncResponsivePanels();
 }
 
+export function operationActivity(state) {
+  const value = String(state || "").toLowerCase();
+  if (["completed", "succeeded"].includes(value)) return "complete";
+  if (["failed", "error", "unavailable", "timed_out", "timeout"].includes(value)) return "failed";
+  if (["outcome_unknown", "interrupted"].includes(value)) return "uncertain";
+  if (["cancelled", "canceled", "stopped"].includes(value)) return "stopped";
+  if (value === "cancel_requested") return "cancelling";
+  if (["needs_input", "pending_approval", "waiting_parent", "waiting_tool", "blocked"].includes(value)) return "waiting";
+  if (["queued", "pending"].includes(value)) return "queued";
+  return ["running", "started", "starting", "recovering", "recovered", "reselecting"].includes(value) ? "running" : "uncertain";
+}
+
 export function renderTaskList(target, tasks, activeTaskId, onSelect, actions = {}) {
   if (!target) return;
+  target._searchTasks = tasks;
+  target._searchSelect = onSelect;
   target._taskMenuCleanup?.();
   delete target._taskMenuCleanup;
   if (!tasks.length) {
@@ -887,11 +1068,16 @@ export function renderTaskList(target, tasks, activeTaskId, onSelect, actions = 
     if (Array.isArray(task.active_operations) && task.active_operations.length) {
       const running = doc.createElement("span");
       running.className = "task-item__running-dot";
-      running.setAttribute("aria-label", "正在运行");
-      running.title = "正在运行";
+      const activities = task.active_operations.map(operation => operationActivity(operation.state));
+      const activity = ["cancelling", "running", "waiting", "queued"].find(state => activities.includes(state)) || "uncertain";
+      const label = { running: "正在运行", cancelling: "正在取消", waiting: "等待处理", queued: "排队中", uncertain: "状态待确认" }[activity];
+      running.dataset.state = activity;
+      running.setAttribute("aria-label", label);
+      running.title = label;
       taskTitle.append(running);
     }
     const taskDate = document.createElement("small");
+    taskDate.className = "task-item__date";
     taskDate.textContent = formatTaskDate(task.updated_at || task.created_at);
     button.append(taskTitle, taskDate);
     button.addEventListener("click", () => onSelect(button.dataset.taskId));
@@ -988,9 +1174,9 @@ const reasoningControllers = new WeakMap();
 export function createReasoningDisclosure(text = "", { running = false } = {}) {
   const details = document.createElement("details");
   details.className = "assistant-reasoning";
-  details.open = true;
+  details.open = running;
   const summary = document.createElement("summary");
-  const orb = createThinkingOrb({ state: "solving", size: 28, paused: !running });
+  const orb = createThinkingOrb({ state: "solving", size: 36, paused: !running });
   orb.element.setAttribute("aria-hidden", "true");
   const title = document.createElement("span");
   title.className = "assistant-reasoning__title";
@@ -1001,10 +1187,17 @@ export function createReasoningDisclosure(text = "", { running = false } = {}) {
   body.className = "assistant-reasoning__body";
   summary.append(orb.element, title, chevron);
   details.append(summary, body);
+  let userSelectedDisclosure = false;
+  summary.addEventListener("click", () => { userSelectedDisclosure = true; });
   const update = (nextText, nextRunning = false) => {
     const value = String(nextText ?? "");
+    const wasRunning = details.dataset.running === "true";
+    if (!userSelectedDisclosure) {
+      if (nextRunning) details.open = true;
+      else if (wasRunning) details.open = false;
+    }
     details.dataset.running = String(nextRunning);
-    title.textContent = reasoningSummary(value, nextRunning);
+    setMotionText(title, reasoningSummary(value, nextRunning));
     const followTail = body.scrollHeight - body.clientHeight - body.scrollTop < 48;
     body.textContent = value;
     if (followTail) {
@@ -1013,8 +1206,7 @@ export function createReasoningDisclosure(text = "", { running = false } = {}) {
     }
     details.hidden = !value && !nextRunning;
     orb.setPaused(!nextRunning);
-    // The user's disclosure choice survives every streamed delta and completion.
-    // Start expanded; updates never override the user's disclosure choice.
+    // Explicit expand/collapse choices survive streamed deltas and completion.
   };
   update(text, running);
   const controller = { element: details, body, update, destroy() { orb.destroy(); reasoningControllers.delete(details); } };
@@ -1121,6 +1313,17 @@ export function setMessageActionIcon(control, label, path) {
   control.replaceChildren(svg);
 }
 
+export function setStatusIcon(control, label, status) {
+  const path = ["succeeded", "completed"].includes(status) ? "M5 12l4 4L19 6"
+    : ["failed", "partial", "interrupted", "unavailable"].includes(status) ? "M12 8v5m0 3h.01M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20"
+    : ["running", "queued", "recovering", "cancel_requested"].includes(status) ? "M12 6v6l4 2M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20"
+    : "M8 12h8M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20";
+  setMessageActionIcon(control, label, path);
+  control.classList.add("state-indicator");
+  control.setAttribute("role", "img");
+  control.dataset.state = status;
+}
+
 function createMessageArtifactCard(reference) {
   const card = document.createElement("section");
   card.className = "message-artifact";
@@ -1171,7 +1374,7 @@ function createQuestionCard(block, options, active) {
   prompt.textContent = String(block.prompt || block.text || "请补充以下信息。");
   card.append(prompt);
   const optionRows = Array.isArray(block.options) ? block.options.slice(0, 3) : [];
-  if (optionRows.length && !(active && options.questionInComposer)) {
+  if (active && optionRows.length && !options.questionInComposer) {
     const choices = document.createElement("div");
     choices.className = "message-question__choices";
     for (const row of optionRows) {
@@ -1196,10 +1399,10 @@ function createQuestionCard(block, options, active) {
     }
     card.append(choices);
   }
-  if (!active) {
-    const answered = document.createElement("span");
-    answered.className = "message-question__answered";
-    answered.textContent = "已回答";
+  if (!active && options.questionAnswer) {
+    const answered = document.createElement("p");
+    answered.className = "message-question__answer";
+    answered.textContent = `回答：${options.questionAnswer}`;
     card.append(answered);
   }
   return card;
@@ -1401,7 +1604,7 @@ export function renderMessages(target, messages, emptyText = "输入任务要求
   if (!target) return;
   target.closest(".chat-surface")?.classList.toggle("chat-surface--empty", !messages?.length);
   if (!messages?.length) {
-    target.innerHTML = `<section class="conversation-start"><div><div class="conversation-start__mark" aria-hidden="true"><img src="/capability/assets/icons/optionhelper-app-icon-tile-light.svg" alt=""></div><h2>开始一项结构化产品研究</h2><p class="conversation-start__copy">直接说想研究什么，不必记住产品编号或填完参数。</p><div class="conversation-starters"><button class="conversation-starter" type="button" data-starter-prompt="我想了解一种期权产品的收益与风险，请帮我从产品特点开始。"><strong>了解产品</strong><span>看懂收益、风险和适用条件。</span></button><button class="conversation-starter" type="button" data-starter-prompt="请根据我的标的、期限和风险偏好筛选合适的期权结构。"><strong>筛选结构</strong><span>从标的、期限和风险偏好出发。</span></button><button class="conversation-starter" type="button" data-starter-prompt="我想为已有产品定价或回测，请帮我确认需要的条款与数据。"><strong>定价与回测</strong><span>使用已有条款，补齐必要的数据。</span></button><button class="conversation-starter" type="button" data-starter-prompt="请把当前任务已有的研究结果整理成报告。"><strong>整理报告</strong><span>汇总已有分析，继续编辑或导出。</span></button></div><p class="empty">选择一个起点，或直接在下方输入；缺少的信息会在需要时向你确认。</p></div></section>`;
+    target.innerHTML = `<section class="conversation-start"><div><div class="conversation-start__mark" aria-hidden="true"><img src="/capability/assets/icons/optionhelper-app-icon-tile-light.svg" alt=""></div><h2>今天想研究什么？</h2><p class="conversation-start__copy">从一个问题、一份条款，或一个投资想法开始。</p><div class="conversation-starters"><button class="conversation-starter" type="button" data-starter-prompt="我想了解一种期权产品的收益与风险，请帮我从产品特点开始。"><strong>了解产品</strong><span>了解收益机制、主要风险与适用场景。</span></button><button class="conversation-starter" type="button" data-starter-prompt="请根据我的标的、期限和风险偏好筛选合适的期权结构。"><strong>筛选结构</strong><span>结合市场观点与投资偏好，比较合适的结构。</span></button><button class="conversation-starter" type="button" data-starter-prompt="我想为已有产品定价或回测，请帮我确认需要的条款与数据。"><strong>定价与回测</strong><span>基于产品条款，测算价格与历史表现。</span></button><button class="conversation-starter" type="button" data-starter-prompt="请把当前任务已有的研究结果整理成报告。"><strong>生成报告</strong><span>将研究结果整理成可编辑、可导出的报告。</span></button></div></div></section>`;
     return;
   }
   let activeQuestionIndex = -1;
@@ -1418,6 +1621,7 @@ export function renderMessages(target, messages, emptyText = "输入任务要求
   const rendered = messages.map((entry, index) => createConversationMessage(entry, {
     ...options,
     questionActive: index === activeQuestionIndex,
+    questionAnswer: messages[index + 1]?.role === "user" ? String(messages[index + 1].content || "") : "",
   }));
   for (const article of rendered) {
     for (const next of article.querySelectorAll(".assistant-reasoning")) {
@@ -1451,10 +1655,9 @@ export function renderReports(target, reports) {
     const meta = document.createElement("span");
     meta.className = "report-meta";
     const status = String(report.status || "");
-    meta.textContent = status === "succeeded" ? "已完成"
-      : status === "partial" ? "部分完成"
-        : status || "状态未知";
-    meta.dataset.state = status;
+    const statusLabel = status === "succeeded" ? "已完成"
+      : status === "partial" ? "部分完成" : status === "failed" ? "生成失败" : status || "状态未知";
+    setStatusIcon(meta, statusLabel, status);
     heading.append(name, meta);
     card.append(heading);
     if (preferred?.name) {
@@ -1466,14 +1669,14 @@ export function renderReports(target, reports) {
       preview.href = artifactPath;
       preview.target = "_blank";
       preview.rel = "noopener";
-      preview.textContent = "预览";
-      preview.setAttribute("aria-label", `预览${title}`);
+      setMessageActionIcon(preview, `预览${title}`, "M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Zm13 0a3 3 0 1 0-6 0 3 3 0 0 0 6 0Z");
+      preview.title = "预览报告";
       const download = document.createElement("a");
       download.href = `${artifactPath}?download=1#display_name=${encodeURIComponent(preferred.display_name || title)}`;
       download.target = "_blank";
       download.rel = "noopener";
-      download.textContent = "下载";
-      download.setAttribute("aria-label", `下载${title}`);
+      setMessageActionIcon(download, `下载${title}`, "M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5");
+      download.title = "下载报告";
       actions.append(preview, download);
       card.append(actions);
     }
@@ -1494,3 +1697,67 @@ export function setTaskLocation(taskId, extra = {}) {
   });
   history.replaceState(null, "", next);
 }
+
+// Motion follows committed UI state. Re-entry cancels the prior animation.
+const surfaceAnimations = new WeakMap();
+export function animateSurface(element, kind = "enter", done = null) {
+  surfaceAnimations.get(element)?.cancel();
+  const reduced = element.ownerDocument.defaultView.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  if (reduced || !element.animate || !element.isConnected) { done?.(); return; }
+  const close = kind === "exit";
+  const frames = kind === "number" ? [{ opacity: .4, transform: "translateY(4px)", filter: "blur(1px)" }, { opacity: 1, transform: "none", filter: "blur(0)" }]
+    : kind === "error" ? [{ transform: "translateX(0)" }, { transform: "translateX(4px)" }, { transform: "translateX(-4px)" }, { transform: "translateX(2px)" }, { transform: "translateX(0)" }]
+    : close ? [{ opacity: 1, transform: "scale(1)" }, { opacity: 0, transform: "scale(.99)" }]
+    : [{ opacity: 0, transform: "translateY(4px) scale(.97)" }, { opacity: 1, transform: "none" }];
+  const animation = element.animate(frames, { duration: close ? 150 : kind === "number" ? 300 : 250, easing: "cubic-bezier(.22,1,.36,1)" });
+  surfaceAnimations.set(element, animation);
+  animation.onfinish = () => {
+    if (surfaceAnimations.get(element) !== animation) return;
+    surfaceAnimations.delete(element);
+    done?.();
+  };
+}
+
+export function setMotionText(element, value) {
+  const text = String(value ?? "");
+  if (element.textContent === text) return;
+  const previous = element.textContent;
+  element.textContent = text;
+  element.dataset.text = text;
+  if (previous) animateSurface(element, "number");
+}
+
+function installWorkspaceMotion(doc) {
+  if (doc.documentElement.dataset.workspaceMotion) return;
+  doc.documentElement.dataset.workspaceMotion = "true";
+  doc.addEventListener("invalid", event => { animateSurface(event.target, "error"); }, true);
+  // Keep the summary hittable throughout rapid open/close clicks.
+  doc.addEventListener("click", event => {
+    const summary = event.target.closest("summary");
+    const details = summary?.parentElement;
+    if (!details?.matches(".assistant-reasoning, .message--process > details")) return;
+    if (event.target.closest("button, a, input")) return;
+    const reduced = doc.defaultView.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (reduced || !details.animate) return;
+    event.preventDefault();
+    const previous = details.getBoundingClientRect().height;
+    surfaceAnimations.get(details)?.cancel();
+    const opening = details.dataset.motionTarget ? details.dataset.motionTarget !== "open" : !details.open;
+    details.dataset.motionTarget = opening ? "open" : "closed";
+    details.open = true;
+    const target = opening ? details.scrollHeight : summary.getBoundingClientRect().height;
+    const animation = details.animate([{ height: `${previous}px`, overflow: "hidden" }, { height: `${target}px`, overflow: "hidden" }], { duration: 250, easing: "cubic-bezier(.22,1,.36,1)" });
+    surfaceAnimations.set(details, animation);
+    animation.onfinish = () => { if (surfaceAnimations.get(details) !== animation) return; details.open = opening; delete details.dataset.motionTarget; surfaceAnimations.delete(details); };
+  });
+  // A faint surface reflection on report previews; text and touch scrolling stay still.
+  doc.addEventListener("pointermove", event => {
+    if (event.pointerType !== "mouse" || doc.defaultView.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    const card = event.target.closest(".report-item");
+    if (!card) return;
+    const rect = card.getBoundingClientRect();
+    card.style.setProperty("--reflection-x", `${100 * (event.clientX - rect.left) / rect.width}%`);
+    card.style.setProperty("--reflection-y", `${100 * (event.clientY - rect.top) / rect.height}%`);
+  }, { passive: true });
+}
+if (typeof document !== "undefined") installWorkspaceMotion(document);
