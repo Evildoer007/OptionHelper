@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import re
 from typing import Any, Mapping, Sequence
 from uuid import uuid4
 
@@ -415,7 +416,12 @@ class RecommenderService:
         runner: AgentStepRunner,
     ) -> RecommendationSet:
         evidence = self._retrieve(case, _research_queries(case), audit)
+        comparison_only = bool(re.search(
+            r"(?:只|仅)(?:做|要|需)?(?:结构)?(?:比较|对比|筛选|推荐)|(?:不|无需|不用)(?:做|进行)?(?:定价|估值|计算)",
+            case.prompt,
+        ))
         structurer = runner.run("Structurer", {
+            "comparison_only": comparison_only,
             "case": case.to_dict(),
             "evidence": [item.to_dict(include_excerpt=True) for item in evidence],
             "max_candidates": min(_requested_candidate_count(case), self.config.max_candidates),
@@ -430,6 +436,40 @@ class RecommenderService:
         )
         if not candidates:
             return self._candidate_set(case, route, run_id, mode, audit, (), rejected)
+        if comparison_only:
+            # The Host, not the model's evaluation_plan, decides whether any
+            # financial execution is allowed for a comparison-only request.
+            comparison = runner.run("Trader", {
+                "comparison_only": True,
+                "case": case.to_dict(),
+                "proposals": [dict(item) for item in structurer.get("proposals", ())
+                              if item.get("product_id") in {candidate.product_id for candidate in candidates}],
+                "evidence": [item.to_dict(include_excerpt=True) for item in evidence],
+                "rule": "只依据产品资料比较适用性和风险；无计算结果，不得声称已定价、回测或验证金融指标。",
+            })
+            products = {item.product_id for item in candidates}
+            reviews = comparison.get("reviews", ())
+            reviewed = [item.get("product_id") for item in reviews]
+            if len(reviewed) != len(set(reviewed)) or set(reviewed) != products:
+                raise RecommendationValidationError("Trader比较必须逐一覆盖当前候选，不得新增产品")
+            compared, comparison_rejected = build_candidates(
+                {"proposals": [item for item in structurer.get("proposals", ()) if item.get("product_id") in products]},
+                comparison, evidence=evidence, run_id=run_id,
+                max_candidates=min(_requested_candidate_count(case), self.config.max_candidates),
+                confirmed_constraints=case.confirmed_constraints,
+            )
+            reviewer = runner.run("Reviewer", {
+                "comparison_only": True, "candidates": [item.to_dict() for item in compared],
+                "rule": "仅复核资料比较，不存在定价或回测结果；只能整体批准或拒绝。",
+            })
+            verdict = parse_reviewer_ranking_verdict(reviewer)
+            audit.append("comparison", "complete", agent_role=None,
+                         input_value={"comparison_only": True},
+                         output_value={"executed_modules": [], "approved": verdict.approved})
+            if not verdict.approved:
+                return self._candidate_set(case, route, run_id, mode, audit, (),
+                                           (*rejected, *comparison_rejected, {"reason": verdict.reason or "Reviewer拒绝", "source": "Reviewer"}))
+            return self._candidate_set(case, route, run_id, mode, audit, compared, (*rejected, *comparison_rejected))
         ready = tuple(item for item in candidates if item.library_status == "ready")
         pending = {item.candidate_id: item for item in candidates if item.library_status != "ready"}
         if not ready:
