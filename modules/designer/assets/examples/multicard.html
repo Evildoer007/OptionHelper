@@ -5,9 +5,10 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="color-scheme" content="light">
 <title>多结构研究简报</title>
-<style>/* designer-token-hash:66fa3e80b3916416ab291943c6aa7c0e771e72c9261027aad2f9e78ce0d93697 */
+<style>/* designer-token-hash:9e99135bf4faef877caf32fbb0001aa2a27cf15a150041f530bfcd2b7450c24a */
 :root {
   --color-brand-red: #C8102E;
+  --color-brand-signature: #8A2F3D;
   --color-on-brand: #FFFFFF;
   --color-paper: #FFFFFF;
   --color-ground: #F4F4F4;
@@ -25,12 +26,12 @@
   --color-blue-gray-soft: #F4F4F4;
   --color-chart-gray: #6B6B6B;
   --color-heatmap-low: #F4F4F4;
-  --color-risk-gold-soft: #FCF7EA;
+  --color-risk-gold-soft: #F7F3E9;
   --color-paper-border: #E2E2E2;
   --color-red-border-soft: #C9C9C9;
   --color-red-surface: #F4F4F4;
   --color-red-tag-border: #C9C9C9;
-  --color-gold-border: #C9C9C9;
+  --color-gold-border: #D8C9A7;
   --color-gold-ink: #936719;
   --color-table-border: #C9C9C9;
   --color-table-head-ink: #252525;
@@ -95,20 +96,20 @@
   --state-ready-color: #49647D;
   --state-ready-surface: #F4F4F4;
   --state-partial-color: #936719;
-  --state-partial-surface: #FCF7EA;
+  --state-partial-surface: #F7F3E9;
   --state-pending-color: #936719;
-  --state-pending-surface: #FCF7EA;
+  --state-pending-surface: #F7F3E9;
   --state-not-run-color: #936719;
-  --state-not-run-surface: #FCF7EA;
+  --state-not-run-surface: #F7F3E9;
   --state-unsupported-color: #936719;
-  --state-unsupported-surface: #FCF7EA;
+  --state-unsupported-surface: #F7F3E9;
   --state-failed-color: #C8102E;
   --state-failed-surface: #F4F4F4;
   --chart-color-1: #C8102E;
-  --chart-color-2: #49647D;
+  --chart-color-2: #252525;
   --chart-color-3: #936719;
   --chart-color-4: #6B6B6B;
-  --chart-color-5: #404040;
+  --chart-color-5: #C9C9C9;
   --breakpoint-narrow: 900px;
   --breakpoint-print: 720px;
 }
@@ -133,8 +134,9 @@ FORM: Read模式。详细报告只有一种连续A4版式。
   --rule: var(--color-rule);
   --rule-strong: var(--color-rule-strong);
   --red: var(--color-brand-red);
+  --brand-signature: var(--color-brand-signature);
   --on-brand: var(--color-on-brand);
-  --blue: var(--color-blue-gray);
+  --blue: var(--ink-soft);
   --gold: var(--color-risk-gold);
 }
 
@@ -258,7 +260,7 @@ a { color: inherit; }
 
 .report-head__brand {
   margin: 0 0 4px;
-  color: var(--blue);
+  color: var(--brand-signature);
   font-size: var(--type-table);
   font-weight: 760;
   letter-spacing: .045em;
@@ -288,16 +290,26 @@ a { color: inherit; }
 .metric-strip {
   display: grid;
   margin: 20px 0 0;
-  border-top: 1px solid var(--rule);
+}
+
+.identity-ledger {
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 20px;
+  padding: 0 0 11px;
   border-bottom: 1px solid var(--rule);
 }
 
-.identity-ledger { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.evidence-spine {
+  border: 1px solid var(--rule-strong);
+  background: var(--surface);
+}
 
 .report-head > .identity-ledger {
   grid-template-columns: minmax(0, 1fr);
-  align-self: stretch;
+  align-self: end;
   margin: 0;
+  padding: 0 0 1px 16px;
+  border: 0;
   border-left: 1px solid var(--rule-strong);
 }
 
@@ -308,8 +320,8 @@ a { color: inherit; }
 }
 
 .identity-ledger div {
-  padding: 8px 11px 9px;
-  border-right: 1px solid var(--rule);
+  padding: 0;
+  border: 0;
 }
 
 .identity-ledger div:last-child { border-right: 0; }
@@ -414,6 +426,12 @@ a { color: inherit; }
   min-width: 0;
 }
 
+/* Draft sections use the full reading width, with the same heading rhythm. */
+.card-appended { margin-block: var(--space-md); }
+.card-appended h2 { margin: 0 0 var(--space-sm); color: var(--blue); font-size: var(--type-subsection); }
+.card-appended .presentation-paragraph { max-width: none; margin-block: 6px; }
+.card-appended .table-wrap { margin-block: var(--space-sm); }
+
 .card-custom,
 .quote-custom {
   padding-top: var(--space-sm);
@@ -462,11 +480,10 @@ a { color: inherit; }
 
 .conclusion-band {
   margin: 0 0 15px;
-  padding: 12px 15px 13px;
+  padding: 14px 17px 15px;
   border-top: 1px solid var(--color-gold-border);
   border-bottom: 1px solid var(--color-gold-border);
-  border-left: 3px solid var(--gold);
-  background: #FBF7EE;
+  background: var(--color-risk-gold-soft);
 }
 
 .conclusion-band__label {
@@ -475,6 +492,11 @@ a { color: inherit; }
   font-size: var(--type-meta);
   font-weight: 780;
   letter-spacing: .08em;
+}
+
+.conclusion-band .metric {
+  border-top-color: var(--color-gold-border);
+  background: transparent;
 }
 
 .conclusion-band h3 {
@@ -494,30 +516,33 @@ a { color: inherit; }
 .recommendation-head { padding-bottom: 3px; }
 
 .metric-strip {
-  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-  margin: 12px 0;
-  border-left: 0;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 10px 22px;
+  margin: 14px 0;
+  border: 0;
+  background: transparent;
 }
 
 .metric {
-  padding: 10px 12px 11px;
-  border-right: 1px solid var(--rule-strong);
-  background: var(--surface);
+  padding: 9px 0 10px;
+  border: 0;
+  border-top: 1px solid var(--rule-strong);
+  background: transparent;
 }
 
 .metric:last-child { border-right: 0; }
 
 .metric__value {
-  color: var(--red);
+  color: var(--ink);
   font-size: var(--type-metric);
-  font-weight: 770;
+  font-weight: 740;
   letter-spacing: -.025em;
   line-height: 1.18;
 }
 
 .metric__label {
   margin-top: 4px;
-  color: var(--blue);
+  color: var(--ink-soft);
   font-size: var(--type-table);
   font-weight: 700;
   line-height: 1.5;
@@ -533,7 +558,7 @@ a { color: inherit; }
 .scenario-grid,
 .alternative-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
   gap: 10px;
   margin: 12px 0;
 }
@@ -545,13 +570,13 @@ a { color: inherit; }
 .scenario,
 .alternative {
   min-width: 0;
-  padding: 11px 12px 12px;
-  border-top: 2px solid var(--red);
-  border-right: 1px solid var(--rule-strong);
-  border-bottom: 1px solid var(--rule-strong);
-  border-left: 1px solid var(--rule-strong);
+  padding: 10px 0 11px;
+  border-top: 1px solid var(--rule-strong);
+  border-right: 0;
+  border-bottom: 0;
+  border-left: 0;
   border-radius: 0;
-  background: var(--surface);
+  background: transparent;
 }
 
 .scenario p,
@@ -585,7 +610,7 @@ a { color: inherit; }
 .chart-figure {
   margin: 14px 0;
   padding: 11px 0 12px;
-  border-top: 2px solid var(--red);
+  border-top: 1px solid var(--rule-strong);
   border-bottom: 1px solid var(--rule-strong);
   background: transparent;
 }
@@ -593,7 +618,7 @@ a { color: inherit; }
 .payoff-figure figcaption,
 .chart-figure figcaption {
   margin-bottom: 8px;
-  color: var(--blue);
+  color: var(--ink-soft);
   font-size: var(--type-caption);
   font-weight: 720;
   line-height: 1.5;
@@ -602,7 +627,8 @@ a { color: inherit; }
 
 .payoff-figure img {
   display: block;
-  width: min(100%, 158mm);
+  width: 100%;
+  max-width: none;
   height: auto;
   margin: auto;
   object-fit: contain;
@@ -626,10 +652,15 @@ a { color: inherit; }
 .chart-data { margin-top: 8px; }
 
 .chart-summary {
-  margin: 0 0 8px;
-  color: var(--muted);
-  font-size: var(--type-meta);
-  line-height: 1.55;
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 .source-note {
@@ -672,10 +703,10 @@ a { color: inherit; }
   border-top: 0;
   border-right: 0;
   border-bottom: 0;
-  border-left: 1px solid var(--gold);
+  border-left: 1px solid var(--red);
   border-radius: 0;
   background: var(--paper);
-  color: var(--color-gold-ink);
+  color: var(--ink-soft);
 }
 
 .module-state strong { font-size: var(--type-caption); }
@@ -766,7 +797,7 @@ table {
 
 caption {
   padding: 8px 0;
-  color: var(--blue);
+  color: var(--ink-soft);
   font-size: var(--type-caption);
   font-weight: 730;
   line-height: 1.5;
@@ -858,8 +889,8 @@ body.report-profile-a4 .report-head { padding-bottom: 4.5mm; }
 body.report-profile-a4 .report-head h1 { font-size: var(--type-report-title-a4); }
 body.report-profile-a4 .report-head__brand { margin-top: 10px; font-size: var(--type-table); }
 body.report-profile-a4 .identity-ledger { margin-top: 12px; }
-body.report-profile-a4 .report-head > .identity-ledger { max-width: 230px; }
-body.report-profile-a4 .identity-ledger div { padding: 9px 11px 10px; }
+body.report-profile-a4 .report-head > .identity-ledger { max-width: 230px; margin-top: 0; }
+body.report-profile-a4 .identity-ledger div { padding: 0; }
 body.report-profile-a4 .evidence-wrap { margin-top: 15px; padding-top: 10px; }
 body.report-profile-a4 .evidence-spine { margin-top: 0; }
 body.report-profile-a4 .evidence-step { padding: 8px 9px 9px; }
@@ -873,17 +904,17 @@ body.report-profile-a4 .alternative h3 { font-size: var(--type-table); }
 body.report-profile-a4 .report-section p { margin: 5px 0; }
 body.report-profile-a4 .conclusion-band {
   margin-bottom: 14px;
-  padding: 11px 14px 12px;
+  padding: 13px 16px 14px;
 }
 body.report-profile-a4 .conclusion-band__label { margin-bottom: 4px !important; }
 body.report-profile-a4 .metric-strip { margin: 10px 0; }
-body.report-profile-a4 .metric { padding: 9px 10px 10px; }
+body.report-profile-a4 .metric { padding: 9px 0 10px; }
 body.report-profile-a4 .metric__value { font-size: calc(var(--type-metric) - 1px); }
 body.report-profile-a4 .metric__label { margin-top: 4px; font-size: var(--type-meta); }
 body.report-profile-a4 .scenario-grid,
 body.report-profile-a4 .alternative-grid { gap: 8px; margin: 10px 0; }
 body.report-profile-a4 .scenario-grid,
-body.report-profile-a4 .alternative-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+body.report-profile-a4 .alternative-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); }
 body.report-profile-a4 .scenario,
 body.report-profile-a4 .alternative { padding: 9px 10px; border-radius: 0; }
 body.report-profile-a4 .scenario p,
@@ -945,11 +976,12 @@ body.report-profile-a4 .disclaimer { margin-top: 12px; padding-top: 10px; line-h
   .report-head > .identity-ledger {
     grid-template-columns: 1fr;
     max-width: none;
-    border-top: 1px solid var(--rule);
+    padding: 0 0 10px;
+    border-top: 0;
     border-left: 0;
   }
-  .identity-ledger div:nth-child(2) { border-right: 0; }
-  .identity-ledger div:nth-child(-n + 2) { border-bottom: 1px solid var(--rule); }
+  .identity-ledger div:nth-child(2),
+  .identity-ledger div:nth-child(-n + 2) { border: 0; }
   .evidence-spine { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .evidence-step:nth-child(2n) { border-right: 0; }
   .evidence-step:nth-child(-n + 4) { border-bottom: 1px solid var(--rule); }
@@ -957,8 +989,7 @@ body.report-profile-a4 .disclaimer { margin-top: 12px; padding-top: 10px; line-h
   .alternative-grid,
   body.report-profile-a4 .scenario-grid,
   body.report-profile-a4 .alternative-grid { grid-template-columns: 1fr; }
-  .metric { border-bottom: 1px solid var(--rule); }
-  .metric:last-child { border-bottom: 0; }
+  .metric { border-bottom: 0; }
   .chart,
   body.report-profile-a4 .chart { height: 250px; }
 }
@@ -1017,7 +1048,7 @@ body.report-profile-a4 .disclaimer { margin-top: 12px; padding-top: 10px; line-h
   .module-state,
   .chart-figure,
   .payoff-figure { break-inside: avoid; }
-  .payoff-figure img { width: 100%; max-width: 170mm; height: auto; }
+  .payoff-figure img { width: 100%; max-width: none; height: auto; }
   a { text-decoration: none; }
 }
 
@@ -1058,7 +1089,7 @@ body.report-profile-a4 .disclaimer { margin-top: 12px; padding-top: 10px; line-h
 
 .comparison-document-head__brand {
   margin: 0 0 4px;
-  color: var(--blue);
+  color: var(--brand-signature);
   font-size: var(--type-meta);
   font-weight: 720;
 }
@@ -1165,12 +1196,12 @@ body.report-profile-a4 .disclaimer { margin-top: 12px; padding-top: 10px; line-h
 .comparison-matrix__cell .plain-list, .comparison-matrix__cell .risk-list { margin: 0; padding-left: 18px; font-size: var(--type-meta); }
 .comparison-matrix__row[data-section="risk"] .comparison-matrix__section-label { color: var(--red); }
 .comparison-matrix__row[data-section="risk"] .comparison-matrix__cell { border-top: 1px solid var(--red); }
-.comparison-state { color: var(--gold); font-size: var(--type-meta); }
+.comparison-state { color: var(--brand-signature); font-size: var(--type-meta); }
 
 .comparison-report-shell { grid-template-columns: minmax(0, 34mm) minmax(0, 210mm); }
 .comparison-report .alternative-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .comparison-report .alternative { min-width: 0; overflow-wrap: break-word; word-break: normal; }
-.comparison-payoff-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.comparison-payoff-grid { display: grid; grid-template-columns: 1fr; gap: 18px; }
 .comparison-payoff-figure { min-width: 0; }
 .comparison-payoff-figure h3 { margin-top: 0; }
 .comparison-payoff-figure .payoff-figure { margin: 0; }
@@ -1180,7 +1211,7 @@ body.report-profile-a4 .disclaimer { margin-top: 12px; padding-top: 10px; line-h
   .comparison-card-document { width: 210mm; margin: 0; padding: 8mm; box-shadow: none; }
   .comparison-matrix__header { break-after: avoid; }
   .comparison-matrix__row { break-inside: avoid; }
-  .comparison-payoff-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .comparison-payoff-grid { grid-template-columns: 1fr; }
 }
 
 /* Shared module-page and App shell contract.  These selectors are intentionally
@@ -1218,7 +1249,7 @@ body.report-profile-a4 .disclaimer { margin-top: 12px; padding-top: 10px; line-h
 .module-header__eyebrow,
 .designer-card__brand {
   margin: 0 0 var(--space-sm);
-  color: var(--blue);
+  color: var(--brand-signature);
   font-size: var(--type-module-label);
   font-weight: 720;
   letter-spacing: .04em;
@@ -1312,7 +1343,7 @@ body.report-profile-a4 .disclaimer { margin-top: 12px; padding-top: 10px; line-h
 
 .designer-card__brand {
   margin: 0 0 3px;
-  color: var(--blue);
+  color: var(--brand-signature);
   font-size: var(--type-card-brand);
   font-weight: 760;
   letter-spacing: .055em;
@@ -1329,7 +1360,7 @@ body.report-profile-a4 .disclaimer { margin-top: 12px; padding-top: 10px; line-h
   margin-top: 7px;
   padding: 0 0 7px 9px;
   border-bottom: var(--border-hairline) solid var(--rule);
-  border-left: 2px solid var(--gold);
+  border-left: 2px solid var(--red);
 }
 
 .designer-card .card-conclusion h2,
@@ -1341,11 +1372,11 @@ body.report-profile-a4 .disclaimer { margin-top: 12px; padding-top: 10px; line-h
   line-height: 1.45;
 }
 
-.designer-card .conclusion-heading { color: var(--color-gold-ink); }
+.designer-card .conclusion-heading { color: var(--ink); }
 
 .designer-card .conclusion-band__label {
   margin: 0 0 2px;
-  color: var(--color-gold-ink);
+  color: var(--red);
   font-size: var(--type-card-label);
   font-weight: 760;
   letter-spacing: .07em;
@@ -1518,7 +1549,7 @@ body.report-profile-a4 .disclaimer { margin-top: 12px; padding-top: 10px; line-h
 
 .quote-head__brand {
   margin: 0 0 3px;
-  color: var(--blue);
+  color: var(--brand-signature);
   font-size: var(--type-card-brand);
   font-weight: 760;
   letter-spacing: .055em;
@@ -1760,7 +1791,7 @@ body.report-profile-a4 .disclaimer { margin-top: 12px; padding-top: 10px; line-h
     <div><p class="comparison-document-head__brand">光大证券 金融创新业务总部</p><h1>多结构研究简报</h1></div>
     <dl class="comparison-document-head__meta"><div><dt>报告日期</dt><dd>2026-08-24</dd></div><div><dt>候选数量</dt><dd>2</dd></div></dl>
   </header>
-  <section class="comparison-product-cards"><article class="comparison-product-card"><header><p>000300.SH</p><h2>看涨价差</h2></header><section><h3>推荐理由</h3><ul class="plain-list"><li>与温和看涨、波动率可能抬升的判断匹配。</li><li>控制初始成本并保留目标区间内的收益弹性。</li></ul></section><section><h3>关键合同条款</h3><div class="table-wrap"><table class="result-table table-density-normal" data-table-density="normal"><colgroup><col class="table-col table-col--default" data-column-key="label"><col class="table-col table-col--numeric" data-column-key="value"></colgroup><thead><tr><th scope="col">条款</th><th scope="col">取值</th></tr></thead><tbody><tr><td class="table-cell table-cell--default" data-label="条款">期限</td><td class="table-cell table-cell--numeric" data-label="取值">3个月</td></tr><tr><td class="table-cell table-cell--default" data-label="条款">执行价</td><td class="table-cell table-cell--numeric" data-label="取值">3,900</td></tr><tr><td class="table-cell table-cell--default" data-label="条款">净期权费</td><td class="table-cell table-cell--numeric" data-label="取值">1.9%</td></tr></tbody></table></div></section><section><h3>估值摘要</h3><div class="table-wrap"><table class="result-table table-density-normal" data-table-density="normal"><colgroup><col class="table-col table-col--default" data-column-key="label"><col class="table-col table-col--numeric" data-column-key="value"><col class="table-col table-col--narrative" data-column-key="basis"></colgroup><thead><tr><th scope="col">指标</th><th scope="col">数值</th><th scope="col">单位或口径</th></tr></thead><tbody><tr><td class="table-cell table-cell--default" data-label="指标">现值</td><td class="table-cell table-cell--numeric" data-label="数值">1.9%</td><td class="table-cell table-cell--narrative" data-label="单位或口径"></td></tr><tr><td class="table-cell table-cell--default" data-label="指标">Delta</td><td class="table-cell table-cell--numeric" data-label="数值">0.23</td><td class="table-cell table-cell--narrative" data-label="单位或口径"></td></tr><tr><td class="table-cell table-cell--default" data-label="指标">Gamma</td><td class="table-cell table-cell--numeric" data-label="数值">4.6×10⁻³</td><td class="table-cell table-cell--narrative" data-label="单位或口径"></td></tr><tr><td class="table-cell table-cell--default" data-label="指标">Vega</td><td class="table-cell table-cell--numeric" data-label="数值">0.09</td><td class="table-cell table-cell--narrative" data-label="单位或口径"></td></tr><tr><td class="table-cell table-cell--default" data-label="指标">Theta</td><td class="table-cell table-cell--numeric" data-label="数值">-0.03</td><td class="table-cell table-cell--narrative" data-label="单位或口径"></td></tr><tr><td class="table-cell table-cell--default" data-label="指标">Rho</td><td class="table-cell table-cell--numeric" data-label="数值">0.01</td><td class="table-cell table-cell--narrative" data-label="单位或口径"></td></tr></tbody></table></div></section><section><h3>回测摘要</h3><div class="table-wrap"><table class="result-table table-density-normal" data-table-density="normal"><colgroup><col class="table-col table-col--default" data-column-key="label"><col class="table-col table-col--numeric" data-column-key="value"><col class="table-col table-col--narrative" data-column-key="basis"></colgroup><thead><tr><th scope="col">指标</th><th scope="col">数值</th><th scope="col">单位或口径</th></tr></thead><tbody><tr><td class="table-cell table-cell--default" data-label="指标">回测区间</td><td class="table-cell table-cell--numeric" data-label="数值">2022-08-24至2026-08-24</td><td class="table-cell table-cell--narrative" data-label="单位或口径"></td></tr><tr><td class="table-cell table-cell--default" data-label="指标">样本数</td><td class="table-cell table-cell--numeric" data-label="数值">48</td><td class="table-cell table-cell--narrative" data-label="单位或口径"></td></tr><tr><td class="table-cell table-cell--default" data-label="指标">历史正收益样本占比</td><td class="table-cell table-cell--numeric" data-label="数值">61%</td><td class="table-cell table-cell--narrative" data-label="单位或口径"></td></tr><tr><td class="table-cell table-cell--default" data-label="指标">平均合同结算收益率</td><td class="table-cell table-cell--numeric" data-label="数值">3.1%</td><td class="table-cell table-cell--narrative" data-label="单位或口径"></td></tr></tbody></table></div></section><section><h3>主要风险</h3><ul class="risk-list"><li>极端行情下可能损失期权费。</li><li>实际成交价格可能偏离估值结果。</li></ul></section></article><article class="comparison-product-card"><header><p>000300.SH</p><h2>保护性看跌</h2></header><section><h3>推荐理由</h3><ul class="plain-list"><li>与温和看涨、波动率可能抬升的判断匹配。</li><li>控制初始成本并保留目标区间内的收益弹性。</li></ul></section><section><h3>关键合同条款</h3><div class="table-wrap"><table class="result-table table-density-normal" data-table-density="normal"><colgroup><col class="table-col table-col--default" data-column-key="label"><col class="table-col table-col--numeric" data-column-key="value"></colgroup><thead><tr><th scope="col">条款</th><th scope="col">取值</th></tr></thead><tbody><tr><td class="table-cell table-cell--default" data-label="条款">期限</td><td class="table-cell table-cell--numeric" data-label="取值">3个月</td></tr><tr><td class="table-cell table-cell--default" data-label="条款">执行价</td><td class="table-cell table-cell--numeric" data-label="取值">3,950</td></tr><tr><td class="table-cell table-cell--default" data-label="条款">净期权费</td><td class="table-cell table-cell--numeric" data-label="取值">2%</td></tr></tbody></table></div></section><section><h3>估值摘要</h3><div class="table-wrap"><table class="result-table table-density-normal" data-table-density="normal"><colgroup><col class="table-col table-col--default" data-column-key="label"><col class="table-col table-col--numeric" data-column-key="value"><col class="table-col table-col--narrative" data-column-key="basis"></colgroup><thead><tr><th scope="col">指标</th><th scope="col">数值</th><th scope="col">单位或口径</th></tr></thead><tbody><tr><td class="table-cell table-cell--default" data-label="指标">现值</td><td class="table-cell table-cell--numeric" data-label="数值">2%</td><td class="table-cell table-cell--narrative" data-label="单位或口径"></td></tr><tr><td class="table-cell table-cell--default" data-label="指标">Delta</td><td class="table-cell table-cell--numeric" data-label="数值">0.24</td><td class="table-cell table-cell--narrative" data-label="单位或口径"></td></tr><tr><td class="table-cell table-cell--default" data-label="指标">Gamma</td><td class="table-cell table-cell--numeric" data-label="数值">4.6×10⁻³</td><td class="table-cell table-cell--narrative" data-label="单位或口径"></td></tr><tr><td class="table-cell table-cell--default" data-label="指标">Vega</td><td class="table-cell table-cell--numeric" data-label="数值">0.09</td><td class="table-cell table-cell--narrative" data-label="单位或口径"></td></tr><tr><td class="table-cell table-cell--default" data-label="指标">Theta</td><td class="table-cell table-cell--numeric" data-label="数值">-0.03</td><td class="table-cell table-cell--narrative" data-label="单位或口径"></td></tr><tr><td class="table-cell table-cell--default" data-label="指标">Rho</td><td class="table-cell table-cell--numeric" data-label="数值">0.01</td><td class="table-cell table-cell--narrative" data-label="单位或口径"></td></tr></tbody></table></div></section><section><h3>回测摘要</h3><div class="table-wrap"><table class="result-table table-density-normal" data-table-density="normal"><colgroup><col class="table-col table-col--default" data-column-key="label"><col class="table-col table-col--numeric" data-column-key="value"><col class="table-col table-col--narrative" data-column-key="basis"></colgroup><thead><tr><th scope="col">指标</th><th scope="col">数值</th><th scope="col">单位或口径</th></tr></thead><tbody><tr><td class="table-cell table-cell--default" data-label="指标">回测区间</td><td class="table-cell table-cell--numeric" data-label="数值">2022-08-24至2026-08-24</td><td class="table-cell table-cell--narrative" data-label="单位或口径"></td></tr><tr><td class="table-cell table-cell--default" data-label="指标">样本数</td><td class="table-cell table-cell--numeric" data-label="数值">48</td><td class="table-cell table-cell--narrative" data-label="单位或口径"></td></tr><tr><td class="table-cell table-cell--default" data-label="指标">历史正收益样本占比</td><td class="table-cell table-cell--numeric" data-label="数值">62%</td><td class="table-cell table-cell--narrative" data-label="单位或口径"></td></tr><tr><td class="table-cell table-cell--default" data-label="指标">平均合同结算收益率</td><td class="table-cell table-cell--numeric" data-label="数值">3.2%</td><td class="table-cell table-cell--narrative" data-label="单位或口径"></td></tr></tbody></table></div></section><section><h3>主要风险</h3><ul class="risk-list"><li>极端行情下可能损失期权费。</li><li>实际成交价格可能偏离估值结果。</li></ul></section></article></section>
+  <section class="comparison-product-cards"><article class="comparison-product-card"><header><p>000300.SH</p><h2>看涨价差</h2></header><section><h3>推荐理由</h3><ul class="plain-list"><li>与温和看涨、波动率可能抬升的判断匹配。</li><li>控制初始成本并保留目标区间内的收益弹性。</li></ul></section><section><h3>关键合同条款</h3><div class="table-wrap"><table class="result-table table-density-normal" data-table-density="normal"><colgroup><col class="table-col table-col--default" data-column-key="label"><col class="table-col table-col--numeric" data-column-key="value"></colgroup><thead><tr><th scope="col">条款</th><th scope="col">取值</th></tr></thead><tbody><tr><td class="table-cell table-cell--default" data-label="条款">期限</td><td class="table-cell table-cell--numeric" data-label="取值">3个月</td></tr><tr><td class="table-cell table-cell--default" data-label="条款">执行价</td><td class="table-cell table-cell--numeric" data-label="取值">3,900</td></tr><tr><td class="table-cell table-cell--default" data-label="条款">净期权费</td><td class="table-cell table-cell--numeric" data-label="取值">1.9%</td></tr></tbody></table></div></section><section><h3>估值摘要</h3><div class="table-wrap"><table class="result-table table-density-normal" data-table-density="normal"><colgroup><col class="table-col table-col--default" data-column-key="label"><col class="table-col table-col--numeric" data-column-key="value"></colgroup><thead><tr><th scope="col">指标</th><th scope="col">数值</th></tr></thead><tbody><tr><td class="table-cell table-cell--default" data-label="指标">现值</td><td class="table-cell table-cell--numeric" data-label="数值">1.9%</td></tr><tr><td class="table-cell table-cell--default" data-label="指标">Delta</td><td class="table-cell table-cell--numeric" data-label="数值">0.23</td></tr><tr><td class="table-cell table-cell--default" data-label="指标">Gamma</td><td class="table-cell table-cell--numeric" data-label="数值">4.6×10⁻³</td></tr><tr><td class="table-cell table-cell--default" data-label="指标">Vega</td><td class="table-cell table-cell--numeric" data-label="数值">0.09</td></tr><tr><td class="table-cell table-cell--default" data-label="指标">Theta</td><td class="table-cell table-cell--numeric" data-label="数值">−0.03</td></tr><tr><td class="table-cell table-cell--default" data-label="指标">Rho</td><td class="table-cell table-cell--numeric" data-label="数值">0.01</td></tr></tbody></table></div></section><section><h3>回测摘要</h3><div class="table-wrap"><table class="result-table table-density-normal" data-table-density="normal"><colgroup><col class="table-col table-col--default" data-column-key="label"><col class="table-col table-col--numeric" data-column-key="value"></colgroup><thead><tr><th scope="col">指标</th><th scope="col">数值</th></tr></thead><tbody><tr><td class="table-cell table-cell--default" data-label="指标">回测区间</td><td class="table-cell table-cell--numeric" data-label="数值">2022-08-24至2026-08-24</td></tr><tr><td class="table-cell table-cell--default" data-label="指标">样本数</td><td class="table-cell table-cell--numeric" data-label="数值">48</td></tr><tr><td class="table-cell table-cell--default" data-label="指标">历史正收益样本占比</td><td class="table-cell table-cell--numeric" data-label="数值">61%</td></tr><tr><td class="table-cell table-cell--default" data-label="指标">平均合同结算收益率</td><td class="table-cell table-cell--numeric" data-label="数值">3.1%</td></tr></tbody></table></div></section><section><h3>主要风险</h3><ul class="risk-list"><li>极端行情下可能损失期权费。</li><li>实际成交价格可能偏离估值结果。</li></ul></section></article><article class="comparison-product-card"><header><p>000300.SH</p><h2>保护性看跌</h2></header><section><h3>推荐理由</h3><ul class="plain-list"><li>与温和看涨、波动率可能抬升的判断匹配。</li><li>控制初始成本并保留目标区间内的收益弹性。</li></ul></section><section><h3>关键合同条款</h3><div class="table-wrap"><table class="result-table table-density-normal" data-table-density="normal"><colgroup><col class="table-col table-col--default" data-column-key="label"><col class="table-col table-col--numeric" data-column-key="value"></colgroup><thead><tr><th scope="col">条款</th><th scope="col">取值</th></tr></thead><tbody><tr><td class="table-cell table-cell--default" data-label="条款">期限</td><td class="table-cell table-cell--numeric" data-label="取值">3个月</td></tr><tr><td class="table-cell table-cell--default" data-label="条款">执行价</td><td class="table-cell table-cell--numeric" data-label="取值">3,950</td></tr><tr><td class="table-cell table-cell--default" data-label="条款">净期权费</td><td class="table-cell table-cell--numeric" data-label="取值">2%</td></tr></tbody></table></div></section><section><h3>估值摘要</h3><div class="table-wrap"><table class="result-table table-density-normal" data-table-density="normal"><colgroup><col class="table-col table-col--default" data-column-key="label"><col class="table-col table-col--numeric" data-column-key="value"></colgroup><thead><tr><th scope="col">指标</th><th scope="col">数值</th></tr></thead><tbody><tr><td class="table-cell table-cell--default" data-label="指标">现值</td><td class="table-cell table-cell--numeric" data-label="数值">2%</td></tr><tr><td class="table-cell table-cell--default" data-label="指标">Delta</td><td class="table-cell table-cell--numeric" data-label="数值">0.24</td></tr><tr><td class="table-cell table-cell--default" data-label="指标">Gamma</td><td class="table-cell table-cell--numeric" data-label="数值">4.6×10⁻³</td></tr><tr><td class="table-cell table-cell--default" data-label="指标">Vega</td><td class="table-cell table-cell--numeric" data-label="数值">0.09</td></tr><tr><td class="table-cell table-cell--default" data-label="指标">Theta</td><td class="table-cell table-cell--numeric" data-label="数值">−0.03</td></tr><tr><td class="table-cell table-cell--default" data-label="指标">Rho</td><td class="table-cell table-cell--numeric" data-label="数值">0.01</td></tr></tbody></table></div></section><section><h3>回测摘要</h3><div class="table-wrap"><table class="result-table table-density-normal" data-table-density="normal"><colgroup><col class="table-col table-col--default" data-column-key="label"><col class="table-col table-col--numeric" data-column-key="value"></colgroup><thead><tr><th scope="col">指标</th><th scope="col">数值</th></tr></thead><tbody><tr><td class="table-cell table-cell--default" data-label="指标">回测区间</td><td class="table-cell table-cell--numeric" data-label="数值">2022-08-24至2026-08-24</td></tr><tr><td class="table-cell table-cell--default" data-label="指标">样本数</td><td class="table-cell table-cell--numeric" data-label="数值">48</td></tr><tr><td class="table-cell table-cell--default" data-label="指标">历史正收益样本占比</td><td class="table-cell table-cell--numeric" data-label="数值">62%</td></tr><tr><td class="table-cell table-cell--default" data-label="指标">平均合同结算收益率</td><td class="table-cell table-cell--numeric" data-label="数值">3.2%</td></tr></tbody></table></div></section><section><h3>主要风险</h3><ul class="risk-list"><li>极端行情下可能损失期权费。</li><li>实际成交价格可能偏离估值结果。</li></ul></section></article></section>
 </main>
 </body>
 </html>
