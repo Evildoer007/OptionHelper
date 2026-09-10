@@ -198,7 +198,7 @@
   padding: 0;
   border: 0;
   background: transparent;
-  color: var(--state-pending-color);
+  color: var(--color-muted);
   font-size: 12px;
   font-weight: 400;
   line-height: 18px;
@@ -207,7 +207,7 @@
 .setup-page .connection-status.is-ready {
   border: 0;
   background: transparent;
-  color: var(--state-ready-color);
+  color: var(--color-muted);
 }
 
 .setup-page .runtime-status-list {
@@ -255,8 +255,8 @@ html[data-theme="dark"] .setup-page .setup-card { background: var(--color-surfac
 
 html[data-theme="dark"] .setup-page .form-result:not(:empty) {
   border: 1px solid var(--color-rule);
-  background: var(--state-ready-surface);
-  color: var(--state-ready-color);
+  background: var(--color-ground);
+  color: var(--color-muted);
 }
 
 html[data-theme="dark"] .setup-page :is(.form-result.notice--error, .form-result.error):not(:empty) {
@@ -332,4 +332,9 @@ html[data-theme="dark"] .setup-page .form-foot {
 /* Grid and flex components must respect hidden sections and controls. */
 .setup-page [hidden] {
   display: none !important;
+}
+
+html[data-settings-embedded] .setup-page .setup { padding: 0; min-height: 100vh; }
+html[data-settings-embedded] .setup-page .setup-card {
+  width: 100%; max-width: none; height: 100vh; border: 0; border-radius: 0; box-shadow: none;
 }
