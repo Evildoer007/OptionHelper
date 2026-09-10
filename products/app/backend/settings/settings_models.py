@@ -19,7 +19,7 @@ MULTI_AGENT_LEGACY_ROLE_ALIASES: dict[str, str] = {
     "Critic": "Reviewer",
 }
 MULTI_AGENT_RECOMMENDATION_ROLES = frozenset().union(*MULTI_AGENT_RECOMMENDATION_PRESET_ROLES.values())
-MULTI_AGENT_ENABLED_RECOMMENDATION_PRESET_IDS = frozenset(MULTI_AGENT_RECOMMENDATION_PRESET_ROLES)
+MULTI_AGENT_ENABLED_RECOMMENDATION_PRESET_IDS = frozenset(MULTI_AGENT_RECOMMENDATION_PRESET_ROLES) - {"sequential-deliberation"}
 MULTI_AGENT_DEFAULT_REVIEW_POLICY_ID = "standard-review"
 MULTI_AGENT_ENABLED_REVIEW_POLICY_IDS = frozenset({MULTI_AGENT_DEFAULT_REVIEW_POLICY_ID})
 MULTI_AGENT_REVIEW_POLICY_ROLES = {
@@ -113,7 +113,7 @@ class SettingsSnapshot:
     model_providers: tuple[ModelProviderProfile, ...] = ()
     default_model_selection: ModelSelection | None = None
     recommendation_execution_mode: str = "single"
-    multi_agent_recommendation_preset_id: str = "sequential-deliberation"
+    multi_agent_recommendation_preset_id: str = "product-trader-loop"
     multi_agent_preset_role_models: dict[str, dict[str, ModelSelection]] = field(default_factory=dict)
     multi_agent_preset_agent_instructions: dict[str, dict[str, str]] = field(default_factory=dict)
     multi_agent_review_policy_id: str = MULTI_AGENT_DEFAULT_REVIEW_POLICY_ID
