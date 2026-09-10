@@ -274,8 +274,12 @@ def parse_reviewer_ranking_verdict(value: Mapping[str, Any] | str) -> ReviewerRa
     if set(data) != {"decision", "reason"}:
         _reject("Reviewer只能输出decision与reason")
     decision = str(data.get("decision", "")).strip().lower()
-    reason = str(data.get("reason", "")).strip()
-    if decision == "approve" and not reason:
+    if not isinstance(data.get("reason"), str):
+        _reject("Reviewer.reason必须为字符串")
+    reason = data["reason"].strip()
+    if decision == "approve":
+        # Approval rationale remains in the audited Agent result; it is not
+        # a rejection reason and must not turn a valid approval into failure.
         return ReviewerRankingVerdict(approved=True)
     if decision == "reject" and reason:
         return ReviewerRankingVerdict(approved=False, reason=reason)
