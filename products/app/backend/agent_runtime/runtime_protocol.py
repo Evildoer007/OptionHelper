@@ -779,7 +779,13 @@ class RuntimeEvent:
                 raise ValidationError(f"RuntimeEvent.{field_name}必须是非负整数")
         if self.type not in _EVENT_TYPES:
             raise ValidationError("RuntimeEvent.type未注册")
-        object.__setattr__(self, "payload", _safe_event_payload(self.type, self.payload))
+        payload = _safe_event_payload(self.type, self.payload)
+        # Scope routes live assistant blocks to their owning UI surface. Keep it
+        # across payload sanitization, including dataclasses.replace and replay.
+        scope = self.payload.get("runtime_scope")
+        if isinstance(scope, str) and scope in {"main_agent", "recommender"}:
+            payload["runtime_scope"] = scope
+        object.__setattr__(self, "payload", payload)
 
     def to_dict(self) -> dict[str, Any]:
         return {
