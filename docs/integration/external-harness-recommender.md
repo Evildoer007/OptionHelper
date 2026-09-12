@@ -1,0 +1,9 @@
+# External Harness接入Recommender
+
+本文面向实现OptionHelper HostAgentPort的开发者，不属于Skill默认用户工作流。
+
+External Harness负责创建独立Child Session、提交角色结果、等待结算、取消和恢复。OptionHelper只提供Recommender业务状态机、严格角色结果Schema、确定性聚合器和Capability工具。
+
+集成入口为`RecommendationWorkflowCoordinator`。`begin_recommendation`返回下一项角色任务，宿主在自己的Agent Runtime中执行并通过`submit_agent_result`提交已结算结果；`cancel_recommendation`仅供宿主把自身取消状态映射到业务协调器。`workflow_ref`、AgentRun、Session和运行凭证只用于Host内部审计，不得作为Skill业务步骤或用户操作要求。
+
+宿主必须如实声明结构化输出、独立Child Session和最大并行数。无法证明独立Child Session时，Skill采用`single_model`语义；用户明确要求必须多智能体时返回不可用。App不使用该降级规则，App的Mode1至Mode4均要求真实Child Session。

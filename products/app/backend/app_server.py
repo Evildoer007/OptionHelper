@@ -14,6 +14,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import sys
 import threading
 from dataclasses import asdict, replace
@@ -47,6 +48,8 @@ from .audit.audit_models import AuditEvent
 from .audit.audit_service import LocalAuditService
 from .authorization.policy import AuthorizationPolicy
 from .authorization.roles import Role
+from .user_guide import guide_for_role
+from .position_amounts import task_amounts, amount_report_html
 from .capability_service import CapabilityServiceCaller
 from .datafetcher_adapter import DataFetcherAdapter
 from .errors import AuthorizationError, CapabilityIntegrityError, UnavailableCapabilityError, UserActionError, ValidationError
@@ -100,12 +103,13 @@ from runtime.protocol.models import ModuleRunRef
 
 
 FRONTEND_ASSETS = frozenset({
+    "shared/user-guide.js", "shared/user-guide.css", "shared/position-size.js", "shared/position-size.css",
     "login/index.html", "login/login-startup.js", "login/login.js",
     "optchat/index.html", "optchat/optchat.js", "optchat/attachment-utils.js",
     "optdesk/index.html", "optdesk/optdesk.js",
     "settings/index.html", "settings/settings.js", "settings/model-providers.css", "settings/general-settings.css", "settings/settings-shell.css",
     "shared/styles.css", "shared/refinement.css", "shared/theme-overrides.css", "shared/app.js", "shared/transition-scope.js", "shared/theme-bootstrap.js", "shared/theme.js", "shared/ui-scale.js", "shared/scrollbar-activity.js", "shared/vol-surface.js", "shared/thinking-orb.js", "shared/thinking-orbs-engine.js", "shared/bloub-engine.js", "shared/bloub-avatar.js", "shared/activity-motion.js",
-    "shared/conversation-outline.js", "shared/conversation-outline.css",
+    "shared/conversation-outline.js", "shared/conversation-outline.css", "shared/conversation-scroll.js",
 })
 _CAPABILITY_CSP = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'self'; form-action 'self'"
 _AGENT_RUNTIME_MODES = frozenset({"disabled", "shadow", "active"})
@@ -210,6 +214,43 @@ def _review_policy_roles(policy_id: str, policy: object) -> list[str]:
     if policy_id == MULTI_AGENT_DEFAULT_REVIEW_POLICY_ID:
         return []
     return _catalog_roles(policy, _REVIEW_POLICY_ROLE_FALLBACKS.get(policy_id, ()))
+
+
+class _AppHTTPServer(ThreadingHTTPServer):
+    """Own request threads through shutdown, including incomplete connections."""
+
+    daemon_threads = False
+
+    def __init__(self, *args, **kwargs) -> None:
+        self._request_sockets: set[socket.socket] = set()
+        self._request_sockets_lock = threading.Lock()
+        super().__init__(*args, **kwargs)
+
+    def get_request(self):
+        request, address = super().get_request()
+        with self._request_sockets_lock:
+            self._request_sockets.add(request)
+        return request, address
+
+    def shutdown_request(self, request) -> None:
+        try:
+            super().shutdown_request(request)
+        finally:
+            with self._request_sockets_lock:
+                self._request_sockets.discard(request)
+
+    def server_close(self) -> None:
+        # A browser may preconnect without sending headers. Unblock those reads
+        # before joining handlers; active handlers retain normal error reporting.
+        with self._request_sockets_lock:
+            requests = tuple(self._request_sockets)
+        for request in requests:
+            try:
+                request.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                # A request may have completed after the snapshot was taken.
+                pass
+        super().server_close()
 
 
 class AppServer:
@@ -471,7 +512,7 @@ class AppServer:
             catalog_version=str(self.registry.manifest["catalog_version"]),
             result_store=self.results,
         )
-        conversation_observations = ResultStoreObservationBuilder(self.results)
+        conversation_observations = ResultStoreObservationBuilder(self.results, self.tasks)
         self.conversation_agent = OptionConversationAgent(
             self.model_gateway,
             self.tasks,
@@ -525,6 +566,9 @@ class AppServer:
         return self.url
 
     def shutdown(self) -> None:
+        # Stop admitting requests before cancelling runtimes they can invoke.
+        if self._httpd is not None:
+            self._httpd.shutdown()
         close_conversations = getattr(self.conversation_agent, "close_all", None)
         if callable(close_conversations):
             close_conversations()
@@ -534,7 +578,6 @@ class AppServer:
         self.operations.shutdown()
         self.compute_supervisor.shutdown()
         if self._httpd is not None:
-            self._httpd.shutdown()
             self._httpd.server_close()
             self._httpd = None
         if self._thread is not None:
@@ -549,7 +592,7 @@ class AppServer:
         class Handler(_AppRequestHandler):
             app = platform
 
-        self._httpd = ThreadingHTTPServer((self.host, self.port), Handler)
+        self._httpd = _AppHTTPServer((self.host, self.port), Handler)
 
     def identity_from_cookie(self, cookie_header: str | None) -> SessionIdentity:
         if not cookie_header:
@@ -1524,7 +1567,18 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.OK, {"status": "ok", "mode": "local", "capability": _capability_summary(self.app.registry)})
             return
         if path == "/":
-            self._serve_frontend_asset("login/index.html")
+            # Resolve an existing session before sending any login-page bytes.
+            # Otherwise its splash flashes while /api/me redirects to OptChat.
+            # Authentication failures still reach the original login bootstrap,
+            # which owns account preparation and actionable error messages.
+            try:
+                identity = self._identity()
+            except (AuthorizationError, UnavailableCapabilityError, UserActionError):
+                identity = None
+            if identity is not None:
+                self._bytes(HTTPStatus.FOUND, b"", "text/html; charset=utf-8", extra_headers={"Location": "/optchat"})
+            else:
+                self._serve_frontend_asset("login/index.html")
             return
         if path == "/app/designer-token-vars.css":
             content, content_type = self.app.registry.read_asset("assets/designer/themes/designer-token-vars.css")
@@ -1535,6 +1589,11 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
         if path.startswith("/app/frontend/"):
             self._serve_frontend_asset(path.removeprefix("/app/frontend/"))
             return
+        if path == "/api/user-guide":
+            identity = self._identity()
+            self.app.policy.require(identity.role, "optchat")
+            self._json(HTTPStatus.OK, guide_for_role(identity.role))
+            return
         if path == "/api/me":
             self.app.login_handler.prepare_accounts()
             identity = self._identity()
@@ -1543,6 +1602,13 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
         if path == "/api/capability/status":
             identity = self._identity()
             self._json(HTTPStatus.OK, {"status": "verified", "caller": identity.public(), "capability": _capability_summary(self.app.registry)})
+            return
+        if path.startswith("/api/tasks/") and path.endswith("/position-size"):
+            identity = self._identity()
+            self.app.policy.require(identity.role, "task.read")
+            task_id = path.removeprefix("/api/tasks/").removesuffix("/position-size").rstrip("/")
+            view = task_amounts(self.app.tasks, self.app.results, identity, task_id)
+            self._json(HTTPStatus.OK, view)
             return
         if path == "/api/tasks":
             identity = self._identity()
@@ -1554,8 +1620,8 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
         if path == "/api/runtime/active-operations":
             identity = self._identity()
             self.app.policy.require(identity.role, "task.read")
-            tasks = self.app.tasks.list(identity)
-            active = self.app.operations.active_summaries(identity, [str(task["task_id"]) for task in tasks])
+            task_ids = self.app.tasks.owned_task_ids(identity)
+            active = self.app.operations.active_summaries(identity, task_ids)
             self._json(HTTPStatus.OK, {"active_count": sum(len(value) for value in active.values())})
             return
         if path.startswith("/api/tasks/") and path.endswith("/operations"):
@@ -2115,6 +2181,22 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
             _only_fields(body, set())
             operation = self.app.operations.cancel_for_task(identity, task_id, operation_id)
             self._json(HTTPStatus.OK, {"operation": operation.public()})
+            return
+        if path.startswith("/api/tasks/") and path.endswith("/position-size"):
+            self.app.policy.require(identity.role, "conversation.write")
+            task_id = path.removeprefix("/api/tasks/").removesuffix("/position-size").rstrip("/")
+            _only_fields(body, {"position_size"})
+            task = self.app.tasks.set_position_size(identity, task_id, body.get("position_size"))
+            self.app.audit.record(AuditEvent(action="task.position_size", principal_id=identity.principal_id, tenant_id=identity.tenant_id, outcome="succeeded", decision="allow", reference=task_id, request_id=request_id))
+            self._json(HTTPStatus.OK, {"task": task})
+            return
+        if path.startswith("/api/tasks/") and path.endswith("/pin"):
+            self.app.policy.require(identity.role, "conversation.write")
+            task_id = path.removeprefix("/api/tasks/").removesuffix("/pin").rstrip("/")
+            _only_fields(body, {"pinned"})
+            task = self.app.tasks.set_pinned(identity, task_id, body.get("pinned"))
+            self.app.audit.record(AuditEvent(action="task.pin", principal_id=identity.principal_id, tenant_id=identity.tenant_id, outcome="succeeded", decision="allow", reference=task_id, request_id=request_id))
+            self._json(HTTPStatus.OK, {"task": task})
             return
         if path.startswith("/api/tasks/") and path.endswith("/rename"):
             self.app.policy.require(identity.role, "conversation.write")

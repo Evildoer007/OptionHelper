@@ -26,6 +26,8 @@
     {"source": "modules/backtester/module-guide.md", "target": "references/module-guides/backtester.md"},
     {"source": "modules/reporter/module-guide.md", "target": "references/module-guides/reporter.md"},
     {"source": "modules/designer/module-guide.md", "target": "references/module-guides/designer.md"},
+    {"source": "references/skill-user-guide.md", "target": "references/skill-user-guide.md"},
+    {"source": "references/skill-user-guide.html", "target": "references/skill-user-guide.html"},
     {"source": "references/optionlist.md", "target": "references/optionlist.md"},
     {"source": "references/optionlib.md", "target": "references/optionlib.md"},
     {"source": "references/knowledger-manager.md", "target": "references/knowledger-manager.md"},

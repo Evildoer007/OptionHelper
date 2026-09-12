@@ -4,6 +4,8 @@
 
 ## 快速开始
 
+日常操作、提问案例和结果解读请阅读[Skill使用说明页面](references/skill-user-guide.html)或[文字版](references/skill-user-guide.md)。这份说明随包提供，适用于对话式Skill；本README继续负责安装与配置。
+
 纯咨询、比较和条款解释只读取资料，不需要Python、iFind或Store。首次需要运行模块时，先完成第1至3步；只有需要实时数据时才继续第4步：
 
 1.把Skill解压到当前项目的Skill目录。

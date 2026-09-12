@@ -31,9 +31,9 @@ html[data-theme="dark"] .setup-page :is(.model-provider-card,.model-catalog-row)
 }
 
 .multi-agent-preset-card {
-  border-color: color-mix(in srgb, var(--color-rule) 82%, transparent);
+  border-color: var(--color-rule);
   border-radius: 16px;
-  box-shadow: 0 1px 0 color-mix(in srgb, var(--color-ink) 4%, transparent);
+  box-shadow: none;
 }
 
 .multi-agent-preset-card:hover:not(.is-disabled) {
@@ -42,9 +42,9 @@ html[data-theme="dark"] .setup-page :is(.model-provider-card,.model-catalog-row)
 }
 
 .multi-agent-preset-card.is-selected {
-  border-color: color-mix(in srgb, var(--color-brand-red) 52%, var(--color-rule));
-  background: color-mix(in srgb, var(--color-brand-red-soft) 42%, var(--color-paper));
-  box-shadow: 0 8px 24px color-mix(in srgb, var(--color-brand-red) 8%, transparent);
+  border-color: var(--color-rule-strong);
+  background: var(--color-paper);
+  box-shadow: none;
 }
 
 .multi-agent-preset-card__head {
@@ -61,8 +61,11 @@ html[data-theme="dark"] .setup-page :is(.model-provider-card,.model-catalog-row)
   line-height: 18px;
 }
 
+/* Keep diagram hover and keyboard focus inside the card's single frame. */
 .multi-agent-preset-diagram {
-  padding: 0 10px 10px;
+  min-width: 0;
+  margin: 0 12px 12px;
+  padding: 4px 0 8px;
 }
 
 .multi-agent-role-form {

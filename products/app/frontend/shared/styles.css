@@ -496,7 +496,7 @@ textarea:focus-visible {
 .task-list__row { position: relative; display: flex; align-items: stretch; min-width: 0; }
 .task-list__row .task-item { min-width: 0; flex: 1; padding-right: 44px; }
 .task-item__title { display: flex; min-width: 0; align-items: center; gap: 7px; overflow: hidden; white-space: nowrap; }
-.task-item__title > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.task-item__text { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .task-item__running-dot { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 999px; background: var(--accent, #c8102e); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent, #c8102e) 14%, transparent); }
 .task-menu-trigger {
   position: absolute;

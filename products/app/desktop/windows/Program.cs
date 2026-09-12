@@ -149,8 +149,10 @@ internal sealed class MainForm : Form
     {
         appOrigin = new Uri(url);
         Text = "OptionHelper";
-        Width = 1320;
-        Height = 860;
+        AutoScaleDimensions = new SizeF(96, 96);
+        AutoScaleMode = AutoScaleMode.Dpi;
+        ClientSize = new Size(1320, 860);
+        StartPosition = FormStartPosition.Manual;
         KeyPreview = true;
         BackColor = Color.FromArgb(247, 247, 247);
         uiPreferencesPath = Path.Combine(stateDirectory, "ui-preferences.json");
@@ -188,6 +190,31 @@ internal sealed class MainForm : Form
                 Close();
             }
         };
+    }
+
+    protected override void OnLoad(EventArgs eventArgs)
+    {
+        base.OnLoad(eventArgs);
+        // The handle now has the selected monitor's DPI. Match the macOS
+        // logical content size, then use a large, centered working-area fit.
+        // This runs only on first display; later user resizing stays untouched.
+        var workArea = Screen.FromHandle(Handle).WorkingArea;
+        var scale = DeviceDpi / 96.0;
+        var preferred = SizeFromClientSize(new Size(
+            (int)Math.Round(1320 * scale), (int)Math.Round(860 * scale)));
+        Bounds = InitialWindowBounds(workArea, preferred, DeviceDpi);
+    }
+
+    internal static Rectangle InitialWindowBounds(Rectangle workArea, Size preferred, int dpi)
+    {
+        var margin = Math.Clamp((int)Math.Round(24 * dpi / 96.0), 0,
+            Math.Min(workArea.Width, workArea.Height) / 4);
+        var width = Math.Min(Math.Max(1, workArea.Width - 2 * margin),
+            Math.Max(preferred.Width, (int)Math.Round(workArea.Width * 0.9)));
+        var height = Math.Min(Math.Max(1, workArea.Height - 2 * margin),
+            Math.Max(preferred.Height, (int)Math.Round(workArea.Height * 0.9)));
+        return new Rectangle(workArea.Left + (workArea.Width - width) / 2,
+            workArea.Top + (workArea.Height - height) / 2, width, height);
     }
 
     private bool IsSameOrigin(Uri url) => url.Scheme == appOrigin.Scheme

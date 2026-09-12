@@ -1,0 +1,33 @@
+{
+  "name_zh": "现金二元看跌",
+  "terms": {
+    "S0": 100.0,
+    "T": 1.0,
+    "exercise_style": "European",
+    "settlement": "cash",
+    "observation_price": "close",
+    "margin_call": false,
+    "K": 100.0,
+    "A": 20.0,
+    "Pi_0": 8.0,
+    "pricing_methods": [
+      "analytical",
+      "monte_carlo"
+    ]
+  },
+  "paths": [
+    {
+      "condition": "True",
+      "cases": [
+        {
+          "domain": "0 <= S_T <= K",
+          "pnl": "cash(0, -P) + cash(T, A)"
+        },
+        {
+          "domain": "S_T > K",
+          "pnl": "cash(0, -P)"
+        }
+      ]
+    }
+  ]
+}

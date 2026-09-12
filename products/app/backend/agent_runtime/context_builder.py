@@ -58,6 +58,7 @@ def conversation_tool_catalog(policy: AuthorizationPolicy, identity: SessionIden
     if policy.allows(identity.role, "report.full.request"):
         output_types.append("report")
     tools[-1] = {**tools[-1], "output_types": output_types}
+    tools.append({"name":"task.position_size", "description":"读取当前任务名义本金；仅用户明确要求调整时保存或清空。无参数表示查询，position_size为null表示清空。", "actions":["read", "set"]})
     tools.append({"name":"reporter.create_document", "description":"根据当前对话生成可编辑HTML、PDF或Word报告草稿，不要求先完成计算。", "actions":["create_document"]})
     return tools
 
@@ -90,6 +91,19 @@ class ContextBuilder:
             "module_run_refs": _refs(task.get("run_refs")),
             "module_run_facts": self._module_run_facts(identity, task.get("run_refs")),
         }
+        if task.get("position_size"):
+            from ..position_amounts import task_amounts, amount_fact_rows
+            facts["task_position_size"] = task["position_size"]
+            facts["position_size_rule"] = "仅复述已验证金额换算，保留原百分比结果与风险单位，不自行乘算或改合同。名义规模在定价与回测参数区设置；OptChat无额外界面控件，使用task.position_size读取或按用户明确要求修改。默认100万，清空不显示金额。"
+            if self._results is not None:
+                try:
+                    view = task_amounts(self._tasks, self._results, identity, task_id, references=task.get("run_refs", [])[-12:])
+                    by_run = {row["run_ref"]["run_id"]: row for row in facts["module_run_facts"]}
+                    for run in view["runs"]:
+                        if run["run_id"] in by_run:
+                            by_run[run["run_id"]]["facts"].extend(amount_fact_rows(view, run))
+                except (AuthorizationError, ValidationError, KeyError, OSError):
+                    facts["amount_facts_status"] = "unavailable"
         surface = self._tasks.model_surface(identity, task_id, controlled_facts=facts)
         return {
             "task": {
@@ -135,16 +149,35 @@ class ContextBuilder:
 class ResultStoreObservationBuilder:
     """Attach only independently verified ModuleRun facts to a tool observation."""
 
-    def __init__(self, results: ResultStore) -> None:
+    def __init__(self, results: ResultStore, tasks: TaskService | None = None) -> None:
         self._results = results
+        self._tasks = tasks
 
     def facts_for(
         self, identity: SessionIdentity, task_id: str, _tool: str, value: Mapping[str, Any],
     ) -> dict[str, Any]:
+        if _tool == "task.position_size" and self._tasks is not None:
+            from ..position_amounts import position_size_facts, task_amounts, amount_fact_rows
+            setting = self._tasks.position_size(identity, task_id)
+            facts = position_size_facts(setting)
+            if setting:
+                references = self._tasks.get(identity, task_id).get("run_refs", [])[-12:]
+                view = task_amounts(self._tasks, self._results, identity, task_id, references=references, position=setting)
+                for run in view["runs"]:
+                    facts.extend(amount_fact_rows(view, run))
+            return {"facts": facts}
         reference = value.get("module_run_ref")
         if not isinstance(reference, dict) or reference.get("task_id") != task_id:
             return {}
-        return self._results.verified_fact_summary(identity, reference)
+        summary = self._results.verified_fact_summary(identity, reference)
+        if self._tasks is not None:
+            from ..position_amounts import task_amounts, amount_fact_rows
+            setting = self._tasks.position_size(identity, task_id)
+            if setting:
+                view = task_amounts(self._tasks, self._results, identity, task_id, references=[reference], position=setting)
+                for run in view["runs"]:
+                    summary["facts"].extend(amount_fact_rows(view, run))
+        return summary
 
 
 def _surface_message_fact(value: Mapping[str, Any], identity: SessionIdentity) -> dict[str, Any]:

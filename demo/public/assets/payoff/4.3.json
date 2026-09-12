@@ -1,0 +1,52 @@
+{
+  "name_zh": "向上敲入看涨",
+  "terms": {
+    "S0": 100.0,
+    "T": 1.0,
+    "exercise_style": "European",
+    "settlement": "cash",
+    "observation_price": "close",
+    "margin_call": false,
+    "H_KI": 120.0,
+    "O_KI": "daily",
+    "K": 100.0,
+    "Pi_0": 5.0,
+    "pricing_methods": [
+      "analytical",
+      "monte_carlo"
+    ],
+    "constraints": [
+      "K < H_in",
+      "O_in == 'daily'"
+    ],
+    "n_C": 1.0,
+    "monitor": {
+      "terminal_in_observed": "require_maturity_observation(S_t[O_in], T)",
+      "tau_in": "first_time(S_t[O_in] >= H_in)"
+    }
+  },
+  "paths": [
+    {
+      "condition": "tau_in == inf",
+      "cases": [
+        {
+          "domain": "0 <= S_T < H_in",
+          "pnl": "cash(0, -n_C * P)"
+        }
+      ]
+    },
+    {
+      "condition": "tau_in < inf",
+      "cases": [
+        {
+          "domain": "S_T > K",
+          "pnl": "cash(0, -n_C * P) + cash(T, u * n_C * (S_T - K))"
+        },
+        {
+          "domain": "0 <= S_T <= K",
+          "pnl": "cash(0, -n_C * P)"
+        }
+      ]
+    }
+  ]
+}

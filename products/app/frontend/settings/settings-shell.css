@@ -322,7 +322,7 @@ html[data-theme="dark"] .setup-page .form-foot {
 /* The focused preset diagram remains accessible without a brand-red frame. */
 .setup-page .multi-agent-preset-diagram[data-preset-diagram]:focus-visible {
   outline: 2px solid var(--color-rule-strong);
-  outline-offset: 2px;
+  outline-offset: -2px;
 }
 
 .setup-page .multi-agent-role-actions {

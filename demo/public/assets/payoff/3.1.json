@@ -1,0 +1,36 @@
+{
+  "name_zh": "跨式",
+  "terms": {
+    "S0": 100.0,
+    "T": 1.0,
+    "exercise_style": "European",
+    "settlement": "cash",
+    "observation_price": "close",
+    "margin_call": false,
+    "K": 100.0,
+    "P_net": 14.0,
+    "pricing_methods": [
+      "analytical",
+      "monte_carlo"
+    ]
+  },
+  "paths": [
+    {
+      "condition": "True",
+      "cases": [
+        {
+          "domain": "0 <= S_T < K",
+          "pnl": "cash(0, -P_net) + cash(T, u * (K - S_T))"
+        },
+        {
+          "domain": "S_T == K",
+          "pnl": "cash(0, -P_net)"
+        },
+        {
+          "domain": "S_T > K",
+          "pnl": "cash(0, -P_net) + cash(T, u * (S_T - K))"
+        }
+      ]
+    }
+  ]
+}

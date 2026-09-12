@@ -422,6 +422,10 @@ export async function initializeWorkspace(mode, { onModeChange } = {}) {
 
   const shell = document.querySelector("[data-workspace-shell]");
   if (!shell) return session;
+  const { initializeUserGuide } = await import("./user-guide.js");
+  initializeUserGuide(shell);
+  const { initializePositionSize } = await import("./position-size.js");
+  initializePositionSize(shell);
   shell.dataset.mode = mode;
   shell.dataset.hasDesk = String(hasDesk);
   const modeSwitch = shell.querySelector("[data-mode-switch]");
@@ -1052,7 +1056,16 @@ export function renderTaskList(target, tasks, activeTaskId, onSelect, actions = 
     doc.removeEventListener("scroll", onViewportChange, true);
     doc.defaultView?.removeEventListener("resize", onViewportChange);
   };
-  const entries = tasks.map((task) => {
+  const pinIcon = () => {
+    const icon = createIcon(["M5 2.5h6M6 2.5v4l-2 2v1h8v-1l-2-2v-4M8 9.5v4"]);
+    icon.querySelector("path").setAttribute("fill", "none");
+    icon.querySelector("path").setAttribute("stroke", "currentColor");
+    icon.querySelector("path").setAttribute("stroke-width", "1.3");
+    icon.querySelector("path").setAttribute("stroke-linecap", "round");
+    icon.querySelector("path").setAttribute("stroke-linejoin", "round");
+    return icon;
+  };
+  const entries = [...tasks].sort((a, b) => Number(b.pinned === true) - Number(a.pinned === true)).map((task) => {
     const row = doc.createElement("div");
     row.className = "task-list__row";
     const button = doc.createElement("button");
@@ -1062,19 +1075,28 @@ export function renderTaskList(target, tasks, activeTaskId, onSelect, actions = 
     button.setAttribute("aria-current", String(task.task_id === activeTaskId));
     const taskTitle = document.createElement("strong");
     taskTitle.className = "task-item__title";
+    const activityDot = doc.createElement("span");
+    activityDot.className = "task-item__running-dot";
+    const activities = (Array.isArray(task.active_operations) ? task.active_operations : [])
+      .map(operation => operationActivity(operation.state));
+    const activity = ["running", "cancelling", "waiting", "queued", "uncertain"].find(state => activities.includes(state)) || "idle";
+    const label = { running: "正在运行", cancelling: "正在取消", waiting: "等待处理", queued: "排队中", uncertain: "状态待确认", idle: "空闲" }[activity];
+    activityDot.dataset.state = activity;
+    activityDot.setAttribute("role", "img");
+    activityDot.setAttribute("aria-label", label);
+    activityDot.title = label;
     const titleText = doc.createElement("span");
+    titleText.className = "task-item__text";
     titleText.textContent = String(task.subject || "新建研究任务");
-    taskTitle.append(titleText);
-    if (Array.isArray(task.active_operations) && task.active_operations.length) {
-      const running = doc.createElement("span");
-      running.className = "task-item__running-dot";
-      const activities = task.active_operations.map(operation => operationActivity(operation.state));
-      const activity = ["cancelling", "running", "waiting", "queued"].find(state => activities.includes(state)) || "uncertain";
-      const label = { running: "正在运行", cancelling: "正在取消", waiting: "等待处理", queued: "排队中", uncertain: "状态待确认" }[activity];
-      running.dataset.state = activity;
-      running.setAttribute("aria-label", label);
-      running.title = label;
-      taskTitle.append(running);
+    taskTitle.append(activityDot, titleText);
+    if (task.pinned === true) {
+      const pin = doc.createElement("span");
+      pin.className = "task-item__pin";
+      pin.setAttribute("role", "img");
+      pin.setAttribute("aria-label", "已置顶");
+      pin.title = "已置顶";
+      pin.append(pinIcon());
+      taskTitle.append(pin);
     }
     const taskDate = document.createElement("small");
     taskDate.className = "task-item__date";
@@ -1082,7 +1104,7 @@ export function renderTaskList(target, tasks, activeTaskId, onSelect, actions = 
     button.append(taskTitle, taskDate);
     button.addEventListener("click", () => onSelect(button.dataset.taskId));
     row.append(button);
-    if (typeof actions.onRename === "function" || typeof actions.onDelete === "function") {
+    if (typeof actions.onPin === "function" || typeof actions.onRename === "function" || typeof actions.onDelete === "function") {
       const targetScope = String(target.id || "tasks").replace(/[^A-Za-z0-9_-]/g, "-");
       const menuId = `task-menu-${targetScope}-${task.task_id}`;
       const trigger = doc.createElement("button");
@@ -1118,6 +1140,7 @@ export function renderTaskList(target, tasks, activeTaskId, onSelect, actions = 
         });
         menu.append(item);
       };
+      addAction(task.pinned === true ? "取消置顶" : "置顶任务", "task-menu__action", actions.onPin, pinIcon);
       addAction("重命名", "task-menu__action", actions.onRename, editIcon);
       addAction("删除任务", "task-menu__action task-menu__action--danger", actions.onDelete, trashIcon);
       trigger.addEventListener("click", (event) => {
@@ -1634,8 +1657,9 @@ export function renderMessages(target, messages, emptyText = "输入任务要求
       next.replaceWith(previous);
     }
   }
+  const previousScrollTop = target.scrollTop;
   target.replaceChildren(...rendered);
-  target.scrollTop = target.scrollHeight;
+  if (!target._conversationScroll?.refresh({ previousScrollTop })) target.scrollTop = target.scrollHeight;
 }
 
 export function renderReports(target, reports) {
@@ -1645,7 +1669,7 @@ export function renderReports(target, reports) {
     return;
   }
   target.replaceChildren(...reports.map((report) => {
-    const { title, preferred } = reportPresentation(report);
+    const { title, preferred, artifacts } = reportPresentation(report);
     const card = document.createElement("article");
     card.className = "report-item";
     const heading = document.createElement("div");
@@ -1660,22 +1684,38 @@ export function renderReports(target, reports) {
     setStatusIcon(meta, statusLabel, status);
     heading.append(name, meta);
     card.append(heading);
-    if (preferred?.name) {
-      const encodedArtifactName = String(preferred.name).split("/").map(encodeURIComponent).join("/");
-      const artifactPath = preferred.url || `/api/reports/${encodeURIComponent(report.report_run_id)}/artifacts/${encodedArtifactName}`;
+    const visibleArtifacts = [preferred, ...artifacts.filter(item => item !== preferred)]
+      .filter((item, index, items) => item?.name && !item.name.startsWith("assets/")
+        && /\.(html|pdf|docx)$/i.test(item.name)
+        && items.findIndex(other => other?.name === item.name && other?.url === item.url) === index);
+    for (const artifact of visibleArtifacts) {
+      const artifactTitle = artifact === preferred ? title
+        : artifact.name === "position-amounts.html" ? "名义规模金额附表（原始交付）"
+        : artifact.display_name || artifact.name;
+      if (artifact !== preferred) {
+        const label = document.createElement("div");
+        label.className = "report-item__heading";
+        const caption = document.createElement("span");
+        caption.className = "report-meta";
+        caption.textContent = artifactTitle;
+        label.append(caption);
+        card.append(label);
+      }
+      const encodedArtifactName = String(artifact.name).split("/").map(encodeURIComponent).join("/");
+      const artifactPath = artifact.url || `/api/reports/${encodeURIComponent(report.report_run_id)}/artifacts/${encodedArtifactName}`;
       const actions = document.createElement("div");
       actions.className = "report-item__actions";
       const preview = document.createElement("a");
       preview.href = artifactPath;
       preview.target = "_blank";
       preview.rel = "noopener";
-      setMessageActionIcon(preview, `预览${title}`, "M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Zm13 0a3 3 0 1 0-6 0 3 3 0 0 0 6 0Z");
+      setMessageActionIcon(preview, `预览${artifactTitle}`, "M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Zm13 0a3 3 0 1 0-6 0 3 3 0 0 0 6 0Z");
       preview.title = "预览报告";
       const download = document.createElement("a");
-      download.href = `${artifactPath}?download=1#display_name=${encodeURIComponent(preferred.display_name || title)}`;
+      download.href = `${artifactPath}?download=1#display_name=${encodeURIComponent(artifact === preferred ? artifact.display_name || title : artifactTitle)}`;
       download.target = "_blank";
       download.rel = "noopener";
-      setMessageActionIcon(download, `下载${title}`, "M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5");
+      setMessageActionIcon(download, `下载${artifactTitle}`, "M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5");
       download.title = "下载报告";
       actions.append(preview, download);
       card.append(actions);

@@ -254,7 +254,7 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
             forMainFrameOnly: true
         )
         let runtimeStatusScript = WKUserScript(
-            source: "(()=>{const post=(state,count)=>window.webkit?.messageHandlers?.optionhelperRuntime?.postMessage({type:'active_operations',state,...(Number.isFinite(count)?{count}: {})});const refresh=()=>fetch('/api/runtime/active-operations').then((response)=>{if(!response.ok)throw new Error('runtime_status_unavailable');return response.json();}).then((value)=>{const count=value?.active_count;if(!Number.isInteger(count)||count<0)throw new Error('runtime_status_invalid');post('ready',count);}).catch(()=>post('recovering'));addEventListener('pageshow',refresh);setInterval(refresh,1400);refresh();})();",
+            source: "(()=>{const post=(state,count)=>window.webkit?.messageHandlers?.optionhelperRuntime?.postMessage({type:'active_operations',state,...(Number.isFinite(count)?{count}: {})});let inFlight=false;const refresh=()=>{if(inFlight)return;inFlight=true;return fetch('/api/runtime/active-operations').then((response)=>{if(!response.ok)throw new Error('runtime_status_unavailable');return response.json();}).then((value)=>{const count=value?.active_count;if(!Number.isInteger(count)||count<0)throw new Error('runtime_status_invalid');post('ready',count);}).catch(()=>post('recovering')).finally(()=>{inFlight=false;});};addEventListener('pageshow',refresh);setInterval(refresh,1400);refresh();})();",
             injectionTime: .atDocumentEnd,
             forMainFrameOnly: true
         )

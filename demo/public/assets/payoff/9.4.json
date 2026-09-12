@@ -1,0 +1,39 @@
+{
+  "name_zh": "方差互换",
+  "terms": {
+    "T": 0.08333333333333333,
+    "Ksig": 13.0,
+    "Nvar": 2500.0,
+    "annualization_days": 244,
+    "Ovar": "daily",
+    "settlement": "cash",
+    "observation_price": "close",
+    "margin_call": false,
+    "derived_terms": {
+      "Nvega": "2 * N_V * K",
+      "G": "max(0.1 * K * N_Vega, 3 * N_Vega)"
+    },
+    "monitor": {
+      "sigma_realized": "(realized_variance(S_t[O_var], n_ann) * 10000) ** 0.5"
+    },
+    "pricing_methods": [
+      "analytical",
+      "monte_carlo"
+    ],
+    "constraints": [
+      "O_var == 'daily'",
+      "n_ann == 244"
+    ]
+  },
+  "paths": [
+    {
+      "condition": "True",
+      "cases": [
+        {
+          "domain": "sigma_realized >= 0",
+          "pnl": "cash(T, N_V * (sigma_realized ** 2 - K ** 2))"
+        }
+      ]
+    }
+  ]
+}

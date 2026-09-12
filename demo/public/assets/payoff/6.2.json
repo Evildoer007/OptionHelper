@@ -1,0 +1,58 @@
+{
+  "name_zh": "安全气囊Airbag（上涨收益封顶）",
+  "terms": {
+    "S0": 100.0,
+    "T": 1.0,
+    "N": 100.0,
+    "B": 80.0,
+    "g": 0.3,
+    "r_cap": 0.25,
+    "p": 0.0,
+    "O_KI": "daily",
+    "settlement": "cash",
+    "observation_price": "close",
+    "margin_call": true,
+    "monitor": {
+      "tau_in": "first_time(S_t[O_in] <= H_in)"
+    },
+    "derived_terms": {
+      "G": "N * g"
+    },
+    "pricing_methods": [
+      "analytical",
+      "monte_carlo"
+    ],
+    "constraints": [
+      "p == 0",
+      "r_cap > 0"
+    ]
+  },
+  "paths": [
+    {
+      "condition": "tau_in < inf",
+      "cases": [
+        {
+          "domain": "S_T >= 0",
+          "pnl": "cash(T, N * r_T)"
+        }
+      ]
+    },
+    {
+      "condition": "tau_in == inf",
+      "cases": [
+        {
+          "domain": "r_T >= r_cap",
+          "pnl": "cash(T, N * r_cap)"
+        },
+        {
+          "domain": "0 < r_T < r_cap",
+          "pnl": "cash(T, N * r_T)"
+        },
+        {
+          "domain": "r_T <= 0",
+          "pnl": "cash(T, 0)"
+        }
+      ]
+    }
+  ]
+}

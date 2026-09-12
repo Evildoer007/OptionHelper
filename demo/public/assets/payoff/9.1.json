@@ -1,0 +1,36 @@
+{
+  "name_zh": "Worst-Of香草看涨期权",
+  "terms": {
+    "S0Vec": [
+      100.0,
+      100.0
+    ],
+    "T": 0.08333333333333333,
+    "K": 100.0,
+    "N": 1.0,
+    "p": 0.0159,
+    "exercise_style": "European",
+    "settlement": "cash",
+    "observation_price": "close",
+    "margin_call": false,
+    "pricing_methods": [
+      "analytical",
+      "monte_carlo"
+    ]
+  },
+  "paths": [
+    {
+      "condition": "True",
+      "cases": [
+        {
+          "domain": "0 <= W_T <= K",
+          "pnl": "cash(0, -N * p)"
+        },
+        {
+          "domain": "W_T > K",
+          "pnl": "cash(0, -N * p) + cash(T, N * (W_T - K) / 100)"
+        }
+      ]
+    }
+  ]
+}

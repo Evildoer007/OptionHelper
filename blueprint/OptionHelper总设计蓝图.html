@@ -1,0 +1,339 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OptionHelper总设计蓝图</title>
+  <style>
+    :root{--red:#C8102E;--deep:#890D26;--red-soft:#F8E9EC;--ink:#252525;--muted:#68727B;--line:#D8DDE0;--paper:#fff;--ground:#F4F4F4;--panel:#FAFBFB;--blue:#315F78;--blue-soft:#E9F0F3;--green:#326B52;--green-soft:#E9F2ED;--gold:#855E22;--gold-soft:#F5EFE2;--font:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",Arial,sans-serif;--mono:"SFMono-Regular",Consolas,monospace}
+    *{box-sizing:border-box}html{scroll-behavior:smooth;background:var(--ground)}body{margin:0;color:var(--ink);font:15px/1.72 var(--font);background:var(--ground)}
+    a{color:inherit}.shell{display:grid;grid-template-columns:260px minmax(0,1fr);max-width:1660px;min-height:100vh;margin:auto;background:var(--paper);box-shadow:0 16px 44px rgba(30,36,42,.08)}
+    .toc{position:sticky;top:0;height:100vh;overflow:auto;padding:28px 20px;background:#eef1f2;border-right:1px solid var(--line)}.brand{padding:0 8px 20px;margin-bottom:14px;border-bottom:2px solid var(--red)}.brand strong{display:block;font-size:18px}.brand span{font-size:12px;color:var(--muted)}
+    nav{display:grid;gap:3px}nav a{text-decoration:none;padding:7px 9px;border-radius:7px;font-size:13px;color:#414a52}nav a:hover,nav a:focus-visible{color:var(--deep);background:#fff;outline:0}nav a.sub{padding-left:22px;font-size:12px;color:var(--muted)}
+    main{min-width:0;padding:44px clamp(28px,4vw,68px) 70px}.hero{padding:10px 0 34px;margin-bottom:30px;border-bottom:1px solid var(--line)}.eyebrow{color:var(--red);font-size:12px;font-weight:800;letter-spacing:.12em}h1,h2,h3{line-height:1.24;letter-spacing:-.025em}h1{margin:5px 0 12px;font-size:clamp(34px,4vw,54px)}h2{margin:0 0 18px;font-size:27px}h3{margin:28px 0 11px;font-size:19px}p{margin:8px 0}.summary{max-width:930px;color:#48525b;font-size:17px}.meta{display:flex;flex-wrap:wrap;gap:9px;margin-top:20px}.meta span{padding:5px 9px;border:1px solid var(--line);border-radius:999px;color:var(--muted);font-size:12px;background:var(--panel)}
+    section{padding:34px 0;border-bottom:1px solid var(--line)}section:last-of-type{border-bottom:0}.callout{margin:17px 0;padding:15px 17px;border-left:4px solid var(--red);border-radius:0 9px 9px 0;background:var(--red-soft)}.callout.info{border-color:var(--blue);background:var(--blue-soft)}.callout.warn{border-color:var(--gold);background:var(--gold-soft)}
+    .grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin:15px 0}.grid.three{grid-template-columns:repeat(3,minmax(0,1fr))}.card{padding:17px;border:1px solid var(--line);border-radius:10px;background:var(--panel)}.card h3{margin:0 0 7px;font-size:16px}.card p{color:#505a63;font-size:14px}
+    .table-wrap{overflow:auto;margin:14px 0 22px;border:1px solid var(--line);border-radius:10px;background:#fff}table{width:100%;min-width:760px;border-collapse:collapse}th,td{padding:11px 13px;text-align:left;vertical-align:top;border-bottom:1px solid var(--line)}th{font-size:12px;color:#4a535b;background:#f0f2f3;white-space:nowrap}td{font-size:13px}tr:last-child td{border-bottom:0}
+    code{font:12px var(--mono);color:var(--deep);background:var(--red-soft);padding:.08rem .3rem;border-radius:4px}.tree{padding:16px;overflow:auto;border-radius:9px;color:#edf1f2;background:#22272b;font:12px/1.62 var(--mono);white-space:pre-wrap}.status{display:inline-block;padding:2px 7px;border-radius:999px;font-size:11px;font-weight:800}.done{color:var(--green);background:var(--green-soft)}.boundary{color:var(--gold);background:var(--gold-soft)}.source{color:var(--blue);background:var(--blue-soft)}
+    figure{margin:20px 0 27px;border:1px solid var(--line);border-radius:12px;overflow:hidden;background:#fff}figcaption{padding:11px 15px;border-bottom:1px solid var(--line);font-size:13px;font-weight:800;background:var(--panel)}svg{display:block;width:100%;height:auto;min-height:250px}.node{stroke-width:1.5}.red{fill:var(--red-soft);stroke:var(--red)}.blue{fill:var(--blue-soft);stroke:var(--blue)}.green{fill:var(--green-soft);stroke:var(--green)}.gold{fill:var(--gold-soft);stroke:var(--gold)}.gray{fill:#f2f4f5;stroke:#7b858d}.edge{fill:none;stroke:#77818a;stroke-width:1.6;marker-end:url(#arrow)}.label{font:700 14px var(--font);fill:var(--ink);text-anchor:middle}.small{font:11px var(--font);fill:var(--muted);text-anchor:middle}footer{padding-top:30px;color:var(--muted);font-size:12px}
+    @media(max-width:980px){.shell{grid-template-columns:1fr}.toc{position:relative;height:auto;border-right:0;border-bottom:1px solid var(--line)}nav{grid-template-columns:repeat(2,minmax(0,1fr))}nav a.sub{display:none}.grid,.grid.three{grid-template-columns:1fr}main{padding:30px 22px 55px}}
+    @media print{body{background:#fff}.shell{display:block;box-shadow:none}.toc{display:none}main{padding:0}figure,.card,.table-wrap{break-inside:avoid}}
+  </style>
+</head>
+<body>
+<div class="shell">
+  <aside class="toc" aria-label="蓝图目录">
+    <div class="brand"><strong>OptionHelper</strong><span>总设计蓝图</span></div>
+    <nav>
+      <a href="#scope">0.文档边界</a><a href="#overview">1.系统全景</a><a class="sub" href="#principles">1.1原则</a>
+      <a href="#workflows">2.三类工作流</a><a class="sub" href="#preflight">2.1运行预检</a><a class="sub" href="#recommendation">2.2推荐闭环</a>
+      <a href="#modules">3.七模块职责</a><a href="#objects">4.对象与Store</a><a href="#app">5.App架构</a><a class="sub" href="#agents">5.1多智能体</a><a class="sub" href="#frontend">5.2前端</a>
+      <a href="#delivery">6.交付体系</a><a href="#package">7.Skill与发布</a><a href="#repository">8.仓库治理</a><a href="#baseline">9.当前实现基线</a><a href="#future">10.后续方向</a>
+    </nav>
+  </aside>
+  <main>
+    <header class="hero">
+      <div class="eyebrow">ARCHITECTURE BLUEPRINT</div>
+      <h1>OptionHelper总设计蓝图</h1>
+      <p class="summary">本蓝图按当前开发仓库重建，统一说明Skill、App、七个模块、受控对象、工作流、报告交付和发布边界。金融条款以OptionLib与OptionReg为准，运行能力以当前源码、测试和发行Manifest为准。</p>
+      <div class="meta"><span>口径核对：2026-09-06</span><span>开发源：无独立发布版本</span><span>当前公开发行目标：v1.0.0</span></div>
+    </header>
+
+    <section id="scope">
+      <h2>0.文档边界</h2>
+      <div class="callout"><strong>当前实现基线：</strong>本文件以当前公开协议、CONTEXT和可追溯验收证据为准，不把旧蓝图、历史产物或计划功能当作现状，也不建立第二套协议。</div>
+      <div class="callout info"><strong>本次核对范围：</strong>本次仅核对Core、Backtester、Reporter公开协议与CONTEXT，并运行蓝图的两个定向测试文件。其余实现说明沿用既有记录，不表示本次重新验收；未执行全量、App、模型、实时iFind或安装包验收。候选与<code>versions/v1.0.0/</code>发行状态须凭独立证据确认。</div>
+      <div class="grid three">
+        <article class="card"><h3>蓝图负责</h3><p>系统边界、模块关系、工作流、对象流、页面宿主、交付与发布规则。</p></article>
+        <article class="card"><h3>领域文档负责</h3><p><code>CONTEXT.md</code>定义共同事实，<code>SKILL.md</code>定义对话行为，各模块指南定义输入、输出和拒绝条件。</p></article>
+        <article class="card"><h3>机器事实负责</h3><p>OptionReg、Schema、Store、Manifest和测试决定可执行字段、哈希与当前能力。</p></article>
+      </div>
+      <p>用户最新明确决定、CONTEXT与当前公开协议约束本蓝图；旧测试断言与历史材料不能反向定义现行口径。各类验收证据须分别记录。</p>
+    </section>
+
+    <section id="overview">
+      <h2>1.系统全景</h2>
+      <figure><figcaption>图1：两个产品、三种入口、一套Capability</figcaption>
+        <svg viewBox="0 0 1180 450" role="img" aria-labelledby="diagram-overview-title diagram-overview-desc">
+          <title id="diagram-overview-title">OptionHelper产品与能力总览</title><desc id="diagram-overview-desc">外部Agent Host通过Skill、OptChat和OptDesk通过App分别调用同源计算载荷，生成受控数据、计算和交付事实。</desc>
+          <defs><marker id="arrow" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto"><path d="M0 0v6l9-3z" fill="#77818a"/></marker></defs>
+          <rect class="node blue" x="45" y="55" width="190" height="76" rx="12"/><text class="label" x="140" y="87"><tspan x="140">外部Agent Host</tspan><tspan class="small" x="140" dy="21">安装OptionHelper Skill</tspan></text>
+          <rect class="node blue" x="45" y="187" width="190" height="76" rx="12"/><text class="label" x="140" y="219"><tspan x="140">OptChat</tspan><tspan class="small" x="140" dy="21">App对话与工作流</tspan></text>
+          <rect class="node blue" x="45" y="319" width="190" height="76" rx="12"/><text class="label" x="140" y="351"><tspan x="140">OptDesk</tspan><tspan class="small" x="140" dy="21">管理员模块操作台</tspan></text>
+          <rect class="node red" x="350" y="120" width="250" height="210" rx="16"/><text class="label" x="475" y="157"><tspan x="475">共享计算载荷</tspan><tspan class="small" x="475" dy="28">Core协议与合同</tspan><tspan class="small" x="475" dy="20">七个能力模块</tspan><tspan class="small" x="475" dy="20">Knowledger与正式目录</tspan><tspan class="small" x="475" dy="20">Reporter与Designer资源</tspan><tspan class="small" x="475" dy="20">共享文件哈希</tspan></text>
+          <rect class="node green" x="720" y="55" width="200" height="76" rx="12"/><text class="label" x="820" y="87"><tspan x="820">数据与合同事实</tspan><tspan class="small" x="820" dy="21">DataAsset · ResolvedContract</tspan></text>
+          <rect class="node green" x="720" y="187" width="200" height="76" rx="12"/><text class="label" x="820" y="219"><tspan x="820">计算事实</tspan><tspan class="small" x="820" dy="21">ModuleRun</tspan></text>
+          <rect class="node green" x="720" y="319" width="200" height="76" rx="12"/><text class="label" x="820" y="351"><tspan x="820">交付事实</tspan><tspan class="small" x="820" dy="21">ReportRun</tspan></text>
+          <rect class="node gold" x="990" y="177" width="150" height="96" rx="12"/><text class="label" x="1065" y="210"><tspan x="1065">HTML · PDF</tspan><tspan class="small" x="1065" dy="22">Card · Report · Quote</tspan></text>
+          <path class="edge" d="M235 93H350"/><path class="edge" d="M235 225H350"/><path class="edge" d="M235 357H350"/><path class="edge" d="M600 170C650 140 670 100 720 93"/><path class="edge" d="M600 225H720"/><path class="edge" d="M600 280C650 310 670 350 720 357"/><path class="edge" d="M920 225H990"/>
+        </svg>
+      </figure>
+      <div class="table-wrap"><table><thead><tr><th>入口</th><th>拥有的能力</th><th>不得拥有</th></tr></thead><tbody>
+        <tr><td>外部Skill Host</td><td>宿主模型、会话、工具调用和项目目录。</td><td>不得复制模块算法、绕过Reporter生成正式报告或修改Skill源码完成普通分析。</td></tr>
+        <tr><td>OptChat</td><td>App任务、模型路由、单Agent或多智能体推荐、结果解释和交付。</td><td>不得读取物理结果目录或在模型文本中拼造ModuleRun。</td></tr>
+        <tr><td>OptDesk</td><td>管理员直接操作DataFetcher、Payoffer、Pricer、Backtester和Reporter页面。</td><td>不得绕过合同冻结、ToolGateway、权限和ResultStore。</td></tr>
+      </tbody></table></div>
+      <h3 id="principles">1.1架构原则</h3>
+      <div class="grid three">
+        <article class="card"><h3>一套金融实现</h3><p>Skill与App共用同一份受哈希绑定的计算载荷。App单独加入五个操作页面和运行壳层，但不复制Knowledger、合同解释器、定价或回测实现。</p></article>
+        <article class="card"><h3>计算模块并列</h3><p>Payoffer、Pricer、Backtester共享ResolvedContract，但彼此不调用；顶层工作流按用户目标编排。</p></article>
+        <article class="card"><h3>报告不重新计算</h3><p>Reporter只解析明确RunRef，Designer只渲染冻结内容。报告存在不等于计算覆盖完整。</p></article>
+        <article class="card"><h3>结果不可变</h3><p>DataAsset、ModuleRun和ReportRun写入受控Store，通过受控引用、文件完整性校验和提交标记复验。</p></article>
+        <article class="card"><h3>公开口径收敛</h3><p>面向用户的估值、回测和报告只展示百分比，不投影内部金额、现金流、名义本金和物理路径。</p></article>
+        <article class="card"><h3>版本只属于发行</h3><p>开发目录和普通文件名不携带发布版本；版本号只进入正式Manifest、安装物名称和发行归档。</p></article>
+      </div>
+    </section>
+
+    <section id="workflows">
+      <h2>2.三类工作流</h2>
+      <figure><figcaption>图2：用户请求的唯一分流</figcaption>
+        <svg viewBox="0 0 1180 470" role="img" aria-labelledby="diagram-workflows-title diagram-workflows-desc">
+          <title id="diagram-workflows-title">OptionHelper三类工作流</title><desc id="diagram-workflows-desc">用户请求分为咨询解释、指定模块运行、推荐与正式交付三类，分别进入直接答复、结构化运行和推荐流程。</desc>
+          <rect class="node gray" x="455" y="30" width="270" height="68" rx="12"/><text class="label" x="590" y="70">用户自然语言需求</text>
+          <rect class="node blue" x="55" y="160" width="280" height="92" rx="12"/><text class="label" x="195" y="193"><tspan x="195">A.咨询与解释</tspan><tspan class="small" x="195" dy="23">知识、条款、比较、已有结果说明</tspan></text>
+          <rect class="node gold" x="450" y="160" width="280" height="92" rx="12"/><text class="label" x="590" y="193"><tspan x="590">B.指定模块运行</tspan><tspan class="small" x="590" dy="23">取数、收益、估值或回测</tspan></text>
+          <rect class="node red" x="845" y="160" width="280" height="92" rx="12"/><text class="label" x="985" y="193"><tspan x="985">C.推荐与正式交付</tspan><tspan class="small" x="985" dy="23">推荐结构、确认条款、按需计算</tspan></text>
+          <rect class="node green" x="55" y="335" width="280" height="82" rx="12"/><text class="label" x="195" y="366"><tspan x="195">直接回答</tspan><tspan class="small" x="195" dy="21">不要求Python、iFind或Store</tspan></text>
+          <rect class="node green" x="450" y="335" width="280" height="82" rx="12"/><text class="label" x="590" y="366"><tspan x="590">结构化ModuleRun</tspan><tspan class="small" x="590" dy="21">需要报告时再交Reporter</tspan></text>
+          <rect class="node green" x="845" y="335" width="280" height="82" rx="12"/><text class="label" x="985" y="366"><tspan x="985">RecommendationSet</tspan><tspan class="small" x="985" dy="21">确认或调整后执行</tspan></text>
+          <path class="edge" d="M590 98C430 120 300 130 195 160"/><path class="edge" d="M590 98V160"/><path class="edge" d="M590 98C750 120 880 130 985 160"/><path class="edge" d="M195 252V335"/><path class="edge" d="M590 252V335"/><path class="edge" d="M985 252V335"/>
+        </svg>
+      </figure>
+      <div class="table-wrap"><table><thead><tr><th>工作流</th><th>进入条件</th><th>默认行为</th><th>提问边界</th></tr></thead><tbody>
+        <tr><td>A.咨询与解释</td><td>知识、条款、比较、已有结果解释和普通期权讨论。</td><td>使用OptionList、OptionLib和已有事实直接回答，不启动运行时。</td><td>不询问Python、数据接口或报告格式。</td></tr>
+        <tr><td>B.指定模块运行</td><td>用户明确要求取数、收益结构、估值、Greeks或回测，或给定产品与合同。</td><td>按需调用一个或多个模块；用户未要求报告时不主动生成报告。</td><td>合并确认会改变计算的缺口。用户覆盖参数后重新冻结输入并重算受影响模块。</td></tr>
+        <tr><td>C.推荐与正式交付</td><td>用户给出观点、期限和风险约束并请求推荐，或明确要求Card、Report、Quote。</td><td>推荐请求进入Recommender；已指定产品的正式报告直接运行所需模块。</td><td>条款确需取舍时展示合同并一次确认；默认HTML，不单独询问版式。</td></tr>
+      </tbody></table></div>
+      <h3 id="preflight">2.1运行预检与数据策略</h3>
+      <ol><li>纯咨询不做运行预检。</li><li>首次执行模块时展示可用Python解释器并由用户选择；同一任务后续继续使用已选解释器。</li><li>检查锁定依赖和项目外部Store；未经确认不自动安装依赖或更换环境。</li><li>只有需要新市场数据时才检查iFind Refresh Token。已有合格DataAssetRef或ModuleRun时不重复取数。</li><li>DataFetcher优先实时获取，不无提示回退本地CSV，不要求Access Token。</li></ol>
+      <h3 id="recommendation">2.2推荐、合同确认与交付闭环</h3>
+      <figure><figcaption>图3：推荐到报告的受控闭环</figcaption>
+        <svg viewBox="0 0 1200 340" role="img" aria-labelledby="diagram-recommendation-title diagram-recommendation-desc">
+          <title id="diagram-recommendation-title">推荐到报告流程</title><desc id="diagram-recommendation-desc">用户观点经Recommender形成候选和合同，按需运行三个计算模块，再由Reporter和Designer完成正式交付。</desc>
+          <rect class="node blue" x="30" y="130" width="145" height="72" rx="10"/><text class="label" x="102" y="160"><tspan x="102">用户观点</tspan><tspan class="small" x="102" dy="20">期限与约束</tspan></text>
+          <rect class="node red" x="215" y="130" width="165" height="72" rx="10"/><text class="label" x="297" y="160"><tspan x="297">Recommender</tspan><tspan class="small" x="297" dy="20">候选与理由</tspan></text>
+          <rect class="node gold" x="420" y="130" width="165" height="72" rx="10"/><text class="label" x="502" y="160"><tspan x="502">合同条款</tspan><tspan class="small" x="502" dy="20">确认或一次调整</tspan></text>
+          <rect class="node green" x="625" y="45" width="155" height="66" rx="10"/><text class="label" x="702" y="84">Payoffer</text>
+          <rect class="node green" x="625" y="133" width="155" height="66" rx="10"/><text class="label" x="702" y="172">Pricer</text>
+          <rect class="node green" x="625" y="221" width="155" height="66" rx="10"/><text class="label" x="702" y="260">Backtester</text>
+          <rect class="node red" x="835" y="130" width="130" height="72" rx="10"/><text class="label" x="900" y="160"><tspan x="900">Reporter</tspan><tspan class="small" x="900" dy="20">显式取证</tspan></text>
+          <rect class="node gold" x="1015" y="130" width="135" height="72" rx="10"/><text class="label" x="1082" y="160"><tspan x="1082">Designer</tspan><tspan class="small" x="1082" dy="20">HTML/PDF</tspan></text>
+          <path class="edge" d="M175 166H215"/><path class="edge" d="M380 166H420"/><path class="edge" d="M585 166C605 145 605 90 625 78"/><path class="edge" d="M585 166H625"/><path class="edge" d="M585 166C605 190 605 245 625 254"/><path class="edge" d="M780 78C810 95 810 145 835 157"/><path class="edge" d="M780 166H835"/><path class="edge" d="M780 254C810 240 810 190 835 175"/><path class="edge" d="M965 166H1015"/>
+        </svg>
+      </figure>
+      <p>顶层工作流按用户目标决定模块覆盖，不强制每次运行三个计算模块。只有用户要求的模块均具有同一合同下的已验证结果，覆盖状态才是<code>complete</code>；缺少模块时可生成如实标注的<code>partial</code>交付，但不得称为完整覆盖。</p>
+    </section>
+
+    <section id="modules">
+      <h2>3.七模块职责</h2>
+      <div class="table-wrap"><table><thead><tr><th>模块</th><th>唯一职责</th><th>正式输入</th><th>正式输出</th><th>关键边界</th></tr></thead><tbody>
+        <tr><td>DataFetcher</td><td>通过Provider获取、校验、缓存和冻结行情及交易日历。</td><td>DataRequest、CallerContext、SecretRef。</td><td>DataAssetRef、DataFetchRun。</td><td>历史行情保持字段校验；交易日历独立请求，不伪造未来价格或工作日日历。</td></tr>
+        <tr><td>Recommender</td><td>按观点、期限和约束形成候选、理由、风险和拟采用合同。</td><td>RecommendationCase、知识证据、模型能力。</td><td>RecommendationSet、CandidateContract。</td><td>只处理结构推荐；已指定产品的直接计算不绕行Recommender。</td></tr>
+        <tr><td>Payoffer</td><td>解释合同分段、路径和收益结构，生成本次JSON与SVG。</td><td>PayoffInput。</td><td>Payoffer ModuleRun。</td><td>默认示例资产只读，本次报告图不能覆盖默认图。</td></tr>
+        <tr><td>Pricer</td><td>估值、Greeks、情景和模型诊断。</td><td>合同、PricingConfig（含定价方法与Monte Carlo路径数）、行情引用及必要交易日历引用。</td><td>Pricer ModuleRun。</td><td>路径依赖结构使用完整未来交易日历；终值型结构不伪造中间交易日。请求日、有效交易日和行情时点分别披露。</td></tr>
+        <tr><td>Backtester</td><td>按历史可见数据逐笔冻结合同并回放事件。</td><td>合同、BacktestConfig、历史DataAssetRef。</td><td>Backtester ModuleRun与公开收益账本。</td><td>公开结果使用decimal_ratio编码的合同结算收益率，面向用户展示百分比；历史正收益样本占比仅描述完整且有效的历史样本。</td></tr>
+        <tr><td>Reporter</td><td>解析明确RunRef、验证证据、组织ReportUnit或Bundle。</td><td>ReportRequest与ResultStorePort。</td><td>ReportRun事实和Designer输入。</td><td>不搜索“最新结果”，不重新计算，不公开private审计工件。</td></tr>
+        <tr><td>Designer</td><td>使用固定模板、主题和离线资产渲染HTML或PDF。</td><td>Reporter冻结的DesignerPayload。</td><td>Card、Report、Quote及ArtifactManifest。</td><td>不改写事实；Presentation Patch只在既有证据内调整表达。</td></tr>
+      </tbody></table></div>
+      <p><strong>合同结算收益率：</strong>完整历史合同按OptionReg已声明的全部合同现金流之和除以产品合同标准化基准，包含已声明的期初期权费，不得重复扣除。资金成本、交易费、税费、对冲和滑点未建模；该指标不是客户资本回报率或客户净收益率。未完整表达期权费的冻结结果须披露限制，不能视为已计入费用。</p>
+      <p><strong>历史正收益样本占比：</strong>完整且有效的合同样本中，合同结算收益率严格大于零的样本数除以有效样本总数；零收益和负收益样本仍计入分母，并分别披露数量。该指标不代表未来获利概率；未覆盖亏损样本不代表不存在亏损风险。</p>
+      <p><strong>完整期限与数据：</strong>T按ACT/365表达合同及现金流时间，n_obs表示观察日数量，两者不得互相替代；修改T须重算到期日、观察日程和路径适用性。回测按完整期限与真实交易日历筛选入场窗口，不完整样本按配置排除并披露或拒绝运行，不截短合同补足样本；日期预检只读，不得静默改写用户日期。观察、障碍和历史结算使用不复权close；adjusted_close仅用于历史波动率及可选入场HV分组。</p>
+      <p>七个模块的Python源码直接位于<code>src/</code>。五个操作模块的页面直接位于<code>page/</code>；Recommender没有操作页面，Designer通过模板和渲染服务工作。</p>
+    </section>
+
+    <section id="objects">
+      <h2>4.对象、Store与协议</h2>
+      <figure><figcaption>图4：从合同和数据到不可变结果</figcaption>
+        <svg viewBox="0 0 1180 390" role="img" aria-labelledby="diagram-objects-title diagram-objects-desc">
+          <title id="diagram-objects-title">受控对象与Store关系</title><desc id="diagram-objects-desc">Core按当前输入和OptionReg编译不可变合同快照，DataFetcher生成数据引用，计算模块和报告链生成只通过RunRef访问的不可变结果。</desc>
+          <rect class="node blue" x="35" y="45" width="180" height="72" rx="10"/><text class="label" x="125" y="76"><tspan x="125">OptionReg</tspan><tspan class="small" x="125" dy="20">机器产品事实</tspan></text>
+          <rect class="node red" x="275" y="45" width="190" height="72" rx="10"/><text class="label" x="370" y="76"><tspan x="370">ResolvedContract</tspan><tspan class="small" x="370" dy="20">不可变合同快照</tspan></text>
+          <rect class="node blue" x="35" y="245" width="180" height="72" rx="10"/><text class="label" x="125" y="276"><tspan x="125">DataFetcher</tspan><tspan class="small" x="125" dy="20">Provider与质量校验</tspan></text>
+          <rect class="node green" x="275" y="245" width="190" height="72" rx="10"/><text class="label" x="370" y="276"><tspan x="370">DataAssetRef</tspan><tspan class="small" x="370" dy="20">DataStore不透明引用</tspan></text>
+          <rect class="node gold" x="540" y="140" width="195" height="82" rx="10"/><text class="label" x="637" y="172"><tspan x="637">三个计算模块</tspan><tspan class="small" x="637" dy="21">共享合同，独立运行</tspan></text>
+          <rect class="node green" x="805" y="45" width="170" height="72" rx="10"/><text class="label" x="890" y="76"><tspan x="890">ModuleRunRef</tspan><tspan class="small" x="890" dy="20">ResultStore引用</tspan></text>
+          <rect class="node red" x="805" y="245" width="170" height="72" rx="10"/><text class="label" x="890" y="276"><tspan x="890">ReportRunRef</tspan><tspan class="small" x="890" dy="20">交付事实引用</tspan></text>
+          <rect class="node gold" x="1030" y="140" width="120" height="82" rx="10"/><text class="label" x="1090" y="172"><tspan x="1090">调用方</tspan><tspan class="small" x="1090" dy="21">只持有RunRef</tspan></text>
+          <path class="edge" d="M215 81H275"/><path class="edge" d="M215 281H275"/><path class="edge" d="M465 81C505 100 505 150 540 168"/><path class="edge" d="M465 281C505 260 505 215 540 195"/><path class="edge" d="M735 170C770 140 775 95 805 82"/><path class="edge" d="M975 81C1010 100 1010 150 1030 168"/><path class="edge" d="M975 281C1010 260 1010 215 1030 195"/>
+        </svg>
+      </figure>
+      <div class="table-wrap"><table><thead><tr><th>对象</th><th>创建者</th><th>验证者</th><th>核心约束</th></tr></thead><tbody>
+        <tr><td>ResolvedContractSnapshot</td><td>Core合同编译器</td><td>Core与各正式模块入口</td><td>按CurrentModuleInput与当前产品规则生成完整不可变快照；以product_id和正整数rule_revision识别产品规则。</td></tr>
+        <tr><td>DataAssetRef</td><td>DataFetcher</td><td>DataStore、ToolGateway、计算模块</td><td>绑定租户、创建者、Schema、媒体类型、内容哈希和覆盖范围。</td></tr>
+        <tr><td>ModuleRunRef</td><td>ResultStore</td><td>Reporter、App和导出入口</td><td>绑定模块、租户、任务和运行编号，以结果文件哈希及产物清单哈希校验完整性，不含物理路径。</td></tr>
+        <tr><td>ReportRunRef</td><td>Reporter与Designer原子提交</td><td>报告库与受控导出</td><td>绑定冻结事实、产物清单、交付类型、格式和访问范围。</td></tr>
+      </tbody></table></div>
+      <p>ResearchTask是研究对话、运行记录和报告索引的容器，不拥有唯一产品、标的、合同或数据资产。ModulePreference只恢复产品下拉框，不构成运行输入或访问约束。CurrentModuleInput仅属于当前页面和下一次运行；系统不提供旧产品定义、合同版本或运行快照选择器。</p>
+      <p>ModuleRun保存本次实际使用的合同快照、数据引用、模块配置和结果，后续页面修改不得改变既有模块运行。ReportRun只引用明确的ModuleRunRef，不读取页面当前输入或最新运行。EditedReport是保留来源与人工编辑属性的独立副本，不回写ModuleRun，也不视为重新计算或自动验证。</p>
+      <div class="callout info"><strong>Store分工：</strong>DataStore保存外部数据；ResultStore保存DataFetchRun、ModuleRun和ReportRun；App的Task、Session、Conversation、Idempotency与Audit Store保存壳层状态。索引不能替代Canonical Run。</div>
+    </section>
+
+    <section id="app">
+      <h2>5.App架构</h2>
+      <figure><figcaption>图5：App壳层、AppServer和内置Capability</figcaption>
+        <svg viewBox="0 0 1180 430" role="img" aria-labelledby="diagram-app-title diagram-app-desc">
+          <title id="diagram-app-title">OptionHelper App架构</title><desc id="diagram-app-desc">Frontend Shell通过同源AppServer访问身份、任务、模型、工具和Store，AppServer调用内置Capability并由双平台桌面壳承载。</desc>
+          <rect class="node blue" x="35" y="55" width="220" height="280" rx="14"/><text class="label" x="145" y="90"><tspan x="145">Frontend Shell</tspan><tspan class="small" x="145" dy="30">Login · OptChat</tspan><tspan class="small" x="145" dy="23">OptDesk · Settings</tspan><tspan class="small" x="145" dy="32">shared request · theme</tspan><tspan class="small" x="145" dy="23">styles · refinement · overrides</tspan></text>
+          <rect class="node red" x="330" y="55" width="300" height="280" rx="14"/><text class="label" x="480" y="90"><tspan x="480">AppServer</tspan><tspan class="small" x="480" dy="28">Identity · Authorization · Session</tspan><tspan class="small" x="480" dy="23">Task · Conversation · Operation</tspan><tspan class="small" x="480" dy="23">ModelGateway · Agent Runtime</tspan><tspan class="small" x="480" dy="23">ToolGateway · PageRegistry</tspan><tspan class="small" x="480" dy="23">Settings · Secret · Audit</tspan><tspan class="small" x="480" dy="23">DataStore · ResultStore</tspan></text>
+          <rect class="node green" x="705" y="55" width="255" height="280" rx="14"/><text class="label" x="832" y="90"><tspan x="832">内置Capability</tspan><tspan class="small" x="832" dy="28">七模块正式入口</tspan><tspan class="small" x="832" dy="23">五个操作页面</tspan><tspan class="small" x="832" dy="23">ModuleHost Bridge</tspan><tspan class="small" x="832" dy="23">OptDesk Presentation</tspan><tspan class="small" x="832" dy="23">Knowledger · Templates</tspan><tspan class="small" x="832" dy="23">Capability Manifest</tspan></text>
+          <rect class="node gold" x="1025" y="82" width="120" height="100" rx="12"/><text class="label" x="1085" y="117"><tspan x="1085">macOS</tspan><tspan class="small" x="1085" dy="22">WKWebView</tspan></text>
+          <rect class="node gold" x="1025" y="220" width="120" height="100" rx="12"/><text class="label" x="1085" y="255"><tspan x="1085">Windows</tspan><tspan class="small" x="1085" dy="22">WebView2</tspan></text>
+          <path class="edge" d="M255 195H330"/><path class="edge" d="M630 195H705"/><path class="edge" d="M960 132H1025"/><path class="edge" d="M960 270H1025"/>
+        </svg>
+      </figure>
+      <h3 id="agents">5.1App多智能体运行时</h3>
+      <p>App已实现一次性与可续接ChildSession、独立AgentRun和持久Workflow事件。Recommender根据所选Mode创建具名角色运行，冻结Preset内容修订，应用并发与总预算，传播取消和超时；应用重启后可从持久历史恢复同一Workflow。该能力是任务内受控编排，不等同于长期驻留的通用Agent Team。</p>
+      <div class="table-wrap"><table><thead><tr><th>能力</th><th>状态</th><th>当前语义</th></tr></thead><tbody>
+        <tr><td>一次性ChildSession与AgentRun</td><td><span class="status done">已实现</span></td><td>每个角色拥有独立Session、AgentRun、模型路由、请求控制和事件日志。</td></tr>
+        <tr><td>四种推荐Mode</td><td><span class="status done">已实现</span></td><td>顺序审议、结构师与交易员循环、独立委员会、约束排序。</td></tr>
+        <tr><td>取消、超时、并发与迟到结果</td><td><span class="status done">已实现</span></td><td>父任务取消向子运行传播，未完成处置的Workflow不能假完成。</td></tr>
+        <tr><td>单模型降级</td><td><span class="status done">受控实现</span></td><td>只在Mode允许且尚未启动Tool时，按相同步骤退化。</td></tr>
+        <tr><td>可续接子会话与冷恢复</td><td><span class="status done">已实现</span></td><td>continuable角色支持follow-up；Workflow与Session历史持久化后可在新Controller中恢复。</td></tr>
+        <tr><td>Preset冻结与恢复校验</td><td><span class="status done">已实现</span></td><td>运行保存64位SHA-256内容修订；启动、待处理、恢复和继续执行均核对当前Preset定义，过期状态不会悄悄续跑。</td></tr>
+        <tr><td>长期通用Agent Team</td><td><span class="status boundary">不提供</span></td><td>当前只提供任务范围内的受控角色编排，不把后台进程或一次Workflow宣传为长期驻留团队。</td></tr>
+        <tr><td>自动上下文维护</td><td><span class="status boundary">未接生产循环</span></td><td>Token、裁剪和压缩存在协议原语，但AgentLoop尚未自动触发。</td></tr>
+      </tbody></table></div>
+      <h3 id="frontend">5.2前端与模块页面</h3>
+      <ul>
+        <li>App前端只维护Login、OptChat、OptDesk和Settings四个壳页面。</li>
+        <li>五个模块页面来自Capability，PageRegistry按Manifest校验后挂载。</li>
+        <li>模块页在<code>host=optdesk</code>时加载Capability自带Presentation资源；App只传受控任务上下文、权限和尺寸，不复制模块DOM。</li>
+        <li>切换任务时销毁旧模块iframe和上下文，避免页面输入与访问范围跨任务混用。</li>
+        <li>ModuleHostContext是短期凭据；Bridge在每次操作前检查到期时间，并在到期前自动换取同任务、同权限的新上下文。</li>
+        <li>每次运行按提交时的当前模块输入重新编译合同并冻结执行快照；页面输入变化不改变进行中的计算操作或已保存结果。</li>
+        <li>OptChat的消息正文与操作区分层排版，避免操作区把中文正文压成单字列。输入框为上方文本区与下方单行工具栏，高度在30px至120px内随内容增长，超出后仅文本区滚动。</li>
+        <li>共享样式目前由<code>styles.css</code>、<code>refinement.css</code>和<code>theme-overrides.css</code>共同生效。后续收敛必须保持当前定稿视觉和真实行为。</li>
+        <li>对话发送用<code>request_id</code>做幂等查询；后台报告和PDF转换使用任务、请求ID和输入哈希做持久幂等，断响应后重试不重复生成。</li>
+        <li>Operation列表保持轻量；历史终态只对当前可见项目按需读取独立<code>/result</code>，以恢复失败阶段、错误代码和处理建议，不把完整结果塞回列表。</li>
+        <li>删除任务前先取消其后台操作；操作尚未停止时保留任务并明确返回稍后重试，不留孤立结果。</li>
+        <li>Card、Report、Quote拥有独立权限位和报告库类型；报告库以公开<code>delivery_mode</code>、<code>comparison</code>和<code>display_name</code>为展示事实，不暴露内部类型名。</li>
+        <li>原生下载只保存成功状态、允许的报告媒体类型和非空正文；报告预览使用无主壳消息处理器的独立WebView配置，仅共享必要Cookie与DataStore。</li>
+      </ul>
+    </section>
+
+    <section id="delivery">
+      <h2>6.交付体系</h2>
+      <figure><figcaption>图6：Reporter与Designer交付矩阵</figcaption>
+        <svg viewBox="0 0 1180 390" role="img" aria-labelledby="diagram-delivery-title diagram-delivery-desc">
+          <title id="diagram-delivery-title">Card、Report和Quote交付流程</title><desc id="diagram-delivery-desc">Reporter验证明确ModuleRunRef并组织冻结事实，Designer按三类模板输出HTML或PDF。</desc>
+          <rect class="node green" x="35" y="145" width="190" height="80" rx="11"/><text class="label" x="130" y="177"><tspan x="130">已验证ModuleRunRef</tspan><tspan class="small" x="130" dy="21">一个或多个合同</tspan></text>
+          <rect class="node red" x="290" y="145" width="175" height="80" rx="11"/><text class="label" x="377" y="177"><tspan x="377">Reporter</tspan><tspan class="small" x="377" dy="21">ReportUnit · Bundle</tspan></text>
+          <rect class="node gold" x="530" y="145" width="175" height="80" rx="11"/><text class="label" x="617" y="177"><tspan x="617">Designer</tspan><tspan class="small" x="617" dy="21">固定模板与主题</tspan></text>
+          <rect class="node blue" x="785" y="35" width="170" height="68" rx="11"/><text class="label" x="870" y="65"><tspan x="870">Card</tspan><tspan class="small" x="870" dy="20">六段无图简报</tspan></text>
+          <rect class="node green" x="785" y="151" width="170" height="68" rx="11"/><text class="label" x="870" y="181"><tspan x="870">Report</tspan><tspan class="small" x="870" dy="20">默认七章详细报告</tspan></text>
+          <rect class="node gold" x="785" y="267" width="170" height="68" rx="11"/><text class="label" x="870" y="297"><tspan x="870">Quote</tspan><tspan class="small" x="870" dy="20">参考报价表</tspan></text>
+          <rect class="node gray" x="1030" y="120" width="110" height="68" rx="11"/><text class="label" x="1085" y="160">HTML</text>
+          <rect class="node gray" x="1030" y="220" width="110" height="68" rx="11"/><text class="label" x="1085" y="260">PDF</text>
+          <path class="edge" d="M225 185H290"/><path class="edge" d="M465 185H530"/><path class="edge" d="M705 175C745 135 750 80 785 69"/><path class="edge" d="M705 185H785"/><path class="edge" d="M705 195C745 235 750 290 785 301"/><path class="edge" d="M955 69C995 95 995 140 1030 150"/><path class="edge" d="M955 185H1030"/><path class="edge" d="M955 301C995 280 995 250 1030 245"/>
+        </svg>
+      </figure>
+      <div class="table-wrap"><table><thead><tr><th>交付类型</th><th>默认内容</th><th>布局</th><th>扩展边界</th></tr></thead><tbody>
+        <tr><td>Card</td><td>结构推荐、推荐理由、关键合同条款、估值摘要、回测摘要、主要风险。</td><td>Card固定六段无图；HTML宽210mm并随内容延展，PDF按A4分页。</td><td>只裁剪已验证事实，不增加损益图，不用JSON或内部键填版面。</td></tr>
+        <tr><td>Report</td><td>默认七章：核心结论、结构推荐、合同参数、收益结构、估值定价、历史回测、风险提示。</td><td>正文为连续A4阅读流；宽屏HTML显示左侧目录，窄屏和PDF隐藏目录。</td><td>七章是单结构默认，不是死限制。多结构比较使用共同分析基准组织多个冻结合同；受控扩展段只能采用白名单字段。Presentation Patch只可排序已知章节、使用白名单别名或附加固定说明，不能新增、修改或隐藏冻结金融事实。</td></tr>
+        <tr><td>Quote</td><td>推荐结构及参考报价、合同身份、估值时点、适用条件和风险提示。</td><td>紧凑报价表，支持HTML和PDF。</td><td>只能选择已验证运行，不是模型即兴报价。</td></tr>
+      </tbody></table></div>
+      <p>HTML不是模型自由编写的网页；Reporter先冻结事实，Designer再按模板渲染。PDF由Designer PDF渲染器生成。公式使用结构化数学表达，数值按公共格式规则控制小数、百分比和科学计数法。</p>
+      <div class="callout warn"><strong>覆盖与交付分离：</strong>缺少Pricer或Backtester结果时相应章节必须明确未执行或不可用。ReportRun可以成功写出，但分析覆盖只能是<code>partial</code>。</div>
+    </section>
+
+    <section id="package">
+      <h2>7.Skill与发布</h2>
+      <h3>7.1Skill安装包</h3>
+      <div class="tree">option-helper/
+├── SKILL.md                    三类工作流与行为约束
+├── README.md                   安装、Python、依赖、iFind与Store
+├── references/                context、OptionList、OptionLib、七模块指南
+├── scripts/
+│   ├── tool_entry.py           项目级受控入口
+│   ├── runtime/                Core协议、Store与Host适配器
+│   ├── modules/                七模块正式源码
+│   └── knowledger/             OptionReg与Catalog快照
+├── assets/
+│   ├── designer/               templates、themes、vendor
+│   ├── payoffer/figures/
+│   └── icons/                  品牌Logo与Mark
+├── LICENSES/
+└── capability-manifest.json</div>
+      <p><code>packaging/skill/package-source-map.json</code>采用白名单复制。Skill面向外部Agent Host，提供模型工作流、模块指南、环境检查和共享计算能力，不提供App式可视化操作页面。五模块页面、Module Host浏览器桥接、Plotly页面运行库、OptChat、OptDesk、Settings、Login、App后端、原生壳、App图标和App专属Agent Runtime均不得进入Skill。开发测试、Designer对照样例、缓存、蓝图、本地<code>data/</code>、<code>result/</code>和<code>.optionhelper/</code>同样不进入Skill。</p>
+      <h3>7.2App安装物</h3>
+      <div class="tree">OptionHelper App
+├── shared capability           经Skill Manifest验真的共享计算字节
+├── assets/pages/               五模块页面、Host桥接、日期与图表运行库
+├── frontend/                   Login、OptChat、OptDesk、Settings
+├── backend/                    AppServer、Task、Operation、Store与设置
+├── agent-runtime/              App任务内Agent运行资源
+├── native shell/               macOS或Windows桌面入口与图标
+└── platform licenses           App实际分发依赖的许可证闭包</div>
+      <p><code>packaging/app/capability-source-map.json</code>只允许App专属页面和Host资源。App不得包含<code>SKILL.md</code>、Skill README、模块指南、模型工作流或Skill环境检查脚本。App组装完成后重新核对全部共享文件，任何App专属复制覆盖共享字节、缺少Skill内容树绑定或混入未声明文件都会终止构建。App与Skill同源，但不是同一目录树，也不能互相整包复制。</p>
+      <h3>7.3候选与正式签发</h3>
+      <figure><figcaption>图7：当前候选和正式归档分离</figcaption>
+        <svg viewBox="0 0 1180 330" role="img" aria-labelledby="diagram-release-title diagram-release-desc">
+          <title id="diagram-release-title">候选构建与正式签发</title><desc id="diagram-release-desc">当前源码在临时目录构建并验收同源Skill和App，候选进入dist，正式签发才生成唯一不可覆盖归档。</desc>
+          <rect class="node blue" x="35" y="125" width="150" height="72" rx="10"/><text class="label" x="110" y="155"><tspan x="110">当前源码</tspan><tspan class="small" x="110" dy="20">无独立版本</tspan></text>
+          <rect class="node red" x="230" y="125" width="165" height="72" rx="10"/><text class="label" x="312" y="155"><tspan x="312">临时Skill</tspan><tspan class="small" x="312" dy="20">Source Map白名单</tspan></text>
+          <rect class="node red" x="440" y="125" width="165" height="72" rx="10"/><text class="label" x="522" y="155"><tspan x="522">同源验收</tspan><tspan class="small" x="522" dy="20">Skill · App · Runtime</tspan></text>
+          <rect class="node green" x="665" y="45" width="190" height="72" rx="10"/><text class="label" x="760" y="75"><tspan x="760">当前候选</tspan><tspan class="small" x="760" dy="20">dist仅ZIP与安装物</tspan></text>
+          <rect class="node gold" x="665" y="205" width="190" height="72" rx="10"/><text class="label" x="760" y="235"><tspan x="760">正式签发</tspan><tspan class="small" x="760" dy="20">原子事务与平台验收</tspan></text>
+          <rect class="node green" x="925" y="205" width="220" height="72" rx="10"/><text class="label" x="1035" y="235"><tspan x="1035">versions/v1.0.0</tspan><tspan class="small" x="1035" dy="20">唯一不可覆盖归档</tspan></text>
+          <path class="edge" d="M185 161H230"/><path class="edge" d="M395 161H440"/><path class="edge" d="M605 153C630 125 635 90 665 81"/><path class="edge" d="M605 170C630 195 635 230 665 241"/><path class="edge" d="M855 241H925"/>
+        </svg>
+      </figure>
+      <div class="table-wrap"><table><thead><tr><th>位置</th><th>职责</th><th>是否可重建</th><th>版本规则</th></tr></thead><tbody>
+        <tr><td>开发源码</td><td>唯一权威实现。</td><td>否。</td><td>目录和普通文件名不带发行版本。</td></tr>
+        <tr><td><code>dist/</code></td><td>当前候选的Skill ZIP和macOS DMG；目标目录只保留<code>option-helper.zip</code>和<code>OptionHelper-v1.0.0-macOS-arm64.dmg</code>。本轮旧候选须在新源码完整构建与验收后才可原子替换。</td><td>可以。</td><td>候选安装物使用发行目标版本，不承担历史追溯；当前设备验收不等同于Developer ID签名、Apple公证或正式签发。</td></tr>
+        <tr><td><code>result/windows-candidate/</code></td><td>Windows候选隔离目录。</td><td>可以。</td><td>不得替换macOS候选或正式归档。</td></tr>
+        <tr><td><code>versions/v1.0.0/</code></td><td>正式Knowledger、Skill、Manifest和安装物归档；本次未核验归档状态。</td><td>首次签发时创建；既有文件不可覆盖，可以事务性追加缺失平台交付物。</td><td>同版本补齐第二平台时必须复用已签发Skill，逐字节禁止改写既有文件，再原子提交。</td></tr>
+      </tbody></table></div>
+    </section>
+
+    <section id="repository">
+      <h2>8.开发仓库目录与治理</h2>
+      <div class="table-wrap"><table><thead><tr><th>目录</th><th>权威内容</th><th>发行处理</th></tr></thead><tbody>
+        <tr><td><code>references/</code></td><td>OptionList、OptionLib、OptionReg和Knowledger治理。</td><td>按Source Map和Catalog签发进入Capability。</td></tr>
+        <tr><td><code>core/</code></td><td>协议、合同、端口、Store适配器、ModuleHost和项目入口。</td><td>只复制正式运行文件和锁定依赖。</td></tr>
+        <tr><td><code>modules/</code></td><td>七模块源码、页面、资产、指南与测试。</td><td>七个<code>src/</code>与正式计算、Reporter、Designer资源进入共享载荷；五个<code>page/</code>只进入App；模块指南只进入Skill；测试不进入任何发行包。</td></tr>
+        <tr><td><code>products/app/</code></td><td>App后端、前端壳层和双平台桌面层。</td><td>只进入App安装物，不进入Skill ZIP。</td></tr>
+        <tr><td><code>packaging/</code></td><td>Source Map、验证器、候选构建和正式签发。</td><td>构建工具不进入运行包，必要环境检查脚本除外。</td></tr>
+        <tr><td><code>blueprint/</code></td><td>总蓝图、Agent架构和专项交接。</td><td>不进入Skill或App运行包。</td></tr>
+        <tr><td><code>data/</code>、<code>result/</code>、<code>.optionhelper/</code></td><td>开发数据、结果和本机状态。</td><td>不进入发行包，不能成为正式源码依赖。</td></tr>
+      </tbody></table></div>
+      <p>模块目录保持相同一级结构语义，但不强制创建无用途空目录。<code>page/</code>只属于五个操作模块；<code>assets/</code>只在真实运行需要时存在，避免套娃；测试、脚本和维护资料分别留在<code>tests/</code>、<code>scripts/</code>和<code>maintenance/</code>。</p>
+    </section>
+
+    <section id="baseline">
+      <h2>9.当前实现基线与验收边界</h2>
+      <div class="table-wrap"><table><thead><tr><th>范围</th><th>当前事实</th><th>交付前独立验证</th></tr></thead><tbody>
+        <tr><td>七模块</td><td><span class="status done">已接入</span>正式入口、模块指南、测试和Capability Source Map均存在。</td><td>金融变化需Golden和跨模块回归，不能只看页面成功。</td></tr>
+        <tr><td>五模块页面</td><td><span class="status done">App专属</span>DataFetcher、Payoffer、Pricer、Backtester和Reporter页面由App Capability白名单组装并在OptDesk挂载，不进入Skill。</td><td>新DMG必须真实点击验证目录、当前模块输入、Pricer和Backtester。</td></tr>
+        <tr><td>Frontend与原生探针</td><td><span class="status done">源码门禁已接入</span>Login、OptChat、OptDesk、Settings和五模块页面均有独立前端契约；账户菜单只展示真实账号名，任务、报告、设置与凭据文案使用准确业务名称。独立WKWebView探针从OptDesk真实DOM创建任务、选择65产品、填写表单并点击Payoffer、Pricer与Backtester，禁止直调<code>/api/tools</code>。</td><td>完整65产品原生循环只能在新DMG、Fixture Backend和临时数据目录执行；源码语法或HTTP矩阵不能替代该验收。</td></tr>
+        <tr><td>Card、Report、Quote</td><td><span class="status done">已接入</span>三套Designer模板和Reporter分支均存在。</td><td>HTML与PDF需渲染、视觉、内容和公开字段验收。</td></tr>
+        <tr><td>App多智能体</td><td><span class="status done">任务内编排已实现</span>一次性与可续接ChildSession、AgentRun、四种Mode、预算、取消、Preset内容修订和冷恢复均已接入。</td><td>持续核对并发、失败恢复和进程回收；不对外宣称长期通用Agent Team。</td></tr>
+        <tr><td>源码测试</td><td><span class="status boundary">失败基线保留</span><code>result/qa/20260906-final/source-full.log</code>记录566失败；后续仅有定向验收。</td><td>定向检查只证明对应范围，不覆盖或重写全量失败基线。</td></tr>
+        <tr><td>受控App矩阵</td><td><span class="status boundary">独立证据</span>65产品的Payoffer、Pricer与Backtester矩阵使用受控正式DataAssetRef；本次未运行，不声明当前矩阵全部通过。</td><td>MC10快速验收不证明生产精度；HTTP或Fixture结果不能替代原生操作、实时取数或安装包验收。</td></tr>
+        <tr><td>实时iFind</td><td><span class="status boundary">本次未验收</span>需独立记录真实Provider请求、权限、响应与数据校验。</td><td>受控数据或连接配置不证明真实取数成功。</td></tr>
+        <tr><td>最终安装包</td><td><span class="status boundary">本次未验收</span>需记录构建对应源码、包内容与实际安装物上的原生运行证据。</td><td>源码、旧候选和Fixture结果不能证明最终包通过；正式签名与发行状态另行核验。</td></tr>
+        <tr><td>Core与App正式引用</td><td><span class="status done">严格绑定</span>每次运行校验RunRef、ResultStore提交、完整合同快照、产品编号与当前规则修订。路径型Pricer分别冻结历史行情与未来交易日历两份DataAssetRef，未来日历从估值日与行情末日的较早者起覆盖至到期日，并确认行情末日在sessions内。</td><td>缺少数据、权限、凭据或正式引用时明确失败，不退回本地硬编码CSV或伪造结果。可确定的输入错误一次返回<code>domain_rejected</code>，不进入Worker恢复循环；未知引擎故障才进入受限恢复链。</td></tr>
+        <tr><td>账号与凭据</td><td><span class="status source">当前设备能力</span>设备内登录、SecretProvider、iFind连接测试和Refresh Token设置已接入；公开设置状态只投影是否配置、验证状态、验证时间和当前凭据修订是否匹配。</td><td>远程身份、服务器托管Secret和外部多用户部署未验证。</td></tr>
+        <tr><td>macOS候选</td><td><span class="status boundary">等待本轮重建</span>交易式构建将在替换<code>dist/</code>前完成Skill完整性、共享字节哈希、App专属资源、DMG挂载、五模块页面、受控Task Operation和ResultStore链路验收，再原子替换候选文件。</td><td>必须从新DMG实际完成登录、OptChat、OptDesk、Settings往返、五模块与计算运行；当前仍为ad-hoc签名，Developer ID签名和Apple公证不在本轮范围。</td></tr>
+        <tr><td>当前交付目录</td><td><span class="status boundary">旧候选待替换</span>既有记录中的<code>dist/</code>候选不能作为本次源码口径收口的交付证据。新ZIP和DMG只在一次完整事务构建、包内容负清单和原生验收通过后记录哈希；<code>versions/v1.0.0/</code>状态须独立核验。</td><td>正式签发时仍必须按平台发行清单执行，不得把技术候选直接宣称为公开正式版。</td></tr>
+        <tr><td>正式外部分发</td><td><span class="status boundary">取决于发行清单</span>开发构建不能证明Developer ID签名或Apple公证。</td><td>只有PlatformReleaseManifest和平台验收可以声明正式状态。</td></tr>
+      </tbody></table></div>
+      <div class="callout warn"><strong>验收原则：</strong>四类验收证据不能相互替代。定向通过不代表当前全量通过，不代表实时iFind联网通过，也不代表最终安装包通过；Skill ZIP、App安装物与正式归档仍须分别校验。</div>
+    </section>
+
+    <section id="future">
+      <h2>10.后续方向</h2>
+      <div class="grid three">
+        <article class="card"><h3>前端Harness</h3><p>继续收敛共享样式、真实浏览器事件和跨任务状态，不以覆盖层掩盖模块错误。</p></article>
+        <article class="card"><h3>Memory</h3><p>区分可复用事实、运行证据和模型上下文，支持授权、查看和删除。</p></article>
+        <article class="card"><h3>DS Harness</h3><p>建立Provider、评测、工具协议和故障诊断的独立Harness，不污染金融模块。</p></article>
+        <article class="card"><h3>多智能体治理</h3><p>在已实现的续接与冷恢复基础上完善资源结算、可观测性和任务级运行分析，不扩张为无边界的长期Agent Team。</p></article>
+        <article class="card"><h3>结构比较</h3><p>以多个独立ReportUnit和共同分析基准做横向比较，不混合不同合同数值。</p></article>
+        <article class="card"><h3>平台发行</h3><p>完成Windows实机、Developer ID签名、公证、安装、卸载和更新策略。</p></article>
+      </div>
+    </section>
+    <footer>OptionHelper总设计蓝图。系统事实以权威源码、正式Store、测试证据和当次发行Manifest为准。</footer>
+  </main>
+</div>
+</body>
+</html>

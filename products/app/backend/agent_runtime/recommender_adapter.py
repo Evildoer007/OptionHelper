@@ -1211,6 +1211,16 @@ class AppConversationToolExecutor:
         )
 
     def call(self, identity: SessionIdentity, task_id: str, name: str, arguments: Mapping[str, Any]) -> Mapping[str, Any]:
+        if name == "task.position_size":
+            from ..authorization.policy import AuthorizationPolicy
+            AuthorizationPolicy().require(identity.role, "conversation.tool.run")
+            if self._tasks is None or set(arguments).difference({"position_size"}):
+                raise ValidationError("名义本金工具只接受当前任务的position_size设置")
+            if "position_size" in arguments:
+                AuthorizationPolicy().require(identity.role, "conversation.write")
+                self._tasks.set_position_size(identity, task_id, arguments["position_size"])
+            setting = self._tasks.position_size(identity, task_id)
+            return {"status": "succeeded", "message": "当前任务已采用保存的名义规模。" if setting else "当前任务已清空名义规模，仅保留原口径。"}
         if name == "reporter.create_document":
             return self.report_delivery.create_document(identity, task_id, arguments)
         if name == "recommendation_delivery.run":

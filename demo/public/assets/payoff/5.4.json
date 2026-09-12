@@ -1,0 +1,33 @@
+{
+  "name_zh": "资产二元看跌",
+  "terms": {
+    "S0": 100.0,
+    "T": 1.0,
+    "exercise_style": "European",
+    "settlement": "cash",
+    "observation_price": "close",
+    "margin_call": false,
+    "K": 100.0,
+    "Pi_0": 50.0,
+    "asset_unit": 1.0,
+    "pricing_methods": [
+      "analytical",
+      "monte_carlo"
+    ]
+  },
+  "paths": [
+    {
+      "condition": "True",
+      "cases": [
+        {
+          "domain": "0 <= S_T < K",
+          "pnl": "cash(0, -P) + cash(T, u * n_asset * S_T)"
+        },
+        {
+          "domain": "S_T >= K",
+          "pnl": "cash(0, -P)"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light dark"><title>Skill使用说明 · OptionHelper</title>
+<style>
+:root{--paper:#fff;--surface:#f6f6f5;--ink:#24262a;--muted:#62666d;--rule:#dedfe1;--accent:#b6243b;--link:#255a89;color-scheme:light}
+:root[data-theme=dark]{--paper:#202124;--surface:#292b2f;--ink:#f0f0f1;--muted:#b8bbc2;--rule:#45484e;--accent:#ff9cab;--link:#9cc8ef;color-scheme:dark}
+*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:15px/1.85 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}a{color:var(--link);text-underline-offset:3px}button,input{font:inherit;color:inherit}button{cursor:pointer}button:disabled{cursor:default}button:focus-visible,a:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline-offset:4px}button:hover{background:var(--surface)}.skip{position:fixed;top:-80px;left:20px;z-index:3;background:var(--paper);padding:8px}.skip:focus{top:8px}
+.sidebar{position:fixed;inset:0 auto 0 0;width:272px;overflow:auto;background:var(--surface);border-right:1px solid var(--rule);padding:34px 22px}.brand{font-size:20px;font-weight:700;letter-spacing:-.4px}.brand span{color:var(--accent)}.edition{font-size:12px;color:var(--muted);margin:2px 0 30px}label{display:block;font-size:13px;margin-bottom:7px}.search{display:flex;gap:6px}input{width:100%;min-width:0;border:1px solid var(--rule);border-radius:6px;background:var(--paper);padding:8px 10px;font-size:13px}nav{display:grid;gap:3px;margin:22px 0}nav a{color:var(--muted);text-decoration:none;padding:7px 10px;font-size:13px;border-radius:5px;line-height:1.6}nav a:hover{background:var(--paper);color:var(--ink)}nav a[aria-current]{background:var(--paper);color:var(--accent);font-weight:650}.sidebar-footer{padding-top:14px;border-top:1px solid var(--rule);font-size:12px}.sidebar-footer a{display:block;margin:8px 0}main{margin-left:272px;padding:48px clamp(28px,6vw,88px) 80px;max-width:1200px}.masthead{max-width:72ch;margin:0 auto 40px;padding-bottom:26px;border-bottom:1px solid var(--rule)}.masthead h1{font-size:34px;line-height:1.3;letter-spacing:-.6px;margin:0 0 15px}.masthead p{color:var(--muted);margin:0}.toolbar{display:flex;gap:10px;flex-wrap:wrap;margin-top:22px}button{border:1px solid var(--rule);background:var(--paper);border-radius:6px;padding:5px 12px;font-size:12px;min-height:34px}article{max-width:72ch;margin:0 auto 52px;scroll-margin-top:28px}article:focus{outline:none}h2{font-size:24px;line-height:1.5;margin:0 0 20px;letter-spacing:-.3px}h3{font-size:17px;line-height:1.5;margin:30px 0 12px}p{margin:0 0 16px}ol,ul{padding-left:1.5em;margin:0 0 20px}li+li{margin-top:7px}blockquote{margin:20px 0 24px;padding:18px 20px;border:1px solid var(--rule);border-radius:8px;background:var(--surface)}blockquote p{margin:0}.example-head{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:10px;color:var(--muted);font-size:12px}.example-head button{min-height:28px;padding:2px 9px;background:var(--paper)}.table-scroll{overflow:auto;max-width:100%;margin-bottom:22px}table{width:100%;border-collapse:collapse;font-size:14px;min-width:360px}th,td{text-align:left;vertical-align:top;padding:10px 12px;border-bottom:1px solid var(--rule)}th{font-weight:650;background:var(--surface)}td:first-child{min-width:110px}#search-status{max-width:72ch;margin:0 auto 28px;color:var(--muted)}[hidden]{display:none!important}.endnote{max-width:72ch;margin:0 auto;border-top:1px solid var(--rule);padding-top:22px;font-size:13px;color:var(--muted)}
+@media(max-width:760px){.sidebar{position:static;width:auto;border-right:0;border-bottom:1px solid var(--rule);padding:22px}.edition{margin-bottom:16px}nav{display:flex;overflow:auto;margin:15px 0 0;padding-bottom:5px}nav a{flex-shrink:0}.sidebar-footer{display:none}main{margin:0;padding:30px 22px 55px}.masthead h1{font-size:28px}h2{font-size:22px}blockquote{padding:14px}article{scroll-margin-top:20px}}
+@media print{:root,:root[data-theme=dark]{--paper:#fff;--surface:#f6f6f5;--ink:#111;--muted:#444;--rule:#ddd;--link:#111;color-scheme:light}.sidebar,.toolbar,.example-head button,.skip,#search-status,.endnote{display:none!important}main{margin:0;max-width:none;padding:0}.masthead{margin-bottom:24px}article[hidden]{display:block!important}article{margin-bottom:30px;max-width:none}body{font-size:11pt;color:#111;background:white}h2,h3{break-after:avoid}blockquote,tr{break-inside:avoid}table{min-width:0}.table-scroll{overflow:visible}button{display:none}a{color:inherit}.masthead p{color:#333}}
+</style></head><body><a class="skip" href="#content">跳到正文</a><aside class="sidebar"><div class="brand">Option<span>Helper</span></div><p class="edition">Skill使用说明</p><label for="guide-search">搜索说明</label><div class="search"><input id="guide-search" type="search" placeholder="搜索估值、回测、报告…" autocomplete="off"></div><nav aria-label="说明目录"><a href="#chapter-1">一、第一次使用</a><a href="#chapter-2">二、把需求说清楚</a><a href="#chapter-3">三、产品解释与结构比较</a><a href="#chapter-4">四、结构推荐</a><a href="#chapter-5">五、收益结构与情景</a><a href="#chapter-6">六、估值、Greeks与反解</a><a href="#chapter-7">七、历史回测</a><a href="#chapter-8">八、数据与运行准备</a><a href="#chapter-9">九、报告与参考报价</a><a href="#chapter-10">十、修改、继续与停止</a><a href="#chapter-11">十一、完整案例</a><a href="#chapter-12">十二、常见问题</a></nav><div class="sidebar-footer"><a href="skill-user-guide.md">阅读文字版</a><a href="../README.md">安装与配置</a></div></aside><main id="content"><header class="masthead"><h1>Skill使用说明</h1><p>从提出需求，到理解结果与交付文件。</p><div class="toolbar"><button id="show-all" type="button">显示全文</button><button id="print-guide" type="button">打印全文</button><button id="theme" type="button" aria-pressed="false">深色阅读</button></div></header><p id="search-status" role="status" hidden></p><article id="chapter-1" tabindex="-1"><h2>一、第一次使用</h2><h3>1.1怎样开始</h3>
+<p>在已安装OptionHelper的项目对话中调用本Skill，然后说明要解决的问题。宿主是否支持自动识别Skill、怎样选择Skill，由所用对话工具决定。没有安装或当前项目没有启用时，先按随包的<a href="../README.md">安装与配置说明</a>处理。</p>
+<p>第一次使用时，对话会提示可以阅读本文件。已有具体需求可以直接开始，不必先读完整份说明。</p>
+<p>可以先发一句：</p>
+<blockquote>
+<p>用OptionHelper解释看涨期权和看涨价差的区别，重点说明成本、收益上限和亏损情形。先不计算。</p>
+</blockquote>
+<p>纯产品咨询不需要配置行情或Python。第一次真正运行计算时，才检查运行环境和所需数据条件。</p>
+<h3>1.2可以得到什么</h3>
+<table>
+<thead>
+<tr>
+<th>需求</th>
+<th>通常得到的内容</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>解释条款</td>
+<td>收益机制、触发条件、成本、风险和适用情景</td>
+</tr>
+<tr>
+<td>比较或推荐结构</td>
+<td>结构差异、适配理由、不适合的情形和待确认条款</td>
+</tr>
+<tr>
+<td>分析收益结构</td>
+<td>条件路径、收益情景、关键边界及可用收益图</td>
+</tr>
+<tr>
+<td>估值与Greeks</td>
+<td>合同估值、敏感度、市场假设、计算方法及精度信息</td>
+</tr>
+<tr>
+<td>历史回测</td>
+<td>入场样本、合同结算、路径事件、统计指标及覆盖限制</td>
+</tr>
+<tr>
+<td>正式交付</td>
+<td>研究简报、完整研究报告、参考报价或多结构对比文件</td>
+</tr>
+</tbody>
+</table>
+<p>普通问题先返回分析结论。只有明确要求文件时，才生成相应正式交付。</p></article><article id="chapter-2" tabindex="-1"><h2>二、把需求说清楚</h2><h3>2.1一条计算需求的基本条件</h3>
+<p>通常需要明确标的、方向、期限、产品或收益结构、关键条款、估值日或历史区间，以及希望得到什么结果。推荐还需要市场观点、收益偏好和损失承受能力。多标的结构逐一列出标的，不用一个名称替代整篮子资产。</p>
+<blockquote>
+<p>挂钩000300.SH，期限三个月，研究买入平值看涨期权。请先列出估值需要的条件，缺项一次问完。</p>
+</blockquote>
+<p>不确定的条件可以直说。Skill会合并追问影响结果的关键缺口，复用同一对话中已确认的条件。输入不完整不意味着可以把任意示例当成真实合同。</p>
+<h3>2.2已有条款文件怎么办</h3>
+<p>宿主支持附件时，可以提供条款文件或图片，并说明用途。能否解析扫描件、表格或图片取决于宿主，不是所有宿主都具备相同的附件能力。</p>
+<blockquote>
+<p>先阅读这份条款，整理标的、期限、观察日、敲入敲出和票息。列出冲突或无法确认的内容，暂不计算。</p>
+</blockquote>
+<p>上传成功、文字提取成功、条款确认完成、正式计算完成是不同状态。模糊图片、缺页或单位不清时，需要补充材料。</p></article><article id="chapter-3" tabindex="-1"><h2>三、产品解释与结构比较</h2><p>咨询适合先理解机制，不必直接进入推荐或计算。可以指定分析范围，避免得到不需要的结果。</p>
+<blockquote>
+<p>只比较雪球和安全气囊的到期损失机制，解释障碍恰好命中时怎样判断。不下载数据、不定价、不回测。</p>
+</blockquote>
+<p>读比较结论时，逐项看成本、本金损失、收益上限、参与率、路径依赖、观察频率和提前终止。名称相同但障碍、票息或观察规则不同，可能是不同合同，不能只比较产品名称。</p>
+<p>数值收益情景要对应明确条款和受控计算。固定示例图帮助理解机制，不代表你本次合同已经计算完成。</p></article><article id="chapter-4" tabindex="-1"><h2>四、结构推荐</h2><p>推荐从客户需求出发。市场观点、期限、风险偏好或损失约束不同，适合的候选也可能不同。</p>
+<blockquote>
+<p>我判断沪深300未来六个月温和上涨，希望比较收益有上限和无上限的方案。请说明各自成本和本金损失情形，先给推荐理由，不生成报告。</p>
+</blockquote>
+<p>“最多接受某个损失”是筛选约束，不表示必然存在满足条件的产品，更不是本金或收益承诺。看推荐时同时核对适合的理由、不适合的市场情景及尚未确认的条款。</p>
+<p>默认采用顺序研判。需要特定研究方式时，可明确指定产品交易循环、独立评议或约束排序。独立多角色能否执行取决于宿主；不能证明角色相互独立时，只能如实称为单模型执行。无需为了普通问题配置多角色模式。</p>
+<p>已有指定产品时直接处理该产品，不会因为要估值或报告就重新推荐。推荐完成也不等于已经完成估值、回测或交付。</p></article><article id="chapter-5" tabindex="-1"><h2>五、收益结构与情景</h2><p>收益结构回答哪些市场路径对应哪些合同现金流。通常先核对期限、行权价、票息、障碍和观察规则，再检查上涨、震荡、下跌以及边界情景。</p>
+<blockquote>
+<p>按已确认条款生成收益结构。说明敲入、敲出、未触发和普通到期分别怎样结算，保留期初费用的原口径。</p>
+</blockquote>
+<p>路径型产品不能仅凭到期价格判断收益。两条路径可能具有相同终值，却在中途触发不同事件。边界的“大于”“大于等于”、观察时点和是否提前终止，应以本次合同为准。</p>
+<p>收益图可能固定部分历史条件，仅展示某个区间或情景。图中的采样最低、最高值不一定是整个产品的最大损失或最大收益。收益图也不是概率分布或未来预测。</p></article><article id="chapter-6" tabindex="-1"><h2>六、估值、Greeks与反解</h2><h3>6.1怎样要求估值</h3>
+<blockquote>
+<p>沿用当前合同，按指定估值日完成估值与Greeks，列出实际采用的行情日期、波动率、利率和分红率。</p>
+</blockquote>
+<p>可以使用解析定价或Monte Carlo。支持解析定价时默认优先采用解析方法；需要Monte Carlo时，使用明确的正整数路径数，不为了提高显示精度擅自增加路径数。用户指定方法、路径数或随机条件时，应保留这些要求。</p>
+<p>新发合同和存续合同不能混用。存续的路径型合同还需要截至估值日的历史观察状态。遇到周末、节假日或请求日行情尚不可用时，应同时披露请求估值日和实际采用的数据日期。</p>
+<h3>6.2怎样读数字</h3>
+<p>先看合同、日期和市场假设，再看价值。估值是给定模型下的合同价值，不是保证收益或可成交报价。</p>
+<table>
+<thead>
+<tr>
+<th>指标</th>
+<th>阅读重点</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>标准误</td>
+<td>Monte Carlo估计的不确定性，不是未来亏损上限</td>
+</tr>
+<tr>
+<td>Delta</td>
+<td>价值对标的价格的一阶敏感度，同时看标的坐标与单位</td>
+</tr>
+<tr>
+<td>Gamma</td>
+<td>二阶价格敏感度，不能直接当作一次价格变化的损益</td>
+</tr>
+<tr>
+<td>Vega</td>
+<td>按结果披露的波动率变动单位阅读，不重复做百分比换算</td>
+</tr>
+<tr>
+<td>Theta</td>
+<td>按结果披露的时间单位与符号阅读</td>
+</tr>
+<tr>
+<td>Rho</td>
+<td>价值对利率变化的敏感度，保留原单位</td>
+</tr>
+<tr>
+<td>Vanna、Volga</td>
+<td>有提供时阅读交叉或二阶风险单位；未提供不等于零</td>
+</tr>
+</tbody>
+</table>
+<p>Greeks描述当前状态附近的局部敏感度。障碍附近、临近到期或市场大幅变化时，不能只用简单线性外推替代重新估值。多标的共同变化的敏感度不等于单只资产的对冲数量。</p>
+<h3>6.3百分比与名义本金</h3>
+<p>标准化基准100不是金融基点。Skill的正式估值、回测和报告目前沿用百分比口径，不提供App任务级名义本金控件或金额附表。用户可以询问单位含义；不能因此把未经过正式金额接口验证的换算称为已经完成的交易规模估值。本说明不改变当前Skill的计算接口。</p>
+<h3>6.4公平参数反解</h3>
+<p>反解回答什么条款值能满足指定目标，例如求票息或行权价。只有明确要求且该产品支持该目标时，才执行反解；普通估值不会自动变成反解。</p>
+<blockquote>
+<p>请检查当前产品是否支持公平票息反解。支持时说明目标和固定条件，再按已确认条件执行，报告收敛情况和适用限制。</p>
+</blockquote>
+<p>反解结果要看目标、残差、不确定性和资格状态。仅供研究的结果不能作为正式参考报价交付。</p></article><article id="chapter-7" tabindex="-1"><h2>七、历史回测</h2><h3>7.1怎样提出回测需求</h3>
+<blockquote>
+<p>回测已确认的六个月雪球，入场区间为2019年至2023年，按月入场。先核对行情覆盖，报告有效样本、排除原因、结算结果和敲入敲出情况。</p>
+</blockquote>
+<p>入场区间并不等于所需行情的全部区间。每笔样本还需要覆盖持有至到期或有效提前终止的观察日；最后一个入场日之后仍可能需要较长行情。</p>
+<h3>7.2怎样读回测</h3>
+<p>依次核对合同版本、标的顺序、入场规则、样本范围、有效样本和排除原因，然后看逐笔结算、路径事件、公共统计及产品专属指标。零有效样本不是零收益，缺失指标也不能当成零。</p>
+<p>高频入场样本可能覆盖同一段历史行情，不能当作相互独立的投资。逐笔合同收益不是可直接交易的账户净值，重叠样本收益不能直接相加成账户收益。</p>
+<h3>7.3HV是什么</h3>
+<p>HV是用入场前历史价格变化计算的历史波动率，可作为分组分析的特征。窗口不足或价格无效时，需要查看相应限制。</p>
+<p>关闭HV特征表示本次不计算这一额外特征或分组，不表示把产品波动率设成零，也不改变合同的收益规则。历史敲入率、敲出率和盈利比例取决于样本，不能当作未来概率保证。</p></article><article id="chapter-8" tabindex="-1"><h2>八、数据与运行准备</h2><p>只在本次动作确实需要时准备环境和数据。已有可用环境、凭据和覆盖一致的数据应复用，不要求重复配置。</p>
+<ol>
+<li>首次运行计算时确认Python环境。已有明确环境选择就沿用，否则由宿主展示可用环境供选择。</li>
+<li>检查锁定依赖。缺少或版本不符时说明缺口，取得安装授权后再处理。</li>
+<li>需要新行情时使用iFind，首次保存凭据走本机安全输入流程。不要把Token写进普通研究问题或报告。</li>
+<li>使用符合标的、日期、字段和口径的数据；交易日历与价格历史分别核对，不能用普通工作日代替交易日。</li>
+</ol>
+<p>已有完整合同的收益结构分析，以及基于已验证结果重新导出文件，不一定需要新行情。数据请求失败时应说明是连接、凭据、权限还是覆盖问题，不编造价格或静默替换数据来源。</p>
+<p>运行数据与结果保存在当前项目的外部目录，Skill安装目录保持只读。安装、依赖和本地配置细节见<a href="../README.md">安装与配置说明</a>。</p></article><article id="chapter-9" tabindex="-1"><h2>九、报告与参考报价</h2><h3>9.1选择交付形式</h3>
+<table>
+<thead>
+<tr>
+<th>交付物</th>
+<th>适合的用途</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>研究简报</td>
+<td>集中阅读推荐理由、条款、估值摘要、回测摘要和主要风险</td>
+</tr>
+<tr>
+<td>完整研究报告</td>
+<td>查看收益结构、定价、历史回测及更完整的研究依据</td>
+</tr>
+<tr>
+<td>参考报价</td>
+<td>查看多个合同版本的期限、执行价、期权费和必要条款</td>
+</tr>
+<tr>
+<td>多结构研究简报或完整报告</td>
+<td>在一份文件中比较明确选择的多个结构</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>基于当前已完成且条款一致的收益结构、估值和回测，生成HTML完整研究报告，给我文件链接。</p>
+</blockquote>
+<p>未指定格式时默认HTML，也可明确要求PDF。参考报价是模型参考，不是交易承诺；报价表不承诺包含Greeks或回测图。</p>
+<h3>9.2已有结果怎样复用</h3>
+<p>明确指向当前对话中的结果、合同版本或已有报告。符合要求的已验证结果可以用于生成文件，已有冻结事实可以换格式或调整报告详略，不必为换文件格式重新计算。</p>
+<blockquote>
+<p>把刚才的完整研究报告导出PDF，沿用原事实，不重新取数、估值或回测。</p>
+</blockquote>
+<p>多个结构可以生成单份对比报告；参考报价也可组合多个已保存合同版本，不要求都来自同一份旧报告。不要把参数或估值日期不同的结果当作同一份合同。</p>
+<h3>9.3交付状态怎样区分</h3>
+<p>计算或资料覆盖不足时，可能只能得到部分结果或不可用说明。部分完成不能称为完整报告。正式文件必须由现成的报告与渲染链路生成，模型解释不能替代缺失计算。</p>
+<p>只有文件实际生成后才提供对应链接。宿主能预览时可以直接打开；不能预览时返回可访问文件位置并说明限制。文件生成不表示已经发给任何客户。</p></article><article id="chapter-10" tabindex="-1"><h2>十、修改、继续与停止</h2><p>在同一研究对话里继续补充条件，明确改什么、保留什么。宿主对跨对话历史的保留能力不同，新对话不应假定自动继承完整条款和结果。</p>
+<blockquote>
+<p>把期限改为三个月，其他条款不变，重新估值并比较变化。暂不重新回测。</p>
+</blockquote>
+<p>改变经济条款需要形成新合同，只重算受影响且用户要求的部分；旧结果继续对应旧输入，不会被改贴到新参数下。已经明确授权的参数调整不需要反复确认。</p>
+<p>停止入口由当前宿主提供。发出停止指令后，查看宿主和运行状态；取消正在生成的回复不必然等于底层计算已经终止。重新执行前先核对是否仍在运行，以及上一轮是否留下完整可用结果。</p></article><article id="chapter-11" tabindex="-1"><h2>十一、完整案例</h2><p>以下演示提问顺序，不是实际产品推荐、真实行情或计算结果。</p>
+<h3>11.1只理解产品</h3>
+<ol>
+<li>“解释看涨价差的收益机制，说明成本和收益上限。”</li>
+<li>“如果到期价格恰好等于两个执行价，分别如何结算？”</li>
+<li>“与单独买入看涨期权比较，保留哪些收益机会，放弃哪些机会？”</li>
+</ol>
+<p>这个过程可以只做资料解释，无需行情、估值或报告。</p>
+<h3>11.2已有产品，完成估值与回测</h3>
+<ol>
+<li>“我已确定研究挂钩000905.SH的六个月雪球，先整理我的条款，关键缺项一次问完。”</li>
+<li>补充票息、障碍、观察规则、起止日期和其他必要条件。</li>
+<li>“按确认条款分析收益结构，检查敲入、敲出和到期边界。”</li>
+<li>“按指定日期估值，披露Greeks、方法、行情日期和精度。”</li>
+<li>“按明确的历史区间及入场频率回测，列出有效样本和排除原因。”</li>
+<li>“确认这些结果对应同一合同后，生成完整研究报告。”</li>
+</ol>
+<h3>11.3从观点到多结构比较</h3>
+<ol>
+<li>说明标的、期限、市场观点、损失承受能力与收益偏好，要求筛选结构。</li>
+<li>核对候选的适配理由和风险，补充真正影响选择的缺口。</li>
+<li>明确要比较的结构或让当前对话按已确认要求选定组合。</li>
+<li>要求完成必要计算并生成一份多结构研究简报。</li>
+<li>后续只调整明确指定的条款或期限，保留其他条件。</li>
+</ol></article><article id="chapter-12" tabindex="-1"><h2>十二、常见问题</h2><p><strong>只想问概念，为什么不需要配置行情？</strong>
+产品机制可以从资料解释。只有需要行情或计算时，才准备对应条件。</p>
+<p><strong>为什么没给价格？</strong>
+产品介绍、推荐完成或条款整理完成不等于已运行估值。先看是否确实要求估值，以及执行是否成功。</p>
+<p><strong>为什么修改参数后还有旧结果？</strong>
+旧结果属于原合同。明确要求重新计算，并核对新结果的条款、日期和来源；旧报告不会自动更新。</p>
+<p><strong>为什么结果和上次不同？</strong>
+核对合同、市场日期、模型、波动率、路径数、随机条件及观察状态，不能只比较产品名称。</p>
+<p><strong>为什么不能按App说明点击设置或填本金？</strong>
+Skill通过宿主对话使用，不提供App页面、账号角色或任务参数控件。可直接询问当前能力和结果单位；App功能不能自动视为Skill已有功能。</p>
+<p><strong>需要全部技术文档吗？</strong>
+日常使用不需要。当前对话按任务读取对应模块说明即可。需要了解安装和环境时阅读<a href="../README.md">安装与配置说明</a>；产品目录见<a href="optionlist.md">产品列表</a>，具体产品规则见<a href="optionlib.md">条款资料</a>。本文件是使用教程，不修改Skill入口和模块的正式规则。</p></article><footer class="endnote">本说明适用于对话式Skill。具体产品条款和可执行能力以当前Skill及正式计算结果为准。<p><a href="skill-user-guide.md">文字版说明</a>　<a href="../README.md">安装与配置</a></p></footer></main>
+<script>
+const chapters=[...document.querySelectorAll('article')], links=[...document.querySelectorAll('nav a')], search=document.querySelector('#guide-search'), status=document.querySelector('#search-status');
+const active=id=>links.forEach(link=>{if(link.hash==='#'+id)link.setAttribute('aria-current','location');else link.removeAttribute('aria-current')});
+const filter=()=>{const value=search.value.trim().toLocaleLowerCase();let count=0;chapters.forEach((chapter,index)=>{const match=!value||chapter.textContent.toLocaleLowerCase().includes(value);chapter.hidden=!match;links[index].hidden=!match;if(match)count++});status.hidden=!value;status.textContent=count?`找到${count}个相关章节。`:'没有找到相关章节，请换一个关键词或显示全文。';if(count)active(chapters.find(chapter=>!chapter.hidden).id)};
+search.addEventListener('input',filter);document.querySelector('#show-all').addEventListener('click',()=>{search.value='';filter();document.querySelector('.masthead').scrollIntoView();search.focus()});document.querySelector('#print-guide').addEventListener('click',()=>window.print());
+const theme=document.querySelector('#theme');theme.addEventListener('click',()=>{const dark=document.documentElement.dataset.theme!=='dark';document.documentElement.dataset.theme=dark?'dark':'light';theme.setAttribute('aria-pressed',String(dark));theme.textContent=dark?'浅色阅读':'深色阅读'});
+links.forEach(link=>link.addEventListener('click',()=>{const chapter=document.getElementById(link.hash.slice(1));chapter.focus({preventScroll:true});active(chapter.id)}));
+const hashChanged=()=>{const chapter=document.getElementById(decodeURIComponent(location.hash.slice(1)));if(!chapter)return;if(chapter.hidden){search.value='';filter()}chapter.scrollIntoView();active(chapter.id)};window.addEventListener('hashchange',hashChanged);if(location.hash)hashChanged();else active(chapters[0].id);
+if('IntersectionObserver'in window){const observer=new IntersectionObserver(entries=>{const first=entries.filter(entry=>entry.isIntersecting&&!entry.target.hidden).sort((a,b)=>a.boundingClientRect.top-b.boundingClientRect.top)[0];if(first)active(first.target.id)},{rootMargin:'-5% 0px -65% 0px'});chapters.forEach(chapter=>observer.observe(chapter))}
+document.querySelectorAll('table').forEach(table=>{const wrap=document.createElement('div');wrap.className='table-scroll';wrap.tabIndex=0;wrap.setAttribute('role','region');wrap.setAttribute('aria-label','说明表格');table.before(wrap);wrap.append(table)});
+document.querySelectorAll('blockquote').forEach(quote=>{const text=quote.textContent.trim(),head=document.createElement('div'),label=document.createElement('span'),button=document.createElement('button');head.className='example-head';label.textContent='提问示例';button.type='button';button.textContent='复制示例';button.addEventListener('click',async()=>{try{await navigator.clipboard.writeText(text);button.textContent='已复制'}catch{button.textContent='请选中文字复制'}window.setTimeout(()=>button.textContent='复制示例',1800)});head.append(label,button);quote.prepend(head)});
+</script></body></html>

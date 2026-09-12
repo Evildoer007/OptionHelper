@@ -1,0 +1,21 @@
+{
+  "source": "OptionHelper/modules/reporter/page/editor",
+  "files": {
+    "report-editor-core.js": {
+      "source": "/Users/haoranxu/Desktop/OptionHelper/modules/reporter/page/editor/report-editor.js",
+      "sha256": "fe06b47b435515da66b1be402e09e7aafdeb42a4f41ebbdf70cf6b774afc35e5"
+    },
+    "report-editor-core.css": {
+      "source": "/Users/haoranxu/Desktop/OptionHelper/modules/reporter/page/editor/report-editor.css",
+      "sha256": "3c717f75f8b4184f1de461172a1127f5a4cca8956e895bb2e2ad38d7b277f9da"
+    },
+    "chart-presentation.js": {
+      "source": "/Users/haoranxu/Desktop/OptionHelper/modules/reporter/page/editor/chart-presentation.js",
+      "sha256": "223465fcf4c562f7c04ca7c6f94ce0b29be4887083ffaf8fd3dda3d847a3e03f"
+    }
+  },
+  "docx": {
+    "version": "9.6.1",
+    "sha256": "ecef72931c98461fc327aa6e95867820aced5db4c3d971ac5ad38ccda21dd360"
+  }
+}

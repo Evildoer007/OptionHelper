@@ -739,8 +739,13 @@ function renderChoiceLabel(node, option) {
     if (!operationId) {
       return asResponse(500, {ok: false, message: "后台运行未返回操作标识。"});
     }
+    return readHostedOperation(action, body, signal, hostContext, operationId, headers);
+  }
+
+  async function readHostedOperation(action, body, signal, hostContext, operationId, headers) {
+    const taskId = String(hostContext.task_id);
     const directResult = directOperationResultModules.has(moduleName);
-    operationConnectionState("submitted", operationId, "后台任务已提交。");
+    operationConnectionState("submitted", operationId, "正在读取后台任务状态。");
     let completed;
     let cancelledByCaller = false;
     let cancelController = null;
@@ -772,6 +777,63 @@ function renderChoiceLabel(node, option) {
     const result = await completed.clone().json().catch(() => ({}));
     return finalizeHostedResult(action, body, result, completed, hostContext);
   }
+
+
+  // Recovery reads task-owned operation records. It never resubmits a calculation.
+  async function restoreModulePage({busy, render, resume, notice}) {
+    if (!hostedInDesk || !["pricer", "backtester"].includes(moduleName)) return;
+    busy(true);
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), 10000);
+    try {
+      const hostContext = await waitForHostContext(controller.signal);
+      const taskId = hostContext?.task_id;
+      if (!taskId) return;
+      const response = await nativeFetch(`/api/tasks/${encodeURIComponent(taskId)}/operations?include_result=false`, {credentials: "same-origin", signal: controller.signal});
+      if (!response.ok) throw new Error("运行记录暂未读取，请重新打开当前任务重试。");
+      const envelope = await response.json();
+      const operations = (envelope.operations || []).filter(item => item.module === moduleName && item.kind === "run" && item.task_id === taskId)
+        .sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
+      const latest = operations[0];
+      if (!latest) return;
+      const previous = operations.find(item => item.state === "succeeded");
+      const active = ["queued", "running", "recovering", "cancelling"].includes(latest.state);
+      if (previous) {
+        try {
+          const outcome = await fetchHostedOperationResult(taskId, previous.operation_id, controller.signal, {retry: false});
+          if (!outcome.response.ok || !outcome.result?.ok) throw new Error("已保存结果暂未读取，请重新打开当前任务重试。");
+          render(outcome.result);
+        } catch (error) {
+          // A historical result is optional while a newer operation is active.
+          // Its failure must not prevent progress tracking or cancellation.
+          if (!active) throw error;
+          notice("历史结果暂未恢复", "继续跟踪当前运行；完成后将展示本次结果。");
+        }
+      }
+      if (active) {
+        window.clearTimeout(timer);
+        busy(false);
+        await resume(latest.operation_id);
+      } else if (latest.state !== "succeeded") {
+        notice(latest.state === "cancelled" ? "上次运行已取消" : "上次运行未完成", `${latest.message || "请检查输入后重试。"}${previous ? " 下方保留上一次完成结果。" : ""}`);
+      }
+    } catch (error) {
+      notice("结果恢复未完成", error.name === "AbortError" ? "读取已保存结果超时，请重新打开当前任务重试。" : error.message || "请重新打开当前任务重试。");
+    } finally {
+      window.clearTimeout(timer);
+      busy(false);
+    }
+  }
+
+  window.OptionHelperModuleRecovery = Object.freeze({
+    restore: restoreModulePage,
+    async resume(operationId, signal) {
+      const hostContext = await waitForHostContext(signal);
+      if (!hostContext?.task_id) return asResponse(400, {ok: false, message: "当前模块没有可恢复的任务。"});
+      const headers = {"Content-Type": "application/json", "X-OptionHelper-Module-Context": JSON.stringify(hostContext), "X-OptionHelper-Request-Id": requestId()};
+      return readHostedOperation("run", {}, signal, hostContext, operationId, headers);
+    },
+  });
 
   async function cancelHostedOperation(taskId, operationId, headers, signal) {
     let failures = 0;
@@ -904,7 +966,7 @@ function renderChoiceLabel(node, option) {
     }
   }
 
-  async function fetchHostedOperationResult(taskId, operationId, signal) {
+  async function fetchHostedOperationResult(taskId, operationId, signal, {retry = true} = {}) {
     let failures = 0;
     while (true) {
       if (signal?.aborted) throw abortError();
@@ -914,6 +976,7 @@ function renderChoiceLabel(node, option) {
           {credentials: "same-origin", signal},
         );
         if (response.status === 202) {
+          if (!retry) throw new Error("已保存结果尚未就绪，请重新打开当前任务重试。");
           await response.json();
           await wait(750, signal);
           continue;
@@ -935,7 +998,7 @@ function renderChoiceLabel(node, option) {
         if (failures) operationConnectionState("connected", operationId);
         return {response: asParsedResponse(response.status, result), result};
       } catch (error) {
-        if (signal?.aborted || error?.name === "AbortError") throw error;
+        if (!retry || signal?.aborted || error?.name === "AbortError") throw error;
         failures += 1;
         operationConnectionState("recovering", operationId);
         await wait(retryDelay(failures), signal);

@@ -1,0 +1,117 @@
+{
+  "name_zh": "保底凤凰式结构",
+  "terms": {
+    "S0": 100.0,
+    "T": 2.0,
+    "N": 10000000.0,
+    "g": 0.2,
+    "K": 100.0,
+    "H_KO": 100.0,
+    "H_KI": 75.0,
+    "c": 0.03,
+    "O_KO": "monthly_last",
+    "O_KI": "daily",
+    "Llock": 6,
+    "settlement": "cash",
+    "observation_price": "close",
+    "margin_call": true,
+    "Hc": 75.0,
+    "Hfloor": 75.0,
+    "F": 0.75,
+    "Oc": "monthly_last",
+    "monitor": {
+      "tau_out": "first_time_after(S_t[O_out] >= H_out, n_lock)",
+      "tau_in": "first_time(S_t[O_in] <= H_in)",
+      "n_coupon": "count_until(S_t[O_c] >= H_c, first_time_after(S_t[O_out] >= H_out, n_lock))"
+    },
+    "derived_terms": {
+      "G": "N * g"
+    },
+    "pricing_methods": [
+      "monte_carlo"
+    ],
+    "constraints": [
+      "K == S_0",
+      "H_c == H_in",
+      "H_in == H_floor",
+      "H_in == F * S_0",
+      "H_in < H_out",
+      "H_out == S_0",
+      "n_lock < period_count(T, 12)",
+      "is_monthly_schedule(O_out)",
+      "is_monthly_schedule(O_c)"
+    ]
+  },
+  "paths": [
+    {
+      "condition": "tau_out < inf",
+      "cases": [
+        {
+          "domain": "S_T >= 0",
+          "pnl": "cash(tau_out, N * c * n_coupon / 12)"
+        }
+      ]
+    },
+    {
+      "condition": "tau_out == inf and tau_in == inf",
+      "cases": [
+        {
+          "domain": "S_T >= 0",
+          "pnl": "cash(T, N * c * n_coupon / 12)"
+        }
+      ]
+    },
+    {
+      "condition": "tau_out == inf and tau_in < inf",
+      "cases": [
+        {
+          "domain": "S_T >= K",
+          "pnl": "cash(T, N * c * n_coupon / 12)"
+        },
+        {
+          "domain": "F * K <= S_T < K",
+          "pnl": "cash(T, N * c * n_coupon / 12 + N * (S_T / K - 1))"
+        },
+        {
+          "domain": "0 <= S_T < F * K",
+          "pnl": "cash(T, N * c * n_coupon / 12 + N * (F - 1))"
+        }
+      ]
+    }
+  ],
+  "visual_template": {
+    "schema": "optionhelper.payoff-visual-template",
+    "layout": "standard_path_cards",
+    "path_views": [
+      {
+        "path_index": 1,
+        "case_indexes": [
+          1
+        ],
+        "axis": "S_T",
+        "chart_kind": "conditional_terminal_metric",
+        "title": "路径1"
+      },
+      {
+        "path_index": 2,
+        "case_indexes": [
+          1
+        ],
+        "axis": "S_T",
+        "chart_kind": "conditional_terminal_metric",
+        "title": "路径2"
+      },
+      {
+        "path_index": 3,
+        "case_indexes": [
+          1,
+          2,
+          3
+        ],
+        "axis": "S_T",
+        "chart_kind": "conditional_terminal_metric",
+        "title": "路径3"
+      }
+    ]
+  }
+}

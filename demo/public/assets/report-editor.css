@@ -1,0 +1,53 @@
+@import url('./report-editing/report-editor-core.css');
+/* THESIS: 复用OH连续纸张编辑界面。OWN-WORLD: 红灰工具栏、白纸、细边框。
+   STORY: 读取现有报告，编辑当前稿，下载副本。FIRST VIEWPORT: 目录、正文与元素设置。
+   FORM: 沿用原生编辑器的Operate界面，仅适配静态导出和Demo宿主。 */
+#oh-demo-report-editor {
+  --font: -apple-system,BlinkMacSystemFont,'PingFang SC',Arial,sans-serif;
+  --ink: #252525; --muted: #62666b; --line: #d8dadd; --red: #ad2940;
+  --red-deep: #8b2033; --wash: #f4f4f4; --color-surface: #fff;
+  font-family: var(--font); font-size: 13px;
+}
+#oh-demo-report-editor * { box-sizing: border-box; }
+#oh-demo-report-editor .report-editor { z-index: 12000; min-height: 0; height: 100dvh; }
+#oh-demo-report-editor [hidden] { display: none !important; }
+#oh-demo-report-editor input, #oh-demo-report-editor select {
+  width: 100%; min-width: 0; padding: 5px 8px; border: 1px solid var(--line);
+  border-radius: 5px; background: #fff; color: var(--ink); font-family: var(--font);
+}
+#oh-demo-report-editor .editor-compact-field input { width: 52px; }
+#oh-demo-report-editor .editor-color-field input { width: 31px; }
+#oh-demo-report-editor .editor-toolbar__commands select { width: auto; }
+#oh-demo-report-editor input:focus-visible, #oh-demo-report-editor select:focus-visible,
+#oh-demo-report-editor button:focus-visible, #oh-demo-report-editor summary:focus-visible {
+  outline: 2px solid var(--red); outline-offset: 2px;
+}
+#oh-demo-report-editor button { cursor: pointer; }
+#oh-demo-report-editor button:disabled { cursor: default; opacity: .5; }
+#oh-demo-report-editor .editor-paper { min-height: 0; height: 100%; width: min(960px,100%); }
+#oh-demo-report-editor .editor-paper iframe { height: 100%; min-height: 0; }
+#oh-demo-report-editor .editor-canvas { padding: 20px; overflow: hidden; display: flex; flex-direction: column; }
+#oh-demo-report-editor .editor-find-bar { flex: 0 0 auto; }
+#oh-demo-report-editor .report-editor__workspace { grid-template-columns: 190px minmax(0,1fr) 250px; }
+#oh-demo-report-editor .report-editor__toolbar { grid-template-columns: minmax(240px,1fr) auto; min-height: 0; }
+#oh-demo-report-editor .editor-command-fold { grid-row: 2; grid-column: 1/-1; }
+#oh-demo-report-editor .editor-toolbar__actions { grid-column: 2; grid-row: 1; }
+#oh-demo-report-editor .editor-exit-dialog h2 { text-align: left; }
+#oh-demo-report-editor .editor-exit-dialog p { font-size: 13px; }
+@media(max-width:1000px) and (min-width:861px) {
+  #oh-demo-report-editor .report-editor__workspace { grid-template-columns: 150px minmax(0,1fr) 210px; }
+}
+@media(max-width:860px) {
+  #oh-demo-report-editor .report-editor__workspace { display: block; }
+  #oh-demo-report-editor .report-editor__toolbar { display: flex; }
+  #oh-demo-report-editor .editor-canvas { padding: 10px; }
+  #oh-demo-report-editor .editor-outline, #oh-demo-report-editor .editor-inspector { visibility: hidden; }
+  #oh-demo-report-editor [data-mobile-panel="outline"] .editor-outline,
+  #oh-demo-report-editor [data-mobile-panel="inspector"] .editor-inspector { visibility: visible; }
+}
+@media(max-width:560px) {
+  #oh-demo-report-editor .editor-canvas { padding: 0; }
+  #oh-demo-report-editor .editor-toolbar__actions { flex-wrap: wrap; overflow: visible; gap: 5px; }
+  #oh-demo-report-editor .editor-toolbar__actions button { padding-inline: 9px; }
+}
+@media print { #oh-demo-report-editor { display: none !important; } }

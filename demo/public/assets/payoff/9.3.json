@@ -1,0 +1,60 @@
+{
+  "name_zh": "折价看涨8080（期权费）",
+  "terms": {
+    "S0": 100.0,
+    "T": 0.08333333333333333,
+    "exercise_style": "European",
+    "settlement": "cash",
+    "observation_price": "close",
+    "margin_call": false,
+    "N": 10000000.0,
+    "K1": 80.0,
+    "K2": 100.0,
+    "alpha": 0.8,
+    "p": 0.2,
+    "pricing_methods": [
+      "analytical",
+      "monte_carlo"
+    ],
+    "constraints": [
+      "K_1 < K_2",
+      "K_2 == S_0"
+    ]
+  },
+  "paths": [
+    {
+      "condition": "True",
+      "cases": [
+        {
+          "domain": "S_T > K_2",
+          "pnl": "cash(0, -N * p) + cash(T, N / S_0 * ((S_T - K_1) - (1 - alpha) * (S_T - K_2)))"
+        },
+        {
+          "domain": "K_1 < S_T <= K_2",
+          "pnl": "cash(0, -N * p) + cash(T, N / S_0 * (S_T - K_1))"
+        },
+        {
+          "domain": "0 <= S_T <= K_1",
+          "pnl": "cash(0, -N * p) + cash(T, 0)"
+        }
+      ]
+    }
+  ],
+  "visual_template": {
+    "schema": "optionhelper.payoff-visual-template",
+    "layout": "standard_path_cards",
+    "path_views": [
+      {
+        "path_index": 1,
+        "case_indexes": [
+          1,
+          2,
+          3
+        ],
+        "axis": "S_T",
+        "chart_kind": "conditional_terminal_metric",
+        "title": "路径1"
+      }
+    ]
+  }
+}

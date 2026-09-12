@@ -29,6 +29,7 @@ from runtime.protocol.models import ModuleRunRef
 from .errors import AuthorizationError, UnavailableCapabilityError, ValidationError
 from .identity.session_identity import SessionIdentity
 from .stores.result_store import ResultStore, _report_evidence_key
+from .position_amounts import task_amounts, selected_run_references, attach_amount_schedule
 
 
 
@@ -441,6 +442,10 @@ class ReporterAdapter:
             )
         except ReporterError as error:
             raise ValidationError(str(error)) from error
+        amount_view = None
+        if self._tasks is not None and self._tasks.get(principal, task_id).get("position_size"):
+            amount_view = task_amounts(self._tasks, self._results, principal, task_id,
+                                      references=selected_run_references(expected_request), allow_selected_tasks=True)
         with tempfile.TemporaryDirectory(prefix="report-", dir=self._staging_root()) as temporary:
             response = dict(reporter_call_tool(
                 {"action": "run", "selection": dict(selection)}, result_store=ports, designer_port=self._designer,
@@ -450,6 +455,7 @@ class ReporterAdapter:
                 raise UnavailableCapabilityError("reporter.run", str(response.get("message") or response.get("error") or "Reporter service failed"))
             report_root = _report_root(Path(temporary) / "runs", task_id, selection.get("report_run_id"))
             delivery = _verified_report_delivery(report_root, expected_request=expected_request)
+            attach_amount_schedule(delivery, amount_view)
             report_request = delivery["request"]
             committed_request = {**dict(report_request), "reporter_audit": delivery["audit"]}
             report_ref = self._results.commit_report_run(
@@ -471,6 +477,11 @@ class ReporterAdapter:
             "preview_url": base,
             "download_url": _artifact_url(report_ref["report_run_id"], delivery["report"], download=True),
         }, *({**item, "role": "candidate"} for item in children)]
+        if delivery.get("amount_schedule"):
+            deliveries.append({"role": "supplement", "display_name": "名义规模金额附表",
+                               "report": delivery["amount_schedule"],
+                               "preview_url": _artifact_url(report_ref["report_run_id"], delivery["amount_schedule"]),
+                               "download_url": _artifact_url(report_ref["report_run_id"], delivery["amount_schedule"], download=True)})
         return {
             "ok": True, "module": "reporter",
             # The App's longstanding API uses completed for a fully verified
@@ -529,10 +540,22 @@ class ReporterAdapter:
                 delivery = _verified_report_delivery(report_root, expected_request=None)
             except ReporterError as error:
                 raise ValidationError(str(error)) from error
+            attach_amount_schedule(delivery, audit.get("position_amounts"))
             committed_request = {**dict(delivery["request"]), "reporter_audit": delivery["audit"]}
             report_ref = self._results.commit_report_run(
                 principal, task_id, committed_request, delivery["artifacts"], status=delivery["status"],
             )
+        deliveries = [{
+            "role": "primary", "display_name": delivery["display_name"], "report": delivery["report"],
+            "preview_url": _artifact_url(report_ref["report_run_id"], delivery["report"]),
+            "download_url": _artifact_url(report_ref["report_run_id"], delivery["report"], download=True),
+        }]
+        if delivery.get("amount_schedule"):
+            deliveries.append({
+                "role": "supplement", "display_name": "名义规模金额附表", "report": delivery["amount_schedule"],
+                "preview_url": _artifact_url(report_ref["report_run_id"], delivery["amount_schedule"]),
+                "download_url": _artifact_url(report_ref["report_run_id"], delivery["amount_schedule"], download=True),
+            })
         return {
             "ok": True,
             "module": "reporter",
@@ -540,11 +563,7 @@ class ReporterAdapter:
             "report_run_ref": report_ref,
             "output": {
                 "report": delivery["report"], "children": [],
-                "deliveries": [{
-                    "role": "primary", "display_name": delivery["display_name"], "report": delivery["report"],
-                    "preview_url": _artifact_url(report_ref["report_run_id"], delivery["report"]),
-                    "download_url": _artifact_url(report_ref["report_run_id"], delivery["report"], download=True),
-                }],
+                "deliveries": deliveries,
                 "delivery_mode": delivery["delivery_mode"], "format": delivery["format"],
                 "can_save_pdf": delivery["can_save_pdf"],
             },

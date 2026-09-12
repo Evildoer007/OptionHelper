@@ -117,10 +117,10 @@ $env:OPTIONHELPER_PYTHON = 'C:\Python312\python.exe'
 
 | 平台 | 输出目录 | 目标文件 |
 | --- | --- | --- |
-| macOS | `dist/` | `option-helper-v0.2.0.zip`、`OptionHelper-v0.1.0.alpha-macOS-arm64.dmg` |
-| Windows | `result/windows-candidate/` | `option-helper-v0.2.0.zip`、`OptionHelper-v0.1.0.alpha-Windows-x64.exe` |
+| macOS | `dist/` | `option-helper-v0.3.0.zip`、`OptionHelper-v0.1.0-macOS-arm64.dmg` |
+| Windows | `result/windows-candidate/` | `option-helper-v0.3.0.zip`、`OptionHelper-v0.1.0-Windows-x64.exe` |
 
-当前版本：Skill为`v0.2.0`，App为`v0.1.0.alpha`。安装包和ZIP带版本号，解压后的目录与应用名称保持不变。
+当前版本：Skill为`v0.3.0`，App为`v0.1.0`。安装包和ZIP带版本号，解压后的目录与应用名称保持不变。
 
 上述入口生成本地候选。正式对外发行还需完成相应平台的签名或公证。构建失败时，按终端显示的失败阶段处理后重新运行。
 

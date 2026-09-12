@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from bisect import bisect_right
 from dataclasses import dataclass, replace
 from typing import Any, Mapping, Sequence
 
@@ -30,6 +31,89 @@ class AlignedHistory:
     close: pd.DataFrame
     price_fields: Mapping[str, pd.DataFrame]
     trading_sessions: pd.DatetimeIndex
+
+
+class _ReplayPreparation:
+    """One backtest's indexes and source arrays; never shared across runs."""
+
+    def __init__(self, history, historical_data, contract):
+        self.history = history
+        self.historical_data = historical_data
+        self.contract = contract
+        self.positions = {day: i for i, day in enumerate(history.close.index)}
+        self.calendar = historical_data.trading_sessions
+        self.calendar_positions = {day: i for i, day in enumerate(self.calendar)}
+        self.stops = {}
+        self.close = None
+        self.fields = None
+        self.hv = {}
+
+    def stop(self, start):
+        cached = self.stops.get(start)
+        if cached is not None:
+            return cached
+        result = self._find_stop(start)
+        self.stops[start] = result
+        return result
+
+    def _find_stop(self, start):
+        entry_date = self.history.close.index[start]
+        calendar_start = self.calendar_positions.get(entry_date)
+        if calendar_start is None:
+            return None, "entry_date_missing_from_controlled_calendar"
+        if "n_obs" in self.contract.terms:
+            target = int(self.contract.terms["n_obs"])
+            if len(self.calendar) - calendar_start < target:
+                return None, "insufficient_observation_count_tenor"
+            terminal_session = self.calendar[calendar_start + target - 1]
+        else:
+            if "T" not in self.contract.terms:
+                return None, "contract_tenor_missing"
+            maturity = entry_date + pd.Timedelta(days=float(self.contract.terms["T"]) * 365.0)
+            maturity_date = maturity.normalize()
+            calendar_closed = maturity_date in self.calendar_positions or bool(len(self.calendar) and self.calendar[-1] > maturity_date)
+            if not calendar_closed:
+                return None, "controlled_calendar_not_closed_through_maturity"
+            calendar_stop = bisect_right(self.calendar, maturity)
+            if calendar_stop <= calendar_start:
+                return None, "insufficient_tenor"
+            terminal_session = self.calendar[calendar_stop - 1]
+        stop = self.positions.get(terminal_session, -1)
+        if stop >= start:
+            return int(stop), None
+        return None, "missing_controlled_calendar_session_price"
+
+    def close_values(self, start, stop):
+        if self.close is None:
+            self.close = self.history.close.to_numpy(dtype=float)
+        return self.close[start:stop + 1]
+
+    def field_values(self, start, stop):
+        if self.fields is None:
+            self.fields = {name: matrix.to_numpy(dtype=float) for name, matrix in self.history.price_fields.items()}
+        return {name: matrix[start:stop + 1] for name, matrix in self.fields.items()}
+
+    def hv_prices(self, asset, price_field, entry_date, window):
+        key = (asset, price_field)
+        if key not in self.hv:
+            frame = self.historical_data.frame
+            rows = frame.loc[frame["asset_id"] == asset]
+            dates = pd.DatetimeIndex(rows["date"])
+            # Integrity validates canonical content, not caller row ordering.
+            # Retain original filtering semantics for reordered input frames.
+            if not dates.is_monotonic_increasing:
+                prices = rows.loc[rows["date"] <= entry_date, price_field].to_numpy(dtype=float)
+                return prices[-(window + 1):]
+            self.hv[key] = (dates, rows[price_field].to_numpy(dtype=float))
+        dates, prices = self.hv[key]
+        end = int(dates.searchsorted(entry_date, side="right"))
+        return prices[max(0, end - window - 1):end]
+
+
+def _calendar_slice(calendar, start, end):
+    if pd.isna(start) or pd.isna(end) or not calendar.is_monotonic_increasing:
+        return calendar[(calendar >= start) & (calendar <= end)]
+    return calendar[calendar.searchsorted(start, side="left"):calendar.searchsorted(end, side="right")]
 
 
 @dataclass(frozen=True)
@@ -106,7 +190,7 @@ def assert_daily_observation_sessions(
     terminal_date: pd.Timestamp,
 ) -> None:
     """逐日观察的合同窗口内，每个受控交易日都必须有全部标的价格。"""
-    required = controlled_sessions[(controlled_sessions >= entry_date) & (controlled_sessions <= terminal_date)]
+    required = _calendar_slice(controlled_sessions, entry_date, terminal_date)
     missing = required.difference(observed_sessions)
     if len(missing):
         dates = ",".join(date.strftime("%Y-%m-%d") for date in missing)
@@ -138,10 +222,7 @@ def controlled_trade_contract(
     """一次生成逐笔合同和审计快照，避免同一路径重复解析合同日程。"""
     from .trade_ledger import freeze_trade_contract
 
-    controlled_dates = historical_data.trading_sessions[
-        (historical_data.trading_sessions >= observed_dates[0])
-        & (historical_data.trading_sessions <= observed_dates[-1])
-    ]
+    controlled_dates = _calendar_slice(historical_data.trading_sessions, observed_dates[0], observed_dates[-1])
     schedule_source, historical_contract = freeze_trade_contract(
         contract,
         entry_date=_date_text(observed_dates[0]),
@@ -233,6 +314,8 @@ def _resolve_effective_backtest_window(
     historical_data: HistoricalData,
     contract: ResolvedContract,
     config: BacktestConfig,
+    *,
+    _prepared: _ReplayPreparation | None = None,
 ) -> EffectiveBacktestWindow:
     """计算唯一有效窗口；不使用浏览器日期、工作日猜测或期限倒减。"""
     observed = history.trading_sessions
@@ -250,11 +333,10 @@ def _resolve_effective_backtest_window(
         start = observed.get_indexer([entry_date])[0]
         if start < 0:
             return None, "entry_date_not_in_aligned_trading_calendar"
-        stop, reason = contract_stop_position(
-            observed,
-            int(start),
-            contract,
-            trading_sessions=controlled,
+        stop, reason = (
+            _prepared.stop(int(start)) if _prepared is not None else contract_stop_position(
+                observed, int(start), contract, trading_sessions=controlled,
+            )
         )
         if stop is None:
             return None, reason
@@ -661,18 +743,34 @@ def entry_hv_feature(
     window: int | None,
     bins: Sequence[float] | None,
 ) -> dict[str, Any]:
+    """Public helper retains its original inputs and arithmetic."""
+    return _entry_hv_feature_prepared(historical_data, underlyings, entry_date, window=window, bins=bins)
+
+
+def _entry_hv_feature_prepared(
+    historical_data: HistoricalData,
+    underlyings: Sequence[str],
+    entry_date: pd.Timestamp,
+    *,
+    window: int | None,
+    bins: Sequence[float] | None,
+    prepared: _ReplayPreparation | None = None,
+) -> dict[str, Any]:
     """只用入场日及以前的前复权收盘价计算可选HV特征。"""
     if window is None:
         return {"status": "not_requested"}
     price_field = historical_data.hv_price_field
     if price_field is None or price_field not in historical_data.frame.columns:
         return {"status": "not_available", "reason": "adj_close_not_provided", "hv_window": window}
-    scoped = historical_data.frame[
+    scoped = None if prepared is not None else historical_data.frame[
         (historical_data.frame["asset_id"].isin(underlyings)) & (historical_data.frame["date"] <= entry_date)
     ]
     by_asset: dict[str, float] = {}
     for asset in underlyings:
-        prices = scoped.loc[scoped["asset_id"] == asset, price_field].to_numpy(dtype=float)
+        prices = (
+            prepared.hv_prices(asset, price_field, entry_date, window) if prepared is not None
+            else scoped.loc[scoped["asset_id"] == asset, price_field].to_numpy(dtype=float)
+        )
         if len(prices) < window + 1:
             return {"status": "not_available", "reason": "insufficient_pre_entry_adj_close", "hv_window": window}
         window_prices = prices[-(window + 1):]

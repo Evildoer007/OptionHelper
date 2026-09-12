@@ -1,0 +1,66 @@
+{
+  "name_zh": "超低敲入保底型雪球",
+  "terms": {
+    "S0": 100.0,
+    "T": 2.0,
+    "N": 10000000.0,
+    "g": 0.35,
+    "H_KO": 100.0,
+    "H_KI": 65.0,
+    "c": 0.043,
+    "O_KO": "monthly_last",
+    "O_KI": "daily",
+    "Llock": 3,
+    "settlement": "cash",
+    "observation_price": "close",
+    "margin_call": true,
+    "monitor": {
+      "tau_out": "first_time_after(S_t[O_out] >= H_out, n_lock)",
+      "tau_in": "first_time(S_t[O_in] <= H_in)"
+    },
+    "derived_terms": {
+      "G": "N * g",
+      "Hfloor": "H_in"
+    },
+    "pricing_methods": [
+      "monte_carlo"
+    ],
+    "constraints": [
+      "H_in < H_out",
+      "is_monthly_schedule(O_out)"
+    ]
+  },
+  "paths": [
+    {
+      "condition": "tau_out < inf",
+      "cases": [
+        {
+          "domain": "S_T >= 0",
+          "pnl": "cash(tau_out, N * c * tau_out)"
+        }
+      ]
+    },
+    {
+      "condition": "tau_out == inf and tau_in == inf",
+      "cases": [
+        {
+          "domain": "S_T >= 0",
+          "pnl": "cash(T, N * c * T)"
+        }
+      ]
+    },
+    {
+      "condition": "tau_out == inf and tau_in < inf",
+      "cases": [
+        {
+          "domain": "S_T >= H_floor",
+          "pnl": "cash(T, N * r_T)"
+        },
+        {
+          "domain": "0 <= S_T < H_floor",
+          "pnl": "cash(T, N * (H_floor / S_0 - 1))"
+        }
+      ]
+    }
+  ]
+}

@@ -696,10 +696,22 @@ class ResultStore:
             if isinstance(document, dict):
                 self._authorize_report(identity, record)
                 row.update(title=document["title"], updated_at=document["updated_at"], manual_edit=True)
+                # Keep frozen supplementary deliveries when the primary document is edited.
+                public = (record.get("report_request", {}).get("reporter_audit", {})
+                          .get("public_delivery", {}))
+                supplements = {item.get("artifact_name") for item in public.get("deliveries", [])
+                               if isinstance(item, dict) and item.get("role") == "supplement"}
+                supplements.add("position-amounts.html")
+                original_supplements = [{**item, "role": "supplement", "frozen_source": True,
+                    "display_name": "名义规模金额附表（原始交付）" if item["name"] == "position-amounts.html"
+                                    else item.get("display_name", item["name"]),
+                    "url": f"/api/reports/{report_run_id}/artifacts/{item['name']}"}
+                    for item in row["artifacts"] if item["name"] in supplements]
                 row["artifacts"] = [{"name": item["name"], "content_type": item["content_type"],
                     "display_name": document["title"] + PurePosixPath(item["name"]).suffix,
                     "url": f"/api/reports/{report_run_id}/document-artifacts/{item['name']}"}
                     for item in document["artifacts"] if not item["name"].startswith("assets/")]
+                row["artifacts"].extend(original_supplements)
             rows.append(row)
         return sorted(rows, key=lambda item: item["created_at"], reverse=True)
 

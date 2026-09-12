@@ -897,11 +897,34 @@ html[data-theme] .workspace-shell[data-workspace-shell] .composer .composer-atta
 html[data-theme] .workspace-shell[data-workspace-shell] .composer .composer-attach-control:is(:hover, :focus-visible):not(:disabled) { width: 104px; }
 html[data-theme] .workspace-shell[data-workspace-shell] .composer .composer-attach-control:is(:hover, :focus-visible):not(:disabled) .composer-attach-label { opacity: 1; }
 .composer-followup-control[hidden] { display: none !important; }
-.task-item__running-dot { width: 6px; height: 6px; background: var(--muted); box-shadow: none; }
-.task-item__running-dot[data-state="running"] { animation: task-activity-pulse 1600ms ease-in-out infinite; }
-@keyframes task-activity-pulse { 50% { opacity: .42; } }
+/* Sent turns reserve reading space above the composer, then consume it as text grows. */
+.workspace-shell.workspace-shell--desk[data-workspace-shell] .message-stream[data-turn-anchored="true"] {
+  padding-bottom: calc(40px + var(--conversation-turn-space, 0px));
+}
+.message--process .process-geometry { flex: 0 0 20px; }
+.task-item__title { gap: 4px; }
+/* The leading status stays in place; only live work emits a quiet ripple. */
+.task-item__title .task-item__running-dot {
+  position: relative; flex: 0 0 14px; width: 14px; height: 18px;
+  color: var(--muted); background: transparent; box-shadow: none;
+}
+.task-item__running-dot::before, .task-item__running-dot::after {
+  content: ""; position: absolute; inset: 6px 4px; box-sizing: border-box; border-radius: 50%;
+}
+.task-item__running-dot::before { background: currentColor; }
+.task-item__running-dot::after { border: 1px solid currentColor; opacity: 0; }
+.task-item__running-dot:is([data-state="running"], [data-state="cancelling"]) { color: var(--accent, #c8102e); }
+.task-item__running-dot:is([data-state="running"], [data-state="cancelling"])::after {
+  animation: task-activity-ripple 1600ms cubic-bezier(.16, 1, .3, 1) infinite;
+}
+.task-item__pin { display: inline-flex; flex: 0 0 12px; color: var(--muted); }
+.task-item__pin svg { display: block; width: 12px; height: 12px; }
+@keyframes task-activity-ripple {
+  0% { transform: scale(1); opacity: .65; }
+  85%, 100% { transform: scale(2.1); opacity: 0; }
+}
 @media (prefers-reduced-motion: reduce) {
-  .task-item__running-dot { animation: none !important; }
+  .task-item__running-dot::after { animation: none !important; opacity: 0 !important; }
   .workspace-shell .composer-attach-control, .workspace-shell .composer-attach-label { transition: none !important; }
 }
 

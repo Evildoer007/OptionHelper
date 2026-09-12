@@ -1126,6 +1126,53 @@ class PricePath:
             fields[source] = source_data
         return cls(data, grid, assets, normalized_dates, fields or None, times is not None)
 
+    @classmethod
+    def _from_prepared_values(
+        cls,
+        values,
+        *,
+        times=None,
+        asset_ids=("UNDERLYING",),
+        dates=None,
+        price_fields=None,
+        _batch_preparation=None,
+    ) -> "PricePath":
+        # Batch-only fast path. Preserve the public constructor and its callers.
+        # Keep validation order identical; only immutable dates may be reused.
+        data = np.asarray(values, dtype=float)
+        if data.ndim == 1:
+            data = data[:, None]
+        if data.ndim != 2 or data.shape[0] < 2 or not np.isfinite(data).all() or (data < 0).any() or (data[0] <= 0).any():
+            raise ContractResolutionError("价格路径必须含至少两个非负价格观察点，且首个观察点必须严格为正")
+        assets = tuple(str(item) for item in asset_ids)
+        if len(assets) != data.shape[1]:
+            raise ContractResolutionError("asset_ids数量与价格路径列数不一致")
+        grid = np.asarray(times if times is not None else np.linspace(0.0, 1.0, data.shape[0]), dtype=float)
+        if grid.shape != (data.shape[0],) or grid[0] < 0.0 or np.any(np.diff(grid) <= 0):
+            raise ContractResolutionError("时间网格须非负且严格递增")
+        normalized_dates: tuple[Any, ...] | None = None
+        if dates is not None:
+            if len(dates) != data.shape[0]:
+                raise ContractResolutionError("日期网格与价格路径长度不一致")
+            if _batch_preparation is None:
+                date_index = pd.to_datetime(list(dates), errors="coerce")
+                if date_index.isna().any() or not date_index.is_monotonic_increasing or date_index.has_duplicates:
+                    raise ContractResolutionError("日期网格须为严格递增的有效交易日")
+                normalized_dates = tuple(date_index)
+            else:
+                normalized_dates = _batch_preparation.path_dates(dates)
+        fields: dict[str, np.ndarray] = {}
+        for source, source_values in dict(price_fields or {}).items():
+            if source not in {"open", "high", "low"}:
+                raise ContractResolutionError("price_fields仅支持open、high或low；收盘价请使用values")
+            source_data = np.asarray(source_values, dtype=float)
+            if source_data.ndim == 1:
+                source_data = source_data[:, None]
+            if source_data.shape != data.shape or not np.isfinite(source_data).all() or (source_data < 0).any() or (source_data[0] <= 0).any():
+                raise ContractResolutionError(f"price_fields.{source}必须与收盘价路径同形状且均为非负，首个观察点严格为正")
+            fields[source] = source_data
+        return cls(data, grid, assets, normalized_dates, fields or None, times is not None)
+
     def values_for(self, source: str) -> np.ndarray:
         """返回合同指定的原始观察价，缺少OHLC字段时明确拒绝执行。"""
         if source == "close":
@@ -1617,6 +1664,76 @@ def prepare_contract_evaluator(
     )
 
 
+
+_PREPARE_MATURITY = True
+_PREPARE_SERIES_DATES = True
+_PREPARE_MONITOR_ORDER = True
+
+
+class _BatchContractPreparation:
+    """Lazy invariant work for one batch call, never a path/result cache.
+
+    First use stays at its original evaluation stage so invalid contracts
+    retain the original error priority. No state survives the batch call.
+    """
+
+    def __init__(self, contract: ResolvedContract) -> None:
+        self.contract = contract
+        self._maturity_ready = False
+        self._maturity = None
+        self._monitor_order = None
+        self._series_dates_ready = False
+        self._series_source_dates = None
+        self._series_dates = None
+        self._path_source_dates = None
+        self._path_normalized_dates = None
+
+    def path_dates(self, dates):
+        # Only an exact tuple of exact timezone-naive Timestamp values is reusable.
+        # Lists, tuple subclasses and custom date objects keep the original path.
+        if dates is self._path_source_dates:
+            return self._path_normalized_dates
+        date_index = pd.to_datetime(list(dates), errors="coerce")
+        if date_index.isna().any() or not date_index.is_monotonic_increasing or date_index.has_duplicates:
+            raise ContractResolutionError("日期网格须为严格递增的有效交易日")
+        normalized = tuple(date_index)
+        if type(dates) is tuple and all(type(value) is pd.Timestamp and value.tzinfo is None for value in dates):
+            self._path_source_dates = dates
+            self._path_normalized_dates = normalized
+        return normalized
+
+    def frozen_maturity(self) -> float | None:
+        if not self._maturity_ready:
+            self._maturity = _frozen_civil_maturity_time(self.contract.identity)
+            self._maturity_ready = True
+        return self._maturity
+
+    def contractual_maturity(self) -> float:
+        frozen = self.frozen_maturity()
+        if frozen is not None:
+            return frozen
+        return _contract_maturity_time(self.contract.identity, self.contract.terms)
+
+    def monitor_order(self, monitor: Mapping[str, Any]) -> tuple[str, ...]:
+        if self._monitor_order is None:
+            self._monitor_order = _monitor_evaluation_order(monitor)
+        return self._monitor_order
+
+    def price_series(self, values, times, dates, *, schedule_cache=None):
+        # PricePath.from_values still validates every path and its date grid.
+        # Reuse only the conversion for internal S_t / W_t wrappers. Recheck
+        # equality so a caller-supplied mutable prepared date list is honored.
+        if not self._series_dates_ready or dates != self._series_source_dates:
+            series = PriceSeries(values, times, dates, schedule_cache=schedule_cache)
+            self._series_source_dates = dates
+            self._series_dates = series.dates
+            self._series_dates_ready = True
+            return series
+        series = PriceSeries(values, times, None, schedule_cache=schedule_cache)
+        series.dates = self._series_dates
+        return series
+
+
 def evaluate_contract_batch(
     prepared: PreparedContractEvaluator,
     values: Sequence[Any] | np.ndarray,
@@ -1647,14 +1764,16 @@ def evaluate_contract_batch(
             raise ContractResolutionError(f"price_fields.{name}必须与批量价格路径同形状")
         normalized_fields[name] = field_array
 
+    batch_preparation = _BatchContractPreparation(prepared.contract)
     evaluations: list[PayoffEvaluation] = []
     for chunk_start in range(0, len(paths), chunk_size):
         chunk_end = min(chunk_start + chunk_size, len(paths))
         for path_index in range(chunk_start, chunk_end):
             if cancellation_check is not None and cancellation_check():
                 raise ContractEvaluationCancelled("批量合同解释已取消")
-            path = PricePath.from_values(
+            path = PricePath._from_prepared_values(
                 paths[path_index],
+                _batch_preparation=batch_preparation,
                 times=prepared.times,
                 dates=prepared.dates,
                 asset_ids=prepared.asset_ids,
@@ -1665,8 +1784,9 @@ def evaluate_contract_batch(
                 path,
                 base_variables=prepared._base_variables,
                 schedule_cache=prepared._schedule_cache,
+                _batch_preparation=batch_preparation,
             )
-            evaluations.append(_evaluate_contract_variables(prepared.contract, path, variables))
+            evaluations.append(_evaluate_contract_variables(prepared.contract, path, variables, _batch_preparation=batch_preparation))
     return BatchPayoffEvaluation(tuple(evaluations))
 
 
@@ -1680,14 +1800,19 @@ def _evaluate_contract_variables(
     contract: ResolvedContract,
     price_path: PricePath,
     variables: dict[str, Any],
+    *,
+    _batch_preparation: _BatchContractPreparation | None = None,
 ) -> PayoffEvaluation:
-    monitor_values = compute_monitor_values(contract, price_path, variables)
+    monitor_values = _compute_monitor_values(
+        contract, price_path, variables,
+        _batch_preparation=_batch_preparation if _PREPARE_MONITOR_ORDER else None,
+    )
     variables.update(monitor_values)
     chosen_paths = [index for index, path in enumerate(contract.paths) if _coerce_bool(evaluate_formula(path["condition"], variables))]
     if len(chosen_paths) != 1:
         raise FormulaError(f"{contract.product_id}在给定价格路径下命中{len(chosen_paths)}条经济路径，必须唯一")
     selected_path = chosen_paths[0]
-    _validate_settlement_endpoint(contract, price_path, monitor_values, contract.paths[selected_path]["condition"])
+    _validate_settlement_endpoint(contract, price_path, monitor_values, contract.paths[selected_path]["condition"], _batch_preparation=_batch_preparation)
     cases = contract.paths[selected_path]["cases"]
     chosen_cases = [index for index, case in enumerate(cases) if _coerce_bool(evaluate_formula(case["domain"], variables))]
     if len(chosen_cases) != 1:
@@ -1707,11 +1832,17 @@ def _validate_settlement_endpoint(
     price_path: PricePath,
     monitor_values: Mapping[str, Any],
     selected_condition: str,
+    *,
+    _batch_preparation: _BatchContractPreparation | None = None,
 ) -> None:
     """未到合同期限的输入只能用于已有终止事件的完整提前结算路径。"""
     if "T" not in contract.terms:
         return
-    contractual_tenor = _contract_maturity_time(contract.identity, contract.terms)
+    contractual_tenor = (
+        _batch_preparation.contractual_maturity()
+        if _PREPARE_MATURITY and _batch_preparation is not None
+        else _contract_maturity_time(contract.identity, contract.terms)
+    )
     actual_tenor = float(price_path.times[-1])
     count_key = counted_observation_key(contract.terms)
     if count_key is not None and price_path.dates is not None:
@@ -1749,12 +1880,24 @@ def _validate_settlement_endpoint(
 
 
 def compute_monitor_values(contract: ResolvedContract, price_path: PricePath, base_variables: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    return _compute_monitor_values(contract, price_path, base_variables)
+
+
+def _compute_monitor_values(
+    contract: ResolvedContract, price_path: PricePath,
+    base_variables: Mapping[str, Any] | None = None,
+    *, _batch_preparation: _BatchContractPreparation | None = None,
+) -> dict[str, Any]:
     monitor = contract.terms.get("monitor", {})
     if not isinstance(monitor, Mapping):
         raise ContractResolutionError("terms.monitor必须为扁平公式字典")
     variables = dict(base_variables or _formula_context(contract, price_path))
     result: dict[str, Any] = {}
-    for name in _monitor_evaluation_order(monitor):
+    order = (
+        _monitor_evaluation_order(monitor) if _batch_preparation is None
+        else _batch_preparation.monitor_order(monitor)
+    )
+    for name in order:
         expression = monitor[name]
         result[name] = evaluate_formula(expression, variables)
         variables[name] = result[name]
@@ -2202,6 +2345,7 @@ def _formula_context(
     *,
     base_variables: Mapping[str, Any] | None = None,
     schedule_cache: Mapping[int, tuple[np.ndarray, np.ndarray]] | None = None,
+    _batch_preparation: _BatchContractPreparation | None = None,
 ) -> dict[str, Any]:
     if price_path.asset_ids != contract.underlyings:
         raise ContractResolutionError("价格路径asset_ids必须与ResolvedContract.underlyings完全一致")
@@ -2223,7 +2367,11 @@ def _formula_context(
         # T是冻结合同起止日定义的ACT/365结算时点；价格路径最后一行可能只是
         # 到期日前最后可用市场价格，不能把该数据日伪装成合同到期日。
         # T_contract保留登记期限，供明确依赖登记期限的公式使用。
-        frozen_maturity = _frozen_civil_maturity_time(contract.identity)
+        frozen_maturity = (
+            _batch_preparation.frozen_maturity()
+            if _PREPARE_MATURITY and _batch_preparation is not None
+            else _frozen_civil_maturity_time(contract.identity)
+        )
         variables["T"] = (
             frozen_maturity if frozen_maturity is not None else float(price_path.times[-1])
         )
@@ -2269,10 +2417,14 @@ def _formula_context(
     values = raw_values / reference_values[None, :] * normalized_reference[None, :]
     terminal = values[-1]
     performance = raw_values / reference_values[None, :] * 100.0
-    primary_series = PriceSeries(
+    series_factory = (
+        _batch_preparation.price_series
+        if _PREPARE_SERIES_DATES and _batch_preparation is not None else PriceSeries
+    )
+    primary_series = series_factory(
         values[:, 0], price_path.times, price_path.dates, schedule_cache=schedule_cache,
     )
-    worst_series = PriceSeries(
+    worst_series = series_factory(
         np.min(performance, axis=1), price_path.times, price_path.dates, schedule_cache=schedule_cache,
     )
     variables.update({

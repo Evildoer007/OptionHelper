@@ -1,0 +1,9 @@
+# 金融计算采用独立Worker，主进程唯一写入
+
+OptionHelper将HTTP、Module Host、权限与Store写入保留在App主进程，把Pricer和Backtester放入自适应的常驻Backend Worker池。主进程先冻结并校验执行快照，Worker只生成ModuleRunDraft，再由主进程按执行范围、产品规则修订和结果完整性原子提交；这样模块切换、Reporter读取和多任务对话不会被Python导入锁或CPU密集计算阻塞，也避免多个进程直接写Store造成结果串写。
+
+## Consequences
+
+计算并发按CPU和可用内存在正常2至8个槽位之间动态准入；低资源时允许降为1个槽位，资源下降不强杀已运行任务。任务间轮转、任务内FIFO。取消只替换承载该操作的Worker；页面隐藏不取消计算。
+
+Worker启动、通信、无心跳或未知引擎异常不直接结束合法计算。控制平面保留同一冻结执行快照和计算操作，将状态切换为`recovering`并使用新Worker继续执行；每次Worker尝试拥有独立标识，但最多提交一个ModuleRun。合同、行情、日历、权限和参数不合法属于业务拒绝，必须在主进程或受控计算边界返回明确原因，不得伪装成Worker故障。

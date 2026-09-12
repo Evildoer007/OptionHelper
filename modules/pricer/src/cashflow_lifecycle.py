@@ -110,6 +110,11 @@ def apply_cashflow_lifecycle(
             cashflow_scale,
         )
 
+    # Preserve the original numerical value when inception classification
+    # removes and restores the exact same cashflow; keep the separate future leg.
+    if include_initial_now and numerical_value_includes_initial and included_initial == initial_cashflow:
+        current_result = result
+
     realized = _normalized_realized_cashflows(observed_state, cashflow_scale)
     current_cashflows: list[dict[str, Any]] = []
     initial_record = _cashflow_record(

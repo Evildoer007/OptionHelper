@@ -1,0 +1,70 @@
+{
+  "name_zh": "敲入变化型雪球",
+  "terms": {
+    "S0": 100.0,
+    "T": 2.0,
+    "N": 10000000.0,
+    "g": 0.2,
+    "K": 100.0,
+    "H_KO": 103.0,
+    "H_KI_1": 70.0,
+    "H_KI_2": 75.0,
+    "c": 0.22,
+    "O_KO": "monthly_last",
+    "O_KI": "daily",
+    "settlement": "cash",
+    "observation_price": "close",
+    "margin_call": true,
+    "derived_terms": {
+      "G": "N * g",
+      "ki_barrier_schedule": "[(0, H_in_1), (1, H_in_2)]"
+    },
+    "monitor": {
+      "tau_out": "first_time(S_t[O_out] >= H_out)",
+      "tau_in": "first_time_below_levels(S_t[O_in], step_levels(S_t[O_in], H_in_j, 'after'))"
+    },
+    "pricing_methods": [
+      "monte_carlo"
+    ],
+    "constraints": [
+      "K == S_0",
+      "H_in_1 == 0.7 * S_0",
+      "H_in_2 == 0.75 * S_0",
+      "H_in_1 < H_out",
+      "H_in_2 < H_out"
+    ]
+  },
+  "paths": [
+    {
+      "condition": "tau_out < inf",
+      "cases": [
+        {
+          "domain": "S_T >= 0",
+          "pnl": "cash(tau_out, N * c * tau_out)"
+        }
+      ]
+    },
+    {
+      "condition": "tau_out == inf and tau_in == inf",
+      "cases": [
+        {
+          "domain": "S_T >= 0",
+          "pnl": "cash(T, N * c * T)"
+        }
+      ]
+    },
+    {
+      "condition": "tau_out == inf and tau_in < inf",
+      "cases": [
+        {
+          "domain": "S_T >= S_0",
+          "pnl": "cash(T, 0)"
+        },
+        {
+          "domain": "0 <= S_T < S_0",
+          "pnl": "cash(T, N * r_T)"
+        }
+      ]
+    }
+  ]
+}

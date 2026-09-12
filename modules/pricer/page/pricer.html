@@ -514,7 +514,7 @@
       function validateDateRelationship(){clearDateErrors();const valuation=OptionHelperDate.read($('valuationDate'),'估值日');const start=OptionHelperDate.read($('contractStartDate'),'合同起始日');if(valuation&&start&&valuation<start){const message='估值日不能早于合同起始日。新发合同请保持两者一致，存续合同可选择起始日之后的估值日。';setDateError('valuationDate',message);const error=new Error(message);error.fieldName='valuationDate';error.publicMessage=message;throw error;}return {valuation,start};}
       function applyDateError(error,presentation=pricingErrorPresentation(error)){if(!presentation.dateField)return null;setDateError(presentation.dateField,presentation.fieldMessage);return $(presentation.dateField);}
       function fillResolvedReference(data){const identity=data?.resolved_contract?.identity||{};const references=identity.reference_prices;if(!references||typeof references!=='object')return;const assets=underlyingList();if(assets.length===1&&Number.isFinite(Number(references[assets[0]])))$('referenceSpot').value=String(references[assets[0]]);else if(assets.length>1)$('referenceSpots').value=JSON.stringify(references);}
-      async function run(event){
+      async function run(event, recoveryOperationId=null){
         event?.preventDefault();
         if(pricingState.operationActive||pricingState.moduleResetLoading)return;
         const message=$('message');const revision=++pricingState.requestRevision;const requestedProduct=$('productId').value;const controller=new AbortController();const hadResult=pricingState.hasResult;
@@ -524,15 +524,19 @@
         syncOperationControls();syncResultSectionVisibility();setOperationProgress('准备输入');message.className='message';message.textContent='正在准备本次定价输入…';setState('正在定价','edit');
         if(hadResult){const completedCopy=$('resultCopy').dataset.completedCopy||$('resultCopy').textContent;$('resultCopy').textContent=`上一次完成结果：${completedCopy}`;showNotice('正在定价','新定价正在后台运行；下方暂时展示上一次完成结果。');}
         try{
+          let response;
+          if(recoveryOperationId) response=await window.OptionHelperModuleRecovery.resume(recoveryOperationId,controller.signal);
+          else {
           clearDateErrors();const assets=underlyingList();if(!assets.length)throw new Error('请至少填写一个标的代码。');validateDateRelationship();
           const identity=contractIdentity(assets);const termValues=readTermValues();const termOverrides=collectParameters(termValues);const pricingConfig=collectPricingConfig(termValues,assets);const pricingObjective=collectPricingObjective();
           message.textContent=monteCarloEstimate(pricingConfig)||'正在提交定价任务…';setOperationProgress('提交任务');
           const body={product_id:requestedProduct,identity,term_overrides:termOverrides,pricing_config:pricingConfig,auto_contract_start_date:$('contractStartDate').dataset.newIssueDefault==='true'};
           if(pricingObjective)body.pricing_objective=pricingObjective;
-          const response=await fetch('/api/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),signal:controller.signal});
+          response=await fetch('/api/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),signal:controller.signal});
+          }
           setOperationProgress('读取结果');const data=await response.json();if(!response.ok||!data.ok)throw moduleError(data,'定价运行失败');const fair=fairResultFrom(data);if(!fair&&data.pricing?.status!=='priced')throw moduleError(data.pricing||data,'当前结构没有生成可用估值结果。');if(fair&&fair.status!=='solved')throw moduleError(fair,'公平合同条款反解未完成。');
-          if(revision!==pricingState.requestRevision||$('productId').value!==requestedProduct)return;
-          fillResolvedReference(data);render(data);message.className='message ok';message.textContent='';setOperationProgress('完成',{progress:100,terminal:true});
+          if(revision!==pricingState.requestRevision||(!recoveryOperationId&&$('productId').value!==requestedProduct))return;
+          if(!recoveryOperationId)fillResolvedReference(data);render(data);if(recoveryOperationId)markRestoredResult();message.className='message ok';message.textContent='';setOperationProgress('完成',{progress:100,terminal:true});
         }catch(error){
           if(revision!==pricingState.requestRevision)return;
           if(operationWasCancelled(error)||(error?.name==='AbortError'&&pricingState.cancellationRequested)){
@@ -578,13 +582,28 @@
         delete $('modelMethod').dataset.productId;
       }
       function resetForFormalPricing(){setContractInputsLocked();resetPricingDefaults();$('underlyings').value='';$('referenceSpot').value='';$('referenceSpots').value='';$('referenceSpot').dataset.localSample='';setNewIssueDefaults();renderTerms();syncResultSectionVisibility();}
+
+      function markRestoredResult(){
+        const completedCopy=$('resultCopy').dataset.completedCopy||$('resultCopy').textContent;
+        $('resultCopy').textContent=`上一次完成结果：${completedCopy}`;
+        showNotice('已恢复上次结果','输入为当前默认参数，下方保留已保存结果；修改后请重新运行。','warning');
+        setState('结果待更新','edit');
+      }
+      async function restorePreviousRun(){
+        await window.OptionHelperModuleRecovery?.restore({
+          busy:value=>{pricingState.moduleResetLoading=value;syncOperationControls();},
+          render:data=>{render(data);markRestoredResult();},
+          resume:operationId=>run(null,operationId),
+          notice:(title,message)=>showNotice(title,message,'warning'),
+        });
+      }
       function moduleResetBusy(){return pricingState.operationActive||pricingState.moduleResetLoading;}
       function requestModuleInputReset(){if(!pricingState.resetOnActivation||!pricingState.moduleVisible||moduleResetBusy())return;pricingState.resetOnActivation=false;void refreshModuleDefaultsAfterReopen();}
       async function refreshModuleDefaultsAfterReopen(){pricingState.moduleResetLoading=true;syncOperationControls();try{await catalog();syncOperationControls();if(pricingState.hasResult){const completedCopy=$('resultCopy').dataset.completedCopy||$('resultCopy').textContent.replace(/^上一次完成结果：/,'');$('resultCopy').textContent=`上一次完成结果：${completedCopy}`;showNotice('已恢复默认参数','下方为上次计算结果。','warning');setState('结果待更新','edit');}else showNotice('已恢复默认参数');}catch(error){showNotice('默认值读取失败',error.message||'重新读取最新产品默认值失败。','error');}finally{pricingState.moduleResetLoading=false;syncOperationControls();requestModuleInputReset();}}
       function handleModuleVisibility(event){pricingState.moduleVisible=event.detail?.active!==false;if(pricingState.moduleVisible&&event.detail?.reopened){pricingState.resetOnActivation=true;requestModuleInputReset();}}
       document.addEventListener('optionhelper:modulevisibility',handleModuleVisibility);
       $('form').addEventListener('submit',event=>{try{validateDateInputs();}catch(error){event.preventDefault();event.stopImmediatePropagation();$('message').className='message error';$('message').textContent=error.message;showNotice('定价失败',error.message,'error');setState('定价失败');}},true);
-      $('form').addEventListener('submit',run);$('stopRun').addEventListener('click',()=>requestOperationStop());$('productId').addEventListener('change',()=>{if(pricingState.operationActive)return;pricingState.requestRevision+=1;rememberProductId($('productId').value);resetResultForSelection();resetForFormalPricing();});$('modelMethod').addEventListener('change',()=>{if(pricingState.operationActive)return;pricingState.requestRevision+=1;syncMethodDependentControls();if(pricingState.hasResult){showNotice('结果待更新','定价方法已修改，当前结果仍为上一次运行；请重新运行定价。','warning');setState('结果待更新','edit');}});$('underlyings').addEventListener('input',()=>{if(pricingState.operationActive)return;invalidateLocalReference();const field=fields().find(el=>el.dataset.key==='U');if(field)field.value=$('underlyings').value.trim();});$('valuationDate').addEventListener('input',()=>{if(pricingState.operationActive)return;invalidateLocalReference();revalidateDateRelationship();});$('valuationDate').addEventListener('change',()=>{syncNewIssueStartFromValuationDate();revalidateDateRelationship();});$('contractStartDate').addEventListener('input',()=>{if(pricingState.operationActive)return;invalidateLocalReference();$('contractStartDate').dataset.newIssueDefault='';revalidateDateRelationship();});$('referenceSpot').addEventListener('input',()=>{if(!pricingState.operationActive)$('referenceSpot').dataset.localSample='';});window.addEventListener('resize',()=>greeksWorkbench.resize());bindResizer($('libraryResizer'),'--library-width',220,420);bindResizer($('inspectorResizer'),'--inspector-width',300,520);setNewIssueDefaults();const hostedByApp=new URLSearchParams(location.search).get('host')==='optdesk'&&window.parent!==window;if(!hostedByApp){$('run').disabled=true;showNotice('无法运行','估值定价必须从OptionHelper App任务中打开，以使用受控合同、行情和交易日历。','error');setState('请从App打开');}else{catalog().then(()=>clearNotice()).catch(error=>{$('message').className='message error';$('message').textContent=error.message;showNotice('目录加载失败',error.message,'error');setState('产品目录加载失败','error');});}
+      $('form').addEventListener('submit',run);$('stopRun').addEventListener('click',()=>requestOperationStop());$('productId').addEventListener('change',()=>{if(pricingState.operationActive)return;pricingState.requestRevision+=1;rememberProductId($('productId').value);resetResultForSelection();resetForFormalPricing();});$('modelMethod').addEventListener('change',()=>{if(pricingState.operationActive)return;pricingState.requestRevision+=1;syncMethodDependentControls();if(pricingState.hasResult){showNotice('结果待更新','定价方法已修改，当前结果仍为上一次运行；请重新运行定价。','warning');setState('结果待更新','edit');}});$('underlyings').addEventListener('input',()=>{if(pricingState.operationActive)return;invalidateLocalReference();const field=fields().find(el=>el.dataset.key==='U');if(field)field.value=$('underlyings').value.trim();});$('valuationDate').addEventListener('input',()=>{if(pricingState.operationActive)return;invalidateLocalReference();revalidateDateRelationship();});$('valuationDate').addEventListener('change',()=>{syncNewIssueStartFromValuationDate();revalidateDateRelationship();});$('contractStartDate').addEventListener('input',()=>{if(pricingState.operationActive)return;invalidateLocalReference();$('contractStartDate').dataset.newIssueDefault='';revalidateDateRelationship();});$('referenceSpot').addEventListener('input',()=>{if(!pricingState.operationActive)$('referenceSpot').dataset.localSample='';});window.addEventListener('resize',()=>greeksWorkbench.resize());bindResizer($('libraryResizer'),'--library-width',220,420);bindResizer($('inspectorResizer'),'--inspector-width',300,520);setNewIssueDefaults();const hostedByApp=new URLSearchParams(location.search).get('host')==='optdesk'&&window.parent!==window;if(!hostedByApp){$('run').disabled=true;showNotice('无法运行','估值定价必须从OptionHelper App任务中打开，以使用受控合同、行情和交易日历。','error');setState('请从App打开');}else{catalog().then(async()=>{clearNotice();await restorePreviousRun();}).catch(error=>{$('message').className='message error';$('message').textContent=error.message;showNotice('目录加载失败',error.message,'error');setState('产品目录加载失败','error');});}
     </script>
   </body>
 </html>

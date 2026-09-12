@@ -77,6 +77,7 @@ APP_BACKEND_SOURCE_INPUTS = (
     "products/app/backend/identity",
     "products/app/backend/model_gateway",
     "products/app/backend/page_registry.py",
+    "products/app/backend/position_amounts.py",
     "products/app/backend/product_rule_revision.py",
     "products/app/backend/report_editor.py",
     "products/app/backend/reporter_adapter.py",
@@ -86,6 +87,7 @@ APP_BACKEND_SOURCE_INPUTS = (
     "products/app/backend/stores",
     "products/app/backend/task_runtime",
     "products/app/backend/tool_gateway.py",
+    "products/app/backend/user_guide.py",
     "products/app/backend/verification_fixture.py",
 )
 MACOS_BUILD_INPUTS = (

@@ -1,0 +1,95 @@
+{
+  "name_zh": "敲出递降型雪球",
+  "terms": {
+    "S0": 100.0,
+    "T": 2.0,
+    "N": 10000000.0,
+    "g": 0.2,
+    "K": 100.0,
+    "H_KI": 70.0,
+    "c": 0.19,
+    "O_KO": "monthly_last",
+    "O_KI": "daily",
+    "settlement": "cash",
+    "observation_price": "close",
+    "margin_call": true,
+    "derived_terms": {
+      "G": "N * g",
+      "ko_barrier_schedule": "linear_schedule(period_count(T, 12), S_0, 1.03, -0.005)"
+    },
+    "monitor": {
+      "tau_out": "first_time_levels(S_t[O_out], schedule_levels(S_t[O_out], H_out_j))",
+      "tau_in": "first_time(S_t[O_in] <= H_in)"
+    },
+    "pricing_methods": [
+      "monte_carlo"
+    ],
+    "constraints": [
+      "K == S_0",
+      "schedule_between(H_out_j, H_in, 2 * S_0)",
+      "O_out == 'monthly_last'"
+    ]
+  },
+  "paths": [
+    {
+      "condition": "tau_out < inf",
+      "cases": [
+        {
+          "domain": "S_T >= 0",
+          "pnl": "cash(tau_out, N * c * tau_out)"
+        }
+      ]
+    },
+    {
+      "condition": "tau_out == inf and tau_in == inf",
+      "cases": [
+        {
+          "domain": "S_T >= 0",
+          "pnl": "cash(T, N * c * T)"
+        }
+      ]
+    },
+    {
+      "condition": "tau_out == inf and tau_in < inf",
+      "cases": [
+        {
+          "domain": "S_T >= 0",
+          "pnl": "cash(T, N * min((S_T - S_0) / S_0, 0))"
+        }
+      ]
+    }
+  ],
+  "visual_template": {
+    "schema": "optionhelper.payoff-visual-template",
+    "layout": "standard_path_cards",
+    "path_views": [
+      {
+        "path_index": 1,
+        "case_indexes": [
+          1
+        ],
+        "axis": "S_T",
+        "chart_kind": "conditional_terminal_metric",
+        "title": "路径1"
+      },
+      {
+        "path_index": 2,
+        "case_indexes": [
+          1
+        ],
+        "axis": "S_T",
+        "chart_kind": "conditional_terminal_metric",
+        "title": "路径2"
+      },
+      {
+        "path_index": 3,
+        "case_indexes": [
+          1
+        ],
+        "axis": "S_T",
+        "chart_kind": "conditional_terminal_metric",
+        "title": "路径3"
+      }
+    ]
+  }
+}

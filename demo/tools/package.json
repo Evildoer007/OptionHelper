@@ -1,0 +1,5 @@
+{
+  "name": "optionhelper-demo-build",
+  "private": true,
+  "devDependencies": { "esbuild": "0.25.12" }
+}

@@ -32,6 +32,8 @@ from runtime.protocol.module_host import ModuleHostContext
 from runtime.protocol.version import DEVELOPMENT_RELEASE_ID
 import pandas as pd
 
+from .metric_profiles import metric_implementation_evidence
+
 from .historical_data import (
     DataFetcherPortUnavailable,
     HistoricalData,
@@ -845,6 +847,7 @@ def _write_run(
         "artifacts/trade_ledger.csv": _trade_ledger_csv(backtest_payload["trade_ledger"]),
         "artifacts/branch_coverage.json": backtest_payload["branch_coverage"],
         "private/audit_trade_ledger.json": _json_text(private_audit_ledger),
+        "private/metric_implementation.json": metric_implementation_evidence(str(output["product_id"])),
     }
     reference = result_store.commit_module_run(
         module="backtester",

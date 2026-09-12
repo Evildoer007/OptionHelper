@@ -14,6 +14,8 @@
     <script type="module" src="/app/frontend/shared/theme.js"></script>
     <script type="module" src="/app/frontend/shared/ui-scale.js"></script>
     <script type="module" src="/app/frontend/shared/scrollbar-activity.js"></script>
+    <link rel="stylesheet" href="/app/frontend/shared/user-guide.css">
+    <link rel="stylesheet" href="/app/frontend/shared/position-size.css">
   </head>
   <body class="workspace-body workspace-body--initializing">
     <div class="workspace-shell workspace-shell--desk" data-workspace-shell data-mode="chat" data-switching="false" data-has-desk="false" data-report-open="false" data-initializing="true" aria-busy="true">
@@ -25,6 +27,7 @@
           <button class="rail-account-trigger" type="button" data-account-menu-toggle aria-controls="account-menu" aria-expanded="false">
             <span class="rail-account-trigger__mark" data-account-avatar aria-hidden="true">U</span><strong class="rail-account-trigger__name" data-account-label>用户</strong>
           </button>
+          <button class="rail-help-trigger" type="button" data-user-guide aria-label="打开使用说明" title="使用说明"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M9.7 9a2.4 2.4 0 0 1 4.6 1c0 1.5-2.3 1.7-2.3 3.3"/><path d="M12 16.5h.01"/></svg></button>
           <div class="rail-account-menu" id="account-menu" role="menu" hidden>
             <div class="rail-account-menu__identity"><strong data-account-menu-label>用户</strong></div>
             <div class="rail-account-menu__separator" aria-hidden="true"></div>

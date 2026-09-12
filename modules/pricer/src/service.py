@@ -29,6 +29,7 @@ from runtime.contracts.input_adapter import (
     verified_trading_calendar,
 )
 from runtime.contracts.term_presentation import build_term_fields
+from runtime.contracts.contract_types import deep_thaw
 from runtime.knowledger import load_registry
 from runtime.protocol.models import (
     DataAssetRef,
@@ -483,7 +484,7 @@ class PricerRuntime:
                 raise PricerWebInputError("正式Pricer交易日历必须由Host注入只读DataAssetRef端口")
             calendar_data, calendar_ref = self._load_calendar_asset(calendar_ref, contract.underlyings)
         try:
-            config = _with_default_valuation_date(PricingConfig.from_mapping(protocol_input.pricing_config))
+            config = _with_default_valuation_date(PricingConfig.from_mapping(deep_thaw(protocol_input.pricing_config)))
             if historical is not None:
                 validate_frozen_contract_reference(
                     contract, historical.rows, valuation_date=str(config.valuation_date),
@@ -625,7 +626,7 @@ class PricerRuntime:
 
         try:
             config = _with_default_valuation_date(
-                PricingConfig.from_mapping(protocol_input.pricing_config),
+                PricingConfig.from_mapping(deep_thaw(protocol_input.pricing_config)),
             )
         except (TypeError, ValueError, PricerInputDefaultError) as error:
             raise PricerWebInputError(str(error)) from error

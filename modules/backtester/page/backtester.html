@@ -528,8 +528,11 @@
           const {declared_loss_pair_count:total,observed_loss_pair_count:seen,uncovered_loss_pair_count:missing}=branch;
           if([total,seen,missing].every(value=>Number.isInteger(value)&&value>=0)&&seen+missing===total)parts.push(total?`损失分支覆盖${seen}/${total}。`:'没有已确认的潜在损失分支。');
         }else parts.push('损失分支分类尚未确认。');
-        const coverage=result.specialized_metrics?.metric_coverage||{};
+        const specialized=result.specialized_metrics||{};
+        const coverage=specialized.metric_coverage||{};
         if(coverage.status==='partial')parts.push(`缺少${(coverage.gaps||[]).length}项结构指标。`);
+        const unavailableDiagnostics=Object.values(specialized.optional_diagnostics||{}).filter(item=>item?.status==='unavailable');
+        if(unavailableDiagnostics.length)parts.push(`另有${unavailableDiagnostics.length}项高阶诊断因上游未提供事实而不可用。`);
         const premium={
           included_in_contract_cashflows:'已计入合同期权费。',
           fixed_zero:'合同期权费固定为零。',
@@ -570,7 +573,7 @@
         setState('回测完成','valid');
         clearNotice();
       }
-      async function run(event) {
+      async function run(event, recoveryOperationId=null) {
         event?.preventDefault();
         if(state.operationActive||state.moduleResetLoading)return;
         clearSuggestedEndDate();
@@ -595,16 +598,20 @@
           notice('正在回测','新回测正在后台运行；下方暂时展示上一次完成结果。');
         }
         try {
+          let response;
+          if(recoveryOperationId) response=await window.OptionHelperModuleRecovery.resume(recoveryOperationId,controller.signal);
+          else {
           if(state.previewStatus!=='ready')throw new Error('当前输入尚未通过完整期限日期预检。');
           const payload=requestPayload();
           $('message').textContent='正在提交历史回测任务…';
           setOperationProgress('提交任务');
-          const response=await fetch('/api/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),signal:controller.signal});
+          response=await fetch('/api/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),signal:controller.signal});
+          }
           setOperationProgress('读取结果');
           const data=await response.json();
           if(!response.ok||!data.ok) throw moduleError(data,'历史回测运行失败');
-          if(revision!==state.requestRevision||$('productId').value!==requestedProduct) return;
-          render(data);
+          if(revision!==state.requestRevision||(!recoveryOperationId&&$('productId').value!==requestedProduct)) return;
+          render(data);if(recoveryOperationId)markRestoredResult();
           $('message').className='message ok';
           $('message').textContent='';
           setOperationProgress('完成',{progress:100,terminal:true});
@@ -652,11 +659,26 @@
       $('form').addEventListener('change',()=>{if(!state.operationActive)schedulePreview();});
       syncEntryRuleControl();
       validateHvDependency();
+
+      function markRestoredResult(){
+        const completedCopy=$('resultCopy').dataset.completedCopy||$('resultCopy').textContent;
+        $('resultCopy').textContent=`上一次完成结果：${completedCopy}`;
+        notice('已恢复上次结果','输入为当前默认参数，下方保留已保存结果；修改后请重新运行。','warning');
+        setState('结果待更新','edit');
+      }
+      async function restorePreviousRun(){
+        await window.OptionHelperModuleRecovery?.restore({
+          busy:value=>{state.moduleResetLoading=value;syncOperationControls();},
+          render:data=>{render(data);markRestoredResult();},
+          resume:operationId=>run(null,operationId),
+          notice:(title,message)=>notice(title,message,'warning'),
+        });
+      }
       function moduleResetBusy(){return state.operationActive||state.moduleResetLoading;}
       function requestModuleInputReset(){if(!state.resetOnActivation||!state.moduleVisible||moduleResetBusy())return;state.resetOnActivation=false;void refreshModuleDefaultsAfterReopen();}
       async function refreshModuleDefaultsAfterReopen(){state.moduleResetLoading=true;invalidatePreview('正在恢复默认参数。');syncOperationControls();try{await catalog();syncOperationControls();if(state.lastResult){const completedCopy=$('resultCopy').dataset.completedCopy||$('resultCopy').textContent.replace(/^上一次完成结果：/,'');$('resultCopy').textContent=`上一次完成结果：${completedCopy}`;notice('已恢复默认参数','下方为上次计算结果。');setState('结果待更新','edit');}else notice('已恢复默认参数');}catch(error){notice('默认值读取失败',error.message||'重新读取最新产品默认值失败。','error');}finally{state.moduleResetLoading=false;syncOperationControls();requestModuleInputReset();}}
       function handleModuleVisibility(event){state.moduleVisible=event.detail?.active!==false;if(state.moduleVisible&&event.detail?.reopened){state.resetOnActivation=true;requestModuleInputReset();}if(state.moduleVisible&&state.pendingChartRender&&state.lastResult)renderCharts(state.lastResult);else if(state.moduleVisible)chartIds.forEach(id=>plotly?.resize($(id)));}
-      document.addEventListener('optionhelper:modulevisibility',handleModuleVisibility); document.querySelectorAll('[data-date-label]').forEach(input=>window.OptionHelperDateInput.bind(input,input.dataset.dateLabel)); $('form').addEventListener('submit',run); $('stopRun').addEventListener('click',()=>requestOperationStop()); $('tradePrevPage').addEventListener('click',()=>changeTradePage(-1)); $('tradeNextPage').addEventListener('click',()=>changeTradePage(1)); $('useSuggestedEndDate').addEventListener('click',applySuggestedDates); $('endDate').addEventListener('input',()=>{if(!state.operationActive){clearSuggestedEndDate();clearDateFeedback();}}); $('startDate').addEventListener('input',()=>{if(!state.operationActive){clearSuggestedEndDate();clearDateFeedback();}}); $('refreshCatalog').addEventListener('click',()=>catalog().then(()=>notice('目录已更新','产品目录已重新读取。')).catch(error=>{notice('目录加载失败',error.message,'error');$('message').className='message error';$('message').textContent=error.message;})); $('underlyings').addEventListener('input',()=>{if(!state.operationActive)schedulePreview();}); $('productId').addEventListener('change',()=>{if(state.operationActive)return;state.requestRevision+=1;rememberProductId($('productId').value);setContractInputsLocked();resetBacktestInputs();resetResultForSelection();}); window.addEventListener('resize',()=>{if(state.moduleVisible)chartIds.forEach(id=>plotly?.resize($(id)));}); if(typeof MutationObserver==='function')new MutationObserver(()=>{if(state.lastResult)renderCharts(state.lastResult);}).observe(document.documentElement,{attributes:true,attributeFilter:['data-theme','class']}); bindResizer('libraryResizer','--library-width',220,420); bindResizer('inspectorResizer','--inspector-width',300,520); if(location.protocol==='file:'){ $('serviceStatus').textContent='独立预览：需要OptionHelper'; notice('无法运行','独立页面不执行回测。请在OptDesk中打开当前任务后运行。','error'); } catalog().then(()=>{if(location.protocol!=='file:')$('serviceStatus').textContent='产品目录已读取';if(location.protocol!=='file:')clearNotice();}).catch(error=>{if(location.protocol!=='file:'){$('serviceStatus').textContent=error.message;$('serviceStatus').style.color='var(--color-brand-red)';$('message').className='message error';$('message').textContent=error.message;notice('目录加载失败',error.message,'error');setState('产品目录加载失败','error');}});
+      document.addEventListener('optionhelper:modulevisibility',handleModuleVisibility); document.querySelectorAll('[data-date-label]').forEach(input=>window.OptionHelperDateInput.bind(input,input.dataset.dateLabel)); $('form').addEventListener('submit',run); $('stopRun').addEventListener('click',()=>requestOperationStop()); $('tradePrevPage').addEventListener('click',()=>changeTradePage(-1)); $('tradeNextPage').addEventListener('click',()=>changeTradePage(1)); $('useSuggestedEndDate').addEventListener('click',applySuggestedDates); $('endDate').addEventListener('input',()=>{if(!state.operationActive){clearSuggestedEndDate();clearDateFeedback();}}); $('startDate').addEventListener('input',()=>{if(!state.operationActive){clearSuggestedEndDate();clearDateFeedback();}}); $('refreshCatalog').addEventListener('click',()=>catalog().then(()=>notice('目录已更新','产品目录已重新读取。')).catch(error=>{notice('目录加载失败',error.message,'error');$('message').className='message error';$('message').textContent=error.message;})); $('underlyings').addEventListener('input',()=>{if(!state.operationActive)schedulePreview();}); $('productId').addEventListener('change',()=>{if(state.operationActive)return;state.requestRevision+=1;rememberProductId($('productId').value);setContractInputsLocked();resetBacktestInputs();resetResultForSelection();}); window.addEventListener('resize',()=>{if(state.moduleVisible)chartIds.forEach(id=>plotly?.resize($(id)));}); if(typeof MutationObserver==='function')new MutationObserver(()=>{if(state.lastResult)renderCharts(state.lastResult);}).observe(document.documentElement,{attributes:true,attributeFilter:['data-theme','class']}); bindResizer('libraryResizer','--library-width',220,420); bindResizer('inspectorResizer','--inspector-width',300,520); if(location.protocol==='file:'){ $('serviceStatus').textContent='独立预览：需要OptionHelper'; notice('无法运行','独立页面不执行回测。请在OptDesk中打开当前任务后运行。','error'); } catalog().then(async()=>{if(location.protocol!=='file:')$('serviceStatus').textContent='产品目录已读取';if(location.protocol!=='file:'){clearNotice();await restorePreviousRun();}}).catch(error=>{if(location.protocol!=='file:'){$('serviceStatus').textContent=error.message;$('serviceStatus').style.color='var(--color-brand-red)';$('message').className='message error';$('message').textContent=error.message;notice('目录加载失败',error.message,'error');setState('产品目录加载失败','error');}});
     </script>
   </body>
 </html>

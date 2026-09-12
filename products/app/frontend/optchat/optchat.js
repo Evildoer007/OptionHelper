@@ -1,3 +1,4 @@
+import { createConversationScroll } from "/app/frontend/shared/conversation-scroll.js";
 import { createConversationOutline } from "/app/frontend/shared/conversation-outline.js";
 import {ACTIVITY_VISUALS, activityForEvent} from '/app/frontend/shared/activity-motion.js';
 import { createBloubAvatar } from '/app/frontend/shared/bloub-avatar.js';
@@ -492,6 +493,9 @@ export async function startWorkspace(initialMode) {
   let restoringScroll = false;
   let modeSwitchRevision = 0;
   let taskSelectionRevision = 0;
+  let taskInteractionRevision = 0;
+  let modeInteractionRevision = 0;
+  const canRestoreStartup = () => taskInteractionRevision === 0 && modeInteractionRevision === 0;
   let reportListRequestRevision = 0;
   let moduleMountRevision = 0;
   let moduleNavigationController = null;
@@ -660,6 +664,7 @@ export async function startWorkspace(initialMode) {
     requestAnimationFrame(() => echo.classList.add("is-running"));
     window.setTimeout(() => echo.remove(), 360);
   };
+  const conversationScroll = createConversationScroll(stream, form);
   const enterActiveConversation = () => {
     chatSurface.classList.remove("chat-surface--empty");
     for (const child of Array.from(stream.children)) {
@@ -686,7 +691,7 @@ export async function startWorkspace(initialMode) {
       pending.append(list);
     }
     stream.append(pending);
-    stream.scrollTop = stream.scrollHeight;
+    conversationScroll.beginTurn(pending);
     return pending;
   };
   const processEventsPath = (taskId, requestId, afterSeq = 0) => (
@@ -1022,7 +1027,11 @@ export async function startWorkspace(initialMode) {
     const details = document.createElement("details");
     details.open = false;
     const summary = document.createElement("summary");
-    const orb = createThinkingOrb({ state: "connecting", size: 28 });
+    const geometry = createThinkingOrb({ state: "shaping", size: 20, className: "thinking-orbs process-geometry" });
+    const orb = { ...geometry, setState(state) {
+      // Keep the lower indicator geometric; the adjacent label carries the real phase.
+      geometry.element.dataset.activityState = state;
+    } };
     orb.element.setAttribute("aria-hidden", "true");
     const summaryLabel = document.createElement("span");
     summaryLabel.textContent = "正在连接";
@@ -1099,7 +1108,7 @@ export async function startWorkspace(initialMode) {
       });
     });
     stream.append(panel);
-    stream.scrollTop = stream.scrollHeight;
+    if (!conversationScroll.refresh()) stream.scrollTop = stream.scrollHeight;
     return {
       panel,
       details,
@@ -1439,7 +1448,7 @@ export async function startWorkspace(initialMode) {
     for (const event of drained.emitted) appendRuntimeProjection(playback, event);
     if (terminal && playback.pendingRows.size === 0) finishProcessPlayback(playback);
     else if (playback.nextSeq > 0 && !playback.panel.dataset.terminal) playback.state.textContent = "正在运行";
-    if (followTail) stream.scrollTop = stream.scrollHeight;
+    if (!conversationScroll.refresh() && followTail) stream.scrollTop = stream.scrollHeight;
   };
   const startProcessPlayback = (taskId, requestId, { restore = false, onCancel = null, onTerminal = null } = {}) => {
     const playback = appendProcessPanel({ onCancel });
@@ -2216,7 +2225,8 @@ export async function startWorkspace(initialMode) {
         : "运行状态与交付物均绑定当前任务。结果状态未知时不会自动重算。";
     }
   };
-  const applyMode = async (mode, { updateHistory = true } = {}) => {
+  const applyMode = async (mode, { updateHistory = true, restoreStartup = false } = {}) => {
+    if (!restoreStartup) ++modeInteractionRevision;
     activeModeTransition?.dispose();
     const nextMode = mode === "desk" ? "desk" : "chat";
     const state = restoringScroll ? readTransient() : saveTransient();
@@ -2316,6 +2326,25 @@ export async function startWorkspace(initialMode) {
   }
 
   const taskListSnapshots = new WeakMap();
+  const pendingTaskPins = new Set();
+  async function toggleTaskPinned(task) {
+    if (pendingTaskPins.has(task.task_id)) return;
+    pendingTaskPins.add(task.task_id);
+    try {
+      await request(`/api/tasks/${encodeURIComponent(task.task_id)}/pin`, {
+        method: "POST", body: safeJson({ pinned: task.pinned !== true }),
+      });
+      await loadTasks();
+      const selected = taskLists.find(list => !list.closest("[hidden], [inert]"));
+      Array.from(selected?.querySelectorAll(".task-item") || [])
+        .find(button => button.dataset.taskId === task.task_id)?.focus({ preventScroll: true });
+    } catch (error) {
+      showWorkspaceStatus(error.message, true);
+    } finally {
+      pendingTaskPins.delete(task.task_id);
+    }
+  }
+
   async function loadTasks() {
     const { tasks } = await request("/api/tasks");
     const activeCount = tasks.reduce((total, task) => total + (task.active_operations?.length || 0), 0);
@@ -2334,7 +2363,7 @@ export async function startWorkspace(initialMode) {
       }, 900);
     }
     const listSnapshot = JSON.stringify([currentTask?.task_id, tasks.map(task => [
-      task.task_id, task.subject, task.updated_at || task.created_at, task.active_operations?.map(operation => operation.state),
+      task.task_id, task.subject, task.pinned === true, task.updated_at || task.created_at, task.active_operations?.map(operation => operation.state),
     ])]);
     taskLists.forEach((taskList) => {
       // Polling an unchanged task must not replace focused buttons or close its menu.
@@ -2349,13 +2378,14 @@ export async function startWorkspace(initialMode) {
             if (taskList.matches("[data-mobile-task-list]")) document.querySelector("[data-task-history-close]")?.click();
           })
           .catch((error) => showWorkspaceStatus(error.message, true)),
-        { onRename: openTaskRenameDialog, onDelete: openTaskDeleteDialog },
+        { onPin: toggleTaskPinned, onRename: openTaskRenameDialog, onDelete: openTaskDeleteDialog },
       );
     });
     return tasks;
   }
 
   function resetTaskSelection() {
+    conversationScroll.reset();
     renderComposerQuestion(null);
     currentTask = null;
     pendingConversationRequest = null;
@@ -2676,7 +2706,8 @@ export async function startWorkspace(initialMode) {
     return true;
   }
 
-  async function selectTask(taskId, updateLocation = true) {
+  async function selectTask(taskId, updateLocation = true, { restoreStartup = false } = {}) {
+    if (!restoreStartup) ++taskInteractionRevision;
     const readingPosition = currentTask?.task_id === taskId && submit.dataset.sending === "true"
       && stream.scrollHeight - stream.clientHeight - stream.scrollTop >= 72 ? stream.scrollTop : null;
     const selectionRevision = ++taskSelectionRevision;
@@ -2693,13 +2724,16 @@ export async function startWorkspace(initialMode) {
     if (currentTask) saveTransient();
     activeProcessPlayback?.stop();
     activeProcessPlayback = null;
+    const readStartedAt = performance.now();
     const { task } = await request(`/api/tasks/${encodeURIComponent(taskId)}`);
-    if (!isCurrentSelection()) return null;
+    if (!isCurrentSelection() || (restoreStartup && !canRestoreStartup())) return null;
     if (currentTask?.task_id && currentTask.task_id !== task.task_id) {
       disposeModuleFrames();
       if (currentMode === "desk") showModuleLoading(currentModule, { replace: true });
     }
+    if (currentTask?.task_id !== task.task_id) conversationScroll.reset();
     currentTask = task;
+    window.dispatchEvent(new CustomEvent("optionhelper.task-selected", { detail: { task, readStartedAt } }));
     clearWorkspaceStatus();
     setRuntimeLiveStatus("");
     pendingConversationRequest = null;
@@ -2915,6 +2949,7 @@ export async function startWorkspace(initialMode) {
       window.clearTimeout(moduleFrameLoadTimers.get(moduleName));
       moduleFrameLoadTimers.delete(moduleName);
       frame.dataset.ready = "true";
+      window.dispatchEvent(new CustomEvent("optionhelper.module-parameters-ready", {detail: {frame, moduleName, taskId}}));
       delete frame.dataset.loadError;
       window.OptionHelperUIScale?.syncFrame?.(frame);
       deliverContext(moduleName);
@@ -3178,6 +3213,7 @@ export async function startWorkspace(initialMode) {
     }
   });
   document.querySelector("[data-new-task]").addEventListener("click", async () => {
+    ++taskInteractionRevision;
     try { await selectTask((await createTask()).task_id); } catch (error) { showWorkspaceStatus("新建任务未完成，请稍后重试。", true); }
   });
 
@@ -3218,6 +3254,7 @@ export async function startWorkspace(initialMode) {
     clearWorkspaceStatus();
     try {
       if (!currentTask) {
+        ++taskInteractionRevision;
         const task = await createTask();
         migrateTransient("new", task.task_id);
         await selectTask(task.task_id);
@@ -3496,8 +3533,12 @@ export async function startWorkspace(initialMode) {
     configureModelPicker(modelPicker).catch(() => {}),
     loadTasks(),
   ]);
-  const requested = taskIdFromLocation();
-  if (requested) await selectTask(requested, false).catch(() => {});
+  // The loading fallback can reveal controls before these reads finish.
+  // A later startup response must yield to task or mode choices already made.
+  if (canRestoreStartup()) {
+    const requested = taskIdFromLocation();
+    if (requested) await selectTask(requested, false, { restoreStartup: true }).catch(() => {});
+  }
   // A workspace entry never creates or silently resumes a task. A task exists
   // only after an explicit rail action, task URL, or the first submitted chat
   // message; this keeps a fresh OptDesk entry unbound and product-neutral.
@@ -3508,7 +3549,9 @@ export async function startWorkspace(initialMode) {
     renderMessages(stream, [], "新建任务后即可开始对话，并按需生成简单报告、详细报告或参考报价。");
     renderTaskOperations([], "");
   }
-  await applyMode(initialMode, { updateHistory: false });
+  if (modeInteractionRevision === 0) {
+    await applyMode(currentMode, { updateHistory: false, restoreStartup: true });
+  }
   restoreTransient();
   await restoreAttachmentDrafts();
   syncComposerAvailability();
@@ -3537,7 +3580,7 @@ export async function startWorkspace(initialMode) {
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible") refreshModels();
   });
-  if (initialMode === "desk" && currentTask) await mountModule(currentModule, false);
+  if (currentMode === "desk" && currentTask) await mountModule(currentModule, false);
   requestAnimationFrame(() => requestAnimationFrame(revealWorkspace));
 }
 

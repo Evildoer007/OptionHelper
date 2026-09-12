@@ -3,12 +3,33 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import asdict
+from hashlib import sha256
+from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 import numpy as np
 
 from .common_metrics import event_happened, monitor_values, number_summary, paired_monitor_values
 from .metric_profile_map import MetricProfileSpec, metric_profile_for, required_profile_output_keys
+
+
+# Freeze the source identity alongside the imported implementation. Later
+# edits on disk must not relabel an already running process's calculations.
+_METRIC_SOURCE_HASHES = {
+    name: sha256(Path(__file__).with_name(name).read_bytes()).hexdigest()
+    for name in ("common_metrics.py", "metric_profile_map.py", "metric_profiles.py")
+}
+
+
+def metric_implementation_evidence(product_id: str) -> dict[str, Any]:
+    """Private per-run provenance; does not enter economic result schemas."""
+    return {
+        "schema": "optionhelper.backtester.metric-implementation.v1",
+        "product_id": product_id,
+        "profile": asdict(metric_profile_for(product_id)),
+        "source_sha256": dict(_METRIC_SOURCE_HASHES),
+    }
 
 
 _OPTIONAL_DIAGNOSTIC_REQUIREMENTS: dict[str, dict[str, Any]] = {

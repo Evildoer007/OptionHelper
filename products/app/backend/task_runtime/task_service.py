@@ -17,6 +17,7 @@ from typing import Any, Mapping, Callable
 from uuid import uuid4
 
 from ..attachments import AttachmentStore
+from ..position_amounts import DEFAULT_POSITION, validate_position
 from ..errors import AuthorizationError, ValidationError
 from ..identity.session_identity import SessionIdentity
 from ..stores import _LocalDocumentStore
@@ -65,6 +66,7 @@ class TaskService:
             "conversation_session_id": str(conversation_session_id),
             "message_count": 0,
             "run_refs": [],
+            "position_size": copy.deepcopy(DEFAULT_POSITION),
             # A bounded, private idempotency journal.  It records only a
             # completed OptChat response projection, never provider payloads
             # or hidden model reasoning.
@@ -89,7 +91,18 @@ class TaskService:
             for task in tasks
             if isinstance(task, dict) and task.get("tenant_id") == identity.tenant_id and task.get("created_by") == identity.principal_id
         ]
-        return [self._public_task(task) for task in sorted(result, key=lambda task: str(task.get("updated_at", "")), reverse=True)]
+        return [self._public_task(task) for task in sorted(result, key=lambda task: (task.get("pinned") is True, str(task.get("updated_at", ""))), reverse=True)]
+
+    def owned_task_ids(self, identity: SessionIdentity) -> list[str]:
+        """Read owned task IDs for runtime status without projecting conversations."""
+
+        return [
+            str(task["task_id"])
+            for task in self._state.read("tasks").values()
+            if isinstance(task, dict)
+            and task.get("tenant_id") == identity.tenant_id
+            and task.get("created_by") == identity.principal_id
+        ]
 
     def get(self, identity: SessionIdentity, task_id: str) -> dict[str, Any]:
         return self._public_task(self._get_raw(identity, task_id))
@@ -109,6 +122,33 @@ class TaskService:
                 raise AuthorizationError("conversation.write", "task is not owned by current caller")
             task["subject"] = subject
             task["updated_at"] = datetime.now(timezone.utc).isoformat()
+            return value
+
+        return self._public_task(self._state.update("tasks", update)[task_id])
+
+    def position_size(self, identity: SessionIdentity, task_id: str) -> dict[str, Any] | None:
+        return copy.deepcopy(self._get_raw(identity, task_id).get("position_size", DEFAULT_POSITION))
+
+    def set_position_size(self, identity: SessionIdentity, task_id: str, position: Any) -> dict[str, Any]:
+        """Save a task display scale without touching contracts or module runs."""
+        setting = validate_position(position)
+
+        def update(value: dict[str, Any]) -> dict[str, Any]:
+            task = _owned_task(value, identity, task_id, "conversation.write")
+            task["position_size"] = copy.deepcopy(setting)
+            task["updated_at"] = datetime.now(timezone.utc).isoformat()
+            return value
+
+        return self._public_task(self._state.update("tasks", update)[task_id])
+
+    def set_pinned(self, identity: SessionIdentity, task_id: str, pinned: bool) -> dict[str, Any]:
+        """Persist a task-list preference without changing task activity or results."""
+        if not isinstance(pinned, bool):
+            raise ValidationError("pinned必须为布尔值")
+
+        def update(value: dict[str, Any]) -> dict[str, Any]:
+            task = _owned_task(value, identity, task_id, "conversation.write")
+            task["pinned"] = pinned
             return value
 
         return self._public_task(self._state.update("tasks", update)[task_id])
@@ -232,6 +272,7 @@ class TaskService:
                 "pending_attachment_uploads", "data_asset_refs",
             }
         }
+        public.setdefault("position_size", copy.deepcopy(DEFAULT_POSITION))
         deletion = value.get("deletion")
         if isinstance(deletion, dict) and deletion.get("status") == "delete_started":
             public["deletion_status"] = "delete_started"

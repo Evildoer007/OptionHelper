@@ -21,6 +21,8 @@ from ..metric_profile_map import MetricProfileSpec
 from ..metric_profiles import profile_for_product, specialized_metrics
 from ..path_replay import (
     aligned_history,
+    _ReplayPreparation,
+    _entry_hv_feature_prepared,
     assert_daily_observation_sessions,
     assert_supported_schedule,
     contract_stop_position,
@@ -197,7 +199,8 @@ def backtest(backtest_input: Any) -> BacktestResult:
     assert_supported_schedule(contract)
     history = aligned_history(historical_data, contract.underlyings, contract)
     daily_observation = requires_daily_observation(contract)
-    effective_window = _resolve_effective_backtest_window(history, historical_data, contract, config)
+    prepared = _ReplayPreparation(history, historical_data, contract)
+    effective_window = _resolve_effective_backtest_window(history, historical_data, contract, config, _prepared=prepared)
     effective_config = replace(
         config,
         start_date=str(effective_window.start_date),
@@ -210,26 +213,21 @@ def backtest(backtest_input: Any) -> BacktestResult:
         _skip_or_reject(skipped, config, entry_date, "entry_date_not_in_aligned_trading_calendar")
     for ordinal, start in enumerate(positions, 1):
         entry_date = _date_text(history.close.index[start])
-        entry_features = entry_hv_feature(
+        entry_features = _entry_hv_feature_prepared(
             historical_data, contract.underlyings, history.close.index[start],
-            window=config.entry_hv_window, bins=config.entry_hv_bins,
+            window=config.entry_hv_window, bins=config.entry_hv_bins, prepared=prepared,
         )
-        stop, reason = contract_stop_position(
-            history.close.index,
-            start,
-            contract,
-            trading_sessions=historical_data.trading_sessions,
-        )
+        stop, reason = prepared.stop(start)
         if stop is None:
             _skip_or_reject(skipped, config, entry_date, reason or "insufficient_tenor")
             continue
         dates = history.close.index[start : stop + 1]
-        values = history.close.iloc[start : stop + 1].to_numpy(dtype=float)
+        values = prepared.close_values(start, stop)
         if len(values) < 2:
             _skip_or_reject(skipped, config, entry_date, "insufficient_path")
             continue
         entry_spots = {asset: float(values[0, index]) for index, asset in enumerate(contract.underlyings)}
-        fields = {name: matrix.iloc[start : stop + 1].to_numpy(dtype=float) for name, matrix in history.price_fields.items()}
+        fields = prepared.field_values(start, stop)
         try:
             if daily_observation:
                 assert_daily_observation_sessions(

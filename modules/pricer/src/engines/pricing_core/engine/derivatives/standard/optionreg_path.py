@@ -624,9 +624,30 @@ def _contract_for_state(
         monitor["n_coupon"] = f"({monitor['n_coupon']}) + {valuation_state.accumulated_count}"
     if monitor == dict(contract.terms.get("monitor", {})) and terms == dict(contract.terms):
         return contract
+    schedules = contract.resolved_schedules
+    if contract.product_id == "7.1" and valuation_state.calendar_day > 1:
+        # The summary quantity already includes observations through as_of.
+        # Keep as_of as the simulation anchor, but do not observe it twice.
+        start = date.fromisoformat(str(contract.identity["contract_start_date"]))
+        as_of = start + timedelta(days=valuation_state.calendar_day - 1)
+        schedules = {
+            key: {**value, "dates": [day for day in value["dates"] if date.fromisoformat(str(day)) > as_of]}
+            if key == "O_KO" else value
+            for key, value in schedules.items()
+        }
+        # Retain the contractual n_obs symbol for the shared endpoint binding.
+        import re
+        completed = len(contract.resolved_schedules["O_KO"]["dates"]) - len(schedules["O_KO"]["dates"])
+        monitor["Q_acc"], replacements = re.subn(
+            r"(accumulated_quantity\([^)]*?,\s*)(?:n_obs|\d+)(\s*,\s*T_contract\s*\))",
+            rf"\g<1>(n_obs - {completed})\g<2>", monitor["Q_acc"],
+        )
+        if replacements != 1:
+            raise ValueError("累购Q_acc公式未能唯一绑定剩余观察数")
     return replace(
         contract,
         terms={**terms, "monitor": monitor},
+        resolved_schedules=schedules,
         path_case_applicability=None,
     )
 
