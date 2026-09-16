@@ -59,7 +59,7 @@ _BLOCK_TAGS = {
     "header", "hr", "li", "main", "nav", "ol", "p", "pre", "section", "table", "ul",
 }
 _IGNORED_TAGS = {"head", "script", "style", "noscript", "template", "title"}
-_CHART_PALETTE = ("#C8102E", "#315D8A", "#C28B2C", "#6B3FA0", "#2F7D6D")
+_CHART_PALETTE = TOKENS.chart_palette
 
 
 def _local_name(tag: str) -> str:
@@ -136,7 +136,7 @@ def _set_style_font(style: Any, *, east_asia: str, latin: str, size: float, bold
     style.font.name = latin
     style.font.size = Pt(size)
     style.font.bold = bold
-    style.font.color.rgb = RGBColor(0, 0, 0)
+    style.font.color.rgb = _parse_color(TOKENS.colors["ink"])
     properties = style.element.get_or_add_rPr()
     fonts = properties.rFonts
     if fonts is None:
@@ -427,7 +427,8 @@ def _set_cell_shading(cell: Any, color: str) -> None:
     shading.set(qn("w:fill"), color.removeprefix("#").upper())
 
 
-def _set_table_borders(table: Any, color: str = "D9D9D9") -> None:
+def _set_table_borders(table: Any, color: str | None = None) -> None:
+    color = (color or TOKENS.colors["rule"]).removeprefix("#").upper()
     properties = table._tbl.tblPr
     borders = properties.find(qn("w:tblBorders"))
     if borders is None:
@@ -526,14 +527,14 @@ def _render_chart_png(spec: Mapping[str, Any]) -> bytes:
     if chart_type not in {"line", "bar", "heatmap"}:
         raise WordRenderError(f"Word不支持图表类型：{chart_type}。")
     width, height = 1280, 420
-    image = Image.new("RGB", (width, height), "#FFFFFF")
+    image = Image.new("RGB", (width, height), TOKENS.colors["paper"])
     draw = ImageDraw.Draw(image)
     label_font = _image_font(22)
     small_font = _image_font(18)
     left, right, top, bottom = 110, 48, 56, 78
     plot_width = width - left - right
     plot_height = height - top - bottom
-    draw.rectangle((left, top, left + plot_width, top + plot_height), outline="#B9BEC7", width=2)
+    draw.rectangle((left, top, left + plot_width, top + plot_height), outline=TOKENS.colors["rule_strong"], width=2)
     x_values = list(spec.get("x") or [])
     value_format = spec.get("value_format")
     suffix = spec.get("value_suffix")
@@ -572,10 +573,10 @@ def _render_chart_png(spec: Mapping[str, Any]) -> bytes:
             for x_index in range(columns):
                 value = cells.get((x_index, y_index))
                 ratio = 0.5 if high == low else (value - low) / (high - low) if value is not None else 0.0
-                color = "#FFFFFF" if value is None else _interpolate_color("#E8EEF5", "#C8102E", ratio)
+                color = TOKENS.colors["paper"] if value is None else _interpolate_color(TOKENS.colors["heatmap_low"], TOKENS.colors["brand_red"], ratio)
                 x0 = left + x_index * cell_width
                 y0 = top + (rows - y_index - 1) * cell_height
-                outline = "#D9DDE3" if value is None else "#FFFFFF"
+                outline = TOKENS.colors["rule"] if value is None else TOKENS.colors["paper"]
                 draw.rectangle((x0, y0, x0 + cell_width, y0 + cell_height), fill=color, outline=outline, width=2)
                 if value is not None:
                     text = _display_value(value, value_format, suffix)
@@ -583,7 +584,7 @@ def _render_chart_png(spec: Mapping[str, Any]) -> bytes:
                     draw_text_within_canvas(
                         (x0 + (cell_width - (box[2] - box[0])) / 2, y0 + (cell_height - (box[3] - box[1])) / 2),
                         text,
-                        fill="#FFFFFF" if ratio > 0.55 else "#252B35",
+                        fill=TOKENS.colors["paper"] if ratio > 0.55 else TOKENS.colors["ink"],
                         font=small_font,
                     )
         for index in sampled_indices(len(x_values)):
@@ -593,7 +594,7 @@ def _render_chart_png(spec: Mapping[str, Any]) -> bytes:
             draw_text_within_canvas(
                 (left + (index + 0.5) * cell_width - (box[2] - box[0]) / 2, top + plot_height + 14),
                 text,
-                fill="#4F5967",
+                fill=TOKENS.colors["ink_soft"],
                 font=small_font,
             )
         for index in sampled_indices(len(y_values)):
@@ -603,7 +604,7 @@ def _render_chart_png(spec: Mapping[str, Any]) -> bytes:
             draw_text_within_canvas(
                 (left - (box[2] - box[0]) - 12, top + (rows - index - 0.5) * cell_height - (box[3] - box[1]) / 2),
                 text,
-                fill="#4F5967",
+                fill=TOKENS.colors["ink_soft"],
                 font=small_font,
             )
     else:
@@ -617,14 +618,14 @@ def _render_chart_png(spec: Mapping[str, Any]) -> bytes:
             low, high = low - 1.0, high + 1.0
         for tick in range(5):
             y = top + plot_height - plot_height * tick / 4
-            draw.line((left, y, left + plot_width, y), fill="#E1E4E8", width=1)
+            draw.line((left, y, left + plot_width, y), fill=TOKENS.colors["rule"], width=1)
             value = low + (high - low) * tick / 4
             label = _display_value(value, value_format, suffix)
             box = draw.textbbox((0, 0), label, font=small_font)
             draw_text_within_canvas(
                 (left - (box[2] - box[0]) - 12, y - (box[3] - box[1]) / 2),
                 label,
-                fill="#6F7780",
+                fill=TOKENS.colors["muted"],
                 font=small_font,
             )
         count = max(1, len(x_values))
@@ -676,7 +677,7 @@ def _render_chart_png(spec: Mapping[str, Any]) -> bytes:
             draw_text_within_canvas(
                 (legend_x + 30, 16),
                 str(item.get("name") or f"序列{series_index + 1}"),
-                fill="#4F5967",
+                fill=TOKENS.colors["ink_soft"],
                 font=small_font,
             )
         for index in sampled_indices(len(x_values)):
@@ -687,7 +688,7 @@ def _render_chart_png(spec: Mapping[str, Any]) -> bytes:
             draw_text_within_canvas(
                 (x - (box[2] - box[0]) / 2, top + plot_height + 14),
                 text,
-                fill="#4F5967",
+                fill=TOKENS.colors["ink_soft"],
                 font=small_font,
             )
 
@@ -698,11 +699,11 @@ def _render_chart_png(spec: Mapping[str, Any]) -> bytes:
         draw_text_within_canvas(
             (left + (plot_width - (box[2] - box[0])) / 2, height - 38),
             x_axis_name,
-            fill="#4F5967",
+            fill=TOKENS.colors["ink_soft"],
             font=label_font,
         )
     if y_axis_name:
-        draw_text_within_canvas((left, 33), y_axis_name, fill="#4F5967", font=small_font)
+        draw_text_within_canvas((left, 33), y_axis_name, fill=TOKENS.colors["ink_soft"], font=small_font)
     output = BytesIO()
     image.save(output, format="PNG", optimize=True)
     return output.getvalue()
@@ -774,7 +775,7 @@ def _svg_color(value: Any, fallback: str | None = None) -> tuple[int, int, int, 
     if not candidate or candidate.lower() in {"none", "transparent"}:
         return None
     if candidate.startswith("url("):
-        candidate = "#C8102E"
+        candidate = TOKENS.colors["brand_red"]
     try:
         rgb = ImageColor.getrgb(candidate)
     except ValueError:
@@ -956,7 +957,7 @@ def _svg_to_png(data: bytes) -> tuple[bytes, tuple[int, int]]:
         if tag in {"image", "use", "foreignobject", "filter", "mask", "pattern"}:
             raise WordRenderError(f"SVG图片包含不支持的{tag}元素。")
         paint = _svg_paint(element, styles, inherited)
-        fill = paint_color(paint, "fill", "#000000")
+        fill = paint_color(paint, "fill", "black")
         stroke = paint_color(paint, "stroke")
         stroke_width = max(1, round(_svg_number(paint.get("stroke-width"), 1.0) * scale))
         if tag == "rect":
@@ -999,7 +1000,7 @@ def _svg_to_png(data: bytes) -> tuple[bytes, tuple[int, int]]:
         for child in list(element):
             walk(child, paint)
 
-    walk(root, {"fill": "#000000"})
+    walk(root, {"fill": "black"})
     output = BytesIO()
     image.save(output, format="PNG", optimize=True)
     return output.getvalue(), image.size
@@ -1318,7 +1319,7 @@ class _WordHtmlRenderer:
                 for paragraph in cell.paragraphs:
                     for run in paragraph.runs:
                         run.bold = True
-                        run.font.color.rgb = RGBColor(255, 255, 255)
+                        run.font.color.rgb = _parse_color(TOKENS.colors["on_brand"])
             elif row_index % 2 == 0:
                 _set_cell_shading(cell, "F4F7FA")
         for row_index in sorted(header_rows):
@@ -1505,7 +1506,7 @@ class _WordHtmlRenderer:
                 run.font.size = Pt(9)
                 if row_index == 0:
                     run.bold = True
-                    run.font.color.rgb = RGBColor(255, 255, 255)
+                    run.font.color.rgb = _parse_color(TOKENS.colors["on_brand"])
                     _set_cell_shading(cell, "315D8A")
                 elif row_index % 2 == 0:
                     _set_cell_shading(cell, "F4F7FA")
