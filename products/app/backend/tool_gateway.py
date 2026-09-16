@@ -8,6 +8,7 @@ Capability failures rather than synthetic financial output.
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
+import ast
 import hashlib
 import importlib
 from io import BytesIO
@@ -361,7 +362,7 @@ class ToolGateway:
                 # rendering constraints. Preserve that business message so the
                 # page can point to the actual field instead of reporting an
                 # unrelated engine outage.
-                raise ValidationError(str(error)) from error
+                raise _public_contract_resolution_error(error) from error
             except Exception as error:
                 raise UnavailableCapabilityError(
                     f"Capability tool {tool_name}",
@@ -669,6 +670,12 @@ class ToolGateway:
         except ContractResolutionError as error:
             raise _public_contract_resolution_error(error) from error
         except Exception as error:
+            record_failure = getattr(self._compute_supervisor, "record_host_failure", None)
+            if callable(record_failure):
+                try:
+                    record_failure(tool_name, error)
+                except Exception:
+                    pass  # Diagnostics must not replace the original failure.
             raise UnavailableCapabilityError(
                 f"Capability tool {tool_name}",
                 "计算进程未能完成本次请求。请检查产品条款、行情数据和交易日历后重试。",
@@ -1390,8 +1397,10 @@ class ToolGateway:
         except (KeyError, AuthorizationError) as error:
             raise ValidationError("Reporter source不属于当前任务或已不再可用") from error
         # Selection and rendering must use the same verified candidate variants.
-        verified_catalog = self._reporter.dispatch({"action": "list_report_sources", "task_id": task_id}, identity)
-        source = next((item for item in verified_catalog.get("sources", []) if item.get("source_id") == source_id), None)
+        try:
+            source = self._reporter.get_verified_report_source(identity, task_id=task_id, source_id=source_id)
+        except (KeyError, AuthorizationError) as error:
+            raise ValidationError("Reporter source没有可验证的当前证据") from error
         if source is None:
             raise ValidationError("Reporter source没有可验证的当前证据")
         if _scope_text(context, "analysis_case_id") and source.get("analysis_case_id") != context.analysis_case_id:
@@ -1404,6 +1413,32 @@ class ToolGateway:
                 "task_id": task_id,
                 "selection": self._controlled_quote_selection(selection, source, identity, task_id),
             }
+        if "comparison_items" in selection:
+            items = selection["comparison_items"]
+            if (selection.get("delivery_mode") != "comparison" or selection.get("output_type") not in {"card", "report"}
+                or not isinstance(items, list) or not 2 <= len(items) <= 128
+                or any(key in selection for key in ("candidate_ids", "module_run_refs", "quote_items"))):
+                raise ValidationError("跨来源对比必须显式选择2至128个合同，不得混用其他选择方式")
+            controlled_items = []
+            seen = set()
+            for item in items:
+                if not isinstance(item, Mapping) or set(item) != {"source_id", "candidate_id", "module_run_refs"}:
+                    raise ValidationError("跨来源对比项字段无效")
+                if not isinstance(item["candidate_id"], str) or not item["candidate_id"].strip():
+                    raise ValidationError("跨来源对比候选身份无效")
+                if item["candidate_id"] in seen:
+                    raise ValidationError("跨来源对比候选身份重复")
+                seen.add(item["candidate_id"])
+                child = {key: value for key, value in selection.items() if key != "comparison_items"}
+                child.update(source_id=item["source_id"], candidate_ids=[item["candidate_id"]],
+                             module_run_refs={item["candidate_id"]:item["module_run_refs"]}, delivery_mode="single")
+                # Reuse every existing scope, exact RunRef and ownership guard.
+                checked = self._controlled_reporter_request({**dict(payload), "selection":child}, identity, context)["selection"]
+                controlled_items.append({"source_id":checked["source_id"], "candidate_id":item["candidate_id"],
+                                         "module_run_refs":checked["module_run_refs"][item["candidate_id"]]})
+            if controlled_items[0]["source_id"] != source_id:
+                raise ValidationError("交付来源必须为首个合同的原来源")
+            return {**dict(payload), "task_id":task_id, "selection":{**dict(selection), "comparison_items":controlled_items}}
         candidate_ids = selection.get("candidate_ids")
         if (
             not isinstance(candidate_ids, list)
@@ -1929,10 +1964,36 @@ def _run_fair_parameter_preflight(
         raise ValidationError(str(error)) from error
 
 
-def _public_contract_resolution_error(error: ContractResolutionError) -> UserActionError | ValidationError:
+def _public_contract_resolution_error(error: ValueError) -> UserActionError | ValidationError:
     """Expose the current-input compiler's reviewed validation message."""
 
-    return ValidationError(str(error))
+    message = str(error)
+    prefix = "条款覆盖不满足产品约束："
+    expression = message.removeprefix(prefix)
+    # Parse only to validate display text; the contract engine remains the evaluator.
+    reviewed = False
+    if message.startswith(prefix) and len(expression) <= 180:
+        try:
+            tree = ast.parse(expression, mode="eval")
+            allowed = (ast.Expression, ast.Compare, ast.Name, ast.Load, ast.Constant,
+                       ast.BinOp, ast.UnaryOp, ast.Add, ast.Sub, ast.Mult, ast.Div,
+                       ast.Mod, ast.Pow, ast.USub, ast.UAdd, ast.Lt, ast.LtE,
+                       ast.Gt, ast.GtE, ast.Eq, ast.NotEq)
+            reviewed = isinstance(tree.body, ast.Compare) and all(
+                isinstance(node, allowed)
+                and (not isinstance(node, ast.Constant) or type(node.value) in (int, float))
+                and (not isinstance(node, ast.Name) or re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*", node.id))
+                for node in ast.walk(tree)
+            )
+        except SyntaxError:
+            pass
+    if reviewed:
+        return UserActionError(
+            "contract_terms_constraint_invalid",
+            f"条款需满足：{expression}。请调整对应参数后重试。",
+            next_step="请按参数旁的约束说明修改条款。",
+        )
+    return ValidationError(message)
 
 
 def _bind_compute_result(
@@ -2164,7 +2225,12 @@ def _plan_backtest_window(
     # Historical acquisition deliberately starts before the requested entry
     # window, while every current-input snapshot binds to its first effective
     # entry for both automatic and user-confirmed explicit windows.
-    identity["contract_start_date"] = start_text
+    # Explicit entry dates define the contract anchor; the wider window remains
+    # a filter and must not replace the first entry chosen by Core.
+    identity["contract_start_date"] = (
+        _backtest_contract_start_date(value, {"start_date": start_text})
+        if config.get("entry_rule") == "explicit" else start_text
+    )
     value["identity"] = identity
     calendar_coverage = calendar_ref.get("coverage")
     calendar_coverage = calendar_coverage if isinstance(calendar_coverage, Mapping) else {}
@@ -2989,7 +3055,7 @@ def _require_conversation_report_request(identity: SessionIdentity, payload: Map
         })
     else:
         _require_scope_fields(selection, {
-            "source_id", "candidate_ids", "selected_modules", "module_run_refs", "delivery_mode", "output_type", "format", "audience", "report_run_id", "metadata",
+            "source_id", "candidate_ids", "comparison_items", "selected_modules", "module_run_refs", "delivery_mode", "output_type", "format", "audience", "report_run_id", "metadata",
         })
 
 
