@@ -140,6 +140,8 @@ export class AgentRun {
       this.inbox.append("next-turn", message("user", typeof prompt === "string" ? [{ type: "text", text: prompt }] : prompt))
       return this.active
     }
+    // An explicit new turn resumes a settled cancellation; old work never resumes itself.
+    if (this.statusValue === "cancelled") this.setStatus("idle")
     const queued = message("user", typeof prompt === "string" ? [{ type: "text", text: prompt }] : prompt)
     this.inbox.append("next-turn", queued)
     this.active = this.drainTurns().finally(() => { this.active = undefined })
@@ -152,6 +154,10 @@ export class AgentRun {
   }
 
   cancel(reason = "cancelled"): RunSnapshot {
+    // Cleanup must not rewrite a settled turn or erase its original error.
+    if (["completed", "failed", "cancelled"].includes(this.statusValue) && this.inbox.nextTurn.length === 0) {
+      return this.snapshot()
+    }
     this.abortController?.abort(reason)
     this.statusValue = "cancelled"
     this.errorValue = reason
@@ -331,6 +337,12 @@ export class AgentRun {
       const assembler = new BlockAssembler()
       try {
         for await (const chunk of this.ports.streamModel(request, signal)) {
+          if (chunk.type === "json-diagnostic") {
+            // Audit only: never publish to ordinary Chat or add to model-visible messages.
+            this.session.append("model/json-diagnostic", chunk.diagnostic,
+              { turn: this.turnValue, step: this.stepValue })
+            continue
+          }
           assembler.push(chunk)
           this.publishChunk(chunk)
         }
