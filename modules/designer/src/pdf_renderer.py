@@ -1222,6 +1222,9 @@ def _chart_flowable(spec: Mapping[str, Any], *, content_width: float, latin_font
     from reportlab.platypus import Flowable
 
     chart_type = str(spec.get("type") or "line")
+    if chart_type == "surface":
+        from .components.surface import surface_svg
+        return _svg_flowable(surface_svg(spec), content_width=content_width, latin_font=latin_font, cjk_font=cjk_font)
     x_values = list(spec.get("x") or [])
     y_values = list(spec.get("y") or [])
     series = list(spec.get("series") or [])
