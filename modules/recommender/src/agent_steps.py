@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from copy import deepcopy
 import hashlib
 import json
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from .models import AuditEvent
 from .ports import AgentPort, AgentStepResult
+from .product_trader_loop import DEFAULT_TERM_KEYS, _controlled_term_overrides
 
 
 # One source for the model-facing array schema and the Host allowlist.
@@ -23,7 +25,8 @@ STRUCTURER_PLAN_SCHEMA = {
             "product_id": {"type": "string", "minLength": 1},
             "modules": {"type": "array", "minItems": 1, "uniqueItems": True,
                         "items": {"type": "string", "enum": list(EVALUATION_MODULES)}},
-            "term_overrides": {"type": "object"},
+            "term_overrides": {"type": "object", "additionalProperties": False,
+                "properties": {key: {"type": ["number", "string"]} for key in sorted(DEFAULT_TERM_KEYS)}},
         },
     },
 }
@@ -31,15 +34,16 @@ STRUCTURER_PLAN_SCHEMA = {
 ROLE_RULES = {
     "Interpreter": "只提取用户已确认事实、缺失信息和产品资料检索查询；查询应使用结构类型、收益特征或风险方向，不查询行情、期权链或波动率数据；不得推荐产品。",
     "Selector": "只能从输入evidence选择产品；每个候选必须引用evidence_id。",
-    "Framer": "只框定用户已确认事实、目标、约束和产品资料检索查询；查询应使用结构类型、收益特征或风险方向，不查询行情或波动率数据；不得推荐产品、不得生成金融指标。",
-    "Matcher": "只能从输入evidence提出匹配目标与约束的产品候选；每个候选必须引用evidence_id；不得生成金融指标。",
-    "Hedger": "只能从输入evidence独立审视候选的适配边界和风险，并以产品候选形式提出意见；每个候选必须引用evidence_id；不得生成金融指标。",
-    "Moderator": "只能合并Framer、Matcher、Hedger和输入evidence已有内容，输出可审计候选及复核；不得新增无证据产品、不得生成金融指标。",
-    "Structurer": "只能基于输入证据提出产品候选、受控条款调整和需要验证的模块；不得生成收益、估值、Greeks或回测数值。",
+    "Framer": "只框定用户已确认事实、目标、约束和产品资料检索查询；查询应使用结构类型、收益特征或风险方向，不查询行情或波动率数据；不得推荐产品、不得编造金融指标；获授权时可调用研究工具，并准确引用其证据。",
+    "Matcher": "只能从输入evidence提出匹配目标与约束的产品候选；每个候选必须引用evidence_id；不得编造金融指标；获授权时可调用研究工具，并准确引用其证据。",
+    "Hedger": "只能从输入evidence独立审视候选的适配边界和风险，并以产品候选形式提出意见；每个候选必须引用evidence_id；不得编造金融指标；获授权时可调用研究工具，并准确引用其证据。",
+    "Moderator": "只能合并Framer、Matcher、Hedger和输入evidence已有内容，输出可审计候选及复核；不得新增无证据产品、不得编造金融指标；获授权时可调用研究工具，并准确引用其证据。",
+    "Structurer": "只能基于输入证据提出产品候选、受控条款调整和需要验证的模块；不得编造收益、估值、Greeks或回测数值；已登记候选可按权限调用研究工具。",
     "Trader": "按当前候选计划调用获授权的业务工具，只依据工具返回的FactRef接受候选或要求受控条款调整；不得新增产品、改写模块结果或生成金融数值。",
     "Specifier": "只把用户原文中的硬约束和排序要求转换为受控RankingSpec；不得生成候选、计算指标或补写用户未表达的阈值。",
-    "Generator": "只能从输入evidence提出候选产品；每个候选必须引用evidence_id，不得生成金融指标或改变RankingSpec。",
+    "Generator": "只能从输入evidence提出候选产品；每个候选必须引用evidence_id，不得编造金融指标或改变RankingSpec；可读取和引用获授权研究工具的结果。",
     "Reviewer": "Mode1只复核Selector已有候选；其他Mode只对当前候选或确定性排序作最终批准或整体拒绝；不得新增候选、重排、改写当前输入或模块事实。",
+    "Evaluator": "自主取得当前候选所需的真实指标和证据，说明缺口；不得自创评分、填零或改变排序规则。",
     "Executor": "只能为已批准候选规划允许的Tool调用；不得生成计算数值。",
     "Freeform": "按当前路由选择最少必要工具；不得把未执行工具写成成功。",
 }
@@ -88,13 +92,13 @@ class AgentReceiptLedger:
     _agent_run_roles: dict[str, str] = field(default_factory=dict, init=False)
     _child_session_roles: dict[str, str] = field(default_factory=dict, init=False)
 
-    def validate(
+    def validate_receipt(
         self,
         role: str,
         port_role: str,
         request: Mapping[str, Any],
         step: AgentStepResult,
-    ) -> Mapping[str, Any]:
+    ) -> None:
         if not isinstance(step, AgentStepResult):
             raise ValueError(f"{role}必须返回AgentStepResult")
         receipt = step.receipt
@@ -113,6 +117,10 @@ class AgentReceiptLedger:
                 raise ValueError("多Agent工作流跨角色重复使用child_session_id")
         self._agent_run_roles[receipt.agent_run_id] = role
         self._child_session_roles[receipt.child_session_id] = role
+    def validate(
+        self, role: str, port_role: str, request: Mapping[str, Any], step: AgentStepResult,
+    ) -> Mapping[str, Any]:
+        self.validate_receipt(role, port_role, request, step)
         _validate_role_result(role, step.result)
         return dict(step.result)
 
@@ -123,6 +131,8 @@ class AgentStepRunner:
     workflow_mode: str
     audit: AuditRecorder
     receipt_ledger: AgentReceiptLedger = field(init=False)
+    result_validator: Callable[[str, Mapping[str, Any]], None] | None = None
+    input_validator: Callable[[], None] | None = None
 
     def __post_init__(self) -> None:
         self.receipt_ledger = AgentReceiptLedger(self.workflow_mode)
@@ -137,6 +147,34 @@ class AgentStepRunner:
             "required_output": _required_output(role, payload),
             "input": dict(payload),
         }
+        request["term_coordinate_rule"] = (
+            "设置条款前读取当前产品的默认数值和单位。价格条款采用normalized_100时，"
+            "参考价格为100，103表示参考价格的103%，不是1.03；票息等百分数条款中8表示8%，不是0.08。"
+            "这些只是在相应单位下的编码示例，不是本轮推荐值。不要把比例小数直接填成价格条款。"
+            "未提出具体调整目的的条款沿用产品默认值，不需在term_overrides重复填写。"
+        )
+        if "reviews" in request["required_output"]:
+            request["ranking_contract"] = {
+                "field": "rank_adjustment",
+                "minimum": -5,
+                "maximum": 5,
+                "direction": "ascending",
+                "priority": ["library_status", "rank_adjustment", "proposal_order"],
+                "meaning": "同一资料状态下，负数靠前、正数靠后、0不调整；相同值保持提案顺序。这不是收益、评分或排名名次。结论与调整方向必须一致。",
+                "example": "两候选资料均ready，若2.1比1.1更适合用户，可给2.1=-1、1.1=0；不要用+1表示更推荐。",
+            }
+        if role == "Trader":
+            request["term_adjustment_rule"] = (
+                "term_adjustments只填写你明确建议的参数值，数值用JSON数字，简短条款用字符串。"
+                "发现问题但没有确定新值时，term_adjustments留空对象，把疑点和复核要求写在reason。"
+                "不要把action、basis或整段评语塞进参数值；Structurer负责据此修改方案。"
+            )
+        if role == "Trader" and payload.get("comparison_only") is True:
+            request["role_rule"] = (
+                "仅依据当前候选及产品资料证据比较结构适配性和风险，按required_output返回reviews。"
+                "不要求未运行计算的FactRef，不启动收益分析、定价或回测；理论判断不得称为已验证报价。"
+                "不得新增产品、修改条款或编造金融数值；rank_adjustment按ranking_contract表达排序意见。"
+            )
         if role == "Structurer":
             request["output_schema"] = {
                 "type": "object", "required": ["research_queries", "proposals", "evaluation_plan"],
@@ -159,34 +197,57 @@ class AgentStepRunner:
         port_role: str,
         request: Mapping[str, Any],
         step: AgentStepResult,
+        *,
+        audit_detail: Mapping[str, Any] | None = None,
     ) -> Mapping[str, Any]:
         try:
             _validate_request_result(role, request, step.result)
             result = self.receipt_ledger.validate(role, port_role, request, step)
+            if self.result_validator is not None:
+                self.result_validator(role, result)
         except Exception as error:
             self.audit.append(role.lower(), "failed", agent_role=port_role, input_value=request, output_value=None,
                               detail={"error_type": type(error).__name__, "message": str(error)})
             raise
-        self.audit.append(role.lower(), "complete", agent_role=port_role, input_value=request, output_value=result)
+        self.audit.append(role.lower(), "complete", agent_role=port_role, input_value=request, output_value=result,
+                          detail=audit_detail)
         return dict(result)
+
+    def _repair_output_once(
+        self, role: str, port_role: str, request: Mapping[str, Any], step: AgentStepResult,
+    ) -> tuple[Mapping[str, Any], AgentStepResult]:
+        # Receipt errors are not model-format errors and must never trigger repair.
+        self.receipt_ledger.validate_receipt(role, port_role, request, step)
+        if self.input_validator is not None:
+            self.input_validator()
+        try:
+            _validate_request_result(role, request, step.result)
+        except ValueError as error:
+            original = deepcopy(step.result)
+            # Repair only the failing role's wire format. Receipt, authority
+            # and financial-evidence validation still happen in accept().
+            self.audit.append(role.lower(), "invalid_output", agent_role=port_role,
+                              input_value=request, output_value=None,
+                              detail={"message": str(error), "repair_attempt": 1})
+            request = {**request, "validation_feedback": {
+                "error": str(error), "attempt": 1,
+                "instruction": "按required_output及output_schema重新返回完整result，补齐必填字段；数组必须为JSON数组。仅修复输出格式，不调用业务工具，不新增候选或修改条款，不编造金融事实。",
+            }}
+            if isinstance(error, _UnknownEvidenceReference):
+                request["validation_feedback"]["instruction"] = (
+                    "只纠正evidence_ref_ids中的错误编号，从本次输入中该产品的证据编号选择。"
+                    "其他字段、候选顺序、条款、数值和正文必须完全保留，不调用业务工具。"
+                )
+            step = self.port.run_step(port_role, request)
+            if isinstance(error, _UnknownEvidenceReference):
+                if _without_proposal_reference_ids(original) != _without_proposal_reference_ids(step.result):
+                    raise ValueError("证据编号修复改变了候选内容，拒绝采用")
+        return request, step
 
     def run(self, role: str, payload: Mapping[str, Any]) -> Mapping[str, Any]:
         port_role, request = self.build_request(role, payload)
         step = self.port.run_step(port_role, request)
-        if role == "Structurer":
-            try:
-                _validate_request_result(role, request, step.result)
-            except ValueError as error:
-                # Repair structure once, before accepting a receipt or executing
-                # a plan. Never coerce strings into modules or retry tool effects.
-                self.audit.append("structurer", "invalid_output", agent_role=port_role,
-                                  input_value=request, output_value=None,
-                                  detail={"message": str(error), "repair_attempt": 1})
-                request = {**request, "validation_feedback": {
-                    "error": str(error), "attempt": 1,
-                    "instruction": "按output_schema重新返回完整result；modules必须为JSON数组，不得新增工具或计算事实。",
-                }}
-                step = self.port.run_step(port_role, request)
+        request, step = self._repair_output_once(role, port_role, request, step)
         return self.accept(role, port_role, request, step)
 
     def run_named(self, payloads: Mapping[str, Mapping[str, Any]]) -> Mapping[str, Mapping[str, Any]]:
@@ -209,26 +270,19 @@ class AgentStepRunner:
         requests: dict[str, Mapping[str, Any]] = {}
         port_roles: dict[str, str] = {}
         for role, payload in payloads.items():
-            port_role = role if self.workflow_mode == "multi_agent" else f"SingleAgent.{role}"
+            port_role, request = self.build_request(role, payload)
             port_roles[role] = port_role
-            requests[role] = {
-                "workflow": "optionhelper.recommender",
-                "role_rule": ROLE_RULES[role],
-                "required_output": _required_output(role, payload),
-                "input": dict(payload),
-            }
+            requests[role] = request
         try:
             results = batch({port_roles[role]: request for role, request in requests.items()})
-            if not isinstance(results, Mapping) or set(results) != set(requests):
+            if not isinstance(results, Mapping) or set(results) != set(port_roles.values()):
                 raise ValueError("具名Agent步骤返回角色集合无效")
             normalized: dict[str, Mapping[str, Any]] = {}
             for role, request in requests.items():
                 step = results[port_roles[role]]
-                result = self.receipt_ledger.validate(role, port_roles[role], request, step)
-                self.audit.append(
-                    role.lower(), "complete", agent_role=port_roles[role], input_value=request,
-                    output_value=result, detail={"independent_agent_run": True},
-                )
+                request, step = self._repair_output_once(role, port_roles[role], request, step)
+                result = self.accept(role, port_roles[role], request, step,
+                                     audit_detail={"independent_agent_run": True})
                 normalized[role] = dict(result)
             return normalized
         except Exception as error:
@@ -278,6 +332,8 @@ def _required_output(role: str, payload: Mapping[str, Any] | None = None) -> Map
         }
     if role == "Trader" and isinstance(payload, Mapping) and payload.get("comparison_only") is True:
         return _required_output("Reviewer", {"proposals": []})
+    if role == "Evaluator":
+        return {"assessment": "string"}
     if role == "Trader":
         return {
             "evaluations": [{
@@ -289,6 +345,8 @@ def _required_output(role: str, payload: Mapping[str, Any] | None = None) -> Map
     if role == "Specifier":
         return {
             "research_queries": "string[]",
+            "missing_information": "string[]，无需澄清时为空",
+            "next_question": "string|null，确实无法确定排序规则时只提出一个合并问题",
             "ranking_spec": {
                 "ranking_spec_id": "string", "hard_constraints": "object", "sort_keys": "object[]",
                 "tie_break_policy": "candidate_id",
@@ -309,6 +367,7 @@ def _required_output(role: str, payload: Mapping[str, Any] | None = None) -> Map
         return {"selected_candidate_ids": "string[]", "conflicts": "string[]"}
     if role == "Moderator":
         return {
+            "refinement_requests": [{"role":"Matcher|Hedger", "question":"string"}],
             "proposals": [{
                 "product_id": "string", "product_name": "string|null", "underlyings": "string[]",
                 "reason": "string", "suitable_for": "string[]", "not_suitable_for": "string[]",
@@ -325,9 +384,37 @@ def _required_output(role: str, payload: Mapping[str, Any] | None = None) -> Map
     return {"response": "string", "tool_requests": [{"module": "string", "request": "object"}]}
 
 
+class _UnknownEvidenceReference(ValueError):
+    """A proposal references an ID absent from the supplied knowledge evidence."""
+
+
+def _without_proposal_reference_ids(result):
+    projected = deepcopy(result)
+    if isinstance(projected, Mapping):
+        for row in projected.get("proposals", ()):
+            if isinstance(row, dict):
+                row.pop("evidence_ref_ids", None)
+    return projected
+
+
 def _validate_request_result(role: str, request: Mapping[str, Any], value: object) -> None:
     _validate_role_result(role, value)
     domain_input = request.get("input", {})
+    evidence = domain_input.get("evidence")
+    if isinstance(evidence, (list, tuple)) and evidence and isinstance(value.get("proposals"), list):
+        known = {item["evidence_id"] for item in evidence
+                 if isinstance(item, Mapping) and isinstance(item.get("evidence_id"), str)}
+        # Research-result evidence uses a different protocol and is validated
+        # separately; it must not be treated as a knowledge-reference catalogue.
+        for row in (value["proposals"] if known else []):
+            unknown = [ref for ref in row.get("evidence_ref_ids", ()) if ref not in known]
+            if unknown:
+                available = [item.get("evidence_id") for item in evidence
+                             if isinstance(item, Mapping) and item.get("product_id") == row.get("product_id")]
+                raise _UnknownEvidenceReference(
+                    f"产品{row.get('product_id')}引用了本次输入中不存在的证据编号：{unknown}。"
+                    f"本产品可用编号：{available}。这不是产品资料缺失。"
+                )
     if role == "Structurer" and domain_input.get("comparison_only") is True and value.get("evaluation_plan"):
         raise ValueError("只比较模式的evaluation_plan必须为[]，不得安排定价、回测或收益计算")
 
@@ -378,6 +465,8 @@ def _validate_role_result(role: str, value: object) -> None:
             if product_name is not None and not isinstance(product_name, str):
                 raise ValueError("Selector.proposal.product_name必须为字符串或null")
             _nonempty_strings(proposal.get("underlyings"), "Selector.proposal.underlyings")
+            if any(any("\u4e00" <= char <= "\u9fff" for char in asset) for asset in proposal["underlyings"]):
+                raise ValueError("候选underlyings必须填写标的代码，不能直接填写中文名称。例如沪深300使用000300.SH。仅修正同一标的的名称与代码，不得更换标的；无法确认代码时应说明缺项。")
             _nonempty_text(proposal.get("reason"), "Selector.proposal.reason")
             for key in ("suitable_for", "not_suitable_for", "main_risks", "evidence_ref_ids"):
                 _strings_value(proposal.get(key), f"Selector.proposal.{key}")
@@ -405,9 +494,16 @@ def _validate_role_result(role: str, value: object) -> None:
                 raise ValueError("Structurer.evaluation_plan.modules不得重复")
             if not isinstance(plan.get("term_overrides", {}), Mapping):
                 raise ValueError("Structurer.evaluation_plan.term_overrides必须为对象")
+            _controlled_term_overrides(plan.get("term_overrides", {}),
+                allowed_term_keys=DEFAULT_TERM_KEYS,
+                field_name=f"Structurer.evaluation_plan[{index}].term_overrides")
         return
     if role == "Trader" and "reviews" in value:
         _validate_role_result("Reviewer", value)
+        return
+    if role == "Evaluator":
+        _closed_fields(value, {"assessment"}, role)
+        _nonempty_text(value.get("assessment"), "Evaluator.assessment")
         return
     if role == "Trader":
         _closed_fields(value, {"evaluations"}, role)
@@ -428,12 +524,29 @@ def _validate_role_result(role: str, value: object) -> None:
             _strings_value(row.get("used_fact_refs"), "Trader.evaluation.used_fact_refs")
             if not isinstance(row.get("term_adjustments", {}), Mapping):
                 raise ValueError("Trader.evaluation.term_adjustments必须为对象")
+            _controlled_term_overrides(row.get("term_adjustments", {}),
+                allowed_term_keys=DEFAULT_TERM_KEYS,
+                field_name="Trader.evaluation.term_adjustments")
+            if row["decision"] == "accept" and row.get("term_adjustments"):
+                raise ValueError("Trader接受候选时不能同时修改条款")
         return
     if role == "Specifier":
-        _closed_fields(value, {"research_queries", "ranking_spec"}, role)
+        _closed_fields(value, {"research_queries", "ranking_spec", "missing_information", "next_question"}, role)
         _strings_field(value, "research_queries")
+        if "missing_information" in value:
+            _strings_field(value, "missing_information")
+        if value.get("next_question") is not None:
+            _nonempty_text(value["next_question"], "Specifier.next_question")
+            if not value.get("missing_information"):
+                raise ValueError("Specifier澄清必须说明缺少的排序条件")
+            if value.get("ranking_spec") is None:
+                return
         if not isinstance(value.get("ranking_spec"), Mapping):
             raise ValueError("Specifier.ranking_spec必须为对象")
+        from .constraint_ranking import parse_specifier_ranking_spec
+        # Validate while the role can still repair its response, not after
+        # control has left the role and the entire workflow has to restart.
+        parse_specifier_ranking_spec(value["ranking_spec"])
         return
     if role == "Generator":
         _validate_role_result("Selector", {"proposals": value.get("proposals")})
@@ -476,7 +589,11 @@ def _validate_role_result(role: str, value: object) -> None:
         _strings_value(value.get("conflicts"), "Moderator.conflicts")
         return
     if role == "Moderator":
-        _closed_fields(value, {"proposals", "reviews"}, role)
+        _closed_fields(value, {"proposals", "reviews", "refinement_requests"}, role)
+        for request in value.get("refinement_requests", []):
+            if not isinstance(request,Mapping) or set(request)!={"role","question"} or request["role"] not in {"Matcher","Hedger"}:
+                raise ValueError("Moderator.refinement_requests无效")
+            _nonempty_text(request.get("question"), "Moderator.question")
         _validate_role_result("Selector", {"proposals": value.get("proposals")})
         _validate_role_result("Reviewer", {"reviews": value.get("reviews")})
         return
