@@ -129,6 +129,14 @@ function scrollbarInk(element) {
 
 export function scrollbarTrackVisible(element, axis, rect) {
   if (!element.isConnected || !element.getClientRects().length) return false;
+  // Overlay thumbs are outside <details>; native disclosure clipping does not
+  // hide them. Some engines retain descendant layout boxes while collapsed.
+  for (let ancestor = element.parentElement; ancestor; ancestor = ancestor.parentElement) {
+    if (ancestor.tagName === "DETAILS" && (!ancestor.open || ancestor.dataset.motionTarget === "closed")) {
+      const summary = [...ancestor.children].find(child => child.tagName === "SUMMARY");
+      if (!summary?.contains(element)) return false;
+    }
+  }
   const style = getComputedStyle(element);
   if (style.visibility === "hidden" || style.visibility === "collapse") return false;
   const bounds = element.getBoundingClientRect();
@@ -224,7 +232,7 @@ export function installScrollbarActivity({ selectors = SHELL_SCROLL_CONTAINERS, 
     const isScrollable = scrollableOnAxis(element, axis, documentScroller);
     let thumb = state.thumbs.get(axis);
     if (!isScrollable || !scrollbarTrackVisible(element, axis, rect) || rect.right <= rect.left || rect.bottom <= rect.top) {
-      if (thumb) thumb.style.display = "none";
+      if (thumb) thumb.style.setProperty("display", "none", "important");
       state.metrics[axis] = null;
       return;
     }
@@ -298,6 +306,12 @@ export function installScrollbarActivity({ selectors = SHELL_SCROLL_CONTAINERS, 
   const queueRender = () => {
     if (renderFrame !== null) return;
     renderFrame = window.requestAnimationFrame(renderAll);
+  };
+
+  const onDisclosureToggle = (event) => {
+    if (event.target?.tagName !== "DETAILS") return;
+    scan(event.target);
+    queueRender();
   };
 
   const register = (element) => {
@@ -376,6 +390,7 @@ export function installScrollbarActivity({ selectors = SHELL_SCROLL_CONTAINERS, 
     document.removeEventListener("pointerup", onPointerUp, true);
     document.removeEventListener("pointercancel", onPointerUp, true);
     document.removeEventListener("optionhelper:themechange", queueRender);
+    document.removeEventListener("toggle", onDisclosureToggle, true);
     window.removeEventListener("resize", queueRender);
     mutationObserver?.disconnect();
     resizeObserver?.disconnect();
@@ -389,18 +404,23 @@ export function installScrollbarActivity({ selectors = SHELL_SCROLL_CONTAINERS, 
   resizeObserver = typeof ResizeObserver === "function" ? new ResizeObserver(queueRender) : null;
   mutationObserver = new MutationObserver((records) => {
     records.forEach((record) => {
+      if (record.type === "attributes") return;
       scanScrollParents(record.target);
       record.addedNodes.forEach((node) => scan(node));
     });
     queueRender();
   });
-  mutationObserver.observe(document.documentElement, { childList: true, subtree: true });
+  mutationObserver.observe(document.documentElement, {
+    childList: true, subtree: true, attributes: true,
+    attributeFilter: ["open", "data-motion-target"],
+  });
 
   document.documentElement.dataset.ohScrollbarOverlay = "enabled";
   document.addEventListener("pointermove", onPointerMove, { capture: true, passive: true });
   document.addEventListener("pointerup", onPointerUp, true);
   document.addEventListener("pointercancel", onPointerUp, true);
   document.addEventListener("optionhelper:themechange", queueRender);
+  document.addEventListener("toggle", onDisclosureToggle, true);
   window.addEventListener("resize", queueRender, { passive: true });
   window.addEventListener("pagehide", (event) => {
     if (!event.persisted) teardown();
