@@ -113,7 +113,7 @@ def build_selected_request(selection: Mapping[str, Any], *, tenant_id: str, sele
 
     if selection_port is None:
         raise ReporterError("当前Host未注入ResultSelectionPort，不能选择已保存运行结果。")
-    allowed = {"source_id", "candidate_ids", "selected_modules", "module_run_refs", "quote_items", "delivery_mode", "output_type", "format", "audience", "report_run_id", "metadata"}
+    allowed = {"source_id", "candidate_ids", "selected_modules", "module_run_refs", "comparison_items", "quote_items", "delivery_mode", "output_type", "format", "audience", "report_run_id", "metadata"}
     unknown = set(selection).difference(allowed)
     if unknown:
         raise ReporterError(f"页面选择含未知字段：{','.join(sorted(unknown))}")
@@ -133,6 +133,8 @@ def build_selected_request(selection: Mapping[str, Any], *, tenant_id: str, sele
     output_type = str(selection.get("output_type", "report")).lower()
     output_format = str(selection.get("format", "html")).lower()
     source_refs = build_host_selection_source_refs(source, tenant_id)
+    if "comparison_items" in selection and output_type == "quote":
+        raise ReporterError("报价不能混用跨来源研究报告选择")
     if output_type == "quote":
         raw_items = selection.get("quote_items")
         if not isinstance(raw_items, list) or not raw_items:
@@ -204,6 +206,43 @@ def build_selected_request(selection: Mapping[str, Any], *, tenant_id: str, sele
             "audience": str(selection.get("audience", "professional")),
             "metadata": dict(selection.get("metadata", {})) if isinstance(selection.get("metadata", {}), Mapping) else {},
         }
+    if "comparison_items" in selection:
+        if output_type not in {"card", "report"} or selection.get("delivery_mode") != "comparison":
+            raise ReporterError("跨来源选择仅适用于多产品研究简报或报告")
+        if any(key in selection for key in ("candidate_ids", "module_run_refs", "quote_items")):
+            raise ReporterError("跨来源选择不能混用单来源或报价选择")
+        items = selection["comparison_items"]
+        if not isinstance(items, list) or not 2 <= len(items) <= 128:
+            raise ReporterError("跨来源对比至少选择两个合同")
+        children = []
+        selected = []
+        refs = {}
+        for item in items:
+            if not isinstance(item, Mapping) or set(item) != {"source_id", "candidate_id", "module_run_refs"}:
+                raise ReporterError("comparison_items必须包含source_id、candidate_id和module_run_refs")
+            candidate_id = require_identifier(item["candidate_id"], "comparison_items.candidate_id")
+            if candidate_id in selected:
+                raise ReporterError("对比候选身份重复，请选择具有独立候选身份的合同")
+            child_selection = {key: value for key, value in selection.items() if key != "comparison_items"}
+            child_selection.update(source_id=item["source_id"], candidate_ids=[candidate_id],
+                                   module_run_refs={candidate_id: item["module_run_refs"]}, delivery_mode="single")
+            child = build_selected_request(child_selection, tenant_id=tenant_id, selection_port=selection_port)
+            if child["task_id"] != task_id:
+                raise ReporterError("跨来源对比只能选择当前任务的运行")
+            if not child["source_refs"]["module_run_refs"].get(candidate_id):
+                raise ReporterError("跨来源对比的每个合同必须选择至少一项已验证计算")
+            selected.append(candidate_id)
+            refs.update(child["source_refs"]["module_run_refs"])
+            children.append(child)
+        if items[0]["source_id"] != source_id:
+            raise ReporterError("交付来源必须是首个所选合同的原来源")
+        # The enclosing report retains its first source's real identity. Each
+        # child request retains its own case, source and immutable RunRefs.
+        result = dict(children[0])
+        result["subject_type"] = "comparison"
+        result["subject_ref"] = {**result["subject_ref"], "delivery_mode": "comparison", "candidate_ids": selected}
+        result["source_refs"] = {**result["source_refs"], "module_run_refs": refs, "comparison_requests": children}
+        return result
     candidate_ids = selection.get("candidate_ids")
     if not isinstance(candidate_ids, list) or not candidate_ids:
         raise ReporterError("页面必须显式选择至少一个候选")
