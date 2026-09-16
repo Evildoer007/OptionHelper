@@ -16,7 +16,7 @@
   border: 0;
   border-radius: 8px;
   background: transparent;
-  color: var(--color-muted, #61656b);
+  color: color-mix(in srgb, var(--color-muted, #61656b) 70%, var(--color-paper, #fff));
   cursor: pointer;
 }
 .rail-help-trigger svg { width: 20px; height: 20px; }
@@ -61,7 +61,7 @@
 .user-guide__example-label { display: block; font-size: 12px; color: var(--color-muted, #61656b); margin-bottom: 6px; }
 .user-guide table { width: 100%; border-collapse: collapse; margin-bottom: 18px; font-size: 13px; }
 .user-guide th, .user-guide td { padding: 9px; text-align: left; vertical-align: top; border-bottom: 1px solid var(--color-rule, #ddd); }
-.user-guide td:first-child { white-space: nowrap; }
+.user-guide th:first-child, .user-guide td:first-child { width: 28%; white-space: normal; overflow-wrap: anywhere; }
 .user-guide dt { font-weight: 650; margin-top: 20px; }
 .user-guide dd { margin: 6px 0 0; }
 .user-guide [hidden] { display: none; }
