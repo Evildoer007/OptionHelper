@@ -184,12 +184,7 @@ export class OptionHelperAgentRuntime implements AgentEventPublisher {
       oneShotSubagent: true, continuableSubagent: true, coldResume: true,
       workflowPersistence: true, workflowScopedCancel: true, turnModelRoute: true,
       hostOrchestration: true,
-      continuableRolesByPreset: {
-        "sequential-deliberation": [],
-        "product-trader-loop": ["Structurer", "Trader"],
-        "independent-council": ["Matcher", "Hedger"],
-        "constraint-ranking": [],
-      },
+
     }
   }
 
