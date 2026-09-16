@@ -51,6 +51,20 @@ _PAGE_TREES = {
     for module in PAGE_MODULES
 }
 _FILE_MAPPINGS = {
+    'core/src/runtime/research_profiles/constraint-ranking/Evaluator/AGENT.md': 'scripts/runtime/research_profiles/constraint-ranking/Evaluator/AGENT.md',
+    'core/src/runtime/research_profiles/constraint-ranking/Generator/AGENT.md': 'scripts/runtime/research_profiles/constraint-ranking/Generator/AGENT.md',
+    'core/src/runtime/research_profiles/constraint-ranking/Reviewer/AGENT.md': 'scripts/runtime/research_profiles/constraint-ranking/Reviewer/AGENT.md',
+    'core/src/runtime/research_profiles/constraint-ranking/Specifier/AGENT.md': 'scripts/runtime/research_profiles/constraint-ranking/Specifier/AGENT.md',
+    'core/src/runtime/research_profiles/independent-council/Framer/AGENT.md': 'scripts/runtime/research_profiles/independent-council/Framer/AGENT.md',
+    'core/src/runtime/research_profiles/independent-council/Hedger/AGENT.md': 'scripts/runtime/research_profiles/independent-council/Hedger/AGENT.md',
+    'core/src/runtime/research_profiles/independent-council/Matcher/AGENT.md': 'scripts/runtime/research_profiles/independent-council/Matcher/AGENT.md',
+    'core/src/runtime/research_profiles/independent-council/Moderator/AGENT.md': 'scripts/runtime/research_profiles/independent-council/Moderator/AGENT.md',
+    'core/src/runtime/research_profiles/product-trader-loop/Reviewer/AGENT.md': 'scripts/runtime/research_profiles/product-trader-loop/Reviewer/AGENT.md',
+    'core/src/runtime/research_profiles/product-trader-loop/Structurer/AGENT.md': 'scripts/runtime/research_profiles/product-trader-loop/Structurer/AGENT.md',
+    'core/src/runtime/research_profiles/product-trader-loop/Trader/AGENT.md': 'scripts/runtime/research_profiles/product-trader-loop/Trader/AGENT.md',
+    'core/src/runtime/research_profiles/sequential-deliberation/Interpreter/AGENT.md': 'scripts/runtime/research_profiles/sequential-deliberation/Interpreter/AGENT.md',
+    'core/src/runtime/research_profiles/sequential-deliberation/Reviewer/AGENT.md': 'scripts/runtime/research_profiles/sequential-deliberation/Reviewer/AGENT.md',
+    'core/src/runtime/research_profiles/sequential-deliberation/Selector/AGENT.md': 'scripts/runtime/research_profiles/sequential-deliberation/Selector/AGENT.md',
     "core/module_host.py": "scripts/module_host.py",
     "core/src/runtime/browser/module_host_bridge.js": "assets/pages/module-host-bridge.js",
     "core/src/runtime/browser/module_host_presentation.css": "assets/pages/module-host-presentation.css",
