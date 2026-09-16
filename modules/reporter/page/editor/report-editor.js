@@ -42,10 +42,10 @@
       if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
       const spec = clone(value);
       spec.id = text(spec.id || id);
-      spec.type = ['line', 'bar', 'heatmap'].includes(text(spec.type).toLowerCase()) ? text(spec.type).toLowerCase() : 'line';
+      spec.type = ['line', 'bar', 'heatmap', 'surface'].includes(text(spec.type).toLowerCase()) ? text(spec.type).toLowerCase() : 'line';
       spec.title = text(spec.title || '图表');
       spec.x = Array.isArray(spec.x) ? spec.x : [];
-      if (spec.type === 'heatmap') {
+      if (['heatmap', 'surface'].includes(spec.type)) {
         spec.y = Array.isArray(spec.y) ? spec.y : [];
         spec.data = Array.isArray(spec.data) ? spec.data.filter(item => Array.isArray(item) && item.length === 3) : [];
       } else {
@@ -818,13 +818,14 @@
     _convertChartType(spec, nextType) {
       const current = spec.type;
       if (current === nextType) return;
-      if (nextType === 'heatmap') {
+      if (['heatmap', 'surface'].includes(current) && ['heatmap', 'surface'].includes(nextType)) { spec.type = nextType; return; }
+      if (['heatmap', 'surface'].includes(nextType)) {
         const series = Array.isArray(spec.series) && spec.series.length ? spec.series : [{name: '系列1', data: spec.x.map(() => 0)}];
         spec.y = series.map(item => item.name);
         spec.data = series.flatMap((item, yIndex) => spec.x.map((_, xIndex) => [xIndex, yIndex, item.data[xIndex] ?? null]));
         delete spec.series;
         spec.z_axis_name ||= spec.y_axis_name || '数值';
-      } else if (current === 'heatmap') {
+      } else if (['heatmap', 'surface'].includes(current)) {
         const cells = new Map((spec.data || []).map(item => [`${item[0]}:${item[1]}`, item[2]]));
         spec.series = (spec.y?.length ? spec.y : ['系列1']).map((name, yIndex) => ({
           name: text(name), data: spec.x.map((_, xIndex) => cells.get(`${xIndex}:${yIndex}`) ?? null),
@@ -851,7 +852,7 @@
       const spec = this._selectedChart();
       if (!spec || !Number.isInteger(row) || !Number.isInteger(column)) return false;
       this.flushPendingHistory();
-      if (spec.type === 'heatmap') {
+      if (['heatmap', 'surface'].includes(spec.type)) {
         const cell = (spec.data || []).find(item => Number(item[0]) === column && Number(item[1]) === row);
         if (cell) cell[2] = finiteNumber(value);
         else spec.data.push([column, row, finiteNumber(value)]);
@@ -870,21 +871,21 @@
       this.flushPendingHistory();
       if (command === 'add-row') {
         spec.x.push(`数据${spec.x.length + 1}`);
-        if (spec.type === 'heatmap') (spec.y || []).forEach((_, yIndex) => spec.data.push([spec.x.length - 1, yIndex, null]));
+        if (['heatmap', 'surface'].includes(spec.type)) (spec.y || []).forEach((_, yIndex) => spec.data.push([spec.x.length - 1, yIndex, null]));
         else (spec.series || []).forEach(series => series.data.push(null));
       } else if (command === 'remove-row' && spec.x.length > 1) {
         const removed = spec.x.length - 1; spec.x.pop();
-        if (spec.type === 'heatmap') spec.data = spec.data.filter(item => Number(item[0]) !== removed);
+        if (['heatmap', 'surface'].includes(spec.type)) spec.data = spec.data.filter(item => Number(item[0]) !== removed);
         else (spec.series || []).forEach(series => series.data.pop());
       } else if (command === 'add-series') {
-        if (spec.type === 'heatmap') {
+        if (['heatmap', 'surface'].includes(spec.type)) {
           spec.y.push(`系列${spec.y.length + 1}`);
           spec.x.forEach((_, xIndex) => spec.data.push([xIndex, spec.y.length - 1, null]));
         } else spec.series.push({name: `系列${spec.series.length + 1}`, data: spec.x.map(() => null)});
       } else if (command === 'remove-series') {
-        if (spec.type === 'heatmap' && spec.y.length > 1) {
+        if (['heatmap', 'surface'].includes(spec.type) && spec.y.length > 1) {
           const removed = spec.y.length - 1; spec.y.pop(); spec.data = spec.data.filter(item => Number(item[1]) !== removed);
-        } else if (spec.type !== 'heatmap' && spec.series.length > 1) spec.series.pop();
+        } else if (!['heatmap', 'surface'].includes(spec.type) && spec.series.length > 1) spec.series.pop();
         else return false;
       } else return false;
       this._syncChartFigure(spec); this._renderChart(spec); this._checkpoint(); this._renderChartInspector();
@@ -920,7 +921,7 @@
       n.editorChartXAxis.value = spec.x_axis_name || '';
       n.editorChartYAxis.value = spec.y_axis_name || '';
       n.editorChartZAxis.value = spec.z_axis_name || '';
-      n.editorChartZAxisLabel.hidden = spec.type !== 'heatmap';
+      n.editorChartZAxisLabel.hidden = !['heatmap', 'surface'].includes(spec.type);
       n.editorChartSeriesActions.hidden = false;
       const table = this.root.createElement('table');
       const head = table.createTHead().insertRow();
@@ -936,7 +937,7 @@
       const axisHead = this.root.createElement('th');
       axisHead.textContent = `${spec.y_axis_name || spec.x_axis_name || '数据'}${unit ? `（数值单位：${unit}）` : ''}`;
       head.append(axisHead);
-      if (spec.type === 'heatmap') {
+      if (['heatmap', 'surface'].includes(spec.type)) {
         spec.x.forEach((value, xIndex) => {
           const cell = this.root.createElement('th');
           cell.append(makeInput(value, {chartX: String(xIndex)}, `横轴第${xIndex + 1}项`)); head.append(cell);
@@ -973,8 +974,8 @@
       const head = table.createTHead().insertRow();
       const body = table.createTBody();
       const appendHeader = label => { const cell = this.document.createElement('th'); cell.scope = 'col'; cell.textContent = label; head.append(cell); };
-      appendHeader(spec.type === 'heatmap' ? `${spec.y_axis_name || '纵轴'}/${spec.x_axis_name || '横轴'}` : spec.x_axis_name || '横轴');
-      if (spec.type === 'heatmap') {
+      appendHeader(['heatmap', 'surface'].includes(spec.type) ? `${spec.y_axis_name || '纵轴'}/${spec.x_axis_name || '横轴'}` : spec.x_axis_name || '横轴');
+      if (['heatmap', 'surface'].includes(spec.type)) {
         spec.x.forEach(value => appendHeader(value));
         const cells = new Map((spec.data || []).map(item => [`${item[0]}:${item[1]}`, item[2]]));
         spec.y.forEach((value, yIndex) => {
