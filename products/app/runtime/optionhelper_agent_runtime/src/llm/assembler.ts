@@ -22,6 +22,7 @@ export class BlockAssembler {
 
   push(chunk: StreamChunk): void {
     switch (chunk.type) {
+      case "json-diagnostic": return
       case "block-start":
         if (!this.partials.has(chunk.index)) {
           this.order.push(chunk.index)
