@@ -138,6 +138,8 @@ export class JsonRpcPeer {
     if (message.error !== undefined) {
       const raw = message.error as Record<string, unknown>
       const error = new Error(String(raw.message ?? "Host请求失败"))
+      // Cancellation is terminal control flow, never a retryable transport fault.
+      if (raw.code === "ModelRequestCancelled") error.name = "AbortError"
       current.chunks?.fail(error)
       current.reject(error)
     } else {
