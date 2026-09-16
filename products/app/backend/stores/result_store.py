@@ -295,6 +295,19 @@ class ResultStore:
         except (StoreError, FileNotFoundError, PermissionError) as error:
             raise ValidationError(f"Core ModuleRun不可读取：{error}") from error
 
+    def read_payoff_image(self, identity: SessionIdentity, task_id: str, run_id: str) -> bytes:
+        """Read only the published task-owned Payoffer SVG, verified by Core."""
+        self._require_task_owner(identity, task_id)
+        record = _stored_module_run(self._state.read("results"), "payoffer", run_id)
+        if not isinstance(record, dict) or record.get("task_id") != task_id:
+            raise KeyError(run_id)
+        if record.get("anchor_state") != "anchored" or record.get("status") != "succeeded":
+            raise ValidationError("损益图尚未完成，无法交付")
+        reference = {key: record[key] for key in (
+            "module", "tenant_id", "task_id", "run_id",
+            "expected_result_file_hash", "expected_artifact_manifest_hash")}
+        return self.read_owned_module_run_file(identity, reference, "artifacts/payoff.svg")
+
     def read_owned_module_run_bundle(self, identity: SessionIdentity, reference: dict[str, str]) -> dict[str, bytes]:
         ref = self._owned_module_run_ref(identity, reference, self._state.read("results"))
         try:
