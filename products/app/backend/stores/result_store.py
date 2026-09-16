@@ -23,6 +23,7 @@ from runtime.contracts.contract_api import (
     ContractResolutionError, ResolvedContract, bind_term_symbols, evaluate_formula, load_registry,
 )
 from runtime.protocol.models import ModuleRunRef
+from runtime.research_policy import current_research_execution
 from modules.reporter.selection_facts import build_host_selection_source_refs
 
 from ..errors import AuthorizationError, ValidationError
@@ -89,6 +90,7 @@ class ResultStore:
         normalized_result: dict[str, Any],
         *,
         defer_publication: bool,
+        research: Mapping[str, Any] | None = None,
     ) -> dict[str, str]:
         if module not in {"payoffer", "pricer", "backtester"}:
             raise ValidationError("ModuleRun module is invalid")
@@ -119,6 +121,7 @@ class ResultStore:
             "analysis_case_id": analysis_case_id,
             "status": str(normalized_result.get("status") or manifest.get("status") or "failed"),
             "result": normalized_result,
+            **({"research": dict(research)} if research is not None else {}),
         }
         self._write_recovery(record_key, record)
         try:
@@ -395,10 +398,11 @@ class ResultStore:
         return {
             "run_ref": run_ref,
             "facts": facts,
+            **({"calculation_context": _pricing_calculation_context(result)} if record["module"] == "pricer" else {}),
             "contract_term_facts": _contract_premium_facts(contract, reference["expected_artifact_manifest_hash"]),
         }
 
-    def list_report_sources(self, *, tenant_id: str, task_id: str | None = None, query: str | None = None) -> dict[str, Any]:
+    def list_report_sources(self, *, tenant_id: str, task_id: str | None = None, query: str | None = None, source_id: str | None = None) -> dict[str, Any]:
         """Return a tenant-scoped projection of completed calculation runs.
 
         This is the only App-side enumeration path.  It deliberately exposes
@@ -410,7 +414,7 @@ class ResultStore:
         if task_id is not None and not task_id:
             raise ValidationError("task_id is invalid")
         catalog, _ = self._list_report_sources_from_records(
-            self._state.read("results"), tenant_id=tenant_id, task_id=task_id, query=query,
+            self._state.read("results"), tenant_id=tenant_id, task_id=task_id, query=query, selected_source_id=source_id,
         )
         return catalog
 
@@ -421,6 +425,7 @@ class ResultStore:
         tenant_id: str,
         task_id: str | None,
         query: str | None,
+        selected_source_id: str | None = None,
         created_by: str | None = None,
     ) -> tuple[dict[str, Any], dict[tuple[str, ...], dict[str, Any]]]:
         """Build one request-scoped catalog and retain its verified evidence."""
@@ -436,11 +441,19 @@ class ResultStore:
                 or record.get("anchor_state") != "anchored"
             ):
                 continue
+            if record.get("research") and not record.get("research_selected", False):
+                continue
             if created_by is not None and record.get("created_by") != created_by:
                 continue
             if record.get("module") not in {"payoffer", "pricer", "backtester"} or not _completed(record.get("result")):
                 continue
             if task_id is not None and record.get("task_id") != task_id:
+                continue
+            # Match the opaque source against committed record metadata before
+            # expensive Core reads. This selects work; it never authorizes it.
+            # Matching records still pass every existing integrity/owner check.
+            if selected_source_id is not None and _source_id(tenant_id, str(record.get("task_id", "")),
+                                                     str(record.get("analysis_case_id", ""))) != selected_source_id:
                 continue
             verified_run = self._verified_report_record(record, tenant_id)
             if verified_run is None:
@@ -558,6 +571,35 @@ class ResultStore:
         except (KeyError, TypeError, ValueError, StoreError, FileNotFoundError, PermissionError, UnicodeDecodeError, json.JSONDecodeError):
             return None
 
+    def select_research_results(self, identity: SessionIdentity, task_id: str, candidates) -> None:
+        """Promote only explicitly selected, still-matching recommendation evidence.
+
+        Core financial files remain immutable. Selection is an App index fact.
+        """
+        self._require_task_owner(identity,task_id)
+        records=self._state.read("results")
+        selected=[]
+        for candidate in candidates:
+            for reference in candidate.get("module_run_refs",[]):
+                owned=self._owned_module_run_ref(identity,reference,records)
+                if owned.task_id!=task_id:raise ValidationError("研究选择不属于当前任务")
+                key=_module_run_key(owned.module,owned.run_id)
+                research=records[key].get("research")
+                if not research:continue
+                snapshot=research.get("candidate_snapshot",{})
+                for field in ("candidate_id","product_id","rule_revision","underlyings"):
+                    if snapshot.get(field)!=candidate.get(field):raise ValidationError("研究结果不属于所选候选")
+                expected=candidate.get("current_inputs",{})
+                actual=snapshot.get("current_inputs",{})
+                for field in ("term_overrides","module_inputs","confirmed_constraints"):
+                    if actual.get(field,{})!=expected.get(field,{}):raise ValidationError("研究输入已改变，不能采用旧证据")
+                self.verify_owned_module_run(identity,reference)
+                selected.append(key)
+        def update(value):
+            for key in selected:value[key]["research_selected"]=True
+            return value
+        self._state.update("results",update)
+
     def list_owned_report_sources(self, identity: SessionIdentity, *, task_id: str | None = None, query: str | None = None) -> dict[str, Any]:
         catalog, _ = self.list_owned_report_sources_with_evidence(identity, task_id=task_id, query=query)
         return catalog
@@ -568,6 +610,7 @@ class ResultStore:
         *,
         task_id: str | None = None,
         query: str | None = None,
+        source_id: str | None = None,
     ) -> tuple[dict[str, Any], dict[tuple[str, ...], dict[str, Any]]]:
         """Return owned sources and their request-local verified manifests."""
 
@@ -580,6 +623,7 @@ class ResultStore:
             task_id=task_id,
             query=query,
             created_by=identity.principal_id,
+            selected_source_id=source_id,
         )
         owned = []
         owned_evidence_keys: set[tuple[str, ...]] = set()
@@ -601,13 +645,14 @@ class ResultStore:
     def get_report_source(self, *, tenant_id: str, source_id: str) -> dict[str, Any]:
         if not isinstance(source_id, str) or not source_id.startswith("source_"):
             raise KeyError(source_id)
-        for source in self.list_report_sources(tenant_id=tenant_id)["sources"]:
+        for source in self.list_report_sources(tenant_id=tenant_id, source_id=source_id)["sources"]:
             if source["source_id"] == source_id:
                 return source
         raise KeyError(source_id)
 
     def get_owned_report_source(self, identity: SessionIdentity, source_id: str) -> dict[str, Any]:
-        for source in self.list_owned_report_sources(identity)["sources"]:
+        catalog, _ = self.list_owned_report_sources_with_evidence(identity, source_id=source_id)
+        for source in catalog["sources"]:
             if source["source_id"] == source_id:
                 return source
         raise KeyError(source_id)
@@ -839,6 +884,7 @@ class _BoundModuleResultStore:
         self._module = module
         self._resolved_contract_snapshot = _validated_run_snapshot(resolved_contract_snapshot)
         self._defer_publication = defer_publication
+        self._research = current_research_execution()
 
     def predict_module_run_ref(
         self,
@@ -910,6 +956,7 @@ class _BoundModuleResultStore:
             committed_files,
             normalized_result,
             defer_publication=self._defer_publication,
+            research=self._research,
         )
         return ModuleRunRef(**reference)
 
@@ -1018,6 +1065,13 @@ def _result_facts(module: str, result: dict[str, Any], result_hash: str) -> list
     selected: list[tuple[str, str, object, str | None]] = []
     if module == "pricer":
         source = result.get("pricing") if isinstance(result.get("pricing"), dict) else {}
+        if source.get("result_kind") == "fair_parameter_solution":
+            for key, label, unit in (("solution", "反解参数值", "percent"), ("residual", "求解残差", "percent"),
+                                     ("target_value", "目标合同价值", "percent"), ("base_parameter", "反解前参数值", "percent"),
+                                     ("iterations", "求解迭代次数", "count")):
+                value = _number(source.get(key))
+                if value is not None:
+                    selected.append((f"fair_parameter.{key}", label, value, unit))
         for key, label, unit in _PRICING_FACTS:
             value = _number(source.get(key))
             if value is not None:
@@ -1050,6 +1104,8 @@ def _result_facts(module: str, result: dict[str, Any], result_hash: str) -> list
             "metric": path,
             "label": label,
             "value": value,
+            **({"source_unit": source["greeks"][path.split(".")[1]].get("pv_percent_unit") or source["greeks"][path.split(".")[1]].get("unit")}
+               if module == "pricer" and path.startswith("greeks.") and isinstance(source["greeks"].get(path.split(".")[1]), dict) else {}),
             **({"unit": unit} if unit else {}),
             **({"value_encoding": "decimal_ratio"} if unit == "percent" else {}),
             **({"derived_from": "minimum_contract_settlement_return", "derivation": "max(0,-minimum_contract_settlement_return)"}
@@ -1057,6 +1113,36 @@ def _result_facts(module: str, result: dict[str, Any], result_hash: str) -> list
         }
         for path, label, value, unit in selected[:24]
     ]
+
+
+def _pricing_calculation_context(result: Mapping[str, Any]) -> dict[str, Any]:
+    """Only copy interpretation fields from the verified run; never recompute."""
+    pricing = result.get("pricing", {})
+    market = pricing.get("market_snapshot") or result.get("market_snapshot", {})
+    snapshot = pricing.get("input_snapshot") or result.get("input_snapshot", {})
+    identity = snapshot.get("contract", {}).get("identity", {})
+    return {
+        "method": pricing.get("method"),
+        "price_convention": pricing.get("price_convention"),
+        "value_basis": pricing.get("value_basis"),
+        "reference_prices": dict(identity.get("reference_prices", {})),
+        "market_data_used": bool((market.get("data_ref") or snapshot.get("market_data_refs") or result.get("data_refs")) and market.get("spot")),
+        **({"result_kind": pricing["result_kind"], "solve_status": pricing.get("status"),
+            "target_id": pricing.get("target_id"), "quote_eligible": pricing.get("quote_eligible"),
+            "precision_status": pricing.get("precision_status"),
+            "fair_parameter_reading": "solution是公开比例编码的反解条款值，不是普通PV。residual是求解残差；solved表示已收敛。是否可正式报价按quote_eligible说明。",
+        } if pricing.get("result_kind") == "fair_parameter_solution" else {}),
+        "cashflow_lifecycle": pricing.get("cashflow_lifecycle", {}),
+        "cashflow_reading": "区分剩余价值、当日现金流和累计损益。期初费用属于合同现金流，"
+                            "不能笼统说不影响估值；按当前估值日和已实现状态解释本次结果。",
+        **{key: market[key] for key in (
+            "valuation_date", "effective_valuation_session", "spot", "normalized_spot", "historical_volatility", "hv_window",
+            "volatility", "volatility_source", "risk_free_rate", "dividend_yield", "time_to_maturity",
+        ) if key in market},
+        "greek_reading": "保留source_unit的原风险因子单位。per_spot是实际市场价格变动一个单位，"
+                         "不能当成归一化S0=100坐标的一个点；per_spot_squared同理。"
+                         "金额Greeks仅在原比例结果上乘名义规模，不改变风险因子坐标。",
+    }
 
 
 def _contract_premium_facts(contract: ResolvedContract, artifact_manifest_hash: str) -> list[dict[str, Any]]:
