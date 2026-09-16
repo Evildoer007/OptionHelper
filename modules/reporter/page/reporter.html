@@ -156,7 +156,7 @@
           <section class="editor-inspector-section editor-chart-inspector" id="editorChartInspector" hidden>
             <h3>图表</h3>
             <label>标题<input id="editorChartTitle" autocomplete="off"></label>
-            <label>类型<select id="editorChartType"><option value="line">折线图</option><option value="bar">柱状图</option><option value="heatmap">热力图</option></select></label>
+            <label>类型<select id="editorChartType"><option value="line">折线图</option><option value="bar">柱状图</option><option value="surface">3D曲面</option><option value="heatmap">热力图</option></select></label>
             <label>横轴名称<input id="editorChartXAxis" autocomplete="off"></label>
             <label>纵轴名称<input id="editorChartYAxis" autocomplete="off"></label>
             <label id="editorChartZAxisLabel" hidden>数值名称<input id="editorChartZAxis" autocomplete="off"></label>
@@ -177,8 +177,10 @@
     </dialog>
     <script src="../module-host-presentation.js"></script>
     <script src="../module-host-bridge.js"></script>
+    <script src="../../designer/vendor/surface-chart.js"></script>
     <script src="./editor/chart-presentation.js"></script>
     <script src="../../designer/vendor/echarts.min.js"></script>
+    <script src="../../designer/vendor/echarts-gl.min.js"></script>
     <script src="./editor/report-editor.js"></script>
     <script src="./reporter.js"></script>
   </body>
