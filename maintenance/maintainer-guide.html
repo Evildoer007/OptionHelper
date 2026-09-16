@@ -1,0 +1,611 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light">
+<title>OH开发维护手册</title><style>
+:root{--red:#b6243b;--blue:#255a89;--ink:#24262a;--paper:#fff;--panel:#fff;--line:#dedfe1;--muted:#62666d;--head:#f6f6f5;--bluewash:#fff;--nav:272px}
+*{box-sizing:border-box}html{scroll-behavior:smooth;scroll-padding-top:30px}body{margin:0;background:var(--paper);color:var(--ink);font:15px/1.85 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}a{color:var(--blue);text-decoration-thickness:1px;text-underline-offset:3px;overflow-wrap:anywhere}a:hover{color:var(--red)}button,input{font:inherit}button{cursor:pointer;color:var(--ink);background:var(--panel);border:1px solid var(--line);border-radius:5px;padding:6px 12px}button:hover{border-color:var(--blue)}:focus-visible{outline:2px solid var(--blue);outline-offset:3px}.skip{position:fixed;left:10px;top:-90px;z-index:5;padding:12px;background:var(--panel)}.skip:focus{top:10px}
+aside{position:fixed;inset:0 auto 0 0;width:var(--nav);padding:34px 22px;background:var(--head);border-right:1px solid var(--line);display:flex;flex-direction:column;z-index:3}.brand{font-size:20px;line-height:1.4;font-weight:700;letter-spacing:-.4px;color:var(--ink);text-decoration:none}.nav-tools{margin:18px 0 8px}.nav-tools label{display:block;font-size:13px;color:var(--muted)}input{width:100%;padding:7px 9px;border:1px solid var(--line);background:var(--paper);border-radius:6px;font-size:13px}#search-status{font-size:12px;color:var(--muted);min-height:22px}nav{overflow-y:auto;min-height:0;scrollbar-width:thin;padding-right:6px}nav a{display:block;text-decoration:none;font-size:13px;padding:7px 10px;border-radius:5px;line-height:1.6;color:var(--muted)}nav a.sub{font-size:12px;padding:4px 8px 4px 17px;color:var(--muted)}nav a:hover{background:var(--paper);color:var(--ink)}nav a.active{background:var(--paper);color:var(--red);font-weight:650}nav a[hidden]{display:none}.nav-footer{padding-top:14px;border-top:1px solid var(--line);margin-top:16px;font-size:12px;color:var(--muted)}.nav-footer a{margin-right:10px}
+main{margin-left:var(--nav);max-width:1200px;padding:48px clamp(28px,6vw,88px) 80px}h1,h2,h3{font-family:inherit;line-height:1.5;scroll-margin-top:24px}h1{font-size:34px;line-height:1.3;letter-spacing:-.6px;margin:0 0 24px}h2{font-size:24px;color:var(--ink);margin:0 0 20px;letter-spacing:-.3px}h3{font-size:17px;margin:30px 0 12px}p{margin:14px 0;overflow-wrap:anywhere}strong{font-weight:700}li{margin:9px 0;overflow-wrap:anywhere}ol,ul{padding-left:1.6em}.chapter{padding-top:32px;margin-top:20px}.table-scroll{max-width:100%;overflow-x:auto;margin:20px 0 22px}table{border-collapse:collapse;width:100%;min-width:360px;font-size:14px;line-height:1.75}th,td{padding:10px 12px;vertical-align:top;text-align:left;border-bottom:1px solid var(--line);overflow-wrap:anywhere}th{background:var(--head);font-weight:650}td:first-child{min-width:110px}code{font:0.88em/1.7 Menlo,Consolas,monospace;background:var(--head);padding:2px 4px;border-radius:3px;overflow-wrap:anywhere}pre{overflow:auto;padding:20px;background:var(--panel);border:1px solid var(--line);border-radius:8px;line-height:1.7;font-size:13px;tab-size:4}pre code{background:none;padding:0;white-space:pre;overflow-wrap:normal;font-size:inherit}details{margin:22px 0;padding:18px 20px;background:var(--head);border:1px solid var(--line);border-radius:8px}summary{cursor:pointer;font-weight:650;color:var(--ink)}details[open] summary{padding-bottom:10px;border-bottom:1px solid var(--line)}.flow{display:flex;flex-direction:column;gap:18px;margin:24px 0;max-width:790px}.flow>div{position:relative;padding:14px 20px;border:1px solid var(--line);background:var(--head);border-radius:8px}.flow>div:not(:last-child):after{content:'↓';position:absolute;left:20px;bottom:-23px;color:var(--blue);line-height:23px}.flow strong{display:block}.flow span{display:block;font-size:14px;color:var(--muted)}.formula{padding:20px;border-block:1px solid var(--line);text-align:center;font:21px/1.7 "Times New Roman",SimSun,serif;margin:22px 0}.chapter-steps{display:flex;justify-content:space-between;gap:18px;margin-top:32px;padding-top:15px;border-top:1px solid var(--line);font-size:13px}.chapter-steps a{max-width:48%;text-decoration:none}.chapter-steps a:last-child{margin-left:auto;text-align:right}#mobile-toggle{display:none}footer{margin-top:45px;color:var(--muted);font-size:13px;border-top:1px solid var(--line);padding-top:16px}
+@media(min-width:1700px){main{margin-right:auto}}
+@media(max-width:800px){html{scroll-padding-top:80px}#mobile-toggle{display:block;position:fixed;top:12px;right:12px;z-index:4;box-shadow:0 2px 9px var(--line)}aside{visibility:hidden;transform:translateX(-100%);width:min(85vw,310px);box-shadow:4px 0 18px var(--line)}body.nav-open aside{visibility:visible;transform:translateX(0)}main{margin-left:0;padding:70px 20px 55px}h1{font-size:28px}h2{font-size:22px}h3{font-size:17px;scroll-margin-top:76px}.chapter{padding-top:25px;margin-top:30px}body{font-size:15px}details{padding:12px}table{font-size:13px}.formula{font-size:17px}pre{padding:14px}}
+@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+@media print{aside,#mobile-toggle,.skip,.chapter-steps,footer{display:none!important}main{margin:0;max-width:none;padding:0}body{background:var(--panel);font-size:11pt}h1{font-size:24pt}h2{font-size:19pt}h3{font-size:15pt}.chapter{margin-top:20px;padding-top:20px}h2,h3,summary{break-after:avoid}pre{white-space:pre-wrap;font-size:9pt}pre code{white-space:pre-wrap;overflow-wrap:anywhere}.table-scroll{overflow:visible}table{min-width:0;font-size:10pt}tr,.flow>div{break-inside:avoid}a{color:var(--ink)}details{break-inside:auto} @page{size:A4;margin:18mm}}
+</style></head>
+<body><a class="skip" href="#top">跳到正文</a>
+<button id="mobile-toggle" type="button" aria-controls="sidebar" aria-expanded="false">目录</button>
+<aside id="sidebar" aria-label="维护手册目录">
+<a class="brand" href="#top">OH开发维护手册</a>
+<div class="nav-tools"><label for="contents-search">查找目录</label><input id="contents-search" type="search" placeholder="产品、规则、发布…" autocomplete="off"><div id="search-status" role="status" aria-live="polite"></div></div>
+<nav id="contents" aria-label="章节"><a class="major" href="#s1">1. 先认识需要改的几个文件</a>
+<a class="sub" href="#s1-1">1.1 产品录入后，哪些地方会用到它</a>
+<a class="sub" href="#s1-2">1.2 源码、安装App和Demo是什么关系</a>
+<a class="major" href="#s2">2. 开始修改前，怎样准备</a>
+<a class="sub" href="#s2-1">2.1 打开项目并选择Python</a>
+<a class="sub" href="#s2-2">2.2 怎样打开正在修改的版本</a>
+<a class="sub" href="#s2-3">2.3 模型和数据连接在哪里设置</a>
+<a class="major" href="#s3">3. 一步一步录入新产品</a>
+<a class="sub" href="#s3-0">3.0 让产品维护Skill协助录入</a>
+<a class="sub" href="#s3-1">3.1 先判断是否真的需要新增</a>
+<a class="sub" href="#s3-2">3.2 第一步：在产品目录里加一行</a>
+<a class="sub" href="#s3-3">3.3 第二步：写清楚中文条款</a>
+<a class="sub" href="#s3-4">3.4 第三步：把条款写进程序</a>
+<a class="sub" href="#s3-5">3.5 第四步：补上默认收益图</a>
+<a class="sub" href="#s3-6">3.6 第五步：确认定价和回测能不能用</a>
+<a class="sub" href="#s3-7">3.7 第六步：实际看一遍结果</a>
+<a class="sub" href="#s3-8">3.8 最后：让其他人用到新产品</a>
+<a class="sub" href="#s3-9">3.9 只是修改已有产品，怎么处理</a>
+<a class="major" href="#s4">4. 遇到新规则，计算代码怎么改</a>
+<a class="sub" href="#s4-1">4.1 先找到程序不理解哪一条</a>
+<a class="sub" href="#s4-2">4.2 修改Pricer时重点看什么</a>
+<a class="sub" href="#s4-3">4.3 修改Backtester时重点看什么</a>
+<a class="sub" href="#s4-4">4.4 名义本金和内部100是什么关系</a>
+<a class="major" href="#s5">5. 行情和日历有变化，怎么维护</a>
+<a class="sub" href="#s5-1">5.1 增加价格字段或数据来源</a>
+<a class="sub" href="#s5-2">5.2 交易日历不能用行情日期代替</a>
+<a class="major" href="#s6">6. Agent和工具参数怎么改</a>
+<a class="sub" href="#s6-1">6.1 修改Agent说什么、什么时候调用工具</a>
+<a class="sub" href="#s6-2">6.2 修改工具参数，按什么顺序</a>
+<a class="sub" href="#s6-3">6.3 修改推荐模式和模型配置</a>
+<a class="major" href="#s7">7. 页面上的参数和交互怎么改</a>
+<a class="sub" href="#s7-1">7.1 加一个参数，不能只加输入框</a>
+<a class="sub" href="#s7-2">7.2 切页、停止和重新运行</a>
+<a class="major" href="#s8">8. 报告内容和样式怎么改</a>
+<a class="sub" href="#s8-1">8.1 找到正确的修改位置</a>
+<a class="sub" href="#s8-2">8.2 修改报告后怎么检查</a>
+<a class="major" href="#s9">9. 任务和结果怎样备份</a>
+<a class="sub" href="#s9-1">9.1 需要备份什么</a>
+<a class="sub" href="#s9-2">9.2 恢复时怎么做</a>
+<a class="major" href="#s10">10. 改完以后，怎样知道改对了</a>
+<a class="sub" href="#s10-1">10.1 产品和计算检查</a>
+<a class="sub" href="#s10-2">10.2 已有测试在哪里</a>
+<a class="sub" href="#s10-3">10.3 速度优化怎么比较</a>
+<a class="major" href="#s11">11. 更新App、Skill和两份Demo</a>
+<a class="sub" href="#s11-1">11.1 打包前先准备好</a>
+<a class="sub" href="#s11-2">11.2 更新安装版</a>
+<a class="sub" href="#s11-3">11.3 更新两份Demo</a>
+<a class="major" href="#s12">12. 录入时常见问题</a>
+<a class="major" href="#s13">13. 日常维护只需留下这些说明</a>
+<a class="sub" href="#s13-1">13.1 新产品交接怎么写</a>
+<a class="sub" href="#s13-2">13.2 修改规则怎么说明</a>
+<a class="sub" href="#s13-3">13.3 修改工具参数怎么说明</a>
+<a class="sub" href="#s13-4">13.4 修改报告怎么说明</a>
+<a class="sub" href="#s13-5">13.5 更新安装版怎么说明</a>
+<a class="sub" href="#s13-6">13.6 出错以后记什么</a>
+<a class="sub" href="#s13-7">13.7 这份手册以后怎么更新</a></nav>
+<div class="nav-footer"><a href="maintainer-guide.md">Markdown正文</a><a href="update-option/SKILL.md">产品维护Skill</a><a href="#s13-7">更新方法</a><br>离线阅读，可用浏览器查找全文</div>
+</aside>
+<main id="content"><h1 id="top">OH开发维护手册</h1>
+<p>有一个新产品，想让OH能够解释它、画收益图、定价和回测，应该从哪里开始？这份手册就按实际修改顺序来讲。</p>
+<p><strong>录入新产品，直接看<a href="#s3">第3章</a>。</strong>那里会用看涨期权作例子，逐个说明打开哪个文件、在哪里添加、字段怎么填，以及改完以后去App里看什么。</p>
+<p>其他章节用于遇到具体问题时查阅：例如新增参数、改报告、更新安装版。文中的文件名可以点击打开。整理日期：2026-09-15；维护入口与产品增删发布要求核对：2026-09-16。</p>
+<section class="chapter" aria-labelledby="s1">
+<h2 id="s1">1. 先认识需要改的几个文件</h2>
+<p>OH没有一个能够完成全部新产品录入的后台表单。现在新增产品主要通过修改源码中的产品资料，再补上收益图和必要的计算支持。</p>
+<p>最先要认识的是下面三个文件。它们描述同一个产品，但各有用途。</p>
+<div class="table-scroll" tabindex="0" role="region" aria-label="维护参考表"><table><thead><tr>
+<th scope="col">文件</th>
+<th scope="col">可以把它理解成什么</th>
+<th scope="col">新产品要加什么</th>
+</tr></thead><tbody>
+<tr><td><a href="../references/optionlist.md">references/optionlist.md</a></td><td>产品目录</td><td>一行产品名称、编号和类别</td></tr>
+<tr><td><a href="../references/optionlib.md">references/optionlib.md</a></td><td>中文产品说明书</td><td>条款、收益规则、例子和适用场景</td></tr>
+<tr><td><a href="../references/optionreg.py">references/optionreg.py</a></td><td>给程序读的产品规则</td><td>默认参数、触发条件、分段收益和付款时间</td></tr>
+</tbody></table></div>
+<p>比如，你只在目录里加了一个名字，程序还不知道这个产品怎么算。只在中文说明中写了收益公式，计算模块也不会自动把文字变成代码。这三处需要一起完成。</p>
+<h3 id="s1-1">1.1 产品录入后，哪些地方会用到它</h3>
+<div class="flow" role="group" aria-label="产品资料如何用于App">
+<div><strong>产品目录和中文说明</strong><span>让维护者和Agent知道有哪些产品、各自是什么</span></div>
+<div><strong>程序中的产品规则</strong><span>告诉计算模块使用哪些参数、如何判断事件、何时支付多少钱</span></div>
+<div><strong>收益图、定价和回测</strong><span>根据这些规则画图、估值和回放历史行情</span></div>
+<div><strong>推荐和报告</strong><span>解释产品，引用已经算出的结果，形成交付文件</span></div>
+</div>
+<p>OH的七个模块分别是DataFetcher取数、Recommender推荐、Payoffer收益分析、Pricer定价、Backtester回测、Reporter组织报告、Designer排版。App中的OptDesk展示其中五个工作页面，推荐主要在OptChat里完成，排版由报告流程调用。</p>
+<p>你修改产品条款时，通常从三个产品文件开始；只有现有程序无法表达新条款时，才需要往下修改计算模块。不要一开始就把所有模块都改一遍。</p>
+<h3 id="s1-2">1.2 源码、安装App和Demo是什么关系</h3>
+<p>桌面上的源码文件夹是你修改程序的地方。安装好的App使用的是打包时放进去的一份程序，源码保存后，已安装App不会跟着自动更新。</p>
+<p>Demo又是单独的一份静态演示。它可以展示页面和已有例子，但不会真的调用Python完成定价或回测。Skill提供计算工具和使用说明，当前包内不包含App的五个操作页面。</p>
+<p>所以，<strong>先把源码里的产品做好并运行检查，再更新App、Skill和Demo。</strong>具体更新方法见第11章。</p>
+</section>
+<section class="chapter" aria-labelledby="s2">
+<h2 id="s2">2. 开始修改前，怎样准备</h2>
+<p>先保留一份能正常工作的旧代码，再在另一份完整源码中修改。保留原来的文件夹结构，不要只把三个产品文件单独拿出来运行。这样改错了可以恢复，也不会影响你正在使用的App。</p>
+<h3 id="s2-1">2.1 打开项目并选择Python</h3>
+<p>在编辑器里打开OptionHelper整个文件夹。当前机器继续使用Anaconda的MachineLearning环境，解释器是：</p>
+<p><code>/opt/anaconda3/envs/MachineLearning/bin/python</code></p>
+<p>不要为了改一个产品重新建环境。换机器时，先按照<a href="../README.md">README</a>准备环境；当前运行检查要求Python至少3.12。运行依赖记录在<a href="../core/requirements.lock">core/requirements.lock</a>，打包依赖在<a href="../packaging/build-requirements.lock">packaging/build-requirements.lock</a>。</p>
+<h3 id="s2-2">2.2 怎样打开正在修改的版本</h3>
+<p>开发时使用<a href="../packaging/app/run_development_app.py">packaging/app/run_development_app.py</a>。它会准备运行需要的资源，然后启动本地App页面。可以在编辑器的运行配置中选择这个文件，工作目录设为OptionHelper根目录。</p>
+<p>请给开发运行使用单独的测试数据目录，避免和日常任务混在一起。启动后打开程序输出的<code>OPTIONHELPER_URL</code>。修改产品规则后，关闭这次开发程序再重新运行，只刷新浏览器可能仍然使用旧规则。</p>
+<details>
+<summary>运行配置怎么填</summary>
+<p>在编辑器的Python运行配置中填写：</p>
+<div class="table-scroll" tabindex="0" role="region" aria-label="维护参考表"><table><thead><tr>
+<th scope="col">配置项</th>
+<th scope="col">填写内容</th>
+</tr></thead><tbody>
+<tr><td>Python解释器</td><td>上面列出的MachineLearning解释器</td></tr>
+<tr><td>程序文件</td><td><code>packaging/app/run_development_app.py</code></td></tr>
+<tr><td>工作目录</td><td>你正在修改的OptionHelper源码根目录</td></tr>
+<tr><td>程序参数</td><td><code>--port 0 --data-dir /tmp/oh-maintenance-session</code></td></tr>
+</tbody></table></div>
+<p><code>--port 0</code>让程序选择空闲端口。<code>--data-dir</code>指定这次测试保存任务的地方，可以换成自己的独立测试目录。程序会生成临时运行资源，并在这个测试目录写入任务和结果；它不会替你更新安装好的App。</p>
+<p>仓库里还有<code>core/start-pages.command</code>和<code>core/start-pages.bat</code>，它们用于独立模块页面，不是完整App的启动入口，也不是当前Skill包的安装入口。</p>
+</details>
+<h3 id="s2-3">2.3 模型和数据连接在哪里设置</h3>
+<p>模型服务、数据接口和导出目录优先在App设置页修改。只有增加新的配置选项或修复保存行为时，才需要改<a href="../products/app/backend/settings/settings_models.py">settings_models.py</a>和<a href="../products/app/backend/settings/settings_service.py">settings_service.py</a>。</p>
+<p>测试录入产品时，使用自己的测试任务和脱敏数据。不要把模型密钥、数据账号或客户材料写进产品文件和示例。</p>
+</section>
+<section class="chapter" aria-labelledby="s3">
+<h2 id="s3">3. 一步一步录入新产品</h2>
+<p>这一章以看涨期权为例，说明一个产品是怎样放进OH的。<strong>看涨期权已经在库里，不要再添加一次。</strong>你可以一边打开它的现有内容，一边按同样的方法填写真正的新产品。</p>
+<h3 id="s3-0">3.0 让产品维护Skill协助录入</h3>
+<p>把条款文字、PDF、截图、表格或网页交给支持Skill的编程助手，同时提供本仓库的<a href="update-option/SKILL.md">update-option/SKILL.md</a>。这个目录是维护Skill，不是OH面向业务用户的计算Skill；仅把它放在仓库里，不代表宿主已经安装或自动发现它。</p>
+<p>可以直接说：“使用maintenance/update-option，按这份材料新增产品。先用人话说明你理解的收益和风险，等我确认后再修改。”修改已有结构时给出产品名称或编号；删除时说明是停止新业务使用，还是从当前目录彻底移除。</p>
+<p>助手会先说明谁收付款、何时观察、怎样触发、何时结束，并给出几个手算情景。看不清或互相冲突的条款会先列出来，不猜填。你确认后，它才修改产品资料和必要的计算支持，并验证实际结果。</p>
+<p>确认时也说明要在哪里生效：开发源码、安装App、业务Skill包或Demo。源码验证通过不等于安装版已更新。已有任务和历史结果应保留，不能因为改产品就被清空。</p>
+<h3 id="s3-1">3.1 先判断是否真的需要新增</h3>
+<p>如果只是把现有雪球的票息从10%改为12%，或者把看涨期权的执行价从100改为105，先在App参数里修改即可，不需要建立一个新产品。</p>
+<p>只有产品的业务结构不同，确实希望它作为独立结构出现在目录里，才做下面的录入。例如新增一种不同的敲出安排、票息结构或到期赔付方式。开始前也要搜一下目录，确认没有已经能够表达同样条款的产品。</p>
+<p>把新产品先用几句话说明白：挂钩什么、什么时候观察、什么条件下付款、付多少、什么时候结束。尤其要写清楚“恰好等于障碍时算不算触发”，以及提前结束后是否还付票息。</p>
+<p>以看涨期权为例，这段说明可以写成：持有者期初支付期权费；只看到期价格；到期价格高于执行价时获得价差，否则不再收款。暂用参考价100、执行价100、期权费5、1份期权作为默认例子。</p>
+<h3 id="s3-2">3.2 第一步：在产品目录里加一行</h3>
+<p>打开<a href="../references/optionlist.md">references/optionlist.md</a>，找到产品表格。现有看涨期权是这一行：</p>
+<div class="table-scroll" tabindex="0" role="region" aria-label="维护参考表"><table><thead><tr>
+<th scope="col">序号</th>
+<th scope="col">中文唯一名称</th>
+<th scope="col">标题编号</th>
+<th scope="col">所属类别</th>
+<th scope="col">入库情况</th>
+</tr></thead><tbody>
+<tr><td>1</td><td>看涨期权</td><td>1.1</td><td>方向性期权</td><td>已录入</td></tr>
+</tbody></table></div>
+<p>真正新增时，在合适的位置插入一行，按下面的方法填写：</p>
+<ul>
+<li><strong>序号</strong>是这张表的排列顺序，不是程序识别产品的编号。插入后把表格顺序整理好。</li>
+<li><strong>中文唯一名称</strong>填写产品正式名称。之后中文说明、程序规则和收益图文件都使用这个名称。</li>
+<li><strong>标题编号</strong>是产品ID。按所属类别选择尚未使用的编号，后面两个产品文件也要使用同一个编号。不要拿旧产品编号给新产品使用。</li>
+<li><strong>所属类别</strong>填写现有分类中合适的一类。确实要增加分类时，再检查页面是否能显示它。</li>
+<li><strong>入库情况</strong>沿用目录已有写法。不要把尚未完成的产品发布给正常使用者。</li>
+</ul>
+<p>完成这一处，只是给产品起好名字、分好类。接着写它的具体规则。</p>
+<h3 id="s3-3">3.3 第二步：写清楚中文条款</h3>
+<p>打开<a href="../references/optionlib.md">references/optionlib.md</a>，搜索<code>### 1.1 看涨期权</code>。从这个标题开始，到下一个产品标题之前，是完整的一份产品说明。</p>
+<p>新增时，可以复制一个相近产品的整个说明段落，放在对应类别下。先改产品编号和名称，再逐节替换内容。保留原来的标题层级，例如产品1.1下面依次是1.1.1到1.1.5；换了产品ID，这些小节编号也要一起改。</p>
+<div class="table-scroll" tabindex="0" role="region" aria-label="维护参考表"><table><thead><tr>
+<th scope="col">小节</th>
+<th scope="col">应该怎么写</th>
+<th scope="col">看涨期权的例子</th>
+</tr></thead><tbody>
+<tr><td>条款要素</td><td>写明标的、期限、数量、费用、观察、支付和提前终止安排</td><td>买入1份，期初付5，到期才行权，无提前终止</td></tr>
+<tr><td>损益结构</td><td>把每一种结局分开写，说明判断条件和双方收付款</td><td>到期不高于100；到期高于100</td></tr>
+<tr><td>默认示例</td><td>给具体参数和几个能手算的结果</td><td>到期100时净损益−5；到期110时净损益+5</td></tr>
+<tr><td>适用场景</td><td>分别说明持有方和对手方为什么使用、如何盈亏</td><td>买方看涨，最大损失是期权费；卖方上涨风险不封顶</td></tr>
+<tr><td>产品总结</td><td>用一段话说明产品主要特点和风险</td><td>付固定费用换上涨收益，涨幅不足以覆盖费用时仍亏损</td></tr>
+</tbody></table></div>
+<p>这里的例子假定真实参考价格也是100，买入1份。其他参考价格下，价格点和真实现金金额之间还需要换算，不能直接照抄例子的金额。</p>
+<p>如果产品有敲入、敲出或多次付息，中文说明要把先后顺序写出来。比如“先敲入后敲出”和“从未敲入直接敲出”是否支付同样金额；同一天敲入和敲出同时满足时，先执行哪条规则。程序不会替你决定这些业务条款。</p>
+<h3 id="s3-4">3.4 第三步：把条款写进程序</h3>
+<p>打开<a href="../references/optionreg.py">references/optionreg.py</a>，搜索<code>PRODUCTS =</code>。里面每一项对应一个产品。继续搜索<code>&#x27;1.1&#x27;:</code>，就能找到看涨期权。</p>
+<p>新产品要作为<strong>PRODUCTS里的一个新条目</strong>加入，不要覆盖整个PRODUCTS，也不要另建一份程序不读取的产品字典。文件最后还会把产品和参数说明组合成REGISTRY，沿用现有写法即可。</p>
+<p>下面把看涨期权这一项整理成更容易阅读的格式。外层<code>&quot;1.1&quot;</code>是产品ID，里面分成身份、默认条款和收益规则三部分。</p>
+<pre tabindex="0"><code data-language="python">{
+    &quot;1.1&quot;: {
+        &quot;identity&quot;: {
+            &quot;product_id&quot;: &quot;1.1&quot;,
+            &quot;name_zh&quot;: &quot;看涨期权&quot;,
+            &quot;entry_status&quot;: True,
+            &quot;rule_revision&quot;: 1,
+        },
+        &quot;terms&quot;: {
+            &quot;S0&quot;: 100.0,
+            &quot;T&quot;: 1.0,
+            &quot;exercise_style&quot;: &quot;European&quot;,
+            &quot;settlement&quot;: &quot;cash&quot;,
+            &quot;observation_price&quot;: &quot;close&quot;,
+            &quot;margin_call&quot;: False,
+            &quot;K&quot;: 100.0,
+            &quot;Pi_0&quot;: 5.0,
+            &quot;n_C&quot;: 1.0,
+            &quot;pricing_methods&quot;: [&quot;analytical&quot;, &quot;monte_carlo&quot;],
+        },
+        &quot;paths&quot;: [{
+            &quot;condition&quot;: &quot;True&quot;,
+            &quot;cases&quot;: [
+                {
+                    &quot;domain&quot;: &quot;0 &lt;= S_T &lt;= K&quot;,
+                    &quot;pnl&quot;: &quot;cash(0, -n_C * P)&quot;,
+                },
+                {
+                    &quot;domain&quot;: &quot;S_T &gt; K&quot;,
+                    &quot;pnl&quot;: &quot;cash(0, -n_C * P) + cash(T, u * n_C * (S_T - K))&quot;,
+                },
+            ],
+        }],
+    },
+}</code></pre>
+<p><strong>先改identity，说明这是哪个产品。</strong><code>product_id</code>要和目录、中文说明一致；<code>name_zh</code>也要完全一致。<code>entry_status=True</code>表示登记为启用。<code>rule_revision=1</code>表示第一版规则，以后改经济规则时递增这个数字，例如从1改成2。</p>
+<p><strong>再改terms，填写产品的默认参数。</strong>这里放的是产品条款，不放模型地址、模拟路径数、回测日期区间等运行设置。</p>
+<div class="table-scroll" tabindex="0" role="region" aria-label="维护参考表"><table><thead><tr>
+<th scope="col">字段</th>
+<th scope="col">含义</th>
+<th scope="col">怎么改</th>
+</tr></thead><tbody>
+<tr><td><code>S0</code></td><td>内部参考价格基准</td><td>通常保留100，不要用它填写名义本金</td></tr>
+<tr><td><code>T</code></td><td>默认期限，以年表示</td><td>半年可写0.5，实际日期还按原有日历逻辑处理</td></tr>
+<tr><td><code>K</code></td><td>执行价格水平</td><td>默认平值写100；改成105就表示参考水平的105%</td></tr>
+<tr><td><code>Pi_0</code></td><td>该例子的默认期权费</td><td>这里是5，损益表达式通过P使用它</td></tr>
+<tr><td><code>n_C</code></td><td>看涨期权份数</td><td>这里是1，不要用它代替用户的名义本金</td></tr>
+<tr><td><code>exercise_style</code></td><td>行权方式</td><td>此例European表示欧式，仅到期行权</td></tr>
+<tr><td><code>settlement</code></td><td>结算方式</td><td>此例cash表示现金结算</td></tr>
+<tr><td><code>observation_price</code></td><td>观察哪个价格</td><td>当前收益分析使用close，即收盘价；换成high不是只改一个单词就能支持</td></tr>
+<tr><td><code>pricing_methods</code></td><td>准备支持的定价方法</td><td>现有1.1支持解析和MC；真正的新产品还要按第3.6节检查实现</td></tr>
+</tbody></table></div>
+<p>字段看不懂时，先查看同文件的<code>TERM_CATALOG</code>。它相当于程序的参数词典。已经有相同含义的字段就复用，不要给同一个执行价另起一个名字。新增词典项也不会自动让公式会计算，新含义仍要检查计算代码是否支持。</p>
+<p><strong>最后改paths，把各种结局写清楚。</strong>上例没有敲入敲出，只看到期价格，所以只有一条路径，<code>condition=&quot;True&quot;</code>表示所有情况都进入这一条，再由cases划分价格区间。</p>
+<p>第一段的<code>domain</code>写<code>0 &lt;= S_T &lt;= K</code>，表示到期价不高于执行价；它只有期初支付期权费这一笔现金流。第二段写<code>S_T &gt; K</code>，表示到期价高于执行价；除了期初付款，还在到期收到价差。</p>
+<p><code>cash(0, ...)</code>里的0表示期初，<code>cash(T, ...)</code>里的T表示到期。负数表示持有方付出，正数表示收到。公式里的u负责把标准化价格点换回实际金额，由现有程序处理。不要为了让公式看起来简短，把不同时间的付款合成一笔到期付款。</p>
+<p>有障碍或多次观察的产品，还要参考相近产品的<code>monitor</code>来描述观察事件；需要先算中间量时，再看<code>derived_terms</code>。先把中文条款逐条对应到这些位置。遇到没有现成写法的新事件，进入第4章处理，不要把一段中文或任意Python函数塞进公式。</p>
+<p>录入后还要试着改参数。例如牛市看涨价差的低执行价必须小于高执行价，不能默认95和105时能算，用户改成110和105后仍放行。需要自动计算的中间量应随基础参数重算，不应让用户直接填写；公式使用参数词典里的符号，例如K1对应K_1。先算哪个中间量、再使用哪个中间量，也要按依赖顺序写清楚。</p>
+<h3 id="s3-5">3.5 第四步：补上默认收益图</h3>
+<p>只完成前三个文件，还不够。OH会按产品中文名读取默认收益图，因此还需要两份文件：</p>
+<div class="table-scroll" tabindex="0" role="region" aria-label="维护参考表"><table><thead><tr>
+<th scope="col">文件位置</th>
+<th scope="col">内容</th>
+</tr></thead><tbody>
+<tr><td><code>modules/payoffer/figures/json/产品中文名.json</code></td><td>画图要用的默认参数和分段信息</td></tr>
+<tr><td><code>modules/payoffer/figures/svg/产品中文名.svg</code></td><td>打开默认示例时看到的收益图</td></tr>
+</tbody></table></div>
+<p>看涨期权对应<a href="../modules/payoffer/figures/json/看涨期权.json">看涨期权.json</a>和<a href="../modules/payoffer/figures/svg/看涨期权.svg">看涨期权.svg</a>。新产品也要使用完全相同的中文名称，不能一个叫“新雪球”、另一个叫“新型雪球”。</p>
+<p>JSON中的<code>name_zh</code>、<code>terms</code>、<code>paths</code>应与新产品登记相符。SVG用现有收益图程序生成，不需要自己手动画曲线。生成后打开图片，检查拐点、横轴、收益方向以及每种情况是否展示完整。</p>
+<p>目前的“刷新默认图”代码只能更新已有文件，不能替你完成新产品的首次建图。下面提供具体做法；如果你请开发者或编程助手处理，可以直接让其按照这段生成两份新文件。</p>
+<p>修改已有默认图时，先查看完整刷新计划：这个入口会扫描其他产品，不能把别的产品差异顺手一起发布。新增或改名先在候选目录准备名称一致的JSON和SVG，再处理已确认不再使用的旧文件。默认图维护记录只保留本次图形资产，三库和计算代码需要另外保留修改前副本；不要以为恢复两张图就恢复了整个产品。</p>
+<details>
+<summary>新产品默认图怎么生成</summary>
+<p>先在第2章准备的源码副本中完成产品登记。在编辑器运行设置中，把这份源码根目录和其中的<code>core/src</code>加入Python导入路径，并把<code>OPTIONHELPER_PROJECT_ROOT</code>指向这份源码根目录。每次修改产品规则后重新启动Python。</p>
+<p>把下面函数放进独立的临时Python文件中。它使用现有收益图程序；输出只写到你传入的文件夹，碰到已有同名文件会停止，避免覆盖。</p>
+<pre tabindex="0"><code data-language="python">from dataclasses import asdict
+from pathlib import Path
+import json
+
+from modules.payoffer.asset_resolver import build_visual_template
+from modules.payoffer.impl.engine import build_payoff_input, render_paths
+from modules.payoffer.impl.svg_renderer import render_svg
+
+
+def prepare_candidate_assets(product, registry, candidate_figures: Path):
+    name = product[&quot;identity&quot;][&quot;name_zh&quot;]
+    if not name or any(char in name for char in (&quot;/&quot;, &quot;\\&quot;, &quot;\0&quot;)):
+        raise ValueError(&quot;产品名称不能包含路径字符&quot;)
+    template = build_visual_template(product[&quot;paths&quot;])
+    payload = {&quot;name_zh&quot;: name, &quot;terms&quot;: product[&quot;terms&quot;],
+               &quot;paths&quot;: product[&quot;paths&quot;], &quot;visual_template&quot;: template}
+    contract = build_payoff_input(name, maintenance_registry=registry)
+    rendered = [asdict(path) for path in render_paths(contract, template)]
+    svg = render_svg({&quot;name_zh&quot;: name, &quot;paths&quot;: rendered})
+    json_path = candidate_figures / &quot;json&quot; / f&quot;{name}.json&quot;
+    svg_path = candidate_figures / &quot;svg&quot; / f&quot;{name}.svg&quot;
+    if json_path.exists() or svg_path.exists():
+        raise ValueError(&quot;候选资产已存在，请先审阅差异&quot;)
+    json_path.parent.mkdir(parents=True, exist_ok=True)
+    svg_path.parent.mkdir(parents=True, exist_ok=True)
+    json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + &quot;\n&quot;,
+                         encoding=&quot;utf-8&quot;)
+    svg_path.write_text(svg, encoding=&quot;utf-8&quot;)</code></pre>
+<p>在这个函数下面，再按自己的源码副本位置和新产品ID填写调用部分：</p>
+<pre tabindex="0"><code data-language="python">from runtime.contracts.contract_api import load_registry
+
+# 改成你正在编辑的源码副本，不要指向已安装App。
+project = Path(&quot;/path/to/OptionHelper-copy&quot;)
+# 改成你在三个产品文件中填写的新ID。
+product_id = &quot;待填写的新产品ID&quot;
+
+registry = load_registry()
+product = registry[&quot;products&quot;][product_id]
+prepare_candidate_assets(product, registry, project / &quot;modules/payoffer/figures&quot;)</code></pre>
+<p>执行前确认编辑器加载的也是这份源码副本，输出路径正确并不代表导入的代码一定正确。完成后，进入json和svg文件夹，确认都出现了新文件，再打开SVG看图。</p>
+<p>这段生成函数已经用现有看涨期权在临时文件夹运行过。新产品如果采用当前绘图程序无法表达的新横轴或新面板，需要再修改<a href="../modules/payoffer/src/asset_resolver.py">asset_resolver.py</a>和<a href="../modules/payoffer/src/impl/engine.py">收益图引擎</a>，不能直接借用旧产品图片。</p>
+</details>
+<h3 id="s3-6">3.6 第五步：确认定价和回测能不能用</h3>
+<p><strong>新增或删除不能只做三库和收益图。</strong>还必须核对Pricer反解能力表、Backtester经济口径表与指标分类表。即使某项能力不支持，也要明确登记原因；表里少了新产品或多了已删除产品，都可能使目录或计算失败。</p>
+<details><summary>容易漏掉的登记与发布依赖</summary>
+<ul>
+<li><a href="../modules/pricer/src/fair_parameter.py">fair_parameter.py</a>：反解能力表要求覆盖当前产品集合；改报价目标或现金流后需要重新审阅。</li>
+<li><a href="../modules/backtester/src/economic_conventions.py">economic_conventions.py</a>和<a href="../modules/backtester/src/metric_profile_map.py">metric_profile_map.py</a>：分别维护费用口径与指标分类，不会仅凭新产品名称自动理解。</li>
+<li><a href="../products/app/backend/position_amounts.py">position_amounts.py</a>：特殊收益单位和方差名义本金需要单独核对金额换算。</li>
+<li>默认JSON/SVG变化还影响发布读取的资产基线。保留旧基线作对照，确认差异后准备新的发行基线，不修改旧Golden来掩盖错误；公开仓库缺少基线时应说明构建依赖。</li>
+<li>产品数量和启用状态检查分布在知识快照、Skill构建与校验、App计算包及macOS/Windows验收。当前仅改entry_status=False不能保证含停用产品的目录能发布。</li>
+</ul>
+<p>详细入口见<a href="update-option/references/oh-integration.md">产品维护接入说明</a>，实际完成标准见<a href="update-option/references/verification.md">验证与交接</a>。清单必须随当前源码核对，不要求每次修改全部文件。</p></details>
+<p><strong>录入产品规则后，不一定需要再改Pricer和Backtester。</strong>如果新条款完全能用现有公式和观察规则表达，可以先运行现有计算。但要实际尝试，不能只在产品条款里写“支持定价”。</p>
+<div class="table-scroll" tabindex="0" role="region" aria-label="维护参考表"><table><thead><tr>
+<th scope="col">你希望新产品支持什么</th>
+<th scope="col">先怎么做</th>
+<th scope="col">不支持时去哪里改</th>
+</tr></thead><tbody>
+<tr><td>画收益图</td><td>打开默认图，再改一次参数重新画</td><td>Payoffer的<a href="../modules/payoffer/src/asset_resolver.py">asset_resolver.py</a>和<a href="../modules/payoffer/src/impl/engine.py">engine.py</a></td></tr>
+<tr><td>MC定价</td><td>在产品方法里声明monte_carlo，重启后选MC运行</td><td><a href="../modules/pricer/src/model_router.py">model_router.py</a>、<a href="../modules/pricer/src/product_pricing_adapter.py">product_pricing_adapter.py</a>及具体引擎</td></tr>
+<tr><td>解析定价</td><td>先确认程序已有这个产品的解析处理</td><td>model_router中的PRODUCT_CAPABILITIES、ProductPricingAdapter和解析引擎；单加analytical字段不够</td></tr>
+<tr><td>Greeks和风险分析</td><td>定价成功后实际查看各项输出及单位</td><td><a href="../modules/pricer/src/greeks.py">greeks.py</a>及产品使用的计算方法</td></tr>
+<tr><td>反解票息或其他参数</td><td>选择目标参数和合理范围实际求解</td><td><a href="../modules/pricer/src/fair_parameter.py">fair_parameter.py</a>、<a href="../modules/pricer/src/fair_solver.py">fair_solver.py</a>、<a href="../modules/pricer/src/valuation_solver.py">valuation_solver.py</a></td></tr>
+<tr><td>历史回测</td><td>给完整行情和日历，先跑短区间</td><td><a href="../modules/backtester/src/entry_generator.py">entry_generator.py</a>、<a href="../modules/backtester/src/path_replay.py">path_replay.py</a></td></tr>
+<tr><td>推荐与报告</td><td>让OptChat解释并使用它，再从真实结果生成报告</td><td><a href="../modules/recommender/src/service.py">推荐模块</a>、<a href="../products/app/backend/reporter_adapter.py">报告适配</a></td></tr>
+</tbody></table></div>
+<p>当前MC会为启用且声明monte_carlo的新产品尝试通用规则计算。解析定价则还需要专门登记和适配，这就是二者维护方式不同的地方。不能因为旧产品1.1写了两种方法，就把新产品也直接标成全部支持。</p>
+<h3 id="s3-7">3.7 第六步：实际看一遍结果</h3>
+<p>先用容易算清楚的例子。看涨期权取参考价格100、执行价100、期权费5、1份，分别看到期价格90、100、110、120，预期净损益是−5、−5、+5、+15。这里检查的是到期损益，不是今天的公平定价。</p>
+<p>新结构也至少准备几种明确情况：正常到期、亏损、触发障碍、恰好等于障碍，以及提前结束。把每种情况应该收到或付出的金额先写出来，再与程序比较。</p>
+<p>然后打开修改后的开发App，按这个顺序操作：</p>
+<ol>
+<li>找到新产品，确认名称、默认条款和收益图都正确。</li>
+<li>改一个参数，例如执行价或票息，再计算一次，确认结果确实随新参数变化。</li>
+<li>运行一次定价，查看价格、Greeks及错误提示是否合理。</li>
+<li>运行一次短区间回测，打开逐笔结果，检查日期、触发事件和收付款。</li>
+<li>生成报告，确认引用的是刚才这个产品、这组参数和这次结果。</li>
+<li>切回原来的产品再跑一次，确认旧产品没有被这次改动影响。</li>
+</ol>
+<p>产品有多标的、存续状态或复杂观察日时，还要分别试这些情况。缺少必要行情时应明确提示缺什么，不能悄悄算出一个看似成功的结果。</p>
+<h3 id="s3-8">3.8 最后：让其他人用到新产品</h3>
+<p><strong>新增或删除产品还有一道发布检查。</strong>当前<a href="../packaging/knowledge_snapshot.py">knowledge_snapshot.py</a>有多处按65个产品校验。产品数量变化时，需要一起调整目录顺序、产品源快照、默认图清单和发布验证，让各处与确认后的产品集合一致。不要只改一个数字，也不要关闭检查。旧发行包仍应按它自己保存的目录验证，不能拿新目录覆盖历史版本。</p>
+<p>完成检查后，把改好的产品文件、默认收益图和确实需要修改的计算代码一起放回正式源码。重新启动开发程序确认能用，然后按第11章打包更新App和Skill，重建Demo。</p>
+<p><strong>如果改完没有生效，先检查是不是还开着旧程序。</strong>产品规则在程序启动后会保持固定；修改文件以后需要重启后端。安装版则还需要重新打包安装，浏览器刷新不能替代这一步。</p>
+<p>出了问题，恢复修改前保存的代码和默认图，重新启动即可继续使用旧规则。不要为了回到旧版本，把新版本产生的任务和报告随手删掉。</p>
+<h3 id="s3-9">3.9 只是修改已有产品，怎么处理</h3>
+<p>只改默认参数也要检查旧任务。当前合同校验会比较实际条款及其来源，不是只比较rule_revision；采用旧默认值的合同可能无法在新版直接重跑，显式覆盖参数的合同则要分别判断。改名要核对知识标题和默认图文件名；改观察规则要核对所需行情和日历。生效前确认构建使用的正是通过检查的那份源码，不能混用不同轮次的资料。</p>
+<div class="table-scroll" tabindex="0" role="region" aria-label="维护参考表"><table><thead><tr>
+<th scope="col">想做的事</th>
+<th scope="col">具体改法</th>
+</tr></thead><tbody>
+<tr><td>这一次换期限、执行价或票息</td><td>在App参数中修改；不改三个产品文件</td></tr>
+<tr><td>以后默认就用新的参数</td><td>改optionreg.py中该产品的terms，同步中文默认示例和默认收益图，再检查新任务是否采用新默认值</td></tr>
+<tr><td>修改敲入敲出、收益公式或支付时间</td><td>改optionlib.md对应条款、optionreg.py对应monitor/paths等规则，递增rule_revision，再重做相关默认图和检查</td></tr>
+<tr><td>产品改名</td><td>三个产品文件中的名称一起改；JSON/SVG文件名和JSON里的name_zh也要改，编号通常保留</td></tr>
+<tr><td>暂时不再提供产品</td><td>不要直接删除旧资料；检查entry_status、目录和推荐是否都阻止新使用，旧任务和报告另外保留</td></tr>
+</tbody></table></div>
+<p>例如把“大于障碍才触发”改成“大于等于就触发”，真正需要改变的是恰好等于障碍的结果。测试时就重点检查相等、略低、略高三种情况，不要只看一条远离障碍的行情。</p>
+<p>规则版本变了，旧任务仍然记录旧条款。不要把旧任务的rule_revision直接改成新值来消除错误。如果需要重现旧结果，用保存的旧版本程序和原数据运行。备份方法见第9章。</p>
+</section>
+<section class="chapter" aria-labelledby="s4">
+<h2 id="s4">4. 遇到新规则，计算代码怎么改</h2>
+<p>三个产品文件解决的是“把已有程序能理解的规则写进去”。如果新产品引入以前没有的观察方式、状态变量或结算方法，就需要开发新的计算支持。</p>
+<h3 id="s4-1">4.1 先找到程序不理解哪一条</h3>
+<p>把新条款逐句与相近产品比较。是多了一个已有含义的参数，还是出现了完全不同的事件？例如从月末观察改成当前不支持的某种观察安排，需要修改观察日期生成逻辑，而不只是给字段填一个新字符串。</p>
+<p>共同的产品规则处理在<a href="../core/src/runtime/contracts/contract_engine.py">contract_engine.py</a>，对外入口在<a href="../core/src/runtime/contracts/contract_api.py">contract_api.py</a>。日期和数据准备还会经过<a href="../core/src/runtime/contracts/input_adapter.py">input_adapter.py</a>及<a href="../modules/pricer/src/observation_schedule.py">observation_schedule.py</a>。</p>
+<p>优先在这套共用逻辑中增加支持，再让定价、回测和收益图使用它。不要在三个模块里分别写三套不同的同名规则。</p>
+<h3 id="s4-2">4.2 修改Pricer时重点看什么</h3>
+<p>从<a href="../modules/pricer/src/service.py">service.py</a>进入，再看model_router如何选择方法，ProductPricingAdapter如何把合同送入计算引擎。先确认产品是否支持该方法，以及数据是否齐全，再排查公式。</p>
+<p>做速度优化时，固定同一组参数比较修改前后结果。路径数、随机数、观察日期、标准误、Greeks、风险和反解都要保留原含义。用户点停止和出错时的行为也属于功能，不能因为计算快了就忽略。</p>
+<h3 id="s4-3">4.3 修改Backtester时重点看什么</h3>
+<p>回测先确定哪天入场，再取这一笔合同需要的历史行情，最后生成逐笔收付款和统计。对应入口是<a href="../modules/backtester/src/entry_generator.py">entry_generator.py</a>、<a href="../modules/backtester/src/path_replay.py">path_replay.py</a>、<a href="../modules/backtester/src/trade_ledger.py">trade_ledger.py</a>和<a href="../modules/backtester/src/common_metrics.py">common_metrics.py</a>。</p>
+<p>如果产品提前结束，检查结束日期之后是否停止计息和付款。只看到一个可能的敲出日期还不够，原程序还有针对实际前段行情的复核，优化时不能省略。</p>
+<p>HV是历史波动率，用于相应的筛选和分组。没有选择这种筛选时可以不启用HV，回测本身照常进行。修改相关逻辑时检查历史窗口不足、分组边界和多标的各自历史，不能把不同标的混成一条序列。</p>
+<h3 id="s4-4">4.4 名义本金和内部100是什么关系</h3>
+<p>内部100是标准化参考价格，名义本金是用户这次业务希望对应的金额。它们不放在同一个参数里。当前App默认名义本金1000000，在定价和回测参数流程中使用。</p>
+<p>金额显示主要看<a href="../products/app/backend/position_amounts.py">position_amounts.py</a>。对于已经明确按每百元计量的金额字段，可以按下式换算：</p>
+<div class="formula" role="math" aria-label="金额换算">金额 = 每百元字段值 × 名义本金 ÷ 100</div>
+<p>概率、收益率、日期和不同单位的Greeks不能全部套这个公式。新增产品时，先确定输出单位，再确认金额附表是否支持。不要直接把内部标准化结果改大，来让Greeks看起来更明显。</p>
+</section>
+<section class="chapter" aria-labelledby="s5">
+<h2 id="s5">5. 行情和日历有变化，怎么维护</h2>
+<p>行情下载和整理主要在<a href="../modules/datafetcher/src/service.py">modules/datafetcher/src</a>。如果增加数据来源，先看<a href="../modules/datafetcher/src/providers/base.py">providers/base.py</a>定义的接口，再参照现有Provider实现。</p>
+<h3 id="s5-1">5.1 增加价格字段或数据来源</h3>
+<p>先拿一小段实际返回的数据，看清楚日期、标的代码、close和其他价格字段分别是什么。把来源特有的格式转换成OH统一格式，再接入使用它的模块。</p>
+<p>请求检查在<a href="../modules/datafetcher/src/request_validator.py">request_validator.py</a>，格式整理在<a href="../modules/datafetcher/src/data_normalizer.py">data_normalizer.py</a>，数据完整性检查在<a href="../modules/datafetcher/src/quality_validator.py">quality_validator.py</a>。根据问题发生的位置修改，不要直接在Pricer里临时补一段特定数据源代码。</p>
+<p>合同使用的价格和计算HV的复权价格可能不同。字段同样是数字，不代表可以互换。拿缺失日期、重复日期、停牌、多标的和无效价格分别试一次。</p>
+<h3 id="s5-2">5.2 交易日历不能用行情日期代替</h3>
+<p><a href="../modules/datafetcher/src/calendar_service.py">calendar_service.py</a>负责日历。某一天没有行情，可能是缺数据，不一定是休市。观察日和到期日应按正式交易日历确定。</p>
+<p>遇到“数据覆盖不足”，先看缺的是合同期间、存续历史，还是HV所需的更早历史。补齐相同口径的数据后重新运行，不要补造价格或把日期直接删掉。</p>
+<p>修改数据处理前保留原文件。新旧结果不同时，可以用同一份原始行情重跑，判断问题来自数据处理还是产品规则。不要修改桌面上独立的DataFetcher工具项目来替代OH内部维护。</p>
+</section>
+<section class="chapter" aria-labelledby="s6">
+<h2 id="s6">6. Agent和工具参数怎么改</h2>
+<p>OptChat背后的对话逻辑主要看<a href="../products/app/backend/agent_runtime/conversation_agent.py">conversation_agent.py</a>。推荐模式看<a href="../products/app/backend/agent_runtime/multi_agent.py">multi_agent.py</a>，推荐业务流程看<a href="../modules/recommender/src/service.py">RecommenderService</a>。</p>
+<h3 id="s6-1">6.1 修改Agent说什么、什么时候调用工具</h3>
+<p>普通对话的提示词和分步说明可以从<a href="../products/app/backend/model_gateway/step_instructions.py">step_instructions.py</a>查起。研究角色的职责在core/src/runtime/research_profiles下，按预设名、角色名找到AGENT.md，例如<a href="../core/src/runtime/research_profiles/product-trader-loop/Structurer/AGENT.md">产品交易循环的Structurer说明</a>；App和Skill共用这套角色说明，不要只改App侧文字。修改前先写几个具体问题，例如“给某个产品估值”“缺少标的时怎么追问”“工具失败以后怎么解释”。修改后用这些问题重新尝试。</p>
+<p>不仅要看回复是否顺畅，还要看它有没有实际调用正确工具、有没有把用户给的参数传进去、有没有把失败说成成功。解释产品可以读资料；输出价格和回测结果必须来自真实计算。</p>
+<p>App有自己的Agent执行环境，Skill则使用外部宿主提供的模型和角色执行能力。App能运行的多角色流程，不代表任意Skill宿主都支持。</p>
+<h3 id="s6-2">6.2 修改工具参数，按什么顺序</h3>
+<p>比如想给定价增加一个可选参数，先决定默认值是什么、缺省时是否保持原行为，以及它究竟属于产品条款、市场输入还是显示选项。</p>
+<ol>
+<li>在<a href="../core/src/runtime/protocol/schemas/tool-io.schema.json">tool-io.schema.json</a>和<a href="../core/src/runtime/protocol/models.py">models.py</a>查看输入结构，增加对应字段。</li>
+<li>查看<a href="../products/app/backend/tool_gateway.py">tool_gateway.py</a>、<a href="../products/app/backend/agent_runtime/runtime_tool_bridge.py">runtime_tool_bridge.py</a>和模块service，确认这个值能一直传到使用它的位置。</li>
+<li>如果它影响计算，把它保存进本次运行实际使用的参数中。以后打开历史结果时，要能看到当时用的值。</li>
+<li>在页面和工具说明中补上输入方式。只增加字段时通常不需要新工具；真的增加操作时，再改<a href="../core/src/runtime/protocol/tool_catalog.py">tool_catalog.py</a>。</li>
+<li>分别试不填、填合法值、填非法值，检查提示和结果；然后通过OptChat和页面各运行一次。</li>
+</ol>
+<h3 id="s6-3">6.3 修改推荐模式和模型配置</h3>
+<p>模型连接优先在设置页改。App公开Mode1产品交易循环、Mode2独立评议、Mode3约束排序，默认产品交易循环；Skill默认仍是兼容顺序研判。新增推荐模式时，再检查各角色职责、调用顺序、可用工具和中止方式。串行执行也可以包含多个角色，不要只按是否并发来判断模式。</p>
+<p>预设、工具权限和快速、标准、深入三档预算在<a href="../core/src/runtime/research_profiles/presets.json">presets.json</a>，由<a href="../core/src/runtime/research_policy.py">research_policy.py</a>读取。默认标准研究；三档共享模块计算预算分别为6、12、24，产品循环最多1、2、4轮，评议复核和排序补充最多0、1、2轮。它们是研究上限，不是必须执行的次数，也不进入金融引擎参数。兼容顺序研判不受这些补充轮数控制。</p>
+<p><a href="../modules/recommender/src/research_session.py">research_session.py</a>管理本次研究的候选访问、共享预算和计算证据。研究角色通过受控工具自主计算，独立评议先验证自己的候选，之后共享证据并定向复核。相同条件下的成功计算可以复用，读取已有结果不重新计算。App的工具接入看<a href="../products/app/backend/agent_runtime/runtime_tool_bridge.py">runtime_tool_bridge.py</a>，Skill宿主接入看<a href="../modules/recommender/src/ports.py">ports.py</a>；未绑定研究工具时不能声称完成了自主计算。</p>
+<p>App使用说明的正文在<a href="../products/app/backend/user_guide.py">user_guide.py</a>。<a href="../products/app/frontend/shared/user-guide.js">user-guide.js</a>从/api/user-guide读取正文并负责搜索、目录和展示；更新工作流说明应修改正文源。Skill说明维护<a href="../references/skill-user-guide.md">skill-user-guide.md</a>，再用现有生成器同步离线HTML。</p>
+<p>保留几个原来答错或调用错误的例子。每次修改后重试，写清楚现在是否解决。这样比反复调整一句提示词、更换一个模型后凭感觉判断更有用。</p>
+</section>
+<section class="chapter" aria-labelledby="s7">
+<h2 id="s7">7. 页面上的参数和交互怎么改</h2>
+<p>先分清是App外层页面，还是里面的模块页面。OptChat和OptDesk在<a href="../products/app/frontend/optdesk/index.html">products/app/frontend</a>下，定价表单在<a href="../modules/pricer/page/pricer.html">modules/pricer/page/pricer.html</a>。其他模块也有自己的page文件夹。</p>
+<h3 id="s7-1">7.1 加一个参数，不能只加输入框</h3>
+<p>以增加默认本金输入为例，除了控件，还要确认默认值、保存草稿、切换产品、提交计算和重新打开任务时是否正确。输入框显示1000000，不代表后端收到的也是1000000。</p>
+<p>修改后建一个测试任务，输入一个容易辨认的值，运行一次，再切页回来。查看结果和报告，确认使用的是这次填写的值。不要先在Demo里改控件，再以为正式App也有了。</p>
+<h3 id="s7-2">7.2 切页、停止和重新运行</h3>
+<p>测试时实际走一遍：A产品运行中切到B，再回A；取消一次运行，再重新运行；改了参数之后查看旧结果。重点看是否串任务、串参数，或者把旧结果当成新结果。</p>
+<p>页面和后端衔接在<a href="../core/src/runtime/browser/module_host_bridge.js">module_host_bridge.js</a>。恢复历史结果失败和恢复正在运行的任务是两个问题，不应一个失败就让整个页面空白。</p>
+<p>窗口大小、居中和启动画面属于原生壳。macOS主要看<a href="../products/app/desktop/macos/OptionHelperApp.swift">OptionHelperApp.swift</a>，还要留意<a href="../products/app/desktop/macos/OptionHelperApp.m">Objective-C后备实现</a>；Windows看<a href="../products/app/desktop/windows/Program.cs">Program.cs</a>。改完要在对应系统打开App，浏览器缩窄不能代替Windows窗口检查。</p>
+</section>
+<section class="chapter" aria-labelledby="s8">
+<h2 id="s8">8. 报告内容和样式怎么改</h2>
+<p>Reporter决定报告放哪些实际结果，Designer负责怎么排版。修改之前先判断：是缺了一项内容，还是内容正确但显示不好看。</p>
+<h3 id="s8-1">8.1 找到正确的修改位置</h3>
+<div class="table-scroll" tabindex="0" role="region" aria-label="维护参考表"><table><thead><tr>
+<th scope="col">想修改什么</th>
+<th scope="col">先打开哪里</th>
+</tr></thead><tbody>
+<tr><td>报告缺少某个计算指标</td><td><a href="../modules/reporter/src/report_unit_builder.py">report_unit_builder.py</a>和<a href="../products/app/backend/reporter_adapter.py">reporter_adapter.py</a></td></tr>
+<tr><td>字体、颜色、表格、版式</td><td><a href="../modules/designer/src/design_tokens.py">design_tokens.py</a>和<a href="../modules/designer/src/design_system_builder.py">design_system_builder.py</a></td></tr>
+<tr><td>报告编辑和保存</td><td><a href="../products/app/backend/report_editor.py">report_editor.py</a></td></tr>
+<tr><td>导出文件</td><td><a href="../products/app/backend/report_delivery.py">report_delivery.py</a></td></tr>
+<tr><td>名义本金对应的金额附表</td><td><a href="../products/app/backend/position_amounts.py">position_amounts.py</a></td></tr>
+<tr><td>图片、文档和其他附件</td><td><a href="../products/app/backend/attachments/attachment_store.py">attachment_store.py</a>及同目录的document_store、image_store</td></tr>
+</tbody></table></div>
+<p>增加指标时，先确认计算结果里确实有这个字段，再把它传进报告。不要只在模板里写一个标题，让模型自行补数值。</p>
+<h3 id="s8-2">8.2 修改报告后怎么检查</h3>
+<p>先用一份现成的测试结果生成旧报告，再用同一份结果生成新报告。只改样式时，金额、日期、价格和回测统计应该保持原样。</p>
+<p>分别打开HTML、PDF和Word，检查中文、公式、图表、长表和分页。需要支持的单产品、多产品和报价报告都要试。HTML打开正常，不代表导出文件也正常。</p>
+<p>再试编辑、保存、关闭、重新打开和再次导出。保留旧报告文件，出了问题恢复模板后可以直接对照，不需要删除整个报告库。</p>
+</section>
+<section class="chapter" aria-labelledby="s9">
+<h2 id="s9">9. 任务和结果怎样备份</h2>
+<p>改代码之前保留旧代码；更新App之前还要保留用户任务和结果。这是两件事。代码恢复了，不代表误删的报告和附件也能恢复。</p>
+<h3 id="s9-1">9.1 需要备份什么</h3>
+<p>macOS的常用数据根目录是<code>~/Library/Application Support/OptionHelper</code>，Windows是<code>~/AppData/Local/OptionHelper</code>。实际运行还可能指定单独的数据目录，先确认本次程序用的是哪一个。</p>
+<p>备份时包括任务、结果、数据文件、报告和附件。如果设置里用了外部文件夹，那些文件也要保留。不要只复制任务索引，却漏掉索引指向的图片或行情。</p>
+<p>对应代码在<a href="../products/app/backend/stores/session_store.py">session_store.py</a>、<a href="../products/app/backend/stores/result_store.py">result_store.py</a>和<a href="../products/app/backend/stores/data_store.py">data_store.py</a>。凭据单独由<a href="../products/app/backend/secrets/secret_provider.py">secret_provider.py</a>等处理，复制普通设置不保证在另一台电脑上仍能登录。</p>
+<h3 id="s9-2">9.2 恢复时怎么做</h3>
+<p>先完成或停止正在运行的任务，再关闭程序并备份目录。恢复时先恢复到另一份测试目录，用对应版本的程序打开，检查任务、结果、附件和报告都能读取，再决定是否替换日常数据。</p>
+<p>规则升级后，旧合同可能不能在新引擎里继续计算。需要重现时，使用修改前的程序、原参数和原行情。不要修改旧结果里的版本数字来绕过提示。</p>
+<p>仓库中的<a href="../products/app/backend/product_rule_revision.py">product_rule_revision.py</a>有清理旧规则结果的函数，但目前没有找到它在正式启动流程中的调用。它会删除相关结果，<strong>不要把运行这个文件当成更新App或恢复数据的日常步骤。</strong></p>
+</section>
+<section class="chapter" aria-labelledby="s10">
+<h2 id="s10">10. 改完以后，怎样知道改对了</h2>
+<p>检查围绕这次修改来做。改产品就重点检查收益规则，改页面就实际操作页面，改报告就打开生成的文件。不需要每次都填一大套表，但要留下能够重复使用的输入和预期结果。</p>
+<h3 id="s10-1">10.1 产品和计算检查</h3>
+<p>先手算简单例子，再用程序比较。包含亏损、盈利、边界和提前终止；多标的产品增加不同标的先后触发的情况。除了总金额，还要看付款日期和事件判断。</p>
+<p>保留旧产品的一组结果。新产品录入完成后，再跑一次旧产品，看看是否受到了意外影响。修复某个错误时，也把原来失败的输入保存下来，以后反复使用。</p>
+<h3 id="s10-2">10.2 已有测试在哪里</h3>
+<p>当前维护者工作区有<code>tests/</code>和<code>packaging/tests/</code>，但它们并未随当前公开仓库提供。别人下载公开源码后不一定有同样的测试，不能直接把缺失当成测试通过。</p>
+<p>常用本地检查包括<code>tests/knowledger/audit.py</code>检查三个产品文件，<code>tests/test_financial_baselines.py</code>检查原有金融结果。运行前确认文件和所需数据存在；没有时请原维护者提供匹配测试，或者另写针对本次产品的检查。</p>
+<p>已有三个产品文件的检查能够发现一部分漏填和冲突，但不能替你判断合同本身是否写对。例如敲出应不应该包含当天，仍需要依据产品条款检查。</p>
+<h3 id="s10-3">10.3 速度优化怎么比较</h3>
+<p>用相同机器、相同Python环境和相同输入，分别运行修改前后程序。各跑几次并交替顺序，记录整次运行用了多久，不只看某个小函数的时间。</p>
+<p>同时比较价格、标准误、Greeks、现金流、回测账本和报错行为。默认要求结果一致；如果明确允许某个字段存在很小的浮点差异，要先说明是哪一项、差多少以及为什么。障碍触发或付款时间改变不是小数末位差异。</p>
+<p>没有稳定加快，或者明显增加内存、让其他产品变慢，就先保留原实现。确认有效后再更新正式代码，并用同一组例子重跑。</p>
+</section>
+<section class="chapter" aria-labelledby="s11">
+<h2 id="s11">11. 更新App、Skill和两份Demo</h2>
+<p>新产品在开发版本里能用以后，还需要把它交给实际使用者。当前版本分别是App v0.1.0和Skill v0.3.0；以后改版本时以<a href="../packaging/release_contract.py">release_contract.py</a>中的APP_VERSION和SKILL_VERSION为准。</p>
+<h3 id="s11-1">11.1 打包前先准备好</h3>
+<p>确认产品目录、中文条款、程序规则和默认图已经一起保存。需要改计算模块的，也要包含相应代码。先保留旧安装包和用户数据，方便出问题时回退。</p>
+<p>新文件是否会被打进包，主要由<a href="../packaging/skill/package-source-map.json">Skill文件映射</a>和<a href="../packaging/app/capability-source-map.json">App文件映射</a>决定。如果文件放在原有产品和默认图目录下，仍要检查构建是否成功；如果加了全新资源目录，需要在打包配置中加入它。</p>
+<h3 id="s11-2">11.2 更新安装版</h3>
+<ol>
+<li>在macOS双击<a href="../build-optionhelper-macos.command">build-optionhelper-macos.command</a>，Windows使用<a href="../build-optionhelper-windows.bat">build-optionhelper-windows.bat</a>。复用已经选好的Python环境。</li>
+<li>等构建完成，查看输出说明。macOS当前产物在<code>dist/</code>，Windows候选产物在<code>result/windows-candidate/</code>。入口会准备App和Skill，不只是启动程序。</li>
+<li>退出旧App，保留旧安装物，再安装新生成的版本。不要把几个源码文件手工塞进旧App包里。</li>
+<li>打开新App，直接查找刚增加的产品，修改参数并运行定价和回测，再生成报告。真正跑一次，才能确认新产品已经进入安装版。</li>
+<li>如果有问题，退出新App，恢复旧安装物。需要恢复数据时按第9章操作，保留更新后产生的任务副本。</li>
+</ol>
+<p>Skill要在实际使用它的宿主中更新包，再尝试解释新产品、调用计算和生成报告。只更新App不会更新另一处安装的Skill。</p>
+<details>
+<summary>负责打包的开发者还需要看哪些文件</summary>
+<p>当前候选构建入口是<a href="../packaging/build_current.py">build_current.py</a>，正式发行入口是<a href="../packaging/release.py">release.py</a>。App与Skill版本独立，这两个入口的version默认含义也不同，不要直接复制旧文档中的v1.0.0示例。</p>
+<p>Skill构建在<a href="../packaging/skill/build_skill.py">build_skill.py</a>，App计算资源准备在<a href="../packaging/app/build_capability.py">build_capability.py</a>，平台App构建在<a href="../packaging/app/build_app.py">build_app.py</a>。原有检查会处理包内文件和版本一致性，不需要在日常录入说明中手工重复这些工作。</p>
+<p>构建产生的<code>versions/</code>用于保留旧版本，不要为了让新包通过而覆盖或删除旧归档。macOS和Windows分别在对应系统检查，不能只在一个系统成功就说两边都好了。</p>
+</details>
+<h3 id="s11-3">11.3 更新两份Demo</h3>
+<p>两份位置分别是仓库里的<code>demo/</code>，以及桌面<code>demo/OptionHelper demo</code>。用现有<a href="../demo/tools/refresh_demo.py">demo/tools/refresh_demo.py</a>更新：它先根据当前源码生成Demo，再备份旧桌面Demo并同步过去。可以在编辑器中选择这个文件，使用原来的Python运行。</p>
+<p>运行结束后分别打开两份Demo，查找新产品、查看默认收益图、切换页面和主题，确认都更新了。构建所需Node依赖见<a href="../demo/README.md">Demo说明</a>。</p>
+<p>Demo里的历史报告不会因为重新生成页面就自动重新计算。如果需要展示新产品案例，要另行准备相应示例。静态Demo只能用于页面和资料演示，正式计算仍在App或Skill中完成。</p>
+</section>
+<section class="chapter" aria-labelledby="s12">
+<h2 id="s12">12. 录入时常见问题</h2>
+<div class="table-scroll" tabindex="0" role="region" aria-label="维护参考表"><table><thead><tr>
+<th scope="col">遇到的问题</th>
+<th scope="col">通常先看哪里</th>
+<th scope="col">怎么处理</th>
+</tr></thead><tbody>
+<tr><td>产品列表没有新名字</td><td>三个产品文件中的编号、名称、启用状态</td><td>确认都已保存，重启开发程序；安装版还需要重新打包</td></tr>
+<tr><td>能选到产品，但没有默认图</td><td>json和svg文件夹</td><td>检查两份文件是否都有，名称是否完全一致</td></tr>
+<tr><td>规则编译报错</td><td>optionreg.py的字段和表达式</td><td>对照同类产品与参数词典，确认没有错拼或未支持的新写法</td></tr>
+<tr><td>写了analytical却不能解析定价</td><td>model_router和ProductPricingAdapter</td><td>需要真实解析支持，不能只改方法名称</td></tr>
+<tr><td>修改后仍是旧条款</td><td>正在运行的程序</td><td>完整重启后端；确认打开的是开发版还是旧安装版</td></tr>
+<tr><td>到期收益不对</td><td>paths的分段、方向、付款时间</td><td>用一个能手算的价格逐项对照，先看现金流再看总额</td></tr>
+<tr><td>敲入敲出边界不对</td><td>monitor、condition和domain</td><td>检查大于与大于等于、观察日和同日事件顺序</td></tr>
+<tr><td>回测数据不足</td><td>合同区间、日历、HV历史窗口</td><td>补齐真正缺少的行情，不用删日期消除错误</td></tr>
+<tr><td>报告显示旧参数</td><td>报告引用的运行结果</td><td>用新参数重新计算，再选择这次结果生成报告</td></tr>
+<tr><td>金额看起来不对</td><td>本金、字段单位和金额附表</td><td>区分每百元、金额、收益率和概率，不能全部乘本金</td></tr>
+<tr><td>Windows窗口或启动画面异常</td><td>Windows原生壳</td><td>在Windows实际打开检查，不只改网页CSS</td></tr>
+<tr><td>一份Demo更新另一份没更新</td><td>Demo同步入口与目标目录</td><td>用同一次refresh_demo运行更新两份，再分别打开</td></tr>
+</tbody></table></div>
+<p>修复时记下一个最小例子，例如具体产品、执行价、到期价和错误金额。这样的描述方便别人接手，也方便下一次确认这个问题有没有复发。</p>
+</section>
+<section class="chapter" aria-labelledby="s13">
+<h2 id="s13">13. 日常维护只需留下这些说明</h2>
+<p>不用把每次录入变成一堆表格。保留一份简短记录，让下一位维护者知道这次改了什么、怎么验证、出问题去哪找旧版。</p>
+<h3 id="s13-1">13.1 新产品交接怎么写</h3>
+<details>
+<summary>可以直接填写的交接模板</summary>
+<pre tabindex="0"><code data-language="text">产品名称：
+产品编号：
+主要条款：
+
+修改的文件：
+- 产品目录：
+- 中文说明：
+- 程序规则：
+- 默认收益图：
+- 额外修改的计算或页面代码：
+
+已经实际运行：
+- 收益图：
+- 定价及Greeks：
+- 回测：
+- 推荐与报告：
+
+暂时不支持的功能：
+旧版本保留在哪里：
+App、Skill和两份Demo是否已经更新：</code></pre>
+<p>不适用的项目写清楚原因，不要一律填“通过”。例如仅支持MC，就明确写不支持解析定价。</p>
+</details>
+<h3 id="s13-2">13.2 修改规则怎么说明</h3>
+<p>写清楚原条款、新条款和应该变化的例子。例如“原来价格等于障碍不触发，现在应触发；其他条件不变”。记录改了哪个产品、rule_revision从几改到几，以及对应中文说明和收益图是否一起更新。</p>
+<h3 id="s13-3">13.3 修改工具参数怎么说明</h3>
+<p>记录参数名称、用户在哪里填写、默认值和后端在哪里使用。留一个不填和一个填写后的实际运行例子，方便别人检查是否传错或遗漏。</p>
+<h3 id="s13-4">13.4 修改报告怎么说明</h3>
+<p>说明改的是内容还是样式，附一份修改前后的同输入报告。标注哪些格式已经打开检查，哪些还没有尝试。</p>
+<h3 id="s13-5">13.5 更新安装版怎么说明</h3>
+<p>写明App和Skill版本、安装物的位置、哪台系统实际运行过，以及两份Demo是否更新。保留旧安装物的位置，出问题可以直接找回。</p>
+<h3 id="s13-6">13.6 出错以后记什么</h3>
+<p>记录产品、输入、操作步骤、预期结果和实际结果。补上修复位置，再用原来的例子重跑。涉及客户信息先脱敏，不把账号和密码带进记录。</p>
+<h3 id="s13-7">13.7 这份手册以后怎么更新</h3>
+<p>正文保留在<a href="maintainer-guide.md">maintainer-guide.md</a>，离线阅读版保留在<a href="maintainer-guide.html">maintainer-guide.html</a>。修改正文后同步更新HTML内容，沿用现有字体和样式；增删章节时一起调整左侧目录链接。当前不保留生成器。</p>
+<p>保存后检查两份内容与链接一致，HTML的目录、折叠、公式及离线阅读仍然有效。同步检查<a href="update-option/SKILL.md">update-option</a>中的维护路径。将maintenance目录纳入源码版本管理即可，不需要提交整个docs目录。手册更新不会自动更新安装App、业务Skill或Demo。</p>
+</section><footer>维护手册同时保留Markdown正文与离线HTML；产品维护助手位于maintenance/update-option。</footer></main>
+<script>
+const links = [...document.querySelectorAll('#contents a')];
+const search = document.querySelector('#contents-search');
+search.addEventListener('input', () => {
+  const query = search.value.trim().toLocaleLowerCase();
+  let count = 0;
+  links.forEach(link => {
+    const match = link.textContent.toLocaleLowerCase().includes(query);
+    link.hidden = !match;
+    if(match) count++;
+  });
+  document.querySelector('#search-status').textContent = query ? `${count}项目录匹配` : '';
+});
+const toggle = document.querySelector('#mobile-toggle');
+function setNavigation(open){document.body.classList.toggle('nav-open',open);toggle.setAttribute('aria-expanded',String(open));}
+toggle.addEventListener('click',()=>setNavigation(!document.body.classList.contains('nav-open')));
+links.forEach(link=>link.addEventListener('click',()=>setNavigation(false)));
+document.addEventListener('keydown',event=>{if(event.key==='Escape')setNavigation(false)});
+document.querySelector('main').addEventListener('click',()=>setNavigation(false));
+const chapters = [...document.querySelectorAll('section.chapter')];
+chapters.forEach((chapter,index)=>{
+  const steps=document.createElement('div');steps.className='chapter-steps';steps.setAttribute('aria-label','章节导航');
+  for(const [position,label] of [[index-1,'上一章'],[index+1,'下一章']]){
+    if(position<0 || position>=chapters.length)continue;
+    const heading=chapters[position].querySelector('h2');
+    const link=document.createElement('a');link.href='#'+heading.id;link.textContent=label+'：'+heading.textContent;steps.append(link);
+  }
+  chapter.append(steps);
+});
+const observer=new IntersectionObserver(entries=>{
+  const visible=entries.filter(entry=>entry.isIntersecting);
+  if(!visible.length)return;
+  const id=visible[0].target.id;
+  links.forEach(link=>{const active=link.hash==='#'+id;link.classList.toggle('active',active);if(active)link.setAttribute('aria-current','location');else link.removeAttribute('aria-current')});
+},{rootMargin:'-5% 0px -70% 0px'});
+document.querySelectorAll('h2,h3').forEach(heading=>observer.observe(heading));
+let printState=[];
+window.addEventListener('beforeprint',()=>{printState=[...document.querySelectorAll('details')].map(item=>[item,item.open]);printState.forEach(([item])=>item.open=true)});
+window.addEventListener('afterprint',()=>printState.forEach(([item,open])=>item.open=open));
+</script></body></html>
