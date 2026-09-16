@@ -2,7 +2,7 @@
 
 ## 正式入口
 
-领域入口为`recommend(RecommendationCase)`。App Agent使用`recommend_fixed(RecommendationCase)`显式进入同一固定状态机，不再经过自由路由。Tool action分别为`recommend`和`recommend_fixed`。本模块只服务`SKILL.md`定义的第三类分析工作流“结构推荐”：闲聊、知识、指定模块运行、已有结果交付、资料维护及自由组合不进入候选状态机。推荐与正式交付相互独立；当前对话大模型负责理解用户意图；Mode1的Interpreter、Selector和Reviewer不要求iFind。本模块不索取或记录凭据。
+领域入口为`recommend(RecommendationCase)`。App Agent使用`recommend_fixed(RecommendationCase)`显式进入同一固定状态机，不再经过自由路由。Tool action分别为`recommend`和`recommend_fixed`。本模块只服务`SKILL.md`定义的第三类分析工作流“结构推荐”：闲聊、知识、指定模块运行、已有结果交付、资料维护及自由组合不进入候选状态机。推荐与正式交付相互独立；当前对话大模型负责理解用户意图；兼容顺序研判的Interpreter、Selector和Reviewer不要求iFind。本模块不索取或记录凭据。
 
 用户已经明确指定产品时不进入候选选择，只验证该产品、标的和覆盖参数；用户指定一个或多个分析模块时直接进入相应模块；用户要求整理已有结果时直接进入Reporter。只有需要从市场观点或约束中选择结构时才运行本模块。
 
@@ -10,7 +10,7 @@
 
 ## 固定推荐流程
 
-该顺序不可跳过、倒置或用模型文本替代。模型只负责理解和说明；候选、合同、计算和交付均由受控端口完成。
+以下角色顺序适用于兼容顺序研判；其他预设按后文的角色流程执行。各预设都必须保留需求约束、候选登记、证据验证和正式交付门禁。模型负责理解、提出方案和决定职责内的工具调用；候选、合同、计算和交付均由受控端口处理，不能用模型文字替代计算。
 
 本模块是客户侧产品筛选工具。各Mode角色和确定性聚合器都以客户已经表达的市场情景、期限、风险承受能力、本金偏好和收益目标为约束，推荐结论必须说明客户为什么适合、承担什么成本与风险以及何时不适合。发行便利、销售偏好、产品库存、页面默认选项、示例编号和更高票息均不得成为推荐理由。
 
@@ -21,22 +21,36 @@
 5. 领域层形成当前候选快照；确认投影仅包含候选、产品、规则修订、标的顺序及当前输入。研究简报和完整研究报告只在缺少会改变计算含义的条件时，一次合并展示拟采用条款并确认；参考报价默认由当前对话直接确定多个结构、标的、期限和参数组合，用户明确指定的结构、期限、条款或已保存结果覆盖对应部分。
 6. 用户明确要求正式交付时，Host按最新OptionReg编译当前输入，顶层工作流按模块需要复用或取得受控DataAssetRef。参考报价对每个选定输入调用必要的Pricer，再由Reporter合并为一份Quote并交给Designer；研究简报和完整研究报告只消费明确选择并核验的ModuleRun。未提出交付时，到候选结论为止，不调用Reporter或Designer。
 
-## 推荐Mode
+## 推荐预设
 
-- Mode1顺序研判：`Interpreter→Selector→Reviewer`。三个角色各自使用一次独立执行；只读取Knowledger，不调用金融计算模块。
-- Mode2产品交易循环：`Structurer⇄Trader→Reviewer`。Structurer提出当前候选和验证需求；Host调用Payoffer、Pricer或Backtester，Trader只依据该候选本轮的已验证Run和FactRef接受候选或提出受控调整。最多2轮，调整保留同一candidate_id并清除受影响的旧证据。
-- Mode3独立评议：Framer完成约束框定后，Matcher和Hedger在隔离上下文中并行读取受控知识证据并提出候选，Moderator合并两条分支的结构化候选与风险结论。当前领域流程不在分支中执行金融计算；任一必要分支失败则整体失败。
-- Mode4约束排序：`Specifier→Generator→Hosted评估→确定性Ranker→Reviewer`。Host逐一评估资料已就绪的当前候选；领域层校验其显式ModuleRun、模块状态和指标来源。Ranker先执行硬约束过滤，再按用户顺序排序；Reviewer只能批准或拒绝。保留合格候选并明确说明数量不足，不把失败模块的残留数值用于排序。
+- 兼容顺序研判：`Interpreter→Selector→Reviewer`。只读取Knowledger，不调用金融计算模块，是Skill的默认预设，不属于App公开的三个Mode。
+- 产品交易循环，App Mode1：`Structurer⇄Trader→Reviewer`。Structurer提出候选和验证问题；Host登记候选后，Structurer和Trader可按职责调用受控研究工具。Trader依据当前候选已验证的Run和FactRef接受候选或提出调整。快速、标准、深入研究最多执行1、2、4轮；条款调整保留同一candidate_id并清除受影响的旧证据。
+- 独立评议，App Mode2：Framer框定约束后，Matcher和Hedger在隔离上下文中并行提出候选。Host登记后，两角色分别验证自身候选，可按需调用金融计算工具；首次研究不能读取另一角色的候选证据。独立研究完成后共享证据，Moderator汇总结论，并按档位对具体问题要求定向复核。不能把首次研究的计算阶段描述为全部并行执行；任一必要角色执行失败均不得宣称流程完成。
+- 约束排序，App Mode3：`Specifier→Generator→Evaluator→确定性Ranker→Reviewer`。Evaluator自主读取候选已有证据，仅对缺失指标调用受控计算。Ranker先按硬约束过滤，再按用户指定顺序排序；Reviewer审核结果，不自行改分。证据或数量不足时按档位补充验证或候选，保留已验证结果并说明不足，不将失败模块的残留数值用于排序。
 
-App从设置中心读取Mode并要求真实多Agent，不根据对话中的Mode字样临时改写设置。Skill默认Mode1，只有用户明确指定时才切换Mode2至Mode4。
+App从设置中心读取预设和研究深度，默认产品交易循环及标准研究，并要求真实多Agent；对话中的Mode字样不临时改写设置。Skill默认兼容顺序研判，只有用户明确指定其他预设时才切换。
 
-Mode1不调用市场数据。只有后续确定需要新数据的Pricer或Backtester时，才先复用合格DataAssetRef；无法复用时先确认iFind，再按DataFetcher指南取得数据。缺少Python、依赖或Store时不启动运行模块，但可以完成不依赖计算的候选研究。
+兼容顺序研判不调用市场数据。研究预设或后续模块需要Pricer、Backtester的新数据时，先复用合格DataAssetRef；无法复用时先确认iFind，再按DataFetcher指南取得数据。缺少Python、依赖或Store时不启动运行模块，但可以完成不依赖计算的候选研究。
+
+## 研究档位与共享角色
+
+三种研究预设默认采用标准研究。Skill仅在用户明确说快速研究、标准研究或深入研究时选择相应档位；深度报告等交付名称不改变档位。以下均为每次研究的上限，不要求跑满，也不调整定价参数或精度。
+
+| 研究档位 | 共享模块计算预算 | 产品循环轮数 | 评议复核轮数 | 排序补充轮数 |
+| --- | --- | --- | --- | --- |
+| 快速研究 | 6 | 1 | 0 | 0 |
+| 标准研究 | 12 | 2 | 1 | 1 |
+| 深入研究 | 24 | 4 | 2 | 2 |
+
+一次请求计算两个模块占用两份预算。读取已有结果不增加计算；相同候选、模块、约束和已冻结数据版本的成功计算可以复用，同一在途请求可以共享。预算用完或用户明确只比较、不计算时，应说明尚未验证的部分，不能用模型估计补成计算事实。
+
+App和Skill共享预设及预算配置`research_profiles/presets.json`与该目录各预设、各角色的AGENT.md，由`research_policy.py`统一读取。角色只使用配置允许的工具：搜索结构、计算已登记候选、读取研究证据。Moderator和Reviewer只读取研究证据，不直接执行金融计算。`ResearchSession`管理本次研究的共享预算、候选访问范围和证据复用；模型连接、角色上下文和停止清理由宿主负责。
 
 资料状态不是`ready`的候选可以保留为研究结果，但不得进入金融评估，状态为`pending_terms`。候选身份仅为`candidate_id`，生成内容绑定`product_id`及正整数`rule_revision`。用户修改已允许参数时，`create_term_variant`更新同一候选的当前输入，清除旧运行引用和评估记录，不重新执行Research或Selector。随后由Host按最新OptionReg编译，并按模块正式输入依赖执行计算。部分模块重试时保留其他模块仍有效的Run，重试失败也必须移除该模块旧成功证据。任务本身不保存活动合同或产品绑定，可自由切换产品。
 
-Skill默认使用Mode1；用户明确指定时可使用Mode2产品交易循环、Mode3独立评议或Mode4约束排序。是否执行真实多Agent由外部Harness的结构化输出和子角色执行上下文隔离能力共同决定，不取决于特定Provider。能力成立时按所选Mode分角色执行；能力不足时由当前模型依次完成同一业务阶段并标记为`single_model`。用户明确要求必须多Agent时，能力不足必须返回不可用，不得降级，任何情况下都不得伪称多Agent。
+Skill默认使用兼容顺序研判；用户明确指定时可使用产品交易循环、独立评议或约束排序。是否执行真实多Agent由外部Harness的结构化输出和子角色执行上下文隔离能力共同决定，不取决于特定Provider。能力成立时按所选Mode分角色执行；能力不足时由当前模型依次完成同一业务阶段并标记为`single_model`。用户明确要求必须多Agent时，能力不足必须返回不可用，不得降级，任何情况下都不得伪称多Agent。
 
-Skill只声明工作流；外部Harness的运行机制不属于OptionHelper业务步骤。正式External Harness集成所需的内部协调端口只记录在开发者集成文档中，不属于默认Skill指南。
+开发者将Skill接入本模块状态机时，自主研究要求宿主绑定受控研究工具，未绑定不得宣称已完成计算研究。Codex原生Skill执行另按SKILL.md链接的原生多Agent工作指南，由主Agent使用宿主工具分工并调用公开金融模块，不要求先实现HostAgentPort；这不代表已经执行本模块的状态机、候选登记或确定性排序。两种路径一次只选一种。App仍使用原有状态机和工具绑定，不读取原生Skill调度约定。
 
 Payoffer、Pricer、Backtester、Reporter和Designer继续按确定性模块执行。任何Agent均不得投票改写估值、Greeks、回测、合同或Reporter冻结事实。
 
