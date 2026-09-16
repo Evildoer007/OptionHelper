@@ -51,6 +51,7 @@ if str(MACOS_PACKAGING) not in sys.path:
     sys.path.insert(0, str(MACOS_PACKAGING))
 
 from verify_skill import content_tree_entries, tree_hash
+from verify_frontend import verify_frontend_assets
 from verify_capability import verify_app_capability
 from release_contract import skill_archive_name
 from release_contract import APP_VERSION, RELEASE_VERSION, require_app_version, app_platform_versions
@@ -1292,6 +1293,10 @@ def probe_backend_startup(backend: Path, resources: Path, workspace: Path) -> No
                         payload = json.loads(response.read().decode("utf-8"))
                     if payload.get("status") != "ok":
                         raise MacOSBuildError("冻结后端健康检查返回无效状态")
+                    for asset in sorted((resources / "frontend/shared").glob("*.js")):
+                        with urlopen(url + "/app/frontend/shared/" + asset.name, timeout=2.0) as response:
+                            if response.read() != asset.read_bytes():
+                                raise MacOSBuildError("冻结后端前端资源内容不一致：" + asset.name)
                     return
                 except OSError:
                     # The launcher wrote its URL before the HTTP thread was
@@ -1629,6 +1634,7 @@ def build_macos(
         manifest_version = app_version if formal_release else "development"
         write_info_plist(bundle, app_version, formal_release=formal_release)
         _shell, shell_language, build_tool = compile_shell(bundle, app_root=app_root)
+        verify_frontend_assets(app_root)
         copy_tree(app_root / "frontend", resources / "frontend", extra_ignored=("*.md",))
         copy_tree(source, resources / "capability" / "option-helper")
         assert_staged_capability(source, resources / "capability" / "option-helper")
