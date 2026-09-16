@@ -28,6 +28,12 @@ class AgentLoopPort(Protocol):
     ) -> dict[str, Any]: ...
 
 
+def _new_report_ids(rows, previous_reports):
+    """Store listings are newest first; delivery follows creation order."""
+    return [row['report_run_id'] for row in sorted(rows, key=lambda row: row['created_at'])
+            if row['report_run_id'] not in previous_reports]
+
+
 class ConversationService:
     def __init__(self, task_service: TaskService, gateway: ModelGateway, *, agent_loop: AgentLoopPort | None = None, report_delivery=None) -> None:
         self._task_service = task_service
@@ -106,11 +112,20 @@ class ConversationService:
                         identity, task_id, request_id, replay_key,
                     ) or request_state
                     delivery = delivery_request(message) if self._report_delivery else None
-                    report_id = self._report_delivery.current_document(identity, task_id) if delivery and delivery['export_only'] and not delivery['multiple'] else None
+                    export_handled = False
+                    export_ids = None
+                    if delivery:
+                        try:
+                            export_ids = self._report_delivery.export_selection(identity, task_id, message)
+                        except ValidationError as error:
+                            response = {'status': 'needs_input', 'text': str(error)}
+                            export_handled = True
                     previous_reports = {row['report_run_id'] for row in self._report_delivery.results.list_report_runs(identity, task_id)} if self._report_delivery else set()
-                    if report_id:
-                        response = {'status': 'completed'}
-                    else:
+                    if export_ids:
+                        response = self._report_delivery.export_documents(
+                            identity, task_id, export_ids, delivery['format'], cancelled=turn_cancelled)
+                        export_handled = True
+                    elif not export_handled:
                         response = self._run_model(
                             identity, task_id, message, selection,
                             execution_ids=_execution_ids(request_state),
@@ -118,16 +133,16 @@ class ConversationService:
                         )
                     created = []
                     if self._report_delivery:
-                        created = [row['report_run_id'] for row in self._report_delivery.results.list_report_runs(identity, task_id) if row['report_run_id'] not in previous_reports]
-                    if turn_cancelled():
+                        created = _new_report_ids(self._report_delivery.results.list_report_runs(identity, task_id), previous_reports)
+                    if turn_cancelled() and not export_handled:
                         response = _cancelled_response()
-                    if delivery and not turn_cancelled():
+                    if delivery and not turn_cancelled() and not export_handled:
                         try:
                             response = self._report_delivery.complete(identity, task_id, message, response,
-                                request_id=request_id, report_id=report_id or (created[-1] if created else None))
+                                request_id=request_id, report_id=created[-1] if created else None)
                         except ValidationError as error:
                             response = {'status':'needs_input','text':str(error)}
-                    if turn_cancelled():
+                    if turn_cancelled() and not export_handled:
                         response = _cancelled_response()
                     if self._report_delivery and created:
                         response = self._report_delivery.attach_documents(identity, task_id, response, created)
