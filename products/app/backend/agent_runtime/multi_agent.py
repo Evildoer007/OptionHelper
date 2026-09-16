@@ -30,6 +30,7 @@ from ..model_gateway.request_control import ModelRequestCancelled, ModelRequestC
 from ..settings.settings_models import ModelSelection
 from .session_context import RunId, SessionEventLog, SessionHeader, SessionId
 from .runtime_invariants import RUNTIME_INVARIANTS
+from runtime.research_policy import load_role_instructions, preset_definitions
 from .durability_checkpoint import DispatchCheckpoint, DurabilityCheckpointStore, stable_operation_id
 
 
@@ -124,34 +125,17 @@ class MultiAgentRecommendationPreset:
 
 
 _PRESETS = {
-    "sequential-deliberation": MultiAgentRecommendationPreset(
-        preset_id="sequential-deliberation", display_name="Mode 1",
-        execution_strategy="sequential", enabled=True, max_agent_runs=4,
-        max_parallel_agent_runs=1, max_seconds_per_agent_run=45.0,
-        roles=("Interpreter", "Selector", "Reviewer"), workflow_total_budget=4,
+    key: MultiAgentRecommendationPreset(
+        preset_id=key, display_name=definition["display_name"],
+        execution_strategy=definition["execution_strategy"], enabled=True,
+        max_agent_runs=definition["default_role_budget"],
+        max_parallel_agent_runs=definition["max_parallel_agents"],
+        max_seconds_per_agent_run=definition["model_timeout_seconds"],
+        roles=tuple(definition["roles"]),
+        workflow_total_budget=definition["default_role_budget"],
         allow_single_agent_fallback=False,
-    ),
-    "product-trader-loop": MultiAgentRecommendationPreset(
-        preset_id="product-trader-loop", display_name="Mode 1",
-        execution_strategy="structurer_trader_loop", enabled=True, max_agent_runs=8,
-        max_parallel_agent_runs=1, max_seconds_per_agent_run=45.0,
-        roles=("Structurer", "Trader", "Reviewer"), workflow_total_budget=8,
-        allow_single_agent_fallback=False,
-    ),
-    "independent-council": MultiAgentRecommendationPreset(
-        preset_id="independent-council", display_name="Mode 2",
-        execution_strategy="independent_council", enabled=True, max_agent_runs=6,
-        max_parallel_agent_runs=2, max_seconds_per_agent_run=45.0,
-        roles=("Framer", "Matcher", "Hedger", "Moderator"), workflow_total_budget=6,
-        allow_single_agent_fallback=False,
-    ),
-    "constraint-ranking": MultiAgentRecommendationPreset(
-        preset_id="constraint-ranking", display_name="Mode 3",
-        execution_strategy="constraint_ranking", enabled=True, max_agent_runs=24,
-        max_parallel_agent_runs=4, max_seconds_per_agent_run=45.0,
-        roles=("Specifier", "Generator", "Evaluator", "Reviewer"), workflow_total_budget=24,
-        allow_single_agent_fallback=False,
-    ),
+    )
+    for key, definition in preset_definitions().items()
 }
 
 
@@ -166,114 +150,7 @@ _DEFAULT_CONTEXT_POLICY = {
 }
 
 
-_DEFAULT_AGENT_INSTRUCTIONS = {
-    "sequential-deliberation": {
-        "Interpreter": """# Interpreter
-
-职责：将用户目标整理为清晰、可验证的产品约束。
-
-- 区分硬约束、偏好和待确认信息。
-- 不生成候选产品，不编造行情、定价或回测结论。
-- 输出供Selector直接使用的结构化约束。""",
-        "Selector": """# Selector
-
-职责：依据已确认约束生成并比较候选结构。
-
-- 只使用输入中已有的产品目录和受控事实。
-- 明确说明候选满足或不满足哪些约束。
-- 不把缺失数据推断为已验证事实。""",
-        "Reviewer": """# Reviewer
-
-职责：复核候选、约束和证据是否一致。
-
-- 检查事实引用、约束遗漏和结论越界。
-- 不新增候选，不替代Host执行金融计算。
-- 仅批准证据充分且逻辑闭合的结果。""",
-    },
-    "product-trader-loop": {
-        "Structurer": """# Structurer
-
-职责：提出候选结构、条款调整和验证计划。
-
-- 每次调整必须形成明确、可复核的候选方案。
-- 标出需要Payoffer、Pricer或Backtester验证的事项。
-- 不把尚未运行的计算写成事实。""",
-        "Trader": """# Trader
-
-职责：基于Host返回的受控事实评估候选。
-
-- 只接受可追溯到FactRef的金融结论。
-- 说明接受、退回或继续验证的具体原因。
-- 条款变化后必须基于新版本重新评估。""",
-        "Reviewer": """# Reviewer
-
-职责：复核最终候选版本及其事实链。
-
-- 检查候选当前输入、运行结果和FactRef是否一致。
-- 拒绝跨候选拼接或未经验证的结论。
-- 不新增金融事实。""",
-    },
-    "independent-council": {
-        "Framer": """# Framer
-
-职责：定义需求边界、比较口径和未决问题。
-
-- 将共同事实与待判断事项分开。
-- 为Matcher和Hedger提供同一比较框架。
-- 不预先给出候选优劣结论。""",
-        "Matcher": """# Matcher
-
-职责：独立评估候选与用户约束的匹配程度。
-
-- 逐项核对约束与受控事实。
-- 不代替Hedger判断风险暴露。
-- 对缺少证据的候选明确标记不可确认。""",
-        "Hedger": """# Hedger
-
-职责：独立识别风险暴露、对冲条件和边界。
-
-- 只引用已提供或工具返回的风险事实。
-- 区分产品风险、市场假设和执行限制。
-- 不因匹配度高而弱化风险提示。""",
-        "Moderator": """# Moderator
-
-职责：汇总独立意见并形成可追溯结论。
-
-- 保留Matcher与Hedger的实质分歧。
-- 结论必须对应共同事实和明确证据。
-- 不新增其他角色未验证的金融事实。""",
-    },
-    "constraint-ranking": {
-        "Specifier": """# Specifier
-
-职责：把用户要求转换为硬约束和排序规则。
-
-- 硬约束、软偏好和权重必须明确分开。
-- 排序规则应可重复执行。
-- 不生成候选或评分结果。""",
-        "Generator": """# Generator
-
-职责：在受控产品目录和证据范围内生成候选。
-
-- 每个候选必须满足全部硬约束。
-- 不自行修改排序规则。
-- 不补造缺失的金融事实。""",
-        "Evaluator": """# Evaluator
-
-职责：逐个验证候选并返回可追溯事实。
-
-- 评分只使用Specifier冻结的规则。
-- 明确记录淘汰原因和FactRef。
-- 不以主观偏好替代确定性比较。""",
-        "Reviewer": """# Reviewer
-
-职责：终审确定性排序及其证据。
-
-- 检查硬约束、评分口径和排序结果的一致性。
-- 只批准或拒绝，不重写评分规则。
-- 拒绝缺少FactRef或跨版本拼接的结果。""",
-    },
-}
+_DEFAULT_AGENT_INSTRUCTIONS = {key: load_role_instructions(key) for key in preset_definitions()}
 
 
 def default_agent_instructions(preset_id: str) -> Mapping[str, str]:
