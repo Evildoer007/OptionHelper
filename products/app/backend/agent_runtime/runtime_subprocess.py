@@ -537,7 +537,22 @@ class RuntimeSubprocessTransport:
         return self.model_proxy.stream(route, [{"role": "user", "content": prompt}])
 
     def _handle_model_request(self, params: Mapping[str, Any], *, complete: bool) -> Mapping[str, Any]:
-        return self._model_result(self._model_raw(params), complete=complete)
+        result = self._model_result(self._model_raw(params), complete=complete)
+        if params.get("operation") != "research_checkpoint":
+            return result
+        # Keep the existing per-string transport guard without clipping structured JSON.
+        # The receiver rejoins text chunks before applying the unchanged context budget.
+        chunks = []
+        for chunk in result["chunks"]:
+            if chunk.get("type") == "text-delta" and isinstance(chunk.get("text"), str):
+                text = chunk["text"]
+                chunks.extend({**chunk, "text": text[start:start + 16_000]}
+                              for start in range(0, len(text), 16_000))
+            else:
+                chunks.append(chunk)
+        if len(chunks) > 256:
+            raise RuntimeSubprocessError("研究检查点超过传输分块容量，不能截断JSON")
+        return {"chunks": chunks}
 
     def _handle_model_stream_request(self, identifier: str, params: Mapping[str, Any]) -> Mapping[str, Any]:
         try:
