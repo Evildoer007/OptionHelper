@@ -236,6 +236,15 @@ class ComputeProcessSupervisor:
                 continue
             return result
 
+    def record_host_failure(self, module: str, error: Exception) -> None:
+        """Retain the cause of preparation failures without recording inputs."""
+        import traceback
+        sites = [f"{Path(frame.filename).name}:{frame.name}:{frame.lineno}"
+                 for frame in traceback.extract_tb(error.__traceback__)]
+        self._diagnostics.record("host_compute_failure", module=module,
+                                 error_type=type(error).__name__,
+                                 error_message=str(error), call_sites=" > ".join(sites))
+
     def shutdown(self) -> None:
         with self._condition:
             self._closed = True
