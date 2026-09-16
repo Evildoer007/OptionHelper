@@ -24,6 +24,7 @@ from .renderer import (
     backtest_summary_rows,
     canonical_greeks,
     display_text,
+    display_basis,
     detail_tables,
     esc,
     esc_rendered,
@@ -326,8 +327,10 @@ def render_multicard_html(
             if key != "recommendation" and content:
                 content = re.sub(r'<caption\b[^>]*>.*?</caption>', '', content, flags=re.S)
                 blocks.append(f'<section><h3>{esc(label)}</h3>{content}</section>')
-        cards.append(f'<article class="comparison-product-card"><header><p>{esc(item["underlyings"])}</p><h2>{esc(item["title"])}</h2></header>' + "".join(blocks) + item["supplement"] + "</article>")
-    body = '<section class="comparison-product-cards">' + "".join(cards) + "</section>"
+        content = "".join(blocks) + item["supplement"]
+        if content:
+            cards.append(f'<article class="comparison-product-card"><header><p>{esc(item["underlyings"])}</p><h2>{esc(item["title"])}</h2></header>' + content + "</article>")
+    body = '<section class="comparison-product-cards">' + "".join(cards) + "</section>" if cards else ""
     for section_id, section_title, _block in section_definition:
         content = render_presentation_content(appended_content.get(section_id, ()))
         if content:
@@ -360,6 +363,8 @@ def _comparison_table(candidates: Sequence[Mapping[str, Any]], rows_by_candidate
                     if (
                         existing.get("value") != row.get("value")
                         or text(existing.get("value_format")) != text(row.get("value_format"))
+                        or text(existing.get("value_suffix")) != text(row.get("value_suffix"))
+                        or display_basis(existing) != display_basis(row)
                     ):
                         candidate_label = text(group[candidate_index].get("label"))
                         raise ValueError(f"{candidate_label}存在同名但取值冲突的指标：{label}。")
@@ -376,7 +381,12 @@ def _comparison_table(candidates: Sequence[Mapping[str, Any]], rows_by_candidate
             row: dict[str, Any] = {"metric": label}
             for index, mapped in enumerate(values):
                 item = mapped.get(label)
-                row[f"c{index}"] = display_text(item.get("value"), item.get("value_format")) + text(item.get("value_suffix")) if item else "—"
+                if item is None:
+                    row[f"c{index}"] = "—"
+                    continue
+                value = display_text(item.get("value"), item.get("value_format")) + text(item.get("value_suffix"))
+                basis = display_basis(item)
+                row[f"c{index}"] = f"{value}（{basis}）" if basis else value
             table_rows.append(row)
         if table_rows:
             tables.append({"title": title, "columns": columns, "rows": table_rows})
@@ -670,9 +680,17 @@ def render_multireport_html(
     overview = _aggregate_report(payload, appended_content)
     overview["parameters"]["detail_tables"] = _comparison_table(_candidates(payload),
         [_term_rows(as_dict(item.get("facts"))) for item in _candidates(payload)], "关键条款")
-    for module in ("payoff", "pricing", "backtest"):
-        overview[module] = {"status": "not_run"}
-    overview_sections = [item for item in section_definition if item[2] != "recommendation"]
+    # Calculation details appear once per product. Hide their overview sections
+    # without changing the verified states consumed by the shared risk summary.
+    overview_sections = []
+    for section_id, title, key in section_definition:
+        if key == "recommendation":
+            continue
+        if key in {"payoff", "pricing", "backtest"}:
+            if appended_content.get(section_id):
+                overview_sections.append((section_id, title, "supplemental"))
+            continue
+        overview_sections.append((section_id, title, key))
     return render_html(
         overview, input_dir, echarts_path,
         design_system_id=build_design_system().design_system_id,
