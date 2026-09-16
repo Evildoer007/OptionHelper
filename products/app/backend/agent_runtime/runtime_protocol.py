@@ -27,6 +27,7 @@ _EVENT_TYPES = frozenset(
         "runtime.error",
         "runtime.recovered",
         "workflow.started",
+        "workflow.handoff",
         "workflow.completed",
         "workflow.failed",
         "workflow.cancelled",
