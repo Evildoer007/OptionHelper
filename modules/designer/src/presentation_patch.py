@@ -23,7 +23,7 @@ _FORBIDDEN_KEYS = frozenset({
     "font", "fonts", "spacing", "radius", "shadow", "class", "html",
     "javascript", "script", "src", "href",
 })
-_MARKUP = re.compile(r"<\s*/?\s*[A-Za-z]|javascript\s*:", re.IGNORECASE)
+_MARKUP = re.compile(r"<\s*/?\s*[A-Za-z][\w:-]*(?:\s+[^<>]*?)?\s*/?>|<\s*/?\s*(?:script|iframe|object|embed|img)\b|javascript\s*:", re.IGNORECASE)
 # Payload may legitimately use terms such as ``exercise_style``. Reject only
 # unambiguous visual keys here; presentation_patch itself uses the stricter
 # list above because its vocabulary is fully controlled by Designer.
@@ -167,8 +167,13 @@ def validated_supplemental_sections(
             if not isinstance(node, Mapping):
                 raise ValueError(f"supplemental_sections[{index}].content[{node_index}]必须是对象。")
             node_type = str(node.get("type") or "").strip().lower()
-            if node_type not in {"paragraph", "metrics", "table", "formula", "chart"}:
+            if node_type not in {"paragraph", "heading", "metrics", "table", "formula", "chart"}:
                 raise ValueError(f"supplemental_sections[{index}]包含不支持内容类型：{node_type or '空'}。")
+            if node_type == "heading":
+                level = node.get("level")
+                if type(level) is not int or not 3 <= level <= 6:
+                    raise ValueError("supplemental heading.level必须为3至6的整数。")
+                _plain_text(node.get("text"), "heading.text")
             _reject_visual_keys(node, f"supplemental_sections[{index}].content[{node_index}]")
             nodes.append(deepcopy(dict(node)))
         result[section_id] = (title, tuple(nodes))
