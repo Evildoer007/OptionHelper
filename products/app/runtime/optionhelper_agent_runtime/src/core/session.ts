@@ -103,7 +103,7 @@ export class AgentSession {
         const data = event.data as Record<string, unknown>
         messages.push({
           id: `summary-${event.seq}`,
-          role: "system",
+          role: data.researchCheckpoint === true ? "user" : "system",
           content: [{ type: "text", text: String(data.summary ?? "") }],
         })
       }
