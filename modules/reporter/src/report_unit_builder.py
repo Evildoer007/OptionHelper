@@ -1470,6 +1470,62 @@ _PREMIUM_STATUS_NOTES = {
 }
 
 
+def _entry_hv_tables(summary: Any) -> tuple[list[dict[str, Any]], list[str]]:
+    """Project frozen entry-HV groups; never recalculate volatility or returns."""
+    if not isinstance(summary, Mapping) or summary.get("status") == "not_requested":
+        return [], []
+    invalid_note = "入场历史波动率分组数据不完整或口径无效，未展示分组统计。"
+    if summary.get("value_encoding") != "decimal_ratio" or summary.get("status") not in {"available", "partial", "not_available"}:
+        return [], [invalid_note]
+    grouped = _safe_count(summary.get("grouped_sample_count"))
+    ungrouped = _safe_count(summary.get("ungrouped_sample_count"))
+    groups = summary.get("groups")
+    if grouped is None or ungrouped is None or not isinstance(groups, list):
+        return [], [invalid_note]
+    rows = []
+    count_keys = ("sample_count", "valid_return_sample_count", "positive_return_count", "zero_return_count", "negative_return_count")
+    return_keys = ("average_contract_settlement_return", "median_contract_settlement_return", "minimum_contract_settlement_return", "maximum_contract_settlement_return")
+    for raw in groups:
+        if not isinstance(raw, Mapping):
+            return [], [invalid_note]
+        counts = {key: _safe_count(raw.get(key)) for key in count_keys}
+        if any(value is None for value in counts.values()) or counts["valid_return_sample_count"] > counts["sample_count"]:
+            return [], [invalid_note]
+        if sum(counts[key] for key in count_keys[2:]) != counts["valid_return_sample_count"]:
+            return [], [invalid_note]
+        lower, upper = raw.get("lower_bound"), raw.get("upper_bound")
+        if any(bound is not None and (_safe_number(bound) is None or bound < 0) for bound in (lower, upper)) or (lower is not None and upper is not None and lower >= upper):
+            return [], [invalid_note]
+        label = (f"{lower * 100:.12g}%≤" if lower is not None else "") + "HV" + (f"<{upper * 100:.12g}%" if upper is not None else "")
+        row = {"label": label, **counts}
+        for key in (*return_keys, "positive_return_rate"):
+            value = raw.get(key)
+            valid = _safe_ratio(value) if key == "positive_return_rate" else _safe_number(value)
+            if value is not None and valid is None:
+                return [], [invalid_note]
+            row[key] = valid
+            row[key + "_format"] = "percent"
+        covered = raw.get("historical_loss_sample_covered")
+        row["historical_loss_sample_covered"] = "已覆盖" if covered is True else "未覆盖" if covered is False else "未提供"
+        rows.append(row)
+    if sum(row["sample_count"] for row in rows) != grouped:
+        return [], [invalid_note]
+    notes = [f"入场历史波动率分组覆盖{grouped}笔，未分组{ungrouped}笔；分组统计只描述已分组样本。"]
+    reasons = summary.get("ungrouped_reasons")
+    reason_labels = {"insufficient_pre_entry_adj_close": "入场前复权收盘价样本不足", "adj_close_not_provided": "未提供复权收盘价", "invalid_pre_entry_adj_close": "入场前复权收盘价无效", "invalid_entry_hv_grouping": "入场历史波动率分组信息无效"}
+    if isinstance(reasons, Mapping):
+        for reason, count in reasons.items():
+            count = _safe_count(count)
+            if count:
+                notes.append(f"{reason_labels.get(str(reason), '其他入场波动率数据限制')}：{count}笔未分组。")
+    if not rows:
+        return [], notes
+    columns = [("label", "入场历史波动率"), ("sample_count", "样本数"), ("valid_return_sample_count", "有效收益样本"), ("positive_return_count", "正收益样本"), ("zero_return_count", "持平样本"), ("negative_return_count", "负收益样本"), ("historical_loss_sample_covered", "历史损失样本")]
+    returns = [("label", "入场历史波动率"), ("positive_return_rate", "历史正收益样本占比"), ("average_contract_settlement_return", "平均合同结算收益率"), ("median_contract_settlement_return", "中位合同结算收益率"), ("minimum_contract_settlement_return", "最低合同结算收益率"), ("maximum_contract_settlement_return", "最高合同结算收益率")]
+    return [{"title": "入场历史波动率分组样本", "columns": columns, "rows": deepcopy(rows)},
+            {"title": "入场历史波动率分组收益", "columns": returns, "rows": deepcopy(rows)}], notes
+
+
 def _backtest_content(module: Mapping[str, Any], contract: Mapping[str, Any] | None = None) -> dict[str, Any]:
     status = str(module.get("status", "not_run"))
     value: dict[str, Any] = {"status": status, "note": _text(module.get("note"))}
@@ -1689,6 +1745,9 @@ def _backtest_content(module: Mapping[str, Any], contract: Mapping[str, Any] | N
             "columns": [("label", "指标"), ("value", "统计值")],
             "rows": deepcopy(specialized_rows),
         })
+    hv_tables, hv_notes = _entry_hv_tables(backtest.get("entry_hv_group_summary"))
+    detail_tables.extend(hv_tables)
+    coverage_limitations.extend(hv_notes)
     value["detail_tables"] = detail_tables
     value["event_statistics"] = []
     value["card_metrics"] = specialized_rows[:4]
@@ -1955,7 +2014,10 @@ def build_report_units(request: ReportRequest, evidence: Mapping[str, Any]) -> l
     if not isinstance(candidate_evidence, Mapping):
         raise ReporterError("证据解析结果缺少candidate_evidence")
     recommender = evidence.get("recommender") if isinstance(evidence.get("recommender"), Mapping) else {}
-    return [_contract_report_unit(request, candidate_evidence[candidate_id], recommender) for candidate_id in request.candidate_ids]
+    return [_contract_report_unit(evidence.get("source_requests", {}).get(candidate_id, request),
+                                  candidate_evidence[candidate_id],
+                                  evidence.get("source_recommenders", {}).get(candidate_id, recommender))
+            for candidate_id in request.candidate_ids]
 
 
 def build_report_document(request: ReportRequest, units: list[Mapping[str, Any]]) -> dict[str, Any]:
