@@ -29,6 +29,23 @@ class OpenAICompatibleStreamError(ValidationError):
     """Raised when an SSE response cannot be treated as a complete stream."""
 
 
+def _interrupt_response(response: Any) -> None:
+    """Wake urllib's blocked socket read before taking its buffered close lock."""
+    import socket
+
+    raw = getattr(getattr(response, "fp", None), "raw", None)
+    connection = getattr(raw, "_sock", None)
+    if isinstance(connection, socket.socket):
+        try:
+            connection.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass  # A completed or concurrently closed connection needs no wake-up.
+        return  # The streaming owner closes its response in the existing context manager.
+    close = getattr(response, "close", None)
+    if callable(close):
+        close()
+
+
 def stream_openai_compatible(
     settings: ModelServiceSettings,
     secret_ref: SecretRef,
@@ -91,12 +108,12 @@ def stream_openai_compatible(
     reasoning_chars = 0
     try:
         timeout = request_control.remaining_seconds() if request_control is not None else 45
-        with open_verified_https(request, timeout=timeout, opener=opener) as response:
+        with open_verified_https(request, timeout=timeout, opener=opener, request_control=request_control) as response:
             remove_cancel_listener: Callable[[], None] = lambda: None
             response_close = getattr(response, "close", None)
             if request_control is not None and callable(response_close):
                 remove_cancel_listener = request_control.add_cancel_listener(
-                    lambda _reason: response_close()
+                    lambda _reason: _interrupt_response(response)
                 )
             try:
                 if request_control is not None:
