@@ -18,7 +18,10 @@ _DELIVERY_MARKERS = {
     "report": ("完整研究报告", "详细报告", "深度报告", "完整报告", "report", "html", "pdf", "报告"),
     "quote": ("参考报价", "报价表", "quote"),
 }
+_NAMED_RECOMMENDATION_PRESETS = ("产品交易循环", "独立评议", "约束排序")
 _RECOMMENDATION_MARKERS = (
+    *_NAMED_RECOMMENDATION_PRESETS,
+    "比较结构", "对比结构", "结构比较", "结构对比", "比较候选", "对比候选",
     "推荐",
     "适合的期权",
     "哪种期权",
@@ -114,6 +117,20 @@ def decide_workflow(
     if recommendation_requested:
         return WorkflowDecision("recommendation", delivery_kind, delivery_format, preset_id,
                                 execution_semantics, "structure_selection_required")
+    # A recommendation can ask for inputs before it has any candidate. Its
+    # parameter reply still belongs to selection, even when it also says Card.
+    previous = next((row for row in reversed(messages or ()) if row.get("role") == "assistant"), {})
+    waiting_for_selection = (
+        not has_contract and not specified_structure
+        and previous.get("status") == "needs_input"
+        and bool(re.search(r"推荐|候选|结构|排序", str(previous.get("content", ""))))
+        and any(row.get("role") == "user" and any(marker in str(row.get("content", ""))
+                for marker in _RECOMMENDATION_MARKERS) for row in messages or ())
+    )
+    explicitly_direct = module_requested and bool(re.search(r"只|仅|先|不要推荐|无需推荐|不再推荐", lowered))
+    if waiting_for_selection and not explicitly_direct and _continues_recommendation(text, messages or ()):
+        return WorkflowDecision("recommendation", delivery_kind, delivery_format, preset_id,
+                                execution_semantics, "recommendation_question_continuation")
     if has_pending_candidate and re.search(r"(?:确认|就用|按)(?:这个|刚才|上述|第[0-9一二三四五六七八九十]+个)", lowered):
         return WorkflowDecision("recommendation", delivery_kind, delivery_format, preset_id,
                                 execution_semantics, "recommendation_continuation")
@@ -164,9 +181,16 @@ def decide_workflow(
 
 def _affirmative_actions(text: str) -> str:
     """Exclude negated action lists without swallowing the next affirmative action."""
-    action = r"(?:(?:生成|执行|进行|做)\s*)?(?:推荐|筛选|定价|估值|回测|报告|html|pdf|计算|文件)"
+    # Match individual actions, not entire clauses: later affirmative requests survive.
+    topic = (
+        r"(?:产品交易循环|独立评议|约束排序|比较结构|对比结构|结构比较|结构对比|比较候选|对比候选|"
+        r"推荐|筛选|收益分析|收益图|定价|估值|回测|报告|html|pdf|计算|文件|行情)"
+    )
+    action = rf"(?:(?:生成|执行|进行|运行|使用|采用|用|调用|获取|做|取)\s*)?{topic}"
     return re.sub(
-        rf"(?:不做|不要|不用|无需|不需要|先别|别)\s*(?:再|重新|走)?\s*{action}(?:\s*(?:和|或|与|、|及)\s*{action})*",
+        rf"(?<!不是)(?<!不能)(?:不需要|不要|不用|无需|禁止|先别|别|不)"
+        rf"\s*(?:再|重新|走)?\s*{action}"
+        rf"(?:\s*(?:和|或|与|、|及)?\s*{action})*",
         "", text,
     )
 
@@ -247,3 +271,9 @@ def recommendation_execution_mode(message: str, default: str = "single") -> str:
         selected = "single" if re.match(r"单|single", match.group("mode"), re.IGNORECASE) else "multi"
         mode = ({"single": "multi", "multi": "single"}[selected] if match.group("negative") else selected)
     return mode
+
+
+def requests_named_recommendation(message: object) -> bool:
+    """Recognize an affirmative named preset without inferring it from menu state."""
+    action_text = _affirmative_actions(str(message or "").casefold())
+    return any(name in action_text for name in _NAMED_RECOMMENDATION_PRESETS)
