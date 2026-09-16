@@ -322,7 +322,7 @@ class ReportRequest:
         missing = required_source_keys.difference(self.source_refs)
         if missing:
             raise ReporterError(f"source_refs缺少：{','.join(sorted(missing))}")
-        allowed_source_keys = required_source_keys | ({"quote_sources"} if self.output_type == "quote" else set())
+        allowed_source_keys = required_source_keys | ({"quote_sources"} if self.output_type == "quote" else {"comparison_requests"} if self.delivery_mode == "comparison" else set())
         unknown_source_keys = set(self.source_refs).difference(allowed_source_keys)
         if unknown_source_keys:
             raise ReporterError(
