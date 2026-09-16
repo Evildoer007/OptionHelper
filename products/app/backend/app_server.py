@@ -1680,6 +1680,22 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
             include_result = parse_qs(parsed.query).get("include_result", ["true"])[0].strip().casefold() not in {"0", "false", "no"}
             self._json(HTTPStatus.OK, {"operation": operation.public(include_result=include_result)})
             return
+        if path.startswith("/api/tasks/") and "/payoff-images/" in path:
+            identity = self._identity()
+            self.app.policy.require(identity.role, "task.read")
+            task_id, image_name = path.removeprefix("/api/tasks/").split("/payoff-images/", 1)
+            from .payoff_image_delivery import payoff_image_block
+            run_id = image_name.removesuffix(".svg")
+            if not image_name.endswith(".svg") or not payoff_image_block(task_id, run_id):
+                raise KeyError(path)
+            content = self.app.results.read_payoff_image(identity, task_id, run_id)
+            download = parse_qs(parsed.query).get("download", [""])[0] == "1"
+            self._bytes(HTTPStatus.OK, content, "image/svg+xml", extra_headers={
+                "Content-Disposition": f'{"attachment" if download else "inline"}; filename="payoff.svg"',
+                "Content-Security-Policy": "sandbox; default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'self'",
+                "X-Content-Type-Options": "nosniff",
+            })
+            return
         if path.startswith("/api/tasks/") and path.endswith("/reports"):
             identity = self._identity()
             self.app.policy.require(identity.role, "task.read")
@@ -3063,6 +3079,8 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
         shared_designer_assets = {
             "assets/designer/themes/designer-token-vars.css",
             "assets/designer/vendor/echarts.min.js",
+            "assets/designer/vendor/echarts-gl.min.js",
+            "assets/designer/vendor/surface-chart.js",
         }
         if not relative.startswith(page_prefix) and relative not in shared_designer_assets:
             raise AuthorizationError("module.page", "only registered module page assets are mountable")
