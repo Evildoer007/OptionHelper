@@ -109,6 +109,7 @@ FRONTEND_ASSETS = frozenset({
     "optdesk/index.html", "optdesk/optdesk.js",
     "settings/index.html", "settings/settings.js", "settings/model-providers.css", "settings/general-settings.css", "settings/settings-shell.css",
     "shared/styles.css", "shared/refinement.css", "shared/theme-overrides.css", "shared/app.js", "shared/transition-scope.js", "shared/theme-bootstrap.js", "shared/theme.js", "shared/ui-scale.js", "shared/scrollbar-activity.js", "shared/vol-surface.js", "shared/thinking-orb.js", "shared/thinking-orbs-engine.js", "shared/bloub-engine.js", "shared/bloub-avatar.js", "shared/activity-motion.js",
+    "shared/composer-research-controls.js", "shared/conversation-transition.js",
     "shared/conversation-outline.js", "shared/conversation-outline.css", "shared/conversation-scroll.js",
 })
 _CAPABILITY_CSP = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'self'; form-action 'self'"
@@ -722,6 +723,7 @@ class AppServer:
             model_providers=principal.model_providers,
             default_model_selection=local_selection,
             recommendation_execution_mode=principal.recommendation_execution_mode,
+            research_depth=principal.research_depth,
             multi_agent_recommendation_preset_id=principal.multi_agent_recommendation_preset_id,
             multi_agent_preset_role_models=principal.multi_agent_preset_role_models,
             multi_agent_preset_agent_instructions=principal.multi_agent_preset_agent_instructions,
@@ -949,6 +951,7 @@ class AppServer:
                 model_providers=providers,
                 default_model_selection=selection,
                 recommendation_execution_mode=snapshot.recommendation_execution_mode,
+                research_depth=snapshot.research_depth,
                 multi_agent_recommendation_preset_id=snapshot.multi_agent_recommendation_preset_id,
                 multi_agent_preset_role_models=snapshot.multi_agent_preset_role_models,
                 multi_agent_preset_agent_instructions=snapshot.multi_agent_preset_agent_instructions,
@@ -1529,7 +1532,7 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
                 "message": (
                     "请检查账号和密码后重试。"
                     if authentication_input else
-                    "本次输入不完整或格式不正确。请检查日期、条款和定价参数后重试。"
+                    _public_validation_summary(error)
                 ),
                 "detail": "认证输入不符合要求" if authentication_input else validation_detail,
                 "next_step": (
@@ -1622,7 +1625,10 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
             self.app.policy.require(identity.role, "task.read")
             task_ids = self.app.tasks.owned_task_ids(identity)
             active = self.app.operations.active_summaries(identity, task_ids)
-            self._json(HTTPStatus.OK, {"active_count": sum(len(value) for value in active.values())})
+            self._json(HTTPStatus.OK, {
+                "active_count": sum(len(value) for value in active.values()),
+                "active_operations_by_task": active,
+            })
             return
         if path.startswith("/api/tasks/") and path.endswith("/operations"):
             identity = self._identity()
@@ -1824,6 +1830,7 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
                 **self.app.agent_runtime_status,
                 "execution_mode": settings.recommendation_execution_mode,
                 "selected_preset_id": settings.multi_agent_recommendation_preset_id,
+                "research_depth": settings.research_depth,
                 "presets": [
                     {
                         "preset_id": preset.preset_id,
@@ -2459,15 +2466,21 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/settings/multi-agent-preset/default":
             self.app.policy.require(identity.role, "settings.model.local.write")
-            _only_fields(body, {"preset_id"})
+            _only_fields(body, {"preset_id", "research_depth"})
             preset_id = str(body.get("preset_id", "")).strip()
             preset = recommendation_presets().get(preset_id)
             if preset_id not in _RECOMMENDATION_MODE_IDS or preset is None or not preset.enabled:
                 raise ValidationError("MultiAgent预设未启用")
             current = self.app.settings_for(identity)
+            from runtime.research_policy import depth_policy
+            depth = body.get("research_depth", current.research_depth)
+            try:
+                depth_policy(depth)
+            except ValueError as error:
+                raise ValidationError(str(error)) from error
             saved = self.app.save_settings(
                 identity,
-                replace(current, multi_agent_recommendation_preset_id=preset_id),
+                replace(current, multi_agent_recommendation_preset_id=preset_id, research_depth=depth),
                 "settings.model.local.write",
             )
             self._json(HTTPStatus.OK, {"settings": self.app.public_settings(identity, saved)})
@@ -3247,6 +3260,15 @@ def _diagnostic_id(request_id: str, failure_code: str, stage: str) -> str:
 
     material = f"{request_id}|{stage}|{failure_code}".encode("utf-8")
     return f"diag-{hashlib.sha256(material).hexdigest()[:12]}"
+
+
+def _public_validation_summary(error: Exception) -> str:
+    """Give reviewed field guidance without promoting arbitrary error detail."""
+
+    detail = _safe_public_validation_message(error)
+    if detail == "条款覆盖不满足产品约束：H_in < H_out":
+        return "敲入障碍必须小于敲出障碍。"
+    return "本次输入不完整或格式不正确。"
 
 
 def _safe_public_validation_message(error: Exception) -> str:
