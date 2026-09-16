@@ -4,7 +4,7 @@
   position: absolute;
   inset-inline-start: 12px;
   top: 12%;
-  height: 76%;
+  height: min(var(--outline-content-height, 60px), 76%);
   width: 28px;
   z-index: 4;
   color: var(--ink, #242424);
