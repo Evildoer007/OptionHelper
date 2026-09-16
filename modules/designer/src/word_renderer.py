@@ -524,6 +524,9 @@ def _interpolate_color(start: str, end: str, ratio: float) -> str:
 
 def _render_chart_png(spec: Mapping[str, Any]) -> bytes:
     chart_type = str(spec.get("type") or "line").lower()
+    if chart_type == "surface":
+        from .components.surface import surface_svg
+        return _svg_to_png(surface_svg(spec).encode("utf-8"))[0]
     if chart_type not in {"line", "bar", "heatmap"}:
         raise WordRenderError(f"Word不支持图表类型：{chart_type}。")
     width, height = 1280, 420
