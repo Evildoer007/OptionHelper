@@ -6,7 +6,7 @@ is never multiplied merely because it is numeric.
 """
 from __future__ import annotations
 
-from decimal import Decimal, InvalidOperation, localcontext
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP, localcontext
 import copy
 import hashlib
 import html
@@ -208,6 +208,24 @@ def task_amounts(tasks, results, identity, task_id: str, *, references=None, pos
     return output
 
 
+def _display_amount(value: Any) -> str:
+    """Round only the rendered currency amount; preserve frozen source strings."""
+    if value is None:
+        return "不适用"
+    if isinstance(value, bool):
+        return "数值无效"
+    try:
+        number = Decimal(str(value))
+        if not number.is_finite() or (number != 0 and abs(number.adjusted()) > 400):
+            return "数值无效"
+        with localcontext() as context:
+            context.prec = max(50, len(number.as_tuple().digits) + max(0, number.adjusted()) + 4)
+            rounded = number.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        return format(abs(rounded) if rounded == 0 else rounded, ".2f")
+    except (InvalidOperation, ValueError, TypeError):
+        return "数值无效"
+
+
 def amount_report_html(view: Mapping) -> bytes:
     """A portable, immutable amount schedule accompanying a source report."""
     escape = lambda value: html.escape(str(value if value is not None else "不适用"))
@@ -224,15 +242,15 @@ def amount_report_html(view: Mapping) -> bytes:
         else:
             body += '<table><tr><th>项目</th><th>金额</th><th>单位</th></tr>'
             for row in projection["rows"]:
-                body += f'<tr><td>{escape(row["label"])}</td><td>{escape(row["amount"])}</td><td>{escape(row["unit"])}</td></tr>'
+                body += f'<tr><td>{escape(row["label"])}</td><td>{escape(_display_amount(row["amount"]))}</td><td>{escape(row["unit"])}</td></tr>'
             body += '</table><p>' + escape(projection.get("note")) + '</p>'
             if projection.get("trade_ledger"):
                 body += '<h3>逐笔结算</h3><table><tr><th>入场日</th><th>结算日</th><th>合同结算金额</th></tr>'
                 for trade in projection["trade_ledger"]:
-                    body += f'<tr><td>{escape(trade["entry_date"])}</td><td>{escape(trade["exit_date"])}</td><td>{escape(trade["amount"])}</td></tr>'
+                    body += f'<tr><td>{escape(trade["entry_date"])}</td><td>{escape(trade["exit_date"])}</td><td>{escape(_display_amount(trade["amount"]))}</td></tr>'
                 body += '</table>'
         chapters.append(body)
-    result = f'''<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{title}</title><style>body{{margin:0;color:#222;background:white;font:14px/1.8 system-ui}}nav{{position:fixed;width:190px;padding:28px;height:100vh;overflow:auto;border-right:1px solid #ddd}}nav a{{display:block;color:#333;margin-bottom:12px}}main{{margin-left:250px;padding:30px;max-width:900px}}h1{{font-size:26px}}h2{{margin-top:38px;font-size:20px}}table{{border-collapse:collapse;width:100%}}td,th{{border-bottom:1px solid #ddd;text-align:left;padding:8px;overflow-wrap:anywhere}}p{{overflow-wrap:anywhere}}@media(max-width:700px){{nav{{position:static;height:auto;width:auto}}main{{margin:0;padding:20px}}}}@media print{{nav{{display:none}}main{{margin:0}}}}</style><nav aria-label="目录">{''.join(links)}</nav><main><h1>{title}</h1><p>规模：{escape(setting['amount'])}{escape(setting['currency'])}；口径：{escape('名义本金' if setting['basis']=='notional' else '每方差百分点平方的名义金额')}。</p><p>本附表冻结生成时的规模与来源。百分比、合同、模型和已完成计算保持原口径；不进行外汇换算，不表示实际保证金或本金保本。</p>{''.join(chapters)}<p>金额附表指纹：{escape(view.get('projection_hash'))}</p></main></html>'''
+    result = f'''<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{title}</title><style>body{{margin:0;color:#222;background:white;font:14px/1.8 system-ui}}nav{{position:fixed;width:190px;padding:28px;height:100vh;overflow:auto;border-right:1px solid #ddd}}nav a{{display:block;color:#333;margin-bottom:12px}}main{{margin-left:250px;padding:30px;max-width:900px}}h1{{font-size:26px}}h2{{margin-top:38px;font-size:20px}}table{{border-collapse:collapse;width:100%}}td,th{{border-bottom:1px solid #ddd;text-align:left;padding:8px;overflow-wrap:anywhere}}p{{overflow-wrap:anywhere}}@media(max-width:700px){{nav{{position:static;height:auto;width:auto}}main{{margin:0;padding:20px}}}}@media print{{nav{{display:none}}main{{margin:0}}}}</style><nav aria-label="目录">{''.join(links)}</nav><main><h1>{title}</h1><p>规模：{escape(_display_amount(setting['amount']))}{escape(setting['currency'])}；口径：{escape('名义本金' if setting['basis']=='notional' else '每方差百分点平方的名义金额')}。</p><p>本附表冻结生成时的规模与来源。百分比、合同、模型和已完成计算保持原口径；不进行外汇换算，不表示实际保证金或本金保本。</p>{''.join(chapters)}<p>金额附表指纹：{escape(view.get('projection_hash'))}</p></main></html>'''
     return result.encode()
 
 
