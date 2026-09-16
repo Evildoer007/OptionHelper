@@ -1676,6 +1676,27 @@ function createConversationMessage(entry, options = {}) {
       if (String(block.preview_url || "").startsWith(prefix) && String(block.download_url || "").startsWith(prefix)) {
         content.append(createMessageArtifactCard({name:block.title, path:block.preview_url, downloadUrl:block.download_url, format:block.format, reportId:block.report_run_id}));
       }
+    } else if (type === "payoff-image" && /^[A-Za-z0-9._:-]{1,160}$/.test(block.task_id || "") && /^[A-Za-z0-9._:-]{1,160}$/.test(block.run_id || "")) {
+      const path = `/api/tasks/${encodeURIComponent(block.task_id)}/payoff-images/${encodeURIComponent(block.run_id)}.svg`;
+      const figure = document.createElement("figure");
+      figure.className = "message-payoff-image";
+      figure.style.margin = "16px 0";
+      const image = document.createElement("img");
+      image.src = path;
+      image.alt = "本次合同损益图";
+      image.style.cssText = "display:block;width:100%;height:auto";
+      const caption = document.createElement("figcaption");
+      const download = document.createElement("a");
+      download.href = `${path}?download=1`;
+      download.download = "payoff.svg";
+      download.textContent = "下载损益图（SVG）";
+      const error = document.createElement("span");
+      error.hidden = true;
+      error.textContent = "损益图暂未加载，请重新打开任务。";
+      image.addEventListener("error", () => { image.hidden = true; error.hidden = false; });
+      caption.append(download, error);
+      figure.append(image, caption);
+      content.append(figure);
     } else if (type === "reasoning" && text) {
       if (!messageReasoning) {
         messageReasoning = createReasoningDisclosure(text);
