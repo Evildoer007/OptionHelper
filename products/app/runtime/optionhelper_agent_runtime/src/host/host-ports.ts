@@ -38,7 +38,7 @@ function usage(value: unknown): TokenUsage {
 }
 
 function wireMessage(item: AgentMessage): JsonValue {
-  const content = item.content.map((block) => {
+  const content = item.content.map((block): JsonValue => {
     if (block.type === "tool-call") return { type: "tool_call", id: block.id, name: block.name, arguments: block.arguments }
     if (block.type === "image") return {
       type: "image", attachment_id: block.attachmentId, media_type: block.mediaType, name: block.name ?? "",
@@ -145,7 +145,18 @@ export class HostRuntimePorts implements RuntimePorts {
     for await (const raw of stream) {
       const item = object(raw)
       const type = String(item.type ?? item.event ?? "text-delta").replaceAll("_", "-")
-      if (type === "text-delta" || type === "reasoning-delta") {
+      if (type === "json-diagnostic") {
+        const data = object(item.diagnostic)
+        if (data.source !== "untrusted_model_draft") throw new Error("Invalid JSON diagnostic source")
+        // Explicit field allowlist keeps host context, settings, and reasoning out of audit.
+        const diagnostic: Record<string, JsonValue> = {}
+        for (const key of ["source", "role", "failure", "original_public_output", "repaired_public_output",
+          "syntax_position", "syntax_line", "syntax_column", "syntax_error"]) {
+          if (typeof data[key] === "string" || typeof data[key] === "number" || data[key] === null) diagnostic[key] = data[key] as JsonValue
+        }
+        yield { type: "json-diagnostic", diagnostic }
+      }
+      else if (type === "text-delta" || type === "reasoning-delta") {
         const blockType = type === "text-delta" ? "text" : "reasoning"
         if (activeTextBlock !== undefined && activeTextBlock.blockType !== blockType) {
           yield* closeTextBlock()
@@ -225,7 +236,22 @@ export class HostRuntimePorts implements RuntimePorts {
     }
   }
 
-  async summarize(messages: readonly AgentMessage[], maxChars: number, _signal: AbortSignal): Promise<string> {
+  summarize = async (messages: readonly AgentMessage[], maxChars: number, _signal: AbortSignal, purpose?: "research-checkpoint"): Promise<string> => {
+    const text = latestUserText(messages)
+    let envelope: any
+    try { envelope = JSON.parse(text) } catch { envelope = null }
+    if (purpose === "research-checkpoint" && envelope?.protocol === "optionhelper.recommender.step") {
+      const response = object(await this.peer.request("host.model.complete", {
+        operation: "research_checkpoint", prompt: text, roleId: envelope.role,
+        publicMessages: modelMessages(messages),
+      }, _signal))
+      const chunks = Array.isArray(response.chunks) ? response.chunks : []
+      const summary = chunks.map(raw => object(raw)).filter(chunk => chunk.type === "text-delta")
+        .map(chunk => String(chunk.text ?? "")).join("")
+      if (!summary) throw new Error("Host research checkpoint is unavailable")
+      return summary
+    }
+
     const lines: string[] = ["以下是此前对话的上下文摘要；精确金融数值必须通过FactRef重新读取："]
     for (const item of messages) {
       const raw = item.content.map((block) => {
