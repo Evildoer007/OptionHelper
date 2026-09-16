@@ -1121,18 +1121,6 @@ export async function startWorkspace(initialMode) {
       showWorkspaceStatus(error, true);
       return false;
     }
-    if (!currentTask) {
-      const selectionRevision = taskSelectionRevision;
-      try {
-        const task = await createTask();
-        if (currentTask || selectionRevision !== taskSelectionRevision) return false;
-        const selected = await selectTask(task.task_id);
-        if (!selected || currentTask?.task_id !== task.task_id) return false;
-      } catch {
-        if (!currentTask) showWorkspaceStatus("附件需要绑定研究任务，但新建任务未完成。", true);
-        return false;
-      }
-    }
     const targetTaskId = draftTaskId();
     const revision = ++attachmentDraftRevision;
     const prepared = [];
@@ -1153,6 +1141,16 @@ export async function startWorkspace(initialMode) {
       });
     }
     if (!prepared.length) return true;
+    if (targetTaskId === "new") {
+      // An unsent task has no server identity. Keep files local until Send.
+      // Blob previews are disallowed by the workspace CSP, so use file chips.
+      prepared.forEach(item => { revokeDraftPreview(item); item.previewUrl = ""; item.ownedPreviewUrl = false; });
+      draftAttachments.push(...prepared);
+      attachmentDraftTaskId = "new";
+      renderDraftAttachments();
+      syncComposerAvailability();
+      return true;
+    }
     showWorkspaceStatus("正在保存附件草稿。", false);
     let references;
     try {
@@ -1381,12 +1379,12 @@ export async function startWorkspace(initialMode) {
       summary,
       actions,
       events,
-      collaboration,
       createSection("分工", "process-agent-section", agentCards),
       createSection("工具调用", "process-tool-section", toolCards),
       usageSection,
     );
-    panel.append(details);
+    // Keep the collaboration map visible when detailed logs collapse for a question.
+    panel.append(collaboration, details);
     details.addEventListener("toggle", () => {
       if (!details.open) return;
       requestAnimationFrame(() => {
@@ -1501,6 +1499,7 @@ export async function startWorkspace(initialMode) {
     if (host.dataset.snapshot === signature) return;
     host.dataset.snapshot = signature;
     renderWorkflow(host, runs, presetStages, terminal, ({card}) => {
+      playback.details.open = true;
       card.scrollIntoView({block:"nearest", behavior:matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth"});
       const heading=card.querySelector("[data-process-card-title]");
       heading.tabIndex=-1; heading.focus({preventScroll:true});
@@ -1684,7 +1683,7 @@ export async function startWorkspace(initialMode) {
     setMotionText(playback.summaryLabel, "运行详情");
     playback.panel.querySelector(".process-detail-icon").hidden = false;
     if (playback.runtimeScope === "main_agent") {
-      if (outcome === "completed" && !playback.panel.querySelector('[data-process-card="tool"]') && playback.events.childElementCount === 0) {
+      if (outcome === "completed" && !playback.panel.querySelector('[data-process-card="tool"]') && playback.agentCardMap.size === 0 && playback.events.childElementCount === 0) {
         playback.panel.hidden = !playback.usage;
         if (playback.usage) {
           playback.panel.dataset.usageOnly = "true";
@@ -1814,7 +1813,7 @@ export async function startWorkspace(initialMode) {
       });
       wakeOperationPoll(operationId);
       if (module) publishModuleOperationCancel(module, operationId);
-      showWorkspaceStatus("正在停止。", false);
+      clearWorkspaceStatus();
       setRuntimeLiveStatus("正在停止。");
     } catch (error) {
       cancellingOperations.delete(operationId);
@@ -2736,8 +2735,8 @@ export async function startWorkspace(initialMode) {
     syncReportActions();
     title.textContent = "未选择任务";
     conversationTitle.textContent = "开始研究";
-    taskState.textContent = "请新建或选择任务后，再运行研究模块。";
-    renderMessages(stream, [], "新建任务后即可开始对话，并按需生成简单报告、详细报告或参考报价。");
+    taskState.textContent = "发送第一条消息后创建任务，或选择已有任务。";
+    renderMessages(stream, [], "发送第一条消息后创建任务，并按需生成简单报告、详细报告或参考报价。");
     renderReports(reports, []);
     renderTaskOperations([], "");
     chatSurface.classList.add("chat-surface--empty");
@@ -3583,9 +3582,30 @@ export async function startWorkspace(initialMode) {
       assistantToggle.focus();
     }
   });
-  document.querySelector("[data-new-task]").addEventListener("click", async () => {
+  document.querySelector("[data-new-task]").addEventListener("click", () => {
+    // Repeated clicks on the blank composer are idempotent, including while
+    // its first submission is acquiring a task identity.
+    if (!currentTask && !selectingTaskId) { input.focus(); return; }
     ++taskInteractionRevision;
-    try { await selectTask((await createTask()).task_id); } catch (error) { showWorkspaceStatus("新建任务未完成，请稍后重试。", true); }
+    ++taskSelectionRevision;
+    if (currentTask) saveTransient();
+    activeProcessPlayback?.stop();
+    activeProcessPlayback = null;
+    activeConversation = null;
+    selectingTaskId = "";
+    taskTransition.cancel();
+    resetTaskSelection();
+    input.value = "";
+    input.oninput = null;
+    form.inert = false;
+    stream.removeAttribute("aria-busy");
+    clearWorkspaceStatus();
+    setRuntimeLiveStatus("");
+    setComposerSending(submit, false);
+    syncComposerInputHeight();
+    syncComposerAvailability();
+    renderLoadedTasks(taskActivitySummaries);
+    input.focus();
   });
 
   submit.addEventListener("click", (event) => {
@@ -3899,8 +3919,8 @@ export async function startWorkspace(initialMode) {
   if (!currentTask) {
     title.textContent = "未选择任务";
     conversationTitle.textContent = "开始研究";
-    taskState.textContent = "请新建或选择任务后，再运行研究模块。";
-    renderMessages(stream, [], "新建任务后即可开始对话，并按需生成简单报告、详细报告或参考报价。");
+    taskState.textContent = "发送第一条消息后创建任务，或选择已有任务。";
+    renderMessages(stream, [], "发送第一条消息后创建任务，并按需生成简单报告、详细报告或参考报价。");
     renderTaskOperations([], "");
   }
   if (modeInteractionRevision === 0) {
