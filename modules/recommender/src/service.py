@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import replace
 import re
 from typing import Any, Mapping, Sequence
@@ -48,7 +49,9 @@ from .ports import (
     KnowledgePort,
     ToolPort,
 )
-from .product_trader_loop import ProductTraderLoop, ProductTraderRound, attach_host_evaluations
+from .product_trader_loop import LoopCandidate, ProductTraderLoop, ProductTraderRound, attach_host_evaluations
+from .research_session import ResearchSession
+from runtime.research_policy import depth_policy, preset_definitions
 
 
 DEFAULT_REQUESTED_CANDIDATE_COUNT = 3
@@ -81,12 +84,7 @@ _ROUTE_TOOLS = {
 
 def capability(config: RecommenderConfig | None = None) -> dict[str, Any]:
     config = config or RecommenderConfig.from_environment()
-    preset_roles = {
-        "sequential-deliberation": ("Interpreter", "Selector", "Reviewer"),
-        "product-trader-loop": ("Structurer", "Trader", "Reviewer"),
-        "independent-council": ("Framer", "Matcher", "Hedger", "Moderator"),
-        "constraint-ranking": ("Specifier", "Generator", "Evaluator", "Reviewer"),
-    }
+    preset_roles = {key: value['roles'] for key,value in preset_definitions().items()}
     configured = {
         "model_gateway": bool(config.model_gateway_url),
         "knowledger": bool(config.knowledger_url),
@@ -272,8 +270,13 @@ class RecommenderService:
             detail={"model_slots_use_wire_roles": True},
         )
         runner = AgentStepRunner(self.agent_port, mode, audit)
-        preset = self.config.multi_agent_preset if mode == "multi_agent" else "sequential-deliberation"
+        preset = self.config.multi_agent_preset
+        self._research = ResearchSession(case, self.tool_port, preset_id=preset, calculation_allowed=not bool(re.search(r"(?:只|仅)(?:做|要|需)?(?:结构(?:比较|对比|筛选|推荐)|(?:比较|对比|筛选|推荐)结构)|(?:不|无需|不用)(?:做|进行)?(?:定价|估值|计算)",case.prompt)))
+        runner.result_validator = self._research.validate_citations
+        runner.input_validator = self._research.require_complete_inputs
+        binder = getattr(self.agent_port,"bind_research_session",None)
         try:
+            if callable(binder):binder(self._research)
             if preset == "independent-council":
                 return self._run_independent_council(case, route, run_id, mode, audit, runner)
             if preset == "product-trader-loop":
@@ -298,6 +301,9 @@ class RecommenderService:
             )
         except Exception as error:
             return self._unavailable_set(case, route, run_id, mode, audit, error)
+        finally:
+            self._research.close()
+            if callable(binder):binder(None)
 
     def _workflow_mode(self, capability: ModelCapability) -> str:
         if not capability.structured_output:
@@ -339,7 +345,7 @@ class RecommenderService:
         })
         return self._complete_mode_one(
             case, route, run_id, mode, audit, runner,
-            evidence=evidence, research=research, critic=critic,
+            evidence=evidence, research=research, critic=critic, catalog_session=self._research,
         )
 
     def _complete_mode_one(
@@ -354,8 +360,11 @@ class RecommenderService:
         evidence: Sequence[Any],
         research: Mapping[str, Any],
         critic: Mapping[str, Any],
+        catalog_session: ResearchSession | None = None,
     ) -> RecommendationSet:
         del step_runner
+        if catalog_session is not None:
+            evidence = catalog_session.merge_catalog_evidence(evidence)
         candidates, rejected = build_candidates(
             research,
             critic,
@@ -380,6 +389,8 @@ class RecommenderService:
             "research_context": case.research_context,
             "confirmed_constraints": dict(case.confirmed_constraints),
         })
+        if framing.get("next_question"):
+            raise RecommendationInputRequired("research_scope", framing["next_question"])
         evidence = self._retrieve(case, framing.get("research_queries", ()), audit)
         shared = {
             "case": case.to_dict(),
@@ -387,12 +398,68 @@ class RecommenderService:
             "evidence": [item.to_dict(include_excerpt=True) for item in evidence],
             "max_candidates": min(_requested_candidate_count(case), self.config.max_candidates),
         }
-        branches = runner.run_named({"Matcher": shared, "Hedger": shared})
+        for role in ("Matcher", "Hedger"):
+            self._research.restrict_role(role, ())
+        proposal_input = {
+            **shared, "phase": "proposal",
+            "rule": "先独立提出候选及依据，交给Host登记；收到registered_candidates后再按其中的candidate_id计算，不用product_id代替。",
+        }
+        branches = runner.run_named({"Matcher": proposal_input, "Hedger": proposal_input})
+        for role in ("Matcher", "Hedger"):
+            for attempt in range(2):
+                proposed = branches[role].get("proposals", ())
+                evidence = self._research.merge_catalog_evidence(evidence)
+                branch_candidates, rejected = build_candidates(
+                    {"proposals": proposed}, {"reviews": _accepting_reviews(proposed)},
+                    evidence=evidence, run_id=run_id + "-" + role,
+                    max_candidates=min(_requested_candidate_count(case), self.config.max_candidates),
+                    confirmed_constraints=case.confirmed_constraints,
+                )
+                if branch_candidates:
+                    break
+                reasons = list(rejected) or [{"reason": "没有提交候选"}]
+                if attempt == 1:
+                    detail = "；".join(str(item["reason"]) for item in reasons)
+                    raise RecommendationValidationError(f"{role}候选无法登记：{detail}")
+                branches[role] = runner.run(role, {
+                    **proposal_input, "phase": "candidate_repair",
+                    "own_proposals": branches[role], "rejected_candidates": reasons,
+                    "rule": "候选尚未登记。根据具体原因修正proposals并保留用户硬约束；此阶段不计算。",
+                })
+            self._research.register(branch_candidates)
+            self._research.restrict_role(role, branch_candidates)
+            branches[role] = runner.run(role, {
+                **shared, **self._research.catalog_for_research(evidence, branch_candidates),
+                "phase":"research", "own_proposals":branches[role],
+                "registered_candidates":[item.to_dict() for item in branch_candidates],
+                "research":{**self._research.context(),"candidates":[item.to_confirmation_dict() for item in branch_candidates]},
+                "rule":"独立验证自己的候选，按需调用工具；输出proposals并保留证据和限制，不读取另一角色的意见。",
+            })
+        self._research.share_evidence()
         moderated = runner.run("Moderator", {
             **shared,
+            "research_evidence": self._research.read(),
             "matcher": dict(branches["Matcher"]),
             "hedger": dict(branches["Hedger"]),
         })
+        for review_index in range(depth_policy(case.research_depth)["council_reviews"]):
+            requests = moderated.get("refinement_requests", ())
+            if not requests: break
+            if not isinstance(requests, (list,tuple)):
+                raise RecommendationValidationError("refinement_requests必须为数组")
+            targeted = {}
+            for request in requests:
+                if not isinstance(request,Mapping) or request.get("role") not in {"Matcher","Hedger"} or not str(request.get("question","")).strip():
+                    raise RecommendationValidationError("复核必须指定有效角色和具体问题")
+                role=request["role"]
+                if role in targeted:raise RecommendationValidationError("同一轮复核角色不得重复")
+                targeted[role]={**shared,"phase":"review","question":request["question"],
+                    "previous_opinion":branches[role],"discussion":moderated,
+                    "research":self._research.context(),"evidence":self._research.read()}
+            branches.update(runner.run_named(targeted))
+            moderated=runner.run("Moderator",{**shared,"matcher":branches["Matcher"],"hedger":branches["Hedger"],
+                "review_index":review_index+1,"evidence":self._research.read(),
+                "rule":"仅依据已验证证据汇总，保留未解决分歧；无需再复核时refinement_requests为空。"})
         audit.append(
             "council", "complete", agent_role=None,
             input_value={"roles": ["Framer", "Matcher", "Hedger", "Moderator"]},
@@ -417,7 +484,7 @@ class RecommenderService:
     ) -> RecommendationSet:
         evidence = self._retrieve(case, _research_queries(case), audit)
         comparison_only = bool(re.search(
-            r"(?:只|仅)(?:做|要|需)?(?:结构)?(?:比较|对比|筛选|推荐)|(?:不|无需|不用)(?:做|进行)?(?:定价|估值|计算)",
+            r"(?:只|仅)(?:做|要|需)?(?:结构(?:比较|对比|筛选|推荐)|(?:比较|对比|筛选|推荐)结构)|(?:不|无需|不用)(?:做|进行)?(?:定价|估值|计算)",
             case.prompt,
         ))
         structurer = runner.run("Structurer", {
@@ -426,6 +493,7 @@ class RecommenderService:
             "evidence": [item.to_dict(include_excerpt=True) for item in evidence],
             "max_candidates": min(_requested_candidate_count(case), self.config.max_candidates),
         })
+        evidence = self._research.merge_catalog_evidence(evidence)
         candidates, rejected = build_candidates(
             {"proposals": structurer.get("proposals", ())},
             {"reviews": _accepting_reviews(structurer.get("proposals", ()))},
@@ -452,6 +520,7 @@ class RecommenderService:
             reviewed = [item.get("product_id") for item in reviews]
             if len(reviewed) != len(set(reviewed)) or set(reviewed) != products:
                 raise RecommendationValidationError("Trader比较必须逐一覆盖当前候选，不得新增产品")
+            evidence = self._research.merge_catalog_evidence(evidence)
             compared, comparison_rejected = build_candidates(
                 {"proposals": [item for item in structurer.get("proposals", ()) if item.get("product_id") in products]},
                 comparison, evidence=evidence, run_id=run_id,
@@ -474,7 +543,8 @@ class RecommenderService:
         pending = {item.candidate_id: item for item in candidates if item.library_status != "ready"}
         if not ready:
             return self._candidate_set(case, route, run_id, mode, audit, candidates, rejected)
-        loop = ProductTraderLoop.start(ready)
+        self._research.register(ready)
+        loop = ProductTraderLoop.start(ready, max_rounds=depth_policy(case.research_depth)["product_iterations"])
         ready_products = {item.product_id for item in ready}
         current_plan = loop.plan_round(_structurer_loop_plan(loop, {
             **dict(structurer), "evaluation_plan": [
@@ -482,16 +552,31 @@ class RecommenderService:
             ],
         }))
         accepted: dict[str, RecommendationCandidate] = {}
-        planned_modules = {
-            item.candidate.candidate.candidate_id: item.modules for item in current_plan.plans
-        }
+        reviewer_feedback = None
         while True:
-            attached, host_results = self._evaluate_round(case, current_plan, audit)
+            current_candidates = [plan.candidate.candidate for plan in current_plan.plans]
+            self._research.register(current_candidates)
             trader = runner.run("Trader", {
-                "case": case.to_dict(),
-                "round": attached.to_dict(),
-                "host_results": host_results,
+                "case": case.to_dict(), "round": current_plan.to_dict(),
+                "reviewer_feedback": reviewer_feedback,
+                "research": self._research.context(),
+                "evidence": self._research.read(),
+                "rule": "先按需调用研究工具验证候选，读取真实结果后再作决定；没有证据不能接受。需要修改时把具体问题交给Structurer。",
             })
+            host_results = {plan.candidate.candidate.candidate_id:
+                self._research.result_for(plan.candidate.candidate, plan.modules, current_plan.round_no)
+                for plan in current_plan.plans}
+            attached = attach_host_evaluations(current_plan,
+                {key:{field:value for field,value in row.items() if field not in {"candidate_id","product_id","rule_revision","message"}}
+                 for key,row in host_results.items()},tenant_id=case.tenant_id,task_id=case.task_id)
+            # Missing or failed evidence can never be promoted by model prose.
+            decisions = trader.get("evaluations", ())
+            for decision in decisions:
+                if isinstance(decision, dict) and decision.get("decision")=="accept":
+                    candidate_key=decision.get("candidate_id")
+                    row=host_results.get(candidate_key)
+                    if row and any(status not in {"succeeded","partial"} for status in row["module_statuses"].values()):
+                        decision.update(decision="rework",term_adjustments={})
             transition = loop.apply_trader_output(attached, _trader_loop_decisions(attached, trader))
             accepted.update({item.candidate_id: item for item in transition.accepted_candidates})
             audit.append(
@@ -503,34 +588,43 @@ class RecommenderService:
                 },
             )
             if transition.next_loop is None:
-                break
-            loop = transition.next_loop
-            current_plan = loop.plan_round({
-                "proposals": [
-                    {
-                        "candidate_id": item.candidate.candidate_id,
-                        "evaluation_plan": list(planned_modules[item.candidate.candidate_id]),
-                        "term_overrides": {},
-                    }
-                    for item in loop.candidates if item.status == "open"
-                ]
+                selected = tuple(
+                    accepted.get(item.candidate_id, pending.get(item.candidate_id))
+                    for item in candidates if item.candidate_id in accepted or item.candidate_id in pending
+                )
+                reviewer = runner.run("Reviewer", {
+                    "candidates": [item.to_dict() for item in selected],
+                    "round_no": current_plan.round_no,
+                    "research": self._research.context(), "evidence": self._research.read(),
+                    "rule": "只能批准或拒绝当前候选，不改写条款。拒绝时说明具体问题，交回Structurer修订并由Trader复核。",
+                })
+                verdict = parse_reviewer_ranking_verdict(reviewer)
+                if verdict.approved:
+                    ranked = tuple(replace(item, rank=index) for index, item in enumerate(selected, start=1))
+                    return self._candidate_set(case, route, run_id, mode, audit, ranked, rejected)
+                if current_plan.round_no >= loop.max_rounds or not accepted:
+                    return self._candidate_set(case, route, run_id, mode, audit, (),
+                        (*rejected, {"reason": verdict.reason or "Reviewer拒绝", "source": "Reviewer"}))
+                reviewer_feedback = dict(reviewer)
+                # Reopen only the reviewed candidates with their current terms.
+                # The shared round limit still bounds both kinds of return.
+                loop = ProductTraderLoop(
+                    tuple(LoopCandidate(item, dict(item.current_inputs.get("term_overrides", {})))
+                          for item in accepted.values()),
+                    current_plan.round_no + 1, loop.allowed_term_keys, loop.max_rounds,
+                )
+                accepted.clear()
+            else:
+                loop = transition.next_loop
+            redesign = runner.run("Structurer", {
+                "case": case.to_dict(), "phase": "rework",
+                "round_no": loop.round_no,
+                "current_candidates": [item.candidate.to_dict() for item in loop.candidates if item.status == "open"],
+                "trader_feedback": dict(trader), "reviewer_feedback": reviewer_feedback,
+                "host_results": host_results, "research": self._research.context(),
+                "rule": "处理Trader或Reviewer的具体问题；返回evaluation_plan，每项含product_id、modules、term_overrides。保持用户硬约束。",
             })
-        selected = tuple(
-            accepted.get(item.candidate_id, pending.get(item.candidate_id))
-            for item in candidates if item.candidate_id in accepted or item.candidate_id in pending
-        )
-        reviewer = runner.run("Reviewer", {
-            "candidates": [item.to_dict() for item in selected],
-            "rule": "只能整体批准或拒绝当前候选，不得改写当前输入。",
-        })
-        verdict = parse_reviewer_ranking_verdict(reviewer)
-        if not verdict.approved:
-            return self._candidate_set(
-                case, route, run_id, mode, audit, (),
-                (*rejected, {"reason": verdict.reason or "Reviewer拒绝", "source": "Reviewer"}),
-            )
-        ranked = tuple(replace(item, rank=index) for index, item in enumerate(selected, start=1))
-        return self._candidate_set(case, route, run_id, mode, audit, ranked, rejected)
+            current_plan = loop.plan_round(_structurer_loop_plan(loop, redesign))
 
     def _evaluate_round(
         self,
@@ -590,6 +684,8 @@ class RecommenderService:
             "research_context": case.research_context,
             "confirmed_constraints": dict(case.confirmed_constraints),
         })
+        if specified.get("next_question"):
+            raise RecommendationInputRequired("ranking_preferences", specified["next_question"])
         spec = parse_specifier_ranking_spec(specified.get("ranking_spec", {}))
         evidence = self._retrieve(case, specified.get("research_queries", ()), audit)
         generated = runner.run("Generator", {
@@ -598,6 +694,7 @@ class RecommenderService:
             "evidence": [item.to_dict(include_excerpt=True) for item in evidence],
             "max_candidates": min(_requested_candidate_count(case), self.config.max_candidates),
         })
+        evidence = self._research.merge_catalog_evidence(evidence)
         candidates, rejected = build_candidates(
             generated,
             {"reviews": _accepting_reviews(generated.get("proposals", ()))},
@@ -622,63 +719,69 @@ class RecommenderService:
         modules = required_modules(spec)
         metric_sources = required_metric_sources(spec)
         metrics_by_candidate: dict[str, Mapping[str, Any]] = {}
-        evaluated: list[RecommendationCandidate] = []
-        for candidate in candidates:
-            response = evaluator(
-                candidate=candidate.to_confirmation_dict(),
-                confirmed_constraints=dict(case.confirmed_constraints),
-                modules=modules,
-                term_overrides=dict(candidate.current_inputs.get("term_overrides", {})),
-                candidate_id=candidate.candidate_id,
-                round_no=1,
-            )
-            if not isinstance(response, Mapping):
-                raise RecommendationValidationError("Hosted候选评估结果必须为对象")
-            row = dict(response)
-            _validate_generated_identity(row, candidate)
-            records = read_evaluation_records(
-                row, candidate_id=candidate.candidate_id, modules=modules, round_no=1,
-                tenant_id=case.tenant_id, task_id=case.task_id,
-            )
-            evaluated.append(replace(
-                candidate, evaluation_records=records,
-                module_run_refs=tuple(item.module_run_ref for item in records if item.module_run_ref is not None),
-                module_statuses={item.module: item.status for item in records},
-            ))
-            metrics_by_candidate[candidate.candidate_id] = _ranking_metrics(row, metric_sources, records)
-            audit.append(
-                "candidate_evaluation", "complete", agent_role=None,
-                input_value=candidate.to_confirmation_dict(),
-                output_value={
-                    "candidate_id": candidate.candidate_id,
-                    "product_id": candidate.product_id,
-                    "rule_revision": candidate.rule_revision,
-                    "metric_sources": sorted(set(metric_sources.values())),
-                },
-            )
-        ranking = rank_candidates(spec, evaluated, metrics_by_candidate)
-        reviewer = runner.run("Reviewer", {
-            "ranking_spec": spec.to_dict(),
-            "ranking_decisions": [item.to_dict() for item in ranking.decisions],
-            "candidates": [item.to_dict() for item in ranking.ranked_candidates],
-        })
-        reviewed = apply_reviewer_verdict(ranking, parse_reviewer_ranking_verdict(reviewer))
-        ranking_rejected = tuple(
-            {"candidate_id": item.candidate_id, "reason": ";".join(item.reasons), "source": "constraint_ranking"}
-            for item in ranking.exclusions
-        )
+        evaluated = {}
+        next_batch = list(candidates)
+        reviewer_feedback = None
+        known = {item.candidate_id:item for item in candidates}
+        fingerprints = {canonical_hash({"product_id":item.product_id,"underlyings":item.underlyings,
+                         "terms":item.current_inputs.get("term_overrides",{})}) for item in candidates}
+        for batch_no in range(1, 2+depth_policy(case.research_depth)["ranking_supplements"]):
+            for candidate in next_batch:
+                self._research.register([candidate])
+                runner.run("Evaluator", {
+                    "case":case.to_dict(),"candidate":candidate.to_dict(),"ranking_spec":spec.to_dict(),
+                    "required_modules":list(modules),"batch_no":batch_no,
+                    "reviewer_feedback":reviewer_feedback,
+                    "research":self._research.context(),"evidence":self._research.read(candidate.candidate_id),
+                    "rule":"自主调用研究工具取得所需指标，先读已有证据，只补缺失部分。总结assessment，不自创指标和评分。",
+                })
+                row = self._research.result_for(candidate, modules, batch_no)
+                records = read_evaluation_records(row,candidate_id=candidate.candidate_id,modules=modules,
+                    round_no=batch_no,tenant_id=case.tenant_id,task_id=case.task_id)
+                evaluated[candidate.candidate_id] = replace(candidate,evaluation_records=records,
+                    module_run_refs=tuple(item.module_run_ref for item in records if item.module_run_ref is not None),
+                    module_statuses={item.module:item.status for item in records})
+                metrics_by_candidate[candidate.candidate_id] = _ranking_metrics(row,metric_sources,records)
+                audit.append("candidate_evaluation","complete",agent_role="Evaluator",
+                    input_value=candidate.to_confirmation_dict(),output_value={"batch_no":batch_no,"module_statuses":row["module_statuses"]})
+            ranking = rank_candidates(spec,tuple(evaluated.values()),metrics_by_candidate)
+            reviewer = runner.run("Reviewer",{
+                "ranking_spec":spec.to_dict(),"ranking_decisions":[item.to_dict() for item in ranking.decisions],
+                "candidates":[item.to_dict() for item in ranking.ranked_candidates],
+                "exclusions":[{"candidate_id":item.candidate_id,"reasons":list(item.reasons)} for item in ranking.exclusions],
+                "batch_no":batch_no})
+            reviewed = apply_reviewer_verdict(ranking,parse_reviewer_ranking_verdict(reviewer))
+            if reviewed.approved and len(ranking.ranked_candidates)>=_requested_candidate_count(case):break
+            if batch_no > depth_policy(case.research_depth)["ranking_supplements"] or self._research.context()["remaining_calculations"]==0:break
+            reviewer_feedback = dict(reviewer)
+            # Revisit rejected evidence even when all module runs succeeded.
+            next_batch=[known[key] for key,item in evaluated.items()
+                        if not reviewed.approved or any(status not in {"succeeded","partial"} for status in item.module_statuses.values())]
+            if len(ranking.ranked_candidates)<_requested_candidate_count(case):
+                supplements=runner.run("Generator",{
+                    "case":case.to_dict(),"ranking_spec":spec.to_dict(),"phase":"supplement",
+                    "evidence":[item.to_dict(include_excerpt=True) for item in evidence],
+                    "existing_candidates":[item.to_dict() for item in evaluated.values()],
+                    "exclusions":[{"candidate_id":item.candidate_id,"reasons":list(item.reasons)} for item in ranking.exclusions],
+                    "reviewer_feedback":reviewer,"max_candidates":_requested_candidate_count(case)-len(ranking.ranked_candidates),
+                    "rule":"仅补充不足部分，保持排序规则；没有新方案可返回空proposals，不重复已有相同条款。"})
+                evidence = self._research.merge_catalog_evidence(evidence)
+                added, omitted=build_candidates(supplements,{"reviews":_accepting_reviews(supplements.get("proposals",()))},
+                    evidence=evidence,run_id=run_id+"-supplement-"+str(batch_no),
+                    max_candidates=self.config.max_candidates,confirmed_constraints=case.confirmed_constraints)
+                rejected=(*rejected,*omitted)
+                for item in added:
+                    fingerprint=canonical_hash({"product_id":item.product_id,"underlyings":item.underlyings,
+                                               "terms":item.current_inputs.get("term_overrides",{})})
+                    if fingerprint in fingerprints or item.library_status!="ready":continue
+                    fingerprints.add(fingerprint);known[item.candidate_id]=item;next_batch.append(item)
+            if not next_batch:break
+        ranking_rejected=tuple({"candidate_id":item.candidate_id,"reason":";".join(item.reasons),"source":"constraint_ranking"} for item in ranking.exclusions)
         if not reviewed.approved:
-            return self._candidate_set(
-                case, route, run_id, mode, audit, (),
-                (*rejected, *ranking_rejected, {"reason": reviewed.rejection_reason or "Reviewer拒绝", "source": "Reviewer"}),
-                ranking_spec=spec.to_dict(),
-            )
-        return self._candidate_set(
-            case, route, run_id, mode, audit,
-            reviewed.ranking.ranked_candidates,
-            (*rejected, *ranking_rejected),
-            ranking_spec=spec.to_dict(),
-        )
+            return self._candidate_set(case,route,run_id,mode,audit,(),
+                (*rejected,*ranking_rejected,{"reason":reviewed.rejection_reason or "Reviewer拒绝，仍有待解决问题","source":"Reviewer"}),ranking_spec=spec.to_dict())
+        return self._candidate_set(case,route,run_id,mode,audit,reviewed.ranking.ranked_candidates,
+            (*rejected,*ranking_rejected),ranking_spec=spec.to_dict())
 
     def _retrieve(
         self,
@@ -763,6 +866,9 @@ class RecommenderService:
             returned_candidate_count=len(current),
             ranking_spec_id=spec_id,
             ranking_spec=ranking_spec,
+            research_evidence=(council_research_evidence(current, self._research)
+                               if self.config.multi_agent_preset == "independent-council"
+                               else candidate_research_evidence(current, self._research)),
             delivery_status=(
                 "pending" if confirmable else "unavailable"
             ) if case.requested_outputs else "not_requested",
@@ -1248,3 +1354,64 @@ def _public_result(
         response = public_text(str(freeform.get("response", "")))
         return {"说明": response or "当前未形成可展示结果。", "状态": str(freeform.get("status", "unavailable"))}
     return {"说明": "当前未形成可展示结果。"}
+
+
+def candidate_research_evidence(candidates, research):
+    evidence = []
+    for candidate in candidates:
+        current = candidate.to_confirmation_dict()
+        references = candidate.to_dict().get('module_run_refs', [])
+        facts = {}
+        used_runs = []
+        for row in research.read(candidate.candidate_id):
+            if row.get('candidate_snapshot') != current:
+                continue
+            valid_runs = [ref for ref in row.get('module_run_refs', [])
+                          if ref in references and row.get('module_statuses', {}).get(ref['module']) in {'succeeded', 'partial'}]
+            if not valid_runs:
+                continue
+            modules = {ref['module'] for ref in valid_runs}
+            for metric, fact in row.get('verified_metrics', {}).items():
+                if (isinstance(fact, dict) and fact.get('fact_ref')
+                        and fact.get('source') in modules | {'contract_terms'}):
+                    facts[metric] = deepcopy(fact)
+            for reference in valid_runs:
+                if reference not in used_runs:
+                    used_runs.append(deepcopy(reference))
+        if facts:
+            evidence.append({'candidate_id': candidate.candidate_id,
+                             'product_id': candidate.product_id,
+                             'verified_metrics': facts, 'module_run_refs': used_runs})
+    return tuple(evidence)
+
+
+def council_research_evidence(candidates, research):
+    """Keep independent branch facts separate while linking identical final terms."""
+    evidence = []
+    for candidate in candidates:
+        current = candidate.to_confirmation_dict()
+        inputs = {key: value for key, value in current.items() if key != "candidate_id"}
+        for row in research.read():
+            snapshot = row.get("candidate_snapshot", {})
+            observed = {key: value for key, value in snapshot.items() if key != "candidate_id"}
+            if observed != inputs:
+                continue
+            references = [ref for ref in row.get("module_run_refs", [])
+                          if row.get("module_statuses", {}).get(ref["module"]) in {"succeeded", "partial"}]
+            modules = {ref["module"] for ref in references}
+            facts = {metric: deepcopy(fact) for metric, fact in row.get("verified_metrics", {}).items()
+                     if isinstance(fact, dict) and fact.get("fact_ref")
+                     and fact.get("source") in modules | {"contract_terms"}}
+            if not references or not facts:
+                continue
+            evidence.append({
+                "candidate_id": candidate.candidate_id,
+                "product_id": candidate.product_id,
+                "research_candidate_id": snapshot["candidate_id"],
+                "research_evidence_id": row.get("research_evidence_id"),
+                "requested_by": row.get("requested_by"),
+                "candidate_snapshot": deepcopy(snapshot),
+                "verified_metrics": facts,
+                "module_run_refs": deepcopy(references),
+            })
+    return tuple(evidence)
