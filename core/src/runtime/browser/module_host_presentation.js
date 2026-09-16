@@ -133,6 +133,8 @@
   document.documentElement.dataset.optionhelperAppHosted = "true";
 
   const moduleScrollContainers = [
+    ".oh-choice__menu",
+    ".choice-menu",
     ".library-panel",
     ".source-panel",
     ".inspector-panel",
