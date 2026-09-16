@@ -16,7 +16,7 @@ from .evaluation_evidence import read_evaluation_records
 from .models import RecommendationCandidate, RecommendationValidationError
 
 
-MAX_ROUNDS = 2
+MAX_ROUNDS = 4
 ALLOWED_MODULES = frozenset({"payoffer", "pricer", "backtester"})
 DEFAULT_TERM_KEYS = frozenset({
     "T", "K", "K1", "K2", "K3", "K4", "Pi_0", "P_net", "c", "c_max", "alpha",
@@ -238,8 +238,11 @@ class ProductTraderLoop:
     candidates: tuple[LoopCandidate, ...]
     round_no: int = 1
     allowed_term_keys: frozenset[str] = DEFAULT_TERM_KEYS
+    max_rounds: int = 2
 
     def __post_init__(self) -> None:
+        if type(self.max_rounds) is not int or not 1 <= self.max_rounds <= MAX_ROUNDS:
+            raise _error("max_rounds无效")
         if not self.candidates:
             raise _error("至少需要一个候选")
         if not 1 <= self.round_no <= MAX_ROUNDS:
@@ -254,6 +257,7 @@ class ProductTraderLoop:
         candidates: Sequence[RecommendationCandidate],
         *,
         allowed_term_keys: frozenset[str] = DEFAULT_TERM_KEYS,
+        max_rounds: int = 2,
     ) -> "ProductTraderLoop":
         rows = tuple(
             LoopCandidate(
@@ -263,7 +267,7 @@ class ProductTraderLoop:
             )
             for item in candidates
         )
-        return cls(candidates=rows, allowed_term_keys=allowed_term_keys)
+        return cls(candidates=rows, allowed_term_keys=allowed_term_keys, max_rounds=max_rounds)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -360,8 +364,7 @@ class ProductTraderLoop:
             )
             if action == "accept" and adjustments:
                 raise _error("accept不得附带term_adjustments")
-            if action == "rework" and not adjustments:
-                raise _error("rework必须附带term_adjustments")
+            # A missing-evidence rework need not change economic terms.
             result.append(TraderDecision(candidate_id, action, adjustments))
         if seen != expected:
             raise _error("Trader必须逐一决定本轮全部候选")
@@ -383,23 +386,18 @@ class ProductTraderLoop:
                     "accepted",
                 )
                 continue
-            if self.round_no >= MAX_ROUNDS:
-                raise _error("第二轮不得再rework")
-            merged = dict(current.term_overrides)
-            merged.update(decision.term_adjustments)
-            updated = create_term_variant(
-                current.candidate,
-                term_overrides=merged,
-                generation_reason=f"mode2_rework_round_{self.round_no}",
-            )
-            states[decision.candidate_id] = LoopCandidate(updated, merged, "open")
+            if self.round_no >= self.max_rounds:
+                continue  # Unaccepted candidate remains unresolved at the configured boundary.
+            # Trader's proposed adjustments are feedback, not an adopted contract.
+            # Structurer owns the next registered term variant.
+            states[decision.candidate_id] = LoopCandidate(current.candidate, current.term_overrides, "open")
             reworked.append(decision.candidate_id)
         next_states = tuple(states[item.candidate.candidate_id] for item in self.candidates)
         accepted = tuple(item.candidate for item in next_states if item.status == "accepted")
         if not reworked:
             return LoopTransition(None, accepted, ())
         return LoopTransition(
-            ProductTraderLoop(next_states, self.round_no + 1, self.allowed_term_keys),
+            ProductTraderLoop(next_states, self.round_no + 1, self.allowed_term_keys, self.max_rounds),
             accepted,
             tuple(reworked),
         )
