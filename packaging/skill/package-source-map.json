@@ -20,7 +20,7 @@
     {"source": "packaging/skill/SKILL_README.md", "target": "README.md"},
     {"source": "CONTEXT.md", "target": "references/context.md"},
     {"source": "modules/datafetcher/module-guide.md", "target": "references/module-guides/datafetcher.md"},
-    {"source": "modules/recommender/module-guide.md", "target": "references/module-guides/recommender.md"},
+    {"source": "packaging/skill/recommender-guide.md", "target": "references/module-guides/recommender.md"},
     {"source": "modules/payoffer/module-guide.md", "target": "references/module-guides/payoffer.md"},
     {"source": "modules/pricer/module-guide.md", "target": "references/module-guides/pricer.md"},
     {"source": "modules/backtester/module-guide.md", "target": "references/module-guides/backtester.md"},
@@ -44,6 +44,7 @@
       "**/*.pyc",
       ".DS_Store",
       "browser/**",
+      "research_profiles/**/AGENT.md",
       "protocol/schemas/README.md"
     ]},
     {"source": "modules/reporter/assets", "target": "assets/reporter", "exclude": ["**/__pycache__/**", "**/*.pyc", ".DS_Store"]},
