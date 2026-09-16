@@ -51,7 +51,7 @@ from .ports import (
 )
 from .product_trader_loop import LoopCandidate, ProductTraderLoop, ProductTraderRound, attach_host_evaluations
 from .research_session import ResearchSession
-from runtime.research_policy import depth_policy, preset_definitions
+from runtime.research_policy import depth_policy, preset_definitions, blocked_research_modules
 
 
 DEFAULT_REQUESTED_CANDIDATE_COUNT = 3
@@ -271,9 +271,12 @@ class RecommenderService:
         )
         runner = AgentStepRunner(self.agent_port, mode, audit)
         preset = self.config.multi_agent_preset
-        self._research = ResearchSession(case, self.tool_port, preset_id=preset, calculation_allowed=not bool(re.search(r"(?:只|仅)(?:做|要|需)?(?:结构(?:比较|对比|筛选|推荐)|(?:比较|对比|筛选|推荐)结构)|(?:不|无需|不用)(?:做|进行)?(?:定价|估值|计算)",case.prompt)))
+        blocked_modules = blocked_research_modules(case.prompt)
+        self._research = ResearchSession(case, self.tool_port, preset_id=preset,
+                                         calculation_allowed=len(blocked_modules) < 3)
         runner.result_validator = self._research.validate_citations
         runner.input_validator = self._research.require_complete_inputs
+        runner.catalog_provider = self._research.catalog_for_validation
         binder = getattr(self.agent_port,"bind_research_session",None)
         try:
             if callable(binder):binder(self._research)
@@ -436,6 +439,8 @@ class RecommenderService:
                 "rule":"独立验证自己的候选，按需调用工具；输出proposals并保留证据和限制，不读取另一角色的意见。",
             })
         self._research.share_evidence()
+        evidence = self._research.merge_catalog_evidence(evidence)
+        shared = {**shared, "evidence": [item.to_dict(include_excerpt=True) for item in evidence]}
         moderated = runner.run("Moderator", {
             **shared,
             "research_evidence": self._research.read(),
@@ -455,10 +460,10 @@ class RecommenderService:
                 if role in targeted:raise RecommendationValidationError("同一轮复核角色不得重复")
                 targeted[role]={**shared,"phase":"review","question":request["question"],
                     "previous_opinion":branches[role],"discussion":moderated,
-                    "research":self._research.context(),"evidence":self._research.read()}
+                    "research":self._research.context(),"research_evidence":self._research.read()}
             branches.update(runner.run_named(targeted))
             moderated=runner.run("Moderator",{**shared,"matcher":branches["Matcher"],"hedger":branches["Hedger"],
-                "review_index":review_index+1,"evidence":self._research.read(),
+                "review_index":review_index+1,"research_evidence":self._research.read(),
                 "rule":"仅依据已验证证据汇总，保留未解决分歧；无需再复核时refinement_requests为空。"})
         audit.append(
             "council", "complete", agent_role=None,
@@ -483,10 +488,7 @@ class RecommenderService:
         runner: AgentStepRunner,
     ) -> RecommendationSet:
         evidence = self._retrieve(case, _research_queries(case), audit)
-        comparison_only = bool(re.search(
-            r"(?:只|仅)(?:做|要|需)?(?:结构(?:比较|对比|筛选|推荐)|(?:比较|对比|筛选|推荐)结构)|(?:不|无需|不用)(?:做|进行)?(?:定价|估值|计算)",
-            case.prompt,
-        ))
+        comparison_only = not self._research.calculation_allowed
         structurer = runner.run("Structurer", {
             "comparison_only": comparison_only,
             "case": case.to_dict(),
@@ -717,6 +719,11 @@ class RecommenderService:
         if not callable(evaluator):
             raise RecommenderUnavailable("constraint-ranking需要Hosted候选评估端口")
         modules = required_modules(spec)
+        if not self._research.calculation_allowed or self._research.blocked_modules.intersection(modules):
+            raise RecommendationInputRequired(
+                "ranking_preferences",
+                "当前排序指标需要你已禁止的计算，本轮不会启动这些模块。是否改为仅依据产品条款比较结构？",
+            )
         metric_sources = required_metric_sources(spec)
         metrics_by_candidate: dict[str, Mapping[str, Any]] = {}
         evaluated = {}
