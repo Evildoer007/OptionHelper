@@ -86,6 +86,7 @@
     const type = spec.type === 'bar' ? 'bar' : 'line';
     const xValues = Array.isArray(spec.x) ? spec.x : [];
     const series = Array.isArray(spec.series) ? spec.series : [];
+    if (spec.type === 'surface') return window.OptionHelperSurface.option(spec, value => formatValue(value, spec), theme.axis?.label);
     if (spec.type === 'heatmap') {
       const yValues = Array.isArray(spec.y) ? spec.y : [];
       const data = Array.isArray(spec.data) ? spec.data : [];
@@ -161,7 +162,7 @@
 
   function renderChart({echarts, host, spec, presentation} = {}) {
     if (!echarts?.init || !host || !spec) throw new Error('图表渲染参数不完整');
-    const instance = echarts.init(host, null, {renderer: 'svg'});
+    const instance = echarts.init(host, null, {renderer: spec.type === 'surface' ? 'canvas' : 'svg'});
     instance.setOption(chartOption(spec, presentation), true);
     return instance;
   }
