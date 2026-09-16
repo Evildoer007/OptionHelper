@@ -1,3 +1,243 @@
+const presetStages = {
+  "sequential-deliberation": {
+    "roles": [
+      "Interpreter",
+      "Selector",
+      "Reviewer"
+    ],
+    "tools": {
+      "Interpreter": [],
+      "Selector": [],
+      "Reviewer": []
+    },
+    "depth_control": null,
+    "continuable_roles": [],
+    "display_name": "兼容顺序研判",
+    "execution_strategy": "sequential",
+    "max_parallel_agents": 1,
+    "default_role_budget": 4,
+    "model_timeout_seconds": 45.0,
+    "stages": [
+      "Interpreter",
+      "Selector",
+      "Reviewer"
+    ],
+    "public_mode": null
+  },
+  "product-trader-loop": {
+    "roles": [
+      "Structurer",
+      "Trader",
+      "Reviewer"
+    ],
+    "tools": {
+      "Structurer": [
+        "search_option_structures",
+        "evaluate_research_candidate",
+        "read_research_evidence"
+      ],
+      "Trader": [
+        "evaluate_research_candidate",
+        "read_research_evidence"
+      ],
+      "Reviewer": [
+        "read_research_evidence"
+      ]
+    },
+    "depth_control": "product_iterations",
+    "continuable_roles": [
+      "Structurer",
+      "Trader",
+      "Reviewer"
+    ],
+    "display_name": "产品交易循环",
+    "execution_strategy": "structurer_trader_loop",
+    "max_parallel_agents": 1,
+    "default_role_budget": 32,
+    "model_timeout_seconds": 45.0,
+    "stages": [
+      "Structurer",
+      "Trader",
+      "Reviewer"
+    ],
+    "public_mode": 1
+  },
+  "independent-council": {
+    "roles": [
+      "Framer",
+      "Matcher",
+      "Hedger",
+      "Moderator"
+    ],
+    "tools": {
+      "Framer": [],
+      "Matcher": [
+        "search_option_structures",
+        "evaluate_research_candidate",
+        "read_research_evidence"
+      ],
+      "Hedger": [
+        "search_option_structures",
+        "evaluate_research_candidate",
+        "read_research_evidence"
+      ],
+      "Moderator": [
+        "read_research_evidence"
+      ]
+    },
+    "depth_control": "council_reviews",
+    "continuable_roles": [
+      "Matcher",
+      "Hedger",
+      "Moderator"
+    ],
+    "display_name": "独立评议",
+    "execution_strategy": "independent_council",
+    "max_parallel_agents": 2,
+    "default_role_budget": 32,
+    "model_timeout_seconds": 45.0,
+    "stages": [
+      "Framer",
+      [
+        "Matcher",
+        "Hedger"
+      ],
+      "Moderator"
+    ],
+    "public_mode": 2
+  },
+  "constraint-ranking": {
+    "roles": [
+      "Specifier",
+      "Generator",
+      "Evaluator",
+      "Reviewer"
+    ],
+    "tools": {
+      "Specifier": [],
+      "Generator": [
+        "search_option_structures",
+        "evaluate_research_candidate",
+        "read_research_evidence"
+      ],
+      "Evaluator": [
+        "evaluate_research_candidate",
+        "read_research_evidence"
+      ],
+      "Reviewer": [
+        "read_research_evidence"
+      ]
+    },
+    "depth_control": "ranking_supplements",
+    "continuable_roles": [
+      "Generator",
+      "Evaluator",
+      "Reviewer"
+    ],
+    "display_name": "约束排序",
+    "execution_strategy": "constraint_ranking",
+    "max_parallel_agents": 4,
+    "default_role_budget": 32,
+    "model_timeout_seconds": 45.0,
+    "stages": [
+      "Specifier",
+      "Generator",
+      "Evaluator",
+      "Ranker",
+      "Reviewer"
+    ],
+    "public_mode": 3
+  }
+};
+
+// Role stages come from the shared preset definition, supplied by the caller.
+function projectWorkflow(runs, definitions, terminal = false) {
+  const roles = new Map();
+  for (const run of runs) {
+    const name = run.role.split('.').at(-1);
+    const previous = roles.get(name);
+    roles.set(name, { ...run, role: name, count: (previous?.count || 0) + 1 });
+  }
+  const definition = roles.size ? Object.values(definitions).find(item => [...roles.keys()].every(role => item.roles.includes(role))) : null;
+  if (!definition) return null;
+  const latestRole = runs.at(-1)?.role.split(".").at(-1);
+  const currentStage = definition.stages.findIndex(stage => (Array.isArray(stage) ? stage : [stage]).includes(latestRole));
+  const stages = definition.stages.map((stage, stageIndex) => (Array.isArray(stage) ? stage : [stage]).map(role => {
+    const run = roles.get(role);
+    if (!definition.roles.includes(role)) return { role, status: 'automatic', count: 0 };
+    if (!run) return { role, status: terminal ? 'not_run' : 'queued', count: 0 };
+    if (!terminal && stageIndex > currentStage && run.status === "complete") return {...run, status:"previous_complete"};
+    return { ...run, status: terminal && ['running','queued','waiting','cancelling'].includes(run.status) ? 'unconfirmed' : run.status };
+  }));
+  return { name: definition.display_name, stages, roleCount: roles.size, runCount: runs.length };
+}
+function renderWorkflow(host, runs, definitions, terminal, onSelect = () => {}, handoffs = []) {
+  const workflow = projectWorkflow(runs, definitions, terminal);
+  host.hidden = !workflow;
+  if (!workflow) return;
+  const doc = host.ownerDocument;
+  const make = (tag, cls, text) => { const node=doc.createElement(tag); node.className=cls; if(text) node.textContent=text; return node; };
+  const header=make('header','workflow-header');
+  header.append(make('strong','','协作进度'),make('small','',`${workflow.roleCount}个角色，${workflow.runCount}次执行`));
+  const scroll=make('div','workflow-scroll');
+  const graph=make('div','workflow-network');
+  const roles=workflow.stages.flat().filter(role=>role.status!=='automatic');
+  const positions=new Map(roles.map((role,index)=>[role.role,80+(index+.5)*640/roles.length]));
+  const svg=doc.createElementNS('http://www.w3.org/2000/svg','svg');
+  svg.setAttribute('viewBox','0 0 800 280');svg.setAttribute('aria-hidden','true');
+  const path = (d, kind, active) => {
+    const line = doc.createElementNS(svg.namespaceURI, 'path');
+    line.setAttribute('d', d);
+    line.setAttribute('class', `workflow-link ${kind}`);
+    svg.append(line);
+    if (active && !terminal) {
+      const energy = doc.createElementNS(svg.namespaceURI, 'g');
+      energy.setAttribute('class', `workflow-pulse ${kind}`);
+      // A bright head followed by progressively dimmer segments travels in
+      // path order, so returned feedback flows toward its actual recipient.
+      for (let index = 12; index >= 0; index--) {
+        const segment = doc.createElementNS(svg.namespaceURI, 'path');
+        segment.setAttribute('d', d);
+        segment.setAttribute('pathLength', '1000');
+        segment.setAttribute('class', index === 0 ? 'energy-segment energy-head' : 'energy-segment');
+        segment.style.setProperty('--energy-lag', String(index * 14));
+        segment.style.setProperty('--energy-alpha', String(index === 0 ? 1 : .9 * (1 - index / 13)));
+        energy.append(segment);
+      }
+      svg.append(energy);
+    }
+    return line;
+  };
+  for(const role of roles){const x=positions.get(role.role);path(`M400 48 C400 100 ${x} 100 ${x} 170`,'host-link',false);}
+  // Only explicit handoff events create role-to-role edges. Role order is not evidence.
+  const valid=handoffs.map(event=>({...event,active:event.active===true && (!event.activeUntil || Date.now()<event.activeUntil)})).filter(event=>event.id && positions.has(event.from) && positions.has(event.to) && event.from!==event.to);
+  const latest=new Map();for(const event of valid)latest.set(`${event.from}:${event.to}`,event);
+  for(const event of latest.values()){
+    const x=positions.get(event.from),y=positions.get(event.to),reverse=event.kind==='return';
+    const direction=y>x?1:-1,start=x+direction*22,end=y-direction*22;
+    const arch=Math.min(72,Math.abs(end-start)*.28)*(reverse?1:-1);
+    const bend=(end-start)*.27;
+    const line=path(`M${start} 184 C${start+bend} ${184+arch} ${end-bend} ${184+arch} ${end} 184`,reverse?'return-link':'handoff-link',event.active===true);
+    const title=doc.createElementNS(svg.namespaceURI,'title');title.textContent=`${event.from} → ${event.to}：${event.label||'交接'}`;line.append(title);
+
+  }
+  graph.append(svg);
+  const root=make('div','workflow-oh','OH');graph.append(root);
+  const labels={previous_complete:'上次已完成',complete:'已完成',running:'运行中',failed:'失败',stopped:'已停止',cancelled:'已停止',cancelling:'正在停止',queued:'等待执行',waiting:'等待中',not_run:'未执行',unconfirmed:'状态待确认'};
+  for(const role of roles){
+    const node=make('button','workflow-node');node.type='button';node.dataset.state=role.status;node.style.left=`${positions.get(role.role)/8}%`;node.disabled=!role.count;
+    if (!terminal && valid.some(event=>event.to===role.role && event.active===true)) node.className+=' receives-energy';
+    const status=labels[role.status]||role.status;
+    node.append(make('span','workflow-mark',role.status==='complete'?'✓':role.status==='failed'?'!':String(roles.indexOf(role)+1)),make('strong','',role.role),make('small','',status+(role.count>1?` · 第${role.count}次执行`:'')));
+    node.setAttribute('aria-label',`${role.role}，${status}，${role.count}次执行`);node.addEventListener('click',()=>onSelect(role));graph.append(node);
+  }
+  scroll.append(graph);
+  const notes=make('div','workflow-handoffs');
+  for(const event of valid.slice(-2)){const row=make('p','workflow-handoff');row.append(make('span','',`${event.from} → ${event.to}`),make('small','',event.label||'交接'));notes.append(row);}
+  if(!valid.length)notes.append(make('p','workflow-note','等待角色交接记录'));
+  host.replaceChildren(header,scroll,notes);
+}
+
 import { createConversationScroll } from "/app/frontend/shared/conversation-scroll.js";
 import { createConversationOutline } from "/app/frontend/shared/conversation-outline.js";
 import {ACTIVITY_VISUALS, activityForEvent} from '/app/frontend/shared/activity-motion.js';
@@ -6,6 +246,8 @@ import { bindComposerKeyboard, enhanceSelects, clearMessage, configureModelPicke
 import { animateSurface, setMotionText, MODEL_CONFIGURATION_CHANGED, setMessageActionIcon, setStatusIcon, operationActivity } from "/app/frontend/shared/app.js";
 import { attachmentMediaType, validateAttachments } from "/app/frontend/optchat/attachment-utils.js";
 import { createThinkingOrb } from "/app/frontend/shared/thinking-orb.js";
+import { createResearchControls } from "/app/frontend/shared/composer-research-controls.js";
+import { createConversationTransition } from "/app/frontend/shared/conversation-transition.js";
 import { createTransitionScope } from "/app/frontend/shared/transition-scope.js";
 import { currentTheme, currentThemePreference, onThemeChange } from "/app/frontend/shared/theme.js";
 
@@ -143,6 +385,9 @@ const runtimeReasoningTextLimit = 512_000;
 const runtimeSummaryLimit = 180;
 const runtimeToolLabels = Object.freeze({
   "recommender.run": "筛选期权结构",
+  "search_option_structures": "检索产品结构",
+  "evaluate_research_candidate": "计算候选方案",
+  "read_research_evidence": "读取计算证据",
   "payoffer": "收益结构",
   "payoffer.run": "收益结构",
   "pricer": "估值定价",
@@ -219,6 +464,7 @@ const runtimeToolLabel = (value, summary = "") => {
   const canonical = key.replace(/^(knowledger|datafetcher|payoffer|pricer|backtester|reporter|recommender|recommendation_delivery)_/, "$1.");
   if (runtimeToolLabels[canonical]) return runtimeToolLabels[canonical];
   const source = String(summary || "");
+  if (source.includes("候选验证")) return "核验候选结果";
   return Object.entries(runtimeToolLabels).find(([module]) => module.endsWith(".run") && source.includes(runtimeToolLabels[module]))?.[1] || "研究模块";
 };
 const runtimeRoleLabel = (value) => {
@@ -313,7 +559,7 @@ export function normalizeRuntimeEvent(row) {
   const family = runtimeFamily(type);
   const status = runtimeStatus(row.status || payload.status, type);
   const role = runtimeRoleLabel(row.role || row.role_id || payload.role || payload.role_id || payload.agent_role);
-  const rawTool = row.tool || row.tool_name || row.module || payload.tool || payload.tool_name || payload.module;
+  const rawTool = row.tool || row.tool_name || row.toolName || row.module || payload.tool || payload.tool_name || payload.toolName || payload.module;
   const summary = runtimePayloadText(row, payload, ["summary", "display_message", "label", "message"]);
   const toolLabel = runtimeToolLabel(rawTool, summary);
   const delta = family === "reasoning"
@@ -334,7 +580,7 @@ export function normalizeRuntimeEvent(row) {
     createdAt: String(row.created_at || row.createdAt || row.timestamp || row.time || payload.created_at || payload.timestamp || "").trim(),
     role,
     agentKey: safeRuntimeKey(row.agent_run_id || row.agentId || payload.agent_run_id || payload.agentId || (type === "agent_run" ? "legacy-agent" : "")),
-    toolKey: safeRuntimeKey(row.call_id || row.tool_call_id || payload.call_id || payload.tool_call_id || `${toolLabel}:${row.agent_run_id || payload.agent_run_id || "main"}`),
+    toolKey: safeRuntimeKey(row.call_id || row.tool_call_id || row.toolCallId || payload.call_id || payload.tool_call_id || payload.toolCallId || `${toolLabel}:${row.agent_run_id || payload.agent_run_id || "main"}`),
     toolLabel,
     detail: family === "tool" && ["failed", "error", "unavailable", "timed_out", "interrupted"].includes(status)
       ? runtimePayloadText(row, payload, ["display_message", "message", "summary", "reason"]) : "",
@@ -396,6 +642,57 @@ export function consumeRuntimeEventRows(cursor, rows) {
 const formatRuntimeTokens = (value) => Number.isFinite(value) ? value.toLocaleString("zh-CN") : "—";
 const transientPrefix = "optionhelper.workspace.state";
 
+// Keep streamed blocks in order, but expose one disclosure for each role.
+export function updateRoleReasoning(card, running = false) {
+  if (!card?.reasoningHost || !card.reasoningBlocks?.size) return;
+  if (!card.reasoningDisclosure) {
+    card.reasoningDisclosure = createReasoningDisclosure("", { compact: true });
+    card.reasoningHost.append(card.reasoningDisclosure.element);
+  }
+  const text = [...card.reasoningBlocks.values()].map(block => block.text).filter(Boolean).join("\n\n");
+  card.reasoningDisclosure.update(text, running);
+  card.reasoningHost.hidden = card.reasoningDisclosure.element.hidden;
+}
+
+export function createProcessToolGroup(title, { progress = false } = {}) {
+  const element = document.createElement("details");
+  element.className = "process-tool-group";
+  const summary = document.createElement("summary");
+  const heading = document.createElement("span");
+  heading.className = "process-tool-group__title";
+  heading.textContent = title;
+  const counts = document.createElement("span");
+  counts.className = "process-tool-group__counts";
+  const calls = document.createElement("div");
+  calls.className = "process-tool-group__calls";
+  const issue = document.createElement("p");
+  issue.className = "process-tool-group__issue";
+  issue.hidden = true;
+  summary.append(heading, counts);
+  element.append(summary, issue, calls);
+  const refresh = () => {
+    const rows = [...calls.children];
+    const totals = { complete: 0, failed: 0, stopped: 0, uncertain: 0, active: 0 };
+    for (const row of rows) {
+      const activity = operationActivity(row.dataset.status);
+      totals[Object.hasOwn(totals, activity) ? activity : "active"] += 1;
+    }
+    const parts = progress ? [] : [`${rows.length}次`];
+    for (const [key, label] of [["active", "进行中"], ["complete", "完成"], ["failed", "失败"], ["stopped", "取消"], ["uncertain", "待确认"]]) {
+      if (totals[key]) parts.push(`${label}${totals[key]}`);
+    }
+    counts.textContent = parts.join("，");
+    element.dataset.active = String(totals.active > 0);
+    element.dataset.hasFailures = String(totals.failed > 0);
+    // The overview never conceals a failed or uncertain call behind a success mark.
+    const problem = rows.find(row => ["failed", "uncertain"].includes(operationActivity(row.dataset.status)));
+    const detail = problem?.querySelector("[data-process-card-detail]")?.textContent || "";
+    issue.textContent = detail;
+    issue.hidden = !detail;
+  };
+  return { element, calls, refresh };
+}
+
 export async function startWorkspace(initialMode) {
   const shell = document.querySelector("[data-workspace-shell]");
   const workArea = shell.querySelector(".work-area");
@@ -414,6 +711,7 @@ export async function startWorkspace(initialMode) {
   workspaceRevealTimer = window.setTimeout(revealWorkspace, 2800);
   const taskLists = Array.from(document.querySelectorAll("[data-task-list]"));
   const stream = document.querySelector("#conversation-stream");
+  const taskTransition = createConversationTransition(stream);
   const chatSurface = document.querySelector("#chat-surface");
   const chatScrollStage = document.querySelector("#chat-scroll-stage");
   const conversationOutline = createConversationOutline({ stream, container: chatScrollStage });
@@ -613,7 +911,7 @@ export async function startWorkspace(initialMode) {
     form.classList.toggle("is-generating", sending);
     button.setAttribute("aria-busy", String(sending));
     button.setAttribute("aria-label", sending
-      ? (button.dataset.cancelRequested === "true" ? "正在取消本次处理" : "取消本次处理")
+      ? (button.dataset.cancelRequested === "true" ? "正在停止" : "停止")
       : "发送");
     syncComposerAvailability();
   };
@@ -630,7 +928,7 @@ export async function startWorkspace(initialMode) {
     submit.disabled = submit.dataset.cancelRequested === "true"
       || (!sending && (modelPicker.disabled || !modelPicker.value || (!input.value.trim() && draftAttachments.length === 0)));
     submit.setAttribute("aria-label", sending
-      ? (submit.dataset.cancelRequested === "true" ? "正在取消本次处理" : "取消本次处理")
+      ? (submit.dataset.cancelRequested === "true" ? "正在停止" : "停止")
       : "发送");
     submit.title = sending ? submit.getAttribute("aria-label")
       : modelPicker.disabled || !modelPicker.value ? "请先配置可用模型"
@@ -1019,7 +1317,7 @@ export async function startWorkspace(initialMode) {
       block.disclosure.update(liveReasoningText(live), false);
     }
   };
-  const appendProcessPanel = ({ onCancel = null } = {}) => {
+  const appendProcessPanel = () => {
     const panel = document.createElement("article");
     panel.className = "message message--assistant message--process";
     panel.dataset.runtimeProcess = "true";
@@ -1050,13 +1348,7 @@ export async function startWorkspace(initialMode) {
     events.dataset.processTimeline = "true";
     const actions = document.createElement("div");
     actions.className = "process-actions";
-    const cancelButton = document.createElement("button");
-    cancelButton.type = "button";
-    cancelButton.className = "process-cancel";
-    setMessageActionIcon(cancelButton, "取消本轮处理", "M6 6h12v12H6Z");
-    cancelButton.hidden = typeof onCancel !== "function";
-    cancelButton.addEventListener("click", () => onCancel?.());
-    actions.append(state, cancelButton);
+    actions.append(state);
 
     const createSection = (label, className, child) => {
       const section = document.createElement("section");
@@ -1116,7 +1408,6 @@ export async function startWorkspace(initialMode) {
       state,
       events,
       orb,
-      cancelButton,
       agentCards,
       collaboration,
       toolCards,
@@ -1124,6 +1415,7 @@ export async function startWorkspace(initialMode) {
       usageValue,
       agentCardMap: new Map(),
       toolCardMap: new Map(),
+      toolGroupMap: new Map(),
       pendingRows: new Map(),
       nextSeq: 0,
       usage: null,
@@ -1162,9 +1454,8 @@ export async function startWorkspace(initialMode) {
     }
     card.dataset.status = event.status;
     const heading = card.querySelector("[data-process-card-title]");
-    const roleLabels = { Interpreter: "需求理解", Selector: "结构筛选", Reviewer: "候选复核", Structurer: "结构设计", Trader: "交易评估", Specifier: "条件整理", Generator: "候选生成", Evaluator: "方案评估" };
     if (!heading.textContent || !/^(?:agent|研究模块)$/i.test(title)) {
-      heading.textContent = kind === "agent" ? (roleLabels[title] || title) : title;
+      heading.textContent = title;
     }
     const status = card.querySelector("[data-process-card-status]");
     const label = runtimeStatusLabel(event.status);
@@ -1184,11 +1475,15 @@ export async function startWorkspace(initialMode) {
     } else {
       status.textContent = label;
       if (["complete", "failed", "stopped", "waiting", "uncertain"].includes(operationActivity(event.status))) {
-        for (const block of card.reasoningBlocks.values()) block.disclosure.update(block.text, false);
+        updateRoleReasoning(card);
       }
     }
     const detail = card.querySelector("[data-process-card-detail]");
-    detail.textContent = event.detail && !/(?:正在运行|正在处理)/.test(event.detail) ? event.detail : event.summary;
+    let detailText = event.detail && !/(?:正在运行|正在处理)/.test(event.detail) ? event.detail : event.summary;
+    for (const [name, label] of Object.entries(runtimeToolLabels)) {
+      if (name.includes("_") || name.includes(".")) detailText = detailText.split(name).join(label);
+    }
+    detail.textContent = detailText;
     if (kind === "agent" && /正在处理本轮分工/.test(detail.textContent)) detail.textContent = "";
     detail.hidden = kind === "tool" || !detail.textContent;
 
@@ -1197,66 +1492,19 @@ export async function startWorkspace(initialMode) {
   const renderCollaboration = (playback) => {
     const host = playback.collaboration;
     if (!host) return;
-    const cards = [...playback.agentCardMap.values()];
-    host.hidden = cards.length < 2;
-    if (host.hidden) return;
-    const states = cards.map(card => operationActivity(card.dataset.status));
-    const signature = JSON.stringify([playback.panel.dataset.terminal, playback.panel.dataset.outcome, cards.map(card => [card.dataset.status, card.querySelector("[data-process-card-title]").textContent])]);
+    const runs = [...playback.agentCardMap.values()].map(card => ({
+      role: card.querySelector("[data-process-card-title]").textContent,
+      status: operationActivity(card.dataset.status), card,
+    }));
+    const terminal = playback.panel.dataset.terminal === "true";
+    const signature = JSON.stringify([terminal, runs.map(({role,status}) => [role,status]), playback.handoffs || []]);
     if (host.dataset.snapshot === signature) return;
     host.dataset.snapshot = signature;
-    const head = document.createElement("header");
-    const title = document.createElement("strong");
-    title.textContent = "协作进度";
-    const count = document.createElement("span");
-    const done = states.filter(state => state === "complete").length;
-    count.textContent = `${cards.length}个Agent，${done}项完成`;
-    head.append(title, count);
-    const graph = document.createElement("div");
-    graph.className = "process-collaboration__graph";
-    graph.style.minWidth = `${Math.max(300, cards.length * 80)}px`;
-    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-    svg.setAttribute("viewBox", "0 0 600 120");
-    svg.setAttribute("preserveAspectRatio", "none");
-    svg.setAttribute("aria-hidden", "true");
-    const root = document.createElement("div");
-    root.className = "process-collaboration__root";
-    root.textContent = "OH";
-    root.title = playback.panel.dataset.terminal === "true" ? "本轮处理已结束" : states.includes("running") ? "正在协作" : "等待汇总";
-    const nodes = document.createElement("div");
-    nodes.className = "process-collaboration__nodes";
-    nodes.style.setProperty("--agent-count", String(cards.length));
-    cards.forEach((card, index) => {
-      const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-      const x = (index + .5) * 600 / cards.length;
-      path.setAttribute("d", `M300 24 C300 65 ${x} 58 ${x} 114`);
-      // These branches represent membership in this request, not sequential dependencies.
-      const unsettled = playback.panel.dataset.terminal === "true" && ["running", "queued", "waiting", "cancelling"].includes(states[index]);
-      path.dataset.state = unsettled ? (["cancelled", "stopped", "interrupted"].includes(playback.panel.dataset.outcome) ? "stopped" : "uncertain") : states[index];
-      const statusLabel = unsettled ? (path.dataset.state === "stopped" ? "已停止" : "完成状态待确认") : runtimeStatusLabel(card.dataset.status);
-      svg.append(path);
-      const node = document.createElement("button");
-      node.type = "button";
-      node.dataset.state = path.dataset.state;
-      const name = card.querySelector("[data-process-card-title]").textContent;
-      node.setAttribute("aria-label", `查看${name}：${statusLabel}`);
-      const mark = document.createElement("span");
-      mark.className = "process-collaboration__mark";
-      mark.textContent = states[index] === "complete" ? "✓" : states[index] === "failed" ? "!" : String(index + 1);
-      const label = document.createElement("span");
-      label.textContent = name;
-      const detail = document.createElement("small");
-      detail.textContent = statusLabel;
-      node.append(mark, label, detail);
-      node.addEventListener("click", () => {
-        card.scrollIntoView({ block: "nearest", behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth" });
-        const heading = card.querySelector("[data-process-card-title]");
-        heading.tabIndex = -1;
-        heading.focus({ preventScroll: true });
-      });
-      nodes.append(node);
-    });
-    graph.append(svg, root, nodes);
-    host.replaceChildren(head, graph);
+    renderWorkflow(host, runs, presetStages, terminal, ({card}) => {
+      card.scrollIntoView({block:"nearest", behavior:matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth"});
+      const heading=card.querySelector("[data-process-card-title]");
+      heading.tabIndex=-1; heading.focus({preventScroll:true});
+    }, playback.handoffs || []);
   };
   const appendProcessTimeline = (playback, projection) => {
     if (!projection.showTimeline) return;
@@ -1271,6 +1519,21 @@ export async function startWorkspace(initialMode) {
     if (!existing) playback.events.append(item);
   };
   const appendRuntimeProjection = (playback, event) => {
+    if (event.type === "workflow.handoff") {
+      const payload = event.payload || event;
+      const id = String(payload.handoff_id || event.seq || "");
+      if (id && typeof payload.from_role === "string" && typeof payload.to_role === "string") {
+        playback.handoffs ||= [];
+        if (!playback.handoffs.some(item => item.id === id)) playback.handoffs.push({
+          id, from: payload.from_role, to: payload.to_role,
+          kind: payload.kind === "return" ? "return" : "handoff",
+          label: String(payload.label || "交接"), active: event.status === "started",
+          activeUntil: (Date.parse(event.created_at || event.timestamp || "") || 0) + 7200,
+        });
+        renderCollaboration(playback);
+      }
+      return;
+    }
     const projection = projectRuntimeEvent(event);
     if (!projection) return;
     if (projection.scope === "main_agent" && playback.runtimeScope !== "main_agent") {
@@ -1298,14 +1561,20 @@ export async function startWorkspace(initialMode) {
       renderCollaboration(playback);
     }
     if (projection.family === "tool") {
-      updateProcessCard(
-        playback.toolCardMap,
-        playback.toolCards,
-        projection.toolKey,
-        projection.toolLabel,
-        projection,
-        "tool",
-      );
+      const roleCard = playback.agentCardMap.get(projection.agentKey);
+      const roleTitle = roleCard?.querySelector("[data-process-card-title]")?.textContent;
+      const title = roleTitle && projection.toolLabel !== "研究模块" ? `${roleTitle}：${projection.toolLabel}` : projection.toolLabel;
+      const groupKey = JSON.stringify([projection.agentKey, projection.toolLabel]);
+      let group = playback.toolGroupMap.get(groupKey);
+      if (!group) {
+        group = createProcessToolGroup(title, { progress: projection.type === "host_module" });
+        playback.toolGroupMap.set(groupKey, group);
+        playback.toolCards.append(group.element);
+      }
+      updateProcessCard(playback.toolCardMap, group.calls, projection.toolKey,
+        projection.toolLabel, projection, "tool");
+      group.refresh();
+      playback.toolCards.parentElement.hidden = false;
     }
     if (projection.family === "block" && projection.scope === "main_agent" && projection.blockType) {
       if (projection.type === "assistant.block_started") {
@@ -1339,14 +1608,11 @@ export async function startWorkspace(initialMode) {
         if (card?.reasoningHost) {
           let roleBlock = card.reasoningBlocks.get(runtimeBlockKey(projection, "reasoning"));
           if (!roleBlock) {
-            const disclosure = createReasoningDisclosure("", { running: true });
-            roleBlock = { text: "", disclosure };
+            roleBlock = { text: "" };
             card.reasoningBlocks.set(runtimeBlockKey(projection, "reasoning"), roleBlock);
-            card.reasoningHost.append(disclosure.element);
-            card.reasoningHost.hidden = false;
           }
           roleBlock.text = appendRuntimeDelta(roleBlock.text, projection.reasoningDelta, runtimeReasoningTextLimit);
-          roleBlock.disclosure.update(roleBlock.text, true);
+          updateRoleReasoning(card, true);
         }
       }
     }
@@ -1407,13 +1673,12 @@ export async function startWorkspace(initialMode) {
     playback.panel.dataset.outcome = outcome;
     renderCollaboration(playback);
     if (submit.dataset.sending === "true") assistantAvatar.setActivity(outcome === "partial" ? "needs_input" : ["interrupted", "stopped"].includes(outcome) ? "cancelled" : outcome);
-    playback.cancelButton.hidden = true;
     playback.orb.setPaused(true);
     playback.orb.element.hidden = true;
     playback.state.hidden = true;
     settleLiveReasoning(playback.liveAssistant);
     for (const card of playback.agentCardMap.values()) {
-      for (const block of card.reasoningBlocks || []) block[1].disclosure.update(block[1].text, false);
+      updateRoleReasoning(card);
     }
     playback.details.open = false;
     setMotionText(playback.summaryLabel, "运行详情");
@@ -1450,8 +1715,8 @@ export async function startWorkspace(initialMode) {
     else if (playback.nextSeq > 0 && !playback.panel.dataset.terminal) playback.state.textContent = "正在运行";
     if (!conversationScroll.refresh() && followTail) stream.scrollTop = stream.scrollHeight;
   };
-  const startProcessPlayback = (taskId, requestId, { restore = false, onCancel = null, onTerminal = null } = {}) => {
-    const playback = appendProcessPanel({ onCancel });
+  const startProcessPlayback = (taskId, requestId, { restore = false, onTerminal = null } = {}) => {
+    const playback = appendProcessPanel();
     playback.liveAssistant = restore ? null : createLiveAssistantMessage();
     if (playback.liveAssistant) stream.insertBefore(playback.liveAssistant.article, playback.panel);
     let stopped = false;
@@ -1503,7 +1768,7 @@ export async function startWorkspace(initialMode) {
         playback.orb.setPaused(true);
         settleLiveReasoning(playback.liveAssistant);
         for (const card of playback.agentCardMap.values()) {
-          for (const block of card.reasoningBlocks?.values() || []) block.disclosure.update(block.text, false);
+          updateRoleReasoning(card);
         }
       },
       restore,
@@ -1535,29 +1800,27 @@ export async function startWorkspace(initialMode) {
     if (activeConversation?.taskId === taskId && activeConversation.requestId === requestId) {
       submit.dataset.cancelRequested = "true";
       submit.disabled = true;
-      submit.setAttribute("aria-label", "正在取消本次处理");
+      submit.setAttribute("aria-label", "正在停止");
     }
     if (activeProcessPlayback?.taskId === taskId && activeProcessPlayback.requestId === requestId) {
-      activeProcessPlayback.state.textContent = "正在取消本轮处理";
-      activeProcessPlayback.cancelButton.disabled = true;
-      setMessageActionIcon(activeProcessPlayback.cancelButton, "正在取消本轮处理", "M6 6h12v12H6Z");
+      activeProcessPlayback.state.textContent = "正在停止";
     }
+    if (activeOperationPolls.has(operationId)) cancellingOperations.add(operationId);
+    wakeOperationPoll(operationId);
     try {
       await request(`/api/tasks/${encodeURIComponent(taskId)}/operations/${encodeURIComponent(operationId)}/cancel`, {
         method: "POST",
         body: safeJson({}),
       });
+      wakeOperationPoll(operationId);
       if (module) publishModuleOperationCancel(module, operationId);
-      showWorkspaceStatus("正在取消本轮处理。", false);
-      setRuntimeLiveStatus("正在取消本轮处理。");
+      showWorkspaceStatus("正在停止。", false);
+      setRuntimeLiveStatus("正在停止。");
     } catch (error) {
+      cancellingOperations.delete(operationId);
       if (activeConversation?.taskId === taskId && activeConversation.requestId === requestId) {
         submit.dataset.cancelRequested = "false";
         syncComposerAvailability();
-      }
-      if (activeProcessPlayback?.taskId === taskId && activeProcessPlayback.requestId === requestId) {
-        activeProcessPlayback.cancelButton.disabled = false;
-        setMessageActionIcon(activeProcessPlayback.cancelButton, "取消本轮处理", "M6 6h12v12H6Z");
       }
       showWorkspaceStatus(error.message || "取消请求未完成，请稍后重试。", true);
     }
@@ -1569,7 +1832,7 @@ export async function startWorkspace(initialMode) {
         activeConversation.cancelWhenAccepted = true;
         submit.dataset.cancelRequested = "true";
         submit.disabled = true;
-        submit.setAttribute("aria-label", "正在等待后台接受取消请求");
+        submit.setAttribute("aria-label", "正在停止");
       }
       return;
     }
@@ -1586,7 +1849,6 @@ export async function startWorkspace(initialMode) {
     activeProcessPlayback?.stop();
     activeProcessPlayback = startProcessPlayback(task.task_id, requestId, {
       restore: true,
-      onCancel: () => cancelConversationRequest(task.task_id, requestId, activeConversation?.operationId),
     });
   };
   const newWorkspaceRequestId = () => globalThis.crypto?.randomUUID?.()
@@ -1651,25 +1913,54 @@ export async function startWorkspace(initialMode) {
     error.operationTerminal = true;
     throw error;
   };
+  // Cancellation wakes status polling without pretending the worker has stopped.
+  const cancellingOperations = new Set();
+  const activeOperationPolls = new Set();
+  const operationPollWaiters = new Map();
+  const wakeOperationPoll = (operationId) => {
+    for (const wake of operationPollWaiters.get(operationId) || []) wake();
+  };
+  const waitForOperationPoll = (operationId, delay) => new Promise((resolve) => {
+    const waiters = operationPollWaiters.get(operationId) || new Set();
+    operationPollWaiters.set(operationId, waiters);
+    const wake = () => {
+      window.clearTimeout(timer);
+      waiters.delete(wake);
+      if (!waiters.size) operationPollWaiters.delete(operationId);
+      resolve();
+    };
+    const timer = window.setTimeout(wake, delay);
+    waiters.add(wake);
+  });
   const waitForOperation = async (taskId, operationId, onUpdate = null) => {
     let failures = 0;
-    while (true) {
-      try {
-        const { operation } = await request(`/api/tasks/${encodeURIComponent(taskId)}/operations/${encodeURIComponent(operationId)}?include_result=false`);
-        failures = 0;
-        onUpdate?.(operation);
-        if (operation.state === "succeeded") return readOperationResult(taskId, operationId, onUpdate);
-        if (["failed", "cancelled", "interrupted"].includes(operation.state)) {
-          return readOperationFailure(taskId, operationId, operation);
+    activeOperationPolls.add(operationId);
+    if (activeConversation?.operationId === operationId && submit.dataset.cancelRequested === "true") {
+      cancellingOperations.add(operationId);
+    }
+    try {
+      while (true) {
+        try {
+          const { operation } = await request(`/api/tasks/${encodeURIComponent(taskId)}/operations/${encodeURIComponent(operationId)}?include_result=false`);
+          failures = 0;
+          onUpdate?.(operation);
+          if (operation.state === "succeeded") return readOperationResult(taskId, operationId, onUpdate);
+          if (["failed", "cancelled", "interrupted"].includes(operation.state)) {
+            return readOperationFailure(taskId, operationId, operation);
+          }
+        } catch (error) {
+          if (error.operationTerminal || [401, 403, 404].includes(error.status)) throw error;
+          failures += 1;
+          onUpdate?.({ state: "recovering", message: "状态连接暂时中断，正在恢复。", recovery_attempts: failures });
+          await waitForOperationPoll(operationId, Math.min(4_000, 500 * (2 ** Math.min(failures - 1, 3))));
+          continue;
         }
-      } catch (error) {
-        if (error.operationTerminal || [401, 403, 404].includes(error.status)) throw error;
-        failures += 1;
-        onUpdate?.({ state: "recovering", message: "状态连接暂时中断，正在恢复。", recovery_attempts: failures });
-        await new Promise((resolve) => window.setTimeout(resolve, Math.min(4_000, 500 * (2 ** Math.min(failures - 1, 3)))));
-        continue;
+        await waitForOperationPoll(operationId, cancellingOperations.has(operationId) ? 100 : 750);
       }
-      await new Promise((resolve) => window.setTimeout(resolve, 750));
+    } finally {
+      activeOperationPolls.delete(operationId);
+      cancellingOperations.delete(operationId);
+      wakeOperationPoll(operationId);
     }
   };
   const lookupConversationResponse = async (taskId, requestId) => {
@@ -2014,7 +2305,6 @@ export async function startWorkspace(initialMode) {
         pendingConversationRequest.taskId,
         pendingConversationRequest.requestId,
         {
-          onCancel: () => cancelConversationRequest(pending.taskId, pending.requestId, pending.operationId),
           // A navigation can happen before POST returns its operation id.
           // Recover the durable response by request id without sending another turn.
           onTerminal: pending.operationId ? null : async () => {
@@ -2173,8 +2463,8 @@ export async function startWorkspace(initialMode) {
     const unresolved = (readTransient().queuedConversations || []).find(item => item.state === "uncertain" && item.content === input.value.trim() && item.mode === mode);
     const item = unresolved || { taskId: currentTask.task_id, requestId: newWorkspaceRequestId(), content: input.value.trim(),
       modelSelection: selectedModel(), mode, state: "submitting" };
-    updateFollowup(item);
-    try { await acceptFollowup(item); }
+    try { await researchControls.whenSettled(); updateFollowup(item); await acceptFollowup(item); }
+    catch (error) { showWorkspaceStatus(error.message || "预设未保存，请重试。", true); }
     finally { followupSubmitting = false; syncComposerAvailability(); }
   };
   for (const button of followupButtons) button.addEventListener("click", () => { void queueFollowup(button.dataset.followupMode); });
@@ -2226,6 +2516,7 @@ export async function startWorkspace(initialMode) {
     }
   };
   const applyMode = async (mode, { updateHistory = true, restoreStartup = false } = {}) => {
+    taskTransition.cancel();
     if (!restoreStartup) ++modeInteractionRevision;
     activeModeTransition?.dispose();
     const nextMode = mode === "desk" ? "desk" : "chat";
@@ -2345,8 +2636,50 @@ export async function startWorkspace(initialMode) {
     }
   }
 
+  let taskActivitySummaries = [];
+  let selectingTaskId = "";
+  // UI acknowledgement belongs to this submission, not to whichever task is open later.
+  const submittingTasks = new Map();
+  function beginTaskSubmission(taskId) {
+    const token = Symbol("submission");
+    if (taskId) submittingTasks.set(taskId, token);
+    renderLoadedTasks(taskActivitySummaries);
+    return {
+      move(nextTaskId) {
+        if (submittingTasks.get(taskId) === token) submittingTasks.delete(taskId);
+        taskId = nextTaskId;
+        if (taskId) submittingTasks.set(taskId, token);
+        renderLoadedTasks(taskActivitySummaries);
+      },
+      finish() {
+        if (submittingTasks.get(taskId) === token) submittingTasks.delete(taskId);
+        renderLoadedTasks(taskActivitySummaries);
+      },
+    };
+  }
+  let taskActivityRequest = null;
+  async function loadTaskActivity() {
+    if (taskActivityRequest) return taskActivityRequest;
+    taskActivityRequest = (async () => {
+      const { active_operations_by_task = {} } = await request("/api/runtime/active-operations");
+      taskActivitySummaries = taskActivitySummaries.map(task => ({
+        ...task, active_operations: active_operations_by_task[task.task_id] || [],
+      }));
+      renderLoadedTasks(taskActivitySummaries);
+    })().finally(() => { taskActivityRequest = null; });
+    return taskActivityRequest;
+  }
+
   async function loadTasks() {
     const { tasks } = await request("/api/tasks");
+    taskActivitySummaries = tasks;
+    renderLoadedTasks(tasks);
+    // Full history may take longer than a calculation; refresh its live state.
+    void loadTaskActivity().catch(() => {});
+    return tasks;
+  }
+
+  function renderLoadedTasks(tasks) {
     const activeCount = tasks.reduce((total, task) => total + (task.active_operations?.length || 0), 0);
     const selectedTask = tasks.find((task) => task.task_id === currentTask?.task_id);
     if (selectedTask?.active_operations?.length) {
@@ -2359,20 +2692,27 @@ export async function startWorkspace(initialMode) {
     window.clearTimeout(operationRefreshTimer);
     if (activeCount > 0) {
       operationRefreshTimer = window.setTimeout(() => {
-        loadTasks().catch(() => {});
+        loadTaskActivity().catch(() => {});
       }, 900);
     }
-    const listSnapshot = JSON.stringify([currentTask?.task_id, tasks.map(task => [
-      task.task_id, task.subject, task.pinned === true, task.updated_at || task.created_at, task.active_operations?.map(operation => operation.state),
-    ])]);
+    const visibleTasks = tasks.map(task => ({ ...task, local_activity: submittingTasks.has(task.task_id) ? "running" : "" }));
+    const selectedTaskId = selectingTaskId || currentTask?.task_id;
+    const listSnapshot = JSON.stringify(visibleTasks.map(task => [
+      task.task_id, task.subject, task.pinned === true, task.updated_at || task.created_at, task.local_activity, task.active_operations?.map(operation => operation.state),
+    ]));
     taskLists.forEach((taskList) => {
       // Polling an unchanged task must not replace focused buttons or close its menu.
-      if (taskListSnapshots.get(taskList) === listSnapshot) return;
+      if (taskListSnapshots.get(taskList) === listSnapshot) {
+        taskList.querySelectorAll(".task-item").forEach(button => {
+          button.setAttribute("aria-current", String(button.dataset.taskId === selectedTaskId));
+        });
+        return;
+      }
       taskListSnapshots.set(taskList, listSnapshot);
       renderTaskList(
         taskList,
-        tasks,
-        currentTask?.task_id,
+        visibleTasks,
+        selectedTaskId,
         (id) => selectTask(id)
           .then(() => {
             if (taskList.matches("[data-mobile-task-list]")) document.querySelector("[data-task-history-close]")?.click();
@@ -2711,6 +3051,7 @@ export async function startWorkspace(initialMode) {
     const readingPosition = currentTask?.task_id === taskId && submit.dataset.sending === "true"
       && stream.scrollHeight - stream.clientHeight - stream.scrollTop >= 72 ? stream.scrollTop : null;
     const selectionRevision = ++taskSelectionRevision;
+    taskTransition.cancel();
     moduleMountRevision += 1;
     // A pending mode animation owns the previous task's scroll snapshot.
     // Release it before loading another task so its frames cannot restore stale state.
@@ -2724,45 +3065,69 @@ export async function startWorkspace(initialMode) {
     if (currentTask) saveTransient();
     activeProcessPlayback?.stop();
     activeProcessPlayback = null;
-    const readStartedAt = performance.now();
-    const { task } = await request(`/api/tasks/${encodeURIComponent(taskId)}`);
-    if (!isCurrentSelection() || (restoreStartup && !canRestoreStartup())) return null;
-    if (currentTask?.task_id && currentTask.task_id !== task.task_id) {
-      disposeModuleFrames();
-      if (currentMode === "desk") showModuleLoading(currentModule, { replace: true });
+    selectingTaskId = taskId;
+    renderLoadedTasks(taskActivitySummaries);
+    stream.setAttribute("aria-busy", "true");
+    form.inert = true;
+    const animateTask = !restoreStartup && currentMode === "chat" && currentTask?.task_id
+      && currentTask.task_id !== taskId;
+    // Let feedback and data loading overlap; never fade to an empty screen.
+    const departure = animateTask ? taskTransition.exit() : Promise.resolve(true);
+    let committed = false;
+    try {
+      const readStartedAt = performance.now();
+      const [{ task }] = await Promise.all([request(`/api/tasks/${encodeURIComponent(taskId)}`), departure]);
+      if (!isCurrentSelection() || (restoreStartup && !canRestoreStartup())) return null;
+      if (currentTask?.task_id && currentTask.task_id !== task.task_id) {
+        disposeModuleFrames();
+        if (currentMode === "desk") showModuleLoading(currentModule, { replace: true });
+      }
+      if (currentTask?.task_id !== task.task_id) conversationScroll.reset();
+      currentTask = task;
+      window.dispatchEvent(new CustomEvent("optionhelper.task-selected", { detail: { task, readStartedAt } }));
+      clearWorkspaceStatus();
+      setRuntimeLiveStatus("");
+      pendingConversationRequest = null;
+      pendingReportRequest = null;
+      pendingReportEditor = null;
+      clearReportFeedback();
+      syncReportActions();
+      title.textContent = task.subject;
+      conversationTitle.textContent = task.subject;
+      taskState.textContent = "当前任务会保留对话、模块运行记录和关联报告。";
+      renderTaskConversation(task);
+      // Restore task-owned requests before async reports/rail updates can save scroll state.
+      restoreTransient();
+      if (!pendingConversationRequest) restoreLatestProcess(task);
+      if (readingPosition !== null) stream.scrollTop = readingPosition;
+      if (animateTask) taskTransition.enter();
+      committed = true;
+      if (updateLocation) setTaskLocation(task.task_id, { module: currentMode === "desk" ? currentModule : "" });
+      renderLoadedTasks(taskActivitySummaries);
+      renderReports(reports, []);
+      // These independent reads already guard their own task/revision on completion.
+      const reportsReady = refreshReportLibrary(taskId).catch(() => {});
+      const operationsReady = loadCurrentTaskOperations(taskId).catch(() => {
+        if (isCurrentSelection()) renderTaskOperations([], taskId);
+      });
+      const tasksReady = loadTasks().catch(() => {});
+      await restoreAttachmentDrafts();
+      if (isCurrentSelection()) form.inert = false;
+      await Promise.all([reportsReady, operationsReady, tasksReady]);
+      if (!isCurrentSelection()) return null;
+      if (currentMode === "desk") {
+        await mountModule(currentModule, false);
+      }
+      return task;
+    } finally {
+      if (isCurrentSelection()) {
+        selectingTaskId = "";
+        form.inert = false;
+        stream.removeAttribute("aria-busy");
+        if (!committed) taskTransition.cancel();
+        renderLoadedTasks(taskActivitySummaries);
+      }
     }
-    if (currentTask?.task_id !== task.task_id) conversationScroll.reset();
-    currentTask = task;
-    window.dispatchEvent(new CustomEvent("optionhelper.task-selected", { detail: { task, readStartedAt } }));
-    clearWorkspaceStatus();
-    setRuntimeLiveStatus("");
-    pendingConversationRequest = null;
-    pendingReportRequest = null;
-    pendingReportEditor = null;
-    clearReportFeedback();
-    syncReportActions();
-    title.textContent = task.subject;
-    conversationTitle.textContent = task.subject;
-    taskState.textContent = "当前任务会保留对话、模块运行记录和关联报告。";
-    renderTaskConversation(task);
-    // Restore task-owned requests before async reports/rail updates can save scroll state.
-    restoreTransient();
-    if (!pendingConversationRequest) restoreLatestProcess(task);
-    if (readingPosition !== null) stream.scrollTop = readingPosition;
-    renderReports(reports, []);
-    await refreshReportLibrary(taskId).catch(() => {});
-    if (!isCurrentSelection()) return null;
-    await loadCurrentTaskOperations(taskId).catch(() => renderTaskOperations([], taskId));
-    if (!isCurrentSelection()) return null;
-    if (updateLocation) setTaskLocation(task.task_id, { module: currentMode === "desk" ? currentModule : "" });
-    await loadTasks();
-    if (!isCurrentSelection()) return null;
-    await restoreAttachmentDrafts();
-    if (!isCurrentSelection()) return null;
-    if (currentMode === "desk") {
-      await mountModule(currentModule, false);
-    }
-    return task;
   }
 
   function disposeModuleFrames() {
@@ -3045,6 +3410,12 @@ export async function startWorkspace(initialMode) {
     // because WebKit changed the proxy object identity.
     if (event.origin !== location.origin || !frame) return;
     if (event.data?.bridge_nonce !== frame?.dataset.bridgeNonce) return;
+    if (event.data?.type === "optionhelper.module-operation-changed") {
+      // Read only live state: loading all conversations can outlast the run.
+      // Never trust a frame-supplied activity or result.
+      void loadTaskActivity().catch(() => {});
+      return;
+    }
     if (event.data?.type === "optionhelper.report-saved") {
       if (moduleName !== "reporter" || event.data.task_id !== currentTask?.task_id
           || typeof event.data.report_run_id !== "string" || !event.data.report_run_id.trim()) return;
@@ -3228,8 +3599,10 @@ export async function startWorkspace(initialMode) {
     void cancelConversationRequest(taskId, requestId, operationId);
   });
 
+  let preparingConversation = false;
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
+    if (preparingConversation || form.inert) return;
     if (submit.dataset.sending === "true") { await queueFollowup(); return; }
     const submittedContent = input.value.trim();
     const submittedDrafts = [...draftAttachments];
@@ -3242,6 +3615,20 @@ export async function startWorkspace(initialMode) {
     }
     if (submittedDrafts.some((item) => item.kind === "image") && !selectedModelSupportsImages()) {
       showWorkspaceStatus("当前模型未声明图片输入能力，请切换支持图片的模型后发送。", true);
+      return;
+    }
+    preparingConversation = true;
+    const originTaskId = currentTask?.task_id || "";
+    const submissionFeedback = beginTaskSubmission(originTaskId);
+    try { await researchControls.whenSettled(); }
+    catch (error) {
+      submissionFeedback.finish();
+      showWorkspaceStatus(error.message || "预设未保存，请重试。", true);
+      return;
+    }
+    finally { preparingConversation = false; }
+    if ((currentTask?.task_id || "") !== originTaskId || form.inert) {
+      submissionFeedback.finish();
       return;
     }
     let pendingMessage;
@@ -3257,7 +3644,9 @@ export async function startWorkspace(initialMode) {
         ++taskInteractionRevision;
         const task = await createTask();
         migrateTransient("new", task.task_id);
-        await selectTask(task.task_id);
+        submissionFeedback.move(task.task_id);
+        const selected = await selectTask(task.task_id);
+        if (!selected || currentTask?.task_id !== task.task_id) return;
       }
       submittedTaskId = currentTask.task_id;
       const resumeUncertain = pendingConversationRequest?.taskId === currentTask.task_id
@@ -3293,7 +3682,6 @@ export async function startWorkspace(initialMode) {
           operationId: submittedRequest.operationId, cancelWhenAccepted: false };
         activeProcessPlayback?.stop();
         processPlayback = startProcessPlayback(submittedTaskId, requestId, {
-          onCancel: () => cancelConversationRequest(submittedTaskId, requestId, activeConversation?.operationId),
         });
         activeProcessPlayback = processPlayback;
       }
@@ -3316,6 +3704,7 @@ export async function startWorkspace(initialMode) {
           await clearDraftAttachments(submittedTaskId);
         },
       );
+      submissionFeedback.finish();
       playbackOutcome = conversationPlaybackOutcome(response);
       processPlayback?.stop({ outcome: playbackOutcome });
       settleConversationRequest(submittedTaskId, requestId);
@@ -3381,6 +3770,8 @@ export async function startWorkspace(initialMode) {
         showWorkspaceStatus(failureMessage, true);
       }
     } finally {
+      submissionFeedback.finish();
+      void loadTaskActivity().catch(() => {});
       processPlayback?.stop({ outcome: playbackOutcome || (submit.dataset.cancelRequested === "true" ? "cancelled" : "failed") });
       if (acceptedOperationId) reconnectingOperations.delete(`conversation:${acceptedOperationId}`);
       if (activeConversation?.taskId === submittedTaskId && activeConversation.requestId === requestId) {
@@ -3451,6 +3842,7 @@ export async function startWorkspace(initialMode) {
   }));
 
   window.addEventListener("pagehide", () => {
+    taskTransition.cancel();
     conversationOutline.destroy();
     assistantAvatar.destroy();
     composerResizeObserver.disconnect();
@@ -3484,51 +3876,13 @@ export async function startWorkspace(initialMode) {
     button.dataset.permitted = String(session.capabilities.includes(capability));
   });
   syncReportActions();
-  const presetHost = document.createElement("div");
-  presetHost.className = "composer-preset";
-  const presetSelect = document.createElement("select");
-  presetSelect.dataset.choice = "true";
-  presetSelect.setAttribute("aria-label", "推荐预设");
-  presetHost.append(presetSelect);
-  form.querySelector(".composer-actions__leading").append(presetHost);
-  const canChoosePreset = session.capabilities.some(value => ["settings.model.local.write", "settings.model.write"].includes(value));
-  let presetSaving = false;
-  const refreshComposerPreset = async () => {
-    const data = await request("/api/settings/multi-agent-presets");
-    const single = document.createElement("option");
-    single.value = "single";
-    single.textContent = "单智能体";
-    const multi = document.createElement("optgroup");
-    multi.label = "多智能体";
-    (data.presets || []).filter(preset => preset.enabled).forEach(preset => {
-      const option = document.createElement("option");
-      option.value = preset.preset_id;
-      option.textContent = preset.display_name;
-      multi.append(option);
-    });
-    presetSelect.replaceChildren(single, ...(multi.children.length ? [multi] : []));
-    presetSelect.value = data.execution_mode === "multi" ? data.selected_preset_id : "single";
-    presetSelect.disabled = !canChoosePreset || presetSaving;
-    enhanceSelects(presetHost);
-    const trigger = presetHost.querySelector(".choice-trigger");
-    if (trigger) trigger.title = `推荐预设：${presetSelect.selectedOptions[0]?.textContent || "未配置"}`;
-  };
-  presetSelect.addEventListener("change", async () => {
-    if (presetSaving || !canChoosePreset) return;
-    const value = presetSelect.value;
-    presetSaving = true;
-    presetSelect.disabled = true;
-    enhanceSelects(presetHost);
-    try {
-      if (value !== "single") await request("/api/settings/multi-agent-preset/default", {method: "POST", body: safeJson({preset_id: value})});
-      await request("/api/settings/recommendation-execution", {method: "POST", body: safeJson({execution_mode: value === "single" ? "single" : "multi"})});
-    } catch (error) { showWorkspaceStatus(error.message, true); }
-    finally {
-      presetSaving = false;
-      await refreshComposerPreset().catch(error => showWorkspaceStatus(error.message, true));
-    }
+  const researchControls = createResearchControls({
+    container: form.querySelector(".composer-actions__leading"),
+    request, enhanceSelects,
+    canChoosePreset: session.capabilities.some(value => ["settings.model.local.write", "settings.model.write"].includes(value)),
+    onError: error => showWorkspaceStatus(error.message, true),
   });
-  await refreshComposerPreset().catch(() => { presetHost.hidden = true; });
+  await researchControls.refresh().catch(() => researchControls.hide());
   const [, tasks] = await Promise.all([
     configureModelPicker(modelPicker).catch(() => {}),
     loadTasks(),
