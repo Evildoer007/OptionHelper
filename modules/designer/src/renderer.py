@@ -36,7 +36,7 @@ SECTION_TITLES = {
 }
 PUBLIC_BRAND = "光大证券 金融创新业务总部"
 STATUS_LABELS = {name: str(state["label"]) for name, state in TOKENS.states.items()}
-CHART_TYPES = {"line", "bar", "heatmap"}
+CHART_TYPES = {"line", "bar", "heatmap", "surface"}
 GREEK_ORDER = ("Delta", "Gamma", "Vega", "Theta", "Rho")
 _GREEK_KEY = {name.casefold(): name for name in GREEK_ORDER}
 _PUBLIC_VALUE_STATUS = {
@@ -54,7 +54,7 @@ PARAMETER_SOURCE_LABELS = {
 ASSET_MODES = {"shared", "portable"}
 _NUMBER_TEXT = re.compile(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$")
 _MATH_SUBSCRIPT_TOKEN = re.compile(
-    r"[A-Za-zΠπ]+_[A-Za-z0-9]+|(?<![A-Za-z0-9_])(?:K[12]|S0)(?![A-Za-z0-9_])"
+    r"(?<![A-Za-z0-9_])(?:[A-Za-zΠπ]|Pi)_[A-Za-z0-9]+(?![A-Za-z0-9_])|(?<![A-Za-z0-9_])(?:K[12]|S0)(?![A-Za-z0-9_])"
 )
 _MATH_EXPRESSION = re.compile(r"[A-Za-zΠπ]+(?:_[A-Za-z0-9]+)?|\d+(?:\.\d+)?|<=|>=|!=|[+\-×*/=(),<>]")
 _SUPERSCRIPT_DIGITS = str.maketrans("-0123456789", "⁻⁰¹²³⁴⁵⁶⁷⁸⁹")
@@ -76,16 +76,19 @@ _PUBLIC_VALUE_TEXT = {
     "daily": "每日",
     "monthly_last": "每月最后一个交易日",
     "configured_paths": "固定路径数",
+    "margin_call": "追加保证金",
 }
 
 _PUBLIC_TEXT_REPLACEMENTS = {
     "configured_paths": "固定路径数",
+    "margin_call": "追加保证金",
 }
 _EXCLUDED_PUBLIC_PARAMETER_KEYS = frozenset({
     "N", "notional", "G", "monitor", "constraints", "derived_terms",
     "pricing_methods", "payoff_figure_basis",
 })
 _PUBLIC_PARAMETER_PRESENTATION = {
+    "margin_call": ("追加保证金", ""),
     "H_KI": ("敲入障碍", "H_in"),
     "H_KO": ("敲出障碍", "H_out"),
     "Hc": ("派息障碍", "H_c"),
@@ -415,6 +418,8 @@ def esc_rendered(value: Any) -> str:
 
 def _is_formula_expression(value: str) -> bool:
     compact = re.sub(r"\s+", "", value)
+    if any(base != "Pi" for base in re.findall(r"([A-Za-z]{2,})_[A-Za-z0-9]+", compact)):
+        return False
     tokens = "".join(_MATH_EXPRESSION.findall(compact))
     return bool(compact and "_" in compact and tokens.replace("×", "*") == compact.replace("×", "*"))
 
@@ -508,7 +513,7 @@ def validate_chart(raw_spec: Any, location: str) -> None:
     if chart_type not in CHART_TYPES:
         raise ValueError(f"{location}图表类型仅支持：{', '.join(sorted(CHART_TYPES))}")
     x_values = as_list(spec.get("x"))
-    if chart_type == "heatmap":
+    if chart_type in {"heatmap", "surface"}:
         missing = [key for key in ("z_axis_name",) if not text(spec.get(key))]
         if missing:
             raise ValueError(f"{location}缺少热力图口径：{', '.join(missing)}")
@@ -629,7 +634,7 @@ def parameter_table(rows: list[Any], caption: str) -> str:
         table_rows.append(
             "<tr>"
             f"<td>{esc(item.get('cn'))}</td>"
-            f"<td class=\"symbol\">{render_inline_formula(symbol) if symbol else '-'}</td>"
+            f"<td class=\"symbol\">{rich_text(symbol) if symbol else '-'}</td>"
             f"<td>{rich_text(value)}</td>"
             f"<td>{esc(PARAMETER_SOURCE_LABELS.get(source, source))}</td>"
             "</tr>"
@@ -700,7 +705,7 @@ def chart_data_table(spec: dict[str, Any], x_values: list[Any], series: list[dic
     rendered in full below its chart rather than hidden behind an expander.
     """
 
-    if text(spec.get("type")).lower() == "heatmap":
+    if text(spec.get("type")).lower() in {"heatmap", "surface"}:
         y_values = as_list(spec.get("y"))
         cells = {
             (int(item[0]), int(item[1])): item[2]
@@ -754,7 +759,7 @@ def add_charts(charts: list[dict[str, Any]], section: str, specs: list[Any]) -> 
         x_values = as_list(spec.get("x"))
         chart_type = text(spec.get("type") or "line").lower()
         series = [as_dict(item) for item in as_list(spec.get("series")) if as_dict(item).get("name")]
-        heatmap = chart_type == "heatmap"
+        heatmap = chart_type in {"heatmap", "surface"}
         if not x_values or (not heatmap and not series):
             continue
         chart_id = text(spec.get("id")) or f"{section}-chart-{len(charts) + position}"
@@ -806,7 +811,8 @@ def add_charts(charts: list[dict[str, Any]], section: str, specs: list[Any]) -> 
             f'aria-label="{esc(spec.get("title") or "图表")}" aria-describedby="{esc(summary_id)}"></div>'
             f'<p id="{esc(summary_id)}" class="chart-summary">{esc(summary)}</p>'
             f'{source_html}'
-            "</figure>"
+            + (chart_data_table(chart, x_values, []) if chart_type == 'surface' else '')
+            + "</figure>"
         )
     return "".join(figures)
 
@@ -826,6 +832,11 @@ def _presentation_chart(node: dict[str, Any]) -> str:
     x_values = as_list(spec.get("x"))
     series = [as_dict(item) for item in as_list(spec.get("series")) if text(as_dict(item).get("name"))]
     title = text(spec.get("title") or "图表")
+    if chart_type == "surface":
+        from .components.surface import surface_svg
+        encoded = base64.b64encode(surface_svg(spec).encode("utf-8")).decode("ascii")
+        return (f'<figure class="presentation-chart"><img class="presentation-chart__image" src="data:image/svg+xml;base64,{encoded}" alt="{esc(title)}">'
+                + chart_data_table(spec, x_values, series) + '</figure>')
     width, height = 720.0, 260.0
     left, right, top, bottom = 52.0, 18.0, 18.0, 42.0
     plot_width, plot_height = width - left - right, height - top - bottom
@@ -836,7 +847,7 @@ def _presentation_chart(node: dict[str, Any]) -> str:
         f'<line x1="{left}" y1="{top + plot_height}" x2="{left + plot_width}" y2="{top + plot_height}" stroke="{TOKENS.colors["rule_strong"]}"/>',
         f'<line x1="{left}" y1="{top}" x2="{left}" y2="{top + plot_height}" stroke="{TOKENS.colors["rule_strong"]}"/>',
     ]
-    if chart_type == "heatmap":
+    if chart_type in {"heatmap", "surface"}:
         y_values = as_list(spec.get("y"))
         points = [item for item in as_list(spec.get("data")) if isinstance(item, list) and len(item) == 3]
         numeric = [float(item[2]) for item in points if isinstance(item[2], (int, float)) and math.isfinite(float(item[2]))]
@@ -1561,6 +1572,12 @@ def render_html(
         if text(value)
     )
     echarts_head = f'<script src="{esc(echarts_path)}" defer></script>' if charts else ""
+    if any(chart.get("type") == "surface" for chart in charts):
+        # Inline the locked offline extension so portable and shared reports
+        # both keep their 3D dependency without fetching a CDN.
+        for name in ("echarts-gl.min.js", "surface-chart.js"):
+            source = (config.asset_root / "vendor" / name).read_text(encoding="utf-8")
+            echarts_head += "<script>window.addEventListener('DOMContentLoaded',function(){" + source.replace("</script", "<\\/script") + "});</script>"
     chart_script = "" if not charts else r"""<script>
 	const chartSpecs=__CHARTS__;
 	const chartInstances=[];
@@ -1598,12 +1615,12 @@ function axisPrecision(values, format) {
 function renderChart(spec) {
   const el = document.getElementById(spec.id);
   if (!el) return;
-  const isHeatmap = spec.type === 'heatmap';
+  const isHeatmap = ['heatmap', 'surface'].includes(spec.type);
   const type = spec.type === 'bar' ? 'bar' : 'line';
   const points = spec.x.length;
   const series = Array.isArray(spec.series) ? spec.series : [];
   const hasLegend = !isHeatmap && series.length > 1;
-  const chart = echarts.init(el, null, {renderer: 'svg'});
+  const chart = echarts.init(el, null, {renderer: spec.type === 'surface' ? 'canvas' : 'svg'});
   const labelStyle = {color: chartTheme.axis.label, fontSize: chartTheme.textStyle.fontSize, hideOverlap: true, margin: 12};
   const categoryAxis = (values, name) => {
     const digits = axisPrecision(values, 'number');
@@ -1617,7 +1634,9 @@ function renderChart(spec) {
       formatter: value => publicCategory(value, name, digits)}
     });
   };
-  if (isHeatmap) {
+  if (spec.type === 'surface') {
+    chart.setOption(window.OptionHelperSurface.option(spec, value => publicNumber(value, spec.value_format, 4), chartTheme.axis.label));
+  } else if (isHeatmap) {
     const values = spec.data.map(item => Number(item[2])).filter(Number.isFinite);
     const escapeLabel = value => String(value).replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
     chart.setOption({
