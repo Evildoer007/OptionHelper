@@ -177,7 +177,7 @@ _VISIBLE_INTERNAL_TEXT = re.compile(
     r"(?:artifact|semantic|presentation|content)[_\s-]?hash|manifest)(?![a-z0-9_])|"
     r"(?:audit|private)[_\s-]*(?:trail|id|hash|manifest|payload|metadata)|"
     r"protocol[_\s-]*(?:object|payload|schema)|内部(?:路径|字段|协议对象)|"
-    r"文件路径|物理路径|绝对路径|(?:^|\s)[~\\/][^\s<]+|[a-z]:[\\/])"
+    r"文件路径|物理路径|绝对路径|(?:^|\s)(?:~[/\\]|/)[^\s<]+|(?:^|\s)\\\\[A-Za-z0-9._-]+\\[^\s<>]+|[a-z]:[\\/])"
 )
 
 
