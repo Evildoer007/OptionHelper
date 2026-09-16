@@ -35,6 +35,24 @@ from ..agent_runtime.redaction import redact_text
 PENDING_RECOMMENDATION_SCHEMA_ID = "optionhelper.pending-recommendation"
 
 
+DEFAULT_TASK_SUBJECTS = frozenset({"新建研究任务", "新研究任务"})
+
+
+def subject_from_first_message(content: str) -> str:
+    """Make a short local title without an extra model request."""
+    text = redact_text(str(content)).strip()
+    text = re.sub(r"https?://\S+", "", text)
+    text = re.sub(r"^[#>*\s]+", "", text)
+    text = re.sub(r"^(?:(?:你好|您好)[，,！!。\s]*|(?:请你|请|麻烦你|麻烦|帮我|帮忙|我想要|我想|我需要)\s*)+", "", text)
+    text = re.split(r"[。！？!?\n]", text, maxsplit=1)[0]
+    text = re.sub(r"\s+", " ", text).strip(" ，,；;：:")
+    if not text:
+        return "研究任务"
+    if len(text) > 28:
+        text = text[:27].rstrip(" ，,；;：:") + "…"
+    return text
+
+
 class TaskService:
     def __init__(self, state: _LocalDocumentStore, event_log: SessionEventLog | None = None) -> None:
         self._state = state
@@ -60,6 +78,7 @@ class TaskService:
             "tenant_id": identity.tenant_id,
             "created_by": identity.principal_id,
             "subject": subject,
+            "_subject_source": "placeholder" if subject in DEFAULT_TASK_SUBJECTS else "manual",
             "status": "created",
             "created_at": now,
             "updated_at": now,
@@ -121,6 +140,7 @@ class TaskService:
             if task.get("tenant_id") != identity.tenant_id or task.get("created_by") != identity.principal_id:
                 raise AuthorizationError("conversation.write", "task is not owned by current caller")
             task["subject"] = subject
+            task["_subject_source"] = "manual"
             task["updated_at"] = datetime.now(timezone.utc).isoformat()
             return value
 
@@ -268,7 +288,7 @@ class TaskService:
             for key, item in value.items()
             if key not in {
                 "conversation_requests", "recommendation_state", "agent_events",
-                "conversation_session_id", "legacy_messages_migrated_at", "deletion",
+                "conversation_session_id", "legacy_messages_migrated_at", "deletion", "_subject_source",
                 "pending_attachment_uploads", "data_asset_refs",
             }
         }
@@ -395,7 +415,14 @@ class TaskService:
                 raise KeyError(task_id)
             if task.get("tenant_id") != identity.tenant_id or task.get("created_by") != identity.principal_id:
                 raise AuthorizationError("conversation.write", "task is not owned by current caller")
-            task["message_count"] = len(transcript_messages(self._event_log.replay(session_id)))
+            saved_messages = transcript_messages(self._event_log.replay(session_id))
+            first_user = next((row for row in saved_messages if row.get("role") == "user"), None)
+            if (role == "user" and first_user and first_user.get("message_id") == message["message_id"]
+                    and task.get("subject") in DEFAULT_TASK_SUBJECTS
+                    and task.get("_subject_source", "placeholder") == "placeholder"):
+                task["subject"] = subject_from_first_message(content)
+                task["_subject_source"] = "automatic"
+            task["message_count"] = len(saved_messages)
             task["updated_at"] = message["created_at"]
             if role == "user" and safe_attachments:
                 pending = task.setdefault("pending_attachment_uploads", {})
@@ -650,13 +677,16 @@ class TaskService:
         if set(reference) != required or reference["tenant_id"] != identity.tenant_id or reference["task_id"] != task_id:
             raise ValidationError("ModuleRunRef is invalid for this task")
 
+        record=self._state.read("results").get(f"{reference['module']}:{reference['run_id']}",{})
+        reference_field="research_run_refs" if record.get("research") and not record.get("research_selected") else "run_refs"
+
         def update(value: dict[str, Any]) -> dict[str, Any]:
             task = value.get(task_id)
             if not isinstance(task, dict):
                 raise KeyError(task_id)
             if task.get("tenant_id") != identity.tenant_id or task.get("created_by") != identity.principal_id:
                 raise AuthorizationError("task.write", "task is not owned by current caller")
-            references = task.setdefault("run_refs", [])
+            references = task.setdefault(reference_field, [])
             if not isinstance(references, list):
                 raise ValidationError("Task run references are invalid")
             if reference not in references:
@@ -1532,6 +1562,10 @@ def _browser_runtime_event(value: Mapping[str, Any]) -> dict[str, Any] | None:
                 elif block_type == "tool-call":
                     safe_blocks.append({"type": "tool-call", "name": str(block.get("name", ""))[:80]})
             safe_payload["blocks"] = safe_blocks
+    elif event_type == "workflow.handoff":
+        safe_payload = {key: str(payload.get(key, ""))[:160]
+                        for key in ("handoff_id", "from_role", "to_role", "kind", "label", "via")}
+        status = "started"
     elif event_type.startswith("agent."):
         safe_payload = {
             "role_id": str(payload.get("role_id", payload.get("role", "Agent")))[:80],
@@ -1543,6 +1577,7 @@ def _browser_runtime_event(value: Mapping[str, Any]) -> dict[str, Any] | None:
     elif event_type.startswith("tool."):
         safe_payload = {
             "tool_name": str(payload.get("tool_name", payload.get("module", "")))[:80],
+            "tool_call_id": str(payload.get("tool_call_id", ""))[:160],
             "status": status,
         }
     elif event_type == "usage.updated":
@@ -1659,9 +1694,17 @@ def _pending_recommendation(value: dict[str, Any], *, allow_approved: bool = Fal
     constraints = value.get("confirmed_constraints")
     if not isinstance(constraints, dict) or set(constraints).difference({
         "underlying", "horizon", "market_view", "max_loss", "principal_fluctuation",
-        "output_type", "format", "path_count", "backtest_range",
+        "output_type", "format", "path_count", "backtest_range", "valuation_date",
     }):
         raise ValidationError("Recommendation continuation constraints are invalid")
+    if "valuation_date" in constraints:
+        valuation_date = constraints["valuation_date"]
+        if not isinstance(valuation_date, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", valuation_date):
+            raise ValidationError("Recommendation valuation_date must be YYYY-MM-DD")
+        try:
+            datetime.strptime(valuation_date, "%Y-%m-%d")
+        except ValueError as error:
+            raise ValidationError("Recommendation valuation_date is invalid") from error
     result["confirmed_constraints"] = copy.deepcopy(constraints)
     delivery = _recommendation_delivery(value.get("delivery"), required=False)
     result["delivery"] = delivery
