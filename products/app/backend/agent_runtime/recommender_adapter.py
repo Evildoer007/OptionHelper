@@ -690,6 +690,8 @@ class AppToolPort(ToolPort):
             self._research_term_catalog = registry['term_catalog']
         return financial_model_view(value, self._research_term_catalog)
 
+    tracks_research_starts = True
+
     def research_data_identity(self):
         from datetime import datetime
         from zoneinfo import ZoneInfo
@@ -2014,6 +2016,9 @@ class AppConversationToolExecutor:
                 else None
             ),
         )
+        if module in {"payoffer", "pricer", "backtester"} and payload.get("action") == "run":
+            from runtime.research_policy import notify_research_calculation_started
+            notify_research_calculation_started(module)
         return dict(self._dispatcher.dispatch_for_conversation(
             module,
             dict(payload),
