@@ -496,6 +496,24 @@ class ReporterAdapter:
             "preview_url": base, "download_url": _artifact_url(report_ref["report_run_id"], delivery["report"], download=True),
         }
 
+    def get_verified_report_source(self, principal: SessionIdentity, *, task_id: str, source_id: str) -> dict[str, Any]:
+        """Return the same public source as the catalog, verifying only its runs."""
+        catalog, evidence = self._results.list_owned_report_sources_with_evidence(
+            principal, task_id=task_id, source_id=source_id,
+        )
+        ports = _ScopedResultPorts(self._results, principal, self._tasks)
+        try:
+            for source in catalog["sources"]:
+                if source.get("source_id") != source_id:
+                    continue
+                verified = ports._verified_source(source, evidence=evidence)
+                if verified is not None:
+                    public = _public_catalog({**catalog, "sources": [verified]})
+                    return public["sources"][0]
+        finally:
+            ports.close()
+        raise KeyError(source_id)
+
     def _rerender(self, request: Mapping[str, Any], principal: SessionIdentity) -> dict[str, Any]:
         """Render another supported format from a saved delivery fact set only."""
 
