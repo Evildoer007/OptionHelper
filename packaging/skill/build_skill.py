@@ -242,6 +242,7 @@ def _copy_file(source: Path, target: Path, *, transform: str | None = None) -> N
     if transform == "skill_links":
         text = source.read_text(encoding="utf-8")
         text = text.replace("](CONTEXT.md)", "](references/context.md)")
+        text = text.replace("](packaging/skill/recommender-guide.md)", "](references/module-guides/recommender.md)")
         for module in MODULES:
             text = text.replace(f"](modules/{module}/module-guide.md)", f"](references/module-guides/{module}.md)")
         target.write_text(text, encoding="utf-8", newline="")
