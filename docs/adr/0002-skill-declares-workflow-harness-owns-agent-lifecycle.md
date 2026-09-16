@@ -1,9 +1,7 @@
-# Skill声明工作流，Harness拥有Agent生命周期
+# Skill与App的执行边界
 
-OptionHelper的App和Skill共享同一Capability与业务路由，但运行在不同宿主中。若由Skill描述或管理Child Session、等待、取消和恢复，外部Harness会把业务说明误解为后台监控任务；若App照搬Skill的宿主指令，又会形成两套Agent生命周期。因此，Skill只声明咨询、直接模块、结构推荐和交付规则，Agent生命周期由实际Harness独占管理。
+Skill由当前对话Agent理解自然语言需求、查询产品资料并调用现有金融与报告模块，不再提供多智能体预设、角色AGENT.md或子Agent工作流。
 
-## Consequences
+App的多智能体能力独立保留。App继续使用共享角色文件、研究预设、Recommender状态机、运行预算、工具桥和生命周期管理；Skill调整不改变这些实现。
 
-External Harness负责Skill执行期间的模型、子Agent、并行、等待、取消、恢复和过程展示。OptionHelper App Harness负责App内的Main Agent、Child Session、Runtime和工具桥。Skill可根据宿主已声明能力选择真实多Agent或单模型语义，但不创建monitor、heartbeat或轮询任务，也不向用户暴露Session和AgentRun。
-
-Recommender Mode只定义业务角色拓扑。App按设置中心选择Mode并要求真实多Agent，能力不足时失败关闭。Skill默认Mode1，只有用户明确指定时才使用Mode2至Mode4；宿主不支持独立Child Session时可执行同一业务阶段的单模型版本，但不得称为多智能体。Capability、合同、ResultStore和Reporter→Designer边界在两种宿主中保持一致。
+Skill打包使用独立推荐指南，排除角色AGENT.md。共用计算代码的内部依赖保留，避免破坏模块加载；保留这些依赖不代表Skill提供对应研究预设。不得通过修改共享金融实现来删除Skill的交互功能。
