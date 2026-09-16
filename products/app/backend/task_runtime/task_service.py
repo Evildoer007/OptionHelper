@@ -350,6 +350,12 @@ class TaskService:
                     continue
                 block_type = str(block.get("type", "")).replace("_", "-")
                 block_text = str(block.get("text", ""))
+                if block_type == "payoff-image":
+                    from ..payoff_image_delivery import payoff_image_block
+                    image = payoff_image_block(task_id, block.get("run_id"))
+                    if image and block.get("task_id") == task_id:
+                        safe_blocks.append(image)
+                    continue
                 if block_type == "document":
                     report_id = str(block.get("report_run_id", ""))
                     if not report_id or any(c not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._:-" for c in report_id):
