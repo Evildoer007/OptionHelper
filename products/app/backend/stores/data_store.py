@@ -29,6 +29,14 @@ class DataStore:
             volatile = deepcopy(self._volatile)
         return {**self._state.read("data_assets"), **volatile}
 
+    def research_revision(self, identity: SessionIdentity) -> str:
+        """Fingerprint visible immutable asset metadata, never credentials or bytes."""
+        rows=[{key:row.get(key) for key in ("data_asset_id","content_hash","coverage","price_convention","created_at")}
+              for row in self._records().values() if row.get("tenant_id")==identity.tenant_id
+              and row.get("created_by")==identity.principal_id]
+        encoded=json.dumps(sorted(rows,key=lambda row:str(row["data_asset_id"])),sort_keys=True,separators=(",",":"),ensure_ascii=False)
+        return sha256(encoded.encode()).hexdigest()
+
     def register(self, identity: SessionIdentity, asset: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(asset, dict):
             raise ValidationError("DataAssetRef must be an object")
@@ -113,7 +121,22 @@ class DataStore:
         """Resolve an opaque App reference to the exact Core DataAssetRef."""
         requested_id = _requested_asset_id(requested)
         if requested_id:
-            record = self.get(identity, requested_id)
+            try:
+                record = self.get(identity, requested_id)
+            except KeyError as error:
+                # A missing reference is an input/data problem, not a worker
+                # failure. Unpinned requests may use the Host's existing
+                # coverage-checked fetch path; pinned revisions must not drift.
+                if isinstance(requested, dict) and requested.get("content_hash"):
+                    raise ValidationError(
+                        "指定版本的行情引用未登记，不能替换为其他数据；请重新取得对应的data_asset_id与content_hash。"
+                    ) from error
+                raise UserActionError(
+                    "data_asset_reference_not_found",
+                    "行情或日历引用未登记，尚未开始计算。标的代码不能作为data_asset_id。",
+                    stage="data",
+                    next_step="使用DataFetcher返回的data_asset_id；如需系统自动匹配或补齐行情，请省略该引用并保留标的和日期范围。",
+                ) from error
             if isinstance(requested, dict) and requested.get("content_hash") not in {None, record.get("content_hash")}:
                 raise ValidationError("DataAssetRef.content_hash与App登记记录不一致")
             if schema_id == "market-history" and not _market_history_metadata_consistent(record):
