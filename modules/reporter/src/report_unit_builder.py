@@ -587,7 +587,7 @@ def _safe_pricing_charts(pricing: Mapping[str, Any], result: Mapping[str, Any]) 
         charts.append({
             "id": key or f"pricing-surface-{len(charts) + 1}",
             "title": _RISK_SURFACE_TITLES.get(key, _text(item.get("name")) or "敏感性曲面"),
-            "type": "heatmap", "x": [value for value in numeric_x_values if value is not None], "y": [value for value in numeric_y_values if value is not None],
+            "type": "surface", "x": [value for value in numeric_x_values if value is not None], "y": [value for value in numeric_y_values if value is not None],
             "data": indexed_cells,
             "x_axis_name": _text(x_axis.get("name") or "横轴"), "y_axis_name": _text(y_axis.get("name") or "纵轴"),
             "z_axis_name": _text(z_axis.get("name") or "敏感性") + "（百分比敏感度）",
