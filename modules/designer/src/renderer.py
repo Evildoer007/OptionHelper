@@ -18,6 +18,7 @@ import tempfile
 from typing import Any, Mapping, Sequence
 
 from .components import render_formula, render_inline_formula
+from .components.math_notation import render_delimited_math
 from .config import DesignerConfig, load_designer_config
 from .design_system_builder import build_design_system
 from .design_tokens import DESIGN_SYSTEM_ID, TOKENS
@@ -206,7 +207,7 @@ def backtest_summary_rows(module: Mapping[str, Any]) -> list[dict[str, Any]]:
     labels = (
         "样本数", "有效收益样本数", "历史正收益样本占比",
         "正收益样本数", "持平样本数", "负收益样本数",
-        "平均合同结算收益率", "最低合同结算收益率", "历史损失样本覆盖",
+        "平均合同结算收益率", "最低合同结算收益率", "最大历史损失", "历史损失样本覆盖",
     )
     rows = [metrics_by_label[label] for label in labels if label in metrics_by_label]
     rows.extend(public_specialized_rows(as_list(module.get("card_metrics")))[:4])
@@ -419,6 +420,11 @@ def _is_formula_expression(value: str) -> bool:
 
 
 def rich_text(value: Any) -> str:
+    """Preserve prose and render explicitly delimited mathematics offline."""
+    return render_delimited_math(text(value), _rich_prose)
+
+
+def _rich_prose(value: Any) -> str:
     """Escape prose while replacing compact subscript notation with MathML."""
 
     source = text(value)
@@ -482,9 +488,13 @@ def public_parameter_rows(rows: list[Any]) -> list[dict[str, Any]]:
             key,
             (text(row.get("cn")), text(row.get("symbol"))),
         )
-        if key in _RATE_PARAMETER_KEYS and isinstance(value, (int, float)) and not isinstance(value, bool):
-            value = f"{_number_text(float(value) * 100)}%"
-        visible.append({**row, "cn": label, "symbol": symbol, "value": text(value)})
+        # Keep declared units and numeric types together until cell rendering.
+        declared_percent = row.get("value_format") in {"percent", "percent_points"}
+        if not declared_percent:
+            if key in _RATE_PARAMETER_KEYS and isinstance(value, (int, float)) and not isinstance(value, bool):
+                value = f"{_number_text(float(value) * 100)}%"
+            value = text(value)
+        visible.append({**row, "cn": label, "symbol": symbol, "value": value})
     return visible
 
 
@@ -659,7 +669,7 @@ def simple_table(rows: list[Any], columns: list[tuple[str, str]], caption: str =
     if not rendered:
         return ""
     density = table_density(columns, rows)
-    head = "".join(f'<th scope="col">{esc(title)}</th>' for _, title in columns)
+    head = "".join(f'<th scope="col">{render_delimited_math(title, esc_rendered)}</th>' for _, title in columns)
     caption_html = f"<caption>{esc(caption)}</caption>" if caption else ""
     return (
         '<div class="table-wrap">'
@@ -899,6 +909,11 @@ def render_presentation_content(nodes: Sequence[dict[str, Any] | Any]) -> str:
         node_type = text(node.get("type")).lower()
         if node_type == "paragraph" and text(node.get("text")):
             blocks.append(f'<p class="presentation-paragraph">{rich_text(node.get("text"))}</p>')
+        elif node_type == "heading" and text(node.get("text")):
+            level = node.get("level")
+            if type(level) is not int or not 3 <= level <= 6:
+                raise ValueError("presentation heading.level必须为3至6的整数。")
+            blocks.append(f'<h{level}>{rich_text(node.get("text"))}</h{level}>')
         elif node_type == "metrics":
             rendered = metric_strip(as_list(node.get("items")))
             if rendered:
@@ -1518,6 +1533,8 @@ def render_html(
                 if text(as_dict(facts.get(module)).get("status")).lower() in {"ready", "partial", "failed"}:
                     bodies.append((label, renderer()))
             body = "".join(f"<section><h3>{esc(label)}</h3>{value}</section>" for label, value in bodies if value)
+            if not body:
+                continue
             product_blocks.append({"id": f"product-{index}", "title": text(candidate.get("title")) or f"产品{index}",
                                    "body": body, "status_attr": ""})
         risk_sections = [item for item in sections if item["id"] == "section-risk"]
