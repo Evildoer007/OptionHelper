@@ -218,6 +218,9 @@ class ModelGateway:
     def multi_agent_recommendation_preset_for(self, identity: SessionIdentity) -> str:
         return self._load(identity).multi_agent_recommendation_preset_id
 
+    def research_depth_for(self, identity: SessionIdentity) -> str:
+        return self._load(identity).research_depth
+
     def multi_agent_review_policy_for(self, identity: SessionIdentity) -> str:
         return self._load(identity).multi_agent_review_policy_id
 
