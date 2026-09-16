@@ -530,6 +530,11 @@ function renderChoiceLabel(node, option) {
     return Math.min(4_000, 500 * (2 ** Math.min(Math.max(0, failures - 1), 3)));
   }
   function operationConnectionState(state, operationId, message = "", metadata = {}) {
+    // Wake the workspace's authoritative task polling when a module starts.
+    if (hostedInDesk && bridgeNonce) window.parent.postMessage({
+      type: "optionhelper.module-operation-changed", module: moduleName,
+      bridge_nonce: bridgeNonce,
+    }, location.origin);
     window.dispatchEvent(new CustomEvent("optionhelper.module-operation-connection", {
       detail: {state, operation_id: operationId, module: moduleName, message, ...metadata},
     }));
