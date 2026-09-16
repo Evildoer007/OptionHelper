@@ -161,6 +161,7 @@ class OptionConversationAgent:
                 path_context = {"messages": self._tasks.get(identity, task_id).get("messages", [])}
             entry["confirmed_path_count"] = _user_path_count(path_context, message, entry.get("question"))
             entry["observations"] = []
+            entry["payoff_images"] = []
             entry["failure_recovery"] = ToolFailureRecovery()
             entry["question"] = None
             entry["workflow_id"] = str(
@@ -220,6 +221,13 @@ class OptionConversationAgent:
                 question = entry["question"]
                 response = _result("needs_input", question["prompt"], list(entry["observations"]))
                 response["_user_question"] = question
+        images = entry.get("payoff_images", [])
+        if images:
+            blocks = response.get("_assistant_blocks")
+            if not isinstance(blocks, list):
+                blocks = [{"type": "text", "text": str(response.get("text") or "损益图已生成。") }]
+            response["text"] = response.get("text") or "损益图已生成。"
+            response["_assistant_blocks"] = [*blocks, *images]
         self._schedule_idle_close(identity, task_id, entry)
         return response
 
@@ -510,6 +518,10 @@ class OptionConversationAgent:
             if tool_name in {"reporter.run", "reporter.create_document", "recommendation_delivery.run"}:
                 from ..report_delivery import _NEGATED_DELIVERY, delivery_request
                 message = str(entry.get("user_message", ""))
+                from ..payoff_image_delivery import requests_payoff_image_only
+                if requests_payoff_image_only(message):
+                    return {"status": "failed", "failure_code": "image_only_delivery",
+                            "message": "本轮只要独立损益图，请使用payoffer_run直接交付SVG图片，不生成报告。"}
                 if _NEGATED_DELIVERY.search(message) and delivery_request(message) is None:
                     blocked = {"status": "failed", "failure_code": "report_delivery_forbidden",
                                "message": "本轮明确不生成报告，不得调用报告或推荐交付工具。请直接说明已有研究结论。"}
@@ -580,7 +592,17 @@ class OptionConversationAgent:
             "contract_term_facts": list(verified.get("contract_term_facts", [])) if isinstance(verified, Mapping) else [],
         }
         entry["observations"].append(observation)
-        return _safe_tool_result(tool_name, raw, verified)
+        result = _safe_tool_result(tool_name, raw, verified)
+        if tool_name == "payoffer.run":
+            from ..payoff_image_delivery import image_from_result
+            image = image_from_result(task_id, raw)
+            if image:
+                images = entry.setdefault("payoff_images", [])
+                if image not in images:
+                    images.append(image)
+                result["image_delivery"] = {"status": "ready", "format": "svg",
+                    "message": "本次损益图将随本轮答复显示，可预览和下载SVG。仅要图片时无需Reporter，不要再生成HTML报告。"}
+        return result
 
     def _attachment_tool(
         self, identity: SessionIdentity, task_id: str, name: str, arguments: Mapping[str, Any],
@@ -1119,6 +1141,17 @@ def _system_prompt(context: Mapping[str, Any]) -> str:
         "结构推荐通过recommender_run交给OptionHelper Host组织，不得模拟Recommender计算。先读取用户附件并结合本轮要求，再提交推荐请求；不要在读取附件前重复询问其中已有的信息。用户说默认、都行或按合理假设继续时，由你明确拟采用参数并交受控合同解析器处理，不要求重复确认，也不得把研究假设冒充市场事实。用户要求报告或HTML文件时，必须交付文件而非代码：用户明确要求定价、回测或模块结果时，先执行所需模块，已有计算直接复用并调用reporter_run；缺少必要输入则询问，计算失败如实说明，不能改交草稿。推荐型card、report、multicard、multireport默认通过recommendation_delivery_run完成合同、Payoffer、Pricer、Backtester再交Reporter；quote至少完成必要定价。推荐完成不是报告任务完成。只有用户明确要求研究草稿，或与结构推荐无关的资料整理，才使用reporter_create_document。报告不要求额外候选审批，使用用户指定结构或本轮首选。缺少会影响计算的条件且用户尚未授权采用假设时，使用ask_user一次提出问题及具体选项，调用后停止并等待回答；用户已回答或允许默认时继续执行，不能重复提问。模板与文件格式分别遵从用户要求，默认HTML。用户要求多个模板时分别调用，不得把单结构模板改成多结构模板；已有指定模板文件生成成功则直接交付，不要为同一文件重复渲染。最终回复保留研究结论、依据和未完成项的简明说明，不能只说已生成文件。所有生成的HTML报告都支持在App报告卡的编辑入口修改正文、标题和版式，并保存导出；编辑不会重算或改写上游计算记录。用户询问编辑时说明该入口，不得声称HTML只读或要求外部编辑器。不要输出内部API路径，Host会显示可预览、下载、编辑的报告卡。只有明确要求源码才展示代码。reporter_create_document的content使用Markdown正文，保留标题、表格和公式；不要提交HTML源码。多产品草稿必须同时填写product_ids，编号来自用户明确选择并经knowledger_search核对；纯知识比较不需要推荐登记。knowledger_search只查询资料，不会保存候选，不能声称已登记或已确认推荐。用户此前明确不计算且本轮只要草稿时继续遵守，不得为生成文件改调计算或推荐。工具报告缺少product_ids时补齐该字段，不得只改标题或正文重复调用；仍无法确定产品时说明缺项并结束。公式使用美元符号包围的标准数学记号。"
         "纯咨询不运行分析模块；指定单模块只执行所需模块；推荐型报告遵循完整交付工作流；已有同一合同结果直接复用，换格式不重新推荐或计算。\n"
         f"本轮工作流参考：{workflow.analysis_path}，依据：{workflow.reason_code}。当前明确意图优先于旧合同和旧候选；无法确定意图时结合用户原话与附件判断，不根据单个关键词扩大任务。\n"
+        "独立图片交付：用户只要损益图、收益图或payoff图时，确认产品条款后只调用payoffer_run；"
+        "成功结果会直接作为图片附在答复中并提供SVG下载。不要为了图片调用Reporter、推荐交付、Pricer或Backtester。"
+        "HTML只是报告的默认格式，不是图片的强制格式。缺少条款时只询问影响收益图的必要条件。"
+        "没有图片成功回执时不得声称已交付；当前图片下载为SVG，不得声称已生成PNG。\n"
+        "对客报告写作要求：摘要和推荐理由面向专业投资者，按市场判断、交易约束、结构选择、"
+        "收益边界及主要风险组织，不写用户说、您希望、Agent角色、角色讨论、投票、工具调用、"
+        "证据校验过程或内部排序字段。把讨论转为有依据的投资结论，不把研究纪要直接提交报告。"
+        "缺少本次报价不能称低成本、小额权利金，缺少可比证据不能称唯一最优；数值只引用本次有效结果。"
+        "不要把买入看涨说成获得全部上涨收益，不要把标的下跌说成无限风险；盈亏平衡按实际单位和条款表述。"
+        "保留不利结果、假设及未计入的交易费用、流动性和执行限制。内部执行问题在对话状态中说明，"
+        "不混入投资摘要；本要求不影响内部审计记录及用户明确要求的流程诊断。\n"
         "旧会话中的工具失败只说明当时请求没有完成，不代表当前能力永久不可用。用户重试时，使用当前工具定义和已确认输入实际尝试一次；不要仅引用旧失败就索要额外授权。工具返回错误后按具体字段修正；输入和依赖未改变时不重复调用，不为绕过报告失败改做用户未要求的计算。Host通知重复失败停止时，如实说明未完成项，保留已有成果，结束本轮。\n"
         "用户重新要求筛选时再推荐；用户只是补充数字、确认或继续时接续原任务，继承已确认参数。单Agent与多Agent只改变推荐协作方式，不改变业务模块范围。修改合同先冻结新版本，只重跑受影响模块；失败保留已成功的运行引用，修正失败步骤后继续，不重启整个流程。只有合同版本、输入和数据口径一致才复用结果。\n"
         "不得编造合同、市场数据或金融计算。引用当前Task的量化事实时，必须逐个在数字后紧接其FactRef，格式为[fact:fact_xxx]；Host会验证并移除标记。"
