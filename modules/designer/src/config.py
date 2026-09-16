@@ -26,7 +26,7 @@ _REQUIRED_TEMPLATE_DEFINITIONS = (
 _RUNTIME_ASSET_FILES = {
     "templates": frozenset((*_REQUIRED_TEMPLATE_NAMES, *_REQUIRED_TEMPLATE_DEFINITIONS)),
     "themes": frozenset({"designer-theme.css", "designer-token-vars.css"}),
-    "vendor": frozenset({"echarts.min.js"}),
+    "vendor": frozenset({"echarts.min.js", "echarts-gl.min.js", "surface-chart.js"}),
 }
 _IGNORED_ASSET_NAMES = frozenset({".DS_Store"})
 # 开发态的资源属于Designer模块；标准Skill发行包将其置于assets/designer。
