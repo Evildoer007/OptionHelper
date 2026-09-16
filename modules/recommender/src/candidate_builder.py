@@ -50,6 +50,12 @@ def create_term_variant(
     if not reason:
         raise RecommendationValidationError("generation_reason不能为空")
     current_inputs = dict(candidate.current_inputs)
+    if reason != "user_term_override":
+        locked = confirmed_term_overrides(current_inputs.get("confirmed_constraints", {}))
+        conflicts = [key for key, value in locked.items() if key in overrides and overrides[key] != value]
+        if conflicts:
+            raise RecommendationValidationError("研究变体不得修改用户已确认条款：" + ",".join(sorted(conflicts)))
+        overrides = {**overrides, **locked}
     current_inputs["term_overrides"] = overrides
     current_inputs["generation_reason"] = reason
     return replace(
