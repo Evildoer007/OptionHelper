@@ -444,21 +444,12 @@ class _LocalKnowledgePort:
 
         registry = load_registry()
         queries = payload.get("queries", ())
-        query = " ".join(str(item).strip().lower() for item in queries if str(item).strip()) if isinstance(queries, Sequence) and not isinstance(queries, str) else str(queries).lower()
-        products = registry.get("products", {})
-        matched = [
-            (product_id, product)
-            for product_id, product in products.items()
-            if isinstance(product, Mapping) and _knowledge_match(query, product_id, product)
-        ]
-        if not matched:
-            matched = [
-                (product_id, product)
-                for product_id, product in products.items()
-                if isinstance(product, Mapping) and bool((product.get("identity") or {}).get("entry_status"))
-            ]
+        from runtime.knowledger.search import select_products
+        if isinstance(queries, str):
+            queries = (queries,)
+        matched, all_matches = select_products(registry.get("products", {}), queries)
         evidence: list[dict[str, Any]] = []
-        for product_id, product in matched[:8]:
+        for product_id, product in matched:
             identity = dict(product.get("identity", {}))
             name = str(identity.get("name_zh") or product_id)
             optionlist = _optionlist_excerpt(self._paths.project_root / "references" / "optionlist.md", product_id, name)
@@ -512,17 +503,13 @@ def _optionlist_excerpt(path: Path, product_id: str, fallback: str) -> str:
 
 
 def _optionlib_excerpt(path: Path, product_id: str, fallback: str) -> str | None:
-    if not path.is_file():
-        return None
-    text = path.read_text(encoding="utf-8")
-    match = re.search(rf"^###\s+{re.escape(product_id)}\s+.*$", text, re.MULTILINE)
-    if match is None:
-        return None
-    end = text.find("\n### ", match.end())
-    return text[match.start(): len(text) if end < 0 else end][:1800] or fallback
+    from runtime.knowledger.search import product_section
+    return product_section(path, product_id)
 
 
 def _evidence(product_id: str, source: str, excerpt: str, identity: Mapping[str, Any], entry_status: bool, catalog_version: str, library_status: str = "ready") -> dict[str, Any]:
+    from runtime.knowledger.interpretation import source_reading_contract
+
     normalized = str(excerpt).strip() or product_id
     digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
     return {
@@ -536,6 +523,7 @@ def _evidence(product_id: str, source: str, excerpt: str, identity: Mapping[str,
         "excerpt": normalized,
         "identity": dict(identity),
         "entry_status": entry_status,
+        **({"reading_contract": source_reading_contract(source, library_status)} if source == "optionlib" else {}),
     }
 
 
