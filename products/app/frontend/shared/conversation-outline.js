@@ -183,6 +183,8 @@ export function createConversationOutline({ stream, container }) {
     win.clearTimeout(refreshTimer);
     refreshTimer = 0;
     entries = [...stream.children].filter(node => node.matches(".message--user:not(.message--pending)") && visible(node));
+    // Keep a short conversation compact; CSS caps growth to the viewport.
+    nav.style.setProperty("--outline-content-height", `${Math.max(60, entries.length * 20)}px`);
     const current = new Set(entries);
     for (const [entry, button] of buttons) {
       if (!current.has(entry)) { button.remove(); buttons.delete(entry); }
