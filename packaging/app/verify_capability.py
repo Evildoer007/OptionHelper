@@ -42,6 +42,23 @@ def _hashes(entries: list[dict[str, object]]) -> dict[str, str]:
     return {str(item["path"]): str(item["sha256"]) for item in entries}
 
 
+def _research_role_errors(root: Path) -> list[str]:
+    """Check eager startup resources before freezing either platform backend."""
+    profiles = root / "scripts/runtime/research_profiles"
+    try:
+        definition = json.loads((profiles / "presets.json").read_text(encoding="utf-8"))
+        errors = []
+        for preset, config in definition["presets"].items():
+            for role in config["roles"]:
+                relative = Path(preset) / role / "AGENT.md"
+                path = profiles / relative
+                if not path.is_file() or path.is_symlink() or not path.read_text(encoding="utf-8").strip():
+                    errors.append(f"App Capability缺少角色说明：{relative}")
+        return errors
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        return [f"App Capability角色配置无效：{error}"]
+
+
 def verify_app_capability(root: Path) -> list[str]:
     root = root.expanduser().resolve()
     errors: list[str] = []
@@ -55,6 +72,7 @@ def verify_app_capability(root: Path) -> list[str]:
     except (OSError, json.JSONDecodeError) as error:
         return [f"App Capability Manifest无效：{error}"]
 
+    errors.extend(_research_role_errors(root))
     actual_hashes = _hashes(entries)
     allowed_top_level = {"scripts", "assets", "references", "LICENSES", "capability-manifest.json"}
     actual_top_level = {path.name for path in root.iterdir()}
