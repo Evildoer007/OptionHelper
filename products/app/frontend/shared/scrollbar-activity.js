@@ -126,6 +126,17 @@ function scrollbarInk(element) {
   return getComputedStyle(colorSource).color || "rgb(37, 40, 43)";
 }
 
+
+export function scrollbarTrackVisible(element, axis, rect) {
+  if (!element.isConnected || !element.getClientRects().length) return false;
+  const style = getComputedStyle(element);
+  if (style.visibility === "hidden" || style.visibility === "collapse") return false;
+  const bounds = element.getBoundingClientRect();
+  // A clipped-away edge has no visible track. Never relocate its thumb into
+  // the middle of the ancestor that clipped it.
+  return axis === "y" ? bounds.right <= rect.right + 1 : bounds.bottom <= rect.bottom + 1;
+}
+
 export function installScrollbarActivity({ selectors = SHELL_SCROLL_CONTAINERS, includeDocument = true } = {}) {
   if (typeof document === "undefined") return null;
   const existing = INSTANCE_BY_DOCUMENT.get(document);
@@ -212,7 +223,7 @@ export function installScrollbarActivity({ selectors = SHELL_SCROLL_CONTAINERS, 
     const element = state.element;
     const isScrollable = scrollableOnAxis(element, axis, documentScroller);
     let thumb = state.thumbs.get(axis);
-    if (!isScrollable || rect.right <= rect.left || rect.bottom <= rect.top) {
+    if (!isScrollable || !scrollbarTrackVisible(element, axis, rect) || rect.right <= rect.left || rect.bottom <= rect.top) {
       if (thumb) thumb.style.display = "none";
       state.metrics[axis] = null;
       return;
@@ -220,7 +231,16 @@ export function installScrollbarActivity({ selectors = SHELL_SCROLL_CONTAINERS, 
 
     thumb ||= createThumb(state, axis);
     const size = scrollbarSize(element);
-    const edge = 2;
+    // Overlay thumbs live outside the scroller, so its rounded clipping does
+    // not apply to them. Keep menu tracks inside the straight inner edges.
+    const roundedMenu = element.matches(".choice-menu, .oh-choice__menu");
+    const menuStyle = roundedMenu ? getComputedStyle(element) : null;
+    const radius = menuStyle ? Math.max(...[
+      menuStyle.borderTopLeftRadius, menuStyle.borderTopRightRadius,
+      menuStyle.borderBottomLeftRadius, menuStyle.borderBottomRightRadius,
+    ].map(value => Number.parseFloat(value) || 0)) : 0;
+    const edge = roundedMenu ? Math.max(6, radius) : 2;
+    const crossInset = roundedMenu ? 5 : 1;
     const clientLength = axis === "y" ? element.clientHeight : element.clientWidth;
     const scrollLength = axis === "y" ? element.scrollHeight : element.scrollWidth;
     const scrollPosition = axis === "y" ? element.scrollTop : element.scrollLeft;
@@ -236,7 +256,7 @@ export function installScrollbarActivity({ selectors = SHELL_SCROLL_CONTAINERS, 
     thumb.style.setProperty("background", `color-mix(in srgb, ${ink} 34%, transparent)`, "important");
     if (axis === "y") {
       setStyle(thumb, {
-        left: `${Math.round(rect.right - size - 1)}px`,
+        left: `${Math.round(rect.right - size - crossInset)}px`,
         top: `${Math.round(rect.top + edge + thumbOffset)}px`,
         width: `${size}px`,
         height: `${Math.round(thumbLength)}px`,
@@ -244,7 +264,7 @@ export function installScrollbarActivity({ selectors = SHELL_SCROLL_CONTAINERS, 
     } else {
       setStyle(thumb, {
         left: `${Math.round(rect.left + edge + thumbOffset)}px`,
-        top: `${Math.round(rect.bottom - size - 1)}px`,
+        top: `${Math.round(rect.bottom - size - crossInset)}px`,
         width: `${Math.round(thumbLength)}px`,
         height: `${size}px`,
       });
