@@ -88,14 +88,261 @@ function safeToolProjection(message2, maxChars) {
     content: [{ type: "text", text: JSON.stringify({ ...facts, pruned: true }) }]
   };
 }
+function projectRepeatedResearchInputs(messages) {
+  const later = /* @__PURE__ */ new Map();
+  const laterEvidence = /* @__PURE__ */ new Map();
+  const projected = messages.map((message2) => structuredClone(message2));
+  for (let index = projected.length - 1; index >= 0; index -= 1) {
+    const message2 = projected[index];
+    if (message2.role !== "user" || message2.content.length !== 1 || message2.content[0]?.type !== "text") continue;
+    let envelope;
+    try {
+      envelope = JSON.parse(message2.content[0].text);
+    } catch {
+      continue;
+    }
+    if (envelope?.protocol !== "optionhelper.recommender.step" || typeof envelope.role !== "string" || envelope.input?.workflow !== "optionhelper.recommender") continue;
+    const input2 = envelope.input.input;
+    if (input2 === null || typeof input2 !== "object" || Array.isArray(input2)) continue;
+    let changed = false;
+    for (const [key, value] of Object.entries(input2)) {
+      const encoded = JSON.stringify(value);
+      if (encoded.length < 512) continue;
+      const identity = JSON.stringify([envelope.role, key]);
+      const repeated = later.get(identity);
+      if (repeated?.value === encoded) {
+        input2[key] = {
+          repeated_input: true,
+          source_message_id: repeated.messageId,
+          source_field: `input.input.${key}`,
+          instruction: "\u6B64\u5B57\u6BB5\u4E0E\u540E\u7EED\u6D88\u606F\u4E2D\u7684\u5B8C\u6574\u5B57\u6BB5\u5B8C\u5168\u76F8\u540C\uFF0C\u8BF7\u8BFB\u53D6\u8BE5\u5B8C\u6574\u5B57\u6BB5\u3002\u5386\u53F2\u539F\u6587\u4ECD\u4FDD\u5B58\u5728\u4F1A\u8BDD\u8BB0\u5F55\u4E2D\u3002"
+        };
+        changed = true;
+      } else {
+        later.set(identity, { value: encoded, messageId: message2.id });
+        if (key === "evidence" && Array.isArray(value)) {
+          input2[key] = value.map((item, evidenceIndex) => {
+            if (!item || typeof item !== "object" || typeof item.evidence_id !== "string") return item;
+            const itemText = JSON.stringify(item);
+            if (itemText.length < 512) return item;
+            const itemKey = JSON.stringify([envelope.role, item.evidence_id]);
+            const prior = laterEvidence.get(itemKey);
+            if (prior?.value === itemText) {
+              changed = true;
+              return {
+                evidence_id: item.evidence_id,
+                repeated_input: true,
+                source_message_id: prior.messageId,
+                source_field: `input.input.evidence[${prior.index}]`
+              };
+            }
+            laterEvidence.set(itemKey, { value: itemText, messageId: message2.id, index: evidenceIndex });
+            return item;
+          });
+        }
+      }
+    }
+    if (changed) projected[index] = { ...message2, content: [{ type: "text", text: JSON.stringify(envelope) }] };
+  }
+  return projected;
+}
+function projectRepeatedResearchValues(messages) {
+  const projected = messages.map((message2) => structuredClone(message2));
+  let researchTurn = false;
+  let seen = /* @__PURE__ */ new Map();
+  const referencedSources = /* @__PURE__ */ new Set();
+  const referenceTurns = /* @__PURE__ */ new Set();
+  const sourceLabels = new Map(projected.map((message2, index) => [message2.id, `r${index}`]));
+  let userMessageId = "";
+  for (const message2 of projected) {
+    if (message2.role === "user") {
+      userMessageId = message2.id;
+      seen = /* @__PURE__ */ new Map();
+      researchTurn = false;
+      try {
+        const block = message2.content[0];
+        const input2 = block?.type === "text" ? JSON.parse(block.text) : null;
+        researchTurn = input2?.protocol === "optionhelper.recommender.step" && input2?.input?.workflow === "optionhelper.recommender";
+      } catch {
+      }
+    }
+    if (!researchTurn || message2.role !== "user" && message2.role !== "tool" || message2.content.length !== 1) continue;
+    const content = message2.content.map((block, blockIndex) => {
+      if (block.type !== "text") return block;
+      let input2;
+      try {
+        input2 = JSON.parse(block.text);
+      } catch {
+        return block;
+      }
+      if (input2 === null || typeof input2 !== "object" || Array.isArray(input2) || "context_source_message_id" in input2 || "context_reference_protocol" in input2) return block;
+      function visit(value, path) {
+        const encoded = JSON.stringify(value);
+        const eligible = value !== null && (typeof value === "object" || typeof value === "string") && encoded.length >= 160;
+        if (eligible) {
+          const previous = seen.get(encoded);
+          if (previous !== void 0) {
+            const reference = { repeated_research_value: previous };
+            if (JSON.stringify(reference).length + 32 < encoded.length) {
+              referenceTurns.add(userMessageId);
+              referencedSources.add(previous.message);
+              return reference;
+            }
+          } else {
+            seen.set(encoded, { message: sourceLabels.get(message2.id), path });
+          }
+        }
+        if (Array.isArray(value)) return value.map((item, index) => visit(item, [...path, index]));
+        if (value !== null && typeof value === "object") {
+          return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, visit(item, [...path, key])]));
+        }
+        return value;
+      }
+      const output = visit(input2, []);
+      if (JSON.stringify(output) === JSON.stringify(input2)) return block;
+      return { ...block, text: JSON.stringify(output) };
+    });
+    Object.assign(message2, { content });
+  }
+  for (const message2 of projected) {
+    const label = sourceLabels.get(message2.id);
+    if (!referencedSources.has(label) && !referenceTurns.has(message2.id)) continue;
+    const block = message2.content[0];
+    if (block?.type !== "text") continue;
+    const value = JSON.parse(block.text);
+    if (referencedSources.has(label)) value.context_source_message_id = label;
+    if (referenceTurns.has(message2.id)) value.context_reference_protocol = "repeated_research_value\u8868\u793A\u5B8C\u5168\u76F8\u540C\u7684JSON\u503C\u3002\u4EE5\u6B63\u6587context_source_message_id\u5339\u914Dmessage\uFF0C\u518D\u6309path\u4E2D\u7684\u5B57\u6BB5/\u6570\u7EC4\u4E0B\u6807\u9010\u5C42\u8BFB\u53D6\uFF0C\u5FC5\u8981\u65F6\u7EE7\u7EED\u89E3\u6790\u5F15\u7528\u3002\u5019\u9009\u8EAB\u4EFD\u4E0E\u8BC1\u636E\u5F52\u5C5E\u6CBF\u7528\u5404\u81EA\u8BB0\u5F55\uFF0C\u4E0D\u80FD\u636E\u6B64\u5408\u5E76\u5019\u9009\u3002\u6B64\u5143\u6570\u636E\u4E0D\u5199\u5165\u4E1A\u52A1\u8F93\u51FA\u3002\u5B8C\u6574\u539F\u503C\u4ECD\u4FDD\u5B58\u5728\u4F1A\u8BDD\u4E2D\u3002";
+    Object.assign(message2, { content: [{ ...block, text: JSON.stringify(value) }] });
+  }
+  return projected;
+}
+function researchToolMessageIds(messages) {
+  const ids = /* @__PURE__ */ new Set();
+  let researchTurn = false;
+  for (const message2 of messages) {
+    if (message2.role === "user") {
+      researchTurn = false;
+      try {
+        const block = message2.content[0];
+        const input2 = block?.type === "text" ? JSON.parse(block.text) : null;
+        researchTurn = input2?.protocol === "optionhelper.recommender.step" && input2?.input?.workflow === "optionhelper.recommender";
+      } catch {
+      }
+    }
+    if (researchTurn && message2.role === "tool") ids.add(message2.id);
+  }
+  return ids;
+}
+function projectArchivedResearchPages(messages) {
+  const projected = messages.map((message2) => structuredClone(message2));
+  const tools = researchToolMessageIds(projected);
+  const calls = /* @__PURE__ */ new Map();
+  const callGroups = /* @__PURE__ */ new Map();
+  const eligible = [];
+  function hasProtectedFacts(value) {
+    if (Array.isArray(value)) return value.some(hasProtectedFacts);
+    if (value === null || typeof value !== "object") return false;
+    return Object.entries(value).some(([key, child]) => ["verified_metrics", "candidate_snapshot", "fact_ref", "warnings", "warning", "limitations", "error", "missing_information"].includes(key) && child !== null && child !== "" && JSON.stringify(child) !== "[]" || hasProtectedFacts(child));
+  }
+  for (const message2 of projected) {
+    if (message2.role === "assistant") for (const block2 of message2.content) {
+      if (block2.type === "tool-call" && block2.name === "read_research_evidence") {
+        try {
+          calls.set(block2.id, JSON.parse(block2.arguments));
+          callGroups.set(block2.id, message2.id);
+        } catch {
+        }
+      }
+    }
+    if (!tools.has(message2.id) || message2.content.length !== 1) continue;
+    const block = message2.content[0];
+    if (block?.type !== "text") continue;
+    let wrapper;
+    try {
+      wrapper = JSON.parse(block.text);
+    } catch {
+      continue;
+    }
+    const page = wrapper?.result?.result;
+    const args = calls.get(message2.toolCallId ?? "");
+    const ref = page?.module_run_ref;
+    if (wrapper.status !== "completed" || wrapper.result?.status !== "completed" || wrapper.result?.tool_name !== "read_research_evidence" || page?.status !== "completed" || page?.source !== "verified_frozen_result" || page?.calculation_started !== false || !args?.candidate_id || ref?.module !== args.module || !["run_id", "task_id", "tenant_id", "expected_result_file_hash", "expected_artifact_manifest_hash"].every((key) => typeof ref?.[key] === "string" && ref[key]) || !Array.isArray(page.result_path) || !Number.isSafeInteger(page.offset) || hasProtectedFacts(page.value)) continue;
+    eligible.push({ message: message2, wrapper, page, group: callGroups.get(message2.toolCallId ?? ""), arguments: {
+      ...args,
+      result_path: page.result_path,
+      offset: page.offset,
+      limit: args.limit ?? 64,
+      expected_run_ref: ref
+    } });
+  }
+  const latestGroup = eligible.at(-1)?.group;
+  for (const item of eligible.filter((item2) => item2.group !== latestGroup)) {
+    const archived = {
+      archived_research_page: true,
+      tool: "read_research_evidence",
+      arguments: item.arguments,
+      note: "\u6B64\u524D\u6210\u529F\u8BFB\u53D6\u9875\u7684\u5B8C\u6574\u503C\u4ECD\u4FDD\u5B58\u5728\u6B64\u51BB\u7ED3RunRef\u4E2D\uFF1B\u9700\u8981\u7EC6\u9879\u65F6\u7528\u4EE5\u4E0A\u53C2\u6570\u53D6\u56DE\uFF0C\u4E0D\u8FDB\u884C\u8BA1\u7B97\u3002\u6765\u6E90\u6216\u5019\u9009\u5DF2\u53D8\u66F4\u65F6\u5FC5\u987B\u62A5\u9519\uFF0C\u4E0D\u53EF\u66FF\u6362\u4E3A\u5176\u4ED6\u8FD0\u884C\u3002"
+    };
+    const recoverableSize = JSON.stringify({
+      value: item.page.value,
+      deferred_fields: item.page.deferred_fields,
+      value_indices: item.page.value_indices
+    }).length;
+    if (JSON.stringify(archived).length + 64 >= recoverableSize) continue;
+    item.page.value = archived;
+    delete item.page.deferred_fields;
+    delete item.page.value_indices;
+    Object.assign(item.message, { content: [{ type: "text", text: JSON.stringify(item.wrapper) }] });
+  }
+  return projected;
+}
+function completeResearchExchange(messages) {
+  const start = messages.findLastIndex((message2) => message2.role === "user");
+  if (start < 0 || messages.at(-1)?.role !== "tool") return false;
+  try {
+    const block = messages[start].content[0];
+    const input2 = block?.type === "text" ? JSON.parse(block.text) : null;
+    if (input2?.protocol !== "optionhelper.recommender.step") return false;
+  } catch {
+    return false;
+  }
+  const pending = /* @__PURE__ */ new Set();
+  let calls = 0;
+  for (const message2 of messages.slice(start + 1)) {
+    for (const block of message2.content) if (message2.role === "assistant" && block.type === "tool-call") {
+      if (pending.has(block.id)) return false;
+      pending.add(block.id);
+      calls++;
+    }
+    if (message2.role === "tool" && (!message2.toolCallId || !pending.delete(message2.toolCallId))) return false;
+  }
+  return calls > 0 && pending.size === 0;
+}
 async function maintainContext(session, policy, summarize, signal) {
   const meter = new TokenMeter();
-  let messages = session.deriveMessages();
+  let messages = projectRepeatedResearchInputs(session.deriveMessages());
   let estimatedTokens = meter.estimateMessages(messages);
   let pruned = false;
   let compacted = false;
+  if (estimatedTokens >= policy.pruneAtTokens && completeResearchExchange(messages)) {
+    const publicMessages = messages.map((message2) => ({
+      ...message2,
+      content: message2.content.filter((block) => block.type !== "reasoning")
+    }));
+    const summary = await summarize(publicMessages, policy.maxContextTokens * 3.2, signal, "research-checkpoint");
+    const payload = JSON.parse(summary);
+    if (payload?.protocol !== "optionhelper.recommender.step" || payload?.input?.research_checkpoint?.source !== "host_verified_research_state")
+      throw new Error("research checkpoint was not verified by Host");
+    const checkpoint = { id: `research-checkpoint-${session.events.length}`, role: "user", content: [{ type: "text", text: summary }] };
+    const tokens = meter.estimateMessages([checkpoint]);
+    if (tokens > policy.maxContextTokens) throw new Error("complete research checkpoint exceeds configured token limit");
+    const sourceSeqs = session.surfaceEvents().map((event) => event.seq);
+    session.append("compaction/summary", { summary, sourceSeqs, researchCheckpoint: true });
+    return { messages: [checkpoint], estimatedTokens: tokens, pruned: false, compacted: true };
+  }
   if (estimatedTokens >= policy.pruneAtTokens) {
-    const next = messages.map((message2) => safeToolProjection(message2, policy.prunedToolResultChars));
+    const protectedTools = researchToolMessageIds(messages);
+    const next = messages.map((message2) => protectedTools.has(message2.id) ? message2 : safeToolProjection(message2, policy.prunedToolResultChars));
     if (JSON.stringify(next) !== JSON.stringify(messages)) {
       session.append("context/tool-results-pruned", {
         messageCount: next.length
@@ -105,10 +352,23 @@ async function maintainContext(session, policy, summarize, signal) {
       pruned = true;
     }
   }
+  if (estimatedTokens >= policy.pruneAtTokens) {
+    messages = projectRepeatedResearchValues(projectArchivedResearchPages(messages));
+    estimatedTokens = meter.estimateMessages(messages);
+  }
   if (estimatedTokens >= policy.compactAtTokens) {
     const keep = Math.max(2, policy.preservedRecentMessages);
-    const source = messages.slice(0, Math.max(0, messages.length - keep));
-    const recent = messages.slice(-keep);
+    let boundary = Math.max(0, messages.length - keep);
+    const latestUser = messages.findLastIndex((message2) => message2.role === "user");
+    if (latestUser >= 0 && boundary > latestUser) boundary = latestUser;
+    if (boundary > 0) {
+      boundary = Math.max(0, messages.slice(0, boundary + 1).findLastIndex((message2) => message2.role === "user"));
+    }
+    if (latestUser > boundary && meter.estimateMessages(messages.slice(boundary)) > policy.compactAtTokens - 2500) {
+      boundary = latestUser;
+    }
+    const source = messages.slice(0, boundary);
+    const recent = messages.slice(boundary);
     if (source.length > 0) {
       session.append("compaction/start", { estimatedTokens });
       try {
@@ -130,6 +390,15 @@ async function maintainContext(session, policy, summarize, signal) {
       }
     }
   }
+  if (estimatedTokens > policy.maxContextTokens) {
+    const fullPages = messages;
+    messages = projectRepeatedResearchValues(messages);
+    estimatedTokens = meter.estimateMessages(messages);
+    if (estimatedTokens > policy.maxContextTokens) {
+      messages = projectRepeatedResearchValues(projectArchivedResearchPages(fullPages));
+      estimatedTokens = meter.estimateMessages(messages);
+    }
+  }
   if (estimatedTokens > policy.maxContextTokens) throw new Error("context exceeds configured token limit");
   return { messages, estimatedTokens, pruned, compacted };
 }
@@ -145,6 +414,8 @@ var BlockAssembler = class {
   currentFinish;
   push(chunk) {
     switch (chunk.type) {
+      case "json-diagnostic":
+        return;
       case "block-start":
         if (!this.partials.has(chunk.index)) {
           this.order.push(chunk.index);
@@ -344,7 +615,7 @@ var AgentSession = class _AgentSession {
         const data = event.data;
         messages.push({
           id: `summary-${event.seq}`,
-          role: "system",
+          role: data.researchCheckpoint === true ? "user" : "system",
           content: [{ type: "text", text: String(data.summary ?? "") }]
         });
       }
@@ -541,6 +812,7 @@ var AgentRun = class {
       this.inbox.append("next-turn", message("user", typeof prompt === "string" ? [{ type: "text", text: prompt }] : prompt));
       return this.active;
     }
+    if (this.statusValue === "cancelled") this.setStatus("idle");
     const queued = message("user", typeof prompt === "string" ? [{ type: "text", text: prompt }] : prompt);
     this.inbox.append("next-turn", queued);
     this.active = this.drainTurns().finally(() => {
@@ -553,6 +825,9 @@ var AgentRun = class {
     return this.turn(prompt, routeId2);
   }
   cancel(reason = "cancelled") {
+    if (["completed", "failed", "cancelled"].includes(this.statusValue) && this.inbox.nextTurn.length === 0) {
+      return this.snapshot();
+    }
     this.abortController?.abort(reason);
     this.statusValue = "cancelled";
     this.errorValue = reason;
@@ -734,6 +1009,14 @@ var AgentRun = class {
       const assembler = new BlockAssembler();
       try {
         for await (const chunk of this.ports.streamModel(request, signal)) {
+          if (chunk.type === "json-diagnostic") {
+            this.session.append(
+              "model/json-diagnostic",
+              chunk.diagnostic,
+              { turn: this.turnValue, step: this.stepValue }
+            );
+            continue;
+          }
           assembler.push(chunk);
           this.publishChunk(chunk);
         }
@@ -1176,13 +1459,7 @@ var OptionHelperAgentRuntime = class {
       workflowPersistence: true,
       workflowScopedCancel: true,
       turnModelRoute: true,
-      hostOrchestration: true,
-      continuableRolesByPreset: {
-        "sequential-deliberation": [],
-        "product-trader-loop": ["Structurer", "Trader"],
-        "independent-council": ["Matcher", "Hedger"],
-        "constraint-ranking": []
-      }
+      hostOrchestration: true
     };
   }
   activate(params2, child = false) {
@@ -1555,7 +1832,25 @@ var HostRuntimePorts = class {
     for await (const raw of stream) {
       const item = object(raw);
       const type = String(item.type ?? item.event ?? "text-delta").replaceAll("_", "-");
-      if (type === "text-delta" || type === "reasoning-delta") {
+      if (type === "json-diagnostic") {
+        const data = object(item.diagnostic);
+        if (data.source !== "untrusted_model_draft") throw new Error("Invalid JSON diagnostic source");
+        const diagnostic = {};
+        for (const key of [
+          "source",
+          "role",
+          "failure",
+          "original_public_output",
+          "repaired_public_output",
+          "syntax_position",
+          "syntax_line",
+          "syntax_column",
+          "syntax_error"
+        ]) {
+          if (typeof data[key] === "string" || typeof data[key] === "number" || data[key] === null) diagnostic[key] = data[key];
+        }
+        yield { type: "json-diagnostic", diagnostic };
+      } else if (type === "text-delta" || type === "reasoning-delta") {
         const blockType = type === "text-delta" ? "text" : "reasoning";
         if (activeTextBlock !== void 0 && activeTextBlock.blockType !== blockType) {
           yield* closeTextBlock();
@@ -1625,7 +1920,26 @@ var HostRuntimePorts = class {
       factRefs
     };
   }
-  async summarize(messages, maxChars, _signal) {
+  summarize = async (messages, maxChars, _signal, purpose) => {
+    const text = latestUserText(messages);
+    let envelope;
+    try {
+      envelope = JSON.parse(text);
+    } catch {
+      envelope = null;
+    }
+    if (purpose === "research-checkpoint" && envelope?.protocol === "optionhelper.recommender.step") {
+      const response = object(await this.peer.request("host.model.complete", {
+        operation: "research_checkpoint",
+        prompt: text,
+        roleId: envelope.role,
+        publicMessages: modelMessages(messages)
+      }, _signal));
+      const chunks = Array.isArray(response.chunks) ? response.chunks : [];
+      const summary = chunks.map((raw) => object(raw)).filter((chunk) => chunk.type === "text-delta").map((chunk) => String(chunk.text ?? "")).join("");
+      if (!summary) throw new Error("Host research checkpoint is unavailable");
+      return summary;
+    }
     const lines = ["\u4EE5\u4E0B\u662F\u6B64\u524D\u5BF9\u8BDD\u7684\u4E0A\u4E0B\u6587\u6458\u8981\uFF1B\u7CBE\u786E\u91D1\u878D\u6570\u503C\u5FC5\u987B\u901A\u8FC7FactRef\u91CD\u65B0\u8BFB\u53D6\uFF1A"];
     for (const item of messages) {
       const raw = item.content.map((block) => {
@@ -1640,7 +1954,7 @@ var HostRuntimePorts = class {
       if (lines.join("\n").length >= maxChars) break;
     }
     return lines.join("\n").slice(0, maxChars);
-  }
+  };
 };
 
 // src/host/json-rpc-peer.ts
@@ -1760,6 +2074,7 @@ var JsonRpcPeer = class {
     if (message2.error !== void 0) {
       const raw = message2.error;
       const error = new Error(String(raw.message ?? "Host\u8BF7\u6C42\u5931\u8D25"));
+      if (raw.code === "ModelRequestCancelled") error.name = "AbortError";
       current.chunks?.fail(error);
       current.reject(error);
     } else {
