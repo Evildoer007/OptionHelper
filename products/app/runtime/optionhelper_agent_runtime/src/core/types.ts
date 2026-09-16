@@ -62,6 +62,7 @@ export type FinishReason =
   | { readonly kind: "error"; readonly message?: string }
 
 export type StreamChunk =
+  | { readonly type: "json-diagnostic"; readonly diagnostic: JsonValue }
   | { readonly type: "block-start"; readonly index: number; readonly blockType: ContentBlock["type"] }
   | { readonly type: "text-delta"; readonly index: number; readonly text: string }
   | { readonly type: "reasoning-delta"; readonly index: number; readonly text: string }
@@ -128,7 +129,7 @@ export interface ModelRequest {
 export interface RuntimePorts {
   streamModel(request: ModelRequest, signal: AbortSignal): AsyncIterable<StreamChunk>
   executeTool(request: ToolExecutionRequest, signal: AbortSignal): Promise<ToolExecutionResult>
-  summarize(messages: readonly AgentMessage[], maxChars: number, signal: AbortSignal): Promise<string>
+  summarize(messages: readonly AgentMessage[], maxChars: number, signal: AbortSignal, purpose?: "research-checkpoint"): Promise<string>
 }
 
 export interface AgentBudget {
