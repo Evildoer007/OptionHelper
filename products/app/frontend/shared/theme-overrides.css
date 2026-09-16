@@ -666,10 +666,13 @@ html[data-theme] .workspace-shell[data-workspace-shell] :is(.task-context, .assi
   -webkit-backdrop-filter: blur(24px) saturate(125%);
   backdrop-filter: blur(24px) saturate(125%);
 }
-html[data-theme] :is(.process-collaboration, .message-question) {
+html[data-theme] .process-collaboration {
   border-color: var(--glass-edge);
   background: var(--glass-soft);
   box-shadow: inset 0 1px 0 var(--glass-edge), 0 3px 10px rgb(0 0 0 / .05);
+}
+html[data-theme] .message-question {
+  border: 0; padding: 0; background: transparent; box-shadow: none;
 }
 html[data-theme] .message-question[data-state="answered"] {
   border: 0; padding: 0; background: transparent; box-shadow: none;
