@@ -31,6 +31,7 @@ if str(ROOT / "packaging") not in sys.path:
     sys.path.insert(0, str(ROOT / "packaging"))
 
 from verify_skill import content_tree_entries, tree_hash
+from verify_frontend import verify_frontend_assets
 from verify_capability import verify_app_capability
 from windows.windows_installer import find_installer_compiler, installer_command, install_for_verification
 from release_contract import APP_VERSION, RELEASE_VERSION, require_app_version, app_platform_versions
@@ -802,6 +803,7 @@ def build_windows(
             else:
                 shutil.copy2(path, target)
         _copy_tree(backend, resources / "backend" / "OptionHelperBackend")
+        verify_frontend_assets(app_root)
         _copy_tree(app_root / "frontend", resources / "frontend", extra_ignored=("*.md",))
         brand_icons = resources / "assets" / "icons"
         brand_icons.mkdir(parents=True)
