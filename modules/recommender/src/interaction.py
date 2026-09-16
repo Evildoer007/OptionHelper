@@ -8,12 +8,13 @@ from __future__ import annotations
 
 import re
 from decimal import Decimal, InvalidOperation
+from datetime import date
 from collections.abc import Mapping, Sequence
 from typing import Any
 
 
 _UNDERLYING = re.compile(r"(?<![A-Za-z0-9])(?P<code>\d{6})\s*\.?\s*(?P<exchange>SH|SZ)(?![A-Za-z0-9])", re.IGNORECASE)
-_HORIZON = re.compile(r"(?P<number>\d+|[一二三四五六七八九十两]+)\s*(?P<unit>个?月|月|年|个?季度|季度|季)")
+_HORIZON = re.compile(r"(?<![\d.\-])(?P<number>\d+(?:\.\d+)?|[一二三四五六七八九十两]+)\s*(?P<unit>个?月|月|年|个?季度|季度|季)")
 _YEAR_AND_HALF = re.compile(r"(?P<number>\d+|[一二三四五六七八九十两]+)\s*年半")
 _LOSS = re.compile(r"(?:最大(?:可承受)?(?:亏损|损失|回撤)?|最大亏损?|亏损(?:不超过|上限为|控制在|改为)?|回撤(?:不超过|上限为|控制在|改为)?|最大(?:可承受)?(?:亏损|损失|回撤)?改为)\s*(?P<value>\d+(?:\.\d+)?)\s*[%％]")
 _PATH_NUMBER = r"(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?\s*(?:万|千|[kKwW])?"
@@ -92,6 +93,12 @@ def normalize_confirmed_constraints(value: Mapping[str, Any] | None) -> dict[str
     term_overrides = _normalize_term_overrides(source.get("term_overrides"))
     if term_overrides:
         result["term_overrides"] = term_overrides
+    valuation_date = source.get("valuation_date")
+    if isinstance(valuation_date, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", valuation_date):
+        try:
+            result["valuation_date"] = date.fromisoformat(valuation_date).isoformat()
+        except ValueError:
+            pass
     path_count = _normalize_path_count(source.get("path_count"))
     if path_count is not None:
         result["path_count"] = path_count
@@ -107,9 +114,9 @@ def confirmed_term_overrides(constraints: Mapping[str, Any]) -> dict[str, Any]:
     """Translate the confirmed investment horizon to the contract year fraction."""
     normalized = normalize_confirmed_constraints(constraints)
     result: dict[str, Any] = {}
-    horizon = re.fullmatch(r"(\d+)(年|个月)", normalized.get("horizon", ""))
+    horizon = re.fullmatch(r"(\d+(?:\.\d+)?)(年|个月)", normalized.get("horizon", ""))
     if horizon:
-        result["T"] = int(horizon[1]) / (12 if horizon[2] == "个月" else 1)
+        result["T"] = float(horizon[1]) / (12 if horizon[2] == "个月" else 1)
     result.update(normalized.get("term_overrides", {}))
     return result
 
@@ -138,7 +145,10 @@ def merge_confirmed_constraints(existing: Mapping[str, Any] | None, messages: Se
         if pending_field == "principal_fluctuation" and confirmation is not None:
             result["principal_fluctuation"] = confirmation
         if pending_field == "path_count":
-            path_count = _normalize_path_count(text)
+            # A short reply such as "10条就行" is a count only when answering
+            # the immediately preceding MC question, never a general quantity.
+            answer = re.fullmatch(rf"\s*({_PATH_NUMBER})\s*条(?:路径)?(?:就行|即可|吧)?[。！!]?\s*", text)
+            path_count = _normalize_path_count(answer.group(1) if answer else text)
             if path_count is not None:
                 result["path_count"] = path_count
         pending_field = None
@@ -202,7 +212,7 @@ def _view_parts(value: str) -> tuple[str, str]:
 
 
 def _negates_market_dimension(text: str, terms: Sequence[str]) -> bool:
-    lowered = text.lower()
+    lowered = _market_view_text(text)
     if any(re.search(rf"{_NEGATION}.{{0,8}}{re.escape(term)}", lowered) for term in terms):
         return True
     return any("波动" in term or "隐波" in term or "iv" in term for term in terms) and bool(
@@ -260,6 +270,12 @@ def _extract_text(text: str) -> dict[str, Any]:
     horizon = _normalize_horizon(text)
     if horizon:
         result["horizon"] = horizon
+    dates = tuple(re.finditer(r"(?:估值日|定价日)(?:期)?\s*(?:改为|为|是|=|：|:)?\s*(\d{4}-\d{2}-\d{2})(?!\d)", text))
+    if dates:
+        try:
+            result["valuation_date"] = date.fromisoformat(dates[-1].group(1)).isoformat()
+        except ValueError:
+            pass
     market_view = _normalize_market_view(text)
     if market_view:
         result["market_view"] = market_view
@@ -584,15 +600,14 @@ def _normalize_horizon(value: object) -> str | None:
         return "3个月" if "一季" in text else None
     candidates: list[tuple[int, int, str]] = []
     for match in matches:
-        number = _number(match.group("number"))
-        if number is None or not 1 <= number <= 120:
+        raw_number = match.group("number")
+        number = Decimal(raw_number) if re.fullmatch(r"\d+(?:\.\d+)?", raw_number) else _number(raw_number)
+        if number is None or not 0 < number <= 120:
             continue
         unit = match.group("unit")
-        normalized = (
-            f"{number}年" if "年" in unit else
-            f"{number * 3}个月" if "季" in unit else
-            f"{number}个月"
-        )
+        amount = Decimal(number) * (3 if "季" in unit else 1)
+        amount_text = format(amount.normalize(), "f")
+        normalized = amount_text + ("年" if "年" in unit else "个月")
         before = text[max(0, match.start() - 10):match.start()]
         after = text[match.end():min(len(text), match.end() + 12)]
         context = before + match.group(0) + after
@@ -621,8 +636,14 @@ def _expand_natural_horizon(text: str) -> str:
     return expanded.replace("半年", "6个月")
 
 
-def _normalize_market_view(value: object) -> str | None:
+def _market_view_text(value: object) -> str:
+    """Product names describe structures, not the user's market outlook."""
     text = str(value or "").strip().lower()
+    return re.sub(r"(?:看涨|看跌|震荡)(?=\s*(?:期权|价差|产品|结构|策略|合约))", "  ", text)
+
+
+def _normalize_market_view(value: object) -> str | None:
+    text = _market_view_text(value)
     if not text:
         return None
     direction_choices: tuple[tuple[str, tuple[str, ...]], ...] = (
