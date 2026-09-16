@@ -16,7 +16,7 @@ _TOKEN = re.compile(
     r"(?i)(?<![A-Za-z0-9_-])(?:sk-[A-Za-z0-9_-]{12,}|eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_.-]{20,}|[A-Fa-f0-9]{32,})(?![A-Za-z0-9_-])"
 )
 _NAMED_SECRET = re.compile(r"(?i)\b(?:bearer|token|secret|api[_-]?key|access[_-]?token|refresh[_-]?token|password)\s*(?::|=|\s)\s*[A-Za-z0-9._~+\-/=]{12,}")
-_LOCAL_PATH = re.compile(r"(?<![A-Za-z0-9_])(?:~|/(?:Users|private|tmp|var|etc|opt|Library))(?:/[^\s,;，；<>]*)?")
+_LOCAL_PATH = re.compile(r"(?<![A-Za-z0-9_])(?:~(?=/)|/(?:Users|private|tmp|var|etc|opt|Library))(?:/[^\s,;，；<>]*)?")
 _HIDDEN_REASONING = re.compile(r"(?is)<(?:think|analysis|reasoning)\b[^>]*>.*?</(?:think|analysis|reasoning)\s*>")
 
 
