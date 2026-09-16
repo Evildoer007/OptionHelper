@@ -154,8 +154,11 @@ def shared_payload_entries(entries: list[dict[str, object]]) -> list[dict[str, o
 
     return [
         item for item in entries
-        if str(item["path"]) in _SHARED_EXACT_PATHS
-        or any(str(item["path"]).startswith(prefix) for prefix in _SHARED_PATH_PREFIXES)
+        if (str(item["path"]) in _SHARED_EXACT_PATHS
+            or any(str(item["path"]).startswith(prefix) for prefix in _SHARED_PATH_PREFIXES))
+        # Role instructions belong to the App; shared engine code remains identical.
+        and not (str(item["path"]).startswith("scripts/runtime/research_profiles/")
+                 and str(item["path"]).endswith("/AGENT.md"))
     ]
 
 
