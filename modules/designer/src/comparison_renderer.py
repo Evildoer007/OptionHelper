@@ -403,7 +403,7 @@ def _compatible_chart_groups(candidates: Sequence[Mapping[str, Any]], module_nam
         for raw in as_list(module.get("charts")):
             spec = as_dict(raw)
             chart_type = text(spec.get("type") or "line").lower()
-            if chart_type == "heatmap":
+            if chart_type in {"heatmap", "surface"}:
                 facet = deepcopy(spec)
                 facet["title"] = f'{text(candidate.get("label"))}：{text(spec.get("title") or "曲面")}'
                 facet["id"] = f'{module_name}-{len(facets) + 1}-facet'
