@@ -59,7 +59,7 @@ def conversation_tool_catalog(policy: AuthorizationPolicy, identity: SessionIden
         output_types.append("report")
     tools[-1] = {**tools[-1], "output_types": output_types}
     tools.append({"name":"task.position_size", "description":"读取当前任务名义本金；仅用户明确要求调整时保存或清空。无参数表示查询，position_size为null表示清空。", "actions":["read", "set"]})
-    tools.append({"name":"reporter.create_document", "description":"根据当前对话生成可编辑HTML、PDF或Word报告草稿，不要求先完成计算。", "actions":["create_document"]})
+    tools.append({"name":"reporter.create_document", "description":"根据当前对话生成可编辑HTML、PDF或Word报告草稿。多产品草稿须填写product_ids，无须推荐登记或计算。", "actions":["create_document"]})
     return tools
 
 
@@ -153,6 +153,56 @@ class ResultStoreObservationBuilder:
         self._results = results
         self._tasks = tasks
 
+    def _recommendation_facts(self, identity, task_id, value):
+        """Reverify selected runs against their immutable host candidate snapshot."""
+        recommendation = value.get("recommendation_set")
+        if not isinstance(recommendation, Mapping) or recommendation.get("task_id") != task_id:
+            return {}
+        facts, terms, seen = [], [], set()
+        for candidate in recommendation.get("candidates", ()):
+            if not isinstance(candidate, Mapping):
+                continue
+            selected = [(ref, candidate.get("candidate_id"), None) for ref in candidate.get("module_run_refs", ())
+                        if isinstance(ref, dict) and candidate.get("module_statuses", {}).get(ref.get("module")) in {"succeeded", "partial"}]
+            for row in recommendation.get("research_evidence", ()):
+                if not isinstance(row, Mapping) or row.get("candidate_id") != candidate.get("candidate_id"):
+                    continue
+                snapshot = row.get("candidate_snapshot")
+                if not isinstance(snapshot, Mapping) or row.get("research_candidate_id") != snapshot.get("candidate_id"):
+                    continue
+                if any(snapshot.get(key) != candidate.get(key) for key in ("product_id", "rule_revision", "underlyings", "current_inputs")):
+                    continue
+                selected.extend((ref, snapshot["candidate_id"], snapshot) for ref in row.get("module_run_refs", ()))
+            for reference, source_candidate_id, mapped_snapshot in selected:
+                if not isinstance(reference, dict) or reference.get("task_id") != task_id:
+                    continue
+                module = reference.get("module")
+                try:
+                    record = self._results.resolve_module_run(identity, reference)
+                    if record.get("status") not in {"succeeded", "partial"}:
+                        continue
+                    snapshot = record.get("research", {}).get("candidate_snapshot", {})
+                    if mapped_snapshot is not None and snapshot != mapped_snapshot:
+                        continue
+                    if snapshot.get("candidate_id") != source_candidate_id or any(snapshot.get(key) != candidate.get(key)
+                                           for key in ("product_id", "rule_revision", "underlyings")):
+                        continue
+                    actual, expected = snapshot.get("current_inputs", {}), candidate.get("current_inputs", {})
+                    if any(actual.get(key, {}) != expected.get(key, {})
+                           for key in ("term_overrides", "module_inputs", "confirmed_constraints")):
+                        continue
+                    summary = self._results.verified_fact_summary(identity, reference, expected_binding={
+                        "candidate_id": source_candidate_id, "product_id": candidate.get("product_id"), "rule_revision": candidate.get("rule_revision")})
+                except (AuthorizationError, ValidationError, KeyError, OSError, TypeError, ValueError):
+                    continue
+                for collection, target in (("facts", facts), ("contract_term_facts", terms)):
+                    for fact in summary.get(collection, ()):
+                        key = (collection, fact.get("fact_ref"))
+                        if key not in seen:
+                            seen.add(key)
+                            target.append(fact)
+        return {"facts": facts, "contract_term_facts": terms}
+
     def facts_for(
         self, identity: SessionIdentity, task_id: str, _tool: str, value: Mapping[str, Any],
     ) -> dict[str, Any]:
@@ -166,6 +216,8 @@ class ResultStoreObservationBuilder:
                 for run in view["runs"]:
                     facts.extend(amount_fact_rows(view, run))
             return {"facts": facts}
+        if _tool == "recommender.run":
+            return self._recommendation_facts(identity, task_id, value)
         reference = value.get("module_run_ref")
         if not isinstance(reference, dict) or reference.get("task_id") != task_id:
             return {}
