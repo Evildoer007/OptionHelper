@@ -226,6 +226,7 @@
         $('canvasState').textContent = message;
         const dot = mode === 'ready' ? 'valid' : mode === 'busy' ? 'edit' : mode === 'dirty' ? 'dirty' : '';
         $('stateDot').className = 'state-dot ' + dot;
+        $('stateDot').dataset.state = mode === 'busy' ? 'running' : 'idle';
       }
 
       function canRuntimePreview() {
