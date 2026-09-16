@@ -6,7 +6,7 @@ DataFetcher、Payoffer、Pricer、Backtester、Reporter内部代码。
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import re
 import json
 import hashlib
@@ -174,6 +174,44 @@ class HostAgentPort:
     capability_provider: Callable[[], ModelCapability | Mapping[str, Any]]
     step_runner: Callable[[str, Mapping[str, Any]], AgentStepResult | Mapping[str, Any]]
     named_step_runner: Callable[[Mapping[str, Mapping[str, Any]]], Mapping[str, AgentStepResult | Mapping[str, Any]]] | None = None
+
+    research_binder: Callable[[Any, Mapping[str, Any]], None] | None = None
+    agent_instructions: Mapping[str, Mapping[str, str]] = field(default_factory=dict)
+
+    def bind_research_session(self, research):
+        """Pass business tools/policy to the host, which owns its agent sessions.
+
+        The callback may bind tools to native children or the current agent.
+        No background server, worker, model or session is created here.
+        """
+        from runtime.research_policy import preset_definitions, load_role_instructions
+        if research is None:
+            if self.research_binder is not None:
+                self.research_binder(None, {})
+            return
+        preset=research.preset_id
+        definition=preset_definitions()[preset]
+        instructions=load_role_instructions(preset)
+        overrides=self.agent_instructions.get(preset,{})
+        for role,text in overrides.items():
+            if role in instructions and str(text).strip():
+                instructions[role]=str(text)
+        from runtime.knowledger.interpretation import KNOWLEDGE_REASONING_RULES
+        instructions = {
+            role: ("宿主知识解释约定，优先于角色自定义文字：" + KNOWLEDGE_REASONING_RULES
+                   + "\n\n以下为原角色说明，保留其职责与工具边界：\n" + text)
+            for role, text in instructions.items()
+        }
+        if self.research_binder is None:
+            if preset!='sequential-deliberation' and research.calculation_allowed:
+                raise PortError('当前宿主尚未绑定自主研究工具，不能声称已完成计算研究')
+            return
+        self.research_binder(research, {
+            'preset_id':preset,'definition':definition,'agent_instructions':instructions,
+            'research_depth':research.case.research_depth,'budget':dict(research.policy),
+            'execution_mode':'multi_agent' if self.capability().supports_multi_agent_workflow else 'single_agent',
+            'lifecycle_owner':'host','model_view':research.model_view,
+        })
 
     def capability(self) -> ModelCapability:
         value = self.capability_provider()
