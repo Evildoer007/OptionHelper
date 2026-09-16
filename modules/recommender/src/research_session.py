@@ -8,7 +8,7 @@ from copy import deepcopy
 import json
 from threading import RLock
 from uuid import uuid4
-from runtime.research_policy import depth_policy, research_execution
+from runtime.research_policy import depth_policy, research_execution, research_calculation_scope, blocked_research_modules
 from .models import EvidenceRef, RecommendationValidationError
 from .evaluation_evidence import read_evaluation_records
 
@@ -26,6 +26,11 @@ class ResearchSession:
         self._pending={}
         self._completed={}
         self._used=0
+        self._reserved=0
+        self._catalog_owners={}
+        self._role_input_catalog={}
+        self._catalog_shared=False
+        self.blocked_modules=blocked_research_modules(case.prompt)
         self._closed=False
         self._role_candidates={}
         self._original_candidates={}
@@ -34,7 +39,7 @@ class ResearchSession:
         self._retrieved_catalog_evidence = {}
         self._stage_inputs = {}
 
-    def record_catalog_search(self, response):
+    def record_catalog_search(self, response, *, role="Host"):
         """Retain validated Host search results for this research's aggregation."""
         if response.get('catalog_version') != self.case.catalog_version:
             raise RecommendationValidationError('检索目录版本与本轮研究不一致')
@@ -48,6 +53,29 @@ class ResearchSession:
                 raise RecommendationValidationError('研究会话已关闭')
             combined = self.merge_catalog_evidence(items)
             self._retrieved_catalog_evidence = {item.evidence_id: item for item in combined}
+            self._catalog_owners.setdefault(role.removeprefix('SingleAgent.'), set()).update(item.evidence_id for item in items)
+
+    def catalog_for_validation(self, role, request):
+        """Validate against the evidence this role could actually receive, without changing its receipt input."""
+        initial = request.get('input', {}).get('evidence', ())
+        rows = [row for row in initial if isinstance(row, dict) and row.get('evidence_id')]
+        items = tuple(EvidenceRef.from_mapping(row, expected_catalog_version=self.case.catalog_version) for row in rows)
+        with self._lock:
+            canonical = role.removeprefix('SingleAgent.')
+            history = self._role_input_catalog.setdefault(canonical, {})
+            for item in items:
+                previous = history.get(item.evidence_id)
+                if previous is not None and previous != item:
+                    raise RecommendationValidationError('角色产品证据ID冲突')
+                history[item.evidence_id] = item
+            combined = self.merge_catalog_evidence(tuple(history.values()))
+            permitted = set(history)
+            permitted.update(self._catalog_owners.get('Host', ()))
+            permitted.update(self._catalog_owners.get(role.removeprefix('SingleAgent.'), ()))
+            if self._catalog_shared:
+                permitted.update(self._retrieved_catalog_evidence)
+            return [item.to_dict(include_excerpt=True) for item in combined if item.evidence_id in permitted]
+
 
     def merge_catalog_evidence(self, initial):
         """One verified evidence set for initial and role-initiated searches."""
@@ -158,6 +186,7 @@ class ResearchSession:
         """The workflow opens branch evidence only after independent research."""
         with self._lock:
             self._role_candidates.clear()
+            self._catalog_shared=True
 
     def _check_role(self, role, candidate_id):
         canonical = role.removeprefix('SingleAgent.')
@@ -186,14 +215,14 @@ class ResearchSession:
                                            if fact.get('source') in modules | {'contract_terms'}}
             return {'research_id': self.research_id, 'candidates': deepcopy(list(candidates.values())),
                     'evidence': evidence, 'used_calculations': self._used,
-                    'remaining_calculations': max(0, self.policy['calculations'] - self._used),
+                    'remaining_calculations': max(0, self.policy['calculations'] - self._used - self._reserved),
                     'calculation_allowed': self.calculation_allowed,
                     'pending_input': deepcopy(self._pending_input)}
 
     def context(self):
         with self._lock:
             return {'research_id':self.research_id,'research_depth':self.case.research_depth,
-                    'remaining_calculations':max(0,self.policy['calculations']-self._used),
+                    'remaining_calculations':max(0,self.policy['calculations']-self._used-self._reserved),
                     'calculation_allowed':self.calculation_allowed,
                     'candidates':deepcopy(list(self._candidates.values()))}
 
@@ -209,7 +238,8 @@ class ResearchSession:
                 self._check_role(role, candidate_id)
             return deepcopy([row for row in self._results.values()
                              if (candidate_id is None or row['candidate_id']==candidate_id)
-                             and (permitted is None or row['candidate_id'] in permitted)])
+                             and (permitted is None or row['candidate_id'] in permitted)
+                             and row.get('candidate_snapshot') == self._candidates.get(row['candidate_id'])])
 
     def require_complete_inputs(self):
         """Surface known user-input gaps before unrelated output-format repair."""
@@ -360,8 +390,8 @@ class ResearchSession:
             if candidate_id not in self._candidates:raise RecommendationValidationError('请先提交候选，由Host登记后再计算')
             self._check_role(role, candidate_id)
             candidate=deepcopy(self._candidates[candidate_id])
-        if not self.calculation_allowed:
-            return self._unavailable(candidate,modules,'用户要求只比较，不进行计算')
+        if not self.calculation_allowed or self.blocked_modules.intersection(modules):
+            return self._unavailable(candidate,modules,'用户限制了本次计算；未启动模块')
         overrides=request.get('term_overrides',{})
         if not isinstance(overrides,dict):raise RecommendationValidationError('term_overrides必须为对象')
         # Candidate term changes must go through the existing variant validator;
@@ -383,10 +413,10 @@ class ResearchSession:
             future=self._pending.get(key)
             owner=future is None
             if owner:
-                if self._used+len(modules)>self.policy['calculations']:
+                if self._used+self._reserved+len(modules)>self.policy['calculations']:
                     return self._unavailable(candidate,modules,'研究计算预算已用完，尚未验证')
                 future=Future();self._pending[key]=future
-                self._used+=len(modules)
+                self._reserved+=len(modules)
         if not owner:
             while True:
                 with self._lock:
@@ -397,12 +427,30 @@ class ResearchSession:
                     return self._reuse(response, question, role, round_no)
                 except FutureTimeoutError:
                     continue
+        outstanding = len(modules)
+        tracked = bool(getattr(self.tool_port, 'tracks_research_starts', False))
+        def started(module):
+            nonlocal outstanding
+            with self._lock:
+                if self._closed:
+                    raise RecommendationValidationError('本次研究已停止')
+                if module not in modules:
+                    raise RecommendationValidationError('宿主启动了研究请求之外的模块')
+                if outstanding:
+                    outstanding -= 1
+                    self._reserved -= 1
+                elif self._used + self._reserved >= self.policy['calculations']:
+                    raise RecommendationValidationError('研究计算预算已用完')
+                self._used += 1
         try:
-            with research_execution({"research_id":self.research_id,"question":question,"role":role,
+            with research_calculation_scope(started), research_execution({"research_id":self.research_id,"question":question,"role":role,
                                      "candidate_snapshot":candidate,"purpose":"research"}):
                 response=dict(self.tool_port.evaluate_candidate(candidate=candidate,
                     confirmed_constraints=dict(self.case.confirmed_constraints),modules=modules,
                     term_overrides=dict(current),candidate_id=candidate_id,round_no=round_no))
+            if not tracked:
+                for module in modules:
+                    started(module)
             read_evaluation_records(response,candidate_id=candidate_id,modules=modules,round_no=round_no,
                                     tenant_id=self.case.tenant_id,task_id=self.case.task_id)
             evidence_id='evidence-'+uuid4().hex
@@ -426,10 +474,16 @@ class ResearchSession:
                                 next_question=error.question)
                 future.set_result(deepcopy(response))
                 return response
+            if not tracked and outstanding:
+                # Legacy ports cannot report individual starts; failed execution attempts still count.
+                for module in modules[:outstanding]:
+                    started(module)
             future.set_exception(error)
             raise
         finally:
-            with self._lock:self._pending.pop(key,None)
+            with self._lock:
+                self._reserved -= outstanding
+                self._pending.pop(key,None)
 
     def _reuse(self, original, question, role, round_no):
         response = deepcopy(original)
