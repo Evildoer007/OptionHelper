@@ -369,13 +369,19 @@ class RecommendationCase:
     conversation_ref: str | None = None
     confirmed_constraints: Mapping[str, Any] = field(default_factory=dict)
     research_context: str = ""
+    research_depth: str = "standard"
+
+    def __post_init__(self):
+        from runtime.research_policy import depth_policy
+        depth_policy(self.research_depth)
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> "RecommendationCase":
         data = dict(value)
+        from runtime.research_policy import research_depth_from_text
         allowed = {
             "analysis_case_id", "task_id", "tenant_id", "prompt", "catalog_version", "run_id",
-            "requested_outputs", "audience", "conversation_ref", "confirmed_constraints", "research_context",
+            "requested_outputs", "audience", "conversation_ref", "confirmed_constraints", "research_context", "research_depth",
         }
         unknown = sorted(set(data) - allowed)
         if unknown:
@@ -392,6 +398,7 @@ class RecommendationCase:
             conversation_ref=str(data.get("conversation_ref", "")).strip() or None,
             confirmed_constraints=_mapping(data.get("confirmed_constraints", {}), "confirmed_constraints"),
             research_context=str(data.get("research_context", "")),
+            research_depth=str(data.get("research_depth") or research_depth_from_text(data.get("prompt", ""))),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -640,6 +647,7 @@ class RecommendationSet:
     returned_candidate_count: int | None = None
     ranking_spec_id: str | None = None
     ranking_spec: Mapping[str, Any] | None = None
+    research_evidence: tuple[Mapping[str, Any], ...] = ()
 
     def __post_init__(self) -> None:
         if self.schema != RECOMMENDATION_SET_SCHEMA or self.route not in {"recommendation", "professional_report"}:
@@ -695,6 +703,8 @@ class RecommendationSet:
         }
         if self.ranking_spec_id is not None:
             result.update({"ranking_spec_id": self.ranking_spec_id, "ranking_spec": _json_value(self.ranking_spec)})
+        if self.research_evidence:
+            result["research_evidence"] = _json_value(self.research_evidence)
         return result
 
     def to_public_dict(self) -> dict[str, Any]:
