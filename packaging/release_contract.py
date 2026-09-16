@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 
 SKILL_VERSION = "v0.3.0"
-APP_VERSION = "v0.1.0"
+APP_VERSION = "v0.1.0-alpha"
 # Signed knowledge and Capability releases follow the Skill version.
 RELEASE_VERSION = SKILL_VERSION
 DEVELOPMENT_ID = "development"
