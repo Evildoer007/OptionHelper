@@ -56,3 +56,35 @@ def workflow_limits(preset, depth='standard'):
     policy=depth_policy(depth)
     rounds=policy[control] if control=='product_iterations' else 1+policy[control]
     return {'rounds':rounds,'reworks':rounds-1,'role_turns':policy['role_turns']}
+
+
+def blocked_research_modules(text):
+    """Recognize explicit execution restrictions before any role can start tools."""
+    import re
+    value = str(text).lower()
+    all_modules = {'payoffer', 'pricer', 'backtester'}
+    negative = r'(?:不要|不得|禁止|无需|不用|不)(?:再|先|实际)?(?:做|进行|执行|启动)?(?:任何|实际|金融|数值)?'
+    if re.search(negative + r'计算', value) or re.search(r"(?:do not|don't|no|without)\s+(?:any\s+)?(?:calculations?|computations?|computing)", value):
+        return all_modules
+    if re.search(r'(?:只|仅)(?:做|要|需)?(?:结构(?:比较|对比|筛选|推荐)|(?:比较|对比|筛选|推荐)结构)', value):
+        return all_modules
+    forbidden=set()
+    for pattern, module in [(r'(?:定价|估值|pricing)', 'pricer'), (r'(?:回测|历史回放|backtest(?:ing)?)', 'backtester'), (r'(?:收益分析|收益计算|payoff)', 'payoffer')]:
+        if re.search(negative + pattern, value) or re.search(r"(?:do not|don't|no|without)\s+" + pattern, value):
+            forbidden.add(module)
+    return forbidden
+
+_RESEARCH_CALCULATION_START=ContextVar('optionhelper_research_calculation_start', default=None)
+
+@contextmanager
+def research_calculation_scope(on_start):
+    token=_RESEARCH_CALCULATION_START.set(on_start)
+    try:
+        yield
+    finally:
+        _RESEARCH_CALCULATION_START.reset(token)
+
+def notify_research_calculation_started(module):
+    callback=_RESEARCH_CALCULATION_START.get()
+    if callback is not None:
+        callback(module)
