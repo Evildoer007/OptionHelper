@@ -119,6 +119,7 @@ def _clean_text(value: str) -> str:
 
 _SUB_OPEN, _SUB_CLOSE = "\ue000", "\ue001"
 _SUPER_OPEN, _SUPER_CLOSE = "\ue002", "\ue003"
+_MATH_ROW_BREAK = "\ue004"
 _SCIENTIFIC_SUPERSCRIPT_RUN = re.compile(r"(?<=×10)[⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻]+")
 _SCIENTIFIC_SUPERSCRIPT_ASCII = str.maketrans("⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻", "0123456789+-")
 
@@ -159,9 +160,12 @@ def _mathml_text(markup: str) -> str:
         if tag == "mroot" and len(children) >= 2:
             return f"root[{content(children[1])}]({content(children[0])})"
         if tag == "mtable":
-            return "[" + "; ".join(content(child) for child in children) + "]"
+            # Preserve MathML rows through the HTML parser's whitespace cleanup.
+            # Delimiters belong to the surrounding MathML, so do not invent
+            # square brackets or punctuation that changes a cases expression.
+            return _MATH_ROW_BREAK.join(content(child) for child in children)
         if tag == "mtr":
-            return ", ".join(content(child) for child in children)
+            return "  ".join(content(child) for child in children)
         if tag == "mtd":
             return "".join(content(child) for child in children)
         value = element.text or ""
@@ -177,7 +181,7 @@ def _mathml_text(markup: str) -> str:
 class _PublicHtmlParser(HTMLParser):
     """Extract public headings, prose, tables and compact Card facts."""
 
-    _TEXT_TAGS = {"h1", "h2", "h3", "h4", "p", "li", "figcaption", "dt", "dd", "small", "caption"}
+    _TEXT_TAGS = {"h1", "h2", "h3", "h4", "h5", "h6", "p", "li", "figcaption", "dt", "dd", "small", "caption"}
     _SKIPPED_TAGS = {"script", "style", "noscript", "title", "head"}
 
     def __init__(self) -> None:
@@ -451,7 +455,15 @@ class _PublicHtmlParser(HTMLParser):
             return
         if self._cell is not None:
             self._cell.append(data)
-        for _, parts in self._active:
+        # A Card's note is emitted as its own field. When <small> is
+        # nested inside <dd>, collecting it into the parent value as well
+        # prints the unit twice. Keep ordinary prose accumulation unchanged.
+        metric_note_active = self._metric_item is not None and any(
+            tag == "small" for tag, _ in self._active
+        )
+        for tag, parts in self._active:
+            if metric_note_active and tag == "dd":
+                continue
             parts.append(data)
 
 
@@ -632,6 +644,29 @@ def _register_fonts() -> tuple[object, str, str]:
             pdfmetrics.registerFont(TTFont(latin_font, str(path)))
         break
 
+    # A CJK face need not contain mathematical operators. Register a system
+    # symbol face for missing glyphs without replacing the existing text faces.
+    if "Designer-Math" not in pdfmetrics.getRegisteredFontNames():
+        math_candidates = (
+            Path("/System/Library/Fonts/Apple Symbols.ttf"),
+            Path("/System/Library/Fonts/Supplemental/Arial Unicode.ttf"),
+            *windows_font_candidates("cambria.ttc", "seguisym.ttf", "symbol.ttf"),
+            Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
+            Path("/usr/share/fonts/truetype/noto/NotoSansMath-Regular.ttf"),
+        )
+        for path in math_candidates:
+            if not path.is_file():
+                continue
+            try:
+                face = TTFont("Designer-Math", str(path), subfontIndex=0)
+            except Exception:
+                # A system may ship an unsupported font container; the next
+                # installed candidate can still supply an embeddable face.
+                continue
+            if face.face.charToGlyph.get(ord("⋅"), 0):
+                pdfmetrics.registerFont(face)
+                break
+
     # Chinese follows the host system font. PDF embeds the selected face so
     # the delivery remains readable on another computer. The CID fallback
     # keeps minimal Linux test environments functional.
@@ -655,7 +690,29 @@ def _register_fonts() -> tuple[object, str, str]:
 
 
 def _font_for_char(char: str, latin_font: str, cjk_font: str) -> str:
-    return latin_font if char.isascii() else cjk_font
+    if char.isascii():
+        return latin_font
+
+    from reportlab.pdfbase import pdfmetrics
+
+    registered = set(pdfmetrics.getRegisteredFontNames())
+    if cjk_font not in registered:
+        # Markup-only callers may supply placeholder names without a runtime.
+        return cjk_font
+    glyphs = getattr(pdfmetrics.getFont(cjk_font).face, "charToGlyph", None)
+    if glyphs is not None and glyphs.get(ord(char), 0):
+        return cjk_font
+    if glyphs is None and not ("\u2200" <= char <= "\u23ff"):
+        # CID fonts do not expose a glyph map. Keep their normal text mapping,
+        # while checking the embedded symbol font for mathematical operators.
+        return cjk_font
+    for name in (latin_font, "Designer-Math"):
+        if name not in registered:
+            continue
+        fallback_glyphs = getattr(pdfmetrics.getFont(name).face, "charToGlyph", {})
+        if fallback_glyphs.get(ord(char), 0):
+            return name
+    return cjk_font
 
 
 def _mixed_markup(value: str, *, latin_font: str, cjk_font: str) -> str:
@@ -669,6 +726,7 @@ def _mixed_markup(value: str, *, latin_font: str, cjk_font: str) -> str:
 
     if not value:
         return ""
+    value = value.replace(_MATH_ROW_BREAK, "\n")
     # HTML editors preserve literal Unicode subscripts in ordinary text.
     # Render them with embedded ASCII glyphs and a real baseline shift.
     value = re.sub(
@@ -694,36 +752,39 @@ def _mixed_markup(value: str, *, latin_font: str, cjk_font: str) -> str:
             for font, chars in runs
         )
 
-    result: list[str] = []
-    plain: list[str] = []
-
-    def flush_plain() -> None:
-        if plain:
-            result.append(font_runs("".join(plain)))
-            plain.clear()
-
-    index = 0
     markers = {
         _SUB_OPEN: (_SUB_CLOSE, "sub"),
         _SUPER_OPEN: (_SUPER_CLOSE, "super"),
     }
-    while index < len(value):
-        marker = markers.get(value[index])
-        if marker is None:
-            plain.append(value[index])
-            index += 1
-            continue
-        close, tag = marker
-        end = value.find(close, index + 1)
-        if end < 0:
-            plain.append(value[index])
-            index += 1
-            continue
+
+    def render_segment(start: int, closing: str | None = None) -> tuple[str, int]:
+        result: list[str] = []
+        plain: list[str] = []
+
+        def flush_plain() -> None:
+            if plain:
+                result.append(font_runs("".join(plain)))
+                plain.clear()
+
+        index = start
+        while index < len(value):
+            char = value[index]
+            if char == closing:
+                flush_plain()
+                return "".join(result), index + 1
+            marker = markers.get(char)
+            if marker is None:
+                plain.append(char)
+                index += 1
+                continue
+            flush_plain()
+            close, tag = marker
+            nested, index = render_segment(index + 1, close)
+            result.append(f"<{tag}>{nested}</{tag}>")
         flush_plain()
-        result.append(f"<{tag}>{font_runs(value[index + 1:end])}</{tag}>")
-        index = end + 1
-    flush_plain()
-    return "".join(result)
+        return "".join(result), index
+
+    return render_segment(0)[0]
 
 
 def _paragraph(value: str, style: object, *, latin_font: str, cjk_font: str) -> object:
@@ -1103,7 +1164,8 @@ def _svg_flowable(markup: str, *, content_width: float, latin_font: str, cjk_fon
                     content = _clean_text("".join(element.itertext()))
                     if content:
                         _fill, _stroke = set_paint(paint)
-                        font_size = max(5.0, _svg_number(paint.get("font-size"), 11.0) * scale_y)
+                        # Preserve SVG typography geometry along with the curve coordinates.
+                        font_size = _svg_number(paint.get("font-size"), 11.0) * scale_y
                         canvas.setFont(cjk_font if any(not char.isascii() for char in content) else latin_font, font_size)
                         x, y = point(_svg_number(element.get("x")), _svg_number(element.get("y")))
                         anchor = element.get("text-anchor")
@@ -1121,6 +1183,31 @@ def _svg_flowable(markup: str, *, content_width: float, latin_font: str, cjk_fon
             canvas.restoreState()
 
     return _PayoffSvg()
+
+
+def _draw_chart_tick(canvas: Any, x: float, y: float, label: str, *, font: str, size: float) -> None:
+    """Draw a right-aligned scientific tick without relying on Unicode exponent glyphs."""
+    from reportlab.pdfbase.pdfmetrics import stringWidth
+
+    matches = list(_SCIENTIFIC_SUPERSCRIPT_RUN.finditer(label))
+    if not matches:
+        canvas.drawRightString(x, y, label)
+        return
+    runs = []
+    offset = 0
+    for match in matches:
+        runs.append((label[offset:match.start()], size, 0.0))
+        runs.append((match.group().translate(_SCIENTIFIC_SUPERSCRIPT_ASCII), size * 0.7, size * 0.35))
+        offset = match.end()
+    runs.append((label[offset:], size, 0.0))
+    width = sum(stringWidth(text, font, run_size) for text, run_size, _rise in runs)
+    text_object = canvas.beginText(x - width, y)
+    for text, run_size, rise in runs:
+        text_object.setFont(font, run_size)
+        text_object.setRise(rise)
+        text_object.textOut(text)
+    text_object.setRise(0)
+    canvas.drawText(text_object)
 
 
 def _chart_flowable(spec: Mapping[str, Any], *, content_width: float, latin_font: str, cjk_font: str) -> object:
@@ -1262,7 +1349,7 @@ def _chart_flowable(spec: Mapping[str, Any], *, content_width: float, latin_font
                 for tick in range(5):
                     value = low + (high - low) * tick / 4
                     label = display_text(value, spec.get("value_format")) + str(spec.get("value_suffix") or "")
-                    canvas.drawRightString(left - 5, bottom + plot_height * tick / 4 - 2, label)
+                    _draw_chart_tick(canvas, left - 5, bottom + plot_height * tick / 4 - 2, label, font=latin_font, size=6.8)
                 if x_values:
                     labels = [str(x_values[index]) for index in range(0, len(x_values), max(1, math.ceil(len(x_values) / 6)))]
                     for index, label in enumerate(labels):
