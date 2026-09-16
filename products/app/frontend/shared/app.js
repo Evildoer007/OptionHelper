@@ -155,7 +155,8 @@ function positionChoiceMenu(choice) {
   choice.dataset.placement = roomBelow < desiredHeight && roomAbove > roomBelow ? "top" : "bottom";
   menu.style.maxHeight = `${Math.min(280, viewportHeight * .42, choice.dataset.placement === "top" ? roomAbove : roomBelow)}px`;
   if (menu.hasAttribute("popover")) {
-    const preferredWidth = choice.closest(".model-picker") ? rect.width : Math.max(rect.width, 270);
+    const preferredWidth = choice.dataset.choiceLayout === "research-depth" ? 136
+      : choice.closest(".model-picker") ? rect.width : Math.max(rect.width, 270);
     const width = Math.min(preferredWidth, view.innerWidth - 24);
     menu.style.boxSizing = "border-box";
     menu.style.position = "fixed";
@@ -223,6 +224,8 @@ function syncChoice(select) {
   const menu = choice.querySelector(".choice-menu");
   if (!trigger || !value || !menu) return;
   const selected = optionFor(select, select.value);
+  const researchDepth = select.dataset.choiceLayout === "research-depth";
+  if (researchDepth) { choice.dataset.choiceLayout = "research-depth"; menu.setAttribute("aria-orientation", "horizontal"); }
   renderChoiceLabel(value, selected);
   trigger.disabled = select.disabled || !select.options.length;
   trigger.setAttribute("aria-disabled", String(trigger.disabled));
@@ -236,7 +239,7 @@ function syncChoice(select) {
   const renderOption = (option) => {
     const item = doc.createElement("button");
     item.type = "button";
-    item.className = "choice-option";
+    item.className = researchDepth ? "choice-option choice-option--depth" : "choice-option";
     item.setAttribute("role", "option");
     item.dataset.value = option.value;
     renderChoiceLabel(item, option);
@@ -363,20 +366,22 @@ export function enhanceSelects(root = document) {
       }
     });
     menu.addEventListener("keydown", (event) => {
-      if (["ArrowDown", "ArrowUp", "Home", "End", " ", "Enter", "Escape"].includes(event.key)) event.stopPropagation();
+      const key = select.dataset.choiceLayout === "research-depth"
+        ? ({ ArrowLeft: "ArrowUp", ArrowRight: "ArrowDown" }[event.key] || event.key) : event.key;
+      if (["ArrowDown", "ArrowUp", "Home", "End", " ", "Enter", "Escape"].includes(key)) event.stopPropagation();
       const options = Array.from(menu.querySelectorAll('[role="option"]:not([disabled])'));
       const at = options.indexOf(doc.activeElement);
-      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      if (key === "ArrowDown" || key === "ArrowUp") {
         event.preventDefault();
-        (options[Math.max(0, Math.min(options.length - 1, at + (event.key === "ArrowDown" ? 1 : -1)))] || options[0])?.focus();
-      } else if (event.key === "Home" || event.key === "End") {
+        (options[Math.max(0, Math.min(options.length - 1, at + (key === "ArrowDown" ? 1 : -1)))] || options[0])?.focus();
+      } else if (key === "Home" || key === "End") {
         event.preventDefault();
-        options[event.key === "Home" ? 0 : options.length - 1]?.focus();
-      } else if (event.key === "Escape") {
+        options[key === "Home" ? 0 : options.length - 1]?.focus();
+      } else if (key === "Escape") {
         event.preventDefault(); close(true);
-      } else if (event.key === "Tab") {
+      } else if (key === "Tab") {
         close(true);
-      } else if (event.key === "Enter" || event.key === " ") {
+      } else if (key === "Enter" || key === " ") {
         event.preventDefault();
         if (event.repeat) return;
         doc.activeElement?.click();
@@ -943,10 +948,10 @@ export function operationActivity(state) {
   if (["failed", "error", "unavailable", "timed_out", "timeout"].includes(value)) return "failed";
   if (["outcome_unknown", "interrupted"].includes(value)) return "uncertain";
   if (["cancelled", "canceled", "stopped"].includes(value)) return "stopped";
-  if (value === "cancel_requested") return "cancelling";
-  if (["needs_input", "pending_approval", "waiting_parent", "waiting_tool", "blocked"].includes(value)) return "waiting";
+  if (["cancel_requested", "cancelling"].includes(value)) return "cancelling";
+  if (["needs_input", "pending_approval", "waiting_parent", "blocked"].includes(value)) return "waiting";
   if (["queued", "pending"].includes(value)) return "queued";
-  return ["running", "started", "starting", "recovering", "recovered", "reselecting"].includes(value) ? "running" : "uncertain";
+  return ["running", "started", "starting", "recovering", "recovered", "reselecting", "waiting_tool"].includes(value) ? "running" : "uncertain";
 }
 
 export function renderTaskList(target, tasks, activeTaskId, onSelect, actions = {}) {
@@ -1079,7 +1084,7 @@ export function renderTaskList(target, tasks, activeTaskId, onSelect, actions = 
     activityDot.className = "task-item__running-dot";
     const activities = (Array.isArray(task.active_operations) ? task.active_operations : [])
       .map(operation => operationActivity(operation.state));
-    const activity = ["running", "cancelling", "waiting", "queued", "uncertain"].find(state => activities.includes(state)) || "idle";
+    const activity = task.local_activity || ["running", "cancelling", "waiting", "queued", "uncertain"].find(state => activities.includes(state)) || "idle";
     const label = { running: "正在运行", cancelling: "正在取消", waiting: "等待处理", queued: "排队中", uncertain: "状态待确认", idle: "空闲" }[activity];
     activityDot.dataset.state = activity;
     activityDot.setAttribute("role", "img");
@@ -1194,12 +1199,12 @@ export function reasoningSummary(text, running = false) {
 
 const reasoningControllers = new WeakMap();
 
-export function createReasoningDisclosure(text = "", { running = false } = {}) {
+export function createReasoningDisclosure(text = "", { running = false, compact = false } = {}) {
   const details = document.createElement("details");
-  details.className = "assistant-reasoning";
-  details.open = running;
+  details.className = compact ? "assistant-reasoning assistant-reasoning--compact" : "assistant-reasoning";
+  details.open = running && !compact;
   const summary = document.createElement("summary");
-  const orb = createThinkingOrb({ state: "solving", size: 36, paused: !running });
+  const orb = createThinkingOrb({ state: "solving", size: compact ? 24 : 36, paused: !running });
   orb.element.setAttribute("aria-hidden", "true");
   const title = document.createElement("span");
   title.className = "assistant-reasoning__title";
@@ -1216,11 +1221,11 @@ export function createReasoningDisclosure(text = "", { running = false } = {}) {
     const value = String(nextText ?? "");
     const wasRunning = details.dataset.running === "true";
     if (!userSelectedDisclosure) {
-      if (nextRunning) details.open = true;
+      if (nextRunning && !compact) details.open = true;
       else if (wasRunning) details.open = false;
     }
     details.dataset.running = String(nextRunning);
-    setMotionText(title, reasoningSummary(value, nextRunning));
+    setMotionText(title, compact ? (nextRunning ? "正在研究" : "查看过程") : reasoningSummary(value, nextRunning));
     const followTail = body.scrollHeight - body.clientHeight - body.scrollTop < 48;
     body.textContent = value;
     if (followTail) {
@@ -1229,6 +1234,7 @@ export function createReasoningDisclosure(text = "", { running = false } = {}) {
     }
     details.hidden = !value && !nextRunning;
     orb.setPaused(!nextRunning);
+    orb.element.hidden = compact && !nextRunning;
     // Explicit expand/collapse choices survive streamed deltas and completion.
   };
   update(text, running);
@@ -1431,14 +1437,90 @@ function createQuestionCard(block, options, active) {
   return card;
 }
 
+function createAssistantFormula(source, display = false) {
+  // A deliberately small offline MathML vocabulary. Unknown notation remains
+  // visible as its original text; model content never becomes HTML or script.
+  if (source.length > 4000) return null;
+  const namespace = "http://www.w3.org/1998/Math/MathML";
+  const node = (tag, ...children) => {
+    const element = document.createElementNS(namespace, tag);
+    for (const child of children) element.append(typeof child === "string" ? document.createTextNode(child) : child);
+    return element;
+  };
+  const symbols = { Delta:"Δ", Gamma:"Γ", Theta:"Θ", Pi:"Π", Sigma:"Σ", Omega:"Ω", delta:"δ", gamma:"γ", theta:"θ", rho:"ρ", sigma:"σ", mu:"μ", pi:"π", alpha:"α", beta:"β", lambda:"λ", tau:"τ", epsilon:"ε", le:"≤", leq:"≤", ge:"≥", geq:"≥", ne:"≠", neq:"≠", cdot:"⋅", times:"×", pm:"±", infty:"∞", in:"∈", notin:"∉", partial:"∂", approx:"≈", to:"→", sum:"∑", prod:"∏", int:"∫" };
+  const tokens = source.match(/\\[a-zA-Z]+|\\.|\d+(?:\.\d+)?|[^\s]/g) || [];
+  let index = 0, depth = 0;
+  const atom = () => {
+    if (++depth > 32) throw new Error("Formula nesting limit");
+    const token = tokens[index++];
+    let element;
+    if (token === "{") {
+      element = row("}");
+    } else if (token === "\\frac" || token === "\\dfrac" || token === "\\tfrac") {
+      element = node("mfrac", atom(), atom());
+    } else if (token === "\\sqrt") {
+      element = node("msqrt", atom());
+    } else if (["\\mathcal", "\\mathbb"].includes(token)) {
+      // Font commands consume one atom, while scripts keep their own structure.
+      element = node("mstyle", atom());
+      element.setAttribute("mathvariant", token === "\\mathbb" ? "double-struck" : "script");
+    } else if (["\\text", "\\mathrm", "\\operatorname", "\\mathbf"].includes(token)) {
+      const content = atom();
+      element = node("mtext", content.textContent);
+    } else if (token?.startsWith("\\")) {
+      const command = token.slice(1);
+      if (symbols[command]) element = node(/[a-zA-Z]/.test(command[0]) && /^(?:Delta|Gamma|Theta|Pi|Sigma|Omega|delta|gamma|theta|rho|sigma|mu|pi|alpha|beta|lambda|tau|epsilon)$/.test(command) ? "mi" : "mo", symbols[command]);
+      else if (["max", "min", "log", "ln", "exp", "sin", "cos", "Pr"].includes(command)) element = node("mi", command);
+      else if (["left", "right", "big", "Big", "bigg", "Bigg", "bigl", "bigr", "Bigl", "Bigr", "biggl", "biggr", "Biggl", "Biggr"].includes(command)) element = atom();
+      else if ([",", ";", "!", " ", "quad", "qquad"].includes(command)) element = node("mspace");
+      else if (["{", "}", "|", "%", "_"].includes(command)) element = node("mo", command);
+      else throw new Error("Unsupported formula command");
+    } else if (!token || token === "}") {
+      throw new Error("Unbalanced formula");
+    } else {
+      element = node(/^\d/.test(token) ? "mn" : /^[a-zA-Z\u0370-\u03ff]$/.test(token) ? "mi" : "mo", token);
+    }
+    depth -= 1;
+    return element;
+  };
+  const row = closing => {
+    const element = node("mrow");
+    while (index < tokens.length && tokens[index] !== closing) {
+      let base = atom(), sub = null, sup = null;
+      while (tokens[index] === "_" || tokens[index] === "^") {
+        const script = tokens[index++], value = atom();
+        if (script === "_") { if (sub) throw new Error("Duplicate subscript"); sub = value; }
+        else { if (sup) throw new Error("Duplicate superscript"); sup = value; }
+      }
+      if (sub && sup) base = node("msubsup", base, sub, sup);
+      else if (sub || sup) base = node(sub ? "msub" : "msup", base, sub || sup);
+      element.append(base);
+    }
+    if (closing && tokens[index++] !== closing) throw new Error("Unbalanced formula");
+    return element;
+  };
+  try {
+    const math = node("math", row(null));
+    math.setAttribute("display", display ? "block" : "inline");
+    math.setAttribute("aria-label", source);
+    return math;
+  } catch { return null; }
+}
+
 function appendAssistantText(container, text) {
   // Render a small, safe prose vocabulary. Model HTML never enters innerHTML.
   const inline = (parent, value) => {
-    const tokens = String(value).split(/(\*\*[^*\n]+\*\*|`[^`\n]+`)/g);
+    const tokens = String(value).split(/(\$\$[\s\S]+?\$\$|\$[^$\n]+\$|\\\([\s\S]+?\\\)|\\\[[\s\S]+?\\\]|\*\*[^*\n]+\*\*|`[^`\n]+`)/g);
     for (const token of tokens) {
+      const formula = /^(?:\$\$|\$|\\\(|\\\[)/.test(token);
+      const display = token.startsWith("$$") || token.startsWith("\\[");
+      const trim = token.startsWith("$") && !display ? 1 : 2;
+      const math = formula ? createAssistantFormula(token.slice(trim, -trim), display) : null;
+      if (math) { parent.append(math); continue; }
       const tag = token.startsWith("**") && token.endsWith("**") ? "strong" : token.startsWith("`") && token.endsWith("`") ? "code" : "span";
       const node = document.createElement(tag);
-      node.textContent = tag === "strong" ? token.slice(2, -2) : tag === "code" ? token.slice(1, -1) : token;
+      if (tag === "strong") inline(node, token.slice(2, -2));
+      else node.textContent = tag === "code" ? token.slice(1, -1) : token;
       parent.append(node);
     }
   };
