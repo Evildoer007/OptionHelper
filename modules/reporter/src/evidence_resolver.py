@@ -1041,6 +1041,38 @@ def resolve_evidence(request: ReportRequest, result_store: ResultStorePort) -> d
             "candidates": {},
             "quote_evidence": _resolve_quote_evidence(request, result_store),
         }
+    if "comparison_requests" in request.source_refs:
+        children = request.source_refs["comparison_requests"]
+        if not isinstance(children, list) or len(children) < 2:
+            raise ReporterError("跨来源对比缺少完整子请求")
+        candidates, candidate_evidence, source_recommenders, source_requests = {}, {}, {}, {}
+        merged_refs = {}
+        for raw_child in children:
+            child = ReportRequest.from_mapping(raw_child)
+            if (child.delivery_mode != "single" or child.output_type != request.output_type
+                or child.tenant_id != request.tenant_id or child.task_id != request.task_id
+                or child.selected_modules != request.selected_modules
+                or child.report_run_id != request.report_run_id):
+                raise ReporterError("跨来源子请求的租户、任务或交付范围不一致")
+            if len(child.candidate_ids) != 1:
+                raise ReporterError("跨来源子请求必须恰好包含一个原合同")
+            candidate_id = child.candidate_ids[0]
+            if candidate_id in candidates:
+                raise ReporterError("跨来源子请求候选重复")
+            resolved = resolve_evidence(child, result_store)
+            candidates[candidate_id] = resolved["candidates"][candidate_id]
+            candidate_evidence[candidate_id] = resolved["candidate_evidence"][candidate_id]
+            source_recommenders[candidate_id] = resolved["recommender"]
+            source_requests[candidate_id] = child
+            merged_refs.update(child.source_refs["module_run_refs"])
+        if tuple(candidates) != request.candidate_ids or merged_refs != request.source_refs["module_run_refs"]:
+            raise ReporterError("跨来源合同顺序或运行引用与冻结选择不一致")
+        first = next(iter(source_requests.values()))
+        if request.analysis_case_id != first.analysis_case_id or request.source_refs["evidence_refs"] != first.source_refs["evidence_refs"]:
+            raise ReporterError("交付锚点与首个原来源不一致")
+        return {"recommender": next(iter(source_recommenders.values())), "candidates": candidates,
+                "candidate_evidence": candidate_evidence, "source_recommenders": source_recommenders,
+                "source_requests": source_requests}
     candidates, recommender = _recommendation_set(request)
     raw_refs = as_mapping(request.source_refs.get("module_run_refs"), "source_refs.module_run_refs")
     candidate_evidence: dict[str, Any] = {}
