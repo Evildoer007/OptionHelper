@@ -372,7 +372,7 @@ class RuntimeToolBridge:
             with self._lock:
                 if self._research is not research or research.case.task_id != state.connection.task_id or research.case.tenant_id != state.identity.tenant_id:
                     raise ValidationError("检索结果不属于当前研究会话")
-                research.record_catalog_search(result)
+                research.record_catalog_search(result, role=state.connection.role_id)
         projected = ToolCallResult(
             request_id=normalized_request_id,
             tool_name=name,
