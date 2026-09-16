@@ -35,13 +35,13 @@ ROLE_RULES = {
     "Interpreter": "只提取用户已确认事实、缺失信息和产品资料检索查询；查询应使用结构类型、收益特征或风险方向，不查询行情、期权链或波动率数据；不得推荐产品。",
     "Selector": "只能从输入evidence选择产品；每个候选必须引用evidence_id。",
     "Framer": "只框定用户已确认事实、目标、约束和产品资料检索查询；查询应使用结构类型、收益特征或风险方向，不查询行情或波动率数据；不得推荐产品、不得编造金融指标；获授权时可调用研究工具，并准确引用其证据。",
-    "Matcher": "只能从输入evidence提出匹配目标与约束的产品候选；每个候选必须引用evidence_id；不得编造金融指标；获授权时可调用研究工具，并准确引用其证据。",
-    "Hedger": "只能从输入evidence独立审视候选的适配边界和风险，并以产品候选形式提出意见；每个候选必须引用evidence_id；不得编造金融指标；获授权时可调用研究工具，并准确引用其证据。",
+    "Matcher": "只能从输入evidence或本轮本角色实际检索的产品资料提出匹配目标与约束的产品候选；每个候选必须引用evidence_id；不得编造金融指标；获授权时可调用研究工具，并准确引用其证据。",
+    "Hedger": "只能依据输入evidence或本轮本角色实际检索的产品资料独立审视候选的适配边界和风险，并以产品候选形式提出意见；每个候选必须引用evidence_id；不得编造金融指标；获授权时可调用研究工具，并准确引用其证据。",
     "Moderator": "只能合并Framer、Matcher、Hedger和输入evidence已有内容，输出可审计候选及复核；不得新增无证据产品、不得编造金融指标；获授权时可调用研究工具，并准确引用其证据。",
-    "Structurer": "只能基于输入证据提出产品候选、受控条款调整和需要验证的模块；不得编造收益、估值、Greeks或回测数值；已登记候选可按权限调用研究工具。",
+    "Structurer": "只能基于输入证据或本轮本角色实际检索的产品资料提出产品候选、受控条款调整和需要验证的模块；不得编造收益、估值、Greeks或回测数值；已登记候选可按权限调用研究工具。",
     "Trader": "按当前候选计划调用获授权的业务工具，只依据工具返回的FactRef接受候选或要求受控条款调整；不得新增产品、改写模块结果或生成金融数值。",
     "Specifier": "只把用户原文中的硬约束和排序要求转换为受控RankingSpec；不得生成候选、计算指标或补写用户未表达的阈值。",
-    "Generator": "只能从输入evidence提出候选产品；每个候选必须引用evidence_id，不得编造金融指标或改变RankingSpec；可读取和引用获授权研究工具的结果。",
+    "Generator": "只能从输入evidence或本轮本角色实际检索的产品资料提出候选产品；每个候选必须引用evidence_id，不得编造金融指标或改变RankingSpec；可读取和引用获授权研究工具的结果。",
     "Reviewer": "Mode1只复核Selector已有候选；其他Mode只对当前候选或确定性排序作最终批准或整体拒绝；不得新增候选、重排、改写当前输入或模块事实。",
     "Evaluator": "自主取得当前候选所需的真实指标和证据，说明缺口；不得自创评分、填零或改变排序规则。",
     "Executor": "只能为已批准候选规划允许的Tool调用；不得生成计算数值。",
@@ -133,6 +133,7 @@ class AgentStepRunner:
     receipt_ledger: AgentReceiptLedger = field(init=False)
     result_validator: Callable[[str, Mapping[str, Any]], None] | None = None
     input_validator: Callable[[], None] | None = None
+    catalog_provider: Callable[[str, Mapping[str, Any]], Any] | None = None
 
     def __post_init__(self) -> None:
         self.receipt_ledger = AgentReceiptLedger(self.workflow_mode)
@@ -147,6 +148,31 @@ class AgentStepRunner:
             "required_output": _required_output(role, payload),
             "input": dict(payload),
         }
+        request["evidence_usage_rule"] = (
+            "evidence是产品资料，research_evidence是计算证据，两者不能混用。"
+            "候选引用产品资料的evidence_id；计算结论引用有效FactRef。"
+            "本轮本角色实际检索到的新产品资料可以使用，不必为了贴合初始检索列表更换候选。"
+            "只能使用已收到或实际读取的资料；独立评议未共享前不能引用另一角色的研究。"
+            "条款变化后只使用仍适用于当前条款的计算结果。"
+        )
+        request["client_report_writing_rule"] = (
+            "候选proposals中的reason、suitable_for、not_suitable_for、main_risks会进入正式对客报告，"
+            "必须使用专业投资研究语言；本规则也适用于Moderator合并后的候选及单智能体输出。"
+            "reason按市场观点与交易约束、结构适配逻辑、收益与亏损边界、关键风险组织，"
+            "只保留与该候选有关的实质结论，避免与适用场景重复。"
+            "不要写用户说、用户明确、您希望等对话转述，改为基于某市场判断或在某交易约束下。"
+            "不得写Agent或角色名称、两角色达成一致、投票、交接、证据补足、工具调用、"
+            "资料校验过程、内部证据编号或rank_adjustment；这些信息仅留在既有研究、复核和审计字段，"
+            "不删除真实风险、限制或反对意见，也不要在输出schema之外新增字段。"
+            "Moderator须把分歧转成投资权衡和适用边界，不得把讨论纪要复制到reason。"
+            "具体价格、Greeks、历史表现及成本判断必须有本次对应合同的有效计算事实，"
+            "缺少报价不得称权利金小额、便宜或成本低，缺少可比证据不得称唯一最优。"
+            "不得把买入看涨描述为获得标的上涨的全部收益，也不得把标的下跌笼统称为无限风险。"
+            "盈亏平衡公式须与计价单位、名义规模和参与率一致；未计入费用、流动性或执行约束时明确披露。"
+            "例如将用户看涨、Matcher与Hedger一致推荐改为：基于未来一个月显著上涨的判断，"
+            "买入看涨期权可保留不封顶的上行收益，最大损失为已付权利金；"
+            "涨幅不足以覆盖权利金时仍可能亏损。示例不构成本轮市场事实或推荐。"
+        )
         request["term_coordinate_rule"] = (
             "设置条款前读取当前产品的默认数值和单位。价格条款采用normalized_100时，"
             "参考价格为100，103表示参考价格的103%，不是1.03；票息等百分数条款中8表示8%，不是0.08。"
@@ -191,6 +217,10 @@ class AgentStepRunner:
             request["output_schema"]["properties"]["evaluation_plan"] = {"type": "array", "maxItems": 0}
         return port_role, request
 
+    def validate_output(self, role, request, result):
+        catalog = self.catalog_provider(role, request) if self.catalog_provider else None
+        _validate_request_result(role, request, result, catalog_evidence=catalog)
+
     def accept(
         self,
         role: str,
@@ -201,7 +231,7 @@ class AgentStepRunner:
         audit_detail: Mapping[str, Any] | None = None,
     ) -> Mapping[str, Any]:
         try:
-            _validate_request_result(role, request, step.result)
+            self.validate_output(role, request, step.result)
             result = self.receipt_ledger.validate(role, port_role, request, step)
             if self.result_validator is not None:
                 self.result_validator(role, result)
@@ -217,11 +247,17 @@ class AgentStepRunner:
         self, role: str, port_role: str, request: Mapping[str, Any], step: AgentStepResult,
     ) -> tuple[Mapping[str, Any], AgentStepResult]:
         # Receipt errors are not model-format errors and must never trigger repair.
-        self.receipt_ledger.validate_receipt(role, port_role, request, step)
+        try:
+            self.receipt_ledger.validate_receipt(role, port_role, request, step)
+        except Exception as error:
+            self.audit.append(role.lower(), "failed", agent_role=port_role,
+                              input_value=request, output_value=None,
+                              detail={"error_type": type(error).__name__, "message": str(error)})
+            raise
         if self.input_validator is not None:
             self.input_validator()
         try:
-            _validate_request_result(role, request, step.result)
+            self.validate_output(role, request, step.result)
         except ValueError as error:
             original = deepcopy(step.result)
             # Repair only the failing role's wire format. Receipt, authority
@@ -397,17 +433,19 @@ def _without_proposal_reference_ids(result):
     return projected
 
 
-def _validate_request_result(role: str, request: Mapping[str, Any], value: object) -> None:
+def _validate_request_result(role: str, request: Mapping[str, Any], value: object, *, catalog_evidence=None) -> None:
     _validate_role_result(role, value)
     domain_input = request.get("input", {})
-    evidence = domain_input.get("evidence")
-    if isinstance(evidence, (list, tuple)) and evidence and isinstance(value.get("proposals"), list):
+    evidence = catalog_evidence if catalog_evidence is not None else domain_input.get("evidence")
+    if isinstance(evidence, (list, tuple)) and (evidence or catalog_evidence is not None) and isinstance(value.get("proposals"), list):
         known = {item["evidence_id"] for item in evidence
                  if isinstance(item, Mapping) and isinstance(item.get("evidence_id"), str)}
         # Research-result evidence uses a different protocol and is validated
         # separately; it must not be treated as a knowledge-reference catalogue.
-        for row in (value["proposals"] if known else []):
-            unknown = [ref for ref in row.get("evidence_ref_ids", ()) if ref not in known]
+        for row in (value["proposals"] if known or catalog_evidence is not None else []):
+            unknown = [ref for ref in row.get("evidence_ref_ids", ()) if ref not in known or not any(
+                item.get("evidence_id") == ref and item.get("product_id") == row.get("product_id")
+                for item in evidence if isinstance(item, Mapping))]
             if unknown:
                 available = [item.get("evidence_id") for item in evidence
                              if isinstance(item, Mapping) and item.get("product_id") == row.get("product_id")]
