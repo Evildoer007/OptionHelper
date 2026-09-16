@@ -30,7 +30,7 @@ Designer只消费`optionhelper.designer-payload`，且顶层`schema`字段必须
 
 `template_id`只选择Designer治理的`assets/templates/*.template.json`。模板定义可选择、命名和排序已有内容块，不能携带HTML、CSS、数值、公式或外部路径；缺少可展示事实的块直接省略。这样可以新增模板，而不要求模型修改Python或手写HTML。
 
-正式对比输入在顶层提供`comparison.candidates`，每个候选包含公开标签、冻结排名、真实首选标记、产品名称、挂钩标的及完整单候选`facts`，候选不少于2个且不设固定上限。Designer按冻结排名展示，不把候选ID、Run ID、哈希或路径写入正文。多结构研究简报不消费候选图表；多结构完整研究报告仅合并横纵轴、单位与口径兼容的折线或柱状图，热力图按候选分别展示。两种多结构交付使用与单结构交付相同的`presentation_patch`和`supplemental_sections`规则。
+正式对比输入在顶层提供`comparison.candidates`，每个候选包含公开标签、冻结排名、真实首选标记、产品名称、挂钩标的及完整单候选`facts`，候选不少于2个且不设固定上限。Designer按冻结排名展示，不把候选ID、Run ID、哈希或路径写入正文。多结构研究简报不消费候选图表；多结构完整研究报告仅合并横纵轴、单位与口径兼容的折线或柱状图，3D曲面和热力图按候选分别展示。两种多结构交付使用与单结构交付相同的`presentation_patch`和`supplemental_sections`规则。
 
 `presentation_patch`是一次性交付展示指令，schema固定为`optionhelper.presentation-patch`。它支持章节排序、改名、隐藏、固定说明，以及加入Payload中已冻结的`supplemental_sections`。补充章节内容只支持文本、指标、表格、公式和图表；Card与Quote拒绝图表。原Payload、标准模板和Reporter事实始终不变，Patch本身不能携带或修改估值、回测、报价和合同数据。所有展示调整记录在内部回执中，HTML和PDF正文不展示该回执。Patch不接受HTML、脚本、CSS、颜色、字体、间距、圆角、阴影或外链字段。没有可展示事实的标准块继续省略，不渲染“未提供”。
 
@@ -74,7 +74,7 @@ Designer只消费`optionhelper.designer-payload`，且顶层`schema`字段必须
 
 `pricing`使用`method`、`valuation_date`、`metrics`、`greeks`、`assumptions`、`scenario_rows`和`charts`。已提供的`greeks`按`Delta`、`Gamma`、`Vega`、`Theta`、`Rho`排序；没有冻结值的Greek不补空行，事实明确为不适用时才显示“不适用”。`status=ready`时展示完整已验证事实；`status=partial`时显示部分完成状态，并仅展示已冻结且可验证的指标和Greeks，不补造其他项目。图表仍只在完整且口径有效时展示。
 
-`charts`支持`line`、`bar`和`heatmap`。热力图用于二维Spot×剩余期限的Greek曲面，字段为`x`、`y`、`data`、`x_axis_name`、`y_axis_name`、`z_axis_name`和`source_note`，其中每项`data`为`[x索引,y索引,已冻结数值]`。所有图表都有读屏摘要与完整展开的数据表；Tooltip、坐标轴和数据表使用同一展示格式，不允许输入颜色覆盖Designer主题。
+`charts`支持`line`、`bar`、`surface`和`heatmap`。二维Spot×剩余期限等Greek网格默认使用`surface`展示3D曲面，`heatmap`保留为手动可选形式；普通单变量风险曲线继续使用折线图。两种网格图的字段为`x`、`y`、`data`、`x_axis_name`、`y_axis_name`、`z_axis_name`和`source_note`，其中每项`data`为`[x索引,y索引,已冻结数值]`。所有图表都有读屏摘要与完整展开的数据表；Tooltip、坐标轴和数据表使用同一展示格式，不允许输入颜色覆盖Designer主题。
 
 `backtest`使用`window`、`entry_rule`、`metrics`、`card_metrics`、`event_statistics`、`detail_tables`、`limitations`和`charts`。`metrics`可包含样本数、历史正收益样本占比、平均合同结算收益率、最大历史损失及正零负样本数；`card_metrics`由Reporter按产品`metric_profile`显式投影产品专属统计。完整Report展示已交接的`event_statistics`；Card和多结构研究简报保持摘要定位，只提取核心指标和四项产品专属指标，不要求展示`event_statistics`。`detail_tables`可承载公共回测、路径事件、监控、路径结果、年度、标的表现及产品专属统计。标准图表顺序为收益率分布、路径结果分布、年度表现、事件触发率；没有冻结图表事实时直接省略该图，只有Reporter明确交接了公开原因时才展示该原因，不得伪造净值图或缺失说明。所有统计必须来自逐笔回测结果聚合，且收益率分母须在`parameters.backtest_input`中披露。
 
@@ -104,3 +104,12 @@ Report固定为连续A4正文。未提供`presentation_patch`时按标准七章�
 - 从同一份冻结交接事实或同一任务运行快照取数，不得在报告渲染时重估、重算Greeks或重跑回测。
 - 绝对价格条款、相对价格条款、日频近似、缺失数据处理和收益率分母必须按实际输入披露。
 - 收益图、估值、回测三者分别引用本次任务的资产和结果，不用默认样图或案例数据替代。
+
+
+### 业务字段与数学符号
+
+正文、风险提示、参数表统一经过Designer的公开文字渲染。已登记的业务字段使用中文名称，例如`margin_call`展示为“追加保证金”。普通下划线字段和多段标识符保留为完整文本，不能仅因含下划线而自动变成数学下标。`S_T`、`K_1`、`P_net`等明确的金融符号保留MathML排版；显式公式仍使用公式输入和数学定界符，不删除不支持的内容。
+
+### 3D交付
+
+HTML使用离线ECharts GL，可旋转查看；PDF与Word使用同一冻结网格的静态3D投影，保留数值表。缺失网格点不补零，也不插值生成新报价；单行或单列网格使用3D点表示。编辑器在3D曲面与热力图之间切换只改变展示类型。没有可用图形运行环境时明确显示图表失败，并保留数据表，不静默改写结果。
