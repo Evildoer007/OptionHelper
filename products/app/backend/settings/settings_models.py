@@ -7,12 +7,12 @@ from ..secrets.secret_ref import SecretRef
 
 
 RoleName = Literal["sales", "admin"]
+from runtime.research_policy import preset_definitions
 MULTI_AGENT_RECOMMENDATION_PRESET_ROLES = {
-    "sequential-deliberation": frozenset({"Interpreter", "Selector", "Reviewer"}),
-    "product-trader-loop": frozenset({"Structurer", "Trader", "Reviewer"}),
-    "independent-council": frozenset({"Framer", "Matcher", "Hedger", "Moderator"}),
-    "constraint-ranking": frozenset({"Specifier", "Generator", "Evaluator", "Reviewer"}),
+    preset: frozenset(definition['roles'])
+    for preset, definition in preset_definitions().items()
 }
+
 MULTI_AGENT_LEGACY_ROLE_ALIASES: dict[str, str] = {
     "Intent": "Interpreter",
     "Research": "Selector",
@@ -114,6 +114,7 @@ class SettingsSnapshot:
     default_model_selection: ModelSelection | None = None
     recommendation_execution_mode: str = "single"
     multi_agent_recommendation_preset_id: str = "product-trader-loop"
+    research_depth: str = "standard"
     multi_agent_preset_role_models: dict[str, dict[str, ModelSelection]] = field(default_factory=dict)
     multi_agent_preset_agent_instructions: dict[str, dict[str, str]] = field(default_factory=dict)
     multi_agent_review_policy_id: str = MULTI_AGENT_DEFAULT_REVIEW_POLICY_ID
@@ -170,6 +171,7 @@ def serialize_settings(snapshot: SettingsSnapshot) -> dict[str, Any]:
         ),
         "recommendation_execution_mode": snapshot.recommendation_execution_mode,
         "multi_agent_recommendation_preset_id": snapshot.multi_agent_recommendation_preset_id,
+        "research_depth": snapshot.research_depth,
         "multi_agent_preset_role_models": {
             preset_id: {
                 MULTI_AGENT_LEGACY_ROLE_ALIASES.get(role, role): {
@@ -401,6 +403,7 @@ def deserialize_settings(value: dict[str, Any]) -> SettingsSnapshot:
         default_model_selection=selection,
         recommendation_execution_mode=str(value.get("recommendation_execution_mode", "single")),
         multi_agent_recommendation_preset_id=preset_id,
+        research_depth=_validated_research_depth(value.get("research_depth", "standard")),
         multi_agent_preset_role_models=role_models,
         multi_agent_preset_agent_instructions=agent_instructions,
         multi_agent_review_policy_id=review_policy_id,
@@ -428,3 +431,9 @@ def _input_modalities(value: object) -> tuple[str, ...]:
     if not modalities or modalities[0] != "text" or any(item not in {"text", "image"} for item in modalities):
         raise ValueError("input_modalities must start with text and may include image")
     return modalities
+
+
+def _validated_research_depth(value):
+    from runtime.research_policy import depth_policy
+    depth_policy(value)
+    return value
