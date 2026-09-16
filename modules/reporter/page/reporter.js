@@ -1,6 +1,6 @@
 (() => {
   const $ = id => document.getElementById(id);
-  const state = { catalog: null, source: null, selected: new Set(), runRefs: {}, quoteItems: [], ready: false, loadingSources: false, quoteMode: false, previewReportRunId: null, pendingReport: null, sourceRequestRevision: 0, interactionRevision: 0, activeReportRequestId: null };
+  const state = { catalog: null, source: null, selected: new Set(), comparisonItems: new Map(), runRefs: {}, quoteItems: [], ready: false, loadingSources: false, quoteMode: false, previewReportRunId: null, pendingReport: null, sourceRequestRevision: 0, interactionRevision: 0, activeReportRequestId: null };
   let bootPromise = null;
   let initialized = false;
   const reportEditor = window.OptionHelperReportEditor?.createReportEditor({
@@ -53,7 +53,11 @@
       notifyReportSaved(data);
       return data;
     }
-    const error = new Error(data.message || fallbackMessage);
+    const message = typeof data.message === 'string' && data.message ? data.message : fallbackMessage;
+    const nextStep = typeof data.next_step === 'string' ? data.next_step.trim() : '';
+    const guidance = nextStep && !message.includes(nextStep) ? nextStep : '';
+    const separator = guidance && !/[。！？.!?]$/.test(message) ? '。' : '';
+    const error = new Error(message + separator + guidance);
     // A lost response may already have saved a report. Only a confirmed final
     // failure releases the claim; transport uncertainty retries the same one.
     error.operationFinished = ['failed', 'cancelled', 'interrupted'].includes(
@@ -157,11 +161,49 @@
     const time = runTime(candidate?.run_display?.[run?.run_id]?.run_time);
     return time === '时间未记录' ? time : time.slice(5);
   }
+  const comparisonKey = (source, candidate) => `${source.source_id}/${candidate.candidate_id}`;
+  function chooseComparison(candidate, checked) {
+    const source = state.source;
+    const key = comparisonKey(source, candidate);
+    if (!checked) { state.comparisonItems.delete(key); return; }
+    const first = state.comparisonItems.values().next().value;
+    if (first && first.task_id !== source.task_id) { notice('多产品报告只能选择同一任务的合同。', 'error'); return; }
+    const refs = {};
+    for (const module of ['payoff','pricing','backtest']) {
+      const options = candidate.module_run_options?.[module] || [];
+      refs[module] = state.runRefs[candidate.candidate_id]?.[module] || options[0] || null;
+    }
+    state.comparisonItems.set(key, {source_id:source.source_id, candidate_id:candidate.candidate_id,
+      task_id:source.task_id, name:candidate.product_name, module_run_refs:refs});
+  }
+  function reconcileComparison() {
+    let lost = false;
+    for (const [key, item] of state.comparisonItems) {
+      const source = state.catalog?.sources?.find(source => source.source_id === item.source_id);
+      const candidate = source?.candidates?.find(candidate => candidate.candidate_id === item.candidate_id);
+      const valid = candidate && source.task_id === item.task_id && Object.entries(item.module_run_refs).every(([module, old]) =>
+        old === null ? !(candidate.module_run_options?.[module]?.length) :
+          (candidate.module_run_options?.[module] || []).some(ref => runRefFields.every(field => ref[field] === old[field])));
+      if (!valid) { state.comparisonItems.delete(key); lost = true; }
+    }
+    return lost;
+  }
+  function renderComparisonSelection() {
+    if (selectedDelivery() !== 'comparison') return;
+    const tray = document.createElement('div');
+    tray.dataset.comparisonSelection = '';
+    tray.innerHTML = [...state.comparisonItems].map(([key,item]) => `<p>${esc(item.name)} <button type="button" data-remove-comparison="${esc(key)}">移除</button></p>`).join('');
+    tray.querySelectorAll('button').forEach(button => button.addEventListener('click', () => {
+      state.comparisonItems.delete(button.dataset.removeComparison); markReportInputChanged(); renderCandidates();
+    }));
+    $('sourceDetail').append(tray);
+  }
   function syncAvailableModules(source) {
     for (const input of document.querySelectorAll('#moduleGroup input[data-module]')) {
       const module = input.dataset.module;
       if (module === 'recommender') continue;
-      const available = (source.candidates || []).some(candidate => candidate.module_run_options?.[module]?.length || candidate.module_run_refs?.[module]);
+      const moduleCandidates = selectedDelivery() === 'comparison' ? (state.catalog?.sources || []).filter(item => item.task_id === source.task_id).flatMap(item => item.candidates || []) : source.candidates || [];
+      const available = moduleCandidates.some(candidate => candidate.module_run_options?.[module]?.length || candidate.module_run_refs?.[module]);
       if (!available) input.checked = false;
       else if (input.disabled) input.checked = true;
       input.disabled = !available;
@@ -179,7 +221,7 @@
     return `<details class="run-audit"><summary>来源与运行审计</summary><pre>${esc(JSON.stringify(audit, null, 2))}</pre></details>`;
   }
   function clearSourceState() {
-    state.catalog = null; state.source = null; state.selected.clear(); state.runRefs = {}; state.quoteItems = []; renderSources();
+    state.catalog = null; state.source = null; state.selected.clear(); state.comparisonItems.clear(); state.runRefs = {}; state.quoteItems = []; renderSources();
     state.previewReportRunId = null; $('previewPanel').hidden = true; $('reportPreview').removeAttribute('src'); $('downloadLink').removeAttribute('href'); $('editReportButton').hidden = true; $('childReports').innerHTML = '';
   }
   function updateControls() {
@@ -187,7 +229,7 @@
     const isQuote = outputType === 'quote';
     $('referenceQuotePanel').hidden = !isQuote;
     $('moduleGroup').hidden = isQuote;
-    const count = isQuote ? state.quoteItems.length : state.selected.size; const moduleCount = selectedModules().length;
+    const count = isQuote ? state.quoteItems.length : selectedDelivery() === 'comparison' ? state.comparisonItems.size : state.selected.size; const moduleCount = selectedModules().length;
     const comparison = selectedDelivery() === 'comparison';
     $('selectionCount').textContent = isQuote ? (count ? `已加入${count}条报价行` : '未加入报价行') : (count ? `已选择${count}项分析来源` : '请选择要纳入报告的产品');
     const unavailableReason = state.activeReportRequestId
@@ -242,7 +284,7 @@
     select.value = retained?.source_id || (missing ? '' : sources[0]?.source_id || '');
     select.disabled = !sources.length;
     state.source = activeSource(); state.runRefs = {};
-    let lostSelection = missing;
+    let lostSelection = reconcileComparison() || missing;
     const candidates = state.source?.candidates || [];
     for (const id of [...state.selected]) {
       if (!candidates.some(candidate => candidate.candidate_id === id)) { state.selected.delete(id); lostSelection = true; }
@@ -298,6 +340,11 @@
     state.source = activeSource(); const source = state.source; const list = $('candidateList'); const isQuote = selectedValue('outputType') === 'quote';
     if (!source) { list.innerHTML = ''; $('sourceDetail').textContent = '当前任务尚无可用于生成报告的分析结果。'; renderQuoteItems(); updateControls(); return; }
     $('sourceDetail').innerHTML = `<details><summary>来源详情</summary><p>${esc(sourceSummary(source))}</p></details>`;
+    renderComparisonSelection();
+    if (selectedDelivery() === 'comparison') for (const candidate of source.candidates || []) {
+      const saved = state.comparisonItems.get(comparisonKey(source, candidate));
+      if (saved) state.runRefs[candidate.candidate_id] = saved.module_run_refs;
+    }
     syncAvailableModules(source);
     if (isQuote) {
       const sources = state.catalog?.sources || [];
@@ -316,12 +363,12 @@
       renderQuoteItems(); updateControls(); restoreSelectionFocus(focusTarget); return;
     }
     list.innerHTML = (source.candidates || []).map(candidate => {
-      const checked = state.selected.has(candidate.candidate_id);
+      const checked = selectedDelivery() === 'comparison' ? state.comparisonItems.has(comparisonKey(source, candidate)) : state.selected.has(candidate.candidate_id);
       const runs = ['payoff','pricing','backtest'].map(module => {
         const options = Array.isArray(candidate.module_run_options?.[module]) ? candidate.module_run_options[module] : [];
         const run = candidate.module_run_refs?.[module] || options[0];
         const status = moduleStatus(run);
-        const selectedIndex = options.indexOf(state.runRefs[candidate.candidate_id]?.[module]);
+        const selectedIndex = options.findIndex(option => runRefFields.every(field => option[field] === state.runRefs[candidate.candidate_id]?.[module]?.[field]));
         const selected = selectedIndex >= 0 ? selectedIndex : 0;
         const labels = distinctLabels(options.map(item => compactRunLabel(item, candidate)));
         const selector = options.length > 1
@@ -331,12 +378,13 @@
       }).join('');
       return `<article class="candidate" data-candidate="${esc(candidate.candidate_id)}" data-selected="${checked}"><div class="candidate-head"><input type="checkbox" data-select-candidate="${esc(candidate.candidate_id)}" ${checked?'checked':''} aria-label="选择${esc(candidate.product_name)}"><div class="candidate-title">${esc(candidate.product_name)}<div class="candidate-subtitle">${esc(candidateIdentity(candidate))}</div></div></div><div class="run-grid">${runs}</div>${candidateAudit(candidate, source)}</article>`;
     }).join('');
-    list.querySelectorAll('.candidate').forEach(card => card.querySelector('input').addEventListener('change', event => { const id = card.dataset.candidate; event.target.checked ? state.selected.add(id) : state.selected.delete(id); markReportInputChanged(); renderCandidates({candidateId:id}); }));
+    list.querySelectorAll('.candidate').forEach(card => card.querySelector('input').addEventListener('change', event => { const id = card.dataset.candidate; if (selectedDelivery() === 'comparison') chooseComparison(source.candidates.find(item => item.candidate_id === id), event.target.checked); else event.target.checked ? state.selected.add(id) : state.selected.delete(id); markReportInputChanged(); renderCandidates({candidateId:id}); }));
     list.querySelectorAll('.run-choice').forEach(select => select.addEventListener('change', event => {
       const candidate = source.candidates.find(item => item.candidate_id === event.target.dataset.candidate);
       const options = candidate?.module_run_options?.[event.target.dataset.module];
       if (!Array.isArray(options)) return;
       state.runRefs[event.target.dataset.candidate] = { ...(state.runRefs[event.target.dataset.candidate] || {}), [event.target.dataset.module]: options[Number(event.target.value)] };
+      if (selectedDelivery() === 'comparison' && state.comparisonItems.has(comparisonKey(source, candidate))) chooseComparison(candidate, true);
       markReportInputChanged();
       updateControls();
     }));
@@ -375,7 +423,7 @@
     if (!source) { notice('当前没有可用的分析结果。请先完成收益结构、估值定价或历史回测。', 'error'); return; }
     const type = selectedValue('outputType'); const format = selectedValue('format');
     if (type === 'quote' && !state.quoteItems.length) { notice('请从已保存的参数运行中加入至少一条报价行。', 'error'); return; }
-    if (type !== 'quote' && !state.selected.size) { notice('请先选择至少一个分析结果。', 'error'); return; }
+    if (type !== 'quote' && !(selectedDelivery() === 'comparison' ? state.comparisonItems.size : state.selected.size)) { notice('请先选择至少一个分析结果。', 'error'); return; }
     const modules = selectedModules();
     if (type === 'quote') {
       const selection = { source_id: source.source_id, quote_items: state.quoteItems.map(item => ({source_id:item.source_id, candidate_id:item.candidate_id, module:item.module, module_run_ref:formalRunRef(item.module_run_ref)})), output_type: type, format, audience: 'professional', metadata: { title: '参考报价表' } };
@@ -400,11 +448,25 @@
       moduleRunRefs[candidateId] = refs;
     });
     const deliveryMode = selectedDelivery();
-    const chosen = (source.candidates || []).filter(candidate => state.selected.has(candidate.candidate_id));
+    const chosen = deliveryMode === 'comparison'
+      ? [...state.comparisonItems.values()].map(item => state.catalog.sources.find(source => source.source_id === item.source_id)?.candidates.find(candidate => candidate.candidate_id === item.candidate_id)).filter(Boolean)
+      : (source.candidates || []).filter(candidate => state.selected.has(candidate.candidate_id));
     const suffix = deliveryMode === 'comparison' ? (type === 'card' ? '多产品简报' : '多产品研究报告') : (type === 'card' ? '简报' : '研究报告');
     const subject = [...new Set(chosen.map(candidate => `${(candidate.underlyings || []).join('、')}${candidate.product_name || ''}`))].join('、');
     const deliveryTitle = subject.slice(0, 120 - suffix.length) + suffix;
-    const selection = { source_id: source.source_id, candidate_ids: [...state.selected], selected_modules: modules, module_run_refs: moduleRunRefs, delivery_mode: deliveryMode, output_type: type, format, audience: 'professional', metadata: { title: deliveryTitle } };
+    let selection = { source_id: source.source_id, candidate_ids: [...state.selected], selected_modules: modules, module_run_refs: moduleRunRefs, delivery_mode: deliveryMode, output_type: type, format, audience: 'professional', metadata: { title: deliveryTitle } };
+    if (deliveryMode === 'comparison') {
+      if (state.comparisonItems.size < 2) { notice('多产品模板需要至少两个合同。', 'error'); return; }
+      const comparisonItems = [...state.comparisonItems.values()].map(item => ({source_id:item.source_id,
+        candidate_id:item.candidate_id, module_run_refs:Object.fromEntries(modules.filter(module => module !== 'recommender')
+          .map(module => [module, item.module_run_refs[module] ? formalRunRef(item.module_run_refs[module]) : null]))}));
+      const common = {source_id:comparisonItems[0].source_id, selected_modules:modules,
+        delivery_mode:deliveryMode, output_type:type, format, audience:'professional', metadata:{title:deliveryTitle}};
+      selection = new Set(comparisonItems.map(item => item.source_id)).size === 1
+        ? {...common, candidate_ids:comparisonItems.map(item => item.candidate_id),
+           module_run_refs:Object.fromEntries(comparisonItems.map(item => [item.candidate_id,item.module_run_refs]))}
+        : {...common, comparison_items:comparisonItems};
+    }
     const attempt = attemptFor(selection);
     const interactionRevision = state.interactionRevision;
     state.activeReportRequestId = attempt.requestId;
