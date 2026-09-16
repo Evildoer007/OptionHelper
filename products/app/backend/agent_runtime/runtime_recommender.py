@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+from dataclasses import replace
+from runtime.research_policy import depth_policy, preset_definitions, role_tools, workflow_limits
 import inspect
 import json
 from pathlib import Path
@@ -45,6 +47,36 @@ from .runtime_subprocess import RuntimeSubprocessTransport, RuntimeSubprocessTim
 TransportFactory = Callable[..., RuntimeSubprocessTransport]
 
 
+def role_input_handoffs(role, payload, preset_id, completed_roles):
+    """Describe only predecessor results actually present in the role input."""
+    value = payload.get("input", {})
+    if not isinstance(value, Mapping):
+        return []
+    sources = []
+    if role == "Structurer" and value.get("phase") == "rework":
+        if value.get("reviewer_feedback"): sources.append(("Reviewer", "return", "终审意见交回修订"))
+        elif value.get("trader_feedback"): sources.append(("Trader", "return", "交易评估意见交回修订"))
+    elif role == "Trader" and (value.get("round") or value.get("candidates")):
+        sources.append(("Structurer", "handoff", "交付候选方案"))
+    elif role in {"Matcher", "Hedger"}:
+        if value.get("discussion"): sources.append(("Moderator", "return", "交付定向复核问题"))
+        elif value.get("phase") == "proposal" and value.get("framing"):
+            sources.append(("Framer", "handoff", "交付研究约束"))
+    elif role == "Moderator":
+        for key, source in (("matcher", "Matcher"), ("hedger", "Hedger")):
+            if isinstance(value.get(key), Mapping): sources.append((source, "handoff", "提交研究意见与证据"))
+    elif role == "Generator" and value.get("ranking_spec"):
+        sources.append(("Reviewer", "return", "补充候选") if value.get("reviewer_feedback") else ("Specifier", "handoff", "交付筛选与排序规则"))
+    elif role == "Evaluator" and value.get("candidate"):
+        sources.append(("Reviewer", "return", "交付补评意见") if value.get("reviewer_feedback") else ("Generator", "handoff", "交付待评估候选"))
+    elif role == "Reviewer" and "candidates" in value:
+        if preset_id == "product-trader-loop": sources.append(("Trader", "handoff", "提交候选与评估证据"))
+        elif preset_id == "constraint-ranking" and "ranking_decisions" in value:
+            sources.append(("Evaluator", "handoff", "提交证据与代码排序结果"))
+    return [{"from_role":source,"to_role":role,"kind":kind,"label":label}
+            for source,kind,label in sources if source in completed_roles]
+
+
 class _OptionHelperRuntimeCapability(ModelCapability):
     """Capability view whose parallel count remains the selected preset value."""
 
@@ -71,6 +103,7 @@ class RuntimeBackedAgentPort(AgentPort):
         task_id: str,
         *,
         preset_id: str = "sequential-deliberation",
+        research_depth: str = "standard",
         selection: ModelSelection | None = None,
         role_model_defaults: Mapping[str, ModelSelection] | None = None,
         role_instructions: Mapping[str, str] | None = None,
@@ -90,6 +123,12 @@ class RuntimeBackedAgentPort(AgentPort):
         self._identity = identity
         self._task_id = str(task_id).strip()
         self._preset: MultiAgentRecommendationPreset = resolve_recommendation_preset(preset_id)
+        self._research_depth = research_depth
+        self._depth_policy = depth_policy(research_depth)
+        if preset_id != "sequential-deliberation":
+            # Covers role turns and targeted reviews, independently of compute count.
+            role_budget = self._depth_policy["role_turns"]
+            self._preset = replace(self._preset, max_agent_runs=role_budget, workflow_total_budget=role_budget)
         self._selection = selection
         self._role_model_defaults = {
             canonical_role_name(role): model
@@ -105,10 +144,15 @@ class RuntimeBackedAgentPort(AgentPort):
         self._transport_factory = transport_factory
         self._host_multi_agent = bool(host_multi_agent)
         self._tool_bridge = tool_bridge
-        self._allowed_tools_by_role = {
-            canonical_role_name(role): tuple(str(item) for item in tools)
-            for role, tools in (allowed_tools_by_role or {}).items()
-        }
+        shared_tools = role_tools(self._preset.preset_id)
+        selected_tools = shared_tools if allowed_tools_by_role is None else allowed_tools_by_role
+        self._allowed_tools_by_role = {}
+        for role, tools in selected_tools.items():
+            canonical = canonical_role_name(role)
+            permitted = shared_tools.get(canonical)
+            if permitted is None or set(tools).difference(permitted):
+                raise ValidationError("角色工具权限不能超出共享预设")
+            self._allowed_tools_by_role[canonical] = tuple(tools)
         if self._preset.preset_id == "sequential-deliberation" and any(
             self._allowed_tools_by_role.values()
         ):
@@ -168,6 +212,11 @@ class RuntimeBackedAgentPort(AgentPort):
         )
         self._controller.bind(self._workflow_spec)
 
+    def bind_research_session(self, research):
+        if self._tool_bridge is not None:
+            self._tool_bridge.bind_research_session(research)
+        self._research = research
+
     @property
     def closed(self) -> bool:
         return self._closed
@@ -220,6 +269,7 @@ class RuntimeBackedAgentPort(AgentPort):
             for role in self._preset.canonical_roles
         )
         max_parallel = min(self._preset.max_parallel_agent_runs, len(roles))
+        limits = workflow_limits(self._preset.preset_id, self._research_depth)
         return WorkflowSpec(
             workflow_id=self._workflow_id,
             task_id=self._task_id,
@@ -231,11 +281,12 @@ class RuntimeBackedAgentPort(AgentPort):
                 "strategy": self._preset.execution_strategy,
                 "parent": "RecommenderService",
                 "child_sessions": "independent",
+                "stages": preset_definitions()[self._preset.preset_id]["stages"],
             },
             max_parallel_agents=max_parallel,
-            max_iterations=2 if self._preset.preset_id in {"product-trader-loop", "constraint-ranking"} else 1,
-            max_rounds=2 if self._preset.preset_id in {"product-trader-loop", "constraint-ranking"} else 1,
-            max_rework_rounds=2 if self._preset.preset_id in {"product-trader-loop", "constraint-ranking"} else 0,
+            max_iterations=limits["rounds"],
+            max_rounds=limits["rounds"],
+            max_rework_rounds=limits["reworks"],
             workflow_total_budget=self._preset.effective_workflow_total_budget,
             deadline_seconds=self._preset.max_seconds_per_agent_run * self._preset.effective_workflow_total_budget,
             output_contract={"financial_facts": "FactRef-only", "parent_authority": True},
@@ -330,6 +381,26 @@ class RuntimeBackedAgentPort(AgentPort):
             },
         }
 
+    def _publish_input_handoffs(self, role, payload):
+        sink = self._event_sink
+        if sink is None:
+            return
+        with self._lock:
+            predecessors = set(self._role_runs)
+        for handoff in role_input_handoffs(role, payload, self._preset.preset_id, predecessors):
+            identifier = f"handoff-{uuid4().hex}"
+            try:
+                sink(RuntimeEvent(
+                    event_id=identifier, seq=0, task_id=self._task_id,
+                    workflow_id=self._workflow_id, session_id=self._root_session_id,
+                    agent_run_id=None, turn=None, step=None, type="workflow.handoff",
+                    timestamp=datetime.now(timezone.utc).isoformat(),
+                    payload={**handoff,"handoff_id":identifier,"status":"running","via":"OH","runtime_scope":"recommender"},
+                ))
+            except Exception:
+                # Progress decoration must never alter a research decision.
+                continue
+
     def run_step(self, role: str, payload: Mapping[str, Any]) -> AgentStepResult:
         wire_role = str(role).removeprefix("SingleAgent.")
         normalized_role = canonical_role_name(wire_role)
@@ -341,6 +412,7 @@ class RuntimeBackedAgentPort(AgentPort):
             self._ensure_available()
             self._call_count += 1
             existing = self._role_runs.get(normalized_role)
+        self._publish_input_handoffs(normalized_role, payload)
         prompt = self._prompt(wire_role, payload)
         try:
             if existing is not None and self._continuable(normalized_role):
@@ -479,12 +551,7 @@ class RuntimeBackedAgentPort(AgentPort):
             self._event_sink(event)
 
     def _continuable(self, role: str) -> bool:
-        canonical = canonical_role_name(role)
-        return (
-            self._preset.preset_id == "product-trader-loop" and canonical in {"Structurer", "Trader"}
-        ) or (
-            self._preset.preset_id == "independent-council" and canonical in {"Matcher", "Hedger"}
-        )
+        return canonical_role_name(role) in preset_definitions()[self._preset.preset_id]['continuable_roles']
 
     def _ensure_available(self) -> None:
         if self._closed:
@@ -502,7 +569,198 @@ class RuntimeBackedAgentPort(AgentPort):
             allow_nan=False,
         )
 
+    def _research_checkpoint(self, request):
+        """Rebuild only public, role-authorized state at a completed tool boundary."""
+        from copy import deepcopy
+        self._ensure_available()
+        envelope = json.loads(str(request.get("prompt", "")))
+        role = canonical_role_name(envelope.get("role", ""))
+        if role not in self._preset.canonical_roles or envelope.get("protocol") != "optionhelper.recommender.step":
+            raise ValidationError("研究检查点角色或协议无效")
+        research = getattr(self, '_research', None) or getattr(self._tool_bridge, '_research', None)
+        if research is None or research.case.task_id != self._task_id or research.case.tenant_id != self._identity.tenant_id:
+            raise ValidationError("研究检查点不属于当前活动任务")
+        state = research.continuation_snapshot(role)
+        prior = envelope.get('input', {}).get('research_checkpoint', {})
+        pages = list(prior.get('read_pages', [])) if isinstance(prior, Mapping) else []
+        notes = list(prior.get('public_notes', [])) if isinstance(prior, Mapping) else []
+        queries = list(prior.get('public_questions', [])) if isinstance(prior, Mapping) else []
+        valid_refs = [(row.get('candidate_id'), ref) for row in state['evidence']
+                      for ref in row.get('module_run_refs', [])]
+        authorized_ids = {row['candidate_id'] for row in state['candidates']}
+        calls = {}
+        messages = request.get('publicMessages', [])
+        start = max((i for i, row in enumerate(messages) if row.get('role') == 'user'), default=0)
+        for message in messages[start + 1:]:
+            for block in message.get('content', []):
+                kind = str(block.get('type', '')).replace('_', '-')
+                if kind == 'reasoning':
+                    raise ValidationError('研究检查点不得接收私有推理')
+                if kind == 'tool-call':
+                    arguments = json.loads(block.get('arguments', '{}'))
+                    if arguments.get('candidate_id') and arguments['candidate_id'] not in authorized_ids:
+                        raise ValidationError('研究检查点含未授权候选')
+                    calls[block['id']] = (block.get('name'), arguments)
+                    if block.get('name') == 'evaluate_research_candidate':
+                        queries.append(json.loads(block.get('arguments', '{}')).get('question', ''))
+                elif kind == 'text' and message.get('role') == 'assistant' and block.get('text'):
+                    notes.append({'source': 'public_assistant_statement', 'text': block['text']})
+                elif kind == 'text' and message.get('role') == 'tool':
+                    call_id = message.get('tool_call_id', message.get('toolCallId'))
+                    if call_id not in calls:
+                        raise ValidationError('研究检查点工具交换不完整')
+                    tool, arguments = calls.pop(call_id)
+                    wrapper = json.loads(block.get('text', '{}'))
+                    page = wrapper.get('result', {}).get('result', {})
+                    if tool == 'read_research_evidence' and page.get('source') == 'verified_frozen_result':
+                        ref = page.get('module_run_ref')
+                        locator = {'candidate_id': arguments.get('candidate_id'), 'module': arguments.get('module'),
+                                   'result_path': page.get('result_path', []), 'offset': page.get('offset', 0),
+                                   'limit': arguments.get('limit', 64), 'expected_run_ref': ref}
+                        pages.append({'arguments': locator, 'status': page.get('status'),
+                                      'page_metadata': {key: value for key, value in page.items() if key not in {'value','module_run_ref','deferred_fields','value_indices','request_id'}}})
+                        def warnings(value):
+                            if isinstance(value, list):
+                                for row in value: warnings(row)
+                            elif isinstance(value, dict):
+                                for key, row in value.items():
+                                    if key in {'warnings','warning','limitations','error','missing_information','messages'} and row:
+                                        notes.append({'source': 'read_page', 'arguments': locator, key: deepcopy(row)})
+                                    else: warnings(row)
+                        warnings(page)
+                    elif tool == 'read_research_evidence' and page.get('source') == 'frozen_stage_input':
+                        notes.append({'source': 'read_stage_input', 'stage_ref': page.get('stage_ref'),
+                                      'result_path': page.get('result_path', []), 'status': page.get('status')})
+                    elif tool != 'evaluate_research_candidate' or wrapper.get('status') != 'completed':
+                        notes.append({'source': 'tool_result', 'tool': tool, 'arguments': arguments, 'result': wrapper})
+        if calls:
+            raise ValidationError('研究检查点仍有未完成工具调用')
+        def unique(values):
+            return list({json.dumps(value, sort_keys=True, ensure_ascii=False): value for value in values}.values())
+        retained = []
+        for page in unique([{**page, 'page_metadata': {key: value for key, value in page.get('page_metadata', {}).items() if key != 'request_id'}} for page in pages]):
+            args = page['arguments']
+            if (args['candidate_id'], args['expected_run_ref']) in valid_refs:
+                retained.append(page)
+            else:
+                notes.append({'source': 'stale_read_reference', 'candidate_id': args['candidate_id'],
+                              'message': '候选或来源已改变，此旧页引用不能用于当前结论'})
+        # Keep the latest completed tool exchange visible for the next model request.
+        # Older exchange bodies remain in the original session and frozen ResultStore.
+        latest_start = max((i for i, message in enumerate(messages[start + 1:], start + 1)
+                            if message.get('role') == 'assistant' and any(
+                                str(block.get('type', '')).replace('_', '-') == 'tool-call'
+                                for block in message.get('content', []))), default=len(messages))
+        latest_exchange = deepcopy(messages[latest_start:])
+        # Store structured JSON once rather than recursively escaping tool JSON strings.
+        for message in latest_exchange:
+            if message.get('role') == 'tool':
+                for block in message.get('content', []):
+                    if block.get('type') == 'text':
+                        try:
+                            block['json_value'] = json.loads(block['text'])
+                        except (TypeError, ValueError):
+                            continue
+                        block['type'] = 'json'
+                        del block['text']
+        envelope = deepcopy(envelope)
+        phase_input = envelope['input'].get('input')
+        if isinstance(phase_input, dict) and 'stage_history' not in phase_input and any(
+                key in phase_input for key in ('own_proposals', 'registered_candidates')):
+            reference = research.freeze_stage_input(role, phase_input)
+            # Current contracts/evidence are in Host state. Preserve proposal reasoning,
+            # suitability, and unresolved information explicitly because state lacks them.
+            source_candidates = phase_input.get('registered_candidates', [])
+            current = {row['candidate_id']: row for row in state['candidates']}
+            contexts = []
+            for row in source_candidates:
+                if not isinstance(row, Mapping):
+                    continue
+                active = current.get(row.get('candidate_id'))
+                if active is None or row.get('current_inputs') != active.get('current_inputs'):
+                    continue
+                contexts.append({key: deepcopy(value) for key, value in row.items() if key in {
+                    'candidate_id', 'product_id', 'product_name', 'reason', 'main_risks',
+                    'missing_inputs', 'suitable_for', 'not_suitable_for', 'library_status', 'key_terms'}})
+            for key in ('own_proposals', 'registered_candidates', 'catalog_references', 'research'):
+                phase_input.pop(key, None)
+            phase_input['candidate_context'] = contexts
+            phase_input['stage_history'] = {'stage_ref': reference,
+                'tool': 'read_research_evidence',
+                'read_paths': [['own_proposals'], ['registered_candidates'], ['catalog_references'], ['research']],
+                'reading_rule': '按所需字段传stage_ref及result_path定向读取，不必重新读入全部历史阶段。',
+                'contents': '本角色本阶段完整原始输入，含原提案、登记记录、目录定位。当前合同和有效事实以research_checkpoint.state为准。'}
+        if (role == 'Moderator' and isinstance(phase_input, dict) and 'stage_history' not in phase_input
+                and isinstance(phase_input.get('matcher'), Mapping) and isinstance(phase_input.get('hedger'), Mapping)):
+            reference = research.freeze_stage_input(role, phase_input)
+            # Keep both roles' complete conclusions, including disagreements and limitations.
+            # Only remove evidence already present byte-for-value in current Host state.
+            phase_input['research_evidence'] = [row for row in phase_input.get('research_evidence', [])
+                                                if row not in state['evidence']]
+            evidence = phase_input.get('evidence', [])
+            archive_index = [{'product_id': row.get('product_id'), 'source': row.get('source'),
+                              'evidence_id': row.get('evidence_id'), 'result_path': ['evidence', index]}
+                             for index, row in enumerate(evidence)
+                             if isinstance(row, Mapping) and row.get('product_id')]
+            # Product catalogue text is frozen reference material, not current contract state.
+            # Keep non-product material inline; every product entry remains exactly retrievable.
+            phase_input['evidence'] = [row for row in evidence if not isinstance(row, Mapping)
+                                      or not row.get('product_id')]
+            phase_input['stage_history'] = {'stage_ref': reference, 'tool': 'read_research_evidence',
+                'catalog_index': archive_index,
+                'reading_rule': '共同约束、两角色完整结论和Host当前完整合同在正文；目录各来源原文用stage_ref与对应result_path按需读取，不必全部重复读取。',
+                'contents': '本Moderator阶段完整冻结输入。已计算事实以research_checkpoint.state.evidence为准；历史原文不代替当前条款。'}
+        # Initial independent-role inputs also contain full catalogue bodies.
+        # Freeze them once, keeping constraints and role conclusions inline.
+        if isinstance(phase_input, dict) and isinstance(phase_input.get('evidence'), list):
+            evidence = phase_input['evidence']
+            product_rows = [(index, row) for index, row in enumerate(evidence)
+                            if isinstance(row, Mapping) and row.get('product_id')]
+            if product_rows:
+                reference = research.freeze_stage_input(role, {'evidence': evidence}, candidate_bound=False)
+                phase_input['evidence'] = [row for row in evidence
+                                          if not isinstance(row, Mapping) or not row.get('product_id')]
+                phase_input['catalog_history'] = {
+                    'stage_ref': reference, 'tool': 'read_research_evidence',
+                    'catalog_index': [{**{key: deepcopy(value) for key, value in row.items()
+                        if key in {'evidence_id', 'product_id', 'source', 'section', 'library_status', 'entry_status'}},
+                        'result_path': ['evidence', index]} for index, row in product_rows],
+                    'reading_rule': '目录原文完整保留，按stage_ref和result_path读取所需条目。不能根据索引猜测条款。',
+                }
+        # Catalogue searches are reference material. Keep their exact source in
+        # the existing role-scoped store, not again inside every checkpoint.
+        # The latest exchange above still carries the just-read complete text.
+        indexed_notes = []
+        for note in notes:
+            wrapper = note.get('result', {}) if isinstance(note, Mapping) else {}
+            result = wrapper.get('result', {}).get('result', {}) if isinstance(wrapper, Mapping) else {}
+            if (note.get('source') == 'tool_result' and note.get('tool') == 'search_option_structures'
+                    and wrapper.get('status') == 'completed' and result.get('ok') is True):
+                reference = research.freeze_stage_input(role, wrapper, candidate_bound=False)
+                indexed_notes.append({
+                    'source': 'catalog_search', 'arguments': note.get('arguments', {}),
+                    'status': 'completed', 'coverage': deepcopy(result.get('coverage', {})),
+                    'stage_ref': reference, 'tool': 'read_research_evidence',
+                    'catalog_index': [{**{key: deepcopy(value) for key, value in row.items()
+                        if key in {'evidence_id', 'product_id', 'source', 'section', 'library_status', 'entry_status'}},
+                        'result_path': ['result', 'result', 'evidence', index]}
+                        for index, row in enumerate(result.get('evidence', [])) if isinstance(row, Mapping)],
+                    'reading_rule': '目录原文完整保存。按stage_ref和目录条目的result_path读取；不必重复查询。',
+                })
+            else:
+                indexed_notes.append(note)
+        notes = indexed_notes
+        envelope['input']['latest_complete_tool_exchange'] = latest_exchange
+        envelope['input']['research_checkpoint'] = {
+            'source': 'host_verified_research_state', 'state': state,
+            'read_pages': retained, 'public_notes': unique(notes), 'public_questions': unique(queries),
+            'continuation_rule': '继续同一研究角色与轮次；约束及当前候选以Host状态为准。latest_complete_tool_exchange保留刚完成工具调用及完整结果，应先使用其中正文；无需仅为找回刚读正文重复读取。已读页按精确RunRef取回；公开问题不等于已解决。不得重新计算已有有效结果，不能把缺失或失败当作完成。',
+        }
+        return {'text': json.dumps(envelope, ensure_ascii=False, separators=(',', ':'), allow_nan=False)}
+
     def _handle_model_request(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
+        if request.get("operation") == "research_checkpoint":
+            return self._research_checkpoint(request)
         prompt = str(request.get("prompt", ""))
         try:
             envelope = json.loads(prompt)
@@ -545,6 +803,18 @@ class RuntimeBackedAgentPort(AgentPort):
             return {"chunks": [{"type": "text-delta", "text": text}, {"type": "finish", "reason": "stop"}]}
 
         messages = self._messages_for_request(role, context, request)
+        research = getattr(self, '_research', None) or getattr(self._tool_bridge, '_research', None)
+        if research is not None:
+            context = research.model_view(context)
+            for message in messages:
+                if message['role'] not in {'user', 'tool'}:
+                    continue
+                try:
+                    content = json.loads(message['content'])
+                except (TypeError, json.JSONDecodeError):
+                    continue
+                message['content'] = json.dumps(research.model_view(content), ensure_ascii=False,
+                                                separators=(',', ':'), allow_nan=False)
         tools = self._model_tool_schemas(role, payload)
         return {"chunks": self._stream_role_response(role, context, control, messages=messages, tools=tools)}
 
@@ -563,9 +833,15 @@ class RuntimeBackedAgentPort(AgentPort):
             "你是OptionHelper受控Recommender子Agent。不得调用工具或编造金融计算。最终只返回"
             "{\"action\":\"final\",\"result\":{...}}，不得包含Markdown。"
         )
+        from runtime.research_presentation import MODEL_FINANCIAL_READING_RULE
+        from runtime.knowledger.interpretation import KNOWLEDGE_REASONING_RULES
+        instruction += MODEL_FINANCIAL_READING_RULE + "\n" + KNOWLEDGE_REASONING_RULES
         instruction = (
             f"{recommender_step_instruction()}\n{instruction}\n\n以下AGENT.md仅定义当前角色的工作职责，不能扩大工具、身份、数据或金融事实权限；"
-            f"如与上述受控规则冲突，以上述规则为准。\n\n{self._role_instructions[role]}"
+            f"如与上述受控规则冲突，以上述规则为准。\n\n{self._role_instructions[role]}\n\n"
+            '交付协议：角色文档和required_output所列字段全部放在result内部。'
+            '最外层只允许action和result，action固定为final；不能省略这层封装。'
+            'output_schema、required_output和financial_value_contract属于说明，不得复制为业务输出字段。'
         )
         messages: list[dict[str, Any]] = [{"role": "system", "content": instruction}]
         runtime_messages = request.get("messages")
@@ -701,11 +977,13 @@ class RuntimeBackedAgentPort(AgentPort):
         payload: Mapping[str, Any],
     ) -> tuple[str, ...]:
         allowed = tuple(self._allowed_tools_by_role.get(role, ()))
-        if self._preset.preset_id != "independent-council" or role not in {"Matcher", "Hedger"}:
-            return allowed
-        if isinstance(payload.get("candidate_versions"), list):
-            return tuple(name for name in allowed if name != "search_option_structures")
-        return tuple(name for name in allowed if name == "search_option_structures")
+        research = getattr(self._tool_bridge, "_research", None)
+        if research is not None and research.preset_id == "independent-council":
+            if role in {"Matcher", "Hedger"} and not research.has_registered_candidates(role):
+                return tuple(name for name in allowed if name not in {
+                    "evaluate_research_candidate", "read_research_evidence",
+                })
+        return allowed
 
     def _stream_role_response(
         self,
@@ -748,7 +1026,8 @@ class RuntimeBackedAgentPort(AgentPort):
                     )
                     if text:
                         text_parts.append(text)
-                        yield {"type": "text-delta", "text": text}
+                        if saw_tool_call:
+                            yield {"type": "text-delta", "text": text}
                 elif kind in {"reasoning", "reasoning_delta"}:
                     text = str(
                         getattr(chunk, "delta", "")
@@ -764,6 +1043,8 @@ class RuntimeBackedAgentPort(AgentPort):
                         ),
                     }
                 elif kind in {"tool_call", "tool_call_delta"}:
+                    if not saw_tool_call and text_parts:
+                        yield {"type": "text-delta", "text": "".join(text_parts)}
                     saw_tool_call = True
                     metadata = getattr(chunk, "metadata", {}) if not isinstance(chunk, Mapping) else chunk
                     if not isinstance(metadata, Mapping):
@@ -796,11 +1077,18 @@ class RuntimeBackedAgentPort(AgentPort):
                     "usage": dict(usage or {}),
                 }
                 return
+            final_text = self._close_complete_json_containers("".join(text_parts), finish_reason)
             try:
-                value = json.loads("".join(text_parts))
-            except (json.JSONDecodeError, TypeError) as error:
-                raise ValidationError("Agent角色未返回严格JSON") from error
+                value = json.loads(final_text)
+            except json.JSONDecodeError as error:
+                final_text, repair_usage = yield from self._repair_role_json(
+                    role, context, control, messages, final_text, error,
+                )
+                usage = {key: (usage or {}).get(key, 0) + repair_usage.get(key, 0)
+                         for key in set(usage or {}) | set(repair_usage)}
+                value = json.loads(final_text)
             self._validate_response(value)
+            yield {"type": "text-delta", "text": final_text}
             yield {
                 "type": "finish",
                 "reason": str(finish_reason or "stop"),
@@ -809,6 +1097,124 @@ class RuntimeBackedAgentPort(AgentPort):
         finally:
             stopped.set()
             watcher.join(timeout=1)
+
+    def _repair_role_json(
+        self, role, context, control, messages, invalid_text, error,
+    ):
+        """Allow one quote-escaping retry by the same role, with no business tools."""
+        repair_messages = [*messages, {
+            "role": "user",
+            "content": (
+                "上一条角色最终输出不是合法JSON。只允许在未转义的字符串内双引号前添加反斜杠，"
+                "其余字符、空白、键顺序和标点必须逐字保留，不重新排版、不改逗号或括号。"
+                "返回完整action=final及result对象，不改变条款、数值、证据编号或判断，"
+                "不得调用任何工具。若原内容无法保持，不得编造。"
+                f"语法错误：{error.msg}，字符位置：{error.pos}。待修正内容：\n{invalid_text}"
+            ),
+        }]
+        control.raise_if_cancelled()
+        text_parts = []
+        repair_usage = {}
+        finished = False
+        try:
+            for chunk in self._role_model_stream(role, context, control, messages=repair_messages, tools=[]):
+                control.refresh_deadline(self._preset.max_seconds_per_agent_run)
+                control.raise_if_cancelled()
+                kind = str(getattr(chunk, "type", None) if not isinstance(chunk, Mapping)
+                           else chunk.get("type", "text_delta")).replace("-", "_")
+                if kind in {"tool_call", "tool_call_delta"}:
+                    raise ValidationError("JSON格式修复不得调用业务工具")
+                if kind in {"text", "text_delta", "content_delta"}:
+                    text_parts.append(str(getattr(chunk, "delta", "") if not isinstance(chunk, Mapping)
+                                          else chunk.get("delta", chunk.get("content", chunk.get("text", "")))))
+                elif kind == "usage":
+                    usage = getattr(chunk, "usage", None) if not isinstance(chunk, Mapping) else chunk.get("usage")
+                    repair_usage = dict(usage or {})
+                    yield {"type": "usage", "usage": repair_usage}
+                elif kind == "finish":
+                    finished = True
+        except Exception:
+            yield self._json_failure_diagnostic(role, invalid_text, "".join(text_parts), error, "repair_stream_failed")
+            raise
+        if not finished:
+            yield self._json_failure_diagnostic(role, invalid_text, "".join(text_parts), error, "repair_stream_incomplete")
+            raise ValidationError("JSON格式修复流未正常结束")
+        final_text = "".join(text_parts)
+        if not self._only_added_quote_escapes(invalid_text, final_text):
+            yield self._json_failure_diagnostic(role, invalid_text, final_text, error, "repair_changed_content")
+            raise ValidationError("JSON修复改变了原始内容，拒绝采用")
+        try:
+            value = json.loads(final_text)
+        except json.JSONDecodeError as repaired_error:
+            yield self._json_failure_diagnostic(role, invalid_text, final_text, error, "repair_json_invalid")
+            raise ValidationError("Agent角色一次格式修复后仍未返回严格JSON") from repaired_error
+        try:
+            self._validate_response(value)
+        except Exception:
+            yield self._json_failure_diagnostic(role, invalid_text, final_text, error, "repair_response_invalid")
+            raise
+        return final_text, repair_usage
+
+    @staticmethod
+    def _close_complete_json_containers(text: str, finish_reason: object) -> str:
+        """Close containers at EOF only; never complete a string, value or stopped stream."""
+        if finish_reason not in {'stop', 'end_turn'}:
+            return text
+        try:
+            json.loads(text)
+            return text
+        except json.JSONDecodeError as error:
+            if error.pos != len(text.rstrip()) or error.msg != "Expecting ',' delimiter":
+                return text
+        stack = []
+        quoted = escaped = False
+        for character in text:
+            if quoted:
+                if escaped:
+                    escaped = False
+                elif character == chr(92):
+                    escaped = True
+                elif character == '"':
+                    quoted = False
+            elif character == '"':
+                quoted = True
+            elif character in '{[':
+                stack.append('}' if character == '{' else ']')
+            elif character in '}]':
+                if not stack or stack.pop() != character:
+                    return text
+        if quoted or not stack:
+            return text
+        closed = text + ''.join(reversed(stack))
+        try:
+            json.loads(closed)
+        except json.JSONDecodeError:
+            return text
+        return closed
+
+    @staticmethod
+    def _json_failure_diagnostic(role, original, repaired, syntax_error, failure):
+        # Only the two public text buffers are allowed here, never messages/context/reasoning.
+        return {"type": "json-diagnostic", "diagnostic": {
+            "source": "untrusted_model_draft", "role": str(role), "failure": failure,
+            "original_public_output": original, "repaired_public_output": repaired,
+            "syntax_position": syntax_error.pos, "syntax_line": syntax_error.lineno,
+            "syntax_column": syntax_error.colno, "syntax_error": syntax_error.msg,
+        }}
+
+    @staticmethod
+    def _only_added_quote_escapes(original: str, repaired: str) -> bool:
+        """Accept only insertion of a backslash directly before an existing quote."""
+        left = right = 0
+        while left < len(original) and right < len(repaired):
+            if original[left] == repaired[right]:
+                left += 1
+                right += 1
+            elif original[left] == '"' and repaired[right:right + 2] == '\\"':
+                right += 1
+            else:
+                return False
+        return left == len(original) and right == len(repaired)
 
     def _role_model_stream(
         self,
