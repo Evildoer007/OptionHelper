@@ -664,6 +664,23 @@ class AppKnowledgePort(KnowledgePort):
 
 
 
+def candidate_validation_status(result):
+    """Classify execution evidence, not whether a candidate is attractive."""
+    raw = result.get("module_statuses") if isinstance(result, Mapping) else None
+    states = {str(value).strip().lower() for value in raw.values()} if isinstance(raw, Mapping) else set()
+    if states.intersection({"failed", "error", "timed_out", "timeout", "unavailable"}):
+        return "failed", "候选验证发生执行异常，请查看未完成的模块。"
+    if states.intersection({"cancelled", "canceled", "stopped"}):
+        return "cancelled", "候选验证已停止，已完成结果保留。"
+    if states.intersection({"needs_input", "pending_question"}):
+        return "needs_input", "候选验证等待补充条件。"
+    if states.intersection({"unsupported", "not_applicable"}):
+        return "unsupported", "部分计算不适用于该结构，需调整验证方式。"
+    if not states or not states.issubset({"completed", "succeeded"}):
+        return "partial", "候选验证结果尚不完整，需继续核实。"
+    return "completed", "候选验证结果已返回。"
+
+
 class AppToolPort(ToolPort):
     """Recommender executor port bound to one App identity and task."""
 
@@ -766,14 +783,8 @@ class AppToolPort(ToolPort):
         except Exception:
             self._emit_visible_event("host_module", "failed", "候选验证模块未完成。")
             raise
-        statuses = result.get("module_statuses") if isinstance(result, Mapping) else None
-        completed_status = "failed" if isinstance(statuses, Mapping) and any(
-            str(value).lower() in {"failed", "unsupported", "timed_out", "cancelled"}
-            for value in statuses.values()
-        ) else "completed"
-        self._emit_visible_event("host_module", completed_status, (
-            "候选验证结果已返回。" if completed_status == "completed" else "候选验证模块未全部完成。"
-        ))
+        completed_status, summary = candidate_validation_status(result)
+        self._emit_visible_event("host_module", completed_status, summary)
         return result
 
     def _emit_visible_event(self, event_type: str, status: str, summary: str) -> None:
