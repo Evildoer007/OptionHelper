@@ -375,7 +375,7 @@ const formatAttachmentBytes = (value) => {
 const randomAttachmentKey = () => globalThis.crypto?.randomUUID?.() || `attachment-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 const runtimeEventStatuses = new Set([
   "queued", "starting", "running", "waiting_tool", "waiting_parent", "started", "pending", "needs_input", "pending_approval", "partial",
-  "reselecting", "completed", "succeeded", "failed", "cancelled", "interrupted", "outcome_unknown", "timed_out", "timeout", "recovered", "stopped",
+  "reselecting", "unsupported", "revision_required", "excluded", "completed", "succeeded", "failed", "cancelled", "interrupted", "outcome_unknown", "timed_out", "timeout", "recovered", "stopped",
 ]);
 const runtimeTerminalStatuses = new Set(["completed", "succeeded", "failed", "cancelled", "interrupted", "outcome_unknown", "timed_out", "timeout", "stopped"]);
 const runtimeSensitiveText = /(?:system[ _-]?prompt|api[ _-]?key|access[ _-]?token|refresh[ _-]?token|bearer|secret|private[ _-]?key|tool[ _-]?arguments?|arguments?|run[ _-]?ref|module[ _-]?run[ _-]?ref|contract[ _-]?fingerprint|task[ _-]?id|request[ _-]?id|tenant[ _-]?id|principal[ _-]?id)/i;
@@ -535,6 +535,11 @@ export function renderProcessUsage(target, usage) {
 
 const defaultRuntimeSummary = (family, status, role, toolLabel) => {
   const subject = family === "tool" ? (toolLabel || "研究模块") : "本轮处理";
+  if (status === "unsupported") return `${subject}不适用，需调整验证方式。`;
+  if (["reselecting", "revision_required"].includes(status)) return "正在按评估意见修订方案。";
+  if (status === "partial") return `${subject}结果不完整，需继续核实。`;
+  if (status === "excluded") return "候选不符合本轮约束，已排除。";
+  if (status === "needs_input") return `${subject}等待补充条件。`;
   if (["failed", "error", "unavailable"].includes(status)) return `${subject}未完成。`;
   if (["cancelled", "canceled"].includes(status)) return `${subject}已停止。`;
   if (["outcome_unknown", "interrupted"].includes(status)) return `${subject}中断，结果尚未确认。`;
@@ -579,10 +584,17 @@ export function normalizeRuntimeEvent(row) {
     summary: family === "tool" ? defaultRuntimeSummary(family, status, role, toolLabel) : summary || defaultRuntimeSummary(family, status, role, toolLabel),
     createdAt: String(row.created_at || row.createdAt || row.timestamp || row.time || payload.created_at || payload.timestamp || "").trim(),
     role,
+    handoff: type === "workflow.handoff" ? Object.freeze({
+      id: safeRuntimeKey(payload.handoff_id || row.handoff_id || row.seq),
+      from: clampRuntimeText(payload.from_role || row.from_role, 48),
+      to: clampRuntimeText(payload.to_role || row.to_role, 48),
+      kind: (payload.kind || row.kind) === "return" ? "return" : "handoff",
+      label: clampRuntimeText(payload.label || row.label),
+    }) : null,
     agentKey: safeRuntimeKey(row.agent_run_id || row.agentId || payload.agent_run_id || payload.agentId || (type === "agent_run" ? "legacy-agent" : "")),
     toolKey: safeRuntimeKey(row.call_id || row.tool_call_id || row.toolCallId || payload.call_id || payload.tool_call_id || payload.toolCallId || `${toolLabel}:${row.agent_run_id || payload.agent_run_id || "main"}`),
     toolLabel,
-    detail: family === "tool" && ["failed", "error", "unavailable", "timed_out", "interrupted"].includes(status)
+    detail: family === "tool" && ["failed", "error", "unavailable", "timed_out", "interrupted", "unsupported", "partial", "needs_input"].includes(status)
       ? runtimePayloadText(row, payload, ["display_message", "message", "summary", "reason"]) : "",
     delta,
     turn: Number.isInteger(row.turn) && row.turn >= 0 ? row.turn : null,
@@ -672,16 +684,21 @@ export function createProcessToolGroup(title, { progress = false } = {}) {
   element.append(summary, issue, calls);
   const refresh = () => {
     const rows = [...calls.children];
-    const totals = { complete: 0, failed: 0, stopped: 0, uncertain: 0, active: 0 };
+    const totals = { complete: 0, failed: 0, stopped: 0, uncertain: 0, review: 0, waiting: 0, excluded: 0, active: 0 };
     for (const row of rows) {
       const activity = operationActivity(row.dataset.status);
       totals[Object.hasOwn(totals, activity) ? activity : "active"] += 1;
     }
     const parts = progress ? [] : [`${rows.length}次`];
-    for (const [key, label] of [["active", "进行中"], ["complete", "完成"], ["failed", "失败"], ["stopped", "取消"], ["uncertain", "待确认"]]) {
+    for (const [key, label] of [["active", "进行中"], ["complete", "完成"], ["failed", "失败"], ["stopped", "已停止"], ["review", "需调整"], ["waiting", "待补充"], ["excluded", "已排除"], ["uncertain", "待确认"]]) {
       if (totals[key]) parts.push(`${label}${totals[key]}`);
     }
-    counts.textContent = parts.join("，");
+    counts.replaceChildren(...parts.flatMap((part, index) => {
+      const item = document.createElement("span");
+      item.textContent = part;
+      item.dataset.failure = String(part.startsWith("失败"));
+      return index ? [document.createTextNode("，"), item] : [item];
+    }));
     element.dataset.active = String(totals.active > 0);
     element.dataset.hasFailures = String(totals.failed > 0);
     // The overview never conceals a failed or uncertain call behind a success mark.
@@ -1007,14 +1024,18 @@ export async function startWorkspace(initialMode) {
     pending_approval: "等待确认",
     cancel_requested: "正在取消",
     blocked: "等待处理条件",
-    reselecting: "重新筛选中",
+    reselecting: "正在修订方案",
+    revision_required: "需要修订",
+    unsupported: "计算不适用",
+    partial: "待补充验证",
+    excluded: "已排除",
     completed: "已完成",
     succeeded: "已完成",
     failed: "失败",
     outcome_unknown: "结果待确认",
     timed_out: "响应超时",
     timeout: "响应超时",
-    cancelled: "已取消",
+    cancelled: "已停止",
     interrupted: "已中断",
     recovered: "已恢复",
     stopped: "已停止",
@@ -1464,9 +1485,10 @@ export async function startWorkspace(initialMode) {
       const stopped = ["cancelled", "canceled", "stopped"].includes(event.status);
       const activity = operationActivity(event.status);
       const waiting = ["queued", "waiting", "cancelling"].includes(activity);
-      const path = waiting ? "M12 7v5l3 2M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0Z" : complete ? "m5 12 4 4L19 6" : failed ? "M12 8v5m0 3v.1M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0Z" : uncertain ? "M12 8v4l3 2M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0Z" : stopped ? "M7 7h10v10H7Z" : "M12 3a9 9 0 1 1-9 9";
-      setMessageActionIcon(status, failed || uncertain ? `${label}，查看原因` : label, path);
-      status.disabled = !(failed || uncertain);
+      const review = activity === "review";
+      const path = review ? "M8 7H4V3M4 7a9 9 0 1 1-1 8" : activity === "excluded" ? "M5 12h14" : waiting ? "M12 7v5l3 2M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0Z" : complete ? "m5 12 4 4L19 6" : failed ? "M12 8v5m0 3v.1M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0Z" : uncertain ? "M12 8v4l3 2M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0Z" : stopped ? "M7 7h10v10H7Z" : "M12 3a9 9 0 1 1-9 9";
+      setMessageActionIcon(status, failed || uncertain || review ? `${label}，查看原因` : label, path);
+      status.disabled = !(failed || uncertain || review);
       status.dataset.state = activity;
       if (failed) status.setAttribute("aria-expanded", "false");
       else status.removeAttribute("aria-expanded");
@@ -1519,17 +1541,20 @@ export async function startWorkspace(initialMode) {
   };
   const appendRuntimeProjection = (playback, event) => {
     if (event.type === "workflow.handoff") {
-      const payload = event.payload || event;
-      const id = String(payload.handoff_id || event.seq || "");
-      if (id && typeof payload.from_role === "string" && typeof payload.to_role === "string") {
+      const handoff = event.handoff;
+      if (handoff?.id && handoff.from && handoff.to) {
         playback.handoffs ||= [];
-        if (!playback.handoffs.some(item => item.id === id)) playback.handoffs.push({
-          id, from: payload.from_role, to: payload.to_role,
-          kind: payload.kind === "return" ? "return" : "handoff",
-          label: String(payload.label || "交接"), active: event.status === "started",
-          activeUntil: (Date.parse(event.created_at || event.timestamp || "") || 0) + 7200,
+        if (!playback.handoffs.some(item => item.id === handoff.id)) playback.handoffs.push({
+          ...handoff,
+          label: handoff.kind === "return" ? `需修订：${handoff.label || "补充验证后继续"}` : handoff.label || "交接",
+          active: ["started", "running"].includes(event.status),
+          activeUntil: (Date.parse(event.createdAt || "") || 0) + 7200,
         });
         renderCollaboration(playback);
+        if (handoff.kind === "return") {
+          playback.state.textContent = `${handoff.from}提出修订意见，交给${handoff.to}继续处理`;
+          setRuntimeLiveStatus(playback.state.textContent);
+        }
       }
       return;
     }
@@ -1646,6 +1671,9 @@ export async function startWorkspace(initialMode) {
     if (projection.family === "recovery" && projection.status === "recovered") {
       playback.state.textContent = "进度已恢复，正在继续读取";
       setRuntimeLiveStatus("本轮进度已恢复，正在继续读取。");
+    } else if (["reselecting", "revision_required", "unsupported", "partial", "needs_input", "excluded"].includes(projection.status)) {
+      playback.state.textContent = projection.summary;
+      setRuntimeLiveStatus(projection.summary);
     } else if (projection.status === "failed") {
       playback.state.textContent = `${projection.toolLabel || projection.role || "当前步骤"}未完成`;
       setRuntimeLiveStatus(projection.summary);
