@@ -946,6 +946,8 @@ export function operationActivity(state) {
   const value = String(state || "").toLowerCase();
   if (["completed", "succeeded"].includes(value)) return "complete";
   if (["failed", "error", "unavailable", "timed_out", "timeout"].includes(value)) return "failed";
+  if (["reselecting", "revision_required", "unsupported", "partial"].includes(value)) return "review";
+  if (value === "excluded") return "excluded";
   if (["outcome_unknown", "interrupted"].includes(value)) return "uncertain";
   if (["cancelled", "canceled", "stopped"].includes(value)) return "stopped";
   if (["cancel_requested", "cancelling"].includes(value)) return "cancelling";
