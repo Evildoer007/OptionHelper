@@ -230,13 +230,27 @@ function renderChoiceLabel(node, option) {
 }
 
 
+  function filterProductChoices(choice) {
+    const search = choice.querySelector('.oh-choice__search');
+    if (!search) return;
+    const words = search.value.normalize('NFKC').toLocaleLowerCase().trim().split(/\s+/).filter(Boolean);
+    let matches = 0;
+    choice.querySelectorAll('.oh-choice__option').forEach(item => {
+      const text = `${item.dataset.value} ${item.textContent}`.normalize('NFKC').toLocaleLowerCase();
+      const visible = !words.length || (Boolean(item.dataset.value) && words.every(word => text.includes(word)));
+      item.hidden = !visible;
+      if (visible && item.dataset.value) matches += 1;
+    });
+    choice.querySelector('.oh-choice__empty').hidden = matches > 0;
+  }
+
   function updateChoice(select) {
     const choice = select.closest("[data-oh-choice]");
     if (!choice) return;
     const trigger = choice.querySelector(".oh-choice__trigger");
     const value = choice.querySelector(".oh-choice__value");
     const menu = choice.querySelector(".oh-choice__menu");
-    const focusedValue = menu.contains(document.activeElement) ? document.activeElement.dataset.value : null;
+    const focusedValue = menu.contains(document.activeElement) && document.activeElement.matches('[role="option"]') ? document.activeElement.dataset.value : null;
     const selected = optionFor(select, select.value);
     renderChoiceLabel(value, selected);
     trigger.disabled = select.disabled || !select.options.length;
@@ -246,7 +260,8 @@ function renderChoiceLabel(node, option) {
     const describedBy = select.getAttribute("aria-describedby");
     if (describedBy) trigger.setAttribute("aria-describedby", describedBy);
     else trigger.removeAttribute("aria-describedby");
-    menu.replaceChildren(...Array.from(select.options).map((option) => {
+    const list = menu.querySelector(".oh-choice__results") || menu;
+    list.replaceChildren(...Array.from(select.options).map((option) => {
       const item = document.createElement("button");
       item.type = "button";
       item.className = "oh-choice__option";
@@ -270,9 +285,10 @@ function renderChoiceLabel(node, option) {
       });
       return item;
     }));
+    filterProductChoices(choice);
     if (trigger.disabled) setChoiceOpen(choice, false);
     else if (focusedValue !== null && choice.dataset.open === "true") {
-      const options = Array.from(menu.querySelectorAll('[role="option"]:not([disabled])'));
+      const options = Array.from(menu.querySelectorAll('[role="option"]:not([disabled]):not([hidden])'));
       (options.find((item) => item.dataset.value === focusedValue) || options.find((item) => item.dataset.value === select.value) || trigger).focus({preventScroll: true});
     }
   }
@@ -304,8 +320,11 @@ function renderChoiceLabel(node, option) {
     choice.dataset.open = String(open);
     trigger.setAttribute("aria-expanded", String(open));
     menu.hidden = !open;
+    const search = choice.querySelector('.oh-choice__search');
+    if (open && search) { search.value = ''; filterProductChoices(choice); menu.scrollTop = 0; }
     if (open) positionChoiceMenu(choice);
-    if (open && focus) (menu.querySelector('[role="option"][aria-selected="true"]:not([disabled])') || menu.querySelector('[role="option"]:not([disabled])'))?.focus();
+    if (open && focus && search) { search.focus({preventScroll: true}); return; }
+    if (open && focus) (menu.querySelector('[role="option"][aria-selected="true"]:not([disabled])') || menu.querySelector('[role="option"]:not([disabled]):not([hidden])'))?.focus();
   }
 
   function closeChoiceControls() {
@@ -350,6 +369,40 @@ function renderChoiceLabel(node, option) {
     menu.setAttribute("role", "listbox");
     menu.setAttribute("aria-label", label);
     menu.hidden = true;
+    if (select.classList.contains('product-select')) {
+      trigger.setAttribute('aria-haspopup', 'dialog');
+      menu.setAttribute('role', 'dialog');
+      const search = document.createElement('input');
+      search.type = 'search';
+      search.className = 'oh-choice__search';
+      search.placeholder = '搜索产品名称或编号';
+      search.setAttribute('aria-label', '搜索产品名称或编号');
+      search.autocomplete = 'off';
+      const header = document.createElement('span');
+      header.className = 'oh-choice__search-header';
+      header.append(search);
+      const results = document.createElement('span');
+      results.className = 'oh-choice__results';
+      results.setAttribute('role', 'listbox');
+      results.setAttribute('aria-label', label);
+      const empty = document.createElement('span');
+      empty.className = 'oh-choice__empty';
+      empty.setAttribute('role', 'status');
+      empty.textContent = '没有匹配的产品';
+      empty.hidden = true;
+      menu.append(header, results, empty);
+      search.addEventListener('input', () => { filterProductChoices(choice); menu.scrollTop = 0; });
+      search.addEventListener('click', event => { event.stopPropagation(); });
+      search.addEventListener('keydown', event => {
+        if (event.isComposing) { event.stopPropagation(); return; }
+        if (event.key === 'Escape' || event.key === 'ArrowDown' || event.key === 'Tab') return;
+        event.stopPropagation();
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          menu.querySelector('[role="option"]:not([disabled]):not([hidden])')?.click();
+        }
+      });
+    }
     select.classList.add("oh-choice__native");
     select.tabIndex = -1;
     select.setAttribute("aria-hidden", "true");
@@ -387,7 +440,7 @@ function renderChoiceLabel(node, option) {
     });
     menu.addEventListener("keydown", (event) => {
       if (["ArrowDown", "ArrowUp", "Home", "End", " ", "Enter", "Escape"].includes(event.key)) event.stopPropagation();
-      const options = Array.from(menu.querySelectorAll('[role="option"]:not([disabled])'));
+      const options = Array.from(menu.querySelectorAll('[role="option"]:not([disabled]):not([hidden])'));
       const index = options.indexOf(document.activeElement);
       if (event.key === "ArrowDown" || event.key === "ArrowUp") {
         event.preventDefault();
@@ -433,6 +486,13 @@ function renderChoiceLabel(node, option) {
       .oh-choice__native[aria-invalid="true"] ~ .oh-choice__trigger { border-color: var(--color-brand-red, #c8102e); background: var(--color-ground, #f4f4f2); box-shadow: 0 0 0 3px var(--color-ground, #f4f4f2); }
       .oh-choice__menu { position: absolute; z-index: 80; top: calc(100% + 6px); right: 0; left: 0; box-sizing: border-box; max-height: min(280px, 42vh); padding: 5px; overflow: auto; border: 1px solid var(--color-rule, #e2e0dc); border-radius: 9px; background: var(--color-surface, #fff); box-shadow: 0 14px 28px var(--color-surface-shadow, rgb(44 53 62 / .08)); }
       .oh-choice[data-direction="up"] .oh-choice__menu { top: auto; bottom: calc(100% + 6px); }
+      .oh-choice__search-header { display: block; position: sticky; top: -5px; z-index: 1; padding: 5px 0 8px; background: var(--color-surface, #fff); }
+      .oh-choice__search { box-sizing: border-box; width: 100%; min-height: 36px; padding: 7px 10px; border: 1px solid var(--color-rule, #e2e0dc); border-radius: 8px; background: var(--color-ground, #f4f4f2); color: var(--color-ink, #252628); font: inherit; font-size: 13px; }
+      .oh-choice__search:focus-visible { outline: 2px solid var(--color-blue-gray, #49647d); outline-offset: -2px; }
+      .oh-choice__search::placeholder { color: var(--color-muted, #6b7075); }
+      .oh-choice__results { display: block; }
+      .oh-choice__empty { display: block; padding: 14px 10px; color: var(--color-muted, #6b7075); font-size: 13px; }
+      .oh-choice__option[hidden], .oh-choice__empty[hidden] { display: none !important; }
       .oh-choice__option { display: flex; width: 100%; min-height: 32px; align-items: center; padding: 7px 9px; border: 0; border-radius: 6px; background: transparent; color: var(--color-ink, #252628); font: inherit; font-size: 12px; line-height: 1.35; text-align: left; }
       .oh-choice__option:hover, .oh-choice__option:focus-visible { outline: 0; background: var(--color-ground, #f4f4f2); color: var(--color-ink, #252628); }
       .oh-choice__option[aria-selected="true"] { background: var(--color-ground, #f4f4f2); color: var(--color-ink, #252628); font-weight: 700; }
