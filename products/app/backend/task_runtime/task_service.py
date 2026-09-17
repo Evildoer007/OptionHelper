@@ -1367,7 +1367,7 @@ _VISIBLE_PROCESS_EVENT_TYPES = frozenset({
     "request", "routing", "agent_run", "host_module", "candidate_cycle", "answer", "terminal",
 })
 _VISIBLE_PROCESS_EVENT_STATUSES = frozenset({
-    "started", "completed", "reselecting", "failed", "cancelled", "needs_input",
+    "started", "completed", "reselecting", "failed", "cancelled", "needs_input", "unsupported", "partial",
 })
 _VISIBLE_PROCESS_FORBIDDEN = re.compile(
     r"(?i)(reasoning|chain[_ -]?of[_ -]?thought|system[_ -]?prompt|prompt|secret|api[_ -]?key|"
