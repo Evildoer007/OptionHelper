@@ -274,7 +274,6 @@ html[data-theme="dark"] .setup-page .settings-nav .connection-item[aria-current]
    at the page boundary instead of changing the form behavior. */
 html[data-theme="dark"] .setup-page .setup-form .field input,
 html[data-theme="dark"] .setup-page .setup-form .field select,
-html[data-theme="dark"] .setup-page .setup-form .field .choice-trigger,
 html[data-theme="dark"] .setup-page .advanced-options__body input {
   border-color: var(--color-rule-strong) !important;
   background: var(--color-paper) !important;
