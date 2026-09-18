@@ -131,6 +131,11 @@
   const query = new URLSearchParams(location.search);
   if (query.get("host") !== "optdesk" || window.parent === window) return;
   document.documentElement.dataset.optionhelperAppHosted = "true";
+  // App and embedded pages use the same dropdown appearance.
+  const choiceStyles = document.createElement("link");
+  choiceStyles.rel = "stylesheet";
+  choiceStyles.href = "/app/frontend/shared/choice-controls.css";
+  document.head.append(choiceStyles);
 
   const moduleScrollContainers = [
     ".oh-choice__menu",
