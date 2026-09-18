@@ -1046,7 +1046,7 @@ class RecommenderAdapter:
         candidates = recommendation.get("candidates") if isinstance(recommendation, Mapping) else None
         status = str(recommendation.get("status", "")) if isinstance(recommendation, Mapping) else ""
         result["control"] = {
-            "resume_main_agent": bool(candidates) and status not in {"pending_question", "unavailable", "failed"},
+            "resume_main_agent": bool(candidates) and status in {"pending_approval", "candidate_ready", "completed"},
             "candidate_owner": "recommender",
             "delivery_owner": "main_agent",
         }
@@ -1065,11 +1065,19 @@ class RecommenderAdapter:
         if not history or not _same_pending_user_turn(history[-1], prompt):
             history.append({"role": "user", "content": str(prompt), "status": "pending_model"})
         confirmed_constraints = merge_confirmed_constraints({}, history)
+        mode, inherited_count = _recommendation_turn_preferences(
+            history, getattr(self._gateway, "recommendation_execution_mode_for", lambda _: "single")(identity),
+        )
+        preset_id = _saved_recommendation_preset(self._gateway, identity, arguments) if mode == "multi" else "sequential-deliberation"
+
         try:
             pending = self._tasks.pending_recommendation(identity, task_id)
         except ValidationError:
             if not _starts_new_recommendation(prompt):
                 return _confirmation_unavailable(task_id, catalog_version)
+            pending = None
+        previous_pending = pending
+        if isinstance(pending, Mapping) and pending.get("preset_id") != preset_id:
             pending = None
         if _pending_request_changed(prompt, pending):
             pending = None
@@ -1103,10 +1111,11 @@ class RecommenderAdapter:
                 "execution": execution,
                 "next_step": str(execution.get("next_step") or "已按最新产品规则编译并执行已确认候选。"),
             }
+        # Selection of an existing candidate has already returned above.
+        # Any actual new research invalidates only the old actionable selection.
+        if previous_pending is not None:
+            self._tasks.retire_pending_recommendation(identity, task_id)
         requested_outputs = _requested_outputs(arguments, confirmed_constraints)
-        mode, inherited_count = _recommendation_turn_preferences(
-            history, getattr(self._gateway, "recommendation_execution_mode_for", lambda _: "single")(identity),
-        )
         requested_candidate_count = _requested_candidate_count_argument(arguments)
         if requested_candidate_count is None:
             requested_candidate_count = inherited_count
@@ -1132,7 +1141,6 @@ class RecommenderAdapter:
                 "Recommender多智能体运行时",
                 "当前App未启用Agent Runtime，不能以Legacy单Agent替代所选多智能体预设。",
             )
-        preset_id = _saved_recommendation_preset(self._gateway, identity, arguments) if mode == "multi" else "sequential-deliberation"
         preset = resolve_recommendation_preset(preset_id)
         lifecycle_projection = LifecycleProjection()
         request_id = str((execution_ids or {}).get("request_id") or "").strip() or None
