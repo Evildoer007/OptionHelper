@@ -184,14 +184,11 @@ function setChoiceOpen(choice, open, { focus = false } = {}) {
     if (menu.hasAttribute("popover") && !menu.matches(":popover-open")) menu.showPopover();
     positionChoiceMenu(choice);
     menu.style.transformOrigin = choice.dataset.placement === "top" ? "bottom center" : "top center";
-    animateSurface(menu);
+    // Dropdown entry motion is shared with module pages in choice-controls.css.
   } else {
     menu.inert = true;
-    animateSurface(menu, "exit", () => {
-      if (choice.dataset.open === "true") return;
-      menu.hidden = true;
-      if (menu.hasAttribute("popover") && menu.matches(":popover-open")) menu.hidePopover();
-    });
+    menu.hidden = true;
+    if (menu.hasAttribute("popover") && menu.matches(":popover-open")) menu.hidePopover();
   }
   if (open && focus) {
     const selected = menu.querySelector('[role="option"][aria-selected="true"]:not([disabled])') || menu.querySelector('[role="option"]:not([disabled])');
@@ -387,6 +384,7 @@ export function enhanceSelects(root = document) {
         doc.activeElement?.click();
       }
     });
+    select.addEventListener("input", () => syncChoice(select));
     select.addEventListener("change", () => syncChoice(select));
     new MutationObserver(() => syncChoice(select)).observe(select, { childList: true, subtree: true, attributes: true, attributeFilter: ["aria-describedby", "aria-invalid", "disabled", "selected", "label"] });
     syncChoice(select);
