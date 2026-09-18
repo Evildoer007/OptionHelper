@@ -56,7 +56,8 @@ def role_input_handoffs(role, payload, preset_id, completed_roles):
     if role == "Structurer" and value.get("phase") == "rework":
         if value.get("reviewer_feedback"): sources.append(("Reviewer", "return", "终审意见交回修订"))
         elif value.get("trader_feedback"): sources.append(("Trader", "return", "交易评估意见交回修订"))
-    elif role == "Trader" and (value.get("round") or value.get("candidates")):
+    elif role == "Trader" and (value.get("round") or value.get("candidates") or
+                              (value.get("comparison_only") and value.get("proposals"))):
         sources.append(("Structurer", "handoff", "交付候选方案"))
     elif role in {"Matcher", "Hedger"}:
         if value.get("discussion"): sources.append(("Moderator", "return", "交付定向复核问题"))
@@ -305,6 +306,7 @@ class RuntimeBackedAgentPort(AgentPort):
         with self._lock:
             self._ensure_available()
             self._call_count = 0
+            self._request_record_start = len(self._run_records)
 
     def capability(self) -> ModelCapability:
         capability = self._gateway.capability_for(
@@ -386,7 +388,8 @@ class RuntimeBackedAgentPort(AgentPort):
         if sink is None:
             return
         with self._lock:
-            predecessors = set(self._role_runs)
+            predecessors = {canonical_role_name(record["role"]) for record in self._run_records[getattr(self, "_request_record_start", 0):]
+                            if record.get("status") == "completed"}
         for handoff in role_input_handoffs(role, payload, self._preset.preset_id, predecessors):
             identifier = f"handoff-{uuid4().hex}"
             try:
