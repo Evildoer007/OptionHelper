@@ -442,7 +442,6 @@ html { font-size: 14px; }
 .model-picker__label { font-size: 10px; }
 .model-picker .choice-trigger { min-height: 32px; font-size: 11px; }
 .model-picker .optionhelper-choice .choice-menu { padding: 4px; }
-.model-picker .optionhelper-choice .choice-option { font-size: 11px; flex-wrap: nowrap; padding-inline: 7px 24px !important; }
 .model-picker .optionhelper-choice .choice-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .send-control { width: 36px; height: 36px; flex-basis: 36px; }
 
@@ -3131,31 +3130,11 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
   .workspace-shell .composer-attach-control, .workspace-shell .composer-attach-control::before { transition: none; }
 }
 
-/* Shared choice surfaces: quiet selection, bilingual labels, consistent depth. */
-.optionhelper-choice .choice-trigger { border-radius: 12px; font-weight: 500; transition: background-color 160ms ease, box-shadow 160ms ease; }
-/* Preserve native optgroup hierarchy in custom choice menus. */
+/* Preset hierarchy and compact composer layout. */
 .optionhelper-choice .choice-group { display: block; border-top: 1px solid var(--color-rule); margin-top: 4px; padding-top: 4px; }
 .optionhelper-choice .choice-group__label { display: block; padding: 5px 11px 3px; font-size: 11px; font-weight: 500; color: var(--color-muted); }
-html[data-theme] .composer .optionhelper-choice .choice-menu { background: var(--color-surface) !important; -webkit-backdrop-filter: none; backdrop-filter: none; }
 .composer .choice[data-open="true"] { z-index: 60; }
 .optionhelper-choice .choice-trigger__value { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 9px; white-space: normal; min-width: 0; }
-.optionhelper-choice .choice-menu { padding: 6px; border: 0; border-radius: 14px; background: var(--surface, #fff); box-shadow: 0 2px 4px rgb(0 0 0 / .06), 0 12px 30px rgb(0 0 0 / .12), 0 0 0 1px rgb(128 128 128 / .14); }
-.optionhelper-choice .choice-option { min-height: 38px; padding: 9px 11px; gap: 4px 9px; border-radius: 9px; flex-wrap: wrap; font-weight: 400; transition: background-color 140ms ease; }
-.optionhelper-choice .choice-option[aria-selected="true"] { background: color-mix(in srgb, var(--ink, #222) 6%, transparent); color: var(--ink, #222); font-weight: 500; }
-.optionhelper-choice .choice-option:hover { background: color-mix(in srgb, var(--ink, #222) 9%, transparent); color: var(--ink, #222); }
-.optionhelper-choice .choice-option:focus-visible { outline: 0; background: color-mix(in srgb, var(--color-ink) 12%, var(--color-surface)); }
-.optionhelper-choice .choice-english { color: var(--muted, #686868); font-size: .85em; font-weight: 400; }
-.optionhelper-choice .choice-option::after { flex-shrink: 0; }
-@media (prefers-reduced-motion: reduce) { .optionhelper-choice :is(.choice-trigger, .choice-option) { transition: none; } }
-
-.optionhelper-choice .choice-option { position: relative; padding-inline-end: 34px; }
-.optionhelper-choice .choice-option[aria-selected="true"]::after {
-  position: absolute;
-  right: 14px;
-  top: 50%;
-  margin: 0;
-  transform: translateY(-65%) rotate(45deg);
-}
 .optionhelper-choice .choice-label { min-width: 0; overflow-wrap: anywhere; }
 
 .message--process .process-usage-summary { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
