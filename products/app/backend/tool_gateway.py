@@ -441,7 +441,7 @@ class ToolGateway:
                     )
                 except UserActionError as error:
                     details = dict(error.details) if isinstance(error.details, Mapping) else {}
-                    suggested = details.get("suggested_end_date") or details.get("latest_complete_entry_session")
+                    suggested = details.get("suggested_end_date")
                     return {
                         "ok": True,
                         "module": "backtester",
@@ -2169,22 +2169,46 @@ def _plan_backtest_window(
             for key, value in error.details.items()
             if value is not None and isinstance(value, (str, int, float))
         }
-        latest_complete = details.get("latest_complete_entry_session")
-        requested_start = details.get("requested_start")
         market_as_of = details.get("market_as_of_session")
         message = str(error)
-        if latest_complete:
-            details["suggested_end_date"] = latest_complete
-        if latest_complete and requested_start and requested_start > latest_complete:
-            details["suggested_start_date"] = latest_complete
-            next_step = (
-                f"请将入场起始日和截止日调整到{latest_complete}或更早，且起始日不晚于截止日；"
-                f"可采用{latest_complete}至{latest_complete}。"
-            )
-        elif latest_complete:
-            next_step = f"请将入场截止日改为{latest_complete}或更早的实际交易日，且不早于起始日。"
+        raw_config = payload.get("backtest_config")
+        config_value = dict(raw_config) if isinstance(raw_config, Mapping) else {}
+        code = str(error.code)
+        if code == "invalid_entry_window":
+            next_step = "请检查入场起始日和截止日，起始日不能晚于截止日；未指定研究区间时可以将两项留空，由系统自动规划。"
+        elif config_value.get("entry_rule") == "explicit":
+            next_step = "请检查指定入场日列表是否位于请求区间内，并具备完整存续期行情与交易日历；系统不会替换你指定的入场日。"
+        elif code in {"no_complete_entry_session", "incomplete_entry_policy_rejected"} and details.get("latest_complete_entry_session"):
+            # Suggest an actually runnable window under the SAME entry/statistics rules.
+            # Never invent a one-day window from the latest daily entry boundary:
+            # monthly entries may not include that date at all.
+            alternative = None
+            starts = [config_value.get("start_date"), None] if config_value.get("start_date") else [None]
+            for suggested_start in starts:
+                try:
+                    alternative = backtester.plan_backtest_window(
+                        contract,
+                        backtester.BacktestConfig.from_mapping({
+                            **config_value, "start_date": suggested_start, "end_date": None,
+                        }),
+                        history,
+                    ).to_dict()
+                    break
+                except (ValueError, entry_module.BacktestWindowError):
+                    continue
+            if alternative:
+                start = alternative["actual_start"]
+                end = alternative["actual_end"]
+                details["suggested_start_date"] = start
+                details["suggested_end_date"] = end
+                next_step = (
+                    f"按当前入场规则，可采用入场起始日{start}至截止日{end}。"
+                    "这会调整请求区间，请确认后采用；原输入保持不变。"
+                )
+            else:
+                next_step = "当前入场规则下没有可用样本，请检查入场规则，并补充完整存续期行情与交易日历。"
         else:
-            next_step = "请获取更长的实际历史行情与对应交易日历后重试。"
+            next_step = "请先补充覆盖完整存续期的行情与交易日历；数据不足时，仅修改起止日期不能保证回测可用。"
         if market_as_of:
             message += f"实际行情截止日为{market_as_of}。"
         # The existing invalid-preview surface renders message directly.
