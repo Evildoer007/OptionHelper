@@ -110,7 +110,10 @@ themeControls?.addEventListener("optionhelper:themecontrol", (event) => {
 
 uiScale?.addEventListener("change", () => setScale(uiScale.value));
 document.addEventListener("optionhelper:uiscalechange", (event) => {
-  if (uiScale) uiScale.value = String(event.detail.scale);
+  if (uiScale) {
+    uiScale.value = String(event.detail.scale);
+    enhanceSelects(uiScale.parentElement);
+  }
 });
 
 function escapeHtml(value) {
