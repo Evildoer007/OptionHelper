@@ -1,4 +1,4 @@
-import { request } from './app.js';
+import { request, enhanceSelects } from './app.js';
 
 const formatAmount = value => {
   if (value === null || value === undefined) return '不适用';
@@ -36,7 +36,7 @@ export function initializePositionSize(shell) {
   const panel = document.createElement('dialog');
   panel.className = 'position-size';
   panel.setAttribute('aria-labelledby', 'position-size-title');
-  panel.innerHTML = `<header><h2 id="position-size-title">名义本金与金额</h2><button type="button" data-size-close aria-label="关闭金额面板">×</button></header><div class="position-size__body"><p>填写当前任务的名义规模后，显示对应金额。原百分比、合同条款与计算保持不变。</p><form data-size-form><label>规模口径<select name="basis"><option value="notional">名义本金</option><option value="variance_notional">方差名义金额，每方差百分点平方</option></select></label><div class="position-size__fields"><label>金额<input name="amount" type="text" inputmode="decimal" placeholder="留空保留百分比" autocomplete="off" maxlength="40"></label><label>币种<select name="currency">${['CNY','USD','HKD','EUR','JPY','GBP','CHF','AUD','CAD','SGD'].map(value => `<option>${value}</option>`).join('')}</select></label></div><small>名义本金是金额换算基准，不是保证金，也不代表保本；币种不触发汇率换算。方差互换单独选择方差名义金额。</small><div class="position-size__actions"><button type="submit">保存规模</button><button type="button" data-size-clear>清空规模</button><button type="button" data-size-refresh>刷新金额结果</button></div></form><p role="status" data-size-status></p><section data-size-results aria-label="当前任务金额结果"></section></div>`;
+  panel.innerHTML = `<header><h2 id="position-size-title">名义本金与金额</h2><button type="button" data-size-close aria-label="关闭金额面板">×</button></header><div class="position-size__body"><p>填写当前任务的名义规模后，显示对应金额。原百分比、合同条款与计算保持不变。</p><form data-size-form><label>规模口径<select data-choice name="basis"><option value="notional">名义本金</option><option value="variance_notional">方差名义金额，每方差百分点平方</option></select></label><div class="position-size__fields"><label>金额<input name="amount" type="text" inputmode="decimal" placeholder="留空保留百分比" autocomplete="off" maxlength="40"></label><label>币种<select data-choice name="currency">${['CNY','USD','HKD','EUR','JPY','GBP','CHF','AUD','CAD','SGD'].map(value => `<option>${value}</option>`).join('')}</select></label></div><small>名义本金是金额换算基准，不是保证金，也不代表保本；币种不触发汇率换算。方差互换单独选择方差名义金额。</small><div class="position-size__actions"><button type="submit">保存规模</button><button type="button" data-size-clear>清空规模</button><button type="button" data-size-refresh>刷新金额结果</button></div></form><p role="status" data-size-status></p><section data-size-results aria-label="当前任务金额结果"></section></div>`;
   document.body.append(panel);
   const form = panel.querySelector('form');
   const status = panel.querySelector('[data-size-status]');
@@ -46,6 +46,7 @@ export function initializePositionSize(shell) {
     field('amount').value = task?.position_size?.amount || '';
     field('currency').value = task?.position_size?.currency || 'CNY';
     field('basis').value = task?.position_size?.basis || 'notional';
+    enhanceSelects(panel);
   };
   const cell = (row, tag, text) => { const element = document.createElement(tag); element.textContent = text ?? '不适用'; row.append(element); return element; };
   const table = (headings, rows) => {
