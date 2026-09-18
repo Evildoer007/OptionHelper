@@ -334,22 +334,37 @@ class RecommenderService:
             "confirmed_constraints": dict(case.confirmed_constraints),
             "rule": "仅把用户原文或confirmed_constraints中的事实标为已确认；research_context是待核实研究资料，不能作为用户确认。用户允许默认时，明确列出研究假设并继续推荐，不把缺少完整定价条款变成固定问卷；只有确实阻塞本次操作的缺口才追问，一次最多一个next_question。",
         })
+        if intent.get("next_question"):
+            raise RecommendationInputRequired("research_scope", intent["next_question"])
         evidence = self._retrieve(case, intent.get("research_queries", ()), audit)
-        research = runner.run("Selector", {
-            "case": case.to_dict(),
-            "intent": dict(intent),
+        selector_input = {
+            "case": case.to_dict(), "intent": dict(intent),
             "evidence": [item.to_dict(include_excerpt=True) for item in evidence],
             "max_candidates": min(_requested_candidate_count(case), self.config.max_candidates),
-        })
-        critic = runner.run("Reviewer", {
-            "case": case.to_dict(),
-            "proposals": research.get("proposals", ()),
-            "rule": "只审阅已有product_id；新增product_id将导致整步失败。",
-        })
-        return self._complete_mode_one(
-            case, route, run_id, mode, audit, runner,
-            evidence=evidence, research=research, critic=critic, catalog_session=self._research,
-        )
+        }
+        # A single conversation can revise its proposal without spawning roles.
+        # Keep the legacy multi-session preset's existing budget unchanged.
+        attempts = self.config.max_loop_rounds if mode == "single_agent" else 1
+        for attempt in range(attempts):
+            research = runner.run("Selector", selector_input)
+            critic = runner.run("Reviewer", {
+                "case": case.to_dict(), "proposals": research.get("proposals", ()),
+                "evidence": selector_input["evidence"],
+                "rule": "只审阅已有product_id；新增product_id将导致整步失败。",
+            })
+            evidence = self._research.merge_catalog_evidence(evidence)
+            candidates, rejected = build_candidates(research, critic, evidence=evidence,
+                run_id=run_id, max_candidates=min(_requested_candidate_count(case), self.config.max_candidates),
+                confirmed_constraints=case.confirmed_constraints)
+            if len(candidates) >= _requested_candidate_count(case) or not rejected or attempt + 1 == attempts:
+                return self._candidate_set(case, route, run_id, mode, audit, candidates, rejected)
+            audit.append("proposal_revision", "revision_required", agent_role="SingleAgent.Selector",
+                input_value={"attempt": attempt + 1}, output_value={"rejected_candidates": list(rejected)})
+            selector_input = {**selector_input, "phase": "rework", "previous_proposals": research,
+                "reviewer_feedback": critic, "rejected_candidates": list(rejected),
+                "retained_candidates": [item.to_dict() for item in candidates],
+                "evidence": [item.to_dict(include_excerpt=True) for item in evidence],
+                "rule": "保留仍适用的候选，处理具体拒绝原因后重新提交方案。不得放宽用户硬约束；没有合适产品时返回空proposals，不为完成流程强行推荐。"}
 
     def _complete_mode_one(
         self,
@@ -364,6 +379,7 @@ class RecommenderService:
         research: Mapping[str, Any],
         critic: Mapping[str, Any],
         catalog_session: ResearchSession | None = None,
+        preserve_research_evidence: bool = False,
     ) -> RecommendationSet:
         del step_runner
         if catalog_session is not None:
@@ -376,6 +392,8 @@ class RecommenderService:
             max_candidates=min(_requested_candidate_count(case), self.config.max_candidates),
             confirmed_constraints=case.confirmed_constraints,
         )
+        if preserve_research_evidence:
+            candidates = tuple(self._research.attach_candidate_evidence(item) for item in candidates)
         return self._candidate_set(case, route, run_id, mode, audit, candidates, rejected)
 
     def _run_independent_council(
@@ -408,6 +426,7 @@ class RecommenderService:
             "rule": "先独立提出候选及依据，交给Host登记；收到registered_candidates后再按其中的candidate_id计算，不用product_id代替。",
         }
         branches = runner.run_named({"Matcher": proposal_input, "Hedger": proposal_input})
+        research_requests = {}
         for role in ("Matcher", "Hedger"):
             for attempt in range(2):
                 proposed = branches[role].get("proposals", ())
@@ -431,13 +450,17 @@ class RecommenderService:
                 })
             self._research.register(branch_candidates)
             self._research.restrict_role(role, branch_candidates)
-            branches[role] = runner.run(role, {
-                **shared, **self._research.catalog_for_research(evidence, branch_candidates),
+            permitted = {item["evidence_id"] for item in self._research.catalog_for_validation(
+                role, {"input": {"evidence": shared["evidence"]}})}
+            own_evidence = [item for item in evidence if item.evidence_id in permitted]
+            research_requests[role] = {
+                **shared, **self._research.catalog_for_research(own_evidence, branch_candidates),
                 "phase":"research", "own_proposals":branches[role],
                 "registered_candidates":[item.to_dict() for item in branch_candidates],
                 "research":{**self._research.context(),"candidates":[item.to_confirmation_dict() for item in branch_candidates]},
                 "rule":"独立验证自己的候选，按需调用工具；输出proposals并保留证据和限制，不读取另一角色的意见。",
-            })
+            }
+        branches.update(runner.run_named(research_requests))
         self._research.share_evidence()
         evidence = self._research.merge_catalog_evidence(evidence)
         shared = {**shared, "evidence": [item.to_dict(include_excerpt=True) for item in evidence]}
@@ -465,18 +488,27 @@ class RecommenderService:
             moderated=runner.run("Moderator",{**shared,"matcher":branches["Matcher"],"hedger":branches["Hedger"],
                 "review_index":review_index+1,"research_evidence":self._research.read(),
                 "rule":"仅依据已验证证据汇总，保留未解决分歧；无需再复核时refinement_requests为空。"})
+        unresolved = tuple(moderated.get("refinement_requests", ()))
         audit.append(
-            "council", "complete", agent_role=None,
+            "council", "partial" if unresolved else "complete", agent_role=None,
             input_value={"roles": ["Framer", "Matcher", "Hedger", "Moderator"]},
-            output_value={"proposal_count": len(moderated.get("proposals", ()))},
-            detail={"roles": ["Framer", "Matcher", "Hedger", "Moderator"]},
+            output_value={"proposal_count": len(moderated.get("proposals", ())),
+                          "unresolved_reviews": [dict(item) for item in unresolved]},
+            detail={"stop_reason": "review_limit" if unresolved else "resolved"},
         )
-        return self._complete_mode_one(
+        result = self._complete_mode_one(
             case, route, run_id, mode, audit, runner,
             evidence=evidence,
             research={"proposals": moderated.get("proposals", ())},
             critic={"reviews": moderated.get("reviews", ())},
+            catalog_session=self._research, preserve_research_evidence=True,
         )
+        candidates = result.candidates
+        limitations = tuple(f"{item['role']}尚需复核：{item['question']}" for item in unresolved)
+        return replace(result, candidates=candidates,
+                       primary_candidate_id=candidates[0].candidate_id if candidates else None,
+                       status="partial" if unresolved and candidates else result.status,
+                       limitations=(*result.limitations, *limitations))
 
     def _run_product_trader_loop(
         self,
