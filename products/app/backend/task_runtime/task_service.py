@@ -796,6 +796,25 @@ class TaskService:
 
         self._state.update("tasks", update)
 
+    def retire_pending_recommendation(self, identity: SessionIdentity, task_id: str) -> None:
+        """Stop offering an earlier selection when a new research request begins.
+
+        Keep the frozen snapshot for diagnosis; do not delete module runs,
+        conversation history or delivered reports.
+        """
+        def update(tasks: dict[str, Any]) -> dict[str, Any]:
+            task = _owned_task(tasks, identity, task_id, "conversation.write")
+            raw = task.get("recommendation_state")
+            if not isinstance(raw, dict):
+                return tasks
+            state = _pending_recommendation(raw, allow_approved=True)
+            if state["status"] in {"pending_approval", "approved"}:
+                state["status"] = "superseded"
+                task["recommendation_state"] = state
+                task["updated_at"] = datetime.now(timezone.utc).isoformat()
+            return tasks
+        self._state.update("tasks", update)
+
     def pending_recommendation(self, identity: SessionIdentity, task_id: str) -> dict[str, Any] | None:
         """Return the task-owned continuation state only to the App executor."""
 
@@ -825,6 +844,8 @@ class TaskService:
             if not isinstance(raw, dict):
                 return tasks
             state = _pending_recommendation(raw, allow_approved=True)
+            if state["status"] == "superseded":
+                return tasks
             if state["status"] == "pending_approval":
                 known_ids = {candidate["candidate_id"] for candidate in state["candidates"]}
                 if any(candidate_id not in known_ids for candidate_id in selected_ids):
@@ -1679,7 +1700,7 @@ def _pending_recommendation(value: dict[str, Any], *, allow_approved: bool = Fal
     status = str(value.get("status", "")).strip()
     permitted = {"pending_approval"}
     if allow_approved:
-        permitted.update({"approved", "completed"})
+        permitted.update({"approved", "completed", "superseded"})
     if status not in permitted:
         raise ValidationError("Recommendation continuation status is invalid")
     state_schema = PENDING_RECOMMENDATION_SCHEMA_ID
@@ -1731,7 +1752,7 @@ def _pending_recommendation(value: dict[str, Any], *, allow_approved: bool = Fal
         raise ValidationError("Recommendation approval contains unknown candidate_id")
     if status == "pending_approval" and approved_candidate_ids:
         raise ValidationError("Pending recommendation cannot contain approved_candidate_ids")
-    if status != "pending_approval" and not approved_candidate_ids:
+    if status in {"approved", "completed"} and not approved_candidate_ids:
         raise ValidationError("Recommendation approval requires approved_candidate_ids")
     result["candidates"] = candidates
     result["approved_candidate_ids"] = approved_candidate_ids
