@@ -5,6 +5,7 @@ imported here. Only the Host may register candidate snapshots and data versions.
 """
 from concurrent.futures import Future, TimeoutError as FutureTimeoutError
 from copy import deepcopy
+from dataclasses import replace
 import json
 from threading import RLock
 from uuid import uuid4
@@ -518,6 +519,8 @@ class ResearchSession:
             for module,status in row.get('module_statuses',{}).items():
                 if module not in statuses:continue
                 statuses[module]=status
+                # A module's new result replaces its whole metric set.
+                metrics={key:fact for key,fact in metrics.items() if fact.get('source')!=module}
                 refs.pop(module,None)
                 if status in {'succeeded','partial'}:
                     reference=next((ref for ref in row.get('module_run_refs',[]) if ref.get('module')==module),None)
@@ -531,3 +534,32 @@ class ResearchSession:
                 'module_run_refs':list(refs.values()),'verified_metrics':metrics,
                 'status':'completed' if all(value=='succeeded' for value in statuses.values()) else 'partial',
                 'message':'部分研究尚未取得可用证据' if any(value=='unsupported' for value in statuses.values()) else ''}
+
+    def attach_candidate_evidence(self, candidate):
+        """Keep one matching Host candidate identity and its verified run records.
+
+        Never join different contracts or combine independent branch runs into
+        a made-up computation. Other branches remain in the research history.
+        """
+        expected = candidate.to_confirmation_dict()
+        expected.pop('candidate_id')
+        with self._lock:
+            matching = [deepcopy(snapshot) for snapshot in self._candidates.values()
+                        if {key:value for key,value in snapshot.items() if key!='candidate_id'} == expected]
+        choices = []
+        for snapshot in matching:
+            current = replace(candidate, candidate_id=snapshot['candidate_id'])
+            rows = self.read(current.candidate_id)
+            modules = sorted({module for row in rows for module in row.get('module_statuses', {})})
+            if not modules:
+                continue
+            evidence = self.result_for(current, modules, 1)
+            records = read_evaluation_records(evidence, candidate_id=current.candidate_id,
+                modules=modules, round_no=1, tenant_id=self.case.tenant_id, task_id=self.case.task_id)
+            refs = tuple(record.module_run_ref for record in records if record.module_run_ref is not None)
+            choices.append((len(refs), current.candidate_id, replace(current,
+                evaluation_records=records, module_run_refs=refs,
+                module_statuses={record.module:record.status for record in records})))
+        if not choices:
+            return candidate
+        return sorted(choices, key=lambda item:(-item[0],item[1]))[0][2]
