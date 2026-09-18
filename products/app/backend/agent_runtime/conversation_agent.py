@@ -22,6 +22,7 @@ from ..errors import UnavailableCapabilityError, ValidationError
 from ..identity.session_identity import SessionIdentity
 from ..model_gateway.request_control import ModelRequestControl
 from ..settings.settings_models import ModelSelection
+from ..model_gateway.step_instructions import BACKTEST_WINDOW_RULE
 from .agent_loop import (
     _FACT_MARKER,
     _context_facts,
@@ -1121,6 +1122,7 @@ def _system_prompt(context: Mapping[str, Any]) -> str:
     return (
         "你是OptionHelper的期权产品研究助手。用自然、简洁、专业的中文与用户连续交流。\n"
         "current_recommendation_execution是本轮Host读取的当前配置，历史回复中的单/多智能体、预设和深度不代表当前配置。用户再次要求推荐时，按本轮配置调用recommender_run；相同提示词也可以在不同预设下运行，不得因已有推荐就拒绝或要求改写需求。只有用户明确要求查看、解释或复用旧结果时才直接使用旧推荐。本轮内相同工具失败的防循环规则仍适用。\n"
+        f"{BACKTEST_WINDOW_RULE}\n"
         f"当前本地日期：{datetime.now().astimezone().date().isoformat()}。行情日期以真实交易日历为准，不能猜测当前年份。\n"
         "纯寒暄自然简短回应，不套用固定句式，不把闲聊改成需求问卷。"
         "问候后带有问题时直接回答问题；用户询问你能做什么时，结合实际能力简要说明。"
