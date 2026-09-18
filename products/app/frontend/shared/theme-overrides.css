@@ -189,8 +189,6 @@ html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-sh
 html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .composer--desk form,
 html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .model-picker select,
 html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .model-picker .choice-trigger,
-html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .choice-menu,
-html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .choice-option,
 html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .task-rename-input {
   background: var(--color-paper) !important;
   border-color: var(--color-rule-strong) !important;
@@ -223,9 +221,7 @@ html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-sh
 
 html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .model-picker select:enabled:hover,
 html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .model-picker .choice:hover .choice-trigger,
-html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .model-picker .choice[data-open="true"] .choice-trigger,
-html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .choice-option:hover,
-html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .choice-option[aria-selected="true"] {
+html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .model-picker .choice[data-open="true"] .choice-trigger {
   background: var(--color-brand-red-soft) !important;
   color: var(--color-ink) !important;
 }
@@ -620,7 +616,6 @@ html[data-theme="dark"] {
   --glass-edge: rgb(255 255 255 / .12);
   --glass-shadow: inset 0 1px 0 rgb(255 255 255 / .08), 0 2px 5px rgb(0 0 0 / .2), 0 14px 36px rgb(0 0 0 / .28);
 }
-html[data-theme] .optionhelper-choice .choice-menu,
 html[data-theme] .conversation-outline__preview {
   background: var(--glass-fill) !important;
   border-color: var(--glass-edge) !important;
@@ -686,14 +681,7 @@ html[data-theme] .workspace-shell[data-workspace-shell] .composer form.is-genera
 html[data-theme] .workspace-shell[data-workspace-shell] .composer form {
   transition: border-color 220ms ease, box-shadow 220ms ease;
 }
-html[data-theme] .optionhelper-choice[data-open="true"] .choice-menu {
-  animation: material-menu-in 180ms cubic-bezier(.16, 1, .3, 1);
-  transform-origin: top center;
-}
-html[data-theme] .optionhelper-choice[data-placement="top"] .choice-menu { transform-origin: bottom center; }
-@keyframes material-menu-in { from { opacity: .35; transform: translateY(3px) scale(.98); } to { opacity: 1; transform: none; } }
 @media (prefers-reduced-motion: reduce) {
-  html[data-theme] .optionhelper-choice[data-open="true"] .choice-menu { animation: none; }
   html[data-theme] .workspace-shell[data-workspace-shell] .composer form { transition: none; }
 }
 @media (prefers-reduced-transparency: reduce) {
