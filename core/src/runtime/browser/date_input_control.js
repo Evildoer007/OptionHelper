@@ -1,4 +1,4 @@
-/* OptionHelper页面统一日期输入边界：编辑时保留原文，失焦后统一显示。 */
+/* OptionHelper页面统一日期输入边界：输入时自动分隔，按数字位置保持光标，失焦后校验。 */
 (function attachDateInputControl(root, factory) {
   const api = factory();
   if (typeof module === 'object' && module.exports) module.exports = api;
@@ -112,19 +112,71 @@
     input._optionhelperDatePicker = picker;
   }
 
+  // Format the visible edit, never silently truncate or discard invalid pasted text.
+  function formatDateEdit(raw, cursor, event = {}, previous = null) {
+    const unchanged = {value: raw, caret: cursor};
+    if (event.isComposing || !/^[0-9/-]*$/.test(raw)) return unchanged;
+    let digits = raw.replace(/[^0-9]/g, '');
+    if (digits.length > 8) return unchanged;
+    let before = raw.slice(0, cursor).replace(/[^0-9]/g, '').length;
+    const deleting = String(event.inputType || '').startsWith('delete');
+    // A native deletion of just a separator must also remove the adjacent digit.
+    // Selection deletions are left to the browser, including selections spanning '/'.
+    if (previous && previous.start === previous.end && deleting
+        && digits === previous.value.replace(/[^0-9]/g, '')) {
+      const backward = event.inputType === 'deleteContentBackward';
+      const forward = event.inputType === 'deleteContentForward';
+      const at = backward ? before - 1 : before;
+      const separator = backward ? previous.value[previous.start - 1] : previous.value[previous.start];
+      if ((backward || forward) && /[/-]/.test(separator || '') && at >= 0 && at < digits.length) {
+        digits = digits.slice(0, at) + digits.slice(at + 1);
+        if (backward) before = at;
+      }
+    }
+    let display = digits.slice(0, 4);
+    if (digits.length > 4 || (!deleting && digits.length === 4)) display += '/' + digits.slice(4, 6);
+    if (digits.length > 6 || (!deleting && digits.length === 6)) display += '/' + digits.slice(6);
+    let caret = 0, count = 0;
+    while (caret < display.length && count < before) {
+      if (/\d/.test(display[caret])) count++;
+      caret++;
+    }
+    if (!deleting && display[caret] === '/') caret++;
+    return {value: display, caret};
+  }
+
+  function formatEdit(input, event = {}, previous = null) {
+    const raw = String(input.value ?? '');
+    const edit = formatDateEdit(raw, input.selectionStart ?? raw.length, event, previous);
+    if (edit.value !== raw) {
+      input.value = edit.value;
+      input.setSelectionRange?.(edit.caret, edit.caret);
+    }
+  }
+
   function bind(input, label = '日期') {
     if (input.dataset?.optionhelperDateBound === 'true') return input;
     if (input.dataset) input.dataset.optionhelperDateBound = 'true';
     input.placeholder = 'yyyy/mm/dd';
+    input.inputMode = 'numeric';
     if (input.value) set(input, input.value, label);
     attachPicker(input, label);
     const clearError = () => {
       input.setCustomValidity?.('');
       input.removeAttribute?.('aria-invalid');
     };
-    input.addEventListener('input', () => {
+    let previousEdit = null;
+    input.addEventListener('beforeinput', () => {
+      previousEdit = {value: input.value, start: input.selectionStart, end: input.selectionEnd};
+    });
+    input.addEventListener('input', (event = {}) => {
+      formatEdit(input, event, previousEdit);
+      previousEdit = null;
       if (input.dataset) delete input.dataset.optionhelperDateIso;
       clearError();
+    });
+    input.addEventListener('compositionend', () => {
+      formatEdit(input);
     });
     input.addEventListener('blur', () => {
       try {
@@ -134,5 +186,85 @@
     return input;
   }
 
-  return Object.freeze({bind, parseAndFormat, read, set, toDisplay, toIso});
+  function normalizeDateList(value) {
+    return String(value ?? '').replace(/\r\n?/g, '\n').replace(/[\t ,，;；]+/g, '\n');
+  }
+
+  function formatListEdit(input, event = {}, previous = null) {
+    if (event.isComposing) return;
+    const raw = String(input.value ?? '');
+    const text = normalizeDateList(raw);
+    const cursor = normalizeDateList(raw.slice(0, input.selectionStart ?? raw.length)).length;
+    const lineIndex = text.slice(0, cursor).split('\n').length - 1;
+    const lineStart = cursor ? text.lastIndexOf('\n', cursor - 1) + 1 : 0;
+    let previousLine = null;
+    if (previous && previous.start === previous.end) {
+      const oldText = normalizeDateList(previous.value);
+      const oldCursor = normalizeDateList(previous.value.slice(0, previous.start)).length;
+      const oldIndex = oldText.slice(0, oldCursor).split('\n').length - 1;
+      if (oldIndex === lineIndex) {
+        const oldStart = oldCursor ? oldText.lastIndexOf('\n', oldCursor - 1) + 1 : 0;
+        previousLine = {value: oldText.split('\n')[oldIndex], start: oldCursor - oldStart, end: oldCursor - oldStart};
+      }
+    }
+    let caret = cursor;
+    const lines = text.split('\n').map((line, index) => {
+      if (index !== lineIndex) return parseAndFormat(line)?.display || line;
+      const edit = formatDateEdit(line, cursor - lineStart, event, previousLine);
+      caret = edit.caret;
+      return edit.value;
+    });
+    const value = lines.join('\n');
+    caret += lines.slice(0, lineIndex).reduce((length, line) => length + line.length + 1, 0);
+    if (value !== raw) {
+      input.value = value;
+      input.setSelectionRange?.(caret, caret);
+    }
+  }
+
+  function readList(input, label = '日期') {
+    const result = [];
+    try {
+      normalizeDateList(input.value).split('\n').forEach((line, index) => {
+        if (line.trim()) result.push(toIso(line, `${label}第${index + 1}行`));
+      });
+      input.setCustomValidity?.('');
+      input.removeAttribute?.('aria-invalid');
+      return result;
+    } catch (error) {
+      input.setCustomValidity?.(error.message);
+      input.setAttribute?.('aria-invalid', 'true');
+      throw error;
+    }
+  }
+
+  function bindList(input, label = '日期', onValidation = () => {}) {
+    if (input.dataset?.optionhelperDateListBound === 'true') return input;
+    if (input.dataset) input.dataset.optionhelperDateListBound = 'true';
+    // Keep the normal multiline keyboard so Enter remains available on touch devices.
+    input.inputMode = 'text';
+    let previous = null;
+    const clearError = () => {
+      input.setCustomValidity?.('');
+      input.removeAttribute?.('aria-invalid');
+      onValidation('');
+    };
+    input.addEventListener('beforeinput', () => {
+      previous = {value: input.value, start: input.selectionStart, end: input.selectionEnd};
+    });
+    input.addEventListener('input', (event = {}) => {
+      formatListEdit(input, event, previous);
+      previous = null;
+      clearError();
+    });
+    input.addEventListener('compositionend', () => { formatListEdit(input); clearError(); });
+    input.addEventListener('blur', () => {
+      if (input.disabled) return;
+      try { readList(input, label); onValidation(''); }
+      catch (error) { onValidation(error.message); }
+    });
+    return input;
+  }
+
+  return Object.freeze({bind, bindList, parseAndFormat, read, readList, set, toDisplay, toIso});
 });
