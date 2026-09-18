@@ -1470,28 +1470,7 @@ html[data-optionhelper-app-hosted="true"][data-optionhelper-module] [hidden] {
   display: none !important;
 }
 
-/* Shared choice surfaces: quiet selection, bilingual labels, consistent depth. */
-html[data-optionhelper-app-hosted="true"] .optionhelper-choice .choice-trigger { border-radius: 12px; font-weight: 500; transition: background-color 160ms ease, box-shadow 160ms ease; }
-html[data-optionhelper-app-hosted="true"] .optionhelper-choice .choice-trigger__value { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 9px; white-space: normal; min-width: 0; }
-html[data-optionhelper-app-hosted="true"] .optionhelper-choice .choice-menu { padding: 6px; border: 0; border-radius: 14px; background: var(--surface, #fff); box-shadow: 0 2px 4px rgb(0 0 0 / .06), 0 12px 30px rgb(0 0 0 / .12), 0 0 0 1px rgb(128 128 128 / .14); }
-html[data-optionhelper-app-hosted="true"] .optionhelper-choice .choice-option { min-height: 38px; padding: 9px 11px; gap: 4px 9px; border-radius: 9px; flex-wrap: wrap; font-weight: 400; transition: background-color 140ms ease; }
-html[data-optionhelper-app-hosted="true"] .optionhelper-choice .choice-option[aria-selected="true"] { background: color-mix(in srgb, var(--ink, #222) 6%, transparent); color: var(--ink, #222); font-weight: 500; }
-html[data-optionhelper-app-hosted="true"] .optionhelper-choice .choice-option:hover { background: color-mix(in srgb, var(--ink, #222) 9%, transparent); color: var(--ink, #222); }
-html[data-optionhelper-app-hosted="true"] .optionhelper-choice .choice-option:focus-visible { outline: 0; background: color-mix(in srgb, var(--color-ink) 12%, var(--color-surface)); }
-html[data-optionhelper-app-hosted="true"] .optionhelper-choice .choice-english { color: var(--muted, #686868); font-size: .85em; font-weight: 400; }
-html[data-optionhelper-app-hosted="true"] .optionhelper-choice .choice-option::after { flex-shrink: 0; }
-@media (prefers-reduced-motion: reduce) { html[data-optionhelper-app-hosted="true"] .optionhelper-choice :is(.choice-trigger, .choice-option) { transition: none; } }
-/* Shared choice surfaces: quiet selection, bilingual labels, consistent depth. */
-html[data-optionhelper-app-hosted="true"] .oh-choice .oh-choice__trigger { border-radius: 12px; font-weight: 500; transition: background-color 160ms ease, box-shadow 160ms ease; }
-html[data-optionhelper-app-hosted="true"] .oh-choice .oh-choice__value { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 9px; white-space: normal; min-width: 0; }
-html[data-optionhelper-app-hosted="true"] .oh-choice .oh-choice__menu { padding: 6px; border: 0; border-radius: 14px; background: var(--surface, #fff); box-shadow: 0 2px 4px rgb(0 0 0 / .06), 0 12px 30px rgb(0 0 0 / .12), 0 0 0 1px rgb(128 128 128 / .14); }
-html[data-optionhelper-app-hosted="true"] .oh-choice .oh-choice__option { min-height: 38px; padding: 9px 11px; gap: 4px 9px; border-radius: 9px; flex-wrap: wrap; font-weight: 400; transition: background-color 140ms ease; }
-html[data-optionhelper-app-hosted="true"] .oh-choice .oh-choice__option[aria-selected="true"] { background: color-mix(in srgb, var(--ink, #222) 6%, transparent); color: var(--ink, #222); font-weight: 500; }
-html[data-optionhelper-app-hosted="true"] .oh-choice .oh-choice__option:hover { background: color-mix(in srgb, var(--ink, #222) 9%, transparent); color: var(--ink, #222); }
-html[data-optionhelper-app-hosted="true"] .oh-choice .oh-choice__option:focus-visible { outline: 0; background: color-mix(in srgb, var(--color-ink) 12%, var(--color-surface)); }
-html[data-optionhelper-app-hosted="true"] .oh-choice .choice-english { color: var(--muted, #686868); font-size: .85em; font-weight: 400; }
-html[data-optionhelper-app-hosted="true"] .oh-choice .oh-choice__option::after { flex-shrink: 0; }
-@media (prefers-reduced-motion: reduce) { html[data-optionhelper-app-hosted="true"] .oh-choice :is(.oh-choice__trigger, .oh-choice__option) { transition: none; } }
+/* Hosted dropdown surfaces are supplied by App choice-controls.css. */
 
 /* Unified selection controls: shared by App and embedded module pages. */
 html body label:has(> input:is([type="checkbox"], [type="radio"])) {
