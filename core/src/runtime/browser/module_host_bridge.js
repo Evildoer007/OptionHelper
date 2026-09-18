@@ -307,7 +307,7 @@ function renderChoiceLabel(node, option) {
     }
     const below = Math.max(0, bottom - rect.bottom - 6);
     const above = Math.max(0, rect.top - top - 6);
-    const upward = below < Math.min(menu.scrollHeight || 160, 160) && above > below;
+    const upward = below < Math.min(menu.scrollHeight || 160, 280) && above > below;
     choice.dataset.direction = upward ? "up" : "down";
     menu.style.maxHeight = `${Math.min(280, window.innerHeight * .42, upward ? above : below)}px`;
   }
@@ -320,11 +320,15 @@ function renderChoiceLabel(node, option) {
     choice.dataset.open = String(open);
     trigger.setAttribute("aria-expanded", String(open));
     menu.hidden = !open;
+    menu.inert = !open;
     const search = choice.querySelector('.oh-choice__search');
     if (open && search) { search.value = ''; filterProductChoices(choice); menu.scrollTop = 0; }
-    if (open) positionChoiceMenu(choice);
+    if (open) {
+      positionChoiceMenu(choice);
+      menu.style.transformOrigin = choice.dataset.direction === "up" ? "bottom center" : "top center";
+    }
     if (open && focus && search) { search.focus({preventScroll: true}); return; }
-    if (open && focus) (menu.querySelector('[role="option"][aria-selected="true"]:not([disabled])') || menu.querySelector('[role="option"]:not([disabled]):not([hidden])'))?.focus();
+    if (open && focus) (menu.querySelector('[role="option"][aria-selected="true"]:not([disabled])') || menu.querySelector('[role="option"]:not([disabled]):not([hidden])'))?.focus({preventScroll: true});
   }
 
   function closeChoiceControls() {
@@ -422,6 +426,7 @@ function renderChoiceLabel(node, option) {
     }
     trigger.addEventListener("click", () => setChoiceOpen(choice, choice.dataset.open !== "true", choice.dataset.open !== "true"));
     trigger.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && choice.dataset.open !== "true") return;
       if (["ArrowDown", "ArrowUp", "Home", "End", " ", "Enter", "Escape"].includes(event.key)) event.stopPropagation();
       if (event.key === "ArrowDown" || event.key === "ArrowUp") {
         event.preventDefault();
