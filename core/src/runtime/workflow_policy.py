@@ -98,7 +98,7 @@ def decide_workflow(
     pending_candidate = controlled_facts.get("recommendation_candidate")
     has_pending_candidate = isinstance(pending_candidate, Mapping)
     recommendation_requested = any(marker in action_text for marker in _RECOMMENDATION_MARKERS) or bool(
-        re.search(r"(?:筛选|挑选|选出|选择)[^，。；;!?！？]{0,18}(?:期权|结构|产品)", action_text)
+        re.search(r"(?:筛选|挑选|挑|选出|选择|选|比较|对比)[^，。；;!?！？]{0,18}(?:期权|结构|产品|方案)", action_text)
     )
     module_requested = any(marker in action_text for marker in _MODULE_MARKERS)
     changing_terms = has_term_change_intent(lowered)
@@ -184,7 +184,7 @@ def _affirmative_actions(text: str) -> str:
     # Match individual actions, not entire clauses: later affirmative requests survive.
     topic = (
         r"(?:产品交易循环|独立评议|约束排序|比较结构|对比结构|结构比较|结构对比|比较候选|对比候选|"
-        r"推荐|筛选|收益分析|收益图|定价|估值|回测|报告|html|pdf|计算|文件|行情)"
+        r"(?:比较|对比|挑选|选择|挑|选)[^，。；;!?！？]{0,18}(?:期权|结构|产品|方案)|推荐|筛选|收益分析|收益图|定价|估值|回测|报告|html|pdf|计算|文件|行情)"
     )
     action = rf"(?:(?:生成|执行|进行|运行|使用|采用|用|调用|获取|做|取)\s*)?{topic}"
     return re.sub(

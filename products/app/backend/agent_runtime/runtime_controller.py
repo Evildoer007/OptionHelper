@@ -135,6 +135,7 @@ class AgentRuntimeController:
         self._workflow: WorkflowSpec | None = None
         self._runs: dict[str, AgentRun] = {}
         self._history: list[RuntimeEvent] = []
+        self._events_by_id: dict[str, RuntimeEvent] = {}
         self._lock = RLock()
         self._status = "idle"
         self._closed = False
@@ -678,7 +679,7 @@ class AgentRuntimeController:
         if self._workflow is not None and event.workflow_id != self._workflow.workflow_id:
             raise AuthorizationError("agent_runtime.event", "Runtime事件不属于当前Workflow")
         with self._lock:
-            existing = next((item for item in self._history if item.event_id == event.event_id), None)
+            existing = self._events_by_id.get(event.event_id)
             if existing is not None:
                 previous = existing.to_dict()
                 incoming = event.to_dict()
@@ -697,7 +698,7 @@ class AgentRuntimeController:
         return event
 
     def _accept_event(self, event: RuntimeEvent, *, persist: bool, notify: bool) -> None:
-        existing = next((item for item in self._history if item.event_id == event.event_id), None)
+        existing = self._events_by_id.get(event.event_id)
         if existing is not None:
             if existing.to_dict() != event.to_dict():
                 raise ValidationError("Runtime事件idempotency冲突")
@@ -723,6 +724,7 @@ class AgentRuntimeController:
                     ignorable=True,
                 )
         self._history.append(event)
+        self._events_by_id[event.event_id] = event
         self._update_from_event(event)
         if notify and self._event_sink is not None:
             self._event_sink(event)

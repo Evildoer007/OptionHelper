@@ -235,15 +235,22 @@ export function projectArchivedResearchPages(messages: readonly AgentMessage[]):
   }
   return projected
 }
-/** Only completed exchanges may become a Host-verified continuation checkpoint. */
+/** Initial role input and completed exchanges may become a Host-verified checkpoint. */
 function completeResearchExchange(messages: readonly AgentMessage[]): boolean {
   const start = messages.findLastIndex(message => message.role === "user")
-  if (start < 0 || messages.at(-1)?.role !== "tool") return false
+  if (start < 0) return false
+  let initialCheckpointAllowed = false
   try {
     const block = messages[start]!.content[0]
     const input = block?.type === "text" ? JSON.parse(block.text) : null
     if (input?.protocol !== "optionhelper.recommender.step") return false
+    initialCheckpointAllowed = input.host_checkpoint_available === true
   } catch { return false }
+  // A large first-stage envelope can overflow before the role gets to call a
+  // tool. Host archives that exact role-scoped input and returns retrievable
+  // references, using the same verified path as later continuation checkpoints.
+  if (start === messages.length - 1) return initialCheckpointAllowed
+  if (messages.at(-1)?.role !== "tool") return false
   const pending = new Set<string>()
   let calls = 0
   for (const message of messages.slice(start + 1)) {

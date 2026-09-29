@@ -47,8 +47,8 @@ Chromium直接在离线环境打开本地HTML；WebKit使用本地路由提供�
 
 macOS与Windows共用前端、计算模块、报告模板和下载实现。macOS使用WKWebView，Windows使用WebView2；系统字体、标题栏与文件选择器由平台负责，不承诺系统装饰像素完全相同。
 
-- macOS输出：`dist/OptionHelper-v0.1.0.alpha-macOS-arm64.dmg`。
-- Windows输出：`result/windows-candidate/OptionHelper-v0.1.0.alpha-Windows-x64.exe`，为安装程序，不是开发运行器。
+- macOS输出：`dist/OptionHelper-v0.1.0-alpha-macOS-arm64.dmg`。
+- Windows输出：`result/windows-candidate/OptionHelper-v0.1.0-alpha-Windows-x64.exe`，为安装程序，不是开发运行器。
 - `packaging/tests/test_windows_current_alignment.py`与`modules/designer/tests/test_windows_text_output_contract.py`共15项通过，覆盖路径、深层报告资源、运行目录隔离及文本输出。
 - 该Mac没有Windows运行环境，未执行Windows安装程序。Windows首次安装、WebView2启动、设置、对话、五种HTML生成下载和升级仍须实机验证。
 - 原生App安装与交互证据单独记录在本地`result/ui-report-acceptance/native-acceptance.md`，只有实际完成才记录通过。
@@ -66,3 +66,11 @@ macOS最新构建d3c12f42ba4dd962e6cd2b6704f580d9702196779aaea881b6f6cba5dd2ad1c
 附件格式与边界32项、前端选择器1项、HTTP上传与对话附件投影7项通过；Windows源码与输出合同15项通过。MD、RTF、PDF从原生文件选择器上传并由模型读取的完整复验在用户切换任务时中断，尚未记为通过。此前实际生成的五种HTML已通过两引擎离线检查；新版原生保存面板下载尚未完成复验。
 
 RTF、PPTX、XLS、TSV、HTML、JSON、XML、YAML和OpenDocument均提取正文。扫描PDF没有OCR，旧版DOC/PPT需转换为DOCX/PPTX；不将这些情况标记成已读成功。
+
+## 6. 2026-09-22文档与账号同步
+
+README及App内使用说明已补充视频本地抽帧、EML、BMP、单页TIFF与代码文本，区分普通文件20MB与视频100MB，以及不含音频转写、多页TIFF需转换等边界。开发维护手册明确双平台各一个安装包、每个平台均包含sales和admin权限，并要求按四种平台与账号组合记录验证。
+
+Skill源码与两种格式的使用说明已允许按目标及实际依赖灵活编排、复用已有结果并持续追加筛选条件。此项仅修改Skill，不改写App的多智能体调度规则。
+
+本次Windows实机验收由用户明确暂缓。当前Mac无法构建Windows安装程序；Windows源码及共享服务端验证不能代替安装包与Windows实机证据。最新构建和安装结果另存本地验收记录，本文的旧快照不作为最新交付证明。

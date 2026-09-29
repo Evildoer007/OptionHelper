@@ -1,0 +1,116 @@
+/* Density follows the space available to the analysis, independently of the app rail. */
+.adaptive-companion-charts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: 24px;
+  border-top: 1px solid var(--rule-soft);
+}
+.adaptive-companion-charts > section { min-width: 0; margin: 16px 0 0; }
+.adaptive-companion-charts .dashboard-chart { height: 140px; }
+.dashboard-panel[data-density="expanded"] .dashboard-main-chart .dashboard-chart { height: 260px; }
+.dashboard-panel[data-density="expanded"] .dashboard-overview-layout { grid-template-columns: minmax(0, 1fr) 200px; gap: 28px; }
+.dashboard-panel[data-density="expanded"] .dashboard-main-chart > section { margin: 8px 0 20px; }
+@container (min-width: 940px) {
+  .dashboard-heading { margin-bottom: 18px; }
+  .dashboard-overview { padding-bottom: 18px; }
+}
+@container (max-width: 450px) {
+  .dashboard-heading { align-items: flex-start; gap: 10px; flex-direction: column; }
+  .dashboard-heading select { max-width: 100%; }
+  .dashboard-summary-grid { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 740px) {
+  html[data-optionhelper-app-hosted="true"] .canvas-toolbar { min-height: 44px; height: auto; flex-wrap: wrap; padding: 6px 12px; gap: 6px; }
+  html[data-optionhelper-app-hosted="true"] .canvas-toolbar-actions { flex-wrap: wrap; gap: 4px; }
+  html[data-optionhelper-app-hosted="true"] #workbench[data-dashboard-layout="columns"] .canvas-panel { grid-template-rows: auto auto minmax(0, 1fr) !important; }
+  .canvas-state { display: none; }
+}
+@container (min-width: 1250px) {
+  .dashboard-panel[data-density="expanded"] .dashboard-overview-main {
+    display: grid;
+    grid-template-columns: minmax(0, 1.8fr) minmax(280px, 1fr);
+    column-gap: 28px;
+    align-items: start;
+  }
+  .dashboard-panel[data-density="expanded"] .dashboard-chart-toolbar { grid-column: 1 / -1; }
+  .dashboard-panel[data-density="expanded"] .dashboard-main-chart { min-width: 0; }
+  .dashboard-panel[data-density="expanded"] .dashboard-main-chart .dashboard-chart { height: 292px; }
+  .adaptive-companion-charts { grid-template-columns: minmax(0, 1fr); gap: 12px; border-top: 0; border-left: 1px solid var(--rule-soft); padding-left: 24px; }
+  .adaptive-companion-charts > section { margin: 8px 0 0; }
+  .adaptive-companion-charts .dashboard-chart { height: 128px; }
+}
+
+/* Reuse OptDesk typography and semantic colours, including its light/dark tokens. */
+#workbench[data-dashboard-layout="columns"] .dashboard-heading h2 {
+  font: var(--oh-type-result-title);
+}
+#workbench[data-dashboard-layout="columns"] .dashboard-overview span,
+#workbench[data-dashboard-layout="columns"] .dashboard-table th {
+  font: var(--oh-type-label);
+}
+#workbench[data-dashboard-layout="columns"] :is(.dashboard-side-values dd, .dashboard-specialty-values dd) {
+  font: var(--oh-type-metric);
+}
+#workbench[data-dashboard-layout="columns"] :is(.dashboard-chart-section h3, .dashboard-side-section h3, .dashboard-summary-section h3) {
+  font: var(--oh-type-section-title);
+  color: var(--ink);
+}
+#workbench[data-dashboard-layout="columns"] :is(.dashboard-note, .dashboard-specialty-values small, .dashboard-metric-help, .three-column-note) {
+  font: var(--oh-type-helper);
+  color: var(--muted);
+}
+#workbench[data-dashboard-layout="columns"] :is(.three-column-toggle, .dashboard-tabs button, .dashboard-range button, .dashboard-chart-reset, .dashboard-more > summary, .dashboard-definitions > summary, .dashboard-side-values dt) {
+  font: var(--oh-type-control);
+}
+#workbench[data-dashboard-layout="columns"] :is(.dashboard-chart-reset, .dashboard-more > summary, .dashboard-definitions > summary) {
+  color: var(--ink);
+}
+#workbench[data-dashboard-layout="columns"] .dashboard-positive { color: var(--color-brand-red); }
+#workbench[data-dashboard-layout="columns"] .dashboard-negative { color: var(--color-blue-gray); }
+.adaptive-statistics { margin-top: 24px; padding-top: 20px; border-top: 1px solid var(--rule); }
+.adaptive-statistics > h3 { margin: 0 0 8px; font: var(--oh-type-section-title); color: var(--ink); }
+.adaptive-statistics .dashboard-summary-grid { column-gap: 28px; }
+@container (max-width: 580px) {
+  .adaptive-statistics .dashboard-summary-grid { grid-template-columns: minmax(0, 1fr); }
+  .dashboard-specialty-values { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+/* A board has a summary band, a chart field, and a compact facts band. */
+.adaptive-board-facts { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.5fr); gap: 28px; margin-top: 12px; padding-top: 16px; border-top: 1px solid var(--rule); }
+.adaptive-board-facts > :only-child { grid-column: 1 / -1; }
+.adaptive-board-facts .dashboard-specialty { margin: 0; padding: 0; border: 0; }
+.adaptive-board-facts .dashboard-chart-toolbar { padding: 0 0 12px; }
+.adaptive-board-facts .dashboard-specialty-values { margin: 0; gap: 12px; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.adaptive-board-facts .adaptive-statistics { margin: 0; padding: 0; border: 0; }
+.adaptive-board-values { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px 20px; margin: 12px 0 0; }
+.adaptive-board-values dt { color: var(--muted); font: var(--oh-type-control); margin-bottom: 4px; }
+.adaptive-board-values dd { color: var(--ink); font: var(--oh-type-metric); font-variant-numeric: tabular-nums; margin: 0; }
+#workbench[data-dashboard-layout="columns"] .dashboard-side-values > div { padding: 5px 0; }
+#workbench[data-dashboard-layout="columns"] .dashboard-side-section + .dashboard-side-section { margin-top: 16px; }
+#workbench[data-dashboard-layout="columns"] .dashboard-overview { padding-bottom: 12px; }
+@container (max-width: 800px) {
+  .adaptive-board-facts { grid-template-columns: minmax(0, 1fr); }
+}
+@container (max-width: 450px) {
+  .adaptive-board-values { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .adaptive-board-facts .dashboard-specialty-values { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+/* One range control governs the entire board; charts are not hidden behind sub-tabs. */
+.adaptive-range-label { font: var(--oh-type-control); color: var(--muted); }
+.adaptive-price-stack { min-width: 0; }
+.adaptive-volume-chart .dashboard-chart-section { margin: 0 0 12px; }
+.adaptive-volume-chart .dashboard-chart { height: 96px; }
+#workbench[data-dashboard-layout="columns"] .adaptive-volume-chart h3 { font: var(--oh-type-label); }
+@container (min-width: 1250px) {
+  .dashboard-panel[data-density="expanded"] .adaptive-price-stack .dashboard-main-chart .dashboard-chart { height: 208px; }
+  .dashboard-panel[data-density="expanded"] .adaptive-price-stack .dashboard-main-chart > section { margin-bottom: 4px; }
+  .adaptive-companion-charts .dashboard-chart { height: 144px; }
+}
+@container (max-width: 450px) {
+  .adaptive-companion-charts { grid-template-columns: minmax(0, 1fr); }
+}
+
+.adaptive-detail-section { min-width: 0; margin: 0 0 28px; }
+.adaptive-detail-section > h3 { font: var(--oh-type-section-title); color: var(--ink); margin: 0 0 14px; }
+.adaptive-detail-section + .adaptive-detail-section { border-top: 1px solid var(--rule); padding-top: 20px; }

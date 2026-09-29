@@ -4,7 +4,7 @@ import re,json,subprocess,base64,mimetypes,sys,os,hashlib
 ROOT=Path(os.environ.get('OPTIONHELPER_SOURCE_ROOT', Path.home()/'Desktop/OptionHelper')).resolve()
 DEMO=Path(__file__).resolve().parents[1]
 PUBLIC=DEMO/'public'
-for folder in [PUBLIC/'data', PUBLIC/'assets', DEMO/'tests']:
+for folder in [PUBLIC/'assets', DEMO/'tests']:
     folder.mkdir(parents=True, exist_ok=True)
 sys.path[:0]=[str(ROOT),str(ROOT/'core/src')]
 import types
@@ -13,7 +13,6 @@ for name in ["pricer","payoffer","backtester","datafetcher","designer","reporter
 from modules.pricer.service import PricerRuntime
 from modules.payoffer.service import catalog_payload, default_example_payload
 catalog={'pricing':PricerRuntime(result_store=object()).catalog(),'payoffer':catalog_payload()}
-(PUBLIC/'data/current-ui-catalog.json').write_text(json.dumps(catalog,ensure_ascii=False),encoding='utf-8')
 used={}
 source_text={}
 def read(p):
@@ -92,11 +91,16 @@ def html(p,module=None):
         return '' if 'preload' in tag else tag
     s=re.sub(r'<link\b[^>]*>',link,s)
     def scripts(m):
-        tag,body=m[1],m[2];src=re.search(r'src="([^"]+)"',tag)
+        tag,body=m[1],m[2]
+        # Attribute boundaries matter: data-plotly-src is not the script's src.
+        src=re.search(r'(?:^|\s)src="([^"]+)"',tag)
         if src and 'type="module"' in tag and joint_bundle is not None:
             return '<script>'+joint_bundle+'</script>' if m[0]==last_tag else ''
         code=script(resolve(src[1],p),'type="module"' in tag,module) if src else adapt_transport(body)
         extra=''
+        if module=='datafetcher' and src and src[1]=='./data-dashboard.js':
+            dependencies=[ROOT/'core/src/runtime/browser/vendor/plotly-optionhelper.min.js', ROOT/'core/src/runtime/browser/plotly_chart_system.js']
+            code=''.join(script(dependency)+';\n' for dependency in dependencies)+code
         if module=='reporter' and src and src[1]=='./editor/report-editor.js':
             extra=''.join('<script src="'+u+'"></script>' for u in ['assets/report-editing/docx.iife.js','assets/report-editing/export.js','assets/current-report-export.js'])
         return '<script>'+code+'</script>'+extra
@@ -121,7 +125,7 @@ for name in ['payoffer','pricer','backtester','datafetcher','reporter']:
     pages[name]=html(ROOT/f'modules/{name}/page/{name}.html',name)
 (PUBLIC/'assets/current-app-pages.js').write_text('window.OH_CURRENT_PAGES='+json.dumps(pages,ensure_ascii=False)+';\n',encoding='utf-8')
 (PUBLIC/'assets/current-catalog.js').write_text('window.OH_CURRENT_CATALOG='+json.dumps(catalog,ensure_ascii=False)+';\n',encoding='utf-8')
-(PUBLIC/'index.html').write_text('''<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>OptionHelper</title></head><body><script src="assets/current-app-pages.js"></script><script src="assets/current-catalog.js"></script><script src="assets/current-default-payoffs.js"></script><script src="assets/current-report-library.js"></script><script>const q=new URLSearchParams(location.search);const view=q.get('view');const page=view==='app'?(q.get('mode')==='chat'?'optchat':'optdesk'):view==='settings'?'settings':'login';document.open();document.write(window.OH_CURRENT_PAGES[page]);document.close();</script></body></html>''',encoding='utf-8')
+(PUBLIC/'index.html').write_text('''<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>OptionHelper</title></head><body><script src="assets/current-app-pages.js"></script><script src="assets/current-catalog.js"></script><script src="assets/current-dashboard-samples.js"></script><script src="assets/current-default-payoffs.js"></script><script src="assets/current-report-library.js"></script><script>const q=new URLSearchParams(location.search);const view=q.get('view');const page=view==='app'?(q.get('mode')==='chat'?'optchat':'optdesk'):view==='settings'?'settings':'login';document.open();document.write(window.OH_CURRENT_PAGES[page]);document.close();</script></body></html>''',encoding='utf-8')
 entry=PUBLIC/'index.html'
 entry.write_text(entry.read_text(encoding='utf-8').replace('<script src="assets/current-app-pages.js">','<script src="assets/current-icon-assets.js"></script><script src="assets/current-app-pages.js">'),encoding='utf-8')
 (DEMO/'tests/current-source-inventory.json').write_text(json.dumps({'source_root':str(ROOT),'files':used,'pages':list(pages),'boundary':'Only routing, asset embedding and offline transport are adapted; original HTML and CSS drive the interface.'},ensure_ascii=False,indent=2),encoding='utf-8')

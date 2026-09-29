@@ -211,6 +211,11 @@ class AgentStepRunner:
                     "evaluation_plan": STRUCTURER_PLAN_SCHEMA,
                 },
             }
+        if role == "Structurer" and payload.get("phase") == "rework":
+            request["rework_scope"] = {
+                "product_ids": [item["product_id"] for item in payload.get("current_candidates", ())],
+                "rule": "本轮只修订current_candidates中的产品。evaluation_plan逐项覆盖且每个product_id恰好一次；不能加入新产品、已接受或已淘汰产品。新增结构需要另起推荐，不属于当前修订。",
+            }
         if role == "Structurer" and payload.get("comparison_only") is True:
             # No financial plan is needed to compare product-library evidence.
             request["required_output"]["evaluation_plan"] = []
@@ -267,11 +272,20 @@ class AgentStepRunner:
                               detail={"message": str(error), "repair_attempt": 1})
             request = {**request, "validation_feedback": {
                 "error": str(error), "attempt": 1,
+                "missing_required_fields": _missing_output_fields(original, request.get("required_output", {})),
+                "invalid_result": original,
                 "instruction": "按required_output及output_schema重新返回完整result，补齐必填字段；数组必须为JSON数组。仅修复输出格式，不调用业务工具，不新增候选或修改条款，不编造金融事实。",
             }}
             if isinstance(error, _UnknownEvidenceReference):
+                # Include the whole role-visible catalogue: feedback for only the
+                # first invalid proposal leaves later products without repair context.
+                catalog = self.catalog_provider(role, request) if self.catalog_provider else request.get("input", {}).get("evidence", ())
+                request["validation_feedback"]["allowed_product_evidence"] = [
+                    dict(item) for item in (catalog or ())
+                    if isinstance(item, Mapping) and item.get("evidence_id")
+                ]
                 request["validation_feedback"]["instruction"] = (
-                    "只纠正evidence_ref_ids中的错误编号，从本次输入中该产品的证据编号选择。"
+                    "逐项检查全部候选，只纠正evidence_ref_ids中的错误编号。只从allowed_product_evidence中该product_id的资料选择，完整复制evidence_id；不能使用计算结果编号。"
                     "其他字段、候选顺序、条款、数值和正文必须完全保留，不调用业务工具。"
                 )
             step = self.port.run_step(port_role, request)
@@ -453,6 +467,14 @@ def _validate_request_result(role: str, request: Mapping[str, Any], value: objec
                     f"产品{row.get('product_id')}引用了本次输入中不存在的证据编号：{unknown}。"
                     f"本产品可用编号：{available}。这不是产品资料缺失。"
                 )
+    if role == "Structurer" and domain_input.get("phase") == "rework":
+        allowed = {item["product_id"] for item in domain_input.get("current_candidates", ())}
+        actual = [item["product_id"] for item in value.get("evaluation_plan", ())]
+        if len(actual) != len(set(actual)) or set(actual) != allowed:
+            raise ValueError(
+                f"当前修订的evaluation_plan必须且只能逐项覆盖{sorted(allowed)}，每个产品一次。"
+                f"收到{actual}。移除不属于当前修订的计划，保留当前产品已有条款，不得新增或替换产品。"
+            )
     if role == "Structurer" and domain_input.get("comparison_only") is True and value.get("evaluation_plan"):
         raise ValueError("只比较模式的evaluation_plan必须为[]，不得安排定价、回测或收益计算")
 
@@ -699,3 +721,19 @@ def _strings_field(value: Mapping[str, Any], key: str) -> list[str]:
     if any(not isinstance(item, str) for item in rows):
         raise ValueError(f"{key}必须为字符串数组")
     return rows
+
+
+def _missing_output_fields(value, schema, path="result"):
+    """List all omitted wire fields so a single repair can fix them together."""
+    missing = []
+    if isinstance(value, Mapping) and isinstance(schema, Mapping):
+        for key, child in schema.items():
+            field = f"{path}.{key}"
+            if key not in value:
+                missing.append(field)
+            else:
+                missing.extend(_missing_output_fields(value[key], child, field))
+    elif isinstance(value, list) and isinstance(schema, list) and schema:
+        for index, item in enumerate(value):
+            missing.extend(_missing_output_fields(item, schema[0], f"{path}[{index}]"))
+    return missing

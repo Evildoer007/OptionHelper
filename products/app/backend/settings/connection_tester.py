@@ -30,7 +30,7 @@ class ConnectionTester:
         request_id: str = "",
         expected_secret_ref: SecretRef | None = None,
     ) -> ConnectionTestResult:
-        if provider_name != "ifind":
+        if provider_name not in {"ifind", "data"}:
             raise UnavailableCapabilityError(
                 provider_name or "data-provider",
                 "该数据接口尚未接入；当前可在设置中心测试iFinD连接。",
@@ -44,7 +44,7 @@ class ConnectionTester:
         connection = result.get("connection") if isinstance(result, dict) else None
         if not isinstance(connection, dict):
             raise ValidationError("DataFetcher未返回连接测试结果")
-        provider = "iFind"
+        provider = str(connection.get("provider_name", "iFind"))
         status = str(connection.get("status", "unavailable"))
         detail = str(connection.get("detail", "iFind连接测试未返回说明。"))
         reason_code = connection.get("reason_code")

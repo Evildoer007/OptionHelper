@@ -549,7 +549,11 @@ macOS的常用数据根目录是`~/Library/Application Support/OptionHelper`，W
 
 ## 11. 更新App、Skill和两份Demo
 
-新产品在开发版本里能用以后，还需要把它交给实际使用者。当前版本分别是App v0.1.0和Skill v0.3.0；以后改版本时以[release_contract.py](../packaging/release_contract.py)中的APP_VERSION和SKILL_VERSION为准。
+新产品在开发版本里能用以后，还需要把它交给实际使用者。当前版本分别是App v0.1.0-alpha和Skill v0.3.0；以后改版本时以[release_contract.py](../packaging/release_contract.py)中的APP_VERSION和SKILL_VERSION为准。
+
+Windows与macOS各提供一个安装包，每个平台都包含sales和admin账号。sales使用OptChat及个人模型、数据配置；admin还可使用OptDesk五个模块。两种账号的使用说明分别为10章和17章，由服务端根据登录身份返回。修改共有能力时同步两份说明，不将管理员操作写成sales可用功能。
+
+发布检查按macOS/sales、macOS/admin、Windows/sales、Windows/admin四种组合记录：登录、对应手册、页面权限、工具与报告、设置和退出切换账号。源码权限检查、安装包构建和实机验收分别记录；未验收的平台必须明确标记，不因共用前后端就视为通过。
 
 ### 11.1 打包前先准备好
 

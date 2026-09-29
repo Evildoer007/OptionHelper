@@ -298,14 +298,18 @@ function projectArchivedResearchPages(messages) {
 }
 function completeResearchExchange(messages) {
   const start = messages.findLastIndex((message2) => message2.role === "user");
-  if (start < 0 || messages.at(-1)?.role !== "tool") return false;
+  if (start < 0) return false;
+  let initialCheckpointAllowed = false;
   try {
     const block = messages[start].content[0];
     const input2 = block?.type === "text" ? JSON.parse(block.text) : null;
     if (input2?.protocol !== "optionhelper.recommender.step") return false;
+    initialCheckpointAllowed = input2.host_checkpoint_available === true;
   } catch {
     return false;
   }
+  if (start === messages.length - 1) return initialCheckpointAllowed;
+  if (messages.at(-1)?.role !== "tool") return false;
   const pending = /* @__PURE__ */ new Set();
   let calls = 0;
   for (const message2 of messages.slice(start + 1)) {
@@ -1916,7 +1920,12 @@ var HostRuntimePorts = class {
     return {
       status: ["completed", "failed", "cancelled", "unknown"].includes(normalized) ? normalized : "failed",
       result: raw,
-      ...raw.error === void 0 ? {} : { error: String(raw.error) },
+      ...["completed", "cancelled"].includes(normalized) ? {} : {
+        error: [
+          typeof raw.message === "string" ? raw.message : typeof raw.error === "string" ? raw.error : "",
+          typeof raw.next_step === "string" ? raw.next_step : ""
+        ].filter(Boolean).join("")
+      },
       factRefs
     };
   }
@@ -1933,6 +1942,7 @@ var HostRuntimePorts = class {
         operation: "research_checkpoint",
         prompt: text,
         roleId: envelope.role,
+        maxChars: Math.max(0, Math.floor(maxChars) - 64),
         publicMessages: modelMessages(messages)
       }, _signal));
       const chunks = Array.isArray(response.chunks) ? response.chunks : [];

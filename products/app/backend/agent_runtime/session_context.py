@@ -84,6 +84,7 @@ class SessionEventLog:
         if self._path is not None:
             self._path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = RLock()
+        self._validated_revisions: dict[str, int] = {}
         self._memory_connection = (
             sqlite3.connect(":memory:", check_same_thread=False)
             if self._path is None else None
@@ -253,13 +254,21 @@ class SessionEventLog:
                     SessionId(str(session_id)), seq, identifier, name, timestamp,
                     safe_data, operation, sources, event_version, ignorable,
                 )
-                current_rows = connection.execute(
-                    "SELECT session_id,seq,event_id,event_type,timestamp,data_json,surface_operation_json,source_event_seqs_json,event_version,ignorable "
-                    "FROM session_events WHERE session_id=? ORDER BY seq",
-                    (str(session_id),),
-                ).fetchall()
-                candidate_events = [*(_event_from_row(row) for row in current_rows), candidate]
-                RUNTIME_INVARIANTS.validate_replay(candidate_events)
+                # Progress-only events do not affect replay semantics. Once this
+                # exact prefix is verified, appending one needs no historical JSON
+                # decoding. Another writer advancing the sequence invalidates it.
+                progress_only = (name == "runtime.event" and ignorable
+                                 and operation is None and not sources)
+                prefix_verified = self._validated_revisions.get(str(session_id)) == seq - 1
+                candidate_events = None
+                if not (progress_only and prefix_verified):
+                    current_rows = connection.execute(
+                        "SELECT session_id,seq,event_id,event_type,timestamp,data_json,surface_operation_json,source_event_seqs_json,event_version,ignorable "
+                        "FROM session_events WHERE session_id=? ORDER BY seq",
+                        (str(session_id),),
+                    ).fetchall()
+                    candidate_events = [*(_event_from_row(row) for row in current_rows), candidate]
+                    RUNTIME_INVARIANTS.validate_replay(candidate_events)
                 if (name in _SURFACE_EVENT_TYPES or operation is not None) and not ignorable:
                     # Validation happens while the write lock is held. A stale
                     # replace therefore fails before the candidate reaches disk.
@@ -288,6 +297,7 @@ class SessionEventLog:
                 if updated.rowcount != 1:
                     raise ValidationError("Session revision is inconsistent with event sequence")
                 connection.commit()
+                self._validated_revisions[str(session_id)] = seq
             except Exception:
                 connection.rollback()
                 raise

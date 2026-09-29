@@ -11,7 +11,7 @@ import json
 from datetime import date, datetime, timezone
 from hashlib import sha256
 from threading import RLock
-from typing import Any, Mapping
+from typing import Any, Mapping, Callable
 
 from ..errors import AuthorizationError, UserActionError, ValidationError
 from ..identity.session_identity import SessionIdentity
@@ -19,10 +19,20 @@ from . import _LocalDocumentStore
 
 
 class DataStore:
-    def __init__(self, state: _LocalDocumentStore) -> None:
+    def __init__(self, state: _LocalDocumentStore, *, provider_for: Callable[[SessionIdentity], str] | None = None) -> None:
         self._state = state
+        self._provider_for = provider_for
         self._volatile: dict[str, dict[str, Any]] = {}
         self._volatile_lock = RLock()
+
+    def _matches_provider(self, record: Mapping[str, Any], identity: SessionIdentity) -> bool:
+        if self._provider_for is None:
+            return True
+        selected = self._provider_for(identity)
+        # An unconfigured remote connection has no provider preference. Existing
+        # owner-scoped, validated local evidence remains usable without secrets.
+        # Explicit remote selections still cannot reuse another source silently.
+        return selected == "unconfigured" or record.get("lineage", {}).get("provider") == selected
 
     def _records(self) -> dict[str, Any]:
         with self._volatile_lock:
@@ -35,7 +45,8 @@ class DataStore:
               for row in self._records().values() if row.get("tenant_id")==identity.tenant_id
               and row.get("created_by")==identity.principal_id]
         encoded=json.dumps(sorted(rows,key=lambda row:str(row["data_asset_id"])),sort_keys=True,separators=(",",":"),ensure_ascii=False)
-        return sha256(encoded.encode()).hexdigest()
+        provider = self._provider_for(identity) if self._provider_for else ""
+        return sha256((provider + "\0" + encoded).encode()).hexdigest()
 
     def register(self, identity: SessionIdentity, asset: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(asset, dict):
@@ -150,6 +161,7 @@ class DataStore:
             candidates = [
                 item for item in self._records().values()
                 if isinstance(item, dict)
+                and self._matches_provider(item, identity)
                 and item.get("tenant_id") == identity.tenant_id
                 and item.get("created_by") == identity.principal_id
                 and "read" in item.get("access_scope", [])
@@ -162,9 +174,9 @@ class DataStore:
                     return None
                 labels = "、".join(str(item) for item in asset_ids)
                 if schema_id == "trading-calendar":
-                    message = f"本地资料库没有覆盖{labels}所需区间的交易日历，系统将尝试通过iFind自动补齐。"
+                    message = f"本地资料库没有覆盖{labels}所需区间的交易日历，系统将尝试通过所选数据服务自动补齐。"
                 else:
-                    message = f"本地资料库没有覆盖{labels}所需区间的行情，系统将尝试通过iFind自动补齐。"
+                    message = f"本地资料库没有覆盖{labels}所需区间的行情，系统将尝试通过所选数据服务自动补齐。"
                 raise UserActionError(
                     "market_data_required",
                     message,
@@ -205,7 +217,8 @@ class DataStore:
             if not isinstance(coverage, dict):
                 continue
             if (
-                item.get("tenant_id") != identity.tenant_id
+                not self._matches_provider(item, identity)
+                or item.get("tenant_id") != identity.tenant_id
                 or item.get("created_by") != identity.principal_id
                 or "read" not in item.get("access_scope", [])
                 or item.get("schema_id") != "market-history"
@@ -257,7 +270,8 @@ class DataStore:
             if not isinstance(item, dict) or not _market_history_metadata_consistent(item):
                 continue
             if (
-                item.get("tenant_id") != identity.tenant_id
+                not self._matches_provider(item, identity)
+                or item.get("tenant_id") != identity.tenant_id
                 or item.get("created_by") != identity.principal_id
                 or "read" not in item.get("access_scope", [])
                 or item.get("schema_id") != "market-history"
@@ -321,7 +335,8 @@ class DataStore:
             if not isinstance(item, dict):
                 continue
             if (
-                item.get("tenant_id") != identity.tenant_id
+                not self._matches_provider(item, identity)
+                or item.get("tenant_id") != identity.tenant_id
                 or item.get("created_by") != identity.principal_id
                 or "read" not in item.get("access_scope", [])
                 or item.get("schema_id") != "trading-calendar"

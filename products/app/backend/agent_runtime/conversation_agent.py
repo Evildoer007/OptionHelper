@@ -207,7 +207,10 @@ class OptionConversationAgent:
                               "正文不重复无引用数值；没有结果支持的数值应明确尚未核实。"
                               "参数、产品编号、日期、知识公式、理论区间和知识库教学案例照常保留，不需要计算引用，也不要标为未核实。"
                               "不要讨论核对协议。不要把期初费用说成完全不影响估值，"
-                              "费用影响要以当前运行的cashflow_lifecycle和合同现金流为准。",
+                              "费用影响要以当前运行的cashflow_lifecycle和合同现金流为准。"
+                              "fact_ref必须逐字完整复制，不得截短。decimal_ratio显示为百分数时须乘100，不能给原值直接加%。"
+                              "以下是本轮可用事实，请优先按readable_display复制数值和引用，正文只保留必要指标：\n"
+                              + _fact_repair_catalog(list(entry["observations"]), _context_facts(current_context)),
                     "modelRouteRef": route.to_dict(),
                     "toolPolicy": {"allowedTools": [], "parallelTools": False},
                     "contextPolicy": _context_policy(),
@@ -568,6 +571,7 @@ class OptionConversationAgent:
                 raw = self._tools.recommend(
                     identity, task_id, str(arguments.get("prompt", "")),
                     selection=entry.get("selection"), execution_ids=entry.get("execution_ids"),
+                    execution_settings=dict(entry.get("context", {}).get("facts", {}).get("current_recommendation_execution", {})),
                 )
             elif tool_name in {"attachment.search", "attachment.read"}:
                 raw = self._attachment_tool(identity, task_id, tool_name, arguments)
@@ -680,7 +684,11 @@ class OptionConversationAgent:
 # Conversation prose contains product IDs, dates, terms and symbolic formulas.
 # Those are not run results. Locate explicit metric values and metric columns,
 # then validate their citations; never split or discard explanatory paragraphs.
-_CONVERSATION_NUMBER = re.compile(r"(?<![A-Za-z0-9_.])[+−-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?(?:[eE][+-]?\d+|\s*[×⋅]\s*10[⁺⁻⁰¹²³⁴⁵⁶⁷⁸⁹]+)?%?")
+_CONVERSATION_NUMBER = re.compile(
+    r"(?<![A-Za-z0-9_.])[+−-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?"
+    r"(?:[eE][+−-]?\d+|\s*[×⋅]\s*10[⁺⁻⁰¹²³⁴⁵⁶⁷⁸⁹]+"
+    r"|\s*(?:\\times|\\cdot|[×⋅])\s*10\s*\^\s*(?:\{[+−-]?\d+\}|[+−-]?\d+))?(?:\\?%)?"
+)
 _CALCULATION_LABEL = re.compile(
     r"(?i)(?<![A-Za-z\\])(?:pv|delta|gamma|vega|theta|rho|price|stderr)(?![A-Za-z])"
     r"|理论价格|理论价值|合同估值|期权价格|净现值|标准误|收益率|胜率|最大回撤|累计收益|年化收益|样本数|平均损益"
@@ -705,6 +713,11 @@ def _conversation_result_numbers(text: str) -> set[tuple[int, int]]:
         for label in _CALCULATION_LABEL.finditer(plain):
             for number in _CONVERSATION_NUMBER.finditer(plain, label.end()):
                 gap = re.sub(r"\([^()\n]*\)|（[^（）\n]*）", "", plain[label.end():number.start()])
+                # In "Gamma：2.1为0.006%", 2.1 names the product, not the metric.
+                # Keep the following value subject to the same citation checks.
+                if re.fullmatch(r"\d+\.\d+", number.group()) and re.match(r"\s*(?:为|是)", plain[number.end():]):
+                    continue
+                gap = re.sub(r"^([\s*`$:：=|]*)(?:产品\s*)?\d+\.\d+\s*(?:为|是)\s*$", r"\1", gap)
                 if _METRIC_VALUE_GAP.fullmatch(gap):
                     if any(start <= number.start() < end for start, end in symbolic_ranges):
                         break
@@ -744,7 +757,11 @@ def _matches_display_number(rendered: str, value: object, unit_suffix: str = "")
         number = rendered.replace(',', '').replace('−', '-')
         number = re.sub(r'\s*[×⋅]\s*10([⁺⁻⁰¹²³⁴⁵⁶⁷⁸⁹]+)',
                         lambda match: 'e' + match.group(1).translate(str.maketrans('⁺⁻⁰¹²³⁴⁵⁶⁷⁸⁹','+-0123456789')), number)
-        percentage = number.endswith('%') or unit_suffix.lstrip().startswith('%')
+        number = re.sub(r'\s*(?:\\times|\\cdot|[×⋅])\s*10\s*\^\s*\{?([+-]?\d+)\}?',
+                        lambda match: 'e' + match.group(1), number)
+        number = number.replace('\\%', '%')
+        suffix = re.sub(r'^[\s$}]*', '', unit_suffix).replace('\\%', '%')
+        percentage = number.endswith('%') or suffix.startswith('%')
         decimal = Decimal(number.removesuffix('%'))
         scale = 100000000 if unit_suffix.lstrip().startswith("亿") else 10000 if unit_suffix.lstrip().startswith("万") else 1
         expected = Decimal(str(value)) * (100 if percentage else 1) / scale
@@ -1126,6 +1143,8 @@ def _system_prompt(context: Mapping[str, Any]) -> str:
         f"当前本地日期：{datetime.now().astimezone().date().isoformat()}。行情日期以真实交易日历为准，不能猜测当前年份。\n"
         "纯寒暄自然简短回应，不套用固定句式，不把闲聊改成需求问卷。"
         "问候后带有问题时直接回答问题；用户询问你能做什么时，结合实际能力简要说明。"
+        "面向用户的最终答复使用业务语言：不要暴露工具名、交付状态机、参数键值、报告ID、运行ID、count或CNY等内部枚举。monthly写每月首个交易日入场，complete_tenor写仅使用完整期限合同，数量写个，人民币金额写元。用户明确要求代码或诊断原始字段时才保留技术细节。"
+        "收益率和金额通常保留两位小数；很小的非零Greeks保留三位有效数字并用科学记数法，不能舍入成零。负数使用数学减号−。仅调整展示精度，不改变单位、不修改原始计算、不省略未完成事项。最终说明结论与局限，不复述内部调用经过。\n"
         "答复长度随问题复杂程度调整，不机械限制字数，不在每轮结尾强行追问。\n"
         "研究任务答复说明结论与依据，只有实际未完成的工作才说明缺项；普通咨询直接回答，不套用完成清单或下一步问卷。不要只返回一句固定失败提示，也不要让用户必须展开思考过程才能理解结论。\n"
         "用户明确不生成报告时只回答问题，不调用报告工具。用户要求依据内置产品规则时先查询对应产品资料，不凭名称推测条款。"
@@ -1137,6 +1156,7 @@ def _system_prompt(context: Mapping[str, Any]) -> str:
         "例如同标的同到期欧式牛市看涨价差在不拆腿且忽略费用时，整笔最大损失为净权利金支出；不能把卖出腿单独的亏损说成整笔结构的额外无限损失。在无套利、整笔两腿同时提前平仓且忽略费用和融资成本时，价差价值仍非负，净损失也不超过初始净权利金；提前整体平仓不是拆腿，不能要求必须持有到期才能满足这一上限。收益封顶只表示不再增加，不表示上涨后无法获益。不同条件需另行核对，不擅自套用该结论。\n"
         "组合的Vega等Greeks取决于标的位置、期限和两腿条件，不能把牛市价差笼统说成始终做多波动率或敏感度总比单腿小。符号公式和具体任务数值应清楚区分。\n"
         "知识解释中的理论范围和已标明的教学示例不是本次运行结果，不需要FactRef，不要因此删掉示例或要求用户运行计算。检索结果不是全库清单，查不到时换产品名称或编号继续查，不能把未命中说成库中不存在。数学公式请使用$...$或独立的$$...$$标记。知识解释和比较直接回答；只有缺少信息确实阻塞用户要求的操作时才提问，并尽量一次问完。\n"
+        "用户只描述标的、市场观点并要求挑选或比较方案时，先运行推荐。标的代码不是期权产品选择；不得要求用户先选具体结构才能开始推荐。缺少影响计算的市场口径时可在推荐后一次询问，不把产品选择责任退回用户。\n"
         "用户指定了期权产品并要求HTML或报告时，直接查询该产品规则，完成所需计算和报告，不调用推荐、不增加备选。只有用户要求选择、推荐或比较候选时才使用推荐模块。旧推荐未完成不能覆盖本轮新指定产品。\n"
         "MC路径数严格使用用户原值：10就是10条，10万才是100000条。将其作为整数传入pricing_config.path_count，model_method使用monte_carlo。精度不足可说明，但不能擅自提高路径数。工具参数错误先按字段说明修正，不要重复询问用户已提供的信息。\n"
         "你专注于期权结构、条款、收益、估值、Greeks、风险与历史回放，不提供无关的通用编程或文件操作能力。\n"
@@ -1226,8 +1246,19 @@ def _tool_properties(name: str) -> dict[str, Any]:
             properties["term_overrides"] = {"type": "object", "description": "与本轮定价沿用相同的收益条款，例如S0、K、T、Pi_0。Payoffer只计算归一化收益结构，不接收identity或行情引用。"}
         if name == "backtester.run":
             properties.update({
-                "historical_data": {"type": "object", "description": "datafetcher_fetch已返回的完整DataAssetRef，引用当前任务历史数据，不自行编造路径或数据。"},
-                "backtest_config": {"type": "object", "description": "历史回放配置；沿用已确认的入场规则、回测区间和合同期限。"},
+                "historical_data": {"type": "object", "properties": {"data_asset_id": {"type": "string"}, "content_hash": {"type": "string"}}, "required": ["data_asset_id"], "additionalProperties": False, "description": "仅提交取数结果的data_asset_id，可附content_hash；Host解析完整受控引用。"},
+                "backtest_config": {"type": "object", "properties": {
+                    "start_date": {"type": "string", "description": "入场起始日，YYYY-MM-DD"},
+                    "end_date": {"type": "string", "description": "入场截止日，非历史行情截止日"},
+                    "entry_rule": {"type": "string", "enum": ["daily", "monthly", "explicit"], "description": "monthly为每月首个交易日入场"},
+                    "entry_dates": {"type": "array", "items": {"type": "string"}},
+                    "complete_tenor": {"type": "boolean"},
+                    "missing_data_policy": {"type": "string", "enum": ["drop_trade", "reject"]},
+                    "alignment_policy": {"type": "string", "enum": ["intersection"]},
+                    "statistics_frequency": {"type": "string", "enum": ["all", "year"]},
+                    "entry_hv_window": {"type": "integer"},
+                    "entry_hv_bins": {"type": "array", "items": {"type": "number"}},
+                }, "additionalProperties": False, "description": "期限T沿用合同。名义本金由task.position_size设置；此对象仅接收入场与统计配置。"},
             })
         return properties
     if name == "pricer.run":
@@ -1494,3 +1525,34 @@ def _digest(value: str) -> str:
 
 
 __all__ = ["OptionConversationAgent"]
+
+
+def _fact_repair_catalog(observations, context_facts):
+    """Give the bounded formatting retry exact references and display units."""
+    facts = {}
+    for source in [*context_facts, *observations]:
+        for fact in [*source.get("facts", []), *source.get("contract_term_facts", [])]:
+            if not isinstance(fact, Mapping):
+                continue
+            ref, value = fact.get("fact_ref"), fact.get("value")
+            if not isinstance(ref, str) or isinstance(value, bool) or not isinstance(value, (int, float)):
+                continue
+            unit = fact.get("unit", "")
+            number = Decimal(str(value))
+            if not number.is_finite():
+                continue
+            suffix = str(unit)
+            if fact.get("value_encoding") == "decimal_ratio":
+                number *= 100
+                suffix = "%"
+            elif unit in {"percentage_points", "percent_points"}:
+                suffix = "个百分点"
+            # Give the repair turn a concise, verifiable display alongside the
+            # exact value; presentation must never change the underlying fact.
+            readable = format(number, ".3e") if number and abs(number) < Decimal("0.01") else format(number, ".2f")
+            readable = readable.replace("-", "−")
+            readable_suffix = "元" if suffix == "CNY" else suffix
+            facts[ref] = {"label": fact.get("label", fact.get("metric", "")),
+                          "display": f"{number}[fact:{ref}]{suffix}",
+                          "readable_display": f"{readable}[fact:{ref}]{readable_suffix}"}
+    return json.dumps(list(facts.values())[-60:], ensure_ascii=False, separators=(",", ":"))

@@ -105,12 +105,12 @@ from runtime.protocol.models import ModuleRunRef
 FRONTEND_ASSETS = frozenset({
     "shared/user-guide.js", "shared/user-guide.css", "shared/position-size.js", "shared/position-size.css",
     "login/index.html", "login/login-startup.js", "login/login.js",
-    "optchat/index.html", "optchat/optchat.js", "optchat/attachment-utils.js",
+    "optchat/index.html", "optchat/optchat.js", "optchat/attachment-utils.js", "optchat/video-attachments.js",
     "optdesk/index.html", "optdesk/optdesk.js",
     "settings/index.html", "settings/settings.js", "settings/model-providers.css", "settings/general-settings.css", "settings/settings-shell.css",
     "shared/styles.css", "shared/refinement.css", "shared/theme-overrides.css", "shared/app.js", "shared/transition-scope.js", "shared/theme-bootstrap.js", "shared/theme.js", "shared/ui-scale.js", "shared/scrollbar-activity.js", "shared/vol-surface.js", "shared/thinking-orb.js", "shared/thinking-orbs-engine.js", "shared/bloub-engine.js", "shared/bloub-avatar.js", "shared/activity-motion.js",
     "shared/choice-controls.css", "shared/composer-research-controls.js", "shared/conversation-transition.js",
-    "shared/conversation-outline.js", "shared/conversation-outline.css", "shared/conversation-scroll.js",
+    "shared/conversation-outline.js", "shared/conversation-outline.css", "shared/conversation-scroll.js", "shared/reply-presentation.js",
 })
 _CAPABILITY_CSP = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'self'; form-action 'self'"
 _AGENT_RUNTIME_MODES = frozenset({"disabled", "shadow", "active"})
@@ -302,7 +302,7 @@ class AppServer:
         self.settings = SettingsService(self._settings_store)
         self.tasks = TaskService(self._documents)
         self.attachments = AttachmentStore(self._documents._root / "attachments")
-        self.data_assets = DataStore(self._documents)
+        self.data_assets = DataStore(self._documents, provider_for=lambda identity: self.datafetcher.selected_provider(identity))
         self.results = ResultStore(self._documents)
         self.registry = PageRegistry(capability_root)
         if not self.registry.integrity["release_ready"] and not allow_unverified_capability:
@@ -704,12 +704,12 @@ class AppServer:
         local_data = principal.data_interface
         if local_data.secret_ref is not None:
             reference = self.secret_reference(
-                identity.tenant_id, "ifind", owner_id=identity.principal_id,
+                identity.tenant_id, _data_secret_service(local_data.provider_name), owner_id=identity.principal_id,
                 revision=local_data.secret_ref.revision,
             )
-            self.secret_provider.allow_reference(reference, "iFind数据凭据")
+            self.secret_provider.allow_reference(reference, _data_secret_purpose(local_data.provider_name))
             local_data = replace(local_data, secret_ref=self._configured_reference(
-                reference, local_data.secret_ref, "iFind数据凭据",
+                reference, local_data.secret_ref, _data_secret_purpose(local_data.provider_name),
             ))
         effective_model = local_model if local_model.provider_name != "unconfigured" else tenant.model_service
         return SettingsSnapshot(
@@ -903,7 +903,7 @@ class AppServer:
             else:
                 reference = self.secret_reference(
                     identity.tenant_id,
-                    "ifind",
+                    _data_secret_service(snapshot.data_interface.provider_name),
                     revision=snapshot.data_interface.secret_ref.revision if snapshot.data_interface.secret_ref else None,
                 ) if snapshot.data_interface.secret_ref else None
                 data = replace(snapshot.data_interface, secret_ref=reference)
@@ -967,7 +967,7 @@ class AppServer:
                 principal = replace(principal, storage_export=snapshot.storage_export)
             elif capability == "settings.data.local.write":
                 reference = self.secret_reference(
-                    identity.tenant_id, "ifind", owner_id=identity.principal_id,
+                    identity.tenant_id, _data_secret_service(snapshot.data_interface.provider_name), owner_id=identity.principal_id,
                     revision=snapshot.data_interface.secret_ref.revision,
                 ) if snapshot.data_interface.secret_ref else None
                 principal = replace(principal, data_interface=replace(snapshot.data_interface, secret_ref=reference))
@@ -1001,12 +1001,20 @@ class AppServer:
         connection_id: str | None = None,
         revision: str | None = None,
     ) -> SecretRef:
-        if purpose not in {"model", "ifind"}:
+        if purpose not in {"model", "ifind", "tinyshare", "tushare"}:
             raise ValidationError("Credential purpose is not supported")
         owner = owner_id or tenant_id
         digest = hashlib.sha256(owner.encode("utf-8")).hexdigest()[:24]
         suffix = "" if connection_id in {None, "primary"} and owner_id is None else f"/{connection_id or 'primary'}"
         return SecretRef(self._secret_reference_provider, f"optionhelper/{purpose}/{digest}{suffix}", revision)
+
+    def data_settings_for_write(self, identity: SessionIdentity, capability: str) -> DataInterfaceSettings:
+        if capability == "settings.data.local.write":
+            return self._principal_settings(identity).data_interface
+        try:
+            return self.settings.load(self._tenant_settings_key(identity.tenant_id)).data_interface
+        except KeyError:
+            return DataInterfaceSettings("unconfigured")
 
     def data_settings_capability(self, identity: SessionIdentity) -> str:
         capability = "settings.data.write" if self.policy.allows(identity.role, "settings.data.write") else "settings.data.local.write"
@@ -1028,6 +1036,8 @@ class AppServer:
         data = public.get("data_interface")
         if not isinstance(data, dict):
             raise ValidationError("Settings公开投影缺少数据接口")
+        if not self.policy.allows(identity.role, "settings.data.write"):
+            data["saved_providers"] = list(self._principal_settings(identity).data_interface.saved_references())
         data.update(self._settings_store.data_verification_status(
             tenant_id=identity.tenant_id,
             principal_id=identity.principal_id,
@@ -1046,7 +1056,7 @@ class AppServer:
         if reference is None:
             return
         matched = self._settings_store.save_data_verification_for_current_reference(
-            settings_key=(identity.principal_id if reference.key == self.secret_reference(identity.tenant_id, "ifind", owner_id=identity.principal_id).key else self._tenant_settings_key(identity.tenant_id)),
+            settings_key=(identity.principal_id if reference.key == self.secret_reference(identity.tenant_id, _data_secret_service(self.settings_for(identity).data_interface.provider_name), owner_id=identity.principal_id).key else self._tenant_settings_key(identity.tenant_id)),
             tenant_id=identity.tenant_id,
             principal_id=identity.principal_id,
             secret_ref=reference,
@@ -1223,11 +1233,11 @@ class AppServer:
         )
         data_reference = self.secret_reference(
             tenant_id,
-            "ifind",
+            _data_secret_service(snapshot.data_interface.provider_name),
             revision=snapshot.data_interface.secret_ref.revision if snapshot.data_interface.secret_ref else None,
         )
         self.secret_provider.allow_reference(model_reference, "模型服务凭据")
-        self.secret_provider.allow_reference(data_reference, "iFind数据凭据")
+        self.secret_provider.allow_reference(data_reference, _data_secret_purpose(snapshot.data_interface.provider_name))
         model = snapshot.model_service
         if model.provider_name == "deepseek-compatible":
             model = replace(model, provider_name="openai-compatible", model_name=model.model_name or "deepseek-v4-flash")
@@ -1265,13 +1275,13 @@ class AppServer:
                 ),
             )
         data = snapshot.data_interface
-        if data.provider_name not in {"unconfigured", "ifind-http"}:
+        if data.provider_name not in {"unconfigured", "ifind-http", "tinyshare", "tushare"}:
             data = DataInterfaceSettings("unconfigured")
         if data.provider_name != "unconfigured" and data.secret_ref != data_reference:
             data = replace(
                 data,
                 secret_ref=self._configured_reference(
-                    data_reference, snapshot.data_interface.secret_ref, "iFind数据凭据",
+                    data_reference, snapshot.data_interface.secret_ref, _data_secret_purpose(snapshot.data_interface.provider_name),
                 ),
             )
         normalized = replace(snapshot, role="admin", model_service=model, data_interface=data)
@@ -2110,6 +2120,8 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
             action = str(body.get("action", "")).strip().lower()
             payload = body.get("payload")
             allowed_actions = {"fetch", "run"}
+            if module == "datafetcher":
+                allowed_actions.add("dashboard")
             if module == "reporter":
                 allowed_actions.add("rerender")
             if module not in PAGE_MODULES or action not in allowed_actions or not isinstance(payload, dict):
@@ -2898,23 +2910,31 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/settings/data/credential":
             capability = self.app.data_settings_capability(identity)
-            _only_fields(body, {"provider_name", "refresh_token"})
-            refresh_token = _credential_value(body, "refresh_token")
+            _only_fields(body, {"provider_name", "refresh_token", "token"})
+            data_settings = _data_from(body)
+            credential_field = "refresh_token" if data_settings.provider_name == "ifind-http" else "token"
+            if ("token" if credential_field == "refresh_token" else "refresh_token") in body:
+                raise ValidationError("凭据类型与所选数据服务不匹配")
+            refresh_token = _credential_value(body, credential_field)
             reference = self.app.secret_reference(
                 identity.tenant_id,
-                "ifind",
+                _data_secret_service(data_settings.provider_name),
                 owner_id=identity.principal_id if capability == "settings.data.local.write" else None,
                 revision=f"rev-{uuid4().hex}",
             )
-            credential = {"refresh_token": refresh_token}
+            credential = {credential_field: refresh_token}
             credential_record = json.dumps(credential, separators=(",", ":"))
             current = self.app.settings_for(identity)
+            own_data = self.app.data_settings_for_write(identity, capability)
+            references = own_data.saved_references()
+            references[data_settings.provider_name] = reference
+            data_settings = replace(data_settings, provider_refs=references)
             snapshot = self.app.save_credential(
                 identity,
                 reference,
                 credential_record,
-                "iFind数据凭据",
-                replace(current, data_interface=DataInterfaceSettings(str(body["provider_name"]).strip(), reference)),
+                _data_secret_purpose(data_settings.provider_name),
+                replace(current, data_interface=replace(data_settings, secret_ref=reference)),
                 capability,
             )
             self.app.audit.record(AuditEvent(
@@ -2937,8 +2957,13 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
                 capability = "settings.model.write"
             elif path.endswith("/data"):
                 _only_fields(body, {"provider_name"})
-                snapshot = replace(current, data_interface=replace(_data_from(body), secret_ref=current.data_interface.secret_ref))
+                next_data = _data_from(body)
                 capability = self.app.data_settings_capability(identity)
+                references = self.app.data_settings_for_write(identity, capability).saved_references()
+                reference = references.get(next_data.provider_name)
+                if reference is None:
+                    raise ValidationError("所选服务尚未保存凭据，请粘贴对应Token并保存")
+                snapshot = replace(current, data_interface=replace(next_data, secret_ref=reference, provider_refs=references))
             else:
                 snapshot = replace(current, storage_export=_storage_from(body))
                 capability = "settings.storage.write"
@@ -3022,7 +3047,7 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
             provider = path.removeprefix("/api/settings/test/")
             tested_ref = (
                 self.app.settings_for(identity).data_interface.secret_ref
-                if provider == "ifind" else None
+                if provider in {"ifind", "data"} else None
             )
             try:
                 result = self.app.connection_tester.test(
@@ -3033,7 +3058,7 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
                 )
             except Exception:
                 raise
-            if provider == "ifind":
+            if provider in {"ifind", "data"}:
                 if result.status == "available":
                     self.app.record_data_connection_verification(
                         identity, available=True, expected_reference=tested_ref,
@@ -3145,7 +3170,7 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
                 # Local CSS icons use data images. Uploaded attachments use
                 # authenticated same-origin endpoints; blob images, remote
                 # resources and inline scripts remain disallowed.
-                "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'self'; object-src 'none'; frame-src 'self'; frame-ancestors 'self'; form-action 'self'",
+                "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; media-src blob:; connect-src 'self'; base-uri 'self'; object-src 'none'; frame-src 'self'; frame-ancestors 'self'; form-action 'self'",
             },
         )
 
@@ -3345,7 +3370,7 @@ def _credential_fields_for(path: str) -> frozenset[str]:
         "/api/settings/model-provider/credential": frozenset({"api_key"}),
         "/api/settings/model-provider/discover": frozenset({"api_key"}),
         "/api/settings/model-provider/test": frozenset({"api_key"}),
-        "/api/settings/data/credential": frozenset({"refresh_token"}),
+        "/api/settings/data/credential": frozenset({"refresh_token", "token"}),
     }.get(path, frozenset())
 
 
@@ -3601,8 +3626,8 @@ def _dispatch_background_report(
 
 def _data_from(value: dict[str, Any]) -> DataInterfaceSettings:
     provider_name = str(value.get("provider_name", "")).strip()
-    if provider_name != "ifind-http":
-        raise ValidationError("当前仅支持iFind数据服务")
+    if provider_name not in {"ifind-http", "tinyshare", "tushare"}:
+        raise ValidationError("请选择iFinD或Tushare数据服务")
     return DataInterfaceSettings(provider_name, None)
 
 
@@ -3669,6 +3694,14 @@ def _capability_summary(registry: PageRegistry) -> dict[str, Any]:
     }
 
 
+
+
+def _data_secret_service(provider_name: str) -> str:
+    return provider_name if provider_name in {"tinyshare", "tushare"} else "ifind"
+
+
+def _data_secret_purpose(provider_name: str) -> str:
+    return "Tushare数据凭据" if provider_name in {"tinyshare", "tushare"} else "iFind数据凭据"
 
 
 def main() -> None:

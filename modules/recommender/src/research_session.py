@@ -109,7 +109,7 @@ class ResearchSession:
                                           {'candidates': candidates, 'input': deepcopy(value)})
             return deepcopy(reference)
 
-    def read_stage_input(self, reference, role, result_path=()):
+    def read_stage_input(self, reference, role, result_path=(), *, offset=0, limit=None):
         with self._lock:
             canonical = role.removeprefix('SingleAgent.')
             if self._closed or not isinstance(reference, dict) or reference.get('role') != canonical:
@@ -121,6 +121,8 @@ class ResearchSession:
                 raise RecommendationValidationError('当前候选已改变，旧阶段引用不能代表当前条款')
             if not isinstance(result_path, (list, tuple)) or len(result_path) > 12:
                 raise RecommendationValidationError('冻结阶段读取路径无效')
+            if type(offset) is not int or offset < 0 or (limit is not None and (type(limit) is not int or not 1 <= limit <= 128)):
+                raise RecommendationValidationError('阶段分页范围无效')
             value = saved['input']
             for key in result_path:
                 if isinstance(value, dict) and isinstance(key, str) and key in value:
@@ -128,8 +130,19 @@ class ResearchSession:
                 elif isinstance(value, list) and type(key) is int and 0 <= key < len(value):
                     value = value[key]
                 else:
-                    raise RecommendationValidationError('冻结阶段读取路径不存在')
-            return {'status': 'completed', 'source': 'frozen_stage_input',
+                    available = list(value)[:32] if isinstance(value, dict) else f'数组长度{len(value)}' if isinstance(value, list) else '当前层为单值'
+                    raise RecommendationValidationError(f'冻结阶段读取路径不存在，当前层可用字段：{available}')
+            pagination = {}
+            if limit is not None or offset:
+                count = limit or 64
+                if isinstance(value, (dict, list, str)):
+                    total = len(value)
+                    value = dict(list(value.items())[offset:offset + count]) if isinstance(value, dict) else value[offset:offset + count]
+                    pagination = {'offset': offset, 'total': total, 'next_offset': offset + count if offset + count < total else None}
+                else:
+                    pagination = {'offset': offset, 'total': 1, 'next_offset': None}
+                    if offset: value = None
+            return {**pagination, 'status': 'completed', 'source': 'frozen_stage_input',
                     'stage_ref': deepcopy(reference), 'result_path': list(result_path), 'input': deepcopy(value),
                     'calculation_started': False}
 
@@ -165,10 +178,20 @@ class ResearchSession:
 
     def register(self, candidates):
         with self._lock:
+            if self._closed:
+                raise RecommendationValidationError('研究会话已关闭')
             for candidate in candidates:
                 snapshot = deepcopy(candidate.to_confirmation_dict())
                 self._original_candidates.setdefault(candidate.candidate_id, snapshot)
                 self._candidates[candidate.candidate_id] = snapshot
+
+    def contains_contract(self, candidate):
+        """Check a merged proposal against contracts actually registered by Host."""
+        expected = candidate.to_confirmation_dict()
+        expected.pop('candidate_id')
+        with self._lock:
+            return any({key: value for key, value in snapshot.items() if key != 'candidate_id'} == expected
+                       for snapshot in self._candidates.values())
 
     def restrict_role(self, role, candidates):
         """Keep first-round council research independent at the tool boundary."""
@@ -277,6 +300,16 @@ class ResearchSession:
                     and (fact.get('source') == 'contract_terms'
                          or evidence.get('module_statuses', {}).get(fact.get('source')) in {'succeeded', 'partial'})
                 }
+                for evidence in self.read(candidate_id, role=role):
+                    if evidence.get("candidate_snapshot") != current:
+                        continue
+                    summary = evidence.get("verified_module_summaries", {}).get("payoffer", {})
+                    if (evidence.get("module_statuses", {}).get("payoffer") in {"succeeded", "partial"}
+                            and any(ref.get("module") == "payoffer" for ref in evidence.get("module_run_refs", []))
+                            and summary.get("available") is True
+                            and summary.get("source") == "verified_payoffer_result"
+                            and isinstance(summary.get("fact_ref"), str)):
+                        known.add(summary["fact_ref"])
                 if not set(references).issubset(known):
                     raise RecommendationValidationError('角色引用了不存在、失效或不属于当前候选的金融事实')
 
@@ -515,6 +548,7 @@ class ResearchSession:
         statuses={module:'unsupported' for module in modules}
         refs={}
         metrics={}
+        summaries={}
         for row in rows:
             for module,status in row.get('module_statuses',{}).items():
                 if module not in statuses:continue
@@ -522,9 +556,13 @@ class ResearchSession:
                 # A module's new result replaces its whole metric set.
                 metrics={key:fact for key,fact in metrics.items() if fact.get('source')!=module}
                 refs.pop(module,None)
+                summaries.pop(module,None)
                 if status in {'succeeded','partial'}:
                     reference=next((ref for ref in row.get('module_run_refs',[]) if ref.get('module')==module),None)
-                    if reference is not None:refs[module]=reference
+                    if reference is not None:
+                        refs[module]=reference
+                        if module in row.get('verified_module_summaries', {}):
+                            summaries[module]=deepcopy(row['verified_module_summaries'][module])
             for metric,fact in row.get('verified_metrics',{}).items():
                 if fact.get('source') in modules or fact.get('source')=='contract_terms':metrics[metric]=fact
         # Never retain metrics from a failed latest module.
@@ -532,6 +570,7 @@ class ResearchSession:
         return {'candidate_id':candidate.candidate_id,'product_id':candidate.product_id,
                 'rule_revision':candidate.rule_revision,'round_no':round_no,'module_statuses':statuses,
                 'module_run_refs':list(refs.values()),'verified_metrics':metrics,
+                'verified_module_summaries':summaries,
                 'status':'completed' if all(value=='succeeded' for value in statuses.values()) else 'partial',
                 'message':'部分研究尚未取得可用证据' if any(value=='unsupported' for value in statuses.values()) else ''}
 

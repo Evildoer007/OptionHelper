@@ -41,6 +41,15 @@ def standalone_report_html(content: bytes, artifact_name: str,
     receive the same bytes, including for reports saved before this fix.
     """
     html = content.decode("utf-8")
+    # Sanitized working documents intentionally drop input meta tags. Restore
+    # only a trusted encoding declaration before any title/text so offline
+    # browsers do not guess GBK for UTF-8 Chinese reports.
+    if not re.search(r'<meta\b[^>]*charset\s*=', html, re.IGNORECASE):
+        head = re.search(r'<head\b[^>]*>', html, re.IGNORECASE)
+        if head:
+            html = html[:head.end()] + '<meta charset="utf-8">' + html[head.end():]
+        else:
+            html = '<meta charset="utf-8">' + html
     script = re.compile(r'<script\b(?P<attrs>[^>]*)>\s*</script\s*>', re.IGNORECASE)
     source = re.compile(r'\bsrc\s*=\s*([\'"])(.*?)\1', re.IGNORECASE)
 

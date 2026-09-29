@@ -265,7 +265,13 @@ class ReportEditor:
             return content, content_type
 
         sanitizer = _ReportHtmlSanitizer(html_artifact_name, read_declared)
-        sanitizer.feed(html)
+        # Older reports embedded full chart grids; keep the plot specifications
+        # and business tables, but omit these duplicate visual data blocks.
+        from bs4 import BeautifulSoup
+        document = BeautifulSoup(html, "html.parser")
+        for table in document.select(".chart-data, table.chart-data-table"):
+            table.decompose()
+        sanitizer.feed(str(document))
         sanitizer.close()
         return sanitizer.result()
 
@@ -692,7 +698,7 @@ function markChartUnavailable(spec){
   const element=document.getElementById(spec.id);
   if(!element)return;
   element.classList.add("chart--unavailable");
-  element.textContent="图表初始化失败，请使用下方完整数据表。";
+  element.textContent="图表初始化失败，请重新加载报告。";
 }
 function initialiseCharts(){
   const presentation=window.OptionHelperChartPresentation;

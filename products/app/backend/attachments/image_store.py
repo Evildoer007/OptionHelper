@@ -23,8 +23,8 @@ from ..errors import ValidationError
 from ..file_permissions import protect_private_path
 
 
-_MEDIA_TYPES = frozenset({"image/png", "image/jpeg", "image/webp", "image/gif"})
-_FORMAT_MEDIA = {"PNG": "image/png", "JPEG": "image/jpeg", "WEBP": "image/webp", "GIF": "image/gif"}
+_MEDIA_TYPES = frozenset({"image/png", "image/jpeg", "image/webp", "image/gif", "image/bmp", "image/tiff"})
+_FORMAT_MEDIA = {"PNG": "image/png", "JPEG": "image/jpeg", "WEBP": "image/webp", "GIF": "image/gif", "BMP": "image/bmp", "TIFF": "image/tiff"}
 _ATTACHMENT_ID = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
@@ -55,7 +55,7 @@ class ImageAttachmentStore:
                 raise ValidationError("图片附件字段无效")
             media_type = str(item.get("media_type", "")).strip().lower()
             if media_type not in _MEDIA_TYPES:
-                raise ValidationError("仅支持PNG、JPEG、WebP和GIF图片")
+                raise ValidationError("支持PNG、JPEG、WebP、GIF、BMP及单页TIFF图片")
             encoded = item.get("data")
             if not isinstance(encoded, str) or not encoded:
                 raise ValidationError("图片附件缺少数据")
@@ -95,6 +95,8 @@ class ImageAttachmentStore:
                 actual_media = _FORMAT_MEDIA.get(str(opened.format or "").upper())
                 if actual_media != declared_media:
                     raise ValidationError("图片声明格式与实际内容不一致")
+                if actual_media == "image/tiff" and getattr(opened, "n_frames", 1) > 1:
+                    raise ValidationError("多页TIFF请先转换为PDF，避免遗漏后续页面")
                 original_width, original_height = opened.size
                 if min(original_width, original_height) < 1:
                     raise ValidationError("图片尺寸无效")

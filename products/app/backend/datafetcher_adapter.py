@@ -107,6 +107,7 @@ class DataFetcherAdapter:
         request_id: str = "",
         trading_calendar_ref: Mapping[str, Any] | None = None,
         expected_secret_ref: SecretRef | None = None,
+        cancellation_check: Callable[[], bool] | None = None,
     ) -> dict[str, Any]:
         """Dispatch one App-owned request, optionally with Host calendar evidence.
 
@@ -124,7 +125,7 @@ class DataFetcherAdapter:
         if expected_secret_ref is not None and interface.secret_ref != expected_secret_ref:
             raise ValidationError("数据凭据版本已变化，请重新发起连接测试")
         requires_ifind = _requires_ifind(request, action)
-        if requires_ifind and (interface.provider_name != "ifind-http" or interface.secret_ref is None):
+        if requires_ifind and (interface.provider_name not in {"ifind-http", "tinyshare", "tushare"} or interface.secret_ref is None):
             raise UnavailableCapabilityError(
                 "datafetcher.configuration",
                 "请先在设置中心完成iFind数据服务配置。",
@@ -142,25 +143,29 @@ class DataFetcherAdapter:
         expose_configuration = action in {"status", "catalog", "list_assets"}
         secret_ref = (
             interface.secret_ref
-            if self._secret_provider is not None and (requires_ifind or expose_configuration)
+            if self._secret_provider is not None and (requires_ifind or expose_configuration or action == "dashboard")
             else None
         )
         call_kwargs: dict[str, Any] = {}
+        if action == "dashboard":
+            call_kwargs["cancellation_check"] = cancellation_check
+        if interface.provider_name in {"tinyshare", "tushare"}:
+            call_kwargs["provider_name"] = interface.provider_name
         if calendar_ref is not None:
             call_kwargs["trading_calendar_ref"] = calendar_ref
-        if calendar_ref is None:
+        if not call_kwargs:
             result = self._app_datafetcher_call(
                 dict(request),
                 _caller(principal, request_id),
                 secret_ref,
-                self._secret_port(secret_ref),
+                self._secret_port(secret_ref, interface.provider_name),
             )
         else:
             result = self._app_datafetcher_call(
                 dict(request),
                 _caller(principal, request_id),
                 secret_ref,
-                self._secret_port(secret_ref),
+                self._secret_port(secret_ref, interface.provider_name),
                 **call_kwargs,
             )
         if not isinstance(result, dict):
@@ -188,6 +193,8 @@ class DataFetcherAdapter:
             elif failure_code == "device_limit_exceeded" and self._mark_temporarily_unavailable is not None:
                 self._mark_temporarily_unavailable(principal, interface.secret_ref)
         result = _project_datafetcher_failure(result)
+        if interface.provider_name in {"tinyshare", "tushare"}:
+            result = _provider_labels(result)
         if not expose_configuration:
             return result
         verified = bool(
@@ -203,18 +210,22 @@ class DataFetcherAdapter:
         }
         return {**result, "credential_status": public_status}
 
+    def selected_provider(self, principal: SessionIdentity) -> str:
+        name = self._settings_for(principal).data_interface.provider_name
+        return {"ifind-http": "ifind_http"}.get(name, name)
+
     def requires_ifind(self, request: Mapping[str, Any]) -> bool:
         """Expose the adapter's single provider decision to its App Host owner."""
 
         return _requires_ifind(request, _action(dict(request)))
-    def _secret_port(self, expected_ref: SecretRef | None) -> Callable[[SecretRef], str] | None:
+    def _secret_port(self, expected_ref: SecretRef | None, provider_name: str = "ifind-http") -> Callable[[SecretRef], str] | None:
         if expected_ref is None or self._secret_provider is None:
             return None
 
         def resolve(reference: SecretRef) -> str:
             if reference != expected_ref:
                 raise ValidationError("DataFetcher只能解析当前设置中心批准的SecretRef")
-            return self._secret_provider.resolve(reference, "iFind数据凭据")
+            return self._secret_provider.resolve(reference, "iFind数据凭据" if provider_name == "ifind-http" else "Tushare数据凭据")
 
         return resolve
 
@@ -423,7 +434,7 @@ def _requires_ifind(request: Mapping[str, Any], action: str) -> bool:
         return True
     if not providers:
         return True
-    return any(provider in {"ifind_http", "ifind_sdk"} for provider in providers)
+    return any(provider in {"ifind_http", "ifind_sdk", "tinyshare", "tushare"} for provider in providers)
 
 
 def _reject_untrusted_context(value: object) -> None:
@@ -438,3 +449,13 @@ def _reject_untrusted_context(value: object) -> None:
     elif isinstance(value, list):
         for item in value:
             _reject_untrusted_context(item)
+
+
+def _provider_labels(value: Any) -> Any:
+    if isinstance(value, str):
+        return value.replace("iFind", "Tushare").replace("Refresh Token", "Token")
+    if isinstance(value, dict):
+        return {key: _provider_labels(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_provider_labels(item) for item in value]
+    return value

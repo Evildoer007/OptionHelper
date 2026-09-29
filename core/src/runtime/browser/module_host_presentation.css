@@ -125,6 +125,8 @@ html[data-optionhelper-app-hosted="true"][data-oh-scrollbar-overlay="enabled"] [
 }
 
 html[data-optionhelper-app-hosted="true"][data-oh-scrollbar-overlay="enabled"] [data-oh-scrollbar-overlay-ready="true"] {
+  /* Standard scrollbar-width overrides WebKit pseudo-elements in newer engines. */
+  scrollbar-width: none !important;
   scrollbar-gutter: auto !important;
 }
 
@@ -146,6 +148,7 @@ html[data-optionhelper-app-hosted="true"][data-oh-scrollbar-overlay="enabled"] :
   .library-panel,
   .source-panel,
   .inspector-panel,
+  .inspector-scroll,
   .settings-panel,
   .canvas-viewport,
   .selection-panel,
@@ -165,6 +168,7 @@ html[data-optionhelper-app-hosted="true"][data-oh-scrollbar-overlay="enabled"] :
   .library-panel,
   .source-panel,
   .inspector-panel,
+  .inspector-scroll,
   .settings-panel,
   .canvas-viewport,
   .selection-panel,
@@ -372,6 +376,7 @@ html[data-optionhelper-app-hosted="true"] .inspector-panel[data-run-layout="true
   display: block !important;
   padding: 0 !important;
   overflow: hidden !important;
+  scrollbar-gutter: auto;
 }
 
 html[data-optionhelper-app-hosted="true"] .inspector-panel[data-run-layout="true"] .inspector-form {

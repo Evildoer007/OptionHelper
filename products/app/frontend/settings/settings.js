@@ -58,6 +58,8 @@ const runtimeModelDetail = document.querySelector("[data-runtime-model-detail]")
 const runtimeData = document.querySelector("[data-runtime-data]");
 const runtimeDataDetail = document.querySelector("[data-runtime-data-detail]");
 let dataConfigured = false;
+let savedDataProvider = "ifind-http";
+let savedDataProviders = new Set();
 let dataProbe = null;
 let persistedDataVerification = null;
 let modelProbe = null;
@@ -164,9 +166,9 @@ function dataVerificationProjection(data) {
       : stale
         ? "已保存的连接验证属于旧凭据版本，请重新测试当前连接。"
         : state === "temporarily_unavailable"
-          ? "当前凭据版本匹配，但iFind连接暂时不可用。已保存配置未丢失，请稍后重新测试。"
+          ? "当前凭据版本匹配，但数据连接暂时不可用。已保存配置未丢失，请稍后重新测试。"
           : state === "not_configured"
-            ? "尚未保存iFind Refresh Token。"
+            ? "尚未保存数据服务凭据。"
             : state === "configured_unverified"
               ? "当前凭据尚未完成连接验证，请测试已保存连接。"
         : state === "pending"
@@ -178,11 +180,16 @@ function dataVerificationProjection(data) {
 function applySettings(settings) {
   const data = settings.data_interface || {};
   dataForm.elements.provider_name.value = data.provider_name === "unconfigured" ? "ifind-http" : (data.provider_name || "ifind-http");
+  savedDataProvider = dataForm.elements.provider_name.value;
+  savedDataProviders = new Set(data.saved_providers || (data.credential_configured ? [savedDataProvider] : []));
+  dataForm.elements.source_brand.value = savedDataProvider === "ifind-http" ? "ifind-http" : "tushare";
+  dataForm.elements.implementation.value = savedDataProvider === "tushare" ? "tushare" : "tinyshare";
   dataConfigured = Boolean(data.credential_configured);
   persistedDataVerification = dataVerificationProjection(data);
   if (!dataProbe) dataProbe = persistedDataVerification;
   dataForm.elements.refresh_token.value = "";
   dataForm.elements.refresh_token.placeholder = dataConfigured ? "••••••••••••（已保存）" : "粘贴Refresh Token";
+  updateDataSourceControls();
   connectionState(dataState, dataConfigured, "data");
   dataStatus.textContent = dataConfigured ? "已声明" : "未配置";
   dataStatus.classList.toggle("is-ready", Boolean(dataProbe?.verified));
@@ -345,7 +352,7 @@ function renderDataProbe() {
   runtimeData.textContent = statusLabel;
   runtimeDataDetail.textContent = dataProbe?.detail || (dataConfigured
     ? "Refresh Token已保存；保存时会自动测试连接，也可重新测试。"
-    : "尚未保存iFind Refresh Token。");
+    : "尚未保存数据服务凭据。");
   dataStatus.textContent = statusLabel;
   dataStatus.classList.toggle("is-ready", Boolean(dataProbe?.verified));
 }
@@ -395,6 +402,10 @@ const rolePresentation = {
 };
 
 const presetPresentation = {
+  "single-agent": {
+    summary: "单智能体推荐流程",
+    description: "同一智能体完成理解、筛选和复核；证据检索由工具执行。缺少必要条件时先补充，复核不通过时在轮次上限内修订；没有合适候选时说明原因。后续计算和报告按需求调用，条件变化后可重新推荐。",
+  },
   "product-trader-loop": {
     summary: "产品交易闭环",
     description: "Structurer与Trader基于同一候选方案迭代，条款变化后重新评估。",
@@ -416,10 +427,31 @@ function presetDiagram(preset) {
   };
   const id = `preset-${preset.preset_id.replace(/[^a-z0-9-]/g, "")}`;
   const arrow = `${id}-arrow`;
-  const viewBox = preset.preset_id === "constraint-ranking" ? "0 0 560 220" : "0 0 560 160";
+  const viewBox = ["single-agent", "constraint-ranking"].includes(preset.preset_id) ? "0 0 560 220" : "0 0 560 160";
   const node = (x, y, width, label, accent = false) => `<g class="preset-diagram__node ${accent ? "is-accent" : ""}"><rect x="${x}" y="${y}" width="${width}" height="48" rx="8"/><text x="${x + width / 2}" y="${y + 29}" text-anchor="middle">${label}</text></g>`;
   let body = "";
-  if (preset.preset_id === "product-trader-loop") {
+  if (preset.preset_id === "single-agent") {
+    body = `<g class="preset-diagram__links">
+      <path d="M132 80H154" marker-end="url(#${arrow})"/>
+      <path d="M266 80H288" marker-end="url(#${arrow})"/>
+      <path d="M400 80H428" marker-end="url(#${arrow})"/>
+      <path d="M488 56V18H344V56" stroke-dasharray="5 4" marker-end="url(#${arrow})"/>
+      <path d="M488 104V156" marker-end="url(#${arrow})"/>
+      <path d="M76 104V156" marker-end="url(#${arrow})"/>
+      <path d="M20 180H6V80H20" stroke-dasharray="5 4" marker-end="url(#${arrow})"/>
+    </g>
+    ${node(20, 56, 112, "需求理解", true)}
+    ${node(154, 56, 112, "证据检索")}
+    ${node(288, 56, 112, "候选筛选", true)}
+    ${node(428, 56, 120, "复核与校验", true)}
+    ${node(20, 156, 112, "补充条件")}
+    ${node(428, 156, 120, "输出候选")}
+    <g class="preset-diagram__module">
+      <text x="416" y="12" text-anchor="middle">需修订</text>
+      <text x="84" y="133">条件不足</text>
+      <text x="496" y="133">通过</text>
+    </g>`;
+  } else if (preset.preset_id === "product-trader-loop") {
     body = `<g class="preset-diagram__links"><path d="M132 44H176" marker-end="url(#${arrow})"/><path d="M384 44H428" marker-end="url(#${arrow})"/><path d="M488 68V100" marker-end="url(#${arrow})"/><path d="M428 84H84Q72 84 72 72V68" fill="none" stroke-dasharray="5 4" marker-end="url(#${arrow})"/></g>${node(12, 20, 120, "Structurer", true)}${node(176, 20, 208, "计算模块")}${node(428, 20, 120, "Trader")}${node(428, 100, 120, "Reviewer")}`;
   } else if (preset.preset_id === "independent-council") {
     body = `<g class="preset-diagram__links"><path d="M124 80H152"/><path d="M152 80V44H176" marker-end="url(#${arrow})"/><path d="M152 80V124H176" marker-end="url(#${arrow})"/><path d="M288 44H348V80"/><path d="M288 124H348V80"/><path d="M348 80H428" marker-end="url(#${arrow})"/></g>${node(12, 56, 112, "Framer", true)}${node(176, 20, 112, "Matcher")}${node(176, 100, 112, "Hedger")}${node(428, 56, 116, "Moderator", true)}`;
@@ -560,6 +592,9 @@ function modeIsAvailable(preset, runtime = readRuntimeState()) {
 
 function renderMultiAgentPresets() {
   const runtime = readRuntimeState();
+  const modeMarkup = `<div class="multi-agent-role-head"><div><label for="recommendation-execution-mode">智能体预设</label><select id="recommendation-execution-mode" data-recommendation-mode data-choice ${canEditModel ? "" : "disabled"}><option data-english="Single Agent" value="single" ${multiAgentState.execution_mode === "single" ? "selected" : ""}>单智能体</option><option data-english="Multi-Agent" value="multi" ${multiAgentState.execution_mode === "multi" ? "selected" : ""}>多智能体</option></select><p>单Agent使用本轮会话模型完成筛选和复核；多Agent按下方预设分工。聊天中指定的模式仅对本次推荐生效。</p></div></div><div class="single-agent-configuration" ${multiAgentState.execution_mode === "single" ? "" : "hidden"}>
+      ${presetDiagram({ preset_id: "single-agent", display_name: "单智能体" })}
+    </div>`;
   const selected = multiAgentState.presets.find((preset) => preset.preset_id === multiAgentState.selected_preset_id);
   const presetRows = multiAgentState.presets.map((preset) => {
     const presentation = presetPresentation[preset.preset_id] || { summary: "推荐预设" };
@@ -574,7 +609,9 @@ function renderMultiAgentPresets() {
     </article>`;
   }).join("");
   if (!selected) {
-    multiAgentRoot.innerHTML = `<div class="model-empty"><strong>未找到可用预设</strong><p>请刷新设置或检查App版本。</p></div>`;
+    multiAgentRoot.innerHTML = `${modeMarkup}<div class="model-empty" ${multiAgentState.execution_mode === "single" ? "hidden" : ""}><strong>未找到可用多智能体预设</strong><p>请刷新设置或检查App版本。</p></div>`;
+    renderReviewPolicies();
+    enhanceSelects(multiAgentRoot);
     return;
   }
   const configuredRoles = multiAgentState.role_models[selected.preset_id] || {};
@@ -584,7 +621,7 @@ function renderMultiAgentPresets() {
     selected.roles, configuredRoles, agentFiles, defaultAgentFiles,
     (role) => roleDisplay(selected.preset_id, role), "role", !selected.enabled,
   );
-  multiAgentRoot.innerHTML = `<div class="multi-agent-role-head"><div><label for="recommendation-execution-mode">智能体预设</label><select id="recommendation-execution-mode" data-recommendation-mode data-choice ${canEditModel ? "" : "disabled"}><option data-english="Single Agent" value="single" ${multiAgentState.execution_mode === "single" ? "selected" : ""}>单智能体</option><option data-english="Multi-Agent" value="multi" ${multiAgentState.execution_mode === "multi" ? "selected" : ""}>多智能体</option></select><p>单Agent使用本轮会话模型完成筛选和复核；多Agent按下方预设分工。聊天中指定的模式仅对本次推荐生效。</p></div></div><div class="multi-agent-configuration" ${multiAgentState.execution_mode === "single" ? "hidden" : ""}><div class="multi-agent-preset-list" role="radiogroup" aria-label="Recommender多智能体预设">${presetRows}</div>
+  multiAgentRoot.innerHTML = `${modeMarkup}<div class="multi-agent-configuration" ${multiAgentState.execution_mode === "single" ? "hidden" : ""}><div class="multi-agent-preset-list" role="radiogroup" aria-label="Recommender多智能体预设">${presetRows}</div>
     <form class="multi-agent-role-form" data-multi-agent-role-form novalidate>
       <div class="multi-agent-role-head"><div><span>当前预设</span><strong>${escapeHtml(selected.display_name)}的Agent配置</strong><small>${modeIsAvailable(selected, runtime) ? "修改对下一次推荐生效。" : "当前Runtime不可用；配置仍可保存，并在Runtime恢复后的新任务中生效。"}</small></div></div>
       <div class="multi-agent-role-list">${presetRoleRows}</div>
@@ -979,8 +1016,8 @@ modelRoot.addEventListener("input", (event) => {
 });
 
 function validateData() {
-  if (dataForm.elements.refresh_token.value.trim() || dataConfigured) return true;
-  return showFieldError(dataForm.elements.refresh_token, "请粘贴iFind Refresh Token后保存。");
+  if (dataForm.elements.refresh_token.value.trim() || savedDataProviders.has(dataForm.elements.provider_name.value)) return true;
+  return showFieldError(dataForm.elements.refresh_token, "请粘贴所选服务的Token后保存。");
 }
 
 function setSaving(form, saving) {
@@ -1015,15 +1052,15 @@ storageForm.addEventListener("submit", async (event) => {
 let dataSaveInProgress = false;
 
 async function testDataConnection() {
-    if (!dataConfigured) { message(resultFor("data"), "请先保存Refresh Token，再测试连接。", true); return; }
+    if (!dataConfigured || savedDataProvider !== dataForm.elements.provider_name.value) { message(resultFor("data"), "请先保存所选服务的Token，再测试连接。", true); return; }
     const generation = configurationGeneration;
     message(resultFor("data"), "凭据已保存，正在测试连接…");
     try {
-      const value = await send("/api/settings/test/ifind", {});
+      const value = await send("/api/settings/test/data", {});
       if (generation !== configurationGeneration) return;
       const failed = value.connection?.status !== "available";
       const verified = !failed;
-      dataProbe = { verified, failed, detail: value.connection?.detail || "iFind连接测试未返回说明。", generation: configurationGeneration };
+      dataProbe = { verified, failed, detail: value.connection?.detail || "数据连接测试未返回说明。", generation: configurationGeneration };
       renderDataProbe();
       message(resultFor("data"), dataProbe.detail, !verified);
     } catch (error) {
@@ -1042,7 +1079,9 @@ if (canManageData) {
     setSaving(dataForm, true);
     try {
       const refresh = dataForm.elements.refresh_token.value.trim();
-      const response = refresh ? await sendCredential("/api/settings/data/credential", { provider_name: "ifind-http", refresh_token: refresh }) : await send("/api/settings/data", { provider_name: "ifind-http" });
+      const provider = dataForm.elements.provider_name.value;
+      const credential = provider === "ifind-http" ? {refresh_token: refresh} : {token: refresh};
+      const response = refresh ? await sendCredential("/api/settings/data/credential", { provider_name: provider, ...credential }) : await send("/api/settings/data", { provider_name: provider });
       dataProbe = null;
       persistedDataVerification = null;
       configurationGeneration += 1;
@@ -1099,3 +1138,25 @@ applySettings(settingsResponse.settings);
 await refreshProviders();
 await refreshMultiAgentPresets();
 await refreshRuntimeStatus();
+
+function updateDataSourceControls() {
+  const compatible = dataForm.elements.source_brand.value === "tushare";
+  dataForm.elements.provider_name.value = compatible ? dataForm.elements.implementation.value : "ifind-http";
+  document.querySelector("#data-implementation-field").hidden = !compatible;
+  document.querySelector("#data-token-label").textContent = compatible ? "Token" : "iFinD Refresh Token";
+  const saved = savedDataProviders.has(dataForm.elements.provider_name.value);
+  dataForm.elements.refresh_token.placeholder = saved ? "••••••••••••（已保存）" : compatible ? "粘贴所选服务的Token" : "粘贴Refresh Token";
+  document.querySelector("#ifind-refresh-spec [data-purpose]").textContent = compatible ? "仅发送给选定服务，真实数据来源保留在记录中" : "由App自动获取可用的访问凭据";
+}
+for (const name of ["source_brand", "implementation"]) {
+  dataForm.elements[name].addEventListener("change", () => {
+    configurationGeneration += 1;
+    dataForm.elements.refresh_token.value = "";
+    updateDataSourceControls();
+    dataProbe = null;
+    dataStatus.textContent = savedDataProviders.has(dataForm.elements.provider_name.value) ? "已保存" : "待保存";
+    dataStatus.classList.remove("is-ready");
+    message(resultFor("data"), "请保存并测试所选服务，保存后用于后续取数。");
+    enhanceSelects(dataForm);
+  });
+}

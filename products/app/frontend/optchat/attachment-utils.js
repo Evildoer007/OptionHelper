@@ -1,4 +1,25 @@
 const mediaTypeByExtension = Object.freeze({
+  ".mov": "video/quicktime",
+  ".mp4": "video/mp4",
+  ".m4v": "video/mp4",
+  ".webm": "video/webm",
+  ".bmp": "image/bmp",
+  ".tif": "image/tiff",
+  ".tiff": "image/tiff",
+  ".eml": "message/rfc822",
+  ".py": "text/plain",
+  ".js": "text/plain",
+  ".ts": "text/plain",
+  ".jsx": "text/plain",
+  ".tsx": "text/plain",
+  ".sql": "text/plain",
+  ".r": "text/plain",
+  ".css": "text/plain",
+  ".sh": "text/plain",
+  ".toml": "text/plain",
+  ".ini": "text/plain",
+  ".srt": "text/plain",
+  ".vtt": "text/plain",
   ".png": "image/png",
   ".jpg": "image/jpeg",
   ".jpeg": "image/jpeg",
@@ -33,6 +54,7 @@ export const ATTACHMENT_ACCEPT = Object.keys(mediaTypeByExtension).join(",");
 export const ATTACHMENT_LIMITS = Object.freeze({
   maxFiles: 20,
   maxFileBytes: 20 * 1024 * 1024,
+  maxVideoBytes: 100 * 1024 * 1024,
   maxTotalBytes: 200 * 1024 * 1024,
 });
 
@@ -52,9 +74,11 @@ export function validateAttachments(files, { existingCount = 0, existingBytes = 
   let total = Number(existingBytes) || 0;
   for (const file of list) {
     const name = String(file?.name || "未命名文件");
-    if (!attachmentMediaType(file)) return `不支持“${name}”，请添加图片、PDF、DOCX、XLSX/XLS、PPTX、RTF、MD、TXT、CSV/TSV、HTML、JSON、XML、YAML或ODT/ODS/ODP。旧版DOC/PPT请先另存为DOCX/PPTX。`;
-    if (!Number.isFinite(file?.size) || file.size <= 0) return `“${name}”为空文件。`;
-    if (file.size > ATTACHMENT_LIMITS.maxFileBytes) return `“${name}”超过20MB上限。`;
+    const mediaType = attachmentMediaType(file);
+    if (!mediaType) return `暂不支持${name}的格式，请转换为PDF、图片或文本后添加。`;
+    if (!Number.isFinite(file?.size) || file.size <= 0) return `${name}为空文件。`;
+    const limit = mediaType.startsWith("video/") ? ATTACHMENT_LIMITS.maxVideoBytes : ATTACHMENT_LIMITS.maxFileBytes;
+    if (file.size > limit) return `${name}超过${limit / 1024 / 1024}MB上限。`;
     total += file.size;
   }
   if (total > ATTACHMENT_LIMITS.maxTotalBytes) return "本条消息附件总量不能超过200MB。";

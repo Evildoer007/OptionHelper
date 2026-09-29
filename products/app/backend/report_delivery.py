@@ -76,8 +76,8 @@ def requested_analysis_modules(text):
 def existing_results_only(text):
     """Explicitly reuse completed runs without authorizing another calculation."""
     return bool(re.search(
-        r'(?:不|不要|无需|不用)(?:再|重新|额外)(?:进行|执行|运行)?计算'
-        r'|(?:仅|只)(?:需|要)?(?:使用|复用|采用)已有(?:的)?(?:计算)?结果',
+        r'(?:不|不要|无需|不用)(?:再|重新|额外|重跑)(?:进行|执行|运行)?计算'
+        r'|(?<!不要)(?<!不用)(?<!不)(?:仅|只)(?:需|要)?(?:使用|复用|采用|整理)已有(?:的)?(?:计算)?结果',
         str(text or '')))
 
 

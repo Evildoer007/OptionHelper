@@ -5,6 +5,8 @@ from __future__ import annotations
 import base64
 import binascii
 import csv
+from email import policy
+from email.parser import BytesParser
 import hashlib
 import io
 from itertools import islice
@@ -21,6 +23,7 @@ from ..file_permissions import protect_private_path
 
 
 _MEDIA_TYPES = {
+    "message/rfc822": ".eml",
     "application/pdf": ".pdf",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
@@ -40,6 +43,8 @@ _MEDIA_TYPES = {
     "application/vnd.oasis.opendocument.presentation": ".odp",
 }
 _EXTENSION_ALIASES = {".markdown": ".md", ".htm": ".html", ".yml": ".yaml", ".log": ".txt", ".jsonl": ".json"}
+_EXTENSION_ALIASES.update(dict.fromkeys((".py", ".js", ".ts", ".jsx", ".tsx", ".sql", ".r", ".css", ".sh", ".toml", ".ini", ".srt", ".vtt"), ".txt"))
+
 _MEDIA_ALIASES = {"text/rtf": "application/rtf", "application/x-rtf": "application/rtf", "text/xml": "application/xml", "text/yaml": "application/yaml", "application/x-yaml": "application/yaml", "text/x-markdown": "text/markdown"}
 _ATTACHMENT_ID = re.compile(r"^sha256:[0-9a-f]{64}$")
 
@@ -75,7 +80,7 @@ class DocumentAttachmentStore:
             media_type = str(item.get("media_type", "")).strip().lower()
             media_type = _MEDIA_ALIASES.get(media_type, media_type)
             if media_type not in _MEDIA_TYPES:
-                raise ValidationError("支持PDF、Word文档DOCX、Excel表格XLSX/XLS、PPTX、RTF、Markdown、文本、CSV/TSV、HTML、JSON、XML、YAML及OpenDocument文档")
+                raise ValidationError("支持PDF、Word文档DOCX、Excel表格XLSX/XLS、PPTX、RTF、Markdown、文本及代码、EML邮件、CSV/TSV、HTML、JSON、XML、YAML及OpenDocument文档")
             name = self._safe_name(item.get("name"))
             extension = Path(name).suffix.lower() if name else ""
             if not name or _EXTENSION_ALIASES.get(extension, extension) != _MEDIA_TYPES[media_type]:
@@ -155,6 +160,19 @@ class DocumentAttachmentStore:
         }
 
     def _extract(self, data: bytes, media_type: str) -> tuple[str, str]:
+        if media_type == "message/rfc822":
+            message = BytesParser(policy=policy.default).parsebytes(data)
+            headers = [f"{key}: {message[key]}" for key in ("Subject", "From", "To", "Date") if message[key]]
+            body = message.get_body(preferencelist=("plain", "html"))
+            if body is None:
+                raise ValidationError("邮件没有可读取的正文；内嵌附件请单独添加")
+            content = body.get_content()
+            if not isinstance(content, str):
+                raise ValidationError("邮件正文不是文本")
+            if body.get_content_type() == "text/html":
+                content, _ = self._extract(content.encode("utf-8"), "text/html")
+            text = "\n".join(headers + [content, "邮件内嵌附件未解析，请按需单独添加。"])
+            return text, "ready"
         if media_type in {"text/plain", "text/markdown", "text/csv", "text/tab-separated-values", "application/json", "application/yaml"}:
             text = self._decode_text(data)
             if media_type in {"text/csv", "text/tab-separated-values"}:

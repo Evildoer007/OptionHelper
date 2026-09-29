@@ -49,8 +49,8 @@ function latestSessionPendingLabel(coverageEnd) {
 function cacheDecisionLabel(value, coverageEnd = '') {
   if (value === 'latest_session_pending') return latestSessionPendingLabel(coverageEnd);
   return ({
-    cache_hit: '使用已保存数据',
-    cache_revalidated: '复核已保存数据',
+    cache_hit: '复用已有数据',
+    cache_revalidated: '复核已有数据',
     cache_rebound: '复用原始数据并重新登记',
     cache_miss_fetched: '实时获取',
     cache_extended: '补齐数据缺口',
@@ -67,6 +67,22 @@ function calendarCompletenessLabel(value, coverageEnd = '') {
   return '未验证';
 }
 
+function providerDisplayName(provider) {
+  return ({ifind_http: 'iFinD', 'ifind-http': 'iFinD', tinyshare: 'Tushare', tushare: 'Tushare'})[String(provider || '').toLowerCase()] || '';
+}
+
+function dataSourceDescription(status) {
+  const provider = status?.selected_provider || status?.provider_name || status?.provider_priority?.[0];
+  return providerDisplayName(provider) || '数据服务';
+}
+
+function assetPersistenceLabel(item) {
+  const ref = item?.data_asset_ref || item || {};
+  if (ref.lineage?.persistence_mode === 'volatile' || String(ref.storage_ref || '').startsWith('volatile:')) return '未保存，重启清除';
+  if (ref.lineage?.persistence_mode === 'library') return '已保存';
+  return '保存状态未知';
+}
+
 function assetIndexViewModel(item) {
   const ref = item?.data_asset_ref || item || {};
   const coverage = ref.coverage || {};
@@ -76,11 +92,10 @@ function assetIndexViewModel(item) {
   const provider = String(lineage.provider || item?.provider || '').toLowerCase();
   const calendar = String(item?.quality_report?.calendar_completeness || '');
   const assetType = schema === 'market-history' ? '历史行情' : schema === 'trading-calendar' ? '交易日历' : '数据资产';
+  const brand = providerDisplayName(provider);
   const source = provider === 'local'
     ? '本地CSV'
-    : provider === 'ifind_http'
-      ? (CACHE_REUSE_DECISIONS.has(cacheDecision) ? 'iFind缓存' : 'iFind')
-      : '来源未提供';
+    : brand ? `${brand}${CACHE_REUSE_DECISIONS.has(cacheDecision) ? '缓存' : ''}` : '来源未提供';
   let quality = '状态未提供';
   if (schema === 'trading-calendar') quality = '已验证';
   else if (cacheDecision === 'latest_session_pending' || calendar === 'latest_session_pending') quality = '末日待发布';
@@ -97,8 +112,9 @@ function dataSourceLabel(data) {
     .find(call => ['succeeded', 'success'].includes(String(call?.outcome || '').toLowerCase()));
   const provider = String(lineageProvider || successfulCall?.provider || '').toLowerCase();
   if (provider === 'local') return '本地CSV';
-  if (['cache_hit', 'cache_revalidated', 'cache_rebound'].includes(data?.cache_decision)) return 'iFind远程缓存';
-  if (provider) return 'iFind远程行情';
+  const sourceName = providerDisplayName(provider) || provider;
+  if (['cache_hit', 'cache_revalidated', 'cache_rebound'].includes(data?.cache_decision)) return `${sourceName}缓存`;
+  if (provider) return `${sourceName}行情`;
   return '数据来源未提供';
 }
 
@@ -259,6 +275,18 @@ function initializePage() {
   let requestRevision = 0;
   let operationActive = false;
   let hasResult = false;
+  const dashboardEnabled = new URLSearchParams(location.search).get('host') === 'optdesk';
+  let dashboard = null;
+  let dashboardTask = null;
+  window.addEventListener('optionhelper.module-host-context', event => {
+    const task = event.detail?.context?.task_id;
+    if (dashboardTask && task !== dashboardTask) {
+      requestRevision++; dashboard?.dispose(); dashboard = null; hasResult = false;
+      $('result-content').replaceChildren(); $('result-content').hidden = true; $('empty-canvas').hidden = false;
+    }
+    dashboardTask = task;
+  });
+  window.addEventListener('pagehide', () => dashboard?.dispose(), {once: true});
   const clearFieldError = id => {
     $(id).removeAttribute('aria-invalid');
     $(`${id}-error`).textContent = '';
@@ -329,24 +357,30 @@ function initializePage() {
     const query = $('asset-search').value.trim().toLowerCase(); const entries = [...assetStore.values()].filter(item => JSON.stringify(item).toLowerCase().includes(query)); const list = $('asset-list'); list.replaceChildren();
     if (!entries.length) {
       const empty = document.createElement('p'); empty.className = 'empty-list';
-      empty.textContent = assetLoadError ? '资产索引加载失败，请刷新重试。' : query && assetStore.size ? '没有匹配的数据资产。' : '暂无已保存数据。';
+      empty.textContent = assetLoadError ? '资产索引加载失败，请刷新重试。' : query && assetStore.size ? '没有匹配的数据资产。' : '暂无已获取数据。';
       list.append(empty); return;
     }
     entries.forEach(item => {
       const ref = item.data_asset_ref || item; const id = ref.data_asset_id || ref.content_hash || item.id;
       if (!id) return;
       const entry = document.createElement('div'); entry.className = 'asset-entry';
-      const select = document.createElement('button'); select.type = 'button'; select.className = 'asset-select'; select.innerHTML = '<strong></strong><span class="asset-range"></span><span class="asset-meta"></span>';
+      const select = document.createElement('button'); select.type = 'button'; select.className = 'asset-select'; select.innerHTML = '<strong></strong><span class="asset-range"></span>';
       const coverage = ref.coverage || {}; const range = [coverage.start_date, coverage.end_date].filter(Boolean).join('至');
-      select.querySelector('strong').textContent = (ref.asset_ids || item.asset_ids || []).join('、') || '已保存数据'; select.querySelector('.asset-range').textContent = `${ref.row_count ?? '—'}行${range ? `，${range}` : ''}`;
-      const indexView = assetIndexViewModel(item); const meta = select.querySelector('.asset-meta');
-      [indexView.assetType, indexView.source, indexView.quality].forEach(value => { const label = document.createElement('span'); label.textContent = value; meta.append(label); });
-      select.addEventListener('click', () => { if (operationActive) return; const ids = ref.asset_ids || item.asset_ids; if (Array.isArray(ids) && ids.length) { $('asset-ids').value = ids.join('\n'); syncSourceVisibility(); markRequestInputChanged(); } });
-      const download = document.createElement('a'); download.className = 'asset-download'; download.href = `/api/assets/${encodeURIComponent(id)}/download`; download.textContent = ref.media_type === 'application/json' ? '下载JSON' : '下载CSV';
+      select.querySelector('strong').textContent = (ref.asset_ids || item.asset_ids || []).join('、') || '已保存数据'; select.querySelector('.asset-range').textContent = range || `${ref.row_count ?? '—'}行`;
+      const indexView = assetIndexViewModel(item);
+      const persistence = assetPersistenceLabel(ref);
+      if (ref.schema_id === 'trading-calendar') {
+        const kind = document.createElement('span'); kind.className = 'asset-kind'; kind.textContent = '日历';
+        select.querySelector('strong').append(kind);
+      }
+      select.title = [indexView.source, indexView.assetType, indexView.quality, persistence, `${ref.row_count ?? '—'}行`, range].filter(Boolean).join('；');
+      select.setAttribute('aria-description', select.title);
+      select.addEventListener('click', () => { if (operationActive) return; const ids = ref.asset_ids || item.asset_ids; if (Array.isArray(ids) && ids.length) { $('asset-ids').value = ids.join('\n'); syncSourceVisibility(); markRequestInputChanged(); if (dashboardEnabled && ref.schema_id === 'market-history') { renderResult({ok:true,data_asset_ref:ref}); hasResult=true; state('正在查看已获取数据'); message(''); } } });
+      const download = document.createElement('a'); download.className = 'asset-download'; download.href = `/api/assets/${encodeURIComponent(id)}/download`; download.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5"/></svg>'; download.title = ref.media_type === 'application/json' ? '下载JSON' : '下载CSV'; download.setAttribute('aria-label', ref.media_type === 'application/json' ? '下载JSON' : '下载CSV');
       entry.append(select, download); list.append(entry);
     });
   }
-  function addAsset(item) { const ref = item?.data_asset_ref || item; if (ref?.lineage?.persistence_mode === 'volatile') return; const key = ref?.data_asset_id || ref?.content_hash; if (key) assetStore.set(key, item); renderAssets(); }
+  function addAsset(item) { const ref = item?.data_asset_ref || item; if (!dashboardEnabled && ref?.lineage?.persistence_mode === 'volatile') return; const key = ref?.data_asset_id || ref?.content_hash; if (key) assetStore.set(key, item); renderAssets(); }
   function appendSummarySection(parent, title, rows, description = '') { const section = document.createElement('section'); section.className = 'result-section'; section.innerHTML = '<h3></h3><p hidden></p><div class="summary-list"></div>'; section.querySelector('h3').textContent = title; if (description) { const copy = section.querySelector('p'); copy.textContent = description; copy.hidden = false; } rows.forEach(([label, value]) => { const item = document.createElement('div'); item.className = 'summary-item'; item.innerHTML = '<span></span><strong></strong>'; item.querySelector('span').textContent = label; item.querySelector('strong').textContent = String(value); section.querySelector('.summary-list').append(item); }); parent.append(section); }
   function appendAuditDetails(parent, value) { const details = document.createElement('details'); details.className = 'audit-details'; details.innerHTML = '<summary>技术详情</summary><pre class="json-block"></pre>'; details.querySelector('pre').textContent = JSON.stringify(value ?? null, null, 2); parent.append(details); }
   function appendMarketChart(parent, rawSeries, options = {}) {
@@ -432,6 +466,12 @@ function initializePage() {
     container.append(controls, plot); parent.append(container); render();
   }
   function renderResult(data) {
+    if (dashboardEnabled && data.ok !== false && data.data_asset_ref?.schema_id === 'market-history') {
+      dashboard ||= new OptionHelperDashboard.Dashboard($('result-content'), requestJson);
+      $('empty-canvas').hidden = true; $('result-content').hidden = false;
+      void dashboard.show(data.data_asset_ref);
+      return;
+    }
     const content = $('result-content'); content.replaceChildren();
     if (data.ok === false) {
       const failure = document.createElement('section'); failure.className = 'result-section failure-card';
@@ -456,7 +496,18 @@ function initializePage() {
     $('empty-canvas').hidden = true; content.hidden = false;
   }
   async function loadAssets() { assetLoadError = false; try { const data = await requestJson('/api/assets'); const items = Array.isArray(data.assets) ? data.assets : Array.isArray(data) ? data : []; assetStore.clear(); items.forEach(addAsset); renderAssets(); } catch (_) { assetLoadError = true; renderAssets(); } }
-  async function loadStatus() { try { const data = await requestJson('/api/status'); $('service-status').textContent = data.status === 'available' ? '本机服务已就绪' : (data.status || '服务状态未知'); $('secret-status').textContent = credentialStatusText(data); } catch (_) { $('service-status').textContent = '本机服务未启动'; $('secret-status').textContent = '无法读取连接状态。'; } }
+  async function loadStatus() {
+    try {
+      const data = await requestJson('/api/status');
+      $('service-status').textContent = data.status === 'available' ? '本机服务已就绪' : (data.status || '服务状态未知');
+      $('secret-status').textContent = credentialStatusText(data);
+      $('data-source-note').textContent = dataSourceDescription(data);
+    } catch (_) {
+      $('service-status').textContent = '本机服务未启动';
+      $('secret-status').textContent = '无法读取连接状态。';
+      $('data-source-note').textContent = dataSourceDescription(null);
+    }
+  }
   let refreshInFlight = null;
   function refreshDataFetcherState() {
     if (refreshInFlight) return refreshInFlight;
@@ -503,11 +554,12 @@ function initializePage() {
   $('request-form').addEventListener('submit', async event => { event.preventDefault(); if (operationActive) return; clearFieldErrors(); const hadResult = hasResult; let request; try { const values=formValues(); values.startDate=OptionHelperDateInput.read($('start-date'),'开始日期'); values.endDate=OptionHelperDateInput.read($('end-date'),'结束日期'); request = buildFetchRequest(values); $('asset-ids').value = request.asset_ids.join('\n'); OptionHelperDateInput.set($('start-date'),request.start_date,'开始日期'); OptionHelperDateInput.set($('end-date'),request.end_date,'结束日期'); syncSourceVisibility(); } catch (error) { state('请求配置错误', 'failed'); message(`${error.message}${hadResult ? ' 下方保留上一次完成结果。' : ''}`, 'failed'); showInputError(error.message); return; }
     const revision = ++requestRevision;
     state('正在检查数据与缓存', 'running'); message(hadResult ? '正在获取数据；下方暂时展示上一次完成结果。' : '正在获取数据并核验保存状态。'); setBusy(true); if (!hadResult) { $('result-content').hidden = true; $('empty-canvas').hidden = false; }
-    try { const data = await requestJson('/api/fetch', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(request)}); if (revision !== requestRevision) return; renderResult(data); addAsset(data); hasResult = true; state('请求完成', 'complete'); message('数据获取完成。'); } catch (error) { if (revision !== requestRevision) return; if (error.payload && !hadResult) renderResult(error.payload); state('请求失败', 'failed'); message(`${error.message}${hadResult ? ' 下方保留上一次完成结果。' : ''}`, 'failed'); } finally { setBusy(false); }
+    try { const data = await requestJson('/api/fetch', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(request)}); if (revision !== requestRevision) return; renderResult(data); addAsset(data); hasResult = true; state('请求完成', 'complete'); message(`数据获取完成。${assetPersistenceLabel(data)}。`); } catch (error) { if (revision !== requestRevision) return; if (error.payload && !hadResult) renderResult(error.payload); state('请求失败', 'failed'); message(`${error.message}${hadResult ? ' 下方保留上一次完成结果。' : ''}`, 'failed'); } finally { setBusy(false); }
   });
-  function bindResizer(id, variable, minimum, maximum) { const resizer = $(id); const workbench = $('workbench'); const current = () => parseInt(getComputedStyle(workbench).getPropertyValue(variable), 10) || minimum; const set = value => { const next = Math.max(minimum, Math.min(maximum, value)); workbench.style.setProperty(variable, `${next}px`); resizer.setAttribute('aria-valuenow', String(next)); }; const direction = variable === '--library-width' ? 1 : -1; let startX = 0; let startValue = 0; const finish = () => { resizer.classList.remove('active'); document.removeEventListener('pointermove', move); document.removeEventListener('pointerup', finish); }; const move = event => set(startValue + direction * (event.clientX - startX)); resizer.setAttribute('aria-valuemin', minimum); resizer.setAttribute('aria-valuemax', maximum); set(current()); resizer.addEventListener('pointerdown', event => { startX = event.clientX; startValue = current(); resizer.classList.add('active'); document.addEventListener('pointermove', move); document.addEventListener('pointerup', finish); }); resizer.addEventListener('keydown', event => { if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return; event.preventDefault(); if (event.key === 'Home') return set(minimum); if (event.key === 'End') return set(maximum); set(current() + direction * (event.key === 'ArrowRight' ? 8 : -8)); }); }
+  function bindResizer(id, variable, minimum, maximum) { const resizer = $(id); const workbench = $('workbench'); const current = () => parseInt(getComputedStyle(workbench).getPropertyValue(variable), 10) || minimum; const set = value => { const next = Math.max(minimum, Math.min(maximum, value)); workbench.style.setProperty(variable, `${next}px`); resizer.setAttribute('aria-valuenow', String(next)); }; const direction = variable === '--library-width' ? 1 : -1; let startX = 0; let startValue = 0; const finish = () => { resizer.classList.remove('active'); document.removeEventListener('pointermove', move); document.removeEventListener('pointerup', finish); document.removeEventListener('pointercancel', finish); }; const move = event => set(startValue + direction * (event.clientX - startX)); resizer.setAttribute('aria-valuemin', minimum); resizer.setAttribute('aria-valuemax', maximum); set(current()); resizer.addEventListener('pointerdown', event => { if (event.button !== 0) return; event.preventDefault(); startX = event.clientX; startValue = current(); resizer.classList.add('active'); document.addEventListener('pointermove', move); document.addEventListener('pointerup', finish); document.addEventListener('pointercancel', finish); }); resizer.addEventListener('keydown', event => { if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return; event.preventDefault(); if (event.key === 'Home') return set(minimum); if (event.key === 'End') return set(maximum); set(current() + direction * (event.key === 'ArrowRight' ? 8 : -8)); }); }
+  if (dashboardEnabled) installThreeColumnLayout($('workbench'));
   bindResizer('library-resizer', '--library-width', 220, 420); bindResizer('inspector-resizer', '--inspector-width', 300, 520); void refreshDataFetcherState();
 }
 
-if (typeof module === 'object' && module.exports) module.exports = {parseAndFormatDate, defaultDateRange, splitList, buildFetchRequest, resultSummary, resultViewModel, chartViewModel, credentialStatusText, dataSettingsFailure, assetIndexViewModel, parseServiceResponse};
+if (typeof module === 'object' && module.exports) module.exports = {assetPersistenceLabel, parseAndFormatDate, defaultDateRange, splitList, buildFetchRequest, resultSummary, resultViewModel, chartViewModel, credentialStatusText, dataSettingsFailure, assetIndexViewModel, parseServiceResponse};
 if (typeof document !== 'undefined' && document.getElementById) initializePage();

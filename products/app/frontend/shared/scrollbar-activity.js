@@ -75,7 +75,9 @@ function createOverlayLayer(documentRoot) {
 
 function setStyle(element, values) {
   Object.entries(values).forEach(([property, value]) => {
-    element.style.setProperty(property, String(value), "important");
+    if (element.style.getPropertyValue(property) !== String(value)) {
+      element.style.setProperty(property, String(value), "important");
+    }
   });
 }
 
@@ -105,14 +107,6 @@ function visibleRect(element) {
   return rect;
 }
 
-function scrollableOnAxis(element, axis, documentScroller) {
-  const overflow = getComputedStyle(element)[axis === "y" ? "overflowY" : "overflowX"];
-  const allowed = element === documentScroller || /auto|scroll|overlay/.test(overflow);
-  const client = axis === "y" ? element.clientHeight : element.clientWidth;
-  const scroll = axis === "y" ? element.scrollHeight : element.scrollWidth;
-  return allowed && scroll > client + 1;
-}
-
 function scrollbarSize(element) {
   const sizeSource = element === document.scrollingElement && document.body ? document.body : element;
   const style = getComputedStyle(sizeSource);
@@ -127,16 +121,18 @@ function scrollbarInk(element) {
 }
 
 
-export function scrollbarTrackVisible(element, axis, rect) {
-  if (!element.isConnected || !element.getClientRects().length) return false;
-  // Overlay thumbs are outside <details>; native disclosure clipping does not
-  // hide them. Some engines retain descendant layout boxes while collapsed.
+function insideClosedDisclosure(element) {
   for (let ancestor = element.parentElement; ancestor; ancestor = ancestor.parentElement) {
     if (ancestor.tagName === "DETAILS" && (!ancestor.open || ancestor.dataset.motionTarget === "closed")) {
       const summary = [...ancestor.children].find(child => child.tagName === "SUMMARY");
-      if (!summary?.contains(element)) return false;
+      if (!summary?.contains(element)) return true;
     }
   }
+  return false;
+}
+
+export function scrollbarTrackVisible(element, axis, rect) {
+  if (!element.isConnected || insideClosedDisclosure(element) || !element.getClientRects().length) return false;
   const style = getComputedStyle(element);
   if (style.visibility === "hidden" || style.visibility === "collapse") return false;
   const bounds = element.getBoundingClientRect();
@@ -160,8 +156,14 @@ export function installScrollbarActivity({ selectors = SHELL_SCROLL_CONTAINERS, 
   let mutationObserver = null;
   let resizeObserver = null;
   let drag = null;
+  let disposed = false;
+  const pendingRoots = new Set();
+  let discoveryWalker = null;
+  // Bound discovery per frame so a large restored conversation yields to input.
+  const discoveryBatchSize = 160;
 
   const setActive = (state, active) => {
+    state.active = active;
     state.thumbs.forEach((thumb) => {
       if (!thumb) return;
       setStyle(thumb, {
@@ -180,6 +182,7 @@ export function installScrollbarActivity({ selectors = SHELL_SCROLL_CONTAINERS, 
     resizeObserver?.unobserve(state.element);
     state.thumbs.forEach((thumb) => thumb?.remove());
     tracked.delete(state.element);
+    states.delete(state.element);
   };
 
   const createThumb = (state, axis) => {
@@ -213,7 +216,7 @@ export function installScrollbarActivity({ selectors = SHELL_SCROLL_CONTAINERS, 
       "box-sizing": "border-box",
       "border-radius": "999px",
       background: "rgba(81, 77, 73, .34)",
-      "box-shadow": "inset 0 0 0 1px rgba(255, 255, 255, .22)",
+      "box-shadow": "none",
       "backdrop-filter": "blur(5px) saturate(112%)",
       "-webkit-backdrop-filter": "blur(5px) saturate(112%)",
       opacity: "0",
@@ -224,94 +227,87 @@ export function installScrollbarActivity({ selectors = SHELL_SCROLL_CONTAINERS, 
     });
     overlayLayer.appendChild(thumb);
     state.thumbs.set(axis, thumb);
+    if (state.active) setActive(state, true);
     return thumb;
   };
 
-  const renderAxis = (state, axis, rect, otherAxisScrollable) => {
+  // Geometry reads are completed for every surface before any overlay write.
+  const measureAxis = (state, axis, rect, style, scrollable, otherScrollable) => {
     const element = state.element;
-    const isScrollable = scrollableOnAxis(element, axis, documentScroller);
-    let thumb = state.thumbs.get(axis);
-    if (!isScrollable || !scrollbarTrackVisible(element, axis, rect) || rect.right <= rect.left || rect.bottom <= rect.top) {
-      if (thumb) thumb.style.setProperty("display", "none", "important");
-      state.metrics[axis] = null;
-      return;
-    }
-
-    thumb ||= createThumb(state, axis);
+    if (!scrollable || !scrollbarTrackVisible(element, axis, rect)) return null;
     const size = scrollbarSize(element);
-    // Overlay thumbs live outside the scroller, so its rounded clipping does
-    // not apply to them. Keep menu tracks inside the straight inner edges.
-    const roundedMenu = element.matches(".choice-menu, .oh-choice__menu");
-    const menuStyle = roundedMenu ? getComputedStyle(element) : null;
-    const radius = menuStyle ? Math.max(...[
-      menuStyle.borderTopLeftRadius, menuStyle.borderTopRightRadius,
-      menuStyle.borderBottomLeftRadius, menuStyle.borderBottomRightRadius,
+    const rounded = element.matches(".choice-menu, .oh-choice__menu");
+    const radius = rounded ? Math.max(...[
+      style.borderTopLeftRadius, style.borderTopRightRadius,
+      style.borderBottomLeftRadius, style.borderBottomRightRadius,
     ].map(value => Number.parseFloat(value) || 0)) : 0;
-    const edge = roundedMenu ? Math.max(6, radius) : 2;
-    const crossInset = roundedMenu ? 5 : 1;
+    const edge = rounded ? Math.max(6, radius) : 2;
+    const crossInset = rounded ? 5 : 1;
     const clientLength = axis === "y" ? element.clientHeight : element.clientWidth;
     const scrollLength = axis === "y" ? element.scrollHeight : element.scrollWidth;
-    const scrollPosition = axis === "y" ? element.scrollTop : element.scrollLeft;
+    const position = axis === "y" ? element.scrollTop : element.scrollLeft;
     const visibleLength = axis === "y" ? rect.bottom - rect.top : rect.right - rect.left;
-    const trackLength = Math.max(0, visibleLength - edge * 2 - (otherAxisScrollable ? size : 0));
-    const thumbLength = Math.min(trackLength, Math.max(28, trackLength * (clientLength / scrollLength)));
+    const trackLength = Math.max(0, visibleLength - edge * 2 - (otherScrollable ? size : 0));
+    if (!trackLength) return null;
+    const thumbLength = Math.min(trackLength, Math.max(28, trackLength * clientLength / scrollLength));
     const maxThumbOffset = Math.max(0, trackLength - thumbLength);
     const scrollRange = Math.max(1, scrollLength - clientLength);
-    const thumbOffset = maxThumbOffset * Math.min(1, Math.max(0, scrollPosition / scrollRange));
-    const ink = scrollbarInk(element);
-
-    thumb.style.setProperty("display", trackLength > 0 ? "block" : "none", "important");
-    thumb.style.setProperty("background", `color-mix(in srgb, ${ink} 34%, transparent)`, "important");
-    if (axis === "y") {
-      setStyle(thumb, {
-        left: `${Math.round(rect.right - size - crossInset)}px`,
-        top: `${Math.round(rect.top + edge + thumbOffset)}px`,
-        width: `${size}px`,
-        height: `${Math.round(thumbLength)}px`,
-      });
-    } else {
-      setStyle(thumb, {
-        left: `${Math.round(rect.left + edge + thumbOffset)}px`,
-        top: `${Math.round(rect.bottom - size - crossInset)}px`,
-        width: `${Math.round(thumbLength)}px`,
-        height: `${size}px`,
-      });
-    }
-    if (thumb.isConnected && trackLength > 0) {
-      element.dataset.ohScrollbarOverlayReady = "true";
-    }
-    state.metrics[axis] = { maxThumbOffset, scrollRange };
+    const offset = maxThumbOffset * Math.min(1, Math.max(0, position / scrollRange));
+    return { metrics: { maxThumbOffset, scrollRange }, styles: {
+      display: "block", background: `color-mix(in srgb, ${scrollbarInk(element)} 34%, transparent)`,
+      left: `${Math.round(axis === "y" ? rect.right - size - crossInset : rect.left + edge + offset)}px`,
+      top: `${Math.round(axis === "y" ? rect.top + edge + offset : rect.bottom - size - crossInset)}px`,
+      width: `${axis === "y" ? size : Math.round(thumbLength)}px`,
+      height: `${axis === "y" ? Math.round(thumbLength) : size}px`,
+    }};
   };
 
-  const renderState = (state) => {
-    if (!state.element.isConnected) {
-      removeState(state);
-      return;
+  const measureState = (state) => {
+    const element = state.element;
+    if (!element.isConnected) return {state, detached: true};
+    if (insideClosedDisclosure(element) || !element.getClientRects().length) return {state, x: null, y: null};
+    const rect = visibleRect(element);
+    if (rect.right <= rect.left || rect.bottom <= rect.top) return {state, x: null, y: null};
+    const style = getComputedStyle(element);
+    const scrollY = (element === documentScroller || /auto|scroll|overlay/.test(style.overflowY))
+      && element.scrollHeight > element.clientHeight + 1;
+    const scrollX = (element === documentScroller || /auto|scroll|overlay/.test(style.overflowX))
+      && element.scrollWidth > element.clientWidth + 1;
+    return {state,
+      y: measureAxis(state, "y", rect, style, scrollY, scrollX),
+      x: measureAxis(state, "x", rect, style, scrollX, scrollY),
+    };
+  };
+
+  const applyState = (measurement) => {
+    const {state} = measurement;
+    if (measurement.detached) { removeState(state); return; }
+    for (const axis of ["x", "y"]) {
+      const next = measurement[axis];
+      state.metrics[axis] = next?.metrics || null;
+      if (next) setStyle(state.thumbs.get(axis) || createThumb(state, axis), next.styles);
+      else if (state.thumbs.has(axis)) setStyle(state.thumbs.get(axis), {display: "none"});
     }
-    const rect = visibleRect(state.element);
-    const scrollY = scrollableOnAxis(state.element, "y", documentScroller);
-    const scrollX = scrollableOnAxis(state.element, "x", documentScroller);
-    renderAxis(state, "y", rect, scrollX);
-    renderAxis(state, "x", rect, scrollY);
+    if (state.element.dataset.ohScrollbarOverlayReady !== "true") state.element.dataset.ohScrollbarOverlayReady = "true";
   };
 
   const renderAll = () => {
     renderFrame = null;
-    [...tracked].forEach((element) => {
-      const state = states.get(element);
-      if (state) renderState(state);
-    });
+    if (disposed) return;
+    discover();
+    const measurements = [...tracked].map(element => measureState(states.get(element)));
+    measurements.forEach(applyState);
+    if (pendingRoots.size || discoveryWalker) queueRender();
   };
 
   const queueRender = () => {
-    if (renderFrame !== null) return;
+    if (disposed || renderFrame !== null) return;
     renderFrame = window.requestAnimationFrame(renderAll);
   };
 
   const onDisclosureToggle = (event) => {
     if (event.target?.tagName !== "DETAILS") return;
-    scan(event.target);
-    queueRender();
+    enqueueScan(event.target);
   };
 
   const register = (element) => {
@@ -328,7 +324,6 @@ export function installScrollbarActivity({ selectors = SHELL_SCROLL_CONTAINERS, 
       onHide: () => setActive(state, false),
     });
     state.onScroll = () => {
-      renderState(state);
       state.controller.wake();
       queueRender();
     };
@@ -336,36 +331,64 @@ export function installScrollbarActivity({ selectors = SHELL_SCROLL_CONTAINERS, 
     // The native pseudo-element is not reliably composited in WKWebView
     // if we wait for a first paint measurement. Once a real scroll surface
     // has a controller, its overlay owns the visual state from the outset.
-    element.dataset.ohScrollbarOverlayReady = "true";
     states.set(element, state);
     tracked.add(element);
     resizeObserver?.observe(element);
     return state;
   };
 
+  const ignored = element => element === overlayLayer || overlayLayer.contains(element);
   const registerIfScrollable = (element) => {
-    if (!(element instanceof Element) || element === document.body || element === document.documentElement) return;
-    const isKnownSurface = Boolean(selectorText) && element.matches(selectorText);
-    if (isKnownSurface
-      || scrollableOnAxis(element, "y", documentScroller)
-      || scrollableOnAxis(element, "x", documentScroller)) {
-      register(element);
+    if (!(element instanceof Element) || states.has(element) || ignored(element)
+      || element === document.body || element === document.documentElement) return;
+    if (selectorText && element.matches(selectorText)) { register(element); return; }
+    // Discover scroll surfaces from CSS; ordinary prose never needs layout dimensions.
+    const style = getComputedStyle(element);
+    if (/auto|scroll|overlay/.test(style.overflowY) || /auto|scroll|overlay/.test(style.overflowX)) register(element);
+  };
+
+  const enqueueScan = root => {
+    if (!(root instanceof Element) || ignored(root)) return;
+    // Coalesce nested mutations before visiting their subtrees.
+    for (const pending of pendingRoots) {
+      if (pending.contains(root)) { queueRender(); return; }
+      if (root.contains(pending)) pendingRoots.delete(pending);
+    }
+    pendingRoots.add(root);
+    queueRender();
+  };
+
+  const discover = () => {
+    const started = performance.now();
+    let visited = 0;
+    while (visited < discoveryBatchSize && performance.now() - started < 5) {
+      if (!discoveryWalker) {
+        const root = pendingRoots.values().next().value;
+        if (!root) break;
+        pendingRoots.delete(root);
+        if (!root.isConnected || ignored(root)) continue;
+        registerIfScrollable(root);
+        visited += 1;
+        discoveryWalker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, {
+          acceptNode: element => ignored(element) || element.hidden
+            ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT,
+        });
+      }
+      if (!discoveryWalker.root.isConnected) { discoveryWalker = null; continue; }
+      const element = discoveryWalker.nextNode();
+      if (!element) { discoveryWalker = null; continue; }
+      registerIfScrollable(element);
+      visited += 1;
     }
   };
 
-  const scan = (root) => {
-    if (!(root instanceof Element)) return;
-    registerIfScrollable(root);
-    const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
-    while (walker.nextNode()) registerIfScrollable(walker.currentNode);
-  };
-
-  const scanScrollParents = (node) => {
-    for (let parent = node instanceof Element ? node : node.parentElement;
-      parent && parent !== document.documentElement;
-      parent = parent.parentElement) {
-      registerIfScrollable(parent);
-    }
+  // A surface can become scrollable after a class/style change or lazy insertion.
+  const onCapturedScroll = event => {
+    const element = event.target;
+    if (!(element instanceof Element) || ignored(element)) return;
+    const state = states.get(element) || register(element);
+    state?.controller.wake();
+    queueRender();
   };
 
   const onPointerMove = (event) => {
@@ -386,6 +409,10 @@ export function installScrollbarActivity({ selectors = SHELL_SCROLL_CONTAINERS, 
   };
 
   const teardown = () => {
+    disposed = true;
+    pendingRoots.clear();
+    discoveryWalker = null;
+    document.removeEventListener("scroll", onCapturedScroll, true);
     document.removeEventListener("pointermove", onPointerMove, true);
     document.removeEventListener("pointerup", onPointerUp, true);
     document.removeEventListener("pointercancel", onPointerUp, true);
@@ -403,17 +430,21 @@ export function installScrollbarActivity({ selectors = SHELL_SCROLL_CONTAINERS, 
 
   resizeObserver = typeof ResizeObserver === "function" ? new ResizeObserver(queueRender) : null;
   mutationObserver = new MutationObserver((records) => {
-    records.forEach((record) => {
-      if (record.type === "attributes") return;
-      scanScrollParents(record.target);
-      record.addedNodes.forEach((node) => scan(node));
-    });
-    queueRender();
+    // No geometry reads or DOM writes in the mutation microtask.
+    let relevant = false;
+    for (const record of records) {
+      if (ignored(record.target)) continue;
+      relevant = true;
+      if (record.type === "attributes") enqueueScan(record.target);
+      else for (const node of record.addedNodes) enqueueScan(node);
+    }
+    if (relevant) queueRender();
   });
   mutationObserver.observe(document.documentElement, {
     childList: true, subtree: true, attributes: true,
-    attributeFilter: ["open", "data-motion-target"],
+    attributeFilter: ["open", "hidden", "class", "data-motion-target"],
   });
+  document.addEventListener("scroll", onCapturedScroll, {capture: true, passive: true});
 
   document.documentElement.dataset.ohScrollbarOverlay = "enabled";
   document.addEventListener("pointermove", onPointerMove, { capture: true, passive: true });
@@ -427,7 +458,7 @@ export function installScrollbarActivity({ selectors = SHELL_SCROLL_CONTAINERS, 
   }, { once: true });
 
   if (includeDocument && documentScroller) register(documentScroller);
-  scan(document.body);
+  enqueueScan(document.body);
   queueRender();
 
   const instance = Object.freeze({ teardown });

@@ -89,6 +89,7 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
     private var reportToggle: NSButton?
     private var loadedURL = false
     private var themePreference = "light"
+    private var sidebarMaterialView: NSVisualEffectView?
     private var activeOperationCount = 0
     private var activeOperationState = "recovering"
     private var closeAfterInterrupt = false
@@ -270,13 +271,22 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         view.navigationDelegate = self
         view.uiDelegate = self
         view.underPageBackgroundColor = .clear
+        // Clearing overscroll alone leaves WebKit's opaque page backing over
+        // the native sidebar. Guard the macOS SPI for an opaque-safe fallback.
+        if view.responds(to: NSSelectorFromString("_setDrawsBackground:")) {
+            view.setValue(false, forKey: "drawsBackground")
+        }
         view.wantsLayer = true
         view.layer?.backgroundColor = NSColor.clear.cgColor
 
         let materialView = NSVisualEffectView(frame: .zero)
-        materialView.material = .sidebar
+        // Use one native material recipe with theme-specific appearance.
+        sidebarMaterialView = materialView
+        applySidebarMaterial(theme: "light")
         materialView.blendingMode = .behindWindow
-        materialView.state = .followsWindowActiveState
+        // Keep the frosted surface when focus moves to another window. AppKit
+        // still honors the system Reduce Transparency setting.
+        materialView.state = .active
         materialView.isEmphasized = false
 
         let contentView = NSView(frame: .zero)
@@ -872,6 +882,13 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         showNavigationFailure("页面进程已结束。任务和后台计算仍由应用服务保存。")
     }
 
+    private func isPayoffImageDownloadURL(_ url: URL?) -> Bool {
+        guard let url, let appOrigin,
+              url.scheme == appOrigin.scheme, url.host == appOrigin.host,
+              url.port == appOrigin.port, isReportDownloadURL(url) else { return false }
+        return url.path.range(of: #"^/api/tasks/[A-Za-z0-9._:-]{1,160}/payoff-images/[A-Za-z0-9._:-]{1,160}\.svg$"#, options: .regularExpression) != nil
+    }
+
     private func isAllowedReportArtifactURL(_ url: URL?) -> Bool {
         guard let url, let appOrigin,
               url.scheme == appOrigin.scheme,
@@ -913,7 +930,7 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         guard !candidate.isEmpty,
               candidate.count <= 160,
               candidate.rangeOfCharacter(from: forbidden) == nil,
-              lower.hasSuffix(".csv") || lower.hasSuffix(".json") else { return nil }
+              lower.hasSuffix(".csv") || lower.hasSuffix(".json") || lower.hasSuffix(".svg") else { return nil }
         return candidate
     }
 
@@ -1127,7 +1144,8 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         let url = navigationAction.request.url
         if webView === self.webView,
            navigationAction.shouldPerformDownload,
-           url?.scheme?.lowercased() == "blob" {
+           (url?.scheme?.lowercased() == "blob"
+            || isPayoffImageDownloadURL(url)) {
             decisionHandler(.download)
             return
         }
@@ -1281,10 +1299,12 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
             window?.appearance = nil
             settingsWindow?.appearance = nil
             let appearance = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua])
+            applySidebarMaterial(theme: appearance == .darkAqua ? "dark" : "light")
             applyDockIcon(theme: appearance == .darkAqua ? "dark" : "light")
         } else {
             window?.appearance = NSAppearance(named: theme == "dark" ? .darkAqua : .aqua)
             settingsWindow?.appearance = window?.appearance
+            applySidebarMaterial(theme: theme)
             applyDockIcon(theme: theme)
         }
     }
@@ -1308,10 +1328,17 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         if keyPath == #keyPath(NSApplication.effectiveAppearance), object as AnyObject? === NSApp {
             guard themePreference == "auto" else { return }
             let appearance = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua])
+            applySidebarMaterial(theme: appearance == .darkAqua ? "dark" : "light")
             applyDockIcon(theme: appearance == .darkAqua ? "dark" : "light")
             return
         }
         super.observeValue(forKeyPath: keyPath, of: object, change: change, context: context)
+    }
+
+    private func applySidebarMaterial(theme: String) {
+        let dark = theme == "dark"
+        sidebarMaterialView?.material = .sidebar
+        sidebarMaterialView?.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
     }
 
     private func applyDockIcon(theme: String) {

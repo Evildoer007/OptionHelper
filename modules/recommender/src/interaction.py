@@ -102,11 +102,31 @@ def normalize_confirmed_constraints(value: Mapping[str, Any] | None) -> dict[str
     path_count = _normalize_path_count(source.get("path_count"))
     if path_count is not None:
         result["path_count"] = path_count
+    for key in ("risk_free_rate", "dividend_yield"):
+        value = source.get(key)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            number = Decimal(str(value))
+            if number.is_finite() and Decimal('-1') < number <= Decimal('1'):
+                result[key] = float(number)
+    window_days = source.get("hv_window")
+    if type(window_days) is int and 2 <= window_days <= 2520:
+        result["hv_window"] = window_days
+    if isinstance(source.get("model_method"), str) and source["model_method"] in {"analytical", "monte_carlo"}:
+        result["model_method"] = source["model_method"]
     window = source.get("backtest_range")
     if isinstance(window, Mapping):
         dates = {key: str(window.get(key, "")).strip() for key in ("start_date", "end_date")}
         if all(re.fullmatch(r"\d{4}-\d{2}-\d{2}", value) for value in dates.values()):
             result["backtest_range"] = dates
+    config = source.get("backtest_config")
+    if isinstance(config, Mapping):
+        controlled = {}
+        if config.get("entry_rule") in {"daily", "monthly", "explicit"}:
+            controlled["entry_rule"] = config["entry_rule"]
+        if isinstance(config.get("complete_tenor"), bool):
+            controlled["complete_tenor"] = config["complete_tenor"]
+        if controlled:
+            result["backtest_config"] = controlled
     return result
 
 
@@ -188,6 +208,8 @@ def _merge_user_constraints(existing: dict[str, Any], extracted: Mapping[str, An
             existing["output_type"] = next(iter(remaining))
         else:
             existing.pop("output_type", None)
+    if "term_overrides" in value:
+        value["term_overrides"] = {**existing.get("term_overrides", {}), **value["term_overrides"]}
     existing.update(value)
     if isinstance(term_operations, Sequence) and not isinstance(term_operations, (str, bytes)):
         merged_overrides = dict(existing.get("term_overrides", {}))
@@ -264,6 +286,30 @@ def _message(value: object) -> tuple[str, str, str]:
 def _extract_text(text: str) -> dict[str, Any]:
     lowered = text.lower()
     result: dict[str, Any] = {}
+    # Only explicit, labelled numerical assumptions become execution inputs.
+    # Percentages are ratios; a bare nonzero rate is deliberately ambiguous.
+    for key, label in (("risk_free_rate", r"无风险利率|risk_free_rate"),
+                       ("dividend_yield", r"股息率|分红率|dividend_yield")):
+        matches = list(re.finditer(
+            rf"(?:{label})\s*(?:改为|设为|设置为|取|为|是|=|：|:)?\s*"
+            r"(?P<number>-?\d+(?:\.\d+)?)\s*(?P<percent>[%％])?(?![\d.])", text, re.I))
+        matches = [match for match in matches if not re.search(
+            r"(?:不要|不用|不采用|并非|不是|禁止)\s*$", text[max(0, match.start()-6):match.start()])]
+        if matches:
+            match = matches[-1]
+            number = Decimal(match['number'])
+            if match['percent'] or number == 0:
+                result[key] = float(number / (100 if match['percent'] else 1))
+    windows = list(re.finditer(r"(?<!\d)(\d{1,4})\s*(?:个交易日|交易日|日)\s*(?:历史)?波动率", text))
+    windows = [match for match in windows if not re.search(
+        r"(?:不要|不用|不采用|并非|不是|禁止)\s*$", text[max(0, match.start()-6):match.start()])]
+    if windows:
+        result['hv_window'] = int(windows[-1][1])
+    methods = list(re.finditer(r"(?:使用|采用|用|改为)\s*(解析(?:模型|法|定价)|蒙特卡洛|monte\s*carlo)", text, re.I))
+    methods = [match for match in methods if not re.search(
+        r"(?:不|无需|禁止|不要)\s*$", text[max(0, match.start()-4):match.start()])]
+    if methods:
+        result['model_method'] = 'analytical' if methods[-1][1].startswith('解析') else 'monte_carlo'
     match = _UNDERLYING.search(text.upper())
     if match:
         result["underlying"] = f"{match.group('code')}.{match.group('exchange').upper()}"
@@ -307,6 +353,26 @@ def _extract_text(text: str) -> dict[str, Any]:
     )
     if window:
         result["backtest_range"] = {"start_date": window[1], "end_date": window[2]}
+    # Entry windows are distinct from the wider historical data coverage.
+    entry_window = re.search(
+        r"(\d{4}-\d{2}-\d{2})\s*(?:至|到|~|～|—|–|to)\s*(\d{4}-\d{2}-\d{2})[^。；;，,\n]{0,24}入场", text, re.IGNORECASE,
+    )
+    if entry_window:
+        result["backtest_range"] = {"start_date": entry_window[1], "end_date": entry_window[2]}
+    backtest_config = {}
+    if re.search(r"(?:每月|月度)(?:首个交易日|第一个交易日)?入场", text):
+        backtest_config["entry_rule"] = "monthly"
+    elif re.search(r"(?:每日|每天|每个交易日)入场", text):
+        backtest_config["entry_rule"] = "daily"
+    if re.search(r"(?:仅|只)(?:使用|取|保留)?完整[^。；;，,\n]{0,6}合同", text):
+        backtest_config["complete_tenor"] = True
+    if backtest_config:
+        result["backtest_config"] = backtest_config
+    # Explicit formula-style assignments are user constraints too. Keep only
+    # unambiguous values; the binding layer intersects keys with each product.
+    assignments = _explicit_term_assignments(text)
+    if assignments:
+        result["term_overrides"] = assignments
     term_operations = _term_override_operations(text)
     if term_operations:
         result["_term_override_operations"] = term_operations
@@ -379,6 +445,21 @@ def _normalize_term_overrides(value: object) -> dict[str, str | float]:
         elif key in allowed_text and isinstance(raw_value, str) and raw_value.strip():
             result[key] = raw_value.strip()
     return result
+
+
+def _explicit_term_assignments(text: str) -> dict[str, float]:
+    aliases = {"k": "K", "k1": "K1", "k2": "K2", "k3": "K3", "k4": "K4",
+               "k_l": "K1", "k_h": "K2", "pi_0": "Pi_0", "p_net": "P_net", "t": "T"}
+    values: dict[str, set[float]] = {}
+    pattern = r"(?<![A-Za-z0-9_])(K_L|K_H|K[1-4]?|Pi_0|P_net|T)\s*[=＝]\s*(\d+(?:\.\d+)?)(?![\d.])"
+    for match in re.finditer(pattern, text, re.IGNORECASE):
+        # Negative instructions do not establish a new confirmed value.
+        prefix = re.split(r"[，,。；;\n]", text[:match.start()])[-1]
+        if re.search(r"不要|不用|不使用|取消|删除", prefix):
+            continue
+        key = aliases[match[1].lower()]
+        values.setdefault(key, set()).add(float(match[2]))
+    return {key: next(iter(options)) for key, options in values.items() if len(options) == 1}
 
 
 def _extract_term_overrides_from_clause(text: str) -> dict[str, str | float]:
@@ -715,6 +796,13 @@ def _local_prefix(text: str, position: int) -> str:
 
 def _normalize_loss(value: object) -> str | None:
     text = str(value or "").strip()
+    explicit = re.search(
+        r"(?:最大(?:可承受)?(?:亏损|损失|回撤)|(?:亏损|损失|回撤)上限)\s*"
+        r"(?:不得超过|不超过|不能超过|不高于|不大于|至多|为|是|=|：|:)?\s*"
+        r"(?:名义本金(?:的)?|本金(?:的)?)?\s*(\d+(?:\.\d+)?)\s*[%％]", text)
+    if explicit:
+        amount = float(explicit[1])
+        return f"{amount:g}%" if 0 < amount <= 100 else None
     direct = re.fullmatch(r"(\d+(?:\.\d+)?)\s*[%％]", text)
     if direct:
         amount = float(direct.group(1))

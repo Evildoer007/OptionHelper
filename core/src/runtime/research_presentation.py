@@ -37,7 +37,7 @@ def financial_model_view(value, term_catalog):
             if found:
                 return found
         if isinstance(node.get('current_inputs'), Mapping):
-            return conventions(node['current_inputs'], inherited)
+            return conventions(node['current_inputs'], inherited or frozenset({'normalized_100'}))
         return inherited
 
     def visit(node, inherited=frozenset()):

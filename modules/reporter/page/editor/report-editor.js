@@ -962,37 +962,6 @@
       n.editorChartData.replaceChildren(table);
     }
 
-    _chartTable(spec) {
-      const wrapper = this.document.createElement('div');
-      wrapper.className = 'table-wrap';
-      const table = this.document.createElement('table');
-      table.className = 'chart-data-table table-density-normal';
-      table.dataset.tableDensity = 'normal';
-      const unit = this._chartUnit(spec);
-      const caption = table.createCaption();
-      caption.textContent = `${spec.title || '图表'}数据${unit ? `（数值单位：${unit}）` : ''}`;
-      const head = table.createTHead().insertRow();
-      const body = table.createTBody();
-      const appendHeader = label => { const cell = this.document.createElement('th'); cell.scope = 'col'; cell.textContent = label; head.append(cell); };
-      appendHeader(['heatmap', 'surface'].includes(spec.type) ? `${spec.y_axis_name || '纵轴'}/${spec.x_axis_name || '横轴'}` : spec.x_axis_name || '横轴');
-      if (['heatmap', 'surface'].includes(spec.type)) {
-        spec.x.forEach(value => appendHeader(value));
-        const cells = new Map((spec.data || []).map(item => [`${item[0]}:${item[1]}`, item[2]]));
-        spec.y.forEach((value, yIndex) => {
-          const row = body.insertRow(); row.insertCell().textContent = value;
-          spec.x.forEach((_, xIndex) => { row.insertCell().textContent = this._chartDisplayValue(cells.get(`${xIndex}:${yIndex}`), spec); });
-        });
-      } else {
-        spec.series.forEach(series => appendHeader(`${series.name}${unit ? `（${unit}）` : ''}`));
-        spec.x.forEach((value, rowIndex) => {
-          const row = body.insertRow(); row.insertCell().textContent = value;
-          spec.series.forEach(series => { row.insertCell().textContent = this._chartDisplayValue(series.data[rowIndex], spec); });
-        });
-      }
-      wrapper.append(table);
-      return wrapper;
-    }
-
     _chartDisplayValue(value, spec) {
       return this.chartPresentation?.formatValue ? this.chartPresentation.formatValue(value, spec) : text(value);
     }
@@ -1019,10 +988,8 @@
       if (caption) caption.textContent = spec.title || '图表';
       const summary = figure.querySelector('.chart-summary');
       if (summary) summary.textContent = spec.accessibility_summary || `${spec.title || '图表'}，横轴为${spec.x_axis_name || '横轴'}，纵轴为${spec.y_axis_name || '纵轴'}。`;
-      let data = figure.querySelector('.chart-data');
-      if (!data) { data = this.document.createElement('div'); data.className = 'chart-data'; host.after(data); }
-      data.contentEditable = 'false';
-      data.replaceChildren(this._chartTable(spec));
+      // Data remains editable in the inspector; the report shows the chart only.
+      figure.querySelectorAll('.chart-data, table.chart-data-table').forEach(node => node.remove());
       let note = figure.querySelector('.source-note');
       if (spec.source_note) {
         if (!note) { note = this.document.createElement('p'); note.className = 'source-note'; figure.append(note); }

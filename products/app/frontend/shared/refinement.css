@@ -263,7 +263,7 @@ html { font-size: 14px; }
 
 .workspace-shell.workspace-shell--desk[data-workspace-shell] .send-control:disabled {
   cursor: default;
-  opacity: .48;
+  opacity: 1;
 }
 
 .workspace-shell.workspace-shell--desk[data-workspace-shell] .send-control {
@@ -464,7 +464,7 @@ html { font-size: 14px; }
 .assistant-panel__head { padding: 14px 16px 12px; }
 .assistant-panel__head strong { font-size: 14px; }
 .assistant-panel__head span { color: var(--muted); font-size: 12px; }
-.assistant-panel__transcript { padding: 14px 16px; }
+.assistant-panel__transcript { padding: 0; }
 .assistant-panel .message { font-size: 13px; }
 .assistant-panel .conversation-start { width: 100%; padding: 12px 0; }
 .assistant-panel .conversation-start__mark { width: 38px; height: 38px; }
@@ -1347,6 +1347,26 @@ html { font-size: 14px; }
 .message-artifact__actions a:hover { color: var(--ink); background: var(--surface-alt, var(--line)); }
 .message-artifact__actions a:focus-visible { outline: 2px solid var(--red); outline-offset: 2px; }
 .message-artifact__actions svg { width: 18px; height: 18px; }
+
+.message-payoff-image { margin: 16px 0; }
+.message-payoff-image figcaption { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.message__actions.has-image-download { opacity: 1; }
+.message__actions a.message-payoff-image__download,
+.message-downloads > summary {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 32px; height: 32px; padding: 6px; box-sizing: border-box;
+  border: 0; border-radius: 6px; background: transparent; color: var(--muted);
+  text-decoration: none; cursor: pointer; list-style: none;
+}
+.message-downloads > summary::-webkit-details-marker { display: none; }
+.message-payoff-image__download svg, .message-downloads > summary svg { width: 18px; height: 18px; }
+.message-payoff-image__download:hover, .message-downloads > summary:hover { color: var(--ink); background: var(--surface-alt, var(--line)); }
+.message-payoff-image__download:focus-visible, .message-downloads > summary:focus-visible { outline: 2px solid var(--red); outline-offset: 2px; }
+.message-downloads { position: relative; }
+.message-downloads__menu { position: absolute; left: 0; bottom: calc(100% + 6px); z-index: 5; min-width: 88px; padding: 4px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); box-shadow: 0 4px 14px rgb(0 0 0 / .12); }
+.message-downloads__item { display: block; padding: 6px 12px; border-radius: 4px; color: var(--ink); text-decoration: none; white-space: nowrap; }
+.message-downloads__item:hover { background: var(--surface-alt, var(--line)); }
+@media (pointer: coarse) { .message__actions a.message-payoff-image__download, .message-downloads > summary { width: 44px; height: 44px; } }
 
 .message-question__prompt { margin: 0 0 12px; color: var(--ink); line-height: 1.6; white-space: pre-wrap; }
 .message-question__choices { display: grid; gap: 8px; }
@@ -2990,6 +3010,11 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
 .message--process[hidden], .message--streaming[hidden],
 .assistant-reasoning[hidden], .thinking-orbs[hidden] { display: none !important; }
 
+.workspace-shell.workspace-shell--desk[data-mode="desk"] .assistant-panel > * { min-width: 0; }
+.workspace-shell.workspace-shell--desk[data-mode="desk"] .assistant-panel .message--process { max-width: 100%; }
+.workspace-shell.workspace-shell--desk[data-mode="desk"] .assistant-panel .process-collaboration { width: 100%; min-width: 0; box-sizing: border-box; }
+.workspace-shell.workspace-shell--desk[data-mode="desk"] .assistant-panel .workflow-network { width: 100%; min-width: 0; min-height: 210px; }
+.workspace-shell.workspace-shell--desk[data-mode="desk"] .assistant-panel .workflow-node { width: 20%; max-width: 155px; }
 .workspace-shell.workspace-shell--desk[data-mode="desk"] .assistant-panel__transcript .message-stream {
   display: flex;
   flex-direction: column;
@@ -3151,6 +3176,11 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
 .process-tool-group > summary::after { content: ""; width: 5px; height: 5px; border-right: 1px solid currentColor; border-bottom: 1px solid currentColor; transform: rotate(-45deg); }
 .process-tool-group[open] > summary::after { transform: rotate(45deg); }
 .process-tool-group__calls { padding: 4px 0 8px 12px; border-left: 1px solid var(--line); margin: 4px 0 8px; }
+.process-tool-group__calls[hidden], .process-tool-group__calls > [hidden] { display: none; }
+.process-tool-group__history { display: block; margin: 4px 0 8px; padding: 6px 0; border: 0; background: transparent; color: var(--muted); font: inherit; font-size: 12px; cursor: pointer; }
+.process-tool-group__history[hidden] { display: none; }
+.process-tool-group__history:hover { color: var(--ink); }
+.process-tool-group__history:focus-visible { outline: 2px solid var(--ink); outline-offset: 3px; }
 .process-tool-group__issue { margin: 4px 0 8px; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
 .process-tool-group[data-has-failures="true"] .process-tool-group__counts { color: var(--red); }
 @media (max-width: 620px) {

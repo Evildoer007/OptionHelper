@@ -16,14 +16,14 @@ export function createResearchControls({ container, request, enhanceSelects, can
   }
   const presetSelect = createSelect(presetHost, '推荐预设');
   const depthSelect = createSelect(depthHost, '研究档位', 'research-depth');
-  for (const [value, label] of [['quick','快速'],['standard','标准'],['deep','深入']]) {
+  for (const [value, label] of [['quick','快速'],['standard','标准'],['deep','深度']]) {
     const option = document.createElement('option');
     option.value = value; option.textContent = label; depthSelect.append(option);
   }
   depthSelect.hidden = true;
   delete depthSelect.dataset.choice;
   const depths = ['quick', 'standard', 'deep'];
-  const labels = ['快速', '标准', '深入'];
+  const labels = ['快速', '标准', '深度'];
   const trigger = document.createElement('button');
   trigger.type = 'button'; trigger.className = 'composer-depth-trigger';
   trigger.setAttribute('aria-expanded', 'false');
@@ -31,14 +31,19 @@ export function createResearchControls({ container, request, enhanceSelects, can
   panel.className = 'research-depth-slider'; panel.hidden = true;
   panel.setAttribute('role', 'group'); panel.setAttribute('aria-label', '选择研究深度');
   const heading = document.createElement('div'); heading.className = 'research-depth-slider__heading';
-  const title = document.createElement('span'); title.textContent = '研究深度';
+  const title = document.createElement('div'); title.className = 'research-depth-slider__context';
+  title.textContent = '研究深度';
+  const reset = document.createElement('button'); reset.type = 'button'; reset.className = 'research-depth-slider__reset';
+  reset.setAttribute('aria-label', '恢复标准研究深度'); reset.title = '恢复标准';
+  reset.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4v5h5M4.5 8a8 8 0 1 1-.4 7"/></svg>';
+  reset.addEventListener('click', () => { if (range.disabled) return; range.value = '1'; updateSlider(); commitDepth(); });
   const current = document.createElement('strong');
   current.className = 'research-depth-slider__value';
   labels.forEach(label => {
     const item = document.createElement('span'); item.textContent = label;
     item.setAttribute('aria-hidden', 'true'); current.append(item);
   });
-  heading.append(title, current);
+  heading.append(current, reset);
   const range = document.createElement('input');
   range.type = 'range'; range.min = '0'; range.max = '2'; range.step = 'any';
   range.setAttribute('aria-label', '研究深度');
@@ -46,7 +51,9 @@ export function createResearchControls({ container, request, enhanceSelects, can
   const rail = document.createElement('div'); rail.className = 'research-depth-slider__rail';
   const fill = document.createElement('span'); fill.className = 'research-depth-slider__fill';
   const thumb = document.createElement('span'); thumb.className = 'research-depth-slider__thumb';
-  rail.append(fill, thumb); track.append(rail, range);
+  const stops = document.createElement('span'); stops.className = 'research-depth-slider__stops';
+  depths.forEach(() => stops.append(document.createElement('i')));
+  rail.append(fill, stops, thumb); track.append(rail, range);
   rail.setAttribute('aria-hidden', 'true');
   const ticks = document.createElement('div'); ticks.className = 'research-depth-slider__labels';
   labels.forEach((label, index) => {
@@ -57,7 +64,7 @@ export function createResearchControls({ container, request, enhanceSelects, can
     });
     ticks.append(button);
   });
-  panel.append(heading, track, ticks); depthHost.append(trigger); document.body.append(panel);
+  panel.append(heading, title, track, ticks); depthHost.append(trigger); document.body.append(panel);
   let panelAnimation = null;
   const reducedMotion = () => window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   function closePanel(focus = false) {
@@ -84,7 +91,7 @@ export function createResearchControls({ container, request, enhanceSelects, can
   }
   function positionPanel() {
     const rect = trigger.getBoundingClientRect();
-    const width = Math.min(236, window.innerWidth - 24);
+    const width = Math.min(280, window.innerWidth - 24);
     panel.style.width = `${width}px`;
     panel.style.left = `${Math.max(12, Math.min(rect.left + rect.width / 2 - width / 2, window.innerWidth - width - 12))}px`;
     panel.style.top = `${Math.max(12, rect.top - panel.offsetHeight - 10)}px`;
@@ -118,8 +125,8 @@ export function createResearchControls({ container, request, enhanceSelects, can
   let pointer = null;
   function pointerPosition(event) {
     const rect = range.getBoundingClientRect();
-    const travel = Math.max(1, rect.width - 24);
-    return Math.max(0, Math.min(2, (event.clientX - rect.left - 12) / travel * 2));
+    const travel = Math.max(1, rect.width - 28);
+    return Math.max(0, Math.min(2, (event.clientX - rect.left - 14) / travel * 2));
   }
   range.addEventListener('pointerdown', event => {
     if (range.disabled || event.button !== 0) return;
@@ -176,6 +183,8 @@ export function createResearchControls({ container, request, enhanceSelects, can
     trigger.textContent = depthSelect.selectedOptions[0]?.textContent || '标准';
     trigger.setAttribute('aria-label', `研究深度：${trigger.textContent}`);
     range.disabled = depthSelect.disabled;
+    reset.disabled = depthSelect.disabled;
+    title.textContent = presetSelect.selectedOptions[0]?.textContent || '研究深度';
     [...ticks.children].forEach(button => { button.disabled = depthSelect.disabled; });
     range.value = String(Math.max(0, depths.indexOf(depthSelect.value))); updateSlider();
     if (depthHost.hidden) closePanel();

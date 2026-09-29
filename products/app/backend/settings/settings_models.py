@@ -86,6 +86,13 @@ class ModelSelection:
 class DataInterfaceSettings:
     provider_name: str
     secret_ref: SecretRef | None = None
+    provider_refs: dict[str, SecretRef] = field(default_factory=dict)
+
+    def saved_references(self) -> dict[str, SecretRef]:
+        references = dict(self.provider_refs)
+        if self.provider_name in {"ifind-http", "tinyshare", "tushare"} and self.secret_ref is not None:
+            references[self.provider_name] = self.secret_ref
+        return references
 
 
 @dataclass(frozen=True)
@@ -201,6 +208,7 @@ def serialize_settings(snapshot: SettingsSnapshot) -> dict[str, Any]:
         },
         "data_interface": {
             "provider_name": snapshot.data_interface.provider_name,
+            "provider_refs": {key: ref.redacted() for key, ref in snapshot.data_interface.saved_references().items()},
             "secret_ref": snapshot.data_interface.secret_ref.redacted() if snapshot.data_interface.secret_ref else None,
         },
         "storage_export": {
@@ -234,6 +242,7 @@ def serialize_settings_public(snapshot: SettingsSnapshot) -> dict[str, Any]:
         public_provider["credential_configured"] = public_provider.pop("secret_ref") is not None
         providers.append(public_provider)
     value["model_providers"] = providers
+    data["saved_providers"] = list(data.pop("provider_refs", {}))
     data["credential_configured"] = data.pop("secret_ref") is not None
     return value
 
@@ -387,6 +396,7 @@ def deserialize_settings(value: dict[str, Any]) -> SettingsSnapshot:
         data_interface=DataInterfaceSettings(
             provider_name=str(data.get("provider_name", "unconfigured")),
             secret_ref=secret_ref(data.get("secret_ref")),
+            provider_refs={name: ref for name, value in dict(data.get("provider_refs", {})).items() if name in {"ifind-http", "tinyshare", "tushare"} and (ref := secret_ref(value)) is not None},
         ),
         storage_export=StorageExportSettings(
             export_location_ref=storage.get("export_location_ref"),

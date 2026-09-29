@@ -1,3 +1,4 @@
+import { presentAssistantReply } from "/app/frontend/shared/reply-presentation.js";
 import { createThinkingOrb } from "/app/frontend/shared/thinking-orb.js";
 const secretKeys = new Set(["password", "token", "api_key", "secret", "secret_value", "private_key"]);
 const sessionEventKey = "optionhelper.session.event";
@@ -156,7 +157,7 @@ function positionChoiceMenu(choice) {
   menu.style.maxHeight = `${Math.min(280, viewportHeight * .42, choice.dataset.placement === "top" ? roomAbove : roomBelow)}px`;
   if (menu.hasAttribute("popover")) {
     const preferredWidth = choice.dataset.choiceLayout === "research-depth" ? 136
-      : choice.closest(".model-picker") ? rect.width : Math.max(rect.width, 270);
+      : choice.closest(".model-picker") ? Math.max(rect.width, 280) : Math.max(rect.width, 270);
     const width = Math.min(preferredWidth, view.innerWidth - 24);
     menu.style.boxSizing = "border-box";
     menu.style.position = "fixed";
@@ -268,6 +269,13 @@ function syncChoice(select) {
     group.append(heading, ...Array.from(child.children).map(renderOption));
     return group;
   }));
+  if (choice.closest(".composer .model-picker")) {
+    const heading = doc.createElement("span");
+    heading.className = "choice-menu__heading";
+    heading.setAttribute("aria-hidden", "true");
+    heading.textContent = "选择模型";
+    menu.prepend(heading);
+  }
   if (trigger.disabled) setChoiceOpen(choice, false);
   else if (focusedValue !== null && isChoiceOpen(choice)) {
     const options = Array.from(menu.querySelectorAll('[role="option"]:not([disabled])'));
@@ -1226,8 +1234,10 @@ export function createReasoningDisclosure(text = "", { running = false, compact 
     }
     details.dataset.running = String(nextRunning);
     setMotionText(title, compact ? (nextRunning ? "正在研究" : "查看过程") : reasoningSummary(value, nextRunning));
-    const followTail = body.scrollHeight - body.clientHeight - body.scrollTop < 48;
-    body.textContent = value;
+    const changed = body.textContent !== value;
+    const visible = changed && details.open && body.isConnected && body.getClientRects().length > 0;
+    const followTail = visible && body.scrollHeight - body.clientHeight - body.scrollTop < 48;
+    if (changed) body.textContent = value;
     if (followTail) {
       body.scrollTop = body.scrollHeight;
       requestAnimationFrame(() => { if (body.isConnected) body.scrollTop = body.scrollHeight; });
@@ -1508,6 +1518,7 @@ function createAssistantFormula(source, display = false) {
 }
 
 function appendAssistantText(container, text) {
+  text = presentAssistantReply(text);
   // Render a small, safe prose vocabulary. Model HTML never enters innerHTML.
   const inline = (parent, value) => {
     const tokens = String(value).split(/(\$\$[\s\S]+?\$\$|\$[^$\n]+\$|\\\([\s\S]+?\\\)|\\\[[\s\S]+?\\\]|\*\*[^*\n]+\*\*|`[^`\n]+`)/g);
@@ -1581,15 +1592,16 @@ function createConversationMessage(entry, options = {}) {
   const user = entry?.role === "user";
   article.className = `message message--${user ? "user" : "assistant"}`;
   const messageBlocks = Array.isArray(entry?.content_blocks) ? entry.content_blocks : [];
-  const hasDocument = messageBlocks.some(block => block?.type === "document");
+  const hasDocument = messageBlocks.some(block => ["document", "payoff-image", "payoff_image"].includes(block?.type));
   const visibleText = messageBlocks.filter(block => block?.type === "text").map(block => String(block.text || "")).filter(Boolean).join("\n\n");
-  const messageText = hasDocument ? visibleText : String(entry?.content ?? "");
+  const rawMessageText = hasDocument ? visibleText : String(entry?.content ?? "");
+  const messageText = user ? rawMessageText : presentAssistantReply(rawMessageText);
   const actions = document.createElement("div");
   actions.className = "message__actions";
   const copy = document.createElement("button");
   copy.type = "button";
   copy.className = "message__action";
-  const copyLabel = user ? "复制我的消息" : "复制回复";
+  const copyLabel = user ? "复制我的消息" : "复制文字";
   const copyPath = "M9 9h12v12H9ZM5 15H3V3h12v2";
   setMessageActionIcon(copy, copyLabel, copyPath);
   const copyStatus = document.createElement("span");
@@ -1667,6 +1679,9 @@ function createConversationMessage(entry, options = {}) {
   const rawBlocks = Array.isArray(entry?.content_blocks) ? entry.content_blocks : [];
   const blocks = rawBlocks.length > 0 ? rawBlocks : [{ type: "text", text: String(entry?.content ?? "") }];
   let messageReasoning = null;
+  const imageDownloads = [];
+  let payoffImageNumber = 0;
+  const payoffImageCount = blocks.filter(block => ["payoff-image", "payoff_image"].includes(block?.type)).length;
   for (const block of blocks) {
     if (!block || typeof block !== "object") continue;
     const type = String(block.type || "").replaceAll("_", "-");
@@ -1680,7 +1695,6 @@ function createConversationMessage(entry, options = {}) {
       const path = `/api/tasks/${encodeURIComponent(block.task_id)}/payoff-images/${encodeURIComponent(block.run_id)}.svg`;
       const figure = document.createElement("figure");
       figure.className = "message-payoff-image";
-      figure.style.margin = "16px 0";
       const image = document.createElement("img");
       image.src = path;
       image.alt = "本次合同损益图";
@@ -1689,12 +1703,18 @@ function createConversationMessage(entry, options = {}) {
       const download = document.createElement("a");
       download.href = `${path}?download=1`;
       download.download = "payoff.svg";
-      download.textContent = "下载损益图（SVG）";
+      download.className = "message-payoff-image__download";
+      setMessageActionIcon(download, "下载损益图（SVG）", "M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5");
+      payoffImageNumber += 1;
+      download.download = payoffImageCount > 1 ? `payoff-${payoffImageNumber}.svg` : "payoff.svg";
+      imageDownloads.push(download);
       const error = document.createElement("span");
       error.hidden = true;
       error.textContent = "损益图暂未加载，请重新打开任务。";
       image.addEventListener("error", () => { image.hidden = true; error.hidden = false; });
-      caption.append(download, error);
+      caption.hidden = true;
+      image.addEventListener("error", () => { caption.hidden = false; });
+      caption.append(error);
       figure.append(image, caption);
       content.append(figure);
     } else if (type === "reasoning" && text) {
@@ -1721,6 +1741,31 @@ function createConversationMessage(entry, options = {}) {
     if (!artifact || shownReports.has(artifact.reportId)) continue;
     shownReports.add(artifact.reportId);
     content.append(createMessageArtifactCard(artifact));
+  }
+  if (imageDownloads.length) {
+    copy.remove();
+    copyStatus.remove();
+    actions.classList.add("has-image-download");
+    if (imageDownloads.length === 1) actions.prepend(imageDownloads[0]);
+    else {
+      const downloads = document.createElement("details");
+      downloads.className = "message-downloads";
+      const trigger = document.createElement("summary");
+      trigger.className = "message__action";
+      setMessageActionIcon(trigger, "保存图片", "M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5");
+      const menu = document.createElement("div"); menu.className = "message-downloads__menu";
+      imageDownloads.forEach((link, index) => {
+        link.className = "message-downloads__item";
+        link.textContent = `图${index + 1}`;
+        link.setAttribute("aria-label", `保存图${index + 1}`);
+        link.addEventListener("click", () => { downloads.open = false; });
+        menu.append(link);
+      });
+      downloads.addEventListener("keydown", event => {
+        if (event.key === "Escape") { downloads.open = false; trigger.focus(); }
+      });
+      downloads.append(trigger, menu); actions.prepend(downloads);
+    }
   }
   article.append(content, actions);
   return article;
@@ -1891,7 +1936,7 @@ function installWorkspaceMotion(doc) {
     const target = opening ? details.scrollHeight : summary.getBoundingClientRect().height;
     const animation = details.animate([{ height: `${previous}px`, overflow: "hidden" }, { height: `${target}px`, overflow: "hidden" }], { duration: 250, easing: "cubic-bezier(.22,1,.36,1)" });
     surfaceAnimations.set(details, animation);
-    animation.onfinish = () => { if (surfaceAnimations.get(details) !== animation) return; details.open = opening; delete details.dataset.motionTarget; surfaceAnimations.delete(details); };
+    animation.onfinish = () => { if (surfaceAnimations.get(details) !== animation) return; details.open = opening; delete details.dataset.motionTarget; surfaceAnimations.delete(details); if (opening) details.dispatchEvent(new Event("disclosure-revealed")); };
   });
   // A faint surface reflection on report previews; text and touch scrolling stay still.
   doc.addEventListener("pointermove", event => {

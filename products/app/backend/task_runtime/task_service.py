@@ -1607,6 +1607,17 @@ def _browser_runtime_event(value: Mapping[str, Any]) -> dict[str, Any] | None:
             "tool_call_id": str(payload.get("tool_call_id", ""))[:160],
             "status": status,
         }
+        context = payload.get("activity_context")
+        if isinstance(context, Mapping):
+            public_context = {}
+            for key in ("module", "section"):
+                if isinstance(context.get(key), str): public_context[key] = redact_text(context[key], limit=100)
+            candidate = context.get("candidate_key")
+            if isinstance(candidate, str) and re.fullmatch(r"[a-f0-9]{16}", candidate): public_context["candidate_key"] = candidate
+            for key in ("offset", "limit"):
+                number = context.get(key)
+                if isinstance(number, int) and not isinstance(number, bool) and number >= 0: public_context[key] = number
+            if public_context: safe_payload["activity_context"] = public_context
     elif event_type == "usage.updated":
         usage = payload.get("usage", payload)
         if isinstance(usage, Mapping):
@@ -1637,8 +1648,20 @@ def _browser_runtime_event(value: Mapping[str, Any]) -> dict[str, Any] | None:
         result = payload.get("result")
         if isinstance(result, Mapping):
             error = result.get("message", error)
-        if status in {"failed", "outcome_unknown", "interrupted", "timed_out"} and isinstance(error, str):
-            safe_payload["message"] = redact_text(error, limit=1_000)
+        if status in {"failed", "outcome_unknown", "interrupted", "timed_out"}:
+            label = {
+                "payoffer": "收益结构", "pricer": "估值定价", "backtester": "历史回测",
+                "datafetcher": "数据获取", "recommender": "结构推荐", "reporter": "报告生成",
+                "knowledger": "产品资料查询",
+            }.get(tool.replace("_", ".").split(".")[0], "研究模块")
+            reason = redact_text(error, limit=800) if isinstance(error, str) and error.strip() else ""
+            next_step = result.get("next_step") if isinstance(result, Mapping) else None
+            if isinstance(next_step, str) and next_step.strip() and next_step not in reason:
+                reason += ("。" if reason and reason[-1] not in "。！？\n" else "") + redact_text(next_step, limit=300)
+            if not reason:
+                reason = "服务未返回具体原因，当前结果尚未确认。可以在本任务重试；如再次失败，请保留运行记录。"
+            safe_payload["message"] = reason
+            summary = f"{label}未完成：{reason}"
     projected = {
         "type": event_type,
         "status": status,
@@ -1722,8 +1745,19 @@ def _pending_recommendation(value: dict[str, Any], *, allow_approved: bool = Fal
     if not isinstance(constraints, dict) or set(constraints).difference({
         "underlying", "horizon", "market_view", "max_loss", "principal_fluctuation",
         "output_type", "format", "path_count", "backtest_range", "valuation_date",
+        "risk_free_rate", "dividend_yield", "hv_window", "model_method",
     }):
         raise ValidationError("Recommendation continuation constraints are invalid")
+    for key in ("risk_free_rate", "dividend_yield"):
+        if key in constraints and (type(constraints[key]) not in (int, float)
+                                   or not -1 < constraints[key] <= 1):
+            raise ValidationError(f"Recommendation {key} must be a finite decimal ratio")
+    if "hv_window" in constraints and (type(constraints["hv_window"]) is not int
+                                       or not 2 <= constraints["hv_window"] <= 2520):
+        raise ValidationError("Recommendation hv_window is invalid")
+    if "model_method" in constraints and (not isinstance(constraints["model_method"], str)
+                                           or constraints["model_method"] not in {"analytical", "monte_carlo"}):
+        raise ValidationError("Recommendation model_method is invalid")
     if "valuation_date" in constraints:
         valuation_date = constraints["valuation_date"]
         if not isinstance(valuation_date, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", valuation_date):

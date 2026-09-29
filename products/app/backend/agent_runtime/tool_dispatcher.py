@@ -73,6 +73,14 @@ class ToolDispatcher:
         if not isinstance(task_id, str) or not task_id:
             raise ValidationError("task_id is required for a Capability module run")
         self._tasks.get(identity, task_id)
+        if tool_name == "datafetcher" and action == "dashboard":
+            # Research reads do not replace formal data runs or task inputs.
+            _, result = self._jobs.run(lambda: self._gateway.dispatch(
+                tool_name, payload, identity, module_context=module_context,
+                request_id=request_id, agent_proxy=agent_proxy,
+                cancellation_check=cancellation_check,
+            ))
+            return result
         if tool_name in {"payoffer", "pricer", "backtester"}:
             clean_payload = dict(payload)
             clean_payload.pop("idempotency_key", None)

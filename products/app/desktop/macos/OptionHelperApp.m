@@ -121,6 +121,7 @@ willPerformHTTPRedirection:(NSHTTPURLResponse *)response
 @property(nonatomic) BOOL loadedURL;
 @property(nonatomic, strong) NSMutableString *startupOutput;
 @property(nonatomic, copy) NSString *themePreference;
+@property(nonatomic, strong) NSVisualEffectView *sidebarMaterialView;
 @property(nonatomic) NSInteger activeOperationCount;
 @property(nonatomic, copy) NSString *activeOperationState;
 @property(nonatomic) BOOL closeAfterInterrupt;
@@ -327,13 +328,24 @@ willPerformHTTPRedirection:(NSHTTPURLResponse *)response
     webView.navigationDelegate = self;
     webView.UIDelegate = self;
     webView.underPageBackgroundColor = NSColor.clearColor;
+    // underPageBackgroundColor only controls the overscroll area. WebKit's
+    // page backing must also be transparent for the native sidebar to show.
+    // This macOS WebKit SPI is guarded; unsupported versions keep the safe
+    // opaque fallback rather than raising an undefined-key exception.
+    if ([webView respondsToSelector:NSSelectorFromString(@"_setDrawsBackground:")]) {
+        [webView setValue:@NO forKey:@"drawsBackground"];
+    }
     webView.wantsLayer = YES;
     webView.layer.backgroundColor = NSColor.clearColor.CGColor;
 
     NSVisualEffectView *materialView = [[NSVisualEffectView alloc] initWithFrame:NSZeroRect];
-    materialView.material = NSVisualEffectMaterialSidebar;
+    // Use one native material recipe with theme-specific appearance.
+    self.sidebarMaterialView = materialView;
+    [self applySidebarMaterial:@"light"];
     materialView.blendingMode = NSVisualEffectBlendingModeBehindWindow;
-    materialView.state = NSVisualEffectStateFollowsWindowActiveState;
+    // Keep the frosted surface when focus moves to another window. AppKit
+    // still honors the system Reduce Transparency setting.
+    materialView.state = NSVisualEffectStateActive;
     materialView.emphasized = NO;
 
     NSView *contentView = [[NSView alloc] initWithFrame:NSZeroRect];
@@ -877,6 +889,16 @@ willPerformHTTPRedirection:(NSHTTPURLResponse *)response
     [self showNavigationFailure:@"页面进程已结束。任务和后台计算仍由应用服务保存。"];
 }
 
+- (BOOL)isPayoffImageDownloadURL:(NSURL *)url {
+    if (url == nil || self.appOrigin == nil) return NO;
+    BOOL sameOrigin = [url.scheme isEqualToString:self.appOrigin.scheme]
+        && [url.host isEqualToString:self.appOrigin.host]
+        && [url.port isEqualToNumber:self.appOrigin.port];
+    NSRegularExpression *route = [NSRegularExpression regularExpressionWithPattern:@"^/api/tasks/[A-Za-z0-9._:-]{1,160}/payoff-images/[A-Za-z0-9._:-]{1,160}\\.svg$" options:0 error:nil];
+    return sameOrigin && [self isReportDownloadURL:url]
+        && [route numberOfMatchesInString:url.path options:0 range:NSMakeRange(0, url.path.length)] == 1;
+}
+
 - (BOOL)isAllowedReportArtifactURL:(NSURL *)url {
     if (url == nil || self.appOrigin == nil) return NO;
     BOOL sameOrigin = [url.scheme isEqualToString:self.appOrigin.scheme]
@@ -923,7 +945,7 @@ willPerformHTTPRedirection:(NSHTTPURLResponse *)response
     [forbidden addCharactersInString:@"/\\:"];
     if (candidate.length == 0 || candidate.length > 160
         || [candidate rangeOfCharacterFromSet:forbidden].location != NSNotFound
-        || (![lower hasSuffix:@".csv"] && ![lower hasSuffix:@".json"])) return nil;
+        || (![lower hasSuffix:@".csv"] && ![lower hasSuffix:@".json"] && ![lower hasSuffix:@".svg"])) return nil;
     return candidate;
 }
 
@@ -1145,7 +1167,8 @@ completionHandler:(void (^)(NSArray<NSURL *> * _Nullable URLs))completionHandler
  decisionHandler:(void (^)(WKNavigationActionPolicy))decisionHandler {
     NSURL *url = navigationAction.request.URL;
     if (webView == self.webView && navigationAction.shouldPerformDownload
-        && [url.scheme.lowercaseString isEqualToString:@"blob"]) {
+        && ([url.scheme.lowercaseString isEqualToString:@"blob"]
+            || [self isPayoffImageDownloadURL:url])) {
         decisionHandler(WKNavigationActionPolicyDownload);
         return;
     }
@@ -1309,10 +1332,12 @@ didFailWithError:(NSError *)error
         self.window.appearance = nil;
         self.settingsWindow.appearance = nil;
         NSAppearanceName appearance = [NSApp.effectiveAppearance bestMatchFromAppearancesWithNames:@[NSAppearanceNameDarkAqua, NSAppearanceNameAqua]];
+        [self applySidebarMaterial:[appearance isEqualToString:NSAppearanceNameDarkAqua] ? @"dark" : @"light"];
         [self applyDockIcon:[appearance isEqualToString:NSAppearanceNameDarkAqua] ? @"dark" : @"light"];
     } else {
         self.window.appearance = [NSAppearance appearanceNamed:[theme isEqualToString:@"dark"] ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
         self.settingsWindow.appearance = self.window.appearance;
+        [self applySidebarMaterial:theme];
         [self applyDockIcon:theme];
     }
 }
@@ -1324,10 +1349,17 @@ didFailWithError:(NSError *)error
     if ([keyPath isEqualToString:@"effectiveAppearance"] && object == NSApp) {
         if (![self.themePreference isEqualToString:@"auto"]) return;
         NSAppearanceName appearance = [NSApp.effectiveAppearance bestMatchFromAppearancesWithNames:@[NSAppearanceNameDarkAqua, NSAppearanceNameAqua]];
+        [self applySidebarMaterial:[appearance isEqualToString:NSAppearanceNameDarkAqua] ? @"dark" : @"light"];
         [self applyDockIcon:[appearance isEqualToString:NSAppearanceNameDarkAqua] ? @"dark" : @"light"];
         return;
     }
     [super observeValueForKeyPath:keyPath ofObject:object change:change context:context];
+}
+
+- (void)applySidebarMaterial:(NSString *)theme {
+    BOOL dark = [theme isEqualToString:@"dark"];
+    self.sidebarMaterialView.material = NSVisualEffectMaterialSidebar;
+    self.sidebarMaterialView.appearance = [NSAppearance appearanceNamed:dark ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
 }
 
 - (void)applyDockIcon:(NSString *)theme {

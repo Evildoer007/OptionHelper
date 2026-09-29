@@ -412,6 +412,8 @@ class ResultStore:
             "run_ref": run_ref,
             "facts": facts,
             **({"calculation_context": _pricing_calculation_context(result)} if record["module"] == "pricer" else {}),
+            **({"payoff_summary": _verified_payoff_summary(result, run_ref["result_file_hash"])}
+               if record["module"] == "payoffer" else {}),
             "contract_term_facts": _contract_premium_facts(contract, reference["expected_artifact_manifest_hash"]),
         }
 
@@ -1089,6 +1091,19 @@ def _result_facts(module: str, result: dict[str, Any], result_hash: str) -> list
             value = _number(source.get(key))
             if value is not None:
                 selected.append((key, label, value, unit))
+        # For long vanilla options and debit verticals at inception, the
+        # future payoff PV is the fair upfront premium. Never label total NPV
+        # (which includes the contractual premium) as that price. Other
+        # structures/valuation dates remain unsupported rather than guessed.
+        lifecycle = source.get("cashflow_lifecycle", {})
+        if (str(result.get("product_id")) in {"1.1", "1.2", "2.1", "2.3"}
+            and isinstance(lifecycle, dict)
+            and lifecycle.get("schema") == "optionhelper.pricer-cashflow-lifecycle.v1"
+            and lifecycle.get("valuation_relation") in {"at_contract_start", "implicit_contract_start"}):
+            remaining = lifecycle.get("remaining_value", {})
+            value = _number(remaining.get("pv_percent")) if isinstance(remaining, dict) else None
+            if value is not None and value >= 0:
+                selected.append(("theoretical_premium", "期初理论权利金率（非市场报价）", value, "percent"))
         greeks = source.get("greeks") if isinstance(source.get("greeks"), dict) else {}
         for raw_name, raw_value in greeks.items():
             name = str(raw_name).lower()
@@ -1621,3 +1636,16 @@ def _report_candidate(record: dict[str, Any], verified_contract: dict[str, Any])
         "evidence_refs": [],
         "module_run_refs": {}, "module_run_options": {},
     }
+
+
+def _verified_payoff_summary(result, result_hash):
+    """Project existing controlled payoff facts, never infer global loss bounds."""
+    facts = result.get("reporter_payoff_facts")
+    if not isinstance(facts, dict) or facts.get("projection_status") != "controlled_percent_machine_facts":
+        return {"available": False, "result_path": ["reporter_payoff_facts"]}
+    encoded = json.dumps(facts, ensure_ascii=False, allow_nan=False, sort_keys=True)
+    return {"available": True, "source": "verified_payoffer_result",
+            "fact_ref": "payoff_" + hashlib.sha256((result_hash + encoded).encode()).hexdigest()[:24],
+            "result_path": ["reporter_payoff_facts"],
+            "value_encoding": "percentage_points", "global_bounds_inferred": False,
+            **({"facts": facts} if len(encoded) <= 16000 else {"read_required": True})}

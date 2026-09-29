@@ -96,8 +96,11 @@ def _quota_limit(request: DataRequest | CalendarRequest, config: DataFetcherConf
     return min(config.max_provider_units, request.quota_limit) if request.quota_limit is not None else config.max_provider_units
 
 
+from .providers.tushare import TushareProvider
+
+
 def _providers() -> dict[str, Any]:
-    providers = (IFindHttpProvider(), LocalCsvProvider(), WindProvider(), IFindSdkProvider())
+    providers = (IFindHttpProvider(), LocalCsvProvider(), WindProvider(), IFindSdkProvider(), TushareProvider("tinyshare"), TushareProvider())
     return {provider.name: provider for provider in providers}
 
 
@@ -425,6 +428,14 @@ def _asset_reference(
             for asset_id, convention in conventions.items()
         },
     }
+    if provider in {"tinyshare", "tushare"}:
+        price_convention.update({
+            "volume_unit": "share_or_fund_unit", "source_volume_unit": "lot",
+            "volume_multiplier": 100,
+            "raw_price_unit_by_asset": {asset: "index_point" if value["asset_class"] == "index" else "CNY" for asset, value in conventions.items()},
+            "adjustment_anchor": "last_observed_date_in_requested_window",
+            "adjustment_formula": "raw * daily_factor / anchor_factor",
+        })
     # LocalDataStore将全部DataAsset元数据纳入storage_ref认证。ID同样必须绑定会
     # 改变资产语义的内容、请求、覆盖与口径，不能以相同CSV静默复用旧lineage。
     identity = hashlib.sha256(json.dumps({
@@ -654,6 +665,8 @@ def _fetch_provider(
                 quota_used += units
             calls.append(_provider_call(name, error.code, units, error))
             last_error = error
+            if isinstance(error, ProviderUnauthorized):
+                raise
             if protected_error is None and isinstance(error, (ProviderUnauthorized, ProviderQuotaExceeded)):
                 protected_error = error
         except (DataNormalizationError, DataQualityError) as error:
@@ -921,6 +934,8 @@ def _resolve_data(
         partial_match = next((match for match in matches if match is not invalid_match and match.frame is not None), None)
         if request.cache_policy == "reuse":
             raise CacheMiss("缓存覆盖不足且cache_policy=reuse禁止下载")
+        if partial_match and partial_match.provider in {"tinyshare", "tushare"} and request.adjustment != "none":
+            partial_match = None  # Preserve one forward-adjustment anchor.
         interval_requests, cached_frame, cached_provider = _interval_requests(request, partial_match)
         if not interval_requests:
             raise CacheMiss("缓存覆盖不足但没有可补齐区间")
@@ -1393,7 +1408,7 @@ def call_tool(request: Mapping[str, Any]) -> Mapping[str, Any]:
     if action == "status":
         return capability()
     if action == "catalog":
-        return {**capability(), "providers": ["ifind_http", "local", "wind", "ifind_sdk"], "wind": WindProvider.capability(enabled=False)}
+        return {**capability(), "providers": ["ifind_http", "tinyshare", "tushare", "local", "wind", "ifind_sdk"], "wind": WindProvider.capability(enabled=False)}
     if action == "list_assets":
         return {**capability(), "assets": list_data_assets()}
     if action not in {"fetch", "fetch_calendar"}:
@@ -1478,7 +1493,7 @@ def _app_fetch_requires_secret(source: Mapping[str, Any]) -> bool:
     providers = tuple(item.strip().lower() for item in request.source_priority if item and item.strip())
     if request.provider and request.provider.strip().lower() not in providers:
         providers = (request.provider.strip().lower(), *providers)
-    return not providers or any(provider in {"ifind_http", "ifind_sdk"} for provider in providers)
+    return not providers or any(provider in {"ifind_http", "ifind_sdk", "tinyshare", "tushare"} for provider in providers)
 
 
 def call_tool_from_app(
@@ -1488,6 +1503,8 @@ def call_tool_from_app(
     secret_ref: SecretRef | None = None,
     secret_port: Callable[[SecretRef], str] | None = None,
     trading_calendar_ref: DataAssetRef | None = None,
+    provider_name: str = "ifind-http",
+    cancellation_check: Callable[[], bool] | None = None,
 ) -> Mapping[str, Any]:
     """App薄适配入口；Host可注入已验证交易日历，不进入页面请求。"""
 
@@ -1503,6 +1520,9 @@ def call_tool_from_app(
     if trading_calendar_ref is not None and not isinstance(trading_calendar_ref, DataAssetRef):
         raise RequestValidationError("App交易日历必须由Host以Core DataAssetRef注入")
 
+    selected_provider = {"ifind-http": "ifind_http", "tinyshare": "tinyshare", "tushare": "tushare"}.get(provider_name)
+    if selected_provider is None:
+        raise RequestValidationError("未知App数据服务")
     payload = dict(request)
     action = _app_action(payload)
     payload.pop("action", None)
@@ -1510,13 +1530,19 @@ def call_tool_from_app(
     verification_key = _verification_key(caller_context, secret_ref)
     with _VERIFIED_CONNECTIONS_LOCK:
         verified = verification_key in _VERIFIED_CONNECTIONS if verification_key is not None else False
-    status = capability(app_configured=configured, app_verified=verified)
+    status = {**capability(app_configured=configured, app_verified=verified), "provider_priority": [selected_provider], "selected_provider": selected_provider}
     if action == "status":
         return status
     if action == "catalog":
-        return {**status, "providers": ["ifind_http", "local", "wind", "ifind_sdk"], "wind": WindProvider.capability(enabled=False)}
+        return {**status, "providers": ["ifind_http", "tinyshare", "tushare", "local", "wind", "ifind_sdk"], "wind": WindProvider.capability(enabled=False)}
     if action == "list_assets":
         return {**status, "assets": list_data_assets(caller=caller_context)}
+    if action == "dashboard":
+        from .dashboard_service import read_dashboard
+        return read_dashboard(payload, caller_context, selected_provider=selected_provider,
+                              secret_ref=secret_ref if selected_provider == "ifind_http" else None,
+                              secret_port=secret_port if selected_provider == "ifind_http" else None,
+                              cancelled=cancellation_check)
     if action not in {"fetch", "fetch_calendar", "test_connection"}:
         return {"ok": False, "module": "datafetcher", "status": "failed", "error": {"code": "unsupported_action", "message": "DataFetcher不支持该action"}}
     task_id = payload.pop("task_id", "local")
@@ -1525,7 +1551,9 @@ def call_tool_from_app(
             raise RequestValidationError("DataFetcher连接测试不接受数据请求字段")
         source: Mapping[str, Any] = {}
     else:
-        source = _business_request_source(payload)
+        source = dict(_business_request_source(payload))
+        if action == "fetch" and source.get("provider") != "local" and source.get("source_priority") not in (["local"], ("local",), "local"):
+            source.update(provider=selected_provider, source_priority=[selected_provider])
     requires_secret = action in {"fetch_calendar", "test_connection"} or (
         action == "fetch" and _app_fetch_requires_secret(source)
     )
@@ -1533,12 +1561,30 @@ def call_tool_from_app(
     if requires_secret:
         config = replace(
             base_config,
-            ifind_secret_ref=_validate_host_secret_ref(secret_ref),
-            ifind_secret_port=_validate_host_secret_port(secret_port),
+            provider_priority=(selected_provider,),
+            ifind_secret_ref=_validate_host_secret_ref(secret_ref) if selected_provider == "ifind_http" else None,
+            ifind_secret_port=_validate_host_secret_port(secret_port) if selected_provider == "ifind_http" else None,
+            token_provider=selected_provider,
+            token_secret_ref=_validate_host_secret_ref(secret_ref) if selected_provider != "ifind_http" else None,
+            token_secret_port=_validate_host_secret_port(secret_port) if selected_provider != "ifind_http" else None,
             trading_calendar_ref=trading_calendar_ref,
         )
     else:
         config = replace(base_config, trading_calendar_ref=trading_calendar_ref)
+    if action == "test_connection" and selected_provider in {"tinyshare", "tushare"}:
+        try:
+            TushareProvider(selected_provider).test_connection(config)
+        except ProviderError as error:
+            if verification_key:
+                with _VERIFIED_CONNECTIONS_LOCK:
+                    _VERIFIED_CONNECTIONS.discard(verification_key)
+            return {**status, "connection": {"provider_name": selected_provider, "status": error.code,
+                    "reason_code": error.reason_code, "detail": str(error)}}
+        if verification_key:
+            with _VERIFIED_CONNECTIONS_LOCK:
+                _VERIFIED_CONNECTIONS.add(verification_key)
+        return {**status, "connection": {"provider_name": selected_provider, "status": "available",
+                "detail": "数据连接及交易日历接口验证通过，行情与复权权限以实际请求为准。"}}
     if action == "test_connection":
         def failed_connection(error: ProviderError, status_name: str, detail: str) -> dict[str, Any]:
             if verification_key is not None:

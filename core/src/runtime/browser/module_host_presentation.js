@@ -139,10 +139,12 @@
 
   const moduleScrollContainers = [
     ".oh-choice__menu",
+    ".oh-choice__results",
     ".choice-menu",
     ".library-panel",
     ".source-panel",
     ".inspector-panel",
+    ".inspector-scroll",
     ".settings-panel",
     ".canvas-viewport",
     ".selection-panel",

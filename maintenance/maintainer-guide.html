@@ -481,7 +481,9 @@ prepare_candidate_assets(product, registry, project / &quot;modules/payoffer/fig
 </section>
 <section class="chapter" aria-labelledby="s11">
 <h2 id="s11">11. 更新App、Skill和两份Demo</h2>
-<p>新产品在开发版本里能用以后，还需要把它交给实际使用者。当前版本分别是App v0.1.0和Skill v0.3.0；以后改版本时以<a href="../packaging/release_contract.py">release_contract.py</a>中的APP_VERSION和SKILL_VERSION为准。</p>
+<p>新产品在开发版本里能用以后，还需要把它交给实际使用者。当前版本分别是App v0.1.0-alpha和Skill v0.3.0；以后改版本时以<a href="../packaging/release_contract.py">release_contract.py</a>中的APP_VERSION和SKILL_VERSION为准。</p>
+<p>Windows与macOS各提供一个安装包，每个平台都包含sales和admin账号。sales使用OptChat及个人模型、数据配置；admin还可使用OptDesk五个模块。两种账号的使用说明分别为10章和17章，由服务端根据登录身份返回。修改共有能力时同步两份说明，不将管理员操作写成sales可用功能。</p>
+<p>发布检查按macOS/sales、macOS/admin、Windows/sales、Windows/admin四种组合记录：登录、对应手册、页面权限、工具与报告、设置和退出切换账号。源码权限检查、安装包构建和实机验收分别记录；未验收的平台必须明确标记，不因共用前后端就视为通过。</p>
 <h3 id="s11-1">11.1 打包前先准备好</h3>
 <p>确认产品目录、中文条款、程序规则和默认图已经一起保存。需要改计算模块的，也要包含相应代码。先保留旧安装包和用户数据，方便出问题时回退。</p>
 <p>新文件是否会被打进包，主要由<a href="../packaging/skill/package-source-map.json">Skill文件映射</a>和<a href="../packaging/app/capability-source-map.json">App文件映射</a>决定。如果文件放在原有产品和默认图目录下，仍要检查构建是否成功；如果加了全新资源目录，需要在打包配置中加入它。</p>

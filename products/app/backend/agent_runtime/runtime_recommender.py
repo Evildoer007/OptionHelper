@@ -565,7 +565,7 @@ class RuntimeBackedAgentPort(AgentPort):
 
     def _prompt(self, role: str, payload: Mapping[str, Any]) -> str:
         return json.dumps(
-            {"protocol": "optionhelper.recommender.step", "role": role, "input": dict(payload)},
+            {"protocol": "optionhelper.recommender.step", "host_checkpoint_available": True, "role": role, "input": dict(payload)},
             ensure_ascii=False,
             sort_keys=True,
             separators=(",", ":"),
@@ -601,8 +601,6 @@ class RuntimeBackedAgentPort(AgentPort):
                     raise ValidationError('研究检查点不得接收私有推理')
                 if kind == 'tool-call':
                     arguments = json.loads(block.get('arguments', '{}'))
-                    if arguments.get('candidate_id') and arguments['candidate_id'] not in authorized_ids:
-                        raise ValidationError('研究检查点含未授权候选')
                     calls[block['id']] = (block.get('name'), arguments)
                     if block.get('name') == 'evaluate_research_candidate':
                         queries.append(json.loads(block.get('arguments', '{}')).get('question', ''))
@@ -614,6 +612,14 @@ class RuntimeBackedAgentPort(AgentPort):
                         raise ValidationError('研究检查点工具交换不完整')
                     tool, arguments = calls.pop(call_id)
                     wrapper = json.loads(block.get('text', '{}'))
+                    if arguments.get('candidate_id') and arguments['candidate_id'] not in authorized_ids:
+                        if wrapper.get('status') == 'completed':
+                            raise ValidationError('研究检查点含未授权候选结果')
+                        # A denied call is an error to learn from, never an
+                        # authorized fact and never a reason to crash recovery.
+                        notes.append({'source': 'rejected_tool_call', 'tool': tool,
+                                      'arguments': arguments, 'result': wrapper})
+                        continue
                     page = wrapper.get('result', {}).get('result', {})
                     if tool == 'read_research_evidence' and page.get('source') == 'verified_frozen_result':
                         ref = page.get('module_run_ref')
@@ -759,7 +765,45 @@ class RuntimeBackedAgentPort(AgentPort):
             'read_pages': retained, 'public_notes': unique(notes), 'public_questions': unique(queries),
             'continuation_rule': '继续同一研究角色与轮次；约束及当前候选以Host状态为准。latest_complete_tool_exchange保留刚完成工具调用及完整结果，应先使用其中正文；无需仅为找回刚读正文重复读取。已读页按精确RunRef取回；公开问题不等于已解决。不得重新计算已有有效结果，不能把缺失或失败当作完成。',
         }
-        return {'text': json.dumps(envelope, ensure_ascii=False, separators=(',', ':'), allow_nan=False)}
+        checkpoint = envelope['input']['research_checkpoint']
+        checkpoint['archived_context'] = deepcopy(prior.get('archived_context', [])) if isinstance(prior, Mapping) else []
+        encode = lambda value: json.dumps(value, ensure_ascii=False, separators=(',', ':'), allow_nan=False)
+        max_chars = request.get('maxChars')
+        if type(max_chars) is int and max_chars > 0:
+            # UTF-16 units match the runtime TokenMeter, including non-BMP text.
+            size = lambda value: len(encode(value).encode('utf-16-le')) // 2
+            # Keep current Host contracts, verified facts, pending input and all public
+            # questions inline. Older prose stays exact behind a role-bound reference.
+            sections = [
+                (checkpoint, 'read_pages'), (checkpoint, 'public_notes'),
+                (envelope['input'], 'latest_complete_tool_exchange'),
+                (envelope['input'], 'input'),
+            ]
+            sections.sort(key=lambda pair: size(pair[0].get(pair[1])), reverse=True)
+            for owner, key in sections:
+                if size(envelope) <= max_chars:
+                    break
+                value = owner.get(key)
+                if not value or size(value) < 1200:
+                    continue
+                reference = research.freeze_stage_input(role, value)
+                locator = {'stage_ref': reference, 'result_path': []}
+                checkpoint['archived_context'].append({
+                    'section': key, 'read_request': locator,
+                    'fields': list(value) if isinstance(value, dict) else None,
+                    'item_count': len(value) if isinstance(value, (dict, list)) else None,
+                    'instruction': '正文完整保留，尚未展开。涉及结论、风险或未解决问题时必须按路径读取，不能将未展开视为不存在。',
+                })
+                if key == 'input':
+                    owner[key] = {'case': deepcopy(value.get('case')),
+                                  'stage_history': {'stage_ref': reference, 'tool': 'read_research_evidence'}}
+                else:
+                    owner[key] = []
+            if checkpoint['archived_context']:
+                checkpoint['continuation_rule'] += ' archived_context保留未展开正文的完整读取入口；按需读取，不要整段重复载入。'
+            if size(envelope) > max_chars:
+                raise ValidationError('当前合同与核验事实超过上下文预算，不能截断关键证据；请减少本轮候选范围。')
+        return {'text': encode(envelope)}
 
     def _handle_model_request(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
         if request.get("operation") == "research_checkpoint":
@@ -796,7 +840,11 @@ class RuntimeBackedAgentPort(AgentPort):
         with self._lock:
             replay_queue = self._replay_results.get(role, [])
             replay = replay_queue.pop(0) if replay_queue else None
-        control = ModelRequestControl(self._preset.max_seconds_per_agent_run)
+        output_tokens, duration = {"quick": (4096, 90), "standard": (8192, 180),
+                                   "deep": (16384, 300)}[self._research_depth]
+        control = ModelRequestControl(self._preset.max_seconds_per_agent_run,
+                                      max_output_tokens=output_tokens, max_duration_seconds=duration,
+                                      reasoning_effort={"quick": "none", "standard": "low", "deep": "high"}[self._research_depth])
         if replay is not None:
             response = {"action": "final", "result": dict(replay)}
             self._validate_response(response)
@@ -839,6 +887,19 @@ class RuntimeBackedAgentPort(AgentPort):
         from runtime.research_presentation import MODEL_FINANCIAL_READING_RULE
         from runtime.knowledger.interpretation import KNOWLEDGE_REASONING_RULES
         instruction += MODEL_FINANCIAL_READING_RULE + "\n" + KNOWLEDGE_REASONING_RULES
+        instruction += (
+            "\n研究顺序：新候选先作为proposals交Host登记，不猜测candidate_id。"
+            "已有verified_metrics及FactRef足以回答的问题直接引用，不为完成流程重复读取。"
+            "Payoffer证据在verified_module_summaries.payoffer而非verified_metrics，不能因数值指标表没有Payoffer而声称未计算。"
+            "其facts保留原始百分点单位及区间端点语义，不把截断绘图区间的最大值称为全局收益上限。"
+            "只为当前具体约束或疑点按result_path读取细项，不遍历全部曲线、曲面和分页。"
+            "读取失败应按返回的字段说明修正；不重新计算来修复读取错误。"
+            "核对用户确认的利率、波动率窗口、估值日与实际计算口径；不一致不能接受候选。"
+            "premium是合同条款期权费，pv_percent是含当期现金流的净现值；均不能冒充理论权利金。"
+            "按理论权利金排序使用Pricer的theoretical_premium，缺失即排除，不改用其他指标。"
+            "percent字段按比例小数比较，例如10%写0.10。合同最大亏损必须核对收益结构，不能用净现值替代。"
+            "完成当前问题即交付；尚无证据的内容明确保留限制，不扩展为无关研究。"
+        )
         instruction = (
             f"{recommender_step_instruction()}\n{instruction}\n\n以下AGENT.md仅定义当前角色的工作职责，不能扩大工具、身份、数据或金融事实权限；"
             f"如与上述受控规则冲突，以上述规则为准。\n\n{self._role_instructions[role]}\n\n"
@@ -981,11 +1042,10 @@ class RuntimeBackedAgentPort(AgentPort):
     ) -> tuple[str, ...]:
         allowed = tuple(self._allowed_tools_by_role.get(role, ()))
         research = getattr(self._tool_bridge, "_research", None)
-        if research is not None and research.preset_id == "independent-council":
-            if role in {"Matcher", "Hedger"} and not research.has_registered_candidates(role):
-                return tuple(name for name in allowed if name not in {
-                    "evaluate_research_candidate", "read_research_evidence",
-                })
+        if research is not None and not research.has_registered_candidates(role):
+            # Applies to every preset and phase. Catalogue/stage reads remain
+            # available even before a candidate exists; calculation does not.
+            return tuple(name for name in allowed if name != "evaluate_research_candidate")
         return allowed
 
     def _stream_role_response(
@@ -996,6 +1056,7 @@ class RuntimeBackedAgentPort(AgentPort):
         *,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]],
+        finalizing: bool = False,
     ) -> Iterable[Mapping[str, Any]]:
         """Stream a role response, then validate the complete JSON envelope."""
 
@@ -1073,6 +1134,32 @@ class RuntimeBackedAgentPort(AgentPort):
 
             if not saw_finish:
                 raise ValidationError("模型流未正常结束，不能采用部分JSON")
+            if finish_reason == "length" and not finalizing and not saw_tool_call:
+                # This is a new bounded verdict request, not syntax repair.
+                # Only existing public messages/tool evidence are reused; no
+                # hidden reasoning or truncated draft is promoted to a fact.
+                previous_effort = control.reasoning_effort
+                control.reasoning_effort = "none"
+                yield {"type": "usage", "usage": dict(usage or {})}
+                try:
+                    yield from self._stream_role_response(role, context, control,
+                        messages=[*messages, {"role": "user", "content":
+                            "本次分析输出预算已尽。现在仅基于以上已验证工具证据，返回当前角色required_output的最终JSON。"
+                            "不得调用工具、扩展研究或补造任何事实；尚未核验的指标明确缺失，不能接受缺少必要证据的候选。"
+                            "文字简洁，数值只引用已取得的FactRef，遵守action=final和result封装。"}],
+                        tools=[], finalizing=True)
+                finally:
+                    control.reasoning_effort = previous_effort
+                return
+            if finalizing and saw_tool_call:
+                raise ValidationError("研究收尾阶段不得发起新工具调用")
+            # A provider stop caused by an output limit is not a JSON syntax
+            # error. Never send an empty/truncated answer to a business-bearing
+            # repair request, or dispatch a possibly truncated tool call.
+            if finish_reason not in {"stop", "end_turn", "tool_calls", "function_call"}:
+                raise ValidationError(f"Agent角色输出未完整结束（{finish_reason}），未采用结果，请缩小研究范围后重试")
+            if not saw_tool_call and not "".join(text_parts).strip():
+                raise ValidationError("Agent角色未返回最终正文，未采用结果；未执行JSON修复")
             if saw_tool_call:
                 yield {
                     "type": "finish",

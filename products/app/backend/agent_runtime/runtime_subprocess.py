@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 import inspect
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -258,7 +259,7 @@ class RuntimeSubprocessTransport:
         normalized = str(method or "").strip().replace("/", ".")
         if not normalized:
             raise ValueError("RPC method不能为空")
-        # Awaiting a child response is business execution, not an RPC handshake.
+        # Awaiting a child response is business execution, not RPC initialization.
         # Model idle detection, cancellation and process exit remain authoritative.
         if timeout is None and normalized in {"subagent.start", "subagent.followup"} and (params or {}).get("wait") is not False:
             timeout = 0
@@ -688,7 +689,15 @@ class RuntimeSubprocessTransport:
             )
             self._run_connections[run_id] = connection
         arguments = _pick(params, "arguments", default={})
-        result = self.tool_bridge.call(connection, tool_name, arguments, request_id=call_id)
+        try:
+            result = self.tool_bridge.call(connection, tool_name, arguments, request_id=call_id)
+        except ValueError as error:
+            # A rejected read has a known outcome and cannot start a calculation.
+            # Keep mutating-tool failures uncertain unless their outcome is proven.
+            if tool_name != "read_research_evidence":
+                raise
+            return {"status": "failed", "error": _safe_value(str(error)),
+                    "result": {"calculation_started": False}}
         return result.to_dict() if hasattr(result, "to_dict") else _safe_value(result)
 
     def _tool_limit(self, role_id: str) -> int:
@@ -876,6 +885,25 @@ class RuntimeSubprocessTransport:
                 "tool_call_id": str(_pick(data, "toolCallId", "tool_call_id", default="")),
                 "tool_name": str(_pick(data, "toolName", "tool_name", default="")),
             }
+            arguments = data.get("arguments")
+            if payload["tool_name"] == "read_research_evidence" and isinstance(arguments, Mapping):
+                modules = {"pricer": "估值定价", "payoffer": "收益结构", "backtester": "历史回测"}
+                fields = {"risk_curves": "风险曲线", "risk_surfaces": "风险曲面", "risk_scenarios": "风险情景", "greeks": "风险指标", "gamma": "Gamma", "delta": "Delta", "vega": "Vega", "theta": "Theta", "rho": "Rho", "price": "价格", "pv": "现值", "metrics": "指标", "statistics": "统计结果", "samples": "回测样本", "cashflows": "现金流"}
+                context = {"module": modules.get(arguments.get("module"), "研究概览")}
+                path = arguments.get("result_path", [])
+                if isinstance(path, (list, tuple)):
+                    labels = [fields[str(part).lower()] for part in path if str(part).lower() in fields]
+                    if labels: context["section"] = "／".join(dict.fromkeys(labels))
+                if "catalog_ref" in arguments: context["section"] = "产品资料"
+                if "stage_ref" in arguments: context["section"] = "阶段输入"
+                candidate = arguments.get("candidate_id")
+                if isinstance(candidate, str) and candidate:
+                    context["candidate_key"] = hashlib.sha256(candidate.encode()).hexdigest()[:16]
+                offset, limit = arguments.get("offset"), arguments.get("limit")
+                if isinstance(offset, int) and not isinstance(offset, bool) and offset >= 0:
+                    context["offset"] = offset
+                    if isinstance(limit, int) and not isinstance(limit, bool) and 0 < limit <= 1000: context["limit"] = limit
+                payload["activity_context"] = context
             if event_type in {"tool.completed", "tool.failed", "tool.cancelled"}:
                 payload["status"] = str(data.get("status", event_type.rsplit(".", 1)[-1]))
                 payload["result"] = _safe_value(data.get("result"))

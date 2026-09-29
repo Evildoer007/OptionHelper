@@ -12,7 +12,7 @@ from urllib.request import Request, urlopen
 from ..errors import ValidationError
 from ..secrets.secret_ref import SecretRef
 from ..settings.settings_models import ModelServiceSettings
-from .deepseek_provider import model_http_error, model_network_error
+from .deepseek_provider import model_http_error, model_network_error, apply_reasoning_control
 from .https_transport import open_verified_https
 from .request_control import ModelRequestCancelled, ModelRequestControl
 
@@ -80,6 +80,9 @@ def stream_openai_compatible(
         raise ValidationError("模型服务凭据无效")
     try:
         request_body: dict[str, Any] = {"model": model_name, "messages": list(messages), "stream": True}
+        if request_control is not None and request_control.max_output_tokens is not None:
+            request_body["max_tokens"] = request_control.max_output_tokens
+        apply_reasoning_control(request_body, endpoint, request_control)
         if tools:
             request_body["tools"] = list(tools)
             request_body["tool_choice"] = "auto"

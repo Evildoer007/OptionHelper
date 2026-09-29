@@ -77,6 +77,7 @@ APP_BACKEND_SOURCE_INPUTS = (
     "products/app/backend/identity",
     "products/app/backend/model_gateway",
     "products/app/backend/page_registry.py",
+    "products/app/backend/payoff_image_delivery.py",
     "products/app/backend/position_amounts.py",
     "products/app/backend/product_rule_revision.py",
     "products/app/backend/report_editor.py",

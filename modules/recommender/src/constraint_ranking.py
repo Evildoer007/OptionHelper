@@ -19,6 +19,7 @@ class ConstraintRankingError(RecommendationValidationError):
 METRIC_SOURCES: Mapping[str, str] = {
     "premium": "contract_terms",
     "pv_percent": "pricer",
+    "theoretical_premium": "pricer",
     "delta": "pricer",
     "gamma": "pricer",
     "vega": "pricer",

@@ -158,6 +158,8 @@ class CapabilityServiceCaller:
         secret_port: object | None = None,
         *,
         trading_calendar_ref: object | None = None,
+        provider_name: str = "ifind-http",
+        cancellation_check: object | None = None,
     ) -> dict[str, Any]:
         """Call only a Capability that declares the App-safe DataFetcher port.
 
@@ -188,10 +190,14 @@ class CapabilityServiceCaller:
                         "secret_ref": secret_ref,
                         "secret_port": secret_port,
                     }
+                    if provider_name != "ifind-http":
+                        handler_kwargs["provider_name"] = provider_name
                     if trading_calendar_ref is not None:
                         handler_kwargs["trading_calendar_ref"] = trading_calendar_ref
+                    if request.get("action") == "dashboard" and cancellation_check is not None:
+                        handler_kwargs["cancellation_check"] = cancellation_check
                     result = handler(dict(request), **handler_kwargs)
-            except UnavailableCapabilityError:
+            except (UnavailableCapabilityError, InterruptedError):
                 raise
             except Exception as error:
                 raise UnavailableCapabilityError(

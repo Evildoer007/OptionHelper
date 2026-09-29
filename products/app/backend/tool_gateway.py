@@ -160,6 +160,15 @@ class ToolGateway:
             calendar_ref = self._single_day_datafetch_calendar(
                 controlled_request, caller_context, request_id=request_id,
             )
+            if controlled_request.get("action") == "dashboard":
+                if agent_proxy:
+                    raise ValidationError("Dashboard仅供Desk使用")
+                try:
+                    return self._datafetcher.dispatch(controlled_request, caller_context, request_id=request_id,
+                                                     cancellation_check=cancellation_check)
+                except InterruptedError:
+                    _raise_if_compute_cancelled(cancellation_check)
+                    raise
             return self._datafetcher.dispatch(
                 controlled_request,
                 caller_context,
@@ -1937,7 +1946,7 @@ def _controlled_datafetcher_request(payload: Mapping[str, Any], context: Any) ->
         unexpected = set(payload) - allowed
         if unexpected:
             raise ValidationError(f"DataFetcher请求包含不允许的字段：{', '.join(sorted(unexpected))}")
-    if action in {"fetch", "fetch_calendar"} and (
+    if action in {"fetch", "fetch_calendar", "dashboard"} and (
         context is None or not isinstance(context.task_id, str) or not context.task_id
     ):
         raise ValidationError("DataFetcher fetch必须绑定当前App任务")
@@ -2130,14 +2139,14 @@ def _plan_backtest_window(
         config_value = dict(raw_config) if isinstance(raw_config, Mapping) else {}
         try:
             config = backtester.BacktestConfig.from_mapping(config_value)
-        except backtester.BacktestConfigError:
+        except backtester.BacktestConfigError as config_error:
             # A user may edit the start before updating the end. Diagnose
             # reversed bounds against the same verified history; do not turn
             # this input error into a misleading historical-data failure.
             start = config_value.get("start_date")
             end = config_value.get("end_date")
             if not (isinstance(start, str) and isinstance(end, str) and start > end):
-                raise
+                raise ValidationError(str(config_error)) from config_error
             if date.fromisoformat(start).isoformat() != start or date.fromisoformat(end).isoformat() != end:
                 raise
             diagnostic_config = backtester.BacktestConfig.from_mapping({

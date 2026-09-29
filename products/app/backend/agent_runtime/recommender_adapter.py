@@ -37,6 +37,7 @@ from modules.recommender.ports import AgentPort, AgentRunReceipt, AgentStepResul
 from modules.recommender.service import RecommendationInputRequired, RecommenderService
 from modules.recommender.config import RecommenderConfig
 from modules.recommender.interaction import (
+    confirmed_term_overrides,
     merge_confirmed_constraints,
     requested_candidate_count_from_text,
 )
@@ -1036,11 +1037,17 @@ class RecommenderAdapter:
         self, identity: SessionIdentity, task_id: str, prompt: str, arguments: Mapping[str, Any], *,
         selection: ModelSelection | None = None, execution_ids: Mapping[str, str] | None = None,
         research_context: str = "",
+        execution_settings: Mapping[str, str] | None = None,
     ) -> Mapping[str, Any]:
+        # The Host captures this at turn start. Never reread another task's
+        # composer choice after the model has spent time researching.
+        frozen = dict(execution_settings or {})
+        gateway = getattr(self, "_gateway", None)
         result = dict(self._run_fixed_internal(
             identity, task_id, prompt, arguments, selection=selection, execution_ids=execution_ids,
             research_context=research_context,
-            research_depth=(self._gateway.research_depth_for(identity) if hasattr(self._gateway,"research_depth_for") else "standard"),
+            research_depth=frozen.get("research_depth") or (gateway.research_depth_for(identity) if hasattr(gateway, "research_depth_for") else "standard"),
+            execution_settings=frozen,
         ))
         recommendation = result.get("recommendation_set")
         candidates = recommendation.get("candidates") if isinstance(recommendation, Mapping) else None
@@ -1057,7 +1064,9 @@ class RecommenderAdapter:
         selection: ModelSelection | None = None, execution_ids: Mapping[str, str] | None = None,
         research_context: str = "",
         research_depth: str = "standard",
+        execution_settings: Mapping[str, str] | None = None,
     ) -> Mapping[str, Any]:
+        frozen = dict(execution_settings or {})
         task = self._tasks.get(identity, task_id)
         catalog_version = str(self._registry.manifest["catalog_version"])
         messages = task.get("messages", [])
@@ -1066,9 +1075,9 @@ class RecommenderAdapter:
             history.append({"role": "user", "content": str(prompt), "status": "pending_model"})
         confirmed_constraints = merge_confirmed_constraints({}, history)
         mode, inherited_count = _recommendation_turn_preferences(
-            history, getattr(self._gateway, "recommendation_execution_mode_for", lambda _: "single")(identity),
+            history, frozen.get("mode") or getattr(self._gateway, "recommendation_execution_mode_for", lambda _: "single")(identity),
         )
-        preset_id = _saved_recommendation_preset(self._gateway, identity, arguments) if mode == "multi" else "sequential-deliberation"
+        preset_id = (frozen.get("preset_id") or _saved_recommendation_preset(self._gateway, identity, arguments)) if mode == "multi" else "sequential-deliberation"
 
         try:
             pending = self._tasks.pending_recommendation(identity, task_id)
@@ -1342,7 +1351,7 @@ class AppConversationToolExecutor:
             search_handler=search_handler,
         )
 
-    def recommend(self, identity, task_id, research_context, *, selection=None, execution_ids=None):
+    def recommend(self, identity, task_id, research_context, *, selection=None, execution_ids=None, execution_settings=None):
         if self._recommender is None:
             raise ValidationError("RecommenderAdapter未绑定")
         messages = self._tasks.get(identity, task_id).get("messages", [])
@@ -1357,6 +1366,7 @@ class AppConversationToolExecutor:
         return self._recommender.run_fixed(
             identity, task_id, user_request, {}, selection=selection,
             execution_ids=execution_ids, research_context=research_context,
+            execution_settings=execution_settings,
         )
 
     def call(self, identity: SessionIdentity, task_id: str, name: str, arguments: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -1522,6 +1532,11 @@ class AppConversationToolExecutor:
             module_inputs = current_inputs.get("module_inputs", {})
             if not isinstance(term_overrides, Mapping) or not isinstance(module_inputs, Mapping):
                 raise ValidationError("已确认候选当前输入无效")
+            confirmed_terms = {
+                **confirmed_term_overrides(current_inputs.get("confirmed_constraints", {})),
+                **confirmed_term_overrides(pending.get("confirmed_constraints", {})),
+            }
+            term_overrides = _product_term_overrides(product, term_overrides, confirmed_terms)
             finished = set((completed_modules or {}).get(candidate_id, ()))
             if finished.difference({"payoffer", "pricer", "backtester"}):
                 raise ValidationError("已完成模块标识无效")
@@ -1536,6 +1551,15 @@ class AppConversationToolExecutor:
                 pricing = pricer_inputs.get("pricing_config")
                 if not isinstance(pricing, Mapping):
                     pricing = _pricing_config_for_resolved_contract(product, confirmed)
+                if isinstance(pricing, Mapping):
+                    # User-confirmed assumptions override role suggestions and
+                    # engine defaults on every candidate and delivery path.
+                    pricing = {**pricing, **{key: confirmed[key] for key in (
+                        "risk_free_rate", "dividend_yield", "hv_window", "model_method",
+                    ) if key in confirmed}}
+                    methods = product.get("terms", {}).get("pricing_methods", ())
+                    if pricing.get("model_method") not in methods:
+                        raise ValidationError("候选定价方法不适用于当前产品，不能静默替换")
                 if isinstance(pricing, Mapping) and pricing.get("model_method") == "monte_carlo":
                     if confirmed.get("path_count") is not None:
                         pricing = {**pricing, "path_count": confirmed["path_count"]}
@@ -1583,12 +1607,13 @@ class AppConversationToolExecutor:
                 if module == "pricer":
                     payload["pricing_config"] = dict(pricing)
                 elif module == "backtester":
-                    constraints = current_inputs.get("confirmed_constraints", pending.get("confirmed_constraints", {}))
-                    window = constraints.get("backtest_range", {}) if isinstance(constraints, Mapping) else {}
+                    constraints = {**current_inputs.get("confirmed_constraints", {}),
+                                   **pending.get("confirmed_constraints", {})}
+                    window = constraints.get("backtest_range", {})
                     config = payload.get("backtest_config", {})
                     if not isinstance(config, Mapping):
                         raise ValidationError("backtest_config必须为对象")
-                    payload["backtest_config"] = {**dict(config), **dict(window)}
+                    payload["backtest_config"] = {**dict(config), **dict(window), **constraints.get("backtest_config", {})}
                 module_payloads[module] = payload
             prepared_candidates.append({
                 "candidate_id": candidate_id, "product_id": product_id,
@@ -1702,6 +1727,7 @@ class AppConversationToolExecutor:
         statuses: dict[str, str] = {}
         run_refs: list[dict[str, Any]] = []
         facts: dict[str, Mapping[str, Any]] = {}
+        summaries: dict[str, Mapping[str, Any]] = {}
         failures = {}
         for module in requested_modules:
             response = module_results.get(module, {}) if isinstance(module_results, Mapping) else {}
@@ -1725,6 +1751,8 @@ class AppConversationToolExecutor:
                     summary = self._results.verified_fact_summary(identity, reference, expected_binding={
                         "candidate_id": candidate_id, "product_id": product_id, "rule_revision": rule_revision,
                     })
+                    if isinstance(summary.get("payoff_summary"), Mapping):
+                        summaries[module] = dict(summary["payoff_summary"])
                     for collection, source in (("facts", module), ("contract_term_facts", "contract_terms")):
                         for fact in summary.get(collection, ()):
                             if not isinstance(fact, Mapping) or not str(fact.get("metric", "")).strip():
@@ -1744,6 +1772,7 @@ class AppConversationToolExecutor:
             "module_run_refs": run_refs,
             "module_statuses": statuses,
             "verified_metrics": facts,
+            "verified_module_summaries": summaries,
             "module_failures": failures,
             "message": execution.get("next_step") or "; ".join(str(row.get("message", "模块未完成")) for row in failures.values()),
             "round_no": round_no,
@@ -1760,8 +1789,6 @@ class AppConversationToolExecutor:
             raise ValidationError("推荐交付参数只允许kind或format")
         pending = self._tasks.pending_recommendation(identity, task_id) if self._tasks else None
         candidates = list((pending or {}).get("candidates") or [])
-        if not candidates:
-            return {"status":"needs_input","message":"请先说明需要研究的结构。"}
         kind = str(arguments.get("kind") or "report")
         fmt = str(arguments.get("format") or "html")
         if kind not in {"card", "report", "quote", "multicard", "multireport"} or fmt not in {"html", "pdf", "docx"}:
@@ -1769,6 +1796,19 @@ class AppConversationToolExecutor:
         from ..report_delivery import delivery_request, required_delivery_modules, existing_results_only
         messages = self._tasks.get(identity, task_id).get("messages", [])
         latest = next((str(row.get("content", "")) for row in reversed(messages) if row.get("role") == "user"), "")
+        if not candidates:
+            # Desk calculations are valid report sources without a recommendation.
+            # Reporter retains task ownership, contract and run verification.
+            if existing_results_only(latest):
+                expected = delivery_request(latest)
+                if expected and not expected["multiple"]:
+                    kind = expected["template"]
+                    fmt = fmt if fmt in expected.get("formats", [expected["format"]]) else expected["format"]
+                return self.call(identity, task_id, "reporter.run", {
+                    "kind": kind.removeprefix("multi"), "format": fmt,
+                    "delivery_mode": "comparison" if kind.startswith("multi") else "single",
+                })
+            return {"status": "needs_input", "message": "当前没有已确认的推荐结构；请先确定结构，或明确使用本任务已有计算结果。"}
         # A reply to the MC question supplies calculation configuration, not
         # a different product. Preserve the frozen candidate and pass that reply
         # through the same parser used when a recommendation is first created.
@@ -1776,8 +1816,8 @@ class AppConversationToolExecutor:
         current = merge_confirmed_constraints(confirmed, messages)
         path_count = current.get("path_count")
         paths_changed = path_count is not None and path_count != confirmed.get("path_count")
-        if paths_changed:
-            pending = {**pending, "confirmed_constraints": {**confirmed, "path_count": path_count}}
+        pending = {**pending, "confirmed_constraints": current}
+        backtest_requested = {**current.get("backtest_range", {}), **current.get("backtest_config", {})}
         expected = delivery_request(latest)
         if expected and not expected["multiple"]:
             kind = expected["template"]
@@ -1813,6 +1853,19 @@ class AppConversationToolExecutor:
                         matching = config.get("model_method") == "analytical" or config.get("path_count") == path_count
                     if not matching:
                         modules_by_id.pop("pricing", None)
+
+            if backtest_requested:
+                refs = {candidate_id: dict(by_module) for candidate_id, by_module in refs.items()}
+                for by_module in refs.values():
+                    reference = by_module.get("backtest")
+                    store = getattr(self, "_results", None)
+                    matching = False
+                    if reference is not None and store is not None:
+                        frozen = json.loads(store.read_owned_module_run_file(identity, reference, "result.json"))
+                        config = frozen.get("backtest", {}).get("backtest_config", {})
+                        matching = all(config.get(key) == value for key, value in backtest_requested.items())
+                    if not matching:
+                        by_module.pop("backtest", None)
 
             ready = required.issubset(selection.get("selected_modules", [])) and all(
                 all(isinstance(refs.get(candidate_id, {}).get(module), Mapping) for module in required)
@@ -2011,6 +2064,27 @@ class AppConversationToolExecutor:
         *,
         binding: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
+        # Check frozen report evidence against the current request before rendering.
+        # A successful new calculation must not hide a stale selected report run.
+        if module == "reporter" and payload.get("action") == "run" and self._tasks and self._results:
+            messages = self._tasks.get(identity, task_id).get("messages", [])
+            constraints = merge_confirmed_constraints({}, messages)
+            expected = {**constraints.get("backtest_range", {}), **constraints.get("backtest_config", {})}
+            selection = payload.get("selection", {})
+            groups = list(selection.get("module_run_refs", {}).values())
+            groups.extend(item.get("module_run_refs", {}) for item in selection.get("comparison_items", []))
+            for refs in groups:
+                reference = refs.get("backtest")
+                if not expected or not isinstance(reference, Mapping):
+                    continue
+                frozen = json.loads(self._results.read_owned_module_run_file(identity, reference, "result.json"))
+                actual = frozen.get("backtest", {}).get("backtest_config", {})
+                labels = {"entry_rule": "入场规则", "start_date": "开始日期", "end_date": "结束日期", "complete_tenor": "完整合同要求"}
+                differences = [f"{labels.get(key, key)}应为{value}，报告引用为{actual.get(key, '未提供')}"
+                               for key, value in expected.items() if actual.get(key) != value]
+                if differences:
+                    raise ValidationError("报告引用的回测与本轮要求不一致：" + "；".join(differences)
+                                          + "。请通过recommendation_delivery_run更新当前推荐的回测与报告引用后重新生成。")
         # OptChat is server-side orchestration. It uses the same signed module
         # scope as Desk, but never grants the model direct module authority.
         binding = dict(binding or {})
@@ -2799,7 +2873,10 @@ def _pricing_config_for_resolved_contract(
     if not isinstance(terms, Mapping):
         raise ValidationError("冻结候选缺少正式合同条款")
     methods = tuple(str(value).strip() for value in terms.get("pricing_methods", ()) if str(value).strip())
-    if "analytical" in methods:
+    requested_method = confirmed_constraints.get("model_method")
+    if requested_method and requested_method not in methods:
+        raise ValidationError("用户指定定价方法不适用于当前产品，不能静默替换")
+    if requested_method == "analytical" or not requested_method and "analytical" in methods:
         return {"model_method": "analytical"}
     if "monte_carlo" not in methods:
         raise ValidationError("冻结候选未声明可用定价方法")
@@ -3170,3 +3247,16 @@ def _contains_hidden_model_field(value: object) -> bool:
 
 
 __all__ = ("AppAgentPort", "AppConversationToolExecutor", "AppKnowledgePort", "AppToolPort", "RecommenderAdapter")
+
+
+def _product_term_overrides(product, proposed, confirmed):
+    """Apply shared user assignments only where the registered product defines them.
+
+    Retain unknown role-supplied fields so contract validation still rejects typos.
+    User assignments take precedence over role proposals for applicable terms.
+    """
+    vocabulary = product.get("terms", {})
+    scoped = {key: value for key, value in proposed.items()
+              if key in vocabulary or key not in confirmed}
+    scoped.update({key: value for key, value in confirmed.items() if key in vocabulary})
+    return scoped

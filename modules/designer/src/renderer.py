@@ -811,14 +811,13 @@ def add_charts(charts: list[dict[str, Any]], section: str, specs: list[Any]) -> 
             f'aria-label="{esc(spec.get("title") or "图表")}" aria-describedby="{esc(summary_id)}"></div>'
             f'<p id="{esc(summary_id)}" class="chart-summary">{esc(summary)}</p>'
             f'{source_html}'
-            + (chart_data_table(chart, x_values, []) if chart_type == 'surface' else '')
             + "</figure>"
         )
     return "".join(figures)
 
 
 def _presentation_chart(node: dict[str, Any]) -> str:
-    """Render a safe one-off chart as static SVG plus its full data table.
+    """Render a safe one-off chart as static SVG without a duplicate data grid.
 
     Standard report charts continue to use offline ECharts. A presentation
     patch must also work in Card, Quote and PDF, so its explicit chart nodes
@@ -836,7 +835,7 @@ def _presentation_chart(node: dict[str, Any]) -> str:
         from .components.surface import surface_svg
         encoded = base64.b64encode(surface_svg(spec).encode("utf-8")).decode("ascii")
         return (f'<figure class="presentation-chart"><img class="presentation-chart__image" src="data:image/svg+xml;base64,{encoded}" alt="{esc(title)}">'
-                + chart_data_table(spec, x_values, series) + '</figure>')
+                + '</figure>')
     width, height = 720.0, 260.0
     left, right, top, bottom = 52.0, 18.0, 18.0, 42.0
     plot_width, plot_height = width - left - right, height - top - bottom

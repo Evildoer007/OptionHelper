@@ -650,6 +650,8 @@ html[data-oh-scrollbar-overlay="enabled"] [data-oh-scrollbar-overlay-ready="true
 }
 
 html[data-oh-scrollbar-overlay="enabled"] [data-oh-scrollbar-overlay-ready="true"] {
+  /* Standard scrollbar-width overrides WebKit pseudo-elements in newer engines. */
+  scrollbar-width: none !important;
   scrollbar-gutter: auto !important;
 }
 
@@ -1175,8 +1177,8 @@ html[data-oh-scrollbar-overlay="enabled"] [data-oh-scrollbar-overlay-ready="true
   transition: background .15s ease, transform .15s ease, opacity .15s ease;
 }
 
-.send-control:hover { background: #820b20; transform: translateY(-1px); }
-.send-control:disabled { opacity: .48; cursor: not-allowed; transform: none; }
+.send-control:hover:not(:disabled) { background: #820b20; transform: translateY(-1px); }
+.send-control:disabled { opacity: 1; cursor: not-allowed; transform: none; }
 .send-control.is-generating:disabled { opacity: 1; cursor: progress; }
 
 .send-control svg { position: relative; z-index: 1; }
@@ -2928,6 +2930,7 @@ html.workspace-overlay-open body { overflow: hidden; }
 /* Chat keeps its full composer. In Desk the same composer folds into a floating
    conversation panel, without remounting input, model selection, or messages. */
 .assistant-toggle,
+.assistant-panel__resize,
 .assistant-panel__head,
 .assistant-panel__transcript { display: none; }
 .workspace-shell.workspace-shell--desk[data-mode="chat"] .assistant-panel { display: contents; }
@@ -2960,8 +2963,8 @@ html.workspace-overlay-open body { overflow: hidden; }
     right: 0;
     bottom: 0;
     display: grid;
-    width: 52px;
-    height: 52px;
+    width: 59.8px;
+    height: 59.8px;
     place-items: center;
     padding: 0;
     border: 0;
@@ -2976,17 +2979,18 @@ html.workspace-overlay-open body { overflow: hidden; }
   .workspace-shell.workspace-shell--desk[data-mode="desk"] .assistant-toggle:hover { background: transparent; transform: scale(1.06); }
   .workspace-shell.workspace-shell--desk[data-mode="desk"] .assistant-toggle:active { transform: scale(.96); }
   .workspace-shell.workspace-shell--desk[data-mode="desk"] .assistant-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-  .workspace-shell.workspace-shell--desk[data-mode="desk"] .assistant-toggle > svg { width: 52px; height: 52px; overflow: visible; stroke: none; }
+  .workspace-shell.workspace-shell--desk[data-mode="desk"] .assistant-toggle > svg { width: 59.8px; height: 59.8px; overflow: visible; stroke: none; }
 
   .workspace-shell.workspace-shell--desk[data-mode="desk"] .assistant-panel {
     position: absolute;
     right: 0;
     top: auto;
-    bottom: 48px;
+    bottom: 0;
     display: grid;
     grid-template-rows: auto minmax(0, 1fr) auto;
-    width: min(432px, calc(100vw - 64px));
-    height: min(570px, calc(100dvh - 84px));
+    box-sizing: border-box;
+    width: min(560px, calc(100vw - 36px));
+    height: min(600px, calc(100dvh - 90px));
     overflow: hidden;
     border: 1px solid var(--line-strong);
     border-radius: 16px;
@@ -2998,6 +3002,29 @@ html.workspace-overlay-open body { overflow: hidden; }
     transform-origin: right bottom;
     transition: opacity .22s ease, transform .36s cubic-bezier(.16, 1, .3, 1);
   }
+
+  /* An open conversation overlays the workbench, so the report drawer must
+     not push the enlarged window beyond the left edge of the viewport. */
+  .workspace-shell.workspace-shell--desk[data-mode="desk"][data-report-open="true"] .assistant-region.is-open {
+    right: max(18px, env(safe-area-inset-right, 0px));
+  }
+  .assistant-panel__actions { display: flex; align-items: center; gap: 4px; }
+  .assistant-panel__resize { display: none; }
+  [data-mode="desk"] .assistant-panel__resize {
+    display: block; position: absolute; z-index: 5; left: 0; top: 0;
+    width: 30px; height: 30px; padding: 0; border: 0;
+    border-radius: 20px 0 0; background: transparent; color: var(--muted);
+    touch-action: none; cursor: nwse-resize;
+  }
+  .assistant-panel__resize span {
+    position: absolute; left: 6px; top: 6px; width: 13px; height: 13px;
+    border-top: 1px solid currentColor; border-left: 1px solid currentColor;
+    border-top-left-radius: 100%; opacity: .45; pointer-events: none;
+  }
+  .assistant-panel__resize:hover span, .assistant-panel__resize:focus-visible span { opacity: 1; }
+  .assistant-panel__resize:focus-visible { outline: none; }
+  .assistant-panel__resize:focus-visible span { border-width: 2px; }
+  .assistant-panel.is-resizing { user-select: none; transition: none; }
 
   .workspace-shell.workspace-shell--desk[data-mode="desk"] .assistant-region.is-open .assistant-panel {
     opacity: 1;
@@ -3450,6 +3477,7 @@ html.workspace-overlay-open body { overflow: hidden; }
   min-height: 0;
   padding: 0 !important;
   overflow: hidden !important;
+  scrollbar-gutter: auto !important;
 }
 
 .module-stage > .conversation-start {

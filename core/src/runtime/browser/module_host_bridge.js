@@ -6,7 +6,7 @@
     document.documentElement.dataset.optionhelperModule = moduleName;
   }
   const routes = {
-    datafetcher: {"/api/status": "status", "/api/assets": "list_assets", "/api/fetch": "fetch"},
+    datafetcher: {"/api/status": "status", "/api/assets": "list_assets", "/api/fetch": "fetch", "/api/dashboard": "dashboard"},
     payoffer: {"/api/catalog": "catalog", "/api/default": "default", "/api/preview": "preview", "/api/run": "run"},
     pricer: {"/api/catalog": "catalog", "/api/run": "run"},
     backtester: {"/api/catalog": "catalog", "/api/preview": "preview", "/api/run": "run"},
@@ -322,7 +322,7 @@ function renderChoiceLabel(node, option) {
     menu.hidden = !open;
     menu.inert = !open;
     const search = choice.querySelector('.oh-choice__search');
-    if (open && search) { search.value = ''; filterProductChoices(choice); menu.scrollTop = 0; }
+    if (open && search) { search.value = ''; filterProductChoices(choice); choice.querySelector('.oh-choice__results').scrollTop = 0; }
     if (open) {
       positionChoiceMenu(choice);
       menu.style.transformOrigin = choice.dataset.direction === "up" ? "bottom center" : "top center";
@@ -376,6 +376,7 @@ function renderChoiceLabel(node, option) {
     if (select.classList.contains('product-select')) {
       trigger.setAttribute('aria-haspopup', 'dialog');
       menu.setAttribute('role', 'dialog');
+      menu.classList.add('oh-choice__menu--searchable');
       const search = document.createElement('input');
       search.type = 'search';
       search.className = 'oh-choice__search';
@@ -395,7 +396,7 @@ function renderChoiceLabel(node, option) {
       empty.textContent = '没有匹配的产品';
       empty.hidden = true;
       menu.append(header, results, empty);
-      search.addEventListener('input', () => { filterProductChoices(choice); menu.scrollTop = 0; });
+      search.addEventListener('input', () => { filterProductChoices(choice); results.scrollTop = 0; });
       search.addEventListener('click', event => { event.stopPropagation(); });
       search.addEventListener('keydown', event => {
         if (event.isComposing) { event.stopPropagation(); return; }
@@ -762,7 +763,7 @@ function renderChoiceLabel(node, option) {
     }
     const scopeError = applyHostScope(body);
     if (scopeError) return asResponse(400, {ok: false, message: scopeError});
-    if (action === "fetch" || action === "run" || action === "rerender") {
+    if (action === "fetch" || action === "dashboard" || action === "run" || action === "rerender") {
       return hostedBackgroundOperation(action, body, signal, hostContext, requestedOperationId(input, init));
     }
     const response = await nativeFetch(`/api/tools/${encodeURIComponent(moduleName)}`, {

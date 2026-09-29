@@ -4,6 +4,12 @@ OptionHelper用于期权结构推荐、收益分析、估值、历史回测和�
 
 从源码生成安装包，按第二节构建；已有安装包，直接看第四节安装与配置。
 
+手册入口：
+
+- [开发维护手册](maintenance/maintainer-guide.html)：产品录入、模块维护、测试与发布；另有[文字版](maintenance/maintainer-guide.md)。
+- [Skill使用说明](references/skill-user-guide.html)：对话式研究、模块编排与结果交付；安装配置见[Skill安装说明源码](packaging/skill/SKILL_README.md)，发行包内作为README提供。
+- App使用说明：登录后点击左下角问号，系统按当前账号展示sales或admin说明，Windows与macOS共用内容。
+
 ## 一、项目结构
 
 App通过OptChat处理研究任务，通过OptDesk操作数据获取、收益结构、定价、回测和研究报告五个模块。Skill供Agent宿主安装使用，与App共享业务源码。
@@ -133,7 +139,7 @@ $env:OPTIONHELPER_PYTHON = 'C:\Python312\python.exe'
 
 成品App已封装Python和Agent运行时，报告图表也使用内置运行时完成语法校验，无需安装Python、Node.js或.NET SDK。
 
-新数据目录首次启动时提供两个账号：
+Windows和macOS各使用一个平台安装包，每个安装包均包含sales与admin两种账号权限，不需要分别下载销售版和管理版。新数据目录首次启动时提供两个账号：
 
 | 账号 | 密码 | 权限 |
 | --- | --- | --- |
@@ -201,11 +207,13 @@ App下载的HTML内嵌本次报告使用的离线图表引擎，可单独复制�
 
 聊天框使用均匀细边框和柔和阴影，外层透明，浅色与深色主题分别控制阴影强度。
 
-附件可添加图片PNG/JPEG/WebP/GIF，以及PDF、DOCX、XLSX/XLS、PPTX、RTF、MD/Markdown、TXT/LOG、CSV/TSV、HTML/HTM、JSON/JSONL、XML、YAML/YML和ODT/ODS/ODP。正文在本地提取，供对话读取和检索；HTML不会执行脚本或加载外链。支持UTF-8、带BOM的UTF-16及GB18030文本。单个文件最多20MB，每条消息最多20个附件、总计200MB。扫描PDF若没有可提取文本会如实提示，未提供OCR；旧版DOC/PPT请先另存为DOCX/PPTX。
+附件支持PNG/JPEG/WebP/GIF/BMP及单页TIFF图片，PDF、DOCX、XLSX/XLS、PPTX、RTF、MD/Markdown、TXT/LOG、CSV/TSV、HTML/HTM、JSON/JSONL、XML、YAML/YML、ODT/ODS/ODP、EML邮件及常见代码文本。正文在本地提取；HTML不会执行脚本或加载外链，EML不递归读取内嵌附件。支持UTF-8、带BOM的UTF-16及GB18030文本。
+
+MOV、MP4、M4V和WebM在本机解码，最多抽取4张画面并附抽帧说明；不转写音频，不等于完整读取视频，具体编码是否可用取决于系统WebView。只有抽帧图片与说明进入附件流程，原视频不会发送给模型。读取图片需要所选模型支持图像。普通文件单个最多20MB，视频单个最多100MB；每条消息最多20个附件、总计200MB，抽帧产生的附件也计入限制。扫描PDF未提供OCR；多页TIFF需转PDF，旧版DOC/PPT需转DOCX/PPTX。
 
 ### 4.5 macOS与Windows一致性
 
-两平台使用同一份前端、业务模块、报告模板和HTML下载接口。报告计算口径、图表数据、五种模板、设置中心、排队与取消流程必须一致；系统字体、窗口装饰和文件选择器遵循各自平台，不承诺逐像素相同。
+两平台使用同一份前端、业务模块、账号权限、按角色展示的使用说明、报告模板和HTML下载接口。sales可通过OptChat调用研究工具和生成报告，但不能访问OptDesk；admin可使用OptChat与OptDesk。权限由服务端检查，隐藏按钮不是唯一防线。报告计算口径、图表数据、五种模板、设置中心、排队与取消流程必须一致；系统字体、窗口装饰和文件选择器遵循各自平台，不承诺逐像素相同。
 
 macOS使用WKWebView，Windows使用WebView2。构建分别校验资源闭包、运行时依赖、安装包图标和产物清单；Windows还检查中文及空格路径、长路径与安装后文件一致性。Windows产物为带版本名称的安装程序.exe，不能用开发目录中的OptionHelper.exe代替。
 

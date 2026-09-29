@@ -113,7 +113,8 @@ def _migrate_snapshot(snapshot: SettingsSnapshot, migrate) -> SettingsSnapshot:
     )
     data_interface = replace(
         snapshot.data_interface,
-        secret_ref=migrate(snapshot.data_interface.secret_ref, "iFind数据凭据"),
+        provider_refs={name: migrate(ref, "iFind数据凭据" if name == "ifind-http" else "Tushare数据凭据") for name, ref in snapshot.data_interface.provider_refs.items()},
+        secret_ref=migrate(snapshot.data_interface.secret_ref, "Tushare数据凭据" if snapshot.data_interface.provider_name in {"tinyshare", "tushare"} else "iFind数据凭据"),
     )
     return replace(
         snapshot,

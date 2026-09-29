@@ -184,7 +184,7 @@ function renderWorkflow(host, runs, definitions, terminal, onSelect = () => {}, 
   const roles=workflow.stages.flat().filter(role=>role.status!=='automatic');
   const positions=new Map(roles.map((role,index)=>[role.role,80+(index+.5)*640/roles.length]));
   const svg=doc.createElementNS('http://www.w3.org/2000/svg','svg');
-  svg.setAttribute('viewBox','0 0 800 280');svg.setAttribute('aria-hidden','true');
+  svg.setAttribute('viewBox','0 0 800 280');svg.setAttribute('preserveAspectRatio','none');svg.setAttribute('aria-hidden','true');
   const path = (d, kind, active) => {
     const line = doc.createElementNS(svg.namespaceURI, 'path');
     line.setAttribute('d', d);
@@ -238,13 +238,14 @@ function renderWorkflow(host, runs, definitions, terminal, onSelect = () => {}, 
   host.replaceChildren(header,scroll,notes);
 }
 
-import { createConversationScroll } from "/app/frontend/shared/conversation-scroll.js";
+import { createConversationScroll, createDeferredConversation, shouldDeferConversation } from "/app/frontend/shared/conversation-scroll.js";
 import { createConversationOutline } from "/app/frontend/shared/conversation-outline.js";
 import {ACTIVITY_VISUALS, activityForEvent} from '/app/frontend/shared/activity-motion.js';
 import { createBloubAvatar } from '/app/frontend/shared/bloub-avatar.js';
 import { bindComposerKeyboard, enhanceSelects, clearMessage, configureModelPicker, createReasoningDisclosure, initializeWorkspace, message, renderMessages, renderReports, renderTaskList, request, safeJson, setTaskLocation, settingsURLFor, openWorkspaceSettings, taskIdFromLocation } from "/app/frontend/shared/app.js";
 import { animateSurface, setMotionText, MODEL_CONFIGURATION_CHANGED, setMessageActionIcon, setStatusIcon, operationActivity } from "/app/frontend/shared/app.js";
-import { attachmentMediaType, validateAttachments } from "/app/frontend/optchat/attachment-utils.js";
+import { prepareAttachmentFiles } from "/app/frontend/optchat/video-attachments.js";
+import { ATTACHMENT_ACCEPT, attachmentMediaType, validateAttachments } from "/app/frontend/optchat/attachment-utils.js";
 import { createThinkingOrb } from "/app/frontend/shared/thinking-orb.js";
 import { createResearchControls } from "/app/frontend/shared/composer-research-controls.js";
 import { createConversationTransition } from "/app/frontend/shared/conversation-transition.js";
@@ -594,7 +595,8 @@ export function normalizeRuntimeEvent(row) {
     agentKey: safeRuntimeKey(row.agent_run_id || row.agentId || payload.agent_run_id || payload.agentId || (type === "agent_run" ? "legacy-agent" : "")),
     toolKey: safeRuntimeKey(row.call_id || row.tool_call_id || row.toolCallId || payload.call_id || payload.tool_call_id || payload.toolCallId || `${toolLabel}:${row.agent_run_id || payload.agent_run_id || "main"}`),
     toolLabel,
-    detail: family === "tool" && ["failed", "error", "unavailable", "timed_out", "interrupted", "unsupported", "partial", "needs_input"].includes(status)
+    activityContext: isRecord(payload.activity_context) ? payload.activity_context : null,
+    detail: family === "tool" && ["failed", "error", "unavailable", "timed_out", "interrupted", "outcome_unknown", "unsupported", "partial", "needs_input"].includes(status)
       ? runtimePayloadText(row, payload, ["display_message", "message", "summary", "reason"]) : "",
     delta,
     turn: Number.isInteger(row.turn) && row.turn >= 0 ? row.turn : null,
@@ -681,7 +683,13 @@ export function createProcessToolGroup(title, { progress = false } = {}) {
   issue.className = "process-tool-group__issue";
   issue.hidden = true;
   summary.append(heading, counts);
-  element.append(summary, issue, calls);
+  const history = document.createElement("button");
+  history.type = "button";
+  history.className = "process-tool-group__history";
+  history.hidden = true;
+  let showCompleted = false;
+  history.addEventListener("click", () => { showCompleted = !showCompleted; refresh(); });
+  element.append(summary, issue, calls, history);
   const refresh = () => {
     const rows = [...calls.children];
     const totals = { complete: 0, failed: 0, stopped: 0, uncertain: 0, review: 0, waiting: 0, excluded: 0, active: 0 };
@@ -701,11 +709,51 @@ export function createProcessToolGroup(title, { progress = false } = {}) {
     }));
     element.dataset.active = String(totals.active > 0);
     element.dataset.hasFailures = String(totals.failed > 0);
-    // The overview never conceals a failed or uncertain call behind a success mark.
-    const problem = rows.find(row => ["failed", "uncertain"].includes(operationActivity(row.dataset.status)));
-    const detail = problem?.querySelector("[data-process-card-detail]")?.textContent || "";
-    issue.textContent = detail;
-    issue.hidden = !detail;
+    // Group successful reads by their actual subject, retaining failures separately.
+    const candidates = new Map();
+    const completed = new Map();
+    for (const row of rows) {
+      const context = row.activityContext;
+      let subject = "";
+      if (context?.candidate_key) {
+        if (!candidates.has(context.candidate_key)) candidates.set(context.candidate_key, candidates.size + 1);
+        subject = `方案${candidates.get(context.candidate_key)}：`;
+      }
+      const description = context ? [context.module, context.section].filter(Boolean).join("／") : "";
+      const title = subject + description || row.dataset.baseTitle || "读取记录";
+      const key = JSON.stringify([context?.candidate_key || "", description, row.dataset.baseTitle]);
+      const label = row.querySelector("[data-process-card-title]");
+      if (label) label.textContent = title;
+      row.hidden = false;
+      if (!progress && operationActivity(row.dataset.status) === "complete") {
+        const bucket = completed.get(key) || [];
+        bucket.push(row); completed.set(key, bucket);
+      }
+    }
+    const groups = [...completed.values()];
+    for (const [index, bucket] of groups.entries()) {
+      const [first, ...duplicates] = bucket;
+      const label = first.querySelector("[data-process-card-title]");
+      if (bucket.length > 1 && label) label.textContent += `（${bucket.length}次）`;
+      for (const row of duplicates) row.hidden = true;
+      first.hidden = groups.length > 6 && index >= 6 && !showCompleted;
+      const detail = first.querySelector("[data-process-card-detail]");
+      if (detail && bucket.length > 1) {
+        detail.textContent = first.activityContext ? `已完成${bucket.length}次读取` : "旧记录未保存具体读取内容";
+        detail.hidden = false;
+      }
+    }
+    calls.hidden = rows.length > 0 && rows.every(row => row.hidden);
+    history.hidden = groups.length <= 6;
+    history.textContent = showCompleted ? "收起更多记录" : `查看其余${groups.length - 6}项`;
+    history.setAttribute("aria-expanded", String(showCompleted));
+    const notices = [];
+    if (totals.active) notices.push(`当前有${totals.active}次调用进行中`);
+    if (totals.failed) notices.push(`${totals.failed}次调用失败，可展开原因`);
+    if (totals.uncertain) notices.push(`${totals.uncertain}次调用结果待确认，不代表整轮失败`);
+    issue.textContent = notices.join("；") + (notices.length ? "。" : "");
+    issue.hidden = !notices.length;
+
   };
   return { element, calls, refresh };
 }
@@ -734,6 +782,18 @@ export async function startWorkspace(initialMode) {
   const conversationOutline = createConversationOutline({ stream, container: chatScrollStage });
   const runtimeLiveStatus = document.querySelector("#runtime-live-status");
   const conversationTitle = document.querySelector("#conversation-title");
+  const assistantTitle = document.querySelector("[data-assistant-title]");
+  function syncTaskTitles(subject) {
+    const label = String(subject || "").trim() || "开始研究";
+    title.textContent = label;
+    conversationTitle.textContent = label;
+    if (assistantTitle) {
+      assistantTitle.textContent = label;
+      assistantTitle.title = label;
+      assistantTitle.closest(".assistant-panel")?.setAttribute("aria-label", label);
+    }
+  }
+
   const assistant = document.querySelector(".assistant-region");
   const assistantPanel = assistant.querySelector(".assistant-panel");
   const assistantTranscript = document.querySelector("#assistant-transcript");
@@ -741,6 +801,7 @@ export async function startWorkspace(initialMode) {
   const assistantAvatar = createBloubAvatar();
   assistantToggle.replaceChildren(assistantAvatar.element);
   const assistantClose = document.querySelector("[data-assistant-close]");
+  const assistantResize = document.querySelector("[data-assistant-resize]");
   const form = document.querySelector("#workspace-form");
   const input = form.elements.content;
   const questionPanel = document.createElement("section");
@@ -785,6 +846,8 @@ export async function startWorkspace(initialMode) {
   const attachmentDropTarget = document.querySelector("[data-attachment-drop-target]");
   const attachmentTrigger = document.querySelector("[data-attachment-trigger]");
   const attachmentInput = document.querySelector("[data-attachment-input]");
+  if (attachmentInput) attachmentInput.accept = ATTACHMENT_ACCEPT;
+  let attachmentPreparing = false;
   if (attachmentTrigger && !attachmentTrigger.querySelector(".composer-attach-label")) {
     const label = document.createElement("span");
     label.className = "composer-attach-label";
@@ -803,6 +866,11 @@ export async function startWorkspace(initialMode) {
   const mount = document.querySelector("#module-mount");
   let currentMode = initialMode;
   let currentTask = null;
+  const deferredConversation = createDeferredConversation({
+    render: task => renderTaskConversation(task),
+    clear: () => stream.replaceChildren(),
+    restore: task => { if (!pendingConversationRequest) restoreLatestProcess(task); },
+  });
   let currentModule = new URLSearchParams(location.search).get("module") || "datafetcher";
   let assistantOpen = false;
   let restoringScroll = false;
@@ -942,7 +1010,7 @@ export async function startWorkspace(initialMode) {
       button.disabled = followupSubmitting || (!promoteQueued && (!input.value.trim() || !modelPicker.value));
       button.title = promoteQueued ? "立即引导：优先执行第一条排队消息" : button.getAttribute("aria-label");
     }
-    submit.disabled = submit.dataset.cancelRequested === "true"
+    submit.disabled = attachmentPreparing || submit.dataset.cancelRequested === "true"
       || (!sending && (modelPicker.disabled || !modelPicker.value || (!input.value.trim() && draftAttachments.length === 0)));
     submit.setAttribute("aria-label", sending
       ? (submit.dataset.cancelRequested === "true" ? "正在停止" : "停止")
@@ -951,11 +1019,11 @@ export async function startWorkspace(initialMode) {
       : modelPicker.disabled || !modelPicker.value ? "请先配置可用模型"
         : submit.disabled ? "输入需求或添加附件后发送" : "发送";
     if (attachmentTrigger) {
-      attachmentTrigger.disabled = sending;
+      attachmentTrigger.disabled = sending || attachmentPreparing;
       attachmentTrigger.setAttribute("aria-disabled", String(sending));
-      attachmentTrigger.title = sending ? "当前回复生成完成后可添加附件" : "添加图片或研究文档";
+      attachmentTrigger.title = sending ? "当前回复生成完成后可添加附件" : "添加图片、文档或视频；视频抽帧解析，不包含音频";
     }
-    if (attachmentInput) attachmentInput.disabled = sending;
+    if (attachmentInput) attachmentInput.disabled = sending || attachmentPreparing;
   };
   let composerSentTimer = 0;
   const markComposerSent = (button) => {
@@ -1129,6 +1197,7 @@ export async function startWorkspace(initialMode) {
     if (attachmentCount) attachmentCount.textContent = String(draftAttachments.length);
   };
   const addDraftFiles = async (files) => {
+    if (attachmentPreparing) return false;
     if (submit.dataset.sending === "true") {
       showWorkspaceStatus("当前回复生成完成后再添加附件。", true);
       return false;
@@ -1144,8 +1213,29 @@ export async function startWorkspace(initialMode) {
     }
     const targetTaskId = draftTaskId();
     const revision = ++attachmentDraftRevision;
+    let parsedFiles;
+    attachmentPreparing = true;
+    syncComposerAvailability();
+    try {
+      if (incoming.some(file => attachmentMediaType(file).startsWith("video/"))) {
+        showWorkspaceStatus("正在本地提取视频画面，不包含音频。", false);
+      }
+      parsedFiles = await prepareAttachmentFiles(incoming, draftAttachments.length);
+      const parsedError = validateAttachments(parsedFiles, {
+        existingCount: draftAttachments.length,
+        existingBytes: draftAttachments.reduce((total, item) => total + item.size, 0),
+      });
+      if (parsedError) throw new Error(parsedError);
+    } catch (error) {
+      if (targetTaskId === draftTaskId() && revision === attachmentDraftRevision) showWorkspaceStatus(error.message, true);
+      return false;
+    } finally {
+      attachmentPreparing = false;
+      syncComposerAvailability();
+    }
+    if (targetTaskId !== draftTaskId() || revision !== attachmentDraftRevision) return false;
     const prepared = [];
-    for (const file of incoming) {
+    for (const file of parsedFiles) {
       if (draftAttachments.some((item) => item.name === file.name && item.size === file.size && item.lastModified === file.lastModified)) continue;
       const mediaType = attachmentMediaType(file);
       prepared.push({
@@ -1167,6 +1257,7 @@ export async function startWorkspace(initialMode) {
       // Blob previews are disallowed by the workspace CSP, so use file chips.
       prepared.forEach(item => { revokeDraftPreview(item); item.previewUrl = ""; item.ownedPreviewUrl = false; });
       draftAttachments.push(...prepared);
+      clearWorkspaceStatus();
       attachmentDraftTaskId = "new";
       renderDraftAttachments();
       syncComposerAvailability();
@@ -1406,18 +1497,14 @@ export async function startWorkspace(initialMode) {
     );
     // Keep the collaboration map visible when detailed logs collapse for a question.
     panel.append(collaboration, details);
-    details.addEventListener("toggle", () => {
-      if (!details.open) return;
+    const revealProcessDetails = () => {
       requestAnimationFrame(() => {
-        const viewport = stream.getBoundingClientRect();
-        const bounds = panel.getBoundingClientRect();
-        const visibleBottom = Math.min(viewport.bottom, form.getBoundingClientRect().top) - 28;
-        if (bounds.bottom <= visibleBottom && bounds.top >= viewport.top + 16) return;
-        const targetTop = Math.max(viewport.top + 16, visibleBottom - bounds.height);
-        stream.scrollBy({ top: bounds.top - targetTop,
-          behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth" });
+        // The height animation reports its final geometry separately.
+        if (details.open && !details.dataset.motionTarget) conversationScroll.reveal(details);
       });
-    });
+    };
+    details.addEventListener("toggle", revealProcessDetails);
+    details.addEventListener("disclosure-revealed", revealProcessDetails);
     stream.append(panel);
     if (!conversationScroll.refresh()) stream.scrollTop = stream.scrollHeight;
     return {
@@ -1472,6 +1559,8 @@ export async function startWorkspace(initialMode) {
       map.set(cardKey, card);
     }
     card.dataset.status = event.status;
+    card.dataset.baseTitle = title;
+    if (event.activityContext) card.activityContext = event.activityContext;
     const heading = card.querySelector("[data-process-card-title]");
     if (!heading.textContent || !/^(?:agent|研究模块)$/i.test(title)) {
       heading.textContent = title;
@@ -1505,7 +1594,12 @@ export async function startWorkspace(initialMode) {
     }
     detail.textContent = detailText;
     if (kind === "agent" && /正在处理本轮分工/.test(detail.textContent)) detail.textContent = "";
-    detail.hidden = kind === "tool" || !detail.textContent;
+    if (kind === "tool" && card.activityContext && operationActivity(event.status) === "complete") {
+      const { offset, limit } = card.activityContext;
+      detail.textContent = Number.isInteger(offset) && Number.isInteger(limit)
+        ? `请求范围：第${offset + 1}至${offset + limit}项` : "读取完成";
+      detail.hidden = false;
+    } else detail.hidden = kind === "tool" || !detail.textContent;
 
     parent.parentElement.hidden = false;
   };
@@ -1733,6 +1827,7 @@ export async function startWorkspace(initialMode) {
     setRuntimeLiveStatus(terminalCopy);
   };
   const appendProcessEvents = (playback, rows, terminal = false) => {
+    if (!rows?.length && !playback.pendingRows.size && !terminal) return;
     const followTail = stream.scrollHeight - stream.clientHeight - stream.scrollTop < 72;
     const drained = consumeRuntimeEventRows(playback, rows);
     playback.nextSeq = drained.nextSeq;
@@ -2110,15 +2205,18 @@ export async function startWorkspace(initialMode) {
   const resumePendingConversation = async (pending) => {
     if (!pending?.operationId || pending.taskId !== currentTask?.task_id) return;
     const key = `conversation:${pending.operationId}`;
-    if (reconnectingOperations.has(key)) return;
-    reconnectingOperations.add(key);
+    // Rebind the visible composer even when this task already has a poller.
+    // A different task's cancellation flag must never disable its stop button.
     activeConversation = {
       taskId: pending.taskId,
       requestId: pending.requestId,
       operationId: pending.operationId,
       cancelWhenAccepted: false,
     };
+    submit.dataset.cancelRequested = String(cancellingOperations.has(pending.operationId));
     setComposerSending(submit, true);
+    if (reconnectingOperations.has(key)) return;
+    reconnectingOperations.add(key);
     try {
       const response = await waitForOperation(pending.taskId, pending.operationId, (operation) => {
         if (activeConversation?.operationId === pending.operationId) activeConversation.state = operation.state;
@@ -2264,6 +2362,7 @@ export async function startWorkspace(initialMode) {
   };
   const saveTransient = () => {
     const previous = readTransient();
+    const deferred = deferredConversation.hasPending(currentTask?.task_id);
     const maxScroll = Math.max(0, stream.scrollHeight - stream.clientHeight);
     const scrollRatio = maxScroll > 0 ? stream.scrollTop / maxScroll : 0;
     const atBottom = maxScroll > 0 && maxScroll - stream.scrollTop <= 2;
@@ -2271,11 +2370,11 @@ export async function startWorkspace(initialMode) {
       ...previous,
       draft: input.value,
       chatScrollTop: currentMode === "chat" ? stream.scrollTop : (previous.chatScrollTop || 0),
-      deskScrollTop: currentMode === "desk" ? stream.scrollTop : (previous.deskScrollTop || 0),
+      deskScrollTop: currentMode === "desk" && !deferred ? stream.scrollTop : (previous.deskScrollTop || 0),
       chatScrollRatio: currentMode === "chat" ? scrollRatio : (previous.chatScrollRatio || 0),
-      deskScrollRatio: currentMode === "desk" ? scrollRatio : (previous.deskScrollRatio || 0),
+      deskScrollRatio: currentMode === "desk" && !deferred ? scrollRatio : (previous.deskScrollRatio || 0),
       chatAtBottom: currentMode === "chat" ? atBottom : Boolean(previous.chatAtBottom),
-      deskAtBottom: currentMode === "desk" ? atBottom : Boolean(previous.deskAtBottom),
+      deskAtBottom: currentMode === "desk" && !deferred ? atBottom : Boolean(previous.deskAtBottom),
       assistantOpen,
       pendingConversation: pendingConversationRequest?.taskId === currentTask?.task_id
         ? pendingConversationRequest
@@ -2291,11 +2390,13 @@ export async function startWorkspace(initialMode) {
   const setAssistantOpen = (open, { focus = false, persist = true } = {}) => {
     assistantOpen = Boolean(open);
     const visibleInDesk = currentMode === "desk" && assistantOpen;
+    const revealed = visibleInDesk && deferredConversation.reveal(currentTask?.task_id);
     assistant.classList.toggle("is-open", visibleInDesk);
     assistantToggle.setAttribute("aria-expanded", String(visibleInDesk));
     assistantAvatar.setActive(currentMode === "desk" && !visibleInDesk);
     assistantPanel.setAttribute("aria-hidden", String(currentMode === "desk" && !assistantOpen));
     assistantPanel.inert = currentMode === "desk" && !assistantOpen;
+    if (revealed) stream.scrollTop = Number(readTransient().deskScrollTop) || 0;
     if (focus && visibleInDesk) {
       input.focus({ preventScroll: true });
       if (submit.dataset.sending === "true") {
@@ -2570,6 +2671,7 @@ export async function startWorkspace(initialMode) {
       shell.dataset.assistantSwitching = "true";
     }
     currentMode = nextMode;
+    if (currentMode === "chat") deferredConversation.reveal(currentTask?.task_id);
     if (previousMode !== currentMode) clearWorkspaceStatus();
     shell.dataset.switching = "true";
     shell.dataset.mode = currentMode;
@@ -2755,14 +2857,14 @@ export async function startWorkspace(initialMode) {
     conversationScroll.reset();
     renderComposerQuestion(null);
     currentTask = null;
+    deferredConversation.reset();
     pendingConversationRequest = null;
     pendingReportRequest = null;
     pendingReportEditor = null;
     clearReportFeedback();
     disposeModuleFrames();
     syncReportActions();
-    title.textContent = "未选择任务";
-    conversationTitle.textContent = "开始研究";
+    syncTaskTitles("");
     taskState.textContent = "发送第一条消息后创建任务，或选择已有任务。";
     renderMessages(stream, [], "发送第一条消息后创建任务，并按需生成简单报告、详细报告或参考报价。");
     renderReports(reports, []);
@@ -2955,8 +3057,7 @@ export async function startWorkspace(initialMode) {
         });
         if (currentTask?.task_id === updated.task_id) {
           currentTask = { ...currentTask, ...updated };
-          title.textContent = updated.subject;
-          conversationTitle.textContent = updated.subject;
+          syncTaskTitles(updated.subject);
         }
         await loadTasks();
         showWorkspaceStatus("任务名称已更新。", false, 3500);
@@ -3044,6 +3145,7 @@ export async function startWorkspace(initialMode) {
   }
 
   function renderTaskConversation(task) {
+    deferredConversation.reset();
     renderComposerQuestion(task);
     renderMessages(stream, task?.messages || [], "可直接输入任务要求，或选择一个研究起点。", {
       questionInComposer: true,
@@ -3119,13 +3221,14 @@ export async function startWorkspace(initialMode) {
       pendingReportEditor = null;
       clearReportFeedback();
       syncReportActions();
-      title.textContent = task.subject;
-      conversationTitle.textContent = task.subject;
+      syncTaskTitles(task.subject);
       taskState.textContent = "当前任务会保留对话、模块运行记录和关联报告。";
-      renderTaskConversation(task);
+      const conversationRendered = deferredConversation.show(task, {
+        defer: shouldDeferConversation(currentMode, readTransient(task.task_id)),
+      });
       // Restore task-owned requests before async reports/rail updates can save scroll state.
       restoreTransient();
-      if (!pendingConversationRequest) restoreLatestProcess(task);
+      if (!pendingConversationRequest && conversationRendered) restoreLatestProcess(task);
       if (readingPosition !== null) stream.scrollTop = readingPosition;
       if (animateTask) taskTransition.enter();
       committed = true;
@@ -3138,13 +3241,12 @@ export async function startWorkspace(initialMode) {
         if (isCurrentSelection()) renderTaskOperations([], taskId);
       });
       const tasksReady = loadTasks().catch(() => {});
-      await restoreAttachmentDrafts();
-      if (isCurrentSelection()) form.inert = false;
-      await Promise.all([reportsReady, operationsReady, tasksReady]);
+      const moduleReady = currentMode === "desk" ? mountModule(currentModule, false) : Promise.resolve();
+      const draftsReady = restoreAttachmentDrafts().then(() => {
+        if (isCurrentSelection()) form.inert = false;
+      });
+      await Promise.all([reportsReady, operationsReady, tasksReady, moduleReady, draftsReady]);
       if (!isCurrentSelection()) return null;
-      if (currentMode === "desk") {
-        await mountModule(currentModule, false);
-      }
       return task;
     } finally {
       if (isCurrentSelection()) {
@@ -3539,6 +3641,45 @@ export async function startWorkspace(initialMode) {
   assistantToggle.addEventListener("focus", () => assistantAvatar.interact());
   assistantToggle.addEventListener("click", () => setAssistantOpen(!assistantOpen, { focus: true }));
   assistantClose.addEventListener("click", () => { setAssistantOpen(false); assistantToggle.focus(); });
+  // Resize from the upper-left corner while keeping the bottom-right dock fixed.
+  const resizeAssistant = (width, height) => {
+    const bounds = assistantPanel.getBoundingClientRect();
+    const maxWidth = Math.max(0, Math.min(window.innerWidth - 24, bounds.right - 12));
+    const maxHeight = Math.max(0, Math.min(window.innerHeight - 24, bounds.bottom - 12));
+    assistantPanel.style.width = `${Math.min(maxWidth, Math.max(Math.min(360, maxWidth), width))}px`;
+    assistantPanel.style.height = `${Math.min(maxHeight, Math.max(Math.min(360, maxHeight), height))}px`;
+  };
+  let assistantDrag = null;
+  assistantResize.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0 || shell.dataset.mode !== "desk") return;
+    const bounds = assistantPanel.getBoundingClientRect();
+    assistantDrag = { x: event.clientX, y: event.clientY, width: bounds.width, height: bounds.height };
+    assistantResize.setPointerCapture(event.pointerId);
+    assistantPanel.classList.add("is-resizing");
+    event.preventDefault();
+  });
+  assistantResize.addEventListener("pointermove", (event) => {
+    if (!assistantDrag) return;
+    resizeAssistant(assistantDrag.width + assistantDrag.x - event.clientX, assistantDrag.height + assistantDrag.y - event.clientY);
+  });
+  const finishAssistantResize = () => {
+    assistantDrag = null;
+    assistantPanel.classList.remove("is-resizing");
+  };
+  assistantResize.addEventListener("pointerup", finishAssistantResize);
+  assistantResize.addEventListener("pointercancel", finishAssistantResize);
+  assistantResize.addEventListener("lostpointercapture", finishAssistantResize);
+  assistantResize.addEventListener("keydown", (event) => {
+    const delta = { ArrowLeft: [24, 0], ArrowRight: [-24, 0], ArrowUp: [0, 24], ArrowDown: [0, -24] }[event.key];
+    if (!delta || shell.dataset.mode !== "desk") return;
+    event.preventDefault();
+    const bounds = assistantPanel.getBoundingClientRect();
+    resizeAssistant(bounds.width + delta[0], bounds.height + delta[1]);
+  });
+  window.addEventListener("resize", () => {
+    if (shell.dataset.mode !== "desk" || !assistantPanel.style.width) return;
+    resizeAssistant(parseFloat(assistantPanel.style.width), parseFloat(assistantPanel.style.height));
+  }, { passive: true });
   stream.addEventListener("scroll", () => {
     if (!restoringScroll) saveTransient();
   }, { passive: true });
@@ -3650,7 +3791,7 @@ export async function startWorkspace(initialMode) {
   let preparingConversation = false;
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
-    if (preparingConversation || form.inert) return;
+    if (preparingConversation || attachmentPreparing || form.inert) return;
     if (submit.dataset.sending === "true") { await queueFollowup(); return; }
     const submittedContent = input.value.trim();
     const submittedDrafts = [...draftAttachments];
@@ -3945,8 +4086,7 @@ export async function startWorkspace(initialMode) {
   // only after an explicit rail action, task URL, or the first submitted chat
   // message; this keeps a fresh OptDesk entry unbound and product-neutral.
   if (!currentTask) {
-    title.textContent = "未选择任务";
-    conversationTitle.textContent = "开始研究";
+    syncTaskTitles("");
     taskState.textContent = "发送第一条消息后创建任务，或选择已有任务。";
     renderMessages(stream, [], "发送第一条消息后创建任务，并按需生成简单报告、详细报告或参考报价。");
     renderTaskOperations([], "");

@@ -86,6 +86,9 @@ class DataFetcherConfig:
     offline: bool = False
     ifind_secret_ref: SecretRef | None = None
     ifind_secret_port: Callable[[SecretRef], str] | None = field(default=None, repr=False, compare=False)
+    token_provider: str | None = None
+    token_secret_ref: SecretRef | None = None
+    token_secret_port: Callable[[SecretRef], str] | None = field(default=None, repr=False, compare=False)
     timeout_seconds: int = 30
     # Host确认的最新可观测行情日。未注入时以Asia/Shanghai当前自然日为上限；
     # 未来日期只能通过独立交易日历入口取得，不能形成历史OHLC资产。
@@ -127,6 +130,9 @@ class DataFetcherConfig:
             offline=self.offline,
             ifind_secret_ref=self.ifind_secret_ref,
             ifind_secret_port=self.ifind_secret_port,
+            token_provider=self.token_provider,
+            token_secret_ref=self.token_secret_ref,
+            token_secret_port=self.token_secret_port,
             timeout_seconds=self.timeout_seconds,
             market_data_as_of_date=self.market_data_as_of_date,
             trading_calendar_ref=self.trading_calendar_ref,

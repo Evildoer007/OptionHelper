@@ -393,8 +393,21 @@ class RecommenderService:
             confirmed_constraints=case.confirmed_constraints,
         )
         if preserve_research_evidence:
+            # A moderator may select or explain existing contracts, but cannot
+            # introduce unreviewed terms while reusing another branch's facts.
+            unregistered = tuple(item for item in candidates if not self._research.contains_contract(item))
+            rejected = (*rejected, *({"candidate_id": item.candidate_id, "product_id": item.product_id,
+                "reason": "汇总条款不属于已登记研究候选，需先交设计角色修订并重新验证", "source": "council_contract_gate"}
+                for item in unregistered))
+            candidates = tuple(item for item in candidates if item not in unregistered)
             candidates = tuple(self._research.attach_candidate_evidence(item) for item in candidates)
-        return self._candidate_set(case, route, run_id, mode, audit, candidates, rejected)
+        return self._candidate_set(
+            case, route, run_id, mode, audit, candidates, rejected,
+            research_evidence=((council_research_evidence(candidates, catalog_session)
+                                if self.config.multi_agent_preset == "independent-council"
+                                else candidate_research_evidence(candidates, catalog_session))
+                               if catalog_session is not None else ()),
+        )
 
     def _run_independent_council(
         self,
@@ -590,6 +603,18 @@ class RecommenderService:
         while True:
             current_candidates = [plan.candidate.candidate for plan in current_plan.plans]
             self._research.register(current_candidates)
+            # The design plan is already registered and validated. Fulfil its
+            # declared evidence dependencies before asking for a verdict;
+            # optional follow-up research remains the Trader's responsibility.
+            for plan in current_plan.plans:
+                candidate = plan.candidate.candidate
+                prior = self._research.result_for(candidate, plan.modules, current_plan.round_no)
+                missing = [module for module in plan.modules
+                           if prior["module_statuses"].get(module) not in {"succeeded", "partial"}]
+                if missing:
+                    self._research.evaluate({"candidate_id": candidate.candidate_id,
+                        "modules": missing, "round_no": current_plan.round_no,
+                        "question": "执行设计者已登记的本轮计算计划，供Trader核验"})
             trader = runner.run("Trader", {
                 "case": case.to_dict(), "round": current_plan.to_dict(),
                 "reviewer_feedback": reviewer_feedback,
@@ -601,7 +626,7 @@ class RecommenderService:
                 self._research.result_for(plan.candidate.candidate, plan.modules, current_plan.round_no)
                 for plan in current_plan.plans}
             attached = attach_host_evaluations(current_plan,
-                {key:{field:value for field,value in row.items() if field not in {"candidate_id","product_id","rule_revision","message"}}
+                {key:{field:value for field,value in row.items() if field not in {"candidate_id","product_id","rule_revision","message","verified_module_summaries"}}
                  for key,row in host_results.items()},tenant_id=case.tenant_id,task_id=case.task_id)
             # Missing or failed evidence can never be promoted by model prose.
             decisions = trader.get("evaluations", ())
@@ -767,6 +792,13 @@ class RecommenderService:
         for batch_no in range(1, 2+depth_policy(case.research_depth)["ranking_supplements"]):
             for candidate in next_batch:
                 self._research.register([candidate])
+                prior = self._research.result_for(candidate, modules, batch_no)
+                missing = [module for module in modules
+                           if prior["module_statuses"].get(module) not in {"succeeded", "partial"}]
+                if missing:
+                    self._research.evaluate({"candidate_id": candidate.candidate_id,
+                        "modules": missing, "round_no": batch_no,
+                        "question": "取得已冻结排序规则所需指标，供Evaluator核验"})
                 runner.run("Evaluator", {
                     "case":case.to_dict(),"candidate":candidate.to_dict(),"ranking_spec":spec.to_dict(),
                     "required_modules":list(modules),"batch_no":batch_no,
@@ -788,6 +820,9 @@ class RecommenderService:
                 "ranking_spec":spec.to_dict(),"ranking_decisions":[item.to_dict() for item in ranking.decisions],
                 "candidates":[item.to_dict() for item in ranking.ranked_candidates],
                 "exclusions":[{"candidate_id":item.candidate_id,"reasons":list(item.reasons)} for item in ranking.exclusions],
+                "verified_evidence": {item.candidate_id: self._research.read(item.candidate_id)
+                                      for item in ranking.ranked_candidates},
+                "rule": "按当前合同的Host计算证据审核指标及FactRef；候选生成时的missing_inputs是计算前状态，须与本次证据核对。无有效证据仍应拒绝。",
                 "batch_no":batch_no})
             reviewed = apply_reviewer_verdict(ranking,parse_reviewer_ranking_verdict(reviewer))
             if reviewed.approved and len(ranking.ranked_candidates)>=_requested_candidate_count(case):break
@@ -862,6 +897,7 @@ class RecommenderService:
         rejected: Sequence[Mapping[str, Any]],
         *,
         ranking_spec: Mapping[str, Any] | None = None,
+        research_evidence: tuple[Mapping[str, Any], ...] | None = None,
     ) -> RecommendationSet:
         current = tuple(
             replace(item, rank=index, candidate_status=(
@@ -905,7 +941,8 @@ class RecommenderService:
             returned_candidate_count=len(current),
             ranking_spec_id=spec_id,
             ranking_spec=ranking_spec,
-            research_evidence=(council_research_evidence(current, self._research)
+            research_evidence=(research_evidence if research_evidence is not None else
+                               council_research_evidence(current, self._research)
                                if self.config.multi_agent_preset == "independent-council"
                                else candidate_research_evidence(current, self._research)),
             delivery_status=(

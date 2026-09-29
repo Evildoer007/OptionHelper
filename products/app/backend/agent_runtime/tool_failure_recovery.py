@@ -36,6 +36,15 @@ class ToolFailureRecovery:
         return None
 
     def record(self, tool, arguments, result, *, stable=False):
+        # Recommendation failures are nested in the domain result. Treat a
+        # failed workflow as terminal for this user turn, even if the main
+        # model paraphrases the prompt. A new user turn gets a fresh guard.
+        recommendation = result.get('recommendation_set')
+        if tool == 'recommender.run' and isinstance(recommendation, dict) and recommendation.get('status') == 'unavailable':
+            self.stopped = True
+            self.last_message = '推荐流程未完成：' + '；'.join(str(x) for x in recommendation.get('limitations', []) if isinstance(x, str))
+            self.last_next_step = '请根据具体失败原因调整条件或模型设置后继续；本轮不会自动重新启动研究。'
+            return
         status = str(result.get('status', '')).casefold()
         if status not in {'failed', 'error', 'unavailable', 'blocked'}:
             if status in {'completed', 'succeeded', 'success', 'ready'}:
@@ -64,5 +73,5 @@ class ToolFailureRecovery:
                 'message': self.last_message, 'next_step': '本轮重复失败已停止。保留已有结果，修正原因后可继续。'}
 
     def summary(self):
-        return ('本轮因重复失败已停止，尚未完成全部请求。\n\n原因：' + self.last_message
+        return ('本轮已停止，尚未完成全部请求。\n\n原因：' + self.last_message
                 + '\n\n已完成的计算和报告仍保留。' + self.last_next_step)

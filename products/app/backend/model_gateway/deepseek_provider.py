@@ -25,6 +25,19 @@ from .request_control import ModelRequestControl
 MAX_MODEL_RESPONSE_BYTES = 512 * 1024
 
 
+def apply_reasoning_control(body, endpoint, control):
+    """Keep research effort explicit for supported DeepSeek models only."""
+    effort = getattr(control, "reasoning_effort", None)
+    if effort is None or urlparse(endpoint).hostname != "api.deepseek.com":
+        return
+    if str(body.get("model", "")) not in {"deepseek-flash", "deepseek-v4-flash", "deepseek-v4-pro"}:
+        return
+    body["thinking"] = {"type": "disabled" if effort == "none" else "enabled"}
+    if effort != "none":
+        body["reasoning_effort"] = effort
+
+
+
 def complete_openai_compatible_with_metadata(
     settings: ModelServiceSettings,
     secret_ref: SecretRef,
@@ -43,8 +56,12 @@ def complete_openai_compatible_with_metadata(
     model_name = settings.model_name.strip()
     if not model_name:
         raise ValidationError("模型名不能为空，请在设置中心明确配置。")
+    request_body = {"model": model_name, "messages": messages, "stream": False}
+    if request_control is not None and request_control.max_output_tokens is not None:
+        request_body["max_tokens"] = request_control.max_output_tokens
+    apply_reasoning_control(request_body, endpoint, request_control)
     payload = json.dumps(
-        {"model": model_name, "messages": messages, "stream": False},
+        request_body,
         ensure_ascii=False,
         separators=(",", ":"),
     ).encode("utf-8")

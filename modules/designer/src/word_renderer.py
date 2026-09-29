@@ -1385,13 +1385,12 @@ class _WordHtmlRenderer:
             spec = self._chart_spec(chart)
             caption = node.find("figcaption")
             title = _clean_text(caption.get_text(" ", strip=True)) if caption is not None else str(spec.get("title") or "图表")
-            data_container = next((child for child in node.find_all("div") if "chart-data" in set(child.get("class") or ())), None)
-            add_data_table = data_container is None or not self._chart_data_matches(data_container, spec)
-            self._add_chart(spec, title=title, add_data_table=add_data_table)
+            self._add_chart(spec, title=title, add_data_table=False)
             for child in node.children:
                 if not isinstance(child, Tag) or child is caption or child is chart:
                     continue
-                self._render_block(child)
+                if "chart-data" not in set(child.get("class") or ()):
+                    self._render_block(child)
             return
         images = node.find_all("img", recursive=False)
         for image in images:
@@ -1430,7 +1429,7 @@ class _WordHtmlRenderer:
 
     def _render_chart(self, node: Tag) -> None:
         spec = self._chart_spec(node)
-        self._add_chart(spec, title=str(spec.get("title") or "图表"), add_data_table=True)
+        self._add_chart(spec, title=str(spec.get("title") or "图表"), add_data_table=False)
 
     def _add_chart(self, spec: Mapping[str, Any], *, title: str, add_data_table: bool) -> None:
         caption = self.document.add_paragraph(style="Caption")

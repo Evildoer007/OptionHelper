@@ -88,6 +88,19 @@ export function createConversationScroll(stream, composer) {
         }, 450);
       });
     },
+    // Explicit disclosure navigation must not be undone by streaming tail following.
+    reveal(node) {
+      interrupt();
+      measure();
+      const viewport = stream.getBoundingClientRect();
+      const bounds = node.getBoundingClientRect();
+      const top = viewport.top + 16;
+      const bottom = viewport.top + viewportHeight() - 28;
+      if (bounds.top >= top && bounds.bottom <= bottom) return;
+      const target = Math.max(top, bottom - bounds.height);
+      stream.scrollBy({top: bounds.top - target,
+        behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth'});
+    },
     refresh,
     reset,
     destroy() {
@@ -101,4 +114,36 @@ export function createConversationScroll(stream, composer) {
   };
   stream._conversationScroll = controller;
   return controller;
+}
+
+/** Keep only the latest hidden task; reveal without losing its history or replay. */
+export function createDeferredConversation({ render, clear, restore }) {
+  let pending = null;
+  return {
+    show(task, { defer = false } = {}) {
+      pending = null;
+      if (defer) {
+        pending = task;
+        clear();
+        return false;
+      }
+      render(task);
+      return true;
+    },
+    reveal(taskId) {
+      if (!pending || pending.task_id !== taskId) return false;
+      const task = pending;
+      pending = null;
+      render(task);
+      restore(task);
+      return true;
+    },
+    hasPending(taskId) { return pending?.task_id === taskId && pending !== null; },
+    reset() { pending = null; },
+  };
+}
+
+export function shouldDeferConversation(mode, state = {}) {
+  return mode === 'desk' && !state.assistantOpen && !state.pendingConversation
+    && !(state.queuedConversations || []).length;
 }

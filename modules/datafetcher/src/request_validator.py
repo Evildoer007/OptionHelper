@@ -218,7 +218,7 @@ def validate_request(value: DataRequest, config: DataFetcherConfig, caller: Call
         priority = config.provider_priority
     if value.provider and value.provider.strip().lower() not in priority:
         priority = (value.provider.strip().lower(), *priority)
-    allowed_providers = {"local", "ifind_http", "ifind_sdk", "wind"}
+    allowed_providers = {"local", "ifind_http", "ifind_sdk", "wind", "tinyshare", "tushare"}
     unknown = set(priority).difference(allowed_providers)
     if unknown:
         raise RequestValidationError(f"未知Provider：{','.join(sorted(unknown))}")
@@ -300,5 +300,9 @@ def cache_identity(
         "principal_id": principal_id,
         "local_source_fingerprint": _request_local_source_fingerprint(value) if provider == "local" else None,
     }
+    # Forward adjustment is anchored to the last observed date of this request.
+    # Never splice a series computed with a different adjustment anchor.
+    if provider in {"tinyshare", "tushare"} and value.adjustment != "none":
+        payload["adjustment_window"] = [value.start_date, value.end_date]
     source = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(source.encode("utf-8")).hexdigest()

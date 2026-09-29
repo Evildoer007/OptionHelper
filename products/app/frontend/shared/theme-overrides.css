@@ -88,9 +88,9 @@ html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-sh
   color: var(--color-ink) !important;
 }
 
-html[data-theme="dark"] .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .workspace-rail,
-html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .workspace-rail,
-html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="desk"] .workspace-rail,
+html[data-theme="dark"] .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .workspace-rail:not(.workspace-rail--unbranded),
+html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="chat"] .workspace-rail:not(.workspace-rail--unbranded),
+html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="desk"] .workspace-rail:not(.workspace-rail--unbranded),
 html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-mode-area {
   background: var(--color-paper) !important;
   border-color: var(--color-rule) !important;
@@ -393,6 +393,8 @@ html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-sh
   border-color: transparent !important;
   background: transparent !important;
   box-shadow: none !important;
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
 }
 
 html[data-theme="light"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .assistant-region .composer form,
@@ -402,8 +404,8 @@ html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-sh
   border: 1px solid var(--composer-edge) !important;
   background: var(--composer-fill) !important;
   box-shadow: var(--composer-shadow) !important;
-  -webkit-backdrop-filter: blur(24px) saturate(125%);
-  backdrop-filter: blur(24px) saturate(125%);
+  -webkit-backdrop-filter: blur(30px) saturate(125%);
+  backdrop-filter: blur(30px) saturate(125%);
 }
 
 /* The model control belongs to the same neutral material as the composer.
@@ -474,35 +476,72 @@ html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-sh
    restrained theme tint so labels and controls remain readable. Browsers keep
    the existing backdrop-filter fallback for local visual development. */
 html[data-theme="light"] {
-  --rail-material-fill: color-mix(in srgb, var(--color-ground) 72%, transparent);
-  --rail-native-material-fill: color-mix(in srgb, var(--color-ground) 22%, transparent);
+  --rail-material-fill: color-mix(in srgb, var(--color-ground) 48%, transparent);
+  /* Light uses its own native material; retain a thin neutral web tint. */
+  --rail-native-material-fill: color-mix(in srgb, var(--color-ground) 8%, transparent);
   --rail-material-border: color-mix(in srgb, var(--color-ink) 10%, transparent);
   --rail-material-control: color-mix(in srgb, var(--color-ink) 5%, transparent);
   --rail-material-control-hover: color-mix(in srgb, var(--color-ink) 8%, transparent);
   --rail-material-menu: color-mix(in srgb, var(--color-paper) 96%, transparent);
+  --rail-mode-selection: rgb(255 255 255 / .66);
+  --rail-mode-selection-edge: rgb(0 0 0 / .13);
+  --rail-mode-selection-shadow: 0 1px 3px rgb(0 0 0 / .12), 0 2px 6px rgb(0 0 0 / .04);
 }
 
 html[data-theme="dark"] {
-  --rail-material-fill: color-mix(in srgb, var(--color-paper) 70%, transparent);
-  --rail-native-material-fill: color-mix(in srgb, var(--color-paper) 28%, transparent);
+  --rail-material-fill: color-mix(in srgb, var(--color-paper) 48%, transparent);
+  /* Match Light tint strength; the native material supplies theme contrast. */
+  --rail-native-material-fill: rgb(42 42 42 / .08);
   --rail-material-border: color-mix(in srgb, var(--color-ink) 14%, transparent);
-  --rail-material-control: color-mix(in srgb, var(--color-ink) 7%, transparent);
-  --rail-material-control-hover: color-mix(in srgb, var(--color-ink) 11%, transparent);
+  --rail-material-control: color-mix(in srgb, var(--color-ink) 4%, transparent);
+  --rail-material-control-hover: color-mix(in srgb, var(--color-ink) 5%, transparent);
   --rail-material-menu: color-mix(in srgb, var(--color-surface) 96%, transparent);
+  --rail-mode-selection: rgb(255 255 255 / .10);
+  --rail-mode-selection-edge: rgb(255 255 255 / .13);
+  --rail-mode-selection-shadow: 0 1px 3px rgb(0 0 0 / .18);
 }
 
 .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .workspace-rail--unbranded {
   border-right-color: var(--rail-material-border) !important;
   background: var(--rail-material-fill) !important;
   color: var(--color-ink) !important;
-  -webkit-backdrop-filter: blur(22px) saturate(118%);
-  backdrop-filter: blur(22px) saturate(118%);
+  -webkit-backdrop-filter: blur(30px) saturate(125%);
+  backdrop-filter: blur(30px) saturate(125%);
 }
 
 html[data-native-material="system"] .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .workspace-rail--unbranded {
   background: var(--rail-native-material-fill) !important;
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
+}
+
+/* Light labels must remain readable when a dark backdrop is visible. */
+html[data-theme="light"][data-native-material="system"] .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .workspace-rail--unbranded :is(.rail-section-label, .rail-help-trigger) {
+  color: #666 !important;
+}
+
+/* A dark glass rail needs its own foreground contrast over bright windows.
+   Scope these tokens to the rail so the conversation and Light stay unchanged. */
+html[data-theme="dark"] .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .workspace-rail--unbranded {
+  --color-muted: #cdcdcd;
+  --color-muted-soft: #bcbcbc;
+  --color-rule: rgb(255 255 255 / .10);
+}
+
+html[data-theme="dark"] .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .workspace-rail--unbranded .task-item[aria-current="true"] {
+  background: rgb(255 255 255 / .09) !important;
+}
+
+html[data-theme="dark"] .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .workspace-rail--unbranded .task-item[aria-current="true"] small {
+  color: #e0e0e0 !important;
+}
+
+html[data-theme="dark"] .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .workspace-rail--unbranded :is(.rail-section-label, .rail-help-trigger) {
+  color: var(--color-muted) !important;
+}
+
+html[data-theme="dark"] .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .workspace-rail--unbranded .rail-footer {
+  border-top-color: var(--color-rule);
 }
 
 html[data-native-shell],
@@ -558,12 +597,17 @@ html[data-native-shell] body.workspace-body .workspace-shell.workspace-shell--de
 }
 
 .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .workspace-rail--unbranded .mode-switch--rail {
-  background: var(--rail-material-control) !important;
+  background: color-mix(in srgb, var(--color-ink) 3%, transparent) !important;
+  border-color: color-mix(in srgb, var(--color-ink) 7%, transparent) !important;
+  box-shadow: none !important;
 }
 
+/* The selected segment is a light translucent lift in either theme. Avoid
+   paper-colored fills: in Dark those turn into a recessed black slab. */
 .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .workspace-rail--unbranded .mode-switch--rail::before {
-  background: color-mix(in srgb, var(--color-paper) 82%, transparent) !important;
-  box-shadow: 0 2px 8px color-mix(in srgb, var(--color-ink) 10%, transparent) !important;
+  background: var(--rail-mode-selection) !important;
+  border-color: var(--rail-mode-selection-edge) !important;
+  box-shadow: var(--rail-mode-selection-shadow) !important;
 }
 
 .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .workspace-rail--unbranded .mode-switch button {
@@ -575,8 +619,8 @@ html[data-native-shell] body.workspace-body .workspace-shell.workspace-shell--de
 }
 
 .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .workspace-rail--unbranded .rail-new-task {
-  border-color: var(--rail-material-border) !important;
-  background: var(--rail-material-control) !important;
+  border-color: transparent !important;
+  background: color-mix(in srgb, var(--color-ink) 3%, transparent) !important;
   color: var(--color-ink) !important;
 }
 
@@ -599,18 +643,28 @@ html[data-native-shell] body.workspace-body .workspace-shell.workspace-shell--de
   }
 }
 
-/* A single material vocabulary for the composer and its floating controls. */
+/* Respect transparency preferences without changing task geometry or contrast. */
+@media (prefers-reduced-transparency: reduce) {
+  html .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .workspace-rail--unbranded {
+    background: var(--color-paper) !important;
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}
+
+/* A single material vocabulary for the composer and its floating controls.
+   The border alone defines the edge: a top inset highlight doubles its weight. */
 html[data-theme="light"] {
-  --composer-fill: #fff;
-  --composer-edge: rgb(37 37 37 / .09);
-  --composer-shadow: 0 2px 4px rgb(30 35 40 / .025), 0 8px 28px rgb(30 35 40 / .065);
+  --composer-fill: rgb(255 255 255 / .26);
+  --composer-edge: rgb(37 37 37 / .15);
+  --composer-shadow: 0 2px 4px rgb(30 35 40 / .025), 0 6px 18px rgb(30 35 40 / .055);
   --glass-fill: rgb(255 255 255 / .78);
   --glass-edge: rgb(37 37 37 / .16);
   --glass-shadow: inset 0 1px 0 rgb(255 255 255 / .95), 0 2px 5px rgb(34 40 50 / .06), 0 14px 36px rgb(34 40 50 / .10);
 }
 html[data-theme="dark"] {
-  --composer-fill: #252525;
-  --composer-edge: rgb(255 255 255 / .11);
+  --composer-fill: rgb(30 30 30 / .30);
+  --composer-edge: rgb(255 255 255 / .16);
   --composer-shadow: 0 2px 4px rgb(0 0 0 / .09), 0 8px 24px rgb(0 0 0 / .16);
   --glass-fill: rgb(40 40 40 / .84);
   --glass-edge: rgb(255 255 255 / .12);
@@ -640,7 +694,7 @@ html[data-theme] .workspace-shell[data-workspace-shell] .composer .choice-trigge
   font-weight: 500;
 }
 @media (prefers-reduced-transparency: reduce) {
-  html[data-theme] { --glass-fill: var(--color-surface); }
+  html[data-theme] { --glass-fill: var(--color-surface); --composer-fill: var(--color-surface); }
 }
 
 /* Shared material across workspace, settings, and contextual surfaces. */
@@ -654,12 +708,47 @@ html[data-theme] .setup-page .setup-card {
   box-shadow: var(--glass-shadow);
 }
 html[data-theme] .setup-page .settings-nav { background: var(--glass-soft); }
-html[data-theme] .workspace-shell[data-workspace-shell] :is(.task-context, .assistant-panel[aria-hidden="false"]) {
+html[data-theme] .workspace-shell[data-workspace-shell] .task-context {
   background: var(--glass-fill);
   border-color: var(--glass-edge);
   box-shadow: var(--glass-shadow);
   -webkit-backdrop-filter: blur(24px) saturate(125%);
   backdrop-filter: blur(24px) saturate(125%);
+}
+/* One frosted surface; opaque child layers would conceal its backdrop. */
+html[data-theme="light"] { --desk-assistant-fill: rgb(255 255 255 / .26); --desk-assistant-highlight: rgb(255 255 255 / .8); }
+html[data-theme="dark"] { --desk-assistant-fill: rgb(28 28 28 / .30); --desk-assistant-highlight: rgb(255 255 255 / .18); }
+html[data-theme] .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="desk"] .assistant-panel {
+  background: var(--desk-assistant-fill) !important;
+  border: 0;
+  border-radius: 20px;
+  box-shadow: inset 0 0 0 1px var(--desk-assistant-highlight), 0 24px 64px -16px rgb(0 0 0 / .24), 0 4px 14px rgb(0 0 0 / .06);
+  -webkit-backdrop-filter: blur(24px) saturate(120%);
+  backdrop-filter: blur(24px) saturate(120%);
+}
+html[data-theme] .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="desk"] .assistant-panel :is(.assistant-panel__head, .assistant-panel__transcript, .message-stream, .desk-command-dock__body, .composer, .conversation-start) {
+  background: transparent !important;
+}
+html[data-theme] .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="desk"] .assistant-panel > .desk-command-dock__body {
+  border: 0 !important;
+  box-shadow: none !important;
+}
+.assistant-panel__head > div:first-child { min-width: 0; }
+.assistant-panel__head [data-assistant-title] {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  html[data-theme] .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="desk"] .assistant-panel { background: var(--color-paper) !important; }
+}
+@media (prefers-reduced-transparency: reduce) {
+  html[data-theme] .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="desk"] .assistant-panel {
+    background: var(--color-paper) !important;
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
 }
 html[data-theme] .process-collaboration {
   border-color: var(--glass-edge);
@@ -688,8 +777,9 @@ html[data-theme] .workspace-shell[data-workspace-shell] .composer form {
   html[data-theme] { --glass-soft: var(--color-surface); }
 }
 
-html[data-theme] .workspace-shell.workspace-shell--desk[data-workspace-shell] .composer textarea::placeholder {
-  color: color-mix(in srgb, var(--color-ink) 45%, transparent) !important;
+html[data-theme] .workspace-shell[data-workspace-shell] .composer textarea::placeholder {
+  color: var(--color-muted) !important;
+  -webkit-text-fill-color: var(--color-muted) !important;
   opacity: 1;
   font-weight: 400;
 }
@@ -929,50 +1019,88 @@ html[data-theme] .workspace-shell[data-workspace-shell] .composer .composer-atta
   overflow: hidden; background: var(--color-surface); color: var(--color-ink);
   box-shadow: 0 24px 64px rgb(0 0 0 / .18);
 }
-.workspace-settings-dialog::backdrop { background: rgb(0 0 0 / .16); backdrop-filter: blur(4px); }
+/* Blur the mounted workspace as one surface. WebKit's backdrop filter can
+   sample its native-transparent rail and opaque content inconsistently. */
+.workspace-body:has(> .workspace-settings-dialog[open]) > .workspace-shell[data-workspace-shell] {
+  filter: blur(10px);
+}
+.workspace-settings-dialog::backdrop { background: rgb(0 0 0 / .08); }
 .workspace-settings-dialog iframe { display: block; width: 100%; height: 100%; border: 0; }
 @media (max-width: 700px) {
   .workspace-settings-dialog { width: calc(100vw - 20px); height: calc(100dvh - 24px); border-radius: 18px; }
 }
 
-/* Research depth expands into a three-stop slider beside the composer. */
-.composer-depth[hidden] { display: none !important; }
+/* Composer popovers share a frosted surface; Desk form dropdowns keep their geometry. */
+html[data-theme] body .composer .optionhelper-choice .choice-menu,
+.research-depth-slider {
+  background: var(--glass-fill);
+  border: 1px solid var(--glass-edge);
+  border-radius: 22px;
+  box-shadow: var(--composer-shadow);
+  -webkit-backdrop-filter: blur(24px) saturate(115%);
+  backdrop-filter: blur(24px) saturate(115%);
+  color: var(--color-ink);
+}
+html[data-theme] body .composer .optionhelper-choice .choice-menu { padding: 8px; }
+html[data-theme] body .composer .model-picker .choice-menu__heading {
+  display: block; padding: 5px 10px 9px; color: var(--color-muted); font-size: 12px; font-weight: 500;
+}
+html[data-theme] body .composer .optionhelper-choice .choice-option {
+  min-height: 38px; border-radius: 12px; padding: 8px 10px; font-size: 14px;
+  background: transparent;
+}
+html[data-theme] body .composer .optionhelper-choice .choice-option[aria-selected="true"] {
+  background: color-mix(in srgb, var(--color-ink) 10%, transparent); font-weight: 500;
+}
+html[data-theme] body .composer .optionhelper-choice .choice-option:enabled:is(:hover,:focus-visible) {
+  background: color-mix(in srgb, var(--color-ink) 6%, transparent);
+}
+html[data-theme] body .composer .optionhelper-choice .choice-group__label {
+  padding: 8px 10px 4px; font-size: 11px; color: var(--color-muted);
+}
+.composer-depth[hidden], .composer-depth select[hidden], .research-depth-slider[hidden] { display: none !important; }
 .composer-depth { flex-shrink: 0; }
-.composer-depth select[hidden] { display: none !important; }
 html body .composer-depth-trigger {
-  width: auto; min-width: 44px; height: 32px; padding: 4px 10px;
-  border: 0; border-radius: 16px; background: transparent;
+  width: auto; min-width: 44px; height: 34px; min-height: 34px; padding: 4px 10px;
+  border: 0; border-radius: 17px;
+  background: color-mix(in srgb, var(--color-ink) 5%, transparent);
   color: var(--color-muted); font-size: 12px; font-weight: 400;
 }
 html body .composer-depth-trigger:hover,
-html body .composer-depth-trigger[aria-expanded="true"] { background: color-mix(in srgb, var(--color-ink) 7%, transparent); }
-.research-depth-slider[hidden] { display: none !important; }
+html body .composer-depth-trigger[aria-expanded="true"] { background: color-mix(in srgb, var(--color-ink) 10%, transparent); }
 .research-depth-slider {
-  position: fixed; z-index: 10000; box-sizing: border-box; padding: 16px 18px 12px;
-  border: 1px solid var(--color-rule); border-radius: 18px;
-  background: var(--color-surface); color: var(--color-ink);
-  box-shadow: 0 6px 24px #00000018;
+  position: fixed; z-index: 10000; box-sizing: border-box; padding: 12px 14px 10px;
+  transform-origin: 50% 100%; --depth-thumb-size: 28px;
 }
-.research-depth-slider__heading { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; font-size: 12px; color: var(--color-muted); }
-.research-depth-slider__heading strong { color: var(--color-ink); font-weight: 500; }
-html body .research-depth-slider input[type="range"] {
-  display: block; appearance: none; -webkit-appearance: none; width: 100%; height: 24px;
-  margin: 0; padding: 0; border: 0; border-radius: 12px; cursor: pointer;
-  background: linear-gradient(to right, var(--color-brand-red, #b51b3b) 0 var(--depth-progress), color-mix(in srgb, var(--color-ink) 9%, transparent) var(--depth-progress) 100%);
+.research-depth-slider__heading { display: grid; grid-template-columns: 28px 1fr 28px; align-items: center; gap: 12px; }
+.research-depth-slider__reset svg { width: 18px; height: 18px; }
+html body .research-depth-slider__reset {
+  display: grid; place-items: center; width: 28px; min-height: 28px; padding: 4px;
+  border: 0; border-radius: 50%; background: transparent; color: var(--color-muted); cursor: pointer;
 }
-.research-depth-slider input::-webkit-slider-thumb {
-  appearance: none; -webkit-appearance: none; width: 24px; height: 24px; border-radius: 50%;
-  background: #fff; border: 1px solid #00000014; box-shadow: 0 1px 4px #00000026;
-}
-.research-depth-slider input::-moz-range-thumb { width: 24px; height: 24px; border-radius: 50%; background: #fff; border: 1px solid #00000014; }
-.research-depth-slider__labels { display: flex; justify-content: space-between; margin-top: 6px; }
-html body .research-depth-slider__labels button {
-  min-width: 0; min-height: 28px; padding: 0; border: 0; background: transparent;
-  font-size: 11px; font-weight: 400; color: var(--color-muted); cursor: pointer;
-}
+html body .research-depth-slider__reset:hover { background: color-mix(in srgb, var(--color-ink) 8%, transparent); color: var(--color-ink); }
+.research-depth-slider__value { grid-column: 2; display: grid; overflow: hidden; text-align: center; line-height: 1.5; font-size: 15px; font-weight: 500; color: var(--color-brand-red); }
+.research-depth-slider__value span { grid-area: 1/1; opacity: 0; transform: translateY(35%); transition: opacity 250ms var(--motion-surface-ease,cubic-bezier(.22,1,.36,1)),transform 250ms var(--motion-surface-ease,cubic-bezier(.22,1,.36,1)); }
+.research-depth-slider__value span[data-selected="true"] { opacity: 1; transform: translateY(0); }
+.research-depth-slider__context { margin: 2px 0 14px; text-align: center; font-size: 12px; line-height: 1.4; color: var(--color-muted); }
+.research-depth-slider__track { position: relative; height: 30px; }
+.research-depth-slider__rail { position: absolute; inset: 2px 0; border-radius: 99px; background: color-mix(in srgb, var(--color-ink) 12%, transparent); pointer-events: none; }
+.research-depth-slider__fill { position: absolute; inset: 0 auto 0 0; width: calc(14px + (100% - 28px) * var(--depth-fraction,.5)); border-radius: 99px; background: var(--color-brand-red); transition: width 250ms var(--motion-surface-ease,cubic-bezier(.22,1,.36,1)); }
+.research-depth-slider__stops { position: absolute; inset: 0 12px; display: flex; align-items: center; justify-content: space-between; }
+.research-depth-slider__stops i { width: 4px; height: 4px; border-radius: 50%; background: color-mix(in srgb,var(--color-ink) 35%,transparent); }
+.research-depth-slider__thumb { position: absolute; left: 0; top: -1px; width: calc(100% - 28px); height: 28px; transform: translateX(var(--depth-progress,50%)); transition: transform 250ms var(--motion-surface-ease,cubic-bezier(.22,1,.36,1)); }
+.research-depth-slider__thumb::after { content: ''; display: block; width: 28px; height: 28px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px #0003,inset 0 0 0 1px #0000000a; }
+html body .research-depth-slider .research-depth-slider__track input[type="range"] { position: absolute; inset: 0; width: 100%; height: 30px; margin: 0; padding: 0; border: 0; opacity: 0; cursor: grab; touch-action: none; }
+.research-depth-slider__track:has(input:focus-visible) { outline: 2px solid var(--color-muted); outline-offset: 4px; border-radius: 99px; }
+.research-depth-slider[data-dragging] :is(.research-depth-slider__thumb,.research-depth-slider__fill) { transition: none; }
+html body .research-depth-slider[data-dragging] input[type="range"] { cursor: grabbing; }
+.research-depth-slider__labels { display: flex; justify-content: space-between; margin-top: 5px; }
+html body .research-depth-slider__labels button { min-width: 0; min-height: 26px; padding: 0 1px; border: 0; background: transparent; font-size: 11px; font-weight: 400; color: var(--color-muted); cursor: pointer; transition: color 250ms var(--motion-surface-ease); }
 html body .research-depth-slider__labels button[aria-pressed="true"] { color: var(--color-ink); font-weight: 500; }
-.research-depth-slider :focus-visible { outline: 2px solid var(--color-ink); outline-offset: 3px; }
-.research-depth-slider :disabled { cursor: wait; opacity: .5; }
+.research-depth-slider :focus-visible { outline: 2px solid var(--color-muted); outline-offset: 3px; }
+.research-depth-slider :disabled { cursor: default; }
+@media(prefers-reduced-motion:reduce) { .research-depth-slider__thumb,.research-depth-slider__fill,.research-depth-slider__value span,html body .research-depth-slider__labels button { transition: none; } }
+@media(prefers-reduced-transparency:reduce) { html[data-theme] body .composer .optionhelper-choice .choice-menu,.research-depth-slider { background: var(--color-surface); backdrop-filter: none; -webkit-backdrop-filter: none; } }
 
 .workflow-header{display:flex;justify-content:space-between;gap:16px;align-items:center}.workflow-header small,.workflow-node small,.workflow-note,.workflow-handoff small{color:var(--color-muted,#999)}.workflow-scroll{overflow-x:auto;overflow-y:hidden;scrollbar-width:thin;contain:paint}.workflow-network{position:relative;min-width:570px;aspect-ratio:800/280}.workflow-network svg{width:100%;height:100%;position:absolute;inset:0;overflow:visible}.workflow-link,.workflow-arrowhead{fill:none;stroke-width:1.15;stroke-linecap:round;stroke-linejoin:round;vector-effect:non-scaling-stroke}.host-link{stroke:var(--color-rule,#666);opacity:.8}.handoff-link{stroke:#618bb4}.return-link{stroke:light-dark(#946514,#e0b568)}.workflow-pulse{fill:none;filter:drop-shadow(0 0 4px currentColor) drop-shadow(0 0 9px currentColor)}
 .workflow-pulse.handoff-link{color:#7caeff;stroke:#7caeff}
@@ -984,27 +1112,30 @@ html body .research-depth-slider__labels button[aria-pressed="true"] { color: va
 
 .receives-energy .workflow-mark{animation:workflow-arrival 2.4s ease-in-out 3}@keyframes workflow-arrival{0%,55%,100%{filter:none}78%{filter:brightness(1.6);box-shadow:0 0 0 7px #79aaff18,0 0 22px #79aaff80}}@media(prefers-reduced-motion:reduce){.receives-energy .workflow-mark{animation:none}}
 
-/* Match Chat/Desk selection motion while retaining a continuous slider. */
-.research-depth-slider{transform-origin:50% 100%}
-.research-depth-slider__track{position:relative;height:28px}
-.research-depth-slider__rail{position:absolute;inset:2px 0;border-radius:99px;background:color-mix(in srgb,var(--color-ink) 9%,transparent);pointer-events:none}
-.research-depth-slider__fill{position:absolute;inset:0;background:color-mix(in srgb,var(--color-brand-red) 78%,transparent);border-radius:99px;transform:none;clip-path:inset(0 calc(100% - var(--depth-progress,50%)) 0 0);transition:clip-path var(--motion-open,250ms) var(--motion-surface-ease,cubic-bezier(.22,1,.36,1))}
-.research-depth-slider__thumb{position:absolute;left:0;top:0;width:calc(100% - 24px);height:24px;transform:translateX(var(--depth-progress,50%));transition:transform var(--motion-open,250ms) var(--motion-surface-ease,cubic-bezier(.22,1,.36,1))}
-.research-depth-slider__thumb::after{content:"";display:block;width:24px;height:24px;border-radius:50%;background:#fff;box-shadow:0 1px 4px #0003,inset 0 0 0 1px #00000012}
-html body .research-depth-slider .research-depth-slider__track input[type="range"]{position:absolute;inset:0;opacity:0;width:100%;height:28px;cursor:grab;touch-action:none}
-.research-depth-slider__track:has(input:focus-visible){outline:2px solid var(--color-muted);outline-offset:4px;border-radius:99px}
-.research-depth-slider[data-dragging] :is(.research-depth-slider__thumb,.research-depth-slider__fill){transition:none}
-html body .research-depth-slider[data-dragging] input[type="range"]{cursor:grabbing}
-.research-depth-slider :disabled{opacity:1}
-.research-depth-slider__value{display:grid;overflow:hidden;min-width:2em;line-height:1.5}
-.research-depth-slider__value span{grid-area:1/1;opacity:0;transform:translateY(35%);transition:opacity var(--motion-open,250ms) var(--motion-surface-ease),transform var(--motion-open,250ms) var(--motion-surface-ease)}
-.research-depth-slider__value span[data-selected="true"]{opacity:1;transform:translateY(0)}
-html body .research-depth-slider__labels button{transition:color var(--motion-open,250ms) var(--motion-surface-ease)}
-@media(prefers-reduced-motion:reduce){.research-depth-slider__thumb,.research-depth-slider__fill,.research-depth-slider__value span,html body .research-depth-slider__labels button{transition:none}}
-
 /* Research revisions are expected workflow branches, not execution errors. */
 .process-tool-card [data-state="review"], .process-tool-card [data-state="waiting"] { color: light-dark(#946514,#e0b568); }
 .process-tool-card [data-state="excluded"] { color: var(--color-muted); }
 
 .process-tool-group .process-tool-group__counts { color: var(--color-muted); }
 .process-tool-group__counts [data-failure="true"] { color: var(--color-brand-red); }
+
+/* Composer feedback stays readable without turning the whole composer red. */
+.workspace-shell .composer #workspace-status.notice {
+  padding: 8px 12px;
+  border-radius: 10px;
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+html[data-theme="dark"] .workspace-shell .composer #workspace-status.notice--error {
+  background: rgb(255 255 255 / .035);
+  color: #efa7b0;
+  border: 0;
+}
+html[data-theme="dark"] .composer:has(#workspace-status.notice--error:not([hidden])) form:not(.is-generating) {
+  border-color: var(--color-rule);
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  html[data-theme] .workspace-shell[data-workspace-shell] .assistant-region .composer form { backdrop-filter: none; -webkit-backdrop-filter: none; }
+}

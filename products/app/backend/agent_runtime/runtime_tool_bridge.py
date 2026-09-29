@@ -213,9 +213,9 @@ class RuntimeToolBridge:
         if set(payload)-{"task_id", "candidate_id", "module", "result_path", "offset", "limit", "expected_run_ref", "catalog_ref", "stage_ref"}:
             raise ValidationError("读取研究证据含未声明字段")
         if "stage_ref" in payload:
-            if set(payload) - {"task_id", "stage_ref", "result_path"}:
+            if set(payload) - {"task_id", "stage_ref", "result_path", "offset", "limit"}:
                 raise ValidationError("冻结阶段读取不能混用其他参数")
-            return research.read_stage_input(payload["stage_ref"], connection.role_id, payload.get("result_path", []))
+            return research.read_stage_input(payload["stage_ref"], connection.role_id, payload.get("result_path", []), offset=payload.get("offset", 0), limit=payload.get("limit"))
         if "catalog_ref" in payload:
             if set(payload) - {"task_id", "catalog_ref"}:
                 raise ValidationError("冻结目录读取不能混用结果读取参数")
@@ -340,12 +340,27 @@ class RuntimeToolBridge:
             raise ValidationError("业务工具未注册")
         if name not in state.connection.allowed_tools:
             raise AuthorizationError("agent_runtime.tool", "当前角色没有该业务工具权限")
-        request = _safe_input(dict(arguments or {}))
+        raw_request = dict(arguments or {})
+        has_reference = name == "read_research_evidence" and "expected_run_ref" in raw_request
+        reference = raw_request.pop("expected_run_ref") if has_reference else None
+        request = _safe_input(raw_request)
+        if has_reference:
+            # This is a frozen evidence identity, never a routing override. Only
+            # its declared scalar fields may cross the boundary; the research
+            # session subsequently matches the complete reference to its ledger.
+            fields = {"module", "tenant_id", "task_id", "run_id", "expected_result_file_hash", "expected_artifact_manifest_hash"}
+            if (not isinstance(reference, Mapping) or set(reference) != fields
+                    or any(not isinstance(value, str) or not value or len(value) > 512 for value in reference.values())
+                    or reference["tenant_id"] != state.identity.tenant_id
+                    or reference["task_id"] != state.connection.task_id
+                    or reference["module"] != request.get("module")):
+                raise ValidationError("冻结结果引用无效或不属于当前任务")
+            request["expected_run_ref"] = dict(reference)
         if not isinstance(request, dict):
             raise ValidationError("工具arguments必须是对象")
         # A cached stage read must still belong to the live role and current contracts.
         # Revalidate before the idempotent cache can return an old successful response.
-        if name == "read_research_evidence" and "stage_ref" in request:
+        if name == "read_research_evidence" and ("stage_ref" in request or "expected_run_ref" in request):
             self._read_research(state.identity, state.connection.task_id, request, state.connection)
         normalized_request_id = self._request_id(request_id)
         request_digest = _request_hash(name, request)
@@ -437,7 +452,7 @@ class RuntimeToolBridge:
 def _tool_definitions() -> dict[str, ToolDefinition]:
     return {
         "evaluate_research_candidate": ToolDefinition("evaluate_research_candidate", "为已登记候选调用真实计算；必须说明待验证问题。", ("candidate_id", "modules", "question", "round_no"), True),
-        "read_research_evidence": ToolDefinition("read_research_evidence", "stage_history中的stage_ref可原样传回以读取本轮本角色冻结阶段原始输入，可用result_path定向读取字段，不与candidate_id/module等参数混用；候选改变后旧引用失效。读取已有证据。指定candidate_id和module后，可用result_path逐层读取完整结果的字段、风险曲线或情景，并按offset和limit分页；不会重新计算。较大的子项会在deferred_fields中给出result_path，按需进入读取；始终使用返回的next_offset翻页，数组的value_indices表示原始位置。概览不等于已经读完所有细项。catalog_references中read_request可原样传回，读取本轮冻结目录原文；引用不可修改，且不与其他读取参数混用。取回归档页时传入其expected_run_ref，严格读取指定冻结版本；候选或来源失效时返回错误，不替换运行。", ("candidate_id", "module", "result_path", "offset", "limit", "expected_run_ref", "catalog_ref", "stage_ref")),
+        "read_research_evidence": ToolDefinition("read_research_evidence", "stage_history中的stage_ref可原样传回以读取本轮本角色冻结阶段原始输入，可用result_path定向读取字段，并用offset/limit分页；不与candidate_id/module/catalog_ref/expected_run_ref混用；候选改变后旧引用失效。读取已有证据。指定candidate_id和module后，可用result_path逐层读取完整结果的字段、风险曲线或情景，并按offset和limit分页；不会重新计算。较大的子项会在deferred_fields中给出result_path，按需进入读取；始终使用返回的next_offset翻页，数组的value_indices表示原始位置。概览不等于已经读完所有细项。catalog_references中read_request可原样传回，读取本轮冻结目录原文；引用不可修改，且不与其他读取参数混用。取回归档页时传入其expected_run_ref，严格读取指定冻结版本；候选或来源失效时返回错误，不替换运行。", ("candidate_id", "module", "result_path", "offset", "limit", "expected_run_ref", "catalog_ref", "stage_ref")),
         "search_option_structures": ToolDefinition("search_option_structures", "检索受控期权结构候选。", ("query", "constraints")),
     }
 

@@ -231,7 +231,10 @@ export class HostRuntimePorts implements RuntimePorts {
       status: ["completed", "failed", "cancelled", "unknown"].includes(normalized)
         ? normalized as ToolExecutionResult["status"] : "failed",
       result: raw as unknown as JsonValue,
-      ...(raw.error === undefined ? {} : { error: String(raw.error) }),
+      ...(["completed", "cancelled"].includes(normalized) ? {} : {
+        error: [typeof raw.message === "string" ? raw.message : typeof raw.error === "string" ? raw.error : "",
+          typeof raw.next_step === "string" ? raw.next_step : ""].filter(Boolean).join(""),
+      }),
       factRefs,
     }
   }
@@ -243,6 +246,7 @@ export class HostRuntimePorts implements RuntimePorts {
     if (purpose === "research-checkpoint" && envelope?.protocol === "optionhelper.recommender.step") {
       const response = object(await this.peer.request("host.model.complete", {
         operation: "research_checkpoint", prompt: text, roleId: envelope.role,
+        maxChars: Math.max(0, Math.floor(maxChars) - 64),
         publicMessages: modelMessages(messages),
       }, _signal))
       const chunks = Array.isArray(response.chunks) ? response.chunks : []

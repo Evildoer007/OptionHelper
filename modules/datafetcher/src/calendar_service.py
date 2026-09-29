@@ -251,6 +251,7 @@ def calendar_evidence_for_history(
 def _canonical_payload(
     request: CalendarRequest,
     sessions_by_exchange: Mapping[str, tuple[str, ...]],
+    provider: str = "ifind_http",
 ) -> tuple[dict[str, Any], bytes, str]:
     exchanges = tuple(sorted(sessions_by_exchange))
     intersection = tuple(sorted(set.intersection(*(set(sessions_by_exchange[item]) for item in exchanges))))
@@ -269,7 +270,7 @@ def _canonical_payload(
         "requested_end_date": request.end_date,
         "sessions": list(intersection),
         "sessions_by_exchange": {key: list(sessions_by_exchange[key]) for key in exchanges},
-        "provider": "ifind_http",
+        "provider": provider,
     }
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return payload, encoded, hashlib.sha256(encoded).hexdigest()
@@ -322,7 +323,8 @@ def _atomic_json(path: Path, value: Mapping[str, Any]) -> None:
 
 
 class CalendarCache:
-    def __init__(self, root: Path):
+    def __init__(self, root: Path, provider: str = "ifind_http"):
+        self.provider = provider
         self.root = root
         self.index_path = root / "calendar-index.json"
         with _INDEX_LOCKS_GUARD:
@@ -377,7 +379,7 @@ class CalendarCache:
                 "tenant_id": caller.tenant_id,
                 "principal_id": caller.principal_id,
                 "exchanges": sorted({str(china_market_convention(item)["exchange"]) for item in request.asset_ids}),
-                "provider": "ifind_http",
+                "provider": ref.lineage.get("provider", "ifind_http"),
                 "updated_at": datetime.now(timezone.utc).isoformat(),
             }
             _atomic_json(self.index_path, index)
@@ -401,7 +403,7 @@ class CalendarCache:
                 "tenant_id": caller.tenant_id,
                 "principal_id": caller.principal_id,
                 "exchanges": sorted({str(china_market_convention(item)["exchange"]) for item in request.asset_ids}),
-                "provider": "ifind_http",
+                "provider": ref.lineage.get("provider", "ifind_http"),
                 "updated_at": datetime.now(timezone.utc).isoformat(),
             }
 
@@ -427,7 +429,7 @@ class CalendarCache:
             if isinstance(reference, Mapping):
                 assets.append({
                     "data_asset_ref": dict(reference),
-                    "provider": "ifind_http",
+                    "provider": record.get("provider", "ifind_http"),
                     "updated_at": record.get("updated_at"),
                 })
         return sorted(assets, key=lambda item: str(item.get("updated_at", "")), reverse=True)[:safe_limit]
@@ -451,7 +453,7 @@ class CalendarCache:
             if isinstance(reference, Mapping) and reference.get("data_asset_id") == data_asset_id:
                 return {
                     "data_asset_ref": dict(reference),
-                    "provider": "ifind_http",
+                    "provider": record.get("provider", "ifind_http"),
                     "updated_at": record.get("updated_at"),
                 }
         return None
@@ -543,6 +545,8 @@ class CalendarCache:
             reverse=True,
         )
         for record in records:
+            if record.get("provider", "ifind_http") != self.provider:
+                continue
             resolved = self._resolve_record(record, caller, store)
             if resolved is None:
                 continue
@@ -630,10 +634,12 @@ def _store_reference(
     owner = hashlib.sha256(
         f"{caller.tenant_id}\0{caller.principal_id}".encode("utf-8")
     ).hexdigest()[:12]
-    data_asset_id = f"calendar-{content_hash}-ifind-o-{owner}"
+    provider = str(payload["provider"])
+    provider_id = "ifind" if provider == "ifind_http" else provider
+    data_asset_id = f"calendar-{content_hash}-{provider_id}-o-{owner}"
     lineage = {
-        "provider": "ifind_http",
-        "endpoint": "get_trade_dates",
+        "provider": provider,
+        "endpoint": "get_trade_dates" if provider == "ifind_http" else "trade_cal",
         "request_hash": hashlib.sha256(json.dumps(request.public_dict(), sort_keys=True).encode("utf-8")).hexdigest(),
         "fetched_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
         "persistence_mode": request.persistence_mode,
@@ -721,7 +727,12 @@ def fetch_calendar_asset(
     if "data:read" not in caller.capabilities:
         raise CalendarValidationError("当前CallerContext无data:read权限")
     request = validate_calendar_request(request_value, config)
-    cache = CalendarCache(Path(config.cache_root))
+    provider = config.provider_priority[0]
+    if provider not in {"ifind_http", "tinyshare", "tushare"}:
+        raise CalendarValidationError("所选来源不支持交易日历")
+    from .providers.tushare import TushareProvider
+    calendar_provider = IFindHttpProvider() if provider == "ifind_http" else TushareProvider(provider)
+    cache = CalendarCache(Path(config.cache_root), provider=provider)
     store = (
         LocalDataStore(Path(config.data_root))
         if request.persistence_mode == "library" or cache.index_path.exists()
@@ -789,9 +800,9 @@ def fetch_calendar_asset(
                     if quota_used + estimated_units > limit:
                         raise ProviderQuotaExceeded("交易日历请求超过DataFetcher额度保护上限")
                     attempted = True
-                    raw_by_exchange = IFindHttpProvider().fetch_calendar(gap_request, config)
+                    raw_by_exchange = calendar_provider.fetch_calendar(gap_request, config)
                     if not isinstance(raw_by_exchange, Mapping):
-                        raise CalendarValidationError("iFind交易日历返回结构无效")
+                        raise CalendarValidationError("数据服务交易日历返回结构无效")
                     validated = {
                         exchange: _validate_exchange_sessions(
                             tuple(values)
@@ -808,15 +819,15 @@ def fetch_calendar_asset(
                         and not isinstance(values, (str, bytes))
                     }
                     if len(validated) != len(raw_by_exchange):
-                        raise CalendarValidationError("iFind交易日历返回结构无效")
+                        raise CalendarValidationError("数据服务交易日历返回结构无效")
                     if sorted(validated) != sorted(exchanges):
-                        raise CalendarValidationError("iFind交易日历未覆盖请求的全部交易所")
+                        raise CalendarValidationError("数据服务交易日历未覆盖请求的全部交易所")
                     for exchange, sessions in validated.items():
                         combined_sessions[exchange].update(sessions)
                     quota_used += estimated_units
                     calls.append({
-                        "provider": "ifind_http",
-                        "endpoint": "get_trade_dates",
+                        "provider": provider,
+                        "endpoint": "get_trade_dates" if provider == "ifind_http" else "trade_cal",
                         "outcome": "succeeded",
                         "quota_units": estimated_units,
                         "start_date": start_date,
@@ -825,8 +836,8 @@ def fetch_calendar_asset(
                     })
                 except (ProviderError, CalendarValidationError) as error:
                     calls.append({
-                        "provider": "ifind_http",
-                        "endpoint": "get_trade_dates",
+                        "provider": provider,
+                        "endpoint": "get_trade_dates" if provider == "ifind_http" else "trade_cal",
                         "outcome": error.code,
                         "quota_units": estimated_units if attempted else 0,
                         "start_date": start_date,
@@ -855,7 +866,7 @@ def fetch_calendar_asset(
                 )
                 for exchange in expected
             }
-            payload, encoded, content_hash = _canonical_payload(request, normalized_sessions)
+            payload, encoded, content_hash = _canonical_payload(request, normalized_sessions, provider)
             ref = _store_reference(request, caller, config, payload, encoded, content_hash)
             if request.persistence_mode == "library":
                 cache.save(request, caller, encoded, ref)

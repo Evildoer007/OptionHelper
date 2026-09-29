@@ -88,12 +88,21 @@
               <div id="review-policy-root" class="review-policy-root" aria-live="polite"></div>
             </section>
             <section id="data" class="setting-section" hidden>
-              <div class="setting-section__head"><div><h2>数据接口</h2><p>连接iFind市场数据。</p></div><span class="connection-status" data-data-status>未配置</span></div>
-              <p>保存自己的Refresh Token，OptChat会在取数时自动获取访问凭据。</p>
+              <div class="setting-section__head"><div><h2>数据接口</h2><p>选择市场数据来源。默认使用iFinD。</p></div><span class="connection-status" data-data-status>未配置</span></div>
+              <p>保存所选服务的凭据，Chat和Desk会使用同一数据来源。</p>
               <form id="data-form" class="setup-form" autocomplete="off" novalidate>
+                <div class="field field--wide">
+                  <label for="data-source">数据来源</label>
+                  <select id="data-source" name="source_brand" data-choice><option value="ifind-http">iFinD</option><option value="tushare">Tushare</option></select>
+                </div>
+                <div class="field field--wide" id="data-implementation-field" hidden>
+                  <label for="data-implementation">接入服务</label>
+                  <select id="data-implementation" name="implementation" data-choice><option value="tinyshare">Tinyshare</option><option value="tushare">Tushare官方</option></select>
+                  <small class="field-note">请选择Token所属服务。两种服务的Token不能混用，连接失败不会自动切换。</small>
+                </div>
                 <input name="provider_name" type="hidden" value="ifind-http">
                 <div class="field field--wide" data-field-spec>
-                  <label for="ifind-refresh-token">iFind Refresh Token<span class="field-required" aria-hidden="true">必填</span></label>
+                  <label for="ifind-refresh-token"><span id="data-token-label">iFinD Refresh Token</span><span class="field-required" aria-hidden="true">必填</span></label>
                   <input id="ifind-refresh-token" name="refresh_token" type="password" autocomplete="new-password" spellcheck="false" placeholder="粘贴Refresh Token" aria-describedby="ifind-refresh-spec data-credential-state">
                   <small class="field-spec" id="ifind-refresh-spec"><span data-purpose>由App自动获取可用的访问凭据</span><span data-example hidden>iFind控制台复制的完整Refresh Token</span><span data-default hidden>未配置</span></small>
                   <small class="field-note" id="data-credential-state">保存后仅写入当前设备的OptionHelper数据目录。</small>

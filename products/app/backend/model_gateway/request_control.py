@@ -12,11 +12,23 @@ class ModelRequestCancelled(RuntimeError):
 
 
 class ModelRequestControl:
-    def __init__(self, timeout_seconds: float) -> None:
+    def __init__(self, timeout_seconds: float, *, max_output_tokens: int | None = None,
+                 max_duration_seconds: float | None = None, reasoning_effort: str | None = None) -> None:
         if timeout_seconds <= 0:
             raise ValueError("model request timeout must be positive")
+        if max_output_tokens is not None and (type(max_output_tokens) is not int or max_output_tokens <= 0):
+            raise ValueError("model output budget must be a positive integer")
+        if max_duration_seconds is not None and max_duration_seconds <= 0:
+            raise ValueError("model total duration must be positive")
+        if reasoning_effort not in {None, "none", "low", "high", "max"}:
+            raise ValueError("invalid reasoning effort")
+        self.reasoning_effort = reasoning_effort
+        self.max_output_tokens = max_output_tokens
+        self._absolute_deadline = monotonic() + max_duration_seconds if max_duration_seconds is not None else None
         self._cancelled = Event()
         self._deadline = monotonic() + timeout_seconds
+        if self._absolute_deadline is not None:
+            self._deadline = min(self._deadline, self._absolute_deadline)
         self._reason = ""
         self._lock = Lock()
         self._cancel_listeners: list[Callable[[str], object]] = []
@@ -25,7 +37,8 @@ class ModelRequestControl:
         """Extend a live stream's idle window without undoing cancellation."""
         with self._lock:
             if not self._cancelled.is_set():
-                self._deadline = monotonic() + timeout_seconds
+                deadline = monotonic() + timeout_seconds
+                self._deadline = min(deadline, self._absolute_deadline) if self._absolute_deadline is not None else deadline
 
     @property
     def cancelled(self) -> bool:

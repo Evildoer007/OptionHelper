@@ -55,3 +55,23 @@ Host登记`DataAssetRef`时必须执行`register_data_asset(ref, identity)`等�
 - 进度：数据已经取得，正在检查日期覆盖、缺失值和复权口径。
 - 完成：数据检查完成。下面给出覆盖范围、质量结论和可用于后续分析的字段。
 - 失败：本次数据暂时无法取得。我会说明失败原因、受影响的分析和需要补齐的条件，不使用未经确认的数据替代。
+
+### 可选Tushare数据连接
+
+App设置默认仍为iFinD。选择“Tushare”后，需要明确接入服务为Tinyshare或Tushare官方，并保存对应Token；二者不是同一凭据或同一数据来源。各服务的凭据分别保留，可以切回已保存来源。sales只保存本人的连接，不能覆盖管理员连接。连接测试实际读取一段交易日历，只证明该接口可用，不代表已获得所有行情及复权权限。
+
+Chat、Desk和研究自动补数采用当前所选服务。自动查找已有行情和日历时也检查实际来源；明确选定的历史数据引用仍保持原来源，不重写历史记录。行情及日历的`lineage.provider`分别记录`ifind_http`、`tinyshare`或`tushare`，缓存按实际服务及用户隔离。鉴权失败立即终止，不自动转向其他服务。
+
+|资产|行情接口|复权因子|价格单位|
+|---|---|---|---|
+|A股|daily|adj_factor|元|
+|ETF|fund_daily|fund_adj|元|
+|指数|index_daily|不适用|指数点|
+
+接口日期为YYYYMMDD，统一输出YYYY-MM-DD。成交量`vol`按接口的手数乘100输出为股或基金份额；本模块暂不提供成交额字段。指数保留原值，证券前复权按“原始价格×当日因子÷请求窗口最后一个已观察交易日因子”计算，四个原始OHLC始终保留。因子缺失、重复、非正或未覆盖行情日期时失败，不用原始价替代。前复权缓存包含完整请求窗口，不跨不同基准拼接。交易日历使用`trade_cal`，分别查询SSE/SZSE，并要求开市与休市日期完整覆盖请求。
+
+Tinyshare使用可审计的HTTP适配层，不导入或打包Tinyshare字节码SDK。当前协议依据本机0.1030.0发布包静态核查；其默认服务是HTTP，不支持同端口TLS。请求只发往固定服务，禁止重定向；遇到外部CDN返回明确报不支持，不追踪任意链接。已有Tinyshare设备标识优先复用；Windows没有既有设备标识时明确提示配置，本轮未声明Windows原生验收。
+
+共享模块默认与Skill原有iFinD流程保持不变。程序调用可显式指定`provider="tinyshare"`或`provider="tushare"`，并通过对应的`TINYSHARE_TOKEN`、`TUSHARE_TOKEN`环境变量或受控`DataFetcherConfig`凭据端口注入Token。不得在请求、示例、日志或版本库保存真实Token。
+
+接口口径参考：[股票日线](https://tushare.pro/document/2?doc_id=27)、[ETF日线](https://tushare.pro/document/2?doc_id=127)、[指数日线](https://tushare.pro/document/2?doc_id=95)、[交易日历](https://tushare.pro/document/2?doc_id=26)。不支持的市场、代码类别、频率或字段直接报错，不替换为其他资产或填零。
