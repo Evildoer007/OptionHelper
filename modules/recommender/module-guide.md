@@ -25,7 +25,7 @@
 
 - 兼容顺序研判：`Interpreter→Selector→Reviewer`。只读取Knowledger，不调用金融计算模块，是Skill的默认预设，不属于App公开的三个Mode。
 - 产品交易循环，App Mode1：`Structurer⇄Trader→Reviewer`。Structurer提出候选和验证问题；Host登记候选后，Structurer和Trader可按职责调用受控研究工具。Trader依据当前候选已验证的Run和FactRef接受候选或提出调整。快速、标准、深入研究最多执行1、2、4轮；条款调整保留同一candidate_id并清除受影响的旧证据。
-- 独立评议，App Mode2：Framer框定约束后，Matcher和Hedger在隔离上下文中并行提出候选。Host登记后，两角色分别验证自身候选，可按需调用金融计算工具；首次研究不能读取另一角色的候选证据。独立研究完成后共享证据，Moderator汇总结论，并按档位对具体问题要求定向复核。不能把首次研究的计算阶段描述为全部并行执行；任一必要角色执行失败均不得宣称流程完成。
+- 独立评议，App Mode2：Framer框定约束后，Matcher和Hedger在隔离上下文中并行提出候选。Host登记后，两角色分别验证自身候选，可按需调用金融计算工具；首次研究不能读取另一角色的候选证据。独立研究完成后共享证据，Moderator汇总结论，并按档位对具体问题要求定向复核。快速档也保留1次必要复核，优先复用已有结果；剩余复核次数由Host明确交给Moderator，达到上限仍有核心缺口时保留未完成状态。不能把首次研究的计算阶段描述为全部并行执行；任一必要角色执行失败均不得宣称流程完成。
 - 约束排序，App Mode3：`Specifier→Generator→Evaluator→确定性Ranker→Reviewer`。Evaluator自主读取候选已有证据，仅对缺失指标调用受控计算。Ranker先按硬约束过滤，再按用户指定顺序排序；Reviewer审核结果，不自行改分。证据或数量不足时按档位补充验证或候选，保留已验证结果并说明不足，不将失败模块的残留数值用于排序。
 
 App从设置中心读取预设和研究深度，默认产品交易循环及标准研究，并要求真实多Agent；对话中的Mode字样不临时改写设置。Skill默认兼容顺序研判，只有用户明确指定其他预设时才切换。

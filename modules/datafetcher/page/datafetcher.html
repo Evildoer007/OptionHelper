@@ -64,15 +64,20 @@
             </details>
           </section>
           <section class="inspector-group data-connection">
-            <h3>数据来源</h3>
-            <section class="data-source-status" id="ifind-status-card"><strong id="data-source-note">数据服务</strong><span id="secret-status" role="status">正在检查</span></section>
-          </section>
-          <section class="inspector-group data-retention">
-            <h3 id="data-retention-label">数据保留</h3>
-            <div class="data-retention-options" role="radiogroup" aria-labelledby="data-retention-label">
-              <label><input type="radio" name="data-retention" value="volatile" checked><span>仅本次使用</span></label>
-              <label><input id="save-downloaded-data" type="radio" name="data-retention" value="library"><span>保存到本地</span></label>
-            </div>
+            <label class="data-setting-row" for="data-source">
+              <span>数据来源</span>
+              <select id="data-source" aria-label="数据来源">
+                <option value="ifind_http">iFinD</option>
+                <option value="tinyshare">Tinyshare</option>
+              </select>
+            </label>
+            <label class="data-setting-row" for="data-retention">
+              <span>数据保留</span>
+              <select id="data-retention" aria-label="数据保留">
+                <option value="volatile" selected>仅本次使用</option>
+                <option value="library">保存到本地</option>
+              </select>
+            </label>
           </section>
         </form>
       </aside>

@@ -158,7 +158,7 @@ class ResultStoreObservationBuilder:
         recommendation = value.get("recommendation_set")
         if not isinstance(recommendation, Mapping) or recommendation.get("task_id") != task_id:
             return {}
-        facts, terms, seen = [], [], set()
+        facts, terms, contexts, seen = [], [], {}, set()
         for candidate in recommendation.get("candidates", ()):
             if not isinstance(candidate, Mapping):
                 continue
@@ -195,13 +195,17 @@ class ResultStoreObservationBuilder:
                         "candidate_id": source_candidate_id, "product_id": candidate.get("product_id"), "rule_revision": candidate.get("rule_revision")})
                 except (AuthorizationError, ValidationError, KeyError, OSError, TypeError, ValueError):
                     continue
+                binding = {"candidate_id": candidate["candidate_id"], "product_id": candidate["product_id"],
+                           "run_id": reference["run_id"], "module": module}
+                if isinstance(summary.get("calculation_context"), Mapping):
+                    contexts[candidate["candidate_id"]] = {**binding, **summary["calculation_context"]}
                 for collection, target in (("facts", facts), ("contract_term_facts", terms)):
                     for fact in summary.get(collection, ()):
                         key = (collection, fact.get("fact_ref"))
                         if key not in seen:
                             seen.add(key)
-                            target.append(fact)
-        return {"facts": facts, "contract_term_facts": terms}
+                            target.append({**fact, **binding})
+        return {"facts": facts, "contract_term_facts": terms, "calculation_contexts": list(contexts.values())}
 
     def facts_for(
         self, identity: SessionIdentity, task_id: str, _tool: str, value: Mapping[str, Any],

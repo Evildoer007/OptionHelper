@@ -3,12 +3,13 @@
   const state = { catalog: null, source: null, selected: new Set(), comparisonItems: new Map(), runRefs: {}, quoteItems: [], ready: false, loadingSources: false, quoteMode: false, previewReportRunId: null, pendingReport: null, sourceRequestRevision: 0, interactionRevision: 0, activeReportRequestId: null };
   let bootPromise = null;
   let initialized = false;
-  const reportEditor = window.OptionHelperReportEditor?.createReportEditor({
+  const reportEditor = new URLSearchParams(location.search).get('host') === 'optdesk'
+    ? window.OptionHelperReportEditor?.createReportEditor({
     root: document,
     fetchImpl: (...args) => fetch(...args),
     notifySaved: data => notifyReportSaved(data),
     echarts: window.echarts,
-  });
+  }) : null;
   const esc = value => String(value ?? '').replace(/[&<>'"]/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[char]));
   const selectedValue = name => name === 'format' ? 'html' : $('reportTemplate').value.replace(/^multi/, '');
   const selectedDelivery = () => $('reportTemplate').value.startsWith('multi') ? 'comparison' : 'single';
@@ -80,6 +81,30 @@
     const reportRunId = data?.report_run_ref?.report_run_id || data?.report_run_id || fallbackReportRunId;
     state.previewReportRunId = typeof reportRunId === 'string' && reportRunId ? reportRunId : null;
     $('editReportButton').hidden = !state.previewReportRunId || !reportEditor;
+  }
+  async function showGeneratedReport(data, fallbackReportRunId) {
+    setPreviewEditorSource(data, fallbackReportRunId);
+    if (reportEditor) {
+      notice('草稿已生成');
+      await reportEditor.open(state.previewReportRunId);
+      return;
+    }
+    if (!data.preview_url || !data.download_url) throw new Error('报告缺少预览或下载地址。');
+    $('previewPanel').hidden = false;
+    $('previewTitle').textContent = data.output?.deliveries?.[0]?.display_name || '已生成报告';
+    $('reportPreview').src = data.preview_url;
+    $('downloadLink').href = data.download_url;
+    $('downloadLink').download = data.output?.report || '';
+    $('childReports').replaceChildren();
+    for (const child of data.output?.children || []) {
+      const link = document.createElement('a');
+      link.className = 'button button-quiet';
+      link.textContent = child.display_name || '候选报告';
+      link.href = child.download_url;
+      link.download = child.report || '';
+      $('childReports').append(link);
+    }
+    notice(data.status === 'partial' ? '报告已生成，部分分析尚未完成。' : '报告已生成');
   }
   function restoreSelectionFocus(target) {
     if (!target) return;
@@ -431,7 +456,7 @@
       const interactionRevision = state.interactionRevision;
       state.activeReportRequestId = attempt.requestId;
       $('generateButton').disabled = true; notice('正在按已选合同快照整理参考报价。');
-      try { const response = await fetch('/api/run', {method:'POST',headers:{'Content-Type':'application/json','X-OptionHelper-Request-Id':attempt.requestId},body:JSON.stringify({selection})}); const data = await readDeliveryResponse(response, '报价表生成失败'); if (!isCurrentReportAttempt(attempt,interactionRevision)) return; settleAttempt(attempt); setPreviewEditorSource(data, selection.report_run_id); notice('草稿已生成'); await reportEditor?.open(state.previewReportRunId); } catch (error) { if (isCurrentReportAttempt(attempt,interactionRevision)) { notice(error.message || '报价表生成失败。', 'error'); if (error.operationFinished) settleAttempt(attempt); } } finally { if (state.activeReportRequestId === attempt.requestId) state.activeReportRequestId = null; updateControls(); }
+      try { const response = await fetch('/api/run', {method:'POST',headers:{'Content-Type':'application/json','X-OptionHelper-Request-Id':attempt.requestId},body:JSON.stringify({selection})}); const data = await readDeliveryResponse(response, '报价表生成失败'); if (!isCurrentReportAttempt(attempt,interactionRevision)) return; settleAttempt(attempt); await showGeneratedReport(data, selection.report_run_id); } catch (error) { if (isCurrentReportAttempt(attempt,interactionRevision)) { notice(error.message || '报价表生成失败。', 'error'); if (error.operationFinished) settleAttempt(attempt); } } finally { if (state.activeReportRequestId === attempt.requestId) state.activeReportRequestId = null; updateControls(); }
       return;
     }
     const moduleRunRefs = {};
@@ -471,7 +496,7 @@
     const interactionRevision = state.interactionRevision;
     state.activeReportRequestId = attempt.requestId;
     $('generateButton').disabled = true; notice('正在整理分析结果并生成报告。');
-    try { const response = await fetch('/api/run', {method:'POST',headers:{'Content-Type':'application/json','X-OptionHelper-Request-Id':attempt.requestId},body:JSON.stringify({selection})}); const data = await readDeliveryResponse(response, '报告生成失败'); if (!isCurrentReportAttempt(attempt,interactionRevision)) return; settleAttempt(attempt); setPreviewEditorSource(data, selection.report_run_id); notice('草稿已生成'); await reportEditor?.open(state.previewReportRunId); } catch (error) { if (isCurrentReportAttempt(attempt,interactionRevision)) { notice(error.message || '报告生成失败。', 'error'); if (error.operationFinished) settleAttempt(attempt); } } finally { if (state.activeReportRequestId === attempt.requestId) state.activeReportRequestId = null; updateControls(); }
+    try { const response = await fetch('/api/run', {method:'POST',headers:{'Content-Type':'application/json','X-OptionHelper-Request-Id':attempt.requestId},body:JSON.stringify({selection})}); const data = await readDeliveryResponse(response, '报告生成失败'); if (!isCurrentReportAttempt(attempt,interactionRevision)) return; settleAttempt(attempt); await showGeneratedReport(data, selection.report_run_id); } catch (error) { if (isCurrentReportAttempt(attempt,interactionRevision)) { notice(error.message || '报告生成失败。', 'error'); if (error.operationFinished) settleAttempt(attempt); } } finally { if (state.activeReportRequestId === attempt.requestId) state.activeReportRequestId = null; updateControls(); }
   }
   function boot() {
     if (initialized) return Promise.resolve();
@@ -506,8 +531,10 @@
   $('taskFilter').addEventListener('change', () => { markReportInputChanged(); loadSources().catch(error => notice(error.message, 'error')); });
   $('sourceSelect').addEventListener('change', () => { markReportInputChanged(); state.selected.clear(); state.runRefs = {}; renderCandidates(); });
   $('generateButton').addEventListener('click', generate);
+  $('importHtmlButton').hidden = !reportEditor;
   $('importHtmlButton').addEventListener('click', () => $('importHtmlFile').click());
   $('importHtmlFile').addEventListener('change', async event => {
+    if (!reportEditor) return;
     const file = event.target.files?.[0];
     const taskId = new URLSearchParams(location.search).get('task_id') || $('taskFilter').value.trim() || state.source?.task_id;
     if (!file || !taskId) { notice('请先选择当前任务。', 'error'); return; }

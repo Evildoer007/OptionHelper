@@ -112,17 +112,17 @@ def _mathematical_minus(value: str) -> str:
     return value.replace("-", "−", 1) if value.startswith("-") else value
 
 
-def _number_text(value: int | float | str) -> str:
+def _number_text(value: int | float | str, digits: int = 2) -> str:
     """Use one public number notation in every reader-facing surface."""
 
     numeric = float(value)
     if numeric == 0:
         return "0"
-    if round(numeric, 2) == 0:
+    if round(numeric, digits) == 0 or abs(numeric) >= 1_000_000_000_000:
         mantissa, exponent = f"{numeric:.2e}".split("e")
         rendered_mantissa = _mathematical_minus(mantissa.rstrip("0").rstrip("."))
         return f"{rendered_mantissa}×10{str(int(exponent)).translate(_SUPERSCRIPT_DIGITS)}"
-    rendered = f"{numeric:,.2f}".rstrip("0").rstrip(".")
+    rendered = f"{numeric:,.{digits}f}".rstrip("0").rstrip(".")
     return "0" if rendered in {"-0", "-0.0"} else _mathematical_minus(rendered)
 
 
@@ -144,7 +144,7 @@ def text(value: Any) -> str:
     return str(value)
 
 
-def display_text(value: Any, value_format: Any = "number") -> str:
+def display_text(value: Any, value_format: Any = "number", *, digits: int = 2) -> str:
     """Format public numeric facts while preserving identifiers and formulas.
 
     Values arrive as frozen facts.  The formatter only affects reader-facing
@@ -170,7 +170,27 @@ def display_text(value: Any, value_format: Any = "number") -> str:
         suffix = "%"
     else:
         suffix = ""
-    return _number_text(numeric) + suffix
+    return _number_text(numeric, digits) + suffix
+
+
+
+def chart_axis_precision(values: Sequence[Any], value_format: Any = "number") -> int:
+    """Keep adjacent ticks distinguishable without printing raw float tails."""
+    numbers = sorted({float(value) for value in values if isinstance(value, (int, float))
+                      and not isinstance(value, bool) and math.isfinite(value)})
+    if len(numbers) < 2:
+        return 2
+    step = min(right - left for left, right in zip(numbers, numbers[1:]))
+    if str(value_format or "").lower() == "percent":
+        step *= 100
+    return min(6, max(2, math.ceil(-math.log10(step))))
+
+
+def chart_category(value: Any, axis_name: Any, *, digits: int = 2) -> str:
+    """Numeric coordinates are rounded; dates and instrument IDs stay literal."""
+    if re.search(r"年|日期|时间|代码|标识", str(axis_name or "")):
+        return str(value if value is not None else "")
+    return display_text(value, digits=digits)
 
 
 def display_basis(row: Mapping[str, Any]) -> str:
@@ -698,60 +718,6 @@ def faceted_table(rows: list[Any], columns: list[tuple[str, str]], caption: str,
     return "".join(rendered)
 
 
-def chart_data_table(spec: dict[str, Any], x_values: list[Any], series: list[dict[str, Any]]) -> str:
-    """Provide the complete visible data table for every chart.
-
-    Reports are a4 documents.  The tabular equivalent is therefore
-    rendered in full below its chart rather than hidden behind an expander.
-    """
-
-    if text(spec.get("type")).lower() in {"heatmap", "surface"}:
-        y_values = as_list(spec.get("y"))
-        cells = {
-            (int(item[0]), int(item[1])): item[2]
-            for item in as_list(spec.get("data"))
-            if isinstance(item, list) and len(item) == 3
-        }
-        title = text(spec.get("title") or "图表")
-        axis_label = f"{text(spec.get('y_axis_name') or '纵轴')}/{text(spec.get('x_axis_name') or '横轴')}"
-        panel_size = 5
-        panels: list[str] = []
-        for offset in range(0, len(x_values), panel_size):
-            indexes = list(range(offset, min(offset + panel_size, len(x_values))))
-            columns = [
-                ("axis", axis_label),
-                *[(f"x_{index}", _axis_text(x_values[index], spec.get("x_axis_name"))) for index in indexes],
-            ]
-            table_rows = [
-                {
-                    "axis": _axis_text(y_value, spec.get("y_axis_name")),
-                    **{
-                        f"x_{x_index}": display_text(cells.get((x_index, y_index)), spec.get("value_format"))
-                        for x_index in indexes
-                    },
-                }
-                for y_index, y_value in enumerate(y_values)
-            ]
-            suffix = "" if len(x_values) <= panel_size else f"（第{offset // panel_size + 1}组）"
-            panels.append(simple_table(table_rows, columns, f"{title}数据{suffix}", "chart-data-table"))
-        return f'<div class="chart-data" data-table-facets="{len(panels)}">' + "".join(panels) + "</div>"
-    title = text(spec.get("title") or "图表")
-    panel_size = 5
-    panels = []
-    for offset in range(0, len(series), panel_size):
-        chunk = series[offset:offset + panel_size]
-        columns = [("axis", text(spec.get("x_axis_name") or "横轴"))]
-        columns.extend((f"series_{index}", text(item.get("name"))) for index, item in enumerate(chunk))
-        table_rows = []
-        for index, x_value in enumerate(x_values):
-            row = {"axis": _axis_text(x_value, spec.get("x_axis_name"))}
-            row.update({f"series_{series_index}": display_text(item["data"][index], spec.get("value_format")) for series_index, item in enumerate(chunk)})
-            table_rows.append(row)
-        suffix = "" if len(series) <= panel_size else f"（第{offset // panel_size + 1}组）"
-        panels.append(simple_table(table_rows, columns, f"{title}数据{suffix}", "chart-data-table"))
-    return f'<div class="chart-data" data-table-facets="{len(panels)}">' + "".join(panels) + "</div>"
-
-
 def add_charts(charts: list[dict[str, Any]], section: str, specs: list[Any]) -> str:
     figures = []
     for position, raw_spec in enumerate(specs, start=1):
@@ -1236,7 +1202,7 @@ def render_pricing(data: dict[str, Any], charts: list[dict[str, Any]]) -> str:
         if valuation_date:
             ledger.append(f'<div><dt>估值日</dt><dd>{esc(valuation_date)}</dd></div>')
         blocks.append('<dl class="identity-ledger">' + "".join(ledger) + "</dl>")
-    blocks.append(metric_strip(as_list(module.get("metrics")), show_basis=False))
+    blocks.append(metric_strip(as_list(module.get("metrics")), show_basis=True))
     pricing_parameters = as_list(as_dict(data.get("parameters")).get("pricing_input"))
     if pricing_parameters:
         pricing_parameter_table = parameter_table(pricing_parameters, "估值参数")
@@ -1246,8 +1212,8 @@ def render_pricing(data: dict[str, Any], charts: list[dict[str, Any]]) -> str:
     greek_rows = canonical_greeks(as_list(module.get("greeks")))
     blocks.append(
         simple_table(
-            greek_rows,
-            [("label", "Greek"), ("value", "数值")],
+            [{**row, "basis": display_basis(row)} for row in greek_rows],
+            [("label", "Greek"), ("value", "数值"), ("basis", "口径")],
             "Greeks",
             "result-table result-table--greeks",
         )
@@ -1282,11 +1248,22 @@ def render_backtest(data: dict[str, Any], charts: list[dict[str, Any]]) -> str:
     if window or entry_rule:
         ledger = []
         if window:
-            ledger.append(f'<div><dt>样本区间</dt><dd>{esc(window)}</dd></div>')
+            ledger.append(f'<div><dt>入场区间</dt><dd>{esc(window)}</dd></div>')
+        if text(module.get("settlement_window")):
+            ledger.append(f'<div><dt>到期结算区间</dt><dd>{esc(module["settlement_window"])}</dd></div>')
+        if module.get("complete_tenor") is True:
+            ledger.append('<div><dt>样本期限</dt><dd>仅保留完整期限合同</dd></div>')
         if entry_rule:
             ledger.append(f'<div><dt>入场规则</dt><dd>{esc(entry_rule)}</dd></div>')
         blocks.append('<dl class="identity-ledger">' + "".join(ledger) + "</dl>")
-    blocks.append(metric_strip(backtest_primary_rows(module), show_basis=False))
+    primary_rows = backtest_primary_rows(module)
+    blocks.append(metric_strip(primary_rows, show_basis=True))
+    remaining_metrics = [as_dict(row) for row in as_list(module.get("metrics"))
+                         if as_dict(row) not in primary_rows]
+    if remaining_metrics:
+        blocks.append(simple_table(remaining_metrics,
+                                   [("label", "指标"), ("value", "统计值")],
+                                   "回测统计", "result-table result-table--backtest"))
     backtest_parameters = as_list(as_dict(data.get("parameters")).get("backtest_input"))
     if backtest_parameters:
         backtest_parameter_table = parameter_table(backtest_parameters, "回测参数")
@@ -1320,9 +1297,9 @@ def render_backtest(data: dict[str, Any], charts: list[dict[str, Any]]) -> str:
     tables = []
     for raw_table in as_list(module.get("detail_tables")):
         table = as_dict(raw_table)
-        if table.get("title") == "公共回测统计":
-            continue
         rows = as_list(table.get("rows"))
+        if table.get("title") == "公共回测统计":
+            rows = [row for row in rows if row not in visible_metrics]
         if table.get("title") == "产品专属统计":
             rows = public_specialized_rows(rows)
             table = {**table, "title": "结构统计"}
@@ -1398,7 +1375,7 @@ def render_conclusion(data: dict[str, Any]) -> str:
         blocks.append(f"<h3>{'推荐理由' if recommended else '研究范围'}</h3>{reasons}")
     valuation = [*as_list(module.get("valuation_summary")), *as_list(module.get("greeks_summary"))]
     if valuation:
-        blocks.append("<h3>估值摘要</h3>" + metric_strip(valuation, show_basis=False))
+        blocks.append("<h3>估值摘要</h3>" + metric_strip(valuation, show_basis=True))
     backtest = as_list(module.get("backtest_summary"))
     if backtest:
         preferred = ("有效收益样本数", "历史正收益样本占比", "平均合同结算收益率", "最低合同结算收益率")
@@ -1536,12 +1513,21 @@ def render_html(
                 for chart in as_list(as_dict(facts.get(module)).get("charts")):
                     if isinstance(chart, dict):
                         chart["id"] = f"product-{index}-{chart.get('id', 'chart')}"
-            bodies = [("合同条款", render_parameters(facts, section_title="合同条款"))]
+            bodies = [("研究说明", render_recommendation(facts, section_title="研究说明")),
+                      ("合同条款", render_parameters(facts, section_title="合同条款"))]
             for module, label, renderer in (("payoff", "收益结构", lambda: render_payoff(facts, input_dir)),
                                              ("pricing", "估值定价", lambda: render_pricing(facts, charts)),
                                              ("backtest", "历史回测", lambda: render_backtest(facts, charts))):
-                if text(as_dict(facts.get(module)).get("status")).lower() in {"ready", "partial", "failed"}:
+                module_facts = as_dict(facts.get(module))
+                module_status = text(module_facts.get("status")).lower()
+                if module_status in {"ready", "partial", "failed"} or (
+                    module_status in {"not_run", "pending", "unsupported"} and text(module_facts.get("note"))
+                ):
                     bodies.append((label, renderer()))
+            for supplement in as_list(candidate.get("displayed_supplements")):
+                section = as_dict(supplement)
+                bodies.append((text(section.get("title")),
+                               render_presentation_content(as_list(section.get("content")))))
             body = "".join(f"<section><h3>{esc(label)}</h3>{value}</section>" for label, value in bodies if value)
             if not body:
                 continue
@@ -1564,7 +1550,7 @@ def render_html(
         + "</nav></aside>"
     )
     chart_json = json.dumps(charts, ensure_ascii=False).replace("</", "<\\/")
-    report_identity = [("报告日期", meta.get("as_of_date"))]
+    report_identity = [("数据基准日", meta.get("as_of_date"))]
     identity = "".join(
         f'<div><dt>{esc(label)}</dt><dd>{esc_rendered(value)}</dd></div>'
         for label, value in report_identity
@@ -1634,7 +1620,9 @@ function renderChart(spec) {
     });
   };
   if (spec.type === 'surface') {
-    chart.setOption(window.OptionHelperSurface.option(spec, value => publicNumber(value, spec.value_format, 4), chartTheme.axis.label));
+    chart.setOption(window.OptionHelperSurface.option(spec,
+      value => publicNumber(value, spec.value_format, 4), chartTheme,
+      (value, name, values) => publicCategory(value, name, axisPrecision(values, 'number'))));
   } else if (isHeatmap) {
     const values = spec.data.map(item => Number(item[2])).filter(Number.isFinite);
     const escapeLabel = value => String(value).replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));

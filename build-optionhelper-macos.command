@@ -66,7 +66,7 @@ if [[ -z "${OPTIONHELPER_PYTHON:-}" ]]; then
     print -u2 "  [${#selected_candidates}] 环境名称=$environment_name；Python版本=$python_version；解释器绝对路径=$candidate"
   done
   if (( ${#selected_candidates} == 0 )); then
-    print -u2 "未找到可选择的Python解释器。请安装Python3.11或更高版本后重试。"
+    print -u2 "未找到可选择的Python解释器，请按README配置构建环境后重试。"
     exit 1
   fi
 

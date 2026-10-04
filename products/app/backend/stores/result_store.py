@@ -11,7 +11,7 @@ import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Mapping, Sequence
 from uuid import uuid4
 
 _CORE_SRC = Path(__file__).resolve().parents[4] / "core" / "src"
@@ -20,7 +20,7 @@ if str(_CORE_SRC) not in sys.path:
 
 from runtime.adapters.local_store import LocalResultStore, StoreError
 from runtime.contracts.contract_api import (
-    ContractResolutionError, ResolvedContract, bind_term_symbols, evaluate_formula, load_registry,
+    ContractResolutionError, ResolvedContract, bind_term_symbols, contract_loss_bound, evaluate_formula, load_registry,
 )
 from runtime.protocol.models import ModuleRunRef
 from runtime.research_policy import current_research_execution
@@ -200,7 +200,7 @@ class ResultStore:
         """Make one verified staged run visible after its contract CAS succeeds."""
 
         payload = _module_run_ref_dict(reference) if isinstance(reference, ModuleRunRef) else dict(reference)
-        ref = self._owned_module_run_ref(identity, payload, self._state.read("results"))
+        ref = self._owned_module_run_ref(identity, payload, self._point_module_records(payload))
         try:
             self._core.verify_module_run(ref, tenant_id=identity.tenant_id)
         except (StoreError, FileNotFoundError, PermissionError) as error:
@@ -241,7 +241,7 @@ class ResultStore:
     def verify_owned_module_run(self, identity: SessionIdentity, reference: dict[str, str]) -> None:
         """Re-authorize and verify one immutable Core run without exposing its path."""
 
-        ref = self._owned_module_run_ref(identity, reference, self._state.read("results"))
+        ref = self._owned_module_run_ref(identity, reference, self._point_module_records(reference))
         try:
             self._core.verify_module_run(ref, tenant_id=identity.tenant_id)
         except (StoreError, FileNotFoundError, PermissionError) as error:
@@ -275,6 +275,12 @@ class ResultStore:
             except (StoreError, FileNotFoundError, PermissionError) as error:
                 raise ValidationError(f"Core ModuleRun不可用：{error}") from error
 
+    def _point_module_records(self, reference: Mapping[str, Any]) -> dict[str, Any]:
+        """Keep the existing ownership/hash guards around one index record."""
+        key = _module_run_key(reference.get("module"), reference.get("run_id"))
+        record = self._state.read_record("results", key)
+        return {key: record} if record is not None else {}
+
     def _owned_module_run_ref(
         self,
         identity: SessionIdentity,
@@ -289,7 +295,7 @@ class ResultStore:
         )
 
     def read_owned_module_run_file(self, identity: SessionIdentity, reference: dict[str, str], name: str) -> bytes:
-        ref = self._owned_module_run_ref(identity, reference, self._state.read("results"))
+        ref = self._owned_module_run_ref(identity, reference, self._point_module_records(reference))
         try:
             return self._core.read_module_run_file(ref, name, tenant_id=identity.tenant_id)
         except (StoreError, FileNotFoundError, PermissionError) as error:
@@ -298,7 +304,7 @@ class ResultStore:
     def read_payoff_image(self, identity: SessionIdentity, task_id: str, run_id: str) -> bytes:
         """Read only the published task-owned Payoffer SVG, verified by Core."""
         self._require_task_owner(identity, task_id)
-        record = _stored_module_run(self._state.read("results"), "payoffer", run_id)
+        record = self._state.read_record("results", _module_run_key("payoffer", run_id))
         if not isinstance(record, dict) or record.get("task_id") != task_id:
             raise KeyError(run_id)
         if record.get("anchor_state") != "anchored" or record.get("status") != "succeeded":
@@ -309,14 +315,14 @@ class ResultStore:
         return self.read_owned_module_run_file(identity, reference, "artifacts/payoff.svg")
 
     def read_owned_module_run_bundle(self, identity: SessionIdentity, reference: dict[str, str]) -> dict[str, bytes]:
-        ref = self._owned_module_run_ref(identity, reference, self._state.read("results"))
+        ref = self._owned_module_run_ref(identity, reference, self._point_module_records(reference))
         try:
             return self._core.read_module_run_bundle(ref, tenant_id=identity.tenant_id)
         except (StoreError, FileNotFoundError, PermissionError) as error:
             raise ValidationError(f"Core ModuleRun不可读取：{error}") from error
 
     def resolve_module_run(self, identity: SessionIdentity, reference: dict[str, str]) -> dict[str, Any]:
-        record = self._resolve_module_run(identity, reference, self._state.read("results"))
+        record = self._resolve_module_run(identity, reference, self._point_module_records(reference))
         try:
             semantic_name = "result.json" if record.get("status") in {"succeeded", "partial"} else "error.json"
             semantic_value = json.loads(self.read_owned_module_run_file(identity, reference, semantic_name))
@@ -355,6 +361,9 @@ class ResultStore:
         reference: dict[str, str],
         *,
         expected_binding: Mapping[str, Any] | None = None,
+        expected_contract_terms: Mapping[str, Any] | None = None,
+        expected_underlyings: Sequence[str] | None = None,
+        research_context: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Project selected numerical facts from one still-verifiable ModuleRun.
 
@@ -408,13 +417,34 @@ class ResultStore:
             contract = ResolvedContract.from_controlled_snapshot(snapshot)
         except (UnicodeDecodeError, ValueError, TypeError) as error:
             raise ValidationError("ModuleRun缺少可验证合同条款快照") from error
+        # Candidate identifiers remain stable when its terms change. Verify the
+        # frozen contract itself before projecting facts into the current round.
+        frozen_contract = contract.to_dict()
+        if expected_contract_terms is not None:
+            if not isinstance(expected_contract_terms, Mapping) or not expected_contract_terms:
+                raise ValidationError("ModuleRun预期合同条款无效")
+            if frozen_contract["terms"] != dict(expected_contract_terms):
+                raise ValidationError("ModuleRun合同条款与当前候选不一致，请重新计算")
+        if expected_underlyings is not None:
+            if (
+                isinstance(expected_underlyings, (str, bytes))
+                or not isinstance(expected_underlyings, Sequence)
+                or not expected_underlyings
+                or any(not isinstance(item, str) or not item.strip() for item in expected_underlyings)
+            ):
+                raise ValidationError("ModuleRun预期标的无效")
+            if frozen_contract["identity"]["underlyings"] != list(expected_underlyings):
+                raise ValidationError("ModuleRun标的与当前候选不一致，请重新计算")
+        from runtime.contracts.research_facts import contract_research_facts
         return {
+            "research_facts": contract_research_facts(contract, research_context),
             "run_ref": run_ref,
             "facts": facts,
             **({"calculation_context": _pricing_calculation_context(result)} if record["module"] == "pricer" else {}),
             **({"payoff_summary": _verified_payoff_summary(result, run_ref["result_file_hash"])}
                if record["module"] == "payoffer" else {}),
-            "contract_term_facts": _contract_premium_facts(contract, reference["expected_artifact_manifest_hash"]),
+            "contract_term_facts": _contract_premium_facts(contract, reference["expected_artifact_manifest_hash"])
+                + _contract_risk_facts(contract, reference["expected_artifact_manifest_hash"]),
         }
 
     def list_report_sources(self, *, tenant_id: str, task_id: str | None = None, query: str | None = None, source_id: str | None = None) -> dict[str, Any]:
@@ -501,7 +531,8 @@ class ResultStore:
             # Keep every verified run option on the same candidate; the
             # selected ModuleRunRef remains the authoritative snapshot and
             # Reporter checks compatibility before it renders a delivery.
-            row = source["candidates"].setdefault(candidate["candidate_id"], candidate)
+            candidate_key = (candidate["candidate_id"], candidate["product_id"], candidate["rule_revision"])
+            row = source["candidates"].setdefault(candidate_key, candidate)
             display_module = _report_module(str(record["module"]))
             reference = {
                 "module": record["module"], "tenant_id": record["tenant_id"], "task_id": record["task_id"], "run_id": record["run_id"],
@@ -521,6 +552,15 @@ class ResultStore:
             candidates = []
             for candidate in grouped_source["candidates"].values():
                 normalized = dict(candidate)
+                if sum(row["candidate_id"] == candidate["candidate_id"]
+                       for row in grouped_source["candidates"].values()) > 1:
+                    # Old recommendations reused ids between product families.
+                    # Keep those immutable runs accessible as distinct variants.
+                    normalized["source_candidate_id"] = candidate["candidate_id"]
+                    identity_suffix = hashlib.sha256(
+                        f"{candidate['product_id']}:{candidate['rule_revision']}".encode()
+                    ).hexdigest()[:12]
+                    normalized["candidate_id"] = f"{candidate['candidate_id']}-product-{identity_suffix}"
                 options_by_module = normalized.get("module_run_options", {})
                 if not isinstance(options_by_module, dict):
                     options_by_module = {}
@@ -778,16 +818,35 @@ class ResultStore:
     def get_report_document(self, identity: SessionIdentity, report_run_id: str) -> dict[str, Any] | None:
         """The original delivery authorizes its independently editable working document."""
         self._owned_report_record(identity, report_run_id)
-        return self._state.read("report_documents").get(report_run_id)
+        return self._state.read_record("report_documents", report_run_id)
 
     def save_report_document(self, identity: SessionIdentity, report_run_id: str,
-                             document: dict[str, Any], artifacts: list[dict[str, Any]]) -> dict[str, Any]:
+                             document: dict[str, Any], artifacts: list[dict[str, Any]], *,
+                             edit_request_id: str | None = None,
+                             edit_request_hash: str | None = None) -> dict[str, Any]:
         source = self._owned_report_record(identity, report_run_id)
         encoded = [{"name": _report_artifact_name(item["name"]), "content_type": item["content_type"],
                     "content": base64.b64encode(item["content"]).decode("ascii")} for item in artifacts]
         saved = {}
         def update(records):
             previous = records.get(report_run_id, {})
+            requests = dict(previous.get("edit_requests", {}))
+            document_hash = _sha256(document)
+            if edit_request_id is not None:
+                if not isinstance(edit_request_id, str) or not re.fullmatch(r"[0-9a-f]{32}", edit_request_id):
+                    raise ValidationError("edit_request_id无效")
+                if not isinstance(edit_request_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", edit_request_hash):
+                    raise ValidationError("编辑请求缺少内容摘要")
+                replay = requests.get(edit_request_id)
+                if replay is not None:
+                    if replay["request_hash"] != edit_request_hash:
+                        raise ValidationError("保存请求编号已用于不同内容，请重新保存")
+                    current_hash = _sha256({key: previous.get(key) for key in ("title", "html", "chart_specs")})
+                    if replay["document_hash"] != current_hash:
+                        raise ValidationError("报告已有更新内容，旧保存请求不能覆盖，请刷新报告")
+                    saved.update(previous)
+                    return
+                requests[edit_request_id] = {"request_hash": edit_request_hash, "document_hash": document_hash}
             unchanged = all(previous.get(key) == document.get(key) for key in ("title", "html", "chart_specs"))
             # A changed draft invalidates older exports. Same-content exports share one document.
             merged = {item["name"]: item for item in previous.get("artifacts", [])} if unchanged else {}
@@ -795,6 +854,8 @@ class ResultStore:
             saved.update(document, task_id=source["task_id"], tenant_id=identity.tenant_id,
                          created_by=identity.principal_id, artifacts=list(merged.values()),
                          updated_at=datetime.now(timezone.utc).isoformat())
+            if requests:
+                saved["edit_requests"] = requests
             records[report_run_id] = saved
         self._state.update("report_documents", update)
         return saved
@@ -832,7 +893,7 @@ class ResultStore:
     def _owned_report_record(self, identity: SessionIdentity, report_run_id: str) -> dict[str, Any]:
         if not isinstance(report_run_id, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", report_run_id):
             raise ValidationError("report_run_id is invalid")
-        record = self._state.read("reports").get(report_run_id)
+        record = self._state.read_record("reports", report_run_id)
         if not isinstance(record, dict):
             raise KeyError(report_run_id)
         self._authorize_report(identity, record)
@@ -864,7 +925,7 @@ class ResultStore:
         records: Mapping[str, Any] | None = None,
     ) -> bool:
         record = _stored_module_run(
-            records if records is not None else self._state.read("results"),
+            records if records is not None else self._point_module_records(reference),
             reference.get("module"), reference.get("run_id"),
         )
         return (
@@ -1226,7 +1287,14 @@ def _contract_premium_facts(contract: ResolvedContract, artifact_manifest_hash: 
     if not coefficients or not all(math.isclose(value, coefficients[0], rel_tol=1e-12, abs_tol=1e-12) for value in coefficients):
         return []
     value = raw / 100.0 if unit == "premium_percent_s0_100" else raw
+    cost = -coefficients[0] * raw / 100.0
     return [{
+        "fact_ref": _fact_ref(artifact_manifest_hash, "resolved_contract.initial_premium_cost", cost),
+        "metric": "initial_premium_cost", "label": "合同期初权利金支出率", "value": cost,
+        "unit": "percent", "value_encoding": "decimal_ratio", "source": "contract_terms",
+        "evidence": {"basis": "uniform_initial_cashflow", "cashflow_coefficient": coefficients[0],
+                     "raw_premium_term": raw, "cashflow_expressions": sorted(expressions)},
+    }, {
         "fact_ref": _fact_ref(artifact_manifest_hash, f"resolved_contract.terms.{key}", value),
         "metric": "premium", "label": "合同期权费率", "value": value,
         "unit": "percent", "value_encoding": "decimal_ratio", "source": "contract_terms",
@@ -1649,3 +1717,30 @@ def _verified_payoff_summary(result, result_hash):
             "result_path": ["reporter_payoff_facts"],
             "value_encoding": "percentage_points", "global_bounds_inferred": False,
             **({"facts": facts} if len(encoded) <= 16000 else {"read_required": True})}
+
+
+def _contract_risk_facts(contract: ResolvedContract, artifact_hash: str) -> list[dict[str, Any]]:
+    facts = []
+    def add(metric, label, value, evidence, unit="ratio"):
+        facts.append({"fact_ref": _fact_ref(artifact_hash, "resolved_contract."+metric, value),
+                      "metric": metric, "label": label, "value": value, "unit": unit,
+                      "value_encoding": "decimal_ratio" if unit == "ratio" else "number",
+                      "source": "contract_terms", "evidence": evidence})
+    margin = contract.terms.get("margin_call")
+    if isinstance(margin, bool):
+        add("margin_call", "存在追加保证金要求", int(margin), {"term_key": "margin_call"}, "indicator")
+    bound = contract_loss_bound(contract)
+    if bound is not None:
+        add("contract_loss_bound", "合同结算亏损上界", bound["value"], dict(bound))
+    # These registered products consist of one long vanilla leg. No inference
+    # from a non-negative payoff is sufficient to certify other structures.
+    if contract.product_id in {"1.1", "1.2"}:
+        quantity = contract.terms.get("n_C" if contract.product_id == "1.1" else "n_P")
+        if type(quantity) in (int, float) and quantity > 0:
+            add("long_only_legs", "仅含买入期权腿", 1, {"product_id": contract.product_id,
+                "rule_revision": contract.identity["rule_revision"], "quantity": quantity}, "indicator")
+    elif contract.product_id == "2.1":
+        add("long_only_legs", "仅含买入期权腿", 0,
+            {"product_id": contract.product_id, "rule_revision": contract.identity["rule_revision"],
+             "long_strike": contract.terms["K1"], "short_strike": contract.terms["K2"]}, "indicator")
+    return facts

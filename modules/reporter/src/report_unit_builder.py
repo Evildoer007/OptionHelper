@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+from runtime.contracts.research_facts import report_research_projection
+
 from copy import deepcopy
 from html import escape
 import math
@@ -190,10 +192,6 @@ def _safe_backtest_charts(backtest: Mapping[str, Any]) -> list[dict[str, Any]]:
     return verified
 
 
-def _math_text(value: Any) -> str:
-    """Preserve formula source notation for Designer's safe MathML renderer."""
-
-    return str(value or "")
 
 
 def _percent_text(value: Any) -> str:
@@ -372,12 +370,12 @@ _SPECIALIZED_PROFILE_ROOTS = {
 # Exact paths, labels and units are the public contract. Nested distributions,
 # conditional diagnostics and future fields stay in the frozen run for audit.
 _SPECIALIZED_PUBLIC_METRICS = (
-    (("terminal_performance", "average"), "平均到期表现", "percent", "百分比；标的到期表现，不是合同结算收益率"),
-    (("terminal_performance_sign", "positive_count"), "到期正表现样本数", "number", "个样本"),
-    (("terminal_performance_sign", "flat_count"), "到期持平样本数", "number", "个样本"),
-    (("terminal_performance_sign", "negative_count"), "到期负表现样本数", "number", "个样本"),
-    (("terminal_performance_sign", "positive_rate"), "到期正表现占比", "percent", "百分比；占具有到期表现记录的样本"),
-    (("terminal_performance_sign", "negative_rate"), "到期负表现占比", "percent", "百分比；占具有到期表现记录的样本"),
+    (("terminal_performance", "average"), "标的平均到期涨跌幅", "percent", "百分比；标的到期表现，不是合同结算收益率"),
+    (("terminal_performance_sign", "positive_count"), "标的到期上涨样本数", "number", "个样本"),
+    (("terminal_performance_sign", "flat_count"), "标的到期持平样本数", "number", "个样本"),
+    (("terminal_performance_sign", "negative_count"), "标的到期下跌样本数", "number", "个样本"),
+    (("terminal_performance_sign", "positive_rate"), "标的到期上涨占比", "percent", "百分比；占具有到期表现记录的样本"),
+    (("terminal_performance_sign", "negative_rate"), "标的到期下跌占比", "percent", "百分比；占具有到期表现记录的样本"),
     (("buffer_outcomes", "non_negative_terminal_rate"), "非负到期表现占比", "percent", "百分比；占具有到期表现记录的样本"),
     (("buffer_outcomes", "negative_terminal_rate"), "负到期表现占比", "percent", "百分比；占具有到期表现记录的样本"),
     (("accumulated_quantity", "Q_acc", "average"), "平均累计数量", "number", "份"),
@@ -918,7 +916,7 @@ def _payoff_content(module: Mapping[str, Any]) -> dict[str, Any]:
             payoff_text = (
                 f"收益率为{_decimal_text(minimum)}%"
                 if math.isclose(minimum, maximum, rel_tol=0.0, abs_tol=1e-12)
-                else f"收益率区间为{_decimal_text(minimum)}%至{_decimal_text(maximum)}%"
+                else f"图示范围内收益率为{_decimal_text(minimum)}%至{_decimal_text(maximum)}%，不代表合同收益上下限"
             )
             scenarios.append({
                 "title": f"{path_title}·情景{segment_index}",
@@ -949,6 +947,42 @@ def _contract_initial_premium_percent(contract: Mapping[str, Any] | None) -> str
     return ""
 
 
+def _pricing_assumptions(pricing, market):
+    """Display frozen Pricer inputs without estimating or filling defaults."""
+    assumptions = []
+    requested = _text(market.get("requested_valuation_date"))
+    effective = _text(market.get("valuation_date") or market.get("market_as_of_date"))
+    if requested and effective and requested != effective:
+        assumptions.append(f"请求估值日为{requested}；实际估值与行情基准日为{effective}，采用该日已验证数据。")
+    rate = _safe_number(market.get("risk_free_rate"))
+    if rate is not None:
+        assumptions.append(f"无风险利率为{rate:.2%}。")
+    dividends = market.get("dividend_yield")
+    if isinstance(dividends, Mapping):
+        for asset, number in dividends.items():
+            if _safe_number(number) is not None:
+                assumptions.append(f"{asset}股息率为{float(number):.2%}。")
+    vols = market.get("volatility")
+    if isinstance(vols, Mapping):
+        for asset, number in vols.items():
+            if _safe_number(number) is not None:
+                assumptions.append(f"{asset}年化波动率为{float(number):.2%}。")
+    if market.get("volatility_source") == "historical_volatility":
+        window, days = market.get("hv_window"), market.get("annualization_trading_days")
+        if type(window) is int and type(days) is int:
+            method = "对数收益率" if market.get("return_method") == "log_return" else "已确认收益率序列"
+            fields = market.get("hv_fields_by_asset", {})
+            price = "复权收盘价" if fields and all(v == "adj_close" for v in fields.values()) else "收盘价"
+            assumptions.append(f"历史波动率采用{window}个交易日的{price}{method}，按每年{days}个交易日年化。")
+    tenor = _safe_number(market.get("time_to_maturity"))
+    if tenor is not None:
+        assumptions.append(f"剩余期限为{tenor:g}年。")
+    paths = pricing.get("path_count")
+    if type(paths) is int and paths > 0:
+        assumptions.append(f"蒙特卡洛路径数为{paths}。")
+    return assumptions
+
+
 def _pricing_content(module: Mapping[str, Any], contract: Mapping[str, Any] | None = None) -> dict[str, Any]:
     status = str(module.get("status", "not_run"))
     value: dict[str, Any] = {"status": status, "note": _text(module.get("note"))}
@@ -972,14 +1006,14 @@ def _pricing_content(module: Mapping[str, Any], contract: Mapping[str, Any] | No
     ):
         raise ReporterError("估值结果不满足当前百分比正式协议")
     value["method"] = _text(pricing.get("method"))
-    market_snapshot = pricing.get("market_snapshot") if isinstance(pricing.get("market_snapshot"), Mapping) else {}
+    market_snapshot = pricing.get("market_snapshot") if isinstance(pricing.get("market_snapshot"), Mapping) else result.get("market_snapshot", {})
     value["valuation_date"] = _text(
         pricing.get("valuation_date")
         or market_snapshot.get("valuation_date")
         or market_snapshot.get("market_as_of_date")
     )
     value["metrics"] = [
-        _metric("估值PV", percent, "标准化百分比口径", value_format="percent"),
+        _metric("合同净现值", percent, "标准化百分比口径", value_format="percent"),
     ]
     if standard_error_percent is not None:
         value["metrics"].append(
@@ -987,7 +1021,19 @@ def _pricing_content(module: Mapping[str, Any], contract: Mapping[str, Any] | No
         )
     # 点数仅用于内部一致性校验；公开交付只显示标准化百分比。
     value["greeks"] = _public_greek_rows(pricing.get("greeks", {}))
-    value["assumptions"] = []
+    value["assumptions"] = _pricing_assumptions(pricing, market_snapshot)
+    lifecycle = pricing.get("cashflow_lifecycle")
+    if isinstance(lifecycle, Mapping) and lifecycle.get("valuation_relation") == "at_contract_start":
+        initial = _safe_number((lifecycle.get("initial_cashflow") or {}).get("pv_percent"))
+        remaining = _safe_number((lifecycle.get("remaining_value") or {}).get("pv_percent"))
+        total = _safe_number((lifecycle.get("current_value") or {}).get("pv_percent"))
+        if initial is None or remaining is None or total is None or abs(initial+remaining-total) > 1e-10 or abs(total-float(percent)) > 1e-10:
+            raise ReporterError("估值现金流分解与合同净现值不一致")
+        value["metrics"].extend([
+            _metric("剩余合同价值", remaining, "与净现值相同数量及参考规模", value_format="percent"),
+            _metric("期初净支出", -initial, "与剩余合同价值相同数量及参考规模", value_format="percent"),
+        ])
+        value["assumptions"].append("合同净现值等于剩余合同价值减期初净支出；两项均已按本合同数量缩放，不能将总价值与单倍期权费直接比较。")
     if _contract_product_id(contract) == "9.3":
         premium = _contract_initial_premium_percent(contract)
         observed = pricing.get("observed_contract_state") if isinstance(pricing.get("observed_contract_state"), Mapping) else {}
@@ -1547,11 +1593,14 @@ def _backtest_content(module: Mapping[str, Any], contract: Mapping[str, Any] | N
         )
     ):
         raise ReporterError("回测结果不满足当前百分比正式协议或逐笔账本校验")
-    start = _text(market.get("date_start"))
-    end = _text(market.get("date_end"))
+    sample = backtest.get("sample_definition", {})
+    window = backtest.get("effective_entry_window") or sample.get("effective_entry_window") or sample.get("entry_window", {})
+    start = _text(window.get("actual_start") or window.get("start_date") or config.get("start_date") or market.get("date_start"))
+    end = _text(window.get("actual_end") or window.get("end_date") or config.get("end_date") or market.get("date_end"))
     value["window"] = "至".join(item for item in (start, end) if item)
-    value["as_of_date"] = end
-    value["entry_rule"] = _text(config.get("entry_rule"))
+    value["as_of_date"] = _text(window.get("market_as_of_session") or market.get("market_as_of_date") or market.get("date_end"))
+
+    value["entry_rule"] = {"daily": "每个交易日入场", "monthly": "每月首个交易日入场", "explicit": "指定交易日入场"}.get(_text(config.get("entry_rule")), _text(config.get("entry_rule")))
     valid_sample_count = common["valid_return_sample_count"]
     public_keys = (
         "sample_count", "valid_return_sample_count", "positive_return_count", "zero_return_count",
@@ -1569,6 +1618,10 @@ def _backtest_content(module: Mapping[str, Any], contract: Mapping[str, Any] | N
     ]
     value["historical_loss_sample_covered"] = common["historical_loss_sample_covered"]
 
+    ledger = backtest.get("trade_ledger", [])
+    dates = [row.get("exit_date") for row in ledger if isinstance(row, Mapping) and isinstance(row.get("exit_date"), str)]
+    value["settlement_window"] = f"{min(dates)}至{max(dates)}" if dates else ""
+    value["complete_tenor"] = config.get("complete_tenor") is True
     detail_tables: list[dict[str, Any]] = []
     if value["metrics"]:
         detail_tables.append({"title": "公共回测统计", "columns": [("label", "指标"), ("value", "数值")], "rows": deepcopy(value["metrics"])})
@@ -1915,6 +1968,11 @@ def _module_summary(name: str, module: Mapping[str, Any]) -> dict[str, Any]:
 
 def _contract_report_unit(request: ReportRequest, candidate_evidence: Mapping[str, Any], recommender: Mapping[str, Any]) -> dict[str, Any]:
     candidate = deepcopy(dict(candidate_evidence["candidate"]))
+    # Model-authored financial prose is audit commentary, not report facts.
+    # All reader economics are derived upstream from the verified contract.
+    facts = candidate_evidence.get("research_facts")
+    candidate.update(report_research_projection(facts if isinstance(facts, Mapping) else {}))
+    candidate["key_terms"] = []
     modules = candidate_evidence["modules"]
     contract = deepcopy(candidate_evidence.get("contract")) if isinstance(candidate_evidence.get("contract"), Mapping) else None
     module_content = {
@@ -1967,6 +2025,7 @@ def _contract_report_unit(request: ReportRequest, candidate_evidence: Mapping[st
         "content": {
             "recommendation": candidate,
             "contract_highlights": _contract_highlights(contract),
+            "research_facts": deepcopy(facts) if isinstance(facts, Mapping) else {},
             **module_content,
             "parameters": parameter_groups,
             **({"quote_fact": deepcopy(candidate_evidence["quote_fact"])} if isinstance(candidate_evidence.get("quote_fact"), Mapping) else {}),

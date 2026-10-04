@@ -16,22 +16,26 @@ from typing import Any
 _UNDERLYING = re.compile(r"(?<![A-Za-z0-9])(?P<code>\d{6})\s*\.?\s*(?P<exchange>SH|SZ)(?![A-Za-z0-9])", re.IGNORECASE)
 _HORIZON = re.compile(r"(?<![\d.\-])(?P<number>\d+(?:\.\d+)?|[一二三四五六七八九十两]+)\s*(?P<unit>个?月|月|年|个?季度|季度|季)")
 _YEAR_AND_HALF = re.compile(r"(?P<number>\d+|[一二三四五六七八九十两]+)\s*年半")
-_LOSS = re.compile(r"(?:最大(?:可承受)?(?:亏损|损失|回撤)?|最大亏损?|亏损(?:不超过|上限为|控制在|改为)?|回撤(?:不超过|上限为|控制在|改为)?|最大(?:可承受)?(?:亏损|损失|回撤)?改为)\s*(?P<value>\d+(?:\.\d+)?)\s*[%％]")
+_LOSS = re.compile(r"(?:最大(?:可承受|可接受)?(?:亏损|损失|回撤)?|最大亏损?|亏损(?:不超过|上限为|控制在|改为)?|回撤(?:不超过|上限为|控制在|改为)?|最大(?:可承受|可接受)?(?:亏损|损失|回撤)?改为)\s*(?P<value>\d+(?:\.\d+)?)\s*[%％]")
 _PATH_NUMBER = r"(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?\s*(?:万|千|[kKwW])?"
 _PATH_COUNT = re.compile(
     r"(?:"
-    rf"(?:mc|monte\s*carlo|蒙特卡洛)(?:模拟)?(?:路径(?:数)?|样本数)?\s*(?:为|是|=|：|:)?\s*(?P<mc>{_PATH_NUMBER})(?![\d.,%％])"
+    rf"(?:mc|monte[\s_]*carlo|蒙特卡洛)(?:模拟)?(?:路径(?:数)?|样本数)?\s*(?:为|是|=|：|:)?\s*(?P<mc>{_PATH_NUMBER})(?![\d.,%％])"
     r"|"
     rf"(?P<plain>{_PATH_NUMBER})\s*(?:条|个)?(?:模拟)?路径(?:数)?"
+    r"|"
+    rf"(?:路径数|path_count)\s*(?:改为|设为|设置为|为|是|=|：|:)?\s*(?P<labelled>{_PATH_NUMBER})(?![\d.,%％])"
     r")",
     re.IGNORECASE,
 )
 _CANDIDATE_COUNT = re.compile(
     r"(?:"
-    r"(?:推荐|筛选|选出|选|列出|提供|给出|给我|返回|想要|需要|要)\s*"
+    r"(?:推荐|筛选|选出|选|列出|提供|给出|给我|返回|想要|需要|要|比较|对比)\s*(?:一下)?\s*"
     r"(?P<number>\d+|[一二三四五六七八九十两]+)\s*"
-    r"(?:个(?!月)|种|项|款|只)[^，,。；;！？!?]{0,8}?(?:候选|结构|产品|结果)"
-    r"|(?:候选|结构|产品)(?:数量|个数)\s*(?:为|是|=|：|:)?\s*"
+    r"(?:个(?!月)|种|项|款|只)"
+    r"(?!\s*(?:交易日|期权腿|腿|行权价|执行价|观察日|观察点|期限|个月|月|年|季度|周|天))"
+    r"[^，,。；;！？!?]{0,8}?(?:候选|结构|产品|结果)"
+    r"|(?:候选|结构|产品)(?:数量|个数)\s*(?:改为|改成|调整为|设为|为|是|=|：|:)?\s*"
     r"(?P<explicit>\d+|[一二三四五六七八九十两]+)"
     r"(?!(?:\d|[.%％]|\s*(?:个?月|年|季度|季|周|天)))"
     r")"
@@ -84,6 +88,22 @@ def normalize_confirmed_constraints(value: Mapping[str, Any] | None) -> dict[str
     principal = _normalize_principal(source.get("principal_fluctuation"))
     if principal is not None:
         result["principal_fluctuation"] = principal
+    for key in ("allow_margin_call", "allow_short_legs", "allow_capped_return", "use_library_defaults"):
+        if isinstance(source.get(key), bool):
+            result[key] = source[key]
+    for key in ("reference_notional", "holding_notional", "premium_budget_amount", "max_loss_amount"):
+        amount = source.get(key)
+        if type(amount) in (int, float) and Decimal(str(amount)).is_finite() and amount > 0:
+            result[key] = float(amount)
+    base_amount = result.get("reference_notional")
+    if base_amount:
+        if "max_loss_amount" in result:
+            result["max_loss"] = f"{result['max_loss_amount'] / base_amount * 100:g}%"
+        if "premium_budget_amount" in result:
+            source["premium_budget_ratio"] = result["premium_budget_amount"] / base_amount
+    cost = source.get("premium_budget_ratio")
+    if type(cost) in (int, float) and 0 < cost <= 1:
+        result["premium_budget_ratio"] = cost
     output = _normalize_output(source.get("output_type") or source.get("kind"))
     if output:
         result["output_type"] = output
@@ -128,6 +148,38 @@ def normalize_confirmed_constraints(value: Mapping[str, Any] | None) -> dict[str
         if controlled:
             result["backtest_config"] = controlled
     return result
+
+
+def question_covered_by_confirmed_terms(question: str, constraints: Mapping[str, Any]) -> bool:
+    """Suppress only questions wholly covered by explicit user permissions.
+
+    Product data still has to be retrieved and verified. Default research
+    terms do not authorize new risk limits, fees or other user preferences.
+    Unknown or mixed questions remain questions instead of guessing answers.
+    """
+    confirmed = normalize_confirmed_constraints(constraints)
+    clauses = re.split(r"[。；;？?]|(?:以及|并且)", question)
+    covered = 0
+    for clause in clauses:
+        clause = re.sub(r"[（(][^（）()]*[）)]", "", clause).strip(" ，,：:")
+        if not clause:
+            continue
+        if re.fullmatch(r"如无(?:特别)?偏好[，,]?(?:将|可以)?(?:以|按|采用|使用)?(?:产品库|产品)?默认条款(?:继续)?研究", clause):
+            continue
+        clause = re.sub(r"^(?:请|麻烦)?(?:确认|说明|明确)?", "", clause)
+        if re.fullmatch(r"(?:收益)?封顶(?:的)?(?:具体)?(?:形式|形态|水平|上限水平)(?:是否有(?:特别)?偏好|有何偏好|有什么要求|是否有特别要求|是多少)?", clause):
+            if confirmed.get("use_library_defaults") is not True:
+                return False
+        elif re.fullmatch(r"(?:是否|能否)(?:需要|要求)?(?:限定)?(?:仅|只)(?:使用)?买入(?:期权)?腿|(?:是否|能否)(?:接受|允许|包含|使用)(?:组合)?卖出(?:期权)?腿", clause):
+            if "allow_short_legs" not in confirmed:
+                return False
+        elif re.fullmatch(r"(?:是否|能否)(?:接受|允许)(?:收益)?封顶", clause):
+            if "allow_capped_return" not in confirmed:
+                return False
+        else:
+            return False
+        covered += 1
+    return covered > 0
 
 
 def confirmed_term_overrides(constraints: Mapping[str, Any]) -> dict[str, Any]:
@@ -175,10 +227,26 @@ def merge_confirmed_constraints(existing: Mapping[str, Any] | None, messages: Se
     return normalize_confirmed_constraints(result)
 
 
+def _is_asserted_permission(text: str, match: re.Match[str]) -> bool:
+    """A question or hypothetical is not a grant or revocation of permission."""
+    prefix = text[max(0, match.start()-8):match.start()]
+    if re.search(r"(?:是否|能否|可否|如果|假如|若|考虑|建议).{0,2}$", prefix):
+        return False
+    suffix = re.split(r"[，,。；;！？!?]", text[match.end():], maxsplit=1)[0]
+    return re.search(r"(?:吗|么)\s*$", suffix) is None
+
+
 def _merge_user_constraints(existing: dict[str, Any], extracted: Mapping[str, Any], text: str) -> None:
     """后续表达只覆盖它真正说明的维度，不能抹掉已确认的波动观点。"""
 
+    if extracted.get("underlying") and extracted.get("underlying") != existing.get("underlying"):
+        existing.pop("holding_notional", None)
+        existing.pop("reference_notional", None)
+    if "reference_notional" in extracted and "holding_notional" not in extracted:
+        existing.pop("holding_notional", None)
     value = dict(extracted)
+    if "max_loss" in value and "max_loss_amount" not in value:
+        existing.pop("max_loss_amount", None)
     negated_outputs = set(value.pop("_negated_outputs", ()))
     term_operations = value.pop("_term_override_operations", ())
     previous_view = str(existing.get("market_view", ""))
@@ -228,7 +296,7 @@ def _merge_user_constraints(existing: dict[str, Any], extracted: Mapping[str, An
 
 
 def _view_parts(value: str) -> tuple[str, str]:
-    direction = next((item for item in ("上涨", "看跌", "震荡") if item in value), "")
+    direction = re.sub(r"(?:\+)?波动率(?:上升|下降)", "", value).strip("+")
     volatility = next((item for item in ("波动率上升", "波动率下降") if item in value), "")
     return direction, volatility
 
@@ -305,11 +373,14 @@ def _extract_text(text: str) -> dict[str, Any]:
         r"(?:不要|不用|不采用|并非|不是|禁止)\s*$", text[max(0, match.start()-6):match.start()])]
     if windows:
         result['hv_window'] = int(windows[-1][1])
-    methods = list(re.finditer(r"(?:使用|采用|用|改为)\s*(解析(?:模型|法|定价)|蒙特卡洛|monte\s*carlo)", text, re.I))
+    methods = list(re.finditer(
+        r'(?:使用|采用|用|改为)\s*(解析(?:模型|法|定价)|蒙特卡洛|monte[\s_]*carlo|mc(?=\s*(?:=|路径|\d)))'
+        r'|((?:mc|monte[\s_]*carlo|蒙特卡洛)(?:模拟)?(?:路径(?:数)?|样本数)?\s*(?:为|是|=|：|:)?\s*\d+)', text, re.I))
     methods = [match for match in methods if not re.search(
-        r"(?:不|无需|禁止|不要)\s*$", text[max(0, match.start()-4):match.start()])]
+        r'(?:不|无需|禁止|不要)\s*$', text[max(0, match.start()-4):match.start()])]
     if methods:
-        result['model_method'] = 'analytical' if methods[-1][1].startswith('解析') else 'monte_carlo'
+        name = methods[-1].group(1) or methods[-1].group(2)
+        result['model_method'] = 'analytical' if name.startswith('解析') else 'monte_carlo'
     match = _UNDERLYING.search(text.upper())
     if match:
         result["underlying"] = f"{match.group('code')}.{match.group('exchange').upper()}"
@@ -328,6 +399,60 @@ def _extract_text(text: str) -> dict[str, Any]:
     loss = _normalize_loss(text)
     if loss:
         result["max_loss"] = loss
+    for key, forbidden, permitted in (
+        ("allow_margin_call", r"(?:不要|不允许|不接受|不能|无需|不需要|无)(?:任何|额外)?(?:追加保证金|追保)|不(?:再)?追加保证金", r"(?:可以|允许|接受)(?:追加保证金|追保)"),
+        ("allow_short_legs", r"(?:不包含|不含|不要|不允许|不接受|禁止)(?:任何)?(?:本金波动(?:、|和|与|及))?(?:收益封顶(?:、|和|与|及))?(?:组合)?卖出腿|只(?:能|接受)?买入(?:保护)?(?:认沽|认购|看跌|看涨|期权)|只买入不卖出", r"(?:可以|允许|接受)(?:本金波动(?:、|和|与|及))?(?:收益封顶(?:、|和|与|及))?(?:包含)?(?:组合)?卖出腿"),
+    ):
+        choices = [(m.start(), False) for m in re.finditer(forbidden, text) if _is_asserted_permission(text, m)]
+        choices += [(m.start(), True) for m in re.finditer(permitted, text) if _is_asserted_permission(text, m) and not text[max(0,m.start()-1):m.start()] == "不"]
+        if choices:
+            result[key] = max(choices)[1]
+    for key, expression in (
+        ("allow_capped_return", r"(?:接受|允许)(?:本金波动(?:、|和|与|及))?(?:收益)?封顶"),
+        ("use_library_defaults", r"(?:采用|使用|按|用)(?:产品库|产品|登记)?(?:的)?默认条款"),
+    ):
+        choices = []
+        for match in re.finditer(expression, text):
+            if not _is_asserted_permission(text, match):
+                continue
+            prefix = text[max(0, match.start()-4):match.start()]
+            choices.append((match.start(), not bool(re.search(r"(?:不要|不用|不能|不|未)\s*$", prefix))))
+        if choices:
+            result[key] = max(choices)[1]
+    budget_label = r"(?:全部)?(?:保护(?:期权)?(?:权利金|成本)|权利金(?:成本|支出)?)"
+    budget = re.search(
+        rf"{budget_label}\s*(?:上限|预算|最多|不超过|不得超过|至多)?\s*(?:为|是|=|：|:)?\s*(\d+(?:\.\d+)?)\s*(万)?元", text)
+    if not budget:
+        budget = re.search(
+            rf"(\d+(?:\.\d+)?)\s*(万)?元\s*(?:仅|只)?(?:是|为|指)\s*{budget_label}(?:上限|预算)?", text)
+    if budget:
+        result["premium_budget_amount"] = float(Decimal(budget[1]) * (10000 if budget[2] else 1))
+    loss_amount = re.search(
+        r"(?:最大(?:可承受|可接受)?(?:合同(?:到期|结算)?|到期)?(?:亏损|损失)|(?:合同(?:到期|结算)?|到期)?(?:亏损|损失)上限)\s*"
+        r"(?:不得超过|不超过|不能超过|不高于|至多|最多|为|是|=|：|:)?\s*(\d+(?:\.\d+)?)\s*(万)?元", text)
+    if loss_amount:
+        result["max_loss_amount"] = float(Decimal(loss_amount[1]) * (10000 if loss_amount[2] else 1))
+    base = re.search(r"(?:持有|持仓金额|评估|本金|名义(?:本金|规模)?|资金)\s*(?:为|是|=|的)?\s*(\d+(?:\.\d+)?)(万)?元", text)
+    if not base:
+        base = re.search(r"(\d+(?:\.\d+)?)(万)?元(?:本金|持仓)", text)
+    # A reference amount and an existing holding have different economics.
+    # Preserve explicit user amounts so downstream code never mines model prose.
+    if base:
+        notional = Decimal(base[1]) * (10000 if base[2] else 1)
+        if notional > 0:
+            result["reference_notional"] = float(notional)
+            holding = re.search(r"(?:持有|持仓(?:金额)?)\s*(?:为|是|=|的)?\s*(\d+(?:\.\d+)?)(万)?元|"
+                                r"(\d+(?:\.\d+)?)(万)?元持仓", text)
+            if holding:
+                amount = Decimal(holding[1] or holding[3]) * (10000 if holding[2] or holding[4] else 1)
+                if amount > 0:
+                    result["holding_notional"] = float(amount)
+                    result["reference_notional"] = float(amount)
+    if budget and base:
+        amount = Decimal(budget[1]) * (10000 if budget[2] else 1)
+        notional = Decimal(base[1]) * (10000 if base[2] else 1)
+        if 0 < amount <= notional:
+            result["premium_budget_ratio"] = float(amount/notional)
     principal = _principal_from_text(text)
     if principal is not None:
         result["principal_fluctuation"] = principal
@@ -360,11 +485,11 @@ def _extract_text(text: str) -> dict[str, Any]:
     if entry_window:
         result["backtest_range"] = {"start_date": entry_window[1], "end_date": entry_window[2]}
     backtest_config = {}
-    if re.search(r"(?:每月|月度)(?:首个交易日|第一个交易日)?入场", text):
+    if re.search(r"(?:每月|月度|按月)(?:首个交易日|第一个交易日)?入场", text):
         backtest_config["entry_rule"] = "monthly"
     elif re.search(r"(?:每日|每天|每个交易日)入场", text):
         backtest_config["entry_rule"] = "daily"
-    if re.search(r"(?:仅|只)(?:使用|取|保留)?完整[^。；;，,\n]{0,6}合同", text):
+    if re.search(r"(?:仅|只)(?:使用|取|保留)?完整(?:期限|[^。；;，,\n]{0,6}合同)", text):
         backtest_config["complete_tenor"] = True
     if backtest_config:
         result["backtest_config"] = backtest_config
@@ -403,15 +528,22 @@ def _normalize_path_count(value: object) -> int | None:
 
 
 def requested_candidate_count_from_text(value: object) -> int | None:
-    """提取用户明确要求的候选数量，不从期限或产品编号推断。"""
+    """Use the last affirmed candidate quantity, excluding periods and leg counts."""
 
-    match = _CANDIDATE_COUNT.search(str(value or ""))
-    if match is None:
-        return None
-    token = match.group("number") or match.group("explicit")
-    if token.isdigit() and len(token) > 1 and token.startswith("0"):
-        return None
-    return _number(token)
+    text = str(value or "")
+    matches = list(_CANDIDATE_COUNT.finditer(text))
+    for match in reversed(matches):
+        prefix = text[max(0, match.start() - 8):match.start()]
+        suffix = text[match.end():match.end() + 8]
+        if re.search(r"(?:不要|不用|不需要|不再|不能|不想|不打算|不希望|无需|并非|不是|取消|别|不)\s*(?:再|继续|只)?\s*$", prefix):
+            continue
+        if re.match(r"\s*(?:不要|不用|不需要|取消)", suffix):
+            continue
+        token = match.group("number") or match.group("explicit")
+        if token.isdigit() and len(token) > 1 and token.startswith("0"):
+            continue
+        return _number(token)
+    return None
 
 
 def _path_count_from_text(text: str) -> int | None:
@@ -419,7 +551,7 @@ def _path_count_from_text(text: str) -> int | None:
     if not matches:
         return None
     match = matches[-1]
-    return _normalize_path_count(match.group("mc") or match.group("plain"))
+    return _normalize_path_count(match.group("mc") or match.group("plain") or match.group("labelled"))
 
 
 def _normalize_term_overrides(value: object) -> dict[str, str | float]:
@@ -434,14 +566,15 @@ def _normalize_term_overrides(value: object) -> dict[str, str | float]:
         return {}
     allowed_numeric = {
         "K", "K1", "K2", "K3", "K4", "Pi_0", "P_net", "c", "c_max", "alpha",
-        "H_KO", "H_KI", "B", "T",
+        "H_KO", "H_KI", "B", "T", "n_C", "n_P",
     }
     allowed_text = {"O_KO", "O_KI", "Oc", "settlement", "exercise_style"}
     result: dict[str, str | float] = {}
     for raw_key, raw_value in value.items():
         key = str(raw_key)
         if key in allowed_numeric and isinstance(raw_value, (int, float)) and not isinstance(raw_value, bool):
-            result[key] = float(raw_value)
+            if Decimal(str(raw_value)).is_finite():
+                result[key] = float(raw_value)
         elif key in allowed_text and isinstance(raw_value, str) and raw_value.strip():
             result[key] = raw_value.strip()
     return result
@@ -449,9 +582,9 @@ def _normalize_term_overrides(value: object) -> dict[str, str | float]:
 
 def _explicit_term_assignments(text: str) -> dict[str, float]:
     aliases = {"k": "K", "k1": "K1", "k2": "K2", "k3": "K3", "k4": "K4",
-               "k_l": "K1", "k_h": "K2", "pi_0": "Pi_0", "p_net": "P_net", "t": "T"}
+               "k_l": "K1", "k_h": "K2", "pi_0": "Pi_0", "p_net": "P_net", "t": "T", "n_c": "n_C", "n_p": "n_P"}
     values: dict[str, set[float]] = {}
-    pattern = r"(?<![A-Za-z0-9_])(K_L|K_H|K[1-4]?|Pi_0|P_net|T)\s*[=＝]\s*(\d+(?:\.\d+)?)(?![\d.])"
+    pattern = r"(?<![A-Za-z0-9_])(K_L|K_H|K[1-4]?|Pi_0|P_net|n_C|n_P|T)\s*[=＝]\s*(\d+(?:\.\d+)?)(?![\d.])"
     for match in re.finditer(pattern, text, re.IGNORECASE):
         # Negative instructions do not establish a new confirmed value.
         prefix = re.split(r"[，,。；;\n]", text[:match.start()])[-1]
@@ -650,7 +783,7 @@ def delivery_preferences_from_text(text: str) -> tuple[set[str], set[str]]:
 
     patterns = {
         "card": r"(?:研究简报|简报|卡片|card|简单报告)",
-        "quote": r"(?:参考报价|报价表|quote)",
+        "quote": r"(?:参考报价|报价表|报价单|quote)",
         "report": r"(?:完整研究报告|详细报告|深度报告|完整报告|report|(?<!简)报告)",
     }
     matches: list[tuple[int, int, str, bool]] = []
@@ -739,6 +872,20 @@ def _normalize_market_view(value: object) -> str | None:
             direction_choices[2],
         )
     direction = _latest_market_expression(text, direction_choices) or ""
+    # A range-bound path and a directional bias can coexist. Keep an explicit
+    # conjunction or alternative instead of treating its final word as a revision.
+    direction_matches = sorted((match.start(), match.end(), normalized,
+                                _is_locally_negated(text, match.start()))
+                               for normalized, terms in direction_choices
+                               for term in terms for match in re.finditer(re.escape(term), text))
+    if len(direction_matches) >= 2:
+        previous, latest = direction_matches[-2:]
+        connector = text[previous[1]:latest[0]]
+        if (not previous[3] and not latest[3] and previous[2] != latest[2]
+            and "震荡" in {previous[2], latest[2]}
+            and re.fullmatch(r"(?:\s|[，,]|\+|并|且|伴随|伴有|同时|或|及|但|但是|中间|中途|期间|可能|会|出现|小幅|温和|缓慢|偏|窄幅|宽幅|的)*", connector)):
+            joiner = "或" if "或" in connector else "+"
+            direction = previous[2] + joiner + latest[2]
     volatility_expression = _latest_market_expression(text, (
         ("波动率上升", ("波动率上升", "波动率上行", "隐含波动率上升", "隐波上升", "波动加大", "波动增大", "iv上升")),
         ("波动率下降", ("波动率下降", "波动率下行", "隐含波动率下降", "隐波下降", "iv下降")),
@@ -796,8 +943,18 @@ def _local_prefix(text: str, position: int) -> str:
 
 def _normalize_loss(value: object) -> str | None:
     text = str(value or "").strip()
+    amounts = re.search(r"(?:最大(?:可承受|可接受)?(?:亏损|损失)|亏损上限)(?:不超过|为|是|=|就是)?\s*(\d+(?:\.\d+)?)\s*(万)?元", text)
+    notional = re.search(r"(?:(?:本金|名义(?:规模|本金)?|资金)(?:为|是|=)?\s*(\d+(?:\.\d+)?)\s*(万)?元|(\d+(?:\.\d+)?)\s*(万)?元(?:本金|名义本金|持仓|，最大|,最大))", text)
+    if amounts and notional:
+        loss_amount = Decimal(amounts[1]) * (10000 if amounts[2] else 1)
+        base = Decimal(notional[1] or notional[3]) * (10000 if (notional[2] or notional[4]) else 1)
+        if base > 0 and 0 < loss_amount <= base:
+            return format((loss_amount/base*100).normalize(), "f") + "%"
+    equivalent = re.search(r"最大(?:可承受|可接受)?(?:亏损|损失)[^，,。；;]{0,24}?(?:即|相当于|占(?:本金)?)(\d+(?:\.\d+)?)\s*[%％]", text)
+    if equivalent and 0 < Decimal(equivalent[1]) <= 100:
+        return format(Decimal(equivalent[1]).normalize(), "f") + "%"
     explicit = re.search(
-        r"(?:最大(?:可承受)?(?:亏损|损失|回撤)|(?:亏损|损失|回撤)上限)\s*"
+        r"(?:最大(?:可承受|可接受)?(?:亏损|损失|回撤)|(?:亏损|损失|回撤)上限)\s*"
         r"(?:不得超过|不超过|不能超过|不高于|不大于|至多|为|是|=|：|:)?\s*"
         r"(?:名义本金(?:的)?|本金(?:的)?)?\s*(\d+(?:\.\d+)?)\s*[%％]", text)
     if explicit:
@@ -813,7 +970,7 @@ def _normalize_loss(value: object) -> str | None:
         if 0 < amount <= 100:
             return f"{amount:g}%"
     revised = re.search(
-        r"(?:最大(?:可承受)?(?:亏损|损失|回撤)?|最大亏损?|亏损|回撤).{0,12}?(?:改为|改成|调整为|设为)\s*(\d+(?:\.\d+)?)\s*[%％]",
+        r"(?:最大(?:可承受|可接受)?(?:亏损|损失|回撤)?|最大亏损?|亏损|回撤).{0,12}?(?:改为|改成|调整为|设为)\s*(\d+(?:\.\d+)?)\s*[%％]",
         text,
     )
     if revised:
@@ -855,7 +1012,7 @@ def _normalize_output(value: object) -> str | None:
     text = str(value or "").strip().lower()
     if text in {"card", "研究简报", "简报", "卡片", "简单报告"}:
         return "card"
-    if text in {"quote", "参考报价", "报价表"}:
+    if text in {"quote", "参考报价", "报价表", "报价单"}:
         return "quote"
     if text in {"both", "两份", "研究简报和完整研究报告"}:
         return "both"
@@ -911,3 +1068,19 @@ __all__ = (
     "normalize_confirmed_constraints", "question_for_missing_constraint", "question_for_missing_constraints",
     "requested_candidate_count_from_text",
 )
+
+
+def requested_comparison_products(prompt, evidence):
+    """Resolve user-named comparison subjects from verified catalogue identity."""
+    import re
+    if not re.search(r'比较|对比|相比|vs\.?|versus', prompt, re.I):
+        return {}
+    products = {}
+    for item in evidence:
+        row = item if isinstance(item, Mapping) else item.to_dict(include_excerpt=True)
+        identity = row.get('identity') or {}
+        product_id = row.get('product_id')
+        name = identity.get('name_zh')
+        if product_id and name and (name in prompt or re.search(r'(?<![\d.])'+re.escape(product_id)+r'(?![\d.])', prompt)):
+            products[product_id] = name
+    return products if len(products)>1 else {}

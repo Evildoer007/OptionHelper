@@ -19,9 +19,11 @@ from .models import RecommendationCandidate, RecommendationValidationError
 MAX_ROUNDS = 4
 ALLOWED_MODULES = frozenset({"payoffer", "pricer", "backtester"})
 DEFAULT_TERM_KEYS = frozenset({
-    "T", "K", "K1", "K2", "K3", "K4", "Pi_0", "P_net", "c", "c_max", "alpha",
+    "T", "K", "K1", "K2", "K3", "K4", "n_C", "n_P", "Pi_0", "P_net", "c", "c_max", "alpha",
     "H_KO", "H_KI", "B", "O_KO", "O_KI", "Oc", "settlement", "exercise_style",
 })
+TEXT_TERM_KEYS = frozenset({"O_KO", "O_KI", "Oc", "settlement", "exercise_style"})
+_NUMERIC_TERM = re.compile(r"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?\Z")
 _IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]*\Z")
 
 
@@ -69,17 +71,20 @@ def _controlled_term_overrides(
         key = str(raw_key)
         if key not in allowed_term_keys:
             raise _error(f"{field_name}含未受控条款：{key}")
-        if isinstance(raw_value, bool) or not isinstance(raw_value, (str, int, float)):
-            raise _error(f"{field_name}.{key}必须为字符串或有限数值")
-        if isinstance(raw_value, float) and not math.isfinite(raw_value):
-            raise _error(f"{field_name}.{key}必须为有限数值")
-        if isinstance(raw_value, str):
-            normalized = raw_value.strip()
-            if not normalized or len(normalized) > 128:
+        if key in TEXT_TERM_KEYS:
+            if not isinstance(raw_value, str) or not raw_value.strip() or len(raw_value.strip()) > 128:
                 raise _error(f"{field_name}.{key}必须为1至128字符的字符串")
-            result[key] = normalized
-        else:
-            result[key] = raw_value
+            result[key] = raw_value.strip()
+            continue
+        # Model JSON may encode a number as text. Normalize only an exact
+        # numeric literal, never percentages, units, expressions or estimates.
+        if isinstance(raw_value, str) and _NUMERIC_TERM.fullmatch(raw_value.strip()):
+            raw_value = float(raw_value.strip())
+        if isinstance(raw_value, bool) or not isinstance(raw_value, (int, float)):
+            raise _error(f"{field_name}.{key}必须为有限数值")
+        if not math.isfinite(raw_value):
+            raise _error(f"{field_name}.{key}必须为有限数值")
+        result[key] = raw_value
     return {key: result[key] for key in sorted(result)}
 
 
@@ -453,3 +458,28 @@ def attach_host_evaluations(
         )
         attached.append(replace(plan, candidate=replace(plan.candidate, candidate=updated)))
     return ProductTraderRound(round_no=round_plan.round_no, plans=tuple(attached))
+
+
+def trader_decisions_for_candidates(output: Mapping[str, Any], expected: Mapping[str, str]) -> Mapping[str, Any]:
+    """Validate current candidate coverage at both the role and transition boundaries."""
+    raw_rows = output.get("evaluations", ())
+    if isinstance(raw_rows, (str, bytes)) or not isinstance(raw_rows, Sequence):
+        raise RecommendationValidationError("Trader.evaluations必须为数组")
+    decisions: list[Mapping[str, Any]] = []
+    seen: set[str] = set()
+    for raw in raw_rows:
+        if not isinstance(raw, Mapping):
+            raise RecommendationValidationError("Trader.evaluations必须为对象数组")
+        candidate_id = str(raw.get("candidate_id", "")).strip()
+        product_id = str(raw.get("product_id", "")).strip()
+        if candidate_id not in expected or expected[candidate_id] != product_id or candidate_id in seen:
+            raise RecommendationValidationError("Trader.evaluations未绑定当前candidate_id与product_id")
+        seen.add(candidate_id)
+        decisions.append({
+            "candidate_id": candidate_id,
+            "action": raw.get("decision"),
+            "term_adjustments": raw.get("term_adjustments", {}),
+        })
+    if seen != set(expected):
+        raise RecommendationValidationError(f"Trader.evaluations必须覆盖本轮全部候选，缺少{sorted(set(expected) - seen)}。逐项返回accept或rework；尚未完成核验时用rework并说明原因，不得默默省略。")
+    return {"decisions": decisions}

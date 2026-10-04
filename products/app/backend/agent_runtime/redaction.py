@@ -18,6 +18,14 @@ _TOKEN = re.compile(
 _NAMED_SECRET = re.compile(r"(?i)\b(?:bearer|token|secret|api[_-]?key|access[_-]?token|refresh[_-]?token|password)\s*(?::|=|\s)\s*[A-Za-z0-9._~+\-/=]{12,}")
 _LOCAL_PATH = re.compile(r"(?<![A-Za-z0-9_])(?:~(?=/)|/(?:Users|private|tmp|var|etc|opt|Library))(?:/[^\s,;，；<>]*)?")
 _HIDDEN_REASONING = re.compile(r"(?is)<(?:think|analysis|reasoning)\b[^>]*>.*?</(?:think|analysis|reasoning)\s*>")
+INTERNAL_REFERENCE_PATTERN = re.compile(
+    r"(?i)(?:reporter\.run|runref|source_id|module_run_ref|report_run_ref|data_asset_ref|"
+    r"contract_ref|contract_fingerprint|registry_snapshot_hash|candidate_id|task_id|"
+    r"artifact_manifest|manifest\.json|文件路径|"
+    r"resolved_?contract|caller_?context|host_?context|module_?host_?context|tool_?gateway|"
+    r"catalog_version|analysis_case_id|principal_id|request_id|tenant_id|session_id|"
+    r"agent_run_id|workflow_id|attachment_id|resultstore|capability_manifest|\brecommender\b|\bhost\b)"
+)
 
 
 def redact_text(value: object, identity: SessionIdentity | None = None, *, limit: int | None = None) -> str:
@@ -38,4 +46,4 @@ def has_hidden_reasoning(value: object) -> bool:
     return bool(_HIDDEN_REASONING.search(str(value or "")))
 
 
-__all__ = ("has_hidden_reasoning", "redact_text")
+__all__ = ("has_hidden_reasoning", "redact_text", "INTERNAL_REFERENCE_PATTERN")

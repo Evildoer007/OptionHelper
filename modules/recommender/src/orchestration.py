@@ -8,20 +8,25 @@ from uuid import uuid4
 
 from .agent_steps import AgentStepRunner, AuditRecorder, MODE_ONE_ROLE_NAMES
 from .evidence_retriever import retrieve_evidence
-from .interaction import missing_required_constraints, question_for_missing_constraints
 from .models import (
-    RECOMMENDATION_SET_SCHEMA,
     ModelCapability,
     RecommendationCase,
     RecommendationSet,
     RouteDecision,
 )
 from .ports import AgentExecutionPolicy, AgentStepResult
+from .research_session import ResearchSession
+from runtime.research_policy import blocked_research_modules
 from .service import (
     RecommenderService,
     RecommenderUnavailable,
     _prepare_recommendation_case,
     _requested_candidate_count,
+    _mode_one_interpreter_input,
+    _mode_one_reviewer_input,
+    _configure_research_runner,
+    _resolve_role_clarification,
+    RecommendationInputRequired,
 )
 
 
@@ -51,6 +56,7 @@ class _ActiveRecommendation:
     audit: AuditRecorder
     runner: AgentStepRunner
     next_task: AgentRoleTask
+    research_session: ResearchSession
     evidence: tuple[Any, ...] = ()
     intent: Mapping[str, Any] | None = None
     research: Mapping[str, Any] | None = None
@@ -97,27 +103,6 @@ class RecommendationWorkflowCoordinator:
             agent_policy="capability_based",
         )
         run_id = case.run_id or f"recommend_{uuid4().hex[:12]}"
-        missing = missing_required_constraints(case.confirmed_constraints)
-        if missing:
-            result = RecommendationSet(
-                schema=RECOMMENDATION_SET_SCHEMA,
-                task_id=case.task_id,
-                run_id=run_id,
-                analysis_case_id=case.analysis_case_id,
-                catalog_version=case.catalog_version,
-                route=route.route,
-                workflow_mode="single_agent",
-                status="pending_question",
-                primary_candidate_id=None,
-                candidates=(),
-                missing_information=missing,
-                next_question=question_for_missing_constraints(missing),
-                requested_outputs=case.requested_outputs,
-                requested_candidate_count=_requested_candidate_count(case),
-                returned_candidate_count=0,
-            )
-            return {"status": "completed", "next_task": None, "recommendation_set": result.to_dict()}
-
         selected_policy = policy or AgentExecutionPolicy()
         capability = self._service.agent_port.capability()
         mode = self._select_mode(capability, selected_policy)
@@ -160,15 +145,14 @@ class RecommendationWorkflowCoordinator:
             detail={"model_slots_use_wire_roles": True},
         )
         runner = AgentStepRunner(port=self._service.agent_port, workflow_mode=mode, audit=audit)
+        research_session = ResearchSession(case, self._service.tool_port,
+            calculation_allowed=len(blocked_research_modules(case.prompt)) < 3)
+        _configure_research_runner(runner, research_session, self._service.tool_port)
         task = self._task(
             workflow_ref,
             runner,
             "Interpreter",
-            {
-                "prompt": case.prompt,
-                "confirmed_constraints": dict(case.confirmed_constraints),
-                "rule": "仅把用户原文或confirmed_constraints中的事实标为已确认；一次最多生成一个next_question。",
-            },
+            _mode_one_interpreter_input(case),
         )
         self._workflows[workflow_ref] = _ActiveRecommendation(
             workflow_ref=workflow_ref,
@@ -179,6 +163,7 @@ class RecommendationWorkflowCoordinator:
             audit=audit,
             runner=runner,
             next_task=task,
+            research_session=research_session,
         )
         return {"status": "running", "workflow_ref": workflow_ref, "next_task": task.to_dict()}
 
@@ -194,6 +179,15 @@ class RecommendationWorkflowCoordinator:
         active.receipts.append(normalized.receipt.to_dict())
 
         if task.role == "Interpreter":
+            result = _resolve_role_clarification(result, active.case.confirmed_constraints, active.audit, "Interpreter")
+            if result.get("next_question"):
+                active.result = self._service._input_required_set(
+                    active.case, active.route, active.run_id, active.mode, active.audit,
+                    RecommendationInputRequired("research_scope", result["next_question"]))
+                active.research_session.close()
+                active.status = "completed"
+                return {"status": "completed", "workflow_ref": active.workflow_ref,
+                        "next_task": None, "recommendation_set": active.result.to_dict()}
             active.intent = result
             queries = tuple(str(item).strip() for item in result.get("research_queries", ()) if str(item).strip())
             if self._service.knowledge_port is None:
@@ -233,27 +227,26 @@ class RecommendationWorkflowCoordinator:
                 active.workflow_ref,
                 active.runner,
                 "Reviewer",
-                {
-                    "case": active.case.to_dict(),
-                    "proposals": result.get("proposals", ()),
-                    "rule": "只审阅已有product_id；新增product_id将导致整步失败。",
-                },
+                _mode_one_reviewer_input(active.case, result.get("proposals", ()), active.evidence),
             )
             return self._running(active)
 
         if task.role != "Reviewer" or active.research is None:
             raise RuntimeError("推荐状态机阶段无效")
-        active.result = self._service._complete_mode_one(
-            active.case,
-            active.route,
-            active.run_id,
-            active.mode,
-            active.audit,
-            active.runner,
-            evidence=active.evidence,
-            research=active.research,
-            critic=result,
-        )
+        try:
+            active.result = self._service._complete_mode_one(
+                active.case, active.route, active.run_id, active.mode, active.audit, active.runner,
+                evidence=active.evidence, research=active.research, critic=result,
+                catalog_session=active.research_session,
+            )
+        except RecommendationInputRequired as error:
+            active.result = self._service._input_required_set(
+                active.case, active.route, active.run_id, active.mode, active.audit, error)
+        except Exception as error:
+            active.result = self._service._unavailable_set(
+                active.case, active.route, active.run_id, active.mode, active.audit, error)
+        finally:
+            active.research_session.close()
         active.status = "completed"
         return {
             "status": "completed",
@@ -264,9 +257,12 @@ class RecommendationWorkflowCoordinator:
 
     def cancel_recommendation(self, workflow_ref: str) -> Mapping[str, Any]:
         active = self._active(workflow_ref)
-        if self._cancel_callback is not None:
-            self._cancel_callback(active.workflow_ref)
-        active.status = "cancelled"
+        try:
+            if self._cancel_callback is not None:
+                self._cancel_callback(active.workflow_ref)
+        finally:
+            active.research_session.close()
+            active.status = "cancelled"
         return {"status": "cancelled", "workflow_ref": active.workflow_ref}
 
     def snapshot(self, workflow_ref: str) -> Mapping[str, Any]:

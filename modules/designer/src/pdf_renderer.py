@@ -21,7 +21,7 @@ from xml.etree import ElementTree
 
 from .design_tokens import TOKENS
 from .system_fonts import windows_font_candidates
-from .renderer import display_text
+from .renderer import display_text, chart_axis_precision, chart_category
 
 
 REPORTLAB_VERSION = "5.0.0"
@@ -42,7 +42,7 @@ class PdfRuntimeError(RuntimeError):
     """Raised when the pinned local PDF runtime is not usable."""
 
 
-BlockKind = Literal["conclusion", "heading", "paragraph", "item", "caption", "table_caption", "table", "metric_grid", "chart", "svg", "image"]
+BlockKind = Literal["conclusion", "heading", "paragraph", "item", "caption", "table_caption", "table", "metric_grid", "chart", "chart_summary", "svg", "image"]
 class PdfTableRows(list[list[str]]):
     """Table rows carrying the density already selected by HTML rendering."""
 
@@ -190,6 +190,7 @@ class _PublicHtmlParser(HTMLParser):
         self._ignored = 0
         self._active: list[tuple[str, list[str]]] = []
         self._conclusion_parts: set[int] = set()
+        self._chart_summary_parts: set[int] = set()
         self._table_rows: PdfTableRows | None = None
         self._table_row: list[str] | None = None
         self._cell: list[str] | None = None
@@ -309,6 +310,8 @@ class _PublicHtmlParser(HTMLParser):
         if tag in self._TEXT_TAGS:
             parts: list[str] = []
             self._active.append((tag, parts))
+            if tag == "p" and "chart-summary" in class_name.split():
+                self._chart_summary_parts.add(id(parts))
             if {"conclusion-band__label", "conclusion-heading"} & set(class_name.split()):
                 self._conclusion_parts.add(id(parts))
 
@@ -427,12 +430,16 @@ class _PublicHtmlParser(HTMLParser):
             value = _clean_text("".join(parts))
             is_conclusion = id(parts) in self._conclusion_parts
             self._conclusion_parts.discard(id(parts))
+            is_chart_summary = id(parts) in self._chart_summary_parts
+            self._chart_summary_parts.discard(id(parts))
             if not value:
                 return
             if is_conclusion:
                 self.blocks.append(("conclusion", 0, value))
                 return
-            if tag.startswith("h") and len(tag) == 2 and tag[1].isdigit():
+            if is_chart_summary:
+                self.blocks.append(("chart_summary", 0, value))
+            elif tag.startswith("h") and len(tag) == 2 and tag[1].isdigit():
                 self.blocks.append(("heading", int(tag[1]), value))
             elif tag == "li":
                 self.blocks.append(("item", 0, value))
@@ -1179,6 +1186,11 @@ def _svg_flowable(markup: str, *, content_width: float, latin_font: str, cjk_fon
                     walk(child, paint)
 
             canvas.saveState()
+            # SVG clips painting to its viewport, including a cropped viewBox.
+            # Apply the same boundary before drawing background rectangles.
+            viewport = canvas.beginPath()
+            viewport.rect(0, 0, self.width, self.height)
+            canvas.clipPath(viewport, stroke=0, fill=0)
             walk(root, {"fill": TOKEN_COLORS["ink"]})
             canvas.restoreState()
 
@@ -1349,12 +1361,14 @@ def _chart_flowable(spec: Mapping[str, Any], *, content_width: float, latin_font
                                 canvas.circle(*point, 1.8, stroke=0, fill=1)
                 canvas.setFont(latin_font, 6.8)
                 canvas.setFillColor(colors.HexColor(TOKEN_COLORS["muted"]))
+                y_digits = chart_axis_precision([low, low + (high - low) / 4], spec.get("value_format"))
                 for tick in range(5):
                     value = low + (high - low) * tick / 4
-                    label = display_text(value, spec.get("value_format")) + str(spec.get("value_suffix") or "")
+                    label = display_text(value, spec.get("value_format"), digits=y_digits) + str(spec.get("value_suffix") or "")
                     _draw_chart_tick(canvas, left - 5, bottom + plot_height * tick / 4 - 2, label, font=latin_font, size=6.8)
                 if x_values:
-                    labels = [str(x_values[index]) for index in range(0, len(x_values), max(1, math.ceil(len(x_values) / 6)))]
+                    x_digits = chart_axis_precision(x_values)
+                    labels = [chart_category(x_values[index], spec.get("x_axis_name"), digits=x_digits) for index in range(0, len(x_values), max(1, math.ceil(len(x_values) / 6)))]
                     for index, label in enumerate(labels):
                         source_index = index * max(1, math.ceil(len(x_values) / 6))
                         x = (left + plot_width * (source_index + .5) / len(x_values) if chart_type == "bar"
@@ -1494,7 +1508,7 @@ def render_pdf(html_content: str, *, chart_specs: Mapping[str, Mapping[str, Any]
 
     def block_flowables(source_blocks: list[PdfBlock], *, available_width: float) -> list[object]:
         result: list[object] = []
-        for kind, level, raw in source_blocks:
+        for index, (kind, level, raw) in enumerate(source_blocks):
             if kind == "conclusion":
                 result.append(_paragraph(str(raw), styles["conclusion"], latin_font=latin_font, cjk_font=cjk_font))
                 continue
@@ -1538,8 +1552,13 @@ def render_pdf(html_content: str, *, chart_specs: Mapping[str, Mapping[str, Any]
                 spec = (chart_specs or {}).get(str(raw))
                 if spec is None:
                     raise PdfRuntimeError(f"报告图表{raw}缺少受控静态图规格。")
-                result.append(_chart_flowable(spec, content_width=available_width, latin_font=latin_font, cjk_font=cjk_font))
-                result.append(Spacer(1, 4))
+                figure = _chart_flowable(spec, content_width=available_width, latin_font=latin_font, cjk_font=cjk_font)
+                gap = Spacer(1, 4)
+                if index + 1 < len(source_blocks) and source_blocks[index + 1][0] == "chart_summary":
+                    # Keep the owned description with its figure when paginating.
+                    figure.keepWithNext = True
+                    gap.keepWithNext = True
+                result.extend([figure, gap])
                 continue
             if kind == "item":
                 result.append(_paragraph("• " + str(raw), styles["item"], latin_font=latin_font, cjk_font=cjk_font))

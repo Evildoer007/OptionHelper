@@ -6,6 +6,8 @@ business projections, never raw history or copied Capability financial results.
 
 from __future__ import annotations
 
+import math
+
 import copy
 from contextlib import contextmanager
 from threading import Event, Lock
@@ -33,6 +35,9 @@ from ..agent_runtime.redaction import redact_text
 
 
 PENDING_RECOMMENDATION_SCHEMA_ID = "optionhelper.pending-recommendation"
+_RECOMMENDATION_PERMISSION_FIELDS = (
+    "allow_margin_call", "allow_short_legs", "allow_capped_return", "use_library_defaults",
+)
 
 
 DEFAULT_TASK_SUBJECTS = frozenset({"新建研究任务", "新研究任务"})
@@ -1744,10 +1749,20 @@ def _pending_recommendation(value: dict[str, Any], *, allow_approved: bool = Fal
     constraints = value.get("confirmed_constraints")
     if not isinstance(constraints, dict) or set(constraints).difference({
         "underlying", "horizon", "market_view", "max_loss", "principal_fluctuation",
-        "output_type", "format", "path_count", "backtest_range", "valuation_date",
-        "risk_free_rate", "dividend_yield", "hv_window", "model_method",
+        "output_type", "format", "path_count", "backtest_range", "backtest_config", "valuation_date",
+        "risk_free_rate", "dividend_yield", "hv_window", "model_method", *_RECOMMENDATION_PERMISSION_FIELDS, "premium_budget_ratio", "reference_notional", "holding_notional", "premium_budget_amount", "max_loss_amount",
     }):
         raise ValidationError("Recommendation continuation constraints are invalid")
+    for key in ("reference_notional", "holding_notional", "premium_budget_amount", "max_loss_amount"):
+        if key in constraints and (type(constraints[key]) not in (int, float)
+                                   or not math.isfinite(constraints[key]) or constraints[key] <= 0):
+            raise ValidationError(f"Recommendation {key} must be a finite positive amount")
+    if "premium_budget_ratio" in constraints and (type(constraints["premium_budget_ratio"]) not in (int, float)
+                                                    or not 0 < constraints["premium_budget_ratio"] <= 1):
+        raise ValidationError("Recommendation premium_budget_ratio must be a finite decimal ratio")
+    for key in _RECOMMENDATION_PERMISSION_FIELDS:
+        if key in constraints and not isinstance(constraints[key], bool):
+            raise ValidationError(f"Recommendation {key} must be boolean")
     for key in ("risk_free_rate", "dividend_yield"):
         if key in constraints and (type(constraints[key]) not in (int, float)
                                    or not -1 < constraints[key] <= 1):
@@ -1766,6 +1781,12 @@ def _pending_recommendation(value: dict[str, Any], *, allow_approved: bool = Fal
             datetime.strptime(valuation_date, "%Y-%m-%d")
         except ValueError as error:
             raise ValidationError("Recommendation valuation_date is invalid") from error
+    if "backtest_config" in constraints:
+        config = constraints["backtest_config"]
+        if (not isinstance(config, dict) or set(config).difference({"entry_rule", "complete_tenor"})
+            or ("entry_rule" in config and config["entry_rule"] not in {"daily", "monthly", "explicit"})
+            or ("complete_tenor" in config and not isinstance(config["complete_tenor"], bool))):
+            raise ValidationError("Recommendation backtest_config is invalid")
     result["confirmed_constraints"] = copy.deepcopy(constraints)
     delivery = _recommendation_delivery(value.get("delivery"), required=False)
     result["delivery"] = delivery

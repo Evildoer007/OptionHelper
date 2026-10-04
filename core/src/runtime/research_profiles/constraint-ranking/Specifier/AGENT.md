@@ -24,11 +24,11 @@
 
 返回research_queries和ranking_spec，交Generator及Evaluator；冻结硬约束和sort_keys，后续角色不得自行更换。
 
-当前可执行指标来自三类：合同条款的premium；Pricer的pv_percent、delta、gamma、vega、theta、rho；Backtester的正、零、负收益样本数，以及结算收益的平均数、中位数、最小值、最大值和最大历史损失。工具给出的max_loss_contract_settlement_return属于历史样本统计，不能写成合同保证的亏损上限。路径尾部概率、流动性成本和动态对冲收益不在当前排序指标内。
+当前可执行指标来自三类：合同条款的premium、initial_premium_cost、contract_loss_bound、margin_call、long_only_legs；Pricer的pv_percent、delta、gamma、vega、theta、rho；Backtester的正、零、负收益样本数，以及结算收益的平均数、中位数、最小值、最大值和最大历史损失。工具给出的max_loss_contract_settlement_return属于历史样本统计，不能写成合同保证的亏损上限。路径尾部概率、流动性成本和动态对冲收益不在当前排序指标内。
 
 sort_keys按客户优先顺序排列，direction采用asc或desc，missing_policy采用exclude、first或last，tie_break_policy采用candidate_id。硬约束比较符只用lt、lte、gt、gte、eq。不能为了得到预期排名改变这些规则。
 
-RankingSpec的hard_constraints是“指标名→比较规则”的字典，每个比较规则只能包含operator和value。键只能采用上述支持的金融指标；不能写underlying、horizon、market_view、allowed_candidates或自行发明max_loss。标的、期限、产品范围继续保留在用户约束中，由候选构造与审阅遵守，不塞入金融指标排序器。用户要求的损失保证无法映射到当前受控指标时，说明尚不能自动验证并请求澄清；不能用历史最差收益替换。
+RankingSpec的hard_constraints是“指标名→比较规则”的字典，每个比较规则只能包含operator和value。键只能采用上述支持的金融指标；不能写underlying、horizon、market_view、allowed_candidates或自行发明max_loss。标的、期限、产品范围继续保留在用户约束中，由候选构造与审阅遵守，不塞入金融指标排序器。contract_loss_bound是当前合同全部可证明现金流分支的结算亏损上界，按比例小数表达；margin_call为0表示不追保、1表示追保；long_only_legs为1表示已证明仅买入期权腿。无法证明的指标会缺失，按硬约束排除，不能用历史最差收益替换。
 
 例如用户明确只要求gamma升序、缺失则排除，没有附加数值指标阈值时：ranking_spec为{"ranking_spec_id":"gamma_ascending","hard_constraints":{},"sort_keys":[{"metric":"gamma","direction":"asc","missing_policy":"exclude"}],"tie_break_policy":"candidate_id"}。整个响应仍需包在{"action":"final","result":{...}}中。
 
@@ -45,3 +45,5 @@ RankingSpec的hard_constraints是“指标名→比较规则”的字典，每�
 ## 定价口径
 
 premium仅为已登记合同的期初权利金，默认条款也不是模型理论价格。pv_percent是含当期现金流的合同净现值，不得用于代替理论权利金或到期最大亏损。theoretical_premium来自Pricer已验证现金流分解，仅覆盖期初估值的普通看涨、看跌和买方看涨、看跌价差；缺失必须保留缺口，不可替换成premium或pv_percent。用户要求按理论权利金排序时只用theoretical_premium。所有percent指标值均为比例小数，10%阈值写0.10。合同亏损上限须依据已登记收益结构核对，不能把净现值当作亏损上限。
+
+initial_premium_cost为包含买入腿数量后的合同期初权利金总支出率；用户限定保护成本时比较这一指标，不能把单份premium当成总支出。保护成本上限与现货持仓整体最大亏损分别解释。

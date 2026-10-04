@@ -27,7 +27,7 @@ from .agent_loop import (
     _FACT_MARKER,
     _context_facts,
 )
-from .redaction import has_hidden_reasoning, redact_text
+from .redaction import has_hidden_reasoning, redact_text, INTERNAL_REFERENCE_PATTERN
 from .recommender_adapter import ConversationEventPersistenceSink
 from .tool_failure_recovery import ToolFailureRecovery
 from .runtime_model_proxy import RuntimeModelProxy
@@ -59,10 +59,7 @@ _WIRE_TO_TOOL = {
     "task_position_size": "task.position_size",
 }
 _TOOL_TO_WIRE = {value: key for key, value in _WIRE_TO_TOOL.items()}
-_INTERNAL_REFERENCE = re.compile(
-    r"(?i)(?:task_id|tenant_id|principal_id|session_id|agent_run_id|workflow_id|"
-    r"attachment_id|module_run_ref|data_asset_ref|contract_ref|resultstore)"
-)
+_INTERNAL_REFERENCE = INTERNAL_REFERENCE_PATTERN
 _FORBIDDEN_RESULT_KEYS = frozenset({
     "secret", "secrets", "password", "credential", "credentials", "api_key",
     "access_token", "refresh_token", "authorization", "private_key", "path",
@@ -162,6 +159,8 @@ class OptionConversationAgent:
                 path_context = {"messages": self._tasks.get(identity, task_id).get("messages", [])}
             entry["confirmed_path_count"] = _user_path_count(path_context, message, entry.get("question"))
             entry["observations"] = []
+            entry.pop("required_recommendation_result", None)
+            entry.pop("completed_recommendation_deliveries", None)
             entry["payoff_images"] = []
             entry["failure_recovery"] = ToolFailureRecovery()
             entry["question"] = None
@@ -172,6 +171,18 @@ class OptionConversationAgent:
             entry["route"] = route
             entry["transport"].route_refs[route.route_id] = route
             self._ensure_activated(entry, current_context, route)
+            delivery_outcome = self._prime_required_recommendation(entry, identity, task_id, attachments or [])
+            if delivery_outcome is not None:
+                self._schedule_idle_close(identity, task_id, entry)
+                return delivery_outcome
+            unfinished = _unfinished_recommendation_response(entry)
+            if unfinished is not None:
+                self._schedule_idle_close(identity, task_id, entry)
+                return unfinished
+            delivered = _completed_recommendation_delivery_response(entry)
+            if delivered is not None:
+                self._schedule_idle_close(identity, task_id, entry)
+                return delivered
             raw = self._request_turn(identity, task_id, entry,
                 "agent.turn",
                 {
@@ -195,6 +206,10 @@ class OptionConversationAgent:
                 list(entry["observations"]),
                 blocks,
             )
+            workflow = _conversation_workflow(current_context, message)
+            if (workflow.analysis_path == "recommendation" and workflow.execution_semantics == "multi_agent"
+                and not _current_recommendation_ready(entry) and not entry.get("question")):
+                response = _unfinished_recommendation_response(entry) or _result("partial", "本轮尚未形成通过复核的候选，未生成新的报告。", list(entry["observations"]))
             if response.pop("_fact_repair_needed", False) and not entry.get("question") and not self._is_cancelled(identity, task_id):
                 # One same-session formatting correction. No tool can run or
                 # change inputs; the existing verified observations are reused.
@@ -219,6 +234,11 @@ class OptionConversationAgent:
                 response = self._validated_response(_result_text(corrected), identity, current_context,
                     list(entry["observations"]), _result_blocks(corrected))
                 response.pop("_fact_repair_needed", None)
+            workflow = _conversation_workflow(current_context, message)
+            if (workflow.analysis_path == "recommendation" and workflow.execution_semantics == "multi_agent"
+                and not any(item.get("tool") == "recommender.run" for item in entry["observations"])
+                and not entry.get("question")):
+                response = _result("partial", "本轮尚未执行所选多智能体流程，未形成新的推荐或报告。", list(entry["observations"]))
             if entry["failure_recovery"].stopped:
                 response = _result("partial", entry["failure_recovery"].summary(), list(entry["observations"]))
             elif entry.get("question"):
@@ -234,6 +254,39 @@ class OptionConversationAgent:
             response["_assistant_blocks"] = [*blocks, *images]
         self._schedule_idle_close(identity, task_id, entry)
         return response
+
+    def _prime_required_recommendation(self, entry, identity, task_id, attachments):
+        """Dispatch a required multi-agent workflow once, independent of old prose.
+
+        Attachments still require the main agent's read/interpret phase. A new
+        user turn resets this receipt; same-turn retries reuse its real result.
+        """
+        decision = _conversation_workflow(entry.get("context", {}), entry.get("user_message", ""))
+        if attachments or decision.analysis_path != "recommendation" or decision.execution_semantics != "multi_agent":
+            return
+        result = self._tool_call(entry, identity, task_id, {
+            "toolName": "recommender_run", "arguments": {"prompt": entry["user_message"]},
+        })
+        entry["context"].setdefault("facts", {})["current_recommendation_result"] = result
+        if not _current_recommendation_ready(entry) or entry.get("question"):
+            return
+        delivery = _recommendation_delivery_request(entry)
+        if delivery is None:
+            return
+        receipts = []
+        for template in delivery["templates"]:
+            for fmt in delivery["formats"]:
+                receipt = self._tool_call(entry, identity, task_id, {
+                    "toolName": "recommendation_delivery_run",
+                    "arguments": {"kind": template, "format": fmt},
+                })
+                receipts.append(receipt)
+                entry["context"]["facts"]["current_report_delivery"] = receipts
+                if not _complete_delivery_receipt(receipt):
+                    # Every requested file is part of one Host-owned delivery.
+                    # A missing input or interrupted render ends the whole batch;
+                    # another model cannot repair it by repeating calculations.
+                    return _incomplete_recommendation_delivery_response(entry, receipt)
 
     def _request_turn(self, identity, task_id, entry, method, params, **kwargs):
         try:
@@ -501,6 +554,11 @@ class OptionConversationAgent:
         cancellation_check = getattr(self, "_is_cancelled", None)
         if callable(cancellation_check) and cancellation_check(identity, task_id):
             return {"status": "cancelled", "message": "本轮已停止，不再发起新工具调用。"}
+        delivery_key = (str(arguments.get("kind") or "report"), str(arguments.get("format") or "html"))
+        if tool_name == "recommendation_delivery.run":
+            completed = entry.get("completed_recommendation_deliveries", {})
+            if delivery_key in completed:
+                return completed[delivery_key]
         recovery = entry.setdefault("failure_recovery", ToolFailureRecovery())
         blocked = recovery.before(tool_name, arguments)
         if blocked is not None:
@@ -520,6 +578,11 @@ class OptionConversationAgent:
             if entry.get("question"):
                 return {"status": "needs_input", "message": "请等待用户回答已提出的问题，再继续依赖该答案的操作。"}
             if tool_name in {"reporter.run", "reporter.create_document", "recommendation_delivery.run"}:
+                decision = _conversation_workflow(entry.get("context", {}), entry.get("user_message", ""))
+                if (decision.analysis_path == "recommendation" and decision.execution_semantics == "multi_agent"
+                    and not _current_recommendation_ready(entry)):
+                    return {"status": "failed", "failure_code": "current_recommendation_required",
+                            "message": "本轮尚无通过复核的推荐，不能交付历史候选。请先完成当前多智能体流程；失败或缺少必要条件时如实保留未完成状态。"}
                 from ..report_delivery import _NEGATED_DELIVERY, delivery_request
                 message = str(entry.get("user_message", ""))
                 from ..payoff_image_delivery import requests_payoff_image_only
@@ -535,7 +598,11 @@ class OptionConversationAgent:
                 from runtime.workflow_policy import requests_named_recommendation
                 message = entry.get("user_message", "")
                 decision = _conversation_workflow(entry.get("context", {}), message)
-                if requests_named_recommendation(message) and decision.analysis_path == "recommendation":
+                continuing_multi_selection = (
+                    decision.reason_code == "recommendation_question_continuation"
+                    and decision.execution_semantics == "multi_agent"
+                )
+                if (requests_named_recommendation(message) or continuing_multi_selection) and decision.analysis_path == "recommendation":
                     blocked = {
                         "status": "failed", "failure_code": "recommendation_workflow_required",
                         "message": "用户明确要求多Agent预设，请调用recommender_run执行该工作流，由获授权角色取得计算证据。主Agent直接计算不能替代角色执行，也不能声称Evaluator或其他角色已运行。",
@@ -562,6 +629,8 @@ class OptionConversationAgent:
                     detail = "缺少" + "、".join(missing) if missing else "字段类型、代码格式或日期格式不正确"
                     raise ValidationError(f"取数请求参数错误：{detail}。请使用asset_ids标的列表及YYYY-MM-DD格式的start_date、end_date修正请求；这不是数据服务故障。")
             if tool_name == "recommender.run" and callable(getattr(self._tools, "recommend", None)):
+                if "required_recommendation_result" in entry:
+                    return entry["required_recommendation_result"]
                 decision = _conversation_workflow(entry.get("context", {}), entry.get("user_message", ""))
                 if decision.analysis_path == "direct_module":
                     return {"status": "direct_module_required", "message": "本轮要求直接处理指定产品、数据、计算或已有报告。请只执行相应模块，不重新推荐或增加备选。"}
@@ -595,9 +664,22 @@ class OptionConversationAgent:
             "status": str(raw.get("status", "succeeded")),
             "facts": list(verified.get("facts", [])) if isinstance(verified, Mapping) else [],
             "contract_term_facts": list(verified.get("contract_term_facts", [])) if isinstance(verified, Mapping) else [],
+            "calculation_contexts": list(verified.get("calculation_contexts", [])) if isinstance(verified, Mapping) else [],
         }
         entry["observations"].append(observation)
         result = _safe_tool_result(tool_name, raw, verified)
+        if (tool_name == "recommendation_delivery.run" and result.get("status") in {"completed", "succeeded"}
+            and any(key in result for key in ("delivery", "document", "preview_url"))):
+            entry.setdefault("completed_recommendation_deliveries", {})[delivery_key] = result
+        if tool_name == "recommender.run":
+            entry["required_recommendation_result"] = result
+            recommendation = result.get("recommendation_set", {})
+            if (recommendation.get("status") == "pending_question"
+                and isinstance(recommendation.get("next_question"), str)
+                and recommendation["next_question"].strip()):
+                prompt = redact_text(recommendation["next_question"], identity, limit=2000).strip()
+                entry["question"] = {"type": "question", "question_id": _digest(prompt),
+                                     "prompt": prompt, "options": [], "allow_free_text": True}
         if tool_name == "payoffer.run":
             from ..payoff_image_delivery import image_from_result
             image = image_from_result(task_id, raw)
@@ -854,8 +936,17 @@ def _validated_conversation_text(text, observations, context_facts):
     for marker in _FACT_MARKER.finditer(text):
         # A citation can follow the displayed number or its unit. It cannot
         # borrow a number across sentences, table cells or another citation.
+        def adjacent_citation_gap(span):
+            gap = text[span[1]:marker.start()]
+            if re.search(r'[|\n。；;，]', gap):
+                return False
+            # Several facts may support one displayed number. Every reference
+            # still validates its own value; only a contiguous citation/unit
+            # chain may borrow that number, never intervening prose.
+            return '[fact:' not in gap or bool(re.fullmatch(r'[\s%\\]*', _FACT_MARKER.sub('', gap)))
+
         candidates = [span for span in numbers if 0 <= marker.start()-span[1] <= 100
-                      and not re.search(r'[|\n。；;，]|\[fact:', text[span[1]:marker.start()])]
+                      and adjacent_citation_gap(span)]
         preferred = [span for span in candidates if span in required]
         candidates = preferred or candidates
         reference = marker.group(1)
@@ -863,7 +954,7 @@ def _validated_conversation_text(text, observations, context_facts):
         # Read the unit on either side of it so a decimal ratio cannot silently
         # become a percentage when the marker is removed for display.
         def unit_suffix(span):
-            before = text[span[1]:marker.start()]
+            before = _FACT_MARKER.sub('', text[span[1]:marker.start()])
             if span in table_percentages and not before.strip():
                 return '%'
             return before if before.strip() else text[marker.end():]
@@ -880,6 +971,9 @@ def _validated_conversation_text(text, observations, context_facts):
     # Replace only an unverified claimed value. Keep Markdown and valid values.
     for start, end in sorted(invalid, reverse=True):
         text = text[:start] + '未核实' + text[end:]
+    # Collapse a duplicate percent sign separated only by fact markers.
+    # This changes presentation after validation, never the claimed number.
+    text = re.sub(r'((?:\\)?%)(?:\[fact:fact_[a-f0-9]{6,64}\])+(?:\\)?%', r'\1', text)
     text = _FACT_MARKER.sub('', text)
     verified = not invalid and not dangling
     if not verified:
@@ -1138,6 +1232,7 @@ def _system_prompt(context: Mapping[str, Any]) -> str:
     )
     return (
         "你是OptionHelper的期权产品研究助手。用自然、简洁、专业的中文与用户连续交流。\n"
+        "current_recommendation_result若存在，是本轮Host已按所选预设真实执行的结果；优先于历史推荐或失败记录，不能再启动同一轮推荐。成功则解释当前结论并继续用户要求的交付；失败则保留真实原因，不回退交付历史候选。历史失败不能当作本轮已执行，也不能阻止新一轮研究。\n"
         "current_recommendation_execution是本轮Host读取的当前配置，历史回复中的单/多智能体、预设和深度不代表当前配置。用户再次要求推荐时，按本轮配置调用recommender_run；相同提示词也可以在不同预设下运行，不得因已有推荐就拒绝或要求改写需求。只有用户明确要求查看、解释或复用旧结果时才直接使用旧推荐。本轮内相同工具失败的防循环规则仍适用。\n"
         f"{BACKTEST_WINDOW_RULE}\n"
         f"当前本地日期：{datetime.now().astimezone().date().isoformat()}。行情日期以真实交易日历为准，不能猜测当前年份。\n"
@@ -1160,7 +1255,7 @@ def _system_prompt(context: Mapping[str, Any]) -> str:
         "用户指定了期权产品并要求HTML或报告时，直接查询该产品规则，完成所需计算和报告，不调用推荐、不增加备选。只有用户要求选择、推荐或比较候选时才使用推荐模块。旧推荐未完成不能覆盖本轮新指定产品。\n"
         "MC路径数严格使用用户原值：10就是10条，10万才是100000条。将其作为整数传入pricing_config.path_count，model_method使用monte_carlo。精度不足可说明，但不能擅自提高路径数。工具参数错误先按字段说明修正，不要重复询问用户已提供的信息。\n"
         "你专注于期权结构、条款、收益、估值、Greeks、风险与历史回放，不提供无关的通用编程或文件操作能力。\n"
-        "结构推荐通过recommender_run交给OptionHelper Host组织，不得模拟Recommender计算。先读取用户附件并结合本轮要求，再提交推荐请求；不要在读取附件前重复询问其中已有的信息。用户说默认、都行或按合理假设继续时，由你明确拟采用参数并交受控合同解析器处理，不要求重复确认，也不得把研究假设冒充市场事实。用户要求报告或HTML文件时，必须交付文件而非代码：用户明确要求定价、回测或模块结果时，先执行所需模块，已有计算直接复用并调用reporter_run；缺少必要输入则询问，计算失败如实说明，不能改交草稿。推荐型card、report、multicard、multireport默认通过recommendation_delivery_run完成合同、Payoffer、Pricer、Backtester再交Reporter；quote至少完成必要定价。推荐完成不是报告任务完成。只有用户明确要求研究草稿，或与结构推荐无关的资料整理，才使用reporter_create_document。报告不要求额外候选审批，使用用户指定结构或本轮首选。缺少会影响计算的条件且用户尚未授权采用假设时，使用ask_user一次提出问题及具体选项，调用后停止并等待回答；用户已回答或允许默认时继续执行，不能重复提问。模板与文件格式分别遵从用户要求，默认HTML。用户要求多个模板时分别调用，不得把单结构模板改成多结构模板；已有指定模板文件生成成功则直接交付，不要为同一文件重复渲染。最终回复保留研究结论、依据和未完成项的简明说明，不能只说已生成文件。所有生成的HTML报告都支持在App报告卡的编辑入口修改正文、标题和版式，并保存导出；编辑不会重算或改写上游计算记录。用户询问编辑时说明该入口，不得声称HTML只读或要求外部编辑器。不要输出内部API路径，Host会显示可预览、下载、编辑的报告卡。只有明确要求源码才展示代码。reporter_create_document的content使用Markdown正文，保留标题、表格和公式；不要提交HTML源码。多产品草稿必须同时填写product_ids，编号来自用户明确选择并经knowledger_search核对；纯知识比较不需要推荐登记。knowledger_search只查询资料，不会保存候选，不能声称已登记或已确认推荐。用户此前明确不计算且本轮只要草稿时继续遵守，不得为生成文件改调计算或推荐。工具报告缺少product_ids时补齐该字段，不得只改标题或正文重复调用；仍无法确定产品时说明缺项并结束。公式使用美元符号包围的标准数学记号。"
+        "结构推荐通过recommender_run交给OptionHelper Host组织，不得模拟Recommender计算。用户要求比较或筛选方案时，选择结构就是研究任务，不要先让用户选定一个结构；只追问实际缺少的市场观点、风险预算或必要条件。用户回答上轮推荐流程的问题后，继续该流程，不因答案提到具体结构就绕过角色协作。先读取用户附件并结合本轮要求，再提交推荐请求；不要在读取附件前重复询问其中已有的信息。用户说默认、都行或按合理假设继续时，由你明确拟采用参数并交受控合同解析器处理，不要求重复确认，也不得把研究假设冒充市场事实。用户要求报告或HTML文件时，必须交付文件而非代码：用户明确要求定价、回测或模块结果时，先执行所需模块，已有计算直接复用并调用reporter_run；缺少必要输入则询问，计算失败如实说明，不能改交草稿。推荐型card、report、multicard、multireport默认通过recommendation_delivery_run完成合同、Payoffer、Pricer、Backtester再交Reporter；quote至少完成必要定价。推荐完成不是报告任务完成。只有用户明确要求研究草稿，或与结构推荐无关的资料整理，才使用reporter_create_document。报告不要求额外候选审批，使用用户指定结构或本轮首选。缺少会影响计算的条件且用户尚未授权采用假设时，使用ask_user一次提出问题及具体选项，调用后停止并等待回答；用户已回答或允许默认时继续执行，不能重复提问。模板与文件格式分别遵从用户要求，默认HTML。用户要求多个模板时分别调用，不得把单结构模板改成多结构模板；已有指定模板文件生成成功则直接交付，不要为同一文件重复渲染。最终回复保留研究结论、依据和未完成项的简明说明，不能只说已生成文件。所有生成的HTML报告都支持在App报告卡的编辑入口修改正文、标题和版式，并保存导出；编辑不会重算或改写上游计算记录。用户询问编辑时说明该入口，不得声称HTML只读或要求外部编辑器。不要输出内部API路径，Host会显示可预览、下载、编辑的报告卡。只有明确要求源码才展示代码。reporter_create_document的content使用Markdown正文，保留标题、表格和公式；不要提交HTML源码。多产品草稿必须同时填写product_ids，编号来自用户明确选择并经knowledger_search核对；纯知识比较不需要推荐登记。knowledger_search只查询资料，不会保存候选，不能声称已登记或已确认推荐。用户此前明确不计算且本轮只要草稿时继续遵守，不得为生成文件改调计算或推荐。工具报告缺少product_ids时补齐该字段，不得只改标题或正文重复调用；仍无法确定产品时说明缺项并结束。公式使用美元符号包围的标准数学记号。"
         "纯咨询不运行分析模块；指定单模块只执行所需模块；推荐型报告遵循完整交付工作流；已有同一合同结果直接复用，换格式不重新推荐或计算。\n"
         f"本轮工作流参考：{workflow.analysis_path}，依据：{workflow.reason_code}。当前明确意图优先于旧合同和旧候选；无法确定意图时结合用户原话与附件判断，不根据单个关键词扩大任务。\n"
         "独立图片交付：用户只要损益图、收益图或payoff图时，确认产品条款后只调用payoffer_run；"
@@ -1393,6 +1488,8 @@ def _safe_tool_result(
         result["facts"] = _safe_value(verified.get("facts"))
     if isinstance(verified, Mapping) and isinstance(verified.get("calculation_context"), Mapping):
         result["calculation_context"] = _safe_value(verified["calculation_context"])
+    if isinstance(verified, Mapping) and isinstance(verified.get("calculation_contexts"), list):
+        result["calculation_contexts"] = _safe_value(verified["calculation_contexts"])
     if isinstance(verified, Mapping) and isinstance(verified.get("contract_term_facts"), list):
         result["contract_term_facts"] = _safe_value(verified["contract_term_facts"])
     if tool_name == "recommender.run" and isinstance(raw.get("recommendation_set"), Mapping):
@@ -1530,7 +1627,11 @@ __all__ = ["OptionConversationAgent"]
 def _fact_repair_catalog(observations, context_facts):
     """Give the bounded formatting retry exact references and display units."""
     facts = {}
+    contexts = {}
     for source in [*context_facts, *observations]:
+        for row in source.get("calculation_contexts", []):
+            if isinstance(row, Mapping) and row.get("candidate_id"):
+                contexts[row["candidate_id"]] = {key: row[key] for key in ("candidate_id", "product_id", "method", "valuation_date", "greek_reading") if key in row}
         for fact in [*source.get("facts", []), *source.get("contract_term_facts", [])]:
             if not isinstance(fact, Mapping):
                 continue
@@ -1549,10 +1650,184 @@ def _fact_repair_catalog(observations, context_facts):
                 suffix = "个百分点"
             # Give the repair turn a concise, verifiable display alongside the
             # exact value; presentation must never change the underlying fact.
-            readable = format(number, ".3e") if number and abs(number) < Decimal("0.01") else format(number, ".2f")
+            if unit in {"count", "indicator"} and number == number.to_integral_value():
+                readable = format(number, ".0f")
+            else:
+                readable = format(number, ".3e") if number and abs(number) < Decimal("0.01") else format(number, ".2f")
             readable = readable.replace("-", "−")
-            readable_suffix = "元" if suffix == "CNY" else suffix
-            facts[ref] = {"label": fact.get("label", fact.get("metric", "")),
+            readable_suffix = {"CNY": "元", "count": "次", "indicator": ""}.get(suffix, suffix)
+            # Repeated module runs can supply the same contract term. Retain
+            # one verified reference per candidate and metric, rather than
+            # dropping the first candidate's valuation with a tail slice.
+            candidate = fact.get("candidate_id")
+            key = (candidate, fact.get("metric")) if candidate and fact.get("metric") else ref
+            facts[key] = {**{name: fact[name] for name in ("candidate_id", "product_id", "metric", "source_unit") if name in fact},
+                          "label": fact.get("label", fact.get("metric", "")),
                           "display": f"{number}[fact:{ref}]{suffix}",
                           "readable_display": f"{readable}[fact:{ref}]{readable_suffix}"}
-    return json.dumps(list(facts.values())[-60:], ensure_ascii=False, separators=(",", ":"))
+    # Round-robin selection keeps every candidate represented within the
+    # display budget. Each display carries its original binding and unit.
+    groups = {}
+    for fact in facts.values():
+        groups.setdefault(fact.get("candidate_id", "unbound"), []).append(fact)
+    selected = []
+    while any(groups.values()) and len(selected) < 96:
+        for rows in groups.values():
+            if rows and len(selected) < 96:
+                selected.append(rows.pop(0))
+    return json.dumps({"facts": selected, "calculation_contexts": list(contexts.values())}, ensure_ascii=False, separators=(",", ":"))
+
+
+
+def _recommendation_delivery_request(entry):
+    """Retain an unfinished, user-requested delivery through a short clarification."""
+    from ..report_delivery import delivery_request
+    current = delivery_request(entry.get("user_message", ""))
+    if current is not None:
+        return current
+    result = entry.get("required_recommendation_result", {})
+    recommendation = result.get("recommendation_set", {}) if isinstance(result, Mapping) else {}
+    outputs = set(recommendation.get("requested_outputs", ())) if isinstance(recommendation, Mapping) else set()
+    outputs.intersection_update({"card", "report", "quote"})
+    if not outputs:
+        return None
+    decision = _conversation_workflow(entry.get("context", {}), entry.get("user_message", ""))
+    if decision.reason_code not in {"recommendation_question_continuation", "recommendation_continuation"}:
+        return None
+    for row in reversed(entry.get("context", {}).get("messages", [])):
+        if not isinstance(row, Mapping):
+            continue
+        if row.get("role") == "assistant" and row.get("status") in {"completed", "answered", "cancelled"}:
+            break
+        if row.get("role") != "user":
+            continue
+        prior = delivery_request(row.get("content", ""))
+        if prior is None:
+            continue
+        templates = [template for template in prior["templates"] if template.removeprefix("multi") in outputs]
+        if templates:
+            return {**prior, "template": templates[-1], "templates": templates, "multiple": len(templates) > 1,
+                    "export_only": False}
+    return None
+
+
+
+def _complete_delivery_receipt(receipt):
+    """A successful calculation status alone does not prove a delivered file."""
+    return (isinstance(receipt, Mapping)
+            and receipt.get("status") in {"completed", "succeeded"}
+            and bool(receipt.get("document") or receipt.get("preview_url"))
+            and receipt.get("delivery", {}).get("coverage_status") != "partial")
+
+
+def _incomplete_recommendation_delivery_response(entry, receipt):
+    """Preserve the actual Host outcome and earlier files without more research."""
+    receipts = entry["context"]["facts"]["current_report_delivery"]
+    completed = [row for row in receipts if _complete_delivery_receipt(row)]
+    status = str(receipt.get("status", "failed"))
+    if status in {"completed", "succeeded"}:
+        status = "partial"
+    elif status not in {"needs_input", "failed", "partial", "cancelled", "interrupted", "timed_out", "unavailable", "blocked"}:
+        status = "failed"
+    if completed and status in {"failed", "unavailable", "blocked"}:
+        status = "partial"
+    text = str(receipt.get("message") or "本次交付尚未完成，已有计算结果保留。")
+    next_step = str(receipt.get("next_step") or "").strip()
+    if next_step and next_step != text.strip():
+        text += "\n\n" + next_step
+    if completed:
+        text = "已完成的文档已保留，其余交付尚未完成。\n\n" + text
+    response = _result(status, text, list(entry.get("observations", ())))
+    documents = [row["document"] for row in completed if isinstance(row.get("document"), Mapping)]
+    if documents:
+        response["document"] = dict(documents[-1])
+    if receipt.get("failure_code"):
+        response["failure_code"] = receipt["failure_code"]
+    if status == "needs_input":
+        prompt = str(receipt.get("message") or next_step or "请补充本次交付所需的条件。")
+        entry["question"] = {"type": "question", "question_id": _digest(prompt),
+                             "prompt": prompt, "options": [], "allow_free_text": True}
+        response["_user_question"] = dict(entry["question"])
+    return response
+
+
+def _completed_recommendation_delivery_response(entry):
+    """A verified file delivery is terminal; do not reopen completed research.
+
+    This applies only to the current Host-owned recommendation and every
+    requested file. Ordinary explanation turns still use the conversation model.
+    """
+    if entry.get("question") or not _current_recommendation_ready(entry):
+        return None
+    request = _recommendation_delivery_request(entry)
+    if request is None:
+        return None
+    receipts = entry.get("context", {}).get("facts", {}).get("current_report_delivery", [])
+    if not isinstance(receipts, list) or len(receipts) != len(request["templates"]) * len(request["formats"]):
+        return None
+    if any(not _complete_delivery_receipt(row) for row in receipts):
+        return None
+    documents = [row["document"] for row in receipts if isinstance(row.get("document"), Mapping)]
+    titles = list(dict.fromkeys(str(row.get("title") or "研究报告") for row in documents))
+    subject = "、".join("《" + title + "》" for title in titles) if titles else "研究报告"
+    modules = set().union(*(row.get("delivery", {}).get("included_modules", []) for row in receipts))
+    labels = [label for key, label in (("payoff", "收益结构"), ("pricing", "估值定价"), ("backtest", "历史回测")) if key in modules]
+    text = subject + "已生成，可预览和下载。"
+    if labels:
+        text += "报告包含" + "、".join(labels) + "；研究假设、统计口径与风险限制已列入正文。"
+    response = _result("completed", text, list(entry.get("observations", [])))
+    if documents:
+        response["document"] = dict(documents[-1])
+    return response
+
+
+def _unfinished_recommendation_response(entry):
+    """Preserve a terminal workflow outcome without another model inventing causes."""
+    current = entry.get("required_recommendation_result")
+    if not isinstance(current, Mapping) or _current_recommendation_ready(entry):
+        return None
+    recommendation = current.get("recommendation_set", {})
+    question = entry.get("question")
+    if isinstance(question, Mapping):
+        response = _result("needs_input", question["prompt"], list(entry.get("observations", ())))
+        response["_user_question"] = dict(question)
+        return response
+    reasons = []
+    metric_labels = {"contract_loss_bound": "合同最大亏损边界尚未通过核验",
+                     "margin_call": "追加保证金条件尚未通过核验",
+                     "initial_premium_cost": "权利金预算尚未通过核验",
+                     "long_only_legs": "仅买入期权腿的要求尚未通过核验"}
+    if isinstance(recommendation, Mapping):
+        for row in recommendation.get("rejected", ()):
+            if not isinstance(row, Mapping):
+                continue
+            raw = str(row.get("reason", ""))
+            structured_gate = row.get("source") in {"proposal_constraint_gate", "confirmed_user_constraints", "constraint_ranking"}
+            labels = [label for metric, label in metric_labels.items() if metric in raw] if structured_gate else []
+            # Model review prose is diagnostic material, not verified public
+            # financial evidence. Keep exact notes in the recommendation audit.
+            if row.get("source") in {"Trader", "Reviewer", "Matcher", "Hedger"}:
+                reasons.append("候选方案未通过适用性复核，仍需调整。")
+            else:
+                reasons.extend(labels or ([raw] if raw else []))
+        reasons.extend(str(item) for item in recommendation.get("limitations", ())
+                       if not str(item).startswith("仅有"))
+    if not reasons and current.get("message"):
+        reasons.append(str(current["message"]))
+    cleaned = []
+    for reason in reasons:
+        reason = redact_text(reason, limit=800).strip()
+        reason = reason.replace("Matcher尚需复核：", "方案适配尚需复核：").replace("Hedger尚需复核：", "风险保护尚需复核：")
+        if reason and reason not in cleaned:
+            cleaned.append(reason)
+    message = "本轮研究尚未完成，未生成新的报告。"
+    if cleaned:
+        message += "\n\n" + "\n".join(cleaned[:4])
+    return _result("partial", message, list(entry.get("observations", ())))
+
+
+def _current_recommendation_ready(entry):
+    current = entry.get("required_recommendation_result", {})
+    recommendation = current.get("recommendation_set", {}) if isinstance(current, Mapping) else {}
+    return (isinstance(recommendation, Mapping) and bool(recommendation.get("candidates"))
+            and recommendation.get("status") in {"pending_approval", "candidate_ready", "completed"})

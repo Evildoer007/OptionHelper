@@ -71,6 +71,8 @@ def financial_model_view(value, term_catalog):
                 }
                 if encoding == 'normalized_price_s0_100':
                     quantities[key]['reference_coordinate'] = 100
+                elif key in {'n_C', 'n_P'} and basis == {'normalized_100'}:
+                    quantities[key]['reading'] = '归一化合同的买入腿倍数，不是市场合约张数。1为一倍名义敞口，0.6为六成，6为六倍；合同现金流随倍数缩放。'
                 elif encoding == 'percentage_points_internal':
                     quantities[key]['reading'] = '百分数数值；例如13表示13%，与市场volatility_override=0.13编码不同。'
             reading['term_overrides'] = quantities
@@ -86,8 +88,9 @@ def financial_model_view(value, term_catalog):
         facts = node.get('verified_metrics')
         if isinstance(facts, Mapping):
             reading['verified_metrics'] = {
-                key: {'unit': fact.get('unit'), 'value_encoding': fact.get('value_encoding', 'unknown'),
-                      'reading': '比例小数；百分比显示为value×100%；这已经是比例，无需再除以原始标的点位。'}
+                key: {'unit': fact.get('unit'), 'source_unit': fact.get('source_unit'),
+                      'value_encoding': fact.get('value_encoding', 'unknown'),
+                      'reading': _fact_reading(fact)}
                 for key, fact in facts.items()
                 if isinstance(fact, Mapping) and fact.get('value_encoding') == 'decimal_ratio'
             }
@@ -96,3 +99,15 @@ def financial_model_view(value, term_catalog):
         return result
 
     return visit(value)
+
+
+def _fact_reading(fact):
+    units = {
+        'pv_percent_per_spot': '每原始标的价格变动1点的合同净现值比例变化；不是市场期权以标的单位计的Delta，不能直接与0.5比较。',
+        'pv_percent_per_spot_squared': '合同净现值比例对原始标的价格的二阶敏感度，单位为每点平方；不能只因原始数值小而判为异常。',
+        'pv_percent_per_1pct_volatility': '波动率变动1个百分点对应的合同净现值比例变化。',
+        'pv_percent_per_calendar_day': '每经过1个日历日对应的合同净现值比例变化。',
+        'pv_percent_per_1pct_rate': '利率变动1个百分点对应的合同净现值比例变化。',
+    }
+    base = '比例小数；百分比显示为value×100%；这已经是比例，无需再除以原始标的点位。'
+    return base + units.get(fact.get('source_unit'), '')

@@ -215,6 +215,9 @@ def _execute(execution: dict[str, Any], stage: dict[str, str]) -> dict[str, Any]
                         data_store=data_store if module in {"pricer", "backtester"} else None,
                     )
                 except BaseException as error:
+                    render_failure = _payoff_render_validation_failure(error)
+                    if render_failure is not None:
+                        raise render_failure from error
                     if _is_payoff_domain_compile_error(error):
                         raise _DeterministicCapabilityRejection() from error
                     raise
@@ -305,6 +308,26 @@ def _safe_failure(error: BaseException) -> dict[str, Any]:
         "error_type": type(error).__name__,
         "diagnostic_id": f"diag_{uuid4().hex}",
     }
+
+
+def _payoff_render_validation_failure(error: BaseException) -> UserActionError | None:
+    """Project only the verified renderer's typed, public size validation."""
+
+    current: BaseException | None = error
+    visited: set[int] = set()
+    while current is not None and id(current) not in visited:
+        visited.add(id(current))
+        error_type = type(current)
+        if (
+            error_type.__name__ == "PayoffRenderValidationError"
+            and error_type.__module__ == "modules.payoffer.impl.svg_renderer"
+        ):
+            return UserActionError(
+                "payoff_image_size_invalid", str(current), stage="input",
+                next_step="请增大收益图尺寸后重新运行。",
+            )
+        current = current.__cause__
+    return None
 
 
 def _is_payoff_domain_compile_error(error: BaseException) -> bool:

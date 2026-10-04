@@ -23,7 +23,7 @@ from typing import Any, Callable
 from uuid import uuid4
 
 from .runtime_model_proxy import ModelCompletion, ModelStreamDelta, RuntimeModelProxy
-from .runtime_protocol import MAX_WORKFLOW_TOOLS, ModelRouteRef, RuntimeEvent
+from .runtime_protocol import MAX_WORKFLOW_TOOLS, ModelRouteRef, RuntimeEvent, safe_runtime_value as _safe_value
 
 
 class RuntimeSubprocessError(RuntimeError):
@@ -45,29 +45,6 @@ def _now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime())
 
 
-def _safe_value(value: object, *, depth: int = 0) -> Any:
-    if depth > 8:
-        return "[truncated]"
-    forbidden = {
-        "secret", "secrets", "password", "credential", "credentials", "apikey",
-        "api_key", "access_token", "authorization", "private_key", "system_prompt",
-        "hidden_reasoning", "reasoning_content",
-    }
-    if isinstance(value, Mapping):
-        result: dict[str, Any] = {}
-        for key, item in value.items():
-            normalized = str(key).casefold().replace("-", "_")
-            if normalized in forbidden or any(marker in normalized for marker in ("secret", "password", "credential", "api_key")):
-                continue
-            result[str(key)] = _safe_value(item, depth=depth + 1)
-        return result
-    if isinstance(value, (list, tuple)):
-        return [_safe_value(item, depth=depth + 1) for item in value[:256]]
-    if isinstance(value, str):
-        return value[:64_000]
-    if value is None or isinstance(value, (bool, int, float)):
-        return value
-    return str(value)[:1_000]
 
 
 def _pick(value: Mapping[str, Any], *names: str, default: Any = None) -> Any:
@@ -371,7 +348,7 @@ class RuntimeSubprocessTransport:
                 raise RuntimeSubprocessError(f"duplicate request id: {identifier}")
             self._pending[identifier] = pending
         try:
-            self._write({"jsonrpc": "2.0", "id": identifier, "method": method, "params": _safe_value(params)})
+            self._write({"jsonrpc": "2.0", "id": identifier, "method": method, "params": _safe_value(params, bounded=False)})
         except Exception:
             with self._pending_lock:
                 self._pending.pop(identifier, None)
@@ -387,7 +364,7 @@ class RuntimeSubprocessTransport:
             return {}
         if not isinstance(pending.result, Mapping):
             raise RuntimeSubprocessError(f"RPC {method} returned a non-object")
-        return dict(_safe_value(pending.result))
+        return dict(_safe_value(pending.result, bounded=False))
 
     def _new_request_id(self) -> str:
         with self._pending_lock:
@@ -498,7 +475,7 @@ class RuntimeSubprocessTransport:
                 result = self._handle_model_request(params, complete=method.endswith("complete"))
             else:
                 result = self._handle_tool_request(params)
-            self._write({"jsonrpc": "2.0", "id": identifier, "result": _safe_value(result)})
+            self._write({"jsonrpc": "2.0", "id": identifier, "result": _safe_value(result, bounded=False)})
         except Exception as error:
             try:
                 self._write({
@@ -510,7 +487,7 @@ class RuntimeSubprocessTransport:
                 return
 
     def _bound_request(self, params: Mapping[str, Any]) -> dict[str, Any]:
-        result = dict(_safe_value(params))
+        result = dict(_safe_value(params, bounded=False))
         for key in (
             "task_id", "taskId", "tenant_id", "tenantId", "principal_id", "principalId",
             "workflow_id", "workflowId",
@@ -563,7 +540,7 @@ class RuntimeSubprocessTransport:
                 self._write({
                     "jsonrpc": "2.0",
                     "method": "host.model.chunk",
-                    "params": {"requestId": identifier, "chunk": _safe_value(chunk)},
+                    "params": {"requestId": identifier, "chunk": _safe_value(chunk, bounded=False)},
                 })
             return {"streamed": True}
         finally:
@@ -665,7 +642,7 @@ class RuntimeSubprocessTransport:
                 raise RuntimeSubprocessError("工具调用次数达到显式配置的上限")
             self._run_tool_counts[run_id] = current + 1
         if self.tool_handler is not None:
-            return _safe_value(self._invoke_callback(self.tool_handler, bound))
+            return _safe_value(self._invoke_callback(self.tool_handler, bound), bounded=False)
         if self.tool_bridge is None:
             raise RuntimeSubprocessError("Host未配置工具回调")
         tool_name = str(_pick(params, "toolName", "tool_name", default="") or "").strip()
@@ -698,7 +675,7 @@ class RuntimeSubprocessTransport:
                 raise
             return {"status": "failed", "error": _safe_value(str(error)),
                     "result": {"calculation_started": False}}
-        return result.to_dict() if hasattr(result, "to_dict") else _safe_value(result)
+        return result.to_dict() if hasattr(result, "to_dict") else _safe_value(result, bounded=False)
 
     def _tool_limit(self, role_id: str) -> int:
         workflow = self._workflow or {}

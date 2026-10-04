@@ -83,11 +83,13 @@ class PasswordCredentialStore:
                 ("admin", "66666666", Role.ADMIN),
                 ("sales", "88888888", Role.SALES),
             ):
-                existing = accounts.get(name, {})
+                if name in accounts:
+                    # Bootstrap fills missing accounts. Existing verifiers and
+                    # claims belong to the user, including migrated stores.
+                    continue
                 accounts[name] = _account_record(
                     name, _validated_password(password), role,
-                    existing.get("tenant_id", "managed-local"),
-                    existing.get("principal_id", f"managed-local:{name}"),
+                    "managed-local", f"managed-local:{name}",
                 )
             value["default_accounts_installed"] = True
             self._write(value)

@@ -873,6 +873,7 @@ export async function startWorkspace(initialMode) {
   });
   let currentModule = new URLSearchParams(location.search).get("module") || "datafetcher";
   let assistantOpen = false;
+  const assistantDesktopQuery = window.matchMedia("(min-width: 701px)");
   let restoringScroll = false;
   let modeSwitchRevision = 0;
   let taskSelectionRevision = 0;
@@ -920,12 +921,20 @@ export async function startWorkspace(initialMode) {
     catch { return normalizePanelLayout(null); }
   })();
 
-  const syncChatComposerClearance = () => {
+  const syncComposerClearance = () => {
     window.cancelAnimationFrame(composerClearanceFrame);
     composerClearanceFrame = window.requestAnimationFrame(() => {
       composerClearanceFrame = 0;
-      const usesFloatingComposer = currentMode === "chat"
-        && window.matchMedia("(min-width: 701px)").matches;
+      const desktop = window.matchMedia("(min-width: 701px)").matches;
+      if (currentMode === "desk" && desktop) {
+        const panelBounds = assistantPanel.getBoundingClientRect();
+        const formBounds = form.getBoundingClientRect();
+        if (formBounds.height > 0) {
+          assistantPanel.style.setProperty("--desk-composer-clearance",
+            `${Math.max(0, Math.ceil(panelBounds.bottom - formBounds.top + 12))}px`);
+        }
+      } else assistantPanel.style.removeProperty("--desk-composer-clearance");
+      const usesFloatingComposer = currentMode === "chat" && desktop;
       if (!usesFloatingComposer) {
         workArea.style.removeProperty("--chat-composer-clearance");
         return;
@@ -944,7 +953,7 @@ export async function startWorkspace(initialMode) {
     const height = Math.min(maximum, Math.max(30, input.scrollHeight));
     input.style.height = `${height}px`;
     input.dataset.overflow = String(input.scrollHeight > maximum);
-    syncChatComposerClearance();
+    syncComposerClearance();
   };
 
   const createModuleBridgeNonce = () => crypto.randomUUID
@@ -2336,27 +2345,29 @@ export async function startWorkspace(initialMode) {
   const settleConversationRequest = (taskId, requestId, { draft, keepPending = false } = {}) => {
     const state = readTransient(taskId);
     const pending = state.pendingConversation;
-    const matches = pending?.taskId === taskId && pending?.requestId === requestId;
+    if (pending?.taskId !== taskId || pending?.requestId !== requestId) return;
     const livePending = pendingConversationRequest?.taskId === taskId
       && pendingConversationRequest.requestId === requestId
       ? pendingConversationRequest
       : pending;
     updateTransient(taskId, {
       draft: draft ?? state.draft ?? "",
-      pendingConversation: matches ? (keepPending ? livePending : null) : (pending || null),
+      pendingConversation: keepPending ? livePending : null,
     });
-    if (currentTask?.task_id === taskId && pendingConversationRequest?.requestId === requestId) {
+    if (currentTask?.task_id === taskId && pendingConversationRequest?.taskId === taskId
+      && pendingConversationRequest.requestId === requestId) {
       pendingConversationRequest = keepPending ? pendingConversationRequest : null;
     }
   };
   const settleReportRequest = (taskId, requestId, { keepPending = false } = {}) => {
     const state = readTransient(taskId);
     const pending = state.pendingReport;
-    const matches = pending?.taskId === taskId && pending?.requestId === requestId;
+    if (pending?.taskId !== taskId || pending?.requestId !== requestId) return;
     updateTransient(taskId, {
-      pendingReport: matches ? (keepPending ? pending : null) : (pending || null),
+      pendingReport: keepPending ? pending : null,
     });
-    if (currentTask?.task_id === taskId && pendingReportRequest?.requestId === requestId) {
+    if (currentTask?.task_id === taskId && pendingReportRequest?.taskId === taskId
+      && pendingReportRequest.requestId === requestId) {
       pendingReportRequest = keepPending ? pendingReportRequest : null;
     }
   };
@@ -2394,8 +2405,9 @@ export async function startWorkspace(initialMode) {
     assistant.classList.toggle("is-open", visibleInDesk);
     assistantToggle.setAttribute("aria-expanded", String(visibleInDesk));
     assistantAvatar.setActive(currentMode === "desk" && !visibleInDesk);
-    assistantPanel.setAttribute("aria-hidden", String(currentMode === "desk" && !assistantOpen));
-    assistantPanel.inert = currentMode === "desk" && !assistantOpen;
+    const hiddenInDesk = currentMode === "desk" && assistantDesktopQuery.matches && !assistantOpen;
+    assistantPanel.setAttribute("aria-hidden", String(hiddenInDesk));
+    assistantPanel.inert = hiddenInDesk;
     if (revealed) stream.scrollTop = Number(readTransient().deskScrollTop) || 0;
     if (focus && visibleInDesk) {
       input.focus({ preventScroll: true });
@@ -2409,6 +2421,11 @@ export async function startWorkspace(initialMode) {
     }
     if (persist) saveTransient();
   };
+
+  assistantDesktopQuery.addEventListener("change", () => {
+    setAssistantOpen(assistantOpen, { persist: false });
+    syncComposerClearance();
+  });
 
   const restoreTransient = () => {
     const state = readTransient();
@@ -2605,7 +2622,7 @@ export async function startWorkspace(initialMode) {
       if (stream.parentElement !== chatScrollStage) chatScrollStage.append(stream);
     }
     setAssistantOpen(assistantOpen, { persist: false });
-    syncChatComposerClearance();
+    syncComposerClearance();
   };
 
   const modePath = (mode) => mode === "desk" ? "/optdesk" : "/optchat";
@@ -3627,15 +3644,16 @@ export async function startWorkspace(initialMode) {
   });
   const moduleTabsResizeObserver = new ResizeObserver(() => syncModuleTabIndicator(false));
   moduleTabsResizeObserver.observe(tabs);
-  const composerResizeObserver = new ResizeObserver(syncChatComposerClearance);
+  const composerResizeObserver = new ResizeObserver(syncComposerClearance);
   composerResizeObserver.observe(form);
+  composerResizeObserver.observe(assistantPanel);
   composerResizeObserver.observe(assistant);
   composerResizeObserver.observe(workArea);
-  syncChatComposerClearance();
+  syncComposerClearance();
   tabs.addEventListener("scroll", () => syncModuleTabIndicator(false), { passive: true });
   window.addEventListener("resize", () => {
     syncModuleTabIndicator(false);
-    syncChatComposerClearance();
+    syncComposerClearance();
   }, { passive: true });
   assistantToggle.addEventListener("pointerenter", () => assistantAvatar.interact());
   assistantToggle.addEventListener("focus", () => assistantAvatar.interact());

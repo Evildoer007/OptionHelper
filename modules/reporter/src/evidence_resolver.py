@@ -19,6 +19,8 @@ from runtime.knowledger.registry_loader import load_registry
 from runtime.ports.result_store import ResultStorePort
 from runtime.contracts.public_projection import encode_contract_parameter, redact_public_money_compatibility
 from runtime.contracts.term_presentation import term_value_encoding
+from runtime.contracts.contract_api import ResolvedContract
+from runtime.contracts.research_facts import research_context, contract_research_facts
 
 from .models import (
     MODULE_TO_RUN,
@@ -182,6 +184,7 @@ def _required_candidate(raw: Mapping[str, Any]) -> dict[str, Any]:
             "key_terms": list(value.get("key_terms", [])) if isinstance(value.get("key_terms", []), list) else [],
             "evidence_refs": list(value.get("evidence_refs", [])) if isinstance(value.get("evidence_refs", []), list) else [],
         }
+        candidate["research_context"] = research_context(value.get("research_context", {}))
         if value.get("source_candidate_id") is not None:
             candidate["source_candidate_id"] = require_identifier(
                 value.get("source_candidate_id"), "RecommendationCandidate.source_candidate_id",
@@ -1093,10 +1096,16 @@ def resolve_evidence(request: ReportRequest, result_store: ResultStorePort) -> d
                     request, result_store, candidate=candidate, display_module=display_module,
                     raw_ref=as_mapping(candidate_refs[display_module], f"module_run_refs.{candidate_id}.{display_module}"),
                 )
+        contract = _validate_candidate_contracts(candidate_id, modules)
+        facts = None
+        if contract is not None:
+            frozen = {key: contract[key] for key in ("identity", "terms", "term_sources", "paths", "resolved_schedules", "path_case_applicability")}
+            facts = contract_research_facts(ResolvedContract.from_controlled_snapshot(frozen), candidate.get("research_context"))
         candidate_evidence[candidate_id] = {
             "candidate": candidate,
             "modules": modules,
-            "contract": _validate_candidate_contracts(candidate_id, modules),
+            "contract": contract,
+            "research_facts": facts,
         }
     return {"recommender": recommender, "candidates": candidates, "candidate_evidence": candidate_evidence}
 

@@ -1307,7 +1307,7 @@ html { font-size: 14px; }
 .message-artifact__mark {
   display: grid;
   place-items: center;
-  color: var(--muted);
+  color: var(--ink);
 }
 .message-artifact__mark svg { width: 28px; height: 28px; }
 @media (max-width: 540px) {
@@ -1339,7 +1339,7 @@ html { font-size: 14px; }
   height: 32px;
   padding: 0;
   border-radius: 8px;
-  color: var(--muted);
+  color: var(--ink);
   background: transparent;
   text-decoration: none;
   transition: background-color 140ms ease, color 140ms ease;
@@ -1356,7 +1356,7 @@ html { font-size: 14px; }
   display: inline-flex; align-items: center; justify-content: center;
   width: 32px; height: 32px; padding: 6px; box-sizing: border-box;
   border: 0; border-radius: 6px; background: transparent; color: var(--muted);
-  text-decoration: none; cursor: pointer; list-style: none;
+  text-decoration: none; cursor: default; list-style: none;
 }
 .message-downloads > summary::-webkit-details-marker { display: none; }
 .message-payoff-image__download svg, .message-downloads > summary svg { width: 18px; height: 18px; }
@@ -1437,7 +1437,7 @@ html { font-size: 14px; }
   align-items: center;
   gap: 9px;
   padding: 2px 0;
-  cursor: pointer;
+  cursor: default;
   list-style: none;
   color: var(--muted);
   font-size: 12.5px;
@@ -1506,7 +1506,7 @@ html { font-size: 14px; }
   font-weight: 500;
   line-height: 20px;
   list-style: none;
-  cursor: pointer;
+  cursor: default;
 }
 .message--process summary::-webkit-details-marker { display: none; }
 .message--process summary:focus-visible { outline: 2px solid var(--red); outline-offset: 4px; }
@@ -1523,7 +1523,7 @@ html { font-size: 14px; }
 .process-tool-section { margin-top: 10px; }
 .process-events:empty, .process-actions:has(button[hidden]) { display: none; }
 .process-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-block: 8px; }
-.process-cancel { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 32px; padding: 4px 10px; border: 0; border-radius: 7px; background: transparent; color: var(--muted); font: inherit; font-size: 12px; cursor: pointer; }
+.process-cancel { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 32px; padding: 4px 10px; border: 0; border-radius: 7px; background: transparent; color: var(--muted); font: inherit; font-size: 12px; cursor: default; }
 .process-cancel svg { display: block; width: 16px; height: 16px; }
 .process-cancel:hover { color: var(--ink); background: var(--surface-hover, color-mix(in srgb, var(--ink) 5%, transparent)); }
 .process-cancel:focus-visible { outline: 1px solid var(--muted); outline-offset: 2px; }
@@ -3020,6 +3020,8 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
   flex-direction: column;
   gap: 20px;
   padding: 18px;
+  padding-bottom: var(--desk-composer-clearance, 172px);
+  scroll-padding-bottom: var(--desk-composer-clearance, 172px);
   align-items: stretch;
 }
 .workspace-shell.workspace-shell--desk[data-mode="desk"] .assistant-panel__transcript .message {
@@ -3064,7 +3066,7 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
 }
 .process-tool-card [data-process-card-status] svg { width: 16px; height: 16px; }
 .process-tool-card [data-state="complete"] { color: var(--success); }
-.process-tool-card [data-state="failed"] { color: var(--red); cursor: pointer; }
+.process-tool-card [data-state="failed"] { color: var(--red); cursor: default; }
 .process-tool-card [data-state="failed"]:hover { background: var(--red-pale); }
 .process-tool-card [data-process-card-status]:focus-visible { outline: 2px solid var(--red); outline-offset: 2px; }
 .process-tool-card [data-state="running"] svg { animation: process-status-spin 1.2s linear infinite; }
@@ -3082,7 +3084,7 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
 .composer-question[hidden] { display: none; }
 .composer-question__prompt { margin: 0 0 12px; font-weight: 600; line-height: 1.6; }
 .composer-question__choices { display: grid; gap: 6px; max-height: 32vh; overflow-y: auto; }
-.composer-question__option { display: flex; align-items: flex-start; gap: 10px; padding: 9px 10px; border-radius: 10px; cursor: pointer; }
+.composer-question__option { display: flex; align-items: flex-start; gap: 10px; padding: 9px 10px; border-radius: 10px; cursor: default; }
 .composer-question__option:hover, .composer-question__option:has(input:checked) { background: var(--surface-muted, #f4f4f4); }
 .composer-question__option input { accent-color: var(--accent, #c8102e); margin: 4px 0 0; flex: 0 0 auto; }
 .composer-question__option span { display: grid; gap: 3px; min-width: 0; }
@@ -3101,7 +3103,7 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
   background: transparent;
   border: 0;
   border-radius: 8px;
-  cursor: pointer;
+  cursor: default;
 }
 .composer-followup-control[hidden], .composer-followups[hidden] { display: none; }
 .composer-followup-control svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
@@ -3111,7 +3113,7 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
 .composer-followups { max-height: 120px; overflow-y: auto; padding: 4px 0 8px; }
 .composer-followup-row { display: flex; align-items: center; gap: 8px; padding: 5px 0; font-size: 12px; }
 .composer-followup-row .composer-followup-content { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.composer-followup-row button { flex: none; padding: 4px 8px; border: 0; background: transparent; color: inherit; cursor: pointer; }
+.composer-followup-row button { flex: none; padding: 4px 8px; border: 0; background: transparent; color: inherit; cursor: default; }
 
 /* Keep the reply footer to one disclosure; its body is the actual breakdown. */
 .message--process[data-usage-only="true"] .process-token-values > span,
@@ -3134,24 +3136,8 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
 .process-collaboration[hidden] { display: none; }
 .process-collaboration > header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; font-size: 12px; }
 .process-collaboration > header > span { color: var(--muted); font-size: 11px; }
-.process-collaboration__graph { position: relative; height: 178px; margin-top: 12px; }
-.process-collaboration__graph > svg { position: absolute; top: 0; left: 0; width: 100%; height: 120px; overflow: visible; }
-.process-collaboration__graph path { fill: none; stroke: var(--line); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
-.process-collaboration__graph path[data-state="running"] { stroke: #3478f6; stroke-dasharray: 10 7; animation: collaboration-flow 1.4s linear infinite; }
-.process-collaboration__graph path[data-state="complete"] { stroke: color-mix(in srgb, var(--ink) 30%, var(--line)); }
-.process-collaboration__root { position: absolute; top: 5px; left: 50%; display: grid; place-items: center; width: 34px; height: 34px; transform: translateX(-50%); border-radius: 50%; background: var(--ink); color: var(--surface); font-size: 10px; font-weight: 600; }
-.process-collaboration__nodes { position: absolute; top: 102px; width: 100%; display: grid; grid-template-columns: repeat(var(--agent-count), minmax(0, 1fr)); gap: 4px; }
-.process-collaboration__nodes button { display: flex; flex-direction: column; align-items: center; gap: 5px; min-width: 0; padding: 0 2px; border: 0; background: transparent; color: var(--ink); cursor: pointer; font-size: 11px; }
-.process-collaboration__nodes button > span:not(.process-collaboration__mark) { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.process-collaboration__nodes button small { color: var(--muted); font-size: 10px; }
-.process-collaboration__mark { display: grid; place-items: center; width: 27px; height: 27px; box-sizing: border-box; border: 1px solid var(--line); border-radius: 50%; background: var(--surface); color: var(--muted); }
-.process-collaboration__nodes [data-state="running"] .process-collaboration__mark { color: #3478f6; border-color: #3478f6; box-shadow: 0 0 0 4px #3478f618; }
-.process-collaboration__nodes [data-state="failed"] .process-collaboration__mark { color: var(--danger); border-color: var(--danger); }
-.process-collaboration__nodes button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 5px; }
-@keyframes collaboration-flow { to { stroke-dashoffset: -34; } }
 .workspace-shell .composer-actions__leading { position: relative; }
 @media (prefers-reduced-motion: reduce) {
-  .process-collaboration__graph path[data-state="running"] { animation: none; stroke-dasharray: none; }
   .workspace-shell .composer-attach-control, .workspace-shell .composer-attach-control::before { transition: none; }
 }
 
@@ -3177,7 +3163,7 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
 .process-tool-group[open] > summary::after { transform: rotate(45deg); }
 .process-tool-group__calls { padding: 4px 0 8px 12px; border-left: 1px solid var(--line); margin: 4px 0 8px; }
 .process-tool-group__calls[hidden], .process-tool-group__calls > [hidden] { display: none; }
-.process-tool-group__history { display: block; margin: 4px 0 8px; padding: 6px 0; border: 0; background: transparent; color: var(--muted); font: inherit; font-size: 12px; cursor: pointer; }
+.process-tool-group__history { display: block; margin: 4px 0 8px; padding: 6px 0; border: 0; background: transparent; color: var(--muted); font: inherit; font-size: 12px; cursor: default; }
 .process-tool-group__history[hidden] { display: none; }
 .process-tool-group__history:hover { color: var(--ink); }
 .process-tool-group__history:focus-visible { outline: 2px solid var(--ink); outline-offset: 3px; }
@@ -3194,3 +3180,6 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
   .process-tool-group__counts { grid-column: 1; grid-row: 2; }
   .process-tool-group > summary::after { grid-column: 2; grid-row: 1 / 3; }
 }
+
+/* macOS exposes the sidebar action in its native titlebar and menu. */
+html[data-native-shell="macos"] [data-rail-collapse-toggle] { display: none !important; }

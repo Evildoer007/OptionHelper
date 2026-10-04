@@ -290,7 +290,7 @@
       editorStyle.textContent = `
         html{scroll-behavior:smooth}body[contenteditable="true"]{min-height:100vh;caret-color:#b21b36;outline:none}
         [data-report-editor-selected="true"]{outline:2px solid #b21b36!important;outline-offset:3px}
-        .chart[data-report-editor-chart-host="true"],img,math{cursor:pointer}
+        .chart[data-report-editor-chart-host="true"],img,math{cursor:default}
       `;
       nextDocument.head.append(editorStyle);
       nextDocument.querySelectorAll('script,iframe,object,embed,form').forEach(node => node.remove());
@@ -998,10 +998,9 @@
     }
 
     renderAllCharts() {
-      Object.values(this.chartSpecs).forEach(spec => {
-        this._syncChartFigure(spec);
-        this._renderChart(spec);
-      });
+      // Opening or restoring a document preserves its authored captions.
+      // Explicit chart edits update captions through _syncChartFigure.
+      Object.values(this.chartSpecs).forEach(spec => this._renderChart(spec));
     }
 
     _renderChart(spec) {

@@ -8,7 +8,7 @@
 .dashboard-overview span { display:block; color:var(--muted); font-size:12px; margin-bottom:9px; }
 .dashboard-overview strong { display:block; font-size:23px; font-weight:550; font-variant-numeric:tabular-nums; }
 .dashboard-tabs { display:flex; gap:20px; overflow-x:auto; border-bottom:1px solid var(--rule); scrollbar-width:thin; }
-.dashboard-tabs button { flex:0 0 auto; padding:12px 0; border:0; border-bottom:2px solid transparent; background:transparent; color:var(--muted); cursor:pointer; white-space:nowrap; font-size:13px; }
+.dashboard-tabs button { flex:0 0 auto; padding:12px 0; border:0; border-bottom:2px solid transparent; background:transparent; color:var(--muted); cursor:default; white-space:nowrap; font-size:13px; }
 .dashboard-tabs button[aria-selected="true"] { color:var(--ink); border-bottom-color:var(--red); font-weight:600; }
 .dashboard-tabs button:focus-visible,.dashboard-table-wrap:focus-visible { outline:2px solid var(--red); outline-offset:-2px; }
 .dashboard-panel { min-height:240px; padding-top:16px; }
@@ -34,7 +34,7 @@
 .dashboard-chart-toolbar .dashboard-note { margin:0; }
 .dashboard-chart-toolbar h3 { margin:0; font-size:14px; font-weight:600; }
 .dashboard-range { display:flex; gap:4px; }
-.dashboard-range button { color:var(--muted); border:1px solid transparent; background:transparent; font:inherit; font-size:12px; padding:7px 10px; border-radius:6px; cursor:pointer; }
+.dashboard-range button { color:var(--muted); border:1px solid transparent; background:transparent; font:inherit; font-size:12px; padding:7px 10px; border-radius:6px; cursor:default; }
 .dashboard-range button[aria-pressed="true"] { border-color:var(--rule); color:var(--ink); background:var(--paper); }
 .dashboard-range button:hover { color:var(--ink); background:var(--paper); }
 .dashboard-range button:focus-visible { outline:2px solid var(--red); outline-offset:2px; }
@@ -56,18 +56,18 @@
 @container (max-width:700px) { .dashboard-specialty-values { grid-template-columns:repeat(2,minmax(0,1fr)); } }
 
 .dashboard-definitions { margin:0 0 16px; color:var(--muted); font-size:12px; }
-.dashboard-definitions summary { cursor:pointer; width:fit-content; padding:4px 0; }
+.dashboard-definitions summary { cursor:default; width:fit-content; padding:4px 0; }
 .dashboard-definitions p { max-width:780px; line-height:1.7; }
 .dashboard-asset-picker { display:grid; gap:5px; flex-shrink:0; color:var(--muted); font-size:12px; }
 .dashboard-asset-picker select { width:150px; max-width:100%; }
 .dashboard-metric-help { display:block; margin-top:7px; color:var(--muted); font-size:11px; line-height:1.5; }
 .dashboard-plot-heading { display:flex; gap:12px; justify-content:space-between; align-items:baseline; margin-bottom:10px; }
 .dashboard-plot-heading h3 { margin:0; }
-.dashboard-chart-reset { flex-shrink:0; border:0; background:none; padding:5px 0; color:var(--muted); font:inherit; font-size:11px; cursor:pointer; }
+.dashboard-chart-reset { flex-shrink:0; border:0; background:none; padding:5px 0; color:var(--muted); font:inherit; font-size:11px; cursor:default; }
 .dashboard-chart-reset:hover { color:var(--ink); text-decoration:underline; }
 .dashboard-chart-reset:focus-visible,.dashboard-more summary:focus-visible,.dashboard-definitions summary:focus-visible { outline:2px solid var(--red); outline-offset:3px; }
 .dashboard-more { border-top:1px solid var(--rule); margin:16px 0; }
-.dashboard-more > summary { cursor:pointer; padding:16px 0; color:var(--ink); font-size:13px; }
+.dashboard-more > summary { cursor:default; padding:16px 0; color:var(--ink); font-size:13px; }
 .dashboard-summary-grid .dashboard-chart { height:240px; }
 @container (max-width:460px) {
   .dashboard-heading { align-items:flex-start; flex-wrap:wrap; gap:12px; }
@@ -77,7 +77,7 @@
 
 /* One primary plot. Analysis remains available without a wall of chart tiles. */
 .dashboard-chart-choices { display:flex; flex-wrap:wrap; gap:18px; }
-.dashboard-chart-choices button { border:0; border-bottom:2px solid transparent; padding:8px 0; background:none; color:var(--muted); font:inherit; font-size:13px; cursor:pointer; }
+.dashboard-chart-choices button { border:0; border-bottom:2px solid transparent; padding:8px 0; background:none; color:var(--muted); font:inherit; font-size:13px; cursor:default; }
 .dashboard-chart-choices button[aria-pressed="true"] { color:var(--ink); border-bottom-color:var(--red); }
 .dashboard-chart-choices button:focus-visible { outline:2px solid var(--red); outline-offset:3px; }
 .dashboard-main-chart .dashboard-chart { height:340px; }
@@ -108,7 +108,7 @@ html[data-optionhelper-app-hosted="true"] .workbench[data-dashboard-layout="quer
 html[data-optionhelper-app-hosted="true"] .workbench[data-dashboard-layout="query"] .dashboard-query-fields .control-field { margin:0 !important; gap:5px !important; }
 html[data-optionhelper-app-hosted="true"] .workbench[data-dashboard-layout="query"] .dashboard-query-fields #submit-request { margin-top:22px; white-space:nowrap; min-height:36px; }
 .dashboard-query-extras { display:flex; flex-wrap:wrap; gap:8px 22px; align-items:start; padding-top:8px; }
-.dashboard-query-details > summary { cursor:pointer; color:var(--muted); font-size:12px; padding:6px 0; }
+.dashboard-query-details > summary { cursor:default; color:var(--muted); font-size:12px; padding:6px 0; }
 .dashboard-query-details[open] { flex-basis:100%; }
 .dashboard-query-extras .canvas-state { margin-left:auto; font-size:11px; color:var(--muted); padding:6px 0; }
 html[data-optionhelper-app-hosted="true"] .dashboard-query .library-panel { padding:8px 0; max-height:240px; overflow:auto; border:0 !important; background:transparent !important; }

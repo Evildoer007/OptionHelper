@@ -25,6 +25,8 @@ from modules.reporter.models import ReporterError
 from modules.reporter.evidence_resolver import report_contracts_compatible
 from modules.reporter.service import build_selected_request, call_tool as reporter_call_tool
 from runtime.protocol.models import ModuleRunRef
+from runtime.knowledger import load_registry
+from runtime.contracts.term_presentation import build_term_fields, EDITABLE
 
 from .errors import AuthorizationError, UnavailableCapabilityError, ValidationError
 from .identity.session_identity import SessionIdentity
@@ -75,12 +77,40 @@ def standalone_report_html(content: bytes, artifact_name: str,
 
 
 def _source_display_terms(contract: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """Read the frozen contractual tenor without guessing missing terms."""
+    """Project known editable numeric clauses from the frozen contract only."""
     terms = contract.get("terms")
-    years = terms.get("T") if isinstance(terms, Mapping) else None
-    if isinstance(years, bool) or not isinstance(years, (int, float)) or not isfinite(years) or years <= 0:
+    if not isinstance(terms, Mapping):
         return []
-    return [{"label": "期限", "value": years, "unit": "年"}]
+    catalog = load_registry()["term_catalog"]
+    rows: list[dict[str, Any]] = []
+    for field in build_term_fields(terms, catalog)["contract_fields"]:
+        if field["key"] not in catalog or field["editability"] != EDITABLE:
+            continue
+        value = terms[field["key"]]
+        values = list(enumerate(value, start=1)) if isinstance(value, (list, tuple)) else [(None, value)]
+        for position, number in values:
+            if isinstance(number, bool) or not isinstance(number, (int, float)) or not isfinite(number):
+                continue
+            if field["key"] == "T" and number <= 0:
+                continue
+            encoding = field["value_encoding"]
+            label = "期限" if field["key"] == "T" else field["label"]
+            if position is not None:
+                label += str(position)
+            unit = field["display_unit"]
+            if encoding == "year_month_calendar_day_to_act365":
+                unit = "年"
+            elif encoding == "percentage_input_decimal_internal":
+                number *= 100
+                unit = "%"
+            elif encoding in {"percentage_points_internal", "percent_of_s0_100"}:
+                unit = "%"
+            elif encoding == "normalized_price_s0_100":
+                # A normalized strike of100 is100% of the contract's S0.
+                # This is a relative contractual level, never a market quote.
+                unit = "%S₀"
+            rows.append({"label": label, "value": number, "unit": unit})
+    return rows
 
 
 def _source_run_display(manifest: Mapping[str, Any], contract: Mapping[str, Any], *, saved_created_at: Any = None) -> dict[str, Any]:
@@ -112,6 +142,54 @@ def _source_run_display(manifest: Mapping[str, Any], contract: Mapping[str, Any]
     return display
 
 
+
+def report_source_matches_recommendation(source: Mapping[str, Any], current: Mapping[str, Any],
+                                         confirmed_constraints: Mapping[str, Any] | None = None) -> bool:
+    """Match business selection to verified evidence without changing Core identity.
+
+    A structural payoff uses normalized axes rather than market tickers. That
+    distinction is allowed only for payoff-only evidence with exact owned Run
+    references. Numerical evidence always keeps its actual ordered underlyings.
+    """
+    if str(source.get("source_candidate_id") or source.get("candidate_id")) != str(current.get("candidate_id")):
+        return False
+    if any(source.get(field) != current.get(field) for field in ("product_id", "rule_revision")):
+        return False
+    references = current.get("module_run_refs")
+    if not isinstance(references, (list, tuple)):
+        return False
+    options_by_module = source.get("module_run_options", {})
+    options = [reference for rows in options_by_module.values() for reference in rows]
+    options.extend(source.get("module_run_refs", {}).values())
+    fields = ("module", "tenant_id", "task_id", "run_id",
+              "expected_result_file_hash", "expected_artifact_manifest_hash")
+    if not all(isinstance(reference, Mapping) and all(reference.get(field) for field in fields)
+               and any(isinstance(option, Mapping) and all(option.get(field) == reference[field] for field in fields)
+                       for option in options) for reference in references):
+        return False
+    contract = source.get("resolved_contract_snapshot", {})
+    actual_assets = source.get("underlyings")
+    expected_assets = current.get("underlyings")
+    if actual_assets != expected_assets:
+        identity = contract.get("identity", {})
+        convention = identity.get("price_convention")
+        normalized = convention == "normalized_100" or (
+            isinstance(convention, Mapping) and convention.get("contract_basis") == "normalized_100")
+        if (not references or set(options_by_module) != {"payoff"} or any(ref["module"] != "payoffer" for ref in references)
+                or not normalized or not isinstance(actual_assets, list) or not isinstance(expected_assets, list)
+                or not expected_assets or len(actual_assets) != len(expected_assets)
+                or actual_assets != [f"S{index}" for index in range(1, len(actual_assets) + 1)]):
+            return False
+    from modules.recommender.interaction import confirmed_term_overrides
+    inputs = current.get("current_inputs", {})
+    overrides = dict(inputs.get("term_overrides", {}))
+    confirmed = {**confirmed_term_overrides(inputs.get("confirmed_constraints", {})),
+                 **confirmed_term_overrides(confirmed_constraints or {})}
+    terms = contract.get("terms", {})
+    overrides.update({key: value for key, value in confirmed.items() if key in terms})
+    return all(terms.get(key) == value for key, value in overrides.items())
+
+
 class _DesignerPort:
     """The one public Designer ModulePort used by App-hosted Reporter."""
 
@@ -124,6 +202,7 @@ class _ScopedResultPorts:
 
     def __init__(self, results: ResultStore, principal: SessionIdentity, tasks=None) -> None:
         self._results, self._principal, self._tasks = results, principal, tasks
+        self._context_transcripts = {}
 
     def close(self) -> None:
         return None
@@ -181,6 +260,49 @@ class _ScopedResultPorts:
         if verified is None:
             raise KeyError(source_id)
         return verified
+
+    def _source_research_context(self, inputs, group, task_id):
+        """Recover legacy user context only as of this verified computation.
+
+        New candidates already freeze typed context. Historical candidates did
+        not save amounts; use their authenticated public transcript, bounded by
+        the earliest selected computation, rather than model commentary or a UI
+        default. Later changes must never rewrite an older research assumption.
+        """
+        from runtime.contracts.research_facts import research_context
+        confirmed = inputs.get("confirmed_constraints", {})
+        context = research_context(confirmed)
+        loader = getattr(self._tasks, "get", None)
+        if context.get("reference_notional") or not callable(loader):
+            return context
+        if any(len(options) > 1 for options in group.get("options", {}).values()):
+            return context
+        timestamps = [datetime.fromisoformat(row["run_time"].replace("Z", "+00:00"))
+                      for row in group["run_display"].values() if row.get("run_time")]
+        if not timestamps:
+            return context
+        cutoff = min(timestamps)
+        if task_id not in self._context_transcripts:
+            self._context_transcripts[task_id] = loader(self._principal, task_id).get("messages", [])
+        messages = []
+        for row in self._context_transcripts[task_id]:
+            try:
+                created = datetime.fromisoformat(row.get("created_at", "").replace("Z", "+00:00"))
+            except (ValueError, TypeError):
+                continue
+            if created.tzinfo is not None and created <= cutoff:
+                messages.append(row)
+        users = [row for row in messages if row.get("role") == "user"]
+        if not users:
+            return context
+        from .agent_runtime.recommender_adapter import _recommendation_research_prompt
+        from modules.recommender.interaction import merge_confirmed_constraints
+        prompt = _recommendation_research_prompt(messages, users[-1].get("content"))
+        turns = [{"role": "user", "content": text} for text in prompt.split("\n\n补充条件：\n")]
+        recovered = merge_confirmed_constraints({}, turns)
+        if recovered.get("underlying") != confirmed.get("underlying"):
+            return context
+        return research_context({**recovered, **confirmed})
 
     def _verified_source(
         self,
@@ -366,14 +488,12 @@ class _ScopedResultPorts:
                     "module_run_refs": single_refs,
                 }
                 recommended = recommendation_index.get(source_candidate_id)
-                if isinstance(recommended, Mapping) and (
-                    recommended.get("product_id") == candidate["product_id"]
-                    and recommended.get("rule_revision") == candidate["rule_revision"]
-                    and recommended.get("underlyings") == candidate["underlyings"]
+                if isinstance(recommended, Mapping) and report_source_matches_recommendation(
+                    candidate, recommended, (pending or {}).get("confirmed_constraints", {}),
                 ):
                     inputs = recommended.get("current_inputs", {})
-                    overrides = inputs.get("term_overrides", {}) if isinstance(inputs, Mapping) else {}
-                    if isinstance(overrides, Mapping) and all(contract.get("terms", {}).get(key) == value for key, value in overrides.items()):
+                    if isinstance(inputs, Mapping):
+                        candidate["research_context"] = self._source_research_context(inputs, group, str(source["task_id"]))
                         candidate["recommendation_bound"] = True
                         candidate["rank"] = recommended["rank"]
                         candidate["is_primary"] = recommended["rank"] == 1
@@ -451,8 +571,22 @@ class ReporterAdapter:
             )
         except ReporterError as error:
             raise ValidationError(str(error)) from error
+        # A frozen explicit research amount takes precedence over a UI default.
+        # Never label a reference amount as an existing underlying holding.
+        frozen_amounts = set()
+        recommendation = expected_request.get("source_refs", {}).get("evidence_refs", {}).get("recommendation_set", {}).get("payload", {})
+        for candidate in recommendation.get("candidates", []):
+            if candidate.get("candidate_id") in expected_request.get("subject_ref", {}).get("candidate_ids", []):
+                ctx = candidate.get("research_context", {})
+                if ctx.get("reference_notional") and candidate.get("currency") == "CNY":
+                    frozen_amounts.add(ctx["reference_notional"])
         amount_view = None
-        if self._tasks is not None and self._tasks.get(principal, task_id).get("position_size"):
+        if len(frozen_amounts) == 1 and self._tasks is not None:
+            amount = next(iter(frozen_amounts))
+            amount_view = task_amounts(self._tasks, self._results, principal, task_id,
+                                      position={"amount": str(amount), "currency": "CNY", "basis": "notional"},
+                                      references=selected_run_references(expected_request), allow_selected_tasks=True)
+        elif not frozen_amounts and self._tasks is not None and self._tasks.get(principal, task_id).get("position_size"):
             amount_view = task_amounts(self._tasks, self._results, principal, task_id,
                                       references=selected_run_references(expected_request), allow_selected_tasks=True)
         with tempfile.TemporaryDirectory(prefix="report-", dir=self._staging_root()) as temporary:

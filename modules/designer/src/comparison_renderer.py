@@ -257,9 +257,9 @@ def _card_candidate_sections(
     backtest_status = text(backtest.get("status")).lower()
     pricing_rows = _card_pricing_rows(pricing) if pricing_status in {"ready", "partial"} else []
     backtest_rows = _card_backtest_rows(backtest) if backtest_status in {"ready", "partial"} else []
-    if text(backtest.get("window")):
+    if backtest_status in {"ready", "partial"} and text(backtest.get("window")):
         backtest_rows.insert(0, {"label": "回测区间", "value": backtest.get("window")})
-    risks = [item for item in as_list(risk.get("items")) if text(item)][:2]
+    risks = list(dict.fromkeys(text(item) for item in as_list(risk.get("items")) if text(item)))
     sections: dict[str, str] = {}
     if reason:
         sections["reason"] = f'<ul class="plain-list">{reason}</ul>'
@@ -268,24 +268,28 @@ def _card_candidate_sections(
             terms, [("label", "条款"), ("value", "取值"), ("note", "说明")], f"{label}关键合同条款"
         )
     pricing_body = (
-        simple_table(pricing_rows, [("label", "指标"), ("value", "数值")], f"{label}估值摘要")
+        simple_table([{**row, "basis": display_basis(row)} for row in pricing_rows], [("label", "指标"), ("value", "数值"), ("basis", "口径")], f"{label}估值摘要")
         if pricing_rows
         else ""
     )
     if pricing_status in {"ready", "partial"}:
         pricing_body += _card_pricing_detail(facts, pricing)
-    if pricing_status in {"partial", "failed"}:
+    if pricing_status in {"partial", "failed"} or (
+        pricing_status in {"not_run", "pending", "unsupported"} and text(pricing.get("note"))
+    ):
         pricing_body = f'<p class="comparison-state" data-status="{esc(pricing_status or "pending")}">{esc(_module_status(pricing))}</p>' + pricing_body
     if pricing_body:
         sections["pricing"] = pricing_body
     backtest_body = (
-        simple_table(backtest_rows, [("label", "指标"), ("value", "数值")], f"{label}回测摘要")
+        simple_table([{**row, "basis": display_basis(row)} for row in backtest_rows], [("label", "指标"), ("value", "数值"), ("basis", "口径")], f"{label}回测摘要")
         if backtest_rows
         else ""
     )
     if backtest_status in {"ready", "partial"}:
         backtest_body += _card_backtest_detail(facts, backtest)
-    if backtest_status in {"partial", "failed"}:
+    if backtest_status in {"partial", "failed"} or (
+        backtest_status in {"not_run", "pending", "unsupported"} and text(backtest.get("note"))
+    ):
         backtest_body = f'<p class="comparison-state" data-status="{esc(backtest_status or "pending")}">{esc(_module_status(backtest))}</p>' + backtest_body
     if backtest_body:
         sections["backtest"] = backtest_body
@@ -318,23 +322,44 @@ def render_multicard_html(
     meta = as_dict(payload.get("meta"))
     title = text(meta.get("title")) or MULTICARD_TITLE
     template = config.read_template(template_shell)
-    cards = []
-    for candidate in candidates:
-        item = _card_candidate_sections(payload, candidate, appended_content)
+    items = [_card_candidate_sections(payload, candidate, appended_content) for candidate in candidates]
+
+    def candidate_card(item: Mapping[str, Any], content: str) -> str:
+        if not content:
+            return ""
+        return (f'<article class="comparison-product-card"><header><p>{esc(item["underlyings"])}</p>'
+                f'<h2>{esc(item["title"])}</h2></header>{content}</article>')
+
+    def candidate_section(item: Mapping[str, Any], section_id: str, label: str, key: str) -> str:
+        content = item["sections"].get(key, "")
+        if key == "recommendation" or not content:
+            return ""
+        content = re.sub(r'<caption\b[^>]*>.*?</caption>', '', content, flags=re.S)
+        return f'<section data-section="{esc(section_id)}"><h3>{esc(label)}</h3>{content}</section>'
+
+    if appended_content:
+        # A shared paragraph cannot occupy a position inside every independent
+        # product card without either duplication or misleading ownership.
+        # Traverse the ordered section plan across all candidates, then emit
+        # its shared content once before moving to the following section.
         blocks = []
         for section_id, label, key in section_definition:
-            content = item["sections"].get(key, "")
-            if key != "recommendation" and content:
-                content = re.sub(r'<caption\b[^>]*>.*?</caption>', '', content, flags=re.S)
-                blocks.append(f'<section><h3>{esc(label)}</h3>{content}</section>')
-        content = "".join(blocks) + item["supplement"]
-        if content:
-            cards.append(f'<article class="comparison-product-card"><header><p>{esc(item["underlyings"])}</p><h2>{esc(item["title"])}</h2></header>' + content + "</article>")
-    body = '<section class="comparison-product-cards">' + "".join(cards) + "</section>" if cards else ""
-    for section_id, section_title, _block in section_definition:
-        content = render_presentation_content(appended_content.get(section_id, ()))
-        if content:
-            body += f'<section class="card-appended"><h2>{esc(section_title)}</h2>{content}</section>'
+            cards = [candidate_card(item, candidate_section(item, section_id, label, key)) for item in items]
+            if any(cards):
+                blocks.append('<section class="comparison-product-cards">' + "".join(cards) + '</section>')
+            shared = render_presentation_content(appended_content.get(section_id, ()))
+            if shared:
+                blocks.append(f'<section class="card-appended" data-section="{esc(section_id)}">'
+                              f'<h2>{esc(label)}</h2>{shared}</section>')
+        supplements = [candidate_card(item, item["supplement"]) for item in items if item["supplement"]]
+        if supplements:
+            blocks.append('<section class="comparison-product-cards">' + "".join(supplements) + '</section>')
+        body = "".join(blocks)
+    else:
+        cards = [candidate_card(item, "".join(candidate_section(item, section_id, label, key)
+                                               for section_id, label, key in section_definition) + item["supplement"])
+                 for item in items]
+        body = '<section class="comparison-product-cards">' + "".join(cards) + "</section>" if any(cards) else ""
     return (
         template.replace("__TITLE__", esc(title))
         .replace("__REPORT_THEME__", config.read_report_theme())
@@ -569,10 +594,7 @@ def _aggregate_report(
             parameter_detail_tables.extend(_parameter_detail_table(candidate, facts, group, title))
         pricing = as_dict(facts.get("pricing"))
         pricing_status = text(pricing.get("status")).lower()
-        concise_pricing_rows = [
-            {key: value for key, value in row.items() if key not in {"unit", "note", "basis"}}
-            for row in _metric_rows(pricing, include_greeks=True)
-        ] if pricing_status in {"ready", "partial"} else []
+        concise_pricing_rows = _metric_rows(pricing, include_greeks=True) if pricing_status in {"ready", "partial"} else []
         pricing_rows.append([
             {"label": "模块状态", "value": _module_status(pricing)},
             *([{"label": "估值方法", "value": pricing.get("method")}] if text(pricing.get("method")) else []),
@@ -698,7 +720,10 @@ def render_multireport_html(
         section_definition=overview_sections,
         appended_content=appended_content,
         template_shell=template_shell,
-        product_sections=_candidates(payload),
+        product_sections=[
+            {**candidate, "displayed_supplements": _candidate_supplements(payload, candidate, appended_content)}
+            for candidate in _candidates(payload)
+        ],
     )
 
 

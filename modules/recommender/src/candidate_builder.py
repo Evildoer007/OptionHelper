@@ -144,6 +144,7 @@ def build_candidates(
     run_id: str,
     max_candidates: int = 3,
     confirmed_constraints: Mapping[str, Any] | None = None,
+    candidate_validator=None,
 ) -> tuple[tuple[RecommendationCandidate, ...], tuple[Mapping[str, Any], ...]]:
     if isinstance(max_candidates, bool) or not isinstance(max_candidates, int) or not 1 <= max_candidates <= 10:
         raise RecommendationValidationError("max_candidates必须位于1至10")
@@ -202,6 +203,16 @@ def build_candidates(
         row["library_status"] = status
         row["not_suitable_for"] = list(dict.fromkeys(_string_list(row.get("not_suitable_for")) + _string_list(review.get("additional_not_suitable_for"))))
         row["main_risks"] = list(dict.fromkeys(_string_list(row.get("main_risks")) + _string_list(review.get("additional_risks"))))
+        if callable(candidate_validator) and status == "ready":
+            try:
+                candidate_validator(product_id, {
+                    **dict(row.get("term_overrides") or {}),
+                    **confirmed_term_overrides(confirmed_constraints or {}),
+                })
+            except ValueError as error:
+                rejected.append({"product_id": product_id, "reason": str(error),
+                                 "source": "proposal_constraint_gate"})
+                continue
         adjustment = max(-5, min(5, int(review.get("rank_adjustment", 0))))
         accepted_rows.append(((_STATUS_SCORE.get(status, 100), adjustment, position), row, refs))
 

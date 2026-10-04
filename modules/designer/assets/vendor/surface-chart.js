@@ -1,7 +1,8 @@
 /* Frozen report grids: presentation only, no interpolation or pricing. */
 (() => {
   'use strict';
-  function option(spec, formatValue = value => String(value), ink = '#555') {
+  function option(spec, formatValue, theme, formatCategory) {
+    const ink = theme.axis.label;
     const x = spec.x || [], y = spec.y || [];
     const numeric = values => values.every(v => v !== null && v !== '' && Number.isFinite(Number(v)));
     const nx = numeric(x), ny = numeric(y);
@@ -12,21 +13,23 @@
     }));
     const z = data.map(row => row[2]).filter(Number.isFinite);
     const axis = (values, name, isNumeric) => ({type: isNumeric ? 'value' : 'category', data: isNumeric ? undefined : values,
-      name: name || '', scale: true, nameTextStyle:{color:ink}, axisLabel:{color:ink}, axisLine:{lineStyle:{color:'#aaa'}}});
+      name: name || '', scale: true, nameTextStyle:{color:ink},
+      axisLabel:{color:ink, formatter:value => formatCategory(value, name, values)},
+      axisLine:{lineStyle:{color:theme.axis.line}}});
     return {
       animation:false, backgroundColor:'transparent',
       tooltip:{confine:true, formatter:item => {
         const escape=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
         const row=item.value;
-        return `${escape(spec.x_axis_name)}：${escape(nx?row[0]:x[row[0]])}<br>${escape(spec.y_axis_name)}：${escape(ny?row[1]:y[row[1]])}<br>${escape(spec.z_axis_name)}：${escape(formatValue(row[2]))}`;
+        return `${escape(spec.x_axis_name)}：${escape(formatCategory(nx?row[0]:x[row[0]],spec.x_axis_name,x))}<br>${escape(spec.y_axis_name)}：${escape(formatCategory(ny?row[1]:y[row[1]],spec.y_axis_name,y))}<br>${escape(spec.z_axis_name)}：${escape(formatValue(row[2]))}`;
       }},
       xAxis3D:axis(x,spec.x_axis_name,nx), yAxis3D:axis(y,spec.y_axis_name,ny),
       zAxis3D:{type:'value',name:spec.z_axis_name||'',scale:true,axisLabel:{color:ink,formatter:formatValue},nameTextStyle:{color:ink}},
       grid3D:{boxWidth:110,boxDepth:85,boxHeight:65,top:0,bottom:35,
         viewControl:{alpha:25,beta:35,distance:210,autoRotate:false},light:{main:{intensity:1.1},ambient:{intensity:.6}}},
       visualMap:{min:z.length?Math.min(...z):0,max:z.length?Math.max(...z):1,dimension:2,show:true,
-        orient:'horizontal',left:'center',bottom:0,formatter:formatValue,textStyle:{color:ink},inRange:{color:['#3478b8','#f3eeee','#c8102e']}},
-      series:[{type:x.length>1 && y.length>1 ? 'surface' : 'scatter3D',symbolSize:6,shading:'color',wireframe:{show:true,lineStyle:{color:'rgba(80,80,80,.18)',width:.5}},data}]
+        orient:'horizontal',left:'center',bottom:0,formatter:formatValue,textStyle:{color:ink},inRange:{color:[theme.heatmap.low,...theme.color.slice(0,2)]}},
+      series:[{type:x.length>1 && y.length>1 ? 'surface' : 'scatter3D',symbolSize:6,shading:'color',wireframe:{show:true,lineStyle:{color:theme.axis.split,width:.5}},data}]
     };
   }
   window.OptionHelperSurface = Object.freeze({option});

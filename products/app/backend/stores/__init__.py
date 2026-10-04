@@ -7,6 +7,7 @@ import os
 import shutil
 import tempfile
 from collections.abc import Callable
+from copy import deepcopy
 from pathlib import Path
 from threading import RLock
 from typing import Any
@@ -47,6 +48,7 @@ class _LocalDocumentStore:
             self._root = Path(_windows_extended_path(str(self._root)))
         self._root.mkdir(parents=True, exist_ok=True)
         self._lock = RLock()
+        self._record_cache = None
         self._migrate_task_model_current_input_v1()
 
     def _migrate_task_model_current_input_v1(self) -> None:
@@ -117,6 +119,35 @@ class _LocalDocumentStore:
                 raise ValidationError(f"Local App state must be an object: {path.name}")
             return value
 
+    def read_record(self, name: str, key: str) -> Any:
+        """Read one detached record; reparse only when the source file changes.
+
+        Keep at most one parsed collection. File identity, size, modification
+        and change timestamps detect atomic replacements and in-place edits.
+        Callers still authorize the returned record and verify Core artifacts.
+        Full reads and writes never borrow this mutable private snapshot.
+        """
+        self._validate_name(name)
+        with self._lock:
+            path = self._path(name)
+            try:
+                stat = path.stat()
+            except FileNotFoundError:
+                self._record_cache = None
+                return None
+            signature = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+            cached = self._record_cache
+            if cached is None or cached[0] != name or cached[1] != signature:
+                self._record_cache = None
+                records = self.read(name)
+                # A large collection remains readable without retaining an
+                # unbounded index in memory. Typical histories fit this bound.
+                if stat.st_size <= 256 * 1024 * 1024:
+                    self._record_cache = (name, signature, records)
+            else:
+                records = cached[2]
+            return deepcopy(records.get(key))
+
     def update(self, name: str, mutator: Callable[[dict[str, Any]], dict[str, Any] | None]) -> dict[str, Any]:
         with self._lock:
             value = self.read(name)
@@ -133,6 +164,8 @@ class _LocalDocumentStore:
                     stream.flush()
                     os.fsync(stream.fileno())
                 os.replace(temporary_name, target)
+                if self._record_cache is not None and self._record_cache[0] == name:
+                    self._record_cache = None
             finally:
                 if os.path.exists(temporary_name):
                     os.unlink(temporary_name)

@@ -701,6 +701,102 @@ class AppToolPort(ToolPort):
     def call(self, module: str, payload: Mapping[str, Any]) -> Mapping[str, Any]:
         return self._executor.call(self._identity, self._task_id, f"{module}.run", payload)
 
+    def validate_product_terms(self, product_id, overrides, *, confirmed_constraints=None, check_limits=True):
+        """Reject another product's parameters before spending calculation budget."""
+        if not hasattr(self, "_research_products"):
+            registry = _load_capability_registry(self._executor._registry.capability_root)
+            self._research_registry = registry
+            self._research_products = registry["products"]
+        product = self._research_products.get(product_id)
+        if not isinstance(product, Mapping):
+            raise ValueError(f"未登记产品：{product_id}")
+        allowed = set(product.get("terms", {})) - {"constraints", "pricing_methods"}
+        unknown = set(overrides) - allowed
+        if unknown:
+            raise ValueError(f"产品{product_id}不支持条款{sorted(unknown)}；本产品登记字段为{sorted(allowed)}。只移除误用的字段，保留已确认的有效条款。")
+        from modules.recommender.constraint_ranking import confirmed_risk_constraints
+        from modules.recommender.interaction import confirmed_term_overrides
+        from runtime.contracts.contract_api import resolve_structural_payoff_contract
+        from ..stores.result_store import _contract_risk_facts, _contract_premium_facts
+        import math
+        terms = {**dict(overrides), **confirmed_term_overrides(confirmed_constraints or {})}
+        try:
+            contract = resolve_structural_payoff_contract(product_id, term_overrides=terms,
+                                                         registry=self._research_registry)
+        except (ValueError, TypeError, KeyError) as error:
+            raise ValueError(f"产品{product_id}条款无法编译：{error}") from error
+        if not confirmed_constraints or not check_limits:
+            return
+        rules = confirmed_risk_constraints(confirmed_constraints)
+        if not rules:
+            return
+        # These are proposal checks only. No FactRef is returned or stored;
+        # delivery still requires actual candidate-bound module evidence.
+        values = {fact["metric"]: fact["value"] for fact in (
+            *_contract_risk_facts(contract, "proposal-validation"),
+            *_contract_premium_facts(contract, "proposal-validation"))}
+        conflicts = []
+        for metric, rule in rules.items():
+            if metric not in values:
+                conflicts.append(f"{metric}缺少可核验的合同依据，不能认定满足该限制")
+                continue
+            actual, limit = values[metric], rule["value"]
+            equal = math.isclose(actual, limit, rel_tol=1e-12, abs_tol=1e-12)
+            if (rule["operator"] == "eq" and not equal) or (rule["operator"] == "lte" and actual > limit and not equal):
+                conflicts.append(f"{metric}={actual:g}，要求{rule['operator']} {limit:g}")
+        if conflicts:
+            preview = self.proposal_term_context([product_id], confirmed_constraints=confirmed_constraints)
+            bound = preview["products"][0].get("quantity_bound") if preview["products"] else None
+            hint = f"已登记默认合同的数量上界：{json.dumps(bound, ensure_ascii=False)}。" if bound else ""
+            raise ValueError(f"产品{product_id}的拟定条款已违反确认约束：{'；'.join(conflicts)}。{hint}在计算前修正方案，不能放宽约束。")
+
+    def proposal_term_context(self, product_ids, *, confirmed_constraints):
+        """Expose contract-only design limits before proposals, without market calls."""
+        from decimal import Decimal
+        from modules.recommender.constraint_ranking import confirmed_risk_constraints
+        from modules.recommender.interaction import confirmed_term_overrides
+        from modules.recommender.product_trader_loop import DEFAULT_TERM_KEYS
+        from runtime.contracts.contract_api import resolve_structural_payoff_contract
+        from ..stores.result_store import _contract_risk_facts, _contract_premium_facts
+        if not hasattr(self, "_research_registry"):
+            self._research_registry = _load_capability_registry(self._executor._registry.capability_root)
+            self._research_products = self._research_registry["products"]
+        rules = confirmed_risk_constraints(confirmed_constraints)
+        locked = confirmed_term_overrides(confirmed_constraints)
+        products = []
+        for product_id in sorted(set(product_ids)):
+            product = self._research_products.get(product_id)
+            if not isinstance(product, Mapping):
+                continue
+            row = {"product_id": product_id, "registered_parameters": {
+                key: value for key, value in product.get("terms", {}).items() if key in DEFAULT_TERM_KEYS}}
+            try:
+                contract = resolve_structural_payoff_contract(product_id, term_overrides=locked,
+                                                             registry=self._research_registry)
+                values = {fact["metric"]: fact["value"] for fact in (
+                    *_contract_risk_facts(contract, "proposal-context"),
+                    *_contract_premium_facts(contract, "proposal-context"))}
+                row["contract_term_preview"] = values
+                row["confirmed_limits"] = rules
+                row["unverified_constraints"] = sorted(set(rules) - set(values))
+                quantity_key = {"1.1": "n_C", "1.2": "n_P"}.get(product_id)
+                if quantity_key and quantity_key not in locked and contract.terms[quantity_key] > 0:
+                    bounds = []
+                    for metric in ("initial_premium_cost", "contract_loss_bound"):
+                        if metric in rules and rules[metric]["operator"] == "lte" and values.get(metric, 0) > 0:
+                            bounds.append(Decimal(str(contract.terms[quantity_key]))
+                                          * Decimal(str(rules[metric]["value"])) / Decimal(str(values[metric])))
+                    if bounds:
+                        row["quantity_bound"] = {"parameter": quantity_key,
+                            "maximum": float(min(bounds)), "default": contract.terms[quantity_key],
+                            "unit": "normalized_contract_multiplier",
+                            "reading": "数量为名义敞口倍数，1是一倍，0.6是六成，6是六倍。上界仅说明给定合同权利金与亏损预算下可行数量；不是实际成交张数。用户未锁定数量且未要求全额覆盖时，可作为拟议数量并披露参与率及覆盖缺口；用户要求全额覆盖时不得自行缩小。"}
+            except (ValueError, TypeError, KeyError) as error:
+                row["unavailable_reason"] = str(error)
+            products.append(row)
+        return {"scope": "产品登记条款与已确认限制的设计前预检，不是市场报价或计算运行证据。所有比例使用小数；不得仅凭此宣称已完成定价或回测。",
+                "products": products}
+
     def research_model_view(self, value):
         from runtime.research_presentation import financial_model_view
         if not hasattr(self, '_research_term_catalog'):
@@ -1095,7 +1191,7 @@ class RecommenderAdapter:
             isinstance(pending, Mapping)
             and pending.get("status") == "pending_approval"
             and not approved_candidate_ids
-            and _has_candidate_selection_intent(prompt)
+            and _has_candidate_selection_intent(prompt, pending)
         ):
             return {
                 "status": "needs_input",
@@ -1137,7 +1233,7 @@ class RecommenderAdapter:
             tenant_id=identity.tenant_id,
             prompt=_recommendation_research_prompt(history, prompt),
             catalog_version=catalog_version,
-            run_id=f"recommend-{task_id}",
+            run_id=f"recommend-{uuid4().hex}",
             requested_outputs=requested_outputs,
             audience=identity.audience,
             conversation_ref=f"task:{task_id}",
@@ -1482,6 +1578,7 @@ class AppConversationToolExecutor:
         pending: Mapping[str, Any],
         *,
         completed_modules: Mapping[str, Sequence[str]] | None = None,
+        analysis_case_ids: Mapping[str, str] | None = None,
     ) -> dict[str, Any]:
         """Preflight all candidates, then run only their missing modules."""
 
@@ -1631,7 +1728,7 @@ class AppConversationToolExecutor:
                     response = self._dispatch(
                         identity, task_id, f"{module}.run", module, payload,
                         binding={
-                            "analysis_case_id": analysis_case_id,
+                            "analysis_case_id": (analysis_case_ids or {}).get(candidate_id, analysis_case_id),
                             "candidate_id": candidate_id,
                             "product_id": product_id,
                             "rule_revision": current_revision,
@@ -1720,6 +1817,25 @@ class AppConversationToolExecutor:
             "requested_outputs": [output_alias[item] for item in requested_modules],
             "confirmed_constraints": dict(confirmed_constraints),
         }
+        # Compile the same effective terms as execution, including explicit
+        # user assignments. Do not let a stable candidate ID prove a stale Run.
+        from runtime.contracts.contract_api import ContractResolutionError, resolve_structural_payoff_contract
+        registry = _load_capability_registry(self._registry.capability_root)
+        product = registry["products"].get(product_id)
+        if not isinstance(product, Mapping):
+            raise ValidationError("当前候选产品不属于最新OptionReg")
+        confirmed_terms = {
+            **confirmed_term_overrides(current_inputs.get("confirmed_constraints", {})),
+            **confirmed_term_overrides(confirmed_constraints),
+        }
+        effective_terms = _product_term_overrides(product, term_overrides, confirmed_terms)
+        try:
+            expected_contract = resolve_structural_payoff_contract(
+                product_id, term_overrides=effective_terms, registry=registry,
+            )
+        except ContractResolutionError as error:
+            raise ValidationError("当前候选合同条款无法验证") from error
+        expected_terms = expected_contract.to_dict()["terms"]
         execution = self.execute_confirmed_recommendation(identity, task_id, pending)
         rows = execution.get("executions", ())
         row = rows[0] if isinstance(rows, list) and rows else {}
@@ -1729,6 +1845,7 @@ class AppConversationToolExecutor:
         facts: dict[str, Mapping[str, Any]] = {}
         summaries: dict[str, Mapping[str, Any]] = {}
         failures = {}
+        verified_research_facts = {}
         for module in requested_modules:
             response = module_results.get(module, {}) if isinstance(module_results, Mapping) else {}
             statuses[module] = _normalized_module_status(response) if isinstance(response, Mapping) else "failed"
@@ -1748,9 +1865,18 @@ class AppConversationToolExecutor:
                     raise ValidationError("候选评估ModuleRunRef不属于本次任务和模块")
                 run_refs.append(reference)
                 if self._results is not None:
-                    summary = self._results.verified_fact_summary(identity, reference, expected_binding={
-                        "candidate_id": candidate_id, "product_id": product_id, "rule_revision": rule_revision,
-                    })
+                    summary = self._results.verified_fact_summary(
+                        identity, reference, research_context=confirmed_constraints,
+                        expected_binding={
+                            "candidate_id": candidate_id, "product_id": product_id, "rule_revision": rule_revision,
+                        },
+                        expected_contract_terms=expected_terms,
+                        # Payoffer uses normalized S1/S2 coordinates; numerical
+                        # modules must prove the actual assets in their order.
+                        expected_underlyings=snapshot["underlyings"] if module != "payoffer" else None,
+                    )
+                    if isinstance(summary.get("research_facts"), Mapping):
+                        verified_research_facts = dict(summary["research_facts"])
                     if isinstance(summary.get("payoff_summary"), Mapping):
                         summaries[module] = dict(summary["payoff_summary"])
                     for collection, source in (("facts", module), ("contract_term_facts", "contract_terms")):
@@ -1762,7 +1888,7 @@ class AppConversationToolExecutor:
                             facts[str(fact["metric"])] = {
                                 "value": fact.get("value"), "unit": fact.get("unit"),
                                 "fact_ref": fact.get("fact_ref"), "source": source,
-                                **{key: fact[key] for key in ("value_encoding", "evidence") if key in fact},
+                                **{key: fact[key] for key in ("value_encoding", "evidence", "source_unit") if key in fact},
                             }
         return {
             "status": execution.get("status", "partial"),
@@ -1772,6 +1898,7 @@ class AppConversationToolExecutor:
             "module_run_refs": run_refs,
             "module_statuses": statuses,
             "verified_metrics": facts,
+            "verified_research_facts": verified_research_facts,
             "verified_module_summaries": summaries,
             "module_failures": failures,
             "message": execution.get("next_step") or "; ".join(str(row.get("message", "模块未完成")) for row in failures.values()),
@@ -1789,6 +1916,14 @@ class AppConversationToolExecutor:
             raise ValidationError("推荐交付参数只允许kind或format")
         pending = self._tasks.pending_recommendation(identity, task_id) if self._tasks else None
         candidates = list((pending or {}).get("candidates") or [])
+        approved_ids = _approved_candidate_ids(pending or {})
+        if approved_ids:
+            # Approval is an ordered subset. Keep it authoritative for every
+            # report kind instead of reverting to the research/storage order.
+            by_id = {candidate["candidate_id"]: candidate for candidate in candidates}
+            if any(candidate_id not in by_id for candidate_id in approved_ids):
+                return {"status": "needs_input", "message": "已批准候选与当前研究结果不一致，请重新确认候选。"}
+            candidates = [by_id[candidate_id] for candidate_id in approved_ids]
         kind = str(arguments.get("kind") or "report")
         fmt = str(arguments.get("format") or "html")
         if kind not in {"card", "report", "quote", "multicard", "multireport"} or fmt not in {"html", "pdf", "docx"}:
@@ -1836,7 +1971,8 @@ class AppConversationToolExecutor:
             aliases = {"payoffer": "payoff", "pricer": "pricing", "backtester": "backtest"}
             required = {aliases[module] for module in modules}
             selection = prepared.get("selection", {})
-            refs = selection.get("module_run_refs", {})
+            bindings = _recommendation_delivery_bindings(selection, selected_ids)
+            refs = {candidate_id: item["module_run_refs"] for candidate_id, item in bindings.items()}
             # An old valuation cannot satisfy a newly requested MC size.
             # Other completed modules retain their original evidence bindings.
             if paths_changed:
@@ -1877,11 +2013,14 @@ class AppConversationToolExecutor:
                 }
                 execution_pending = {**pending, "candidates": selected, "approved_candidate_ids": selected_ids,
                                      "requested_outputs": list(modules)}
-                if any(completed.values()) and self._results is not None:
-                    existing_source = self._results.get_owned_report_source(identity, selection["source_id"])
-                    execution_pending["analysis_case_id"] = existing_source["analysis_case_id"]
+                source_cases = {}
+                if self._results is not None:
+                    for candidate_id, item in bindings.items():
+                        source = self._results.get_owned_report_source(identity, item["source_id"])
+                        source_cases[candidate_id] = source["analysis_case_id"]
                 execution = self.execute_confirmed_recommendation(
                     identity, task_id, execution_pending, completed_modules=completed,
+                    analysis_case_ids=source_cases,
                 )
                 if execution.get("status") != "completed":
                     return {**execution, "text": execution.get("next_step") or "所需计算尚未完成。"}
@@ -2175,11 +2314,20 @@ class AppConversationToolExecutor:
                 # not an unrelated historical variant of the same product.
                 requested_candidate_ids = [group[0]["candidate_id"] for group in matches]
                 requested_product_ids = None
+        if requested_candidate_ids is None and requested_product_ids is None and self._tasks is not None:
+            pending = self._tasks.pending_recommendation(identity, task_id) or {}
+            current_candidates = sorted(pending.get("candidates", []),
+                key=lambda item: (not bool(item.get("is_primary")), item.get("rank", 1000000)))
+            if current_candidates:
+                selected = current_candidates if delivery_mode == "comparison" or requested_kind == "quote" else current_candidates[:1]
+                requested_candidate_ids = [item["candidate_id"] for item in selected]
+        chosen = []
         if requested_candidate_ids is not None and self._tasks is not None:
-            pending=self._tasks.pending_recommendation(identity,task_id) or {}
-            chosen=[candidate for candidate in pending.get("candidates",[]) if candidate.get("candidate_id") in requested_candidate_ids]
-            if len(chosen)==len(requested_candidate_ids):
-                self._results.select_research_results(identity,task_id,chosen)
+            pending = self._tasks.pending_recommendation(identity, task_id) or {}
+            current_by_id = {candidate["candidate_id"]: candidate for candidate in pending.get("candidates", [])}
+            if all(candidate_id in current_by_id for candidate_id in requested_candidate_ids):
+                chosen = [current_by_id[candidate_id] for candidate_id in requested_candidate_ids]
+                self._results.select_research_results(identity, task_id, chosen)
         from ..reporter_adapter import ReporterAdapter
         catalog = ReporterAdapter(self._results, self._tasks).dispatch(
             {"action": "list_report_sources", "task_id": task_id}, identity,
@@ -2189,6 +2337,30 @@ class AppConversationToolExecutor:
             return _report_needs_input()
         sources = [_current_report_source(source, preserve_variants=requested_candidate_ids is not None)
                    for source in sources if isinstance(source, Mapping)]
+        if chosen:
+            # Legacy tasks may reuse a candidate id across different contracts.
+            # Resolve it against this recommendation's verified evidence, never
+            # against the first historical row with the same identifier.
+            bound_ids = []
+            bound_sources = set()
+            for current_candidate in chosen:
+                matches = [(source, item) for source in sources for item in source["candidates"]
+                           if _report_matches_recommendation(item, current_candidate, pending.get("confirmed_constraints", {}))]
+                if len(matches) != 1:
+                    return _report_needs_input()
+                source, item = matches[0]
+                bound_sources.add((source["source_id"], item["candidate_id"]))
+                for reference in current_candidate.get("module_run_refs", []):
+                    module = next((name for name, compute in _REPORT_TO_COMPUTE_MODULE.items()
+                                   if compute == reference.get("module")), None)
+                    if module is not None:
+                        item["module_run_refs"][module] = dict(reference)
+                bound_ids.append(item["candidate_id"])
+            sources = [{**source, "candidates": [item for item in source["candidates"]
+                        if (source["source_id"], item["candidate_id"]) in bound_sources]}
+                       for source in sources]
+            sources = [source for source in sources if source["candidates"]]
+            requested_candidate_ids = bound_ids
         field = "product_id" if requested_product_ids is not None else "candidate_id"
         requested = requested_product_ids if requested_product_ids is not None else requested_candidate_ids or []
         covered_by_one_source = any(all(sum(str(item.get(field)) == value for item in entry["candidates"]) == 1
@@ -2406,6 +2578,39 @@ def _with_report_delivery(response: Mapping[str, Any], prepared: Mapping[str, An
     return result
 
 
+def _recommendation_delivery_bindings(selection: Mapping[str, Any], candidate_ids: Sequence[str]) -> dict[str, dict[str, Any]]:
+    """Preserve ordered Host source bindings for either Reporter selection shape.
+
+    Reporter candidate ids may represent contract variants. The Host already
+    resolved them against the current recommendation; do not guess by product.
+    """
+    items = selection.get("comparison_items")
+    if items is None:
+        refs = selection.get("module_run_refs", {})
+        items = [{"source_id": selection.get("source_id"), "candidate_id": candidate_id,
+                  "module_run_refs": refs.get(candidate_id, {})}
+                 for candidate_id in selection.get("candidate_ids", ())]
+    if not items:
+        return {}
+    if not isinstance(items, list) or len(items) != len(candidate_ids):
+        raise ValidationError("报告来源与当前候选数量不一致")
+    if any(not isinstance(item, Mapping) or not item.get("source_id")
+           or not item.get("candidate_id") or not isinstance(item.get("module_run_refs"), Mapping)
+           for item in items):
+        raise ValidationError("报告来源绑定无效")
+    keys = [(item["source_id"], item["candidate_id"]) for item in items]
+    if len(set(keys)) != len(keys):
+        raise ValidationError("报告来源候选重复")
+    return {candidate_id: {"source_id": item["source_id"], "module_run_refs": dict(item["module_run_refs"])}
+            for candidate_id, item in zip(candidate_ids, items)}
+
+
+def _report_matches_recommendation(report: Mapping[str, Any], current: Mapping[str, Any],
+                                   confirmed_constraints: Mapping[str, Any] | None = None) -> bool:
+    from ..reporter_adapter import report_source_matches_recommendation
+    return report_source_matches_recommendation(report, current, confirmed_constraints)
+
+
 def _current_report_source(source: Mapping[str, Any], *, preserve_variants: bool = False) -> dict[str, Any]:
     """Bind the latest dated verified run explicitly, never by storage order."""
     candidates = []
@@ -2598,20 +2803,38 @@ def _text_tuple(value: object) -> tuple[str, ...]:
 
 
 def _recommendation_research_prompt(messages: Sequence[object], latest: object) -> str:
-    """Parameter replies retain the most recent explicit research request."""
+    """Keep the research request through answers to material clarifications.
+
+    A clarification can mention choosing terms or the multi-agent preset.
+    Those words route it to Recommender, but do not make it a new mandate.
+    """
     text = str(latest or "").strip()
-    if _starts_new_recommendation(text):
-        return text
-    user_turns = [str(row.get("content", "")).strip() for row in messages
-                  if isinstance(row, Mapping) and row.get("role") == "user"]
-    start = next((index for index in range(len(user_turns) - 1, -1, -1)
-                  if _starts_new_recommendation(user_turns[index])), None)
+    rows = [dict(row) for row in messages if isinstance(row, Mapping)]
+    if not rows or rows[-1].get("role") != "user" or str(rows[-1].get("content", "")).strip() != text:
+        rows.append({"role": "user", "content": text})
+    user_turns = []
+    start = None
+    needs_input = False
+    for row in rows:
+        role = row.get("role")
+        if role == "assistant":
+            needs_input = row.get("status") == "needs_input"
+            continue
+        if role != "user":
+            continue
+        content = str(row.get("content", "")).strip()
+        if not content:
+            continue
+        explicit_restart = bool(re.search(r"重新(?:研究|推荐|筛选|开始)|新(?:建)?任务|换(?:个|一个)(?:标的|研究|问题)", content))
+        continuation = bool(re.search(r"继续|按(?:前述|原先|已确认|原有)", content))
+        clarification = (needs_input or continuation) and not explicit_restart
+        if (explicit_restart or _starts_new_recommendation(content)) and not clarification:
+            start = len(user_turns)
+        user_turns.append(content)
+        needs_input = False
     if start is None:
         return text
-    turns = user_turns[start:]
-    if not turns or turns[-1] != text:
-        turns.append(text)
-    return "\n\n补充条件：\n".join(turns)
+    return "\n\n补充条件：\n".join(user_turns[start:])
 
 
 def _recommendation_turn_preferences(messages: Sequence[object], default_mode: str) -> tuple[str, int | None]:
@@ -2849,13 +3072,6 @@ def _persisted_constraints(constraints: Mapping[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in constraints.items() if key != "term_overrides"}
 
 
-def _pending_constraints(pending: Mapping[str, Any]) -> dict[str, Any]:
-    """Return shared selection constraints; per-candidate terms stay in their contracts."""
-
-    stored = pending.get("confirmed_constraints")
-    if not isinstance(stored, Mapping):
-        raise ValidationError("待确认候选缺少冻结条件")
-    return dict(stored)
 
 
 def _pricing_config_for_resolved_contract(
@@ -2886,15 +3102,38 @@ def _pricing_config_for_resolved_contract(
     return {"model_method": "monte_carlo", "path_count": value}
 
 
-def _affirmative_candidate_approval(prompt: object) -> bool:
+def _candidate_approval_clauses(prompt: object, pending: Mapping[str, Any] | None = None) -> list[str]:
+    """Keep explicit selection clauses separate from questions about other options."""
+    clauses = []
+    for clause in re.split(r"[，。；;\n]", str(prompt or "").strip().casefold()):
+        if re.search(r"[？?]|(?:吗|么|是否|能否|可否)", clause):
+            continue
+        short = re.sub(r"\s+", "", clause).strip("。！! ")
+        if re.fullmatch(r"(?:第[0-9一二两三四五六七八九十]+(?:个|号|项)|前[0-9一二两三四五六七八九十]+个|都选|全选|全部)", short):
+            clauses.append(clause)
+            continue
+        command = re.match(r"^\s*(?:(?:请|我们|我)\s*)?(?:确认|批准|就用|就选|选择|选用|选)\s*(?:推荐结果|推荐候选)?\s*(.*)$", clause)
+        if command is None:
+            continue
+        target = command[1].strip("。！! ")
+        if re.match(r"第[0-9一二两三四五六七八九十]+|候选\s*[0-9a-z一二两三四五六七八九十_-]+|[0-9]+\.[0-9]+|[0-9]+(?:个|号|名|项|$)|当前候选|已有候选|上述候选|这个|这些|全部|所有候选", target):
+            clauses.append(clause)
+            continue
+        candidates = pending.get("candidates", ()) if isinstance(pending, Mapping) else ()
+        for candidate in candidates:
+            if not isinstance(candidate, Mapping):
+                continue
+            for field in ("candidate_id", "product_name"):
+                value = str(candidate.get(field) or "").strip().casefold()
+                if value and (target == value or target.startswith(value + "和") or target.startswith(value + "与") or target.startswith(value + "、")):
+                    clauses.append(clause)
+                    break
+    return list(dict.fromkeys(clauses))
+
+
+def _affirmative_candidate_approval(prompt: object, pending: Mapping[str, Any] | None = None) -> bool:
     """Only an affirmative selection command can approve existing contracts."""
-    short = re.sub(r"\s+", "", str(prompt or "")).strip("，。；;！？!?")
-    if re.fullmatch(r"(?:第[0-9一二两三四五六七八九十]+(?:个|号|项)|前[0-9一二两三四五六七八九十]+个|都选|全选|全部)", short):
-        return True
-    for clause in re.split(r"[，。；;！？!?\n]", str(prompt or "").strip().casefold()):
-        if re.match(r"^\s*(?:(?:请|我|我们)\s*)?(?:确认|批准|就用|就选|选择|选用|选)\s*(?=第[0-9一二两三四五六七八九十]+|候选\s*[0-9a-z一二两三四五六七八九十_-]+|[0-9]+\.[0-9]+|当前候选|已有候选|上述候选|这个|这些|全部|所有候选)", clause):
-            return True
-    return False
+    return bool(_candidate_approval_clauses(prompt, pending))
 
 
 def _pending_request_changed(prompt: object, pending: Mapping[str, Any] | None) -> bool:
@@ -2930,9 +3169,9 @@ def _selected_candidate_ids(
 ) -> list[str]:
     """Resolve an ordered user selection to authoritative candidate IDs."""
 
-    if _starts_new_recommendation(prompt) or _pending_request_changed(prompt, pending):
+    if _starts_new_recommendation(prompt, pending) or _pending_request_changed(prompt, pending):
         return []
-    if arguments.get("approved_candidate_ids") is None and not _affirmative_candidate_approval(prompt):
+    if not _affirmative_candidate_approval(prompt, pending):
         return []
     if not isinstance(pending, Mapping):
         return []
@@ -2952,8 +3191,10 @@ def _selected_candidate_ids(
             raise ValidationError("approved_candidate_ids不能为空或重复")
         if any(item not in candidate_ids for item in selected):
             raise ValidationError("approved_candidate_ids包含未知candidate_id")
-        return selected
-    text = re.sub(r"\s+", "", str(prompt or "")).strip().lower()
+        # The model may resolve IDs, but cannot replace the user's named or
+        # ordered choice. The same deterministic parser remains authoritative.
+        return selected if selected == _selected_candidate_ids(prompt, {}, pending) else []
+    text = re.sub(r"\s+", "", "，".join(_candidate_approval_clauses(prompt, pending))).strip().lower()
     short = text.strip("，。；;！？!?")
     if short in {"都选", "全选", "全部"}:
         return candidate_ids
@@ -2972,24 +3213,20 @@ def _selected_candidate_ids(
     if direct:
         return [candidate_id for _, candidate_id in direct]
     ranked: list[tuple[int, str]] = []
-    for matched in re.finditer(r"(?:第|选择|选|候选)\s*(\d{1,2})(?:个|号|名|项)?", text):
-        rank = int(matched.group(1))
-        if 1 <= rank <= len(candidate_ids):
-            ranked.append((matched.start(), candidate_ids[rank - 1]))
-    if ranked:
-        ordered = [candidate_id for _, candidate_id in sorted(ranked)]
-        return list(dict.fromkeys(ordered))
     chinese_numbers = {
-        "一": 1, "二": 2, "三": 3, "四": 4, "五": 5,
+        "一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5,
         "六": 6, "七": 7, "八": 8, "九": 9, "十": 10,
     }
-    chinese_ranked: list[tuple[int, str]] = []
-    for matched in re.finditer(r"(?:第|选择|选|候选)\s*([一二三四五六七八九十])(?:个|号|名|项)?", text):
-        rank = chinese_numbers[matched.group(1)]
-        if 1 <= rank <= len(candidate_ids):
-            chinese_ranked.append((matched.start(), candidate_ids[rank - 1]))
-    if chinese_ranked:
-        ordered = [candidate_id for _, candidate_id in sorted(chinese_ranked)]
+    # One pass preserves mixed Chinese/numeric order; an unknown rank invalidates
+    # the whole selection instead of silently approving its valid subset.
+    for matched in re.finditer(r"(?:第|选择|选|候选)\s*(\d{1,2}|[一二两三四五六七八九十])(?![\d.])(?:个|号|名|项)?", text):
+        value = matched.group(1)
+        rank = int(value) if value.isdigit() else chinese_numbers[value]
+        if not 1 <= rank <= len(candidate_ids):
+            return []
+        ranked.append((matched.start(), candidate_ids[rank - 1]))
+    if ranked:
+        ordered = [candidate_id for _, candidate_id in ranked]
         return list(dict.fromkeys(ordered))
     named: list[tuple[int, str]] = []
     for candidate in candidates:
@@ -3001,24 +3238,26 @@ def _selected_candidate_ids(
                 named.append((position, candidate_id))
                 break
     if named:
+        if len({position for position, _ in named}) != len(named):
+            return []
         return list(dict.fromkeys(candidate_id for _, candidate_id in sorted(named)))
     if len(candidate_ids) == 1 and _approval_text(prompt):
         return list(candidate_ids)
     return []
 
 
-def _starts_new_recommendation(prompt: object) -> bool:
+def _starts_new_recommendation(prompt: object, pending: Mapping[str, Any] | None = None) -> bool:
     text = str(prompt or "").strip().casefold()
     if decide_workflow(text).reason_code != "structure_selection_required":
         return False
-    return not _affirmative_candidate_approval(text)
+    return not _affirmative_candidate_approval(text, pending)
 
 
-def _has_candidate_selection_intent(prompt: object) -> bool:
-    if _starts_new_recommendation(prompt):
+def _has_candidate_selection_intent(prompt: object, pending: Mapping[str, Any] | None = None) -> bool:
+    if _starts_new_recommendation(prompt, pending):
         return False
     text = str(prompt or "").strip().casefold()
-    return _affirmative_candidate_approval(text)
+    return _affirmative_candidate_approval(text, pending)
 
 
 def _approved_candidate_ids(pending: Mapping[str, Any]) -> list[str]:

@@ -23,23 +23,23 @@
   const text = value => String(value ?? '');
   const copy = value => JSON.parse(JSON.stringify(value));
 
-  function displayNumber(value, valueFormat = 'number') {
+  function displayNumber(value, valueFormat = 'number', digits = 2) {
     if (value === null || value === undefined || value === '') return '';
     let number = Number(value);
     if (!Number.isFinite(number)) return text(value);
     const format = text(valueFormat || 'number').toLowerCase();
     if (format === 'percent') number *= 100;
     const percent = format === 'percent' || format === 'percent_points';
-    if (number !== 0 && Math.round(number * 100) === 0) {
+    if (number !== 0 && (Math.round(Math.abs(number) * 10 ** digits) === 0 || Math.abs(number) >= 1e12)) {
       const [mantissa, exponent] = number.toExponential(2).split('e');
       const power = [...String(Number(exponent))].map(character => superscript[character] || character).join('');
-      return `${mantissa.replace(/0+$/, '').replace(/\.$/, '')}×10${power}${percent ? '%' : ''}`;
+      return `${mantissa.replace(/0+$/, '').replace(/\.$/, '').replace(/^-/, '−')}×10${power}${percent ? '%' : ''}`;
     }
-    return new Intl.NumberFormat('zh-CN', {maximumFractionDigits: 2}).format(number) + (percent ? '%' : '');
+    return new Intl.NumberFormat('zh-CN', {maximumFractionDigits: digits}).format(number).replace(/^-/, '−') + (percent ? '%' : '');
   }
 
-  function formatValue(value, spec = {}) {
-    return `${displayNumber(value, spec.value_format)}${text(spec.value_suffix)}`;
+  function formatValue(value, spec = {}, digits = 2) {
+    return `${displayNumber(value, spec.value_format, digits)}${text(spec.value_suffix)}`;
   }
 
   function unitLabel(spec = {}) {
@@ -63,8 +63,17 @@
     return text(spec.value_format).toLowerCase() === 'percent' ? number / 100 : number;
   }
 
-  function displayCategory(value, axisName) {
-    return /年|日期|时间|代码|标识/.test(text(axisName)) ? text(value) : displayNumber(value, 'number');
+  function displayCategory(value, axisName, digits = 2) {
+    return /年|日期|时间|代码|标识/.test(text(axisName)) ? text(value) : displayNumber(value, 'number', digits);
+  }
+
+  function axisPrecision(values, format = 'number') {
+    const numbers = [...new Set(values.filter(value => value !== null && value !== '' && Number.isFinite(Number(value))).map(Number))].sort((a,b) => a-b);
+    if (numbers.length < 2) return 2;
+    let step = Infinity;
+    for (let index = 1; index < numbers.length; index++) step = Math.min(step, numbers[index] - numbers[index-1]);
+    if (format === 'percent') step *= 100;
+    return Math.min(6, Math.max(2, Math.ceil(-Math.log10(step))));
   }
 
   function presentationDefaults() {
@@ -86,7 +95,7 @@
     const type = spec.type === 'bar' ? 'bar' : 'line';
     const xValues = Array.isArray(spec.x) ? spec.x : [];
     const series = Array.isArray(spec.series) ? spec.series : [];
-    if (spec.type === 'surface') return window.OptionHelperSurface.option(spec, value => formatValue(value, spec), theme.axis?.label);
+    if (spec.type === 'surface') return window.OptionHelperSurface.option(spec, value => formatValue(value, spec, 4), theme.axis?.label);
     if (spec.type === 'heatmap') {
       const yValues = Array.isArray(spec.y) ? spec.y : [];
       const data = Array.isArray(spec.data) ? spec.data : [];
@@ -103,12 +112,12 @@
         xAxis: {
           type: 'category', name: spec.x_axis_name || '', nameLocation: 'middle', nameGap: 27, data: xValues,
           axisLine: {lineStyle: {color: theme.axis?.line}},
-          axisLabel: {color: theme.axis?.label, fontSize: theme.textStyle?.fontSize, formatter: value => displayCategory(value, spec.x_axis_name)},
+          axisLabel: {color: theme.axis?.label, fontSize: theme.textStyle?.fontSize, formatter: value => displayCategory(value, spec.x_axis_name, axisPrecision(xValues))},
         },
         yAxis: {
           type: 'category', name: spec.y_axis_name || '', nameLocation: 'middle', nameGap: 48, data: yValues,
           axisLine: {lineStyle: {color: theme.axis?.line}},
-          axisLabel: {color: theme.axis?.label, fontSize: theme.textStyle?.fontSize, formatter: value => displayCategory(value, spec.y_axis_name)},
+          axisLabel: {color: theme.axis?.label, fontSize: theme.textStyle?.fontSize, formatter: value => displayCategory(value, spec.y_axis_name, axisPrecision(yValues))},
         },
         visualMap: {
           min: values.length ? Math.min(...values) : 0,
@@ -122,10 +131,13 @@
       };
     }
     const hasLegend = series.length > 1;
+    const yValues = series.flatMap(item => item.data || []).filter(value => value !== null && value !== '' && Number.isFinite(Number(value))).map(Number);
+    const span = yValues.length ? (Math.max(...yValues) - Math.min(0, ...yValues)) / 4 : 1;
+    const yDigits = axisPrecision([0, span], spec.value_format);
     return {
       animation: false,
       color: [...palette],
-      tooltip: {...tooltipStyle, trigger: 'axis', valueFormatter: value => formatValue(value, spec)},
+      tooltip: {...tooltipStyle, trigger: 'axis', valueFormatter: value => formatValue(value, spec, Math.max(4, yDigits))},
       legend: {
         show: hasLegend, top: 2,
         textStyle: {color: theme.textStyle?.color, fontFamily: theme.textStyle?.fontFamily, fontSize: theme.textStyle?.fontSize},
@@ -137,12 +149,12 @@
         axisLabel: {
           color: theme.axis?.label, fontSize: theme.textStyle?.fontSize, interval: 0,
           rotate: xValues.length > 14 ? 42 : 0,
-          formatter: value => displayCategory(value, spec.x_axis_name),
+          formatter: value => displayCategory(value, spec.x_axis_name, axisPrecision(xValues)),
         },
       },
       yAxis: {
         type: 'value', name: spec.y_axis_name || '', nameTextStyle: {color: theme.axis?.label},
-        axisLabel: {color: theme.axis?.label, fontSize: theme.textStyle?.fontSize, formatter: value => formatValue(value, spec)},
+        axisLabel: {color: theme.axis?.label, fontSize: theme.textStyle?.fontSize, formatter: value => formatValue(value, spec, yDigits)},
         splitLine: {lineStyle: {color: theme.axis?.split, type: 'dashed'}},
       },
       series: series.map((item, seriesIndex) => ({

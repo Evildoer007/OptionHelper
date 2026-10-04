@@ -3,7 +3,7 @@
 The renderer consumes only the supplied HTML and frozen chart specifications.
 It never reads ReportIR, local image paths, or network resources.  Paragraphs,
 lists, tables and equations remain native Word content; charts are inserted as
-static figures with native data tables so their current values remain visible.
+static figures from the current specifications; supplied report tables stay editable.
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ from urllib.parse import unquote_to_bytes
 from xml.etree import ElementTree
 
 from .design_tokens import TOKENS
+from .renderer import display_text, chart_axis_precision, chart_category
 from .system_fonts import windows_font_candidates
 
 from bs4 import BeautifulSoup, NavigableString, Tag
@@ -474,22 +475,14 @@ def _number(value: Any) -> float | None:
     return parsed if math.isfinite(parsed) else None
 
 
-def _compact_number(value: float) -> str:
-    if value == 0:
-        return "0"
-    if abs(value) >= 1_000_000 or abs(value) < 0.0001:
-        return f"{value:.4g}"
-    return f"{value:.6f}".rstrip("0").rstrip(".")
 
 
-def _display_value(value: Any, value_format: Any = None, suffix: Any = None) -> str:
+def _display_value(value: Any, value_format: Any = None, suffix: Any = None, *, digits: int = 2) -> str:
     number = _number(value)
     if number is None:
         text = "—" if value is None else str(value)
-    elif str(value_format or "").lower() == "percent":
-        text = _compact_number(number * 100) + "%"
     else:
-        text = _compact_number(number)
+        text = display_text(number, value_format, digits=digits)
     return text + str(suffix or "")
 
 
@@ -592,7 +585,7 @@ def _render_chart_png(spec: Mapping[str, Any]) -> bytes:
                     )
         for index in sampled_indices(len(x_values)):
             value = x_values[index]
-            text = str(value)
+            text = chart_category(value, spec.get('x_axis_name'), digits=chart_axis_precision(x_values))
             box = draw.textbbox((0, 0), text, font=small_font)
             draw_text_within_canvas(
                 (left + (index + 0.5) * cell_width - (box[2] - box[0]) / 2, top + plot_height + 14),
@@ -602,7 +595,7 @@ def _render_chart_png(spec: Mapping[str, Any]) -> bytes:
             )
         for index in sampled_indices(len(y_values)):
             value = y_values[index]
-            text = str(value)
+            text = chart_category(value, spec.get('y_axis_name'), digits=chart_axis_precision(y_values))
             box = draw.textbbox((0, 0), text, font=small_font)
             draw_text_within_canvas(
                 (left - (box[2] - box[0]) - 12, top + (rows - index - 0.5) * cell_height - (box[3] - box[1]) / 2),
@@ -619,11 +612,12 @@ def _render_chart_png(spec: Mapping[str, Any]) -> bytes:
             low, high = min(0.0, low), max(0.0, high)
         if low == high:
             low, high = low - 1.0, high + 1.0
+        y_digits = chart_axis_precision([low, low + (high - low) / 4], value_format)
         for tick in range(5):
             y = top + plot_height - plot_height * tick / 4
             draw.line((left, y, left + plot_width, y), fill=TOKENS.colors["rule"], width=1)
             value = low + (high - low) * tick / 4
-            label = _display_value(value, value_format, suffix)
+            label = _display_value(value, value_format, suffix, digits=y_digits)
             box = draw.textbbox((0, 0), label, font=small_font)
             draw_text_within_canvas(
                 (left - (box[2] - box[0]) - 12, y - (box[3] - box[1]) / 2),
@@ -685,7 +679,7 @@ def _render_chart_png(spec: Mapping[str, Any]) -> bytes:
             )
         for index in sampled_indices(len(x_values)):
             value = x_values[index]
-            text = str(value)
+            text = chart_category(value, spec.get('x_axis_name'), digits=chart_axis_precision(x_values))
             box = draw.textbbox((0, 0), text, font=small_font)
             x = left + (index + 0.5) * plot_width / count
             draw_text_within_canvas(
@@ -1385,7 +1379,7 @@ class _WordHtmlRenderer:
             spec = self._chart_spec(chart)
             caption = node.find("figcaption")
             title = _clean_text(caption.get_text(" ", strip=True)) if caption is not None else str(spec.get("title") or "图表")
-            self._add_chart(spec, title=title, add_data_table=False)
+            self._add_chart(spec, title=title)
             for child in node.children:
                 if not isinstance(child, Tag) or child is caption or child is chart:
                     continue
@@ -1429,9 +1423,9 @@ class _WordHtmlRenderer:
 
     def _render_chart(self, node: Tag) -> None:
         spec = self._chart_spec(node)
-        self._add_chart(spec, title=str(spec.get("title") or "图表"), add_data_table=False)
+        self._add_chart(spec, title=str(spec.get("title") or "图表"))
 
-    def _add_chart(self, spec: Mapping[str, Any], *, title: str, add_data_table: bool) -> None:
+    def _add_chart(self, spec: Mapping[str, Any], *, title: str) -> None:
         caption = self.document.add_paragraph(style="Caption")
         caption.alignment = WD_ALIGN_PARAGRAPH.CENTER
         caption.paragraph_format.keep_with_next = True
@@ -1445,81 +1439,16 @@ class _WordHtmlRenderer:
         image._inline.docPr.set("descr", str(spec.get("title") or title or "图表"))
         image._inline.docPr.set("title", str(spec.get("title") or title or "图表"))
         self.rendered_blocks += 2
-        if add_data_table:
-            self._render_chart_data_table(spec)
-
-    def _chart_data_matches(self, container: Tag, spec: Mapping[str, Any]) -> bool:
-        visible = _clean_text(container.get_text(" ", strip=True))
-        expected: list[str] = [str(value) for value in list(spec.get("x") or [])]
-        if str(spec.get("type") or "line").lower() == "heatmap":
-            expected.extend(str(value) for value in list(spec.get("y") or []))
-            expected.extend(_display_value(row[2], spec.get("value_format"), spec.get("value_suffix")) for row in list(spec.get("data") or []) if isinstance(row, (list, tuple)) and len(row) == 3)
-        else:
-            for series in list(spec.get("series") or []):
-                if isinstance(series, Mapping):
-                    expected.extend(_display_value(value, spec.get("value_format"), spec.get("value_suffix")) for value in list(series.get("data") or []))
-        return all(value in visible for value in expected if value)
-
-    def _render_chart_data_table(self, spec: Mapping[str, Any]) -> None:
-        chart_type = str(spec.get("type") or "line").lower()
-        x_values = list(spec.get("x") or [])
-        value_format = spec.get("value_format")
-        suffix = spec.get("value_suffix")
-        if chart_type == "heatmap":
-            y_values = list(spec.get("y") or [])
-            values = {
-                (int(row[0]), int(row[1])): _display_value(row[2], value_format, suffix)
-                for row in list(spec.get("data") or [])
-                if isinstance(row, (list, tuple)) and len(row) == 3 and str(row[0]).lstrip("-").isdigit() and str(row[1]).lstrip("-").isdigit()
-            }
-            rows = [[str(spec.get("y_axis_name") or "纵轴") + " / " + str(spec.get("x_axis_name") or "横轴"), *(str(value) for value in x_values)]]
-            rows.extend([str(y_value), *(values.get((x_index, y_index), "—") for x_index in range(len(x_values)))] for y_index, y_value in enumerate(y_values))
-        else:
-            series = [item for item in list(spec.get("series") or []) if isinstance(item, Mapping)]
-            rows = [[str(spec.get("x_axis_name") or "横轴"), *(str(item.get("name") or f"序列{index + 1}") for index, item in enumerate(series))]]
-            for index, x_value in enumerate(x_values):
-                rows.append([
-                    str(x_value),
-                    *(
-                        _display_value(list(item.get("data") or [])[index], value_format, suffix)
-                        if index < len(list(item.get("data") or [])) else "—"
-                        for item in series
-                    ),
-                ])
-        self._add_matrix_table(rows)
-
-    def _add_matrix_table(self, rows: Sequence[Sequence[str]]) -> None:
-        if not rows or not rows[0]:
-            return
-        table = self.document.add_table(rows=len(rows), cols=len(rows[0]))
-        table.style = "Table Grid"
-        table.alignment = WD_TABLE_ALIGNMENT.CENTER
-        table.autofit = True
-        _set_table_borders(table)
-        for row_index, values in enumerate(rows):
-            for column_index, value in enumerate(values):
-                cell = table.cell(row_index, column_index)
-                cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
-                _set_cell_margins(cell)
-                paragraph = cell.paragraphs[0]
-                paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER if column_index else WD_ALIGN_PARAGRAPH.LEFT
-                run = paragraph.add_run(str(value))
-                _set_font(run)
-                run.font.size = Pt(9)
-                if row_index == 0:
-                    run.bold = True
-                    run.font.color.rgb = _parse_color(TOKENS.colors["on_brand"])
-                    _set_cell_shading(cell, "315D8A")
-                elif row_index % 2 == 0:
-                    _set_cell_shading(cell, "F4F7FA")
-        _set_repeat_table_header(table.rows[0])
-        spacer = self.document.add_paragraph()
-        spacer.paragraph_format.space_after = Pt(0)
-        spacer.paragraph_format.line_spacing = Pt(1)
-        self.rendered_blocks += 1
 
 
-def _select_document_root(soup: BeautifulSoup) -> Tag:
+def _select_document_root(soup: BeautifulSoup, *, include_body_content: bool = False) -> Tag:
+    # An editable report can contain user paragraphs before/after its main
+    # element. Export that same body while omitting only Designer navigation.
+    # Normal generated reports retain the authoritative report-main boundary.
+    if include_body_content and isinstance(soup.body, Tag):
+        for navigation in soup.select(".report-toc, .skip-link"):
+            navigation.decompose()
+        return soup.body
     preferred = soup.select_one("#report-main.report-document")
     if isinstance(preferred, Tag):
         return preferred
@@ -1531,11 +1460,13 @@ def _select_document_root(soup: BeautifulSoup) -> Tag:
     return soup
 
 
-def render_docx(html_content: str, *, chart_specs: Mapping | None = None) -> bytes:
+def render_docx(html_content: str, *, chart_specs: Mapping | None = None, include_body_content: bool = False) -> bytes:
     """Convert cleaned Designer HTML to an editable A4 DOCX byte stream.
 
     ``#report-main.report-document`` is authoritative when present; otherwise
-    the first ``main`` element and then ``body`` are used.  ``chart_specs`` is
+    the first ``main`` element and then ``body`` are used. Editable-document
+    exports can include all body content with ``include_body_content=True``;
+    Designer navigation is excluded. ``chart_specs`` is
     the current Designer mapping from chart id to frozen line, bar or heatmap
     specification.
     """
@@ -1545,7 +1476,7 @@ def render_docx(html_content: str, *, chart_specs: Mapping | None = None) -> byt
     if chart_specs is not None and not isinstance(chart_specs, Mapping):
         raise WordRenderError("chart_specs必须是图表id到Designer规格的映射。")
     soup = BeautifulSoup(html_content, "html.parser")
-    root = _select_document_root(soup)
+    root = _select_document_root(soup, include_body_content=include_body_content)
     document = Document()
     _configure_document(document)
     heading = soup.find("title") or root.find("h1")

@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import re
 
+from runtime.workflow_policy import requests_structure_selection
+
 from .interaction import delivery_preferences_from_text
 from .models import RouteDecision
 
@@ -50,7 +52,7 @@ def route_intent(prompt: str) -> RouteDecision:
     explicit_education = _contains(text, ("介绍", "了解", "解释", "是什么", "适用情景"))
     if explicit_education and not has_recommend and not has_run and not has_report:
         return RouteDecision("knowledge", 0.9, "请求教育性介绍，不进入正式推荐流程", False, "single")
-    structure_selection = has_recommend or (has_market_view and bool(re.search(r"(结构|产品|策略)", text)))
+    structure_selection = requests_structure_selection(text)
     if has_report and structure_selection and not _contains(text, _EXISTING):
         return RouteDecision(
             "professional_report", 0.94, "专业报告请求包含结构选择，需要固定推荐流程", True, "capability_based"

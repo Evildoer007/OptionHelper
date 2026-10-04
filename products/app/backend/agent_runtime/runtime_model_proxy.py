@@ -16,18 +16,9 @@ from ..errors import ValidationError
 from ..identity.session_identity import SessionIdentity
 from ..model_gateway.request_control import ModelRequestControl
 from ..settings.settings_models import ModelSelection
-from .runtime_protocol import ModelRouteIssuer, ModelRouteRef
+from .runtime_protocol import ModelRouteIssuer, ModelRouteRef, _safe_reasoning_text
 
 
-def _safe_reasoning_text(value: object) -> str:
-    text = str(value or "")[:64_000]
-    text = re.sub(
-        r"(api[_ -]?key|access[_ -]?token|refresh[_ -]?token|secret|password|authorization|private[_ -]?key|base[_ -]?url)\s*[:=]\s*[^\s,;]+",
-        r"\1: [已过滤]",
-        text,
-        flags=re.IGNORECASE,
-    )
-    return re.sub(r"\bbearer\s+[A-Za-z0-9._~+/=-]{8,}", "Bearer [已过滤]", text, flags=re.IGNORECASE)
 
 
 class ModelGatewayPort(Protocol):

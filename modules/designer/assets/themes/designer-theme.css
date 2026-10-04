@@ -1659,11 +1659,11 @@ body.report-profile-a4 .disclaimer { margin-top: 12px; padding-top: 10px; line-h
 .comparison-product-cards{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:24px;margin-top:24px}
 .comparison-product-card{min-width:0;padding:20px;border:1px solid var(--rule);background:var(--paper)}
 .comparison-product-card>header{padding-bottom:14px;border-bottom:2px solid var(--red)}
-.comparison-product-card>header p{margin:0 0 6px;color:var(--blue);font-size:12px}
-.comparison-product-card h2{margin:0;font-size:19px;line-height:1.4}
-.comparison-product-card h3{margin:18px 0 8px;font-size:13px;color:var(--blue)}
-.comparison-product-card table{width:100%;table-layout:auto;font-size:11px}
+.comparison-product-card>header p{margin:0 0 6px;color:var(--blue);font-size:var(--type-module-label)}
+.comparison-product-card h2{margin:0;font-size:var(--type-card-title);line-height:1.4}
+.comparison-product-card h3{margin:18px 0 8px;font-size:var(--type-caption);color:var(--blue)}
+.comparison-product-card table{width:100%;table-layout:auto;font-size:var(--type-table-compact)}
 .comparison-product-card th,.comparison-product-card td{padding:7px 5px;overflow-wrap:anywhere}
-.comparison-product-card .plain-list,.comparison-product-card .risk-list{padding-left:18px;font-size:12px}
+.comparison-product-card .plain-list,.comparison-product-card .risk-list{padding-left:18px;font-size:var(--type-table)}
 @media(max-width:700px){.comparison-product-cards{grid-template-columns:1fr}}
 @media print{.comparison-product-cards{display:block}.comparison-product-card{margin-bottom:8mm;break-inside:avoid}.comparison-product-card>header{break-after:avoid}thead{display:table-header-group}tr{break-inside:avoid}}

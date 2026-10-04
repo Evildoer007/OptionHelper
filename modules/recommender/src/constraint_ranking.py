@@ -18,6 +18,10 @@ class ConstraintRankingError(RecommendationValidationError):
 
 METRIC_SOURCES: Mapping[str, str] = {
     "premium": "contract_terms",
+    "initial_premium_cost": "contract_terms",
+    "contract_loss_bound": "contract_terms",
+    "margin_call": "contract_terms",
+    "long_only_legs": "contract_terms",
     "pv_percent": "pricer",
     "theoretical_premium": "pricer",
     "delta": "pricer",
@@ -291,3 +295,28 @@ def apply_reviewer_verdict(ranking: ConstraintRankingResult, verdict: ReviewerRa
     if not isinstance(ranking, ConstraintRankingResult) or not isinstance(verdict, ReviewerRankingVerdict):
         _reject("ranking或verdict类型无效")
     return ReviewedConstraintRanking(ranking=ranking, approved=verdict.approved, rejection_reason=verdict.reason)
+
+
+def confirmed_risk_constraints(constraints: Mapping[str, Any]) -> dict[str, Any]:
+    """Canonical hard limits come from the user, never from an Agent omission."""
+    import re
+    rules = {}
+    match = re.fullmatch(r"(\d+(?:\.\d+)?)%", str(constraints.get("max_loss", "")))
+    if match:
+        rules["contract_loss_bound"] = {"operator": "lte", "value": float(Decimal(match[1])/100)}
+    if type(constraints.get("premium_budget_ratio")) in (int, float):
+        rules["initial_premium_cost"] = {"operator": "lte", "value": constraints["premium_budget_ratio"]}
+    if constraints.get("allow_margin_call") is False:
+        rules["margin_call"] = {"operator": "eq", "value": 0}
+    if constraints.get("allow_short_legs") is False:
+        rules["long_only_legs"] = {"operator": "eq", "value": 1}
+    return rules
+
+
+def bind_confirmed_risk_constraints(spec: RankingSpec, constraints: Mapping[str, Any]) -> RankingSpec:
+    # These restrictions have a canonical user-owned representation. The
+    # model may not invent, strengthen or retain one that the user did not set.
+    user_owned = {"contract_loss_bound", "initial_premium_cost", "margin_call", "long_only_legs"}
+    rules = {key: value for key, value in spec.hard_constraints.items() if key not in user_owned}
+    rules.update(confirmed_risk_constraints(constraints))
+    return replace(spec, hard_constraints=rules)

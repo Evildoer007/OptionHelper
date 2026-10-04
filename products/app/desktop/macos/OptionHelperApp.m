@@ -1280,6 +1280,18 @@ didFailWithError:(NSError *)error
 }
 
 - (void)userContentController:(WKUserContentController *)userContentController didReceiveScriptMessage:(WKScriptMessage *)message {
+    if ([message.name isEqualToString:@"optionhelperSession"] && message.webView == self.webView
+        && message.frameInfo.isMainFrame && [self isSafeAppURL:message.frameInfo.request.URL]
+        && [message.body isKindOfClass:NSDictionary.class] && [message.body[@"type"] isEqualToString:@"workspace_rail_state"]
+        && [message.body[@"collapsed"] isKindOfClass:NSNumber.class]
+        && CFGetTypeID((__bridge CFTypeRef)message.body[@"collapsed"]) == CFBooleanGetTypeID()) {
+        BOOL collapsed = [message.body[@"collapsed"] boolValue];
+        NSString *label = collapsed ? @"展开任务栏" : @"收起任务栏";
+        self.railToggle.toolTip = label;
+        [self.railToggle setAccessibilityLabel:label];
+        [self.railToggle setAccessibilityValue:collapsed ? @"已收起" : @"已展开"];
+        return;
+    }
     if ([message.name isEqualToString:@"optionhelperSession"] && [message.body isKindOfClass:[NSDictionary class]]
         && [message.body[@"type"] isEqualToString:@"signed_out"]) {
         [self cancelSettingsNavigationWatchdog];
@@ -1371,6 +1383,13 @@ didFailWithError:(NSError *)error
     NSApp.applicationIconImage = [[NSImage alloc] initWithContentsOfURL:path];
 }
 
+- (BOOL)validateMenuItem:(NSMenuItem *)item {
+    if (item.action == @selector(toggleRail:)) {
+        return [@[@"/optchat", @"/optdesk"] containsObject:self.webView.URL.path ?: @""];
+    }
+    return YES;
+}
+
 - (void)installMainMenu {
     NSMenu *mainMenu = [[NSMenu alloc] initWithTitle:@""];
     NSMenu *appMenu = [[NSMenu alloc] initWithTitle:@"OptionHelper"];
@@ -1394,6 +1413,10 @@ didFailWithError:(NSError *)error
     NSMenu *viewMenu = [[NSMenu alloc] initWithTitle:@"显示"];
     NSMenuItem *viewMenuItem = [[NSMenuItem alloc] initWithTitle:@"" action:nil keyEquivalent:@""];
     viewMenuItem.submenu = viewMenu;
+    NSMenuItem *sidebar = [[NSMenuItem alloc] initWithTitle:@"收起或展开任务栏" action:@selector(toggleRail:) keyEquivalent:@"s"];
+    sidebar.keyEquivalentModifierMask = NSEventModifierFlagControl | NSEventModifierFlagCommand;
+    sidebar.target = self;
+    [viewMenu addItem:sidebar];
     self.zoomInMenuItem = [[NSMenuItem alloc] initWithTitle:@"放大" action:@selector(increaseUIScale:) keyEquivalent:@"+"];
     self.zoomInMenuItem.keyEquivalentModifierMask = NSEventModifierFlagCommand;
     self.zoomInMenuItem.target = self;

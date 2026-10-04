@@ -185,13 +185,13 @@ html[data-report-editor-open="true"],html[data-report-editor-open="true"] body{o
 .editor-source-panel textarea{display:block;width:100%;height:55vh;margin:12px 0;font:12px/1.6 ui-monospace,monospace;resize:vertical}
 
 .editor-command-fold{position:relative;flex:0 0 auto}
-.editor-command-fold>summary{display:block;padding:8px 10px;border:1px solid var(--line,#ddd);border-radius:5px;font-size:12px;cursor:pointer;list-style:none}
+.editor-command-fold>summary{display:block;padding:8px 10px;border:1px solid var(--line,#ddd);border-radius:5px;font-size:12px;cursor:default;list-style:none}
 .editor-command-fold:not([open])>.editor-toolbar__commands{display:none}
 .editor-command-fold[open]>.editor-toolbar__commands{position:absolute;right:0;top:100%;z-index:8;display:flex;flex-wrap:wrap;width:min(600px,80vw);padding:12px;background:var(--color-surface,#fff);border:1px solid var(--line,#ddd);box-shadow:0 6px 20px #0002}
 .editor-action--secondary:hover{color:#fff}
 
 .editor-export-menu{position:relative}
-.editor-export-menu>summary{padding:8px 14px;border:1px solid var(--line,#ddd);border-radius:6px;font-size:12px;list-style:none;cursor:pointer}
+.editor-export-menu>summary{padding:8px 14px;border:1px solid var(--line,#ddd);border-radius:6px;font-size:12px;list-style:none;cursor:default}
 .editor-export-menu>div{position:absolute;right:0;top:calc(100% + 6px);z-index:9;display:grid;gap:5px;min-width:130px;padding:8px;background:var(--color-surface,#fff);border:1px solid var(--line,#ddd);border-radius:8px;box-shadow:0 8px 24px #0002}
 #editorCombineSections{display:grid;gap:10px;margin:16px 0}
 #editorCombineSections label{display:flex;align-items:center;gap:10px}

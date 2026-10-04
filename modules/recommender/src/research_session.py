@@ -13,6 +13,28 @@ from runtime.research_policy import depth_policy, research_execution, research_c
 from .models import EvidenceRef, RecommendationValidationError
 from .evaluation_evidence import read_evaluation_records
 
+
+def _validate_host_evaluation_identity(response, candidate):
+    """Validate the Host's identity before assigning facts to a candidate snapshot."""
+    for field in ('candidate_id', 'product_id', 'rule_revision'):
+        if field not in response:
+            raise RecommendationValidationError(f'Hosted候选评估缺少{field}')
+        value = response[field]
+        if field == 'rule_revision' and (not isinstance(value, int) or isinstance(value, bool)):
+            raise RecommendationValidationError('Hosted候选评估rule_revision必须为整数')
+        if value != candidate[field]:
+            raise RecommendationValidationError(f'Hosted候选评估{field}与当前候选不一致')
+
+
+class FinancialFactReferenceError(RecommendationValidationError):
+    """A role can correct its references only against current owned facts."""
+    def __init__(self, candidate_id, invalid_refs, available_facts):
+        super().__init__('角色引用了不存在、失效或不属于当前候选的金融事实')
+        self.candidate_id = candidate_id
+        self.invalid_refs = sorted(invalid_refs)
+        self.available_facts = deepcopy(available_facts)
+
+
 class ResearchSession:
     def __init__(self, case, tool_port, *, calculation_allowed=True, preset_id="sequential-deliberation"):
         self.case=case
@@ -23,6 +45,7 @@ class ResearchSession:
         self.research_id='research-'+uuid4().hex
         self._lock=RLock()
         self._candidates={}
+        self._candidate_readiness={}
         self._results={}
         self._pending={}
         self._completed={}
@@ -184,6 +207,7 @@ class ResearchSession:
                 snapshot = deepcopy(candidate.to_confirmation_dict())
                 self._original_candidates.setdefault(candidate.candidate_id, snapshot)
                 self._candidates[candidate.candidate_id] = snapshot
+                self._candidate_readiness[candidate.candidate_id] = candidate.library_status
 
     def contains_contract(self, candidate):
         """Check a merged proposal against contracts actually registered by Host."""
@@ -203,7 +227,8 @@ class ResearchSession:
         canonical = role.removeprefix('SingleAgent.')
         with self._lock:
             permitted = self._role_candidates.get(canonical)
-            return any(permitted is None or candidate_id in permitted
+            return any(self._candidate_readiness.get(candidate_id) == "ready"
+                       and (permitted is None or candidate_id in permitted)
                        for candidate_id in self._candidates)
 
     def share_evidence(self):
@@ -311,7 +336,13 @@ class ResearchSession:
                             and isinstance(summary.get("fact_ref"), str)):
                         known.add(summary["fact_ref"])
                 if not set(references).issubset(known):
-                    raise RecommendationValidationError('角色引用了不存在、失效或不属于当前候选的金融事实')
+                    facts = [fact for evidence in self.read(candidate_id, role=role)
+                             for fact in evidence.get('verified_metrics', {}).values()
+                             if isinstance(fact, dict) and fact.get('fact_ref') in known]
+                    facts += [summary for evidence in self.read(candidate_id, role=role)
+                              for summary in [evidence.get('verified_module_summaries', {}).get('payoffer', {})]
+                              if summary.get('fact_ref') in known]
+                    raise FinancialFactReferenceError(candidate_id, set(references)-known, facts)
 
     def read_result(self, candidate_id, module, result_path=(), *, role='Host', offset=0, limit=64, expected_run_ref=None):
         """Read a page of an already verified result, without another compute."""
@@ -424,6 +455,10 @@ class ResearchSession:
             if candidate_id not in self._candidates:raise RecommendationValidationError('请先提交候选，由Host登记后再计算')
             self._check_role(role, candidate_id)
             candidate=deepcopy(self._candidates[candidate_id])
+            readiness = self._candidate_readiness.get(candidate_id)
+        self.require_complete_inputs()
+        if readiness != "ready":
+            return self._unavailable(candidate, modules, "候选资料尚未就绪，未启动金融计算")
         if not self.calculation_allowed or self.blocked_modules.intersection(modules):
             return self._unavailable(candidate,modules,'用户限制了本次计算；未启动模块')
         overrides=request.get('term_overrides',{})
@@ -435,6 +470,9 @@ class ResearchSession:
             raise RecommendationValidationError('条款变体必须先交给设计角色并由Host登记，不能覆盖当前候选')
         round_no=request.get('round_no',1)
         if type(round_no) is not int or round_no<1:raise RecommendationValidationError('研究轮次无效')
+        evaluate_candidate = getattr(self.tool_port, 'evaluate_candidate', None)
+        if not callable(evaluate_candidate):
+            raise RecommendationValidationError('缺少Host候选评估端口，不能验证当前合同和用户风险约束')
         # Without a Host-frozen data identity, successful runs are not cached.
         # Concurrent requests may share an in-flight execution only.
         identify=getattr(self.tool_port,'research_data_identity',None)
@@ -479,12 +517,20 @@ class ResearchSession:
         try:
             with research_calculation_scope(started), research_execution({"research_id":self.research_id,"question":question,"role":role,
                                      "candidate_snapshot":candidate,"purpose":"research"}):
-                response=dict(self.tool_port.evaluate_candidate(candidate=candidate,
+                response=dict(evaluate_candidate(candidate=candidate,
                     confirmed_constraints=dict(self.case.confirmed_constraints),modules=modules,
                     term_overrides=dict(current),candidate_id=candidate_id,round_no=round_no))
-            if not tracked:
-                for module in modules:
-                    started(module)
+            with self._lock:
+                if not tracked:
+                    self._used += outstanding
+                    self._reserved -= outstanding
+                    outstanding = 0
+                if self._closed:
+                    cancelled = self._unavailable(candidate, modules, '研究已停止，不采用迟到结果')
+                    cancelled['status'] = 'cancelled'
+                    future.set_result(deepcopy(cancelled))
+                    return cancelled
+            _validate_host_evaluation_identity(response, candidate)
             read_evaluation_records(response,candidate_id=candidate_id,modules=modules,round_no=round_no,
                                     tenant_id=self.case.tenant_id,task_id=self.case.task_id)
             evidence_id='evidence-'+uuid4().hex
@@ -493,6 +539,11 @@ class ResearchSession:
                              'purpose':'research'})
             data_after=identify() if callable(identify) else None
             with self._lock:
+                if self._closed:
+                    cancelled = self._unavailable(candidate, modules, '研究已停止，不采用迟到结果')
+                    cancelled['status'] = 'cancelled'
+                    future.set_result(deepcopy(cancelled))
+                    return cancelled
                 self._results[evidence_id]=deepcopy(response)
                 if data_before is not None and data_before==data_after and all(status=="succeeded" for status in response["module_statuses"].values()):
                     self._completed[key]=deepcopy(response)
@@ -510,8 +561,10 @@ class ResearchSession:
                 return response
             if not tracked and outstanding:
                 # Legacy ports cannot report individual starts; failed execution attempts still count.
-                for module in modules[:outstanding]:
-                    started(module)
+                with self._lock:
+                    self._used += outstanding
+                    self._reserved -= outstanding
+                    outstanding = 0
             future.set_exception(error)
             raise
         finally:
@@ -530,6 +583,8 @@ class ResearchSession:
         # original evidence retain the unchanged computation and its provenance.
         response.pop('evaluation_records', None)
         with self._lock:
+            if self._closed:
+                raise RecommendationValidationError('研究已停止，不再复用计算结果')
             self._results[response['research_evidence_id']] = deepcopy(response)
         return response
 

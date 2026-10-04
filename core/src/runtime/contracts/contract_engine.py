@@ -12,7 +12,7 @@ import re
 from copy import deepcopy
 from dataclasses import dataclass, field
 from functools import lru_cache
-from math import inf
+from math import ceil, floor, inf
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Callable, Mapping, Sequence
@@ -337,6 +337,8 @@ class _ReachabilityInterval:
 
 
 _ALL_REACHABILITY = (_ReachabilityInterval(),)
+# No-event ordinals are the actual inf sentinel, not a limit of finite prices.
+_ALL_ORDINAL_REACHABILITY = (_ReachabilityInterval(upper=inf, upper_closed=True),)
 _APPLICABILITY_KEYS = frozenset({"path_index", "case_index", "status", "reason_code"})
 _APPLICABILITY_REASONS = frozenset({
     "terminal_constraints_satisfiable",
@@ -361,6 +363,8 @@ def _derive_path_case_applicability(
 
     variables = bind_term_symbols(terms, _shared_term_catalog())
     monitor_rules = _terminal_monitor_rules(identity, terms, resolved_schedules, variables)
+    ordinal_bounds = _observation_ordinal_bounds(terms, resolved_schedules, variables)
+    count_bounds = _observation_count_bounds(terms, resolved_schedules)
     result: list[dict[str, Any]] = []
     for path_offset, path in enumerate(paths):
         path_intervals, path_reasons = _terminal_formula_intervals(
@@ -372,6 +376,42 @@ def _derive_path_case_applicability(
             )
             combined = _intersect_interval_sets(path_intervals, case_intervals)
             reasons = path_reasons | case_reasons
+            # An observation ordinal is a 1-based integer or inf when its
+            # event never happens. Project the whole path/case conjunction
+            # onto each ordinal so event-finite guards cannot admit inf.
+            for ordinal, (event, bounds) in ordinal_bounds.items():
+                path_ordinals, _ = _terminal_formula_intervals(
+                    str(path["condition"]), variables, monitor_rules,
+                    projection_axis=ordinal, ordinal_event=event,
+                )
+                case_ordinals, _ = _terminal_formula_intervals(
+                    str(case["domain"]), variables, monitor_rules,
+                    projection_axis=ordinal, ordinal_event=event,
+                )
+                possible = _intersect_interval_sets(
+                    bounds, _intersect_interval_sets(path_ordinals, case_ordinals),
+                )
+                if not _has_observation_ordinal(possible):
+                    combined = ()
+                    break
+            # A count of one scalar frozen series has finite integer support.
+            # Continuous intervals such as 0 < count < 1 contain no legal
+            # observation count, even though their real-valued width is > 0.
+            for counter, bounds in count_bounds.items():
+                path_counts, _ = _terminal_formula_intervals(
+                    str(path["condition"]), variables, monitor_rules,
+                    projection_axis=counter,
+                )
+                case_counts, _ = _terminal_formula_intervals(
+                    str(case["domain"]), variables, monitor_rules,
+                    projection_axis=counter,
+                )
+                possible = _intersect_interval_sets(
+                    bounds, _intersect_interval_sets(path_counts, case_counts),
+                )
+                if not _has_observation_ordinal(possible):
+                    combined = ()
+                    break
             if combined:
                 status = "active"
                 reason_code = "terminal_constraints_satisfiable"
@@ -425,6 +465,125 @@ def _validate_path_case_applicability(
     if seen != expected_refs:
         raise ContractResolutionError("path_case_applicability必须逐一覆盖全部产品path/case")
     return tuple(records)
+
+
+
+def _observation_count_bounds(
+    terms: Mapping[str, Any],
+    schedules: Mapping[str, Any],
+) -> dict[str, tuple[_ReachabilityInterval, ...]]:
+    """Prove count support from one scalar series and its frozen selector.
+
+    Unknown functions, mixed selectors and unscheduled arrays stay unknown.
+    No payoff formula or price-dependent event probability is substituted.
+    """
+    monitor = terms.get("monitor", {})
+    if not isinstance(monitor, Mapping):
+        return {}
+    catalog = _shared_term_catalog()
+    schedule_counts = {
+        str(catalog[key]["symbol"]): len(snapshot["dates"])
+        for key, snapshot in schedules.items()
+        if key in catalog and isinstance(snapshot, Mapping) and "dates" in snapshot
+    }
+    result = {}
+    for name, expression in monitor.items():
+        try:
+            node = ast.parse(str(expression), mode="eval").body
+        except SyntaxError:
+            continue
+        if (not isinstance(node, ast.Call) or not isinstance(node.func, ast.Name)
+            or node.func.id != "count" or len(node.args) != 1):
+            continue
+        series = {_scheduled_series(item) for item in ast.walk(node.args[0])
+                  if isinstance(item, ast.Subscript)}
+        if len(series) != 1 or None in series:
+            continue
+        series_name, selector = next(iter(series))
+        if series_name not in {"S_t", "W_t"} or selector not in schedule_counts:
+            continue
+        result[str(name)] = (_ReachabilityInterval(0, schedule_counts[selector], True, True),)
+    return result
+
+
+def _observation_ordinal_bounds(
+    terms: Mapping[str, Any],
+    schedules: Mapping[str, Any],
+    variables: Mapping[str, Any],
+) -> dict[str, tuple[str, tuple[_ReachabilityInterval, ...]]]:
+    """Derive ordinal support from the same frozen selector and event formula.
+
+    Unknown event functions keep the broad 1..N support. first_time_after
+    additionally excludes the skipped observations, as the evaluator does.
+    This is a necessary reachability proof, never an alternate payoff model.
+    """
+    monitor = terms.get("monitor", {})
+    if not isinstance(monitor, Mapping):
+        return {}
+    catalog = _shared_term_catalog()
+    schedule_counts = {
+        str(catalog[key]["symbol"]): len(snapshot["dates"])
+        for key, snapshot in schedules.items()
+        if key in catalog and isinstance(snapshot, Mapping) and "dates" in snapshot
+    }
+    result = {}
+    for name, expression in monitor.items():
+        try:
+            node = ast.parse(str(expression), mode="eval").body
+        except SyntaxError:
+            continue
+        if (
+            not isinstance(node, ast.Call) or not isinstance(node.func, ast.Name)
+            or node.func.id != "observation_ordinal" or len(node.args) != 2
+            or not isinstance(node.args[1], ast.Name)
+        ):
+            continue
+        series = _scheduled_series(node.args[0])
+        if series is None or series[1] not in schedule_counts:
+            continue
+        event_name = node.args[1].id
+        minimum, maximum = 1, schedule_counts[series[1]]
+        try:
+            event = ast.parse(str(monitor.get(event_name, "")), mode="eval").body
+        except SyntaxError:
+            event = None
+        if (
+            isinstance(event, ast.Call) and isinstance(event.func, ast.Name)
+            and event.func.id == "first_time_after" and len(event.args) == 2
+        ):
+            event_series = {
+                _scheduled_series(item) for item in ast.walk(event.args[0])
+                if isinstance(item, ast.Subscript)
+            }
+            if event_series == {series}:
+                try:
+                    skipped = float(evaluate_formula(ast.unparse(event.args[1]), variables))
+                except (TypeError, ValueError, FormulaError):
+                    pass
+                else:
+                    if np.isfinite(skipped) and skipped >= 0:
+                        minimum = int(skipped) + 1
+        finite = (_ReachabilityInterval(minimum, maximum, True, True),) if minimum <= maximum else ()
+        result[str(name)] = (event_name, (*finite, _ReachabilityInterval(inf, inf, True, True)))
+    return result
+
+
+def _has_observation_ordinal(intervals: Sequence[_ReachabilityInterval]) -> bool:
+    """Check integer support without enumerating a long frozen calendar."""
+    for interval in intervals:
+        if interval.lower == interval.upper == inf:
+            if interval.lower_closed and interval.upper_closed:
+                return True
+            continue
+        lower = ceil(interval.lower)
+        upper = floor(interval.upper)
+        if lower == interval.lower and not interval.lower_closed:
+            lower += 1
+        if upper == interval.upper and not interval.upper_closed:
+            upper -= 1
+        if lower <= upper:
+            return True
+    return False
 
 
 def _terminal_monitor_rules(
@@ -568,38 +727,55 @@ def _terminal_formula_intervals(
     expression: str,
     variables: Mapping[str, Any],
     monitor_rules: Mapping[str, tuple[str, bool, bool, tuple[_ReachabilityInterval, ...]]],
+    *,
+    projection_axis: str = "S_T",
+    ordinal_event: str | None = None,
 ) -> tuple[tuple[_ReachabilityInterval, ...], frozenset[str]]:
     try:
         root = ast.parse(expression, mode="eval").body
     except SyntaxError:
-        return _ALL_REACHABILITY, frozenset()
-    return _terminal_node_intervals(root, variables, monitor_rules)
+        return (_ALL_ORDINAL_REACHABILITY if ordinal_event is not None else _ALL_REACHABILITY), frozenset()
+    return _terminal_node_intervals(
+        root, variables, monitor_rules, projection_axis=projection_axis, ordinal_event=ordinal_event,
+    )
 
 
 def _terminal_node_intervals(
     node: ast.AST,
     variables: Mapping[str, Any],
     monitor_rules: Mapping[str, tuple[str, bool, bool, tuple[_ReachabilityInterval, ...]]],
+    *,
+    projection_axis: str = "S_T",
+    ordinal_event: str | None = None,
 ) -> tuple[tuple[_ReachabilityInterval, ...], frozenset[str]]:
+    support = _ALL_ORDINAL_REACHABILITY if ordinal_event is not None else _ALL_REACHABILITY
+    if isinstance(node, ast.Constant) and isinstance(node.value, bool):
+        return (support if node.value else ()), frozenset()
     if isinstance(node, ast.BoolOp):
-        parts = [_terminal_node_intervals(item, variables, monitor_rules) for item in node.values]
+        parts = [
+            _terminal_node_intervals(
+                item, variables, monitor_rules, projection_axis=projection_axis, ordinal_event=ordinal_event,
+            )
+            for item in node.values
+        ]
         if isinstance(node.op, ast.Or):
             nonempty = tuple(interval for intervals, _ in parts for interval in intervals)
             return nonempty, frozenset().union(*(reasons for _, reasons in parts)) if not nonempty else frozenset()
-        intervals = _ALL_REACHABILITY
+        intervals = support
         reasons: frozenset[str] = frozenset()
         for following, following_reasons in parts:
             intervals = _intersect_interval_sets(intervals, following)
             reasons |= following_reasons
         return intervals, reasons
     if not isinstance(node, ast.Compare):
-        return _ALL_REACHABILITY, frozenset()
-    intervals = _ALL_REACHABILITY
+        return support, frozenset()
+    intervals = support
     reasons: frozenset[str] = frozenset()
     left = node.left
     for operator, right in zip(node.ops, node.comparators):
         piece, piece_reasons = _comparison_terminal_constraint(
             left, operator, right, variables, monitor_rules,
+            projection_axis=projection_axis, ordinal_event=ordinal_event,
         )
         intervals = _intersect_interval_sets(intervals, piece)
         reasons |= piece_reasons
@@ -613,7 +789,24 @@ def _comparison_terminal_constraint(
     right: ast.AST,
     variables: Mapping[str, Any],
     monitor_rules: Mapping[str, tuple[str, bool, bool, tuple[_ReachabilityInterval, ...]]],
+    *,
+    projection_axis: str = "S_T",
+    ordinal_event: str | None = None,
 ) -> tuple[tuple[_ReachabilityInterval, ...], frozenset[str]]:
+    if ordinal_event is not None:
+        linked_names = {projection_axis: None, ordinal_event: None}
+        name, state = _monitor_infinity_comparison(left, operator, right, linked_names)
+        if name is not None:
+            support = (
+                (_ReachabilityInterval(inf, inf, True, True),) if state == "infinite"
+                else (_ReachabilityInterval(upper=inf, upper_closed=False),)
+            )
+            return support, frozenset()
+        direct = _axis_comparison_intervals(left, operator, right, variables, projection_axis)
+        return (direct, frozenset()) if direct is not None else (_ALL_ORDINAL_REACHABILITY, frozenset())
+    if projection_axis != "S_T":
+        direct = _axis_comparison_intervals(left, operator, right, variables, projection_axis)
+        return (direct, frozenset()) if direct is not None else (_ALL_REACHABILITY, frozenset())
     monitor_name, state = _monitor_infinity_comparison(left, operator, right, monitor_rules)
     if monitor_name is not None and state is not None:
         kind, eligible, same_terminal_price, event_intervals = monitor_rules[monitor_name]
@@ -707,6 +900,11 @@ def _axis_comparison_intervals(
         return (_ReachabilityInterval(upper=bound, upper_closed=True),)
     if isinstance(effective_operator, ast.Eq):
         return (_ReachabilityInterval(bound, bound, True, True),)
+    if isinstance(effective_operator, ast.NotEq):
+        return (
+            _ReachabilityInterval(upper=bound, upper_closed=False),
+            _ReachabilityInterval(lower=bound, lower_closed=False),
+        )
     return None
 
 
@@ -3125,3 +3323,72 @@ def _json_scalar_map(values: Mapping[str, Any]) -> dict[str, Any]:
         elif isinstance(value, np.ndarray): result[key] = value.tolist()
         else: result[key] = value
     return result
+
+
+def contract_loss_bound(contract: ResolvedContract) -> Mapping[str, Any] | None:
+    """Prove a conservative settlement-loss bound over every contractual branch.
+
+    Terminal constraints are over-approximated, never sampled. Unknown path
+    histories broaden the domain. Non-affine cashflows or unbounded losses
+    yield no certificate. The result excludes external fees and credit risk.
+    """
+    if contract.terms.get("S0") != _NORMALIZED_PRICE_BASE:
+        return None
+    variables = bind_term_symbols(contract.terms)
+    variables["u"] = 1.0
+    branches = []
+    minimum = inf
+    try:
+        for path in contract.paths:
+            path_domain, _ = _terminal_formula_intervals(str(path["condition"]), variables, {})
+            for case in path["cases"]:
+                domain, _ = _terminal_formula_intervals(str(case["domain"]), variables, {})
+                domain = _intersect_interval_sets(path_domain, domain)
+                domain = _intersect_interval_sets(domain, (_ReachabilityInterval(0.0, inf, True, False),))
+                if not domain:
+                    continue
+                constant, slope = _settlement_affine(ast.parse(case["pnl"], mode="eval").body, variables)
+                if not np.isfinite([constant, slope]).all():
+                    return None
+                for interval in domain:
+                    endpoint = interval.lower if slope >= 0 else interval.upper
+                    value = constant if slope == 0 else constant + slope * endpoint
+                    if not np.isfinite(value):
+                        return None
+                    minimum = min(minimum, value)
+                branches.append({"condition": path["condition"], "domain": case["domain"],
+                                 "cashflows": case["pnl"], "constant": constant, "slope": slope})
+    except (ValueError, TypeError, KeyError, ZeroDivisionError, OverflowError):
+        return None
+    if not branches or not np.isfinite(minimum):
+        return None
+    return {"value": max(0.0, -minimum / _NORMALIZED_PRICE_BASE),
+            "basis": "contractual_affine_domain_bound", "terminal_price_domain": "S_T >= 0",
+            "scope": "合同现金流结算亏损上界，不含合同外费用、流动性及信用损失", "branches": branches}
+
+
+def _settlement_affine(node: ast.AST, variables: Mapping[str, Any]) -> tuple[float, float]:
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "cash":
+        if len(node.args) != 2 or node.keywords:
+            raise ValueError("Unsupported cashflow")
+        # Timing does not affect undiscounted contractual settlement PnL.
+        return _settlement_affine(node.args[1], variables)
+    if isinstance(node, ast.Name) and node.id == "S_T":
+        return 0.0, 1.0
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
+        a, b = _settlement_affine(node.operand, variables)
+        sign = -1 if isinstance(node.op, ast.USub) else 1
+        return sign*a, sign*b
+    if isinstance(node, ast.BinOp):
+        a, b = _settlement_affine(node.left, variables)
+        c, d = _settlement_affine(node.right, variables)
+        if isinstance(node.op, ast.Add): return a+c, b+d
+        if isinstance(node.op, ast.Sub): return a-c, b-d
+        if isinstance(node.op, ast.Mult) and not (b and d): return a*c, a*d+b*c
+        if isinstance(node.op, ast.Div) and d == 0 and c != 0: return a/c, b/c
+        raise ValueError("Non-affine cashflow")
+    if isinstance(node, ast.Constant) and type(node.value) in (int, float):
+        return float(node.value), 0.0
+    if isinstance(node, ast.Name) and node.id in variables and type(variables[node.id]) in (int, float):
+        return float(variables[node.id]), 0.0
+    raise ValueError("Unproven cashflow dependence")

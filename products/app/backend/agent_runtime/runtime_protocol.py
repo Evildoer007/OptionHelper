@@ -17,6 +17,36 @@ from uuid import uuid4
 from ..errors import ValidationError
 
 
+def safe_runtime_value(value: object, *, depth: int = 0, bounded: bool = True) -> Any:
+    """Redact sensitive fields; bound telemetry, never truncate live RPC data.
+
+    Structured research inputs need intact JSON for Host checkpoint projection.
+    Context budgets are enforced by the runtime, after this transport boundary.
+    """
+    if bounded and depth > 8:
+        return "[truncated]"
+    forbidden = {
+        "secret", "secrets", "password", "credential", "credentials", "apikey",
+        "accesstoken", "refreshtoken", "authorization", "privatekey", "systemprompt",
+        "hiddenreasoning", "reasoningcontent",
+    }
+    if isinstance(value, Mapping):
+        result: dict[str, Any] = {}
+        for key, item in value.items():
+            normalized = re.sub(r"[\s_-]+", "", str(key).casefold())
+            if normalized in forbidden or any(marker in normalized for marker in ("secret", "password", "credential", "apikey", "accesstoken", "refreshtoken", "privatekey", "authorization")):
+                continue
+            result[str(key)] = safe_runtime_value(item, depth=depth + 1, bounded=bounded)
+        return result
+    if isinstance(value, (list, tuple)):
+        return [safe_runtime_value(item, depth=depth + 1, bounded=bounded) for item in (value[:256] if bounded else value)]
+    if isinstance(value, str):
+        return value[:64_000] if bounded else value
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    return str(value)[:1_000]
+
+
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$")
 _PRESET_REVISION = re.compile(r"^[0-9a-f]{64}$")
 _EVENT_TYPES = frozenset(

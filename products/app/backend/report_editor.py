@@ -7,6 +7,7 @@ from copy import deepcopy
 from html import escape
 from html.parser import HTMLParser
 import json
+import hashlib
 from pathlib import PurePosixPath
 import re
 from typing import Any, Callable, Mapping
@@ -190,8 +191,12 @@ class ReportEditor:
             rendered = _render_docx_bytes(clean_html, chart_specs)
             artifacts.append({"name": "report.docx", "content_type": _DOCX_MEDIA_TYPE, "content": rendered})
 
+        request_hash = hashlib.sha256(json.dumps(
+            {key: request[key] for key in sorted(required)}, ensure_ascii=False,
+            sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
         self._results.save_report_document(identity, source_report_run_id,
-            {"title": title, "html": clean_html, "chart_specs": chart_specs}, artifacts)
+            {"title": title, "html": clean_html, "chart_specs": chart_specs}, artifacts,
+            edit_request_id=edit_request_id, edit_request_hash=request_hash)
         base = f"/api/reports/{source_report_run_id}/document-artifacts/"
         return {"ok": True, "task_id": task_id, "report_run_id": source_report_run_id,
                 "html_url": base + "report.html", "download_url": base + f"report.{output_format}?download=1#display_name=" + quote(f"{title}.{output_format}", safe=""),
@@ -730,7 +735,7 @@ def _render_docx_bytes(html: str, chart_specs: Mapping[str, Mapping[str, Any]]) 
     except ImportError as error:
         raise ValidationError("Word导出组件不可用") from error
     try:
-        content = render_docx(html, chart_specs=chart_specs)
+        content = render_docx(html, chart_specs=chart_specs, include_body_content=True)
     except Exception as error:
         raise ValidationError(f"编辑报告无法导出Word：{error}") from error
     if not isinstance(content, bytes) or not content:

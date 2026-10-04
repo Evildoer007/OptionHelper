@@ -774,10 +774,19 @@ class RuntimeBackedAgentPort(AgentPort):
             size = lambda value: len(encode(value).encode('utf-16-le')) // 2
             # Keep current Host contracts, verified facts, pending input and all public
             # questions inline. Older prose stays exact behind a role-bound reference.
+            # Reference correction needs the verified index and the unchanged
+            # output template, not a second inline copy of product source text.
+            # Full source remains in the role's catalogue/stage stores.
+            feedback = envelope['input'].get('validation_feedback')
+            if isinstance(feedback, dict) and isinstance(feedback.get('allowed_product_evidence'), list):
+                feedback['allowed_product_evidence'] = [
+                    {key: row[key] for key in ('evidence_id','product_id','source','section','library_status') if key in row}
+                    for row in feedback['allowed_product_evidence'] if isinstance(row, Mapping)]
             sections = [
                 (checkpoint, 'read_pages'), (checkpoint, 'public_notes'),
                 (envelope['input'], 'latest_complete_tool_exchange'),
                 (envelope['input'], 'input'),
+                (envelope['input'], 'proposal_term_context'),
             ]
             sections.sort(key=lambda pair: size(pair[0].get(pair[1])), reverse=True)
             for owner, key in sections:

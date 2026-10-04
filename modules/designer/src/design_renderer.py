@@ -198,6 +198,7 @@ def _card_data_table(rows: list[Mapping[str, Any]]) -> str:
     """Render concise Card facts without methodological filler columns."""
 
     items: list[str] = []
+    has_basis = any(text(row.get("basis")) for row in rows)
     for row in rows:
         label = text(row.get("metric"))
         value = text(row.get("value"))
@@ -207,14 +208,17 @@ def _card_data_table(rows: list[Mapping[str, Any]]) -> str:
             "<tr>"
             f'<td class="table-cell table-cell--narrative{" table-cell--long" if len(label) >= 24 else ""}">{esc(label)}</td>'
             f'<td class="table-cell table-cell--numeric">{rich_text(value)}</td>'
-            "</tr>"
+            + (f'<td class="table-cell table-cell--narrative">{rich_text(row.get("basis"))}</td>' if has_basis else "")
+            + "</tr>"
         )
     if not items:
         return ""
     return (
         '<div class="table-wrap card-table-wrap"><table class="card-data-table" data-table-density="normal">'
-        '<thead><tr><th scope="col">指标</th><th scope="col">数值</th></tr></thead>'
-        f'<tbody>{"".join(items)}</tbody></table></div>'
+        '<thead><tr><th scope="col">指标</th><th scope="col">数值</th>'
+        + ('<th scope="col">口径</th>' if has_basis else "")
+        + '</tr></thead>'
+        + f'<tbody>{"".join(items)}</tbody></table></div>'
     )
 
 
@@ -308,7 +312,7 @@ def _card_body(
             for row in (as_dict(item) for item in as_list(pricing.get("metrics"))[:4]):
                 value = display_text(row.get("value"), row.get("value_format"))
                 if text(row.get("label")) and value:
-                    rows.append({"metric": text(row.get("label")), "value": value})
+                    rows.append({"metric": text(row.get("label")), "value": value, "basis": display_basis(row)})
             greeks = {text(row.get("label")): row for row in canonical_greeks(as_list(pricing.get("greeks")))}
             for label in ("Delta", "Gamma", "Vega", "Theta", "Rho"):
                 row = greeks.get(label)
@@ -316,7 +320,7 @@ def _card_body(
                     continue
                 value = display_text(row.get("value"), row.get("value_format"))
                 if value:
-                    rows.append({"metric": label, "value": value})
+                    rows.append({"metric": label, "value": value, "basis": display_basis(row)})
         table = _card_data_table(rows)
         state = module_state(pricing) if status == "partial" else ""
         if not table and not state:
@@ -338,7 +342,7 @@ def _card_body(
             for row in backtest_summary_rows(backtest):
                 value = display_text(row.get("value"), row.get("value_format"))
                 if text(row.get("label")) and value:
-                    rows.append({"metric": text(row.get("label")), "value": value})
+                    rows.append({"metric": text(row.get("label")), "value": value, "basis": display_basis(row)})
         table = _card_data_table(rows)
         state = module_state(backtest) if status == "partial" else ""
         if not table and not state:
@@ -355,7 +359,7 @@ def _card_body(
         return f'<div class="card-analysis"><h2>{esc(title)}</h2>{state}{table}' + (f'<p class="card-data-note">{esc(detail)}</p>' if detail else "") + disclosures + "</div>"
 
     def risk_block(title: str) -> str:
-        values = [text(item) for item in as_list(risk.get("items")) if text(item)][:2]
+        values = list(dict.fromkeys(text(item) for item in as_list(risk.get("items")) if text(item)))
         shown_notes = {text(item) for item in as_list(backtest.get("summary_notes"))}
         limitations = list(dict.fromkeys(text(item) for item in as_list(risk.get("limitations"))
                                        if text(item) and text(item) not in shown_notes))

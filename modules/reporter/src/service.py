@@ -34,6 +34,30 @@ PAGE_DIR = RUNTIME_PATHS.module_page_dir("reporter")
 PAGE = PAGE_DIR / "reporter.html"
 LOGO = RUNTIME_PATHS.project_root / "assets" / "icons" / "optionhelper-logo.svg"
 TILE_ICON = RUNTIME_PATHS.project_root / "assets" / "icons" / "optionhelper-app-icon-tile-light.svg"
+# Serve the fixed dependency set of this page in both source and release layouts.
+BROWSER_DIR = RUNTIME_PATHS.project_root / ("assets/pages" if RUNTIME_PATHS.mode == "release" else "core/src/runtime/browser")
+DESIGNER_VENDOR_DIR = RUNTIME_PATHS.project_root / ("assets/designer/vendor" if RUNTIME_PATHS.mode == "release" else "modules/designer/assets/vendor")
+DESIGNER_THEME_DIR = RUNTIME_PATHS.project_root / ("assets/designer/themes" if RUNTIME_PATHS.mode == "release" else "modules/designer/assets/themes")
+_PAGE_ASSETS = {
+    "/designer/themes/designer-token-vars.css": (DESIGNER_THEME_DIR / "designer-token-vars.css", "text/css; charset=utf-8"),
+    "/reporter.css": (PAGE_DIR / "reporter.css", "text/css; charset=utf-8"),
+    "/reporter.js": (PAGE_DIR / "reporter.js", "application/javascript; charset=utf-8"),
+    "/icons/optionhelper-logo.svg": (LOGO, "image/svg+xml"),
+    "/icons/optionhelper-app-icon-tile-light.svg": (TILE_ICON, "image/svg+xml"),
+    **{"/editor/" + name: (PAGE_DIR / "editor" / name, media_type) for name, media_type in (
+        ("report-editor.js", "application/javascript; charset=utf-8"),
+        ("chart-presentation.js", "application/javascript; charset=utf-8"),
+        ("report-editor.css", "text/css; charset=utf-8"),
+    )},
+    **{"/" + name: (BROWSER_DIR / (name if RUNTIME_PATHS.mode == "release" else name.replace("-", "_")), media_type) for name, media_type in (
+        ("module-host-presentation.js", "application/javascript; charset=utf-8"),
+        ("module-host-bridge.js", "application/javascript; charset=utf-8"),
+        ("module-host-presentation.css", "text/css; charset=utf-8"),
+    )},
+    **{"/designer/vendor/" + name: (DESIGNER_VENDOR_DIR / name, "application/javascript; charset=utf-8") for name in (
+        "surface-chart.js", "echarts.min.js", "echarts-gl.min.js",
+    )},
+}
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("OPTIONHELPER_REPORTER_PORT", "4282"))
 _FORBIDDEN = {"request_path", "result_dir", "output_root", "report_level", "delivery_mode", "module_runs"}
@@ -510,14 +534,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._serve_report_artifact_path(parsed.path, parse_qs(parsed.query))
         if parsed.path in {"/", "/reporter.html"}:
             return self._file(PAGE, "text/html; charset=utf-8")
-        if parsed.path == "/reporter.css":
-            return self._file(PAGE_DIR / "reporter.css", "text/css; charset=utf-8")
-        if parsed.path == "/reporter.js":
-            return self._file(PAGE_DIR / "reporter.js", "application/javascript; charset=utf-8")
-        if parsed.path == "/icons/optionhelper-logo.svg":
-            return self._file(LOGO, "image/svg+xml")
-        if parsed.path == "/icons/optionhelper-app-icon-tile-light.svg":
-            return self._file(TILE_ICON, "image/svg+xml")
+        asset = _PAGE_ASSETS.get(parsed.path)
+        if asset is not None:
+            return self._file(*asset)
         return self._json(HTTPStatus.NOT_FOUND, {"ok": False, "message": "未找到资源"})
 
     def do_POST(self) -> None:  # noqa: N802

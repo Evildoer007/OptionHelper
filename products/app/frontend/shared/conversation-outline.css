@@ -42,7 +42,7 @@
   border-radius: 4px;
   background: transparent;
   color: color-mix(in srgb, var(--muted, #666) 45%, transparent);
-  cursor: pointer;
+  cursor: default;
   display: grid;
   align-items: start;
   justify-items: start;
@@ -78,7 +78,7 @@
   display: none;
   text-decoration: underline;
   text-underline-offset: 3px;
-  cursor: pointer;
+  cursor: default;
 }
 @media (pointer: coarse) {
   .conversation-outline { width: 44px; }

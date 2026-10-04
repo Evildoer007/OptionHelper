@@ -48,6 +48,8 @@ def build_host_selection_source_refs(source: Mapping[str, Any], tenant_id: str) 
             "key_terms": list(raw.get("key_terms", [])) if isinstance(raw.get("key_terms"), list) else [],
             "evidence_refs": list(raw.get("evidence_refs", [])) if isinstance(raw.get("evidence_refs"), list) else [],
         }
+        from runtime.contracts.research_facts import research_context
+        candidate["research_context"] = research_context(raw.get("research_context", {}))
         candidates.append(candidate)
 
     run_id = require_identifier(source.get("selection_run_id") or source_id, "source.selection_run_id")

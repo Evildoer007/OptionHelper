@@ -725,6 +725,22 @@ def build_windows(
     )
     if native_runtime_required:
         _assert_source_name_boundary(repo_root=repo_root)
+    # Installed Windows Apps require a native runtime even for local candidates.
+    # Source fallback belongs to the source host, never to an installer payload.
+    try:
+        runtime_candidate = resolve_runtime_candidate(
+            "windows-x64",
+            explicit=agent_runtime_path,
+            repository_root=repo_root,
+            formal=formal_context,
+        )
+    except RuntimeBuildError as error:
+        raise WindowsBuildError(str(error)) from error
+    if runtime_candidate is None:
+        raise WindowsBuildError(
+            "Windows App安装物必须包含已验证原生Agent运行时；"
+            "源码开发回退仅用于源码运行，不能生成Windows安装包"
+        )
     _progress("正在验证当次Capability")
     check_prerequisites(capability_root)
     if verify_app_capability(capability_root):
@@ -830,12 +846,6 @@ def build_windows(
         )
         _verify_required_licenses(resources, license_root=license_root)
         try:
-            runtime_candidate = resolve_runtime_candidate(
-                "windows-x64",
-                explicit=agent_runtime_path,
-                repository_root=repo_root,
-                formal=formal_context,
-            )
             runtime_summary = prepare_staged_runtime(
                 resources,
                 "windows-x64",

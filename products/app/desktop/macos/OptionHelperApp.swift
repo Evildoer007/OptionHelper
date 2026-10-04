@@ -1,16 +1,28 @@
 import Cocoa
 import WebKit
 
+// Cocoa and WebKit resolve edit actions through the responder chain.
+// Declare the shared Objective-C selector contract without assuming these
+// methods are exposed as static members of NSResponder by the current SDK.
+@objc private protocol OptionHelperEditingActions {
+    func undo(_ sender: Any?)
+    func redo(_ sender: Any?)
+    func cut(_ sender: Any?)
+    func copy(_ sender: Any?)
+    func paste(_ sender: Any?)
+    func selectAll(_ sender: Any?)
+}
+
 private final class OptionHelperWindow: NSWindow {
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         guard modifiers == .command,
               let key = event.charactersIgnoringModifiers?.lowercased(),
               let action = switch key {
-              case "x": #selector(NSResponder.cut(_:))
-              case "c": #selector(NSResponder.copy(_:))
-              case "v": #selector(NSResponder.paste(_:))
-              case "a": #selector(NSResponder.selectAll(_:))
+              case "x": #selector(OptionHelperEditingActions.cut(_:))
+              case "c": #selector(OptionHelperEditingActions.copy(_:))
+              case "v": #selector(OptionHelperEditingActions.paste(_:))
+              case "a": #selector(OptionHelperEditingActions.selectAll(_:))
               default: nil
               }
         else {
@@ -52,7 +64,7 @@ private final class OptionHelperReportDownloadDelegate: NSObject, URLSessionTask
 }
 
 @main
-final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler, WKDownloadDelegate {
+final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler, WKDownloadDelegate, NSMenuItemValidation {
     private enum PresentationDecision {
         case retry
         case ready
@@ -1259,6 +1271,17 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
     }
 
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        if message.name == "optionhelperSession", message.webView === webView,
+           message.frameInfo.isMainFrame, isSafeAppURL(message.frameInfo.request.url),
+           let value = message.body as? [String: Any], value["type"] as? String == "workspace_rail_state",
+           let collapsed = value["collapsed"] as? NSNumber,
+           CFGetTypeID(collapsed) == CFBooleanGetTypeID() {
+            let label = collapsed.boolValue ? "展开任务栏" : "收起任务栏"
+            railToggle?.toolTip = label
+            railToggle?.setAccessibilityLabel(label)
+            railToggle?.setAccessibilityValue(collapsed.boolValue ? "已收起" : "已展开")
+            return
+        }
         if message.name == "optionhelperSession", let value = message.body as? [String: Any],
            value["type"] as? String == "signed_out" {
             clearAuxiliaryWindowsAfterSignOut()
@@ -1350,6 +1373,13 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         NSApp.applicationIconImage = NSImage(contentsOf: icon)
     }
 
+    func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        if item.action == #selector(toggleRail(_:)) {
+            return ["/optchat", "/optdesk"].contains(webView?.url?.path ?? "")
+        }
+        return true
+    }
+
     private func installMainMenu() {
         let mainMenu = NSMenu()
 
@@ -1362,18 +1392,22 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         let editMenu = NSMenu(title: "编辑")
         let editMenuItem = NSMenuItem()
         editMenuItem.submenu = editMenu
-        addEditItem("撤销", action: #selector(NSResponder.undo(_:)), key: "z", to: editMenu)
-        addEditItem("重做", action: #selector(NSResponder.redo(_:)), key: "z", modifiers: [.command, .shift], to: editMenu)
+        addEditItem("撤销", action: #selector(OptionHelperEditingActions.undo(_:)), key: "z", to: editMenu)
+        addEditItem("重做", action: #selector(OptionHelperEditingActions.redo(_:)), key: "z", modifiers: [.command, .shift], to: editMenu)
         editMenu.addItem(.separator())
-        addEditItem("剪切", action: #selector(NSResponder.cut(_:)), key: "x", to: editMenu)
-        addEditItem("复制", action: #selector(NSResponder.copy(_:)), key: "c", to: editMenu)
-        addEditItem("粘贴", action: #selector(NSResponder.paste(_:)), key: "v", to: editMenu)
-        addEditItem("全选", action: #selector(NSResponder.selectAll(_:)), key: "a", to: editMenu)
+        addEditItem("剪切", action: #selector(OptionHelperEditingActions.cut(_:)), key: "x", to: editMenu)
+        addEditItem("复制", action: #selector(OptionHelperEditingActions.copy(_:)), key: "c", to: editMenu)
+        addEditItem("粘贴", action: #selector(OptionHelperEditingActions.paste(_:)), key: "v", to: editMenu)
+        addEditItem("全选", action: #selector(OptionHelperEditingActions.selectAll(_:)), key: "a", to: editMenu)
         mainMenu.addItem(editMenuItem)
 
         let viewMenu = NSMenu(title: "显示")
         let viewMenuItem = NSMenuItem()
         viewMenuItem.submenu = viewMenu
+        let sidebar = NSMenuItem(title: "收起或展开任务栏", action: #selector(toggleRail(_:)), keyEquivalent: "s")
+        sidebar.keyEquivalentModifierMask = [.control, .command]
+        sidebar.target = self
+        viewMenu.addItem(sidebar)
         let zoomIn = NSMenuItem(title: "放大", action: #selector(increaseUIScale(_:)), keyEquivalent: "+")
         zoomIn.keyEquivalentModifierMask = .command
         zoomIn.target = self

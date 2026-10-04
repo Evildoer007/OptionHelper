@@ -33,12 +33,16 @@ PLOT_RIGHT = 540
 _TOKEN_PATTERN = re.compile(r"^([A-Za-z])_(?:\{(.+)\}|(.+))$")
 
 
+class PayoffRenderValidationError(ValueError):
+    """User-supplied image dimensions cannot contain the verified payoff layout."""
+
+
 def normalize_render_options(value: Mapping[str, Any] | None) -> dict[str, int]:
     """校验仅影响SVG像素尺寸的展示参数。"""
     if value is None:
         return {}
     if not isinstance(value, Mapping) or set(value) != {"width", "height"}:
-        raise ValueError("render_options必须且只能包含width与height")
+        raise PayoffRenderValidationError("图片尺寸必须同时指定宽度和高度")
     normalized: dict[str, int] = {}
     for key, minimum, maximum, label in (
         ("width", MIN_CANVAS_WIDTH, MAX_CANVAS_WIDTH, "图片宽度"),
@@ -46,7 +50,7 @@ def normalize_render_options(value: Mapping[str, Any] | None) -> dict[str, int]:
     ):
         raw = value.get(key)
         if isinstance(raw, bool) or not isinstance(raw, int) or not minimum <= raw <= maximum:
-            raise ValueError(f"{label}必须是{minimum}至{maximum}之间的整数像素值")
+            raise PayoffRenderValidationError(f"{label}必须是{minimum}至{maximum}之间的整数像素值")
         normalized[key] = raw
     return normalized
 
@@ -318,7 +322,7 @@ def _layout_cards(
         ])
         minimum_height = ceil(92.0 + legend_reserve + CARD_GAP * (row_count - 1) + row_count * minimum_row_height)
         if canvas_height < minimum_height:
-            raise ValueError(f"当前收益图的图片高度至少需要{minimum_height}像素，请增大图片高度")
+            raise PayoffRenderValidationError(f"当前收益图的图片高度至少需要{minimum_height}像素，请增大图片高度")
         available = canvas_height - 92.0 - legend_reserve - CARD_GAP * (row_count - 1)
         requested_row_height = available / row_count
     layouts: list[_CardLayout] = []

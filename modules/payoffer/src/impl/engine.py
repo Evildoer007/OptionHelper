@@ -974,6 +974,12 @@ def render_paths(contract: ResolvedContract, visual_template: Mapping[str, Any])
             terminal_slice = axis in {"S_T", "r_T", "W_T"}
             chart_kind = view["chart_kind"]
             status_note = "固定非终值历史，仅终值变化" if terminal_slice else "按横轴路径统计量构造确定性候选路径"
+            initial_scenario = (
+                fixed_template.waypoints[0][1]
+                if fixed_template.waypoints and fixed_template.waypoints[0][0] == 0.0 else None
+            )
+            if initial_scenario is not None:
+                status_note += f"；固定起点价格{initial_scenario:g}，按合同基准归一"
             if includes_initial_premium:
                 status_note += "；合同结算收益率已包含期初期权费"
             rendered.append(
@@ -985,7 +991,12 @@ def render_paths(contract: ResolvedContract, visual_template: Mapping[str, Any])
                     thresholds=_thresholds(contract, selected_domains, axis), payoff_levels=_payoff_levels(segments),
                     reporter_segments=reporter_segments, reporter_endpoints=reporter_endpoints,
                     status_note=status_note,
-                    candidate_state={"template": fixed_template.name, "history_rule": "nonterminal_fixed" if terminal_slice else "axis_constructed", "seed_monitor_values": state_seed, "case_indexes": selected_case_indexes},
+                    candidate_state={
+                        "template": fixed_template.name,
+                        "history_rule": "nonterminal_fixed" if terminal_slice else "axis_constructed",
+                        "seed_monitor_values": state_seed, "case_indexes": selected_case_indexes,
+                        **({"normalized_initial_price": initial_scenario} if initial_scenario is not None else {}),
+                    },
                 )
             )
     return rendered

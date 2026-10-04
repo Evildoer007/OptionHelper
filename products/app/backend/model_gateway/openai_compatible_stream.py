@@ -6,13 +6,17 @@ import json
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 from ..errors import ValidationError
 from ..secrets.secret_ref import SecretRef
 from ..settings.settings_models import ModelServiceSettings
-from .deepseek_provider import model_http_error, model_network_error, apply_reasoning_control
+from .deepseek_provider import (
+    apply_reasoning_control,
+    model_http_error,
+    model_network_error,
+    validate_openai_base_url as _validate_base_url,
+)
 from .https_transport import open_verified_https
 from .request_control import ModelRequestCancelled, ModelRequestControl
 
@@ -387,22 +391,6 @@ def _completion_endpoint(endpoint: str) -> str:
     return f"{value}/chat/completions"
 
 
-def _validate_base_url(endpoint: str) -> str:
-    value = endpoint.strip()
-    if not value or any(ord(character) < 33 for character in value):
-        raise ValidationError("模型Base URL格式无效")
-    parsed = urlparse(value)
-    if (
-        parsed.scheme != "https"
-        or not parsed.hostname
-        or parsed.username is not None
-        or parsed.password is not None
-        or parsed.query
-        or parsed.fragment
-        or parsed.params
-    ):
-        raise ValidationError("模型Base URL必须是无账号、查询参数和片段的完整https地址")
-    return value
 
 
 __all__ = [

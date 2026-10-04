@@ -13,6 +13,8 @@ from .candidate_builder import build_candidates
 from .config import RecommenderConfig
 from .constraint_ranking import (
     METRIC_SOURCES,
+    bind_confirmed_risk_constraints,
+    confirmed_risk_constraints,
     apply_reviewer_verdict,
     parse_reviewer_ranking_verdict,
     parse_specifier_ranking_spec,
@@ -25,8 +27,10 @@ from .evaluation_evidence import read_evaluation_records
 from .executor import ALLOWED_MODULES, execute
 from .interaction import (
     delivery_preferences_from_text,
+    question_covered_by_confirmed_terms,
     merge_confirmed_constraints,
     requested_candidate_count_from_text,
+    requested_comparison_products,
 )
 from .intent_router import route_intent
 from .models import (
@@ -34,6 +38,7 @@ from .models import (
     ModelCapability,
     RECOMMENDATION_SET_SCHEMA,
     RecommendationCase,
+    RankingSpec,
     RecommendationCandidate,
     RecommendationSet,
     RecommendationValidationError,
@@ -49,9 +54,53 @@ from .ports import (
     KnowledgePort,
     ToolPort,
 )
-from .product_trader_loop import LoopCandidate, ProductTraderLoop, ProductTraderRound, attach_host_evaluations
+from .product_trader_loop import LoopCandidate, ProductTraderLoop, ProductTraderRound, attach_host_evaluations, trader_decisions_for_candidates
 from .research_session import ResearchSession
 from runtime.research_policy import depth_policy, preset_definitions, blocked_research_modules
+
+
+def _resolve_role_clarification(value, confirmed_constraints, audit, role):
+    """Keep the role receipt, record the Host decision, and continue research."""
+    question = value.get("next_question")
+    if not question or not question_covered_by_confirmed_terms(question, confirmed_constraints):
+        return value
+    audit.append("clarification", "already_confirmed", agent_role=role,
+                 input_value={"question": question}, output_value={"next_question": None},
+                 detail={"basis": "explicit_user_term_permissions"})
+    return {**value, "next_question": None}
+
+
+def _mode_one_interpreter_input(case):
+    return {
+        "prompt": case.prompt,
+        "research_context": case.research_context,
+        "confirmed_constraints": dict(case.confirmed_constraints),
+        "rule": "仅把用户原文或confirmed_constraints中的事实标为已确认；research_context是待核实研究资料，不能作为用户确认。用户允许默认时，明确列出研究假设并继续推荐，不把缺少完整定价条款变成固定问卷；只有确实阻塞本次操作的缺口才追问，一次最多一个next_question。",
+    }
+
+
+def _mode_one_reviewer_input(case, proposals, evidence):
+    return {
+        "case": case.to_dict(), "proposals": proposals,
+        "evidence": [item.to_dict(include_excerpt=True) for item in evidence],
+        "rule": "只审阅已有product_id；新增product_id将导致整步失败。",
+    }
+
+
+def _configure_research_runner(runner, session, tool_port):
+    """Use the same request-owned validation gates for direct and staged hosts."""
+    runner.result_validator = session.validate_citations
+    runner.input_validator = session.require_complete_inputs
+    runner.catalog_provider = session.catalog_for_validation
+    validate_terms = getattr(tool_port, "validate_product_terms", None)
+    if callable(validate_terms):
+        runner.term_validator = lambda product_id, terms: validate_terms(
+            product_id, terms, confirmed_constraints=session.case.confirmed_constraints, check_limits=False)
+    proposal_context = getattr(tool_port, "proposal_term_context", None)
+    if callable(proposal_context):
+        runner.proposal_context_provider = lambda role, request: proposal_context(
+            {row["product_id"] for row in session.catalog_for_validation(role, request)},
+            confirmed_constraints=session.case.confirmed_constraints)
 
 
 DEFAULT_REQUESTED_CANDIDATE_COUNT = 3
@@ -274,9 +323,7 @@ class RecommenderService:
         blocked_modules = blocked_research_modules(case.prompt)
         self._research = ResearchSession(case, self.tool_port, preset_id=preset,
                                          calculation_allowed=len(blocked_modules) < 3)
-        runner.result_validator = self._research.validate_citations
-        runner.input_validator = self._research.require_complete_inputs
-        runner.catalog_provider = self._research.catalog_for_validation
+        _configure_research_runner(runner, self._research, self.tool_port)
         binder = getattr(self.agent_port,"bind_research_session",None)
         try:
             if callable(binder):binder(self._research)
@@ -288,25 +335,26 @@ class RecommenderService:
                 return self._run_constraint_ranking(case, route, run_id, mode, audit, runner)
             return self._run_fixed(case, route, run_id, mode, audit, runner)
         except RecommendationInputRequired as error:
-            audit.append(
-                "workflow", "pending", agent_role=None,
-                input_value={"case": case.analysis_case_id},
-                output_value={"missing_information": [error.field], "next_question": error.question},
-            )
-            return RecommendationSet(
-                schema=RECOMMENDATION_SET_SCHEMA, task_id=case.task_id, run_id=run_id,
-                analysis_case_id=case.analysis_case_id, catalog_version=case.catalog_version,
-                route=route.route, workflow_mode=mode, status="pending_question",
-                primary_candidate_id=None, candidates=(), requested_outputs=case.requested_outputs,
-                missing_information=(error.field,), next_question=error.question,
-                requested_candidate_count=_requested_candidate_count(case), returned_candidate_count=0,
-                audit_trail=tuple(audit.events),
-            )
+            return self._input_required_set(case, route, run_id, mode, audit, error)
         except Exception as error:
             return self._unavailable_set(case, route, run_id, mode, audit, error)
         finally:
             self._research.close()
             if callable(binder):binder(None)
+
+    @staticmethod
+    def _input_required_set(case, route, run_id, mode, audit, error):
+        audit.append("workflow", "pending", agent_role=None,
+            input_value={"case": case.analysis_case_id},
+            output_value={"missing_information": [error.field], "next_question": error.question})
+        return RecommendationSet(
+            schema=RECOMMENDATION_SET_SCHEMA, task_id=case.task_id, run_id=run_id,
+            analysis_case_id=case.analysis_case_id, catalog_version=case.catalog_version,
+            route=route.route, workflow_mode=mode, status="pending_question",
+            primary_candidate_id=None, candidates=(), requested_outputs=case.requested_outputs,
+            missing_information=(error.field,), next_question=error.question,
+            requested_candidate_count=_requested_candidate_count(case), returned_candidate_count=0,
+            audit_trail=tuple(audit.events))
 
     def _workflow_mode(self, capability: ModelCapability) -> str:
         if not capability.structured_output:
@@ -328,12 +376,8 @@ class RecommenderService:
         audit: AuditRecorder,
         runner: AgentStepRunner,
     ) -> RecommendationSet:
-        intent = runner.run("Interpreter", {
-            "prompt": case.prompt,
-            "research_context": case.research_context,
-            "confirmed_constraints": dict(case.confirmed_constraints),
-            "rule": "仅把用户原文或confirmed_constraints中的事实标为已确认；research_context是待核实研究资料，不能作为用户确认。用户允许默认时，明确列出研究假设并继续推荐，不把缺少完整定价条款变成固定问卷；只有确实阻塞本次操作的缺口才追问，一次最多一个next_question。",
-        })
+        intent = runner.run("Interpreter", _mode_one_interpreter_input(case))
+        intent = _resolve_role_clarification(intent, case.confirmed_constraints, audit, "Interpreter")
         if intent.get("next_question"):
             raise RecommendationInputRequired("research_scope", intent["next_question"])
         evidence = self._retrieve(case, intent.get("research_queries", ()), audit)
@@ -347,13 +391,9 @@ class RecommenderService:
         attempts = self.config.max_loop_rounds if mode == "single_agent" else 1
         for attempt in range(attempts):
             research = runner.run("Selector", selector_input)
-            critic = runner.run("Reviewer", {
-                "case": case.to_dict(), "proposals": research.get("proposals", ()),
-                "evidence": selector_input["evidence"],
-                "rule": "只审阅已有product_id；新增product_id将导致整步失败。",
-            })
+            critic = runner.run("Reviewer", _mode_one_reviewer_input(case, research.get("proposals", ()), evidence))
             evidence = self._research.merge_catalog_evidence(evidence)
-            candidates, rejected = build_candidates(research, critic, evidence=evidence,
+            candidates, rejected = self._build_candidates(research, critic, evidence=evidence,
                 run_id=run_id, max_candidates=min(_requested_candidate_count(case), self.config.max_candidates),
                 confirmed_constraints=case.confirmed_constraints)
             if len(candidates) >= _requested_candidate_count(case) or not rejected or attempt + 1 == attempts:
@@ -382,27 +422,30 @@ class RecommenderService:
         preserve_research_evidence: bool = False,
     ) -> RecommendationSet:
         del step_runner
+        session = catalog_session if catalog_session is not None else getattr(self, "_research", None)
         if catalog_session is not None:
             evidence = catalog_session.merge_catalog_evidence(evidence)
-        candidates, rejected = build_candidates(
+        candidates, rejected = self._build_candidates(
             research,
             critic,
             evidence=evidence,
             run_id=run_id,
             max_candidates=min(_requested_candidate_count(case), self.config.max_candidates),
             confirmed_constraints=case.confirmed_constraints,
+            research_session=session,
         )
         if preserve_research_evidence:
             # A moderator may select or explain existing contracts, but cannot
             # introduce unreviewed terms while reusing another branch's facts.
-            unregistered = tuple(item for item in candidates if not self._research.contains_contract(item))
+            unregistered = tuple(item for item in candidates if not session.contains_contract(item))
             rejected = (*rejected, *({"candidate_id": item.candidate_id, "product_id": item.product_id,
                 "reason": "汇总条款不属于已登记研究候选，需先交设计角色修订并重新验证", "source": "council_contract_gate"}
                 for item in unregistered))
             candidates = tuple(item for item in candidates if item not in unregistered)
-            candidates = tuple(self._research.attach_candidate_evidence(item) for item in candidates)
+            candidates = tuple(session.attach_candidate_evidence(item) for item in candidates)
         return self._candidate_set(
             case, route, run_id, mode, audit, candidates, rejected,
+            research_session=session,
             research_evidence=((council_research_evidence(candidates, catalog_session)
                                 if self.config.multi_agent_preset == "independent-council"
                                 else candidate_research_evidence(candidates, catalog_session))
@@ -423,14 +466,19 @@ class RecommenderService:
             "research_context": case.research_context,
             "confirmed_constraints": dict(case.confirmed_constraints),
         })
+        framing = _resolve_role_clarification(framing, case.confirmed_constraints, audit, "Framer")
         if framing.get("next_question"):
             raise RecommendationInputRequired("research_scope", framing["next_question"])
         evidence = self._retrieve(case, framing.get("research_queries", ()), audit)
+        dependencies = _requested_research_modules(case, self._research)
+        branch_limit = min(_requested_candidate_count(case), self.config.max_candidates)
+        if dependencies:
+            branch_limit = min(branch_limit, max(1, depth_policy(case.research_depth)["calculations"] // (2 * len(dependencies))))
         shared = {
             "case": case.to_dict(),
             "framing": dict(framing),
             "evidence": [item.to_dict(include_excerpt=True) for item in evidence],
-            "max_candidates": min(_requested_candidate_count(case), self.config.max_candidates),
+            "max_candidates": branch_limit,
         }
         for role in ("Matcher", "Hedger"):
             self._research.restrict_role(role, ())
@@ -444,10 +492,10 @@ class RecommenderService:
             for attempt in range(2):
                 proposed = branches[role].get("proposals", ())
                 evidence = self._research.merge_catalog_evidence(evidence)
-                branch_candidates, rejected = build_candidates(
+                branch_candidates, rejected = self._build_candidates(
                     {"proposals": proposed}, {"reviews": _accepting_reviews(proposed)},
                     evidence=evidence, run_id=run_id + "-" + role,
-                    max_candidates=min(_requested_candidate_count(case), self.config.max_candidates),
+                    max_candidates=branch_limit,
                     confirmed_constraints=case.confirmed_constraints,
                 )
                 if branch_candidates:
@@ -463,6 +511,10 @@ class RecommenderService:
                 })
             self._research.register(branch_candidates)
             self._research.restrict_role(role, branch_candidates)
+            for candidate in branch_candidates:
+                if candidate.library_status == "ready" and dependencies:
+                    self._research.evaluate({"candidate_id": candidate.candidate_id, "modules": list(dependencies),
+                        "round_no": 1, "question": "取得用户明确要求的研究结果，供独立角色复核"}, role=role)
             permitted = {item["evidence_id"] for item in self._research.catalog_for_validation(
                 role, {"input": {"evidence": shared["evidence"]}})}
             own_evidence = [item for item in evidence if item.evidence_id in permitted]
@@ -471,19 +523,21 @@ class RecommenderService:
                 "phase":"research", "own_proposals":branches[role],
                 "registered_candidates":[item.to_dict() for item in branch_candidates],
                 "research":{**self._research.context(),"candidates":[item.to_confirmation_dict() for item in branch_candidates]},
-                "rule":"独立验证自己的候选，按需调用工具；输出proposals并保留证据和限制，不读取另一角色的意见。",
+                "evidence_results": self._research.read(role=role),
+                "rule":"先核对已完成的本分支计算，不重复计算。更新proposals说明和缺项，保留已登记term_overrides及真实未知项，不读取另一角色意见。",
             }
         branches.update(runner.run_named(research_requests))
         self._research.share_evidence()
         evidence = self._research.merge_catalog_evidence(evidence)
         shared = {**shared, "evidence": [item.to_dict(include_excerpt=True) for item in evidence]}
+        review_limit = depth_policy(case.research_depth)["council_reviews"]
         moderated = runner.run("Moderator", {
-            **shared,
+            **shared, "review_rounds_remaining": review_limit,
             "research_evidence": self._research.read(),
             "matcher": dict(branches["Matcher"]),
             "hedger": dict(branches["Hedger"]),
         })
-        for review_index in range(depth_policy(case.research_depth)["council_reviews"]):
+        for review_index in range(review_limit):
             requests = moderated.get("refinement_requests", ())
             if not requests: break
             if not isinstance(requests, (list,tuple)):
@@ -496,10 +550,12 @@ class RecommenderService:
                 if role in targeted:raise RecommendationValidationError("同一轮复核角色不得重复")
                 targeted[role]={**shared,"phase":"review","question":request["question"],
                     "previous_opinion":branches[role],"discussion":moderated,
+                    "rule":"只处理指定问题，先读取本分支已有结果。区分可由现有证据回答的问题与确实缺少的数据，不为补文字重新计算。",
                     "research":self._research.context(),"research_evidence":self._research.read()}
             branches.update(runner.run_named(targeted))
             moderated=runner.run("Moderator",{**shared,"matcher":branches["Matcher"],"hedger":branches["Hedger"],
-                "review_index":review_index+1,"research_evidence":self._research.read(),
+                "review_index":review_index+1,"review_rounds_remaining":review_limit-review_index-1,
+                "research_evidence":self._research.read(),
                 "rule":"仅依据已验证证据汇总，保留未解决分歧；无需再复核时refinement_requests为空。"})
         unresolved = tuple(moderated.get("refinement_requests", ()))
         audit.append(
@@ -538,17 +594,39 @@ class RecommenderService:
             "comparison_only": comparison_only,
             "case": case.to_dict(),
             "evidence": [item.to_dict(include_excerpt=True) for item in evidence],
-            "max_candidates": min(_requested_candidate_count(case), self.config.max_candidates),
+            "max_candidates": min(max(_requested_candidate_count(case), len(requested_comparison_products(case.prompt, evidence))), self.config.max_candidates),
         })
         evidence = self._research.merge_catalog_evidence(evidence)
-        candidates, rejected = build_candidates(
+        candidates, rejected = self._build_candidates(
             {"proposals": structurer.get("proposals", ())},
             {"reviews": _accepting_reviews(structurer.get("proposals", ()))},
             evidence=evidence,
             run_id=run_id,
-            max_candidates=min(_requested_candidate_count(case), self.config.max_candidates),
+            max_candidates=min(max(_requested_candidate_count(case), len(requested_comparison_products(case.prompt, evidence))), self.config.max_candidates),
             confirmed_constraints=case.confirmed_constraints,
         )
+        preflight_failures = [row for row in rejected if row.get("source") == "proposal_constraint_gate"]
+        if not candidates and preflight_failures and not comparison_only:
+            # Repair design before spending the quick mode's single financial
+            # evaluation round. Unknown risk bounds are not feasible designs.
+            structurer = runner.run("Structurer", {
+                "phase": "preflight_repair", "case": case.to_dict(),
+                "preflight_rejections": preflight_failures,
+                "evidence": [item.to_dict(include_excerpt=True) for item in evidence],
+                "max_candidates": min(max(_requested_candidate_count(case), len(requested_comparison_products(case.prompt, evidence))), self.config.max_candidates),
+                "rule": "当前拟议方案均未通过合同预检。只使用已登记且有资料证据的产品，保持用户硬约束。"
+                        "缺少风险边界证据的方案不能作为满足限制的候选；可修订未锁定条款，"
+                        "或从已有资料选择有可核验风险边界的其他产品，不调用计算工具。"
+                        "返回完整proposals和evaluation_plan。确实无可行方案则返回空数组。仅有这一次设计修订机会。",
+            })
+            evidence = self._research.merge_catalog_evidence(evidence)
+            candidates, rejected = self._build_candidates(
+                {"proposals": structurer.get("proposals", ())},
+                {"reviews": _accepting_reviews(structurer.get("proposals", ()))},
+                evidence=evidence, run_id=run_id,
+                max_candidates=min(max(_requested_candidate_count(case), len(requested_comparison_products(case.prompt, evidence))), self.config.max_candidates),
+                confirmed_constraints=case.confirmed_constraints,
+            )
         if not candidates:
             return self._candidate_set(case, route, run_id, mode, audit, (), rejected)
         if comparison_only:
@@ -568,10 +646,10 @@ class RecommenderService:
             if len(reviewed) != len(set(reviewed)) or set(reviewed) != products:
                 raise RecommendationValidationError("Trader比较必须逐一覆盖当前候选，不得新增产品")
             evidence = self._research.merge_catalog_evidence(evidence)
-            compared, comparison_rejected = build_candidates(
+            compared, comparison_rejected = self._build_candidates(
                 {"proposals": [item for item in structurer.get("proposals", ()) if item.get("product_id") in products]},
                 comparison, evidence=evidence, run_id=run_id,
-                max_candidates=min(_requested_candidate_count(case), self.config.max_candidates),
+                max_candidates=min(max(_requested_candidate_count(case), len(requested_comparison_products(case.prompt, evidence))), self.config.max_candidates),
                 confirmed_constraints=case.confirmed_constraints,
             )
             reviewer = runner.run("Reviewer", {
@@ -593,11 +671,12 @@ class RecommenderService:
         self._research.register(ready)
         loop = ProductTraderLoop.start(ready, max_rounds=depth_policy(case.research_depth)["product_iterations"])
         ready_products = {item.product_id for item in ready}
+        dependencies = _requested_research_modules(case, self._research)
         current_plan = loop.plan_round(_structurer_loop_plan(loop, {
             **dict(structurer), "evaluation_plan": [
                 item for item in structurer.get("evaluation_plan", ()) if item.get("product_id") in ready_products
             ],
-        }))
+        }, required_modules=dependencies))
         accepted: dict[str, RecommendationCandidate] = {}
         reviewer_feedback = None
         while True:
@@ -632,8 +711,8 @@ class RecommenderService:
             decisions = trader.get("evaluations", ())
             for decision in decisions:
                 if isinstance(decision, dict) and decision.get("decision")=="accept":
-                    candidate_key=decision.get("candidate_id")
-                    row=host_results.get(candidate_key)
+                    decision_candidate_id=decision.get("candidate_id")
+                    row=host_results.get(decision_candidate_id)
                     if row and any(status not in {"succeeded","partial"} for status in row["module_statuses"].values()):
                         decision.update(decision="rework",term_adjustments={})
             transition = loop.apply_trader_output(attached, _trader_loop_decisions(attached, trader))
@@ -651,16 +730,24 @@ class RecommenderService:
                     accepted.get(item.candidate_id, pending.get(item.candidate_id))
                     for item in candidates if item.candidate_id in accepted or item.candidate_id in pending
                 )
-                reviewer = runner.run("Reviewer", {
-                    "candidates": [item.to_dict() for item in selected],
-                    "round_no": current_plan.round_no,
-                    "research": self._research.context(), "evidence": self._research.read(),
-                    "rule": "只能批准或拒绝当前候选，不改写条款。拒绝时说明具体问题，交回Structurer修订并由Trader复核。",
-                })
-                verdict = parse_reviewer_ranking_verdict(reviewer)
+                returned = tuple({"candidate_id": row.get("candidate_id"), "product_id": row.get("product_id"),
+                                  "reason": row.get("reason") or "本轮仍需修订，快速档已结束。", "source": "Trader"}
+                                 for row in decisions if row.get("decision") == "rework")
+                rejected = (*rejected, *returned)
+                if not selected:
+                    return self._candidate_set(case, route, run_id, mode, audit, (), rejected)
+                selected_ids = {item.candidate_id for item in selected}
+                final_research = self._research.context()
+                final_research["candidates"] = [item for item in final_research["candidates"]
+                                                 if item["candidate_id"] in selected_ids]
+                final_evidence = [item for item in self._research.read()
+                                  if item["candidate_id"] in selected_ids]
+                selected, verdict, reviewer = self._finalize_reviewed_candidates(
+                    case, selected, runner, final_research, final_evidence,
+                    current_plan.round_no, allow_narrative_repair=bool(accepted),
+                )
                 if verdict.approved:
-                    ranked = tuple(replace(item, rank=index) for index, item in enumerate(selected, start=1))
-                    return self._candidate_set(case, route, run_id, mode, audit, ranked, rejected)
+                    return self._candidate_set(case, route, run_id, mode, audit, selected, rejected)
                 if current_plan.round_no >= loop.max_rounds or not accepted:
                     return self._candidate_set(case, route, run_id, mode, audit, (),
                         (*rejected, {"reason": verdict.reason or "Reviewer拒绝", "source": "Reviewer"}))
@@ -683,7 +770,42 @@ class RecommenderService:
                 "host_results": host_results, "research": self._research.context(),
                 "rule": "处理Trader或Reviewer的具体问题；返回evaluation_plan，每项含product_id、modules、term_overrides。保持用户硬约束。",
             })
-            current_plan = loop.plan_round(_structurer_loop_plan(loop, redesign))
+            current_plan = loop.plan_round(_structurer_loop_plan(loop, redesign, required_modules=dependencies))
+
+    def _finalize_reviewed_candidates(self, case, selected, runner, research, evidence,
+                                      round_no, *, allow_narrative_repair):
+        """Resolve review wording without reopening verified contracts or calculations."""
+        feedback = None
+        for attempt in range(2 if allow_narrative_repair else 1):
+            finalized = runner.run("Structurer", {
+                "phase": "finalize", "case": case.to_dict(),
+                "current_candidates": [item.to_dict() for item in selected],
+                "research": research, "evidence": evidence, "reviewer_feedback": feedback,
+                "rule": "计算已结束。不改条款、不发起新计算。candidate_narratives按本次需求的推荐顺序排列，首项为首选。"
+                        "根据已验证结果解释取舍，不沿用计算前的提案顺序。若有reviewer_feedback，逐项修订其指出的叙述与排序问题。"
+                        "区分合同研究假设、理论价值和实际成交条件。用户已确认默认条款假设时，可在同一单位和期限下比较假设成本，必须明确不是市场报价。"
+                        "合同保证金事实只适用于完整登记合同，拆腿、市场保证金与成交成本未核验时保留执行前限制，不声称交易可执行。"
+                        "删除已由本轮计算解决的缺项，保留真实未知项；不把历史最差收益写成合同最大亏损。",
+            })
+            narratives = {row["candidate_id"]: row for row in finalized["candidate_narratives"]}
+            by_id = {item.candidate_id: item for item in selected}
+            selected = tuple(replace(by_id[candidate_id], rank=index, **{
+                key: row[key] if key == "reason" else tuple(row[key])
+                for key in ("reason", "suitable_for", "not_suitable_for", "main_risks", "missing_inputs")
+            }) for index, (candidate_id, row) in enumerate(narratives.items(), start=1))
+            reviewer = runner.run("Reviewer", {
+                "case": case.to_dict(), "candidates": [item.to_dict() for item in selected],
+                "round_no": round_no, "research": research, "evidence": evidence,
+                "rule": "只能批准或拒绝，不改条款。首项和rank=1均为拟交付首选，核对其是否符合用户已确认的市场判断与目标。"
+                        "按已确认的合同研究假设审查；未取得市场报价、拆腿保证金和流动性须披露，不可声称已核验，但不能仅因这些交易条件未核验拒绝合同假设下的研究。"
+                        "按同一研究假设口径比较权利金是允许的，不能把它表述为实际成交成本。四舍五入或约数在单位一致且与事实相符时，不构成财务错误。"
+                        "不从用户未提及的行情或限制增加硬约束。若首选与已确认偏好矛盾，或计算缺失、事实不符，明确拒绝并指出具体问题。",
+            })
+            verdict = parse_reviewer_ranking_verdict(reviewer)
+            if verdict.approved:
+                return selected, verdict, reviewer
+            feedback = dict(reviewer)
+        return selected, verdict, reviewer
 
     def _evaluate_round(
         self,
@@ -729,6 +851,62 @@ class RecommenderService:
             round_plan, attachable, tenant_id=case.tenant_id, task_id=case.task_id,
         ), host_results
 
+    def _build_candidates(self, research, critic, *, research_session=None, **kwargs):
+        """Reject an infeasible proposal individually; retain other valid designs."""
+        validate = getattr(self.tool_port, "validate_product_terms", None)
+        session = research_session if research_session is not None else getattr(self, "_research", None)
+        if callable(validate) and (session is None or session.calculation_allowed):
+            kwargs["candidate_validator"] = lambda product_id, terms: validate(
+                product_id, terms, confirmed_constraints=kwargs.get("confirmed_constraints", {}))
+        return build_candidates(research, critic, **kwargs)
+
+    def _repair_ranking_proposals(self, case, spec, generated, candidates, rejected, evidence, runner, run_id):
+        """Return known infeasible designs once before spending calculation budget.
+
+        A default contract failing a limit does not prove that the product has
+        no feasible registered terms. Keep valid proposals untouched and ask
+        their designer to revise only rejected proposals, with the same limits.
+        """
+        failures = [row for row in rejected if row.get("source") == "proposal_constraint_gate"]
+        if not failures:
+            return candidates, rejected, evidence
+        preview = getattr(self.tool_port, "proposal_term_context", None)
+        if callable(preview) and candidates:
+            context = preview([item.product_id for item in candidates],
+                              confirmed_constraints=case.confirmed_constraints)
+            required = {metric for metric, source in required_metric_sources(spec).items()
+                        if source == "contract_terms"}
+            ready = {item.product_id for item in candidates if item.library_status == "ready"}
+            if any(row.get("product_id") in ready
+                   and required.issubset(row.get("contract_term_preview", {}))
+                   for row in context.get("products", ())):
+                return candidates, rejected, evidence
+        elif candidates:
+            return candidates, rejected, evidence
+        rejected_products = {row["product_id"] for row in failures}
+        revised = runner.run("Generator", {
+            "phase": "preflight_repair", "case": case.to_dict(), "ranking_spec": spec.to_dict(),
+            "current_proposals": [row for row in generated.get("proposals", ())
+                                  if row["product_id"] in rejected_products],
+            "preflight_rejections": failures, "allowed_product_ids": sorted(rejected_products),
+            "evidence": [item.to_dict(include_excerpt=True) for item in evidence],
+            "rule": "这些提案的默认或拟议条款已被合同预检拒绝，不代表产品不可调整。"
+                    "根据proposal_term_context和具体拒绝原因，修订未锁定且已登记的参数；"
+                    "如登记了可行数量上界，可提出相应数量并说明参与率与权利金。"
+                    "只返回当前被拒绝产品的修订提案，不能修改其他候选、放宽确认约束、"
+                    "新增产品或调用计算工具。确实无可行修订时返回空proposals。仅有这一次修订机会。",
+        })
+        revisions = {row["product_id"]: row for row in revised.get("proposals", ())}
+        merged = {"proposals": [revisions.get(row["product_id"], row)
+                                for row in generated.get("proposals", ())]}
+        evidence = self._research.merge_catalog_evidence(evidence)
+        candidates, rejected = self._build_candidates(
+            merged, {"reviews": _accepting_reviews(merged["proposals"])}, evidence=evidence,
+            run_id=run_id, max_candidates=min(_requested_candidate_count(case), self.config.max_candidates),
+            confirmed_constraints=case.confirmed_constraints,
+        )
+        return candidates, rejected, evidence
+
     def _run_constraint_ranking(
         self,
         case: RecommendationCase,
@@ -743,25 +921,34 @@ class RecommenderService:
             "research_context": case.research_context,
             "confirmed_constraints": dict(case.confirmed_constraints),
         })
+        specified = _resolve_role_clarification(specified, case.confirmed_constraints, audit, "Specifier")
         if specified.get("next_question"):
             raise RecommendationInputRequired("ranking_preferences", specified["next_question"])
-        spec = parse_specifier_ranking_spec(specified.get("ranking_spec", {}))
+        spec = bind_confirmed_risk_constraints(
+            parse_specifier_ranking_spec(specified.get("ranking_spec", {})), case.confirmed_constraints)
+        # A requested contractual loss order cannot be silently replaced by
+        # the minimum of a finite historical sample.
+        if re.search(r"(?:到期|合同)(?:结算)?最大(?:亏损|损失)", case.prompt):
+            spec = replace(spec, sort_keys=tuple({**dict(key), "metric": "contract_loss_bound"}
+                if key["metric"] == "max_loss_contract_settlement_return" else key for key in spec.sort_keys))
         evidence = self._retrieve(case, specified.get("research_queries", ()), audit)
         generated = runner.run("Generator", {
             "case": case.to_dict(),
             "ranking_spec": spec.to_dict(),
             "evidence": [item.to_dict(include_excerpt=True) for item in evidence],
-            "max_candidates": min(_requested_candidate_count(case), self.config.max_candidates),
+            "max_candidates": min(max(_requested_candidate_count(case), len(requested_comparison_products(case.prompt, evidence))), self.config.max_candidates),
         })
         evidence = self._research.merge_catalog_evidence(evidence)
-        candidates, rejected = build_candidates(
+        candidates, rejected = self._build_candidates(
             generated,
             {"reviews": _accepting_reviews(generated.get("proposals", ()))},
             evidence=evidence,
             run_id=run_id,
-            max_candidates=min(_requested_candidate_count(case), self.config.max_candidates),
+            max_candidates=min(max(_requested_candidate_count(case), len(requested_comparison_products(case.prompt, evidence))), self.config.max_candidates),
             confirmed_constraints=case.confirmed_constraints,
         )
+        candidates, rejected, evidence = self._repair_ranking_proposals(
+            case, spec, generated, candidates, rejected, evidence, runner, run_id)
         if not candidates:
             return self._candidate_set(case, route, run_id, mode, audit, (), rejected)
         pending = tuple(item for item in candidates if item.library_status != "ready")
@@ -775,7 +962,8 @@ class RecommenderService:
         evaluator = getattr(self.tool_port, "evaluate_candidate", None)
         if not callable(evaluator):
             raise RecommenderUnavailable("constraint-ranking需要Hosted候选评估端口")
-        modules = required_modules(spec)
+        modules = tuple(dict.fromkeys((*required_modules(spec),
+                                      *_requested_research_modules(case, self._research))))
         if not self._research.calculation_allowed or self._research.blocked_modules.intersection(modules):
             raise RecommendationInputRequired(
                 "ranking_preferences",
@@ -817,11 +1005,12 @@ class RecommenderService:
                     input_value=candidate.to_confirmation_dict(),output_value={"batch_no":batch_no,"module_statuses":row["module_statuses"]})
             ranking = rank_candidates(spec,tuple(evaluated.values()),metrics_by_candidate)
             reviewer = runner.run("Reviewer",{
+                "case": case.to_dict(),
                 "ranking_spec":spec.to_dict(),"ranking_decisions":[item.to_dict() for item in ranking.decisions],
                 "candidates":[item.to_dict() for item in ranking.ranked_candidates],
                 "exclusions":[{"candidate_id":item.candidate_id,"reasons":list(item.reasons)} for item in ranking.exclusions],
-                "verified_evidence": {item.candidate_id: self._research.read(item.candidate_id)
-                                      for item in ranking.ranked_candidates},
+                "verified_evidence": {candidate_id: self._research.read(candidate_id)
+                                      for candidate_id in evaluated},
                 "rule": "按当前合同的Host计算证据审核指标及FactRef；候选生成时的missing_inputs是计算前状态，须与本次证据核对。无有效证据仍应拒绝。",
                 "batch_no":batch_no})
             reviewed = apply_reviewer_verdict(ranking,parse_reviewer_ranking_verdict(reviewer))
@@ -840,7 +1029,7 @@ class RecommenderService:
                     "reviewer_feedback":reviewer,"max_candidates":_requested_candidate_count(case)-len(ranking.ranked_candidates),
                     "rule":"仅补充不足部分，保持排序规则；没有新方案可返回空proposals，不重复已有相同条款。"})
                 evidence = self._research.merge_catalog_evidence(evidence)
-                added, omitted=build_candidates(supplements,{"reviews":_accepting_reviews(supplements.get("proposals",()))},
+                added, omitted=self._build_candidates(supplements,{"reviews":_accepting_reviews(supplements.get("proposals",()))},
                     evidence=evidence,run_id=run_id+"-supplement-"+str(batch_no),
                     max_candidates=self.config.max_candidates,confirmed_constraints=case.confirmed_constraints)
                 rejected=(*rejected,*omitted)
@@ -886,6 +1075,48 @@ class RecommenderService:
         )
         return evidence
 
+    def _enforce_user_risk_constraints(self, case, candidates, *, research_session=None):
+        """All presets pass the same immutable-contract gate before delivery."""
+        rules = confirmed_risk_constraints(case.confirmed_constraints)
+        if not candidates or not rules:
+            return tuple(candidates), ()
+        spec = RankingSpec(ranking_spec_id="confirmed-user-risk-limits", hard_constraints=rules,
+                           sort_keys=({"metric": next(iter(rules)), "direction": "asc", "missing_policy": "exclude"},),
+                           tie_break_policy="candidate_id")
+        metric_sources = {key: "contract_terms" for key in rules}
+        accepted, rejected = [], []
+        for candidate in candidates:
+            if candidate.library_status != "ready":
+                # Retain research-only proposals without claiming risk validation.
+                # Their pending_terms state cannot authorize financial execution.
+                accepted.append(candidate)
+                continue
+            session = research_session if research_session is not None else getattr(self, "_research", None)
+            if session is None:
+                raise RecommenderUnavailable("当前推荐缺少独立研究会话，不能验证风险约束")
+            session.register([candidate])
+            row = session.result_for(candidate, ("payoffer", "pricer", "backtester"), 1)
+            if not any(fact.get("source") == "contract_terms" for fact in row["verified_metrics"].values()):
+                if session.calculation_allowed and "payoffer" not in session.blocked_modules:
+                    session.evaluate({"candidate_id": candidate.candidate_id, "modules": ["payoffer"],
+                        "round_no": 1, "question": "核验用户硬约束对应的当前合同现金流及保证金条件"})
+                    row = session.result_for(candidate, ("payoffer", "pricer", "backtester"), 1)
+            modules = tuple(module for module, status in row["module_statuses"].items() if status in {"succeeded", "partial"})
+            row = session.result_for(candidate, modules, 1)
+            records = read_evaluation_records(row, candidate_id=candidate.candidate_id, modules=modules,
+                round_no=1, tenant_id=case.tenant_id, task_id=case.task_id)
+            metrics = _ranking_metrics(row, metric_sources, records)
+            ranked = rank_candidates(spec, (candidate,), {candidate.candidate_id: metrics})
+            if ranked.ranked_candidates:
+                accepted.append(replace(candidate, evaluation_records=records,
+                    module_run_refs=tuple(record.module_run_ref for record in records if record.module_run_ref),
+                    module_statuses={record.module: record.status for record in records}))
+            else:
+                reasons = [reason for exclusion in ranked.exclusions for reason in exclusion.reasons]
+                rejected.append({"candidate_id": candidate.candidate_id, "product_id": candidate.product_id,
+                                 "source": "confirmed_user_constraints", "reason": ";".join(reasons)})
+        return tuple(accepted), tuple(rejected)
+
     def _candidate_set(
         self,
         case: RecommendationCase,
@@ -898,7 +1129,10 @@ class RecommenderService:
         *,
         ranking_spec: Mapping[str, Any] | None = None,
         research_evidence: tuple[Mapping[str, Any], ...] | None = None,
+        research_session: ResearchSession | None = None,
     ) -> RecommendationSet:
+        candidates, constraint_rejections = self._enforce_user_risk_constraints(case, candidates, research_session=research_session)
+        rejected = (*rejected, *constraint_rejections)
         current = tuple(
             replace(item, rank=index, candidate_status=(
                 "pending_confirmation" if item.library_status == "ready" else "pending_terms"
@@ -921,6 +1155,12 @@ class RecommenderService:
         if any(item.library_status != "ready" for item in current):
             limitations += ("部分候选资料尚未就绪，仅保留研究说明，未执行金融计算。",)
         confirmable = any(item.library_status == "ready" for item in current)
+        if current and not confirmable and set(case.requested_outputs).intersection({'report', 'reporter', 'quote'}):
+            gaps = [str(gap).strip() for item in current
+                    for gap in item.missing_inputs if str(gap).strip()]
+            if gaps:
+                raise RecommendationInputRequired('candidate_terms',
+                    '当前方案尚不能进入计算，需明确：'+gaps[0]+'。请补充该条件，回答后继续本任务研究。')
         spec_id = str(ranking_spec.get("ranking_spec_id")) if ranking_spec is not None else None
         return RecommendationSet(
             schema=RECOMMENDATION_SET_SCHEMA,
@@ -1121,7 +1361,7 @@ def _accepting_reviews(proposals: object) -> list[dict[str, Any]]:
     return reviews
 
 
-def _structurer_loop_plan(loop: ProductTraderLoop, output: Mapping[str, Any]) -> Mapping[str, Any]:
+def _structurer_loop_plan(loop: ProductTraderLoop, output: Mapping[str, Any], *, required_modules=()) -> Mapping[str, Any]:
     raw_plans = output.get("evaluation_plan", ())
     if isinstance(raw_plans, (str, bytes)) or not isinstance(raw_plans, Sequence):
         raise RecommendationValidationError("Structurer.evaluation_plan必须为数组")
@@ -1140,7 +1380,7 @@ def _structurer_loop_plan(loop: ProductTraderLoop, output: Mapping[str, Any]) ->
         "proposals": [
             {
                 "candidate_id": state.candidate.candidate_id,
-                "evaluation_plan": list(plans[product_id].get("modules", ())),
+                "evaluation_plan": list(dict.fromkeys((*plans[product_id].get("modules", ()), *required_modules))),
                 "term_overrides": dict(plans[product_id].get("term_overrides", {})),
             }
             for product_id, state in states.items()
@@ -1152,31 +1392,11 @@ def _trader_loop_decisions(
     round_plan: ProductTraderRound,
     output: Mapping[str, Any],
 ) -> Mapping[str, Any]:
-    raw_rows = output.get("evaluations", ())
-    if isinstance(raw_rows, (str, bytes)) or not isinstance(raw_rows, Sequence):
-        raise RecommendationValidationError("Trader.evaluations必须为数组")
     expected = {
         item.candidate.candidate.candidate_id: item.candidate.candidate.product_id
         for item in round_plan.plans
     }
-    decisions: list[Mapping[str, Any]] = []
-    seen: set[str] = set()
-    for raw in raw_rows:
-        if not isinstance(raw, Mapping):
-            raise RecommendationValidationError("Trader.evaluations必须为对象数组")
-        candidate_id = str(raw.get("candidate_id", "")).strip()
-        product_id = str(raw.get("product_id", "")).strip()
-        if candidate_id not in expected or expected[candidate_id] != product_id or candidate_id in seen:
-            raise RecommendationValidationError("Trader.evaluations未绑定当前candidate_id与product_id")
-        seen.add(candidate_id)
-        decisions.append({
-            "candidate_id": candidate_id,
-            "action": raw.get("decision"),
-            "term_adjustments": raw.get("term_adjustments", {}),
-        })
-    if seen != set(expected):
-        raise RecommendationValidationError("Trader.evaluations必须覆盖本轮全部候选")
-    return {"decisions": decisions}
+    return trader_decisions_for_candidates(output, expected)
 
 
 def _validate_generated_identity(value: Mapping[str, Any], candidate: RecommendationCandidate) -> None:
@@ -1222,6 +1442,8 @@ def _ranking_metrics(
                 entry = entry.get("value")
         if entry is None:
             continue
+        if source == "contract_terms" and not any(record.module_run_ref is not None and record.status in {"succeeded", "partial"} for record in records):
+            raise RecommendationValidationError(f"合同指标{metric}缺少绑定当前合同的ModuleRunRef")
         if source != "contract_terms":
             record = source_records.get(source)
             if record is None or record.module_run_ref is None or record.status not in {"succeeded", "partial"}:
@@ -1240,9 +1462,9 @@ def _research_queries(case: RecommendationCase) -> tuple[str, ...]:
     constraints = case.confirmed_constraints
     view = str(constraints.get("market_view", ""))
     terms = [str(constraints.get("underlying", "")).strip()]
-    if "上涨" in view:
+    if any(word in view for word in ("上涨", "看涨", "上行")):
         terms.append("看涨期权")
-    elif "看跌" in view:
+    elif any(word in view for word in ("看跌", "下跌", "回调", "下行")):
         terms.append("看跌期权")
     terms.append(case.prompt)
     return tuple(dict.fromkeys(item for item in terms if item))
@@ -1491,3 +1713,18 @@ def council_research_evidence(candidates, research):
                 "module_run_refs": deepcopy(references),
             })
     return tuple(evidence)
+
+
+def _requested_research_modules(case, research):
+    """Plan evidence prerequisites before asking roles for a research verdict."""
+    if not research.calculation_allowed:
+        return ()
+    modules = set()
+    if set(case.requested_outputs).intersection({"card", "report", "multicard", "multireport"}):
+        modules.update({"payoffer", "pricer", "backtester"})
+    for pattern, module in ((r"收益|保护效果", "payoffer"), (r"定价|估值|成本|Greeks|希腊", "pricer"),
+                            (r"回测|历史回放", "backtester")):
+        if re.search(pattern, case.prompt, re.IGNORECASE):
+            modules.add(module)
+    return tuple(module for module in ("payoffer", "pricer", "backtester")
+                 if module in modules and module not in research.blocked_modules)

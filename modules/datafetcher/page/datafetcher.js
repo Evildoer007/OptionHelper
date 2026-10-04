@@ -71,11 +71,6 @@ function providerDisplayName(provider) {
   return ({ifind_http: 'iFinD', 'ifind-http': 'iFinD', tinyshare: 'Tushare', tushare: 'Tushare'})[String(provider || '').toLowerCase()] || '';
 }
 
-function dataSourceDescription(status) {
-  const provider = status?.selected_provider || status?.provider_name || status?.provider_priority?.[0];
-  return providerDisplayName(provider) || '数据服务';
-}
-
 function assetPersistenceLabel(item) {
   const ref = item?.data_asset_ref || item || {};
   if (ref.lineage?.persistence_mode === 'volatile' || String(ref.storage_ref || '').startsWith('volatile:')) return '未保存，重启清除';
@@ -131,7 +126,12 @@ function buildFetchRequest(values) {
   if (!assetIds.length) throw new Error('请至少填写一个资产标识。');
   const invalidAsset = assetIds.find(item => !/^\d{6}\.(?:SH|SZ)$/.test(item));
   if (invalidAsset) throw new Error(`资产标识“${invalidAsset}”格式不正确，请使用000300.SH或399001.SZ。`);
-  const request = {asset_ids: assetIds, start_date: start.iso, end_date: end.iso, fields, source_priority: ['local', 'ifind_http'], frequency: values.frequency || '1d', adjustment: values.adjustment, cache_policy: 'extend_only', offline: false, persistence_mode: values.saveDownloadedData ? 'library' : 'volatile'};
+  const provider = values.dataSource || 'ifind_http';
+  if (!['ifind_http', 'tinyshare', 'tushare'].includes(provider)) throw new Error('请选择支持的数据来源。');
+  const persistenceMode = values.persistenceMode ?? (values.saveDownloadedData ? 'library' : 'volatile');
+  if (!['volatile', 'library'].includes(persistenceMode)) throw new Error('请选择数据保留方式。');
+  const request = {asset_ids: assetIds, start_date: start.iso, end_date: end.iso, fields, source_priority: ['local', provider], frequency: values.frequency || '1d', adjustment: values.adjustment, cache_policy: 'extend_only', offline: false, persistence_mode: persistenceMode};
+  if (values.dataSource) request.provider = provider;
   return request;
 }
 
@@ -226,17 +226,6 @@ function resultSummary(data) {
   ];
   const ref = data.data_asset_ref || {};
   return [{label: '获取方式', value: cacheDecisionLabel(data.cache_decision, ref.coverage?.end_date)}, {label: '记录数', value: ref.row_count ?? '暂无'}, {label: '保存状态', value: ref.lineage?.persistence_mode === 'volatile' ? '本次使用，未保存' : '已保存到数据资产'}];
-}
-
-function credentialStatusText(data) {
-  const status = data?.credential_status;
-  const configured = typeof data?.configured === 'boolean' ? data.configured : status?.configured;
-  if (configured === false) return '未配置，请前往设置中心。';
-  if (configured === true) {
-    if (status?.remote_provider === 'available') return '已连接。';
-    return '已配置，尚未验证。';
-  }
-  return '连接状态未知。';
 }
 
 function dataSettingsFailure(data) {
@@ -375,7 +364,7 @@ function initializePage() {
       }
       select.title = [indexView.source, indexView.assetType, indexView.quality, persistence, `${ref.row_count ?? '—'}行`, range].filter(Boolean).join('；');
       select.setAttribute('aria-description', select.title);
-      select.addEventListener('click', () => { if (operationActive) return; const ids = ref.asset_ids || item.asset_ids; if (Array.isArray(ids) && ids.length) { $('asset-ids').value = ids.join('\n'); syncSourceVisibility(); markRequestInputChanged(); if (dashboardEnabled && ref.schema_id === 'market-history') { renderResult({ok:true,data_asset_ref:ref}); hasResult=true; state('正在查看已获取数据'); message(''); } } });
+      select.addEventListener('click', () => { if (operationActive) return; const ids = ref.asset_ids || item.asset_ids; if (Array.isArray(ids) && ids.length) { $('asset-ids').value = ids.join('\n'); syncFieldSummary(); markRequestInputChanged(); if (dashboardEnabled && ref.schema_id === 'market-history') { renderResult({ok:true,data_asset_ref:ref}); hasResult=true; state('正在查看已获取数据'); message(''); } } });
       const download = document.createElement('a'); download.className = 'asset-download'; download.href = `/api/assets/${encodeURIComponent(id)}/download`; download.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5"/></svg>'; download.title = ref.media_type === 'application/json' ? '下载JSON' : '下载CSV'; download.setAttribute('aria-label', ref.media_type === 'application/json' ? '下载JSON' : '下载CSV');
       entry.append(select, download); list.append(entry);
     });
@@ -496,16 +485,24 @@ function initializePage() {
     $('empty-canvas').hidden = true; content.hidden = false;
   }
   async function loadAssets() { assetLoadError = false; try { const data = await requestJson('/api/assets'); const items = Array.isArray(data.assets) ? data.assets : Array.isArray(data) ? data : []; assetStore.clear(); items.forEach(addAsset); renderAssets(); } catch (_) { assetLoadError = true; renderAssets(); } }
+  let dataSettings = null;
+  let sourceSwitchInFlight = false;
+  let selectedSource = 'ifind_http';
   async function loadStatus() {
     try {
-      const data = await requestJson('/api/status');
+      const [data, response] = await Promise.all([requestJson('/api/status'), fetch('/api/settings')]);
+      const settings = await response.json();
+      if (!response.ok || !settings.settings?.data_interface) throw new Error('无法读取数据接口设置。');
+      dataSettings = settings.settings.data_interface;
+      if (!sourceSwitchInFlight) {
+        const provider = dataSettings.provider_name === 'ifind-http' ? 'ifind_http' : dataSettings.provider_name;
+        $('data-source').value = ['tinyshare', 'tushare'].includes(provider) ? 'tinyshare' : 'ifind_http';
+        selectedSource = $('data-source').value;
+        $('data-source').dispatchEvent(new Event('input', {bubbles:true}));
+      }
       $('service-status').textContent = data.status === 'available' ? '本机服务已就绪' : (data.status || '服务状态未知');
-      $('secret-status').textContent = credentialStatusText(data);
-      $('data-source-note').textContent = dataSourceDescription(data);
     } catch (_) {
-      $('service-status').textContent = '本机服务未启动';
-      $('secret-status').textContent = '无法读取连接状态。';
-      $('data-source-note').textContent = dataSourceDescription(null);
+      $('service-status').textContent = '无法读取服务状态';
     }
   }
   let refreshInFlight = null;
@@ -531,8 +528,8 @@ function initializePage() {
     OptionHelperDateInput.bind(input, id === 'start-date' ? '开始日期' : '结束日期');
   }
   const fieldControls = [...document.querySelectorAll('.extra-field')];
-  const formValues = () => ({assetIds: $('asset-ids').value, startDate: $('start-date').value, endDate: $('end-date').value, fields: fieldControls.filter(node => node.checked).map(node => node.value).join(','), frequency: $('frequency').value, adjustment: $('adjustment').value, saveDownloadedData: $('save-downloaded-data').checked});
-  function syncSourceVisibility() { const selectedFields = fieldControls.filter(node => node.checked).length; $('field-summary').textContent = selectedFields === fieldControls.length ? '全部字段' : `${selectedFields}项字段`; }
+  const formValues = () => ({assetIds: $('asset-ids').value, startDate: $('start-date').value, endDate: $('end-date').value, fields: fieldControls.filter(node => node.checked).map(node => node.value).join(','), frequency: $('frequency').value, adjustment: $('adjustment').value, dataSource: $('data-source').value === 'tinyshare' && dataSettings?.provider_name === 'tushare' ? 'tushare' : $('data-source').value, persistenceMode: $('data-retention').value});
+  function syncFieldSummary() { const selectedFields = fieldControls.filter(node => node.checked).length; $('field-summary').textContent = selectedFields === fieldControls.length ? '全部字段' : `${selectedFields}项字段`; }
   function markRequestInputChanged() {
     if (operationActive) return;
     requestRevision += 1;
@@ -544,14 +541,39 @@ function initializePage() {
   $('request-form').addEventListener('change', revalidateDateErrors);
   $('request-form').addEventListener('input', revalidateAssetError);
   $('request-form').addEventListener('change', revalidateAssetError);
-  $('request-form').addEventListener('input', syncSourceVisibility);
-  $('request-form').addEventListener('change', syncSourceVisibility);
+  $('request-form').addEventListener('input', syncFieldSummary);
+  $('request-form').addEventListener('change', syncFieldSummary);
   $('request-form').addEventListener('input', markRequestInputChanged);
   $('request-form').addEventListener('change', markRequestInputChanged);
-  syncSourceVisibility();
+  $('data-source').addEventListener('change', async () => {
+    if (sourceSwitchInFlight || operationActive) return;
+    const source = $('data-source').value;
+    const providerName = source === 'ifind_http' ? 'ifind-http' : source;
+    markRequestInputChanged();
+    sourceSwitchInFlight = true;
+    setBusy(true);
+    try {
+      const saved = dataSettings?.saved_providers || [];
+      const actualProvider = providerName === 'tinyshare' && !saved.includes('tinyshare') && saved.includes('tushare') ? 'tushare' : providerName;
+      const response = await fetch('/api/settings/data', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({provider_name:actualProvider})});
+      const data = await response.json();
+      if (!response.ok || !data.settings?.data_interface) throw new Error(data.error?.message || data.detail || data.message || '数据来源切换失败。');
+      dataSettings = data.settings.data_interface;
+      selectedSource = source;
+      await loadAssets();
+    } catch (error) {
+      $('data-source').value = selectedSource;
+      $('data-source').dispatchEvent(new Event('input', {bubbles:true}));
+      message(error.message.includes('凭据') || error.message.includes('Token') ? '所选数据源尚未配置，请前往设置中心保存对应凭据。' : error.message, 'failed');
+    } finally {
+      sourceSwitchInFlight = false;
+      setBusy(false);
+    }
+  });
+  syncFieldSummary();
   $('asset-search').addEventListener('input', renderAssets); $('refresh-assets').addEventListener('click', () => { void refreshDataFetcherState(); });
   document.addEventListener('optionhelper:modulevisibility', event => { if (event.detail?.active === true) void refreshDataFetcherState(); });
-  $('request-form').addEventListener('submit', async event => { event.preventDefault(); if (operationActive) return; clearFieldErrors(); const hadResult = hasResult; let request; try { const values=formValues(); values.startDate=OptionHelperDateInput.read($('start-date'),'开始日期'); values.endDate=OptionHelperDateInput.read($('end-date'),'结束日期'); request = buildFetchRequest(values); $('asset-ids').value = request.asset_ids.join('\n'); OptionHelperDateInput.set($('start-date'),request.start_date,'开始日期'); OptionHelperDateInput.set($('end-date'),request.end_date,'结束日期'); syncSourceVisibility(); } catch (error) { state('请求配置错误', 'failed'); message(`${error.message}${hadResult ? ' 下方保留上一次完成结果。' : ''}`, 'failed'); showInputError(error.message); return; }
+  $('request-form').addEventListener('submit', async event => { event.preventDefault(); if (operationActive || sourceSwitchInFlight) return; clearFieldErrors(); const hadResult = hasResult; let request; try { if (!dataSettings) throw new Error('尚未读取数据接口设置，请刷新后重试。'); const values=formValues(); values.startDate=OptionHelperDateInput.read($('start-date'),'开始日期'); values.endDate=OptionHelperDateInput.read($('end-date'),'结束日期'); request = buildFetchRequest(values); $('asset-ids').value = request.asset_ids.join('\n'); OptionHelperDateInput.set($('start-date'),request.start_date,'开始日期'); OptionHelperDateInput.set($('end-date'),request.end_date,'结束日期'); syncFieldSummary(); } catch (error) { state('请求配置错误', 'failed'); message(`${error.message}${hadResult ? ' 下方保留上一次完成结果。' : ''}`, 'failed'); showInputError(error.message); return; }
     const revision = ++requestRevision;
     state('正在检查数据与缓存', 'running'); message(hadResult ? '正在获取数据；下方暂时展示上一次完成结果。' : '正在获取数据并核验保存状态。'); setBusy(true); if (!hadResult) { $('result-content').hidden = true; $('empty-canvas').hidden = false; }
     try { const data = await requestJson('/api/fetch', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(request)}); if (revision !== requestRevision) return; renderResult(data); addAsset(data); hasResult = true; state('请求完成', 'complete'); message(`数据获取完成。${assetPersistenceLabel(data)}。`); } catch (error) { if (revision !== requestRevision) return; if (error.payload && !hadResult) renderResult(error.payload); state('请求失败', 'failed'); message(`${error.message}${hadResult ? ' 下方保留上一次完成结果。' : ''}`, 'failed'); } finally { setBusy(false); }
@@ -561,5 +583,5 @@ function initializePage() {
   bindResizer('library-resizer', '--library-width', 220, 420); bindResizer('inspector-resizer', '--inspector-width', 300, 520); void refreshDataFetcherState();
 }
 
-if (typeof module === 'object' && module.exports) module.exports = {assetPersistenceLabel, parseAndFormatDate, defaultDateRange, splitList, buildFetchRequest, resultSummary, resultViewModel, chartViewModel, credentialStatusText, dataSettingsFailure, assetIndexViewModel, parseServiceResponse};
+if (typeof module === 'object' && module.exports) module.exports = {assetPersistenceLabel, parseAndFormatDate, defaultDateRange, splitList, buildFetchRequest, resultSummary, resultViewModel, chartViewModel, dataSettingsFailure, assetIndexViewModel, parseServiceResponse};
 if (typeof document !== 'undefined' && document.getElementById) initializePage();

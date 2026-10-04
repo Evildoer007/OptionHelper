@@ -25,10 +25,11 @@ from runtime.contracts.contract_api import (
     ResolvedContract,
     verify_current_product_rule,
 )
+from runtime.contracts.contract_types import semantic_hash
 from runtime.ports.result_store import ResultStorePort
 from runtime.protocol.module_host import ModuleHostContext
 
-from .asset_resolver import figure_asset_paths
+from .asset_resolver import figure_asset_paths, load_current_visual_template
 from .config import DEFAULT_MAINTENANCE_ENV, DEFAULT_PORT, HOST, PORT_ENV
 from .impl.engine import (
     PayoffEngineError,
@@ -60,6 +61,8 @@ _MAINTENANCE_TOKEN = token_urlsafe(32)
 _MAINTENANCE_PLAN_TTL_SECONDS = 600.0
 _MAINTENANCE_PLAN_LOCK = Lock()
 _MAINTENANCE_PLANS: dict[str, dict[str, Any]] = {}
+_DEFAULT_EXAMPLE_LOCK = Lock()
+_DEFAULT_EXAMPLE_CACHE: dict[str, tuple[str, str]] = {}
 _FILE_PREVIEW_API_PATHS = frozenset({
     "/api/status",
     "/api/catalog",
@@ -96,21 +99,44 @@ def _maintenance_manager():
 
 
 def default_example_payload(product_id: object) -> dict[str, Any]:
-    """读取固定默认SVG；该路径不构造本次合同，也不写任何资产。"""
+    """Render a read-only example from the same current rules as live previews.
+
+    The structural contract uses Core's deterministic non-market calendar.
+    A bounded memory cache retains one current figure per registered product;
+    terms or paths changing invalidate it even when rule_revision is unchanged.
+    This path never creates a task ModuleRun or rewrites frozen asset files.
+    """
     identifier, product = _product_for_request(product_id)
     name_zh = str(product["identity"]["name_zh"])
-    paths = figure_asset_paths(name_zh)
-    try:
-        svg = paths["svg"].read_text(encoding="utf-8")
-    except OSError as error:
-        raise PayoffEngineError(f"缺少{name_zh}的固定默认资产") from error
+    rule_revision = int(product["identity"]["rule_revision"])
+    visual_template = load_current_visual_template(name_zh, product["paths"])
+    rule_hash = semantic_hash({"product": product, "visual_template": visual_template})
+    with _DEFAULT_EXAMPLE_LOCK:
+        cached = _DEFAULT_EXAMPLE_CACHE.get(identifier)
+        if cached is not None and cached[0] == rule_hash:
+            svg = cached[1]
+        else:
+            rendered = preview_result(name_zh)
+            payload = rendered.payload
+            if (payload.get("product_id") != identifier
+                    or payload.get("rule_revision") != rule_revision):
+                raise PayoffEngineError("默认收益图与当前产品规则不一致")
+            if not isinstance(rendered.svg, str) or "<svg" not in rendered.svg:
+                raise PayoffEngineError("当前默认收益图未形成有效SVG")
+            current_id, current_product = _product_for_request(identifier)
+            current_template = load_current_visual_template(name_zh, current_product["paths"])
+            current_hash = semantic_hash({"product": current_product, "visual_template": current_template})
+            if current_id != identifier or current_hash != rule_hash:
+                raise PayoffEngineError("收益图生成期间产品规则已变化，请重新加载")
+            svg = rendered.svg
+            _DEFAULT_EXAMPLE_CACHE[identifier] = (rule_hash, svg)
     return {
         "ok": True,
         "module": "payoffer",
         "view_mode": "default_example",
         "read_only": True,
         "product_id": identifier,
-        "rule_revision": int(product["identity"]["rule_revision"]),
+        "rule_revision": rule_revision,
         "name_zh": name_zh,
         "svg": svg,
         "path_summaries": _path_summaries(product),

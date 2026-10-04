@@ -16,7 +16,7 @@ ExecutionSemantics = Literal["multi_agent", "single_model"]
 _DELIVERY_MARKERS = {
     "card": ("研究简报", "简单报告", "简报", "card"),
     "report": ("完整研究报告", "详细报告", "深度报告", "完整报告", "report", "html", "pdf", "报告"),
-    "quote": ("参考报价", "报价表", "quote"),
+    "quote": ("参考报价", "报价表", "报价单", "quote"),
 }
 _NAMED_RECOMMENDATION_PRESETS = ("产品交易循环", "独立评议", "约束排序")
 _RECOMMENDATION_MARKERS = (
@@ -97,9 +97,7 @@ def decide_workflow(
     ) and bool(module_run_facts)
     pending_candidate = controlled_facts.get("recommendation_candidate")
     has_pending_candidate = isinstance(pending_candidate, Mapping)
-    recommendation_requested = any(marker in action_text for marker in _RECOMMENDATION_MARKERS) or bool(
-        re.search(r"(?:筛选|挑选|挑|选出|选择|选|比较|对比)[^，。；;!?！？]{0,18}(?:期权|结构|产品|方案)", action_text)
-    )
+    recommendation_requested = _requests_structure_selection(action_text)
     module_requested = any(marker in action_text for marker in _MODULE_MARKERS)
     changing_terms = has_term_change_intent(lowered)
     specified_structure = _has_specified_structure(lowered) and (
@@ -119,15 +117,12 @@ def decide_workflow(
                                 execution_semantics, "structure_selection_required")
     # A recommendation can ask for inputs before it has any candidate. Its
     # parameter reply still belongs to selection, even when it also says Card.
-    previous = next((row for row in reversed(messages or ()) if row.get("role") == "assistant"), {})
-    waiting_for_selection = (
-        not has_contract and not specified_structure
-        and previous.get("status") == "needs_input"
-        and bool(re.search(r"推荐|候选|结构|排序", str(previous.get("content", ""))))
-        and any(row.get("role") == "user" and any(marker in str(row.get("content", ""))
-                for marker in _RECOMMENDATION_MARKERS) for row in messages or ())
-    )
-    explicitly_direct = module_requested and bool(re.search(r"只|仅|先|不要推荐|无需推荐|不再推荐", lowered))
+    waiting_for_selection = _has_pending_selection(messages or ())
+    # “只买入” limits the allowed structure; it does not cancel the workflow.
+    explicitly_direct = bool(re.search(
+        r"不要推荐|无需推荐|不再推荐|(?:只|仅|先)(?:给[^，。；]{0,16})?(?:回测|定价|估值|计算|生成|导出|获取|下载|画)",
+        lowered,
+    ))
     if waiting_for_selection and not explicitly_direct and _continues_recommendation(text, messages or ()):
         return WorkflowDecision("recommendation", delivery_kind, delivery_format, preset_id,
                                 execution_semantics, "recommendation_question_continuation")
@@ -177,6 +172,37 @@ def decide_workflow(
         "consultation", delivery_kind, delivery_format, preset_id,
         execution_semantics, "consultation",
     )
+
+
+def requests_structure_selection(message: object) -> bool:
+    """One shared intent boundary for the Host and Recommender."""
+    return _requests_structure_selection(_affirmative_actions(str(message or "").casefold()))
+
+
+def _requests_structure_selection(text: str) -> bool:
+    if any(marker in text for marker in _RECOMMENDATION_MARKERS) or re.search(
+        r"(?:筛选|挑选|挑|选出|选择|选|比较|对比)[^，。；;!?！？]{0,18}(?:期权|结构|产品|方案)", text
+    ):
+        return True
+    # A ranking request can omit its object after stating investment constraints.
+    return bool(re.search(
+        r"(?:按|依据|根据)[^，。；;!?！？]{0,30}(?:最大损失|最大亏损|风险|收益|gamma|delta|vega)"
+        r"[^，。；;!?！？]{0,20}(?:筛选|选出|挑选|排序)", text
+    ))
+
+
+def _has_pending_selection(messages: Sequence[Mapping[str, object]]) -> bool:
+    previous = next((row for row in reversed(messages) if row.get("role") == "assistant"), {})
+    if previous.get("status") not in {"needs_input", "partial"}:
+        return False
+    # Only retain the current unfinished mandate. A completed earlier research
+    # task cannot capture clarification for a subsequent data/calculation task.
+    for row in reversed(messages):
+        if row.get("role") == "assistant" and row.get("status") in {"completed", "answered", "cancelled"}:
+            return False
+        if row.get("role") == "user" and requests_structure_selection(row.get("content")):
+            return True
+    return False
 
 
 def _affirmative_actions(text: str) -> str:
@@ -249,7 +275,7 @@ def _continues_recommendation(
         r"(?:[0-9][0-9.,%％/\-至到\s]*(?:万|千|[kKwW]|条|个?月|年|天|\.(?:SH|SZ))?|"
         r"是|否|可以|接受|不接受|默认|都行|都可以|按默认|用默认)", text.strip(), re.IGNORECASE,
     )
-    return bool(answer) and str(latest.get("status", "")).casefold() in {"pending_approval", "needs_input"}
+    return bool(answer) and str(latest.get("status", "")).casefold() in {"pending_approval", "needs_input", "partial"}
 
 
 def has_term_change_intent(message: object) -> bool:
@@ -260,7 +286,7 @@ def has_term_change_intent(message: object) -> bool:
     )
 
 
-__all__ = ("WorkflowDecision", "decide_workflow", "has_term_change_intent")
+__all__ = ("WorkflowDecision", "decide_workflow", "has_term_change_intent", "requests_structure_selection")
 
 
 def recommendation_execution_mode(message: str, default: str = "single") -> str:

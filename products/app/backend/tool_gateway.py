@@ -729,7 +729,7 @@ class ToolGateway:
         history_request = _history_fetch_request(module, payload, None, assets)
         if module == "backtester":
             return self._resolve_backtest_data_refs(
-                history_request, requested, identity, request_id=request_id,
+                history_request, requested, identity, request_id=request_id, compute_payload=payload,
             )
         history_ref = None
         covering_history_resolver = getattr(self._data_assets, "resolve_market_history_covering", None)
@@ -874,6 +874,7 @@ class ToolGateway:
         identity: SessionIdentity,
         *,
         request_id: str,
+        compute_payload: Mapping[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         """Resolve an executable market horizon before choosing cached prices.
 
@@ -922,6 +923,8 @@ class ToolGateway:
                 stage="data",
             )
 
+        history_request = _counted_backtest_history_scope(
+            history_request, calendar_ref, compute_payload, as_of=as_of)
         history_ref = None
         covering_history = getattr(self._data_assets, "resolve_market_history_covering", None)
         if _empty_data_reference(requested_history) and callable(covering_history):
@@ -2619,6 +2622,38 @@ def _backtest_history_request_for_calendar(
         "start_date": sessions[0].isoformat(),
         "end_date": (following or sessions[-1]).isoformat(),
     }
+
+
+def _counted_backtest_history_scope(request, calendar_reference, compute_payload, *, as_of):
+    """Limit a dated replay to Core's authenticated observation endpoint.
+
+    n_obs counts exchange observations. A historic explicit entry does not
+    require price bars through today merely because its tenor is counted.
+    Automatic entry windows still use the full current acquisition horizon.
+    """
+    if not isinstance(compute_payload, Mapping):
+        return request
+    config = compute_payload.get("backtest_config", {})
+    if not isinstance(config, Mapping):
+        return request
+    entries = config.get("entry_dates", ())
+    ceilings = list(entries) if isinstance(entries, (list, tuple)) else []
+    if config.get("end_date"):
+        ceilings.append(config["end_date"])
+    if not ceilings:
+        return request
+    requirements = compile_compute_data_requirements("backtester", compute_payload)
+    if requirements.observation_count is None:
+        return request
+    coverage = calendar_reference.get("coverage", {}) if isinstance(calendar_reference, Mapping) else {}
+    sessions = coverage.get("sessions", ())
+    if not isinstance(sessions, (list, tuple)) or not sessions:
+        return request
+    ceiling = max(date.fromisoformat(str(value)).isoformat() for value in ceilings)
+    endpoint = requirements.observation_end_date(sorted(set(sessions)), ceiling)
+    if endpoint is None:
+        return request
+    return {**request, "end_date": min(endpoint, as_of.isoformat())}
 
 
 def _backtest_calendar_fetch_request(history_request: Mapping[str, Any]) -> dict[str, Any]:

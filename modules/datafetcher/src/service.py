@@ -613,6 +613,7 @@ def _fetch_provider(
     *,
     expected_trading_dates: Mapping[str, tuple[str, ...]] | None = None,
     latest_observable_date: str | None = None,
+    latest_completed_date: str | None = None,
     latest_pending_session: str | None = None,
 ) -> tuple[str, pd.DataFrame, int]:
     catalog = _providers()
@@ -645,7 +646,7 @@ def _fetch_provider(
             if name == "local":
                 # 保留已读取文件的完整价格快照，资产输出和日历校验仍使用请求视图。
                 validate_daily_history(normalized, request.fields, latest_observable_date=latest_observable_date)
-            request_view = _request_view(normalized, request)
+            request_view = _request_view(normalized, request, latest_completed_date=latest_completed_date)
             # Provider优先级只有在当前Provider按标的、价格字段及已验证交易日历
             # 完整覆盖本次区间后才可终止。本地文件缺少中间交易日时应继续尝试
             # 后续API，不能先记录成功再在Provider选择结束后失败。
@@ -767,13 +768,19 @@ def _previous_verified_session_request(
     return replace(request, start_date=session, end_date=session)
 
 
-def _request_view(frame: pd.DataFrame, request: DataRequest) -> pd.DataFrame:
-    """从宽缓存生成本次请求视图，避免改变缓存本体覆盖。"""
+def _request_view(
+    frame: pd.DataFrame,
+    request: DataRequest,
+    *,
+    latest_completed_date: str | None = None,
+) -> pd.DataFrame:
+    """从宽缓存提取已完成日线，保持缓存本体的完整覆盖。"""
 
     assets = frame["asset_id"].astype(str).str.upper()
     dates = frame["date"].astype(str)
+    end_date = min(request.end_date, latest_completed_date) if latest_completed_date else request.end_date
     view = frame.loc[
-        assets.isin(request.asset_ids) & dates.between(request.start_date, request.end_date)
+        assets.isin(request.asset_ids) & dates.between(request.start_date, end_date)
     ].copy()
     observed_assets = set(view["asset_id"].astype(str).str.upper())
     missing_assets = sorted(set(request.asset_ids).difference(observed_assets))
@@ -828,7 +835,7 @@ def _resolve_data(
         ]
         full_match = next((match for match in matches if match.complete and match.frame is not None and match.metadata), None)
         if full_match is not None:
-            request_frame = _request_view(full_match.frame, request)
+            request_frame = _request_view(full_match.frame, request, latest_completed_date=latest_completed_date)
             reference = full_match.metadata.get("data_asset_ref")
             asset_ref: DataAssetRef | None = _asset_ref(reference) if isinstance(reference, Mapping) else None
             if asset_ref is not None:
@@ -953,6 +960,7 @@ def _resolve_data(
                     quota_usage["used"],
                     expected_trading_dates=interval_expected_dates,
                     latest_observable_date=latest_observable_date,
+                    latest_completed_date=latest_completed_date,
                     latest_pending_session=(
                         latest_pending_session
                         if latest_pending_session is not None
@@ -973,7 +981,7 @@ def _resolve_data(
             selected_provider = provider
             fetched_frames.append(frame)
         cache_frame = merge_daily_history(cached_frame, *fetched_frames)
-        frame = _request_view(cache_frame, request)
+        frame = _request_view(cache_frame, request, latest_completed_date=latest_completed_date)
         quality = validate_daily_history(
             frame, request.fields, start_date=request.start_date, end_date=request.end_date,
             expected_trading_dates=expected_trading_dates,

@@ -485,13 +485,6 @@ class _SelectionPort:
         return dict(self._source)
 
 
-def _knowledge_match(query: str, product_id: str, product: Mapping[str, Any]) -> bool:
-    identity = product.get("identity", {})
-    name = str(identity.get("name_zh", "")).lower() if isinstance(identity, Mapping) else ""
-    if product_id.lower() in query or (name and name in query):
-        return True
-    direction = "看涨" if any(word in query for word in ("上涨", "看涨", "上行", "走高")) else "看跌" if any(word in query for word in ("下跌", "看跌", "下行")) else ""
-    return bool(direction and direction in name)
 
 
 def _optionlist_excerpt(path: Path, product_id: str, fallback: str) -> str:
@@ -634,11 +627,9 @@ def _confirmed_constraints(
 
     from modules.recommender.interaction import merge_confirmed_constraints
 
-    defaults: dict[str, Any] = {
-        "horizon": "3个月",
-        "max_loss": "100%",
-        "principal_fluctuation": True,
-    }
+    # Research assumptions belong to contract preparation. They must not become
+    # user confirmations or authorize a risk tolerance the user never supplied.
+    defaults: dict[str, Any] = {}
     if output_type:
         defaults["output_type"] = output_type
         defaults["format"] = "html"

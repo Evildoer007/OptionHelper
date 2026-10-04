@@ -20,6 +20,7 @@ from ..errors import AuthorizationError, UnavailableCapabilityError, ValidationE
 from ..identity.session_identity import SessionIdentity
 from .runtime_protocol import (
     AgentRun,
+    safe_runtime_value as _safe_value,
     MAX_WORKFLOW_STEPS,
     MAX_WORKFLOW_TOOLS,
     RuntimeEvent,
@@ -74,31 +75,6 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _safe_value(value: object, *, depth: int = 0) -> Any:
-    """Project transport output without reflecting credentials or raw prompts."""
-
-    if depth > 8:
-        return "[truncated]"
-    forbidden = {
-        "secret", "secrets", "password", "credential", "credentials", "apikey",
-        "api_key", "access_token", "authorization", "private_key", "system_prompt",
-        "hidden_reasoning", "reasoning_content",
-    }
-    if isinstance(value, Mapping):
-        result: dict[str, Any] = {}
-        for key, item in value.items():
-            normalized = str(key).casefold().replace("-", "_")
-            if normalized in forbidden or any(marker in normalized for marker in ("secret", "password", "credential", "api_key")):
-                continue
-            result[str(key)] = _safe_value(item, depth=depth + 1)
-        return result
-    if isinstance(value, (list, tuple)):
-        return [_safe_value(item, depth=depth + 1) for item in value[:256]]
-    if isinstance(value, str):
-        return value[:64_000]
-    if value is None or isinstance(value, (bool, int, float)):
-        return value
-    return str(value)[:1_000]
 
 
 class AgentRuntimeController:
@@ -412,7 +388,7 @@ class AgentRuntimeController:
         if self._transport is None:
             raise RuntimeError("AgentRuntime尚未启动")
         result = self._invoke_request(method, params, request_id=request_id)
-        return dict(_safe_value(result))
+        return dict(_safe_value(result, bounded=False))
 
     def _invoke_request(self, method: str, params: Mapping[str, Any], *, request_id: str) -> Mapping[str, Any]:
         fn = getattr(self._transport, "request", None)

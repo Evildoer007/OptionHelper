@@ -859,6 +859,13 @@ function installLayoutControls(shell) {
   };
   const setRailCollapsed = (collapsed, persist = false) => {
     shell.dataset.railCollapsed = String(collapsed);
+    const label = collapsed ? "展开任务栏" : "收起任务栏";
+    shell.querySelectorAll("[data-rail-collapse-toggle]").forEach((button) => {
+      button.setAttribute("aria-expanded", String(!collapsed));
+      button.setAttribute("aria-label", label);
+      button.title = label;
+    });
+    window.webkit?.messageHandlers?.optionhelperSession?.postMessage({type:"workspace_rail_state", collapsed});
     if (collapsed) {
       const accountRoot = shell.querySelector("[data-account-menu-root]");
       const accountMenu = accountRoot?.querySelector(".rail-account-menu");
@@ -881,7 +888,7 @@ function installLayoutControls(shell) {
   applyWidth("report", readStored("report", limits.report.fallback));
   setReportOpen(false);
   setTaskHistoryOpen(false);
-  try { setRailCollapsed(document.documentElement.dataset.nativeShell === "macos" && localStorage.getItem("optionhelper.workspace.railCollapsed") === "true"); } catch { setRailCollapsed(false); }
+  try { setRailCollapsed(localStorage.getItem("optionhelper.workspace.railCollapsed") === "true"); } catch { setRailCollapsed(false); }
   requestAnimationFrame(() => requestAnimationFrame(() => { shell.dataset.layoutReady = "true"; }));
 
   const bindSplitter = (splitter, kind) => {
@@ -939,7 +946,15 @@ function installLayoutControls(shell) {
       trapPanelFocus(event, contextPanel);
     }
   });
-  window.addEventListener("optionhelper:toggle-task-rail", () => setRailCollapsed(shell.dataset.railCollapsed !== "true", true));
+  const toggleTaskRail = () => setRailCollapsed(shell.dataset.railCollapsed !== "true", true);
+  shell.querySelectorAll("[data-rail-collapse-toggle]").forEach((button) => button.addEventListener("click", toggleTaskRail));
+  window.addEventListener("optionhelper:toggle-task-rail", toggleTaskRail);
+  window.addEventListener("keydown", (event) => {
+    if (event.ctrlKey && event.altKey && !event.metaKey && !event.shiftKey && event.key.toLowerCase() === "s") {
+      event.preventDefault();
+      toggleTaskRail();
+    }
+  });
   bindSplitter(railSplitter, "rail");
   bindSplitter(contextSplitter, "report");
   compactReportMedia.addEventListener?.("change", syncResponsivePanels);

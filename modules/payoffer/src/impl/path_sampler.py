@@ -19,6 +19,7 @@ from runtime.contracts.contract_api import (
     ResolvedContract,
 )
 from runtime.contracts.contract_api import bind_term_symbols, evaluate_formula
+from runtime.contracts.contract_engine import counted_observation_key
 
 
 AXIS_VARIABLES = frozenset({"S_T", "r_T", "W_T", "sigma_realized", "n_in"})
@@ -192,6 +193,25 @@ def path_templates(contract: ResolvedContract) -> tuple[CandidateTemplate, ...]:
     if monthly_schedule:
         for level in middle_levels:
             templates.append(CandidateTemplate(f"month-end-mid-{level:g}", ((0.10, level),), terminal_period_end=True))
+    # Ordinal branches can trigger on the very first frozen observation.
+    # Fixed 10%-tenor waypoints miss that state on short/daily schedules.
+    # Append explicit first-observation witnesses; existing templates retain
+    # their priority and every witness still uses the shared evaluator.
+    monitor = contract.terms.get("monitor", {})
+    if isinstance(monitor, Mapping) and any("observation_ordinal" in str(value) for value in monitor.values()):
+        grid = _candidate_frozen_grid(contract)
+        if grid is not None:
+            dates, times = grid
+            first_observation = min(
+                pd.Timestamp(day).normalize()
+                for snapshot in contract.resolved_schedules.values() for day in snapshot["dates"]
+            )
+            positions = np.flatnonzero(dates == first_observation)
+            if len(positions):
+                fraction = float(times[positions[0]]) / float(contract.terms["T"])
+                if fraction < 1.0:
+                    for level in (*lower_levels, *upper_levels):
+                        templates.append(CandidateTemplate(f"first-observation-{level:g}", ((fraction, level),)))
     return tuple(templates)
 
 
@@ -219,8 +239,14 @@ def candidate_path(
     # 收益图横轴只改变终值。候选历史的非终值观察点必须固定，否则改变S_T时会
     # 连带改变tau、累计量和派息次数，把不同路径状态伪装成一条单变量损益曲线。
     # 各模板在其最后一个路标后保持该水平，最后一个观察点才设为横轴终值。
-    anchors_x = np.asarray([0.0, *(fraction for fraction, _ in template.waypoints)], dtype=float)
-    anchors_y = np.asarray([normalized_reference[0], *(level for _, level in template.waypoints)], dtype=float)
+    anchors = [(0.0, float(normalized_reference[0]))]
+    for fraction, level in template.waypoints:
+        if fraction == 0.0:
+            anchors[0] = (0.0, level)
+        else:
+            anchors.append((fraction, level))
+    anchors_x = np.asarray([fraction for fraction, _ in anchors], dtype=float)
+    anchors_y = np.asarray([level for _, level in anchors], dtype=float)
     if len(anchors_x) == 1:
         base = np.full(points, anchors_y[0], dtype=float)
     else:
@@ -465,35 +491,39 @@ def _candidate_frozen_grid(
             )
         )
         lower = pd.Timestamp(contract_start).normalize() if contract_start else _derived_contract_start(first_date, monthly_snapshots)
-        if contract_end:
+        count_key = counted_observation_key(contract.terms)
+        if count_key is not None:
+            expected_observations = int(contract.terms["n_obs"])
+            counted_dates = sorted({
+                pd.Timestamp(item).normalize()
+                for item in contract.resolved_schedules[count_key]["dates"]
+                if pd.Timestamp(item).normalize() >= lower
+            })
+            if len(counted_dates) < expected_observations:
+                raise DomainCompileError("ResolvedContract冻结观察日数量与n_obs不一致，无法生成候选收益路径")
+            # Observation count and cashflow maturity are separate contract facts.
+            # Use the nth registered session even when it falls after cashflow T;
+            # never clip that schedule to the civil settlement date for plotting.
+            upper = counted_dates[expected_observations - 1]
+        elif contract_end:
             upper = pd.Timestamp(contract_end).normalize()
         elif _has_host_frozen_calendar(contract):
-            # Host正式合同必须冻结实际结算日。月度观察日并不必然等于到期日；
-            # 不能为了画图在最后观察日后自行推迟结算日并伪造合同路径。
             raise DomainCompileError("正式ResolvedContract缺少identity.contract_end_date，不能推定收益图结算日")
         else:
             upper = _derived_contract_end(
                 contract, lower, daily_snapshots, monthly_snapshots,
                 terminal_period_end=terminal_period_end,
             )
-        if daily_snapshots and "n_obs" in contract.terms:
-            expected_observations = int(contract.terms["n_obs"])
-            daily_dates = sorted({
-                pd.Timestamp(item).normalize()
-                for snapshot in daily_snapshots
-                for item in snapshot["dates"]
-                if lower <= pd.Timestamp(item).normalize() <= upper
-            })
-            if len(daily_dates) < expected_observations:
-                raise DomainCompileError("ResolvedContract日度冻结观察日数量与n_obs不一致，无法生成候选收益路径")
-            # n_obs是日度观察合同的受控期数，不是自然年内所有交易日的
-            # 上限校验值。Host可能冻结到理论ACT/365到期日的完整日历，
-            # 候选路径仍必须与Pricer和Backtester一样在第n_obs个真实观察日收口。
-            upper = daily_dates[expected_observations - 1]
     except DomainCompileError:
         raise
     except (TypeError, ValueError, KeyError) as error:
         raise DomainCompileError("ResolvedContract合同期限无法确定候选观察日") from error
+    if count_key is not None and len(counted_dates) == 1 and upper == lower:
+        # PricePath has an initial price anchor as well as observed prices.
+        # A singleton schedule can observe on the declared start date; place
+        # only its structural initial anchor before that observation. It is
+        # not added to the frozen schedule and is never a market-data claim.
+        lower = first_date - pd.Timedelta(days=1)
     if upper <= lower:
         raise DomainCompileError("ResolvedContract合同起止日必须严格递增")
     if _requires_maturity_observation(contract):
@@ -656,6 +686,9 @@ def _range_count_path(contract: ResolvedContract, target_count: int) -> PricePat
     values = np.full(len(times), outside / normalized_reference * raw_reference, dtype=float)
     if count:
         values[observation_indices[:count]] = inside / normalized_reference * raw_reference
+    if dates is not None and 0 not in observation_indices:
+        # The initial price anchor is not a contractual range observation.
+        values[0] = raw_reference
     return PricePath.from_values(values, times=times, asset_ids=contract.underlyings, dates=dates)
 
 

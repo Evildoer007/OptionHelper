@@ -10,7 +10,9 @@ from typing import Any, Callable, Mapping
 
 from .models import AuditEvent
 from .ports import AgentPort, AgentStepResult
-from .product_trader_loop import DEFAULT_TERM_KEYS, _controlled_term_overrides
+from .research_session import FinancialFactReferenceError
+from .interaction import requested_comparison_products
+from .product_trader_loop import DEFAULT_TERM_KEYS, TEXT_TERM_KEYS, _controlled_term_overrides, trader_decisions_for_candidates
 
 
 # One source for the model-facing array schema and the Host allowlist.
@@ -26,7 +28,7 @@ STRUCTURER_PLAN_SCHEMA = {
             "modules": {"type": "array", "minItems": 1, "uniqueItems": True,
                         "items": {"type": "string", "enum": list(EVALUATION_MODULES)}},
             "term_overrides": {"type": "object", "additionalProperties": False,
-                "properties": {key: {"type": ["number", "string"]} for key in sorted(DEFAULT_TERM_KEYS)}},
+                "properties": {key: {"type": "string" if key in TEXT_TERM_KEYS else "number"} for key in sorted(DEFAULT_TERM_KEYS)}},
         },
     },
 }
@@ -121,7 +123,10 @@ class AgentReceiptLedger:
         self, role: str, port_role: str, request: Mapping[str, Any], step: AgentStepResult,
     ) -> Mapping[str, Any]:
         self.validate_receipt(role, port_role, request, step)
-        _validate_role_result(role, step.result)
+        if role == "Structurer" and request.get("input", {}).get("phase") == "finalize":
+            _validate_finalized_narratives(step.result, request["input"].get("current_candidates", ()))
+        else:
+            _validate_role_result(role, step.result)
         return dict(step.result)
 
 
@@ -134,6 +139,8 @@ class AgentStepRunner:
     result_validator: Callable[[str, Mapping[str, Any]], None] | None = None
     input_validator: Callable[[], None] | None = None
     catalog_provider: Callable[[str, Mapping[str, Any]], Any] | None = None
+    term_validator: Callable[[str, Mapping[str, Any]], None] | None = None
+    proposal_context_provider: Callable[[str, Mapping[str, Any]], Mapping[str, Any]] | None = None
 
     def __post_init__(self) -> None:
         self.receipt_ledger = AgentReceiptLedger(self.workflow_mode)
@@ -141,6 +148,8 @@ class AgentStepRunner:
     def build_request(self, role: str, payload: Mapping[str, Any]) -> tuple[str, Mapping[str, Any]]:
         if role not in ROLE_RULES:
             raise ValueError(f"未知Agent角色：{role}")
+        if self.input_validator is not None:
+            self.input_validator()
         port_role = role if self.workflow_mode == "multi_agent" else f"SingleAgent.{role}"
         request = {
             "workflow": "optionhelper.recommender",
@@ -148,6 +157,32 @@ class AgentStepRunner:
             "required_output": _required_output(role, payload),
             "input": dict(payload),
         }
+        request["candidate_identity_rule"] = (
+            "每个proposals列表的product_id必须唯一；同一产品只保留一个当前方案，不能为条款变体虚构产品编号。"
+            "term_overrides只能使用proposal_term_context中该product_id的registered_parameters；不同产品的字段不能互用。n_C/n_P只适用于明确登记该字段的产品，不能给价差结构添加单腿数量参数；数值用JSON数字。"
+            "用户未锁定数量且未要求全额覆盖时，可提出较小的买入腿数量并解释参与率与保护缺口，不能谎称全额覆盖或实际市场成交。"
+            "research阶段和Moderator合并时必须完整保留所选已登记候选的term_overrides，不可只在文字中改变行权价或覆盖比例。"
+        )
+        from .constraint_ranking import confirmed_risk_constraints
+        case_constraints = payload.get("case", {}).get("confirmed_constraints", {}) if isinstance(payload.get("case"), Mapping) else {}
+        constraints = payload.get("confirmed_constraints", case_constraints)
+        request["confirmed_risk_limits"] = confirmed_risk_constraints(constraints if isinstance(constraints, Mapping) else {})
+        request["hard_constraint_rule"] = (
+            "硬约束仅取confirmed_risk_limits中当前用户已确认的条件；缺少的条件不得自行添加。"
+            "不追加保证金不等于仅买入期权腿。只有allow_short_legs=false时才要求long_only_legs=1；"
+            "没有这一限制时，不能因候选含卖出腿而称其违反用户硬约束。"
+            "已确认的限制不可降级为待确认风险。"
+            "计算前可列明待核实项，计算后不合格者必须排除。合同风险取contract_loss_bound，"
+            "追加保证金取margin_call，只有long_only_legs=1才证明仅买入期权腿。"
+            "这些指标缺失表示尚未证明，不能用历史样本最差收益替代合同亏损上界。"
+        )
+        request["capital_scope_rule"] = (
+            "本金或名义本金是金额与风险比例的基准，不自动等于全部支付权利金、资金必须全部占用或要求全额覆盖。"
+            "只有用户明确要求时才加入全额投入、最低参与率或全额覆盖限制；不得为了判定无可行方案自行增加这些限制。"
+            "可在产品登记的数量参数内提出资金使用方案，但必须披露数量倍数、权利金、剩余资金与覆盖缺口，不能暗改名义本金。"
+            "某个默认条款不合格不等于整个产品库均不可行；先检查有依据的可调条款和其他结构，不为凑方案放宽已确认约束。"
+            "可以接受收益封顶是允许封顶，不是要求必须封顶；许可条件不能擅自升级为排他性硬约束。"
+        )
         request["evidence_usage_rule"] = (
             "evidence是产品资料，research_evidence是计算证据，两者不能混用。"
             "候选引用产品资料的evidence_id；计算结论引用有效FactRef。"
@@ -201,6 +236,16 @@ class AgentStepRunner:
                 "不要求未运行计算的FactRef，不启动收益分析、定价或回测；理论判断不得称为已验证报价。"
                 "不得新增产品、修改条款或编造金融数值；rank_adjustment按ranking_contract表达排序意见。"
             )
+        if role == "Specifier":
+            from .constraint_ranking import METRIC_SOURCES, SUPPORTED_OPERATORS
+            request["ranking_metrics"] = dict(METRIC_SOURCES)
+            request["ranking_spec_rule"] = (
+                "硬约束与排序只能使用ranking_metrics中的指标名；不得用别名或自创指标。"
+                "合同到期最大损失使用contract_loss_bound，不使用历史样本最差收益。"
+                "sort_keys逐项包含metric、direction（asc或desc）、missing_policy（exclude、first或last）；"
+                "hard_constraints按指标名映射operator与value，operator仅可为"
+                + ",".join(sorted(SUPPORTED_OPERATORS)) + "。只保留用户要求的排序指标。"
+            )
         if role == "Structurer":
             request["output_schema"] = {
                 "type": "object", "required": ["research_queries", "proposals", "evaluation_plan"],
@@ -220,11 +265,61 @@ class AgentStepRunner:
             # No financial plan is needed to compare product-library evidence.
             request["required_output"]["evaluation_plan"] = []
             request["output_schema"]["properties"]["evaluation_plan"] = {"type": "array", "maxItems": 0}
+        if role == "Structurer" and payload.get("phase") == "finalize":
+            candidate_ids = [item["candidate_id"] for item in payload.get("current_candidates", ())]
+            narrative_fields = {"reason": {"type": "string", "minLength": 1}, **{
+                key: {"type": "array", "items": {"type": "string"}}
+                for key in ("suitable_for", "not_suitable_for", "main_risks", "missing_inputs")}}
+            request["required_output"] = {"candidate_narratives": [{
+                "candidate_id": candidate_id, "reason": "string", "suitable_for": "string[]",
+                "not_suitable_for": "string[]", "main_risks": "string[]", "missing_inputs": "string[]",
+            } for candidate_id in candidate_ids]}
+            request["output_schema"] = {"type": "object", "additionalProperties": False,
+                "required": ["candidate_narratives"], "properties": {"candidate_narratives": {
+                    "type": "array", "minItems": len(candidate_ids), "maxItems": len(candidate_ids),
+                    "items": {"type": "object", "additionalProperties": False,
+                        "required": ["candidate_id", *narrative_fields],
+                        "properties": {"candidate_id": {"type": "string", "enum": candidate_ids}, **narrative_fields}}}}}
+        if (self.proposal_context_provider is not None
+            and role in {"Structurer", "Generator", "Matcher", "Hedger", "Moderator", "Selector"}
+            and payload.get("phase") != "finalize"):
+            request["proposal_term_context"] = self.proposal_context_provider(role, request)
+        if role in {'Generator', 'Structurer', 'Selector'} and not payload.get('phase'):
+            prompt = payload.get('case', {}).get('prompt', '')
+            catalog = self.catalog_provider(role, request) if self.catalog_provider else payload.get('evidence', ())
+            scope = requested_comparison_products(prompt, catalog or ())
+            if scope:
+                request['comparison_subjects'] = scope
+                request['comparison_rule'] = ('逐项提出用户点名的比较产品，不能自行遗漏或用允许收益封顶排除买入看涨。'
+                    '可行条款未确定时明确说明缺口；已授权研究假设或部分投入时先检查登记参数与quantity_bound。'
+                    '不把市场报价缺失误写为产品库缺失，不虚构满足预算。')
         return port_role, request
 
     def validate_output(self, role, request, result):
+        if self.input_validator is not None:
+            self.input_validator()
         catalog = self.catalog_provider(role, request) if self.catalog_provider else None
+        if callable(self.term_validator) and isinstance(result, Mapping):
+            errors = []
+            for collection in ("proposals", "evaluation_plan"):
+                rows = result.get(collection, ())
+                if not isinstance(rows, (list, tuple)):
+                    continue
+                for row in rows:
+                    if not isinstance(row, Mapping) or not isinstance(row.get("product_id"), str) or not isinstance(row.get("term_overrides", {}), Mapping):
+                        continue
+                    try:
+                        self.term_validator(row["product_id"], row.get("term_overrides", {}))
+                    except ValueError as error:
+                        errors.append(str(error))
+            if errors:
+                raise _InvalidProductTerms("；".join(dict.fromkeys(errors)))
         _validate_request_result(role, request, result, catalog_evidence=catalog)
+        expected = set(request.get('comparison_subjects', {}))
+        if expected and isinstance(result.get('proposals'), list):
+            missing = expected-{row['product_id'] for row in result['proposals']}
+            if missing:
+                raise _MissingComparisonCandidate('遗漏用户点名的比较产品：'+','.join(sorted(missing)))
 
     def accept(
         self,
@@ -248,10 +343,37 @@ class AgentStepRunner:
                           detail=audit_detail)
         return dict(result)
 
-    def _repair_output_once(
-        self, role: str, port_role: str, request: Mapping[str, Any], step: AgentStepResult,
-    ) -> tuple[Mapping[str, Any], AgentStepResult]:
-        # Receipt errors are not model-format errors and must never trigger repair.
+    def _validate_repairable_result(self, role, request, result):
+        self.validate_output(role, request, result)
+        if self.result_validator is not None:
+            self.result_validator(role, result)
+
+    def _repair_output(self, role, port_role, request, step):
+        """Allow a newly exposed validation category one correction, at most twice.
+
+        Reference validation precedes product-term validation. Correcting a bad
+        reference must not exhaust the only opportunity to fix an independent
+        term-schema error that was hidden behind it. Repeated errors stop here.
+        """
+        repaired_categories = set()
+        for _ in range(2):
+            self._validate_step_receipt(role, port_role, request, step)
+            try:
+                self._validate_repairable_result(role, request, step.result)
+            except ValueError as error:
+                category = type(error)
+                if category in repaired_categories:
+                    break
+                if repaired_categories and category not in {_UnknownEvidenceReference, _InvalidProductTerms, FinancialFactReferenceError, _MissingComparisonCandidate}:
+                    break
+                repaired_categories.add(category)
+                request, step = self._repair_output_once(role, port_role, request, step)
+            else:
+                break
+        return request, step
+
+    def _validate_step_receipt(self, role, port_role, request, step):
+        """Reject and record invalid receipts before any model-output repair."""
         try:
             self.receipt_ledger.validate_receipt(role, port_role, request, step)
         except Exception as error:
@@ -259,14 +381,18 @@ class AgentStepRunner:
                               input_value=request, output_value=None,
                               detail={"error_type": type(error).__name__, "message": str(error)})
             raise
-        if self.input_validator is not None:
-            self.input_validator()
+
+    def _repair_output_once(
+        self, role: str, port_role: str, request: Mapping[str, Any], step: AgentStepResult,
+    ) -> tuple[Mapping[str, Any], AgentStepResult]:
+        # Receipt errors are not model-format errors and must never trigger repair.
+        self._validate_step_receipt(role, port_role, request, step)
         try:
-            self.validate_output(role, request, step.result)
+            self._validate_repairable_result(role, request, step.result)
         except ValueError as error:
             original = deepcopy(step.result)
-            # Repair only the failing role's wire format. Receipt, authority
-            # and financial-evidence validation still happen in accept().
+            # Correct the failing output category without changing receipt or
+            # authority. Final acceptance repeats every strict validation.
             self.audit.append(role.lower(), "invalid_output", agent_role=port_role,
                               input_value=request, output_value=None,
                               detail={"message": str(error), "repair_attempt": 1})
@@ -276,19 +402,70 @@ class AgentStepRunner:
                 "invalid_result": original,
                 "instruction": "按required_output及output_schema重新返回完整result，补齐必填字段；数组必须为JSON数组。仅修复输出格式，不调用业务工具，不新增候选或修改条款，不编造金融事实。",
             }}
+            if isinstance(error, _InvalidProductTerms):
+                request["validation_feedback"]["instruction"] = (
+                    "按具体校验错误修正当前候选的条款参数，再返回完整result。只能使用当前产品的登记字段，"
+                    "不能新增或替换产品，不改用户已确认条件，不调用计算工具。若用户允许部分覆盖，可调整未锁定数量以满足预算；"
+                    "不能把改写合同权利金说成取得实际市场报价。无法满足时明确说明，不编造可行性。"
+                )
             if isinstance(error, _UnknownEvidenceReference):
                 # Include the whole role-visible catalogue: feedback for only the
                 # first invalid proposal leaves later products without repair context.
                 catalog = self.catalog_provider(role, request) if self.catalog_provider else request.get("input", {}).get("evidence", ())
                 request["validation_feedback"]["allowed_product_evidence"] = [
-                    dict(item) for item in (catalog or ())
+                    {key: item[key] for key in ('evidence_id', 'product_id', 'source', 'section', 'library_status')
+                     if key in item} for item in (catalog or ())
                     if isinstance(item, Mapping) and item.get("evidence_id")
                 ]
                 request["validation_feedback"]["instruction"] = (
                     "逐项检查全部候选，只纠正evidence_ref_ids中的错误编号。只从allowed_product_evidence中该product_id的资料选择，完整复制evidence_id；不能使用计算结果编号。"
                     "其他字段、候选顺序、条款、数值和正文必须完全保留，不调用业务工具。"
                 )
+            if isinstance(error, _MissingComparisonCandidate):
+                request['validation_feedback']['instruction'] = (
+                    '补齐comparison_subjects中遗漏产品的完整提案，保留已返回产品及其条款，使用本次产品资料。'
+                    '依据proposal_term_context中的登记字段、数量上界与用户授权形成拟议条款，明确其为研究假设。'
+                    '不得放宽预算、编造价格或计算数值；确实缺少条件时在missing_inputs列明，不能伪称已满足预算。')
+            if isinstance(error, FinancialFactReferenceError):
+                if not error.available_facts:
+                    raise
+                request['validation_feedback'].update(
+                    candidate_id=error.candidate_id, invalid_fact_refs=error.invalid_refs,
+                    allowed_financial_facts=error.available_facts,
+                    instruction='仅纠正当前候选的used_fact_refs与对应reason。逐字使用allowed_financial_facts中的有效fact_ref及其事实；'
+                                '不得将payload_ref、产品资料或其他候选引用作为FactRef，不得凭空增加数值。'
+                                '不改变候选、顺序、decision、条款、排名或其他字段，不调用计算工具。')
+            if isinstance(error, _UnknownEvidenceReference):
+                # Freeze every non-reference field in the correction schema.
+                # The original proposal is the correction template, rather
+                # than a generic role sample that invites narrative rewriting.
+                template = deepcopy(original)
+                allowed = request['validation_feedback']['allowed_product_evidence']
+                rows = []
+                for row in template.get('proposals', ()):
+                    references = [item['evidence_id'] for item in allowed
+                                  if item.get('product_id') == row['product_id']]
+                    rows.append({'type': 'object', 'additionalProperties': False,
+                        'required': list(row), 'properties': {
+                            key: {'type': 'array', 'minItems': 1, 'uniqueItems': True,
+                                  'items': {'type': 'string', 'enum': references}}
+                            if key == 'evidence_ref_ids' else {'const': value}
+                            for key, value in row.items()}})
+                request['required_output'] = template
+                request['output_schema'] = {'type': 'object', 'additionalProperties': False,
+                    'required': list(template), 'properties': {
+                        key: {'type': 'array', 'prefixItems': rows,
+                              'minItems': len(rows), 'maxItems': len(rows), 'items': False}
+                        if key == 'proposals' else {'const': value}
+                        for key, value in template.items()}}
             step = self.port.run_step(port_role, request)
+            if isinstance(error, FinancialFactReferenceError):
+                if _without_financial_reference_text(original, error.candidate_id) != _without_financial_reference_text(step.result, error.candidate_id):
+                    raise ValueError('金融事实引用修复改变了候选或决策，拒绝采用')
+                for field in ('evaluations', 'branch_results'):
+                    for row in step.result.get(field, ()):
+                        if row.get('candidate_id') == error.candidate_id and not row.get('used_fact_refs'):
+                            raise ValueError('金融事实引用修复不得清空证据')
             if isinstance(error, _UnknownEvidenceReference):
                 if _without_proposal_reference_ids(original) != _without_proposal_reference_ids(step.result):
                     raise ValueError("证据编号修复改变了候选内容，拒绝采用")
@@ -297,7 +474,7 @@ class AgentStepRunner:
     def run(self, role: str, payload: Mapping[str, Any]) -> Mapping[str, Any]:
         port_role, request = self.build_request(role, payload)
         step = self.port.run_step(port_role, request)
-        request, step = self._repair_output_once(role, port_role, request, step)
+        request, step = self._repair_output(role, port_role, request, step)
         return self.accept(role, port_role, request, step)
 
     def run_named(self, payloads: Mapping[str, Mapping[str, Any]]) -> Mapping[str, Mapping[str, Any]]:
@@ -330,7 +507,7 @@ class AgentStepRunner:
             normalized: dict[str, Mapping[str, Any]] = {}
             for role, request in requests.items():
                 step = results[port_roles[role]]
-                request, step = self._repair_output_once(role, port_roles[role], request, step)
+                request, step = self._repair_output(role, port_roles[role], request, step)
                 result = self.accept(role, port_roles[role], request, step,
                                      audit_detail={"independent_agent_run": True})
                 normalized[role] = dict(result)
@@ -364,7 +541,7 @@ def _required_output(role: str, payload: Mapping[str, Any] | None = None) -> Map
                 "product_id": "string", "product_name": "string|null", "underlyings": "string[]",
                 "reason": "string", "suitable_for": "string[]", "not_suitable_for": "string[]",
                 "main_risks": "string[]", "library_status": "ready|partial|conflict|unavailable",
-                "evidence_ref_ids": "string[]", "missing_inputs": "string[]",
+                "evidence_ref_ids": "string[]", "missing_inputs": "string[]", "term_overrides": "object",
             }]
         }
     if role == "Structurer":
@@ -374,7 +551,7 @@ def _required_output(role: str, payload: Mapping[str, Any] | None = None) -> Map
                 "product_id": "string", "product_name": "string|null", "underlyings": "string[]",
                 "reason": "string", "suitable_for": "string[]", "not_suitable_for": "string[]",
                 "main_risks": "string[]", "library_status": "ready|partial|conflict|unavailable",
-                "evidence_ref_ids": "string[]", "missing_inputs": "string[]",
+                "evidence_ref_ids": "string[]", "missing_inputs": "string[]", "term_overrides": "object",
             }],
             "evaluation_plan": [{
                 "product_id": "string", "modules": ["payoffer"], "term_overrides": "object",
@@ -422,7 +599,7 @@ def _required_output(role: str, payload: Mapping[str, Any] | None = None) -> Map
                 "product_id": "string", "product_name": "string|null", "underlyings": "string[]",
                 "reason": "string", "suitable_for": "string[]", "not_suitable_for": "string[]",
                 "main_risks": "string[]", "library_status": "ready|partial|conflict|unavailable",
-                "evidence_ref_ids": "string[]", "missing_inputs": "string[]",
+                "evidence_ref_ids": "string[]", "missing_inputs": "string[]", "term_overrides": "object",
             }],
             "reviews": [{
                 "product_id": "string", "hard_reject": "boolean", "rejection_reason": "string|null",
@@ -448,8 +625,16 @@ def _without_proposal_reference_ids(result):
 
 
 def _validate_request_result(role: str, request: Mapping[str, Any], value: object, *, catalog_evidence=None) -> None:
-    _validate_role_result(role, value)
     domain_input = request.get("input", {})
+    if role == "Structurer" and domain_input.get("phase") == "finalize":
+        _validate_finalized_narratives(value, domain_input.get("current_candidates", ()))
+        return
+    _validate_role_result(role, value)
+    if role == "Trader" and "round" in domain_input and not domain_input.get("comparison_only"):
+        expected = {plan["candidate"]["candidate"]["candidate_id"]:
+                    plan["candidate"]["candidate"]["product_id"]
+                    for plan in domain_input["round"].get("plans", ())}
+        trader_decisions_for_candidates(value, expected)
     evidence = catalog_evidence if catalog_evidence is not None else domain_input.get("evidence")
     if isinstance(evidence, (list, tuple)) and (evidence or catalog_evidence is not None) and isinstance(value.get("proposals"), list):
         known = {item["evidence_id"] for item in evidence
@@ -467,6 +652,10 @@ def _validate_request_result(role: str, request: Mapping[str, Any], value: objec
                     f"产品{row.get('product_id')}引用了本次输入中不存在的证据编号：{unknown}。"
                     f"本产品可用编号：{available}。这不是产品资料缺失。"
                 )
+    if role == "Generator" and domain_input.get("phase") == "preflight_repair":
+        allowed = set(domain_input.get("allowed_product_ids", ()))
+        if any(row["product_id"] not in allowed for row in value.get("proposals", ())):
+            raise ValueError("计算前修订只能修改当前被拒绝的产品，不能新增产品或改写已保留候选")
     if role == "Structurer" and domain_input.get("phase") == "rework":
         allowed = {item["product_id"] for item in domain_input.get("current_candidates", ())}
         actual = [item["product_id"] for item in value.get("evaluation_plan", ())]
@@ -512,15 +701,22 @@ def _validate_role_result(role: str, value: object) -> None:
     if role in {"Selector", "Matcher", "Hedger"}:
         _closed_fields(value, {"proposals"}, role)
         proposals = _array_field(value, "proposals")
+        products = [row.get("product_id") for row in proposals if isinstance(row, Mapping)]
+        if len(products) != len(set(products)):
+            raise ValueError("proposals中的product_id不得重复。同一产品只保留一个当前方案，合并比较理由；不能虚构新产品编号。")
         for proposal in proposals:
             if not isinstance(proposal, Mapping):
                 raise ValueError("Selector.proposals必须为对象数组")
             _closed_fields(
                 proposal,
-                {"product_id", "product_name", "underlyings", "reason", "suitable_for", "not_suitable_for", "main_risks", "library_status", "evidence_ref_ids", "missing_inputs"},
+                {"product_id", "product_name", "underlyings", "reason", "suitable_for", "not_suitable_for", "main_risks", "library_status", "evidence_ref_ids", "missing_inputs", "term_overrides"},
                 "Selector.proposal",
             )
             _nonempty_text(proposal.get("product_id"), "Selector.proposal.product_id")
+            if "term_overrides" in proposal:
+                terms = proposal["term_overrides"]
+                _controlled_term_overrides(proposal["term_overrides"], allowed_term_keys=DEFAULT_TERM_KEYS,
+                                          field_name="proposal.term_overrides")
             product_name = proposal.get("product_name")
             if product_name is not None and not isinstance(product_name, str):
                 raise ValueError("Selector.proposal.product_name必须为字符串或null")
@@ -737,3 +933,42 @@ def _missing_output_fields(value, schema, path="result"):
         for index, item in enumerate(value):
             missing.extend(_missing_output_fields(item, schema[0], f"{path}[{index}]"))
     return missing
+
+
+def _validate_finalized_narratives(value, candidates):
+    """Allow text refresh only; the verified contract and evidence stay immutable."""
+    if not isinstance(value, Mapping):
+        raise ValueError("Structurer.finalize必须返回对象")
+    _closed_fields(value, {"candidate_narratives"}, "Structurer.finalize")
+    rows = _array_field(value, "candidate_narratives")
+    actual = []
+    for row in rows:
+        if not isinstance(row, Mapping):
+            raise ValueError("candidate_narratives必须为对象数组")
+        _closed_fields(row, {"candidate_id", "reason", "suitable_for", "not_suitable_for", "main_risks", "missing_inputs"}, "candidate_narrative")
+        _nonempty_text(row.get("candidate_id"), "candidate_id")
+        _nonempty_text(row.get("reason"), "reason")
+        for key in ("suitable_for", "not_suitable_for", "main_risks", "missing_inputs"):
+            _strings_value(row.get(key), key)
+        actual.append(row["candidate_id"])
+    expected = {row["candidate_id"] for row in candidates}
+    if len(actual) != len(set(actual)) or set(actual) != expected:
+        raise ValueError(f"文字定稿只能覆盖当前候选{sorted(expected)}，每个恰好一次；收到{actual}。删除其他候选，仅保留当前候选说明。")
+
+
+class _InvalidProductTerms(ValueError):
+    """A proposal violates registered parameters or an explicit user limit."""
+
+
+def _without_financial_reference_text(value, candidate_id):
+    result = deepcopy(value)
+    for field in ('evaluations', 'branch_results'):
+        for row in result.get(field, ()):
+            if row.get('candidate_id') == candidate_id:
+                row.pop('used_fact_refs', None)
+                row.pop('reason', None)
+    return result
+
+
+class _MissingComparisonCandidate(ValueError):
+    """A named comparison cannot silently discard a product before evaluation."""

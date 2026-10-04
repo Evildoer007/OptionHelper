@@ -64,11 +64,39 @@ function modelMessages(messages: readonly AgentMessage[]): JsonValue[] {
   for (const message of messages) for (const block of message.content) {
     if (block.type === "tool-call" && !block.name.trim()) invalidIds.add(block.id)
   }
-  return messages.filter(message => !(message.role === "tool" && invalidIds.has(message.toolCallId ?? "")))
+  const cleaned = messages.filter(message => !(message.role === "tool" && invalidIds.has(message.toolCallId ?? "")))
     .map(message => ({ ...message, content: message.content.filter(block =>
       block.type !== "tool-call" || !invalidIds.has(block.id)) }))
     .filter(message => message.content.length > 0)
-    .map(wireMessage)
+  const projected: AgentMessage[] = []
+  const pending = new Set<string>()
+  const closeInterruptedBatch = () => {
+    for (const id of pending) projected.push({
+      id: `interrupted-tool-${id}`, role: "tool", toolCallId: id,
+      content: [{ type: "text", text: JSON.stringify({
+        status: "interrupted",
+        message: "上次工具调用未取得持久化结果，执行状态未知。不能据此认定成功；继续前请核对已有结果。",
+      }) }],
+    })
+    pending.clear()
+  }
+  // A stop or process exit can leave a persisted assistant call without its
+  // reply. Repair only the model projection, preserving the original audit log.
+  // Every tool batch must finish before a new user/assistant message begins.
+  for (const message of cleaned) {
+    if (message.role === "tool") {
+      if (!pending.delete(message.toolCallId ?? "")) continue
+      projected.push(message)
+      continue
+    }
+    closeInterruptedBatch()
+    projected.push(message)
+    if (message.role === "assistant") for (const block of message.content) {
+      if (block.type === "tool-call") pending.add(block.id)
+    }
+  }
+  closeInterruptedBatch()
+  return projected.map(wireMessage)
 }
 
 function latestUserText(messages: readonly AgentMessage[]): string {

@@ -16,7 +16,8 @@ _TEMPLATE = re.compile(r'(?<![A-Za-z])(multireport|multicard|report|card|quote)(
 
 _NEGATED_DELIVERY = re.compile(
     r'(?:不需要|不必|不要|不用|无需|暂不|先不|不)(?:再|重新)?'
-    r'(?:生成|导出|下载|输出|制作|提供|给我|报告|简报|报价表|html|pdf|word|docx)', re.I)
+    r'(?:(?:计算|定价|估值|回测)(?:、|或|和|及|与|以及))*'
+    r'(?:生成|导出|下载|输出|制作|提供|给我|报告|简报|报价表|报价单|html|pdf|word|docx)', re.I)
 
 def delivery_request(text):
     text = str(text or '').strip()
@@ -26,13 +27,25 @@ def delivery_request(text):
     # A separate affirmative clause still permits e.g. 不要PDF，生成HTML报告.
     text = '，'.join(clause for clause in re.split(r'[，,。；;！!\n]|但是|但|而是', text)
                     if not _NEGATED_DELIVERY.search(clause))
-    templates = list(dict.fromkeys(match.group(1).lower() for match in _TEMPLATE.finditer(text)))
     template_match = _TEMPLATE.search(text)
-    file_word = re.search(r'报告|简报|报价表|html|pdf|word|docx', text, re.I)
+    file_word = re.search(r'报告|简报|报价表|报价单|参考报价|html|pdf|word|docx', text, re.I)
     action = re.search(r'生成|导出|下载|给我|给一|再给|改成|转成|整理成|输出|制作|做一', text)
     if (not file_word and not template_match) or (not action and text.lower() not in {'card','report','quote','multicard','multireport'}):
         return None
-    template = template_match.group(1).lower() if template_match else ('quote' if '报价' in text else 'card' if '简报' in text else 'report')
+    public_kinds = [(match.start(), {'报告': 'report', '简报': 'card', '报价表': 'quote', '报价单': 'quote', '参考报价': 'quote'}[match.group()])
+                    for match in re.finditer(r'报价表|报价单|参考报价|简报|报告', text)]
+    # Public Chinese names and template identifiers express the same request.
+    # Preserve their order instead of retaining only the last Chinese family.
+    named_kinds = [(match.start(), match.end(), match.group(1).lower())
+                   for match in _TEMPLATE.finditer(text)]
+    for position, kind in public_kinds:
+        alias = any(end <= position and named.removeprefix('multi') == kind
+                    and text[end:position].strip() in {'', '研究'}
+                    for _, end, named in named_kinds)
+        if not alias:
+            named_kinds.append((position, position, kind))
+    templates = list(dict.fromkeys(kind for _, _, kind in sorted(named_kinds)))
+    template = templates[-1] if templates else 'report'
     if len(templates) <= 1 and re.search(r'(?:多|两|双|[2-9])(?:个|款|种)?(?:产品|结构)|(?:产品|结构)(?:横向)?对比', text) and template in {'card','report'}:
         template = 'multi' + template
     formats = list(re.finditer(r'html|pdf|word|docx', text, re.I))
@@ -40,7 +53,9 @@ def delivery_request(text):
     return {'template': template, 'templates': templates if len(templates) > 1 else [template],
             'multiple': len(templates) > 1, 'format': 'docx' if fmt == 'word' else fmt,
             'formats': list(dict.fromkeys('docx' if m.group().lower() == 'word' else m.group().lower() for m in formats)) or ['html'],
-            'export_only': bool(re.search(r'再给|改成|转成|导出|下载', text)) and not bool(re.search(r'推荐|重新生成', text))}
+            'export_only': bool(re.search(r'再给|改成|转成|导出|下载', text)) and not bool(re.search(
+                r'推荐|重新生成|多智能体|(?:继续|完成|重新).{0,20}(?:研究|分析)|'
+                r'(?:生成|制作|撰写|编写|整理).{0,80}(?:报告|简报|交付)', text))}
 
 
 def requested_analysis_modules(text):
@@ -74,23 +89,38 @@ def requested_analysis_modules(text):
 
 
 def existing_results_only(text):
-    """Explicitly reuse completed runs without authorizing another calculation."""
-    return bool(re.search(
-        r'(?:不|不要|无需|不用)(?:再|重新|额外|重跑)(?:进行|执行|运行)?计算'
-        r'|(?<!不要)(?<!不用)(?<!不)(?:仅|只)(?:需|要)?(?:使用|复用|采用|整理)已有(?:的)?(?:计算)?结果',
-        str(text or '')))
+    """Follow the latest explicit reuse or calculation instruction."""
+    text = str(text or '')
+    reuse = re.compile(
+        r'(?:仅|只|直接|就)?(?:需|要)?(?:使用|复用|采用|整理|沿用|用)'
+        r'(?:本(?:任务|轮)(?:的)?)?(?:已有|现有|已完成|已计算)(?:的)?'
+        r'(?:计算|研究|分析)?结果')
+    calculation = re.compile(
+        r'(?:需要|要|请|重新|继续|补做|补充|再|执行|进行|运行|重跑)'
+        r'\s*(?:再|重新|继续)?(?:做|进行|执行|运行)?(?:计算|定价|估值|回测|收益分析)')
+    actions = []
+    for pattern, kind in ((reuse, 'reuse'), (calculation, 'calculation')):
+        for match in pattern.finditer(text):
+            prefix = re.split(r'[，,。；;！？!?\n]|但是|但|而是|改为', text[:match.start()])[-1]
+            negated = bool(re.search(
+                r'(?:不要|不用|无需|无须|不必|不需要|不想|不能|别|不)\s*(?:再|直接|仅|只)?\s*$', prefix))
+            actions.append((match.end(), kind == 'reuse' and not negated
+                            or kind == 'calculation' and negated))
+    return max(actions, default=(0, False), key=lambda row: row[0])[1]
 
 
 def required_delivery_modules(text, template, *, has_recommendation=False):
-    """One coverage policy for tool calls, model fallback and draft admission."""
-    explicit = requested_analysis_modules(text)
+    """Use one coverage policy; explicit prohibitions survive report defaults."""
+    from runtime.research_policy import blocked_research_modules
+    explicit = set(requested_analysis_modules(text))
     if template == 'quote':
-        return tuple(module for module in ('payoffer', 'pricer', 'backtester')
-                     if module in explicit or module == 'pricer')
+        explicit.add('pricer')
     draft = bool(re.search(r'(?<!不要)(?<!不生成)草稿|只(?:需|要).{0,8}(?:整理|文字)|(?:不|无需|不用|暂不)(?:需要|进行|执行|做)?计算', str(text)))
     if has_recommendation and template in {'card', 'report', 'multicard', 'multireport'} and not draft:
-        return ('payoffer', 'pricer', 'backtester')
-    return explicit
+        explicit.update(('payoffer', 'pricer', 'backtester'))
+    prohibited = blocked_research_modules(text)
+    return tuple(module for module in ('payoffer', 'pricer', 'backtester')
+                 if module in explicit and module not in prohibited)
 
 
 def _document_markdown(content):

@@ -21,7 +21,7 @@ from ..errors import AuthorizationError, UnavailableCapabilityError, ValidationE
 from ..identity.session_identity import SessionIdentity
 from ..settings.settings_models import ModelSelection
 from ..report_delivery import delivery_request
-from .redaction import has_hidden_reasoning, redact_text
+from .redaction import has_hidden_reasoning, redact_text, INTERNAL_REFERENCE_PATTERN
 from .durability_checkpoint import DurabilityCheckpointStore, stable_operation_id
 from .session_context import SessionId
 
@@ -29,13 +29,7 @@ from .session_context import SessionId
 _ACTIONS = frozenset({"final", "ask_user", "call_tool"})
 _FORBIDDEN_DECISION_KEYS = frozenset({"reasoning", "chain_of_thought", "analysis", "secret", "api_key", "token"})
 _SECRET_TEXT = ("sk-", "access_token", "refresh_token", "api_key", "password", "bearer ")
-_INTERNAL_TEXT = re.compile(
-    r"(?i)(reporter\.run|runref|source_id|module_run_ref|report_run_ref|data_asset_ref|"
-    r"contract_ref|candidate_id|task_id|artifact_manifest|manifest\.json|文件路径|"
-    r"resolved_?contract|caller_?context|host_?context|module_?host_?context|tool_?gateway|"
-    r"catalog_version|analysis_case_id|principal_id|request_id|tenant_id|"
-    r"capability_manifest|\brecommender\b|\bhost\b)"
-)
+_INTERNAL_TEXT = INTERNAL_REFERENCE_PATTERN
 _REPORT_MODULE_LABELS = {
     "payoff": "收益结构",
     "pricing": "估值定价",
@@ -271,12 +265,7 @@ class AgentLoop:
                         if error.capability == "natural_conversation_agent":
                             pass
                         else:
-                            return _result(
-                                "unavailable",
-                                f"当前无法继续：{_safe_error(error)}",
-                                observations,
-                                round_number,
-                            )
+                            return _unavailable_result(error, identity, observations, round_number)
                     except (AuthorizationError, ValidationError, ValueError) as error:
                         return _result(
                             "unavailable",
@@ -327,14 +316,9 @@ class AgentLoop:
                 if checkpoint is not None:
                     self._dispatch_checkpoints.succeeded(checkpoint)
             except (UnavailableCapabilityError, AuthorizationError, ValidationError, ValueError) as error:
-                return _result(
-                    "unavailable",
-                    f"当前无法继续：{_safe_error(error)}",
-                    observations,
-                    round_number,
-                    error_capability=error.capability if isinstance(error, UnavailableCapabilityError) else None,
-                    error_next_step=error.next_step if isinstance(error, UnavailableCapabilityError) else None,
-                )
+                if isinstance(error, UnavailableCapabilityError):
+                    return _unavailable_result(error, identity, observations, round_number)
+                return _result("unavailable", f"当前无法继续：{_safe_error(error)}", observations, round_number)
             except Exception:  # model adapters must not leak internals to the user
                 return _result("unavailable", "当前模型服务未返回可用决策。", observations, round_number)
 
@@ -1171,6 +1155,23 @@ def _contains_sensitive_key(value: object) -> bool:
 
 def _has_failure(observations: list[dict[str, Any]]) -> bool:
     return any(item.get("status") in {"failed", "partial", "unsupported", "cancelled", "timed_out", "unavailable"} for item in observations)
+
+
+def _unavailable_result(
+    error: UnavailableCapabilityError,
+    identity: SessionIdentity,
+    observations: list[dict[str, Any]],
+    rounds: int,
+) -> dict[str, Any]:
+    """Preserve actionable Host failures across both conversation engines."""
+    capability = redact_text(error.capability, identity, limit=240).strip()
+    next_step = redact_text(error.next_step, identity, limit=1_000).strip()
+    capability = capability or "相关能力"
+    next_step = next_step or "请检查设置后重试。"
+    return _result(
+        "unavailable", f"{capability}当前不可用。{next_step}", observations, rounds,
+        error_capability=capability, error_next_step=next_step,
+    )
 
 
 def _safe_error(error: Exception) -> str:

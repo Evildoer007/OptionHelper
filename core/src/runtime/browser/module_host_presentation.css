@@ -43,6 +43,8 @@ html[data-optionhelper-app-hosted="true"] {
   --wash: var(--color-blue-gray-soft);
   --font: var(--font-sans);
   --mono: var(--font-sans);
+  --oh-module-toolbar-height: 56px;
+  --oh-module-toolbar-control-height: 32px;
   --oh-type-panel-title: 700 18px/1.28 var(--font);
   --oh-type-result-title: 700 22px/1.28 var(--font);
   --oh-type-workspace-title: 650 16px/1.35 var(--font);
@@ -1005,8 +1007,101 @@ html[data-optionhelper-app-hosted="true"] :is(
   background: var(--paper) !important;
 }
 
-html[data-optionhelper-app-hosted="true"] .canvas-toolbar {
-  padding-inline: 18px !important;
+/* The Desk status/action row belongs to the host, not each module's
+ * standalone grid or button padding. Keep normal states on one baseline;
+ * scroll commands horizontally instead of letting them stretch the row. */
+html[data-optionhelper-app-hosted="true"] :is(
+  .canvas-panel > .canvas-toolbar,
+  .selection-panel > .section-head
+) {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center !important;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: nowrap !important;
+  height: var(--oh-module-toolbar-height) !important;
+  min-height: var(--oh-module-toolbar-height) !important;
+  padding: 0 18px !important;
+  border-bottom: 1px solid var(--rule) !important;
+}
+
+html[data-optionhelper-app-hosted="true"] .canvas-toolbar > :is(
+  .canvas-state, .canvas-toolbar-primary, .canvas-operation
+) {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+html[data-optionhelper-app-hosted="true"] .canvas-toolbar .canvas-state {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+html[data-optionhelper-app-hosted="true"] .canvas-toolbar .canvas-state > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+html[data-optionhelper-app-hosted="true"] :is(
+  .canvas-toolbar-actions,
+  .selection-panel > .section-head > .top-actions
+) {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto !important;
+  flex-wrap: nowrap !important;
+  width: auto !important;
+  min-width: 0;
+  max-width: calc(100% - 48px);
+  gap: 8px;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+html[data-optionhelper-app-hosted="true"] :is(
+  .canvas-panel > .canvas-toolbar,
+  .selection-panel > .section-head
+) .button {
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  height: var(--oh-module-toolbar-control-height) !important;
+  min-height: var(--oh-module-toolbar-control-height) !important;
+  padding-block: 0 !important;
+  white-space: nowrap;
+}
+
+/* A real compute diagnostic can add a second row; empty messages do not. */
+html[data-optionhelper-app-hosted="true"] .canvas-panel > .compute-toolbar:has(> .message:not(:empty):not([hidden])) {
+  height: auto !important;
+  flex-wrap: wrap !important;
+  padding-block: 12px !important;
+}
+
+html[data-optionhelper-app-hosted="true"] .compute-toolbar > .message {
+  flex: 0 0 100%;
+  max-height: 96px;
+  overflow: auto;
+}
+
+html[data-optionhelper-app-hosted="true"] .selection-panel > .section-head {
+  margin: 0 -28px 20px !important;
+}
+
+html[data-optionhelper-app-hosted="true"] .selection-panel > .section-head > div:first-child {
+  min-width: 0;
+}
+
+html[data-optionhelper-app-hosted="true"] .selection-panel > .section-head h2 {
+  margin: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 html[data-optionhelper-app-hosted="true"] .canvas-viewport {
@@ -1123,7 +1218,7 @@ html[data-optionhelper-app-hosted="true"] :is(
 }
 
 html[data-optionhelper-app-hosted="true"] .selection-panel {
-  padding: 24px 28px !important;
+  padding: 0 28px 24px !important;
 }
 
 html[data-optionhelper-app-hosted="true"] .optionhelper-choice {
@@ -1477,7 +1572,7 @@ html[data-optionhelper-app-hosted="true"][data-optionhelper-module] [hidden] {
 
 /* Hosted dropdown surfaces are supplied by App choice-controls.css. */
 
-/* Unified selection controls: shared by App and embedded module pages. */
+/* Native selection controls share a shape. */
 html body label:has(> input:is([type="checkbox"], [type="radio"])) {
   display: flex;
   align-items: center;
