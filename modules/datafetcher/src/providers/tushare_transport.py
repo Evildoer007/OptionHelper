@@ -117,7 +117,7 @@ def tinyshare_device_id() -> str:
     values = [platform.machine(), platform.processor(), platform.system(), str(uuid.getnode()), platform.node()]
     if platform.system() == "Darwin":
         try:
-            result = subprocess.run(["system_profiler", "SPHardwareDataType"], capture_output=True, text=True, timeout=5, check=False)
+            result = subprocess.run(["/usr/sbin/system_profiler", "SPHardwareDataType"], capture_output=True, text=True, timeout=5, check=False)
             hardware = next((line.split(":")[-1].strip() for line in result.stdout.splitlines() if "Hardware UUID" in line), "")
             values.append(hardware)
         except (OSError, subprocess.TimeoutExpired):

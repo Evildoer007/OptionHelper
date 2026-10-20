@@ -581,7 +581,7 @@ def prepare_staged_runtime(
     }
 
 
-def probe_runtime_process(artifact: Path, *, timeout: float = 8.0) -> dict[str, Any]:
+def probe_runtime_process(artifact: Path, *, timeout: float = 8.0, environment: Mapping[str, str] | None = None, command_prefix: list[str] | None = None) -> dict[str, Any]:
     """Start the staged executable directly and require clean shutdown."""
 
     path = artifact.expanduser().resolve()
@@ -612,7 +612,8 @@ def probe_runtime_process(artifact: Path, *, timeout: float = 8.0) -> dict[str, 
         ) + "\n"
         try:
             process = subprocess.Popen(
-                [str(path)],
+                [*(command_prefix or ()), str(path)],
+                env=dict(environment) if environment is not None else None,
                 cwd=str(path.parent),
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,

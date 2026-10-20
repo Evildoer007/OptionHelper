@@ -35,6 +35,7 @@ from name_boundary import assert_agent_runtime_delivery_clean
 APP_PACKAGING = ROOT / "packaging" / "app"
 if str(APP_PACKAGING) not in sys.path:
     sys.path.insert(0, str(APP_PACKAGING))
+from runtime_portability import clean_runtime_environment, isolated_macos_command, verify_macos_binary_compatibility
 from platform_payload import (  # noqa: E402
     MACOS_ALLOWED_RESOURCE_ENTRIES,
     MACOS_BUILD_INPUTS,
@@ -221,7 +222,10 @@ def verify_agent_runtime(resources: Path) -> dict[str, object]:
         raise AppVerificationError("App Manifest中的Agent运行时不是local_verified")
     try:
         verified = verify_staged_runtime(resources, "macos-arm64", summary)
-        probe = probe_runtime_process(resources / str(verified["resource_path"]))
+        with tempfile.TemporaryDirectory(prefix="optionhelper-node-isolation-") as directory:
+            environment = clean_runtime_environment(Path(directory))
+            prefix = isolated_macos_command([], blocked_roots=(ROOT,))
+            probe = probe_runtime_process(resources / str(verified["resource_path"]), environment=environment, command_prefix=prefix)
         if probe.get("status") != LOCAL_VERIFIED or probe.get("support_status") != LOCAL_VERIFIED:
             raise RuntimeBuildError("macOS Agent运行时探测未记录local_verified")
     except RuntimeBuildError as error:
@@ -257,6 +261,10 @@ def verify_delivery_metadata(
         raise AppVerificationError("App版本或发布记录不可解析") from error
     require(isinstance(manifest, dict), "App Manifest必须是对象")
     verify_version_metadata(info, manifest)
+    try:
+        verify_macos_binary_compatibility(bundle)
+    except RuntimeError as error:
+        raise AppVerificationError(str(error)) from error
     formal = manifest.get("formal_release") is True
     expected_status = "formal_release" if formal else "local_candidate"
     require(manifest.get("release_status") == expected_status, "App Manifest发布状态无效")
@@ -379,15 +387,23 @@ def verify(
     )
 
     with tempfile.TemporaryDirectory(prefix="optionhelper-app-verify-") as temporary:
-        environment = dict(os.environ)
-        for key in ("OPTIONHELPER_RUNTIME_ROOT", "OPTIONHELPER_DATA_ROOT", "OPTIONHELPER_RESULT_ROOT"):
-            environment.pop(key, None)
+        environment = clean_runtime_environment(Path(temporary) / "environment")
+        state_root = Path(environment["TMPDIR"]) / "state"
+        probe = subprocess.run(isolated_macos_command(
+            [str(backend), "--probe-runtime-environment", "--resource-dir", str(resources)],
+            blocked_roots=(ROOT,)), env=environment, capture_output=True, text=True, timeout=30)
+        require(probe.returncode == 0, "隔离环境时区探测失败：" + probe.stderr[-1200:])
+        prefix = "OPTIONHELPER_RUNTIME_ENVIRONMENT="
+        lines = [line for line in probe.stdout.splitlines() if line.startswith(prefix)]
+        require(bool(lines), "成品缺少运行环境验收记录")
+        runtime_environment = json.loads(lines[-1][len(prefix):])
+        require(runtime_environment.get("frozen") is True and runtime_environment.get("timezone", {}).get("source") == "bundled-tzdata", "成品未使用内置时区数据")
         process = subprocess.Popen(
-            [
+            isolated_macos_command([
                 str(backend), "--host", "127.0.0.1", "--port", "0",
-                "--data-dir", str(Path(temporary) / "state"), "--resource-dir", str(resources),
+                "--data-dir", str(state_root), "--resource-dir", str(resources),
                 "--verification-fixture",
-            ],
+            ], blocked_roots=(ROOT,)),
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -701,7 +717,7 @@ def verify(
                 {"Cookie": admin},
             )
             require(status == 200, "成品App未能保存OptionHelper本地iFind凭据")
-            credential_root = Path(temporary) / "credentials"
+            credential_root = state_root.parent / "credentials"
             credential_files = tuple(credential_root.glob("*.secret"))
             require(credential_root.is_dir(), "成品App未创建OptionHelper本地凭据目录")
             require(stat.S_IMODE(credential_root.stat().st_mode) == 0o700, "成品App凭据目录权限不是700")
@@ -711,7 +727,7 @@ def verify(
                 "成品App凭据文件权限不是600",
             )
             settings_document = json.loads(
-                (Path(temporary) / "state" / "settings.json").read_text(encoding="utf-8"),
+                (state_root / "settings.json").read_text(encoding="utf-8"),
             )
             settings_text = json.dumps(settings_document, ensure_ascii=False)
             require('"provider": "local-secret"' in settings_text, "成品App设置未保存local-secret引用")

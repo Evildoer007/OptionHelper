@@ -14,6 +14,7 @@ from typing import Callable, Iterable
 REQUIRED_FROZEN_DISTRIBUTIONS = frozenset({
     "beautifulsoup4",
     "certifi",
+    "tzdata",
     "llvmlite",
     "lxml",
     "numba",

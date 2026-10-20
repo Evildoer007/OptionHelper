@@ -68,7 +68,7 @@ function calendarCompletenessLabel(value, coverageEnd = '') {
 }
 
 function providerDisplayName(provider) {
-  return ({ifind_http: 'iFinD', 'ifind-http': 'iFinD', tinyshare: 'Tushare', tushare: 'Tushare'})[String(provider || '').toLowerCase()] || '';
+  return ({ifind_http: 'iFinD', 'ifind-http': 'iFinD', tinyshare: 'Tinyshare', tushare: 'Tushare'})[String(provider || '').toLowerCase()] || '';
 }
 
 function assetPersistenceLabel(item) {
@@ -496,7 +496,7 @@ function initializePage() {
       dataSettings = settings.settings.data_interface;
       if (!sourceSwitchInFlight) {
         const provider = dataSettings.provider_name === 'ifind-http' ? 'ifind_http' : dataSettings.provider_name;
-        $('data-source').value = ['tinyshare', 'tushare'].includes(provider) ? 'tinyshare' : 'ifind_http';
+        $('data-source').value = ['tinyshare', 'tushare'].includes(provider) ? provider : 'ifind_http';
         selectedSource = $('data-source').value;
         $('data-source').dispatchEvent(new Event('input', {bubbles:true}));
       }
@@ -528,7 +528,7 @@ function initializePage() {
     OptionHelperDateInput.bind(input, id === 'start-date' ? '开始日期' : '结束日期');
   }
   const fieldControls = [...document.querySelectorAll('.extra-field')];
-  const formValues = () => ({assetIds: $('asset-ids').value, startDate: $('start-date').value, endDate: $('end-date').value, fields: fieldControls.filter(node => node.checked).map(node => node.value).join(','), frequency: $('frequency').value, adjustment: $('adjustment').value, dataSource: $('data-source').value === 'tinyshare' && dataSettings?.provider_name === 'tushare' ? 'tushare' : $('data-source').value, persistenceMode: $('data-retention').value});
+  const formValues = () => ({assetIds: $('asset-ids').value, startDate: $('start-date').value, endDate: $('end-date').value, fields: fieldControls.filter(node => node.checked).map(node => node.value).join(','), frequency: $('frequency').value, adjustment: $('adjustment').value, dataSource: $('data-source').value, persistenceMode: $('data-retention').value});
   function syncFieldSummary() { const selectedFields = fieldControls.filter(node => node.checked).length; $('field-summary').textContent = selectedFields === fieldControls.length ? '全部字段' : `${selectedFields}项字段`; }
   function markRequestInputChanged() {
     if (operationActive) return;
@@ -553,8 +553,7 @@ function initializePage() {
     sourceSwitchInFlight = true;
     setBusy(true);
     try {
-      const saved = dataSettings?.saved_providers || [];
-      const actualProvider = providerName === 'tinyshare' && !saved.includes('tinyshare') && saved.includes('tushare') ? 'tushare' : providerName;
+      const actualProvider = providerName;
       const response = await fetch('/api/settings/data', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({provider_name:actualProvider})});
       const data = await response.json();
       if (!response.ok || !data.settings?.data_interface) throw new Error(data.error?.message || data.detail || data.message || '数据来源切换失败。');

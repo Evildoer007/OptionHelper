@@ -55,6 +55,7 @@ from verify_frontend import verify_frontend_assets
 from verify_capability import verify_app_capability
 from release_contract import skill_archive_name
 from release_contract import APP_VERSION, RELEASE_VERSION, require_app_version, app_platform_versions
+from runtime_portability import MACOS_MINIMUM_VERSION, verify_macos_binary_compatibility
 from verify_macos import verify as verify_frozen_macos_app
 from platform_payload import (
     BACKEND_DESKTOP_COMMON_MODULES,
@@ -1164,6 +1165,8 @@ def backend_build_command(workspace: Path, *, app_root: Path = APP_ROOT) -> list
     # settings templates from package data when a document is constructed.
     command.extend(("--collect-data", "docx"))
     command.extend(("--collect-data", "certifi"))
+    # ZoneInfo fallback must be shipped, including dynamic regional packages.
+    command.extend(("--collect-all", "tzdata"))
     # JSON Schema format validation imports this grammar lazily at first use.
     command.extend(("--collect-data", "rfc3987_syntax"))
     command.extend(("--collect-data", "lark"))
@@ -1401,7 +1404,7 @@ def write_info_plist(bundle: Path, app_version: str, *, formal_release: bool = F
         "CFBundleShortVersionString": public_version,
         "CFBundleVersion": bundle_version,
         "OptionHelperDisplayVersion": app_version,
-        "LSMinimumSystemVersion": "13.0",
+        "LSMinimumSystemVersion": MACOS_MINIMUM_VERSION,
         "NSHighResolutionCapable": True,
         "OptionHelperReleaseStatus": "formal_release" if formal_release else "local_candidate",
     }
@@ -1434,7 +1437,7 @@ def compile_shell(bundle: Path, *, app_root: Path = APP_ROOT) -> tuple[Path, str
     output = bundle / "Contents" / "MacOS" / "OptionHelper"
     output.parent.mkdir(parents=True)
     swift = [
-        "xcrun", "swiftc", str(app_root / "desktop" / "macos" / "OptionHelperApp.swift"),
+        "xcrun", "swiftc", "-target", f"arm64-apple-macos{MACOS_MINIMUM_VERSION}", str(app_root / "desktop" / "macos" / "OptionHelperApp.swift"),
         "-framework", "Cocoa", "-framework", "WebKit", "-o", str(output),
     ]
     try:
@@ -1444,7 +1447,7 @@ def compile_shell(bundle: Path, *, app_root: Path = APP_ROOT) -> tuple[Path, str
         if output.exists():
             output.unlink()
     objc = [
-        "xcrun", "clang", "-fobjc-arc", str(app_root / "desktop" / "macos" / "OptionHelperApp.m"),
+        "xcrun", "clang", "-target", f"arm64-apple-macos{MACOS_MINIMUM_VERSION}", "-fobjc-arc", str(app_root / "desktop" / "macos" / "OptionHelperApp.m"),
         "-framework", "Cocoa", "-framework", "WebKit", "-o", str(output),
     ]
     run(objc)
@@ -1459,6 +1462,10 @@ def verify_bundle(
     repo_root: Path = ROOT,
 ) -> None:
     verify_installable_bundle_permissions(bundle)
+    try:
+        verify_macos_binary_compatibility(bundle)
+    except RuntimeError as error:
+        raise MacOSBuildError(str(error)) from error
     resources = bundle / "Contents" / "Resources"
     required = [
         bundle / "Contents" / "Info.plist", bundle / "Contents" / "MacOS" / "OptionHelper",

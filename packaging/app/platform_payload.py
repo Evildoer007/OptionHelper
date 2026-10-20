@@ -92,6 +92,9 @@ APP_BACKEND_SOURCE_INPUTS = (
     "products/app/backend/verification_fixture.py",
 )
 MACOS_BUILD_INPUTS = (
+    "packaging/app/runtime_portability.py",
+    "packaging/app/macos/build_macos.py",
+    "packaging/app/macos/verify_macos.py",
     *APP_BACKEND_SOURCE_INPUTS,
     "products/app/config/app-defaults.yaml",
     "products/app/config/logging.yaml",

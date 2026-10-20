@@ -424,6 +424,8 @@ def backend_build_command(
     # the frozen backend; these resources are opened lazily during rendering.
     command.extend(("--collect-data", "docx"))
     command.extend(("--collect-data", "certifi"))
+    # ZoneInfo fallback must be shipped, including dynamic regional packages.
+    command.extend(("--collect-all", "tzdata"))
     # JSON Schema format validation imports this grammar lazily at first use.
     command.extend(("--collect-data", "rfc3987_syntax"))
     command.extend(("--collect-data", "lark"))

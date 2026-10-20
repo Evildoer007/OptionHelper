@@ -25,6 +25,12 @@ from .settings.settings_models import SettingsSnapshot
 _RESERVED_CONTEXT_KEYS = {"app_context", "tenant_id", "principal_id", "secret_ref", "credential_ref"}
 _SECRET_KEYS = {"password", "token", "access_token", "refresh_token", "api_key", "secret", "secret_value", "private_key"}
 _FAILURE_PROJECTIONS = {
+    "quality_error": ("返回行情未通过数据质量或交易日历完整性校验。", "请核对行情缺失、停牌和日历覆盖；不要把未验证数据用于计算。"),
+    "normalization_error": ("返回行情的日期、字段或标的格式不符合要求。", "请核对所选数据源及字段；保留失败记录以便检查返回格式。"),
+    "cache_corrupt": ("本机行情缓存校验失败。", "请重新获取受影响的数据；已有报告和任务不需要删除。"),
+    "offline_miss": ("离线数据未覆盖本次请求。", "请连接已配置的数据源补取所需区间。"),
+    "cache_miss": ("本机没有覆盖本次请求的行情缓存。", "请使用已配置的数据源获取行情后重试。"),
+    "failed": ("数据获取运行时发生内部错误。", "请保留失败记录并核对安装包完整性；重填API不一定能解决此问题。"),
     "credential_unavailable": (
         "无法读取当前保存的iFind凭据。",
         "请在数据接口中重新保存Refresh Token，保存后会自动验证。",
@@ -194,7 +200,7 @@ class DataFetcherAdapter:
                 self._mark_temporarily_unavailable(principal, interface.secret_ref)
         result = _project_datafetcher_failure(result)
         if interface.provider_name in {"tinyshare", "tushare"}:
-            result = _provider_labels(result)
+            result = _provider_labels(result, interface.provider_name)
         if not expose_configuration:
             return result
         verified = bool(
@@ -451,11 +457,11 @@ def _reject_untrusted_context(value: object) -> None:
             _reject_untrusted_context(item)
 
 
-def _provider_labels(value: Any) -> Any:
+def _provider_labels(value: Any, provider_name: str = "tushare") -> Any:
     if isinstance(value, str):
-        return value.replace("iFind", "Tushare").replace("Refresh Token", "Token")
+        return value.replace("iFind", "Tinyshare" if provider_name == "tinyshare" else "Tushare").replace("Refresh Token", "Token")
     if isinstance(value, dict):
-        return {key: _provider_labels(item) for key, item in value.items()}
+        return {key: _provider_labels(item, provider_name) for key, item in value.items()}
     if isinstance(value, list):
-        return [_provider_labels(item) for item in value]
+        return [_provider_labels(item, provider_name) for item in value]
     return value

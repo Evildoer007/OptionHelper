@@ -67,6 +67,30 @@ def configure_agent_runtime(resources: Path) -> Path | None:
     return None
 
 
+def configure_timezone_runtime() -> dict[str, object]:
+    """Frozen Apps always use their own pinned IANA database, never the build host."""
+    from zoneinfo import ZoneInfo, reset_tzpath
+    frozen = bool(getattr(sys, "frozen", False))
+    if frozen:
+        try:
+            import tzdata
+            from importlib.resources import files
+            package_root = Path(tzdata.__file__).resolve()
+            if not package_root.is_relative_to(Path(sys._MEIPASS).resolve()):
+                raise RuntimeError("时区包来源不属于内置Python运行时")
+            if not files("tzdata.zoneinfo").joinpath("Asia/Shanghai").is_file():
+                raise RuntimeError("内置上海时区文件缺失")
+            reset_tzpath(())
+            ZoneInfo.clear_cache()
+            ZoneInfo("Asia/Shanghai")
+        except (ImportError, OSError, ValueError, KeyError) as error:
+            raise RuntimeError("内置时区数据不完整，请重新安装完整的OptionHelper安装包。") from error
+        return {"source": "bundled-tzdata", "version": tzdata.__version__,
+                "zone": "Asia/Shanghai", "external_timezone_paths": []}
+    ZoneInfo("Asia/Shanghai")
+    return {"source": "development-environment", "zone": "Asia/Shanghai"}
+
+
 def require_isolated_fixture_directory(runtime_root: Path) -> None:
     """Reject verification data outside an empty operating-system temp tree."""
 
@@ -131,6 +155,7 @@ def main() -> int:
     parser.add_argument("--compute-worker", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--probe-compute-worker", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--probe-pdf-runtime", action="store_true")
+    parser.add_argument("--probe-runtime-environment", action="store_true")
     parser.add_argument(
         "--verification-fixture",
         action="store_true",
@@ -141,6 +166,11 @@ def main() -> int:
     resources = (args.resource_dir or resource_root()).resolve()
     os.environ["OPTIONHELPER_RESOURCE_ROOT"] = str(resources)
     configure_resource_imports(resources)
+    timezone_status = configure_timezone_runtime()
+    if args.probe_runtime_environment:
+        runtime_path = configure_agent_runtime(resources)
+        print("OPTIONHELPER_RUNTIME_ENVIRONMENT=" + json.dumps({"frozen": bool(getattr(sys, "frozen", False)), "timezone": timezone_status, "bundled_agent_runtime": runtime_path is not None}, sort_keys=True), flush=True)
+        return 0
     capability_root = resources / "capability" / "option-helper"
     # PyInstaller modules have no repository-relative __file__ at runtime.
     # Bind the staged immutable Capability explicitly so Runtime Bootstrap

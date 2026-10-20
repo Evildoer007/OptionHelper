@@ -134,10 +134,10 @@ $env:OPTIONHELPER_PYTHON = 'C:\Python312\python.exe'
 
 ### 4.1 安装App并登录
 
-- macOS：打开DMG，将`OptionHelper.app`复制到应用程序目录后启动。
+- macOS：使用Apple芯片、macOS14或更高版本。打开DMG，将`OptionHelper.app`复制到应用程序目录后启动；当前DMG不支持Intel Mac。
 - Windows：双击`OptionHelper-版本号-Windows-x64.exe`完成安装，之后从开始菜单或桌面快捷方式启动。默认安装到当前用户目录，无需管理员权限；可在Windows“已安装的应用”中卸载。升级和卸载保留本机研究结果与API配置。首次运行前确认已安装WebView2 Runtime。
 
-成品App已封装Python和Agent运行时，报告图表也使用内置运行时完成语法校验，无需安装Python、Node.js或.NET SDK。
+成品App已封装Python、固定版本的IANA时区数据和Agent运行时，报告图表也使用内置运行时完成语法校验，无需安装Anaconda、Python、Node.js或.NET SDK。macOS构建会检查全部原生二进制的架构和最低系统要求，并在禁止访问开发机Anaconda、外部Node和源码目录的环境中验证内置运行时。
 
 Windows和macOS各使用一个平台安装包，每个安装包均包含sales与admin两种账号权限，不需要分别下载销售版和管理版。新数据目录首次启动时提供两个账号：
 
