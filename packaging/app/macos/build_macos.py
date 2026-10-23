@@ -89,6 +89,8 @@ from build_runtime import (  # noqa: E402
     prepare_staged_runtime,
     resolve_runtime_candidate,
     verify_staged_runtime,
+    verify_runtime_candidate,
+    write_runtime_manifest,
 )
 from name_boundary import assert_agent_runtime_delivery_clean, assert_name_boundary_clean
 
@@ -277,6 +279,108 @@ def formal_signing_configuration() -> tuple[str, str]:
     return identity, profile
 
 
+def verify_formal_signed_code(path: Path, identity: str) -> None:
+    """Check a nested executable before its final bytes enter any hash record."""
+    run(["codesign", "--verify", "--strict", "--verbose=2", str(path)])
+    details = run(["codesign", "--display", "--verbose=4", str(path)])
+    if f"Authority={identity}" not in details or "Signature=adhoc" in details:
+        raise MacOSBuildError("内置可执行文件的Developer ID签名身份不一致")
+
+
+def _signing_entitlements(workspace: Path, *, python_runtime: bool = False) -> Path:
+    """Grant executable-memory rights to JIT hosts, never to the UI or libraries."""
+    entitlements = {"com.apple.security.cs.allow-jit": True}
+    if python_runtime:
+        # LLVM/Numba currently creates executable pages without MAP_JIT.
+        entitlements["com.apple.security.cs.allow-unsigned-executable-memory"] = True
+    path = workspace / ("python-runtime-entitlements.plist" if python_runtime else "node-runtime-entitlements.plist")
+    with path.open("wb") as handle:
+        plistlib.dump(entitlements, handle, sort_keys=True)
+    return path
+
+
+def _sign_code(path: Path, *, identity: str | None, entitlements: Path | None = None) -> None:
+    command = ["codesign", "--force"]
+    if identity is not None:
+        command.extend(["--options", "runtime", "--timestamp"])
+        if entitlements is not None:
+            command.extend(["--entitlements", str(entitlements)])
+    command.extend(["--sign", identity or "-", str(path)])
+    run(command)
+
+
+def sign_agent_runtime_candidate(
+    candidate: Path, *, workspace: Path, identity: str, source_root: Path,
+) -> Path:
+    """Validate provenance, sign a copy, then bind the actual signed runtime bytes.
+
+    The source candidate remains immutable. A Developer ID signature changes
+    the Mach-O file, so its derived candidate and staged resource manifests must
+    be generated only after that signature and the hardened-runtime probe.
+    """
+    original = verify_runtime_candidate(
+        candidate, "macos-arm64", source_root=source_root,
+        require_source_provenance=True,
+    )
+    destination_root = workspace / "signed-agent-runtime"
+    destination_root.mkdir()
+    signed_candidate = destination_root / candidate.name
+    shutil.copy2(candidate, signed_candidate)
+    signed_candidate.chmod(0o755)
+    _sign_code(signed_candidate, identity=identity, entitlements=_signing_entitlements(workspace))
+    verify_formal_signed_code(signed_candidate, identity)
+    probe = probe_runtime_process(signed_candidate)
+    manifest_path = write_runtime_manifest(
+        signed_candidate, "macos-arm64", probe=probe, source_root=source_root,
+    )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["pre_signing_artifact"] = {
+        "sha256": original["sha256"], "size": original["size"],
+        "signing_identity": identity,
+    }
+    write_json(manifest_path, manifest)
+    return signed_candidate
+
+
+def _is_macho(path: Path) -> bool:
+    if path.is_symlink() or not path.is_file():
+        return False
+    with path.open("rb") as handle:
+        return handle.read(4) in {
+            b"\xcf\xfa\xed\xfe", b"\xce\xfa\xed\xfe", b"\xfe\xed\xfa\xcf", b"\xfe\xed\xfa\xce",
+            b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca", b"\xca\xfe\xba\xbf", b"\xbf\xba\xfe\xca",
+        }
+
+
+def sign_nested_bundle_code(
+    bundle: Path, *, workspace: Path, identity: str | None,
+) -> None:
+    """Finish inner signatures before freezing the outer resource inventory.
+
+    The native shell is sealed with the outer App later. The staged Agent
+    executable already carries its final signature and its own verified hash.
+    Re-signing either after the inventory freezes would invalidate that binding.
+    """
+    shell = bundle / "Contents/MacOS/OptionHelper"
+    agent = bundle / "Contents/Resources/agent-runtime/optionhelper-agent-runtime"
+    paths = sorted(bundle.rglob("*"), key=lambda path: (-len(path.parts), str(path)))
+    for path in paths:
+        if path in {shell, agent} or not _is_macho(path):
+            continue
+        entitlements = None
+        if identity is not None and path.name == "OptionHelperBackend":
+            entitlements = _signing_entitlements(workspace, python_runtime=True)
+        _sign_code(path, identity=identity, entitlements=entitlements)
+    for path in paths:
+        if not path.is_symlink() and path.is_dir() and path.suffix in {".framework", ".xpc", ".appex", ".app"}:
+            _sign_code(path, identity=identity)
+
+
+def sign_outer_app_bundle(bundle: Path, *, identity: str | None) -> None:
+    """Seal the App once without the --deep mutation of already hashed children."""
+    _sign_code(bundle, identity=identity)
+
+
 def verify_formal_app_bundle(
     bundle: Path,
     *,
@@ -295,6 +399,12 @@ def verify_formal_app_bundle(
         raise MacOSBuildError("正式macOS App签名身份与发布配置不一致")
     if require_gatekeeper:
         run(["spctl", "--assess", "--type", "execute", "--verbose=4", str(bundle)])
+
+
+def sign_formal_dmg(dmg: Path, *, identity: str) -> None:
+    """Sign the distributed container whose primary signature Gatekeeper assesses."""
+    run(["codesign", "--force", "--timestamp", "--sign", identity, str(dmg)])
+    verify_formal_signed_code(dmg, identity)
 
 
 def verify_formal_dmg_distribution(dmg: Path) -> None:
@@ -1653,6 +1763,12 @@ def build_macos(
                 repository_root=repo_root,
                 formal=formal_release,
             )
+            if formal_release and runtime_candidate is not None:
+                assert signing_identity is not None
+                runtime_candidate = sign_agent_runtime_candidate(
+                    runtime_candidate, workspace=temporary,
+                    identity=signing_identity, source_root=runtime_source_root,
+                )
             runtime_summary = prepare_staged_runtime(
                 resources,
                 "macos-arm64",
@@ -1674,6 +1790,8 @@ def build_macos(
                 repository_license_root=license_root,
             )
             verify_python_runtime_licenses(resources / "LICENSES" / "python-runtime", license_inventory)
+            normalize_installable_bundle_permissions(bundle)
+            sign_nested_bundle_code(bundle, workspace=temporary, identity=signing_identity)
             outer_payload = build_outer_payload_manifest(
                 repo_root,
                 bundle,
@@ -1715,10 +1833,7 @@ def build_macos(
         _progress("正在签名并验证应用包")
         if formal_release:
             assert signing_identity is not None
-            run([
-                "codesign", "--force", "--deep", "--options", "runtime", "--timestamp",
-                "--sign", signing_identity, str(bundle),
-            ])
+            sign_outer_app_bundle(bundle, identity=signing_identity)
             # Gatekeeper is meaningful only after the containing DMG has been
             # accepted by notarytool and stapled.  Before that point, verify
             # the Developer ID signature itself without falsely requiring an
@@ -1729,8 +1844,11 @@ def build_macos(
                 require_gatekeeper=False,
             )
         else:
-            run(["codesign", "--force", "--deep", "--sign", "-", str(bundle)])
+            sign_outer_app_bundle(bundle, identity=None)
             run(["codesign", "--verify", "--deep", "--strict", "--verbose=2", str(bundle)])
+        verify_bundle(
+            bundle, manifest, require_native_runtime=native_runtime_required, repo_root=repo_root,
+        )
         verify_installable_bundle_permissions(bundle)
         _progress("正在生成DMG安装物")
         built_dmg = temporary / f"OptionHelper-{app_version}-macOS-arm64.dmg"
@@ -1742,7 +1860,8 @@ def build_macos(
         build_styled_dmg(dmg_layout, built_dmg, temporary)
         run(["hdiutil", "verify", str(built_dmg)])
         if formal_release:
-            assert notary_profile is not None
+            assert notary_profile is not None and signing_identity is not None
+            sign_formal_dmg(built_dmg, identity=signing_identity)
             run([
                 "xcrun", "notarytool", "submit", str(built_dmg),
                 "--keychain-profile", notary_profile, "--wait",

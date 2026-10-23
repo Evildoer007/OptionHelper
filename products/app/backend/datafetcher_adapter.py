@@ -25,6 +25,10 @@ from .settings.settings_models import SettingsSnapshot
 _RESERVED_CONTEXT_KEYS = {"app_context", "tenant_id", "principal_id", "secret_ref", "credential_ref"}
 _SECRET_KEYS = {"password", "token", "access_token", "refresh_token", "api_key", "secret", "secret_value", "private_key"}
 _FAILURE_PROJECTIONS = {
+    "tinyshare_device_busy": (
+        "当前Tinyshare Token正在被其他设备使用。",
+        "请暂停其他设备上的调用，等待服务端限制解除后重试；无需重新填写Token。",
+    ),
     "quality_error": ("返回行情未通过数据质量或交易日历完整性校验。", "请核对行情缺失、停牌和日历覆盖；不要把未验证数据用于计算。"),
     "normalization_error": ("返回行情的日期、字段或标的格式不符合要求。", "请核对所选数据源及字段；保留失败记录以便检查返回格式。"),
     "cache_corrupt": ("本机行情缓存校验失败。", "请重新获取受影响的数据；已有报告和任务不需要删除。"),
@@ -296,9 +300,10 @@ def _project_datafetcher_failure(result: Mapping[str, Any]) -> dict[str, Any]:
     nested = nested if isinstance(nested, Mapping) else {}
     code = str(nested.get("code", result.get("status", ""))).strip()
     reason_code = str(nested.get("reason_code", ""))
-    if reason_code == "credential_unavailable":
-        code = reason_code
-    projection = _FAILURE_PROJECTIONS.get(code)
+    projection_code = reason_code if reason_code in {"credential_unavailable", "tinyshare_device_busy"} else code
+    if projection_code == "credential_unavailable":
+        code = projection_code
+    projection = _FAILURE_PROJECTIONS.get(projection_code)
     if projection is None:
         return {
             "ok": False,
@@ -313,7 +318,7 @@ def _project_datafetcher_failure(result: Mapping[str, Any]) -> dict[str, Any]:
         "stage": "data",
         "message": message,
         "next_step": next_step,
-        "retryable": code == "provider_unavailable",
+        "retryable": code == "provider_unavailable" or projection_code == "tinyshare_device_busy",
     }
     for field in ("reason_code", "provider_error_code", "http_status"):
         candidate = nested.get(field)

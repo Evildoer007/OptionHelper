@@ -14,8 +14,8 @@ import pandas as pd
 from ..config import DataFetcherConfig, SecretPortUnavailable, resolve_secret
 from ..market_conventions import china_market_convention
 from ..models import CalendarRequest, DataRequest
-from .base import (ProviderAccountPermissionDenied, ProviderInputError, ProviderNoData,
-                   ProviderQuotaExceeded, ProviderUnauthorized, ProviderUnavailable)
+from .base import (ProviderError, ProviderInputError, ProviderNoData,
+                   ProviderUnauthorized, ProviderUnavailable)
 
 OHLC = ("open", "high", "low", "close")
 ENDPOINTS = {"stock": "daily", "etf": "fund_daily", "index": "index_daily"}
@@ -23,14 +23,8 @@ ENDPOINTS = {"stock": "daily", "etf": "fund_daily", "index": "index_daily"}
 
 def _provider_failure(error: Exception) -> Exception:
     # Use server text only for classification. Never propagate credential echoes.
-    message = str(error).lower()
-    if any(word in message for word in ("token", "授权码", "认证", "鉴权")):
-        return ProviderUnauthorized("数据Token验证失败，请检查所选服务与Token是否匹配")
-    if any(word in message for word in ("频次", "频率", "每分钟", "quota", "rate limit")):
-        return ProviderQuotaExceeded("数据服务调用额度或频次受限")
-    if any(word in message for word in ("权限", "积分", "permission", "forbidden")):
-        return ProviderAccountPermissionDenied("当前数据账号无权访问该接口")
-    return ProviderUnavailable("数据服务请求未完成，请检查网络与服务状态")
+    from .tushare_transport import provider_failure
+    return provider_failure(str(error))
 
 
 def _dates(frame: pd.DataFrame, column: str) -> pd.Series:
@@ -82,7 +76,7 @@ class TushareProvider:
     def _query(client: Any, endpoint: str, **params: Any) -> pd.DataFrame:
         try:
             frame = client.query(endpoint, **params)
-        except (ProviderUnavailable, ProviderUnauthorized, ProviderAccountPermissionDenied, ProviderQuotaExceeded):
+        except ProviderError:
             raise
         except Exception as error:
             raise _provider_failure(error) from None

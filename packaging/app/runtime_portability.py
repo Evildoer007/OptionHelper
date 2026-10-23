@@ -11,6 +11,14 @@ import sys
 
 MACOS_MINIMUM_VERSION = '14.0'
 MACOS_ARCHITECTURE = 0x0100000C
+# The release contract accepts only little-endian, thin ARM64 Mach-O files.
+# Recognize every other Mach-O magic so incompatible containers cannot vanish
+# from the compatibility count as if they were ordinary data resources.
+UNSUPPORTED_MACHO_MAGICS = frozenset({
+    b'\xce\xfa\xed\xfe', b'\xfe\xed\xfa\xce', b'\xfe\xed\xfa\xcf',
+    b'\xca\xfe\xba\xbe', b'\xbe\xba\xfe\xca',
+    b'\xca\xfe\xba\xbf', b'\xbf\xba\xfe\xca',
+})
 
 
 def clean_runtime_environment(root: Path) -> dict[str, str]:
@@ -56,7 +64,12 @@ def verify_macos_binary_compatibility(bundle: Path) -> dict[str, object]:
             continue
         with path.open('rb') as stream:
             header = stream.read(8)
-        if header[:4] == b'\xcf\xfa\xed\xfe':
+        magic = header[:4]
+        if magic in UNSUPPORTED_MACHO_MAGICS:
+            raise RuntimeError(f'App仅支持单架构ARM64 Mach-O，不接受Universal、32位或其他格式：{path.relative_to(bundle)}')
+        if magic == b'\xcf\xfa\xed\xfe':
+            if len(header) != 8:
+                raise RuntimeError(f'Mach-O头部不完整：{path.relative_to(bundle)}')
             if struct.unpack('<I', header[4:8])[0] != MACOS_ARCHITECTURE:
                 raise RuntimeError(f'App包含非ARM64二进制：{path.relative_to(bundle)}')
             binaries.append(path)

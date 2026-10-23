@@ -293,7 +293,11 @@ class LocalCache:
             try:
                 frame = pd.read_csv(path, dtype={"date": str, "asset_id": str})
                 actual_hash = daily_content_hash(frame)
-            except (DataNormalizationError, KeyError, OSError, pd.errors.ParserError):
+            except (DataNormalizationError, KeyError, OSError, UnicodeDecodeError,
+                    pd.errors.EmptyDataError, pd.errors.ParserError):
+                # CSV parsing can fail before a frame exists. Empty/truncated
+                # or invalidly encoded cache bytes are misses, just like a hash
+                # mismatch; the caller still enforces offline/reuse policies.
                 return None
             if actual_hash != record.get("content_hash"):
                 return None
