@@ -1492,12 +1492,14 @@ def _validate_host_secret_port(value: object) -> Callable[[SecretRef], str]:
 
 
 def _app_fetch_requires_secret(source: Mapping[str, Any]) -> bool:
-    """仅iFind DataRequest需要Host凭据注入；Local仍由受控路径门禁保护。"""
+    """Require credentials only when a request is permitted to call a remote feed."""
 
     try:
         request = DataRequest.from_mapping(source)
     except ValueError as error:
         raise RequestValidationError(str(error)) from error
+    if request.offline or request.cache_policy.strip().lower() == "reuse":
+        return False
     providers = tuple(item.strip().lower() for item in request.source_priority if item and item.strip())
     if request.provider and request.provider.strip().lower() not in providers:
         providers = (request.provider.strip().lower(), *providers)
