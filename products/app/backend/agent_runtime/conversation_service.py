@@ -123,7 +123,7 @@ class ConversationService:
                     previous_reports = {row['report_run_id'] for row in self._report_delivery.results.list_report_runs(identity, task_id)} if self._report_delivery else set()
                     if export_ids:
                         response = self._report_delivery.export_documents(
-                            identity, task_id, export_ids, delivery['format'], cancelled=turn_cancelled)
+                            identity, task_id, export_ids, delivery['formats'] if len(delivery['formats']) > 1 else delivery['format'], cancelled=turn_cancelled)
                         export_handled = True
                     elif not export_handled:
                         response = self._run_model(
@@ -135,15 +135,15 @@ class ConversationService:
                     if self._report_delivery:
                         created = _new_report_ids(self._report_delivery.results.list_report_runs(identity, task_id), previous_reports)
                     if turn_cancelled() and not export_handled:
-                        response = _cancelled_response()
+                        response = _cancelled_response(response)
                     if delivery and not turn_cancelled() and not export_handled:
                         try:
                             response = self._report_delivery.complete(identity, task_id, message, response,
-                                request_id=request_id, report_id=created[-1] if created else None)
+                                request_id=request_id, report_id=created[-1] if created else None, report_ids=created)
                         except ValidationError as error:
                             response = {'status':'needs_input','text':str(error)}
                     if turn_cancelled() and not export_handled:
-                        response = _cancelled_response()
+                        response = _cancelled_response(response)
                     if self._report_delivery and created:
                         response = self._report_delivery.attach_documents(identity, task_id, response, created)
 
@@ -277,11 +277,18 @@ class ConversationService:
         )
 
 
-def _cancelled_response() -> dict[str, Any]:
-    return {
+def _cancelled_response(response: dict[str, Any] | None = None) -> dict[str, Any]:
+    result = {
+        **(response or {}),
         "status": "cancelled", "text": "本次运行已取消；可在当前任务中调整后重新运行。", "observations": [], "rounds": 0,
         "state": {"code": "cancelled", "terminal": True, "retryable": False},
     }
+    if response and response.get('_assistant_blocks'):
+        result['_assistant_blocks'] = [
+            {'type': 'text', 'text': result['text']},
+            *[block for block in response['_assistant_blocks'] if block.get('type') != 'text'],
+        ]
+    return result
 
 
 def _execution_ids(request_state: dict[str, Any] | None) -> dict[str, str]:
