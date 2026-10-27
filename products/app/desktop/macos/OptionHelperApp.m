@@ -95,11 +95,39 @@ willPerformHTTPRedirection:(NSHTTPURLResponse *)response
 
 @end
 
+// One pending WebKit reply owns one sheet and completes at most once.
+@interface OptionHelperNativeDialog : NSObject
+@property(nonatomic, weak) WKWebView *sourceView;
+@property(nonatomic, strong) NSWindow *sheetWindow;
+@property(nonatomic, copy) void (^completion)(BOOL accepted);
+@property(nonatomic) BOOL finished;
+- (void)finish:(BOOL)accepted;
+- (void)cancel;
+@end
+
+@implementation OptionHelperNativeDialog
+- (void)finish:(BOOL)accepted {
+    if (self.finished) return;
+    self.finished = YES;
+    void (^completion)(BOOL) = self.completion;
+    self.completion = nil;
+    if (completion != nil) completion(accepted);
+}
+- (void)cancel {
+    if (self.finished) return;
+    [self finish:NO];
+    if (self.sheetWindow.sheetParent != nil) {
+        [self.sheetWindow.sheetParent endSheet:self.sheetWindow returnCode:NSModalResponseCancel];
+    }
+}
+@end
+
 @interface OptionHelperAppDelegate : NSObject <NSApplicationDelegate, NSWindowDelegate, WKScriptMessageHandler, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate>
 @property(nonatomic, strong) NSTask *backend;
 @property(nonatomic, strong) NSPipe *startupPipe;
 @property(nonatomic, strong) NSWindow *window;
 @property(nonatomic, strong) WKWebView *webView;
+@property(nonatomic, strong) NSMutableDictionary<NSUUID *, OptionHelperNativeDialog *> *nativeDialogs;
 @property(nonatomic, strong) NSWindow *reportPreviewWindow;
 @property(nonatomic, strong) WKWebView *reportPreviewWebView;
 @property(nonatomic) BOOL reportWindowIsEditor;
@@ -147,6 +175,7 @@ willPerformHTTPRedirection:(NSHTTPURLResponse *)response
 }
 
 - (void)applicationWillTerminate:(NSNotification *)notification {
+    [self cancelNativeDialogsForWebView:nil];
     [self cancelNavigationWatchdog];
     [self cancelSettingsNavigationWatchdog];
     [self.webView.configuration.userContentController removeScriptMessageHandlerForName:@"optionhelperTheme"];
@@ -828,6 +857,7 @@ willPerformHTTPRedirection:(NSHTTPURLResponse *)response
 }
 
 - (void)webView:(WKWebView *)webView didStartProvisionalNavigation:(WKNavigation *)navigation {
+    [self cancelNativeDialogsForWebView:webView];
     if (webView == self.settingsWebView) {
         [self beginSettingsNavigationWatchdog];
         return;
@@ -879,6 +909,7 @@ willPerformHTTPRedirection:(NSHTTPURLResponse *)response
 }
 
 - (void)webViewWebContentProcessDidTerminate:(WKWebView *)webView {
+    [self cancelNativeDialogsForWebView:webView];
     if (webView == self.settingsWebView) {
         [self cancelSettingsNavigationWatchdog];
         [self showSettingsFailure:@"设置页面进程已结束。工作台和后台任务仍保持原状。"];
@@ -1137,29 +1168,115 @@ willPerformHTTPRedirection:(NSHTTPURLResponse *)response
     return nil;
 }
 
+- (BOOL)nativeDialogURLIsSameOrigin:(NSURL *)url {
+    return url != nil && self.appOrigin != nil && url.user == nil && url.password == nil
+        && [url.scheme isEqualToString:self.appOrigin.scheme]
+        && [url.host isEqualToString:self.appOrigin.host]
+        && ((url.port == nil && self.appOrigin.port == nil) || [url.port isEqualToNumber:self.appOrigin.port]);
+}
+
+- (BOOL)isTrustedNativeDialogSource:(WKWebView *)source frame:(WKFrameInfo *)frame {
+    BOOL ownedMain = source == self.webView && [self isSafeAppURL:source.URL];
+    BOOL ownedEditor = source == self.reportPreviewWebView && self.reportWindowIsEditor
+        && [self isAllowedReportEditorURL:source.URL];
+    if ((!ownedMain && !ownedEditor) || ![self nativeDialogURLIsSameOrigin:source.URL]
+        || ![self nativeDialogURLIsSameOrigin:frame.request.URL]) return NO;
+    WKSecurityOrigin *origin = frame.securityOrigin;
+    NSInteger expectedPort = self.appOrigin.port != nil ? self.appOrigin.port.integerValue
+        : ([self.appOrigin.scheme isEqualToString:@"https"] ? 443 : 80);
+    if (![origin.protocol isEqualToString:self.appOrigin.scheme] || ![origin.host isEqualToString:self.appOrigin.host]
+        || origin.port != expectedPort) return NO;
+    NSURL *url = frame.request.URL;
+    if ([self isSafeAppURL:url] || [self isAllowedReportEditorURL:url]) return YES;
+    for (NSString *module in @[@"datafetcher", @"payoffer", @"pricer", @"backtester", @"reporter"]) {
+        NSString *path = [NSString stringWithFormat:@"/capability/assets/pages/%@/%@.html", module, module];
+        if ([url.path isEqualToString:path]) return YES;
+    }
+    return NO;
+}
+
+- (NSWindow *)nativeDialogWindowForWebView:(WKWebView *)source {
+    NSWindow *window = source.window;
+    BOOL ownedMain = source == self.webView && window == self.window;
+    BOOL ownedEditor = source == self.reportPreviewWebView && window == self.reportPreviewWindow && self.reportWindowIsEditor;
+    return (ownedMain || ownedEditor) && window.isVisible ? window : nil;
+}
+
+- (void)cancelNativeDialogsForWebView:(WKWebView *)source {
+    for (OptionHelperNativeDialog *dialog in [self.nativeDialogs.allValues copy]) {
+        if (source == nil || dialog.sourceView == source) [dialog cancel];
+    }
+}
+
+- (void)webView:(WKWebView *)webView
+runJavaScriptConfirmPanelWithMessage:(NSString *)message
+initiatedByFrame:(WKFrameInfo *)frame
+completionHandler:(void (^)(BOOL result))completionHandler {
+    NSWindow *hostWindow = [self nativeDialogWindowForWebView:webView];
+    if (![self isTrustedNativeDialogSource:webView frame:frame] || hostWindow == nil) {
+        completionHandler(NO);
+        return;
+    }
+    [self cancelNativeDialogsForWebView:webView];
+    NSAlert *alert = [NSAlert new];
+    alert.messageText = [message substringToIndex:MIN(message.length, 4000)];
+    [alert addButtonWithTitle:@"确认"];
+    NSButton *cancel = [alert addButtonWithTitle:@"取消"];
+    cancel.keyEquivalent = @"\033";
+    NSUUID *identity = [NSUUID UUID];
+    OptionHelperNativeDialog *dialog = [OptionHelperNativeDialog new];
+    dialog.sourceView = webView;
+    dialog.sheetWindow = alert.window;
+    NSURL *sourceURL = webView.URL;
+    __weak typeof(self) weakSelf = self;
+    __weak WKWebView *weakView = webView;
+    dialog.completion = ^(BOOL accepted) {
+        [weakSelf.nativeDialogs removeObjectForKey:identity];
+        BOOL valid = weakView != nil && [weakView.URL isEqual:sourceURL]
+            && [weakSelf isTrustedNativeDialogSource:weakView frame:frame];
+        completionHandler(accepted && valid);
+    };
+    if (self.nativeDialogs == nil) self.nativeDialogs = [NSMutableDictionary dictionary];
+    self.nativeDialogs[identity] = dialog;
+    [alert beginSheetModalForWindow:hostWindow completionHandler:^(NSModalResponse response) {
+        [dialog finish:response == NSAlertFirstButtonReturn];
+    }];
+}
+
 - (void)webView:(WKWebView *)webView
 runOpenPanelWithParameters:(WKOpenPanelParameters *)parameters
 initiatedByFrame:(WKFrameInfo *)frame
 completionHandler:(void (^)(NSArray<NSURL *> * _Nullable URLs))completionHandler {
-    if (webView != self.webView) {
+    NSWindow *hostWindow = [self nativeDialogWindowForWebView:webView];
+    if (![self isTrustedNativeDialogSource:webView frame:frame] || hostWindow == nil) {
         completionHandler(nil);
         return;
     }
+    [self cancelNativeDialogsForWebView:webView];
     NSOpenPanel *panel = [NSOpenPanel openPanel];
     panel.canChooseFiles = YES;
     panel.canChooseDirectories = parameters.allowsDirectories;
     panel.allowsMultipleSelection = parameters.allowsMultipleSelection;
     panel.canCreateDirectories = NO;
     panel.resolvesAliases = YES;
-    void (^finish)(NSModalResponse) = ^(NSModalResponse response) {
-        completionHandler(response == NSModalResponseOK ? panel.URLs : nil);
+    NSUUID *identity = [NSUUID UUID];
+    OptionHelperNativeDialog *dialog = [OptionHelperNativeDialog new];
+    dialog.sourceView = webView;
+    dialog.sheetWindow = panel;
+    NSURL *sourceURL = webView.URL;
+    __weak typeof(self) weakSelf = self;
+    __weak WKWebView *weakView = webView;
+    dialog.completion = ^(BOOL accepted) {
+        [weakSelf.nativeDialogs removeObjectForKey:identity];
+        BOOL valid = weakView != nil && [weakView.URL isEqual:sourceURL]
+            && [weakSelf isTrustedNativeDialogSource:weakView frame:frame];
+        completionHandler(accepted && valid ? panel.URLs : nil);
     };
-    NSWindow *hostWindow = webView.window ?: self.window;
-    if (hostWindow != nil) {
-        [panel beginSheetModalForWindow:hostWindow completionHandler:finish];
-    } else {
-        [panel beginWithCompletionHandler:finish];
-    }
+    if (self.nativeDialogs == nil) self.nativeDialogs = [NSMutableDictionary dictionary];
+    self.nativeDialogs[identity] = dialog;
+    [panel beginSheetModalForWindow:hostWindow completionHandler:^(NSModalResponse response) {
+        [dialog finish:response == NSModalResponseOK];
+    }];
 }
 
 - (void)webView:(WKWebView *)webView
@@ -1259,10 +1376,15 @@ didFailWithError:(NSError *)error
         return NO;
     }
     if (sender == self.reportPreviewWindow) {
+        [self cancelNativeDialogsForWebView:self.reportPreviewWebView];
         [sender orderOut:nil];
         return NO;
     }
-    if (sender != self.window || self.closeAfterInterrupt || ([self.activeOperationState isEqualToString:@"ready"] && self.activeOperationCount == 0)) return YES;
+    if (sender != self.window) return YES;
+    if (self.closeAfterInterrupt || ([self.activeOperationState isEqualToString:@"ready"] && self.activeOperationCount == 0)) {
+        [self cancelNativeDialogsForWebView:nil];
+        return YES;
+    }
     NSAlert *alert = [[NSAlert alloc] init];
     BOOL runtimeReady = [self.activeOperationState isEqualToString:@"ready"];
     alert.messageText = runtimeReady ? @"仍有任务正在运行" : @"正在确认后台任务状态";
@@ -1271,11 +1393,13 @@ didFailWithError:(NSError *)error
     [alert addButtonWithTitle:@"取消"];
     if ([alert runModal] != NSAlertFirstButtonReturn) return NO;
     self.closeAfterInterrupt = YES;
+    [self cancelNativeDialogsForWebView:nil];
     [self.webView evaluateJavaScript:@"fetch('/api/runtime/shutdown',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).catch(()=>{}).finally(()=>window.webkit?.messageHandlers?.optionhelperRuntime?.postMessage({type:'shutdown_complete'}));" completionHandler:nil];
     return NO;
 }
 
 - (void)windowWillClose:(NSNotification *)notification {
+    if (notification.object == self.window) [self cancelNativeDialogsForWebView:nil];
     if (notification.object == self.window) [NSApp terminate:nil];
 }
 
@@ -1294,6 +1418,7 @@ didFailWithError:(NSError *)error
     }
     if ([message.name isEqualToString:@"optionhelperSession"] && [message.body isKindOfClass:[NSDictionary class]]
         && [message.body[@"type"] isEqualToString:@"signed_out"]) {
+        [self cancelNativeDialogsForWebView:nil];
         [self cancelSettingsNavigationWatchdog];
         [self.settingsWebView stopLoading];
         [self.settingsWebView loadHTMLString:@"" baseURL:nil];
