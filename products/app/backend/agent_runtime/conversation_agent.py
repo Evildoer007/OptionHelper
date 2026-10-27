@@ -273,20 +273,18 @@ class OptionConversationAgent:
         delivery = _recommendation_delivery_request(entry)
         if delivery is None:
             return
+        from ..report_delivery import delivery_targets
         receipts = []
-        for template in delivery["templates"]:
-            for fmt in delivery["formats"]:
-                receipt = self._tool_call(entry, identity, task_id, {
-                    "toolName": "recommendation_delivery_run",
-                    "arguments": {"kind": template, "format": fmt},
-                })
-                receipts.append(receipt)
-                entry["context"]["facts"]["current_report_delivery"] = receipts
-                if not _complete_delivery_receipt(receipt):
-                    # Every requested file is part of one Host-owned delivery.
-                    # A missing input or interrupted render ends the whole batch;
-                    # another model cannot repair it by repeating calculations.
-                    return _incomplete_recommendation_delivery_response(entry, receipt)
+        for target in delivery_targets(delivery):
+            receipt = self._tool_call(entry, identity, task_id, {
+                "toolName": "recommendation_delivery_run",
+                "arguments": {"kind": target["template"], "format": target["format"]},
+            })
+            receipts.append(receipt)
+            entry["context"]["facts"]["current_report_delivery"] = receipts
+            if not _complete_delivery_receipt(receipt):
+                # A missing input or interrupted render ends this delivery batch.
+                return _incomplete_recommendation_delivery_response(entry, receipt)
 
     def _request_turn(self, identity, task_id, entry, method, params, **kwargs):
         try:
@@ -554,6 +552,11 @@ class OptionConversationAgent:
         cancellation_check = getattr(self, "_is_cancelled", None)
         if callable(cancellation_check) and cancellation_check(identity, task_id):
             return {"status": "cancelled", "message": "本轮已停止，不再发起新工具调用。"}
+        if tool_name in {"reporter.run", "reporter.create_document", "recommendation_delivery.run"}:
+            from ..report_delivery import delivery_discussion_only
+            if delivery_discussion_only(entry.get("user_message", "")):
+                return {"status": "failed", "failure_code": "report_delivery_not_requested",
+                        "message": "本轮只需说明报告或代码问题，没有要求生成文件。"}
         delivery_key = (str(arguments.get("kind") or "report"), str(arguments.get("format") or "html"))
         if tool_name == "recommendation_delivery.run":
             completed = entry.get("completed_recommendation_deliveries", {})
@@ -1681,7 +1684,7 @@ def _fact_repair_catalog(observations, context_facts):
 
 def _recommendation_delivery_request(entry):
     """Retain an unfinished, user-requested delivery through a short clarification."""
-    from ..report_delivery import delivery_request
+    from ..report_delivery import delivery_request, delivery_targets
     current = delivery_request(entry.get("user_message", ""))
     if current is not None:
         return current
@@ -1706,8 +1709,10 @@ def _recommendation_delivery_request(entry):
             continue
         templates = [template for template in prior["templates"] if template.removeprefix("multi") in outputs]
         if templates:
+            targets = [target for target in delivery_targets(prior) if target["template"] in templates]
             return {**prior, "template": templates[-1], "templates": templates, "multiple": len(templates) > 1,
-                    "export_only": False}
+                    "deliveries": targets, "formats": list(dict.fromkeys(target["format"] for target in targets)),
+                    "format": targets[-1]["format"], "export_only": False}
     return None
 
 
@@ -1763,7 +1768,8 @@ def _completed_recommendation_delivery_response(entry):
     if request is None:
         return None
     receipts = entry.get("context", {}).get("facts", {}).get("current_report_delivery", [])
-    if not isinstance(receipts, list) or len(receipts) != len(request["templates"]) * len(request["formats"]):
+    from ..report_delivery import delivery_targets
+    if not isinstance(receipts, list) or len(receipts) != len(delivery_targets(request)):
         return None
     if any(not _complete_delivery_receipt(row) for row in receipts):
         return None
@@ -1778,6 +1784,8 @@ def _completed_recommendation_delivery_response(entry):
     response = _result("completed", text, list(entry.get("observations", [])))
     if documents:
         response["document"] = dict(documents[-1])
+        response["_assistant_blocks"] = [{"type": "text", "text": response["text"]},
+            *[{**dict(document), "type": "document"} for document in documents]]
     return response
 
 
