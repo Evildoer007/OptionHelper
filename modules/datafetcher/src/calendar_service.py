@@ -356,7 +356,7 @@ class CalendarCache:
             return {"entries": {}}
         try:
             value = json.loads(self.index_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as error:
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
             raise CalendarValidationError("交易日历缓存索引损坏") from error
         if not isinstance(value, dict) or not isinstance(value.get("entries"), dict):
             raise CalendarValidationError("交易日历缓存索引结构无效")
