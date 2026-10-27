@@ -63,6 +63,35 @@ private final class OptionHelperReportDownloadDelegate: NSObject, URLSessionTask
     }
 }
 
+// A native sheet owns a WebKit reply until a choice or lifecycle cancellation.
+private final class OptionHelperNativeDialog {
+    weak var sourceView: WKWebView?
+    let sheetWindow: NSWindow
+    var completion: ((Bool) -> Void)?
+    private var finished = false
+
+    init(sourceView: WKWebView, sheetWindow: NSWindow) {
+        self.sourceView = sourceView
+        self.sheetWindow = sheetWindow
+    }
+
+    func finish(_ accepted: Bool) {
+        guard !finished else { return }
+        finished = true
+        let callback = completion
+        completion = nil
+        callback?(accepted)
+    }
+
+    func cancel() {
+        guard !finished else { return }
+        finish(false)
+        if let parent = sheetWindow.sheetParent {
+            parent.endSheet(sheetWindow, returnCode: .cancel)
+        }
+    }
+}
+
 @main
 final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler, WKDownloadDelegate, NSMenuItemValidation {
     private enum PresentationDecision {
@@ -78,6 +107,7 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
     private var backend: Process?
     private var startupPipe: Pipe?
     private var window: NSWindow?
+    private var nativeDialogs: [UUID: OptionHelperNativeDialog] = [:]
     private var webView: WKWebView?
     private var reportPreviewWindow: NSWindow?
     private var reportPreviewWebView: WKWebView?
@@ -123,6 +153,7 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        cancelNativeDialogs()
         cancelNavigationWatchdog()
         cancelSettingsNavigationWatchdog()
         startupPipe?.fileHandleForReading.readabilityHandler = nil
@@ -833,6 +864,7 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
     }
 
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        cancelNativeDialogs(for: webView)
         if webView === settingsWebView {
             beginSettingsNavigationWatchdog()
             return
@@ -884,6 +916,7 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
     }
 
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        cancelNativeDialogs(for: webView)
         if webView === settingsWebView {
             cancelSettingsNavigationWatchdog()
             showSettingsFailure("设置页面进程已结束。工作台和后台任务仍保持原状。")
@@ -1122,29 +1155,99 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         return nil
     }
 
+    private func nativeDialogURLIsSameOrigin(_ url: URL?) -> Bool {
+        guard let url, let appOrigin else { return false }
+        return url.user == nil && url.password == nil && url.scheme == appOrigin.scheme
+            && url.host == appOrigin.host && url.port == appOrigin.port
+    }
+
+    private func isTrustedNativeDialogSource(_ source: WKWebView, frame: WKFrameInfo) -> Bool {
+        let ownedMain = source === webView && isSafeAppURL(source.url)
+        let ownedEditor = source === reportPreviewWebView && reportWindowIsEditor
+            && isAllowedReportEditorURL(source.url)
+        guard ownedMain || ownedEditor, let appOrigin,
+              nativeDialogURLIsSameOrigin(source.url), nativeDialogURLIsSameOrigin(frame.request.url) else { return false }
+        let origin = frame.securityOrigin
+        let expectedPort = appOrigin.port ?? (appOrigin.scheme == "https" ? 443 : 80)
+        guard origin.protocol == appOrigin.scheme, origin.host == appOrigin.host,
+              origin.port == expectedPort, let url = frame.request.url else { return false }
+        if isSafeAppURL(url) || isAllowedReportEditorURL(url) { return true }
+        return ["datafetcher", "payoffer", "pricer", "backtester", "reporter"].contains { module in
+            url.path == "/capability/assets/pages/\(module)/\(module).html"
+        }
+    }
+
+    private func nativeDialogWindow(for source: WKWebView) -> NSWindow? {
+        guard let host = source.window, host.isVisible else { return nil }
+        let ownedMain = source === webView && host === window
+        let ownedEditor = source === reportPreviewWebView && host === reportPreviewWindow && reportWindowIsEditor
+        return ownedMain || ownedEditor ? host : nil
+    }
+
+    private func cancelNativeDialogs(for source: WKWebView? = nil) {
+        for dialog in Array(nativeDialogs.values) where source == nil || dialog.sourceView === source {
+            dialog.cancel()
+        }
+    }
+
+    func webView(
+        _ webView: WKWebView,
+        runJavaScriptConfirmPanelWithMessage message: String,
+        initiatedByFrame frame: WKFrameInfo,
+        completionHandler: @escaping (Bool) -> Void
+    ) {
+        guard isTrustedNativeDialogSource(webView, frame: frame), let host = nativeDialogWindow(for: webView) else {
+            completionHandler(false)
+            return
+        }
+        cancelNativeDialogs(for: webView)
+        let alert = NSAlert()
+        alert.messageText = String(message.prefix(4000))
+        alert.addButton(withTitle: "确认")
+        alert.addButton(withTitle: "取消").keyEquivalent = "\u{1b}"
+        let identity = UUID()
+        let dialog = OptionHelperNativeDialog(sourceView: webView, sheetWindow: alert.window)
+        let sourceURL = webView.url
+        dialog.completion = { [weak self, weak webView] accepted in
+            self?.nativeDialogs.removeValue(forKey: identity)
+            guard let self, let webView else { completionHandler(false); return }
+            completionHandler(accepted && webView.url == sourceURL && self.isTrustedNativeDialogSource(webView, frame: frame))
+        }
+        nativeDialogs[identity] = dialog
+        alert.beginSheetModal(for: host) { response in
+            dialog.finish(response == .alertFirstButtonReturn)
+        }
+    }
+
     func webView(
         _ webView: WKWebView,
         runOpenPanelWith parameters: WKOpenPanelParameters,
         initiatedByFrame frame: WKFrameInfo,
         completionHandler: @escaping ([URL]?) -> Void
     ) {
-        guard webView === self.webView else {
+        guard isTrustedNativeDialogSource(webView, frame: frame), let host = nativeDialogWindow(for: webView) else {
             completionHandler(nil)
             return
         }
+        cancelNativeDialogs(for: webView)
         let panel = NSOpenPanel()
         panel.canChooseFiles = true
         panel.canChooseDirectories = parameters.allowsDirectories
         panel.allowsMultipleSelection = parameters.allowsMultipleSelection
         panel.canCreateDirectories = false
         panel.resolvesAliases = true
-        let finish: (NSApplication.ModalResponse) -> Void = { response in
-            completionHandler(response == .OK ? panel.urls : nil)
+        let identity = UUID()
+        let dialog = OptionHelperNativeDialog(sourceView: webView, sheetWindow: panel)
+        let sourceURL = webView.url
+        dialog.completion = { [weak self, weak webView] accepted in
+            self?.nativeDialogs.removeValue(forKey: identity)
+            guard let self, let webView else { completionHandler(nil); return }
+            let valid = accepted && webView.url == sourceURL && self.isTrustedNativeDialogSource(webView, frame: frame)
+            completionHandler(valid ? panel.urls : nil)
         }
-        if let hostWindow = webView.window ?? window {
-            panel.beginSheetModal(for: hostWindow, completionHandler: finish)
-        } else {
-            panel.begin(completionHandler: finish)
+        nativeDialogs[identity] = dialog
+        panel.beginSheetModal(for: host) { response in
+            dialog.finish(response == .OK)
         }
     }
 
@@ -1247,11 +1350,15 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
             return false
         }
         if sender === reportPreviewWindow {
+            cancelNativeDialogs(for: reportPreviewWebView)
             sender.orderOut(nil)
             return false
         }
         guard sender === window else { return true }
-        if closeAfterInterrupt || (activeOperationState == "ready" && activeOperationCount == 0) { return true }
+        if closeAfterInterrupt || (activeOperationState == "ready" && activeOperationCount == 0) {
+            cancelNativeDialogs()
+            return true
+        }
         let alert = NSAlert()
         alert.messageText = activeOperationState == "ready" ? "仍有任务正在运行" : "正在确认后台任务状态"
         alert.informativeText = activeOperationState == "ready"
@@ -1261,11 +1368,13 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         alert.addButton(withTitle: "取消")
         guard alert.runModal() == .alertFirstButtonReturn else { return false }
         closeAfterInterrupt = true
+        cancelNativeDialogs()
         webView?.evaluateJavaScript("fetch('/api/runtime/shutdown',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).catch(()=>{}).finally(()=>window.webkit?.messageHandlers?.optionhelperRuntime?.postMessage({type:'shutdown_complete'}));")
         return false
     }
 
     func windowWillClose(_ notification: Notification) {
+        if notification.object as? NSWindow === window { cancelNativeDialogs() }
         guard notification.object as? NSWindow === window else { return }
         NSApp.terminate(nil)
     }
@@ -1333,6 +1442,7 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
     }
 
     private func clearAuxiliaryWindowsAfterSignOut() {
+        cancelNativeDialogs()
         cancelSettingsNavigationWatchdog()
         settingsWebView?.stopLoading()
         settingsWebView?.loadHTMLString("", baseURL: nil)
