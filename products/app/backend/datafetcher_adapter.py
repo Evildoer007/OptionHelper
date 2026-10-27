@@ -425,6 +425,13 @@ def _requires_ifind(request: Mapping[str, Any], action: str) -> bool:
     source = request.get("request", request.get("data_request", request))
     if not isinstance(source, Mapping):
         return True
+    cache_policy = source.get("cache_policy", "extend_only")
+    if source.get("offline") is True or (
+        isinstance(cache_policy, str) and cache_policy.strip().lower() == "reuse"
+    ):
+        # The service still enforces the caller/provider cache identity and
+        # offline/reuse miss policy; neither branch may contact a remote feed.
+        return False
 
     raw_priority = source.get("source_priority")
     if isinstance(raw_priority, str):
