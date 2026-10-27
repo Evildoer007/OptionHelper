@@ -20,7 +20,7 @@ from runtime.workflow_policy import decide_workflow, recommendation_execution_mo
 from ..errors import AuthorizationError, UnavailableCapabilityError, ValidationError
 from ..identity.session_identity import SessionIdentity
 from ..settings.settings_models import ModelSelection
-from ..report_delivery import delivery_request
+from ..report_delivery import delivery_request, delivery_targets
 from .redaction import has_hidden_reasoning, redact_text, INTERNAL_REFERENCE_PATTERN
 from .durability_checkpoint import DurabilityCheckpointStore, stable_operation_id
 from .session_context import SessionId
@@ -226,18 +226,9 @@ class AgentLoop:
                         # rerun them after a document has been committed.
                         if self._is_cancelled(identity, task_id):
                             return _result("cancelled", "本次任务已取消。", observations, round_number)
-                        delivery = dict(self._tool_executor.call(
-                            identity, task_id, "recommendation_delivery.run",
-                            {"kind": requested_document["template"], "format": requested_document["format"]},
-                        ))
-                        observations.append(_observation("recommendation_delivery.run", delivery, identity))
-                        return {
-                            **delivery,
-                            "state": _state(str(delivery.get("status", "unavailable"))),
-                            "text": delivery.get("text") or delivery.get("next_step") or delivery.get("message") or "所需计算尚未完成。",
-                            "observations": observations,
-                            "rounds": round_number,
-                        }
+                        return self._run_requested_recommendation_delivery(
+                            identity, task_id, requested_document, observations, round_number,
+                        )
                     # Recommender persists the authoritative ordered candidate
                     # state.  The parent Agent must observe that committed state,
                     # never the context captured before recommendation ran.
@@ -483,6 +474,33 @@ class AgentLoop:
                 return _result("timed_out", "本次任务处理超时，未生成计算结论。", observations, round_number)
         return _result("max_rounds", "已达到最大工具决策轮次，未生成最终结论。", observations, self._max_rounds)
 
+    def _run_requested_recommendation_delivery(self, identity, task_id, request, observations, round_number):
+        """Deliver the explicit target list from one verified recommendation."""
+        completed = []
+        for target in delivery_targets(request):
+            if self._is_cancelled(identity, task_id):
+                result = {"status": "cancelled", "text": "本次交付已取消；已完成文件保留。"}
+                break
+            result = dict(self._tool_executor.call(
+                identity, task_id, "recommendation_delivery.run",
+                {"kind": target["template"], "format": target["format"]},
+            ))
+            observations.append(_observation("recommendation_delivery.run", result, identity))
+            status = str(result.get("status", "unavailable"))
+            if isinstance(result.get("document"), Mapping):
+                completed.append(dict(result["document"]))
+            if status not in {"completed", "succeeded"}:
+                if completed and status in {"failed", "unavailable", "blocked"}:
+                    result["status"] = "partial"
+                break
+        if completed:
+            result["document"] = completed[-1]
+            result["documents"] = completed
+            result["_assistant_blocks"] = [{**document, "type": "document"} for document in completed]
+        return {**result, "state": _state(str(result.get("status", "unavailable"))),
+                "text": result.get("text") or result.get("next_step") or result.get("message") or "交付尚未完成。",
+                "observations": observations, "rounds": round_number}
+
     def _run_dual_delivery(
         self,
         identity: SessionIdentity,
@@ -493,11 +511,14 @@ class AgentLoop:
     ) -> dict[str, Any]:
         """Render both requested documents from the task's existing formal results."""
 
-        output_format = "pdf" if "pdf" in message.lower() else "html"
+        request = delivery_request(message)
+        targets = delivery_targets(request) if request else [{"template": kind, "format": "html"} for kind in ("card", "report")]
         deliveries: list[Mapping[str, Any]] = []
         has_partial_delivery = False
-        for kind in ("card", "report"):
-            arguments: dict[str, Any] = {"kind": kind, "format": output_format}
+        for target in targets:
+            if self._is_cancelled(identity, task_id):
+                return _result("cancelled", "本次交付已取消；已完成文件保留。", observations, round_number)
+            arguments: dict[str, Any] = {"kind": target["template"], "format": target["format"]}
             try:
                 raw = self._tool_executor.call(identity, task_id, "reporter.run", arguments)
                 observations.append(_observation("reporter.run", raw, identity))
