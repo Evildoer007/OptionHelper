@@ -1466,6 +1466,12 @@ class AppConversationToolExecutor:
         )
 
     def call(self, identity: SessionIdentity, task_id: str, name: str, arguments: Mapping[str, Any]) -> Mapping[str, Any]:
+        if name in {"reporter.run", "reporter.create_document", "recommendation_delivery.run"} and self._tasks is not None:
+            from ..report_delivery import delivery_discussion_only
+            messages = self._tasks.get(identity, task_id).get("messages", [])
+            latest = next((str(row.get("content", "")) for row in reversed(messages) if row.get("role") == "user"), "")
+            if delivery_discussion_only(latest):
+                raise ValidationError("本轮是在询问报告或代码，没有要求生成文件。")
         if name == "task.position_size":
             from ..authorization.policy import AuthorizationPolicy
             AuthorizationPolicy().require(identity.role, "conversation.tool.run")
