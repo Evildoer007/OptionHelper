@@ -192,7 +192,7 @@ class LocalCache:
             return {"schema": "optionhelper.data-cache-index", "entries": {}}
         try:
             value = json.loads(self.index_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as error:
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
             raise CacheIndexError("DataFetcher缓存索引损坏，拒绝静默覆盖") from error
         if self._is_v1_index(value):
             value = {
@@ -277,31 +277,33 @@ class LocalCache:
                 missing[asset_id] = intervals
         return missing
 
+    def _validated_disk_record(self, record: object) -> tuple[pd.DataFrame, dict[str, Any]] | None:
+        """Validate payload and metadata together before trusting their coverage."""
+
+        if not isinstance(record, dict):
+            return None
+        relative_path = record.get("data_path")
+        if not isinstance(relative_path, str):
+            return None
+        path = (self.root / relative_path).resolve()
+        if self.root.resolve() not in path.parents or not path.is_file():
+            return None
+        try:
+            frame = pd.read_csv(path, dtype={"date": str, "asset_id": str})
+            actual_hash = daily_content_hash(frame)
+        except (DataNormalizationError, KeyError, OSError, UnicodeDecodeError,
+                pd.errors.EmptyDataError, pd.errors.ParserError):
+            return None
+        if actual_hash != record.get("content_hash"):
+            return None
+        return frame, dict(record)
+
     def _disk_record(self, identity: str) -> tuple[pd.DataFrame, dict[str, Any]] | None:
         if not self.index_path.exists():
             return None
         with self._index_guard():
             record = self._index(migrate=False)["entries"].get(identity)
-            if not isinstance(record, dict):
-                return None
-            relative_path = record.get("data_path")
-            if not isinstance(relative_path, str):
-                return None
-            path = (self.root / relative_path).resolve()
-            if self.root.resolve() not in path.parents or not path.is_file():
-                return None
-            try:
-                frame = pd.read_csv(path, dtype={"date": str, "asset_id": str})
-                actual_hash = daily_content_hash(frame)
-            except (DataNormalizationError, KeyError, OSError, UnicodeDecodeError,
-                    pd.errors.EmptyDataError, pd.errors.ParserError):
-                # CSV parsing can fail before a frame exists. Empty/truncated
-                # or invalidly encoded cache bytes are misses, just like a hash
-                # mismatch; the caller still enforces offline/reuse policies.
-                return None
-            if actual_hash != record.get("content_hash"):
-                return None
-            return frame, dict(record)
+            return self._validated_disk_record(record)
 
     def _volatile_record(self, identity: str) -> tuple[pd.DataFrame, dict[str, Any]] | None:
         key = (str(self.root.resolve()), identity)
@@ -441,13 +443,16 @@ class LocalCache:
         content_hash = str(metadata["content_hash"])
         relative_path = f"assets/{content_hash}.csv"
         with self._index_guard():
+            index = self._index()
+            previous = self._validated_disk_record(index["entries"].get(identity))
+            # A corrupt or missing payload invalidates its old coverage claims.
+            # A narrow replacement must not inherit dates from discarded bytes.
+            existing = previous[1] if previous is not None else {}
             _atomic_write_csv(self.root / relative_path, frame)
             _atomic_write_json(self.root / "assets" / f"{content_hash}.json", dict(metadata))
-            index = self._index()
-            existing = index["entries"].get(identity)
             index["entries"][identity] = {
                 "data_path": relative_path,
-                **self._saved_metadata(metadata, existing or {}, data_asset_ref_key, reset_coverage),
+                **self._saved_metadata(metadata, existing, data_asset_ref_key, reset_coverage),
             }
             _atomic_write_json(self.index_path, index)
         with _VOLATILE_ENTRIES_LOCK:
