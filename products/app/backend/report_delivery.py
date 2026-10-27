@@ -19,43 +19,162 @@ _NEGATED_DELIVERY = re.compile(
     r'(?:(?:计算|定价|估值|回测)(?:、|或|和|及|与|以及))*'
     r'(?:生成|导出|下载|输出|制作|提供|给我|报告|简报|报价表|报价单|html|pdf|word|docx)', re.I)
 
+_ACTION = re.compile(r'生成|导出|下载|给我|给一|再给|改成|转成|整理成|输出|制作|做一')
+_FORMAT = re.compile(r'(?<![A-Za-z])(html|pdf|word|docx)(?![A-Za-z])', re.I)
+_DOCUMENT_NAME = re.compile(r'报价表|报价单|参考报价|简报|报告')
+_PUBLIC_TEMPLATE = {'报告': 'report', '简报': 'card', '报价表': 'quote', '报价单': 'quote', '参考报价': 'quote'}
+_FORMAT_JOINER = re.compile(r'^\s*(?:和|与|及|以及|或|、|,|，|/|\+|&)\s*$', re.I)
+
+
+def _document_mentions(text):
+    named = [(match.start(), match.end(), match.group(1).lower()) for match in _TEMPLATE.finditer(text)]
+    for match in _DOCUMENT_NAME.finditer(text):
+        kind = _PUBLIC_TEMPLATE[match.group()]
+        alias = next((index for index, (_start, end, template) in enumerate(named)
+                      if end <= match.start() and template.removeprefix('multi') == kind
+                      and text[end:match.start()].strip() in {'', '研究'}), None)
+        if alias is None:
+            named.append((match.start(), match.end(), kind))
+        else:
+            start, _end, template = named[alias]
+            named[alias] = (start, match.end(), template)
+    return sorted(named)
+
+
+def _format_groups(text):
+    groups = []
+    for match in _FORMAT.finditer(text):
+        fmt = 'docx' if match.group(1).lower() == 'word' else match.group(1).lower()
+        if groups and _FORMAT_JOINER.fullmatch(text[groups[-1][1]:match.start()]):
+            start, _end, formats = groups[-1]
+            groups[-1] = (start, match.end(), list(dict.fromkeys([*formats, fmt])))
+        else:
+            groups.append((match.start(), match.end(), [fmt]))
+    return groups
+
+
+def _affirmative_delivery_text(text):
+    """Keep output directives and their format lists, not explanatory clauses.
+
+    A question before an action is different from an action whose report must
+    explain a reason. Negation and code-example requests are evaluated per
+    clause, so they cannot veto a separate affirmative document instruction.
+    """
+    base_clauses = re.split(r'[，,。；;！!\n]|但是|但|而是', text)
+    clauses = []
+    for clause in base_clauses:
+        if re.match(r'\s*(?:为什么|为何|怎么|如何)', clause):
+            clauses.append(clause)
+        else:
+            clauses.extend(re.split(r'(?:并且|并|然后|同时|之后)(?=\s*(?:请|再|帮我)?(?:生成|导出|下载|输出|制作|整理成))', clause))
+    retained = []
+    directed = False
+    for raw in clauses:
+        clause = raw.strip()
+        if not clause or _NEGATED_DELIVERY.search(clause):
+            continue
+        if re.search(r'源码|源代码|代码示例', clause):
+            continue
+        action = _ACTION.search(clause)
+        if action:
+            prefix = clause[:action.start()]
+            if re.search(r'为什么|为何|怎么|如何|区别|解释|说明', prefix):
+                continue
+            if action.group() in {'给我', '给一', '再给'} and re.match(r'\s*(?:解释|说明|介绍)', clause[action.end():]):
+                continue
+            if _DOCUMENT_NAME.search(clause) or _TEMPLATE.search(clause) or _FORMAT.search(clause):
+                directed = True
+                mentions = _document_mentions(clause)
+                explanation = re.search(r'(?:并|同时|然后)?(?:解释|说明)', clause)
+                if mentions and explanation and explanation.start() >= mentions[0][1]:
+                    clause = clause[:explanation.start()]
+                retained.append(clause)
+                continue
+        if clause.lower() in {'card', 'report', 'quote', 'multicard', 'multireport'}:
+            directed = True
+            retained.append(clause)
+            continue
+        # Formats and names may be enumerated in a following clause.
+        remainder = _FORMAT.sub('', _TEMPLATE.sub('', _DOCUMENT_NAME.sub('', clause)))
+        remainder = re.sub(r'研究|专业|格式|版本|分别|统一|全部|所有|每份|各份|均|都|用|为|和|与|以及|及|或|的|[\s、/+:：?？-]', '', remainder)
+        if not remainder and (_FORMAT.search(clause) or _document_mentions(clause)):
+            retained.append(clause)
+    return '，'.join(retained) if directed else None
+
+
+def _requested_document_targets(text, mentions):
+    """Bind each format group to its document, or to an explicit shared list."""
+    if not mentions:
+        mentions = [(len(text), len(text), 'report')]
+    groups = _format_groups(text)
+    assigned = [[] for _ in mentions]
+    if len(groups) == 1 and re.search(r'分别', text) and len(groups[0][2]) == len(mentions):
+        for index, fmt in enumerate(groups[0][2]):
+            assigned[index] = [fmt]
+    elif len(groups) == 1 and (groups[0][1] <= mentions[0][0] or groups[0][0] >= mentions[-1][1]):
+        assigned = [list(groups[0][2]) for _ in mentions]
+    else:
+        for start, end, formats in groups:
+            previous = next((index for index in range(len(mentions)-1, -1, -1) if mentions[index][1] <= start), None)
+            following = next((index for index, mention in enumerate(mentions) if mention[0] >= end), None)
+            if previous is None:
+                index = following
+            elif following is None:
+                index = previous
+            else:
+                # Prefix modifiers belong to the next document: Word研究报告.
+                # A conjunction after the format indicates postfix: 简报PDF和报告.
+                suffix = text[end:mentions[following][0]]
+                direct_prefix = re.fullmatch(r'\s*(?:(?:格式|版本|的|研究|专业)\s*)*', suffix)
+                index = following if direct_prefix else previous
+            if index is not None:
+                assigned[index].extend(formats)
+        shared = groups[0][2] if groups and groups[0][1] <= mentions[0][0] else ['html']
+        assigned = [formats or list(shared) for formats in assigned]
+    targets = []
+    for (_start, _end, template), formats in zip(mentions, assigned):
+        for fmt in dict.fromkeys(formats or ['html']):
+            target = {'template': template, 'format': fmt}
+            if target not in targets:
+                targets.append(target)
+    return targets
+
+
+def delivery_targets(request):
+    """One ordered target model used by Host routing, conversion and receipts."""
+    explicit = request.get('deliveries')
+    if isinstance(explicit, list):
+        return [dict(target) for target in explicit]
+    # Old in-memory fixtures and recovery records predate the explicit model.
+    return [{'template': template, 'format': fmt}
+            for template in request.get('templates', [request['template']])
+            for fmt in request.get('formats', [request['format']])]
+
+
 def delivery_request(text):
-    text = str(text or '').strip()
-    if re.search(r'源码|源代码|代码示例|为什么|为何|怎么用|区别', text):
+    original = str(text or '').strip()
+    text = _affirmative_delivery_text(original)
+    if text is None:
         return None
-    # Exclude negated delivery clauses before detecting actions and formats.
-    # A separate affirmative clause still permits e.g. 不要PDF，生成HTML报告.
-    text = '，'.join(clause for clause in re.split(r'[，,。；;！!\n]|但是|但|而是', text)
-                    if not _NEGATED_DELIVERY.search(clause))
-    template_match = _TEMPLATE.search(text)
-    file_word = re.search(r'报告|简报|报价表|报价单|参考报价|html|pdf|word|docx', text, re.I)
-    action = re.search(r'生成|导出|下载|给我|给一|再给|改成|转成|整理成|输出|制作|做一', text)
-    if (not file_word and not template_match) or (not action and text.lower() not in {'card','report','quote','multicard','multireport'}):
-        return None
-    public_kinds = [(match.start(), {'报告': 'report', '简报': 'card', '报价表': 'quote', '报价单': 'quote', '参考报价': 'quote'}[match.group()])
-                    for match in re.finditer(r'报价表|报价单|参考报价|简报|报告', text)]
-    # Public Chinese names and template identifiers express the same request.
-    # Preserve their order instead of retaining only the last Chinese family.
-    named_kinds = [(match.start(), match.end(), match.group(1).lower())
-                   for match in _TEMPLATE.finditer(text)]
-    for position, kind in public_kinds:
-        alias = any(end <= position and named.removeprefix('multi') == kind
-                    and text[end:position].strip() in {'', '研究'}
-                    for _, end, named in named_kinds)
-        if not alias:
-            named_kinds.append((position, position, kind))
-    templates = list(dict.fromkeys(kind for _, _, kind in sorted(named_kinds)))
-    template = templates[-1] if templates else 'report'
-    if len(templates) <= 1 and re.search(r'(?:多|两|双|[2-9])(?:个|款|种)?(?:产品|结构)|(?:产品|结构)(?:横向)?对比', text) and template in {'card','report'}:
-        template = 'multi' + template
-    formats = list(re.finditer(r'html|pdf|word|docx', text, re.I))
-    fmt = formats[-1].group().lower() if formats else 'html'
-    return {'template': template, 'templates': templates if len(templates) > 1 else [template],
-            'multiple': len(templates) > 1, 'format': 'docx' if fmt == 'word' else fmt,
-            'formats': list(dict.fromkeys('docx' if m.group().lower() == 'word' else m.group().lower() for m in formats)) or ['html'],
+    mentions = _document_mentions(text)
+    templates = list(dict.fromkeys(template for _start, _end, template in mentions))
+    if len(templates) <= 1 and re.search(r'(?:多|两|双|[2-9])(?:个|款|种)?(?:产品|结构)|(?:产品|结构)(?:横向)?对比', original):
+        mentions = [(start, end, 'multi'+kind if kind in {'card', 'report'} else kind) for start, end, kind in mentions]
+    targets = _requested_document_targets(text, mentions)
+    templates = list(dict.fromkeys(target['template'] for target in targets))
+    formats = list(dict.fromkeys(target['format'] for target in targets))
+    return {'template': templates[-1], 'templates': templates, 'multiple': len(templates) > 1,
+            'format': targets[-1]['format'], 'formats': formats, 'deliveries': targets,
             'export_only': bool(re.search(r'再给|改成|转成|导出|下载', text)) and not bool(re.search(
                 r'推荐|重新生成|多智能体|(?:继续|完成|重新).{0,20}(?:研究|分析)|'
                 r'(?:生成|制作|撰写|编写|整理).{0,80}(?:报告|简报|交付)', text))}
+
+
+def delivery_discussion_only(text):
+    """Reject explicit non-delivery turns without revoking prior continuations."""
+    value = str(text or '')
+    return delivery_request(value) is None and bool(_NEGATED_DELIVERY.search(value) or re.search(
+        r'为什么|为何|怎么|如何|区别|源码|源代码|代码示例', value))
 
 
 def requested_analysis_modules(text):
@@ -321,34 +440,43 @@ class ReportDelivery:
                 raise ValidationError('报告不属于当前对话')
         return selected
 
-    def export_documents(self, identity, task_id, report_ids, fmt, *, cancelled=None):
-        """Convert selected frozen documents, retaining each successful delivery."""
-        blocks = []
-        documents = []
-        notices = []
-        incomplete = False
-        stopped = False
-        for report_id in report_ids:
-            if cancelled and cancelled():
-                stopped = True
+    def export_documents(self, identity, task_id, report_ids, fmt, *, cancelled=None, reuse_completed=False):
+        """Convert each selected document to each explicitly requested format.
+
+        Existing documents share their immutable identity across formats. A
+        failed format cannot erase successful files or mark the batch complete;
+        cancellation stops before the next conversion and retains committed ones.
+        """
+        formats = [fmt] if isinstance(fmt, str) else list(dict.fromkeys(fmt))
+        if not formats or any(value not in {'html', 'pdf', 'docx'} for value in formats):
+            raise ValidationError('报告格式应为HTML、PDF或Word')
+        blocks, documents, notices = [], [], []
+        incomplete = stopped = False
+        for report_id in dict.fromkeys(report_ids):
+            for output_format in formats:
+                if cancelled and cancelled():
+                    stopped = True
+                    break
+                title = self.editor.editor_payload(identity, report_id)['title']
+                label = 'Word' if output_format == 'docx' else output_format.upper()
+                try:
+                    exported = self.export(identity, task_id, report_id, output_format,
+                                           reuse_completed=reuse_completed)
+                except ValidationError as error:
+                    incomplete = True
+                    detail = error.message if isinstance(error, UserActionError) else '导出未完成，请在报告编辑页重试。'
+                    notices.append(f'{title}：{label}未导出。{detail}')
+                    continue
+                incomplete = incomplete or exported.get('status') != 'completed'
+                blocks.extend(block for block in exported.get('_assistant_blocks', []) if block.get('type') == 'document')
+                if exported.get('document'):
+                    documents.append(exported['document'])
+                notices.append(f'{title}：{label}已导出。' if exported.get('status') == 'completed'
+                               else f'{title}：{exported.get("text") or label + "暂未导出。"}')
+            if stopped:
                 break
-            title = self.editor.editor_payload(identity, report_id)['title']
-            try:
-                exported = self.export(identity, task_id, report_id, fmt)
-            except ValidationError as error:
-                incomplete = True
-                detail = error.message if isinstance(error, UserActionError) else '导出未完成，请在报告编辑页重试。'
-                notices.append(f'{title}：{detail}')
-                continue
-            incomplete = incomplete or exported.get('status') != 'completed'
-            blocks.extend(block for block in exported.get('_assistant_blocks', []) if block.get('type') == 'document')
-            if exported.get('document'):
-                documents.append(exported['document'])
-            label = 'Word' if fmt == 'docx' else fmt.upper()
-            notices.append(f'{title}：{label}已导出。' if exported.get('status') == 'completed'
-                           else f'{title}：{exported.get("text") or "所选格式暂未导出。"}')
         if stopped:
-            notices.append('已停止转换；已完成的文件仍可下载，其余报告未转换。')
+            notices.append('已停止转换；已完成的文件仍可下载，其余格式未转换。')
         status = 'cancelled' if stopped else 'partial' if incomplete and documents else 'needs_input' if incomplete else 'completed'
         text = '\n'.join(notices)
         response = {'status': status, 'text': text, '_assistant_blocks': [{'type': 'text', 'text': text}, *blocks],
@@ -356,6 +484,28 @@ class ReportDelivery:
         if documents:
             response['document'] = documents[-1]
         return response
+
+    def _with_requested_exports(self, identity, task_id, report_id, request, response, *, reuse_completed=False):
+        exported = self.export_documents(identity, task_id, [report_id], request['formats'],
+            cancelled=lambda: self.tasks.is_cancelled(identity, task_id), reuse_completed=reuse_completed)
+        original_text = str(response.get('text') or '').strip()
+        notice = str(exported.get('text') or '').strip()
+        text = '\n\n'.join(dict.fromkeys(value for value in (original_text, notice) if value))
+        blocks = [block for block in response.get('_assistant_blocks', [])
+                  if block.get('type') != 'text' and not (block.get('type') == 'document'
+                    and block.get('report_run_id') == report_id and block.get('format') in request['formats'])]
+        blocks.extend(block for block in exported.get('_assistant_blocks', []) if block.get('type') == 'document')
+        documents = []
+        for document in [*(response.get('documents') or []), response.get('document') or {}, *(exported.get('documents') or [])]:
+            if document.get('report_run_id') and document not in documents:
+                documents.append(document)
+        status = response.get('status') or 'completed'
+        if status == 'completed' or exported['status'] == 'cancelled':
+            status = exported['status']
+        return {**response, **{key: value for key, value in exported.items() if key not in {'text', 'status', '_assistant_blocks'}},
+                'status': status, 'text': text, 'documents': documents,
+                **({'document': documents[-1]} if documents else {}),
+                '_assistant_blocks': [{'type': 'text', 'text': text}, *blocks]}
 
     def export(self, identity, task_id, report_id, fmt, *, reuse_completed=False):
         document = self.editor.editor_payload(identity, report_id)
@@ -410,20 +560,14 @@ class ReportDelivery:
                 'document': exported['document']}
 
     def attach_documents(self, identity, task_id, response, report_ids):
-        """Expose every report created this turn, including short follow-up requests.
-
-        Resolve ownership and source HTML through the editor, never model URLs.
-        Attaching a card neither rewrites the report nor changes analysis status.
-        """
+        """Attach missing reports without collapsing one report's format cards."""
         blocks = list(response.get('_assistant_blocks') or [])
         if not blocks and str(response.get('text') or '').strip():
             blocks.append({'type': 'text', 'text': response['text']})
-        ordered_ids = list(dict.fromkeys(report_ids))
-        existing = {block.get('report_run_id'): block for block in blocks if block.get('type') == 'document'}
-        blocks = [block for block in blocks if not (block.get('type') == 'document' and block.get('report_run_id') in ordered_ids)]
-        for report_id in ordered_ids:
-            if report_id in existing:
-                blocks.append(existing[report_id])
+        existing = {(block.get('report_run_id'), block.get('format', 'html'))
+                    for block in blocks if block.get('type') == 'document'}
+        for report_id in dict.fromkeys(report_ids):
+            if any(key[0] == report_id for key in existing):
                 continue
             document = self.editor.editor_payload(identity, report_id)
             if document['task_id'] != task_id:
@@ -444,13 +588,24 @@ class ReportDelivery:
         latest = next((str(row.get('content', '')) for row in reversed(messages) if row.get('role') == 'user'), '')
         if not expected and _NEGATED_DELIVERY.search(latest):
             raise ValidationError('本轮明确不生成报告，请直接回答用户问题。')
+        if delivery_discussion_only(latest):
+            raise ValidationError('本轮是在询问报告或代码，没有要求生成文件。')
         if requested_analysis_modules(latest):
             raise ValidationError('本次要求实际计算结果，请先完成所需分析并从分析结果生成报告，不能改交草稿。')
         allowed = {'title','content','template','format','product_ids'}
         if set(arguments)-allowed:
             raise ValidationError('报告草稿只接受标题、正文、模板、格式和product_ids产品编号列表')
-        template = expected['template'] if expected and not expected['multiple'] else str(arguments.get('template') or 'report')
-        fmt = expected['format'] if expected else str(arguments.get('format') or 'html').lower()
+        template = str(arguments.get('template') or (expected['template'] if expected else 'report'))
+        fmt = str(arguments.get('format') or 'html').lower()
+        if expected:
+            targets = delivery_targets(expected)
+            matches = [target for target in targets if target['template'] == template]
+            if not matches:
+                if expected['multiple']:
+                    raise ValidationError('报告模板不在本次明确要求的交付列表中')
+                matches = targets
+            selected = next((target for target in matches if target['format'] == fmt), matches[0])
+            template, fmt = selected['template'], selected['format']
         if template not in {'card','report','multicard','multireport'} or fmt not in {'html','pdf','docx'}:
             raise ValidationError('请选择研究简报或报告，以及HTML、PDF或Word格式；报价需使用已验证结果')
         pending = self.tasks.pending_recommendation(identity, task_id)
@@ -512,21 +667,83 @@ class ReportDelivery:
                                             report_id=report_id, output_type=kind, comparison=template.startswith('multi'))
         return self.export(identity, task_id, saved['report_run_id'], fmt)
 
-    def complete(self, identity, task_id, message, response, *, request_id=None, report_id=None):
+    def _complete_document_batch(self, identity, task_id, request, response, report_ids):
+        """Verify each requested pair against current, owner-scoped stored files.
+
+        A missing document family requires input; Host may convert a verified
+        current document to another format, but never invents a missing report.
+        """
+        ids = list(dict.fromkeys(report_ids))
+        for block in [*(response.get('_assistant_blocks') or []), *(response.get('documents') or []), response.get('document') or {}]:
+            identifier = block.get('report_run_id') if isinstance(block, Mapping) else None
+            if identifier and identifier not in ids:
+                ids.append(identifier)
+        rows = {row['report_run_id']: row for row in self.results.list_report_runs(identity, task_id)
+                if row.get('report_run_id') in ids}
+        documents, missing = [], []
+        stopped = False
+        labels = {'card': '研究简报', 'report': '研究报告', 'quote': '报价表',
+                  'multicard': '多结构简报', 'multireport': '多结构报告'}
+        for target in delivery_targets(request):
+            if self.tasks.is_cancelled(identity, task_id):
+                stopped = True
+                break
+            label = ('Word' if target['format'] == 'docx' else target['format'].upper()) + labels[target['template']]
+            candidates = [row for identifier, row in rows.items()
+                          if ('multi' if row.get('comparison') else '') + row.get('output_type', 'report') == target['template']]
+            if not candidates:
+                missing.append(label)
+                continue
+            row = next((item for item in candidates if any(
+                artifact.get('name') == 'report.' + target['format']
+                for artifact in item.get('artifacts', []))), candidates[0])
+            try:
+                exported = self.export(identity, task_id, row['report_run_id'], target['format'], reuse_completed=True)
+            except ValidationError:
+                missing.append(label)
+                continue
+            document = exported.get('document')
+            if isinstance(document, Mapping) and document not in documents:
+                documents.append(dict(document))
+            if exported.get('status') != 'completed' or not document or document.get('format') != target['format']:
+                missing.append(label)
+        if stopped:
+            status, notice = 'cancelled', '交付已取消；已完成文件保留。'
+        elif missing:
+            status = 'partial' if documents else 'needs_input'
+            notice = '尚未交付：' + '、'.join(missing) + '。请继续完成这些文档，已有文件保留。'
+        else:
+            status = response.get('status', 'completed')
+            notice = '要求的文档及格式已全部交付。'
+        text = notice if missing or stopped else '\n\n'.join(value for value in (str(response.get('text') or '').strip(), notice) if value)
+        output = {**response, 'status': status, 'text': text, 'documents': documents,
+                  '_assistant_blocks': [{'type': 'text', 'text': text},
+                                        *[{**document, 'type': 'document'} for document in documents]]}
+        if documents:
+            output['document'] = documents[-1]
+        else:
+            output.pop('document', None)
+        return output
+
+    def complete(self, identity, task_id, message, response, *, request_id=None, report_id=None, report_ids=None):
         request = delivery_request(message)
         if not request or response.get('status') in {'cancelled','timed_out','unavailable','blocked'} or self.tasks.is_cancelled(identity,task_id):
             return response
-        if response.get('document') or request['multiple']:
-            # Each requested template is produced by its own tool call. The
-            # conversation service attaches all resulting documents together.
-            return response
+        if request['multiple']:
+            return self._complete_document_batch(identity, task_id, request, response, report_ids or ([report_id] if report_id else []))
         # Questions and failed/partial analyses are not report content. An existing
         # verified document can still be exported without rerunning its analysis.
         if not report_id and response.get('status', 'completed') != 'completed':
             return response
         created_this_turn = bool(report_id)
-        report_id = report_id or (self.current_document(identity,task_id) if request['export_only'] else None)
+        report_id = report_id or (response.get('document') or {}).get('report_run_id') or (self.current_document(identity,task_id) if request['export_only'] else None)
         if report_id:
+            delivered = {block.get('format') for block in response.get('_assistant_blocks', [])
+                         if block.get('type') == 'document'}
+            if set(request['formats']).issubset(delivered):
+                return response
+            if len(request['formats']) > 1:
+                return self._with_requested_exports(identity, task_id, report_id, request, response, reuse_completed=created_this_turn)
             return self._with_export(identity, task_id, report_id, request['format'], response, reuse_completed=created_this_turn)
         pending = self.tasks.pending_recommendation(identity,task_id)
         modules = required_delivery_modules(message, request['template'], has_recommendation=bool((pending or {}).get('candidates')))
@@ -535,7 +752,11 @@ class ReportDelivery:
         if self.tools and modules:
             result = self.tools.call(identity, task_id, 'recommendation_delivery.run',
                                      {'kind': request['template'], 'format': request['format']})
-            return {**result, 'text': result.get('text') or result.get('next_step') or result.get('message') or '所需计算尚未完成。'}
+            result = {**result, 'text': result.get('text') or result.get('next_step') or result.get('message') or '所需计算尚未完成。'}
+            reference = result.get('document') or result.get('report_run_ref') or {}
+            if len(request['formats']) > 1 and reference.get('report_run_id'):
+                return self._with_requested_exports(identity, task_id, reference['report_run_id'], request, result, reuse_completed=True)
+            return result
         pending = self.tasks.pending_recommendation(identity,task_id)
         candidates = sorted((pending or {}).get('candidates') or [], key=lambda item: (not bool(item.get('is_primary')), item.get('rank') if isinstance(item.get('rank'), (int,float)) else 1000000))
         if self.tools:
@@ -551,10 +772,16 @@ class ReportDelivery:
                 ref=result.get('report_run_ref') or result.get('document') or {}
                 report_id=ref.get('report_run_id') or result.get('report_run_id')
                 if report_id:
+                    if len(request['formats']) > 1:
+                        return self._with_requested_exports(identity, task_id, report_id, request, result, reuse_completed=True)
                     return self._with_export(identity, task_id, report_id, request['format'], response)
         if request['template']=='quote':
             raise ValidationError('尚无可验证的报价结果，不能生成报价表。请提供报价来源或先完成估值。')
         text=str(response.get('text') or '').strip()
         if not text:
             raise ValidationError('报告内容尚未生成，请重试本次报告请求')
-        return self.create_document(identity,task_id,{'content':text,'template':request['template'],'format':request['format']},request_id=request_id)
+        first = request['formats'][0]
+        created = self.create_document(identity,task_id,{'content':text,'template':request['template'],'format':first},request_id=request_id)
+        if len(request['formats']) > 1 and created.get('document'):
+            return self._with_requested_exports(identity, task_id, created['document']['report_run_id'], {**request, 'formats': request['formats'][1:]}, created, reuse_completed=True)
+        return created
