@@ -44,6 +44,10 @@ class ImageAttachmentStore:
         self._mkdir_private(self._root)
 
     def save_encoded(self, images: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+        return [self._commit(data, metadata) for data, metadata in self.prepare_encoded(images)]
+
+    def prepare_encoded(self, images: Sequence[Mapping[str, Any]]) -> list[tuple[bytes, dict[str, Any]]]:
+        """Validate the complete image batch without publishing any files."""
         if isinstance(images, (str, bytes)) or not isinstance(images, Sequence):
             raise ValidationError("图片附件必须是数组")
         if not images or len(images) > self.max_images_per_message:
@@ -70,8 +74,7 @@ class ImageAttachmentStore:
                 raise ValidationError("本条消息的图片总量超过200MB上限")
             decoded.append((data, media_type, self._safe_name(item.get("name"))))
 
-        prepared = [self._prepare(data, media_type, name) for data, media_type, name in decoded]
-        return [self._commit(data, metadata) for data, metadata in prepared]
+        return [self._prepare(data, media_type, name) for data, media_type, name in decoded]
 
     def read(self, reference: Mapping[str, Any]) -> bytes:
         attachment_id = str(reference.get("attachment_id", ""))
@@ -82,9 +85,16 @@ class ImageAttachmentStore:
         try:
             data = data_path.read_bytes()
             stored = json.loads(metadata_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+        except (OSError, UnicodeError, json.JSONDecodeError):
             raise ValidationError("图片附件不可用") from None
-        if hashlib.sha256(data).hexdigest() != digest or stored != dict(reference):
+        name = reference.get("name")
+        if name is not None and (not isinstance(name, str) or self._safe_name(name) != name):
+            raise ValidationError("图片附件名称无效")
+        # Names belong to each upload reference. The immutable identity covers
+        # the bytes and their verified properties, including legacy metadata.
+        content_metadata = lambda value: {key: item for key, item in value.items() if key != "name"}
+        if (not isinstance(stored, dict) or hashlib.sha256(data).hexdigest() != digest
+                or content_metadata(stored) != content_metadata(reference)):
             raise ValidationError("图片附件完整性校验失败")
         self._verify_stored(data, stored)
         return data
@@ -159,13 +169,15 @@ class ImageAttachmentStore:
         if data_path.exists() and metadata_path.exists():
             self.read(metadata)
             return dict(metadata)
-        self._atomic_write(data_path, data)
-        self._atomic_write(
-            metadata_path,
-            json.dumps(metadata, ensure_ascii=False, separators=(",", ":")).encode("utf-8"),
-        )
+        for path, payload in self._artifact_payloads(data, metadata).items():
+            self._atomic_write(path, payload)
         self.read(metadata)
         return dict(metadata)
+
+    def _artifact_payloads(self, data: bytes, metadata: Mapping[str, Any]) -> dict[Path, bytes]:
+        data_path, metadata_path = self._paths(self._digest(str(metadata["attachment_id"])))
+        return {data_path: data, metadata_path: json.dumps(dict(metadata), ensure_ascii=False,
+                                                          separators=(",", ":")).encode("utf-8")}
 
     def _verify_stored(self, data: bytes, metadata: Mapping[str, Any]) -> None:
         try:
