@@ -164,6 +164,7 @@ def delivery_request(text):
     templates = list(dict.fromkeys(target['template'] for target in targets))
     formats = list(dict.fromkeys(target['format'] for target in targets))
     return {'template': templates[-1], 'templates': templates, 'multiple': len(templates) > 1,
+            'explicit_templates': templates if mentions else [],
             'format': targets[-1]['format'], 'formats': formats, 'deliveries': targets,
             'export_only': bool(re.search(r'再给|改成|转成|导出|下载', text)) and not bool(re.search(
                 r'推荐|重新生成|多智能体|(?:继续|完成|重新).{0,20}(?:研究|分析)|'
@@ -175,6 +176,54 @@ def delivery_discussion_only(text):
     value = str(text or '')
     return delivery_request(value) is None and bool(_NEGATED_DELIVERY.search(value) or re.search(
         r'为什么|为何|怎么|如何|区别|源码|源代码|代码示例', value))
+
+
+def _explicit_draft_request(text):
+    return any('草稿' in clause and not re.search(
+        r'(?:不要|不用|无需|无须|不必|不是|不需要|禁止|不)(?:再)?\s*(?:提供|生成|制作|写|交付)?\s*(?:研究|报告)?草稿', clause)
+               for clause in re.split(r'[，,。；;\n]', str(text or '')))
+
+
+def _report_template(report):
+    return ('multi' if report.get('comparison') else '') + str(report.get('output_type') or 'report')
+
+
+def _formal_report_response(result, model_response):
+    """The formal receipt owns completion and coverage, including real files."""
+    status = str(result.get('status') or 'needs_input')
+    if status == 'succeeded':
+        status = 'completed'
+    coverage = result.get('delivery') or {}
+    missing = [label for module, label in (('payoff', '收益结构'), ('pricing', '定价'), ('backtest', '回测'))
+               if module in coverage.get('missing_modules', [])]
+    if status == 'completed' and (missing or coverage.get('coverage_status') == 'partial'):
+        status = 'partial'
+    text = str(result.get('text') or result.get('message') or result.get('next_step') or '').strip()
+    if missing:
+        text = '\n\n'.join(value for value in (text, '报告尚未包含' + '、'.join(missing) + '的正式结果，已保留已完成内容。') if value)
+    if not text:
+        text = (str(model_response.get('text') or '').strip() if status == 'completed' else '')
+    if not text:
+        text = '正式报告尚未完整交付，请根据已确认的分析结果继续；已有文件保留。'
+    return {**result, 'status': status, 'text': text,
+            'state': {**(result.get('state') or {}), 'code': status, 'terminal': True,
+                      'retryable': status not in {'completed', 'cancelled'}}}
+
+
+def _continues_delivery(text, messages):
+    """A continuation resumes an existing contract; an explanation grants none."""
+    from runtime.workflow_policy import decide_workflow, is_consultation_request
+    value = str(text or '').strip()
+    if delivery_discussion_only(value) or is_consultation_request(value.casefold()):
+        return False
+    if re.search(r'(?:不要|不用|无需|别|不)\s*(?:再)?(?:继续|接着|重试|恢复)', value):
+        return False
+    decision = decide_workflow(value, messages=messages)
+    if decision.reason_code in {'recommendation_question_continuation', 'recommendation_continuation'}:
+        return True
+    if decision.analysis_path != 'consultation':
+        return False
+    return bool(re.search(r'继续|接着|接续|重试|恢复|补齐|补完|完成剩余', value))
 
 
 def requested_analysis_modules(text):
@@ -353,6 +402,40 @@ class ReportDelivery:
                     return str(block['report_run_id'])
         return None
 
+    def request_context(self, identity, task_id, message):
+        """Resolve targets and their committed files from durable conversation history.
+
+        Explicit requests start a new contract. A short continuation retains the
+        latest contract and only its subsequent document receipts, so restarting
+        the App cannot turn an unfinished batch into an unverified text success.
+        """
+        request = delivery_request(message)
+        if request is not None:
+            return {'request': request, 'source_message': str(message), 'report_ids': [], 'continued': False}
+        messages = self.tasks.get(identity, task_id).get('messages', [])
+        history = messages[:-1] if messages and messages[-1].get('role') == 'user' and messages[-1].get('content') == message else messages
+        if not _continues_delivery(message, history):
+            return None
+        from runtime.workflow_policy import decide_workflow
+        for index in range(len(history) - 1, -1, -1):
+            row = history[index]
+            if row.get('role') != 'user':
+                continue
+            content = str(row.get('content') or '')
+            prior = delivery_request(content)
+            if prior is not None:
+                report_ids = list(dict.fromkeys(
+                    str(block['report_run_id']) for reply in history[index + 1:]
+                    if reply.get('role') == 'assistant'
+                    for block in reply.get('content_blocks', [])
+                    if block.get('type') == 'document' and block.get('report_run_id')))
+                return {'request': prior, 'source_message': content,
+                        'report_ids': report_ids, 'continued': True}
+            # A later independent research action supersedes the old contract.
+            if not delivery_discussion_only(content) and decide_workflow(content).analysis_path != 'consultation':
+                break
+        return None
+
     def export_selection(self, identity, task_id, message):
         """Resolve existing files from this task without asking the model.
 
@@ -390,7 +473,8 @@ class ReportDelivery:
             title = str(block.get('title') or '').strip()
             if title:
                 title_index.setdefault(title, set()).add(report_id)
-        for report in self.results.list_report_runs(identity, task_id):
+        reports = {row['report_run_id']: row for row in self.results.list_report_runs(identity, task_id)}
+        for report in reports.values():
             report_id = str(report.get('report_run_id') or '').strip()
             title = str(report.get('title') or '').strip()
             if not report_id or not title:
@@ -411,6 +495,15 @@ class ReportDelivery:
         mentioned_titles = sorted((title for title in known_titles if len(title) >= 4 and title in text),
                                   key=text.find)
         named_titles = explicit_titles or quoted_titles or mentioned_titles
+        requested_templates = set(request.get('explicit_templates', []))
+        if named_titles and not (explicit_titles or quoted_titles) and requested_templates:
+            named_templates = {_report_template(reports[identifier])
+                               for title in named_titles for identifier in title_index.get(title, ())
+                               if identifier in reports}
+            if not requested_templates.issubset(named_templates):
+                # A generic family name can equal one saved title. It must not
+                # consume another explicitly requested family from the batch.
+                named_titles = []
         if named_titles:
             selected = []
             for title in dict.fromkeys(named_titles):
@@ -430,17 +523,30 @@ class ReportDelivery:
                     raise ValidationError('当前任务报告库中有已保存报告，请说明要导出的完整标题；未将独立报告合并为同一批交付。')
                 selected = list(documents)
             else:
-                selected = list(batches[-1]) if plural else [last_ids[-1]]
+                if requested_templates:
+                    eligible_batches = [[identifier for identifier in batch
+                        if identifier in reports and _report_template(reports[identifier]) in requested_templates]
+                        for batch in batches]
+                    eligible_batches = [batch for batch in eligible_batches if batch]
+                    if not eligible_batches:
+                        raise ValidationError('当前任务没有所要求类型的已交付文档，请说明完整标题或先生成该文档。')
+                    selected = list(eligible_batches[-1]) if plural else [eligible_batches[-1][-1]]
+                else:
+                    selected = list(batches[-1]) if plural else [last_ids[-1]]
             if expected_count is not None and expected_count != len(selected):
                 raise ValidationError(f'当前选择有{len(selected)}份报告，与要求的{expected_count}份不一致，请说明完整标题。')
         selected = list(dict.fromkeys(selected))
+        if requested_templates:
+            actual_templates = {_report_template(reports[identifier]) for identifier in selected if identifier in reports}
+            if not requested_templates.issubset(actual_templates) or actual_templates - requested_templates:
+                raise ValidationError('所选文档与要求的简报或报告类型不一致，请说明完整标题。')
         # Validate the entire selection before writing even the first export.
         for report_id in selected:
             if self.editor.editor_payload(identity, report_id)['task_id'] != task_id:
                 raise ValidationError('报告不属于当前对话')
         return selected
 
-    def export_documents(self, identity, task_id, report_ids, fmt, *, cancelled=None, reuse_completed=False):
+    def export_documents(self, identity, task_id, report_ids, fmt, *, cancelled=None, reuse_completed=False, request=None):
         """Convert each selected document to each explicitly requested format.
 
         Existing documents share their immutable identity across formats. A
@@ -452,8 +558,16 @@ class ReportDelivery:
             raise ValidationError('报告格式应为HTML、PDF或Word')
         blocks, documents, notices = [], [], []
         incomplete = stopped = False
+        reports = ({row['report_run_id']: row for row in self.results.list_report_runs(identity, task_id)}
+                   if request and request.get('explicit_templates') else {})
         for report_id in dict.fromkeys(report_ids):
-            for output_format in formats:
+            selected_formats = formats
+            if reports:
+                template = _report_template(reports.get(report_id, {}))
+                selected_formats = [target['format'] for target in delivery_targets(request) if target['template'] == template]
+                if not selected_formats:
+                    raise ValidationError('所选文档类型不在本次交付目标中')
+            for output_format in selected_formats:
                 if cancelled and cancelled():
                     stopped = True
                     break
@@ -586,6 +700,10 @@ class ReportDelivery:
         messages = task.get('messages', [])
         expected = delivery_request(messages[-1].get('content')) if messages and messages[-1].get('role') == 'user' else None
         latest = next((str(row.get('content', '')) for row in reversed(messages) if row.get('role') == 'user'), '')
+        context = self.request_context(identity, task_id, latest)
+        source_message = context['source_message'] if context else latest
+        if existing_results_only(source_message) and not _explicit_draft_request(source_message):
+            raise ValidationError('本次要求使用正式分析结果，不能改交对话草稿；缺少结果时请说明所需分析。')
         if not expected and _NEGATED_DELIVERY.search(latest):
             raise ValidationError('本轮明确不生成报告，请直接回答用户问题。')
         if delivery_discussion_only(latest):
@@ -680,7 +798,7 @@ class ReportDelivery:
                 ids.append(identifier)
         rows = {row['report_run_id']: row for row in self.results.list_report_runs(identity, task_id)
                 if row.get('report_run_id') in ids}
-        documents, missing = [], []
+        documents, missing, incomplete_sources = [], [], []
         stopped = False
         labels = {'card': '研究简报', 'report': '研究报告', 'quote': '报价表',
                   'multicard': '多结构简报', 'multireport': '多结构报告'}
@@ -697,6 +815,15 @@ class ReportDelivery:
             row = next((item for item in candidates if any(
                 artifact.get('name') == 'report.' + target['format']
                 for artifact in item.get('artifacts', []))), candidates[0])
+            stored = self.results.get_owned_report_run(identity, row['report_run_id'])
+            frozen_request = stored.get('report_request') or {}
+            selected_modules = (frozen_request.get('subject_ref') or {}).get('selected_modules')
+            partial_coverage = (row.get('output_type') == 'report'
+                and frozen_request.get('manual_edit') is not True
+                and isinstance(selected_modules, list)
+                and not {'payoff', 'pricing', 'backtest'}.issubset(selected_modules))
+            if (partial_coverage or row.get('status') not in {'completed', 'succeeded'}) and label not in incomplete_sources:
+                incomplete_sources.append(label)
             try:
                 exported = self.export(identity, task_id, row['report_run_id'], target['format'], reuse_completed=True)
             except ValidationError:
@@ -712,11 +839,17 @@ class ReportDelivery:
         elif missing:
             status = 'partial' if documents else 'needs_input'
             notice = '尚未交付：' + '、'.join(missing) + '。请继续完成这些文档，已有文件保留。'
+        elif incomplete_sources:
+            status, notice = 'partial', '文件已保留，但以下文档的正式分析仍未完整：' + '、'.join(incomplete_sources) + '。'
         else:
             status = response.get('status', 'completed')
             notice = '要求的文档及格式已全部交付。'
-        text = notice if missing or stopped else '\n\n'.join(value for value in (str(response.get('text') or '').strip(), notice) if value)
+        if missing and incomplete_sources:
+            notice += '\n以下文档的正式分析仍未完整：' + '、'.join(incomplete_sources) + '。'
+        text = notice if missing or stopped or incomplete_sources else '\n\n'.join(value for value in (str(response.get('text') or '').strip(), notice) if value)
         output = {**response, 'status': status, 'text': text, 'documents': documents,
+                  'state': {**(response.get('state') or {}), 'code': status, 'terminal': True,
+                            'retryable': status not in {'completed', 'cancelled'}},
                   '_assistant_blocks': [{'type': 'text', 'text': text},
                                         *[{**document, 'type': 'document'} for document in documents]]}
         if documents:
@@ -725,11 +858,14 @@ class ReportDelivery:
             output.pop('document', None)
         return output
 
-    def complete(self, identity, task_id, message, response, *, request_id=None, report_id=None, report_ids=None):
-        request = delivery_request(message)
+    def complete(self, identity, task_id, message, response, *, request_id=None, report_id=None, report_ids=None, context=None):
+        request = context['request'] if context else delivery_request(message)
         if not request or response.get('status') in {'cancelled','timed_out','unavailable','blocked'} or self.tasks.is_cancelled(identity,task_id):
             return response
-        if request['multiple']:
+        if context and context.get('continued'):
+            message = context['source_message']
+            report_ids = list(dict.fromkeys([*context.get('report_ids', []), *(report_ids or []), *([report_id] if report_id else [])]))
+        if request['multiple'] or context and context.get('continued'):
             return self._complete_document_batch(identity, task_id, request, response, report_ids or ([report_id] if report_id else []))
         # Questions and failed/partial analyses are not report content. An existing
         # verified document can still be exported without rerunning its analysis.
@@ -759,7 +895,8 @@ class ReportDelivery:
             return result
         pending = self.tasks.pending_recommendation(identity,task_id)
         candidates = sorted((pending or {}).get('candidates') or [], key=lambda item: (not bool(item.get('is_primary')), item.get('rank') if isinstance(item.get('rank'), (int,float)) else 1000000))
-        if self.tools:
+        explicit_draft = _explicit_draft_request(message)
+        if self.tools and not explicit_draft:
             args={'kind':request['template'].removeprefix('multi'),'format':'html',
                   'delivery_mode':'comparison' if request['template'].startswith('multi') else 'single'}
             if candidates:
@@ -769,12 +906,21 @@ class ReportDelivery:
             # Never let a current recommendation fall back to unrelated historical runs.
             if not candidates or 'candidate_ids' in args:
                 result=self.tools.call(identity,task_id,'reporter.run',args)
+                result = _formal_report_response(result, response)
                 ref=result.get('report_run_ref') or result.get('document') or {}
                 report_id=ref.get('report_run_id') or result.get('report_run_id')
-                if report_id:
+                if report_id and result['status'] in {'completed', 'partial'}:
                     if len(request['formats']) > 1:
                         return self._with_requested_exports(identity, task_id, report_id, request, result, reuse_completed=True)
-                    return self._with_export(identity, task_id, report_id, request['format'], response)
+                    return self._with_export(identity, task_id, report_id, request['format'], result)
+                status = str(result.get('status') or 'needs_input')
+                if status in {'completed', 'succeeded'}:
+                    status = 'needs_input'
+                text = str(result.get('message') or result.get('next_step') or result.get('text')
+                           or '正式报告尚未形成可验证文件，请先完成或选择本任务的分析结果。')
+                return {**result, 'status': status, 'text': text}
+        if existing_results_only(message) and not explicit_draft:
+            return {'status': 'needs_input', 'text': '本任务尚无可用的正式分析结果，请先完成或选择已有分析；未生成草稿。'}
         if request['template']=='quote':
             raise ValidationError('尚无可验证的报价结果，不能生成报价表。请提供报价来源或先完成估值。')
         text=str(response.get('text') or '').strip()
