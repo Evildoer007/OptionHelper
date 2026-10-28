@@ -533,6 +533,7 @@ class IFindHttpProvider:
                 config.ifind_secret_ref,
                 "IFIND_REFRESH_TOKEN",
                 host_secret_port=config.ifind_secret_port,
+                require_host_port=config.require_host_credentials,
             )
         except SecretPortUnavailable as error:
             raise ProviderUnavailable("iFind本机凭据无法读取，请重新保存数据接口凭据", reason_code="credential_unavailable") from error
