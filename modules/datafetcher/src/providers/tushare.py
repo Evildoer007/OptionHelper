@@ -58,7 +58,8 @@ class TushareProvider:
             raise ProviderUnauthorized("Token与所选数据服务不匹配")
         try:
             secret = resolve_secret(config.token_secret_ref, self.name.upper() + "_TOKEN",
-                                    host_secret_port=config.token_secret_port)
+                                    host_secret_port=config.token_secret_port,
+                                    require_host_port=config.require_host_credentials)
         except SecretPortUnavailable:
             raise ProviderUnavailable("无法读取数据Token", reason_code="credential_unavailable") from None
         if not secret:
