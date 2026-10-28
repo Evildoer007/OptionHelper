@@ -111,19 +111,24 @@ class ConversationService:
                     request_state = self._task_service.mark_conversation_execution_started(
                         identity, task_id, request_id, replay_key,
                     ) or request_state
-                    delivery = delivery_request(message) if self._report_delivery else None
+                    resolver = getattr(self._report_delivery, 'request_context', None)
+                    delivery_context = resolver(identity, task_id, message) if callable(resolver) else None
+                    delivery = delivery_context['request'] if delivery_context else (delivery_request(message) if self._report_delivery else None)
+                    inherited_reports = delivery_context.get('report_ids', []) if delivery_context else []
                     export_handled = False
                     export_ids = None
                     if delivery:
                         try:
-                            export_ids = self._report_delivery.export_selection(identity, task_id, message)
+                            source_message = delivery_context['source_message'] if delivery_context else message
+                            export_ids = self._report_delivery.export_selection(identity, task_id, source_message)
                         except ValidationError as error:
                             response = {'status': 'needs_input', 'text': str(error)}
                             export_handled = True
                     previous_reports = {row['report_run_id'] for row in self._report_delivery.results.list_report_runs(identity, task_id)} if self._report_delivery else set()
                     if export_ids:
                         response = self._report_delivery.export_documents(
-                            identity, task_id, export_ids, delivery['formats'] if len(delivery['formats']) > 1 else delivery['format'], cancelled=turn_cancelled)
+                            identity, task_id, export_ids, delivery['formats'] if len(delivery['formats']) > 1 else delivery['format'],
+                            cancelled=turn_cancelled, request=delivery)
                         export_handled = True
                     elif not export_handled:
                         response = self._run_model(
@@ -139,13 +144,15 @@ class ConversationService:
                     if delivery and not turn_cancelled() and not export_handled:
                         try:
                             response = self._report_delivery.complete(identity, task_id, message, response,
-                                request_id=request_id, report_id=created[-1] if created else None, report_ids=created)
+                                request_id=request_id, report_id=created[-1] if created else None,
+                                report_ids=created, context=delivery_context)
                         except ValidationError as error:
                             response = {'status':'needs_input','text':str(error)}
                     if turn_cancelled() and not export_handled:
                         response = _cancelled_response(response)
-                    if self._report_delivery and created:
-                        response = self._report_delivery.attach_documents(identity, task_id, response, created)
+                    committed_reports = list(dict.fromkeys([*inherited_reports, *created]))
+                    if self._report_delivery and committed_reports:
+                        response = self._report_delivery.attach_documents(identity, task_id, response, committed_reports)
 
                 settled = self._task_service.settle_conversation_model(
                     identity, task_id, request_id, replay_key, response,
