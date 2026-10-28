@@ -7,11 +7,21 @@ import os
 import re
 import time
 from pathlib import Path
+from threading import Lock, RLock
 from typing import Any, Mapping, Sequence
 
 from ..errors import ValidationError
 from .document_store import DocumentAttachmentStore
 from .image_store import ImageAttachmentStore
+
+
+_STORE_LOCKS: dict[Path, RLock] = {}
+_STORE_LOCKS_GUARD = Lock()
+
+
+def _store_lock(root: Path) -> RLock:
+    with _STORE_LOCKS_GUARD:
+        return _STORE_LOCKS.setdefault(root, RLock())
 
 
 class AttachmentStore:
@@ -25,6 +35,7 @@ class AttachmentStore:
 
     def __init__(self, root: Path) -> None:
         self._root = Path(root).resolve()
+        self._write_lock = _store_lock(self._root)
         self.images = ImageAttachmentStore(self._root / "images")
         self.documents = DocumentAttachmentStore(self._root / "documents")
 
@@ -47,23 +58,60 @@ class AttachmentStore:
                 raise ValidationError("本条消息的附件总量超过200MB上限")
             target = images if str(item.get("media_type", "")).startswith("image/") else documents
             target.append((index, item))
-        if self._stored_bytes() + total > self.max_storage_bytes:
-            raise ValidationError("OptionHelper附件存储已达到2GB上限，暂不能继续上传")
-        result: list[dict[str, Any] | None] = [None] * len(files)
+        # Preparation can reject a corrupt document after a valid image. Do
+        # all decoding/extraction before publishing either kind of content.
+        prepared = []
         if images:
-            saved = self.images.save_encoded([item for _index, item in images])
-            for (index, _item), reference in zip(images, saved, strict=True):
-                result[index] = reference
+            values = self.images.prepare_encoded([item for _index, item in images])
+            prepared.extend((index, self.images, data, metadata)
+                            for (index, _item), (data, metadata) in zip(images, values, strict=True))
         if documents:
-            saved = self.documents.save_encoded([item for _index, item in documents])
-            for (index, _item), reference in zip(documents, saved, strict=True):
-                result[index] = reference
+            values = self.documents.prepare_encoded([item for _index, item in documents])
+            prepared.extend((index, self.documents, data, metadata)
+                            for (index, _item), (data, metadata) in zip(documents, values, strict=True))
+        identifiers = [metadata["attachment_id"] for _index, _store, _data, metadata in prepared]
+        if len(set(identifiers)) != len(identifiers):
+            raise ValidationError("同一批附件包含重复内容，请只保留一份。")
+        with self._write_lock:
+            return self._commit_batch(prepared, len(files))
+
+    def _commit_batch(self, prepared: list[tuple], count: int) -> list[dict[str, Any]]:
+        """Publish one prepared batch, restoring only its own writes on error."""
+        writes: dict[Path, bytes] = {}
+        for _index, store, data, metadata in prepared:
+            payloads = store._artifact_payloads(data, metadata)
+            for path in payloads:
+                store._reject_link(path)
+            if all(path.is_file() for path in payloads):
+                store.read({key: value for key, value in metadata.items() if key != "_text"})
+                continue
+            for path, payload in payloads.items():
+                writes.setdefault(path, payload)
+        before = {path: path.read_bytes() if path.exists() else None for path in writes}
+        added_bytes = sum(len(content) - len(before[path] or b"") for path, content in writes.items())
+        if self._stored_bytes() + added_bytes > self.max_storage_bytes:
+            raise ValidationError("OptionHelper附件存储已达到2GB上限，暂不能继续上传")
+        result: list[dict[str, Any] | None] = [None] * count
+        try:
+            for index, store, data, metadata in prepared:
+                result[index] = store._commit(data, metadata)
+        except Exception:
+            for path, previous in before.items():
+                if previous is None:
+                    path.unlink(missing_ok=True)
+                elif not path.exists() or path.read_bytes() != previous:
+                    ImageAttachmentStore._atomic_write(path, previous)
+            raise
         references = [dict(item) for item in result if item is not None]
         for reference in references:
             self._touch_artifact(reference)
         return references
 
     def collect_orphans(self, referenced_attachment_ids: set[str]) -> dict[str, int]:
+        with self._write_lock:
+            return self._collect_orphans(referenced_attachment_ids)
+
+    def _collect_orphans(self, referenced_attachment_ids: set[str]) -> dict[str, int]:
         """Reclaim complete, unreferenced content-addressed attachment groups.
 
         Callers supply the complete live Task reference set. Invalid,
