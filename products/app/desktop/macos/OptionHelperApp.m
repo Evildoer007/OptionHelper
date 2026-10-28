@@ -122,12 +122,32 @@ willPerformHTTPRedirection:(NSHTTPURLResponse *)response
 }
 @end
 
+typedef NS_ENUM(NSInteger, OptionHelperNativeDownloadKind) {
+    OptionHelperNativeDownloadNone, OptionHelperNativeDownloadAttachment,
+    OptionHelperNativeDownloadData, OptionHelperNativeDownloadPayoff, OptionHelperNativeDownloadBlob,
+};
+
+// A download owns its picker reply and temporary file until completion or cancellation.
+@interface OptionHelperNativeDownload : NSObject
+@property(nonatomic, weak) WKWebView *sourceView;
+@property(nonatomic, strong) WKDownload *download;
+@property(nonatomic, strong) NSURL *sourceURL;
+@property(nonatomic, strong) NSURL *requestURL;
+@property(nonatomic) OptionHelperNativeDownloadKind kind;
+@property(nonatomic, strong) OptionHelperNativeDialog *destinationDialog;
+@property(nonatomic, strong) NSURL *destinationURL;
+@property(nonatomic, strong) NSURL *stagingURL;
+@property(nonatomic) BOOL finished;
+@end
+@implementation OptionHelperNativeDownload @end
+
 @interface OptionHelperAppDelegate : NSObject <NSApplicationDelegate, NSWindowDelegate, WKScriptMessageHandler, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate>
 @property(nonatomic, strong) NSTask *backend;
 @property(nonatomic, strong) NSPipe *startupPipe;
 @property(nonatomic, strong) NSWindow *window;
 @property(nonatomic, strong) WKWebView *webView;
 @property(nonatomic, strong) NSMutableDictionary<NSUUID *, OptionHelperNativeDialog *> *nativeDialogs;
+@property(nonatomic, strong) NSMapTable<WKDownload *, OptionHelperNativeDownload *> *nativeDownloads;
 @property(nonatomic, strong) NSWindow *reportPreviewWindow;
 @property(nonatomic, strong) WKWebView *reportPreviewWebView;
 @property(nonatomic) BOOL reportWindowIsEditor;
@@ -176,6 +196,7 @@ willPerformHTTPRedirection:(NSHTTPURLResponse *)response
 
 - (void)applicationWillTerminate:(NSNotification *)notification {
     [self cancelNativeDialogsForWebView:nil];
+    [self cancelNativeDownloadsForWebView:nil];
     [self cancelNavigationWatchdog];
     [self cancelSettingsNavigationWatchdog];
     [self.webView.configuration.userContentController removeScriptMessageHandlerForName:@"optionhelperTheme"];
@@ -858,6 +879,7 @@ willPerformHTTPRedirection:(NSHTTPURLResponse *)response
 
 - (void)webView:(WKWebView *)webView didStartProvisionalNavigation:(WKNavigation *)navigation {
     [self cancelNativeDialogsForWebView:webView];
+    [self cancelNativeDownloadsForWebView:webView];
     if (webView == self.settingsWebView) {
         [self beginSettingsNavigationWatchdog];
         return;
@@ -910,6 +932,7 @@ willPerformHTTPRedirection:(NSHTTPURLResponse *)response
 
 - (void)webViewWebContentProcessDidTerminate:(WKWebView *)webView {
     [self cancelNativeDialogsForWebView:webView];
+    [self cancelNativeDownloadsForWebView:webView];
     if (webView == self.settingsWebView) {
         [self cancelSettingsNavigationWatchdog];
         [self showSettingsFailure:@"设置页面进程已结束。工作台和后台任务仍保持原状。"];
@@ -969,21 +992,100 @@ willPerformHTTPRedirection:(NSHTTPURLResponse *)response
     else [alert runModal];
 }
 
-- (NSString *)dataAssetDownloadFilename:(NSString *)suggestedFilename {
+- (OptionHelperNativeDownloadKind)nativeDownloadKindForURL:(NSURL *)url {
+    if ([url.scheme.lowercaseString isEqualToString:@"blob"]) {
+        NSURL *origin = [NSURL URLWithString:[url.absoluteString substringFromIndex:5]];
+        return [self nativeDialogURLIsSameOrigin:origin] ? OptionHelperNativeDownloadBlob : OptionHelperNativeDownloadNone;
+    }
+    if (![self nativeDialogURLIsSameOrigin:url]) return OptionHelperNativeDownloadNone;
+    NSString *encoded = [NSURLComponents componentsWithURL:url resolvingAgainstBaseURL:NO].percentEncodedPath.lowercaseString;
+    for (NSString *escape in @[@"%2e", @"%2f", @"%5c", @"%25"]) {
+        if ([encoded containsString:escape]) return OptionHelperNativeDownloadNone;
+    }
+    for (NSString *part in url.path.pathComponents) {
+        if ([part isEqualToString:@"."] || [part isEqualToString:@".."]) return OptionHelperNativeDownloadNone;
+    }
+    if (url.fragment.length > 0) return OptionHelperNativeDownloadNone;
+    NSString *identifier = @"[A-Za-z0-9][A-Za-z0-9._:-]{0,159}";
+    NSString *attachment = [NSString stringWithFormat:@"^/api/tasks/%@/attachments/%@$", identifier, identifier];
+    NSString *asset = [NSString stringWithFormat:@"^/api/assets/%@/download$", identifier];
+    if (url.query.length == 0) {
+        if ([url.path rangeOfString:attachment options:NSRegularExpressionSearch].location != NSNotFound) return OptionHelperNativeDownloadAttachment;
+        if ([url.path rangeOfString:asset options:NSRegularExpressionSearch].location != NSNotFound) return OptionHelperNativeDownloadData;
+    }
+    NSArray<NSURLQueryItem *> *items = [NSURLComponents componentsWithURL:url resolvingAgainstBaseURL:NO].queryItems;
+    if ([self isPayoffImageDownloadURL:url] && items.count == 1) return OptionHelperNativeDownloadPayoff;
+    return OptionHelperNativeDownloadNone;
+}
+
+- (NSString *)nativeDownloadFilename:(NSString *)suggestedFilename kind:(OptionHelperNativeDownloadKind)kind {
     NSString *candidate = [suggestedFilename stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
-    NSString *lower = candidate.lowercaseString;
     NSMutableCharacterSet *forbidden = [NSCharacterSet.controlCharacterSet mutableCopy];
-    [forbidden addCharactersInString:@"/\\:"];
-    if (candidate.length == 0 || candidate.length > 160
-        || [candidate rangeOfCharacterFromSet:forbidden].location != NSNotFound
-        || (![lower hasSuffix:@".csv"] && ![lower hasSuffix:@".json"] && ![lower hasSuffix:@".svg"])) return nil;
-    return candidate;
+    [forbidden addCharactersInString:@"/\\:%\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069"];
+    if (candidate.length == 0 || candidate.length > 160 || [candidate hasPrefix:@"."]
+        || [candidate rangeOfCharacterFromSet:forbidden].location != NSNotFound) return nil;
+    NSString *extension = candidate.pathExtension.lowercaseString;
+    NSSet<NSString *> *allowed = nil;
+    switch (kind) {
+        case OptionHelperNativeDownloadAttachment:
+            allowed = [NSSet setWithArray:@[@"pdf", @"docx", @"xlsx", @"xls", @"pptx", @"rtf", @"odt", @"ods", @"odp",
+                @"txt", @"md", @"markdown", @"csv", @"tsv", @"json", @"jsonl", @"xml", @"yaml", @"yml", @"log", @"eml",
+                @"html", @"htm", @"png", @"jpg", @"jpeg", @"webp", @"gif", @"bmp", @"tif", @"tiff",
+                @"mov", @"mp4", @"m4v", @"webm", @"py", @"js", @"ts", @"jsx", @"tsx", @"sql", @"r", @"css", @"toml", @"ini", @"srt", @"vtt"]];
+            break;
+        case OptionHelperNativeDownloadData: allowed = [NSSet setWithArray:@[@"csv", @"json"]]; break;
+        case OptionHelperNativeDownloadPayoff: allowed = [NSSet setWithObject:@"svg"]; break;
+        case OptionHelperNativeDownloadBlob: allowed = [NSSet setWithArray:@[@"csv", @"json", @"svg"]]; break;
+        default: return nil;
+    }
+    return [allowed containsObject:extension] ? candidate : nil;
+}
+
+- (BOOL)isTrustedNativeDownloadSource:(WKWebView *)source {
+    return source == self.webView && [self isSafeAppURL:source.URL]
+        && [self nativeDialogURLIsSameOrigin:source.URL] && [self nativeDialogWindowForWebView:source] != nil;
+}
+
+- (BOOL)nativeDownload:(OptionHelperNativeDownload *)item matchesURL:(NSURL *)url {
+    return item != nil && !item.finished && [self isTrustedNativeDownloadSource:item.sourceView]
+        && [item.sourceView.URL isEqual:item.sourceURL] && [url isEqual:item.requestURL]
+        && [self nativeDownloadKindForURL:url] == item.kind;
+}
+
+- (void)finishNativeDownload:(OptionHelperNativeDownload *)item cancel:(BOOL)cancel {
+    if (item == nil || item.finished) return;
+    item.finished = YES;
+    [self.nativeDownloads removeObjectForKey:item.download];
+    [item.destinationDialog cancel];
+    item.destinationDialog = nil;
+    if (cancel) [item.download cancel:nil];
+    if (item.stagingURL != nil) [NSFileManager.defaultManager removeItemAtURL:item.stagingURL error:nil];
+}
+
+- (void)cancelNativeDownloadsForWebView:(WKWebView *)source {
+    for (OptionHelperNativeDownload *item in self.nativeDownloads.objectEnumerator.allObjects) {
+        if (source == nil || item.sourceView == source) [self finishNativeDownload:item cancel:YES];
+    }
+}
+
+- (void)registerNativeDownload:(WKDownload *)download webView:(WKWebView *)source requestURL:(NSURL *)url {
+    OptionHelperNativeDownloadKind kind = [self nativeDownloadKindForURL:url];
+    if ([self.nativeDownloads objectForKey:download] != nil) return;
+    if (![self isTrustedNativeDownloadSource:source] || kind == OptionHelperNativeDownloadNone) {
+        [download cancel:nil];
+        return;
+    }
+    OptionHelperNativeDownload *item = [OptionHelperNativeDownload new];
+    item.sourceView = source; item.sourceURL = source.URL; item.requestURL = url; item.kind = kind; item.download = download;
+    if (self.nativeDownloads == nil) self.nativeDownloads = [NSMapTable strongToStrongObjectsMapTable];
+    [self.nativeDownloads setObject:item forKey:download];
+    download.delegate = self;
 }
 
 - (void)showDataAssetDownloadFailure:(NSString *)detail {
     NSAlert *alert = [[NSAlert alloc] init];
     alert.alertStyle = NSAlertStyleWarning;
-    alert.messageText = @"数据下载未完成";
+    alert.messageText = @"下载未完成";
     alert.informativeText = detail.length > 0 ? detail : @"未收到数据文件。";
     if (self.window != nil) [alert beginSheetModalForWindow:self.window completionHandler:nil];
     else [alert runModal];
@@ -1283,10 +1385,15 @@ completionHandler:(void (^)(NSArray<NSURL *> * _Nullable URLs))completionHandler
  decidePolicyForNavigationAction:(WKNavigationAction *)navigationAction
  decisionHandler:(void (^)(WKNavigationActionPolicy))decisionHandler {
     NSURL *url = navigationAction.request.URL;
-    if (webView == self.webView && navigationAction.shouldPerformDownload
-        && ([url.scheme.lowercaseString isEqualToString:@"blob"]
-            || [self isPayoffImageDownloadURL:url])) {
-        decisionHandler(WKNavigationActionPolicyDownload);
+    OptionHelperNativeDownloadKind kind = [self nativeDownloadKindForURL:url];
+    if (kind != OptionHelperNativeDownloadNone && (kind != OptionHelperNativeDownloadBlob || navigationAction.shouldPerformDownload)) {
+        BOOL trusted = [self isTrustedNativeDownloadSource:webView]
+            && [self isTrustedNativeDialogSource:webView frame:navigationAction.sourceFrame];
+        decisionHandler(trusted ? WKNavigationActionPolicyDownload : WKNavigationActionPolicyCancel);
+        return;
+    }
+    if (navigationAction.shouldPerformDownload && ![self isAllowedReportArtifactURL:url]) {
+        decisionHandler(WKNavigationActionPolicyCancel);
         return;
     }
     if (webView == self.webView && navigationAction.targetFrame.isMainFrame && [self isSafeAppURL:url] && [url.path isEqualToString:@"/settings"]) {
@@ -1325,37 +1432,100 @@ completionHandler:(void (^)(NSArray<NSURL *> * _Nullable URLs))completionHandler
         : WKNavigationActionPolicyCancel);
 }
 
-- (void)webView:(WKWebView *)webView
-navigationAction:(WKNavigationAction *)navigationAction
-didBecomeDownload:(WKDownload *)download {
-    if (webView != self.webView) return;
-    download.delegate = self;
+- (void)webView:(WKWebView *)webView decidePolicyForNavigationResponse:(WKNavigationResponse *)navigationResponse
+ decisionHandler:(void (^)(WKNavigationResponsePolicy))decisionHandler {
+    NSURLResponse *response = navigationResponse.response;
+    OptionHelperNativeDownloadKind kind = [self nativeDownloadKindForURL:response.URL];
+    if (kind != OptionHelperNativeDownloadNone) {
+        NSHTTPURLResponse *http = [response isKindOfClass:NSHTTPURLResponse.class] ? (NSHTTPURLResponse *)response : nil;
+        BOOL validStatus = kind == OptionHelperNativeDownloadBlob || (http != nil && http.statusCode >= 200 && http.statusCode < 300);
+        decisionHandler([self isTrustedNativeDownloadSource:webView] && validStatus ? WKNavigationResponsePolicyDownload : WKNavigationResponsePolicyCancel);
+        return;
+    }
+    NSHTTPURLResponse *http = [response isKindOfClass:NSHTTPURLResponse.class] ? (NSHTTPURLResponse *)response : nil;
+    NSString *disposition = [http valueForHTTPHeaderField:@"Content-Disposition"].lowercaseString;
+    BOOL unsupportedDownload = !navigationResponse.canShowMIMEType || [disposition hasPrefix:@"attachment"];
+    decisionHandler(unsupportedDownload ? WKNavigationResponsePolicyCancel : WKNavigationResponsePolicyAllow);
 }
 
-- (void)download:(WKDownload *)download
-decideDestinationUsingResponse:(NSURLResponse *)response
-suggestedFilename:(NSString *)suggestedFilename
-completionHandler:(void (^)(NSURL * _Nullable destination))completionHandler {
-    NSString *filename = [self dataAssetDownloadFilename:suggestedFilename];
-    if (filename == nil) {
+- (void)webView:(WKWebView *)webView navigationAction:(WKNavigationAction *)navigationAction didBecomeDownload:(WKDownload *)download {
+    [self registerNativeDownload:download webView:webView requestURL:navigationAction.request.URL];
+}
+
+- (void)webView:(WKWebView *)webView navigationResponse:(WKNavigationResponse *)navigationResponse didBecomeDownload:(WKDownload *)download {
+    [self registerNativeDownload:download webView:webView requestURL:download.originalRequest.URL];
+}
+
+- (void)download:(WKDownload *)download decideDestinationUsingResponse:(NSURLResponse *)response
+ suggestedFilename:(NSString *)suggestedFilename completionHandler:(void (^)(NSURL * _Nullable destination))completionHandler {
+    OptionHelperNativeDownload *item = [self.nativeDownloads objectForKey:download];
+    NSHTTPURLResponse *http = [response isKindOfClass:NSHTTPURLResponse.class] ? (NSHTTPURLResponse *)response : nil;
+    BOOL validStatus = item.kind == OptionHelperNativeDownloadBlob || (http != nil && http.statusCode >= 200 && http.statusCode < 300);
+    NSString *filename = [self nativeDownloadFilename:suggestedFilename kind:item.kind];
+    if (![self nativeDownload:item matchesURL:response.URL] || !validStatus || filename == nil || item.destinationDialog != nil) {
         completionHandler(nil);
-        [self showDataAssetDownloadFailure:@"下载文件名或类型不受支持。"];
+        [self finishNativeDownload:item cancel:YES];
+        if (item != nil && filename == nil) [self showDataAssetDownloadFailure:@"下载文件名或类型不受支持。"];
         return;
     }
     NSSavePanel *panel = [NSSavePanel savePanel];
     panel.canCreateDirectories = YES;
     panel.nameFieldStringValue = filename;
-    void (^finish)(NSModalResponse) = ^(NSModalResponse result) {
-        completionHandler(result == NSModalResponseOK ? panel.URL : nil);
+    panel.allowedFileTypes = @[filename.pathExtension];
+    panel.allowsOtherFileTypes = NO;
+    OptionHelperNativeDialog *dialog = [OptionHelperNativeDialog new];
+    dialog.sourceView = item.sourceView; dialog.sheetWindow = panel; item.destinationDialog = dialog;
+    __weak typeof(self) weakSelf = self;
+    dialog.completion = ^(BOOL accepted) {
+        OptionHelperAppDelegate *self = weakSelf;
+        item.destinationDialog = nil;
+        BOOL valid = self != nil && accepted && [self nativeDownload:item matchesURL:response.URL]
+            && panel.URL.isFileURL && [panel.URL.pathExtension.lowercaseString isEqualToString:filename.pathExtension.lowercaseString];
+        if (valid) {
+            item.destinationURL = panel.URL;
+            NSString *temporaryName = [NSString stringWithFormat:@".optionhelper-download-%@.%@", NSUUID.UUID.UUIDString, filename.pathExtension];
+            item.stagingURL = [[panel.URL URLByDeletingLastPathComponent] URLByAppendingPathComponent:temporaryName];
+            completionHandler(item.stagingURL);
+        } else {
+            completionHandler(nil);
+            [self finishNativeDownload:item cancel:YES];
+        }
     };
-    if (self.window != nil) [panel beginSheetModalForWindow:self.window completionHandler:finish];
-    else [panel beginWithCompletionHandler:finish];
+    [panel beginSheetModalForWindow:[self nativeDialogWindowForWebView:item.sourceView] completionHandler:^(NSModalResponse result) {
+        [dialog finish:result == NSModalResponseOK];
+    }];
 }
 
-- (void)download:(WKDownload *)download
-didFailWithError:(NSError *)error
-      resumeData:(NSData *)resumeData {
-    [self showDataAssetDownloadFailure:error.localizedDescription];
+- (void)download:(WKDownload *)download willPerformHTTPRedirection:(NSHTTPURLResponse *)response
+ newRequest:(NSURLRequest *)request decisionHandler:(void (^)(WKDownloadRedirectPolicy))decisionHandler {
+    OptionHelperNativeDownload *item = [self.nativeDownloads objectForKey:download];
+    BOOL allowed = [self nativeDownload:item matchesURL:request.URL];
+    decisionHandler(allowed ? WKDownloadRedirectPolicyAllow : WKDownloadRedirectPolicyCancel);
+    if (!allowed) [self finishNativeDownload:item cancel:YES];
+}
+
+- (void)downloadDidFinish:(WKDownload *)download {
+    OptionHelperNativeDownload *item = [self.nativeDownloads objectForKey:download];
+    if (item == nil || item.finished) return;
+    NSError *error = nil;
+    if (![self nativeDownload:item matchesURL:item.requestURL] || item.stagingURL == nil || item.destinationURL == nil) {
+        [self finishNativeDownload:item cancel:YES];
+        return;
+    }
+    if ([NSFileManager.defaultManager fileExistsAtPath:item.destinationURL.path]) {
+        [NSFileManager.defaultManager replaceItemAtURL:item.destinationURL withItemAtURL:item.stagingURL backupItemName:nil options:0 resultingItemURL:nil error:&error];
+    } else {
+        [NSFileManager.defaultManager moveItemAtURL:item.stagingURL toURL:item.destinationURL error:&error];
+    }
+    [self finishNativeDownload:item cancel:NO];
+    if (error != nil) [self showDataAssetDownloadFailure:error.localizedDescription];
+}
+
+- (void)download:(WKDownload *)download didFailWithError:(NSError *)error resumeData:(NSData *)resumeData {
+    OptionHelperNativeDownload *item = [self.nativeDownloads objectForKey:download];
+    if (item == nil || item.finished) return;
+    [self finishNativeDownload:item cancel:NO];
+    if (![self isCancelledNavigationError:error]) [self showDataAssetDownloadFailure:error.localizedDescription];
 }
 
 - (void)windowDidResize:(NSNotification *)notification {
@@ -1377,12 +1547,14 @@ didFailWithError:(NSError *)error
     }
     if (sender == self.reportPreviewWindow) {
         [self cancelNativeDialogsForWebView:self.reportPreviewWebView];
+        [self cancelNativeDownloadsForWebView:self.reportPreviewWebView];
         [sender orderOut:nil];
         return NO;
     }
     if (sender != self.window) return YES;
     if (self.closeAfterInterrupt || ([self.activeOperationState isEqualToString:@"ready"] && self.activeOperationCount == 0)) {
         [self cancelNativeDialogsForWebView:nil];
+        [self cancelNativeDownloadsForWebView:nil];
         return YES;
     }
     NSAlert *alert = [[NSAlert alloc] init];
@@ -1394,12 +1566,16 @@ didFailWithError:(NSError *)error
     if ([alert runModal] != NSAlertFirstButtonReturn) return NO;
     self.closeAfterInterrupt = YES;
     [self cancelNativeDialogsForWebView:nil];
+    [self cancelNativeDownloadsForWebView:nil];
     [self.webView evaluateJavaScript:@"fetch('/api/runtime/shutdown',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).catch(()=>{}).finally(()=>window.webkit?.messageHandlers?.optionhelperRuntime?.postMessage({type:'shutdown_complete'}));" completionHandler:nil];
     return NO;
 }
 
 - (void)windowWillClose:(NSNotification *)notification {
-    if (notification.object == self.window) [self cancelNativeDialogsForWebView:nil];
+    if (notification.object == self.window) {
+        [self cancelNativeDialogsForWebView:nil];
+        [self cancelNativeDownloadsForWebView:nil];
+    }
     if (notification.object == self.window) [NSApp terminate:nil];
 }
 
@@ -1419,6 +1595,7 @@ didFailWithError:(NSError *)error
     if ([message.name isEqualToString:@"optionhelperSession"] && [message.body isKindOfClass:[NSDictionary class]]
         && [message.body[@"type"] isEqualToString:@"signed_out"]) {
         [self cancelNativeDialogsForWebView:nil];
+        [self cancelNativeDownloadsForWebView:nil];
         [self cancelSettingsNavigationWatchdog];
         [self.settingsWebView stopLoading];
         [self.settingsWebView loadHTMLString:@"" baseURL:nil];
