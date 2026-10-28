@@ -92,6 +92,31 @@ private final class OptionHelperNativeDialog {
     }
 }
 
+private enum OptionHelperNativeDownloadKind {
+    case none, attachment, data, payoff, blob
+}
+
+// One download owns its picker reply and temporary file until it finishes.
+private final class OptionHelperNativeDownload {
+    weak var sourceView: WKWebView?
+    let download: WKDownload
+    let sourceURL: URL
+    let requestURL: URL
+    let kind: OptionHelperNativeDownloadKind
+    var destinationDialog: OptionHelperNativeDialog?
+    var destinationURL: URL?
+    var stagingURL: URL?
+    var finished = false
+
+    init(sourceView: WKWebView, download: WKDownload, sourceURL: URL, requestURL: URL, kind: OptionHelperNativeDownloadKind) {
+        self.sourceView = sourceView
+        self.download = download
+        self.sourceURL = sourceURL
+        self.requestURL = requestURL
+        self.kind = kind
+    }
+}
+
 @main
 final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler, WKDownloadDelegate, NSMenuItemValidation {
     private enum PresentationDecision {
@@ -108,6 +133,7 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
     private var startupPipe: Pipe?
     private var window: NSWindow?
     private var nativeDialogs: [UUID: OptionHelperNativeDialog] = [:]
+    private var nativeDownloads: [ObjectIdentifier: OptionHelperNativeDownload] = [:]
     private var webView: WKWebView?
     private var reportPreviewWindow: NSWindow?
     private var reportPreviewWebView: WKWebView?
@@ -154,6 +180,7 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
 
     func applicationWillTerminate(_ notification: Notification) {
         cancelNativeDialogs()
+        cancelNativeDownloads()
         cancelNavigationWatchdog()
         cancelSettingsNavigationWatchdog()
         startupPipe?.fileHandleForReading.readabilityHandler = nil
@@ -865,6 +892,7 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
 
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         cancelNativeDialogs(for: webView)
+        cancelNativeDownloads(for: webView)
         if webView === settingsWebView {
             beginSettingsNavigationWatchdog()
             return
@@ -917,6 +945,7 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
 
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
         cancelNativeDialogs(for: webView)
+        cancelNativeDownloads(for: webView)
         if webView === settingsWebView {
             cancelSettingsNavigationWatchdog()
             showSettingsFailure("设置页面进程已结束。工作台和后台任务仍保持原状。")
@@ -968,21 +997,86 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         else { alert.runModal() }
     }
 
-    private func dataAssetDownloadFilename(_ suggestedFilename: String) -> String? {
+    private func nativeDownloadKind(for url: URL?) -> OptionHelperNativeDownloadKind {
+        guard let url else { return .none }
+        if url.scheme?.lowercased() == "blob" {
+            return nativeDialogURLIsSameOrigin(URL(string: String(url.absoluteString.dropFirst(5)))) ? .blob : .none
+        }
+        guard nativeDialogURLIsSameOrigin(url),
+              let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return .none }
+        let encoded = components.percentEncodedPath.lowercased()
+        guard !["%2e", "%2f", "%5c", "%25"].contains(where: encoded.contains),
+              !url.pathComponents.contains(where: { $0 == "." || $0 == ".." }),
+              url.fragment == nil || url.fragment == "" else { return .none }
+        let identifier = "[A-Za-z0-9][A-Za-z0-9._:-]{0,159}"
+        if url.query == nil || url.query == "" {
+            if url.path.range(of: "^/api/tasks/\(identifier)/attachments/\(identifier)$", options: .regularExpression) != nil { return .attachment }
+            if url.path.range(of: "^/api/assets/\(identifier)/download$", options: .regularExpression) != nil { return .data }
+        }
+        if isPayoffImageDownloadURL(url), components.queryItems?.count == 1 { return .payoff }
+        return .none
+    }
+
+    private func nativeDownloadFilename(_ suggestedFilename: String, kind: OptionHelperNativeDownloadKind) -> String? {
         let candidate = suggestedFilename.trimmingCharacters(in: .whitespacesAndNewlines)
-        let lower = candidate.lowercased()
-        let forbidden = CharacterSet.controlCharacters.union(CharacterSet(charactersIn: "/\\:"))
-        guard !candidate.isEmpty,
-              candidate.count <= 160,
-              candidate.rangeOfCharacter(from: forbidden) == nil,
-              lower.hasSuffix(".csv") || lower.hasSuffix(".json") || lower.hasSuffix(".svg") else { return nil }
-        return candidate
+        let forbidden = CharacterSet.controlCharacters.union(CharacterSet(charactersIn: "/\\:%\u{202a}\u{202b}\u{202c}\u{202d}\u{202e}\u{2066}\u{2067}\u{2068}\u{2069}"))
+        guard !candidate.isEmpty, candidate.count <= 160, !candidate.hasPrefix("."),
+              candidate.rangeOfCharacter(from: forbidden) == nil else { return nil }
+        let fileExtension = (candidate as NSString).pathExtension.lowercased()
+        let allowed: Set<String>
+        switch kind {
+        case .attachment:
+            allowed = ["pdf", "docx", "xlsx", "xls", "pptx", "rtf", "odt", "ods", "odp",
+                "txt", "md", "markdown", "csv", "tsv", "json", "jsonl", "xml", "yaml", "yml", "log", "eml",
+                "html", "htm", "png", "jpg", "jpeg", "webp", "gif", "bmp", "tif", "tiff",
+                "mov", "mp4", "m4v", "webm", "py", "js", "ts", "jsx", "tsx", "sql", "r", "css", "toml", "ini", "srt", "vtt"]
+        case .data: allowed = ["csv", "json"]
+        case .payoff: allowed = ["svg"]
+        case .blob: allowed = ["csv", "json", "svg"]
+        case .none: return nil
+        }
+        return allowed.contains(fileExtension) ? candidate : nil
+    }
+
+    private func isTrustedNativeDownloadSource(_ source: WKWebView?) -> Bool {
+        guard let source, source === webView else { return false }
+        return isSafeAppURL(source.url) && nativeDialogURLIsSameOrigin(source.url) && nativeDialogWindow(for: source) != nil
+    }
+
+    private func nativeDownload(_ item: OptionHelperNativeDownload?, matches url: URL?) -> Bool {
+        guard let item, !item.finished, isTrustedNativeDownloadSource(item.sourceView) else { return false }
+        return item.sourceView?.url == item.sourceURL && url == item.requestURL && nativeDownloadKind(for: url) == item.kind
+    }
+
+    private func finishNativeDownload(_ item: OptionHelperNativeDownload?, cancel: Bool) {
+        guard let item, !item.finished else { return }
+        item.finished = true
+        nativeDownloads.removeValue(forKey: ObjectIdentifier(item.download))
+        item.destinationDialog?.cancel()
+        item.destinationDialog = nil
+        if cancel { item.download.cancel(nil) }
+        if let staging = item.stagingURL { try? FileManager.default.removeItem(at: staging) }
+    }
+
+    private func cancelNativeDownloads(for source: WKWebView? = nil) {
+        for item in Array(nativeDownloads.values) where source == nil || item.sourceView === source {
+            finishNativeDownload(item, cancel: true)
+        }
+    }
+
+    private func registerNativeDownload(_ download: WKDownload, webView source: WKWebView, requestURL url: URL?) {
+        let kind = nativeDownloadKind(for: url)
+        if nativeDownloads[ObjectIdentifier(download)] != nil { return }
+        guard isTrustedNativeDownloadSource(source), kind != .none, let sourceURL = source.url, let url else { download.cancel(nil); return }
+        let item = OptionHelperNativeDownload(sourceView: source, download: download, sourceURL: sourceURL, requestURL: url, kind: kind)
+        nativeDownloads[ObjectIdentifier(download)] = item
+        download.delegate = self
     }
 
     private func showDataAssetDownloadFailure(_ detail: String) {
         let alert = NSAlert()
         alert.alertStyle = .warning
-        alert.messageText = "数据下载未完成"
+        alert.messageText = "下载未完成"
         alert.informativeText = detail
         if let window { alert.beginSheetModal(for: window) }
         else { alert.runModal() }
@@ -1257,11 +1351,14 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
     ) {
         let url = navigationAction.request.url
-        if webView === self.webView,
-           navigationAction.shouldPerformDownload,
-           (url?.scheme?.lowercased() == "blob"
-            || isPayoffImageDownloadURL(url)) {
-            decisionHandler(.download)
+        let kind = nativeDownloadKind(for: url)
+        if kind != .none, kind != .blob || navigationAction.shouldPerformDownload {
+            let trusted = isTrustedNativeDownloadSource(webView) && isTrustedNativeDialogSource(webView, frame: navigationAction.sourceFrame)
+            decisionHandler(trusted ? .download : .cancel)
+            return
+        }
+        if navigationAction.shouldPerformDownload, !isAllowedReportArtifactURL(url) {
+            decisionHandler(.cancel)
             return
         }
         if webView === self.webView, navigationAction.targetFrame?.isMainFrame == true, isSafeAppURL(url), url?.path == "/settings" {
@@ -1298,38 +1395,98 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
             || (reportWindowIsEditor && isAllowedReportEditorURL(url)) ? .allow : .cancel)
     }
 
-    func webView(
-        _ webView: WKWebView,
-        navigationAction: WKNavigationAction,
-        didBecome download: WKDownload
-    ) {
-        guard webView === self.webView else { return }
-        download.delegate = self
+    func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse,
+                 decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void) {
+        let response = navigationResponse.response
+        let kind = nativeDownloadKind(for: response.url)
+        if kind != .none {
+            let http = response as? HTTPURLResponse
+            let validStatus = kind == .blob || http.map { (200..<300).contains($0.statusCode) } == true
+            decisionHandler(isTrustedNativeDownloadSource(webView) && validStatus ? .download : .cancel)
+            return
+        }
+        let disposition = (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Content-Disposition")?.lowercased() ?? ""
+        decisionHandler(!navigationResponse.canShowMIMEType || disposition.hasPrefix("attachment") ? .cancel : .allow)
     }
 
-    func download(
-        _ download: WKDownload,
-        decideDestinationUsing response: URLResponse,
-        suggestedFilename: String,
-        completionHandler: @escaping (URL?) -> Void
-    ) {
-        guard let filename = dataAssetDownloadFilename(suggestedFilename) else {
+    func webView(_ webView: WKWebView, navigationAction: WKNavigationAction, didBecome download: WKDownload) {
+        registerNativeDownload(download, webView: webView, requestURL: navigationAction.request.url)
+    }
+
+    func webView(_ webView: WKWebView, navigationResponse: WKNavigationResponse, didBecome download: WKDownload) {
+        registerNativeDownload(download, webView: webView, requestURL: download.originalRequest.url)
+    }
+
+    func download(_ download: WKDownload, decideDestinationUsing response: URLResponse, suggestedFilename: String,
+                  completionHandler: @escaping (URL?) -> Void) {
+        let item = nativeDownloads[ObjectIdentifier(download)]
+        let http = response as? HTTPURLResponse
+        let validStatus = item?.kind == .blob || http.map { (200..<300).contains($0.statusCode) } == true
+        guard let item, nativeDownload(item, matches: response.url), validStatus,
+              let filename = nativeDownloadFilename(suggestedFilename, kind: item.kind), item.destinationDialog == nil,
+              let source = item.sourceView, let hostWindow = nativeDialogWindow(for: source) else {
             completionHandler(nil)
-            showDataAssetDownloadFailure("下载文件名或类型不受支持。")
+            finishNativeDownload(item, cancel: true)
+            if let item, nativeDownloadFilename(suggestedFilename, kind: item.kind) == nil {
+                showDataAssetDownloadFailure("下载文件名或类型不受支持。")
+            }
             return
         }
         let panel = NSSavePanel()
         panel.canCreateDirectories = true
         panel.nameFieldStringValue = filename
-        let finish: (NSApplication.ModalResponse) -> Void = { response in
-            completionHandler(response == .OK ? panel.url : nil)
+        panel.allowedFileTypes = [(filename as NSString).pathExtension]
+        panel.allowsOtherFileTypes = false
+        let dialog = OptionHelperNativeDialog(sourceView: source, sheetWindow: panel)
+        item.destinationDialog = dialog
+        dialog.completion = { [weak self] accepted in
+            item.destinationDialog = nil
+            guard let self, accepted, self.nativeDownload(item, matches: response.url),
+                  let destination = panel.url, destination.isFileURL,
+                  destination.pathExtension.lowercased() == (filename as NSString).pathExtension.lowercased() else {
+                completionHandler(nil)
+                self?.finishNativeDownload(item, cancel: true)
+                return
+            }
+            item.destinationURL = destination
+            let temporaryName = ".optionhelper-download-\(UUID().uuidString).\((filename as NSString).pathExtension)"
+            let staging = destination.deletingLastPathComponent().appendingPathComponent(temporaryName)
+            item.stagingURL = staging
+            completionHandler(staging)
         }
-        if let window { panel.beginSheetModal(for: window, completionHandler: finish) }
-        else { panel.begin(completionHandler: finish) }
+        panel.beginSheetModal(for: hostWindow) { response in dialog.finish(response == .OK) }
+    }
+
+    func download(_ download: WKDownload, willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest,
+                  decisionHandler: @escaping (WKDownload.RedirectPolicy) -> Void) {
+        let item = nativeDownloads[ObjectIdentifier(download)]
+        let allowed = nativeDownload(item, matches: request.url)
+        decisionHandler(allowed ? .allow : .cancel)
+        if !allowed { finishNativeDownload(item, cancel: true) }
+    }
+
+    func downloadDidFinish(_ download: WKDownload) {
+        guard let item = nativeDownloads[ObjectIdentifier(download)], !item.finished else { return }
+        guard nativeDownload(item, matches: item.requestURL), let staging = item.stagingURL, let destination = item.destinationURL else {
+            finishNativeDownload(item, cancel: true)
+            return
+        }
+        var saveError: Error?
+        do {
+            if FileManager.default.fileExists(atPath: destination.path) {
+                _ = try FileManager.default.replaceItemAt(destination, withItemAt: staging)
+            } else {
+                try FileManager.default.moveItem(at: staging, to: destination)
+            }
+        } catch { saveError = error }
+        finishNativeDownload(item, cancel: false)
+        if let saveError { showDataAssetDownloadFailure(saveError.localizedDescription) }
     }
 
     func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) {
-        showDataAssetDownloadFailure(error.localizedDescription)
+        guard let item = nativeDownloads[ObjectIdentifier(download)], !item.finished else { return }
+        finishNativeDownload(item, cancel: false)
+        if !isCancelledNavigationError(error) { showDataAssetDownloadFailure(error.localizedDescription) }
     }
 
     func windowDidResize(_ notification: Notification) {
@@ -1351,12 +1508,14 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         }
         if sender === reportPreviewWindow {
             cancelNativeDialogs(for: reportPreviewWebView)
+            cancelNativeDownloads(for: reportPreviewWebView)
             sender.orderOut(nil)
             return false
         }
         guard sender === window else { return true }
         if closeAfterInterrupt || (activeOperationState == "ready" && activeOperationCount == 0) {
             cancelNativeDialogs()
+            cancelNativeDownloads()
             return true
         }
         let alert = NSAlert()
@@ -1369,12 +1528,16 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         guard alert.runModal() == .alertFirstButtonReturn else { return false }
         closeAfterInterrupt = true
         cancelNativeDialogs()
+        cancelNativeDownloads()
         webView?.evaluateJavaScript("fetch('/api/runtime/shutdown',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).catch(()=>{}).finally(()=>window.webkit?.messageHandlers?.optionhelperRuntime?.postMessage({type:'shutdown_complete'}));")
         return false
     }
 
     func windowWillClose(_ notification: Notification) {
-        if notification.object as? NSWindow === window { cancelNativeDialogs() }
+        if notification.object as? NSWindow === window {
+            cancelNativeDialogs()
+            cancelNativeDownloads()
+        }
         guard notification.object as? NSWindow === window else { return }
         NSApp.terminate(nil)
     }
@@ -1443,6 +1606,7 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
 
     private func clearAuxiliaryWindowsAfterSignOut() {
         cancelNativeDialogs()
+        cancelNativeDownloads()
         cancelSettingsNavigationWatchdog()
         settingsWebView?.stopLoading()
         settingsWebView?.loadHTMLString("", baseURL: nil)
