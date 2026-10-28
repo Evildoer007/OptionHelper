@@ -68,6 +68,10 @@ class DocumentAttachmentStore:
         self._mkdir_private(self._root)
 
     def save_encoded(self, documents: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+        return [self._commit(data, metadata) for data, metadata in self.prepare_encoded(documents)]
+
+    def prepare_encoded(self, documents: Sequence[Mapping[str, Any]]) -> list[tuple[bytes, dict[str, Any]]]:
+        """Decode and extract every document before the caller commits a batch."""
         if isinstance(documents, (str, bytes)) or not isinstance(documents, Sequence):
             raise ValidationError("文档附件必须是数组")
         if not documents or len(documents) > self.max_documents_per_message:
@@ -98,7 +102,7 @@ class DocumentAttachmentStore:
             if total > self.max_message_source_bytes:
                 raise ValidationError("本条消息的文档总量超过200MB上限")
             decoded.append((data, media_type, name))
-        return [self._commit(data, self._prepare(data, media_type, name)) for data, media_type, name in decoded]
+        return [(data, self._prepare(data, media_type, name)) for data, media_type, name in decoded]
 
     def read(self, reference: Mapping[str, Any]) -> bytes:
         digest = self._digest(str(reference.get("attachment_id", "")))
@@ -108,9 +112,14 @@ class DocumentAttachmentStore:
         try:
             data = source_path.read_bytes()
             stored = json.loads(metadata_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+        except (OSError, UnicodeError, json.JSONDecodeError):
             raise ValidationError("文档附件不可用") from None
-        if hashlib.sha256(data).hexdigest() != digest or stored != dict(reference):
+        name = reference.get("name")
+        if not isinstance(name, str) or self._safe_name(name) != name:
+            raise ValidationError("文档附件名称无效")
+        content_metadata = lambda value: {key: item for key, item in value.items() if key != "name"}
+        if (not isinstance(stored, dict) or hashlib.sha256(data).hexdigest() != digest
+                or content_metadata(stored) != content_metadata(reference)):
             raise ValidationError("文档附件完整性校验失败")
         return data
 
@@ -381,7 +390,8 @@ class DocumentAttachmentStore:
         raise ValidationError("文本文件编码无法识别")
 
     def _commit(self, data: bytes, metadata: dict[str, Any]) -> dict[str, Any]:
-        text = str(metadata.pop("_text"))
+        payloads = self._artifact_payloads(data, metadata)
+        metadata = {key: value for key, value in metadata.items() if key != "_text"}
         digest = self._digest(str(metadata["attachment_id"]))
         source_path, text_path, metadata_path = self._paths(digest)
         self._mkdir_private(source_path.parent)
@@ -390,11 +400,16 @@ class DocumentAttachmentStore:
         if source_path.exists() and text_path.exists() and metadata_path.exists():
             self.read(metadata)
             return dict(metadata)
-        self._atomic_write(source_path, data)
-        self._atomic_write(text_path, text.encode("utf-8"))
-        self._atomic_write(metadata_path, json.dumps(metadata, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+        for path, payload in payloads.items():
+            self._atomic_write(path, payload)
         self.read(metadata)
         return dict(metadata)
+
+    def _artifact_payloads(self, data: bytes, metadata: Mapping[str, Any]) -> dict[Path, bytes]:
+        source_path, text_path, metadata_path = self._paths(self._digest(str(metadata["attachment_id"])))
+        reference = {key: value for key, value in metadata.items() if key != "_text"}
+        return {source_path: data, text_path: str(metadata["_text"]).encode("utf-8"),
+                metadata_path: json.dumps(reference, ensure_ascii=False, separators=(",", ":")).encode("utf-8")}
 
     def _paths(self, digest: str) -> tuple[Path, Path, Path]:
         directory = self._root / digest[:2]
