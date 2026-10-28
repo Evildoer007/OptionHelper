@@ -35,8 +35,13 @@ def resolve_secret(
     fallback_env: str,
     *,
     host_secret_port: Callable[[SecretRef], str] | None = None,
+    require_host_port: bool = False,
 ) -> str | None:
-    """在Provider调用边界解析Core SecretRef，调用者不得记录返回值。"""
+    """Resolve at the Provider boundary; App calls require their Host port.
+
+    Independent Core callers may use local defaults. App callers must never
+    fall through to a process environment or an unapproved OS-vault lookup.
+    """
 
     if host_secret_port is not None:
         if ref is None:
@@ -47,6 +52,8 @@ def resolve_secret(
             # Host凭据端口的异常可能含敏感上下文；只保留可重试的非敏感状态。
             raise SecretPortUnavailable("Host凭据端口暂不可用") from error
         return value.strip() if isinstance(value, str) and value.strip() else None
+    if require_host_port:
+        return None
     if ref is None:
         return os.environ.get(fallback_env) or None
     provider = ref.provider.strip().lower()
@@ -98,6 +105,8 @@ class DataFetcherConfig:
     # 只有含calendar_id、calendar_revision和完整覆盖声明的映射才可作为已验证日历。
     # 裸sessions仍可保留为辅助信息，但行情质量必须标记为unverified。
     trading_calendar_sessions: Mapping[str, object] = field(default_factory=dict)
+    # App入口强制启用；只有直接Core调用可使用环境或系统钥匙串默认凭据。
+    require_host_credentials: bool = False
 
     @classmethod
     def from_runtime(cls) -> "DataFetcherConfig":
@@ -140,4 +149,5 @@ class DataFetcherConfig:
                 key: dict(value) if isinstance(value, Mapping) else tuple(value)
                 for key, value in self.trading_calendar_sessions.items()
             },
+            require_host_credentials=self.require_host_credentials,
         )
