@@ -625,6 +625,12 @@ def _fetch_provider(
         if (config.offline or request.offline) and provider.network:
             calls.append({"provider": name, "outcome": "skipped_offline", "quota_units": 0})
             continue
+        if config.require_host_credentials and provider.network and name != config.token_provider:
+            # A request may retain a local-first fallback list, but it cannot
+            # approve another remote feed or invalidate the selected API key.
+            calls.append({"provider": name, "outcome": "skipped_not_approved", "quota_units": 0})
+            last_error = RequestValidationError("请求的数据来源未获当前App设置批准")
+            continue
         units = int(provider.estimate_quota(request))
         if quota_used + units > limit:
             calls.append(_provider_call(name, "quota_exceeded", units))
@@ -680,7 +686,7 @@ def _fetch_provider(
     if protected_error is not None:
         raise protected_error
     if last_error is not None:
-        if isinstance(last_error, (ProviderError, DataQualityError)):
+        if isinstance(last_error, (RequestValidationError, ProviderError, DataQualityError)):
             raise last_error
         raise ProviderUnavailable("没有可用Provider满足本次请求") from last_error
     raise ProviderUnavailable("没有可用Provider满足本次请求")
@@ -1567,7 +1573,18 @@ def call_tool_from_app(
     requires_secret = action in {"fetch_calendar", "test_connection"} or (
         action == "fetch" and _app_fetch_requires_secret(source)
     )
-    base_config = DataFetcherConfig.from_runtime()
+    # Local-first requests may retain several provider names, but only the
+    # selected feed receives a Host-approved credential. No App provider may
+    # inherit the direct-Core environment or system-vault credential defaults.
+    base_config = replace(
+        DataFetcherConfig.from_runtime(),
+        require_host_credentials=True,
+        ifind_secret_ref=None,
+        ifind_secret_port=None,
+        token_provider=selected_provider,
+        token_secret_ref=None,
+        token_secret_port=None,
+    )
     if requires_secret:
         config = replace(
             base_config,
