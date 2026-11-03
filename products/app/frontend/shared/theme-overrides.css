@@ -333,8 +333,7 @@ html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-sh
 
 html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-account-trigger__mark {
   border-color: transparent !important;
-  background: #50555C !important;
-  color: #FFFFFF !important;
+  background: transparent !important;
 }
 
 html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-account-menu__identity strong,
