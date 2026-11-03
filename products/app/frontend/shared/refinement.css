@@ -2967,13 +2967,13 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
 }
 
 .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-account-trigger__mark {
+  display: block;
   width: 22px;
   height: 22px;
   flex-basis: 22px;
   border-radius: 50%;
-  background: #62666D;
-  color: #FFFFFF;
-  font-size: 9px;
+  background: transparent;
+  object-fit: contain;
 }
 
 .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-account-trigger__name { font-size: 12.5px; }
