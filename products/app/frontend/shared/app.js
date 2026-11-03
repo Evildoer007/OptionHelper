@@ -496,9 +496,6 @@ export async function initializeWorkspace(mode, { onModeChange } = {}) {
   accountMenuRoot?.querySelectorAll("[data-account-label], [data-account-menu-label]").forEach((label) => {
     label.textContent = accountLabel;
   });
-  accountMenuRoot?.querySelectorAll("[data-account-avatar]").forEach((avatar) => {
-    avatar.textContent = Array.from(accountLabel.trim())[0]?.toUpperCase() || "U";
-  });
   const accountMenuItems = () => Array.from(accountMenu?.querySelectorAll('[role="menuitem"]:not([disabled])') || []);
   const focusAccountMenuItem = (position) => {
     const items = accountMenuItems();
