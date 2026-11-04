@@ -1849,7 +1849,7 @@ export async function startWorkspace(initialMode) {
   const startProcessPlayback = (taskId, requestId, { restore = false, onTerminal = null } = {}) => {
     const playback = appendProcessPanel();
     playback.liveAssistant = restore ? null : createLiveAssistantMessage();
-    if (playback.liveAssistant) stream.insertBefore(playback.liveAssistant.article, playback.panel);
+    if (playback.liveAssistant) playback.panel.after(playback.liveAssistant.article);
     let stopped = false;
     let timer = 0;
     const poll = async () => {
@@ -1977,10 +1977,13 @@ export async function startWorkspace(initialMode) {
   const restoreLatestProcess = (task) => {
     const requestId = lastConversationRequestId(task?.messages);
     if (!requestId || currentTask?.task_id !== task.task_id) return;
+    const responseMessage = [...stream.children].reverse().find(message =>
+      message.matches(".message--assistant:not(.message--process):not(.message--streaming)"));
     activeProcessPlayback?.stop();
     activeProcessPlayback = startProcessPlayback(task.task_id, requestId, {
       restore: true,
     });
+    if (responseMessage) stream.insertBefore(activeProcessPlayback.panel, responseMessage);
   };
   const newWorkspaceRequestId = () => globalThis.crypto?.randomUUID?.()
     || `chat-${Date.now()}-${Math.random().toString(36).slice(2)}`;
