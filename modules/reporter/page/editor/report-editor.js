@@ -1009,7 +1009,7 @@
       this.chartInstances.get(spec.id)?.dispose?.();
       this.chartInstances.delete(spec.id);
       host.replaceChildren();
-      if (!this.echarts?.init || !this.chartPresentation?.renderChart) {
+      if ((spec.type !== 'surface' && !this.echarts?.init) || !this.chartPresentation?.renderChart) {
         host.textContent = '图表预览不可用，请使用下方数据表。';
         return;
       }
@@ -1034,6 +1034,7 @@
       html.querySelectorAll('[data-report-editor-chart-host]').forEach(host => {
         host.replaceChildren();
         host.classList.remove('chart--unavailable');
+        host.removeAttribute('data-surface-view');
       });
       html.querySelectorAll('[data-report-editor-selected],[data-runtime-echarts]').forEach(node => {
         node.removeAttribute('data-report-editor-selected');
