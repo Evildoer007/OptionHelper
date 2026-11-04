@@ -545,17 +545,17 @@ def _safe_pricing_charts(pricing: Mapping[str, Any], result: Mapping[str, Any]) 
         y_axis = item.get("y_axis") if isinstance(item.get("y_axis"), Mapping) else {}
         x_values = x_axis.get("values") if isinstance(x_axis.get("values"), list) else []
         y_values = y_axis.get("values") if isinstance(y_axis.get("values"), list) else []
-        cells: list[list[float]] = []
+        cells: list[list[float | None]] = []
         for point in item.get("data", []) if isinstance(item.get("data"), list) else []:
             cell = point.get("value") if isinstance(point, Mapping) else None
             if not isinstance(cell, list) or len(cell) != 3:
                 cells = []
                 break
             numeric_cell = [_safe_number(value) for value in cell]
-            if any(value is None for value in numeric_cell):
+            if any(value is None for value in numeric_cell[:2]) or (numeric_cell[2] is None and cell[2] is not None):
                 cells = []
                 break
-            cells.append([value for value in numeric_cell if value is not None])
+            cells.append(numeric_cell)
         numeric_x_values = [_safe_number(value) for value in x_values]
         numeric_y_values = [_safe_number(value) for value in y_values]
         if (
@@ -566,7 +566,7 @@ def _safe_pricing_charts(pricing: Mapping[str, Any], result: Mapping[str, Any]) 
             or any(value is None for value in (*numeric_x_values, *numeric_y_values))
         ):
             continue
-        indexed_cells: list[list[float]] = []
+        indexed_cells: list[list[float | None]] = []
         for x_value, y_value, z_value in cells:
             x_index, y_index = int(x_value), int(y_value)
             if (
@@ -589,9 +589,16 @@ def _safe_pricing_charts(pricing: Mapping[str, Any], result: Mapping[str, Any]) 
             "data": indexed_cells,
             "x_axis_name": _text(x_axis.get("name") or "横轴"), "y_axis_name": _text(y_axis.get("name") or "纵轴"),
             "z_axis_name": _text(z_axis.get("name") or "敏感性") + "（百分比敏感度）",
+            "x_axis_unit": _text(x_axis.get("unit")), "y_axis_unit": _text(y_axis.get("unit")),
+            "z_axis_unit": _text(z_axis.get("unit")),
             "value_format": "percent",
             "source_note": "本次估值结果，按标准化百分比敏感度表示。",
         })
+        market = next((annotation for annotation in (item.get("annotations") if isinstance(item.get("annotations"), list) else [])
+                       if isinstance(annotation, Mapping) and annotation.get("kind") == "market"
+                       and _safe_number(annotation.get("axis_value")) is not None), None)
+        if market is not None:
+            charts[-1]["reference_x"] = market["axis_value"]
     return charts
 
 
