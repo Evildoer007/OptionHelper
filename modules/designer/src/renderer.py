@@ -751,6 +751,9 @@ def add_charts(charts: list[dict[str, Any]], section: str, specs: list[Any]) -> 
                 "data": [list(item) for item in as_list(spec.get("data")) if isinstance(item, list) and len(item) == 3],
                 "z_axis_name": text(spec.get("z_axis_name")),
             })
+            for key in ("x_axis_unit", "y_axis_unit", "z_axis_unit", "reference_x"):
+                if key in spec:
+                    chart[key] = deepcopy(spec[key])
         else:
             chart["series"] = [
                 {
@@ -1558,10 +1561,9 @@ def render_html(
     )
     echarts_head = f'<script src="{esc(echarts_path)}" defer></script>' if charts else ""
     if any(chart.get("type") == "surface" for chart in charts):
-        # Inline the locked offline extension so portable and shared reports
-        # both keep their 3D dependency without fetching a CDN.
-        for name in ("echarts-gl.min.js", "surface-chart.js"):
-            source = (config.asset_root / "vendor" / name).read_text(encoding="utf-8")
+        # Both report modes use the workbench's locked offline Plotly runtime.
+        for path in config.surface_runtime_paths:
+            source = path.read_text(encoding="utf-8")
             echarts_head += "<script>window.addEventListener('DOMContentLoaded',function(){" + source.replace("</script", "<\\/script") + "});</script>"
     chart_script = "" if not charts else r"""<script>
 	const chartSpecs=__CHARTS__;
@@ -1600,6 +1602,10 @@ function axisPrecision(values, format) {
 function renderChart(spec) {
   const el = document.getElementById(spec.id);
   if (!el) return;
+  if (spec.type === 'surface') {
+    chartInstances.push(window.OptionHelperSurface.mount(el, spec));
+    return;
+  }
   const isHeatmap = ['heatmap', 'surface'].includes(spec.type);
   const type = spec.type === 'bar' ? 'bar' : 'line';
   const points = spec.x.length;
@@ -1619,11 +1625,7 @@ function renderChart(spec) {
       formatter: value => publicCategory(value, name, digits)}
     });
   };
-  if (spec.type === 'surface') {
-    chart.setOption(window.OptionHelperSurface.option(spec,
-      value => publicNumber(value, spec.value_format, 4), chartTheme,
-      (value, name, values) => publicCategory(value, name, axisPrecision(values, 'number'))));
-  } else if (isHeatmap) {
+  if (isHeatmap) {
     const values = spec.data.map(item => Number(item[2])).filter(Number.isFinite);
     const escapeLabel = value => String(value).replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
     chart.setOption({
@@ -1666,7 +1668,7 @@ function renderChart(spec) {
   }
   chartInstances.push(chart);
 }
-	function initialiseCharts(){if(!window.echarts){markChartsUnavailable();return;}chartSpecs.forEach(spec=>{try{renderChart(spec);}catch(error){markChartUnavailable(spec.id,"图表初始化失败，请重新加载报告。");console.error("图表初始化失败",spec.id,error);}});}
+	function initialiseCharts(){chartSpecs.forEach(spec=>{try{renderChart(spec);}catch(error){markChartUnavailable(spec.id,"图表初始化失败，请重新加载报告。");console.error("图表初始化失败",spec.id,error);}});}
 	window.addEventListener("DOMContentLoaded",initialiseCharts);let resizeTimer;window.addEventListener("resize",()=>{window.clearTimeout(resizeTimer);resizeTimer=window.setTimeout(()=>chartInstances.forEach(chart=>chart.resize()),150)});
 </script>"""
     chart_script = (
