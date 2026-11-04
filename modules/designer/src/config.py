@@ -26,7 +26,7 @@ _REQUIRED_TEMPLATE_DEFINITIONS = (
 _RUNTIME_ASSET_FILES = {
     "templates": frozenset((*_REQUIRED_TEMPLATE_NAMES, *_REQUIRED_TEMPLATE_DEFINITIONS)),
     "themes": frozenset({"designer-theme.css", "designer-token-vars.css"}),
-    "vendor": frozenset({"echarts.min.js", "echarts-gl.min.js", "surface-chart.js"}),
+    "vendor": frozenset({"echarts.min.js", "surface-chart.js"}),
 }
 _IGNORED_ASSET_NAMES = frozenset({".DS_Store"})
 # 开发态的资源属于Designer模块；标准Skill发行包将其置于assets/designer。
@@ -195,6 +195,23 @@ class DesignerConfig:
         """Return a reference to the single checked-in chart runtime."""
 
         return os.path.relpath(self.echarts_asset_path, destination_dir.resolve())
+
+    @property
+    def surface_runtime_paths(self) -> tuple[Path, ...]:
+        """Resolve the same locked Plotly sources in development and delivery."""
+
+        project = Path(__file__).resolve().parents[3]
+        browser = project / "core" / "src" / "runtime" / "browser"
+        if browser.is_dir():
+            sources = (browser / "vendor" / "plotly-optionhelper.min.js", browser / "plotly_chart_system.js")
+        else:
+            browser = self.asset_root / "runtime"
+            sources = (browser / "vendor" / "plotly-optionhelper.min.js", browser / "plotly-chart-system.js")
+        paths = (*sources, self.asset_root / "vendor" / "surface-chart.js")
+        for path in paths:
+            if not path.is_file() or path.is_symlink():
+                raise DesignerConfigurationError(f"找不到离线Plotly曲面资源：{path.name}")
+        return paths
 
     def validate_request(
         self,
