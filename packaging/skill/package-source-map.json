@@ -36,7 +36,9 @@
     {"source": "assets/icons/optionhelper-mark.svg", "target": "assets/icons/optionhelper-mark.svg"},
     {"source": "core/tool_entry.py", "target": "scripts/tool_entry.py"},
     {"source": "core/requirements.lock", "target": "scripts/requirements.lock"},
-    {"source": "packaging/skill/environment_check.py", "target": "scripts/environment_check.py"}
+    {"source": "packaging/skill/environment_check.py", "target": "scripts/environment_check.py"},
+    {"source": "core/src/runtime/browser/plotly_chart_system.js", "target": "assets/designer/runtime/plotly-chart-system.js"},
+    {"source": "core/src/runtime/browser/vendor/plotly-optionhelper.min.js", "target": "assets/designer/runtime/vendor/plotly-optionhelper.min.js"}
   ],
   "trees": [
     {"source": "core/src/runtime", "target": "scripts/runtime", "exclude": [
@@ -52,7 +54,6 @@
       ".DS_Store",
       "README.md",
       "LibreChat-LICENSE.txt",
-      "Plotly.js-LICENSE.txt",
       "ThinkingOrbs-LICENSE.txt",
       "OptionHelper-Agent-Runtime-LICENSE.txt",
       "OptionHelper-Agent-Runtime-NOTICES.txt",
