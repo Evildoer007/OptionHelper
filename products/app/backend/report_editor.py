@@ -685,8 +685,8 @@ def _attach_trusted_charts(
         .replace("\u2029", "\\u2029")
     )
     if any(spec.get("type") == "surface" for spec in chart_specs.values()):
-        vendor = load_designer_config().asset_root / "vendor"
-        echarts_source += "\n" + "\n".join((vendor / name).read_text(encoding="utf-8") for name in ("echarts-gl.min.js", "surface-chart.js"))
+        sources = load_designer_config().surface_runtime_paths
+        echarts_source += "\n" + "\n".join(path.read_text(encoding="utf-8") for path in sources)
     echarts_base64 = base64.b64encode(echarts_source.encode("utf-8")).decode("ascii")
     script = """<script>
 (()=>{
@@ -707,7 +707,7 @@ function markChartUnavailable(spec){
 }
 function initialiseCharts(){
   const presentation=window.OptionHelperChartPresentation;
-  if(!window.echarts||!presentation||typeof presentation.mountCharts!=="function"){
+  if(!presentation||typeof presentation.mountCharts!=="function"){
     chartSpecs.forEach(markChartUnavailable);
     return;
   }
