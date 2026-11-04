@@ -38,10 +38,13 @@ TILE_ICON = RUNTIME_PATHS.project_root / "assets" / "icons" / "optionhelper-app-
 BROWSER_DIR = RUNTIME_PATHS.project_root / ("assets/pages" if RUNTIME_PATHS.mode == "release" else "core/src/runtime/browser")
 DESIGNER_VENDOR_DIR = RUNTIME_PATHS.project_root / ("assets/designer/vendor" if RUNTIME_PATHS.mode == "release" else "modules/designer/assets/vendor")
 DESIGNER_THEME_DIR = RUNTIME_PATHS.project_root / ("assets/designer/themes" if RUNTIME_PATHS.mode == "release" else "modules/designer/assets/themes")
+PLOTLY_VENDOR_DIR = BROWSER_DIR / "vendor"
 _PAGE_ASSETS = {
     "/designer/themes/designer-token-vars.css": (DESIGNER_THEME_DIR / "designer-token-vars.css", "text/css; charset=utf-8"),
     "/reporter.css": (PAGE_DIR / "reporter.css", "text/css; charset=utf-8"),
     "/reporter.js": (PAGE_DIR / "reporter.js", "application/javascript; charset=utf-8"),
+    "/plotly-chart-system.js": (BROWSER_DIR / ("plotly-chart-system.js" if RUNTIME_PATHS.mode == "release" else "plotly_chart_system.js"), "application/javascript; charset=utf-8"),
+    "/vendor/plotly-optionhelper.min.js": (PLOTLY_VENDOR_DIR / "plotly-optionhelper.min.js", "application/javascript; charset=utf-8"),
     "/icons/optionhelper-logo.svg": (LOGO, "image/svg+xml"),
     "/icons/optionhelper-app-icon-tile-light.svg": (TILE_ICON, "image/svg+xml"),
     **{"/editor/" + name: (PAGE_DIR / "editor" / name, media_type) for name, media_type in (
@@ -55,7 +58,7 @@ _PAGE_ASSETS = {
         ("module-host-presentation.css", "text/css; charset=utf-8"),
     )},
     **{"/designer/vendor/" + name: (DESIGNER_VENDOR_DIR / name, "application/javascript; charset=utf-8") for name in (
-        "surface-chart.js", "echarts.min.js", "echarts-gl.min.js",
+        "surface-chart.js", "echarts.min.js",
     )},
 }
 HOST = "127.0.0.1"
