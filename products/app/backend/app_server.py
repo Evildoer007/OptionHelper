@@ -3104,7 +3104,6 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
         shared_designer_assets = {
             "assets/designer/themes/designer-token-vars.css",
             "assets/designer/vendor/echarts.min.js",
-            "assets/designer/vendor/echarts-gl.min.js",
             "assets/designer/vendor/surface-chart.js",
         }
         if not relative.startswith(page_prefix) and relative not in shared_designer_assets:
