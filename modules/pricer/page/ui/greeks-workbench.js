@@ -9,13 +9,6 @@
     rho: { label: 'Rho', surfaceKey: 'rho_surface' },
   };
   const SURFACE_VIEWS = new Set(['3d', 'heatmap', 'table']);
-  const DEFAULT_CAMERA = Object.freeze({
-    eye: { x: 1.45, y: -1.55, z: 1.08 },
-    center: { x: 0, y: 0, z: -.08 },
-    up: { x: 0, y: 0, z: 1 },
-    projection: { type: 'orthographic' },
-  });
-
   function finite(value) {
     return typeof value === 'number' && Number.isFinite(value);
   }
@@ -70,7 +63,7 @@
     for (const item of surface?.data || []) {
       const [xIndex, yIndex, value] = item.value || [];
       if (!Number.isInteger(xIndex) || !Number.isInteger(yIndex)) continue;
-      if (yIndex >= matrix.length || xIndex >= xs.length) continue;
+      if (xIndex < 0 || yIndex < 0 || yIndex >= matrix.length || xIndex >= xs.length) continue;
       matrix[yIndex][xIndex] = finite(value) ? value : null;
       points.push({
         xIndex,
@@ -353,7 +346,7 @@
         zmin: domain.min,
         zmax: domain.max,
         colorscale: plotly.valueColorscale(domain.min, domain.max),
-        zsmooth: 'best',
+        zsmooth: false,
         connectgaps: false,
         hoverongaps: false,
         hovertemplate: surfaceHover(surface),
@@ -377,75 +370,19 @@
       return finite(value) ? { x: grid.xs[xIndex], y: grid.ys[yIndex], z: value } : null;
     }
 
-    function sceneAxis(title) {
-      const palette = plotly.colors();
-      return {
-        title: { text: title, font: plotly.font(12) },
-        tickfont: plotly.font(11),
-        showgrid: false,
-        zeroline: false,
-        showbackground: false,
-        showspikes: false,
-        showline: true,
-        linecolor: palette.rule,
-        ticks: 'outside',
-        tickcolor: palette.rule,
-      };
-    }
-
     function render3d(surface, grid, domain, revision) {
       const node = getElement('greekSurfaceChart');
-      const palette = plotly.colors();
-      const traces = [{
-        type: 'surface',
-        x: grid.xs,
-        y: grid.ys,
-        z: grid.matrix,
-        customdata: grid.matrix.map((row) => row.map((value) => formatRiskValue(value, surface.z_axis.unit, formatUnit))),
-        cmin: domain.min,
-        cmax: domain.max,
-        colorscale: plotly.valueColorscale(domain.min, domain.max),
-        hovertemplate: surfaceHover(surface),
-        connectgaps: false,
-        contours: { x: { show: false }, y: { show: false }, z: { show: false } },
-        lighting: { ambient: .86, diffuse: .58, specular: 0, roughness: 1, fresnel: 0 },
-        colorbar: { title: { text: formatUnit(surface.z_axis.unit), side: 'right', font: plotly.font(12) }, thickness: 10, len: .66, outlinewidth: 0, tickfont: plotly.font(11) },
-      }];
-      const current = currentSurfacePoint(surface, grid);
-      if (current) {
-        traces.push({
-          type: 'scatter3d',
-          mode: 'markers',
-          name: '当前市场点',
-          x: [current.x],
-          y: [current.y],
-          z: [current.z],
-          customdata: [[formatRiskValue(current.z, surface.z_axis.unit, formatUnit)]],
-          marker: { color: palette.risk, size: 5, line: { color: palette.paper, width: 1 } },
-          hovertemplate: `<b>当前市场点</b><br>${escapeHtml(surface.x_axis.name)}：%{x}<br>${escapeHtml(surface.y_axis.name)}：%{y}日<br>数值：%{customdata[0]}<extra></extra>`,
-          showlegend: false,
-        });
-      }
-      const layout = {
-        autosize: true,
-        margin: { l: 0, r: 34, t: 8, b: 0 },
-        paper_bgcolor: 'rgba(0,0,0,0)',
-        font: plotly.font(12, palette.ink),
-        showlegend: false,
-        hoverlabel: { bgcolor: palette.paper, bordercolor: palette.rule, font: plotly.font(12, palette.ink) },
-        uirevision: `surface-${state.activeGreek}-${surface.key}`,
-        scene: {
-          bgcolor: 'rgba(0,0,0,0)',
-          dragmode: 'orbit',
-          aspectmode: 'manual',
-          aspectratio: { x: 1.5, y: 1, z: .68 },
-          camera: DEFAULT_CAMERA,
-          xaxis: sceneAxis(surface.x_axis.name),
-          yaxis: sceneAxis(`${surface.y_axis.name}（日）`),
-          zaxis: sceneAxis(surface.z_axis.name),
-        },
-      };
-      return plotly.render(node, traces, layout).then(() => {
+      const figure = plotly.surfaceFigure({
+        x: grid.xs, y: grid.ys, z: grid.matrix,
+        xTitle: surface.x_axis.name, yTitle: surface.y_axis.name, zTitle: surface.z_axis.name,
+        formatX: value => formatAxisValue(value, surface.x_axis.unit, formatNumber),
+        formatY: value => formatAxisValue(value, surface.y_axis.unit, formatNumber),
+        formatZ: formatRiskPercent,
+        current: currentSurfacePoint(surface, grid),
+        revision: `surface-${state.activeGreek}-${surface.key}`,
+        width: node.clientWidth || 800,
+      });
+      return plotly.render(node, figure.traces, figure.layout).then(() => {
         if (revision === state.renderRevision) plotly.watchWebglLoss(node, () => fallbackSurface('3D上下文已失效，已切换热力图'));
       });
     }
@@ -557,7 +494,7 @@
 
     getElement('resetSurfaceView').addEventListener('click', () => {
       const node = getElement('greekSurfaceChart');
-      if (state.surfaceView === '3d' && node._fullLayout) global.Plotly?.relayout(node, { 'scene.camera': DEFAULT_CAMERA });
+      if (state.surfaceView === '3d' && node._fullLayout) global.Plotly?.relayout(node, { 'scene.camera': plotly.surfaceCamera() });
     });
     const themeObserver = typeof global.MutationObserver === 'function'
       ? new global.MutationObserver(() => { if (state.pricing) render(); })
