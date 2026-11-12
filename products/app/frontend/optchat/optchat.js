@@ -3260,7 +3260,8 @@ export async function startWorkspace(initialMode) {
       const operationsReady = loadCurrentTaskOperations(taskId).catch(() => {
         if (isCurrentSelection()) renderTaskOperations([], taskId);
       });
-      const tasksReady = loadTasks().catch(() => {});
+      // The initial task list was already fetched before restoring the URL's task.
+      const tasksReady = restoreStartup ? Promise.resolve() : loadTasks().catch(() => {});
       const moduleReady = currentMode === "desk" ? mountModule(currentModule, false) : Promise.resolve();
       const draftsReady = restoreAttachmentDrafts().then(() => {
         if (isCurrentSelection()) form.inert = false;
@@ -3510,9 +3511,11 @@ export async function startWorkspace(initialMode) {
     if (!frame) frame = createModuleFrame(moduleName, taskId);
     activateFrame(moduleName);
 
-    if (!forceRetry && frame.dataset.ready === "true" && moduleContexts.has(moduleName)) {
-      deliverContext(moduleName);
-      clearModuleLoading(moduleName, taskId);
+    if (!forceRetry && moduleContexts.has(moduleName)) {
+      if (frame.dataset.ready === "true") {
+        deliverContext(moduleName);
+        clearModuleLoading(moduleName, taskId);
+      }
       return frame;
     }
 
@@ -4092,17 +4095,17 @@ export async function startWorkspace(initialMode) {
     canChoosePreset: session.capabilities.some(value => ["settings.model.local.write", "settings.model.write"].includes(value)),
     onError: error => showWorkspaceStatus(error.message, true),
   });
-  await researchControls.refresh().catch(() => researchControls.hide());
-  const [, tasks] = await Promise.all([
-    configureModelPicker(modelPicker).catch(() => {}),
-    loadTasks(),
-  ]);
-  // The loading fallback can reveal controls before these reads finish.
-  // A later startup response must yield to task or mode choices already made.
-  if (canRestoreStartup()) {
+  const initialTaskReady = loadTasks().then(async () => {
+    // The loading fallback can already have let the user choose a task or mode.
+    if (!canRestoreStartup()) return;
     const requested = taskIdFromLocation();
     if (requested) await selectTask(requested, false, { restoreStartup: true }).catch(() => {});
-  }
+  });
+  await Promise.all([
+    researchControls.refresh().catch(() => researchControls.hide()),
+    configureModelPicker(modelPicker).catch(() => {}),
+    initialTaskReady,
+  ]);
   // A workspace entry never creates or silently resumes a task. A task exists
   // only after an explicit rail action, task URL, or the first submitted chat
   // message; this keeps a fresh OptDesk entry unbound and product-neutral.
@@ -4115,8 +4118,7 @@ export async function startWorkspace(initialMode) {
   if (modeInteractionRevision === 0) {
     await applyMode(currentMode, { updateHistory: false, restoreStartup: true });
   }
-  restoreTransient();
-  await restoreAttachmentDrafts();
+  if (!currentTask && !selectingTaskId) restoreTransient();
   syncComposerAvailability();
   let modelRefresh = null;
   let modelRefreshQueued = false;
@@ -4143,7 +4145,6 @@ export async function startWorkspace(initialMode) {
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible") refreshModels();
   });
-  if (currentMode === "desk" && currentTask) await mountModule(currentModule, false);
   requestAnimationFrame(() => requestAnimationFrame(revealWorkspace));
 }
 
