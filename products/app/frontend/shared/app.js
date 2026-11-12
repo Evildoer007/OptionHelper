@@ -1,6 +1,9 @@
 import { presentAssistantReply } from "/app/frontend/shared/reply-presentation.js";
 import { createThinkingOrb } from "/app/frontend/shared/thinking-orb.js";
-const secretKeys = new Set(["password", "token", "api_key", "secret", "secret_value", "private_key"]);
+import { request } from "/app/frontend/shared/app-request.js";
+
+export { request, safeJson } from "/app/frontend/shared/app-request.js";
+
 const sessionEventKey = "optionhelper.session.event";
 
 function notifySignedOut() {
@@ -17,36 +20,6 @@ function notifySignedOut() {
 addEventListener("storage", (event) => {
   if (event.key === sessionEventKey && event.newValue) location.replace("/");
 });
-
-export async function request(path, options = {}) {
-  const { headers = {}, ...requestOptions } = options;
-  const response = await fetch(path, {
-    ...requestOptions,
-    headers: { "Content-Type": "application/json", ...headers },
-  });
-  const body = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    const error = new Error(body.message || body.detail || body.reason || body.next_step || body.error?.next_step || body.error || "请求未完成");
-    error.status = response.status;
-    error.body = body;
-    throw error;
-  }
-  return body;
-}
-
-export function safeJson(value, { allowSecrets = new Set() } = {}) {
-  const visit = (item) => {
-    if (Array.isArray(item)) return item.map(visit);
-    if (item && typeof item === "object") {
-      return Object.fromEntries(Object.entries(item).map(([key, child]) => {
-        if (secretKeys.has(key) && !allowSecrets.has(key)) throw new Error("明文凭据只能通过设置中心的专用凭据表单保存。");
-        return [key, visit(child)];
-      }));
-    }
-    return item;
-  };
-  return JSON.stringify(visit(value));
-}
 
 export function message(node, text, isError = false) {
   if (!node) return;
@@ -433,9 +406,11 @@ export async function initializeWorkspace(mode, { onModeChange } = {}) {
 
   const shell = document.querySelector("[data-workspace-shell]");
   if (!shell) return session;
-  const { initializeUserGuide } = await import("./user-guide.js");
+  const [{ initializeUserGuide }, { initializePositionSize }] = await Promise.all([
+    import("./user-guide.js"),
+    import("./position-size.js"),
+  ]);
   initializeUserGuide(shell);
-  const { initializePositionSize } = await import("./position-size.js");
   initializePositionSize(shell);
   shell.dataset.mode = mode;
   shell.dataset.hasDesk = String(hasDesk);
