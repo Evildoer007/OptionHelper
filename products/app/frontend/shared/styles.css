@@ -2838,7 +2838,7 @@ html.workspace-overlay-open body { overflow: hidden; }
   left: 0;
   min-height: 0;
   pointer-events: none;
-  transition: transform .24s cubic-bezier(.16, 1, .3, 1);
+  transition: transform .16s cubic-bezier(.16, 1, .3, 1);
 }
 .chat-surface {
   display: grid;
@@ -3570,9 +3570,7 @@ html.workspace-overlay-open body { overflow: hidden; }
 
 .settings-nav [hidden] { display: none; }
 
-/* Approved login surface. Its visual timings and geometry are sourced from
-   optionhelper_entry.html; other App surfaces intentionally keep their own
-   established layout rules. */
+/* Login surface based on optionhelper_entry.html, with a short launch animation. */
 .login-page {
   --login-bg: #F1F1F1;
   --login-card: #FFFFFF;
@@ -3631,7 +3629,7 @@ html.workspace-overlay-open body { overflow: hidden; }
   position: fixed;
   z-index: 2;
   top: 18px;
-  right: 88px;
+  right: clamp(16px, 2vw, 24px);
   display: inline-flex;
   gap: 2px;
   padding: 3px;
@@ -3915,7 +3913,7 @@ html.login-boot .login-splash { display: grid; }
 .login-splash.is-leaving {
   display: grid;
   pointer-events: none;
-  animation: login-splash-out 0.458s cubic-bezier(.4, 0, .55, 1) forwards;
+  animation: login-splash-out .16s cubic-bezier(.4, 0, .55, 1) forwards;
 }
 
 @keyframes login-splash-out { to { opacity: 0; transform: scale(1.025); } }
@@ -3959,7 +3957,7 @@ html[data-theme="dark"] .login-splash { background: #0E1013; }
   position: relative;
   z-index: 1;
   display: block;
-  animation: login-reference-glow 1.26s cubic-bezier(.22, 1, .36, 1) .192s both;
+  animation: login-reference-glow .58s cubic-bezier(.22, 1, .36, 1) .065s both;
 }
 
 .login-splash__sparks {
@@ -3971,33 +3969,33 @@ html[data-theme="dark"] .login-splash { background: #0E1013; }
   height: 100%;
   opacity: 1;
   pointer-events: none;
-  transition: opacity .504s cubic-bezier(.22, 1, .36, 1);
+  transition: opacity .18s cubic-bezier(.22, 1, .36, 1);
 }
 
 .login-splash__sparks.is-settled { opacity: 0; }
 
 .login-splash__reference-disc {
-  animation: login-reference-disc 1.224s linear both;
+  animation: login-reference-disc .55s linear both;
 }
 
 .login-splash__reference-ink {
-  animation: login-reference-ink 1.14s linear .216s both;
+  animation: login-reference-ink .48s linear .06s both;
 }
 
 .login-splash__reference-arc {
-  animation: login-reference-arc 1.14s linear .216s both;
+  animation: login-reference-arc .48s linear .06s both;
 }
 
 .login-splash__reference-word { opacity: 0; }
 
 .login-splash.is-assembled .login-splash__reference-word {
-  animation: login-reference-word .432s cubic-bezier(.22, 1, .36, 1) both;
+  animation: login-reference-word .16s cubic-bezier(.22, 1, .36, 1) both;
 }
 
 .login-splash__reference-rule {
   transform-box: fill-box;
   transform-origin: left center;
-  animation: login-reference-rule .6s cubic-bezier(.62, 0, .28, 1) .984s both;
+  animation: login-reference-rule .24s cubic-bezier(.62, 0, .28, 1) .36s both;
 }
 
 @keyframes login-reference-disc {
@@ -4041,10 +4039,8 @@ html[data-theme="dark"] .login-splash { background: #0E1013; }
 
 @keyframes login-reference-rule { from { transform: scaleX(0); } to { transform: scaleX(1); } }
 
-.login-wrap.is-revealing { animation: login-card-in 0.458s cubic-bezier(.16, 1, .3, 1) both; }
+.login-wrap.is-revealing { animation: login-card-in .20s cubic-bezier(.16, 1, .3, 1) both; }
 @keyframes login-card-in { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
-
-@media (max-width: 520px) { .login-theme { right: 76px; } }
 
 @media (max-width: 520px) {
   .login-card { padding: 28px 22px 26px; border-radius: 12px; }
