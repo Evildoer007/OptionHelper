@@ -1,4 +1,4 @@
-import { request, safeJson } from "/app/frontend/shared/app.js";
+import { request, safeJson } from "/app/frontend/shared/app-request.js";
 import { installThemeControls } from "/app/frontend/shared/theme.js";
 import { initializeVolSurface } from "/app/frontend/shared/vol-surface.js";
 
