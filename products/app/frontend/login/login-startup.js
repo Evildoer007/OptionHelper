@@ -26,8 +26,8 @@
     }
 
     const logoAsset = "/app/assets/icons/optionhelper-logo.svg";
-    const startMs = 516;
-    const flyMs = 960;
+    const startMs = 100;
+    const flyMs = 460;
     const stagger = .5;
     const particleStep = 2;
     const canvas = document.createElement("canvas");
@@ -346,18 +346,16 @@
     splash.removeEventListener("click", finish);
     splash.classList.add("is-leaving");
     revealLogin();
-    setTimeout(() => {
-      splash.remove();
-      account?.focus({ preventScroll: true });
-    }, 470);
+    account?.focus({ preventScroll: true });
+    setTimeout(() => splash.remove(), 180);
   };
 
-  timer = setTimeout(finish, 2200);
+  timer = setTimeout(finish, 760);
   document.addEventListener("keydown", finish);
   splash.addEventListener("click", finish);
 
   // The launch screen is never allowed to become a permanent application
   // state.  This independent watchdog still releases the login page if a
   // browser timer is throttled while the WebKit window is being activated.
-  setTimeout(finish, 3120);
+  setTimeout(finish, 1260);
 })();
