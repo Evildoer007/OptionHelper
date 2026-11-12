@@ -105,6 +105,7 @@ from runtime.protocol.models import ModuleRunRef
 FRONTEND_ASSETS = frozenset({
     "shared/user-guide.js", "shared/user-guide.css", "shared/position-size.js", "shared/position-size.css",
     "login/index.html", "login/login-startup.js", "login/login.js",
+    "shared/app-request.js",
     "optchat/index.html", "optchat/optchat.js", "optchat/attachment-utils.js", "optchat/video-attachments.js",
     "optdesk/index.html", "optdesk/optdesk.js",
     "settings/index.html", "settings/settings.js", "settings/model-providers.css", "settings/general-settings.css", "settings/settings-shell.css",
